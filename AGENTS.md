@@ -15,7 +15,7 @@ chats, each conversation an agent session on a **station** (a machine of theirs)
   on the device, the views. The UIs only render it. `client/shell` (Rust) is its IO in the native apps,
   `client/iroh-wasm` iroh for the browser, `client/i18n/catalog` the words of every part (zh and en, the same keys).
 - `apps/mbui/`: the app on every platform (Android, iOS, macOS, Windows, Linux, and the web), in MoonBit on mbui, the
-  UI framework at `libs/mbui`.
+  UI framework at `libs/mbui`. `libs/comma-ui`: Comma's design system as a component library on mbui, of its own.
 - `libs/base/`: the first of the base in MoonBit, of no program (the Rust shell's binding, the mesh's wire and its
   device side). Nothing here is built on it yet.
 - `web/`: the web's host of that app, a few pages of its own (Preact) and the design system `web/ui`.
