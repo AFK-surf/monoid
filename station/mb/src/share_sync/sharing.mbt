@@ -665,6 +665,82 @@ fn may_use(allow : Json, station : String) -> Bool {
 }
 
 ///|
+/// What a host answers a station a share's `allow` leaves out (index.ts NOT_FOR_IT), one in none of the workspaces it
+/// is shared in as the cloud's list has it (NOT_THERE), any while that list is not known (STATIONS_UNKNOWN), and one
+/// asking of a share it does not have (NOT_SHARED: no longer shared, or moved and forgotten).
+let not_for_it : String = "that share is not for this station"
+
+///|
+let not_there : String = "that share is not for this station's workspaces"
+
+///|
+let stations_unknown : String = "this station does not know its workspaces' stations yet"
+
+///|
+let not_shared : String = "this station does not share that"
+
+///|
+/// Whether a host answered that its `allow` leaves this station out (index.ts `notOurs`): the copy it has is not its to
+/// keep, as the `gone` its host tells (share.changed) would have said had it got here. Only that, the host's own word:
+/// what the cloud's list says (NOT_THERE, STATIONS_UNKNOWN) it can hold back or lose a station of a while, and a host
+/// that forgot a move answers NOT_SHARED till the new one says it.
+fn not_ours(e : Error) -> Bool {
+  error_words(e) == not_for_it
+}
+
+///|
+/// Whether two of a share's `allow` let the same stations use it (anything but an array: every one), in whatever order
+/// (index.ts `sameStations`).
+fn same_stations(a : Json?, b : Json?) -> Bool {
+  match (a, b) {
+    (Some(Array(x)), Some(Array(y))) => {
+      let names = (xs : Array[Json]) => xs.map(v => js_string(Some(v)))
+      let mine : Set[String] = Set::from_array(names(x))
+      let both : Set[String] = Set::from_array(names(x) + names(y))
+      x.length() == y.length() && both.length() == mine.length()
+    }
+    (Some(Array(_)), _) | (_, Some(Array(_))) => false
+    _ => true
+  }
+}
+
+///|
+/// Why a host refuses `peer` a share it has (index.ts `handle`), each said apart: its `allow` leaving it out (its own
+/// word, a copy taken away on it), the cloud's list not known, or leaving it out (a copy kept on those).
+fn refusal_of(
+  allow : Json,
+  peer : String,
+  rosters : Map[String, Array[String]]?,
+  reach : (Map[String, Array[String]]) -> String?,
+) -> String? {
+  if !may_use(allow, peer) {
+    return Some(not_for_it)
+  }
+  guard rosters is Some(r) else { return Some(stations_unknown) }
+  if reach(r) is None {
+    return Some(not_there)
+  }
+  None
+}
+
+///|
+/// The stations to be told a share is no longer for them (`told` -1) as who may use it changes from `before` to `now`
+/// (index.ts `syncHosted`): every one of the workspaces' its `allow` leaves out, not only those down as told of it (one
+/// the cloud's list left out a while is forgotten as told, and would keep its copy, told nothing till it asked again).
+fn left_out(
+  told : Map[String, Json],
+  before : Json?,
+  now : Json,
+  rosters : Map[String, Array[String]],
+  itself : (String) -> Bool,
+) -> Array[String] {
+  if same_stations(before, Some(now)) {
+    return []
+  }
+  rosters.keys().filter(peer => !told.contains(peer) && !may_use(now, peer) && !itself(peer)).collect()
+}
+
+///|
 fn allow_of(v : Json?) -> Json {
   match v {
     Some(Array(_) as a) => a
@@ -1081,8 +1157,17 @@ async fn Sharing::sync_hosted_now(self : Sharing) -> Map[String, Own] {
             dirty = true
           }
         }
-        if js_stringify(hosted.get("allow").unwrap_or(Json::null())) != js_stringify(now.allow) ||
-          hosted.get("allow") is None {
+        // Who may use it changed: every station it leaves out now is to be told so (-1, `left_out`). Kept as it was
+        // till the stations are known, so that they are told then.
+        if self.rosters() is Some(ros) &&
+          (
+            js_stringify(hosted.get("allow").unwrap_or(Json::null())) != js_stringify(now.allow) ||
+            hosted.get("allow") is None
+          ) {
+          let told = obj_field(hosted, "told")
+          for peer in left_out(told, hosted.get("allow"), now.allow, ros, p => self.itself(p)) {
+            told[peer] = jnum(-1.0)
+          }
           hosted["allow"] = now.allow
           dirty = true
         }

@@ -407,6 +407,20 @@ async fn Sharing::reconcile_once(self : Sharing) -> Unit {
       self.checked.add(id)
     } catch {
       e => {
+        // Its host says who may use it leaves this station out (`not_ours`) and the word of it never got here: taken
+        // away as that word would have taken it; any other refusal (the host's list of stations not known, or leaving
+        // this one out) is taken as the host not answering.
+        if not_ours(e) {
+          self.deps.log.info("share", "its host says a share is not this station's; its copy is taken away", jobj([
+            ("id", jstr(id)),
+            ("host", had.get("host").unwrap_or(jnull())),
+          ]))
+          self.silent_hosts.remove(js_string(had.get("host")))
+          borrowed_all.remove(id)
+          self.drop(id, had)
+          self.write_state()
+          continue
+        }
         pending.val = true
         self.silent_hosts[js_string(had.get("host"))] = (self.deps.clock.now)()
         self.deps.log.info("share", "a share could not be had from its host", jobj([
