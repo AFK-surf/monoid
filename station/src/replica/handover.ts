@@ -38,7 +38,7 @@ import { STILLFAIL_SURFACE, comingWs, handedWs } from "../store/rows.ts";
 import { type CarriedJob, type CarryIndex, type Gathered, carriedPlace, listFile } from "./carry-worker.ts";
 import { HASH, STATION, WORKSPACE } from "./format.ts";
 import type { Ask } from "./peers.ts";
-import type { Need } from "../move/module.ts";
+import { type Need, Said } from "../move/module.ts";
 import type { KeptSend } from "../api/admin.ts";
 import { HEADROOM, LACK_MOST, type MadeGit, RETRY_MOST_MS, RETRY_MS, connectsThere, gatherSoon, placeSoon, rebuildGits } from "./retire.ts";
 import { lackingIn, receiveFile, sendGathered } from "./sending.ts";
@@ -55,10 +55,21 @@ const AFTER_SHOWN: readonly ChatTable[] = ["entries", "letters", "deliveries"];
 
 /// Why a chat cannot go to station `name`: a chat of its key is live there (`keys`), one that went on there apart from
 /// this one (the copy a retirement taken back left there, 2026-11-14): never merged into, whichever had more.
-export const liveHereWords = (keys: readonly string[], name: string) => why("liveThere", { station: name, keys: keys.join(", ") });
+export const liveHereWords = (_keys: readonly string[], name: string) => why("liveThere", { station: name });
 
 /// Why a hand-over did not go, in the station's language (`station.move.why.*`): every reason the chat's failure gives.
 const why = (key: string, args: Record<string, unknown> = {}) => tr(stationLang(), `station.move.why.${key}`, args);
+
+/// What carrying a chat's files failed of, in words: what a person can act on of its own (a file this station cannot
+/// read, no room left), else one reason with the detail as it came; what the other station said, or the move's own
+/// words, as they are.
+const carryWords = (e: unknown): Error => {
+  if (e instanceof Refused || e instanceof Said) return e;
+  const err = e as NodeJS.ErrnoException;
+  if (err?.code === "EACCES" || err?.code === "EPERM") return new Said(why("cannotRead", { path: err.path ?? "", count: 1 }));
+  if (err?.code === "ENOSPC") return new Said(why("noSpace"));
+  return new Said(why("carryFailed", { detail: err?.message ?? String(e) }));
+};
 
 /// What a session's account is known by across the workspace: the share it is a copy of or the host of (`share`), the
 /// key it runs with (`key`, a hash of it), or a login not shared, by its id where it is (`own`: `<id>@<station>`, the
@@ -383,6 +394,11 @@ export class Handover {
 
   /// Why chat `key` cannot be handed to `to` now, in words that say what to do (null: it can). `ignoreFiles`: one whose
   /// room is not the station's own goes without its files.
+  /// Chat `key` as people call it: its title, else its key without still.fail's own prefix.
+  #chatName(key: string): string {
+    return this.#d.store.getSession(key)?.title ?? key.replace(/^chat:/, "");
+  }
+
   /// `planning`: as a plan lists it (a chat of a connect that is not routed needs that connect there, which the plan
   /// says by its needs); else as it is to go now (`stoppedFor`: it may go while that is not there).
   check(key: string, to: string, opts: { ignoreFiles?: boolean; planning?: boolean; stoppedFor?: Need | null; reads?: SessionReads } = {}): string | null {
@@ -405,10 +421,10 @@ export class Handover {
       // (a chat of a connect that is not routed runs where the connect runs: it goes once its connect is there, or
       // arrives there stopped, waiting for it)
       if (kind !== null && !routed(kind) && !opts.planning && opts.stoppedFor?.module !== "connects" && this.#d.connects?.runsOn(s.connect) !== to) {
-        return why("connectFirst", { chat: k, connect: s.connect, kind: kind.mode === "single-session" ? why("oneSession") : kind.kind });
+        return why("connectFirst", { chat: this.#chatName(k), connect: s.connect, kind: kind.mode === "single-session" ? why("oneSession") : kind.kind });
       }
       if (!opts.ignoreFiles && s.archivedAt === null && !s.workspace.startsWith(join(this.#d.data, "sessions"))) {
-        return why("filesOutside", { chat: k, dir: s.workspace });
+        return why("filesOutside", { chat: this.#chatName(k), dir: s.workspace });
       }
     }
     return null;
@@ -436,7 +452,7 @@ export class Handover {
     if (refused !== null) throw new Refused(refused);
     const keys = this.together(key);
     const ws = this.#d.hub.wsOf(key)!;
-    if (opts.wait !== true) for (const k of keys) if (this.#d.hub.busy(k)) throw new Refused(why("inTurn", { chat: k }));
+    if (opts.wait !== true) for (const k of keys) if (this.#d.hub.busy(k)) throw new Refused(why("inTurn", { chat: this.#chatName(k) }));
     const name = this.#d.roster(ws)?.find((s) => s.id === to)?.name ?? "";
     const o: Out = {
       id: handoverId(keys, to, this.#d.fibers.now()), keys, to, toName: name, ws, at: this.#d.fibers.now(), step: "files", error: null, jobs: [], dropOwed: false,
@@ -453,13 +469,13 @@ export class Handover {
       await this.#files(o, begun, opts.progress, false);
       for (const k of keys) {
         if (!this.#d.hub.busy(k)) continue;
-        if (opts.wait !== true) throw new Error(why("inTurn", { chat: k }));
+        if (opts.wait !== true) throw new Error(why("inTurn", { chat: this.#chatName(k) }));
         let late: () => void = () => {};
         const deadline = new Promise<"late">((resolve) => (late = this.#d.fibers.after(TURN_WAIT_MS, () => resolve("late")))); // timer: a deadline for the turn's end
         this.#waitingTurn.add(o.id);
         const ended = await Promise.race([this.#d.hub.turnEnded(k).then(() => "ended" as const), deadline]).finally(() => this.#waitingTurn.delete(o.id));
         late();
-        if (ended === "late") throw new Error(why("turnLate", { chat: k, minutes: TURN_WAIT_MS / 60_000 }));
+        if (ended === "late") throw new Error(why("turnLate", { chat: this.#chatName(k), minutes: TURN_WAIT_MS / 60_000 }));
       }
     } catch (e) {
       const error = (e as Error).message;
@@ -530,7 +546,9 @@ export class Handover {
     o.step = "files";
     await this.#save(o);
     const db = join(d.data, "stillfail.db");
-    const g: Gathered = await this.#work.gather(d.data, db, o.ws, false, scratch(d.data, o.id), undefined, null, o.keys);
+    const g: Gathered = await this.#work.gather(d.data, db, o.ws, false, scratch(d.data, o.id), undefined, null, o.keys).catch((e) => Promise.reject(carryWords(e)));
+    // (a file of its room this station cannot read: the chat does not go, rather than go without it)
+    if ((g.unreadableCount ?? 0) > 0) throw new Said(why("cannotRead", { path: (g.unreadable ?? []).join("、"), count: g.unreadableCount }));
     const need = HEADROOM + g.bytes + Math.ceil(g.bytes / 20);
     if (g.gits > 0 && begun?.git === false) throw new Error(why("noGit", { station: o.toName || o.to.slice(0, 12), n: g.gits }));
     if (typeof begun?.free === "number" && need > begun.free) throw new Error(why("noRoom", { station: o.toName || o.to.slice(0, 12), free: gb(begun.free), need: gb(need) }));
@@ -547,7 +565,7 @@ export class Handover {
       stopping: () => this.#closed || o.abandoned === true,
       total: (bytes) => void (held || (o.total = bytes, o.done = 0, progress?.({ done: 0, total: bytes, unit: "bytes" }))),
       done: (bytes) => void (held || (o.done += bytes, progress?.({ done: o.done, total: o.total, unit: "bytes" }))),
-    }, held, [], true);
+    }, held, [], true).catch((e) => Promise.reject(carryWords(e)));
     this.#given(o);
     if (carry === null) throw new Error(why("stopping"));
     const placed = await ask({ method: "handover.place", carry });
@@ -806,7 +824,7 @@ export class Handover {
             return { ok: true };
           }
           case "handover.place":
-            return await this.#serialIn(i, () => this.#place(i, String(request.carry ?? "")));
+            return await this.#serialIn(i, () => this.#place(i, String(request.carry ?? ""))).catch((e) => Promise.reject(carryWords(e)));
           case "handover.rows": {
             const table = String(request.table ?? "") as ChatTable;
             // (shown: only what was said there after its rows went, its log's and what it has yet to be handed)

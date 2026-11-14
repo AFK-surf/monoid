@@ -22,6 +22,7 @@
 // `own:<profile>@<station>` again, as before it moved.
 import { join } from "node:path";
 import { log } from "../ops/log.ts";
+import { stationLang, tr } from "../ops/i18n.ts";
 import type { AccountOf } from "../replica/handover.ts";
 import { shareRefusal } from "../share/index.ts";
 import { KeptSet } from "./kept.ts";
@@ -111,7 +112,7 @@ export function accountsModule(d: AccountsDeps): Module & { cameHome(share: stri
         if (d.profile !== undefined && d.profile(pid) == null) gone.add(id);
         local.set(id, pid);
         if (a !== null) asked[id] = a;
-        items.push({ module: "accounts", id, label: a?.name ?? pid, needs: [], ...(a === null ? { cannot: `this machine's own login cannot go to another station: sign in there with the login tool` } : {}) });
+        items.push({ module: "accounts", id, label: a?.name ?? pid, needs: [], ...(a === null ? { cannot: tr(stationLang(), "station.move.sched.machineLogin") } : {}) });
       }
       // (not answered: what it has is not guessed, the logins asked of it cannot go this turn, nor what needs them)
       let failed: unknown = null;

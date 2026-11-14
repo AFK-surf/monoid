@@ -16,7 +16,7 @@ import { type ShareMoves, accountItemId, accountsModule } from "./accounts.ts";
 import { PLAN_PAGE, chatsModule, giveBack } from "./chats.ts";
 import { connectsModule } from "./connects.ts";
 import { JobsModule } from "./jobs.ts";
-import type { Module, PlanReads } from "./module.ts";
+import { type Module, type PlanReads, Said } from "./module.ts";
 import { ReposModule, repoItemId, worktreesOfClones } from "./repos.ts";
 import { SettingsModule } from "./settings.ts";
 import { type VaultDeps, VaultModule, vaultItemId } from "./vault.ts";
@@ -152,10 +152,10 @@ export class Moves {
       const name = this.#d.roster(this.#d.home() ?? "")?.find((r) => r.id === station)?.name || station.slice(0, 12);
       if (e instanceof PeerGone && !this.#suspect.has(station)) {
         this.#suspect.add(station);
-        throw new Error(tr(stationLang(), "station.move.noAnswer", { station: name }));
+        throw new Said(tr(stationLang(), "station.move.noAnswer", { station: name }));
       }
       if (e instanceof PeerGone || timedOut || this.#suspect.has(station)) {
-        const gone = new Error(tr(stationLang(), "station.move.gone", { station: name }));
+        const gone = new Said(tr(stationLang(), "station.move.gone", { station: name }));
         this.#gone.set(station, gone);
         log.warn("move", "a station found gone in a turn: asked nothing more of it till it ends", { station: station.slice(0, 12), error: (e as Error).message });
         throw gone;

@@ -12,6 +12,7 @@ import { readFileSync } from "node:fs";
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { Refused } from "../mesh/bus.ts";
+import { stationLang, tr } from "../ops/i18n.ts";
 import { type Item, type ItemState, type Module, unanswered, notAnswered } from "./module.ts";
 
 type Json = any;
@@ -64,7 +65,7 @@ export class SettingsModule implements Module {
       const theirs = there?.[k];
       const cannot = failed !== null ? unanswered(failed) : theirs === undefined || theirs === null || same(theirs, raw[k]) || (isMap(theirs) && isMap(raw[k])) || this.#moved.has(`setting:${k}`)
         ? undefined
-        : `that station has its own ${k} (${JSON.stringify(theirs).slice(0, 80)}), which it keeps: its chats rely on it. Change it in that station's settings if this one's is meant there`;
+        : tr(stationLang(), "station.move.sched.settingThere", { key: k, value: JSON.stringify(theirs).slice(0, 80) });
       return { module: "settings", id: `setting:${k}`, label: k, needs: [], ...(cannot !== undefined ? { cannot, ...(failed !== null ? { again: true as const } : {}) } : {}) };
     });
   }
@@ -124,7 +125,7 @@ export class SettingsModule implements Module {
         });
         return { ok: true };
       }
-      throw new Refused(`this station has its own ${key}, which it keeps: its chats rely on it. Change it in this station's settings if the other's is meant here`);
+      throw new Refused(tr(stationLang(), "station.move.sched.settingHere", { key }));
     }
     if (request.method === "move.setting.back") {
       const f = this.#former[key];

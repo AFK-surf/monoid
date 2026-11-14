@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, test } from "node:test";
@@ -41,6 +41,7 @@ import { Readers } from "../src/read/pool.ts";
 import { elsewhere } from "../src/api/seen.ts";
 import { RETRY_MS } from "../src/replica/retire.ts";
 import { PeerGone } from "../src/mesh/peer.ts";
+import { stationLang, tr } from "../src/ops/i18n.ts";
 import { transcriptAt } from "../src/agents/claude.ts";
 import { hearLines } from "../src/ops/log.ts";
 import { WS, A, B, C, type Station, world, endTurn, stillfailChat, gitEnv, filesOf, entries, homeThread } from "./move-world.ts";
@@ -295,6 +296,24 @@ test("a chat working in a checkout of its own: its commits no remote has and its
   assert.match(git(there, "status", "--porcelain"), /^M app\.ts$/m);
 });
 
+test("a file of the chat's room this station cannot read: the chat does not go, said in the station's words naming the file, and goes on here", async () => {
+  const w = world();
+  const a = w.get(A);
+  const { key } = await stillfailChat(a);
+  const file = join(a.rig.session(key).workspace, "locked.txt");
+  writeFileSync(file, "secret\n");
+  chmodSync(file, 0o000);
+  try {
+    const error = await a.moves.handover.handOver(key, B).then(() => null, (e: Error) => e.message);
+    assert.match(error ?? "", /读不到 1 个文件（.*locked\.txt）|cannot read 1 of its files \(.*locked\.txt\)/, `the station's words, naming it: ${error}`);
+    assert.equal(a.rig.hub.chatHeld(key), null, "goes on here");
+    assert.equal(a.rig.store.handedTo(key), null, "nothing of it went");
+    assert.deepEqual(w.get(B).moves.handover.ins().filter((i) => i.step !== "dropped").map((i) => i.step), [], "nothing left half there");
+  } finally {
+    chmodSync(file, 0o644);
+  }
+});
+
 test("a failure at each step before it went: the chat works here afterwards and nothing of it is there", async () => {
   for (const how of ["unreached", "full", "hash", "import", "counts", "a-restart"] as const) {
     const w = world();
@@ -424,8 +443,8 @@ test("a whole station handed over chat by chat: one whose account cannot go is l
   assert.equal(out.failed, null, JSON.stringify(out.failed));
   assert.ok(out.done.some((d) => d.id === one.key) && out.done.some((d) => d.id === two.key));
   const refused = out.refused.find((r) => r.item.id === mine);
-  assert.match(refused?.why ?? "", /needs accounts machine:mine/);
-  assert.match(out.refused.find((r) => r.item.id === "machine:mine")?.why ?? "", /this machine's own login/);
+  assert.match(refused?.why ?? "", /(needs account “|需要账号「)mine/);
+  assert.match(out.refused.find((r) => r.item.id === "machine:mine")?.why ?? "", /this machine's own login|本机自己的登录/);
   assert.equal(b.rig.store.getSession(mine), null);
   assert.equal(a.rig.hub.handedOver(mine), false, "it works here");
 });
@@ -448,7 +467,7 @@ test("a failed item stops only what needs it: of three chats and their logins mo
   assert.ok(done.includes(`chats ${one.key}`) && done.includes(`chats ${three}`), `the others went: ${JSON.stringify(done)}`);
   assert.ok(out.done.some((d) => d.module === "accounts"), `the logins went: ${JSON.stringify(done)}`);
   assert.deepEqual((out.failures ?? []).map((f) => [f.item.id, /the middle one refused/.test(f.error)]), [[mid.key, true]], "the failed one named, with its words");
-  assert.match(out.refused.find((r) => r.item.id === `${mid.key}#dev`)?.why ?? "", new RegExp(`waits for chats ${mid.key} .*which did not move: .*the middle one refused`), "its job not started, waiting for it");
+  assert.match(out.refused.find((r) => r.item.id === `${mid.key}#dev`)?.why ?? "", /(waits for|在等).*(which did not move|没有迁过去)[:：].*the middle one refused/, "its job not started, waiting for it");
   assert.equal(a.rig.store.handedTo(mid.key), null, "it goes on here");
   // Back whole, the first chat not coming back: the rest come back.
   w.tamper((to, r) => {
@@ -554,7 +573,7 @@ test("arriveStopped, by a person's POST /move and by station_move: a chat whose 
   assert.equal((await a.ask("POST", "/move", { to: B, module: "chats", item: one })).status, 202);
   await a.moves.scheduler.settle();
   await w.quiet();
-  assert.match(a.moves.scheduler.last(WS)?.refused.find((r) => r.item.id === one)?.why ?? "", new RegExp(`needs accounts ${account}`), "without it: refused, naming the login");
+  assert.match(a.moves.scheduler.last(WS)?.refused.find((r) => r.item.id === one)?.why ?? "", /needs account “solo”|需要账号「solo」/, "without it: refused, naming the login");
   assert.equal((await a.ask("POST", "/move", { to: B, module: "chats", item: one, arriveStopped: true })).status, 202);
   await a.moves.scheduler.settle();
   await w.quiet();
@@ -679,7 +698,7 @@ test("an account that cannot be borrowed moved first: its chats here stop, namin
   // its account cannot go back while a chat there needs it: said, naming it
   const back = await a.moves.scheduler.back(WS, B, { module: "accounts", item: `own:solo@${A}` });
   assert.deepEqual(back.refused.map((r) => r.item.id), [`own:solo@${A}`]);
-  assert.match(back.refused[0]!.why, new RegExp(`chats ${one.key}`));
+  assert.match(back.refused[0]!.why, new RegExp(one.key.replace(/^chat:/, "")));
 });
 
 test("an account that cannot be borrowed moved, then back: its chats here stopped meanwhile go on here, what was said to them delivered once", async () => {
@@ -911,7 +930,7 @@ test("a linked worktree with commits no remote has: its repository moves first, 
   const repo = `repo:${bare}`;
   assert.ok(plan.items.find((x) => x.id === key)!.needs.some((n) => n.module === "repos" && n.id === repo), "the chat needs its repository");
   const refused = await a.moves.scheduler.move(WS, B, { module: "chats", item: key });
-  assert.match(refused.refused[0]?.why ?? "", /needs repos/);
+  assert.match(refused.refused[0]?.why ?? "", /(needs repository|需要仓库)/);
   // (a repository moved is copied: still here, so moving it alone stops nothing; nor do the vault, agent home or settings)
   assert.deepEqual(plan.items.find((x) => x.id === repo)!.wouldStop, []);
   for (const m of a.moves.modules.filter((x) => ["repos", "vault", "settings"].includes(x.id))) assert.equal(m.usableHere?.({ module: m.id, id: "x", label: "x", needs: [] }), true, m.id);
@@ -951,7 +970,7 @@ test("settings and secrets each moved, then back: both stations as they were", a
   a.rig.raw.maxNudges = 3;
   b.rig.raw.maxNudges = 5;
   const nudges = (await a.moves.scheduler.plan(WS, B)).items.find((x) => x.id === "setting:maxNudges")!;
-  assert.match(nudges.cannot ?? "", /that station has its own maxNudges \(5\), which it keeps/);
+  assert.match(nudges.cannot ?? "", /that station has its own maxNudges \(5\), which it keeps|那台 station 有自己的 maxNudges（5）/);
   const pa = plainStore(a.rig.store.db);
   const pb = plainStore(b.rig.store.db);
   pa.put({ ws: WS, id: "tok", owner: "p@x", version: 1, kind: "token", name: "token", fields: { value: "s3cret" }, notes: "", at: 1 } as Json);
@@ -1009,14 +1028,14 @@ test("the other station not answering what repositories or settings it has as th
   const unanswered = new Set<string>();
   const handle = b.bus.handle.bind(b.bus);
   b.bus.handle = ((ws: string, peer: string, request: Json) => (unanswered.delete(request?.method) ? Promise.reject(new Error("the station was not reached")) : handle(ws, peer, request))) as typeof b.bus.handle;
-  const words = /the other station did not answer what it has of it \(.*the station was not reached\): ask again$/;
+  const words = /(the other station did not answer whether it has it: ask again|另一台 station 没有回答它那边有没有这一项：再试一次)$/;
   for (const m of ["move.repo.have", "move.setting.values"]) unanswered.add(m);
   const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: key, withNeeds: true });
   await w.quiet();
   assert.equal(out.failed, null, JSON.stringify(out));
   assert.deepEqual(out.done, []);
   assert.deepEqual(out.refused.map((r) => r.item.id), [key], "the chat, nothing of it tried");
-  assert.ok(out.refused[0]!.why.startsWith(`it needs repos ${repo} (proj) there, which cannot go: `), out.refused[0]!.why);
+  assert.ok(out.refused[0]!.why.startsWith(tr(stationLang(), "station.move.sched.needCannot", { need: tr(stationLang(), "station.move.called", { what: tr(stationLang(), "station.move.module.repos"), label: "proj" }), why: "" })), out.refused[0]!.why);
   assert.match(out.refused[0]!.why, words);
   for (const m of ["move.repo.have", "move.setting.values"]) unanswered.add(m);
   const plain = await a.moves.scheduler.move(WS, B, { module: "settings", item: "setting:agentEnv" });
@@ -2173,16 +2192,16 @@ test("a chat handed to the other, then put back in sight here by hand (its row h
     return r;
   });
   const first = (await a.moves.scheduler.plan(WS, B)).items.find((x) => x.id === key);
-  assert.match(first?.cannot ?? "", /the other station did not answer what it has of it \(the station was not reached\): ask again/, `not answered: it cannot go this turn: ${JSON.stringify(first)}`);
+  assert.match(first?.cannot ?? "", /the other station did not answer whether it has it: ask again|另一台 station 没有回答它那边有没有这一项：再试一次/, `not answered: it cannot go this turn: ${JSON.stringify(first)}`);
   w.tamper(null);
   const plan = await a.moves.scheduler.plan(WS, B);
   const item = plan.items.find((x) => x.id === key);
   assert.equal(item?.state, "here", JSON.stringify(item));
-  assert.match(item?.cannot ?? "", /a chat of this key is live on B|key 在「B」上还有一个在继续的对话/i, `the plan says it cannot go: ${JSON.stringify(item)}`);
+  assert.match(item?.cannot ?? "", /a chat of this key is live on B|在「B」上还有一个在继续的副本/i, `the plan says it cannot go: ${JSON.stringify(item)}`);
   const view = moveView(plan, a.moves.modules.map((m) => m.id), a.moves.scheduler.stopped(), { limit: 50 }, null, false, (id) => id.slice(0, 1).toUpperCase());
   const row = view.modules.find((m: Json) => m.id === "chats").items.find((x: Json) => x.id === key);
-  assert.match(row?.cannot ?? "", /a chat of this key is live on B|key 在「B」上还有一个在继续的对话/i, `GET /move's row says so: ${JSON.stringify(row)}`);
-  await assert.rejects(a.moves.handover.handOver(key, B, { wait: true }), /a chat of this key is live on B|key 在「B」上还有一个在继续的对话/i);
+  assert.match(row?.cannot ?? "", /a chat of this key is live on B|在「B」上还有一个在继续的副本/i, `GET /move's row says so: ${JSON.stringify(row)}`);
+  await assert.rejects(a.moves.handover.handOver(key, B, { wait: true }), /a chat of this key is live on B|在「B」上还有一个在继续的副本/i);
 });
 
 test("a chat whose key is live where it would go (one that went on there apart from it, as a retirement taken back leaves one) cannot go: the plan says so, the station asked refuses it before anything is written, and the chat goes on here", async () => {
@@ -2199,11 +2218,11 @@ test("a chat whose key is live where it would go (one that went on there apart f
   await endTurn(a, key);
   const before = { row: b.rig.store.getSession(key), log: entries(b, there), sessions: b.rig.store.db.prepare("SELECT COUNT(*) AS n FROM sessions").get() };
   const plan = await a.moves.scheduler.plan(WS, B);
-  assert.match(plan.items.find((x) => x.id === key)?.cannot ?? "", /a chat of this key is live on B|key 在「B」上还有一个在继续的对话/i);
+  assert.match(plan.items.find((x) => x.id === key)?.cannot ?? "", /a chat of this key is live on B|在「B」上还有一个在继续的副本/i);
   const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: key });
-  assert.match(out.refused[0]?.why ?? "", /a chat of this key is live on B|key 在「B」上还有一个在继续的对话/i);
+  assert.match(out.refused[0]?.why ?? "", /a chat of this key is live on B|在「B」上还有一个在继续的副本/i);
   // (asked anyway, past the plan: refused there before anything is written)
-  await assert.rejects(a.moves.handover.handOver(key, B, { wait: true }), /a chat of this key is live on B|key 在「B」上还有一个在继续的对话/i);
+  await assert.rejects(a.moves.handover.handOver(key, B, { wait: true }), /a chat of this key is live on B|在「B」上还有一个在继续的副本/i);
   await w.quiet();
   assert.deepEqual(b.moves.handover.ins(), [], "nothing begun there");
   assert.deepEqual({ row: b.rig.store.getSession(key), log: entries(b, there), sessions: b.rig.store.db.prepare("SELECT COUNT(*) AS n FROM sessions").get() }, before, "nothing written there");

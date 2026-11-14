@@ -49,7 +49,12 @@ export type CarriedHome = { dir: string; list: string; files: number; bytes: num
 /// index of a station from before, or where it has none).
 export type CarryIndex = { v: 2; dataDir: string; sessions: CarriedSession[]; gits: CarriedGit[]; skipped: string[]; jobs: CarriedJob[]; bundles: Record<string, string>; files: number; bytes: number; agent?: CarriedHome | null };
 /// What a gathering answers (the rest is on disk): where its index is, and how much it names.
-export type Gathered = { index: string; files: number; bytes: number; gits: number; skipped: number };
+/// `unreadable`: the files (and directories) of what goes that this station could not read: none goes left out silently,
+/// what gathered them says so (the first few; `unreadableCount` all of them).
+export type Gathered = { index: string; files: number; bytes: number; gits: number; skipped: number; unreadable?: string[]; unreadableCount?: number };
+
+/// Whether an error reading a file is that this station may not read it (not that it went meanwhile).
+const denied = (e: unknown) => ["EACCES", "EPERM"].includes((e as NodeJS.ErrnoException)?.code ?? "");
 
 /// A session of the workspace as the gathering reads it.
 type SessionAt = { key: string; workspace: string; cwd: string | null; runtime: string; profile: string; runtime_session_id: string | null; archived_at: number | null };
@@ -208,6 +213,12 @@ export function gather(dataDir: string, db: string, ws: string, home: boolean, s
   let list: ListFile | null = null;
   /// Where what is added may be (the agent home's own files are under it, not the data directory's sessions).
   let under: (path: string) => boolean = (path) => carriedPlace(dataDir, path);
+  const unreadable: string[] = [];
+  let unreadableCount = 0;
+  const cannotRead = (path: string) => {
+    unreadableCount++;
+    if (unreadable.length < 5) unreadable.push(path);
+  };
   const add = (path: string) => {
     if (seen.has(path) || !under(path) || list === null) return;
     seen.add(path);
@@ -226,7 +237,8 @@ export function gather(dataDir: string, db: string, ws: string, home: boolean, s
     let hash: string;
     try {
       hash = was !== undefined && was.size === st.size && was.mtimeMs === st.mtimeMs ? was.hash : hashFile(path);
-    } catch {
+    } catch (e) {
+      if (denied(e)) cannotRead(path);
       return;
     }
     list.add({ path, hash, size: st.size, mode: st.mode & 0o777, mtimeMs: st.mtimeMs });
@@ -236,7 +248,8 @@ export function gather(dataDir: string, db: string, ws: string, home: boolean, s
     let names: string[];
     try {
       names = readdirSync(dir); // sync: in the gathering's own thread (gatherSoon)
-    } catch {
+    } catch (e) {
+      if (denied(e)) cannotRead(dir);
       return;
     }
     for (const name of names.sort()) {
@@ -256,7 +269,8 @@ export function gather(dataDir: string, db: string, ws: string, home: boolean, s
     let names: string[];
     try {
       names = readdirSync(dir); // sync: in the gathering's own thread (gatherSoon)
-    } catch {
+    } catch (e) {
+      if (denied(e)) cannotRead(dir);
       return;
     }
     if (names.includes(".git") && checkout(dir)) return;
@@ -449,7 +463,7 @@ export function gather(dataDir: string, db: string, ws: string, home: boolean, s
   const path = indexFile(scratch);
   writeFileSync(`${path}.tmp`, JSON.stringify(index)); // sync: in the gathering's own thread (gatherSoon)
   renameSync(`${path}.tmp`, path); // sync: in the gathering's own thread (gatherSoon)
-  return { index: path, files, bytes, gits: gits.length, skipped: skipped.length };
+  return { index: path, files, bytes, gits: gits.length, skipped: skipped.length, ...(unreadableCount > 0 ? { unreadable, unreadableCount } : {}) };
 }
 
 /// The files of an agent home that go along: its MEMORY.md and presets.json, and every skill of its skills/ that people

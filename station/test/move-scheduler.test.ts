@@ -12,6 +12,10 @@ import { type Selection, Scheduler } from "../src/move/scheduler.ts";
 import { moveView } from "../src/move/routes.ts";
 import { cloneLogin } from "../src/move/repos.ts";
 import { given } from "./hub-fakes.ts";
+import { setStationLang } from "../src/ops/i18n.ts";
+
+// (the scheduler's words in English here, as this file reads them)
+setStationLang("en");
 
 type Json = any;
 
@@ -67,7 +71,7 @@ test("an item is refused while what it needs is not there, naming it, and goes o
   const refused = await s.move("ws", "B", { module: "chats", item: "c1" });
   assert.deepEqual(refused.done, []);
   assert.equal(refused.refused.length, 1);
-  assert.match(refused.refused[0]!.why, /needs accounts sub \(a subscription\) there first/);
+  assert.match(refused.refused[0]!.why, /needs account “a subscription” there first/);
   assert.deepEqual(log, [], "nothing moved");
   const first = await s.move("ws", "B", { module: "accounts", item: "sub" });
   assert.deepEqual(first.done, [{ module: "accounts", id: "sub" }]);
@@ -92,14 +96,14 @@ test("a need that cannot go: what needs it is refused in that need's own words, 
   const jobs = fake("jobs", ["chats"], [{ id: "j1", label: "dev server", needs: [{ module: "chats", id: "c1" }] }], log);
   const s = new Scheduler({ data: mkdtempSync(join(process.env.STILLFAIL_TEST_TMP ?? tmpdir(), "move-")), modules: [accounts, chats, jobs] });
   const why = (out: Json, id: string) => out.refused.find((r: Json) => r.item.id === id)?.why;
-  const chat = `it needs accounts mine (the machine's) there, which cannot go: ${MINE}`;
+  const chat = `it needs account “the machine's” there, which cannot go: ${MINE}`;
   for (const withNeeds of [false, true]) {
     const one = await s.move("ws", "B", { module: "chats", item: "c1", withNeeds });
-    assert.equal(why(one, "c1"), `${chat} (or arriveStopped: it goes and waits there for it)`, `withNeeds ${withNeeds}: the need's own words, never "move that first"`);
+    assert.equal(why(one, "c1"), `${chat} (or let it go ahead and wait there for it)`, `withNeeds ${withNeeds}: the need's own words, never "move that first"`);
     const job = await s.move("ws", "B", { module: "jobs", item: "j1", withNeeds });
-    assert.equal(why(job, "j1"), `it needs chats c1 (chat one) there, which cannot go: ${chat} (or arriveStopped: it goes and waits there for it)`, `withNeeds ${withNeeds}: one step further`);
+    assert.equal(why(job, "j1"), `it needs chat “chat one” there, which cannot go: ${chat} (or let it go ahead and wait there for it)`, `withNeeds ${withNeeds}: one step further`);
     const two = await s.move("ws", "B", { module: "chats", item: "c2", withNeeds, arriveStopped: true });
-    assert.equal(why(two, "c2"), `it needs accounts asked (a login) there, which cannot go: ${UNANSWERED}`, `withNeeds ${withNeeds}: not answered: no way but asking again`);
+    assert.equal(why(two, "c2"), `it needs account “a login” there, which cannot go: ${UNANSWERED}`, `withNeeds ${withNeeds}: not answered: no way but asking again`);
   }
   assert.deepEqual(log, [], "nothing moved");
   const stopped = await s.move("ws", "B", { module: "chats", item: "c1", arriveStopped: true });
@@ -120,7 +124,7 @@ test("moving back is refused while something there needs it, naming it; asked fo
   await s.move("ws", "B", { module: "jobs", item: "j1", withNeeds: true });
   const refused = await s.back("ws", "B", { module: "accounts", item: "sub" });
   assert.deepEqual(refused.done, []);
-  assert.match(refused.refused[0]!.why, /chats c1 \(chat one\) there needs it: move that back first/);
+  assert.match(refused.refused[0]!.why, /chat “chat one” there needs it: move that back first/);
   log.length = 0;
   const all = await s.back("ws", "B", { module: "accounts", item: "sub", withNeeds: true });
   assert.deepEqual(all.done.map((d) => `${d.module}/${d.id}`), ["jobs/j1", "chats/c1", "accounts/sub"]);
@@ -198,7 +202,7 @@ test("modules may need each other; items may not: a chain of items needing each 
   const connects = fake("connects", ["chats"], [{ id: "k1", label: "k", needs: [{ module: "chats", id: "c1" }] }, { id: "k2", label: "k2", needs: [] }], log);
   const s = new Scheduler({ data: mkdtempSync(join(process.env.STILLFAIL_TEST_TMP ?? tmpdir(), "move-")), modules: [chats, connects] });
   const plan = await given(s.plan("ws", "B"), "the plan answers");
-  const chain = /need each other, so none can go first: chats c1 → connects k1 → chats c1|connects k1 → chats c1 → connects k1/;
+  const chain = /need each other, so none can go first: chat “c” → connect “k” → chat “c”|connect “k” → chat “c” → connect “k”/;
   assert.match(plan.items.find((x) => x.id === "c1")!.cannot ?? "", chain);
   assert.match(plan.items.find((x) => x.id === "k1")!.cannot ?? "", chain);
   assert.equal(plan.items.find((x) => x.id === "k2")!.cannot, undefined, "the rest planned as ever");
@@ -359,8 +363,8 @@ test("a chat asked to move with what it needs, one of which would stop other cha
   assert.deepEqual(out.done, [], "nothing moved");
   assert.deepEqual(log, [], "nothing stopped");
   const why = Object.fromEntries(out.refused.map((r) => [`${r.item.module} ${r.item.id}`, r.why]));
-  assert.match(why["chats c1"] ?? "", /it needs accounts solo \(a login of this machine's\), whose move would stop chats c2 \(chat two\) here: move accounts solo itself/);
-  assert.match(why["accounts solo"] ?? "", /moving it would stop chats c2 \(chat two\) here/);
+  assert.match(why["chats c1"] ?? "", /it needs account “a login of this machine's”, whose move would stop chat “chat two” here: move it on its own/);
+  assert.match(why["accounts solo"] ?? "", /moving it would stop chat “chat two” here/);
   // (the two asked together: nothing else stops, so the login goes with them)
   const both = await s.move("ws", "B", { module: "chats", withNeeds: true });
   assert.deepEqual(both.done.map((d) => d.id).sort(), ["c1", "c2", "solo"]);

@@ -4,6 +4,7 @@
 // moved and moved back on its own, where each stands.
 
 import { log } from "../ops/log.ts";
+import { stationLang, tr } from "../ops/i18n.ts";
 
 /// An item a module's needs name, by its module and its id there (an id the workspace knows it by, the same on every
 /// station: a chat's session key, a share's id, a connect as `<id>@<origin>`).
@@ -19,13 +20,17 @@ export type Waits = Need & { label?: string; at?: string };
 export type Item = { module: string; id: string; label: string; needs: Need[]; cannot?: string; again?: true; size?: number };
 /// Why an item cannot go where the other station did not answer what it has of it, as a plan asked (a station enrolled a
 /// moment ago, not reached): a plan is never made on a guess of what is there, so it is not tried; asked again it is.
+/// What a move says to people, in the station's language, already: passed on as it is, never worded again.
+export class Said extends Error {}
+
 /// A plan's question of the other station not answered (`method`, of `to`): said once in the log as it fails, the error
 /// as it came, so what a start or a dead station did is read there (a plan says only that it was not answered).
 export const notAnswered = (method: string, to: string, e: unknown): unknown => {
   log.warn("move", "a plan's question of the other station was not answered", { method, station: to.slice(0, 12), error: (e as Error)?.message ?? String(e) });
   return e ?? new Error("no answer");
 };
-export const unanswered = (e: unknown) => `the other station did not answer what it has of it (${(e as Error)?.message ?? String(e)}): ask again`;
+/// (what it failed with is in the log, said as the plan asked, `notAnswered`: not in a sentence for people)
+export const unanswered = (_e: unknown) => tr(stationLang(), "station.move.sched.unanswered");
 
 /// Where an item stands: here, moving, there, failed (why kept; it is here and works), or stopped: still here, but
 /// what it needs moved away and cannot be had here (`waitsFor`), so it is held as one moving is, not left to fail

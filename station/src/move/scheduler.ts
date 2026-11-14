@@ -9,6 +9,7 @@ import { readFileSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { log } from "../ops/log.ts";
+import { stationLang, tr } from "../ops/i18n.ts";
 import { type Item, type ItemState, type Module, type Need, type PlanReads, type Progress, type Waits, named, sameItem } from "./module.ts";
 
 /// An item as a plan shows it: what it is, where it stands, and what would be stopped here if it moved alone.
@@ -201,7 +202,7 @@ export class Scheduler {
     const cycles = itemCycles(items.filter((x) => x.cannot === undefined));
     for (let at = 0; at < items.length; at++) {
       const chain = items[at]!.cannot === undefined ? cycles.get(named(items[at]!)) : undefined;
-      if (chain !== undefined) items[at] = { ...items[at]!, cannot: `these items need each other, so none can go first: ${chain.map(named).join(" → ")}` };
+      if (chain !== undefined) items[at] = { ...items[at]!, cannot: say("cycle", { chain: chain.map(called).join(" → ") }) };
     }
     const planned: Planned[] = items.map((item) => {
       const { at, ...st } = this.#stateOf(item);
@@ -289,7 +290,7 @@ export class Scheduler {
     const index = new Items(all);
     const find = (n: Need) => index.find(n);
     const chosen = select(all, sel);
-    if (chosen.length === 0) throw new Error(sel.item !== undefined ? `no item ${sel.module ?? ""} ${sel.item} here to move (station_move plan lists them)` : "nothing to move");
+    if (chosen.length === 0) throw new Error(sel.item !== undefined ? say("noItem", { item: called({ module: sel.module ?? "", label: sel.item }) }) : say("nothing"));
     // (with its needs: what it needs first, and what those need)
     const wanted = new Map<string, Planned>();
     const taking = new Set<string>();
@@ -332,7 +333,7 @@ export class Scheduler {
       // one that cannot ever go leaves the way of arriving stopped there, waiting for it; one not answered this turn none)
       const blocked = p.cannot === undefined ? cannotGo(p) : undefined;
       if (blocked !== undefined && (blocked.again || sel.arriveStopped !== true)) {
-        refusedWhy.set(k, needCannot(blocked.x, blocked.why) + (blocked.again ? "" : " (or arriveStopped: it goes and waits there for it)"));
+        refusedWhy.set(k, needCannot(blocked.x, blocked.why) + (blocked.again ? "" : say("orArrive")));
         return;
       }
       if (sel.withNeeds === true || sel.all === true) {
@@ -343,10 +344,10 @@ export class Scheduler {
           // (a need on a round of items needing each other is refused as that round, before this rule speaks)
           const others = sel.all === true || p.cannot !== undefined || x.cannot !== undefined ? [] : wouldStopOthers(x);
           if (others.length > 0) {
-            const some = others.slice(0, 3).map((y) => `${named(y)} (${y.label})`).join(", ");
-            const more = others.length > 3 ? ` and ${others.length - 3} more` : "";
-            refusedWhy.set(k, `it needs ${named(x)} (${x.label}), whose move would stop ${some}${more} here: move ${named(x)} itself (its row says what it stops), or make it one that can be shared first`);
-            refusedWhy.set(named(x), `moving it would stop ${some}${more} here, which need it: move it on its own (its row says what it stops), or make it one that can be shared first`);
+            const some = others.slice(0, 3).map(called).join("、");
+            const more = others.length > 3 ? say("more", { n: others.length - 3 }) : "";
+            refusedWhy.set(k, say("wouldStop", { need: called(x), some: `${some}${more}` }));
+            refusedWhy.set(named(x), say("wouldStopIt", { some: `${some}${more}` }));
             continue;
           }
           take(x);
@@ -392,11 +393,11 @@ export class Scheduler {
       const waits = p.needs.find((n) => !thereNow.has(named(n)) && find(n) !== undefined && this.#modules.get(n.module)!.usableThere?.(find(n)!) !== true);
       const waitsFailed = waits === undefined ? undefined : failedHere.get(named(waits));
       if (waitsFailed !== undefined) {
-        out.refused.push({ item: p, why: `it waits for ${named(waits!)} (${find(waits!)!.label}), which did not move: ${waitsFailed}` });
+        out.refused.push({ item: p, why: say("waitsFailed", { need: called(find(waits!)!), why: waitsFailed }) });
         continue;
       }
       if (waits !== undefined && sel.arriveStopped !== true) {
-        out.refused.push({ item: p, why: `it needs ${named(waits)} (${find(waits)!.label}) there first: move that first, or ask with withNeeds (or arriveStopped: it waits there for it)` });
+        out.refused.push({ item: p, why: say("needsFirst", { need: called(find(waits)!) }) });
         continue;
       }
       const m = this.#modules.get(p.module)!;
@@ -438,7 +439,7 @@ export class Scheduler {
         try {
           await this.#modules.get(p.module)!.back(p, to);
         } catch (e) {
-          fail(p, `it moved for ${forWhom.map(named).join(", ")}, which did not go, and could not be brought back: ${(e as Error).message}`);
+          fail(p, say("notBroughtBack", { for: forWhom.map(called).join("、"), what: called(p), why: (e as Error).message }));
           continue;
         }
         out.done = out.done.filter((d) => !sameItem(d, x));
@@ -482,7 +483,7 @@ export class Scheduler {
     const find = (n: Need) => index.find(n);
     // (what is there now: one whose move failed is here, no item of a move back)
     const chosen = select(all, sel).filter((x) => x.state === "there");
-    if (chosen.length === 0) throw new Error(sel.item !== undefined ? `${sel.module ?? ""} ${sel.item} is not there to move back` : "nothing there to move back");
+    if (chosen.length === 0) throw new Error(sel.item !== undefined ? say("notThere", { item: called({ module: sel.module ?? "", label: sel.item }) }) : say("nothingThere"));
     const backing = new Set(chosen.map(named));
     // (what follows what goes back: the items of `follow` there that need it, a chat's jobs, go back first, each arriving
     // stopped until it is here)
@@ -502,7 +503,7 @@ export class Scheduler {
       const dependent = index.needing(p).find((x) => stillThere.has(named(x)));
       if (dependent !== undefined) {
         const failed = failedThere.get(named(dependent));
-        out.refused.push({ item: p, why: failed !== undefined ? `${named(dependent)} (${dependent.label}) there needs it, and it did not come back: ${failed}` : `${named(dependent)} (${dependent.label}) there needs it: move that back first, or ask for all` });
+        out.refused.push({ item: p, why: failed !== undefined ? say("backNeedsFailed", { item: called(dependent), why: failed }) : say("backNeeds", { item: called(dependent) }) });
         continue;
       }
       // (what it needs that is still there and cannot be had here: it comes back stopped, waiting for it)
@@ -714,7 +715,11 @@ function cycleThrough(start: Item, part: Set<string>, by: Map<string, Item>): It
 }
 
 /// Why an item is refused for need `x`, which cannot go (and is not usable there): `x`'s own words of why (`why`).
-const needCannot = (x: Item, why: string) => `it needs ${named(x)} (${x.label}) there, which cannot go: ${why}`;
+const needCannot = (x: Item, why: string) => say("needCannot", { need: called(x), why });
+/// An item as people call it: what it is (its module's word) and its label, never its id (kept in the outcome's fields).
+export const called = (x: { module: string; label: string }) => tr(stationLang(), "station.move.called", { what: tr(stationLang(), `station.move.module.${x.module}`), label: x.module === "chats" ? x.label.replace(/^chat:/, "") : x.label });
+/// What the scheduler says, in the station's language (`station.move.sched.*`).
+const say = (key: string, args: Record<string, unknown> = {}) => tr(stationLang(), `station.move.sched.${key}`, args);
 
 function select(all: Planned[], sel: Selection): Planned[] {
   if (sel.all === true) return all.filter((x) => sel.module === undefined || x.module === sel.module);

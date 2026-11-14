@@ -367,7 +367,7 @@ test("the other station not answering what logins it has as the plan asks: the c
   assert.equal(out.failed, null, JSON.stringify(out));
   assert.deepEqual(out.done, []);
   assert.deepEqual(out.refused.map((r) => r.item.id), [one.key], "the chat, nothing else tried");
-  assert.match(out.refused[0]!.why, /^it needs accounts own:max@a{64} \(.+\) there, which cannot go: the other station did not answer what it has of it \(the station was not reached\): ask again$/);
+  assert.match(out.refused[0]!.why, /^(it needs account “[^”]+” there, which cannot go: the other station did not answer whether it has it: ask again|它需要账号「[^」]+」在那边，而那一项迁不了：另一台 station 没有回答它那边有没有这一项：再试一次)$/);
   assert.equal(present(a, "max").share, undefined, "not shared");
   assert.equal(JSON.parse(readFileSync(join(a.rig.dir, "homes", "max", ".credentials.json"), "utf8")).claudeAiOauth.refreshToken, "r", "its login here");
   assert.equal(b.rig.raw.profiles.some((p: Json) => p.id === "max"), false, "nothing of it there");
