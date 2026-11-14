@@ -294,7 +294,28 @@ export class Scheduler {
     // which says what it stops)
     const chosenNames = new Set(chosen.map(named));
     const refusedWhy = new Map<string, string>();
-    const cannotGo = (p: Planned) => p.needs.map(find).find((x): x is Planned => x !== undefined && x.cannot !== undefined && x.state !== "there" && this.#modules.get(x.module)!.usableThere?.(x) !== true);
+    /// Why need `x` cannot be had there: its own `cannot`, or a need of its own that cannot (said one step further);
+    /// `again`: of this turn only (the other did not answer). Null: it can, or is there, or usable there.
+    const cannotOf = (x: Planned, seen = new Set<string>()): { why: string; again: boolean } | null => {
+      if (x.state === "there" || this.#modules.get(x.module)!.usableThere?.(x) === true) return null;
+      if (x.cannot !== undefined) return { why: x.cannot, again: x.again === true };
+      if (seen.has(named(x))) return null;
+      seen.add(named(x));
+      for (const n of x.needs) {
+        const y = find(n);
+        const c = y === undefined ? null : cannotOf(y, seen);
+        if (c !== null) return { why: needCannot(y!, c.why), again: c.again };
+      }
+      return null;
+    };
+    const cannotGo = (p: Planned) => {
+      for (const n of p.needs) {
+        const x = find(n);
+        const c = x === undefined ? null : cannotOf(x);
+        if (c !== null) return { x: x!, ...c };
+      }
+      return undefined;
+    };
     const wouldStopOthers = (x: Planned) => {
       if (this.#modules.get(x.module)!.usableHere?.(x) === true) return [];
       return index.needing(x).filter((y) => y.state !== "there" && !chosenNames.has(named(y)) && this.#modules.get(y.module)!.stop !== undefined);
@@ -303,10 +324,11 @@ export class Scheduler {
       const k = named(p);
       if (wanted.has(k) || taking.has(k)) return;
       taking.add(k);
-      // (a need that cannot go and is not usable there: what needs it is refused in its words, nothing of it tried)
+      // (a need that cannot go and is not usable there: what needs it is refused in its words, nothing of it tried;
+      // one that cannot ever go leaves the way of arriving stopped there, waiting for it; one not answered this turn none)
       const blocked = p.cannot === undefined ? cannotGo(p) : undefined;
-      if (blocked !== undefined) {
-        refusedWhy.set(k, needCannot(blocked));
+      if (blocked !== undefined && (blocked.again || sel.arriveStopped !== true)) {
+        refusedWhy.set(k, needCannot(blocked.x, blocked.why) + (blocked.again ? "" : " (or arriveStopped: it goes and waits there for it)"));
         return;
       }
       if (sel.withNeeds === true || sel.all === true) {
@@ -687,8 +709,8 @@ function cycleThrough(start: Item, part: Set<string>, by: Map<string, Item>): It
   return [start, start];
 }
 
-/// Why an item is refused for need `x`, which cannot go (and is not usable there): `x`'s own words of why.
-const needCannot = (x: Item) => `it needs ${named(x)} (${x.label}) there, which cannot go: ${x.cannot}`;
+/// Why an item is refused for need `x`, which cannot go (and is not usable there): `x`'s own words of why (`why`).
+const needCannot = (x: Item, why: string) => `it needs ${named(x)} (${x.label}) there, which cannot go: ${why}`;
 
 function select(all: Planned[], sel: Selection): Planned[] {
   if (sel.all === true) return all.filter((x) => sel.module === undefined || x.module === sel.module);

@@ -166,7 +166,7 @@ export class ReposModule implements Module {
       let failed: unknown = null;
       const answer = await this.#d.ask(to, { method: "move.repo.have", urls: items.map((x) => x.id.slice(5)) }).catch((e) => ((failed = e ?? new Error("no answer")), null));
       for (const x of items) this.#there.set(x.id, answer?.have?.[x.id.slice(5)] === true);
-      if (failed !== null) for (const x of items) x.cannot = unanswered(failed);
+      if (failed !== null) for (const x of items) (x.cannot = unanswered(failed)), (x.again = true);
     }
     return items;
   }

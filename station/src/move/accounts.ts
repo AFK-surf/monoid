@@ -111,7 +111,7 @@ export function accountsModule(d: AccountsDeps): Module & { cameHome(share: stri
       // (not answered: what it has is not guessed, the logins asked of it cannot go this turn, nor what needs them)
       let failed: unknown = null;
       const answer = Object.keys(asked).length === 0 ? null : await d.ask(to, { method: "move.accounts", accounts: asked }).catch((e) => ((failed = e ?? new Error("no answer")), null));
-      if (failed !== null) for (const x of items) if (x.id in asked) x.cannot = unanswered(failed);
+      if (failed !== null) for (const x of items) if (x.id in asked) (x.cannot = unanswered(failed)), (x.again = true);
       for (const id of Object.keys(asked)) {
         const pid = answer?.here?.[id];
         there.set(id, typeof pid === "string" ? { id: pid, hosts: typeof answer?.hosts?.[id] === "boolean" ? answer.hosts[id] : null } : null);

@@ -65,7 +65,7 @@ export class SettingsModule implements Module {
       const cannot = failed !== null ? unanswered(failed) : theirs === undefined || theirs === null || same(theirs, raw[k]) || (isMap(theirs) && isMap(raw[k])) || this.#moved.has(`setting:${k}`)
         ? undefined
         : `that station has its own ${k} (${JSON.stringify(theirs).slice(0, 80)}), which it keeps: its chats rely on it. Change it in that station's settings if this one's is meant there`;
-      return { module: "settings", id: `setting:${k}`, label: k, needs: [], ...(cannot !== undefined ? { cannot } : {}) };
+      return { module: "settings", id: `setting:${k}`, label: k, needs: [], ...(cannot !== undefined ? { cannot, ...(failed !== null ? { again: true as const } : {}) } : {}) };
     });
   }
 

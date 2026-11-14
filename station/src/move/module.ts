@@ -12,7 +12,9 @@ export type Waits = Need & { label?: string; at?: string };
 
 /// What a module would move: its id, what people call it, what it needs moved first (only of the modules its module
 /// declares), why it cannot move (in words that say what to do; none: it can), how big it is (bytes, where known).
-export type Item = { module: string; id: string; label: string; needs: Need[]; cannot?: string; size?: number };
+/// `again`: its `cannot` is of this turn only (the other station did not answer what it has): asked again it may go,
+/// and nothing goes ahead of it to wait for it.
+export type Item = { module: string; id: string; label: string; needs: Need[]; cannot?: string; again?: true; size?: number };
 /// Why an item cannot go where the other station did not answer what it has of it, as a plan asked (a station enrolled a
 /// moment ago, not reached): a plan is never made on a guess of what is there, so it is not tried; asked again it is.
 export const unanswered = (e: unknown) => `the other station did not answer what it has of it (${(e as Error)?.message ?? String(e)}): ask again`;
