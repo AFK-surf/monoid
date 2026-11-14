@@ -102,16 +102,26 @@ export function moveShown(raw: J, o: { to: string; toName: string; module: strin
             : cannot !== null
               ? t("core-views.move.state.cannot")
               : "";
+    // (a stopped one: what waits for is on the station this page is toward, it goes there (迁移) and its note names the
+    // other way, bringing that back here; on a third station, nothing to press here and its note says where to go)
+    const what = state === "stopped" ? waitsFor(nameOf(x?.waitsFor)) : "";
+    const toWhat = state === "stopped" && waitsAt !== "" && waitsAt === o.toName;
+    const stoppedNote = state !== "stopped" || waitsAt === ""
+      ? ""
+      : toWhat
+        ? t("core-views.move.stopped.orBack", { what })
+        : t("core-views.move.stopped.elsewhere", { what, at: waitsAt });
     // (why, under it: its failure, why it cannot move, else why the last move or move back left it out)
-    const note = state === "failed"
+    const note = stoppedNote !== "" ? stoppedNote : state === "failed"
       ? str(x?.error) || (failed?.item === named ? failed.error : "")
       : cannot !== null && state !== "there"
         ? cannot
         : failed?.item === named && state !== "there"
           ? failed.error
           : refused.get(named) ?? "";
-    // (its action at its row's end: 迁移 here, 迁回 there, 重试 failed; none moving, stopped or where it cannot move)
-    const action = !acts ? "" : state === "there" ? "back" : state === "failed" ? "retry" : state === "here" && cannot === null ? "move" : "";
+    // (its action at its row's end: 迁移 here, and stopped where what it waits for is where it would go; 迁回 there,
+    // 重试 failed; none moving, stopped otherwise or where it cannot move)
+    const action = !acts ? "" : state === "there" ? "back" : state === "failed" ? "retry" : (state === "here" && cannot === null) || toWhat ? "move" : "";
     return {
       id: str(x?.id),
       label: str(x?.label) || str(x?.id),

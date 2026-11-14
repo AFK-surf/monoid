@@ -225,6 +225,35 @@ test("a chat moving says what it waits for: its turn's end, or the station it co
   r.core.close();
 });
 
+test("a stopped chat offers 迁移 where what it waits for is, its note the other way; one whose need is on a third station says where to go", async () => {
+  const said = moved({
+    moving: null,
+    modules: [
+      { id: "accounts", needs: [], done: 1, total: 1, items: [item("p-kimi", "Kimi Code", "there")], more: null },
+      {
+        id: "chats", needs: ["accounts"], done: 0, total: 3,
+        items: [
+          item("k1", "发版", "stopped", { waitsFor: "accounts p-kimi", waitsAt: "mini" }),
+          item("k2", "周报", "stopped", { waitsFor: "accounts p-kimi", waitsAt: "lab" }),
+          item("k3", "草稿", "stopped", { waitsFor: "accounts p-kimi" }),
+        ],
+        more: null,
+      },
+    ],
+    stopped: [], last: null,
+  });
+  const r = await rig((_station, key) => (key.startsWith("GET /move") ? said : undefined));
+  // (the page toward mini: Kimi Code is there)
+  const v = await r.show(1, { to: "st2", module: "chats" });
+  assert.equal(v.toName, "mini");
+  assert.deepEqual(v.modules[1].items.map((x: J) => [x.label, x.action, x.note]), [
+    ["发版", "move", "把「Kimi Code」迁回这里：在账号那一行"],
+    ["周报", "", "在「lab」的迁移页上迁回「Kimi Code」，或把这个对话迁到「lab」"],
+    ["草稿", "", ""],
+  ]);
+  r.core.close();
+});
+
 test("told `move` changed, what is shown is read again and changes by its rows", async () => {
   let said = moved();
   const r = await rig((_station, key) => (key.startsWith("GET /move") ? said : undefined));

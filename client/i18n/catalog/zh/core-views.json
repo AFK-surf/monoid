@@ -735,6 +735,8 @@
   "core-views.move.state.stoppedAt": "已停，等「{what}」（在「{at}」）",
   "core-views.move.state.failed": "失败",
   "core-views.move.state.cannot": "无法迁移",
+  "core-views.move.stopped.orBack": "把「{what}」迁回这里：在账号那一行",
+  "core-views.move.stopped.elsewhere": "在「{at}」的迁移页上迁回「{what}」，或把这个对话迁到「{at}」",
   "core-views.move.mark.moving": "迁移中",
   "core-views.move.mark.failed": "失败",
   "core-views.move.mark.stopped": "已停",

@@ -828,6 +828,8 @@
   "core-views.move.state.stoppedAt": "Stopped, waiting for “{what}” (on “{at}”)",
   "core-views.move.state.failed": "Failed",
   "core-views.move.state.cannot": "Can't move",
+  "core-views.move.stopped.orBack": "Bring “{what}” back here: on its row under accounts",
+  "core-views.move.stopped.elsewhere": "Bring “{what}” back on the move page of “{at}”, or move this chat to “{at}”",
   "core-views.move.mark.moving": "Moving",
   "core-views.move.mark.failed": "Failed",
   "core-views.move.mark.stopped": "Stopped",
