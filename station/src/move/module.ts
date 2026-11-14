@@ -27,8 +27,9 @@ export type Progress = { done: number; total: number; unit: string };
 /// `at`: the station it is on, where its module knows (a chat handed to another, `handed_over`); `waitsFor`, of one
 /// stopped: what it waits for, with the station that is on where known.
 /// `waits`, of one moving: what its move waits for now, not stuck though its progress stands ("turn": the chat's turn
-/// under way to end, before it is held).
-export type ItemState = { state: State; error?: string; progress?: Progress; waitsFor?: Waits; at?: string; waits?: "turn" };
+/// under way to end, before it is held; "station": the station it comes from, `from`, to go on with it: shown here, or
+/// dropped and it stays there, once that station is heard from).
+export type ItemState = { state: State; error?: string; progress?: Progress; waitsFor?: Waits; at?: string; waits?: "turn" | "station"; from?: string };
 /// How an item arrives: stopped, waiting for `stoppedFor` (the station it arrives at keeps it stopped).
 export type Arrive = { stoppedFor?: Waits };
 

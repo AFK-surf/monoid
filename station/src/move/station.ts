@@ -26,6 +26,7 @@ import { mkdir, rename, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { Scheduler } from "./scheduler.ts";
 import { type Lang, stationLang, tr } from "../ops/i18n.ts";
+import { log } from "../ops/log.ts";
 import { hold as holdUpdates } from "../updates/holds.ts";
 
 /// A JSON file written whole (beside, then renamed).
@@ -125,6 +126,44 @@ export class Moves {
   /// module's state): a chat stopped for one names it so after a start too.
   readonly #known: Map<string, AccountOf>;
 
+  /// In a turn, the stations it found gone (by id: what each later ask of one fails with at once) and those whose
+  /// connection was found gone once (`PeerGone`: the next ask dials anew). Out of a turn, asks go as they are.
+  readonly #gone = new Map<string, Error>();
+  readonly #suspect = new Set<string>();
+  #inTurn = false;
+
+  /// What this station's moves ask of another: in a turn, a station found gone is asked nothing more until it ends,
+  /// every step toward it failing at once with the same words (drill 23's 185 s of asks of a station killed).
+  readonly #ask: Ask = async (station, request) => {
+    if (!this.#inTurn) return await this.#d.ask(station, request);
+    const gone = this.#gone.get(station);
+    if (gone !== undefined) throw gone;
+    try {
+      const answer = await this.#d.ask(station, request);
+      this.#suspect.delete(station);
+      return answer;
+    } catch (e) {
+      if (e instanceof Refused) {
+        this.#suspect.delete(station);
+        throw e;
+      }
+      // (found gone once: asked again, it is dialed anew; that failing too, or no answer in time, it is gone)
+      const timedOut = e instanceof Error && e.message.startsWith("peer request timed out");
+      if (e instanceof PeerGone && !this.#suspect.has(station)) {
+        this.#suspect.add(station);
+        throw e;
+      }
+      if (e instanceof PeerGone || timedOut || this.#suspect.has(station)) {
+        const name = this.#d.roster(this.#d.home() ?? "")?.find((r) => r.id === station)?.name || station.slice(0, 12);
+        const gone = new Error(tr(stationLang(), "station.move.gone", { station: name }));
+        this.#gone.set(station, gone);
+        log.warn("move", "a station found gone in a turn: asked nothing more of it till it ends", { station: station.slice(0, 12), error: (e as Error).message });
+        throw gone;
+      }
+      throw e;
+    }
+  };
+
   constructor(d: MovesDeps) {
     this.#d = d;
     let known: Record<string, AccountOf> = {};
@@ -133,7 +172,7 @@ export class Moves {
     } catch {}
     this.#known = new Map(Object.entries(known));
     const here = () => d.here() ?? "";
-    const ask = d.ask;
+    const ask = this.#ask;
     this.repos = new ReposModule({
       data: d.data, reposDir: d.reposDir, ask, here,
       after: (ms, f) => d.fibers.after(ms, f), name: (station) => d.roster(d.home() ?? "")?.find((r) => r.id === station)?.name ?? station.slice(0, 12),
@@ -149,11 +188,11 @@ export class Moves {
     this.vault = new VaultModule({ data: d.data, owners: (ws) => v.owners(ws), plain: v.plain, vaults: v.vaults, ask });
     this.settings = new SettingsModule({ data: d.data, ask, config: d.config ?? { raw: () => ({}), update: () => {} } });
     this.jobs = new JobsModule({
-      data: d.data, up: d.jobs.up, stop: d.jobs.stop, start: d.jobs.start, ask: (s, r) => d.ask(s, { ...r, fromData: d.data }), here,
+      data: d.data, up: d.jobs.up, stop: d.jobs.stop, start: d.jobs.start, ask: (s, r) => this.#ask(s, { ...r, fromData: d.data }), here,
       chatOf: (session) => this.handover.chatOf(session),
     });
     this.handover = new Handover({
-      data: d.data, here: d.here, home: d.home, roster: d.roster, ask: d.ask, fibers: d.fibers, store: d.store, hub: d.hub, connects: d.connects,
+      data: d.data, here: d.here, home: d.home, roster: d.roster, ask: this.#ask, fibers: d.fibers, store: d.store, hub: d.hub, connects: d.connects,
       jobs: {
         of: (keys) => d.jobs.up(keys).map(({ id: _, ...j }) => j),
         stop: async (keys, why) => void (await this.jobs.keep(keys, why)),
@@ -200,7 +239,7 @@ export class Moves {
         const p = d.profiles().find((x) => x?.id === id);
         return p?.share !== null && typeof p?.share === "object";
       },
-      moveProfile: d.moveProfile, ask: d.ask, here,
+      moveProfile: d.moveProfile, ask: this.#ask, here,
       data: d.data, shareMoves: d.shareMoves,
       profile: (id) => d.profiles().find((x) => x?.id === id),
       present: (id) => {
@@ -212,7 +251,7 @@ export class Moves {
     this.modules = [
       this.#accounts,
       chatsModule({
-        store: d.store, handover: this.handover, hub: d.hub, ask: d.ask, here, reads: (ws) => this.reads(ws),
+        store: d.store, handover: this.handover, hub: d.hub, ask: this.#ask, here, reads: (ws) => this.reads(ws),
         kindOf: (id) => d.connects?.kindOf(id) ?? null, wait: () => this.wait,
         name: (id) => d.roster(d.home() ?? "")?.find((r) => r.id === id)?.name || id.slice(0, 12),
         vaultsOf: (keys, ws) => new Map([...v.grantOwners(keys)].map(([k, owners]) => [k, owners.map((o) => `${vaultItemId(o)}@${ws}`)])),
@@ -229,7 +268,7 @@ export class Moves {
           if (d.connects === null) throw new Error("the connects are not up yet");
           await d.connects.move(id, to, awaiting);
         },
-        ask: d.ask, here,
+        ask: this.#ask, here,
       }),
       this.repos,
       this.vault,
@@ -237,11 +276,17 @@ export class Moves {
     ];
     this.scheduler = new Scheduler({
       data: d.data, modules: this.modules, changed: () => d.changed?.(), progress: () => d.changed?.(),
-      tellArrived: async (to, item) => void (await d.ask(to, { method: "move.arrived", item })),
+      tellArrived: async (to, item) => void (await this.#ask(to, { method: "move.arrived", item })),
       now: () => d.fibers.now(),
       refusal: (ws, station) => this.refusal(ws, station),
       hold: () => this.#hold(),
       restarted: () => tr(stationLang(), "station.move.restarted"),
+      // (a turn's stations found gone are its own: forgotten as it begins and ends)
+      turn: (on) => {
+        this.#inTurn = on;
+        this.#gone.clear();
+        this.#suspect.clear();
+      },
       reads: (ws) => {
         const r = this.reads(ws);
         this.#planning.set(ws, r);

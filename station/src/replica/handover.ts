@@ -1029,23 +1029,31 @@ export class Handover {
     return [...this.#ins.values()].filter((i) => i.step === "coming" && i.ws === ws).map((i) => [...i.keys].sort());
   }
 
-  /// Whether chat `key` is coming here now (a hand-over of it begun here, not shown nor dropped yet).
-  comingHere(key: string): boolean {
-    return [...this.#ins.values()].some((i) => i.step === "coming" && i.keys.includes(key));
+  /// The station chat `key` is coming here from now (a hand-over of it begun here, not shown nor dropped yet): it waits
+  /// for that station to go on with it. Null: none.
+  comingFrom(key: string): string | null {
+    return [...this.#ins.values()].find((i) => i.step === "coming" && i.keys.includes(key))?.origin ?? null;
   }
 
   /// Once no hand-over of chat `key` coming here is still coming: each shown here (its rows the chat's, `showChat`) or
   /// dropped. What brought it back waits for this: the station it came from may have gone on without having been
   /// answered that it is shown here (its word lost on the way), telling it again by its retry.
-  async arrived(key: string): Promise<void> {
+  /// `withinMs`: waited no longer (the clock's): false where one is still coming then.
+  async arrived(key: string, withinMs?: number): Promise<boolean> {
     for (const i of [...this.#ins.values()]) {
       if (i.step !== "coming" || !i.keys.includes(key) || this.#closed) continue;
-      await new Promise<void>((resolve) => {
+      let late = () => {};
+      const shown = new Promise<boolean>((resolve) => {
         const list = this.#settledIn.get(i.id) ?? [];
-        list.push(resolve);
+        list.push(() => resolve(true));
         this.#settledIn.set(i.id, list);
+        if (withinMs !== undefined) late = this.#d.fibers.after(withinMs, () => resolve(false)); // timer: the most a move back waits for its chat to be shown
       });
+      const ok = await shown;
+      late();
+      if (!ok) return false;
     }
+    return true;
   }
 
   /// `path`, replaced or pruned by hand-over `i`, moved aside the first time (`inAside`'s list says where it was).

@@ -58,7 +58,7 @@ export function moveView(plan: Plan, order: string[], stopped: { item: { module:
           ...(x.waitsFor ? { waitsFor: named(x.waitsFor) } : {}),
           // (where it is, a station neither this one nor the one the page is toward; where what it waits for is)
           ...(x.at !== undefined ? { at: name(x.at) } : {}),
-          ...(x.waitsFor?.at !== undefined ? { waitsAt: name(x.waitsFor.at) } : {}),
+          ...(x.waitsFor?.at !== undefined ? { waitsAt: name(x.waitsFor.at) } : x.waits === "station" && x.from !== undefined ? { waitsAt: name(x.from) } : {}),
           ...(x.cannot !== undefined ? { cannot: x.cannot } : {}),
           ...(x.error ? { error: x.error } : {}),
           ...(x.progress ? { progress: x.progress } : {}),

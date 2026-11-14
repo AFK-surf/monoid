@@ -11,6 +11,10 @@ import { stationLang, tr } from "../ops/i18n.ts";
 import { accountItemId } from "./accounts.ts";
 import { connectItemId } from "./connects.ts";
 
+/// The most a move back waits for the chat it brings to be shown here once the other answered it went: twice an answer's
+/// bound (mesh/peer.ts, 30 s), what the other's word told again takes where it is up.
+export const ARRIVE_WAIT_MS = 60_000;
+
 type Json = any;
 
 /// The chats a plan reads of a workspace at a time: it reads them all, a page at a time (Office-VM-1 had 2,384, of
@@ -121,15 +125,21 @@ export function chatsModule(d: ChatsDeps): Module {
     },
     async back(item, from, opts) {
       await d.ask(from, { method: "move.back", module: "chats", id: item.id, to: d.here(), ...(opts?.stoppedFor ? { stoppedFor: opts.stoppedFor } : {}) });
-      // (back once shown here, not before: the other may answer having gone on without our word that it is shown)
-      for (const k of keysOf(item)) await d.handover.arrived(k);
+      // (back once shown here, not before: the other may answer having gone on without our word that it is shown; one
+      // that does not come in the time the other is told again, the other gone since, is on its way, said so)
+      for (const k of keysOf(item)) {
+        if (await d.handover.arrived(k, ARRIVE_WAIT_MS)) continue;
+        throw new Error(tr(stationLang(), "station.move.onItsWay", { station: d.name?.(from) ?? from.slice(0, 12) }));
+      }
     },
     state(item): ItemState {
       const o = d.handover.outOf(item.id);
       // (gone, not shown there yet: still moving, its page served here as it went)
       if (o !== null && o.step === "gone" && !o.shown) return { state: "moving", progress: { done: o.done, total: o.total, unit: "bytes" } };
-      // (coming here: moving until it is shown here, whatever its row's `handed_over` still says)
-      if (d.handover.comingHere(item.id)) return { state: "moving" };
+      // (coming here: moving until it is shown here, whatever its row's `handed_over` still says; it waits for the
+      // station it comes from to go on with it)
+      const from = d.handover.comingFrom(item.id);
+      if (from !== null) return { state: "moving", waits: "station", from };
       const handed = d.store.handedTo(item.id);
       if (handed !== null) return { state: "there", at: handed.station };
       // (where it went is no longer said here: here, whatever a record of an older trip says)

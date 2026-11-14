@@ -491,6 +491,48 @@ test("a move asked as the connection to the other station is found gone asks onc
   assert.equal(a.rig.store.handedTo(key)?.station, B, "nothing moved");
 });
 
+test("the other station killed in the middle of a turn: found gone once and dialed anew in vain, it is asked nothing more in that turn: what is left of the turn fails at once in people's words, the turn ends; started again, it keeps nothing of it", async () => {
+  const w = world();
+  const a = w.get(A);
+  const b = w.get(B);
+  const first = await stillfailChat(a);
+  const second = await stillfailChat(a);
+  // (B killed as the first chat's files are to be placed there, in its first pass: every request to it found gone from
+  // then on, the one under way too)
+  let dead = false;
+  const asked: Json[] = [];
+  w.tamper((to, r) => {
+    if (to === B && r.method === "handover.place") dead = true;
+    if (to === B && dead) {
+      asked.push(r);
+      throw new PeerGone();
+    }
+    return r;
+  });
+  const out = await a.moves.scheduler.move(WS, B, { module: "chats" });
+  await w.quiet();
+  const failures = new Map((out.failures ?? []).map((f) => [f.item.id, f.error]));
+  assert.deepEqual([...failures.keys()].sort(), [first.key, second.key].sort(), JSON.stringify(out));
+  // (the chat that met it found it gone; the other was never begun there: failed at once, in people's words)
+  const begun = (k: string) => asked.some((r) => r.method === "handover.begin" && Array.isArray(r.keys) && r.keys.includes(k));
+  const later = [first.key, second.key].find((k) => !begun(k));
+  assert.ok(later !== undefined, `one chat asked nothing of B once it was gone: ${JSON.stringify(asked.map((r) => r.method))}`);
+  assert.match(failures.get(later!) ?? "", /B does not answer: nothing more is asked of it in this move|「B」没有应答：这次迁移不再向它发出任何请求/, "the station's own words, naming it");
+  assert.ok(!(failures.get(later!) ?? "").includes("execution may have happened"), "people's words, not the transport's");
+  assert.ok(asked.length <= 3, `the request under way found gone, dialed anew once, then nothing more: ${JSON.stringify(asked.map((r) => r.method))}`);
+  for (const k of [first.key, second.key]) {
+    assert.equal(a.rig.store.handedTo(k), null, "here");
+    assert.equal(a.rig.hub.chatHeld(k), null, "goes on here");
+  }
+  // B up again: told what it keeps of it is dropped; nothing of either chat left there
+  dead = false;
+  w.tamper(null);
+  a.moves.handover.reached(B);
+  await w.quiet();
+  assert.deepEqual(b.rig.store.liveOf([first.key, second.key]), [], "B shows neither");
+  assert.equal(b.moves.handover.comingFrom(first.key) ?? b.moves.handover.comingFrom(second.key), null, "nor keeps either coming");
+});
+
 test("arriveStopped, by a person's POST /move and by station_move: a chat whose login is not there goes all the same, arriving there stopped, waiting for it; asked without it, it is refused naming the login", async () => {
   const w = world();
   const a = w.get(A);

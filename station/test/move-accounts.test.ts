@@ -18,6 +18,7 @@ import { hubConfig } from "../src/sessions/config.ts";
 import { newSession, say } from "../src/sessions/lifecycle.ts";
 import { Moves } from "../src/move/station.ts";
 import { moveView } from "../src/move/routes.ts";
+import { ARRIVE_WAIT_MS } from "../src/move/chats.ts";
 import { shareRefusal, Sharing } from "../src/share/index.ts";
 import { Rig, message, settle, testClock } from "./hub-fakes.ts";
 import { sessionKey } from "../src/sessions/hub.ts";
@@ -730,8 +731,9 @@ test("a chat stopped here for its login, then moved itself, then back alone whil
 });
 
 test("a chat moved with its login that cannot be shared in one turn, then brought back alone by a move back asked here: the moment that turn ends its row says stopped, waiting for the login on the other, handed to nowhere", async () => {
-  for (const lost of [false, true]) {
-  const { a, b, quiet } = world([KIMI]);
+  for (const how of ["shown", "word lost", "never told again"]) {
+  const lost = how !== "shown";
+  const { t, a, b, quiet } = world([KIMI]);
   signIn(a, "kimi", {});
   const one = await chatOn(a, "kimi");
   const account = `own:kimi@${A}`;
@@ -742,7 +744,7 @@ test("a chat moved with its login that cannot be shared in one turn, then brough
   const row = async () => {
     const view = moveView(await a.moves.scheduler.plan(WS, B), a.moves.modules.map((m) => m.id), a.moves.scheduler.stopped(), { limit: 50 }, null, false, (id) => id.slice(0, 1).toUpperCase());
     const r = view.modules.find((m: Json) => m.id === "chats").items.find((x: Json) => x.id === one.key);
-    return r === undefined ? null : [r.state, r.waitsFor, r.waitsAt];
+    return r === undefined ? null : [r.state, r.waitsFor ?? r.waits, r.waitsAt];
   };
   // (the page read while it is on B, as a device had it: its pages read and kept as `handedTo` keeps them)
   assert.equal((await row())?.[0], "there", "there while on B");
@@ -761,7 +763,8 @@ test("a chat moved with its login that cannot be shared in one turn, then brough
   const ask = b.bus.ask.bind(b.bus);
   let losing = lost;
   const lostIt = Promise.withResolvers<void>();
-  b.bus.ask = ((s: string, r: Json) => (losing && r?.method === "handover.show" ? ((losing = false), lostIt.resolve(), Promise.reject(new Error("the answer was lost on the way"))) : ask(s, r))) as typeof b.bus.ask;
+  let cut = false;
+  b.bus.ask = ((s: string, r: Json) => (cut ? Promise.reject(new Error("station unreachable")) : losing && r?.method === "handover.show" ? ((losing = false), lostIt.resolve(), Promise.reject(new Error("the answer was lost on the way"))) : ask(s, r))) as typeof b.bus.ask;
   let ended = false;
   const backing = a.moves.scheduler.back(WS, B, { module: "chats", item: one.key }).finally(() => (ended = true));
   if (lost) {
@@ -769,14 +772,25 @@ test("a chat moved with its login that cannot be shared in one turn, then brough
     await lostIt.promise;
     await settle();
     assert.equal(ended, false, "the turn does not end before the chat it brings is shown here");
-    assert.deepEqual((await row())?.[0], "moving", "moving till it is shown here");
+    assert.deepEqual(await row(), ["moving", "station", "B"], "moving till it is shown here: waiting for B to go on with it");
+    if (how === "never told again") {
+      // (B gone from then on: the move back waits no longer than its bound, and says the chat is on its way)
+      cut = true;
+      await t.adjust(ARRIVE_WAIT_MS);
+      await settle();
+      assert.equal(ended, true, "the move back ended within its bound");
+      const back = await backing;
+      assert.match((back.failures ?? [])[0]?.error ?? "", /on its way here from B, which does not answer|正在从「B」迁回这里/, JSON.stringify(back));
+      assert.deepEqual(await row(), ["moving", "station", "B"], "still on its way, waiting for B");
+      continue;
+    }
     b.moves.handover.reached(A);
   }
   const back = await backing;
   if (!lost) await held.promise;
   // (the moment the turn's end is told, nothing waited for after)
   assert.equal(back.failed, null, JSON.stringify(back));
-  assert.equal(a.rig.store.handedTo(one.key), null, `handed to nowhere: it is here (lost ${lost})`);
+  assert.equal(a.rig.store.handedTo(one.key), null, `handed to nowhere: it is here (${how})`);
   assert.deepEqual(await row(), ["stopped", `accounts ${account}`, "B"], `its row: stopped, waiting for the login on B (lost ${lost})`);
   await quiet();
   assert.deepEqual(await row(), ["stopped", `accounts ${account}`, "B"], "and so after");

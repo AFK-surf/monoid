@@ -50,6 +50,8 @@ export type SchedulerDeps = {
   restarted?: () => string;
   /// What one plan of `ws` reads once for all its modules (module.ts `PlanReads`); none: each module its own.
   reads?: (ws: string) => PlanReads;
+  /// Told as a turn with `station` begins (true) and as it ends (false).
+  turn?: (on: boolean, station: string) => void;
 };
 
 const stoppedFile = (data: string) => join(data, "move", "stopped.json");
@@ -241,6 +243,7 @@ export class Scheduler {
       if (why) throw new Error(why);
       // (held from its first item to its end: an update would cut it)
       letGo = this.#d.hold?.() ?? null;
+      this.#d.turn?.(true, station);
       await mkdir(dirname(turnFile(this.#d.data)), { recursive: true });
       await writeFile(turnFile(this.#d.data), JSON.stringify({ ws, how, station, by }));
       return await f();
@@ -255,6 +258,7 @@ export class Scheduler {
       },
     ).finally(async () => {
       await rm(turnFile(this.#d.data), { force: true }).catch(() => {});
+      this.#d.turn?.(false, station);
       (letGo as (() => void) | null)?.();
       this.#asked--;
       this.#stopping = null;
