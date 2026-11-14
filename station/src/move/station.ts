@@ -149,12 +149,12 @@ export class Moves {
       }
       // (found gone once: asked again, it is dialed anew; that failing too, or no answer in time, it is gone)
       const timedOut = e instanceof Error && e.message.startsWith("peer request timed out");
+      const name = this.#d.roster(this.#d.home() ?? "")?.find((r) => r.id === station)?.name || station.slice(0, 12);
       if (e instanceof PeerGone && !this.#suspect.has(station)) {
         this.#suspect.add(station);
-        throw e;
+        throw new Error(tr(stationLang(), "station.move.noAnswer", { station: name }));
       }
       if (e instanceof PeerGone || timedOut || this.#suspect.has(station)) {
-        const name = this.#d.roster(this.#d.home() ?? "")?.find((r) => r.id === station)?.name || station.slice(0, 12);
         const gone = new Error(tr(stationLang(), "station.move.gone", { station: name }));
         this.#gone.set(station, gone);
         log.warn("move", "a station found gone in a turn: asked nothing more of it till it ends", { station: station.slice(0, 12), error: (e as Error).message });

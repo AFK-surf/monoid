@@ -55,8 +55,10 @@ const AFTER_SHOWN: readonly ChatTable[] = ["entries", "letters", "deliveries"];
 
 /// Why a chat cannot go to station `name`: a chat of its key is live there (`keys`), one that went on there apart from
 /// this one (the copy a retirement taken back left there, 2026-11-14): never merged into, whichever had more.
-export const liveHereWords = (keys: readonly string[], name: string) =>
-  `a chat of this key is live on ${name} (${keys.join(", ")}): it went on there apart from this one, and the two are not merged; this one stays here, and each goes on where it is: say in either what the other has that it needs`;
+export const liveHereWords = (keys: readonly string[], name: string) => why("liveThere", { station: name, keys: keys.join(", ") });
+
+/// Why a hand-over did not go, in the station's language (`station.move.why.*`): every reason the chat's failure gives.
+const why = (key: string, args: Record<string, unknown> = {}) => tr(stationLang(), `station.move.why.${key}`, args);
 
 /// What a session's account is known by across the workspace: the share it is a copy of or the host of (`share`), the
 /// key it runs with (`key`, a hash of it), or a login not shared, by its id where it is (`own`: `<id>@<station>`, the
@@ -361,7 +363,7 @@ export class Handover {
 
   /// Thrown where hand-over `o` was asked to stop.
   #given(o: Out): void {
-    if (o.abandoned === true) throw new Error("the move was asked to stop before this chat went: it goes on here");
+    if (o.abandoned === true) throw new Error(why("abandoned"));
   }
 
   /// The sessions handed over with `key`: those that share its still.fail home chat (threads.home).
@@ -387,15 +389,15 @@ export class Handover {
     const reads = opts.reads ?? this.#reads;
     const here = this.#d.here();
     const row = reads.session(key);
-    if (here === null || row === null) return "there is no such chat here";
+    if (here === null || row === null) return why("noSuchChat");
     const ws = this.#d.hub.wsOf(row);
-    if (ws === null || row.ws?.startsWith(handedWs("")) || row.ws?.startsWith(comingWs(""))) return "that chat is not of a workspace this station is in now (handed over already, or not shown yet here)";
-    if (!WORKSPACE.test(ws) || !STATION.test(to) || to === here) return "name another station of the chat's workspace";
+    if (ws === null || row.ws?.startsWith(handedWs("")) || row.ws?.startsWith(comingWs(""))) return why("notInWorkspaceNow");
+    if (!WORKSPACE.test(ws) || !STATION.test(to) || to === here) return why("nameAnother");
     const target = this.#d.roster(ws)?.find((s) => s.id === to);
-    if (target === undefined) return "that station is not one of this chat's workspace's: name one station_list lists";
-    if (target.tasks === true) return `${target.name} only runs tasks: a chat goes only to a whole station`;
+    if (target === undefined) return why("notOfWorkspace");
+    if (target.tasks === true) return why("tasksOnly", { station: target.name });
     const busy = (this.#outsOf.get(key) ?? []).find((o) => o.step === "held" || o.step === "files" || o.step === "rows" || o.step === "gone");
-    if (busy !== undefined) return busy.step === "gone" ? `that chat is going to ${busy.toName || busy.to.slice(0, 8)} already: wait for it to be there` : "that chat is being handed over already: wait for it, or look at station_move status";
+    if (busy !== undefined) return busy.step === "gone" ? why("goingAlready", { station: busy.toName || busy.to.slice(0, 8) }) : why("handingAlready");
     for (const k of this.together(key, reads)) {
       const s = reads.session(k);
       if (s === null) continue;
@@ -403,10 +405,10 @@ export class Handover {
       // (a chat of a connect that is not routed runs where the connect runs: it goes once its connect is there, or
       // arrives there stopped, waiting for it)
       if (kind !== null && !routed(kind) && !opts.planning && opts.stoppedFor?.module !== "connects" && this.#d.connects?.runsOn(s.connect) !== to) {
-        return `chat ${k} is of connect ${s.connect} (${kind.mode === "single-session" ? "one session for all its messages" : kind.kind}), whose chats run only where it runs: move the connect first (station_move, module connects; withNeeds does it in order)`;
+        return why("connectFirst", { chat: k, connect: s.connect, kind: kind.mode === "single-session" ? why("oneSession") : kind.kind });
       }
       if (!opts.ignoreFiles && s.archivedAt === null && !s.workspace.startsWith(join(this.#d.data, "sessions"))) {
-        return `chat ${k} works in ${s.workspace}, which is not this station's own: its files would not go; ask again with its files left behind if that is meant`;
+        return why("filesOutside", { chat: k, dir: s.workspace });
       }
     }
     return null;
@@ -430,11 +432,11 @@ export class Handover {
   /// `stoppedFor`: what it needs is not usable there yet (the scheduler says so): it arrives there stopped, waiting for
   /// that, its accounts there or not.
   async handOver(key: string, to: string, opts: { wait?: boolean; ignoreFiles?: boolean; progress?: (p: { done: number; total: number; unit: string }) => void; stoppedFor?: Need } = {}): Promise<Out> {
-    const why = this.check(key, to, { ...opts, stoppedFor: opts.stoppedFor ?? null });
-    if (why !== null) throw new Refused(why);
+    const refused = this.check(key, to, { ...opts, stoppedFor: opts.stoppedFor ?? null });
+    if (refused !== null) throw new Refused(refused);
     const keys = this.together(key);
     const ws = this.#d.hub.wsOf(key)!;
-    if (opts.wait !== true) for (const k of keys) if (this.#d.hub.busy(k)) throw new Refused(`chat ${k} is in a turn now: ask again when it ended, or with wait, which waits for it`);
+    if (opts.wait !== true) for (const k of keys) if (this.#d.hub.busy(k)) throw new Refused(why("inTurn", { chat: k }));
     const name = this.#d.roster(ws)?.find((s) => s.id === to)?.name ?? "";
     const o: Out = {
       id: handoverId(keys, to, this.#d.fibers.now()), keys, to, toName: name, ws, at: this.#d.fibers.now(), step: "files", error: null, jobs: [], dropOwed: false,
@@ -451,25 +453,25 @@ export class Handover {
       await this.#files(o, begun, opts.progress, false);
       for (const k of keys) {
         if (!this.#d.hub.busy(k)) continue;
-        if (opts.wait !== true) throw new Error(`chat ${k} is in a turn now: ask again when it ended, or with wait, which waits for it`);
+        if (opts.wait !== true) throw new Error(why("inTurn", { chat: k }));
         let late: () => void = () => {};
         const deadline = new Promise<"late">((resolve) => (late = this.#d.fibers.after(TURN_WAIT_MS, () => resolve("late")))); // timer: a deadline for the turn's end
         this.#waitingTurn.add(o.id);
         const ended = await Promise.race([this.#d.hub.turnEnded(k).then(() => "ended" as const), deadline]).finally(() => this.#waitingTurn.delete(o.id));
         late();
-        if (ended === "late") throw new Error(`chat ${k} was still in its turn after ${TURN_WAIT_MS / 60_000} min: ask again later`);
+        if (ended === "late") throw new Error(why("turnLate", { chat: k, minutes: TURN_WAIT_MS / 60_000 }));
       }
     } catch (e) {
       const error = (e as Error).message;
       if (this.#closed) throw new Refused(tr(stationLang(), "station.move.stoppedMidway", { station: name || to.slice(0, 12) }));
       await this.#fail(o, error);
-      throw new Refused(`the chat did not go to ${name || "that station"} and goes on here: ${error}`);
+      throw new Refused(tr(stationLang(), "station.move.chatStayed", { station: name || to.slice(0, 12), why: error }));
     }
     try {
       this.#given(o);
     } catch (e) {
       await this.#fail(o, (e as Error).message);
-      throw new Refused(`the chat did not go to ${name || "that station"} and goes on here: ${(e as Error).message}`);
+      throw new Refused(tr(stationLang(), "station.move.chatStayed", { station: name || to.slice(0, 12), why: (e as Error).message }));
     }
     for (const k of keys) await this.#d.hub.holdChat(k, `moving to ${name || to.slice(0, 8)}`);
     o.held = true;
@@ -485,7 +487,7 @@ export class Handover {
       // (this process stopping: the next goes on from where it stood, `start`)
       if (this.#closed) throw new Refused(tr(stationLang(), "station.move.stoppedHeld", { station: name || to.slice(0, 12) }));
       await this.#fail(o, error);
-      throw new Refused(`the chat did not go to ${name || "that station"} and goes on here: ${error}`);
+      throw new Refused(tr(stationLang(), "station.move.chatStayed", { station: name || to.slice(0, 12), why: error }));
     }
     // (what is told after it went is told until it answers: by itself, on failure with a backoff)
     await this.#afterGone(o).catch((e) => {
@@ -530,8 +532,8 @@ export class Handover {
     const db = join(d.data, "stillfail.db");
     const g: Gathered = await this.#work.gather(d.data, db, o.ws, false, scratch(d.data, o.id), undefined, null, o.keys);
     const need = HEADROOM + g.bytes + Math.ceil(g.bytes / 20);
-    if (g.gits > 0 && begun?.git === false) throw new Error(`${o.toName || "that station"} has no git, and this chat has ${g.gits} git worktree${g.gits === 1 ? "" : "s"} to be made again there: install git there first`);
-    if (typeof begun?.free === "number" && need > begun.free) throw new Error(`${o.toName || "that station"} has ${gb(begun.free)} free and this chat needs ${gb(need)}: free some room there, or pick another station`);
+    if (g.gits > 0 && begun?.git === false) throw new Error(why("noGit", { station: o.toName || o.to.slice(0, 12), n: g.gits }));
+    if (typeof begun?.free === "number" && need > begun.free) throw new Error(why("noRoom", { station: o.toName || o.to.slice(0, 12), free: gb(begun.free), need: gb(need) }));
     d.fail?.("files");
     const carry = await sendGathered(g, {
       // (where each goes and how big, so that what is in place there already is not sent again)
@@ -547,9 +549,9 @@ export class Handover {
       done: (bytes) => void (held || (o.done += bytes, progress?.({ done: o.done, total: o.total, unit: "bytes" }))),
     }, held, [], true);
     this.#given(o);
-    if (carry === null) throw new Error("this station is stopping");
+    if (carry === null) throw new Error(why("stopping"));
     const placed = await ask({ method: "handover.place", carry });
-    if (held && typeof placed?.missing === "number" && placed.missing > 0) throw new Error(`${placed.missing} of its files are not there after they were sent`);
+    if (held && typeof placed?.missing === "number" && placed.missing > 0) throw new Error(why("filesMissing", { n: placed.missing }));
   }
 
   /// Held, steps 3 to 5 up to `gone`: its files again (what changed since the first pass), its rows, the counts.
@@ -570,7 +572,7 @@ export class Handover {
     d.fail?.("counts");
     this.#given(o);
     const differs = counts === undefined ? "it said nothing" : differ(sent, counts);
-    if (differs !== null) throw new Error(`what it has is not what was sent (${differs})`);
+    if (differs !== null) throw new Error(why("notWhatSent", { what: differs }));
     // Gone: said here first, durably, before anything else is told.
     o.counts = counts!;
     o.there = Object.fromEntries(o.keys.map((k) => [k, { thread: d.store.homeChat(k)?.id ?? null, there: typeof (counts as Json).homes?.[k] === "number" ? (counts as Json).homes[k] : null }]));
@@ -766,18 +768,18 @@ export class Handover {
       try {
         const ws = typeof request?.workspace === "string" ? request.workspace : "";
         const id = typeof request?.id === "string" ? request.id : "";
-        if (!WORKSPACE.test(ws) || (workspace !== undefined && workspace !== ws) || !inWorkspace(peer, ws) || request?.origin !== peer) throw new Refused("not a station of this workspace");
-        if (!/^[0-9a-z-]{1,80}$/.test(id)) throw new Refused("not a hand-over");
+        if (!WORKSPACE.test(ws) || (workspace !== undefined && workspace !== ws) || !inWorkspace(peer, ws) || request?.origin !== peer) throw new Refused(why("notStationOfWs"));
+        if (!/^[0-9a-z-]{1,80}$/.test(id)) throw new Refused(why("badRequest", { detail: "not a hand-over" }));
         if (request.method === "handover.begin") return await this.#begin(peer, ws, id, request);
         const i = this.#ins.get(id);
         if (request.method === "handover.drop") return i === undefined ? { ok: true } : await this.#drop1(i);
-        if (i === undefined || i.origin !== peer) throw new Refused("not begun: handover.begin first");
+        if (i === undefined || i.origin !== peer) throw new Refused(why("badRequest", { detail: "not begun: handover.begin first" }));
         // (dropped here, by its own drop or a newer hand-over of the chat: nothing more of it is taken)
-        if (i.step === "dropped" || this.#dropping.has(i.id)) throw new Refused("that hand-over was dropped here: hand the chat over again");
+        if (i.step === "dropped" || this.#dropping.has(i.id)) throw new Refused(why("droppedThere"));
         switch (request.method) {
           case "handover.lacking": {
             const hashes = Array.isArray(request.hashes) ? request.hashes : [];
-            if (hashes.length > (this.#d.lackMost ?? LACK_MOST) || !hashes.every((h: unknown) => typeof h === "string" && HASH.test(h))) throw new Refused("too many hashes");
+            if (hashes.length > (this.#d.lackMost ?? LACK_MOST) || !hashes.every((h: unknown) => typeof h === "string" && HASH.test(h))) throw new Refused(why("badRequest", { detail: "too many hashes" }));
             const lacking = new Set(await lackingIn(inFiles(this.#d.data, id), hashes));
             // (one in place here already, the same bytes where it goes, is not lacking: a room kept here, or placed
             // by a hand-over before)
@@ -799,7 +801,7 @@ export class Handover {
             return await this.#serialIn(i, () => this.#prune(i));
           case "handover.put": {
             const name = String(request.name ?? "");
-            if (bytes === null || !HASH.test(name)) throw new Refused("not a file's hash");
+            if (bytes === null || !HASH.test(name)) throw new Refused(why("badRequest", { detail: "not a file's hash" }));
             await receiveFile(inFiles(this.#d.data, id), name, bytes as Bytes);
             return { ok: true };
           }
@@ -808,8 +810,8 @@ export class Handover {
           case "handover.rows": {
             const table = String(request.table ?? "") as ChatTable;
             // (shown: only what was said there after its rows went, its log's and what it has yet to be handed)
-            if (i.step !== "coming" && (i.step !== "shown" || !AFTER_SHOWN.includes(table))) throw new Refused("shown already");
-            if (!CHAT_TABLES.includes(table) || !Array.isArray(request.rows) || request.rows.length > 500) throw new Refused("not a page of a chat's rows");
+            if (i.step !== "coming" && (i.step !== "shown" || !AFTER_SHOWN.includes(table))) throw new Refused(why("shownAlready"));
+            if (!CHAT_TABLES.includes(table) || !Array.isArray(request.rows) || request.rows.length > 500) throw new Refused(why("badRequest", { detail: "not a page of a chat's rows" }));
             this.#d.fail?.("import");
             this.#d.store.importRows(i.ctx, table, request.rows, i.step === "coming" ? i.id : undefined);
             this.#d.fail?.("imported");
@@ -824,7 +826,7 @@ export class Handover {
           case "handover.show":
             return await this.#show(i, Array.isArray(request.sends) ? request.sends : []);
         }
-        throw new Refused("no such hand-over request");
+        throw new Refused(why("badRequest", { detail: "no such hand-over request" }));
       } finally {
         if (bytes !== null) await stopBytes(bytes).catch(() => {});
       }
@@ -833,9 +835,9 @@ export class Handover {
 
   async #begin(origin: string, ws: string, id: string, request: Json): Promise<Json> {
     const was = this.#ins.get(id);
-    if (was !== undefined && was.step !== "coming") throw new Refused(`that hand-over was ${was.step} here already`);
+    if (was !== undefined && was.step !== "coming") throw new Refused(why("wasAlready", { step: was.step }));
     const keys: string[] = Array.isArray(request.keys) ? request.keys.filter((k: unknown): k is string => typeof k === "string") : [];
-    if (keys.length === 0) throw new Refused("no chat named");
+    if (keys.length === 0) throw new Refused(why("badRequest", { detail: "no chat named" }));
     // (a chat of the same key that is live here went on apart from it: never merged into, nothing written)
     const live = this.#d.store.liveOf(keys);
     if (live.length > 0) throw new Refused(liveHereWords(live, this.#d.roster(ws)?.find((s) => s.id === this.#d.here())?.name || "this station"));
@@ -858,7 +860,7 @@ export class Handover {
     }
     const stoppedFor = request.stoppedFor !== null && typeof request.stoppedFor?.module === "string" && typeof request.stoppedFor?.id === "string" ? { module: request.stoppedFor.module, id: request.stoppedFor.id, ...(typeof request.stoppedFor.label === "string" ? { label: request.stoppedFor.label } : {}) } as Need : null;
     // (one that arrives stopped, waiting for its account, goes on its ids as they are until it comes)
-    if (missing.length > 0 && stoppedFor === null) throw new Refused(`the account${missing.length === 1 ? "" : "s"} ${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} not usable on this station: move or share ${missing.length === 1 ? "it" : "them"} here first (station_move, module accounts)`);
+    if (missing.length > 0 && stoppedFor === null) throw new Refused(why("accountsMissing", { names: missing.join(", ") }));
     for (const x of Array.isArray(request.described) ? request.described : []) {
       if (x?.known && typeof x.station === "string" && x.described) this.#d.connects?.learnOf(x.known, x.station, x.described);
     }
@@ -877,7 +879,7 @@ export class Handover {
   }
 
   async #place(i: In, carry: string): Promise<Json> {
-    if (!HASH.test(carry)) throw new Refused("not a copy's name");
+    if (!HASH.test(carry)) throw new Refused(why("badRequest", { detail: "not a copy's name" }));
     const files = inFiles(this.#d.data, i.id);
     const index = join(files, carry);
     // (what the first pass placed stays placed: the second looks only at what the lists say otherwise of)
@@ -1118,7 +1120,7 @@ export class Handover {
 
   async #dropIn(i: In): Promise<Json> {
     if (i.step === "dropped") return { ok: true };
-    if (i.step === "shown") throw new Refused("it is shown here: it went");
+    if (i.step === "shown") throw new Refused(why("shownHere"));
     this.#d.store.dropImport(i.ctx);
     this.#d.store.forgetImport(i.id);
     // What git made for it: each worktree's own `.git` taken out and its registration with it (`worktree prune`), the
@@ -1192,11 +1194,11 @@ async function inPlace(path: string, data: string, f: { hash: string; size: numb
 
 /// Where what was sent and what it has differ, in words (null: they do not).
 function differ(sent: Counts, there: Counts): string | null {
-  if (sent.sessions !== there.sessions) return `${sent.sessions} sessions sent, ${there.sessions} there`;
+  if (sent.sessions !== there.sessions) return why("countSessions", { sent: sent.sessions, there: there.sessions });
   for (const k of ["entries", "letters"] as const) {
-    for (const [t, n] of Object.entries(sent[k])) if ((there[k][t] ?? 0) !== n) return `${n} ${k} of a thread sent, ${there[k][t] ?? 0} there`;
+    for (const [t, n] of Object.entries(sent[k])) if ((there[k][t] ?? 0) !== n) return why("countThread", { sent: n, what: k, there: there[k][t] ?? 0 });
   }
-  for (const [t, n] of Object.entries(sent.rows)) if ((there.rows[t] ?? 0) !== n) return `${n} rows of ${t} sent, ${there.rows[t] ?? 0} there`;
+  for (const [t, n] of Object.entries(sent.rows)) if ((there.rows[t] ?? 0) !== n) return why("countRows", { sent: n, table: t, there: there.rows[t] ?? 0 });
   return null;
 }
 

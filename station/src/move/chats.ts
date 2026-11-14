@@ -118,7 +118,7 @@ export function chatsModule(d: ChatsDeps): Module {
       // (one in a turn, not to be waited for: refused as its hand-over would refuse it, before anything moves for it)
       if (d.wait?.() !== false) return null;
       const busy = keysOf(item).find((k) => d.hub.busy?.(k) === true);
-      return busy === undefined ? null : `chat ${busy} is in a turn now: ask again when it ended, or with wait, which waits for it`;
+      return busy === undefined ? null : tr(stationLang(), "station.move.why.inTurn", { chat: busy });
     },
     async move(item, to, progress: (p: Progress) => void, opts) {
       await d.handover.handOver(item.id, to, { wait: d.wait?.() ?? true, progress, stoppedFor: opts?.stoppedFor });

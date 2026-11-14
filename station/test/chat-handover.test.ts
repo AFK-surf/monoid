@@ -321,8 +321,8 @@ test("a failure at each step before it went: the chat works here afterwards and 
     b.up = true;
     await w.quiet();
     assert.notEqual(error, null, `${how}: refused`);
-    if (how === "full") assert.match(error!, /free some room there/);
-    if (how !== "a-restart") assert.match(error!, /goes on here/, how);
+    if (how === "full") assert.match(error!, /free some room there|腾出空间/);
+    if (how !== "a-restart") assert.match(error!, /goes on here|在这里继续/, how);
     // (stopped as it went, and started again: each says what to do next, in the station's words)
     if (how === "a-restart") {
       assert.match(error!, /once this station is up again[^]*then hand it over again|重新运行后[^]*之后再迁移一次/, how);
@@ -501,7 +501,9 @@ test("the other station killed in the middle of a turn: found gone once and dial
   // then on, the one under way too)
   let dead = false;
   const asked: Json[] = [];
+  const begun: string[][] = [];
   w.tamper((to, r) => {
+    if (to === B && r.method === "handover.begin" && Array.isArray(r.keys) && !dead) begun.push(r.keys);
     if (to === B && r.method === "handover.place") dead = true;
     if (to === B && dead) {
       asked.push(r);
@@ -514,11 +516,13 @@ test("the other station killed in the middle of a turn: found gone once and dial
   const failures = new Map((out.failures ?? []).map((f) => [f.item.id, f.error]));
   assert.deepEqual([...failures.keys()].sort(), [first.key, second.key].sort(), JSON.stringify(out));
   // (the chat that met it found it gone; the other was never begun there: failed at once, in people's words)
-  const begun = (k: string) => asked.some((r) => r.method === "handover.begin" && Array.isArray(r.keys) && r.keys.includes(k));
-  const later = [first.key, second.key].find((k) => !begun(k));
-  assert.ok(later !== undefined, `one chat asked nothing of B once it was gone: ${JSON.stringify(asked.map((r) => r.method))}`);
+  // (the chat under way as B died: begun there before; the other never begun there once B was dead)
+  const under = [first.key, second.key].find((k) => begun.some((keys) => keys.includes(k)));
+  const later = [first.key, second.key].find((k) => k !== under);
+  assert.ok(under !== undefined && !asked.some((r) => r.method === "handover.begin" && Array.isArray(r.keys) && r.keys.includes(later!)), `one chat asked nothing of B once it was gone: ${JSON.stringify(asked.map((r) => r.method))}`);
   assert.match(failures.get(later!) ?? "", /B does not answer: nothing more is asked of it in this move|「B」没有应答：这次迁移不再向它发出任何请求/, "the station's own words, naming it");
-  assert.ok(!(failures.get(later!) ?? "").includes("execution may have happened"), "people's words, not the transport's");
+  assert.match(failures.get(under!) ?? "", /B did not answer this step|「B」没有应答这一步/, "the one under way: the station's words too");
+  for (const k of [under!, later!]) assert.ok(!/execution may have happened|connection was gone/.test(failures.get(k) ?? ""), `people's words, not the transport's: ${failures.get(k)}`);
   assert.ok(asked.length <= 3, `the request under way found gone, dialed anew once, then nothing more: ${JSON.stringify(asked.map((r) => r.method))}`);
   for (const k of [first.key, second.key]) {
     assert.equal(a.rig.store.handedTo(k), null, "here");
@@ -601,7 +605,7 @@ test("what moves nothing is asked first, and what moved for an item that then di
   await a.rig.quiet();
   a.moves.wait = false;
   const busy = await a.moves.scheduler.move(WS, B, { module: "chats", item: key, withNeeds: true });
-  assert.match(busy.refused.find((r) => r.item.id === key)?.why ?? "", /in a turn now/);
+  assert.match(busy.refused.find((r) => r.item.id === key)?.why ?? "", /in a turn now|正在进行一轮/);
   assert.deepEqual(busy.done, [], "nothing moved for it");
   assert.ok(solo(a) && !solo(b), "its login here");
   a.moves.wait = true;
@@ -1176,7 +1180,7 @@ test("a chat in a turn, asked to move with wait false, is refused and goes on he
   assert.equal(a.rig.hub.busy(key), true);
   a.moves.wait = false;
   const out = await given(a.moves.scheduler.move(WS, B, { module: "chats", item: key }), "refused at once, its turn not waited for");
-  assert.match(out.refused.find((r) => r.item.id === key)?.why ?? "", /in a turn now/, "refused before anything moves");
+  assert.match(out.refused.find((r) => r.item.id === key)?.why ?? "", /in a turn now|正在进行一轮/, "refused before anything moves");
   assert.equal(a.rig.hub.chatHeld(key), null, "not held");
   assert.equal(a.rig.store.handedTo(key), null);
 });
@@ -1811,8 +1815,8 @@ test("the station it leaves stopped while the chat is held and its files are bei
   // What of it comes after its drop (a late page of rows, a show) is refused, and puts nothing in.
   const late = (request: Json) => a.bus.ask(B, { ...request, workspace: WS, origin: A, id });
   const why = (p: Promise<unknown>) => p.then(() => "taken", (e: Error) => e.message);
-  assert.match(await why(late({ method: "handover.rows", table: "sessions", rows: a.rig.store.chatPage("sessions", key, null, 500, [key]) })), /dropped here/);
-  assert.match(await why(late({ method: "handover.show", sends: [] })), /dropped here/);
+  assert.match(await why(late({ method: "handover.rows", table: "sessions", rows: a.rig.store.chatPage("sessions", key, null, 500, [key]) })), /dropped there|在那边已经撤回/);
+  assert.match(await why(late({ method: "handover.show", sends: [] })), /dropped there|在那边已经撤回/);
   assert.deepEqual(b.moves.handover.ins().map((i) => i.step), ["dropped"]);
   assert.equal(b.rig.store.getSession(key), null, "no row of it there");
   assert.equal(existsSync(roomThere), false, `nothing of its room there: ${existsSync(roomThere) ? JSON.stringify(filesOf(roomThere)) : ""}`);
@@ -2156,11 +2160,11 @@ test("a chat whose key is live where it would go (one that went on there apart f
   await endTurn(a, key);
   const before = { row: b.rig.store.getSession(key), log: entries(b, there), sessions: b.rig.store.db.prepare("SELECT COUNT(*) AS n FROM sessions").get() };
   const plan = await a.moves.scheduler.plan(WS, B);
-  assert.match(plan.items.find((x) => x.id === key)?.cannot ?? "", /a chat of this key is live on B/);
+  assert.match(plan.items.find((x) => x.id === key)?.cannot ?? "", /a chat of this key is live on B|key 在「B」上还有一个在继续的对话/i);
   const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: key });
-  assert.match(out.refused[0]?.why ?? "", /a chat of this key is live on B/);
+  assert.match(out.refused[0]?.why ?? "", /a chat of this key is live on B|key 在「B」上还有一个在继续的对话/i);
   // (asked anyway, past the plan: refused there before anything is written)
-  await assert.rejects(a.moves.handover.handOver(key, B, { wait: true }), /a chat of this key is live on B/);
+  await assert.rejects(a.moves.handover.handOver(key, B, { wait: true }), /a chat of this key is live on B|key 在「B」上还有一个在继续的对话/i);
   await w.quiet();
   assert.deepEqual(b.moves.handover.ins(), [], "nothing begun there");
   assert.deepEqual({ row: b.rig.store.getSession(key), log: entries(b, there), sessions: b.rig.store.db.prepare("SELECT COUNT(*) AS n FROM sessions").get() }, before, "nothing written there");

@@ -117,7 +117,7 @@ const WANT: string[] = [
   "chats | chat:c-0001 | a chat of two | accounts share:sh-cc,accounts key:f663c3465c5f0b8b63e89ebd3a687043 |  | here | jobs chat:c-0002#watch",
   "chats | cl:C1:1.1 | a Slack thread | accounts share:sh-cc,accounts key:f663c3465c5f0b8b63e89ebd3a687043 |  | here | jobs cl:C1:1.1#dev,connects cl@A",
   "chats | cl:C1:1.2 | cl:C1:1.2 | accounts share:sh-b |  | here | connects cl@A",
-  "chats | cl:C1:1.4 | cl:C1:1.4 | accounts share:sh-cc | chat cl:C1:1.4 works in /elsewhere/proj, which is not this station's own: its files would not go; ask again with its files left behind if that is meant | here | connects cl@A",
+  "chats | cl:C1:1.4 | cl:C1:1.4 | accounts share:sh-cc | 对话 cl:C1:1.4 的工作目录 /elsewhere/proj 不在这台 station 自己的目录里：它的文件不会一起迁走；确实要这样的话，选不带文件再迁一次 | here | connects cl@A",
   "chats | cl:C1:1.5 | cl:C1:1.5 | accounts share:sh-cc |  | here | connects cl@A",
   "chats | cl:C1:1.9 | cl:C1:1.9 | accounts share:sh-cc |  | there | ",
   "chats | cl:C1:3.1 | cl:C1:3.1 | accounts share:sh-cc,repos repo:https://example.test/shared.git |  | here | connects cl@A",
