@@ -1828,9 +1828,10 @@ export class Store {
   /// (`handedWs`) with them.
   sessionsOfWs(ws: string | null, home: string | null, after: string, limit: number): string[] {
     const named = ws === null ? home : ws;
-    // (each by the index of a workspace's sessions, sessions_by_ws, then the two merged)
-    const own = this.#all(ws === null ? "SELECT key FROM sessions WHERE ws IS NULL AND key > ? ORDER BY key LIMIT ?" : "SELECT key FROM sessions WHERE ws = ? AND key > ? ORDER BY key LIMIT ?", ...(ws === null ? [after, limit] : [ws, after, limit]));
-    const handed = this.#all("SELECT key FROM sessions WHERE ws = ? AND key > ? ORDER BY key LIMIT ?", handedWs(named ?? ""), after, limit);
+    // (each by the index of a workspace's sessions, sessions_of_ws, then the two merged)
+    const page = "SELECT key FROM sessions WHERE COALESCE(ws, '') = ? AND key > ? ORDER BY key LIMIT ?";
+    const own = this.#all(page, ws ?? "", after, limit);
+    const handed = this.#all(page, handedWs(named ?? ""), after, limit);
     return [...own, ...handed].map((r) => r.key as string).sort().slice(0, limit);
   }
 

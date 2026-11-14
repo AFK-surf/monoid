@@ -1463,6 +1463,9 @@ export function addWorkspaceColumns(db: DatabaseSync): void {
   // Which workspace each session is in, by its key (read/store.ts SEEN_OF, in each usage read): from the index alone,
   // not each session's whole row (every session's, for the usage page's history).
   db.exec("CREATE INDEX IF NOT EXISTS sessions_ws ON sessions (key, ws)");
-  // A workspace's sessions by key (store.ts sessionsOfWs: what a migration plans, move/), a page at a time.
-  db.exec("CREATE INDEX IF NOT EXISTS sessions_by_ws ON sessions (ws, key)");
+  // A workspace's sessions by key (store.ts sessionsOfWs: what a migration plans, move/), a page at a time. On an
+  // expression the other reads of `ws` do not name, so that it changes none of their plans (a plain (ws, key) index
+  // took the join of legacy-decision-session-store.test.ts's sessions by key from its index).
+  db.exec("DROP INDEX IF EXISTS sessions_by_ws");
+  db.exec("CREATE INDEX IF NOT EXISTS sessions_of_ws ON sessions (COALESCE(ws, ''), key)");
 }
