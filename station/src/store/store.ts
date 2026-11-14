@@ -37,6 +37,7 @@ import { retiredUsage } from "./usage-retire.ts";
 import { findRuntimeSource, type RuntimeSource } from "./runtime-source.ts";
 import * as usage from "./usage.ts";
 import { timed } from "./timed.ts";
+import * as handover from "./handover.ts";
 import { installUsageMinutes } from "./usage-minutes.ts";
 import { installIncrementalUsageTotals, installUsageDetail, usageTotalsComplete } from "./usage-detail.ts";
 import { installUsageSpan } from "./usage-span.ts";
@@ -1705,6 +1706,67 @@ export class Store {
   }
 
   // ── chats handed over one at a time (replica/handover.ts, store/handover.ts) ──
+
+  /// The threads sessions `keys` take part in after `after`, at most `limit`: what a chat handed over sends.
+  chatThreads(keys: readonly string[], after: number, limit = handover.PAGE): number[] {
+    return handover.chatThreads(this.db, keys, after, limit);
+  }
+
+  /// A page of a chat's rows of `table` (store/handover.ts `chatPage`).
+  chatPage(table: handover.ChatTable, of: number | string, after: handover.After, limit = handover.PAGE, keys: readonly string[] = []): Json[] {
+    return handover.chatPage(this.db, table, of, after, limit, keys);
+  }
+
+  /// A page of another station's chat's rows put in (store/handover.ts `importRows`), one transaction: its sessions say
+  /// `ctx.ws` (not shown) until `showChat`. `ctx` says what was put in.
+  importRows(ctx: handover.ImportCtx, table: handover.ChatTable, rows: Json[]): void {
+    this.#with((changes) => {
+      const touched: handover.Touched = { sessions: new Set(), threads: new Set() };
+      this.#tx(() => handover.importRows(this.db, ctx, table, rows, touched));
+      for (const key of touched.sessions) this.#wsOf.delete(key);
+      for (const key of touched.sessions) changes.push({ type: "session", key });
+      for (const id of touched.threads) changes.push({ type: "thread", id, entries: [] });
+      if (touched.sessions.size > 0) this.#sessionWorkspaceChanged();
+    });
+  }
+
+  /// What a hand-over that failed put in (`ctx`), taken out: its sessions put in anew deleted, those there before as
+  /// they were, the threads it put in anew gone.
+  dropImport(ctx: handover.ImportCtx): void {
+    const fresh = this.#with((changes) => {
+      const fresh = this.#tx(() => handover.dropImport(this.db, ctx));
+      for (const s of ctx.made.sessions) {
+        this.#wsOf.delete(s.key);
+        changes.push({ type: "session", key: s.key });
+      }
+      return fresh;
+    });
+    for (const key of fresh) this.deleteSession(key);
+    this.#with((changes) => {
+      for (const id of this.#tx(() => handover.dropEmptyThreads(this.db, ctx))) changes.push({ type: "threadRemoved", id });
+    });
+    this.#sessionWorkspaceChanged();
+  }
+
+  /// Sessions `keys` put in from another station shown: of workspace `ws` (null: the home one) from now on; one handed
+  /// from here before and back now is no longer said to be there (`handed_over`).
+  showChat(keys: readonly string[], ws: string | null): void {
+    this.#with((changes) => {
+      this.#tx(() => {
+        for (const key of keys) {
+          this.#run("UPDATE sessions SET ws = ? WHERE key = ?", ws, key);
+          if (this.#run("DELETE FROM handed_over WHERE session = ?", key) > 0) changes.push({ type: "moved", key, station: null, ws, thread: null, there: null });
+        }
+      });
+      for (const key of keys) {
+        this.#wsOf.delete(key);
+        this.#handed.delete(key);
+        changes.push({ type: "session", key });
+        for (const t of this.sessionThreads(key)) changes.push({ type: "thread", id: t.thread.id, entries: [] });
+      }
+      this.#sessionWorkspaceChanged();
+    });
+  }
 
   /// Sessions `keys` handed to `station`: out of sight here (`handedWs`: `home` names the home one's), where each went
   /// kept with its chat's thread here and there.
