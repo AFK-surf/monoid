@@ -160,7 +160,7 @@ test("the page's value is what the station's GET /move says, a module's items on
   const back = await r.show(3, { to: "st2" });
   assert.equal(back.modules[0].action, "back");
   const page = await r.show(4, {});
-  assert.equal(page.active, true, "something of it is there");
+  assert.equal(page.active, false, "something of it there alone: no 迁移 on its page");
   assert.equal(page.title, "迁移", "no move said where it went");
   assert.equal(page.allMove ?? null, null, "no target: nothing offered");
   said = moved({ modules: [{ id: "accounts", needs: [], done: 0, total: 2, items: [item("p", "x", "here")], more: null }], moving: null, stopped: [], last: null });
@@ -268,6 +268,28 @@ test("a login here that the other station borrows says so, and can still be move
     ["Claude 工作", "here", "在这里，「mini」可借用", "move"],
     ["本机登录", "here", "", "move"],
   ]);
+  r.core.close();
+});
+
+test("its station's page shows 迁移 while a move runs, something is stopped waiting or a module's last turn failed, each with its words; something of it there alone shows none", async () => {
+  // (no module open, no station named: the station's page's own read)
+  const elsewhere = { modules: [{ id: "accounts", needs: [], done: 2, total: 2, items: [], more: null }, { id: "chats", needs: [], done: 1, total: 5, items: [], more: null }] };
+  let said = moved({ ...elsewhere, moving: null, stopped: [], last: null });
+  const r = await rig((_station, key) => (key.startsWith("GET /move") ? said : undefined));
+  const shown = async (over: Record<string, unknown>) => {
+    said = moved({ ...elsewhere, ...over });
+    r.pushOn([AT, "st"], "move", { changed: true });
+    await r.host.time.pass(500);
+    const v = r.view(1);
+    return [v.active, v.title, v.count, v.note];
+  };
+  const first = await r.show(1, {});
+  assert.deepEqual([first.active, first.count], [false, "3 / 7"], "three of seven there, nothing else: no 迁移");
+  assert.deepEqual(await shown({ stopped: [], last: null }), [true, "迁移", "3 / 7", "迁移中 · 聊天「修复登录」"]);
+  assert.deepEqual(await shown({ moving: null, last: null }), [true, "迁移", "3 / 7", "1 项已停"]);
+  const failed = { at: 2, by: "a@x.com", done: [], refused: [], stopped: [], resumed: [], failed: { item: "chats k3", error: "盘满了：在 mini 上腾出 2 GB 再试" } };
+  assert.deepEqual(await shown({ moving: null, stopped: [], last: failed }), [true, "迁移", "3 / 7", "1 项失败"]);
+  assert.deepEqual(await shown({ moving: null, stopped: [], last: null }), [false, "迁移", "3 / 7", ""], "back to there alone: none again");
   r.core.close();
 });
 

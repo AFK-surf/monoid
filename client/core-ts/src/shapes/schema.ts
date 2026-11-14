@@ -1660,7 +1660,7 @@ export const SHAPES: Record<string, Shape> = {
     ["targets", vec("MoveTarget"), { doc: "The workspace's other stations online that offer moving, to choose among." }],
     ["canMove", "bool", { doc: "The viewer may move and move back (one of the workspace's owners and admins)." }],
     ["moving", opt("MoveNow"), { doc: "What moves now; none while nothing does." }],
-    ["active", "bool", { doc: "Something of it moved, moving, stopped or failed: its station's page shows 迁移." }],
+    ["active", "bool", { doc: "A move under way, something stopped waiting, or a module's last turn failed: its station's page shows 迁移\n(something of it on the other station alone does not)." }],
     ["title", "String", { said: true, doc: "Its station's page's row: where it moves (迁移到 Maple: the station chosen, else the one the last move went to)." }],
     ["count", "String", { said: true, doc: "Of every module's items, done of total." }],
     ["note", "String", { said: true, doc: "What stands out, the worst first (1 项失败 · 2 项已停 · 迁移中 · 聊天「…」); none where nothing does." }],
