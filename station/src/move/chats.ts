@@ -113,7 +113,8 @@ export function chatsModule(d: ChatsDeps): Module {
       const o = d.handover.outOf(item.id);
       // (gone, not shown there yet: still moving, its page served here as it went)
       if (o !== null && o.step === "gone" && !o.shown) return { state: "moving", progress: { done: o.done, total: o.total, unit: "bytes" } };
-      if (d.store.handedTo(item.id) !== null) return { state: "there" };
+      const handed = d.store.handedTo(item.id);
+      if (handed !== null) return { state: "there", at: handed.station };
       // (where it went is no longer said here: here, whatever a record of an older trip says)
       if (o === null) return { state: "here" };
       if (o.step === "held" || o.step === "files" || o.step === "rows") return { state: "moving", progress: { done: o.done, total: o.total, unit: "bytes" } };

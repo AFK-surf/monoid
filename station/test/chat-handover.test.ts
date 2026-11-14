@@ -522,6 +522,30 @@ test("arriveStopped, by a person's POST /move and by station_move: a chat whose 
   assert.ok(b.moves.scheduler.stopped().some((s) => s.item.id === two), "by the tool too");
 });
 
+test("what the move page reads of a chat says where it is and where what it waits for is: a chat at a third station `at` it, one stopped here for a login on the other `waitsAt` it; an ordinary row neither", async () => {
+  const w = world([A, B, C]);
+  const a = w.get(A);
+  const atC = await stillfailChat(a);
+  const plain = await stillfailChat(a);
+  a.rig.raw.profiles.push({ id: "solo", runtime: "claude", home: "homes/solo" });
+  const [stopped, t] = newSession(a.rig.hub, { runtime: "claude", profile: "solo", createdBy: "p@x" });
+  say(a.rig.hub, t.id, "p@x", "hi");
+  await endTurn(a, stopped);
+  assert.equal((await a.moves.scheduler.move(WS, C, { module: "chats", item: atC.key })).failed, null);
+  await w.quiet();
+  assert.equal((await a.moves.scheduler.move(WS, B, { module: "accounts", item: `own:solo@${A}` })).failed, null);
+  await w.quiet();
+  const name = (id: string) => ({ [A]: "A", [B]: "B", [C]: "C" })[id] ?? id;
+  const view = moveView(await a.moves.scheduler.plan(WS, B), a.moves.modules.map((m) => m.id), a.moves.scheduler.stopped(), { limit: 50 }, null, false, name);
+  const row = (id: string) => view.modules.find((m: Json) => m.id === "chats").items.find((x: Json) => x.id === id);
+  assert.equal(row(atC.key).at, "C", "a chat at a third station says which");
+  assert.deepEqual([row(stopped).state, row(stopped).waitsFor, row(stopped).waitsAt], ["stopped", `accounts own:solo@${A}`, "B"], "stopped here, waiting for a login on B");
+  assert.ok(!("at" in row(plain.key)) && !("waitsAt" in row(plain.key)), "an ordinary row neither");
+  // (toward the station a chat is at, it is simply there)
+  const toward = moveView(await a.moves.scheduler.plan(WS, C), a.moves.modules.map((m) => m.id), a.moves.scheduler.stopped(), { limit: 50 }, null, false, name);
+  assert.ok(!("at" in toward.modules.find((m: Json) => m.id === "chats").items.find((x: Json) => x.id === atC.key)), "there, toward where it is");
+});
+
 test("a chat held as what it needs moved away says so as its process ends, not that the station is in no workspace", async () => {
   const w = world();
   const a = w.get(A);

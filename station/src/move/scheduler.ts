@@ -201,8 +201,9 @@ export class Scheduler {
       if (chain !== undefined) items[at] = { ...items[at]!, cannot: `these items need each other, so none can go first: ${chain.map(named).join(" → ")}` };
     }
     const planned: Planned[] = items.map((item) => {
-      const st = this.#stateOf(item);
-      return { ...item, ...st, wouldStop: [] };
+      const { at, ...st } = this.#stateOf(item);
+      // (where it is, said only where that is neither here nor the station the plan is toward)
+      return { ...item, ...st, ...(at !== undefined && at !== to ? { at } : {}), wouldStop: [] };
     });
     const index = new Items(planned);
     for (const p of planned) {

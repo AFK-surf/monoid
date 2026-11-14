@@ -147,6 +147,7 @@ export const MovesLive = Layer.effectDiscard(
       scheduler: moves.scheduler,
       order: () => moves.modules.map((m) => m.id),
       home: () => cloud.home(),
+      name: (ws, id) => roster(ws)?.find((x) => x.id === id)?.name || null,
       station: (ws, v) => {
         const r = roster(ws)?.find((x) => x.id === v || x.name.toLowerCase() === v.toLowerCase() || (v.length >= 8 && x.id.startsWith(v)));
         return r === undefined ? null : { id: r.id, tasks: r.tasks || cloud.rigOf(r.id, ws) !== null };

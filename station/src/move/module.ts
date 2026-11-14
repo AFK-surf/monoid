@@ -19,8 +19,9 @@ export type Item = { module: string; id: string; label: string; needs: Need[]; c
 /// (the owner, 2026-11-14: 「依赖项被迁走就停掉啊」).
 export type State = "here" | "moving" | "there" | "failed" | "stopped";
 export type Progress = { done: number; total: number; unit: string };
-/// `waitsFor`, of one stopped: what it waits for, with the station that is on where known.
-export type ItemState = { state: State; error?: string; progress?: Progress; waitsFor?: Waits };
+/// `at`: the station it is on, where its module knows (a chat handed to another, `handed_over`); `waitsFor`, of one
+/// stopped: what it waits for, with the station that is on where known.
+export type ItemState = { state: State; error?: string; progress?: Progress; waitsFor?: Waits; at?: string };
 /// How an item arrives: stopped, waiting for `stoppedFor` (the station it arrives at keeps it stopped).
 export type Arrive = { stoppedFor?: Waits };
 

@@ -25,7 +25,8 @@ export const MOVE_PAGE = 50;
 export const MOVE_PAGE_MOST = 200;
 
 /// The answer of GET /move for `plan`: `module`/`after` the page of one module that goes on from `after`.
-export function moveView(plan: Plan, order: string[], stopped: { item: { module: string; id: string }; waitsFor: { module: string; id: string } }[], o: { module?: string; after?: string; limit?: number } = {}, last: Last | null = null, stopping = false): Json {
+/// `name`: what the roster calls a station (`at`, `waitsAt`), its id's start where it names none.
+export function moveView(plan: Plan, order: string[], stopped: { item: { module: string; id: string }; waitsFor: { module: string; id: string } }[], o: { module?: string; after?: string; limit?: number } = {}, last: Last | null = null, stopping = false, name: (id: string) => string = (id) => id.slice(0, 12)): Json {
   const limit = Math.min(Math.max(o.limit ?? MOVE_PAGE, 1), MOVE_PAGE_MOST);
   const moving = plan.items.find((x) => x.state === "moving") ?? null;
   // (each module's items, gone through once)
@@ -55,6 +56,9 @@ export function moveView(plan: Plan, order: string[], stopped: { item: { module:
         items: page.map((x) => ({
           id: x.id, label: x.label, state: x.state, needs: x.needs.map(named),
           ...(x.waitsFor ? { waitsFor: named(x.waitsFor) } : {}),
+          // (where it is, a station neither this one nor the one the page is toward; where what it waits for is)
+          ...(x.at !== undefined ? { at: name(x.at) } : {}),
+          ...(x.waitsFor?.at !== undefined ? { waitsAt: name(x.waitsFor.at) } : {}),
           ...(x.cannot !== undefined ? { cannot: x.cannot } : {}),
           ...(x.error ? { error: x.error } : {}),
           ...(x.progress ? { progress: x.progress } : {}),
@@ -92,6 +96,8 @@ export type MoveRoutesDeps = {
   here: () => string | null;
   /// Whether this machine only runs tasks (a rig) now.
   rig: () => boolean;
+  /// What the roster of `ws` calls station `id` (none: its id's start).
+  name?: (ws: string, id: string) => string | null;
   /// move/station.ts `refusal`: switched off here or there.
   refusal: (ws: string, station: string, lang: Request["lang"]) => Promise<string | null>;
 };
@@ -153,7 +159,7 @@ export function moveRoutes(d: MoveRoutesDeps): Route[] {
         try {
           const plan = await d.scheduler.plan(ws, to);
           const limit = Number(param(r, "limit") ?? MOVE_PAGE);
-          return ok(moveView(plan, d.order(), d.scheduler.stopped(), { module: param(r, "module") ?? undefined, after: param(r, "after") ?? undefined, limit: Number.isFinite(limit) ? limit : MOVE_PAGE }, d.scheduler.last(ws), d.scheduler.stopping()));
+          return ok(moveView(plan, d.order(), d.scheduler.stopped(), { module: param(r, "module") ?? undefined, after: param(r, "after") ?? undefined, limit: Number.isFinite(limit) ? limit : MOVE_PAGE }, d.scheduler.last(ws), d.scheduler.stopping(), (id) => d.name?.(ws, id) ?? id.slice(0, 12)));
         } catch (e) {
           return error(409, (e as Error).message);
         }
