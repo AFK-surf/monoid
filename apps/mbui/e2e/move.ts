@@ -24,9 +24,44 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, statfsSync, unlinkSync, watch, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { check as checked, Device, dir, fail, failures, type J, log, stationDo, stationSays, whenChanged, within } from "./device.ts";
+import { check as checked, Device, dir, fail, failures, type J, log, whenChanged, within } from "./device.ts";
 
 const WORK = process.env.E2E_WORK!;
+// The last line the drill said: what a limit that passes names as waited for (each wait says itself as it begins).
+let lastSaid = "";
+const said0 = console.log;
+console.log = (...xs: unknown[]) => {
+  lastSaid = xs.map(String).join(" ");
+  said0(...xs);
+};
+/// The run's limit (E2E_MOVE_LIMIT, the harness's, less a minute to say it) and each part's (`limit`): past one, it fails
+/// by name with what it was waiting for and the run ends, what the part left half done being no state to go on from.
+/// A step that holds the thread itself (a synchronous child) is bounded by its own timeout (`stationDo`) and, past all,
+/// by the harness's limit (scripts/e2e-local.sh move).
+const over = (what: string, s: number) => {
+  fail(`${what}: over its limit of ${s} s`, new Error(`waiting for: ${lastSaid.trim()}`));
+  log(`${failures()} FAILED`);
+  process.exit(1);
+};
+const runLimit = Math.max(60, Number(process.env.E2E_MOVE_LIMIT ?? 14400) - 60);
+setTimeout(() => over("the run", runLimit), runLimit * 1000).unref();
+let partTimer: ReturnType<typeof setTimeout> | undefined;
+const limit = (what: string, s: number) => {
+  clearTimeout(partTimer);
+  log(`${what}: begins, its limit ${s} s`);
+  partTimer = setTimeout(() => over(what, s), s * 1000);
+  partTimer.unref();
+};
+/// scripts/e2e-local.sh's words (crash, again, halt, second-station …), its last line logged; failed past `ms` (a
+/// station that does not start, or a child that keeps the pipe open: drill 8's `again station` held it 2 h 38 min).
+const stationDo = (what: string, ...more: string[]) => {
+  const ms = 180_000;
+  const r = spawnSync("scripts/e2e-local.sh", [what, ...more], { encoding: "utf8", timeout: ms, killSignal: "SIGKILL", env: { ...process.env, HOME: process.env.E2E_HOME ?? process.env.HOME } });
+  const last = `${r.stdout ?? ""}${r.stderr ?? ""}`.trim().split("\n").pop();
+  if (r.error !== undefined || r.status !== 0) throw new Error(`e2e-local.sh ${what} ${more.join(" ")}: ${r.error?.message ?? `exit ${r.status}`}${r.signal ? ` (${r.signal}, past ${ms / 1000} s?)` : ""}: ${last}`);
+  log(`  station: ${last}`);
+};
+
 const ST = process.env.E2E_STATION!;
 const RUN = `${WORK}/run`;
 const DATA = { A: `${ST}/data`, B: `${ST}-b/data`, C: `${ST}-third/data` } as const;
@@ -443,6 +478,7 @@ try {
   log(`A signed in as ${a.sub}: workspace ${ws}, station ${A}`);
   await a.stationState(ws, (s) => s.state === "online", 120_000);
 
+  limit("setup", 300);
   // ── setup: the chat of check 2 on A with all it is to take along, a vault item, the agent home's skill; B enrolled ──
   const tag = randomBytes(3).toString("hex");
   const secret = `s${tag}`;
@@ -518,6 +554,7 @@ try {
 
   // ── 1: the page's data ──
   if (part("1")) {
+    limit("1", 300);
     await check("1: stationMove A→B lists the modules with true counts", async () => {
       const v = await a.until(moveT(bId), (v) => v?.modules?.length > 0 && v, 60_000);
       const chats = v.modules.find((m: J) => m.id === "chats");
@@ -549,6 +586,7 @@ try {
 
   // ── 2: one chat there and back ──
   if (part("2") && k2 !== "") {
+    limit("2", 900);
     let arrived = false;
     let movedWith: { module: string; id: string }[] = [];
     // (the other chat of A, made by the harness's up: what an item moved away stops here)
@@ -774,7 +812,7 @@ try {
     }
   };
 
-  if (part("3n") && (await clean("3n"))) {
+  if (part("3n") && (limit("3n", 900), await clean("3n"))) {
     // (drill-move-7's 3b: a chat's first pass cut half a second after its login moved, B's answer's stream reset, with
     // nothing killed; this is that alone)
     let key = "";
@@ -788,7 +826,7 @@ try {
     });
     if (key !== "") await endsWell("3n", key);
   }
-  if (part("3a") && (await clean("3a"))) {
+  if (part("3a") && (limit("3a", 900), await clean("3a"))) {
     let key = "";
     await check("3a: B killed (SIGKILL, its machine as it loses power) during the chat's first pass, started again", async () => {
       key = await faultChat("f3a", 300);
@@ -806,7 +844,7 @@ try {
     });
     if (key !== "") await endsWell("3a", key);
   }
-  if (part("3b") && (await clean("3b"))) {
+  if (part("3b") && (limit("3b", 900), await clean("3b"))) {
     let key = "";
     await check("3b: A killed while the chat is held (its second pass), started again", async () => {
       key = await faultChat("f3b", 300);
@@ -828,7 +866,7 @@ try {
     });
     if (key !== "") await endsWell("3b", key);
   }
-  if (part("3c") && (await clean("3c"))) {
+  if (part("3c") && (limit("3c", 900), await clean("3c"))) {
     let key = "";
     let note = "";
     await check("3c: B killed just after it took the chat (A says it went), started again; a message said meanwhile", async () => {
@@ -869,7 +907,7 @@ try {
     }
     if (key !== "") await endsWell("3c", key);
   }
-  if (part("3d") && (await clean("3d"))) {
+  if (part("3d") && (limit("3d", 900), await clean("3d"))) {
     let key = "";
     await check("3d: move.stop during the first pass: the chat here and working, last.stoppedBy says who", async () => {
       key = await faultChat("f3d", 300);
@@ -884,7 +922,7 @@ try {
     });
     if (key !== "") await endsWell("3d", key);
   }
-  if (part("3e") && (await clean("3e"))) {
+  if (part("3e") && (limit("3e", 900), await clean("3e"))) {
     const dmg = `${WORK}/drill-small.dmg`;
     let mounted = false;
     try {
@@ -958,7 +996,7 @@ try {
       }
     }
   }
-  if (part("3f") && (await clean("3f"))) {
+  if (part("3f") && (limit("3f", 900), await clean("3f"))) {
     const launcher = () => spawnSync("pgrep", ["-f", `run --app ${ST}/app --data`], { encoding: "utf8" }).stdout.split("\n").filter((x) => x !== "").map(Number)[0];
     /// A handed over to a fresh Node by its launcher (SIGUSR2, what an update does once it goes ahead), until the new
     /// one says it has taken over.
@@ -999,7 +1037,7 @@ try {
   }
 
   // ── 4: everything to B and all back ──
-  if (part("4") && (await clean("4"))) {
+  if (part("4") && (limit("4", 3600), await clean("4"))) {
     const keys: string[] = [];
     const archived: string[] = [];
     let jobTag = "";
@@ -1093,6 +1131,7 @@ try {
 
   // ── 5: measured ──
   if (part("5")) {
+    limit("5", 10800);
     await check("5: one chat with a 500 MB / 5,000-file room: its first pass and its pause, measured", async () => {
       const key = await newChat(`big-${tag}`);
       const t1 = Date.now();
@@ -1117,7 +1156,7 @@ try {
       if (addLive + addOld === 0) return;
       const home = sql("A", "select ws from sessions where ws is not null and ws not like 'handed:%' and ws not like 'coming:%' limit 1")[0]?.ws ?? ws;
       stationDo("halt", "station");
-      log(`  ${execFileSync(process.execPath, ["--no-warnings", join(dirname(new URL(import.meta.url).pathname), "move-seed.ts"), process.env.E2E_SF_SRC!, DATA.A, home, String(addLive), String(addOld), randomBytes(3).toString("hex")], { encoding: "utf8" }).trim()}`);
+      log(`  ${execFileSync(process.execPath, ["--no-warnings", join(dirname(new URL(import.meta.url).pathname), "move-seed.ts"), process.env.E2E_SF_SRC!, DATA.A, home, String(addLive), String(addOld), randomBytes(3).toString("hex")], { encoding: "utf8", timeout: 1_800_000 }).trim()}`);
       stationDo("again", "station");
       await a.stationState(ws, (s) => s.state === "online", 120_000, aId);
     };
@@ -1176,6 +1215,7 @@ try {
 } catch (e) {
   fail("the run", e);
 }
+clearTimeout(partTimer);
 steps.A?.close();
 for (const r of report) log(`MEASURED ${r}`);
 log(failures() === 0 ? "ALL PASSED" : `${failures()} FAILED`);

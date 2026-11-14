@@ -407,10 +407,22 @@ rigs() {
 
 # e2e/move.ts the same way (a station's things moved to another and back, with faults), its devices' data under
 # $WORK/move
+# The run has a limit (E2E_MOVE_LIMIT seconds, 4 h unless set): the drill keeps its own a minute less, and each of its
+# parts one of its own (e2e/move.ts `limit`), each failing by name with what it waited for; this one bounds it where a
+# step holds the drill's thread itself (a synchronous child that never ends: drill 8 sat 2 h 38 min so).
 move() {
+  local most=${E2E_MOVE_LIMIT:-14400}
   (export E2E_HOME=$HOME; . $RUN/station-env.sh 2>/dev/null; export HOME=$WORK/move-home; mkdir -p $HOME
    E2E_SF_SRC=$E E2E_ORIGIN=$ORIGIN E2E_PEER_DATA=$WORK/move E2E_WORK=$WORK E2E_STATION=$STATION E2E_PORT=$PORT \
-     E2E_RELAY=$RELAY_PORT node $ROOT/e2e/move.ts </dev/null)
+     E2E_RELAY=$RELAY_PORT E2E_MOVE_LIMIT=$most node $ROOT/e2e/move.ts </dev/null &
+   local pid=$! rc
+   (sleep $most; kill -0 $pid 2>/dev/null || exit 0  # timer: the run's deadline
+    echo "FAIL the run: over its limit of $most s (scripts/e2e-local.sh move); the drill's process killed, its last line above"
+    kill -TERM $pid; sleep 10; kill -KILL $pid 2>/dev/null) &
+   local dog=$!
+   wait $pid; rc=$?
+   pkill -P $dog 2>/dev/null; kill $dog 2>/dev/null
+   exit $rc)
 }
 # A station's machine losing power (`crash NAME`): its process group SIGKILLed (the launcher and what it started), and
 # whatever else runs on its data directory or in it (its runners and agents, its jobs, which run in groups of their
@@ -434,7 +446,12 @@ crash() {
 }
 again() {
   local n=${1:?a station}
-  if [ $n = station ]; then start_station; else more_launch $n; fi
+  # (the test station's waitfor is detached with this shell's stdout, which `up` leaves on the terminal: a caller that
+  # reads this command's output to its end, e2e/move.ts's execFileSync, would wait as long as the station runs; drill
+  # 8 sat 2 h 38 min there. What start_station says goes to a file, shown where it fails)
+  if [ $n = station ]; then
+    start_station >"$RUN/station-again.out" 2>&1 </dev/null || { cat "$RUN/station-again.out"; die "the station did not start again"; }
+  else more_launch $n; fi
   say "$n up again ($(cat $RUN/$n.pid))"
 }
 
