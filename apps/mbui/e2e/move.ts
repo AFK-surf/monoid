@@ -131,9 +131,8 @@ function turns(since = 0): { at: number; pid: number; session: string; resumed: 
 /// The processes of the job tagged `tag` (its command line says drill-job-<tag>), each with the station its working
 /// directory is of.
 function jobs(tag: string): { pid: number; cwd: string; on: Name | "?" }[] {
-  // (the job's own process alone: what started it may carry its command line among its arguments)
-  // (python's own argv has `-c import…` unquoted; a shell or runner that carries the command line has it quoted)
-  const mine = new RegExp(`^\\s*(\\d+)\\s.*\\s-c import time; time\\.sleep\\(10\\*\\*9\\) drill-job-${tag}$`);
+  // (the job's own shell alone, whose argv is `sh -c <its command>`: what started it may carry the line among its own)
+  const mine = new RegExp(`^\\s*(\\d+)\\s+(?:\\S*/)?(?:ba|z)?sh -c while :; do sleep 3600; done; : drill-job-${tag}$`);
   const pids = spawnSync("ps", ["-axo", "pid=,args="], { encoding: "utf8" }).stdout.split("\n").map((l) => mine.exec(l)?.[1]).filter((x): x is string => x !== undefined).map(Number);
   return pids.map((pid) => {
     const l = spawnSync("lsof", ["-nP", "-a", "-p", String(pid), "-d", "cwd", "-Fn"], { encoding: "utf8" }).stdout;
@@ -141,7 +140,22 @@ function jobs(tag: string): { pid: number; cwd: string; on: Name | "?" }[] {
     return { pid, cwd, on: at(cwd) };
   });
 }
-const jobsText = (tag: string) => jobs(tag).map((j) => `${j.pid}@${j.on}`).join(",") || "none";
+/// What there is of job `tag` to say where it is not as wanted: every process naming it, and its logs' last lines.
+function jobEvidence(tag: string): string {
+  const ps = spawnSync("ps", ["-axo", "pid=,ppid=,args="], { encoding: "utf8" }).stdout.split("\n").filter((l) => l.includes(`drill-job-${tag}`)).map((l) => l.trim().slice(0, 200));
+  const logs: string[] = [];
+  for (const n of stations()) {
+    const d = `${DATA[n]}/jobs/logs`;
+    for (const f of existsSync(d) ? readdirSync(d) : []) {
+      const t = readFileSync(join(d, f), "utf8");
+      if (t.includes(tag) || f.includes(tag)) logs.push(`${n}:${f}: ${t.slice(-400)}`);
+    }
+    const up = sql(n, `select * from jobs where name = ${lit(`drill-${tag}`)}`);
+    if (up.length > 0) logs.push(`${n}'s jobs: ${brief(up, 800)}`);
+  }
+  return `processes [${ps.join(" | ")}] ${logs.join(" ; ")}`;
+}
+const jobsText = (tag: string) => jobs(tag).map((j) => `${j.pid}@${j.on}`).join(",") || `none (${jobEvidence(tag)})`;
 
 const lastOn = (n: Name, ws: string): J | null => {
   try {
@@ -201,7 +215,9 @@ async function say(key: string, text: string, prefix: string, ms = 120_000): Pro
 async function newChat(label: string): Promise<string> {
   const { key: made } = await a.call("chat.create", { station: A, runtime: "claude" });
   await a.call("chat.send", { station: A, session: made, text: `drill-seed:${label}` });
-  const v = await a.until({ topic: "chat", station: A, session: made }, (v) => texts(v).some((t) => t.startsWith(`drill-seeded ${label}`)) && typeof v?.key === "string" && v, 120_000);
+  const v = await a.until({ topic: "chat", station: A, session: made }, (v) => texts(v).some((t) => t.startsWith(`drill-seeded ${label}`)) && typeof v?.key === "string" && typeof v?.thread?.id === "number" && v, 120_000);
+  // (named, as a person does: a chat left unnamed has its agent asked for a title, which is no move's)
+  await a.call("chat.rename", { station: A, thread: v.thread.id, title: `drill ${label}` });
   return v.key as string;
 }
 /// The device's rows of chat `key` once `ok` holds of them (or the time is up: an error saying what they were).
@@ -345,7 +361,7 @@ try {
     commit2 = git(join(room2, "proj"), "rev-parse", "HEAD");
     writeFileSync(join(room2, "proj", "README.md"), "drill, changed and not committed\n");
     const started = await say(k2, `drill-job:${tag}`, `drill-job ${tag}`);
-    await whenChanged([DATA.A], () => jobs(tag).length > 0, 60_000, () => `no job up: ${started}`);
+    await whenChanged([DATA.A], () => jobs(tag).length > 0, 60_000, () => `no job up: ${started.slice(0, 300)}; ${jobEvidence(tag)}`);
     log(`  chat ${k2}, room ${room2}, commit ${commit2.slice(0, 10)}, job ${jobsText(tag)}`);
   });
   let item = "";
@@ -423,6 +439,7 @@ try {
     const rid = runtimeId("A", k2) ?? "";
     await check("2: the chat moved to B (move.start with what it needs), its turn ending with it there", async () => {
       before = texts(await a.until(chatT(k2), (v) => v?.messages && v));
+      for (const t of turns().filter((t) => t.session === rid)) log(`  before the move, handed on ${at(t.cwd)}: ${t.text.replace(/\s+/g, " ").slice(0, 100)}`);
       t0 = Date.now();
       await a.call("move.start", { station: A, to: bId, module: "chats", item: k2, withNeeds: true });
       // a message said while the chat is held: as its hand-over says held (its second pass), at once
@@ -444,8 +461,14 @@ try {
         const now = texts(await a.until(chatT(k2), (v) => v?.messages && v));
         const added = now.filter((t) => !before.includes(t) && !t.includes(heldNote || "\u0000"));
         if (added.length > 0) throw new Error(`new in the chat: ${brief(added)}`);
-        const woke = turns(t0).filter((t) => (t.session === rid || at(t.cwd) !== "?" && t.cwd.endsWith(room2.split("/").pop()!)) && !(heldNote !== "" && t.text.includes(heldNote)));
-        if (woke.length > 0) throw new Error(`its agent was handed: ${brief(woke.map((t) => t.text.slice(0, 120)))}`);
+        // (what its agent was handed since the move began, each with what it came of: a message said to it, the
+        // station's ask for a title after a turn ended, or nothing anyone said: the move's own)
+        const mine = turns(t0).filter((t) => t.session === rid);
+        for (const t of mine) log(`  handed on ${at(t.cwd)} (pid ${t.pid}, resumed ${t.resumed}): ${t.text.replace(/\s+/g, " ").slice(0, 160)}`);
+        const woke = mine.filter((t) => !(heldNote !== "" && t.text.includes(`drill-note:${heldNote}`)) && !t.text.includes("still has no title"));
+        const titled = mine.filter((t) => t.text.includes("still has no title"));
+        if (titled.length > 0) log(`  (asked for a title on ${titled.map((t) => at(t.cwd)).join(", ")} after a turn there ended: actor.ts askedToName, kept in its memory alone)`);
+        if (woke.length > 0) throw new Error(`its agent was handed what nobody said: ${brief(woke.map((t) => t.text.slice(0, 160)))}`);
       });
       await check("2: a message said while the chat was held arrives once on B, answered once there", async () => {
         if (heldNote === "") throw new Error("no message was said while it was held (never seen held)");
@@ -458,7 +481,8 @@ try {
         if (handed.length !== 1) throw new Error(`handed to an agent ${handed.length} times: ${brief(handed.map((t) => `${t.pid}@${at(t.cwd)}`))}`);
       });
       await check("2: a message sent to it is answered on B by its agent going on from its transcript", async () => {
-        const said = await say(k2, "drill-recall:", "drill-recall ");
+        const nonce = randomBytes(3).toString("hex");
+        const said = await say(k2, `drill-recall:${nonce}`, `drill-recall ${nonce} `);
         log(`  ${said}`);
         const cwd = /cwd=(\S+)/.exec(said)?.[1] ?? "";
         if (at(cwd) !== "B") throw new Error(`answered from ${at(cwd)}: ${said}`);
@@ -471,7 +495,7 @@ try {
         if (readFileSync(join(r, "notes.txt"), "utf8") !== `notes of ${tag}\n`) throw new Error("notes.txt differs");
         const head = git(join(r, "proj"), "rev-parse", "HEAD");
         if (head !== commit2) throw new Error(`HEAD ${head}, was ${commit2}`);
-        const st = git(join(r, "proj"), "status", "--porcelain");
+        const st = execFileSync("git", ["status", "--porcelain"], { cwd: join(r, "proj"), encoding: "utf8" });
         if (!/^ M README\.md$/m.test(st)) throw new Error(`status: ${JSON.stringify(st)}`);
         const common = git(join(r, "proj"), "rev-parse", "--git-common-dir");
         if (!under(real(join(r, "proj", common)), "B")) throw new Error(`its worktree hangs on ${common}, not of B`);
@@ -504,7 +528,8 @@ try {
       if (backed) {
         await check("2: back on A it is listed once there and works", async () => {
           await listedOnceOn(k2, "A");
-          const said = await say(k2, "drill-recall:", "drill-recall ");
+          const nonce = randomBytes(3).toString("hex");
+          const said = await say(k2, `drill-recall:${nonce}`, `drill-recall ${nonce} `);
           const cwd = /cwd=(\S+)/.exec(said)?.[1] ?? "";
           if (at(cwd) !== "A" || !said.includes(`secret=${secret}`)) throw new Error(said);
         });

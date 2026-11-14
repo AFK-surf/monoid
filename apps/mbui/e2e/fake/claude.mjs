@@ -26,11 +26,11 @@
 //                                               and what came back, else what device_use answered
 // The move drill's (e2e/move.ts), each a turn ending all done with one chat_post:
 //   drill-remember:<word>                       `drill-remembered <word>` (the word is in its transcript, as it was said)
-//   drill-recall:                               what it finds of its own past in its transcript (the file the real one
-//                                               would resume from): `drill-recall secret=<the last remembered word, or
+//   drill-recall:<nonce>                        what it finds of its own past in its transcript (the file the real one
+//                                               would resume from): `drill-recall <nonce> secret=<the last remembered word, or
 //                                               none> lines=<its lines> resumed=<--resume given> session=<id> cwd=<its
 //                                               working directory> pid=<its pid>`
-//   drill-job:<tag>                             job_start a job that only waits, `drill-job-<tag>` in its command line
+//   drill-job:<tag>                             job_start a job that only waits (a shell's loop), `drill-job-<tag>` at its command line's end
 //   drill-move:<json>                           station_move with those arguments: `drill-move: <what it answered>`
 //   drill-note:<n>                              `drill-noted <n> cwd=<cwd>`
 //   drill-seed:<n>                              `drill-seeded <n>`
@@ -263,11 +263,11 @@ async function drill(text, to, line) {
         if (m) secret = m[1];
       } catch {}
     }
-    return done(`drill-recall secret=${secret} lines=${lines.length} resumed=${args.includes("--resume")} session=${sessionId} cwd=${process.cwd()} pid=${process.pid}`);
+    return done(`drill-recall ${line("drill-recall:").trim()} secret=${secret} lines=${lines.length} resumed=${args.includes("--resume")} session=${sessionId} cwd=${process.cwd()} pid=${process.pid}`);
   }
   if (/(^|\s)drill-job:/.test(text)) {
     const tag = line("drill-job:").trim();
-    const started = await tool("job_start", { name: `drill-${tag}`, command: `exec python3 -c 'import time; time.sleep(10**9)' drill-job-${tag}` });
+    const started = await tool("job_start", { name: `drill-${tag}`, command: `while :; do sleep 3600; done; : drill-job-${tag}` });
     record("assistant", [{ type: "text", text: started }]);
     return done(`drill-job ${tag}: ${started}`);
   }
@@ -299,7 +299,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
   } catch {}
   const text = msg?.type === "user" ? (msg.message?.content ?? []).map((c) => c.text ?? "").join("") : "";
   if (msg?.type === "user" && process.env.FAKE_DUMP) {
-    fs.appendFileSync(`${process.env.FAKE_DUMP}.turns`, JSON.stringify({ at: Date.now(), pid: process.pid, session: sessionId, resumed: args.includes("--resume"), cwd: process.cwd(), text: text.slice(0, 600) }) + "\n");
+    fs.appendFileSync(`${process.env.FAKE_DUMP}.turns`, JSON.stringify({ at: Date.now(), pid: process.pid, session: sessionId, resumed: args.includes("--resume"), cwd: process.cwd(), text: text.slice(0, 8000) }) + "\n");
   }
   if (msg?.type === "user" && ours(text)) {
     turn(text).catch((e) => {
