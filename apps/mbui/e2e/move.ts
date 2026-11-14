@@ -1041,7 +1041,7 @@ try {
     };
     /// What station `n` holds of chat `key` itself: its row, where it says it was handed, its hand-overs in.
     const heldOn = (n: Name, key: string): string =>
-      `${n}'s row ${brief(Object.fromEntries(Object.entries(sql(n, `select * from sessions where key = ${lit(key)}`)[0] ?? {}).filter(([c]) => !["token", "title"].includes(c))), 900)}, handed_over ${brief(sql(n, `select station, ws from handed_over where session = ${lit(key)}`))}, hand-overs in ${brief(handovers(n, "in").filter((i) => (i.keys ?? []).includes(key)).map((i) => ({ id: i.id, step: i.step })))}`;
+      `${n}'s row ${brief(Object.fromEntries(Object.entries(sql(n, `select * from sessions where key = ${lit(key)}`)[0] ?? {}).filter(([c]) => !["token", "title"].includes(c))), 900)}, handed_over ${brief(sql(n, `select station, ws from handed_over where session = ${lit(key)}`))}, hand-overs in ${brief(handovers(n, "in").filter((i) => (i.keys ?? []).includes(key)).map((i) => ({ id: i.id, step: i.step })))}, out ${brief(handovers(n, "out").filter((o) => (o.keys ?? []).includes(key)).map((o) => ({ id: o.id.slice(-8), step: o.step, shown: o.shown ?? null })), 400)}`;
     let k6 = "";
     let roomA: Map<string, string> = new Map();
     const r1 = `r${tag}`;
