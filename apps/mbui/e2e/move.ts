@@ -256,20 +256,27 @@ async function moveBack(key: string, from: Name, module = "chats", ms = 300_000)
 }
 const named = (x: J) => (typeof x === "string" ? x : `${x?.module} ${x?.id}`);
 const outcome = (l: J) => `done [${(l?.done ?? []).map(named).join(", ")}] refused [${(l?.refused ?? []).map((r: J) => `${named(r.item)}: ${r.why}`).join(" | ")}] failed ${l?.failed ? `${named(l.failed.item ?? "-")}: ${l.failed.error}` : "none"}${l?.stoppedBy !== undefined ? ` stoppedBy ${l.stoppedBy}` : ""}`;
-/// The item `key` of the chats module back on A from where it is, the jobs that hang on it first (what the page's
-/// back of the chat would be refused for), until it is live on A.
+/// Chat `key` back on A from where it is, with what moved with it (its account, its jobs, its repository): the page's
+/// 全部迁回, `move.back {all}` from A's page, until it is live on A and its agent answers there.
 async function home(key: string): Promise<void> {
   for (const n of ["B", "C"] as Name[]) {
-    if (standing(n, key) !== "live") continue;
-    let l = await moveBack(key, n);
-    if (standing("A", key) !== "live") {
-      for (const r of l.refused ?? []) if (/^jobs /.test(named(r.item)) || /jobs/.test(r.why)) log(`  (back refused while its jobs are there: ${r.why})`);
-      const jobsThere = (l.refused ?? []).map((r: J) => /(jobs \S+)/.exec(r.why)?.[1]).filter(Boolean) as string[];
-      for (const j of jobsThere) await moveBack(j.slice(5), n, "jobs");
-      l = await moveBack(key, n);
-    }
+    if (!existsSync(`${DATA[n]}/stillfail.db`) || standing(n, key) !== "live") continue;
+    const t0 = Date.now();
+    await a.call("move.back", { station: A, from: idOf(n), all: true });
+    const l = await turnEnds("A", t0);
     if (standing("A", key) !== "live") throw new Error(`not back on A: ${standings(key)}; ${outcome(l)}`);
   }
+}
+
+/// Each fault from a clean state: whatever of A is on B (the page counts it done) brought back first, all of it.
+async function reset(label: string): Promise<void> {
+  const v = await a.until(moveT(bId), (v) => v?.modules && v.moving === null && v, 120_000).catch(() => null);
+  const there = (v?.modules ?? []).filter((m: J) => m.done > 0);
+  if (there.length === 0) return;
+  log(`  ${label}: bringing back first ${there.map((m: J) => `${m.id} ${m.done}`).join(", ")}`);
+  const t0 = Date.now();
+  await a.call("move.back", { station: A, from: bId, all: true });
+  log(`  ${outcome(await turnEnds("A", t0))}`);
 }
 
 /// What every fault must end with: chat `key` on exactly one station, listed once there, answering there, nothing of
@@ -454,6 +461,8 @@ try {
       log(`  ${outcome(l)}; steps ${brief(steps.A!.of(outOf(k2)?.id ?? "").map((s) => `${s.step}${s.held ? "*" : ""}+${s.at - t0}`))}`);
       if (standing("B", k2) !== "live") throw new Error(`${standings(k2)}; ${outcome(l)}`);
       arrived = true;
+      const profilesA = (JSON.parse(readFileSync(`${DATA.A}/config.json`, "utf8")).profiles ?? []).map((p: J) => p.id);
+      log(`  A's profiles now ${brief(profilesA)}; stopped on A: ${existsSync(`${DATA.A}/move/stopped.json`) ? readFileSync(`${DATA.A}/move/stopped.json`, "utf8").slice(0, 400) : "none"}`);
     });
     if (arrived) {
       await check("2: the device lists the chat once, on B", () => listedOnceOn(k2, "B"));
@@ -513,12 +522,14 @@ try {
         const r = roomOn("B", k2)!;
         writeFileSync(join(r, "notes.txt"), `notes of ${tag}, changed on B\n`);
         unlinkSync(join(r, "gone-later.txt"));
+        // the chat's own 迁回 on its row first, as a person presses it; then what it needs, 全部迁回
         const l = await moveBack(k2, "B");
-        log(`  ${outcome(l)}`);
-        if (standing("A", k2) !== "live") {
-          fail("2: the chat's own move back (its row's 迁回) brings it back", new Error(`${standings(k2)}; ${outcome(l)}`));
-          await home(k2);
-        }
+        log(`  its own 迁回: ${outcome(l)}; ${standings(k2)}`);
+        if (standing("A", k2) !== "live") fail("2: the chat's own move back (its row's 迁回) brings it back", new Error(`${standings(k2)}; ${outcome(l)}`));
+        else log(`  stopped on A now: ${existsSync(`${DATA.A}/move/stopped.json`) ? readFileSync(`${DATA.A}/move/stopped.json`, "utf8").slice(0, 400) : "none"}`);
+        const t1 = Date.now();
+        await a.call("move.back", { station: A, from: bId, all: true });
+        log(`  全部迁回: ${outcome(await turnEnds("A", t1))}`);
         backed = true;
         const ra = roomOn("A", k2)!;
         if (readFileSync(join(ra, "notes.txt"), "utf8") !== `notes of ${tag}, changed on B\n`) throw new Error("notes.txt is not B's");
@@ -564,6 +575,7 @@ try {
   }, 180_000, () => `never in its first pass: ${brief(outOf(key))}`);
 
   if (part("3a")) {
+    await reset("3a").catch((e) => log(`  reset: ${e}`));
     let key = "";
     await check("3a: B killed (SIGKILL, its machine as it loses power) during the chat's first pass, started again", async () => {
       key = await faultChat("f3a", 300);
@@ -579,6 +591,7 @@ try {
     if (key !== "") await endsWell("3a", key);
   }
   if (part("3b")) {
+    await reset("3b").catch((e) => log(`  reset: ${e}`));
     let key = "";
     await check("3b: A killed while the chat is held (its second pass), started again", async () => {
       key = await faultChat("f3b", 300);
@@ -596,6 +609,7 @@ try {
     if (key !== "") await endsWell("3b", key);
   }
   if (part("3c")) {
+    await reset("3c").catch((e) => log(`  reset: ${e}`));
     let key = "";
     let note = "";
     await check("3c: B killed just after it took the chat (A says it went), started again; a message said meanwhile delivered once", async () => {
@@ -623,6 +637,7 @@ try {
     }
   }
   if (part("3d")) {
+    await reset("3d").catch((e) => log(`  reset: ${e}`));
     let key = "";
     await check("3d: move.stop during the first pass: the chat here and working, last.stoppedBy says who", async () => {
       key = await faultChat("f3d", 300);
@@ -638,6 +653,7 @@ try {
     if (key !== "") await endsWell("3d", key);
   }
   if (part("3e")) {
+    await reset("3e").catch((e) => log(`  reset: ${e}`));
     const dmg = `${WORK}/drill-small.dmg`;
     let mounted = false;
     try {
@@ -712,6 +728,7 @@ try {
     }
   }
   if (part("3f")) {
+    await reset("3f").catch((e) => log(`  reset: ${e}`));
     const launcher = () => spawnSync("pgrep", ["-f", `run --app ${ST}/app --data`], { encoding: "utf8" }).stdout.split("\n").filter((x) => x !== "").map(Number)[0];
     /// A handed over to a fresh Node by its launcher (SIGUSR2, what an update does once it goes ahead), until the new
     /// one says it has taken over.
@@ -755,6 +772,7 @@ try {
 
   // ── 4: everything to B and all back ──
   if (part("4")) {
+    await reset("4").catch((e) => log(`  reset: ${e}`));
     const keys: string[] = [];
     const archived: string[] = [];
     let jobTag = "";
