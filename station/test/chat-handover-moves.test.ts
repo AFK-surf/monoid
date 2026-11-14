@@ -16,7 +16,7 @@ import { given, message } from "./hub-fakes.ts";
 import { PeerGone } from "../src/mesh/peer.ts";
 import { stationLang, tr } from "../src/ops/i18n.ts";
 import { hearLines } from "../src/ops/log.ts";
-import { WS, A, B, C, type Station, world, endTurn, stillfailChat, gitEnv, homeThread } from "./move-world.ts";
+import { WS, A, B, C, type Station, world, endTurn, stillfailChat, gitEnv, homeThread, entries } from "./move-world.ts";
 
 type Json = any;
 
@@ -264,6 +264,31 @@ test("an account that cannot be borrowed moved first: its chats here stop, namin
   const back = await a.moves.scheduler.back(WS, B, { module: "accounts", item: `own:solo@${A}` });
   assert.deepEqual(back.refused.map((r) => r.item.id), [`own:solo@${A}`]);
   assert.match(back.refused[0]!.why, new RegExp(one.key.replace(/^chat:/, "")));
+});
+
+test("a chat stopped as its account moved away says once what it waits for, as a person speaks in it: nothing before, nothing a second time", async () => {
+  const w = world();
+  const a = w.get(A);
+  a.rig.raw.profiles.push({ id: "solo", runtime: "claude", home: "homes/solo" });
+  const [key, t] = newSession(a.rig.hub, { runtime: "claude", profile: "solo", createdBy: "p@x" });
+  say(a.rig.hub, t.id, "p@x", "hi");
+  await endTurn(a, key);
+  await a.moves.scheduler.move(WS, B, { module: "accounts", item: `own:solo@${A}` });
+  await w.quiet();
+  assert.equal(a.rig.hub.chatHeld(key), `stopped: waits for accounts own:solo@${A}, moved away`);
+  // (the catalog's words, the stations' names whatever they are: move/chats.ts `holdChat`'s notice)
+  const shapeOf = (k: string) => tr(stationLang(), k, { here: "\u0000", item: "solo", there: "\u0000" }).replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replaceAll("\u0000", ".+");
+  const shape = new RegExp(`^ember:⚠️ (${shapeOf("station.move.stoppedChat")}|${shapeOf("station.move.stoppedChatHere")})$`);
+  const said = () => entries(a, t.id).filter((e) => e.startsWith("ember:"));
+  assert.deepEqual(said(), [], "the stop itself says nothing");
+  say(a.rig.hub, t.id, "p@x", "are you there?");
+  await w.quiet();
+  assert.equal(said().length, 1, `said once as a person spoke: ${JSON.stringify(said())}`);
+  assert.match(said()[0]!, shape, "what it waits for, in the station's words");
+  say(a.rig.hub, t.id, "p@x", "still there?");
+  await w.quiet();
+  assert.equal(said().length, 1, "not a second time in this stop");
+  assert.equal(a.rig.claude.count(), 1, "no turn while stopped");
 });
 
 test("an account that cannot be borrowed moved, then back: its chats here stopped meanwhile go on here, what was said to them delivered once", async () => {
