@@ -186,10 +186,12 @@ fn fx_move_view(params : Map[String, Json]) -> Json {
         fx_move_item(acts, "p2", "ChatGPT 团队", if some { "there" } else { "here" }, if some { there_ } else { "" }),
         fx_move_item(acts, "p3", "本机 Codex 登录", "cannot", tr("core-views.move.state.cannot"), note="这台机器自己的登录不迁：在 Maple 上登录它自己的"),
       ]),
-      block_of("vault", [], d(1), 1, "", []),
-      block_of("agent-home", [], d(1), 1, "", []),
-      block_of("settings", [], 0, 1, "", []),
+      // (in the order the core gives them, move.ts MODULES: what the chats need, the station's settings, the chats;
+      // jobs has none here, so is not shown)
+      block_of("connects", ["chats"], 0, 2, "", []),
       block_of("repos", [], d(2), 4, "", []),
+      block_of("vault", [], d(1), 1, "", []),
+      block_of("settings", [], 0, 1, "", []),
       block_of(
         "chats",
         ["accounts", "connects", "repos", "vault"],
@@ -198,7 +200,6 @@ fn fx_move_view(params : Map[String, Json]) -> Json {
         if mid { "moving" } else if ended { "failed" } else { "" },
         chats,
       ),
-      block_of("connects", ["chats"], 0, 2, "", []),
     ]
   }
   // (what cannot move of the items read: 本机 Codex 登录, and 周报 once a turn moved chats)

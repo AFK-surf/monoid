@@ -1693,7 +1693,7 @@ export const SHAPES: Record<string, Shape> = {
     ["text", "String", { said: true, doc: "Its confirmation's count, with how many cannot move (of the items read) on the same line." }],
   ]),
   MoveModule: struct([
-    ["id", "String", { doc: "accounts | vault | agent-home | settings | repos | chats | jobs | connects" }],
+    ["id", "String", { doc: "accounts | connects | repos | vault | settings | chats | jobs: in this order (move.ts MODULES), one unknown after them" }],
     ["needs", vec("String"), { doc: "The modules it needs moved first, by their ids (the page names them, as it names the module by its id)." }],
     ["done", "i64", { client: "I54" }],
     ["total", "i64", { client: "I54" }],

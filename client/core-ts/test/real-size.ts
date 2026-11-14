@@ -1577,14 +1577,14 @@ export function moveOf(now: number, asked: { to: string; module: string; limit?:
     return item(keyOf(0, i), label, "here");
   });
   const modules: [string, string[], J[]][] = [
+    // (in the station's order, move/station.ts `modules`: what GET /move answers them in)
     ["accounts", [], n(6, 3, (i) => `Claude · ${PEOPLE[i % PEOPLE.length]!.email}`, (i) => (i === 5 ? { cannot: "这台机器自己的登录不迁：在 Willow 上登录它自己的" } : {}))],
-    ["vault", [], n(2, 1, (i) => `${PEOPLE[i]!.name} 的密钥`)],
-    ["agent-home", [], n(1, 1, () => "记忆与 14 个 skill")],
-    ["settings", [], n(1, 0, () => "归档、自动决策、网络")],
-    ["repos", [], n(12, 5, (i) => `github.com/acme/${["app", "station", "web", "infra", "docs", "relay"][i % 6]}${i < 6 ? "" : `-${i}`}`)],
     ["chats", ["accounts", "connects", "repos", "vault"], chats],
     ["jobs", ["chats"], n(8, 2, (i) => `dev server · ${TITLES[i % TITLES.length]}`)],
     ["connects", ["chats"], n(4, 0, (i) => ["Slack · Acme", "飞书 · 产品群", "Comma · 值班", "Slack · Acme Labs"][i]!)],
+    ["repos", [], n(12, 5, (i) => `github.com/acme/${["app", "station", "web", "infra", "docs", "relay"][i % 6]}${i < 6 ? "" : `-${i}`}`)],
+    ["vault", [], n(2, 1, (i) => `${PEOPLE[i]!.name} 的密钥`)],
+    ["settings", [], n(1, 0, () => "归档、自动决策、网络")],
   ];
   const raw = {
     ws: "ws", to: asked.to,

@@ -1935,7 +1935,6 @@ core-views.copies.retire.why.failed
 core-views.copies.retire.waiting
 core-views.move.module.accounts
 core-views.move.module.vault
-core-views.move.module.agent-home
 core-views.move.module.settings
 core-views.move.module.repos
 core-views.move.module.chats

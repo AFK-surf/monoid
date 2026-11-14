@@ -1982,7 +1982,6 @@ let en : Map[String, String] = {
   "core-views.copies.retire.waiting": "Waiting for confirmation",
   "core-views.move.module.accounts": "Accounts",
   "core-views.move.module.vault": "Vault",
-  "core-views.move.module.agent-home": "Agent memory and skills",
   "core-views.move.module.settings": "Station settings",
   "core-views.move.module.repos": "Repository cache",
   "core-views.move.module.chats": "Chats",

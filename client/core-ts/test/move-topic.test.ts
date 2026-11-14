@@ -293,6 +293,20 @@ test("its station's page shows 迁移 while a move runs, something is stopped wa
   r.core.close();
 });
 
+test("the modules in the page's order whatever order the station answers them in: what the chats need, the station's settings, the chats, their jobs; one not known last", async () => {
+  // (as a station answers them, move/station.ts `modules`: accounts, chats, jobs, connects, repos, vault, settings; and
+  // one this core does not know)
+  const one = (id: string, needs: string[] = []) => ({ id, needs, done: 0, total: 1, items: [], more: null });
+  const said = moved({
+    modules: [one("accounts"), one("chats", ["accounts", "connects", "repos", "vault"]), one("later"), one("jobs", ["chats"]), one("connects"), one("repos"), one("vault"), one("settings")],
+    moving: null, stopped: [], last: null,
+  });
+  const r = await rig((_station, key) => (key.startsWith("GET /move") ? said : undefined));
+  const v = await r.show(1, { to: "st2" });
+  assert.deepEqual(v.modules.map((m: J) => m.id), ["accounts", "connects", "repos", "vault", "settings", "chats", "jobs", "later"]);
+  r.core.close();
+});
+
 test("told `move` changed, what is shown is read again and changes by its rows", async () => {
   let said = moved();
   const r = await rig((_station, key) => (key.startsWith("GET /move") ? said : undefined));

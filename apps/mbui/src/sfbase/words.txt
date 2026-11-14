@@ -2654,7 +2654,6 @@ web-pages.stations.move.all
 web-pages.stations.move.allBack
 web-pages.stations.move.module.accounts
 web-pages.stations.move.module.vault
-web-pages.stations.move.module.agent-home
 web-pages.stations.move.module.settings
 web-pages.stations.move.module.repos
 web-pages.stations.move.module.chats
@@ -2662,7 +2661,6 @@ web-pages.stations.move.module.jobs
 web-pages.stations.move.module.connects
 web-pages.stations.move.need.accounts
 web-pages.stations.move.need.vault
-web-pages.stations.move.need.agent-home
 web-pages.stations.move.need.settings
 web-pages.stations.move.need.repos
 web-pages.stations.move.need.chats

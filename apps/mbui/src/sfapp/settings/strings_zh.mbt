@@ -1949,7 +1949,6 @@ let zh : Map[String, String] = {
   "core-views.copies.retire.waiting": "等待确认",
   "core-views.move.module.accounts": "账号",
   "core-views.move.module.vault": "密钥库",
-  "core-views.move.module.agent-home": "Agent 记忆与 skills",
   "core-views.move.module.settings": "Station 设置",
   "core-views.move.module.repos": "仓库缓存",
   "core-views.move.module.chats": "聊天",

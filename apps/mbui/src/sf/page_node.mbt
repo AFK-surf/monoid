@@ -743,6 +743,8 @@ let row_tag : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Subtle
 /// person's), which stands across the row's middle, and its control too where lines are under its first (wide under a
 /// finger, so is a control with lines under it: the row is wide enough for its lines beside it).
 /// `title_cut`, `value_cut`: its title, what it says, a summary cut short on its line where it has less room;
+/// `value_wraps`: what it says, where it goes under its title and has not the room even on a line of its own there,
+/// taking more lines under it, never cut (a narrow row's: what a moved item waits for, its whole name);
 /// `chevron_room`: a chevron's room kept where it has none, so a list's ends line up. What is after its title
 /// (`title_after`) leaves its line (View::drops) where it says so and the line has not the room.
 #callsite(autofill(loc))
@@ -779,6 +781,7 @@ pub fn link_row_node(
   wide_title? : () -> @ui.TextStyle,
   title_cut? : Bool = false,
   value_cut? : Bool = false,
+  value_wraps? : Bool = false,
   chevron_room? : Bool = false,
   loc~ : SourceLoc,
 ) -> Unit {
@@ -816,6 +819,7 @@ pub fn link_row_node(
     wide_title?,
     title_cut~,
     value_cut~,
+    value_wraps~,
     chevron_room~,
   )
 }
@@ -859,6 +863,7 @@ pub fn link_row_opens_node(
   wide_title? : () -> @ui.TextStyle,
   title_cut? : Bool = false,
   value_cut? : Bool = false,
+  value_wraps? : Bool = false,
   chevron_room? : Bool = false,
   loc~ : SourceLoc,
 ) -> Unit {
@@ -896,6 +901,7 @@ pub fn link_row_opens_node(
     wide_title?,
     title_cut~,
     value_cut~,
+    value_wraps~,
     chevron_room~,
   )
 }
@@ -936,6 +942,7 @@ fn link_row_made(
   wide_title? : () -> @ui.TextStyle,
   title_cut? : Bool = false,
   value_cut? : Bool = false,
+  value_wraps? : Bool = false,
   chevron_room? : Bool = false,
   loc~ : SourceLoc,
 ) -> Unit {
@@ -1108,13 +1115,18 @@ fn link_row_made(
           tv.show(fn() { value() != "" }, fn(said) {
             said.row(Is(true)).gap(Is(6.0)).lines_up(Is(Some(Middle))) |> ignore
             said.show(value_dot, fn(d) { status_dot_node(d) })
-            if value_cut {
+            if value_cut || value_wraps {
               said.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
             }
             said.box(fn(w) {
+              // (`value_wraps`: on a line of its own under the title, as narrow as that line and onto the next where
+              // it has not the room, its words whole)
+              if value_wraps {
+                w.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+              }
               styled_words(w, value, fn() {
                 let look = value_look(if value_bad() { pg_value.then(bad) } else { pg_value })
-                if value_cut { look.then(cut_words) } else { look }
+                if value_cut { look.then(cut_words) } else if value_wraps { look.then(value_wrapped) } else { look }
               })
               |> ignore
             })
@@ -1150,6 +1162,10 @@ fn link_row_made(
   })
   |> ignore
 }
+
+///|
+/// What a row says taking lines under its title where it has not the room on one (link_row's `value_wraps`).
+let value_wrapped : @ui.TextStyle = @ui.text_style(wrap=true)
 
 ///|
 /// What follows what a row says on its first line (link_row's `tail`: a spinner, a mark), across its middle, while

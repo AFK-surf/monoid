@@ -17,8 +17,11 @@ type J = any;
 export const MOVE_PAGE = 50;
 export const MOVE_SHOWN_MOST = 200;
 
-/// The modules the station names (move/AGENTS.md), each as people call it; one the app does not know by its id.
-const MODULES = ["accounts", "vault", "agent-home", "settings", "repos", "chats", "jobs", "connects"];
+/// The modules the station names (move/AGENTS.md), each as people call it (one the app does not know by its id), in the
+/// order the page shows them: what the chats need, as their note names it (账号、连接、仓库缓存、密钥库), the station's
+/// settings, then the chats and their jobs, the long list last so it pushes none of the others off the page (the lead,
+/// 2026-11-15); one the list does not know after them, in the station's order. The station answers in its own.
+const MODULES = ["accounts", "connects", "repos", "vault", "settings", "chats", "jobs"];
 
 const arr = (v: unknown): J[] => (Array.isArray(v) ? v : []);
 const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
@@ -59,7 +62,12 @@ export type MoveTarget = { station: string; name: string; free: string };
 /// page draws it. `module`: the one whose items are open ("" none); `targets`: the workspace's other whole stations
 /// online that offer moving (their overview's `move.offered`); `canMove`: the viewer may move (an owner or admin).
 export function moveShown(raw: J, o: { to: string; toName: string; module: string; targets: MoveTarget[]; canMove: boolean }): J {
-  const modules = arr(raw?.modules);
+  // (in the page's order, MODULES; one it does not know after them as the station has it)
+  const rank = (m: J) => {
+    const i = MODULES.indexOf(str(m?.id));
+    return i < 0 ? MODULES.length : i;
+  };
+  const modules = arr(raw?.modules).map((m, i) => [m, i] as const).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map(([m]) => m);
   const stopped = arr(raw?.stopped);
   const last = isObject(raw?.last) ? raw.last : null;
   // (each item's label by its name, of those the answer holds: what a stopped one waits for)

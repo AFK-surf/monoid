@@ -166,19 +166,24 @@ test "the modules one card, a row each in their order: its name, done of total a
   let calls : Array[Made] = []
   let t = move_tester(calls, "settings-station-move", w=1280.0, h=800.0, platform=0)
   move_audit(t, "1280")
-  let names = ["账号", "密钥库", "Agent 记忆与 skills", "Station 设置", "仓库缓存", "聊天"]
+  // (in the order the core gives them, move.ts MODULES: 连接 between 账号 and 仓库缓存 checked apart, the settings'
+  // sidebar having a row of it too; 后台任务 has nothing here)
+  let names = ["账号", "仓库缓存", "密钥库", "Station 设置", "聊天"]
   for i in 1..<names.length() {
     assert_true(move_at(t, names[i - 1]).1 < move_at(t, names[i]).1, msg="1280: \{names[i]}: " + move_all_words(t))
   }
-  // (连接, the last, is the settings' sidebar's row too beside it: two of it, the module's under 聊天)
-  assert_true(t.words().iter().any(fn(x) { x.0 == "连接" && x.2 > move_at(t, "聊天").2 }), msg="1280: " + move_all_words(t))
+  // (连接 is the settings' sidebar's row too beside it: two of it, the module's between 账号 and 仓库缓存, on the card)
+  assert_true(
+    t.words().iter().any(fn(x) { x.0 == "连接" && x.1 > move_at(t, "账号").0 - 2.0 && x.2 > move_at(t, "账号").1 && x.2 < move_at(t, "仓库缓存").1 }),
+    msg="1280: " + move_all_words(t),
+  )
   // (后台任务 has nothing: not shown)
   assert_true(!move_said(t, "后台任务") && !move_said(t, "空"), msg="1280: " + move_all_words(t))
   assert_true(move_said(t, "0 / 2"), msg=move_all_words(t))
   // (one card: its rows closer than cards of their own would stand)
   let a = move_at(t, "账号")
-  let b = move_at(t, "密钥库")
-  assert_true(b.1 - a.1 < 80.0, msg="1280: a row each on one card: \{a.1} \{b.1}")
+  let b = move_at(t, "仓库缓存")
+  assert_true(b.1 - a.1 < 140.0, msg="1280: a row each on one card: \{a.1} \{b.1}")
   for size in [(390.0, 844.0, 2), (1280.0, 800.0, 0)] {
     let (w, h, platform) = size
     let calls : Array[Made] = []
@@ -187,7 +192,7 @@ test "the modules one card, a row each in their order: its name, done of total a
     for x in ["2 / 3", "1 / 1", "0 / 1", "2 / 4"] {
       assert_true(move_said(t, x), msg="\{w}: \{x}: " + move_all_words(t))
     }
-    assert_eq(move_seen(t).filter(fn(x) { x.0 == "迁回" }).length(), 2, msg="\{w}: 密钥库 and Agent 记忆 all there: " + move_all_words(t))
+    assert_eq(move_seen(t).filter(fn(x) { x.0 == "迁回" }).length(), 1, msg="\{w}: 密钥库 all there: " + move_all_words(t))
     assert_eq(t.words().filter(fn(x) { x.0.has_suffix("…") }).map(fn(x) { x.0 }), [], msg="\{w}")
     // (the page's main action at the end of the row it goes to)
     let to = move_at(t, "迁到")
@@ -417,12 +422,12 @@ test "its station's page shows one row of it only while a move runs, something i
   let calls : Array[Made] = []
   let t = move_tester(calls, "settings-station-move-section")
   move_audit(t, "")
-  assert_true(move_said(t, "迁移到 Maple") && move_said(t, "8 / 19"), msg=move_all_words(t))
+  assert_true(move_said(t, "迁移到 Maple") && move_said(t, "7 / 18"), msg=move_all_words(t))
   assert_true(t.find("1 项失败 · 1 项已停 · 迁移中 · 聊天「修复登录后首页闪白」") is Some(_), msg=move_all_words(t))
   assert_true(move_at(t, "迁移到 Maple").1 < move_at(t, "概览").1, msg="under its head, over its parts")
   // (one row: no module of it named on the station's page)
   assert_true(!move_said(t, "账号") && !move_said(t, "仓库缓存"), msg=move_all_words(t))
-  let count = move_at(t, "8 / 19")
+  let count = move_at(t, "7 / 18")
   let title = move_at(t, "迁移到 Maple")
   assert_true((count.1 + count.3 / 2.0 - (title.1 + title.3 / 2.0)).abs() <= 2.0, msg="its count on its first line")
   move_press(t, "迁移到 Maple")
@@ -455,11 +460,32 @@ test "its station's page shows one row of it only while a move runs, something i
 }
 
 ///|
+test "an item's state takes a line more under its label where it has not the room on one, its words whole: a stopped one's at words 1.3 in English" {
+  let t = screen_in("settings-station-move-chats", ("phone", 390.0, 844.0, 2, ""), "en", font_scale=1.3)
+  move_audit(t, "en 1.3")
+  // (聊天 the last module, its items under it: down to the stopped one)
+  move_scroll(t, 400.0)
+  move_audit(t, "en 1.3, scrolled")
+  let words = t.words()
+  // (none of it cut short, and all of it there: what it waits for, its name whole, on the line its words end on)
+  assert_true(!words.iter().any(fn(x) { x.0.has_prefix("Stopped") && x.0.has_suffix("…") }), msg=move_all_words(t))
+  assert_true(words.iter().any(fn(x) { x.0.has_prefix("Stopped") }), msg=move_all_words(t))
+  assert_true(words.iter().any(fn(x) { x.0.has_suffix("星火”") }), msg=move_all_words(t))
+  // (under its label, which is whole)
+  let label = move_at(t, "发版前跑一遍回归")
+  let stopped = match words.iter().find_first(fn(x) { x.0.has_prefix("Stopped") }) {
+    Some(x) => x
+    None => @halt.saying("no Stopped: " + move_all_words(t))
+  }
+  assert_true(stopped.2 > label.1, msg="under its label: \{stopped.2} \{label.1}")
+}
+
+///|
 test "in English the modules and what they need are said in English, from the tables by each module's id" {
   // (as the sweeps open a screen in English: the device's language said, the fixture's mode opened)
   let t = screen_in("settings-station-move", ("phone", 390.0, 844.0, 2, ""), "en")
   move_audit(t, "en")
-  for x in ["Accounts", "Vault", "Agent memory and skills", "Station settings", "Repository cache"] {
+  for x in ["Accounts", "Vault", "Station settings", "Repository cache"] {
     assert_true(move_said(t, x), msg="\{x}: " + move_all_words(t))
   }
   move_scroll(t, 300.0)

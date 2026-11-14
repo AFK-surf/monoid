@@ -456,6 +456,9 @@ fn station_move_item_node(
       fn() {  },
       value~,
       value_bad=bad,
+      // (where it stands, a stopped one's with the whole name of what it waits for, onto a line more under its label
+      // where even a line of its own has not the room: 「Stopped · waiting for "Slack · 星火"」 at words 1.3 in English)
+      value_wraps=true,
       note~,
       lacks=true,
       goes=false,

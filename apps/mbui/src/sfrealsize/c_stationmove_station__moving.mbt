@@ -5,6 +5,6 @@ fn init {
   let asked =
     #|{"topic":"stationMove","station":"ws/maple","to":"","module":""}
   let messages =
-    #|[[{"path":["active"],"set":true},{"path":["count"],"set":"1 / 274"},{"path":["modules"],"key":["id"],"patch":"chats","ops":[{"path":["count"],"set":"1 / 240"},{"path":["done"],"set":1}]}]]
+    #|[[{"path":["active"],"set":true},{"path":["count"],"set":"1 / 273"},{"path":["modules"],"key":["id"],"patch":"chats","ops":[{"path":["count"],"set":"1 / 240"},{"path":["done"],"set":1}]}]]
   put_changes(asked, "moving", messages)
 }

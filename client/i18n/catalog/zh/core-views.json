@@ -718,7 +718,6 @@
   "core-views.copies.taking.failed": "没接收成：{why}",
   "core-views.move.module.accounts": "账号",
   "core-views.move.module.vault": "密钥库",
-  "core-views.move.module.agent-home": "Agent 记忆与 skills",
   "core-views.move.module.settings": "Station 设置",
   "core-views.move.module.repos": "仓库缓存",
   "core-views.move.module.chats": "聊天",
