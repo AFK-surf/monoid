@@ -51,6 +51,8 @@ const SPECS: Record<string, Spec> = {
   // (a station's item changes as it says something new, each a few seconds: the others go out as they went)
   stations: items("station"),
   newChat: { fields: { stations: items("station") } },
+  // (an item moving is a patch of its row; a module's block its own)
+  stationMove: { fields: { targets: items("station"), modules: { key: ["id"], item: { fields: { items: items("id") } } } } },
 };
 
 export function specOf(topic: Topic): Spec | null {

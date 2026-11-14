@@ -18,6 +18,7 @@ import { PENDING_MOST, type Pending } from "../src/lock-pending.ts";
 import type { Topic } from "../src/protocol.ts";
 import { PAGE } from "../src/station/channel-kinds.ts";
 import { localDay } from "../src/views/usage.ts";
+import { MOVE_PAGE, MOVE_SHOWN_MOST, freeText, moveLimit, moveShown } from "../src/move.ts";
 import { hostOf, link, overview, rows, sessions, threads, workspace } from "./views-rig.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -1530,7 +1531,62 @@ export function more(now: number): [Topic, unknown][] {
   out.push([{ topic: "linkPreview", station: CHAT.station, url: "https://github.com/acme/app/pull/5244" }, { kind: "github_pull_request", url: "https://github.com/acme/app/pull/5244", repository: "acme/app", number: 5244, title: "Android：列表行高首帧算好，滚动不再重新测量", state: "open", author: { login: "lina-park" }, additions: 412, deletions: 187, changedFiles: 14, comments: 6, labels: ["android", "performance", "needs-review"], updatedAt: now - HOUR, checks: { passed: 23, failed: 0, pending: 2 } }]);
   for (const [st, at] of UP.entries()) out.push([{ topic: "stationSearch", station: at, q: SEARCH, limit: 6 }, searchOf(now, st)]);
   for (const [topic, value] of peeks(now)) out.push([topic, value]);
+  for (const asked of MOVES_ASKED) out.push([{ topic: "stationMove", station: CHAT.station, ...asked }, moveOf(now, asked)]);
   return out;
+}
+
+/// The ways the app asks what of Maple moves (apps/mbui sfpages/station_move_node.mbt): its station's page (whether it
+/// shows 迁移), the page with its modules closed, with 聊天 open (as it opens by itself, something of it moving), and
+/// that list scrolled to the most it shows.
+export const MOVES_ASKED: { to: string; module: string; limit?: number }[] = [
+  { to: "", module: "" },
+  { to: "willow", module: "" },
+  { to: "willow", module: "chats" },
+  { to: "willow", module: "chats", limit: 200 },
+];
+
+/// What Maple says of moving its things to Willow (its GET /move, module by module), `step` chats on from where it is
+/// at `now`: some of each module there, one chat moving and how far, some stopped waiting for an account, some that
+/// failed or cannot move, saying why; the asked module's items `limit` of them (the others' first page, as the sync
+/// holds them), as the page draws it (move.ts).
+export function moveOf(now: number, asked: { to: string; module: string; limit?: number }, step = 0): J {
+  const limit = moveLimit(asked.limit);
+  const item = (id: string, label: string, state: string, more: J = {}) => ({ id, label, state, needs: [], ...more });
+  const n = (k: number, there: number, label: (i: number) => string, more: (i: number) => J = () => ({})) =>
+    Array.from({ length: k }, (_, i) => item(`i${i}`, label(i), i < there ? "there" : "here", more(i)));
+  // (more chats than the page shows of a module at the most, MOVE_SHOWN_MOST: what it shows is that, however many it has)
+  const chats = Array.from({ length: MOVE_SHOWN_MOST + 40 }, (_, i) => {
+    const at = 30 + step;
+    const label = TITLES[i % TITLES.length]!;
+    if (i < at) return item(keyOf(0, i), label, "there");
+    if (i === at) return item(keyOf(0, i), label, "moving", { progress: { done: (64 + 40 * step) * 1024 ** 2, total: 412 * 1024 ** 2, unit: "bytes" } });
+    if (i < at + 4) return item(keyOf(0, i), label, "stopped", { waitsFor: "accounts i0" });
+    if (i < at + 6) return item(keyOf(0, i), label, "failed", { error: `Willow 的磁盘只剩 2.1 GB，这个聊天的文件要 ${3 + i % 4}.4 GB：在 Willow 上腾出空间再试` });
+    if (i < at + 8) return item(keyOf(0, i), label, "here", { cannot: "它的工作目录在 station 之外（/Volumes/Work/app）：把目录移进 station 的工作区再迁" });
+    return item(keyOf(0, i), label, "here");
+  });
+  const modules: [string, string[], J[]][] = [
+    ["accounts", [], n(6, 3, (i) => `Claude · ${PEOPLE[i % PEOPLE.length]!.email}`, (i) => (i === 5 ? { cannot: "这台机器自己的登录不迁：在 Willow 上登录它自己的" } : {}))],
+    ["vault", [], n(2, 1, (i) => `${PEOPLE[i]!.name} 的密钥`)],
+    ["agent-home", [], n(1, 1, () => "记忆与 14 个 skill")],
+    ["settings", [], n(1, 0, () => "归档、自动决策、网络")],
+    ["repos", [], n(12, 5, (i) => `github.com/acme/${["app", "station", "web", "infra", "docs", "relay"][i % 6]}${i < 6 ? "" : `-${i}`}`)],
+    ["chats", ["accounts", "connects", "repos", "vault"], chats],
+    ["jobs", ["chats"], n(8, 2, (i) => `dev server · ${TITLES[i % TITLES.length]}`)],
+    ["connects", ["chats"], n(4, 0, (i) => ["Slack · Acme", "飞书 · 产品群", "Comma · 值班", "Slack · Acme Labs"][i]!)],
+  ];
+  const raw = {
+    ws: "ws", to: asked.to,
+    modules: modules.map(([id, needs, all]) => {
+      const page = all.slice(0, id === asked.module ? limit : MOVE_PAGE);
+      return { id, needs, done: all.filter((x) => x.state === "there").length, total: all.length, items: page, more: page.length < all.length ? page.at(-1).id : null };
+    }),
+    moving: { module: "chats", id: keyOf(0, 30 + step), label: TITLES[(30 + step) % TITLES.length], progress: { done: (64 + 40 * step) * 1024 ** 2, total: 412 * 1024 ** 2, unit: "bytes" } },
+    stopped: [1, 2, 3].map((k) => ({ item: `chats ${keyOf(0, 30 + step + k)}`, waitsFor: "accounts i0" })),
+    last: { at: now - 5 * MIN, by: PEOPLE[0]!.email, done: [], refused: [{ item: `chats ${keyOf(0, 40 + step)}`, why: "它要的连接「Slack · Acme」还没迁到 Willow：先迁连接，或用全部迁移" }], stopped: [], resumed: [], failed: null },
+  };
+  const targets = STATIONS.slice(1, UP_COUNT).map((s, i) => ({ station: s.id, name: s.name, free: freeText({ disk: { freeBytes: (180 + 40 * i) * 1024 ** 3 } }) }));
+  return moveShown(raw, { to: asked.to, toName: asked.to === "" ? "" : "Willow", module: asked.module, targets, canMove: true });
 }
 
 /// Bytes made of `seed` alone, as base64: a picture's that is not one.

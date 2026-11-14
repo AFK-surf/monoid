@@ -28,6 +28,7 @@ import * as logins from "./machine-logins.ts";
 import { laterSleep } from "../runtime.ts";
 import { timed } from "../spent.ts";
 import * as looks from "../looks.ts";
+import { freeText, moveShown } from "../move.ts";
 
 /// A chat shows a window of its thread's entries: at most this many of what it shows (shownTo).
 export const WINDOW = 3 * PAGE;
@@ -44,7 +45,7 @@ export function packetsSince(was: LinkNet["packets"], now: LinkNet["packets"]): 
   return { sent: now.sent - was.sent, lost: now.lost - was.lost };
 }
 
-const STATION_TOPICS = new Set(["link", "overview", "sessions", "host", "net", "way", "threads", "chatRows", "jobs", "archivedRows", "stationUsage", "stationResources", "session", "live", "thread", "letters", "slackApp", "jobLog", "job", "drive", "screens", "terminals", "screenCard", "machineLogins", "machineLogin", "machineLoginScreen", "stationSearch", "memory", "presets", "linkPreview", "filePeek", "messagePeek"]);
+const STATION_TOPICS = new Set(["link", "overview", "sessions", "host", "net", "way", "threads", "chatRows", "jobs", "archivedRows", "stationUsage", "stationResources", "session", "live", "thread", "letters", "slackApp", "jobLog", "job", "drive", "screens", "terminals", "screenCard", "machineLogins", "machineLogin", "machineLoginScreen", "stationSearch", "memory", "presets", "stationMove", "linkPreview", "filePeek", "messagePeek"]);
 
 const u64 = (v: unknown): number | null => (typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : null);
 
@@ -59,7 +60,7 @@ export function placeKey(station: string, thread: number): string {
 }
 
 /// The station topics made from how its link is (up, down, why): made again as it changes.
-const LINKED = new Set(["link", "live", "screens", "terminals", "screenCard", "drive", "presets", "memory", "linkPreview", "filePeek", "messagePeek", "job", "machineLogins", "machineLogin"]);
+const LINKED = new Set(["link", "live", "screens", "terminals", "screenCard", "drive", "presets", "memory", "stationMove", "linkPreview", "filePeek", "messagePeek", "job", "machineLogins", "machineLogin"]);
 
 export class StationTopics implements Owner {
   readonly #core: Inner;
@@ -194,6 +195,8 @@ export class StationTopics implements Owner {
     if (topic.topic === "memory") this.#sync.memoryShown(station);
     // The presets: read each time shown (the directories offered move as chats work), and as one changes.
     if (topic.topic === "presets") this.#sync.presetsShown(station);
+    // What moves to another station: read each time shown, and as its station says it changed.
+    if (topic.topic === "stationMove") this.#sync.moveShown(topic);
     // What a web link in a message is: read each time its card shows (a pull request's state moves), what was read
     // last shown meanwhile.
     if (topic.topic === "linkPreview") this.#sync.linkPreviewShown(station, topic.url as string);
@@ -320,6 +323,14 @@ export class StationTopics implements Owner {
         if (link && down(link.state)) return { err: new CoreError("offline", downWords(link.state, this.#core.views.stationName(station))) };
         return error ? { err: error } : undefined;
       }
+      case "stationMove": {
+        // As the station said it last (move.ts shapes it), with the stations it may go to as the workspace has them now;
+        // nothing read yet, as `memory`.
+        const v = link?.memory.get(topicKey(topic));
+        if (v !== undefined) return { ok: this.#moveShown(topic, v) };
+        if (link && down(link.state)) return { err: new CoreError("offline", downWords(link.state, this.#core.views.stationName(station))) };
+        return error ? { err: error } : undefined;
+      }
       case "memory": {
         // As the station said it last (kept: there as the app opens again), with what the clients show of it; nothing
         // read yet, as `drive`.
@@ -364,6 +375,23 @@ export class StationTopics implements Owner {
         // Held: what is held goes out (the store reads it); with nothing held, why not, once known.
         return error ? { err: error } : undefined;
     }
+  }
+
+  /// What the station said of moving to `topic.to` as its page draws it (move.ts): the workspace's other stations online
+  /// that offer moving (their overview's `move.offered`), each with its room; the viewer may move as an owner or admin.
+  #moveShown(topic: Topic, raw: unknown): unknown {
+    const station = topic.station as string;
+    const ws = ofAddress(station);
+    const to = typeof topic.to === "string" ? topic.to : "";
+    const targets = (this.#core.views.stations(ws) ?? []).flatMap((s) => {
+      if (s.address === station || !s.online) return [];
+      const overview = this.#core.data.shared({ topic: "overview", station: s.address });
+      if (get(get(overview, "move"), "offered") !== true) return [];
+      return [{ station: s.id, name: s.name, free: freeText(overview) }];
+    });
+    const role = get(this.#core.data.shared({ topic: "workspace", workspace: ws }), "role");
+    const toName = to === "" ? "" : (targets.find((x) => x.station === to)?.name ?? this.#core.views.stationName(`${ws}/${to}`));
+    return moveShown(raw, { to, toName, module: typeof topic.module === "string" ? topic.module : "", targets, canMove: role === "owner" || role === "admin" });
   }
 
   // ── logins ──

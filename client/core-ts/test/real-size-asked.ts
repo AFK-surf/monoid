@@ -14,7 +14,7 @@ import {
   CHANGELOG_DEVICE, CHANGELOG_SEEN, CHAT, PEOPLE, CHAT_MESSAGES, DRIVE, LETTERS_COUNT, JOB, JOB_LOG_LINES, OPENS, OTHER_WORKSPACE, OUTLINED, PEEKS, SEARCH, UP, VAULT_ITEM, cardCame, changelogFeed, changelogReleased,
   chatArchived, chatRenamed, devicesAdded, devicesSaid, driveAdded, fixture, hostReading, jobLogOf, jobsMoved, lettersHeld, listedOf, liveStepped, lockApproved, memberJoined, messageAdded, more,
   netOf, outlinedEdit, outlinedLog, outlinedSaid, outlinedWorking, overviewMoved, othersPresetsChanged, othersPresetsOf, presetRecordsChanged, presetsChanged, quotaChanged, records, resourcesOf, screensMoved, screensOf, sessionMade, thingSaid, transcriptOf,
-  usageRead, vaultAdded, vaultUsed, ownPendingOf, STATIONS,
+  usageRead, vaultAdded, vaultUsed, ownPendingOf, STATIONS, MOVES_ASKED, moveOf,
 } from "./real-size.ts";
 import { logged } from "../src/log-lines.ts";
 import type { Inner } from "../src/core.ts";
@@ -141,6 +141,12 @@ export const ASKED: Record<string, Record<string, unknown> & { topic: string }> 
   "presets": { topic: "presets", station },
   // (others' presets, asked at a press: views/presets.ts, read of the stations as it is shown)
   "otherPresets": { topic: "otherPresets", scope: "ws" },
+  // (what of Maple moves to another station, sfpages/station_move_node.mbt: whether its page shows 迁移; the page, its
+  // modules closed; 聊天 open, as it opens by itself; and that list scrolled to the most it shows, move.ts MOVE_SHOWN_MOST)
+  "stationMove station": { topic: "stationMove", station, ...MOVES_ASKED[0]! },
+  "stationMove": { topic: "stationMove", station, ...MOVES_ASKED[1]! },
+  "stationMove chats": { topic: "stationMove", station, ...MOVES_ASKED[2]! },
+  "stationMove chats most": { topic: "stationMove", station, ...MOVES_ASKED[3]! },
   "linkPreview page": { topic: "linkPreview", station, url: PEEKS.page },
   "linkPreview pull": { topic: "linkPreview", station, url: PEEKS.pull },
   "filePeek picture": { topic: "filePeek", station, key, path: PEEKS.picture },
@@ -542,6 +548,8 @@ export const CAUSES: Record<string, Cause> = {
   carried: { run: ({ t, base }) => t.data.put("presetRecords", "ws", presetRecordsChanged(base, t.host.nowMs())) },
   // Others' presets read again as Maple told `presets` while they are shown: one of them changed.
   others: { run: ({ t, base, presets }) => presets.heard("ws", station, othersPresetsChanged(base, t.host.nowMs())) },
+  // A chat of Maple's moved to Willow and the next one moving (its `move` event, read again where shown).
+  moving: { run: ({ t, base }) => { for (const a of MOVES_ASKED) t.set({ topic: "stationMove", station, ...a }, moveOf(base, a, 1)); } },
   // A build more out: the changelog read again (changelog.ts `read`: kept, and both of its ways told).
   release: {
     run: ({ t, base }) => {

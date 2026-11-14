@@ -157,6 +157,9 @@ const EMPTY: Record<string, Record<string, string>> = {
     "overview.copies.offers": STATE, "overview.copies.formerly": NONE, "overview.copies.taking": STATE,
     "overview.copies.retire.steps": STATE,
   },
+  // (no module open: its items are the open one's alone, move.ts)
+  "stationMove station": { "modules[].items": ASKED_SO },
+  "stationMove": { "modules[].items": ASKED_SO },
   "stationPart profiles": { "[].modelsSaving": SAVING, "[].quota.windows[].time": NEVER, "[].decisionModels": NONE, "[].workspaces": NONE },
   // (a sign-in under way: Willow's)
   "stationPart logins": { "(whole)": STATE },

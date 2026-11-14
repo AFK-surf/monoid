@@ -1361,6 +1361,11 @@ export interface StationCopies {
 	taking?: CopyTaking[];
 }
 
+export interface StationMoveOffer {
+	/** Its things may be moved to another station (the station's switch, off by default). */
+	offered?: boolean;
+}
+
 /**
  * A station's overview, with what the clients show of its connects and profiles: each part of it as `stationPart`
  * sends it (STATION_PARTS). A station's page is sent its own, `StationOverview`.
@@ -1433,6 +1438,8 @@ export interface Overview {
 	elevation?: StationElevation;
 	/** The copies of its chats kept off it (copies.ts). None from a station older than them, which then shows nothing. */
 	copies?: StationCopies;
+	/** Whether moving its things to another station is offered on it (move.ts). None from a station older than it: not offered. */
+	move?: StationMoveOffer;
 }
 
 /** What a workspace's chat list shows: all, the viewer's (我参与的), the watching ones (监控中), the viewer's hidden chats (已隐藏), or archived chats (已归档). */
@@ -1664,6 +1671,8 @@ export interface PrefsView {
 	workspace?: string;
 	/** The chat page last open, by scope (a workspace; `local` in what a station's own page kept, before it went). */
 	lastChat?: Record<string, string>;
+	/** The station each station's things were last chosen to move to on this device (its page of 迁移), by its address: that one's id. */
+	moveTo?: Record<string, string>;
 	/**
 	 * The chat last open, by workspace, as the core keeps it from `client.focus` (a settings page leaves it as it
 	 * was; a new chat shown, none): what the workspace's page goes back to.

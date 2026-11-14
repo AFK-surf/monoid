@@ -43,6 +43,7 @@ import { dayOf, holdsWhole, sameDetailCoverage, usageHistoryRange, withPart } fr
 import { threadAfter, threadAfterLetters } from "./thread-after.ts";
 import { type Marks, OwnHeld, markDismissed, markPin, markRead, markThread, marksOf, marksPut, rowShared, rowWords, rowsMade, rowsShared, sharedPlace, sharedWhole } from "./rows-made.ts";
 import { timed } from "../spent.ts";
+import { MOVE_PAGE, moveLimit } from "../move.ts";
 import { glanced } from "../work.ts";
 import { isOwnSurface } from "../titles.ts";
 
@@ -536,6 +537,60 @@ export class StationsSync {
   /// was read last shows meanwhile.
   presetsShown(address: string): void {
     this.#enqueue(address, "presets", Priority.shown, this.#presets(address));
+  }
+
+  /// What moving the station's things to another stands at (GET /move, the `stationMove` topic: move.ts), read as its
+  /// page shows it, as its station tells `move` (`changed`) and as a move asked here is taken; what was read last shows
+  /// meanwhile. With `module`, as many of its items as `limit`, a page after another (each from the last's `more`).
+  moveShown(topic: Topic): void {
+    this.#enqueue(topic.station as string, `move ${topicKey(topic)}`, Priority.shown, this.#move(topic));
+  }
+
+  /// Each `stationMove` shown of `address` read again (told it changed, or a move asked).
+  #movesShown(address: string): void {
+    for (const t of this.#core.store.liveTopics()) if (t.topic === "stationMove" && t.station === address) this.moveShown(t);
+  }
+
+  #move(topic: Topic): Effect.Effect<void, CoreError> {
+    const address = topic.station as string;
+    const key = topicKey(topic);
+    const to = typeof topic.to === "string" ? topic.to : "";
+    const module = typeof topic.module === "string" ? topic.module : "";
+    const limit = moveLimit(topic.limit);
+    return Effect.gen({ self: this }, function* () {
+      const link = this.#links.get(address);
+      if (!link || !this.reachable(address)) return;
+      let first: unknown = undefined;
+      const items: unknown[] = [];
+      let after: string | null = null;
+      for (;;) {
+        const page = Math.min(MOVE_PAGE, limit - items.length);
+        const path = `/move?to=${encode(to)}${module === "" ? "" : `&module=${encode(module)}&limit=${page}${after === null ? "" : `&after=${encode(after)}`}`}`;
+        const answer = yield* Effect.result(this.requests.call(link.addr, "GET", path, null, { quiet: true }));
+        if (answer._tag === "Failure") {
+          if (answer.failure.status !== undefined && !link.memory.has(key)) {
+            link.errors.set(key, answer.failure);
+            this.onChange(address, "errors", key);
+          }
+          return;
+        }
+        if (first === undefined) first = answer.success;
+        if (module === "") break;
+        const m = (Array.isArray(get(answer.success, "modules")) ? (get(answer.success, "modules") as unknown[]) : []).find((x) => get(x, "id") === module);
+        const got = Array.isArray(get(m, "items")) ? (get(m, "items") as unknown[]) : [];
+        items.push(...got);
+        after = str(get(m, "more"));
+        if (after === null || after === "" || got.length === 0 || items.length >= limit) break;
+      }
+      // (the asked module's items, all its pages read, and where its list goes on from)
+      const held = module === "" || !isObject(first)
+        ? first
+        : { ...first, modules: (get(first, "modules") as unknown[]).map((m) => (get(m, "id") === module ? { ...(m as object), items: items.slice(0, limit), more: after } : m)) };
+      link.errors.delete(key);
+      if (equal(link.memory.get(key), held)) return;
+      link.memory.set(key, held);
+      this.onChange(address, "log", key);
+    });
   }
 
   #presets(address: string): Effect.Effect<void, CoreError> {
@@ -1638,6 +1693,10 @@ export class StationsSync {
         if (isObject(get(data, "login"))) this.putMachineLogin(address, get(data, "login"));
         return;
       }
+      // What moves to another station changed (an item moved, went on, stopped, how far one is): read again where shown.
+      case "move":
+        this.#movesShown(address);
+        return;
       // The presets, or the folders offered for one, changed (one made on another device, the machine's repositories
       // found after they were asked for): read again where shown or held.
       case "presets":
@@ -2434,6 +2493,10 @@ export class StationsSync {
           break;
         case "presets":
           reads.push(["presets", this.#presets(address)]);
+          break;
+        // A move or a move back asked: what it stands at read again where shown (its station tells the rest as it goes).
+        case "move":
+          this.#movesShown(address);
           break;
         case "identity":
           read("overview", { topic: "overview", station: address }, "/overview");

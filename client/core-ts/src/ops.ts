@@ -23,6 +23,8 @@ export type Effect =
   | { kind: "memory" }
   /// The workspace's presets on the station (the `presets` topic): read again.
   | { kind: "presets" }
+  /// What moves to another station (the `stationMove` topic): read again where shown.
+  | { kind: "move" }
   | { kind: "identity" }
   /// Folders of the station's drive under `root` (paths relative to it): read again where held or shown.
   | { kind: "drive"; root: string; paths: string[] }
@@ -79,6 +81,8 @@ export const PARAMS: Record<string, string> = {
   "copies.retireCancel": "",
   "copies.retireAgain": "",
   "copies.retirePreview": "",
+  "move.start": "to:string module?:string item?:string all?:boolean withNeeds?:boolean",
+  "move.back": "from:string module?:string item?:string all?:boolean",
   "station.restart": "",
   "context.setAfresh": "afreshWhenCold?:boolean afreshAbove?:number",
   "diagnostics.setLogs": "logs:boolean",
@@ -364,6 +368,14 @@ function stationOp(name: string, params: unknown): Request | null {
     // What retiring it would take along and leave, as its panel shows them (schema.ts RetirePreview), read as it opens.
     case "copies.retirePreview":
       return op("GET", () => "/retire/preview", null, NONE);
+    // What of the station moves to another of its workspace (`to`, its id), module by module (its move/routes.ts): one
+    // item, a module's (with what it needs first, `withNeeds`) or all of it; or moved back here from `from`. By its
+    // owners and admins; answered at once (202), what it does told as `move` (the `stationMove` topic), a refusal in
+    // its words (`station.move.off` where the station does not offer moving).
+    case "move.start":
+      return op("POST", () => "/move", { to: p.str("to"), ...p.pick(["module", "item", "all", "withNeeds"]) }, { kind: "move" });
+    case "move.back":
+      return op("POST", () => "/move/back", { from: p.str("from"), ...p.pick(["module", "item", "all"]) }, { kind: "move" });
     // The station started again by its launcher (its routes/network.ts), managers only.
     case "station.restart":
       return op("POST", () => "/station/restart", null, OVERVIEW);
