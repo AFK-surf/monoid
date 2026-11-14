@@ -1813,6 +1813,14 @@ export class Store {
     });
   }
 
+  /// Of sessions `keys`, those this station has in sight: a row of its own (`ws` none or a workspace's), not one put
+  /// out of sight (handed away, coming, a retirement's leftover). One statement whatever their number.
+  liveOf(keys: readonly string[]): string[] {
+    if (keys.length === 0) return [];
+    return this.#all(`SELECT key FROM sessions WHERE key IN (SELECT value FROM json_each(?1))
+      AND (ws IS NULL OR (ws NOT LIKE 'handed:%' AND ws NOT LIKE 'coming:%' AND ws NOT LIKE 'retired:%'))`, JSON.stringify(keys)).map((r) => String(r.key));
+  }
+
   /// Where session `key` was handed (null: it was not, or came back): kept in memory once read.
   handedTo(key: string): HandedChat | null {
     if (this.#handed.has(key)) return this.#handed.get(key)!;

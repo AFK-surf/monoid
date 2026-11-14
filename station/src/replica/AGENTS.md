@@ -105,7 +105,9 @@ below, sends them along).
   chat is held alone (sessions/hub.ts `holdChat`), its files gathered alone (carry-worker.ts `gather`'s `keys`) and sent
   as a retirement's are (`sending.ts`), its rows sent a page at a time and put in through the other's store, hidden
   until shown (store/handover.ts, `comingWs`): each thread's log goes on past what that station has (n kept where it
-  was this chat's own as it was left, else by ts), so a chat handed back appends what was said there. Only once the
+  was this chat's own as it was left, else by ts), so a chat handed back appends what was said there. A chat of a key live where it would go (in sight there:
+  one that went on there apart from it) is never merged into: the plan says it cannot move (`move.chats.live`) and
+  `handover.begin` refuses it before anything is written. Only once the
   other counted what it has does this one say it went; before, a failure undoes it there and the chat goes on here;
   after, nothing is undone and the rest is told until it is answered. Its platform threads are re-pointed where their
   connect runs (connects/workspace.ts `route`, `connect.route`); what still comes here of it goes on there

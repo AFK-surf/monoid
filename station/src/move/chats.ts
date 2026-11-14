@@ -2,7 +2,7 @@
 // (replica/handover.ts `together`), by its session key. It needs the accounts its sessions run on (accounts.ts, by the
 // share or key they are known by). Moved by the hand-over (replica/handover.ts); moved back by the same the other way,
 // asked of the station it is on (`move.back`). Stopped here, it is held as one being handed over is.
-import type { Handover } from "../replica/handover.ts";
+import { type Handover, liveHereWords } from "../replica/handover.ts";
 import type { Store } from "../store/store.ts";
 import { type SessionRow, comingWs, handedWs } from "../store/rows.ts";
 import type { Item, ItemState, Module, Need, PlanReads, Progress } from "./module.ts";
@@ -59,6 +59,12 @@ export function chatsModule(d: ChatsDeps): Module {
           kept.push({ key, row, keys });
         }
         const grants = d.vaultsOf([...new Set(kept.flatMap((x) => x.keys))], ws);
+        // (a chat of a key live there already went on there apart from this one: it cannot go, never merged into;
+        // asked once a page, a station not reached saying nothing, as the hand-over asks it again)
+        const asking = kept.filter((x) => d.store.handedTo(x.key) === null).flatMap((x) => x.keys);
+        const there = asking.length === 0 || to === "" ? null : await d.ask(to, { method: "move.chats.live", keys: asking }).catch(() => null);
+        const liveThere = new Set<string>(Array.isArray(there?.live) ? there.live.filter((k: unknown): k is string => typeof k === "string") : []);
+        const thereName = typeof there?.name === "string" && there.name !== "" ? there.name : to.slice(0, 12);
         for (const { key, row, keys } of kept) {
           const needs: Need[] = [];
           for (const [pid, a] of d.handover.accountsOf(keys, reads)) {
@@ -84,7 +90,8 @@ export function chatsModule(d: ChatsDeps): Module {
           for (const id of repos) needs.push({ module: "repos", id });
           for (const id of new Set(keys.flatMap((k) => grants.get(k) ?? []))) needs.push({ module: "vault", id });
           const handed = d.store.handedTo(key);
-          const why = handed !== null ? null : d.handover.check(key, to, { planning: true, reads });
+          const live = handed !== null ? [] : keys.filter((k) => liveThere.has(k));
+          const why = handed !== null ? null : live.length > 0 ? liveHereWords(live, thereName) : d.handover.check(key, to, { planning: true, reads });
           items.push({ module: "chats", id: keys[0]!, label: row.title ?? key, needs, ...(why !== null ? { cannot: why } : {}) });
         }
       }

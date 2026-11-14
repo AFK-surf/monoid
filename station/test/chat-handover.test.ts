@@ -1225,8 +1225,8 @@ test("a chat handed forth, back and forth again, its log with entries of no ts (
 
 /// B holding a retired copy of A's chat as the switched-off retirement left it (ws `retired:<ws>`, its threads put in
 /// with B's own ids, its files in place, their times kept): what A's rows and room were then.
-function retiredCopy(a: Station, b: Station, key: string) {
-  const ctx = newCtx({ from: A, here: B, fromData: a.rig.dir, toData: b.rig.dir, connects: {}, profiles: { cc: "ccb" }, ws: `retired:${WS}` });
+function retiredCopy(a: Station, b: Station, key: string, ws: string | null = `retired:${WS}`) {
+  const ctx = newCtx({ from: A, here: B, fromData: a.rig.dir, toData: b.rig.dir, connects: {}, profiles: { cc: "ccb" }, ws: ws as string }); // (none: a live row of the home workspace)
   b.rig.store.importRows(ctx, "sessions", a.rig.store.chatPage("sessions", key, null, 500, [key]));
   for (const t of a.rig.store.chatThreads([key], 0, 200)) {
     for (const table of ["threads", "thread_sessions", "entries", "letters"] as const) b.rig.store.importRows(ctx, table, a.rig.store.chatPage(table, t, null, 500, [key]));
@@ -1283,6 +1283,33 @@ test("a station holding a retired copy of the chat (older log, same thread keys,
     const o = a.moves.handover.outOf(key)!;
     assert.equal(o.sentBytes, "what I am doing now".length, "what was in place not sent again");
   }
+});
+
+test("a chat whose key is live where it would go (one that went on there apart from it, as a retirement taken back leaves one) cannot go: the plan says so, the station asked refuses it before anything is written, and the chat goes on here", async () => {
+  const w = world();
+  const a = w.get(A);
+  const b = w.get(B);
+  const { key, thread } = await stillfailChat(a);
+  retiredCopy(a, b, key, null);
+  // (it went on there: said something of its own)
+  const there = homeThread(b, key);
+  b.rig.store.insertMessage({ thread: there, ts: b.rig.hub.nextTs(), authorKind: "person", author: "p@x", text: "going on there" });
+  say(a.rig.hub, thread, "p@x", "going on here");
+  await w.quiet();
+  await endTurn(a, key);
+  const before = { row: b.rig.store.getSession(key), log: entries(b, there), sessions: b.rig.store.db.prepare("SELECT COUNT(*) AS n FROM sessions").get() };
+  const plan = await a.moves.scheduler.plan(WS, B);
+  assert.match(plan.items.find((x) => x.id === key)?.cannot ?? "", /a chat of this key is live on B/);
+  const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: key });
+  assert.match(out.refused[0]?.why ?? "", /a chat of this key is live on B/);
+  // (asked anyway, past the plan: refused there before anything is written)
+  await assert.rejects(a.moves.handover.handOver(key, B, { wait: true }), /a chat of this key is live on B/);
+  await w.quiet();
+  assert.deepEqual(b.moves.handover.ins(), [], "nothing begun there");
+  assert.deepEqual({ row: b.rig.store.getSession(key), log: entries(b, there), sessions: b.rig.store.db.prepare("SELECT COUNT(*) AS n FROM sessions").get() }, before, "nothing written there");
+  assert.equal(a.rig.store.handedTo(key), null);
+  assert.equal(a.rig.hub.chatHeld(key), null, "it goes on here");
+  assert.equal(a.rig.session(key).ws, null);
 });
 
 test("a chat stopped for its account whose hand-over fails in the first pass of its files stays stopped: nothing lets it go that it did not hold", async () => {

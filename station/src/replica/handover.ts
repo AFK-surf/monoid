@@ -49,6 +49,11 @@ type Json = any;
 /// How long a hand-over waits for a busy chat's turn to end, where it was asked to wait.
 export const TURN_WAIT_MS = 10 * 60_000;
 
+/// Why a chat cannot go to station `name`: a chat of its key is live there (`keys`), one that went on there apart from
+/// this one (the copy a retirement taken back left there, 2026-11-14): never merged into, whichever had more.
+export const liveHereWords = (keys: readonly string[], name: string) =>
+  `a chat of this key is live on ${name} (${keys.join(", ")}): it went on there apart from this one, and the two are not merged; this one stays here, and each goes on where it is: say in either what the other has that it needs`;
+
 /// What a session's account is known by across the workspace: the share it is a copy of or the host of (`share`), the
 /// key it runs with (`key`, a hash of it), or a login not shared, by its id where it is (`own`: `<id>@<station>`, the
 /// id it keeps where it moves); null: this machine's own login, which cannot be had elsewhere.
@@ -743,6 +748,9 @@ export class Handover {
     if (was !== undefined && was.step !== "coming") throw new Refused(`that hand-over was ${was.step} here already`);
     const keys: string[] = Array.isArray(request.keys) ? request.keys.filter((k: unknown): k is string => typeof k === "string") : [];
     if (keys.length === 0) throw new Refused("no chat named");
+    // (a chat of the same key that is live here went on apart from it: never merged into, nothing written)
+    const live = this.#d.store.liveOf(keys);
+    if (live.length > 0) throw new Refused(liveHereWords(live, this.#d.roster(ws)?.find((s) => s.id === this.#d.here())?.name || "this station"));
     // Its accounts as they are here: each the profile of the same share, or of the same key; one not here refused,
     // named.
     const profiles: Record<string, string> = {};

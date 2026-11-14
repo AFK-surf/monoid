@@ -483,6 +483,11 @@ export class Moves {
           if (typeof item?.module !== "string" || typeof item?.id !== "string") throw new Refused("no item named");
           return { ok: true, resumed: await this.scheduler.arrived({ module: item.module, id: item.id }) };
         }
+        case "move.chats.live": {
+          // (of the chats a plan toward here names, those of a key live here already: never merged into)
+          const keys = Array.isArray(request.keys) ? request.keys.filter((k: unknown): k is string => typeof k === "string").slice(0, PLAN_PAGE * 4) : [];
+          return { live: this.#d.store.liveOf(keys), name: this.#d.roster(String(workspace ?? ""))?.find((r) => r.id === this.#d.here())?.name || "" };
+        }
         case "move.job.stop":
           await this.#d.jobs.stopNamed(String(request.session ?? ""), String(request.name ?? ""));
           return { ok: true };
