@@ -255,6 +255,22 @@ fn lists_band_node(
           offered=fn() { update_now() is Offered(_, ..) },
         )
       })
+      // the stations' newer releases waiting for this person beside it, as the app's own is offered; pressed, their
+      // dialog (sfpages station_updates.mbt)
+      let stations_said = fn() {
+        match workspace() {
+          Some(w) if (src.asks_station_updates)() => @sfpages.station_updates_said(settings_core(src, w), w.id)
+          _ => ""
+        }
+      }
+      line.show(at_once=true, fn() { stations_said() != "" }, fn(k) {
+        @sf.update_key_node(k, tips, update_key_side, update_key_mark, stations_said, stations_said, fn() { false }, fn() { None }, fn() {
+          match @signals.untracked(workspace) {
+            Some(w) => @sfpages.station_updates_dialog(settings_core(src, w), w.id)
+            None => ()
+          }
+        }, offered=fn() { true })
+      })
       // the filter: its menu (sfpages' filter_menu), a filter its list, 已归档 the archive's list
       line.show(at_once=true, fn() { view().map(fn(v) { v.stations > 0 }).unwrap_or(false) }, fn(k) {
         k.box(fn(f) {
