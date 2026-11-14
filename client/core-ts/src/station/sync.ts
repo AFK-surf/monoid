@@ -553,9 +553,12 @@ export class StationsSync {
     this.#enqueue(topic.station as string, `move ${topicKey(topic)}`, Priority.shown, this.#move(topic));
   }
 
-  /// Each `stationMove` shown of `address` read again (told it changed, or a move asked).
+  /// Each `stationMove` shown of `address` read again (told it changed, or a move asked): only those in use, as drive and
+  /// memory are; one let go of and kept a while (the store's grace) is read as it is shown again (topics.ts `resume`).
+  /// (A page whose size changed as a person scrolled left its other sizes kept a minute each, every one read again at
+  /// each telling: drill 27, 36 reads a second for one page watched.)
   #movesShown(address: string): void {
-    for (const t of this.#core.store.liveTopics()) if (t.topic === "stationMove" && t.station === address) this.moveShown(t);
+    for (const t of this.#core.store.liveTopics()) if (t.topic === "stationMove" && t.station === address && this.#core.store.inUse(t)) this.moveShown(t);
   }
 
   #move(topic: Topic): Effect.Effect<void, CoreError> {

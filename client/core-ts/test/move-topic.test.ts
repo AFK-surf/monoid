@@ -95,7 +95,7 @@ async function rig(answer: (station: string, key: string, body: J) => unknown, r
     take();
     return values.get(id);
   };
-  return { ...s, asked, reads, ask, show, view: (id: number) => (take(), values.get(id)) };
+  return { ...s, ui, asked, reads, ask, show, view: (id: number) => (take(), values.get(id)) };
 }
 
 test("the page's value is what the station's GET /move says, a module's items only for the module open, each row in words", async () => {
@@ -286,6 +286,26 @@ test("told `move` changed, what is shown is read again and changes by its rows",
   const v = r.view(1);
   assert.equal(v.moving ?? null, null);
   assert.deepEqual([v.modules[1].count, v.modules[1].items[0].stateText, v.modules[1].items[0].action], ["2 / 5", "已迁移", "back"]);
+  r.core.close();
+});
+
+test("told `move` changed, only the pages shown are read again; one let go of is read as it is shown again", async () => {
+  let said = moved();
+  const r = await rig((_station, key) => (key.startsWith("GET /move") ? said : undefined));
+  await r.show(1, { to: "st2", module: "chats" });
+  // (another size of the same page, shown and let go of: kept a while by the store, not shown)
+  await r.show(2, { to: "st2", module: "chats", limit: 7 });
+  r.core.receive(r.ui, { kind: "unsubscribe", id: 2, unsubscribe: true } as never);
+  await r.host.time.pass(500);
+  const before = r.reads.length;
+  said = moved({ moving: null });
+  r.pushOn([AT, "st"], "move", { changed: true });
+  await r.host.time.pass(500);
+  assert.deepEqual(r.reads.slice(before), ["st /move?to=st2&module=chats&limit=50"], "the page shown alone");
+  // Shown again while still kept: read then, not left as it was.
+  const again = r.reads.length;
+  await r.show(3, { to: "st2", module: "chats", limit: 7 });
+  assert.deepEqual(r.reads.slice(again), ["st /move?to=st2&module=chats&limit=7"], "read as it is shown again");
   r.core.close();
 });
 
