@@ -134,7 +134,9 @@ async function rawItem(n: Name, to: Name, key: string): Promise<string> {
   const f = join(dir, a.name, "answers", `${idOf(n).slice(0, 8)}.move-${idOf(to).slice(0, 8)}-chats.txt`);
   if (!existsSync(f)) return `(no answer of ${n}'s page toward ${to} kept)`;
   const raw = readFileSync(f, "utf8");
-  const i = raw.indexOf(`"id":"${key}"`);
+  // (the item's id where it is a value, however the answer is spaced or escaped)
+  const m = new RegExp(`\\\\?"id\\\\?"\\s*:\\s*\\\\?"${key}`).exec(raw);
+  const i = m?.index ?? -1;
   if (i < 0) return `(${raw.split("\n")[0]}: no item ${key} in it; ${raw.length} bytes)`;
   let start = raw.lastIndexOf("{", i);
   let depth = 0;
@@ -1002,7 +1004,9 @@ try {
             await a.call("move.start", { station: A, to: bId, module: "accounts", item });
             const lo = await turnEnds("A", t0);
             moved = true;
-            log(`  the login alone to B: ${outcome(lo)}; ${standings(kd)}; stopped ${stoppedOf(kd)}`);
+            log(`  the login alone to B: ${outcome(lo)}; its turn's stopped ${brief(lo?.stopped ?? null, 600)}; ${standings(kd)}; stopped ${stoppedOf(kd)}`);
+            // (the facts at that moment, for the station's side: no verdict of them)
+            log(`  2k's second chat as the login left, its facts: A's stopped.json ${existsSync(`${DATA.A}/move/stopped.json`) ? readFileSync(`${DATA.A}/move/stopped.json`, "utf8").slice(0, 1200) : "none"}\n    ${heldOf2(kd)}\n    the first chat: ${heldOf2(kc)}\n    A's page toward B, as A answered it, the second chat: ${await rawItem("A", "B", kd)}\n    the first chat: ${await rawItem("A", "B", kc)}\n    A's runtime sessions of both: ${brief(sql("A", `select session_key, profile, id from runtime_sessions where session_key in (${lit(kd)}, ${lit(kc)})`))}\n    the stations' logs around it:\n    ${logsAround(Date.now() - 1500)}`);
             if (stoppedOf(kd) === null) throw new Error(`not stopped on A as its login left: ${standings(kd)}`);
             const m = await atRest("2k");
             const row = ((m.modules.find((x: J) => x.id === "chats")?.items ?? []) as J[]).find((x: J) => x.id === kd);
