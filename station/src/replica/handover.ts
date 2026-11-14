@@ -922,6 +922,7 @@ export class Handover {
     for (const [connect, key] of Object.entries(i.bindings ?? {})) if (this.#d.store.binding(connect) === null) this.#d.store.setBinding(connect, key);
     this.#d.store.showChat(i.keys, i.ws === home ? null : i.ws);
     await this.#endOuts(i.keys);
+    await this.#trimIns(i);
     const from = this.#d.roster(i.ws)?.find((s) => s.id === i.origin)?.name || i.origin.slice(0, 12);
     for (const k of i.keys) {
       const row = this.#d.store.getSession(k);
@@ -966,6 +967,17 @@ export class Handover {
       this.#outs.delete(o.id);
       for (const k of o.keys) this.#outsOf.set(k, (this.#outsOf.get(k) ?? []).filter((x) => x.id !== o.id));
       await rm(outFile(this.#d.data, o.id), { force: true });
+    }
+  }
+
+  /// Of a chat's arrivals here the newest record is kept (`i`, shown): an older one, shown or dropped, goes, never one
+  /// still coming, nor while a record from before (no `v: 2`) of that chat that `#cameBack` judges by it stands unended.
+  async #trimIns(i: In): Promise<void> {
+    const judged = (k: string) => [...this.#outs.values()].some((o) => o.v !== 2 && o.ended !== true && o.keys.includes(k));
+    for (const old of [...this.#ins.values()]) {
+      if (old.id === i.id || old.step === "coming" || !old.keys.every((k) => i.keys.includes(k)) || old.keys.some(judged)) continue;
+      this.#ins.delete(old.id);
+      await rm(inFile(this.#d.data, old.id), { force: true });
     }
   }
 

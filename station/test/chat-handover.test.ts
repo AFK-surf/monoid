@@ -1761,6 +1761,21 @@ test("what a station keeps of a chat's trips is bounded: three times there and b
   await startedAgainChangesNothing(w, key, "three times there and back");
 });
 
+test("what a station keeps of a chat's arrivals is bounded: three times there and back leave one record of them on each station, and a start at rest after changes nothing", async () => {
+  const w = world();
+  const a = w.get(A);
+  const b = w.get(B);
+  const { key } = await stillfailChat(a);
+  for (let i = 0; i < 3; i++) {
+    assert.equal((await a.moves.scheduler.move(WS, B, { module: "chats", item: key })).failed, null);
+    await w.quiet();
+    assert.equal((await a.moves.scheduler.back(WS, B, { module: "chats", item: key })).failed, null);
+    await w.quiet();
+  }
+  for (const st of [a, b]) assert.deepEqual(st.moves.handover.ins().filter((i) => i.keys.includes(key)).map((i) => i.step), ["shown"], `${st.id.slice(0, 1)}: one record of its arrivals`);
+  await startedAgainChangesNothing(w, key, "three arrivals each side");
+});
+
 test("a chat whose key is live where it would go (one that went on there apart from it, as a retirement taken back leaves one) cannot go: the plan says so, the station asked refuses it before anything is written, and the chat goes on here", async () => {
   const w = world();
   const a = w.get(A);
