@@ -42,6 +42,8 @@ type Station = {
   id: string; rig: Rig; bus: PeerBus; moves: Moves; sharing: Sharing; fibers: Fibers;
   /// share.take asked of another station fails (its answer lost on the way).
   failTake: boolean;
+  /// The next `move.accounts` this station asks goes unanswered (the other not reached).
+  failAccounts: boolean;
   make(): Moves;
 };
 
@@ -71,7 +73,7 @@ function world(profiles: Json[], o: { third?: boolean; slack?: boolean } = {}) {
   })) as Cloud;
   const make = (id: string): Station => {
     const rig = new Rig({ place: { workspace: WS, station: id }, workspaces: [WS], fileStore: true, clock: t.clock });
-    const st = { id, rig, failTake: false } as unknown as Station;
+    const st = { id, rig, failTake: false, failAccounts: false } as unknown as Station;
     rig.raw.connects = o.slack && id === A ? [{ id: "cl", slack: { botName: "Claude bot" }, bind: { runtime: "claude" } }] : [];
     rig.raw.profiles = id === A ? structuredClone(profiles) : [{ id: "bx", runtime: "codex", home: "homes/bx", env: { OPENAI_API_KEY: "k" } }];
     Object.defineProperty(rig, "config", { get: () => hubConfig(rig.raw, rig.dir), configurable: true });
@@ -115,7 +117,7 @@ function world(profiles: Json[], o: { third?: boolean; slack?: boolean } = {}) {
       const hub = rig.hub;
       const moves = new Moves({
         data: rig.dir, store: rig.store, fibers: st.fibers, here: () => id, home: () => WS, roster: () => roster,
-        ask: (s, r) => st.bus.ask(s, r),
+        ask: (s, r) => (st.failAccounts && r?.method === "move.accounts" ? ((st.failAccounts = false), Promise.reject(new Error("the station was not reached"))) : st.bus.ask(s, r)),
         hub: { holdChat: (k, w, n) => hub.holdChat(k, w, n), releaseChat: (k) => hub.releaseChat(k), wakeChat: (k) => hub.wakeChat(k), busy: (k) => hub.busy(k), turnEnded: (k) => hub.turnEnded(k), drained: (c, ch, ts) => hub.drained(c, ch, ts), wsOf: (k) => hub.wsOf(k) },
         connects: null,
         jobs: { up: () => [], stop: async () => {}, start: () => {}, stopNamed: async () => {} },
@@ -348,6 +350,31 @@ test("home again by the other's own move (its scheduler, or a person moving it o
     assert.deepEqual(keptShares(a), [], `nothing kept (${route})`);
     assert.equal((await a.moves.scheduler.plan(WS, B)).items.find((x) => x.id === `own:max@${A}`)?.state, "here", "its own again, by the id it had");
   }
+});
+
+test("the other station not answering what logins it has as the plan asks: the chat on one refused in words (ask again), nothing of it tried, nothing moved; asked again with the answer, it goes", async () => {
+  const { a, b, quiet } = world([MAX]);
+  signIn(a, "max", CLAUDE_LOGIN);
+  const one = await chatOn(a, "max");
+  const account = `own:max@${A}`;
+  a.failAccounts = true;
+  const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: one.key, withNeeds: true });
+  await quiet();
+  assert.equal(out.failed, null, JSON.stringify(out));
+  assert.deepEqual(out.done, []);
+  assert.deepEqual(out.refused.map((r) => r.item.id), [one.key], "the chat, nothing else tried");
+  assert.match(out.refused[0]!.why, /^it needs accounts own:max@a{64} \(.+\) there, which cannot go: the other station did not answer what it has of it \(the station was not reached\): ask again$/);
+  assert.equal(present(a, "max").share, undefined, "not shared");
+  assert.equal(JSON.parse(readFileSync(join(a.rig.dir, "homes", "max", ".credentials.json"), "utf8")).claudeAiOauth.refreshToken, "r", "its login here");
+  assert.equal(b.rig.raw.profiles.some((p: Json) => p.id === "max"), false, "nothing of it there");
+  assert.equal(a.rig.store.handedTo(one.key), null, "the chat here");
+  assert.equal(a.rig.hub.chatHeld(one.key), null, "not stopped");
+  assert.deepEqual(keptShares(a), []);
+  const again = await a.moves.scheduler.move(WS, B, { module: "chats", item: one.key, withNeeds: true });
+  await quiet();
+  assert.equal(again.failed, null, JSON.stringify(again));
+  assert.deepEqual(again.done, [{ module: "accounts", id: account }, { module: "chats", id: one.key }]);
+  assert.equal(a.rig.store.handedTo(one.key)?.station, B, "the chat went");
 });
 
 test("a login that cannot be shared (a Kimi sign-in) moves as it is: gone from here, what needs it here stopped first", async () => {

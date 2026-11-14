@@ -13,6 +13,9 @@ export type Waits = Need & { label?: string; at?: string };
 /// What a module would move: its id, what people call it, what it needs moved first (only of the modules its module
 /// declares), why it cannot move (in words that say what to do; none: it can), how big it is (bytes, where known).
 export type Item = { module: string; id: string; label: string; needs: Need[]; cannot?: string; size?: number };
+/// Why an item cannot go where the other station did not answer what it has of it, as a plan asked (a station enrolled a
+/// moment ago, not reached): a plan is never made on a guess of what is there, so it is not tried; asked again it is.
+export const unanswered = (e: unknown) => `the other station did not answer what it has of it (${(e as Error)?.message ?? String(e)}): ask again`;
 
 /// Where an item stands: here, moving, there, failed (why kept; it is here and works), or stopped: still here, but
 /// what it needs moved away and cannot be had here (`waitsFor`), so it is held as one moving is, not left to fail
