@@ -145,8 +145,11 @@ const git = (dir: string, args: string[], timeout?: number): string | null => {
 };
 
 /// The sessions of a workspace whose things go along, as both the gathering and the preview read them (`home`: the
-/// station's home workspace, whose sessions say none).
-const sessionsIn = (home: boolean) => `SELECT key, workspace, cwd, runtime, profile, runtime_session_id, archived_at FROM sessions WHERE ${home ? "(ws = ? OR ws IS NULL)" : "ws = ?"} ORDER BY key`;
+/// station's home workspace, whose sessions say none); `keys`: those sessions alone (a chat handed over, handover.ts),
+/// whatever their `ws`.
+const sessionsIn = (home: boolean, keys: readonly string[] | null = null) => keys !== null
+  ? "SELECT key, workspace, cwd, runtime, profile, runtime_session_id, archived_at FROM sessions WHERE key IN (SELECT value FROM json_each(?)) ORDER BY key"
+  : `SELECT key, workspace, cwd, runtime, profile, runtime_session_id, archived_at FROM sessions WHERE ${home ? "(ws = ? OR ws IS NULL)" : "ws = ?"} ORDER BY key`;
 
 /// A session's room under `dataDir` as its files go along (footprint.ts `roomOf`, said under `dataDir` as given,
 /// `realData` its real path), null where its directory is not the station's own (it stays, `skipped`).
@@ -187,8 +190,9 @@ const listFile = (scratch: string, key: string) => join(scratch, "lists", `${cre
 /// one's room, a git checkout in it as git lists its files (tracked and not ignored) with its repository, a linked
 /// worktree's commits no remote has in a bundle; written in `scratch` (a list a session, the index of them). A file of
 /// the gathering before that has the same size and time is not read again (its hash from that session's list then).
-/// `agent`: the workspace's agent home here, whose own files go along too (`homeFiles`).
-export function gather(dataDir: string, db: string, ws: string, home: boolean, scratch: string, agent: string | null = null): Gathered {
+/// `agent`: the workspace's agent home here, whose own files go along too (`homeFiles`). `keys`: those sessions alone,
+/// not the workspace's (a chat handed over: its scratch is its own).
+export function gather(dataDir: string, db: string, ws: string, home: boolean, scratch: string, agent: string | null = null, keys: readonly string[] | null = null): Gathered {
   const d = new DatabaseSync(db, { readOnly: true, timeout: 30_000 });
   const gits: CarriedGit[] = [];
   const sessions: CarriedSession[] = [];
@@ -357,7 +361,7 @@ export function gather(dataDir: string, db: string, ws: string, home: boolean, s
     realData = realpathSync(dataDir); // sync: in the gathering's own thread (gatherSoon)
   } catch {}
   try {
-    const rows = d.prepare(sessionsIn(home)).all(ws) as SessionAt[];
+    const rows = d.prepare(sessionsIn(home, keys)).all(keys !== null ? JSON.stringify(keys) : ws) as SessionAt[];
     const runs = d.prepare("SELECT id, profile, runtime FROM runtime_sessions WHERE session_key = ? ORDER BY at");
     for (const s of rows) {
       const at = listFile(scratch, s.key);
@@ -498,9 +502,22 @@ export function homeFiles(agent: string): string[] {
 /// file's bytes read from `from` (`<hash>` each, put in place by `putFile`): where the retired station
 /// had it, moved to here. One there already with the same size and time, or the same bytes, is left as it is, another
 /// put in its place. A link to the retired station's data directory names this one's. What of it could not be put (its
-/// bytes not brought) is counted.
-export function place(dataDir: string, indexPath: string, from: string): { placed: number; missing: number; kept: number } {
+/// bytes not brought) is counted. `made`: a file the paths it put where nothing was are written to, a line each (what a
+/// hand-over that fails takes away again, handover.ts).
+export function place(dataDir: string, indexPath: string, from: string, made: string | null = null): { placed: number; missing: number; kept: number } {
   const index = JSON.parse(readFileSync(indexPath, "utf8")) as CarryIndex; // sync: in the placing's own thread (placeSoon)
+  const madeFd = made === null ? null : openSync(made, "a"); // sync: in the placing's own thread (placeSoon)
+  const fresh = (path: string) => {
+    if (madeFd !== null) writeSync(madeFd, `${path}\n`); // sync: in the placing's own thread (placeSoon)
+  };
+  try {
+    return placeAll(index, dataDir, from, fresh);
+  } finally {
+    if (madeFd !== null) closeSync(madeFd); // sync: in the placing's own thread (placeSoon)
+  }
+}
+
+function placeAll(index: CarryIndex, dataDir: string, from: string, fresh: (path: string) => void): { placed: number; missing: number; kept: number } {
   let placed = 0;
   let missing = 0;
   let kept = 0;
@@ -536,6 +553,7 @@ export function place(dataDir: string, indexPath: string, from: string): { place
         }
         mkdirSync(dirname(path), { recursive: true }); // sync: in the placing's own thread (placeSoon)
         symlinkSync(target, path); // sync: in the placing's own thread (placeSoon)
+        if (there === null) fresh(path);
         placed++;
         continue;
       }
@@ -555,6 +573,7 @@ export function place(dataDir: string, indexPath: string, from: string): { place
       utimesSync(tmp, f.mtimeMs / 1000, f.mtimeMs / 1000); // sync: in the placing's own thread (placeSoon)
       if (there !== null) rmSync(path, { recursive: true, force: true }); // sync: in the placing's own thread (placeSoon)
       renameSync(tmp, path); // sync: in the placing's own thread (placeSoon)
+      if (there === null) fresh(path);
       placed++;
     }
   }
@@ -582,7 +601,7 @@ export function putFile(blob: string, tmp: string): void {
 if (!isMainThread && workerData?.carry !== undefined) {
   const a = workerData.carry;
   try {
-    const answer = a.op === "gather" ? gather(a.dataDir, a.db, a.ws, a.home, a.scratch, a.agent ?? null) : a.op === "preview" ? preview(a.dataDir, a.db, a.ws, a.home) : place(a.dataDir, a.index, a.from);
+    const answer = a.op === "gather" ? gather(a.dataDir, a.db, a.ws, a.home, a.scratch, a.agent ?? null, a.keys ?? null) : a.op === "preview" ? preview(a.dataDir, a.db, a.ws, a.home) : place(a.dataDir, a.index, a.from, a.made ?? null);
     parentPort!.postMessage({ answer });
   } catch (e) {
     parentPort!.postMessage({ error: (e as Error).message });

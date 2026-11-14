@@ -20,9 +20,9 @@ import { type Lang, stationLang, tr } from "../ops/i18n.ts";
 import { readArchive, threadFile } from "./archive.ts";
 import {
   type Attachment, type AutoTitle, type ChatShare, type EntryRow, type JobNotice, type JobRow, type Json, type Membership,
-  type MessageRow, type NewMessage, type NewSession, type Opened, type PendingMessage, type Handed, type Letter, type AuthorKind, type ProcessRow, type ProfileStatus,
+  type MessageRow, type NewMessage, type NewSession, type Opened, type PendingMessage, type Handed, type HandedChat, type Letter, type AuthorKind, type ProcessRow, type ProfileStatus,
   type SessionBusy, type SessionRow, type SessionStats, type SessionThread, type StoreChange, type ThreadRow, type ThreadSummary,
-  type CardChoice, type TurnFor, type TurnRow, type TurnSummary, type WidgetModel, type InWorkspace, AUTO, XSHARE_IDLE_MS, I64_MAX, MANUAL, STATION_AUTHOR, STILLFAIL_SURFACE, attachment,
+  type CardChoice, type TurnFor, type TurnRow, type TurnSummary, type WidgetModel, type InWorkspace, AUTO, XSHARE_IDLE_MS, I64_MAX, MANUAL, STATION_AUTHOR, STILLFAIL_SURFACE, attachment, handedWs,
   byBytes, cardOf, entryColumns, jsonList, letterEntry, letterMessage, mergeEntries, optionsCard, parsed, stored, takeChars, toEntry, toJob, toMembership,
   LAST_MESSAGE, LEGACY_LAST_MESSAGE, LEGACY_MESSAGES_BEFORE, LETTER_SQL, MESSAGES_BEFORE, MESSAGE_PAGE_ENTRIES, isLetter, liveShare, shareLive, toChatShare, toMessage, toOpened, toSession, toSessionThread, toThread, toTurnSummary, JOBS_RUNNING, JOBS_UP, JOB_AT_PORT, SESSION_JOBS, CARD_BEFORE, OPTIONS_BEFORE, SESSION_OF_RUNTIME, PEOPLE_AT,
 } from "./rows.ts";
@@ -1702,6 +1702,71 @@ export class Store {
       for (const id of removed) changes.push({ type: "threadRemoved", id, ws });
       for (const id of kept) changes.push({ type: "thread", id, entries: [] });
     });
+  }
+
+  // ── chats handed over one at a time (replica/handover.ts, store/handover.ts) ──
+
+  /// Sessions `keys` handed to `station`: out of sight here (`handedWs`: `home` names the home one's), where each went
+  /// kept with its chat's thread here and there.
+  handOff(keys: readonly string[], station: string, home: string | null, threads: Record<string, { thread: number | null; there: number | null }>): void {
+    this.#with((changes) => {
+      this.#tx(() => {
+        for (const key of keys) {
+          const row = this.#one("SELECT ws FROM sessions WHERE key = ?", key);
+          if (row === undefined) continue;
+          const ws = (row.ws as string | null) ?? null;
+          const t = threads[key] ?? { thread: null, there: null };
+          this.#run("INSERT INTO handed_over (session, station, ws, thread, there, at) VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT (session) DO UPDATE SET station = ?2, ws = ?3, thread = ?4, there = ?5, at = ?6", key, station, ws, t.thread, t.there, this.now());
+          this.#run("UPDATE sessions SET ws = ? WHERE key = ?", handedWs(ws ?? home ?? ""), key);
+          changes.push({ type: "moved", key, station, ws, thread: t.thread, there: t.there });
+        }
+      });
+      for (const key of keys) {
+        this.#wsOf.delete(key);
+        this.#handed.delete(key);
+        changes.push({ type: "session", key });
+      }
+      this.#sessionWorkspaceChanged();
+    });
+  }
+
+  /// Where session `key` was handed (null: it was not, or came back): kept in memory once read.
+  handedTo(key: string): HandedChat | null {
+    if (this.#handed.has(key)) return this.#handed.get(key)!;
+    const r = this.#one("SELECT * FROM handed_over WHERE session = ?", key);
+    const h: HandedChat | null = r === undefined ? null : { session: key, station: r.station, ws: r.ws ?? null, thread: r.thread ?? null, there: r.there ?? null, at: r.at };
+    if (!this.db.isTransaction) this.#handed.set(key, h);
+    return h;
+  }
+  readonly #handed = new Map<string, HandedChat | null>();
+
+  /// The chats handed from here, by session after `after`, at most `limit`.
+  handedChats(after: string, limit: number): HandedChat[] {
+    return this.#all("SELECT * FROM handed_over WHERE session > ? ORDER BY session LIMIT ?", after, limit).map((r) => ({ session: r.session, station: r.station, ws: r.ws ?? null, thread: r.thread ?? null, there: r.there ?? null, at: r.at }));
+  }
+
+  /// What a chat handed here is told of it, once, as its next turn starts (`untoldMovedNote`): said anew where it came
+  /// here before.
+  setMovedNote(session: string, text: string): void {
+    this.#run("INSERT INTO moved_notes (session, text, told_at) VALUES (?1, ?2, NULL) ON CONFLICT (session) DO UPDATE SET text = ?2, told_at = NULL", session, text);
+    this.#movedUntold.add(session);
+  }
+
+  /// The sessions that came through connect `id`, at most `limit` (what a connect's move waits for).
+  sessionsOfConnect(id: string, limit: number): string[] {
+    return this.#all("SELECT key FROM sessions WHERE connect = ? ORDER BY key LIMIT ?", id, limit).map((r) => r.key as string);
+  }
+
+  /// The sessions of workspace `ws` (null: the home one's, which say none) after `after`, at most `limit`, handed ones
+  /// (`handedWs`) with them.
+  sessionsOfWs(ws: string | null, home: string | null, after: string, limit: number): string[] {
+    const named = ws === null ? home : ws;
+    return this.#all("SELECT key FROM sessions WHERE (ws IS ?1 OR ws = ?2) AND key > ?3 ORDER BY key LIMIT ?4", ws, handedWs(named ?? ""), after, limit).map((r) => r.key as string);
+  }
+
+  /// No chat of a connect's thread runs on another station any more (one handed back here).
+  dropConnectThreadStation(connect: string, channel: string, threadTs: string): void {
+    this.#run("DELETE FROM connect_threads WHERE connect = ? AND channel = ? AND thread_ts = ?", connect, channel, threadTs);
   }
 
   // ── single-session bindings ──

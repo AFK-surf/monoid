@@ -732,6 +732,12 @@ export class Events {
         }
         break;
       }
+      case "moved":
+        // A chat handed to another station (replica/handover.ts), or back here (`station` null): a device drops its row
+        // here and follows it there (`chat-moved`), its link going to that station.
+        this.emit("chat-moved", { session: change.key, station: change.station, thread: change.thread, there: change.there }, { sees: { ws: change.ws } });
+        this.rowsChanged(null, true);
+        break;
       case "threadRemoved":
         this.emit("thread-removed", { id: change.id }, { sees: { ws: change.ws ?? null } });
         // Told so: a device that makes its rows takes its own out.

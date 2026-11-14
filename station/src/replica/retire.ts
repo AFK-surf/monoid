@@ -37,14 +37,13 @@
 // Each step is safe to run again where it stopped; where each side stands is kept in a file (`retiring.json`,
 // `taking/<origin>.json`, `drops-owed.json`) so that a restart goes on with it.
 import { execFile } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
-import { createReadStream, readFileSync, readdirSync } from "node:fs";
-import { copyFile, mkdir, open, readFile, readdir, rename, rm, stat, statfs, writeFile } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import { readFileSync, readdirSync } from "node:fs";
+import { copyFile, mkdir, readFile, readdir, rename, rm, stat, statfs, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve, sep } from "node:path";
-import { createInterface } from "node:readline";
 import { Worker } from "node:worker_threads";
 import { type Bytes, Refused, bytesOf, withBytes } from "../mesh/bus.ts";
-import { fileBytes, oneBytes, stopBytes } from "../mesh/files.ts";
+import { stopBytes } from "../mesh/files.ts";
 import type { Fibers } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { platform } from "../platform/index.ts";
@@ -55,6 +54,7 @@ import { FolderPlace } from "./places.ts";
 import type { Ask } from "./peers.ts";
 import { type Outcome, moved, outcomeFile, readyFile, restoreDir } from "./restore.ts";
 import { mergeAgentHome } from "./agent-carry.ts";
+import { lackingIn, receiveFile, sendGathered } from "./sending.ts";
 import { movedSaid } from "../jobs/jobs.ts";
 import { hold as holdUpdates } from "../updates/holds.ts";
 
@@ -264,13 +264,13 @@ async function writeJson(path: string, v: unknown): Promise<void> {
 
 const there = (path: string) => stat(path).then(() => true, () => false);
 
-const gitRun = (dir: string, args: string[]): Promise<string> =>
+export const gitRun = (dir: string, args: string[]): Promise<string> =>
   new Promise((resolve, reject) => {
     execFile("git", ["-C", dir, ...args], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024, timeout: 30 * 60_000, env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_SSH_COMMAND: "ssh -o BatchMode=yes" } }, (e, out, err) =>
       e ? reject(new Error(String(err).trim() || e.message)) : resolve(String(out).trim()));
   });
 
-const gitHere = (): Promise<boolean> =>
+export const gitHere = (): Promise<boolean> =>
   new Promise((resolve) => execFile("git", ["--version"], { timeout: 30_000 }, (e) => resolve(e === null)));
 
 /// The bytes free where `data` is; a copy there a clone where the disk makes them (APFS: macOS).
@@ -295,8 +295,8 @@ function inThread<T>(asked: Record<string, unknown>, signal?: AbortSignal): Prom
     w.once("error", (e) => (done(), reject(e)));
   });
 }
-export const gatherSoon = (dataDir: string, db: string, ws: string, home: boolean, scratch: string, signal?: AbortSignal, agent: string | null = null) => inThread<Gathered>({ op: "gather", dataDir, db, ws, home, scratch, agent }, signal);
-export const placeSoon = (dataDir: string, index: string, from: string) => inThread<{ placed: number; missing: number; kept: number }>({ op: "place", dataDir, index, from });
+export const gatherSoon = (dataDir: string, db: string, ws: string, home: boolean, scratch: string, signal?: AbortSignal, agent: string | null = null, keys: readonly string[] | null = null) => inThread<Gathered>({ op: "gather", dataDir, db, ws, home, scratch, agent, keys }, signal);
+export const placeSoon = (dataDir: string, index: string, from: string, made: string | null = null) => inThread<{ placed: number; missing: number; kept: number }>({ op: "place", dataDir, index, from, made });
 export const previewSoon = (dataDir: string, db: string, ws: string, home: boolean) => inThread<{ chats: number; archived: number; outside: number }>({ op: "preview", dataDir, db, ws, home });
 
 /// What a retirement of a workspace would move, as the app shows it before a person retires the station (GET
@@ -999,74 +999,24 @@ export class Retire {
     }
   }
 
-  /// What the gathering `g` names that the other station lacks, sent: each session's list read as it streams, its hashes
-  /// asked of in batches (`retire.lacking`, LACK_MOST at most), then the list itself; the index last, its hash said back
-  /// (null: stopped). A file that changed since it was gathered is refused there: left for the next gathering while the
-  /// chats work, gathered again (the step tried again) once they are stopped (`strict`). The agent home's list is one more.
+  /// What the gathering `g` names that the other station lacks, sent (sending.ts `sendGathered`, by `retire.lacking`
+  /// and `retire.put`): the index last, its hash said back (null: stopped).
   async #send(s: State, g: Gathered, here: string, strict: boolean): Promise<string | null> {
-    const index = JSON.parse(await readFile(g.index, "utf8")) as CarryIndex;
-    s.total = index.bytes;
     s.done = 0;
-    this.#changed(true);
-    for (const session of [...index.sessions, ...(index.agent ? [index.agent] : [])]) {
-      let batch: { hash: string; path: string; size: number }[] = [];
-      const lines = createInterface({ input: createReadStream(session.at), crlfDelay: Infinity });
-      try {
-        for await (const line of lines) {
-          if (this.#stopping) return null;
-          if (line === "") continue;
-          const f = JSON.parse(line);
-          if (typeof f?.hash !== "string") continue;
-          batch.push({ hash: f.hash, path: f.path, size: f.size });
-          if (batch.length >= this.#lackMost) {
-            await this.#sendBatch(s, here, batch, strict);
-            batch = [];
-          }
-        }
-      } finally {
-        lines.close();
-      }
-      await this.#sendBatch(s, here, batch, strict);
-      if (strict) await this.#sendBatch(s, here, [{ hash: session.list, path: session.at, size: 0 }], true);
-    }
-    await this.#sendBatch(s, here, Object.entries(index.bundles).map(([hash, path]) => ({ hash, path, size: 0 })), strict);
-    if (this.#stopping || !strict) return null;
-    index.jobs = s.jobs;
-    const text = Buffer.from(JSON.stringify(index));
-    const hash = createHash("sha256").update(text).digest("hex");
-    await this.#d.ask(s.to, withBytes({ method: "retire.put", workspace: s.workspace, origin: here, name: hash }, oneBytes(text)));
-    return hash;
-  }
-
-  /// Of `batch`, what the other station lacks, sent.
-  async #sendBatch(s: State, here: string, batch: { hash: string; path: string; size: number }[], strict: boolean): Promise<void> {
-    if (batch.length === 0) return;
-    const asked = [...new Set(batch.map((f) => f.hash))];
-    const answer = await this.#d.ask(s.to, { method: "retire.lacking", workspace: s.workspace, origin: here, hashes: asked });
-    const lacking = new Set<string>(Array.isArray(answer?.lacking) ? answer.lacking : asked);
-    for (const f of batch) {
-      if (this.#stopping) return;
-      if (lacking.delete(f.hash)) {
-        let size = 0;
-        try {
-          size = (await stat(f.path)).size;
-        } catch {
-          // (gone since it was gathered: left for the next gathering while the chats work; once they are stopped the
-          // gathering is made again, so that the other station is sent all its lists name)
-          if (strict) throw new Error("a file went as it was sent: gathered again");
-          continue;
-        }
-        try {
-          await this.#d.ask(s.to, withBytes({ method: "retire.put", workspace: s.workspace, origin: here, name: f.hash }, fileBytes(f.path, 0, size)));
-        } catch (e) {
-          if (!(e instanceof Refused && /changed/.test(e.message)) && !/got shorter/.test((e as Error).message)) throw e;
-          if (strict) throw new Error("a file changed as it was sent: gathered again");
-          continue;
-        }
-      }
-      s.done += f.size;
-      this.#changed(false);
-    }
+    return await sendGathered(g, {
+      lacking: (hashes) => this.#d.ask(s.to, { method: "retire.lacking", workspace: s.workspace, origin: here, hashes }),
+      put: (hash, bytes) => this.#d.ask(s.to, withBytes({ method: "retire.put", workspace: s.workspace, origin: here, name: hash }, bytes)),
+      most: this.#lackMost,
+      stopping: () => this.#stopping,
+      total: (bytes) => {
+        s.total = bytes;
+        this.#changed(true);
+      },
+      done: (bytes) => {
+        s.done += bytes;
+        this.#changed(false);
+      },
+    }, strict, s.jobs);
   }
 
   /// The other station says it took this one's place (`retire.took`): the accounts and connects next.
@@ -1354,9 +1304,7 @@ export class Retire {
             if (hashes.length > this.#lackMost || !hashes.every((h: unknown) => typeof h === "string" && HASH.test(h))) throw new Refused(`at most ${this.#lackMost} files' hashes`);
             const t = this.#taking.get(peer);
             if (t === undefined || t.workspace !== ws) throw new Refused("not begun: retire.begin first");
-            const files = join(this.#carried.dir(ws, peer), "files");
-            const held = await Promise.all(hashes.map((h: string) => there(join(files, h))));
-            return { lacking: hashes.filter((_: string, i: number) => !held[i]) };
+            return { lacking: await lackingIn(join(this.#carried.dir(ws, peer), "files"), hashes) };
           }
           case "retire.put": {
             const name = String(request.name ?? "");
@@ -1409,36 +1357,9 @@ export class Retire {
     return { ok: true };
   }
 
-  /// A file sent: written beside, its bytes' hash checked as they come, then put in place; one whose bytes are not what
-  /// its name says (it changed as it was read) refused.
+  /// A file sent, taken by its hash (sending.ts `receiveFile`).
   async #receive(ws: string, origin: string, hash: string, bytes: Bytes): Promise<void> {
-    const dir = join(this.#carried.dir(ws, origin), "files");
-    const path = join(dir, hash);
-    if (await there(path)) {
-      for await (const _ of bytes) void _;
-      return;
-    }
-    await mkdir(dir, { recursive: true });
-    const tmp = `${path}.${randomBytes(4).toString("hex")}.tmp`;
-    const h = createHash("sha256");
-    const f = await open(tmp, "w");
-    try {
-      for await (const piece of bytes) {
-        h.update(piece);
-        for (let done = 0; done < piece.length; ) done += (await f.write(piece, done, piece.length - done)).bytesWritten;
-      }
-      await f.sync();
-    } catch (e) {
-      await f.close().catch(() => {});
-      await rm(tmp, { force: true });
-      throw e;
-    }
-    await f.close();
-    if (h.digest("hex") !== hash) {
-      await rm(tmp, { force: true });
-      throw new Refused("changed: its bytes are not what its name says");
-    }
-    await rename(tmp, path);
+    await receiveFile(join(this.#carried.dir(ws, origin), "files"), hash, bytes);
   }
 
   async #takeAsked(origin: string, ws: string, request: Json): Promise<Json> {

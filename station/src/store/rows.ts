@@ -12,6 +12,13 @@ export type Json = any;
 export const STILLFAIL_SURFACE = "ember";
 /// The connect the page's own threads' sessions are in (sessions/internal.ts INTERNAL_CONNECT), stored the same way.
 export const STILLFAIL_CONNECT = "ember";
+/// What a chat handed to another station one at a time (replica/handover.ts) says its workspace is here once it went
+/// (store `handOff`), out of every device's sight here; and what one coming here says until it is shown (`comingWs`).
+export const handedWs = (ws: string) => `handed:${ws}`;
+export const comingWs = (ws: string) => `coming:${ws}`;
+/// A chat handed from here to another station (store `handOff`): where it went, the workspace it was of here (null:
+/// the home one), its thread here and there, when.
+export type HandedChat = { session: string; station: string; ws: string | null; thread: number | null; there: number | null; at: number };
 /// Archived by a person.
 export const MANUAL = "manual";
 /// Archived by the station, for idling (or brought back by something said).
@@ -273,6 +280,9 @@ export type StoreChange =
   | { type: "letters"; id: number; letters: EntryRow[] }
   /// It went, with every entry it had; `ws` as its session's.
   | { type: "threadRemoved"; id: number; ws?: string | null }
+  /// A chat was handed to another station (`station`; null: it came back here): its session, the workspace it is of,
+  /// its thread here and there (replica/handover.ts).
+  | { type: "moved"; key: string; station: string | null; ws: string | null; thread: number | null; there: number | null }
   /// A viewer's read position moved.
   | { type: "read"; viewer: string; thread: number; n: number }
   /// A viewer hid a chat from their lists, or made it visible again.

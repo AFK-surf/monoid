@@ -19,7 +19,7 @@ import type { Hub } from "../sessions/hub.ts";
 import { ControlPlane, Parts, Paths, Peers, StationConfig, Store } from "../services.ts";
 import type { Store as StoreT } from "../store/store.ts";
 import type { NameBook } from "./names.ts";
-import { CALL, EVENT, LIST, MOVED, ROUTED, RemoteConnects, RemoteSurface, TAKE, type Described, type Known, answerCall, describe, knownIn, knownOf, localOf, threadOfEvent } from "./remote.ts";
+import { CALL, EVENT, LIST, MOVED, ROUTE, ROUTED, RemoteConnects, RemoteSurface, TAKE, type Described, type Known, answerCall, describe, knownIn, knownOf, localOf, threadOfEvent } from "./remote.ts";
 
 type Json = any;
 
@@ -86,6 +86,52 @@ export class WorkspaceConnects {
       return { has: this.entries().some((c) => this.workspaceOf(c) === workspace && fingerprint(kindOf(c), c?.[kindOf(c)]) === print) };
     });
     d.bus.on(TAKE, (peer, request, workspace) => this.take(peer, request, workspace));
+    // (one thread's chat runs on another station from now on, or here again: replica/handover.ts)
+    d.bus.on(ROUTE, async (peer, request, workspace) => {
+      const known = knownIn(request?.connect);
+      const id = known === null ? "" : localOf(known, d.here());
+      const entry = this.entryOf(id);
+      if (known === null || entry === undefined || typeof workspace !== "string" || this.workspaceOf(entry) !== workspace || !this.inWorkspace(workspace, peer)) throw new Error("no such connect");
+      if (typeof request?.channel !== "string" || typeof request?.threadTs !== "string") throw new Error("no such thread");
+      this.routeHere(id, request.channel, request.threadTs, typeof request.station === "string" ? request.station : null);
+      return { ok: true };
+    });
+  }
+
+  /// A thread of a connect of this station's: its chat runs on `station` from now on (null, or this one: here).
+  private routeHere(id: string, channel: string, threadTs: string, station: string | null): void {
+    if (station === null || station === this.d.here()) this.d.store.dropConnectThreadStation(id, channel, threadTs);
+    else this.d.store.setConnectThreadStation(id, channel, threadTs, station);
+  }
+
+  /// A thread of connect `id` (as this station names it): its chat runs on `station` from now on, said where the connect
+  /// runs (here, or asked of the station it runs on, `connect.route`). Not a routed kind: refused.
+  async route(id: string, channel: string, threadTs: string, station: string): Promise<void> {
+    const entry = this.entryOf(id);
+    if (entry !== undefined) {
+      if (!ROUTED.includes(kindOf(entry) as never) || entry.mode === "single-session") throw new Error("that connect's chats run only where it runs");
+      return this.routeHere(id, channel, threadTs, station);
+    }
+    const remote = this.remote.surface(id);
+    if (remote === undefined) throw new Error(`connect ${id} is not known here`);
+    await this.d.bus.ask(remote.station, { method: ROUTE, workspace: remote.described.workspace, connect: knownOf(id, this.d.here()), channel, threadTs, station });
+  }
+
+  /// Connect `id` as this station knows it: where it runs and what it says of itself (null: not known here), so that a
+  /// station a chat of it is handed to posts through it before it heard any of its events (`learnOf`).
+  describedFor(id: string): { station: string; described: Described } | null {
+    const own = this.described(id);
+    if (own !== null) return { station: this.d.here(), described: own };
+    const remote = this.remote.surface(id);
+    return remote === undefined ? null : { station: remote.station, described: remote.described };
+  }
+
+  /// What another station said of a connect a chat handed here goes through (`describedFor`): learnt, unless it is one
+  /// of this station's own.
+  learnOf(known: Known, station: string, described: Described): void {
+    const id = localOf(known, this.d.here());
+    if (this.entryOf(id) !== undefined) return;
+    this.remote.learn(id, station, described);
   }
 
   private entries(): Json[] {
@@ -136,6 +182,14 @@ export class WorkspaceConnects {
     if (this.entryOf(id) !== undefined) throw new Error("that connect runs on this station");
     this.remote.learn(id, peer, d);
     const event = request.event as ChatEvent;
+    // (its chat was handed from here to another station, and the connect's station not told yet, or the event already
+    // on its way: it goes on there, as the connect's station would send it)
+    const thread = threadOfEvent(event);
+    const moved = this.d.hub().movedTo(id, thread.channel, thread.threadTs);
+    if (moved !== null && moved !== this.d.here()) {
+      await this.d.bus.ask(moved, { method: EVENT, workspace, connect: known, described: d, event });
+      return { ok: true };
+    }
     await this.d.hub().receive(id, event);
     // Its people and channel named here as there (the pages read them from this station's names book).
     if (event.type === "message") {
@@ -221,6 +275,26 @@ export class WorkspaceConnects {
   /// retired from `ws` does once its chats are there (replica/retire.ts).
   ownIn(ws: string): string[] {
     return this.entries().filter((c) => this.workspaceOf(c) === ws && typeof c?.id === "string").map((c) => c.id as string);
+  }
+  /// `ownIn`'s with their kind and mode (move/connects.ts).
+  ownKinds(ws: string): { id: string; name: string; kind: string; mode: string }[] {
+    return this.namedIn(ws).map((c) => ({ ...c, mode: this.entryOf(c.id)?.mode === "single-session" ? "single-session" : "multi-session" }));
+  }
+  /// The ids of every connect of this station's.
+  ownIds(): string[] {
+    return this.entries().filter((c) => typeof c?.id === "string").map((c) => c.id as string);
+  }
+  /// How connect `id` (as this station names it) goes, its own or another station's (null: not known here).
+  kindOf(id: string): { kind: string; mode: string } | null {
+    const entry = this.entryOf(id);
+    if (entry !== undefined) return { kind: kindOf(entry), mode: entry.mode === "single-session" ? "single-session" : "multi-session" };
+    const remote = this.remote.surface(id);
+    return remote === undefined ? null : { kind: remote.described.kind, mode: remote.described.mode };
+  }
+  /// The station connect `id` runs on (null: this one, or not known).
+  runsOn(id: string): string | null {
+    if (this.entryOf(id) !== undefined) return null;
+    return this.remote.surface(id)?.station ?? null;
   }
   /// `ownIn`'s, as the app names them: each one's name (its id where it has none) and kind.
   namedIn(ws: string): { id: string; name: string; kind: string }[] {
@@ -349,7 +423,10 @@ export class WorkspaceConnects {
     if (to === this.d.here() || !this.inWorkspace(ws, to)) throw new Refused(400, tr(lang, "station.connect.moveWhere"));
     const d = this.described(id);
     const known = knownOf(id, this.d.here());
-    const threads = [...this.d.store.connectThreads(id), ...this.d.store.connectLocalThreads(id).map((t) => ({ ...t, station: localsTo }))].filter((t) => t.station !== to);
+    // (a thread routed elsewhere already, a chat of it handed from here to another station, goes on there)
+    const routed = this.d.store.connectThreads(id);
+    const seen = new Set(routed.map((t) => `${t.channel}\0${t.threadTs}`));
+    const threads = [...routed, ...this.d.store.connectLocalThreads(id).filter((t) => !seen.has(`${t.channel}\0${t.threadTs}`)).map((t) => ({ ...t, station: localsTo }))].filter((t) => t.station !== to);
     await this.d.bus.ask(to, { method: TAKE, workspace: ws, connect: known, entry: { ...entry, workspace: ws }, threads });
     this.d.config.update((raw) => {
       raw.connects = (Array.isArray(raw.connects) ? raw.connects : []).filter((c: Json) => c?.id !== id);

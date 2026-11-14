@@ -739,7 +739,8 @@ test("what a platform says while a workspace is quiet is kept, and goes to the s
     const wc = new WorkspaceConnects({
       data: r.dir, hub: () => r.hub, store: r.store, config: { raw: () => r.raw, update: (f) => f(r.raw) },
       here: () => "A", home: () => "home", stations: () => [{ id: "A", name: "a" }, { id: "B", name: "b" }],
-      bus: { ask: async (s, req) => (asked.push([s, req.method, req.event?.message?.text]), { ok: true }), on: () => {} },
+      // (the bots of its connects told to the others, connect.bots, are not what this looks at)
+      bus: { ask: async (s, req) => (req.method === "connect.bots" ? null : asked.push([s, req.method, req.event?.message?.text]), { ok: true }), on: () => {} },
       names: () => null,
     });
     await r.hub.quiet("home");

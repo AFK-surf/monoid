@@ -33,6 +33,7 @@ import { tr, stationLang } from "../ops/i18n.ts";
 import { iso, sessionPlaces, transcriptSources } from "../read/transcript.ts";
 import { type Attachment, MANUAL, type SessionRow, type Store, STILLFAIL_SURFACE, feishuSurface, commaSurface, slackSurface, type MessageRow, type ThreadRow, type ThreadSummary } from "../store/store.ts";
 import type { DeliveryCardState, InWorkspace, PendingMessage } from "../store/rows.ts";
+import { comingWs, handedWs } from "../store/rows.ts";
 import { runShown } from "./run-change.ts";
 import type { PolicyChecks } from "./archive-policy.ts";
 import type { RecentChatList } from "../store/chat-list.ts";
@@ -162,6 +163,7 @@ export class Retiring extends Error {
 /// What a station retired from `ws` says its chats there are of once the station they went to took them: no workspace
 /// it is in, so they are out of every device's sight here (replica/retire.ts).
 export const retiredWs = (ws: string) => `retired:${ws}`;
+export { comingWs, handedWs } from "../store/rows.ts";
 
 export class Hub {
   readonly options: HubOptions;
@@ -448,13 +450,85 @@ export class Hub {
     return this.quieted.has(ws);
   }
 
-  /// Whether session `key` is one of the chats this station hands, or handed, to another as it is retired: of a
-  /// workspace quiet here, or put out of sight (`retiredWs`).
+  /// Whether session `key` is one of the chats this station hands, or handed, to another: of a workspace quiet here, put
+  /// out of sight (`retiredWs`, `handedWs`, one coming here and not shown yet, `comingWs`), or held one at a time
+  /// (`holdChat`).
   handedOver(key: string): boolean {
     const ws = this.store.sessionWs(key);
     if (ws === undefined) return false;
-    if (ws !== null && ws.startsWith(retiredWs(""))) return true;
+    if (this.heldChats.has(key)) return true;
+    if (ws !== null && (ws.startsWith(retiredWs("")) || ws.startsWith(handedWs("")) || ws.startsWith(comingWs("")))) return true;
     return this.quieted.has(ws ?? this.workspaces()[0] ?? "");
+  }
+
+  /// The chats held one at a time (replica/handover.ts: one being handed to another station; move/: one stopped as what
+  /// it needs moved away), each with why: no turn starts, its process is ended as the station's leaving a workspace
+  /// ends it (its turn cut off stays marked running, its messages pending), what is said to it is kept in its threads'
+  /// logs, delivered where it ends up.
+  private readonly heldChats = new Map<string, string>();
+
+  /// Holds session `key` (`why`: for the status), at once: none of its turns starts from now on.
+  async holdChat(key: string, why: string): Promise<void> {
+    this.heldChats.set(key, why);
+    const fiber = this.deadlines.get(key);
+    if (fiber) (this.interrupt(fiber), this.deadlines.delete(key));
+    await this.actors.get(key)?.suspend();
+  }
+
+  /// `holdChat` taken back: what it cut off resumes and what waited goes on, as `unquiet` does. False: it was not held.
+  releaseChat(key: string): boolean {
+    if (!this.heldChats.delete(key)) return false;
+    this.wakeChat(key);
+    return true;
+  }
+
+  /// A chat that may take turns now (let go, shown here): what was cut off resumes, what waited goes on.
+  wakeChat(key: string): void {
+    const row = this.store.getSession(key);
+    if (row === null || this.heldChats.has(key) || this.holdsNow.size > 0 || !this.online(row) || !this.inAWorkspace(key)) return;
+    if (row.running) void this.actor(row).recover();
+    else if (this.store.hasPending(key)) void this.actor(row).kick();
+  }
+
+  /// Whether session `key` is in a turn now.
+  busy(key: string): boolean {
+    return this.actors.get(key)?.processState() === "running";
+  }
+
+  /// Once session `key`'s turn ended, as the store says it (at once where none runs).
+  turnEnded(key: string): Promise<void> {
+    if (!this.busy(key)) return Promise.resolve();
+    return new Promise((resolve) => {
+      const off = this.store.subscribe((change) => {
+        if (change.type !== "session" || change.key !== key || this.busy(key)) return;
+        off();
+        resolve();
+      });
+    });
+  }
+
+  /// Why session `key` is held one at a time (null: it is not).
+  chatHeld(key: string): string | null {
+    return this.heldChats.get(key) ?? null;
+  }
+
+  /// What a connect's platform said in a thread, as far as it came, taken (`accept`'s turn of that thread waited for):
+  /// a chat handed over sends the rest of its log after it.
+  async drained(connectId: string, channel: string, threadTs: string): Promise<void> {
+    await this.inThread(`${this.surface(connectId)}\0${channel}\0${threadTs}`, async () => {});
+  }
+
+  /// The station a chat of `connect`'s thread was handed to (store `handedTo`): what it says there goes there.
+  movedTo(connect: string, channel: string, threadTs: string): string | null {
+    const thread = this.store.threadAt(this.surface(connect), channel, threadTs);
+    if (thread === null) return null;
+    for (const m of this.store.threadSessions(thread.id)) {
+      // (one being handed back here takes what comes here: it is to go on here)
+      if (m.connect !== connect || this.store.sessionWs(m.session)?.startsWith(comingWs("")) === true) continue;
+      const to = this.store.handedTo(m.session);
+      if (to !== null) return to.station;
+    }
+    return null;
   }
 
   /// The station left one of its workspaces but is still in others: that workspace's
@@ -1531,7 +1605,7 @@ export class Hub {
       archiveIsCold: (key) => this.cold.isCold(key),
       restoreArchive: (key) => this.cold.restore(key),
       cleanArchive: (key) => this.cold.pack(key),
-      held: (key) => this.holdsNow.size > 0 || !this.inAWorkspace(key),
+      held: (key) => this.holdsNow.size > 0 || this.heldChats.has(key) || !this.inAWorkspace(key),
       stopJobs: async (key) => {
         const jobs = this.jobs;
         if (!jobs) return;

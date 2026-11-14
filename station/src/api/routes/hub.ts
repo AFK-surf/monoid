@@ -242,6 +242,25 @@ export function quotesOf(given: unknown): Quote[] {
 /// A whole dimension (`as_f64`, no fraction, 0 < v < 100000).
 const dimension = (v: unknown) => (typeof v === "number" && Number.isInteger(v) && v > 0 && v < 100_000 ? v : undefined);
 
+/// A chat handed to another station (replica/handover.ts): what a device asking of it here is answered (409, with
+/// `moved`: {session, station, thread, there}): it drops its row here and asks that station, its thread there `there`.
+class Moved extends Refused {
+  readonly moved: { session: string; station: string; thread: number | null; there: number | null };
+  constructor(message: string, moved: Moved["moved"]) {
+    super(409, message);
+    this.moved = moved;
+  }
+}
+
+/// Thrown where one of `keys` was handed to another station.
+function movedOf(s: Store, keys: readonly string[], r: Request): void {
+  for (const key of keys) {
+    const h = s.handedTo(key);
+    if (h === null) continue;
+    throw new Moved(tr(r.lang, "station.move.movedThere"), { session: key, station: h.station, thread: h.thread, there: h.there });
+  }
+}
+
 export const routes = (tools: Tools): Route[] => {
   const { read, store } = tools;
   /// Answered with the hub, its refusals as `{error}`; 503 while there is none (a station starting). The agents' side as it
@@ -252,6 +271,7 @@ export const routes = (tools: Tools): Route[] => {
     try {
       return await f(store, agents);
     } catch (e) {
+      if (e instanceof Moved) return json(409, JSON.stringify({ error: e.message, moved: e.moved }));
       if (e instanceof Refused) return error(e.status, e.message);
       return error(500, (e as Error).message);
     }
@@ -262,8 +282,10 @@ export const routes = (tools: Tools): Route[] => {
   const retiring = (r: Request, a: AgentsParts) => {
     if (r.viewer.workspace !== null && a.hub.quietIn(r.viewer.workspace)) throw new Refused(503, tr(r.lang, "station.retire.moving"));
   };
-  /// A session there, and in the asker's workspace (one of another is none for them: api/seen.ts).
+  /// A session there, and in the asker's workspace (one of another is none for them: api/seen.ts); one handed to
+  /// another station is said where it went (`Moved`).
   const session = (s: Store, key: string, r: Request) => {
+    movedOf(s, [key], r);
     if (s.getSession(key) === null || !sessionSeen(s, r.viewer, key)) throw new Refused(404, `unknown session ${key}`);
   };
   const thread = (s: Store, id: string) => {
@@ -448,6 +470,18 @@ export const routes = (tools: Tools): Route[] => {
           const [key, chat] = await as(400, () => continueMachineSession(a.hub, roots, found, r.viewer.email, r.lang, r.viewer.home === false ? r.viewer.workspace : null));
           log.info("admin", "machine session continued from the admin page", { session: key, from: id, by: r.viewer.email });
           return made(r, key, chat.id);
+        }),
+    },
+    // The chats handed from here to other stations, a page at a time by session (`after`), each with where it went.
+    {
+      method: "GET",
+      pattern: /^\/moved$/,
+      handle: (r) =>
+        write((s) => {
+          const after = param(r, "after") ?? "";
+          const limit = Math.min(Math.max(Number(param(r, "limit") ?? 200) || 200, 1), 500);
+          const moved = s.handedChats(after, limit).filter((h) => (h.ws ?? null) === (r.viewer.workspace ?? null) || r.viewer.workspace === null || h.ws === null);
+          return ok({ moved: moved.map((h) => ({ session: h.session, station: h.station, thread: h.thread, there: h.there, at: h.at })) });
         }),
     },
     // Another chat on the pages with a session in it.
@@ -640,6 +674,7 @@ export const routes = (tools: Tools): Route[] => {
           const t = thread(s, segment(rawId!));
           if (t.surface !== STILLFAIL_SURFACE) throw new Refused(400, tr(r.lang, "station.admin.postOnlyStillfail"));
           retiring(r, a);
+          movedOf(s, s.threadSessions(t.id).map((m) => m.session), r);
           const i = input(r);
           const said = text(i.text).trim();
           const files = await attachments(r, s, a, t.id, i.attachments);

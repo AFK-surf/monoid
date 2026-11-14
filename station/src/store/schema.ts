@@ -462,6 +462,17 @@ CREATE TABLE IF NOT EXISTS model_stars (
   stars TEXT NOT NULL,
   PRIMARY KEY (ws, sub)
 );
+-- The chats handed from here to another station while both are up (replica/handover.ts): where each went, the
+-- workspace it was of here (null: the home one), its chat's thread here and there. Its rows here stay (a hand-back
+-- goes on from them); a device, a link or a letter naming it is told where it is.
+CREATE TABLE IF NOT EXISTS handed_over (
+  session TEXT PRIMARY KEY,
+  station TEXT NOT NULL,
+  ws TEXT,
+  thread INTEGER,
+  there INTEGER,
+  at INTEGER NOT NULL
+);
 `;
 
 /// Each message as it reads now: its latest edit's words, files and quotes.
