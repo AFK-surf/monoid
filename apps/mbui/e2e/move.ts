@@ -734,8 +734,11 @@ try {
             log(`  the chat as the device shows it now: ${brief(shown, 900)}`);
             if (row?.state !== "stopped") throw new Error(`its row on A's page says ${row?.state} (${row?.stateText}), not stopped waiting for its account`);
             const read = [shown.stateText, shown.offlineNote, JSON.stringify(shown.connection), ...shown.outbox, ...texts(v).filter((t) => !t.startsWith("drill-"))].join(" | ");
-            if (!/停|等|stopped|waits for|账号|登录|login|account/i.test(read)) throw new Error(`nothing on the chat's page tells the person it is stopped and what it waits for (only the move page's row says ${row?.stateText}): ${read.slice(0, 400)}`);
-            log(`  what tells the person: ${brief(read.split(" | ").find((x) => /停|等|stopped|waits for|账号|登录|login|account/i.test(x)), 400)}`);
+            // (a line that says it is stopped and names what it waits for: the login, as the move page's row names it)
+            const waited = /等「([^」]+)」/.exec(String(row?.stateText ?? ""))?.[1] ?? "cc";
+            const telling = read.split(" | ").find((x) => /停|等|stopped|wait/i.test(x) && x.includes(waited));
+            log(`  what tells the person: ${brief(telling ?? null, 400)} (lines read: ${read.slice(0, 400)})`);
+            if (telling === undefined) throw new Error(`nothing on the chat's page says it is stopped waiting for ${waited}: ${read.slice(0, 400)}`);
           });
           await check("2: its account moved back: the chat goes on, what was said meanwhile answered once, its job on A, A's other chat answers too", async () => {
             const la = await moveBack(account.id, "B", "accounts");
@@ -849,8 +852,11 @@ try {
           const shown = { stateText: v.stateText ?? null, offlineNote: v.offlineNote ?? null, connection: v.connection ?? null, outbox: (v.outbox ?? []).map((o: J) => `${o.state}${o.waits ? `: ${o.waits}` : ""}`), messages: texts(v).slice(-3) };
           log(`  the chat as the device shows it: ${brief(shown, 900)}`);
           const read = [shown.stateText, shown.offlineNote, JSON.stringify(shown.connection), ...shown.outbox, ...texts(v).filter((t) => !t.startsWith("drill-"))].join(" | ");
-          if (!/停|等|stopped|waits for|账号|登录|login|account/i.test(read)) throw new Error(`nothing on the chat's page says it is stopped and what it waits for: ${read.slice(0, 400)}`);
-          log(`  what tells the person: ${brief(read.split(" | ").find((x) => /停|等|stopped|waits for|账号|登录|login|account/i.test(x)), 400)}`);
+          // (a line that says it is stopped and names the login it waits for; drill 11 matched the station's give-up
+          // notice after a turn of the fake agent's, sessions/actor.ts giveUp, which says neither)
+          const telling = read.split(" | ").find((x) => /停|等|stopped|wait/i.test(x) && /Kimi Code|kimi-code/i.test(x));
+          log(`  what tells the person: ${brief(telling ?? null, 400)} (lines read: ${read.slice(0, 400)})`);
+          if (telling === undefined) throw new Error(`nothing on the chat's page says it is stopped waiting for Kimi Code: ${read.slice(0, 400)}`);
         });
         await check("2k: its login moved back: the chat goes on, what was said meanwhile answered once, on A, from its context", async () => {
           const l = await moveBack(item, "B", "accounts");
@@ -883,7 +889,7 @@ try {
     });
   }
 
-  // ── 3: faults ──
+  // ── what a part needs to begin from a clean state, and a chat with a room of its own (parts 6, 3, 4, 7) ──
   /// A chat on A for a fault, with a room of `mb` MB in `files` files (so that its first pass takes seconds).
   const faultChat = async (label: string, mb: number, files = 400) => {
     const key = await newChat(`${label}-${tag}`);
@@ -905,8 +911,25 @@ try {
           throw new Error(`${n} is not online on alice's device`);
         });
       }
-      const logins = (JSON.parse(readFileSync(`${DATA.A}/config.json`, "utf8")).profiles ?? []).filter((p: J) => p.runtime === "claude");
-      if (logins.length === 0) throw new Error(`A has no login to run a chat on (B's: ${brief((JSON.parse(readFileSync(`${DATA.B}/config.json`, "utf8")).profiles ?? []).map((p: J) => p.id))})`);
+      const logins = (JSON.parse(readFileSync(`${DATA.A}/config.json`, "utf8")).profiles ?? []).filter((p: J) => p.runtime === "claude" || p.borrowed === true || p.share !== undefined);
+      if (logins.length === 0) {
+        // (the product lost it, a FAIL of the part that did; this part runs all the same, on one seeded again as `up`
+        // seeds it: so each part stands on its own)
+        const cfgOf = (n: Name) => existsSync(`${DATA[n]}/config.json`) ? brief((JSON.parse(readFileSync(`${DATA[n]}/config.json`, "utf8")).profiles ?? []).map((p: J) => ({ id: p.id, share: p.share ?? null, borrowed: p.borrowed ?? null, host: p.host ?? null })), 400) : "none";
+        log(`  RESTORED BY HAND: A has no login to run a chat on (A's ${cfgOf("A")}, B's ${cfgOf("B")}, A's accounts kept ${["accounts-known.json", "accounts-shared.json"].map((f) => existsSync(`${DATA.A}/move/${f}`) ? `${f} ${readFileSync(`${DATA.A}/move/${f}`, "utf8").slice(0, 300)}` : "").join(" ")}): cc seeded again in A's config as the harness's up does`);
+        stationDo("halt", "station");
+        try {
+          const cfgPath = `${DATA.A}/config.json`;
+          const cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
+          cfg.profiles = [...(cfg.profiles ?? []).filter((p: J) => p.id !== "cc"), { id: "cc", runtime: "claude", home: "homes/cc", models: ["claude-sonnet-5-5"] }];
+          writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+          mkdirSync(`${DATA.A}/homes/cc`, { recursive: true });
+          if (!existsSync(`${DATA.A}/homes/cc/.credentials.json`)) writeFileSync(`${DATA.A}/homes/cc/.credentials.json`, "{}");
+        } finally {
+          await up("A");
+          await a.stationState(ws, (s) => s.state === "online", 120_000, aId);
+        }
+      }
       const k = await newChat(`clean-${label}-${tag}`);
       const said = await say(k, `drill-note:clean-${label}`, `drill-noted clean-${label}`, 60_000);
       if (at(/cwd=(\S+)/.exec(said)?.[1] ?? "") !== "A") throw new Error(`a new chat on A answered from elsewhere: ${said}`);
@@ -917,6 +940,132 @@ try {
     }
   };
 
+  // ── 6: a chat moved to a station that still holds a retired copy of it (what this morning's failed retirement left
+  // on the real target, of every chat) and back ──
+  if (part("6") && (limit("6", 900), await clean("6"))) {
+    /// Each file of `room` (relative path) by a digest of its bytes.
+    const snapshot = (room: string): Map<string, string> => {
+      const m = new Map<string, string>();
+      const walk = (d: string, rel: string) => {
+        for (const e of readdirSync(d, { withFileTypes: true })) {
+          const r = rel === "" ? e.name : `${rel}/${e.name}`;
+          if (e.isDirectory()) walk(join(d, e.name), r);
+          else if (e.isFile()) m.set(r, createHash("sha256").update(readFileSync(join(d, e.name))).digest("hex").slice(0, 12));
+        }
+      };
+      if (existsSync(room)) walk(room, "");
+      return m;
+    };
+    const differ = (want: Map<string, string>, got: Map<string, string>): string[] => [
+      ...[...want].filter(([f, h]) => got.get(f) !== h).map(([f]) => `${f} ${got.has(f) ? "differs" : "missing"}`),
+      ...[...got.keys()].filter((f) => !want.has(f)).map((f) => `${f} extra`),
+    ];
+    /// The texts of chat `key`'s thread on station `n`, in its order (its latest thread there).
+    const entriesOn = (n: Name, key: string): string[] => {
+      const t = sql(n, `select thread from thread_sessions where session = ${lit(key)} order by joined_at desc limit 1`)[0]?.thread;
+      return t === undefined ? [] : sql(n, `select text from entries where thread = ${t} and text is not null and text != '' order by n`).map((r) => String(r.text));
+    };
+    /// What of `want` (the station it left, in order) is not on `got` once each and in that order.
+    const entriesDiffer = (want: string[], got: string[]): string | null => {
+      const count = (l: string[], t: string) => l.filter((x) => x === t).length;
+      const wrong = [...new Set(want)].filter((t) => count(got, t) !== count(want, t)).map((t) => `${brief(t.slice(0, 60))} ${count(want, t)}x there, ${count(got, t)}x here`);
+      let i = 0;
+      for (const t of got) if (i < want.length && t === want[i]) i++;
+      if (wrong.length === 0 && i === want.length) return null;
+      return `${wrong.slice(0, 5).join("; ")}${i < want.length ? `; out of order from ${brief(want[i]!.slice(0, 60))}` : ""}`;
+    };
+    let k6 = "";
+    let roomA: Map<string, string> = new Map();
+    const r1 = `r${tag}`;
+    const r2 = `q${tag}`;
+    await check("6: setup: a chat moved A→B and back with its room, more said and changed on A; B left as a retirement leaves it (by hand, e2e/move-stale.ts with B's own store, B stopped: its row's ws retired:, two entries only B has, its room older, its transcript what the chat left there)", async () => {
+      k6 = await newChat(`stale-${tag}`);
+      await say(k6, `drill-remember:${r1}`, `drill-remembered ${r1}`);
+      const room = roomOn("A", k6)!;
+      writeFileSync(join(room, "same.txt"), "the same on both\n");
+      writeFileSync(join(room, "differs.txt"), "A's first\n");
+      writeFileSync(join(room, "lacking.txt"), "A's, gone from B's copy\n");
+      const l = await moveChat(k6, "B");
+      if (standing("B", k6) !== "live") throw new Error(`not to B: ${standings(k6)}; ${outcome(l)}`);
+      await home(k6);
+      // (what A has since that B's copy will not: words said, a remembered word newer than B's transcript, a file changed)
+      await say(k6, `drill-remember:${r2}`, `drill-remembered ${r2}`);
+      writeFileSync(join(room, "differs.txt"), "A's, changed after it came back\n");
+      stationDo("halt", "second");
+      try {
+        log(`  ${execFileSync(process.execPath, ["--no-warnings", join(dirname(new URL(import.meta.url).pathname), "move-stale.ts"), process.env.E2E_SF_SRC!, DATA.B, k6, ws, tag, "differs.txt", "lacking.txt"], { encoding: "utf8", timeout: 120_000 }).trim()}`);
+      } finally {
+        await up("B");
+      }
+      log(`  B's row of it: ${brief(sql("B", `select ws, workspace from sessions where key = ${lit(k6)}`))}; standing ${standings(k6)}`);
+    });
+    if (k6 !== "") {
+      await check("6: B's own move page does not list the retired row as a chat of B's", async () => {
+        const v = await a.until({ topic: "stationMove", station: B, to: aId, module: "chats" }, (v) => v?.modules && v, 60_000);
+        const chatsM = v.modules.find((m: J) => m.id === "chats");
+        log(`  B's page: chats ${chatsM?.done}/${chatsM?.total}: ${brief((chatsM?.items ?? []).map((x: J) => `${x.id.slice(-8)} ${x.state}`), 300)}`);
+        if ((chatsM?.items ?? []).some((x: J) => x.id === k6)) throw new Error(`B's page lists ${k6} as a chat of B's`);
+      });
+      /// Chat `k6` moved (to B by A's page with its needs, or back by its 全部迁回), a message said in its hold; then
+      /// each thing it must be on the station it went to, a check each.
+      const there = async (to: Name, label: string, last: string) => {
+        const from: Name = to === "B" ? "A" : "B";
+        const wantEntries = entriesOn(from, k6);
+        const wantRoom = snapshot(roomOn(from, k6)!);
+        const note = `${label}-${tag}`;
+        let said = false;
+        await check(`6: ${label}: moved, a message said while it is held`, async () => {
+          const t0 = Date.now();
+          if (to === "B") await a.call("move.start", { station: A, to: bId, module: "chats", item: k6, withNeeds: true });
+          else await a.call("move.back", { station: A, from: bId, all: true });
+          const held = heldOf(k6, t0, from).then(async () => {
+            await a.call("chat.send", { station: A, session: k6, text: `drill-note:${note}` });
+            said = true;
+          });
+          held.catch((e) => log(`  ${e.message}`));
+          const l = await turnEnds("A", t0);
+          await within(held.catch(() => {}), 10_000);
+          log(`  ${outcome(l)}; ${standings(k6)}; its hand-over ${outOn(from, k6)?.step}: ${outOn(from, k6)?.error ?? ""}`);
+          if (liveOn(k6).join() !== to) throw new Error(`${standings(k6)}; ${outcome(l)}`);
+        });
+        await check(`6: ${label}: listed once, on ${to}`, () => listedOnceOn(k6, to));
+        await check(`6: ${label}: every entry of ${from}'s on ${to} once and in order`, async () => {
+          const got = entriesOn(to, k6);
+          log(`  ${from} had ${wantEntries.length}, ${to} has ${got.length}; only on ${to}: ${brief(got.filter((t) => !wantEntries.includes(t) && !t.includes(note)).map((t) => t.slice(0, 60)), 400)}`);
+          const why = entriesDiffer(wantEntries, got);
+          if (why !== null) throw new Error(why);
+        });
+        await check(`6: ${label}: its room on ${to} exactly ${from}'s`, async () => {
+          const d = differ(wantRoom, snapshot(roomOn(to, k6)!));
+          if (d.length > 0) throw new Error(d.slice(0, 10).join(", "));
+        });
+        await check(`6: ${label}: what was said while it was held arrives once, answered once on ${to}`, async () => {
+          if (!said) throw new Error("nothing was said: it was never seen held");
+          log(`  waiting for ${note} answered`);
+          const v = await a.until(chatT(k6), (v) => texts(v).some((t) => t.startsWith(`drill-noted ${note}`)) && v, 120_000);
+          const asked = texts(v).filter((t) => t === `drill-note:${note}`).length;
+          const answers = texts(v).filter((t) => t.startsWith(`drill-noted ${note}`));
+          if (asked !== 1 || answers.length !== 1 || at(/cwd=(\S+)/.exec(answers[0]!)?.[1] ?? "") !== to) throw new Error(`said ${asked} times, answered ${brief(answers)}`);
+        });
+        await check(`6: ${label}: its agent goes on from its context on ${to} (what it was told last, resumed)`, async () => {
+          const nonce = randomBytes(3).toString("hex");
+          const got = await say(k6, `drill-recall:${nonce}`, `drill-recall ${nonce} `);
+          log(`  ${got}`);
+          if (at(/cwd=(\S+)/.exec(got)?.[1] ?? "") !== to) throw new Error(`answered from elsewhere: ${got}`);
+          if (!got.includes(`secret=${last}`)) throw new Error(`it does not recall ${last}, the last it was told (${r1}: what B's stale copy holds; ${r2}: what A had before it went): ${got}`);
+          if (!got.includes("resumed=true")) throw new Error(`a new context: ${got}`);
+        });
+      };
+      await there("B", "to B over the retired copy", r2);
+      // (something said on B for A to recall once back: drill 8 found A going on from its own copy of before)
+      const r3 = `p${tag}`;
+      if (liveOn(k6).join() === "B") {
+        await say(k6, `drill-remember:${r3}`, `drill-remembered ${r3}`).catch((e) => log(`  not said on B: ${e.message}`));
+        await there("A", "back to A", r3);
+      }
+    }
+  }
+  // ── 3: faults ──
   if (part("3n") && (limit("3n", 900), await clean("3n"))) {
     // (drill-move-7's 3b: a chat's first pass cut half a second after its login moved, B's answer's stream reset, with
     // nothing killed; this is that alone)
@@ -1341,131 +1490,6 @@ try {
     });
   }
 
-  // ── 6: a chat moved to a station that still holds a retired copy of it (what this morning's failed retirement left
-  // on the real target, of every chat) and back ──
-  if (part("6") && (limit("6", 900), await clean("6"))) {
-    /// Each file of `room` (relative path) by a digest of its bytes.
-    const snapshot = (room: string): Map<string, string> => {
-      const m = new Map<string, string>();
-      const walk = (d: string, rel: string) => {
-        for (const e of readdirSync(d, { withFileTypes: true })) {
-          const r = rel === "" ? e.name : `${rel}/${e.name}`;
-          if (e.isDirectory()) walk(join(d, e.name), r);
-          else if (e.isFile()) m.set(r, createHash("sha256").update(readFileSync(join(d, e.name))).digest("hex").slice(0, 12));
-        }
-      };
-      if (existsSync(room)) walk(room, "");
-      return m;
-    };
-    const differ = (want: Map<string, string>, got: Map<string, string>): string[] => [
-      ...[...want].filter(([f, h]) => got.get(f) !== h).map(([f]) => `${f} ${got.has(f) ? "differs" : "missing"}`),
-      ...[...got.keys()].filter((f) => !want.has(f)).map((f) => `${f} extra`),
-    ];
-    /// The texts of chat `key`'s thread on station `n`, in its order (its latest thread there).
-    const entriesOn = (n: Name, key: string): string[] => {
-      const t = sql(n, `select thread from thread_sessions where session = ${lit(key)} order by joined_at desc limit 1`)[0]?.thread;
-      return t === undefined ? [] : sql(n, `select text from entries where thread = ${t} and text is not null and text != '' order by n`).map((r) => String(r.text));
-    };
-    /// What of `want` (the station it left, in order) is not on `got` once each and in that order.
-    const entriesDiffer = (want: string[], got: string[]): string | null => {
-      const count = (l: string[], t: string) => l.filter((x) => x === t).length;
-      const wrong = [...new Set(want)].filter((t) => count(got, t) !== count(want, t)).map((t) => `${brief(t.slice(0, 60))} ${count(want, t)}x there, ${count(got, t)}x here`);
-      let i = 0;
-      for (const t of got) if (i < want.length && t === want[i]) i++;
-      if (wrong.length === 0 && i === want.length) return null;
-      return `${wrong.slice(0, 5).join("; ")}${i < want.length ? `; out of order from ${brief(want[i]!.slice(0, 60))}` : ""}`;
-    };
-    let k6 = "";
-    let roomA: Map<string, string> = new Map();
-    const r1 = `r${tag}`;
-    const r2 = `q${tag}`;
-    await check("6: setup: a chat moved A→B and back with its room, more said and changed on A; B left as a retirement leaves it (by hand, e2e/move-stale.ts with B's own store, B stopped: its row's ws retired:, two entries only B has, its room older, its transcript what the chat left there)", async () => {
-      k6 = await newChat(`stale-${tag}`);
-      await say(k6, `drill-remember:${r1}`, `drill-remembered ${r1}`);
-      const room = roomOn("A", k6)!;
-      writeFileSync(join(room, "same.txt"), "the same on both\n");
-      writeFileSync(join(room, "differs.txt"), "A's first\n");
-      writeFileSync(join(room, "lacking.txt"), "A's, gone from B's copy\n");
-      const l = await moveChat(k6, "B");
-      if (standing("B", k6) !== "live") throw new Error(`not to B: ${standings(k6)}; ${outcome(l)}`);
-      await home(k6);
-      // (what A has since that B's copy will not: words said, a remembered word newer than B's transcript, a file changed)
-      await say(k6, `drill-remember:${r2}`, `drill-remembered ${r2}`);
-      writeFileSync(join(room, "differs.txt"), "A's, changed after it came back\n");
-      stationDo("halt", "second");
-      try {
-        log(`  ${execFileSync(process.execPath, ["--no-warnings", join(dirname(new URL(import.meta.url).pathname), "move-stale.ts"), process.env.E2E_SF_SRC!, DATA.B, k6, ws, tag, "differs.txt", "lacking.txt"], { encoding: "utf8", timeout: 120_000 }).trim()}`);
-      } finally {
-        await up("B");
-      }
-      log(`  B's row of it: ${brief(sql("B", `select ws, workspace from sessions where key = ${lit(k6)}`))}; standing ${standings(k6)}`);
-    });
-    if (k6 !== "") {
-      await check("6: B's own move page does not list the retired row as a chat of B's", async () => {
-        const v = await a.until({ topic: "stationMove", station: B, to: aId, module: "chats" }, (v) => v?.modules && v, 60_000);
-        const chatsM = v.modules.find((m: J) => m.id === "chats");
-        log(`  B's page: chats ${chatsM?.done}/${chatsM?.total}: ${brief((chatsM?.items ?? []).map((x: J) => `${x.id.slice(-8)} ${x.state}`), 300)}`);
-        if ((chatsM?.items ?? []).some((x: J) => x.id === k6)) throw new Error(`B's page lists ${k6} as a chat of B's`);
-      });
-      /// Chat `k6` moved (to B by A's page with its needs, or back by its 全部迁回), a message said in its hold; then
-      /// each thing it must be on the station it went to, a check each.
-      const there = async (to: Name, label: string, last: string) => {
-        const from: Name = to === "B" ? "A" : "B";
-        const wantEntries = entriesOn(from, k6);
-        const wantRoom = snapshot(roomOn(from, k6)!);
-        const note = `${label}-${tag}`;
-        let said = false;
-        await check(`6: ${label}: moved, a message said while it is held`, async () => {
-          const t0 = Date.now();
-          if (to === "B") await a.call("move.start", { station: A, to: bId, module: "chats", item: k6, withNeeds: true });
-          else await a.call("move.back", { station: A, from: bId, all: true });
-          const held = heldOf(k6, t0, from).then(async () => {
-            await a.call("chat.send", { station: A, session: k6, text: `drill-note:${note}` });
-            said = true;
-          });
-          held.catch((e) => log(`  ${e.message}`));
-          const l = await turnEnds("A", t0);
-          await within(held.catch(() => {}), 10_000);
-          log(`  ${outcome(l)}; ${standings(k6)}; its hand-over ${outOn(from, k6)?.step}: ${outOn(from, k6)?.error ?? ""}`);
-          if (liveOn(k6).join() !== to) throw new Error(`${standings(k6)}; ${outcome(l)}`);
-        });
-        await check(`6: ${label}: listed once, on ${to}`, () => listedOnceOn(k6, to));
-        await check(`6: ${label}: every entry of ${from}'s on ${to} once and in order`, async () => {
-          const got = entriesOn(to, k6);
-          log(`  ${from} had ${wantEntries.length}, ${to} has ${got.length}; only on ${to}: ${brief(got.filter((t) => !wantEntries.includes(t) && !t.includes(note)).map((t) => t.slice(0, 60)), 400)}`);
-          const why = entriesDiffer(wantEntries, got);
-          if (why !== null) throw new Error(why);
-        });
-        await check(`6: ${label}: its room on ${to} exactly ${from}'s`, async () => {
-          const d = differ(wantRoom, snapshot(roomOn(to, k6)!));
-          if (d.length > 0) throw new Error(d.slice(0, 10).join(", "));
-        });
-        await check(`6: ${label}: what was said while it was held arrives once, answered once on ${to}`, async () => {
-          if (!said) throw new Error("nothing was said: it was never seen held");
-          log(`  waiting for ${note} answered`);
-          const v = await a.until(chatT(k6), (v) => texts(v).some((t) => t.startsWith(`drill-noted ${note}`)) && v, 120_000);
-          const asked = texts(v).filter((t) => t === `drill-note:${note}`).length;
-          const answers = texts(v).filter((t) => t.startsWith(`drill-noted ${note}`));
-          if (asked !== 1 || answers.length !== 1 || at(/cwd=(\S+)/.exec(answers[0]!)?.[1] ?? "") !== to) throw new Error(`said ${asked} times, answered ${brief(answers)}`);
-        });
-        await check(`6: ${label}: its agent goes on from its context on ${to} (what it was told last, resumed)`, async () => {
-          const nonce = randomBytes(3).toString("hex");
-          const got = await say(k6, `drill-recall:${nonce}`, `drill-recall ${nonce} `);
-          log(`  ${got}`);
-          if (at(/cwd=(\S+)/.exec(got)?.[1] ?? "") !== to) throw new Error(`answered from elsewhere: ${got}`);
-          if (!got.includes(`secret=${last}`)) throw new Error(`it does not recall ${last}, the last it was told (${r1}: what B's stale copy holds; ${r2}: what A had before it went): ${got}`);
-          if (!got.includes("resumed=true")) throw new Error(`a new context: ${got}`);
-        });
-      };
-      await there("B", "to B over the retired copy", r2);
-      // (something said on B for A to recall once back: drill 8 found A going on from its own copy of before)
-      const r3 = `p${tag}`;
-      if (liveOn(k6).join() === "B") {
-        await say(k6, `drill-remember:${r3}`, `drill-remembered ${r3}`).catch((e) => log(`  not said on B: ${e.message}`));
-        await there("A", "back to A", r3);
-      }
-    }
-  }
   // ── 7: one station's asks of another while the other's process changes (for why asks went unanswered after it did:
   // drill 9 and 10's 3b and 3c). The asker asks once a second by the product's own way, a person's move back of an
   // item that is not there (POST /move/back): before anything it asks the other `move.open` (move/station.ts refusal),
