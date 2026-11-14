@@ -509,6 +509,23 @@ async function atRest(label: string): Promise<J> {
   return now;
 }
 
+/// A row of A's page toward B as alice's device is left holding it once A has gone quiet after a turn (`v`, atRest's):
+/// where it is not yet as `ok` wants, the device's further reads of the page are waited for (each a telling of A's
+/// `move`), up to `ms`, and the newest judged. A first read stale and a later one right is said as a line of its own
+/// (STALE …), not a failure: what a person is left looking at is what fails (the lead, 2026-11-14).
+async function rowSettled(label: string, v: J, key: string, ok: (row: J) => boolean, module = "chats", ms = 5000): Promise<J> {
+  const rowOf = (x: J) => ((x?.modules?.find((m: J) => m.id === module)?.items ?? []) as J[]).find((r: J) => r.id === key);
+  const first = rowOf(v);
+  if (ok(first)) return first;
+  const t0 = Date.now();
+  const reads0 = a.answers.filter((x) => x.station === aId && x.path.startsWith("/admin/api/move?")).length;
+  const got = await a.until(moveT(bId, module), (x) => x?.modules && ok(rowOf(x)) && x, ms).catch(() => null);
+  const reads = a.answers.filter((x) => x.station === aId && x.path.startsWith("/admin/api/move?")).length - reads0;
+  if (got === null) return first;
+  log(`STALE ${label}: ${key.slice(-8)}'s row read at the turn's end as ${brief(first)}, right ${Date.now() - t0} ms later after ${reads} further read(s) of the page: ${brief(rowOf(got))}`);
+  return rowOf(got);
+}
+
 /// Each fault from a clean state: whatever of A is on B (the page counts it done) brought back first, all of it.
 async function reset(label: string): Promise<void> {
   const v = await atRest(label);
@@ -835,7 +852,7 @@ try {
           await check("2: back on A while its account is still on B: stopped, and the person is told so", async () => {
             log(`  A's stopped.json: ${existsSync(`${DATA.A}/move/stopped.json`) ? readFileSync(`${DATA.A}/move/stopped.json`, "utf8").slice(0, 600) : "none"}`);
             const m = await a.until(moveT(bId), (v) => v?.modules && v, 60_000);
-            const row = (m.modules.find((x: J) => x.id === "chats")?.items ?? []).find((x: J) => x.id === k2);
+            const row = await rowSettled("2", m, k2, (r) => r?.state === "stopped");
             const chatsM = m.modules.find((x: J) => x.id === "chats");
             log(`  A's page: the chat's row ${brief(row)}; note ${m.note}; its chats ${chatsM?.done}/${chatsM?.total}, the rows it shows ${brief((chatsM?.items ?? []).map((x: J) => `${x.id.slice(-8)} ${x.state}`), 400)}${chatsM?.more ? " and more" : ""}`);
             await a.call("chat.send", { station: A, session: k2, text: `drill-recall:${nonce}` });
@@ -952,7 +969,7 @@ try {
         if (s === null || !s.includes(item)) throw new Error(`not stopped waiting for ${item}: ${s}`);
         const m = await atRest("2k");
         const chatsM = m.modules.find((x: J) => x.id === "chats");
-        const row = (chatsM?.items ?? []).find((x: J) => x.id === kc);
+        const row = await rowSettled("2k", m, kc, (r) => r?.state === "stopped");
         log(`  A's page: its row ${brief(row)}; rows ${brief((chatsM?.items ?? []).map((x: J) => `${x.id.slice(-8)} ${x.state}`), 400)}`);
         // (what the station's chats module reads for its state, move/chats.ts state: where it was handed, its hand-over out)
         log(`  A's own: handed_over ${brief(sql("A", `select station from handed_over where session = ${lit(kc)}`))}; its hand-overs out ${brief(handovers("A", "out").filter((o) => (o.keys ?? []).includes(kc)).map((o) => ({ id: o.id, step: o.step, at: o.at })), 600)}`);
@@ -1009,7 +1026,7 @@ try {
             log(`  2k's second chat as the login left, its facts: A's stopped.json ${existsSync(`${DATA.A}/move/stopped.json`) ? readFileSync(`${DATA.A}/move/stopped.json`, "utf8").slice(0, 1200) : "none"}\n    ${heldOf2(kd)}\n    the first chat: ${heldOf2(kc)}\n    A's page toward B, as A answered it, the second chat: ${await rawItem("A", "B", kd)}\n    the first chat: ${await rawItem("A", "B", kc)}\n    A's runtime sessions of both: ${brief(sql("A", `select session_key, profile, id from runtime_sessions where session_key in (${lit(kd)}, ${lit(kc)})`))}\n    the stations' logs around it:\n    ${logsAround(Date.now() - 1500)}`);
             if (stoppedOf(kd) === null) throw new Error(`not stopped on A as its login left: ${standings(kd)}`);
             const m = await atRest("2k");
-            const row = ((m.modules.find((x: J) => x.id === "chats")?.items ?? []) as J[]).find((x: J) => x.id === kd);
+            const row = await rowSettled("2k", m, kd, (r) => r?.state === "stopped" && r?.action === "move");
             log(`  A's page: its row ${brief(row)}`);
             if (row?.state !== "stopped" || row?.action !== "move") throw new Error(`its row offers no 迁移: ${brief(row)}`);
             const n2 = randomBytes(3).toString("hex");
@@ -1027,7 +1044,7 @@ try {
             if (answers.length !== 1 || at(/cwd=(\S+)/.exec(answers[0]!)?.[1] ?? "") !== "B") throw new Error(`answered ${brief(answers)}`);
             if (!answers[0]!.includes(`secret=d${tag}`)) throw new Error(`not from its context: ${answers[0]}`);
             const after = await atRest("2k");
-            const rowAfter = ((after.modules.find((x: J) => x.id === "chats")?.items ?? []) as J[]).find((x: J) => x.id === kd);
+            const rowAfter = await rowSettled("2k", after, kd, (r) => r?.state === "there");
             log(`  A's page after: its row ${brief(rowAfter)}`);
             // (the facts at that moment, for the station's side: no verdict of them)
             log(`  2k's second chat, its facts: A's stopped.json ${existsSync(`${DATA.A}/move/stopped.json`) ? readFileSync(`${DATA.A}/move/stopped.json`, "utf8").slice(0, 800) : "none"}\n    ${heldOf2(kd)}\n    A's page toward B, as A answered it: ${await rawItem("A", "B", kd)}`);
@@ -1308,7 +1325,7 @@ try {
     if (seeded) {
       await check("6b: A's page toward B shows it as one that cannot move, saying why", async () => {
         const v = await atRest("6b");
-        const row = (v.modules.find((m: J) => m.id === "chats")?.items ?? []).find((x: J) => x.id === kl);
+        const row = await rowSettled("6b", v, kl, (r) => r?.state === "cannot" && String(r?.note ?? "").trim() !== "");
         const readAt = Date.now();
         log(`  its row ${brief(row)}`);
         // (the facts at that moment, for the station's side: no verdict of them)
