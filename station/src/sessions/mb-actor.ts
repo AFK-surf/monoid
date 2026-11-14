@@ -98,8 +98,11 @@ export class ActorsProgram {
   /// Whether what was said to it is not all taken in yet, or something of it runs (not counting what waits on an answer
   /// of the station's): what a test's `settle` waits for.
   busy() {
-    return this.#sent > this.#seen || this.#active > 0;
+    return this.#sent > this.#seen || this.#active > 0 || this.#answering > 0;
   }
+
+  /// What it asked that is being answered here: its actor waits on it, as SessionActor waits on what it awaits.
+  #answering = 0;
 
   actor(key: string, runtime: RuntimeKind, deps: SessionDeps): MbActor {
     const actor = new MbActor(this, key, runtime, deps);
@@ -193,9 +196,10 @@ export class ActorsProgram {
     if (said.mirror !== undefined) actor.mirrored(said.state);
     else if (typeof said.rpc === "number") {
       const id = said.rpc;
+      this.#answering++;
       actor.asked(said.fn, Array.isArray(said.args) ? said.args : []).then(
-        (value) => this.post({ answer: id, value: value === undefined ? null : value }),
-        (error) => this.post({ answer: id, error: errorOf(error, actor.runtime) }),
+        (value) => { this.#answering--; this.post({ answer: id, value: value === undefined ? null : value }); },
+        (error) => { this.#answering--; this.post({ answer: id, error: errorOf(error, actor.runtime) }); },
       );
     } else if (typeof said.tell === "string") {
       try {
