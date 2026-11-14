@@ -300,7 +300,8 @@ export class Scheduler {
       if (sel.withNeeds === true || sel.all === true) {
         for (const n of p.needs) {
           const x = find(n);
-          if (x === undefined || x.state === "there") continue;
+          // (a need usable there already, an account the other borrows, is not taken along: in `all` it goes as its own)
+          if (x === undefined || x.state === "there" || this.#modules.get(x.module)!.usableThere?.(x) === true) continue;
           // (a need on a round of items needing each other is refused as that round, before this rule speaks)
           const others = sel.all === true || p.cannot !== undefined || x.cannot !== undefined ? [] : wouldStopOthers(x);
           if (others.length > 0) {
@@ -334,7 +335,7 @@ export class Scheduler {
         out.refused.push({ item: p, why: p.cannot });
         continue;
       }
-      const waits = p.needs.find((n) => !thereNow.has(named(n)) && find(n) !== undefined);
+      const waits = p.needs.find((n) => !thereNow.has(named(n)) && find(n) !== undefined && this.#modules.get(n.module)!.usableThere?.(find(n)!) !== true);
       if (waits !== undefined && sel.arriveStopped !== true) {
         out.refused.push({ item: p, why: `it needs ${named(waits)} (${find(waits)!.label}) there first: move that first, or ask with withNeeds (or arriveStopped: it waits there for it)` });
         continue;

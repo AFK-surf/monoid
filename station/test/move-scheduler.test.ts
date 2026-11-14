@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { Item, ItemState, Module, Need } from "../src/move/module.ts";
-import { Scheduler } from "../src/move/scheduler.ts";
+import { type Selection, Scheduler } from "../src/move/scheduler.ts";
 import { moveView } from "../src/move/routes.ts";
 import { cloneLogin } from "../src/move/repos.ts";
 import { given } from "./hub-fakes.ts";
@@ -16,7 +16,7 @@ import { given } from "./hub-fakes.ts";
 type Json = any;
 
 /// A module of the test's: its items, where each is, what it did in order (shared by the modules, `log`).
-function fake(id: string, needs: string[], items: Omit<Item, "module">[], log: string[], o: { usable?: (id: string) => boolean; fails?: Set<string> } = {}): Module & { where: Map<string, string>; stopped: Map<string, Need> } {
+function fake(id: string, needs: string[], items: Omit<Item, "module">[], log: string[], o: { usable?: (id: string) => boolean; usableThere?: (id: string) => boolean; fails?: Set<string> } = {}): Module & { where: Map<string, string>; stopped: Map<string, Need> } {
   const where = new Map<string, string>(items.map((x) => [x.id, "here"]));
   const stopped = new Map<string, Need>();
   return {
@@ -37,6 +37,7 @@ function fake(id: string, needs: string[], items: Omit<Item, "module">[], log: s
       return { state: where.get(item.id) === "here" ? "here" : "there" };
     },
     usableHere: o.usable === undefined ? undefined : (item) => o.usable!(item.id),
+    usableThere: o.usableThere === undefined ? undefined : (item) => where.get(item.id) === "here" && o.usableThere!(item.id),
     async stop(item, waitsFor) {
       log.push(`stop ${id}/${item.id}`);
       stopped.set(item.id, waitsFor);
@@ -225,6 +226,31 @@ test("all at once: an account that cannot be shared goes as late as it can, its 
   assert.ok(at("accounts/X") > at("accounts/Y") && at("accounts/X") > at("chats/c2"), `after what does not need it: ${moved.join(", ")}`);
   assert.deepEqual([at("chats/c1"), at("chats/c3")].sort(), [at("accounts/X") + 1, at("accounts/X") + 2], `its chats right after it: ${moved.join(", ")}`);
   assert.deepEqual(log.filter((l) => l.startsWith("stop ")), ["stop chats/c1", "stop chats/c3"], "only X stops anything");
+});
+
+test("a need usable there though it is not there (an account the other station borrows): what needs it goes without it, never waiting or taken along; in a whole move it goes as its own item; the plan shows it here", async () => {
+  const run = (sel: Selection) => {
+    const log: string[] = [];
+    const accounts = fake("accounts", [], [{ id: "sub", label: "lent there", needs: [] }], log, { usable: () => true, usableThere: (id) => id === "sub" });
+    const chats = fake("chats", ["accounts"], [{ id: "c1", label: "chat one", needs: [{ module: "accounts", id: "sub" }] }], log);
+    const s = new Scheduler({ data: mkdtempSync(join(process.env.STILLFAIL_TEST_TMP ?? tmpdir(), "move-")), modules: [accounts, chats] });
+    return { log, s, out: s.move("ws", "B", sel) };
+  };
+  const one = run({ module: "chats", item: "c1" });
+  assert.deepEqual((await one.out).refused, [], "not refused for it");
+  assert.deepEqual(one.log, ["move chats/c1"], "it went alone");
+  assert.equal((await one.s.plan("ws", "B")).items.find((x) => x.id === "sub")!.state, "here", "the account as it stands: here");
+  const back = await one.s.back("ws", "B", { module: "chats", item: "c1" });
+  assert.deepEqual([back.done, back.stopped], [[{ module: "chats", id: "c1" }], []], "back, nothing to wait for");
+  const needs = run({ module: "chats", item: "c1", withNeeds: true });
+  assert.deepEqual((await needs.out).done, [{ module: "chats", id: "c1" }]);
+  assert.deepEqual(needs.log, ["move chats/c1"], "not taken along for its sake");
+  const mod = run({ module: "chats", all: true });
+  assert.deepEqual((await mod.out).done, [{ module: "chats", id: "c1" }]);
+  assert.deepEqual(mod.log, ["move chats/c1"], "a whole module of chats takes no account along");
+  const all = run({ all: true });
+  assert.equal((await all.out).failed, null);
+  assert.deepEqual(all.log.sort(), ["move accounts/sub", "move chats/c1"], "in a whole move it goes as its own item");
 });
 
 test("a clone refused for want of a login says to sign in to that host on that station", () => {

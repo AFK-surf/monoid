@@ -52,6 +52,8 @@ export interface Module {
   /// Whether the item, moved away, can still be had here (an account this station borrows from where it went).
   /// Absent: it cannot.
   usableHere?(item: Item): boolean;
+  /// What needs it can go there though it is not there: e.g. an account the other station borrows. Absent: it cannot.
+  usableThere?(item: Item): boolean;
   /// Whether the item is on this station now, from what the module keeps (none: its state says `here` or `failed`):
   /// what lets go, as the station starts, what was stopped waiting for it (scheduler `settleStopped`).
   isHere?(item: Item): boolean;

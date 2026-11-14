@@ -10,7 +10,9 @@ chats paused 18 minutes, a half-moved state, no way back), whose start stays swi
   cannot move, in words that say what to do), moves one, moves one back, says where each stands. Each item's state is
   its module's, durable, so either side started again goes on or undoes. The scheduler (`scheduler.ts`) never does a
   module's work: it orders by the items' needs (one whose need is not there is refused naming it; `withNeeds` moves
-  those first, but not one whose leaving would stop other items here: both refused, naming what it would stop), moves back in the reverse order (refused while something there needs it, naming that), and tells what
+  those first, but not one whose leaving would stop other items here: both refused, naming what it would stop; a need
+  usable there though it is not, `usableThere`, is neither waited for nor taken along), moves back in the reverse order
+  (refused while something there needs it, naming that), and tells what
   changed. No polling.
 - When an item moves away, every item here that needs it and cannot have it here any more is stopped first (a state of
   its own, `stopped.json`, held again as the station starts), never left to fail (左子健, 2026-11-14: 「依赖项被迁走就停掉啊」):
