@@ -1110,7 +1110,13 @@ try {
           log(`  what agents were handed of it since: ${brief(turns(handedT0).filter((t) => t.text.includes(tag) && /drill-note:/.test(t.text)).map((t) => `${t.pid}@${at(t.cwd)} +${t.at - handedT0}ms: ${(t.text.match(/drill-note:\S+/g) ?? []).join(", ")}`), 800)}`);
           if (!said) throw new Error("nothing was said: it was never seen held");
           log(`  waiting for ${note} answered`);
-          const v = await untilChat(k6, (v) => texts(v).some((t) => t.startsWith(`drill-noted ${note}`)) && v, 120_000);
+          // (it cannot come once the chat holds the note and its agent is idle with nothing pending: then 10 s more, not
+          // 120: drill 18's sat out the whole wait)
+          const idle = (v: J) => texts(v).includes(`drill-note:${note}`) && (v?.agents ?? []).every((x: J) => x?.session?.running === false && (x?.session?.pending ?? 0) === 0);
+          const first = await untilChat(k6, (v) => (texts(v).some((t) => t.startsWith(`drill-noted ${note}`)) || idle(v)) && v, 120_000);
+          const v = texts(first).some((t) => t.startsWith(`drill-noted ${note}`)) ? first : await untilChat(k6, (v) => texts(v).some((t) => t.startsWith(`drill-noted ${note}`)) && v, 10_000).catch(() => {
+            throw new Error(`not answered: the chat holds it, its agent idle with nothing pending (${brief((first?.agents ?? []).map((x: J) => ({ running: x?.session?.running, pending: x?.session?.pending, lastTurn: x?.session?.lastTurn?.ending })))}), and no answer 10 s after`);
+          });
           const asked = texts(v).filter((t) => t === `drill-note:${note}`).length;
           const answers = texts(v).filter((t) => t.startsWith(`drill-noted ${note}`));
           if (asked !== 1 || answers.length !== 1 || at(/cwd=(\S+)/.exec(answers[0]!)?.[1] ?? "") !== to) throw new Error(`said ${asked} times, answered ${brief(answers)}`);
