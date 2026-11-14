@@ -1828,7 +1828,13 @@ try {
       stationDo("halt", "station");
       log(`  ${execFileSync(process.execPath, ["--no-warnings", join(dirname(new URL(import.meta.url).pathname), "move-seed.ts"), process.env.E2E_SF_SRC!, DATA.A, home, String(addLive), String(addOld), randomBytes(3).toString("hex")], { encoding: "utf8", timeout: 1_800_000 }).trim()}`);
       stationDo("again", "station");
+      const up = Date.now();
       await a.stationState(ws, (s) => s.state === "online", 120_000, aId);
+      // (and the device's link to it usable again: a request of its answered by the new process. Online is the cloud's
+      // word, which comes first: drill 28's link to A, dialled into the endpoint as it closed, sat three beats (15 s) on
+      // a dead connection, and the page's first answer timed after online read 16,446 ms where GET /move took 15)
+      const ready = await a.answered(aId, "/", up, 120_000);
+      log(`  A's link usable again ${ready.at - up} ms after A was up (${ready.method} ${ready.path.replace(/\?.*$/, "")})`);
     };
     /// What the stations' logs say of their main thread held since `from` (each log's byte offset): how often, the longest.
     const logs = () => ({ A: `${RUN}/station.log`, B: `${RUN}/second.log` });
@@ -1838,7 +1844,7 @@ try {
       const ms = [...t.matchAll(/the main thread was held.*?heldMs=(\d+)/g)].map((m) => Number(m[1]));
       return `${n}: ${ms.length} held, longest ${ms.length === 0 ? 0 : Math.max(...ms)} ms${ms.filter((x) => x > 200).length > 0 ? ` (${ms.filter((x) => x > 200).length} over 200 ms)` : ""}`;
     }).join("; ");
-    /// GET /move as the device asks it: the `stationMove` topic's first answer for a page not read yet, and how long
+    /// GET /move as the device asks it, its link to A usable (seed's wait): the `stationMove` topic's first answer for a page not read yet, and how long
     /// the request itself took (its answer read to its end); and station_move plan through an agent, less a turn's own.
     const timeMove = async (label: string, key: string) => {
       const limit = 51 + Math.floor(Math.random() * 140);
