@@ -2395,6 +2395,7 @@ pub fn fixture(mode : String) -> Source {
     asks_outline: fn() { true },
     switches_ahead: fn() { true },
     asks_station_updates: fn() { true },
+    asks_station_move: fn() { true },
   }
 }
 

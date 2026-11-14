@@ -165,7 +165,7 @@ fn station_view_node(
     // of it moved to another station, moving, stopped or failed: station_move_node.mbt's)
     let out = if station_moving_shown(s()) {
       ["moving", "parts"]
-    } else if flag(s(), "online") && @settings.move_shown(core, address) {
+    } else if flag(s(), "online") && (core.move_on)() && @settings.move_shown(core, address) {
       ["move", "parts"]
     } else {
       ["parts"]

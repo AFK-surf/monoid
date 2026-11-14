@@ -98,6 +98,9 @@ pub(all) struct Core {
   read_only : String
   /// whether the workspace's devices are asked for (the source's `asks_devices`: not in a replay of a run from before)
   devices_on : () -> Bool
+  /// whether a station's page asks what of it moves (`stationMove`, its 迁移 row: sfpages station_node.mbt): the source's
+  /// `asks_station_move`, not in a replay of a run from before
+  move_on : () -> Bool
 }
 
 ///|

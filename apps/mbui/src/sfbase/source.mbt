@@ -158,6 +158,9 @@ pub(all) struct Source {
   /// whether the stations' newer releases waiting for this person are asked for (`stationUpdates`: their key beside
   /// the app's update, sfpages station_updates.mbt): not of a run seen again that was recorded before the app did
   asks_station_updates : () -> Bool
+  /// whether a station's page asks what of it moves (`stationMove`: its 迁移 row while a move runs, something is
+  /// stopped or a turn failed, sfpages station_node.mbt): not of a run seen again that was recorded before the app did
+  asks_station_move : () -> Bool
 }
 
 ///|
@@ -666,6 +669,7 @@ pub fn made_source(
     asks_outline: fn() { true },
     switches_ahead: fn() { true },
     asks_station_updates: fn() { true },
+    asks_station_move: fn() { true },
   }
 }
 

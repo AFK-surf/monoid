@@ -223,7 +223,6 @@ let corners_first_line_known : Map[String, Int] = Map([
   ("desk-win-zh newchat-preset-new-browse", 2),
   ("desk-zh newchat-preset-new-browse", 2),
   ("phone-en settings-connects", 2),
-  ("phone-en settings-decisions", 1),
   ("phone-en settings-new-connect", 2),
   ("phone-en settings-new-connect-app", 2),
   ("phone-en settings-new-connect-comma", 2),
