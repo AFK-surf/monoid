@@ -197,13 +197,13 @@ pub fn station_move_node(
         _ if key.has_prefix("m/") => {
           let id = key.unsafe_substring(start=2, end=key.length())
           let first = @signals.untracked(fn() { text(modules().get(0), "id") }) == id
-          @sf.card_piece_node(b, fn() { if first { @sf.CardTop } else { @sf.CardBetween } }, wide_card=true, fn(card) {
+          @sf.card_piece_node(b, fn() { if first { @sf.CardTop } else { @sf.CardBetween } }, wide_list=true, fn(card) {
             station_move_module_node(card, id, fn() { module_of(id) }, fn() { open() == id }, fn() { toggle(id) }, fn(action) {
               module_act(id, action)
             }, fn() { is_doing(core, calls, module_on(id)) }, fn() { failed_of(core, calls, module_on(id)) })
           })
         }
-        "foot" => @sf.card_piece_node(b, fn() { @sf.CardFoot }, wide_card=true, fn(_) {  })
+        "foot" => @sf.card_piece_node(b, fn() { @sf.CardFoot }, wide_list=true, fn(_) {  })
         "nothing" =>
           @sf.group_node(b, fn(g) { @sf.link_row_node(g, fn() { text(view(), "nothing") }, fn() {  }, goes=false) })
         _ if key.has_prefix("i/") => {
@@ -211,7 +211,7 @@ pub fn station_move_node(
           let cut = rest.find("/").unwrap_or(0)
           let m = rest.unsafe_substring(start=0, end=cut)
           let id = rest.unsafe_substring(start=cut + 1, end=rest.length())
-          @sf.card_piece_node(b, fn() { @sf.CardBetween }, wide_card=true, fn(card) {
+          @sf.card_piece_node(b, fn() { @sf.CardBetween }, wide_list=true, fn(card) {
             // (under its module's row, in from it)
             card.box(fn(i) {
               i.padding(Is((@sf.text_in, 0.0, 0.0, 0.0))) |> ignore
