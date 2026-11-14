@@ -851,6 +851,12 @@ export class Store {
     return this.#archiveDir;
   }
 
+  /// What another writer of the database wrote, told those who follow the store as its own writes are (mesh/served.ts:
+  /// the marks the MoonBit program writes for a device).
+  told(changes: Changes): void {
+    this.#send(changes);
+  }
+
   #send(changes: Changes): void {
     const listeners = this.#listeners;
     for (const change of changes) {
@@ -1531,6 +1537,11 @@ export class Store {
       this.#titleRevisions.set(thread, this.titleRevision(thread) + 1);
       changes.push({ type: "thread", id: thread, entries: [] });
     });
+  }
+
+  /// A chat named by hand by another program (the MoonBit program serving devices, mesh/served.ts): as `setThreadTitle`.
+  retitled(thread: number): void {
+    this.#titleRevisions.set(thread, this.titleRevision(thread) + 1);
   }
 
   /// Changes even when a person writes the same title again; a pending generation must respect that choice.

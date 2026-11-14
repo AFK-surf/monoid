@@ -61,7 +61,9 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
 
 - Beside a block of several lines, an icon, a mark, a chevron or a one-line part (a plan, a value) sits on its first
   line, aligned with it, never centred on the block's height (the user, 2026-11-14: 「不应该一个图标或者一行内容跟多行做
-  垂直居中对齐」, said before).
+  垂直居中对齐」, said before). mbui's `Tester::first_line_faults` holds an icon, a mark and a chevron to it on every
+  screen (corners_wbtest.mbt), what broke it then counted in `corners_first_line_known`, only falling; a one-line part
+  is not checked yet.
 
 - A named style (a top-level `let`, and a `.then(…)` of one) whose properties are all tokens and numbers is written
   as its text, `@ui.css("w=Full px=S2 hovered{bg=Hover}")`; `@ui.style(…)` is for one that names a variable or is
@@ -166,6 +168,9 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
 - What is left of the old is counted by detlint and only falls: `old-island` (`@ui.old` hosting a Ctx in a node),
   `old-list` (`Ctx::list`), `old-panel`, `click-read`, `key-read`, `build-motion`, `layout-read-back`, `ui-current`.
   A change never adds one; one it touches it moves over. A node-made part is never wrapped back into a Ctx.
+- The chat's page made as nodes is behind a setting a person turns on, 外观's 试用新对话页 (the prefs' `chatPage`,
+  sfbase's `chat_page_from_prefs`), off by default till it lacks nothing (the owner, 2026-11-14: 「做开关」「别把用户搞得
+  没法用」); `chat_page_nodes_at_start` stays false meanwhile.
 - What changes with the width a row or a part is given is a binding (`By`: a gap's height, a margin, a size), never a
   structure switched by a value worked out of that width (`pick`, `show` on `width() <= …`): a structure switched makes
   its way in and out, and what the window or the system's bars do to the width is no motion of the thing's (found by
@@ -183,6 +188,14 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
   - No time window is a cause, and no logic reads whether a motion runs.
   - What comes or goes by its size keeps its whole scale, from where it starts, and is not seen at half its size or
     less, so it does not jump (the user, 2026-10-31, again 2026-11-08): its opacity is `@sf.seen_at(scale)`.
+
+## Farview's client
+
+- A chat's Farview tab is drawn by the app itself (`src/sfpages/farview_tab.mbt`) with Farview's client, the module
+  `fvclient` of the private AFK-surf/farview, never copied here (左子健, 2026-11-07 and 2026-11-14: 固定 commit 拉进
+  moon.work): `scripts/farview.sh` puts it in `deps/farview` at the commit `farview.pin` names, `moon.work` names it,
+  `scripts/env.sh` fetches it with git's own credentials and CI with the read-only deploy key `FARVIEW_DEPLOY_KEY`
+  (each workflow's env, the mbui-moonbit action's last step). A newer client is a change of `farview.pin`.
 
 ## Running the app in development
 
@@ -271,7 +284,14 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
   {scope, mine:false}`, without `MBUI_PROFILE_ROWS` the accounts' rows and one account out of the run's `profiles
   {scope}` (`src/sfreplay/source.mbt`).
 - For development stills, prepare a `scripts/media-job.sh picture` job for each source state and reuse its Wasm
-  renderer across scenes; use a `film` job for video (`scripts/media-job.sh` says how).
+  renderer across scenes; use a `film` job for video (`scripts/media-job.sh` says how). A renderer not published is
+  built on the build station by `scripts/media-dev-build.sh KEY INBOX "" mbui-film-wasm` (the job's `runtime.key`),
+  in a station task's mirror as it is: no `.git`, no `MBUI_TOOLS` needed. Never the native `sffix` (`scripts/mac.sh`)
+  for a still: it compiles the whole framework's C, 45-90 s a build against the Wasm renderer's 10-20 s (2026-11-14).
+- A picture says what every rule finds in the frame it drew (`rules:` lines, `Tester::audit`), after it is written. One
+  made for people is drawn at 3 (`MBUI_FILM_SCALE=3`; the user, 2026-11-14), at rest (not a way's middle frame), in
+  the state asked about (a menu or panel open where that is the change), and is sent with none of those lines that its
+  change brought (a before keeps its own, said as such).
 - No check runs the whole app on a device, an emulator, a simulator or a desktop window and compares its picture
   with a kept one: that is slow, and what it waits for is never the app's own. A device runs only the host's
   contracts (`mbui-host-*`), the render contracts, and a few end-to-end smoke flows that wait for named events; their

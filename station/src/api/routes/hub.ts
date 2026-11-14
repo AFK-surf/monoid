@@ -252,6 +252,18 @@ class Moved extends Refused {
   }
 }
 
+/// What a person's message to thread `thread` is answered where a chat in it was handed to another station (409, with
+/// `moved`), as POST /threads/:id/messages answers it: also the MoonBit program's way to it (admin.ts `claimSay`).
+export function movedAnswer(s: Store, thread: number, lang: Request["lang"]): Answer | null {
+  try {
+    movedOf(s, s.threadSessions(thread).map((m) => m.session), { lang } as Request);
+  } catch (e) {
+    if (e instanceof Moved) return json(409, JSON.stringify({ error: e.message, moved: e.moved }));
+    throw e;
+  }
+  return null;
+}
+
 /// Thrown where one of `keys` was handed to another station.
 function movedOf(s: Store, keys: readonly string[], r: Request): void {
   for (const key of keys) {

@@ -443,7 +443,7 @@ test "on the tape a chat brought over while its view is on its way: the page com
 /// What the last frame drew from `left` across on (its instances, as Tester::drawn_text says them).
 fn drawn_from(t : @ui.Tester, left : Double) -> Array[String] {
   let out = []
-  for line in t.drawn_text().split("\n") {
+  for line in t.drawn_instances_text().split("\n") {
     if line.has_prefix("inst ") {
       // (its first number: where it is across, in 1/64 px)
       let mut x = 0
@@ -1428,4 +1428,30 @@ test "on the tape a passage picked anew after the sidebar was brought over bring
   t.draw()
   t.run_for(@ui.move_most_ms)
   assert_eq(@sfdesk.wide.tape_at.get(), @sfdesk.TapePane::Page)
+}
+
+///|
+test "on the tape, the pointer resting on a message's ⋯ till its tip shows: back goes to the sidebar, the tip no place it leaves" {
+  let t = tape_chat(0, 720.0, 800.0)
+  t.tap_text("首页的列表改成按天分组")
+  t.run_for(@ui.move_most_ms)
+  t.tap_text("整理发布清单")
+  t.run_for(@ui.move_most_ms)
+  page_over(t, 720.0)
+  assert_eq(@sfdesk.wide.tape_at.get(), @sfdesk.TapePane::Page)
+  // (a message's ⋯, shown as the pointer rests on its message: the pointer on it, a tip's while)
+  let words = "推送截图前要先登录 gh"
+  guard t.rect_of(words) is Some((wx, wy, _, wh)) else { fail("「\{words}」 not drawn") }
+  t.move_to(wx + 4.0, wy + wh / 2.0)
+  t.draw()
+  let more = @sf.t("web-main.menu.more")
+  let mores = fn() { t.semantics().filter(fn(s) { s.label == more && !s.hidden }) }
+  guard mores() is [m, ..] else { fail("no ⋯ shown over the message") }
+  let (mx, my, mw, mh) = m.rect
+  t.move_to(mx + mw / 2.0, my + mh / 2.0)
+  t.run_for(@ui.move_most_ms * 2.0)
+  assert_true(mores().length() >= 2, msg="its tip not shown: \{mores().length()}")
+  t.back()
+  t.run_for(@ui.move_most_ms)
+  assert_eq(@sfdesk.wide.tape_at.get(), @sfdesk.TapePane::Side)
 }

@@ -14,7 +14,7 @@ import { route } from "../route.ts";
 import { Kind, type Span, type SpanContext } from "../trace.ts";
 import { fromBase64, get, hex, isObject, parseJson, toJsonBytes } from "../util.ts";
 import type { StationAddr } from "./addr.ts";
-import { concat, readAll, replyHeader, type RequestHead, type ScreenAsk, type StationWire, type WireReply, type WireSocket } from "./wire.ts";
+import { concat, readAll, replyHeader, type RequestHead, type ScreenAsk, type StationWire, type TerminalAsk, type WireReply, type WireSocket } from "./wire.ts";
 import { timed } from "../spent.ts";
 import { BUILD_HEADER, ownBuild, stationTooOld } from "./oldest.ts";
 
@@ -646,6 +646,74 @@ export class Requests {
         // What the station lacks for it (macOS's grants), said with a 503.
         if (isObject(get(data, "access"))) error.access = get(data, "access");
         return yield* Effect.fail(error);
+      }
+      return view;
+    });
+  }
+
+  /// A view of one of the station's terminals (`new` opens one): its stream, open both ways once the station answered 200.
+  terminalView(station: StationAddr, id: string, ask: TerminalAsk, ctx: SpanContext | null): Effect.Effect<WireSocket, CoreError, Scope.Scope> {
+    return Effect.gen({ self: this }, function* () {
+      const full = `/admin/api/terminals/${encode(id)}/view`;
+      const waiting = this.#status(station).begin({ station: station.toString() }, t("core-misc.terminal.opening"), false);
+      const span = this.#core.tracer.span(`TERMINAL ${route(full)}`, Kind.Client, ctx);
+      span.set("url.path", route(full));
+      span.set("stillfail.stream", true);
+      const head: RequestHead = { method: "POST", path: full, headers: [["traceparent", span.context.traceparent()], [LANG_HEADER, current()], [BUILD_HEADER, ownBuild() || "0.1.0"]] };
+      const opening = this.wire.terminal ? this.wire.terminal(station, head, ask) : Effect.fail(new CoreError("unsupported", t("core-misc.terminal.noWire")));
+      const opened = yield* Effect.result(
+        Effect.raceFirst(
+          opening,
+          Effect.sleep(SOCKET_OPEN_MS).pipe(Effect.andThen(Effect.fail(new CoreError("timeout", t("core-misc.terminal.timeout"))))),
+        ).pipe(Effect.ensuring(Effect.sync(() => waiting.end()))),
+      );
+      if (opened._tag === "Failure") {
+        failed(span, opened.failure);
+        span.end();
+        return yield* Effect.fail(opened.failure);
+      }
+      const view = opened.success;
+      answered(span, view.reply);
+      span.end();
+      if (view.reply.status !== 200) {
+        const bytes = yield* Effect.orElseSucceed(readAll(view.reply.body), () => empty);
+        const data = parseJson(bytes);
+        return yield* Effect.fail(httpError(view.reply.status, data === undefined ? {} : data));
+      }
+      return view;
+    });
+  }
+
+  /// A Farview tab's own protocol, carried by the station to its host (farview.ts): open once the station answers
+  /// 200, the host's bytes both ways then. A station that refuses says why (`httpError`: 404 no such tab, 403 a
+  /// read-only member); one from before takes the stream for a request and never answers: given up after SOCKET_OPEN_MS.
+  farviewView(station: StationAddr, screen: string, ctx: SpanContext | null): Effect.Effect<WireSocket, CoreError, Scope.Scope> {
+    return Effect.gen({ self: this }, function* () {
+      const full = `/admin/api/farview/${encode(screen)}`;
+      const waiting = this.#status(station).begin({ station: station.toString() }, t("core-misc.farview.opening"), false);
+      const span = this.#core.tracer.span(`FARVIEW ${route(full)}`, Kind.Client, ctx);
+      span.set("url.path", route(full));
+      span.set("stillfail.stream", true);
+      const head: RequestHead = { method: "POST", path: full, headers: [["traceparent", span.context.traceparent()], [LANG_HEADER, current()], [BUILD_HEADER, ownBuild() || "0.1.0"]] };
+      const opening = this.wire.farview ? this.wire.farview(station, head, screen) : Effect.fail(new CoreError("unsupported", t("core-misc.farview.noWire")));
+      const opened = yield* Effect.result(
+        Effect.raceFirst(
+          opening,
+          Effect.sleep(SOCKET_OPEN_MS).pipe(Effect.andThen(Effect.fail(new CoreError("timeout", t("core-misc.farview.timeout"))))),
+        ).pipe(Effect.ensuring(Effect.sync(() => waiting.end()))),
+      );
+      if (opened._tag === "Failure") {
+        failed(span, opened.failure);
+        span.end();
+        return yield* Effect.fail(opened.failure);
+      }
+      const view = opened.success;
+      answered(span, view.reply);
+      span.end();
+      if (view.reply.status !== 200) {
+        const bytes = yield* Effect.orElseSucceed(readAll(view.reply.body), () => empty);
+        const data = parseJson(bytes);
+        return yield* Effect.fail(httpError(view.reply.status, data === undefined ? {} : data));
       }
       return view;
     });

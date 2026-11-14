@@ -11,6 +11,7 @@ import { USER_TAB_ID } from "../screens/source.ts";
 import type { SimDebug } from "../screens/sim-debug.ts";
 import type { Readers } from "../read/pool.ts";
 import { HttpError } from "../read/views.ts";
+import { toEntry } from "../store/rows.ts";
 import { type Answer, type Request, error, json, queryPairs } from "./request.ts";
 import { routes as chats } from "./routes/chats.ts";
 import { routes as usage } from "./routes/usage.ts";
@@ -20,7 +21,7 @@ import { routes as marks } from "./routes/marks.ts";
 import { routes as updates } from "./routes/updates.ts";
 import { routes as accounts } from "./routes/accounts.ts";
 import { routes as xshare } from "./routes/xshare.ts";
-import { routes as hub, uploadPath } from "./routes/hub.ts";
+import { routes as hub, movedAnswer, uploadPath } from "./routes/hub.ts";
 import { routes as deviceTools } from "./routes/tools.ts";
 import { routes as agentEnv } from "./routes/agent-env.ts";
 import { routes as networkSettings } from "./routes/network.ts";
@@ -129,7 +130,7 @@ export class Admin {
   private routes: Route[];
   /// What the routes are given; the station's parts' too (parts.ts).
   private tools: Tools;
-  private readers: Readers;
+  readonly readers: Readers;
 
   readonly host: Host;
 
@@ -148,7 +149,9 @@ export class Admin {
       read: async (r, op, args) => {
         try {
           const signal = r.method === "GET" || (r.method === "POST" && READS.test(r.path)) ? r.signal : undefined;
-          return json(200, await this.readers.read(op, args, r.lang, { background: r.background === true, signal }));
+          const options = { background: r.background === true, signal };
+          // (as bytes, passed on as the reader gave them; a test's stand-in for the readers may give text alone)
+          return json(200, "readBytes" in this.readers ? await this.readers.readBytes(op, args, r.lang, options) : await (this.readers as Readers).read(op, args, r.lang, options));
         } catch (e) {
           return error(e instanceof HttpError ? e.status : 500, (e as Error).message);
         }
@@ -300,6 +303,61 @@ export class Admin {
   }
   /// Each kept slot's answer, as it settled (a slot's promise cannot be looked into).
   readonly #settled = new WeakMap<Slot, Kept>();
+
+  /// A person's message the MoonBit program writes (mesh/served.ts `say`): as `once` keeps a keyed write's answer,
+  /// asked before it is written (`kept`: the first one's answer, given again), with the timestamp it is written at
+  /// (the hub's, one clock for every message) and what to settle the key with once answered; refused as POST
+  /// /threads/:id/messages refuses (routes/hub.ts: the station starting, or moving away from the asker's workspace).
+  async claimSay(viewer: Request["viewer"], path: string, key: string | null, lang: Request["lang"]): Promise<{ kept: Kept } | { refused: Kept } | { ts: string; settle: (answer: Kept | null) => void }> {
+    const refused = (status: number, message: string) => ({ refused: error(status, message) as Kept });
+    const agents = typeof this.deps.agents === "function" ? this.deps.agents() : this.deps.agents;
+    const store = this.deps.store ?? agents?.hub.store;
+    if (store === undefined || agents === undefined) return refused(503, "station starting");
+    if (viewer.workspace !== null && agents.hub.quietIn(viewer.workspace)) return refused(503, tr(lang, "station.retire.moving"));
+    // (a chat handed to another station: answered where it went, as POST /threads/:id/messages answers it, never written here)
+    const thread = SEND_PATH.exec(path)?.[1];
+    const moved = thread === undefined || !/^\d+$/.test(decodeURIComponent(thread)) ? null : movedAnswer(store, Number(decodeURIComponent(thread)), lang);
+    if (moved !== null) return { refused: moved as Kept };
+    if (key === null || key === "" || key.length > 200) return { ts: agents.hub.nextTs(), settle: () => {} };
+    const slotKey = `${viewer.email}\0${path}\0${key}`;
+    const now = (this.deps.clock ?? liveClock).currentTimeMillisUnsafe();
+    for (const [k, slot] of this.slots) if (slot.at !== null && now - slot.at >= ONCE_KEEP_MS) this.slots.delete(k);
+    for (;;) {
+      const slot = this.slots.get(slotKey);
+      if (slot === undefined) break;
+      const kept = await slot.answer;
+      if (kept !== null) return { kept: { status: kept.status, headers: { ...kept.headers }, body: kept.body } };
+      if (this.slots.get(slotKey) === slot) this.slots.delete(slotKey);
+    }
+    let settle: (kept: Kept | null) => void = () => {};
+    const slot: Slot = { at: null, answer: new Promise<Kept | null>((resolve) => (settle = resolve)) };
+    this.slots.set(slotKey, slot);
+    return {
+      ts: agents.hub.nextTs(),
+      settle: (answer) => {
+        if (answer !== null && answer.status < 500) {
+          slot.at = (this.deps.clock ?? liveClock).currentTimeMillisUnsafe();
+          const kept: Kept = { status: answer.status, headers: answer.headers, body: answer.body };
+          // (as `once` keeps its answers: a hand-over carries it with its chat, `keptSends`)
+          this.#settled.set(slot, kept);
+          settle(kept);
+        } else {
+          settle(null);
+          if (this.slots.get(slotKey) === slot) this.slots.delete(slotKey);
+        }
+      },
+    };
+  }
+
+  /// A person's message the MoonBit program wrote (`row`, as the entries table has it): told the store's followers
+  /// as the store's own write is told, and delivered to the chat's sessions as `say` delivers it (sessions/lifecycle.ts).
+  saidElsewhere(thread: number, n: number, text: string, row: Record<string, unknown>) {
+    const agents = typeof this.deps.agents === "function" ? this.deps.agents() : this.deps.agents;
+    const store = this.deps.store ?? agents?.hub.store;
+    if (store === undefined || agents === undefined) return;
+    store.told([{ type: "thread", id: thread, entries: [toEntry(row)] }]);
+    agents.hub.deliver(thread, n, store.threadSessions(thread).map((m: { session: string }) => m.session), text);
+  }
 
   /// `write`'s answer, or the answer the first write under `key` had: while the first is under way the
   /// others wait for it; a 5xx is not kept (the write may not have happened: asked again, it is tried again).

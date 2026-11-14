@@ -124,6 +124,7 @@ fn reset() -> Unit {
   ask_turns.clear()
   wide_reset()
   invite_reset()
+  login_link_reset()
   // the library as a run begins (what is presented, the menus open, a group's and a page's rows, the viewers: the texts
   // read, the films played, the reader's layout; the system's bars): this is the moment the run begins where it is said
   // by hand (sf's run_begins.mbt)
@@ -155,6 +156,7 @@ fn pages_shell(src : Source, wide : Bool) -> Shell {
     home,
     close_overlays,
     open_invite,
+    open_login,
     behind: peeks_stop_all,
     open: fn(p) { open_where(src, p) },
     open_over: fn(p) { open_over_where(src, p) },
@@ -536,8 +538,16 @@ pub fn app_tree(src : Source) -> (@view.View) -> Unit {
     @sf.set_words(fill)
     // Keep the prefs reader with the tree from its first read, including before the first frame is built.
     root.reacts(fn() { src.topic("prefs", {}).get().value }, @sfbase.language_from_prefs)
+    // (the chat page this device makes, as chosen in 外观's 试用新对话页, told before any page of nodes is made: the first
+    // chat opened is the page chosen)
+    root.reacts(fn() { src.topic("prefs", {}).get().value }, @sfbase.chat_page_from_prefs)
     // (the window's keys as the core's prefs keep them on this device, changed as they are: settings' keymap.mbt)
-    root.keymap(By(fn() { @settings.keymap_of(src.topic("prefs", {}).get().value) })) |> ignore
+    // (and a Farview tab's page's caret's keys, where it has the keyboard: fvclient's stage)
+    root.keymap(By(fn() {
+      let m = @settings.keymap_of(src.topic("prefs", {}).get().value)
+      { ..m, bindings: [..@stage.page_keys(), ..m.bindings] }
+    }))
+    |> ignore
     // (the window's height, what a chat list's and a chat's first window are worked out of wherever they are first
     // asked: sfbase's first_window, chat_first_window; said before any page of nodes is made, as it asks; none before
     // the first frame gives it, what was known kept till then)
@@ -550,6 +560,20 @@ pub fn app_tree(src : Source) -> (@view.View) -> Unit {
     // (what the app shows, by its kind alone, told the window thread's journal as it changes, on every host: what its
     // hang reports and the device's performance record say; no frame asks it)
     root.reacts(fn() { @sfbase.shown_kind(shown_now(src, root.window().0)) }, @ui.journal_shows)
+    // (to a core that counts what people use (client/core-ts's use-counts.ts: a build given still.fail's project, on
+    // its own cloud), whether to, as the settings say, and while it does what the app shows by that same kind alone,
+    // each as it changes; nothing to one that does not, as under a Tester or a replay)
+    root.reacts(fn() { @sfbase.counts_told(src, @sfbase.shown_kind(shown_now(src, root.window().0))) }, fn(told) {
+      match told {
+        Some((on, kind)) => {
+          (src.call)("client.reports", { "on": Json::boolean(on) }, @sfbase.answer_unread)
+          if on {
+            (src.call)("client.shown", { "page": Json::string(kind) }, @sfbase.answer_unread)
+          }
+        }
+        None => ()
+      }
+    })
     // (how it lays out what it shows, 小屏/中屏/大屏 by @sf.layout's name, and the window's size, told the journal as
     // either changes: what a hang report says beside the page, so it is made again in a Tester's window of that size)
     root.reacts(
@@ -805,6 +829,8 @@ fn page_view(
         Setting(r) => setting_page(c, src, w, r)
         // (made once: narrow_shell.mbt's history_node)
         History(_, _, _) => ()
+        // (a Farview tab: made once, narrow_shell.mbt's)
+        Screen(at) if @sfpages.farview_screen(at.screen) => ()
         Screen(at) => @sfpages.screen_page(c, src, at, system_frame())
       }
       // the page runs under the status bar; it keeps the paper behind its icons, moving with it (App.kt: the list, a

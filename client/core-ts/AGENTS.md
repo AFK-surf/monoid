@@ -207,7 +207,7 @@ another; the accounts' list's merge across stations and its refills.
   asked on that workspace's address, never to the cloud nor a station of another workspace (which get the chain);
   taken once one of those took entry and body, else pending, waiting for those. Said so now: a role, a member out, a
   station in (`joinStation`, `addStation` once its code is confirmed) or out, off and on again (the root's person
-  alone, `lock_root_only`, which names them and the way out, `stillfail lock reset` on a station's machine; the topic
+  alone, on the log that binds them, `lock_root_only`, which names them and the way out, `stillfail lock reset` on a station's machine; the topic
   says it to another owner, `rootText`, and offers the root's person turning it on again while off, `onAgainText`). What lets someone in there (2026-11-13): a web page is `web {id, label, exp}` on its own
   person's log (personal-lock.ts `web`), approved face to face only by a device of that person's on the log that binds
   them (views/pair.ts `movedPlace`), one entry and one ask for every moved workspace it asked in, renewed by a later
@@ -288,10 +288,11 @@ another; the accounts' list's merge across stations and its refills.
   one on a build under `MOVED_FROM_BUILD` is told to update by a station of the workspace as it next asks
   (station/src/mesh/serve.ts `movedTooOld`: 请更新, 请刷新页面 on the web) and is in again once it has, nothing approved
   anew. Do not bring a wait for people's devices back. `lock.handOver` answers
-  `lock_not_ready` in the upgrade's title). For now, each lifted by its own change: a chain with a web page whose person
-  has no app on it (`webOnlyIn`: carried until its `exp`, then nobody can approve it again there, and the page telling
-  them to install an app is not drawn yet), and more than `HAND_OVER_MEMBERS_MOST` members bound to a log (`LOGS_MOST` a
-  workspace); a host made for tests that calls `lock.handOver` itself is not held to these. The owner's (the user,
+  `lock_not_ready` in the upgrade's title). For now, lifted by its own change: more than `HAND_OVER_MEMBERS_MOST` members
+  bound to a log (`LOGS_MOST` a workspace); a host made for tests that calls `lock.handOver` itself is not held to it. A
+  member with only a web page holds nothing back and is told nothing before it (the owner, 2026-11-13: 「开了安全模式那就需要
+  app」; 2026-11-15): their page is carried until its `exp`, then is one nobody can approve there (`needsAppIn`, drawn in
+  the app's place of the workspace and on 安全), and their first app comes in as a newcomer's. The owner's (the user,
   2026-11-14, 「都按推荐」): the person who turned safe mode on (`genesisPerson`) hands over; another owner's device only
   once that person has not in 14 days from the later of `HAND_OVER_FROM` and the genesis, or is no owner on the chain any
   more (`mayHandOver`); after the move only that person turns safe mode off or on again (`lock_root_only`). To people it
@@ -311,6 +312,15 @@ another; the accounts' list's merge across stations and its refills.
   theirs off. A member the chain named, first
   app device after the move, is admitted face to face as a newcomer is, in the role the state gives them (views/pair.ts
   `admitOf`), what the chain carried of theirs staying.
+- After a move the root's person is a member like any other (rules/AGENTS.md, `~root`; the lead, 2026-11-14): another
+  owner takes them out with a removal naming the root's log too (lock-statements.ts `cancelsOf`), said only where
+  every station the state names said `rootout` (views/lock.ts `rootOutServed`; else the act is refused as before, as
+  it would not do what it means), adds them again and approves their new app as anyone's first (views/pair.ts
+  `admitOf`); `open` and `off` are said from the log that binds them once it is a real admit (`saysOnOff`). Their
+  new app begins its lock anew (personal-lock.ts `begin`: its signer made first and said in the genesis, the chain left
+  no lock begun elsewhere to it) and brings the chain pinned to the stations again only for a reason that changed since
+  one took it (`#bringPinned`; round 24 of `apps/mbui/e2e/locks-moved.ts`, 2026-11-14: each read and each refusal
+  brought it, 878 POSTs in 91 s). `test/lock-left-out.test.ts` counts its asks.
 - Known, not built for (the lead, 2026-11-14): a station of another workspace from before build 8799 keeps a stale copy
   of the person's log once they say a statement. A root log holding statements of a half-done handover of builds
   9040–9054 that the chain has since contradicted is held back silently; nothing is built for it.

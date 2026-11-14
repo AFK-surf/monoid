@@ -48,7 +48,11 @@ yet and you can add one, add it.
   and shows what it shows now once that is gone and its place holds it whole, its place's way to a smaller one waiting
   for it, of no way said with it, setting out then in the one way of what goes then; a side that makes nothing takes
   no room and no gap at rest, as a show's that is not there: never both seen, no words cut or moved by the way
-  (`src/view/pick_leave.mbt`; a video's capsule; the coordinator of the migration, 2026-11-11 and 2026-11-14). Say
+  (`src/view/pick_leave.mbt`; a video's capsule; the coordinator of the migration, 2026-11-11 and 2026-11-14). Under a
+  page's list whose insides join its way, such a pick is one thing changing look as a key does, and a show's part going
+  or coming (`leave` or not) goes as a key does: its place's way sets out at the cause in the list's group, waiting for
+  nothing, and what goes and what comes are drawn by how far that way has gone (view's `row_held_at`, about their start and top: neither seen at half or less), never cut
+  (`src/view/list_part_leave_test.mbt`; the coordinator of the migration, 2026-11-14: a card answered). Say
   `at_once=true` only where one is in another's place the column does not see (an old view's drawn there, one sidebar
   for another), and on what a row of a page's list shows only while it is the last of its run (its time line under
   it): gone in the change by which a key comes after it, as the old page built the row again without it, the key
@@ -80,7 +84,9 @@ yet and you can add one, add it.
   `Tree::raised_blocks`, ui's `view_paint` moving what it draws after its list's, cut as where it is; found by a press
   and read out where it is laid); not at its foot, `at_once` or with motion reduced, as any key
   (`src/view/list_key_whole_test.mbt`, `src/ui/list_key_whole_wbtest.mbt`; the coordinator of the migration,
-  2026-11-14); what is sent takes it up only: at its foot, in a change by which a key comes at
+  2026-11-14); a key coming by data whose page says how it comes (`comes_way`: a length and a curve, one's own words
+  sent on their flight's rise) sets the list's one way of that moment on that curve, all of it, not a Move (flex's
+  ComeGroup `spec`; `src/view/list_comes_way_test.mbt`; the coordinator of the migration, 2026-11-14); what is sent takes it up only: at its foot, in a change by which a key comes at
   its foot, or comes before keys that stay under it there (an agent's line: at the foot for the one reading; the
   coordinator of the migration, 2026-11-14), the stretch from the top of the last key that stays before it to the
   column's end, whatever stays under it, is never shorter than it was then while that change's ways go and rests as
@@ -152,7 +158,10 @@ yet and you can add one, add it.
   (`ListPlace::follow_from`: a chat's answer read from its top), that top a margin under what covers the list's top: a
   standing limit, which while it binds holds the list by that top and has it off its foot to every rule of its foot,
   however near the foot, and stands till the hand takes the list, an ask, another named, or its key goes
-  (`src/view/list_follow_from_test.mbt`; the coordinator of the migration, 2026-11-14).
+  (`src/view/list_follow_from_test.mbt`; the coordinator of the migration, 2026-11-14). What it reports in sight
+  (`ListPlace::on_sight`) is what is seen: a key coming by data is not seen whole, nor its end seen (Sight's
+  `foot_whole`; `at_foot` is where it lays out), till it is drawn whole, told once at its way's end, in the change where
+  it comes at once (`src/view/list_sight_coming_test.mbt`; the coordinator of the migration, 2026-11-14).
 - What a page asks of its list (`ListPlace`: a block brought to its top or its middle, back to its foot) is done only
   in a pass that can do it as asked: one that cannot make the rows that show there, or that a way still going under
   it would leave short, keeps the ask for the next pass. Asked back to its foot, the list ends at its foot as the foot

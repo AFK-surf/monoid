@@ -13,6 +13,10 @@ concurrency:
 permissions:
   contents: read
   actions: read
+env:
+  # Farview's client, which the app draws a chat's Farview tab with (apps/mbui/scripts/farview.sh: a private repository,
+  # read by its deploy key)
+  FARVIEW_DEPLOY_KEY: ${{ secrets.FARVIEW_DEPLOY_KEY }}
 jobs:
   plan:
     if: github.repository_owner == 'AFK-surf' && github.ref == 'refs/heads/main'
@@ -88,8 +92,16 @@ jobs:
           MACOS_DEVELOPER_ID_KEYCHAIN_B64_1: ${{ secrets.MACOS_DEVELOPER_ID_KEYCHAIN_B64_1 }}
           MACOS_DEVELOPER_ID_KEYCHAIN_B64_2: ${{ secrets.MACOS_DEVELOPER_ID_KEYCHAIN_B64_2 }}
           KEYCHAIN_PASSWORD_AFK: ${{ secrets.KEYCHAIN_PASSWORD_AFK }}
+        run: sh .github/release-desktop.sh --stable
+      # Only frees the runner's disk of the zip already put: it fetches the zip back from R2 to compare, which from mini1
+      # took past the job's 10 minutes after the release was out (0.1.8947, two attempts, 2026-11-15), so it never fails
+      # or holds back the release.
+      - name: Remove the uploaded Mac zip's local copy
+        continue-on-error: true
+        timeout-minutes: 2
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
-          sh .github/release-desktop.sh --stable
           build=$(git rev-list --count HEAD)
           cache=${MBUI_MAC_CACHE:-"$HOME/stillfail-ci/mbui-mac-stable"}
           # (where scripts/beta.sh of the release's checkout builds: beside libs/mbui once mbui is there)
@@ -154,7 +166,14 @@ jobs:
           # The installer's signature (its .sig): none is an error.
           RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
           RELEASE_DIR: ${{ runner.temp }}/release
+          POSTHOG_JSON: ${{ secrets.POSTHOG_JSON }}
         run: |
+          # the PostHog project its core sends what people use to (apps/mbui/scripts/core.sh posthog_define)
+          if [ -n "${POSTHOG_JSON:-}" ]; then
+            (umask 077 && printf '%s' "$POSTHOG_JSON" > "$RUNNER_TEMP/posthog.json")
+            export STILLFAIL_POSTHOG="$RUNNER_TEMP/posthog.json"
+          fi
+          unset POSTHOG_JSON
           # This checkout is the reviewed release and can be older than the workflow.
           git show "$GITHUB_SHA:apps/mbui/scripts/win-compiler.sh" > "$RUNNER_TEMP/win-compiler.sh"
           . "$RUNNER_TEMP/win-compiler.sh"
@@ -344,6 +363,9 @@ jobs:
       - uses: actions/checkout@v5
         with: { ref: '${{ needs.plan.outputs.sha }}', fetch-depth: 0 }
       - uses: ./.github/actions/setup-mac
+      # (MoonBit for the station's reader, station/mb/build.sh, built here where the natives' cache lacks it: pruned on
+      # the runner, the stable's station job of 0487f79c found `moon: command not found` four times, 43616763857)
+      - uses: ./.github/actions/mbui-moonbit
       - name: Publish all three stable station platforms from the pinned source
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -355,7 +377,10 @@ jobs:
           KEYCHAIN_PASSWORD_AFK: ${{ secrets.KEYCHAIN_PASSWORD_AFK }}
           # The key the release is signed with (scripts/release-sign.ts): none is an error.
           RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
-        run: sh .github/release.sh --stable station
+        # The native parts it fetches by the usual route: the direct one (STILLFAIL_DIRECT_DNS, setup-mac) trickled each
+        # part for 300 s from mini1 and cut four attempts at 10 minutes, the usual route sending one in 20 s (0.1.8947,
+        # 43616763857). A release runs its base's scripts/native.ts, which gives up a slow route only from #6329 on.
+        run: STILLFAIL_DIRECT_DNS= sh .github/release.sh --stable station
 
   # The official site, still.fail, from the same revision: the pipeline deploys only youdid.wtf's (site-beta), and a
   # stable release that left it out kept still.fail at 2026-10-01's for two weeks (no Windows download on it).

@@ -522,6 +522,8 @@ enum Handle {
     Listener(Arc<Listener>),
     /// A zstd stream being taken apart (`zstd.open`).
     Unzstd(Arc<Mutex<Unzstd>>),
+    /// A zstd stream being made (`zstd.stream`): each piece given flushed out whole (station/mesh/compress.ts's way).
+    Zstd(Arc<Mutex<zstd::stream::raw::Encoder<'static>>>),
 }
 
 /// A listening socket: TCP on this machine's loopback (one bound here, or one a launcher bound and handed down by its
@@ -752,6 +754,61 @@ fn headers_of(response: &reqwest::Response) -> Value {
     Value::Array(response.headers().iter().map(|(k, v)| json!([k.as_str(), String::from_utf8_lossy(v.as_bytes())])).collect())
 }
 
+/// What a stream's other end sent first, up to its first line's end (16 KiB at most; less where it ended or failed):
+/// all of what was read, to be carried on before the rest (a frame of `pipe`'s).
+async fn read_head_line(halves: &Halves) -> Vec<u8> {
+    let mut read = Vec::new();
+    let mut buf = vec![0u8; 16 * 1024];
+    let mut recv = halves.recv.lock().await;
+    let Some(recv) = recv.as_mut() else { return read };
+    while !read.contains(&b'\n') && read.len() < 16 * 1024 {
+        match recv.read(&mut buf).await {
+            Ok(Some(n)) => read.extend_from_slice(&buf[..n]),
+            _ => break,
+        }
+    }
+    read
+}
+
+/// A request's route as `conn.hand`'s `routes` say them: its head line's method (GET where none) and its path without
+/// its query. None where the line is not one (wire.ts: a JSON head line).
+fn route_of(read: &[u8]) -> Option<String> {
+    let end = read.iter().position(|&b| b == b'\n')?;
+    let head: Value = serde_json::from_slice(&read[..end]).ok()?;
+    let method = head.get("method").and_then(Value::as_str).unwrap_or("GET").to_uppercase();
+    let path = head.get("path")?.as_str()?;
+    Some(format!("{method} {}", path.split('?').next().unwrap_or(path)))
+}
+
+/// Whether route `r` (`"GET /a/b"`) is one `pattern` names: the same method and as many segments, each the same or `*`
+/// (any one, not empty).
+fn route_matches(pattern: &str, r: &str) -> bool {
+    let (mut p, mut r) = (pattern.split('/'), r.split('/'));
+    loop {
+        match (p.next(), r.next()) {
+            (None, None) => return true,
+            (Some("*"), Some(s)) if !s.is_empty() => {}
+            (Some(a), Some(b)) if a == b => {}
+            _ => return false,
+        }
+    }
+}
+
+/// `bytes` said to the Unix socket at `path` on a connection of their own, then that connection ended.
+async fn tell_unix(path: &str, bytes: &[u8]) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        let mut socket = tokio::net::UnixStream::connect(path).await.map_err(err)?;
+        socket.write_all(bytes).await.map_err(err)?;
+        socket.shutdown().await.map_err(err)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (path, bytes);
+        Err("Unix sockets are Unix's".into())
+    }
+}
+
 fn str_of<'a>(v: &'a Value, k: &str) -> Result<&'a str, String> {
     v.get(k).and_then(Value::as_str).ok_or_else(|| format!("missing {k}"))
 }
@@ -866,6 +923,7 @@ impl Handle {
             Handle::IStream(_) => "stream",
             Handle::Listener(_) => "listener",
             Handle::Unzstd(_) => "unzstd",
+            Handle::Zstd(_) => "zstd",
         }
     }
 }
@@ -1192,8 +1250,57 @@ impl Inner {
                     None => Answer::json(json!({ "end": true })),
                 })
             }
+            // `bytes` compressed whole at `level` with a window of 2^`window` (station/mesh/compress.ts's: what a station's
+            // program answers a device that asks for zstd), off the caller's thread.
+            "zstd.compress" => {
+                let level = a.get("level").and_then(Value::as_i64).unwrap_or(3) as i32;
+                let window = a.get("window").and_then(Value::as_u64).unwrap_or(20) as u32;
+                let input = bytes.unwrap_or_default();
+                let out = tokio::task::spawn_blocking(move || -> Result<Vec<u8>, String> {
+                    let mut z = zstd::bulk::Compressor::new(level).map_err(err)?;
+                    z.set_parameter(zstd::zstd_safe::CParameter::WindowLog(window)).map_err(err)?;
+                    z.compress(&input).map_err(err)
+                })
+                .await
+                .map_err(err)??;
+                Ok(Answer::bytes(json!({}), out))
+            }
+            // A zstd stream made of what is given it piece by piece (`zstd.push`), each piece flushed: what an event stream
+            // a station's program answers goes out as (station/mesh/compress.ts `compressedStream`), `level` and a window of
+            // 2^`window` its.
+            "zstd.stream" => {
+                let level = a.get("level").and_then(Value::as_i64).unwrap_or(3) as i32;
+                let window = a.get("window").and_then(Value::as_u64).unwrap_or(20) as u32;
+                let mut e = zstd::stream::raw::Encoder::new(level).map_err(err)?;
+                e.set_parameter(zstd::zstd_safe::CParameter::WindowLog(window)).map_err(err)?;
+                Ok(Answer::json(json!({ "id": self.keep(Handle::Zstd(Arc::new(Mutex::new(e)))) })))
+            }
             "zstd.open" => Ok(Answer::json(json!({ "id": self.keep(Handle::Unzstd(Arc::new(Mutex::new(Unzstd::new()?)))) }))),
             "zstd.push" => {
+                if let Handle::Zstd(z) = self.handle(id_of(&a)?)? {
+                    use zstd::stream::raw::{InBuffer, Operation, OutBuffer};
+                    let input = bytes.unwrap_or_default();
+                    let mut z = z.lock().unwrap();
+                    let mut out = Vec::with_capacity(input.len() / 2 + 64);
+                    let mut chunk = vec![0u8; 64 * 1024];
+                    let mut inb = InBuffer::around(&input);
+                    while inb.pos() < input.len() {
+                        let mut o = OutBuffer::around(&mut chunk[..]);
+                        z.run(&mut inb, &mut o).map_err(err)?;
+                        let n = o.pos();
+                        out.extend_from_slice(&chunk[..n]);
+                    }
+                    loop {
+                        let mut o = OutBuffer::around(&mut chunk[..]);
+                        let left = z.flush(&mut o).map_err(err)?;
+                        let n = o.pos();
+                        out.extend_from_slice(&chunk[..n]);
+                        if left == 0 {
+                            break;
+                        }
+                    }
+                    return Ok(Answer::bytes(json!({}), out));
+                }
                 let Handle::Unzstd(z) = self.handle(id_of(&a)?)? else { return Err("not a zstd stream".into()) };
                 let input = bytes.unwrap_or_default();
                 let mut z = z.lock().unwrap();
@@ -1795,9 +1902,19 @@ impl Inner {
             // one). A 0 there and no index: a front from before. Kept as a stream here meanwhile
             // (`istream.stopped`, `istream.reset`). Answered once the connection is gone.
             // What station/mb's front gives its Node, with no step of the program's for each stream.
+            //
+            // With `front` (Unix sockets' paths, each taking the next in turn) and `routes` ("GET /admin/api/chats", …): a stream past the first
+            // whose head line (its first, read here) asks one of those, by its method and its path without the query,
+            // goes there instead, with what was read of it, and `path` is told its index went elsewhere (its head the
+            // ids, a 3 and the index): what the front answers itself. A route's segment `*` is any one segment.
             "conn.hand" => {
                 let on = id_of(&a)?;
                 let path = str_of(&a, "path")?.to_string();
+                let fronts: Vec<String> = a.get("front").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
+                let mut turn = 0usize;
+                let routes: Arc<Vec<String>> = Arc::new(
+                    a.get("routes").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect(),
+                );
                 let Handle::Conn(conn) = self.handle(on)? else { return Ok(Answer::json(json!({}))) };
                 while let Ok((mut send, mut recv)) = conn.accept_bi().await {
                     if !matches!(self.handle(on), Ok(Handle::Conn(_))) {
@@ -1820,9 +1937,30 @@ impl Inner {
                     head.extend(id.to_be_bytes());
                     head.push(2);
                     head.extend(index.to_be_bytes());
-                    let (inner, path) = (self.clone(), path.clone());
+                    let front = (!fronts.is_empty()).then(|| fronts[turn % fronts.len()].clone());
+                    turn += 1;
+                    let (inner, path, routes) = (self.clone(), path.clone(), routes.clone());
                     tokio::spawn(async move {
-                        if let Err(e) = inner.hand(id, halves, &path, &head).await {
+                        let mut head = head;
+                        let mut to = &path;
+                        if let (Some(front), true) = (&front, index > 0 && !routes.is_empty()) {
+                            let read = read_head_line(&halves).await;
+                            if route_of(&read).is_some_and(|r| routes.iter().any(|p| route_matches(p, &r))) {
+                                let mut skip = head[..16].to_vec();
+                                skip.push(3);
+                                skip.extend(index.to_be_bytes());
+                                if let Err(e) = tell_unix(&path, &skip).await {
+                                    eprintln!("mesh: a stream's index not told: {e}");
+                                }
+                                to = front;
+                            }
+                            // (as the frame `pipe` would have carried it: its length first)
+                            if !read.is_empty() {
+                                head.extend((read.len() as u32).to_be_bytes());
+                                head.extend(read);
+                            }
+                        }
+                        if let Err(e) = inner.hand(id, halves, to, &head).await {
                             eprintln!("mesh: a stream not given: {e}");
                         }
                     });

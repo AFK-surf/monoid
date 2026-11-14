@@ -9,7 +9,13 @@
   front (`mb/src/front/mesh.mbt`), which the launcher starts and keeps across Node's handovers
   (`native/launcher/src/front.rs`), for each Node in turn (`src/mesh/front.ts`, its streams carried by the shell and
   none of their bytes by the program); where none runs (Windows, a checkout without the program) Node binds it itself
-  with its addon (`native/mesh`), which keeps the image codecs and the rest as before. The native
+  with its addon (`native/mesh`), which keeps the image codecs and the rest as before. A device's requests of the
+  routes in `src/mesh/served.ts` (the reads a device makes, `/batch`, `/changed`, its marks, names and a message in
+  words and quotes) the front hands the MoonBit program that answers them itself (station/mb's reader `--serve`), not
+  Node, which only tells it who each connection's member is and the floor a core is too old under there, takes what it wrote (`changes`, `said`: Node's store
+  tells, the hub delivers) and keeps a message's idempotency slot and timestamp (`claim`); and `GET /events`, which
+  Node's events make and give it a piece at a time, each told several streams given once (`relay`), and which it
+  compresses and writes. The native
   parts are prebuilt by their sources (`scripts/native.ts`): even a comment changed in one makes every machine and
   CI build it again, so touch them only for what they do.
 - What still.fail draws outside the app (the Helper's windows, `native/helper`) is in still.fail's design (the
@@ -82,7 +88,11 @@
   tools say, goes through its serial queue. Input is a prompt when idle, a steer during a turn, else queued.
 - Runtimes are drivers behind one seam (`src/agents/runtime.ts`): Claude Code a `claude -p` process per session;
   Codex one app-server per account, a thread per session, whose per-session settings go in `thread/start`'s config,
-  never the process's environment; the others in `src/agents/`. A driver owns its child's stdin.
+  never the process's environment; the others in `src/agents/`. A driver owns its child's stdin. Claude Code's output
+  is read by the MoonBit program (`src/agents/mb-agents.ts`, `mb/src/reader/agents.mbt`, its frames `mb/src/claude`)
+  where it is built, off the station's thread: Node starts and ends the processes and is told the events, each line
+  acknowledged to its runner once Node took them; a handover holds its reading first (`freeze`, hub.ts `handOver`).
+  `test/claude-here.test.ts` runs the driver's tests with it read here, as where the program is not.
 - Their tools are the station's MCP endpoint (`src/tools/`, HTTP on 127.0.0.1, a bearer token per session). What they
   read of how to work is `src/agents/instructions.ts` and the skills in `src/skills/`. A change to the instructions, a
   tool's parameters or its rules adds a note at the end of `src/agents/migrations.ts` (the next number, a sentence),
@@ -116,6 +126,10 @@
   CRDT library (it grows, and every station would have to compact it together). With no version both came from (each
   station's memory of before) MEMORY.md's lines, and a file both kept on since it was copied, are put together each
   line once; skills of one name and nothing alike are kept apart as `<name>-<station>` (the user, 2026-11-14).
+  Two versions of one history whose common version a station does not keep (and the other could not give) keep
+  every line of both: a merge never drops what either had. `test/memory-sync-random.test.ts` holds it over random
+  worlds (`MEMORY_RANDOM_SEEDS` for more; it fails on 0.1.9133's code), `test/memory-sync-upgrade.test.ts` that what
+  0.1.9133 to 0.1.9168 left (a skill kept apart twice, a station's own file moved) is mended (`#mend`).
 
 ## How a workspace's devices reach its stations (its ways)
 
@@ -251,6 +265,17 @@
   (`src/api/moved-from.ts`) asking in a workspace whose chain moved is told to update there (426 with `update`, as
   `coreTooOld`; `src/mesh/serve.ts` `movedTooOld`), which its app shows as the ordinary 请更新 (请刷新页面 on the web); one
   that says no build is answered as `coreTooOld` answers it. `test/device-builds.test.ts` holds it.
+- After a move the root's person is a member like any other (rules/AGENTS.md, `~root`; the lead, 2026-11-14): this
+  station says `rootout` in its GET /lock `serves`, so a core says a removal of them naming the root's log only where
+  every station reads it so, and a core under `ROOT_OUT_FROM_BUILD` (`src/api/moved-from.ts`) is told to update
+  (`movedTooOld`) only where the state in force has them out of `~root` (`Cloud.rootOut`, the rules' `root_in`):
+  nowhere else is anyone told anything. The MoonBit program answers its routes by the same floor (`movedFloor`, the
+  build under which a core is too old in a connection's workspace, told it with each connection's member and again as
+  the state in force changes; a program from before it goes by whether the chain moved). Which of their logs is theirs is the state's to say (`src/mesh/serve.ts`
+  `ownChainsOf`): GET /lock/person and a refusal's `person` give the root's log as theirs no more once an admit binds
+  them by another, so their new app never reads its lock replaced and a device of the root's log hears that it was;
+  the root's log stays among the workspace's logs and is never let go as a person's oldest (`CHAINS_A_PERSON`,
+  `src/mesh/person-chains.ts`). `test/lock-root-out.test.ts` holds it.
 
 ## Screens
 
@@ -259,6 +284,15 @@
   it, and every other person's view that drives it, their own on another device too, only looks from then on, told
   who took it; a view's own reopen (its link went, a resize) never takes it. An agent's view is not one of them: its
   input waits while a person drives (`src/tools/computer.ts`). Each side is told it in a notice (「独占这块应该需要有提示」).
+
+## Terminals
+
+- A member's terminal on the station (`src/terminals/`; the user, 2026-11-14) is a runner's (`--pty`, its id
+  `term-…`, its meta in `<data>/run/terminals/`), taken up by the next station as an agent's is; what takes up agents'
+  runners leaves those (`isTerminalRunner`). Every member but a read-only one opens one and types (one at a time, 接管
+  as a screen's); a read-only member looks. A workspace sees only its own. A view is given the runner's screen first
+  (libghostty-vt's, native/runner `screen`), then only the output past it. Not on a station that only runs tasks yet
+  (it serves no device): that is a step of its own.
 
 ## Devices (设备)
 

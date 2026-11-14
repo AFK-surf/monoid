@@ -8,7 +8,7 @@
 import type { Admin } from "../api/admin.ts";
 import { langOfCore, queryPairs } from "../api/request.ts";
 import { BUILD_HEADER, COUNTED_FROM, buildOf, coreTooOld } from "../api/oldest.ts";
-import { MOVED_FROM_BUILD } from "../api/moved-from.ts";
+import { MOVED_FROM_BUILD, ROOT_OUT_FROM_BUILD } from "../api/moved-from.ts";
 import { deviceBuildsOf } from "./device-builds.ts";
 import { tr } from "../ops/i18n.ts";
 import type { Cloud } from "../cloud/state.ts";
@@ -36,7 +36,8 @@ import { Traces, parseParent, route } from "./traces.ts";
 import { FrameReader, SocketRefused, openSocket, previewTarget, pumpSocket } from "../jobs/preview.ts";
 import { type Admit, door } from "./door.ts";
 import { SLOW_REPLY_BYTES, pathsOf, slowly } from "./reply-watch.ts";
-import { type Asked, HOP, Reader, send, writeLine } from "./wire.ts";
+import { type Answer, type Asked, HOP, Reader, send, writeLine } from "./wire.ts";
+import type { Served } from "./served.ts";
 
 export const ALPN = Buffer.from("stillfail/admin/1");
 // Keep old clients admitted until protocol-2 clients have reached the stable channel.
@@ -147,7 +148,7 @@ function leftOutFor(cloud: Cloud, hello: any, device: string, accepted?: Accepte
 /// and the last entries of the workspace's lock (`entries`), so one taken out of it hears so, with no cloud to read it of.
 export function refusalOf(cloud: Cloud, hello: any, device: string, e: unknown, accepted?: Accepted, sub: string | null = null): Record<string, unknown> {
   if (e instanceof LockRefusal) {
-    const chains = sub === null ? [] : personChainsOf(cloud).of(sub).map(([genesis, entries]) => ({ genesis, entries }));
+    const chains = sub === null ? [] : ownChainsOf(cloud, sub, joinedOf(cloud, claimed(hello))).map(([genesis, entries]) => ({ genesis, entries }));
     const person = chains.length > 0 && JSON.stringify(chains).length <= REFUSAL_PERSON_BYTES ? { person: chains } : {};
     const ws = joinedOf(cloud, claimed(hello));
     const tail: Entry[] = [];
@@ -319,9 +320,23 @@ export function sawBuild(cloud: Cloud, viewer: Admitted["viewer"], headers: Reco
 /// says none is answered as `coreTooOld` answers it (a web page from before builds were said, or not loaded again since:
 /// told to update, every request of it was refused and nothing on it said why, 2026-11-10), and one under COUNTED_FROM
 /// (a development build's, an iOS app's TestFlight number) cannot be told apart.
+/// So too one under ROOT_OUT_FROM_BUILD where the state in force has the root's person out of `~root` (`Cloud.rootOut`):
+/// its rules read the removal that took them out as nothing; anywhere else it reads the state as this station does.
 export function movedTooOld(cloud: Cloud, viewer: Admitted["viewer"], build: number | null): boolean {
-  if (build === null || build < COUNTED_FROM || build >= MOVED_FROM_BUILD) return false;
-  return typeof cloud.chain(joinedOf(cloud, viewer.workspace))?.state?.moved === "string";
+  if (build === null || build < COUNTED_FROM) return false;
+  const floor = movedFloor(cloud, viewer.workspace);
+  return floor !== null && build < floor;
+}
+
+/// The build under which a core of a release is too old in `workspace` here (`movedTooOld`'s rule): MOVED_FROM_BUILD
+/// where its chain moved, ROOT_OUT_FROM_BUILD where the state in force has the root's person out of `~root`, null where
+/// the chain did not move. Told the MoonBit program of each connection with its member (served.ts), which refuses its
+/// requests by it as Node's routes are refused by `movedTooOld`.
+export function movedFloor(cloud: Cloud, workspace: string): number | null {
+  const ws = joinedOf(cloud, workspace);
+  if (typeof cloud.chain(ws)?.state?.moved !== "string") return null;
+  // (a Cloud made without the constructor, as tests make one, has none: read on every request, so optional)
+  return typeof cloud.rootOut === "function" && cloud.rootOut(ws) ? ROOT_OUT_FROM_BUILD : MOVED_FROM_BUILD;
 }
 
 /// The ids of the devices workspace `ws`'s lock here names (null: the home one): its chain's, and where it moved the
@@ -381,7 +396,9 @@ export function lockRoute(cloud: Cloud, method: string, query: [string, string][
     // lock let in, as admission let this one, and of a workspace with none, of nobody)
     // (`carried`: a moved chain read as it moved beside its people's logs, cloud/lock.ts `state4Moved`, 2026-11-14: every
     // reader must make the same state, so a core hands a chain over only once each of its stations says it)
-    return [200, { head: lockHead(cloud, ws), entries: cloud.lockAfter(from, ws), ...atHash, takes: ["person"], serves: ["person", "devices", "told", "forks", "bodies", "logs", "builds", "carried", "bind"], builds: deviceBuildsOf(cloud).of(lockDeviceIds(cloud, ws)) }];
+    // (`rootout`: a removal of the root's person naming the root's log takes them out, rules/AGENTS.md: a core says one
+    // only once each station the list names says it)
+    return [200, { head: lockHead(cloud, ws), entries: cloud.lockAfter(from, ws), ...atHash, takes: ["person"], serves: ["person", "devices", "told", "forks", "bodies", "logs", "builds", "carried", "bind", "rootout"], builds: deviceBuildsOf(cloud).of(lockDeviceIds(cloud, ws)) }];
   }
   if (method !== "POST") return [405, { error: "GET or POST" }];
   let entries: (Entry | null)[];
@@ -501,6 +518,25 @@ function personTold(cloud: Cloud, ws: string | null, viewer: Admitted["viewer"],
   }
 }
 
+/// The chains of `sub`'s own lock this station keeps, as a device of theirs asking in workspace `ws` is told them (GET
+/// /lock/person, a refusal's `person`): every one, but the root's log of a workspace whose chain moved once the state in
+/// force there binds its person by another log of theirs (rules/AGENTS.md `~root`; the lead, 2026-11-14). Which log is
+/// theirs is the state's to say (what the logs and bodies signed), never the control plane's nor which came last. So,
+/// where the root's person began their lock anew (`restart`, a new genesis): while `~root` still binds them, and once
+/// they are taken out and bound by nothing, both logs are theirs here, as before this rule; once an owner's admit binds
+/// them by the new one, that one alone, so a device still on the root's log hears its person's lock was begun anew
+/// (its core's `replaced`) and the new app never takes the old log for theirs. The root's log is kept and given among
+/// the workspace's logs in every phase (`Cloud.logsOf`, person-sync.ts): the workspace is rooted in it for good.
+export function ownChainsOf(cloud: Cloud, sub: string, workspace: string | null | undefined): [string, unknown[]][] {
+  const all = personChainsOf(cloud).of(sub);
+  // (a Cloud made without the constructor, as tests make one, may have none of these: read on every request, so optional)
+  if (typeof cloud.home !== "function" || typeof cloud.chain !== "function" || typeof cloud.locked !== "function") return all;
+  const ws = workspace && workspace !== cloud.home() ? workspace : null;
+  const root = cloud.chain(ws)?.state?.moved;
+  const bound = root === undefined ? undefined : cloud.locked(ws)?.state?.persons.get(sub);
+  return bound === undefined || bound === root ? all : all.filter(([genesis]) => genesis !== root);
+}
+
 /// How far a person's chain gone by goes: its last entry's place and hash.
 const personHead = (chain: unknown[]) => ({ seq: chain.length - 1, hash: chain.length === 0 ? null : hashOf(chain.at(-1) as Entry) });
 
@@ -516,7 +552,7 @@ export function lockPartRoute(cloud: Cloud, part: string, method: string, body: 
     const chains = personChainsOf(cloud);
     // (with what this station serves of the person's logs and the builds of the app devices on the asker's own log, as
     // seen here: what their core reads before it writes a kind an older station or app refuses, device-builds.ts)
-    if (method === "GET") return [200, { chains: chains.of(viewer.sub).map(([genesis, entries]) => ({ genesis, entries })), serves: ["logs", "builds", "carried", "bind"], builds: deviceBuildsOf(cloud).of(personDeviceIds(cloud, viewer.sub)) }];
+    if (method === "GET") return [200, { chains: ownChainsOf(cloud, viewer.sub, viewer.workspace).map(([genesis, entries]) => ({ genesis, entries })), serves: ["logs", "builds", "carried", "bind", "rootout"], builds: deviceBuildsOf(cloud).of(personDeviceIds(cloud, viewer.sub)) }];
     if (method !== "POST") return [405, { error: "GET or POST" }];
     let said: any;
     try {
@@ -684,6 +720,8 @@ export type Members = {
   tailnet?: () => string[];
   /// Told each time a member's device has connected (parts.ts `memberConnected`).
   connected?: () => void;
+  /// The MoonBit program that answers some requests itself (served.ts): told who each connection's member is.
+  served?: Served;
 };
 
 /// One member's connection: the credential first, nothing served before it checks out; then a request a stream. The
@@ -732,6 +770,8 @@ function admission(m: Members, device: string): Admit {
     try {
       ({ admitted: current, named } = check(hello, (sub) => (whose = sub)));
     } catch (e) {
+      // (what answers a route itself waits for no member of this one: none comes)
+      if (m.served !== undefined && conn.handed !== undefined) m.served.viewer(conn.handed, null);
       return { refused: { line: refusalOf(m.cloud, hello, device, e, m.accepted?.(), whose), code: 1, reason: e instanceof LockRefusal ? "lock_unconfirmed" : "credential_refused", error: e } };
     }
     // How far its lock goes, when it has one (a device that has more brings it).
@@ -753,6 +793,7 @@ function admission(m: Members, device: string): Admit {
       else {
         try {
           current = stillIn(m.cloud, current, named, device);
+          told();
           return false;
         } catch {
           conn.close(3, "lock_unconfirmed");
@@ -767,6 +808,18 @@ function admission(m: Members, device: string): Admit {
       expiry = wall.after(Math.max(0, current.exp * 1000 - wall.now()) + 50, () => void (gone() || watchExpiry()));
     };
     let unlisten = () => {};
+    // Who the member is, told what answers a route itself (served.ts) as it is now (null: gone).
+    const told = (gone = false) => {
+      if (m.served === undefined || conn.handed === undefined) return;
+      if (gone) return m.served.viewer(conn.handed, null);
+      const viewer = { ...current.viewer, home: m.cloud.home() === current.viewer.workspace };
+      // (who asks is remembered by name as the admin API remembers them: Admin.handle, which its requests skip)
+      if (viewer.name !== "") m.admin.readers.names.set(viewer.email, viewer.name);
+      // (told again as the state changes, `gone` on every change of the cloud's and the person logs': so the floor
+      // rises the moment the root's person goes out, and falls as she is back under `~root`)
+      const floor = movedFloor(m.cloud, viewer.workspace);
+      m.served.viewer(conn.handed, viewer, floor !== null, floor);
+    };
     return {
       line,
       opened: () => {
@@ -797,11 +850,13 @@ function admission(m: Members, device: string): Admit {
           unlistenCloud();
           unlistenPersons();
         };
+        told();
       },
       // Renewals on the credential stream (one that fails is answered why, by the door, and ends nothing).
       renew: (line) => {
         ({ admitted: current, named } = check(line));
         watchExpiry();
+        told();
         return { ok: true, expires_at: current.exp };
       },
       stream: () => {
@@ -813,6 +868,7 @@ function admission(m: Members, device: string): Admit {
       ended: () => {
         expiry?.();
         unlisten();
+        told(true);
       },
     };
   };
@@ -920,6 +976,33 @@ async function answerRequest(m: Members, stream: Stream, reader: Reader, head: a
     return socket(m, stream, reader, head, path);
   }
   const body = await reader.rest();
+  // A device that stops reading or loses its connection no longer needs its pending reads. Do not cancel writes: their
+  // effects and idempotency answers must be finished even when their caller goes away.
+  const controller = readsOf(method, path) ? new AbortController() : null;
+  let handling = true;
+  if (controller) void stream.stopped().then(() => { if (handling) controller.abort(); }, () => { if (handling) controller.abort(); });
+  const { handled, headers, rest, plain } = await handledOf(m, method, path, head, body, viewer, controller?.signal).finally(() => { handling = false; });
+  if (plain) return answer(handled.status, (handled.body as Buffer).toString());
+  // Compressed, for a client that asks so (compress.ts).
+  const sent = await compressed(handled, headers, rest);
+  const ready = wall.now();
+  await send(stream, sent);
+  await stream.finish();
+  if (Buffer.isBuffer(sent.body) && sent.body.length >= SLOW_REPLY_BYTES) slowly(stream, conn, () => `${method} ${route(rest.split("?")[0] ?? rest)}`, sent.body.length, ready - asked, ready);
+}
+
+/// Whether a request only reads (what is let go when its device stops reading).
+const readsOf = (method: string, path: string) => {
+  const rest = path.slice("/admin/api".length);
+  const at = rest.indexOf("?");
+  return method === "GET" || (method === "POST" && /^\/*(batch|changed\/(chats|threads|sessions))$/.test(at < 0 ? rest : rest.slice(0, at)));
+};
+
+/// A request's answer once its body is in, as the admin API and the station's own routes give it (not compressed), with
+/// the headers it went on with and its path after /admin/api.
+/// `plain`: the station's own answer, said as it is (not compressed, no length said).
+async function handledOf(m: Members, method: string, path: string, head: any, body: Buffer, viewer: Admitted["viewer"], signal?: AbortSignal): Promise<{ handled: Answer; headers: Record<string, string>; rest: string; plain?: true }> {
+  const json = (status: number, said: unknown): Answer => ({ status, headers: { "content-type": "application/json" }, body: Buffer.from(typeof said === "string" ? said : JSON.stringify(said)) });
   // The caller's headers go on, but not those of the hop, nor any of the station's own: who is asking is only what
   // the credential says.
   const headers: Record<string, string> = {};
@@ -928,53 +1011,59 @@ async function answerRequest(m: Members, stream: Stream, reader: Reader, head: a
     if (HOP.includes(lower) || lower.startsWith("x-stillfail-") || lower === "traceparent" || lower === "tracestate") continue;
     if (typeof value === "string") headers[name] = value;
   }
-  if (!m.up()) return answer(502, { error: "station unreachable: not started" });
   const rest = path.slice("/admin/api".length);
+  if (!m.up()) return { handled: json(502, { error: "station unreachable: not started" }), headers, rest, plain: true };
   const at = rest.indexOf("?");
+  const route = at < 0 ? rest : rest.slice(0, at);
   // The workspace lock (cloud/lock.ts): the station's, here where the device that brings it is known.
-  if ((at < 0 ? rest : rest.slice(0, at)) === "/lock") {
+  if (route === "/lock") {
     const [status, said] = lockRoute(m.cloud, method, at < 0 ? [] : queryPairs(rest.slice(at + 1)), body, viewer);
-    return answer(status, said);
+    return { handled: json(status, said), headers, rest, plain: true };
   }
   // The workspace's ways (mesh/ways.ts): read by its members' devices, changed from the app's 连接方式.
-  if ((at < 0 ? rest : rest.slice(0, at)) === "/ways") {
+  if (route === "/ways") {
     const [status, said] = waysRoute(m.cloud, method, body, viewer);
-    return answer(status, said);
+    return { handled: json(status, said), headers, rest, plain: true };
   }
   // The stations' names and marks (mesh/station-marks.ts): read by its members' devices, this station's own changed.
-  const marksPath = at < 0 ? rest : rest.slice(0, at);
-  if (marksPath === "/station-marks" || marksPath === "/station-mark") {
-    const [status, said] = stationMarksRoute(m.cloud, method, body, viewer, marksPath === "/station-mark");
-    return answer(status, said);
+  if (route === "/station-marks" || route === "/station-mark") {
+    const [status, said] = stationMarksRoute(m.cloud, method, body, viewer, route === "/station-mark");
+    return { handled: json(status, said), headers, rest, plain: true };
   }
-  const lockPart = /^\/lock\/(person|devices|bodies|logs)$/.exec(at < 0 ? rest : rest.slice(0, at));
+  const lockPart = /^\/lock\/(person|devices|bodies|logs)$/.exec(route);
   if (lockPart) {
     const [status, said] = lockPartRoute(m.cloud, lockPart[1]!, method, body, viewer);
-    return answer(status, said);
+    return { handled: json(status, said), headers, rest, plain: true };
   }
-  // A device that stops reading or loses its connection no longer needs its pending reads. Do not cancel writes: their
-  // effects and idempotency answers must be finished even when their caller goes away.
-  const reads = method === "GET" || (method === "POST" && /^\/*(batch|changed\/(chats|threads|sessions))$/.test(at < 0 ? rest : rest.slice(0, at)));
-  const controller = reads ? new AbortController() : null;
-  let handling = true;
-  if (controller) void stream.stopped().then(() => { if (handling) controller.abort(); }, () => { if (handling) controller.abort(); });
   const handled = await m.admin.handle({
     method,
-    path: at < 0 ? rest : rest.slice(0, at),
+    path: route,
     query: at < 0 ? [] : queryPairs(rest.slice(at + 1)),
     search: at < 0 ? "" : rest.slice(at),
     headers,
     body,
     viewer,
     lang: langOfCore(headers),
-    ...(controller ? { signal: controller.signal } : {}),
-  }).finally(() => { handling = false; });
-  // Compressed, for a client that asks so (compress.ts).
-  const sent = await compressed(handled, headers, rest);
-  const ready = wall.now();
-  await send(stream, sent);
-  await stream.finish();
-  if (Buffer.isBuffer(sent.body) && sent.body.length >= SLOW_REPLY_BYTES) slowly(stream, conn, () => `${method} ${route(rest.split("?")[0] ?? rest)}`, sent.body.length, ready - asked, ready);
+    ...(signal ? { signal } : {}),
+  });
+  return { handled, headers, rest };
+}
+
+/// A request the MoonBit program gave back (served.ts `fallback`), answered as one on a stream is once its body is in:
+/// its body as it comes where it comes so (GET /events), not compressed.
+export async function answerGiven(m: Members, viewer: Admitted["viewer"], head: any, body: Buffer, signal?: AbortSignal): Promise<Answer> {
+  const method: string = typeof head?.method === "string" ? head.method.toUpperCase() : "GET";
+  const path: string = typeof head?.path === "string" ? head.path : "";
+  return (await handledOf(m, method, path, head, body, viewer, signal)).handled;
+}
+
+/// A request the MoonBit program gave back (served.ts `fallback`), answered as one on a stream is once its body is in.
+export async function handledGiven(m: Members, viewer: Admitted["viewer"], head: any, body: Buffer): Promise<{ status: number; headers: Record<string, string>; body: Buffer }> {
+  const handled = await answerGiven(m, viewer, head, body);
+  const parts: Buffer[] = [];
+  if (Buffer.isBuffer(handled.body)) parts.push(handled.body);
+  else for await (const chunk of handled.body) parts.push(Buffer.from(chunk));
+  return { status: handled.status, headers: handled.headers, body: Buffer.concat(parts) };
 }
 
 /// A WebSocket of a web service on this machine, for a preview's page (preview.ts `openSocket`): answered 101 once the

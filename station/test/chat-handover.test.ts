@@ -1314,6 +1314,33 @@ test("a message a device sent here under its key, asked again there after the ch
   assert.equal(entries(b, there).filter((e) => e === "person:a new one").length, 1);
 });
 
+test("a message written here under its key by the program's way (`claimSay`, the say path), asked again there after the chat moved, is answered as here and not posted twice", async () => {
+  const w = world();
+  const a = w.get(A);
+  const b = w.get(B);
+  const { key, thread } = await stillfailChat(a);
+  const viewer = { sub: "p", email: "p@x", name: "P", role: "member", workspace: WS, device: "d" } as Json;
+  // (the program claims the key, writes the message, and settles the key with its answer)
+  const claimed = await a.admin.claimSay(viewer, `/threads/${thread}/messages`, "k1", "en");
+  assert.ok("ts" in claimed, JSON.stringify(claimed));
+  say(a.rig.hub, thread, "p@x", "only once");
+  const body = Buffer.from(JSON.stringify({ ok: true, ts: claimed.ts }));
+  claimed.settle({ status: 200, headers: { "content-type": "application/json" }, body });
+  await endTurn(a, key);
+  await a.moves.scheduler.move(WS, B, { module: "chats", item: key });
+  await w.quiet();
+  const there = homeThread(b, key);
+  // (its answer lost on the way, the device asks again, of the station the chat went to)
+  const again = await b.admin.claimSay(viewer, `/threads/${there}/messages`, "k1", "en");
+  assert.ok("kept" in again, `answered as it was here, not claimed anew: ${JSON.stringify(again)}`);
+  assert.deepEqual(JSON.parse(String(again.kept.body)), JSON.parse(String(body)));
+  assert.equal(entries(b, there).filter((e) => e === "person:only once").length, 1, entries(b, there).join("\n"));
+  // (a new message by that way to the chat here, where it went from: answered where it went, never written here)
+  const here = await a.admin.claimSay(viewer, `/threads/${thread}/messages`, "k2", "en");
+  assert.ok("refused" in here && here.refused.status === 409, `answered where it went: ${JSON.stringify(here)}`);
+  assert.equal(JSON.parse(String(here.refused.body)).moved?.station, B, "pointed at the station it went to");
+});
+
 test("a person moves a chat with POST /move and back with POST /move/back: a member is refused, a second while one runs is 409, GET /move shows it there with the last outcome", async () => {
   const w = world();
   const a = w.get(A);

@@ -242,7 +242,7 @@ for t in $targets; do
       src/sfapp/contrast_wbtest.mbt:1 src/sfapp/kept_rows_kinds_wbtest.mbt:@2@3@4@5@8 src/sfapp/preview_tree_wbtest.mbt:@54
       src/sfapp/words_large_wbtest.mbt:2 src/sfapp/real_size_wbtest.mbt:2 src/sfapp/send_steady_wbtest.mbt:@1@2
       src/sfapp/chat_page_nodes_wbtest.mbt:2 src/sfapp/answers_still_wbtest.mbt:@2@3@4@5
-      src/sfapp/switches_still_wbtest.mbt:@20@25@29@34@38@43@47@52@68@90@123@146@176@205@248)
+      src/sfapp/switches_still_wbtest.mbt:@20@25@29@34@38@43@47@52@56@60@68@90@123@146@176@205@248)
     pages=()
     for f in "${files[@]}"; do [[ " ${sweeps[*]} " = *" $f:"* ]] || pages+=("$f"); done
     for w in "${sweeps[@]}"; do
@@ -432,7 +432,23 @@ for t in $targets; do
           # branches alike, 254-312 s (cut at its 5 minutes on main 02416d29 43580485463; reply-place 43588784943 298 s),
           # the others 151-235. The third reckoned 1500: by the table its pages 172 s, the first's 637, the second's
           # 795, the fourth's 705, each of those some 10-35 s of the table more, on their four and two)
-          *) specs="4,4,950,1 2,4,430,1 1,4,1500,1 4,4,900,1" ;;
+          # (the third's pages, 235 s by the table on its one program, ran 217-243 s beside kept_rows', answers_still's
+          # and real_size's eleven runs, app 3/4 227-255 s of its 5 minutes on four pushes of 2026-11-14 (43604749359,
+          # 43605560534, 43605643007), the second's 181-235 on its two programs, the first's and fourth's 105-152 on their
+          # four. The third reckoned 1650 and the second 650: by the table the third's pages 132 s, the second's 694 (751),
+          # the first's 622 (529), the fourth's 666 (599))
+          # (dealt so, the third's job was 132-170 s on main 2c8f3745 43607717744 and branches after, the first's
+          # 212-243 and the fourth's 227-261: too many taken from the third. Reckoned 1580: by the table its pages 188 s,
+          # the first's 598, the second's 690, the fourth's 643)
+          # (dealt so, the first's pages ran 235 s, some 0.39 s for each of the table's beside real_size's half (195 s)
+          # and preview_tree's halves, where the fourth's ran 149, 0.23, and the second's and third's jobs 142 and 153
+          # (app-deal-third-2's push, 2026-11-14). The first reckoned 1150 and the fourth 800: by the table the first's
+          # pages 462 s, the second's 710, the third's 188, the fourth's 759)
+          # (dealt so, the fourth's job was 199-268 s on main 152b19b5 43615169071 and branches after #6295, its pages
+          # 245-275 beside send_steady's three; the first's 132-197 and the third's 142-183. The fourth reckoned 900,
+          # the first 1060 and the third 1590: by the table the first's pages 523 s, the second's 711, the third's 205,
+          # the fourth's 682)
+          *) specs="4,4,1060,1 2,4,700,1 1,4,1590,1 4,4,900,1" ;;
         esac
         g1=() g2=() g3=() g4=()
         while read -r g f; do
@@ -541,12 +557,16 @@ for t in $targets; do
       # 54-124 s, main 85413543 42736997391, station-conversations-survive 42739107408, 2026-11-10)
       "src/sfapp/preview_tree_wbtest.mbt "*) case "${MBUI_TEST_FPS:-}" in "" | 60) echo 1 ;; *) echo 4 ;; esac ;;
       "src/sfapp/contrast_wbtest.mbt  ") echo contrast ;;
-      # (switches_still's sixteen runs, every screen's switches pressed over a core answering late, on four runners of
+      # (switches_still's runs, every screen's switches pressed over a core answering late, on four runners of
       # their own, every fourth on each (APP_PART), four side by side on its four cores: main's alone, after a merge
       # (mbui-check.yml's switches). Cut where its tests' time, as main's runs measured it, comes to a sixteenth each:
       # by count, ten a run past the 60th and two before it, a runner's fourteen runs side by side on its four cores were
       # 200-280 s each, its job 295 s of its 5 minutes, main 4dda0ed0 43565383295, 2026-11-14 (its chats' screens, 20-52,
       # the most). No more runners for it (the owner: 「不要一慢就拆」, 「分片会排队」))
+      # (seventeen since, its tests 52-68 cut at 60: that one run was 273-279 s, part 1/4 288-291 s of its 5 minutes on
+      # main 98178dc5 43606413194 and cf48243e 43604572194, its other three runs 68-132 s; the other parts 108-166 s)
+      # (eighteen since, its tests 52-60 cut at 56: that run was 247 s on main ccb596e1 43609558227, part 1/4 258 s
+      # beside its four others (99-167 s), where 60-68 was 96; its tests 52-59 8-11 s each on Studio, none the most)
       "src/sfapp/switches_still_wbtest.mbt "*) echo switches ;;
       # (send_steady's three on the fourth, beside its pages on its four cores: the deal reckons them there)
       "src/sfapp/send_steady_wbtest.mbt "*) echo 4 ;;

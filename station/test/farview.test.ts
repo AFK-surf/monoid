@@ -106,6 +106,8 @@ test("a view sends its size, a picture first and then only once the host says th
   const port = await framePort(picture);
   const screen = new FarviewScreen({ session: "chat:c-1", port: port.port });
   assert.match(screen.id, /^browser:fv_[0-9a-f]{24}$/);
+  // (an app that draws Farview itself reads it by a stream of its own: the list says it can)
+  assert.equal(screen.farview, true);
   assert.equal(screen.openedBy(), "chat:c-1");
   const view = await screen.open({ maxWidth: 4000, maxHeight: 4000, codecs: ["jpeg"], fit: { width: 400, height: 800, scale: 2 } });
   assert.equal(screen.viewing(), 1);
@@ -141,6 +143,30 @@ test("a view sends its size, a picture first and then only once the host says th
   assert.equal(screen.viewing(), 0);
   screen.close();
   port.close();
+});
+
+test("a person's paste goes to the tab as typed, and what they copy there reaches their clipboard", async () => {
+  const port = await framePort(Buffer.from([0xff, 0xd8, 9, 0xff, 0xd9]));
+  const screen = new FarviewScreen({ session: "chat:c-1", port: port.port });
+  try {
+    assert.deepEqual(screen.clipboard(), ["text"]);
+    const view = await screen.open({ maxWidth: 4000, maxHeight: 4000, codecs: ["jpeg"] });
+    // (heard once the server took it: the size the view sends first, then the paste, on one connection in order)
+    const pasted = new Promise<void>((resolve) => {
+      const look = () => (port.heard.some((m) => m.text === "pasted") ? resolve() : setImmediate(look));
+      look();
+    });
+    await view.setClipboard!({ type: "text", text: "pasted" }, true);
+    await pasted;
+    const copied = new Promise<unknown>((resolve) => view.watchClipboard!((clip) => resolve(clip)));
+    await until(() => port.sockets.length > 0);
+    port.said({ copied: "copied words" });
+    assert.deepEqual(await copied, { type: "text", text: "copied words" });
+    view.close();
+  } finally {
+    screen.close();
+    port.close();
+  }
 });
 
 test("the browser tool gives the chat's Farview where the switch is on, and its Chrome where it is not", async () => {

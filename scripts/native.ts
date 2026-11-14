@@ -319,6 +319,21 @@ function ghosttyVt(): Part {
   };
 }
 
+/// A crate that links libghostty-vt where it is made for macOS or Linux: that build of it is in its key, and its build
+/// is told where it is (GHOSTTY_VT_DIR, which the crate's build.rs reads).
+function withGhosttyVt(part: Part): Part {
+  const linked = (t: Target) => t === "darwin-arm64" || LINUX(t);
+  return {
+    ...part,
+    recipe: (t) => ({ ...(part.recipe(t) as object), ...(linked(t) ? { ghosttyVt: key("ghostty-vt", t) } : {}) }),
+    build(t, out) {
+      const before = process.env.GHOSTTY_VT_DIR;
+      if (linked(t)) process.env.GHOSTTY_VT_DIR = ensure("ghostty-vt", t);
+      try { part.build(t, out); } finally { if (before === undefined) delete process.env.GHOSTTY_VT_DIR; else process.env.GHOSTTY_VT_DIR = before; }
+    },
+  };
+}
+
 /// An mbui offscreen program and its portable launcher. The sources are conservative: a change to an app component or
 /// the framework selects a new binary. A separate scene or drive file is never part of the key.
 function mbuiRenderer(app: string, launcher: string): Part {
@@ -330,7 +345,7 @@ function mbuiRenderer(app: string, launcher: string): Part {
     rust: false,
     // Generated interface summaries are not compiler inputs; `moon check` can rewrite them without changing a scene.
     inputs: ["apps/mbui/src", "libs/mbui/src", "libs/mbui/tools", "libs/mbui/scripts",
-      "apps/mbui/moon.mod", "apps/mbui/moon.work", "libs/mbui/moon.mod",
+      "apps/mbui/moon.mod", "apps/mbui/moon.work", "apps/mbui/farview.pin", "apps/mbui/scripts/farview.sh", "libs/mbui/moon.mod",
       "apps/mbui/scripts/env.sh", "apps/mbui/scripts/mbui.sh", "apps/mbui/scripts/mac.sh", `apps/mbui/scripts/${launcher}`,
       ":(exclude,glob)apps/mbui/**/*_test.mbt", ":(exclude,glob)apps/mbui/**/*_wbtest.mbt",
       ":(exclude,glob)apps/mbui/**/pkg.generated.mbti", ":(exclude,glob)libs/mbui/**/*_test.mbt",
@@ -387,7 +402,8 @@ const PARTS: Record<string, Part> = {
   // The TypeScript station's launcher (§2) and an agent's runner (§1).
   // On Windows with stillfail-station-w.exe beside it: the launcher as the logon task runs it, with no window.
   launcher: withHidden(stationCrate("station/native/launcher", exe("stillfail-station"), exe("stillfail-station"))),
-  runner: { ...stationCrate("station/native/runner", exe("stillfail-runner"), exe("stillfail-runner")), targets: STATION_BINS, env: "STILLFAIL_RUNNER" },
+  // On macOS and Linux with libghostty-vt linked, the screen of a terminal it keeps (its build.rs, src/ghostty.rs).
+  runner: withGhosttyVt({ ...stationCrate("station/native/runner", exe("stillfail-runner"), exe("stillfail-runner")), targets: STATION_BINS, env: "STILLFAIL_RUNNER" }),
   // Windows' display as the station's desktop screen, what still.fail Helper is on macOS.
   screen: { ...stationCrate("station/native/screen", () => "stillfail-screen.exe", "stillfail-screen.exe"), targets: ["win32-x64"], env: "STILLFAIL_SCREEN" },
   // For the station's tests: the Rust station's cold storage as a command (test/cold-compat.test.ts), and a member's
@@ -1113,6 +1129,12 @@ async function releaseThroughApi(name: string): Promise<{ bytes: Buffer; url: st
 /// 300 s cut the stable release's jobs at their limit (43458373814, 43460534865, 2026-11-13: four stalls of 177-303 s
 /// in one night, the same part from GitHub's release in 4 s); a part sent at all comes far faster than this.
 const STALLED_MS = 15_000;
+/// A download still coming slower than this after SLOW_AFTER_MS is given up on as a stall is, and the next place asked.
+/// The CI Mac's direct route to the store (STILLFAIL_DIRECT_DNS) trickled for 300 s and broke off, part after part, while
+/// the usual route sent the same part in 20 s (mini1, Publish stable 43616763857, 2026-11-15: four attempts of the
+/// station job, each cut at its 10 minutes by one such part); every part is at most tens of MB.
+const SLOW_AFTER_MS = 20_000;
+const SLOWEST_BYTES_PER_S = 200_000;
 
 async function download(part: string, target: Target, k: string): Promise<string | null> {
   const name = asset(part, target, k);
@@ -1129,9 +1151,14 @@ async function download(part: string, target: Target, k: string): Promise<string
   const releaseUrl = `https://github.com/${REPO}/releases/download/${RELEASE}/${name}`;
   // (each place in turn: one that answers and then breaks off is said so, and the next one asked: a body cut short
   // failed the whole job with only the socket's error, 39431384793)
-  for (const at of [`${STORE}/${name}`, releaseUrl]) {
+  // (the store by the direct route where the CI Mac has one, then by the usual route, then the release)
+  const places: [string, boolean][] = [[`${STORE}/${name}`, true]];
+  if (process.env.STILLFAIL_DIRECT_DNS) places.push([`${STORE}/${name}`, false]);
+  places.push([releaseUrl, false]);
+  for (const [at, direct] of places) {
     let answered = false;
-    // (given up on once nothing came for STALLED_MS, the connection's or a byte's, and the next place asked)
+    // (given up on once nothing came for STALLED_MS, the connection's or a byte's, or once it still comes slower than
+    // SLOWEST_BYTES_PER_S after SLOW_AFTER_MS, and the next place asked)
     const stalled = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const moved = () => {
@@ -1139,8 +1166,17 @@ async function download(part: string, target: Target, k: string): Promise<string
       timer = setTimeout(() => stalled.abort(new Error(`nothing came for ${STALLED_MS / 1000} s`)), STALLED_MS);
     };
     moved();
+    const begun = Date.now();
+    let got = 0;
+    const slow = setInterval(() => { // timer: a deadline, the download's rate looked at
+      const ms = Date.now() - begun;
+      if (ms >= SLOW_AFTER_MS && got / (ms / 1000) < SLOWEST_BYTES_PER_S) {
+        stalled.abort(new Error(`${(got / 1e6).toFixed(1)} MB in ${(ms / 1000).toFixed(0)} s`));
+      }
+    }, 1_000);
     try {
-      const r = await fetchNative(at, { redirect: "follow", signal: AbortSignal.any([stalled.signal, AbortSignal.timeout(300_000)]) });
+      const signal = AbortSignal.any([stalled.signal, AbortSignal.timeout(300_000)]);
+      const r = direct ? await fetchNative(at, { redirect: "follow", signal }) : await fetch(at, { redirect: "follow", signal });
       moved();
       if (!r.ok) {
         if (at === releaseUrl && r.status !== 404) releaseFailed = true;
@@ -1152,7 +1188,7 @@ async function download(part: string, target: Target, k: string): Promise<string
       const chunks: Uint8Array[] = [];
       if (r.body) {
         const reader = r.body.getReader();
-        for (let next = await reader.read(); !next.done; next = await reader.read()) { chunks.push(next.value); moved(); }
+        for (let next = await reader.read(); !next.done; next = await reader.read()) { chunks.push(next.value); got += next.value.length; moved(); }
       }
       bytes = Buffer.concat(chunks);
       url = at;
@@ -1161,7 +1197,7 @@ async function download(part: string, target: Target, k: string): Promise<string
       if (at === releaseUrl) releaseFailed = true;
       const cause = (e as Error & { cause?: Error }).cause?.message;
       log(`${part} ${target}: ${answered ? `${at} broke off while sending it` : `could not reach ${new URL(at).host}`} (${(e as Error).message}${cause ? `: ${cause}` : ""})`);
-    } finally { clearTimeout(timer); }
+    } finally { clearTimeout(timer); clearInterval(slow); }
   }
   if (!bytes && releaseFailed) {
     const fromApi = await releaseThroughApi(name);

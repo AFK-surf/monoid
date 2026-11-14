@@ -1145,6 +1145,8 @@ web-pages.appearance.archive.offHint
 web-pages.appearance.archive.reviewed
 web-pages.appearance.archive.reviewedHint
 web-pages.appearance.archive.title
+web-pages.appearance.chatPage.description
+web-pages.appearance.chatPage.title
 web-pages.appearance.drop.description
 web-pages.appearance.drop.file
 web-pages.appearance.drop.path
@@ -1425,6 +1427,7 @@ web-pages.security.joinTitle
 web-pages.security.joined
 web-pages.security.lead
 web-pages.security.members
+web-pages.security.needsAppTitle
 web-pages.security.newDeviceOf
 web-pages.security.newDevices
 web-pages.security.newDevicesHow

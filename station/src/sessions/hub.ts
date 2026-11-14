@@ -27,7 +27,7 @@ import { Clock, Effect, Fiber } from "effect";
 import { liveClock, within } from "../ops/fibers.ts";
 import { RUNTIME_KINDS, type AgentDriver, type AgentSession, type RuntimeKind } from "../agents/runtime.ts";
 import { runnerId } from "../agents/process.ts";
-import { allLeft, liveRunners } from "../agents/runner.ts";
+import { allLeft, isTerminalRunner, liveRunners } from "../agents/runner.ts";
 import { log } from "../ops/log.ts";
 import { tr, stationLang } from "../ops/i18n.ts";
 import { iso, sessionPlaces, transcriptSources } from "../read/transcript.ts";
@@ -604,6 +604,19 @@ export class Hub {
       this.release("drain");
       throw error;
     }
+    // What the MoonBit program reads of the processes (agents/mb-agents.ts) held from here: what it said before is
+    // taken in too, and the snapshots say where each stands then.
+    const frozen = [...this.drivers.values()].filter((d) => d.freeze !== undefined);
+    if (frozen.length > 0) {
+      try {
+        await Promise.all(frozen.map((d) => d.freeze!()));
+        await this.settled(limitMs);
+      } catch (error) {
+        for (const d of frozen) d.thaw?.();
+        this.release("drain");
+        throw error;
+      }
+    }
     // Settled: leave incoming events waiting for old preparation unacknowledged for the next station.
     this.incoming.abort();
     // Snapshotted at once, before anything else is taken in.
@@ -651,7 +664,7 @@ export class Hub {
     }
     await this.adopt(handed);
     // A crash left runners without a snapshot: what they keep is taken up as it stands.
-    const runners = new Set(this.options.runners ? this.options.runners() : (await liveRunners(this.config().dataDir, { strict: true })).map((r) => r.id));
+    const runners = new Set(this.options.runners ? this.options.runners() : (await liveRunners(this.config().dataDir, { strict: true })).map((r) => r.id).filter((id) => !isTerminalRunner(id)));
     const taken = new Set(handed.sessions.map((s) => s.key));
     // A shared Codex host can only have a session to recover when that session was marked running. Without a
     // session-owned runner there is no reason to load the station's idle and archived sessions.
