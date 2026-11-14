@@ -60,8 +60,11 @@ export class ActorsProgram {
   #next = 0;
   readonly #calls = new Map<number, { resolve: (value: Json) => void; reject: (error: Error) => void }>();
 
-  private constructor(data: string, clock: Clock.Clock) {
+  readonly #store: { told(changes: any[]): void } | null;
+
+  private constructor(data: string, clock: Clock.Clock, store: { told(changes: any[]): void; db: any } | null) {
     this.#clock = clock;
+    this.#store = store;
     this.#proc = new MbProcess(mbReaderBinary()!, ["--actors", "1", "--data", data]);
     // (it ends with its hub, which closes it: the process waits on it only while it has something going)
     this.#proc.ref(false);
@@ -78,6 +81,10 @@ export class ActorsProgram {
     });
     programs.add(this);
     endAll();
+    // Where the station's database is, for what of the store an actor reads and writes itself (actor_store.mbt); one in
+    // memory (a test's) is this process's alone, asked as the rest is.
+    const main = store === null ? undefined : (store.db.prepare("PRAGMA database_list").all() as { name: string; file: string }[]).find((d) => d.name === "main");
+    if (main !== undefined && main.file !== "") this.post({ db: main.file });
   }
 
   /// Ends it at once (the station's process ends).
@@ -86,9 +93,9 @@ export class ActorsProgram {
   }
 
   /// The program for a hub on `data`, where it is built (none: the hub's actors are SessionActor's).
-  static open(data: string, clock: Clock.Clock): ActorsProgram | null {
+  static open(data: string, clock: Clock.Clock, store: { told(changes: any[]): void; db: any } | null = null): ActorsProgram | null {
     if (process.env.STILLFAIL_ACTORS_HOST === "0" || mbReaderBinary() === null) return null;
-    return new ActorsProgram(data, clock);
+    return new ActorsProgram(data, clock, store);
   }
 
   now() {
@@ -162,6 +169,10 @@ export class ActorsProgram {
   }
 
   #hear(said: Json) {
+    if (Array.isArray(said?.changes)) {
+      this.#store?.told(said.changes);
+      return;
+    }
     if (typeof said?.after === "number") {
       const id = said.after;
       // timer: a wait of an actor's (its wait, a refill), on the hub's clock

@@ -44,7 +44,14 @@ fn truthy(v : Json) -> Bool {
 
 ///|
 async fn Actors::store(self : Actors, a : Actor, f : String, args : Array[Json]) -> Json raise {
-  self.rpc(a.key, "store." + f, args)
+  // (what it reads and writes of it itself, on the station's database: actor_store.mbt)
+  match self.local_store(f, args) {
+    Some(v) => {
+      self.mirror(a)
+      v
+    }
+    None => self.rpc(a.key, "store." + f, args)
+  }
 }
 
 ///|

@@ -364,7 +364,9 @@ export class Rig {
     if (o.maxWarmClaude !== undefined) this.raw.maxWarmClaude = o.maxWarmClaude;
     if (o.warmMinutes !== undefined) this.raw.warmMinutes = o.warmMinutes;
     this.config = hubConfig(this.raw, this.dir);
-    this.store = Store.open(o.fileStore ? join(this.dir, "stillfail.db") : ":memory:", null, o.clock);
+    // In a file, as a station's: the sessions' actors read and write it themselves where they run in the MoonBit program
+    // (sessions/mb-actor.ts), which one in memory would keep from them (`fileStore: false`: in memory all the same).
+    this.store = Store.open(o.fileStore !== false ? join(this.dir, "stillfail.db") : ":memory:", null, o.clock);
     const chats = new Map<string, ChatSurface>([
       ["cl", this.chat],
       ["gpt", this.gptChat],

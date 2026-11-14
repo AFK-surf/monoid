@@ -1446,7 +1446,7 @@ export class Hub {
     if (existing) return existing;
     const runtime = runtimeNamed(row.runtime);
     if (!runtime) throw new Error(`session ${row.key} runs an unknown runtime ${row.runtime}`);
-    if (this.actorsProgram === undefined) this.actorsProgram = ActorsProgram.open(this.config().dataDir, this.clock);
+    if (this.actorsProgram === undefined) this.actorsProgram = ActorsProgram.open(this.config().dataDir, this.clock, this.store);
     const actor = this.actorsProgram ? this.actorsProgram.actor(row.key, runtime, this.deps) : new SessionActor(row.key, runtime, this.deps);
     this.actors.set(row.key, actor);
     return actor;

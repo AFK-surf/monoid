@@ -85,7 +85,10 @@
   serial queue. Input is a prompt when idle, a steer during a turn, else queued. The actors run in the MoonBit program
   (`mb/src/reader/actors.mbt`, `actor_run.mbt`; reader `--actors`), the hub holding a shell of each
   (`src/sessions/mb-actor.ts`) that answers what the program asks of the station (the store, the drivers, the chats,
-  the words, all shared with `src/sessions/actor.ts`) and reads at once what it last told of each; `SessionActor`
+  the words, all shared with `src/sessions/actor.ts`) and reads at once what it last told of each. What of the store
+  it reads and writes most (its turns, running, its session's row) it does itself on the station's database
+  (`mb/src/reader/actor_store.mbt`, store.ts's statements), telling Node's store what changed; a store in memory is
+  asked through Node, so the hub's tests keep theirs in a file (`test/hub-fakes.ts`). `SessionActor`
   (`actor.ts`) is the actor where the program is not (`STILLFAIL_ACTORS_HOST=0`). A test's `settle()` waits for the
   program too (`actorsBusy`); a test that replaces SessionActor's own steps runs on it.
 - Runtimes are drivers behind one seam (`src/agents/runtime.ts`): Claude Code a `claude -p` process per session;

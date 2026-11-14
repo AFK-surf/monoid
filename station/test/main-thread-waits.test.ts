@@ -77,7 +77,9 @@ const STATEMENTS = {
   // 98 until #5188 (6810813bf): a session whose model no account enables is kept on its account before each turn, so the
   // pool is not asked to pick and no longer reads each running session's row (hub.ts `running`, `getSession`).
   // 97 until sessions stopped running in sandboxes: a turn no longer reads its session's row to copy its files there.
-  turn: 96,
+  // 96 until the sessions' actors read and wrote their turns, running and sessions' rows themselves, in the MoonBit
+  // program (mb/src/reader/actor_store.mbt): not on this thread.
+  turn: 76,
   toolCall: 4,
   // A call recorded with compact usage installed, as a station has it: BEGIN, whether it was recorded before, its
   // session's context as kept, the call, its context, its file's position, COMMIT. (12 before: sqlite_master asked twice,
@@ -102,7 +104,8 @@ const STATEMENTS = {
   // last turn as its process is let go (7 each). 24 since what archiving each sets going is counted to its end (its
   // last turn again as its wait is let go, after a turn of the loop), as where its actor runs in the MoonBit program
   // that all comes after one (sessions/mb-actor.ts): the same work, counted whole, in either.
-  autoArchiveLook: 24,
+  // 21 since the actor reads its last turn and ends its wait in the MoonBit program (actor_store.mbt).
+  autoArchiveLook: 21,
 } as const;
 
 test("a transcript growing: read and told, its length gathered, written with the others' once LENGTHS_GATHER_MS is up", async () => {

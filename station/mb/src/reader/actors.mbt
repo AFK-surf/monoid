@@ -118,11 +118,13 @@ priv struct Actors {
   mut active : Int
   /// Node's lines taken in
   mut seen : Int
+  /// the station's database, where Node said it is (a store in memory is Node's alone)
+  mut db : @sql.Db?
 }
 
 ///|
 fn Actors::new(host : @host.Host) -> Actors {
-  { host, actors: Map([]), asked: Map([]), timers: Map([]), next: 0, now: 0.0, active: 0, seen: 0 }
+  { host, actors: Map([]), asked: Map([]), timers: Map([]), next: 0, now: 0.0, active: 0, seen: 0, db: None }
 }
 
 ///|
@@ -359,6 +361,15 @@ fn Actors::heard(self : Actors, line : String) -> Unit {
     self.now = now
   }
   match said {
+    { "db": String(path), .. } => {
+      self.db = Some(@sql.Db::attach(self.host, path, wait=5000)) catch {
+        e => {
+          @host.note("actors: the station's database not opened: " + (match e { @wire.ShellError(m) => m }))
+          None
+        }
+      }
+      return
+    }
     { "answer": Number(id, ..), .. } => {
       let id = id.to_int()
       if self.asked.get(id) is Some(d) {
