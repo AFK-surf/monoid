@@ -1847,8 +1847,11 @@ export class Store {
     // (each by the index of a workspace's sessions, sessions_of_ws, then the two merged)
     const page = "SELECT key FROM sessions WHERE COALESCE(ws, '') = ? AND key > ? ORDER BY key LIMIT ?";
     const own = this.#all(page, ws ?? "", after, limit);
+    // (the home one's sessions say its id too: those from before workspaces were written say none, a station enrolled
+    // since writes the home's id, as hub `ofWorkspace` takes both; the move drill's A had every chat so, 2026-11-14)
+    const named_ = ws === null && home !== null && home !== "" ? this.#all(page, home, after, limit) : [];
     const handed = this.#all(page, handedWs(named ?? ""), after, limit);
-    return [...own, ...handed].map((r) => r.key as string).sort().slice(0, limit);
+    return [...new Set([...own, ...named_, ...handed].map((r) => r.key as string))].sort().slice(0, limit);
   }
 
   /// No chat of a connect's thread runs on another station any more (one handed back here).

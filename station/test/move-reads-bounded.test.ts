@@ -81,3 +81,33 @@ test("a migration's reads go by an index and a limit, on a store with many chats
     store.close();
   }
 });
+
+// The home workspace's sessions say none (those from before workspaces were written) or the home's id (a station
+// enrolled since: every chat of the move drill's A, 2026-11-14, whose plan then listed none): a plan pages through both,
+// and those it handed away, merged by key, and a joined workspace's alone; paging across the merge skips no key.
+test("a workspace's sessions, a page at a time: the home one's whether they say no workspace or its id", () => {
+  const store = Store.open(":memory:");
+  try {
+    const want: Record<string, string[]> = { home: [], other: [] };
+    for (let i = 0; i < 40; i++) {
+      const key = `chat:c-${String(i).padStart(4, "0")}`;
+      const ws = i % 4 === 0 ? null : i % 4 === 1 ? "home" : i % 4 === 2 ? "handed:home" : "other";
+      store.insertSession({ key, connect: "ember", runtime: "claude", profile: "cc", workspace: `/d/sessions/chat/${key}/workspace`, token: `t${i}`, createdAt: 1, lastActiveAt: 1, ws });
+      want[ws === "other" ? "other" : "home"]!.push(key);
+    }
+    const all = (ws: string | null) => {
+      const got: string[] = [];
+      for (let after = ""; ; ) {
+        const page = store.sessionsOfWs(ws, "home", after, 7);
+        assert.ok(page.length <= 7);
+        got.push(...page);
+        if (page.length < 7) return got;
+        after = page.at(-1)!;
+      }
+    };
+    assert.deepEqual(all(null), want.home);
+    assert.deepEqual(all("other"), want.other);
+  } finally {
+    store.close();
+  }
+});
