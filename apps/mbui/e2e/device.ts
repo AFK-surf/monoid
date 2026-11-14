@@ -35,25 +35,35 @@ export const within = <T>(p: Promise<T>, ms: number): Promise<T | undefined> => 
 /// eight writes in 12 s, and this run's waits ended by whatever else was told later, or not at all: round 7 failed with
 /// what it waited for there, "alice's own lock 16 long, not 16". So a wait looks once more as its time ends
 /// (`whenChanged`), and says when that was what saw it.
-const watches = new Map<string, Set<() => void>>();
+/// (closed as its last waiter goes: drill 24 kept a recursive watch of each station's whole data directory for the rest
+/// of the run, and a move of 2,384 rooms then held this process minutes at a time on their events, past a turn's end)
+const watches = new Map<string, { all: Set<() => void>; w: ReturnType<typeof watch> }>();
 function watching(d: string, changed: () => void): () => void {
   let told = watches.get(d);
   if (told === undefined) {
-    const all = (told = new Set<() => void>());
-    watches.set(d, all);
+    const all = new Set<() => void>();
     const w = watch(d, { recursive: true }, () => {
       for (const f of [...all]) f();
     });
+    told = { all, w };
+    watches.set(d, told);
+    const mine = told;
     // (a watch that fails, its directory gone: the next wait there begins another; those waiting keep their deadlines)
     w.on("error", () => {
-      if (watches.get(d) === all) watches.delete(d);
+      if (watches.get(d) === mine) watches.delete(d);
       w.close();
     });
     w.unref();
   }
-  told.add(changed);
+  told.all.add(changed);
   const mine = told;
-  return () => void mine.delete(changed);
+  return () => {
+    mine.all.delete(changed);
+    if (mine.all.size === 0 && watches.get(d) === mine) {
+      watches.delete(d);
+      mine.w.close();
+    }
+  };
 }
 
 /// What `ok` gives, looked at again as each of `dirs` changes (the file system's events, as scripts/waitfor.mjs waits:
