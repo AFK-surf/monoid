@@ -84,6 +84,8 @@ export function moveShown(raw: J, o: { to: string; toName: string; module: strin
     // (what one moving waits for, as the station says it: its chat's turn to end (`waits: "turn"`), or, coming here, the
     // station it comes from to answer (`waits: "station"`, `from` and `waitsAt` its name))
     const waits = str(x?.waits);
+    // (a login here that another station borrows while something there needs it: `lentTo`, its name)
+    const lentTo = state === "here" ? str(x?.lentTo) : "";
     const from = str(x?.from);
     const stateText = state === "moving"
       ? waits === "turn"
@@ -101,7 +103,9 @@ export function moveShown(raw: J, o: { to: string; toName: string; module: strin
             ? t("core-views.move.state.failed")
             : cannot !== null
               ? t("core-views.move.state.cannot")
-              : "";
+              : lentTo !== ""
+                ? t("core-views.move.state.lentTo", { to: lentTo })
+                : "";
     // (a stopped one: what waits for is on the station this page is toward, it goes there (迁移) and its note names the
     // other way, bringing that back here; on a third station, nothing to press here and its note says where to go)
     const what = state === "stopped" ? waitsFor(nameOf(x?.waitsFor)) : "";

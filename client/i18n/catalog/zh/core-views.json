@@ -730,6 +730,7 @@
   "core-views.move.state.waitsTurn": "正在等这一轮对话结束",
   "core-views.move.state.waitsStation": "正在从「{from}」迁来，等「{at}」应答",
   "core-views.move.state.there": "已迁移",
+  "core-views.move.state.lentTo": "在这里，「{to}」可借用",
   "core-views.move.state.stopped": "已停 · 等「{what}」",
   "core-views.move.state.thereAt": "在「{at}」",
   "core-views.move.state.stoppedAt": "已停，等「{what}」（在「{at}」）",

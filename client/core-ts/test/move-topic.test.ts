@@ -254,6 +254,23 @@ test("a stopped chat offers 迁移 where what it waits for is, its note the othe
   r.core.close();
 });
 
+test("a login here that the other station borrows says so, and can still be moved", async () => {
+  const said = moved({
+    moving: null,
+    modules: [
+      { id: "accounts", needs: [], done: 0, total: 2, items: [item("p-work", "Claude 工作", "here", { lentTo: "mini" }), item("p-me", "本机登录", "here")], more: null },
+    ],
+    stopped: [], last: null,
+  });
+  const r = await rig((_station, key) => (key.startsWith("GET /move") ? said : undefined));
+  const v = await r.show(1, { to: "st2", module: "accounts" });
+  assert.deepEqual(v.modules[0].items.map((x: J) => [x.label, x.state, x.stateText, x.action]), [
+    ["Claude 工作", "here", "在这里，「mini」可借用", "move"],
+    ["本机登录", "here", "", "move"],
+  ]);
+  r.core.close();
+});
+
 test("told `move` changed, what is shown is read again and changes by its rows", async () => {
   let said = moved();
   const r = await rig((_station, key) => (key.startsWith("GET /move") ? said : undefined));
