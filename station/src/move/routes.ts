@@ -62,12 +62,14 @@ export function moveView(plan: Plan, order: string[], stopped: { item: { module:
           ...(x.cannot !== undefined ? { cannot: x.cannot } : {}),
           ...(x.error ? { error: x.error } : {}),
           ...(x.progress ? { progress: x.progress } : {}),
+          // (moving, waiting for what is not its own progress: its chat's turn to end)
+          ...(x.waits !== undefined ? { waits: x.waits } : {}),
           ...(x.wouldStop.length > 0 ? { wouldStop: x.wouldStop.map(named) } : {}),
         })),
         more: from + limit < mine.length ? page.at(-1)?.id ?? null : null,
       };
     }),
-    moving: moving === null ? null : { module: moving.module, id: moving.id, label: moving.label, progress: moving.progress ?? null, ...(stopping ? { stopping: true } : {}) },
+    moving: moving === null ? null : { module: moving.module, id: moving.id, label: moving.label, progress: moving.progress ?? null, ...(moving.waits !== undefined ? { waits: moving.waits } : {}), ...(stopping ? { stopping: true } : {}) },
     stopped: stopped.map((s) => ({ item: named(s.item), waitsFor: named(s.waitsFor) })),
     last: last === null ? null : {
       at: last.at, by: last.by, how: last.how, station: last.station, ...(last.stoppedBy !== undefined ? { stoppedBy: last.stoppedBy } : {}),

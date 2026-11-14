@@ -1139,6 +1139,41 @@ test("a chat in a turn, asked to move with wait false, is refused and goes on he
   assert.equal(a.rig.store.handedTo(key), null);
 });
 
+test("a chat in a turn moved, its turn waited for: the move page's row and the moving one say it waits for the turn to end (`waits: \"turn\"`), not stuck; the turn ended, it goes, and nothing says so any more", async () => {
+  const w = world();
+  const a = w.get(A);
+  const [key, t] = newSession(a.rig.hub, { runtime: "claude", profile: "cc", createdBy: "p@x" });
+  say(a.rig.hub, t.id, "p@x", "busy now");
+  await a.rig.quiet();
+  assert.equal(a.rig.hub.busy(key), true);
+  // (told the moment the hand-over begins to wait for the turn)
+  const waiting = Promise.withResolvers<void>();
+  const hub = a.rig.hub;
+  const turnEnded = hub.turnEnded.bind(hub);
+  hub.turnEnded = (k: string) => {
+    const ended = turnEnded(k);
+    waiting.resolve();
+    return ended;
+  };
+  const moving = a.moves.scheduler.move(WS, B, { module: "chats", item: key });
+  await waiting.promise;
+  const name = (id: string) => ({ [A]: "A", [B]: "B" })[id] ?? id;
+  const view = async () => moveView(await a.moves.scheduler.plan(WS, B), a.moves.modules.map((m) => m.id), a.moves.scheduler.stopped(), { limit: 50 }, null, false, name);
+  const during = await view();
+  const row = (v: Json) => v.modules.find((m: Json) => m.id === "chats").items.find((x: Json) => x.id === key);
+  assert.deepEqual([row(during).state, row(during).waits], ["moving", "turn"], "its row: moving, waiting for the turn");
+  assert.deepEqual([during.moving?.id, during.moving?.waits], [key, "turn"], "the moving one says so too");
+  assert.equal(a.rig.hub.chatHeld(key), null, "not held while its turn goes on");
+  await a.rig.call(key, "chat_state", { kind: "final" });
+  a.rig.claude.last().complete();
+  const out = await moving;
+  await w.quiet();
+  assert.equal(out.failed, null, JSON.stringify(out));
+  assert.equal(a.rig.store.handedTo(key)?.station, B, "it went once the turn ended");
+  const after = await view();
+  assert.deepEqual([row(after).state, "waits" in row(after), after.moving], ["there", false, null]);
+});
+
 test("a chat sent ahead of its account (arriveStopped) arrives stopped there, and goes on there as the account comes", async () => {
   const w = world();
   const a = w.get(A);

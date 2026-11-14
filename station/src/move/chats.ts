@@ -123,7 +123,7 @@ export function chatsModule(d: ChatsDeps): Module {
       if (handed !== null) return { state: "there", at: handed.station };
       // (where it went is no longer said here: here, whatever a record of an older trip says)
       if (o === null) return { state: "here" };
-      if (o.step === "held" || o.step === "files" || o.step === "rows") return { state: "moving", progress: { done: o.done, total: o.total, unit: "bytes" } };
+      if (o.step === "held" || o.step === "files" || o.step === "rows") return { state: "moving", progress: { done: o.done, total: o.total, unit: "bytes" }, ...(d.handover.waitsForTurn(o) ? { waits: "turn" as const } : {}) };
       if (o.step === "failed") return { state: "failed", error: o.error ?? "" };
       return { state: "here" };
     },

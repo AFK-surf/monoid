@@ -340,6 +340,13 @@ export class Handover {
     return this.#outsOf.get(key)?.[0] ?? null;
   }
 
+  /// The hand-overs waiting for a chat's turn to end before they hold it (by id): known here while they wait.
+  readonly #waitingTurn = new Set<string>();
+  /// Whether hand-over `o` waits for its chat's turn to end now.
+  waitsForTurn(o: Out): boolean {
+    return this.#waitingTurn.has(o.id);
+  }
+
   // ── the station it leaves ──
 
   /// The move under way asked to stop: each hand-over not gone yet gives up at its next step, undone as a failure there
@@ -443,7 +450,8 @@ export class Handover {
         if (opts.wait !== true) throw new Error(`chat ${k} is in a turn now: ask again when it ended, or with wait, which waits for it`);
         let late: () => void = () => {};
         const deadline = new Promise<"late">((resolve) => (late = this.#d.fibers.after(TURN_WAIT_MS, () => resolve("late")))); // timer: a deadline for the turn's end
-        const ended = await Promise.race([this.#d.hub.turnEnded(k).then(() => "ended" as const), deadline]);
+        this.#waitingTurn.add(o.id);
+        const ended = await Promise.race([this.#d.hub.turnEnded(k).then(() => "ended" as const), deadline]).finally(() => this.#waitingTurn.delete(o.id));
         late();
         if (ended === "late") throw new Error(`chat ${k} was still in its turn after ${TURN_WAIT_MS / 60_000} min: ask again later`);
       }
