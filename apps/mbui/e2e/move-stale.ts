@@ -1,0 +1,26 @@
+// What the move drill's part 6 (e2e/move.ts) leaves on a stopped station of a chat that went back from it, by hand, as a
+// failed retirement left the real target on 2026-11-14: its session row marked as the old flow marks a retired one
+// (sessions/hub.ts `retiredWs`), two entries said only there after what it has of the chat's thread (the station's
+// store, `insertMessage`), and its room older than the chat's own (a file only it has, one that differs, one it
+// lacks). Its transcript is what the chat left there, older already. What it did, printed.
+//   node e2e/move-stale.ts <the station's checkout> <data> <session key> <workspace> <tag> <file that differs> <file it lacks>
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+
+const [src, data, key, ws, tag, differs, lacks] = process.argv.slice(2);
+const { Store } = await import(pathToFileURL(join(src!, "station/src/store/store.ts")).href);
+const store = Store.open(join(data!, "stillfail.db"));
+const row = store.db.prepare("SELECT ws, workspace FROM sessions WHERE key = ?").get(key) as { ws: string | null; workspace: string } | undefined;
+if (row === undefined) throw new Error(`no session ${key} in ${data}`);
+store.db.prepare("UPDATE sessions SET ws = ? WHERE key = ?").run(`retired:${ws}`, key);
+const thread = (store.db.prepare("SELECT thread FROM thread_sessions WHERE session = ? ORDER BY joined_at DESC LIMIT 1").get(key) as { thread: number } | undefined)?.thread;
+if (thread === undefined) throw new Error(`no thread of ${key} in ${data}`);
+const now = Date.now();
+for (let i = 1; i <= 2; i++) store.insertMessage({ thread, ts: `${Math.floor(now / 1000)}.${String(900000 + i)}`, authorKind: "person", author: "alice@example.test", text: `drill-stale only on this station ${tag} ${i}` });
+mkdirSync(row.workspace, { recursive: true });
+writeFileSync(join(row.workspace, "only-here.txt"), `left by a retirement ${tag}\n`);
+writeFileSync(join(row.workspace, differs!), `an older copy ${tag}\n`);
+rmSync(join(row.workspace, lacks!), { force: true });
+store.close();
+console.log(`STALE ${key}: ws ${row.ws} -> retired:${ws}, thread ${thread} +2 entries, room ${row.workspace}: only-here.txt, ${differs} older, ${lacks} gone`);
