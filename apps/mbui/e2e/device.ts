@@ -59,14 +59,18 @@ function watching(d: string, changed: () => void): () => void {
 /// What `ok` gives, looked at again as each of `dirs` changes (the file system's events, as scripts/waitfor.mjs waits:
 /// a station's database and the lock chains it keeps), or an error saying `what` by `ms`. Looked at once more at `ms`:
 /// what holds by then is not failed for no change having been seen of it, and the run says that it was so.
-export function whenChanged<T>(dirs: string[], ok: () => T | undefined | null | false, ms: number, what: () => string): Promise<T> {
+/// (`every`: looked at again that often besides, where a file event may be missed: drill 23 saw a move's turn end 215
+/// and 268 s after the station wrote it, by the next event in that directory)
+export function whenChanged<T>(dirs: string[], ok: () => T | undefined | null | false, ms: number, what: () => string, every?: number): Promise<T> {
   return new Promise((resolve, reject) => {
     let done = false;
     const end = () => {
       done = true;
       clearTimeout(deadline);
+      if (again !== undefined) clearInterval(again);
       for (const stop of stops) stop();
     };
+    const again = every === undefined ? undefined : setInterval(() => void look(), every);
     const look = (): boolean => {
       if (done) return false;
       const got = ok();
