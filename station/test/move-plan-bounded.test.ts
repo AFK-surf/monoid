@@ -109,7 +109,7 @@ test("a plan says of every chat, account, job and connect what it said before it
 });
 
 const WANT: string[] = [
-  "accounts | share:sh-cc | cc |  |  | there | ",
+  "accounts | share:sh-cc | cc |  |  | here | ",
   "accounts | key:f663c3465c5f0b8b63e89ebd3a687043 | cx |  |  | there | chats chat:c-0001,chats cl:C1:1.1",
   "accounts | share:sh-b | bor |  |  | here | ",
   "accounts | machine:mine | mine |  | this machine's own login cannot go to another station: sign in there with the login tool | here | chats gpt:C1:1.3",

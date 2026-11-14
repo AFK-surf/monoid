@@ -120,7 +120,7 @@ function world(profiles: Json[], o: { third?: boolean; slack?: boolean } = {}) {
         // (as move/live.ts gives them)
         moveProfile: (pid, to) => st.sharing.moveProfile(pid, to),
         shareMoves: { move: (pid, to, made) => st.sharing.moveProfile(pid, to, undefined, made), unshare: (share, stations) => st.sharing.unshareMoved(share, stations) },
-        sessionsIn: (ws, after, limit) => rig.store.sessionsOfWs(ws === WS ? null : ws, WS, after, limit),
+        sessionsIn: (ws, after, limit) => rig.store.sessionPageOfWs(ws === WS ? null : ws, WS, after, limit),
         reposDir: join(rig.dir, "repos"),
         room: async () => ({ free: 1e15 }),
         hasGit: async () => true,

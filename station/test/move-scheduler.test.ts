@@ -326,3 +326,25 @@ test("a chat asked to move with what it needs, one of which would stop other cha
   const both = await s.move("ws", "B", { module: "chats", withNeeds: true });
   assert.deepEqual(both.done.map((d) => d.id).sort(), ["c1", "c2", "solo"]);
 });
+
+test("a chat asked with what it needs: a login shared as it moves (usable here after) or one usable there already is never refused for what it would stop, and nothing here is stopped for it", async () => {
+  const log: string[] = [];
+  // (`shared`: usable here once it went; `borrowed`: here, and usable there as it is)
+  const accounts = fake("accounts", [], [{ id: "shared", label: "a login shared as it moves", needs: [] }, { id: "borrowed", label: "a login the other borrows", needs: [] }], log, { usable: (id) => id === "shared", usableThere: (id) => id === "borrowed" });
+  const chats = fake("chats", ["accounts"], [
+    { id: "c1", label: "chat one", needs: [{ module: "accounts", id: "shared" }] },
+    { id: "c2", label: "chat two", needs: [{ module: "accounts", id: "shared" }] },
+    { id: "c3", label: "chat three", needs: [{ module: "accounts", id: "borrowed" }] },
+    { id: "c4", label: "chat four", needs: [{ module: "accounts", id: "borrowed" }] },
+  ], log);
+  const s = new Scheduler({ data: mkdtempSync(join(process.env.STILLFAIL_TEST_TMP ?? tmpdir(), "move-")), modules: [accounts, chats] });
+  const one = await s.move("ws", "B", { module: "chats", item: "c1", withNeeds: true });
+  assert.deepEqual(one.refused, [], "the login shared as it moves stops nothing: taken along");
+  assert.deepEqual(one.done.map((d) => d.id), ["shared", "c1"]);
+  const three = await s.move("ws", "B", { module: "chats", item: "c3", withNeeds: true });
+  assert.deepEqual(three.refused, [], "the login usable there: not taken along, nothing refused");
+  assert.deepEqual(three.done.map((d) => d.id), ["c3"]);
+  assert.equal(accounts.where.get("borrowed"), "here");
+  assert.deepEqual(s.stopped(), [], "nothing stopped for either");
+  assert.deepEqual(log.filter((l) => l.startsWith("stop")), []);
+});
