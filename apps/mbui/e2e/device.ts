@@ -90,7 +90,7 @@ const askedFile = (data: string) => join(data, "asked.log");
 /// of its own, its first write the head line (client/core-ts/src/mesh.ts `#open`: `{"method","path",…}`), its answer
 /// read to its end as that stream reads null, the station the connection's (`remoteId`, a station's id). `told` hears
 /// each such answer; nothing the core sends or reads is changed.
-function watchRequests(told: (station: string, method: string, path: string) => void): void {
+function watchRequests(told: (station: string, method: string, path: string, status: string) => void): void {
   // (the object as it is, but for `own`: the native one's methods called on it)
   const over = <T extends object>(target: T, own: Record<string, unknown>): T =>
     new Proxy(target, {
@@ -103,6 +103,8 @@ function watchRequests(told: (station: string, method: string, path: string) => 
   const stream = (s: J, station: string): J => {
     let first = true;
     let head: { method: string; path: string } | null = null;
+    // (the answer's head as it is read: its status where it says one)
+    let answered = "";
     return over(s, {
       write: (b: Buffer) => {
         if (first) {
@@ -117,10 +119,11 @@ function watchRequests(told: (station: string, method: string, path: string) => 
       },
       read: async () => {
         const b = await s.read();
+        if (answered === "" && b !== null && b !== undefined) answered = /"status"\s*:\s*(\d{3})/.exec(Buffer.from(b).subarray(0, 400).toString("utf8"))?.[1] ?? "-";
         if ((b === null || b === undefined) && head !== null) {
           const h = head;
           head = null;
-          told(station, h.method, h.path);
+          told(station, h.method, h.path, answered);
         }
         return b;
       },
@@ -144,8 +147,8 @@ if (process.argv[2] === "device") {
   // (its record: what its links do, the core's lines; and each request of a station answered, this file's)
   const record = join(data, "record.log");
   // (before the core is loaded: it loads the addon as its host is made)
-  watchRequests((station, method, path) => {
-    appendFileSync(record, `asked: ${station.slice(0, 8)} ${method} ${path} -> answered\n`);
+  watchRequests((station, method, path, status) => {
+    appendFileSync(record, `asked: ${station.slice(0, 8)} ${method} ${path} -> answered${status !== "" && status !== "-" ? ` ${status}` : ""}\n`);
     if (process.connected) process.send!({ answered: { station, method, path } });
   });
   const { start } = await import(pathToFileURL(join(src, "client/core-ts/src/hosts/node.ts")).href);

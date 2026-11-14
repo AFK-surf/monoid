@@ -3,12 +3,14 @@
 // (sessions/hub.ts `retiredWs`), two entries said only there after what it has of the chat's thread (the station's
 // store, `insertMessage`), and its room older than the chat's own (a file only it has, one that differs, one it
 // lacks). Its transcript is what the chat left there, older already. What it did, printed.
-//   node e2e/move-stale.ts <the station's checkout> <data> <session key> <workspace> <tag> <file that differs> <file it lacks>
+// Beside it, what the real target holds of the retirement that took that workspace's chats (replica/retire.ts): its
+// `replica/taken.json` naming the retired station, `formerly.json` empty, `taking/` and `carry/<ws>/` empty.
+//   node e2e/move-stale.ts <the station's checkout> <data> <session key> <workspace> <tag> <file that differs> <file it lacks> <retired station's id> <its name>
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-const [src, data, key, ws, tag, differs, lacks] = process.argv.slice(2);
+const [src, data, key, ws, tag, differs, lacks, origin, originName] = process.argv.slice(2);
 const { Store } = await import(pathToFileURL(join(src!, "station/src/store/store.ts")).href);
 const store = Store.open(join(data!, "stillfail.db"));
 const row = store.db.prepare("SELECT ws, workspace FROM sessions WHERE key = ?").get(key) as { ws: string | null; workspace: string } | undefined;
@@ -27,4 +29,9 @@ writeFileSync(join(row.workspace, "only-here.txt"), `left by a retirement ${tag}
 writeFileSync(join(row.workspace, differs!), `an older copy ${tag}\n`);
 rmSync(join(row.workspace, lacks!), { force: true });
 store.close();
-console.log(`STALE ${key}: ws ${row.ws} -> retired:${ws}, thread ${thread} +2 entries, room ${row.workspace}: only-here.txt, ${differs} older, ${lacks} gone`);
+const replica = join(data!, "replica");
+mkdirSync(join(replica, "taking"), { recursive: true });
+mkdirSync(join(replica, "carry", ws!), { recursive: true });
+writeFileSync(join(replica, "taken.json"), JSON.stringify([{ origin, name: originName, workspace: ws, at: now, chats: 0, jobs: [] }]));
+writeFileSync(join(replica, "formerly.json"), "[]");
+console.log(`STALE ${key}: ws ${row.ws} -> retired:${ws}, thread ${thread} +2 entries, room ${row.workspace}: only-here.txt, ${differs} older, ${lacks} gone; replica/taken.json naming ${originName} (${origin!.slice(0, 8)}), formerly.json [], taking/ and carry/${ws}/ empty`);

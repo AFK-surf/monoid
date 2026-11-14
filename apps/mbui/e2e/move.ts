@@ -1018,16 +1018,7 @@ try {
     };
     /// What station `n` holds of chat `key` itself: its row, where it says it was handed, its hand-overs in.
     const heldOn = (n: Name, key: string): string =>
-      `${n}'s row ${brief(sql(n, `select ws, came_from, archived_at, workspace from sessions where key = ${lit(key)}`))}, handed_over ${brief(sql(n, `select station, ws from handed_over where session = ${lit(key)}`))}, hand-overs in ${brief(handovers(n, "in").filter((i) => (i.keys ?? []).includes(key)).map((i) => ({ id: i.id, step: i.step })))}`;
-    /// What of `want` (the station it left, in order) is not on `got` once each and in that order.
-    const entriesDiffer = (want: string[], got: string[]): string | null => {
-      const count = (l: string[], t: string) => l.filter((x) => x === t).length;
-      const wrong = [...new Set(want)].filter((t) => count(got, t) !== count(want, t)).map((t) => `${brief(t.slice(0, 60))} ${count(want, t)}x there, ${count(got, t)}x here`);
-      let i = 0;
-      for (const t of got) if (i < want.length && t === want[i]) i++;
-      if (wrong.length === 0 && i === want.length) return null;
-      return `${wrong.slice(0, 5).join("; ")}${i < want.length ? `; out of order from ${brief(want[i]!.slice(0, 60))}` : ""}`;
-    };
+      `${n}'s row ${brief(Object.fromEntries(Object.entries(sql(n, `select * from sessions where key = ${lit(key)}`)[0] ?? {}).filter(([c]) => !["token", "title"].includes(c))), 900)}, handed_over ${brief(sql(n, `select station, ws from handed_over where session = ${lit(key)}`))}, hand-overs in ${brief(handovers(n, "in").filter((i) => (i.keys ?? []).includes(key)).map((i) => ({ id: i.id, step: i.step })))}`;
     let k6 = "";
     let roomA: Map<string, string> = new Map();
     const r1 = `r${tag}`;
@@ -1047,7 +1038,8 @@ try {
       writeFileSync(join(room, "differs.txt"), "A's, changed after it came back\n");
       stationDo("halt", "second");
       try {
-        log(`  ${execFileSync(process.execPath, ["--no-warnings", join(dirname(new URL(import.meta.url).pathname), "move-stale.ts"), process.env.E2E_SF_SRC!, DATA.B, k6, ws, tag, "differs.txt", "lacking.txt"], { encoding: "utf8", timeout: 120_000 }).trim()}`);
+        const aName = String(((await a.until({ topic: "workspace", workspace: ws }, (v) => v?.stations && v, 30_000)).stations as J[]).find((s) => s.id === aId)?.name ?? "A");
+        log(`  ${execFileSync(process.execPath, ["--no-warnings", join(dirname(new URL(import.meta.url).pathname), "move-stale.ts"), process.env.E2E_SF_SRC!, DATA.B, k6, ws, tag, "differs.txt", "lacking.txt", aId, aName], { encoding: "utf8", timeout: 120_000 }).trim()}`);
       } finally {
         await up("B");
       }
@@ -1085,28 +1077,17 @@ try {
           if (liveOn(k6).join() !== to) throw new Error(`${standings(k6)}; ${outcome(l)}`);
         });
         await check(`6: ${label}: listed once, on ${to}`, () => listedOnceOn(k6, to));
-        // (the lead, 2026-11-14, as the station's unit test shows the code does: a thread is a log by number and the chat
-        // that moves keeps its numbers; what only the copy there had is kept, each once, numbered after the arriving
-        // chat's log as it was when it moved. Out of order by time alone is no failure)
-        await check(`6: ${label}: every entry of ${from}'s on ${to} once and in ${from}'s order, each only the copy had once after them${to === "A" ? ", and A's and B's the same entry for entry" : ""}`, async () => {
+        // (the lead, 2026-11-14, as the station agent traced the code: no renumbering is written; each station's log
+        // keeps its own numbers, an arriving entry the same at its number skipped, one found by ts elsewhere is that one,
+        // one not found numbered on. Where the copy's own entries sit may differ between the two: no failure)
+        await check(`6: ${label}: every entry of ${from}'s on ${to} once, each only the copy had once`, async () => {
           const got = entriesOn(to, k6);
           const extra = got.filter((t) => !wantEntries.includes(t) && !t.includes(note));
           log(`  ${from} had ${wantEntries.length}, ${to} has ${got.length}; only on ${to}: ${brief(extra.map((t) => t.slice(0, 60)), 400)}`);
           const whys: string[] = [];
-          const why0 = entriesDiffer(wantEntries, got);
-          if (why0 !== null) whys.push(why0);
-          const lastWant = wantEntries.length === 0 ? -1 : Math.max(...wantEntries.map((t) => got.lastIndexOf(t)));
-          for (const t of new Set(extra)) {
-            const at = got.map((x, i) => (x === t ? i : -1)).filter((i) => i >= 0);
-            if (at.length !== 1) whys.push(`${brief(t.slice(0, 60))} ${at.length}x`);
-            else if (at[0]! < lastWant) whys.push(`${brief(t.slice(0, 60))} at ${at[0]! + 1}, before ${from}'s last at ${lastWant + 1}`);
-          }
-          if (to === "A") {
-            // (but what this move's hold said and its answer, which A writes after B let go of it)
-            const onB = entriesOn("B", k6).filter((t) => !t.includes(note));
-            const onA = got.filter((t) => !t.includes(note));
-            if (JSON.stringify(onB) !== JSON.stringify(onA)) whys.push(`A's and B's differ (A ${onA.length}, B ${onB.length}) from ${onA.findIndex((t, i) => onB[i] !== t) + 1}`);
-          }
+          const count = (l: string[], t: string) => l.filter((x) => x === t).length;
+          for (const t of new Set(wantEntries)) if (count(got, t) !== count(wantEntries, t)) whys.push(`${brief(t.slice(0, 60))} ${count(wantEntries, t)}x on ${from}, ${count(got, t)}x on ${to}`);
+          for (const t of new Set(extra)) if (count(got, t) !== 1) whys.push(`${brief(t.slice(0, 60))} ${count(got, t)}x on ${to}`);
           const why = whys.length === 0 ? null : whys.join("; ");
           if (why !== null) {
             log(`  ${from}'s ${entryRows(from, k6)}`);
@@ -1143,6 +1124,21 @@ try {
       if (liveOn(k6).join() === "B") {
         await say(k6, `drill-remember:${r3}`, `drill-remembered ${r3}`).catch((e) => log(`  not said on B: ${e.message}`));
         await there("A", "back to A", r3);
+        await check("6: two more trips there and back add no entry on either side", async () => {
+          const before = { A: entriesOn("A", k6).length, B: entriesOn("B", k6).length };
+          for (let i = 0; i < 2; i++) {
+            const l = await moveChat(k6, "B");
+            if (standing("B", k6) !== "live") throw new Error(`trip ${i + 1} not to B: ${standings(k6)}; ${outcome(l)}`);
+            await home(k6);
+          }
+          const after = { A: entriesOn("A", k6).length, B: entriesOn("B", k6).length };
+          log(`  entries before ${brief(before)}, after ${brief(after)}`);
+          if (after.A !== before.A || after.B !== before.B) {
+            log(`  A's ${entryRows("A", k6)}`);
+            log(`  B's ${entryRows("B", k6)}`);
+            throw new Error(`entries before ${brief(before)}, after ${brief(after)}`);
+          }
+        });
       }
     }
   }
