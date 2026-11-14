@@ -1849,8 +1849,7 @@ try {
     };
     /// While a whole station's move runs, A's move page as a person watching holds it (one subscription, `watching`
     /// below): at its end, from the device's record (each request with when it was answered and how long it took), how
-    /// often that page was read, how long each read took, and how many plans A made that asked B which chats are live
-    /// (A's log: a plan's line, its answer asked or kept for the turn). The drill adds no read of its own: drill 27's
+    /// often that page was read, and how long each read took. The drill adds no read of its own: drill 27's
     /// timed reads, each a page of another size, stayed live a minute each (the core's grace) and were read again at
     /// every telling, 35 of the 36 reads a second.
     const duringMove = () => {
@@ -1868,9 +1867,7 @@ try {
           const shapes = new Set(rec.map((m) => m[3].replace(/to=[0-9a-f]+/, "")));
           const took = rec.map((m) => Number(m[4])).sort((x, y) => x - y);
           const q = (f: number) => (took.length === 0 ? "-" : `${took[Math.min(took.length - 1, Math.floor(f * took.length))]} ms`);
-          const asks = (existsSync(`${RUN}/station.log`) ? readFileSync(`${RUN}/station.log`, "utf8").split("\n") : [])
-            .filter((l) => l.includes("asked which chats are live") && l.slice(0, 24) >= from.toISOString() && l.slice(0, 24) <= to.toISOString()).length;
-          return `the watched page read ${rec.length} times (${(rec.length / secs).toFixed(2)} a second, the busiest second ${Math.max(0, ...perSecond.values())}; ${shapes.size} path(s)), each answered in p50 ${q(0.5)}, p90 ${q(0.9)}, max ${took.length === 0 ? "-" : `${took.at(-1)} ms`}; A's plans that asked B which chats are live (asked or kept): ${asks}`;
+          return `the watched page read ${rec.length} times (${(rec.length / secs).toFixed(2)} a second, the busiest second ${Math.max(0, ...perSecond.values())}; ${shapes.size} path(s)), each answered in p50 ${q(0.5)}, p90 ${q(0.9)}, max ${took.length === 0 ? "-" : `${took.at(-1)} ms`}`;
         },
       };
     };
