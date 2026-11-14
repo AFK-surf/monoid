@@ -1085,10 +1085,29 @@ try {
           if (liveOn(k6).join() !== to) throw new Error(`${standings(k6)}; ${outcome(l)}`);
         });
         await check(`6: ${label}: listed once, on ${to}`, () => listedOnceOn(k6, to));
-        await check(`6: ${label}: every entry of ${from}'s on ${to} once and in order`, async () => {
+        // (the lead, 2026-11-14, as the station's unit test shows the code does: a thread is a log by number and the chat
+        // that moves keeps its numbers; what only the copy there had is kept, each once, numbered after the arriving
+        // chat's log as it was when it moved. Out of order by time alone is no failure)
+        await check(`6: ${label}: every entry of ${from}'s on ${to} once and in ${from}'s order, each only the copy had once after them${to === "A" ? ", and A's and B's the same entry for entry" : ""}`, async () => {
           const got = entriesOn(to, k6);
-          log(`  ${from} had ${wantEntries.length}, ${to} has ${got.length}; only on ${to}: ${brief(got.filter((t) => !wantEntries.includes(t) && !t.includes(note)).map((t) => t.slice(0, 60)), 400)}`);
-          const why = entriesDiffer(wantEntries, got);
+          const extra = got.filter((t) => !wantEntries.includes(t) && !t.includes(note));
+          log(`  ${from} had ${wantEntries.length}, ${to} has ${got.length}; only on ${to}: ${brief(extra.map((t) => t.slice(0, 60)), 400)}`);
+          const whys: string[] = [];
+          const why0 = entriesDiffer(wantEntries, got);
+          if (why0 !== null) whys.push(why0);
+          const lastWant = wantEntries.length === 0 ? -1 : Math.max(...wantEntries.map((t) => got.lastIndexOf(t)));
+          for (const t of new Set(extra)) {
+            const at = got.map((x, i) => (x === t ? i : -1)).filter((i) => i >= 0);
+            if (at.length !== 1) whys.push(`${brief(t.slice(0, 60))} ${at.length}x`);
+            else if (at[0]! < lastWant) whys.push(`${brief(t.slice(0, 60))} at ${at[0]! + 1}, before ${from}'s last at ${lastWant + 1}`);
+          }
+          if (to === "A") {
+            // (but what this move's hold said and its answer, which A writes after B let go of it)
+            const onB = entriesOn("B", k6).filter((t) => !t.includes(note));
+            const onA = got.filter((t) => !t.includes(note));
+            if (JSON.stringify(onB) !== JSON.stringify(onA)) whys.push(`A's and B's differ (A ${onA.length}, B ${onB.length}) from ${onA.findIndex((t, i) => onB[i] !== t) + 1}`);
+          }
+          const why = whys.length === 0 ? null : whys.join("; ");
           if (why !== null) {
             log(`  ${from}'s ${entryRows(from, k6)}`);
             log(`  ${to}'s ${entryRows(to, k6)}`);
