@@ -10,7 +10,8 @@
 //   1 the page's data: what moves A→B with true counts, B offered, bob refused;
 //   2 one chat (messages, transcript, a file, a git worktree of the repos cache with a commit no remote has and a change
 //     not committed, a job) there and back;
-//   3 faults, each on a chat of its own: a B killed in the first pass, b A killed while the chat is held, c B killed as
+//   3 faults, each on a chat of its own and from a state checked clean: n none (a 300 MB room moved with its needs), a B
+//     killed in the first pass, b A killed while the chat is held, c B killed as
 //     it took the chat, d move.stop in the first pass, e C without room, f A handed over to a fresh process (SIGUSR2 to
 //     its launcher) in an agent's turn and in a move's;
 //   4 everything (all) to B and all back;
@@ -166,6 +167,31 @@ const lastOn = (n: Name, ws: string): J | null => {
 };
 const brief = (v: J, most = 600) => JSON.stringify(v)?.slice(0, most);
 
+/// Where chat `key` is stopped, as the station it is shown on keeps it (move/stopped.json): what it waits for; null
+/// where it is not stopped.
+function stoppedOf(key: string): string | null {
+  for (const n of stations()) {
+    let l: J = [];
+    try {
+      l = JSON.parse(readFileSync(`${DATA[n]}/move/stopped.json`, "utf8"));
+    } catch {
+      continue;
+    }
+    const s = (Array.isArray(l) ? l : []).find((x: J) => x?.item?.module === "chats" && x?.item?.id === key);
+    if (s !== undefined && standing(n, key) === "live") return `stopped on ${n}, waiting for ${s.waitsFor?.module} ${s.waitsFor?.id}`;
+  }
+  return null;
+}
+/// Whether station `n`'s launcher runs (its pid file, e2e-local.sh's, and that process).
+function alive(n: Name): boolean {
+  try {
+    process.kill(Number(readFileSync(`${RUN}/${SHELL_NAME[n]}.pid`, "utf8").trim()), 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /// A room filled with `count` files of `bytes` bytes each, each its own random bytes (two the same would be sent once).
 function fill(room: string, sub: string, count: number, bytes: number): void {
   const d = join(room, sub);
@@ -205,12 +231,28 @@ const moveT = (to: string, module = "chats", limit?: number) => ({ topic: "stati
 
 /// What chat `key` was answered after `text` was said in it by alice's device (aimed at A, where it began: the core
 /// sends it on to where it is): the first new message beginning `prefix`.
+/// It fails at once where no answer can come: what was said failed in the outbox, or the chat is stopped where it is
+/// (its station's move/stopped.json, what GET /move's `stopped` says), saying why.
 async function say(key: string, text: string, prefix: string, ms = 120_000): Promise<string> {
   log(`  saying ${text.slice(0, 80)}, waiting for ${prefix}`);
   const before = new Set(texts(await a.until(chatT(key), (v) => v?.messages && v, 60_000)));
+  const stopped0 = stoppedOf(key);
+  if (stopped0 !== null) throw new Error(`no answer can come: the chat is ${stopped0} (${standings(key)})`);
   await a.call("chat.send", { station: A, session: key, text });
-  const got = await a.until(chatT(key), (v) => texts(v).find((t) => t.startsWith(prefix) && !before.has(t)) ?? failedSend(v, text), ms);
-  if (typeof got !== "string") throw new Error(`what was said did not go: ${got.failed}`);
+  // (the chat stopped meanwhile, as its station's files say; a wait that never ends otherwise. Let go of at the next
+  // change once the answer came)
+  let over = false;
+  const stops = whenChanged(stations().map((n) => DATA[n]), () => {
+    if (over) return { over };
+    const s = stoppedOf(key);
+    return s !== null && { stopped: s };
+  }, ms + 5_000, () => "").catch(() => new Promise<never>(() => {}));
+  const answered = a.until(chatT(key), (v) => texts(v).find((t) => t.startsWith(prefix) && !before.has(t)) ?? failedSend(v, text), ms);
+  const got = await Promise.race([answered, stops.then((s) => ("stopped" in s ? s : answered))]).finally(() => void (over = true));
+  if (typeof got !== "string") {
+    if ("stopped" in got) throw new Error(`no answer can come: the chat is ${got.stopped} (${standings(key)})`);
+    throw new Error(`what was said did not go: ${got.failed}`);
+  }
   return got;
 }
 /// A message of the outbox that the core says failed (the station refused it): why, at once, never a wait for good.
@@ -229,7 +271,8 @@ async function newChat(label: string): Promise<string> {
   return v.key as string;
 }
 /// The device's rows of chat `key` once `ok` holds of them (or the time is up: an error saying what they were).
-async function listed(key: string, ok: (rows: J[]) => boolean, ms = 90_000): Promise<J[]> {
+async function listed(key: string, ok: (rows: J[]) => boolean, ms = 90_000, what = "as wanted"): Promise<J[]> {
+  log(`  waiting for alice's list to show ${key.slice(-8)} ${what}`);
   let seen: J[] = [];
   try {
     return await a.until(chatsT(), (v) => {
@@ -240,7 +283,39 @@ async function listed(key: string, ok: (rows: J[]) => boolean, ms = 90_000): Pro
     throw new Error(`the device lists it as ${brief(seen.map((r) => ({ station: r.station, title: r.title })))}`);
   }
 }
-const listedOnceOn = (key: string, n: Name, ms?: number) => listed(key, (r) => r.length === 1 && r[0].station === addr(n), ms);
+const listedOnceOn = (key: string, n: Name, ms?: number) => listed(key, (r) => r.length === 1 && r[0].station === addr(n), ms, `once, on ${n}`);
+
+/// Until hand-over `key`'s first pass to `to` is under way: `to` has files of it and A has not held it yet. At once an
+/// error where it cannot come: its hand-over failed, or the turn asked at `t0` ended.
+async function firstPass(key: string, t0: number, to: Name = "B"): Promise<J> {
+  log(`  waiting for ${key.slice(-8)}'s first pass to ${to} (files there, not held)`);
+  const got = await whenChanged([DATA.A, DATA[to]], () => {
+    const o = outOf(key);
+    if (o !== null && o.step === "files" && o.held === false && filesIn(to, o.id) > 0) return { o };
+    return cannotCome(key, t0);
+  }, 180_000, () => `never in its first pass: ${brief(outOf(key))}`);
+  if ("why" in got) throw new Error(`no first pass can come: ${got.why}`);
+  return got.o;
+}
+/// Until hand-over `key` is held (its second pass); at once an error where it cannot come, as `firstPass`.
+async function heldOf(key: string, t0: number): Promise<J> {
+  log(`  waiting for ${key.slice(-8)} held (its second pass)`);
+  const got = await whenChanged([DATA.A], () => {
+    const o = outOf(key);
+    if (o?.held === true) return { o };
+    return cannotCome(key, t0);
+  }, 300_000, () => `never held: ${brief(outOf(key))}`);
+  if ("why" in got) throw new Error(`it can never be held: ${got.why}`);
+  return got.o;
+}
+/// Why hand-over `key` asked at `t0` goes no further: its step failed, or A's turn ended (move/last.json); else false.
+function cannotCome(key: string, t0: number): { why: string } | false {
+  const o = outOf(key);
+  if (o !== null && o.at >= t0 - 1000 && o.step === "failed") return { why: `its hand-over ${o.id} failed: ${o.error} (at ${o.done ?? "?"} of ${o.total ?? "?"} bytes)` };
+  const l = lastOn("A", ws);
+  if (l !== null && l.at >= t0 && !existsSync(`${DATA.A}/move/turn.json`)) return { why: `A's turn ended: ${outcome(l)}; its hand-over ${o?.step}: ${o?.error ?? ""}` };
+  return false;
+}
 
 /// The end of the move or move back asked of station `n` at `since`: its `last` (move/last.json) once its turn ended.
 function turnEnds(n: Name, since: number, ms = 300_000): Promise<J> {
@@ -276,9 +351,27 @@ async function home(key: string): Promise<void> {
   }
 }
 
+/// A's page of moving to B once A has no turn under way (move/turn.json, the station's own word: a wait for the page's
+/// `moving` to be none sat out its 120 s before every part after 2 in drill-move-7, no GET /move asked meanwhile). That
+/// the page then says nothing moves is a check of its own.
+async function atRest(label: string): Promise<J> {
+  log(`  ${label}: waiting for A to have no move under way (move/turn.json gone), then for its page`);
+  await whenChanged([DATA.A], () => !existsSync(`${DATA.A}/move/turn.json`), 300_000, () => `A's turn still under way: ${readFileSync(`${DATA.A}/move/turn.json`, "utf8").slice(0, 400)}`);
+  const v = await a.until(moveT(bId), (v) => v?.modules && v, 60_000);
+  if ((v.moving ?? null) === null) return v;
+  let now = v;
+  await check(`${label}: A's page says nothing moves once its turn ended`, async () => {
+    log(`  the page says moving ${brief(v.moving)} with no turn on A; waiting 10 s for it to be told`);
+    now = await a.until(moveT(bId), (x) => x?.modules && (x.moving ?? null) === null && x, 10_000).catch(() => {
+      throw new Error(`it says moving ${brief(v.moving)} (${v.note}) and A has no turn: its last ${brief(lastOn("A", ws), 300)}`);
+    });
+  });
+  return now;
+}
+
 /// Each fault from a clean state: whatever of A is on B (the page counts it done) brought back first, all of it.
 async function reset(label: string): Promise<void> {
-  const v = await a.until(moveT(bId), (v) => v?.modules && v.moving === null && v, 120_000).catch(() => null);
+  const v = await atRest(label);
   const there = (v?.modules ?? []).filter((m: J) => m.done > 0);
   if (there.length === 0) return;
   log(`  ${label}: bringing back first ${there.map((m: J) => `${m.id} ${m.done}`).join(", ")}`);
@@ -287,11 +380,19 @@ async function reset(label: string): Promise<void> {
   log(`  ${outcome(await turnEnds("A", t0))}`);
 }
 
+/// Station `n` started again after a fault, until alice's device sees it online.
+async function up(n: Name): Promise<void> {
+  stationDo("again", SHELL_NAME[n]);
+  log(`  waiting for ${n} online on alice's device`);
+  await a.until({ topic: "stations", scope: ws }, (v) => (v ?? []).find((s: J) => s.id === idOf(n) && s.online), 120_000);
+}
+
 /// What every fault must end with: chat `key` on exactly one station, listed once there, answering there, nothing of
 /// it on the other (no row shown, no room, nothing half placed), and its next move succeeding. Each a check of its own.
 async function endsWell(label: string, key: string): Promise<void> {
   let on: Name | null = null;
   await check(`${label}: on exactly one station, listed once there`, async () => {
+    log(`  waiting for ${key.slice(-8)} shown on one station alone, nothing coming`);
     const live = await whenChanged(stations().map((n) => DATA[n]), () => {
       const l = liveOn(key);
       const coming = stations().some((n) => standing(n, key) === "coming");
@@ -345,6 +446,7 @@ try {
   // ── setup: the chat of check 2 on A with all it is to take along, a vault item, the agent home's skill; B enrolled ──
   const tag = randomBytes(3).toString("hex");
   const secret = `s${tag}`;
+  const secretB = `b${tag}`;
   let k2 = "";
   let room2 = "";
   let commit2 = "";
@@ -461,7 +563,7 @@ try {
       t0 = Date.now();
       await a.call("move.start", { station: A, to: bId, module: "chats", item: k2, withNeeds: true });
       // a message said while the chat is held: as its hand-over says held (its second pass), at once
-      const held = whenChanged([`${DATA.A}/replica`], () => outOf(k2)?.held === true && outOf(k2), 300_000, () => `never held: ${brief(outOf(k2))}`).then(async (o) => {
+      const held = heldOf(k2, t0).then(async (o) => {
         heldNote = `held-${tag}`;
         await a.call("chat.send", { station: A, session: k2, text: `drill-note:${heldNote}` });
         log(`  said while ${o.step}${outOf(k2)?.step !== o.step ? ` (it was ${outOf(k2)?.step} once sent)` : ""}`);
@@ -509,6 +611,8 @@ try {
         if (at(cwd) !== "B") throw new Error(`answered from ${at(cwd)}: ${said}`);
         if (!said.includes(`secret=${secret}`)) throw new Error(`its transcript there lacks what it was told before: ${said}`);
         if (!said.includes("resumed=true")) throw new Error(`a new context, not resumed: ${said}`);
+        // (something said on B, for its agent to recall once back on A)
+        await say(k2, `drill-remember:${secretB}`, `drill-remembered ${secretB}`);
       });
       await check("2: its file, its commit and its change not committed are there on B, its worktree a working one", async () => {
         const r = roomOn("B", k2)!;
@@ -561,7 +665,14 @@ try {
           const lc = await moveBack(k2, "B");
           log(`  the chat's 迁回 again: ${outcome(lc)}; ${standings(k2)}`);
         }
-        if (account !== undefined && standing("A", k2) === "live") {
+        // (an own login that can be shared is shared as it moves, A borrowing it: then this login leaves nothing on A to
+        // stop, and the case is to be driven by one that cannot be shared; arriveStopped, the other way the lead named,
+        // is forward only and neither POST /move nor station_move takes it yet)
+        const borrowed = (JSON.parse(readFileSync(`${DATA.A}/config.json`, "utf8")).profiles ?? []).filter((p: J) => p.runtime === "claude");
+        if (account !== undefined && standing("A", k2) === "live" && borrowed.length > 0) {
+          fail("2: back on A while its account is still on B: stopped, and the person is told so", new Error(`not reachable by this login: A borrows it (${brief(borrowed.map((p: J) => ({ id: p.id, share: p.share ?? null })))}); it needs a login that cannot be shared, which the drill has no way to make yet`));
+        }
+        if (account !== undefined && standing("A", k2) === "live" && borrowed.length === 0) {
           const nonce = randomBytes(3).toString("hex");
           await check("2: back on A while its account is still on B: stopped, and the person is told so", async () => {
             log(`  A's stopped.json: ${existsSync(`${DATA.A}/move/stopped.json`) ? readFileSync(`${DATA.A}/move/stopped.json`, "utf8").slice(0, 600) : "none"}`);
@@ -572,11 +683,13 @@ try {
             if (k0 !== "") await a.call("chat.send", { station: A, session: k0, text: `drill-note:k0-${nonce}` });
             await whenChanged([DATA.A], () => sql("A", `select count(*) n from entries where text like ${lit(`%drill-recall:${nonce}%`)}`)[0].n > 0, 60_000, () => "the message is not in A's log");
             const v = await a.until(chatT(k2), (v) => v?.messages && v);
-            const shown = { pending: v.pending, failed: v.failed, offline: v.offline, outbox: (v.outbox ?? []).map((o: J) => o.state), stopped: v.stopped, waits: v.waits, line: v.line };
-            log(`  the chat as the device shows it now: ${brief(shown)}; its last messages ${brief(texts(v).slice(-3))}`);
+            // (what of the chat's page a person reads of where it stands: its line, the line over its composer, what is
+            // said under what they sent, its messages since; not the whole value, where a field's name matched before)
+            const shown = { stateText: v.stateText ?? null, offlineNote: v.offlineNote ?? null, connection: v.connection ?? null, outbox: (v.outbox ?? []).map((o: J) => `${o.state}${o.waits ? `: ${o.waits}` : ""}`), messages: texts(v).slice(-3) };
+            log(`  the chat as the device shows it now: ${brief(shown, 900)}`);
             if (row?.state !== "stopped") throw new Error(`its row on A's page says ${row?.state} (${row?.stateText}), not stopped waiting for its account`);
-            const said = JSON.stringify(v);
-            if (!/stopped|waits|等待|暂停|停/.test(said)) throw new Error("nothing in the chat tells the person it is stopped and what it waits for");
+            const read = [shown.stateText, shown.offlineNote, JSON.stringify(shown.connection), ...shown.outbox, ...texts(v).filter((t) => !t.startsWith("drill-"))].join(" | ");
+            if (!/停|等|stopped|waits for|账号|登录|login|account/i.test(read)) throw new Error(`nothing on the chat's page tells the person it is stopped and what it waits for (only the move page's row says ${row?.stateText}): ${read.slice(0, 400)}`);
           });
           await check("2: its account moved back: the chat goes on, what was said meanwhile answered once, its job on A, A's other chat answers too", async () => {
             const la = await moveBack(account.id, "B", "accounts");
@@ -602,8 +715,13 @@ try {
           await listedOnceOn(k2, "A");
           const nonce = randomBytes(3).toString("hex");
           const said = await say(k2, `drill-recall:${nonce}`, `drill-recall ${nonce} `);
+          log(`  ${said}`);
           const cwd = /cwd=(\S+)/.exec(said)?.[1] ?? "";
-          if (at(cwd) !== "A" || !said.includes(`secret=${secret}`)) throw new Error(said);
+          if (at(cwd) !== "A") throw new Error(`answered from ${at(cwd)}: ${said}`);
+          // (there and back: its agent goes on from its transcript, what it was told before the move recalled, as
+          // `--resume` given; agents/claude.ts bringTranscript's EEXIST of drill-move-7 is about this)
+          if (!said.includes(`secret=${secretB}`)) throw new Error(`its transcript on A lacks what it was told on B (${secretB}): ${said}`);
+          if (!said.includes("resumed=true")) throw new Error(`a new context, not resumed: ${said}`);
         });
         await check("2: back on A its job runs on A only", async () => {
           await whenChanged([DATA.A, DATA.B], () => {
@@ -629,82 +747,135 @@ try {
     fill(roomOn("A", key)!, "bulk", files, Math.floor((mb * 1024 * 1024) / files));
     return key;
   };
-  /// Until its first pass is under way: B has files of it and A's hand-over has not held it yet.
-  const inFirstPass = (key: string, to: Name = "B") => whenChanged([`${DATA.A}/replica`, `${DATA[to]}/replica`], () => {
-    const o = outOf(key);
-    return o !== null && o.step === "files" && o.held === false && filesIn(to, o.id) > 0 && o;
-  }, 180_000, () => `never in its first pass: ${brief(outOf(key))}`);
+  /// Whether a fault's part may begin: what any part before left of A on B brought back (reset), every station up
+  /// and online, the login on A, and a new chat on A answering there. Not so: what is not clean is said, as a FAIL,
+  /// and the part does not run (never a part run on from a state it did not check).
+  const clean = async (label: string): Promise<boolean> => {
+    log(`  ${label}: from a clean state? every station up, the login on A, a new chat on A answering`);
+    try {
+      await reset(label);
+      const down = (["A", "B"] as Name[]).filter((n) => !alive(n));
+      if (down.length > 0) throw new Error(`not up: ${down.join(", ")}`);
+      for (const n of ["A", "B"] as Name[]) {
+        log(`  waiting for ${n} online on alice's device`);
+        await a.until({ topic: "stations", scope: ws }, (v) => (v ?? []).find((s: J) => s.id === idOf(n) && s.online), 60_000).catch(() => {
+          throw new Error(`${n} is not online on alice's device`);
+        });
+      }
+      const logins = (JSON.parse(readFileSync(`${DATA.A}/config.json`, "utf8")).profiles ?? []).filter((p: J) => p.runtime === "claude");
+      if (logins.length === 0) throw new Error(`A has no login to run a chat on (B's: ${brief((JSON.parse(readFileSync(`${DATA.B}/config.json`, "utf8")).profiles ?? []).map((p: J) => p.id))})`);
+      const k = await newChat(`clean-${label}-${tag}`);
+      const said = await say(k, `drill-note:clean-${label}`, `drill-noted clean-${label}`, 60_000);
+      if (at(/cwd=(\S+)/.exec(said)?.[1] ?? "") !== "A") throw new Error(`a new chat on A answered from elsewhere: ${said}`);
+      return true;
+    } catch (e) {
+      fail(`${label}: begins from a clean state (the part is not run)`, e);
+      return false;
+    }
+  };
 
-  if (part("3a")) {
-    await reset("3a").catch((e) => log(`  reset: ${e}`));
+  if (part("3n") && (await clean("3n"))) {
+    // (drill-move-7's 3b: a chat's first pass cut half a second after its login moved, B's answer's stream reset, with
+    // nothing killed; this is that alone)
+    let key = "";
+    await check("3n: a chat with a 300 MB room moved with what it needs, nothing killed: it goes", async () => {
+      key = await faultChat("f3n", 300);
+      const t0 = Date.now();
+      const l = await moveChat(key, "B");
+      const o = outOf(key);
+      log(`  ${outcome(l)}; its hand-over ${o?.id} ${o?.step}: ${o?.error ?? ""} (${o?.done ?? "?"} of ${o?.total ?? "?"} bytes); steps ${brief(steps.A!.of(o?.id ?? "").map((s) => `${s.step}${s.held ? "*" : ""}+${s.at - t0}`))}`);
+      if (standing("B", key) !== "live") throw new Error(`${standings(key)}; ${outcome(l)}`);
+    });
+    if (key !== "") await endsWell("3n", key);
+  }
+  if (part("3a") && (await clean("3a"))) {
     let key = "";
     await check("3a: B killed (SIGKILL, its machine as it loses power) during the chat's first pass, started again", async () => {
       key = await faultChat("f3a", 300);
       const t0 = Date.now();
       await a.call("move.start", { station: A, to: bId, module: "chats", item: key, withNeeds: true });
-      const o = await inFirstPass(key);
-      stationDo("crash", "second");
-      log(`  killed with ${filesIn("B", o.id)} files of it there`);
-      const l = await turnEnds("A", t0);
-      log(`  A's turn: ${outcome(l)}; its hand-over ${outOf(key)?.step}: ${outOf(key)?.error}`);
-      stationDo("again", "second");
+      const o = await firstPass(key, t0);
+      try {
+        stationDo("crash", "second");
+        log(`  killed with ${filesIn("B", o.id)} files of it there`);
+        const l = await turnEnds("A", t0);
+        log(`  A's turn: ${outcome(l)}; its hand-over ${outOf(key)?.step}: ${outOf(key)?.error}`);
+      } finally {
+        await up("B");
+      }
     });
     if (key !== "") await endsWell("3a", key);
   }
-  if (part("3b")) {
-    await reset("3b").catch((e) => log(`  reset: ${e}`));
+  if (part("3b") && (await clean("3b"))) {
     let key = "";
     await check("3b: A killed while the chat is held (its second pass), started again", async () => {
       key = await faultChat("f3b", 300);
       const room = roomOn("A", key)!;
+      const t0 = Date.now();
       await a.call("move.start", { station: A, to: bId, module: "chats", item: key, withNeeds: true });
-      await inFirstPass(key);
+      await firstPass(key, t0);
       // (its files changed meanwhile: what the second pass, held, sends again, so that it is held for seconds)
       fill(room, "bulk", 400, Math.floor((150 * 1024 * 1024) / 400));
-      const o = await whenChanged([`${DATA.A}/replica`], () => outOf(key)?.held === true && outOf(key), 300_000, () => `never held: ${brief(outOf(key))}`);
-      stationDo("crash", "station");
-      log(`  killed at ${o.step}, held`);
-      stationDo("again", "station");
-      await a.stationState(ws, (s) => s.state === "online", 120_000, aId);
+      const o = await heldOf(key, t0);
+      try {
+        stationDo("crash", "station");
+        log(`  killed at ${o.step}, held`);
+      } finally {
+        await up("A");
+        log("  waiting for A online on alice's device's link");
+        await a.stationState(ws, (s) => s.state === "online", 120_000, aId);
+      }
     });
     if (key !== "") await endsWell("3b", key);
   }
-  if (part("3c")) {
-    await reset("3c").catch((e) => log(`  reset: ${e}`));
+  if (part("3c") && (await clean("3c"))) {
     let key = "";
     let note = "";
-    await check("3c: B killed just after it took the chat (A says it went), started again; a message said meanwhile delivered once", async () => {
+    await check("3c: B killed just after it took the chat (A says it went), started again; a message said meanwhile", async () => {
       key = await faultChat("f3c", 50, 100);
       const t0 = Date.now();
       await a.call("move.start", { station: A, to: bId, module: "chats", item: key, withNeeds: true });
-      const o = await whenChanged([`${DATA.A}/replica`], () => ["gone", "done"].includes(outOf(key)?.step) && outOf(key), 300_000, () => `never gone: ${brief(outOf(key))}`);
-      stationDo("crash", "second");
-      const inB = handovers("B", "in").find((i) => i.id === o.id);
-      log(`  killed at A's ${o.step}, B's ${inB?.step ?? "none"}`);
-      note = `f3c-${tag}`;
-      await a.call("chat.send", { station: A, session: key, text: `drill-note:${note}` });
-      stationDo("again", "second");
+      log(`  waiting for ${key.slice(-8)} gone from A`);
+      const o = await whenChanged([DATA.A], () => (["gone", "done"].includes(outOf(key)?.step) ? { o: outOf(key) } : cannotCome(key, t0)), 300_000, () => `never gone: ${brief(outOf(key))}`);
+      if ("why" in o) throw new Error(`it never went: ${o.why}`);
+      try {
+        stationDo("crash", "second");
+        const inB = handovers("B", "in").find((i) => i.id === o.o.id);
+        log(`  killed at A's ${o.o.step}, B's ${inB?.step ?? "none"}`);
+        note = `f3c-${tag}`;
+        // (whatever the send answers while B is down, what was said is to arrive once B is up: the next check)
+        const sent = await a.call("chat.send", { station: A, session: key, text: `drill-note:${note}` }).then((x) => `sent ${brief(x, 200)}`, (e) => `the send answered ${String(e).slice(0, 300)}`);
+        const v = await a.until(chatT(key), (v) => v?.messages && v, 10_000).catch(() => null);
+        log(`  said while B was down: ${sent}; the device's outbox ${brief((v?.outbox ?? []).map((x: J) => ({ text: x.text, state: x.state, error: x.error ?? null, waits: x.waits ?? null })))}`);
+      } finally {
+        await up("B");
+      }
       const l = await turnEnds("A", t0);
       log(`  A's turn: ${outcome(l)}`);
     });
-    if (key !== "") {
-      await check("3c: the message said while B was down arrives once, answered once", async () => {
-        const v = await a.until(chatT(key), (v) => texts(v).some((t) => t.startsWith(`drill-noted ${note}`)) && v, 180_000);
+    if (key !== "" && note !== "") {
+      await check("3c: said while B was down: arrives once, answered once after B is up", async () => {
+        log(`  waiting for ${note} answered`);
+        const v = await a.until(chatT(key), (v) => texts(v).some((t) => t.startsWith(`drill-noted ${note}`)) && v, 180_000).catch(async (e) => {
+          const now = await a.until(chatT(key), (v) => v?.messages && v, 10_000).catch(() => null);
+          const onB = sql("B", `select count(*) n from entries where text like ${lit(`%drill-note:${note}%`)}`)[0]?.n;
+          const onA = sql("A", `select count(*) n from entries where text like ${lit(`%drill-note:${note}%`)}`)[0]?.n;
+          throw new Error(`not answered: in B's log ${onB}, in A's ${onA}; the device's outbox ${brief((now?.outbox ?? []).map((x: J) => ({ text: x.text, state: x.state, error: x.error ?? null })))}; ${String(e).slice(0, 200)}`);
+        });
         const asked = texts(v).filter((t) => t === `drill-note:${note}`).length;
         const answers = texts(v).filter((t) => t.startsWith(`drill-noted ${note}`)).length;
         if (asked !== 1 || answers !== 1) throw new Error(`said ${asked} times, answered ${answers}`);
       });
-      await endsWell("3c", key);
     }
+    if (key !== "") await endsWell("3c", key);
   }
-  if (part("3d")) {
-    await reset("3d").catch((e) => log(`  reset: ${e}`));
+  if (part("3d") && (await clean("3d"))) {
     let key = "";
     await check("3d: move.stop during the first pass: the chat here and working, last.stoppedBy says who", async () => {
       key = await faultChat("f3d", 300);
       const t0 = Date.now();
       await a.call("move.start", { station: A, to: bId, module: "chats", item: key, withNeeds: true });
-      await inFirstPass(key);
+      await firstPass(key, t0);
       await a.call("move.stop", { station: A });
       const l = await turnEnds("A", t0);
       log(`  ${outcome(l)}`);
@@ -713,8 +884,7 @@ try {
     });
     if (key !== "") await endsWell("3d", key);
   }
-  if (part("3e")) {
-    await reset("3e").catch((e) => log(`  reset: ${e}`));
+  if (part("3e") && (await clean("3e"))) {
     const dmg = `${WORK}/drill-small.dmg`;
     let mounted = false;
     try {
@@ -788,8 +958,7 @@ try {
       }
     }
   }
-  if (part("3f")) {
-    await reset("3f").catch((e) => log(`  reset: ${e}`));
+  if (part("3f") && (await clean("3f"))) {
     const launcher = () => spawnSync("pgrep", ["-f", `run --app ${ST}/app --data`], { encoding: "utf8" }).stdout.split("\n").filter((x) => x !== "").map(Number)[0];
     /// A handed over to a fresh Node by its launcher (SIGUSR2, what an update does once it goes ahead), until the new
     /// one says it has taken over.
@@ -819,7 +988,7 @@ try {
       k3 = await faultChat("f3f-move", 300);
       const t0 = Date.now();
       await a.call("move.start", { station: A, to: bId, module: "chats", item: k3, withNeeds: true });
-      await inFirstPass(k3);
+      await firstPass(k3, t0);
       await handOverA();
       const l = await turnEnds("A", t0);
       log(`  ${outcome(l)}; ${standings(k3)}; its hand-over ${outOf(k3)?.step}: ${outOf(k3)?.error}`);
@@ -830,8 +999,7 @@ try {
   }
 
   // ── 4: everything to B and all back ──
-  if (part("4")) {
-    await reset("4").catch((e) => log(`  reset: ${e}`));
+  if (part("4") && (await clean("4"))) {
     const keys: string[] = [];
     const archived: string[] = [];
     let jobTag = "";
@@ -863,7 +1031,7 @@ try {
       measured(`all of A (${before.length} chats) to B: ${((Date.now() - t0) / 1000).toFixed(1)} s`);
       log(`  ${outcome(l)}`);
       moved = true;
-      const v = await a.until(moveT(bId), (v) => v?.modules && v.moving === null && v, 60_000);
+      const v = await atRest("4");
       const short = v.modules.filter((m: J) => m.done !== m.total);
       log(`  after: ${v.modules.map((m: J) => `${m.id} ${m.done}/${m.total}`).join(", ")}`);
       if (short.length > 0) throw new Error(`not all there: ${short.map((m: J) => `${m.id} ${m.done}/${m.total}${(m.items ?? []).filter((x: J) => x.state !== "there").slice(0, 3).map((x: J) => ` [${x.label}: ${x.state} ${x.note}]`).join("")}`).join("; ")}`);
