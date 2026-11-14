@@ -43,6 +43,7 @@ import type { KeptSend } from "../api/admin.ts";
 import { HEADROOM, LACK_MOST, type MadeGit, RETRY_MOST_MS, RETRY_MS, connectsThere, gatherSoon, placeSoon, rebuildGits } from "./retire.ts";
 import { lackingIn, receiveFile, sendGathered } from "./sending.ts";
 import { carriedTo, moved } from "./restore.ts";
+import { stationLang, tr } from "../ops/i18n.ts";
 
 type Json = any;
 
@@ -287,7 +288,7 @@ export class Handover {
       for (const k of off) this.#d.hub.releaseChat(k);
     }
     for (const o of this.#outs.values()) {
-      if (o.step === "held" || o.step === "files" || o.step === "rows") await this.#fail(o, "this station started again as the chat was being handed over: it goes on here; hand it over again");
+      if (o.step === "held" || o.step === "files" || o.step === "rows") await this.#fail(o, tr(stationLang(), "station.move.restartedMidway", { station: o.toName || o.to.slice(0, 12) }));
       // (one whose chat came back since is over: nothing of it is told any more, as its arrival ended it)
       else if (o.step === "gone" && o.v !== 2 && o.keys.every((k) => this.#cameBack(o, k))) {
         o.step = "done";
@@ -437,7 +438,7 @@ export class Handover {
       }
     } catch (e) {
       const error = (e as Error).message;
-      if (this.#closed) throw new Refused(`this station stopped as the chat was being handed over: it goes on here`);
+      if (this.#closed) throw new Refused(tr(stationLang(), "station.move.stoppedMidway", { station: name || to.slice(0, 12) }));
       await this.#fail(o, error);
       throw new Refused(`the chat did not go to ${name || "that station"} and goes on here: ${error}`);
     }
@@ -459,7 +460,7 @@ export class Handover {
     } catch (e) {
       const error = (e as Error).message;
       // (this process stopping: the next goes on from where it stood, `start`)
-      if (this.#closed) throw new Refused(`this station stopped as the chat was being handed over: it goes on here once it is up again`);
+      if (this.#closed) throw new Refused(tr(stationLang(), "station.move.stoppedHeld", { station: name || to.slice(0, 12) }));
       await this.#fail(o, error);
       throw new Refused(`the chat did not go to ${name || "that station"} and goes on here: ${error}`);
     }

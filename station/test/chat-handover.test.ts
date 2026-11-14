@@ -323,6 +323,11 @@ test("a failure at each step before it went: the chat works here afterwards and 
     assert.notEqual(error, null, `${how}: refused`);
     if (how === "full") assert.match(error!, /free some room there/);
     if (how !== "a-restart") assert.match(error!, /goes on here/, how);
+    // (stopped as it went, and started again: each says what to do next, in the station's words)
+    if (how === "a-restart") {
+      assert.match(error!, /once this station is up again[^]*then hand it over again|重新运行后[^]*之后再迁移一次/, how);
+      assert.match(a.moves.handover.outOf(key)?.error ?? "", /Hand it over again \(station_move|需要时再迁移一次（station_move/, how);
+    }
     assert.equal(a.rig.store.handedTo(key), null, how);
     assert.equal(a.rig.hub.handedOver(key), false, `${how}: not held here`);
     assert.equal(b.rig.store.getSession(key), null, `${how}: nothing of it there`);
