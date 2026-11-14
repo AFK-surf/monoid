@@ -624,7 +624,7 @@ export class Handover {
     for (const [c, k] of Object.entries((request.bindings ?? {}) as Record<string, string>)) if (typeof k === "string") bindings[strings(request.connects)[c] ?? c] = k;
     const i: In = was ?? {
       id, origin, keys, ws, at: this.#d.fibers.now(), step: "coming", carry: null, error: null, stoppedFor, bindings,
-      ctx: newCtx({ from: origin, fromData: String(request.dataDir ?? ""), toData: this.#d.data, connects: strings(request.connects), profiles, ws: comingWs(ws) }),
+      ctx: newCtx({ from: origin, here: this.#d.here() ?? undefined, fromData: String(request.dataDir ?? ""), toData: this.#d.data, connects: strings(request.connects), profiles, ws: comingWs(ws) }),
     };
     this.#ins.set(id, i);
     await this.#saveIn(i);

@@ -1453,6 +1453,10 @@ export function addListState(db: DatabaseSync): void {
 /// is in (sessions.ws) and whose archive policy a row is (archive_policy.ws); NULL is the station's home workspace.
 export function addWorkspaceColumns(db: DatabaseSync): void {
   if (!has(db, "sessions", "ws")) db.exec("ALTER TABLE sessions ADD COLUMN ws TEXT");
+  // A chat handed here from another station (replica/handover.ts): the station it came from (none: it began here, or
+  // came back to where it began) and the one it began on (none: here).
+  if (!has(db, "sessions", "came_from")) db.exec("ALTER TABLE sessions ADD COLUMN came_from TEXT");
+  if (!has(db, "sessions", "began_on")) db.exec("ALTER TABLE sessions ADD COLUMN began_on TEXT");
   if (!has(db, "archive_policy", "ws")) db.exec("ALTER TABLE archive_policy ADD COLUMN ws TEXT");
   // The sessions counted by connect and workspace (store.ts SESSION_COUNTS, in every overview): from the index alone.
   db.exec("CREATE INDEX IF NOT EXISTS sessions_by_connect ON sessions (connect, ws)");

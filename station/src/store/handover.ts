@@ -129,6 +129,8 @@ export type Made = {
 /// here (by their id there), what was put in, and counted.
 export type ImportCtx = {
   from: string;
+  /// This station (where it began, its row says none of where it came from).
+  here?: string;
   fromData: string;
   toData: string;
   connects: Record<string, string>;
@@ -234,6 +236,15 @@ export function importRows(db: DatabaseSync, ctx: ImportCtx, table: ChatTable, r
         r.cwd = moved(r.cwd, ctx.fromData, ctx.toData);
         r.running = 0;
         r.ws = ctx.ws;
+        // (where it came from and where it began: none where it comes back to where it began)
+        const began = typeof r.began_on === "string" && r.began_on !== "" ? r.began_on : ctx.from;
+        if (ctx.here !== undefined && began === ctx.here) {
+          r.began_on = null;
+          r.came_from = null;
+        } else {
+          r.began_on = began;
+          r.came_from = ctx.from;
+        }
         if (typeof r.profile === "string" && ctx.profiles[r.profile] !== undefined) r.profile = ctx.profiles[r.profile];
         if (typeof r.profiles === "string") {
           try {

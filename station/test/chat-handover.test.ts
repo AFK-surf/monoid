@@ -834,6 +834,28 @@ test("what the app's page reads of a move: the modules in order with their needs
   assert.equal(view.moving, null);
 });
 
+test("a chat's row says the station it came from: none where it began, the one before where it went on, none again back where it began", async () => {
+  const w = world([A, B, C]);
+  const a = w.get(A);
+  const b = w.get(B);
+  const c = w.get(C);
+  const { key } = await stillfailChat(a);
+  assert.equal(a.rig.session(key).from, undefined, "it began here");
+  await a.moves.scheduler.move(WS, B, { module: "chats", item: key });
+  await w.quiet();
+  assert.equal(b.rig.session(key).from, A);
+  const on = await b.moves.scheduler.move(WS, C, { module: "chats", item: key });
+  await w.quiet();
+  assert.equal(on.failed, null, JSON.stringify(on));
+  assert.equal(c.rig.session(key).from, B, "the station before");
+  assert.equal(b.rig.store.handedTo(key)?.station, C, "and B says where it went");
+  const home = await c.moves.scheduler.move(WS, A, { module: "chats", item: key });
+  await w.quiet();
+  assert.equal(home.failed, null, JSON.stringify(home));
+  assert.equal(a.rig.session(key).from, undefined, "back where it began: none");
+  assert.equal(a.rig.store.handedTo(key), null);
+});
+
 test("a station's notice that comes back through another bot's connect wakes nothing and brings no chat back; that bot's ordinary message is taken", async () => {
   const w = world();
   const a = w.get(A);
