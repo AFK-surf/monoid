@@ -176,7 +176,11 @@ class Steps {
     // (the file an event names read alone: reading every record at each event held the drill's process minutes at a
     // time once a station had thousands, drill 25's part 5, its profile: 1,187 s in reading them)
     this.#w = watch(d, (_e, f) => {
-      if (typeof f !== "string" || !f.endsWith(".json")) return this.scan();
+      // (a record is written beside itself and renamed into place, `<id>.json.<hex>.tmp` first: that name's event is
+      // no record, and taking it for one read every record again at each write, thousands of them in part 5: drill 26's
+      // stalls of up to 102 s, each longer than the one before)
+      if (typeof f !== "string") return this.scan();
+      if (!f.endsWith(".json")) return;
       try {
         this.#take(JSON.parse(readFileSync(join(d, f), "utf8")));
       } catch {}
