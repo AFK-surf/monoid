@@ -208,7 +208,8 @@ export class Scheduler {
     });
     const index = new Items(planned);
     for (const p of planned) {
-      if (this.#modules.get(p.module)!.usableHere?.(p) === true) continue;
+      // (one there already stops nothing by a move: what it stopped as it went is stopped, said by its own row)
+      if (p.state === "there" || this.#modules.get(p.module)!.usableHere?.(p) === true) continue;
       p.wouldStop = index.needing(p).filter((x) => x.state !== "there").map((x) => ({ module: x.module, id: x.id }));
     }
     return { ws, to, modules: [...this.#modules.values()].map((m) => ({ id: m.id, needs: m.needs })), items: planned };

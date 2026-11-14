@@ -418,6 +418,10 @@ test("a login that cannot be shared (a Kimi sign-in) moves as it is: gone from h
   assert.equal(profile(a, "kimi"), undefined, "gone from here");
   assert.equal(profile(b, "kimi")?.share, undefined, "the other's own, not shared");
   assert.deepEqual(keptShares(a), []);
+  // (there now: moving it stops nothing more, though what needs it here is stopped)
+  const there = (await a.moves.scheduler.plan(WS, B)).items.find((x) => x.id === account)!;
+  assert.equal(there.state, "there");
+  assert.deepEqual(there.wouldStop, [], "there already: a move of it would stop nothing");
 });
 
 test("one shared before with every station: the other only borrowing it, it is here still and usable there; moved, the other hosts it and this one borrows it, nothing stopped; back, this one hosts it again, shared as it was", async () => {

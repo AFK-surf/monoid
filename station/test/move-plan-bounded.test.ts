@@ -110,7 +110,7 @@ test("a plan says of every chat, account, job and connect what it said before it
 
 const WANT: string[] = [
   "accounts | share:sh-cc | cc |  |  | here | ",
-  "accounts | key:f663c3465c5f0b8b63e89ebd3a687043 | cx |  |  | there | chats chat:c-0001,chats cl:C1:1.1",
+  "accounts | key:f663c3465c5f0b8b63e89ebd3a687043 | cx |  |  | there | ",
   "accounts | share:sh-b | bor |  |  | here | ",
   "accounts | machine:mine | mine |  | this machine's own login cannot go to another station: sign in there with the login tool | here | chats gpt:C1:1.3",
   "accounts | own:solo@A | solo |  |  | here | chats team:all",
@@ -119,7 +119,7 @@ const WANT: string[] = [
   "chats | cl:C1:1.2 | cl:C1:1.2 | accounts share:sh-b |  | here | connects cl@A",
   "chats | cl:C1:1.4 | cl:C1:1.4 | accounts share:sh-cc | chat cl:C1:1.4 works in /elsewhere/proj, which is not this station's own: its files would not go; ask again with its files left behind if that is meant | here | connects cl@A",
   "chats | cl:C1:1.5 | cl:C1:1.5 | accounts share:sh-cc |  | here | connects cl@A",
-  "chats | cl:C1:1.9 | cl:C1:1.9 | accounts share:sh-cc |  | there | connects cl@A",
+  "chats | cl:C1:1.9 | cl:C1:1.9 | accounts share:sh-cc |  | there | ",
   "chats | cl:C1:3.1 | cl:C1:3.1 | accounts share:sh-cc,repos repo:https://example.test/shared.git |  | here | connects cl@A",
   "chats | cl:C1:3.2 | cl:C1:3.2 | accounts share:sh-cc,repos repo:https://example.test/shared.git |  | here | connects cl@A",
   "chats | cl:C1:3.3 | cl:C1:3.3 | accounts share:sh-cc,repos repo:https://example.test/own.git |  | here | connects cl@A",
