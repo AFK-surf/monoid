@@ -213,7 +213,10 @@ export function world(ids: string[] = [A, B]) {
 export async function endTurn(st: Station, key: string, driver: "claude" | "codex" = "claude") {
   await st.rig.quiet();
   await st.rig.call(key, "chat_state", { kind: "final" });
-  st.rig[driver].last().complete();
+  // (its own runtime session: a station with more chats keeps a process for each)
+  const own = st.rig[driver].sessions.filter((s) => s.options.key === key).at(-1);
+  if (own === undefined) throw new Error(`no ${driver} session of ${key}`);
+  own.complete();
   await st.rig.quiet();
 }
 

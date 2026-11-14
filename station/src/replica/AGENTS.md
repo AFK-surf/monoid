@@ -105,10 +105,15 @@ below, sends them along).
   chat is held alone (sessions/hub.ts `holdChat`), its files gathered alone (carry-worker.ts `gather`'s `keys`) and sent
   as a retirement's are (`sending.ts`), its rows sent a page at a time and put in through the other's store, hidden
   until shown (store/handover.ts, `comingWs`): each thread's log goes on past what that station has (n kept where it
-  was this chat's own as it was left, else by ts), so a chat handed back appends what was said there. A chat of a key live where it would go (in sight there:
+  was this chat's own as it was left, else by ts), so a chat handed back appends what was said there. Each station's
+  log keeps the numbers it has: an arriving entry the same at its number is skipped, one found by ts elsewhere is that
+  one, one not found is numbered on, and nothing already there is renumbered; so where a copy there had entries of its
+  own (the leftover of a retirement taken back, 2026-11-14) each station has every entry once and the two orders differ
+  only in where those sit. Renumbering would rewrite a hidden copy's rows and all that hangs on their numbers for a
+  divergence of one station (the owner's 「避免脚本乱改改错」). A chat of a key live where it would go (in sight there:
   one that went on there apart from it) is never merged into: the plan says it cannot move (`move.chats.live`) and
   `handover.begin` refuses it before anything is written. What it had yet to be handed goes with it and is marked
-  handed here as it goes (store `handOff`), so none of it is handed to its agent again as it comes back. Only once the
+  handed here once it is shown there (store `deliveredThere`), so none of it is handed to its agent again as it comes back. Only once the
   other counted what it has does this one say it went; before, a failure undoes it there and the chat goes on here;
   after, nothing is undone and the rest is told until it is answered. Its platform threads are re-pointed where their
   connect runs (connects/workspace.ts `route`, `connect.route`); what still comes here of it goes on there

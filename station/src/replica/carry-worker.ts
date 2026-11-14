@@ -21,7 +21,7 @@ import { rebuildable, roomOf } from "../sessions/footprint.ts";
 import { BUILTIN_SKILLS, FEEDBACK_SKILL } from "../sessions/agent-home.ts";
 import { runtimeKind } from "../agents/runtime.ts";
 import { sessionPlaces, storage, transcriptSources } from "../read/transcript.ts";
-import { moved } from "./restore.ts";
+import { carriedTo, moved } from "./restore.ts";
 
 /// A file that goes along, a line of its session's list: where it is (under the station's data directory), its bytes'
 /// hash, how big, its mode and time; a symbolic link its target instead (nothing to send).
@@ -569,7 +569,7 @@ function placeAll(index: CarryIndex, dataDir: string, from: string, fresh: (path
         continue;
       }
       // (resolved first: a path the other station said is put under this one's sessions or transcripts, or nowhere)
-      const path = resolve(moved(f.path, index.dataDir, dataDir));
+      const path = resolve(carriedTo(f.path, index.dataDir, dataDir));
       if (!carriedPlace(root, path)) continue;
       // (placed by this placing before as the index says it now: not looked at again)
       if (!("link" in f) && seen?.before(path, f) === true) {

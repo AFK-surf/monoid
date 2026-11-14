@@ -42,7 +42,7 @@ import type { Need } from "../move/module.ts";
 import type { KeptSend } from "../api/admin.ts";
 import { HEADROOM, LACK_MOST, RETRY_MOST_MS, RETRY_MS, connectsThere, gatherSoon, placeSoon, rebuildGits } from "./retire.ts";
 import { lackingIn, receiveFile, sendGathered } from "./sending.ts";
-import { moved } from "./restore.ts";
+import { carriedTo, moved } from "./restore.ts";
 
 type Json = any;
 
@@ -732,7 +732,7 @@ export class Handover {
             const files = (Array.isArray(request.files) ? request.files : []).slice(0, this.#d.lackMost ?? LACK_MOST);
             for (const f of files) {
               if (!lacking.has(f?.hash) || typeof f?.path !== "string") continue;
-              if (await inPlace(moved(f.path, i.ctx.fromData, this.#d.data), this.#d.data, f)) lacking.delete(f.hash);
+              if (await inPlace(carriedTo(f.path, i.ctx.fromData, this.#d.data), this.#d.data, f)) lacking.delete(f.hash);
             }
             return { lacking: hashes.filter((h: string) => lacking.has(h)) };
           }
@@ -839,7 +839,7 @@ export class Handover {
         if (line === "") continue;
         try {
           const f = JSON.parse(line);
-          f.path = moved(f.path, index.dataDir, this.#d.data);
+          f.path = carriedTo(f.path, index.dataDir, this.#d.data);
           named.add(f.path);
           here.push(JSON.stringify(f));
         } catch {}

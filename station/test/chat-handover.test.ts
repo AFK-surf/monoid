@@ -1299,6 +1299,106 @@ test("a station holding a retired copy of the chat (older log, same thread keys,
   }
 });
 
+test("what a retirement left of a chat there (its rows retired, a log with entries only it has, a room that differs both ways, an older transcript) is taken over as an older copy: moved there and back three times, shown once, every entry once on each side (what only it had kept, after or before A's later ones as each log has them; nothing renumbered), what hangs on a number pointing at the same entry, no row added by a trip; the room and transcript A's, its runtime session taken up; never a chat of its own there", async () => {
+  const w = world();
+  const a = w.get(A);
+  const b = w.get(B);
+  const { key, thread } = await stillfailChat(a);
+  const old = await stillfailChat(a);
+  a.rig.store.setArchived(old.key, true, "manual");
+  const room = a.rig.session(key).workspace;
+  writeFileSync(join(room, "same.md"), "the same on both");
+  writeFileSync(join(room, "differs.md"), "A's words");
+  writeFileSync(join(room, "missing.md"), "only A has it");
+  const transcript = (st: Station) => join(st.rig.dir, "transcripts", "claude", claudeProject(st.rig.session(key).workspace)!, "claude-1.jsonl");
+  mkdirSync(dirname(transcript(a)), { recursive: true });
+  writeFileSync(transcript(a), '{"type":"user","said":"before"}\n');
+  retiredCopy(a, b, key);
+  retiredCopy(a, b, old.key);
+  const there = homeThread(b, key);
+  const copied = entries(b, there);
+  // There, after the retirement and before it was taken back by hand: something said, its room refilled by hand.
+  // (one older than what A said since, one newer: each log's order of them is its own, every entry once)
+  b.rig.store.insertMessage({ thread: there, ts: b.rig.hub.nextTs(), authorKind: "person", author: "p@x", text: "said only there" });
+  const roomThere = b.rig.session(key).workspace;
+  writeFileSync(join(roomThere, "stale.md"), "only there");
+  writeFileSync(join(roomThere, "differs.md"), "B's older words");
+  utimesSync(join(roomThere, "differs.md"), new Date(1_000_000), new Date(1_000_000));
+  rmSync(join(roomThere, "missing.md"));
+  mkdirSync(dirname(transcript(b)), { recursive: true });
+  writeFileSync(transcript(b), '{"type":"user"}\n');
+  // Here, after it was taken back: more said, the transcript grown.
+  say(a.rig.hub, thread, "p@x", "said here after the return");
+  await w.quiet();
+  await endTurn(a, key);
+  b.rig.store.insertMessage({ thread: there, ts: b.rig.hub.nextTs(), authorKind: "person", author: "p@x", text: "said only there, later" });
+  // (a viewer's read mark, a reply's target: each by a number, through the collision)
+  const lastHere = a.rig.store.db.prepare("SELECT MAX(n) AS n FROM entries WHERE thread = ?").get(thread) as { n: number };
+  a.rig.store.db.prepare("INSERT OR REPLACE INTO reads (viewer, thread, n, at) VALUES ('p@x', ?, ?, 0)").run(thread, lastHere.n);
+  writeFileSync(transcript(a), '{"type":"user","said":"before"}\n{"type":"user","said":"after"}\n');
+  // B's plan and its page never take the leftover for a chat of its own: nothing of it to move from B.
+  assert.deepEqual((await b.moves.scheduler.plan(WS, A)).items.filter((x) => x.module === "chats"), [], "not B's own");
+  const view = await b.ask("GET", "/move", null, "owner", [["to", A]]);
+  assert.equal(view.body.modules.find((m: Json) => m.id === "chats").total, 0);
+  // Moved there: taken over as an older copy of the same chat.
+  const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: key });
+  const out2 = await a.moves.scheduler.move(WS, B, { module: "chats", item: old.key });
+  await w.quiet();
+  assert.equal(out.failed, null, JSON.stringify(out));
+  assert.equal(out2.failed, null, JSON.stringify(out2));
+  assert.equal(homeThread(b, key), there, "the same thread there");
+  assert.equal(b.rig.session(key).ws, null, "shown under the workspace");
+  assert.equal(b.rig.session(old.key).ws, null);
+  assert.notEqual(b.rig.session(old.key).archivedAt, null, "archived as it was");
+  assert.deepEqual(entries(b, homeThread(b, old.key)), entries(a, old.thread));
+  const once = (xs: string[]) => [...xs].sort();
+  const whole = once([...entries(a, thread), "person:said only there", "person:said only there, later"]);
+  assert.deepEqual(once(entries(b, there)), whole, "every entry once there: A's and what only it had");
+  assert.deepEqual(entries(b, there).slice(0, copied.length), copied, "nothing renumbered there");
+  const markThere = b.rig.store.db.prepare("SELECT n FROM reads WHERE viewer = 'p@x' AND thread = ?").get(there) as { n: number } | undefined;
+  const textAt = (st: Station, t: number, n: number) => (st.rig.store.db.prepare("SELECT kind || ':' || author || ':' || COALESCE(ts, '') || ':' || COALESCE(text, '') AS text FROM entries WHERE thread = ? AND n = ?").get(t, n) as { text: string } | undefined)?.text;
+  assert.equal(textAt(b, there, markThere!.n), textAt(a, thread, lastHere.n), "the read mark at the same entry there");
+  assert.deepEqual(roomOf(roomThere), roomOf(room), "the room A's: the stale file gone, the differing one A's, the missing one there");
+  assert.equal(readFileSync(transcript(b), "utf8"), readFileSync(transcript(a), "utf8"), "the transcript A's");
+  // A device's reads of its page there, by the station's readers as it serves them: the session, its place in the
+  // list, its thread.
+  const viewer = { sub: "u", email: "p@x", name: "P", role: "owner", workspace: WS, device: "d", home: true } as Json;
+  const readers = new Readers(b.rig.dir, 1);
+  try {
+    const page = JSON.parse(await readers.read("session", { key, viewer, lang: "en", turns: null, jobs: null }, "en"));
+    assert.equal(page.session?.key, key, "its page there");
+    const list = JSON.parse(await readers.read("sessions", { connect: null, archived: false, lang: "en", viewer }, "en"));
+    assert.ok((Array.isArray(list) ? list : list.sessions ?? []).some((x: Json) => x.key === key), "in the list there");
+    const view = JSON.parse(await readers.read("thread", { id: String(there), viewer, lang: "en" }, "en"));
+    assert.ok(view !== null, "its thread there");
+  } finally {
+    await readers.close();
+  }
+  say(b.rig.hub, there, "p@x", "and now?");
+  await w.quiet();
+  assert.equal(b.rig.claude.last().options.resume, "claude-1", "its runtime session taken up");
+  await endTurn(b, key);
+  // And back, and forth and back twice more: each log keeps its numbers, no row added by a trip.
+  const rows = (st: Station, t: number) => (st.rig.store.db.prepare("SELECT COUNT(*) AS n FROM entries WHERE thread = ?").get(t) as { n: number }).n;
+  let counts: [number, number] | null = null;
+  for (let trip = 0; trip < 3; trip++) {
+    const back = await a.moves.scheduler.back(WS, B, { module: "chats", item: key });
+    await w.quiet();
+    assert.equal(back.failed, null, JSON.stringify(back));
+    assert.equal(a.rig.session(key).ws, null);
+    assert.equal(a.rig.store.handedTo(key), null);
+    assert.deepEqual(once(entries(a, thread)), once(entries(b, there)), `the same entries here as there, each once (trip ${trip})`);
+    assert.deepEqual(roomOf(room), roomOf(roomThere));
+    const now: [number, number] = [rows(a, thread), rows(b, there)];
+    if (counts !== null) assert.deepEqual(now, counts, `no row added by trip ${trip}`);
+    counts = now;
+    if (trip === 2) break;
+    const forth = await a.moves.scheduler.move(WS, B, { module: "chats", item: key });
+    await w.quiet();
+    assert.equal(forth.failed, null, JSON.stringify(forth));
+  }
+});
+
 /// What a device reads of chat `key`'s page on `st` (its thread `thread` there), through the station's readers as it
 /// serves them: the session, its timeline, the thread, its entries after the first; each answered or why not.
 async function pageReads(st: Station, key: string, thread: number): Promise<string[]> {
