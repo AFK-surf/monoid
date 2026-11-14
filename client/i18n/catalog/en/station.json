@@ -721,6 +721,7 @@
   "station.move.movedThere": "This chat moved to another station: open it there.",
   "station.move.off": "Moving chats between stations is not open on this station yet: nothing was moved.",
   "station.move.offThere": "Moving chats between stations is not open on station “{station}” yet: nothing was moved.",
+  "station.move.unreachable": "Station “{station}” cannot be reached now: nothing was moved. Try again once it is up.",
   "station.move.managersOnly": "Only an owner or admin of the workspace moves this station's chats and items.",
   "station.move.running": "Another move is under way on this station: wait for it to end (the move page shows how far it is), then try again.",
   "station.move.isRig": "This station only runs tasks and has no chats to move: make it a whole station first.",

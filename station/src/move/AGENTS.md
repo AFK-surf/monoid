@@ -52,7 +52,7 @@ chats paused 18 minutes, a half-moved state, no way back), whose start stays swi
 - Moving is switched on per machine (config.json `move: true`, off unless set; not one of the settings that move), and
   is offered only where it is on (the overview's `move.offered`) until the real run between our own stations has
   passed; then the switch goes (the lead, 2026-11-14). Off, every turn is refused before anything is held (the
-  scheduler asks `refusal` first: here, then `move.open` there, a station that does not answer being off), and a
+  scheduler asks `refusal` first: here, then `move.open` there, one that refuses it being from before and off, one not reached said to be out of reach), and a
   station that is off takes no `handover.begin` and sends nothing back; `GET /move` still answers.
 - A message a device wrote under its idempotency key (api/admin.ts `once`) goes with its chat: what was kept of it is
   sent with `handover.show` and kept there under the thread's id there, so the device's retry there is answered as

@@ -1073,6 +1073,13 @@ test("a failure in the first pass of its files: the chat was never held, works h
   const { key, thread } = await stillfailChat(a);
   a.fails.add("files");
   const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: key });
+  // Not reached at all: said to be out of reach, not to have moving switched off.
+  b.on = true;
+  b.up = false;
+  const away = await a.ask("POST", "/move/back", { from: B, module: "chats", item: key });
+  assert.equal(away.status, 409);
+  assert.match(away.body.error, /Station “B” cannot be reached now: nothing was moved/);
+  await assert.rejects(a.moves.scheduler.move(WS, B, { module: "chats", item: key }), /cannot be reached now|现在连不上/);
   await w.quiet();
   assert.match(out.failed?.error ?? "", /the test failed files/);
   assert.equal(a.rig.hub.chatHeld(key), null);

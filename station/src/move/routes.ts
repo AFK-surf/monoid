@@ -8,7 +8,7 @@
 // `POST /move {to, module?, item?, all?, withNeeds?}` and `POST /move/back {from, module?, item?, all?}` are the people's
 // way to what station_move does, the same turn of the same scheduler: the workspace's owners and admins, answered 202
 // at once while it goes on (GET /move and `move` say how far and what came of it); refused in the viewer's words where
-// moving is switched off here or there (move/AGENTS.md), while another turn is under way, on a station that only runs
+// moving is switched off here or there or that station is out of reach (move/AGENTS.md), while another turn is under way, on a station that only runs
 // tasks, or with a target that is not a whole station of the workspace. No card: the person pressing is the
 // confirmation, `all` too.
 import type { Route } from "../api/admin.ts";

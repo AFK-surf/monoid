@@ -350,14 +350,21 @@ export class Moves {
     return this.#d.moveOn?.() ?? true;
   }
 
-  /// Why a move or a move back with `station` of `ws` cannot begin now (null: it can): the switch here, then there
-  /// (a station that does not answer `move.open`, being older or unreachable, is taken as off: nothing is held).
+  /// Why a move or a move back with `station` of `ws` cannot begin now (null: it can): the switch here, then there (a
+  /// station that answers `move.open` with a refusal is from before moving, and is taken as off); one that does not
+  /// answer at all is said to be out of reach, which is what is known of it. Nothing is held either way.
   async refusal(ws: string, station: string, lang: Lang = stationLang()): Promise<string | null> {
     if (!this.on()) return tr(lang, "station.move.off");
-    const open = await this.#d.ask(station, { method: "move.open", workspace: ws }).catch(() => null);
+    const name = () => this.#d.roster(ws)?.find((r) => r.id === station)?.name || station.slice(0, 12);
+    let open: Json;
+    try {
+      open = await this.#d.ask(station, { method: "move.open", workspace: ws });
+    } catch (e) {
+      if (!(e instanceof Refused)) return tr(lang, "station.move.unreachable", { station: name() });
+      open = null;
+    }
     if (open?.on === true) return null;
-    const name = this.#d.roster(ws)?.find((r) => r.id === station)?.name || station.slice(0, 12);
-    return tr(lang, "station.move.offThere", { station: name });
+    return tr(lang, "station.move.offThere", { station: name() });
   }
 
   answers(inWorkspace: (peer: string) => boolean) {
