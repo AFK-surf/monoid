@@ -156,6 +156,7 @@ export const NOTES: [number, string][] = [
   [149, "station_move takes station (another station does it with its own items) and wait (false: a chat in a turn is refused, not waited for); repos, vault, agent-home and settings move as items of their own now, a chat of a Comma or single-session connect moves after its connect, and an item may arrive stopped where what it needs is not there yet (arriveStopped)."],
   [150, "station_move has action stop (the move under way stops: a chat not yet gone stays here, one gone completes), and moving is refused where a station has it switched off (config.json move), saying so."],
   [151, "station_move has no module agent-home any more: the memory and skills are the same on every station of the workspace already, and each person's presets go with their devices, so nothing of them moves."],
+  [152, "station_move takes arriveStopped (move): an item whose need is not there goes all the same, arriving there stopped, waiting for it; a chat stopped by a move answers once, as someone speaks in it, what it waits for and where."],
 ];
 
 /// The last note that replaces every one before it (the instructions rewritten whole): a session behind it hears only

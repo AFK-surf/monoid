@@ -35,6 +35,7 @@ export const MOVE_TOOL = {
       module: { type: "string" },
       item: { type: "string" },
       withNeeds: { type: "boolean" },
+      arriveStopped: { type: "boolean" },
       all: { type: "boolean" },
       station: { type: "string" },
       wait: { type: "boolean" },
@@ -113,7 +114,7 @@ export class MoveAsks {
   /// The tool's work for workspace `ws` (`session`: the chat asking here; null: asked by another station).
   async toolIn(ws: string, session: string | null, args: Json): Promise<Json> {
     this.#d.setWait?.(args.wait !== false);
-    const sel: Selection = { module: typeof args.module === "string" ? args.module : undefined, item: typeof args.item === "string" ? args.item : undefined, withNeeds: args.withNeeds === true, all: args.all === true };
+    const sel: Selection = { module: typeof args.module === "string" ? args.module : undefined, item: typeof args.item === "string" ? args.item : undefined, withNeeds: args.withNeeds === true, all: args.all === true, arriveStopped: args.arriveStopped === true };
     switch (args.action) {
       case "plan":
       case "status": {

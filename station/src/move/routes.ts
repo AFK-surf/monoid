@@ -5,7 +5,7 @@
 // `after` page one module's items further; `limit` (at most 200) is a page's. Told changed as `move` on the event
 // stream (move/live.ts), which a device reads it again on; it is never asked again on a timer. `last`: the workspace's
 // last move or move back and what came of it (scheduler.ts `Last`).
-// `POST /move {to, module?, item?, all?, withNeeds?}` and `POST /move/back {from, module?, item?, all?}` are the people's
+// `POST /move {to, module?, item?, all?, withNeeds?, arriveStopped?}` and `POST /move/back {from, module?, item?, all?}` are the people's
 // way to what station_move does, the same turn of the same scheduler: the workspace's owners and admins, answered 202
 // at once while it goes on (GET /move and `move` say how far and what came of it); refused in the viewer's words where
 // moving is switched off here or there or that station is out of reach (move/AGENTS.md), while another turn is under way, on a station that only runs
@@ -114,6 +114,8 @@ export function moveRoutes(d: MoveRoutesDeps): Route[] {
       module: typeof b.module === "string" && b.module !== "" ? b.module : undefined,
       item: typeof b.item === "string" && b.item !== "" ? b.item : undefined,
       all: b.all === true, withNeeds: !back && b.withNeeds === true,
+      // (a move back brings an item stopped where what it needs stays there by itself)
+      arriveStopped: !back && b.arriveStopped === true,
     };
     if (sel.all !== true && (sel.module === undefined || (sel.item === undefined && !back))) return error(400, tr(r.lang, "station.move.pick"));
     const why = await d.refusal(ws, at.id, r.lang);

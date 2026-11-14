@@ -491,6 +491,37 @@ test("a move asked as the connection to the other station is found gone asks onc
   assert.equal(a.rig.store.handedTo(key)?.station, B, "nothing moved");
 });
 
+test("arriveStopped, by a person's POST /move and by station_move: a chat whose login is not there goes all the same, arriving there stopped, waiting for it; asked without it, it is refused naming the login", async () => {
+  const w = world();
+  const a = w.get(A);
+  const b = w.get(B);
+  a.rig.raw.profiles.push({ id: "solo", runtime: "claude", home: "homes/solo" });
+  const chat = async () => {
+    const [key, t] = newSession(a.rig.hub, { runtime: "claude", profile: "solo", createdBy: "p@x" });
+    say(a.rig.hub, t.id, "p@x", "hi");
+    await endTurn(a, key);
+    return key;
+  };
+  const one = await chat();
+  const two = await chat();
+  const account = `own:solo@${A}`;
+  assert.equal((await a.ask("POST", "/move", { to: B, module: "chats", item: one })).status, 202);
+  await a.moves.scheduler.settle();
+  await w.quiet();
+  assert.match(a.moves.scheduler.last(WS)?.refused.find((r) => r.item.id === one)?.why ?? "", new RegExp(`needs accounts ${account}`), "without it: refused, naming the login");
+  assert.equal((await a.ask("POST", "/move", { to: B, module: "chats", item: one, arriveStopped: true })).status, 202);
+  await a.moves.scheduler.settle();
+  await w.quiet();
+  assert.equal(a.moves.scheduler.last(WS)?.failed, null, JSON.stringify(a.moves.scheduler.last(WS)));
+  assert.equal(b.rig.store.getSession(one)?.ws, null, "there");
+  assert.deepEqual(b.moves.scheduler.stopped().map((s) => [s.item.id, s.waitsFor.id]), [[one, account]], "stopped there, waiting for its login");
+  const asks = new MoveAsks({ data: a.rig.dir, scheduler: a.moves.scheduler, here: () => A, wsOf: () => WS, roster: () => [{ id: A, name: "A" }, { id: B, name: "B" }], cards: { post: async () => null }, notify: () => {}, refusal: (ws, s) => a.moves.refusal(ws, s) });
+  const said = await asks.toolIn(WS, null, { action: "move", to: "B", module: "chats", item: two, arriveStopped: true });
+  await w.quiet();
+  assert.equal(said.outcome.failed, null, JSON.stringify(said));
+  assert.ok(b.moves.scheduler.stopped().some((s) => s.item.id === two), "by the tool too");
+});
+
 test("a chat held as what it needs moved away says so as its process ends, not that the station is in no workspace", async () => {
   const w = world();
   const a = w.get(A);
