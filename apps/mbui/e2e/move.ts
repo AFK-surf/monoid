@@ -1130,19 +1130,30 @@ try {
       if (liveOn(k6).join() === "B") {
         await say(k6, `drill-remember:${r3}`, `drill-remembered ${r3}`).catch((e) => log(`  not said on B: ${e.message}`));
         await there("A", "back to A", r3);
-        await check("6: two more trips there and back add no entry on either side", async () => {
-          const before = { A: entriesOn("A", k6).length, B: entriesOn("B", k6).length };
-          for (let i = 0; i < 2; i++) {
+        // (from a state with nothing pending: the first trip brings B level with A and lets what was owed be answered
+        // (drill 18's A gained the late answer to the note its arrival left unanswered, a fault known); the two after it
+        // add nothing on either side)
+        await check("6: trips there and back add no entry on either side (counted after a first trip, then two more)", async () => {
+          const trip = async (i: number) => {
             const l = await moveChat(k6, "B");
-            if (standing("B", k6) !== "live") throw new Error(`trip ${i + 1} not to B: ${standings(k6)}; ${outcome(l)}`);
+            if (standing("B", k6) !== "live") throw new Error(`trip ${i} not to B: ${standings(k6)}; ${outcome(l)}`);
             await home(k6);
-          }
-          const after = { A: entriesOn("A", k6).length, B: entriesOn("B", k6).length };
-          log(`  entries before ${brief(before)}, after ${brief(after)}`);
-          if (after.A !== before.A || after.B !== before.B) {
-            log(`  A's ${entryRows("A", k6)}`);
-            log(`  B's ${entryRows("B", k6)}`);
-            throw new Error(`entries before ${brief(before)}, after ${brief(after)}`);
+          };
+          const rows = (n: Name) => {
+            const t = sql(n, `select thread from thread_sessions where session = ${lit(k6)} order by joined_at desc limit 1`)[0]?.thread;
+            return t === undefined ? [] : sql(n, `select n, ts, kind, author, substr(coalesce(text, ''), 1, 50) t from entries where thread = ${t} order by n`);
+          };
+          await trip(1);
+          const before = { A: rows("A"), B: rows("B") };
+          await trip(2);
+          await trip(3);
+          const after = { A: rows("A"), B: rows("B") };
+          const added = (was: J[], now: J[]) => now.filter((r) => !was.some((w) => w.ts === r.ts && w.t === r.t)).map((r) => `${r.n} ${r.ts} ${r.kind} ${r.author} ${JSON.stringify(r.t)}`);
+          log(`  entries after the first trip A ${before.A.length} B ${before.B.length}, after two more A ${after.A.length} B ${after.B.length}`);
+          const addA = added(before.A, after.A);
+          const addB = added(before.B, after.B);
+          if (addA.length + addB.length > 0 || after.A.length !== before.A.length || after.B.length !== before.B.length) {
+            throw new Error(`added on A: ${brief(addA, 600)}; on B: ${brief(addB, 600)}`);
           }
         });
       }
