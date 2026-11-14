@@ -1,5 +1,6 @@
 // What the app shows of a migration (move/AGENTS.md): `GET /move?to=<station>` answers, for the asker's workspace and
-// that station, the modules in order with their needs, each module's done of total and a page of its items (label,
+// that station, the modules in order with their needs, each module's done of total, how many of its items here cannot
+// move (`cannot`, of all of them) and a page of its items (label,
 // state, what it needs and waits for, why it cannot move, its error, the moving one's progress inside it). `module` and
 // `after` page one module's items further; `limit` (at most 200) is a page's. Told changed as `move` on the event
 // stream (move/live.ts), which a device reads it again on; it is never asked again on a timer. `last`: the workspace's
@@ -39,12 +40,18 @@ export function moveView(plan: Plan, order: string[], stopped: { item: { module:
       const from = o.module === id && o.after !== undefined ? mine.findIndex((x) => x.id === o.after) + 1 : 0;
       const page = mine.slice(from, from + limit);
       let done = 0;
-      for (const x of mine) if (x.state === "there") done++;
+      let cannot = 0;
+      for (const x of mine) {
+        if (x.state === "there") done++;
+        else if (x.state === "here" && x.cannot !== undefined) cannot++;
+      }
       return {
         id,
         needs: needsOf.get(id) ?? [],
         done,
         total: mine.length,
+        // (those here that cannot move, of all its items, not of the page: what a whole move would leave here)
+        cannot,
         items: page.map((x) => ({
           id: x.id, label: x.label, state: x.state, needs: x.needs.map(named),
           ...(x.waitsFor ? { waitsFor: named(x.waitsFor) } : {}),

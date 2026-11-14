@@ -741,7 +741,7 @@ test("the rows put in tell what they are, marks and reads among them, as the cop
   assert.ok(told.threads.includes(there));
 });
 
-test("what the app's page reads of a move: the modules in order with their needs, done of total, each item as it stands", async () => {
+test("what the app's page reads of a move: the modules in order with their needs, done of total, how many cannot move of all, each item as it stands", async () => {
   const w = world();
   const a = w.get(A);
   const { key } = await stillfailChat(a);
@@ -802,6 +802,12 @@ test("the copies' export on the station a chat went to carries it in its next pa
   const b = w.get(B);
   const { key, thread } = await stillfailChat(a);
   a.rig.store.setRead("p@x", thread, 2);
+  // (a chat on this machine's own login, which cannot go, and one working outside the station's data: each cannot move)
+  newSession(a.rig.hub, { runtime: "claude", profile: "mine", createdBy: "p@x" });
+  const [outside] = newSession(a.rig.hub, { runtime: "claude", profile: "cc", createdBy: "p@x" });
+  a.rig.store.db.prepare("UPDATE sessions SET workspace = ? WHERE key = ?").run("/elsewhere/proj", outside);
+  const one = moveView(await a.moves.scheduler.plan(WS, B), a.moves.modules.map((m) => m.id), a.moves.scheduler.stopped(), { limit: 1 });
+  assert.deepEqual(one.modules.map((m: Json) => [m.id, m.cannot]).filter(([, n]: [string, number]) => n > 0), [["accounts", 1], ["chats", 1]], "counted of all, not of a page of one");
   a.rig.store.setPin("q@x", key, true);
   a.rig.store.setChatHidden("r@x", thread, true);
   const e = new Exporter({ db: join(b.rig.dir, "stillfail.db"), replica: join(b.rig.dir, "replica-copy"), dataDir: b.rig.dir, origin: B, now: () => 1_000 });

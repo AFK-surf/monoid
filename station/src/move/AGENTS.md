@@ -44,7 +44,7 @@ chats paused 18 minutes, a half-moved state, no way back), whose start stays swi
   cannot move; back takes out exactly what was added). These four copy, so what moved is still usable here
   (`usableHere`): moving one stops nothing. What each moved is kept across a start (`kept.ts`). Grants do not move: a vault's is sealed to this station's
   keeper and kept in its memory, a plain one is taken up as a station starts; the owner approves again there.
-- What the app shows is `GET /move?to=` (routes.ts: the modules in order with their needs, done of total, a page of
+- What the app shows is `GET /move?to=` (routes.ts: the modules in order with their needs, done of total, how many cannot move (`cannot`), a page of
   items each, and `last`, the workspace's last turn and what came of it, kept in `last.json`), told changed as `move`
   on the event stream. People move with `POST /move` and `POST /move/back` (owners and admins; 202, the scheduler's
   turn going on; one turn at a time, an agent's and a person's alike: a second while one runs is 409). No card there:
