@@ -120,7 +120,7 @@ const askedFile = (data: string) => join(data, "asked.log");
 /// each such answer; nothing the core sends or reads is changed.
 /// (`body`: given the whole answer, as read, of each request whose path `bodyOf` picks: what a station said, word for
 /// word, where a drill needs it beside what the core made of it)
-function watchRequests(told: (station: string, method: string, path: string, status: string) => void, bodyOf?: (path: string) => boolean, body?: (station: string, path: string, raw: string) => void): void {
+function watchRequests(told: (station: string, method: string, path: string, status: string, ms: number) => void, bodyOf?: (path: string) => boolean, body?: (station: string, path: string, raw: string) => void): void {
   // (the object as it is, but for `own`: the native one's methods called on it)
   const over = <T extends object>(target: T, own: Record<string, unknown>): T =>
     new Proxy(target, {
@@ -136,10 +136,13 @@ function watchRequests(told: (station: string, method: string, path: string, sta
     // (the answer's head as it is read: its status where it says one)
     let answered = "";
     let chunks: Buffer[] | null = null;
+    // (when its head was written: how long the station took to answer it, read to its end)
+    let began = 0;
     return over(s, {
       write: (b: Buffer) => {
         if (first) {
           first = false;
+          began = Date.now();
           const end = b.indexOf(10);
           try {
             const h = end > 0 ? JSON.parse(b.subarray(0, end).toString("utf8")) : null;
@@ -158,7 +161,7 @@ function watchRequests(told: (station: string, method: string, path: string, sta
         if ((b === null || b === undefined) && head !== null) {
           const h = head;
           head = null;
-          told(station, h.method, h.path, answered);
+          told(station, h.method, h.path, answered, Date.now() - began);
           if (chunks !== null) {
             const raw = Buffer.concat(chunks).toString("utf8");
             chunks = null;
@@ -187,8 +190,8 @@ if (process.argv[2] === "device") {
   // (its record: what its links do, the core's lines; and each request of a station answered, this file's)
   const record = join(data, "record.log");
   // (before the core is loaded: it loads the addon as its host is made)
-  watchRequests((station, method, path, status) => {
-    appendFileSync(record, `asked: ${new Date().toISOString().slice(11, 23)} ${station.slice(0, 8)} ${method} ${path} -> answered${status !== "" && status !== "-" ? ` ${status}` : ""}\n`);
+  watchRequests((station, method, path, status, ms) => {
+    appendFileSync(record, `asked: ${new Date().toISOString().slice(11, 23)} ${station.slice(0, 8)} ${method} ${path} -> answered${status !== "" && status !== "-" ? ` ${status}` : ""} in ${ms} ms\n`);
     if (process.connected) process.send!({ answered: { station, method, path } });
   }, (path) => path.startsWith("/admin/api/move?"), (station, path, raw) => {
     // (each station's move page as it answered last, by the station and what was asked: `answers/<station>.move.txt`)

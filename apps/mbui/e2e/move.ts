@@ -1847,43 +1847,30 @@ try {
       const plan = Date.now() - t2;
       measured(`${label}: stationMove first answer ${shown} ms (GET /move answered at ${answered} ms); station_move plan ${plan} ms (a turn alone ${turn} ms); main thread: ${holds(from)}`);
     };
-    /// While a whole station's move runs: the drill's own reads of A's page timed (a page of a size not held, so read
-    /// now, every 5 s), and, at its end, how often alice's device read A's page (its record: each answered request
-    /// with its time) against how many plans A made that asked B which chats are live (A's log): each read of the page
-    /// by a device used to make one such ask (drill 26), `d94a0ccb0` reuses B's answers while its turn runs.
+    /// While a whole station's move runs, A's move page as a person watching holds it (one subscription, `watching`
+    /// below): at its end, from the device's record (each request with when it was answered and how long it took), how
+    /// often that page was read, how long each read took, and how many plans A made that asked B which chats are live
+    /// (A's log: a plan's line, its answer asked or kept for the turn). The drill adds no read of its own: drill 27's
+    /// timed reads, each a page of another size, stayed live a minute each (the core's grace) and were read again at
+    /// every telling, 35 of the 36 reads a second.
     const duringMove = () => {
       const from = new Date();
-      const took: number[] = [];
-      let on = true;
-      const loop = (async () => {
-        while (on) {
-          const t = Date.now();
-          const ok = await a.until(moveT(bId, "chats", 51 + Math.floor(Math.random() * 140)), (v) => v?.modules && v, 60_000).then(() => true, () => false);
-          if (ok) took.push(Date.now() - t);
-          for (let i = 0; i < 50 && on; i++) await new Promise((r) => setTimeout(r, 100));
-        }
-      })();
       return {
         end: async () => {
-          on = false;
-          await loop;
           const to = new Date();
           const day = (d: Date) => d.toISOString().slice(11, 23);
           const rec = readFileSync(join(dir, a.name, "record.log"), "utf8").split("\n")
-            .map((l) => /^asked: (\d\d:\d\d:\d\d\.\d{3}) (\S+) GET \/admin\/api\/move\?(\S*)/.exec(l))
-            .filter((m): m is RegExpExecArray => m !== null && m[2] === aId.slice(0, 8) && m[1] >= day(from) && m[1] <= day(to)).map((m) => m[1]);
-          // (of them, the page as a person watching holds it: its first page of 50, the app's)
-          const watched = readFileSync(join(dir, a.name, "record.log"), "utf8").split("\n")
-            .map((l) => /^asked: (\d\d:\d\d:\d\d\.\d{3}) (\S+) GET \/admin\/api\/move\?to=[0-9a-f]+&module=chats&limit=50 /.exec(l))
-            .filter((m): m is RegExpExecArray => m !== null && m[2] === aId.slice(0, 8) && m[1] >= day(from) && m[1] <= day(to)).length;
+            .map((l) => /^asked: (\d\d:\d\d:\d\d\.\d{3}) (\S+) GET \/admin\/api\/move\?(\S*) -> answered(?: \S+)? in (\d+) ms/.exec(l))
+            .filter((m): m is RegExpExecArray => m !== null && m[2] === aId.slice(0, 8) && m[1] >= day(from) && m[1] <= day(to));
           const perSecond = new Map<string, number>();
-          for (const t of rec) perSecond.set(t.slice(0, 8), (perSecond.get(t.slice(0, 8)) ?? 0) + 1);
+          for (const m of rec) perSecond.set(m[1].slice(0, 8), (perSecond.get(m[1].slice(0, 8)) ?? 0) + 1);
           const secs = Math.max(1, (to.getTime() - from.getTime()) / 1000);
+          const shapes = new Set(rec.map((m) => m[3].replace(/to=[0-9a-f]+/, "")));
+          const took = rec.map((m) => Number(m[4])).sort((x, y) => x - y);
+          const q = (f: number) => (took.length === 0 ? "-" : `${took[Math.min(took.length - 1, Math.floor(f * took.length))]} ms`);
           const asks = (existsSync(`${RUN}/station.log`) ? readFileSync(`${RUN}/station.log`, "utf8").split("\n") : [])
             .filter((l) => l.includes("asked which chats are live") && l.slice(0, 24) >= from.toISOString() && l.slice(0, 24) <= to.toISOString()).length;
-          const sorted = [...took].sort((x, y) => x - y);
-          const q = (f: number) => (sorted.length === 0 ? "-" : `${sorted[Math.min(sorted.length - 1, Math.floor(f * sorted.length))]} ms`);
-          return `the device read A's page ${rec.length} times (the watched page's ${watched}, ${(watched / secs).toFixed(2)} a second; all ${(rec.length / secs).toFixed(2)} a second, the busiest second ${Math.max(0, ...perSecond.values())}); A's plans asked B which chats are live ${asks} times; the drill's own reads of the page (every 5 s, ${took.length}): p50 ${q(0.5)}, max ${sorted.length === 0 ? "-" : `${sorted.at(-1)} ms`}`;
+          return `the watched page read ${rec.length} times (${(rec.length / secs).toFixed(2)} a second, the busiest second ${Math.max(0, ...perSecond.values())}; ${shapes.size} path(s)), each answered in p50 ${q(0.5)}, p90 ${q(0.9)}, max ${took.length === 0 ? "-" : `${took.at(-1)} ms`}; A's plans that asked B which chats are live (asked or kept): ${asks}`;
         },
       };
     };
