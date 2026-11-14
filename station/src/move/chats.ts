@@ -11,8 +11,9 @@ import { connectItemId } from "./connects.ts";
 
 type Json = any;
 
-/// The most chats a plan lists of a workspace.
-export const PLAN_MOST = 2_000;
+/// The chats a plan reads of a workspace at a time: it reads them all, a page at a time (Office-VM-1 had 2,384, of
+/// which a bound of 2,000 left 384 never moved, and its done of total wrong).
+export const PLAN_PAGE = 500;
 
 export type ChatsDeps = {
   store: Store;
@@ -32,6 +33,8 @@ export type ChatsDeps = {
   wait?: () => boolean;
   /// The sessions of `ws` here (null: the home one's), after `after`, at most `limit`.
   sessionsIn: (ws: string, after: string, limit: number) => string[];
+  /// A page's size (`PLAN_PAGE`; a test's smaller).
+  page?: number;
 };
 
 export function chatsModule(d: ChatsDeps): Module {
@@ -42,7 +45,15 @@ export function chatsModule(d: ChatsDeps): Module {
     async plan(ws, to) {
       const items: Item[] = [];
       const seen = new Set<string>();
-      for (const key of d.sessionsIn(ws, "", PLAN_MOST)) {
+      const page = d.page ?? PLAN_PAGE;
+      const keys: string[] = [];
+      for (let after = ""; ; ) {
+        const got = d.sessionsIn(ws, after, page);
+        keys.push(...got);
+        if (got.length < page) break;
+        after = got.at(-1)!;
+      }
+      for (const key of keys) {
         if (seen.has(key)) continue;
         const row = d.store.getSession(key);
         if (row === null || row.ws?.startsWith(comingWs("")) === true) continue;
@@ -71,6 +82,9 @@ export function chatsModule(d: ChatsDeps): Module {
         items.push({ module: "chats", id: keys[0]!, label: row.title ?? key, needs, ...(why !== null ? { cannot: why } : {}) });
       }
       return items;
+    },
+    abandon() {
+      d.handover.abandon();
     },
     async move(item, to, progress: (p: Progress) => void, opts) {
       await d.handover.handOver(item.id, to, { wait: d.wait?.() ?? true, progress, stoppedFor: opts?.stoppedFor });

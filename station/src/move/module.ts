@@ -35,6 +35,12 @@ export interface Module {
   /// Whether the item, moved away, can still be had here (an account this station borrows from where it went).
   /// Absent: it cannot.
   usableHere?(item: Item): boolean;
+  /// Whether the item is on this station now, from what the module keeps (none: its state says `here` or `failed`):
+  /// what lets go, as the station starts, what was stopped waiting for it (scheduler `settleStopped`).
+  isHere?(item: Item): boolean;
+  /// The turn was asked to stop (scheduler `stopTurn`): the item under way gives up where it is not yet past its point
+  /// of no return (undone as a failure there is), else completes. None: what is under way completes.
+  abandon?(): void;
   /// The item held here as its need moved away (`waitsFor`), and let go once it is back or the item moved; durable as
   /// the scheduler keeps it (scheduler.ts `stopped`). A module with nothing to hold has none.
   stop?(item: Item, waitsFor: Need): Promise<void>;

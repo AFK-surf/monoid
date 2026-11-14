@@ -33,7 +33,8 @@ export type Sending = {
 /// itself (`strict`); the bundles; the index last (with `jobs` in it), its hash said back (null: stopped, or not
 /// `strict`). A file that changed since it was gathered is refused there: left for the next gathering while the chats
 /// work, gathered again (the step tried again, thrown) once they are held (`strict`). The agent home's list is one more.
-export async function sendGathered(g: Gathered, to: Sending, strict: boolean, jobs: unknown[] = []): Promise<string | null> {
+/// `indexed`: the index put (its hash said back) where not `strict` too, so what was sent can be placed already.
+export async function sendGathered(g: Gathered, to: Sending, strict: boolean, jobs: unknown[] = [], indexed = false): Promise<string | null> {
   const index = JSON.parse(await readFile(g.index, "utf8")) as CarryIndex;
   to.total(index.bytes);
   for (const session of [...index.sessions, ...(index.agent ? [index.agent] : [])]) {
@@ -55,10 +56,11 @@ export async function sendGathered(g: Gathered, to: Sending, strict: boolean, jo
       lines.close();
     }
     await sendBatch(to, batch, strict);
-    if (strict) await sendBatch(to, [{ hash: session.list, path: session.at, size: 0 }], true);
+    // (its list too where the index goes, so what was sent can be placed by it)
+    if (strict || indexed) await sendBatch(to, [{ hash: session.list, path: session.at, size: 0 }], strict);
   }
   await sendBatch(to, Object.entries(index.bundles).map(([hash, path]) => ({ hash, path, size: 0 })), strict);
-  if (to.stopping() || !strict) return null;
+  if (to.stopping() || (!strict && !indexed)) return null;
   index.jobs = jobs as CarryIndex["jobs"];
   const text = Buffer.from(JSON.stringify(index));
   const hash = createHash("sha256").update(text).digest("hex");

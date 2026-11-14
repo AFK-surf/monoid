@@ -473,6 +473,13 @@ CREATE TABLE IF NOT EXISTS handed_over (
   there INTEGER,
   at INTEGER NOT NULL
 );
+-- What a chat being handed here has put in so far (the ctx of replica/handover.ts In), written in the same transaction as
+-- each page of its rows: a stop between a page and the hand-over's own file leaves nothing a drop does not take out.
+-- Gone once it is shown or dropped.
+CREATE TABLE IF NOT EXISTS handover_in (
+  id TEXT PRIMARY KEY,
+  ctx TEXT NOT NULL
+);
 `;
 
 /// Each message as it reads now: its latest edit's words, files and quotes.

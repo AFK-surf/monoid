@@ -709,5 +709,16 @@
   "station.move.card.declineDetail": "什么都不迁",
   "station.move.ownersOnly": "只有工作区的所有者或管理员能确认迁走整台 station。",
   "station.move.askGone": "这张卡片已经失效：请让 agent 重新发起。",
-  "station.move.movedThere": "这个聊天已迁到另一台 station：请在那边打开。"
+  "station.move.movedThere": "这个聊天已迁到另一台 station：请在那边打开。",
+  "station.move.off": "这台 station 还没开放在 station 之间迁移聊天：没有迁移任何内容。",
+  "station.move.offThere": "station「{station}」还没开放在 station 之间迁移聊天：没有迁移任何内容。",
+  "station.move.managersOnly": "只有工作区的所有者或管理员能迁移这台 station 的聊天和其他内容。",
+  "station.move.running": "这台 station 上已有一次迁移在进行：等它结束（迁移页面会显示进度）后再试。",
+  "station.move.isRig": "这台 station 只执行任务，没有可迁移的聊天：请先把它改回完整 station。",
+  "station.move.notWhole": "「{station}」只执行任务：请选工作区里一台完整的 station。",
+  "station.move.noStation": "这个工作区里没有「{station}」这台 station：请从工作区的 station 中选一台。",
+  "station.move.self": "这就是这台 station：请选另一台。",
+  "station.move.pick": "请说明要迁移什么：一个模块和其中的一项，或者全部。",
+  "station.move.notRunning": "这台 station 上没有正在进行的迁移，无需停止。",
+  "station.move.restarted": "迁移进行中这台 station 重启了：已迁走的保持迁走，其余仍在原处。再发起一次即可继续。"
 }

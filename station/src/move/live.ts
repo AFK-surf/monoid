@@ -3,7 +3,7 @@
 import { Effect, Layer } from "effect";
 import { Fibers } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
-import { ControlPlane, Events, Key, Parts, Paths, Peers, Store } from "../services.ts";
+import { AdminApi, ControlPlane, Events, Key, Parts, Paths, Peers, Store } from "../services.ts";
 import { Agents } from "../sessions/agents.ts";
 import { chatCards } from "../replica/retire-asks.ts";
 import { gitHere, gitRun } from "../replica/retire.ts";
@@ -26,6 +26,7 @@ export const MovesLive = Layer.effectDiscard(
     const parts = yield* Parts;
     const key = yield* Key;
     const agents = yield* Agents;
+    const admin = yield* AdminApi;
     const fibers = yield* Effect.acquireRelease(Effect.sync(() => new Fibers("move")), (f) => Effect.promise(() => f.close()));
     const roster = (ws: string) => {
       const m = cloud.membership(ws);
@@ -67,7 +68,8 @@ export const MovesLive = Layer.effectDiscard(
         ownIn: (ws) => wc()?.ownKinds(ws) ?? [],
         runsOn: (id) => wc()?.runsOn(id) ?? null,
         movedAway: (ws) => wc()?.movedAway(ws) ?? [],
-        move: (id, to) => wc()!.move(id, to, null),
+        move: (id, to, awaiting) => wc()!.move(id, to, null, undefined, undefined, awaiting ?? []),
+        arrived: async (keys) => wc()?.arrived(keys),
       },
       jobs: {
         up: (keys, ws) => store.jobsUp()
@@ -87,6 +89,10 @@ export const MovesLive = Layer.effectDiscard(
       hasGit: gitHere,
       changed: () => changed(),
       config: agents.config,
+      // (a machine's own setting, off unless set: moving is offered here only once it is on; move/AGENTS.md)
+      moveOn: () => agents.config.raw()?.move === true,
+      keptSends: (threads) => admin.keptSends(threads),
+      keepSends: (sends) => admin.keepSends(sends),
       homeOf: (ws) => (cloud.home() === ws ? hub.config().agentHome : join(hub.config().agentHome, "workspaces", ws)),
       vault: {
         owners: (ws) => [...new Set([
@@ -104,7 +110,10 @@ export const MovesLive = Layer.effectDiscard(
     const answers = moves.answers(inWorkspace);
     bus.on("handover.", answers);
     // (a station heard from again: what is owed to it of a hand-over is told now)
-    bus.heard((peer) => moves.handover.reached(peer));
+    bus.heard((peer) => {
+      moves.handover.reached(peer);
+      moves.heard(peer);
+    });
     bus.on("move.", answers);
     const asks = new MoveAsks({
       data, scheduler: moves.scheduler,
@@ -115,6 +124,7 @@ export const MovesLive = Layer.effectDiscard(
       notify: (session, text) => hub.notify(session, text),
       ask: (station, request) => bus.ask(station, request),
       setWait: (w) => void (moves.wait = w),
+      refusal: (ws, station) => moves.refusal(ws, station),
     });
     bus.on("move.tool", async (peer, request, workspace) => {
       if (!inWorkspace(peer) || typeof workspace !== "string") throw new Error("not a station of this workspace");
@@ -124,8 +134,16 @@ export const MovesLive = Layer.effectDiscard(
       scheduler: moves.scheduler,
       order: () => moves.modules.map((m) => m.id),
       home: () => cloud.home(),
-      station: (ws, v) => roster(ws)?.find((r) => r.id === v || r.name.toLowerCase() === v.toLowerCase() || (v.length >= 8 && r.id.startsWith(v)))?.id ?? null,
+      station: (ws, v) => {
+        const r = roster(ws)?.find((x) => x.id === v || x.name.toLowerCase() === v.toLowerCase() || (v.length >= 8 && x.id.startsWith(v)));
+        return r === undefined ? null : { id: r.id, tasks: r.tasks || cloud.rigOf(r.id, ws) !== null };
+      },
+      here: () => key.id,
+      rig: () => cloud.state?.rig !== undefined,
+      refusal: (ws, station, lang) => moves.refusal(ws, station, lang),
     }));
+    // (whether the app offers moving here: the switch; GET /move answers either way)
+    parts.overview("move", () => ({ offered: moves.on() }));
     parts.cardChoice("move", { may: (viewer, card, at) => asks.may(viewer, card, at), chosen: (viewer, card, option, at) => asks.chosen(viewer, card, option, at) });
     parts.tools(moveTools(asks));
     bus.whenAttached(() => void moves.start().catch((e) => log.warn("move", "the migrations did not go on", { error: (e as Error).message })));

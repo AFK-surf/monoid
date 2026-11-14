@@ -1028,3 +1028,25 @@ test("a session's summary read before its messages were taken is not told after 
   assert.deepEqual(told, [["session-pending", 0], ["session", 0]]);
   await a.close();
 });
+
+test("a chat handed to another station is told to a stream cut before and resumed after, only to its workspace's", async () => {
+  const { events, change } = setup(testClock().clock);
+  const before = await opened(events);
+  change({ type: "session", key: "1" });
+  await settle();
+  const heard = before.got.findLast((e) => e.id)!.id!;
+  await before.close();
+  // Handed over while no stream of a@x's was open: one of another workspace's, open then, is not told.
+  const answer = await events.open({ ...viewer("b@x"), workspace: "other", home: false }, "zh", false, [], [], null);
+  const other = reader(answer.body as AsyncIterable<Buffer>);
+  change({ type: "moved", key: "1", station: "b", ws: "w", thread: 7, there: 3 });
+  await settle();
+  const back = await opened(events, heard);
+  await settle();
+  assert.equal(back.resumed, true);
+  const moved = back.got.filter((e) => e.event === "chat-moved");
+  assert.deepEqual(moved.map((e) => e.data), [{ session: "1", station: "b", thread: 7, there: 3 }]);
+  assert.ok(!other.got.some((e) => e.event === "chat-moved"));
+  await back.close();
+  await other.close();
+});

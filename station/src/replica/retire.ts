@@ -296,7 +296,7 @@ function inThread<T>(asked: Record<string, unknown>, signal?: AbortSignal): Prom
   });
 }
 export const gatherSoon = (dataDir: string, db: string, ws: string, home: boolean, scratch: string, signal?: AbortSignal, agent: string | null = null, keys: readonly string[] | null = null) => inThread<Gathered>({ op: "gather", dataDir, db, ws, home, scratch, agent, keys }, signal);
-export const placeSoon = (dataDir: string, index: string, from: string, made: string | null = null) => inThread<{ placed: number; missing: number; kept: number }>({ op: "place", dataDir, index, from, made });
+export const placeSoon = (dataDir: string, index: string, from: string, made: string | null = null, aside: string | null = null, placed: string | null = null) => inThread<{ placed: number; missing: number; kept: number }>({ op: "place", dataDir, index, from, made, aside, placed });
 export const previewSoon = (dataDir: string, db: string, ws: string, home: boolean) => inThread<{ chats: number; archived: number; outside: number }>({ op: "preview", dataDir, db, ws, home });
 
 /// What a retirement of a workspace would move, as the app shows it before a person retires the station (GET

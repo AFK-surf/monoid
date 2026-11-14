@@ -23,11 +23,11 @@ export const MOVE_TOOL = {
     "Move this station's chats, accounts, jobs and connects to another station of the chat's workspace, one item or all, and back. Read the stillfail-move skill first. " +
     "plan {to}: every item, what it needs moved first, what cannot move and why, what a move would stop here. " +
     "move {to, module, item}: one item (a chat: its session key; its jobs follow); withNeeds moves what it needs first; all moves everything, after an owner or admin confirms a card in the app. " +
-    "back {module, item, to: where it is}: moves it back here. status: where each stands. station: another station of the workspace does it (its own items); wait false: a chat in a turn is refused rather than waited for.",
+    "back {module, item, to: where it is}: moves it back here. status: where each stands. stop: the move under way stops (what has not moved stays here). station: another station of the workspace does it (its own items); wait false: a chat in a turn is refused rather than waited for.",
   inputSchema: {
     type: "object",
     properties: {
-      action: { enum: ["plan", "move", "back", "status"] },
+      action: { enum: ["plan", "move", "back", "status", "stop"] },
       to: { type: "string", description: "The other station, by name or id (station_list)." },
       module: { type: "string" },
       item: { type: "string" },
@@ -56,6 +56,8 @@ export type MoveAsksDeps = {
   ask?: (station: string, request: Json) => Promise<Json>;
   /// Whether a busy chat's turn is waited for, for the request under way (move/station.ts `wait`).
   setWait?: (wait: boolean) => void;
+  /// Why a move or a move back with that station cannot begin (move/station.ts `refusal`: switched off here or there).
+  refusal?: (ws: string, station: string) => Promise<string | null>;
 };
 
 export class MoveAsks {
@@ -118,22 +120,30 @@ export class MoveAsks {
       }
       case "move": {
         const to = this.#station(ws, args.to);
+        const why = await this.#d.refusal?.(ws, to.id);
+        if (why) throw new Refused(why);
         if (sel.all === true) {
           if (session === null) throw new Refused("moving all of a station is confirmed on a card in a chat on it");
           return await this.#askAll(session, ws, to);
         }
         if (sel.module === undefined || sel.item === undefined) throw new Refused("move: name the module and the item (station_move plan lists them), or all");
-        const out = await this.#d.scheduler.move(ws, to.id, { ...sel, follow: sel.module === "chats" ? ["jobs"] : undefined });
+        const out = await this.#d.scheduler.move(ws, to.id, { ...sel, follow: sel.module === "chats" ? ["jobs"] : undefined }, session);
         return { outcome: out, say: outcomeWords(out, "moved to", to.name) };
       }
       case "back": {
         const from = this.#station(ws, args.to);
         if (sel.module === undefined || (sel.item === undefined && sel.all !== true)) throw new Refused("back: name the module and the item (station_move status lists them), and to: the station it is on");
-        const out = await this.#d.scheduler.back(ws, from.id, sel);
+        const why = await this.#d.refusal?.(ws, from.id);
+        if (why) throw new Refused(why);
+        const out = await this.#d.scheduler.back(ws, from.id, sel, session);
         return { outcome: out, say: outcomeWords(out, "back here from", from.name) };
       }
+      case "stop": {
+        if (!this.#d.scheduler.stopTurn(session)) throw new Refused(tr(stationLang(), "station.move.notRunning"));
+        return { stopping: true, say: "The move under way stops: nothing further of it starts; a chat not yet gone goes on here, one already gone completes there. Its outcome is told as it ends." };
+      }
     }
-    throw new Refused("action is one of plan, move, back, status");
+    throw new Refused("action is one of plan, move, back, status, stop");
   }
 
   async #askAll(session: string, ws: string, to: { id: string; name: string }): Promise<Json> {
@@ -182,7 +192,7 @@ export class MoveAsks {
     }
     a.state = "confirmed";
     void this.#save();
-    this.#running = this.#d.scheduler.move(a.ws, a.to, { all: true, follow: ["jobs"] }).then(
+    this.#running = this.#d.scheduler.move(a.ws, a.to, { all: true, follow: ["jobs"] }, viewer.email).then(
       (out) => this.#d.notify(a.session, `${viewer.email} confirmed moving everything to ${a.toName}. ${outcomeWords(out, "moved to", a.toName)}`),
       (e) => this.#d.notify(a.session, `${viewer.email} confirmed moving everything to ${a.toName}, but it did not begin: ${(e as Error).message}`),
     );

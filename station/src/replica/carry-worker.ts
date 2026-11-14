@@ -13,7 +13,7 @@
 // index and streams the lists, and what goes between the two stations is a list's piece at a time (retire.ts).
 import { execFileSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { chmodSync, closeSync, copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync, writeSync } from "node:fs";
+import { appendFileSync, chmodSync, closeSync, copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync, writeSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { isMainThread, parentPort, workerData } from "node:worker_threads";
@@ -184,7 +184,7 @@ export function preview(dataDir: string, db: string, ws: string, home: boolean):
 
 /// Where a gathering keeps its index and its lists, in `scratch`.
 export const indexFile = (scratch: string) => join(scratch, "index.json");
-const listFile = (scratch: string, key: string) => join(scratch, "lists", `${createHash("sha256").update(key).digest("hex").slice(0, 32)}.jsonl`);
+export const listFile = (scratch: string, key: string) => join(scratch, "lists", `${createHash("sha256").update(key).digest("hex").slice(0, 32)}.jsonl`);
 
 /// What goes along with the chats of `ws` on the station whose data directory is `dataDir`: their transcripts and each
 /// one's room, a git checkout in it as git lists its files (tracked and not ignored) with its repository, a linked
@@ -503,21 +503,54 @@ export function homeFiles(agent: string): string[] {
 /// had it, moved to here. One there already with the same size and time, or the same bytes, is left as it is, another
 /// put in its place. A link to the retired station's data directory names this one's. What of it could not be put (its
 /// bytes not brought) is counted. `made`: a file the paths it put where nothing was are written to, a line each (what a
-/// hand-over that fails takes away again, handover.ts).
-export function place(dataDir: string, indexPath: string, from: string, made: string | null = null): { placed: number; missing: number; kept: number } {
+/// hand-over that fails takes away again, handover.ts). `aside`: a directory what was there and is replaced is moved
+/// into, the first time (`list.txt` says where each was: what a hand-over that fails puts back, handover.ts); none:
+/// what is replaced is removed. `placed`: a file of what this placing put or found in place before (path, hash, size,
+/// time), kept by it: one the index says the same of again is left without being looked at (a hand-over's second
+/// pass touches only what changed since its first).
+export function place(dataDir: string, indexPath: string, from: string, made: string | null = null, aside: string | null = null, placed: string | null = null): { placed: number; missing: number; kept: number } {
   const index = JSON.parse(readFileSync(indexPath, "utf8")) as CarryIndex; // sync: in the placing's own thread (placeSoon)
+  // (what is there that is this placing's own already, made or put aside before: replaced, not put aside again)
+  const ours = new Set<string>();
+  for (const at of [made, aside === null ? null : join(aside, "list.txt")]) {
+    if (at !== null && existsSync(at)) for (const line of linesOf(at)) if (line !== "") ours.add(line.split("\t")[0]!); // sync: in the placing's own thread (placeSoon)
+  }
+  const known = new Map<string, string>();
+  if (placed !== null && existsSync(placed)) for (const line of linesOf(placed)) { // sync: in the placing's own thread (placeSoon)
+    const tab = line.indexOf("\t");
+    if (tab > 0) known.set(line.slice(0, tab), line.slice(tab + 1));
+  }
+  const placedFd = placed === null ? null : openSync(placed, "a"); // sync: in the placing's own thread (placeSoon)
+  const same = (_path: string, f: { hash: string; size: number; mtimeMs: number }) => `${f.hash}\t${f.size}\t${Math.trunc(f.mtimeMs)}`;
+  const seen = {
+    before: (path: string, f: { hash: string; size: number; mtimeMs: number }) => known.get(path) === same(path, f),
+    now: (path: string, f: { hash: string; size: number; mtimeMs: number }) => {
+      if (placedFd !== null && known.get(path) !== same(path, f)) writeSync(placedFd, `${path}\t${same(path, f)}\n`); // sync: in the placing's own thread (placeSoon)
+    },
+  };
   const madeFd = made === null ? null : openSync(made, "a"); // sync: in the placing's own thread (placeSoon)
   const fresh = (path: string) => {
+    ours.add(path);
     if (madeFd !== null) writeSync(madeFd, `${path}\n`); // sync: in the placing's own thread (placeSoon)
   };
+  const away = (path: string) => {
+    if (aside === null || ours.has(path)) return void rmSync(path, { recursive: true, force: true }); // sync: in the placing's own thread (placeSoon)
+    mkdirSync(aside, { recursive: true }); // sync: in the placing's own thread (placeSoon)
+    const name = `${createHash("sha256").update(path).digest("hex").slice(0, 32)}-${randomBytes(4).toString("hex")}`;
+    renameSync(path, join(aside, name)); // sync: in the placing's own thread (placeSoon)
+    appendFileSync(join(aside, "list.txt"), `${path}\t${name}\n`); // sync: in the placing's own thread (placeSoon)
+    ours.add(path);
+  };
   try {
-    return placeAll(index, dataDir, from, fresh);
+    return placeAll(index, dataDir, from, fresh, away, seen);
   } finally {
     if (madeFd !== null) closeSync(madeFd); // sync: in the placing's own thread (placeSoon)
+    if (placedFd !== null) closeSync(placedFd); // sync: in the placing's own thread (placeSoon)
   }
 }
 
-function placeAll(index: CarryIndex, dataDir: string, from: string, fresh: (path: string) => void): { placed: number; missing: number; kept: number } {
+type Seen = { before(path: string, f: { hash: string; size: number; mtimeMs: number }): boolean; now(path: string, f: { hash: string; size: number; mtimeMs: number }): void };
+function placeAll(index: CarryIndex, dataDir: string, from: string, fresh: (path: string) => void, away: (path: string) => void, seen: Seen | null = null): { placed: number; missing: number; kept: number } {
   let placed = 0;
   let missing = 0;
   let kept = 0;
@@ -538,6 +571,11 @@ function placeAll(index: CarryIndex, dataDir: string, from: string, fresh: (path
       // (resolved first: a path the other station said is put under this one's sessions or transcripts, or nowhere)
       const path = resolve(moved(f.path, index.dataDir, dataDir));
       if (!carriedPlace(root, path)) continue;
+      // (placed by this placing before as the index says it now: not looked at again)
+      if (!("link" in f) && seen?.before(path, f) === true) {
+        kept++;
+        continue;
+      }
       let there = null;
       try {
         there = lstatSync(path); // sync: in the placing's own thread (placeSoon)
@@ -549,7 +587,7 @@ function placeAll(index: CarryIndex, dataDir: string, from: string, fresh: (path
             kept++;
             continue;
           }
-          rmSync(path, { recursive: true, force: true }); // sync: in the placing's own thread (placeSoon)
+          away(path);
         }
         mkdirSync(dirname(path), { recursive: true }); // sync: in the placing's own thread (placeSoon)
         symlinkSync(target, path); // sync: in the placing's own thread (placeSoon)
@@ -558,6 +596,7 @@ function placeAll(index: CarryIndex, dataDir: string, from: string, fresh: (path
         continue;
       }
       if (there !== null && there.isFile() && there.size === f.size && (Math.trunc(there.mtimeMs) === Math.trunc(f.mtimeMs) || hashFile(path) === f.hash)) {
+        seen?.now(path, f);
         kept++;
         continue;
       }
@@ -571,9 +610,10 @@ function placeAll(index: CarryIndex, dataDir: string, from: string, fresh: (path
       putFile(blob, tmp);
       chmodSync(tmp, f.mode); // sync: in the placing's own thread (placeSoon)
       utimesSync(tmp, f.mtimeMs / 1000, f.mtimeMs / 1000); // sync: in the placing's own thread (placeSoon)
-      if (there !== null) rmSync(path, { recursive: true, force: true }); // sync: in the placing's own thread (placeSoon)
+      if (there !== null) away(path);
       renameSync(tmp, path); // sync: in the placing's own thread (placeSoon)
       if (there === null) fresh(path);
+      seen?.now(path, f);
       placed++;
     }
   }
@@ -601,7 +641,7 @@ export function putFile(blob: string, tmp: string): void {
 if (!isMainThread && workerData?.carry !== undefined) {
   const a = workerData.carry;
   try {
-    const answer = a.op === "gather" ? gather(a.dataDir, a.db, a.ws, a.home, a.scratch, a.agent ?? null, a.keys ?? null) : a.op === "preview" ? preview(a.dataDir, a.db, a.ws, a.home) : place(a.dataDir, a.index, a.from, a.made ?? null);
+    const answer = a.op === "gather" ? gather(a.dataDir, a.db, a.ws, a.home, a.scratch, a.agent ?? null, a.keys ?? null) : a.op === "preview" ? preview(a.dataDir, a.db, a.ws, a.home) : place(a.dataDir, a.index, a.from, a.made ?? null, a.aside ?? null, a.placed ?? null);
     parentPort!.postMessage({ answer });
   } catch (e) {
     parentPort!.postMessage({ error: (e as Error).message });

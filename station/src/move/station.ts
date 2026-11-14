@@ -16,12 +16,25 @@ import { connectsModule } from "./connects.ts";
 import { JobsModule } from "./jobs.ts";
 import type { Module } from "./module.ts";
 import { AgentHomeModule } from "./agent-home.ts";
-import { ReposModule, repoItemId, worktreesIn } from "./repos.ts";
+import { ReposModule, repoItemId, worktreesKept } from "./repos.ts";
 import { SettingsModule } from "./settings.ts";
 import { type VaultDeps, VaultModule, vaultItemId } from "./vault.ts";
 import { gatherSoon } from "../replica/retire.ts";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { readFileSync } from "node:fs";
+import { mkdir, rename, writeFile } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
 import { Scheduler } from "./scheduler.ts";
+import { type Lang, stationLang, tr } from "../ops/i18n.ts";
+import { hold as holdUpdates } from "../updates/holds.ts";
+
+/// A JSON file written whole (beside, then renamed).
+async function writeJsonFile(path: string, v: unknown): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  const tmp = `${path}.${randomBytes(4).toString("hex")}.tmp`;
+  await writeFile(tmp, JSON.stringify(v));
+  await rename(tmp, path);
+}
 
 type Json = any;
 
@@ -39,7 +52,9 @@ export type MovesDeps = {
     ownIn(ws: string): { id: string; name: string; kind: string; mode: string }[];
     /// This station's connects of `ws` (added here) that run on another station now.
     movedAway?(ws: string): { id: string; name: string; kind: string; mode: string }[];
-    move(id: string, to: string): Promise<void>;
+    move(id: string, to: string, awaiting?: string[]): Promise<void>;
+    /// Chats `keys` are here now (connects/workspace.ts `arrived`: what was kept for them taken).
+    arrived?(keys: string[]): Promise<void>;
   }) | null;
   /// The jobs (jobs.ts): those up (of sessions `keys`, or of `ws`'s chats), one stopped, one started.
   jobs: { up(keys: string[] | null, ws?: string): (CarriedJob & { id: string })[]; stop(id: string, why: string): Promise<void>; start(job: CarriedJob): void; stopNamed(session: string, name: string): Promise<void> };
@@ -63,6 +78,17 @@ export type MovesDeps = {
   /// This station's vault stores and the owners with secrets of a workspace here, the owners whose plain grants
   /// sessions hold (vault.ts).
   vault?: { owners(ws: string): string[]; grantOwners(keys: string[]): string[]; plain: VaultDeps["plain"]; vaults: VaultDeps["vaults"] };
+  /// The messages a device's key keeps from being posted twice (api/admin.ts), carried with a chat that goes.
+  keptSends?: HandoverDeps["keptSends"];
+  keepSends?: HandoverDeps["keepSends"];
+  /// Whether moving is switched on here (config.json `move`, a machine's own setting, off unless set; move/AGENTS.md).
+  /// None given: on (a test's).
+  moveOn?: () => boolean;
+  /// The chats a plan reads at a time (chats.ts `PLAN_PAGE`; a test's smaller).
+  planPage?: number;
+  /// What keeps the station from updating itself (updates/holds.ts `hold`): held through a turn here, and while
+  /// another station's request or a chat coming here is taken. None given: the station's own.
+  hold?: () => () => void;
 };
 
 /// What a profile of config.json is known by across the workspace (handover.ts `AccountOf`): the share it is or is a
@@ -90,16 +116,22 @@ export class Moves {
   readonly #d: MovesDeps;
   /// Whether a busy chat's turn is waited for as it moves (station_move `wait`, for the request under way).
   wait = true;
-  /// What each profile here was known by, kept as it moves away (in memory: started again, a chat stopped for one
-  /// names it as this machine's own).
-  readonly #known = new Map<string, AccountOf>();
+  /// What each profile here was known by, kept as it moves away (`move/accounts-known.json`, with the accounts
+  /// module's state): a chat stopped for one names it so after a start too.
+  readonly #known: Map<string, AccountOf>;
 
   constructor(d: MovesDeps) {
     this.#d = d;
+    let known: Record<string, AccountOf> = {};
+    try {
+      known = JSON.parse(readFileSync(join(d.data, "move", "accounts-known.json"), "utf8")) as Record<string, AccountOf>; // sync: read once, before the station serves
+    } catch {}
+    this.#known = new Map(Object.entries(known));
     const here = () => d.here() ?? "";
     const ask = d.ask;
     this.repos = new ReposModule({
       data: d.data, reposDir: d.reposDir, ask, here,
+      after: (ms, f) => d.fibers.after(ms, f), name: (station) => d.roster(d.home() ?? "")?.find((r) => r.id === station)?.name ?? station.slice(0, 12),
       workspaces: (ws) => d.sessionsIn(ws, "", 2_000).flatMap((k) => d.store.getSession(k)?.workspace ?? []),
       git: d.git ?? (async () => { throw new Error("no git here"); }),
     });
@@ -132,7 +164,10 @@ export class Moves {
           const p = d.profiles().find((x) => x?.id === id);
           if (p === undefined) return this.#known.get(id) ?? null;
           const a = accountOf(p, here());
-          if (a !== null) this.#known.set(id, a);
+          if (a !== null && JSON.stringify(this.#known.get(id)) !== JSON.stringify(a)) {
+            this.#known.set(id, a);
+            void writeJsonFile(join(d.data, "move", "accounts-known.json"), Object.fromEntries(this.#known)).catch(() => {});
+          }
           return a;
         },
         here: (a) => this.accountHere(a),
@@ -140,6 +175,9 @@ export class Moves {
       reposDir: d.reposDir, room: d.room, hasGit: d.hasGit, git: d.git, lackMost: d.lackMost, work: d.work, fail: d.fail,
       changed: () => d.changed?.(),
       arrivedStopped: (keys, need, ws) => this.scheduler.noteStopped({ module: "chats", id: keys[0]! }, need, ws),
+      shown: (keys) => d.connects?.arrived?.(keys),
+      keptSends: d.keptSends, keepSends: d.keepSends,
+      hold: () => (d.hold ?? holdUpdates)(),
       bindingsOf: (keys) => {
         const out: Record<string, string> = {};
         // (by session, the connects bound to it: as many as a station has single-session connects)
@@ -159,15 +197,20 @@ export class Moves {
           return p?.share !== null && typeof p?.share === "object";
         },
         moveProfile: d.moveProfile, ask: d.ask, here,
+        present: (id) => {
+          // (one moved here is known by the id it had there: an own login by its profile's id)
+          const own = id.startsWith("own:") ? id.slice(4, id.lastIndexOf("@")) : null;
+          return d.profiles().find((p) => typeof p?.id === "string" && (p.id === own || accountItemId(p.id, accountOf(p, here())) === id))?.id;
+        },
       }),
       chatsModule({
-        store: d.store, handover: this.handover, hub: d.hub, ask: d.ask, here, sessionsIn: d.sessionsIn,
+        store: d.store, handover: this.handover, hub: d.hub, ask: d.ask, here, sessionsIn: d.sessionsIn, page: d.planPage,
         kindOf: (id) => d.connects?.kindOf(id) ?? null, wait: () => this.wait,
         reposOf: async (keys) => {
           const out: string[] = [];
           for (const k of keys) {
             const w = d.store.getSession(k)?.workspace;
-            if (w !== undefined) for (const r of await worktreesIn(w)) out.push(repoItemId(r.url));
+            if (w !== undefined) for (const r of await worktreesKept(w)) out.push(repoItemId(r.url));
           }
           return [...new Set(out)];
         },
@@ -179,9 +222,11 @@ export class Moves {
         own: (ws) => [...(d.connects?.ownIn(ws) ?? []), ...(d.connects?.movedAway?.(ws) ?? [])],
         chatsOf: (id) => this.#chatsOfConnect(id),
         runsOn: (id) => d.connects?.runsOn(id) ?? null,
-        move: async (id, to) => {
+        kindOf: (id) => d.connects?.kindOf(id) ?? null,
+        keysOf: (id) => d.store.sessionsOfConnect(id, 2_000).filter((k) => d.store.handedTo(k) === null),
+        move: async (id, to, awaiting) => {
           if (d.connects === null) throw new Error("the connects are not up yet");
-          await d.connects.move(id, to);
+          await d.connects.move(id, to, awaiting);
         },
         ask: d.ask, here,
       }),
@@ -193,6 +238,10 @@ export class Moves {
     this.scheduler = new Scheduler({
       data: d.data, modules: this.modules, changed: () => d.changed?.(), progress: () => d.changed?.(),
       tellArrived: async (to, item) => void (await d.ask(to, { method: "move.arrived", item })),
+      now: () => d.fibers.now(),
+      refusal: (ws, station) => this.refusal(ws, station),
+      hold: () => this.#hold(),
+      restarted: () => tr(stationLang(), "station.move.restarted"),
     });
   }
 
@@ -225,18 +274,75 @@ export class Moves {
   }
 
   /// What another station asks of this one's migrations (`move.*`).
+  /// Whether moving is switched on here.
+  on(): boolean {
+    return this.#d.moveOn?.() ?? true;
+  }
+
+  /// Why a move or a move back with `station` of `ws` cannot begin now (null: it can): the switch here, then there
+  /// (a station that does not answer `move.open`, being older or unreachable, is taken as off: nothing is held).
+  async refusal(ws: string, station: string, lang: Lang = stationLang()): Promise<string | null> {
+    if (!this.on()) return tr(lang, "station.move.off");
+    const open = await this.#d.ask(station, { method: "move.open", workspace: ws }).catch(() => null);
+    if (open?.on === true) return null;
+    const name = this.#d.roster(ws)?.find((r) => r.id === station)?.name || station.slice(0, 12);
+    return tr(lang, "station.move.offThere", { station: name });
+  }
+
   answers(inWorkspace: (peer: string) => boolean) {
+    const each = this.#answers(inWorkspace);
+    return async (peer: string, request: Json, workspace?: string): Promise<Json> => {
+      // (another station's request taken whole before this station updates itself)
+      const letGo = this.#hold();
+      try {
+        return await each(peer, request, workspace);
+      } finally {
+        letGo();
+      }
+    };
+  }
+
+  /// A station heard from: what is stopped here for what may have come from it meanwhile (a tell of its coming lost) is
+  /// looked at (scheduler `settleStopped`), a burst of requests heard as one: while one look goes on, one more after it.
+  heard(_peer: string): void {
+    if (this.scheduler.stopped().length === 0) return;
+    if (this.#looking) return void (this.#again = true);
+    this.#looking = true;
+    void (async () => {
+      try {
+        do {
+          this.#again = false;
+          await this.scheduler.settleStopped().catch(() => {});
+        } while (this.#again && this.scheduler.stopped().length > 0);
+      } finally {
+        this.#looking = false;
+      }
+    })();
+  }
+  #looking = false;
+  #again = false;
+
+  /// The hold of updates (`hold`).
+  get #hold(): () => () => void {
+    return this.#d.hold ?? holdUpdates;
+  }
+
+  #answers(inWorkspace: (peer: string) => boolean) {
     const handed = this.handover.answers((peer, ws) => inWorkspace(peer) && (this.#d.roster(ws)?.some((s) => s.id === peer) ?? true));
     return async (peer: string, request: Json, workspace?: string): Promise<Json> => {
+      // (switched off here: nothing is taken, before anything is held there)
+      if (request?.method === "handover.begin" && !this.on()) throw new Refused(tr(stationLang(), "station.move.offThere", { station: this.#d.roster(String(workspace ?? ""))?.find((r) => r.id === this.#d.here())?.name || (this.#d.here() ?? "").slice(0, 12) }));
       if (typeof request?.method === "string" && request.method.startsWith("handover.")) return handed(peer, request, workspace);
       if (!inWorkspace(peer)) throw new Refused("not a station of this workspace");
       const method = typeof request?.method === "string" ? request.method : "";
       const bytes = bytesOf(request);
-      if (method.startsWith("move.repo.")) return this.repos.answer(request, bytes);
+      if (method.startsWith("move.repo.")) return this.repos.answer(peer, request, bytes);
       if (method.startsWith("move.home.")) return this.home.answer(peer, request, bytes);
       if (method.startsWith("move.setting.")) return this.settings.answer(peer, request);
       if (method.startsWith("move.vault.")) return this.vault.answer(request);
       switch (request?.method) {
+        case "move.open":
+          return { on: this.on() };
         case "move.accounts": {
           const out: Record<string, string | null> = {};
           for (const [id, a] of Object.entries((request.accounts ?? {}) as Record<string, AccountOf>)) out[id] = this.accountHere(a);
@@ -245,6 +351,7 @@ export class Moves {
         case "move.back": {
           // (an item moved here from the station asking, moved back to it)
           if (request.to !== peer) throw new Refused("an item goes back only to the station asking");
+          if (!this.on()) throw new Refused(tr(stationLang(), "station.move.offThere", { station: this.#d.roster(String(workspace ?? ""))?.find((r) => r.id === this.#d.here())?.name || (this.#d.here() ?? "").slice(0, 12) }));
           const id = String(request.id ?? "");
           if (request.module === "chats") {
             const stoppedFor = typeof request.stoppedFor?.module === "string" && typeof request.stoppedFor?.id === "string" ? { module: request.stoppedFor.module, id: request.stoppedFor.id } : undefined;

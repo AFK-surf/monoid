@@ -9,6 +9,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { Item, ItemState, Module, Need } from "../src/move/module.ts";
 import { Scheduler } from "../src/move/scheduler.ts";
+import { cloneLogin } from "../src/move/repos.ts";
+import { given } from "./hub-fakes.ts";
 
 /// A module of the test's: its items, where each is, what it did in order (shared by the modules, `log`).
 function fake(id: string, needs: string[], items: Omit<Item, "module">[], log: string[], o: { usable?: (id: string) => boolean; fails?: Set<string> } = {}): Module & { where: Map<string, string>; stopped: Map<string, Need> } {
@@ -129,10 +131,11 @@ test("an item moved away that cannot be had here stops what needs it here, befor
 test("a whole move: everything in its needs' order, what cannot move listed with why and what needs it with it, the first failure stops it and is said; all of it back after", async () => {
   const w = world({ fails: new Set(["c2"]) });
   const out = await w.s.move("ws", "B", { all: true });
-  assert.deepEqual(out.done.map((d) => `${d.module}/${d.id}`), ["accounts/sub", "accounts/grok", "chats/c1"]);
+  // (grok, which stops c2 here, goes as late as it can, c2 right after it)
+  assert.deepEqual(out.done.map((d) => `${d.module}/${d.id}`), ["accounts/sub", "accounts/grok"]);
   assert.equal(out.failed?.item.id, "c2");
   assert.match(out.failed!.error, /would not go/);
-  assert.deepEqual(w.log, ["move accounts/sub", "stop chats/c2", "move accounts/grok", "stop jobs/j1", "move chats/c1"], "nothing after the failure; what needs what went stopped first");
+  assert.deepEqual(w.log, ["move accounts/sub", "stop chats/c2", "move accounts/grok"], "nothing after the failure; what needs what went stopped first");
   // (a whole station, the failure fixed, then all of it back)
   const ok = world();
   const all = await ok.s.move("ws", "B", { all: true });
@@ -146,12 +149,19 @@ test("a whole move: everything in its needs' order, what cannot move listed with
   assert.deepEqual(ok.s.stopped(), []);
 });
 
-test("modules may need each other; items may not: a chain of items needing each other round is refused, named", async () => {
+test("modules may need each other; items may not: a chain of items needing each other round cannot move, named, and the plan still shows the rest", async () => {
   const log: string[] = [];
   const chats = fake("chats", ["connects"], [{ id: "c1", label: "c", needs: [{ module: "connects", id: "k1" }] }], log);
   const connects = fake("connects", ["chats"], [{ id: "k1", label: "k", needs: [{ module: "chats", id: "c1" }] }, { id: "k2", label: "k2", needs: [] }], log);
   const s = new Scheduler({ data: mkdtempSync(join(tmpdir(), "move-")), modules: [chats, connects] });
-  await assert.rejects(s.plan("ws", "B"), /need each other, so none can go first: chats c1 → connects k1 → chats c1|connects k1 → chats c1 → connects k1/);
+  const plan = await given(s.plan("ws", "B"), "the plan answers");
+  const chain = /need each other, so none can go first: chats c1 → connects k1 → chats c1|connects k1 → chats c1 → connects k1/;
+  assert.match(plan.items.find((x) => x.id === "c1")!.cannot ?? "", chain);
+  assert.match(plan.items.find((x) => x.id === "k1")!.cannot ?? "", chain);
+  assert.equal(plan.items.find((x) => x.id === "k2")!.cannot, undefined, "the rest planned as ever");
+  const out = await given(s.move("ws", "B", { module: "chats", item: "c1", withNeeds: true }), "the move answers");
+  assert.equal(out.done.length, 0);
+  assert.match(out.refused[0]?.why ?? "", chain);
   // (the modules' needs alone, a cycle of their own, are fine)
   const ok = new Scheduler({ data: mkdtempSync(join(tmpdir(), "move-")), modules: [fake("chats", ["connects"], [], log), fake("connects", ["chats"], [{ id: "k2", label: "k2", needs: [] }], log)] });
   assert.equal((await ok.plan("ws", "B")).items.length, 1);
@@ -176,4 +186,33 @@ test("an item may go to where what it needs is not (arriveStopped), and is told 
   assert.deepEqual(back.done.map((d) => `${d.module}/${d.id}`), ["chats/c2", "accounts/grok"]);
   assert.deepEqual(back.stopped, [{ item: { module: "chats", id: "c2" }, waitsFor: { module: "accounts", id: "grok" } }]);
   assert.deepEqual(back.resumed, [{ module: "chats", id: "c2" }]);
+});
+
+test("all at once: an account that cannot be shared goes as late as it can, its chats right after it; what copies (repos) stops nothing", async () => {
+  const log: string[] = [];
+  const accounts = fake("accounts", [], [{ id: "X", label: "not shared", needs: [] }, { id: "Y", label: "shared", needs: [] }], log, { usable: (id) => id === "Y" });
+  const repos = fake("repos", [], [{ id: "r1", label: "r1", needs: [] }, { id: "r2", label: "r2", needs: [] }], log, { usable: () => true });
+  const chats = fake("chats", ["accounts", "repos"], [
+    { id: "c1", label: "c1", needs: [{ module: "accounts", id: "X" }, { module: "repos", id: "r1" }] },
+    { id: "c2", label: "c2", needs: [{ module: "accounts", id: "Y" }, { module: "repos", id: "r2" }] },
+    { id: "c3", label: "c3", needs: [{ module: "accounts", id: "X" }] },
+  ], log);
+  const s = new Scheduler({ data: mkdtempSync(join(process.env.STILLFAIL_TEST_TMP ?? tmpdir(), "move-")), modules: [accounts, repos, chats] });
+  const plan = await s.plan("ws", "B");
+  assert.deepEqual(plan.items.filter((x) => x.module === "repos").map((x) => x.wouldStop), [[], []], "a repository moved stops nothing");
+  const out = await s.move("ws", "B", { all: true });
+  assert.equal(out.failed, null);
+  const moved = log.filter((l) => l.startsWith("move ")).map((l) => l.slice(5));
+  const at = (x: string) => moved.indexOf(x);
+  assert.ok(at("accounts/X") > at("repos/r1") && at("accounts/X") > at("repos/r2"), moved.join(", "));
+  assert.ok(at("accounts/X") > at("accounts/Y") && at("accounts/X") > at("chats/c2"), `after what does not need it: ${moved.join(", ")}`);
+  assert.deepEqual([at("chats/c1"), at("chats/c3")].sort(), [at("accounts/X") + 1, at("accounts/X") + 2], `its chats right after it: ${moved.join(", ")}`);
+  assert.deepEqual(log.filter((l) => l.startsWith("stop ")), ["stop chats/c1", "stop chats/c3"], "only X stops anything");
+});
+
+test("a clone refused for want of a login says to sign in to that host on that station", () => {
+  assert.equal(cloneLogin("fatal: could not read Username for 'https://github.com': terminal prompts disabled", "https://github.com/o/r.git", "Office-Host-2"),
+    "Office-Host-2 could not clone https://github.com/o/r.git: it is not signed in to github.com. Sign in to github.com on Office-Host-2 (its git credentials or an SSH key there), then move it again");
+  assert.match(cloneLogin("git@gitlab.com: Permission denied (publickey).", "git@gitlab.com:o/r.git", "B") ?? "", /not signed in to gitlab\.com/);
+  assert.equal(cloneLogin("fatal: destination path exists", "https://x/y", "B"), null);
 });

@@ -43,5 +43,7 @@ How to go about it:
    chat there). `wait: false` refuses a chat that is in a turn rather than waiting for it.
 6. `back {to: <the station it is on>, module, item}` moves it back here; an item something there still needs is
    refused, naming it: move that back first, or ask with `all`.
+7. `stop` stops the move under way: nothing further of it starts; a chat whose files are still going stays here and
+   goes on, one already gone completes there. What came of it is said as it ends.
 
 A station moved whole is still in the workspace afterwards: taking it out is the person's own step in the app.

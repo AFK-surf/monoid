@@ -293,7 +293,15 @@ export function importRows(db: DatabaseSync, ctx: ImportCtx, table: ChatTable, r
         else {
           if (table === "entries") t.linear = false;
           else t.lettersLinear = false;
-          const byTs = r.ts === null || r.ts === undefined ? undefined : (db.prepare(`SELECT n FROM ${table} WHERE thread = ? AND ts = ?`).get(t.id, r.ts as string) as { n: number } | undefined);
+          // (one with no ts, an edit of a message (store.ts #editMessage): found by what it is, its target as it is
+          // here, through entries_edits, so that a chat handed forth and back again does not get it twice; letters
+          // always have one, store.ts insertLetter)
+          const target = table === "entries" && typeof r.target === "number" ? n(t, r.target) : undefined;
+          const byTs = r.ts !== null && r.ts !== undefined
+            ? (db.prepare(`SELECT n FROM ${table} WHERE thread = ? AND ts = ?`).get(t.id, r.ts as string) as { n: number } | undefined)
+            : target === undefined ? undefined
+            : (db.prepare("SELECT n FROM entries WHERE thread = ? AND target = ? AND ts IS NULL AND kind IS ? AND author = ? AND at IS ? AND text IS ? LIMIT 1")
+              .get(t.id, target, (r.kind ?? null) as SQLInputValue, String(r.author), (r.at ?? null) as SQLInputValue, (r.text ?? null) as SQLInputValue) as { n: number } | undefined);
           if (byTs !== undefined) {
             map[String(was)] = byTs.n;
             break;

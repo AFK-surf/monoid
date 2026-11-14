@@ -718,5 +718,16 @@
   "station.move.card.declineDetail": "Nothing is moved",
   "station.move.ownersOnly": "Only an owner or admin of the workspace confirms moving a whole station.",
   "station.move.askGone": "This card no longer asks anything: ask the agent again.",
-  "station.move.movedThere": "This chat moved to another station: open it there."
+  "station.move.movedThere": "This chat moved to another station: open it there.",
+  "station.move.off": "Moving chats between stations is not open on this station yet: nothing was moved.",
+  "station.move.offThere": "Moving chats between stations is not open on station “{station}” yet: nothing was moved.",
+  "station.move.managersOnly": "Only an owner or admin of the workspace moves this station's chats and items.",
+  "station.move.running": "Another move is under way on this station: wait for it to end (the move page shows how far it is), then try again.",
+  "station.move.isRig": "This station only runs tasks and has no chats to move: make it a whole station first.",
+  "station.move.notWhole": "“{station}” only runs tasks: pick a whole station of the workspace.",
+  "station.move.noStation": "There is no station “{station}” in this workspace: pick one of the workspace's stations.",
+  "station.move.self": "That is this station: pick another one.",
+  "station.move.pick": "Say what to move: a module and one of its items, or everything.",
+  "station.move.notRunning": "No move is under way on this station: there is nothing to stop.",
+  "station.move.restarted": "This station restarted during the move: what had moved stays moved, the rest is here as it was. Ask again to go on."
 }

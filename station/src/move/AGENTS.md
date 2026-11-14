@@ -25,21 +25,45 @@ chats paused 18 minutes, a half-moved state, no way back), whose start stays swi
   first, arriving stopped, then the item. Modules may need each other (chats and connects do); items may not: a chain
   of items needing each other round is refused, named.
 - The modules: `accounts` (needs none: a login, by the share or key it is known by across the workspace, moved by
-  share/index.ts `moveProfile`; this machine's own never), `chats` (needs accounts, connects, repos, vault: one chat by
+  share/index.ts `moveProfile`; this machine's own never; what each was known by kept as it moves away,
+  `accounts-known.json`), `chats` (needs accounts, connects, repos, vault: one chat by
   `station/src/replica/handover.ts`, its files a mirror by difference: the station it goes to says what it has in
   place, what differs is sent, what the lists no longer name is removed there, in its room alone), `jobs` (needs
   chats: started there once its chat is there; one chat moved by the tool moves its jobs right after, so a job never
   runs on two stations), `connects` (needs chats: a Slack or Feishu connect once the chats that came through it are
   there; a Comma or single-session connect's chats need it instead, so it goes first, stopping them here, and each goes
-  on there as it moves), `repos` (a canonical clone a chat's linked worktree hangs on, by its remote: cloned there, what
+  on there as it moves: the connect arrives knowing which of its chats are still to come (`connect.take`'s
+  `awaiting`) and keeps what its platform says, in order, until they are all there, never a new session for one on its
+  way, connects/workspace.ts `arrived`), `repos` (a canonical clone a chat's linked worktree hangs on, by its remote: cloned there, what
   no remote has fetched from a bundle; back, removed there only where this move made it; the chat's move only adds
   its worktree, `rebuildGits` `clone: false`), `vault` (an owner's plain items and the vaults they own, rows sent as
   they are; back, the other lets go of what this move put there), `agent-home` (agent-carry.ts's merge, what it added
   kept so that back takes out exactly that) and `settings` (config.json's settings that are a person's choice,
-  settings.ts `SETTINGS`; back, the other's former values). Grants do not move: a vault's is sealed to this station's
+  settings.ts `SETTINGS`: what the other has already is never overwritten, the owner's 「不好搬但有其它办法规避的部分直接规避，
+  避免脚本乱改改错」: one it lacks it takes, a map the keys it lacks, another value of its own it keeps and the item
+  cannot move; back takes out exactly what was added). These four copy, so what moved is still usable here
+  (`usableHere`): moving one stops nothing. What each moved is kept across a start (`kept.ts`). Grants do not move: a vault's is sealed to this station's
   keeper and kept in its memory, a plain one is taken up as a station starts; the owner approves again there.
 - What the app shows is `GET /move?to=` (routes.ts: the modules in order with their needs, done of total, a page of
-  items each), told changed as `move` on the event stream.
+  items each, and `last`, the workspace's last turn and what came of it, kept in `last.json`), told changed as `move`
+  on the event stream. People move with `POST /move` and `POST /move/back` (owners and admins; 202, the scheduler's
+  turn going on; one turn at a time, an agent's and a person's alike: a second while one runs is 409). No card there:
+  the press in the app is the confirmation.
+- Moving is switched on per machine (config.json `move: true`, off unless set; not one of the settings that move), and
+  is offered only where it is on (the overview's `move.offered`) until the real run between our own stations has
+  passed; then the switch goes (the lead, 2026-11-14). Off, every turn is refused before anything is held (the
+  scheduler asks `refusal` first: here, then `move.open` there, a station that does not answer being off), and a
+  station that is off takes no `handover.begin` and sends nothing back; `GET /move` still answers.
+- A message a device wrote under its idempotency key (api/admin.ts `once`) goes with its chat: what was kept of it is
+  sent with `handover.show` and kept there under the thread's id there, so the device's retry there is answered as
+  here, not posted again (`keptSends`, `keepSends`).
+- A chat's files go twice (`station/src/replica/handover.ts`): first while it works, then held only for what changed
+  since, the station it goes to keeping what the first placed (`placed.txt`), so its pause does not grow with its room.
+- A turn holds the station's self-update from its first item to its end, and the station taking a request or a chat
+  holds it while it does (`station/src/updates/holds.ts`). A turn cut by a stop is kept as `last` saying so (`turn.json`); as
+  the station starts, and as a station is heard from again, what waits for an item that is here goes on
+  (`settleStopped`). `POST /move/stop` and station_move `stop` stop a turn: nothing further starts, a chat not yet
+  gone gives up and goes on here, one gone completes. `all` goes through every chat a page at a time.
 - `station_move` (`station/src/tools/move.ts`, skill `station/src/skills/stillfail-move.md`) is the scheduler's face: one chat or item
   needs no card (it pauses seconds and moving it back undoes it); `all` is confirmed once on a card by an owner or admin
   in the app (`MoveAsks`, the card choice `move`).

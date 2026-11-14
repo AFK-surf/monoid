@@ -18,6 +18,9 @@ export type AccountsDeps = {
   shared: (id: string) => boolean;
   /// Its login moved to `to` (share/index.ts `moveProfile`, which refuses in words).
   moveProfile: (id: string, to: string) => Promise<unknown>;
+  /// The profile in this station's config now that account item `id` is (its share, its key, or an own one by its
+  /// profile's id): none, not here.
+  present?: (id: string) => string | undefined;
   ask: (station: string, request: Json) => Promise<Json>;
   here: () => string;
 };
@@ -62,6 +65,9 @@ export function accountsModule(d: AccountsDeps): Module {
     state(item): ItemState {
       if (moving.has(item.id)) return { state: "moving" };
       return { state: typeof there.get(item.id) === "string" ? "there" : "here" };
+    },
+    isHere(item) {
+      return d.present?.(item.id) !== undefined;
     },
     usableHere(item) {
       const pid = local.get(item.id);

@@ -6,6 +6,7 @@
 // what it had. Grants are not moved: a vault's is sealed to this station's keeper (its request's `box`) and lives in
 // its memory, a plain one is taken up only as a station starts (vault/secrets.ts `#restore`), so a chat that holds one
 // asks its owner again where it goes; it needs its owner's item there for that (chats.ts).
+import { KeptSet } from "./kept.ts";
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { mkdir, rename, writeFile } from "node:fs/promises";
@@ -37,12 +38,17 @@ type Put = Record<string, { plain: string[]; vaults: string[]; items: [string, s
 export class VaultModule implements Module {
   readonly id = "vault";
   readonly needs = [] as const;
+  /// What a move copies stays here too: moving it stops nothing here (scheduler `stops`, `wouldStop`).
+  usableHere(): boolean {
+    return true;
+  }
   readonly #d: VaultDeps;
-  readonly #moved = new Set<string>();
+  readonly #moved: KeptSet;
   #put: Put;
 
   constructor(d: VaultDeps) {
     this.#d = d;
+    this.#moved = new KeptSet(join(d.data, "move", "vault-moved.json"));
     try {
       this.#put = JSON.parse(readFileSync(join(d.data, "move", "vaults.json"), "utf8")) as Put; // sync: read once, before the station serves
     } catch {
@@ -68,13 +74,13 @@ export class VaultModule implements Module {
       const items = this.#d.vaults.items(ws, v.id);
       for (let i = 0; i < items.length || i === 0; i += PAGE) await this.#d.ask(to, { method: "move.vault.put", workspace: ws, ws, owner, vault: v, items: items.slice(i, i + PAGE) });
     }
-    this.#moved.add(item.id);
+    await this.#moved.add(item.id);
   }
 
   async back(item: Item, from: string): Promise<void> {
     const { owner, ws } = this.#of(item);
     await this.#d.ask(from, { method: "move.vault.back", workspace: ws, ws, owner });
-    this.#moved.delete(item.id);
+    await this.#moved.delete(item.id);
   }
 
   state(item: Item): ItemState {

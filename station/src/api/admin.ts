@@ -116,6 +116,11 @@ export type AdminDeps = {
 const ONCE_KEY = "idempotency-key";
 const ONCE_KEEP_MS = 10 * 60_000;
 type Kept = { status: number; headers: Record<string, string>; body: Buffer };
+/// A message's write kept under its key, as a hand-over carries it to the station its chat went to (`keptSends`):
+/// whose key, the thread there, the key, when it was kept, and its answer (the body in base64).
+export type KeptSend = { viewer: string; thread: number; key: string; at: number; status: number; headers: Record<string, string>; body: string };
+/// A person's message in a chat (routes/hub.ts): the thread it is written to.
+const SEND_PATH = /^\/*threads\/+([^/]+)\/+messages(?:\/.*)?$/;
 /// A key's first write: its answer once there (none: not kept), and when it was kept.
 type Slot = { at: number | null; answer: Promise<Kept | null> };
 
@@ -261,6 +266,41 @@ export class Admin {
     return runtimeCompatible(r, answer);
   }
 
+  /// The messages written under a key to threads `threads` here (each to its id on the station it went to), as a
+  /// hand-over carries them there (replica/handover.ts): asked again there under the same key, they are answered as
+  /// here and not posted again. Only what was written (a 2xx); a refusal here is no write to keep a retry from.
+  keptSends(threads: ReadonlyMap<number, number>): KeptSend[] {
+    const out: KeptSend[] = [];
+    for (const [k, slot] of this.slots) {
+      if (slot.at === null) continue;
+      const [viewer, path, key] = k.split("\0");
+      const thread = path === undefined ? undefined : SEND_PATH.exec(path)?.[1];
+      const there = thread === undefined ? undefined : threads.get(Number(decodeURIComponent(thread)));
+      if (there === undefined || key === undefined) continue;
+      const kept = this.#settled.get(slot);
+      if (kept === undefined || kept.status < 200 || kept.status >= 300) continue;
+      out.push({ viewer: viewer!, thread: there, key, at: slot.at, status: kept.status, headers: kept.headers, body: kept.body.toString("base64") });
+    }
+    return out;
+  }
+
+  /// What another station kept of the messages of a chat it handed here (`keptSends` there), kept here as if written
+  /// here, for the rest of their time: over a refusal kept meanwhile (the chat was not shown here yet), never over a
+  /// write of this station's own.
+  keepSends(sends: readonly KeptSend[]): void {
+    for (const s of sends) {
+      const k = `${s.viewer}\0/threads/${s.thread}/messages\0${s.key}`;
+      const had = this.slots.get(k);
+      if (had !== undefined && (had.at === null || ((this.#settled.get(had)?.status ?? 0) >= 200 && (this.#settled.get(had)?.status ?? 0) < 300))) continue;
+      const kept: Kept = { status: s.status, headers: s.headers, body: Buffer.from(s.body, "base64") };
+      const slot: Slot = { at: s.at, answer: Promise.resolve(kept) };
+      this.#settled.set(slot, kept);
+      this.slots.set(k, slot);
+    }
+  }
+  /// Each kept slot's answer, as it settled (a slot's promise cannot be looked into).
+  readonly #settled = new WeakMap<Slot, Kept>();
+
   /// `write`'s answer, or the answer the first write under `key` had: while the first is under way the
   /// others wait for it; a 5xx is not kept (the write may not have happened: asked again, it is tried again).
   private async once(key: string, write: () => Promise<Answer>): Promise<Answer> {
@@ -291,6 +331,7 @@ export class Admin {
     }
     if (kept.status < 500) {
       slot.at = (this.deps.clock ?? liveClock).currentTimeMillisUnsafe();
+      this.#settled.set(slot, kept);
       settle(kept);
     } else {
       settle(null);

@@ -12,9 +12,14 @@ export type ConnectsDeps = {
   own: (ws: string) => { id: string; name: string; kind: string; mode: string }[];
   /// The chat items whose sessions came through connect `id` here (at most a plan's).
   chatsOf: (id: string) => string[];
+  /// How connect `id` goes, and the session keys that came through it here.
+  kindOf?: (id: string) => { kind: string; mode: string } | null;
+  keysOf?: (id: string) => string[];
   /// Where connect `id` (as this station names it) runs now (null: here or not known).
   runsOn: (id: string) => string | null;
-  move: (id: string, to: string) => Promise<void>;
+  /// Moved to `to`; `awaiting`: its chats still here (a connect that is not routed), whose messages are kept there
+  /// until each comes.
+  move: (id: string, to: string, awaiting: string[]) => Promise<void>;
   ask: (station: string, request: Json) => Promise<Json>;
   here: () => string;
 };
@@ -43,7 +48,11 @@ export function connectsModule(d: ConnectsDeps): Module {
       });
     },
     async move(item, to) {
-      await d.move(localOf(item.id, d.here()), to);
+      const local = localOf(item.id, d.here());
+      // (a connect that is not routed: its chats here are still to come, and what it says meanwhile waits for them)
+      const kind = d.kindOf?.(local) ?? null;
+      const routed = kind === null || ((kind.kind === "slack" || kind.kind === "feishu") && kind.mode !== "single-session");
+      await d.move(local, to, routed ? [] : d.keysOf?.(local) ?? []);
       moved.set(item.id, to);
     },
     async back(item, from) {

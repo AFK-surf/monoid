@@ -1719,10 +1719,14 @@ export class Store {
 
   /// A page of another station's chat's rows put in (store/handover.ts `importRows`), one transaction: its sessions say
   /// `ctx.ws` (not shown) until `showChat`. `ctx` says what was put in.
-  importRows(ctx: handover.ImportCtx, table: handover.ChatTable, rows: Json[]): void {
+  /// `id`: the hand-over's, whose ctx is kept with the rows (`handover_in`, `importCtx`).
+  importRows(ctx: handover.ImportCtx, table: handover.ChatTable, rows: Json[], id?: string): void {
     this.#with((changes) => {
       const touched: handover.Touched = { sessions: new Set(), threads: new Set() };
-      this.#tx(() => handover.importRows(this.db, ctx, table, rows, touched));
+      this.#tx(() => {
+        handover.importRows(this.db, ctx, table, rows, touched);
+        if (id !== undefined) this.#run("INSERT INTO handover_in (id, ctx) VALUES (?1, ?2) ON CONFLICT (id) DO UPDATE SET ctx = ?2", id, JSON.stringify(ctx));
+      });
       for (const key of touched.sessions) this.#wsOf.delete(key);
       for (const key of touched.sessions) changes.push({ type: "session", key });
       for (const id of touched.threads) changes.push({ type: "thread", id, entries: [] });
@@ -1737,6 +1741,17 @@ export class Store {
 
   /// What a hand-over that failed put in (`ctx`), taken out: its sessions put in anew deleted, those there before as
   /// they were, the threads it put in anew gone.
+  /// What hand-over `id` put in here so far, as kept with its rows (null: nothing, or it ended).
+  importCtx(id: string): handover.ImportCtx | null {
+    const r = this.#one("SELECT ctx FROM handover_in WHERE id = ?", id);
+    return r === undefined ? null : (JSON.parse(r.ctx as string) as handover.ImportCtx);
+  }
+
+  /// Hand-over `id` ended (shown, or dropped): what it put in is kept no more.
+  forgetImport(id: string): void {
+    this.#run("DELETE FROM handover_in WHERE id = ?", id);
+  }
+
   dropImport(ctx: handover.ImportCtx): void {
     const fresh = this.#with((changes) => {
       const fresh = this.#tx(() => handover.dropImport(this.db, ctx));
@@ -1784,7 +1799,8 @@ export class Store {
           const ws = (row.ws as string | null) ?? null;
           const t = threads[key] ?? { thread: null, there: null };
           this.#run("INSERT INTO handed_over (session, station, ws, thread, there, at) VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT (session) DO UPDATE SET station = ?2, ws = ?3, thread = ?4, there = ?5, at = ?6", key, station, ws, t.thread, t.there, this.now());
-          this.#run("UPDATE sessions SET ws = ? WHERE key = ?", handedWs(ws ?? home ?? ""), key);
+          // Gone from here for anywhere: no longer the station it came here from that its row says (`from`).
+          this.#run("UPDATE sessions SET ws = ?, came_from = NULL WHERE key = ?", handedWs(ws ?? home ?? ""), key);
           changes.push({ type: "moved", key, station, ws, thread: t.thread, there: t.there });
         }
       });

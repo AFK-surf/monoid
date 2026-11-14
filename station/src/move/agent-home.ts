@@ -3,6 +3,7 @@
 // and merged into the agent home there as a retirement merges it (replica/agent-carry.ts), nothing there overwritten;
 // what the merge added is kept there (`move/homes.json`). Moved back: exactly that taken out again (the skills it put,
 // the presets it added, the memory as it was before).
+import { KeptSet } from "./kept.ts";
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
@@ -34,13 +35,18 @@ type Merged = Record<string, { from: string; merged: HomeMerged }>;
 export class AgentHomeModule implements Module {
   readonly id = "agent-home";
   readonly needs = [] as const;
+  /// What a move copies stays here too: moving it stops nothing here (scheduler `stops`, `wouldStop`).
+  usableHere(): boolean {
+    return true;
+  }
   readonly #d: AgentHomeDeps;
-  readonly #moved = new Set<string>();
+  readonly #moved: KeptSet;
   readonly #moving = new Map<string, Progress>();
   #merged: Merged;
 
   constructor(d: AgentHomeDeps) {
     this.#d = d;
+    this.#moved = new KeptSet(join(d.data, "move", "agent-home-moved.json"));
     try {
       this.#merged = JSON.parse(readFileSync(join(d.data, "move", "homes.json"), "utf8")) as Merged; // sync: read once, before the station serves
     } catch {
@@ -69,7 +75,7 @@ export class AgentHomeModule implements Module {
         done: (bytes) => (p.done += bytes, progress({ ...p })),
       }, true);
       await ask({ method: "move.home.merge", index });
-      this.#moved.add(item.id);
+      await this.#moved.add(item.id);
     } finally {
       this.#moving.delete(item.id);
       await rm(scratch, { recursive: true, force: true });
@@ -79,7 +85,7 @@ export class AgentHomeModule implements Module {
   async back(item: Item, from: string): Promise<void> {
     const ws = item.id.slice(5);
     await this.#d.ask(from, { method: "move.home.back", workspace: ws, ws });
-    this.#moved.delete(item.id);
+    await this.#moved.delete(item.id);
   }
 
   state(item: Item): ItemState {
