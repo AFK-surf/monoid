@@ -81,8 +81,16 @@ export function moveShown(raw: J, o: { to: string; toName: string; module: strin
     // is (`waitsAt`))
     const at = str(x?.at);
     const waitsAt = str(x?.waitsAt);
+    // (what one moving waits for, as the station says it: its chat's turn to end (`waits: "turn"`), or, coming here, the
+    // station it comes from to answer (`waits: "station"`, `from` and `waitsAt` its name))
+    const waits = str(x?.waits);
+    const from = str(x?.from);
     const stateText = state === "moving"
-      ? t("core-views.move.state.moving")
+      ? waits === "turn"
+        ? t("core-views.move.state.waitsTurn")
+        : waits === "station" && (from !== "" || waitsAt !== "")
+          ? t("core-views.move.state.waitsStation", { from: from || waitsAt, at: waitsAt || from })
+          : t("core-views.move.state.moving")
       : state === "there"
         ? at !== "" ? t("core-views.move.state.thereAt", { at }) : t("core-views.move.state.there")
         : state === "stopped"

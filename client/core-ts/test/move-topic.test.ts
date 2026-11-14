@@ -199,6 +199,32 @@ test("a chat at a third station says where it is, a stopped one where what it wa
   r.core.close();
 });
 
+test("a chat moving says what it waits for: its turn's end, or the station it comes from", async () => {
+  const said = moved({
+    moving: null,
+    modules: [
+      {
+        id: "chats", needs: [], done: 0, total: 3,
+        items: [
+          item("k1", "修复登录", "moving", { waits: "turn" }),
+          item("k2", "发版", "moving", { waits: "station", from: "mini", waitsAt: "mini" }),
+          item("k3", "草稿", "moving"),
+        ],
+        more: null,
+      },
+    ],
+    stopped: [], last: null,
+  });
+  const r = await rig((_station, key) => (key.startsWith("GET /move") ? said : undefined));
+  const v = await r.show(1, { to: "st2", module: "chats" });
+  assert.deepEqual(v.modules[0].items.map((x: J) => [x.label, x.state, x.stateText]), [
+    ["修复登录", "moving", "正在等这一轮对话结束"],
+    ["发版", "moving", "正在从「mini」迁来，等「mini」应答"],
+    ["草稿", "moving", "迁移中"],
+  ]);
+  r.core.close();
+});
+
 test("told `move` changed, what is shown is read again and changes by its rows", async () => {
   let said = moved();
   const r = await rig((_station, key) => (key.startsWith("GET /move") ? said : undefined));

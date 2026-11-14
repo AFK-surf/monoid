@@ -820,6 +820,8 @@
   "core-views.move.count": "{done} / {total}",
   "core-views.move.nothing": "Nothing to move",
   "core-views.move.state.moving": "Moving",
+  "core-views.move.state.waitsTurn": "Waiting for this turn of the chat to end",
+  "core-views.move.state.waitsStation": "Coming from “{from}”, waiting for “{at}” to answer",
   "core-views.move.state.there": "Moved",
   "core-views.move.state.stopped": "Stopped · waiting for “{what}”",
   "core-views.move.state.thereAt": "On “{at}”",
