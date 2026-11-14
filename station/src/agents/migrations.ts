@@ -165,6 +165,7 @@ export const NOTES: [number, string][] = [
   [158, "station_move has action stop (the move under way stops: a chat not yet gone stays here, one gone completes), and moving is refused where a station has it switched off (config.json move), saying so."],
   [159, "station_move has no module agent-home any more: the memory and skills are the same on every station of the workspace already, and each person's presets go with their devices, so nothing of them moves."],
   [160, "station_move takes arriveStopped (move): an item whose need is not there goes all the same, arriving there stopped, waiting for it; a chat stopped by a move answers once, as someone speaks in it, what it waits for and where."],
+  [161, "secret_save takes oauth: \"slack\" (kind token, no value, command or path): the card has the person sign in to Slack in the still.fail app, and their own Slack token is kept in their vault, given through the proxy to slack.com, for calling Slack's API as them; skill stillfail-vault says how."],
 ];
 
 /// The last note that replaces every one before it (the instructions rewritten whole): a session behind it hears only

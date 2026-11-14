@@ -200,7 +200,7 @@ fn tell_device() -> Unit {
 
 ///|
 /// Each frame, with the `accounts` topic: what the environment asked once the accounts are read, and a browser login
-/// come back.
+/// come back (a sign-in's, a vault's: vault_oauth.mbt).
 pub fn frame(accounts : @core.Sub) -> Unit {
   // (by the accounts the core says and the environment's: the same in each build of the frame)
   if accounts.value is Some(list) {
@@ -231,6 +231,7 @@ pub fn frame(accounts : @core.Sub) -> Unit {
     }
   }
   login_back()
+  oauth_back()
 }
 
 ///|

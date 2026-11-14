@@ -2066,6 +2066,11 @@ export interface VaultSave {
 	 * account, when `username` is absent; a file: a button that picks it) over the answer, `vault.approve` with `typed`.
 	 */
 	typed?: boolean;
+	/**
+	 * With `typed`, a token the person signs in to this service for instead (`slack`): a button for its page in
+	 * place of the field, `vault.oauthBegin` with the request, which approves it as the browser comes back.
+	 */
+	oauth?: string;
 }
 
 /**
