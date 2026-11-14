@@ -522,6 +522,17 @@ try {
         if (!under(real(join(r, "proj", common)), "B")) throw new Error(`its worktree hangs on ${common}, not of B`);
         log(`  B's worktree hangs on ${common}`);
       });
+      await check("2: one chat moved with what it needs leaves A working: A's other chat answers a new message at once, a new chat on A works", async () => {
+        // (the lead, 2026-11-14: an own login that can be shared is shared as it moves, A borrowing it; one that cannot
+        // is refused in words, never taken along by one chat's move)
+        log(`  A's profiles ${brief((JSON.parse(readFileSync(`${DATA.A}/config.json`, "utf8")).profiles ?? []).map((p: J) => ({ id: p.id, share: p.share ?? null })))}`);
+        if (k0 !== "") {
+          const n = randomBytes(3).toString("hex");
+          const said = await say(k0, `drill-note:other-${n}`, `drill-noted other-${n}`, 60_000);
+          if (at(/cwd=(\S+)/.exec(said)?.[1] ?? "") !== "A") throw new Error(`A's other chat answered from elsewhere: ${said}`);
+        }
+        await newChat(`after-move-${tag}`);
+      });
       await check("2: the job runs on B and not on A", async () => {
         const j = await whenChanged([DATA.B, DATA.A], () => {
           const l = jobs(tag);
