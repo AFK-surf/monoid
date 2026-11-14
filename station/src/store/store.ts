@@ -1726,6 +1726,11 @@ export class Store {
       for (const key of touched.sessions) this.#wsOf.delete(key);
       for (const key of touched.sessions) changes.push({ type: "session", key });
       for (const id of touched.threads) changes.push({ type: "thread", id, entries: [] });
+      for (const c of touched.marks ?? []) {
+        // (a read put in: its number as it is here)
+        if (c.type === "read" && c.n === null) c.n = this.readPosition(c.viewer, c.thread);
+        changes.push(c);
+      }
       if (touched.sessions.size > 0) this.#sessionWorkspaceChanged();
     });
   }
@@ -1823,7 +1828,10 @@ export class Store {
   /// (`handedWs`) with them.
   sessionsOfWs(ws: string | null, home: string | null, after: string, limit: number): string[] {
     const named = ws === null ? home : ws;
-    return this.#all("SELECT key FROM sessions WHERE (ws IS ?1 OR ws = ?2) AND key > ?3 ORDER BY key LIMIT ?4", ws, handedWs(named ?? ""), after, limit).map((r) => r.key as string);
+    // (each by the index of a workspace's sessions, sessions_by_ws, then the two merged)
+    const own = this.#all(ws === null ? "SELECT key FROM sessions WHERE ws IS NULL AND key > ? ORDER BY key LIMIT ?" : "SELECT key FROM sessions WHERE ws = ? AND key > ? ORDER BY key LIMIT ?", ...(ws === null ? [after, limit] : [ws, after, limit]));
+    const handed = this.#all("SELECT key FROM sessions WHERE ws = ? AND key > ? ORDER BY key LIMIT ?", handedWs(named ?? ""), after, limit);
+    return [...own, ...handed].map((r) => r.key as string).sort().slice(0, limit);
   }
 
   /// No chat of a connect's thread runs on another station any more (one handed back here).

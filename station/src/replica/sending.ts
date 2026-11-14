@@ -15,10 +15,11 @@ type Json = any;
 
 /// How a sending reaches the other station and says how far it went.
 export type Sending = {
-  /// Asks of the other station what of `hashes` it lacks (its answer's `lacking`).
-  lacking(hashes: string[]): Promise<Json>;
-  /// Sends it one file by its hash.
-  put(hash: string, bytes: Bytes): Promise<Json>;
+  /// Asks of the other station what of `hashes` it lacks (its answer's `lacking`); `files`: each with where it is put
+  /// and how big (a station that keeps a copy of the room says which it has in place already).
+  lacking(hashes: string[], files: { hash: string; path: string; size: number; mtimeMs?: number }[]): Promise<Json>;
+  /// Sends it one file by its hash (`path`: where it is here; "" for a list or the index).
+  put(hash: string, bytes: Bytes, path: string, size: number): Promise<Json>;
   /// The most hashes one `lacking` asks of.
   most: number;
   /// Whether to stop between files (a cancel, the process closing).
@@ -36,7 +37,7 @@ export async function sendGathered(g: Gathered, to: Sending, strict: boolean, jo
   const index = JSON.parse(await readFile(g.index, "utf8")) as CarryIndex;
   to.total(index.bytes);
   for (const session of [...index.sessions, ...(index.agent ? [index.agent] : [])]) {
-    let batch: { hash: string; path: string; size: number }[] = [];
+    let batch: { hash: string; path: string; size: number; mtimeMs?: number }[] = [];
     const lines = createInterface({ input: createReadStream(session.at), crlfDelay: Infinity });
     try {
       for await (const line of lines) {
@@ -44,7 +45,7 @@ export async function sendGathered(g: Gathered, to: Sending, strict: boolean, jo
         if (line === "") continue;
         const f = JSON.parse(line);
         if (typeof f?.hash !== "string") continue;
-        batch.push({ hash: f.hash, path: f.path, size: f.size });
+        batch.push({ hash: f.hash, path: f.path, size: f.size, mtimeMs: f.mtimeMs });
         if (batch.length >= to.most) {
           await sendBatch(to, batch, strict);
           batch = [];
@@ -61,15 +62,15 @@ export async function sendGathered(g: Gathered, to: Sending, strict: boolean, jo
   index.jobs = jobs as CarryIndex["jobs"];
   const text = Buffer.from(JSON.stringify(index));
   const hash = createHash("sha256").update(text).digest("hex");
-  await to.put(hash, oneBytes(text));
+  await to.put(hash, oneBytes(text), "", text.length);
   return hash;
 }
 
 /// Of `batch`, what the other station lacks, sent.
-async function sendBatch(to: Sending, batch: { hash: string; path: string; size: number }[], strict: boolean): Promise<void> {
+async function sendBatch(to: Sending, batch: { hash: string; path: string; size: number; mtimeMs?: number }[], strict: boolean): Promise<void> {
   if (batch.length === 0) return;
   const asked = [...new Set(batch.map((f) => f.hash))];
-  const answer = await to.lacking(asked);
+  const answer = await to.lacking(asked, batch);
   const lacking = new Set<string>(Array.isArray(answer?.lacking) ? answer.lacking : asked);
   for (const f of batch) {
     if (to.stopping()) return;
@@ -84,7 +85,7 @@ async function sendBatch(to: Sending, batch: { hash: string; path: string; size:
         continue;
       }
       try {
-        await to.put(f.hash, fileBytes(f.path, 0, size));
+        await to.put(f.hash, fileBytes(f.path, 0, size), f.path, size);
       } catch (e) {
         if (!(e instanceof Refused && /changed/.test(e.message)) && !/got shorter/.test((e as Error).message)) throw e;
         if (strict) throw new Error("a file changed as it was sent: gathered again");

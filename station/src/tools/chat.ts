@@ -12,7 +12,7 @@ import { sessionSend } from "../sessions/messages.ts";
 import { chatCreate } from "../sessions/opened.ts";
 import { chatArchive } from "../sessions/chat-archive.ts";
 import type { Args } from "../sessions/args.ts";
-import { chatList, chatRead, elsewhere, readAfar, scopeOf, sessionHistory } from "../sessions/others.ts";
+import { chatList, chatRead, elsewhere, linkedSession, readAfar, scopeOf, sessionHistory } from "../sessions/others.ts";
 import { suggestArchive } from "../sessions/review.ts";
 import { STILLFAIL_SURFACE } from "../store/store.ts";
 import type { Tool } from "./mcp.ts";
@@ -450,7 +450,11 @@ export const SESSION_HISTORY = {
 /// here.
 function afar(hub: Hub, key: string, tool: "chat_read" | "session_history", args: Args): Promise<string> | null {
   const station = typeof args.chat === "string" ? elsewhere(hub, key, args.chat) : null;
-  return station !== null ? readAfar(hub, key, station, tool, args) : null;
+  if (station !== null) return readAfar(hub, key, station, tool, args);
+  // (a chat handed from here to another station is read where it is now: replica/handover.ts)
+  const ref = typeof args.chat === "string" ? (linkedSession(args.chat)?.[0] ?? args.chat.trim()) : "";
+  const moved = ref === "" ? null : hub.store.handedTo(ref);
+  return moved === null ? null : readAfar(hub, key, moved.station, tool, { ...args, chat: ref });
 }
 
 /// `run` with `args`' files (and with `links` its text's local links) in folders macOS protects copied first

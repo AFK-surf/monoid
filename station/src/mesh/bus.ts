@@ -151,7 +151,19 @@ export class PeerBus {
   }
 
   /// A request of a station of `workspace` (the transport authenticated it and checked it belongs).
+  /// Who is told each time another station is heard from (it asked something here: its link is open), by station:
+  /// what is owed to it is told now rather than at its backoff's next try (replica/handover.ts `reached`).
+  private readonly hearers: ((peer: string) => void)[] = [];
+  heard(f: (peer: string) => void): void {
+    this.hearers.push(f);
+  }
+
   handle(workspace: string, peer: string, request: Json): Promise<Json> {
+    for (const f of this.hearers) {
+      try {
+        f(peer);
+      } catch {}
+    }
     const method = methodOf(request);
     const dot = method.indexOf(".");
     const inbox = this.handlers.get(method) ?? (dot > 0 ? this.handlers.get(method.slice(0, dot + 1)) : undefined) ?? this.rest;

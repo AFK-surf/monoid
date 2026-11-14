@@ -180,14 +180,28 @@ const bump = (ts: string): string => {
   return ts.slice(0, i) + String(BigInt(ts.slice(i)) + 1n).padStart(ts.length - i, "0");
 };
 
-/// What a page touched here, for the changes the store tells: sessions, threads (with entries put in).
-export type Touched = { sessions: Set<string>; threads: Set<number> };
+/// What a page touched here, for the changes the store tells: sessions, threads (with entries put in), and each mark
+/// as its own change says it (what the copies' export reads again by: replica/copies.ts `tell`).
+export type Touched = { sessions: Set<string>; threads: Set<number>; marks?: Json[] };
 
 /// A page of `table`'s rows of the copy put in (inside a transaction of the store's): what it touched.
 export function importRows(db: DatabaseSync, ctx: ImportCtx, table: ChatTable, rows: Row[], touched: Touched): void {
   const thread = (was: unknown): ThreadThere | undefined => ctx.threads[String(was)];
   const n = (t: ThreadThere | undefined, was: unknown) => (t === undefined ? undefined : t.ns[String(was)] ?? (was as number));
-  const keep = (key: Row) => ((ctx.made.rows[table] ??= []).push(key), (ctx.counts.rows[table] = (ctx.counts.rows[table] ?? 0) + 1));
+  const told = (change: Json) => void (touched.marks ??= []).push(change);
+  const keep = (key: Row) => {
+    (ctx.made.rows[table] ??= []).push(key);
+    ctx.counts.rows[table] = (ctx.counts.rows[table] ?? 0) + 1;
+    const k = key as Json;
+    if (table === "reads") told({ type: "read", viewer: k.viewer, thread: k.thread, n: null });
+    else if (table === "hidden_chats") told({ type: "hidden", viewer: k.viewer, thread: k.thread, hidden: true });
+    else if (table === "muted_chats") told({ type: "muted", viewer: k.viewer, thread: k.thread, muted: true });
+    else if (table === "kept_chats") told({ type: "dismissed", viewer: k.viewer, kept: { thread: k.thread, kept: true } });
+    else if (table === "dismissed") told({ type: "dismissed", viewer: k.viewer, card: { thread: k.thread, n: k.n } });
+    else if (table === "pins") told({ type: "pins", viewer: k.viewer, session: k.session, at: null });
+    else if (table === "closed_cards") told({ type: "thread", id: k.thread, entries: [], closed: k.n });
+    else if (table === "turns" || table === "runtime_sessions") touched.sessions.add(String(k.session_key ?? ""));
+  };
   for (const r0 of rows) {
     const r: Row = { ...r0 };
     switch (table) {
@@ -299,7 +313,7 @@ export function importRows(db: DatabaseSync, ctx: ImportCtx, table: ChatTable, r
           if (t === undefined) (r.about_thread = null), (r.about_n = null);
           else (r.about_n = n(t, r.about_n) ?? null), (r.about_thread = t.id);
         }
-        if (insert(db, "turns", r, " OR IGNORE").changes > 0) keep({ id: r.id });
+        if (insert(db, "turns", r, " OR IGNORE").changes > 0) keep({ id: r.id, session_key: r.session_key });
         else ctx.counts.rows.turns = (ctx.counts.rows.turns ?? 0) + 1;
         touched.sessions.add(String(r.session_key));
         break;
@@ -330,6 +344,7 @@ export function importRows(db: DatabaseSync, ctx: ImportCtx, table: ChatTable, r
         r.n = n(t, r.n);
         if (insert(db, "reads", r, " OR IGNORE").changes > 0) keep({ viewer: r.viewer, thread: r.thread });
         else {
+          told({ type: "read", viewer: r.viewer, thread: r.thread, n: r.n });
           db.prepare("UPDATE reads SET n = MAX(n, ?) WHERE viewer = ? AND thread = ?").run(r.n as number, r.viewer as string, r.thread as number);
           ctx.counts.rows.reads = (ctx.counts.rows.reads ?? 0) + 1;
         }

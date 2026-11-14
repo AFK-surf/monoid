@@ -3,7 +3,7 @@
 // (`move.*`: which accounts it has, an item moved back to the station asking, a job started or stopped here). Made by
 // the composition root (move/live.ts) and by the tests, given what it needs.
 import { createHash } from "node:crypto";
-import { Refused } from "../mesh/bus.ts";
+import { Refused, bytesOf } from "../mesh/bus.ts";
 import type { Fibers } from "../ops/fibers.ts";
 import type { CarriedJob } from "../replica/carry-worker.ts";
 import { type AccountOf, Handover, type HandoverDeps } from "../replica/handover.ts";
@@ -15,7 +15,12 @@ import { chatsModule } from "./chats.ts";
 import { connectsModule } from "./connects.ts";
 import { JobsModule } from "./jobs.ts";
 import type { Module } from "./module.ts";
-import { PENDING, pendingModule } from "./pending.ts";
+import { AgentHomeModule } from "./agent-home.ts";
+import { ReposModule, repoItemId, worktreesIn } from "./repos.ts";
+import { SettingsModule } from "./settings.ts";
+import { type VaultDeps, VaultModule, vaultItemId } from "./vault.ts";
+import { gatherSoon } from "../replica/retire.ts";
+import { join } from "node:path";
 import { Scheduler } from "./scheduler.ts";
 
 type Json = any;
@@ -30,7 +35,12 @@ export type MovesDeps = {
   store: Store;
   hub: HandoverDeps["hub"];
   /// The workspace's connects (connects/workspace.ts), and this station's own of a workspace with their kind and mode.
-  connects: (HandoverDeps["connects"] & { ownIn(ws: string): { id: string; name: string; kind: string; mode: string }[]; runsOn(id: string): string | null; move(id: string, to: string): Promise<void> }) | null;
+  connects: (HandoverDeps["connects"] & {
+    ownIn(ws: string): { id: string; name: string; kind: string; mode: string }[];
+    /// This station's connects of `ws` (added here) that run on another station now.
+    movedAway?(ws: string): { id: string; name: string; kind: string; mode: string }[];
+    move(id: string, to: string): Promise<void>;
+  }) | null;
   /// The jobs (jobs.ts): those up (of sessions `keys`, or of `ws`'s chats), one stopped, one started.
   jobs: { up(keys: string[] | null, ws?: string): (CarriedJob & { id: string })[]; stop(id: string, why: string): Promise<void>; start(job: CarriedJob): void; stopNamed(session: string, name: string): Promise<void> };
   /// config.json's profiles as written; one's login moved to another station (share/index.ts `moveProfile`).
@@ -46,6 +56,13 @@ export type MovesDeps = {
   work?: HandoverDeps["work"];
   fail?: HandoverDeps["fail"];
   changed?: () => void;
+  /// config.json as written, for the settings that move (settings.ts).
+  config?: { raw(): Json; update(f: (raw: Json) => void): void };
+  /// The agent home of `ws` here (agent-home.ts).
+  homeOf?: (ws: string) => string;
+  /// This station's vault stores and the owners with secrets of a workspace here, the owners whose plain grants
+  /// sessions hold (vault.ts).
+  vault?: { owners(ws: string): string[]; grantOwners(keys: string[]): string[]; plain: VaultDeps["plain"]; vaults: VaultDeps["vaults"] };
 };
 
 /// What a profile of config.json is known by across the workspace (handover.ts `AccountOf`): the share it is or is a
@@ -66,7 +83,13 @@ export class Moves {
   readonly jobs: JobsModule;
   readonly scheduler: Scheduler;
   readonly modules: Module[];
+  readonly repos: ReposModule;
+  readonly vault: VaultModule;
+  readonly home: AgentHomeModule;
+  readonly settings: SettingsModule;
   readonly #d: MovesDeps;
+  /// Whether a busy chat's turn is waited for as it moves (station_move `wait`, for the request under way).
+  wait = true;
   /// What each profile here was known by, kept as it moves away (in memory: started again, a chat stopped for one
   /// names it as this machine's own).
   readonly #known = new Map<string, AccountOf>();
@@ -74,6 +97,24 @@ export class Moves {
   constructor(d: MovesDeps) {
     this.#d = d;
     const here = () => d.here() ?? "";
+    const ask = d.ask;
+    this.repos = new ReposModule({
+      data: d.data, reposDir: d.reposDir, ask, here,
+      workspaces: (ws) => d.sessionsIn(ws, "", 2_000).flatMap((k) => d.store.getSession(k)?.workspace ?? []),
+      git: d.git ?? (async () => { throw new Error("no git here"); }),
+    });
+    const none = { owners: () => [], grantOwners: () => [], plain: { items: () => [], item: () => null, put: () => {}, forget: () => {} }, vaults: { vaults: () => [], vault: () => null, items: () => [], item: () => null, putVault: () => {}, putItem: () => {}, forgetItem: () => {}, forgetVault: () => {} } };
+    const v = d.vault ?? none;
+    this.vault = new VaultModule({ data: d.data, owners: (ws) => v.owners(ws), plain: v.plain, vaults: v.vaults, ask });
+    const work = d.work ?? { gather: gatherSoon };
+    this.home = new AgentHomeModule({
+      data: d.data, ask, here, lackMost: d.lackMost ?? 2_000,
+      homeOf: (ws) => d.homeOf?.(ws) ?? join(d.data, "agent", ws),
+      gather: (agent, scratch) => work.gather(d.data, join(d.data, "stillfail.db"), "", false, scratch, undefined, agent, []),
+      name: (station, ws) => d.roster(ws)?.find((r) => r.id === station)?.name ?? station.slice(0, 12),
+      now: () => d.fibers.now(),
+    });
+    this.settings = new SettingsModule({ data: d.data, ask, config: d.config ?? { raw: () => ({}), update: () => {} } });
     this.jobs = new JobsModule({
       data: d.data, up: d.jobs.up, stop: d.jobs.stop, start: d.jobs.start, ask: (s, r) => d.ask(s, { ...r, fromData: d.data }), here,
       chatOf: (session) => this.handover.together(session)[0] ?? session,
@@ -98,6 +139,13 @@ export class Moves {
       },
       reposDir: d.reposDir, room: d.room, hasGit: d.hasGit, git: d.git, lackMost: d.lackMost, work: d.work, fail: d.fail,
       changed: () => d.changed?.(),
+      arrivedStopped: (keys, need, ws) => this.scheduler.noteStopped({ module: "chats", id: keys[0]! }, need, ws),
+      bindingsOf: (keys) => {
+        const out: Record<string, string> = {};
+        // (by session, the connects bound to it: as many as a station has single-session connects)
+        for (const [session, connects] of d.store.listBindings()) if (keys.includes(session)) for (const c of connects) out[c] = session;
+        return out;
+      },
     });
     this.modules = [
       accountsModule({
@@ -114,11 +162,21 @@ export class Moves {
       }),
       chatsModule({
         store: d.store, handover: this.handover, hub: d.hub, ask: d.ask, here, sessionsIn: d.sessionsIn,
+        kindOf: (id) => d.connects?.kindOf(id) ?? null, wait: () => this.wait,
+        reposOf: async (keys) => {
+          const out: string[] = [];
+          for (const k of keys) {
+            const w = d.store.getSession(k)?.workspace;
+            if (w !== undefined) for (const r of await worktreesIn(w)) out.push(repoItemId(r.url));
+          }
+          return [...new Set(out)];
+        },
+        vaultsOf: (keys, ws) => v.grantOwners(keys).map((o) => `${vaultItemId(o)}@${ws}`),
         jobs: { keep: async (keys, why) => void (await this.jobs.keep(keys, why)), startKept: (keys) => this.jobs.startKept(keys) },
       }),
       this.jobs,
       connectsModule({
-        own: (ws) => d.connects?.ownIn(ws) ?? [],
+        own: (ws) => [...(d.connects?.ownIn(ws) ?? []), ...(d.connects?.movedAway?.(ws) ?? [])],
         chatsOf: (id) => this.#chatsOfConnect(id),
         runsOn: (id) => d.connects?.runsOn(id) ?? null,
         move: async (id, to) => {
@@ -127,9 +185,15 @@ export class Moves {
         },
         ask: d.ask, here,
       }),
-      ...PENDING.map(([id, label, why]) => pendingModule(id, label, why)),
+      this.repos,
+      this.vault,
+      this.home,
+      this.settings,
     ];
-    this.scheduler = new Scheduler({ data: d.data, modules: this.modules, changed: () => d.changed?.() });
+    this.scheduler = new Scheduler({
+      data: d.data, modules: this.modules, changed: () => d.changed?.(), progress: () => d.changed?.(),
+      tellArrived: async (to, item) => void (await d.ask(to, { method: "move.arrived", item })),
+    });
   }
 
   #chatsOfConnect(id: string): string[] {
@@ -166,6 +230,12 @@ export class Moves {
     return async (peer: string, request: Json, workspace?: string): Promise<Json> => {
       if (typeof request?.method === "string" && request.method.startsWith("handover.")) return handed(peer, request, workspace);
       if (!inWorkspace(peer)) throw new Refused("not a station of this workspace");
+      const method = typeof request?.method === "string" ? request.method : "";
+      const bytes = bytesOf(request);
+      if (method.startsWith("move.repo.")) return this.repos.answer(request, bytes);
+      if (method.startsWith("move.home.")) return this.home.answer(peer, request, bytes);
+      if (method.startsWith("move.setting.")) return this.settings.answer(peer, request);
+      if (method.startsWith("move.vault.")) return this.vault.answer(request);
       switch (request?.method) {
         case "move.accounts": {
           const out: Record<string, string | null> = {};
@@ -177,7 +247,8 @@ export class Moves {
           if (request.to !== peer) throw new Refused("an item goes back only to the station asking");
           const id = String(request.id ?? "");
           if (request.module === "chats") {
-            await this.handover.handOver(id, peer, { wait: true });
+            const stoppedFor = typeof request.stoppedFor?.module === "string" && typeof request.stoppedFor?.id === "string" ? { module: request.stoppedFor.module, id: request.stoppedFor.id } : undefined;
+            await this.handover.handOver(id, peer, { wait: true, stoppedFor });
             return { ok: true };
           }
           if (request.module === "accounts") {
@@ -203,6 +274,12 @@ export class Moves {
           if (this.#d.store.jobsUp().some((x) => x.sessionKey === j.session && x.name === j.name && x.command === j.command)) return { ok: true };
           this.#d.jobs.start({ ...j, cwd });
           return { ok: true };
+        }
+        case "move.arrived": {
+          // (an item the asking station moved here: what waited here for it goes on)
+          const item = request.item;
+          if (typeof item?.module !== "string" || typeof item?.id !== "string") throw new Refused("no item named");
+          return { ok: true, resumed: await this.scheduler.arrived({ module: item.module, id: item.id }) };
         }
         case "move.job.stop":
           await this.#d.jobs.stopNamed(String(request.session ?? ""), String(request.name ?? ""));

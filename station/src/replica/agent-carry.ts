@@ -22,7 +22,10 @@ import { type KeptRecord, canonical, newerRecord } from "../../../client/core-ts
 /// What an agent home is made with (sessions/agent-home.ts `workspaceAgentHome`): as good as none.
 const MADE_EMPTY = "# still.fail memory";
 
-export type HomeMerged = { memory: "put" | "appended" | "kept" | "none"; presets: number; skills: string[]; skillsKept: string[] };
+/// What a merge did: of its memory, how many presets it added and their ids, the skills it put and those it kept;
+/// `memoryBefore`: the memory as it was before (where it put or appended), so that what it added can be taken out
+/// again (move/agent-home.ts).
+export type HomeMerged = { memory: "put" | "appended" | "kept" | "none"; presets: number; presetIds?: string[]; skills: string[]; skillsKept: string[]; memoryBefore?: string | null };
 
 const there = (path: string) => stat(path).then(() => true, () => false);
 
@@ -77,9 +80,11 @@ export async function mergeAgentHome(to: string, home: CarriedHome, list: string
     const mark = memoryMark(from.origin);
     if (theirs === "" || theirs === MADE_EMPTY || ours.includes(mark)) out.memory = "kept";
     else if (ours.trim() === "" || ours.trim() === MADE_EMPTY) {
+      out.memoryBefore = ours;
       await writeWhole(path, `${theirs}\n\n${mark}\n`);
       out.memory = "put";
     } else {
+      out.memoryBefore = ours;
       const day = new Date(from.at).toISOString().slice(0, 10);
       await writeWhole(path, `${ours.trimEnd()}\n\n## From station ${from.name || from.origin.slice(0, 12)} (retired into this one on ${day})\n\n${mark}\n\n${theirs}\n`);
       out.memory = "appended";
@@ -97,6 +102,9 @@ export async function mergeAgentHome(to: string, home: CarriedHome, list: string
       if (merged.taken > 0) {
         await writeWhole(path, `${JSON.stringify(merged.file, null, 2)}\n`);
         out.presets = merged.taken;
+        // (those it added that were not here at all: what moving it back takes out)
+        const ids = new Set(ours.presets.map((x: any) => x?.id).filter((x: unknown) => typeof x === "string"));
+        out.presetIds = theirs.presets.filter((x: any) => typeof x?.id === "string" && !ids.has(x.id)).map((x: any) => x.id as string);
       }
     }
   }

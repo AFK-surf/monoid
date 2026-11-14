@@ -18,9 +18,16 @@ A move is made of items, each of one module, each moved and moved back on its ow
   once there, as its next turn starts. A failure before the switch leaves it working here as before.
 - `jobs`: one job or service a chat had running. Stopped as its chat is held, started there once the chat is there
   (moving one chat moves its jobs right after). A job runs on one station at a time.
-- `connects`: one Slack or Feishu connect, once the chats that came through it are there. Comma and single-session
-  connects cannot move yet (plan says why).
-- `agent-home`, `settings`, `repos`, `vault`: not built as modules yet; plan lists each with what to do instead.
+- `connects`: one Slack or Feishu connect, once the chats that came through it are there. A Comma or single-session
+  connect goes first: its chats here stop, and each goes on there as it moves.
+- `repos`: a repository a chat's git worktree hangs on (cloned there, what no remote has sent along); a chat with such
+  a worktree needs it there first.
+- `vault`: an owner's secrets kept here (the station's copies of them). Granted secrets are asked again there.
+- `agent-home`: the agents' memory, presets and people's skills, merged there (nothing there overwritten).
+- `settings`: config.json's choices (sandboxes, agentEnv, archiving and the like); back, the other's are put back.
+
+An item can also arrive stopped where what it needs is not there yet (`arriveStopped`, or moving back: what needs an
+item comes back first, stopped, then the item), and goes on as that arrives.
 
 How to go about it:
 
@@ -32,7 +39,9 @@ How to go about it:
    an owner or admin confirms in the still.fail app; then every item moves in order, those that cannot are listed with
    why, and it stops at the first failure and says which. Connects and logins go last by their needs.
 4. `status {to}` says where each stands (`stopped` items name what they wait for).
-5. `back {to: <the station it is on>, module, item}` moves it back here; an item something there still needs is
+5. `station: <another station>` has that station do any of these with its own items (`all` excepted: ask from a
+   chat there). `wait: false` refuses a chat that is in a turn rather than waiting for it.
+6. `back {to: <the station it is on>, module, item}` moves it back here; an item something there still needs is
    refused, naming it: move that back first, or ask with `all`.
 
 A station moved whole is still in the workspace afterwards: taking it out is the person's own step in the app.

@@ -9,6 +9,10 @@ import { chatCards } from "../replica/retire-asks.ts";
 import { gitHere, gitRun } from "../replica/retire.ts";
 import { MoveAsks, moveTools } from "../tools/move.ts";
 import { Moves } from "./station.ts";
+import { moveRoutes } from "./routes.ts";
+import { join } from "node:path";
+import { plainStore } from "../vault/plain.ts";
+import { vaultStore } from "../vault/store.ts";
 
 type Json = any;
 
@@ -30,6 +34,16 @@ export const MovesLive = Layer.effectDiscard(
     };
     const hub = agents.hub;
     const wc = () => agents.workspaceConnects;
+    // (a burst of changes, a file's progress among them, told once: what the app's page reads again, GET /move)
+    let telling: (() => void) | null = null;
+    const changed = () => {
+      if (telling !== null) return;
+      telling = fibers.after(500, () => { // timer: a debounce of a burst (each file's progress)
+        telling = null;
+        events.tell("move", { changed: true }, "move", {});
+        events.overviewChanged();
+      });
+    };
     const moves = new Moves({
       data, store, fibers, roster,
       here: () => key.id,
@@ -52,6 +66,7 @@ export const MovesLive = Layer.effectDiscard(
         own: () => wc()?.ownIds() ?? [],
         ownIn: (ws) => wc()?.ownKinds(ws) ?? [],
         runsOn: (id) => wc()?.runsOn(id) ?? null,
+        movedAway: (ws) => wc()?.movedAway(ws) ?? [],
         move: (id, to) => wc()!.move(id, to, null),
       },
       jobs: {
@@ -70,12 +85,26 @@ export const MovesLive = Layer.effectDiscard(
       reposDir: hub.reposDir(),
       git: gitRun,
       hasGit: gitHere,
-      changed: () => events.overviewChanged(),
+      changed: () => changed(),
+      config: agents.config,
+      homeOf: (ws) => (cloud.home() === ws ? hub.config().agentHome : join(hub.config().agentHome, "workspaces", ws)),
+      vault: {
+        owners: (ws) => [...new Set([
+          ...(store.db.prepare("SELECT DISTINCT owner FROM vault_plain WHERE ws = ? LIMIT 500").all(ws) as { owner: string }[]).map((r) => r.owner),
+          ...vaultStore(store.db).vaults(ws).map((x) => x.owner),
+        ])],
+        grantOwners: (keys) => [...new Set((store.db.prepare("SELECT body FROM vault_grants WHERE session IN (SELECT value FROM json_each(?)) LIMIT 500").all(JSON.stringify(keys)) as { body: string }[])
+          .flatMap((r) => { try { const o = JSON.parse(r.body)?.request?.owner; return typeof o === "string" ? [o] : []; } catch { return []; } }))],
+        plain: plainStore(store.db),
+        vaults: vaultStore(store.db) as Json,
+      },
     });
     yield* Effect.addFinalizer(() => Effect.promise(() => moves.close()));
     const inWorkspace = (peer: string) => cloud.memberships().some((m) => m.peers.some((p: Json) => p?.id === peer));
     const answers = moves.answers(inWorkspace);
     bus.on("handover.", answers);
+    // (a station heard from again: what is owed to it of a hand-over is told now)
+    bus.heard((peer) => moves.handover.reached(peer));
     bus.on("move.", answers);
     const asks = new MoveAsks({
       data, scheduler: moves.scheduler,
@@ -84,7 +113,19 @@ export const MovesLive = Layer.effectDiscard(
       roster,
       cards: chatCards(hub as Json),
       notify: (session, text) => hub.notify(session, text),
+      ask: (station, request) => bus.ask(station, request),
+      setWait: (w) => void (moves.wait = w),
     });
+    bus.on("move.tool", async (peer, request, workspace) => {
+      if (!inWorkspace(peer) || typeof workspace !== "string") throw new Error("not a station of this workspace");
+      return asks.toolIn(workspace, null, request?.args ?? {});
+    });
+    parts.routes(moveRoutes({
+      scheduler: moves.scheduler,
+      order: () => moves.modules.map((m) => m.id),
+      home: () => cloud.home(),
+      station: (ws, v) => roster(ws)?.find((r) => r.id === v || r.name.toLowerCase() === v.toLowerCase() || (v.length >= 8 && r.id.startsWith(v)))?.id ?? null,
+    }));
     parts.cardChoice("move", { may: (viewer, card, at) => asks.may(viewer, card, at), chosen: (viewer, card, option, at) => asks.chosen(viewer, card, option, at) });
     parts.tools(moveTools(asks));
     bus.whenAttached(() => void moves.start().catch((e) => log.warn("move", "the migrations did not go on", { error: (e as Error).message })));

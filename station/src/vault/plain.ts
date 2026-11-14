@@ -149,6 +149,11 @@ export class PlainStore {
     return null;
   }
 
+  /// An item let go of whole, no version kept (what a move put here, taken back: move/vault.ts).
+  forget(ws: string, id: string): void {
+    this.#db.prepare("DELETE FROM vault_plain WHERE ws = ? AND id = ?").run(ws, id);
+  }
+
   /// A new version, in place of the one before; a deleted one keeps nothing of what it held.
   put(i: PlainItem): void {
     const kept: PlainItem = i.deleted ? { ws: i.ws, id: i.id, owner: i.owner, version: i.version, kind: i.kind, name: "", fields: {}, notes: "", at: i.at, deleted: true } : i;

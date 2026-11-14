@@ -96,9 +96,12 @@ export async function sessionSend(hub: Hub, key: string, args: Args): Promise<st
   const paths: string[] = Array.isArray(args.files) ? args.files.map(jsString) : [];
   const [title, link] = sender(hub, key);
   const here = link !== null ? linkedStation(link) : null;
-  const there = linkedStation(to);
+  // (a chat handed from here to another station is written to where it is now: replica/handover.ts)
+  const named0 = linkedSession(to)?.[0] ?? to;
+  const handed = (linkedStation(to) === null || linkedStation(to) === here) ? hub.store.handedTo(named0) : null;
+  const there = handed !== null ? handed.station : linkedStation(to);
   if (there !== null && there !== here) {
-    const target = linkedSession(to)?.[0];
+    const target = handed !== null ? named0 : linkedSession(to)?.[0];
     if (target === undefined) throw new Error(`${to} names no chat`);
     const call = peersOf(hub, key);
     if (!call) throw new Error("other stations cannot be reached from this one yet");
@@ -157,6 +160,9 @@ export async function fromPeer(hub: Hub, peer: string, request: Json, ws: string
   const target = typeof request?.to === "string" ? request.to : "";
   const from = typeof request?.session === "string" ? request.session : "";
   if (text === "" || target === "" || from === "" || chars(text) > MAX_TEXT) throw new Error(`a message needs to, session and text (at most ${MAX_TEXT} characters)`);
+  // (a chat handed from here to another station takes it there, as the sender would have sent it)
+  const handed = hub.store.handedTo(target);
+  if (handed !== null && hub.peers() !== null && handed.station !== peer) return await hub.peers()!(handed.station, { ...request, ...(ws !== null ? { workspace: ws } : {}) });
   if (hub.store.getSession(target) === null || !reachable(hub, target, ws, true)) throw new Error(`no session ${target} on this station (it may have been deleted)`);
   const thread = sessionThreadOf(hub, target);
   if (hub.store.manuallyArchived(thread.thread.id)) throw new Error(`that chat was archived by hand: it takes no messages until someone restores it`);

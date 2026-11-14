@@ -16,7 +16,8 @@ export type Planned = Item & ItemState & { wouldStop: Need[] };
 export type Plan = { ws: string; to: string; modules: { id: string; needs: readonly string[] }[]; items: Planned[] };
 /// Which items: one (`module` and `item`), a module's (`module`), or all (`all`); `withNeeds`: what they need first;
 /// `follow`: the items of these modules that need only what moved go with it (a chat's jobs).
-export type Selection = { module?: string; item?: string; all?: boolean; withNeeds?: boolean; follow?: string[] };
+/// `arriveStopped`: an item whose need is not there goes all the same, arriving there stopped, waiting for it.
+export type Selection = { module?: string; item?: string; all?: boolean; withNeeds?: boolean; follow?: string[]; arriveStopped?: boolean };
 /// What came of a move or a move back: moved in order; refused (not tried: why); stopped as their need went; the
 /// failure it stopped at.
 export type Outcome = { done: Need[]; refused: { item: Need; why: string }[]; stopped: { item: Need; waitsFor: Need }[]; resumed: Need[]; failed: { item: Need; error: string } | null };
@@ -29,6 +30,8 @@ export type SchedulerDeps = {
   changed?: () => void;
   /// Progress of the item moving now.
   progress?: (item: Need, p: Progress) => void;
+  /// Tells station `to` that `item` is there now: what is stopped there waiting for it goes on (`arrived`).
+  tellArrived?: (to: string, item: Need) => Promise<void>;
 };
 
 const stoppedFile = (data: string) => join(data, "move", "stopped.json");
@@ -76,6 +79,8 @@ export class Scheduler {
         items.push(item);
       }
     }
+    const cycle = itemCycle(items);
+    if (cycle !== null) throw new Error(`these items need each other, so none can go first: ${cycle.map(named).join(" → ")}`);
     const planned: Planned[] = items.map((item) => {
       const st = this.#stateOf(item);
       return { ...item, ...st, wouldStop: [] };
@@ -133,8 +138,8 @@ export class Scheduler {
         continue;
       }
       const waits = p.needs.find((n) => !thereNow.has(named(n)) && find(n) !== undefined);
-      if (waits !== undefined) {
-        out.refused.push({ item: p, why: `it needs ${named(waits)} (${find(waits)!.label}) there first: move that first, or ask with withNeeds` });
+      if (waits !== undefined && sel.arriveStopped !== true) {
+        out.refused.push({ item: p, why: `it needs ${named(waits)} (${find(waits)!.label}) there first: move that first, or ask with withNeeds (or arriveStopped: it waits there for it)` });
         continue;
       }
       const m = this.#modules.get(p.module)!;
@@ -147,12 +152,14 @@ export class Scheduler {
       }
       if (stops.length > 0) await this.#saveStopped();
       try {
-        await m.move(p, to, (progress) => this.#d.progress?.(p, progress));
+        await m.move(p, to, (progress) => this.#d.progress?.(p, progress), waits === undefined ? undefined : { stoppedFor: { module: waits.module, id: waits.id } });
       } catch (e) {
         out.failed = { item: p, error: (e as Error).message };
         await this.#unstop((s) => sameItem(s.waitsFor, p) && stops.some((x) => sameItem(x, s.item)), true);
         break;
       }
+      // (what waits for it there goes on)
+      await this.#d.tellArrived?.(to, { module: p.module, id: p.id }).catch((e) => log.warn("move", "the other station not told what came", { item: named(p), error: (e as Error).message }));
       thereNow.add(named(p));
       out.done.push({ module: p.module, id: p.id });
       for (const x of stops) out.stopped.push({ item: { module: x.module, id: x.id }, waitsFor: { module: p.module, id: p.id } });
@@ -202,11 +209,17 @@ export class Scheduler {
         out.refused.push({ item: p, why: `${named(dependent)} (${dependent.label}) there needs it: move that back first, or ask for all` });
         continue;
       }
+      // (what it needs that is still there and cannot be had here: it comes back stopped, waiting for it)
+      const waits = p.needs.map(find).find((n): n is Planned => n !== undefined && stillThere.has(named(n)) && this.#modules.get(n.module)!.usableHere?.(n) !== true);
       try {
-        await this.#modules.get(p.module)!.back(p, from);
+        await this.#modules.get(p.module)!.back(p, from, waits === undefined ? undefined : { stoppedFor: { module: waits.module, id: waits.id } });
       } catch (e) {
         out.failed = { item: p, error: (e as Error).message };
         break;
+      }
+      if (waits !== undefined) {
+        await this.noteStopped({ module: p.module, id: p.id }, { module: waits.module, id: waits.id }, ws, false);
+        out.stopped.push({ item: { module: p.module, id: p.id }, waitsFor: { module: waits.module, id: waits.id } });
       }
       stillThere.delete(named(p));
       out.done.push({ module: p.module, id: p.id });
@@ -216,6 +229,24 @@ export class Scheduler {
       this.#d.changed?.();
     }
     return out;
+  }
+
+  /// An item that arrived here stopped, waiting for `waitsFor` (a hand-over with `stoppedFor`): kept stopped here,
+  /// held by its module (`hold`; false: it held itself as it arrived).
+  async noteStopped(item: Need, waitsFor: Need, ws: string, hold = true): Promise<void> {
+    if (this.#stopped.some((s) => sameItem(s.item, item))) return;
+    if (hold) await this.#modules.get(item.module)?.stop?.({ module: item.module, id: item.id, label: item.id, needs: [waitsFor] }, waitsFor);
+    this.#stopped.push({ item, waitsFor, ws });
+    await this.#saveStopped();
+    this.#d.changed?.();
+  }
+
+  /// `item` is here now (another station moved it here): what waited here for it goes on.
+  async arrived(item: Need): Promise<Need[]> {
+    const going = this.#stopped.filter((s) => sameItem(s.waitsFor, item)).map((s) => s.item);
+    await this.#unstop((s) => sameItem(s.waitsFor, item), true);
+    this.#d.changed?.();
+    return going;
   }
 
   /// The stopped items `which` names let go (`resume`: told to go on here; else they moved).
@@ -238,6 +269,34 @@ export class Scheduler {
     await writeFile(tmp, JSON.stringify(this.#stopped));
     await rename(tmp, path);
   }
+}
+
+/// A chain of items that need each other round (null: none): modules may need each other, items may not.
+function itemCycle(items: Item[]): Item[] | null {
+  const by = new Map(items.map((x) => [named(x), x]));
+  const state = new Map<string, 1 | 2>();
+  const path: Item[] = [];
+  const visit = (x: Item): Item[] | null => {
+    const k = named(x);
+    if (state.get(k) === 2) return null;
+    if (state.get(k) === 1) return [...path.slice(path.findIndex((y) => named(y) === k)), x];
+    state.set(k, 1);
+    path.push(x);
+    for (const n of x.needs) {
+      const y = by.get(named(n));
+      if (y === undefined) continue;
+      const c = visit(y);
+      if (c !== null) return c;
+    }
+    path.pop();
+    state.set(k, 2);
+    return null;
+  };
+  for (const x of items) {
+    const c = visit(x);
+    if (c !== null) return c;
+  }
+  return null;
 }
 
 function select(all: Planned[], sel: Selection): Planned[] {

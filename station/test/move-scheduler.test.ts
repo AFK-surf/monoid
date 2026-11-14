@@ -91,7 +91,8 @@ test("moving back is refused while something there needs it, naming it; asked fo
   log.length = 0;
   const all = await s.back("ws", "B", { module: "accounts", item: "sub", withNeeds: true });
   assert.deepEqual(all.done.map((d) => `${d.module}/${d.id}`), ["jobs/j1", "chats/c1", "accounts/sub"]);
-  assert.deepEqual(log, ["back jobs/j1", "back chats/c1", "back accounts/sub"]);
+  // (the job comes back first, stopped as its chat is still there, and goes on as its chat comes)
+  assert.deepEqual(log, ["back jobs/j1", "back chats/c1", "resume jobs/j1", "back accounts/sub"]);
 });
 
 test("an item moved away that cannot be had here stops what needs it here, before it goes; started again it is still stopped; it goes on as the item comes back, or as it moves itself", async () => {
@@ -143,4 +144,36 @@ test("a whole move: everything in its needs' order, what cannot move listed with
   assert.deepEqual(back.refused, []);
   assert.ok((await ok.s.plan("ws", "B")).items.every((x) => x.state === "here"));
   assert.deepEqual(ok.s.stopped(), []);
+});
+
+test("modules may need each other; items may not: a chain of items needing each other round is refused, named", async () => {
+  const log: string[] = [];
+  const chats = fake("chats", ["connects"], [{ id: "c1", label: "c", needs: [{ module: "connects", id: "k1" }] }], log);
+  const connects = fake("connects", ["chats"], [{ id: "k1", label: "k", needs: [{ module: "chats", id: "c1" }] }, { id: "k2", label: "k2", needs: [] }], log);
+  const s = new Scheduler({ data: mkdtempSync(join(tmpdir(), "move-")), modules: [chats, connects] });
+  await assert.rejects(s.plan("ws", "B"), /need each other, so none can go first: chats c1 → connects k1 → chats c1|connects k1 → chats c1 → connects k1/);
+  // (the modules' needs alone, a cycle of their own, are fine)
+  const ok = new Scheduler({ data: mkdtempSync(join(tmpdir(), "move-")), modules: [fake("chats", ["connects"], [], log), fake("connects", ["chats"], [{ id: "k2", label: "k2", needs: [] }], log)] });
+  assert.equal((await ok.plan("ws", "B")).items.length, 1);
+});
+
+test("an item may go to where what it needs is not (arriveStopped), and is told there what it waits for; back, what needs an item there comes first, arriving stopped", async () => {
+  const { log, s } = world();
+  const told: string[] = [];
+  const arrived: string[] = [];
+  const w2 = world();
+  const s2 = new Scheduler({ data: mkdtempSync(join(tmpdir(), "move-")), modules: [w2.accounts, w2.chats, w2.jobs], tellArrived: async (to, item) => void arrived.push(`${to}:${item.module}/${item.id}`) });
+  const out = await s2.move("ws", "B", { module: "chats", item: "c2", arriveStopped: true });
+  assert.deepEqual(out.done, [{ module: "chats", id: "c2" }]);
+  assert.deepEqual(arrived, ["B:chats/c2"]);
+  void told;
+  void s;
+  void log;
+  // back: c2's account goes back after it; c2 arrives stopped, then goes on
+  await s2.move("ws", "B", { module: "accounts", item: "grok" });
+  w2.log.length = 0;
+  const back = await s2.back("ws", "B", { module: "accounts", item: "grok", withNeeds: true });
+  assert.deepEqual(back.done.map((d) => `${d.module}/${d.id}`), ["chats/c2", "accounts/grok"]);
+  assert.deepEqual(back.stopped, [{ item: { module: "chats", id: "c2" }, waitsFor: { module: "accounts", id: "grok" } }]);
+  assert.deepEqual(back.resumed, [{ module: "chats", id: "c2" }]);
 });

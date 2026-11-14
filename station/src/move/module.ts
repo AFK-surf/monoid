@@ -17,6 +17,8 @@ export type Item = { module: string; id: string; label: string; needs: Need[]; c
 export type State = "here" | "moving" | "there" | "failed" | "stopped";
 export type Progress = { done: number; total: number; unit: string };
 export type ItemState = { state: State; error?: string; progress?: Progress; waitsFor?: Need };
+/// How an item arrives: stopped, waiting for `stoppedFor` (the station it arrives at keeps it stopped).
+export type Arrive = { stoppedFor?: Need };
 
 export interface Module {
   readonly id: string;
@@ -24,10 +26,11 @@ export interface Module {
   readonly needs: readonly string[];
   /// What it would move of `ws` here to `to` (bounded: a page of each of what there are many of).
   plan(ws: string, to: string): Promise<Item[]>;
-  /// The item moved to `to`, its progress told as it goes; safe to start again after a stop.
-  move(item: Item, to: string, progress: (p: Progress) => void): Promise<void>;
-  /// The item here again as it was, from `from`; safe to start again.
-  back(item: Item, from: string): Promise<void>;
+  /// The item moved to `to`, its progress told as it goes; safe to start again after a stop. `stoppedFor`: what it
+  /// needs is not usable there yet: it arrives stopped, waiting for that (the scheduler says so, never the module).
+  move(item: Item, to: string, progress: (p: Progress) => void, opts?: Arrive): Promise<void>;
+  /// The item here again as it was, from `from`; safe to start again. `stoppedFor`: as `move`'s, here.
+  back(item: Item, from: string, opts?: Arrive): Promise<void>;
   state(item: Item): ItemState;
   /// Whether the item, moved away, can still be had here (an account this station borrows from where it went).
   /// Absent: it cannot.

@@ -1740,7 +1740,9 @@ export class Retire {
 /// to its commit, its branch taken where no branch of that name is here. Its files are left as they were put: what it
 /// changed shows as changed. One that cannot be made is left as its files, its bundle kept beside it
 /// (`<dir>.carried.bundle`: the only copy of its commits no remote has), counted.
-export async function rebuildGits(dataDir: string, reposDir: string, carry: { dataDir: string; gits: CarryIndex["gits"] }, from: string, git: (dir: string, args: string[]) => Promise<string>): Promise<{ made: number; failed: number }> {
+/// `clone` false: a repository not in the cache already is not cloned, and its remote not fetched: a chat handed over
+/// (handover.ts) has its repository moved before it by the repos module (move/repos.ts), and only adds its worktree.
+export async function rebuildGits(dataDir: string, reposDir: string, carry: { dataDir: string; gits: CarryIndex["gits"] }, from: string, git: (dir: string, args: string[]) => Promise<string>, opts: { clone?: boolean } = {}): Promise<{ made: number; failed: number }> {
   let made = 0;
   let failed = 0;
   const repos = new Map<string, string>();
@@ -1757,6 +1759,7 @@ export async function rebuildGits(dataDir: string, reposDir: string, carry: { da
         return dir;
       }
     }
+    if (opts.clone === false) throw new Error(`its repository (${remote}) is not on this station: move it first (station_move, module repos)`);
     const base = basename(remote).replace(/\.git$/, "").replace(/[^A-Za-z0-9._-]/g, "-") || "repo";
     let name = base;
     for (let i = 2; await there(join(reposDir, name)); i++) name = `${base}-${i}`;
@@ -1782,7 +1785,7 @@ export async function rebuildGits(dataDir: string, reposDir: string, carry: { da
       }
       const repo = await repoOf(g.remote);
       if (g.bundle !== null) await git(repo, ["fetch", "-q", join(from, g.bundle), `+HEAD:refs/carried/${g.head}`]);
-      if (await git(repo, ["cat-file", "-e", `${g.head}^{commit}`]).then(() => false, () => true)) await git(repo, ["fetch", "-q", "origin"]);
+      if (opts.clone !== false && await git(repo, ["cat-file", "-e", `${g.head}^{commit}`]).then(() => false, () => true)) await git(repo, ["fetch", "-q", "origin"]);
       const beside = `${dir}.git-carrying`;
       await rm(beside, { recursive: true, force: true });
       await git(repo, ["worktree", "add", "-q", "--no-checkout", "--detach", beside, g.head]);

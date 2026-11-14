@@ -23,7 +23,7 @@ export const MOVE_TOOL = {
     "Move this station's chats, accounts, jobs and connects to another station of the chat's workspace, one item or all, and back. Read the stillfail-move skill first. " +
     "plan {to}: every item, what it needs moved first, what cannot move and why, what a move would stop here. " +
     "move {to, module, item}: one item (a chat: its session key; its jobs follow); withNeeds moves what it needs first; all moves everything, after an owner or admin confirms a card in the app. " +
-    "back {module, item, to: where it is}: moves it back here. status: where each stands.",
+    "back {module, item, to: where it is}: moves it back here. status: where each stands. station: another station of the workspace does it (its own items); wait false: a chat in a turn is refused rather than waited for.",
   inputSchema: {
     type: "object",
     properties: {
@@ -33,6 +33,8 @@ export const MOVE_TOOL = {
       item: { type: "string" },
       withNeeds: { type: "boolean" },
       all: { type: "boolean" },
+      station: { type: "string" },
+      wait: { type: "boolean" },
     },
     required: ["action"],
     additionalProperties: false,
@@ -50,6 +52,10 @@ export type MoveAsksDeps = {
   roster: (ws: string) => { id: string; name: string }[] | null;
   cards: { post(session: string, text: string, card: Json): Promise<{ thread: number; ts: string } | null> };
   notify: (session: string, text: string) => void;
+  /// Asks another station of the workspace (its station_move, `move.tool`).
+  ask?: (station: string, request: Json) => Promise<Json>;
+  /// Whether a busy chat's turn is waited for, for the request under way (move/station.ts `wait`).
+  setWait?: (wait: boolean) => void;
 };
 
 export class MoveAsks {
@@ -83,6 +89,25 @@ export class MoveAsks {
   async tool(session: string, args: Json): Promise<Json> {
     const ws = this.#d.wsOf(session);
     if (ws === null) throw new Refused("this chat is of no workspace here");
+    // (another station asked to do it, of its own items: as station_retire asked one)
+    if (typeof args.station === "string" && args.station.trim() !== "") {
+      const roster = this.#d.roster(ws) ?? [];
+      const s = args.station.trim();
+      const at = roster.find((r) => r.id === s) ?? roster.find((r) => r.name.toLowerCase() === s.toLowerCase()) ?? roster.find((r) => s.length >= 8 && r.id.startsWith(s));
+      if (at === undefined) throw new Refused(`no station ${s} in this chat's workspace: station_list lists them`);
+      if (at.id !== this.#d.here()) {
+        if (args.all === true) throw new Refused(`moving all of station ${at.name} is confirmed on a card in a chat on that station: ask from one there (chat_create opens one)`);
+        if (this.#d.ask === undefined) throw new Refused("other stations cannot be asked from here");
+        const { station: _, ...rest } = args;
+        return await this.#d.ask(at.id, { method: "move.tool", workspace: ws, args: rest });
+      }
+    }
+    return await this.toolIn(ws, session, args);
+  }
+
+  /// The tool's work for workspace `ws` (`session`: the chat asking here; null: asked by another station).
+  async toolIn(ws: string, session: string | null, args: Json): Promise<Json> {
+    this.#d.setWait?.(args.wait !== false);
     const sel: Selection = { module: typeof args.module === "string" ? args.module : undefined, item: typeof args.item === "string" ? args.item : undefined, withNeeds: args.withNeeds === true, all: args.all === true };
     switch (args.action) {
       case "plan":
@@ -93,7 +118,10 @@ export class MoveAsks {
       }
       case "move": {
         const to = this.#station(ws, args.to);
-        if (sel.all === true) return await this.#askAll(session, ws, to);
+        if (sel.all === true) {
+          if (session === null) throw new Refused("moving all of a station is confirmed on a card in a chat on it");
+          return await this.#askAll(session, ws, to);
+        }
         if (sel.module === undefined || sel.item === undefined) throw new Refused("move: name the module and the item (station_move plan lists them), or all");
         const out = await this.#d.scheduler.move(ws, to.id, { ...sel, follow: sel.module === "chats" ? ["jobs"] : undefined });
         return { outcome: out, say: outcomeWords(out, "moved to", to.name) };

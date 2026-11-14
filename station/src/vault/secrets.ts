@@ -78,6 +78,8 @@ CREATE TABLE IF NOT EXISTS vault_grants (
   body TEXT NOT NULL,
   PRIMARY KEY (ws, id)
 );
+-- A session's grants (move/vault.ts: whose secrets a chat that moves needs).
+CREATE INDEX IF NOT EXISTS vault_grants_session ON vault_grants (session);
 `;
 
 /// The words of a grant's scope on its card, and what each means.

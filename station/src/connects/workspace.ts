@@ -308,6 +308,10 @@ export class WorkspaceConnects {
   ownKinds(ws: string): { id: string; name: string; kind: string; mode: string }[] {
     return this.namedIn(ws).map((c) => ({ ...c, mode: this.entryOf(c.id)?.mode === "single-session" ? "single-session" : "multi-session" }));
   }
+  /// The connects of `ws` added on this station that run on another one now (moved there).
+  movedAway(ws: string): { id: string; name: string; kind: string; mode: string }[] {
+    return this.remote.connects().filter((c) => c.workspace === ws && !c.id.includes("@")).map((c) => ({ id: c.id, name: c.id, kind: c.kind, mode: c.mode }));
+  }
   /// The ids of every connect of this station's.
   ownIds(): string[] {
     return this.entries().filter((c) => typeof c?.id === "string").map((c) => c.id as string);

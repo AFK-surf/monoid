@@ -8,7 +8,7 @@
 // with their connects (connects/workspace.ts) and their moves (move/station.ts), over a transport of the test's.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
 import { PeerBus, bytesOf, withBytes } from "../src/mesh/bus.ts";
@@ -22,6 +22,12 @@ import { sessionKey } from "../src/sessions/hub.ts";
 import { NOTICE_MARK } from "../src/sessions/chat.ts";
 import { newSession, say } from "../src/sessions/lifecycle.ts";
 import { Moves } from "../src/move/station.ts";
+import { moveView } from "../src/move/routes.ts";
+import { plainStore } from "../src/vault/plain.ts";
+import { vaultStore } from "../src/vault/store.ts";
+import { METHOD, fromPeer } from "../src/sessions/messages.ts";
+import { tell } from "../src/replica/copies.ts";
+import { nothingTold } from "../src/replica/export.ts";
 import { Rig, message, reply, testClock } from "./hub-fakes.ts";
 
 type Json = any;
@@ -39,6 +45,9 @@ function across(v: Json): Json {
 type Station = {
   id: string; rig: Rig; bus: PeerBus; connects: WorkspaceConnects; moves: Moves; fibers: Fibers; up: boolean;
   jobs: (CarriedJob & { id: string })[]; started: string[]; free: number; fails: Set<string>; onFail: ((step: string) => void) | null;
+  /// Its own connects' surfaces, by their id here; git run as the station runs it.
+  local: Map<string, Json>;
+  git: (dir: string, args: string[]) => Promise<string>;
   make(): Moves;
 };
 
@@ -70,14 +79,14 @@ function world(ids: string[] = [A, B]) {
       : [{ id: `cc${tag}`, runtime: "claude", home: `homes/cc${tag}`, share: { id: "sh-cc", borrowed: true, host: A } }, { id: `cx${tag}`, runtime: "codex", home: `homes/cx${tag}`, env: { OPENAI_API_KEY: "k" } }];
     if (id !== A) rig.raw.connects = [];
     else rig.raw.connects = rig.raw.connects.filter((c: Json) => c.id !== "team");
+    st.local = new Map<string, Json>([["cl", rig.chat], ["gpt", rig.gptChat]]);
     const config = () => {
       const read = hubConfig(rig.raw, rig.dir);
       read.connects.push(...st.connects.remote.connects());
       return read;
     };
     Object.defineProperty(rig, "config", { get: config, configurable: true });
-    const local = new Map([["cl", rig.chat], ["gpt", rig.gptChat]]);
-    rig.hub = rig.newHub({ chats: (c) => (rig.raw.connects.some((e: Json) => e.id === c) ? local.get(c) : undefined) ?? st.connects.remote.surface(c) });
+    rig.hub = rig.newHub({ chats: (c) => (rig.raw.connects.some((e: Json) => e.id === c) ? st.local.get(c) : undefined) ?? st.connects.remote.surface(c) });
     st.connects = new WorkspaceConnects({
       data: rig.dir, hub: () => rig.hub, store: rig.store, config: { raw: () => rig.raw, update: (f) => f(rig.raw) }, bus: st.bus,
       here: () => id, home: () => WS, stations: (ws) => (ws === WS ? roster : []), names: () => null,
@@ -92,7 +101,7 @@ function world(ids: string[] = [A, B]) {
         hub: { holdChat: (k, w) => hub.holdChat(k, w), releaseChat: (k) => hub.releaseChat(k), wakeChat: (k) => hub.wakeChat(k), busy: (k) => hub.busy(k), turnEnded: (k) => hub.turnEnded(k), drained: (c, ch, ts) => hub.drained(c, ch, ts), wsOf: (k) => hub.wsOf(k) },
         connects: {
           route: (c, ch, ts, to) => wc.route(c, ch, ts, to), describedFor: (c) => wc.describedFor(c), learnOf: (k, s, d) => wc.learnOf(k, s, d), kindOf: (c) => wc.kindOf(c),
-          own: () => wc.ownIds(), ownIn: (ws) => wc.ownKinds(ws), runsOn: (c) => wc.runsOn(c), move: (c, to) => wc.move(c, to, null),
+          own: () => wc.ownIds(), ownIn: (ws) => wc.ownKinds(ws), runsOn: (c) => wc.runsOn(c), move: (c, to) => wc.move(c, to, null), movedAway: (ws) => wc.movedAway(ws),
         },
         jobs: {
           up: (keys, ws) => st.jobs.filter((j) => (keys === null ? ws === undefined || hub.ofWorkspace(j.session, ws) : keys.includes(j.session))),
@@ -124,12 +133,27 @@ function world(ids: string[] = [A, B]) {
           st.onFail?.(step);
           if (st.fails.delete(step)) throw new Error(`the test failed ${step}`);
         },
+        git: st.git,
+        config: { raw: () => rig.raw, update: (f) => f(rig.raw) },
+        homeOf: (ws) => join(rig.dir, "agent-homes", ws),
+        vault: {
+          owners: (ws) => (rig.store.db.prepare("SELECT DISTINCT owner FROM vault_plain WHERE ws = ?").all(ws) as { owner: string }[]).map((r) => r.owner),
+          grantOwners: () => [],
+          plain: plainStore(rig.store.db),
+          vaults: vaultStore(rig.store.db) as Json,
+        },
       });
       st.bus.on("handover.", moves.answers(() => true));
       st.bus.on("move.", moves.answers(() => true));
       return moves;
     };
+    st.git = async (dir: string, args: string[]) => execFileSync("git", ["-C", dir, ...args], { encoding: "utf8", env: gitEnv(rig.dir), stdio: ["ignore", "pipe", "pipe"] }).trim();
     st.moves = st.make();
+    // (a letter to a chat of another station's, and one there coming here: messages.ts)
+    rig.hub.onPeer((station, request) => st.bus.ask(station, request));
+    st.bus.on(METHOD, (peer, request, ws) => fromPeer(rig.hub, peer, request, ws ?? null));
+    // (a station heard from again: what is owed to it is told now, as move/live.ts has it)
+    st.bus.heard((peer) => st.moves.handover.reached(peer));
     stations.set(id, st);
     open.push(async () => {
       await st.moves.close();
@@ -166,6 +190,22 @@ async function stillfailChat(st: Station) {
   mkdirSync(ws, { recursive: true });
   writeFileSync(join(ws, "notes.md"), "what I was doing");
   return { key, thread: thread.id };
+}
+
+const gitEnv = (home: string) => ({ ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@x", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@x", GIT_CONFIG_NOSYSTEM: "1", HOME: home });
+
+/// The files under `dir`, by their path in it, with their bytes (what a room holds).
+function filesOf(dir: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  const walk = (at: string) => {
+    for (const name of readdirSync(at)) {
+      const path = join(at, name);
+      if (statSync(path).isDirectory()) walk(path);
+      else out[path.slice(dir.length + 1)] = readFileSync(path, "utf8");
+    }
+  };
+  walk(dir);
+  return out;
 }
 
 const entries = (st: Station, thread: number) => st.rig.store.entriesAfter(thread, 0).map((e) => `${e.authorKind}:${e.text ?? ""}`);
@@ -253,7 +293,7 @@ test("a Slack thread's chat handed over with its connect staying here: what come
   await w.quiet();
   await w.t.adjust(RETRY_MS);
   await w.quiet();
-  assert.equal(c.rig.store.connectThreadStation(`cl@${A}`, first.channel, first.threadTs), A, "told as it was tried again");
+  assert.equal(c.rig.store.connectThreadStation(`cl@${A}`, first.channel, first.threadTs), A, `told as it was heard from again: ${JSON.stringify({ b: b.moves.handover.outs().map((o) => [o.step, o.to.slice(0, 1), o.routed, o.routes, o.shown, o.error]), a: a.moves.handover.outs().map((o) => [o.step, o.to.slice(0, 1), o.routed, o.routes.length]), c: c.moves.handover.outs().length, runsOn: b.connects.runsOn(`cl@${A}`) })}`);
   const home = a.rig.store.threadAt("slack:T1", first.channel, first.threadTs)!;
   assert.deepEqual(a.rig.said(home.id).map((m) => m.text), ["<@UBOT> look", "and the tests", "on it", "still there?", "back?"], "what was said there, once, in order");
 });
@@ -524,6 +564,274 @@ test("an account that cannot be borrowed moved, then back: its chats here stoppe
   assert.equal(a.rig.hub.chatHeld(key), null);
   const prompts = a.rig.claude.sessions.flatMap((s) => s.prompts).join("\n");
   assert.equal(prompts.split("while it is away").length - 1, 1, prompts);
+});
+
+test("an account that cannot be borrowed and its chat, both moved: the chat comes back first, stopped here waiting for it, then the account, and it goes on here; what was said to it meanwhile is delivered once", async () => {
+  const w = world();
+  const a = w.get(A);
+  const b = w.get(B);
+  a.rig.raw.profiles.push({ id: "solo", runtime: "claude", home: "homes/solo" });
+  const [key, t] = newSession(a.rig.hub, { runtime: "claude", profile: "solo", createdBy: "p@x" });
+  say(a.rig.hub, t.id, "p@x", "hi");
+  await endTurn(a, key);
+  const account = `own:solo@${A}`;
+  const there = await a.moves.scheduler.move(WS, B, { module: "chats", item: key, withNeeds: true });
+  await w.quiet();
+  assert.equal(there.failed, null, JSON.stringify(there));
+  assert.deepEqual(there.done.map((d) => d.module), ["accounts", "chats"]);
+  // the chat first: it comes back stopped, waiting for its account
+  const chat = await a.moves.scheduler.back(WS, B, { module: "chats", item: key });
+  await w.quiet();
+  assert.equal(chat.failed, null, JSON.stringify(chat));
+  assert.deepEqual(chat.stopped, [{ item: { module: "chats", id: key }, waitsFor: { module: "accounts", id: account } }]);
+  assert.equal(a.rig.store.handedTo(key), null, "here again");
+  assert.match(a.rig.hub.chatHeld(key) ?? "", /waits for accounts/);
+  const turns = a.rig.claude.count();
+  say(a.rig.hub, t.id, "p@x", "while it waits here");
+  await w.quiet();
+  assert.equal(a.rig.claude.count(), turns, "no turn while stopped");
+  // then its account: it goes on here
+  const back = await a.moves.scheduler.back(WS, B, { module: "accounts", item: account });
+  await w.quiet();
+  assert.equal(back.failed, null, JSON.stringify(back));
+  assert.deepEqual(back.resumed, [{ module: "chats", id: key }]);
+  assert.equal(a.rig.hub.chatHeld(key), null);
+  const prompts = a.rig.claude.sessions.flatMap((s) => s.prompts).join("\n");
+  assert.equal(prompts.split("while it waits here").length - 1, 1, prompts);
+  void b;
+});
+
+test("a chat of a connect that is not routed (one session for all): the connect first, its chat stopped here; the chat then, going on there; back: the chat stopped here, then the connect, and it goes on here", async () => {
+  const w = world();
+  const a = w.get(A);
+  const b = w.get(B);
+  a.rig.raw.connects.push({ id: "team", mode: "single-session", requireMention: false, bind: { runtime: "claude" } });
+  a.local.set("team", a.rig.teamChat);
+  b.local.set(`team@${A}`, b.rig.teamChat);
+  await a.connects.receive("team", { type: "message", message: message({ text: "hello team" }) });
+  await a.rig.quiet();
+  const key = a.rig.store.binding("team")!;
+  await endTurn(a, key);
+  const plan = await a.moves.scheduler.plan(WS, B);
+  assert.ok(plan.items.find((x) => x.id === key)!.needs.some((n) => n.module === "connects" && n.id === `team@${A}`), "it needs its connect");
+  assert.equal(plan.items.find((x) => x.id === key)!.cannot, undefined);
+  const connect = await a.moves.scheduler.move(WS, B, { module: "connects", item: `team@${A}` });
+  await w.quiet();
+  assert.deepEqual(connect.stopped.map((x) => x.item.id), [key]);
+  const moved = await a.moves.scheduler.move(WS, B, { module: "chats", item: key });
+  await w.quiet();
+  assert.equal(moved.failed, null, JSON.stringify(moved));
+  assert.equal(b.rig.store.binding(`team@${A}`), key);
+  await b.connects.receive(`team@${A}`, { type: "message", message: message({ text: "there now?" }) });
+  await w.quiet();
+  assert.ok(b.rig.claude.sessions.flatMap((x) => x.prompts).join("\n").includes("there now?"));
+  await endTurn(b, key);
+  // back: the chat, stopped here; then the connect
+  const chat = await a.moves.scheduler.back(WS, B, { module: "chats", item: key });
+  await w.quiet();
+  assert.equal(chat.failed, null, JSON.stringify(chat));
+  assert.deepEqual(chat.stopped.map((x) => x.waitsFor), [{ module: "connects", id: `team@${A}` }]);
+  const back = await a.moves.scheduler.back(WS, B, { module: "connects", item: `team@${A}` });
+  await w.quiet();
+  assert.equal(back.failed, null, JSON.stringify(back));
+  assert.deepEqual(back.resumed.map((x) => x.id), [key]);
+  await a.connects.receive("team", { type: "message", message: message({ text: "home?" }) });
+  await w.quiet();
+  const heard = a.rig.claude.sessions.flatMap((x) => [...x.prompts, ...x.steers]).join("\n");
+  assert.ok(heard.includes("home?"), JSON.stringify({ held: a.rig.hub.chatHeld(key), binding: a.rig.store.binding("team"), row: a.rig.store.getSession(key), connects: a.rig.raw.connects.map((c: Json) => c.id), heard }));
+});
+
+test("a hand-back is a mirror by difference: what changed there is sent, what went there is removed here, nothing else sent", async () => {
+  const w = world();
+  const a = w.get(A);
+  const b = w.get(B);
+  const { key } = await stillfailChat(a);
+  const room = a.rig.session(key).workspace;
+  writeFileSync(join(room, "stays.txt"), "the same both ways");
+  writeFileSync(join(room, "goes.txt"), "deleted there");
+  writeFileSync(join(room, "edited.txt"), "before");
+  await a.moves.scheduler.move(WS, B, { module: "chats", item: key });
+  await w.quiet();
+  const there = b.rig.session(key).workspace;
+  writeFileSync(join(there, "edited.txt"), "after, edited there");
+  utimesSync(join(there, "edited.txt"), 1_700_000_000, 1_700_000_000);
+  rmSync(join(there, "goes.txt"));
+  writeFileSync(join(there, "added.txt"), "added there");
+  const back = await a.moves.scheduler.back(WS, B, { module: "chats", item: key });
+  await w.quiet();
+  assert.equal(back.failed, null, JSON.stringify(back));
+  assert.deepEqual(filesOf(room), filesOf(there), "the room here is the one there");
+  const out = b.moves.handover.outs()[0]!;
+  assert.equal(out.sentBytes, Buffer.byteLength("after, edited there") + Buffer.byteLength("added there"), "only what changed was sent");
+});
+
+test("entries with no ts on a hand-back are neither doubled nor lost", async () => {
+  const w = world();
+  const a = w.get(A);
+  const b = w.get(B);
+  const { key, thread } = await stillfailChat(a);
+  const t = a.rig.store.getThread(thread)!;
+  const first = a.rig.store.entriesAfter(thread, 0).find((e) => e.kind === "message" && e.ts !== null)!;
+  a.rig.store.editMessage(t.surface, t.channel, t.threadTs, first.ts!, "edited here");
+  await a.moves.scheduler.move(WS, B, { module: "chats", item: key });
+  await w.quiet();
+  const tb = b.rig.store.getThread(homeThread(b, key))!;
+  b.rig.store.editMessage(tb.surface, tb.channel, tb.threadTs, first.ts!, "edited there");
+  await a.moves.scheduler.back(WS, B, { module: "chats", item: key });
+  await w.quiet();
+  const edits = a.rig.store.entriesAfter(thread, 0).filter((e) => e.kind === "edit").map((e) => e.text);
+  assert.deepEqual(edits, ["edited here", "edited there"]);
+  assert.deepEqual(entries(a, thread), entries(b, tb.id));
+});
+
+test("two still.fail chats of the same ts, one here and one there: handed over, each stays its own", async () => {
+  const w = world();
+  const a = w.get(A);
+  const b = w.get(B);
+  const { key, thread } = await stillfailChat(a);
+  const [other, ot] = newSession(b.rig.hub, { runtime: "claude", profile: "ccb", createdBy: "q@x" });
+  say(b.rig.hub, ot.id, "q@x", "b's own chat");
+  await endTurn(b, other);
+  // (the same ts as A's chat: each station mints its own)
+  b.rig.store.db.prepare("UPDATE threads SET thread_ts = ?, channel = ? WHERE id = ?").run(a.rig.store.getThread(thread)!.threadTs, a.rig.store.getThread(thread)!.channel, ot.id);
+  const before = entries(b, ot.id);
+  await a.moves.scheduler.move(WS, B, { module: "chats", item: key });
+  await w.quiet();
+  const moved = homeThread(b, key);
+  assert.notEqual(moved, ot.id, "a thread of its own");
+  assert.deepEqual(entries(b, ot.id), before, "b's own chat untouched");
+  assert.deepEqual(entries(b, moved), entries(a, thread));
+});
+
+test("a letter to a chat that moved, from a chat still here, reaches it there; reading it from here reads it there", async () => {
+  const w = world();
+  const a = w.get(A);
+  const b = w.get(B);
+  const { key } = await stillfailChat(a);
+  const mover = await stillfailChat(a);
+  await a.moves.scheduler.move(WS, B, { module: "chats", item: mover.key });
+  await w.quiet();
+  const said = await a.rig.call(key, "session_send", { to: mover.key, text: "where are you now?" });
+  await w.quiet();
+  assert.match(said, /Sent to/);
+  assert.ok(b.rig.claude.sessions.flatMap((s) => s.prompts).join("\n").includes("where are you now?"), "delivered there");
+});
+
+test("a linked worktree with commits no remote has: its repository moves first, then the chat only adds its worktree; back, the clone made there is removed", async () => {
+  const w = world();
+  const a = w.get(A);
+  const b = w.get(B);
+  const { key } = await stillfailChat(a);
+  const ws = a.rig.session(key).workspace;
+  const run = (dir: string, ...args: string[]) => execFileSync("git", ["-C", dir, ...args], { encoding: "utf8", env: gitEnv(a.rig.dir), stdio: ["ignore", "pipe", "pipe"] }).trim();
+  const bare = join(a.rig.dir, "remote.git");
+  execFileSync("git", ["init", "-q", "--bare", "-b", "main", bare], { env: gitEnv(a.rig.dir) });
+  const repos = join(a.rig.dir, "repos");
+  mkdirSync(repos, { recursive: true });
+  execFileSync("git", ["clone", "-q", bare, join(repos, "proj")], { env: gitEnv(a.rig.dir), stdio: "ignore" });
+  const clone = join(repos, "proj");
+  writeFileSync(join(clone, "a.txt"), "pushed\n");
+  run(clone, "add", "-A");
+  run(clone, "commit", "-q", "-m", "pushed");
+  run(clone, "push", "-q", "origin", "HEAD:main");
+  run(clone, "worktree", "add", "-q", "-b", "feature", join(ws, "proj"));
+  writeFileSync(join(ws, "proj", "a.txt"), "pushed\nnot pushed\n");
+  run(join(ws, "proj"), "commit", "-q", "-am", "not pushed anywhere");
+  writeFileSync(join(ws, "proj", "a.txt"), "pushed\nnot pushed\nnot committed\n");
+  const head = run(join(ws, "proj"), "rev-parse", "HEAD");
+  const plan = await a.moves.scheduler.plan(WS, B);
+  const repo = `repo:${bare}`;
+  assert.ok(plan.items.find((x) => x.id === key)!.needs.some((n) => n.module === "repos" && n.id === repo), "the chat needs its repository");
+  const refused = await a.moves.scheduler.move(WS, B, { module: "chats", item: key });
+  assert.match(refused.refused[0]?.why ?? "", /needs repos/);
+  const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: key, withNeeds: true });
+  await w.quiet();
+  assert.equal(out.failed, null, JSON.stringify(out));
+  assert.deepEqual(out.done.map((d) => d.module), ["repos", "chats"]);
+  const there = join(b.rig.session(key).workspace, "proj");
+  assert.equal(run(there, "rev-parse", "HEAD"), head);
+  assert.equal(run(there, "log", "-1", "--format=%s"), "not pushed anywhere");
+  assert.equal(readFileSync(join(there, "a.txt"), "utf8"), "pushed\nnot pushed\nnot committed\n");
+  assert.match(run(there, "status", "--porcelain"), /^M a\.txt$/m, "unstaged as it was");
+  // back: the chat, then the clone made there removed
+  await a.moves.scheduler.back(WS, B, { module: "chats", item: key });
+  await a.moves.scheduler.back(WS, B, { module: "repos", item: repo });
+  await w.quiet();
+  assert.deepEqual(readdirSync(join(b.rig.dir, "repos")), []);
+});
+
+test("agent home, settings and secrets each moved, then back: both stations as they were", async () => {
+  const w = world();
+  const a = w.get(A);
+  const b = w.get(B);
+  await stillfailChat(a);
+  const homeA = join(a.rig.dir, "agent-homes", WS);
+  const homeB = join(b.rig.dir, "agent-homes", WS);
+  mkdirSync(join(homeA, "skills", "deploy"), { recursive: true });
+  writeFileSync(join(homeA, "MEMORY.md"), "A remembers this");
+  writeFileSync(join(homeA, "skills", "deploy", "SKILL.md"), "how A deploys");
+  mkdirSync(join(homeB, "skills", "own"), { recursive: true });
+  writeFileSync(join(homeB, "MEMORY.md"), "B's own memory");
+  writeFileSync(join(homeB, "skills", "own", "SKILL.md"), "B's own skill");
+  const beforeA = filesOf(homeA);
+  const beforeB = filesOf(homeB);
+  a.rig.raw.agentEnv = { FOO: "from A" };
+  b.rig.raw.agentEnv = { FOO: "B's" };
+  const pa = plainStore(a.rig.store.db);
+  const pb = plainStore(b.rig.store.db);
+  pa.put({ ws: WS, id: "tok", owner: "p@x", version: 1, kind: "token", name: "token", fields: { value: "s3cret" }, notes: "", at: 1 } as Json);
+  pb.put({ ws: WS, id: "mine", owner: "p@x", version: 1, kind: "token", name: "b's", fields: { value: "b" }, notes: "", at: 1 } as Json);
+  const plainB = pb.items(WS, "p@x").map((i) => i.id);
+  const out = await a.moves.scheduler.move(WS, B, { module: "agent-home", item: `home:${WS}` });
+  await a.moves.scheduler.move(WS, B, { module: "settings", item: "setting:agentEnv" });
+  await a.moves.scheduler.move(WS, B, { module: "vault", item: `vault:p@x@${WS}` });
+  assert.equal(out.failed, null, JSON.stringify(out));
+  assert.equal(readFileSync(join(homeB, "skills", "deploy", "SKILL.md"), "utf8"), "how A deploys");
+  assert.match(readFileSync(join(homeB, "MEMORY.md"), "utf8"), /B's own memory[\s\S]*A remembers this/);
+  assert.deepEqual(b.rig.raw.agentEnv, { FOO: "from A" });
+  assert.deepEqual(pb.items(WS, "p@x").map((i) => i.id).sort(), ["mine", "tok"]);
+  for (const [module, item] of [["agent-home", `home:${WS}`], ["settings", "setting:agentEnv"], ["vault", `vault:p@x@${WS}`]] as const) {
+    const back = await a.moves.scheduler.back(WS, B, { module, item });
+    assert.equal(back.failed, null, `${module}: ${JSON.stringify(back)}`);
+  }
+  assert.deepEqual(filesOf(homeB), beforeB, "B's agent home as it was");
+  assert.deepEqual(filesOf(homeA), beforeA, "A's untouched");
+  assert.deepEqual(b.rig.raw.agentEnv, { FOO: "B's" });
+  assert.deepEqual(pb.items(WS, "p@x").map((i) => i.id), plainB, "B lets go of what this move put there, and only that");
+});
+
+test("the rows put in tell what they are, marks and reads among them, as the copies' export reads them", async () => {
+  const w = world();
+  const a = w.get(A);
+  const b = w.get(B);
+  const { key, thread } = await stillfailChat(a);
+  a.rig.store.setRead("p@x", thread, 2);
+  a.rig.store.setPin("p@x", key, true);
+  const told = nothingTold();
+  const off = b.rig.store.subscribe((c) => void tell(told, c));
+  await a.moves.scheduler.move(WS, B, { module: "chats", item: key });
+  await w.quiet();
+  off();
+  const there = homeThread(b, key);
+  assert.ok(told.marks.some((m) => m.table === "reads" && m.key.thread === there && m.key.viewer === "p@x"), JSON.stringify(told.marks));
+  assert.ok(told.marks.some((m) => m.table === "pins" && m.key.session === key));
+  assert.ok(told.sessions.includes(key));
+  assert.ok(told.threads.includes(there));
+});
+
+test("what the app's page reads of a move: the modules in order with their needs, done of total, each item as it stands", async () => {
+  const w = world();
+  const a = w.get(A);
+  const { key } = await stillfailChat(a);
+  await a.moves.scheduler.move(WS, B, { module: "chats", item: key });
+  await w.quiet();
+  const view = moveView(await a.moves.scheduler.plan(WS, B), a.moves.modules.map((m) => m.id), a.moves.scheduler.stopped(), { limit: 10 });
+  assert.deepEqual(view.modules.map((m: Json) => m.id), ["accounts", "chats", "jobs", "connects", "repos", "vault", "agent-home", "settings"]);
+  const chats = view.modules.find((m: Json) => m.id === "chats");
+  assert.deepEqual(chats.needs, ["accounts", "connects", "repos", "vault"]);
+  assert.equal(chats.done, 1);
+  assert.deepEqual(chats.items.find((x: Json) => x.id === key), { id: key, label: a.rig.session(key).title ?? key, state: "there", needs: ["accounts share:sh-cc"] });
+  assert.equal(view.moving, null);
 });
 
 test("a station's notice that comes back through another bot's connect wakes nothing and brings no chat back; that bot's ordinary message is taken", async () => {
