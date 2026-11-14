@@ -231,7 +231,8 @@ export function outcomeWords(out: Outcome, how: string, station: string): string
   if (out.refused.length > 0) parts.push(`Not moved: ${out.refused.map((r) => `${named(r.item)}: ${r.why}`).join("; ")}.`);
   if (out.stopped.length > 0) parts.push(`Stopped here, waiting for what they need: ${out.stopped.map((s) => `${named(s.item)} (waits for ${named(s.waitsFor)})`).join(", ")}.`);
   if (out.resumed.length > 0) parts.push(`Going on here again: ${out.resumed.map(named).join(", ")}.`);
-  if (out.failed !== null) parts.push(`It stopped at ${named(out.failed.item)}: ${out.failed.error}. What was moved before it stays moved; ask again once that is fixed.`);
+  const failures = out.failures ?? (out.failed !== null ? [out.failed] : []);
+  if (failures.length > 0) parts.push(`Failed: ${failures.map((f) => `${named(f.item)}: ${f.error}`).join("; ")}. Everything else of the turn went on; what needs a failed item was not started (said above). Ask again for those once the cause is fixed.`);
   return parts.join(" ");
 }
 

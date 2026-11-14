@@ -132,14 +132,15 @@ test("an item moved away that cannot be had here stops what needs it here, befor
   assert.deepEqual(log, ["move chats/c2"]);
 });
 
-test("a whole move: everything in its needs' order, what cannot move listed with why and what needs it with it, the first failure stops it and is said; all of it back after", async () => {
+test("a whole move: everything in its needs' order, what cannot move listed with why and what needs it with it, a failure stops only what needs it and is said; all of it back after", async () => {
   const w = world({ fails: new Set(["c2"]) });
   const out = await w.s.move("ws", "B", { all: true });
-  // (grok, which stops c2 here, goes as late as it can, c2 right after it)
-  assert.deepEqual(out.done.map((d) => `${d.module}/${d.id}`), ["accounts/sub", "accounts/grok"]);
+  // (grok, which stops c2 here, goes as late as it can, c2 right after it; c2 failing, c1 and its job go on)
+  assert.deepEqual(out.done.map((d) => `${d.module}/${d.id}`), ["accounts/sub", "accounts/grok", "chats/c1", "jobs/j1"]);
   assert.equal(out.failed?.item.id, "c2");
+  assert.deepEqual((out.failures ?? []).map((f) => f.item.id), ["c2"]);
   assert.match(out.failed!.error, /would not go/);
-  assert.deepEqual(w.log, ["move accounts/sub", "stop chats/c2", "move accounts/grok"], "nothing after the failure; what needs what went stopped first");
+  assert.deepEqual(w.log, ["move accounts/sub", "stop chats/c2", "move accounts/grok", "stop jobs/j1", "move chats/c1", "move jobs/j1"], "what needs what goes stopped first (c1's job before c1, going right after it); the failure stops nothing that does not need it");
   // (a whole station, the failure fixed, then all of it back)
   const ok = world();
   const all = await ok.s.move("ws", "B", { all: true });

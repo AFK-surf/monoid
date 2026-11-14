@@ -20,11 +20,13 @@ export type Plan = { ws: string; to: string; modules: { id: string; needs: reado
 export type Selection = { module?: string; item?: string; all?: boolean; withNeeds?: boolean; follow?: string[]; arriveStopped?: boolean };
 /// What came of a move or a move back: moved in order; refused (not tried: why); stopped as their need went; the
 /// failure it stopped at.
-export type Outcome = { done: Need[]; refused: { item: Need; why: string }[]; stopped: { item: Need; waitsFor: Need }[]; resumed: Need[]; failed: { item: Need; error: string } | null };
+/// `failures`: each item whose move failed, with its words: the turn goes on past it, only what needs it not started
+/// (refused, naming it); `failed` the first of them.
+export type Outcome = { done: Need[]; refused: { item: Need; why: string }[]; stopped: { item: Need; waitsFor: Need }[]; resumed: Need[]; failed: { item: Need; error: string } | null; failures?: { item: Need; error: string }[] };
 /// The last move or move back of a workspace's, as the app shows it (GET /move `last`): when it ended, who asked (a
 /// person's email; an agent's: its chat's session key), which way and with which station, and what came of it. A turn
 /// that could not begin (its plan refused) has `failed` with no item.
-export type Last = { at: number; by: string | null; how: "move" | "back"; station: string; stoppedBy?: string | null; done: Need[]; refused: { item: Need; why: string }[]; stopped: { item: Need; waitsFor: Need }[]; resumed: Need[]; failed: { item: Need | null; error: string } | null };
+export type Last = { at: number; by: string | null; how: "move" | "back"; station: string; stoppedBy?: string | null; done: Need[]; refused: { item: Need; why: string }[]; stopped: { item: Need; waitsFor: Need }[]; resumed: Need[]; failed: { item: Need | null; error: string } | null; failures?: { item: Need; error: string }[] };
 /// An item stopped here, kept: what it waits for, of which workspace.
 type Stopped = { item: Need; waitsFor: Need; ws: string };
 
@@ -328,14 +330,26 @@ export class Scheduler {
     const going = sel.all === true || sel.withNeeds === true ? lateOrder([...wanted.values()], find, stopsOthers) : order([...wanted.values()], find);
     // (what moved here leaves the stopped set at once and is saved so as the turn ends: a start drops one that moved)
     let unsaved = false;
+    // (an item that fails stops only what needs it: every other item of the turn goes on)
+    const failedHere = new Map<string, string>();
+    const fail = (p: Need, error: string) => {
+      out.failures = [...(out.failures ?? []), { item: { module: p.module, id: p.id }, error }];
+      out.failed ??= { item: { module: p.module, id: p.id }, error };
+      failedHere.set(named(p), error);
+    };
     for (const p of going) {
-      if (out.failed !== null || this.#stopping !== null) break;
+      if (this.#stopping !== null) break;
       if (thereNow.has(named(p)) || refusedWhy.has(named(p))) continue;
       if (p.cannot !== undefined) {
         out.refused.push({ item: p, why: p.cannot });
         continue;
       }
       const waits = p.needs.find((n) => !thereNow.has(named(n)) && find(n) !== undefined && this.#modules.get(n.module)!.usableThere?.(find(n)!) !== true);
+      const waitsFailed = waits === undefined ? undefined : failedHere.get(named(waits));
+      if (waitsFailed !== undefined) {
+        out.refused.push({ item: p, why: `it waits for ${named(waits!)} (${find(waits!)!.label}), which did not move: ${waitsFailed}` });
+        continue;
+      }
       if (waits !== undefined && sel.arriveStopped !== true) {
         out.refused.push({ item: p, why: `it needs ${named(waits)} (${find(waits)!.label}) there first: move that first, or ask with withNeeds (or arriveStopped: it waits there for it)` });
         continue;
@@ -352,10 +366,10 @@ export class Scheduler {
       try {
         await m.move(p, to, (progress) => this.#d.progress?.(p, progress), waits === undefined ? undefined : { stoppedFor: { module: waits.module, id: waits.id } });
       } catch (e) {
-        out.failed = { item: p, error: (e as Error).message };
+        fail(p, (e as Error).message);
         await this.#letGo(stops.flatMap((x) => this.#stopped.get(x) ?? []).filter((s) => sameItem(s.waitsFor, p)), true);
         unsaved = false;
-        break;
+        continue;
       }
       // (what waits for it there goes on)
       await this.#d.tellArrived?.(to, { module: p.module, id: p.id }).catch((e) => log.warn("move", "the other station not told what came", { item: named(p), error: (e as Error).message }));
@@ -367,7 +381,7 @@ export class Scheduler {
       this.#d.changed?.();
     }
     // (what follows what moved: the items of `follow` that need only what is there now)
-    if (out.failed === null && sel.follow !== undefined && out.done.length > 0) {
+    if (sel.follow !== undefined && out.done.length > 0) {
       const after = await this.plan(ws, to);
       const there = new Set(after.items.filter((x) => x.state === "there").map(named));
       const done = new Set(out.done.map(named));
@@ -378,8 +392,7 @@ export class Scheduler {
           out.done.push({ module: p.module, id: p.id });
           if (this.#stopped.remove(p) !== undefined) unsaved = true;
         } catch (e) {
-          out.failed = { item: p, error: (e as Error).message };
-          break;
+          fail(p, (e as Error).message);
         }
       }
     }
@@ -394,7 +407,8 @@ export class Scheduler {
     const all = plan.items;
     const index = new Items(all);
     const find = (n: Need) => index.find(n);
-    const chosen = select(all, sel).filter((x) => x.state === "there" || x.state === "failed");
+    // (what is there now: one whose move failed is here, no item of a move back)
+    const chosen = select(all, sel).filter((x) => x.state === "there");
     if (chosen.length === 0) throw new Error(sel.item !== undefined ? `${sel.module ?? ""} ${sel.item} is not there to move back` : "nothing there to move back");
     const backing = new Set(chosen.map(named));
     // (what follows what goes back: the items of `follow` there that need it, a chat's jobs, go back first, each arriving
@@ -408,11 +422,14 @@ export class Scheduler {
       }
     }
     const stillThere = new Set(all.filter((x) => x.state === "there").map(named));
+    // (an item that fails stops only what needs it: every other item of the turn goes on)
+    const failedThere = new Map<string, string>();
     for (const p of order(all.filter((x) => backing.has(named(x))), find).reverse()) {
-      if (out.failed !== null || this.#stopping !== null) break;
+      if (this.#stopping !== null) break;
       const dependent = index.needing(p).find((x) => stillThere.has(named(x)));
       if (dependent !== undefined) {
-        out.refused.push({ item: p, why: `${named(dependent)} (${dependent.label}) there needs it: move that back first, or ask for all` });
+        const failed = failedThere.get(named(dependent));
+        out.refused.push({ item: p, why: failed !== undefined ? `${named(dependent)} (${dependent.label}) there needs it, and it did not come back: ${failed}` : `${named(dependent)} (${dependent.label}) there needs it: move that back first, or ask for all` });
         continue;
       }
       // (what it needs that is still there and cannot be had here: it comes back stopped, waiting for it)
@@ -420,8 +437,11 @@ export class Scheduler {
       try {
         await this.#modules.get(p.module)!.back(p, from, waits === undefined ? undefined : { stoppedFor: { module: waits.module, id: waits.id } });
       } catch (e) {
-        out.failed = { item: p, error: (e as Error).message };
-        break;
+        const error = (e as Error).message;
+        out.failures = [...(out.failures ?? []), { item: { module: p.module, id: p.id }, error }];
+        out.failed ??= { item: { module: p.module, id: p.id }, error };
+        failedThere.set(named(p), error);
+        continue;
       }
       if (waits !== undefined) {
         await this.noteStopped({ module: p.module, id: p.id }, { module: waits.module, id: waits.id }, ws, false);

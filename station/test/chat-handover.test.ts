@@ -425,6 +425,40 @@ test("a whole station handed over chat by chat: one whose account cannot go is l
   assert.equal(a.rig.hub.handedOver(mine), false, "it works here");
 });
 
+test("a failed item stops only what needs it: of three chats and their logins moved whole, the middle chat failing, the other two and the logins go, the failed one is named with its words, its job not started and named as waiting for it; moved back whole, a chat that cannot come back stops only itself", async () => {
+  const w = world();
+  const a = w.get(A);
+  const b = w.get(B);
+  const one = await stillfailChat(a);
+  const mid = await stillfailChat(a);
+  const [three] = newSession(a.rig.hub, { runtime: "codex", profile: "cx", createdBy: "p@x" });
+  a.jobs.push({ id: "a-dev", session: mid.key, name: "dev", command: "npm run dev", cwd: a.rig.session(mid.key).workspace, port: 3000, watch: false });
+  w.tamper((to, r) => {
+    if (to === B && r.method === "handover.begin" && Array.isArray(r.keys) && r.keys.includes(mid.key)) throw new Error("the middle one refused");
+    return r;
+  });
+  const out = await a.moves.scheduler.move(WS, B, { all: true, follow: ["jobs"] });
+  await w.quiet();
+  const done = out.done.map((d) => `${d.module} ${d.id}`);
+  assert.ok(done.includes(`chats ${one.key}`) && done.includes(`chats ${three}`), `the others went: ${JSON.stringify(done)}`);
+  assert.ok(out.done.some((d) => d.module === "accounts"), `the logins went: ${JSON.stringify(done)}`);
+  assert.deepEqual((out.failures ?? []).map((f) => [f.item.id, /the middle one refused/.test(f.error)]), [[mid.key, true]], "the failed one named, with its words");
+  assert.match(out.refused.find((r) => r.item.id === `${mid.key}#dev`)?.why ?? "", new RegExp(`waits for chats ${mid.key} .*which did not move: .*the middle one refused`), "its job not started, waiting for it");
+  assert.equal(a.rig.store.handedTo(mid.key), null, "it goes on here");
+  // Back whole, the first chat not coming back: the rest come back.
+  w.tamper((to, r) => {
+    if (to === A && r.method === "handover.begin" && Array.isArray(r.keys) && r.keys.includes(one.key)) throw new Error("the first one refused");
+    return r;
+  });
+  const back = await a.moves.scheduler.back(WS, B, { all: true });
+  await w.quiet();
+  assert.deepEqual((back.failures ?? []).map((f) => f.item.id), [one.key], `the failed one named: ${JSON.stringify(back.failures)}`);
+  const named = [...back.done, ...back.refused.map((r) => r.item), ...(back.failures ?? []).map((f) => f.item)];
+  assert.ok(!named.some((x) => x.id === mid.key), `the one that never went is no item of the move back: ${JSON.stringify(named)}`);
+  assert.ok(back.done.some((d) => d.id === three), `the others came back: ${JSON.stringify(back.done)}`);
+  assert.equal(a.rig.store.handedTo(three), null);
+});
+
 test("a move asked as the connection to the other station is found gone asks once more, dialed anew: it goes; gone again, the other is said out of reach", async () => {
   const w = world();
   const a = w.get(A);
