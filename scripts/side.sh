@@ -8,7 +8,7 @@
 #   sh scripts/side.sh core-ts   one part's
 set -u
 cd "$(dirname "$0")/.."
-parts=${*:-core-ts station rust locks locks-moved locks-as-moved rigs rigs-as-moved cloud}
+parts=${*:-core-ts station rust locks locks-moved locks-as-moved rigs rigs-as-moved move cloud}
 status=0
 for part in $parts; do
   echo "· side: $part"
@@ -44,6 +44,12 @@ for part in $parts; do
     # The same with the workspace moved as safe mode comes on (E2E_LOCKS_MOVED=1, rigs.ts), on ports of its own.
     rigs-as-moved) (cd apps/mbui && E2E_LOCKS_MOVED=1 E2E_WORK=${RUNNER_TEMP:-/tmp}/side-rigs-as-moved E2E_STATION=/tmp/side-rigsmoved-$(id -u) E2E_PORT=28800 \
       E2E_RELAY=28809 bash scripts/e2e-local.sh rigs-all) || status=1 ;;
+    # A station's things moved to another and back, with faults (apps/mbui/e2e/move.ts): two whole stations and a third
+    # on a small volume of its own beside the test station, alice's device, chats with files, a git worktree, a job and
+    # a vault item moved and moved back, stations killed and started again mid-move (scripts/e2e-local.sh move-all), on
+    # ports and directories of its own.
+    move) (cd apps/mbui && E2E_WORK=${RUNNER_TEMP:-/tmp}/side-move E2E_STATION=/tmp/side-move-$(id -u) E2E_PORT=28780 \
+      E2E_RELAY=28789 bash scripts/e2e-local.sh move-all) || status=1 ;;
     # A self-hosted cloud on workerd (cloud/side): built, signing people in through an SMTP relay and an OpenID provider of
     # the test's own, over real sockets with a CA of its own.
     cloud) (cd cloud && pnpm side) || status=1 ;;

@@ -26,6 +26,14 @@
 #   scripts/e2e-local.sh rigs       a rig end to end against what `up` started (e2e/rigs.ts: a machine enrolled as
 #                                   alice's rig beside the test station, asked for, granted, used, taken back)
 #   scripts/e2e-local.sh rigs-all   up, rigs, down (the side run's, scripts/side.sh rigs); rigs failed, kept the same
+#   scripts/e2e-local.sh move       a station's things moved to another and back, with faults, against what `up`
+#                                   started (e2e/move.ts: alice's device, the test station A, B and a third enrolled
+#                                   beside it, moving switched on in each, E2E_STATION_EXTRA and E2E_MORE_EXTRA)
+#   scripts/e2e-local.sh move-all   up, move, down (the side run's, scripts/side.sh move); move failed, kept as locks-all's
+#   scripts/e2e-local.sh crash NAME   that station's machine as it loses power: every process of its own SIGKILLed at
+#                                   once (its launcher, Node, runners, agents and jobs: what runs on its data directory
+#                                   or in it); NAME station (the test station) or as second-station names them
+#   scripts/e2e-local.sh again NAME   and started again on its data, nothing enrolled
 #   scripts/e2e-local.sh kept locks|rigs   what this run wrote, copied to $E2E_WORK/kept (emptied first, and by up):
 #                                   the cloud's and relay's logs, each station's (station, second, third, rig: its
 #                                   launcher's, its enrollment's, its data/logs, its kept locks of data/mesh), each
@@ -289,7 +297,8 @@ EOF
   ln -s $E/station/dist $STATION/app/station
   ln -s "$(command -v node)" $STATION/app/node/bin/node
   # its one profile with a model enabled, so a new chat can be made there (newChat.create refuses a station with none)
-  echo '{"profiles":[{"id":"cc","runtime":"claude","home":"homes/cc","models":["claude-sonnet-5-5"]}],"autoUpdate":false}' > $STATION/data/config.json
+  # (E2E_STATION_EXTRA: more of it, `,"key":value…`: the move drill's switch, e2e/move.ts)
+  echo '{"profiles":[{"id":"cc","runtime":"claude","home":"homes/cc","models":["claude-sonnet-5-5"]}],"autoUpdate":false'"${E2E_STATION_EXTRA:-}"'}' > $STATION/data/config.json
   echo '{}' > $STATION/data/homes/cc/.credentials.json
   # (what this shell has of the machine's own station, a job's notify address and token, is not the test station's)
   cat > $RUN/station-env.sh <<EOF
@@ -393,6 +402,39 @@ rigs() {
   (export E2E_HOME=$HOME; . $RUN/station-env.sh 2>/dev/null; export HOME=$WORK/rigs-home; mkdir -p $HOME
    E2E_SF_SRC=$E E2E_ORIGIN=$ORIGIN E2E_PEER_DATA=$WORK/rigs E2E_WORK=$WORK E2E_STATION=$STATION E2E_PORT=$PORT \
      E2E_RELAY=$RELAY_PORT node $ROOT/e2e/rigs.ts </dev/null)
+}
+
+# e2e/move.ts the same way (a station's things moved to another and back, with faults), its devices' data under
+# $WORK/move
+move() {
+  (export E2E_HOME=$HOME; . $RUN/station-env.sh 2>/dev/null; export HOME=$WORK/move-home; mkdir -p $HOME
+   E2E_SF_SRC=$E E2E_ORIGIN=$ORIGIN E2E_PEER_DATA=$WORK/move E2E_WORK=$WORK E2E_STATION=$STATION E2E_PORT=$PORT \
+     E2E_RELAY=$RELAY_PORT node $ROOT/e2e/move.ts </dev/null)
+}
+# A station's machine losing power (`crash NAME`): its process group SIGKILLed (the launcher and what it started), and
+# whatever else runs on its data directory or in it (its runners and agents, its jobs, which run in groups of their
+# own), by their command line or their working directory; only this run's own station's, never another's.
+station_dir() { [ "$1" = station ] && echo $STATION || more_dir $1; }
+crash() {
+  local n=${1:?a station}; local d=$(station_dir $n)
+  [ -n "$d" ] && [ -d "$d/data" ] || die "no station $n"
+  local real=$(cd "$d" && pwd -P) p cwd
+  if alive $n; then kill -KILL -- -$(cat $RUN/$n.pid) 2>/dev/null || true; fi
+  pkill -KILL -f "$d/data" 2>/dev/null || true
+  # (one listing of every process's working directory: p<pid> then n<path>)
+  lsof -nP -a -d cwd -u $(id -u) -Fpn 2>/dev/null | while IFS= read -r l; do
+    case "$l" in
+      p*) p=${l#p} ;;
+      n*) cwd=${l#n}; case "$cwd" in "$d/"*|"$real/"*|"/private$d/"*) kill -KILL $p 2>/dev/null || true ;; esac ;;
+    esac
+  done
+  rm -f $RUN/$n.pid
+  say "$n crashed (every process of its own killed)"
+}
+again() {
+  local n=${1:?a station}
+  if [ $n = station ]; then start_station; else more_launch $n; fi
+  say "$n up again ($(cat $RUN/$n.pid))"
 }
 
 # What a failed locks or rigs leaves to be read (the side run uploads it: .github/workflows/side.yml), copied before
@@ -729,7 +771,8 @@ second_station() {
   [ ! -f $RUN/$n.seed ] || { mkdir -p $B/data/mesh && cp $RUN/$n.seed $B/data/mesh/secret.key && chmod 600 $B/data/mesh/secret.key; }
   ln -s $E/station/dist $B/app/station
   ln -s "$(command -v node)" $B/app/node/bin/node
-  echo '{"autoUpdate":false}' > $B/data/config.json
+  # (E2E_MORE_EXTRA: more of it, as E2E_STATION_EXTRA for the test station's)
+  echo '{"autoUpdate":false'"${E2E_MORE_EXTRA:-}"'}' > $B/data/config.json
   (. $RUN/station-env.sh && export HOME=$B/home STILLFAIL_DATA=$B/data && \
     node $E/station/dist/main.js enroll $ORIGIN $token ${lock:+--lock $lock} ${rig:+--rig $rig} --data $B/data >$RUN/$n-enroll.log 2>&1) \
     || { cat $RUN/$n-enroll.log; die "enrolling the $n station failed"; }
@@ -923,6 +966,14 @@ case "${1:-all}" in
     trap down EXIT
     up
     locks_moved || { rc=$?; kept locks-moved || true; exit $rc; } ;;
+  move) move ;;
+  move-all)
+    export E2E_STATION_EXTRA=${E2E_STATION_EXTRA-',"move":true,"maxNudges":7'} E2E_MORE_EXTRA=${E2E_MORE_EXTRA-',"move":true'}
+    trap down EXIT
+    up
+    move || { rc=$?; kept move || true; exit $rc; } ;;
+  crash) shift; crash "$@" ;;
+  again) shift; again "$@" ;;
   rigs) rigs ;;
   rigs-all)
     trap down EXIT
