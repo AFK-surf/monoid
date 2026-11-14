@@ -29,8 +29,9 @@ chats paused 18 minutes, a half-moved state, no way back), whose start stays swi
   `accounts-known.json`), `chats` (needs accounts, connects, repos, vault: one chat by
   `station/src/replica/handover.ts`, its files a mirror by difference: the station it goes to says what it has in
   place, what differs is sent, what the lists no longer name is removed there, in its room alone), `jobs` (needs
-  chats: started there once its chat is there; one chat moved by the tool moves its jobs right after, so a job never
-  runs on two stations), `connects` (needs chats: a Slack or Feishu connect once the chats that came through it are
+  chats: started there once its chat is there; one chat moved by the tool or the app moves its jobs right after, and
+  moved back takes them back first, so a job never runs on two stations; a job back while its chat is there is kept
+  here stopped, and starts as its chat comes), `connects` (needs chats: a Slack or Feishu connect once the chats that came through it are
   there; a Comma or single-session connect's chats need it instead, so it goes first, stopping them here, and each goes
   on there as it moves: the connect arrives knowing which of its chats are still to come (`connect.take`'s
   `awaiting`) and keeps what its platform says, in order, until they are all there, never a new session for one on its

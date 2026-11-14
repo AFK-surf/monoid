@@ -396,6 +396,9 @@ export class Scheduler {
     const chosen = select(all, sel).filter((x) => x.state === "there" || x.state === "failed");
     if (chosen.length === 0) throw new Error(sel.item !== undefined ? `${sel.module ?? ""} ${sel.item} is not there to move back` : "nothing there to move back");
     const backing = new Set(chosen.map(named));
+    // (what follows what goes back: the items of `follow` there that need it, a chat's jobs, go back first, each arriving
+    // stopped until it is here)
+    if (sel.follow !== undefined) for (const p of chosen) for (const x of index.needing(p)) if (sel.follow.includes(x.module) && x.state === "there") backing.add(named(x));
     // (with what needs it, where the whole is asked back)
     if (sel.all === true || sel.withNeeds === true) {
       const queue = [...chosen];

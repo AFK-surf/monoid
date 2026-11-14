@@ -120,7 +120,7 @@ export function moveRoutes(d: MoveRoutesDeps): Route[] {
     // (asked meanwhile, while the other station was asked)
     if (d.scheduler.busy()) return error(409, tr(r.lang, "station.move.running"));
     const follow = sel.all === true || sel.module === "chats" ? ["jobs"] : undefined;
-    const run = back ? d.scheduler.back(ws, at.id, sel, r.viewer.email) : d.scheduler.move(ws, at.id, { ...sel, follow }, r.viewer.email);
+    const run = back ? d.scheduler.back(ws, at.id, { ...sel, follow }, r.viewer.email) : d.scheduler.move(ws, at.id, { ...sel, follow }, r.viewer.email);
     // (what came of it is GET /move's `last`, and the `move` event says it changed)
     void run.catch(() => {});
     return json(202, JSON.stringify({ started: true }));

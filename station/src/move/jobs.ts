@@ -9,7 +9,7 @@ import { mkdir, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { CarriedJob } from "../replica/carry-worker.ts";
 import { log } from "../ops/log.ts";
-import type { Item, ItemState, Module } from "./module.ts";
+import type { Arrive, Item, ItemState, Module } from "./module.ts";
 
 type Json = any;
 
@@ -102,13 +102,25 @@ export class JobsModule implements Module {
     }
   }
 
-  async back(item: Item, from: string): Promise<void> {
+  /// Stopped there and started here; one whose chat is still there (`stoppedFor`) is kept here, stopped, and starts
+  /// as its chat comes (`resume`): a job never runs here before its chat's room is here.
+  async back(item: Item, from: string, opts?: Arrive): Promise<void> {
     const m = this.#k.moved.find((x) => jobItemId(x.job) === item.id);
     if (m === undefined) throw new Error(`job ${item.label} did not move from here`);
     await this.#d.ask(from, { method: "move.job.stop", session: m.job.session, name: m.job.name });
     this.#k.moved = this.#k.moved.filter((x) => x !== m);
+    if (opts?.stoppedFor !== undefined && !this.#k.kept.some((j) => jobItemId(j) === item.id)) this.#k.kept.push(m.job);
     await this.#save();
-    this.#startHere(m.job);
+    if (opts?.stoppedFor === undefined) this.#startHere(m.job);
+  }
+
+  /// What it waited for is here (its chat came back): a job kept for it started here, once.
+  async resume(item: Item): Promise<void> {
+    const j = this.#k.kept.find((x) => jobItemId(x) === item.id);
+    if (j === undefined) return;
+    this.#k.kept = this.#k.kept.filter((x) => x !== j);
+    await this.#save();
+    this.#startHere(j);
   }
 
   state(item: Item): ItemState {

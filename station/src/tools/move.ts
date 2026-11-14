@@ -139,7 +139,7 @@ export class MoveAsks {
         if (sel.module === undefined || (sel.item === undefined && sel.all !== true)) throw new Refused("back: name the module and the item (station_move status lists them), and to: the station it is on");
         const why = await this.#d.refusal?.(ws, from.id);
         if (why) throw new Refused(why);
-        const out = await this.#d.scheduler.back(ws, from.id, sel, session);
+        const out = await this.#d.scheduler.back(ws, from.id, { ...sel, follow: sel.module === "chats" ? ["jobs"] : undefined }, session);
         return { outcome: out, say: outcomeWords(out, "back here from", from.name) };
       }
       case "stop": {

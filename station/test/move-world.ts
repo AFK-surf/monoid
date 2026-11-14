@@ -117,7 +117,8 @@ export function world(ids: string[] = [A, B]) {
           stop: async (jid) => void (st.jobs = st.jobs.filter((j) => j.id !== jid)),
           start: (j) => {
             st.jobs.push({ ...j, id: `${tag}-job-${st.started.length}` });
-            st.started.push(`${j.session}#${j.name}@${j.cwd}`);
+            // (one started while its chat is away from this station says so: never meant to be)
+            st.started.push(`${j.session}#${j.name}@${j.cwd}${rig.store.handedTo(j.session) !== null ? " (its chat away)" : ""}`);
           },
           stopNamed: async (s, n) => void (st.jobs = st.jobs.filter((j) => !(j.session === s && j.name === n))),
         },

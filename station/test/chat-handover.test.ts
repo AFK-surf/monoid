@@ -189,10 +189,45 @@ test("a chat with a running job: stopped as it is held, started there once it is
   assert.ok(both.slice(held + 1).every(([, a, b]) => a === 0 && b === 0), `stopped while it moved: ${JSON.stringify(both)}`);
   assert.equal(a.jobs.length, 0);
   assert.deepEqual(b.jobs.map((j) => [j.session, j.name, j.cwd]), [[key, "dev", b.rig.session(key).workspace]]);
-  // back: stopped there, started here
-  await a.moves.scheduler.back(WS, B, { module: "jobs", item: `${key}#dev` });
+  // The job back alone, its chat still there: stopped there, kept here stopped, waiting for its chat, never started here.
+  const alone = await a.moves.scheduler.back(WS, B, { module: "jobs", item: `${key}#dev` });
+  assert.deepEqual(alone.stopped, [{ item: { module: "jobs", id: `${key}#dev` }, waitsFor: { module: "chats", id: key } }]);
   assert.equal(b.jobs.length, 0);
+  assert.equal(a.jobs.length, 0, "not run here before its chat is here");
+  // The chat back as a person asks it (POST /move/back): its job starts here as it is here, once.
+  const back = await a.ask("POST", "/move/back", { from: B, module: "chats", item: key });
+  assert.equal(back.status, 202);
+  await a.moves.scheduler.settle();
+  await w.quiet();
+  assert.equal(a.moves.scheduler.last(WS)?.failed, null, JSON.stringify(a.moves.scheduler.last(WS)));
   assert.deepEqual(a.jobs.map((j) => j.name), ["dev"]);
+  assert.deepEqual(a.started, [`${key}#dev@${a.rig.session(key).workspace}`], "started here once, its chat here");
+  assert.equal(a.moves.scheduler.stopped().length, 0);
+});
+
+test("a chat with a job there moved back: its job stops there first, the chat comes back, then its job starts here, once", async () => {
+  const w = world();
+  const a = w.get(A);
+  const b = w.get(B);
+  const { key } = await stillfailChat(a);
+  a.jobs.push({ id: "a-dev", session: key, name: "dev", command: "npm run dev", cwd: a.rig.session(key).workspace, port: 3000, watch: false });
+  const moved = await a.ask("POST", "/move", { to: B, module: "chats", item: key });
+  assert.equal(moved.status, 202);
+  await a.moves.scheduler.settle();
+  await w.quiet();
+  assert.equal(b.jobs.length, 1);
+  const back = await a.ask("POST", "/move/back", { from: B, module: "chats", item: key });
+  assert.equal(back.status, 202);
+  await a.moves.scheduler.settle();
+  await w.quiet();
+  const last = a.moves.scheduler.last(WS)!;
+  assert.equal(last.failed, null, JSON.stringify(last));
+  assert.deepEqual(last.refused, []);
+  assert.deepEqual(last.done.map((d) => d.module), ["jobs", "chats"], "its job first, stopped there");
+  assert.deepEqual(last.resumed, [{ module: "jobs", id: `${key}#dev` }], "then started here as the chat came");
+  assert.equal(b.jobs.length, 0);
+  assert.deepEqual(a.jobs.map((j) => [j.session, j.name]), [[key, "dev"]]);
+  assert.ok(!a.started.some((s) => s.includes("its chat away")), JSON.stringify(a.started));
 });
 
 test("a chat's files are told as they go: their total first, then how far, up to all of it", async () => {
@@ -367,6 +402,25 @@ test("a whole station handed over chat by chat: one whose account cannot go is l
   assert.equal(a.rig.hub.handedOver(mine), false, "it works here");
 });
 
+test("a chat held as what it needs moved away says so as its process ends, not that the station is in no workspace", async () => {
+  const w = world();
+  const a = w.get(A);
+  const [key, t] = newSession(a.rig.hub, { runtime: "claude", profile: "cc", createdBy: "p@x" });
+  say(a.rig.hub, t.id, "p@x", "work on it");
+  await a.rig.quiet();
+  const lines: string[] = [];
+  hearLines((l) => void lines.push(l.message));
+  try {
+    await a.rig.hub.holdChat(key, "stopped: waits for accounts own:solo@A, moved away");
+    await a.rig.quiet();
+  } finally {
+    hearLines(null);
+  }
+  const ending = lines.filter((m) => m.startsWith("ending the runtime process"));
+  assert.deepEqual(ending, ["ending the runtime process: the chat is held: stopped: waits for accounts own:solo@A, moved away"]);
+  assert.match(a.rig.store.listTurns(key).at(-1)?.summary.detail ?? "", /the chat is held: stopped: waits for accounts/);
+});
+
 test("an account that cannot be borrowed moved first: its chats here stop, naming it; a message to one is delivered once after it moved; moved back, the others go on here", async () => {
   const w = world();
   const a = w.get(A);
@@ -402,25 +456,6 @@ test("an account that cannot be borrowed moved first: its chats here stop, namin
   // its account cannot go back while a chat there needs it: said, naming it
   const back = await a.moves.scheduler.back(WS, B, { module: "accounts", item: `own:solo@${A}` });
   assert.deepEqual(back.refused.map((r) => r.item.id), [`own:solo@${A}`]);
-test("a chat held as what it needs moved away says so as its process ends, not that the station is in no workspace", async () => {
-  const w = world();
-  const a = w.get(A);
-  const [key, t] = newSession(a.rig.hub, { runtime: "claude", profile: "cc", createdBy: "p@x" });
-  say(a.rig.hub, t.id, "p@x", "work on it");
-  await a.rig.quiet();
-  const lines: string[] = [];
-  hearLines((l) => void lines.push(l.message));
-  try {
-    await a.rig.hub.holdChat(key, "stopped: waits for accounts own:solo@A, moved away");
-    await a.rig.quiet();
-  } finally {
-    hearLines(null);
-  }
-  const ending = lines.filter((m) => m.startsWith("ending the runtime process"));
-  assert.deepEqual(ending, ["ending the runtime process: the chat is held: stopped: waits for accounts own:solo@A, moved away"]);
-  assert.match(a.rig.store.listTurns(key).at(-1)?.summary.detail ?? "", /the chat is held: stopped: waits for accounts/);
-});
-
   assert.match(back.refused[0]!.why, new RegExp(`chats ${one.key}`));
 });
 
@@ -767,6 +802,12 @@ test("what the app's page reads of a move: the modules in order with their needs
   const { key } = await stillfailChat(a);
   await a.moves.scheduler.move(WS, B, { module: "chats", item: key });
   await w.quiet();
+  // (a chat on this machine's own login, which cannot go, and one working outside the station's data: each cannot move)
+  newSession(a.rig.hub, { runtime: "claude", profile: "mine", createdBy: "p@x" });
+  const [outside] = newSession(a.rig.hub, { runtime: "claude", profile: "cc", createdBy: "p@x" });
+  a.rig.store.db.prepare("UPDATE sessions SET workspace = ? WHERE key = ?").run("/elsewhere/proj", outside);
+  const one = moveView(await a.moves.scheduler.plan(WS, B), a.moves.modules.map((m) => m.id), a.moves.scheduler.stopped(), { limit: 1 });
+  assert.deepEqual(one.modules.map((m: Json) => [m.id, m.cannot]).filter(([, n]: [string, number]) => n > 0), [["accounts", 1], ["chats", 1]], "counted of all, not of a page of one");
   const view = moveView(await a.moves.scheduler.plan(WS, B), a.moves.modules.map((m) => m.id), a.moves.scheduler.stopped(), { limit: 10 });
   assert.deepEqual(view.modules.map((m: Json) => m.id), ["accounts", "chats", "jobs", "connects", "repos", "vault", "agent-home", "settings"]);
   const chats = view.modules.find((m: Json) => m.id === "chats");
@@ -822,12 +863,6 @@ test("the copies' export on the station a chat went to carries it in its next pa
   const b = w.get(B);
   const { key, thread } = await stillfailChat(a);
   a.rig.store.setRead("p@x", thread, 2);
-  // (a chat on this machine's own login, which cannot go, and one working outside the station's data: each cannot move)
-  newSession(a.rig.hub, { runtime: "claude", profile: "mine", createdBy: "p@x" });
-  const [outside] = newSession(a.rig.hub, { runtime: "claude", profile: "cc", createdBy: "p@x" });
-  a.rig.store.db.prepare("UPDATE sessions SET workspace = ? WHERE key = ?").run("/elsewhere/proj", outside);
-  const one = moveView(await a.moves.scheduler.plan(WS, B), a.moves.modules.map((m) => m.id), a.moves.scheduler.stopped(), { limit: 1 });
-  assert.deepEqual(one.modules.map((m: Json) => [m.id, m.cannot]).filter(([, n]: [string, number]) => n > 0), [["accounts", 1], ["chats", 1]], "counted of all, not of a page of one");
   a.rig.store.setPin("q@x", key, true);
   a.rig.store.setChatHidden("r@x", thread, true);
   const e = new Exporter({ db: join(b.rig.dir, "stillfail.db"), replica: join(b.rig.dir, "replica-copy"), dataDir: b.rig.dir, origin: B, now: () => 1_000 });
@@ -1038,6 +1073,13 @@ test("moving switched off here refuses POST /move, POST /move/back and station_m
   assert.equal(a.rig.store.handedTo(key), null);
   assert.equal(b.rig.store.getSession(key), null, "nothing of it there");
   assert.match(a.moves.scheduler.last(WS)!.failed!.error, offThere);
+  // Not reached at all: said to be out of reach, not to have moving switched off.
+  b.on = true;
+  b.up = false;
+  const away = await a.ask("POST", "/move/back", { from: B, module: "chats", item: key });
+  assert.equal(away.status, 409);
+  assert.match(away.body.error, /Station “B” cannot be reached now: nothing was moved/);
+  await assert.rejects(a.moves.scheduler.move(WS, B, { module: "chats", item: key }), /cannot be reached now|现在连不上/);
 });
 
 /// The files of a room, by name, with their words.
@@ -1073,13 +1115,6 @@ test("a failure in the first pass of its files: the chat was never held, works h
   const { key, thread } = await stillfailChat(a);
   a.fails.add("files");
   const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: key });
-  // Not reached at all: said to be out of reach, not to have moving switched off.
-  b.on = true;
-  b.up = false;
-  const away = await a.ask("POST", "/move/back", { from: B, module: "chats", item: key });
-  assert.equal(away.status, 409);
-  assert.match(away.body.error, /Station “B” cannot be reached now: nothing was moved/);
-  await assert.rejects(a.moves.scheduler.move(WS, B, { module: "chats", item: key }), /cannot be reached now|现在连不上/);
   await w.quiet();
   assert.match(out.failed?.error ?? "", /the test failed files/);
   assert.equal(a.rig.hub.chatHeld(key), null);
