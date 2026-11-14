@@ -1308,7 +1308,7 @@ try {
         const readAt = Date.now();
         log(`  its row ${brief(row)}`);
         // (the facts at that moment, for the station's side: no verdict of them)
-        log(`  6b's facts: ${heldOf2(kl)}\n    the seed's set-aside: ${existsSync(`${keep}.out`) ? readdirSync(`${keep}.out`).join(", ") : "none"}\n    A's page toward B, as A answered it: ${await rawItem("A", "B", kl)}\n    B's page toward A, as B answered it: ${await rawItem("B", "A", kl)}\n    the stations' logs around the read:\n    ${logsAround(readAt)}`);
+        log(`  6b's facts: ${heldOf2(kl)}\n    the seed's set-aside: ${existsSync(`${keep}.out`) ? readdirSync(`${keep}.out`).join(", ") : "none"}\n    A's page toward B, as A answered it: ${await rawItem("A", "B", kl)}\n    B's page toward A, as B answered it: ${await rawItem("B", "A", kl)}\n    A's plans asking B which chats are live, the last three: ${(existsSync(`${RUN}/station.log`) ? readFileSync(`${RUN}/station.log`, "utf8").split("\n").filter((l) => l.includes("asked which chats are live")).slice(-3) : []).join("\n      ") || "none"}\n    the stations' logs around the read:\n    ${logsAround(readAt)}`);
         if (row?.state !== "cannot" || String(row?.note ?? "").trim() === "") throw new Error(`its row ${brief(row)}: not one that cannot move, with words`);
       });
       await check("6b: a move asked anyway is refused, nothing of B changed", async () => {
