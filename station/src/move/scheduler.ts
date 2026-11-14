@@ -489,6 +489,14 @@ export class Scheduler {
     // (what was lent for items that did not go is taken back: the last of them here, nothing of it stays lent)
     const notGone = (out.failures ?? []).map((f) => f.item).filter((x) => !lending.has(named(x)));
     if (notGone.length > 0) for (const m of this.#modules.values()) await m.left?.(notGone).catch((e) => log.warn("move", "what was lent for items that did not go not taken back", { error: (e as Error).message }));
+    // (what the turn left lent, not what it lent and took back: nothing of that left here, nothing to tell)
+    if (out.lent !== undefined) {
+      out.lent = out.lent.filter((n) => {
+        const x = find(n);
+        return x !== undefined && this.#modules.get(x.module)!.state(x).lentTo !== undefined;
+      });
+      if (out.lent.length === 0) delete out.lent;
+    }
     // (what moved only for items of this turn that then did not go is brought back, in the same turn, and said so: a
     // login moved for a chat that failed is not left on the other station)
     {

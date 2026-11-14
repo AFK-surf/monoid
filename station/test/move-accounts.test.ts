@@ -742,6 +742,7 @@ test("the other station killed in the first pass of a chat moved with its login 
   const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: one.key, withNeeds: true });
   await quiet();
   assert.deepEqual((out.failures ?? []).map((f) => f.item.id), [one.key], JSON.stringify(out));
+  assert.equal(out.lent, undefined, "nothing said lent: the lending was taken back in the same turn");
   assert.equal(present(a, "max").share, undefined, "the lending undone: this station's own, as it was");
   assert.equal(JSON.parse(readFileSync(join(a.rig.dir, "homes", "max", ".credentials.json"), "utf8")).claudeAiOauth.refreshToken, "r", "its login here");
   assert.deepEqual(lentShares(a), {}, "nothing kept lent");
