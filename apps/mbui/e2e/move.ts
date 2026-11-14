@@ -1622,15 +1622,18 @@ try {
       await b.stop();
       judge(b.asks, t0, t0, null);
     });
-    await check("7b: A's whole station stopped and started again while B holds its connection: asks fail at once while A is down, answered within 5 s of A being ready", async () => {
+    /// B asking A across A's whole station stopped for `downMs` and started again: the asks, and when A was ready.
+    const acrossStop = async (downMs: number) => {
       const t0 = Date.now();
       const b = asking("B", "A");
       await new Promise((r) => setTimeout(r, 3000));
+      let downAt = 0;
       let upAt = 0;
       try {
         stationDo("halt", "station");
-        log("  A stopped (launcher, front and Node); 10 s of asks while it is down");
-        await new Promise((r) => setTimeout(r, 10_000));
+        downAt = Date.now();
+        log(`  A stopped (launcher, front and Node); ${downMs / 1000} s of asks while it is down`);
+        await new Promise((r) => setTimeout(r, downMs));
       } finally {
         stationDo("again", "station");
         upAt = Date.now();
@@ -1638,7 +1641,24 @@ try {
         await new Promise((r) => setTimeout(r, 15_000));
         await b.stop();
       }
-      judge(b.asks, t0, upAt + 5000, upAt);
+      log(`  A down from +${((downAt - t0) / 1000).toFixed(1)}s, ready at +${((upAt - t0) / 1000).toFixed(1)}s; ${b.asks.length} asks: ${said(b.asks, t0).slice(0, 3000)}`);
+      return { asks: b.asks, t0, downAt, upAt };
+    };
+    // (the lead, 2026-11-14: an ask held while A is down and answered once it is back is answered, not failed; what is
+    // held is that each is answered or refused in words, none by a timeout, by 5 s after A is ready)
+    await check("7b: A's whole station stopped 10 s and started again while B asks it: every ask answered or refused in words, none timed out, each by 5 s after A is ready", async () => {
+      const { asks, upAt } = await acrossStop(10_000);
+      const timedOut = asks.filter((x) => /timed out|no answer in|not ended|answered nothing/.test(x.said));
+      const late = asks.filter((x) => x.at + x.ms > upAt && x.at + x.ms > Math.max(upAt + 5000, x.at + 2000));
+      for (const x of [...timedOut, ...late].slice(0, 4)) log(`  the ask at ${iso(x.at)} (${x.ms} ms: ${x.said.slice(0, 120)}), both logs:\n${logsBetween(x.at - 1000, x.at + x.ms + 1000) || "  (nothing)"}`);
+      const why: string[] = [];
+      if (timedOut.length > 0) why.push(`${timedOut.length} timed out: ${timedOut.map((x) => `${iso(x.at)} ${x.ms} ms`).join(", ")}`);
+      if (late.length > 0) why.push(`${late.length} not answered by 5 s after A was ready: ${late.map((x) => `${iso(x.at)} ended ${((x.at + x.ms - upAt) / 1000).toFixed(1)} s after`).join(", ")}`);
+      if (why.length > 0) throw new Error(why.join("; "));
+    });
+    await check("7b: A stopped 45 s while B asks it: what an ask begun in the stop gets, and when (measured, no bound yet)", async () => {
+      const { asks, downAt, upAt } = await acrossStop(45_000);
+      for (const x of asks.filter((x) => x.at >= downAt && x.at < upAt)) measured(`7b 45 s stop: an ask begun ${((x.at - downAt) / 1000).toFixed(1)} s into it got after ${(x.ms / 1000).toFixed(1)} s (${((x.at + x.ms - upAt) / 1000).toFixed(1)} s from A ready): ${x.said.slice(0, 160)}`);
     });
     await check("7c: A's new process dies at start beside the serving one (not handed over; going on as before), then B asks A and A asks B: no ask over 2 s, every one answered", async () => {
       log("  waiting for A online on alice's device's link (7b stopped it)");
