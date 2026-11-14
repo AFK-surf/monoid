@@ -2178,6 +2178,8 @@ test("a plan with no station named (the station page's own row) asks nothing of 
 });
 
 test("a chat handed to the other, then put back in sight here by hand (its row here again, where it went and its trip's records set aside), so live on both: the plan toward the other says it cannot go, in its words; asked anyway, refused there", async () => {
+  // (its rows saying no workspace, or the workspace's id, as a station enrolled in it writes them)
+  for (const named of [false, true]) {
   const w = world();
   const a = w.get(A);
   const b = w.get(B);
@@ -2187,7 +2189,8 @@ test("a chat handed to the other, then put back in sight here by hand (its row h
   assert.equal(b.rig.store.liveOf([key]).length, 1, "live there");
   // (by hand, this station stopped: its row in sight again, where it went forgotten, its trip's records moved aside)
   await a.moves.close();
-  a.rig.store.db.prepare("UPDATE sessions SET ws = NULL WHERE key = ?").run(key);
+  a.rig.store.db.prepare("UPDATE sessions SET ws = ? WHERE key = ?").run(named ? WS : null, key);
+  if (named) w.get(B).rig.store.db.prepare("UPDATE sessions SET ws = ? WHERE key = ? AND ws IS NULL").run(WS, key);
   a.rig.store.db.prepare("DELETE FROM handed_over WHERE session = ?").run(key);
   const out = join(a.rig.dir, "replica", "handover", "out");
   if (existsSync(out)) renameSync(out, `${out}.aside`);
@@ -2214,6 +2217,7 @@ test("a chat handed to the other, then put back in sight here by hand (its row h
   const row = view.modules.find((m: Json) => m.id === "chats").items.find((x: Json) => x.id === key);
   assert.match(row?.cannot ?? "", /a chat of this key is live on B|在「B」上还有一个在继续的副本/i, `GET /move's row says so: ${JSON.stringify(row)}`);
   await assert.rejects(a.moves.handover.handOver(key, B, { wait: true }), /a chat of this key is live on B|在「B」上还有一个在继续的副本/i);
+  }
 });
 
 test("a chat whose key is live where it would go (one that went on there apart from it, as a retirement taken back leaves one) cannot go: the plan says so, the station asked refuses it before anything is written, and the chat goes on here", async () => {
