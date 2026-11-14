@@ -17,7 +17,11 @@ store.db.prepare("UPDATE sessions SET ws = ? WHERE key = ?").run(`retired:${ws}`
 const thread = (store.db.prepare("SELECT thread FROM thread_sessions WHERE session = ? ORDER BY joined_at DESC LIMIT 1").get(key) as { thread: number } | undefined)?.thread;
 if (thread === undefined) throw new Error(`no thread of ${key} in ${data}`);
 const now = Date.now();
-for (let i = 1; i <= 2; i++) store.insertMessage({ thread, ts: `${Math.floor(now / 1000)}.${String(900000 + i)}`, authorKind: "person", author: "alice@example.test", text: `drill-stale only on this station ${tag} ${i}` });
+// (said there before the chat came back from it: just after the last entry it has, not at the time of seeding, which is
+// after what A had said since)
+const last = (store.db.prepare("SELECT ts FROM entries WHERE thread = ? AND ts IS NOT NULL ORDER BY n DESC LIMIT 1").get(thread) as { ts: string } | undefined)?.ts ?? `${Math.floor(now / 1000)}.000000`;
+const [secs, frac = "0"] = last.split(".");
+for (let i = 1; i <= 2; i++) store.insertMessage({ thread, ts: `${secs}.${String(Number(frac.padEnd(6, "0").slice(0, 6)) + i).padStart(6, "0")}`, authorKind: "person", author: "alice@example.test", text: `drill-stale only on this station ${tag} ${i}` });
 mkdirSync(row.workspace, { recursive: true });
 writeFileSync(join(row.workspace, "only-here.txt"), `left by a retirement ${tag}\n`);
 writeFileSync(join(row.workspace, differs!), `an older copy ${tag}\n`);

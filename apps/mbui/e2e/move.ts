@@ -239,7 +239,8 @@ function launcherOf(n: Name): number | undefined {
   // (-ww: ps cuts a long line to the width it guesses otherwise, the launcher's `--app` among what it cut: drill 14)
   for (const l of spawnSync("ps", ["-axww", "-o", "pid=,comm=,args="], { encoding: "utf8" }).stdout.split("\n")) {
     const m = /^\s*(\d+)\s+(\S+)\s+(.*)$/.exec(l);
-    if (m && m[2]!.endsWith("stillfail-station") && m[3]!.includes(` run --app ${app} `)) return Number(m[1]);
+    // (comm is cut to 16 characters on macOS, drill 15: the launcher is known by its argv's first word)
+    if (m && m[3]!.split(" ")[0]!.endsWith("/stillfail-station") && m[3]!.includes(` run --app ${app} `)) return Number(m[1]);
   }
   return undefined;
 }
@@ -436,7 +437,14 @@ async function home(key: string): Promise<void> {
 async function atRest(label: string): Promise<J> {
   log(`  ${label}: waiting for A to have no move under way (move/turn.json gone), then for its page`);
   await whenChanged([DATA.A], () => !existsSync(`${DATA.A}/move/turn.json`), 300_000, () => `A's turn still under way: ${readFileSync(`${DATA.A}/move/turn.json`, "utf8").slice(0, 400)}`);
-  const v = await a.until(moveT(bId), (v) => v?.modules && v, 60_000);
+  // (what the page holds read after the turn's end, as A tells `move` changed: else a value of before it, drill 11's
+  // "there" and drill 15's missing row of the same chat on the same tree, read before and during the turn)
+  const ended = Date.now();
+  const v0 = await a.until(moveT(bId), (v) => v?.modules && v, 60_000);
+  await a.answered(aId, "/move?", ended - 500, 10_000).then(
+    () => log("  A's page read again after its turn's end"),
+    (e) => log(`  A's page not read again within 10 s of its turn's end (not told it changed?): ${String(e).slice(0, 300)}`));
+  const v = await a.until(moveT(bId), (v) => v?.modules && v !== v0 && v, 2_000).catch(() => v0);
   if ((v.moving ?? null) === null) return v;
   let now = v;
   await check(`${label}: A's page says nothing moves once its turn ended`, async () => {
@@ -1091,7 +1099,9 @@ try {
           const d = differ(wantRoom, snapshot(roomOn(to, k6)!));
           if (d.length > 0) throw new Error(d.slice(0, 10).join(", "));
         });
+        const handedT0 = Date.now() - 30_000;
         await check(`6: ${label}: what was said while it was held arrives once, answered once on ${to}`, async () => {
+          log(`  what agents were handed of it since: ${brief(turns(handedT0).filter((t) => t.text.includes(tag) && /drill-note:/.test(t.text)).map((t) => `${t.pid}@${at(t.cwd)} +${t.at - handedT0}ms: ${(t.text.match(/drill-note:\S+/g) ?? []).join(", ")}`), 800)}`);
           if (!said) throw new Error("nothing was said: it was never seen held");
           log(`  waiting for ${note} answered`);
           const v = await untilChat(k6, (v) => texts(v).some((t) => t.startsWith(`drill-noted ${note}`)) && v, 120_000);
