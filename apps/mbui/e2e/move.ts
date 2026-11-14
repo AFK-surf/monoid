@@ -19,6 +19,7 @@
 //     `stationMove` topic's first answer, and station_move plan) with 300 and 2,400 chats.
 //   6 a chat moved to a B that still holds a retired copy of it (its row `retired:`, entries only B has, an older room
 //     and transcript: e2e/move-stale.ts) and back: listed once, every entry once in order, the room exact, its context.
+//   6b a chat whose key is live on both: shown as one that cannot move, a move refused, B untouched;
 //   7 one station asking another each second while the other is handed to a new process, stopped and started, and
 //     handed to one that dies at start: each ask answered or refused within 2 s, answered again within 5 s of it ready.
 // Each check says PASS or FAIL with what was seen; a failed one does not stop the next where that can go on alone.
@@ -160,6 +161,12 @@ class Steps {
   close() {
     this.#w?.close();
   }
+}
+
+/// How many entries chat `key`'s latest thread has on station `n`.
+function entriesOf(n: Name, key: string): number {
+  const t = sql(n, `select thread from thread_sessions where session = ${lit(key)} order by joined_at desc limit 1`)[0]?.thread;
+  return t === undefined ? 0 : Number(sql(n, `select count(*) n from entries where thread = ${t}`)[0]?.n ?? 0);
 }
 
 /// The turns the stations' agents were handed ($FAKE_DUMP.turns, e2e/fake/claude.mjs), since `since`.
@@ -1165,6 +1172,60 @@ try {
       }
     }
   }
+  // ── 6b: a chat whose key is live on both stations (moved A→B, then put back in sight on A by hand): A's page shows it
+  // as one that cannot move, in words, and a move asked anyway is refused, nothing of B changed ──
+  if (part("6b") && (limit("6b", 600), await clean("6b"))) {
+    let kl = "";
+    const keep = `${WORK}/move-live-${tag}.json`;
+    const live = (mode: "live" | "restore") => execFileSync(process.execPath, ["--no-warnings", join(dirname(new URL(import.meta.url).pathname), "move-live.ts"), process.env.E2E_SF_SRC!, DATA.A, kl, mode, keep], { encoding: "utf8", timeout: 120_000 }).trim();
+    let seeded = false;
+    await check("6b: setup: a chat moved A→B, then put back in sight on A by hand (e2e/move-live.ts through A's own store, A stopped): live on both", async () => {
+      kl = await newChat(`live-${tag}`);
+      const l = await moveChat(kl, "B");
+      if (standing("B", kl) !== "live") throw new Error(`not to B: ${standings(kl)}; ${outcome(l)}`);
+      stationDo("halt", "station");
+      try {
+        log(`  ${live("live")}`);
+        seeded = true;
+      } finally {
+        await up("A");
+        await a.stationState(ws, (s) => s.state === "online", 120_000, aId);
+      }
+      if (liveOn(kl).join() !== "A,B") throw new Error(`not live on both: ${standings(kl)}`);
+      log(`  ${standings(kl)}`);
+    });
+    if (seeded) {
+      await check("6b: A's page toward B shows it as one that cannot move, saying why", async () => {
+        const v = await atRest("6b");
+        const row = (v.modules.find((m: J) => m.id === "chats")?.items ?? []).find((x: J) => x.id === kl);
+        log(`  its row ${brief(row)}`);
+        if (row?.state !== "cannot" || String(row?.note ?? "").trim() === "") throw new Error(`its row ${brief(row)}: not one that cannot move, with words`);
+      });
+      await check("6b: a move asked anyway is refused, nothing of B changed", async () => {
+        const rowB = () => brief(sql("B", `select ws, came_from, last_active_at, archived_at from sessions where key = ${lit(kl)}`));
+        const before = { row: rowB(), entries: entriesOf("B", kl), room: roomOn("B", kl) };
+        const roomFiles = (r: string | null) => (r !== null && existsSync(r) ? readdirSync(r).sort().join(",") : "none");
+        const files0 = roomFiles(before.room);
+        const l = await moveChat(kl, "B");
+        log(`  ${outcome(l)}; ${standings(kl)}`);
+        const why = [...(l.refused ?? []).filter((r: J) => named(r.item) === `chats ${kl}`).map((r: J) => r.why), l.failed?.error ?? ""].filter((x) => x !== "").join(" | ");
+        if ((l.done ?? []).some((d: J) => named(d) === `chats ${kl}`)) throw new Error(`it moved: ${outcome(l)}`);
+        if (why === "") throw new Error(`not refused in words: ${outcome(l)}`);
+        const after = { row: rowB(), entries: entriesOf("B", kl), room: roomOn("B", kl) };
+        if (after.row !== before.row || after.entries !== before.entries || roomFiles(after.room) !== files0) throw new Error(`B changed: row ${before.row} -> ${after.row}, entries ${before.entries} -> ${after.entries}, room ${files0} -> ${roomFiles(after.room)}`);
+      });
+      // (A as 6b found it: the row put back as it was, then the chat brought home from B)
+      stationDo("halt", "station");
+      try {
+        log(`  6b's end: ${live("restore")}`);
+      } finally {
+        await up("A");
+        await a.stationState(ws, (s) => s.state === "online", 120_000, aId);
+      }
+      await home(kl).catch((e) => log(`  6b's chat not brought home: ${String(e).slice(0, 300)}`));
+    }
+  }
+
   // ── 3: faults ──
   if (part("3n") && (limit("3n", 900), await clean("3n"))) {
     // (drill-move-7's 3b: a chat's first pass cut half a second after its login moved, B's answer's stream reset, with
