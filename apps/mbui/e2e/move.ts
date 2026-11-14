@@ -236,7 +236,8 @@ function alive(n: Name): boolean {
 /// after its `--`, and drill 12 signalled it, so that nothing was handed over.
 function launcherOf(n: Name): number | undefined {
   const app = `${dirname(DATA[n])}/app`;
-  for (const l of spawnSync("ps", ["-axo", "pid=,comm=,args="], { encoding: "utf8" }).stdout.split("\n")) {
+  // (-ww: ps cuts a long line to the width it guesses otherwise, the launcher's `--app` among what it cut: drill 14)
+  for (const l of spawnSync("ps", ["-axww", "-o", "pid=,comm=,args="], { encoding: "utf8" }).stdout.split("\n")) {
     const m = /^\s*(\d+)\s+(\S+)\s+(.*)$/.exec(l);
     if (m && m[2]!.endsWith("stillfail-station") && m[3]!.includes(` run --app ${app} `)) return Number(m[1]);
   }
@@ -249,7 +250,10 @@ async function handOver(n: Name): Promise<{ from: number; log: string }> {
   const file = `${RUN}/${SHELL_NAME[n]}.log`;
   const from = statSync(file).size;
   const pid = launcherOf(n);
-  if (pid === undefined) throw new Error(`${n}'s launcher not found`);
+  if (pid === undefined) {
+    const mine = spawnSync("ps", ["-axww", "-o", "pid=,comm=,args="], { encoding: "utf8" }).stdout.split("\n").filter((l) => l.includes(dirname(DATA[n]))).map((l) => l.trim().slice(0, 240));
+    throw new Error(`${n}'s launcher not found among: ${mine.join(" | ") || "nothing under " + dirname(DATA[n])}`);
+  }
   process.kill(pid, "SIGUSR2");
   log(`  SIGUSR2 to ${n}'s launcher ${pid}; waiting for it to begin a handover`);
   await whenChanged([RUN], () => /handover: Node [0-9]+ started beside|not handed over/.test(readFileSync(file, "utf8").slice(from)), 10_000,
@@ -295,6 +299,9 @@ const measured = (s: string) => {
 };
 
 const chatT = (key: string) => ({ topic: "chat", station: A, session: key });
+/// Chat `key`'s page once `ok` holds of it; at once an error where its station answers it has no such chat (404:
+/// drill 13's part 6 waited 120 s and 60 s more on one).
+const untilChat = <T>(key: string, ok: (v: J) => T | undefined | null | false, ms = 60_000): Promise<T> => a.until(chatT(key), ok, ms, (e) => e?.status === 404 || e?.code === "http_404");
 const texts = (v: J): string[] => (v?.messages ?? []).map((m: J) => String(m.text ?? ""));
 const rowsOf = (v: J): J[] => (v?.days ?? []).flatMap((d: J) => d.items ?? []);
 const chatsT = () => ({ topic: "chats", scope: ws, mine: false });
@@ -306,7 +313,7 @@ const moveT = (to: string, module = "chats", limit?: number) => ({ topic: "stati
 /// (its station's move/stopped.json, what GET /move's `stopped` says), saying why.
 async function say(key: string, text: string, prefix: string, ms = 120_000): Promise<string> {
   log(`  saying ${text.slice(0, 80)}, waiting for ${prefix}`);
-  const before = new Set(texts(await a.until(chatT(key), (v) => v?.messages && v, 60_000)));
+  const before = new Set(texts(await untilChat(key, (v) => v?.messages && v, 60_000)));
   const stopped0 = stoppedOf(key);
   if (stopped0 !== null) throw new Error(`no answer can come: the chat is ${stopped0} (${standings(key)})`);
   await a.call("chat.send", { station: A, session: key, text });
@@ -318,7 +325,7 @@ async function say(key: string, text: string, prefix: string, ms = 120_000): Pro
     const s = stoppedOf(key);
     return s !== null && { stopped: s };
   }, ms + 5_000, () => "").catch(() => new Promise<never>(() => {}));
-  const answered = a.until(chatT(key), (v) => texts(v).find((t) => t.startsWith(prefix) && !before.has(t)) ?? failedSend(v, text), ms);
+  const answered = untilChat(key, (v) => texts(v).find((t) => t.startsWith(prefix) && !before.has(t)) ?? failedSend(v, text), ms);
   const got = await Promise.race([answered, stops.then((s) => ("stopped" in s ? s : answered))]).finally(() => void (over = true));
   if (typeof got !== "string") {
     if ("stopped" in got) throw new Error(`no answer can come: the chat is ${got.stopped} (${standings(key)})`);
@@ -633,7 +640,7 @@ try {
     let before: string[] = [];
     const rid = runtimeId("A", k2) ?? "";
     await check("2: the chat moved to B (move.start with what it needs), its turn ending with it there", async () => {
-      before = texts(await a.until(chatT(k2), (v) => v?.messages && v));
+      before = texts(await untilChat(k2, (v) => v?.messages && v));
       for (const t of turns().filter((t) => t.session === rid)) log(`  before the move, handed on ${at(t.cwd)}: ${t.text.replace(/\s+/g, " ").slice(0, 100)}`);
       t0 = Date.now();
       await a.call("move.start", { station: A, to: bId, module: "chats", item: k2, withNeeds: true });
@@ -656,7 +663,7 @@ try {
     if (arrived) {
       await check("2: the device lists the chat once, on B", () => listedOnceOn(k2, "B"));
       await check("2: nothing was posted into the chat by a station and its agent was not woken by the move", async () => {
-        const now = texts(await a.until(chatT(k2), (v) => v?.messages && v));
+        const now = texts(await untilChat(k2, (v) => v?.messages && v));
         const added = now.filter((t) => !before.includes(t) && !t.includes(heldNote || "\u0000"));
         if (added.length > 0) throw new Error(`new in the chat: ${brief(added)}`);
         // (what its agent was handed since the move began, each with what it came of: a message said to it, the
@@ -670,7 +677,7 @@ try {
       });
       await check("2: a message said while the chat was held arrives once on B, answered once there", async () => {
         if (heldNote === "") throw new Error("no message was said while it was held (never seen held)");
-        const v = await a.until(chatT(k2), (v) => texts(v).some((t) => t.startsWith(`drill-noted ${heldNote}`)) && v, 120_000);
+        const v = await untilChat(k2, (v) => texts(v).some((t) => t.startsWith(`drill-noted ${heldNote}`)) && v, 120_000);
         const asked = texts(v).filter((t) => t === `drill-note:${heldNote}`).length;
         const answers = texts(v).filter((t) => t.startsWith(`drill-noted ${heldNote}`));
         const cwd = /cwd=(\S+)/.exec(answers[0] ?? "")?.[1] ?? "";
@@ -758,7 +765,7 @@ try {
             await a.call("chat.send", { station: A, session: k2, text: `drill-recall:${nonce}` });
             if (k0 !== "") await a.call("chat.send", { station: A, session: k0, text: `drill-note:k0-${nonce}` });
             await whenChanged([DATA.A], () => sql("A", `select count(*) n from entries where text like ${lit(`%drill-recall:${nonce}%`)}`)[0].n > 0, 60_000, () => "the message is not in A's log");
-            const v = await a.until(chatT(k2), (v) => v?.messages && v);
+            const v = await untilChat(k2, (v) => v?.messages && v);
             // (what of the chat's page a person reads of where it stands: its line, the line over its composer, what is
             // said under what they sent, its messages since; not the whole value, where a field's name matched before)
             const shown = { stateText: v.stateText ?? null, offlineNote: v.offlineNote ?? null, connection: v.connection ?? null, outbox: (v.outbox ?? []).map((o: J) => `${o.state}${o.waits ? `: ${o.waits}` : ""}`), messages: texts(v).slice(-3) };
@@ -774,7 +781,7 @@ try {
           await check("2: its account moved back: the chat goes on, what was said meanwhile answered once, its job on A, A's other chat answers too", async () => {
             const la = await moveBack(account.id, "B", "accounts");
             log(`  ${outcome(la)}; A's profiles ${brief((JSON.parse(readFileSync(`${DATA.A}/config.json`, "utf8")).profiles ?? []).map((p: J) => p.id))}`);
-            const v = await a.until(chatT(k2), (v) => texts(v).some((t) => t.startsWith(`drill-recall ${nonce} `)) && v, 120_000);
+            const v = await untilChat(k2, (v) => texts(v).some((t) => t.startsWith(`drill-recall ${nonce} `)) && v, 120_000);
             const answers = texts(v).filter((t) => t.startsWith(`drill-recall ${nonce} `));
             if (answers.length !== 1 || at(/cwd=(\S+)/.exec(answers[0]!)?.[1] ?? "") !== "A") throw new Error(`answered ${brief(answers)}`);
             if (k0 !== "") await a.until({ topic: "chat", station: A, session: k0 }, (v) => texts(v).filter((t) => t.startsWith(`drill-noted k0-${nonce}`)).length === 1 && v, 120_000);
@@ -879,7 +886,7 @@ try {
         await check("2k: the person is told in the chat that it is stopped and what it waits for", async () => {
           await a.call("chat.send", { station: A, session: kc, text: `drill-recall:${nonce}` });
           await whenChanged([DATA.A], () => sql("A", `select count(*) n from entries where text like ${lit(`%drill-recall:${nonce}%`)}`)[0].n > 0, 60_000, () => "the message is not in A's log");
-          const v = await a.until(chatT(kc), (v) => v?.messages && v);
+          const v = await untilChat(kc, (v) => v?.messages && v);
           const shown = { stateText: v.stateText ?? null, offlineNote: v.offlineNote ?? null, connection: v.connection ?? null, outbox: (v.outbox ?? []).map((o: J) => `${o.state}${o.waits ? `: ${o.waits}` : ""}`), messages: texts(v).slice(-3) };
           log(`  the chat as the device shows it: ${brief(shown, 900)}`);
           const read = [shown.stateText, shown.offlineNote, JSON.stringify(shown.connection), ...shown.outbox, ...texts(v).filter((t) => !t.startsWith("drill-"))].join(" | ");
@@ -893,7 +900,7 @@ try {
           const l = await moveBack(item, "B", "accounts");
           log(`  ${outcome(l)}; A's profiles ${brief((JSON.parse(readFileSync(`${DATA.A}/config.json`, "utf8")).profiles ?? []).map((p: J) => p.id))}`);
           log(`  waiting for drill-recall ${nonce} answered`);
-          const v = await a.until(chatT(kc), (v) => texts(v).some((t) => t.startsWith(`drill-recall ${nonce} `)) && v, 120_000);
+          const v = await untilChat(kc, (v) => texts(v).some((t) => t.startsWith(`drill-recall ${nonce} `)) && v, 120_000);
           const answers = texts(v).filter((t) => t.startsWith(`drill-recall ${nonce} `));
           log(`  ${brief(answers)}`);
           if (answers.length !== 1 || at(/cwd=(\S+)/.exec(answers[0]!)?.[1] ?? "") !== "A") throw new Error(`answered ${brief(answers)}`);
@@ -903,7 +910,7 @@ try {
       await reset("2k").catch((e) => log(`  2k's end: ${String(e).slice(0, 300)}`));
       // (A left as 2k found it: its chat archived, the sign-in taken out of A's config, else the pool gives new chats to
       // the login with fewest, sessions/pool.ts pickProfile, and drill 10's 3n ran on it)
-      await a.until(chatT(kc), (v) => typeof v?.thread?.id === "number" && v, 30_000).then((v) => a.call("chat.archive", { station: A, session: kc, thread: v.thread.id, archived: true })).catch((e) => log(`  2k's chat not archived: ${String(e).slice(0, 200)}`));
+      await untilChat(kc, (v) => typeof v?.thread?.id === "number" && v, 30_000).then((v) => a.call("chat.archive", { station: A, session: kc, thread: v.thread.id, archived: true })).catch((e) => log(`  2k's chat not archived: ${String(e).slice(0, 200)}`));
     }
     await check("2k: end: A as 2k found it (the Kimi sign-in taken out of its config)", async () => {
       stationDo("halt", "station");
@@ -996,6 +1003,14 @@ try {
       const t = sql(n, `select thread from thread_sessions where session = ${lit(key)} order by joined_at desc limit 1`)[0]?.thread;
       return t === undefined ? [] : sql(n, `select text from entries where thread = ${t} and text is not null and text != '' order by n`).map((r) => String(r.text));
     };
+    /// Chat `key`'s thread on station `n` as its entries are: n, ts, kind, first words.
+    const entryRows = (n: Name, key: string): string => {
+      const t = sql(n, `select thread from thread_sessions where session = ${lit(key)} order by joined_at desc limit 1`)[0]?.thread;
+      return t === undefined ? "no thread" : `thread ${t}: ` + sql(n, `select n, ts, kind, substr(coalesce(text, ''), 1, 40) t from entries where thread = ${t} order by n`).map((r) => `${r.n} ${r.ts} ${r.kind} ${JSON.stringify(r.t)}`).join(" | ");
+    };
+    /// What station `n` holds of chat `key` itself: its row, where it says it was handed, its hand-overs in.
+    const heldOn = (n: Name, key: string): string =>
+      `${n}'s row ${brief(sql(n, `select ws, came_from, archived_at, workspace from sessions where key = ${lit(key)}`))}, handed_over ${brief(sql(n, `select station, ws from handed_over where session = ${lit(key)}`))}, hand-overs in ${brief(handovers(n, "in").filter((i) => (i.keys ?? []).includes(key)).map((i) => ({ id: i.id, step: i.step })))}`;
     /// What of `want` (the station it left, in order) is not on `got` once each and in that order.
     const entriesDiffer = (want: string[], got: string[]): string | null => {
       const count = (l: string[], t: string) => l.filter((x) => x === t).length;
@@ -1057,6 +1072,8 @@ try {
           const l = await turnEnds("A", t0);
           await within(held.catch(() => {}), 10_000);
           log(`  ${outcome(l)}; ${standings(k6)}; its hand-over ${outOn(from, k6)?.step}: ${outOn(from, k6)?.error ?? ""}`);
+          log(`  ${heldOn(to, k6)}; ${heldOn(from, k6)}`);
+          await untilChat(k6, (v) => v?.messages && v, 15_000).then(() => log("  the device opens the chat's page"), (e) => log(`  the device does not open the chat's page: ${String(e).slice(0, 400)}`));
           if (liveOn(k6).join() !== to) throw new Error(`${standings(k6)}; ${outcome(l)}`);
         });
         await check(`6: ${label}: listed once, on ${to}`, () => listedOnceOn(k6, to));
@@ -1064,7 +1081,11 @@ try {
           const got = entriesOn(to, k6);
           log(`  ${from} had ${wantEntries.length}, ${to} has ${got.length}; only on ${to}: ${brief(got.filter((t) => !wantEntries.includes(t) && !t.includes(note)).map((t) => t.slice(0, 60)), 400)}`);
           const why = entriesDiffer(wantEntries, got);
-          if (why !== null) throw new Error(why);
+          if (why !== null) {
+            log(`  ${from}'s ${entryRows(from, k6)}`);
+            log(`  ${to}'s ${entryRows(to, k6)}`);
+            throw new Error(why);
+          }
         });
         await check(`6: ${label}: its room on ${to} exactly ${from}'s`, async () => {
           const d = differ(wantRoom, snapshot(roomOn(to, k6)!));
@@ -1073,7 +1094,7 @@ try {
         await check(`6: ${label}: what was said while it was held arrives once, answered once on ${to}`, async () => {
           if (!said) throw new Error("nothing was said: it was never seen held");
           log(`  waiting for ${note} answered`);
-          const v = await a.until(chatT(k6), (v) => texts(v).some((t) => t.startsWith(`drill-noted ${note}`)) && v, 120_000);
+          const v = await untilChat(k6, (v) => texts(v).some((t) => t.startsWith(`drill-noted ${note}`)) && v, 120_000);
           const asked = texts(v).filter((t) => t === `drill-note:${note}`).length;
           const answers = texts(v).filter((t) => t.startsWith(`drill-noted ${note}`));
           if (asked !== 1 || answers.length !== 1 || at(/cwd=(\S+)/.exec(answers[0]!)?.[1] ?? "") !== to) throw new Error(`said ${asked} times, answered ${brief(answers)}`);
@@ -1168,7 +1189,7 @@ try {
         note = `f3c-${tag}`;
         // (whatever the send answers while B is down, what was said is to arrive once B is up: the next check)
         const sent = await a.call("chat.send", { station: A, session: key, text: `drill-note:${note}` }).then((x) => `sent ${brief(x, 200)}`, (e) => `the send answered ${String(e).slice(0, 300)}`);
-        const v = await a.until(chatT(key), (v) => v?.messages && v, 10_000).catch(() => null);
+        const v = await untilChat(key, (v) => v?.messages && v, 10_000).catch(() => null);
         log(`  said while B was down: ${sent}; the device's outbox ${brief((v?.outbox ?? []).map((x: J) => ({ text: x.text, state: x.state, error: x.error ?? null, waits: x.waits ?? null })))}`);
       } finally {
         await up("B");
@@ -1179,8 +1200,8 @@ try {
     if (key !== "" && note !== "") {
       await check("3c: said while B was down: arrives once, answered once after B is up", async () => {
         log(`  waiting for ${note} answered`);
-        const v = await a.until(chatT(key), (v) => texts(v).some((t) => t.startsWith(`drill-noted ${note}`)) && v, 180_000).catch(async (e) => {
-          const now = await a.until(chatT(key), (v) => v?.messages && v, 10_000).catch(() => null);
+        const v = await untilChat(key, (v) => texts(v).some((t) => t.startsWith(`drill-noted ${note}`)) && v, 180_000).catch(async (e) => {
+          const now = await untilChat(key, (v) => v?.messages && v, 10_000).catch(() => null);
           const onB = sql("B", `select count(*) n from entries where text like ${lit(`%drill-note:${note}%`)}`)[0]?.n;
           const onA = sql("A", `select count(*) n from entries where text like ${lit(`%drill-note:${note}%`)}`)[0]?.n;
           throw new Error(`not answered: in B's log ${onB}, in A's ${onA}; the device's outbox ${brief((now?.outbox ?? []).map((x: J) => ({ text: x.text, state: x.state, error: x.error ?? null })))}; ${String(e).slice(0, 200)}`);
@@ -1321,7 +1342,7 @@ try {
       const began = await whenChanged([ST], () => turns(t0).find((t) => t.text.includes(`drill-gate:${g}`)), 60_000, () => "the gated turn never began");
       await handOverA();
       writeFileSync(`${FAKE}.gate-${g}`, "go\n");
-      const v = await a.until(chatT(key), (v) => texts(v).some((t) => t.startsWith(`drill-gated ${g}`)) && v, 120_000);
+      const v = await untilChat(key, (v) => texts(v).some((t) => t.startsWith(`drill-gated ${g}`)) && v, 120_000);
       const answers = texts(v).filter((t) => t.startsWith(`drill-gated ${g}`));
       const handed = turns(t0).filter((t) => t.text.includes(`drill-gate:${g}`));
       if (answers.length !== 1 || !answers[0]!.includes(`pid=${began.pid}`) || handed.length !== 1) throw new Error(`answers ${brief(answers)}, the turn began in ${began.pid}, handed ${handed.length} times`);
@@ -1353,7 +1374,7 @@ try {
       await say(keys[0]!, `drill-job:${jobTag}`, `drill-job ${jobTag}`);
       await whenChanged([DATA.A], () => jobs(jobTag).length > 0, 60_000, () => "no job");
       for (const k of keys.slice(7)) {
-        const thread = (await a.until(chatT(k), (v) => typeof v?.thread?.id === "number" && v)).thread.id;
+        const thread = (await untilChat(k, (v) => typeof v?.thread?.id === "number" && v)).thread.id;
         await a.call("chat.archive", { station: A, session: k, thread, archived: true });
         archived.push(k);
       }

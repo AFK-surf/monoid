@@ -330,7 +330,9 @@ export class Device {
     });
   }
   /// The topic's value once `ok` gives something (or the time is up: what it was, in the error).
-  until<T>(topic: J, ok: (v: J) => T | undefined | null | false, ms = 60_000): Promise<T> {
+  /// `stop`: an error the topic gives that says what is waited for cannot come (a chat its station says it has not):
+  /// the wait ends at once with it, rather than at `ms`.
+  until<T>(topic: J, ok: (v: J) => T | undefined | null | false, ms = 60_000, stop?: (error: J) => boolean): Promise<T> {
     const id = this.next++;
     return new Promise((resolve, reject) => {
       const entry = { value: undefined as J, error: undefined as J, changed: () => {} };
@@ -343,7 +345,14 @@ export class Device {
         reject(new Error(`${this.name} timed out on ${JSON.stringify(topic)}: ${JSON.stringify(entry.value ?? entry.error)?.slice(0, 2500)}`));
       }, ms);
       entry.changed = () => {
-        if (entry.value === undefined) return;
+        if (entry.value === undefined) {
+          if (entry.error !== undefined && stop?.(entry.error)) {
+            clearTimeout(timer);
+            end();
+            reject(new Error(`${this.name} told it cannot come on ${JSON.stringify(topic)}: ${JSON.stringify(entry.error)?.slice(0, 600)}`));
+          }
+          return;
+        }
         const got = ok(entry.value);
         if (got) {
           clearTimeout(timer);
