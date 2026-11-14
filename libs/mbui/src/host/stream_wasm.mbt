@@ -126,5 +126,8 @@ fn st_audio_played(id : Int) -> Double = "mbhost" "mb_host_stream_audio_played"
 fn st_audio_queued(id : Int) -> Double = "mbhost" "mb_host_stream_audio_queued"
 
 ///|
+fn st_audio_wanted(id : Int) -> Double = "mbhost" "mb_host_stream_audio_wanted"
+
+///|
 fn st_audio_volume(id : Int, v : Double) = "mbhost" "mb_host_stream_audio_volume"
 

@@ -1081,6 +1081,18 @@ pub fn Stream::audio_queued(self : Stream) -> Double {
 }
 
 ///|
+/// Milliseconds of its sound the host wants queued before it starts (@hostapi.stream_audio_wanted: Windows' reserve,
+/// 100 ms at first, up to 300 ms after late packets, coming back to 100 ms once calm): an app pacing packets by
+/// `audio_played` keeps at least this much ahead (`while sent - played < ahead.max(s.audio_wanted())`). Answered before
+/// the stream opens too; 0 once closed, or where the host plays none or says none.
+pub fn Stream::audio_wanted(self : Stream) -> Double {
+  if self.closed {
+    return 0.0
+  }
+  @hostapi.stream_audio_wanted(self.id)
+}
+
+///|
 /// Its sound played at volume `v` (1 as it came, 0 silent), from now on, its sound started later too; asked before it
 /// opens, told the host as it does. Where the host has nothing for it, as it came.
 pub fn Stream::audio_volume(self : Stream, v : Double) -> Unit {
@@ -1101,6 +1113,13 @@ pub fn Tester::set_stream_audio(self : Tester, on : Bool) -> Unit { self.fake.au
 /// milliseconds queued.
 pub fn Tester::set_stream_audio_clock(self : Tester, id : Int, played : Double, queued : Double) -> Unit {
   self.fake.stream_audio_clock[id] = (played, queued)
+}
+
+///|
+/// Milliseconds stream `id`'s host wants queued before its sound starts (Stream::audio_wanted; `id` 0: before a stream
+/// opens, and the default for opened ones).
+pub fn Tester::set_stream_audio_wanted(self : Tester, id : Int, ms : Double) -> Unit {
+  self.fake.stream_audio_wanted[id] = ms
 }
 
 ///|

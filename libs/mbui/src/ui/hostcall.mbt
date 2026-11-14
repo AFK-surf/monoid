@@ -323,9 +323,10 @@ struct FakeHost {
   streams_fed : Map[Int, Array[String]]
   stream_said : Map[Int, Array[String]]
   /// whether it takes a frame not to be shown (Tester::set_stream_hides), and what each stream says of its sound
-  /// (Tester::set_stream_audio_clock: samples played, ms queued)
+  /// (Tester::set_stream_audio_clock: samples played, ms queued; Tester::set_stream_audio_wanted: ms wanted)
   mut stream_hides : Bool
   stream_audio_clock : Map[Int, (Double, Double)]
+  stream_audio_wanted : Map[Int, Double]
   /// the device beyond the window (device.mbt): awake, haptics, the clipboard's picture and reads, the keyboard's height
   dev : FakeDevice
   /// pictures' pixels as the test made them up (Tester::add_pixels), by source; and those of the images loaded from

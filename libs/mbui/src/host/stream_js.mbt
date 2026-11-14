@@ -89,4 +89,7 @@ fn st_audio_played(_id : Int) -> Double { 0.0 }
 fn st_audio_queued(_id : Int) -> Double { 0.0 }
 
 ///|
+fn st_audio_wanted(_id : Int) -> Double { 0.0 }
+
+///|
 fn st_audio_volume(_id : Int, _v : Double) -> Unit { () }
