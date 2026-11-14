@@ -114,7 +114,9 @@ const askedFile = (data: string) => join(data, "asked.log");
 /// of its own, its first write the head line (client/core-ts/src/mesh.ts `#open`: `{"method","path",…}`), its answer
 /// read to its end as that stream reads null, the station the connection's (`remoteId`, a station's id). `told` hears
 /// each such answer; nothing the core sends or reads is changed.
-function watchRequests(told: (station: string, method: string, path: string, status: string) => void): void {
+/// (`body`: given the whole answer, as read, of each request whose path `bodyOf` picks: what a station said, word for
+/// word, where a drill needs it beside what the core made of it)
+function watchRequests(told: (station: string, method: string, path: string, status: string) => void, bodyOf?: (path: string) => boolean, body?: (station: string, path: string, raw: string) => void): void {
   // (the object as it is, but for `own`: the native one's methods called on it)
   const over = <T extends object>(target: T, own: Record<string, unknown>): T =>
     new Proxy(target, {
@@ -129,6 +131,7 @@ function watchRequests(told: (station: string, method: string, path: string, sta
     let head: { method: string; path: string } | null = null;
     // (the answer's head as it is read: its status where it says one)
     let answered = "";
+    let chunks: Buffer[] | null = null;
     return over(s, {
       write: (b: Buffer) => {
         if (first) {
@@ -136,7 +139,10 @@ function watchRequests(told: (station: string, method: string, path: string, sta
           const end = b.indexOf(10);
           try {
             const h = end > 0 ? JSON.parse(b.subarray(0, end).toString("utf8")) : null;
-            if (typeof h?.method === "string" && typeof h.path === "string") head = { method: h.method, path: h.path };
+            if (typeof h?.method === "string" && typeof h.path === "string") {
+              head = { method: h.method, path: h.path };
+              if (bodyOf?.(h.path) === true) chunks = [];
+            }
           } catch {}
         }
         return s.write(b);
@@ -144,10 +150,16 @@ function watchRequests(told: (station: string, method: string, path: string, sta
       read: async () => {
         const b = await s.read();
         if (answered === "" && b !== null && b !== undefined) answered = /"status"\s*:\s*(\d{3})/.exec(Buffer.from(b).subarray(0, 400).toString("utf8"))?.[1] ?? "-";
+        if (chunks !== null && b !== null && b !== undefined) chunks.push(Buffer.from(b));
         if ((b === null || b === undefined) && head !== null) {
           const h = head;
           head = null;
           told(station, h.method, h.path, answered);
+          if (chunks !== null) {
+            const raw = Buffer.concat(chunks).toString("utf8");
+            chunks = null;
+            body?.(station, h.path, raw);
+          }
         }
         return b;
       },
@@ -174,6 +186,11 @@ if (process.argv[2] === "device") {
   watchRequests((station, method, path, status) => {
     appendFileSync(record, `asked: ${new Date().toISOString().slice(11, 23)} ${station.slice(0, 8)} ${method} ${path} -> answered${status !== "" && status !== "-" ? ` ${status}` : ""}\n`);
     if (process.connected) process.send!({ answered: { station, method, path } });
+  }, (path) => path.startsWith("/admin/api/move?"), (station, path, raw) => {
+    // (each station's move page as it answered last, by the station and what was asked: `answers/<station>.move.txt`)
+    mkdirSync(join(data, "answers"), { recursive: true });
+    const q = new URL(`http://x${path}`).searchParams;
+    writeFileSync(join(data, "answers", `${station.slice(0, 8)}.move-${(q.get("to") ?? "").slice(0, 8) || "none"}-${q.get("module") || "all"}.txt`), `${new Date().toISOString()} ${path}\n${raw}`);
   });
   // (how long this process's own loop was held, where over a second: drill 24 saw a turn's end minutes late and could not
   // tell whose loop it was)

@@ -127,6 +127,34 @@ function handovers(n: Name, side: "out" | "in"): J[] {
   }
   return out;
 }
+/// What station `n`'s move page toward `to` says of item `key` word for word, as the station answered alice's device
+/// (its page read now; the device keeps each answer, device.ts `answers/`): the item's own JSON, else what was read.
+async function rawItem(n: Name, to: Name, key: string): Promise<string> {
+  await a.until({ topic: "stationMove", station: n === "A" ? A : B, to: idOf(to), module: "chats" }, (v) => v?.modules && v, 30_000).catch(() => null);
+  const f = join(dir, a.name, "answers", `${idOf(n).slice(0, 8)}.move-${idOf(to).slice(0, 8)}-chats.txt`);
+  if (!existsSync(f)) return `(no answer of ${n}'s page toward ${to} kept)`;
+  const raw = readFileSync(f, "utf8");
+  const i = raw.indexOf(`"id":"${key}"`);
+  if (i < 0) return `(${raw.split("\n")[0]}: no item ${key} in it; ${raw.length} bytes)`;
+  let start = raw.lastIndexOf("{", i);
+  let depth = 0;
+  for (let j = start; j < raw.length; j++) {
+    if (raw[j] === "{") depth++;
+    else if (raw[j] === "}" && --depth === 0) return `${raw.split("\n")[0].slice(0, 30)} ${raw.slice(start, j + 1)}`;
+  }
+  return raw.slice(start, start + 600);
+}
+/// Both stations' log lines of the second around `at` (their launchers' logs).
+const logsAround = (at: number) => {
+  const from = new Date(at - 1000).toISOString(), to = new Date(at + 1000).toISOString();
+  return (["station", "second"] as const).flatMap((n) => {
+    const f = `${RUN}/${n}.log`;
+    return existsSync(f) ? readFileSync(f, "utf8").split("\n").filter((l) => l.slice(0, 24) >= from && l.slice(0, 24) <= to).map((l) => `${n === "station" ? "A" : "B"}: ${l.slice(0, 300)}`) : [];
+  }).join("\n    ");
+};
+/// What both stations hold of chat `key` now, for a failure's facts: its row, where it was handed, the hand-overs out.
+const heldOf2 = (key: string) => (["A", "B"] as Name[]).map((n) =>
+  `${n}: sessions ${brief(sql(n, `select key, ws, archived_at, came_from, began_on, profile from sessions where key = ${lit(key)}`))}; handed_over ${brief(sql(n, `select * from handed_over where session = ${lit(key)}`))}; out ${brief(handovers(n, "out").filter((o) => (o.keys ?? []).includes(key)).map((o) => ({ id: o.id, step: o.step, ended: o.ended ?? null, at: o.at })))}`).join("\n    ");
 const outOn = (n: Name, key: string) => handovers(n, "out").filter((o) => (o.keys ?? []).includes(key)).sort((x, y) => y.at - x.at)[0] ?? null;
 const outOf = (key: string) => outOn("A", key);
 const filesIn = (n: Name, id: string) => {
@@ -997,6 +1025,8 @@ try {
             const after = await atRest("2k");
             const rowAfter = ((after.modules.find((x: J) => x.id === "chats")?.items ?? []) as J[]).find((x: J) => x.id === kd);
             log(`  A's page after: its row ${brief(rowAfter)}`);
+            // (the facts at that moment, for the station's side: no verdict of them)
+            log(`  2k's second chat, its facts: A's stopped.json ${existsSync(`${DATA.A}/move/stopped.json`) ? readFileSync(`${DATA.A}/move/stopped.json`, "utf8").slice(0, 800) : "none"}\n    ${heldOf2(kd)}\n    A's page toward B, as A answered it: ${await rawItem("A", "B", kd)}`);
             if (rowAfter?.state !== "there") throw new Error(`its row on A's page reads ${rowAfter?.state}, not there`);
           });
         } finally {
@@ -1275,7 +1305,10 @@ try {
       await check("6b: A's page toward B shows it as one that cannot move, saying why", async () => {
         const v = await atRest("6b");
         const row = (v.modules.find((m: J) => m.id === "chats")?.items ?? []).find((x: J) => x.id === kl);
+        const readAt = Date.now();
         log(`  its row ${brief(row)}`);
+        // (the facts at that moment, for the station's side: no verdict of them)
+        log(`  6b's facts: ${heldOf2(kl)}\n    the seed's set-aside: ${existsSync(`${keep}.out`) ? readdirSync(`${keep}.out`).join(", ") : "none"}\n    A's page toward B, as A answered it: ${await rawItem("A", "B", kl)}\n    B's page toward A, as B answered it: ${await rawItem("B", "A", kl)}\n    the stations' logs around the read:\n    ${logsAround(readAt)}`);
         if (row?.state !== "cannot" || String(row?.note ?? "").trim() === "") throw new Error(`its row ${brief(row)}: not one that cannot move, with words`);
       });
       await check("6b: a move asked anyway is refused, nothing of B changed", async () => {
