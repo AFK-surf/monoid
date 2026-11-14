@@ -11,7 +11,7 @@
 //   once. With neither, two stations listing one session key are two chats (a platform thread's key is its connect's,
 //   each station's own), both listed;
 // - what opens a chat by that station follows it (data.ts `chatNow`, any number of hops, none round): a link
-//   (asks.ts `linkNow`), a page open on it (views.ts `#chatMoved`: it shows its copy there, its thread as the page names
+//   (asks.ts `linkNow`), a page open on it (core/routing.ts `#movedTo`: each topic it holds shows its copy there, its thread as the page names
 //   it), the calls that name it (`aimed`: sent where it is, once more where the station said so only as it was asked);
 // - what was done here and not confirmed yet is aimed there (local.ts `moved`): its outbox (a message the station
 //   answered so is sent there, never shown failed), the first messages to its agent, a chat asked for here that became

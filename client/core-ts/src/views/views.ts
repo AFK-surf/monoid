@@ -878,10 +878,6 @@ function cutWords(words: string, max: number): string {
 /// (`chat.find`'s own excerpt keeps refs.ts's lengths.)
 const SNIPPET_LEAD = 12;
 
-/// The chat topic of a chat where it is now (data.ts chatNow): by its thread there, else its session.
-const movedTopic = (now: { station: string; session: string; thread: number | null }): Topic =>
-  now.thread !== null ? { topic: "chat", station: now.station, thread: now.thread, session: null } : { topic: "chat", station: now.station, thread: null, session: now.session };
-
 /// The views a core shows, as an owner of their topics.
 export class Views implements Owner {
   /// The list rows made from each record (with what else they were made with), so a row whose record did not change
@@ -1153,38 +1149,8 @@ export class Views implements Owner {
     }
   }
 
-  /// Where a chat a page holds on the station it left is now (data.ts chatNow: as its stations said it went, any number
-  /// of times): the topic of its copy there, and its thread on the station the page names (what the page sends by).
-  /// Null where it did not go.
-  #chatMoved(view: Topic): { topic: Topic; thread: number | null } | null {
-    const station = typeof view.station === "string" ? view.station : null;
-    if (station === null) return null;
-    const data = this.#core.data;
-    if (typeof view.thread === "number") {
-      const now = data.chatNow(station, { thread: view.thread });
-      return now === null ? null : { topic: movedTopic(now), thread: view.thread };
-    }
-    const session = typeof view.session === "string" ? view.session : null;
-    if (session === null || session.startsWith(PENDING_PREFIX)) return null;
-    const now = data.chatNow(station, { session });
-    return now === null ? null : { topic: movedTopic(now), thread: data.moved(station, session)?.thread ?? null };
-  }
-
-  /// A chat a page holds on the station it left, as its copy where it is now shows (`#chatMoved`): the page goes on
-  /// there as it was, nothing said. Its thread as the page names it (what it sends is aimed there: views/moved.ts).
-  #movedChat(moved: { topic: Topic; thread: number | null }): Value | undefined {
-    const out = this.value(moved.topic);
-    if (out === undefined || !("ok" in out) || moved.thread === null) return out;
-    const v = out.ok as J;
-    return isObject(v.thread) ? { ok: { ...v, thread: { ...v.thread, id: moved.thread } } } : out;
-  }
-
   /// The topics a view is built from, given what is known now; `opening`, what its first value reads alone (`start`).
   #sources(view: Topic, opening = false): Topic[] {
-    if (view.topic === "chat") {
-      const moved = this.#chatMoved(view);
-      if (moved !== null) return [{ topic: "prefs" }, moved.topic];
-    }
     const topics: Topic[] = [];
     const station = typeof view.station === "string" ? view.station : "";
     // (and its station's screens, for its bar's way to them)
@@ -1655,10 +1621,6 @@ export class Views implements Owner {
     const live = this.#views.get(topicKey(view));
     if (live === undefined) return undefined;
     timed(`${view.topic}.sources`, () => untracked(() => this.#sync(view)));
-    if (view.topic === "chat") {
-      const moved = this.#chatMoved(view);
-      if (moved !== null) return this.#movedChat(moved);
-    }
     const out = timed(`${view.topic}.make`, () => this.#compute(view));
     if (view.topic !== "chat" || out === undefined || !("ok" in out)) return out;
     const v = out.ok as J;

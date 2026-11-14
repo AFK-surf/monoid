@@ -12,7 +12,9 @@ import type { StationAddr } from "../src/station/addr.ts";
 import { HostWire, type RequestHead, type StationWire } from "../src/station/wire.ts";
 import type { FakeHost } from "../src/testing.ts";
 import { answers, apply, call, subscribe, v } from "./helpers.ts";
-import { base, chatsOf, entry, started, stationReplies, status } from "./station-fixture.ts";
+import { base, chatsOf, entry, session, started, stationReplies, status } from "./station-fixture.ts";
+import type { Topic } from "../src/protocol.ts";
+import { Queue } from "effect";
 
 // deno-lint-ignore no-explicit-any
 type J = any;
@@ -31,7 +33,7 @@ type World = {
   rows: Record<string, Row[]>;
   moved: Record<string, J[]>;
   off: Set<string>;
-  sent: { station: string; method: string; path: string; body: J }[];
+  sent: { station: string; method: string; path: string; body: J; headers: [string, string][] }[];
   reply: (station: string, method: string, path: string, body: J) => unknown;
 };
 
@@ -41,7 +43,7 @@ function world(): World {
 
 const stationOf = (req: HttpRequest) => req.headers.find(([k]) => k === AT)?.[1] ?? "st";
 
-async function rig(w: World, host?: FakeHost) {
+async function rig(w: World, host?: FakeHost, gate?: (g: { resumes: boolean; marks: boolean }) => void) {
   const wire = (h: FakeHost) => {
     const inner = new HostWire(h);
     return {
@@ -49,14 +51,15 @@ async function rig(w: World, host?: FakeHost) {
         w.off.has(station.station) ? Effect.fail(new CoreError("mesh", "unreached")) : inner.request(station, { ...head, headers: [...head.headers, [AT, station.station]] }, body),
     } as StationWire;
   };
-  const answer = (x: { host: FakeHost; cloud: { also?: Record<string, unknown> } }) => {
+  const answer = (x: { host: FakeHost; cloud: { also?: Record<string, unknown> }; gate: { resumes: boolean; marks: boolean } }) => {
+    gate?.(x.gate);
     // (as the cloud lists them each time it is asked: A down once it is off)
     Object.defineProperty(x.cloud, "also", { get: () => ({ stations: [{ id: "st", name: "studio", online: !w.off.has("st"), last_seen: null }, { id: "st2", name: "mini", online: true, last_seen: null }] }) });
     stationReplies(x.host, (req: HttpRequest) => {
       const who = stationOf(req);
       const path = req.url.replace("https://stillfail.test/admin/api", "");
       const body = req.body && req.body.length > 0 ? JSON.parse(new TextDecoder().decode(req.body)) : null;
-      if (req.method !== "GET" && !path.startsWith("/changed/") && path !== "/batch") w.sent.push({ station: who, method: req.method, path, body });
+      if (req.method !== "GET" && !path.startsWith("/changed/") && path !== "/batch") w.sent.push({ station: who, method: req.method, path, body, headers: req.headers });
       const said = w.reply(who, req.method, path, body);
       if (said !== undefined) return said;
       if (req.method === "GET" && path.startsWith("/moved?")) {
@@ -65,7 +68,10 @@ async function rig(w: World, host?: FakeHost) {
       }
       // (each chat's one message, as its row says it goes to 1)
       const entries = /^\/threads\/(\d+)\/entries\?/.exec(path);
-      if (req.method === "GET" && entries) return { last: 1, entries: [{ ...entry(1, "m1"), thread: Number(entries[1]) }] };
+      // (B's said on another day, so what a page shows of it by day is B's own)
+      if (req.method === "GET" && entries) return { last: 1, entries: [{ ...entry(1, "m1"), thread: Number(entries[1]), ...(who === "st2" ? { at: 3 * 86_400_000 } : {}) }] };
+      // (B's agent runs a job there, A's none)
+      if (req.method === "GET" && who === "st2" && /^\/sessions\/k1(\?|$)/.test(path)) return { session: session("k1"), threads: [], turns: [], jobs: [{ id: "j-b", name: "web", state: "running", startedAt: 1, session: "k1" }] };
       const of = chatsOf(w.rows[who]!.map(rowOf));
       const asked = `${req.method} ${path}`;
       return asked in of ? of[asked] : undefined;
@@ -76,6 +82,7 @@ async function rig(w: World, host?: FakeHost) {
     return { ...s, ui: s.core.connect() };
   }
   // (a core started anew on the same device: its database as the last left it, the stations as they are now)
+  void gate;
   const core = await Core.create(host, { clock: host.time.clock, sample: 0, wire: () => wire(host) });
   await host.time.pass(500);
   return { host, core, ui: core.connect(), pushOn: undefined as never };
@@ -221,29 +228,68 @@ test("a_link_follows_every_hop_and_refuses_one_that_goes_round", () => {
   assert.equal(linkNow(chat, (a) => a, round), chat);
 });
 
-test("a_chat_open_when_it_moves_goes_on_where_it_is_with_its_draft", async () => {
+/// A chat open on A (its page holding `topic` by A's thread, 7) as A says it went to B (its thread there 21): what it
+/// shows before and after, and B's own of the same topic.
+async function openAsItMoves(topic: (station: string, thread: number) => Topic, draft?: string) {
   const w = world();
   w.rows.st = [{ id: "k1", thread: 7, title: "在 studio", at: 5000 }];
   // (B has its copy already, as one being put in: older, so A's is the one shown)
   w.rows.st2 = [{ id: "k1", thread: 21, title: "在 mini", at: 3000 }];
   const s = await rig(w);
-  const values = new Map<number, unknown>();
-  subscribe(s.core, s.ui, 1, { topic: "chat", station: A, thread: 7, session: null });
-  s.core.inner.data.set({ topic: "draft", station: A, chat: "k1" }, { text: "写了一半" }, false);
+  subscribe(s.core, s.ui, 1, topic(A, 7));
+  if (draft !== undefined) s.core.inner.data.set({ topic: "draft", station: A, chat: "k1" }, { text: draft }, false);
   await settle(s.host);
-  apply(s.host, values);
-  assert.equal(v(values, 1)?.title, "在 studio");
-  // Handed over: A says it went.
+  const store = s.core.inner.store;
+  const before = store.value(topic(A, 7));
   s.pushOn([AT, "st"], "chat-moved", movedTo("k1", "st2", 7, 21));
+  // (B's own, as a page there would hold it)
+  subscribe(s.core, s.ui, 2, topic(B, 21));
   await settle(s.host);
-  apply(s.host, values);
-  // The page goes on, its copy on B shown, its thread as the page names it (what it sends is aimed at B).
-  assert.equal(v(values, 1)?.title, "在 mini");
-  assert.equal(v(values, 1)?.thread?.id, 7);
+  return { s, before, after: store.value(topic(A, 7)), there: store.value(topic(B, 21)) };
+}
+
+/// A value as the page on A names its thread (B's 21 its 7).
+const named = (v: unknown) => {
+  const x = JSON.parse(JSON.stringify(v ?? null));
+  if (x?.ok?.thread?.id === 21) x.ok.thread.id = 7;
+  return JSON.stringify(x);
+};
+
+test("a_chat_open_when_it_moves_shows_its_copy_where_it_is_its_thread_as_the_page_names_it", async () => {
+  const { s, before, after, there } = await openAsItMoves((station, thread) => ({ topic: "chat", station, thread, session: null }));
+  assert.equal((before as J)?.ok?.title, "在 studio");
+  assert.equal((after as J)?.ok?.title, "在 mini");
+  assert.equal((after as J)?.ok?.thread?.id, 7);
+  assert.equal(JSON.stringify(after), named(there));
+  s.core.close();
+});
+
+// Every other topic a chat's page holds by its thread: its copy's on B, the page's own topic all along.
+for (const [name, of] of [
+  ["its_messages", (station: string, thread: number): Topic => ({ topic: "thread", station, thread })],
+  ["its_letters", (station: string, thread: number): Topic => ({ topic: "letters", station, thread })],
+  ["what_its_agents_wrote_each_other", (station: string, thread: number): Topic => ({ topic: "chatLetters", station, thread })],
+  ["its_things", (station: string, thread: number): Topic => ({ topic: "chatThings", station, thread })],
+  ["its_outline", (station: string, thread: number): Topic => ({ topic: "chatOutline", station, thread })],
+  ["its_jobs", (station: string, thread: number): Topic => ({ topic: "chatJobs", station, thread, session: null })],
+] as const) {
+  test(`a_chat_open_when_it_moves_shows_${name}_where_it_is`, async () => {
+    const { s, before, after, there } = await openAsItMoves(of);
+    assert.notEqual(there, undefined, "B's");
+    // (B's differs from A's: so it is B's that is shown)
+    assert.notEqual(named(there), named(before), "B's is not A's");
+    assert.equal(JSON.stringify(after), named(there));
+    s.core.close();
+  });
+}
+
+test("a_chat_open_when_it_moves_keeps_its_draft_where_it_is", async () => {
+  const { s } = await openAsItMoves((station, thread) => ({ topic: "chat", station, thread, session: null }), "写了一半");
   assert.equal((s.core.inner.data.get({ topic: "draft", station: B, chat: "k1" }) as J)?.text, "写了一半");
   assert.equal(s.core.inner.data.get({ topic: "draft", station: A, chat: "k1" }), undefined);
   s.core.close();
 });
+
 
 test("a_message_its_station_says_went_elsewhere_is_sent_there_once_and_never_failed", async () => {
   const w = world();
@@ -258,7 +304,7 @@ test("a_message_its_station_says_went_elsewhere_is_sent_there_once_and_never_fai
   subscribe(s.core, s.ui, 1, { topic: "chat", station: A, thread: 7, session: null });
   await settle(s.host);
   const failed: unknown[] = [];
-  call(s.core, s.ui, 2, "chat.send", { station: A, thread: 7, text: "接着做" });
+  call(s.core, s.ui, 2, "chat.send", { station: A, thread: 7, text: "接着做", client: "测试端" });
   for (let i = 0; i < 6; i++) {
     await s.host.settle();
     await s.host.time.pass(200);
@@ -274,6 +320,10 @@ test("a_message_its_station_says_went_elsewhere_is_sent_there_once_and_never_fai
   }
   const posts = w.sent.filter((x) => x.method === "POST" && x.path.endsWith("/messages"));
   assert.deepEqual(posts.map((x) => [x.station, x.path, x.body?.text]), [["st", "/threads/7/messages", "接着做"], ["st2", "/threads/21/messages", "接着做"]]);
+  // Sent there as the same message: its key and the app it was sent from as they went to A (B knows it by them).
+  const key = (x: { headers: [string, string][] }) => x.headers.find(([k]) => k.toLowerCase() === "idempotency-key")?.[1];
+  assert.ok(key(posts[0]!) !== undefined && key(posts[0]!) === key(posts[1]!), "the same idempotency key");
+  assert.deepEqual([posts[0]!.body?.client, posts[1]!.body?.client], ["测试端", "测试端"]);
   assert.deepEqual((values.get(2) as J)?.ok, { seq: 4 });
   assert.deepEqual(failed, [], "never shown failed");
   assert.deepEqual(s.core.inner.views.local.outbox(A, 7), []);
@@ -403,4 +453,36 @@ test("a_chat_that_came_back_while_the_device_was_away_is_listed_where_it_is", as
   assert.deepEqual(listed(values, 1), [[A, "k1", "在 studio"]]);
   assert.equal(again.core.inner.data.chatNow(A, { session: "k1" }), null);
   again.core.close();
+});
+
+test("a_chat_moved_told_as_a_stream_comes_back_is_taken_as_one_told_live", async () => {
+  const w = world();
+  w.rows.st = [{ id: "k1", thread: 7, title: "在 studio", at: 5000 }];
+  w.rows.st2 = [{ id: "k1", thread: 21, title: "在 mini", at: 3000 }];
+  const s = await rig(w, undefined, (g) => {
+    g.resumes = true;
+    g.marks = true;
+  });
+  const values = new Map<number, unknown>();
+  subscribe(s.core, s.ui, 1, { topic: "chats", scope: "ws" });
+  await settle(s.host);
+  const onA = (x: { headers?: [string, string][] }) => (x.headers ?? []).some(([k, v]) => k === AT && v === "st");
+  const asked = () => s.host.requests.filter((r) => r.url.includes("/admin/api/moved?") && stationOf(r) === "st").length;
+  const movedReads = asked();
+  // A's stream goes; it comes back going on from where the device was in A's events, telling what it missed first.
+  type Stream = { path: string; queue: Queue.Queue<Uint8Array | null>; closed: boolean; headers?: [string, string][] };
+  const streams = (s as unknown as { streams: Stream[] }).streams;
+  const first = streams.filter((x) => onA(x) && !x.closed).at(-1)!;
+  Queue.offerUnsafe(first.queue, null);
+  await s.host.time.pass(3_000, 50);
+  await settle(s.host);
+  const resumed = streams.filter((x) => onA(x) && !x.closed).at(-1)!;
+  assert.ok(resumed !== first && resumed.path.includes("since="), "resumed");
+  s.pushOn([AT, "st"], "chat-moved", movedTo("k1", "st2", 7, 21));
+  await settle(s.host);
+  apply(s.host, values);
+  assert.deepEqual(listed(values, 1), [[B, "k1", "在 mini"]]);
+  assert.equal(s.core.inner.data.chatNow(A, { thread: 7 })?.thread, 21);
+  assert.equal(asked(), movedReads, "GET /moved not read again: the resumed stream told it");
+  s.core.close();
 });

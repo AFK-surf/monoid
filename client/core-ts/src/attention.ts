@@ -104,7 +104,7 @@ export class Attention implements Owner {
     const core = this.#core;
     const thread = get(value.ok, "thread");
     const id = get(thread, "id");
-    // (a chat its station said went to another: its copy there is what is attended, views.ts #chatMoved)
+    // (a chat its station said went to another: its copy there is what is attended, core/routing.ts #movedTo)
     if (typeof id === "number" && core.data.chatNow(station, { thread: id }) !== null) return value;
     const read = typeof id === "number" ? core.stations.readPosition(station, id) : null;
     // A cached optimistic read can outlive its interrupted request. Use the same position the sidebar sees so that

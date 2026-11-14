@@ -127,8 +127,8 @@ is never written (account.ts `#movedAway`), nor one the station it went to says 
 `#came`), so every read of `chat` sees one row a chat and no read filters. One session key on two stations with
 neither said is two chats (a platform thread's key is its connect's, each station's own: the lead, 2026-11-14).
 What names a chat on the station it left (a call's params, a link, a page's topic, a draft) is aimed through
-`chatNow` where it is read, never by rewriting what the UI holds: a page open on it keeps its topic and its thread id
-(views.ts `#movedChat`).
+`chatNow` where it is read, never by rewriting what the UI holds: a page open on it keeps its topics and its thread id,
+each shown of its copy there (core/routing.ts `#movedTo`, one place for every topic a chat's page holds).
 
 ## What is shared is never written
 
