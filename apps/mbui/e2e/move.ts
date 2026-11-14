@@ -9,7 +9,7 @@
 // what their agents were handed ($FAKE_DUMP.turns).
 //   1 the page's data: what moves A→B with true counts, B offered, bob refused;
 //   2 one chat (messages, transcript, a file, a git worktree of the repos cache with a commit no remote has and a change
-//     not committed, a job) there and back;
+//     not committed, a job) there and back; 2k one on a login that cannot be shared, back on A while that login is on B;
 //   3 faults, each on a chat of its own and from a state checked clean: n none (a 300 MB room moved with its needs), a B
 //     killed in the first pass, b A killed while the chat is held, c B killed as
 //     it took the chat, d move.stop in the first pass, e C without room, f A handed over to a fresh process (SIGUSR2 to
@@ -299,8 +299,8 @@ function failedSend(v: J, text: string): { failed: string } | undefined {
   return o === undefined ? undefined : { failed: String(o.error ?? v?.failed ?? "failed") };
 }
 /// A chat made on A whose agent answered once: its session key as the station has it.
-async function newChat(label: string): Promise<string> {
-  const { key: made } = await a.call("chat.create", { station: A, runtime: "claude" });
+async function newChat(label: string, profile?: string): Promise<string> {
+  const { key: made } = await a.call("chat.create", { station: A, runtime: "claude", ...(profile ? { profile } : {}) });
   await a.call("chat.send", { station: A, session: made, text: `drill-seed:${label}` });
   const v = await a.until({ topic: "chat", station: A, session: made }, (v) => failedSend(v, `drill-seed:${label}`) ?? (texts(v).some((t) => t.startsWith(`drill-seeded ${label}`)) && typeof v?.key === "string" && typeof v?.thread?.id === "number" && v), 120_000);
   if (v.failed !== undefined) throw new Error(`a new chat on A did not take its first message: ${v.failed}`);
@@ -712,7 +712,7 @@ try {
         // is forward only and neither POST /move nor station_move takes it yet)
         const borrowed = (JSON.parse(readFileSync(`${DATA.A}/config.json`, "utf8")).profiles ?? []).filter((p: J) => p.runtime === "claude");
         if (account !== undefined && standing("A", k2) === "live" && borrowed.length > 0) {
-          fail("2: back on A while its account is still on B: stopped, and the person is told so", new Error(`not reachable by this login: A borrows it (${brief(borrowed.map((p: J) => ({ id: p.id, share: p.share ?? null })))}); it needs a login that cannot be shared, which the drill has no way to make yet`));
+          log(`  (A borrows the login it moved with, ${brief(borrowed.map((p: J) => ({ id: p.id, share: p.share ?? null })))}: back on A nothing waits for it; the stopped path is 2k's, a login that cannot be shared)`);
         }
         if (account !== undefined && standing("A", k2) === "live" && borrowed.length === 0) {
           const nonce = randomBytes(3).toString("hex");
@@ -780,6 +780,84 @@ try {
           await listedOnceOn(k2, "A");
         });
       }
+    }
+  }
+
+  // ── 2k: back on A while its login is on B, by a login that cannot be shared (a Kimi Code sign-in: share/index.ts
+  // shareRefusal), so that it moves as it is and A keeps no copy ──
+  if (part("2k")) {
+    limit("2k", 900);
+    let kc = "";
+    const kimi = "kimi-code";
+    await check("2k: setup: a Kimi Code sign-in on A (seeded by hand in A's config.json and its home while A is stopped: its tokens far from due, so A never asks Kimi), a chat on it", async () => {
+      stationDo("halt", "station");
+      try {
+        const cfgPath = `${DATA.A}/config.json`;
+        const cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
+        if (!(cfg.profiles ?? []).some((p: J) => p.id === kimi)) cfg.profiles = [...(cfg.profiles ?? []), { id: kimi, name: "Kimi Code", access: { kind: "api-provider", provider: kimi, login: true }, home: `homes/${kimi}`, env: {}, models: ["claude-sonnet-5-5"] }];
+        writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+        const home = `${DATA.A}/homes/${kimi}`;
+        mkdirSync(home, { recursive: true });
+        writeFileSync(join(home, "kimi-code.json"), JSON.stringify({ access: `drill-${tag}`, refresh: `drill-${tag}`, expiresAt: Date.now() + 30 * 86_400_000, lifeMs: 15 * 60_000, deviceId: `drill-${tag}` }), { mode: 0o600 });
+        writeFileSync(join(home, "kimi-code.token"), `drill-${tag}`, { mode: 0o600 });
+      } finally {
+        await up("A");
+        log("  waiting for A online on alice's device's link");
+        await a.stationState(ws, (s) => s.state === "online", 120_000, aId);
+      }
+      kc = await newChat(`kimi-${tag}`, kimi);
+      const prof = sql("A", `select profile from sessions where key = ${lit(kc)}`)[0]?.profile;
+      if (prof !== kimi) throw new Error(`the chat runs on ${prof}, not ${kimi}`);
+      await say(kc, `drill-remember:k${tag}`, `drill-remembered k${tag}`);
+    });
+    if (kc !== "") {
+      let item = "";
+      await check("2k: moved to B with what it needs: its login goes as it is, A keeps no copy of it", async () => {
+        const l = await moveChat(kc, "B");
+        item = (l.done ?? []).find((d: J) => d.module === "accounts")?.id ?? "";
+        const onA = (JSON.parse(readFileSync(`${DATA.A}/config.json`, "utf8")).profiles ?? []).map((p: J) => ({ id: p.id, share: p.share ?? null }));
+        log(`  ${outcome(l)}; A's profiles ${brief(onA)}`);
+        if (standing("B", kc) !== "live") throw new Error(`${standings(kc)}; ${outcome(l)}`);
+        if (item === "") throw new Error(`no login moved with it: ${outcome(l)}`);
+        if (onA.some((p: J) => p.id === kimi)) throw new Error(`A still has ${kimi}: ${brief(onA)}`);
+      });
+      const nonce = randomBytes(3).toString("hex");
+      let back = false;
+      await check("2k: the chat alone moved back while its login stays on B: on A, stopped, waiting for it", async () => {
+        const l = await moveBack(kc, "B");
+        log(`  ${outcome(l)}; ${standings(kc)}; A's stopped ${existsSync(`${DATA.A}/move/stopped.json`) ? readFileSync(`${DATA.A}/move/stopped.json`, "utf8").slice(0, 600) : "none"}`);
+        if (standing("A", kc) !== "live") throw new Error(`not back on A: ${standings(kc)}; ${outcome(l)}`);
+        back = true;
+        const s = stoppedOf(kc);
+        if (s === null || !s.includes(item)) throw new Error(`not stopped waiting for ${item}: ${s}`);
+        const m = await atRest("2k");
+        const chatsM = m.modules.find((x: J) => x.id === "chats");
+        const row = (chatsM?.items ?? []).find((x: J) => x.id === kc);
+        log(`  A's page: its row ${brief(row)}; rows ${brief((chatsM?.items ?? []).map((x: J) => `${x.id.slice(-8)} ${x.state}`), 400)}`);
+        if (row?.state !== "stopped") throw new Error(`its row on A's page says ${row?.state} (${row?.stateText}), not stopped`);
+      });
+      if (back) {
+        await check("2k: the person is told in the chat that it is stopped and what it waits for", async () => {
+          await a.call("chat.send", { station: A, session: kc, text: `drill-recall:${nonce}` });
+          await whenChanged([DATA.A], () => sql("A", `select count(*) n from entries where text like ${lit(`%drill-recall:${nonce}%`)}`)[0].n > 0, 60_000, () => "the message is not in A's log");
+          const v = await a.until(chatT(kc), (v) => v?.messages && v);
+          const shown = { stateText: v.stateText ?? null, offlineNote: v.offlineNote ?? null, connection: v.connection ?? null, outbox: (v.outbox ?? []).map((o: J) => `${o.state}${o.waits ? `: ${o.waits}` : ""}`), messages: texts(v).slice(-3) };
+          log(`  the chat as the device shows it: ${brief(shown, 900)}`);
+          const read = [shown.stateText, shown.offlineNote, JSON.stringify(shown.connection), ...shown.outbox, ...texts(v).filter((t) => !t.startsWith("drill-"))].join(" | ");
+          if (!/停|等|stopped|waits for|账号|登录|login|account/i.test(read)) throw new Error(`nothing on the chat's page says it is stopped and what it waits for: ${read.slice(0, 400)}`);
+        });
+        await check("2k: its login moved back: the chat goes on, what was said meanwhile answered once, on A, from its context", async () => {
+          const l = await moveBack(item, "B", "accounts");
+          log(`  ${outcome(l)}; A's profiles ${brief((JSON.parse(readFileSync(`${DATA.A}/config.json`, "utf8")).profiles ?? []).map((p: J) => p.id))}`);
+          log(`  waiting for drill-recall ${nonce} answered`);
+          const v = await a.until(chatT(kc), (v) => texts(v).some((t) => t.startsWith(`drill-recall ${nonce} `)) && v, 120_000);
+          const answers = texts(v).filter((t) => t.startsWith(`drill-recall ${nonce} `));
+          log(`  ${brief(answers)}`);
+          if (answers.length !== 1 || at(/cwd=(\S+)/.exec(answers[0]!)?.[1] ?? "") !== "A") throw new Error(`answered ${brief(answers)}`);
+          if (!answers[0]!.includes(`secret=k${tag}`)) throw new Error(`not from its context: ${answers[0]}`);
+        });
+      }
+      await reset("2k").catch((e) => log(`  2k's end: ${String(e).slice(0, 300)}`));
     }
   }
 
