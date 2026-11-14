@@ -23,7 +23,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, statfsSync, unlinkSync, watch, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { check, Device, dir, fail, failures, type J, log, stationDo, stationSays, whenChanged, within } from "./device.ts";
+import { check as checked, Device, dir, fail, failures, type J, log, stationDo, stationSays, whenChanged, within } from "./device.ts";
 
 const WORK = process.env.E2E_WORK!;
 const ST = process.env.E2E_STATION!;
@@ -132,7 +132,8 @@ function turns(since = 0): { at: number; pid: number; session: string; resumed: 
 /// directory is of.
 function jobs(tag: string): { pid: number; cwd: string; on: Name | "?" }[] {
   // (the job's own process alone: what started it may carry its command line among its arguments)
-  const mine = new RegExp(`^\\s*(\\d+)\\s+\\S*[Pp]ython[0-9.]*\\s+-c import time; time\\.sleep\\(10\\*\\*9\\) drill-job-${tag}$`);
+  // (python's own argv has `-c import…` unquoted; a shell or runner that carries the command line has it quoted)
+  const mine = new RegExp(`^\\s*(\\d+)\\s.*\\s-c import time; time\\.sleep\\(10\\*\\*9\\) drill-job-${tag}$`);
   const pids = spawnSync("ps", ["-axo", "pid=,args="], { encoding: "utf8" }).stdout.split("\n").map((l) => mine.exec(l)?.[1]).filter((x): x is string => x !== undefined).map(Number);
   return pids.map((pid) => {
     const l = spawnSync("lsof", ["-nP", "-a", "-p", String(pid), "-d", "cwd", "-Fn"], { encoding: "utf8" }).stdout;
@@ -157,6 +158,12 @@ function fill(room: string, sub: string, count: number, bytes: number): void {
   mkdirSync(d, { recursive: true });
   for (let i = 0; i < count; i++) writeFileSync(join(d, `f${String(i).padStart(5, "0")}.bin`), randomBytes(bytes));
 }
+
+/// A check (device.ts `check`), its start said as it begins: the log's last line is always the step under way.
+const check = (what: string, body: () => Promise<unknown>) => {
+  log(`· ${what}`);
+  return checked(what, body);
+};
 
 const a = new Device("A");
 const bob = new Device("BOB", "bob");
@@ -185,6 +192,7 @@ const moveT = (to: string, module = "chats", limit?: number) => ({ topic: "stati
 /// What chat `key` was answered after `text` was said in it by alice's device (aimed at A, where it began: the core
 /// sends it on to where it is): the first new message beginning `prefix`.
 async function say(key: string, text: string, prefix: string, ms = 120_000): Promise<string> {
+  log(`  saying ${text.slice(0, 80)}, waiting for ${prefix}`);
   const before = new Set(texts(await a.until(chatT(key), (v) => v?.messages && v, 60_000)));
   await a.call("chat.send", { station: A, session: key, text });
   return a.until(chatT(key), (v) => texts(v).find((t) => t.startsWith(prefix) && !before.has(t)), ms);
@@ -212,6 +220,7 @@ const listedOnceOn = (key: string, n: Name, ms?: number) => listed(key, (r) => r
 
 /// The end of the move or move back asked of station `n` at `since`: its `last` (move/last.json) once its turn ended.
 function turnEnds(n: Name, since: number, ms = 300_000): Promise<J> {
+  log(`  waiting for the end of the turn on ${n}`);
   return whenChanged([`${DATA[n]}/move`], () => {
     const l = lastOn(n, ws);
     return l !== null && l.at >= since && !existsSync(`${DATA[n]}/move/turn.json`) && l;
@@ -397,7 +406,7 @@ try {
       await a.call("workspace.addMembers", { account: a.sub, workspace: ws, role: "member", emails: ["bob@example.test"] });
       await bob.signIn();
       const v = await bob.until({ topic: "stationMove", station: A, to: bId, module: "chats" }, (v) => v?.modules && v, 90_000);
-      if (v.canMove !== false || v.allMove !== null) throw new Error(`bob's page: canMove ${v.canMove}, allMove ${brief(v.allMove)}`);
+      if (v.canMove !== false || (v.allMove ?? null) !== null) throw new Error(`bob's page: canMove ${v.canMove}, allMove ${brief(v.allMove)}`);
       const r = await bob.call("move.start", { station: A, to: bId, module: "chats", item: k2, withNeeds: true }).then((x) => ({ ok: x }), (e) => ({ err: String(e) }));
       if (!("err" in r)) throw new Error(`bob's move.start answered ${brief(r)}`);
       log(`  bob refused: ${r.err.slice(0, 300)}`);
