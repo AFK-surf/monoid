@@ -461,7 +461,9 @@ again() {
 # down ends it all: the logs of this run, the cloud's, the relay's and each station's apart (side run 42815367472's
 # job's log had a device's handshake refused five times and did not say which process refused it), each device's
 # record of what its links did (e2e/device.ts), and the locks each station kept as they stood (public keys and signed
-# entries of the test accounts). Nothing else of the data directories: no database, keys, config or sealed values.
+# entries of the test accounts). Nothing else of the data directories: no database, keys, config or sealed values,
+# but a move's (the drill's own stations, never uploaded): each station's database (a `.backup` copy, as it stood),
+# its hand-overs in and out (replica/handover) and a listing of its transcripts, to read what moved where.
 # Only files written since this run's up (its auth-key), so another run's left in $WORK never pass for this one's. A
 # copy that fails is let be: what the run ended with is what it says.
 KEPT=$WORK/kept
@@ -469,6 +471,17 @@ keep() {
   [ -f "$1" ] && [ ! "$1" -ot $RUN/auth-key ] || return 0
   mkdir -p "$(dirname "$KEPT/$2")" || return 0
   if [ "$(wc -c < "$1" | tr -d ' ')" -gt 5242880 ]; then tail -c 5242880 "$1" > "$KEPT/$2"; else cp "$1" "$KEPT/$2"; fi
+}
+moved_kept() {
+  local data=$1 n=$2
+  mkdir -p $KEPT/$n || return 0
+  if [ -f $data/stillfail.db ]; then
+    if command -v sqlite3 >/dev/null; then sqlite3 $data/stillfail.db ".backup '$KEPT/$n/stillfail.db'" 2>/dev/null || true
+    else for f in stillfail.db stillfail.db-wal stillfail.db-shm; do [ -f $data/$f ] && cp $data/$f $KEPT/$n/$f; done; fi
+  fi
+  for f in in out; do [ -d $data/replica/handover/$f ] && mkdir -p $KEPT/$n/handover && cp -R $data/replica/handover/$f $KEPT/$n/handover/$f; done
+  [ -d $data/transcripts ] && (cd $data && find transcripts -exec ls -ld {} + > $KEPT/$n/transcripts.txt 2>&1)
+  return 0
 }
 kept() {
   local part=${1:?locks or rigs} n d f
@@ -483,6 +496,7 @@ kept() {
     for f in "$d"/data/logs/*.log; do keep "$f" $n/logs/"$(basename "$f")"; done
     keep "$d"/data/mesh/lock.json $n/mesh/lock.json
     keep "$d"/data/mesh/person-chains.json $n/mesh/person-chains.json
+    [ "$part" = move ] && [ -d "$d"/data ] && moved_kept "$d"/data $n
   done
   for f in $WORK/$part/*/record.log; do keep "$f" devices/"$(basename "$(dirname "$f")")".log; done
   say "kept $KEPT ($(find $KEPT -type f | wc -l | tr -d ' ') files)"
@@ -993,7 +1007,8 @@ case "${1:-all}" in
     trap down EXIT
     up
     rm -f $RUN/*.before.log
-    move || { rc=$?; kept move || true; exit $rc; } ;;
+    move || { rc=$?; kept move || true; exit $rc; }
+    kept move || true ;;
   crash) shift; crash "$@" ;;
   again) shift; again "$@" ;;
   halt) shift; if [ "${1:?a station}" = station ]; then stop station; pkill -f "$STATION/data" 2>/dev/null || true; say "station halted"; else second_stop $1; fi ;;
