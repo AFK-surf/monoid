@@ -48,7 +48,7 @@ import { previewTarget, proxyPreview } from "../jobs/preview.ts";
 import type { Clock } from "effect";
 import { liveClock } from "../ops/fibers.ts";
 import { readOnly } from "../mesh/credential.ts";
-import { elsewhere } from "./seen.ts";
+import { elsewhere, went } from "./seen.ts";
 import { reviewUndecided } from "../sessions/review.ts";
 import { tr } from "../ops/i18n.ts";
 
@@ -405,7 +405,11 @@ export class Admin {
     if (r.method === "POST" && /^\/*batch$/.test(r.path)) return this.batch(r);
     // A session, chat or job of another workspace than the viewer's is none for them (api/seen.ts).
     const hidden = this.deps.store ? elsewhere(this.deps.store, r.path, r.viewer) : null;
-    if (hidden !== null) return error(404, hidden);
+    if (hidden !== null) {
+      // (a write to a chat handed to another station: answered where it went, as a message to it is; a read stays not there)
+      const there = r.method === "GET" || r.method === "HEAD" ? null : went(this.deps.store!, r.path, r.viewer);
+      return there !== null ? json(409, JSON.stringify({ error: tr(r.lang, "station.move.movedThere"), moved: there })) : error(404, hidden);
+    }
     // A web service on this machine, through its preview's path: any method, its answer as it comes.
     const preview = previewTarget(r.path);
     if (preview !== null) {

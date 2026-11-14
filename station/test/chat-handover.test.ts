@@ -1341,6 +1341,46 @@ test("a message written here under its key by the program's way (`claimSay`, the
   assert.equal(JSON.parse(String(here.refused.body)).moved?.station, B, "pointed at the station it went to");
 });
 
+/// Every write a device makes to a chat (api/routes/marks.ts, a message: routes/hub.ts), as it asks it.
+const WRITES = (thread: number, key: string): [string, string, Json?][] => [
+  ["PUT", `/threads/${thread}/read`, { n: 1 }], ["PUT", `/threads/${thread}/hidden`, { hidden: true }], ["PUT", `/threads/${thread}/muted`, { muted: true }],
+  ["PUT", `/threads/${thread}/keep`], ["DELETE", `/threads/${thread}/keep`], ["PUT", `/threads/${thread}/title`, { title: "Named" }],
+  ["PUT", `/threads/${thread}/dismissed`, { n: 1 }], ["PUT", `/sessions/${key}/pin`], ["DELETE", `/sessions/${key}/pin`], ["POST", `/sessions/${key}/title`, { title: "Named" }],
+];
+
+test("a write to a chat handed to another station is answered where it went (409 `moved`) on every write route, a message too; before it went written; a read of it, and a write to one still coming, not there (404)", async () => {
+  const w = world();
+  const a = w.get(A);
+  // (its turn ended: stillfailChat's)
+  const { key, thread } = await stillfailChat(a);
+  const viewer = { sub: "p", email: "p@x", name: "P", role: "member", workspace: WS, device: "d" } as Json;
+  const ask = (method: string, path: string, body?: Json) =>
+    a.admin.handle({ method, path, query: [], headers: {}, body: Buffer.from(body === undefined ? "" : JSON.stringify(body)), viewer, lang: "en" } as Request);
+  const said = (x: { body: unknown }) => { try { return JSON.parse(String(x.body)); } catch { return String(x.body); } };
+  // Before it went: each written here (a card to dismiss there is none: refused for that, not as a chat not there).
+  for (const [method, path, body] of WRITES(thread, key)) {
+    const r = await ask(method, path, body);
+    assert.ok(r.status !== 409 && !/unknown (session|thread)/.test(JSON.stringify(said(r))), `${method} ${path} before it went: ${r.status} ${JSON.stringify(said(r))}`);
+  }
+  await a.moves.scheduler.move(WS, B, { module: "chats", item: key });
+  await w.quiet();
+  assert.ok(a.rig.store.sessionWs(key)?.startsWith("handed:"), "gone from here");
+  const there = homeThread(w.get(B), key);
+  for (const [method, path, body] of [...WRITES(thread, key), ["POST", `/threads/${thread}/messages`, { text: "after" }] as [string, string, Json]]) {
+    const r = await ask(method, path, body);
+    assert.equal(r.status, 409, `${method} ${path} after it went: ${JSON.stringify(said(r))}`);
+    assert.deepEqual(said(r).moved, { session: key, station: B, thread, there }, `${method} ${path}: pointed where it went`);
+  }
+  assert.ok(!entries(a, thread).includes("person:after"), "the message not written here");
+  // A read of it stays not there; so does a write from a member of another workspace.
+  for (const path of [`/threads/${thread}`, `/sessions/${key}`]) assert.equal((await ask("GET", path)).status, 404, `GET ${path}`);
+  const other = await a.admin.handle({ method: "PUT", path: `/sessions/${key}/pin`, query: [], headers: {}, body: Buffer.alloc(0), viewer: { ...viewer, workspace: "elsewhere", home: false }, lang: "en" } as Request);
+  assert.equal(other.status, 404, "another workspace's member is told nothing of where it went");
+  // One still coming here (not shown yet): not there.
+  a.rig.store.insertSession({ key: "arriving", connect: "chat", runtime: "claude", profile: "cc", workspace: "/w", token: "t-arriving", createdAt: 1, lastActiveAt: 1, ws: `coming:${WS}` } as Json);
+  assert.equal((await ask("PUT", "/sessions/arriving/pin")).status, 404, "one still coming");
+});
+
 test("a person moves a chat with POST /move and back with POST /move/back: a member is refused, a second while one runs is 409, GET /move shows it there with the last outcome", async () => {
   const w = world();
   const a = w.get(A);

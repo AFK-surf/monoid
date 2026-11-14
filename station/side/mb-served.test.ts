@@ -18,6 +18,7 @@ import { tr } from "../src/ops/i18n.ts";
 import { type Endpoint, type Stream, loadMesh } from "../src/mesh/native.ts";
 import { Store, newMessage } from "../src/store/store.ts";
 import { quotesOf } from "../src/api/routes/hub.ts";
+import { Admin } from "../src/api/admin.ts";
 
 const binary = mbReaderBinary();
 const skip = binary === null ? "the MoonBit program is not built here (station/mb/build.sh)" : false;
@@ -79,6 +80,12 @@ test("a routed request is answered by the MoonBit program as the admin API answe
   store.insertSession({ key: "elsewhere", connect: "ember", runtime: "claude", profile: "cc", workspace: "/w", token: "e", createdAt: 1, lastActiveAt: 1, ws: "other" } as Parameters<Store["insertSession"]>[0]);
   const hidden = store.openThread("ember", "CHAT", "ce", "Elsewhere", null).id;
   store.joinThread(hidden, "elsewhere", "ember");
+  // (one handed to another station of the member's workspace and shown there: replica/handover.ts; and one still coming)
+  store.insertSession({ key: "gone", connect: "ember", runtime: "claude", profile: "cc", workspace: "/w", token: "g", createdAt: 1, lastActiveAt: 1, ws: "handed:ws" } as Parameters<Store["insertSession"]>[0]);
+  const went = store.openThread("ember", "CHAT", "cg", "Gone", null).id;
+  store.joinThread(went, "gone", "ember");
+  store.db.prepare("INSERT INTO handed_over (session, station, ws, thread, there, at) VALUES ('gone', 'stC', 'ws', ?, 7, 1)").run(went);
+  store.insertSession({ key: "arriving", connect: "ember", runtime: "claude", profile: "cc", workspace: "/w", token: "ar", createdAt: 1, lastActiveAt: 1, ws: "coming:ws" } as Parameters<Store["insertSession"]>[0]);
   const thread = store.openThread("ember", "CHAT", "c", "Served", null).id;
   for (let i = 0; i < 40; i++) store.insertMessage({ ...newMessage(thread, String(i + 1), "person", "p@x", `message ${i} ${"words ".repeat(20)}`), at: (i + 1) * 10 } as ReturnType<typeof newMessage>);
   t.after(() => store.close());
@@ -310,6 +317,31 @@ test("a routed request is answered by the MoonBit program as the admin API answe
     assert.deepEqual(await put("PUT", `/threads/${hidden}/read`, { n: 1 }), { status: 404, body: { error: `unknown thread ${hidden}` } });
     assert.deepEqual(told.map((c) => c.type), ["read", "read", "hidden", "muted", "dismissed", "dismissed", "pins", "pins"]);
     assert.deepEqual(told[3], { type: "muted", viewer: "p@x", thread, muted: true });
+    // a write to a chat handed to another station: answered where it went (409, `moved`), as Node answers it
+    // (api/seen.ts `went`, admin.ts); a read of it, and a write to one still coming, not there, as Node's too
+    const node = new Admin({ names: new Map(), read: async () => "{}" } as any, { store });
+    const nodes = async (method: string, path: string, body?: unknown) => {
+      const a = await node.handle({ method, path, query: [], headers: {}, body: Buffer.from(body === undefined ? "" : JSON.stringify(body)), viewer: viewer as any, lang: "en" } as any);
+      return { status: a.status, body: JSON.parse(String(a.body)) };
+    };
+    told.length = 0;
+    for (const [method, path, body] of [
+      ["PUT", `/threads/${went}/read`, { n: 1 }], ["PUT", `/threads/${went}/hidden`, { hidden: true }], ["PUT", `/threads/${went}/muted`, { muted: true }],
+      ["PUT", `/threads/${went}/keep`], ["DELETE", `/threads/${went}/keep`], ["PUT", `/threads/${went}/title`, { title: "T" }], ["PUT", `/threads/${went}/dismissed`, { n: 1 }],
+      ["PUT", "/sessions/gone/pin"], ["DELETE", "/sessions/gone/pin"], ["POST", "/sessions/gone/title", { title: "T" }],
+      ["POST", `/threads/${went}/messages`, { text: "after" }],
+    ] as [string, string, unknown?][]) {
+      const theirs = await put(method, path, body);
+      assert.deepEqual(theirs, { status: 409, body: { error: tr("en", "station.move.movedThere"), moved: { session: "gone", station: "stC", thread: went, there: 7 } } }, `${method} ${path}`);
+      assert.deepEqual(theirs, await nodes(method, path, body), `${method} ${path}: as Node answers it`);
+    }
+    assert.equal(told.length, 0, `nothing written of a chat that went: ${JSON.stringify(told)}`);
+    assert.equal(store.entriesAfter(went, 0).length, 0, "no message written to it");
+    for (const [method, path, error] of [["PUT", "/sessions/arriving/pin", "unknown session arriving"], ["GET", `/threads/${went}`, `unknown thread ${went}`], ["GET", "/sessions/gone", "unknown session gone"]]) {
+      const theirs = await put(method!, path!);
+      assert.deepEqual(theirs, { status: 404, body: { error } }, `${method} ${path}: not there`);
+      assert.deepEqual(theirs, await nodes(method!, path!), `${method} ${path}: as Node answers it`);
+    }
     // names given by hand: a session's with its own chat, a chat's answered as it is read; the chats told named
     told.length = 0;
     const titled: number[] = [];

@@ -524,8 +524,8 @@ fn Serving::read_path(
   }
   let pairs = query_pairs(query)
   // A session or a chat of another workspace than the member's is none for them (api/seen.ts `elsewhere`).
-  if self.elsewhere(route, who.viewer) is Some(m) {
-    return Text(404, error(m))
+  if self.unseen(route, who.viewer, false, words) is Some((status, said)) {
+    return Text(status, said)
   }
   let routed = match posted {
     Some((body, runtimes)) => changed_read(route, pairs, who.viewer, lang, body, runtimes)
@@ -689,6 +689,59 @@ fn signed_digits(s : String) -> Bool {
   } else {
     digits(s)
   }
+}
+
+///|
+/// What a request naming a session or a chat the member does not see here is answered (api/seen.ts `elsewhere`, and
+/// admin.ts `answer` after it), None where they see it: a write (`write`) to a chat handed to another station of their
+/// workspace and shown there is answered where it went, as a message to it is (409, `moved`: seen.ts `went`), so that a
+/// device aims it there; anything else, and every read, as not there (404).
+fn Serving::unseen(self : Serving, route : String, viewer : Json, write : Bool, words : Json) -> (Int, String)? raise {
+  guard self.elsewhere(route, viewer) is Some(m) else { return None }
+  if write && self.went(route, viewer) is Some(moved) {
+    let said = match words.value("movedThere") {
+      Some(String(w)) => w
+      _ => ""
+    }
+    return Some((409, ({ "error": Json::string(said), "moved": moved } : Json).stringify()))
+  }
+  Some((404, ({ "error": Json::string(m) } : Json).stringify()))
+}
+
+///|
+/// api/seen.ts `went`: where a chat a write's path names went, for a member it is not seen by: one of its sessions
+/// handed to another station of their workspace (handed_over's `ws`) and shown there (its `ws` here `handed:`).
+fn Serving::went(self : Serving, route : String, viewer : Json) -> Json? raise {
+  let parts : Array[String] = route.split("/").map(p => p.to_string()).collect()
+  guard parts.length() >= 5 && parts[1] == "admin" && parts[2] == "api" else { return None }
+  let id = segment(parts[4])
+  let db = self.reader.db_now()
+  let keys : Array[Json] = match parts[3] {
+    "sessions" => [Json::string(id)]
+    "threads" =>
+      if signed_digits(id) && signed_number(id).abs() <= 9007199254740991.0 {
+        db.all("SELECT session FROM thread_sessions WHERE thread = ? ORDER BY joined_at, rowid", [Json::number(signed_number(id))]).map(r => r.get("session").unwrap_or(Json::null()))
+      } else {
+        []
+      }
+    _ => []
+  }
+  for key in keys {
+    guard db.all("SELECT h.station AS station, h.ws AS hws, h.thread AS thread, h.there AS there, s.ws AS ws FROM handed_over h JOIN sessions s ON s.key = h.session WHERE h.session = ?", [key]) is [r, ..] else { continue }
+    guard r.get("ws") is Some(String(ws)) && ws.has_prefix("handed:") else { continue }
+    let seen = match r.get("hws").unwrap_or(Json::null()) {
+      String(_) as hws => hws == viewer.value("workspace").unwrap_or(Json::null())
+      _ => !(viewer.value("home") is Some(False))
+    }
+    guard seen else { continue }
+    return Some(({
+      "session": key,
+      "station": r.get("station").unwrap_or(Json::null()),
+      "thread": r.get("thread").unwrap_or(Json::null()),
+      "there": r.get("there").unwrap_or(Json::null()),
+    } : Json))
+  }
+  None
 }
 
 ///|
@@ -1106,8 +1159,8 @@ fn Serving::mark(
   if viewer.value("role") == Some(Json::string("viewer")) && not(own) {
     return Text(403, error("read-only members cannot change this station"))
   }
-  if self.elsewhere(route, viewer) is Some(m) {
-    return Text(404, error(m))
+  if self.unseen(route, viewer, true, words) is Some((status, said)) {
+    return Text(status, said)
   }
   let email = match viewer.value("email") {
     Some(String(e)) => e
@@ -1391,8 +1444,10 @@ async fn Serving::say(
     return error(403, "read-only members cannot change this station")
   }
   let route = "/admin/api/threads/\{raw}/messages"
-  if self.elsewhere(route, viewer) is Some(m) {
-    return error(404, m)
+  if self.unseen(route, viewer, true, words) is Some((status, said)) {
+    return Some(
+      (({ "status": Json::number(status.to_double()), "headers": { "content-type": "application/json" } } : Json), @utf8.encode(said)),
+    )
   }
   let db = self.reader.db_now()
   let id = segment(raw)

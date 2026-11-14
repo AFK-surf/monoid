@@ -136,6 +136,8 @@ export class Served {
       renameOnlyStillfail: tr(lang, "station.admin.renameOnlyStillfail"), nothingWaiting: tr(lang, "station.admin.nothingWaiting"), updateClientForOption: tr(lang, "station.admin.updateClientForOption"),
       notInteger: Object.fromEntries(["after", "before", "from", "to"].map((name) => [name, tr(lang, "station.admin.notInteger", { name })])),
       fromAndTo: tr(lang, "station.admin.fromAndTo"), inScriptOutput: tr(lang, "station.transcript.inScriptOutput"),
+      // (a write to a chat handed to another station: seen.ts `went`)
+      movedThere: tr(lang, "station.move.movedThere"),
     }]));
     server.process.postMessage({
       set: { lastKnown: LAST_KNOWN, words, oldestCore: OLDEST_CORE, countedFrom: COUNTED_FROM, movedFromBuild: MOVED_FROM_BUILD, build: stationBuild(), runtimes: RUNTIME_KINDS, pending: READS_PENDING },
