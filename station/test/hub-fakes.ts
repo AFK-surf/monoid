@@ -17,6 +17,7 @@ import { chatTools } from "../src/tools/chat.ts";
 import { type Attachment, Store } from "../src/store/store.ts";
 import { letterMessage } from "../src/store/rows.ts";
 import { CcIndexPreparation } from "../src/store/cc-thread-index.ts";
+import { actorsBusy } from "../src/sessions/mb-actor.ts";
 
 type Json = any;
 
@@ -277,7 +278,7 @@ export async function settle(rounds = 100) {
   for (let quiet = 0; quiet < rounds; ) {
     await new Promise((r) => setImmediate(r));
     // (a file handle's close, the last step of fs/promises' writeFile and readFile, is a request of its own: CloseReq)
-    quiet = process.getActiveResourcesInfo().some((r) => r === "FSReqPromise" || r === "FSReqCallback" || r === "CloseReq") ? 0 : quiet + 1;
+    quiet = actorsBusy() || process.getActiveResourcesInfo().some((r) => r === "FSReqPromise" || r === "FSReqCallback" || r === "CloseReq") ? 0 : quiet + 1;
   }
 }
 
@@ -371,7 +372,9 @@ export class Rig {
     if (o.maxWarmClaude !== undefined) this.raw.maxWarmClaude = o.maxWarmClaude;
     if (o.warmMinutes !== undefined) this.raw.warmMinutes = o.warmMinutes;
     this.config = hubConfig(this.raw, this.dir);
-    this.store = Store.open(o.fileStore ? join(this.dir, "stillfail.db") : ":memory:", null, o.clock);
+    // In a file, as a station's: the sessions' actors read and write it themselves where they run in the MoonBit program
+    // (sessions/mb-actor.ts), which one in memory would keep from them (`fileStore: false`: in memory all the same).
+    this.store = Store.open(o.fileStore !== false ? join(this.dir, "stillfail.db") : ":memory:", null, o.clock);
     const chats = new Map<string, ChatSurface>([
       ["cl", this.chat],
       ["gpt", this.gptChat],

@@ -75,6 +75,9 @@ pub(all) struct Said {
 pub(all) struct Carried {
   moved : String
   chain : LockState
+  /// The chain's devices by their member, each member's in the chain's order: what is carried of one member is found
+  /// without walking everyone's (`carry_of`, `binds_of`).
+  devices_of : Map[String, Array[Device]]
 }
 
 ///|
@@ -135,8 +138,29 @@ pub fn roster(ws : String, root : String, chains : Array[Array[Json]], bodies : 
 /// that `moved` names, with what the chain as it moved still says (`Carried`). A chain that does not fold, or does not
 /// end in a `moved`, roots it in nothing ("no root": nothing is told).
 pub fn roster_moved(ws : String, chain : Array[Json], chains : Array[Array[Json]], bodies : Array[Json], without : Array[String], c : &Crypto) -> Roster {
+  roster_carried(ws, moved_of(chain, c), chains, bodies, without, c)
+}
+
+///|
+/// A moved chain read once (`moved_of`): the root its `moved` names and what the chain as it moved still says. Nothing
+/// follows a `moved`, so it stands for its chain while that is the chain held; what reads it (`roster_carried`,
+/// `state4_carried`) only reads it.
+pub(all) struct Moved {
+  root : String
+  carried : Carried?
+}
+
+///|
+/// `chain` (its active chain, the `moved` last) read as it moved (`carried_of`).
+pub fn moved_of(chain : Array[Json], c : &Crypto) -> Moved {
   let (root, carried) = carried_of(chain, c)
-  roster_of(ws, root, chains, bodies, without, carried, c).0
+  { root, carried }
+}
+
+///|
+/// `roster_moved` of a chain read once (`moved_of`).
+pub fn roster_carried(ws : String, m : Moved, chains : Array[Array[Json]], bodies : Array[Json], without : Array[String], c : &Crypto) -> Roster {
+  roster_of(ws, m.root, chains, bodies, without, m.carried, c).0
 }
 
 ///|
@@ -145,7 +169,16 @@ pub fn roster_moved(ws : String, chain : Array[Json], chains : Array[Array[Json]
 pub fn carried_of(chain : Array[Json], c : &Crypto) -> (String, Carried?) {
   let s = fold(chain, None, c) catch { _ => return ("", None) }
   match s.moved {
-    Some(root) => (root, Some({ moved: s.head, chain: s }))
+    Some(root) => {
+      let devices_of : Map[String, Array[Device]] = Map([])
+      for _, d in s.devices {
+        match devices_of.get(d.sub) {
+          Some(ds) => ds.push(d)
+          None => devices_of[d.sub] = [d]
+        }
+      }
+      (root, Some({ moved: s.head, chain: s, devices_of }))
+    }
     None => ("", None)
   }
 }
@@ -699,8 +732,8 @@ fn binds_of(ws : String, cr : Carried, root_sub : String, in_force : Array[(Stri
     guard text_of(field(Some(b), "key")) is Some(key) && text_of(field(Some(b), "sig")) is Some(sig) else { continue }
     let own : Map[String, Unit] = Map([])
     let dev : Map[String, Unit] = Map([])
-    for _, d in cr.chain.devices {
-      if d.sub == sub && d.kind == "app" && d.own && d.sign_key is Some(k) {
+    for d in cr.devices_of.get(sub).unwrap_or([]) {
+      if d.kind == "app" && d.own && d.sign_key is Some(k) {
         own[d.id] = ()
         if k == key {
           dev[d.id] = ()

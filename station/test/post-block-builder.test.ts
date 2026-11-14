@@ -10,6 +10,11 @@ import { installPostBlocks, postBlocksReady } from "../src/store/post-blocks.ts"
 import { Store } from "../src/store/store.ts";
 import { Rig } from "./hub-fakes.ts";
 
+// SessionActor's own steps are what these look at (its formatting and its checks as it delivers, each replaced here):
+// the actor of a checkout without the MoonBit program, not the program's (sessions/mb-actor.ts), whose steps the
+// hub's tests run.
+process.env.STILLFAIL_ACTORS_HOST = "0";
+
 function fromBefore(store: Store, name = "old"): number {
   const thread = store.openThread("ember", "CHAT", name, null, null).id;
   const put = store.db.prepare("INSERT INTO entries (thread,n,kind,author_kind,author,ts,at) VALUES (?,?,'message','agent',?,?,?)");

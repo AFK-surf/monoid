@@ -77,7 +77,9 @@ const STATEMENTS = {
   // 98 until #5188 (6810813bf): a session whose model no account enables is kept on its account before each turn, so the
   // pool is not asked to pick and no longer reads each running session's row (hub.ts `running`, `getSession`).
   // 97 until sessions stopped running in sandboxes: a turn no longer reads its session's row to copy its files there.
-  turn: 96,
+  // 96 until the sessions' actors read and wrote their turns, running and sessions' rows themselves, in the MoonBit
+  // program (mb/src/reader/actor_store.mbt): not on this thread.
+  turn: 76,
   toolCall: 4,
   // A call recorded with compact usage installed, as a station has it: BEGIN, whether it was recorded before, its
   // session's context as kept, the call, its context, its file's position, COMMIT. (12 before: sqlite_master asked twice,
@@ -99,7 +101,10 @@ const STATEMENTS = {
   // 53 before (3 sessions archived, one at work): every session shown and chat of its own, and of each idle one its
   // bindings, pin, chats, row, jobs, keeps and work, read here. Now the look is a reader's; here only the archiving of each
   // session it archives: BEGIN, its row and its chat out of the lists, COMMIT, its chats and row for what is told, its
-  // last turn as its process is let go (7 each).
+  // last turn as its process is let go (7 each). 24 since what archiving each sets going is counted to its end (its
+  // last turn again as its wait is let go, after a turn of the loop), as where its actor runs in the MoonBit program
+  // that all comes after one (sessions/mb-actor.ts): the same work, counted whole, in either.
+  // 21 since the actor reads its last turn and ends its wait in the MoonBit program (actor_store.mbt).
   autoArchiveLook: 21,
 } as const;
 
@@ -433,8 +438,10 @@ test("the auto-archive's look is a reader's: here only the sessions it archives 
     // What a reader read for the look (read/ops-sessions.ts `archiveLook`), as the station has it carried over.
     const { autoArchiveMs, slackArchiveMs } = r.hub.config();
     const read = JSON.parse(JSON.stringify(archiveLookOf(r.store.db, r.hub.now(), autoArchiveMs, slackArchiveMs)));
+    // (what archiving each sets going counted too, wherever the actor that does it runs: sessions/mb-actor.ts)
     const look = await counted(async () => {
       autoArchive(r.hub, r.hub.now(), undefined, undefined, undefined, undefined, undefined, read);
+      await settle();
     });
     assert.deepEqual(keys.map((key) => r.store.getSession(key)?.archivedAt !== null), [true, true, true, false], "the three done, not the one at work");
     // For each session archived, its archiving; nothing for the one that stays, nor for the look itself.

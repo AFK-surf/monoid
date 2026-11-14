@@ -1434,6 +1434,8 @@ test("an agent opens a chat on another station: made there once per key, its fir
   assert.equal(far.store.listSessions().length, 1);
   assert.equal(far.said(thread.id).length, 1);
   // Its turn ends needing a person: the opener there is told.
+  // Its turn there has begun (what was set going there is done) before its agent answers in it.
+  await settle();
   await far.call(child!, "chat_post", { to: `CHAT/${thread.threadTs}`, text: "which device?", kind: "need_human", need: "选一台测试机" });
   await settle();
   runtimeOf(far, child!).complete();

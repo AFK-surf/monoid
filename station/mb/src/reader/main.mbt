@@ -104,7 +104,7 @@ fn say_answer(host : @host.Host, answer : Json) -> Unit {
 ///|
 /// The reads moved here from read/worker.ts (read/pool.ts `MOVED`).
 fn moved(op : String) -> Bool {
-  ["job", "jobLog", "historyPendingCard", "statePendingCard", "deliveryCardState", "reviewPendingCard", "stateQuestion", "pendingDeliveries", "latestMessages", "chatHistoryMessages", "openedChatSaid", "widgetState", "transcriptFile", "memory", "machineSessions", "machineSession", "sessionsAtWork", "policyChecks", "recentConnectPeople", "usageTurns", "usageCalls", "outflowMessages", "archiveLook", "recentChatList", "searchChatList", "threadList", "sharedOf", "sharedChats", "chatMarks", "entries", "letters", "summary", "sessions", "session", "threads", "thread", "turnNotices", "saidNotices", "chats", "chatRows", "outflowChats", "openJobs", "resourceChats", "usage", "outflowUsage", "timeline", "transcriptState", "sessionPlace", "changed"].contains(
+  ["job", "jobLog", "historyPendingCard", "statePendingCard", "deliveryCardState", "reviewPendingCard", "stateQuestion", "pendingDeliveries", "latestMessages", "chatHistoryMessages", "openedChatSaid", "widgetState", "transcriptFile", "memory", "machineSessions", "machineSession", "sessionsAtWork", "policyChecks", "recentConnectPeople", "usageTurns", "usageCalls", "outflowMessages", "archiveLook", "recentChatList", "searchChatList", "threadList", "sharedOf", "sharedChats", "chatMarks", "entries", "letters", "summary", "sessions", "session", "threads", "thread", "turnNotices", "saidNotices", "chats", "chatRows", "outflowChats", "openJobs", "resourceChats", "usage", "outflowUsage", "timeline", "transcriptState", "sessionPlace", "changed", "tailRead"].contains(
     op,
   )
 }
@@ -182,6 +182,9 @@ fn Reader::answer_in(self : Reader, db : @sql.Db, op : String, ask : Json) -> Js
     "outflowUsage" => @readops.outflow_usage(db, self.host, self.data, self.sep, ask)
     "timeline" => @readops.timeline(db, self.host, self.data, self.sep, self.finder, ask)
     "transcriptState" => @readops.transcript_state(db, self.host, self.data, self.sep, self.finder, args)
+    // (a transcript read on from where it stood, for the live view: sessions/live.ts)
+    "tailRead" =>
+      @history.tail_read(self.host, match args.value("runtime") { Some(String(r)) => r; _ => "claude" }, args.value("state").unwrap_or(Json::null()))
     "sessionPlace" => @readops.session_place(db, self.host, self.data, self.sep, ask)
     // (what of a list a client does not hold as it is: the list read as its own op reads it, its args those given)
     "changed" =>
@@ -911,6 +914,8 @@ fn main {
       }))
     (None, _, Some(data)) if flag("--agents") is Some(_) =>
       @host.run(shell_dir=data + "/shell", host => serve_agents(host))
+    (None, _, Some(data)) if flag("--actors") is Some(_) =>
+      @host.run(shell_dir=data + "/shell", host => serve_actors(host))
     (None, _, Some(data)) if flag("--serve") is Some(socket) =>
       @host.run(shell_dir=data + "/shell", host => {
         let sep = flag("--sep").unwrap_or("/")

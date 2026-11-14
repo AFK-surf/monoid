@@ -84,15 +84,26 @@
 
 ## Agents
 
-- One actor per session (`src/sessions/actor.ts`): every change to its state, runtime events, deliveries and what its
-  tools say, goes through its serial queue. Input is a prompt when idle, a steer during a turn, else queued.
+- One actor per session: every change to its state, runtime events, deliveries and what its tools say, goes through its
+  serial queue. Input is a prompt when idle, a steer during a turn, else queued. The actors run in the MoonBit program
+  (`mb/src/reader/actors.mbt`, `actor_run.mbt`; reader `--actors`), the hub holding a shell of each
+  (`src/sessions/mb-actor.ts`) that answers what the program asks of the station (the store, the drivers, the chats,
+  the words, all shared with `src/sessions/actor.ts`) and reads at once what it last told of each. What of the store
+  it reads and writes most (its turns, running, its session's row) it does itself on the station's database
+  (`mb/src/reader/actor_store.mbt`, store.ts's statements), telling Node's store what changed; a store in memory is
+  asked through Node, so the hub's tests keep theirs in a file (`test/hub-fakes.ts`). `SessionActor`
+  (`actor.ts`) is the actor where the program is not (`STILLFAIL_ACTORS_HOST=0`). A test's `settle()` waits for the
+  program too (`actorsBusy`); a test that replaces SessionActor's own steps runs on it.
 - Runtimes are drivers behind one seam (`src/agents/runtime.ts`): Claude Code a `claude -p` process per session;
   Codex one app-server per account, a thread per session, whose per-session settings go in `thread/start`'s config,
   never the process's environment; the others in `src/agents/`. A driver owns its child's stdin. Claude Code's output
   is read by the MoonBit program (`src/agents/mb-agents.ts`, `mb/src/reader/agents.mbt`, its frames `mb/src/claude`)
   where it is built, off the station's thread: Node starts and ends the processes and is told the events, each line
   acknowledged to its runner once Node took them; a handover holds its reading first (`freeze`, hub.ts `handOver`).
-  `test/claude-here.test.ts` runs the driver's tests with it read here, as where the program is not.
+  A Codex app-server's output is read there too, its lines given Node whole but for its diffs (`turn/diff/updated`,
+  of which the station keeps nothing). One program for every driver, running while it has a process to read.
+  `test/claude-here.test.ts` and `test/codex-here.test.ts` run the drivers' tests with it read here, as where the
+  program is not.
 - Their tools are the station's MCP endpoint (`src/tools/`, HTTP on 127.0.0.1, a bearer token per session). What they
   read of how to work is `src/agents/instructions.ts` and the skills in `src/skills/`. A change to the instructions, a
   tool's parameters or its rules adds a note at the end of `src/agents/migrations.ts` (the next number, a sentence),
@@ -265,6 +276,13 @@
   (`src/api/moved-from.ts`) asking in a workspace whose chain moved is told to update there (426 with `update`, as
   `coreTooOld`; `src/mesh/serve.ts` `movedTooOld`), which its app shows as the ordinary 请更新 (请刷新页面 on the web); one
   that says no build is answered as `coreTooOld` answers it. `test/device-builds.test.ts` holds it.
+- A device reads the logs and bodies by their heads (the lead, 2026-11-15; `serves` `heads`): GET /lock/heads gives
+  each log as `[genesis, head hash]`, each body by its hash and `lacking`, POST /lock/given `{logs, bodies}` the logs and
+  bodies named, each only to whom and where the whole reads give them (`givesDevice`, `Cloud.logsOf`; `logsGiven`), both
+  answered by Node as the other lock routes are; the whole reads stay for cores from before. A core under
+  `LOGS_ANY_FROM_BUILD` (`src/api/moved-from.ts`) kept at most `LOGS_BEFORE` logs, so it is told to update (`movedFloor`,
+  the highest floor that applies) only where the state in force is made of more (`Cloud.needs`). `test/lock-heads.test.ts`
+  holds it.
 - After a move the root's person is a member like any other (rules/AGENTS.md, `~root`; the lead, 2026-11-14): this
   station says `rootout` in its GET /lock `serves`, so a core says a removal of them naming the root's log only where
   every station reads it so, and a core under `ROOT_OUT_FROM_BUILD` (`src/api/moved-from.ts`) is told to update

@@ -128,6 +128,23 @@ export class MbProcess extends EventEmitter {
     this.#child.stdin!.write(`${JSON.stringify(message, (_, v) => typeof v === "bigint" ? v.toString() : v)}\n`);
   }
 
+  /// Whether the station's process waits on it to end: not for one that lives as long as what uses it, while that has
+  /// nothing asked of it.
+  ref(on: boolean) {
+    if (on) this.#child.ref();
+    else this.#child.unref();
+    for (const stream of [this.#child.stdin, this.#child.stdout, this.#child.stderr]) {
+      const s = stream as unknown as { ref?(): void; unref?(): void } | null;
+      if (on) s?.ref?.();
+      else s?.unref?.();
+    }
+  }
+
+  /// Ends it now, not waiting for its end (the station's process is ending).
+  kill() {
+    if (!this.#exited) this.#child.kill("SIGKILL");
+  }
+
   terminate(): Promise<number> {
     if (this.#exited) return Promise.resolve(this.#child.exitCode ?? 1);
     return new Promise((resolve) => {
