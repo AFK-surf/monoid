@@ -2165,6 +2165,18 @@ test("a chat that comes back is started with the transcript of what was said whe
   }
 });
 
+test("a plan with no station named (the station page's own row) asks nothing of anyone and says nothing of the other side", async () => {
+  const w = world();
+  const a = w.get(A);
+  await stillfailChat(a);
+  const asked: string[] = [];
+  const ask = a.bus.ask.bind(a.bus);
+  a.bus.ask = ((station: string, r: Json) => (asked.push(`${station || "nobody"} ${r?.method}`), ask(station, r))) as typeof a.bus.ask;
+  const plan = await a.moves.scheduler.plan(WS, "");
+  assert.deepEqual(asked, [], "nothing asked of anyone");
+  assert.deepEqual(plan.items.filter((x) => x.again === true).map((x) => x.id), [], "nothing said not answered");
+});
+
 test("a chat handed to the other, then put back in sight here by hand (its row here again, where it went and its trip's records set aside), so live on both: the plan toward the other says it cannot go, in its words; asked anyway, refused there", async () => {
   const w = world();
   const a = w.get(A);

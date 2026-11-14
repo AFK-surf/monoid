@@ -8,6 +8,7 @@ import { type SessionRow, comingWs, handedWs } from "../store/rows.ts";
 import { type Item, type ItemState, type Module, type Need, type PlanReads, type Progress, unanswered, notAnswered } from "./module.ts";
 import { repoItemId } from "./repos.ts";
 import { stationLang, tr } from "../ops/i18n.ts";
+import { log } from "../ops/log.ts";
 import { accountItemId } from "./accounts.ts";
 import { connectItemId } from "./connects.ts";
 
@@ -58,6 +59,9 @@ export function chatsModule(d: ChatsDeps): Module {
       const items: Item[] = [];
       const seen = new Set<string>();
       const plan = given ?? d.reads(ws);
+      /// What the other station was asked of its live chats in this plan, and what it named live (one line a plan).
+      let askedLive = 0;
+      let saidLive = 0;
       for await (const reads of plan.pages()) {
         const kept: { key: string; row: SessionRow; keys: string[] }[] = [];
         for (const row of reads.rows()) {
@@ -76,6 +80,7 @@ export function chatsModule(d: ChatsDeps): Module {
         let failed: unknown = null;
         const there = asking.length === 0 || to === "" ? null : await d.ask(to, { method: "move.chats.live", keys: asking }).catch((e) => ((failed = notAnswered("move.chats.live", to, e)), null));
         const liveThere = new Set<string>(Array.isArray(there?.live) ? there.live.filter((k: unknown): k is string => typeof k === "string") : []);
+        if (there !== null) (askedLive += asking.length), (saidLive += liveThere.size);
         const thereName = typeof there?.name === "string" && there.name !== "" ? there.name : to.slice(0, 12);
         for (const { key, row, keys } of kept) {
           const needs: Need[] = [];
@@ -108,6 +113,7 @@ export function chatsModule(d: ChatsDeps): Module {
           items.push({ module: "chats", id: keys[0]!, label: row.title ?? key, needs, ...(why !== null ? { cannot: why } : {}), ...(unknown ? { again: true as const } : {}) });
         }
       }
+      if (askedLive > 0) log.info("move", "the other station asked which chats are live there", { station: to.slice(0, 12), asked: askedLive, live: saidLive });
       // (a chat coming here, not shown yet, is out of the pages (its rows `coming:`): listed by its arrival's record,
       // moving, by the row it had here where it had one)
       for (const keys of d.handover.comingIn(ws)) {
