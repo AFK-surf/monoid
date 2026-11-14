@@ -209,13 +209,21 @@ async function say(key: string, text: string, prefix: string, ms = 120_000): Pro
   log(`  saying ${text.slice(0, 80)}, waiting for ${prefix}`);
   const before = new Set(texts(await a.until(chatT(key), (v) => v?.messages && v, 60_000)));
   await a.call("chat.send", { station: A, session: key, text });
-  return a.until(chatT(key), (v) => texts(v).find((t) => t.startsWith(prefix) && !before.has(t)), ms);
+  const got = await a.until(chatT(key), (v) => texts(v).find((t) => t.startsWith(prefix) && !before.has(t)) ?? failedSend(v, text), ms);
+  if (typeof got !== "string") throw new Error(`what was said did not go: ${got.failed}`);
+  return got;
+}
+/// A message of the outbox that the core says failed (the station refused it): why, at once, never a wait for good.
+function failedSend(v: J, text: string): { failed: string } | undefined {
+  const o = (v?.outbox ?? []).find((x: J) => x.text === text && x.state === "failed");
+  return o === undefined ? undefined : { failed: String(o.error ?? v?.failed ?? "failed") };
 }
 /// A chat made on A whose agent answered once: its session key as the station has it.
 async function newChat(label: string): Promise<string> {
   const { key: made } = await a.call("chat.create", { station: A, runtime: "claude" });
   await a.call("chat.send", { station: A, session: made, text: `drill-seed:${label}` });
-  const v = await a.until({ topic: "chat", station: A, session: made }, (v) => texts(v).some((t) => t.startsWith(`drill-seeded ${label}`)) && typeof v?.key === "string" && typeof v?.thread?.id === "number" && v, 120_000);
+  const v = await a.until({ topic: "chat", station: A, session: made }, (v) => failedSend(v, `drill-seed:${label}`) ?? (texts(v).some((t) => t.startsWith(`drill-seeded ${label}`)) && typeof v?.key === "string" && typeof v?.thread?.id === "number" && v), 120_000);
+  if (v.failed !== undefined) throw new Error(`a new chat on A did not take its first message: ${v.failed}`);
   // (named, as a person does: a chat left unnamed has its agent asked for a title, which is no move's)
   await a.call("chat.rename", { station: A, thread: v.thread.id, title: `drill ${label}` });
   return v.key as string;
@@ -440,6 +448,9 @@ try {
   // ── 2: one chat there and back ──
   if (part("2") && k2 !== "") {
     let arrived = false;
+    let movedWith: { module: string; id: string }[] = [];
+    // (the other chat of A, made by the harness's up: what an item moved away stops here)
+    const k0 = sql("A", "select key from sessions").map((r) => r.key as string).find((k) => k !== k2) ?? "";
     let heldNote = "";
     let t0 = 0;
     let before: string[] = [];
@@ -461,6 +472,7 @@ try {
       log(`  ${outcome(l)}; steps ${brief(steps.A!.of(outOf(k2)?.id ?? "").map((s) => `${s.step}${s.held ? "*" : ""}+${s.at - t0}`))}`);
       if (standing("B", k2) !== "live") throw new Error(`${standings(k2)}; ${outcome(l)}`);
       arrived = true;
+      movedWith = (l.done ?? []).filter((d: J) => d.module !== "chats");
       const profilesA = (JSON.parse(readFileSync(`${DATA.A}/config.json`, "utf8")).profiles ?? []).map((p: J) => p.id);
       log(`  A's profiles now ${brief(profilesA)}; stopped on A: ${existsSync(`${DATA.A}/move/stopped.json`) ? readFileSync(`${DATA.A}/move/stopped.json`, "utf8").slice(0, 400) : "none"}`);
     });
@@ -522,14 +534,52 @@ try {
         const r = roomOn("B", k2)!;
         writeFileSync(join(r, "notes.txt"), `notes of ${tag}, changed on B\n`);
         unlinkSync(join(r, "gone-later.txt"));
-        // the chat's own 迁回 on its row first, as a person presses it; then what it needs, 全部迁回
+        // the chat's own 迁回 on its row first, as a person presses it
         const l = await moveBack(k2, "B");
         log(`  its own 迁回: ${outcome(l)}; ${standings(k2)}`);
         if (standing("A", k2) !== "live") fail("2: the chat's own move back (its row's 迁回) brings it back", new Error(`${standings(k2)}; ${outcome(l)}`));
-        else log(`  stopped on A now: ${existsSync(`${DATA.A}/move/stopped.json`) ? readFileSync(`${DATA.A}/move/stopped.json`, "utf8").slice(0, 400) : "none"}`);
+        // then as its refusal says: what needs it first (its job), then it, the account it runs on still on B
+        const job = movedWith.find((x) => x.module === "jobs");
+        const account = movedWith.find((x) => x.module === "accounts");
+        if (standing("A", k2) !== "live" && job !== undefined) {
+          await check("2: its job moved back alone, the chat still on B: where it runs", async () => {
+            const lj = await moveBack(job.id, "B", "jobs");
+            log(`  ${outcome(lj)}; the job's processes ${jobsText(tag)}; the chat ${standings(k2)}`);
+            if (jobs(tag).some((j) => j.on === "A") && standing("B", k2) === "live") throw new Error(`the job runs on A (${jobsText(tag)}) while its chat is on B, its room on A not yet mirrored back`);
+          });
+          const lc = await moveBack(k2, "B");
+          log(`  the chat's 迁回 again: ${outcome(lc)}; ${standings(k2)}`);
+        }
+        if (account !== undefined && standing("A", k2) === "live") {
+          const nonce = randomBytes(3).toString("hex");
+          await check("2: back on A while its account is still on B: stopped, and the person is told so", async () => {
+            log(`  A's stopped.json: ${existsSync(`${DATA.A}/move/stopped.json`) ? readFileSync(`${DATA.A}/move/stopped.json`, "utf8").slice(0, 600) : "none"}`);
+            const m = await a.until(moveT(bId), (v) => v?.modules && v, 60_000);
+            const row = (m.modules.find((x: J) => x.id === "chats")?.items ?? []).find((x: J) => x.id === k2);
+            log(`  A's page: the chat's row ${brief(row)}; note ${m.note}`);
+            await a.call("chat.send", { station: A, session: k2, text: `drill-recall:${nonce}` });
+            if (k0 !== "") await a.call("chat.send", { station: A, session: k0, text: `drill-note:k0-${nonce}` });
+            await whenChanged([DATA.A], () => sql("A", `select count(*) n from entries where text like ${lit(`%drill-recall:${nonce}%`)}`)[0].n > 0, 60_000, () => "the message is not in A's log");
+            const v = await a.until(chatT(k2), (v) => v?.messages && v);
+            const shown = { pending: v.pending, failed: v.failed, offline: v.offline, outbox: (v.outbox ?? []).map((o: J) => o.state), stopped: v.stopped, waits: v.waits, line: v.line };
+            log(`  the chat as the device shows it now: ${brief(shown)}; its last messages ${brief(texts(v).slice(-3))}`);
+            if (row?.state !== "stopped") throw new Error(`its row on A's page says ${row?.state} (${row?.stateText}), not stopped waiting for its account`);
+            const said = JSON.stringify(v);
+            if (!/stopped|waits|等待|暂停|停/.test(said)) throw new Error("nothing in the chat tells the person it is stopped and what it waits for");
+          });
+          await check("2: its account moved back: the chat goes on, what was said meanwhile answered once, its job on A, A's other chat answers too", async () => {
+            const la = await moveBack(account.id, "B", "accounts");
+            log(`  ${outcome(la)}; A's profiles ${brief((JSON.parse(readFileSync(`${DATA.A}/config.json`, "utf8")).profiles ?? []).map((p: J) => p.id))}`);
+            const v = await a.until(chatT(k2), (v) => texts(v).some((t) => t.startsWith(`drill-recall ${nonce} `)) && v, 120_000);
+            const answers = texts(v).filter((t) => t.startsWith(`drill-recall ${nonce} `));
+            if (answers.length !== 1 || at(/cwd=(\S+)/.exec(answers[0]!)?.[1] ?? "") !== "A") throw new Error(`answered ${brief(answers)}`);
+            if (k0 !== "") await a.until({ topic: "chat", station: A, session: k0 }, (v) => texts(v).filter((t) => t.startsWith(`drill-noted k0-${nonce}`)).length === 1 && v, 120_000);
+            await whenChanged([DATA.A], () => jobs(tag).length === 1 && jobs(tag)[0]!.on === "A", 60_000, () => `the job's processes: ${jobsText(tag)}`);
+          });
+        }
         const t1 = Date.now();
         await a.call("move.back", { station: A, from: bId, all: true });
-        log(`  全部迁回: ${outcome(await turnEnds("A", t1))}`);
+        log(`  全部迁回 of what is left: ${outcome(await turnEnds("A", t1))}`);
         backed = true;
         const ra = roomOn("A", k2)!;
         if (readFileSync(join(ra, "notes.txt"), "utf8") !== `notes of ${tag}, changed on B\n`) throw new Error("notes.txt is not B's");
@@ -765,9 +815,7 @@ try {
       if (standing("B", k3) !== "live") throw new Error(`cut: ${outcome(l)}`);
     });
     if (k3 !== "") await endsWell("3f", k3);
-    await check("3f: the station's own self-update waits for a move's turn (updates/holds.ts)", async () => {
-      throw new Error("NOT BUILT: the harness's stations have autoUpdate off and no newer release to update to; only the launcher's handover (SIGUSR2) is reachable, above");
-    });
+    log("SKIP 3f: the station's own self-update waits for a move's turn (updates/holds.ts): not built, the harness's stations have autoUpdate off and no newer release to update to; only the launcher's handover (SIGUSR2) is reachable, above");
   }
 
   // ── 4: everything to B and all back ──
@@ -861,9 +909,7 @@ try {
         if (sql("B", "select count(*) n from vault_plain")[0].n > 0) throw new Error("B kept the vault item it was given");
       });
     }
-    await check("4: a connect moved with it (a platform's fake)", async () => {
-      throw new Error("NOT BUILT: the harness has no Slack, Feishu or Comma fake a connect could run against; connects were not part of `all`");
-    });
+    log("SKIP 4: a connect moved with it: not built, the harness has no Slack, Feishu or Comma fake a connect could run against; no connect was part of `all`");
   }
 
   // ── 5: measured ──
@@ -883,24 +929,32 @@ try {
       if (standing("B", key) !== "live") throw new Error(`${standings(key)}; ${outcome(l)}`);
       await home(key);
     });
-    const seed = async (n: number) => {
-      const have = () => sql("A", "select count(*) n from sessions where (ws is null or (ws not like 'handed:%' and ws not like 'coming:%'))")[0].n as number;
-      const t0 = Date.now();
-      const start = have();
-      let i = start;
-      const lanes = Array.from({ length: 16 }, async () => {
-        while (i < n) {
-          const j = i++;
-          await newChat(`seed-${j}-${tag}`);
-        }
-      });
-      await Promise.all(lanes);
-      log(`  ${have() - start} chats made by the device (chat.create and a message each, its agent answering) in ${((Date.now() - t0) / 1000).toFixed(0)} s`);
+    /// A's chats brought to `live` shown and `archived` archived, what lacks made by the station's own store while A
+    /// is stopped (e2e/move-seed.ts), then A started again and online.
+    const seed = async (live: number, archived: number) => {
+      const countOf = (q: string) => sql("A", `select count(*) n from sessions where (ws is null or (ws not like 'handed:%' and ws not like 'coming:%')) and ${q}`)[0].n as number;
+      const addLive = Math.max(0, live - countOf("archived_at is null"));
+      const addOld = Math.max(0, archived - countOf("archived_at is not null"));
+      if (addLive + addOld === 0) return;
+      const home = sql("A", "select ws from sessions where ws is not null and ws not like 'handed:%' and ws not like 'coming:%' limit 1")[0]?.ws ?? ws;
+      stationDo("halt", "station");
+      log(`  ${execFileSync(process.execPath, ["--no-warnings", join(dirname(new URL(import.meta.url).pathname), "move-seed.ts"), process.env.E2E_SF_SRC!, DATA.A, home, String(addLive), String(addOld), randomBytes(3).toString("hex")], { encoding: "utf8" }).trim()}`);
+      stationDo("again", "station");
+      await a.stationState(ws, (s) => s.state === "online", 120_000, aId);
     };
+    /// What the stations' logs say of their main thread held since `from` (each log's byte offset): how often, the longest.
+    const logs = () => ({ A: `${RUN}/station.log`, B: `${RUN}/second.log` });
+    const offsets = () => Object.fromEntries(Object.entries(logs()).map(([n, f]) => [n, existsSync(f) ? statSync(f).size : 0])) as Record<string, number>;
+    const holds = (from: Record<string, number>) => Object.entries(logs()).map(([n, f]) => {
+      const t = existsSync(f) ? readFileSync(f, "utf8").slice(from[n] ?? 0) : "";
+      const ms = [...t.matchAll(/the main thread was held.*?heldMs=(\d+)/g)].map((m) => Number(m[1]));
+      return `${n}: ${ms.length} held, longest ${ms.length === 0 ? 0 : Math.max(...ms)} ms${ms.filter((x) => x > 200).length > 0 ? ` (${ms.filter((x) => x > 200).length} over 200 ms)` : ""}`;
+    }).join("; ");
     /// GET /move as the device asks it: the `stationMove` topic's first answer for a page not read yet, and how long
     /// the request itself took (its answer read to its end); and station_move plan through an agent, less a turn's own.
     const timeMove = async (label: string, key: string) => {
       const limit = 51 + Math.floor(Math.random() * 140);
+      const from = offsets();
       const t0 = Date.now();
       await a.until(moveT(bId, "chats", limit), (v) => v?.modules && v, 300_000);
       const shown = Date.now() - t0;
@@ -911,28 +965,33 @@ try {
       const t2 = Date.now();
       await say(key, `drill-move:${JSON.stringify({ action: "plan", to: bId })}`, "drill-move:", 600_000);
       const plan = Date.now() - t2;
-      measured(`${label}: stationMove first answer ${shown} ms (GET /move answered at ${answered} ms); station_move plan ${plan} ms (a turn alone ${turn} ms)`);
+      measured(`${label}: stationMove first answer ${shown} ms (GET /move answered at ${answered} ms); station_move plan ${plan} ms (a turn alone ${turn} ms); main thread: ${holds(from)}`);
     };
-    let k300 = "";
-    await check("5: 300 small chats: GET /move timed, all moved with `all` and back, timed", async () => {
-      await seed(300);
-      k300 = await newChat(`timer-${tag}`);
-      await timeMove("300 chats", k300);
+    let timer = "";
+    await check("5: 300 chats (40 shown, 260 archived): GET /move timed", async () => {
+      timer = await newChat(`timer-${tag}`);
+      await seed(40, 260);
+      await timeMove("300 chats", timer);
+    });
+    await check("5: a real station's shape, 2,384 chats (149 shown, 2,235 archived): GET /move timed, all of it moved with `all` and back, timed", async () => {
+      if (timer === "") timer = await newChat(`timer-${tag}`);
+      await seed(149, 2235);
+      await timeMove("2,384 chats", timer);
       const n = sql("A", "select count(*) n from sessions where (ws is null or (ws not like 'handed:%' and ws not like 'coming:%'))")[0].n as number;
+      let from = offsets();
       const t0 = Date.now();
       await a.call("move.start", { station: A, to: bId, all: true });
       const l = await turnEnds("A", t0, 3_600_000);
       const s = (Date.now() - t0) / 1000;
-      measured(`${n} chats moved with all: ${s.toFixed(0)} s, ${(s / n).toFixed(2)} s a chat; at that rate 2,384 chats take ${((2384 * s) / n / 60).toFixed(0)} min (${outcome(l).slice(0, 400)})`);
+      const left = sql("A", "select count(*) n from sessions where (ws is null or (ws not like 'handed:%' and ws not like 'coming:%'))")[0].n as number;
+      measured(`${n} chats moved with all: ${s.toFixed(0)} s, ${((n - left) / (s / 60)).toFixed(0)} chats a minute, ${left} left on A; main thread: ${holds(from)} (${outcome(l).slice(0, 600)})`);
+      from = offsets();
       const t1 = Date.now();
-      const lb = await a.call("move.back", { station: A, from: bId, all: true }).then(() => turnEnds("A", t1, 3_600_000));
+      await a.call("move.back", { station: A, from: bId, all: true });
+      const lb = await turnEnds("A", t1, 3_600_000);
       const sb = (Date.now() - t1) / 1000;
-      measured(`and back: ${sb.toFixed(0)} s, ${(sb / n).toFixed(2)} s a chat (${outcome(lb).slice(0, 400)})`);
-    });
-    await check("5: 2,400 chats: GET /move timed", async () => {
-      await seed(2400);
-      if (k300 === "") k300 = await newChat(`timer-${tag}`);
-      await timeMove("2,400 chats", k300);
+      measured(`and back: ${sb.toFixed(0)} s, ${(n / (sb / 60)).toFixed(0)} chats a minute; main thread: ${holds(from)} (${outcome(lb).slice(0, 600)})`);
+      if (left > 0) throw new Error(`${left} chats not moved`);
     });
   }
 } catch (e) {

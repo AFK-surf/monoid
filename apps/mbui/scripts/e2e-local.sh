@@ -34,6 +34,7 @@
 #                                   once (its launcher, Node, runners, agents and jobs: what runs on its data directory
 #                                   or in it); NAME station (the test station) or as second-station names them
 #   scripts/e2e-local.sh again NAME   and started again on its data, nothing enrolled
+#   scripts/e2e-local.sh halt NAME    that station stopped as `down` stops it (its data kept, for `again`)
 #   scripts/e2e-local.sh kept locks|rigs   what this run wrote, copied to $E2E_WORK/kept (emptied first, and by up):
 #                                   the cloud's and relay's logs, each station's (station, second, third, rig: its
 #                                   launcher's, its enrollment's, its data/logs, its kept locks of data/mesh), each
@@ -974,6 +975,7 @@ case "${1:-all}" in
     move || { rc=$?; kept move || true; exit $rc; } ;;
   crash) shift; crash "$@" ;;
   again) shift; again "$@" ;;
+  halt) shift; if [ "${1:?a station}" = station ]; then stop station; pkill -f "$STATION/data" 2>/dev/null || true; say "station halted"; else second_stop $1; fi ;;
   rigs) rigs ;;
   rigs-all)
     trap down EXIT
