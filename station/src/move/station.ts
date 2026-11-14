@@ -2,7 +2,6 @@
 // this station's chats, accounts, jobs and connects, the scheduler over them, and what another station asks of them
 // (`move.*`: which accounts it has, an item moved back to the station asking, a job started or stopped here). Made by
 // the composition root (move/live.ts) and by the tests, given what it needs.
-import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { Refused, bytesOf } from "../mesh/bus.ts";
 import { PeerGone } from "../mesh/peer.ts";
@@ -111,10 +110,6 @@ export function accountOf(p: Json, station: string): AccountOf | null {
   return { own: `${p.id}@${station}`, name };
 }
 
-/// The plan's read-only questions of the other station: what a page's plan may take from the turn under way's kept
-/// answers.
-const KEPT = new Set(["move.accounts", "move.chats.live", "move.repo.have", "move.setting.values"]);
-
 export class Moves {
   readonly handover: Handover;
   readonly jobs: JobsModule;
@@ -136,27 +131,10 @@ export class Moves {
   readonly #gone = new Map<string, Error>();
   readonly #suspect = new Set<string>();
   #inTurn = false;
-  /// The station the turn under way is toward, and the answers of its read-only plan questions kept for the length of it,
-  /// by the whole request, for plans made to be shown alone (`#shown`): a turn's plan and steps ask as ever; dropped as
-  /// the turn begins and ends, never kept on disk; an unanswered one never kept.
-  #turnTo = "";
-  readonly #kept = new Map<string, Json>();
-  readonly #shown = new AsyncLocalStorage<true>();
 
   /// What this station's moves ask of another: in a turn, a station found gone is asked nothing more until it ends,
   /// every step toward it failing at once with the same words (drill 23's 185 s of asks of a station killed).
   readonly #ask: Ask = async (station, request) => {
-    if (station !== "" && station === this.#turnTo && this.#shown.getStore() === true && KEPT.has(request?.method)) {
-      const k = `${station} ${JSON.stringify(request)}`;
-      if (this.#kept.has(k)) return this.#kept.get(k);
-      const answer = await this.#turnAsk(station, request);
-      this.#kept.set(k, answer);
-      return answer;
-    }
-    return await this.#turnAsk(station, request);
-  };
-
-  readonly #turnAsk: Ask = async (station, request) => {
     if (!this.#inTurn) return await this.#d.ask(station, request);
     const gone = this.#gone.get(station);
     if (gone !== undefined) throw gone;
@@ -309,14 +287,11 @@ export class Moves {
       hold: () => this.#hold(),
       restarted: () => tr(stationLang(), "station.move.restarted"),
       // (a turn's stations found gone are its own: forgotten as it begins and ends)
-      turn: (on, station) => {
+      turn: (on) => {
         this.#inTurn = on;
-        this.#turnTo = on ? station : "";
         this.#gone.clear();
         this.#suspect.clear();
-        this.#kept.clear();
       },
-      shown: (f) => this.#shown.run(true, f),
       reads: (ws) => {
         const r = this.reads(ws);
         this.#planning.set(ws, r);

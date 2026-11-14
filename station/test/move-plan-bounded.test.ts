@@ -12,7 +12,7 @@ import { test } from "node:test";
 import { sessionKey } from "../src/sessions/hub.ts";
 import { MANUAL, comingWs } from "../src/store/rows.ts";
 import { PLAN_PAGE } from "../src/move/chats.ts";
-import { A, B, WS, officeShape, world } from "./move-world.ts";
+import { A, B, WS, officeShape, stillfailChat, world } from "./move-world.ts";
 
 type Json = any;
 const require = createRequire(import.meta.url);
@@ -264,6 +264,53 @@ for (const n of [300, 2_384]) {
     assert.ok(f.total() <= FILES, `${f.total()} calls of the file system for ${n} chats: at most ${FILES}, whatever the chats`);
     const distinct = new Map(w.seen.map((s) => [s.sql, s]));
     for (const s of distinct.values()) assert.deepEqual(scans(w.db, s.sql, s.args), [], `a scan in: ${s.sql}`);
+  });
+}
+
+/// A page of the move page read while a turn runs (statements and rows, whatever the station's size).
+const PAGE_READ = 48;
+const PAGE_READ_ROWS = 400;
+/// What a page read during a turn asks the modules of where items stand: the page's rows and the item the turn is at.
+const PAGE_ASKED = 50 + 2;
+
+for (const n of [300, 2_384]) {
+  test(`a page of the move page read while a turn runs, among ${n} chats: its rows and counts from the turn's own plan, at most ${PAGE_READ} statements and ${PAGE_READ_ROWS} rows, nothing asked of the other station, only its rows asked where they stand`, async () => {
+    const { w, a } = officeShape(n);
+    const b = w.get(B);
+    const { key } = await stillfailChat(a);
+    // (a turn held as the chat's files are placed there)
+    const gate = Promise.withResolvers<void>();
+    const at = Promise.withResolvers<void>();
+    b.placing = async () => {
+      at.resolve();
+      await gate.promise;
+    };
+    const turn = a.moves.scheduler.move(WS, B, { module: "chats", item: key });
+    await at.promise;
+    // (what the other station is asked, and what the modules are asked of where items stand)
+    let askedThere = 0;
+    const handle = b.bus.handle.bind(b.bus);
+    b.bus.handle = ((ws: string, peer: string, r: Json) => (String(r?.method ?? "").startsWith("move.") && askedThere++, handle(ws, peer, r))) as typeof b.bus.handle;
+    let stated = 0;
+    for (const m of a.moves.modules) {
+      const was = m.state.bind(m);
+      m.state = (x) => (stated++, was(x));
+    }
+    const w2 = watch(a.rig.store);
+    const view = await a.ask("GET", "/move", null, "owner", [["to", B], ["module", "chats"], ["limit", "50"]]);
+    w2.stop();
+    assert.equal(view.status, 200, JSON.stringify(view.body));
+    const chats = view.body.modules.find((m: Json) => m.id === "chats");
+    assert.equal(chats.items.length, 50, "a page of rows");
+    assert.ok(chats.total > n, `counted: ${chats.total}`);
+    assert.equal(askedThere, 0, "nothing asked of the other station");
+    assert.ok(stated <= PAGE_ASKED, `${stated} items asked where they stand: at most the page's and the one the turn is at`);
+    assert.ok(w2.seen.length <= PAGE_READ, `${w2.seen.length} statements for a page read among ${n} chats: at most ${PAGE_READ}`);
+    assert.ok(w2.rows() <= PAGE_READ_ROWS, `${w2.rows()} rows for a page read among ${n} chats: at most ${PAGE_READ_ROWS}`);
+    b.placing = undefined;
+    gate.resolve();
+    await turn;
+    await w.quiet();
   });
 }
 

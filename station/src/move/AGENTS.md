@@ -65,9 +65,11 @@ chats paused 18 minutes, a half-moved state, no way back), whose start stays swi
 - What the app shows is `GET /move?to=` (routes.ts: the modules in order with their needs, done of total, how many cannot move (`cannot`), a page of
   items each, and `last`, the workspace's last turn and what came of it, kept in `last.json`), told changed as `move`
   on the event stream (a burst told once in 500 ms, live.ts). A turn under way reads as moving until its end is told
-  (the item it is at, scheduler `current`). A plan made to be shown (`planShown`: this page, station_move plan and
-  status) takes the other station's answers to its read-only questions kept for the turn under way toward it; the
-  turn's own plan and steps ask as ever; dropped as the turn ends.
+  (the item it is at, scheduler `current`). While a turn toward the station the page is read for runs, the page is
+  answered from the turn's own plan (scheduler `held`: each module's items in order, each one's place, counts kept as
+  items end), only the page's rows asked where they stand now: a read during a turn reads no page of the station's chats
+  and asks nothing of the other (station/AGENTS.md: a read answers by an index and a limit); station_move plan and status
+  take the same plan, every item asked where it stands. At rest, and from the read the turn's end prompts, planned anew.
 - A plan never guesses what the other station has: a question of it not answered (`move.accounts`,
   `move.chats.live`, `move.repo.have`, `move.setting.values`) makes what it asks of unable to go this turn, said so
   (ask again), logged with what it failed with; with no station named it asks nothing. What needs an item that cannot go

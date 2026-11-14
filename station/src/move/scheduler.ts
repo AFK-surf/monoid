@@ -15,6 +15,9 @@ import { type Item, type ItemState, type Module, type Need, type PlanReads, type
 /// An item as a plan shows it: what it is, where it stands, and what would be stopped here if it moved alone.
 export type Planned = Item & ItemState & { wouldStop: Need[] };
 export type Plan = { ws: string; to: string; modules: { id: string; needs: readonly string[] }[]; items: Planned[] };
+/// The turn under way's plan as a page reads it (scheduler `held`): each module's items in the plan's order, each one's
+/// place among them (by `named`), per module how many there are, cannot go and are there; `now`, an item as it stands.
+export type Held = { byModule: ReadonlyMap<string, readonly Planned[]>; at: ReadonlyMap<string, number>; counts: ReadonlyMap<string, { done: number; total: number; cannot: number }>; now: (x: Planned) => Planned };
 /// Which items: one (`module` and `item`), a module's (`module`), or all (`all`); `withNeeds`: what they need first;
 /// `follow`: the items of these modules that need only what moved go with it (a chat's jobs).
 /// `arriveStopped`: an item whose need is not there goes all the same, arriving there stopped, waiting for it.
@@ -53,9 +56,6 @@ export type SchedulerDeps = {
   reads?: (ws: string) => PlanReads;
   /// Told as a turn with `station` begins (true) and as it ends (false).
   turn?: (on: boolean, station: string) => void;
-  /// Runs a plan made to be shown (a page's, an agent's read), not one a turn decides by: the other station's answers it
-  /// asks may be the ones kept for the turn under way toward it (move/station.ts `#ask`).
-  shown?: <T>(f: () => Promise<T>) => Promise<T>;
 };
 
 const stoppedFile = (data: string) => join(data, "move", "stopped.json");
@@ -193,9 +193,56 @@ export class Scheduler {
   }
 
   /// What a move of `ws` to `to` would be: every module's items, where each stands, what each would stop.
-  /// The plan as a page or an agent reads it (`shown`): never what a turn decides by.
-  planShown(ws: string, to: string): Promise<Plan> {
-    return this.#d.shown !== undefined ? this.#d.shown(() => this.plan(ws, to)) : this.plan(ws, to);
+  /// The plan as an agent reads it (station_move plan, status): while a turn toward `to` runs, the turn's own plan, each
+  /// item where it stands now (no page of the station read again, nothing asked of the other); else planned anew.
+  async planShown(ws: string, to: string): Promise<Plan> {
+    const h = this.#held;
+    if (h !== null && h.ws === ws && h.to === to) return { ...h.plan, items: h.plan.items.map((x) => this.#now(x)) };
+    return await this.plan(ws, to);
+  }
+
+  /// The turn under way's own plan, for a page read while it runs (routes.ts `moveView`'s `held`): each module's items in
+  /// the plan's order, each one's place among them, and per module how many there are, cannot go and are there, kept as
+  /// items end; a row's state is asked as it is shown. Null: no turn toward `to` of `ws` runs.
+  held(ws: string, to: string): { plan: Plan; view: Held } | null {
+    const h = this.#held;
+    if (h === null || h.ws !== ws || h.to !== to) return null;
+    return { plan: h.plan, view: { byModule: h.byModule, at: h.at, counts: h.counts, now: (x) => this.#now(x) } };
+  }
+
+  /// Item `x` of the turn's plan as it stands now: what the plan said of it, but its state, the module's and the
+  /// stopped set's now.
+  #now(x: Planned): Planned {
+    const { state: _s, error: _e, progress: _p, waitsFor: _w, at: _a, waits: _ws, from: _f, lentTo: _l, ...item } = x;
+    const { at, ...st } = this.#stateOf(item);
+    return { ...item, ...st, ...(at !== undefined && at !== this.#held?.to ? { at } : {}), wouldStop: x.wouldStop };
+  }
+
+  #held: (Omit<Held, "now"> & { ws: string; to: string; plan: Plan }) | null = null;
+
+  /// The turn's plan held for the pages read while it runs (one pass over it, as the turn begins).
+  #hold(ws: string, to: string, plan: Plan): void {
+    const byModule = new Map<string, Planned[]>();
+    const at = new Map<string, number>();
+    const counts = new Map<string, { done: number; total: number; cannot: number }>();
+    for (const x of plan.items) {
+      const list = byModule.get(x.module) ?? [];
+      at.set(named(x), list.length);
+      list.push(x);
+      byModule.set(x.module, list);
+      const c = counts.get(x.module) ?? { done: 0, total: 0, cannot: 0 };
+      c.total++;
+      if (x.state === "there") c.done++;
+      else if (x.state === "here" && x.cannot !== undefined) c.cannot++;
+      counts.set(x.module, c);
+    }
+    this.#held = { ws, to, plan, byModule, at, counts };
+  }
+
+  /// Item `x` there (1) or here again (-1): its module's count of those there, as it ends.
+  #ended(x: Need, there: 1 | -1): void {
+    const c = this.#held?.counts.get(x.module);
+    if (c !== undefined) c.done = Math.max(0, Math.min(c.total, c.done + there));
   }
 
   async plan(ws: string, to: string): Promise<Plan> {
@@ -279,6 +326,7 @@ export class Scheduler {
       this.#asked--;
       this.#stopping = null;
       this.#current = null;
+      this.#held = null;
       this.#d.changed?.();
     });
     this.#turn = run.catch(() => {});
@@ -302,6 +350,7 @@ export class Scheduler {
   async #move(ws: string, to: string, sel: Selection): Promise<Outcome> {
     const out: Outcome = { done: [], refused: [], stopped: [], resumed: [], failed: null };
     const plan = await this.plan(ws, to);
+    this.#hold(ws, to, plan);
     const all = plan.items;
     const index = new Items(all);
     const find = (n: Need) => index.find(n);
@@ -475,6 +524,7 @@ export class Scheduler {
       await this.#d.tellArrived?.(to, { module: p.module, id: p.id }).catch((e) => log.warn("move", "the other station not told what came", { item: named(p), error: (e as Error).message }));
       thereNow.add(named(p));
       out.done.push({ module: p.module, id: p.id });
+      this.#ended(p, 1);
       for (const x of stops) out.stopped.push({ item: { module: x.module, id: x.id }, waitsFor: { module: p.module, id: p.id } });
       // (moved where its need is: no longer stopped here)
       if (this.#stopped.remove(p) !== undefined) unsaved = true;
@@ -492,6 +542,7 @@ export class Scheduler {
       }
       thereNow.add(named(p));
       out.done.push({ module: p.module, id: p.id });
+      this.#ended(p, 1);
       this.#d.changed?.();
     }
     // (what was lent for items that did not go is taken back: the last of them here, nothing of it stays lent)
@@ -521,6 +572,7 @@ export class Scheduler {
           continue;
         }
         out.done = out.done.filter((d) => !sameItem(d, x));
+        this.#ended(x, -1);
         doneNow.delete(named(x));
         out.returned = [...(out.returned ?? []), { module: x.module, id: x.id }];
         // (what waited here for it goes on)
@@ -542,6 +594,7 @@ export class Scheduler {
         try {
           await this.#modules.get(p.module)!.move(p, to, (progress) => this.#d.progress?.(p, progress));
           out.done.push({ module: p.module, id: p.id });
+          this.#ended(p, 1);
           if (this.#stopped.remove(p) !== undefined) unsaved = true;
         } catch (e) {
           fail(p, (e as Error).message);
@@ -556,6 +609,7 @@ export class Scheduler {
   async #back(ws: string, from: string, sel: Selection): Promise<Outcome> {
     const out: Outcome = { done: [], refused: [], stopped: [], resumed: [], failed: null };
     const plan = await this.plan(ws, from);
+    this.#hold(ws, from, plan);
     const all = plan.items;
     const index = new Items(all);
     const find = (n: Need) => index.find(n);
@@ -602,6 +656,7 @@ export class Scheduler {
       }
       stillThere.delete(named(p));
       out.done.push({ module: p.module, id: p.id });
+      this.#ended(p, -1);
       // (here again: what was lent for it alone is taken back)
       for (const m of this.#modules.values()) await m.left?.([{ module: p.module, id: p.id }]).catch((e) => log.warn("move", "what was lent for an item back here not taken back", { error: (e as Error).message }));
       // (what waited here for it goes on)

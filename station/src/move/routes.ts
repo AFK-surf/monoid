@@ -17,7 +17,7 @@ import type { Request } from "../api/request.ts";
 import { managesStation } from "../mesh/credential.ts";
 import { tr } from "../ops/i18n.ts";
 import { named } from "./module.ts";
-import type { Last, Plan, Planned, Scheduler, Selection } from "./scheduler.ts";
+import type { Held, Last, Plan, Planned, Scheduler, Selection } from "./scheduler.ts";
 
 type Json = any;
 
@@ -26,26 +26,38 @@ export const MOVE_PAGE_MOST = 200;
 
 /// The answer of GET /move for `plan`: `module`/`after` the page of one module that goes on from `after`.
 /// `name`: what the roster calls a station (`at`, `waitsAt`), its id's start where it names none.
-export function moveView(plan: Plan, order: string[], stopped: { item: { module: string; id: string }; waitsFor: { module: string; id: string } }[], o: { module?: string; after?: string; limit?: number } = {}, last: Last | null = null, stopping = false, name: (id: string) => string = (id) => id.slice(0, 12), current: { module: string; id: string } | null = null): Json {
+export function moveView(plan: Plan, order: string[], stopped: { item: { module: string; id: string }; waitsFor: { module: string; id: string } }[], o: { module?: string; after?: string; limit?: number } = {}, last: Last | null = null, stopping = false, name: (id: string) => string = (id) => id.slice(0, 12), current: { module: string; id: string } | null = null, held: Held | null = null): Json {
   const limit = Math.min(Math.max(o.limit ?? MOVE_PAGE, 1), MOVE_PAGE_MOST);
+  // (a turn under way: its own plan, held by module with each item's place and the counts it keeps; only the page's rows
+  // and the item it is at asked where they stand now: nothing gone through whole)
+  const heldAt = (n: { module: string; id: string }) => {
+    const i = held?.at.get(named(n));
+    return i === undefined ? undefined : held!.byModule.get(n.module)?.[i];
+  };
   // (the turn under way is at an item till its end is told, whether that item reads moving yet or not)
-  const moving = plan.items.find((x) => x.state === "moving") ?? (current === null ? null : plan.items.find((x) => x.module === current.module && x.id === current.id) ?? null);
-  // (each module's items, gone through once)
-  const of = new Map<string, Planned[]>(order.map((id) => [id, []]));
-  for (const x of plan.items) of.get(x.module)?.push(x);
+  const moving = held !== null
+    ? (current === null ? null : ((x) => (x === undefined ? null : held.now(x)))(heldAt(current)))
+    : plan.items.find((x) => x.state === "moving") ?? (current === null ? null : plan.items.find((x) => x.module === current.module && x.id === current.id) ?? null);
+  // (each module's items, gone through once; held, as the turn keeps them)
+  const of = new Map<string, readonly Planned[]>(order.map((id) => [id, held?.byModule.get(id) ?? []]));
+  if (held === null) for (const x of plan.items) (of.get(x.module) as Planned[] | undefined)?.push(x);
   const needsOf = new Map(plan.modules.map((m) => [m.id, m.needs]));
   return {
     ws: plan.ws,
     to: plan.to,
     modules: order.map((id) => {
       const mine = of.get(id)!;
-      const from = o.module === id && o.after !== undefined ? mine.findIndex((x) => x.id === o.after) + 1 : 0;
-      const page = mine.slice(from, from + limit);
+      const from = o.module === id && o.after !== undefined ? (held !== null ? (held.at.get(named({ module: id, id: o.after })) ?? -1) : mine.findIndex((x) => x.id === o.after)) + 1 : 0;
+      const page = held !== null ? mine.slice(from, from + limit).map(held.now) : mine.slice(from, from + limit);
       let done = 0;
       let cannot = 0;
-      for (const x of mine) {
-        if (x.state === "there") done++;
-        else if (x.state === "here" && x.cannot !== undefined) cannot++;
+      const kept = held?.counts.get(id);
+      if (kept !== undefined) (done = kept.done), (cannot = kept.cannot);
+      else if (held === null) {
+        for (const x of mine) {
+          if (x.state === "there") done++;
+          else if (x.state === "here" && x.cannot !== undefined) cannot++;
+        }
       }
       return {
         id,
@@ -164,9 +176,11 @@ export function moveRoutes(d: MoveRoutesDeps): Route[] {
         const to = given === "" ? "" : (d.station(ws, given)?.id ?? null);
         if (to === null) return error(400, tr(r.lang, "station.move.noStation", { station: given }));
         try {
-          const plan = await d.scheduler.planShown(ws, to);
+          // (a turn under way toward it: its own plan, the page's rows as they stand now; else planned anew)
+          const held = d.scheduler.held(ws, to);
+          const plan = held?.plan ?? (await d.scheduler.plan(ws, to));
           const limit = Number(param(r, "limit") ?? MOVE_PAGE);
-          return ok(moveView(plan, d.order(), d.scheduler.stopped(), { module: param(r, "module") ?? undefined, after: param(r, "after") ?? undefined, limit: Number.isFinite(limit) ? limit : MOVE_PAGE }, d.scheduler.last(ws), d.scheduler.stopping(), (id) => d.name?.(ws, id) ?? id.slice(0, 12), d.scheduler.current()));
+          return ok(moveView(plan, d.order(), d.scheduler.stopped(), { module: param(r, "module") ?? undefined, after: param(r, "after") ?? undefined, limit: Number.isFinite(limit) ? limit : MOVE_PAGE }, d.scheduler.last(ws), d.scheduler.stopping(), (id) => d.name?.(ws, id) ?? id.slice(0, 12), d.scheduler.current(), held?.view ?? null));
         } catch (e) {
           return error(409, (e as Error).message);
         }

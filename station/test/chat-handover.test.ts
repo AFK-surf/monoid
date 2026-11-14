@@ -2194,70 +2194,39 @@ test("a chat that comes back is started with the transcript of what was said whe
   }
 });
 
-test("the other station's answers to a plan's questions kept for a turn toward it, for the page alone: read twice in a turn, each asked once; the turn asks as ever; after its end asked anew; one not answered asked again", async () => {
+test("the move page read while a turn runs answers from the turn's own plan: a chat gone there, the one moving, the module's count kept as each ends; after the turn's end, planned anew", async () => {
   const w = world();
   const a = w.get(A);
   const b = w.get(B);
-  const { key } = await stillfailChat(a);
-  // (a second chat here throughout: what the plan asks of B is of the chats here, and one handed away is asked of no more)
+  const first = await stillfailChat(a);
   const second = await stillfailChat(a);
-  // (what B is asked, by request)
-  const asked = new Map<string, number>();
-  const handle = b.bus.handle.bind(b.bus);
-  let losing = false;
-  b.bus.handle = ((ws: string, peer: string, r: Json) => {
-    if (typeof r?.method === "string" && r.method.startsWith("move.") && r.method !== "move.open") asked.set(r.method, (asked.get(r.method) ?? 0) + 1);
-    if (losing && r?.method === "move.chats.live") {
-      losing = false;
-      return Promise.reject(new Error("the station was not reached"));
-    }
-    return handle(ws, peer, r);
-  }) as typeof b.bus.handle;
-  const live = () => asked.get("move.chats.live") ?? 0;
-  // (a turn held as the chat's files are placed there)
-  const placing = Promise.withResolvers<void>();
-  const reached = Promise.withResolvers<void>();
-  b.placing = async () => {
-    reached.resolve();
-    await placing.promise;
-  };
-  const turn = a.moves.scheduler.move(WS, B, { module: "chats", item: key });
-  await reached.promise;
-  const byTurn = live();
-  assert.ok(byTurn >= 1, "the turn asked as ever");
-  await a.moves.scheduler.planShown(WS, B);
-  await a.moves.scheduler.planShown(WS, B);
-  assert.equal(live(), byTurn + 1, "two page reads in a turn: asked once");
-  // (one not answered is not kept: asked again at the next read)
-  w.tamper(null);
-  const fresh = new Map(asked);
-  await a.moves.scheduler.plan(WS, B);
-  assert.equal(live(), (fresh.get("move.chats.live") ?? 0) + 1, "the turn's own plan asks, never a kept answer");
-  b.placing = undefined;
-  placing.resolve();
-  assert.equal((await turn).failed, null);
-  await w.quiet();
-  const after = live();
-  await a.moves.scheduler.planShown(WS, B);
-  assert.equal(live(), after + 1, "after the turn's end asked anew");
-  // (not answered in a turn: asked again at the next read)
+  // (the second chat's files held as they are placed there: the first gone by then)
   const gate = Promise.withResolvers<void>();
   const at = Promise.withResolvers<void>();
+  let placings = 0;
   b.placing = async () => {
+    if (++placings < 3) return;
     at.resolve();
     await gate.promise;
   };
-  const turn2 = a.moves.scheduler.move(WS, B, { module: "chats", item: second.key });
+  const turn = a.moves.scheduler.move(WS, B, { module: "chats" });
   await at.promise;
-  losing = true;
-  const before = live();
-  await a.moves.scheduler.planShown(WS, B);
-  await a.moves.scheduler.planShown(WS, B);
-  assert.equal(live(), before + 2, "the one not answered not kept: asked again");
+  const page = async () => (await a.ask("GET", "/move", null, "owner", [["to", B], ["module", "chats"], ["limit", "50"]])).body.modules.find((m: Json) => m.id === "chats");
+  const during = await page();
+  const row = (v: Json, k: string) => v.items.find((x: Json) => x.id === k);
+  const [gone, moving] = a.rig.store.handedTo(first.key) !== null ? [first.key, second.key] : [second.key, first.key];
+  assert.equal(row(during, gone)?.state, "there", "the chat gone: there, as it is now");
+  assert.equal(row(during, moving)?.state, "moving", "the one under way: moving");
+  assert.equal(during.done, 1, "its module's count: one there, kept as it ended");
   b.placing = undefined;
   gate.resolve();
-  await turn2;
+  assert.equal((await turn).failed, null);
   await w.quiet();
+  // (at rest: planned anew, a chat made since listed)
+  const third = await stillfailChat(a);
+  const after = await page();
+  assert.equal(row(after, third.key)?.state, "here", "a chat made after the turn's end is on the page");
+  assert.equal(after.done, 2);
 });
 
 test("a plan with no station named (the station page's own row) asks nothing of anyone and says nothing of the other side", async () => {
