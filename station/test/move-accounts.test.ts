@@ -17,6 +17,7 @@ import { gather, place } from "../src/replica/carry-worker.ts";
 import { hubConfig } from "../src/sessions/config.ts";
 import { newSession, say } from "../src/sessions/lifecycle.ts";
 import { Moves } from "../src/move/station.ts";
+import { moveView } from "../src/move/routes.ts";
 import { shareRefusal, Sharing } from "../src/share/index.ts";
 import { Rig, message, testClock } from "./hub-fakes.ts";
 import { sessionKey } from "../src/sessions/hub.ts";
@@ -563,6 +564,47 @@ test("a chat stopped by a move and archived by hand: a person's word to it is re
   await quiet();
   assert.equal(a.rig.store.getSession(one.key)!.archivedAt, archived, "still archived");
   assert.equal(stationSaid(), said, "nothing said");
+});
+
+test("a chat stopped here for its login, then moved itself, then back alone while its login stays there: held as it arrives (its stop anew, waiting for the login where it is now), says so once as it is spoken to, starts no turn; the login back lets it go", async () => {
+  const { a, b, quiet } = world([KIMI]);
+  signIn(a, "kimi", {});
+  const one = await chatOn(a, "kimi");
+  const account = `own:kimi@${A}`;
+  const handed = (st: Station) => st.rig.claude.sessions.flatMap((s) => s.prompts).join("\n");
+  const stationSaid = (st: Station, thread: number) => (st.rig.store.db.prepare("SELECT COUNT(*) AS n FROM entries WHERE thread = ? AND author_kind = 'ember'").get(thread) as { n: number }).n;
+  // Its login away: stopped here.
+  assert.equal((await a.moves.scheduler.move(WS, B, { module: "accounts", item: account })).failed, null);
+  await quiet();
+  assert.deepEqual(a.moves.scheduler.stopped().map((s) => s.item.id), [one.key]);
+  // It follows its login there, by the hand-over itself (as any route other than this station's own turn takes it):
+  // no longer stopped here.
+  await a.moves.handover.handOver(one.key, B, { wait: true });
+  await quiet();
+  assert.deepEqual(a.moves.scheduler.stopped(), [], "nothing of it kept stopped here once it went");
+  // (as a station from before this left it: its entry kept, nothing held)
+  await a.moves.scheduler.noteStopped({ module: "chats", id: one.key }, { module: "accounts", id: account }, WS, false);
+  // Back alone, its login staying there: held as it arrives, waiting for the login where it is now.
+  const back = await a.moves.scheduler.back(WS, B, { module: "chats", item: one.key });
+  await quiet();
+  assert.equal(back.failed, null, JSON.stringify(back));
+  assert.match(a.rig.hub.chatHeld(one.key) ?? "", /^stopped: waits for accounts/, "held");
+  assert.deepEqual(a.moves.scheduler.stopped().map((s) => [s.item.id, (s.waitsFor as { at?: string }).at]), [[one.key, B]], "kept stopped, waiting for the login on B");
+  // (the move page has its row at once: stopped, waiting for the login, which is on B)
+  const view = moveView(await a.moves.scheduler.plan(WS, B), a.moves.modules.map((m) => m.id), a.moves.scheduler.stopped(), { limit: 50 }, null, false, (id) => id.slice(0, 1).toUpperCase());
+  const row = view.modules.find((m: Json) => m.id === "chats").items.find((x: Json) => x.id === one.key);
+  assert.deepEqual(row === undefined ? null : [row.state, row.waitsFor, row.waitsAt], ["stopped", `accounts ${account}`, "B"], "its row on the move page");
+  const before = handed(a);
+  const said = stationSaid(a, one.thread);
+  say(a.rig.hub, one.thread, "p@x", "back here?");
+  await quiet();
+  assert.equal(stationSaid(a, one.thread), said + 1, "said once");
+  assert.equal(handed(a), before, "no turn");
+  // The login back: it goes on, handed what was said.
+  assert.equal((await a.moves.scheduler.back(WS, B, { module: "accounts", item: account })).failed, null);
+  await quiet();
+  assert.ok(handed(a).slice(before.length).includes("back here?"), "handed once it goes on");
+  void b;
 });
 
 test("two chats on one login that cannot be shared, moved with what they need, one going and one failing: the login stays there for the one that went, which works there; the failed one stays here stopped waiting for it and says so when spoken to; nothing brought back", async () => {

@@ -501,10 +501,22 @@ export class Scheduler {
 
   /// An item that arrived here stopped, waiting for `waitsFor` (a hand-over with `stoppedFor`): kept stopped here,
   /// held by its module (`hold`; false: it held itself as it arrived).
+  /// Kept stopped and held are one fact: one listed already is held again, waiting for what it waits for now (where
+  /// that is may have changed: its login moved on since).
   async noteStopped(item: Need, waitsFor: Waits, ws: string, hold = true): Promise<void> {
-    if (this.#stopped.has(item)) return;
     if (hold) await this.#modules.get(item.module)?.stop?.({ module: item.module, id: item.id, label: item.id, needs: [waitsFor] }, waitsFor);
+    if (this.#stopped.has(item)) this.#stopped.remove(item);
     this.#stopped.add({ item, waitsFor, ws });
+    await this.#saveStopped();
+    this.#d.changed?.();
+  }
+
+  /// Items `gone` went from here (a chat handed to another station): no longer stopped here, nothing let go or resumed
+  /// (one that comes back is stopped anew as it arrives, `noteStopped`).
+  async forget(gone: Need[]): Promise<void> {
+    let changed = false;
+    for (const item of gone) if (this.#stopped.remove(item) !== undefined) changed = true;
+    if (!changed) return;
     await this.#saveStopped();
     this.#d.changed?.();
   }

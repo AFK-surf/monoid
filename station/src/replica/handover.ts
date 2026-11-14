@@ -153,6 +153,9 @@ export type HandoverDeps = {
   hold?: () => () => void;
   /// Chats `keys` shown here (what their connect kept for them while they were on their way, taken: move/station.ts).
   shown?: (keys: string[]) => Promise<void> | void;
+  /// Chats `keys` went from here (`gone`): what kept them stopped here is no longer this station's (the scheduler's
+  /// stopped set): one that comes back is stopped anew as it arrives.
+  went?: (keys: string[]) => Promise<void> | void;
   /// The single-session connects bound to sessions here (store `binding`), by connect.
   bindingsOf?: (keys: string[]) => Record<string, string>;
   /// For a test: a step's failure made there (`files`, `rows`, `counts`, `show`).
@@ -283,6 +286,7 @@ export class Handover {
       const off = this.#notOff(o);
       if (off.length === 0) continue;
       this.#d.store.goneTo(off, o.to, o.there);
+      await this.#d.went?.(off);
       if (!o.shown) continue;
       this.#d.store.shownThere(off, this.#d.home());
       for (const k of off) this.#d.hub.releaseChat(k);
@@ -565,6 +569,7 @@ export class Handover {
     // (where it went, for what its platforms say; still in sight here, held, until it is shown there: a device is
     // pointed there only once it is there to be read, `#afterGone`)
     d.store.goneTo(o.keys, o.to, o.there);
+    await d.went?.(o.keys);
     await rm(scratch(d.data, o.id), { recursive: true, force: true });
     log.info("handover", "a chat went to another station", { id: o.id, to: o.to, keys: o.keys.length });
   }

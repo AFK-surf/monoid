@@ -1809,6 +1809,15 @@ async function startedAgainChangesNothing(w: ReturnType<typeof world>, key: stri
     }
     return out;
   };
+  // (kept stopped and held as stopped are one fact on every station: neither without the other)
+  const oneFact = (when: string) => {
+    for (const st of w.stations.values()) {
+      const listed = st.moves.scheduler.stopped().some((s) => s.item.module === "chats" && s.item.id === key);
+      const held = /^stopped: /.test(st.rig.hub.chatHeld(key) ?? "");
+      assert.equal(listed, held, `${how}, ${when}: on ${st.id.slice(0, 1)} the chat is ${listed ? "kept stopped but not held" : "held as stopped but not kept so"}`);
+    }
+  };
+  oneFact("at rest");
   const before = await read();
   for (const st of w.stations.values()) {
     await st.moves.close();
@@ -1817,6 +1826,7 @@ async function startedAgainChangesNothing(w: ReturnType<typeof world>, key: stri
   for (const st of w.stations.values()) await st.moves.start();
   await w.quiet();
   assert.deepEqual(await read(), before, `${how}: a start at rest changes nothing`);
+  oneFact("started again");
 }
 
 test("a start at rest changes nothing of a chat that moved: there; there and back; there, back and there; over a retired copy; a hand-over that failed", async () => {

@@ -176,6 +176,7 @@ export class Moves {
       changed: () => d.changed?.(),
       arrivedStopped: (keys, need, ws) => this.scheduler.noteStopped({ module: "chats", id: keys[0]! }, need, ws),
       shown: (keys) => d.connects?.arrived?.(keys),
+      went: (keys) => this.scheduler.forget(keys.map((id) => ({ module: "chats", id }))),
       keptSends: d.keptSends, keepSends: d.keepSends,
       hold: () => (d.hold ?? holdUpdates)(),
       bindingsOf: (keys) => {

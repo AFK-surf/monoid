@@ -477,7 +477,8 @@ export class Hub {
   /// answers, once in this hold, as a person speaks in it (a chat stopped by a move: what it waits for and where).
   async holdChat(key: string, why: string, notice?: () => string): Promise<void> {
     this.heldChats.set(key, why);
-    if (notice !== undefined && !this.stopNotices.has(key)) this.stopNotices.set(key, { words: notice, told: false });
+    // (a stop anew, or what it waits for now: said once in it)
+    if (notice !== undefined) this.stopNotices.set(key, { words: notice, told: false });
     const fiber = this.deadlines.get(key);
     if (fiber) (this.interrupt(fiber), this.deadlines.delete(key));
     // (held for what it is: moving to another station, or stopped as what it needs moved away)
