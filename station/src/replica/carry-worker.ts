@@ -508,7 +508,7 @@ export function homeFiles(agent: string): string[] {
 /// what is replaced is removed. `placed`: a file of what this placing put or found in place before (path, hash, size,
 /// time), kept by it: one the index says the same of again is left without being looked at (a hand-over's second
 /// pass touches only what changed since its first).
-export function place(dataDir: string, indexPath: string, from: string, made: string | null = null, aside: string | null = null, placed: string | null = null): { placed: number; missing: number; kept: number } {
+export function place(dataDir: string, indexPath: string, from: string, made: string | null = null, aside: string | null = null, placed: string | null = null, projects = false): { placed: number; missing: number; kept: number } {
   const index = JSON.parse(readFileSync(indexPath, "utf8")) as CarryIndex; // sync: in the placing's own thread (placeSoon)
   // (what is there that is this placing's own already, made or put aside before: replaced, not put aside again)
   const ours = new Set<string>();
@@ -542,7 +542,7 @@ export function place(dataDir: string, indexPath: string, from: string, made: st
     ours.add(path);
   };
   try {
-    return placeAll(index, dataDir, from, fresh, away, seen);
+    return placeAll(index, dataDir, from, fresh, away, seen, projects);
   } finally {
     if (madeFd !== null) closeSync(madeFd); // sync: in the placing's own thread (placeSoon)
     if (placedFd !== null) closeSync(placedFd); // sync: in the placing's own thread (placeSoon)
@@ -550,7 +550,7 @@ export function place(dataDir: string, indexPath: string, from: string, made: st
 }
 
 type Seen = { before(path: string, f: { hash: string; size: number; mtimeMs: number }): boolean; now(path: string, f: { hash: string; size: number; mtimeMs: number }): void };
-function placeAll(index: CarryIndex, dataDir: string, from: string, fresh: (path: string) => void, away: (path: string) => void, seen: Seen | null = null): { placed: number; missing: number; kept: number } {
+function placeAll(index: CarryIndex, dataDir: string, from: string, fresh: (path: string) => void, away: (path: string) => void, seen: Seen | null = null, projects = false): { placed: number; missing: number; kept: number } {
   let placed = 0;
   let missing = 0;
   let kept = 0;
@@ -569,7 +569,9 @@ function placeAll(index: CarryIndex, dataDir: string, from: string, fresh: (path
         continue;
       }
       // (resolved first: a path the other station said is put under this one's sessions or transcripts, or nowhere)
-      const path = resolve(carriedTo(f.path, index.dataDir, dataDir));
+      // (`projects`, a chat handed over: a Claude transcript under its room's project here, where one there before
+      // would otherwise be the one its agent resumes; a retirement's stays where it was put, found by its id)
+      const path = resolve(projects ? carriedTo(f.path, index.dataDir, dataDir) : moved(f.path, index.dataDir, dataDir));
       if (!carriedPlace(root, path)) continue;
       // (placed by this placing before as the index says it now: not looked at again)
       if (!("link" in f) && seen?.before(path, f) === true) {
@@ -641,7 +643,7 @@ export function putFile(blob: string, tmp: string): void {
 if (!isMainThread && workerData?.carry !== undefined) {
   const a = workerData.carry;
   try {
-    const answer = a.op === "gather" ? gather(a.dataDir, a.db, a.ws, a.home, a.scratch, a.agent ?? null, a.keys ?? null) : a.op === "preview" ? preview(a.dataDir, a.db, a.ws, a.home) : place(a.dataDir, a.index, a.from, a.made ?? null, a.aside ?? null, a.placed ?? null);
+    const answer = a.op === "gather" ? gather(a.dataDir, a.db, a.ws, a.home, a.scratch, a.agent ?? null, a.keys ?? null) : a.op === "preview" ? preview(a.dataDir, a.db, a.ws, a.home) : place(a.dataDir, a.index, a.from, a.made ?? null, a.aside ?? null, a.placed ?? null, a.projects === true);
     parentPort!.postMessage({ answer });
   } catch (e) {
     parentPort!.postMessage({ error: (e as Error).message });

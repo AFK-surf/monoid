@@ -139,7 +139,7 @@ export function world(ids: string[] = [A, B]) {
         lackMost: 50,
         work: {
           gather: async (dataDir, db, ws, home, scratch, _signal, agent, keys) => gather(dataDir, db, ws, home, scratch, agent ?? null, keys ?? null),
-          place: async (dataDir, index, from, made, aside, placed) => place(dataDir, index, from, made ?? null, aside ?? null, placed ?? null),
+          place: async (dataDir, index, from, made, aside, placed, projects) => place(dataDir, index, from, made ?? null, aside ?? null, placed ?? null, projects ?? false),
         },
         fail: (step) => {
           st.onFail?.(step);

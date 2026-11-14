@@ -814,7 +814,7 @@ export class Handover {
     const files = inFiles(this.#d.data, i.id);
     const index = join(files, carry);
     // (what the first pass placed stays placed: the second looks only at what the lists say otherwise of)
-    const placed = await this.#work.place(this.#d.data, index, files, inMade(this.#d.data, i.id), inAside(this.#d.data, i.id), join(dir(this.#d.data), "in", i.id, "placed.txt"));
+    const placed = await this.#work.place(this.#d.data, index, files, inMade(this.#d.data, i.id), inAside(this.#d.data, i.id), join(dir(this.#d.data), "in", i.id, "placed.txt"), true);
     const c = JSON.parse(await readFile(index, "utf8")) as CarryIndex;
     if (c.gits.length > 0 && this.#d.git !== undefined) await rebuildGits(this.#d.data, this.#d.reposDir, c, files, this.#d.git, { clone: false });
     i.carry = carry;
