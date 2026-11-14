@@ -426,7 +426,13 @@ async function moveBack(key: string, from: Name, module = "chats", ms = 300_000)
   return turnEnds("A", t0, ms);
 }
 const named = (x: J) => (typeof x === "string" ? x : `${x?.module} ${x?.id}`);
-const outcome = (l: J) => `done [${(l?.done ?? []).map(named).join(", ")}] refused [${(l?.refused ?? []).map((r: J) => `${named(r.item)}: ${r.why}`).join(" | ")}] failed ${l?.failed ? `${named(l.failed.item ?? "-")}: ${l.failed.error}` : "none"}${l?.stoppedBy !== undefined ? ` stoppedBy ${l.stoppedBy}` : ""}`;
+/// Each item whose move failed in a turn, with its words: `last.failures` (a station that goes on past a failure, every
+/// one named), else its one `failed`.
+const failuresOf = (l: J): { item: string; error: string }[] =>
+  Array.isArray(l?.failures) && l.failures.length > 0 ? l.failures.map((f: J) => ({ item: named(f.item ?? "-"), error: String(f.error) })) : l?.failed ? [{ item: named(l.failed.item ?? "-"), error: String(l.failed.error) }] : [];
+/// What a turn said of item `id` failing ("chats <key>"), else of the first that failed; "" where none did.
+const failedWhy = (l: J, id?: string) => (failuresOf(l).find((f) => id === undefined || f.item === id) ?? (id === undefined ? undefined : failuresOf(l)[0]))?.error ?? "";
+const outcome = (l: J) => `done [${(l?.done ?? []).map(named).join(", ")}] refused [${(l?.refused ?? []).map((r: J) => `${named(r.item)}: ${r.why}`).join(" | ")}] failed ${failuresOf(l).length > 0 ? failuresOf(l).map((f) => `${f.item}: ${f.error}`).join(" | ") : "none"}${l?.stoppedBy !== undefined ? ` stoppedBy ${l.stoppedBy}` : ""}`;
 /// Chat `key` back on A from where it is, with what moved with it (its account, its jobs, its repository): the page's
 /// 全部迁回, `move.back {all}` from A's page, until it is live on A and its agent answers there.
 async function home(key: string): Promise<void> {
@@ -1218,7 +1224,7 @@ try {
         const files0 = roomFiles(before.room);
         const l = await moveChat(kl, "B");
         log(`  ${outcome(l)}; ${standings(kl)}`);
-        const why = [...(l.refused ?? []).filter((r: J) => named(r.item) === `chats ${kl}`).map((r: J) => r.why), l.failed?.error ?? ""].filter((x) => x !== "").join(" | ");
+        const why = [...(l.refused ?? []).filter((r: J) => named(r.item) === `chats ${kl}`).map((r: J) => r.why), failedWhy(l, `chats ${kl}`)].filter((x) => x !== "").join(" | ");
         if ((l.done ?? []).some((d: J) => named(d) === `chats ${kl}`)) throw new Error(`it moved: ${outcome(l)}`);
         if (why === "") throw new Error(`not refused in words: ${outcome(l)}`);
         const after = { row: rowB(), entries: entriesOf("B", kl), room: roomOn("B", kl) };
@@ -1385,7 +1391,7 @@ try {
           const l = await turnEnds("A", t0);
           for (const d of l.done ?? []) if (d.module === "accounts") toC.add(d.id);
           const o = outOf(key);
-          const why = l.failed?.error ?? (l.refused ?? []).map((r: J) => r.why).join(" | ");
+          const why = failedWhy(l, `chats ${key}`) || (l.refused ?? []).map((r: J) => r.why).join(" | ");
           log(`  ${outcome(l)}; its hand-over ${o?.step} held=${o?.held}`);
           if (standing("A", key) !== "live") throw new Error(standings(key));
           if (o !== null && o.held !== false) throw new Error("it was held before it was refused");
@@ -1480,8 +1486,10 @@ try {
       log(`  ${outcome(l)}; ${standings(k3)}; its hand-over ${outOf(k3)?.step}: ${outOf(k3)?.error}`);
       if (standing("B", k3) === "live") return;
       if (standing("A", k3) !== "live") throw new Error(`neither went nor stayed: ${standings(k3)}`);
-      const why = String(l.failed?.error ?? outOf(k3)?.error ?? "");
-      if (!/again|retry|再|重新/i.test(why)) throw new Error(`it stayed on A, but what the turn says does not say what to do: ${why || outcome(l)}`);
+      const why = failedWhy(l, `chats ${k3}`) || String(outOf(k3)?.error ?? "");
+      // (what to do, as the station says it in its language: station.move.restartedMidway / stoppedMidway / stoppedHeld,
+      // zh 「…再迁移一次」, en "…hand it over again")
+      if (!/再迁移一次|hand it over again/i.test(why)) throw new Error(`it stayed on A, but what the turn says does not say what to do: ${why || outcome(l)}`);
     });
     if (k3 !== "") await endsWell("3f", k3);
     log("SKIP 3f: the station's own self-update waits for a move's turn (updates/holds.ts): not built, the harness's stations have autoUpdate off and no newer release to update to; only the launcher's handover (SIGUSR2) is reachable, above");
