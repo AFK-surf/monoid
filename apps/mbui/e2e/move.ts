@@ -460,7 +460,7 @@ async function endsWell(label: string, key: string): Promise<void> {
       for (const i of handovers(n, "in").filter((i) => (i.keys ?? []).includes(key))) if (filesIn(n, i.id) > 0 && i.step !== "shown") throw new Error(`${n} keeps ${filesIn(n, i.id)} files of hand-over ${i.id} (${i.step})`);
       const roomThere = roomOn(there, key);
       const mapped = roomThere === null ? null : roomThere.replace(DATA[there], DATA[n]).replace(real(DATA[there]), DATA[n]);
-      if (mapped !== null && st === "none" && existsSync(mapped) && readdirSync(mapped).length > 0) throw new Error(`${n} has a room for it at ${mapped} (${readdirSync(mapped).slice(0, 5).join(", ")}) and no chat`);
+      if (mapped !== null && st === "none" && existsSync(mapped) && readdirSync(mapped).length > 0) throw new Error(`${n} has a room for it at ${mapped} (${readdirSync(mapped).slice(0, 5).join(", ")}) and no chat; ${n}'s hand-overs in of it ${brief(handovers(n, "in").filter((i) => (i.keys ?? []).includes(key)).map((i) => ({ id: i.id, step: i.step })))}, A's out ${brief(handovers("A", "out").filter((o) => (o.keys ?? []).includes(key)).map((o) => ({ id: o.id, step: o.step, dropOwed: o.dropOwed, error: o.error })), 500)}`);
     }
   });
   await check(`${label}: its next move succeeds`, async () => {
@@ -988,6 +988,12 @@ try {
         });
       }
     } finally {
+      // (what moved to C, a login with a chat's needs among it, brought back before C is taken away with it: drill 9's
+      // login went A→C with 3e's refused chat and was deleted with C)
+      if (cId !== "") {
+        const t0 = Date.now();
+        await a.call("move.back", { station: A, from: cId, all: true }).then(() => turnEnds("A", t0, 120_000)).then((l) => log(`  what moved to C brought back: ${outcome(l)}`), (e) => log(`  what moved to C not brought back: ${String(e).slice(0, 300)}`));
+      }
       try {
         if (cId !== "") stationDo("second-stop", "third");
         if (mounted) sh("hdiutil", ["detach", "-quiet", "-force", DATA.C]);

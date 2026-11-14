@@ -446,6 +446,8 @@ crash() {
 }
 again() {
   local n=${1:?a station}
+  # (its launcher's log is written anew as it starts, waitfor's tee: what it said before is kept beside, and by `kept`)
+  [ ! -f $RUN/$n.log ] || { echo "--- started again $(date -u +%FT%TZ)" >> $RUN/$n.before.log; cat $RUN/$n.log >> $RUN/$n.before.log; }
   # (the test station's waitfor is detached with this shell's stdout, which `up` leaves on the terminal: a caller that
   # reads this command's output to its end, e2e/move.ts's execFileSync, would wait as long as the station runs; drill
   # 8 sat 2 h 38 min there. What start_station says goes to a file, shown where it fails)
@@ -475,6 +477,7 @@ kept() {
   keep $RUN/relay.log relay.log
   for n in station second third fourth rig; do
     if [ $n = station ]; then d=$STATION; f=enroll; else d=$(more_dir $n); f=$n-enroll; fi
+    keep $RUN/$n.before.log $n/launcher-before.log
     keep $RUN/$n.log $n/launcher.log
     keep $RUN/$f.log $n/enroll.log
     for f in "$d"/data/logs/*.log; do keep "$f" $n/logs/"$(basename "$f")"; done
@@ -989,6 +992,7 @@ case "${1:-all}" in
     export E2E_STATION_EXTRA=${E2E_STATION_EXTRA-',"move":true,"maxNudges":7'} E2E_MORE_EXTRA=${E2E_MORE_EXTRA-',"move":true'}
     trap down EXIT
     up
+    rm -f $RUN/*.before.log
     move || { rc=$?; kept move || true; exit $rc; } ;;
   crash) shift; crash "$@" ;;
   again) shift; again "$@" ;;
