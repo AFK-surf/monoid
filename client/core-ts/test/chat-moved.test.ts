@@ -365,6 +365,43 @@ test("a_rename_and_a_pin_aimed_at_the_station_it_left_go_where_it_is", async () 
   s.core.close();
 });
 
+// A mark sent to the station a chat just left, before this device is told it went (the station answers it 409 with
+// `moved`, as a message: the station agent's, 2026-11-15): made again where it is (core.ts `#call`'s `again`), what was
+// laid over its row ending done there and nothing left of it on the station it left; a card dismissed the same.
+test("a_mark_answered_moved_is_made_again_where_the_chat_is_its_overlay_done_there_and_a_card_dismissed_too", async () => {
+  const w = world();
+  w.rows.st = [{ id: "k1", thread: 7, title: "在 studio", at: 5000 }];
+  const refused = status(409, { error: "这个会话已转到另一台 station", moved: movedTo("k1", "st2", 7, 21) });
+  w.reply = (station, method, path) => {
+    if (station === "st" && (path === "/threads/7/hidden" || path === "/threads/7/dismissed")) return refused;
+    if (station === "st2" && (path === "/threads/21/hidden" || path === "/threads/21/dismissed")) return { ok: true };
+    return undefined;
+  };
+  const s = await rig(w);
+  await settle(s.host);
+  call(s.core, s.ui, 1, "chat.hide", { station: A, thread: 7, hidden: true });
+  call(s.core, s.ui, 2, "decision.dismiss", { station: A, thread: 7, seq: 3 });
+  await settle(s.host);
+  const emitted = s.host.takeEmitted();
+  assert.ok(answers(emitted, 1) && "ok" in answers(emitted, 1)!, JSON.stringify(answers(emitted, 1)));
+  assert.ok(answers(emitted, 2) && "ok" in answers(emitted, 2)!, JSON.stringify(answers(emitted, 2)));
+  // (each asked of A once, as it was named there, and made again on B, its thread there)
+  // (the two go at once: in either order)
+  const asked = w.sent.filter((x) => x.path.endsWith("/hidden") || x.path.endsWith("/dismissed")).map((x) => JSON.stringify([x.station, x.method, x.path, x.body])).sort();
+  assert.deepEqual(asked, [
+    ["st", "PUT", "/threads/7/dismissed", { n: 3 }],
+    ["st", "PUT", "/threads/7/hidden", { hidden: true }],
+    ["st2", "PUT", "/threads/21/dismissed", { n: 3 }],
+    ["st2", "PUT", "/threads/21/hidden", { hidden: true }],
+  ].map((x) => JSON.stringify(x)).sort());
+  const local = s.core.inner.views.local;
+  // (laid over B's copy, done there; none left over A's)
+  assert.equal(local.asChanging(B, { thread: 21, session: "k1", hidden: false }).hidden, true);
+  assert.equal(local.asChanging(A, { thread: 7, session: "k1", hidden: false }).hidden, false);
+  assert.ok(local.rowsQuiet(A), "nothing changing of A's rows");
+  s.core.close();
+});
+
 test("a_change_laid_over_a_chat_that_moved_is_laid_over_its_copy_there", async () => {
   const w = world();
   w.rows.st = [{ id: "k1", thread: 7, title: "在 studio", at: 5000 }];
