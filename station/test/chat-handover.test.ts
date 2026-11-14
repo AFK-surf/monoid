@@ -50,7 +50,10 @@ test("a still.fail chat handed over goes on there: shown there, out of sight her
   const plan = await a.moves.scheduler.plan(WS, B);
   const item = plan.items.find((x) => x.module === "chats" && x.id === key)!;
   assert.deepEqual(item.needs, [{ module: "accounts", id: "share:sh-cc" }]);
-  assert.equal(plan.items.find((x) => x.id === "share:sh-cc")!.state, "there", "B borrows it already");
+  // (B borrows it already: A's still, here, and usable there, so the chat goes without it)
+  const account = plan.items.find((x) => x.id === "share:sh-cc")!;
+  assert.equal(account.state, "here", "A hosts it");
+  assert.equal(a.moves.modules.find((m) => m.id === "accounts")!.usableThere!(account), true, "B borrows it already");
   const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: key, follow: ["jobs"] });
   await w.quiet();
   assert.deepEqual(out.done, [{ module: "chats", id: key }]);

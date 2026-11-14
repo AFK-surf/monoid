@@ -11,7 +11,7 @@ import { moved } from "../replica/restore.ts";
 import type { Ask } from "../replica/peers.ts";
 import type { Store } from "../store/store.ts";
 import type { SessionPage } from "../store/store.ts";
-import { accountItemId, accountsModule } from "./accounts.ts";
+import { type ShareMoves, accountItemId, accountsModule } from "./accounts.ts";
 import { PLAN_PAGE, chatsModule, giveBack } from "./chats.ts";
 import { connectsModule } from "./connects.ts";
 import { JobsModule } from "./jobs.ts";
@@ -62,6 +62,9 @@ export type MovesDeps = {
   /// config.json's profiles as written; one's login moved to another station (share/index.ts `moveProfile`).
   profiles: () => Json[];
   moveProfile: (id: string, to: string) => Promise<unknown>;
+  /// A login not shared that can be, shared as it moves and that share undone once it is back (accounts.ts; none: one
+  /// not shared moves as it is, a test's).
+  shareMoves?: ShareMoves;
   /// The sessions of `ws` here after `after`, at most `limit` (the home one's: those that say none or its id), read as
   /// a page (store `sessionPageOfWs`).
   sessionsIn: (ws: string, after: string, limit: number) => SessionPage;
@@ -209,6 +212,8 @@ export class Moves {
           return p?.share !== null && typeof p?.share === "object";
         },
         moveProfile: d.moveProfile, ask: d.ask, here,
+        data: d.data, shareMoves: d.shareMoves,
+        profile: (id) => d.profiles().find((x) => x?.id === id),
         present: (id) => {
           // (one moved here is known by the id it had there: an own login by its profile's id)
           const own = id.startsWith("own:") ? id.slice(4, id.lastIndexOf("@")) : null;
@@ -422,9 +427,14 @@ export class Moves {
         case "move.open":
           return { on: this.on() };
         case "move.accounts": {
+          // (`hosts`: whether the login is this station's, its own or a share it hosts; else it borrows it)
           const out: Record<string, string | null> = {};
-          for (const [id, a] of Object.entries((request.accounts ?? {}) as Record<string, AccountOf>)) out[id] = this.accountHere(a);
-          return { here: out };
+          const hosts: Record<string, boolean> = {};
+          for (const [id, a] of Object.entries((request.accounts ?? {}) as Record<string, AccountOf>)) {
+            const pid = (out[id] = this.accountHere(a));
+            if (pid !== null) hosts[id] = this.#d.profiles().find((p) => p?.id === pid)?.share?.borrowed !== true;
+          }
+          return { here: out, hosts };
         }
         case "move.back": {
           // (an item moved here from the station asking, moved back to it)
@@ -439,6 +449,13 @@ export class Moves {
           if (request.module === "accounts") {
             const pid = this.#d.profiles().find((p) => typeof p?.id === "string" && accountItemId(p.id, accountOf(p, this.#d.here() ?? "")) === id)?.id ?? this.accountHere(id.startsWith("own:") ? { own: id.slice(4), name: id } : { name: id });
             if (pid === undefined) throw new Refused(`no account ${id} here`);
+            // (one this station only borrows is not here to go back: its login is with its host)
+            const p = this.#d.profiles().find((x) => x?.id === pid);
+            if (p?.share?.borrowed === true) {
+              const host = String(p.share.host ?? "");
+              const name = this.#d.roster(String(workspace ?? ""))?.find((r) => r.id === host)?.name || host.slice(0, 12);
+              throw new Refused(`account ${id} is not on this station to move back: this station only borrows it, its login is on ${name}${host === peer ? " (the station asking)" : ""}`);
+            }
             return { ok: true, ...((await this.#d.moveProfile(pid, peer)) as object) };
           }
           if (request.module === "connects") {

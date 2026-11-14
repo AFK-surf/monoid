@@ -26,9 +26,14 @@ chats paused 18 minutes, a half-moved state, no way back), whose start stays swi
   comes (`move.arrived`). Forward goes needs-first unless asked `arriveStopped`; back, what needs an item there comes
   first, arriving stopped, then the item. Modules may need each other (chats and connects do); items may not: a chain
   of items needing each other round is refused, named.
-- The modules: `accounts` (needs none: a login, by the share or key it is known by across the workspace, moved by
-  share/index.ts `moveProfile`; this machine's own never; what each was known by kept as it moves away,
-  `accounts-known.json`), `chats` (needs accounts, connects, repos, vault: one chat by
+- The modules: `accounts` (needs none: a login, by the share, key or own profile it is known by across the workspace
+  now, moved by share/index.ts `moveProfile`; this machine's own never; one not shared whose login can be
+  (`shareRefusal`) is shared as it moves, with the two stations alone, so this station borrows it after and nothing here
+  stops (the lead, 2026-11-14: a drill's one login carried 396 chats), that share undone as it comes back unless a person
+  opened it to another station meanwhile (`accounts-shared.json`); one that cannot be (SuperGrok, Cursor, Devin,
+  Antigravity, a Kimi sign-in) is gone from here and stops what needs it; what each was known by kept as it moves away,
+  `accounts-known.json`; there once the other hosts it: one it only borrows is here, this station's still, and usable
+  there, `usableThere`), `chats` (needs accounts, connects, repos, vault: one chat by
   `station/src/replica/handover.ts`, its files a mirror by difference: the station it goes to says what it has in
   place, what differs is sent, what the lists no longer name is removed there, in its room alone), `jobs` (needs
   chats: started there once its chat is there; one chat moved by the tool or the app moves its jobs right after, and
