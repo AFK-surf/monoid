@@ -146,6 +146,8 @@ export type AgentsParts = {
   /// This station's connects of a workspace, and each moved to another station of it, as the workspace's connects say
   /// (connects/workspace.ts), for a station retired from it (replica/retire.ts).
   retireConnects: { of(ws: string): string[]; named(ws: string): { id: string; name: string; kind: string }[]; move(ws: string, to: string): Promise<void>; takeHeld(ws: string): Promise<void> } | null;
+  /// The workspace's connects (connects/workspace.ts), once made: what a chat handed over is re-pointed by (move/).
+  workspaceConnects: import("../connects/workspace.ts").WorkspaceConnects | null;
   /// What a part does as the station takes its sessions up and as its workspaces change (`Along`).
   along(a: Along): void;
   /// Whether the sessions are taken up (the process before is gone), and whether the station is in its workspace.
@@ -975,7 +977,7 @@ export const AgentsLive = (control: Control) =>
           }
         }),
       );
-      const self = Agents.of({ pageOf, pages, previousGone: previous, cardOutcomes, hub, jobs, remote, mcp, config, updates, accounts, sharing: sharing!, xshare, peers, forwards, overview: view, surfaces: (chats) => void surfaceChats.push(chats), connects: (more) => void moreConnects.push(more), receive: (connect, event) => receive(connect, event), route: (f) => void (receive = f), nameBook: (kind, book) => void nameBooks.set(kind, book), nameBooks, heldBy: (ws, kind, own) => connectHeld(ws, kind, own), connectHeld: (f) => void (connectHeld = f), connectKind: (kind, view) => void connectKinds.set(kind, view), connectKinds, retireConnects: null, along: (a) => void along.push(a), taken: () => taken, bound, cloud, net, helperFiles, place: () => { const s = place(); return s ? { origin: s.origin, workspace: s.workspace, station: s.station, name: s.name } : null; } });
+      const self = Agents.of({ pageOf, pages, previousGone: previous, cardOutcomes, hub, jobs, remote, mcp, config, updates, accounts, sharing: sharing!, xshare, peers, forwards, overview: view, surfaces: (chats) => void surfaceChats.push(chats), connects: (more) => void moreConnects.push(more), receive: (connect, event) => receive(connect, event), route: (f) => void (receive = f), nameBook: (kind, book) => void nameBooks.set(kind, book), nameBooks, heldBy: (ws, kind, own) => connectHeld(ws, kind, own), connectHeld: (f) => void (connectHeld = f), connectKind: (kind, view) => void connectKinds.set(kind, view), connectKinds, retireConnects: null, workspaceConnects: null, along: (a) => void along.push(a), taken: () => taken, bound, cloud, net, helperFiles, place: () => { const s = place(); return s ? { origin: s.origin, workspace: s.workspace, station: s.station, name: s.name } : null; } });
       // The admin API asks for the agents' side as a request comes (services.ts AgentsSide); its routes are a part.
       (yield* AgentsSide).current = self;
       // And what the mesh asks of it (services.ts MeshSide).

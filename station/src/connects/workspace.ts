@@ -465,6 +465,7 @@ export const WorkspaceConnectsLive = Layer.effectDiscard(
     agents.connects(() => connects.remote.connects());
     agents.route((id, event) => connects.receive(id, event));
     agents.connectHeld((ws, kind, own) => connects.heldBy(ws, kind, own));
+    agents.workspaceConnects = connects;
     agents.retireConnects = { of: (ws) => connects.ownIn(ws), named: (ws) => connects.namedIn(ws), move: (ws, to) => connects.moveAll(ws, to), takeHeld: (ws) => connects.takeHeld(ws) };
     const routes: Route[] = [
       {

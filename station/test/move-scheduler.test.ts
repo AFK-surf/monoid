@@ -1,0 +1,146 @@
+// The migration's scheduler (move/scheduler.ts) over modules of the test's own (move/module.ts): it only orders them.
+// An item whose need is not there is refused naming it, and goes after it; withNeeds moves the needs first, in order;
+// moving back is refused while something there needs it, naming that; an item moved away that cannot be had here stops
+// what needs it here (kept across a start), and what stopped goes on as it comes back, or as it moves itself.
+import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { test } from "node:test";
+import type { Item, ItemState, Module, Need } from "../src/move/module.ts";
+import { Scheduler } from "../src/move/scheduler.ts";
+
+/// A module of the test's: its items, where each is, what it did in order (shared by the modules, `log`).
+function fake(id: string, needs: string[], items: Omit<Item, "module">[], log: string[], o: { usable?: (id: string) => boolean; fails?: Set<string> } = {}): Module & { where: Map<string, string>; stopped: Map<string, Need> } {
+  const where = new Map<string, string>(items.map((x) => [x.id, "here"]));
+  const stopped = new Map<string, Need>();
+  return {
+    id, needs, where, stopped,
+    async plan() {
+      return items.map((x) => ({ ...x, module: id }));
+    },
+    async move(item, to) {
+      if (o.fails?.has(item.id)) throw new Error(`${item.id} would not go`);
+      log.push(`move ${id}/${item.id}`);
+      where.set(item.id, to);
+    },
+    async back(item) {
+      log.push(`back ${id}/${item.id}`);
+      where.set(item.id, "here");
+    },
+    state(item): ItemState {
+      return { state: where.get(item.id) === "here" ? "here" : "there" };
+    },
+    usableHere: o.usable === undefined ? undefined : (item) => o.usable!(item.id),
+    async stop(item, waitsFor) {
+      log.push(`stop ${id}/${item.id}`);
+      stopped.set(item.id, waitsFor);
+    },
+    async resume(item) {
+      log.push(`resume ${id}/${item.id}`);
+      stopped.delete(item.id);
+    },
+  };
+}
+
+function world(o: { usable?: (id: string) => boolean; fails?: Set<string> } = {}) {
+  const log: string[] = [];
+  const accounts = fake("accounts", [], [{ id: "sub", label: "a subscription", needs: [] }, { id: "grok", label: "a Grok sign-in", needs: [] }], log, { usable: o.usable ?? ((x) => x === "sub") });
+  const chats = fake("chats", ["accounts"], [
+    { id: "c1", label: "chat one", needs: [{ module: "accounts", id: "sub" }] },
+    { id: "c2", label: "chat two", needs: [{ module: "accounts", id: "grok" }] },
+  ], log, { fails: o.fails });
+  const jobs = fake("jobs", ["chats"], [{ id: "j1", label: "dev server", needs: [{ module: "chats", id: "c1" }] }], log);
+  const data = mkdtempSync(join(process.env.STILLFAIL_TEST_TMP ?? tmpdir(), "move-"));
+  const make = () => new Scheduler({ data, modules: [accounts, chats, jobs] });
+  return { log, accounts, chats, jobs, s: make(), make };
+}
+
+test("an item is refused while what it needs is not there, naming it, and goes once it is; withNeeds moves its needs first, in order", async () => {
+  const { log, s } = world();
+  const refused = await s.move("ws", "B", { module: "chats", item: "c1" });
+  assert.deepEqual(refused.done, []);
+  assert.equal(refused.refused.length, 1);
+  assert.match(refused.refused[0]!.why, /needs accounts sub \(a subscription\) there first/);
+  assert.deepEqual(log, [], "nothing moved");
+  const first = await s.move("ws", "B", { module: "accounts", item: "sub" });
+  assert.deepEqual(first.done, [{ module: "accounts", id: "sub" }]);
+  const then = await s.move("ws", "B", { module: "chats", item: "c1", follow: ["jobs"] });
+  assert.deepEqual(then.done.map((d) => `${d.module}/${d.id}`), ["chats/c1", "jobs/j1"], "its job follows it");
+  // withNeeds: what it needs first, in order
+  const w = world();
+  const out = await w.s.move("ws", "B", { module: "jobs", item: "j1", withNeeds: true });
+  assert.deepEqual(out.done.map((d) => `${d.module}/${d.id}`), ["accounts/sub", "chats/c1", "jobs/j1"]);
+  assert.deepEqual(w.log, ["move accounts/sub", "stop jobs/j1", "move chats/c1", "move jobs/j1"], "its job stopped as its chat went, then moved");
+});
+
+test("a need's module undeclared is refused as the plan is made", async () => {
+  const log: string[] = [];
+  const bad = fake("chats", [], [{ id: "c1", label: "c", needs: [{ module: "accounts", id: "sub" }] }], log);
+  const acc = fake("accounts", [], [{ id: "sub", label: "s", needs: [] }], log);
+  const s = new Scheduler({ data: mkdtempSync(join(tmpdir(), "move-")), modules: [acc, bad] });
+  await assert.rejects(s.plan("ws", "B"), /needs accounts sub, of a module it does not declare/);
+});
+
+test("moving back is refused while something there needs it, naming it; asked for all, the dependents go back first", async () => {
+  const { log, s } = world();
+  await s.move("ws", "B", { module: "jobs", item: "j1", withNeeds: true });
+  const refused = await s.back("ws", "B", { module: "accounts", item: "sub" });
+  assert.deepEqual(refused.done, []);
+  assert.match(refused.refused[0]!.why, /chats c1 \(chat one\) there needs it: move that back first/);
+  log.length = 0;
+  const all = await s.back("ws", "B", { module: "accounts", item: "sub", withNeeds: true });
+  assert.deepEqual(all.done.map((d) => `${d.module}/${d.id}`), ["jobs/j1", "chats/c1", "accounts/sub"]);
+  assert.deepEqual(log, ["back jobs/j1", "back chats/c1", "back accounts/sub"]);
+});
+
+test("an item moved away that cannot be had here stops what needs it here, before it goes; started again it is still stopped; it goes on as the item comes back, or as it moves itself", async () => {
+  const { log, chats, s, make } = world();
+  const plan = await s.plan("ws", "B");
+  assert.deepEqual(plan.items.find((x) => x.id === "grok")!.wouldStop, [{ module: "chats", id: "c2" }], "the plan says what it would stop");
+  assert.deepEqual(plan.items.find((x) => x.id === "sub")!.wouldStop, [], "one borrowed here stops nothing");
+  const out = await s.move("ws", "B", { module: "accounts", item: "grok" });
+  assert.deepEqual(out.stopped, [{ item: { module: "chats", id: "c2" }, waitsFor: { module: "accounts", id: "grok" } }]);
+  assert.deepEqual(log, ["stop chats/c2", "move accounts/grok"], "stopped before its need went");
+  assert.equal((await s.plan("ws", "B")).items.find((x) => x.id === "c2")!.state, "stopped");
+  assert.deepEqual((await s.plan("ws", "B")).items.find((x) => x.id === "c2")!.waitsFor, { module: "accounts", id: "grok" });
+  // started again: still stopped (held again)
+  const again = make();
+  chats.stopped.clear();
+  await again.start();
+  assert.deepEqual(chats.stopped.get("c2"), { module: "accounts", id: "grok" });
+  assert.equal((await again.plan("ws", "B")).items.find((x) => x.id === "c2")!.state, "stopped");
+  // back: it goes on here
+  log.length = 0;
+  const back = await again.back("ws", "B", { module: "accounts", item: "grok" });
+  assert.deepEqual(back.resumed, [{ module: "chats", id: "c2" }]);
+  assert.deepEqual(log, ["back accounts/grok", "resume chats/c2"]);
+  assert.equal((await again.plan("ws", "B")).items.find((x) => x.id === "c2")!.state, "here");
+  // moved again, then the chat moves itself: no longer stopped, nothing resumed here
+  await again.move("ws", "B", { module: "accounts", item: "grok" });
+  log.length = 0;
+  const moved = await again.move("ws", "B", { module: "chats", item: "c2" });
+  assert.deepEqual(moved.done, [{ module: "chats", id: "c2" }]);
+  assert.deepEqual(again.stopped(), []);
+  assert.deepEqual(log, ["move chats/c2"]);
+});
+
+test("a whole move: everything in its needs' order, what cannot move listed with why and what needs it with it, the first failure stops it and is said; all of it back after", async () => {
+  const w = world({ fails: new Set(["c2"]) });
+  const out = await w.s.move("ws", "B", { all: true });
+  assert.deepEqual(out.done.map((d) => `${d.module}/${d.id}`), ["accounts/sub", "accounts/grok", "chats/c1"]);
+  assert.equal(out.failed?.item.id, "c2");
+  assert.match(out.failed!.error, /would not go/);
+  assert.deepEqual(w.log, ["move accounts/sub", "stop chats/c2", "move accounts/grok", "stop jobs/j1", "move chats/c1"], "nothing after the failure; what needs what went stopped first");
+  // (a whole station, the failure fixed, then all of it back)
+  const ok = world();
+  const all = await ok.s.move("ws", "B", { all: true });
+  assert.equal(all.failed, null);
+  assert.deepEqual(all.done.map((d) => d.id).sort(), ["c1", "c2", "grok", "j1", "sub"]);
+  assert.ok((await ok.s.plan("ws", "B")).items.every((x) => x.state === "there"));
+  const back = await ok.s.back("ws", "B", { all: true });
+  assert.equal(back.failed, null);
+  assert.deepEqual(back.refused, []);
+  assert.ok((await ok.s.plan("ws", "B")).items.every((x) => x.state === "here"));
+  assert.deepEqual(ok.s.stopped(), []);
+});
