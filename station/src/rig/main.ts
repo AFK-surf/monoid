@@ -242,7 +242,7 @@ export const RigMeshLive = Layer.effectDiscard(
       // Kept on the relays its workspace's ways keep on, as a station is (mesh/relays.ts).
       const bound = wantedRelays(cloud);
       const endpoint = yield* Effect.acquireRelease(
-        Effect.promise(() => bindStation(native, { secretKey: key.seed, alpns: [PEER_HTTP_ALPN, PEER_BYTES_ALPN, PEER_ALPN], relayUrls: bound, discovery: process.env.STILLFAIL_NO_DISCOVERY !== "1", congestion: congestionOf(config.raw()) })),
+        Effect.promise(() => bindStation(native, { secretKey: key.seed, alpns: [PEER_HTTP_ALPN, PEER_BYTES_ALPN, PEER_ALPN], relayUrls: bound, discovery: process.env.STILLFAIL_NO_DISCOVERY !== "1", dht: process.env.STILLFAIL_NO_DHT !== "1", congestion: congestionOf(config.raw()) })),
         (endpoint) => Effect.ignore(Effect.timeoutOption(Effect.promise(() => endpoint.close()), "1 second")),
       );
       log.info("mesh", "rig listening", { rig: endpoint.id(), workspace: cloud.state!.workspace_name, sockets: endpoint.sockets(), lan: lanAddrs(endpoint.sockets()) });

@@ -367,23 +367,31 @@ impl Inner {
         if a.get("relayOnly").and_then(Value::as_bool).unwrap_or(false) {
             builder = builder.clear_ip_transports();
         }
+        // The DHT unless `dht: false` (a company's filter marking the Mainline DHT as risky), mDNS either way: the
+        // station's addon's `dht`.
+        let with_dht = a.get("dht").and_then(Value::as_bool).unwrap_or(true);
         // Stations on the LAN (mDNS, never announced itself) and which relay they are on (the DHT), as client/core-ts's.
         if lookup_active {
             let mdns = iroh_mdns_address_lookup::MdnsAddressLookup::builder().service_name(MDNS_SERVICE).advertise(false);
-            let dht_lookup = iroh_mainline_address_lookup::DhtAddressLookup::builder().dht_builder(dht()).no_publish();
+            let dht_lookup = with_dht.then(|| iroh_mainline_address_lookup::DhtAddressLookup::builder().dht_builder(dht()).no_publish());
             if let Some(allowed) = lookup_relays {
-                builder = builder
-                    .address_lookup(FilteredLookup(allowed.clone(), mdns))
-                    .address_lookup(FilteredLookup(allowed, dht_lookup));
+                builder = builder.address_lookup(FilteredLookup(allowed.clone(), mdns));
+                if let Some(dht_lookup) = dht_lookup {
+                    builder = builder.address_lookup(FilteredLookup(allowed, dht_lookup));
+                }
             } else {
-                builder = builder.address_lookup(mdns).address_lookup(dht_lookup);
+                builder = builder.address_lookup(mdns);
+                if let Some(dht_lookup) = dht_lookup {
+                    builder = builder.address_lookup(dht_lookup);
+                }
             }
         } else if a.get("discovery").and_then(Value::as_bool).unwrap_or(false) {
             // A station's: found on the LAN by mDNS and by its relay through the DHT, both announced (the station's
             // addon's `bind`), each left out, said, where it cannot be made (mDNS's port held, no network yet).
-            builder = builder
-                .address_lookup(Optional("mDNS", iroh_mdns_address_lookup::MdnsAddressLookup::builder().service_name(MDNS_SERVICE)))
-                .address_lookup(Optional("the DHT", iroh_mainline_address_lookup::DhtAddressLookup::builder().dht_builder(dht()).secret_key(key_again)));
+            builder = builder.address_lookup(Optional("mDNS", iroh_mdns_address_lookup::MdnsAddressLookup::builder().service_name(MDNS_SERVICE)));
+            if with_dht {
+                builder = builder.address_lookup(Optional("the DHT", iroh_mainline_address_lookup::DhtAddressLookup::builder().dht_builder(dht()).secret_key(key_again)));
+            }
         }
         let endpoint = builder.bind().await.map_err(err)?;
         Ok(Answer::json(json!({ "id": self.keep(Handle::Endpoint(endpoint, kept)) })))

@@ -913,6 +913,7 @@ async fn P51::mesh_run(self : P51, m : MeshLive, rig : Bool) -> Unit {
     alpns,
     bound,
     discovery=env_get("STILLFAIL_NO_DISCOVERY") != Some("1"),
+    dht=env_get("STILLFAIL_NO_DHT") != Some("1"),
     bind_addr~,
     congestion=Some(congestion),
   )

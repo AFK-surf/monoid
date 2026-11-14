@@ -280,9 +280,9 @@ fn field(o : Json, k : String) -> Json {
 }
 
 ///|
-/// What of a binding cannot change on an endpoint bound already: its key, whether it finds and is found, its address,
-/// whether it goes by relays alone and the DSCP its packets are marked with (`dscp`, set by the shell's `iroh.bind`
-/// alone). Its relays, its congestion controller and its protocols can (`Mesh::bind`): a Node that takes another set
+/// What of a binding cannot change on an endpoint bound already: its key, whether it finds and is found (and through
+/// the DHT: `dht`), its address, whether it goes by relays alone and the DSCP its packets are marked with (`dscp`, set
+/// by the shell's `iroh.bind` alone). Its relays, its congestion controller and its protocols can (`Mesh::bind`): a Node that takes another set
 /// of protocols (a release that adds one, the MoonBit station's and Node's) is not given an endpoint of its own beside
 /// the one there, whose closing refused every connection that came to it meanwhile (2026-11-18, Office-Host-2 as
 /// 0.1.10002 took over from 0.1.9996).
@@ -290,6 +290,7 @@ fn identity_of(options : Json, key : Bytes) -> String {
   let parts : Array[Json] = [
     Json::string(hex(key)),
     field(options, "discovery"),
+    field(options, "dht"),
     field(options, "bindAddr"),
     field(options, "relayOnly"),
     field(options, "dscp"),
