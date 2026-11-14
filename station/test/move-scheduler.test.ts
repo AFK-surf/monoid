@@ -9,8 +9,11 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { Item, ItemState, Module, Need } from "../src/move/module.ts";
 import { Scheduler } from "../src/move/scheduler.ts";
+import { moveView } from "../src/move/routes.ts";
 import { cloneLogin } from "../src/move/repos.ts";
 import { given } from "./hub-fakes.ts";
+
+type Json = any;
 
 /// A module of the test's: its items, where each is, what it did in order (shared by the modules, `log`).
 function fake(id: string, needs: string[], items: Omit<Item, "module">[], log: string[], o: { usable?: (id: string) => boolean; fails?: Set<string> } = {}): Module & { where: Map<string, string>; stopped: Map<string, Need> } {
@@ -229,4 +232,52 @@ test("a clone refused for want of a login says to sign in to that host on that s
     "Office-Host-2 could not clone https://github.com/o/r.git: it is not signed in to github.com. Sign in to github.com on Office-Host-2 (its git credentials or an SSH key there), then move it again");
   assert.match(cloneLogin("git@gitlab.com: Permission denied (publickey).", "git@gitlab.com:o/r.git", "B") ?? "", /not signed in to gitlab\.com/);
   assert.equal(cloneLogin("fatal: destination path exists", "https://x/y", "B"), null);
+});
+
+/// Reads of the items' properties a scheduler makes (each `needs` array's, each item's once it is planned), counted
+/// through a Proxy: what its lookups cost, whatever the machine.
+function countedWorld(n: number) {
+  const reads = { n: 0 };
+  const counted = <T extends object>(x: T): T => new Proxy(x, { get: (t, p, r) => (reads.n++, Reflect.get(t, p, r)) });
+  const log: string[] = [];
+  const k = Math.max(1, Math.floor(n / 10));
+  const accounts = fake("accounts", [], Array.from({ length: k }, (_, i) => ({ id: `a${i}`, label: `a${i}`, needs: counted([] as Need[]) })), log, { usable: () => false });
+  const chats = fake("chats", ["accounts"], Array.from({ length: n }, (_, i) => ({ id: `c${i}`, label: `c${i}`, needs: counted([{ module: "accounts", id: `a${i % k}` }]) })), log);
+  const jobs = fake("jobs", ["chats"], Array.from({ length: k }, (_, i) => ({ id: `j${i}`, label: `j${i}`, needs: counted([{ module: "chats", id: `c${i}` }]) })), log);
+  const s = new Scheduler({ data: mkdtempSync(join(process.env.STILLFAIL_TEST_TMP ?? tmpdir(), "move-")), modules: [accounts, chats, jobs] });
+  // (a turn's plan as the scheduler makes it, each item read through the count)
+  const plan = s.plan.bind(s);
+  const turns = { on: false };
+  (s as Json).plan = async (ws: string, to: string) => {
+    const p = await plan(ws, to);
+    return turns.on ? { ...p, items: p.items.map(counted) } : p;
+  };
+  return { s, reads, turns, plan };
+}
+
+test("the scheduler's own work grows as the items do: a plan, a whole move and a whole move back read each item a bounded number of times, at N and 3N items", async () => {
+  const at = async (n: number) => {
+    const { s, reads, turns, plan } = countedWorld(n);
+    reads.n = 0;
+    const p = await plan("ws", "B");
+    const planned = reads.n;
+    reads.n = 0;
+    moveView(p, ["accounts", "chats", "jobs"], s.stopped());
+    const view = reads.n;
+    turns.on = true;
+    reads.n = 0;
+    const out = await s.move("ws", "B", { all: true });
+    const moved = reads.n;
+    assert.equal(out.failed, null);
+    reads.n = 0;
+    await s.back("ws", "B", { all: true });
+    const back = reads.n;
+    return { items: p.items.length, planned, view, moved, back };
+  };
+  const one = await at(300);
+  const three = await at(900);
+  // (linear: the counts at 3N are about three times those at N; one that went as the square would be nine times)
+  for (const k of ["planned", "view", "moved", "back"] as const) {
+    assert.ok(three[k] <= 3.5 * one[k] + 50, `${k}: ${one[k]} reads for ${one.items} items, ${three[k]} for ${three.items}: at most 3.5 times as many`);
+  }
 });

@@ -16,7 +16,7 @@ import type { Request } from "../api/request.ts";
 import { managesStation } from "../mesh/credential.ts";
 import { tr } from "../ops/i18n.ts";
 import { named } from "./module.ts";
-import type { Last, Plan, Scheduler, Selection } from "./scheduler.ts";
+import type { Last, Plan, Planned, Scheduler, Selection } from "./scheduler.ts";
 
 type Json = any;
 
@@ -27,17 +27,23 @@ export const MOVE_PAGE_MOST = 200;
 export function moveView(plan: Plan, order: string[], stopped: { item: { module: string; id: string }; waitsFor: { module: string; id: string } }[], o: { module?: string; after?: string; limit?: number } = {}, last: Last | null = null, stopping = false): Json {
   const limit = Math.min(Math.max(o.limit ?? MOVE_PAGE, 1), MOVE_PAGE_MOST);
   const moving = plan.items.find((x) => x.state === "moving") ?? null;
+  // (each module's items, gone through once)
+  const of = new Map<string, Planned[]>(order.map((id) => [id, []]));
+  for (const x of plan.items) of.get(x.module)?.push(x);
+  const needsOf = new Map(plan.modules.map((m) => [m.id, m.needs]));
   return {
     ws: plan.ws,
     to: plan.to,
     modules: order.map((id) => {
-      const mine = plan.items.filter((x) => x.module === id);
+      const mine = of.get(id)!;
       const from = o.module === id && o.after !== undefined ? mine.findIndex((x) => x.id === o.after) + 1 : 0;
       const page = mine.slice(from, from + limit);
+      let done = 0;
+      for (const x of mine) if (x.state === "there") done++;
       return {
         id,
-        needs: plan.modules.find((m) => m.id === id)?.needs ?? [],
-        done: mine.filter((x) => x.state === "there").length,
+        needs: needsOf.get(id) ?? [],
+        done,
         total: mine.length,
         items: page.map((x) => ({
           id: x.id, label: x.label, state: x.state, needs: x.needs.map(named),
