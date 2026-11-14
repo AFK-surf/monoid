@@ -9,7 +9,7 @@
 // what their agents were handed ($FAKE_DUMP.turns).
 //   1 the page's data: what moves A→B with true counts, B offered, bob refused;
 //   2 one chat (messages, transcript, a file, a git worktree of the repos cache with a commit no remote has and a change
-//     not committed, a job) there and back; 2k one on a login that cannot be shared, back on A while that login is on B;
+//     not committed, a job) there and back, a rename and a pin sent to A while it is held (A's still) ending up on B; 2k one on a login that cannot be shared, back on A while that login is on B;
 //   3 faults, each on a chat of its own and from a state checked clean: n none (a 300 MB room moved with its needs), a B
 //     killed in the first pass, b A killed while the chat is held, c B killed as
 //     it took the chat, d move.stop in the first pass, e C without room, f A handed over to a fresh process (SIGUSR2 to
@@ -21,7 +21,10 @@
 //     and transcript: e2e/move-stale.ts) and back: listed once, every entry once in order, the room exact, its context.
 //   6b a chat whose key is live on both: shown as one that cannot move, a move refused, B untouched;
 //   7 one station asking another each second while the other is handed to a new process, stopped and started, and
-//     handed to one that dies at start: each ask answered or refused within 2 s, answered again within 5 s of it ready.
+//     handed to one that dies at start: each ask answered or refused within 2 s, answered again within 5 s of it ready;
+//   8 a device away while a chat moves A→B, A down as it comes back, with no place in B's stream B can go on from (8:
+//     never told by B; 8r: told, its place taken out as B's log moving past it would): it lists the chat once, on B,
+//     which only B's list read can tell it (its session's `from`).
 // Each check says PASS or FAIL with what was seen; a failed one does not stop the next where that can go on alone.
 // E2E_SF_SRC, E2E_ORIGIN, E2E_PEER_DATA as peer.ts; E2E_WORK, E2E_STATION as e2e-local.sh's. E2E_MOVE_ONLY: the
 // parts to run (e.g. "1 2 3a 5"; all of them where unset).
@@ -741,6 +744,10 @@ try {
     // (the other chat of A, made by the harness's up: what an item moved away stops here)
     const k0 = sql("A", "select key from sessions").map((r) => r.key as string).find((k) => k !== k2) ?? "";
     let heldNote = "";
+    // (a rename and a pin sent to A as the chat is held there, its second pass: still A's, which takes them, the
+    // hand-over carrying them; what each answered. Not the moment after A said it went and before the device was told,
+    // which a station answers 409 `moved`: no request of a device here can be put in that moment on purpose)
+    let heldMarks: { title: string; renamed: string; pinned: string } | null = null;
     let t0 = 0;
     let before: string[] = [];
     const rid = runtimeId("A", k2) ?? "";
@@ -754,6 +761,12 @@ try {
         heldNote = `held-${tag}`;
         await a.call("chat.send", { station: A, session: k2, text: `drill-note:${heldNote}` });
         log(`  said while ${o.step}${outOf(k2)?.step !== o.step ? ` (it was ${outOf(k2)?.step} once sent)` : ""}`);
+        // (and, in the same moment, a rename and a pin of it named on A, as a device that has not been told does)
+        const title = `drill-renamed-${tag}`;
+        const said = (p: Promise<J>) => p.then((r) => (r && typeof r === "object" && "err" in r ? `refused: ${JSON.stringify(r.err).slice(0, 160)}` : "ok"), (e) => `failed: ${String(e?.message ?? e).slice(0, 160)}`);
+        const [renamed, pinned] = await Promise.all([said(a.call("chat.rename", { station: A, session: k2, title })), said(a.call("chat.pin", { station: A, session: k2, pinned: true }))]);
+        heldMarks = { title, renamed, pinned };
+        log(`  renamed and pinned while ${outOf(k2)?.step}: rename ${renamed}, pin ${pinned}`);
       });
       held.catch((e) => log(`  ${e.message}`));
       const l = await turnEnds("A", t0);
@@ -799,6 +812,20 @@ try {
         if (asked !== 1 || answers.length !== 1 || at(cwd) !== "B") throw new Error(`said ${asked} times, answered ${answers.length} (${brief(answers)})`);
         const handed = turns(t0).filter((t) => t.text.includes(`drill-note:${heldNote}`));
         if (handed.length !== 1) throw new Error(`handed to an agent ${handed.length} times: ${brief(handed.map((t) => `${t.pid}@${at(t.cwd)}`))}`);
+      });
+      await check("2: a rename and a pin sent to A while the chat is held there end up on B (A takes them, the hand-over's second pass carries them)", async () => {
+        const m = heldMarks as { title: string; renamed: string; pinned: string } | null;
+        if (m === null) throw new Error("none was sent while it was held (never seen held)");
+        const on = (n: Name) => ({
+          title: sql(n, `select title from sessions where key = ${lit(k2)}`)[0]?.title ?? null,
+          pins: sql(n, `select viewer from pins where session = ${lit(k2)}`).map((r) => r.viewer as string),
+        });
+        // (B's as its stores say it, waited for as a fact of state: at most 30 s after it is live there)
+        const b = await whenChanged([DATA.B], () => {
+          const x = on("B");
+          return x.title === m.title && x.pins.some((v) => v.startsWith("alice")) && x;
+        }, 30_000, () => `on B ${brief(on("B"))}, on A ${brief(on("A"))}; the device was answered: rename ${m.renamed}, pin ${m.pinned}`);
+        log(`  on B: ${brief(b)}; the device was answered: rename ${m.renamed}, pin ${m.pinned}`);
       });
       await check("2: a message sent to it is answered on B by its agent going on from its transcript", async () => {
         const nonce = randomBytes(3).toString("hex");
@@ -2063,6 +2090,94 @@ try {
       }
       if (errs.length > 0) throw new Error(errs.join(" | "));
     });
+  }
+  if (part("8") && (limit("8", 1200), await clean("8"))) {
+    // A device away while a chat moves A→B, A down as it comes back: only B's list read can tell it the chat came from
+    // A (its session's `from`, account.ts `#came`). Both ways a device is without a place in B's stream that B can go on
+    // from: it was never told anything by B (a phone off since before B was enrolled or anything moved there), or it
+    // was and B's log of events has moved past it (B keeps so many, events.ts): there its place, its database's `heard`
+    // of B, is taken out by hand while it is closed, as move-stale.ts does to a station's store. Else B's stream,
+    // resumed, tells it again what it missed, Node's events with their `from`, and the list read is never the one asked.
+    const { DatabaseSync } = await import("node:sqlite");
+    /// The device's account databases (hosts/node.ts `dbPath`: `databases/<name>.db` in its core's data), each with the
+    /// rows of its workspace's records keyed `key`: what it keeps of B's stream.
+    const heardIn = (name: string, key: string, drop: boolean): string[] => {
+      const at = join(dir, name, "core", "databases");
+      if (!existsSync(at)) return [`no ${at}`];
+      return readdirSync(at).filter((f) => f.endsWith(".db")).map((f) => {
+        const db = new DatabaseSync(join(at, f));
+        try {
+          const has = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'workspace_pref'").get();
+          if (!has) return `${f}: no workspace_pref`;
+          const n = Number((db.prepare("SELECT count(*) n FROM workspace_pref WHERE key = ?").get(key) as { n: number }).n);
+          if (drop && n > 0) db.prepare("DELETE FROM workspace_pref WHERE key = ?").run(key);
+          return `${f}: ${n}${drop && n > 0 ? " taken out" : ""}`;
+        } finally {
+          db.close();
+        }
+      });
+    };
+    for (const round of [{ id: "8", told: false }, { id: "8r", told: true }]) {
+      const d = new Device(`A${round.id}`);
+      let k8 = "";
+      let away = false;
+      let aDown = false;
+      /// The device's rows of chat `key` once `ok` holds of them (or an error saying what they were).
+      const listedOnD = async (key: string, ok: (rows: J[]) => boolean, what: string, ms = 90_000): Promise<J[]> => {
+        log(`  waiting for ${d.name}'s list to show ${key.slice(-8)} ${what}`);
+        let seen: J[] = [];
+        try {
+          return await d.until(chatsT(), (v) => {
+            seen = rowsOf(v).filter((r) => r.session === key);
+            return v?.days && ok(seen) && seen;
+          }, ms);
+        } catch {
+          throw new Error(`${d.name} lists it as ${brief(seen.map((r) => ({ station: r.station, title: r.title })))}`);
+        }
+      };
+      const how = round.told ? "told by B before it went away, its place in B's log gone" : "never told anything by B";
+      try {
+        await check(`${round.id}: setup: alice's device ${d.name} (${how}) lists a chat on A, then is closed`, async () => {
+          await d.signIn();
+          k8 = await newChat(`away-${round.id}-${tag}`);
+          await listedOnD(k8, (r) => r.length === 1 && r[0].station === A, "once, on A");
+          if (round.told) {
+            // (told by B: a chat of its own moved there while it watches, listed there once, so B's stream told it)
+            const kw = await newChat(`seen-${round.id}-${tag}`);
+            await moveChat(kw, "B");
+            await listedOnD(kw, (r) => r.length === 1 && r[0].station === B, "once, on B");
+            await home(kw);
+          }
+          await d.close();
+          away = true;
+        });
+        if (!away) continue;
+        await check(`${round.id}: moved to B while ${d.name} is away; then A stopped`, async () => {
+          const l = await moveChat(k8, "B");
+          if (standing("B", k8) !== "live") throw new Error(`${standings(k8)}; ${outcome(l)}`);
+          stationDo("halt", "station");
+          aDown = true;
+        });
+        // (its place in B's stream as it is: a line of the set-up, not a check)
+        const kept = heardIn(d.name, `heard:${B}`, round.told);
+        log(`  ${d.name}'s place in B's stream (heard:${B.slice(-8)}): ${brief(kept)}${round.told ? "" : " (none to take out: never told)"}`);
+        if (!aDown) continue;
+        await check(`${round.id}: back with A down, ${d.name} lists the chat once, on B (only B's list read with \`from\` can say it came from A)`, async () => {
+          const t0 = Date.now();
+          await d.restart();
+          try {
+            await listedOnD(k8, (r) => r.length === 1 && r[0].station === B, "once, on B", 120_000);
+          } finally {
+            const asked = d.answers.filter((x) => x.at >= t0).map((x) => `${bId.startsWith(x.station) || x.station.startsWith(bId.slice(0, 8)) ? "B" : x.station.slice(0, 8)} ${x.method} ${x.path.replace(/\?.*$/, "")}`);
+            log(`  what ${d.name} read since it came back: ${brief([...new Set(asked)], 900)}`);
+          }
+        });
+      } finally {
+        await within(d.close(), 5000).catch(() => {});
+        if (aDown) await up("A").catch((e) => log(`  A not up again: ${e.message}`));
+        if (k8 !== "") await home(k8).catch((e) => log(`  ${k8.slice(-8)} not brought home: ${e.message}`));
+      }
+    }
   }
 } catch (e) {
   fail("the run", e);
