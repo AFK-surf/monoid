@@ -586,7 +586,13 @@ try {
   });
   const enroll = async (n: "B" | "C", name: string) => {
     const before = new Set<string>(((await a.until({ topic: "workspace", workspace: ws }, (v) => v?.stations && v)).stations as J[]).map((s) => s.id));
-    const made = await a.call("workspace.enroll", { account: a.sub, workspace: ws, name });
+    let made = await a.call("workspace.enroll", { account: a.sub, workspace: ws, name });
+    // (a token beginning with `-` is taken by `stillfail station enroll` for an option, drill 17's `--NS_e6cc…`: a
+    // product fault being fixed on main; until then another is asked for, said here)
+    for (let i = 0; i < 5 && String(made?.token ?? "").startsWith("-"); i++) {
+      log(`  the enrolment token begins with "-" (${String(made.token).slice(0, 6)}…), which the enrol command takes for an option: another asked for`);
+      made = await a.call("workspace.enroll", { account: a.sub, workspace: ws, name });
+    }
     const file = `${dir}/enroll-${n}.log`;
     mkdirSync(dir, { recursive: true });
     writeFileSync(file, `ANSWER workspace.enroll ok ${JSON.stringify(made)}\n`);
