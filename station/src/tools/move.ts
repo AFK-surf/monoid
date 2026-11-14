@@ -11,11 +11,15 @@ import { Refused } from "../mesh/bus.ts";
 import { managesStation } from "../mesh/credential.ts";
 import { stationLang, tr } from "../ops/i18n.ts";
 import type { CardAt } from "../parts.ts";
+import type { Need } from "../move/module.ts";
 import type { Outcome, Plan, Scheduler, Selection } from "../move/scheduler.ts";
-import { named } from "../move/module.ts";
 import type { Tool } from "./mcp.ts";
 
 type Json = any;
+
+/// An item as the scheduler names it in what it says (move/module.ts `named`): said again here, as what the parts share
+/// takes only a part's types (test/platform-apart.test.ts).
+const named = (n: Need) => `${n.module} ${n.id}`;
 
 export const MOVE_TOOL = {
   name: "station_move",

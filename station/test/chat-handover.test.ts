@@ -755,6 +755,24 @@ test("entries with no ts on a hand-back are neither doubled nor lost", async () 
   assert.deepEqual(entries(a, thread), entries(b, tb.id));
 });
 
+test("a hand-back keeps by number what its log here already has: a letter written there under a ts the log has (another machine's clock) is put in, not taken for that one", async () => {
+  const w = world();
+  const a = w.get(A);
+  const b = w.get(B);
+  const { key, thread } = await stillfailChat(a);
+  const letter = (st: Station, t: number, text: string) => st.rig.store.insertLetter({ thread: t, ts: "1700000000.000100", authorKind: "agent", author: key, text, letter: { way: "out", title: "another chat", link: null } });
+  const letters = (st: Station, t: number) => (st.rig.store.db.prepare("SELECT n, ts, text FROM letters WHERE thread = ? ORDER BY n").all(t) as { n: number; ts: string; text: string }[]).map((r) => `${r.n} ${r.ts} ${r.text}`);
+  letter(a, thread, "written here");
+  assert.equal((await a.moves.scheduler.move(WS, B, { module: "chats", item: key })).failed, null);
+  await w.quiet();
+  const there = homeThread(b, key);
+  letter(b, there, "written there");
+  assert.equal((await a.moves.scheduler.back(WS, B, { module: "chats", item: key })).failed, null);
+  await w.quiet();
+  assert.deepEqual(letters(a, thread), ["1 1700000000.000100 written here", "2 1700000000.000100 written there"]);
+  assert.deepEqual(letters(a, thread), letters(b, there));
+});
+
 test("two still.fail chats of the same ts, one here and one there: handed over, each stays its own", async () => {
   const w = world();
   const a = w.get(A);
@@ -830,8 +848,14 @@ test("a linked worktree with commits no remote has: its repository moves first, 
   assert.equal(run(there, "log", "-1", "--format=%s"), "not pushed anywhere");
   assert.equal(readFileSync(join(there, "a.txt"), "utf8"), "pushed\nnot pushed\nnot committed\n");
   assert.match(run(there, "status", "--porcelain"), /^M a\.txt$/m, "unstaged as it was");
-  // back: the chat, then the clone made there removed
-  await a.moves.scheduler.back(WS, B, { module: "chats", item: key });
+  // back: the chat, then the clone made there removed. Its repository here lost its remote meanwhile, so this
+  // station's gathering lists the worktree's `.git` (it is not one to be made again from a remote), which the lists
+  // sent never name: it stays, and the worktree with it.
+  run(clone, "remote", "remove", "origin");
+  assert.equal((await a.moves.scheduler.back(WS, B, { module: "chats", item: key })).failed, null);
+  await w.quiet();
+  assert.equal(run(join(ws, "proj"), "rev-parse", "HEAD"), head, "the worktree here still git's");
+  run(clone, "remote", "add", "origin", bare);
   await a.moves.scheduler.back(WS, B, { module: "repos", item: repo });
   await w.quiet();
   assert.deepEqual(readdirSync(join(b.rig.dir, "repos")), []);

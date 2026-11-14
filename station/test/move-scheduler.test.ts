@@ -167,6 +167,20 @@ test("modules may need each other; items may not: a chain of items needing each 
   assert.equal((await ok.plan("ws", "B")).items.length, 1);
 });
 
+test("an item stopped waiting goes on as what it waits for is told come here (move.arrived), whatever this station's own look at its plan finds", async () => {
+  const log: string[] = [];
+  // (the account it waits for is in no plan here: a look as the station starts or hears from another lets nothing go)
+  const accounts = fake("accounts", [], [], log);
+  const chats = fake("chats", ["accounts"], [{ id: "c1", label: "c", needs: [{ module: "accounts", id: "sub" }] }], log);
+  const s = new Scheduler({ data: mkdtempSync(join(process.env.STILLFAIL_TEST_TMP ?? tmpdir(), "move-")), modules: [accounts, chats] });
+  await s.noteStopped({ module: "chats", id: "c1" }, { module: "accounts", id: "sub" }, "ws");
+  assert.deepEqual(await s.settleStopped(), []);
+  assert.deepEqual(s.stopped().map((x) => x.item.id), ["c1"]);
+  assert.deepEqual(await s.arrived({ module: "accounts", id: "sub" }), [{ module: "chats", id: "c1" }]);
+  assert.deepEqual(s.stopped(), [], "let go as it was told");
+  assert.deepEqual(log, ["stop chats/c1", "resume chats/c1"]);
+});
+
 test("an item may go to where what it needs is not (arriveStopped), and is told there what it waits for; back, what needs an item there comes first, arriving stopped", async () => {
   const { log, s } = world();
   const told: string[] = [];
