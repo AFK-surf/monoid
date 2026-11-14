@@ -25,10 +25,13 @@
 //   never the machine's own login), while both are up (`moveProfile`; the owner, 2026-11-14: 「账号在 station 之间转移也做
 //   一下」): its login files (`signInFiles`, those its runtime signs in with, nothing else of its home) are handed over,
 //   and this station lets go of them only once the other says it has it, so one station alone ever holds a login. One
-//   shared stops lending, keeps a copy borrowed from the new host and tells the stations it had told where it went; one
-//   not shared is the other's own then, gone from here (its sessions go on on another profile, as one deleted). It keeps
-//   its id there where that is free (a session moved with a retired station takes its conversation up on it), and
+//   shared stops lending, keeps a copy borrowed from the new host (where its `allow` lets it) and tells the stations it
+//   had told where it went; one not shared is the other's own then, gone from here (its sessions go on on another
+//   profile, as one deleted). It keeps its id there where that is free (a session moved with a retired station takes its conversation up on it), and
 //   serves there only the workspaces it served here (`withheldFor`; not moved to a station whose home it did not serve).
+//   A migration (move/accounts.ts) moves one not shared whose login can be (`shareRefusal`) as a shared one, shared
+//   first with the two stations alone (`shareFirst`), so the station it leaves borrows it and nothing there stops; back
+//   home, that share is undone where nobody opened it to another station meanwhile (`unshareMoved`).
 //
 // Config: a shared profile has `share: {id, allow}` on its host and `share: {id, borrowed: true, host}` where copied
 // (`paused`: this station does not use the copy, `hostOff`: its host disabled it; accounts/index.ts putProfile);
@@ -288,6 +291,24 @@ function keptCodexExpiry(file: string): number {
   }
 }
 
+/// Why profile `p`'s login cannot be shared with other stations (null: it can): what `shareProfile` refuses turning a
+/// share on, and what a move asks before sharing a login as it moves it (move/accounts.ts), so the two never differ. A
+/// copy of another station's is not this station's to share.
+export function shareRefusal(p: Json): string | null {
+  if (isObject(p?.share) && p.share.borrowed === true) return "this profile is another station's";
+  // Grok Build's sign-in is not lent yet (only Claude Code's and Codex's are: lendClaude, lendCodex).
+  if (p?.access?.kind === "subscription" && p.runtime === "grok") return "a SuperGrok subscription cannot be shared with other stations yet";
+  // Nor Cursor's (its key stays where it was minted).
+  if (p?.access?.kind === "subscription" && p.runtime === "cursor") return "a Cursor account cannot be shared with other stations yet";
+  // Nor Devin's.
+  if (p?.access?.kind === "subscription" && p.runtime === "devin") return "a Devin account cannot be shared with other stations yet";
+  // Nor the Antigravity CLI's Google account.
+  if (p?.access?.kind === "subscription" && p.runtime === "agy") return "an Antigravity CLI sign-in cannot be shared with other stations yet";
+  // Nor a Kimi sign-in (its token is renewed every few minutes here, accounts/kimi.ts).
+  if (p?.access?.provider === "kimi-code" && p?.access?.login === true) return "a Kimi Code sign-in cannot be shared with other stations yet";
+  return null;
+}
+
 export class Sharing {
   private deps: SharingDeps;
   private time: Fibers;
@@ -301,6 +322,9 @@ export class Sharing {
   private unreachable = new Map<string, number>();
   /// Shares this station is handing to another right now: not lent meanwhile.
   private moving = new Set<string>();
+  /// Shares made to move a profile (moveProfile `shareFirst`), while it moves: no station is told of them here (the one
+  /// it goes to tells them, as their host), so none takes a copy of what goes to that station in a moment.
+  private unannounced = new Set<string>();
   private moveDone = new Map<string, Promise<void>>();
   /// The Claude token each borrowed profile was last lent (Codex keeps its own in its home's auth.json).
   private lentClaude = new Map<string, MachineToken>();
@@ -571,6 +595,7 @@ export class Sharing {
       this.loginDirs.delete(id);
     }
     for (const [id, now] of own) {
+      if (this.unannounced.has(id)) continue;
       if (now.kind === "skill") this.watchHosted(now.skill!, join(this.skillsDir(), now.skill!));
       if (now.kind === "profile" && now.profile?.runtime === "codex" && now.profile?.access?.kind === "subscription") this.watchLogin(id, this.codexFile(now.profile));
       else if (this.loginDirs.has(id)) { this.stopWatch(`login:${id}`); this.loginDirs.delete(id); }
@@ -1308,16 +1333,8 @@ export class Sharing {
     const p = this.profiles().find((x) => x.id === profileId);
     if (!p) throw new Error(`unknown profile ${profileId}`);
     if (isObject(p.share) && p.share.borrowed === true) throw new Error("this profile is another station's");
-    // Grok Build's sign-in is not lent yet (only Claude Code's and Codex's are: lendClaude, lendCodex).
-    if (on && p.access?.kind === "subscription" && p.runtime === "grok") throw new Error("a SuperGrok subscription cannot be shared with other stations yet");
-    // Nor Cursor's (its key stays where it was minted).
-    if (on && p.access?.kind === "subscription" && p.runtime === "cursor") throw new Error("a Cursor account cannot be shared with other stations yet");
-    // Nor Devin's.
-    if (on && p.access?.kind === "subscription" && p.runtime === "devin") throw new Error("a Devin account cannot be shared with other stations yet");
-    // Nor the Antigravity CLI's Google account.
-    if (on && p.access?.kind === "subscription" && p.runtime === "agy") throw new Error("an Antigravity CLI sign-in cannot be shared with other stations yet");
-    // Nor a Kimi sign-in (its token is renewed every few minutes here, accounts/kimi.ts).
-    if (on && p.access?.provider === "kimi-code" && p.access?.login === true) throw new Error("a Kimi Code sign-in cannot be shared with other stations yet");
+    const refused = on ? shareRefusal(p) : null;
+    if (refused !== null) throw new Error(refused);
     const had = isObject(p.share) && typeof p.share.id === "string" ? (p.share.id as string) : null;
     // (the stations it reaches are said by the cloud: a station just started waits for them, as a login wanted does)
     if (on && among !== null) await this.rosterSaid();
@@ -1379,9 +1396,17 @@ export class Sharing {
 
   /// A profile of this station's moved to another whole station of a workspace it serves (`to`): its login handed over
   /// (`signInFiles`), let go of here only once that station says it has it. One shared: this one stops lending, keeps a
-  /// copy borrowed from the new host and tells the stations it had told where it went. One not shared: gone from here,
+  /// copy borrowed from the new host (none where its stations do not include this one: gone from here then, as one not
+  /// shared) and tells the stations it had told where it went. One not shared: gone from here,
   /// the other's own, its sessions here going on on another profile. Its id there, said back. Refused in words.
-  async moveProfile(profileId: string, to: string, lang = stationLang()): Promise<{ id: string }> {
+  /// `shareFirst` (a migration's, move/accounts.ts): one not shared whose login can be (`shareRefusal`) is shared first,
+  /// with this station and `to` alone (`allow` those two: neither every station nor a third gains anything), no station
+  /// told, and moved as a shared one, so that this station borrows it after and its chats here go on. `shareFirst` is
+  /// given the share's id before it is made (kept, by the move, as one it made). Where the move fails before the other
+  /// took it, the share is undone and the login here is as it was; the login here is let go of only once the other said
+  /// it has it (its files written there before it answers), so it is never on neither station. `share`: the share it
+  /// moved as.
+  async moveProfile(profileId: string, to: string, lang = stationLang(), shareFirst?: (share: string) => Promise<void>): Promise<{ id: string; share?: string }> {
     const t = (key: string, args?: Record<string, unknown>) => tr(lang, key, args);
     const p = this.profiles().find((x) => x.id === profileId);
     if (!p) throw new Error(t("station.share.moveUnknown"));
@@ -1398,39 +1423,91 @@ export class Sharing {
         if (!lstatSync(path).isSymbolicLink()) credentials[name] = readFileSync(path).toString("base64");
       } catch {}
     }
-    if (!isObject(p.share)) return this.moveOwn(p, to, ws, credentials, t, lang);
-    const id = p.share.id as string;
+    const me = this.me();
+    const sharing = !isObject(p.share) && shareFirst !== undefined && shareRefusal(p) === null && me !== null;
+    if (!isObject(p.share) && !sharing) return this.moveOwn(p, to, ws, credentials, t, lang);
+    const id = sharing ? newId() : (p.share.id as string);
     if (this.moving.has(id)) throw new Error(t("station.share.moving"));
-    const allow: string[] | null = Array.isArray(p.share.allow) ? p.share.allow : null;
+    const allow: string[] | null = sharing ? [me!, to] : Array.isArray(p.share.allow) ? p.share.allow : null;
     const state = this.readState();
-    const was = state.hosted[id];
+    const was = sharing ? undefined : state.hosted[id];
     const done = Promise.withResolvers<void>();
     this.moving.add(id);
+    if (sharing) this.unannounced.add(id);
     this.moveDone.set(id, done.promise);
     let there = profileId;
+    let made = false;
+    let taken = false;
+    let keeps = true;
     try {
+      if (sharing) {
+        await shareFirst!(id);
+        this.deps.config.update((raw) => {
+          for (const x of raw.profiles ?? []) if (x.id === profileId) x.share = { id, allow };
+        });
+        made = true;
+        log.info("share", "a profile shared as it moves, with this station and the one it goes to only", { profile: profileId, to });
+      }
       const answer = await this.deps.ask(to, ws, { method: "share.take", id, profileId, profile: { ...portable(p), access: p.access }, served: this.sharedIn(p), lang, email: this.emailOf(p), credentials, allow, version: (was?.version ?? 0) + 1, quotaRevision: was?.quotaRevision ?? 0, resetKeys: was?.resetKeys ?? [] });
+      taken = true;
       if (typeof answer?.id === "string") there = answer.id;
       // Ours no more: the login forgotten (the new host renews it now), the profile kept as a copy under the same id.
       for (const name of Object.keys(credentials)) await rm(join(home, name), { force: true });
       const email = this.emailOf(p);
+      // (a station its stations do not include keeps no copy: it may not borrow it, and its host's word that it is
+      // no longer for it may come before it has one, so it would keep it)
+      keeps = allow === null || (me !== null && allow.includes(me));
       this.deps.config.update((raw) => {
-        for (const x of raw.profiles ?? []) if (x.id === profileId) x.share = { id, borrowed: true, host: to, ...(email ? { email } : {}) };
+        if (!keeps) raw.profiles = (Array.isArray(raw.profiles) ? raw.profiles : []).filter((x: Json) => x?.id !== profileId);
+        else for (const x of raw.profiles ?? []) if (x.id === profileId) x.share = { id, borrowed: true, host: to, ...(email ? { email } : {}) };
       });
       const after = this.readState();
       delete after.hosted[id];
       // Fetched from the new host at once: the workspaces it shares it in are its to say now.
-      after.borrowed[id] = { version: (was?.version ?? 0) + 1, hash: "", kind: "profile", name: String(p.name ?? p.id), host: to, allow, stale: true, quotaRevision: was?.quotaRevision ?? 0 };
+      if (keeps) after.borrowed[id] = { version: (was?.version ?? 0) + 1, hash: "", kind: "profile", name: String(p.name ?? p.id), host: to, allow, stale: true, quotaRevision: was?.quotaRevision ?? 0 };
       after.moved[id] = { to, tell: Object.keys(was?.told ?? {}) };
       this.writeState(after);
+    } catch (e) {
+      // (the share this move made, undone while the login is still here alone: as it was)
+      if (made && !taken) {
+        this.deps.config.update((raw) => {
+          for (const x of raw.profiles ?? []) if (x.id === profileId && isObject(x.share) && x.share.id === id) delete x.share;
+        });
+        log.info("share", "a share made to move a profile undone: the move failed", { profile: profileId, to, error: (e as Error).message });
+      }
+      throw e;
     } finally {
       this.moving.delete(id);
+      this.unannounced.delete(id);
       this.moveDone.delete(id);
       done.resolve();
     }
-    log.info("share", "a shared profile moved to another station", { profile: profileId, to });
+    log.info("share", "a shared profile moved to another station", { profile: profileId, to, ...(keeps ? {} : { copy: "none: this station may not use it" }) });
+    if (!keeps) {
+      await this.deps.profileGone?.(profileId).catch((error) => log.warn("share", "moving sessions off a profile moved away failed", { profile: profileId, error: (error as Error).message }));
+      this.deps.changed();
+    }
     await this.reconcile();
-    return { id: there };
+    return { id: there, share: id };
+  }
+
+  /// A share a move made (`moveProfile` `shareFirst`) undone once its login is home again (move/accounts.ts `back`): no
+  /// longer shared, each station told so letting go of its copy, where it is this station's again under that share and
+  /// allowed to none but `stations` (the two of the move). One a person opened to another station meanwhile (or to
+  /// every station) stays shared, and the log says so: what a person gave is not taken away. True: undone.
+  async unshareMoved(share: string, stations: string[]): Promise<boolean> {
+    const p = this.profiles().find((x) => isObject(x.share) && x.share.id === share && x.share.borrowed !== true);
+    if (p === undefined) {
+      log.info("share", "a share a move made is not undone: this station does not host it", { share });
+      return false;
+    }
+    const allow: string[] | null = Array.isArray(p.share.allow) ? p.share.allow : null;
+    if (allow === null || allow.some((s) => !stations.includes(s))) {
+      log.info("share", "a share a move made stays shared: a person allowed other stations since", { profile: p.id, share, allow: allow === null ? "every station" : allow.map((s) => s.slice(0, 8)).join(",") });
+      return false;
+    }
+    await this.shareProfile(String(p.id), false, null, null, "a move back");
+    return true;
   }
 
   /// A profile not shared moved to `to`: the other station takes it as its own, then it is gone from here.
