@@ -59,6 +59,16 @@ function watching(d: string, changed: () => void): () => void {
 /// What `ok` gives, looked at again as each of `dirs` changes (the file system's events, as scripts/waitfor.mjs waits:
 /// a station's database and the lock chains it keeps), or an error saying `what` by `ms`. Looked at once more at `ms`:
 /// what holds by then is not failed for no change having been seen of it, and the run says that it was so.
+/// Calls `said` with how long this process's loop was held each time a once-a-second tick comes over a second late.
+export function heldProbe(said: (ms: number) => void): void {
+  let last = Date.now();
+  setInterval(() => {
+    const now = Date.now();
+    if (now - last > 2000) said(now - last - 1000);
+    last = now;
+  }, 1000).unref();
+}
+
 /// (`every`: looked at again that often besides, where a file event may be missed: drill 23 saw a move's turn end 215
 /// and 268 s after the station wrote it, by the next event in that directory)
 export function whenChanged<T>(dirs: string[], ok: () => T | undefined | null | false, ms: number, what: () => string, every?: number): Promise<T> {
@@ -152,9 +162,12 @@ if (process.argv[2] === "device") {
   const record = join(data, "record.log");
   // (before the core is loaded: it loads the addon as its host is made)
   watchRequests((station, method, path, status) => {
-    appendFileSync(record, `asked: ${station.slice(0, 8)} ${method} ${path} -> answered${status !== "" && status !== "-" ? ` ${status}` : ""}\n`);
+    appendFileSync(record, `asked: ${new Date().toISOString().slice(11, 23)} ${station.slice(0, 8)} ${method} ${path} -> answered${status !== "" && status !== "-" ? ` ${status}` : ""}\n`);
     if (process.connected) process.send!({ answered: { station, method, path } });
   });
+  // (how long this process's own loop was held, where over a second: drill 24 saw a turn's end minutes late and could not
+  // tell whose loop it was)
+  heldProbe((ms) => appendFileSync(record, `${new Date().toISOString()} held: this device's process did nothing else for ${ms} ms\n`));
   const { start } = await import(pathToFileURL(join(src, "client/core-ts/src/hosts/node.ts")).href);
   // (`again`: the same device started anew, its data and what it sealed kept)
   if (process.argv[4] !== "again") rmSync(data, { recursive: true, force: true });

@@ -29,7 +29,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, statfsSync, unlinkSync, watch, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { check as checked, Device, dir, fail, failures, type J, log, whenChanged, within } from "./device.ts";
+import { check as checked, Device, dir, fail, failures, heldProbe, type J, log, whenChanged, within } from "./device.ts";
 
 const WORK = process.env.E2E_WORK!;
 // The last line the drill said: what a limit that passes names as waited for (each wait says itself as it begins).
@@ -298,6 +298,8 @@ const bob = new Device("BOB", "bob");
 let ws = "";
 let A = "";
 let aId = "";
+// (the drill's own loop held over a second, said as it happens: so a late sighting is placed, the drill's or not)
+heldProbe((ms) => log(`  (the drill's own process did nothing else for ${ms} ms)`));
 let bId = "";
 let cId = "";
 let B = "";
