@@ -173,17 +173,25 @@ class Steps {
     this.n = n;
     const d = `${DATA[n]}/replica/handover/out`;
     mkdirSync(d, { recursive: true });
-    this.#w = watch(d, () => this.scan());
+    // (the file an event names read alone: reading every record at each event held the drill's process minutes at a
+    // time once a station had thousands, drill 25's part 5, its profile: 1,187 s in reading them)
+    this.#w = watch(d, (_e, f) => {
+      if (typeof f !== "string" || !f.endsWith(".json")) return this.scan();
+      try {
+        this.#take(JSON.parse(readFileSync(join(d, f), "utf8")));
+      } catch {}
+    });
     this.scan();
   }
   scan(): void {
-    for (const o of handovers(this.n, "out")) {
-      const l = this.seen.get(o.id) ?? [];
-      const held = o.held !== false;
-      const last = l.at(-1);
-      if (last === undefined || last.step !== o.step || last.held !== held) l.push({ step: o.step, held, at: Date.now() });
-      this.seen.set(o.id, l);
-    }
+    for (const o of handovers(this.n, "out")) this.#take(o);
+  }
+  #take(o: J): void {
+    const l = this.seen.get(o.id) ?? [];
+    const held = o.held !== false;
+    const last = l.at(-1);
+    if (last === undefined || last.step !== o.step || last.held !== held) l.push({ step: o.step, held, at: Date.now() });
+    this.seen.set(o.id, l);
   }
   of(id: string) {
     return this.seen.get(id) ?? [];
