@@ -34,9 +34,12 @@ export function moveView(plan: Plan, order: string[], stopped: { item: { module:
     const i = held?.at.get(named(n));
     return i === undefined ? undefined : held!.byModule.get(n.module)?.[i];
   };
+  // (each row asked where it stands once a read, the item the turn is at among them or not)
+  const asked = new Map<Planned, Planned>();
+  const now = (x: Planned) => asked.get(x) ?? (asked.set(x, held!.now(x)), asked.get(x)!);
   // (the turn under way is at an item till its end is told, whether that item reads moving yet or not)
   const moving = held !== null
-    ? (current === null ? null : ((x) => (x === undefined ? null : held.now(x)))(heldAt(current)))
+    ? (current === null ? null : ((x) => (x === undefined ? null : now(x)))(heldAt(current)))
     : plan.items.find((x) => x.state === "moving") ?? (current === null ? null : plan.items.find((x) => x.module === current.module && x.id === current.id) ?? null);
   // (each module's items, gone through once; held, as the turn keeps them)
   const of = new Map<string, readonly Planned[]>(order.map((id) => [id, held?.byModule.get(id) ?? []]));
@@ -48,7 +51,7 @@ export function moveView(plan: Plan, order: string[], stopped: { item: { module:
     modules: order.map((id) => {
       const mine = of.get(id)!;
       const from = o.module === id && o.after !== undefined ? (held !== null ? (held.at.get(named({ module: id, id: o.after })) ?? -1) : mine.findIndex((x) => x.id === o.after)) + 1 : 0;
-      const page = held !== null ? mine.slice(from, from + limit).map(held.now) : mine.slice(from, from + limit);
+      const page = held !== null ? mine.slice(from, from + limit).map(now) : mine.slice(from, from + limit);
       let done = 0;
       let cannot = 0;
       const kept = held?.counts.get(id);

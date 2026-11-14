@@ -270,11 +270,13 @@ for (const n of [300, 2_384]) {
 /// A page of the move page read while a turn runs (statements and rows, whatever the station's size).
 const PAGE_READ = 48;
 const PAGE_READ_ROWS = 400;
-/// What a page read during a turn asks the modules of where items stand: the page's rows and the item the turn is at.
-const PAGE_ASKED = 50 + 2;
+/// What a page read during a turn asks the modules of where items stand: the rows it answers (each module's page, the
+/// one asked for and the first of every other, as at rest), the item the turn is at among them, each once; never by the
+/// station's size. Kept by n, the same at both.
+const pageAsked = new Map<number, number>();
 
 for (const n of [300, 2_384]) {
-  test(`a page of the move page read while a turn runs, among ${n} chats: its rows and counts from the turn's own plan, at most ${PAGE_READ} statements and ${PAGE_READ_ROWS} rows, nothing asked of the other station, only its rows asked where they stand`, async () => {
+  test(`a page of the move page read while a turn runs, among ${n} chats: its rows and counts from the turn's own plan, at most ${PAGE_READ} statements and ${PAGE_READ_ROWS} rows, nothing asked of the other station, only the rows it answers (every module's page) asked where they stand, as many at 2,384 chats as at 300`, async () => {
     const { w, a } = officeShape(n);
     const b = w.get(B);
     const { key } = await stillfailChat(a);
@@ -296,15 +298,25 @@ for (const n of [300, 2_384]) {
       const was = m.state.bind(m);
       m.state = (x) => (stated++, was(x));
     }
+    // (the page read is the one the moving chat is on: asked where it stands once, as a row, not again as moving)
+    const list = a.moves.scheduler.held(WS, B)!.view.byModule.get("chats")!;
+    const i = list.findIndex((x) => x.id === key);
+    assert.ok(i >= 0, "the moving chat in the turn's plan");
+    const start = Math.max(0, Math.min(i, list.length - 50));
     const w2 = watch(a.rig.store);
-    const view = await a.ask("GET", "/move", null, "owner", [["to", B], ["module", "chats"], ["limit", "50"]]);
+    const view = await a.ask("GET", "/move", null, "owner", [["to", B], ["module", "chats"], ["limit", "50"], ...(start > 0 ? [["after", list[start - 1]!.id] as [string, string]] : [])]);
     w2.stop();
     assert.equal(view.status, 200, JSON.stringify(view.body));
     const chats = view.body.modules.find((m: Json) => m.id === "chats");
     assert.equal(chats.items.length, 50, "a page of rows");
     assert.ok(chats.total > n, `counted: ${chats.total}`);
     assert.equal(askedThere, 0, "nothing asked of the other station");
-    assert.ok(stated <= PAGE_ASKED, `${stated} items asked where they stand: at most the page's and the one the turn is at`);
+    const rows = view.body.modules.reduce((t: number, m: Json) => t + m.items.length, 0);
+    for (const m of view.body.modules) assert.ok(m.items.length <= 50, `${m.id}: ${m.items.length} rows, at most the page's 50`);
+    assert.ok(chats.items.some((x: Json) => x.id === key && x.state === "moving"), "the moving chat among the page's rows");
+    assert.equal(stated, rows, `${stated} items asked where they stand: the ${rows} rows answered, the moving one among them, each once`);
+    pageAsked.set(n, stated);
+    if (pageAsked.has(300) && n !== 300) assert.equal(stated, pageAsked.get(300), `as many asked among ${n} chats as among 300`);
     assert.ok(w2.seen.length <= PAGE_READ, `${w2.seen.length} statements for a page read among ${n} chats: at most ${PAGE_READ}`);
     assert.ok(w2.rows() <= PAGE_READ_ROWS, `${w2.rows()} rows for a page read among ${n} chats: at most ${PAGE_READ_ROWS}`);
     b.placing = undefined;
