@@ -23,8 +23,10 @@ A move is made of items, each of one module, each moved and moved back on its ow
 - `repos`: a repository a chat's git worktree hangs on (cloned there, what no remote has sent along); a chat with such
   a worktree needs it there first.
 - `vault`: an owner's secrets kept here (the station's copies of them). Granted secrets are asked again there.
-- `agent-home`: the agents' memory, presets and people's skills, merged there (nothing there overwritten).
 - `settings`: config.json's choices (sandboxes, agentEnv, archiving and the like); back, the other's are put back.
+
+The agents' memory and skills, and each person's presets, are the same on every station of the workspace already:
+nothing of them moves.
 
 An item can also arrive stopped where what it needs is not there yet (`arriveStopped`, or moving back: what needs an
 item comes back first, stopped, then the item), and goes on as that arrives.

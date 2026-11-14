@@ -708,7 +708,7 @@ test("a linked worktree with commits no remote has: its repository moves first, 
   assert.match(refused.refused[0]?.why ?? "", /needs repos/);
   // (a repository moved is copied: still here, so moving it alone stops nothing; nor do the vault, agent home or settings)
   assert.deepEqual(plan.items.find((x) => x.id === repo)!.wouldStop, []);
-  for (const m of a.moves.modules.filter((x) => ["repos", "vault", "agent-home", "settings"].includes(x.id))) assert.equal(m.usableHere?.({ module: m.id, id: "x", label: "x", needs: [] }), true, m.id);
+  for (const m of a.moves.modules.filter((x) => ["repos", "vault", "settings"].includes(x.id))) assert.equal(m.usableHere?.({ module: m.id, id: "x", label: "x", needs: [] }), true, m.id);
   const alone = await a.moves.scheduler.move(WS, B, { module: "repos", item: repo });
   assert.deepEqual(alone.stopped, []);
   assert.equal(a.rig.hub.chatHeld(key), null, "the chat goes on here");
@@ -734,21 +734,11 @@ test("a linked worktree with commits no remote has: its repository moves first, 
   assert.deepEqual(readdirSync(join(b.rig.dir, "repos")), []);
 });
 
-test("agent home, settings and secrets each moved, then back: both stations as they were", async () => {
+test("settings and secrets each moved, then back: both stations as they were", async () => {
   const w = world();
   const a = w.get(A);
   const b = w.get(B);
   await stillfailChat(a);
-  const homeA = join(a.rig.dir, "agent-homes", WS);
-  const homeB = join(b.rig.dir, "agent-homes", WS);
-  mkdirSync(join(homeA, "skills", "deploy"), { recursive: true });
-  writeFileSync(join(homeA, "MEMORY.md"), "A remembers this");
-  writeFileSync(join(homeA, "skills", "deploy", "SKILL.md"), "how A deploys");
-  mkdirSync(join(homeB, "skills", "own"), { recursive: true });
-  writeFileSync(join(homeB, "MEMORY.md"), "B's own memory");
-  writeFileSync(join(homeB, "skills", "own", "SKILL.md"), "B's own skill");
-  const beforeA = filesOf(homeA);
-  const beforeB = filesOf(homeB);
   a.rig.raw.agentEnv = { FOO: "from A", BAR: "only A has it" };
   b.rig.raw.agentEnv = { FOO: "B's" };
   // (a setting B has of its own, another value: B keeps it, and it cannot move, saying so)
@@ -764,12 +754,9 @@ test("agent home, settings and secrets each moved, then back: both stations as t
   // (B, taking a setting, holds its self-update while it does)
   const holding: number[] = [];
   b.onUpdate = () => void holding.push(b.holds);
-  const out = await a.moves.scheduler.move(WS, B, { module: "agent-home", item: `home:${WS}` });
-  await a.moves.scheduler.move(WS, B, { module: "settings", item: "setting:agentEnv" });
+  const out = await a.moves.scheduler.move(WS, B, { module: "settings", item: "setting:agentEnv" });
   await a.moves.scheduler.move(WS, B, { module: "vault", item: `vault:p@x@${WS}` });
   assert.equal(out.failed, null, JSON.stringify(out));
-  assert.equal(readFileSync(join(homeB, "skills", "deploy", "SKILL.md"), "utf8"), "how A deploys");
-  assert.match(readFileSync(join(homeB, "MEMORY.md"), "utf8"), /B's own memory[\s\S]*A remembers this/);
   assert.deepEqual(b.rig.raw.agentEnv, { FOO: "B's", BAR: "only A has it" }, "what B lacked taken, its own kept");
   assert.equal(b.rig.raw.maxNudges, 5);
   assert.ok(holding.length > 0 && holding.every((n) => n > 0), `held while it took the setting: ${holding}`);
@@ -783,13 +770,11 @@ test("agent home, settings and secrets each moved, then back: both stations as t
   await a.moves.start();
   await b.moves.start();
   const again = await a.moves.scheduler.plan(WS, B);
-  for (const id of [`home:${WS}`, "setting:agentEnv", `vault:p@x@${WS}`]) assert.equal(again.items.find((x) => x.id === id)?.state, "there", id);
-  for (const [module, item] of [["agent-home", `home:${WS}`], ["settings", "setting:agentEnv"], ["vault", `vault:p@x@${WS}`]] as const) {
+  for (const id of ["setting:agentEnv", `vault:p@x@${WS}`]) assert.equal(again.items.find((x) => x.id === id)?.state, "there", id);
+  for (const [module, item] of [["settings", "setting:agentEnv"], ["vault", `vault:p@x@${WS}`]] as const) {
     const back = await a.moves.scheduler.back(WS, B, { module, item });
     assert.equal(back.failed, null, `${module}: ${JSON.stringify(back)}`);
   }
-  assert.deepEqual(filesOf(homeB), beforeB, "B's agent home as it was");
-  assert.deepEqual(filesOf(homeA), beforeA, "A's untouched");
   assert.deepEqual(b.rig.raw.agentEnv, { FOO: "B's" });
   assert.deepEqual(pb.items(WS, "p@x").map((i) => i.id), plainB, "B lets go of what this move put there, and only that");
 });
@@ -826,7 +811,7 @@ test("what the app's page reads of a move: the modules in order with their needs
   const one = moveView(await a.moves.scheduler.plan(WS, B), a.moves.modules.map((m) => m.id), a.moves.scheduler.stopped(), { limit: 1 });
   assert.deepEqual(one.modules.map((m: Json) => [m.id, m.cannot]).filter(([, n]: [string, number]) => n > 0), [["accounts", 1], ["chats", 1]], "counted of all, not of a page of one");
   const view = moveView(await a.moves.scheduler.plan(WS, B), a.moves.modules.map((m) => m.id), a.moves.scheduler.stopped(), { limit: 10 });
-  assert.deepEqual(view.modules.map((m: Json) => m.id), ["accounts", "chats", "jobs", "connects", "repos", "vault", "agent-home", "settings"]);
+  assert.deepEqual(view.modules.map((m: Json) => m.id), ["accounts", "chats", "jobs", "connects", "repos", "vault", "settings"]);
   const chats = view.modules.find((m: Json) => m.id === "chats");
   assert.deepEqual(chats.needs, ["accounts", "connects", "repos", "vault"]);
   assert.equal(chats.done, 1);

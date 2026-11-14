@@ -156,7 +156,6 @@ export function world(ids: string[] = [A, B]) {
         },
         keptSends: (threads) => st.admin.keptSends(threads),
         keepSends: (sends) => st.admin.keepSends(sends),
-        homeOf: (ws) => join(rig.dir, "agent-homes", ws),
         vault: {
           owners: (ws) => (rig.store.db.prepare("SELECT DISTINCT owner FROM vault_plain WHERE ws = ?").all(ws) as { owner: string }[]).map((r) => r.owner),
           grantOwners: () => new Map(),

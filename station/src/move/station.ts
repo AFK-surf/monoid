@@ -16,11 +16,9 @@ import { PLAN_PAGE, chatsModule, giveBack } from "./chats.ts";
 import { connectsModule } from "./connects.ts";
 import { JobsModule } from "./jobs.ts";
 import type { Module, PlanReads } from "./module.ts";
-import { AgentHomeModule } from "./agent-home.ts";
 import { ReposModule, repoItemId, worktreesOfClones } from "./repos.ts";
 import { SettingsModule } from "./settings.ts";
 import { type VaultDeps, VaultModule, vaultItemId } from "./vault.ts";
-import { gatherSoon } from "../replica/retire.ts";
 import { dirname, join } from "node:path";
 import { readFileSync } from "node:fs";
 import { mkdir, rename, writeFile } from "node:fs/promises";
@@ -78,8 +76,6 @@ export type MovesDeps = {
   changed?: () => void;
   /// config.json as written, for the settings that move (settings.ts).
   config?: { raw(): Json; update(f: (raw: Json) => void): void };
-  /// The agent home of `ws` here (agent-home.ts).
-  homeOf?: (ws: string) => string;
   /// This station's vault stores and the owners with secrets of a workspace here, the owners whose plain grants
   /// sessions hold (vault.ts).
   vault?: { owners(ws: string): string[]; grantOwners(keys: string[]): Map<string, string[]>; plain: VaultDeps["plain"]; vaults: VaultDeps["vaults"] };
@@ -119,7 +115,6 @@ export class Moves {
   readonly modules: Module[];
   readonly repos: ReposModule;
   readonly vault: VaultModule;
-  readonly home: AgentHomeModule;
   readonly settings: SettingsModule;
   readonly #d: MovesDeps;
   /// Whether a busy chat's turn is waited for as it moves (station_move `wait`, for the request under way).
@@ -150,14 +145,6 @@ export class Moves {
     const none = { owners: () => [], grantOwners: () => new Map<string, string[]>(), plain: { items: () => [], item: () => null, put: () => {}, forget: () => {} }, vaults: { vaults: () => [], vault: () => null, items: () => [], item: () => null, putVault: () => {}, putItem: () => {}, forgetItem: () => {}, forgetVault: () => {} } };
     const v = d.vault ?? none;
     this.vault = new VaultModule({ data: d.data, owners: (ws) => v.owners(ws), plain: v.plain, vaults: v.vaults, ask });
-    const work = d.work ?? { gather: gatherSoon };
-    this.home = new AgentHomeModule({
-      data: d.data, ask, here, lackMost: d.lackMost ?? 2_000,
-      homeOf: (ws) => d.homeOf?.(ws) ?? join(d.data, "agent", ws),
-      gather: (agent, scratch) => work.gather(d.data, join(d.data, "stillfail.db"), "", false, scratch, undefined, agent, []),
-      name: (station, ws) => d.roster(ws)?.find((r) => r.id === station)?.name ?? station.slice(0, 12),
-      now: () => d.fibers.now(),
-    });
     this.settings = new SettingsModule({ data: d.data, ask, config: d.config ?? { raw: () => ({}), update: () => {} } });
     this.jobs = new JobsModule({
       data: d.data, up: d.jobs.up, stop: d.jobs.stop, start: d.jobs.start, ask: (s, r) => d.ask(s, { ...r, fromData: d.data }), here,
@@ -241,7 +228,6 @@ export class Moves {
       }),
       this.repos,
       this.vault,
-      this.home,
       this.settings,
     ];
     this.scheduler = new Scheduler({
@@ -420,7 +406,6 @@ export class Moves {
       const method = typeof request?.method === "string" ? request.method : "";
       const bytes = bytesOf(request);
       if (method.startsWith("move.repo.")) return this.repos.answer(peer, request, bytes);
-      if (method.startsWith("move.home.")) return this.home.answer(peer, request, bytes);
       if (method.startsWith("move.setting.")) return this.settings.answer(peer, request);
       if (method.startsWith("move.vault.")) return this.vault.answer(request);
       switch (request?.method) {

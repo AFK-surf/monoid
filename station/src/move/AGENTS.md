@@ -45,13 +45,16 @@ chats paused 18 minutes, a half-moved state, no way back), whose start stays swi
   way, connects/workspace.ts `arrived`), `repos` (a canonical clone a chat's linked worktree hangs on, by its remote: cloned there, what
   no remote has fetched from a bundle; back, removed there only where this move made it; the chat's move only adds
   its worktree, `rebuildGits` `clone: false`), `vault` (an owner's plain items and the vaults they own, rows sent as
-  they are; back, the other lets go of what this move put there), `agent-home` (agent-carry.ts's merge, what it added
-  kept so that back takes out exactly that) and `settings` (config.json's settings that are a person's choice,
+  they are; back, the other lets go of what this move put there) and `settings` (config.json's settings that are a person's choice,
   settings.ts `SETTINGS`: what the other has already is never overwritten, the owner's 「不好搬但有其它办法规避的部分直接规避，
   避免脚本乱改改错」: one it lacks it takes, a map the keys it lacks, another value of its own it keeps and the item
-  cannot move; back takes out exactly what was added). These four copy, so what moved is still usable here
+  cannot move; back takes out exactly what was added). These three copy, so what moved is still usable here
   (`usableHere`): moving one stops nothing. What each moved is kept across a start (`kept.ts`). Grants do not move: a vault's is sealed to this station's
   keeper and kept in its memory, a plain one is taken up as a station starts; the owner approves again there.
+- The agents' memory and team skills, and people's presets and starred models, are no module: they are the same on
+  every station of a workspace already (station/AGENTS.md, The agents' memory; Presets and starred models), so nothing
+  of them moves (the lead, 2026-11-14: what need not be moved is not). What memory.ts keeps on its machine (a skill past
+  its size, a file only its owner reads) stays there, as it does for every station.
 - What the app shows is `GET /move?to=` (routes.ts: the modules in order with their needs, done of total, how many cannot move (`cannot`), a page of
   items each, and `last`, the workspace's last turn and what came of it, kept in `last.json`), told changed as `move`
   on the event stream. People move with `POST /move` and `POST /move/back` (owners and admins; 202, the scheduler's

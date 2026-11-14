@@ -155,6 +155,7 @@ export const NOTES: [number, string][] = [
   [148, "New tool station_move {action: plan|move|back|status, to?, module?, item?, withNeeds?, all?} and skill stillfail-move: chats move to another station one at a time while both stations work (a chat pauses for seconds; its jobs follow), and back the same way; accounts and connects are items of their own; a whole station is every item moved in order, confirmed once on a card by an owner or admin. A chat moved here is told so once with what it is next handed."],
   [149, "station_move takes station (another station does it with its own items) and wait (false: a chat in a turn is refused, not waited for); repos, vault, agent-home and settings move as items of their own now, a chat of a Comma or single-session connect moves after its connect, and an item may arrive stopped where what it needs is not there yet (arriveStopped)."],
   [150, "station_move has action stop (the move under way stops: a chat not yet gone stays here, one gone completes), and moving is refused where a station has it switched off (config.json move), saying so."],
+  [151, "station_move has no module agent-home any more: the memory and skills are the same on every station of the workspace already, and each person's presets go with their devices, so nothing of them moves."],
 ];
 
 /// The last note that replaces every one before it (the instructions rewritten whole): a session behind it hears only

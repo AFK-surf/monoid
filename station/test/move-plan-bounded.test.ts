@@ -136,7 +136,6 @@ const WANT: string[] = [
   "connects | cm@A | cm | chats cm:C9:1.7 |  | here | ",
   "repos | repo:https://example.test/shared.git | shared |  |  | here | ",
   "repos | repo:https://example.test/own.git | own |  |  | here | ",
-  "agent-home | home:ws | the agents' memory, presets and skills |  |  | here | ",
   "settings | setting:askToName | askToName |  |  | here | ",
 ];
 

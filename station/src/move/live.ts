@@ -10,7 +10,6 @@ import { gitHere, gitRun } from "../replica/retire.ts";
 import { MoveAsks, moveTools } from "../tools/move.ts";
 import { Moves } from "./station.ts";
 import { moveRoutes } from "./routes.ts";
-import { join } from "node:path";
 import { plainStore } from "../vault/plain.ts";
 import { vaultStore } from "../vault/store.ts";
 
@@ -95,7 +94,6 @@ export const MovesLive = Layer.effectDiscard(
       moveOn: () => agents.config.raw()?.move === true,
       keptSends: (threads) => admin.keptSends(threads),
       keepSends: (sends) => admin.keepSends(sends),
-      homeOf: (ws) => (cloud.home() === ws ? hub.config().agentHome : join(hub.config().agentHome, "workspaces", ws)),
       vault: {
         owners: (ws) => [...new Set([
           ...(store.db.prepare("SELECT DISTINCT owner FROM vault_plain WHERE ws = ? LIMIT 500").all(ws) as { owner: string }[]).map((r) => r.owner),
