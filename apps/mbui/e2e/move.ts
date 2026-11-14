@@ -479,6 +479,14 @@ const failuresOf = (l: J): { item: string; error: string }[] =>
   Array.isArray(l?.failures) && l.failures.length > 0 ? l.failures.map((f: J) => ({ item: named(f.item ?? "-"), error: String(f.error) })) : l?.failed ? [{ item: named(l.failed.item ?? "-"), error: String(l.failed.error) }] : [];
 /// What a turn said of item `id` failing ("chats <key>"), else of the first that failed; "" where none did.
 const failedWhy = (l: J, id?: string) => (failuresOf(l).find((f) => id === undefined || f.item === id) ?? (id === undefined ? undefined : failuresOf(l)[0]))?.error ?? "";
+/// A failed turn's `last.lent` against A's login as it is now: what it lists lent must still be lent (A's login shared
+/// with the other), none once the lending was taken back (`489f4480e`: `last.lent` is what the turn left lent).
+async function lentLeft(l: J): Promise<void> {
+  const lent = ((l?.lent ?? []) as J[]).map((x: J) => (typeof x === "string" ? x : named(x)));
+  const shared = (JSON.parse(readFileSync(`${DATA.A}/config.json`, "utf8")).profiles ?? []).filter((p: J) => p.share != null && p.share.borrowed !== true && (p.share.allow ?? []).length > 0);
+  log(`  the turn's lent ${brief(lent)}; A's logins shared now ${brief(shared.map((p: J) => ({ id: p.id, allow: p.share.allow })))}`);
+  if (lent.length > 0 && shared.length === 0) throw new Error(`the turn lists ${lent.join(", ")} lent, and A lends nothing now`);
+}
 const outcome = (l: J) => `done [${(l?.done ?? []).map(named).join(", ")}]${(l?.lent ?? []).length > 0 ? ` lent [${l.lent.map(named).join(", ")}]` : ""} refused [${(l?.refused ?? []).map((r: J) => `${named(r.item)}: ${r.why}`).join(" | ")}] failed ${failuresOf(l).length > 0 ? failuresOf(l).map((f) => `${f.item}: ${f.error}`).join(" | ") : "none"}${l?.stoppedBy !== undefined ? ` stoppedBy ${l.stoppedBy}` : ""}`;
 /// Chat `key` back on A from where it is, with what moved with it (its account, its jobs, its repository): the page's
 /// 全部迁回, `move.back {all}` from A's page, until it is live on A and its agent answers there.
@@ -1413,6 +1421,7 @@ try {
   }
   if (part("3a") && (limit("3a", 900), await clean("3a"))) {
     let key = "";
+    let failedLent: J = null;
     await check("3a: B killed (SIGKILL, its machine as it loses power) during the chat's first pass, started again", async () => {
       key = await faultChat("f3a", 300);
       const t0 = Date.now();
@@ -1423,10 +1432,12 @@ try {
         log(`  killed with ${filesIn("B", o.id)} files of it there`);
         const l = await turnEnds("A", t0);
         log(`  A's turn: ${outcome(l)}; its hand-over ${outOf(key)?.step}: ${outOf(key)?.error}`);
+        failedLent = l;
       } finally {
         await up("B");
       }
     });
+    if (failedLent !== null) await check("3a: the failed turn lists no login lent, its lending taken back", () => lentLeft(failedLent));
     if (key !== "") await endsWell("3a", key);
   }
   if (part("3b") && (limit("3b", 900), await clean("3b"))) {
@@ -1538,6 +1549,7 @@ try {
         log(`  C ${cId}: ${(freeBefore / 1024 / 1024).toFixed(0)} MB free`);
       });
       if (cId !== "" && mounted) {
+        let tooBig: J = null;
         await check("3e: a chat larger than C's free room: refused before it is held, saying what to do, or failed with the chat working on A and C clean", async () => {
           key = await faultChat("f3e", Math.ceil((freeBefore - 1024 * 1048576) / 1048576) + 60, 300);
           const t0 = Date.now();
@@ -1556,7 +1568,9 @@ try {
           log(`  C free before ${(freeBefore / 1048576).toFixed(0)} MB, after ${(free / 1048576).toFixed(0)} MB`);
           await whenChanged([`${DATA.C}/replica`], () => !handovers("C", "in").some((i) => (i.keys ?? []).includes(key) && i.step === "coming") && true, 120_000, () => `C's hand-over in: ${brief(handovers("C", "in"))}`);
           if (free < freeBefore - 20 * 1048576) throw new Error(`C has ${((freeBefore - free) / 1048576).toFixed(0)} MB less free than before`);
+          tooBig = l;
         });
+        if (tooBig !== null) await check("3e: the too-big chat's failed turn lists no login lent, its lending taken back", () => lentLeft(tooBig));
         if (key !== "") {
           await check("3e: the chat answers on A, listed once there", async () => {
             await listedOnceOn(key, "A");
@@ -1829,6 +1843,42 @@ try {
       const plan = Date.now() - t2;
       measured(`${label}: stationMove first answer ${shown} ms (GET /move answered at ${answered} ms); station_move plan ${plan} ms (a turn alone ${turn} ms); main thread: ${holds(from)}`);
     };
+    /// While a whole station's move runs: the drill's own reads of A's page timed (a page of a size not held, so read
+    /// now, every 5 s), and, at its end, how often alice's device read A's page (its record: each answered request
+    /// with its time) against how many plans A made that asked B which chats are live (A's log): each read of the page
+    /// by a device used to make one such ask (drill 26), `d94a0ccb0` reuses B's answers while its turn runs.
+    const duringMove = () => {
+      const from = new Date();
+      const took: number[] = [];
+      let on = true;
+      const loop = (async () => {
+        while (on) {
+          const t = Date.now();
+          const ok = await a.until(moveT(bId, "chats", 51 + Math.floor(Math.random() * 140)), (v) => v?.modules && v, 60_000).then(() => true, () => false);
+          if (ok) took.push(Date.now() - t);
+          for (let i = 0; i < 50 && on; i++) await new Promise((r) => setTimeout(r, 100));
+        }
+      })();
+      return {
+        end: async () => {
+          on = false;
+          await loop;
+          const to = new Date();
+          const day = (d: Date) => d.toISOString().slice(11, 23);
+          const rec = readFileSync(join(dir, a.name, "record.log"), "utf8").split("\n")
+            .map((l) => /^asked: (\d\d:\d\d:\d\d\.\d{3}) (\S+) GET \/admin\/api\/move\?/.exec(l))
+            .filter((m): m is RegExpExecArray => m !== null && m[2] === aId.slice(0, 8) && m[1] >= day(from) && m[1] <= day(to)).map((m) => m[1]);
+          const perSecond = new Map<string, number>();
+          for (const t of rec) perSecond.set(t.slice(0, 8), (perSecond.get(t.slice(0, 8)) ?? 0) + 1);
+          const secs = Math.max(1, (to.getTime() - from.getTime()) / 1000);
+          const asks = (existsSync(`${RUN}/station.log`) ? readFileSync(`${RUN}/station.log`, "utf8").split("\n") : [])
+            .filter((l) => l.includes("asked which chats are live") && l.slice(0, 24) >= from.toISOString() && l.slice(0, 24) <= to.toISOString()).length;
+          const sorted = [...took].sort((x, y) => x - y);
+          const q = (f: number) => (sorted.length === 0 ? "-" : `${sorted[Math.min(sorted.length - 1, Math.floor(f * sorted.length))]} ms`);
+          return `the device read A's page ${rec.length} times (${(rec.length / secs).toFixed(2)} a second, the busiest second ${Math.max(0, ...perSecond.values())}); A's plans asked B which chats are live ${asks} times; the drill's own reads of the page (every 5 s, ${took.length}): p50 ${q(0.5)}, max ${sorted.length === 0 ? "-" : `${sorted.at(-1)} ms`}`;
+        },
+      };
+    };
     let timer = "";
     await check("5: 300 chats (40 shown, 260 archived): GET /move timed", async () => {
       timer = await newChat(`timer-${tag}`);
@@ -1845,7 +1895,9 @@ try {
       let from = offsets();
       const t0 = Date.now();
       await a.call("move.start", { station: A, to: bId, all: true });
+      const there = duringMove();
       const l = await turnEnds("A", t0, 3_600_000);
+      measured(`2,384 chats there, during the move: ${await there.end()}`);
       const seenS = (Date.now() - t0) / 1000;
       // (what is measured is the station's: its turn's end as it wrote it)
       const s = typeof l?.at === "number" ? (l.at - t0) / 1000 : seenS;
@@ -1858,7 +1910,9 @@ try {
       from = offsets();
       const t1 = Date.now();
       await a.call("move.back", { station: A, from: bId, all: true });
+      const back = duringMove();
       const lb = await turnEnds("A", t1, 3_600_000);
+      measured(`2,384 chats back, during the move: ${await back.end()}`);
       const seenB = (Date.now() - t1) / 1000;
       const sb = typeof lb?.at === "number" ? (lb.at - t1) / 1000 : seenB;
       measured(`and back: ${sb.toFixed(0)} s, ${(n / (sb / 60)).toFixed(0)} chats a minute; ${ends(lb, t1, seenB)}; main thread: ${holds(from)}; ${notDone(lb)}`);
