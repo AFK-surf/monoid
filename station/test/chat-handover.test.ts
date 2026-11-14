@@ -1480,6 +1480,152 @@ test("a device is told a chat moved only once the station it went to shows it: u
   }
 });
 
+test("the station it leaves stopped while the chat is held and its files are being placed there: the drop it then sends waits for the placing and leaves nothing of that hand-over there, and the chat goes on here", async () => {
+  const w = world();
+  const a = w.get(A);
+  const b = w.get(B);
+  const { key, thread } = await stillfailChat(a);
+  const room = a.rig.session(key).workspace;
+  writeFileSync(join(room, "first.md"), "sent while it works");
+  const roomThere = room.replace(a.rig.dir, b.rig.dir);
+  // The held pass's placing there takes long; this station stops meanwhile.
+  let placings = 0;
+  let release: () => void = () => {};
+  let reached: () => void = () => {};
+  const atHeld = new Promise<void>((r) => (reached = r));
+  b.placing = async () => {
+    if (++placings !== 2) return;
+    reached();
+    await new Promise<void>((r) => (release = r));
+  };
+  a.onFail = (step) => {
+    if (step !== "held") return;
+    a.onFail = null;
+    mkdirSync(join(room, "made", "in", "the", "hold"), { recursive: true });
+    writeFileSync(join(room, "made", "in", "the", "hold", "late.md"), "written as it was held");
+  };
+  // (what ended first, of the held pass's placing and the drop)
+  const order: string[] = [];
+  b.placed = () => void (placings === 2 && order.push("placed"));
+  const moving = a.moves.handover.handOver(key, B, { wait: true }).then(() => null, (e: Error) => e.message);
+  await atHeld;
+  assert.ok(existsSync(join(roomThere, "first.md")), "the first pass placed there");
+  const id = b.moves.handover.ins()[0]!.id;
+  await a.moves.close();
+  a.moves = a.make();
+  const started = a.moves.start().then(() => void order.push("dropped"));
+  // (the drop is there, waiting or not, before the placing goes on)
+  await a.rig.quiet();
+  await b.rig.quiet();
+  release();
+  await started;
+  assert.notEqual(await moving, null, "it did not go");
+  await w.quiet();
+  assert.deepEqual(order, ["placed", "dropped"], "the drop waited for the placing under way");
+  // What of it comes after its drop (a late page of rows, a show) is refused, and puts nothing in.
+  const late = (request: Json) => a.bus.ask(B, { ...request, workspace: WS, origin: A, id });
+  const why = (p: Promise<unknown>) => p.then(() => "taken", (e: Error) => e.message);
+  assert.match(await why(late({ method: "handover.rows", table: "sessions", rows: a.rig.store.chatPage("sessions", key, null, 500, [key]) })), /dropped here/);
+  assert.match(await why(late({ method: "handover.show", sends: [] })), /dropped here/);
+  assert.deepEqual(b.moves.handover.ins().map((i) => i.step), ["dropped"]);
+  assert.equal(b.rig.store.getSession(key), null, "no row of it there");
+  assert.equal(existsSync(roomThere), false, `nothing of its room there: ${existsSync(roomThere) ? JSON.stringify(filesOf(roomThere)) : ""}`);
+  assert.equal(a.rig.store.handedTo(key), null);
+  assert.equal(a.rig.hub.chatHeld(key), null, "it goes on here");
+  say(a.rig.hub, thread, "p@x", "still here?");
+  await w.quiet();
+  assert.ok(a.rig.claude.sessions.flatMap((x) => x.prompts).join("\n").includes("still here?"));
+});
+
+test("a hand-over that fails after the other station made its linked worktree again (the drop coming, or this station stopped): nothing of it is left there, git's registration and the branch it made with it, the repository as it was; handed over again, git makes it again", async () => {
+  for (const how of ["drop", "stopped"] as const) {
+    const w = world();
+    const a = w.get(A);
+    const b = w.get(B);
+    const { key } = await stillfailChat(a);
+    const ws = a.rig.session(key).workspace;
+    const run = (dir: string, ...args: string[]) => execFileSync("git", ["-C", dir, ...args], { encoding: "utf8", env: gitEnv(a.rig.dir), stdio: ["ignore", "pipe", "pipe"] }).trim();
+    const bare = join(a.rig.dir, "remote.git");
+    execFileSync("git", ["init", "-q", "--bare", "-b", "main", bare], { env: gitEnv(a.rig.dir) });
+    const repos = join(a.rig.dir, "repos");
+    mkdirSync(repos, { recursive: true });
+    execFileSync("git", ["clone", "-q", bare, join(repos, "proj")], { env: gitEnv(a.rig.dir), stdio: "ignore" });
+    const clone = join(repos, "proj");
+    writeFileSync(join(clone, "a.txt"), "pushed\n");
+    run(clone, "add", "-A");
+    run(clone, "commit", "-q", "-m", "pushed");
+    run(clone, "push", "-q", "origin", "HEAD:main");
+    run(clone, "worktree", "add", "-q", "-b", "feature", join(ws, "proj"));
+    writeFileSync(join(ws, "proj", "a.txt"), "pushed\nnot pushed\n");
+    run(join(ws, "proj"), "commit", "-q", "-am", "not pushed anywhere");
+    const head = run(join(ws, "proj"), "rev-parse", "HEAD");
+    assert.equal((await a.moves.scheduler.move(WS, B, { module: "repos", item: `repo:${bare}` })).failed, null);
+    await w.quiet();
+    const repoThere = join(b.rig.dir, "repos", readdirSync(join(b.rig.dir, "repos"))[0]!);
+    const refsBefore = run(repoThere, "for-each-ref", "--format=%(refname) %(objectname)");
+    const listBefore = run(repoThere, "worktree", "list", "--porcelain");
+    const roomThere = ws.replace(a.rig.dir, b.rig.dir);
+    // It fails once the other made the worktree: counted wrong (its drop comes), or this station stops as it is told.
+    if (how === "drop") a.fails.add("counts");
+    else a.onFail = (step) => {
+      if (step !== "rows") return;
+      a.onFail = null;
+      assert.ok(existsSync(join(roomThere, "proj", ".git")), "made there before it stops");
+      void a.moves.close();
+      throw new Error("the station stopped");
+    };
+    const failed = await a.moves.handover.handOver(key, B, { wait: true }).then(() => null, (e: Error) => e.message);
+    assert.notEqual(failed, null, how);
+    if (how === "stopped") {
+      a.moves = a.make();
+      await a.moves.start();
+    }
+    await w.quiet();
+    assert.equal(existsSync(roomThere), false, `${how}: nothing of its room there`);
+    assert.doesNotMatch(run(repoThere, "worktree", "list", "--porcelain"), new RegExp(roomThere.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), `${how}: git names no worktree of it there`);
+    assert.equal(run(repoThere, "worktree", "list", "--porcelain"), listBefore, `${how}: the repository's worktrees as they were`);
+    assert.equal(run(repoThere, "for-each-ref", "--format=%(refname) %(objectname)"), refsBefore, `${how}: its branches and refs as they were`);
+    assert.equal(a.rig.hub.chatHeld(key), null, `${how}: it goes on here`);
+    // Handed over again: git makes its worktree again there, refusing nothing.
+    const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: key });
+    await w.quiet();
+    assert.equal(out.failed, null, `${how}: ${JSON.stringify(out)}`);
+    assert.equal(run(join(b.rig.session(key).workspace, "proj"), "rev-parse", "HEAD"), head, `${how}: git's worktree there`);
+  }
+});
+
+test("a hand-over given up whose drop has not reached the other station yet, then the chat handed over again: the newer one drops the older there first, so the older's drop, coming late, takes nothing the newer counted", async () => {
+  const w = world();
+  const a = w.get(A);
+  const b = w.get(B);
+  const { key } = await stillfailChat(a);
+  const room = a.rig.session(key).workspace;
+  writeFileSync(join(room, "kept.md"), "placed by the first, counted by the second");
+  // The first: the other not reached once the chat is held (its first pass placed there), its drop owed.
+  a.onFail = (step) => {
+    if (step !== "held") return;
+    a.onFail = null;
+    b.up = false;
+  };
+  const first = await a.moves.handover.handOver(key, B, { wait: true }).then(() => null, (e: Error) => e.message);
+  assert.notEqual(first, null);
+  assert.equal(a.moves.handover.outs().find((o) => o.step === "failed")?.dropOwed, true, "its drop owed");
+  b.up = true;
+  // The second, before the first's drop is tried again.
+  const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: key });
+  await w.quiet();
+  assert.equal(out.failed, null, JSON.stringify(out));
+  const roomThere = b.rig.session(key).workspace;
+  assert.deepEqual(filesOf(roomThere), filesOf(room), "its room there");
+  // The first's drop, at last.
+  await w.t.adjust(RETRY_MS * 4);
+  await w.quiet();
+  assert.equal(a.moves.handover.outs().some((o) => o.dropOwed), false, "the first's drop answered");
+  assert.ok(existsSync(join(roomThere, "kept.md")), "what the second counted there still");
+  assert.deepEqual(filesOf(roomThere), filesOf(room), "its room there still, whole");
+  assert.equal(b.rig.session(key).ws, null, "shown there");
+});
+
 test("a chat whose key is live where it would go (one that went on there apart from it, as a retirement taken back leaves one) cannot go: the plan says so, the station asked refuses it before anything is written, and the chat goes on here", async () => {
   const w = world();
   const a = w.get(A);

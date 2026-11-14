@@ -50,6 +50,10 @@ export type Station = {
   profileHangs?: boolean;
   /// Called as its config.json is written by a module (a setting taken).
   onUpdate?: () => void;
+  /// Waited for before a hand-over's files are placed here (each placing, its index's path): a placing that takes long.
+  placing?: (index: string) => Promise<void>;
+  /// Called as a placing here ended.
+  placed?: () => void;
   /// Its routes of move/routes.ts, as a device asks them.
   ask(method: string, path: string, body: Json, role?: string, query?: [string, string][]): Promise<{ status: number; body: Json }>;
   jobs: (CarriedJob & { id: string })[]; started: string[]; free: number; fails: Set<string>; onFail: ((step: string) => void) | null;
@@ -139,7 +143,14 @@ export function world(ids: string[] = [A, B]) {
         lackMost: 50,
         work: {
           gather: async (dataDir, db, ws, home, scratch, _signal, agent, keys) => gather(dataDir, db, ws, home, scratch, agent ?? null, keys ?? null),
-          place: async (dataDir, index, from, made, aside, placed, projects) => place(dataDir, index, from, made ?? null, aside ?? null, placed ?? null, projects ?? false),
+          place: async (dataDir, index, from, made, aside, placed, projects) => {
+            await st.placing?.(index);
+            try {
+              return place(dataDir, index, from, made ?? null, aside ?? null, placed ?? null, projects ?? false);
+            } finally {
+              st.placed?.();
+            }
+          },
         },
         fail: (step) => {
           st.onFail?.(step);

@@ -114,7 +114,10 @@ below, sends them along).
   one that went on there apart from it) is never merged into: the plan says it cannot move (`move.chats.live`) and
   `handover.begin` refuses it before anything is written. What it had yet to be handed goes with it and is marked
   handed here once it is shown there (store `deliveredThere`), so none of it is handed to its agent again as it comes back. Only once the
-  other counted what it has does this one say it went; before, a failure undoes it there and the chat goes on here;
+  other counted what it has does this one say it went; before, a failure undoes it there and the chat goes on here
+  (`handover.drop`: after the placing under way, what it placed and the directories made for it, a linked worktree
+  git made with its registration, branch and ref, the repository staying; what it put aside back; a newer hand-over
+  of the chat drops an older one still coming first, so the older's drop, late, takes nothing of it);
   after, nothing is undone and the rest is told until it is answered. Its platform threads are re-pointed where their
   connect runs (connects/workspace.ts `route`, `connect.route`); what still comes here of it goes on there
   (`movedTo`). A device naming it here is answered where it went (409 with `moved`, `GET /moved`, `chat-moved`),

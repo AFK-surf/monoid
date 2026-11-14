@@ -23,8 +23,8 @@
 // Nothing is posted in its threads nor said in the chat; its agent is told once as its next turn starts (moved_notes).
 import { createHash, randomBytes } from "node:crypto";
 import { createReadStream, readFileSync, readdirSync } from "node:fs";
-import { mkdir, readFile, readdir, rename, rm, stat, statfs, writeFile } from "node:fs/promises";
-import { basename, dirname, join, sep } from "node:path";
+import { appendFile, mkdir, readFile, readdir, realpath, rename, rm, rmdir, stat, statfs, writeFile } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { type Bytes, Refused, bytesOf, withBytes } from "../mesh/bus.ts";
 import { stopBytes } from "../mesh/files.ts";
 import type { Fibers } from "../ops/fibers.ts";
@@ -40,7 +40,7 @@ import { HASH, STATION, WORKSPACE } from "./format.ts";
 import type { Ask } from "./peers.ts";
 import type { Need } from "../move/module.ts";
 import type { KeptSend } from "../api/admin.ts";
-import { HEADROOM, LACK_MOST, RETRY_MOST_MS, RETRY_MS, connectsThere, gatherSoon, placeSoon, rebuildGits } from "./retire.ts";
+import { HEADROOM, LACK_MOST, type MadeGit, RETRY_MOST_MS, RETRY_MS, connectsThere, gatherSoon, placeSoon, rebuildGits } from "./retire.ts";
 import { lackingIn, receiveFile, sendGathered } from "./sending.ts";
 import { carriedTo, moved } from "./restore.ts";
 
@@ -162,6 +162,8 @@ const inFiles = (data: string, id: string) => join(dir(data), "in", id, "files")
 const inMade = (data: string, id: string) => join(dir(data), "in", id, "made.txt");
 /// What was here that a hand-over coming in replaced or pruned, kept until it is shown (put back where it is dropped).
 const inAside = (data: string, id: string) => join(dir(data), "in", id, "aside");
+/// The linked worktrees git made for a hand-over coming here, a line each (retire.ts `MadeGit`).
+const inGits = (data: string, id: string) => join(dir(data), "in", id, "gits.jsonl");
 const scratch = (data: string, id: string) => join(dir(data), "out", id);
 
 async function writeJson(path: string, v: unknown): Promise<void> {
@@ -215,6 +217,12 @@ export class Handover {
   readonly #ins = new Map<string, In>();
   /// The chats coming here, each holding the station's self-update until it is shown or dropped.
   readonly #inHeld = new Map<string, () => void>();
+  /// What a hand-over coming here does to its files, one at a time (its placing, its pruning, its drop): a drop waits
+  /// for the placing under way, so nothing it places is left after it.
+  readonly #inWork = new Map<string, Promise<unknown>>();
+  /// The hand-overs coming here whose drop was asked: from then on nothing more of them is taken (`#dropIn` may still
+  /// wait for a placing under way).
+  readonly #dropping = new Set<string>();
   readonly #runs = new Map<string, Promise<void>>();
   readonly #again = new Map<string, () => void>();
   readonly #tries = new Map<string, number>();
@@ -720,8 +728,10 @@ export class Handover {
         if (!/^[0-9a-z-]{1,80}$/.test(id)) throw new Refused("not a hand-over");
         if (request.method === "handover.begin") return await this.#begin(peer, ws, id, request);
         const i = this.#ins.get(id);
-        if (request.method === "handover.drop") return await this.#dropIn(i);
+        if (request.method === "handover.drop") return i === undefined ? { ok: true } : await this.#drop1(i);
         if (i === undefined || i.origin !== peer) throw new Refused("not begun: handover.begin first");
+        // (dropped here, by its own drop or a newer hand-over of the chat: nothing more of it is taken)
+        if (i.step === "dropped" || this.#dropping.has(i.id)) throw new Refused("that hand-over was dropped here: hand the chat over again");
         switch (request.method) {
           case "handover.lacking": {
             const hashes = Array.isArray(request.hashes) ? request.hashes : [];
@@ -737,7 +747,7 @@ export class Handover {
             return { lacking: hashes.filter((h: string) => lacking.has(h)) };
           }
           case "handover.prune":
-            return await this.#prune(i);
+            return await this.#serialIn(i, () => this.#prune(i));
           case "handover.put": {
             const name = String(request.name ?? "");
             if (bytes === null || !HASH.test(name)) throw new Refused("not a file's hash");
@@ -745,7 +755,7 @@ export class Handover {
             return { ok: true };
           }
           case "handover.place":
-            return await this.#place(i, String(request.carry ?? ""));
+            return await this.#serialIn(i, () => this.#place(i, String(request.carry ?? "")));
           case "handover.rows": {
             const table = String(request.table ?? "") as ChatTable;
             // (shown: only what was said there after its rows went, its log's and what it has yet to be handed)
@@ -780,6 +790,11 @@ export class Handover {
     // (a chat of the same key that is live here went on apart from it: never merged into, nothing written)
     const live = this.#d.store.liveOf(keys);
     if (live.length > 0) throw new Refused(liveHereWords(live, this.#d.roster(ws)?.find((s) => s.id === this.#d.here())?.name || "this station"));
+    // (an older hand-over of the chat still coming here was given up where it began, its drop maybe not here yet: it is
+    // dropped now, before this one places anything, so that its drop, coming late, takes nothing this one counted)
+    for (const old of [...this.#ins.values()]) {
+      if (old.id !== id && old.origin === origin && old.step === "coming" && old.keys.some((k) => keys.includes(k))) await this.#drop1(old);
+    }
     // Its accounts as they are here: each the profile of the same share, or of the same key; one not here refused,
     // named.
     const profiles: Record<string, string> = {};
@@ -816,7 +831,9 @@ export class Handover {
     // (what the first pass placed stays placed: the second looks only at what the lists say otherwise of)
     const placed = await this.#work.place(this.#d.data, index, files, inMade(this.#d.data, i.id), inAside(this.#d.data, i.id), join(dir(this.#d.data), "in", i.id, "placed.txt"), true);
     const c = JSON.parse(await readFile(index, "utf8")) as CarryIndex;
-    if (c.gits.length > 0 && this.#d.git !== undefined) await rebuildGits(this.#d.data, this.#d.reposDir, c, files, this.#d.git, { clone: false });
+    // (each worktree git makes for it kept, as the files it makes are: a drop takes it out again)
+    const gits = inGits(this.#d.data, i.id);
+    if (c.gits.length > 0 && this.#d.git !== undefined) await rebuildGits(this.#d.data, this.#d.reposDir, c, files, this.#d.git, { clone: false, made: (m) => appendFile(gits, `${JSON.stringify(m)}\n`) });
     i.carry = carry;
     await this.#saveIn(i);
     return { ok: true, placed: placed.placed, missing: placed.missing };
@@ -920,6 +937,17 @@ export class Handover {
   }
 
   /// `path`, replaced or pruned by hand-over `i`, moved aside the first time (`inAside`'s list says where it was).
+  /// The directories a placing made for what it put, left empty as that is taken out: removed, up to the rooms'
+  /// roots (one that holds anything stays, and so does everything above it).
+  async #emptied(at: string): Promise<void> {
+    for (let d = at; ; d = dirname(d)) {
+      const parts = relative(this.#d.data, d).split(sep);
+      // (never the data directory's own, `sessions/` nor a runtime's `transcripts*/<runtime>/`)
+      if (parts[0] === "" || parts[0] === ".." || isAbsolute(parts[0]!) || parts.length <= (parts[0]!.startsWith("transcripts") ? 2 : 1)) return;
+      if (!(await rmdir(d).then(() => true, () => false))) return;
+    }
+  }
+
   async #putAside(i: In, path: string): Promise<void> {
     const aside = inAside(this.#d.data, i.id);
     const list = join(aside, "list.txt");
@@ -939,13 +967,63 @@ export class Handover {
 
   /// What a hand-over that did not go put in here, taken out: its rows (store `dropImport`) and the files placed where
   /// nothing was; what it replaced or pruned put back.
-  async #dropIn(i: In | undefined): Promise<Json> {
-    if (i === undefined || i.step === "dropped") return { ok: true };
+  /// Hand-over `i` dropped: nothing more of it taken from now, then undone once what it was doing to its files ended.
+  async #drop1(i: In): Promise<Json> {
+    this.#dropping.add(i.id);
+    try {
+      return await this.#serialIn(i, () => this.#dropIn(i));
+    } finally {
+      this.#dropping.delete(i.id);
+    }
+  }
+
+  /// `f`, after what hand-over `i` was doing to its files here ended.
+  #serialIn<T>(i: In, f: () => Promise<T>): Promise<T> {
+    const before = this.#inWork.get(i.id) ?? Promise.resolve();
+    const run = before.then(f, f);
+    const settled = run.catch(() => {});
+    this.#inWork.set(i.id, settled);
+    void settled.then(() => {
+      if (this.#inWork.get(i.id) === settled) this.#inWork.delete(i.id);
+    });
+    return run;
+  }
+
+  async #dropIn(i: In): Promise<Json> {
+    if (i.step === "dropped") return { ok: true };
     if (i.step === "shown") throw new Refused("it is shown here: it went");
     this.#d.store.dropImport(i.ctx);
     this.#d.store.forgetImport(i.id);
+    // What git made for it: each worktree's own `.git` taken out and its registration with it (`worktree prune`), the
+    // branch and the ref it made there deleted; the repository and all it had before stay.
+    const gits = new Map<string, MadeGit>();
+    for (const line of (await readFile(inGits(this.#d.data, i.id), "utf8").catch(() => "")).split("\n")) {
+      try {
+        const m = JSON.parse(line) as MadeGit;
+        const was = gits.get(m.dir);
+        gits.set(m.dir, { ...m, branch: m.branch ?? was?.branch ?? null, ref: m.ref ?? was?.ref ?? null });
+      } catch {}
+    }
+    for (const m of gits.values()) {
+      if (this.#d.git === undefined || !carriedPlace(this.#d.data, join(m.dir, ".git"))) continue;
+      // (its registration is the directory its `.git` names in the repository: that one alone, never a prune of others)
+      for (const at of [join(m.dir, ".git"), join(`${m.dir}.git-carrying`, ".git")]) {
+        const named = /^gitdir: (.+)$/m.exec(await readFile(at, "utf8").catch(() => ""))?.[1]?.trim();
+        const ours = named === undefined ? false : (await realpath(dirname(named)).catch(() => "")) === (await realpath(join(m.repo, ".git", "worktrees")).catch(() => null));
+        if (ours) await rm(named!, { recursive: true, force: true }).catch(() => {});
+        await rm(at, { force: true }).catch(() => {});
+      }
+      await rm(`${m.dir}.git-carrying`, { recursive: true, force: true }).catch(() => {});
+      if (m.branch !== null) await this.#d.git(m.repo, ["branch", "-D", m.branch]).catch(() => {});
+      if (m.ref !== null) await this.#d.git(m.repo, ["update-ref", "-d", m.ref]).catch(() => {});
+      await this.#emptied(m.dir);
+    }
     const made = await readFile(inMade(this.#d.data, i.id), "utf8").catch(() => "");
-    for (const path of made.split("\n")) if (path !== "") await rm(path, { force: true }).catch(() => {});
+    for (const path of made.split("\n")) {
+      if (path === "") continue;
+      await rm(path, { force: true }).catch(() => {});
+      await this.#emptied(dirname(path));
+    }
     const aside = inAside(this.#d.data, i.id);
     for (const line of (await readFile(join(aside, "list.txt"), "utf8").catch(() => "")).split("\n")) {
       const [path, name] = line.split("\t");

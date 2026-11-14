@@ -1742,7 +1742,11 @@ export class Retire {
 /// (`<dir>.carried.bundle`: the only copy of its commits no remote has), counted.
 /// `clone` false: a repository not in the cache already is not cloned, and its remote not fetched: a chat handed over
 /// (handover.ts) has its repository moved before it by the repos module (move/repos.ts), and only adds its worktree.
-export async function rebuildGits(dataDir: string, reposDir: string, carry: { dataDir: string; gits: CarryIndex["gits"] }, from: string, git: (dir: string, args: string[]) => Promise<string>, opts: { clone?: boolean } = {}): Promise<{ made: number; failed: number }> {
+/// A linked worktree `rebuildGits` made: its directory, its repository, the branch and the ref it made there (none: there
+/// already). What a hand-over that fails takes out again (handover.ts), the repository itself staying.
+export type MadeGit = { dir: string; repo: string; branch: string | null; ref: string | null };
+
+export async function rebuildGits(dataDir: string, reposDir: string, carry: { dataDir: string; gits: CarryIndex["gits"] }, from: string, git: (dir: string, args: string[]) => Promise<string>, opts: { clone?: boolean; made?: (m: MadeGit) => Promise<void> } = {}): Promise<{ made: number; failed: number }> {
   let made = 0;
   let failed = 0;
   const repos = new Map<string, string>();
@@ -1784,11 +1788,15 @@ export async function rebuildGits(dataDir: string, reposDir: string, carry: { da
         continue;
       }
       const repo = await repoOf(g.remote);
-      if (g.bundle !== null) await git(repo, ["fetch", "-q", join(from, g.bundle), `+HEAD:refs/carried/${g.head}`]);
+      const ref = `refs/carried/${g.head}`;
+      const refBefore = g.bundle === null ? true : await git(repo, ["rev-parse", "-q", "--verify", ref]).then(() => true, () => false);
+      if (g.bundle !== null) await git(repo, ["fetch", "-q", join(from, g.bundle), `+HEAD:${ref}`]);
       if (opts.clone !== false && await git(repo, ["cat-file", "-e", `${g.head}^{commit}`]).then(() => false, () => true)) await git(repo, ["fetch", "-q", "origin"]);
       const beside = `${dir}.git-carrying`;
       await rm(beside, { recursive: true, force: true });
       await git(repo, ["worktree", "add", "-q", "--no-checkout", "--detach", beside, g.head]);
+      // (said before it is in place, so that one cut between the two is taken out too)
+      await opts.made?.({ dir, repo, branch: null, ref: refBefore ? null : ref });
       await rename(join(beside, ".git"), join(dir, ".git"));
       await rm(beside, { recursive: true, force: true });
       await git(dir, ["worktree", "repair"]);
@@ -1796,7 +1804,10 @@ export async function rebuildGits(dataDir: string, reposDir: string, carry: { da
       if (g.branch !== null) {
         const at = await git(repo, ["rev-parse", "-q", "--verify", `refs/heads/${g.branch}`]).catch(() => null);
         // (a branch of that name here already is another's: the checkout stays at its commit, detached)
-        if (at === null) await git(dir, ["checkout", "-q", "-b", g.branch]);
+        if (at === null) {
+          await opts.made?.({ dir, repo, branch: g.branch, ref: refBefore ? null : ref });
+          await git(dir, ["checkout", "-q", "-b", g.branch]);
+        }
       }
       made++;
     } catch (e) {
