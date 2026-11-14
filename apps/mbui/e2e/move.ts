@@ -1463,6 +1463,18 @@ try {
         log(`  C's end: ${String(e).slice(0, 300)}`);
       }
     }
+    // (drill 24: 3e moved a chat to C with its login, the chat came back alone, the login stayed hosted on C, A borrowing
+    // it, and as C left the workspace A's copy was taken away: the next part found A with no login (RESTORED BY HAND).
+    // The login is A's to keep: shared, not moved, its host stays where it was. Held until that lands, and after.)
+    if (cId !== "") {
+      await check("3e: C gone: A still has its login (what went to C with a chat is not lost with C)", async () => {
+        const usable = () => (JSON.parse(readFileSync(`${DATA.A}/config.json`, "utf8")).profiles ?? []).filter((p: J) => p.id === "cc" && p.share?.borrowed !== true);
+        // (a borrowed copy is taken away once A hears its host left, some seconds after: waited for, at most 30 s)
+        const lost = await whenChanged([DATA.A], () => usable().length === 0, 30_000, () => "kept").then(() => true, () => false);
+        log(`  A's profiles: ${brief((JSON.parse(readFileSync(`${DATA.A}/config.json`, "utf8")).profiles ?? []).map((p: J) => ({ id: p.id, share: p.share ?? null })), 400)}`);
+        if (lost) throw new Error("A has no login of its own any more: it went to C with a chat and was lost with C");
+      });
+    }
   }
   if (part("3f") && (limit("3f", 900), await clean("3f"))) {
 
