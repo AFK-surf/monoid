@@ -226,7 +226,8 @@ fn fx_move_view(params : Map[String, Json]) -> Json {
         Json::null()
       },
     ),
-    ("active", Json::boolean(some)),
+    // (its station's page's row: a move under way, something stopped or failed; something there alone, none: move.ts)
+    ("active", Json::boolean(mid || ended)),
     // (no station chosen, its station's page: the last move went to Maple)
     ("title", str(if some { fill("core-views.move.summary.to", [("name", if name == "" { "Maple" } else { name })]) } else { tr("core-views.move.summary.title") })),
     ("count", str(fill("core-views.move.count", [("done", there.to_string()), ("total", (left + there).to_string())]))),

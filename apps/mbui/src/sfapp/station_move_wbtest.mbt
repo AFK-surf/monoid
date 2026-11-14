@@ -413,7 +413,7 @@ test "停止 at the end of what moves now: the core asked once, 正在停止… 
 }
 
 ///|
-test "its station's page shows one row of it only while something of it is moved, moving, stopped or failed: where, how far, what stands out, opening its page" {
+test "its station's page shows one row of it only while a move runs, something is stopped or a turn failed: where, how far, what stands out, opening its page; something of it there alone, none" {
   let calls : Array[Made] = []
   let t = move_tester(calls, "settings-station-move-section")
   move_audit(t, "")
@@ -436,13 +436,22 @@ test "its station's page shows one row of it only while something of it is moved
     t.run_for(@ui.move_most_ms)
     assert_true(!move_said(t, "迁移") && !move_said(t, "迁移到 Maple"), msg=move_all_words(t))
   }
-  // (something there, the switch off: shown all the same)
+  // (something there alone, nothing moving, stopped or failed: none, the switch on or off; reached by its ⋯)
+  for offered in [true, false] {
+    let calls : Array[Made] = []
+    let t = move_tester(calls, "settings-station")
+    @settings.fixture_move(offered~, stage="half")
+    t.draw()
+    t.run_for(@ui.move_most_ms)
+    assert_true(!move_said(t, "迁移") && !move_said(t, "迁移到 Maple"), msg=move_all_words(t))
+  }
+  // (a turn that left something stopped and something failed, the switch off: shown all the same)
   let calls : Array[Made] = []
   let t = move_tester(calls, "settings-station")
-  @settings.fixture_move(offered=false, stage="half")
+  @settings.fixture_move(offered=false, stage="ended")
   t.draw()
   t.run_for(@ui.move_most_ms)
-  assert_true(move_said(t, "迁移到 Maple"), msg=move_all_words(t))
+  assert_true(move_said(t, "迁移到 Maple") && t.find("1 项失败 · 1 项已停") is Some(_), msg=move_all_words(t))
 }
 
 ///|
