@@ -12,7 +12,7 @@ import { readFileSync } from "node:fs";
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { Refused } from "../mesh/bus.ts";
-import { type Item, type ItemState, type Module, unanswered } from "./module.ts";
+import { type Item, type ItemState, type Module, unanswered, notAnswered } from "./module.ts";
 
 type Json = any;
 
@@ -59,7 +59,7 @@ export class SettingsModule implements Module {
     const keys = SETTINGS.filter((k) => raw[k] !== undefined);
     // (not answered: whether it has its own is not guessed, nothing of them goes this turn)
     let failed: unknown = null;
-    const there = to === "" || keys.length === 0 ? null : ((await this.#d.ask(to, { method: "move.setting.values", key: "agentEnv", keys }).catch((e) => ((failed = e ?? new Error("no answer")), null)))?.values as Record<string, Json> | undefined) ?? null;
+    const there = to === "" || keys.length === 0 ? null : ((await this.#d.ask(to, { method: "move.setting.values", key: "agentEnv", keys }).catch((e) => ((failed = notAnswered("move.setting.values", to, e)), null)))?.values as Record<string, Json> | undefined) ?? null;
     return keys.map((k) => {
       const theirs = there?.[k];
       const cannot = failed !== null ? unanswered(failed) : theirs === undefined || theirs === null || same(theirs, raw[k]) || (isMap(theirs) && isMap(raw[k])) || this.#moved.has(`setting:${k}`)

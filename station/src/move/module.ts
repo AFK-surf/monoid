@@ -3,6 +3,8 @@
 // move/AGENTS.md). This is the one seam every module is: what it would move (its items, each naming what it needs), each
 // moved and moved back on its own, where each stands.
 
+import { log } from "../ops/log.ts";
+
 /// An item a module's needs name, by its module and its id there (an id the workspace knows it by, the same on every
 /// station: a chat's session key, a share's id, a connect as `<id>@<origin>`).
 export type Need = { module: string; id: string };
@@ -17,6 +19,12 @@ export type Waits = Need & { label?: string; at?: string };
 export type Item = { module: string; id: string; label: string; needs: Need[]; cannot?: string; again?: true; size?: number };
 /// Why an item cannot go where the other station did not answer what it has of it, as a plan asked (a station enrolled a
 /// moment ago, not reached): a plan is never made on a guess of what is there, so it is not tried; asked again it is.
+/// A plan's question of the other station not answered (`method`, of `to`): said once in the log as it fails, the error
+/// as it came, so what a start or a dead station did is read there (a plan says only that it was not answered).
+export const notAnswered = (method: string, to: string, e: unknown): unknown => {
+  log.warn("move", "a plan's question of the other station was not answered", { method, station: to.slice(0, 12), error: (e as Error)?.message ?? String(e) });
+  return e ?? new Error("no answer");
+};
 export const unanswered = (e: unknown) => `the other station did not answer what it has of it (${(e as Error)?.message ?? String(e)}): ask again`;
 
 /// Where an item stands: here, moving, there, failed (why kept; it is here and works), or stopped: still here, but
