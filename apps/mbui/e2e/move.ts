@@ -232,6 +232,37 @@ function alive(n: Name): boolean {
   }
 }
 
+/// Station `n`'s launcher, by its own process name: the harness's waitfor (its pid file's) carries the same arguments
+/// after its `--`, and drill 12 signalled it, so that nothing was handed over.
+function launcherOf(n: Name): number | undefined {
+  const app = `${dirname(DATA[n])}/app`;
+  for (const l of spawnSync("ps", ["-axo", "pid=,comm=,args="], { encoding: "utf8" }).stdout.split("\n")) {
+    const m = /^\s*(\d+)\s+(\S+)\s+(.*)$/.exec(l);
+    if (m && m[2]!.endsWith("stillfail-station") && m[3]!.includes(` run --app ${app} `)) return Number(m[1]);
+  }
+  return undefined;
+}
+/// Station `n` sent SIGUSR2 by its launcher's pid, as an update does, and the launcher's word on it from its log (each
+/// station's `<name>.log`): it began a handover (a Node started beside the one serving), or the error at once where it
+/// said nothing of one in 10 s.
+async function handOver(n: Name): Promise<{ from: number; log: string }> {
+  const file = `${RUN}/${SHELL_NAME[n]}.log`;
+  const from = statSync(file).size;
+  const pid = launcherOf(n);
+  if (pid === undefined) throw new Error(`${n}'s launcher not found`);
+  process.kill(pid, "SIGUSR2");
+  log(`  SIGUSR2 to ${n}'s launcher ${pid}; waiting for it to begin a handover`);
+  await whenChanged([RUN], () => /handover: Node [0-9]+ started beside|not handed over/.test(readFileSync(file, "utf8").slice(from)), 10_000,
+    () => `${n}'s launcher said nothing of a handover in 10 s: ${readFileSync(file, "utf8").slice(from).split("\n").slice(-5).join(" | ")}`);
+  return { from, log: file };
+}
+/// What `n`'s launcher said since `from` once it said how the handover ended: taken over, or not handed over.
+function handoverEnd(h: { from: number; log: string }, ms = 120_000): Promise<string> {
+  log("  waiting for the handover's end in the launcher's log");
+  return whenChanged([RUN], () => /Node [0-9]+ has taken over|not handed over[^\n]*|did not take over[^\n]*/.exec(readFileSync(h.log, "utf8").slice(h.from))?.[0], ms,
+    () => `no end of the handover said: ${readFileSync(h.log, "utf8").slice(h.from).split("\n").slice(-6).join(" | ")}`);
+}
+
 /// A room filled with `count` files of `bytes` bytes each, each its own random bytes (two the same would be sent once).
 function fill(room: string, sub: string, count: number, bytes: number): void {
   const d = join(room, sub);
@@ -1274,15 +1305,12 @@ try {
     }
   }
   if (part("3f") && (limit("3f", 900), await clean("3f"))) {
-    const launcher = () => spawnSync("pgrep", ["-f", `run --app ${ST}/app --data`], { encoding: "utf8" }).stdout.split("\n").filter((x) => x !== "").map(Number)[0];
+
     /// A handed over to a fresh Node by its launcher (SIGUSR2, what an update does once it goes ahead), until the new
     /// one says it has taken over.
     const handOverA = async () => {
-      const log0 = statSync(`${RUN}/station.log`).size;
-      const pid = launcher();
-      if (pid === undefined) throw new Error("A's launcher not found: the harness's stations run under it");
-      process.kill(pid, "SIGUSR2");
-      await whenChanged([RUN], () => readFileSync(`${RUN}/station.log`, "utf8").slice(log0).match(/Node [0-9]+ has taken over/), 120_000, () => "no new Node took over");
+      const end = await handoverEnd(await handOver("A"));
+      if (!/has taken over/.test(end)) throw new Error(`not handed over: ${end}`);
     };
     let key = "";
     await check("3f: A handed over to a fresh process (SIGUSR2 to its launcher) during an agent's turn: the turn is not cut", async () => {
@@ -1497,16 +1525,27 @@ try {
   // once the other is ready, asks are answered again within 5 s ──
   if (part("7") && (limit("7", 900), await clean("7"))) {
     type Ask = { at: number; ms: number; said: string; reached: boolean };
-    const unreached = /连不上|unreachable|out of reach|not reached/i;
+    const unreached = /连不上|unreachable|out of reach|not reached|timed out|connection lost|answered nothing/i;
     /// Station `asker` (an address) asking station `other` (an id) once a second until `stop`.
-    const asking = (asker: string, other: string) => {
+    /// The end of station `n`'s turn asked at `since` (its move/last.json once move/turn.json is gone).
+    const turnEndOn = (n: Name, since: number, ms: number) => whenChanged([DATA[n]], () => {
+      const l = lastOn(n, ws);
+      return l !== null && l.at >= since && !existsSync(`${DATA[n]}/move/turn.json`) && l;
+    }, ms, () => `${n}'s turn asked at ${since} not ended`);
+    /// Station `askerN` asking station `otherN` once a second until `stop`: each ask its POST and, where it was taken,
+    /// the turn it began (its plan asks the other too), to its end, so that no ask overlaps the one before (drill 12's
+    /// asks after the first were all "a move is under way here", answered by B alone).
+    const asking = (askerN: Name, otherN: Name) => {
+      const asker = addr(askerN);
+      const other = idOf(otherN);
       const asks: Ask[] = [];
       let on = true;
       const done = (async () => {
         while (on) {
           const t = Date.now();
-          const said = (await within(a.call("move.back", { station: asker, from: other, module: "chats", item: "chat:c-drill-not-there" }).then(() => "answered (202)", (e) => String(e).replace(/^Error: [A-Z]+ move\.back: /, "").slice(0, 200)), 35_000)) ?? "no answer in 35 s";
-          asks.push({ at: t, ms: Date.now() - t, said, reached: !unreached.test(said) && !said.startsWith("no answer") });
+          let said = (await within(a.call("move.back", { station: asker, from: other, module: "chats", item: "chat:c-drill-not-there" }).then(() => "202", (e) => String(e).replace(/^Error: [A-Z]+ move\.back: /, "").slice(0, 200)), 35_000)) ?? "no answer in 35 s";
+          if (said === "202") said = await turnEndOn(askerN, t, 35_000).then((l) => `202, its turn: ${outcome(l)}`, () => "202, its turn not ended in 35 s");
+          asks.push({ at: t, ms: Date.now() - t, said, reached: !unreached.test(said) && !/no answer|not ended|under way|进行/.test(said) });
           const wait = 1000 - (Date.now() - t);
           if (wait > 0) await new Promise((r) => setTimeout(r, wait));
         }
@@ -1544,18 +1583,19 @@ try {
       if (upAt !== null && (firstBack === undefined || firstBack.at + firstBack.ms - upAt > 5000)) why.push(`answered again ${back} after A was ready, not within 5 s`);
       if (why.length > 0) throw new Error(why.join("; "));
     };
-    const launcherA = () => spawnSync("pgrep", ["-f", `stillfail-station run --app ${ST}/app `], { encoding: "utf8" }).stdout.split("\n").filter((x) => x !== "").map(Number)[0];
 
     await check("7a: A handed over to a new process as an update does (SIGUSR2 to its launcher) while B asks it each second: no ask over 2 s, every one answered", async () => {
       const t0 = Date.now();
-      const b = asking(B, aId);
+      const b = asking("B", "A");
       await new Promise((r) => setTimeout(r, 3000));
-      const log0 = statSync(`${RUN}/station.log`).size;
-      const pid = launcherA();
-      if (pid === undefined) throw new Error("A's launcher not found");
-      process.kill(pid, "SIGUSR2");
-      log(`  SIGUSR2 to A's launcher ${pid}; waiting for its new Node to take over`);
-      await whenChanged([RUN], () => readFileSync(`${RUN}/station.log`, "utf8").slice(log0).match(/Node [0-9]+ has taken over/), 120_000, () => "no new Node took over");
+      try {
+        const end = await handoverEnd(await handOver("A"));
+        log(`  ${end}`);
+        if (!/has taken over/.test(end)) throw new Error(`not handed over: ${end}`);
+      } catch (e) {
+        await b.stop();
+        throw e;
+      }
       log("  waiting 10 s more of asks");
       await new Promise((r) => setTimeout(r, 10_000));
       await b.stop();
@@ -1563,7 +1603,7 @@ try {
     });
     await check("7b: A's whole station stopped and started again while B holds its connection: asks fail at once while A is down, answered within 5 s of A being ready", async () => {
       const t0 = Date.now();
-      const b = asking(B, aId);
+      const b = asking("B", "A");
       await new Promise((r) => setTimeout(r, 3000));
       let upAt = 0;
       try {
@@ -1591,22 +1631,20 @@ try {
       writeFileSync(join(broken, "main.js"), "process.exit(1);\n");
       const failed = `${DATA.A}/run/handoff-failed`;
       rmSync(failed, { force: true });
-      const pid = launcherA();
-      if (pid === undefined) throw new Error("A's launcher not found");
       try {
         rmSync(link);
         execFileSync("ln", ["-s", broken, link]);
-        process.kill(pid, "SIGUSR2");
-        log(`  SIGUSR2 to A's launcher ${pid} with its next Node broken; waiting for "not handed over"`);
-        await whenChanged([DATA.A], () => existsSync(failed), 120_000, () => `no failed handover said: ${readFileSync(`${RUN}/station.log`, "utf8").split("\n").slice(-5).join(" | ")}`);
-        log(`  ${readFileSync(failed, "utf8").trim()}`);
+        log("  A's next Node broken (app/station pointed at a main.js that exits 1)");
+        const end = await handoverEnd(await handOver("A"));
+        log(`  ${end}; handoff-failed: ${existsSync(failed) ? readFileSync(failed, "utf8").trim() : "none"}`);
+        if (!/not handed over/.test(end)) throw new Error(`the broken Node did not fail its handover: ${end}`);
       } finally {
         rmSync(link, { force: true });
         execFileSync("ln", ["-s", target, link]);
       }
       const t0 = Date.now();
-      const b = asking(B, aId);
-      const ab = asking(A, bId);
+      const b = asking("B", "A");
+      const ab = asking("A", "B");
       log("  15 s of asks each way");
       await new Promise((r) => setTimeout(r, 15_000));
       await Promise.all([b.stop(), ab.stop()]);
