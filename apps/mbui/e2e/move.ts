@@ -501,11 +501,21 @@ async function atRest(label: string): Promise<J> {
   // (what the page holds read after the turn's end, as A tells `move` changed: else a value of before it, drill 11's
   // "there" and drill 15's missing row of the same chat on the same tree, read before and during the turn)
   const ended = Date.now();
-  const v0 = await a.until(moveT(bId), (v) => v?.modules && v, 60_000);
-  await a.answered(aId, "/move?", ended - 500, 10_000).then(
-    () => log("  A's page read again after its turn's end"),
-    (e) => log(`  A's page not read again within 10 s of its turn's end (not told it changed?): ${String(e).slice(0, 300)}`));
-  const v = await a.until(moveT(bId), (v) => v?.modules && v !== v0 && v, 2_000).catch(() => v0);
+  // (the page as the device holds it from now, each value with when it came: what counts is one that came after the
+  // read it waited for, not a value that is merely another object: drill 26's 6b took the device's value of before A's
+  // restart, its first read since not yet in, so; the lead, 2026-11-14)
+  const held = a.watch(moveT(bId));
+  try {
+    const v0 = await a.until(moveT(bId), (v) => v?.modules && v, 60_000);
+    const read = await a.answered(aId, "/move?", ended - 500, 10_000).then(
+      (x) => (log("  A's page read again after its turn's end"), x.at),
+      (e) => (log(`  A's page not read again within 10 s of its turn's end (not told it changed?): ${String(e).slice(0, 300)}`), null));
+    const after = () => (read === null ? undefined : held.values.find((x) => x.at >= read && x.value?.modules));
+    if (read !== null) await whenChanged([], () => after() !== undefined, 2_000, () => "no value after the read", 50).catch(() => undefined);
+    var v: J = after()?.value ?? held.values.at(-1)?.value ?? v0;
+  } finally {
+    held.stop();
+  }
   if ((v.moving ?? null) === null) return v;
   let now = v;
   await check(`${label}: A's page says nothing moves once its turn ended`, async () => {
