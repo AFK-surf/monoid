@@ -377,6 +377,24 @@ test("the other station not answering what logins it has as the plan asks: the c
   assert.equal(a.rig.store.handedTo(one.key)?.station, B, "the chat went");
 });
 
+test("a login not shared handed to and fro three times: what each station keeps of a hand-over taken (share/state.json `taken`) goes once its profile is gone from there, never more than the one it holds", async () => {
+  const { a, b, quiet } = world([KIMI]);
+  signIn(a, "kimi", {});
+  const taken = (st: Station) => JSON.parse(readFileSync(join(st.rig.dir, "share", "state.json"), "utf8")).taken ?? {};
+  await a.sharing.moveProfile("kimi", B);
+  await quiet();
+  assert.deepEqual(taken(b), { [`${A}/kimi`]: "kimi" }, "B took it");
+  await b.sharing.moveProfile("kimi", A);
+  await quiet();
+  assert.deepEqual(taken(b), {}, "B's goes with its profile");
+  assert.deepEqual(taken(a), { [`${B}/kimi`]: "kimi" }, "A took it");
+  await a.sharing.moveProfile("kimi", B);
+  await quiet();
+  assert.deepEqual(taken(a), {}, "A's goes with its profile");
+  assert.deepEqual(taken(b), { [`${A}/kimi`]: "kimi" }, "B took it again: one entry");
+  assert.equal(present(b, "kimi").id, "kimi");
+});
+
 test("a login that cannot be shared (a Kimi sign-in) moves as it is: gone from here, what needs it here stopped first", async () => {
   const { a, b, quiet } = world([KIMI]);
   assert.notEqual(shareRefusal(KIMI), null);

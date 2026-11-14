@@ -739,6 +739,7 @@ export class Sharing {
       }
     }
     if ([...silent].some((h) => !this.unreachable.has(h))) this.deps.recheck?.();
+    this.forgetTaken(state);
     this.writeState(state);
     this.linkBorrowedSkills(state);
     // What did not get through is tried again, less often the longer it does not.
@@ -1578,6 +1579,13 @@ export class Sharing {
     }
   }
 
+  /// What `taken` keeps is read by `takeOwn` alone, for the same hand-over asked again (its answer lost), and only while
+  /// the profile it names is here: one whose profile is gone (moved on, removed) is over, and goes.
+  private forgetTaken(state: State) {
+    const ids = new Set(this.profiles().map((x) => x?.id));
+    for (const [asked, id] of Object.entries(state.taken ?? {})) if (!ids.has(id)) delete state.taken![asked];
+  }
+
   /// A profile not shared handed over by another station of a workspace both are in: this station's own from now on,
   /// under the id it had there where that is free. One of the same account here already (or taken before, its answer
   /// lost) is the one taken.
@@ -1605,6 +1613,7 @@ export class Sharing {
       raw.profiles = list;
     });
     (state.taken ??= {})[asked] = localId;
+    this.forgetTaken(state);
     this.writeState(state);
     log.info("share", "a profile handed over to this station", { id: localId, from: peer });
     this.deps.changed();
