@@ -114,6 +114,7 @@ export class Moves {
   readonly jobs: JobsModule;
   readonly scheduler: Scheduler;
   readonly modules: Module[];
+  readonly #accounts: ReturnType<typeof accountsModule>;
   readonly repos: ReposModule;
   readonly vault: VaultModule;
   readonly settings: SettingsModule;
@@ -186,29 +187,30 @@ export class Moves {
         return out;
       },
     });
+    this.#accounts = accountsModule({
+      // (the accounts module plans without waiting: the pages the plan under way read before its modules, `#planning`)
+      used: (ws) => {
+        const out = new Map<string, AccountOf | null>();
+        const reads = this.#planning.get(ws);
+        const pages = reads !== undefined && reads.loaded().length > 0 ? reads.loaded() : this.#pagesNow(ws);
+        for (const page of pages) for (const k of page.keys) for (const [id, a] of this.handover.accountsOf([k], page)) out.set(id, a);
+        return out;
+      },
+      shared: (id) => {
+        const p = d.profiles().find((x) => x?.id === id);
+        return p?.share !== null && typeof p?.share === "object";
+      },
+      moveProfile: d.moveProfile, ask: d.ask, here,
+      data: d.data, shareMoves: d.shareMoves,
+      profile: (id) => d.profiles().find((x) => x?.id === id),
+      present: (id) => {
+        // (one moved here is known by the id it had there: an own login by its profile's id)
+        const own = id.startsWith("own:") ? id.slice(4, id.lastIndexOf("@")) : null;
+        return d.profiles().find((p) => typeof p?.id === "string" && (p.id === own || accountItemId(p.id, accountOf(p, here())) === id))?.id;
+      },
+    });
     this.modules = [
-      accountsModule({
-        // (the accounts module plans without waiting: the pages the plan under way read before its modules, `#planning`)
-        used: (ws) => {
-          const out = new Map<string, AccountOf | null>();
-          const reads = this.#planning.get(ws);
-          const pages = reads !== undefined && reads.loaded().length > 0 ? reads.loaded() : this.#pagesNow(ws);
-          for (const page of pages) for (const k of page.keys) for (const [id, a] of this.handover.accountsOf([k], page)) out.set(id, a);
-          return out;
-        },
-        shared: (id) => {
-          const p = d.profiles().find((x) => x?.id === id);
-          return p?.share !== null && typeof p?.share === "object";
-        },
-        moveProfile: d.moveProfile, ask: d.ask, here,
-        data: d.data, shareMoves: d.shareMoves,
-        profile: (id) => d.profiles().find((x) => x?.id === id),
-        present: (id) => {
-          // (one moved here is known by the id it had there: an own login by its profile's id)
-          const own = id.startsWith("own:") ? id.slice(4, id.lastIndexOf("@")) : null;
-          return d.profiles().find((p) => typeof p?.id === "string" && (p.id === own || accountItemId(p.id, accountOf(p, here())) === id))?.id;
-        },
-      }),
+      this.#accounts,
       chatsModule({
         store: d.store, handover: this.handover, hub: d.hub, ask: d.ask, here, reads: (ws) => this.reads(ws),
         kindOf: (id) => d.connects?.kindOf(id) ?? null, wait: () => this.wait,
@@ -336,6 +338,11 @@ export class Moves {
 
   async close(): Promise<void> {
     await this.handover.close();
+  }
+
+  /// Share `share` hosted here again, from `from`: what a trip of this station's shared for it undone (accounts.ts).
+  shareCameHome(share: string, from: string): Promise<void> {
+    return this.#accounts.cameHome(share, from);
   }
 
   /// What another station asks of this one's migrations (`move.*`).

@@ -128,6 +128,8 @@ export const MovesLive = Layer.effectDiscard(
       moves.heard(peer);
     });
     bus.on("move.", answers);
+    // (a login home again, by any route: the share a trip made for it undone)
+    agents.sharing.onHosted = (share, from) => void moves.shareCameHome(share, from).catch(() => {});
     const asks = new MoveAsks({
       data, scheduler: moves.scheduler,
       here: () => key.id,

@@ -946,7 +946,13 @@ export class Sharing {
   async handle(peer: string, request: Json, workspace?: string): Promise<Json> {
     const method = String(request?.method ?? "");
     const id = String(request?.id ?? "");
-    if (method === "share.changed") return this.heard(peer, id, request, workspace ?? this.deps.cloud.home());
+    if (method === "share.changed") {
+      // (one this station is handing over as it is told: heard once the hand-over is done here, so a word of the new
+      // host's, its share undone as the login came home, is not heard by the station that still hosts it, then lost)
+      const moving = this.moveDone.get(id);
+      if (moving !== undefined) await moving;
+      return this.heard(peer, id, request, workspace ?? this.deps.cloud.home());
+    }
     if (method === "share.take") return this.take(peer, request);
     const state = this.readState();
     const moved = state.moved[id];
@@ -1605,6 +1611,10 @@ export class Sharing {
     return { taken: true, id: localId };
   }
 
+  /// Told as a shared profile is handed over to this station to host (share `id`, from `peer`): a move's (move/
+  /// accounts.ts) undoes the share its trip made once the login is home again, by whatever route it came.
+  onHosted: ((id: string, peer: string) => void) | null = null;
+
   /// A profile handed over by the station that has it (one this station borrows it from, or any station of its
   /// workspaces for one not seen here).
   private take(peer: string, request: Json): Json {
@@ -1648,6 +1658,7 @@ export class Sharing {
     this.writeState(after);
     log.info("share", "a shared profile handed over to this station", { id, from: peer });
     void this.reconcile();
+    this.onHosted?.(id, peer);
     return { taken: true, id: localId };
   }
 

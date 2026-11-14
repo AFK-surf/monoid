@@ -58,6 +58,8 @@ const SPARE = { id: "spare", name: "Spare", runtime: "claude", access: { kind: "
 function world(profiles: Json[], o: { third?: boolean; slack?: boolean } = {}) {
   const t = testClock();
   const stations = new Map<string, Station>();
+  /// The undoing of shares as their logins came home (`onHosted`), awaited by `quiet`.
+  const homing = new Set<Promise<void>>();
   const roster = [A, B, ...(o.third ? [C] : [])].map((id) => ({ id, name: id.slice(0, 1).toUpperCase() }));
   const cloudFor = (station: string) => Object.defineProperties(Object.create(Cloud.prototype), Object.getOwnPropertyDescriptors({
     peersCurrent: true,
@@ -137,6 +139,8 @@ function world(profiles: Json[], o: { third?: boolean; slack?: boolean } = {}) {
       return moves;
     };
     st.moves = st.make();
+    // (as move/live.ts gives it: a login home again, by any route, has the share its trip made undone)
+    st.sharing.onHosted = (share, from) => void homing.add(st.moves.shareCameHome(share, from).catch(() => {}));
     stations.set(id, st);
     open.push(async () => {
       await st.moves.close();
@@ -158,6 +162,7 @@ function world(profiles: Json[], o: { third?: boolean; slack?: boolean } = {}) {
         await s.rig.quiet();
       }
       await Promise.all([...stations.values()].map((s) => s.sharing.reconcile()));
+      await Promise.all(homing);
     }
     await Promise.all([...stations.values()].map((s) => s.sharing.stateWritten()));
   };
@@ -320,6 +325,31 @@ test("moved back after a person opened it to a third station: it stays shared, a
   assert.deepEqual(keptShares(a), [], "no longer this move's to undo");
 });
 
+test("home again by the other's own move (its scheduler, or a person moving it on the accounts page): the share this station's trip made is undone, the login its own again, nothing kept", async () => {
+  for (const route of ["scheduler", "accounts page"]) {
+    const { a, b, quiet } = world([MAX]);
+    signIn(a, "max", CLAUDE_LOGIN);
+    const one = await chatOn(a, "max");
+    await a.moves.scheduler.move(WS, B, { module: "chats", item: one.key, withNeeds: true });
+    await quiet();
+    const share = shareOf(a, "max").id as string;
+    assert.deepEqual(keptShares(a), [share], "made by the trip");
+    const there = ofShare(b, share)!;
+    if (route === "scheduler") {
+      const out = await b.moves.scheduler.move(WS, A, { module: "accounts", item: `share:${share}` });
+      assert.equal(out.failed, null, JSON.stringify(out));
+      assert.deepEqual(out.done, [{ module: "accounts", id: `share:${share}` }], route);
+    } else await b.sharing.moveProfile(there.id, A);
+    await quiet();
+    const home = present(a, "max");
+    assert.equal(home.share, undefined, `not shared once home (${route})`);
+    assert.equal(JSON.parse(readFileSync(join(a.rig.dir, "homes", "max", ".credentials.json"), "utf8")).claudeAiOauth.refreshToken, "r", "its login here");
+    assert.equal(b.rig.raw.profiles.some((p: Json) => p.id === "max" || p.share?.id === share), false, `the other keeps no copy (${route})`);
+    assert.deepEqual(keptShares(a), [], `nothing kept (${route})`);
+    assert.equal((await a.moves.scheduler.plan(WS, B)).items.find((x) => x.id === `own:max@${A}`)?.state, "here", "its own again, by the id it had");
+  }
+});
+
 test("a login that cannot be shared (a Kimi sign-in) moves as it is: gone from here, what needs it here stopped first", async () => {
   const { a, b, quiet } = world([KIMI]);
   assert.notEqual(shareRefusal(KIMI), null);
@@ -382,6 +412,43 @@ test("one shared before with every station: the other only borrowing it, it is h
   const after = (await a.moves.scheduler.plan(WS, B)).items.find((x) => x.id === account)!;
   assert.equal(after.state, "here");
   assert.equal(accounts.usableThere!(after), true);
+});
+
+test("a chat on a login the other station hosts and this one borrows: it goes, nothing of the login moves; back likewise", async () => {
+  const { a, b, quiet } = world([MAX]);
+  signIn(a, "max", CLAUDE_LOGIN);
+  await a.sharing.shareProfile("max", true, null);
+  await quiet();
+  const share = shareOf(a, "max").id as string;
+  const account = `share:${share}`;
+  const one = await chatOn(a, "max");
+  await a.moves.scheduler.move(WS, B, { module: "accounts", item: account });
+  await quiet();
+  assert.equal(shareOf(a, "max").borrowed, true, "A borrows it");
+  const accounts = a.moves.modules.find((m) => m.id === "accounts")!;
+  const plan = await a.moves.scheduler.plan(WS, B);
+  const item = plan.items.find((x) => x.id === account)!;
+  assert.equal(item.state, "there", "B hosts it");
+  assert.equal(accounts.usableThere!(item), true, "usable there: B hosts it");
+  const hosted = structuredClone(ofShare(b, share));
+  const borrowed = structuredClone(present(a, "max"));
+  const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: one.key, withNeeds: true });
+  await quiet();
+  assert.equal(out.failed, null, JSON.stringify(out));
+  assert.deepEqual(out.done, [{ module: "chats", id: one.key }], "the chat alone");
+  assert.deepEqual(out.refused, []);
+  assert.equal(a.rig.store.handedTo(one.key)?.station, B, "the chat went");
+  assert.deepEqual(present(a, "max"), borrowed, "A borrows it as it did");
+  assert.deepEqual(ofShare(b, share), hosted, "B hosts it as it did");
+  assert.deepEqual(keptShares(a), []);
+  const back = await a.moves.scheduler.back(WS, B, { module: "chats", item: one.key, withNeeds: true });
+  await quiet();
+  assert.equal(back.failed, null, JSON.stringify(back));
+  assert.deepEqual(back.done, [{ module: "chats", id: one.key }], "the chat alone");
+  assert.equal(a.rig.store.handedTo(one.key), null, "the chat home");
+  assert.deepEqual(present(a, "max"), borrowed, "A borrows it still");
+  assert.deepEqual(ofShare(b, share), hosted, "B hosts it still");
+  assert.equal(a.rig.hub.chatHeld(one.key), null, "not stopped: its login is usable here");
 });
 
 test("one shared before with stations the other is not among: it moves as a shared one, and back it stays shared with them, the other keeping nothing", async () => {

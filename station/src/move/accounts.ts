@@ -62,7 +62,7 @@ export type AccountsDeps = {
   shareMoves?: ShareMoves;
 };
 
-export function accountsModule(d: AccountsDeps): Module {
+export function accountsModule(d: AccountsDeps): Module & { cameHome(share: string, from: string): Promise<void> } {
   /// What the other station said it has, as each plan asked it: by item id, its profile there and whether it hosts the
   /// login (false: it borrows it; null: a station from before, which does not say, taken as hosting it); null: none.
   const there = new Map<string, { id: string; hosts: boolean | null } | null>();
@@ -75,6 +75,25 @@ export function accountsModule(d: AccountsDeps): Module {
     if (made === null || d.shared(pid)) return false;
     const p = d.profile?.(pid);
     return p !== undefined && p !== null && p.machine !== true && shareRefusal(p) === null;
+  };
+  /// Undoing a share as its login came home, by share id (one at a time: the move back and the take it caused both ask).
+  const homing = new Map<string, Promise<void>>();
+  /// Share `share` hosted here again, handed over from `from` by any route (a move back of this station's, the other's
+  /// own move, a person's on the accounts page): the share a trip of this station's made for it undone, but where a
+  /// person opened it to another station meanwhile; no longer this station's to undo either way.
+  const cameHome = (share: string, from: string): Promise<void> => {
+    if (made === null || !made.has(share)) return Promise.resolve();
+    const going = homing.get(share);
+    if (going !== undefined) return going;
+    const undo = (async () => {
+      const undone = await d.shareMoves!.unshare(share, [d.here(), from]).catch((e) => {
+        log.warn("move", "a share a move made not undone as its login came home", { share, error: (e as Error).message });
+        return null;
+      });
+      if (undone !== null) await made.delete(share);
+    })().finally(() => homing.delete(share));
+    homing.set(share, undo);
+    return undo;
   };
   return {
     id: "accounts",
@@ -125,13 +144,7 @@ export function accountsModule(d: AccountsDeps): Module {
       await d.ask(from, { method: "move.back", module: "accounts", id: item.id, to: d.here() });
       there.set(item.id, null);
       // (home: the share this move made undone, but where a person opened it to another station meanwhile)
-      const share = item.id.startsWith("share:") ? item.id.slice("share:".length) : null;
-      if (made === null || share === null || !made.has(share)) return;
-      const undone = await d.shareMoves!.unshare(share, [d.here(), from]).catch((e) => {
-        log.warn("move", "a share a move made not undone as its login came back", { share, error: (e as Error).message });
-        return null;
-      });
-      if (undone !== null) await made.delete(share);
+      if (item.id.startsWith("share:")) await cameHome(item.id.slice("share:".length), from);
     },
     state(item): ItemState {
       if (moving.has(item.id)) return { state: "moving" };
@@ -139,6 +152,7 @@ export function accountsModule(d: AccountsDeps): Module {
       const t = there.get(item.id);
       return { state: t != null && t.hosts !== false ? "there" : "here" };
     },
+    cameHome,
     usableThere(item) {
       return there.get(item.id) != null;
     },
