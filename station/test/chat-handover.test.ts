@@ -455,8 +455,12 @@ test("a failed item stops only what needs it: of three chats and their logins mo
     if (to === A && r.method === "handover.begin" && Array.isArray(r.keys) && r.keys.includes(one.key)) throw new Error("the first one refused");
     return r;
   });
+  const there = (await a.moves.scheduler.plan(WS, B)).items.filter((x) => x.state === "there").map((x) => `${x.module} ${x.id}`);
   const back = await a.moves.scheduler.back(WS, B, { all: true });
   await w.quiet();
+  // (every item that was there is said of: came back, not brought (why), or failed: none left out by a failure)
+  const said = new Set([...back.done, ...back.refused.map((r) => r.item), ...(back.failures ?? []).map((f) => f.item)].map((x) => `${x.module} ${x.id}`));
+  assert.deepEqual(there.filter((x) => !said.has(x)), [], `every item there said of: ${JSON.stringify(back)}`);
   assert.deepEqual((back.failures ?? []).map((f) => f.item.id), [one.key], `the failed one named: ${JSON.stringify(back.failures)}`);
   const named = [...back.done, ...back.refused.map((r) => r.item), ...(back.failures ?? []).map((f) => f.item)];
   assert.ok(!named.some((x) => x.id === mid.key), `the one that never went is no item of the move back: ${JSON.stringify(named)}`);
@@ -477,9 +481,9 @@ test("a move asked as the connection to the other station is found gone asks onc
     }
     return r;
   });
-  const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: key });
+  const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: key }).then((o) => ({ turn: null as string | null, failed: o.failed }), (e: Error) => ({ turn: e.message, failed: null }));
   await w.quiet();
-  assert.equal(out.failed, null, JSON.stringify(out));
+  assert.deepEqual(out, { turn: null, failed: null }, "asked once more, dialed anew: it went");
   assert.equal(b.rig.session(key).ws, null, "it went");
   gone = 2;
   const back = await a.moves.scheduler.back(WS, B, { module: "chats", item: key }).then(() => null, (e: Error) => e.message);
