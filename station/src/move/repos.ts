@@ -10,7 +10,7 @@ import { mkdir, open, readFile, readdir, realpath, rename, rm, stat, writeFile }
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { Refused, withBytes, type Bytes } from "../mesh/bus.ts";
 import { fileBytes } from "../mesh/files.ts";
-import type { Item, ItemState, Module, PlanReads, Progress } from "./module.ts";
+import { type Item, type ItemState, type Module, type PlanReads, type Progress, unanswered } from "./module.ts";
 
 type Json = any;
 
@@ -162,8 +162,11 @@ export class ReposModule implements Module {
       }
     }
     if (items.length > 0 && to !== "") {
-      const answer = await this.#d.ask(to, { method: "move.repo.have", urls: items.map((x) => x.id.slice(5)) }).catch(() => null);
+      // (not answered: whether it has them is not guessed, none of them goes this turn, nor what needs them)
+      let failed: unknown = null;
+      const answer = await this.#d.ask(to, { method: "move.repo.have", urls: items.map((x) => x.id.slice(5)) }).catch((e) => ((failed = e ?? new Error("no answer")), null));
       for (const x of items) this.#there.set(x.id, answer?.have?.[x.id.slice(5)] === true);
+      if (failed !== null) for (const x of items) x.cannot = unanswered(failed);
     }
     return items;
   }

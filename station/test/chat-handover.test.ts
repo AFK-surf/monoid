@@ -939,6 +939,55 @@ test("settings and secrets each moved, then back: both stations as they were", a
   assert.deepEqual(pb.items(WS, "p@x").map((i) => i.id), plainB, "B lets go of what this move put there, and only that");
 });
 
+test("the other station not answering what repositories or settings it has as the plan asks: none of them goes, nor the chat that needs its repository, each refused in words (ask again), nothing tried; asked again with the answer, they go", async () => {
+  const w = world();
+  const a = w.get(A);
+  const b = w.get(B);
+  const { key } = await stillfailChat(a);
+  const ws = a.rig.session(key).workspace;
+  const run = (dir: string, ...args: string[]) => execFileSync("git", ["-C", dir, ...args], { encoding: "utf8", env: gitEnv(a.rig.dir), stdio: ["ignore", "pipe", "pipe"] }).trim();
+  const bare = join(a.rig.dir, "remote.git");
+  execFileSync("git", ["init", "-q", "--bare", "-b", "main", bare], { env: gitEnv(a.rig.dir) });
+  const clone = join(a.rig.dir, "repos", "proj");
+  mkdirSync(join(a.rig.dir, "repos"), { recursive: true });
+  execFileSync("git", ["clone", "-q", bare, clone], { env: gitEnv(a.rig.dir), stdio: "ignore" });
+  writeFileSync(join(clone, "a.txt"), "pushed\n");
+  run(clone, "add", "-A");
+  run(clone, "commit", "-q", "-m", "pushed");
+  run(clone, "push", "-q", "origin", "HEAD:main");
+  run(clone, "worktree", "add", "-q", "-b", "feature", join(ws, "proj"));
+  a.rig.raw.agentEnv = { FOO: "from A" };
+  b.rig.raw.agentEnv = { BAR: "B's" };
+  const repo = `repo:${bare}`;
+  // (B not reached for each question once: what it has is not guessed)
+  const unanswered = new Set<string>();
+  const handle = b.bus.handle.bind(b.bus);
+  b.bus.handle = ((ws: string, peer: string, request: Json) => (unanswered.delete(request?.method) ? Promise.reject(new Error("the station was not reached")) : handle(ws, peer, request))) as typeof b.bus.handle;
+  const words = /the other station did not answer what it has of it \(.*the station was not reached\): ask again$/;
+  for (const m of ["move.repo.have", "move.setting.values"]) unanswered.add(m);
+  const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: key, withNeeds: true });
+  await w.quiet();
+  assert.equal(out.failed, null, JSON.stringify(out));
+  assert.deepEqual(out.done, []);
+  assert.deepEqual(out.refused.map((r) => r.item.id), [key], "the chat, nothing of it tried");
+  assert.ok(out.refused[0]!.why.startsWith(`it needs repos ${repo} (proj) there, which cannot go: `), out.refused[0]!.why);
+  assert.match(out.refused[0]!.why, words);
+  for (const m of ["move.repo.have", "move.setting.values"]) unanswered.add(m);
+  const plain = await a.moves.scheduler.move(WS, B, { module: "settings", item: "setting:agentEnv" });
+  assert.deepEqual(plain.done, []);
+  assert.match(plain.refused.find((r) => r.item.id === "setting:agentEnv")?.why ?? "", words, "the setting");
+  assert.equal(a.rig.store.handedTo(key), null, "the chat here");
+  assert.deepEqual(existsSync(join(b.rig.dir, "repos")) ? readdirSync(join(b.rig.dir, "repos")) : [], [], "no clone there");
+  assert.deepEqual(b.rig.raw.agentEnv, { BAR: "B's" }, "B's settings as they were");
+  const again = await a.moves.scheduler.move(WS, B, { module: "chats", item: key, withNeeds: true });
+  await w.quiet();
+  assert.equal(again.failed, null, JSON.stringify(again));
+  assert.deepEqual(again.done.map((d) => d.id), [repo, key]);
+  const setting = await a.moves.scheduler.move(WS, B, { module: "settings", item: "setting:agentEnv" });
+  assert.deepEqual(setting.done.map((d) => d.id), ["setting:agentEnv"]);
+  assert.deepEqual(b.rig.raw.agentEnv, { BAR: "B's", FOO: "from A" });
+});
+
 test("the rows put in tell what they are, marks and reads among them, as the copies' export reads them", async () => {
   const w = world();
   const a = w.get(A);

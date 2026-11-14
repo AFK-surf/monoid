@@ -12,7 +12,7 @@ import { readFileSync } from "node:fs";
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { Refused } from "../mesh/bus.ts";
-import type { Item, ItemState, Module } from "./module.ts";
+import { type Item, type ItemState, type Module, unanswered } from "./module.ts";
 
 type Json = any;
 
@@ -57,10 +57,12 @@ export class SettingsModule implements Module {
   async plan(_ws: string, to: string): Promise<Item[]> {
     const raw = this.#d.config.raw() ?? {};
     const keys = SETTINGS.filter((k) => raw[k] !== undefined);
-    const there = to === "" || keys.length === 0 ? null : ((await this.#d.ask(to, { method: "move.setting.values", key: "agentEnv", keys }).catch(() => null))?.values as Record<string, Json> | undefined) ?? null;
+    // (not answered: whether it has its own is not guessed, nothing of them goes this turn)
+    let failed: unknown = null;
+    const there = to === "" || keys.length === 0 ? null : ((await this.#d.ask(to, { method: "move.setting.values", key: "agentEnv", keys }).catch((e) => ((failed = e ?? new Error("no answer")), null)))?.values as Record<string, Json> | undefined) ?? null;
     return keys.map((k) => {
       const theirs = there?.[k];
-      const cannot = theirs === undefined || theirs === null || same(theirs, raw[k]) || (isMap(theirs) && isMap(raw[k])) || this.#moved.has(`setting:${k}`)
+      const cannot = failed !== null ? unanswered(failed) : theirs === undefined || theirs === null || same(theirs, raw[k]) || (isMap(theirs) && isMap(raw[k])) || this.#moved.has(`setting:${k}`)
         ? undefined
         : `that station has its own ${k} (${JSON.stringify(theirs).slice(0, 80)}), which it keeps: its chats rely on it. Change it in that station's settings if this one's is meant there`;
       return { module: "settings", id: `setting:${k}`, label: k, needs: [], ...(cannot !== undefined ? { cannot } : {}) };
