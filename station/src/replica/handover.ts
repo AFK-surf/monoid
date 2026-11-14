@@ -80,6 +80,9 @@ export type Out = {
   /// Whether B showed it; and whether what was taken here between its rows' last sending and its going out of sight
   /// here (`shownThere`) was sent after it and B took it up (`caught`).
   shown: boolean; caught?: boolean;
+  /// Its chat came back here since (`#endOuts`): over for good, nothing of it replayed or told. `v`: written by a station
+  /// that ends its records so (2); one of before is judged by whether its chat came back (`#cameBack`).
+  ended?: boolean; v?: 2;
   /// What was sent and placed of its files (bytes), for the status; of them, the bytes of the room's own files that
   /// went (what was in place there already did not).
   done: number; total: number; sentBytes?: number;
@@ -257,10 +260,17 @@ export class Handover {
 
   /// Begun (the mesh attached): each hand-over goes on where it stood. One cut before it went did not go: undone.
   /// The sessions of `o`, gone, still in sight here: not shown there yet, or shown and this process stopped before its
-  /// rows here said so.
+  /// rows here said so. A record of a trip is acted on only while its chat has not come here since from where it went
+  /// (a hand-over from there shown here after this one began): one that came back is here, whatever the record says
+  /// (a start hid every chat that went and came back, the drill of 2026-11-14).
   #notOff(o: Out): string[] {
-    if (o.step !== "gone" && o.step !== "done") return [];
-    return o.keys.filter((k) => this.#d.store.getSession(k) !== null && this.#d.store.sessionWs(k)?.startsWith(handedWs("")) !== true);
+    if (o.ended === true || (o.step !== "gone" && o.step !== "done")) return [];
+    return o.keys.filter((k) => this.#d.store.getSession(k) !== null && this.#d.store.sessionWs(k)?.startsWith(handedWs("")) !== true && (o.v === 2 || !this.#cameBack(o, k)));
+  }
+
+  /// Whether chat `k` came here since `o` took it away, from where it went.
+  #cameBack(o: Out, k: string): boolean {
+    return [...this.#ins.values()].some((i) => i.step === "shown" && i.origin === o.to && i.at >= o.at && i.keys.includes(k));
   }
 
   async start(): Promise<void> {
@@ -278,7 +288,12 @@ export class Handover {
     }
     for (const o of this.#outs.values()) {
       if (o.step === "held" || o.step === "files" || o.step === "rows") await this.#fail(o, "this station started again as the chat was being handed over: it goes on here; hand it over again");
-      else if (o.step === "gone" || (o.step === "failed" && o.dropOwed)) this.#go(o);
+      // (one whose chat came back since is over: nothing of it is told any more, as its arrival ended it)
+      else if (o.step === "gone" && o.v !== 2 && o.keys.every((k) => this.#cameBack(o, k))) {
+        o.step = "done";
+        o.ended = true;
+        await this.#save(o);
+      } else if (o.step === "gone" || (o.step === "failed" && o.dropOwed)) this.#go(o);
     }
   }
 
@@ -400,7 +415,7 @@ export class Handover {
     const name = this.#d.roster(ws)?.find((s) => s.id === to)?.name ?? "";
     const o: Out = {
       id: handoverId(keys, to, this.#d.fibers.now()), keys, to, toName: name, ws, at: this.#d.fibers.now(), step: "files", error: null, jobs: [], dropOwed: false,
-      sent: {}, counts: null, there: {}, routes: [], routed: 0, shown: false, done: 0, total: 0, held: false,
+      sent: {}, counts: null, there: {}, routes: [], routed: 0, shown: false, done: 0, total: 0, held: false, v: 2,
     };
     this.#keepOut(o);
     await this.#save(o);
@@ -599,6 +614,8 @@ export class Handover {
   /// then each of its platform threads re-pointed where its connect runs; told until each answers.
   async #afterGone(o: Out): Promise<void> {
     const d = this.#d;
+    // (the chat came back here since: nothing of this one is said or sent any more)
+    if (o.step === "done" || o.ended === true) return;
     const here = d.here()!;
     const ask = (request: Json) => d.ask(o.to, { ...request, workspace: o.ws, origin: here, id: o.id });
     if (!o.shown) {
@@ -619,10 +636,8 @@ export class Handover {
     }
     // Shown there: out of sight here and devices told where, in one step; then what was taken here since its rows
     // were last sent goes after it (a message sent here meanwhile), and it is shown again there, to take that up.
-    if (o.keys.some((k) => d.store.sessionWs(k)?.startsWith(handedWs("")) !== true)) {
-      d.store.shownThere(o.keys, d.home());
-      for (const k of o.keys) d.hub.releaseChat(k);
-    }
+    d.store.shownThere(o.keys, d.home());
+    for (const k of o.keys) d.hub.releaseChat(k);
     if (!o.caught) {
       // (only where something was taken: one page a thread and session at most to know it)
       const since = Object.entries(o.sent).some(([t, was]) => d.store.chatPage("entries", Number(t), was.entries, 1, o.keys).length > 0 || d.store.chatPage("letters", Number(t), was.letters, 1, o.keys).length > 0)
@@ -906,6 +921,7 @@ export class Handover {
     if (i.stoppedFor) await this.#d.arrivedStopped?.(i.keys, i.stoppedFor, i.ws);
     for (const [connect, key] of Object.entries(i.bindings ?? {})) if (this.#d.store.binding(connect) === null) this.#d.store.setBinding(connect, key);
     this.#d.store.showChat(i.keys, i.ws === home ? null : i.ws);
+    await this.#endOuts(i.keys);
     const from = this.#d.roster(i.ws)?.find((s) => s.id === i.origin)?.name || i.origin.slice(0, 12);
     for (const k of i.keys) {
       const row = this.#d.store.getSession(k);
@@ -929,6 +945,28 @@ export class Handover {
 
   #holdIn(i: In): void {
     if (i.step === "coming" && !this.#inHeld.has(i.id) && this.#d.hold !== undefined) this.#inHeld.set(i.id, this.#d.hold());
+  }
+
+  /// Chats `keys` came here: every hand-over of them from here before is over for good, whatever its step (none replayed
+  /// as a start, none told again).
+  /// What is kept of them is bounded: an ended record is dropped once a newer ended one names all its chats (a chat
+  /// handed about for a year keeps one), never the newest.
+  async #endOuts(keys: readonly string[]): Promise<void> {
+    for (const o of [...this.#outs.values()]) {
+      if (o.ended === true || (o.step !== "gone" && o.step !== "done") || !o.keys.some((k) => keys.includes(k))) continue;
+      o.step = "done";
+      o.ended = true;
+      this.#again.get(o.id)?.();
+      this.#again.delete(o.id);
+      await this.#save(o);
+    }
+    const ended = [...this.#outs.values()].filter((o) => o.ended === true);
+    for (const o of ended) {
+      if (!ended.some((n) => n !== o && n.at >= o.at && n.id !== o.id && o.keys.every((k) => n.keys.includes(k)) && (n.at > o.at || n.id > o.id))) continue;
+      this.#outs.delete(o.id);
+      for (const k of o.keys) this.#outsOf.set(k, (this.#outsOf.get(k) ?? []).filter((x) => x.id !== o.id));
+      await rm(outFile(this.#d.data, o.id), { force: true });
+    }
   }
 
   #letIn(id: string): void {

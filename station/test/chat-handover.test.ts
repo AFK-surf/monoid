@@ -234,6 +234,7 @@ test("a chat with a job there moved back: its job stops there first, the chat co
   assert.equal(b.jobs.length, 0);
   assert.deepEqual(a.jobs.map((j) => [j.session, j.name]), [[key, "dev"]]);
   assert.ok(!a.started.some((s) => s.includes("its chat away")), JSON.stringify(a.started));
+  await startedAgainChangesNothing(w, key, "its job back with it");
 });
 
 test("a chat's files are told as they go: their total first, then how far, up to all of it", async () => {
@@ -328,6 +329,7 @@ test("a failure at each step before it went: the chat works here afterwards and 
     // (a failure in the first pass of its files never held it: its agent's process goes on, so the turn is in it)
     assert.equal(a.rig.claude.count(), how === "unreached" || how === "full" || how === "hash" ? 1 : 2, `${how}: a turn here`);
     assert.ok(a.rig.claude.last().prompts.join("\n").includes("still here?"), how);
+    await startedAgainChangesNothing(w, key, `failed: ${how}`);
   }
 });
 
@@ -1535,6 +1537,7 @@ test("the station it leaves stopped while the chat is held and its files are bei
   say(a.rig.hub, thread, "p@x", "still here?");
   await w.quiet();
   assert.ok(a.rig.claude.sessions.flatMap((x) => x.prompts).join("\n").includes("still here?"));
+  await startedAgainChangesNothing(w, key, "dropped as it was placed");
 });
 
 test("a hand-over that fails after the other station made its linked worktree again (the drop coming, or this station stopped): nothing of it is left there, git's registration and the branch it made with it, the repository as it was; handed over again, git makes it again", async () => {
@@ -1591,6 +1594,7 @@ test("a hand-over that fails after the other station made its linked worktree ag
     await w.quiet();
     assert.equal(out.failed, null, `${how}: ${JSON.stringify(out)}`);
     assert.equal(run(join(b.rig.session(key).workspace, "proj"), "rev-parse", "HEAD"), head, `${how}: git's worktree there`);
+    await startedAgainChangesNothing(w, key, `worktree: ${how}`);
   }
 });
 
@@ -1624,6 +1628,137 @@ test("a hand-over given up whose drop has not reached the other station yet, the
   assert.ok(existsSync(join(roomThere, "kept.md")), "what the second counted there still");
   assert.deepEqual(filesOf(roomThere), filesOf(room), "its room there still, whole");
   assert.equal(b.rig.session(key).ws, null, "shown there");
+});
+
+/// What a device and the move page read of chat `key` on each station of `w` (where it is, in sight, held, its row,
+/// its page's log, the jobs), started again: the same as before (a start at rest changes nothing).
+async function startedAgainChangesNothing(w: ReturnType<typeof world>, key: string, how: string) {
+  const read = async () => {
+    const out: Json = {};
+    for (const st of w.stations.values()) {
+      const row = st.rig.store.getSession(key);
+      const other = [...w.stations.keys()].find((id) => id !== st.id)!;
+      const item = (await st.moves.scheduler.plan(WS, other)).items.find((x) => x.module === "chats" && x.id === key);
+      const home = row === null ? null : st.rig.store.homeChat(key);
+      out[st.id.slice(0, 1)] = {
+        row: row === null ? null : { ws: row.ws, archivedAt: row.archivedAt },
+        handedTo: st.rig.store.handedTo(key)?.station.slice(0, 1) ?? null,
+        held: st.rig.hub.chatHeld(key),
+        item: item === undefined ? null : { state: item.state },
+        log: home === null ? null : entries(st, home.id),
+        jobs: st.jobs.map((j) => `${j.session}#${j.name}`),
+      };
+    }
+    return out;
+  };
+  const before = await read();
+  for (const st of w.stations.values()) {
+    await st.moves.close();
+    st.moves = st.make();
+  }
+  for (const st of w.stations.values()) await st.moves.start();
+  await w.quiet();
+  assert.deepEqual(await read(), before, `${how}: a start at rest changes nothing`);
+}
+
+test("a start at rest changes nothing of a chat that moved: there; there and back; there, back and there; over a retired copy; a hand-over that failed", async () => {
+  for (const how of ["there", "there and back", "there, back and there", "over a retired copy", "failed"] as const) {
+    const w = world();
+    const a = w.get(A);
+    const b = w.get(B);
+    const { key } = await stillfailChat(a);
+    if (how === "over a retired copy") retiredCopy(a, b, key);
+    if (how === "failed") a.fails.add("counts");
+    const forth = () => a.moves.scheduler.move(WS, B, { module: "chats", item: key });
+    const back = () => a.moves.scheduler.back(WS, B, { module: "chats", item: key });
+    await forth();
+    await w.quiet();
+    if (how === "there and back" || how === "there, back and there") {
+      assert.equal((await back()).failed, null, how);
+      await w.quiet();
+    }
+    if (how === "there, back and there") {
+      assert.equal((await forth()).failed, null, how);
+      await w.quiet();
+    }
+    await startedAgainChangesNothing(w, key, how);
+    // (and moved on after: back from there where it is there, forth from here where it is here)
+    const here = a.rig.store.handedTo(key) === null;
+    const next = here ? await forth() : await back();
+    await w.quiet();
+    assert.equal(next.failed, null, `${how}: its next move succeeds: ${JSON.stringify(next)}`);
+  }
+});
+
+test("a chat that came back ends every record here of its trips before: none of them asks anything of the station it went to after, nor says it is there, however it stood (one whose last telling there failed), across starts; a record of it cut at gone is not replayed over it", async () => {
+  const w = world();
+  const a = w.get(A);
+  const b = w.get(B);
+  const { key, thread } = await stillfailChat(a);
+  // There, the telling after its show failing once (a message taken as it was shown, sent after it, refused): its
+  // record here stays at gone, its telling owed.
+  let shows = 0;
+  w.tamper((to, r) => {
+    if (to !== B || r.method !== "handover.show") return r;
+    shows++;
+    if (shows === 1) say(a.rig.hub, thread, "p@x", "said as it was shown");
+    if (shows === 2) throw new Error("not this time");
+    return r;
+  });
+  assert.equal((await a.moves.scheduler.move(WS, B, { module: "chats", item: key })).failed, null);
+  await w.quiet();
+  const first = a.moves.handover.outOf(key)!;
+  assert.equal(first.step, "gone", "its telling owed");
+  // Back before that telling is tried again.
+  w.tamper((to, r) => r);
+  assert.equal((await a.moves.scheduler.back(WS, B, { module: "chats", item: key })).failed, null);
+  await w.quiet();
+  // Here again: in a turn, something said that waits for it to end (not given to the turn under way).
+  say(a.rig.hub, thread, "p@x", "home again");
+  await w.quiet();
+  a.rig.claude.sessions.filter((x) => x.options.key === key).at(-1)!.unsteerable = true;
+  say(a.rig.hub, thread, "p@x", "while it works");
+  await w.quiet();
+  const asked: string[] = [];
+  w.tamper((to, r) => {
+    if (r.id === first.id) asked.push(`${to.slice(0, 1)} ${r.method}`);
+    return r;
+  });
+  await w.t.adjust(RETRY_MS * 8);
+  await w.quiet();
+  assert.deepEqual(asked, [], "the trip before asks nothing more");
+  await endTurn(a, key);
+  await w.quiet();
+  assert.ok(a.rig.claude.sessions.filter((x) => x.options.key === key).flatMap((x) => x.prompts).join("\n").includes("while it works"), "what waited here is handed to its agent here: nothing of the trip before marked it handed");
+  assert.deepEqual(a.moves.handover.outs().filter((o) => o.keys.includes(key)).map((o) => o.step), ["done"], "its record here ended");
+  assert.equal((await a.moves.scheduler.plan(WS, B)).items.find((x) => x.id === key)?.state, "here");
+  await startedAgainChangesNothing(w, key, "back before its telling");
+  // A record of it as a station from before this kept one, cut at gone: not replayed over the chat that came back
+  // since, nor told again.
+  const file = join(a.rig.dir, "replica", "handover", "out", `${first.id}.json`);
+  const kept = JSON.parse(readFileSync(file, "utf8"));
+  delete kept.v;
+  delete kept.ended;
+  kept.step = "gone";
+  writeFileSync(file, JSON.stringify(kept));
+  await startedAgainChangesNothing(w, key, "a record cut at gone");
+  await w.t.adjust(RETRY_MS * 8);
+  await w.quiet();
+  assert.deepEqual(asked, [], "nor, started again, does a record of it cut at gone");
+});
+
+test("what a station keeps of a chat's trips is bounded: three times there and back leave one record of them here, and a start at rest after changes nothing", async () => {
+  const w = world();
+  const a = w.get(A);
+  const { key } = await stillfailChat(a);
+  for (let i = 0; i < 3; i++) {
+    assert.equal((await a.moves.scheduler.move(WS, B, { module: "chats", item: key })).failed, null);
+    await w.quiet();
+    assert.equal((await a.moves.scheduler.back(WS, B, { module: "chats", item: key })).failed, null);
+    await w.quiet();
+  }
+  assert.deepEqual(a.moves.handover.outs().filter((o) => o.keys.includes(key)).map((o) => [o.step, o.ended]), [["done", true]], "one record, ended");
+  await startedAgainChangesNothing(w, key, "three times there and back");
 });
 
 test("a chat whose key is live where it would go (one that went on there apart from it, as a retirement taken back leaves one) cannot go: the plan says so, the station asked refuses it before anything is written, and the chat goes on here", async () => {

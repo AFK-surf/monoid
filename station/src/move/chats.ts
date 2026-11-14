@@ -111,9 +111,9 @@ export function chatsModule(d: ChatsDeps): Module {
       // (gone, not shown there yet: still moving, its page served here as it went)
       if (o !== null && o.step === "gone" && !o.shown) return { state: "moving", progress: { done: o.done, total: o.total, unit: "bytes" } };
       if (d.store.handedTo(item.id) !== null) return { state: "there" };
+      // (where it went is no longer said here: here, whatever a record of an older trip says)
       if (o === null) return { state: "here" };
       if (o.step === "held" || o.step === "files" || o.step === "rows") return { state: "moving", progress: { done: o.done, total: o.total, unit: "bytes" } };
-      if (o.step === "gone") return { state: "there" };
       if (o.step === "failed") return { state: "failed", error: o.error ?? "" };
       return { state: "here" };
     },
