@@ -432,6 +432,13 @@ export class StationsSync {
     for (const topic of this.#core.store.liveTopics()) {
       if (topic.station !== address) continue;
       if (topic.topic === "thread" && typeof topic.thread === "number") {
+        // One of a chat this station said went elsewhere: asked where it is now (data.ts chatNow, as every read that
+        // names it), not of this one, which says it has none (404, #threadGone: kept as the page's, there again later).
+        const now = this.#core.data.chatNow(address, { thread: topic.thread });
+        if (now !== null) {
+          if (now.thread !== null && this.#links.has(now.station)) this.channels.catchUp(entriesOf(now.station, now.thread), Priority.shown);
+          continue;
+        }
         this.channels.catchUp(entriesOf(address, topic.thread), Priority.shown);
         // An opening around an unread or saved position may still be missing even if a later page is held. Recompute it
         // so its failed range read is asked again, independently of whether the catch-up read brings anything new.
@@ -1536,6 +1543,36 @@ export class StationsSync {
   detail(address: string, key: string, from: number, to: number): Effect.Effect<void, CoreError> {
     const work = Effect.suspend(() => (this.#links.has(address) ? Effect.asVoid(this.channels.read(transcriptOf(address, key), { from, to, whole: true }, { quiet: true })) : Effect.void));
     return Deferred.await(this.#enqueue(address, `detail/${key}/${from}-${to}`, Priority.detail, work));
+  }
+
+  /// A chat its stations say is on `address` now (views/moved.ts: the station it left said it went here, this one's row
+  /// says it came, or it came back), its thread here `thread`: what was kept of it here as not there (a read answered
+  /// 404 while it was elsewhere: #threadGone, #onSessionRemoved, a history's failed read) is let go of, and what a page
+  /// holds of it is asked again now, as it would be on its first showing.
+  chatHere(address: string, session: string, thread: number | null): void {
+    const link = this.#links.get(address);
+    if (!link) return;
+    const live = new Set(this.#core.store.liveTopics().map((t) => topicKey(t)));
+    if (thread !== null) {
+      const topic: Topic = { topic: "thread", station: address, thread };
+      const key = topicKey(topic);
+      if (link.errors.delete(key)) this.onChange(address, "errors", key);
+      if (live.has(key)) {
+        this.channels.bring(entriesOf(address, thread), Priority.shown, "latest");
+        // (its summary, where the 404 took it: #threadGone)
+        if (this.#core.data.thread(address, thread) === undefined) this.summaryOf(address, thread);
+      }
+    }
+    const of: Topic = { topic: "session", station: address, key: session };
+    if (link.errors.delete(topicKey(of))) {
+      this.onChange(address, "errors", topicKey(of));
+      if (live.has(topicKey(of))) this.#enqueue(address, `session/${session}`, Priority.shown, this.#session(address, session));
+    }
+    const history = link.lives.get(session);
+    if (history?.failed !== undefined) {
+      this.#transcriptMisses.delete(`${address}\u0001${session}`);
+      if (live.has(topicKey({ topic: "live", station: address, key: session }))) this.channels.bring(transcriptOf(address, session), Priority.shown, "latest");
+    }
   }
 
   /// A thread gone from its station: its row and its entries go, and its topic says so.

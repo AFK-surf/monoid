@@ -73,6 +73,11 @@ async function rig(w: World, host?: FakeHost, gate?: (g: { resumes: boolean; mar
       // (B's agent runs a job there, A's none)
       if (req.method === "GET" && who === "st2" && /^\/sessions\/k1(\?|$)/.test(path)) return { session: session("k1"), threads: [], turns: [], jobs: [{ id: "j-b", name: "web", state: "running", startedAt: 1, session: "k1" }] };
       const of = chatsOf(w.rows[who]!.map(rowOf));
+      // (a thread's own summary, as its station lists it)
+      // (the marks of some chats as of all: the fixture's are of none)
+      if (req.method === "GET" && path.startsWith("/chats?marks=1&")) return of["GET /chats?marks=1"];
+      const one = /^\/threads\/(\d+)$/.exec(path);
+      if (req.method === "GET" && one) return ((of["GET /threads"] as J[]) ?? []).find((t: J) => t.id === Number(one[1])) ?? status(404, { error: "没有这个会话" });
       const asked = `${req.method} ${path}`;
       return asked in of ? of[asked] : undefined;
     });
@@ -484,5 +489,172 @@ test("a_chat_moved_told_as_a_stream_comes_back_is_taken_as_one_told_live", async
   assert.deepEqual(listed(values, 1), [[B, "k1", "在 mini"]]);
   assert.equal(s.core.inner.data.chatNow(A, { thread: 7 })?.thread, 21);
   assert.equal(asked(), movedReads, "GET /moved not read again: the resumed stream told it");
+  s.core.close();
+});
+
+/// A station's stream goes and comes back (going on from where the device was where `resumes`): what it shows asked
+/// again (sync.ts #catchUpShown).
+async function streamAgain(s: { host: FakeHost }, station: string) {
+  type Stream = { path: string; queue: Queue.Queue<Uint8Array | null>; closed: boolean; headers?: [string, string][] };
+  const streams = (s as unknown as { streams: Stream[] }).streams;
+  const of = (x: Stream) => (x.headers ?? []).some(([k, v]) => k === AT && v === station);
+  const first = streams.filter((x) => of(x) && !x.closed).at(-1)!;
+  Queue.offerUnsafe(first.queue, null);
+  await s.host.time.pass(3_000, 50);
+  await settle(s.host);
+  assert.ok(streams.filter((x) => of(x) && !x.closed).at(-1) !== first, "its stream back");
+}
+
+/// What went out of subscription `id` from now until the core is at rest, each message as JSON.
+async function sentOf(host: FakeHost, id: number): Promise<string[]> {
+  const out: string[] = [];
+  for (let i = 0; i < 5; i++) {
+    await host.settle();
+    await host.time.pass(500);
+    for (const [, m] of host.takeEmitted()) if ((m as J).id === id) out.push(JSON.stringify(m));
+  }
+  return out;
+}
+
+/// B's copy's thread (21) as B has it while the chat is not on it: none (`404`).
+const goneOnB = (gone: () => boolean) => (station: string, method: string, path: string) => (gone() && station === "st2" && /^\/threads\/21(\/|\?|$)/.test(path) ? status(404, { error: "没有这个会话" }) : undefined);
+const askedOfB = (host: FakeHost, from: number) => host.requests.slice(from).filter((r) => stationOf(r) === "st2" && r.url.includes("/threads/21/entries"));
+
+test("a_chat_there_back_and_there_again_shows_its_messages_there_with_no_not_there_and_is_not_asked_of_a_station_that_said_it_went", async () => {
+  const w = world();
+  w.rows.st = [{ id: "k1", thread: 7, title: "在 studio", at: 5000 }];
+  w.rows.st2 = [{ id: "k1", thread: 21, title: "在 mini", at: 3000 }];
+  let gone = false;
+  w.reply = goneOnB(() => gone);
+  const s = await rig(w, undefined, (g) => {
+    g.resumes = true;
+    g.marks = true;
+  });
+  const page: Topic = { topic: "thread", station: A, thread: 7 };
+  subscribe(s.core, s.ui, 1, page);
+  await settle(s.host);
+  s.pushOn([AT, "st"], "chat-moved", movedTo("k1", "st2", 7, 21));
+  await settle(s.host);
+  assert.equal(s.core.inner.data.chatNow(A, { thread: 7 })?.thread, 21);
+  assert.ok(JSON.stringify(s.core.inner.store.value(page)).includes("m1"), "B's messages");
+  // Back: B says it went to A, A that it came back; B has none of it now.
+  gone = true;
+  s.pushOn([AT, "st2"], "chat-moved", movedTo("k1", "st", 21, 7));
+  s.pushOn([AT, "st"], "chat-moved", movedTo("k1", null, null, null));
+  await settle(s.host);
+  assert.equal(s.core.inner.data.chatNow(A, { thread: 7 }), null);
+  // B's stream goes and comes back: what was shown of the chat there is asked where it is (A), never of B.
+  const before = s.host.requests.length;
+  await streamAgain(s, "st2");
+  assert.deepEqual(askedOfB(s.host, before).map((r) => r.url), [], "not asked of the station that said it went");
+  // There again: from the first value the page's topic shows its messages, never that the chat is not there.
+  gone = false;
+  s.host.takeEmitted();
+  s.pushOn([AT, "st"], "chat-moved", movedTo("k1", "st2", 7, 21));
+  s.pushOn([AT, "st2"], "chat-moved", movedTo("k1", null, null, null));
+  const sent = await sentOf(s.host, 1);
+  assert.deepEqual(sent.filter((m) => m.includes("http_404")), [], "never not there");
+  const now = s.core.inner.store.value(page) as J;
+  assert.ok(now !== undefined && "ok" in now && JSON.stringify(now).includes("m1"), JSON.stringify(now));
+  s.core.close();
+});
+
+test("a_chat_whose_row_on_another_station_says_it_came_lets_go_of_a_not_there_kept_of_it_there", async () => {
+  // B names the chat in nothing (no row, nothing said went: a station that never had it, or whose copy was retired),
+  // and a page opened on its thread there (a notice of B's) was answered that it has none (kept: sync.ts #threadGone).
+  const w = world();
+  w.rows.st = [{ id: "k1", thread: 7, title: "在 studio", at: 5000 }];
+  let gone = true;
+  w.reply = goneOnB(() => gone);
+  const s = await rig(w, undefined, (g) => {
+    g.marks = true;
+  });
+  const page: Topic = { topic: "thread", station: A, thread: 7 };
+  subscribe(s.core, s.ui, 1, page);
+  subscribe(s.core, s.ui, 2, { topic: "thread", station: B, thread: 21 });
+  await settle(s.host);
+  assert.equal((s.core.inner.store.value({ topic: "thread", station: B, thread: 21 }) as J)?.err?.code, "http_404", "B said it has none");
+  assert.equal(s.core.inner.data.chatNow(A, { thread: 7 }), null);
+  // The chat comes to B, as B shows it (station store/store.ts showChat): its session and its rows changed, its row
+  // saying it came from A; neither station says it moved.
+  gone = false;
+  const row = { id: "k1", thread: 21, title: "在 mini", at: 6000, from: "st" };
+  w.rows.st2 = [row];
+  s.host.takeEmitted();
+  s.pushOn([AT, "st2"], "session", (chatsOf([rowOf(row)])["GET /sessions"] as J[])[0]);
+  s.pushOn([AT, "st2"], "chat-changed", { thread: 21 });
+  const sent = await sentOf(s.host, 1);
+  const data = s.core.inner.data;
+  assert.equal(data.chatNow(A, { thread: 7 })?.thread, 21, `on B, by its row's from: B's rows ${JSON.stringify(data.chatsOf(B, { thread: 21 }))}`);
+  // The page's topic shows B's messages, never that the chat is not there.
+  assert.deepEqual(sent.filter((m) => m.includes("http_404")), [], "never not there");
+  const now = s.core.inner.store.value(page) as J;
+  assert.ok(now !== undefined && "ok" in now && JSON.stringify(now).includes("m1"), JSON.stringify(now));
+  s.core.close();
+});
+
+test("a_chat_whose_row_comes_before_its_summary_says_it_came_is_taken_as_come_the_same", async () => {
+  // As the case before, the other way round: B's row first (its session's summary and its thread, nothing saying
+  // where it came from), then its summary saying so. Both end the same: the chat on B by its thread there.
+  const w = world();
+  w.rows.st = [{ id: "k1", thread: 7, title: "在 studio", at: 5000 }];
+  const s = await rig(w, undefined, (g) => {
+    g.marks = true;
+  });
+  const page: Topic = { topic: "thread", station: A, thread: 7 };
+  subscribe(s.core, s.ui, 1, page);
+  await settle(s.host);
+  const row = { id: "k1", thread: 21, title: "在 mini", at: 6000, from: "st" };
+  w.rows.st2 = [{ ...row, from: undefined }];
+  s.pushOn([AT, "st2"], "session", (chatsOf([rowOf({ ...row, from: undefined })])["GET /sessions"] as J[])[0]);
+  s.pushOn([AT, "st2"], "chat-changed", { thread: 21 });
+  await settle(s.host);
+  const data = s.core.inner.data;
+  assert.equal(data.chatsOf(B, { thread: 21 }).length, 1, "B's row first");
+  assert.equal(data.chatNow(A, { thread: 7 }), null, `not yet: nothing says it came (B's rows ${JSON.stringify(data.chatsOf(B, { thread: 21 }))})`);
+  w.rows.st2 = [row];
+  s.pushOn([AT, "st2"], "session", (chatsOf([rowOf(row)])["GET /sessions"] as J[])[0]);
+  await settle(s.host);
+  assert.deepEqual(data.chatNow(A, { thread: 7 }), { station: B, session: "k1", thread: 21 }, `B's rows ${JSON.stringify(data.chatsOf(B, { thread: 21 }))}, A's said ${JSON.stringify(data.moved(A, "k1"))}`);
+  const now = s.core.inner.store.value(page) as J;
+  assert.ok(now !== undefined && "ok" in now && JSON.stringify(now).includes("m1"), JSON.stringify(now));
+  s.core.close();
+});
+
+test("a_not_there_read_before_the_station_it_left_said_so_goes_as_it_says_the_chat_came_back", async () => {
+  // Back on A, B's stream away as it went: A said it came back, B nothing yet, so B is asked of its thread (it was
+  // shown) and has none (kept). B's stream back tells it went; then it comes to B again, B saying so (`chat-moved`, no
+  // station: station/src/store/store.ts showChat).
+  const w = world();
+  w.rows.st = [{ id: "k1", thread: 7, title: "在 studio", at: 5000 }];
+  w.rows.st2 = [{ id: "k1", thread: 21, title: "在 mini", at: 3000 }];
+  let gone = false;
+  w.reply = goneOnB(() => gone);
+  const s = await rig(w, undefined, (g) => {
+    g.resumes = true;
+    g.marks = true;
+  });
+  const page: Topic = { topic: "thread", station: A, thread: 7 };
+  subscribe(s.core, s.ui, 1, page);
+  await settle(s.host);
+  s.pushOn([AT, "st"], "chat-moved", movedTo("k1", "st2", 7, 21));
+  await settle(s.host);
+  gone = true;
+  s.pushOn([AT, "st"], "chat-moved", movedTo("k1", null, null, null));
+  await settle(s.host);
+  const before = s.host.requests.length;
+  await streamAgain(s, "st2");
+  assert.ok(askedOfB(s.host, before).length > 0, "asked of B, which had said nothing");
+  s.pushOn([AT, "st2"], "chat-moved", movedTo("k1", "st", 21, 7));
+  await settle(s.host);
+  gone = false;
+  s.host.takeEmitted();
+  s.pushOn([AT, "st"], "chat-moved", movedTo("k1", "st2", 7, 21));
+  s.pushOn([AT, "st2"], "chat-moved", movedTo("k1", null, null, null));
+  const sent = await sentOf(s.host, 1);
+  assert.equal(s.core.inner.data.chatNow(A, { thread: 7 })?.thread, 21, "on B again");
+  assert.deepEqual(sent.filter((m) => m.includes("http_404")), [], "never not there");
+  const now = s.core.inner.store.value(page) as J;
+  assert.ok(now !== undefined && "ok" in now && JSON.stringify(now).includes("m1"), JSON.stringify(now));
   s.core.close();
 });

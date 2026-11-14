@@ -1161,7 +1161,7 @@ export class AccountDb {
     this.kept.wrote(beside, () => (archived ? undefined : kept));
     this.#loadedList(station, archived ? "archived" : "chats")?.set(id, kept, [ord]);
     this.#tellChatRead(station, archived, id, before, kept, before === undefined ? undefined : ordBefore, ord);
-    if (!archived) this.#came(station, row, c, before === undefined);
+    if (!archived) this.#came(station, row, c, before === undefined || (c.thread !== null && u64(get(before, "thread")) === null));
     if (!archived) this.#tellChat(station, id, before, kept);
     this.#tell({ topic: archived ? "archivedRows" : "chatRows", station });
   }
@@ -1417,16 +1417,21 @@ export class AccountDb {
   /// `from`, else its agent's summary's: that station's id; station/src/replica/handover.ts): that one's rows of it go and
   /// are not listed of it, as where it said so itself (`putMoved`), so a device that never heard it (it off) lists the
   /// chat once. What it says itself overrides this (its `chat-moved`, `GET /moved`, a `409 moved`).
-  /// (`first`: new to the list; its summary is read only then)
+  /// One rule whichever comes first, the row or its summary's `from`: a summary saying it written for a session whose
+  /// row is listed takes that row so (`#summaryCame`), and a row that comes to name its thread after it was taken
+  /// without one says its thread here (else the chat is known here by no thread: a page by its thread never follows).
+  /// (`first`: new to the list, or to its thread; its summary is read only then)
   #came(station: string, row: J, c: ChatCols, first: boolean): void {
     if (c.session === null) return;
     const from = str(get(row, "from")) ?? (first ? str(get(this.summary(station, c.session), "from")) : null);
     if (from === null || from === "" || from.includes("/")) return;
     const at = station.lastIndexOf("/");
     const there = `${at < 0 ? "" : station.slice(0, at + 1)}${from}`;
-    if (there === station || this.moved(there, c.session) !== undefined) return;
+    if (there === station) return;
+    const known = this.moved(there, c.session);
+    if (known !== undefined && !(known.came === true && known.station === station && known.there === null && c.thread !== null)) return;
     // (its thread there as its row there says it, before that goes: what was sent to it there is aimed here by it)
-    const thread = u64(this.sql.all("SELECT thread FROM chat WHERE station = ? AND session = ? AND thread IS NOT NULL LIMIT 1", [there, c.session])[0]?.[0]);
+    const thread = known?.thread ?? u64(this.sql.all("SELECT thread FROM chat WHERE station = ? AND session = ? AND thread IS NOT NULL LIMIT 1", [there, c.session])[0]?.[0]);
     this.putMoved(there, c.session, { station, thread, there: c.thread, at: null, came: true });
     this.#changes.came.push([there, c.session]);
   }
@@ -1671,6 +1676,17 @@ export class AccountDb {
     else list?.delete(key);
     this.#tell({ topic: "sessions", station });
     this.#tellSession(station, key);
+    this.#summaryCame(station, key, kept);
+  }
+
+  /// A summary saying its chat came from another station (`from`), its row listed already: taken as a row new to the
+  /// list is (`#came`), so the order the two come in changes nothing.
+  #summaryCame(station: string, key: string, summary: J): void {
+    if (str(get(summary, "from")) === null) return;
+    const r = this.sql.all("SELECT json FROM chat WHERE station = ? AND session = ? AND archived = 0 LIMIT 1", [station, key])[0];
+    if (r === undefined || typeof r[0] !== "string") return;
+    const row = JSON.parse(r[0]) as J;
+    this.#came(station, row, this.#chatCols(row), true);
   }
 
   #tellSession(station: string, key: string): void {

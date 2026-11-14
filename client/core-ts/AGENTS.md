@@ -129,6 +129,11 @@ neither said is two chats (a platform thread's key is its connect's, each statio
 What names a chat on the station it left (a call's params, a link, a page's topic, a draft) is aimed through
 `chatNow` where it is read, never by rewriting what the UI holds: a page open on it keeps its topics and its thread id,
 each shown of its copy there (core/routing.ts `#movedTo`, one place for every topic a chat's page holds).
+`#came` is one rule whichever of the row and its summary's `from` comes first (`#summaryCame`), and takes the chat
+by its thread there once its row names it. A log held of a station that said its chat went is never asked of that
+station (its catch-up as a stream comes back aimed by `chatNow`: it would answer 404); and being told a chat is on a
+station (the one it left saying so, a `409 moved`, its row there come from another, it back) lets go of what was kept
+of it there as not there and reads again what a page holds of it (station/sync.ts `chatHere`).
 
 ## What is shared is never written
 

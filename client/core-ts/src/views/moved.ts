@@ -49,14 +49,21 @@ export function movedOf(address: string, said: unknown): { session: string; to: 
 /// `address` says its chat of `session` went to `to` (null: came back): kept, and what was done here to it aimed there.
 export function heard(inner: Inner, address: string, session: string, to: MovedTo | null): void {
   const thread = to === null ? null : (to.thread ?? inner.data.moved(address, session)?.thread ?? null);
-  if (!inner.data.putMoved(address, session, to) || to === null) return;
-  aimThere(inner, address, session, thread);
+  // (back: its thread here, as the station said it went)
+  const back = to === null ? (inner.data.moved(address, session)?.thread ?? null) : null;
+  if (!inner.data.putMoved(address, session, to)) return;
+  // Back on it: what was kept of it here as not there while it was elsewhere goes, what is shown of it asked again.
+  if (to === null) inner.stations.chatHere(address, session, back);
+  else aimThere(inner, address, session, thread);
 }
 
 /// What was done here to `address`'s chat of `session` (its thread there `thread`) aimed where it is now.
 function aimThere(inner: Inner, address: string, session: string, thread: number | null): void {
   const now = inner.data.chatNow(address, { session });
   if (now === null) return;
+  // Told it is there now: what was kept of it there as not there (a read answered 404 while it was elsewhere) goes,
+  // and what a page holds of it is asked again (sync.ts chatHere): a reader reads when it is told.
+  inner.stations.chatHere(now.station, session, now.thread);
   const sends = inner.views?.local.moved(address, session, thread, now.station, now.thread) ?? [];
   if (now.thread !== null) inner.viewCalls?.movedSends(now.station, now.thread, sends);
   // Its draft, by its session, where none is kept there (composer.ts keeps it there from now on).
