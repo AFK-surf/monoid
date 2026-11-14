@@ -96,7 +96,9 @@ const filesIn = (n: Name, id: string) => {
 class Steps {
   readonly seen = new Map<string, { step: string; held: boolean; at: number }[]>();
   #w: ReturnType<typeof watch> | null = null;
-  constructor(readonly n: Name) {
+  readonly n: Name;
+  constructor(n: Name) {
+    this.n = n;
     const d = `${DATA[n]}/replica/handover/out`;
     mkdirSync(d, { recursive: true });
     this.#w = watch(d, () => this.scan());
