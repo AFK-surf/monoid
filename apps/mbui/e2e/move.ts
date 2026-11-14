@@ -1475,8 +1475,13 @@ try {
       const t0 = Date.now();
       await a.call("chat.send", { station: A, session: key, text: `drill-gate:${g}` });
       const began = await whenChanged([ST], () => turns(t0).find((t) => t.text.includes(`drill-gate:${g}`)), 60_000, () => "the gated turn never began");
-      await handOverA();
-      writeFileSync(`${FAKE}.gate-${g}`, "go\n");
+      // (the gate opened whatever the handover's check says: a turn left open is in its turn for good, and the next part
+      // that moves this chat waits ten minutes on it: drill 22's part 4)
+      try {
+        await handOverA();
+      } finally {
+        writeFileSync(`${FAKE}.gate-${g}`, "go\n");
+      }
       const v = await untilChat(key, (v) => texts(v).some((t) => t.startsWith(`drill-gated ${g}`)) && v, 120_000);
       const answers = texts(v).filter((t) => t.startsWith(`drill-gated ${g}`));
       const handed = turns(t0).filter((t) => t.text.includes(`drill-gate:${g}`));
@@ -1683,13 +1688,17 @@ try {
       const l = await turnEnds("A", t0, 3_600_000);
       const s = (Date.now() - t0) / 1000;
       const left = sql("A", "select count(*) n from sessions where (ws is null or (ws not like 'handed:%' and ws not like 'coming:%'))")[0].n as number;
-      measured(`${n} chats moved with all: ${s.toFixed(0)} s, ${((n - left) / (s / 60)).toFixed(0)} chats a minute, ${left} left on A; main thread: ${holds(from)} (${outcome(l).slice(0, 600)})`);
+      // (the turn's end as the station wrote it, `last.at`, beside when this wait saw it: drill 22's way back was seen
+      // 600 s after its last chat with nothing in either station's log between; what was left or failed, whole)
+      const ends = (x: J, t: number, seen: number) => `the station's turn ended at ${typeof x?.at === "number" ? ((x.at - t) / 1000).toFixed(1) : "?"} s, seen at ${seen.toFixed(1)} s`;
+      const notDone = (x: J) => `refused [${(x?.refused ?? []).map((r: J) => `${named(r.item)}: ${r.why}`).join(" | ")}] failed ${failuresOf(x).map((f) => `${f.item}: ${f.error}`).join(" | ") || "none"}`;
+      measured(`${n} chats moved with all: ${s.toFixed(0)} s, ${((n - left) / (s / 60)).toFixed(0)} chats a minute, ${left} left on A; ${ends(l, t0, s)}; main thread: ${holds(from)}; ${notDone(l)}`);
       from = offsets();
       const t1 = Date.now();
       await a.call("move.back", { station: A, from: bId, all: true });
       const lb = await turnEnds("A", t1, 3_600_000);
       const sb = (Date.now() - t1) / 1000;
-      measured(`and back: ${sb.toFixed(0)} s, ${(n / (sb / 60)).toFixed(0)} chats a minute; main thread: ${holds(from)} (${outcome(lb).slice(0, 600)})`);
+      measured(`and back: ${sb.toFixed(0)} s, ${(n / (sb / 60)).toFixed(0)} chats a minute; ${ends(lb, t1, sb)}; main thread: ${holds(from)}; ${notDone(lb)}`);
       if (left > 0) throw new Error(`${left} chats not moved`);
     });
   }
