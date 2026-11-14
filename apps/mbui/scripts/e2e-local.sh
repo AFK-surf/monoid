@@ -407,6 +407,7 @@ rigs() {
 
 # e2e/move.ts the same way (a station's things moved to another and back, with faults), its devices' data under
 # $WORK/move
+# (E2E_DRILL_NODE: options for the drill's own node, `--cpu-prof --cpu-prof-dir=…` to see where its time goes.)
 # The run has a limit (E2E_MOVE_LIMIT seconds, 4 h unless set): the drill keeps its own a minute less, and each of its
 # parts one of its own (e2e/move.ts `limit`), each failing by name with what it waited for; this one bounds it where a
 # step holds the drill's thread itself (a synchronous child that never ends: drill 8 sat 2 h 38 min so).
@@ -414,7 +415,7 @@ move() {
   local most=${E2E_MOVE_LIMIT:-14400}
   (export E2E_HOME=$HOME; . $RUN/station-env.sh 2>/dev/null; export HOME=$WORK/move-home; mkdir -p $HOME
    E2E_SF_SRC=$E E2E_ORIGIN=$ORIGIN E2E_PEER_DATA=$WORK/move E2E_WORK=$WORK E2E_STATION=$STATION E2E_PORT=$PORT \
-     E2E_RELAY=$RELAY_PORT E2E_MOVE_LIMIT=$most node $ROOT/e2e/move.ts </dev/null &
+     E2E_RELAY=$RELAY_PORT E2E_MOVE_LIMIT=$most node ${E2E_DRILL_NODE:-} $ROOT/e2e/move.ts </dev/null &
    local pid=$! rc
    (sleep $most; kill -0 $pid 2>/dev/null || exit 0  # timer: the run's deadline
     echo "FAIL the run: over its limit of $most s (scripts/e2e-local.sh move); the drill's process killed, its last line above"

@@ -1779,6 +1779,8 @@ try {
       if (timer === "") timer = await newChat(`timer-${tag}`);
       await seed(149, 2235);
       await timeMove("2,384 chats", timer);
+      // (E2E_MOVE_TIMING_ONLY: the pages and the plan timed, the whole moved neither way: a timing run of its own)
+      if (process.env.E2E_MOVE_TIMING_ONLY === "1") return log("  (timing only: the 2,384 chats not moved)");
       const n = sql("A", "select count(*) n from sessions where (ws is null or (ws not like 'handed:%' and ws not like 'coming:%'))")[0].n as number;
       let from = offsets();
       const t0 = Date.now();
