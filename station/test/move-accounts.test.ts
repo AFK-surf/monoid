@@ -399,6 +399,67 @@ test("a login not shared handed to and fro three times: what each station keeps 
   assert.equal(present(b, "kimi").id, "kimi");
 });
 
+test("a chat whose login is on no station any more (its profile removed here since) is no item's need: the plan lists no account for it; it goes, alone or with all, the archived one too, nothing refused or failed; there it answers a message as here; back likewise", async () => {
+  const { a, b, quiet } = world([MAX, SPARE]);
+  signIn(a, "max", CLAUDE_LOGIN);
+  const one = await chatOn(a, "max");
+  const shelved = await chatOn(a, "max");
+  signIn(a, "spare", CLAUDE_LOGIN);
+  const unknown = await chatOn(a, "spare");
+  // (one whose login no station ever had, its rows naming a profile never known here; one known as it was, then
+  // removed: renamed or taken out by a person)
+  a.rig.store.db.prepare("UPDATE sessions SET profile = 'ghost', profiles = NULL WHERE key = ?").run(unknown.key);
+  a.rig.store.db.prepare("UPDATE runtime_sessions SET profile = 'ghost' WHERE session_key = ?").run(unknown.key);
+  a.rig.raw.profiles = a.rig.raw.profiles.filter((p: Json) => p.id !== "spare");
+  await a.moves.scheduler.plan(WS, B);
+  a.rig.raw.profiles = a.rig.raw.profiles.filter((p: Json) => p.id !== "max");
+  a.rig.store.setArchived(shelved.key, true, "auto");
+  const plan = await a.moves.scheduler.plan(WS, B);
+  assert.deepEqual(plan.items.filter((x) => x.module === "accounts").map((x) => x.id), [], "no account item for a login that is nowhere, known before or not");
+  assert.ok(!plan.items.some((x) => x.id === "machine:ghost"), "one never known is no machine's own login either");
+  const view = moveView(plan, a.moves.modules.map((m) => m.id), a.moves.scheduler.stopped(), { limit: 50 }, null, false, (id) => id.slice(0, 1).toUpperCase());
+  assert.equal(view.modules.find((m: Json) => m.id === "accounts")?.cannot ?? 0, 0, "nothing counted as unable to move");
+  // (what a person's word to it does: here, then there, then here again, the same)
+  const said = (st: Station, thread: number) => (st.rig.store.db.prepare("SELECT text FROM entries WHERE thread = ? AND author_kind = 'ember' ORDER BY n").all(thread) as { text: string }[]).map((r) => r.text);
+  const react = async (st: Station, thread: number, text: string) => {
+    const before = said(st, thread).length;
+    say(st.rig.hub, thread, "p@x", text);
+    await quiet();
+    // (a turn it began on a process of its own, ended as its agent would: nothing left in a turn to wait for)
+    const session = st.rig.claude.sessions.find((x) => x.prompts.some((p) => p.includes(text)));
+    if (session !== undefined) {
+      await st.rig.call(one.key, "chat_state", { kind: "final" });
+      session.complete();
+      await quiet();
+    }
+    assert.equal(st.rig.hub.busy(one.key), false, `${st.id.slice(0, 1)}: in no turn after: ${JSON.stringify(said(st, thread).slice(before))}`);
+    return { said: said(st, thread).slice(before).map((x) => x.replace(/[「“][^」”]*[」”]/g, "…")), turn: session !== undefined };
+  };
+  // (its process from before its login was removed ended, as after a start: what it does is what a chat whose
+  // account is missing does)
+  await a.rig.hub.holdChat(one.key, "its process ended");
+  a.rig.hub.releaseChat(one.key);
+  await quiet();
+  const here = await react(a, one.thread, "still there?");
+  if (process.env.MOVE_SAID === "1") console.log(`SAID ${JSON.stringify(here)}`);
+  assert.deepEqual([here.said.length, here.turn], [1, false], `a chat whose account is missing says so once, no turn: ${JSON.stringify(here)}`);
+  const out = await a.moves.scheduler.move(WS, B, { all: true });
+  await quiet();
+  assert.equal(out.failed, null, JSON.stringify(out));
+  assert.deepEqual(out.refused, [], "nothing refused");
+  assert.deepEqual(out.failures ?? [], []);
+  for (const k of [one.key, shelved.key, unknown.key]) assert.equal(a.rig.store.handedTo(k)?.station, B, `${k} went`);
+  assert.notEqual(b.rig.store.getSession(shelved.key)?.archivedAt ?? null, null, "the archived one archived there");
+  const there = await react(b, b.rig.store.homeChat(one.key)!.id, "and now?");
+  assert.deepEqual(there, here, "there as here");
+  const back = await a.moves.scheduler.back(WS, B, { all: true });
+  await quiet();
+  assert.equal(back.failed, null, JSON.stringify(back));
+  assert.deepEqual(back.refused, []);
+  for (const k of [one.key, shelved.key, unknown.key]) assert.equal(a.rig.store.handedTo(k), null, `${k} back`);
+  assert.deepEqual(await react(a, one.thread, "back?"), here, "back here as before");
+});
+
 test("a login that cannot be shared (a Kimi sign-in) moves as it is: gone from here, what needs it here stopped first", async () => {
   const { a, b, quiet } = world([KIMI]);
   assert.notEqual(shareRefusal(KIMI), null);

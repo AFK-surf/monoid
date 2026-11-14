@@ -101,9 +101,14 @@ export function accountsModule(d: AccountsDeps): Module & { cameHome(share: stri
     async plan(ws, to) {
       const items: Item[] = [];
       const asked: Record<string, AccountOf> = {};
+      /// Those its chats name that are no profile here (removed, renamed, or moved away): an item only where the other
+      /// station has it (one moved there, what what is stopped here waits for), else no need of anything.
+      const gone = new Set<string>();
       for (const [pid, a] of d.used(ws)) {
         const id = accountItemId(pid, a);
         if (items.some((x) => x.id === id)) continue;
+        // (not here, known before or never: an item only where the other has it, below)
+        if (d.profile !== undefined && d.profile(pid) == null) gone.add(id);
         local.set(id, pid);
         if (a !== null) asked[id] = a;
         items.push({ module: "accounts", id, label: a?.name ?? pid, needs: [], ...(a === null ? { cannot: `this machine's own login cannot go to another station: sign in there with the login tool` } : {}) });
@@ -116,7 +121,8 @@ export function accountsModule(d: AccountsDeps): Module & { cameHome(share: stri
         const pid = answer?.here?.[id];
         there.set(id, typeof pid === "string" ? { id: pid, hosts: typeof answer?.hosts?.[id] === "boolean" ? answer.hosts[id] : null } : null);
       }
-      return items;
+      // (one that is not here, nor there, answered so: no item, nothing to move nor to wait for)
+      return items.filter((x) => !gone.has(x.id) || failed !== null || there.get(x.id) != null);
     },
     async move(item, to) {
       const pid = local.get(item.id);

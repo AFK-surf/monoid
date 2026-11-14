@@ -211,6 +211,7 @@ export class Moves {
           return a;
         },
         here: (a) => this.accountHere(a),
+        present: (id) => d.profiles().some((p) => p?.id === id),
       },
       reposDir: d.reposDir, room: d.room, hasGit: d.hasGit, git: d.git, lackMost: d.lackMost, work: d.work, fail: d.fail,
       changed: () => d.changed?.(),

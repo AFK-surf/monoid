@@ -134,7 +134,9 @@ export type HandoverDeps = {
   /// here (a hand-over that failed).
   jobs: { of(keys: string[]): CarriedJob[]; stop(keys: string[], why: string): Promise<void>; start(job: CarriedJob): void };
   /// What a profile here is known by elsewhere (null: none here), and the profile here of one so known (null: none).
-  accounts: { of(id: string): AccountOf | null; here(a: AccountOf): string | null };
+  /// `present`: whether profile `id` is one of this station's (in its config): one that is not is a login of no
+  /// station's to its chats unless the station they go to has it (the plan's rule, move/accounts.ts), no need of them.
+  accounts: { of(id: string): AccountOf | null; here(a: AccountOf): string | null; present?(id: string): boolean };
   reposDir: string;
   room?: () => Promise<{ free: number | null }>;
   hasGit?: () => Promise<boolean>;
@@ -509,7 +511,9 @@ export class Handover {
       const it = d.connects?.describedFor(id);
       if (it) described.push({ known: knownOf(id, here), station: it.station, described: it.described });
     }
-    return await ask({ method: "handover.begin", keys: o.keys, ws: o.ws, dataDir: d.data, accounts, connects, described, stoppedFor, bindings: this.#bindingsOf(o.keys) });
+    // (those no profile here, told so: where the other has none of them either, no need of the chat's)
+    const nowhere = Object.keys(accounts).filter((pid) => d.accounts.present?.(pid) === false);
+    return await ask({ method: "handover.begin", keys: o.keys, ws: o.ws, dataDir: d.data, accounts, nowhere, connects, described, stoppedFor, bindings: this.#bindingsOf(o.keys) });
   }
 
   /// Its files: gathered alone (what the first pass hashed taken by path, size and time: its lists in the same
@@ -844,8 +848,11 @@ export class Handover {
     // named.
     const profiles: Record<string, string> = {};
     const missing: string[] = [];
+    const nowhere = new Set<string>(Array.isArray(request.nowhere) ? request.nowhere.filter((x: unknown): x is string => typeof x === "string") : []);
     for (const [pid, a] of Object.entries((request.accounts ?? {}) as Record<string, AccountOf | null>)) {
       const here = a === null ? null : this.#d.accounts.here(a);
+      // (a login of no station's, here neither: no need of the chat's, which goes on as one whose account is missing)
+      if (here === null && nowhere.has(pid)) continue;
       if (here === null) missing.push(a?.name || pid);
       else profiles[pid] = here;
     }
