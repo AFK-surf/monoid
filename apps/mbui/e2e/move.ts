@@ -264,14 +264,15 @@ async function handOver(n: Name): Promise<{ from: number; log: string }> {
   }
   process.kill(pid, "SIGUSR2");
   log(`  SIGUSR2 to ${n}'s launcher ${pid}; waiting for it to begin a handover`);
-  await whenChanged([RUN], () => /handover: Node [0-9]+ started beside|not handed over/.test(readFileSync(file, "utf8").slice(from)), 10_000,
+  await whenChanged([RUN], () => /handover: Node [0-9]+ started beside|not handed over; going on as before/.test(readFileSync(file, "utf8").slice(from)), 10_000,
     () => `${n}'s launcher said nothing of a handover in 10 s: ${readFileSync(file, "utf8").slice(from).split("\n").slice(-5).join(" | ")}`);
   return { from, log: file };
 }
-/// What `n`'s launcher said since `from` once it said how the handover ended: taken over, or not handed over.
+/// What `n`'s launcher said since `from` once it said how the handover ended: taken over, or not handed over (its own
+/// words: the station's "a chat was not handed over" in the same log is a chat's, drill 19 took it for the launcher's).
 function handoverEnd(h: { from: number; log: string }, ms = 120_000): Promise<string> {
   log("  waiting for the handover's end in the launcher's log");
-  return whenChanged([RUN], () => /Node [0-9]+ has taken over|not handed over[^\n]*|did not take over[^\n]*/.exec(readFileSync(h.log, "utf8").slice(h.from))?.[0], ms,
+  return whenChanged([RUN], () => /Node [0-9]+ has taken over|not handed over; going on as before[^\n]*|Node [0-9]+ did not take over[^\n]*/.exec(readFileSync(h.log, "utf8").slice(h.from))?.[0], ms,
     () => `no end of the handover said: ${readFileSync(h.log, "utf8").slice(h.from).split("\n").slice(-6).join(" | ")}`);
 }
 
@@ -1457,7 +1458,10 @@ try {
       if (answers.length !== 1 || !answers[0]!.includes(`pid=${began.pid}`) || handed.length !== 1) throw new Error(`answers ${brief(answers)}, the turn began in ${began.pid}, handed ${handed.length} times`);
     });
     let k3 = "";
-    await check("3f: A handed over to a fresh process during a move's first pass: the move's turn is not cut", async () => {
+    // (a handover by hand in a move's first pass fails that chat's hand-over cleanly: the station's own updates are held
+    // while a move's turn runs, so only a hand-made one meets it; the lead, 2026-11-14: right, as long as the chat is
+    // here and working, the turn says what happened and what to do, and nothing is left on B: the last two by endsWell)
+    await check("3f: A handed over to a fresh process during a move's first pass: the chat stays on A and the turn says what happened and what to do", async () => {
       k3 = await faultChat("f3f-move", 300);
       const t0 = Date.now();
       await a.call("move.start", { station: A, to: bId, module: "chats", item: k3, withNeeds: true });
@@ -1465,7 +1469,10 @@ try {
       await handOverA();
       const l = await turnEnds("A", t0);
       log(`  ${outcome(l)}; ${standings(k3)}; its hand-over ${outOf(k3)?.step}: ${outOf(k3)?.error}`);
-      if (standing("B", k3) !== "live") throw new Error(`cut: ${outcome(l)}`);
+      if (standing("B", k3) === "live") return;
+      if (standing("A", k3) !== "live") throw new Error(`neither went nor stayed: ${standings(k3)}`);
+      const why = String(l.failed?.error ?? outOf(k3)?.error ?? "");
+      if (!/again|retry|再|重新/i.test(why)) throw new Error(`it stayed on A, but what the turn says does not say what to do: ${why || outcome(l)}`);
     });
     if (k3 !== "") await endsWell("3f", k3);
     log("SKIP 3f: the station's own self-update waits for a move's turn (updates/holds.ts): not built, the harness's stations have autoUpdate off and no newer release to update to; only the launcher's handover (SIGUSR2) is reachable, above");
