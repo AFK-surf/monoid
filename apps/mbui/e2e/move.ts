@@ -239,6 +239,10 @@ function alive(n: Name): boolean {
   }
 }
 
+/// What log `file` holds past byte `from` (a size statSync gave): read by bytes, not by the characters of a string, which
+/// fall short of the bytes once a line says anything but ASCII (drill 22: 3f's wait sliced past the launcher's
+/// "started beside" by the bytes of the station's words before it, and never saw it).
+const since = (file: string, from: number) => readFileSync(file).subarray(from).toString("utf8");
 /// Station `n`'s launcher, by its own process name: the harness's waitfor (its pid file's) carries the same arguments
 /// after its `--`, and drill 12 signalled it, so that nothing was handed over.
 function launcherOf(n: Name): number | undefined {
@@ -264,16 +268,16 @@ async function handOver(n: Name): Promise<{ from: number; log: string }> {
   }
   process.kill(pid, "SIGUSR2");
   log(`  SIGUSR2 to ${n}'s launcher ${pid}; waiting for it to begin a handover`);
-  await whenChanged([RUN], () => /handover: Node [0-9]+ started beside|not handed over; going on as before/.test(readFileSync(file, "utf8").slice(from)), 10_000,
-    () => `${n}'s launcher said nothing of a handover in 10 s: ${readFileSync(file, "utf8").slice(from).split("\n").slice(-5).join(" | ")}`);
+  await whenChanged([RUN], () => /handover: Node [0-9]+ started beside|not handed over; going on as before/.test(since(file, from)), 10_000,
+    () => `${n}'s launcher said nothing of a handover in 10 s: ${since(file, from).split("\n").slice(-5).join(" | ")}`);
   return { from, log: file };
 }
 /// What `n`'s launcher said since `from` once it said how the handover ended: taken over, or not handed over (its own
 /// words: the station's "a chat was not handed over" in the same log is a chat's, drill 19 took it for the launcher's).
 function handoverEnd(h: { from: number; log: string }, ms = 120_000): Promise<string> {
   log("  waiting for the handover's end in the launcher's log");
-  return whenChanged([RUN], () => /Node [0-9]+ has taken over|not handed over; going on as before[^\n]*|Node [0-9]+ did not take over[^\n]*/.exec(readFileSync(h.log, "utf8").slice(h.from))?.[0], ms,
-    () => `no end of the handover said: ${readFileSync(h.log, "utf8").slice(h.from).split("\n").slice(-6).join(" | ")}`);
+  return whenChanged([RUN], () => /Node [0-9]+ has taken over|not handed over; going on as before[^\n]*|Node [0-9]+ did not take over[^\n]*/.exec(since(h.log, h.from))?.[0], ms,
+    () => `no end of the handover said: ${since(h.log, h.from).split("\n").slice(-6).join(" | ")}`);
 }
 
 /// A room filled with `count` files of `bytes` bytes each, each its own random bytes (two the same would be sent once).
@@ -1499,6 +1503,14 @@ try {
   if (part("4") && (limit("4", 3600), await clean("4"))) {
     const keys: string[] = [];
     const archived: string[] = [];
+    /// An archived chat's room as its station packed it on A (its `mine.txt` inside): the packed file, and its bytes'
+    /// digest as packed before the move (drill 22 read `workspace/mine.txt` of a packed room, which has none).
+    const packedOf = (k: string): string | null => {
+      const r = roomOn("A", k)!;
+      return [join(r, "workspace.tar.zst"), join(dirname(r), "workspace.tar.zst")].find((f) => existsSync(f)) ?? null;
+    };
+    const digestOf = (f: string) => createHash("sha256").update(readFileSync(f)).digest("hex");
+    const packed = new Map<string, string>();
     let jobTag = "";
     await check("4: setup: about 12 chats on A (3 archived with their packed workspace), a job, the vault item, the skill, a setting, the account", async () => {
       for (let i = 0; i < 10; i++) keys.push(await newChat(`all-${i}-${tag}`));
@@ -1511,10 +1523,8 @@ try {
         await a.call("chat.archive", { station: A, session: k, thread, archived: true });
         archived.push(k);
       }
-      await whenChanged([DATA.A], () => archived.every((k) => {
-        const r = roomOn("A", k)!;
-        return existsSync(join(r, "workspace.tar.zst")) || existsSync(join(dirname(r), "workspace.tar.zst"));
-      }), 120_000, () => `not packed: ${archived.map((k) => roomOn("A", k)).join(", ")}`);
+      await whenChanged([DATA.A], () => archived.every((k) => packedOf(k) !== null), 120_000, () => `not packed: ${archived.map((k) => roomOn("A", k)).join(", ")}`);
+      for (const k of archived) packed.set(k, digestOf(packedOf(k)!));
     });
     const plan0 = await a.until(moveT(bId), (v) => v?.modules?.length > 0 && v, 60_000).catch(() => null);
     log(`  before: ${plan0?.modules?.map((m: J) => `${m.id} ${m.done}/${m.total}`).join(", ")}`);
@@ -1574,7 +1584,13 @@ try {
         const now = new Set(allChats());
         const missing = before.filter((k) => !now.has(k));
         if (missing.length > 0) throw new Error(`not back on A: ${missing.slice(0, 5).map((k) => `${k} ${standings(k)}`).join("; ")} (${missing.length})`);
-        for (const k of keys) if (readFileSync(join(roomOn("A", k)!, "mine.txt"), "utf8") !== `${k}\n`) throw new Error(`${k}'s file`);
+        for (const k of keys) {
+          // (an archived one's room packed as it was before it went, byte for byte; the others' file as written)
+          if (packed.has(k)) {
+            const f = packedOf(k);
+            if (f === null || digestOf(f) !== packed.get(k)) throw new Error(`${k}'s packed room: ${f === null ? "none on A" : "not the bytes it had before it went"}`);
+          } else if (readFileSync(join(roomOn("A", k)!, "mine.txt"), "utf8") !== `${k}\n`) throw new Error(`${k}'s file`);
+        }
         const j = jobs(jobTag);
         if (!(j.length === 1 && j[0]!.on === "A")) throw new Error(`the job: ${jobsText(jobTag)}`);
         const onB = sql("B", "select count(*) n from sessions where (ws is null or (ws not like 'handed:%' and ws not like 'coming:%'))")[0].n;
@@ -1623,7 +1639,7 @@ try {
     const logs = () => ({ A: `${RUN}/station.log`, B: `${RUN}/second.log` });
     const offsets = () => Object.fromEntries(Object.entries(logs()).map(([n, f]) => [n, existsSync(f) ? statSync(f).size : 0])) as Record<string, number>;
     const holds = (from: Record<string, number>) => Object.entries(logs()).map(([n, f]) => {
-      const t = existsSync(f) ? readFileSync(f, "utf8").slice(from[n] ?? 0) : "";
+      const t = existsSync(f) ? since(f, from[n] ?? 0) : "";
       const ms = [...t.matchAll(/the main thread was held.*?heldMs=(\d+)/g)].map((m) => Number(m[1]));
       return `${n}: ${ms.length} held, longest ${ms.length === 0 ? 0 : Math.max(...ms)} ms${ms.filter((x) => x > 200).length > 0 ? ` (${ms.filter((x) => x > 200).length} over 200 ms)` : ""}`;
     }).join("; ");
