@@ -558,7 +558,7 @@ test "an account's stations appear once even with several copies" {
   for platform in [0, 2] {
     let t = settings_tester("profile:ws1/st1#cc", shows="settings-profile-hosts", platform~)
     assert_eq(t.words().filter(fn(w) { w.0 == "Cedar" && w.5 > 0.5 }).length(), 1, msg="one station, one row, platform \{platform}")
-    assert_true(t.find("向 Willow 借用") is None)
+    assert_true(t.find("在此 station 单独登录") is Some(_) && t.find("向 Willow 借用") is Some(_))
     t.tap_text("Cedar")
     assert_true(app.nav.top() is Setting(@settings.Route::Profile("ws1/st3", "local")), msg="open the station's profile, platform \{platform}")
   }
@@ -1193,10 +1193,10 @@ test "a profile's page: who it is and whether it works, then its allowance and w
   assert_true(y("分享给其他 station") > y("星火助手"))
   // A workspace without its own mark is named once, without a repeated initial beside it.
   let ws = "个人 中的对话可使用此账号运行 agent"
-  assert_true(y(ws) > y("分享给其他 station") && t.find("同时用于 个人") is None)
-  assert_true(t.boxes().filter(fn(b) { b.text == "个" }).is_empty())
-  assert_true(y("全部模型") > y(ws))
+  assert_true(y("全部模型") > y("分享给其他 station"))
   assert_true(y("默认 Fast") > y("全部模型"))
+  assert_true(y(ws) > y("默认 Fast") && t.find("同时用于 个人") is None)
+  assert_true(t.boxes().filter(fn(b) { b.text == "个" }).is_empty())
   // its models one row, how many; all of them a press away
   assert_true(t.find("3 个模型") is Some(_) && t.find("Sonnet 5") is None)
 }

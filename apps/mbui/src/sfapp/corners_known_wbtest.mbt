@@ -25,6 +25,11 @@ let corners_everywhere_known : Map[String, Int] = {
   // words' and the window's, no place it is stood at: the rule holds what does not scroll to the corner, and nothing
   // here stands it elsewhere. Gone as the page's height is any other (English's has none).
   known["touch-zh lock-security"] = 3
+  // settings-profile-quota in the tablet's 600×900 window: with the Profile sections consolidated into three cards, the
+  // page is 11 short of its 888 panel, so it does not scroll and its last card (设置's, 16 in from the panel's sides,
+  // 26 round) stands 40.6 over the panel's 42-round foot (the rail's one plus the card and its box in both foot corners).
+  known["touch-zh settings-profile-quota"] = 5
+  known["touch-en settings-profile-quota"] = 5
   // A request for the phone waiting (chat-phone-lacks, swept since 2026-11-11; the same card as chat-phone's, on main
   // unswept): its length's chooser, the last of its answer's row, stands in the card's foot end corner off concentric
   // with it where its words are long (闲置 1 小时后失效 on a phone; Until idle for 1 hour wherever English is), as the

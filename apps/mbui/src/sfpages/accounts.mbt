@@ -239,7 +239,7 @@ fn profile_keys(core : Core, here : () -> Here, o : () -> Json?, p : () -> Json?
     out.push("quota")
   }
   let has_sharing = has(o(), "sharing") && !(field(o(), "sharing") is Some(Null))
-  if items(entry(), "places").length() > 1 || has_sharing || !copy {
+  if items(entry(), "places").length() > 1 || has_sharing {
     out.push("station")
   }
   if !copy {
@@ -292,8 +292,8 @@ fn profile_block_node(
     "sign-in" => profile_sign_in_node(b, core, address, id, s, p, open)
     "trouble" => profile_trouble_node(b, core, address, id, s, p, open)
     "quota" => profile_quota_node(b, core, address, id, o, p, tips)
-    "station" => profile_station_node(b, core, address, id, s, o, p, entry, stint)
-    "settings" => profile_settings_node(b, core, here, address, id, s, p, open, tips)
+    "station" => profile_station_node(b, core, address, id, s, o, p, entry)
+    "settings" => profile_settings_node(b, core, here, address, id, s, p, open, stint, tips)
     _ => ()
   }
 }
@@ -1061,8 +1061,8 @@ fn reset_note(r : Json?) -> String {
 // ── where it is and whom it is shared with ──────────────────────────────
 
 ///|
-/// The stations that have the account, sharing it with the workspace's other stations, and the other workspaces the
-/// station serves, in one Station section in node `b`.
+/// The stations that have the account and sharing it with the workspace's other stations, in one Station section in
+/// node `b`.
 fn profile_station_node(
   b : @view.View,
   core : Core,
@@ -1072,7 +1072,6 @@ fn profile_station_node(
   o : () -> Json?,
   p : () -> Json?,
   entry : () -> Json?,
-  stint : () -> Int,
 ) -> Unit {
   let on = [("station", address), ("id", id)]
   let share = fn() { field(p(), "share") }
@@ -1097,32 +1096,99 @@ fn profile_station_node(
       _ => None
     }
   }
-  let joined = fn() {
-    if profile_copy(p()) {
-      []
-    } else {
-      let m = (core.topic)("memberships", { "station": str(address) }).get().value
-      if flag(m, "manages") {
-        items(m, "workspaces").filter(fn(w) { !flag(Some(w), "home") })
-      } else {
-        []
-      }
-    }
-  }
   let has_places = fn() { items(entry(), "places").length() > 1 }
   let has_sharing = fn() { has(o(), "sharing") && !(field(o(), "sharing") is Some(Null)) }
-  b.show(at_once=true, fn() { joined().length() > 0 || has_places() || has_sharing() }, fn(s_view) {
+  let lender = fn() -> Json? {
+    let host = text(share(), "host")
+    let members = items(entry(), "members")
+    match members.search_by(fn(m) { text(Some(m), "stationId") == host && text(Some(m), "role") == "host" }) {
+      Some(i) => Some(members[i])
+      None => None
+    }
+  }
+  let copy_note = fn() -> String {
+    let host = name_of(text(share(), "host"))
+    if subscription() && field(share(), "reachable") is Some(False) {
+      @sf.t("web-pages.profiles.share.hostAway", args=[("station", host)])
+    } else {
+      @sf.t("web-pages.profiles.share.copy", args=[("station", host)])
+    }
+  }
+  b.show(at_once=true, fn() { has_places() || has_sharing() }, fn(s_view) {
     @sf.section_node(s_view, fn() { @sf.t("android-misc.bar.place.stations") }, fn(sec) {
       @sf.group_node(sec, fn(g) {
-        g.show(at_once=true, fn() { has_sharing() && user() }, fn(x) {
-          let lender = fn() -> Json? {
-            let host = text(share(), "host")
-            let members = items(entry(), "members")
-            match members.search_by(fn(m) { text(Some(m), "stationId") == host && text(Some(m), "role") == "host" }) {
-              Some(i) => Some(members[i])
-              None => None
+        g.show(at_once=true, has_places, fn(pl_box) {
+          pl_box.each(fn() { items(entry(), "places") }, fn(m) { text(Some(m), "station") }, fn(r, m) {
+            let mv = fn() { Some(m.get()) }
+            let station = @signals.untracked(fn() { text(mv(), "station") })
+            let pid = fn() { text(mv(), "profileId") }
+            let state = fn() { field(mv(), "state") }
+            let current = station == address
+            let pill = fn() -> (String, @sf.PillTone) {
+              if !flag(mv(), "online") {
+                (@sf.t("web-pages.stations.offline"), Neutral)
+              } else if pid() == "" && text(state(), "text") != "" {
+                (text(state(), "text"), pill_tone(text(state(), "tone")))
+              } else if !flag(mv(), "usable") {
+                (@sf.t("web-pages.settings.profiles.hostAway", args=[("station", text(mv(), "sourceName"))]), Red)
+              } else {
+                (text(state(), "text"), pill_tone(text(state(), "tone")))
+              }
             }
-          }
+            let role_text = fn() -> String {
+              if pill().0 != "" {
+                return ""
+              }
+              let pid_now = pid()
+              let members = items(entry(), "members")
+              let found = match members.search_by(fn(x) { text(Some(x), "station") == station && (pid_now == "" || text(Some(x), "profileId") == pid_now) }) {
+                Some(i) => Some(members[i])
+                None =>
+                  match members.search_by(fn(x) { text(Some(x), "station") == station }) {
+                    Some(i) => Some(members[i])
+                    None => None
+                  }
+              }
+              match found {
+                Some(mem) => {
+                  let about = text(Some(mem), "about")
+                  if text(Some(mem), "role") == "host" {
+                    match about.find("，") {
+                      Some(idx) => about.clamped_view(end=idx).to_owned()
+                      None =>
+                        match about.find(",") {
+                          Some(idx) => about.clamped_view(end=idx).to_owned()
+                          None => about
+                        }
+                    }
+                  } else {
+                    about
+                  }
+                }
+                None => ""
+              }
+            }
+            r.pick(at_once=true, fn() { !current && pid() != "" }, fn(x, opens) {
+              @sf.link_row_node(
+                x,
+                fn() { text(mv(), "stationName") },
+                fn() {
+                  let to = @signals.untracked(pid)
+                  place_pick[place_key(workspace_of(station), "profiles")] = Profile(station, to)
+                  (core.push)(Profile(station, to))
+                },
+                value=role_text,
+                goes=opens,
+                chevron_room=true,
+                title_after=fn(a) { @sf.pill_node(a, fn() { @sf.t("web-pages.connect.current") }) |> ignore },
+                title_after_shown=fn() { current },
+                tail=fn(t) { t.pick(at_once=true, fn() { pill().1 }, fn(y, tone) { @sf.pill_node(y, fn() { pill().0 }, tone~) |> ignore }) },
+                tail_shown=fn() { pill().0 != "" },
+              )
+            })
+          })
+        })
+        g.show(at_once=true, fn() { has_sharing() && user() && (!profile_pausable(p()) || lender() is Some(_)) }, fn(x) {
           x.pick(at_once=true, fn() { lender() is Some(_) }, fn(r, goes) {
             @sf.link_row_node(
               r,
@@ -1137,6 +1203,13 @@ fn profile_station_node(
                 let host = name_of(text(share(), "host"))
                 if subscription() && field(share(), "reachable") is Some(False) {
                   @sf.t("web-pages.profiles.share.hostAway", args=[("station", host)])
+                } else {
+                  ""
+                }
+              },
+              value=fn() {
+                if goes {
+                  @sf.t("web-pages.profiles.share.goHost", args=[("station", name_of(text(share(), "host")))])
                 } else {
                   ""
                 }
@@ -1173,6 +1246,13 @@ fn profile_station_node(
                 change()
               }
             },
+            note=fn() {
+              if user() && lender() is None {
+                copy_note()
+              } else {
+                ""
+              }
+            },
             busy=busy_put,
           )
         })
@@ -1180,7 +1260,7 @@ fn profile_station_node(
         let movable = fn() {
           has_sharing() && !user() && !flag(p(), "machine") && ((shared() && subscription()) || targets().iter().any(fn(x) { flag(Some(x), "online") }))
         }
-        g.show(at_once=true, movable, fn(x) {
+        g.show(at_once=true, fn() { movable() && !has_places() }, fn(x) {
           x.pick(at_once=true, fn() { !moving() && targets().length() > 0 }, fn(r, goes) {
             @sf.link_row_node(
               r,
@@ -1248,16 +1328,8 @@ fn profile_station_node(
               fn() {
                 pick_stations(core, address, id, @signals.untracked(stations), @signals.untracked(sid), @signals.untracked(allowed))
               },
-              note=fn() {
-                let users = strings(share(), "users").map(name_of)
-                if users.length() > 0 {
-                  @sf.t("web-pages.profiles.share.users", args=[("stations", users.join(@sf.t("web-main.list.separator")))])
-                } else {
-                  ""
-                }
-              },
               value=fn() {
-                match allowed() {
+                let scope = match allowed() {
                   None => @sf.t("web-pages.profiles.share.everyStation")
                   Some(a) =>
                     stations()
@@ -1265,85 +1337,19 @@ fn profile_station_node(
                     .map(fn(x) { text(Some(x), "name") })
                     .join(@sf.t("web-main.list.separator"))
                 }
+                if !has_places() {
+                  let users = strings(share(), "users").map(name_of)
+                  if users.length() > 0 {
+                    scope + " · " + @sf.t("web-pages.profiles.share.users", args=[("stations", users.join(@sf.t("web-main.list.separator")))])
+                  } else {
+                    scope
+                  }
+                } else {
+                  scope
+                }
               },
               goes~,
             )
-          })
-        })
-        g.show(at_once=true, has_places, fn(pl_box) {
-          pl_box.each(fn() { items(entry(), "places") }, fn(m) { text(Some(m), "station") }, fn(r, m) {
-            let mv = fn() { Some(m.get()) }
-            let station = @signals.untracked(fn() { text(mv(), "station") })
-            let pid = fn() { text(mv(), "profileId") }
-            let state = fn() { field(mv(), "state") }
-            let current = station == address
-            let pill = fn() -> (String, @sf.PillTone) {
-              if !flag(mv(), "online") {
-                (@sf.t("web-pages.stations.offline"), Neutral)
-              } else if pid() == "" && text(state(), "text") != "" {
-                (text(state(), "text"), pill_tone(text(state(), "tone")))
-              } else if !flag(mv(), "usable") {
-                (@sf.t("web-pages.settings.profiles.hostAway", args=[("station", text(mv(), "sourceName"))]), Red)
-              } else {
-                (text(state(), "text"), pill_tone(text(state(), "tone")))
-              }
-            }
-            r.pick(at_once=true, fn() { !current && pid() != "" }, fn(x, opens) {
-              @sf.link_row_node(
-                x,
-                fn() { text(mv(), "stationName") },
-                fn() {
-                  let to = @signals.untracked(pid)
-                  place_pick[place_key(workspace_of(station), "profiles")] = Profile(station, to)
-                  (core.push)(Profile(station, to))
-                },
-                goes=opens,
-                chevron_room=true,
-                title_after=fn(a) { @sf.pill_node(a, fn() { @sf.t("web-pages.connect.current") }) |> ignore },
-                title_after_shown=fn() { current },
-                tail=fn(t) { t.pick(at_once=true, fn() { pill().1 }, fn(y, tone) { @sf.pill_node(y, fn() { pill().0 }, tone~) |> ignore }) },
-                tail_shown=fn() { pill().0 != "" },
-              )
-            })
-          })
-        })
-        g.show(at_once=true, fn() { joined().length() > 0 }, fn(ws_box) {
-          ws_box.each(joined, fn(w) { text(Some(w), "workspace") }, fn(r, w) {
-            let wv = fn() { Some(w.get()) }
-            let ws = @signals.untracked(fn() { text(wv(), "workspace") })
-            let name = fn() { text(wv(), "name") }
-            let emoji = fn() { text(wv(), "emoji") }
-            let icon = fn() { text(wv(), "icon") }
-            let on_ws = fn() { strings(p(), "workspaces").contains(ws) }
-            r.pick(at_once=true, fn() { @sf.has_station_mark(emoji(), icon()) }, fn(y, marked) {
-              @sf.switch_row_node(
-                y,
-                name,
-                on_ws,
-                fn(next) {
-                  let now = strings(@signals.untracked(p), "workspaces")
-                  let list = if next { now.copy() } else { now.filter(fn(x) { x != ws }) }
-                  if next {
-                    list.push(ws)
-                  }
-                  let named = @signals.untracked(name)
-                  @settings.act(
-                    core,
-                    @sf.t("web-pages.profiles.workspaces.title"),
-                    "profile.put",
-                    obj([("station", str(address)), ("id", str(id)), ("input", obj([("workspaces", Json::array(list.map(str)))]))]),
-                    done=@sf.t(if next { "web-pages.profiles.workspaces.turnedOn" } else { "web-pages.profiles.workspaces.turnedOff" }, args=[("name", named)]),
-                  )
-                },
-                note=fn() { @sf.t(if on_ws() { "web-pages.profiles.workspaces.on" } else { "web-pages.profiles.workspaces.off" }, args=[("name", name())]) },
-                busy=busy_put,
-                lead?=if marked {
-                  Some(fn(l) { @sf.station_mark_node(l, emoji, icon, profile_ws_mark, fn() { @sf.theme().p.text }, stint) })
-                } else {
-                  None
-                },
-              )
-            })
           })
         })
       })
@@ -1459,8 +1465,8 @@ fn pick_stations(core : Core, address : String, id : String, stations : Array[Js
 // ── settings (models, how it runs, key, variables) ──────────────────────
 
 ///|
-/// Its settings in node `b`: its models, its key or machine login, how it runs (fast mode, background on message), and
-/// its environment variables, in one Settings card.
+/// Its settings in node `b`: its models, its key or machine login, how it runs (fast mode, background on message), the
+/// other workspaces the station serves, and its environment variables, in one Settings card.
 fn profile_settings_node(
   b : @view.View,
   core : Core,
@@ -1470,6 +1476,7 @@ fn profile_settings_node(
   s : () -> Json?,
   p : () -> Json?,
   open : ProfileOpen,
+  stint : () -> Int,
   tips : @sf.TipLayer?,
 ) -> Unit {
   let on = [("station", address), ("id", id)]
@@ -1478,6 +1485,18 @@ fn profile_settings_node(
   let machine = fn() { flag(p(), "machine") }
   let keyed = fn() { ["opencode-go", "anthropic-api", "api-provider"].contains(kind()) && !flag(access(), "login") }
   let busy = fn() { is_doing(core, ["profile.put"], on) }
+  let joined = fn() {
+    if profile_copy(p()) {
+      []
+    } else {
+      let m = (core.topic)("memberships", { "station": str(address) }).get().value
+      if flag(m, "manages") {
+        items(m, "workspaces").filter(fn(w) { !flag(Some(w), "home") })
+      } else {
+        []
+      }
+    }
+  }
   let put = fn(what : String, key : String, value : Bool, done : String) {
     @settings.act(core, what, "profile.put", obj([("station", str(address)), ("id", str(id)), ("input", obj([(key, Json::boolean(value))]))]), done~)
   }
@@ -1626,6 +1645,45 @@ fn profile_settings_node(
                 note=fn() { if flag(p(), "backgroundOnMessage") { @sf.t("web-pages.profiles.backgroundOn") } else { @sf.t("web-pages.profiles.backgroundOff") } },
                 busy~,
               )
+            })
+            g.show(at_once=true, fn() { joined().length() > 0 }, fn(ws_box) {
+              ws_box.each(joined, fn(w) { text(Some(w), "workspace") }, fn(r, w) {
+                let wv = fn() { Some(w.get()) }
+                let ws = @signals.untracked(fn() { text(wv(), "workspace") })
+                let name = fn() { text(wv(), "name") }
+                let emoji = fn() { text(wv(), "emoji") }
+                let icon = fn() { text(wv(), "icon") }
+                let on_ws = fn() { strings(p(), "workspaces").contains(ws) }
+                r.pick(at_once=true, fn() { @sf.has_station_mark(emoji(), icon()) }, fn(y, marked) {
+                  @sf.switch_row_node(
+                    y,
+                    name,
+                    on_ws,
+                    fn(next) {
+                      let now = strings(@signals.untracked(p), "workspaces")
+                      let list = if next { now.copy() } else { now.filter(fn(x) { x != ws }) }
+                      if next {
+                        list.push(ws)
+                      }
+                      let named = @signals.untracked(name)
+                      @settings.act(
+                        core,
+                        @sf.t("web-pages.profiles.workspaces.title"),
+                        "profile.put",
+                        obj([("station", str(address)), ("id", str(id)), ("input", obj([("workspaces", Json::array(list.map(str)))]))]),
+                        done=@sf.t(if next { "web-pages.profiles.workspaces.turnedOn" } else { "web-pages.profiles.workspaces.turnedOff" }, args=[("name", named)]),
+                      )
+                    },
+                    note=fn() { @sf.t(if on_ws() { "web-pages.profiles.workspaces.on" } else { "web-pages.profiles.workspaces.off" }, args=[("name", name())]) },
+                    busy~,
+                    lead?=if marked {
+                      Some(fn(l) { @sf.station_mark_node(l, emoji, icon, profile_ws_mark, fn() { @sf.theme().p.text }, stint) })
+                    } else {
+                      None
+                    },
+                  )
+                })
+              })
             })
             g.show(at_once=true, fn() { kind() == "env" }, fn(env_box) {
               env_box.each(fn() { items(p(), "env") }, fn(e) { text(Some(e), "key") }, fn(r, e) {
