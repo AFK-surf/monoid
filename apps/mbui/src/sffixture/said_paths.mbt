@@ -1187,6 +1187,9 @@ pub let said_paths : Map[String, Array[String]] = {
     "targets.*.free",
     "moving.line",
     "moving.progress.text",
+    "title",
+    "count",
+    "note",
     "allMove.title",
     "allMove.text",
     "allBack.title",
@@ -1197,6 +1200,7 @@ pub let said_paths : Map[String, Array[String]] = {
     "modules.*.items.*.stateText",
     "modules.*.items.*.note",
     "modules.*.items.*.progress.text",
+    "nothing",
   ],
   "stationUpdates": [
     "items.*.name",

@@ -110,22 +110,37 @@ test("the page's value is what the station's GET /move says, a module's items on
   assert.equal(v.canMove, true);
   assert.equal(v.moving.line, "聊天 · 修复登录 · 12 MB / 40 MB");
   assert.equal(v.active, true);
-  // (the modules in the station's order, their needs a chip each, done of total, the one action; none's empty)
+  // (the modules that have items in the station's order, their needs, done of total; jobs, empty, not shown; while
+  // a turn runs no action anywhere, the station answering any a 409: 停止 is the action then)
   assert.deepEqual(v.modules.map((m: J) => [m.id, m.needs, m.count, m.action, m.opens, m.items.length]), [
-    ["accounts", [], "1 / 2", "move", false, 0],
+    ["accounts", [], "1 / 2", "", false, 0],
     ["chats", ["accounts", "connects"], "1 / 5", "", true, 5],
-    ["jobs", ["chats"], "空", "", false, 0],
   ]);
-  // (each row: where it stands at its end, why under it, its own action)
+  assert.equal(v.nothing, "");
+  // (each row: where it stands at its end, why under it)
   assert.deepEqual(v.modules[1].items.map((x: J) => [x.label, x.state, x.stateText, x.note, x.progress?.text ?? null, x.action]), [
     ["修复登录", "moving", "迁移中", "", "12 MB / 40 MB", ""],
-    ["发版", "stopped", "已停 · 等「Claude 工作」", "", null, "move"],
-    ["整理文档", "failed", "失败", "盘满了：在 mini 上腾出 2 GB 再试", null, "move"],
-    ["周报", "there", "已迁移", "", null, "back"],
-    ["草稿", "here", "", "它要的连接还没迁过去：先迁连接", null, "move"],
+    ["发版", "stopped", "已停 · 等「Claude 工作」", "", null, ""],
+    ["整理文档", "failed", "失败", "盘满了：在 mini 上腾出 2 GB 再试", null, ""],
+    ["周报", "there", "已迁移", "", null, ""],
+    ["草稿", "here", "", "它要的连接还没迁过去：先迁连接", null, ""],
   ]);
-  assert.deepEqual([v.allMove.n, v.allMove.title, v.allMove.text], [5, "全部迁移到 mini", "5 项"]);
-  assert.deepEqual([v.allBack.n, v.allBack.title], [2, "从 mini 全部迁回"]);
+  assert.equal(v.allMove ?? null, null, "a turn runs: no 全部迁移");
+  assert.equal(v.allBack ?? null, null, "a turn runs: no 全部迁回");
+  // (its station's page's one row: where, done of total of all of it, what stands out the worst first)
+  assert.deepEqual([v.title, v.count, v.note], ["迁移到 mini", "2 / 7", "1 项失败 · 1 项已停 · 迁移中 · 聊天「修复登录」"]);
+  assert.equal(v.allThere, false);
+
+  // The turn ended: each row's action back at its end (迁移 here, 迁回 there, 重试 failed; none stopped or where it
+  // cannot move), each module's, 全部迁移 with how many cannot move on its line, 全部迁回.
+  said = moved({ moving: null, modules: moved().modules.map((m: J) => (m.id === "chats" ? { ...m, items: m.items.map((x: J) => (x.id === "k1" ? item("k1", "修复登录", "here") : x)) } : m)) });
+  r.pushOn([AT, "st"], "move", { changed: true });
+  await r.host.time.pass(500);
+  const idle = r.view(1);
+  assert.deepEqual(idle.modules.map((m: J) => m.action), ["move", "move"]);
+  assert.deepEqual(idle.modules[1].items.map((x: J) => [x.label, x.action]), [["修复登录", "move"], ["发版", ""], ["整理文档", "retry"], ["周报", "back"], ["草稿", "move"]]);
+  assert.deepEqual([idle.allMove.n, idle.allMove.title, idle.allMove.text], [5, "全部迁移到 mini", "5 项 · 1 项无法迁移"]);
+  assert.deepEqual([idle.allBack.n, idle.allBack.title], [2, "从 mini 全部迁回"]);
 
   // Another module open: its items alone, what cannot move said so.
   const a = await r.show(2, { to: "st2", module: "accounts" });
@@ -135,12 +150,18 @@ test("the page's value is what the station's GET /move says, a module's items on
   ]);
   assert.equal(a.modules[1].items.length, 0);
 
+  // Every module empty: none shown, the card's one line.
+  said = moved({ modules: [{ id: "jobs", needs: [], done: 0, total: 0, items: [], more: null }], moving: null, stopped: [], last: null });
+  const none = await r.show(5, { to: "st2", module: "jobs" });
+  assert.deepEqual([none.modules, none.nothing, none.allMove ?? null], [[], "没有要迁移的", null]);
+
   // A module all of which is there offers moving it back; the station's page, no target, says only whether it shows.
   said = moved({ modules: [{ id: "accounts", needs: [], done: 2, total: 2, items: [], more: null }], moving: null, stopped: [], last: null });
   const back = await r.show(3, { to: "st2" });
   assert.equal(back.modules[0].action, "back");
   const page = await r.show(4, {});
   assert.equal(page.active, true, "something of it is there");
+  assert.equal(page.title, "迁移", "no move said where it went");
   assert.equal(page.allMove ?? null, null, "no target: nothing offered");
   said = moved({ modules: [{ id: "accounts", needs: [], done: 0, total: 2, items: [item("p", "x", "here")], more: null }], moving: null, stopped: [], last: null });
   r.pushOn([AT, "st"], "move", { changed: true });
@@ -220,10 +241,10 @@ test("move and move back go to the station at once, what they did read again; a 
 });
 
 test("one who is not an owner or admin is offered no action", async () => {
-  const r = await rig((_station, key) => (key.startsWith("GET /move") ? moved() : undefined), "member");
+  const r = await rig((_station, key) => (key.startsWith("GET /move") ? moved({ moving: null }) : undefined), "member");
   const v = await r.show(1, { to: "st2", module: "chats" });
   assert.equal(v.canMove, false);
-  assert.deepEqual(v.modules.map((m: J) => m.action), ["", "", ""]);
+  assert.deepEqual(v.modules.map((m: J) => m.action), ["", ""]);
   assert.deepEqual([...new Set(v.modules[1].items.map((x: J) => x.action))], [""]);
   assert.equal(v.allMove ?? null, null);
   r.core.close();
@@ -237,5 +258,28 @@ test("the station a station's things go to is kept on this device, by that stati
   assert.equal(r.view(9)?.moveTo?.[S], "st2");
   await r.ask("prefs.set", { moveTo: { [S]: null } });
   assert.equal(r.view(9)?.moveTo?.[S], undefined);
+  r.core.close();
+});
+
+test("the turn under way stopped: move.stop at once, stopping said till it ends; its station's page names where the last move went; all of it there", async () => {
+  let said = moved({ last: { at: 1, by: "a@x.com", station: "st2", done: [], refused: [], stopped: [], resumed: [], failed: null } });
+  const r = await rig((_station, key) => {
+    if (key.startsWith("GET /move")) return said;
+    if (key === "POST /move/stop") return { stopping: true };
+    return undefined;
+  });
+  const page = await r.show(1, {});
+  assert.equal(page.title, "迁移到 mini");
+  await r.show(2, { to: "st2" });
+  said = moved({ moving: { ...moved().moving, stopping: true } });
+  const ok = await r.ask("move.stop", { station: S });
+  assert.ok("ok" in ok, JSON.stringify(ok));
+  assert.deepEqual(r.asked.at(-1), { station: "st", key: "POST /move/stop", body: {} });
+  assert.equal(r.view(2).moving.stopping, true);
+  said = moved({ modules: [{ id: "accounts", needs: [], done: 2, total: 2, items: [], more: null }], moving: null, stopped: [], last: null });
+  r.pushOn([AT, "st"], "move", { changed: true });
+  await r.host.time.pass(500);
+  assert.equal(r.view(2).allThere, true);
+  assert.equal(r.view(2).allMove ?? null, null);
   r.core.close();
 });

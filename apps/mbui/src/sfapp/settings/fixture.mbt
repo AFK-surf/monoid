@@ -305,6 +305,7 @@ let fx_station_updated : Ref[Bool] = Ref(false)
 fn fixture_reset() -> Unit {
   fx.names.clear()
   rigs_fixture_reset()
+  move_fixture_reset()
   devices_fixture_reset()
   fx_many_models.val = false
   fx_many_kept.val = false
@@ -764,8 +765,11 @@ pub fn fixture_page(mode : String) -> String {
   if m.has_prefix("settings-new-connect") {
     fixture_open.desk = "new-connect"
   }
+  let moves = move_fixture_mode(m)
   match m {
     "settings" => "home"
+    _ if moves && (m == "settings-station-move-section" || m == "settings-station-move-offered") => "station:ws1/st1"
+    _ if moves => "move:ws1/st1"
     "settings-station-mark" | "settings-station-gpu" | "settings-station-gpu-many" | "settings-station-env" | "settings-station-processes" | "settings-station-lower" | "settings-station-versions" | "settings-station-update-failed" | "settings-station-updated" | "settings-station-network" | "settings-station-away" | "settings-station-copies" | "settings-station-copies-alone" | "settings-station-restore" | "settings-station-restore-offer" | "settings-station-restore-confirm" | "settings-station-restore-confirm-long" | "settings-station-restored" | "settings-station-retire" | "settings-station-retire-panel" | "settings-station-retire-panel-pick" | "settings-station-retire-panel-none" | "settings-station-retire-panel-joined" | "settings-station-retire-panel-long" | "settings-station-retire-sending" | "settings-station-retire-sent" | "settings-station-retire-sent-failed" | "settings-station-retire-quiet" | "settings-station-retire-failed" | "settings-station-retire-accounts" | "settings-station-retire-done" | "settings-station-retire-done-left" | "settings-station-taking" =>
       "station:ws1/st1"
     "settings-stations-add" | "settings-stations-existing" | "settings-stations-command" | "settings-first-station" =>
@@ -1811,6 +1815,7 @@ fn fx_station(address : String) -> Json {
           ("network", obj([("congestion", str(fx.congestion))])),
           ("elevation", fx.elevation.unwrap_or(Json::null())),
           ("copies", fx.copies.unwrap_or(Json::null())),
+          ("move", fx_move_offer()),
           ("sharing", Json::boolean(true)),
           (
             "machineLogins",
@@ -3049,6 +3054,8 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
         ]),
       )
     }
+    "stationMove" => Some(fx_move_view(params))
+    "doing" if fx_move.refused is Some(_) => Some(obj([("doing", Json::array(fx_move_doing()))]))
     "doing" => Some(obj([("doing", if fx.protecting {
       [obj([("call", str("lock.joinStation")), ("stage", str("running")), ("params", obj([("workspace", str("ws1")), ("station", str("st2"))]))])]
     } else if fx.key_giving {
@@ -3115,6 +3122,10 @@ pub fn fixture_call(name : String, params : Json) -> Result[Json, Json]? {
     )
   }
   match retire_fixture_call(name, p) {
+    Some(r) => return Some(r)
+    None => ()
+  }
+  match move_fixture_call(name, p) {
     Some(r) => return Some(r)
     None => ()
   }

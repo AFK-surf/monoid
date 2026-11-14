@@ -104,6 +104,9 @@ pub fn settings_fixture(src : Source, core : Core) -> Unit {
         Some({ "station": Json::string("ws1/st1"), "name": Json::string("Willow") }),
         @settings.fixture_retire_preview(),
       )
+    // (Willow's 全部迁移 asked: its ⋯'s, over its page of 迁移, Maple chosen)
+    "move-all" =>
+      @sfpages.station_move_all_confirm(core, "ws1/st1", @settings.move_of(core, "ws1/st1", "st2", "").value, false)
     _ => ()
   }
 }

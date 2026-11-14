@@ -2717,6 +2717,8 @@ let en : Map[String, String] = {
   "web-pages.stations.move.need.jobs": "background jobs",
   "web-pages.stations.move.need.connects": "connects",
   "web-pages.stations.move.needs": "Needs {names}",
+  "web-pages.stations.move.stop": "Stop",
+  "web-pages.stations.move.stopping": "Stopping…",
   "web-pages.stations.retire.menu": "Move chats away and remove…",
   "web-pages.stations.retire.section": "Moving",
   "web-pages.stations.retire.title": "Move {station}'s chats away",

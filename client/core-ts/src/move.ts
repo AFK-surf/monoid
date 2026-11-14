@@ -70,6 +70,8 @@ export function moveShown(raw: J, o: { to: string; toName: string; module: strin
   const failed = isObject(last?.failed) ? { item: nameOf(last.failed.item), error: str(last.failed.error) } : null;
   const moving = isObject(raw?.moving) ? raw.moving : null;
   const movingIn = moving === null ? "" : str(moving.module);
+  // (while a turn runs nothing else is offered, the station answering any other a 409: 停止 is the action then)
+  const acts = o.canMove && moving === null;
   const waitsFor = (named: string) => labels.get(named) || moduleName(moduleOf(named));
   const itemOf = (module: string, x: J): J => {
     const named = `${module} ${str(x?.id)}`;
@@ -94,7 +96,8 @@ export function moveShown(raw: J, o: { to: string; toName: string; module: strin
         : failed?.item === named && state !== "there"
           ? failed.error
           : refused.get(named) ?? "";
-    const action = !o.canMove || state === "moving" ? "" : state === "there" ? "back" : cannot !== null ? "" : "move";
+    // (its action at its row's end: 迁移 here, 迁回 there, 重试 failed; none moving, stopped or where it cannot move)
+    const action = !acts ? "" : state === "there" ? "back" : state === "failed" ? "retry" : state === "here" && cannot === null ? "move" : "";
     return {
       id: str(x?.id),
       label: str(x?.label) || str(x?.id),
@@ -105,7 +108,8 @@ export function moveShown(raw: J, o: { to: string; toName: string; module: strin
       action,
     };
   };
-  const shown = modules.map((m) => {
+  // (a module with nothing is not shown)
+  const shown = modules.filter((m) => num(m?.total) > 0).map((m) => {
     const id = str(m?.id);
     const done = num(m?.done);
     const total = num(m?.total);
@@ -114,14 +118,14 @@ export function moveShown(raw: J, o: { to: string; toName: string; module: strin
     const failedHere = page.some((x) => x?.state === "failed") || (failed !== null && moduleOf(failed.item) === id);
     const mark = movingIn === id ? "moving" : failedHere ? "failed" : stoppedHere ? "stopped" : "";
     const open = o.module === id;
-    const action = !o.canMove || total === 0 || movingIn === id ? "" : done >= total ? "back" : "move";
+    const action = !acts ? "" : done >= total ? "back" : "move";
     return {
       id,
       // (what it needs, by the modules' ids: the page names them, as it names the module, in its own words)
       needs: arr(m?.needs).map(str).filter((n) => n !== ""),
       done,
       total,
-      count: total === 0 ? t("core-views.move.empty") : t("core-views.move.count", { done: String(done), total: String(total) }),
+      count: t("core-views.move.count", { done: String(done), total: String(total) }),
       mark,
       markText: mark === "" ? "" : t(`core-views.move.mark.${mark}`),
       // (opens by itself: something of it moving, failed or stopped)
@@ -139,19 +143,49 @@ export function moveShown(raw: J, o: { to: string; toName: string; module: strin
       const progress = progressOf(moving.progress);
       const parts = [moduleName(movingIn), str(moving.label) || str(moving.id)];
       if (progress !== null) parts.push(progress.text);
-      return { module: movingIn, item: str(moving.id), line: parts.join(" · "), progress };
+      return { module: movingIn, item: str(moving.id), line: parts.join(" · "), progress, stopping: moving.stopping === true };
     })();
+  // (what stands out of it, the worst first: what failed, what is stopped, what moves now; its station's page's one row)
+  const failedNames = new Set<string>();
+  const stoppedNames = new Set<string>(stopped.map((s) => nameOf(s?.item)));
+  for (const m of modules) {
+    for (const x of arr(m?.items)) {
+      const named = `${str(m?.id)} ${str(x?.id)}`;
+      if (x?.state === "failed") failedNames.add(named);
+      if (x?.state === "stopped") stoppedNames.add(named);
+    }
+  }
+  if (failed !== null && failed.item !== "") failedNames.add(failed.item);
+  const standout: string[] = [];
+  if (failedNames.size > 0) standout.push(t("core-views.move.summary.failed", { n: String(failedNames.size) }));
+  if (stoppedNames.size > 0) standout.push(t("core-views.move.summary.stopped", { n: String(stoppedNames.size) }));
+  if (moving !== null) standout.push(t("core-views.move.summary.moving", { module: moduleName(movingIn), label: str(moving.label) || str(moving.id) }));
+  // (what cannot move, of the items read: said beside how many 全部迁移 moves)
+  let cannotAll = 0;
+  for (const m of modules) for (const x of arr(m?.items)) if (typeof x?.cannot === "string" && (str(x?.state) || "here") === "here") cannotAll++;
+  const allText = cannotAll === 0
+    ? t("core-views.move.all.text", { n: String(toMove) })
+    : `${t("core-views.move.all.text", { n: String(toMove) })} · ${t("core-views.move.all.cannot", { n: String(cannotAll) })}`;
+  const doneAll = shown.reduce((n, m) => n + m.done, 0);
+  const totalAll = shown.reduce((n, m) => n + m.total, 0);
   return {
     to: o.to,
     toName: o.toName,
     targets: o.targets,
     canMove: o.canMove,
     moving: movingShown,
+    title: o.toName === "" ? t("core-views.move.summary.title") : t("core-views.move.summary.to", { name: o.toName }),
+    count: t("core-views.move.count", { done: String(doneAll), total: String(totalAll) }),
+    note: standout.join(" · "),
+    // (all of it there: what the page offers in 全部迁移's place is taking the station out of the workspace)
+    allThere: acts && o.to !== "" && totalAll > 0 && toMove === 0,
     // (its station's page shows 迁移: something of it moved, moving, stopped or failed)
     active: moving !== null || stopped.length > 0 || toBack > 0 || shown.some((m) => m.mark !== ""),
-    allMove: !o.canMove || toMove === 0 || o.to === "" ? null : { n: toMove, title: t("core-views.move.all.title", { name: o.toName }), text: t("core-views.move.all.text", { n: String(toMove) }) },
-    allBack: !o.canMove || toBack === 0 || o.to === "" ? null : { n: toBack, title: t("core-views.move.back.title", { name: o.toName }), text: t("core-views.move.back.text", { n: String(toBack) }) },
+    allMove: !acts || toMove === 0 || o.to === "" ? null : { n: toMove, title: t("core-views.move.all.title", { name: o.toName }), text: allText },
+    allBack: !acts || toBack === 0 || o.to === "" ? null : { n: toBack, title: t("core-views.move.back.title", { name: o.toName }), text: t("core-views.move.back.text", { n: String(toBack) }) },
     modules: shown,
+    // (every module empty: the card says so in one line)
+    nothing: modules.length > 0 && shown.length === 0 ? t("core-views.move.nothing") : "",
   };
 }
 

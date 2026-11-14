@@ -2689,6 +2689,8 @@ let zh : Map[String, String] = {
   "web-pages.stations.move.need.jobs": "后台任务",
   "web-pages.stations.move.need.connects": "连接",
   "web-pages.stations.move.needs": "依赖 {names}",
+  "web-pages.stations.move.stop": "停止",
+  "web-pages.stations.move.stopping": "正在停止…",
   "web-pages.stations.retire.menu": "迁走聊天并移出…",
   "web-pages.stations.retire.section": "迁移",
   "web-pages.stations.retire.title": "迁走 {station} 的聊天",

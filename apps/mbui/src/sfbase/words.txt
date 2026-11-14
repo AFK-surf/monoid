@@ -2669,6 +2669,8 @@ web-pages.stations.move.need.chats
 web-pages.stations.move.need.jobs
 web-pages.stations.move.need.connects
 web-pages.stations.move.needs
+web-pages.stations.move.stop
+web-pages.stations.move.stopping
 web-pages.stations.retire.menu
 web-pages.stations.retire.section
 web-pages.stations.retire.title

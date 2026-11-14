@@ -1382,16 +1382,24 @@ pub fn link_row(
           (true, false) => pg_row_title.then(row_strong)
           (false, false) => pg_row_title
         }
-        // its end: what follows what it says, its chevron
+        // its end: what follows what it says, its chevron (on the first of two lines where what it says may go under
+        // its title, as tall as that line and across its middle, never across the middle of both)
         let end = fn() {
-          match tail {
-            Some(f) => f()
-            None => ()
+          let marks = fn() {
+            match tail {
+              Some(f) => f()
+              None => ()
+            }
+            if goes && (chevron || out) {
+              icon(c, mark, size=pg_chevron, color=th.p.subtle) |> ignore
+            } else if chevron_room {
+              c.box(style=@ui.style(w=Fixed(pg_chevron), h=Fixed(pg_chevron)), fn() {  }) |> ignore
+            }
           }
-          if goes && (chevron || out) {
-            icon(c, mark, size=pg_chevron, color=th.p.subtle) |> ignore
-          } else if chevron_room {
-            c.box(style=@ui.style(w=Fixed(pg_chevron), h=Fixed(pg_chevron)), fn() {  }) |> ignore
+          if under && value != "" && (tail is Some(_) || (goes && (chevron || out)) || chevron_room) {
+            line_end(c, marks)
+          } else {
+            marks()
           }
           // (a face's row's control at the row's end in its middle, not on its first line: a control as tall as a
           // press's room (button_height) on a first line reaches past the row over it)
@@ -1415,7 +1423,7 @@ pub fn link_row(
           end()
         } else {
           c.box(style=pg_row_words, fn() {
-            c.box(style=row_first_line, fn() {
+            c.box(style=if value != "" { row_first_lines } else { row_first_line }, fn() {
               if value == "" {
                 if title_after is Some(_) {
                   c.box(style=title_line, keep=true, fn() {
@@ -1640,6 +1648,11 @@ let row_below : @ui.Style = @ui.css("row w=Full pt=S1_5 gap=S1_5 align=ACenter")
 /// A row's first line: its title, what it has at its end, 12 apart, across their middle.
 // kept across runs: a value (no field of it changes)
 let row_first_line : @ui.Style = @ui.css("row w=Full gap=S3 align=ACenter")
+
+///|
+/// row_first_line where what it says may go under its title: what is after them on the first of the two lines
+/// (each a line's height, across its middle: line_end), never across the middle of both.
+let row_first_lines : @ui.Style = @ui.css("row w=Full gap=S3 align=AStart")
 
 ///|
 /// A figure (a code to scan, a picture) and the words about it (FeishuConnect.css.ts scan: 24 apart, across their

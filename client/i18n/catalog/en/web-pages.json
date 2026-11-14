@@ -2067,5 +2067,7 @@
   "web-pages.stations.move.need.chats": "chats",
   "web-pages.stations.move.need.jobs": "background jobs",
   "web-pages.stations.move.need.connects": "connects",
-  "web-pages.stations.move.needs": "Needs {names}"
+  "web-pages.stations.move.needs": "Needs {names}",
+  "web-pages.stations.move.stop": "Stop",
+  "web-pages.stations.move.stopping": "Stopping…"
 }

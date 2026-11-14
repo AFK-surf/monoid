@@ -55,13 +55,22 @@ pub fn card_piece_node(
     let f = if foot() { r } else { 0.0 }
     Some((t, t, f, f))
   }
+  // (as tall as its round ends at least: a top or foot that holds no row, its room alone, shorter than its corners
+  // would draw them squeezed to that, its edge straight)
+  let least = fn(r : Double) -> Double? {
+    match (top(), foot()) {
+      (false, false) => None
+      (true, true) => Some(r * 2.0)
+      _ => Some(r)
+    }
+  }
   if parent.lent(panel_in_lent) is Some(p) && !p.small {
     parent.box(made_for=loc, fn(k) {
       style_node(k, fn() {
         let (t, f) = (if top() { corner_inset } else { 0.0 }, if foot() { corner_inset } else { 0.0 })
         panel_card_ground.then(@ui.style(px=room(corner_inset), pt=room(t), pb=room(f))).then(panel_card_out_node(k))
       })
-      k.grow(Is(1.0)).corners(By(fn() { corners(card_corner) })).lends(on_card_lent, true).lends(part_at, { ..at, list: at.look is Wide })
+      k.grow(Is(1.0)).min_height(By(fn() { least(card_corner) })).corners(By(fn() { corners(card_corner) })).lends(on_card_lent, true).lends(part_at, { ..at, list: at.look is Wide })
       |> ignore
       rows(k)
     })
@@ -97,6 +106,7 @@ pub fn card_piece_node(
       card
       .grow(Is(1.0))
       .padding(By(fn() { (pad, if top() { pad } else { 0.0 }, pad, if foot() { pad } else { 0.0 }) }))
+      .min_height(By(fn() { least(corner) }))
       .corners(By(fn() { corners(corner) }))
       .ground(By(fn() { @ui.tree_theme().color(Card) }))
       .clips(Is(true))

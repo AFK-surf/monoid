@@ -16,6 +16,7 @@ export interface OperationParams {
   "copies.retirePreview": {  };
   "move.start": { to: string; module?: string | null | undefined; item?: string | null | undefined; all?: boolean | null | undefined; withNeeds?: boolean | null | undefined };
   "move.back": { from: string; module?: string | null | undefined; item?: string | null | undefined; all?: boolean | null | undefined };
+  "move.stop": {  };
   "station.restart": {  };
   "context.setAfresh": { afreshWhenCold?: boolean | null | undefined; afreshAbove?: number | null | undefined };
   "diagnostics.setLogs": { logs: boolean };
@@ -210,6 +211,7 @@ export function bindStationOperations(call: Call) {
     copiesRetirePreview: <T = unknown>(params: OperationParams["copies.retirePreview"] = {}) => call("copies.retirePreview", params) as Promise<T>,
     moveStart: <T = unknown>(params: OperationParams["move.start"]) => call("move.start", params) as Promise<T>,
     moveBack: <T = unknown>(params: OperationParams["move.back"]) => call("move.back", params) as Promise<T>,
+    moveStop: <T = unknown>(params: OperationParams["move.stop"] = {}) => call("move.stop", params) as Promise<T>,
     stationRestart: <T = unknown>(params: OperationParams["station.restart"] = {}) => call("station.restart", params) as Promise<T>,
     contextSetAfresh: <T = unknown>(params: OperationParams["context.setAfresh"] = {}) => call("context.setAfresh", params) as Promise<T>,
     diagnosticsSetLogs: <T = unknown>(params: OperationParams["diagnostics.setLogs"]) => call("diagnostics.setLogs", params) as Promise<T>,

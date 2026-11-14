@@ -1,14 +1,18 @@
 // Moving a station's things to another station of its workspace, module by module (the core's `stationMove` topic,
 // client/core-ts/src/move.ts, of the station's move/: each module on its own, its needs first, progress inside it,
 // everything undoable: the owner, 2026-11-14). Rarely used and risky, so no row of the station's page offers it: its ⋯
-// has 迁移到另一台… while it is online and offers moving, which opens this page, a step further in from it; its 迁移
-// shows on the station's page only while something of it is moved, moving, stopped or failed (station_move_section).
-// No sentence explains it (the owner, 2026-11-14: 「字太多了，应该用更结构化更所见即所得的方式设计 UI」): the station it goes
-// to, chosen in one row and remembered for this station on this device; what moves now; each module a card, its needs
-// as chips, done of total and a thin bar, its one action at its first line; opened (by itself where something of it
-// moves, failed or stopped), its items a row each, where it stands at the row's end and why under it, its own action
-// in its menu, a page more as its list is scrolled to its end. Everything said is the core's; a press is a call to it,
-// a refusal said on the row it was pressed on.
+// has 迁移到另一台… while it is online and offers moving, which opens this page, a step further in from it; its station's
+// page shows one row of it only while something of it is moved, moving, stopped or failed (station_move_section).
+// No sentence explains it (the owner, 2026-11-14: 「字太多了，应该用更结构化更所见即所得的方式设计 UI」). Its first card
+// the station it goes to, chosen in one row (a chevron after its name while there is one to choose) and remembered for
+// this station on this device, and at its end the page's main action, 全部迁移 (the main case is retiring a station:
+// 左子健, 2026-11-13), 移出 workspace once all of it is there; what moves now, with 停止; the modules that have items one
+// card, a row each (its name, done of total, its one action and a chevron on its first line, what it needs in a line
+// under it), one opened (by a press, or by itself where something of it moves, failed or stopped) showing its items in
+// the same card under its row, where each stands and its own action at its end (迁移, 迁回, 重试), why under it, a page
+// more as the list is scrolled to its end; 全部迁回 in its ⋯. While a turn runs 停止 is the only action: the station
+// answers any other a 409, so the core offers none. Everything said is the core's or the app's words by a module's id;
+// a press is a call to the core, a refusal said on the row it was pressed on.
 
 ///|
 /// Station `address`'s 迁移 (its ⋯'s 迁移到另一台…) made once in node `v`, as wide as `width` gives it.
@@ -98,6 +102,13 @@ pub fn station_move_node(
     if field(view(), "moving") is Some(Object(_)) {
       out.push("now")
     }
+    // (every module empty: its card's one line)
+    if modules().is_empty() {
+      if text(view(), "nothing") != "" {
+        out.push("nothing")
+      }
+      return out
+    }
     for m in modules() {
       let id = text(Some(m), "id")
       out.push("m/" + id)
@@ -106,9 +117,9 @@ pub fn station_move_node(
           out.push("i/" + id + "/" + text(Some(x), "id"))
         }
       }
-      // (its card's foot a piece of its own: what opens under its head opens between, the card's ends as they were)
-      out.push("f/" + id)
     }
+    // (the modules' one card's foot a piece of its own: what opens under a module opens between, its ends as they were)
+    out.push("foot")
     out
   }
   // (a call pressed: answered at once, what it does shown as the topic tells it; refused, said on the row pressed)
@@ -126,6 +137,7 @@ pub fn station_move_node(
       call("move.start", [("to", str(@signals.untracked(to))), ("module", str(id)), ("all", Json::boolean(true))])
     }
   }
+  // (迁移 and 重试 alike: that item moved, what it needs first)
   let item_act = fn(m : String, id : String, action : String) {
     if action == "back" {
       call("move.back", [("from", str(@signals.untracked(to))), ("module", str(m)), ("item", str(id))])
@@ -135,7 +147,7 @@ pub fn station_move_node(
   }
   // its ⋯: 全部迁移 and 全部迁回, each asked once, naming the station and how many
   let actions = fn(a : @view.View) {
-    a.show(fn() { chosen() && (field(view(), "allMove") is Some(Object(_)) || field(view(), "allBack") is Some(Object(_))) }, fn(m) {
+    a.show(fn() { chosen() && field(view(), "allBack") is Some(Object(_)) }, fn(m) {
       @sf.icon_action_opens_node(m, "more", fn() { @sf.t("common.more") }, fn(at) {
         let v = @signals.untracked(view)
         @sf.menu(station_move_menu(v, fn(back) { station_move_all_confirm(core, address, v, back) }), from=Node(at), along=End)
@@ -171,26 +183,43 @@ pub fn station_move_node(
               None => ""
             }
           })
-        "to" => station_move_to_node(b, core, address, to, targets)
-        "now" => station_move_now_node(b, fn() { field(view(), "moving") })
+        "to" =>
+          station_move_to_node(b, core, address, to, targets, fn() { if chosen() { view() } else { None } }, fn() {
+            match @signals.untracked(s) {
+              Some(_) as st => station_remove_ask(core, @signals.untracked(here), st)
+              None => ()
+            }
+          })
+        "now" =>
+          station_move_now_node(b, fn() { field(view(), "moving") }, fn() {
+            call("move.stop", [])
+          }, fn() { is_doing(core, ["move.stop"], [("station", address)]) })
         _ if key.has_prefix("m/") => {
           let id = key.unsafe_substring(start=2, end=key.length())
-          @sf.card_piece_node(b, fn() { @sf.CardTop }, wide_card=true, fn(card) {
+          let first = @signals.untracked(fn() { text(modules().get(0), "id") }) == id
+          @sf.card_piece_node(b, fn() { if first { @sf.CardTop } else { @sf.CardBetween } }, wide_card=true, fn(card) {
             station_move_module_node(card, id, fn() { module_of(id) }, fn() { open() == id }, fn() { toggle(id) }, fn(action) {
               module_act(id, action)
             }, fn() { is_doing(core, calls, module_on(id)) }, fn() { failed_of(core, calls, module_on(id)) })
           })
         }
-        _ if key.has_prefix("f/") => @sf.card_piece_node(b, fn() { @sf.CardFoot }, wide_card=true, fn(_) {  })
+        "foot" => @sf.card_piece_node(b, fn() { @sf.CardFoot }, wide_card=true, fn(_) {  })
+        "nothing" =>
+          @sf.group_node(b, fn(g) { @sf.link_row_node(g, fn() { text(view(), "nothing") }, fn() {  }, goes=false) })
         _ if key.has_prefix("i/") => {
           let rest = key.unsafe_substring(start=2, end=key.length())
           let cut = rest.find("/").unwrap_or(0)
           let m = rest.unsafe_substring(start=0, end=cut)
           let id = rest.unsafe_substring(start=cut + 1, end=rest.length())
           @sf.card_piece_node(b, fn() { @sf.CardBetween }, wide_card=true, fn(card) {
-            station_move_item_node(card, fn() { item_of(m, id) }, fn(action) { item_act(m, id, action) }, fn() {
-              is_doing(core, calls, item_on(m, id))
-            }, fn() { failed_of(core, calls, item_on(m, id)) })
+            // (under its module's row, in from it)
+            card.box(fn(i) {
+              i.padding(Is((@sf.text_in, 0.0, 0.0, 0.0))) |> ignore
+              station_move_item_node(i, fn() { item_of(m, id) }, fn(action) { item_act(m, id, action) }, fn() {
+                is_doing(core, calls, item_on(m, id))
+              }, fn() { failed_of(core, calls, item_on(m, id)) })
+            })
+            |> ignore
           })
         }
         _ => ()
@@ -209,9 +238,19 @@ fn move_module_of(v : Json?, id : String) -> Json? {
 }
 
 ///|
-/// Where its things go (in `b`): one row, the station chosen among those the core offers (each its name and its room),
-/// or that there is none to go to.
-fn station_move_to_node(b : @view.View, core : Core, address : String, to : () -> String, targets : () -> Array[Json]) -> Unit {
+/// Where its things go (in `b`): one row, the station chosen among those the core offers (each its name and its room,
+/// a chevron after the name chosen), or that there is none to go to; at its end the page's main action once one is
+/// chosen (`v`, what the core says of it then): 全部迁移, asked once; with all of it there, 移出 workspace (`remove`, the
+/// station's own); none while a turn runs, nor the chevron or the choice.
+fn station_move_to_node(
+  b : @view.View,
+  core : Core,
+  address : String,
+  to : () -> String,
+  targets : () -> Array[Json],
+  v : () -> Json?,
+  remove : () -> Unit,
+) -> Unit {
   let name = fn() {
     let t = to()
     match targets().iter().find_first(fn(x) { text(Some(x), "station") == t }) {
@@ -219,34 +258,62 @@ fn station_move_to_node(b : @view.View, core : Core, address : String, to : () -
       None => @sf.t("web-pages.stations.move.choose")
     }
   }
+  // (what the action at its end is now: none, 全部迁移, 移出 workspace)
+  let main = fn() {
+    if flag(v(), "allThere") {
+      "remove"
+    } else if field(v(), "allMove") is Some(Object(_)) {
+      "all"
+    } else {
+      ""
+    }
+  }
   @sf.group_node(b, fn(g) {
-    @sf.link_row_opens_node(
-      g,
-      fn() { @sf.t("web-pages.stations.move.to") },
-      fn(at) {
-        let now = @signals.untracked(to)
-        let all = @signals.untracked(targets).map(fn(x) {
-          let id = text(Some(x), "station")
-          let free = text(Some(x), "free")
-          let label = if free == "" { text(Some(x), "name") } else { text(Some(x), "name") + " · " + free }
-          Some(@sf.menu_item_of(label, chosen=id == now, fn() { @settings.move_target_set(core, address, id) }))
-        })
-        guard !all.is_empty() else { return }
-        @sf.menu(all, from=Node(at), along=End)
-      },
-      value=fn() { if targets().is_empty() { @sf.t("web-pages.stations.move.none") } else { name() } },
-    )
+    g.pick(main, fn(r, what) {
+      @sf.link_row_opens_node(
+        r,
+        fn() { @sf.t("web-pages.stations.move.to") },
+        fn(at) {
+          // (none to choose while a turn runs: its chevron absent, a press nothing)
+          guard !(field(@signals.untracked(v), "moving") is Some(Object(_))) else { return }
+          let now = @signals.untracked(to)
+          let all = @signals.untracked(targets).map(fn(x) {
+            let id = text(Some(x), "station")
+            let free = text(Some(x), "free")
+            let label = if free == "" { text(Some(x), "name") } else { text(Some(x), "name") + " · " + free }
+            Some(@sf.menu_item_of(label, chosen=id == now, fn() { @settings.move_target_set(core, address, id) }))
+          })
+          guard !all.is_empty() else { return }
+          @sf.menu(all, from=Node(at), along=End)
+        },
+        value=fn() { if targets().is_empty() { @sf.t("web-pages.stations.move.none") } else { name() } },
+        // (a chevron after its name while there is a station to choose, before the action at its end)
+        chevron=false,
+        tail=fn(e) { station_move_chevron(e, fn() { "chevron-right" }) },
+        tail_shown=fn() { !targets().is_empty() && !(field(v(), "moving") is Some(Object(_))) },
+        control?=match what {
+          "all" =>
+            Some(fn(c : @view.View) {
+              @sf.button_node(c, fn() { @sf.t("web-pages.stations.move.all") }, fn() {
+                station_move_all_confirm(core, address, @signals.untracked(v), false)
+              }, tone=Primary)
+              |> ignore
+            })
+          "remove" =>
+            Some(fn(c : @view.View) { @sf.button_node(c, fn() { @sf.t("web-pages.stations.retire.remove") }, remove, tone=Primary) |> ignore })
+          _ => None
+        },
+      )
+    })
   })
 }
 
 ///|
-/// What moves now (in `b`): its module, its item and how far, a spinner before it and a bar under its line.
-fn station_move_now_node(b : @view.View, moving : () -> Json?) -> Unit {
-  let part = fn() {
-    let p = field(moving(), "progress")
-    let total = number(p, "total")
-    if total > 0.0 { Some(number(p, "done") / total) } else { None }
-  }
+/// What moves now (in `b`): its module, its item and how far, in a line with a spinner before it (its bar is its item's,
+/// in its module's list: one line here, 停止 across its middle in its card's corner as a row's own); 停止 at its end
+/// (`stop`), 正在停止… and not to be pressed once asked (the core's `stopping`) or while the call goes (`asking`).
+fn station_move_now_node(b : @view.View, moving : () -> Json?, stop : () -> Unit, asking : () -> Bool) -> Unit {
+  let stopping = fn() { flag(moving(), "stopping") || asking() }
   @sf.group_node(b, fn(g) {
     @sf.link_row_node(
       g,
@@ -254,8 +321,15 @@ fn station_move_now_node(b : @view.View, moving : () -> Json?) -> Unit {
       fn() {  },
       goes=false,
       lead=LeadLine(fn(l) { @sf.spinner_node(l, size=st_row_glyph) |> ignore }),
-      below=fn(r) { station_move_bar(r, part) },
-      below_open=fn() { 1.0 },
+      control=fn(c) {
+        @sf.row_end_button_node(
+          c,
+          fn() { @sf.t(if flag(moving(), "stopping") { "web-pages.stations.move.stopping" } else { "web-pages.stations.move.stop" }) },
+          stop,
+          disabled=stopping,
+        )
+        |> ignore
+      },
     )
   })
 }
@@ -271,10 +345,12 @@ fn station_move_bar(r : @view.View, part : () -> Double?) -> Unit {
 }
 
 ///|
-/// A module's head (in `card`, its card's first piece), module `id`: its name, the modules it needs in a line of words
-/// under it (依赖 账号、连接…; none where it needs none), done of total at its first line's end with its one action (迁移,
-/// 迁回) there, a thin bar under it all (none for a module with nothing); pressed, its items open or shut (`toggle`); a
-/// refusal of its action in place of what it needs while the core keeps it, in amber.
+/// A module's row (in `card`, a piece of the modules' card), module `id`: its name, the modules it needs in a line of
+/// words under it (依赖 账号、连接…; none where it needs none), done of total at its first line's end with its one action
+/// (迁移, 迁回; none while a turn runs) and after it a chevron, down, up while its items are open, all of it as high as
+/// that line's words (line_end_node), so the row is as tall with its action or without it, a refusal coming under it or
+/// not; pressed, its items open or shut (`toggle`); a refusal of its action in place of what it needs while the core
+/// keeps it, in amber.
 fn station_move_module_node(
   card : @view.View,
   id : String,
@@ -285,8 +361,6 @@ fn station_move_module_node(
   doing : () -> Bool,
   failed : () -> String?,
 ) -> Unit {
-  let total = fn() { number(m(), "total") }
-  let action = fn() { text(m(), "action") }
   let needs = fn() {
     match strings(m(), "needs") {
       [] => ""
@@ -296,8 +370,8 @@ fn station_move_module_node(
         ])
     }
   }
-  card.pick(fn() { (total() > 0.0, action(), failed() is Some(_)) }, fn(r, k) {
-    let (some, act_now, refused) = k
+  card.pick(fn() { (text(m(), "action"), failed() is Some(_)) }, fn(r, k) {
+    let (act_now, refused) = k
     @sf.link_row_node(
       r,
       fn() { @sf.t("web-pages.stations.move.module." + id) },
@@ -305,41 +379,44 @@ fn station_move_module_node(
       value=fn() { text(m(), "count") },
       note=fn() { failed().unwrap_or(needs()) },
       lacks=refused,
-      goes=some,
-      folds?=if some { Some(is_open) } else { None },
-      control?=if act_now == "" {
-        None
-      } else {
-        Some(fn(c : @view.View) {
-          @sf.row_end_button_node(
-            c,
-            fn() { @sf.t(if act_now == "back" { "web-pages.stations.move.back" } else { "web-pages.stations.move.move" }) },
-            fn() { act(act_now) },
-            busy=doing,
-            disabled=doing,
-          )
-          |> ignore
+      folds=is_open,
+      control=fn(e) {
+        @sf.line_end_node(e, fn(c) {
+          if act_now != "" {
+            @sf.row_end_button_node(
+              c,
+              fn() { @sf.t(if act_now == "back" { "web-pages.stations.move.back" } else { "web-pages.stations.move.move" }) },
+              fn() { act(act_now) },
+              busy=doing,
+              disabled=doing,
+            )
+            |> ignore
+          }
+          station_move_chevron(c, fn() { if is_open() { "chevron-up" } else { "chevron-down" } })
         })
       },
-      below?=if some {
-        Some(fn(b : @view.View) {
-          station_move_bar(b, fn() {
-            let t = total()
-            if t > 0.0 { Some(number(m(), "done") / t) } else { Some(0.0) }
-          })
-        })
-      } else {
-        None
-      },
-      below_open=fn() { if some { 1.0 } else { 0.0 } },
     )
   })
 }
 
 ///|
-/// An item's row (in `card`, a piece of its module's card): its label, where it stands at its end (迁移中 with how far
-/// and a bar under its line; 已迁移; 已停 · 等「…」; 失败, 无法迁移 with why under it; nothing where it is here), its own
-/// action in its menu (迁移, 迁回); a refusal of it under it, in amber.
+/// A row's chevron (`mark`: its icon's name now), made in `e` at its first line's end as a row's own is.
+fn station_move_chevron(e : @view.View, mark : () -> String) -> Unit {
+  e.box(fn(c) {
+    c.row(Is(true)).lines_up(Is(Some(Middle))) |> ignore
+    @sf.icon_node(c, mark(), @sf.pg_chevron, By(fn() { @sf.theme().p.subtle }), name_now=mark) |> ignore
+  })
+  |> ignore
+}
+
+///|
+/// An item's row (in `card`, a piece of its module's card): its label on its first line, where it stands at that line's
+/// end (迁移中 with how far and a bar under its line; 已迁移; 已停 · 等「…」; 失败, 无法迁移 with why under it; nothing
+/// where it is here), on a line of its own under the label where both have not the room, never the label cut short; and
+/// after it its own action (迁移 here, 迁回 there, 重试 failed; none moving, stopped, where it cannot move or while a turn
+/// runs), on its first line as high as that line's words (the row's own line_end, its lines being under it), so the
+/// row is as tall with it or without it; a refusal of it under
+/// it, in amber.
 fn station_move_item_node(
   card : @view.View,
   x : () -> Json?,
@@ -367,40 +444,43 @@ fn station_move_item_node(
   }
   card.pick(fn() { (text(x(), "action"), state() == "moving") }, fn(r, k) {
     let (action, moving) = k
-    let below = if moving { Some(fn(b : @view.View) { station_move_bar(b, part) }) } else { None }
-    let below_open = fn() { if moving { 1.0 } else { 0.0 } }
     let bad = fn() { state() == "failed" }
-    if action == "" {
-      @sf.link_row_node(r, fn() { text(x(), "label") }, fn() {  }, value~, value_bad=bad, note~, lacks=true, goes=false, below?, below_open~)
-      return
+    let words = match action {
+      "back" => "web-pages.stations.move.back"
+      "retry" => "common.retry"
+      _ => "web-pages.stations.move.move"
     }
-    @sf.link_row_opens_node(
+    @sf.link_row_node(
       r,
       fn() { text(x(), "label") },
-      fn(at) {
-        guard !@signals.untracked(doing) else { return }
-        let label = @sf.t(if action == "back" { "web-pages.stations.move.back" } else { "web-pages.stations.move.move" })
-        @sf.menu([Some(@sf.menu_item_of(label, icon=if action == "back" { "arrow-left" } else { "arrow-right" }, fn() { act(action) }))], from=Node(at), along=End)
-      },
+      fn() {  },
       value~,
       value_bad=bad,
       note~,
       lacks=true,
-      chevron=false,
-      below?,
-      below_open~,
+      goes=false,
+      // (something under its first line always, its bar while it moves, nothing else: so where it stands goes under its
+      // label where the line has not the room for both, as a row with lines under it lays them, never the label cut)
+      below=fn(b) { station_move_bar(b, part) },
+      below_open=fn() { if moving { 1.0 } else { 0.0 } },
+      control?=if action == "" {
+        None
+      } else {
+        // (the button alone: with lines always under its first (`below`), the row puts it on that line, as high as it,
+        // itself: link_row's `under`)
+        Some(fn(c : @view.View) {
+          @sf.row_end_button_node(c, fn() { @sf.t(words) }, fn() { act(action) }, busy=doing, disabled=doing) |> ignore
+        })
+      },
     )
   })
 }
 
 ///|
-/// Its ⋯ (station_move_node's), of what was read (`v`): 全部迁移 and 全部迁回 where each has something to do, each
-/// asked first (`ask`: true moving back).
+/// Its ⋯ (station_move_node's), of what was read (`v`): 全部迁回 where something is there, asked first (`ask`: true
+/// moving back; 全部迁移 is the page's main action, at its first card's end).
 fn station_move_menu(v : Json?, ask : (Bool) -> Unit) -> Array[@sf.MenuItem?] {
   let out : Array[@sf.MenuItem?] = []
-  if field(v, "allMove") is Some(Object(_)) {
-    out.push(Some(@sf.menu_item_of(@sf.t("web-pages.stations.move.all"), icon="move", fn() { ask(false) })))
-  }
   if field(v, "allBack") is Some(Object(_)) {
     out.push(Some(@sf.menu_item_of(@sf.t("web-pages.stations.move.allBack"), icon="arrow-left", fn() { ask(true) })))
   }
@@ -441,26 +521,14 @@ fn station_move_sample(w : @view.View) -> Unit {
 }
 
 ///|
-/// Its 迁移 on its station's page (station_view_node's "move", while @settings.move_shown): each module of which
-/// something is not simply here, a row with how it stands, opening this page.
+/// Its 迁移 on its station's page (station_view_node's "move", while @settings.move_shown), under its head: one row,
+/// where it moves (迁移到 Maple), done of total of all of it, what stands out under it (the worst first), opening this
+/// page.
 fn station_move_section(b : @view.View, core : Core, address : String) -> Unit {
-  let modules = fn() {
-    items(@settings.move_of(core, address, "", "").value, "modules").filter(fn(m) {
-      number(Some(m), "done") > 0.0 || text(Some(m), "mark") != ""
-    })
-  }
-  st_section_node(b, fn() { @sf.t("web-pages.stations.move.section") }, fn(sec) {
-    @sf.group_node(sec, fn(g) {
-      g.each(modules, fn(m) { text(Some(m), "id") }, fn(row, m) {
-        let mv = fn() { Some(m.get()) }
-        let id = @signals.untracked(fn() { text(mv(), "id") })
-        @sf.link_row_node(row, fn() { @sf.t("web-pages.stations.move.module." + id) }, fn() { (core.push)(StationMove(address)) }, value=fn() {
-          match text(mv(), "markText") {
-            "" => text(mv(), "count")
-            mark => mark + " · " + text(mv(), "count")
-          }
-        })
-      })
+  let v = fn() { @settings.move_of(core, address, "", "").value }
+  @sf.group_node(b, fn(g) {
+    @sf.link_row_node(g, fn() { text(v(), "title") }, fn() { (core.push)(StationMove(address)) }, value=fn() { text(v(), "count") }, note=fn() {
+      text(v(), "note")
     })
   })
 }

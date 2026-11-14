@@ -5,6 +5,6 @@ fn init {
   let asked =
     #|{"topic":"stationMove","station":"ws/maple","to":"willow","module":""}
   let messages =
-    #|[[{"path":["allBack","n"],"set":43},{"path":["allBack","text"],"set":"43 项"},{"path":["allMove","n"],"set":231},{"path":["allMove","text"],"set":"231 项"},{"path":["modules"],"key":["id"],"patch":"chats","ops":[{"path":["count"],"set":"31 / 240"},{"path":["done"],"set":31}]},{"path":["moving","item"],"set":"k-maple-31"},{"path":["moving","line"],"set":"聊天 · 把 chat 的图片缩略图改成 thumbhash · 104 MB / 412 MB"},{"path":["moving","progress","done"],"set":109051904},{"path":["moving","progress","text"],"set":"104 MB / 412 MB"}]]
+    #|[[{"path":["count"],"set":"43 / 274"},{"path":["modules"],"key":["id"],"patch":"chats","ops":[{"path":["count"],"set":"31 / 240"},{"path":["done"],"set":31}]},{"path":["moving","item"],"set":"k-maple-31"},{"path":["moving","line"],"set":"聊天 · 把 chat 的图片缩略图改成 thumbhash · 104 MB / 412 MB"},{"path":["moving","progress","done"],"set":109051904},{"path":["moving","progress","text"],"set":"104 MB / 412 MB"},{"path":["note"],"set":"2 项失败 · 3 项已停 · 迁移中 · 聊天「把 chat 的图片缩略图改成 thumbhash」"}]]
   put_changes(asked, "moving", messages)
 }

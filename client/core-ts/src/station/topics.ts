@@ -390,7 +390,9 @@ export class StationTopics implements Owner {
       return [{ station: s.id, name: s.name, free: freeText(overview) }];
     });
     const role = get(this.#core.data.shared({ topic: "workspace", workspace: ws }), "role");
-    const toName = to === "" ? "" : (targets.find((x) => x.station === to)?.name ?? this.#core.views.stationName(`${ws}/${to}`));
+    // (no station chosen, its station's page: the one the last move went to, as the station says)
+    const toId = to !== "" ? to : (typeof get(get(raw, "last"), "station") === "string" ? (get(get(raw, "last"), "station") as string) : "");
+    const toName = toId === "" ? "" : (targets.find((x) => x.station === toId)?.name ?? this.#core.views.stationName(`${ws}/${toId}`));
     return moveShown(raw, { to, toName, module: typeof topic.module === "string" ? topic.module : "", targets, canMove: role === "owner" || role === "admin" });
   }
 

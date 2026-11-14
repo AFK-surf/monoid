@@ -1049,7 +1049,18 @@ fn link_row_made(
       // (as wide as the row leaves it, narrower where what it holds is wider: its words wrapped there, as a row's are)
       words.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
       words.box(fn(first) {
-        first.row(Is(true)).gap(Is(12.0)).lines_up(Is(Some(Middle))) |> ignore
+        // (where what it says may go under its title, its first line may be two: what is after them stands on the
+        // first of them, each as tall as that line and across its middle, never across the middle of both)
+        let may_wrap = fn() { under() && value() != "" }
+        let line = fn() { node_sp(first, @ui.tree_theme().text_size(Body).1) }
+        let on_line = fn(side : Double) {
+          if may_wrap() {
+            (0.0, dmax(0.0, (line() - side) / 2.0), 0.0, 0.0)
+          } else {
+            (0.0, 0.0, 0.0, 0.0)
+          }
+        }
+        first.row(Is(true)).gap(Is(12.0)).lines_up(By(fn() { Some(if may_wrap() { Start } else { Middle }) })) |> ignore
         // with words under it, its title and what it says in a line, what it says under the title where the line has not
         // the room (pg_title_value, a row in lines: its ends the title's and what it says'); else all of it on one line,
         // its title giving way (link_row's `!under`)
@@ -1111,11 +1122,13 @@ fn link_row_made(
           })
         })
         |> ignore
-        row_tail_node(first, tail, tail_shown)
+        row_tail_node(first, tail, tail_shown, tall=fn() { if may_wrap() { Some(line()) } else { None } })
         if ends {
-          icon_node(first, mark(), pg_chevron, By(fn() { theme().p.subtle }), name_now=mark) |> ignore
+          icon_node(first, mark(), pg_chevron, By(fn() { theme().p.subtle }), name_now=mark).margin(By(fn() { on_line(pg_chevron) }))
+          |> ignore
         } else if chevron_room {
-          first.box(fn(e) { e.width(Is(Some(pg_chevron))).height(Is(Some(pg_chevron))) |> ignore }) |> ignore
+          first.box(fn(e) { e.width(Is(Some(pg_chevron))).height(Is(Some(pg_chevron))).margin(By(fn() { on_line(pg_chevron) })) |> ignore })
+          |> ignore
         }
         // (what is done here, at its end: on its first line where lines are under it, as high as that line; a face's
         // by the whole row's side there, below)
@@ -1141,11 +1154,17 @@ fn link_row_made(
 ///|
 /// What follows what a row says on its first line (link_row's `tail`: a spinner, a mark), across its middle, while
 /// `shown` says: none of its room else.
-fn row_tail_node(first : @view.View, tail : ((@view.View) -> Unit)?, shown : () -> Bool) -> Unit {
+fn row_tail_node(
+  first : @view.View,
+  tail : ((@view.View) -> Unit)?,
+  shown : () -> Bool,
+  tall? : () -> Double? = fn() { None },
+) -> Unit {
   match tail {
     Some(f) =>
       first.show(shown, fn(e) {
-        e.row(Is(true)).lines_up(Is(Some(Middle))) |> ignore
+        // (`tall`: as tall as its line at least, where it stands on the first of two)
+        e.row(Is(true)).lines_up(Is(Some(Middle))).min_height(By(tall)) |> ignore
         f(e)
       })
     None => ()

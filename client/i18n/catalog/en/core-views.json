@@ -818,7 +818,7 @@
   "core-views.move.module.jobs": "Background jobs",
   "core-views.move.module.connects": "Connects",
   "core-views.move.count": "{done} / {total}",
-  "core-views.move.empty": "Empty",
+  "core-views.move.nothing": "Nothing to move",
   "core-views.move.state.moving": "Moving",
   "core-views.move.state.there": "Moved",
   "core-views.move.state.stopped": "Stopped · waiting for “{what}”",
@@ -830,6 +830,12 @@
   "core-views.move.free": "{size} free",
   "core-views.move.all.title": "Move everything to {name}",
   "core-views.move.all.text": {"one": "1 item", "other": "{n} items"},
+  "core-views.move.all.cannot": {"one": "1 can't move", "other": "{n} can't move"},
   "core-views.move.back.title": "Move everything back from {name}",
-  "core-views.move.back.text": {"one": "1 item", "other": "{n} items"}
+  "core-views.move.back.text": {"one": "1 item", "other": "{n} items"},
+  "core-views.move.summary.title": "Moving",
+  "core-views.move.summary.to": "Moving to {name}",
+  "core-views.move.summary.moving": "Moving · {module} “{label}”",
+  "core-views.move.summary.stopped": {"one": "1 stopped", "other": "{n} stopped"},
+  "core-views.move.summary.failed": {"one": "1 failed", "other": "{n} failed"}
 }

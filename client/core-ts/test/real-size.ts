@@ -1551,6 +1551,17 @@ export const MOVES_ASKED: { to: string; module: string; limit?: number }[] = [
 /// holds them), as the page draws it (move.ts).
 export function moveOf(now: number, asked: { to: string; module: string; limit?: number }, step = 0): J {
   const limit = moveLimit(asked.limit);
+  // (its station's page, no station chosen: as a station's page mostly is, nothing of it moved, so no 迁移 there and what
+  // else the page shows as it would be, till `step` chats of it moved: 迁移 at its top; the page of 迁移 mid-way, as below)
+  if (asked.to === "") {
+    const quiet = moveOf(now, { ...asked, to: "willow" }, step);
+    const done = (m: J) => (m.id === "chats" ? step : 0);
+    return {
+      ...quiet, to: "", toName: "", moving: null, active: step > 0, allMove: null, allBack: null, allThere: false, note: "",
+      count: `${step} / ${quiet.modules.reduce((n: number, m: J) => n + m.total, 0)}`,
+      modules: quiet.modules.map((m: J) => ({ ...m, done: done(m), count: m.total === 0 ? m.count : `${done(m)} / ${m.total}`, mark: "", markText: "", opens: false, action: "" })),
+    };
+  }
   const item = (id: string, label: string, state: string, more: J = {}) => ({ id, label, state, needs: [], ...more });
   const n = (k: number, there: number, label: (i: number) => string, more: (i: number) => J = () => ({})) =>
     Array.from({ length: k }, (_, i) => item(`i${i}`, label(i), i < there ? "there" : "here", more(i)));

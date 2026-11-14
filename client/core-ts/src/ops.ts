@@ -83,6 +83,7 @@ export const PARAMS: Record<string, string> = {
   "copies.retirePreview": "",
   "move.start": "to:string module?:string item?:string all?:boolean withNeeds?:boolean",
   "move.back": "from:string module?:string item?:string all?:boolean",
+  "move.stop": "",
   "station.restart": "",
   "context.setAfresh": "afreshWhenCold?:boolean afreshAbove?:number",
   "diagnostics.setLogs": "logs:boolean",
@@ -376,6 +377,10 @@ function stationOp(name: string, params: unknown): Request | null {
       return op("POST", () => "/move", { to: p.str("to"), ...p.pick(["module", "item", "all", "withNeeds"]) }, { kind: "move" });
     case "move.back":
       return op("POST", () => "/move/back", { from: p.str("from"), ...p.pick(["module", "item", "all"]) }, { kind: "move" });
+    // The turn under way stopped after the item it is on (that one let go and undone where it is not held yet); nothing
+    // else starts (`moving.stopping` meanwhile).
+    case "move.stop":
+      return op("POST", () => "/move/stop", {}, { kind: "move" });
     // The station started again by its launcher (its routes/network.ts), managers only.
     case "station.restart":
       return op("POST", () => "/station/restart", null, OVERVIEW);
