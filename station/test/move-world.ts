@@ -111,7 +111,7 @@ export function world(ids: string[] = [A, B]) {
       const moves = new Moves({
         data: rig.dir, store: rig.store, fibers: st.fibers, here: () => id, home: () => WS, roster: () => roster,
         ask: (s, r) => st.bus.ask(s, r),
-        hub: { holdChat: (k, w) => hub.holdChat(k, w), releaseChat: (k) => hub.releaseChat(k), wakeChat: (k) => hub.wakeChat(k), busy: (k) => hub.busy(k), turnEnded: (k) => hub.turnEnded(k), drained: (c, ch, ts) => hub.drained(c, ch, ts), wsOf: (k) => hub.wsOf(k) },
+        hub: { holdChat: (k, w, n) => hub.holdChat(k, w, n), releaseChat: (k) => hub.releaseChat(k), wakeChat: (k) => hub.wakeChat(k), busy: (k) => hub.busy(k), turnEnded: (k) => hub.turnEnded(k), drained: (c, ch, ts) => hub.drained(c, ch, ts), wsOf: (k) => hub.wsOf(k) },
         connects: {
           route: (c, ch, ts, to) => wc.route(c, ch, ts, to), describedFor: (c) => wc.describedFor(c), learnOf: (k, s, d) => wc.learnOf(k, s, d), kindOf: (c) => wc.kindOf(c),
           own: () => wc.ownIds(), ownIn: (ws) => wc.ownKinds(ws), runsOn: (c) => wc.runsOn(c), move: (c, to, awaiting) => wc.move(c, to, null, undefined, undefined, awaiting ?? []), movedAway: (ws) => wc.movedAway(ws), arrived: (keys) => wc.arrived(keys),

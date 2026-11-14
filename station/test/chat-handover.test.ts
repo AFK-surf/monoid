@@ -531,7 +531,7 @@ test("an account that cannot be borrowed moved first: its chats here stop, namin
   await a.moves.start();
   const plan = await a.moves.scheduler.plan(WS, B);
   assert.equal(plan.items.find((x) => x.id === one.key)!.state, "stopped");
-  assert.deepEqual(plan.items.find((x) => x.id === one.key)!.waitsFor, { module: "accounts", id: `own:solo@${A}` });
+  assert.deepEqual(plan.items.find((x) => x.id === one.key)!.waitsFor, { module: "accounts", id: `own:solo@${A}`, label: "solo", at: B }, "what it waits for, and the station that is on");
   assert.ok(plan.items.find((x) => x.id === one.key)!.needs.some((n) => n.id === `own:solo@${A}`), "named as it was known, not as this machine's own");
   // a message to one waits, and is delivered once, there
   say(a.rig.hub, one.thread, "p@x", "for one");

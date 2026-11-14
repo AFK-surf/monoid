@@ -211,6 +211,7 @@ export class Moves {
       chatsModule({
         store: d.store, handover: this.handover, hub: d.hub, ask: d.ask, here, reads: (ws) => this.reads(ws),
         kindOf: (id) => d.connects?.kindOf(id) ?? null, wait: () => this.wait,
+        name: (id) => d.roster(d.home() ?? "")?.find((r) => r.id === id)?.name || id.slice(0, 12),
         vaultsOf: (keys, ws) => new Map([...v.grantOwners(keys)].map(([k, owners]) => [k, owners.map((o) => `${vaultItemId(o)}@${ws}`)])),
         jobs: { keep: async (keys, why) => void (await this.jobs.keep(keys, why)), startKept: (keys) => this.jobs.startKept(keys) },
       }),
@@ -431,7 +432,7 @@ export class Moves {
           if (!this.on()) throw new Refused(tr(stationLang(), "station.move.offThere", { station: this.#d.roster(String(workspace ?? ""))?.find((r) => r.id === this.#d.here())?.name || (this.#d.here() ?? "").slice(0, 12) }));
           const id = String(request.id ?? "");
           if (request.module === "chats") {
-            const stoppedFor = typeof request.stoppedFor?.module === "string" && typeof request.stoppedFor?.id === "string" ? { module: request.stoppedFor.module, id: request.stoppedFor.id } : undefined;
+            const stoppedFor = typeof request.stoppedFor?.module === "string" && typeof request.stoppedFor?.id === "string" ? { module: request.stoppedFor.module, id: request.stoppedFor.id, ...(typeof request.stoppedFor.label === "string" ? { label: request.stoppedFor.label } : {}) } : undefined;
             await this.handover.handOver(id, peer, { wait: true, stoppedFor });
             return { ok: true };
           }

@@ -113,7 +113,7 @@ function world(profiles: Json[], o: { third?: boolean; slack?: boolean } = {}) {
       const moves = new Moves({
         data: rig.dir, store: rig.store, fibers: st.fibers, here: () => id, home: () => WS, roster: () => roster,
         ask: (s, r) => st.bus.ask(s, r),
-        hub: { holdChat: (k, w) => hub.holdChat(k, w), releaseChat: (k) => hub.releaseChat(k), wakeChat: (k) => hub.wakeChat(k), busy: (k) => hub.busy(k), turnEnded: (k) => hub.turnEnded(k), drained: (c, ch, ts) => hub.drained(c, ch, ts), wsOf: (k) => hub.wsOf(k) },
+        hub: { holdChat: (k, w, n) => hub.holdChat(k, w, n), releaseChat: (k) => hub.releaseChat(k), wakeChat: (k) => hub.wakeChat(k), busy: (k) => hub.busy(k), turnEnded: (k) => hub.turnEnded(k), drained: (c, ch, ts) => hub.drained(c, ch, ts), wsOf: (k) => hub.wsOf(k) },
         connects: null,
         jobs: { up: () => [], stop: async () => {}, start: () => {}, stopNamed: async () => {} },
         profiles: () => rig.raw.profiles,
@@ -496,3 +496,71 @@ for (const [name, login, allow] of [["a login that cannot be shared (a Kimi sign
     assert.equal(a.rig.session(k1).profile, login.id);
   });
 }
+
+test("a chat stopped by a move says so once, as a person speaks in it, never by itself: what it waits for and where, the two ways out, what was said kept and handed when it goes on; no turn starts meanwhile; brought back alone while its login stays there, it says so where it arrived", async () => {
+  const { a, b, quiet } = world([KIMI]);
+  signIn(a, "kimi", {});
+  const one = await chatOn(a, "kimi");
+  const account = `own:kimi@${A}`;
+  // (what the station said in a chat, and what was handed to its agents)
+  const stationSaid = (st: Station, thread: number) => (st.rig.store.db.prepare("SELECT text FROM entries WHERE thread = ? AND author_kind = 'ember' ORDER BY n").all(thread) as { text: string }[]).map((r) => r.text);
+  const handed = (st: Station) => st.rig.claude.sessions.flatMap((s) => s.prompts).join("\n");
+  const said0 = stationSaid(a, one.thread).length;
+  // Its login moved away: the chat stopped here, nothing said by that.
+  assert.equal((await a.moves.scheduler.move(WS, B, { module: "accounts", item: account })).failed, null);
+  await quiet();
+  assert.notEqual(a.rig.hub.chatHeld(one.key), null, "stopped");
+  assert.equal(stationSaid(a, one.thread).length, said0, "nobody spoke: nothing said");
+  // A person speaks twice: said once, in the station's words; no turn starts.
+  const before = handed(a);
+  say(a.rig.hub, one.thread, "p@x", "are you there?");
+  await quiet();
+  say(a.rig.hub, one.thread, "p@x", "and now?");
+  await quiet();
+  const told = stationSaid(a, one.thread).slice(said0);
+  assert.equal(told.length, 1, `said once: ${JSON.stringify(told)}`);
+  assert.match(told[0]!, /Kimi/, "names what it waits for");
+  assert.match(told[0]!, /「A」/, "names where it is stopped");
+  assert.match(told[0]!, /「B」/, "names where that is");
+  assert.match(told[0]!, /station_move/, "says how to go on");
+  assert.equal(handed(a), before, "no turn meanwhile, nothing handed: its notice wakes no agent");
+  // Its login back: it goes on, given both.
+  assert.equal((await a.moves.scheduler.back(WS, B, { module: "accounts", item: account })).failed, null);
+  await quiet();
+  const now = handed(a).slice(before.length);
+  assert.ok(now.includes("are you there?") && now.includes("and now?"), `both handed once it goes on: ${now}`);
+  assert.equal(stationSaid(a, one.thread).length, said0 + 1, "not said again");
+  await endTurn(a, one.key);
+  // There with its login, then back alone, its login staying there: it arrives stopped, and says so as it is spoken to.
+  assert.equal((await a.moves.scheduler.move(WS, B, { module: "chats", item: one.key, withNeeds: true })).failed, null);
+  await quiet();
+  const back = await a.moves.scheduler.back(WS, B, { module: "chats", item: one.key });
+  await quiet();
+  assert.equal(back.failed, null, JSON.stringify(back));
+  assert.deepEqual(back.stopped.map((s) => s.item.id), [one.key], "arrived stopped, waiting for its login there");
+  const here = handed(a);
+  const said1 = stationSaid(a, one.thread).length;
+  say(a.rig.hub, one.thread, "p@x", "back here?");
+  await quiet();
+  const told2 = stationSaid(a, one.thread).slice(said1);
+  assert.equal(told2.length, 1, `said once where it arrived: ${JSON.stringify(told2)}`);
+  assert.match(told2[0]!, /「B」/, "names where its login is");
+  assert.equal(handed(a), here, "no turn starts while it waits");
+  void b;
+});
+
+test("a chat stopped by a move and archived by hand: a person's word to it is refused as it is today, nothing said by the stop and the archive as it was", async () => {
+  const { a, quiet } = world([KIMI]);
+  signIn(a, "kimi", {});
+  const one = await chatOn(a, "kimi");
+  assert.equal((await a.moves.scheduler.move(WS, B, { module: "accounts", item: `own:kimi@${A}` })).failed, null);
+  await quiet();
+  a.rig.store.setArchived(one.key, true, "manual");
+  const archived = a.rig.store.getSession(one.key)!.archivedAt;
+  const stationSaid = () => (a.rig.store.db.prepare("SELECT COUNT(*) AS n FROM entries WHERE thread = ? AND author_kind = 'ember'").get(one.thread) as { n: number }).n;
+  const said = stationSaid();
+  assert.throws(() => say(a.rig.hub, one.thread, "p@x", "still?"), /手动归档|archived/, "refused, as a chat archived by hand refuses a message");
+  await quiet();
+  assert.equal(a.rig.store.getSession(one.key)!.archivedAt, archived, "still archived");
+  assert.equal(stationSaid(), said, "nothing said");
+});

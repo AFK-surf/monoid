@@ -6,6 +6,9 @@
 /// An item a module's needs name, by its module and its id there (an id the workspace knows it by, the same on every
 /// station: a chat's session key, a share's id, a connect as `<id>@<origin>`).
 export type Need = { module: string; id: string };
+/// What a stopped item waits for: the need, what people call it and the station it is on (none: not known, a record
+/// from before).
+export type Waits = Need & { label?: string; at?: string };
 
 /// What a module would move: its id, what people call it, what it needs moved first (only of the modules its module
 /// declares), why it cannot move (in words that say what to do; none: it can), how big it is (bytes, where known).
@@ -16,9 +19,10 @@ export type Item = { module: string; id: string; label: string; needs: Need[]; c
 /// (the owner, 2026-11-14: 「依赖项被迁走就停掉啊」).
 export type State = "here" | "moving" | "there" | "failed" | "stopped";
 export type Progress = { done: number; total: number; unit: string };
-export type ItemState = { state: State; error?: string; progress?: Progress; waitsFor?: Need };
+/// `waitsFor`, of one stopped: what it waits for, with the station that is on where known.
+export type ItemState = { state: State; error?: string; progress?: Progress; waitsFor?: Waits };
 /// How an item arrives: stopped, waiting for `stoppedFor` (the station it arrives at keeps it stopped).
-export type Arrive = { stoppedFor?: Need };
+export type Arrive = { stoppedFor?: Waits };
 
 /// What one plan reads once for all the modules that need it (move/station.ts makes it for each plan): the
 /// workspace's chats here a page at a time, each page read once whichever module asks first, and the canonical clones
@@ -62,7 +66,7 @@ export interface Module {
   abandon?(): void;
   /// The item held here as its need moved away (`waitsFor`), and let go once it is back or the item moved; durable as
   /// the scheduler keeps it (scheduler.ts `stopped`). A module with nothing to hold has none.
-  stop?(item: Item, waitsFor: Need): Promise<void>;
+  stop?(item: Item, waitsFor: Waits): Promise<void>;
   resume?(item: Item): Promise<void>;
 }
 

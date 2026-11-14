@@ -110,7 +110,7 @@ export type HandoverDeps = {
   /// The hub (sessions/hub.ts): a chat held one at a time and let go, its turn's state, what a thread's platform said
   /// waited for, a chat woken, a connect's surface.
   hub: {
-    holdChat(key: string, why: string): Promise<void>;
+    holdChat(key: string, why: string, notice?: () => string): Promise<void>;
     releaseChat(key: string): boolean;
     wakeChat(key: string): void;
     busy(key: string): boolean;
@@ -144,7 +144,7 @@ export type HandoverDeps = {
   /// Told as a hand-over's state changes (the scheduler, move/).
   changed?: (id: string) => void;
   /// A chat that arrived here stopped, waiting for `need` (move/scheduler.ts `noteStopped`), held before it is shown.
-  arrivedStopped?: (keys: string[], need: Need, ws: string) => Promise<void>;
+  arrivedStopped?: (keys: string[], need: Need & { label?: string; at?: string }, ws: string) => Promise<void>;
   /// The messages written under a client's key to these threads here, each to its thread there (api/admin.ts
   /// `keptSends`), and those of a chat handed here kept as if written here (`keepSends`).
   keptSends?: (threads: ReadonlyMap<number, number>) => KeptSend[];
@@ -827,7 +827,7 @@ export class Handover {
       if (here === null) missing.push(a?.name || pid);
       else profiles[pid] = here;
     }
-    const stoppedFor = request.stoppedFor !== null && typeof request.stoppedFor?.module === "string" && typeof request.stoppedFor?.id === "string" ? { module: request.stoppedFor.module, id: request.stoppedFor.id } as Need : null;
+    const stoppedFor = request.stoppedFor !== null && typeof request.stoppedFor?.module === "string" && typeof request.stoppedFor?.id === "string" ? { module: request.stoppedFor.module, id: request.stoppedFor.id, ...(typeof request.stoppedFor.label === "string" ? { label: request.stoppedFor.label } : {}) } as Need : null;
     // (one that arrives stopped, waiting for its account, goes on its ids as they are until it comes)
     if (missing.length > 0 && stoppedFor === null) throw new Refused(`the account${missing.length === 1 ? "" : "s"} ${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} not usable on this station: move or share ${missing.length === 1 ? "it" : "them"} here first (station_move, module accounts)`);
     for (const x of Array.isArray(request.described) ? request.described : []) {
@@ -927,7 +927,8 @@ export class Handover {
     }
     const home = this.#d.home();
     // (one that arrives stopped is held before it is shown: no turn starts)
-    if (i.stoppedFor) await this.#d.arrivedStopped?.(i.keys, i.stoppedFor, i.ws);
+    // (what it waits for is where it came from)
+    if (i.stoppedFor) await this.#d.arrivedStopped?.(i.keys, { ...i.stoppedFor, at: i.origin }, i.ws);
     for (const [connect, key] of Object.entries(i.bindings ?? {})) if (this.#d.store.binding(connect) === null) this.#d.store.setBinding(connect, key);
     this.#d.store.showChat(i.keys, i.ws === home ? null : i.ws);
     await this.#endOuts(i.keys);

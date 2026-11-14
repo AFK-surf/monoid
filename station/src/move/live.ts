@@ -50,7 +50,7 @@ export const MovesLive = Layer.effectDiscard(
       home: () => cloud.home(),
       ask: (station, request) => bus.ask(station, request),
       hub: {
-        holdChat: (k, why) => hub.holdChat(k, why),
+        holdChat: (k, why, notice) => hub.holdChat(k, why, notice),
         releaseChat: (k) => hub.releaseChat(k),
         wakeChat: (k) => hub.wakeChat(k),
         busy: (k) => hub.busy(k),

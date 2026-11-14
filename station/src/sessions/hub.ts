@@ -468,9 +468,16 @@ export class Hub {
   /// logs, delivered where it ends up.
   private readonly heldChats = new Map<string, string>();
 
-  /// Holds session `key` (`why`: for the status), at once: none of its turns starts from now on.
-  async holdChat(key: string, why: string): Promise<void> {
+  /// What a chat stopped by a move says once, as a person next speaks in it (`stoppedNotice`): its words, made as it
+  /// is said, and whether they were said in this stop. Nothing is said by the stop itself: a login moved away never posts
+  /// into every chat that used it.
+  private readonly stopNotices = new Map<string, { words: () => string; told: boolean }>();
+
+  /// Holds session `key` (`why`: for the status), at once: none of its turns starts from now on. `notice`: what it
+  /// answers, once in this hold, as a person speaks in it (a chat stopped by a move: what it waits for and where).
+  async holdChat(key: string, why: string, notice?: () => string): Promise<void> {
     this.heldChats.set(key, why);
+    if (notice !== undefined && !this.stopNotices.has(key)) this.stopNotices.set(key, { words: notice, told: false });
     const fiber = this.deadlines.get(key);
     if (fiber) (this.interrupt(fiber), this.deadlines.delete(key));
     // (held for what it is: moving to another station, or stopped as what it needs moved away)
@@ -479,6 +486,7 @@ export class Hub {
 
   /// `holdChat` taken back: what it cut off resumes and what waited goes on, as `unquiet` does. False: it was not held.
   releaseChat(key: string): boolean {
+    this.stopNotices.delete(key);
     if (!this.heldChats.delete(key)) return false;
     this.wakeChat(key);
     return true;
@@ -1623,6 +1631,12 @@ export class Hub {
       restoreArchive: (key) => this.cold.restore(key),
       cleanArchive: (key) => this.cold.pack(key),
       held: (key) => this.holdsNow.size > 0 || this.heldChats.has(key) || !this.inAWorkspace(key),
+      stoppedNotice: (key) => {
+        const n = this.stopNotices.get(key);
+        if (n === undefined || n.told || !this.heldChats.has(key)) return null;
+        n.told = true;
+        return n.words();
+      },
       stopJobs: async (key) => {
         const jobs = this.jobs;
         if (!jobs) return;

@@ -212,6 +212,8 @@ export type SessionDeps = {
   /// Turns are held (the station is about to stop or hand over, or is out of the session's workspace): none starts,
   /// messages stay pending.
   held(key: string): boolean;
+  /// What a chat stopped by a move answers, once a stop, as a person speaks in it (null: nothing now).
+  stoppedNotice?(key: string): string | null;
   /// Stopped while it waits: ends the session's jobs that would bring it back.
   stopJobs(key: string): Promise<void>;
   /// Archived: ends every job and service of the session.
@@ -1151,6 +1153,11 @@ export class SessionActor {
   }
 
   private async pump() {
+    // (stopped by a move and spoken to: said once in this stop what it waits for and what to do; what was said is kept)
+    if (this.deps.held(this.key) && this.deps.store.hasPending(this.key)) {
+      const words = this.deps.stoppedNotice?.(this.key) ?? null;
+      if (words !== null) await this.notice(`⚠️ ${words}`);
+    }
     if (this.deliveryInterruptions > 0 || this.recoveries > 0 || this.recoveryDeferred || this.deps.held(this.key) || this.archived() || this.compacting) return; // they stay pending
     if (this.codexUpdate) {
       if (this.codexUpdate.finished) await this.continueAfterCodexUpdate(this.codexUpdate);

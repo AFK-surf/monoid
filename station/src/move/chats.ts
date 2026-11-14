@@ -7,6 +7,7 @@ import type { Store } from "../store/store.ts";
 import { type SessionRow, comingWs, handedWs } from "../store/rows.ts";
 import type { Item, ItemState, Module, Need, PlanReads, Progress } from "./module.ts";
 import { repoItemId } from "./repos.ts";
+import { stationLang, tr } from "../ops/i18n.ts";
 import { accountItemId } from "./accounts.ts";
 import { connectItemId } from "./connects.ts";
 
@@ -24,7 +25,9 @@ export const giveBack = () => new Promise<void>((resolve) => setImmediate(resolv
 export type ChatsDeps = {
   store: Store;
   handover: Handover;
-  hub: { holdChat(key: string, why: string): Promise<void>; releaseChat(key: string): boolean };
+  hub: { holdChat(key: string, why: string, notice?: () => string): Promise<void>; releaseChat(key: string): boolean };
+  /// What people call station `id` (its id's start where the roster has no name).
+  name?: (id: string) => string;
   /// Its jobs stopped and kept as one being handed over has them (jobs.ts `keep`), and started again here.
   jobs: { keep(keys: string[], why: string): Promise<void>; startKept(keys: string[]): void };
   ask: (station: string, request: Json) => Promise<Json>;
@@ -119,7 +122,10 @@ export function chatsModule(d: ChatsDeps): Module {
     },
     async stop(item, waitsFor) {
       const keys = keysOf(item);
-      for (const k of keys) await d.hub.holdChat(k, `stopped: waits for ${waitsFor.module} ${waitsFor.id}, moved away`);
+      // (said once in the chat as a person next speaks in it, not by the stop: station's words, in its language)
+      const name = (id: string) => d.name?.(id) ?? id.slice(0, 12);
+      const notice = () => tr(stationLang(), waitsFor.at === undefined ? "station.move.stoppedChatHere" : "station.move.stoppedChat", { here: name(d.here()), item: waitsFor.label ?? `${waitsFor.module} ${waitsFor.id}`, there: waitsFor.at === undefined ? "" : name(waitsFor.at) });
+      for (const k of keys) await d.hub.holdChat(k, `stopped: waits for ${waitsFor.module} ${waitsFor.id}, moved away`, notice);
       await d.jobs.keep(keys, `its chat waits for ${waitsFor.module} ${waitsFor.id}, which moved to another station`);
     },
     async resume(item) {

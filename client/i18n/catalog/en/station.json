@@ -725,6 +725,8 @@
   "station.move.restartedMidway": "This station started again as the chat was being handed over to {station}: it goes on here, nothing of it went. Hand it over again (station_move, or the move page) when you want it there.",
   "station.move.stoppedMidway": "This station stopped as the chat was being handed over to {station}: it goes on here, nothing of it went. Hand it over again once this station is up.",
   "station.move.stoppedHeld": "This station stopped as the chat was being handed over to {station}: it goes on here once this station is up again, nothing of it went; then hand it over again.",
+  "station.move.stoppedChat": "This chat is stopped on 「{here}」: it waits for 「{item}」, which is on 「{there}」. To go on, bring 「{item}」 back here, or move this chat to 「{there}」 (station_move, or the move page). What you said is kept and handed to its agent when it goes on.",
+  "station.move.stoppedChatHere": "This chat is stopped on 「{here}」: it waits for 「{item}」, which was moved away. To go on, bring 「{item}」 back here, or move this chat to where it is (station_move, or the move page). What you said is kept and handed to its agent when it goes on.",
   "station.move.managersOnly": "Only an owner or admin of the workspace moves this station's chats and items.",
   "station.move.running": "Another move is under way on this station: wait for it to end (the move page shows how far it is), then try again.",
   "station.move.isRig": "This station only runs tasks and has no chats to move: make it a whole station first.",

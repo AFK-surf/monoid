@@ -9,7 +9,7 @@ import { readFileSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { log } from "../ops/log.ts";
-import { type Item, type ItemState, type Module, type Need, type PlanReads, type Progress, named, sameItem } from "./module.ts";
+import { type Item, type ItemState, type Module, type Need, type PlanReads, type Progress, type Waits, named, sameItem } from "./module.ts";
 
 /// An item as a plan shows it: what it is, where it stands, and what would be stopped here if it moved alone.
 export type Planned = Item & ItemState & { wouldStop: Need[] };
@@ -28,7 +28,7 @@ export type Outcome = { done: Need[]; refused: { item: Need; why: string }[]; st
 /// that could not begin (its plan refused) has `failed` with no item.
 export type Last = { at: number; by: string | null; how: "move" | "back"; station: string; stoppedBy?: string | null; done: Need[]; refused: { item: Need; why: string }[]; stopped: { item: Need; waitsFor: Need }[]; resumed: Need[]; failed: { item: Need | null; error: string } | null; failures?: { item: Need; error: string }[] };
 /// An item stopped here, kept: what it waits for, of which workspace.
-type Stopped = { item: Need; waitsFor: Need; ws: string };
+type Stopped = { item: Need; waitsFor: Waits; ws: string };
 
 export type SchedulerDeps = {
   data: string;
@@ -359,12 +359,13 @@ export class Scheduler {
       // it onto another), and goes on where the move fails.
       const stops: Planned[] = m.usableHere?.(p) === true ? [] : index.needing(p).filter((x) => !thereNow.has(named(x)) && !this.#stopped.has(x) && this.#modules.get(x.module)!.stop !== undefined);
       for (const x of stops) {
-        await this.#modules.get(x.module)!.stop!(x, { module: p.module, id: p.id });
-        this.#stopped.add({ item: { module: x.module, id: x.id }, waitsFor: { module: p.module, id: p.id }, ws });
+        const waitsFor: Waits = { module: p.module, id: p.id, label: p.label, at: to };
+        await this.#modules.get(x.module)!.stop!(x, waitsFor);
+        this.#stopped.add({ item: { module: x.module, id: x.id }, waitsFor, ws });
       }
       if (stops.length > 0 || unsaved) (await this.#saveStopped(), (unsaved = false));
       try {
-        await m.move(p, to, (progress) => this.#d.progress?.(p, progress), waits === undefined ? undefined : { stoppedFor: { module: waits.module, id: waits.id } });
+        await m.move(p, to, (progress) => this.#d.progress?.(p, progress), waits === undefined ? undefined : { stoppedFor: { module: waits.module, id: waits.id, label: find(waits)?.label } });
       } catch (e) {
         fail(p, (e as Error).message);
         await this.#letGo(stops.flatMap((x) => this.#stopped.get(x) ?? []).filter((s) => sameItem(s.waitsFor, p)), true);
@@ -435,7 +436,7 @@ export class Scheduler {
       // (what it needs that is still there and cannot be had here: it comes back stopped, waiting for it)
       const waits = p.needs.map(find).find((n): n is Planned => n !== undefined && stillThere.has(named(n)) && this.#modules.get(n.module)!.usableHere?.(n) !== true);
       try {
-        await this.#modules.get(p.module)!.back(p, from, waits === undefined ? undefined : { stoppedFor: { module: waits.module, id: waits.id } });
+        await this.#modules.get(p.module)!.back(p, from, waits === undefined ? undefined : { stoppedFor: { module: waits.module, id: waits.id, label: waits.label } });
       } catch (e) {
         const error = (e as Error).message;
         out.failures = [...(out.failures ?? []), { item: { module: p.module, id: p.id }, error }];
@@ -444,7 +445,7 @@ export class Scheduler {
         continue;
       }
       if (waits !== undefined) {
-        await this.noteStopped({ module: p.module, id: p.id }, { module: waits.module, id: waits.id }, ws, false);
+        await this.noteStopped({ module: p.module, id: p.id }, { module: waits.module, id: waits.id, label: waits.label, at: from }, ws, false);
         out.stopped.push({ item: { module: p.module, id: p.id }, waitsFor: { module: waits.module, id: waits.id } });
       }
       stillThere.delete(named(p));
@@ -462,7 +463,7 @@ export class Scheduler {
 
   /// An item that arrived here stopped, waiting for `waitsFor` (a hand-over with `stoppedFor`): kept stopped here,
   /// held by its module (`hold`; false: it held itself as it arrived).
-  async noteStopped(item: Need, waitsFor: Need, ws: string, hold = true): Promise<void> {
+  async noteStopped(item: Need, waitsFor: Waits, ws: string, hold = true): Promise<void> {
     if (this.#stopped.has(item)) return;
     if (hold) await this.#modules.get(item.module)?.stop?.({ module: item.module, id: item.id, label: item.id, needs: [waitsFor] }, waitsFor);
     this.#stopped.add({ item, waitsFor, ws });

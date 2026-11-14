@@ -110,12 +110,12 @@ test("an item moved away that cannot be had here stops what needs it here, befor
   assert.deepEqual(out.stopped, [{ item: { module: "chats", id: "c2" }, waitsFor: { module: "accounts", id: "grok" } }]);
   assert.deepEqual(log, ["stop chats/c2", "move accounts/grok"], "stopped before its need went");
   assert.equal((await s.plan("ws", "B")).items.find((x) => x.id === "c2")!.state, "stopped");
-  assert.deepEqual((await s.plan("ws", "B")).items.find((x) => x.id === "c2")!.waitsFor, { module: "accounts", id: "grok" });
+  assert.deepEqual((await s.plan("ws", "B")).items.find((x) => x.id === "c2")!.waitsFor, { module: "accounts", id: "grok", label: "a Grok sign-in", at: "B" }, "what it waits for, and the station that is on");
   // started again: still stopped (held again)
   const again = make();
   chats.stopped.clear();
   await again.start();
-  assert.deepEqual(chats.stopped.get("c2"), { module: "accounts", id: "grok" });
+  assert.deepEqual(chats.stopped.get("c2"), { module: "accounts", id: "grok", label: "a Grok sign-in", at: "B" });
   assert.equal((await again.plan("ws", "B")).items.find((x) => x.id === "c2")!.state, "stopped");
   // back: it goes on here
   log.length = 0;
