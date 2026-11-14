@@ -181,7 +181,7 @@ export function world(ids: string[] = [A, B]) {
     st.git = async (dir: string, args: string[]) => execFileSync("git", ["-C", dir, ...args], { encoding: "utf8", env: gitEnv(rig.dir), stdio: ["ignore", "pipe", "pipe"] }).trim();
     st.moves = st.make();
     const routes = moveRoutes({
-      scheduler: { busy: () => st.moves.scheduler.busy(), last: (ws: string) => st.moves.scheduler.last(ws), plan: (ws: string, to: string) => st.moves.scheduler.plan(ws, to), stopped: () => st.moves.scheduler.stopped(), move: (...a: Parameters<Moves["scheduler"]["move"]>) => st.moves.scheduler.move(...a), back: (...a: Parameters<Moves["scheduler"]["back"]>) => st.moves.scheduler.back(...a), stopTurn: (by: string | null) => st.moves.scheduler.stopTurn(by), stopping: () => st.moves.scheduler.stopping() } as Json,
+      scheduler: { busy: () => st.moves.scheduler.busy(), last: (ws: string) => st.moves.scheduler.last(ws), plan: (ws: string, to: string) => st.moves.scheduler.plan(ws, to), stopped: () => st.moves.scheduler.stopped(), move: (...a: Parameters<Moves["scheduler"]["move"]>) => st.moves.scheduler.move(...a), back: (...a: Parameters<Moves["scheduler"]["back"]>) => st.moves.scheduler.back(...a), stopTurn: (by: string | null) => st.moves.scheduler.stopTurn(by), stopping: () => st.moves.scheduler.stopping(), current: () => st.moves.scheduler.current() } as Json,
       order: () => st.moves.modules.map((m) => m.id), home: () => WS, here: () => id, rig: () => false,
       station: (_ws, v) => (roster.some((r) => r.id === v || r.name === v) ? { id: roster.find((r) => r.id === v || r.name === v)!.id, tasks: false } : null),
       refusal: (ws, s, lang) => st.moves.refusal(ws, s, lang),

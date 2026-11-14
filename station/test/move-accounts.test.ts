@@ -45,6 +45,8 @@ type Station = {
   failTake: boolean;
   /// What this station says of its shares to others (`share.changed`) does not reach them.
   failChanged: boolean;
+  /// Told as this station tells devices its moves changed (move/station.ts `changed`).
+  onMove?: () => void;
   /// The next `move.accounts` this station asks goes unanswered (the other not reached).
   failAccounts: boolean;
   make(): Moves;
@@ -139,6 +141,7 @@ function world(profiles: Json[], o: { third?: boolean; slack?: boolean } = {}) {
           place: async (dataDir, index, from, made, aside, placed, projects) => place(dataDir, index, from, made ?? null, aside ?? null, placed ?? null, projects ?? false),
         },
         hold: () => () => {},
+        changed: () => st.onMove?.(),
       });
       st.bus.on("handover.", moves.answers(() => true));
       st.bus.on("move.", moves.answers(() => true));
@@ -472,7 +475,31 @@ test("a login that cannot be shared (a Kimi sign-in) moves as it is: gone from h
   const item = plan.items.find((x) => x.id === account)!;
   assert.equal(a.moves.modules.find((m) => m.id === "accounts")!.usableHere!(item), false);
   assert.deepEqual(sorted(item.wouldStop.map((n) => n.id)), sorted([k1, k2]));
+  // (each telling of the moves' change read as a device would: one consistent state, and a turn under way says so)
+  let ended = false;
+  const reads: Promise<string | null>[] = [];
+  a.onMove = () => {
+    const during = !ended;
+    reads.push((async () => {
+      const view = moveView(await a.moves.scheduler.plan(WS, B), a.moves.modules.map((m) => m.id), a.moves.scheduler.stopped(), { limit: 50 }, null, false, (id) => id.slice(0, 1).toUpperCase(), a.moves.scheduler.current());
+      const kept = new Set(a.moves.scheduler.stopped().map((x) => x.item.id));
+      for (const x of view.modules.find((m: Json) => m.id === "chats").items as Json[]) {
+        if (x.state === "here" && kept.has(x.id)) return `${x.id} here while kept stopped`;
+        if (x.state === "stopped" && a.rig.store.handedTo(x.id) !== null) return `${x.id} stopped while handed away`;
+      }
+      if (during && a.moves.scheduler.busy() && view.moving === null) return "a turn under way read as nothing moving";
+      return null;
+    })());
+  };
   const out = await a.moves.scheduler.move(WS, B, { module: "accounts", item: account });
+  ended = true;
+  a.onMove = undefined;
+  assert.ok(reads.length > 0, "devices told");
+  assert.deepEqual((await Promise.all(reads)).filter((x) => x !== null), [], "every read one consistent state");
+  // (the moment the turn's end is told, before anything settles: both rows on the page stopped, waiting for it on B)
+  const view = moveView(await a.moves.scheduler.plan(WS, B), a.moves.modules.map((m) => m.id), a.moves.scheduler.stopped(), { limit: 50 }, null, false, (id) => id.slice(0, 1).toUpperCase());
+  const rows = view.modules.find((m: Json) => m.id === "chats").items.filter((x: Json) => x.id === k1 || x.id === k2).map((x: Json) => [x.id, x.state, x.waitsFor, x.waitsAt]);
+  assert.deepEqual(sorted(rows.map((r: Json[]) => JSON.stringify(r))), sorted([k1, k2].map((k) => JSON.stringify([k, "stopped", `accounts ${account}`, "B"]))), "both rows stopped, waiting for it on B");
   await quiet();
   assert.equal(out.failed, null, JSON.stringify(out));
   assert.deepEqual(sorted(out.stopped.map((s) => s.item.id)), sorted([k1, k2]));

@@ -26,9 +26,10 @@ export const MOVE_PAGE_MOST = 200;
 
 /// The answer of GET /move for `plan`: `module`/`after` the page of one module that goes on from `after`.
 /// `name`: what the roster calls a station (`at`, `waitsAt`), its id's start where it names none.
-export function moveView(plan: Plan, order: string[], stopped: { item: { module: string; id: string }; waitsFor: { module: string; id: string } }[], o: { module?: string; after?: string; limit?: number } = {}, last: Last | null = null, stopping = false, name: (id: string) => string = (id) => id.slice(0, 12)): Json {
+export function moveView(plan: Plan, order: string[], stopped: { item: { module: string; id: string }; waitsFor: { module: string; id: string } }[], o: { module?: string; after?: string; limit?: number } = {}, last: Last | null = null, stopping = false, name: (id: string) => string = (id) => id.slice(0, 12), current: { module: string; id: string } | null = null): Json {
   const limit = Math.min(Math.max(o.limit ?? MOVE_PAGE, 1), MOVE_PAGE_MOST);
-  const moving = plan.items.find((x) => x.state === "moving") ?? null;
+  // (the turn under way is at an item till its end is told, whether that item reads moving yet or not)
+  const moving = plan.items.find((x) => x.state === "moving") ?? (current === null ? null : plan.items.find((x) => x.module === current.module && x.id === current.id) ?? null);
   // (each module's items, gone through once)
   const of = new Map<string, Planned[]>(order.map((id) => [id, []]));
   for (const x of plan.items) of.get(x.module)?.push(x);
@@ -162,7 +163,7 @@ export function moveRoutes(d: MoveRoutesDeps): Route[] {
         try {
           const plan = await d.scheduler.plan(ws, to);
           const limit = Number(param(r, "limit") ?? MOVE_PAGE);
-          return ok(moveView(plan, d.order(), d.scheduler.stopped(), { module: param(r, "module") ?? undefined, after: param(r, "after") ?? undefined, limit: Number.isFinite(limit) ? limit : MOVE_PAGE }, d.scheduler.last(ws), d.scheduler.stopping(), (id) => d.name?.(ws, id) ?? id.slice(0, 12)));
+          return ok(moveView(plan, d.order(), d.scheduler.stopped(), { module: param(r, "module") ?? undefined, after: param(r, "after") ?? undefined, limit: Number.isFinite(limit) ? limit : MOVE_PAGE }, d.scheduler.last(ws), d.scheduler.stopping(), (id) => d.name?.(ws, id) ?? id.slice(0, 12), d.scheduler.current()));
         } catch (e) {
           return error(409, (e as Error).message);
         }

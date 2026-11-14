@@ -112,6 +112,13 @@ export class Scheduler {
   }
 
   /// Whether a move or a move back is under way (or asked behind one).
+  /// The item the turn under way is at (stopping what needs it, or moving it): a read of a turn under way says it
+  /// moves, until its end is told, not only while an item reads `moving`.
+  #current: Need | null = null;
+  current(): Need | null {
+    return this.#current;
+  }
+
   busy(): boolean {
     return this.#asked > 0;
   }
@@ -263,6 +270,7 @@ export class Scheduler {
       (letGo as (() => void) | null)?.();
       this.#asked--;
       this.#stopping = null;
+      this.#current = null;
       this.#d.changed?.();
     });
     this.#turn = run.catch(() => {});
@@ -404,10 +412,15 @@ export class Scheduler {
       // What here needs it and cannot have it here once it went is stopped first (its account moving away would move
       // it onto another), and goes on where the move fails.
       const stops: Planned[] = m.usableHere?.(p) === true ? [] : index.needing(p).filter((x) => !thereNow.has(named(x)) && !this.#stopped.has(x) && this.#modules.get(x.module)!.stop !== undefined);
+      // (kept stopped before it is held: no read sees it held and not said stopped)
+      this.#current = p;
       for (const x of stops) {
         const waitsFor: Waits = { module: p.module, id: p.id, label: p.label, at: to };
-        await this.#modules.get(x.module)!.stop!(x, waitsFor);
         this.#stopped.add({ item: { module: x.module, id: x.id }, waitsFor, ws });
+        await this.#modules.get(x.module)!.stop!(x, waitsFor).catch((e) => {
+          this.#stopped.remove(x);
+          throw e;
+        });
       }
       if (stops.length > 0 || unsaved) (await this.#saveStopped(), (unsaved = false));
       try {
@@ -500,6 +513,7 @@ export class Scheduler {
     const failedThere = new Map<string, string>();
     for (const p of order(all.filter((x) => backing.has(named(x))), find).reverse()) {
       if (this.#stopping !== null) break;
+      this.#current = p;
       const dependent = index.needing(p).find((x) => stillThere.has(named(x)));
       if (dependent !== undefined) {
         const failed = failedThere.get(named(dependent));
