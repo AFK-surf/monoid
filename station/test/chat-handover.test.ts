@@ -1964,6 +1964,8 @@ async function startedAgainChangesNothing(w: ReturnType<typeof world>, key: stri
       const listed = st.moves.scheduler.stopped().some((s) => s.item.module === "chats" && s.item.id === key);
       const held = /^stopped: /.test(st.rig.hub.chatHeld(key) ?? "");
       assert.equal(listed, held, `${how}, ${when}: on ${st.id.slice(0, 1)} the chat is ${listed ? "kept stopped but not held" : "held as stopped but not kept so"}`);
+      // (and nothing kept stopped of a chat that is not here: handed away, it waits for nothing here)
+      if (listed) assert.equal(st.rig.store.handedTo(key), null, `${how}, ${when}: on ${st.id.slice(0, 1)} the chat is kept stopped though it was handed away`);
     }
   };
   oneFact("at rest");

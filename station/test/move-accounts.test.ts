@@ -856,6 +856,13 @@ test("a chat moved with its login that cannot be shared in one turn, then brough
   await quiet();
   assert.deepEqual(await row(), ["stopped", `accounts ${account}`, "B"], "and so after");
   assert.match(a.rig.hub.chatHeld(one.key) ?? "", /^stopped: waits for accounts/, "held");
+  // (moved again, by the row's own move with what it needs, its login there: it goes, and is stopped here no more)
+  const again = await a.moves.scheduler.move(WS, B, { module: "chats", item: one.key, withNeeds: true });
+  await quiet();
+  assert.equal(again.failed, null, JSON.stringify(again));
+  assert.equal(a.rig.store.handedTo(one.key)?.station, B, `handed to B (${how})`);
+  assert.deepEqual(a.moves.scheduler.stopped().filter((s) => s.item.id === one.key), [], `nothing kept stopped of it here (${how})`);
+  assert.deepEqual(await row(), ["there", undefined, undefined], `its row: there (${how})`);
   }
 });
 
