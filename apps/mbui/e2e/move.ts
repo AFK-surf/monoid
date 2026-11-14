@@ -1870,8 +1870,12 @@ try {
           const to = new Date();
           const day = (d: Date) => d.toISOString().slice(11, 23);
           const rec = readFileSync(join(dir, a.name, "record.log"), "utf8").split("\n")
-            .map((l) => /^asked: (\d\d:\d\d:\d\d\.\d{3}) (\S+) GET \/admin\/api\/move\?/.exec(l))
+            .map((l) => /^asked: (\d\d:\d\d:\d\d\.\d{3}) (\S+) GET \/admin\/api\/move\?(\S*)/.exec(l))
             .filter((m): m is RegExpExecArray => m !== null && m[2] === aId.slice(0, 8) && m[1] >= day(from) && m[1] <= day(to)).map((m) => m[1]);
+          // (of them, the page as a person watching holds it: its first page of 50, the app's)
+          const watched = readFileSync(join(dir, a.name, "record.log"), "utf8").split("\n")
+            .map((l) => /^asked: (\d\d:\d\d:\d\d\.\d{3}) (\S+) GET \/admin\/api\/move\?to=[0-9a-f]+&module=chats&limit=50 /.exec(l))
+            .filter((m): m is RegExpExecArray => m !== null && m[2] === aId.slice(0, 8) && m[1] >= day(from) && m[1] <= day(to)).length;
           const perSecond = new Map<string, number>();
           for (const t of rec) perSecond.set(t.slice(0, 8), (perSecond.get(t.slice(0, 8)) ?? 0) + 1);
           const secs = Math.max(1, (to.getTime() - from.getTime()) / 1000);
@@ -1879,7 +1883,7 @@ try {
             .filter((l) => l.includes("asked which chats are live") && l.slice(0, 24) >= from.toISOString() && l.slice(0, 24) <= to.toISOString()).length;
           const sorted = [...took].sort((x, y) => x - y);
           const q = (f: number) => (sorted.length === 0 ? "-" : `${sorted[Math.min(sorted.length - 1, Math.floor(f * sorted.length))]} ms`);
-          return `the device read A's page ${rec.length} times (${(rec.length / secs).toFixed(2)} a second, the busiest second ${Math.max(0, ...perSecond.values())}); A's plans asked B which chats are live ${asks} times; the drill's own reads of the page (every 5 s, ${took.length}): p50 ${q(0.5)}, max ${sorted.length === 0 ? "-" : `${sorted.at(-1)} ms`}`;
+          return `the device read A's page ${rec.length} times (the watched page's ${watched}, ${(watched / secs).toFixed(2)} a second; all ${(rec.length / secs).toFixed(2)} a second, the busiest second ${Math.max(0, ...perSecond.values())}); A's plans asked B which chats are live ${asks} times; the drill's own reads of the page (every 5 s, ${took.length}): p50 ${q(0.5)}, max ${sorted.length === 0 ? "-" : `${sorted.at(-1)} ms`}`;
         },
       };
     };
@@ -1897,6 +1901,8 @@ try {
       if (process.env.E2E_MOVE_TIMING_ONLY === "1") return log("  (timing only: the 2,384 chats not moved)");
       const n = sql("A", "select count(*) n from sessions where (ws is null or (ws not like 'handed:%' and ws not like 'coming:%'))")[0].n as number;
       let from = offsets();
+      // (a person watching A's move page through both moves, as the app holds it: one subscription of the page)
+      const watching = a.watch(moveT(bId));
       const t0 = Date.now();
       await a.call("move.start", { station: A, to: bId, all: true });
       const there = duringMove();
@@ -1917,6 +1923,8 @@ try {
       const back = duringMove();
       const lb = await turnEnds("A", t1, 3_600_000);
       measured(`2,384 chats back, during the move: ${await back.end()}`);
+      log(`  the watched page took ${watching.values.length} values through both moves`);
+      watching.stop();
       const seenB = (Date.now() - t1) / 1000;
       const sb = typeof lb?.at === "number" ? (lb.at - t1) / 1000 : seenB;
       measured(`and back: ${sb.toFixed(0)} s, ${(n / (sb / 60)).toFixed(0)} chats a minute; ${ends(lb, t1, seenB)}; main thread: ${holds(from)}; ${notDone(lb)}`);
