@@ -784,6 +784,28 @@ test("share.borrow failing after the share was made: the share undone, the login
   assert.equal(a.rig.store.handedTo(one.key)?.station, B);
 });
 
+test("a login asked for by name, share.take failing after the share made for its move: the share undone, the login here as it was, nothing kept, the other told nothing; asked again, its host moves", async () => {
+  const { a, b, quiet } = world([MAX]);
+  signIn(a, "max", CLAUDE_LOGIN);
+  const one = await chatOn(a, "max");
+  const account = `own:max@${A}`;
+  a.failTake = true;
+  const out = await a.moves.scheduler.move(WS, B, { module: "accounts", item: account });
+  await quiet();
+  assert.equal(out.failed?.item.id, account, JSON.stringify(out));
+  assert.match(out.failed!.error, /lost on the way/);
+  assert.deepEqual(present(a, "max"), MAX, "not shared, as it was");
+  assert.equal(JSON.parse(readFileSync(join(a.rig.dir, "homes", "max", ".credentials.json"), "utf8")).claudeAiOauth.refreshToken, "r", "its login here");
+  assert.deepEqual(keptShares(a), [], "no share kept as made by a move");
+  assert.deepEqual(b.rig.raw.profiles.map((p: Json) => p.id), ["bx"], "the other has nothing of it");
+  assert.equal(a.rig.hub.chatHeld(one.key), null, "its chat goes on");
+  a.failTake = false;
+  const again = await a.moves.scheduler.move(WS, B, { module: "accounts", item: account });
+  await quiet();
+  assert.equal(again.failed, null, JSON.stringify(again));
+  assert.equal(shareOf(a, "max").borrowed, true, "its host moved: borrowed here");
+});
+
 for (const [name, login, allow] of [["a login that cannot be shared (a Kimi sign-in)", KIMI, null], ["a login shared with stations this one is not among", MAX, [C]]] as const) {
   test(`${name}, moved away by the scheduler while another of its runtime is here: the chats that need it are stopped, stay on it, nothing said in them; back, they go on on it`, async () => {
     const { a, b, quiet } = world([login, SPARE], { third: true, slack: true });
