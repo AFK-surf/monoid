@@ -77,12 +77,18 @@ export function moveShown(raw: J, o: { to: string; toName: string; module: strin
     const named = `${module} ${str(x?.id)}`;
     const state = str(x?.state) || "here";
     const cannot = typeof x?.cannot === "string" ? x.cannot : null;
+    // (where it is, by its station's name, where that is a third station's (`at`); where what a stopped one waits for
+    // is (`waitsAt`))
+    const at = str(x?.at);
+    const waitsAt = str(x?.waitsAt);
     const stateText = state === "moving"
       ? t("core-views.move.state.moving")
       : state === "there"
-        ? t("core-views.move.state.there")
+        ? at !== "" ? t("core-views.move.state.thereAt", { at }) : t("core-views.move.state.there")
         : state === "stopped"
-          ? t("core-views.move.state.stopped", { what: waitsFor(nameOf(x?.waitsFor)) })
+          ? waitsAt !== ""
+            ? t("core-views.move.state.stoppedAt", { what: waitsFor(nameOf(x?.waitsFor)), at: waitsAt })
+            : t("core-views.move.state.stopped", { what: waitsFor(nameOf(x?.waitsFor)) })
           : state === "failed"
             ? t("core-views.move.state.failed")
             : cannot !== null

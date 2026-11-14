@@ -729,6 +729,8 @@
   "core-views.move.state.moving": "迁移中",
   "core-views.move.state.there": "已迁移",
   "core-views.move.state.stopped": "已停 · 等「{what}」",
+  "core-views.move.state.thereAt": "在「{at}」",
+  "core-views.move.state.stoppedAt": "已停，等「{what}」（在「{at}」）",
   "core-views.move.state.failed": "失败",
   "core-views.move.state.cannot": "无法迁移",
   "core-views.move.mark.moving": "迁移中",

@@ -822,6 +822,8 @@
   "core-views.move.state.moving": "Moving",
   "core-views.move.state.there": "Moved",
   "core-views.move.state.stopped": "Stopped · waiting for “{what}”",
+  "core-views.move.state.thereAt": "On “{at}”",
+  "core-views.move.state.stoppedAt": "Stopped, waiting for “{what}” (on “{at}”)",
   "core-views.move.state.failed": "Failed",
   "core-views.move.state.cannot": "Can't move",
   "core-views.move.mark.moving": "Moving",

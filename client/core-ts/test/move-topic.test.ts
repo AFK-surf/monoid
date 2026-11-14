@@ -170,6 +170,35 @@ test("the page's value is what the station's GET /move says, a module's items on
   r.core.close();
 });
 
+test("a chat at a third station says where it is, a stopped one where what it waits for is", async () => {
+  // (the station names them: `at` of one on another station than the two this page is between, `waitsAt` of what a
+  // stopped one waits for)
+  const said = moved({
+    moving: null,
+    modules: [
+      { id: "accounts", needs: [], done: 1, total: 1, items: [item("p-kimi", "Kimi Code", "there")], more: null },
+      {
+        id: "chats", needs: ["accounts"], done: 1, total: 3,
+        items: [
+          item("k1", "周报", "there", { at: "lab" }),
+          item("k2", "发版", "stopped", { waitsFor: "accounts p-kimi", waitsAt: "mini" }),
+          item("k3", "草稿", "stopped", { waitsFor: "accounts p-kimi" }),
+        ],
+        more: null,
+      },
+    ],
+    stopped: [], last: null,
+  });
+  const r = await rig((_station, key) => (key.startsWith("GET /move") ? said : undefined));
+  const v = await r.show(1, { to: "st2", module: "chats" });
+  assert.deepEqual(v.modules[1].items.map((x: J) => [x.label, x.state, x.stateText]), [
+    ["周报", "there", "在「lab」"],
+    ["发版", "stopped", "已停，等「Kimi Code」（在「mini」）"],
+    ["草稿", "stopped", "已停 · 等「Kimi Code」"],
+  ]);
+  r.core.close();
+});
+
 test("told `move` changed, what is shown is read again and changes by its rows", async () => {
   let said = moved();
   const r = await rig((_station, key) => (key.startsWith("GET /move") ? said : undefined));
