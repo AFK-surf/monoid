@@ -15,6 +15,7 @@ import type { Iroh } from "../iroh.ts";
 import { claimBy } from "../lock.ts";
 import { BULK_SLOW_BPS, HOT_RELAYS, type CredentialSource, type Link, Mesh, type MeshEnv, type Presented, type Reply, relayHost, SPEED_MIN_BYTES, SPEED_SLOW_MIN_MS } from "../mesh.ts";
 import { PAIR_ALPN } from "../pair.ts";
+import * as prefs from "../prefs.ts";
 import { RELAY, type Place, type Status } from "../status.ts";
 import { route } from "../route.ts";
 import { utf8 } from "../util.ts";
@@ -550,7 +551,7 @@ function takes(inner: Inner): Pick<MeshEnv, "takes" | "incoming"> {
 /// it a device waiting to be confirmed is told its credential was refused, and asks the cloud for another at each try).
 export function meshEnv(inner: Inner, iroh: Iroh): MeshEnv {
   const leaves=new LeafLinks();
-  return { prepare:leaves.prepare, linked:leaves.linked, host: inner.host, runner: inner.runner, tracer: inner.tracer, iroh, wakes: inner.wakes, ...STATION_MESH, ...takes(inner), ...(!inner.host.appKeys ? { hotRelays: HOT_RELAYS } : {}), refusal: refusedForLock };
+  return { prepare:leaves.prepare, linked:leaves.linked, host: inner.host, runner: inner.runner, tracer: inner.tracer, iroh, wakes: inner.wakes, ...STATION_MESH, dht: () => prefs.dhtOn(inner.data), ...takes(inner), ...(!inner.host.appKeys ? { hotRelays: HOT_RELAYS } : {}), refusal: refusedForLock };
 }
 
 /// The core's mesh: brought up on first use with the relays any account's `/v1/me` names, the credentials from
