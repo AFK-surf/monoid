@@ -925,17 +925,23 @@ try {
       });
       if (back) {
         await check("2k: the person is told in the chat that it is stopped and what it waits for", async () => {
+          // (the station answers a person's message to a chat a move stopped once, with its own notice in the chat
+          // (author_kind ember, station/src/store/rows.ts STATION_AUTHOR), station.move.stoppedChat: zh 「这个对话在「A」上
+          // 暂停了：它在等「Kimi Code」…」; and no turn begins)
+          const t0 = Date.now();
           await a.call("chat.send", { station: A, session: kc, text: `drill-recall:${nonce}` });
           await whenChanged([DATA.A], () => sql("A", `select count(*) n from entries where text like ${lit(`%drill-recall:${nonce}%`)}`)[0].n > 0, 60_000, () => "the message is not in A's log");
-          const v = await untilChat(kc, (v) => v?.messages && v);
-          const shown = { stateText: v.stateText ?? null, offlineNote: v.offlineNote ?? null, connection: v.connection ?? null, outbox: (v.outbox ?? []).map((o: J) => `${o.state}${o.waits ? `: ${o.waits}` : ""}`), messages: texts(v).slice(-3) };
-          log(`  the chat as the device shows it: ${brief(shown, 900)}`);
-          const read = [shown.stateText, shown.offlineNote, JSON.stringify(shown.connection), ...shown.outbox, ...texts(v).filter((t) => !t.startsWith("drill-"))].join(" | ");
-          // (a line that says it is stopped and names the login it waits for; drill 11 matched the station's give-up
-          // notice after a turn of the fake agent's, sessions/actor.ts giveUp, which says neither)
-          const telling = read.split(" | ").find((x) => /停|等|stopped|wait/i.test(x) && /Kimi Code|kimi-code/i.test(x));
-          log(`  what tells the person: ${brief(telling ?? null, 400)} (lines read: ${read.slice(0, 400)})`);
-          if (telling === undefined) throw new Error(`nothing on the chat's page says it is stopped waiting for Kimi Code: ${read.slice(0, 400)}`);
+          const notices = () => sql("A", `select text from entries e join threads t on t.id = e.thread where t.home = ${lit(kc)} and e.at >= ${t0} and e.author_kind = 'ember'`).map((r) => String(r.text));
+          const said = await whenChanged([DATA.A], () => {
+            const n = notices().filter((x) => /暂停|在等|paused|stopped|waiting/i.test(x) && /Kimi Code|kimi-code/i.test(x));
+            return n.length > 0 && n;
+          }, 30_000, () => `no notice of the station's in the chat saying it is stopped waiting for Kimi Code: its notices since ${brief(notices(), 400)}`);
+          // (once: the next check's answer, once, after its login is back, says no second turn came of it either)
+          const all = notices().filter((x) => /暂停|在等|paused|stopped|waiting/i.test(x) && /Kimi Code|kimi-code/i.test(x));
+          const begun = turns(t0).filter((t) => t.text.includes(`drill-recall:${nonce}`));
+          log(`  the station's notice: ${brief(said[0], 400)}; notices of it ${all.length}; turns begun ${begun.length}`);
+          if (all.length !== 1) throw new Error(`told ${all.length} times: ${brief(all, 600)}`);
+          if (begun.length > 0) throw new Error(`a turn began in the stopped chat: ${brief(begun, 400)}`);
         });
         await check("2k: its login moved back: the chat goes on, what was said meanwhile answered once, on A, from its context", async () => {
           const l = await moveBack(item, "B", "accounts");
