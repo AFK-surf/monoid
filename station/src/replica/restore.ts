@@ -3,6 +3,7 @@
 // now, and put into this station's database before its store opens: the same thread ids, entry numbers and session
 // keys, the paths in its rows moved from the lost station's data directory to this one's, its files put where the rows
 // say. Only into a station that has no chats of its own yet; the station then says it was that one (`formerly`).
+import { claudeProject } from "../read/transcript.ts";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { Worker } from "node:worker_threads";
 import { dirname, join, sep } from "node:path";
@@ -10,7 +11,6 @@ import { DatabaseSync } from "node:sqlite";
 import { type Head, type Rec, type Row, Folded, OWN_LOG, RESTORE_ORDER, THREAD_COLUMNS, asHead, attachedPaths, bumpedTs, decodeBatch } from "./format.ts";
 import { headFile } from "./export.ts";
 import { STILLFAIL_SURFACE } from "../store/rows.ts";
-import { claudeProject } from "../read/transcript.ts";
 
 /// Where a restore brings a copy before it is put in: `<data>/restore/`, its generation's batches and files as a
 /// place keeps them, and `ready.json` once all of it is there.
@@ -35,26 +35,26 @@ export function readCopy(dir: string): { head: Head; folded: Folded } {
   return { head, folded };
 }
 
-/// `path` as it is on this station: under `to` where it was under `from`.
-/// Where a file carried from the station whose data directory is `from` is put here: as `moved`, and a Claude
-/// transcript's project directory (`transcripts*/claude/<project>/`, named after the working directory it ran in:
-/// read/transcript.ts `claudeProject`) named after that directory here, where the runtime resumes it. Kept under the
-/// other's name, it was not found first: this station's own older copy of the same session, still in place under this
-/// directory's name, was resumed instead (a chat moved there and back recalled nothing of its time there; 2026-11-14).
-export function carriedTo(path: string, from: string, to: string): string {
+/// Where a file of a chat carried from the station whose data directory is `from` lies here, the one answer for its
+/// placing, for whether it is in place already and for its pruning: as `moved`, and a Claude transcript
+/// (`transcripts*/claude/<project>/…`, its project named by the runtime after the real path of the directory it ran
+/// in, read/transcript.ts `claudeProject`) under the project of `room`, its room here as the runtime will see it (its
+/// real path, `/private/tmp/…` where the data directory is behind a symlink), whatever name it had there; none given:
+/// as `moved`. Kept under the other's name, it was not the one resumed: this station's own older copy of the same
+/// session, in place under this room's project, was (a chat moved there and back recalled nothing of its time there;
+/// 2026-11-14).
+export function carriedTo(path: string, from: string, to: string, room: string | null): string {
   const at = moved(path, from, to);
-  if (from === "" || from === to || at === path) return at;
-  const f = from.endsWith(sep) ? from.slice(0, -1) : from;
+  const project = room === null ? null : claudeProject(room);
+  if (project === null || from === "" || at === path) return at;
   const t = to.endsWith(sep) ? to.slice(0, -1) : to;
   const parts = at.slice(t.length + 1).split(/[\\/]/);
   if (parts.length < 4 || !parts[0]!.startsWith("transcripts") || parts[1] !== "claude") return at;
-  const was = claudeProject(f);
-  const now = claudeProject(t);
-  if (was === null || now === null || !parts[2]!.startsWith(was)) return at;
-  parts[2] = now + parts[2]!.slice(was.length);
+  parts[2] = project;
   return join(t, ...parts);
 }
 
+/// `path` as it is on this station: under `to` where it was under `from`.
 export function moved(path: string, from: string, to: string): string {
   if (from === "" || from === to) return path;
   const f = from.endsWith(sep) ? from.slice(0, -1) : from;

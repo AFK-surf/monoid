@@ -17,7 +17,7 @@ type Json = any;
 export type Sending = {
   /// Asks of the other station what of `hashes` it lacks (its answer's `lacking`); `files`: each with where it is put
   /// and how big (a station that keeps a copy of the room says which it has in place already).
-  lacking(hashes: string[], files: { hash: string; path: string; size: number; mtimeMs?: number }[]): Promise<Json>;
+  lacking(hashes: string[], files: { hash: string; path: string; size: number; mtimeMs?: number; room?: string }[]): Promise<Json>;
   /// Sends it one file by its hash (`path`: where it is here; "" for a list or the index).
   put(hash: string, bytes: Bytes, path: string, size: number): Promise<Json>;
   /// The most hashes one `lacking` asks of.
@@ -38,7 +38,9 @@ export async function sendGathered(g: Gathered, to: Sending, strict: boolean, jo
   const index = JSON.parse(await readFile(g.index, "utf8")) as CarryIndex;
   to.total(index.bytes);
   for (const session of [...index.sessions, ...(index.agent ? [index.agent] : [])]) {
-    let batch: { hash: string; path: string; size: number; mtimeMs?: number }[] = [];
+    let batch: { hash: string; path: string; size: number; mtimeMs?: number; room?: string }[] = [];
+    // (the session's room, by which the other finds where a file of it lies there: restore.ts `carriedTo`)
+    const room = "workspace" in session && typeof session.workspace === "string" ? session.workspace : undefined;
     const lines = createInterface({ input: createReadStream(session.at), crlfDelay: Infinity });
     try {
       for await (const line of lines) {
@@ -46,7 +48,7 @@ export async function sendGathered(g: Gathered, to: Sending, strict: boolean, jo
         if (line === "") continue;
         const f = JSON.parse(line);
         if (typeof f?.hash !== "string") continue;
-        batch.push({ hash: f.hash, path: f.path, size: f.size, mtimeMs: f.mtimeMs });
+        batch.push({ hash: f.hash, path: f.path, size: f.size, mtimeMs: f.mtimeMs, ...(room !== undefined ? { room } : {}) });
         if (batch.length >= to.most) {
           await sendBatch(to, batch, strict);
           batch = [];
@@ -69,7 +71,7 @@ export async function sendGathered(g: Gathered, to: Sending, strict: boolean, jo
 }
 
 /// Of `batch`, what the other station lacks, sent.
-async function sendBatch(to: Sending, batch: { hash: string; path: string; size: number; mtimeMs?: number }[], strict: boolean): Promise<void> {
+async function sendBatch(to: Sending, batch: { hash: string; path: string; size: number; mtimeMs?: number; room?: string }[], strict: boolean): Promise<void> {
   if (batch.length === 0) return;
   const asked = [...new Set(batch.map((f) => f.hash))];
   const answer = await to.lacking(asked, batch);

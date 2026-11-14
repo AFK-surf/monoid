@@ -97,13 +97,14 @@ export function toolsLostIn(frame: Json, calls: Set<string>): string | null {
 
 export const userMessage = (text: string) => JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "text", text }] } });
 
-/// Claude keeps a session at $CLAUDE_CONFIG_DIR/projects/<encoded cwd>/<id>.jsonl: looked for in the directory of `cwd`
-/// (where it runs on), then in every project's (it ran elsewhere before: many directories on a station, each looked at).
-/// Where it is, or null.
+/// Claude keeps a session at $CLAUDE_CONFIG_DIR/projects/<encoded cwd>/<id>.jsonl, the cwd as it sees it (its real
+/// path, as `bringTranscript` names it): looked for in that project first, then in the one of `cwd` as given, then in
+/// every project's (it ran elsewhere before: many directories on a station, each looked at). Where it is, or null.
 export async function transcriptAt(home: string, sessionId: string, cwd: string): Promise<string | null> {
-  const project = claudeProject(cwd);
-  const here = project === null ? null : join(home, "projects", project, `${sessionId}.jsonl`);
-  if (here !== null && (await isFile(here))) return here;
+  for (const project of new Set([claudeProject(await realpath(cwd).catch(() => cwd)), claudeProject(cwd)])) {
+    const here = project === null ? null : join(home, "projects", project, `${sessionId}.jsonl`);
+    if (here !== null && (await isFile(here))) return here;
+  }
   let dirs: string[];
   try {
     dirs = await readdir(join(home, "projects"));

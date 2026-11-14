@@ -509,7 +509,7 @@ export class Handover {
     d.fail?.("files");
     const carry = await sendGathered(g, {
       // (where each goes and how big, so that what is in place there already is not sent again)
-      lacking: (hashes, files) => ask({ method: "handover.lacking", hashes, files: files.map((f) => ({ hash: f.hash, path: f.path, size: f.size, mtimeMs: f.mtimeMs ?? null })) }),
+      lacking: (hashes, files) => ask({ method: "handover.lacking", hashes, files: files.map((f) => ({ hash: f.hash, path: f.path, size: f.size, mtimeMs: f.mtimeMs ?? null, ...(f.room !== undefined ? { room: f.room } : {}) })) }),
       put: async (hash, bytes, path, size) => {
         const answer = await d.ask(o.to, withBytes({ method: "handover.put", workspace: o.ws, origin: here, id: o.id, name: hash }, bytes));
         if (carriedPlace(d.data, path)) o.sentBytes = (o.sentBytes ?? 0) + size;
@@ -755,9 +755,16 @@ export class Handover {
             // (one in place here already, the same bytes where it goes, is not lacking: a room kept here, or placed
             // by a hand-over before)
             const files = (Array.isArray(request.files) ? request.files : []).slice(0, this.#d.lackMost ?? LACK_MOST);
+            const rooms = new Map<string, string>();
             for (const f of files) {
               if (!lacking.has(f?.hash) || typeof f?.path !== "string") continue;
-              if (await inPlace(carriedTo(f.path, i.ctx.fromData, this.#d.data), this.#d.data, f)) lacking.delete(f.hash);
+              // (where it lies here by the same answer its placing gives: restore.ts `carriedTo`)
+              let room: string | null = null;
+              if (typeof f.room === "string") {
+                room = rooms.get(f.room) ?? (await realOfSoon(moved(f.room, i.ctx.fromData, this.#d.data)));
+                rooms.set(f.room, room);
+              }
+              if (await inPlace(carriedTo(f.path, i.ctx.fromData, this.#d.data, room), this.#d.data, f)) lacking.delete(f.hash);
             }
             return { lacking: hashes.filter((h: string) => lacking.has(h)) };
           }
@@ -867,11 +874,12 @@ export class Handover {
     for (const s of index.sessions) {
       const list = await readFile(join(files, s.list), "utf8").catch(() => "");
       const here: string[] = [];
+      const roomHere = await realOfSoon(moved(s.workspace, index.dataDir, this.#d.data));
       for (const line of list.split("\n")) {
         if (line === "") continue;
         try {
           const f = JSON.parse(line);
-          f.path = carriedTo(f.path, index.dataDir, this.#d.data);
+          f.path = carriedTo(f.path, index.dataDir, this.#d.data, roomHere);
           named.add(f.path);
           here.push(JSON.stringify(f));
         } catch {}
@@ -1087,6 +1095,17 @@ export class Handover {
     await this.#saveIn(i);
     await rm(join(dir(this.#d.data), "in", i.id), { recursive: true, force: true });
     return { ok: true };
+  }
+}
+
+/// `path`'s real path, the part of it not there yet as it is (carry-worker.ts `realOf`, off the main thread's way).
+async function realOfSoon(path: string): Promise<string> {
+  const rest: string[] = [];
+  for (let at = path; ; at = dirname(at)) {
+    const real = await realpath(at).catch(() => null);
+    if (real !== null) return join(real, ...rest.reverse());
+    if (dirname(at) === at) return path;
+    rest.push(basename(at));
   }
 }
 

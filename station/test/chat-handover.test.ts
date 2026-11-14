@@ -8,7 +8,9 @@
 // with their connects (connects/workspace.ts) and their moves (move/station.ts), over a transport of the test's.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, test } from "node:test";
 import { PeerBus, bytesOf, withBytes } from "../src/mesh/bus.ts";
@@ -38,6 +40,7 @@ import { claudeProject } from "../src/read/transcript.ts";
 import { Readers } from "../src/read/pool.ts";
 import { elsewhere } from "../src/api/seen.ts";
 import { RETRY_MS } from "../src/replica/retire.ts";
+import { transcriptAt } from "../src/agents/claude.ts";
 import { hearLines } from "../src/ops/log.ts";
 import { WS, A, B, C, type Station, world, endTurn, stillfailChat, gitEnv, filesOf, entries, homeThread } from "./move-world.ts";
 
@@ -1297,7 +1300,7 @@ test("what a retirement left of a chat there (its rows retired, a log with entri
   writeFileSync(join(room, "same.md"), "the same on both");
   writeFileSync(join(room, "differs.md"), "A's words");
   writeFileSync(join(room, "missing.md"), "only A has it");
-  const transcript = (st: Station) => join(st.rig.dir, "transcripts", "claude", claudeProject(st.rig.session(key).workspace)!, "claude-1.jsonl");
+  const transcript = (st: Station) => join(st.rig.dir, "transcripts", "claude", claudeProject(realpathSync(st.rig.session(key).workspace))!, "claude-1.jsonl");
   mkdirSync(dirname(transcript(a)), { recursive: true });
   writeFileSync(transcript(a), '{"type":"user","said":"before"}\n');
   retiredCopy(a, b, key);
@@ -1774,6 +1777,78 @@ test("what a station keeps of a chat's arrivals is bounded: three times there an
   }
   for (const st of [a, b]) assert.deepEqual(st.moves.handover.ins().filter((i) => i.keys.includes(key)).map((i) => i.step), ["shown"], `${st.id.slice(0, 1)}: one record of its arrivals`);
   await startedAgainChangesNothing(w, key, "three arrivals each side");
+});
+
+test("a chat that comes back is started with the transcript of what was said where it was: it is put under the project of its room's real path here, in place of the one it had here before, which a drop puts back; the data directory behind a symlink or not", async () => {
+  const was = process.env.TMPDIR;
+  try {
+    for (const how of ["through a symlink", "plainly"] as const) {
+      const real = realpathSync(tmpdir());
+      const base = mkdtempSync(join(real, "transcripts-"));
+      if (how === "through a symlink") {
+        mkdirSync(join(base, "target"));
+        symlinkSync(join(base, "target"), join(base, "via"));
+        process.env.TMPDIR = join(base, "via");
+      } else process.env.TMPDIR = base;
+      const w = world();
+      process.env.TMPDIR = was;
+      const a = w.get(A);
+      const b = w.get(B);
+      const { key } = await stillfailChat(a);
+      const id = a.rig.session(key).runtimeSessionId!;
+      const at = (st: Station) => join(st.rig.dir, "transcripts", "claude", claudeProject(realpathSync(st.rig.session(key).workspace))!, `${id}.jsonl`);
+      const all = (st: Station) => readdirSync(join(st.rig.dir, "transcripts", "claude")).filter((p) => existsSync(join(st.rig.dir, "transcripts", "claude", p, `${id}.jsonl`)));
+      mkdirSync(dirname(at(a)), { recursive: true });
+      writeFileSync(at(a), '{"said":"here before"}\n');
+      // (each file sent, by its hash)
+      const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+      const puts: string[] = [];
+      w.tamper((_to, r) => {
+        if (r.method === "handover.put") puts.push(String(r.name));
+        return r;
+      });
+      assert.equal((await a.moves.scheduler.move(WS, B, { module: "chats", item: key })).failed, null);
+      await w.quiet();
+      assert.ok(existsSync(at(b)), `${how}: there under its room's project; its files there: ${JSON.stringify(all(b))}`);
+      assert.equal(readFileSync(at(b), "utf8"), '{"said":"here before"}\n', `${how}: there under its room's project`);
+      assert.equal(puts.filter((h) => h === sha('{"said":"here before"}\n')).length, 1, `${how}: sent once, its held pass sending nothing of it unchanged`);
+      writeFileSync(at(b), '{"said":"here before"}\n{"said":"said there"}\n');
+      // (there, an older copy under the project of the room as its row names it, through the link: not the one resumed)
+      const named = (st: Station) => join(st.rig.dir, "transcripts", "claude", claudeProject(st.rig.session(key).workspace)!, `${id}.jsonl`);
+      if (how === "through a symlink") {
+        assert.notEqual(named(b), at(b));
+        mkdirSync(dirname(named(b)), { recursive: true });
+        writeFileSync(named(b), '{"said":"an older copy"}\n');
+      }
+      // Back, failing once at its counts (dropped here): the one it had here before as it was.
+      b.fails.add("counts");
+      assert.notEqual((await a.moves.scheduler.back(WS, B, { module: "chats", item: key })).failed, null);
+      await w.quiet();
+      assert.equal(readFileSync(at(a), "utf8"), '{"said":"here before"}\n', `${how}: a drop puts back the one it had here`);
+      // Back.
+      assert.equal((await a.moves.scheduler.back(WS, B, { module: "chats", item: key })).failed, null);
+      await w.quiet();
+      assert.equal(readFileSync(at(a), "utf8"), '{"said":"here before"}\n{"said":"said there"}\n', `${how}: here under its room's project, what was said there`);
+      assert.deepEqual(all(a), [claudeProject(realpathSync(a.rig.session(key).workspace))], `${how}: no other file of it here`);
+      // There again, unchanged: it is in place there, nothing of it sent.
+      puts.length = 0;
+      assert.equal((await a.moves.scheduler.move(WS, B, { module: "chats", item: key })).failed, null);
+      await w.quiet();
+      assert.equal(puts.filter((h) => h === sha('{"said":"here before"}\n{"said":"said there"}\n')).length, 0, `${how}: in place there, not sent again`);
+      assert.equal((await a.moves.scheduler.back(WS, B, { module: "chats", item: key })).failed, null);
+      await w.quiet();
+      // What its agent is started with (agents/claude.ts): that one, by the room as given and by its real path alike.
+      const home = mkdtempSync(join(real, "home-"));
+      symlinkSync(join(a.rig.dir, "transcripts", "claude"), join(home, "projects"));
+      if (how === "through a symlink") {
+        mkdirSync(dirname(named(a)), { recursive: true });
+        writeFileSync(named(a), '{"said":"an older copy"}\n');
+      }
+      assert.equal(await transcriptAt(home, id, a.rig.session(key).workspace), join(home, "projects", claudeProject(realpathSync(a.rig.session(key).workspace))!, `${id}.jsonl`), how);
+    }
+  } finally {
+    process.env.TMPDIR = was;
+  }
 });
 
 test("a chat whose key is live where it would go (one that went on there apart from it, as a retirement taken back leaves one) cannot go: the plan says so, the station asked refuses it before anything is written, and the chat goes on here", async () => {

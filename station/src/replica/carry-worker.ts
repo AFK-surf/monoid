@@ -14,7 +14,7 @@
 import { execFileSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, chmodSync, closeSync, copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync, writeSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { isMainThread, parentPort, workerData } from "node:worker_threads";
 import { rebuildable, roomOf } from "../sessions/footprint.ts";
@@ -379,7 +379,10 @@ export function gather(dataDir: string, db: string, ws: string, home: boolean, s
       // subagents beside it.
       const ids = (runs.all(s.key) as { id: string; profile: string | null; runtime: string | null }[]).map((r) => ({ id: r.id, profile: r.profile, runtime: r.runtime ?? s.runtime }));
       if (s.runtime_session_id !== null && !ids.some((r) => r.id === s.runtime_session_id)) ids.push({ id: s.runtime_session_id, profile: s.profile, runtime: s.runtime });
-      const found = transcriptSources(dataDir, [], ids.filter((r) => runtimeKind(r.runtime) !== null), sessionPlaces(s));
+      // (looked for first where the runtime resumes it: under the project of the room's real path; another of the same
+      // id elsewhere is an older copy)
+      const places = sessionPlaces(s);
+      const found = transcriptSources(dataDir, [], ids.filter((r) => runtimeKind(r.runtime) !== null), [...new Set([...places.map(realOf), ...places])]);
       for (const t of found.paths) {
         add(storage(t.path));
         if (t.runtime === "claude") {
@@ -549,6 +552,20 @@ export function place(dataDir: string, indexPath: string, from: string, made: st
   }
 }
 
+/// `path`'s real path, the part of it not there yet as it is: what a process working in it will see (`/private/tmp/…`
+/// where it is behind a symlink).
+function realOf(path: string): string {
+  const rest: string[] = [];
+  for (let at = path; ; at = dirname(at)) {
+    try {
+      return join(realpathSync(at), ...rest.reverse()); // sync: in the placing's own thread (placeSoon)
+    } catch {
+      if (dirname(at) === at) return path;
+      rest.push(basename(at));
+    }
+  }
+}
+
 type Seen = { before(path: string, f: { hash: string; size: number; mtimeMs: number }): boolean; now(path: string, f: { hash: string; size: number; mtimeMs: number }): void };
 function placeAll(index: CarryIndex, dataDir: string, from: string, fresh: (path: string) => void, away: (path: string) => void, seen: Seen | null = null, projects = false): { placed: number; missing: number; kept: number } {
   let placed = 0;
@@ -557,6 +574,9 @@ function placeAll(index: CarryIndex, dataDir: string, from: string, fresh: (path
   const root = resolve(dataDir);
   for (const s of index.sessions) {
     const list = join(from, s.list);
+    // (a chat handed over: its Claude transcripts under the project of its room here as the runtime sees it, its real
+    // path, whatever project they were under there)
+    const room = projects ? realOf(moved(s.workspace, index.dataDir, dataDir)) : null;
     if (!existsSync(list)) { // sync: in the placing's own thread (placeSoon)
       missing += s.files;
       continue;
@@ -571,7 +591,7 @@ function placeAll(index: CarryIndex, dataDir: string, from: string, fresh: (path
       // (resolved first: a path the other station said is put under this one's sessions or transcripts, or nowhere)
       // (`projects`, a chat handed over: a Claude transcript under its room's project here, where one there before
       // would otherwise be the one its agent resumes; a retirement's stays where it was put, found by its id)
-      const path = resolve(projects ? carriedTo(f.path, index.dataDir, dataDir) : moved(f.path, index.dataDir, dataDir));
+      const path = resolve(projects ? carriedTo(f.path, index.dataDir, dataDir, room) : moved(f.path, index.dataDir, dataDir));
       if (!carriedPlace(root, path)) continue;
       // (placed by this placing before as the index says it now: not looked at again)
       if (!("link" in f) && seen?.before(path, f) === true) {
