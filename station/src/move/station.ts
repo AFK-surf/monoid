@@ -150,7 +150,7 @@ export class Moves {
     this.settings = new SettingsModule({ data: d.data, ask, config: d.config ?? { raw: () => ({}), update: () => {} } });
     this.jobs = new JobsModule({
       data: d.data, up: d.jobs.up, stop: d.jobs.stop, start: d.jobs.start, ask: (s, r) => d.ask(s, { ...r, fromData: d.data }), here,
-      chatOf: (session) => this.handover.together(session)[0] ?? session,
+      chatOf: (session) => this.handover.chatOf(session),
     });
     this.handover = new Handover({
       data: d.data, here: d.here, home: d.home, roster: d.roster, ask: d.ask, fibers: d.fibers, store: d.store, hub: d.hub, connects: d.connects,

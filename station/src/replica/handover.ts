@@ -361,6 +361,13 @@ export class Handover {
     return [...keys].sort();
   }
 
+  /// The chat session `key` goes with, by the first of its keys (`together`): a member of another's still.fail home
+  /// chat goes with that chat (as the chats' plan lists it), else its own.
+  chatOf(key: string): string {
+    const home = this.#d.store.sessionThreads(key, 64).find((m) => m.thread.surface === STILLFAIL_SURFACE && m.thread.home !== null && m.thread.home !== key)?.thread.home;
+    return this.together(home ?? key)[0] ?? key;
+  }
+
   /// Why chat `key` cannot be handed to `to` now, in words that say what to do (null: it can). `ignoreFiles`: one whose
   /// room is not the station's own goes without its files.
   /// `planning`: as a plan lists it (a chat of a connect that is not routed needs that connect there, which the plan
