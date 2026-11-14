@@ -957,6 +957,52 @@ try {
           if (!answers[0]!.includes(`secret=k${tag}`)) throw new Error(`not from its context: ${answers[0]}`);
         });
       }
+      // A second chat on the login, stopped on A by the login going to B alone: its row on A's page offers 迁移 (the core's
+      // view: what it waits for is on the station the page is toward), pressed as the app presses it (move.start of the
+      // item with what it needs): it goes to B and goes on there. What the station does with a stopped chat's move is
+      // said as it is. Then both back as they were: the chat home (stopped again), the login after it.
+      if (back) {
+        let kd = "";
+        let moved = false;
+        try {
+          await check("2k: a second chat on the login, stopped on A as the login went to B alone: its row's 迁移 takes it to B, where it goes on from its context", async () => {
+            kd = await newChat(`kimi2-${tag}`, kimi);
+            await say(kd, `drill-remember:d${tag}`, `drill-remembered d${tag}`);
+            const t0 = Date.now();
+            await a.call("move.start", { station: A, to: bId, module: "accounts", item });
+            const lo = await turnEnds("A", t0);
+            moved = true;
+            log(`  the login alone to B: ${outcome(lo)}; ${standings(kd)}; stopped ${stoppedOf(kd)}`);
+            if (stoppedOf(kd) === null) throw new Error(`not stopped on A as its login left: ${standings(kd)}`);
+            const m = await atRest("2k");
+            const row = ((m.modules.find((x: J) => x.id === "chats")?.items ?? []) as J[]).find((x: J) => x.id === kd);
+            log(`  A's page: its row ${brief(row)}`);
+            if (row?.state !== "stopped" || row?.action !== "move") throw new Error(`its row offers no 迁移: ${brief(row)}`);
+            const n2 = randomBytes(3).toString("hex");
+            await a.call("chat.send", { station: A, session: kd, text: `drill-recall:${n2}` });
+            await whenChanged([DATA.A], () => sql("A", `select count(*) n from entries where text like ${lit(`%drill-recall:${n2}%`)}`)[0].n > 0, 60_000, () => "the message is not in A's log");
+            // (the press: what the app's 迁移 on that row sends, station_move_node.mbt item_act)
+            const t1 = Date.now();
+            await a.call("move.start", { station: A, to: bId, module: "chats", item: kd, withNeeds: true });
+            const l = await turnEnds("A", t1);
+            log(`  the press, as the station took it: ${outcome(l)}; ${standings(kd)}`);
+            if (standing("B", kd) !== "live") throw new Error(`not on B: ${standings(kd)}; ${outcome(l)}`);
+            const v = await untilChat(kd, (v) => texts(v).some((t) => t.startsWith(`drill-recall ${n2} `)) && v, 120_000);
+            const answers = texts(v).filter((t) => t.startsWith(`drill-recall ${n2} `));
+            log(`  ${brief(answers)}`);
+            if (answers.length !== 1 || at(/cwd=(\S+)/.exec(answers[0]!)?.[1] ?? "") !== "B") throw new Error(`answered ${brief(answers)}`);
+            if (!answers[0]!.includes(`secret=d${tag}`)) throw new Error(`not from its context: ${answers[0]}`);
+            const after = await atRest("2k");
+            const rowAfter = ((after.modules.find((x: J) => x.id === "chats")?.items ?? []) as J[]).find((x: J) => x.id === kd);
+            log(`  A's page after: its row ${brief(rowAfter)}`);
+            if (rowAfter?.state !== "there") throw new Error(`its row on A's page reads ${rowAfter?.state}, not there`);
+          });
+        } finally {
+          // (home as 2k found it: the second chat back (it arrives stopped), then the login, both chats going on on A)
+          if (kd !== "" && standing("B", kd) === "live") await moveBack(kd, "B").then((l) => log(`  the second chat home: ${outcome(l)}`), (e) => log(`  the second chat not home: ${e}`));
+          if (moved) await moveBack(item, "B", "accounts").then((l) => log(`  the login home: ${outcome(l)}; ${standings(kd)}`), (e) => log(`  the login not home: ${e}`));
+        }
+      }
       await reset("2k").catch((e) => log(`  2k's end: ${String(e).slice(0, 300)}`));
       // (A left as 2k found it: its chat archived, the sign-in taken out of A's config, else the pool gives new chats to
       // the login with fewest, sessions/pool.ts pickProfile, and drill 10's 3n ran on it)
