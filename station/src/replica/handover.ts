@@ -49,6 +49,9 @@ type Json = any;
 /// How long a hand-over waits for a busy chat's turn to end, where it was asked to wait.
 export const TURN_WAIT_MS = 10 * 60_000;
 
+/// What a chat's station sends after it was shown where it went: what was said there meanwhile.
+const AFTER_SHOWN: readonly ChatTable[] = ["entries", "letters", "deliveries"];
+
 /// Why a chat cannot go to station `name`: a chat of its key is live there (`keys`), one that went on there apart from
 /// this one (the copy a retirement taken back left there, 2026-11-14): never merged into, whichever had more.
 export const liveHereWords = (keys: readonly string[], name: string) =>
@@ -74,8 +77,9 @@ export type Out = {
   /// Each session's home thread here and there (B's answer), its threads' platforms' (connect, channel, ts), and those
   /// re-pointed already.
   there: Record<string, { thread: number | null; there: number | null }>; routes: { connect: string; channel: string; threadTs: string }[]; routed: number;
-  /// Whether B showed it.
-  shown: boolean;
+  /// Whether B showed it; and whether what was taken here between its rows' last sending and its going out of sight
+  /// here (`shownThere`) was sent after it and B took it up (`caught`).
+  shown: boolean; caught?: boolean;
   /// What was sent and placed of its files (bytes), for the status; of them, the bytes of the room's own files that
   /// went (what was in place there already did not).
   done: number; total: number; sentBytes?: number;
@@ -238,25 +242,30 @@ export class Handover {
       this.#holdIn(i);
     }
     for (const o of this.#outs.values()) if ((o.step === "held" || o.step === "files" || o.step === "rows") && o.held !== false) for (const key of o.keys) void d.hub.holdChat(key, `moving to ${o.toName || o.to.slice(0, 8)}`);
-    // (one that went as this process stopped, before its rows here said so: held until `start` says so)
+    // (one that went and is not shown there yet, or went as this process stopped before its rows here said so: held
+    // until `start` says so, or it is shown there)
     for (const o of this.#outs.values()) for (const key of this.#notOff(o)) void d.hub.holdChat(key, `moving to ${o.toName || o.to.slice(0, 8)}`);
   }
 
   /// Begun (the mesh attached): each hand-over goes on where it stood. One cut before it went did not go: undone.
-  /// The sessions of `o`, gone, whose rows here do not say so yet (this process stopped between the two).
+  /// The sessions of `o`, gone, still in sight here: not shown there yet, or shown and this process stopped before its
+  /// rows here said so.
   #notOff(o: Out): string[] {
-    if (o.step !== "gone") return [];
-    return o.keys.filter((k) => this.#d.store.handedTo(k)?.station !== o.to && this.#d.store.getSession(k) !== null);
+    if (o.step !== "gone" && o.step !== "done") return [];
+    return o.keys.filter((k) => this.#d.store.getSession(k) !== null && this.#d.store.sessionWs(k)?.startsWith(handedWs("")) !== true);
   }
 
   async start(): Promise<void> {
     // (what was left to remove as a chat came here was shown, where this process stopped before it was gone)
     for (const name of await readdir(join(dir(this.#d.data), "in")).catch(() => [] as string[])) if (name.startsWith(".gone-")) void rm(join(dir(this.#d.data), "in", name), { recursive: true, force: true }).catch(() => {});
-    // (gone, its rows said so first, before anything else: then let go as a hand-over lets go once it went)
+    // (gone, where it went said first, before anything else; shown there, out of sight here and let go as a hand-over
+    // lets go once it is shown there; not shown yet, still held, its reads served here, until it is)
     for (const o of this.#outs.values()) {
       const off = this.#notOff(o);
       if (off.length === 0) continue;
-      this.#d.store.handOff(off, o.to, this.#d.home(), o.there);
+      this.#d.store.goneTo(off, o.to, o.there);
+      if (!o.shown) continue;
+      this.#d.store.shownThere(off, this.#d.home());
       for (const k of off) this.#d.hub.releaseChat(k);
     }
     for (const o of this.#outs.values()) {
@@ -529,8 +538,9 @@ export class Handover {
     o.step = "gone";
     await this.#save(o);
     d.fail?.("gone");
-    d.store.handOff(o.keys, o.to, d.home(), o.there);
-    for (const k of o.keys) d.hub.releaseChat(k);
+    // (where it went, for what its platforms say; still in sight here, held, until it is shown there: a device is
+    // pointed there only once it is there to be read, `#afterGone`)
+    d.store.goneTo(o.keys, o.to, o.there);
     await rm(scratch(d.data, o.id), { recursive: true, force: true });
     log.info("handover", "a chat went to another station", { id: o.id, to: o.to, keys: o.keys.length });
   }
@@ -597,6 +607,24 @@ export class Handover {
       for (const t of Object.values(o.there)) if (t.thread !== null && t.there !== null) threads.set(t.thread, t.there);
       await ask({ method: "handover.show", sends: d.keptSends?.(threads) ?? [] });
       o.shown = true;
+      await this.#save(o);
+    }
+    // Shown there: out of sight here and devices told where, in one step; then what was taken here since its rows
+    // were last sent goes after it (a message sent here meanwhile), and it is shown again there, to take that up.
+    if (o.keys.some((k) => d.store.sessionWs(k)?.startsWith(handedWs("")) !== true)) {
+      d.store.shownThere(o.keys, d.home());
+      for (const k of o.keys) d.hub.releaseChat(k);
+    }
+    if (!o.caught) {
+      // (only where something was taken: one page a thread and session at most to know it)
+      const since = Object.entries(o.sent).some(([t, was]) => d.store.chatPage("entries", Number(t), was.entries, 1, o.keys).length > 0 || d.store.chatPage("letters", Number(t), was.letters, 1, o.keys).length > 0)
+        || o.keys.some((k) => d.store.chatPage("deliveries", k, null, 1, o.keys).length > 0);
+      if (since) {
+        await this.#sendRows(o, ask, o.sent);
+        await ask({ method: "handover.show", sends: [] });
+      }
+      d.store.deliveredThere(o.keys);
+      o.caught = true;
       await this.#save(o);
     }
     for (; o.routed < o.routes.length; o.routed++) {
@@ -719,11 +747,12 @@ export class Handover {
           case "handover.place":
             return await this.#place(i, String(request.carry ?? ""));
           case "handover.rows": {
-            if (i.step !== "coming") throw new Refused("shown already");
             const table = String(request.table ?? "") as ChatTable;
+            // (shown: only what was said there after its rows went, its log's and what it has yet to be handed)
+            if (i.step !== "coming" && (i.step !== "shown" || !AFTER_SHOWN.includes(table))) throw new Refused("shown already");
             if (!CHAT_TABLES.includes(table) || !Array.isArray(request.rows) || request.rows.length > 500) throw new Refused("not a page of a chat's rows");
             this.#d.fail?.("import");
-            this.#d.store.importRows(i.ctx, table, request.rows, i.id);
+            this.#d.store.importRows(i.ctx, table, request.rows, i.step === "coming" ? i.id : undefined);
             this.#d.fail?.("imported");
             await this.#saveIn(i);
             return { ok: true };
@@ -850,7 +879,11 @@ export class Handover {
     // (only of its own threads here: another's are not this hand-over's to keep)
     const homes = new Set(i.keys.map((k) => this.#d.store.homeChat(k)?.id));
     this.#d.keepSends?.(sends.filter((x) => typeof x?.thread === "number" && homes.has(x.thread)));
-    if (i.step === "shown") return { ok: true };
+    // (shown again, after what was said where it was meanwhile came: taken up)
+    if (i.step === "shown") {
+      for (const k of i.keys) this.#d.hub.wakeChat(k);
+      return { ok: true };
+    }
     const home = this.#d.home();
     // (one that arrives stopped is held before it is shown: no turn starts)
     if (i.stoppedFor) await this.#d.arrivedStopped?.(i.keys, i.stoppedFor, i.ws);

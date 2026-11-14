@@ -107,8 +107,10 @@ export function chatsModule(d: ChatsDeps): Module {
       await d.ask(from, { method: "move.back", module: "chats", id: item.id, to: d.here(), ...(opts?.stoppedFor ? { stoppedFor: opts.stoppedFor } : {}) });
     },
     state(item): ItemState {
-      if (d.store.handedTo(item.id) !== null) return { state: "there" };
       const o = d.handover.outOf(item.id);
+      // (gone, not shown there yet: still moving, its page served here as it went)
+      if (o !== null && o.step === "gone" && !o.shown) return { state: "moving", progress: { done: o.done, total: o.total, unit: "bytes" } };
+      if (d.store.handedTo(item.id) !== null) return { state: "there" };
       if (o === null) return { state: "here" };
       if (o.step === "held" || o.step === "files" || o.step === "rows") return { state: "moving", progress: { done: o.done, total: o.total, unit: "bytes" } };
       if (o.step === "gone") return { state: "there" };

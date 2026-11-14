@@ -1788,23 +1788,47 @@ export class Store {
     });
   }
 
-  /// Sessions `keys` handed to `station`: out of sight here (`handedWs`: `home` names the home one's), where each went
-  /// kept with its chat's thread here and there.
+  /// Sessions `keys` handed to `station`: where each went kept with its chat's thread here and there, then out of sight
+  /// here (`goneTo`, then `shownThere`, at once).
   handOff(keys: readonly string[], station: string, home: string | null, threads: Record<string, { thread: number | null; there: number | null }>): void {
-    this.#with((changes) => {
+    this.goneTo(keys, station, threads);
+    this.shownThere(keys, home);
+    this.deliveredThere(keys);
+  }
+
+  /// Sessions `keys` went to `station` (the hand-over's `gone`): where each went kept, with its chat's thread here and
+  /// there, so what its platforms say goes there (hub `movedTo`); still in sight here, as it went, until that station
+  /// shows it (`shownThere`): a device is pointed there only once it is there to be read.
+  goneTo(keys: readonly string[], station: string, threads: Record<string, { thread: number | null; there: number | null }>): void {
+    this.#with(() => {
       this.#tx(() => {
         for (const key of keys) {
           const row = this.#one("SELECT ws FROM sessions WHERE key = ?", key);
           if (row === undefined) continue;
           const ws = (row.ws as string | null) ?? null;
+          if (ws?.startsWith(handedWs("")) === true) continue;
           const t = threads[key] ?? { thread: null, there: null };
           this.#run("INSERT INTO handed_over (session, station, ws, thread, there, at) VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT (session) DO UPDATE SET station = ?2, ws = ?3, thread = ?4, there = ?5, at = ?6", key, station, ws, t.thread, t.there, this.now());
+        }
+      });
+      for (const key of keys) this.#handed.delete(key);
+    });
+  }
+
+  /// Sessions `keys`, gone (`goneTo`), shown where they went: out of sight here (`handedWs`: `home` names the home
+  /// one's), devices told where (`moved`), in one step.
+  shownThere(keys: readonly string[], home: string | null): void {
+    this.#with((changes) => {
+      this.#tx(() => {
+        for (const key of keys) {
+          const row = this.#one("SELECT ws FROM sessions WHERE key = ?", key);
+          const h = this.#one("SELECT * FROM handed_over WHERE session = ?", key);
+          if (row === undefined || h === undefined) continue;
+          const ws = (row.ws as string | null) ?? null;
+          if (ws?.startsWith(handedWs("")) === true) continue;
           // Gone from here for anywhere: no longer the station it came here from that its row says (`from`).
           this.#run("UPDATE sessions SET ws = ?, came_from = NULL WHERE key = ?", handedWs(ws ?? home ?? ""), key);
-          // What it had yet to be handed went with it (handed there, store/handover.ts `deliveries`): none of it is
-          // handed to its agent here again should it come back.
-          this.#run("UPDATE deliveries SET delivered_at = ?2 WHERE session = ?1 AND delivered_at IS NULL", key, this.now());
-          changes.push({ type: "moved", key, station, ws, thread: t.thread, there: t.there });
+          changes.push({ type: "moved", key, station: h.station as string, ws, thread: (h.thread as number | null) ?? null, there: (h.there as number | null) ?? null });
         }
       });
       for (const key of keys) {
@@ -1813,6 +1837,15 @@ export class Store {
         changes.push({ type: "session", key });
       }
       this.#sessionWorkspaceChanged();
+    });
+  }
+
+  /// What sessions `keys` had yet to be handed here went with them, the last of it once they were out of sight here
+  /// (handed there, store/handover.ts `deliveries`): none of it is handed to their agent here again should they come
+  /// back.
+  deliveredThere(keys: readonly string[]): void {
+    this.#tx(() => {
+      for (const key of keys) this.#run("UPDATE deliveries SET delivered_at = ?2 WHERE session = ?1 AND delivered_at IS NULL", key, this.now());
     });
   }
 

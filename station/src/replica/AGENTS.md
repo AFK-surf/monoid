@@ -112,7 +112,10 @@ below, sends them along).
   other counted what it has does this one say it went; before, a failure undoes it there and the chat goes on here;
   after, nothing is undone and the rest is told until it is answered. Its platform threads are re-pointed where their
   connect runs (connects/workspace.ts `route`, `connect.route`); what still comes here of it goes on there
-  (`movedTo`). A device naming it here is answered where it went (409 with `moved`, `GET /moved`, `chat-moved`).
+  (`movedTo`). A device naming it here is answered where it went (409 with `moved`, `GET /moved`, `chat-moved`),
+  only once that station showed it (store `goneTo`, then `shownThere`: told at `gone`, a device read it there before it
+  was there to be read and kept 「对话不存在」, the drill of 2026-11-14): until then it is read here as it went, held,
+  and what is taken here meanwhile goes after it (`caught`).
   Nothing is posted in it; its agent is told once (`moved_notes`).
 - Not here, by the owner's decision (2026-11-09): reading a chat from a copy while its station is away, signed heads, a
   lock entry for a replacement.

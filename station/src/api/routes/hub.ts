@@ -12,7 +12,7 @@ import type { Route, Tools } from "../admin.ts";
 import { tr } from "../../ops/i18n.ts";
 import { log } from "../../ops/log.ts";
 import { find as findMachineSession, roots as machineRoots } from "../../read/machine.ts";
-import { STILLFAIL_SURFACE } from "../../store/rows.ts";
+import { STILLFAIL_SURFACE, handedWs } from "../../store/rows.ts";
 import type { Attachment, Quote, SessionRow } from "../../store/rows.ts";
 import type { Store } from "../../store/store.ts";
 import type { AgentsParts } from "../../sessions/agents.ts";
@@ -256,7 +256,8 @@ class Moved extends Refused {
 function movedOf(s: Store, keys: readonly string[], r: Request): void {
   for (const key of keys) {
     const h = s.handedTo(key);
-    if (h === null) continue;
+    // (gone and not shown there yet, it is read here as it went: a device is pointed there once it is there to be read)
+    if (h === null || s.sessionWs(key)?.startsWith(handedWs("")) !== true) continue;
     throw new Moved(tr(r.lang, "station.move.movedThere"), { session: key, station: h.station, thread: h.thread, there: h.there });
   }
 }
@@ -480,7 +481,8 @@ export const routes = (tools: Tools): Route[] => {
         write((s) => {
           const after = param(r, "after") ?? "";
           const limit = Math.min(Math.max(Number(param(r, "limit") ?? 200) || 200, 1), 500);
-          const moved = s.handedChats(after, limit).filter((h) => (h.ws ?? null) === (r.viewer.workspace ?? null) || r.viewer.workspace === null || h.ws === null);
+          // (one gone and not shown there yet is not said: it is read here until it is)
+          const moved = s.handedChats(after, limit).filter((h) => ((h.ws ?? null) === (r.viewer.workspace ?? null) || r.viewer.workspace === null || h.ws === null) && s.sessionWs(h.session)?.startsWith(handedWs("")) === true);
           return ok({ moved: moved.map((h) => ({ session: h.session, station: h.station, thread: h.thread, there: h.there, at: h.at })) });
         }),
     },

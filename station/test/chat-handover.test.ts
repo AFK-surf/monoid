@@ -35,6 +35,9 @@ import { Rig, given, message, reply, testClock } from "./hub-fakes.ts";
 import { Admin } from "../src/api/admin.ts";
 import { newCtx } from "../src/store/handover.ts";
 import { claudeProject } from "../src/read/transcript.ts";
+import { Readers } from "../src/read/pool.ts";
+import { elsewhere } from "../src/api/seen.ts";
+import { RETRY_MS } from "../src/replica/retire.ts";
 import { hearLines } from "../src/ops/log.ts";
 import { WS, A, B, C, type Station, world, endTurn, stillfailChat, gitEnv, filesOf, entries, homeThread } from "./move-world.ts";
 
@@ -1293,6 +1296,102 @@ test("a station holding a retired copy of the chat (older log, same thread keys,
     assert.deepEqual(roomOf(b.rig.session(key).workspace), roomOf(room), "its files A's");
     const o = a.moves.handover.outOf(key)!;
     assert.equal(o.sentBytes, "what I am doing now".length, "what was in place not sent again");
+  }
+});
+
+/// What a device reads of chat `key`'s page on `st` (its thread `thread` there), through the station's readers as it
+/// serves them: the session, its timeline, the thread, its entries after the first; each answered or why not.
+async function pageReads(st: Station, key: string, thread: number): Promise<string[]> {
+  const viewer = { sub: "u", email: "p@x", name: "P", role: "owner", workspace: WS, device: "d", home: true } as Json;
+  const readers = new Readers(st.rig.dir, 1);
+  const out: string[] = [];
+  const one = async (what: string, path: string, op: string, args: Json) => {
+    const no = elsewhere(st.rig.store, path, viewer);
+    if (no !== null) return void out.push(`${what}: ${no}`);
+    out.push(await readers.read(op, args, "en").then(() => `${what}: ok`, (e: Error) => `${what}: ${e.message}`));
+  };
+  try {
+    await one("session", `/sessions/${key}`, "session", { key, viewer, lang: "en", turns: null, jobs: null });
+    await one("timeline", `/sessions/${key}/timeline`, "timeline", { key, before: undefined, limit: "50", lang: "en" });
+    await one("thread", `/threads/${thread}`, "thread", { id: String(thread), viewer, lang: "en" });
+    await one("entries", `/threads/${thread}/entries`, "entries", { viewer, thread, params: [["after", "1"], ["limit", "50"]] });
+  } finally {
+    await readers.close();
+  }
+  return out;
+}
+
+test("a device is told a chat moved only once the station it went to shows it: until then the station it left serves its page as it went and takes what is sent, which goes after it; told, the page there is read from the first ask (a fresh chat, over a retired copy, the station it left started again in between, the other not reached for a while)", async () => {
+  for (const how of ["fresh", "leftover", "a-restart", "b-down"] as const) {
+    const w = world();
+    const a = w.get(A);
+    const b = w.get(B);
+    const { key, thread } = await stillfailChat(a);
+    if (how === "leftover") retiredCopy(a, b, key);
+    const ok = ["session: ok", "timeline: ok", "thread: ok", "entries: ok"];
+    // Each time a device is told it moved: what a device reading it there would be answered then.
+    const told: string[] = [];
+    const viewer = { sub: "u", email: "p@x", name: "P", role: "owner", workspace: WS, device: "d", home: true } as Json;
+    const off = a.rig.store.subscribe((c) => {
+      if (c.type !== "moved" || c.key !== key) return;
+      const there = b.rig.store.homeChat(key)?.id ?? -1;
+      told.push(`${elsewhere(b.rig.store, `/sessions/${key}`, viewer) ?? "session seen"} | ${elsewhere(b.rig.store, `/threads/${there}/entries`, viewer) ?? "thread seen"}`);
+    });
+    // A message taken here as the show is on its way there, after the chat's rows last went: it goes after them.
+    let atShow = false;
+    w.tamper((to, r) => {
+      if (to === B && r.method === "handover.show" && !atShow) (atShow = true), say(a.rig.hub, thread, "p@x", "said as it was shown");
+      return r;
+    });
+    // The show held back: refused once (or the other not reached until let up).
+    a.onFail = (step) => {
+      if (step !== "show") return;
+      a.onFail = null;
+      if (how === "b-down" || how === "a-restart") b.up = false;
+      else throw new Error("the show held back");
+    };
+    const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: key });
+    await w.quiet();
+    assert.equal(out.failed, null, `${how}: ${JSON.stringify(out)}`);
+    // (a device told it moved reads it there at once: what that would be answered)
+    for (const t of told) assert.equal(t, "session seen | thread seen", `${how}: told it moved while there it is not to be read`);
+    assert.deepEqual(told, [], `${how}: no device told it moved before it is shown there`);
+    assert.equal(a.rig.store.handedTo(key)?.station, B, `${how}: where it went kept`);
+    assert.deepEqual(await pageReads(a, key, thread), ok, `${how}: its page here as it went`);
+    say(a.rig.hub, thread, "p@x", "said in between");
+    await w.quiet();
+    assert.equal(a.rig.claude.count(), 1, `${how}: no turn here`);
+    if (how === "a-restart") {
+      await a.moves.close();
+      a.moves = a.make();
+      await a.moves.start();
+      await w.quiet();
+      assert.deepEqual(told, [], `${how}: still not told`);
+      assert.notEqual(a.rig.hub.chatHeld(key), null, `${how}: still held here`);
+      assert.deepEqual(await pageReads(a, key, thread), ok, `${how}: its page here still`);
+      b.up = true;
+    }
+    if (how === "b-down") {
+      await w.t.adjust(RETRY_MS);
+      await w.quiet();
+      assert.deepEqual(told, [], `${how}: not told while it is not reached`);
+      assert.deepEqual(await pageReads(a, key, thread), ok, `${how}: its page here meanwhile`);
+      b.up = true;
+    }
+    await w.t.adjust(RETRY_MS * 4);
+    await w.quiet();
+    off();
+    assert.equal(told.length, 1, `${how}: told once: ${JSON.stringify(told)}`);
+    assert.equal(told[0], "session seen | thread seen", `${how}: read there from the first ask`);
+    const there = homeThread(b, key);
+    assert.deepEqual(await pageReads(b, key, there), ok, `${how}: its page there`);
+    assert.equal(entries(b, there).filter((e) => e === "person:said in between").length, 1, `${how}: what was sent in between there once`);
+    assert.ok(b.rig.claude.sessions.flatMap((x) => x.prompts).join("\n").includes("said in between"), `${how}: and handed to its agent there`);
+    assert.ok(atShow, how);
+    assert.equal(entries(b, there).filter((e) => e === "person:said as it was shown").length, 1, `${how}: what was taken as it was shown there once`);
+    assert.ok(b.rig.claude.sessions.flatMap((x) => [...x.prompts, ...x.steers]).join("\n").includes("said as it was shown"), `${how}: and handed to its agent there`);
+    assert.equal(a.rig.hub.chatHeld(key), null, `${how}: let go here`);
+    assert.equal(a.rig.claude.count(), 1, `${how}: never a turn here`);
   }
 });
 
