@@ -1502,9 +1502,10 @@ try {
       if (standing("B", k3) === "live") return;
       if (standing("A", k3) !== "live") throw new Error(`neither went nor stayed: ${standings(k3)}`);
       const why = failedWhy(l, `chats ${k3}`) || String(outOf(k3)?.error ?? "");
-      // (what to do, as the station says it in its language: station.move.restartedMidway / stoppedMidway / stoppedHeld,
-      // zh 「…再迁移一次」, en "…hand it over again")
-      if (!/再迁移一次|hand it over again/i.test(why)) throw new Error(`it stayed on A, but what the turn says does not say what to do: ${why || outcome(l)}`);
+      // (what to do, as the station says it in its language: a hand-over's own, station.move.restartedMidway /
+      // stoppedMidway / stoppedHeld, zh 「…再迁移一次」, en "…hand it over again"; or the turn's, a station restarted mid-move,
+      // zh 「…再发起一次即可继续」 (drill 23), en "…ask again to go on")
+      if (!/再迁移一次|再发起一次|hand it over again|ask again/i.test(why)) throw new Error(`it stayed on A, but what the turn says does not say what to do: ${why || outcome(l)}`);
     });
     if (k3 !== "") await endsWell("3f", k3);
     log("SKIP 3f: the station's own self-update waits for a move's turn (updates/holds.ts): not built, the harness's stations have autoUpdate off and no newer release to update to; only the launcher's handover (SIGUSR2) is reachable, above");
