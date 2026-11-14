@@ -75,6 +75,7 @@ export function moveView(plan: Plan, order: string[], stopped: { item: { module:
       stopped: last.stopped.map((x) => ({ item: named(x.item), waitsFor: named(x.waitsFor) })), resumed: last.resumed.map(named),
       failed: last.failed === null ? null : { item: last.failed.item === null ? null : named(last.failed.item), error: last.failed.error },
       ...((last.failures ?? []).length > 0 ? { failures: last.failures!.map((f) => ({ item: named(f.item), error: f.error })) } : {}),
+      ...((last.returned ?? []).length > 0 ? { returned: last.returned!.map(named) } : {}),
     },
   };
 }

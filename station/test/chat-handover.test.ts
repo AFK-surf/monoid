@@ -546,6 +546,39 @@ test("what the move page reads of a chat says where it is and where what it wait
   assert.ok(!("at" in toward.modules.find((m: Json) => m.id === "chats").items.find((x: Json) => x.id === atC.key)), "there, toward where it is");
 });
 
+test("what moves nothing is asked first, and what moved for an item that then did not go comes back: a chat in a turn (wait false) is refused before its login moves; a chat refused there has its login, moved for it, brought back in the same turn, said so", async () => {
+  const w = world();
+  const a = w.get(A);
+  const b = w.get(B);
+  a.rig.raw.profiles.push({ id: "solo", runtime: "claude", home: "homes/solo" });
+  const [key, t] = newSession(a.rig.hub, { runtime: "claude", profile: "solo", createdBy: "p@x" });
+  const account = `own:solo@${A}`;
+  const solo = (st: Station) => st.rig.raw.profiles.some((p: Json) => p.id === "solo");
+  // In a turn, not to be waited for: refused, its login not moved.
+  say(a.rig.hub, t.id, "p@x", "busy now");
+  await a.rig.quiet();
+  a.moves.wait = false;
+  const busy = await a.moves.scheduler.move(WS, B, { module: "chats", item: key, withNeeds: true });
+  assert.match(busy.refused.find((r) => r.item.id === key)?.why ?? "", /in a turn now/);
+  assert.deepEqual(busy.done, [], "nothing moved for it");
+  assert.ok(solo(a) && !solo(b), "its login here");
+  a.moves.wait = true;
+  await endTurn(a, key);
+  // Refused there once its login moved for it: the login comes back.
+  w.tamper((to, r) => {
+    if (to === B && r.method === "handover.begin") throw new Error("not taken there");
+    return r;
+  });
+  const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: key, withNeeds: true });
+  await w.quiet();
+  assert.deepEqual((out.failures ?? []).map((f) => f.item.id), [key], "the chat failed, named");
+  assert.deepEqual(out.returned, [{ module: "accounts", id: account }], "its login brought back, said so");
+  assert.deepEqual(out.done, [], "nothing left moved");
+  assert.ok(solo(a) && !solo(b), "its login here again");
+  assert.equal(a.rig.hub.chatHeld(key), null, "the chat goes on here");
+  assert.deepEqual(a.moves.scheduler.stopped(), []);
+});
+
 test("a chat held as what it needs moved away says so as its process ends, not that the station is in no workspace", async () => {
   const w = world();
   const a = w.get(A);
@@ -1052,7 +1085,7 @@ test("a chat in a turn, asked to move with wait false, is refused and goes on he
   assert.equal(a.rig.hub.busy(key), true);
   a.moves.wait = false;
   const out = await given(a.moves.scheduler.move(WS, B, { module: "chats", item: key }), "refused at once, its turn not waited for");
-  assert.match(out.failed?.error ?? "", /in a turn now/);
+  assert.match(out.refused.find((r) => r.item.id === key)?.why ?? "", /in a turn now/, "refused before anything moves");
   assert.equal(a.rig.hub.chatHeld(key), null, "not held");
   assert.equal(a.rig.store.handedTo(key), null);
 });

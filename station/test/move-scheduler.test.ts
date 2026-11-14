@@ -154,6 +154,17 @@ test("a whole move: everything in its needs' order, what cannot move listed with
   assert.deepEqual(ok.s.stopped(), []);
 });
 
+test("what moved only for an item that then did not go is brought back in the same turn, and the outcome says so", async () => {
+  const w = world({ fails: new Set(["c2"]) });
+  const out = await w.s.move("ws", "B", { module: "chats", item: "c2", withNeeds: true });
+  assert.deepEqual((out.failures ?? []).map((f) => f.item.id), ["c2"]);
+  assert.deepEqual(out.returned, [{ module: "accounts", id: "grok" }]);
+  assert.deepEqual(out.done, []);
+  assert.deepEqual(w.log, ["stop chats/c2", "move accounts/grok", "back accounts/grok", "resume chats/c2"]);
+  assert.equal((await w.s.plan("ws", "B")).items.find((x) => x.id === "grok")!.state, "here");
+  assert.deepEqual(w.s.stopped(), []);
+});
+
 test("modules may need each other; items may not: a chain of items needing each other round cannot move, named, and the plan still shows the rest", async () => {
   const log: string[] = [];
   const chats = fake("chats", ["connects"], [{ id: "c1", label: "c", needs: [{ module: "connects", id: "k1" }] }], log);

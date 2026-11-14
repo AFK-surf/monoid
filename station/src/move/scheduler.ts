@@ -22,11 +22,12 @@ export type Selection = { module?: string; item?: string; all?: boolean; withNee
 /// failure it stopped at.
 /// `failures`: each item whose move failed, with its words: the turn goes on past it, only what needs it not started
 /// (refused, naming it); `failed` the first of them.
-export type Outcome = { done: Need[]; refused: { item: Need; why: string }[]; stopped: { item: Need; waitsFor: Need }[]; resumed: Need[]; failed: { item: Need; error: string } | null; failures?: { item: Need; error: string }[] };
+/// `returned`: what moved only for an item that then did not go, brought back in the same turn.
+export type Outcome = { done: Need[]; refused: { item: Need; why: string }[]; stopped: { item: Need; waitsFor: Need }[]; resumed: Need[]; failed: { item: Need; error: string } | null; failures?: { item: Need; error: string }[]; returned?: Need[] };
 /// The last move or move back of a workspace's, as the app shows it (GET /move `last`): when it ended, who asked (a
 /// person's email; an agent's: its chat's session key), which way and with which station, and what came of it. A turn
 /// that could not begin (its plan refused) has `failed` with no item.
-export type Last = { at: number; by: string | null; how: "move" | "back"; station: string; stoppedBy?: string | null; done: Need[]; refused: { item: Need; why: string }[]; stopped: { item: Need; waitsFor: Need }[]; resumed: Need[]; failed: { item: Need | null; error: string } | null; failures?: { item: Need; error: string }[] };
+export type Last = { at: number; by: string | null; how: "move" | "back"; station: string; stoppedBy?: string | null; done: Need[]; refused: { item: Need; why: string }[]; stopped: { item: Need; waitsFor: Need }[]; resumed: Need[]; failed: { item: Need | null; error: string } | null; failures?: { item: Need; error: string }[]; returned?: Need[] };
 /// An item stopped here, kept: what it waits for, of which workspace.
 type Stopped = { item: Need; waitsFor: Waits; ws: string };
 
@@ -319,7 +320,16 @@ export class Scheduler {
       }
       wanted.set(k, p);
     };
-    for (const p of chosen) take(p);
+    // (an item refused by what moves nothing is refused before any need of it moves: nothing is moved for it)
+    const notReady = new Map<string, string>();
+    for (const p of chosen) {
+      const why = await this.#modules.get(p.module)!.ready?.(p, to);
+      if (typeof why === "string") notReady.set(named(p), why);
+    }
+    for (const p of chosen) {
+      if (notReady.has(named(p))) out.refused.push({ item: { module: p.module, id: p.id }, why: notReady.get(named(p))! });
+      else take(p);
+    }
     for (const k of refusedWhy.keys()) {
       const x = index.find({ module: k.slice(0, k.indexOf(" ")), id: k.slice(k.indexOf(" ") + 1) });
       if (x !== undefined) out.refused.push({ item: { module: x.module, id: x.id }, why: refusedWhy.get(k)! });
@@ -381,6 +391,33 @@ export class Scheduler {
       // (moved where its need is: no longer stopped here)
       if (this.#stopped.remove(p) !== undefined) unsaved = true;
       this.#d.changed?.();
+    }
+    // (what moved only for items of this turn that then did not go is brought back, in the same turn, and said so: a
+    // login moved for a chat that failed is not left on the other station)
+    {
+      const doneNow = new Set(out.done.map(named));
+      for (const x of [...out.done].reverse()) {
+        const p = find(x);
+        if (p === undefined || chosenNames.has(named(x))) continue;
+        const forWhom = index.needing(p).filter((y) => wanted.has(named(y)));
+        if (forWhom.length === 0 || forWhom.some((y) => doneNow.has(named(y)))) continue;
+        try {
+          await this.#modules.get(p.module)!.back(p, to);
+        } catch (e) {
+          fail(p, `it moved for ${forWhom.map(named).join(", ")}, which did not go, and could not be brought back: ${(e as Error).message}`);
+          continue;
+        }
+        out.done = out.done.filter((d) => !sameItem(d, x));
+        doneNow.delete(named(x));
+        out.returned = [...(out.returned ?? []), { module: x.module, id: x.id }];
+        // (what waited here for it goes on)
+        const waited = this.#stopped.waitingFor(p);
+        if (waited.length > 0) {
+          for (const s of waited) out.resumed.push(s.item);
+          await this.#letGo(waited, true);
+          out.stopped = out.stopped.filter((s) => !sameItem(s.waitsFor, x));
+        }
+      }
     }
     // (what follows what moved: the items of `follow` that need only what is there now)
     if (sel.follow !== undefined && out.done.length > 0) {

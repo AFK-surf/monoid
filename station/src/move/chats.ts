@@ -25,7 +25,7 @@ export const giveBack = () => new Promise<void>((resolve) => setImmediate(resolv
 export type ChatsDeps = {
   store: Store;
   handover: Handover;
-  hub: { holdChat(key: string, why: string, notice?: () => string): Promise<void>; releaseChat(key: string): boolean };
+  hub: { holdChat(key: string, why: string, notice?: () => string): Promise<void>; releaseChat(key: string): boolean; busy?(key: string): boolean };
   /// What people call station `id` (its id's start where the roster has no name).
   name?: (id: string) => string;
   /// Its jobs stopped and kept as one being handed over has them (jobs.ts `keep`), and started again here.
@@ -102,6 +102,12 @@ export function chatsModule(d: ChatsDeps): Module {
     },
     abandon() {
       d.handover.abandon();
+    },
+    async ready(item) {
+      // (one in a turn, not to be waited for: refused as its hand-over would refuse it, before anything moves for it)
+      if (d.wait?.() !== false) return null;
+      const busy = keysOf(item).find((k) => d.hub.busy?.(k) === true);
+      return busy === undefined ? null : `chat ${busy} is in a turn now: ask again when it ended, or with wait, which waits for it`;
     },
     async move(item, to, progress: (p: Progress) => void, opts) {
       await d.handover.handOver(item.id, to, { wait: d.wait?.() ?? true, progress, stoppedFor: opts?.stoppedFor });

@@ -564,3 +564,26 @@ test("a chat stopped by a move and archived by hand: a person's word to it is re
   assert.equal(a.rig.store.getSession(one.key)!.archivedAt, archived, "still archived");
   assert.equal(stationSaid(), said, "nothing said");
 });
+
+test("two chats on one login that cannot be shared, moved with what they need, one going and one failing: the login stays there for the one that went, which works there; the failed one stays here stopped waiting for it and says so when spoken to; nothing brought back", async () => {
+  const { a, b, quiet } = world([KIMI]);
+  signIn(a, "kimi", {});
+  const one = await chatOn(a, "kimi");
+  const two = await chatOn(a, "kimi");
+  const account = `own:kimi@${A}`;
+  const handle = b.bus.handle.bind(b.bus);
+  b.bus.handle = ((ws: string, peer: string, request: Json) => request?.method === "handover.begin" && Array.isArray(request.keys) && request.keys.includes(two.key) ? Promise.reject(new Error("not taken there")) : handle(ws, peer, request)) as typeof b.bus.handle;
+  const out = await a.moves.scheduler.move(WS, B, { module: "chats", withNeeds: true });
+  await quiet();
+  assert.deepEqual((out.failures ?? []).map((f) => f.item.id), [two.key], "the failed one named");
+  assert.deepEqual(out.returned ?? [], [], "nothing brought back: the one that went needs it");
+  assert.ok(out.done.some((d) => d.id === one.key) && out.done.some((d) => d.id === account), JSON.stringify(out.done));
+  assert.ok(b.rig.raw.profiles.some((p: Json) => p.id === "kimi") && !a.rig.raw.profiles.some((p: Json) => p.id === "kimi"), "the login there");
+  assert.equal(b.rig.store.getSession(one.key)?.ws, null, "the one that went is there");
+  assert.equal(b.rig.hub.chatHeld(one.key), null, "and works there");
+  assert.match(a.rig.hub.chatHeld(two.key) ?? "", /^stopped: /, "the failed one stopped here, waiting for its login");
+  const said = (a.rig.store.db.prepare("SELECT COUNT(*) AS n FROM entries WHERE thread = ? AND author_kind = 'ember'").get(two.thread) as { n: number }).n;
+  say(a.rig.hub, two.thread, "p@x", "and me?");
+  await quiet();
+  assert.equal((a.rig.store.db.prepare("SELECT COUNT(*) AS n FROM entries WHERE thread = ? AND author_kind = 'ember'").get(two.thread) as { n: number }).n, said + 1, "says so when spoken to");
+});

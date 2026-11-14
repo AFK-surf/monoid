@@ -65,6 +65,9 @@ export interface Module {
   /// The turn was asked to stop (scheduler `stopTurn`): the item under way gives up where it is not yet past its point
   /// of no return (undone as a failure there is), else completes. None: what is under way completes.
   abandon?(): void;
+  /// Why the item cannot go to `to` now by what moves nothing (it is in a turn and is not to be waited for, it is not
+  /// to go there as it is): asked before any of its needs moves for it (null: it may go). None: nothing to ask.
+  ready?(item: Item, to: string): Promise<string | null>;
   /// The item held here as its need moved away (`waitsFor`), and let go once it is back or the item moved; durable as
   /// the scheduler keeps it (scheduler.ts `stopped`). A module with nothing to hold has none.
   stop?(item: Item, waitsFor: Waits): Promise<void>;
