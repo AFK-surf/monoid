@@ -733,6 +733,7 @@ try {
             if (row?.state !== "stopped") throw new Error(`its row on A's page says ${row?.state} (${row?.stateText}), not stopped waiting for its account`);
             const read = [shown.stateText, shown.offlineNote, JSON.stringify(shown.connection), ...shown.outbox, ...texts(v).filter((t) => !t.startsWith("drill-"))].join(" | ");
             if (!/停|等|stopped|waits for|账号|登录|login|account/i.test(read)) throw new Error(`nothing on the chat's page tells the person it is stopped and what it waits for (only the move page's row says ${row?.stateText}): ${read.slice(0, 400)}`);
+            log(`  what tells the person: ${brief(read.split(" | ").find((x) => /停|等|stopped|waits for|账号|登录|login|account/i.test(x)), 400)}`);
           });
           await check("2: its account moved back: the chat goes on, what was said meanwhile answered once, its job on A, A's other chat answers too", async () => {
             const la = await moveBack(account.id, "B", "accounts");
@@ -834,6 +835,8 @@ try {
         const chatsM = m.modules.find((x: J) => x.id === "chats");
         const row = (chatsM?.items ?? []).find((x: J) => x.id === kc);
         log(`  A's page: its row ${brief(row)}; rows ${brief((chatsM?.items ?? []).map((x: J) => `${x.id.slice(-8)} ${x.state}`), 400)}`);
+        // (what the station's chats module reads for its state, move/chats.ts state: where it was handed, its hand-over out)
+        log(`  A's own: handed_over ${brief(sql("A", `select station from handed_over where session = ${lit(kc)}`))}; its hand-overs out ${brief(handovers("A", "out").filter((o) => (o.keys ?? []).includes(kc)).map((o) => ({ id: o.id, step: o.step, at: o.at })), 600)}`);
         if (row?.state !== "stopped") throw new Error(`its row on A's page says ${row?.state} (${row?.stateText}), not stopped`);
       });
       if (back) {
@@ -845,6 +848,7 @@ try {
           log(`  the chat as the device shows it: ${brief(shown, 900)}`);
           const read = [shown.stateText, shown.offlineNote, JSON.stringify(shown.connection), ...shown.outbox, ...texts(v).filter((t) => !t.startsWith("drill-"))].join(" | ");
           if (!/停|等|stopped|waits for|账号|登录|login|account/i.test(read)) throw new Error(`nothing on the chat's page says it is stopped and what it waits for: ${read.slice(0, 400)}`);
+          log(`  what tells the person: ${brief(read.split(" | ").find((x) => /停|等|stopped|waits for|账号|登录|login|account/i.test(x)), 400)}`);
         });
         await check("2k: its login moved back: the chat goes on, what was said meanwhile answered once, on A, from its context", async () => {
           const l = await moveBack(item, "B", "accounts");
@@ -858,7 +862,23 @@ try {
         });
       }
       await reset("2k").catch((e) => log(`  2k's end: ${String(e).slice(0, 300)}`));
+      // (A left as 2k found it: its chat archived, the sign-in taken out of A's config, else the pool gives new chats to
+      // the login with fewest, sessions/pool.ts pickProfile, and drill 10's 3n ran on it)
+      await a.until(chatT(kc), (v) => typeof v?.thread?.id === "number" && v, 30_000).then((v) => a.call("chat.archive", { station: A, session: kc, thread: v.thread.id, archived: true })).catch((e) => log(`  2k's chat not archived: ${String(e).slice(0, 200)}`));
     }
+    await check("2k: end: A as 2k found it (the Kimi sign-in taken out of its config)", async () => {
+      stationDo("halt", "station");
+      try {
+        const cfgPath = `${DATA.A}/config.json`;
+        const cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
+        cfg.profiles = (cfg.profiles ?? []).filter((p: J) => p.id !== kimi);
+        writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+        log(`  A's profiles ${brief(cfg.profiles.map((p: J) => p.id))}; B's ${brief((JSON.parse(readFileSync(`${DATA.B}/config.json`, "utf8")).profiles ?? []).map((p: J) => p.id))}`);
+      } finally {
+        await up("A");
+        await a.stationState(ws, (s) => s.state === "online", 120_000, aId);
+      }
+    });
   }
 
   // ── 3: faults ──
@@ -1008,6 +1028,8 @@ try {
   if (part("3e") && (limit("3e", 900), await clean("3e"))) {
     const dmg = `${WORK}/drill-small.dmg`;
     let mounted = false;
+    /// The logins moved to C with a chat's needs (its chat refused or not): brought back each before C goes.
+    const toC = new Set<string>();
     try {
       let key = "";
       let freeBefore = 0;
@@ -1016,7 +1038,9 @@ try {
         C = `${ws}/${cId}`;
         stationDo("second-stop", "third");
         rmSync(dmg, { force: true });
-        sh("hdiutil", ["create", "-quiet", "-size", "120m", "-fs", "APFS", "-volname", "drillsmall", dmg]);
+        // (a station keeps 1 GB free past what a chat takes, replica/retire.ts HEADROOM, handover.ts's `need`: C has room for a
+        // small chat and not for a big one; drill 10's 120 MB took none)
+        sh("hdiutil", ["create", "-quiet", "-size", "1600m", "-fs", "APFS", "-volname", "drillsmall", dmg]);
         const orig = `${DATA.C}.orig`;
         rmSync(orig, { recursive: true, force: true });
         sh("mv", [DATA.C, orig]);
@@ -1033,10 +1057,11 @@ try {
       });
       if (cId !== "" && mounted) {
         await check("3e: a chat larger than C's free room: refused before it is held, saying what to do, or failed with the chat working on A and C clean", async () => {
-          key = await faultChat("f3e", Math.ceil(freeBefore / 1024 / 1024) + 60, 300);
+          key = await faultChat("f3e", Math.ceil((freeBefore - 1024 * 1048576) / 1048576) + 60, 300);
           const t0 = Date.now();
           await a.call("move.start", { station: A, to: cId, module: "chats", item: key, withNeeds: true });
           const l = await turnEnds("A", t0);
+          for (const d of l.done ?? []) if (d.module === "accounts") toC.add(d.id);
           const o = outOf(key);
           const why = l.failed?.error ?? (l.refused ?? []).map((r: J) => r.why).join(" | ");
           log(`  ${outcome(l)}; its hand-over ${o?.step} held=${o?.held}`);
@@ -1059,6 +1084,7 @@ try {
         await check("3e: C still works after: a small chat moved to C answers there, and comes back", async () => {
           const small = await newChat(`f3e-small-${tag}`);
           const l = await moveChat(small, "C");
+          for (const d of l.done ?? []) if (d.module === "accounts") toC.add(d.id);
           if (standing("C", small) !== "live") throw new Error(`${standings(small)}; ${outcome(l)}`);
           const said = await say(small, `drill-note:f3e-small-${tag}`, `drill-noted f3e-small-${tag}`);
           if (at(/cwd=(\S+)/.exec(said)?.[1] ?? "") !== "C") throw new Error(said);
@@ -1071,6 +1097,17 @@ try {
       if (cId !== "") {
         const t0 = Date.now();
         await a.call("move.back", { station: A, from: cId, all: true }).then(() => turnEnds("A", t0, 120_000)).then((l) => log(`  what moved to C brought back: ${outcome(l)}`), (e) => log(`  what moved to C not brought back: ${String(e).slice(0, 300)}`));
+        // (全部迁回 stops at its first item that fails, a chat whose move to C failed among them (move/scheduler.ts
+        // `#back`): each login brought back alone then, or it is lost with C, drill 10)
+        // (a login shared as it moved is named `share:…` after its move, accounts.ts: what A's page to C says is there)
+        const thereOnC = await a.until({ topic: "stationMove", station: A, to: cId, module: "accounts" }, (v) => v?.modules && v, 30_000)
+          .then((v) => (v.modules.find((m: J) => m.id === "accounts")?.items ?? []).filter((x: J) => x.state === "there" || x.state === "failed").map((x: J) => x.id as string), () => [] as string[]);
+        log(`  logins moved to C: ${[...toC].join(", ") || "none"}; A's page to C says there: ${thereOnC.join(", ") || "none"}`);
+        for (const id of new Set([...thereOnC, ...toC])) {
+          const have = (JSON.parse(readFileSync(`${DATA.A}/config.json`, "utf8")).profiles ?? []).map((p: J) => brief(p.share ?? p.id));
+          const t1 = Date.now();
+          await a.call("move.back", { station: A, from: cId, module: "accounts", item: id }).then(() => turnEnds("A", t1, 120_000)).then((l) => log(`  ${id} back from C: ${outcome(l)}; A's profiles were ${have.join(", ")}`), (e) => log(`  ${id} not back from C: ${String(e).slice(0, 300)}`));
+        }
       }
       try {
         if (cId !== "") stationDo("second-stop", "third");
