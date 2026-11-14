@@ -27,13 +27,20 @@ chats paused 18 minutes, a half-moved state, no way back), whose start stays swi
   first, arriving stopped, then the item. Modules may need each other (chats and connects do); items may not: a chain
   of items needing each other round is refused, named.
 - The modules: `accounts` (needs none: a login, by the share, key or own profile it is known by across the workspace
-  now, moved by share/index.ts `moveProfile`; this machine's own never; one not shared whose login can be
-  (`shareRefusal`) is shared as it moves, with the two stations alone, so this station borrows it after and nothing here
-  stops (the lead, 2026-11-14: a drill's one login carried 396 chats), that share undone as it comes back unless a person
-  opened it to another station meanwhile (`accounts-shared.json`); one that cannot be (SuperGrok, Cursor, Devin,
-  Antigravity, a Kimi sign-in) is gone from here and stops what needs it; what each was known by kept as it moves away,
-  `accounts-known.json`; there once the other hosts it: one it only borrows is here, this station's still, and usable
-  there, `usableThere`), `chats` (needs accounts, connects, repos, vault: one chat by
+  now; this machine's own never. One that can be shared (`shareRefusal`), taken only because what moves needs it, is
+  lent, not moved (the owner, 2026-11-15: its host never leaves, so nothing of it is stranded on a station that dies or
+  leaves the workspace): shared with the station it goes to (with the two alone where it was not shared; that one added
+  where it is shared with others), told to it directly and answered once its copy is there (share/index.ts `lendTo`,
+  `share.borrow`), before what needs it goes; kept as lent for those items (`accounts-lent.json`) and taken back by this
+  station alone when the last of them is here again (a move back, a failure, an arrival by any route), the other told
+  then or once it is heard from; the plan and the page say it is here and usable there (`lentTo`), a turn what it lent
+  (`lent`). Asked for by name, or in a whole move, its host moves (share/index.ts `moveProfile`), after what needs it:
+  one not shared, shared as it moves with the two stations alone, that share undone as it comes home by any route
+  unless a person opened it to another station meanwhile (`accounts-shared.json`). One that cannot be shared
+  (SuperGrok, Cursor, Devin, Antigravity, a Kimi sign-in) moves as it is, gone from here, what needs it stopped first.
+  What each was known by is kept as it moves away (`accounts-known.json`); one that is no profile here and the other
+  does not have either is no item and no need of anything: its chats go as chats whose account is missing. There once
+  the other hosts it: one it only borrows is here, this station's still, and usable there, `usableThere`), `chats` (needs accounts, connects, repos, vault: one chat by
   `station/src/replica/handover.ts`, its files a mirror by difference: the station it goes to says what it has in
   place, what differs is sent, what the lists no longer name is removed there, in its room alone), `jobs` (needs
   chats: started there once its chat is there; one chat moved by the tool or the app moves its jobs right after, and
@@ -57,7 +64,18 @@ chats paused 18 minutes, a half-moved state, no way back), whose start stays swi
   its size, a file only its owner reads) stays there, as it does for every station.
 - What the app shows is `GET /move?to=` (routes.ts: the modules in order with their needs, done of total, how many cannot move (`cannot`), a page of
   items each, and `last`, the workspace's last turn and what came of it, kept in `last.json`), told changed as `move`
-  on the event stream. People move with `POST /move` and `POST /move/back` (owners and admins; 202, the scheduler's
+  on the event stream (a burst told once in 500 ms, live.ts). A turn under way reads as moving until its end is told
+  (the item it is at, scheduler `current`). A plan made to be shown (`planShown`: this page, station_move plan and
+  status) takes the other station's answers to its read-only questions kept for the turn under way toward it; the
+  turn's own plan and steps ask as ever; dropped as the turn ends.
+- A plan never guesses what the other station has: a question of it not answered (`move.accounts`,
+  `move.chats.live`, `move.repo.have`, `move.setting.values`) makes what it asks of unable to go this turn, said so
+  (ask again), logged with what it failed with; with no station named it asks nothing. What needs an item that cannot go
+  is refused in that item's own words, nothing of it tried. In a turn, a station found gone (its connection gone and
+  dialed anew in vain, or no answer in time) is asked nothing more till the turn ends: every later step fails at once,
+  in the station's words. What a move says to people is the catalog's (`station.move.*`), naming things as people
+  call them, never by id.
+- People move with `POST /move` and `POST /move/back` (owners and admins; 202, the scheduler's
   turn going on; one turn at a time, an agent's and a person's alike: a second while one runs is 409). No card there:
   the press in the app is the confirmation.
 - Moving is switched on per machine (config.json `move: true`, off unless set; not one of the settings that move), and
