@@ -616,6 +616,15 @@ try {
     log(`  B ${bId}`);
   });
   if (bId === "") throw new Error("no B: nothing to move to");
+  // (no agent-home module since c5e5ba9ce: main keeps the agents' memory and skills the same on every station of a
+  // workspace by itself (#6206), so the skill is on B with no move at all)
+  await check("setup: the skill in A's agent home is on B by the workspace's own sharing, within 30 s of B enrolled, with no move", async () => {
+    const t0 = Date.now();
+    const at = `${DATA.B}/agent/skills/drill-skill/SKILL.md`;
+    log("  waiting for the skill on B");
+    await whenChanged([DATA.B], () => existsSync(at) && readFileSync(at, "utf8").includes(tag), 30_000, () => `not on B: B's agent/skills ${existsSync(`${DATA.B}/agent/skills`) ? readdirSync(`${DATA.B}/agent/skills`).join(", ") : "none"}; B's agent ${existsSync(`${DATA.B}/agent`) ? readdirSync(`${DATA.B}/agent`).join(", ") : "none"}`);
+    log(`  on B after ${((Date.now() - t0) / 1000).toFixed(1)} s`);
+  });
   steps.A = new Steps("A");
 
   // ── 1: the page's data ──
@@ -1564,7 +1573,7 @@ try {
         if (onB > 0) throw new Error(`B still shows ${onB} chats`);
         const cfg = JSON.parse(readFileSync(`${DATA.B}/config.json`, "utf8"));
         if (cfg.maxNudges !== undefined) throw new Error(`B kept the setting it was given: maxNudges ${cfg.maxNudges}`);
-        if (existsSync(`${DATA.B}/agent/skills/drill-skill`)) throw new Error("B kept the skill it was given");
+        // (the skill stays on B: the workspace's skills are every station's, no move's to take back)
         if (sql("B", "select count(*) n from vault_plain")[0].n > 0) throw new Error("B kept the vault item it was given");
       });
     }
