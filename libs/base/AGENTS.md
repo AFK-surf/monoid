@@ -12,12 +12,14 @@ of its workspace (`moon.work`); `effect` stays in mbui.
   and browser APIs), and `Shell::stood_in` for deterministic tests.
 - `src/wire`: pure stream framing and event-stream parsing (`lines`, request/reply heads, SSE text) with no transport.
 - `src/mesh`: the device side of the mesh on top of `shell` and `wire` (endpoints, scoped peer links, hello/pings/renewal,
-  requests/streams/duplex, health racing in `health.mbt`, and wake/rebind in `wake.mbt`).
+  requests/streams/duplex, health racing in `health.mbt`, wake/rebind in `wake.mbt`, and what the endpoint is bound
+  with, relays told again and connections peers dial to it in `bind.mbt`).
 
 ## It knows no program
 
 - Not still.fail's app, station or cloud, and not any specific application. Everything program-specific is passed in via
-  `Options`, `Mesh::link` (`scope`), `Mesh::drop_link` (`reason`), and `Shell::start`.
+  `Options` (`Binding`: lookup, protocols taken, relay entries the program worked out), `Mesh::link` (`scope`),
+  `Mesh::drop_link` (`reason`), and `Shell::start`.
 - `scripts/mb-base.ts` (`scripts/check.sh`) enforces that packages import only their own packages, `mbui/effect`, and
   MoonBit's core, and that no line under `src/` names `still.fail` or application-specific vocabulary (`member`,
   `conversation`, `im`). Legacy exceptions in `NAMED` (`sf_shell_start`, etc.) may only shrink; never add a name chosen
@@ -49,6 +51,10 @@ of its workspace (`moon.work`); `effect` stays in mbui.
   `TooLong`). What is longer is read as it comes (`Reply::take`, a duplex's reply, `Inbound::take`), keeping none: a
   reader that stops asking holds its peer back by the transport's own window, and a body told of (`Link::request`'s
   `wrote`) has one step of 64 KiB waiting at most.
+- A connection a peer dials to the endpoint (`Mesh::incoming`, only where `Binding.takes` names a protocol) is never a
+  link: no credential, ping or `links` entry knows it. The mesh keeps one the shell brought that no asker took yet;
+  its first line is held to `first_ms` (30 s) and 64 KiB (`Incoming::first`). How long a taken one stays and how
+  many at once are its program's to bound; while one is open the endpoint is not bound anew.
 - The device's key file is its user's alone whatever the umask, by the Rust shell's doing alone
   (`client/shell/src/lib.rs` `create_private`): a program linked to a shell from before keeps its key as its umask has
   it. `shell.c` has been compiled and run on macOS on arm64 alone.
@@ -65,7 +71,10 @@ left is another part's:
   TypeScript too, which holds them the same. An endpoint bound anew (`Mesh::rebind`) leaves one such entry each
   time, and that is no rare time: every dial that runs out of time unconnected leaves the endpoint taken for
   stuck, so a peer that does not answer, asked for again and again, binds it anew at each try (5 s apart at the
-  soonest), as in the device base in TypeScript.
+  soonest), as in the device base in TypeScript. The same each time its relays are told again (`Mesh::retune`).
+- Natively the Rust shell takes every connection dialled to an endpoint that takes a protocol once `iroh.accept` is
+  first asked, queueing those nobody asked for with no bound (`client/shell/src/lib.rs`, `Accepted`); the mesh asks
+  one at a time. That shell's to bound. A page's shell has no `iroh.accept` (`Mesh::incoming` fails there).
 - A write given up lets go of its stream: that is the mesh's intent (`Out::write` resets it), and both shells' only
   once that write moves. `istream.write` holds the sending half while it writes, and `istream.reset` waits for it
   (`client/shell/src/lib.rs`, `client/iroh-wasm/src/lib.rs`): given up because the peer is not reading, the write
@@ -101,5 +110,11 @@ left is another part's:
     (`Mesh::ping`, `Mesh::race`) or stream opens/accepts (`Link::stream`, `Link::accept`) run in the mesh's own fibers.
   - `Mesh::rebind` only rebinds the endpoint when `Mesh::idle` reports nothing active on it; callers never cache the
     endpoint handle across waits.
+  - `Mesh::retune` onto other relays lets go of every link first, as `drop_link` does (peers told the caller's
+    reason), then binds once their ends are told; it never closes the endpoint under live links. A failed bind
+    leaves the links gone and the old relays kept until a dial finds the endpoint idle. Entries alone
+    (`iroh.setRelayEntries`) are told one telling at a time, never rebinding.
+  - The wait for `iroh.accept` outlives an endpoint: it is let go of in the step the endpoint changes
+    (`Mesh::forget_coming`), and its fiber and asker both check it is still the one kept before taking its answer.
   - Native device keys written by the Rust shell are `0600` (`create_private`), and `shell.c` requires POSIX (`pthread`,
     `arc4random_buf`, glibc >= 2.36 on Linux).
