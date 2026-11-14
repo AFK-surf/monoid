@@ -2167,6 +2167,72 @@ test("a chat that comes back is started with the transcript of what was said whe
   }
 });
 
+test("the other station's answers to a plan's questions kept for a turn toward it, for the page alone: read twice in a turn, each asked once; the turn asks as ever; after its end asked anew; one not answered asked again", async () => {
+  const w = world();
+  const a = w.get(A);
+  const b = w.get(B);
+  const { key } = await stillfailChat(a);
+  // (a second chat here throughout: what the plan asks of B is of the chats here, and one handed away is asked of no more)
+  const second = await stillfailChat(a);
+  // (what B is asked, by request)
+  const asked = new Map<string, number>();
+  const handle = b.bus.handle.bind(b.bus);
+  let losing = false;
+  b.bus.handle = ((ws: string, peer: string, r: Json) => {
+    if (typeof r?.method === "string" && r.method.startsWith("move.") && r.method !== "move.open") asked.set(r.method, (asked.get(r.method) ?? 0) + 1);
+    if (losing && r?.method === "move.chats.live") {
+      losing = false;
+      return Promise.reject(new Error("the station was not reached"));
+    }
+    return handle(ws, peer, r);
+  }) as typeof b.bus.handle;
+  const live = () => asked.get("move.chats.live") ?? 0;
+  // (a turn held as the chat's files are placed there)
+  const placing = Promise.withResolvers<void>();
+  const reached = Promise.withResolvers<void>();
+  b.placing = async () => {
+    reached.resolve();
+    await placing.promise;
+  };
+  const turn = a.moves.scheduler.move(WS, B, { module: "chats", item: key });
+  await reached.promise;
+  const byTurn = live();
+  assert.ok(byTurn >= 1, "the turn asked as ever");
+  await a.moves.scheduler.planShown(WS, B);
+  await a.moves.scheduler.planShown(WS, B);
+  assert.equal(live(), byTurn + 1, "two page reads in a turn: asked once");
+  // (one not answered is not kept: asked again at the next read)
+  w.tamper(null);
+  const fresh = new Map(asked);
+  await a.moves.scheduler.plan(WS, B);
+  assert.equal(live(), (fresh.get("move.chats.live") ?? 0) + 1, "the turn's own plan asks, never a kept answer");
+  b.placing = undefined;
+  placing.resolve();
+  assert.equal((await turn).failed, null);
+  await w.quiet();
+  const after = live();
+  await a.moves.scheduler.planShown(WS, B);
+  assert.equal(live(), after + 1, "after the turn's end asked anew");
+  // (not answered in a turn: asked again at the next read)
+  const gate = Promise.withResolvers<void>();
+  const at = Promise.withResolvers<void>();
+  b.placing = async () => {
+    at.resolve();
+    await gate.promise;
+  };
+  const turn2 = a.moves.scheduler.move(WS, B, { module: "chats", item: second.key });
+  await at.promise;
+  losing = true;
+  const before = live();
+  await a.moves.scheduler.planShown(WS, B);
+  await a.moves.scheduler.planShown(WS, B);
+  assert.equal(live(), before + 2, "the one not answered not kept: asked again");
+  b.placing = undefined;
+  gate.resolve();
+  await turn2;
+  await w.quiet();
+});
+
 test("a plan with no station named (the station page's own row) asks nothing of anyone and says nothing of the other side", async () => {
   const w = world();
   const a = w.get(A);

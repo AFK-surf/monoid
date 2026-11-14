@@ -119,7 +119,7 @@ export class MoveAsks {
       case "plan":
       case "status": {
         const to = args.to === undefined && args.action === "status" ? null : this.#station(ws, args.to);
-        const plan = await this.#d.scheduler.plan(ws, to?.id ?? "");
+        const plan = await this.#d.scheduler.planShown(ws, to?.id ?? "");
         return { plan: brief(plan), stopped: this.#d.scheduler.stopped(), say: planWords(plan, to?.name ?? "", args.action === "status") };
       }
       case "move": {

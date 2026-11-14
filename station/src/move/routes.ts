@@ -164,7 +164,7 @@ export function moveRoutes(d: MoveRoutesDeps): Route[] {
         const to = given === "" ? "" : (d.station(ws, given)?.id ?? null);
         if (to === null) return error(400, tr(r.lang, "station.move.noStation", { station: given }));
         try {
-          const plan = await d.scheduler.plan(ws, to);
+          const plan = await d.scheduler.planShown(ws, to);
           const limit = Number(param(r, "limit") ?? MOVE_PAGE);
           return ok(moveView(plan, d.order(), d.scheduler.stopped(), { module: param(r, "module") ?? undefined, after: param(r, "after") ?? undefined, limit: Number.isFinite(limit) ? limit : MOVE_PAGE }, d.scheduler.last(ws), d.scheduler.stopping(), (id) => d.name?.(ws, id) ?? id.slice(0, 12), d.scheduler.current()));
         } catch (e) {

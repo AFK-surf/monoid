@@ -53,6 +53,9 @@ export type SchedulerDeps = {
   reads?: (ws: string) => PlanReads;
   /// Told as a turn with `station` begins (true) and as it ends (false).
   turn?: (on: boolean, station: string) => void;
+  /// Runs a plan made to be shown (a page's, an agent's read), not one a turn decides by: the other station's answers it
+  /// asks may be the ones kept for the turn under way toward it (move/station.ts `#ask`).
+  shown?: <T>(f: () => Promise<T>) => Promise<T>;
 };
 
 const stoppedFile = (data: string) => join(data, "move", "stopped.json");
@@ -190,6 +193,11 @@ export class Scheduler {
   }
 
   /// What a move of `ws` to `to` would be: every module's items, where each stands, what each would stop.
+  /// The plan as a page or an agent reads it (`shown`): never what a turn decides by.
+  planShown(ws: string, to: string): Promise<Plan> {
+    return this.#d.shown !== undefined ? this.#d.shown(() => this.plan(ws, to)) : this.plan(ws, to);
+  }
+
   async plan(ws: string, to: string): Promise<Plan> {
     const items: Item[] = [];
     const reads = this.#d.reads?.(ws);
