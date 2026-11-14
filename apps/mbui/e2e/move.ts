@@ -127,25 +127,6 @@ function handovers(n: Name, side: "out" | "in"): J[] {
   }
   return out;
 }
-/// What station `n`'s move page toward `to` says of item `key` word for word, as the station answered alice's device
-/// (its page read now; the device keeps each answer, device.ts `answers/`): the item's own JSON, else what was read.
-async function rawItem(n: Name, to: Name, key: string): Promise<string> {
-  await a.until({ topic: "stationMove", station: n === "A" ? A : B, to: idOf(to), module: "chats" }, (v) => v?.modules && v, 30_000).catch(() => null);
-  const f = join(dir, a.name, "answers", `${idOf(n).slice(0, 8)}.move-${idOf(to).slice(0, 8)}-chats.txt`);
-  if (!existsSync(f)) return `(no answer of ${n}'s page toward ${to} kept)`;
-  const raw = readFileSync(f, "utf8");
-  // (the item's id where it is a value, however the answer is spaced or escaped)
-  const m = new RegExp(`\\\\?"id\\\\?"\\s*:\\s*\\\\?"${key}`).exec(raw);
-  const i = m?.index ?? -1;
-  if (i < 0) return `(${raw.split("\n")[0]}: no item ${key} in it; ${raw.length} bytes)`;
-  let start = raw.lastIndexOf("{", i);
-  let depth = 0;
-  for (let j = start; j < raw.length; j++) {
-    if (raw[j] === "{") depth++;
-    else if (raw[j] === "}" && --depth === 0) return `${raw.split("\n")[0].slice(0, 30)} ${raw.slice(start, j + 1)}`;
-  }
-  return raw.slice(start, start + 600);
-}
 /// Both stations' log lines of the second around `at` (their launchers' logs).
 const logsAround = (at: number) => {
   const from = new Date(at - 1000).toISOString(), to = new Date(at + 1000).toISOString();
@@ -1074,7 +1055,7 @@ try {
             moved = true;
             log(`  the login alone to B: ${outcome(lo)}; its turn's stopped ${brief(lo?.stopped ?? null, 600)}; ${standings(kd)}; stopped ${stoppedOf(kd)}`);
             // (the facts at that moment, for the station's side: no verdict of them)
-            log(`  2k's second chat as the login left, its facts: A's stopped.json ${existsSync(`${DATA.A}/move/stopped.json`) ? readFileSync(`${DATA.A}/move/stopped.json`, "utf8").slice(0, 1200) : "none"}\n    ${heldOf2(kd)}\n    the first chat: ${heldOf2(kc)}\n    A's page toward B, as A answered it, the second chat: ${await rawItem("A", "B", kd)}\n    the first chat: ${await rawItem("A", "B", kc)}\n    A's runtime sessions of both: ${brief(sql("A", `select session_key, profile, id from runtime_sessions where session_key in (${lit(kd)}, ${lit(kc)})`))}\n    the stations' logs around it:\n    ${logsAround(Date.now() - 1500)}`);
+            log(`  2k's second chat as the login left, its facts: A's stopped.json ${existsSync(`${DATA.A}/move/stopped.json`) ? readFileSync(`${DATA.A}/move/stopped.json`, "utf8").slice(0, 1200) : "none"}\n    ${heldOf2(kd)}\n    the first chat: ${heldOf2(kc)}\n    A's runtime sessions of both: ${brief(sql("A", `select session_key, profile, id from runtime_sessions where session_key in (${lit(kd)}, ${lit(kc)})`))}\n    the stations' logs around it:\n    ${logsAround(Date.now() - 1500)}`);
             if (stoppedOf(kd) === null) throw new Error(`not stopped on A as its login left: ${standings(kd)}`);
             const m = await atRest("2k");
             const row = await rowSettled("2k", m, kd, (r) => r?.state === "stopped" && r?.action === "move");
@@ -1098,7 +1079,7 @@ try {
             const rowAfter = await rowSettled("2k", after, kd, (r) => r?.state === "there");
             log(`  A's page after: its row ${brief(rowAfter)}`);
             // (the facts at that moment, for the station's side: no verdict of them)
-            log(`  2k's second chat, its facts: A's stopped.json ${existsSync(`${DATA.A}/move/stopped.json`) ? readFileSync(`${DATA.A}/move/stopped.json`, "utf8").slice(0, 800) : "none"}\n    ${heldOf2(kd)}\n    A's page toward B, as A answered it: ${await rawItem("A", "B", kd)}`);
+            log(`  2k's second chat, its facts: A's stopped.json ${existsSync(`${DATA.A}/move/stopped.json`) ? readFileSync(`${DATA.A}/move/stopped.json`, "utf8").slice(0, 800) : "none"}\n    ${heldOf2(kd)}`);
             if (rowAfter?.state !== "there") throw new Error(`its row on A's page reads ${rowAfter?.state}, not there`);
           });
         } finally {
@@ -1380,7 +1361,7 @@ try {
         const readAt = Date.now();
         log(`  its row ${brief(row)}`);
         // (the facts at that moment, for the station's side: no verdict of them)
-        log(`  6b's facts: ${heldOf2(kl)}\n    the seed's set-aside: ${existsSync(`${keep}.out`) ? readdirSync(`${keep}.out`).join(", ") : "none"}\n    A's page toward B, as A answered it: ${await rawItem("A", "B", kl)}\n    B's page toward A, as B answered it: ${await rawItem("B", "A", kl)}\n    A's plans asking B which chats are live, the last three: ${(existsSync(`${RUN}/station.log`) ? readFileSync(`${RUN}/station.log`, "utf8").split("\n").filter((l) => l.includes("asked which chats are live")).slice(-3) : []).join("\n      ") || "none"}\n    the stations' logs around the read:\n    ${logsAround(readAt)}`);
+        log(`  6b's facts: ${heldOf2(kl)}\n    the seed's set-aside: ${existsSync(`${keep}.out`) ? readdirSync(`${keep}.out`).join(", ") : "none"}\n    A's plans asking B which chats are live, the last three: ${(existsSync(`${RUN}/station.log`) ? readFileSync(`${RUN}/station.log`, "utf8").split("\n").filter((l) => l.includes("asked which chats are live")).slice(-3) : []).join("\n      ") || "none"}\n    the stations' logs around the read:\n    ${logsAround(readAt)}`);
         if (row?.state !== "cannot" || String(row?.note ?? "").trim() === "") throw new Error(`its row ${brief(row)}: not one that cannot move, with words`);
       });
       await check("6b: a move asked anyway is refused, nothing of B changed", async () => {

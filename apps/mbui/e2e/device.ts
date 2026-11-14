@@ -193,11 +193,6 @@ if (process.argv[2] === "device") {
   watchRequests((station, method, path, status, ms) => {
     appendFileSync(record, `asked: ${new Date().toISOString().slice(11, 23)} ${station.slice(0, 8)} ${method} ${path} -> answered${status !== "" && status !== "-" ? ` ${status}` : ""} in ${ms} ms\n`);
     if (process.connected) process.send!({ answered: { station, method, path } });
-  }, (path) => path.startsWith("/admin/api/move?"), (station, path, raw) => {
-    // (each station's move page as it answered last, by the station and what was asked: `answers/<station>.move.txt`)
-    mkdirSync(join(data, "answers"), { recursive: true });
-    const q = new URL(`http://x${path}`).searchParams;
-    writeFileSync(join(data, "answers", `${station.slice(0, 8)}.move-${(q.get("to") ?? "").slice(0, 8) || "none"}-${q.get("module") || "all"}.txt`), `${new Date().toISOString()} ${path}\n${raw}`);
   });
   // (how long this process's own loop was held, where over a second: drill 24 saw a turn's end minutes late and could not
   // tell whose loop it was)
