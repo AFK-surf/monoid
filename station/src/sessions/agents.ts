@@ -347,7 +347,8 @@ export const AgentsLive = (control: Control) =>
           return page ? `${page}?service=${encode(job)}` : null;
         },
       });
-      const remote = new Remote({ data, store, jobs, notify: (session, text) => hub.notify(session, text), places: hub.places, bus: yield* Peers });
+      const meshBus = yield* Peers;
+      const remote = new Remote({ data, store, jobs, notify: (session, text) => hub.notify(session, text), places: hub.places, bus: meshBus });
       // Its sandboxes (config.json's `sandboxes`): targets of station_task whose tasks run there as this station's jobs.
       remote.setSandboxes(() => sandboxesOf(config.raw()));
       jobs.setSandboxes((name) => sandboxesOf(config.raw()).find((s) => s.name === name) ?? null);
@@ -609,6 +610,7 @@ export const AgentsLive = (control: Control) =>
         profileChanged: (id, reset) => accounts.sharedChanged(id, reset),
         quotaReset: (id) => accounts.sharedQuotaReset(id),
         profileGone: (id) => hub.profileGone(id),
+        itself: (station) => meshBus.cameHere(station),
       });
       remote.setShares((peer, request, workspace) => sharing!.handle(peer, request, workspace));
       sharing.start();

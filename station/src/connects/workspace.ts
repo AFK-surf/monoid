@@ -119,9 +119,17 @@ export class WorkspaceConnects {
 
   // ── on the station a chat runs on ────────────────────────────────────────────────────────────────────────────
 
-  /// An event of a connect of another station's for a chat here.
+  /// An event of a connect of another station's for a chat here; or one kept on a station retired for one of its
+  /// connects that moved here since (`kept`), taken as this station's connect's own (`moveAll`).
   private async taken(peer: string, request: Json, workspace: string | undefined): Promise<Json> {
     const known = knownIn(request?.connect);
+    if (request?.kept === true) {
+      const id = known === null ? "" : localOf(known, this.d.here());
+      const entry = this.entryOf(id);
+      if (known === null || typeof workspace !== "string" || entry === undefined || this.workspaceOf(entry) !== workspace || !this.inWorkspace(workspace, peer)) throw new Error("no such connect");
+      await this.receive(id, request.event as ChatEvent);
+      return { ok: true };
+    }
     const d: Described | undefined = request?.described;
     if (known === null || typeof d?.kind !== "string" || typeof workspace !== "string" || d.workspace !== workspace || !this.inWorkspace(workspace, peer)) throw new Error("no such connect");
     const id = localOf(known, this.d.here());
@@ -218,33 +226,47 @@ export class WorkspaceConnects {
   namedIn(ws: string): { id: string; name: string; kind: string }[] {
     return this.entries().filter((c) => this.workspaceOf(c) === ws && typeof c?.id === "string").map((c) => ({ id: c.id as string, name: typeof c.name === "string" && c.name !== "" ? c.name : (c.id as string), kind: kindOf(c) }));
   }
-    async moveAll(ws: string, to: string): Promise<void> {
-    // (what was kept for it first, in order; from then on each event goes there as it comes, until its connect moved)
+  /// Each connect is there before what was kept of it goes there, in order, as that station's own connect's (`kept`): a
+  /// chat it starts a turn in calls it there (2026-11-14: forwarded before it moved, each such turn failed, the connect
+  /// not yet on the station). From then on each event goes there as it comes. One that came on its new socket meanwhile
+  /// is in its thread's log by its ts. What did not go stays kept, and goes as this is done again.
+  async moveAll(ws: string, to: string): Promise<void> {
     await this.inHeld(async () => {
-      const lines = (await readFile(this.heldFile, "utf8").catch(() => "")).split("\n").filter((l) => l !== "");
-      const rest: string[] = [];
-      for (let i = 0; i < lines.length; i++) {
-        let e: Json;
-        try {
-          e = JSON.parse(lines[i]!);
-        } catch {
-          continue;
-        }
-        if (e?.ws !== ws) {
-          rest.push(lines[i]!);
-          continue;
-        }
-        try {
-          await this.forward(to, e.id, ws, e.event as ChatEvent);
-        } catch (error) {
-          await this.writeHeld([...rest, ...lines.slice(i)]);
-          throw error;
-        }
+      // (those kept of a connect moved before this was cut first)
+      const own = new Set(this.ownIn(ws));
+      await this.sendKept(ws, to, (id) => !own.has(id));
+      for (const id of own) {
+        await this.move(id, to, null, stationLang(), to);
+        await this.sendKept(ws, to, (c) => c === id);
       }
-      await this.writeHeld(rest);
       this.heldTo.set(ws, to);
     });
-    for (const id of this.ownIn(ws)) await this.move(id, to, null, stationLang(), to);
+  }
+
+  /// What was kept of `ws`'s connects that `which` names sent to `to`, where they run now, in order; the rest stays kept.
+  private async sendKept(ws: string, to: string, which: (id: string) => boolean): Promise<void> {
+    const lines = (await readFile(this.heldFile, "utf8").catch(() => "")).split("\n").filter((l) => l !== "");
+    if (lines.length === 0) return;
+    const rest: string[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      let e: Json;
+      try {
+        e = JSON.parse(lines[i]!);
+      } catch {
+        continue;
+      }
+      if (e?.ws !== ws || typeof e.id !== "string" || !which(e.id)) {
+        rest.push(lines[i]!);
+        continue;
+      }
+      try {
+        await this.d.bus.ask(to, { method: EVENT, workspace: ws, connect: knownOf(e.id, this.d.here()), kept: true, event: e.event });
+      } catch (error) {
+        await this.writeHeld([...rest, ...lines.slice(i)]);
+        throw error;
+      }
+    }
+    await this.writeHeld(rest);
   }
 
   /// What was kept of `ws`'s platforms while its chats were quiet, taken here after all, in order, as it would have been
@@ -278,11 +300,12 @@ export class WorkspaceConnects {
     return turn;
   }
 
-  /// An event of `ws`'s, whose chats here go to another station: kept, or, once what was kept went there, sent there.
+  /// An event of `ws`'s, whose chats here go to another station: kept, or, once its connects and what was kept went
+  /// there, sent there as its connect's there.
   private hold(id: string, ws: string, event: ChatEvent): Promise<void> {
     return this.inHeld(async () => {
       const to = this.heldTo.get(ws);
-      if (to !== undefined) return this.forward(to, id, ws, event);
+      if (to !== undefined) return void (await this.d.bus.ask(to, { method: EVENT, workspace: ws, connect: knownOf(id, this.d.here()), kept: true, event }));
       await mkdir(dirname(this.heldFile), { recursive: true });
       await appendFile(this.heldFile, `${JSON.stringify({ id, ws, event })}\n`);
     });

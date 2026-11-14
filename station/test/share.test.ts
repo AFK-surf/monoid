@@ -56,7 +56,7 @@ class FakeCloud {
 
 type Station = { data: string; config: ConfigFile; sharing: Sharing; lent: string[] };
 
-function station(cloud: FakeCloud, id: string, others: () => Map<string, Station>, profiles: any[] = [], codexRenewRunning: (id: string) => Promise<boolean> = async () => false, extra: { profileChanged?: (id: string, reset: boolean) => Promise<void>; quotaReset?: (id: string) => Promise<void>; machineEmail?: (runtime: string) => string | null; profileGone?: (id: string) => Promise<void> } = {}): Station {
+function station(cloud: FakeCloud, id: string, others: () => Map<string, Station>, profiles: any[] = [], codexRenewRunning: (id: string) => Promise<boolean> = async () => false, extra: { profileChanged?: (id: string, reset: boolean) => Promise<void>; quotaReset?: (id: string) => Promise<void>; machineEmail?: (runtime: string) => string | null; profileGone?: (id: string) => Promise<void>; itself?: (station: string) => boolean } = {}): Station {
   const data = mkdtempSync(join(tmpdir(), "share-"));
   writeFileSync(join(data, "config.json"), JSON.stringify({ profiles }));
   const config = new ConfigFile(data);
@@ -884,4 +884,61 @@ test("a station gone from the workspace: what it shared is taken away, what it u
   await settle(a);
   assert.deepEqual(a.sharing.profileView(a.config.raw().profiles[0])!.users, [], "no one borrows it now");
   assert.equal(a.config.raw().profiles[0].share.id, id);
+});
+
+test("a copy whose host retired into this station is not asked for, nor is that station told of this one's shares: it comes here with its accounts", async () => {
+  const cloud = new FakeCloud();
+  const all = new Map<string, Station>();
+  let retired = false;
+  const a = station(cloud, A, () => all, [{ ...KEY, id: "mine", name: "Mine" }], undefined, { itself: (s) => retired && s === B });
+  const b = station(cloud, B, () => all, [KEY]);
+  all.set(A, a).set(B, b);
+  await b.sharing.shareProfile("deepseek", true, null);
+  await a.sharing.shareProfile("mine", true, null);
+  await settle(a, b);
+  const theirs = b.config.raw().profiles[0].share.id;
+  const mine = a.config.raw().profiles.find((p: any) => p.id === "mine").share.id;
+  assert.ok(a.config.raw().profiles.some((p: any) => p.share?.id === theirs), "A borrows B's");
+  // B retired into A: a request naming B comes back to A itself (mesh/bus.ts), answered here
+  retired = true;
+  const asked: string[] = [];
+  all.set(B, { ...a, sharing: { handle: (peer: string, request: any, ws?: string) => (asked.push(request.method), a.sharing.handle(peer, request, ws)) } as any });
+  a.config.update((raw) => (raw.profiles.find((p: any) => p.id === "mine").name = "Mine 2"));
+  const copy = a.config.raw().profiles.find((p: any) => p.share?.id === theirs);
+  // (as a process started again: nothing asked about yet in this run)
+  (a.sharing as any).checked.clear();
+  const state = JSON.parse(readFileSync(join(a.data, "share", "state.json"), "utf8"));
+  assert.ok(state.borrowed[theirs]);
+  await settle(a);
+  assert.deepEqual(asked, [], "nothing asked of itself");
+  const after = JSON.parse(readFileSync(join(a.data, "share", "state.json"), "utf8"));
+  assert.equal(after.borrowed[mine], undefined, "its own share not taken for one it borrows");
+  assert.deepEqual(a.config.raw().profiles.find((p: any) => p.share?.id === theirs), copy, "the copy stays as it is");
+  await a.sharing.close();
+  await b.sharing.close();
+});
+
+test("a pass that asks this station itself, answered here at once, never begins another inside it: one pass at a time", async () => {
+  const cloud = new FakeCloud();
+  let depth = 0;
+  let most = 0;
+  let left = 20;
+  const others = new Map<string, Station>();
+  const a = station(cloud, A, () => others, [KEY]);
+  // (B is A itself: a request naming it is answered by A, which asks for a pass again as it is)
+  others.set(B, { sharing: { handle: () => {
+    depth++;
+    most = Math.max(most, depth);
+    try {
+      if (left-- > 0) void a.sharing.reconcile();
+    } finally {
+      depth--;
+    }
+    throw new Error("this station does not share that");
+  } } } as any);
+  await a.sharing.shareProfile("deepseek", true, null);
+  await settle(a);
+  assert.ok(left < 20, "asked");
+  assert.equal(most, 1, "no pass begun inside another");
+  await a.sharing.close();
 });

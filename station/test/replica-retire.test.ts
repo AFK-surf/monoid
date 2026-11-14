@@ -11,7 +11,7 @@
 // home goes along, merged into the other's.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, readlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, cpSync, existsSync, linkSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, readlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, test } from "node:test";
@@ -25,7 +25,7 @@ import { Copies } from "../src/replica/copies.ts";
 import { Exporter, genDir, nothingTold, ownDir } from "../src/replica/export.ts";
 import { keepers } from "../src/replica/peers.ts";
 import { build, takeBack, takeBackSoon } from "../src/replica/restore.ts";
-import { QUIET_UNREACHED_MS, RETRY_MOST_MS, RETRY_MS, Retire, connectsThere, rebuildGits } from "../src/replica/retire.ts";
+import { ACCOUNTS_WAIT_MS, HEADROOM, QUIET_UNREACHED_MS, RETRY_MOST_MS, RETRY_MS, Retire, connectsThere, rebuildGits } from "../src/replica/retire.ts";
 import { RETIRE_OFF, RetireAsks, chatCards, confirmLabel, declineLabel } from "../src/replica/retire-asks.ts";
 import { hold, holding } from "../src/updates/holds.ts";
 import { stationLang, tr } from "../src/ops/i18n.ts";
@@ -37,7 +37,7 @@ import type { Request } from "../src/api/request.ts";
 import { StationParts } from "../src/parts.ts";
 import { newMessage } from "../src/store/store.ts";
 import { InlineRunner } from "../src/replica/runner.ts";
-import { Retiring, sessionKey } from "../src/sessions/hub.ts";
+import { Retiring, retiredWs, sessionKey } from "../src/sessions/hub.ts";
 import { WorkspaceConnects } from "../src/connects/workspace.ts";
 import { EVENT, TAKE } from "../src/connects/remote.ts";
 import { Store } from "../src/store/store.ts";
@@ -93,6 +93,11 @@ type Node = {
   agent: string; asks: RetireAsks; cards: { session: string; text: string; card: Json }[]; cardState: "same" | "other" | "none"; puts: number;
   /// The holds on its updating itself it has now (updates/holds.ts, through which each goes too).
   held: number;
+  /// A placing that waits until it is cut (given how), and what is done just before one (none: nothing).
+  placeHang: ((cut: (e: Error) => void) => void) | null;
+  beforePlace: (() => void) | null;
+  /// The id each of its accounts has on the station it moves to (none said: its own).
+  movedTo: Map<string, string>;
 };
 
 /// The most hashes a message of the test's stations asks of (the stations' own is LACK_MOST).
@@ -113,6 +118,7 @@ class Mesh {
     const node = {
       id: nid, data, store, bus, quieted: [], unquieted: [], retired: [], moved: [], connects: [], bindings: {}, took: [], down: false, free: 1e15, git: true, placeFails: 0, gathers: 0, restores: 0, gathered: null, hang: false, accounts: [], unmovable: new Set(), events: [], most: 0, answer: 0, homeIs: HOME,
       up: [{ session: "chat:a", name: "dev", command: "npm run dev" }], started: [], startFails: new Map(), said: [], told: [], agent: join(data, "agent"), cards: [], cardState: "same", puts: 0, held: 0, hanging: null, gate: null, gated: null,
+      placeHang: null, beforePlace: null, movedTo: new Map(),
     } as unknown as Node;
     const count = (v: Json) => {
       for (const k of ["hashes", "lacking"]) if (Array.isArray(v?.[k])) node.most = Math.max(node.most, v[k].length);
@@ -212,9 +218,10 @@ class Mesh {
           if (node.unmovable.has(pid)) throw new Error("that station did not take it");
           node.accounts = node.accounts.filter((p) => p.id !== pid);
           node.events.push(`account:${pid}`);
-          return { id: pid };
+          return { id: node.movedTo.get(pid) ?? pid };
         },
       },
+      followAccounts: (keys, map) => keys.filter((k) => node.store.followProfiles(k, map)).length,
       connectsOf: () => node.connects,
       connectsNamed: () => node.connects.map((c) => ({ id: c, name: c, kind: "slack" })),
       bindingsOf: (c) => Object.fromEntries(c.filter((x) => node.bindings[x] !== undefined).map((x) => [x, node.bindings[x]!])),
@@ -238,6 +245,11 @@ class Mesh {
           return g;
         },
         place: async (...a) => {
+          if (node.placeHang !== null) {
+            const hang = node.placeHang;
+            return new Promise((_, reject) => hang(reject));
+          }
+          node.beforePlace?.();
           if (node.placeFails > 0) {
             node.placeFails--;
             throw new Error("the disk said no");
@@ -370,7 +382,7 @@ test("a station retired: its chats, transcripts and rooms go on on the station p
   assert.equal(b.restores, 1);
   // (what goes along is in place on B before it starts again; what an install makes is not)
   assert.equal(readFileSync(join(there, "notes.md"), "utf8"), "what I was doing, more and more");
-  assert.equal(statSync(join(there, "notes.md")).nlink, 1, "a copy, not a link to what was sent");
+  assert.equal(statSync(join(there, "notes.md")).nlink, 2, "linked to what was sent: its bytes not copied");
   assert.equal(existsSync(join(there, "node_modules")), false, "a build's output stays behind");
   assert.equal(readFileSync(join(bData, "transcripts", "claude", claudeProject(ws)!, "run-1.jsonl"), "utf8"), '{"type":"user"}\n');
 
@@ -402,6 +414,7 @@ test("a station retired: its chats, transcripts and rooms go on on the station p
   assert.equal((after.prepare("SELECT ws FROM sessions WHERE key = 'chat:a'").get() as { ws: string | null }).ws, null, "of B's home workspace, as there");
   after.close();
   assert.deepEqual(JSON.parse(readFileSync(join(bData, "replica", "formerly.json"), "utf8")), [A]);
+  assert.equal(statSync(join(there, "notes.md")).nlink, 1, "what was sent gone once taken: the file is the chat's alone");
   // each moved chat's agent is told once where it came from and what did not move
   const note = b.took[0]!.notes.find((n) => n.session === "chat:a")!.text;
   for (const part of [A.slice(0, 4), a.data, bData, "git worktree repair", "npm run dev"]) assert.ok(note.includes(part), part);
@@ -481,7 +494,6 @@ test("each side started again where it stopped goes on: the station retired at q
   a.gathered = (_g, n) => {
     if (n === 2) b.down = true;
   };
-  b.placeFails = 1;
   await a.retire.retire(HOME, B, "p@x");
   await mesh.settle();
   assert.equal(step(a), "quiet");
@@ -491,15 +503,23 @@ test("each side started again where it stopped goes on: the station retired at q
   await mesh.settle();
   assert.equal(step(a), "quiet");
   assert.ok(a.quieted.length >= quiets + 2, "quiet again as it starts again");
+  // B's process stops while it places them (its placing cut as it goes): started again, it places them, nothing failed
+  let cut: ((e: Error) => void) | null = null;
+  const placing = new Promise<void>((resolve) => {
+    b.placeHang = (c) => ((cut = c), resolve());
+  });
   b.down = false;
   await a.retire.again(HOME);
-  await mesh.settle();
+  await placing;
   assert.equal(step(a), "handing");
-  // B's placing failed once: started again, it places them
   assert.equal(takingStep(b), "placing");
-  await mesh.restart(B);
+  b.placeHang = null;
+  const restarted = mesh.restart(B);
+  cut!(new Error("the process went"));
+  await restarted;
   await mesh.settle();
   assert.equal(takingStep(b), "restart");
+  assert.equal(step(a), "handing", "not said to have failed");
   assert.ok(existsSync(join(there, "notes.md")));
   await mesh.restart(B, true);
   await mesh.settle();
@@ -655,6 +675,37 @@ test("quiet stops a home workspace's chat with a turn running, takes no new turn
   }
 });
 
+test("an account a retired station's chats ran on moving away says nothing in them: no entry in their threads, nothing posted through a connect, the chats left as they are", async () => {
+  const r = new Rig({ workspaces: ["home"] });
+  try {
+    const m = message();
+    await r.accept(m);
+    await settle();
+    const key = sessionKey("cl", "C1", m.threadTs);
+    r.claude.last().complete();
+    await settle();
+    r.edit((raw) => raw.profiles.push({ id: "cc2", runtime: "claude", home: "homes/cc2" }));
+    const entries = () => (r.store.db.prepare("SELECT COUNT(*) AS n FROM entries").get() as { n: number }).n;
+    const [posts, before] = [r.chat.posts.length, entries()];
+    // (its chats handed over and out of sight here, then its account moved to the station they went to)
+    await r.hub.quiet("home");
+    r.store.setSessionsWs(null, retiredWs("home"));
+    r.edit((raw) => (raw.profiles = raw.profiles.filter((p: Json) => p.id !== "cc")));
+    await r.hub.profileGone("cc");
+    await settle();
+    assert.equal(r.session(key).profile, "cc", "left as it is");
+    assert.equal(entries(), before, "nothing in its threads");
+    assert.equal(r.chat.posts.length, posts, "nothing posted");
+    // (nor where the account it ran on is asked for it by the station)
+    r.hub.accounts.runOn(key);
+    await settle();
+    assert.equal(entries(), before);
+    assert.equal(r.chat.posts.length, posts);
+  } finally {
+    await r.close();
+  }
+});
+
 test("a chat moved here: its agent is told once, with what it is next handed", async () => {
   const r = new Rig({ workspaces: ["home"], maxNudges: 0 });
   try {
@@ -681,7 +732,7 @@ test("a chat moved here: its agent is told once, with what it is next handed", a
   }
 });
 
-test("what a platform says while a workspace is quiet is kept, and goes to the station its chats went to in order before the connect moves", async () => {
+test("what a platform says while a workspace is quiet is kept, and goes to the station its chats went to in order once its connect moved there", async () => {
   const r = new Rig({ workspaces: ["home"] });
   try {
     const asked: [string, string, string | undefined][] = [];
@@ -699,13 +750,43 @@ test("what a platform says while a workspace is quiet is kept, and goes to the s
     assert.equal(asked.length, 0, "kept here, taken by nobody yet");
     assert.equal(r.claude.count(), 0);
     await wc.moveAll("home", "B");
-    // (the kept events first, in order, then each of its connects of the workspace moved)
-    assert.deepEqual(asked.slice(0, 2), [["B", EVENT, "<@UBOT> one"], ["B", EVENT, "two"]]);
-    assert.deepEqual(asked.slice(2), ["cl", "gpt", "team"].map(() => ["B", TAKE, undefined]));
+    // (each connect of the workspace moved, then what was kept of it, in order)
+    assert.deepEqual(asked, [["B", TAKE, undefined], ["B", EVENT, "<@UBOT> one"], ["B", EVENT, "two"], ["B", TAKE, undefined], ["B", TAKE, undefined]]);
     assert.deepEqual(r.raw.connects, [], "they moved");
     assert.equal(readFileSync(join(r.dir, "replica", "held-events.jsonl"), "utf8"), "");
   } finally {
     await r.close();
+  }
+});
+
+test("a person's message kept while the chats paused is taken on the station they went to as its own connect's, the connect there already", async () => {
+  const a = new Rig({ workspaces: ["home"] });
+  const b = new Rig({ workspaces: ["home"] });
+  try {
+    // (B's connects answer A's requests as the mesh carries them)
+    const inboxes = new Map<string, (peer: string, request: Json, workspace?: string) => Promise<Json>>();
+    const wb = new WorkspaceConnects({
+      data: b.dir, hub: () => b.hub, store: b.store, config: { raw: () => b.raw, update: (f) => b.edit(f) },
+      here: () => "B", home: () => "home", stations: () => [{ id: "A", name: "a" }, { id: "B", name: "b" }],
+      bus: { ask: async () => ({ ok: true }), on: (method, inbox) => void inboxes.set(method, inbox) },
+      names: () => null,
+    });
+    const wa = new WorkspaceConnects({
+      data: a.dir, hub: () => a.hub, store: a.store, config: { raw: () => a.raw, update: (f) => f(a.raw) },
+      here: () => "A", home: () => "home", stations: () => [{ id: "A", name: "a" }, { id: "B", name: "b" }],
+      bus: { ask: async (s, req) => (s === "B" ? inboxes.get(req.method)!("A", JSON.parse(JSON.stringify(req)), req.workspace) : { ok: true }), on: () => {} },
+      names: () => null,
+    });
+    const got: [string, boolean][] = [];
+    b.hub.receive = async (id: string) => void got.push([id, b.raw.connects.some((c: Json) => c.id === id)]);
+    await a.hub.quiet("home");
+    await wa.receive("cl", { type: "message", message: message({ text: "<@UBOT> while it paused" }) });
+    await wa.moveAll("home", "B");
+    assert.deepEqual(got, [["cl@A", true]], "its connect on B as B takes it");
+    void wb;
+  } finally {
+    await a.close();
+    await b.close();
   }
 });
 
@@ -747,8 +828,8 @@ test("what goes along: an archived chat's room whole, nothing of a directory not
   assert.equal(existsSync(join(to, "station.key")), false);
   assert.equal(readFileSync(join(to, "sessions", "chat", "chat:b", "workspace.tar.zst"), "utf8"), "packed");
   assert.equal(readlinkSync(join(to, "sessions", "chat", "chat:a", "workspace", "pic-link")), join(to, "sessions", "chat", "chat:a", "workspace", "uploads", "pic.png"));
-  // (copied from what was sent, never linked to it: what was sent stays until the taking is done)
-  assert.equal(statSync(join(to, "sessions", "chat", "chat:b", "workspace.tar.zst")).nlink, 1);
+  // (linked to what was sent: its bytes not copied)
+  assert.equal(statSync(join(to, "sessions", "chat", "chat:b", "workspace.tar.zst")).ino, statSync(join(files, hashFile(join(room, "workspace.tar.zst")))).ino);
   // put in again (started again after it): what is there with the same bytes stays
   const again = place(to, g.index, files);
   assert.equal(again.placed, 0);
@@ -1498,4 +1579,190 @@ test("retiring switched off (module.ts RETIRE_STARTS): POST /retire refused in w
   assert.equal(on.status, 202);
   assert.equal(step(a), "sending");
   await mesh.settle();
+});
+
+test("a file put in place is linked to what was sent, no byte of it copied; the same bytes at two paths are two files; placed again, what is there stays; a placing cut between a link and its rename still ends with the right bytes", () => {
+  const made = station();
+  const aws = join(made.data, "sessions", "chat", "chat:a", "workspace");
+  writeFileSync(join(aws, "same-1.txt"), "the same bytes");
+  writeFileSync(join(aws, "same-2.txt"), "the same bytes");
+  writeFileSync(join(aws, "own.txt"), "bytes of its own");
+  made.store.close();
+  const g = gather(made.data, made.db, HOME, true, join(made.data, "replica", "carrying"));
+  const files = sent(g);
+  const to = dataDir("to");
+  const there = join(to, "sessions", "chat", "chat:a", "workspace");
+  const blob = (name: string) => join(files, hashFile(join(aws, name)));
+  const ino = (path: string) => statSync(path).ino;
+  assert.equal(place(to, g.index, files).missing, 0);
+  // (the first path of some bytes is linked to them; the second has its own file)
+  assert.equal(ino(join(there, "own.txt")), ino(blob("own.txt")), "linked to what was sent");
+  assert.equal(ino(join(there, "same-1.txt")), ino(blob("same-1.txt")));
+  assert.notEqual(ino(join(there, "same-2.txt")), ino(join(there, "same-1.txt")), "two paths, two files");
+  appendFileSync(join(there, "same-1.txt"), ", changed in place");
+  assert.equal(readFileSync(join(there, "same-2.txt"), "utf8"), "the same bytes", "one written in place leaves the other");
+  writeFileSync(join(there, "same-1.txt"), "the same bytes");
+  // placed again: what is there stays
+  const inos = ["own.txt", "same-1.txt", "same-2.txt"].map((n) => ino(join(there, n)));
+  const again = place(to, g.index, files);
+  assert.equal(again.missing, 0);
+  assert.deepEqual(["own.txt", "same-1.txt", "same-2.txt"].map((n) => ino(join(there, n))), inos);
+  // cut between its link and its rename: the link left beside it, the file not there
+  rmSync(join(there, "own.txt"));
+  linkSync(blob("own.txt"), join(there, "own.txt.0a0b0c0d.carrying"));
+  assert.equal(place(to, g.index, files).missing, 0);
+  assert.equal(readFileSync(join(there, "own.txt"), "utf8"), "bytes of its own");
+  assert.notEqual(ino(join(there, "own.txt")), ino(blob("own.txt")), "copied: what was sent is linked elsewhere already");
+});
+
+test("a placing B fails at is said to A at once: its chats work again at sent, nothing holds either's updating; started again, B places nothing by itself; handed over again, it places them and takes them", async () => {
+  const { mesh, B, a, b, there } = await setup();
+  b.placeFails = 1;
+  await a.retire.retire(HOME, B, "p@x");
+  await mesh.settle();
+  assert.equal(takingStep(b), "failed");
+  const r = a.retire.overview(HOME).retiring!;
+  assert.equal(r.step, "sent");
+  assert.equal(r.reason, "failed");
+  assert.match(r.error ?? "", /the disk said no/);
+  assert.deepEqual(a.unquieted, [HOME], "its chats work again");
+  assert.equal(a.held + b.held, 0);
+  assert.equal(b.restores, 0);
+  await mesh.restart(B);
+  await mesh.settle();
+  assert.equal(takingStep(b), "failed");
+  assert.equal(b.restores, 0);
+  await a.retire.again(HOME);
+  await mesh.settle();
+  assert.equal(takingStep(b), "restart");
+  assert.ok(existsSync(join(there, "notes.md")));
+  await mesh.restart(B, true);
+  await mesh.settle();
+  assert.equal(step(a), "done");
+});
+
+test("a placing that failed, asked again to be put in (\`again\`), is placed again, not taken from the copy", async () => {
+  const { mesh, A, B, a, b, bData, there } = await setup();
+  b.placeFails = 1;
+  await a.retire.retire(HOME, B, "p@x");
+  await mesh.settle();
+  assert.equal(takingStep(b), "failed");
+  const t = JSON.parse(readFileSync(join(bData, "replica", "taking", `${A}.json`), "utf8"));
+  assert.equal(t.failedAt, "placing");
+  assert.deepEqual(await b.bus.handle(HOME, A, { method: "retire.take", workspace: HOME, origin: A, gen: t.gen, carry: t.carry, connects: {}, bindings: {} }), { ok: true, failed: t.error }, "not by itself");
+  assert.deepEqual(await b.bus.handle(HOME, A, { method: "retire.take", workspace: HOME, origin: A, gen: t.gen, carry: t.carry, connects: {}, bindings: {}, again: true }), { ok: true });
+  await b.retire.settle();
+  assert.equal(takingStep(b), "restart");
+  assert.ok(existsSync(join(there, "notes.md")), "placed");
+  void a;
+  void mesh;
+});
+
+test("a file sent that is not on B as it places them fails the hand-over, said to A, whose chats work again; handed over again, it is sent again", async () => {
+  const { mesh, A, B, a, b, bData, ws, there } = await setup();
+  const blob = join(bData, "replica", "carry", HOME, A, "files", hashFile(join(ws, "notes.md")));
+  b.beforePlace = () => rmSync(blob, { force: true });
+  await a.retire.retire(HOME, B, "p@x");
+  await mesh.settle();
+  assert.equal(takingStep(b), "failed");
+  assert.equal(b.restores, 0, "nothing put in");
+  const r = a.retire.overview(HOME).retiring!;
+  assert.equal(r.step, "sent");
+  assert.match(r.error ?? "", /1 file that .* sent is not here/);
+  assert.deepEqual(a.unquieted, [HOME]);
+  b.beforePlace = null;
+  await a.retire.again(HOME);
+  await mesh.settle();
+  assert.equal(takingStep(b), "restart");
+  assert.equal(readFileSync(join(there, "notes.md"), "utf8"), "what I was doing");
+});
+
+test("chats taken with what went along gone from under them: said, in B's status and to A, not 0 chats said as if all went well", async () => {
+  const { mesh, A, B, a, b, bData } = await setup();
+  await a.retire.retire(HOME, B, "p@x");
+  await mesh.settle();
+  rmSync(join(bData, "replica", "carry", HOME, A), { recursive: true, force: true });
+  await mesh.restart(B, true);
+  await mesh.settle();
+  assert.equal(step(a), "done");
+  const taken = (await b.retire.agentAsk(HOME, { op: "status" })).status.taken[0];
+  assert.match(taken.error ?? "", /index.*no job of theirs was started again/);
+});
+
+test("B's disk about full as it is asked to take the chats: refused at once, A's chats work again; with room, handed over again, it takes them", async () => {
+  const { mesh, B, a, b } = await setup();
+  a.gathered = (_g, n) => {
+    if (n === 2) b.free = HEADROOM - 1;
+  };
+  await a.retire.retire(HOME, B, "p@x");
+  await mesh.settle();
+  const r = a.retire.overview(HOME).retiring!;
+  assert.equal(r.step, "sent");
+  assert.equal(r.reason, "failed");
+  assert.match(r.error ?? "", /free/);
+  assert.deepEqual(a.unquieted, [HOME]);
+  assert.equal(takingStep(b), "coming", "nothing placed");
+  b.free = 1e15;
+  a.gathered = null;
+  await a.retire.again(HOME);
+  await mesh.settle();
+  await mesh.restart(B, true);
+  await mesh.settle();
+  assert.equal(step(a), "done");
+});
+
+test("the chats taken go on on their accounts under the ids those have on B: one that is another account's id there under the next free one, a shared one under its copy's; B's own chat on an account of the same id stays", async () => {
+  const { mesh, B, a, b, made } = await setup();
+  a.accounts = [{ id: "cc", name: "CC" }, { id: "claude5", name: "Claude 5" }];
+  a.movedTo.set("cc", "cc-2").set("claude5", "sh-0123456789abcdef0123");
+  made.store.ranIn("chat:a", "run-1", "cc");
+  // (the session told changed, which its copy reads its runtime sessions again by)
+  made.store.setSessionProfile("chat:a", "cc", false);
+  made.store.setSessionProfile("chat:b", "claude5", false);
+  await a.retire.retire(HOME, B, "p@x");
+  await mesh.settle();
+  await mesh.restart(B, true);
+  await mesh.settle();
+  assert.equal(step(a), "done");
+  assert.equal(b.store.getSession("chat:a")!.profile, "cc-2");
+  assert.equal(b.store.ranOn("chat:a", "run-1"), "cc-2", "its runtime session taken up there, not gone on afresh");
+  assert.equal(b.store.getSession("chat:b")!.profile, "sh-0123456789abcdef0123");
+  assert.equal(b.store.getSession("chat:m1")!.profile, "cc", "B's own");
+  assert.equal(existsSync(join(b.data, "replica", "took", `${a.id}.keys`)), false, "let go once its accounts came");
+});
+
+test("what wakes the chats taken waits for their accounts: the jobs start at once, their words and the driver's told once the accounts came, or ACCOUNTS_WAIT_MS after they were taken, the driver told they have not come", async () => {
+  const { mesh, A, B, a, b, ws } = await setup();
+  a.up = [{ session: "chat:a", name: "dev", command: "npm run dev", cwd: ws, port: null, watch: false }];
+  await a.retire.retire(HOME, B, "p@x", { driver: { station: A, session: "chat:a" } });
+  await mesh.settle();
+  assert.equal(step(a), "handing");
+  // (A not reached as B took them: its accounts do not come)
+  a.down = true;
+  await mesh.restart(B, true);
+  await mesh.settle();
+  assert.deepEqual(b.started.map((j) => j.name), ["dev"], "started at once");
+  assert.equal(b.said.length, 0);
+  assert.equal(toldTo(b, "chat:a").length, 0);
+  // the keys of the chats taken kept, a line each
+  const keys = readFileSync(join(b.data, "replica", "took", `${A}.keys`), "utf8").split("\n").filter((k) => k !== "");
+  for (const k of ["chat:a", "chat:b"]) assert.ok(keys.includes(k), k);
+  await advance(mesh, ACCOUNTS_WAIT_MS - 1);
+  await mesh.settle();
+  assert.equal(b.said.length, 0);
+  // (started again meanwhile: the deadline kept)
+  await mesh.restart(B);
+  await advance(mesh, 1);
+  await mesh.settle();
+  assert.equal(b.said.filter(([s]) => s === "chat:a").length, 1);
+  const told = toldTo(b, "chat:a");
+  assert.equal(told.length, 1);
+  assert.match(told[0]!, /its chats were taken here.*accounts have not come here yet/s);
+  // A up: its accounts come (the same ids), nothing told twice, nothing moved
+  a.down = false;
+  await advance(mesh, RETRY_MOST_MS);
+  await mesh.settle();
+  assert.equal(step(a), "done");
+  assert.equal(b.said.filter(([s]) => s === "chat:a").length, 1);
+  assert.equal(b.store.getSession("chat:a")!.profile, "cc");
 });

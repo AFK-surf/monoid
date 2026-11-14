@@ -113,6 +113,12 @@ export class PeerBus {
     return call(station, typeof request?.workspace === "string" ? request.workspace : null, request);
   }
 
+  /// Whether a request naming `station` comes back to this station: it is this one, or one whose place it took.
+  cameHere(station: string, workspace: string | null = null): boolean {
+    if (station === "" || this.self === "") return false;
+    return station === this.self || (this.now !== null && this.now(station, workspace) === this.self);
+  }
+
   /// Which station took a lost one's place (`now`); `self`, this station's id.
   formerly(now: (station: string, workspace: string | null) => string, self: string): void {
     this.now = now;

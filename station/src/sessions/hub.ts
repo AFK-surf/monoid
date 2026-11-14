@@ -303,7 +303,8 @@ export class Hub {
       // its chat as a change by hand is (lifecycle.ts `configure`).
       moved: (key, was) => {
         const now = this.store.getSession(key);
-        if (!now) return;
+        // (one handed to another station as this one was retired says nothing here: it goes on there)
+        if (!now || this.handedOver(key)) return;
         const named = (id: string) => {
           const name = this.accounts.profile(id)?.name;
           return typeof name === "string" ? name : null;
@@ -445,6 +446,15 @@ export class Hub {
   /// Whether this station is handing `ws`'s chats to another.
   quietIn(ws: string): boolean {
     return this.quieted.has(ws);
+  }
+
+  /// Whether session `key` is one of the chats this station hands, or handed, to another as it is retired: of a
+  /// workspace quiet here, or put out of sight (`retiredWs`).
+  handedOver(key: string): boolean {
+    const ws = this.store.sessionWs(key);
+    if (ws === undefined) return false;
+    if (ws !== null && ws.startsWith(retiredWs(""))) return true;
+    return this.quieted.has(ws ?? this.workspaces()[0] ?? "");
   }
 
   /// The station left one of its workspaces but is still in others: that workspace's
@@ -1078,9 +1088,11 @@ export class Hub {
 
   /// A profile was deleted: the sessions on it are taken on by another of their runtime's (their process ends now if
   /// idle, else when its turn is over); those no other profile can run are stopped, and their process ends.
+  /// A chat handed to another station as this one is retired is left as it is: it goes on there, and its account moving
+  /// away from here (share/index.ts `moveProfile`) says nothing in it.
   async profileGone(id: string) {
     for (const row of this.store.listSessions()) {
-      if (row.profile !== id) continue;
+      if (row.profile !== id || this.handedOver(row.key)) continue;
       let movable = true;
       try {
         this.accounts.runOn(row.key);
@@ -1093,6 +1105,20 @@ export class Hub {
       if (!movable) await actor.stop();
       await actor.changed();
     }
+  }
+
+  /// Chats moved here from a retired station whose accounts came after them (replica/retire.ts `retire.accounts`): those
+  /// of `keys` that ran on an account of `map` (its id there) go on on the id it has here, their runtime sessions too, so
+  /// that the next turn takes up its runtime session there and nothing is said in the chat; one with a process up takes
+  /// it as it is next idle. How many moved.
+  followAccounts(keys: string[], map: Map<string, string>): number {
+    let n = 0;
+    for (const key of keys) {
+      if (!this.store.followProfiles(key, map)) continue;
+      n++;
+      void this.actors.get(key)?.changed().catch(() => {});
+    }
+    return n;
   }
 
   /// Starts a session's runtime ahead of a message (SessionActor.warm).

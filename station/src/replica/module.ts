@@ -101,6 +101,7 @@ export const CopiesLive = Layer.effectDiscard(
         own: () => ownProfiles().map((p: Json) => ({ id: String(p.id), name: typeof p.name === "string" && p.name !== "" ? p.name : String(p.id) })),
         move: (id, to) => agents.sharing.moveProfile(id, to),
       },
+      followAccounts: (keys, map) => agents.hub.followAccounts(keys, map),
       // (what their platforms said meanwhile taken here, in order, as it would have been)
       unquiet: (ws) => {
         agents.hub.unquiet(ws);

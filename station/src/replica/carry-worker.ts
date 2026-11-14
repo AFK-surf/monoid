@@ -13,7 +13,7 @@
 // index and streams the lists, and what goes between the two stations is a list's piece at a time (retire.ts).
 import { execFileSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { chmodSync, closeSync, constants, copyFileSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync, writeSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { isMainThread, parentPort, workerData } from "node:worker_threads";
@@ -495,7 +495,7 @@ export function homeFiles(agent: string): string[] {
 }
 
 /// What the index at `indexPath` says put under this station's data directory `dataDir`, each session's list and each
-/// file's bytes read from `from` (`<hash>` each, copied: a clone where the disk makes one): where the retired station
+/// file's bytes read from `from` (`<hash>` each, put in place by `putFile`): where the retired station
 /// had it, moved to here. One there already with the same size and time, or the same bytes, is left as it is, another
 /// put in its place. A link to the retired station's data directory names this one's. What of it could not be put (its
 /// bytes not brought) is counted.
@@ -550,7 +550,7 @@ export function place(dataDir: string, indexPath: string, from: string): { place
       }
       mkdirSync(dirname(path), { recursive: true }); // sync: in the placing's own thread (placeSoon)
       const tmp = `${path}.${randomBytes(4).toString("hex")}.carrying`;
-      copyFileSync(blob, tmp, constants.COPYFILE_FICLONE); // sync: in the placing's own thread (placeSoon)
+      putFile(blob, tmp);
       chmodSync(tmp, f.mode); // sync: in the placing's own thread (placeSoon)
       utimesSync(tmp, f.mtimeMs / 1000, f.mtimeMs / 1000); // sync: in the placing's own thread (placeSoon)
       if (there !== null) rmSync(path, { recursive: true, force: true }); // sync: in the placing's own thread (placeSoon)
@@ -559,6 +559,24 @@ export function place(dataDir: string, indexPath: string, from: string): { place
     }
   }
   return { placed, missing, kept };
+}
+
+/// A file sent (`blob`) put at `tmp` without copying its bytes: linked to it, where nothing else is linked to it yet.
+/// One linked already (the same bytes at another path, or a placing cut between its link and its rename) is copied, so
+/// that no two paths share a file (one written in place would change the other); so is one where the disk makes no
+/// link (another volume, a file system without them, too many links). Node's copy with COPYFILE_FICLONE copies the
+/// bytes on APFS (measured 2026-11-14: a station's disk filled as a retirement's 55 GB were placed), so no clone is
+/// asked for.
+export function putFile(blob: string, tmp: string): void {
+  if (lstatSync(blob).nlink === 1) { // sync: in the placing's own thread (placeSoon)
+    try {
+      linkSync(blob, tmp); // sync: in the placing's own thread (placeSoon)
+      return;
+    } catch (e) {
+      if (!["EXDEV", "EPERM", "ENOTSUP", "EMLINK", "ENOSYS"].includes((e as NodeJS.ErrnoException).code ?? "")) throw e;
+    }
+  }
+  copyFileSync(blob, tmp); // sync: in the placing's own thread (placeSoon)
 }
 
 if (!isMainThread && workerData?.carry !== undefined) {

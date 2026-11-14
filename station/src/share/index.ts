@@ -122,6 +122,9 @@ export type SharingDeps = {
   quotaReset?: (id: string) => Promise<void>;
   /// A profile of this station's moved to another and gone from here: its sessions go on on another (hub `profileGone`).
   profileGone?: (id: string) => Promise<void>;
+  /// Whether a request naming `station` comes back to this station (mesh/bus.ts `cameHere`: a station retired into this
+  /// one, `formerly`): it is neither told nor asked anything, as this station would answer itself.
+  itself?: (station: string) => boolean;
   clock?: Clock.Clock;
   /// Tests: Codex's token endpoint.
   codexTokenUrl?: string;
@@ -520,7 +523,9 @@ export class Sharing {
       this.again = true;
       return this.reconciling;
     }
-    this.reconciling = (async () => {
+    // (set before the pass begins: what a pass asks may be answered here at once, by this station itself, which asks for
+    // one again; begun inside it, each began another inside it until the stack ran out, 2026-11-14)
+    this.reconciling = Promise.resolve().then(async () => {
       do {
         this.again = false;
         try {
@@ -529,7 +534,7 @@ export class Sharing {
           log.warn("share", "bringing shares in line failed", { error: (e as Error).message });
         }
       } while (this.again);
-    })().finally(() => (this.reconciling = null));
+    }).finally(() => (this.reconciling = null));
     return this.reconciling;
   }
 
@@ -541,6 +546,7 @@ export class Sharing {
     this.followSkills(state);
     let pending = false;
     const silent = new Set(this.unreachable.keys());
+    const itself = (station: string) => this.deps.itself?.(station) === true;
     /// Its answer; a refusal kept on what it was of (`hosted`: shown where it is shared, till it is taken).
     const tell = async (peer: string, ws: string | null, request: Json, hosted?: Hosted): Promise<Json | Error> => {
       try {
@@ -589,6 +595,8 @@ export class Sharing {
       this.writeState();
       if (rosters === null) continue;
       for (const peer of rosters.keys()) {
+        // (a station retired into this one: its copies came here with it)
+        if (itself(peer)) continue;
         const ws = this.reach(now, peer, rosters);
         if (ws !== null && this.mayUse(now.allow, peer)) {
           const version = hosted.version;
@@ -607,7 +615,7 @@ export class Sharing {
     for (const [id, hosted] of Object.entries(state.hosted)) {
       if (own.has(id)) continue;
       for (const peer of Object.keys(hosted.told)) {
-        if (rosters !== null && !rosters.has(peer)) delete hosted.told[peer];
+        if (itself(peer) || (rosters !== null && !rosters.has(peer))) delete hosted.told[peer];
         else if (!((await tell(peer, null, { method: "share.changed", id, gone: true })) instanceof Error)) delete hosted.told[peer];
       }
       if (Object.keys(hosted.told).length === 0) delete state.hosted[id];
@@ -616,7 +624,7 @@ export class Sharing {
     for (const [id, moved] of Object.entries(state.moved)) {
       const left: string[] = [];
       for (const peer of moved.tell) {
-        if (peer === moved.to || (rosters !== null && !rosters.has(peer))) continue;
+        if (peer === moved.to || itself(peer) || (rosters !== null && !rosters.has(peer))) continue;
         if ((await tell(peer, null, { method: "share.changed", id, host: moved.to })) instanceof Error) left.push(peer);
       }
       if (left.length === 0) delete state.moved[id];
@@ -633,6 +641,8 @@ export class Sharing {
         continue;
       }
       if (!had.stale && !had.pending && !had.profileUpdate && !had.resetPending?.length && this.checked.has(id)) continue;
+      // (its host retired into this station: nobody to ask, it comes here as its accounts do, `share.take`)
+      if (itself(had.host)) continue;
       try {
         for (const key of [...(had.resetPending ?? [])]) {
           try {
@@ -687,6 +697,10 @@ export class Sharing {
     }
     // Hosts of borrowed subscriptions that did not answer: asked whether they do now.
     for (const host of [...this.unreachable.keys()]) {
+      if (itself(host)) {
+        this.unreachable.delete(host);
+        continue;
+      }
       const borrowed = this.profiles().find((p) => this.borrowedSubscription(p) && p.share.host === host);
       if (!borrowed) {
         this.unreachable.delete(host);

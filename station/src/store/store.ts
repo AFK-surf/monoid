@@ -1279,6 +1279,24 @@ export class Store {
     );
   }
 
+  /// Session `key`'s accounts said anew by `map` (each by the id it had, to the id it has: a retired station's, as they
+  /// came here after its chats, replica/retire.ts): its own, the ones it is kept to, and its runtime sessions'. Whether
+  /// its own changed.
+  followProfiles(key: string, map: Map<string, string>): boolean {
+    const row = this.getSession(key);
+    if (!row) return false;
+    for (const r of this.#all("SELECT id, profile FROM runtime_sessions WHERE session_key = ?", key)) {
+      const to = typeof r.profile === "string" ? map.get(r.profile) : undefined;
+      if (to !== undefined) this.#run("UPDATE runtime_sessions SET profile = ? WHERE session_key = ? AND id = ?", to, key, r.id);
+    }
+    const to = map.get(row.profile);
+    const kept = row.profiles ?? null;
+    const list = kept === null ? null : kept.map((p) => map.get(p) ?? p);
+    if (to === undefined && (kept === null || list!.every((p, i) => p === kept[i]))) return false;
+    this.setSessionProfile(key, to ?? row.profile, row.profilePinned, list);
+    return to !== undefined;
+  }
+
   /// The profile a runtime session of the session last ran on, if known.
   ranOn(key: string, id: string): string | null {
     return this.#one("SELECT profile FROM runtime_sessions WHERE session_key = ? AND id = ?", key, id)?.profile ?? null;
