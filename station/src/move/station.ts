@@ -10,13 +10,14 @@ import { type AccountOf, Handover, type HandoverDeps } from "../replica/handover
 import { moved } from "../replica/restore.ts";
 import type { Ask } from "../replica/peers.ts";
 import type { Store } from "../store/store.ts";
+import type { SessionPage } from "../store/store.ts";
 import { accountItemId, accountsModule } from "./accounts.ts";
-import { chatsModule } from "./chats.ts";
+import { PLAN_PAGE, chatsModule, giveBack } from "./chats.ts";
 import { connectsModule } from "./connects.ts";
 import { JobsModule } from "./jobs.ts";
-import type { Module } from "./module.ts";
+import type { Module, PlanReads } from "./module.ts";
 import { AgentHomeModule } from "./agent-home.ts";
-import { ReposModule, repoItemId, worktreesKept } from "./repos.ts";
+import { ReposModule, repoItemId, worktreesOfClones } from "./repos.ts";
 import { SettingsModule } from "./settings.ts";
 import { type VaultDeps, VaultModule, vaultItemId } from "./vault.ts";
 import { gatherSoon } from "../replica/retire.ts";
@@ -61,8 +62,9 @@ export type MovesDeps = {
   /// config.json's profiles as written; one's login moved to another station (share/index.ts `moveProfile`).
   profiles: () => Json[];
   moveProfile: (id: string, to: string) => Promise<unknown>;
-  /// The sessions of `ws` here after `after`, at most `limit` (the home one's say none).
-  sessionsIn: (ws: string, after: string, limit: number) => string[];
+  /// The sessions of `ws` here after `after`, at most `limit` (the home one's: those that say none or its id), read as
+  /// a page (store `sessionPageOfWs`).
+  sessionsIn: (ws: string, after: string, limit: number) => SessionPage;
   reposDir: string;
   room?: HandoverDeps["room"];
   hasGit?: HandoverDeps["hasGit"];
@@ -77,7 +79,7 @@ export type MovesDeps = {
   homeOf?: (ws: string) => string;
   /// This station's vault stores and the owners with secrets of a workspace here, the owners whose plain grants
   /// sessions hold (vault.ts).
-  vault?: { owners(ws: string): string[]; grantOwners(keys: string[]): string[]; plain: VaultDeps["plain"]; vaults: VaultDeps["vaults"] };
+  vault?: { owners(ws: string): string[]; grantOwners(keys: string[]): Map<string, string[]>; plain: VaultDeps["plain"]; vaults: VaultDeps["vaults"] };
   /// The messages a device's key keeps from being posted twice (api/admin.ts), carried with a chat that goes.
   keptSends?: HandoverDeps["keptSends"];
   keepSends?: HandoverDeps["keepSends"];
@@ -86,6 +88,9 @@ export type MovesDeps = {
   moveOn?: () => boolean;
   /// The chats a plan reads at a time (chats.ts `PLAN_PAGE`; a test's smaller).
   planPage?: number;
+  /// The repositories found on the machine outside the repository cache (sessions/presets.ts `RepoIndex`, as it holds
+  /// them: never walked for a plan), whose linked worktrees chats may work in.
+  clonesElsewhere?: () => Promise<string[]>;
   /// What keeps the station from updating itself (updates/holds.ts `hold`): held through a turn here, and while
   /// another station's request or a chat coming here is taken. None given: the station's own.
   hold?: () => () => void;
@@ -132,10 +137,14 @@ export class Moves {
     this.repos = new ReposModule({
       data: d.data, reposDir: d.reposDir, ask, here,
       after: (ms, f) => d.fibers.after(ms, f), name: (station) => d.roster(d.home() ?? "")?.find((r) => r.id === station)?.name ?? station.slice(0, 12),
-      workspaces: (ws) => d.sessionsIn(ws, "", 2_000).flatMap((k) => d.store.getSession(k)?.workspace ?? []),
+      workspaces: async (ws) => {
+        const out: string[] = [];
+        for await (const page of this.reads(ws).pages()) for (const r of page.rows()) out.push(r.workspace);
+        return out;
+      },
       git: d.git ?? (async () => { throw new Error("no git here"); }),
     });
-    const none = { owners: () => [], grantOwners: () => [], plain: { items: () => [], item: () => null, put: () => {}, forget: () => {} }, vaults: { vaults: () => [], vault: () => null, items: () => [], item: () => null, putVault: () => {}, putItem: () => {}, forgetItem: () => {}, forgetVault: () => {} } };
+    const none = { owners: () => [], grantOwners: () => new Map<string, string[]>(), plain: { items: () => [], item: () => null, put: () => {}, forget: () => {} }, vaults: { vaults: () => [], vault: () => null, items: () => [], item: () => null, putVault: () => {}, putItem: () => {}, forgetItem: () => {}, forgetVault: () => {} } };
     const v = d.vault ?? none;
     this.vault = new VaultModule({ data: d.data, owners: (ws) => v.owners(ws), plain: v.plain, vaults: v.vaults, ask });
     const work = d.work ?? { gather: gatherSoon };
@@ -187,9 +196,12 @@ export class Moves {
     });
     this.modules = [
       accountsModule({
+        // (the accounts module plans without waiting: the pages the plan under way read before its modules, `#planning`)
         used: (ws) => {
           const out = new Map<string, AccountOf | null>();
-          for (const key of d.sessionsIn(ws, "", 2_000)) for (const [id, a] of this.handover.accountsOf([key])) out.set(id, a);
+          const reads = this.#planning.get(ws);
+          const pages = reads !== undefined && reads.loaded().length > 0 ? reads.loaded() : this.#pagesNow(ws);
+          for (const page of pages) for (const k of page.keys) for (const [id, a] of this.handover.accountsOf([k], page)) out.set(id, a);
           return out;
         },
         shared: (id) => {
@@ -204,17 +216,9 @@ export class Moves {
         },
       }),
       chatsModule({
-        store: d.store, handover: this.handover, hub: d.hub, ask: d.ask, here, sessionsIn: d.sessionsIn, page: d.planPage,
+        store: d.store, handover: this.handover, hub: d.hub, ask: d.ask, here, reads: (ws) => this.reads(ws),
         kindOf: (id) => d.connects?.kindOf(id) ?? null, wait: () => this.wait,
-        reposOf: async (keys) => {
-          const out: string[] = [];
-          for (const k of keys) {
-            const w = d.store.getSession(k)?.workspace;
-            if (w !== undefined) for (const r of await worktreesKept(w)) out.push(repoItemId(r.url));
-          }
-          return [...new Set(out)];
-        },
-        vaultsOf: (keys, ws) => v.grantOwners(keys).map((o) => `${vaultItemId(o)}@${ws}`),
+        vaultsOf: (keys, ws) => new Map([...v.grantOwners(keys)].map(([k, owners]) => [k, owners.map((o) => `${vaultItemId(o)}@${ws}`)])),
         jobs: { keep: async (keys, why) => void (await this.jobs.keep(keys, why)), startKept: (keys) => this.jobs.startKept(keys) },
       }),
       this.jobs,
@@ -223,7 +227,7 @@ export class Moves {
         chatsOf: (id) => this.#chatsOfConnect(id),
         runsOn: (id) => d.connects?.runsOn(id) ?? null,
         kindOf: (id) => d.connects?.kindOf(id) ?? null,
-        keysOf: (id) => d.store.sessionsOfConnect(id, 2_000).filter((k) => d.store.handedTo(k) === null),
+        keysOf: async (id) => (await this.#ofConnect(id)).filter((k) => d.store.handedTo(k) === null),
         move: async (id, to, awaiting) => {
           if (d.connects === null) throw new Error("the connects are not up yet");
           await d.connects.move(id, to, awaiting);
@@ -242,12 +246,79 @@ export class Moves {
       refusal: (ws, station) => this.refusal(ws, station),
       hold: () => this.#hold(),
       restarted: () => tr(stationLang(), "station.move.restarted"),
+      reads: (ws) => {
+        const r = this.reads(ws);
+        this.#planning.set(ws, r);
+        return r;
+      },
     });
   }
 
-  #chatsOfConnect(id: string): string[] {
+  /// The plan under way of each workspace's reads (`reads`), for what plans without being given them.
+  readonly #planning = new Map<string, PlanReads>();
+
+  /// What one plan of `ws` reads once for its modules (module.ts `PlanReads`): the workspace's chats a page at a time,
+  /// each page read as the first module asks for it and given to the others as it was, the main thread given back
+  /// between pages; the linked worktrees as the clones say them, read once.
+  reads(ws: string): PlanReads {
+    const size = this.#d.planPage ?? PLAN_PAGE;
+    const pages: SessionPage[] = [];
+    let done = false;
+    let clones: Promise<Map<string, { repo: string; url: string }[]>> | null = null;
+    const d = this.#d;
+    const iterate = async function* () {
+      for (let i = 0; ; i++) {
+        if (i > 0) await giveBack();
+        if (i >= pages.length) {
+          if (done) return;
+          const page = d.sessionsIn(ws, pages.at(-1)?.keys.at(-1) ?? "", size);
+          pages.push(page);
+          if (page.keys.length < size) done = true;
+        }
+        yield pages[i]!;
+      }
+    };
+    return {
+      pages: iterate,
+      load: async () => {
+        for await (const _ of iterate()) void _;
+      },
+      loaded: () => pages,
+      worktrees: async (dir) => (await (clones ??= (async () => worktreesOfClones(d.reposDir, (await d.clonesElsewhere?.()) ?? [], d.data))())).get(dir) ?? [],
+    };
+  }
+
+  /// Every page of `ws`'s chats at once, for what plans outside a plan's reads (none of the scheduler's does).
+  #pagesNow(ws: string): SessionPage[] {
+    const size = this.#d.planPage ?? PLAN_PAGE;
+    const out: SessionPage[] = [];
+    for (let after = ""; ; ) {
+      const page = this.#d.sessionsIn(ws, after, size);
+      out.push(page);
+      if (page.keys.length < size) return out;
+      after = page.keys.at(-1)!;
+    }
+  }
+
+  /// The sessions that came through connect `id`, every one, a page at a time.
+  async #ofConnect(id: string, each?: (keys: string[]) => void): Promise<string[]> {
+    const out: string[] = [];
+    for (let after = ""; ; ) {
+      const keys = this.#d.store.sessionsOfConnect(id, PLAN_PAGE, after);
+      out.push(...keys);
+      each?.(keys);
+      if (keys.length < PLAN_PAGE) return out;
+      after = keys.at(-1)!;
+      await giveBack();
+    }
+  }
+
+  async #chatsOfConnect(id: string): Promise<string[]> {
     const out = new Set<string>();
-    for (const r of this.#d.store.sessionsOfConnect(id, 2_000)) out.add(this.handover.together(r)[0] ?? r);
+    await this.#ofConnect(id, (keys) => {
+      const reads = this.#d.store.sessionPage(keys);
+      for (const r of keys) out.add(this.handover.together(r, reads)[0] ?? r);
+    });
     return [...out];
   }
 

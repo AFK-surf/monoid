@@ -20,12 +20,29 @@ export type ItemState = { state: State; error?: string; progress?: Progress; wai
 /// How an item arrives: stopped, waiting for `stoppedFor` (the station it arrives at keeps it stopped).
 export type Arrive = { stoppedFor?: Need };
 
+/// What one plan reads once for all the modules that need it (move/station.ts makes it for each plan): the
+/// workspace's chats here a page at a time, each page read once whichever module asks first, and the canonical clones
+/// the linked worktrees in a directory hang on, as the repository cache's clones say them.
+export type PlanReads = {
+  /// The workspace's chats here, a page at a time (store.ts `SessionPage`), the main thread given back between pages.
+  pages(): AsyncIterable<import("../store/store.ts").SessionPage>;
+  /// Every page read (`pages` gone through), so that what plans without waiting finds them (`loaded`): the scheduler's,
+  /// before the modules plan.
+  load(): Promise<void>;
+  /// The pages read so far.
+  loaded(): readonly import("../store/store.ts").SessionPage[];
+  /// The canonical clones the linked worktrees in `dir`, or right under it, hang on, as the clones say them (repos.ts
+  /// `worktreesOfClones`, read once a plan): nothing of a chat's room is read.
+  worktrees(dir: string): Promise<{ repo: string; url: string }[]>;
+};
+
 export interface Module {
   readonly id: string;
   /// The modules its items may need (declared and checked: an item's `needs` names only these).
   readonly needs: readonly string[];
   /// What it would move of `ws` here to `to` (bounded: a page of each of what there are many of).
-  plan(ws: string, to: string): Promise<Item[]>;
+  /// `reads`: what this plan reads once for its modules.
+  plan(ws: string, to: string, reads?: PlanReads): Promise<Item[]>;
   /// The item moved to `to`, its progress told as it goes; safe to start again after a stop. `stoppedFor`: what it
   /// needs is not usable there yet: it arrives stopped, waiting for that (the scheduler says so, never the module).
   move(item: Item, to: string, progress: (p: Progress) => void, opts?: Arrive): Promise<void>;

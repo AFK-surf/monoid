@@ -6,11 +6,11 @@
 // (chats.ts), and its own move only adds the worktree (replica/retire.ts `rebuildGits` with `clone: false`).
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { Refused, withBytes, type Bytes } from "../mesh/bus.ts";
 import { fileBytes } from "../mesh/files.ts";
-import type { Item, ItemState, Module, Progress } from "./module.ts";
+import type { Item, ItemState, Module, PlanReads, Progress } from "./module.ts";
 
 type Json = any;
 
@@ -18,7 +18,7 @@ export type ReposDeps = {
   data: string;
   reposDir: string;
   /// The working directories of `ws`'s chats here (at most a plan's).
-  workspaces: (ws: string) => string[];
+  workspaces: (ws: string) => Promise<string[]>;
   git: (dir: string, args: string[]) => Promise<string>;
   ask: (station: string, request: Json) => Promise<Json>;
   here: () => string;
@@ -77,6 +77,47 @@ export async function worktreesIn(workspace: string): Promise<{ repo: string; ur
   return out;
 }
 
+/// What each worktree name of a clone's says its worktree is (`.git/worktrees/<name>/gitdir`), read once and kept for
+/// the process's life: a name under a clone does not come to mean another path, and one removed drops out of the
+/// clone's listing.
+const gitdirs = new Map<string, string>();
+
+/// The linked worktrees of canonical clones, as each clone says them (`.git/worktrees/<name>/gitdir` names the
+/// worktree's `.git`), by the directory each is in and the one above it (where `worktreesIn` finds them: a chat's room,
+/// or a directory right under it): the repository cache's clones (`reposDir`) and those found elsewhere on the machine
+/// (`elsewhere`: sessions/presets.ts `RepoIndex`). What it asks of the disk is the cache's listing and, a clone, its
+/// config and its list of worktrees (a worktree's gitdir only as its name first appears), never a chat's. Git writes
+/// those paths resolved (`/private/var/…` for a `/var/…` that links there): each under `dataDir` is said by `dataDir`
+/// too.
+export async function worktreesOfClones(reposDir: string, elsewhere: string[], dataDir: string): Promise<Map<string, { repo: string; url: string }[]>> {
+  const out = new Map<string, { repo: string; url: string }[]>();
+  const real = await realpath(dataDir).catch(() => dataDir);
+  const inCache = (await readdir(reposDir).catch(() => [] as string[])).sort().map((name) => join(reposDir, name));
+  for (const repo of [...new Set([...inCache, ...elsewhere])]) {
+    const config = await readFile(join(repo, ".git", "config"), "utf8").catch(() => "");
+    const m = /\[remote "origin"\][^[]*?url\s*=\s*(.+)/.exec(config);
+    if (m === null) continue;
+    const url = m[1]!.trim();
+    for (const wt of (await readdir(join(repo, ".git", "worktrees")).catch(() => [] as string[])).sort()) {
+      const at = join(repo, ".git", "worktrees", wt, "gitdir");
+      let gitdir = gitdirs.get(at);
+      if (gitdir === undefined) {
+        gitdir = (await readFile(at, "utf8").catch(() => "")).trim();
+        if (gitdir !== "") gitdirs.set(at, gitdir);
+      }
+      if (gitdir === "" || !isAbsolute(gitdir)) continue;
+      const dir = dirname(gitdir);
+      const said = real !== dataDir && dir.startsWith(real + "/") ? dataDir + dir.slice(real.length) : null;
+      for (const at of [dir, dirname(dir), ...(said !== null ? [said, dirname(said)] : [])]) {
+        const list = out.get(at) ?? [];
+        if (!list.some((x) => x.url === url)) list.push({ repo, url });
+        out.set(at, list);
+      }
+    }
+  }
+  return out;
+}
+
 export const repoItemId = (url: string) => `repo:${url}`;
 
 /// What a station keeps of the clones moves made here (removed on a move back), by remote.
@@ -108,10 +149,12 @@ export class ReposModule implements Module {
     }
   }
 
-  async plan(ws: string, to: string): Promise<Item[]> {
+  async plan(ws: string, to: string, reads?: PlanReads): Promise<Item[]> {
     const items: Item[] = [];
-    for (const w of this.#d.workspaces(ws)) {
-      for (const r of await worktreesKept(w)) {
+    const workspaces: string[] = [];
+    if (reads !== undefined) for await (const page of reads.pages()) for (const r of page.rows()) workspaces.push(r.workspace);
+    for (const w of reads !== undefined ? workspaces : await this.#d.workspaces(ws)) {
+      for (const r of reads !== undefined ? await reads.worktrees(w) : await worktreesKept(w)) {
         const id = repoItemId(r.url);
         if (items.some((x) => x.id === id)) continue;
         this.#local.set(id, r.repo);

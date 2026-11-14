@@ -9,7 +9,7 @@ import { readFileSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { log } from "../ops/log.ts";
-import { type Item, type ItemState, type Module, type Need, type Progress, named, sameItem } from "./module.ts";
+import { type Item, type ItemState, type Module, type Need, type PlanReads, type Progress, named, sameItem } from "./module.ts";
 
 /// An item as a plan shows it: what it is, where it stands, and what would be stopped here if it moved alone.
 export type Planned = Item & ItemState & { wouldStop: Need[] };
@@ -45,6 +45,8 @@ export type SchedulerDeps = {
   hold?: () => () => void;
   /// What a turn under way as the station stopped says as its outcome, in the viewer's words.
   restarted?: () => string;
+  /// What one plan of `ws` reads once for all its modules (module.ts `PlanReads`); none: each module its own.
+  reads?: (ws: string) => PlanReads;
 };
 
 const stoppedFile = (data: string) => join(data, "move", "stopped.json");
@@ -171,8 +173,15 @@ export class Scheduler {
   /// What a move of `ws` to `to` would be: every module's items, where each stands, what each would stop.
   async plan(ws: string, to: string): Promise<Plan> {
     const items: Item[] = [];
+    const reads = this.#d.reads?.(ws);
+    // (the workspace's chats read first, a page at a time, so that a module that plans without waiting has them)
+    await reads?.load();
+    let first = true;
     for (const m of this.#modules.values()) {
-      for (const item of await m.plan(ws, to)) {
+      // (the main thread given back between modules, as between a module's pages)
+      if (!first) await new Promise<void>((resolve) => setImmediate(resolve));
+      first = false;
+      for (const item of await m.plan(ws, to, reads)) {
         for (const n of item.needs) if (!m.needs.includes(n.module)) throw new Error(`module ${m.id}'s item ${item.id} needs ${named(n)}, of a module it does not declare`);
         items.push(item);
       }

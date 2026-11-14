@@ -1836,8 +1836,8 @@ export class Store {
   }
 
   /// The sessions that came through connect `id`, at most `limit` (what a connect's move waits for).
-  sessionsOfConnect(id: string, limit: number): string[] {
-    return this.#all("SELECT key FROM sessions WHERE connect = ? ORDER BY key LIMIT ?", id, limit).map((r) => r.key as string);
+  sessionsOfConnect(id: string, limit: number, after = ""): string[] {
+    return this.#all("SELECT key FROM sessions WHERE connect = ? AND key > ? ORDER BY key LIMIT ?", id, after, limit).map((r) => r.key as string);
   }
 
   /// The sessions of workspace `ws` (null: the home one's, which say none) after `after`, at most `limit`, handed ones
@@ -1852,6 +1852,64 @@ export class Store {
     const named_ = ws === null && home !== null && home !== "" ? this.#all(page, home, after, limit) : [];
     const handed = this.#all(page, handedWs(named ?? ""), after, limit);
     return [...new Set([...own, ...named_, ...handed].map((r) => r.key as string))].sort().slice(0, limit);
+  }
+
+  /// `sessionsOfWs`'s page (the same keys in the same order) as a page of sessions (`SessionPage`), read in one
+  /// statement: each session's row, where it was handed (kept as `handedTo` keeps it) and the accounts its runtime
+  /// sessions ran on.
+  sessionPageOfWs(ws: string | null, home: string | null, after: string, limit: number): SessionPage {
+    const named = ws === null ? home : ws;
+    const branch = "SELECT * FROM (SELECT * FROM sessions WHERE COALESCE(ws, '') = ? AND key > ? ORDER BY key LIMIT ?)";
+    const homeToo = ws === null && home !== null && home !== "";
+    const ran = "(SELECT json_group_array(profile) FROM (SELECT profile, MIN(id) AS first FROM runtime_sessions WHERE session_key = u.key AND profile IS NOT NULL GROUP BY profile ORDER BY first))";
+    const sql = `SELECT u.*, h.station AS h_station, h.ws AS h_ws, h.thread AS h_thread, h.there AS h_there, h.at AS h_at, ${ran} AS h_ran FROM (${[branch, ...(homeToo ? [branch] : []), branch].join(" UNION ALL ")}) u LEFT JOIN handed_over h ON h.session = u.key ORDER BY u.key LIMIT ?`;
+    const args: Arg[] = [ws ?? "", after, limit, ...(homeToo ? [home, after, limit] : []), handedWs(named ?? ""), after, limit, limit];
+    const rows: SessionRow[] = [];
+    const ranOf = new Map<string, string[]>();
+    for (const r of this.#all(sql, ...args)) {
+      const key = r.key as string;
+      if (!this.db.isTransaction) this.#handed.set(key, r.h_station === null || r.h_station === undefined ? null : { session: key, station: r.h_station, ws: r.h_ws ?? null, thread: r.h_thread ?? null, there: r.h_there ?? null, at: r.h_at });
+      ranOf.set(key, JSON.parse((r.h_ran as string | null) ?? "[]") as string[]);
+      rows.push(toSession(r));
+    }
+    return new SessionPage(this, rows.map((r) => r.key), rows, ranOf);
+  }
+
+  /// What a page of sessions is read with at once (move/: a plan's modules): their rows (given, or read as first asked),
+  /// the sessions of each one's still.fail home chat, the accounts their runtime sessions ran on, each one statement for
+  /// the page and one for the sessions a home chat brings that the page lacks; a session not of the page is read alone.
+  sessionPage(keys: readonly string[], rows?: readonly SessionRow[]): SessionPage {
+    return new SessionPage(this, keys, rows);
+  }
+
+  /// Of sessions `keys`: those that are the home of a still.fail chat, with that chat's sessions (`homeChat`: its first
+  /// such thread), in one statement.
+  stillfailHomes(keys: readonly string[]): Map<string, string[]> {
+    const out = new Map<string, string[]>();
+    if (keys.length === 0) return out;
+    const first = new Map<string, number>();
+    for (const r of this.#all("SELECT t.id, t.home, t.surface, m.session FROM threads t LEFT JOIN thread_sessions m ON m.thread = t.id WHERE t.home IN (SELECT value FROM json_each(?)) ORDER BY t.id, m.joined_at, m.rowid LIMIT ?", JSON.stringify(keys), keys.length * 64)) {
+      const home = r.home as string;
+      if (!first.has(home)) first.set(home, r.id as number);
+      if (first.get(home) !== r.id || r.surface !== STILLFAIL_SURFACE) continue;
+      const list = out.get(home) ?? [];
+      if (typeof r.session === "string") list.push(r.session);
+      out.set(home, list);
+    }
+    return out;
+  }
+
+  /// The accounts sessions `keys`' runtime sessions ran on, each session's in the order its runtime sessions are kept
+  /// (by id), in one statement.
+  ranOnOf(keys: readonly string[]): Map<string, string[]> {
+    const out = new Map<string, string[]>();
+    if (keys.length === 0) return out;
+    for (const r of this.#all("SELECT session_key, profile, MIN(id) AS first FROM runtime_sessions WHERE session_key IN (SELECT value FROM json_each(?)) AND profile IS NOT NULL GROUP BY session_key, profile ORDER BY session_key, first LIMIT ?", JSON.stringify(keys), keys.length * 64)) {
+      const list = out.get(r.session_key as string) ?? [];
+      list.push(r.profile as string);
+      out.set(r.session_key as string, list);
+    }
+    return out;
   }
 
   /// No chat of a connect's thread runs on another station any more (one handed back here).
@@ -4259,4 +4317,77 @@ export class Store {
 function checkedAt(value: Json): number | null {
   const at = value !== null && typeof value === "object" && !Array.isArray(value) ? value.checkedAt : undefined;
   return typeof at === "number" && Number.isInteger(at) ? at : null;
+}
+
+/// A page of sessions as `Store.sessionPage` and `Store.sessionPageOfWs` read it.
+export class SessionPage {
+  readonly #store: Store;
+  /// Its sessions, in order.
+  readonly keys: readonly string[];
+  readonly #keys: ReadonlySet<string>;
+  readonly #rows = new Map<string, SessionRow | null>();
+  #rowsRead = false;
+  #homes: Map<string, string[]> | null = null;
+  /// Each session's accounts, of those read (`#ranOf`).
+  #ran = new Map<string, string[]>();
+  #ranOf: Set<string> | null = null;
+
+  constructor(store: Store, keys: readonly string[], rows?: readonly SessionRow[], ran?: Map<string, string[]>) {
+    this.#store = store;
+    this.keys = keys;
+    this.#keys = new Set(keys);
+    if (rows !== undefined) this.#take(keys, rows);
+    if (ran !== undefined) {
+      this.#ran = ran;
+      this.#ranOf = new Set(keys);
+    }
+  }
+
+  #take(keys: Iterable<string>, rows: readonly SessionRow[]): void {
+    for (const k of keys) this.#rows.set(k, null);
+    for (const r of rows) this.#rows.set(r.key, r);
+    this.#rowsRead = true;
+  }
+
+  /// Its sessions' rows, in order (those that are).
+  rows(): SessionRow[] {
+    return this.keys.flatMap((k) => this.session(k) ?? []);
+  }
+
+  session(key: string): SessionRow | null {
+    if (!this.#rowsRead && this.#keys.has(key)) this.#take(this.#keys, this.#store.sessionsOf([...this.#keys]));
+    if (this.#rows.has(key)) return this.#rows.get(key) ?? null;
+    return this.#store.getSession(key);
+  }
+
+  /// The sessions of `key`'s still.fail home chat (null: it is the home of none).
+  homeMembers(key: string): string[] | null {
+    if (!this.#keys.has(key)) return this.#store.stillfailHomes([key]).get(key) ?? null;
+    if (this.#homes === null) {
+      this.#homes = this.#store.stillfailHomes([...this.#keys]);
+      // (those a home chat brings that the page lacks: their rows and accounts read with the page's)
+      const more = [...new Set([...this.#homes.values()].flat())].filter((k) => !this.#keys.has(k) && !this.#rows.has(k));
+      if (more.length > 0) {
+        if (!this.#rowsRead) this.#take(this.#keys, this.#store.sessionsOf([...this.#keys]));
+        const got = this.#store.sessionsOf(more);
+        for (const k of more) this.#rows.set(k, null);
+        for (const r of got) this.#rows.set(r.key, r);
+        if (this.#ranOf !== null) {
+          for (const [k, list] of this.#store.ranOnOf(more)) this.#ran.set(k, list);
+          for (const k of more) this.#ranOf.add(k);
+        }
+      }
+    }
+    return this.#homes.get(key) ?? null;
+  }
+
+  /// The accounts `key`'s runtime sessions ran on, in order.
+  ranOn(key: string): string[] {
+    if (this.#ranOf === null && (this.#keys.has(key) || this.#rows.has(key))) {
+      this.#ranOf = new Set([...this.#keys, ...this.#rows.keys()]);
+      this.#ran = this.#store.ranOnOf([...this.#ranOf]);
+    }
+    if (this.#ranOf !== null && this.#ranOf.has(key)) return this.#ran.get(key) ?? [];
+    return this.#store.ranOnOf([key]).get(key) ?? [];
+  }
 }

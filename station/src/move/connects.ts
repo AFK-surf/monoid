@@ -11,10 +11,10 @@ export type ConnectsDeps = {
   /// This station's connects of `ws`: id, name, kind, mode.
   own: (ws: string) => { id: string; name: string; kind: string; mode: string }[];
   /// The chat items whose sessions came through connect `id` here (at most a plan's).
-  chatsOf: (id: string) => string[];
+  chatsOf: (id: string) => Promise<string[]>;
   /// How connect `id` goes, and the session keys that came through it here.
   kindOf?: (id: string) => { kind: string; mode: string } | null;
-  keysOf?: (id: string) => string[];
+  keysOf?: (id: string) => Promise<string[]>;
   /// Where connect `id` (as this station names it) runs now (null: here or not known).
   runsOn: (id: string) => string | null;
   /// Moved to `to`; `awaiting`: its chats still here (a connect that is not routed), whose messages are kept there
@@ -40,19 +40,21 @@ export function connectsModule(d: ConnectsDeps): Module {
     async plan(ws, to) {
       target = to;
       const here = d.here();
-      return d.own(ws).map((c): Item => {
+      const items: Item[] = [];
+      for (const c of d.own(ws)) {
         // (a routed one goes once its chats are there; one that is not runs its chats where it runs: they need it,
         // and are stopped here as it goes)
         const routed = (c.kind === "slack" || c.kind === "feishu") && c.mode !== "single-session";
-        return { module: "connects", id: itemOf(c.id, here), label: c.name, needs: routed ? d.chatsOf(c.id).map((id) => ({ module: "chats", id })) : [] };
-      });
+        items.push({ module: "connects", id: itemOf(c.id, here), label: c.name, needs: routed ? (await d.chatsOf(c.id)).map((id) => ({ module: "chats", id })) : [] });
+      }
+      return items;
     },
     async move(item, to) {
       const local = localOf(item.id, d.here());
       // (a connect that is not routed: its chats here are still to come, and what it says meanwhile waits for them)
       const kind = d.kindOf?.(local) ?? null;
       const routed = kind === null || ((kind.kind === "slack" || kind.kind === "feishu") && kind.mode !== "single-session");
-      await d.move(local, to, routed ? [] : d.keysOf?.(local) ?? []);
+      await d.move(local, to, routed ? [] : ((await d.keysOf?.(local)) ?? []));
       moved.set(item.id, to);
     },
     async back(item, from) {

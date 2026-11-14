@@ -4,16 +4,22 @@
 // asked of the station it is on (`move.back`). Stopped here, it is held as one being handed over is.
 import type { Handover } from "../replica/handover.ts";
 import type { Store } from "../store/store.ts";
-import { comingWs, handedWs } from "../store/rows.ts";
-import type { Item, ItemState, Module, Need, Progress } from "./module.ts";
+import { type SessionRow, comingWs, handedWs } from "../store/rows.ts";
+import type { Item, ItemState, Module, Need, PlanReads, Progress } from "./module.ts";
+import { repoItemId } from "./repos.ts";
 import { accountItemId } from "./accounts.ts";
 import { connectItemId } from "./connects.ts";
 
 type Json = any;
 
 /// The chats a plan reads of a workspace at a time: it reads them all, a page at a time (Office-VM-1 had 2,384, of
-/// which a bound of 2,000 left 384 never moved, and its done of total wrong).
-export const PLAN_PAGE = 500;
+/// which a bound of 2,000 left 384 never moved, and its done of total wrong), each page in a few statements whatever
+/// its chats (store.ts `SessionPage`), the loop given back between pages (`giveBack`).
+export const PLAN_PAGE = 200;
+
+/// The main thread given back between a plan's pages: what waits behind it goes first, so that no hold of it grows
+/// with the chats.
+export const giveBack = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 export type ChatsDeps = {
   store: Store;
@@ -25,16 +31,12 @@ export type ChatsDeps = {
   here: () => string;
   /// How connect `id` goes (connects/workspace.ts `kindOf`; null: not known).
   kindOf: (id: string) => { kind: string; mode: string } | null;
-  /// The repos items (repos.ts) the linked worktrees of sessions `keys` hang on, and the vault items (vault.ts) of the
-  /// owners whose grants they hold.
-  reposOf: (keys: string[]) => Promise<string[]>;
-  vaultsOf: (keys: string[], ws: string) => string[];
+  /// The vault items (vault.ts) of the owners whose grants each of sessions `keys` holds (one read for them all).
+  vaultsOf: (keys: string[], ws: string) => Map<string, string[]>;
   /// Whether a busy chat's turn is waited for as it moves (station_move `wait`; none: it is).
   wait?: () => boolean;
-  /// The sessions of `ws` here (null: the home one's), after `after`, at most `limit`.
-  sessionsIn: (ws: string, after: string, limit: number) => string[];
-  /// A page's size (`PLAN_PAGE`; a test's smaller).
-  page?: number;
+  /// What a plan of `ws` reads once (move/station.ts), where the scheduler gave none.
+  reads: (ws: string) => PlanReads;
 };
 
 export function chatsModule(d: ChatsDeps): Module {
@@ -42,44 +44,49 @@ export function chatsModule(d: ChatsDeps): Module {
   return {
     id: "chats",
     needs: ["accounts", "connects", "repos", "vault"],
-    async plan(ws, to) {
+    async plan(ws, to, given) {
       const items: Item[] = [];
       const seen = new Set<string>();
-      const page = d.page ?? PLAN_PAGE;
-      const keys: string[] = [];
-      for (let after = ""; ; ) {
-        const got = d.sessionsIn(ws, after, page);
-        keys.push(...got);
-        if (got.length < page) break;
-        after = got.at(-1)!;
-      }
-      for (const key of keys) {
-        if (seen.has(key)) continue;
-        const row = d.store.getSession(key);
-        if (row === null || row.ws?.startsWith(comingWs("")) === true) continue;
-        const keys = row.ws?.startsWith(handedWs("")) === true ? [key] : d.handover.together(key);
-        for (const k of keys) seen.add(k);
-        const needs: Need[] = [];
-        for (const [pid, a] of d.handover.accountsOf(keys)) {
-          const id = accountItemId(pid, a);
-          if (!needs.some((n) => n.id === id)) needs.push({ module: "accounts", id });
+      const plan = given ?? d.reads(ws);
+      for await (const reads of plan.pages()) {
+        const kept: { key: string; row: SessionRow; keys: string[] }[] = [];
+        for (const row of reads.rows()) {
+          const key = row.key;
+          if (seen.has(key)) continue;
+          if (row.ws?.startsWith(comingWs("")) === true) continue;
+          const keys = row.ws?.startsWith(handedWs("")) === true ? [key] : d.handover.together(key, reads);
+          for (const k of keys) seen.add(k);
+          kept.push({ key, row, keys });
         }
-        // (one of a connect that is not routed needs that connect there: it runs where its connect runs)
-        for (const k of keys) {
-          const c = d.store.getSession(k)?.connect ?? "";
-          if (c === "" || c === "ember" || c === "chat") continue;
-          const kind = d.kindOf(c);
-          if (kind !== null && (kind.mode === "single-session" || (kind.kind !== "slack" && kind.kind !== "feishu"))) {
-            const id = connectItemId(c, d.here());
-            if (!needs.some((n) => n.id === id)) needs.push({ module: "connects", id });
+        const grants = d.vaultsOf([...new Set(kept.flatMap((x) => x.keys))], ws);
+        for (const { key, row, keys } of kept) {
+          const needs: Need[] = [];
+          for (const [pid, a] of d.handover.accountsOf(keys, reads)) {
+            const id = accountItemId(pid, a);
+            if (!needs.some((n) => n.id === id)) needs.push({ module: "accounts", id });
           }
+          // (one of a connect that is not routed needs that connect there: it runs where its connect runs)
+          for (const k of keys) {
+            const c = reads.session(k)?.connect ?? "";
+            if (c === "" || c === "ember" || c === "chat") continue;
+            const kind = d.kindOf(c);
+            if (kind !== null && (kind.mode === "single-session" || (kind.kind !== "slack" && kind.kind !== "feishu"))) {
+              const id = connectItemId(c, d.here());
+              if (!needs.some((n) => n.id === id)) needs.push({ module: "connects", id });
+            }
+          }
+          // (the repositories its linked worktrees hang on; its owner's secrets where it holds a grant of them)
+          const repos = new Set<string>();
+          for (const k of keys) {
+            const s = reads.session(k);
+            if (s !== null) for (const r of await plan.worktrees(s.workspace)) repos.add(repoItemId(r.url));
+          }
+          for (const id of repos) needs.push({ module: "repos", id });
+          for (const id of new Set(keys.flatMap((k) => grants.get(k) ?? []))) needs.push({ module: "vault", id });
+          const handed = d.store.handedTo(key);
+          const why = handed !== null ? null : d.handover.check(key, to, { planning: true, reads });
+          items.push({ module: "chats", id: keys[0]!, label: row.title ?? key, needs, ...(why !== null ? { cannot: why } : {}) });
         }
-        // (the repositories its linked worktrees hang on; its owner's secrets where it holds a grant of them)
-        for (const id of await d.reposOf(keys)) needs.push({ module: "repos", id });
-        for (const id of d.vaultsOf(keys, ws)) needs.push({ module: "vault", id });
-        const handed = d.store.handedTo(key);
-        const why = handed !== null ? null : d.handover.check(key, to, { planning: true });
-        items.push({ module: "chats", id: keys[0]!, label: row.title ?? key, needs, ...(why !== null ? { cannot: why } : {}) });
       }
       return items;
     },

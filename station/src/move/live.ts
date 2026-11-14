@@ -83,8 +83,9 @@ export const MovesLive = Layer.effectDiscard(
       },
       profiles: () => (Array.isArray(agents.config.raw()?.profiles) ? agents.config.raw().profiles : []),
       moveProfile: (id, to) => agents.sharing.moveProfile(id, to),
-      sessionsIn: (ws, after, limit) => store.sessionsOfWs(cloud.home() === ws ? null : ws, cloud.home(), after, limit),
+      sessionsIn: (ws, after, limit) => store.sessionPageOfWs(cloud.home() === ws ? null : ws, cloud.home(), after, limit),
       reposDir: hub.reposDir(),
+      clonesElsewhere: async () => (await hub.repoIndex.repos()).map((c) => c.path),
       git: gitRun,
       hasGit: gitHere,
       changed: () => changed(),
@@ -99,8 +100,21 @@ export const MovesLive = Layer.effectDiscard(
           ...(store.db.prepare("SELECT DISTINCT owner FROM vault_plain WHERE ws = ? LIMIT 500").all(ws) as { owner: string }[]).map((r) => r.owner),
           ...vaultStore(store.db).vaults(ws).map((x) => x.owner),
         ])],
-        grantOwners: (keys) => [...new Set((store.db.prepare("SELECT body FROM vault_grants WHERE session IN (SELECT value FROM json_each(?)) LIMIT 500").all(JSON.stringify(keys)) as { body: string }[])
-          .flatMap((r) => { try { const o = JSON.parse(r.body)?.request?.owner; return typeof o === "string" ? [o] : []; } catch { return []; } }))],
+        // (each session's owners, of the grants it holds: one read for a page of chats)
+        grantOwners: (keys) => {
+          const out = new Map<string, string[]>();
+          for (const r of store.db.prepare("SELECT session, body FROM vault_grants WHERE session IN (SELECT value FROM json_each(?)) ORDER BY session, rowid LIMIT ?").all(JSON.stringify(keys), keys.length * 50) as { session: string; body: string }[]) {
+            let o: unknown;
+            try {
+              o = JSON.parse(r.body)?.request?.owner;
+            } catch {}
+            if (typeof o !== "string") continue;
+            const list = out.get(r.session) ?? [];
+            if (!list.includes(o)) list.push(o);
+            out.set(r.session, list);
+          }
+          return out;
+        },
         plain: plainStore(store.db),
         vaults: vaultStore(store.db) as Json,
       },

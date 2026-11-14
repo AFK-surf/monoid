@@ -3,7 +3,7 @@
 // of the test's; and a station shaped like the one moving was measured for (`officeShape`).
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach } from "node:test";
 import { PeerBus, bytesOf, withBytes } from "../src/mesh/bus.ts";
 import { WorkspaceConnects } from "../src/connects/workspace.ts";
@@ -20,6 +20,7 @@ import { vaultStore } from "../src/vault/store.ts";
 import { METHOD, fromPeer } from "../src/sessions/messages.ts";
 import { READ, forPeer } from "../src/sessions/others.ts";
 import { Rig, testClock } from "./hub-fakes.ts";
+import { MANUAL } from "../src/store/rows.ts";
 import { Admin } from "../src/api/admin.ts";
 
 type Json = any;
@@ -129,8 +130,9 @@ export function world(ids: string[] = [A, B]) {
           rig.raw.profiles = rig.raw.profiles.filter((x: Json) => x.id !== pid);
           return { id: pid };
         },
-        sessionsIn: (ws, after, limit) => rig.store.sessionsOfWs(ws === WS ? null : ws, WS, after, limit),
+        sessionsIn: (ws, after, limit) => rig.store.sessionPageOfWs(ws === WS ? null : ws, WS, after, limit),
         reposDir: join(rig.dir, "repos"),
+        clonesElsewhere: async () => st.elsewhere ?? [],
         room: async () => ({ free: st.free }),
         hasGit: async () => true,
         lackMost: 50,
@@ -156,7 +158,7 @@ export function world(ids: string[] = [A, B]) {
         homeOf: (ws) => join(rig.dir, "agent-homes", ws),
         vault: {
           owners: (ws) => (rig.store.db.prepare("SELECT DISTINCT owner FROM vault_plain WHERE ws = ?").all(ws) as { owner: string }[]).map((r) => r.owner),
-          grantOwners: () => [],
+          grantOwners: () => new Map(),
           plain: plainStore(rig.store.db),
           vaults: vaultStore(rig.store.db) as Json,
         },
@@ -245,3 +247,65 @@ export function filesOf(dir: string): Record<string, string> {
 export const entries = (st: Station, thread: number) => st.rig.store.entriesAfter(thread, 0).map((e) => `${e.authorKind}:${e.text ?? ""}`);
 export const homeThread = (st: Station, key: string) => st.rig.store.homeChat(key)?.id ?? st.rig.store.sessionThreads(key)[0]!.thread.id;
 
+/// A's chats as the station moving was measured for had them (Office-VM-1, 2026-11-14: 2,384 in its home workspace, 149
+/// of them live, most of them Slack threads' chats, 9 accounts, 5 connects, 6 jobs), `n` of them in that shape: each a
+/// Slack thread of one of A's Slack connects with three messages and a runtime session, those past the live ones
+/// archived; half saying no workspace, half the home's id; 30 canonical clones in the repository cache, a linked
+/// worktree of one of them in every sixth chat's room, 400 at most (as git leaves them, without git).
+/// `git`: the clones and worktrees made by git, each clone's remote a bare repository of the test's (what a move of
+/// them runs); else only the files git would leave, which a plan reads.
+export function officeShape(n: number, o: { git?: boolean } = {}) {
+  const w = world();
+  const a = w.get(A);
+  for (let k = 0; k < 6; k++) a.rig.raw.profiles.push({ id: `p${k}`, runtime: "claude", home: `homes/p${k}`, share: { id: `sh-p${k}` } });
+  for (let k = 0; k < 3; k++) a.rig.raw.connects.push({ id: `sl${k}`, slack: { botName: `bot ${k}` }, bind: { runtime: "claude" } });
+  const store = a.rig.store;
+  const profiles = ["cc", "p0", "p1", "p2", "p3", "p4", "p5", "cx", "mine"];
+  const live = Math.round((n * 149) / 2384);
+  const keys: string[] = [];
+  for (let i = 0; i < n; i++) {
+    const ts = `${1700000000 + i}.000100`;
+    const connect = ["cl", "cl", "cl", "sl0", "sl1", "sl2", "gpt"][i % 7]!;
+    const key = `${connect}:C1:${ts}`;
+    const profile = profiles[i % profiles.length]!;
+    store.insertSession({ key, connect, runtime: "claude", profile, workspace: join(a.rig.dir, "sessions", `s${i}`, "workspace"), token: `office${i}`, createdAt: 1, lastActiveAt: 1, ws: i % 2 === 0 ? null : WS });
+    const t = store.openThread("slack:T1", "C1", ts, null, "p@x");
+    store.joinThread(t.id, key, connect);
+    for (let m = 0; m < 3; m++) store.insertMessage({ thread: t.id, ts: `${1700000000 + i}.00010${m}`, authorKind: "person", author: "U1", text: "hi" });
+    store.ranIn(key, `run-${i}`, profile);
+    if (i >= live) store.setArchived(key, true, MANUAL);
+    keys.push(key);
+  }
+  for (let k = 0; k < 6; k++) a.jobs.push({ id: `A-job-${k}`, session: keys[k]!, name: `dev${k}`, cwd: join(a.rig.dir, "sessions", `s${k}`, "workspace"), command: "npm run dev" } as Json);
+  const run = (dir: string, ...args: string[]) => execFileSync("git", ["-C", dir, ...args], { encoding: "utf8", env: gitEnv(a.rig.dir), stdio: ["ignore", "pipe", "pipe"] });
+  for (let c = 0; c < 30; c++) {
+    const repo = join(a.rig.dir, "repos", `r${c}`);
+    if (o.git === true) {
+      const bare = join(a.rig.dir, "remotes", `r${c}.git`);
+      mkdirSync(bare, { recursive: true });
+      run(bare, "init", "-q", "--bare", "-b", "main");
+      execFileSync("git", ["clone", "-q", bare, repo], { env: gitEnv(a.rig.dir), stdio: "ignore" });
+      writeFileSync(join(repo, "README"), `r${c}\n`);
+      run(repo, "add", "-A");
+      run(repo, "commit", "-q", "-m", "first");
+      run(repo, "push", "-q", "origin", "HEAD:main");
+      continue;
+    }
+    mkdirSync(join(repo, ".git"), { recursive: true });
+    writeFileSync(join(repo, ".git", "config"), `[remote "origin"]\n\turl = https://example.test/r${c}.git\n`);
+  }
+  for (let i = 0; i < n && i < 6 * 400; i += 6) {
+    const repo = join(a.rig.dir, "repos", `r${i % 30}`);
+    const at = join(a.rig.dir, "sessions", `s${i}`, "workspace", `r${i % 30}`);
+    if (o.git === true) {
+      mkdirSync(dirname(at), { recursive: true });
+      run(repo, "worktree", "add", "-q", "-b", `s${i}`, at);
+      continue;
+    }
+    mkdirSync(join(repo, ".git", "worktrees", `s${i}`), { recursive: true });
+    writeFileSync(join(repo, ".git", "worktrees", `s${i}`, "gitdir"), `${join(at, ".git")}\n`);
+    mkdirSync(at, { recursive: true });
+    writeFileSync(join(at, ".git"), `gitdir: ${join(repo, ".git", "worktrees", `s${i}`)}\n`);
+  }
+  return { w, a, keys, live };
+}

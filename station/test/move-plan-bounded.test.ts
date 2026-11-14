@@ -1,15 +1,21 @@
 // What a migration's plan is (move/scheduler.ts `plan`, over the modules move/station.ts makes) on a station with every
 // case the chats plan knows, held to a dump of it as it was before its reads went by pages (each item: module, id,
-// label, needs, cannot, state, wouldStop), so that how it reads never changes what it says.
+// label, needs, cannot, state, wouldStop), so that how it reads never changes what it says; and what it costs on a
+// station of the real one's shape (move-world.ts `officeShape`): its statements a page of chats whatever their number,
+// each by an index, and the main thread given back between pages.
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { DatabaseSync, type SQLInputValue, StatementSync } from "node:sqlite";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import { test } from "node:test";
 import { sessionKey } from "../src/sessions/hub.ts";
 import { MANUAL, comingWs } from "../src/store/rows.ts";
-import { A, B, WS, world } from "./move-world.ts";
+import { PLAN_PAGE } from "../src/move/chats.ts";
+import { A, B, WS, officeShape, world } from "./move-world.ts";
 
 type Json = any;
+const require = createRequire(import.meta.url);
 
 /// A's chats and accounts with every case a plan knows (keys and paths fixed, so the dump says the same each run).
 function cases() {
@@ -133,3 +139,147 @@ const WANT: string[] = [
   "agent-home | home:ws | the agents' memory, presets and skills |  |  | here | ",
   "settings | setting:askToName | askToName |  |  | here | ",
 ];
+
+/// Every statement run on a database, whenever and however it was prepared (the store keeps what it prepares, so a
+/// statement made before a test looks runs many times after): what `watch` counts runs of. Installed before any store
+/// is opened. The plan reads on the main thread's store only: nothing of it goes to a reader thread or the program.
+const dbOf = new WeakMap<object, object>();
+/// The database the last statement was prepared on (the store's is behind store/timed.ts's wrapper: found by preparing).
+let prepared: object | null = null;
+type Seen = { sql: string; args: SQLInputValue[]; turn: number; rows: number };
+const counting: { db: object | null; seen: Seen[]; rows: number; turn: number } = { db: null, seen: [], rows: 0, turn: 0 };
+{
+  const prepare = DatabaseSync.prototype.prepare;
+  DatabaseSync.prototype.prepare = function (this: DatabaseSync, sql: string, ...rest: unknown[]) {
+    const st = (prepare as Json).call(this, sql, ...rest);
+    dbOf.set(st, this);
+    prepared = this;
+    return st;
+  } as Json;
+  for (const m of ["all", "get", "iterate", "run"] as const) {
+    const f = (StatementSync.prototype as Json)[m];
+    (StatementSync.prototype as Json)[m] = function (this: StatementSync, ...args: SQLInputValue[]) {
+      const r = f.apply(this, args);
+      if (counting.db === null || dbOf.get(this) !== counting.db) return r;
+      const one: Seen = { sql: this.sourceSQL, args, turn: counting.turn, rows: m === "all" ? (r as unknown[]).length : m === "get" ? (r === undefined ? 0 : 1) : 0 };
+      counting.seen.push(one);
+      counting.rows += one.rows;
+      if (m === "iterate") return (function* () { for (const x of r as Iterable<unknown>) { one.rows++; counting.rows++; yield x; } })();
+      return r;
+    };
+  }
+}
+
+/// The statements run on `store`'s database from now on (`stop`), with the turn of the loop each ran in (a turn given
+/// back between two statements counts one more), and the rows they fetched.
+function watch(store: Json) {
+  store.db.prepare("SELECT 1");
+  counting.db = prepared;
+  counting.seen = [];
+  counting.rows = 0;
+  let on = true;
+  const tick = () => {
+    if (!on) return;
+    counting.turn++;
+    setImmediate(tick);
+  };
+  setImmediate(tick);
+  return { seen: counting.seen, rows: () => counting.rows, stop: () => void ((on = false), (counting.db = null)), db: store.db as DatabaseSync };
+}
+
+/// What SQLite's plan of a statement scans of a table of the store's (none: by an index; a subquery's rows, `SCAN u`, or
+/// json_each's are no table's).
+function scans(db: DatabaseSync, sql: string, args: SQLInputValue[]): string[] {
+  const tables = new Set((db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as { name: string }[]).map((r) => r.name));
+  return (db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...args) as { detail: string }[]).map((r) => String(r.detail)).filter((d) => {
+    const m = /^SCAN (\w+)/.exec(d);
+    return m !== null && tables.has(m[1]!);
+  });
+}
+
+/// The calls of the file system's promises from now on (`stop`), by name: what a plan asks of the disk (counted by
+/// wrapping node:fs/promises and syncing the modules' bindings of it, as test/main-thread-waits.test.ts counts waits).
+function watchFiles() {
+  const fsp = require("node:fs/promises") as Record<string, Json>;
+  const names = ["stat", "lstat", "readFile", "readdir", "open", "access", "statfs"];
+  const was = new Map(names.map((n) => [n, fsp[n]]));
+  const calls = new Map<string, number>();
+  for (const n of names) fsp[n] = (...args: unknown[]) => (calls.set(n, (calls.get(n) ?? 0) + 1), was.get(n)(...args));
+  syncBuiltinESMExports();
+  return {
+    total: () => [...calls.values()].reduce((a, b) => a + b, 0),
+    calls,
+    stop: () => {
+      for (const n of names) fsp[n] = was.get(n);
+      syncBuiltinESMExports();
+    },
+  };
+}
+
+/// The bound: statements a plan makes for each page of chats (the chats' own page and what reads it, the accounts',
+/// the repositories' and each connect's), and those a plan makes whatever the chats (the jobs', each module's own).
+const A_PAGE = 16;
+const WHATEVER = 64;
+/// Rows: each chat's row once (its page), and once more as a connect's (`sessionsOfConnect`, keys only).
+const ROWS_A_CHAT = 2;
+const ROWS_WHATEVER = 200;
+/// Calls of the file system a plan, whatever the chats: the repository cache's listing, each clone's config and list
+/// of worktrees (repos.ts `worktreesOfClones`), and the agent home's and settings' own; the first plan of a process
+/// reads each worktree's gitdir once more.
+const CLONES = 30;
+const filesMost = (worktrees: number) => 1 + 2 * CLONES + worktrees + 32;
+
+for (const n of [300, 2_384]) {
+  test(`a plan of ${n} chats reads them a page at a time: at most ${A_PAGE} statements a page and ${WHATEVER} more, each by an index, the main thread given back between pages`, async () => {
+    const { a } = officeShape(n);
+    const worktrees = Math.min(Math.ceil(n / 6), 400);
+    const FILES = filesMost(0);
+    const first = watchFiles();
+    const before = await a.moves.scheduler.plan(WS, B);
+    first.stop();
+    assert.ok(first.total() <= filesMost(worktrees), `${first.total()} calls of the file system for the first plan of ${n} chats: at most ${filesMost(worktrees)}, a worktree's gitdir read once`);
+    const w = watch(a.rig.store);
+    const f = watchFiles();
+    const plan = await a.moves.scheduler.plan(WS, B);
+    f.stop();
+    w.stop();
+    assert.deepEqual(dump(plan), dump(before), "the same plan, read again");
+    const pages = Math.ceil(n / PLAN_PAGE);
+    const most = A_PAGE * pages + WHATEVER;
+    const runs = new Map<number, number>();
+    for (const s of w.seen) runs.set(s.turn, (runs.get(s.turn) ?? 0) + 1);
+    const longest = Math.max(...runs.values());
+    const by = new Map<string, { runs: number; rows: number }>();
+    for (const s of w.seen) {
+      const b = by.get(s.sql) ?? { runs: 0, rows: 0 };
+      b.runs++;
+      b.rows += s.rows;
+      by.set(s.sql, b);
+    }
+    const top = [...by].sort((x, y) => y[1].rows - x[1].rows).slice(0, 5).map(([sql, b]) => `  stmt ${b.runs} runs ${b.rows} rows: ${sql.replace(/\s+/g, " ").slice(0, 160)}`);
+    console.log(`PLAN n=${n}: ${w.seen.length} statements, ${w.rows()} rows (${pages} pages, at most ${most}; rows at most ${ROWS_A_CHAT * n + ROWS_WHATEVER}), the longest run in one turn ${longest}, file system calls ${f.total()} ${JSON.stringify(Object.fromEntries(f.calls))}\n${top.join("\n")}`);
+    assert.ok(w.seen.length >= pages, `${w.seen.length} statements for ${n} chats (${pages} pages): the counter sees nothing`);
+    assert.ok(w.seen.length <= most, `${w.seen.length} statements for ${n} chats (${pages} pages): at most ${most}`);
+    assert.ok(w.rows() <= ROWS_A_CHAT * n + ROWS_WHATEVER, `${w.rows()} rows for ${n} chats: at most ${ROWS_A_CHAT} a chat and ${ROWS_WHATEVER}`);
+    assert.ok(longest <= A_PAGE, `${longest} statements in one turn of the loop: at most a page's ${A_PAGE}`);
+    assert.ok(f.total() <= FILES, `${f.total()} calls of the file system for ${n} chats: at most ${FILES}, whatever the chats`);
+    const distinct = new Map(w.seen.map((s) => [s.sql, s]));
+    for (const s of distinct.values()) assert.deepEqual(scans(w.db, s.sql, s.args), [], `a scan in: ${s.sql}`);
+  });
+}
+
+test("a linked worktree made or removed between two plans is seen by the next, its clone asked only for its list", async () => {
+  const { a, keys } = officeShape(30);
+  const key = keys[1]!;
+  const repos = (plan: Json) => plan.items.find((x: Json) => x.id === key).needs.filter((n: Json) => n.module === "repos").map((n: Json) => n.id);
+  assert.deepEqual(repos(await a.moves.scheduler.plan(WS, B)), []);
+  const repo = join(a.rig.dir, "repos", "r7");
+  const at = join(a.rig.session(key).workspace, "r7");
+  mkdirSync(join(repo, ".git", "worktrees", "late"), { recursive: true });
+  writeFileSync(join(repo, ".git", "worktrees", "late", "gitdir"), `${join(at, ".git")}\n`);
+  mkdirSync(at, { recursive: true });
+  writeFileSync(join(at, ".git"), `gitdir: ${join(repo, ".git", "worktrees", "late")}\n`);
+  assert.deepEqual(repos(await a.moves.scheduler.plan(WS, B)), ["repo:https://example.test/r7.git"], "made: seen");
+  rmSync(join(repo, ".git", "worktrees", "late"), { recursive: true });
+  assert.deepEqual(repos(await a.moves.scheduler.plan(WS, B)), [], "removed: gone");
+});

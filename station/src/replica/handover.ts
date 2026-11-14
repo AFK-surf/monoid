@@ -33,6 +33,7 @@ import { knownOf } from "../connects/remote.ts";
 import type { Described, Known } from "../connects/remote.ts";
 import { CHAT_TABLES, BY_N, MARKS, type ChatTable, type Counts, type ImportCtx, afterOf, newCtx } from "../store/handover.ts";
 import type { Store } from "../store/store.ts";
+import type { SessionRow } from "../store/rows.ts";
 import { STILLFAIL_SURFACE, comingWs, handedWs } from "../store/rows.ts";
 import { type CarriedJob, type CarryIndex, type Gathered, carriedPlace, listFile } from "./carry-worker.ts";
 import { HASH, STATION, WORKSPACE } from "./format.ts";
@@ -103,7 +104,7 @@ export type HandoverDeps = {
     /// Once its turn ended (at once where none runs).
     turnEnded(key: string): Promise<void>;
     drained(connect: string, channel: string, threadTs: string): Promise<void>;
-    wsOf(key: string): string | null;
+    wsOf(key: string | SessionRow): string | null;
   };
   /// The workspace's connects (connects/workspace.ts): a thread re-pointed where its connect runs, what one says of
   /// itself and where it runs, learnt from another station, and how one goes (null: not known here).
@@ -186,9 +187,22 @@ const gb = (n: number) => `${(n / 1024 ** 3).toFixed(1)} GB`;
 /// to the same station in the same millisecond are two: the second was refused there as "shown already").
 export const handoverId = (keys: string[], to: string, at: number) => `${at.toString(36)}-${Buffer.from(keys[0] ?? "").toString("hex").slice(0, 24)}-${to.slice(0, 8)}-${randomBytes(4).toString("hex")}`;
 
+/// What `together`, `accountsOf` and `check` read of sessions: the store's, a statement each, or a page's read at once
+/// (store.ts `SessionPage`, a plan's).
+export type SessionReads = {
+  session(key: string): SessionRow | null;
+  /// The sessions of `key`'s still.fail home chat (null: it is the home of none).
+  homeMembers(key: string): string[] | null;
+  /// The accounts its runtime sessions ran on, in the order they are kept.
+  ranOn(key: string): string[];
+};
+
 export class Handover {
   readonly #d: HandoverDeps;
   readonly #outs = new Map<string, Out>();
+  /// Each session's hand-overs from here, the latest first (`outs`, by session).
+  readonly #outsOf = new Map<string, Out[]>();
+  readonly #reads: SessionReads;
   readonly #ins = new Map<string, In>();
   /// The chats coming here, each holding the station's self-update until it is shown or dropped.
   readonly #inHeld = new Map<string, () => void>();
@@ -203,7 +217,15 @@ export class Handover {
   constructor(d: HandoverDeps) {
     this.#d = d;
     this.#work = d.work ?? { gather: gatherSoon, place: placeSoon };
-    for (const o of readAll<Out>(join(dir(d.data), "out"))) this.#outs.set(o.id, o);
+    this.#reads = {
+      session: (k) => d.store.getSession(k),
+      homeMembers: (k) => {
+        const home = d.store.homeChat(k);
+        return home !== null && home.surface === STILLFAIL_SURFACE ? d.store.threadSessions(home.id).map((m) => m.session) : null;
+      },
+      ranOn: (k) => [...new Set(d.store.chatPage("runtime_sessions", k, null, 500).flatMap((r) => (typeof r.profile === "string" ? [r.profile as string] : [])))],
+    };
+    for (const o of readAll<Out>(join(dir(d.data), "out"))) this.#keepOut(o);
     for (const i of readAll<In>(join(dir(d.data), "in"))) {
       // (what its rows' pages put in, as kept with them: newer than its file where a stop came between the two)
       if (i.step === "coming") i.ctx = d.store.importCtx(i.id) ?? i.ctx;
@@ -256,12 +278,24 @@ export class Handover {
   outs(): Out[] {
     return [...this.#outs.values()].sort((a, b) => b.at - a.at);
   }
+
+  /// A hand-over kept (`#outs`), and among its sessions' (`#outsOf`) by when it began, the latest first (one of the
+  /// same time after those before it, as `outs` sorts them).
+  #keepOut(o: Out): void {
+    this.#outs.set(o.id, o);
+    for (const k of o.keys) {
+      const list = (this.#outsOf.get(k) ?? []).filter((x) => x.id !== o.id);
+      const at = list.findIndex((x) => x.at < o.at);
+      list.splice(at < 0 ? list.length : at, 0, o);
+      this.#outsOf.set(k, list);
+    }
+  }
   ins(): In[] {
     return [...this.#ins.values()];
   }
   /// The latest hand-over of session `key` from here (none: never).
   outOf(key: string): Out | null {
-    return this.outs().find((o) => o.keys.includes(key)) ?? null;
+    return this.#outsOf.get(key)?.[0] ?? null;
   }
 
   // ── the station it leaves ──
@@ -278,10 +312,10 @@ export class Handover {
   }
 
   /// The sessions handed over with `key`: those that share its still.fail home chat (threads.home).
-  together(key: string): string[] {
+  /// `reads`: what reads the sessions (a plan's page).
+  together(key: string, reads: SessionReads = this.#reads): string[] {
     const keys = new Set([key]);
-    const home = this.#d.store.homeChat(key);
-    if (home !== null && home.surface === STILLFAIL_SURFACE) for (const m of this.#d.store.threadSessions(home.id)) keys.add(m.session);
+    for (const m of reads.homeMembers(key) ?? []) keys.add(m);
     return [...keys].sort();
   }
 
@@ -289,20 +323,21 @@ export class Handover {
   /// room is not the station's own goes without its files.
   /// `planning`: as a plan lists it (a chat of a connect that is not routed needs that connect there, which the plan
   /// says by its needs); else as it is to go now (`stoppedFor`: it may go while that is not there).
-  check(key: string, to: string, opts: { ignoreFiles?: boolean; planning?: boolean; stoppedFor?: Need | null } = {}): string | null {
+  check(key: string, to: string, opts: { ignoreFiles?: boolean; planning?: boolean; stoppedFor?: Need | null; reads?: SessionReads } = {}): string | null {
+    const reads = opts.reads ?? this.#reads;
     const here = this.#d.here();
-    const row = this.#d.store.getSession(key);
+    const row = reads.session(key);
     if (here === null || row === null) return "there is no such chat here";
-    const ws = this.#d.hub.wsOf(key);
+    const ws = this.#d.hub.wsOf(row);
     if (ws === null || row.ws?.startsWith(handedWs("")) || row.ws?.startsWith(comingWs(""))) return "that chat is not of a workspace this station is in now (handed over already, or not shown yet here)";
     if (!WORKSPACE.test(ws) || !STATION.test(to) || to === here) return "name another station of the chat's workspace";
     const target = this.#d.roster(ws)?.find((s) => s.id === to);
     if (target === undefined) return "that station is not one of this chat's workspace's: name one station_list lists";
     if (target.tasks === true) return `${target.name} only runs tasks: a chat goes only to a whole station`;
-    const busy = this.outs().find((o) => o.keys.includes(key) && (o.step === "held" || o.step === "files" || o.step === "rows" || o.step === "gone"));
+    const busy = (this.#outsOf.get(key) ?? []).find((o) => o.step === "held" || o.step === "files" || o.step === "rows" || o.step === "gone");
     if (busy !== undefined) return busy.step === "gone" ? `that chat is going to ${busy.toName || busy.to.slice(0, 8)} already: wait for it to be there` : "that chat is being handed over already: wait for it, or look at station_move status";
-    for (const k of this.together(key)) {
-      const s = this.#d.store.getSession(k);
+    for (const k of this.together(key, reads)) {
+      const s = reads.session(k);
       if (s === null) continue;
       const kind = isInternal(s.connect) ? null : this.#d.connects?.kindOf(s.connect) ?? null;
       // (a chat of a connect that is not routed runs where the connect runs: it goes once its connect is there, or
@@ -319,13 +354,12 @@ export class Handover {
 
   /// The accounts sessions `keys` run on (their sessions' and runtime sessions' profiles), as they are known across the
   /// workspace (`AccountOf`; null: this machine's own, which cannot go).
-  accountsOf(keys: string[]): Map<string, AccountOf | null> {
+  accountsOf(keys: string[], reads: SessionReads = this.#reads): Map<string, AccountOf | null> {
     const out = new Map<string, AccountOf | null>();
     for (const key of keys) {
-      const row = this.#d.store.getSession(key);
+      const row = reads.session(key);
       if (row === null) continue;
-      const ids = new Set<string>([row.profile, ...(row.profiles ?? [])]);
-      for (const r of this.#d.store.chatPage("runtime_sessions", key, null, 500)) if (typeof r.profile === "string") ids.add(r.profile);
+      const ids = new Set<string>([row.profile, ...(row.profiles ?? []), ...reads.ranOn(key)]);
       for (const id of ids) if (!out.has(id)) out.set(id, this.#d.accounts.of(id));
     }
     return out;
@@ -346,7 +380,7 @@ export class Handover {
       id: handoverId(keys, to, this.#d.fibers.now()), keys, to, toName: name, ws, at: this.#d.fibers.now(), step: "files", error: null, jobs: [], dropOwed: false,
       sent: {}, counts: null, there: {}, routes: [], routed: 0, shown: false, done: 0, total: 0, held: false,
     };
-    this.#outs.set(o.id, o);
+    this.#keepOut(o);
     await this.#save(o);
     let begun: Json;
     try {
