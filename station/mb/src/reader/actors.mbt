@@ -162,8 +162,8 @@ async fn Actors::rpc(self : Actors, key : String, f : String, args : Array[Json]
   }
   self.active -= 1
   self.say_node({ "rpc": Json::number(id.to_double()), "actor": Json::string(key), "fn": Json::string(f), "args": Json::array(args) })
+  // (counted again as its answer comes: `heard`)
   let answer = d.wait()
-  self.active += 1
   match answer {
     { "error": err, .. } => raise Asked(err)
     _ => answer.value("value").unwrap_or(Json::null())
@@ -323,20 +323,16 @@ async fn Actors::enqueue(self : Actors, a : Actor, task : async () -> Unit raise
   a.queued += 1
   self.mirror(a)
   let done : @effect.Deferred[Unit] = @effect.Deferred::new()
-  // (its caller waits on it, as on nothing of Node's: the task is what runs)
-  self.active -= 1
+  // (its caller is counted active while it waits on its task: the task is its work, waiting its turn or running)
   ignore(
     a.tasks.try_offer(() => {
       if a.phase != "closed" {
-        self.active += 1
         task() catch {
           e => self.log(a, "error", "session task failed", fields={ "error": Json::string(Asked::message(e)) })
         }
-        self.active -= 1
       }
       a.queued -= 1
       self.mirror(a)
-      self.active += 1
       ignore(done.succeed(()))
     }),
   )
@@ -367,6 +363,8 @@ fn Actors::heard(self : Actors, line : String) -> Unit {
       let id = id.to_int()
       if self.asked.get(id) is Some(d) {
         self.asked.remove(id)
+        // (what waited on it runs again from now: so it is said to be, before it does)
+        self.active += 1
         ignore(d.succeed(said))
       }
       return
