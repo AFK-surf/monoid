@@ -24,11 +24,11 @@ export type Selection = { module?: string; item?: string; all?: boolean; withNee
 /// `failures`: each item whose move failed, with its words: the turn goes on past it, only what needs it not started
 /// (refused, naming it); `failed` the first of them.
 /// `returned`: what moved only for an item that then did not go, brought back in the same turn.
-export type Outcome = { done: Need[]; refused: { item: Need; why: string }[]; stopped: { item: Need; waitsFor: Need }[]; resumed: Need[]; failed: { item: Need; error: string } | null; failures?: { item: Need; error: string }[]; returned?: Need[] };
+export type Outcome = { done: Need[]; refused: { item: Need; why: string }[]; stopped: { item: Need; waitsFor: Need }[]; resumed: Need[]; failed: { item: Need; error: string } | null; failures?: { item: Need; error: string }[]; returned?: Need[]; lent?: Need[] };
 /// The last move or move back of a workspace's, as the app shows it (GET /move `last`): when it ended, who asked (a
 /// person's email; an agent's: its chat's session key), which way and with which station, and what came of it. A turn
 /// that could not begin (its plan refused) has `failed` with no item.
-export type Last = { at: number; by: string | null; how: "move" | "back"; station: string; stoppedBy?: string | null; done: Need[]; refused: { item: Need; why: string }[]; stopped: { item: Need; waitsFor: Need }[]; resumed: Need[]; failed: { item: Need | null; error: string } | null; failures?: { item: Need; error: string }[]; returned?: Need[] };
+export type Last = { at: number; by: string | null; how: "move" | "back"; station: string; stoppedBy?: string | null; done: Need[]; refused: { item: Need; why: string }[]; stopped: { item: Need; waitsFor: Need }[]; resumed: Need[]; failed: { item: Need | null; error: string } | null; failures?: { item: Need; error: string }[]; returned?: Need[]; lent?: Need[] };
 /// An item stopped here, kept: what it waits for, of which workspace.
 type Stopped = { item: Need; waitsFor: Waits; ws: string };
 
@@ -302,6 +302,9 @@ export class Scheduler {
     // (with its needs: what it needs first, and what those need)
     const wanted = new Map<string, Planned>();
     const taking = new Set<string>();
+    /// Needs lent, not moved, for what needs them (a login shared with the other, this station its host): by name, and
+    /// the items of the turn they are lent for; lent just before the first of those goes.
+    const lending = new Map<string, { x: Planned; for: Need[] }>();
     // (asked for some items with what they need, not for all: a need whose leaving would stop other items here is not
     // taken along for their sake, and the item that needs it is refused saying so: that need moves from its own row,
     // which says what it stops)
@@ -349,6 +352,14 @@ export class Scheduler {
           const x = find(n);
           // (a need usable there already, an account the other borrows, is not taken along: in `all` it goes as its own)
           if (x === undefined || x.state === "there" || this.#modules.get(x.module)!.usableThere?.(x) === true) continue;
+          // (one that can be made usable there without moving it is lent for it: its host stays here, nothing of it can be
+          // stranded on the other; it moves only asked for itself, after what needs it)
+          if (this.#modules.get(x.module)!.canLend?.(x) === true) {
+            const l = lending.get(named(x)) ?? { x, for: [] };
+            l.for.push({ module: p.module, id: p.id });
+            lending.set(named(x), l);
+            continue;
+          }
           // (a need on a round of items needing each other is refused as that round, before this rule speaks)
           const others = sel.all === true || p.cannot !== undefined || x.cannot !== undefined ? [] : wouldStopOthers(x);
           if (others.length > 0) {
@@ -391,12 +402,33 @@ export class Scheduler {
       out.failed ??= { item: { module: p.module, id: p.id }, error };
       failedHere.set(named(p), error);
     };
+    const lentNow = new Set<string>();
+    /// Items asked for themselves that were lent this turn for what needs them: moved after the rest.
+    const hostAfter: Planned[] = [];
     for (const p of going) {
       if (this.#stopping !== null) break;
       if (thereNow.has(named(p)) || refusedWhy.has(named(p))) continue;
       if (p.cannot !== undefined) {
         out.refused.push({ item: p, why: p.cannot });
         continue;
+      }
+      if (lending.has(named(p))) {
+        hostAfter.push(p);
+        continue;
+      }
+      // (what it needs that is lent for it, lent now, before it goes)
+      for (const n of p.needs) {
+        const l = lending.get(named(n));
+        if (l === undefined || lentNow.has(named(n)) || failedHere.has(named(n))) continue;
+        try {
+          this.#current = l.x;
+          await this.#modules.get(l.x.module)!.lend!(l.x, to, l.for);
+          lentNow.add(named(n));
+          out.lent = [...(out.lent ?? []), { module: l.x.module, id: l.x.id }];
+          this.#d.changed?.();
+        } catch (e) {
+          fail(l.x, (e as Error).message);
+        }
       }
       const waits = p.needs.find((n) => !thereNow.has(named(n)) && find(n) !== undefined && this.#modules.get(n.module)!.usableThere?.(find(n)!) !== true);
       const waitsFailed = waits === undefined ? undefined : failedHere.get(named(waits));
@@ -440,6 +472,23 @@ export class Scheduler {
       if (this.#stopped.remove(p) !== undefined) unsaved = true;
       this.#d.changed?.();
     }
+    // (lent for what moved and asked for itself too: its host moves now, after what needed it)
+    for (const p of hostAfter) {
+      if (this.#stopping !== null) break;
+      this.#current = p;
+      try {
+        await this.#modules.get(p.module)!.move(p, to, (progress) => this.#d.progress?.(p, progress));
+      } catch (e) {
+        fail(p, (e as Error).message);
+        continue;
+      }
+      thereNow.add(named(p));
+      out.done.push({ module: p.module, id: p.id });
+      this.#d.changed?.();
+    }
+    // (what was lent for items that did not go is taken back: the last of them here, nothing of it stays lent)
+    const notGone = (out.failures ?? []).map((f) => f.item).filter((x) => !lending.has(named(x)));
+    if (notGone.length > 0) for (const m of this.#modules.values()) await m.left?.(notGone).catch((e) => log.warn("move", "what was lent for items that did not go not taken back", { error: (e as Error).message }));
     // (what moved only for items of this turn that then did not go is brought back, in the same turn, and said so: a
     // login moved for a chat that failed is not left on the other station)
     {
@@ -537,6 +586,8 @@ export class Scheduler {
       }
       stillThere.delete(named(p));
       out.done.push({ module: p.module, id: p.id });
+      // (here again: what was lent for it alone is taken back)
+      for (const m of this.#modules.values()) await m.left?.([{ module: p.module, id: p.id }]).catch((e) => log.warn("move", "what was lent for an item back here not taken back", { error: (e as Error).message }));
       // (what waited here for it goes on)
       const waited = this.#stopped.waitingFor(p);
       if (waited.length > 0) {

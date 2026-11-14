@@ -955,6 +955,7 @@ export class Sharing {
       return this.heard(peer, id, request, workspace ?? this.deps.cloud.home());
     }
     if (method === "share.take") return this.take(peer, request);
+    if (method === "share.borrow") return this.borrow(peer, id, request);
     const state = this.readState();
     const moved = state.moved[id];
     if (moved && method === "share.version") return { moved: moved.to };
@@ -1496,6 +1497,73 @@ export class Sharing {
     }
     await this.reconcile();
     return { id: there, share: id };
+  }
+
+  /// Profile `profileId` lent to station `to` for a move's sake, this station staying its host: shared with it (with this
+  /// station and `to` alone where it is not shared; `to` added where it is shared with stations it is not among), and
+  /// `to` told so directly, answered once it has its copy (`share.borrow`); refused in words where it does not answer,
+  /// what was changed here for it undone. What it changed, for `unlend` to undo.
+  async lendTo(profileId: string, to: string): Promise<{ share: string; made: boolean; widened: boolean }> {
+    const p = this.profiles().find((x) => x.id === profileId);
+    if (!p) throw new Error(`unknown profile ${profileId}`);
+    if (isObject(p.share) && p.share.borrowed === true) throw new Error("this profile is another station's");
+    const me = this.me();
+    if (me === null) throw new Error("this station is in no workspace");
+    let made = false;
+    let widened = false;
+    if (!isObject(p.share)) {
+      await this.shareProfile(profileId, true, [me, to], null, "a move");
+      made = true;
+    } else if (Array.isArray(p.share.allow) && !p.share.allow.includes(to)) {
+      await this.shareProfile(profileId, true, [...p.share.allow, to], null, "a move");
+      widened = true;
+    }
+    const now = this.profiles().find((x) => x.id === profileId)!;
+    const share = String(now.share.id);
+    const state = this.readState();
+    const version = state.hosted[share]?.version ?? 1;
+    try {
+      await this.deps.ask(to, null, {
+        method: "share.borrow", id: share, version, profile: portable(now), email: now.access?.kind === "subscription" ? this.emailOf(now) : null,
+        allow: Array.isArray(now.share.allow) ? now.share.allow : null, workspaces: this.sharedIn(now), quotaRevision: state.hosted[share]?.quotaRevision ?? 0,
+      });
+      this.told(share, to, version);
+    } catch (e) {
+      await this.unlend(share, to, made, widened).catch(() => {});
+      throw e;
+    }
+    return { share, made, widened };
+  }
+
+  /// What `lendTo` changed undone, this station its host: the share made for it undone, or `to` taken out of those it
+  /// was added to; `to` told so as the sharing tells it (now, or once it is heard from).
+  async unlend(share: string, to: string, made: boolean, widened: boolean): Promise<void> {
+    const p = this.profiles().find((x) => isObject(x.share) && x.share.id === share && x.share.borrowed !== true);
+    if (p === undefined) return;
+    if (made) await this.shareProfile(String(p.id), false, null, null, "a move done with it");
+    else if (widened && Array.isArray(p.share.allow)) await this.shareProfile(String(p.id), true, p.share.allow.filter((x: string) => x !== to), null, "a move done with it");
+  }
+
+  /// A share lent to this station by its host for a move (`lendTo`): its copy placed here before this answers.
+  private borrow(peer: string, id: string, request: Json): Json {
+    if (!/^sh-[0-9a-z]{10,40}$/.test(id)) throw new Error("bad share id");
+    if (this.ownShares().has(id)) return { borrowed: true };
+    const me = this.me();
+    const allow: string[] | null = Array.isArray(request?.allow) ? request.allow : null;
+    if (allow !== null && (me === null || !allow.includes(me))) throw new Error("this station is not among those it is shared with");
+    const state = this.readState();
+    const had: Borrowed = state.borrowed[id] ?? { version: -1, hash: "", kind: "profile", name: String(request?.profile?.name ?? id), host: peer, allow, stale: true };
+    had.host = peer;
+    had.allow = allow;
+    this.placeProfile(id, had, request);
+    had.version = Number(request?.version ?? 0);
+    had.quotaRevision = Number(request?.quotaRevision ?? 0);
+    had.stale = false;
+    state.borrowed[id] = had;
+    this.writeState(state);
+    this.checked.add(id);
+    void this.reconcile();
+    return { borrowed: true };
   }
 
   /// A share a move made (`moveProfile` `shareFirst`) undone once its login is home again (move/accounts.ts `back`): no

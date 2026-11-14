@@ -63,6 +63,8 @@ export function moveView(plan: Plan, order: string[], stopped: { item: { module:
           ...(x.cannot !== undefined ? { cannot: x.cannot } : {}),
           ...(x.error ? { error: x.error } : {}),
           ...(x.progress ? { progress: x.progress } : {}),
+          // (here, its host, and usable there too: lent for what moved there)
+          ...(x.lentTo !== undefined ? { lentTo: name(x.lentTo) } : {}),
           // (moving, waiting for what is not its own progress: its chat's turn to end)
           ...(x.waits !== undefined ? { waits: x.waits } : {}),
           ...(x.wouldStop.length > 0 ? { wouldStop: x.wouldStop.map(named) } : {}),
@@ -79,6 +81,7 @@ export function moveView(plan: Plan, order: string[], stopped: { item: { module:
       failed: last.failed === null ? null : { item: last.failed.item === null ? null : named(last.failed.item), error: last.failed.error },
       ...((last.failures ?? []).length > 0 ? { failures: last.failures!.map((f) => ({ item: named(f.item), error: f.error })) } : {}),
       ...((last.returned ?? []).length > 0 ? { returned: last.returned!.map(named) } : {}),
+      ...((last.lent ?? []).length > 0 ? { lent: last.lent!.map(named) } : {}),
     },
   };
 }

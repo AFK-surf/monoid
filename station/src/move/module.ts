@@ -42,7 +42,9 @@ export type Progress = { done: number; total: number; unit: string };
 /// `waits`, of one moving: what its move waits for now, not stuck though its progress stands ("turn": the chat's turn
 /// under way to end, before it is held; "station": the station it comes from, `from`, to go on with it: shown here, or
 /// dropped and it stays there, once that station is heard from).
-export type ItemState = { state: State; error?: string; progress?: Progress; waitsFor?: Waits; at?: string; waits?: "turn" | "station"; from?: string };
+/// `lentTo`, of one here: the station it is usable on too, lent for what moved there (a login shared with it, this
+/// station its host).
+export type ItemState = { state: State; error?: string; progress?: Progress; waitsFor?: Waits; at?: string; waits?: "turn" | "station"; from?: string; lentTo?: string };
 /// How an item arrives: stopped, waiting for `stoppedFor` (the station it arrives at keeps it stopped).
 export type Arrive = { stoppedFor?: Waits };
 
@@ -80,6 +82,15 @@ export interface Module {
   usableHere?(item: Item): boolean;
   /// What needs it can go there though it is not there: e.g. an account the other station borrows. Absent: it cannot.
   usableThere?(item: Item): boolean;
+  /// Whether the item, needed there, can be made usable there without moving it (a login lent: shared with the other,
+  /// this station staying its host). Absent: it cannot.
+  canLend?(item: Item): boolean;
+  /// The item made usable at `to` for `forWhom` (the items of the turn that need it there), not moved; answered once it
+  /// is (refused in words where it cannot be): `usableThere` says so from then.
+  lend?(item: Item, to: string, forWhom: Need[]): Promise<void>;
+  /// Items `items` are here, or never went (came back, failed, a chat that arrived here): what was lent for them alone is
+  /// taken back.
+  left?(items: Need[]): Promise<void>;
   /// Whether the item is on this station now, from what the module keeps (none: its state says `here` or `failed`):
   /// what lets go, as the station starts, what was stopped waiting for it (scheduler `settleStopped`).
   isHere?(item: Item): boolean;

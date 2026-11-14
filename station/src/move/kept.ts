@@ -40,3 +40,44 @@ export class KeptSet {
     await rename(tmp, this.#path);
   }
 }
+
+/// Records by key in one JSON file, kept across a start as `KeptSet` keeps ids: read once before the station serves,
+/// written whole as it changes.
+export class KeptMap<T> {
+  readonly #path: string;
+  #map: Map<string, T>;
+
+  constructor(path: string) {
+    this.#path = path;
+    try {
+      this.#map = new Map(Object.entries(JSON.parse(readFileSync(path, "utf8")) as Record<string, T>)); // sync: read once, before the station serves
+    } catch {
+      this.#map = new Map();
+    }
+  }
+
+  get(key: string): T | undefined {
+    return this.#map.get(key);
+  }
+
+  entries(): [string, T][] {
+    return [...this.#map.entries()];
+  }
+
+  async set(key: string, value: T): Promise<void> {
+    this.#map.set(key, value);
+    await this.#save();
+  }
+
+  async delete(key: string): Promise<void> {
+    if (!this.#map.delete(key)) return;
+    await this.#save();
+  }
+
+  async #save(): Promise<void> {
+    await mkdir(dirname(this.#path), { recursive: true });
+    const tmp = `${this.#path}.${randomBytes(4).toString("hex")}.tmp`;
+    await writeFile(tmp, JSON.stringify(Object.fromEntries(this.#map)));
+    await rename(tmp, this.#path);
+  }
+}

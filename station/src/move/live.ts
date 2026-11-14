@@ -82,7 +82,10 @@ export const MovesLive = Layer.effectDiscard(
       },
       profiles: () => (Array.isArray(agents.config.raw()?.profiles) ? agents.config.raw().profiles : []),
       moveProfile: (id, to) => agents.sharing.moveProfile(id, to),
-      shareMoves: { move: (id, to, made) => agents.sharing.moveProfile(id, to, undefined, made), unshare: (share, stations) => agents.sharing.unshareMoved(share, stations) },
+      shareMoves: {
+        move: (id, to, made) => agents.sharing.moveProfile(id, to, undefined, made), unshare: (share, stations) => agents.sharing.unshareMoved(share, stations),
+        lend: (id, to) => agents.sharing.lendTo(id, to), unlend: (share, to, made, widened) => agents.sharing.unlend(share, to, made, widened),
+      },
       sessionsIn: (ws, after, limit) => store.sessionPageOfWs(cloud.home() === ws ? null : ws, cloud.home(), after, limit),
       reposDir: hub.reposDir(),
       clonesElsewhere: async () => (await hub.repoIndex.repos()).map((c) => c.path),

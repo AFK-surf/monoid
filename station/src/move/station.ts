@@ -216,7 +216,11 @@ export class Moves {
       reposDir: d.reposDir, room: d.room, hasGit: d.hasGit, git: d.git, lackMost: d.lackMost, work: d.work, fail: d.fail,
       changed: () => d.changed?.(),
       arrivedStopped: (keys, need, ws) => this.scheduler.noteStopped({ module: "chats", id: keys[0]! }, need, ws),
-      shown: (keys) => d.connects?.arrived?.(keys),
+      // (a chat here again by any route: what was lent for it alone is taken back)
+      shown: async (keys) => {
+        await d.connects?.arrived?.(keys);
+        await this.#accounts.left?.(keys.map((id) => ({ module: "chats", id }))).catch((e) => log.warn("move", "what was lent for a chat back here not taken back", { error: (e as Error).message }));
+      },
       went: (keys) => this.scheduler.forget(keys.map((id) => ({ module: "chats", id }))),
       keptSends: d.keptSends, keepSends: d.keepSends,
       hold: () => (d.hold ?? holdUpdates)(),
