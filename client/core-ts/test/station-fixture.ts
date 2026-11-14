@@ -81,7 +81,7 @@ function changedOf(whole: HttpResponse, id: string, req: HttpRequest): HttpRespo
 export function stationHost(answers: Answers) {
   const host = new FakeHost();
   signIn(host);
-  const streams: { path: string; queue: Queue.Queue<Uint8Array | null>; closed: boolean }[] = [];
+  const streams: { path: string; queue: Queue.Queue<Uint8Array | null>; closed: boolean; headers?: [string, string][] }[] = [];
   host.onFetch((req: HttpRequest) => later.get(host)?.(req) ?? compressedFor(req, answer(req)));
   // How it answers what changed of a list (POST /changed/<list>) and several reads in one (POST /batch): `false`, as a
   // station from before (no such route).
@@ -172,7 +172,7 @@ export function stationHost(answers: Answers) {
       }
       const queue = yield* Queue.unbounded<Uint8Array | null>();
       const path = req.url.replace("https://stillfail.test/admin/api", "");
-      const open = { path, queue, closed: false };
+      const open = { path, queue, closed: false, headers: req.headers };
       yield* Effect.addFinalizer(() => Effect.sync(() => (open.closed = true)));
       streams.push(open);
       // It opens as the station's does (a reader of zstd starts once it has 18 bytes), and asked compressed, each chunk
@@ -195,11 +195,16 @@ export function stationHost(answers: Answers) {
     const s = [...streams].reverse().find((x) => !x.closed)!;
     Queue.offerUnsafe(s.queue, new TextEncoder().encode(`${id !== undefined ? `id: ${id}\n` : ""}event: ${name}\ndata: ${JSON.stringify(data)}\n\n`));
   };
+  /// Sends an event on the newest open stream whose request said `header` (a test's wire naming its station so).
+  const pushOn = (header: [string, string], name: string, data: unknown) => {
+    const s = [...streams].reverse().find((x) => !x.closed && (x.headers ?? []).some(([k, v]) => k === header[0] && v === header[1]))!;
+    Queue.offerUnsafe(s.queue, new TextEncoder().encode(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`));
+  };
   const end = () => {
     const s = streams[streams.length - 1];
     Queue.offerUnsafe(s.queue, null);
   };
-  return { host, streams, push, end, gate, changes, batches, cloud, told, tell };
+  return { host, streams, push, pushOn, end, gate, changes, batches, cloud, told, tell };
 }
 
 /// What a station keeps beside the summaries, none of it (GET /chats?marks=1).

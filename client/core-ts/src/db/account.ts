@@ -20,7 +20,7 @@ import { SqlError, sqlError } from "../host.ts";
 import { topicKey, type Topic } from "../protocol.ts";
 import type { Runner } from "../runtime.ts";
 import { equal, isObject } from "../util.ts";
-import { CHAT_COLUMNS, CHAT_MADE, type ChatColumnsMade, ensureChatColumns, ensureFilesKept, ensureKept, ensureLetters, ensureMdKept, ensureOverviewParts, ensureSaid, ensureSlackSaid, giveBackRoom, migrate, overviewProfilesOf, PART_COLUMNS, partRev, versionOf } from "./schema.ts";
+import { CHAT_COLUMNS, CHAT_MADE, type ChatColumnsMade, ensureChatColumns, ensureFilesKept, ensureKept, ensureLetters, ensureMdKept, ensureMoved, ensureOverviewParts, ensureSaid, ensureSlackSaid, giveBackRoom, migrate, overviewProfilesOf, PART_COLUMNS, partRev, versionOf } from "./schema.ts";
 import { CHAT_READS, rowColumns, type ChatRead } from "./chat-reads.ts";
 import { KEPT, KEPT_ALL, KeptValues, type ListRow } from "./kept.ts";
 import { readItem, type Said } from "../elsewhere.ts";
@@ -61,7 +61,16 @@ export type Changes = {
   logs: Map<string, [string, string, string]>;
   /// The stations whose sidebar rows were read for the first time (where noticing starts from).
   firstChats: Set<string>;
+  /// A chat a station said went elsewhere (`moved`) and now came back to it (station, session): its row made again
+  /// (views/moved.ts).
+  freed: [string, string][];
+  /// Where a chat went that the station it went to said it came from (account.ts `#came`): the one it left, its session.
+  came: [string, string][];
 };
+
+/// Where a station said a chat of its went (schema.ts ensureMoved): the station it is on now (its address), its thread
+/// on the one it left and there.
+export type MovedTo = { station: string; thread: number | null; there: number | null; at: number | null; came?: true };
 
 /// A station's list a view reads: which rows, in what order.
 export type ListKind = "chats" | "archived" | "sessions" | "threads" | "jobs";
@@ -362,7 +371,7 @@ export class AccountDb {
   #inTx = false;
   /// What failed in this burst: it is rolled back.
   #failed: SqlError | null = null;
-  #changes: Changes = { topics: new Map(), chats: new Map(), readChats: new Map(), logs: new Map(), firstChats: new Set() };
+  #changes: Changes = { topics: new Map(), chats: new Map(), readChats: new Map(), logs: new Map(), firstChats: new Set(), freed: [], came: [] };
   /// The statements of this burst that are what the device did itself, to be written again if the burst fails.
   #precious: [string, readonly SqlValue[]][] = [];
   /// What could not be written even so, written again with the next burst.
@@ -415,6 +424,7 @@ export class AccountDb {
       const was = this.sql.all("SELECT value FROM meta WHERE key = 'account'")[0]?.[0];
       if (was === undefined) this.sql.run("INSERT INTO meta (key, value) VALUES ('account', ?)", [sub]);
       ensureLetters(sql);
+      this.#openMoved();
       try {
         ensureSaid(sql);
         this.#said = true;
@@ -501,7 +511,7 @@ export class AccountDb {
     if (!this.#inTx) return this.#settled();
     const changes = this.#changes;
     const precious = this.#precious;
-    this.#changes = { topics: new Map(), chats: new Map(), readChats: new Map(), logs: new Map(), firstChats: new Set() };
+    this.#changes = { topics: new Map(), chats: new Map(), readChats: new Map(), logs: new Map(), firstChats: new Set(), freed: [], came: [] };
     this.#precious = [];
     this.#inTx = false;
     const failed = this.#failed;
@@ -1151,6 +1161,7 @@ export class AccountDb {
     this.kept.wrote(beside, () => (archived ? undefined : kept));
     this.#loadedList(station, archived ? "archived" : "chats")?.set(id, kept, [ord]);
     this.#tellChatRead(station, archived, id, before, kept, before === undefined ? undefined : ordBefore, ord);
+    if (!archived) this.#came(station, row, c, before === undefined);
     if (!archived) this.#tellChat(station, id, before, kept);
     this.#tell({ topic: archived ? "archivedRows" : "chatRows", station });
   }
@@ -1187,7 +1198,8 @@ export class AccountDb {
       glanced.chatRowsWalked += rows.length;
       rows.forEach((row, i) => {
         const id = idText(get(row, "id"));
-        if (id === null || seen.has(id)) return;
+        // (one the station said went elsewhere: not listed of it, its rows gone as gone ones go)
+        if (id === null || seen.has(id) || this.#movedAway(station, row)) return;
         seen.add(id);
         items.push([id, row]);
         if (places !== undefined) given.push(places[i]!);
@@ -1265,6 +1277,8 @@ export class AccountDb {
   putChat(station: string, row: J, place?: number): void {
     const id = idText(get(row, "id"));
     if (id === null || !this.listed(station, "chats")) return;
+    // (one the station said went elsewhere: not listed of it)
+    if (this.#movedAway(station, row)) return this.dropChat(station, id);
     this.#write(() => {
       const h = this.#chatsHeld.get(K("chats", station))?.get(id);
       if (h !== undefined && h.row === row && Object.isFrozen(row)) {
@@ -1305,6 +1319,116 @@ export class AccountDb {
       this.#deleteChatRow(station, 0, id, this.#chatRow(station, 0, id, r[0], r[1]), r[2] as number);
       this.#bumpRev(station, "chats");
     });
+  }
+
+  // ── chats moved to another station ──
+
+  /// Where each station said a chat of its went (schema.ts ensureMoved), by station and session; and by that station's
+  /// thread, its session. Read whole as the database opens: a row a chat handed over, a few thousand once a whole
+  /// station moved.
+  readonly #moved = new Map<string, Map<string, MovedTo>>();
+  readonly #movedThreads = new Map<string, Map<number, string>>();
+  #movedMade = false;
+
+  #openMoved(): void {
+    try {
+      ensureMoved(this.sql);
+      this.#movedMade = true;
+    } catch {
+      // No room to make it: where chats went is known only while this core runs.
+      return;
+    }
+    for (const r of this.sql.all("SELECT station, session, there_station, thread, there, at, came FROM moved")) {
+      this.#movedSet(String(r[0]), String(r[1]), { station: String(r[2]), thread: u64(r[3]), there: u64(r[4]), at: num(r[5]), ...(r[6] === 1 ? { came: true as const } : {}) });
+    }
+  }
+
+  #movedSet(station: string, session: string, to: MovedTo | null): void {
+    const was = this.#moved.get(station)?.get(session);
+    if (was?.thread != null) this.#movedThreads.get(station)?.delete(was.thread);
+    if (to === null) {
+      this.#moved.get(station)?.delete(session);
+      return;
+    }
+    let of = this.#moved.get(station);
+    if (of === undefined) this.#moved.set(station, (of = new Map()));
+    of.set(session, to);
+    if (to.thread !== null) {
+      let threads = this.#movedThreads.get(station);
+      if (threads === undefined) this.#movedThreads.set(station, (threads = new Map()));
+      threads.set(to.thread, session);
+    }
+  }
+
+  /// Where `station` said its chat of `session` went; undefined: it did not, or it came back.
+  moved(station: string, session: string): MovedTo | undefined {
+    return this.#moved.get(station)?.get(session);
+  }
+
+  /// The session of `station`'s chat of `thread` that it said went elsewhere.
+  movedThread(station: string, thread: number): string | undefined {
+    return this.#movedThreads.get(station)?.get(thread);
+  }
+
+  /// The sessions `station` said went elsewhere.
+  movedFrom(station: string): string[] {
+    return [...(this.#moved.get(station)?.keys() ?? [])];
+  }
+
+  /// `station` says its chat of `session` went to `to` (null: came back to it). What it lists of it goes (its rows,
+  /// listed and archived: `dropChatsOf`), and is not taken from it again while it says so; back, it is listed again
+  /// (`freed`). Whether that changed what was known.
+  putMoved(station: string, session: string, to: MovedTo | null): boolean {
+    const was = this.moved(station, session);
+    if (to === null ? was === undefined : was !== undefined && was.station === to.station && was.thread === to.thread && was.there === to.there && was.came === to.came) return false;
+    this.#movedSet(station, session, to);
+    this.#write(() => {
+      if (this.#movedMade) {
+        if (to === null) this.#run("DELETE FROM moved WHERE station = ? AND session = ?", [station, session]);
+        else this.#run("INSERT OR REPLACE INTO moved (station, session, there_station, thread, there, at, came) VALUES (?, ?, ?, ?, ?, ?, ?)", [station, session, to.station, to.thread, to.there, to.at, to.came === true ? 1 : 0]);
+      }
+      if (to === null) this.#changes.freed.push([station, session]);
+      else this.dropChatsOf(station, session);
+    });
+    return true;
+  }
+
+  /// `station`'s rows of the chat of `session`, listed and archived, gone (found by `chat_session`).
+  dropChatsOf(station: string, session: string): void {
+    this.#write(() => {
+      for (const r of this.sql.all("SELECT archived, id, json, unread, ord FROM chat WHERE station = ? AND session = ?", [station, session])) {
+        const archived = r[0] as number;
+        const id = String(r[1]);
+        this.#deleteChatRow(station, archived, id, this.#chatRow(station, archived, id, r[2], r[3]), r[4] as number);
+        this.#bumpRev(station, archived ? "archived" : "chats");
+      }
+    });
+  }
+
+  /// Whether a row is one `station` said went elsewhere (`putMoved`): not listed of it.
+  #movedAway(station: string, row: J): boolean {
+    const of = this.#moved.get(station);
+    if (of === undefined || of.size === 0) return false;
+    const session = get(row, "session");
+    return typeof session === "string" && of.has(session);
+  }
+
+  /// A listed row written of `station` whose chat says it came from another station of its workspace (its record's
+  /// `from`, else its agent's summary's: that station's id; station/src/replica/handover.ts): that one's rows of it go and
+  /// are not listed of it, as where it said so itself (`putMoved`), so a device that never heard it (it off) lists the
+  /// chat once. What it says itself overrides this (its `chat-moved`, `GET /moved`, a `409 moved`).
+  /// (`first`: new to the list; its summary is read only then)
+  #came(station: string, row: J, c: ChatCols, first: boolean): void {
+    if (c.session === null) return;
+    const from = str(get(row, "from")) ?? (first ? str(get(this.summary(station, c.session), "from")) : null);
+    if (from === null || from === "" || from.includes("/")) return;
+    const at = station.lastIndexOf("/");
+    const there = `${at < 0 ? "" : station.slice(0, at + 1)}${from}`;
+    if (there === station || this.moved(there, c.session) !== undefined) return;
+    // (its thread there as its row there says it, before that goes: what was sent to it there is aimed here by it)
+    const thread = u64(this.sql.all("SELECT thread FROM chat WHERE station = ? AND session = ? AND thread IS NOT NULL LIMIT 1", [there, c.session])[0]?.[0]);
+    this.putMoved(there, c.session, { station, thread, there: c.thread, at: null, came: true });
+    this.#changes.came.push([there, c.session]);
   }
 
   /// What a declared read finds (chat-reads.ts), each row with its record where `wants` says so (every row by default):

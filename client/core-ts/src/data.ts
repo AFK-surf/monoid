@@ -7,7 +7,7 @@
 // out; each database's writer says which topics a burst changed, and the store pushes what changed (keyed deltas).
 import { Effect, Fiber, Queue } from "effect";
 import { OVERVIEW_CHAT, OVERVIEW_PROFILED } from "./db/schema.ts";
-import { AccountDb, LIST_OF, foundOf, type ChatFound, type Changes, type Derive, type HeadRow, type ListKind, type LogTable, type RowChange, frozen } from "./db/account.ts";
+import { AccountDb, LIST_OF, foundOf, type ChatFound, type Changes, type Derive, type HeadRow, type ListKind, type LogTable, type MovedTo, type RowChange, frozen } from "./db/account.ts";
 import { KEPT as BESIDE, type AnyKept, type Kept, type Maker, type Owner } from "./db/kept.ts";
 import { CHAT_READS, chatKeys, type ChatRead, type ReadKey } from "./db/chat-reads.ts";
 import type { Host, Sql, SqlRow, SqlValue } from "./host.ts";
@@ -595,7 +595,73 @@ export class Data {
       const list = [...rows.values()];
       for (const l of this.#chatsChanged) l(station, list, changes.firstChats.has(station));
     }
+    for (const [station, session] of changes.freed) for (const l of this.#freed) l(station, session);
+    for (const [station, session] of changes.came) {
+      this.#movedSeen.touch(station);
+      for (const l of this.#came) l(station, session);
+    }
   }
+
+  // ── chats moved to another station ──
+
+  readonly #freed: ((station: string, session: string) => void)[] = [];
+  readonly #came: ((station: string, session: string) => void)[] = [];
+  readonly #movedSeen = new Marks();
+
+  /// Hears a chat the station it went to said came from `station` (db/account.ts `#came`), after the burst that wrote it.
+  onCame(listener: (station: string, session: string) => void): void {
+    this.#came.push(listener);
+  }
+
+  /// Hears a chat that came back to `station` (db/account.ts Changes `freed`): its rows to be made again.
+  onFreed(listener: (station: string, session: string) => void): void {
+    this.#freed.push(listener);
+  }
+
+  /// Where `station` said its chat of `session` went (undefined: it did not, or it came back); read so, made again as
+  /// that changes.
+  moved(station: string, session: string): MovedTo | undefined {
+    this.#movedSeen.read(station);
+    return this.of(station)?.moved(station, session);
+  }
+
+  /// The session of `station`'s chat of `thread` that it said went elsewhere.
+  movedThread(station: string, thread: number): string | undefined {
+    this.#movedSeen.read(station);
+    return this.of(station)?.movedThread(station, thread);
+  }
+
+  /// The sessions `station` said went elsewhere.
+  movedFrom(station: string): string[] {
+    return this.of(station)?.movedFrom(station) ?? [];
+  }
+
+  /// `station` says its chat of `session` went to `to` (null: came back): whether that changed what was known.
+  putMoved(station: string, session: string, to: MovedTo | null): boolean {
+    const changed = this.of(station)?.putMoved(station, session, to) ?? false;
+    if (changed) this.#movedSeen.touch(station);
+    return changed;
+  }
+
+  /// Where a chat of `station` is now (by its session, or its thread there), as the stations said it went, station by
+  /// station: its station, session and thread there; null where none said it went, or what they said goes round.
+  chatNow(station: string, by: { session: string } | { thread: number }): { station: string; session: string; thread: number | null } | null {
+    let session = "session" in by ? by.session : this.movedThread(station, by.thread);
+    if (session === undefined) return null;
+    let at = station;
+    let thread: number | null = "thread" in by ? by.thread : null;
+    const seen = new Set<string>([at]);
+    for (;;) {
+      const to = this.moved(at, session);
+      if (to === undefined) break;
+      if (seen.has(to.station)) return null;
+      seen.add(to.station);
+      at = to.station;
+      thread = to.there;
+    }
+    return at === station ? null : { station: at, session, thread };
+  }
+
 
   /// Hears every held topic that changes.
   onChange(listener: (topic: Topic) => void): void {

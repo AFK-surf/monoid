@@ -15,6 +15,7 @@ import * as prefs from "../prefs.ts";
 import * as refs from "../refs.ts";
 import type { SpanContext } from "../trace.ts";
 import { StationAddr } from "../station/addr.ts";
+import { MOVED } from "../station/requests.ts";
 import { arr as arrU, get as getU, hex } from "../util.ts";
 import { PENDING_PREFIX, sentAs } from "./local.ts";
 import type { Views } from "./views.ts";
@@ -175,10 +176,26 @@ export class ViewCalls {
         this.#local.outboxDelivering(station, thread, id);
         return yield* this.#inner.stations.post(station, thread, sentAs(entry), ctx, typeof entry.idem === "string" ? entry.idem : undefined);
       }));
+      // Aimed meanwhile at the chat's copy on the station it went to (views/moved.ts): what came of it said there; one
+      // its station answered so sent there, never shown failed.
+      const now = this.#local.outboxGet(station, thread, id) === undefined ? this.#inner.data.chatNow(station, { thread }) : null;
+      const there = now !== null && now.thread !== null && this.#local.outboxGet(now.station, now.thread, id) !== undefined ? now : null;
       if (result._tag === "Success") {
         if (result.success === null) return null;
+        if (there !== null) {
+          this.#views.outboxSent(there.station, there.thread!, id, result.success);
+          return { seq: result.success };
+        }
         this.#views.outboxSent(station, thread, id, result.success);
         return { seq: result.success };
+      }
+      if (there !== null) return yield* this.deliver(there.station, there.thread!, id, ctx, retry);
+      if (result.failure.code === MOVED) {
+        const moved = this.#inner.data.chatNow(station, { thread });
+        if (moved !== null && moved.thread !== null) {
+          this.#local.moved(station, moved.session, thread, moved.station, moved.thread);
+          return yield* this.deliver(moved.station, moved.thread, id, ctx, retry);
+        }
       }
       // A 400 is the station refusing the message as it is (a file it does not have: one that went up to another
       // station): sent again, it would be refused again.
@@ -186,6 +203,15 @@ export class ViewCalls {
       this.#local.outboxState(station, thread, id, result.failure.message, !restoring && result.failure.status === 400, result.failure.status === undefined && unreachedCode(result.failure));
       return yield* Effect.fail(result.failure);
     });
+  }
+
+  /// Messages of a chat's outbox aimed at its copy on the station it went to (views/moved.ts, local.ts `moved`) that were
+  /// on their way: sent there, each once (one whose try here is still out goes there as that one is answered).
+  movedSends(station: string, thread: number, ids: readonly string[]): void {
+    for (const id of ids) {
+      if ([...this.#deliveries.keys()].some((k) => k.endsWith(`:${id}`))) continue;
+      this.#inner.runner.fork(Effect.ignore(this.deliver(station, thread, id, null, true), { log: "Unhandled", message: "message delivered" }));
+    }
   }
 
   /// Asks the station for a chat asked for here; once made, what waited for it goes, in order.
@@ -246,6 +272,12 @@ export class ViewCalls {
           }),
         );
         if (made._tag === "Failure") {
+          // Its agent's chat went to another station (views/moved.ts): what waited for it is asked for there.
+          const now = made.failure.code === MOVED ? this.#inner.data.chatNow(station, { session: key }) : null;
+          if (now !== null) {
+            if (this.#local.firstTry(now.station, key)) this.makeFirst(now.station, key);
+            return;
+          }
           this.#local.firstFailed(station, key, made.failure.message);
           return;
         }

@@ -2096,6 +2096,13 @@ export class StationsSync {
     data.set({ topic: "chatRows", station: address }, rowsMade(sessions, threads, link.marks, me, rowWords(), link.rows));
   }
 
+  /// A chat's rows of a station made again of what is held of it (views/moved.ts: one it may list again, its chat back on
+  /// it or another station's row of it gone): of a list its station makes, its row by its id (a row's id is its agent's
+  /// session); else the list, as rowsMade makes it.
+  remakeRows(address: string, session: string): void {
+    this.#remake(address, { ids: [session] });
+  }
+
   /// A row gone from the list, by its id.
   #dropRow(address: string, row: unknown): void {
     const id = str(get(row, "id"));
@@ -2538,6 +2545,9 @@ export class StationsSync {
 
   /// Records how far the viewer has read a thread; nothing is sent when it is read that far already.
   read(address: string, thread: number, n: number, ctx: SpanContext | null): Effect.Effect<void, CoreError> {
+    // (a chat its station said went to another: read there, views/moved.ts)
+    const now = this.#core.data.chatNow(address, { thread });
+    if (now !== null && now.thread !== null) return this.read(now.station, now.thread, n, ctx);
     return Effect.gen({ self: this }, function* () {
       const key = `${address}\u0001${thread}`;
       const position = this.readPosition(address, thread);

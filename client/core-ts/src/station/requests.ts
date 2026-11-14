@@ -19,6 +19,8 @@ import { timed } from "../spent.ts";
 import { BUILD_HEADER, ownBuild, stationTooOld } from "./oldest.ts";
 
 export const IDEMPOTENCY_KEY = "idempotency-key";
+/// The code of a request's failure where the chat it asked of went to another station (`onMoved`).
+export const MOVED = "chat_moved";
 /// A request that only reads though it is no GET (POST /changed/<list>, what is held in its body): asked again on
 /// another way as a GET is (mesh-wire.ts `mayRepeat`).
 export const READS = "stillfail-reads";
@@ -156,6 +158,9 @@ export class Requests {
   readonly wire: StationWire;
   /// Told of a station that answered a request whole and well (2xx): it is reached, whatever its stream found.
   onAnswered: (station: StationAddr) => void = () => {};
+  /// Told of a station's answer that the chat asked of went to another station (`409 {error, moved}`: station/src/api/
+  /// routes/hub.ts `Moved`), before the request fails (`chat_moved`), so what fails of it is aimed there (views/moved.ts).
+  onMoved: (station: StationAddr, moved: unknown) => void = () => {};
 
   constructor(core: Inner, wire: StationWire) {
     this.#core = core;
@@ -273,7 +278,13 @@ export class Requests {
     return Effect.flatMap(this.exchange(station, method, path, headers, bytes, options.quiet ?? false, options.ctx ?? null, undefined, undefined, undefined, undefined, true), (r) => {
       // Parsed inside the exchange: invalid JSON also fails its request span.
       const data = r.json === undefined ? {} : r.json;
-      return r.status >= 200 && r.status < 300 ? Effect.succeed(data as unknown) : Effect.fail(httpError(r.status, data));
+      if (r.status >= 200 && r.status < 300) return Effect.succeed(data as unknown);
+      const error = httpError(r.status, data);
+      if (r.status === 409 && isObject(get(data, "moved"))) {
+        this.onMoved(station, get(data, "moved"));
+        error.code = MOVED;
+      }
+      return Effect.fail(error);
     });
   }
 

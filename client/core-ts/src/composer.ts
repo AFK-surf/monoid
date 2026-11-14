@@ -232,8 +232,17 @@ export class Composers {
     return s;
   }
 
-  #db(key: string): AccountDb | undefined {
+  /// Where a draft is kept (refs.ts draftAt): a chat's by its session, on the station it is on now where its station
+  /// said it went to another (views/moved.ts), so it follows it there.
+  #at(key: string): [string, string] | null {
     const at = draftAt(key);
+    if (at === null || at[1] === "new") return at;
+    const now = this.#inner.data.chatNow(at[0], { session: at[1] });
+    return now === null ? at : [now.station, at[1]];
+  }
+
+  #db(key: string): AccountDb | undefined {
+    const at = this.#at(key);
     return at ? this.#inner.data.of(at[0]) : undefined;
   }
 
@@ -247,7 +256,7 @@ export class Composers {
   }
 
   #kept(key: string): unknown {
-    const at = draftAt(key);
+    const at = this.#at(key);
     return at ? this.#inner.data.get({ topic: "draft", station: at[0], chat: at[1] }) : undefined;
   }
 
@@ -310,12 +319,12 @@ export class Composers {
   }
 
   #forget(key: string): void {
-    const at = draftAt(key);
+    const at = this.#at(key);
     if (at) this.#inner.data.forgetTopic({ topic: "draft", station: at[0], chat: at[1] });
   }
 
   #save(key: string, s: State, immediate = false): void {
-    const at = draftAt(key);
+    const at = this.#at(key);
     if (!at || s.db !== this.#db(key)) return;
     const topic = { topic: "draft", station: at[0], chat: at[1] };
     const draft = this.#draft(s);

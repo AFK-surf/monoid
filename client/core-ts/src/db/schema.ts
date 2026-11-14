@@ -503,6 +503,15 @@ export function ensureLetters(sql: Sql): void {
   sql.exec("CREATE TABLE IF NOT EXISTS letter (station TEXT NOT NULL, thread INTEGER NOT NULL, n INTEGER NOT NULL, json TEXT NOT NULL, PRIMARY KEY (station, thread, n)) WITHOUT ROWID");
 }
 
+/// Where a station said a chat of its went (`moved`: station/src/replica/handover.ts, its `409 moved`, `GET /moved`,
+/// `chat-moved`): by the station it left (`station`, its address) and the chat's session, the station it is on now (its
+/// address), its thread on the one it left (`thread`) and there (`there`); `came`, said by the one it went to (its row's
+/// `from`, account.ts `#came`), not by the one it left. A chat that came back has no row. Made where missing at every
+/// open, as `said`.
+export function ensureMoved(sql: Sql): void {
+  sql.exec("CREATE TABLE IF NOT EXISTS moved (station TEXT NOT NULL, session TEXT NOT NULL, there_station TEXT NOT NULL, thread INTEGER, there INTEGER, at INTEGER, came INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (station, session)) WITHOUT ROWID");
+}
+
 /// What is kept of each log (a thread's entries, `entry`; an agent's transcript, `transcript`) as the device holds
 /// within its room (data.ts KEPT): when its chat was last opened here, and whether its items were let go for room.
 /// Made where missing at every open, as `said`.

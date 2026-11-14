@@ -83,6 +83,8 @@ import * as vaultCalls from "./views/vault.ts";
 import * as waysCalls from "./views/ways-stations.ts";
 import * as stationMarkCalls from "./views/station-marks.ts";
 import * as presetCalls from "./views/presets.ts";
+import * as movedChats from "./views/moved.ts";
+import { MOVED } from "./station/requests.ts";
 import * as transferCalls from "./views/transfers.ts";
 import * as browseCalls from "./views/browse.ts";
 import * as downloads from "./views/downloads.ts";
@@ -293,6 +295,7 @@ export class Core {
       waysCalls.install(inner);
       stationMarkCalls.install(inner);
       inner.presets = presetCalls.install(inner);
+      movedChats.install(inner);
       transferCalls.install(inner);
       browseCalls.install(inner);
       downloads.install(inner);
@@ -305,7 +308,7 @@ export class Core {
       inner.choose = installChoose(inner);
       installShareIn(inner);
       inner.forms = installForms(inner);
-      const asks = new Asks(inner.host, (from, to) => inner.changelog.brings(from, to), (address) => inner.views?.stationNow(address) ?? address);
+      const asks = new Asks(inner.host, (from, to) => inner.changelog.brings(from, to), (address) => inner.views?.stationNow(address) ?? address, (address, by) => inner.data.chatNow(address, by));
       asks.follow(inner.accounts);
       // A release may be out (still.fail cloud said one is, or its events socket opened again: what it said while closed
       // is not said again): the newest of each feed read again when next asked, and the app told (the `releases`
@@ -604,8 +607,10 @@ export class Core {
     const inner = this.inner;
     const asked = heavy(name) ? null : params;
     let call: Call;
+    // (what it names aimed where its chat is now: views/moved.ts)
+    const aimed = movedChats.aimed(inner, params);
     try {
-      call = parseCall(name, params, bytes);
+      call = parseCall(name, aimed, bytes);
     } catch (e) {
       inner.host.emit(client, answer(id, { err: asCoreError(e) }));
       return;
@@ -638,8 +643,19 @@ export class Core {
     };
     const key = `${client}/${id}`;
     const stoppable = cancellable(call);
+    // Its station answered that the chat it names went to another (views/moved.ts): asked there, once.
+    const again = (error: CoreError): Effect.Effect<unknown, CoreError> => {
+      if (error.code !== MOVED) return Effect.fail(error);
+      const there = movedChats.aimed(inner, params);
+      if (get(there, "station") === get(aimed, "station") && get(there, "thread") === get(aimed, "thread")) return Effect.fail(error);
+      return Effect.try({ try: () => parseCall(name, there, bytes), catch: asCoreError }).pipe(
+        Effect.flatMap((c) => execute(inner, c, progress, [client, id], span.context)),
+        Effect.mapError(asCoreError),
+      );
+    };
     const run = execute(inner, call, progress, [client, id], span.context).pipe(
       Effect.mapError(asCoreError),
+      Effect.catch(again),
       // Stopped (a UI cancelled it, or went): it says so.
       Effect.onInterrupt(() =>
         Effect.sync(() => {
