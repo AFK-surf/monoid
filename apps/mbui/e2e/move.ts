@@ -19,6 +19,8 @@
 //     `stationMove` topic's first answer, and station_move plan) with 300 and 2,400 chats.
 //   6 a chat moved to a B that still holds a retired copy of it (its row `retired:`, entries only B has, an older room
 //     and transcript: e2e/move-stale.ts) and back: listed once, every entry once in order, the room exact, its context.
+//   7 one station asking another each second while the other is handed to a new process, stopped and started, and
+//     handed to one that dies at start: each ask answered or refused within 2 s, answered again within 5 s of it ready.
 // Each check says PASS or FAIL with what was seen; a failed one does not stop the next where that can go on alone.
 // E2E_SF_SRC, E2E_ORIGIN, E2E_PEER_DATA as peer.ts; E2E_WORK, E2E_STATION as e2e-local.sh's. E2E_MOVE_ONLY: the
 // parts to run (e.g. "1 2 3a 5"; all of them where unset).
@@ -1463,6 +1465,142 @@ try {
         await there("A", "back to A", r3);
       }
     }
+  }
+  // ── 7: one station's asks of another while the other's process changes (for why asks went unanswered after it did:
+  // drill 9 and 10's 3b and 3c). The asker asks once a second by the product's own way, a person's move back of an
+  // item that is not there (POST /move/back): before anything it asks the other `move.open` (move/station.ts refusal),
+  // so each answer, 202 or a refusal, is as late as that ask; each timed. None may take over 2 s, answered or refused;
+  // once the other is ready, asks are answered again within 5 s ──
+  if (part("7") && (limit("7", 900), await clean("7"))) {
+    type Ask = { at: number; ms: number; said: string; reached: boolean };
+    const unreached = /连不上|unreachable|out of reach|not reached/i;
+    /// Station `asker` (an address) asking station `other` (an id) once a second until `stop`.
+    const asking = (asker: string, other: string) => {
+      const asks: Ask[] = [];
+      let on = true;
+      const done = (async () => {
+        while (on) {
+          const t = Date.now();
+          const said = (await within(a.call("move.back", { station: asker, from: other, module: "chats", item: "chat:c-drill-not-there" }).then(() => "answered (202)", (e) => String(e).replace(/^Error: [A-Z]+ move\.back: /, "").slice(0, 200)), 35_000)) ?? "no answer in 35 s";
+          asks.push({ at: t, ms: Date.now() - t, said, reached: !unreached.test(said) && !said.startsWith("no answer") });
+          const wait = 1000 - (Date.now() - t);
+          if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+        }
+      })();
+      return { asks, stop: async () => { on = false; await done; } };
+    };
+    const iso = (t: number) => new Date(t).toISOString();
+    /// Both stations' log lines from `from` to `to` (their launchers' logs, each line's own time).
+    const logsBetween = (from: number, to: number): string => {
+      const out: string[] = [];
+      for (const [n, files] of [["A", ["station.before.log", "station.log"]], ["B", ["second.before.log", "second.log"]]] as const) {
+        for (const f of files) {
+          const path = `${RUN}/${f}`;
+          if (!existsSync(path)) continue;
+          for (const l of readFileSync(path, "utf8").split("\n")) {
+            const t = Date.parse(l.slice(0, 24));
+            if (Number.isFinite(t) && t >= from && t <= to) out.push(`${n}| ${l.slice(0, 300)}`);
+          }
+        }
+      }
+      return out.join("\n");
+    };
+    const said = (asks: Ask[], t0: number) => asks.map((x) => `+${((x.at - t0) / 1000).toFixed(1)}s ${x.ms}ms ${x.reached ? "" : "UNREACHED "}${x.said.slice(0, 80)}`).join("; ");
+    /// What of `asks` is not as held (slow, or not reached once it should be), each with both logs from its second.
+    const judge = (asks: Ask[], t0: number, reachedFrom: number | null, upAt: number | null): void => {
+      const slow = asks.filter((x) => x.ms > 2000);
+      const late = reachedFrom === null ? [] : asks.filter((x) => x.at >= reachedFrom && !x.reached);
+      const firstBack = upAt === null ? null : asks.find((x) => x.at >= upAt && x.reached);
+      const back = upAt === null ? null : firstBack === undefined ? "never" : `${((firstBack.at + firstBack.ms - upAt) / 1000).toFixed(1)} s`;
+      log(`  ${asks.length} asks: ${said(asks, t0).slice(0, 3000)}${back !== null ? `; answered again ${back} after A was ready` : ""}`);
+      for (const x of [...slow, ...late].slice(0, 4)) log(`  the ask at ${iso(x.at)} (${x.ms} ms: ${x.said.slice(0, 120)}), both logs:\n${logsBetween(x.at - 1000, x.at + x.ms + 1000) || "  (nothing)"}`);
+      const why: string[] = [];
+      if (slow.length > 0) why.push(`${slow.length} took over 2 s (longest ${Math.max(...slow.map((x) => x.ms))} ms)`);
+      if (late.length > 0) why.push(`${late.length} not reached when they should be`);
+      if (upAt !== null && (firstBack === undefined || firstBack.at + firstBack.ms - upAt > 5000)) why.push(`answered again ${back} after A was ready, not within 5 s`);
+      if (why.length > 0) throw new Error(why.join("; "));
+    };
+    const launcherA = () => spawnSync("pgrep", ["-f", `stillfail-station run --app ${ST}/app `], { encoding: "utf8" }).stdout.split("\n").filter((x) => x !== "").map(Number)[0];
+
+    await check("7a: A handed over to a new process as an update does (SIGUSR2 to its launcher) while B asks it each second: no ask over 2 s, every one answered", async () => {
+      const t0 = Date.now();
+      const b = asking(B, aId);
+      await new Promise((r) => setTimeout(r, 3000));
+      const log0 = statSync(`${RUN}/station.log`).size;
+      const pid = launcherA();
+      if (pid === undefined) throw new Error("A's launcher not found");
+      process.kill(pid, "SIGUSR2");
+      log(`  SIGUSR2 to A's launcher ${pid}; waiting for its new Node to take over`);
+      await whenChanged([RUN], () => readFileSync(`${RUN}/station.log`, "utf8").slice(log0).match(/Node [0-9]+ has taken over/), 120_000, () => "no new Node took over");
+      log("  waiting 10 s more of asks");
+      await new Promise((r) => setTimeout(r, 10_000));
+      await b.stop();
+      judge(b.asks, t0, t0, null);
+    });
+    await check("7b: A's whole station stopped and started again while B holds its connection: asks fail at once while A is down, answered within 5 s of A being ready", async () => {
+      const t0 = Date.now();
+      const b = asking(B, aId);
+      await new Promise((r) => setTimeout(r, 3000));
+      let upAt = 0;
+      try {
+        stationDo("halt", "station");
+        log("  A stopped (launcher, front and Node); 10 s of asks while it is down");
+        await new Promise((r) => setTimeout(r, 10_000));
+      } finally {
+        stationDo("again", "station");
+        upAt = Date.now();
+        log("  A ready again (its new Node took over); 15 s of asks");
+        await new Promise((r) => setTimeout(r, 15_000));
+        await b.stop();
+      }
+      judge(b.asks, t0, upAt + 5000, upAt);
+    });
+    await check("7c: A's new process dies at start beside the serving one (not handed over; going on as before), then B asks A and A asks B: no ask over 2 s, every one answered", async () => {
+      log("  waiting for A online on alice's device's link (7b stopped it)");
+      await a.stationState(ws, (s) => s.state === "online", 120_000, aId);
+      // (the next Node made to die by the harness alone: A's app/station, a link to the station's build, pointed for that
+      // one start at a main.js that exits 1, then put back)
+      const link = `${ST}/app/station`;
+      const target = execFileSync("readlink", [link], { encoding: "utf8" }).trim();
+      const broken = `${WORK}/broken-station`;
+      mkdirSync(broken, { recursive: true });
+      writeFileSync(join(broken, "main.js"), "process.exit(1);\n");
+      const failed = `${DATA.A}/run/handoff-failed`;
+      rmSync(failed, { force: true });
+      const pid = launcherA();
+      if (pid === undefined) throw new Error("A's launcher not found");
+      try {
+        rmSync(link);
+        execFileSync("ln", ["-s", broken, link]);
+        process.kill(pid, "SIGUSR2");
+        log(`  SIGUSR2 to A's launcher ${pid} with its next Node broken; waiting for "not handed over"`);
+        await whenChanged([DATA.A], () => existsSync(failed), 120_000, () => `no failed handover said: ${readFileSync(`${RUN}/station.log`, "utf8").split("\n").slice(-5).join(" | ")}`);
+        log(`  ${readFileSync(failed, "utf8").trim()}`);
+      } finally {
+        rmSync(link, { force: true });
+        execFileSync("ln", ["-s", target, link]);
+      }
+      const t0 = Date.now();
+      const b = asking(B, aId);
+      const ab = asking(A, bId);
+      log("  15 s of asks each way");
+      await new Promise((r) => setTimeout(r, 15_000));
+      await Promise.all([b.stop(), ab.stop()]);
+      const errs: string[] = [];
+      try {
+        log("  B asking A:");
+        judge(b.asks, t0, t0, null);
+      } catch (e) {
+        errs.push(`B asking A: ${(e as Error).message}`);
+      }
+      try {
+        log("  A asking B:");
+        judge(ab.asks, t0, t0, null);
+      } catch (e) {
+        errs.push(`A asking B: ${(e as Error).message}`);
+      }
+      if (errs.length > 0) throw new Error(errs.join(" | "));
+    });
   }
 } catch (e) {
   fail("the run", e);
