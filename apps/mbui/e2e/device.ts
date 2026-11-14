@@ -101,7 +101,11 @@ export function whenChanged<T>(dirs: string[], ok: () => T | undefined | null | 
       if (look()) log(`  (seen only as its ${ms} ms ended: no change of ${dirs.join(", ")} was told for it; are this Mac's file events late or lost?)`);
       else if (!done) (end(), reject(new Error(what())));
     }, ms);
-    const stops = dirs.map((d) => watching(d, () => void look()));
+    // (a directory not there yet, as A's `move/` before any move wrote it: not watched, looked at every second instead)
+    const missing = dirs.filter((d) => !existsSync(d));
+    const stops = dirs.filter((d) => existsSync(d)).map((d) => watching(d, () => void look()));
+    const slow = missing.length > 0 && every === undefined ? setInterval(() => void look(), 1000) : undefined;
+    if (slow !== undefined) stops.push(() => clearInterval(slow));
     look();
   });
 }
