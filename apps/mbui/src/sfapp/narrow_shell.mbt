@@ -615,6 +615,10 @@ fn narrow_made_as(
       made("station-archiving/" + st, fn(p, core, here, frame, _stint, _acts) {
         @sfpages.station_archiving_node(p, core, here, st, on_back=core.pop, frame~)
       })
+    Setting(StationMove(st)) =>
+      made("station-move/" + st, fn(p, core, here, frame, _stint, _acts) {
+        @sfpages.station_move_node(p, core, here, st, on_back=core.pop, frame~)
+      })
     Setting(AutoDecisions) =>
       made("auto-decisions", fn(p, core, here, frame, _stint, _acts) {
         @sfpages.decisions_node(p, core, here, on_back=core.pop, frame~)

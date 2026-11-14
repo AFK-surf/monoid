@@ -514,6 +514,10 @@ fn tape_made(
       made("station-archiving/" + st, fn(p, core, here, _stint, told, _acts) {
         @sfpages.station_archiving_node(p, core, here, st, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~)
       })
+    Setting(StationMove(st)) if pane_makes.val =>
+      made("station-move/" + st, fn(p, core, here, _stint, told, _acts) {
+        @sfpages.station_move_node(p, core, here, st, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~)
+      })
     // (a chat, and the new chat that becomes one in place: the same page, a node of the tree's, its old view in it as
     // yet, built as the stack's island built it (tape_page_one), its bar what that says (tape_bar_collected))
     page if pane_makes.val && @sfbase.chat_page_is(page) =>

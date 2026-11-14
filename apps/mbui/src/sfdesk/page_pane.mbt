@@ -277,6 +277,10 @@ fn pane_made(
       made("station-archiving/" + st, fn(a, core, here, _stint, frame, width) {
         @sfpages.station_archiving_node(a, core, here, st, on_back=core.pop, frame~, width~)
       })
+    Setting(StationMove(st)) =>
+      made("station-move/" + st, fn(a, core, here, _stint, frame, width) {
+        @sfpages.station_move_node(a, core, here, st, on_back=core.pop, frame~, width~, tips~)
+      })
     Setting(Shortcuts) =>
       // (recording while it is the one on top of the stack: its stay there, stint's)
       made("shortcuts", fn(a, core, _here, stint, frame, width) {

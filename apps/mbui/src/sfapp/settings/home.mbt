@@ -66,7 +66,7 @@ fn route_page(c : @ui.Ctx, core : Core, here : Here, route : Route) -> Unit {
     // setting_route
     Home | Appearance | Fonts | BarSettings | Changelog | About | Memories | Memory(_) | AutoDecisions | UsagePrices(_) | Usage | Me | Workspace | Security | SecurityOpen | Vault | VaultItems | VaultItem(_, _) | Connects(_) | Connect(_, _) | Station(_) | Profile(_, _) | NewProfile(_) => ()
     // the web's desktop pages, one for every frame (src/sfpages), drawn by the frame's setting_route too
-    Shortcuts | Notifications | Permissions | Archiving | StationArchiving(_) | LocalStation | MemoryDoc(_, _, _) | AutoCompletion | AutoPolicy(_) => ()
+    Shortcuts | Notifications | Permissions | Archiving | StationArchiving(_) | StationMove(_) | LocalStation | MemoryDoc(_, _, _) | AutoCompletion | AutoPolicy(_) => ()
     RunSettings(s, key) => run_settings_page(c, core, s, key)
   }
 }

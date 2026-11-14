@@ -303,8 +303,8 @@ fn station_menu(c : @ui.Ctx, core : Core, here : Here, s : Json?) -> Unit {
 }
 
 ///|
-/// What its ⋯ holds (station_menu's): renaming it, restarting it while it is online, its chats moved away and it taken
-/// out (station_retire_item's), removing it (asked first).
+/// What its ⋯ holds (station_menu's): renaming it, restarting it while it is online, its things moved to another station
+/// (station_move_item's), its chats moved away and it taken out (station_retire_item's), removing it (asked first).
 fn station_menu_items(core : Core, here : Here, s : Json?) -> Array[@sf.MenuItem?] {
   let address = text(s, "station")
   let remove = fn() { station_remove_ask(core, here, s) }
@@ -342,6 +342,7 @@ fn station_menu_items(core : Core, here : Here, s : Json?) -> Array[@sf.MenuItem
       } else {
         None
       },
+      station_move_item(core, s),
       station_retire_item(core, here, s),
       Some(@sf.menu_item_of(@sf.t("web-pages.settings.stations.remove"), icon="trash", danger=true, remove)),
   ]

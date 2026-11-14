@@ -161,8 +161,15 @@ fn station_view_node(
     }
   }
   let blocks = fn() {
-    // (being retired, or taking a retired one's chats in: 迁移 first, over its parts, whichever is shown)
-    let out = if station_moving_shown(s()) { ["moving", "parts"] } else { ["parts"] }
+    // (being retired, or taking a retired one's chats in: 迁移 first, over its parts, whichever is shown; or something
+    // of it moved to another station, moving, stopped or failed: station_move_node.mbt's)
+    let out = if station_moving_shown(s()) {
+      ["moving", "parts"]
+    } else if flag(s(), "online") && @settings.move_shown(core, address) {
+      ["move", "parts"]
+    } else {
+      ["parts"]
+    }
     out.append(
       match part() {
         "processes" => ["processes"]
@@ -208,6 +215,7 @@ fn station_view_node(
       "network" => station_network_node(b, core, address, fn() { field(field(s(), "overview"), "network") }, manager)
       "copies" => station_copies_node(b, core, address, fn() { field(field(s(), "overview"), "copies") })
       "moving" => station_moving_node(b, core, here, s, manager)
+      "move" => station_move_section(b, core, address)
       "software" => station_software_node(b, core, s, manager, tips)
       "device" => station_device_node(b, s)
       _ => ()

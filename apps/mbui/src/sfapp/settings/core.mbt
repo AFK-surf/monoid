@@ -170,6 +170,8 @@ pub(all) enum Route {
   Permissions
   Archiving
   StationArchiving(String)
+  /// moving a station's things to another, module by module (src/sfpages station_move_node.mbt), by its address
+  StationMove(String)
   /// the prices the usage is counted at, over its days (UsagePricesScreen)
   UsagePrices(Int)
   /// how a chat's agent runs (RunSettingsScreen): its station, its session's key
@@ -622,7 +624,7 @@ pub fn reset() -> Unit {
 /// Whether every frame makes `r`'s page once as nodes of the window's tree (narrow_made, pane_made, tape_made), as a page
 /// of the stack and as a place: its old view gone.
 pub fn made_once(r : Route) -> Bool {
-  r is (About | Changelog | Memories | Memory(_) | MemoryDoc(_, _, _) | Archiving | StationArchiving(_) | AutoDecisions | Usage | UsagePrices(_) | Shortcuts | Notifications | AutoCompletion | Permissions | AutoPolicy(_) | Appearance | LocalStation | Security | SecurityOpen | Workspace | VaultItems | Connects(_) | Connect(_, _) | Profile(_, _) | NewProfile(_) | Station(_))
+  r is (About | Changelog | Memories | Memory(_) | MemoryDoc(_, _, _) | Archiving | StationArchiving(_) | StationMove(_) | AutoDecisions | Usage | UsagePrices(_) | Shortcuts | Notifications | AutoCompletion | Permissions | AutoPolicy(_) | Appearance | LocalStation | Security | SecurityOpen | Workspace | VaultItems | Connects(_) | Connect(_, _) | Profile(_, _) | NewProfile(_) | Station(_))
 }
 
 ///|
@@ -679,6 +681,7 @@ pub fn route_of(name : String) -> Route? {
             "vault-item" => Some(VaultItem(address, id))
             "policy" => Some(AutoPolicy(arg))
             "archiving" => Some(StationArchiving(arg))
+            "move" => Some(StationMove(arg))
             "prices" => Some(UsagePrices(int_of(arg, 7)))
             "run" => Some(RunSettings(address, id))
             "memory" => Some(Memory(arg))
