@@ -1801,6 +1801,9 @@ export class Store {
           this.#run("INSERT INTO handed_over (session, station, ws, thread, there, at) VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT (session) DO UPDATE SET station = ?2, ws = ?3, thread = ?4, there = ?5, at = ?6", key, station, ws, t.thread, t.there, this.now());
           // Gone from here for anywhere: no longer the station it came here from that its row says (`from`).
           this.#run("UPDATE sessions SET ws = ?, came_from = NULL WHERE key = ?", handedWs(ws ?? home ?? ""), key);
+          // What it had yet to be handed went with it (handed there, store/handover.ts `deliveries`): none of it is
+          // handed to its agent here again should it come back.
+          this.#run("UPDATE deliveries SET delivered_at = ?2 WHERE session = ?1 AND delivered_at IS NULL", key, this.now());
           changes.push({ type: "moved", key, station, ws, thread: t.thread, there: t.there });
         }
       });

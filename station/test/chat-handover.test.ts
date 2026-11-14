@@ -372,7 +372,7 @@ test("handed over, then back: what was said there is in its log here once, in or
   assert.equal(a.rig.claude.last().options.resume, "claude-1");
 });
 
-test("a message sent while the chat is held is delivered once, there", async () => {
+test("a message sent while the chat is held is delivered once, there: answered there, it is not handed to its agent again as the chat comes back, and what is said after is handed alone", async () => {
   const w = world();
   const a = w.get(A);
   const b = w.get(B);
@@ -382,9 +382,20 @@ test("a message sent while the chat is held is delivered once, there", async () 
   };
   await a.moves.scheduler.move(WS, B, { module: "chats", item: key });
   await w.quiet();
+  a.onFail = null;
   assert.equal(a.rig.claude.count(), 1, "not taken here");
   const prompts = b.rig.claude.sessions.flatMap((s) => s.prompts).join("\n");
   assert.equal(prompts.split("while it moves").length - 1, 1, prompts);
+  await endTurn(b, key);
+  const back = await a.moves.scheduler.back(WS, B, { module: "chats", item: key });
+  await w.quiet();
+  assert.equal(back.failed, null, JSON.stringify(back));
+  const before = a.rig.claude.sessions.flatMap((s) => s.prompts).length;
+  say(a.rig.hub, thread, "p@x", "home again");
+  await w.quiet();
+  const handed = a.rig.claude.sessions.flatMap((s) => s.prompts).slice(before).join("\n");
+  assert.match(handed, /home again/, "the new one handed");
+  assert.doesNotMatch(handed, /while it moves/, "the one answered there not handed again");
 });
 
 test("a whole station handed over chat by chat: one whose account cannot go is listed with why, the others go", async () => {
