@@ -1408,7 +1408,8 @@ try {
           log(`  ${outcome(l)}; its hand-over ${o?.step} held=${o?.held}`);
           if (standing("A", key) !== "live") throw new Error(standings(key));
           if (o !== null && o.held !== false) throw new Error("it was held before it was refused");
-          if (!/free|room|space/i.test(why)) throw new Error(`what it said does not say what to do about room: ${why}`);
+          // (the station's words in either language: station.move.why.noRoom, zh 「…先在那边腾出空间，或换一台 station」)
+          if (!/free|room|space|腾出|空间/i.test(why)) throw new Error(`what it said does not say what to do about room: ${why}`);
           const s = statfsSync(DATA.C);
           const free = Number(s.bavail) * Number(s.bsize);
           log(`  C free before ${(freeBefore / 1048576).toFixed(0)} MB, after ${(free / 1048576).toFixed(0)} MB`);
@@ -1508,7 +1509,7 @@ try {
       // (what to do, as the station says it in its language: a hand-over's own, station.move.restartedMidway /
       // stoppedMidway / stoppedHeld, zh 「…再迁移一次」, en "…hand it over again"; or the turn's, a station restarted mid-move,
       // zh 「…再发起一次即可继续」 (drill 23), en "…ask again to go on")
-      if (!/再迁移一次|再发起一次|hand it over again|ask again/i.test(why)) throw new Error(`it stayed on A, but what the turn says does not say what to do: ${why || outcome(l)}`);
+      if (!/再迁移一次|再发起一次|再交接一次|over again|ask again/i.test(why)) throw new Error(`it stayed on A, but what the turn says does not say what to do: ${why || outcome(l)}`);
     });
     if (k3 !== "") await endsWell("3f", k3);
     log("SKIP 3f: the station's own self-update waits for a move's turn (updates/holds.ts): not built, the harness's stations have autoUpdate off and no newer release to update to; only the launcher's handover (SIGUSR2) is reachable, above");
@@ -1717,7 +1718,7 @@ try {
   // once the other is ready, asks are answered again within 5 s ──
   if (part("7") && (limit("7", 900), await clean("7"))) {
     type Ask = { at: number; ms: number; said: string; reached: boolean };
-    const unreached = /连不上|unreachable|out of reach|not reached|timed out|connection lost|answered nothing/i;
+    const unreached = /连不上|没有应答|unreachable|out of reach|not reached|timed out|connection lost|answered nothing|did not answer|does not answer/i;
     /// Station `asker` (an address) asking station `other` (an id) once a second until `stop`.
     /// The end of station `n`'s turn asked at `since` (its move/last.json once move/turn.json is gone).
     const turnEndOn = (n: Name, since: number, ms: number) => whenChanged([DATA[n]], () => {
@@ -1737,7 +1738,7 @@ try {
           const t = Date.now();
           let said = (await within(a.call("move.back", { station: asker, from: other, module: "chats", item: "chat:c-drill-not-there" }).then(() => "202", (e) => String(e).replace(/^Error: [A-Z]+ move\.back: /, "").slice(0, 200)), 35_000)) ?? "no answer in 35 s";
           if (said === "202") said = await turnEndOn(askerN, t, 35_000).then((l) => `202, its turn: ${outcome(l)}`, () => "202, its turn not ended in 35 s");
-          asks.push({ at: t, ms: Date.now() - t, said, reached: !unreached.test(said) && !/no answer|not ended|under way|进行/.test(said) });
+          asks.push({ at: t, ms: Date.now() - t, said, reached: !unreached.test(said) && !/no answer|not ended|under way|进行|没有应答/.test(said) });
           const wait = 1000 - (Date.now() - t);
           if (wait > 0) await new Promise((r) => setTimeout(r, wait));
         }
@@ -1819,7 +1820,8 @@ try {
     // held is that each is answered or refused in words, none by a timeout, by 5 s after A is ready)
     await check("7b: A's whole station stopped 10 s and started again while B asks it: every ask answered or refused in words, none timed out, each by 5 s after A is ready", async () => {
       const { asks, upAt } = await acrossStop(10_000);
-      const timedOut = asks.filter((x) => /timed out|no answer in|not ended|answered nothing/.test(x.said));
+      // (a station that did not answer, in its words in either language: station.move.noAnswer and .gone, 「…没有应答…」)
+      const timedOut = asks.filter((x) => /timed out|no answer in|not ended|answered nothing|没有应答|did not answer|does not answer/.test(x.said));
       const late = asks.filter((x) => x.at + x.ms > upAt && x.at + x.ms > Math.max(upAt + 5000, x.at + 2000));
       for (const x of [...timedOut, ...late].slice(0, 4)) log(`  the ask at ${iso(x.at)} (${x.ms} ms: ${x.said.slice(0, 120)}), both logs:\n${logsBetween(x.at - 1000, x.at + x.ms + 1000) || "  (nothing)"}`);
       const why: string[] = [];
