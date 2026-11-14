@@ -98,6 +98,13 @@ export function chatsModule(d: ChatsDeps): Module {
           items.push({ module: "chats", id: keys[0]!, label: row.title ?? key, needs, ...(why !== null ? { cannot: why } : {}) });
         }
       }
+      // (a chat coming here, not shown yet, is out of the pages (its rows `coming:`): listed by its arrival's record,
+      // moving, by the row it had here where it had one)
+      for (const keys of d.handover.comingIn(ws)) {
+        if (keys.some((k) => seen.has(k))) continue;
+        for (const k of keys) seen.add(k);
+        items.push({ module: "chats", id: keys[0]!, label: d.store.getSession(keys[0]!)?.title ?? keys[0]!, needs: [] });
+      }
       return items;
     },
     abandon() {
@@ -114,11 +121,15 @@ export function chatsModule(d: ChatsDeps): Module {
     },
     async back(item, from, opts) {
       await d.ask(from, { method: "move.back", module: "chats", id: item.id, to: d.here(), ...(opts?.stoppedFor ? { stoppedFor: opts.stoppedFor } : {}) });
+      // (back once shown here, not before: the other may answer having gone on without our word that it is shown)
+      for (const k of keysOf(item)) await d.handover.arrived(k);
     },
     state(item): ItemState {
       const o = d.handover.outOf(item.id);
       // (gone, not shown there yet: still moving, its page served here as it went)
       if (o !== null && o.step === "gone" && !o.shown) return { state: "moving", progress: { done: o.done, total: o.total, unit: "bytes" } };
+      // (coming here: moving until it is shown here, whatever its row's `handed_over` still says)
+      if (d.handover.comingHere(item.id)) return { state: "moving" };
       const handed = d.store.handedTo(item.id);
       if (handed !== null) return { state: "there", at: handed.station };
       // (where it went is no longer said here: here, whatever a record of an older trip says)

@@ -19,7 +19,7 @@ import { newSession, say } from "../src/sessions/lifecycle.ts";
 import { Moves } from "../src/move/station.ts";
 import { moveView } from "../src/move/routes.ts";
 import { shareRefusal, Sharing } from "../src/share/index.ts";
-import { Rig, message, testClock } from "./hub-fakes.ts";
+import { Rig, message, settle, testClock } from "./hub-fakes.ts";
 import { sessionKey } from "../src/sessions/hub.ts";
 
 type Json = any;
@@ -727,6 +727,61 @@ test("a chat stopped here for its login, then moved itself, then back alone whil
   await quiet();
   assert.ok(handed(a).slice(before.length).includes("back here?"), "handed once it goes on");
   void b;
+});
+
+test("a chat moved with its login that cannot be shared in one turn, then brought back alone by a move back asked here: the moment that turn ends its row says stopped, waiting for the login on the other, handed to nowhere", async () => {
+  for (const lost of [false, true]) {
+  const { a, b, quiet } = world([KIMI]);
+  signIn(a, "kimi", {});
+  const one = await chatOn(a, "kimi");
+  const account = `own:kimi@${A}`;
+  const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: one.key, withNeeds: true });
+  await quiet();
+  assert.deepEqual(out.done, [{ module: "accounts", id: account }, { module: "chats", id: one.key }], JSON.stringify(out));
+  assert.equal(a.rig.store.handedTo(one.key)?.station, B, "handed to B");
+  const row = async () => {
+    const view = moveView(await a.moves.scheduler.plan(WS, B), a.moves.modules.map((m) => m.id), a.moves.scheduler.stopped(), { limit: 50 }, null, false, (id) => id.slice(0, 1).toUpperCase());
+    const r = view.modules.find((m: Json) => m.id === "chats").items.find((x: Json) => x.id === one.key);
+    return r === undefined ? null : [r.state, r.waitsFor, r.waitsAt];
+  };
+  // (the page read while it is on B, as a device had it: its pages read and kept as `handedTo` keeps them)
+  assert.equal((await row())?.[0], "there", "there while on B");
+  // (a person's word to it on B while it is handed back is caught up after it is shown here)
+  const held = Promise.withResolvers<void>();
+  const hold = b.rig.hub.holdChat.bind(b.rig.hub);
+  b.rig.hub.holdChat = async (k: string, why: string, notice?: () => string) => {
+    await hold(k, why, notice);
+    if (k === one.key && why.startsWith("moving")) {
+      const thread = b.rig.store.homeChat(one.key)!.id;
+      say(b.rig.hub, thread, "p@x", "said while it went back");
+      held.resolve();
+    }
+  };
+  // (lost: B's first word to A that the chat is there to show is lost on the way, as on a connection that drops)
+  const ask = b.bus.ask.bind(b.bus);
+  let losing = lost;
+  const lostIt = Promise.withResolvers<void>();
+  b.bus.ask = ((s: string, r: Json) => (losing && r?.method === "handover.show" ? ((losing = false), lostIt.resolve(), Promise.reject(new Error("the answer was lost on the way"))) : ask(s, r))) as typeof b.bus.ask;
+  let ended = false;
+  const backing = a.moves.scheduler.back(WS, B, { module: "chats", item: one.key }).finally(() => (ended = true));
+  if (lost) {
+    // (B went on, its word lost, to tell it again by its retry: the turn here does not end, the chat moving, till then)
+    await lostIt.promise;
+    await settle();
+    assert.equal(ended, false, "the turn does not end before the chat it brings is shown here");
+    assert.deepEqual((await row())?.[0], "moving", "moving till it is shown here");
+    b.moves.handover.reached(A);
+  }
+  const back = await backing;
+  if (!lost) await held.promise;
+  // (the moment the turn's end is told, nothing waited for after)
+  assert.equal(back.failed, null, JSON.stringify(back));
+  assert.equal(a.rig.store.handedTo(one.key), null, `handed to nowhere: it is here (lost ${lost})`);
+  assert.deepEqual(await row(), ["stopped", `accounts ${account}`, "B"], `its row: stopped, waiting for the login on B (lost ${lost})`);
+  await quiet();
+  assert.deepEqual(await row(), ["stopped", `accounts ${account}`, "B"], "and so after");
+  assert.match(a.rig.hub.chatHeld(one.key) ?? "", /^stopped: waits for accounts/, "held");
+  }
 });
 
 test("two chats on one login that cannot be shared, moved with what they need, one going and one failing: the login stays there for the one that went, which works there; the failed one stays here stopped waiting for it and says so when spoken to; nothing brought back", async () => {

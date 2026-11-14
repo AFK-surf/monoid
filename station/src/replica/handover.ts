@@ -306,6 +306,8 @@ export class Handover {
     this.#closed = true;
     for (const letGo of this.#inHeld.values()) letGo();
     this.#inHeld.clear();
+    for (const done of [...this.#settledIn.values()].flat()) done();
+    this.#settledIn.clear();
     for (const stop of this.#again.values()) stop();
     this.#again.clear();
     await Promise.all([...this.#runs.values()].map((p) => p.catch(() => {})));
@@ -1014,6 +1016,36 @@ export class Handover {
   #letIn(id: string): void {
     this.#inHeld.get(id)?.();
     this.#inHeld.delete(id);
+    for (const done of this.#settledIn.get(id) ?? []) done();
+    this.#settledIn.delete(id);
+  }
+
+  /// What waits for a hand-over coming here to be shown here or dropped (by its id).
+  readonly #settledIn = new Map<string, (() => void)[]>();
+
+  /// The chats of workspace `ws` coming here now (by their keys, sorted): a hand-over begun here, not shown nor dropped
+  /// yet. Few at a time, read from the records kept of them.
+  comingIn(ws: string): string[][] {
+    return [...this.#ins.values()].filter((i) => i.step === "coming" && i.ws === ws).map((i) => [...i.keys].sort());
+  }
+
+  /// Whether chat `key` is coming here now (a hand-over of it begun here, not shown nor dropped yet).
+  comingHere(key: string): boolean {
+    return [...this.#ins.values()].some((i) => i.step === "coming" && i.keys.includes(key));
+  }
+
+  /// Once no hand-over of chat `key` coming here is still coming: each shown here (its rows the chat's, `showChat`) or
+  /// dropped. What brought it back waits for this: the station it came from may have gone on without having been
+  /// answered that it is shown here (its word lost on the way), telling it again by its retry.
+  async arrived(key: string): Promise<void> {
+    for (const i of [...this.#ins.values()]) {
+      if (i.step !== "coming" || !i.keys.includes(key) || this.#closed) continue;
+      await new Promise<void>((resolve) => {
+        const list = this.#settledIn.get(i.id) ?? [];
+        list.push(resolve);
+        this.#settledIn.set(i.id, list);
+      });
+    }
   }
 
   /// `path`, replaced or pruned by hand-over `i`, moved aside the first time (`inAside`'s list says where it was).
