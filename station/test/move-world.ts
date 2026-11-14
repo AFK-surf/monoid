@@ -1,8 +1,9 @@
-// The stations of a workspace as the migration's tests make them (chat-handover.test.ts, move-plan-bounded.test.ts):
+// The stations of a workspace as the migration's tests make them (chat-handover*.test.ts, move-plan-bounded.test.ts):
 // each a Rig (hub-fakes.ts) with its connects (connects/workspace.ts) and its moves (move/station.ts), over a transport
 // of the test's; and a station shaped like the one moving was measured for (`officeShape`).
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import assert from "node:assert/strict";
+import { mkdirSync, readFileSync, readdirSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach } from "node:test";
 import { PeerBus, bytesOf, withBytes } from "../src/mesh/bus.ts";
@@ -22,6 +23,7 @@ import { READ, forPeer } from "../src/sessions/others.ts";
 import { Rig, testClock } from "./hub-fakes.ts";
 import { MANUAL } from "../src/store/rows.ts";
 import { Admin } from "../src/api/admin.ts";
+import { newCtx } from "../src/store/handover.ts";
 
 type Json = any;
 export const WS = "ws";
@@ -322,4 +324,66 @@ export function officeShape(n: number, o: { git?: boolean } = {}) {
     writeFileSync(join(at, ".git"), `gitdir: ${join(repo, ".git", "worktrees", `s${i}`)}\n`);
   }
   return { w, a, keys, live };
+}
+
+/// B holding a retired copy of A's chat as the switched-off retirement left it (ws `retired:<ws>`, its threads put in
+/// with B's own ids, its files in place, their times kept): what A's rows and room were then.
+export function retiredCopy(a: Station, b: Station, key: string, ws: string | null = `retired:${WS}`) {
+  const ctx = newCtx({ from: A, here: B, fromData: a.rig.dir, toData: b.rig.dir, connects: {}, profiles: { cc: "ccb" }, ws: ws as string }); // (none: a live row of the home workspace)
+  b.rig.store.importRows(ctx, "sessions", a.rig.store.chatPage("sessions", key, null, 500, [key]));
+  for (const t of a.rig.store.chatThreads([key], 0, 200)) {
+    for (const table of ["threads", "thread_sessions", "entries", "letters"] as const) b.rig.store.importRows(ctx, table, a.rig.store.chatPage(table, t, null, 500, [key]));
+  }
+  const from = a.rig.session(key).workspace;
+  const to = b.rig.session(key).workspace;
+  mkdirSync(to, { recursive: true });
+  for (const n of readdirSync(from)) {
+    if (!statSync(join(from, n)).isFile()) continue;
+    writeFileSync(join(to, n), readFileSync(join(from, n)));
+    const st = statSync(join(from, n));
+    utimesSync(join(to, n), st.atime, st.mtime);
+  }
+}
+
+/// What a device and the move page read of chat `key` on each station of `w` (where it is, in sight, held, its row,
+/// its page's log, the jobs), started again: the same as before (a start at rest changes nothing).
+export async function startedAgainChangesNothing(w: ReturnType<typeof world>, key: string, how: string) {
+  const read = async () => {
+    const out: Json = {};
+    for (const st of w.stations.values()) {
+      const row = st.rig.store.getSession(key);
+      const other = [...w.stations.keys()].find((id) => id !== st.id)!;
+      const item = (await st.moves.scheduler.plan(WS, other)).items.find((x) => x.module === "chats" && x.id === key);
+      const home = row === null ? null : st.rig.store.homeChat(key);
+      out[st.id.slice(0, 1)] = {
+        row: row === null ? null : { ws: row.ws, archivedAt: row.archivedAt },
+        handedTo: st.rig.store.handedTo(key)?.station.slice(0, 1) ?? null,
+        held: st.rig.hub.chatHeld(key),
+        item: item === undefined ? null : { state: item.state },
+        log: home === null ? null : entries(st, home.id),
+        jobs: st.jobs.map((j) => `${j.session}#${j.name}`),
+      };
+    }
+    return out;
+  };
+  // (kept stopped and held as stopped are one fact on every station: neither without the other)
+  const oneFact = (when: string) => {
+    for (const st of w.stations.values()) {
+      const listed = st.moves.scheduler.stopped().some((s) => s.item.module === "chats" && s.item.id === key);
+      const held = /^stopped: /.test(st.rig.hub.chatHeld(key) ?? "");
+      assert.equal(listed, held, `${how}, ${when}: on ${st.id.slice(0, 1)} the chat is ${listed ? "kept stopped but not held" : "held as stopped but not kept so"}`);
+      // (and nothing kept stopped of a chat that is not here: handed away, it waits for nothing here)
+      if (listed) assert.equal(st.rig.store.handedTo(key), null, `${how}, ${when}: on ${st.id.slice(0, 1)} the chat is kept stopped though it was handed away`);
+    }
+  };
+  oneFact("at rest");
+  const before = await read();
+  for (const st of w.stations.values()) {
+    await st.moves.close();
+    st.moves = st.make();
+  }
+  for (const st of w.stations.values()) await st.moves.start();
+  await w.quiet();
+  assert.deepEqual(await read(), before, `${how}: a start at rest changes nothing`);
+  oneFact("started again");
 }
