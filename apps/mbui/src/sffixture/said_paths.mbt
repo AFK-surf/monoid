@@ -1168,6 +1168,10 @@ pub let said_paths : Map[String, Array[String]] = {
     "way.path",
     "home",
   ],
+  "stationUpdates": [
+    "items.*.name",
+    "items.*.detail",
+  ],
   "stations": [
     "*.name",
     "*.summary",

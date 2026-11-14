@@ -1081,8 +1081,12 @@ fn fixture_answer(f : Fixture, name : String, params : Map[String, Json], versio
     match name {
       // (files-reading: the stations not read yet, the files' sidebar waiting on them)
       _ if f.mode == "files-reading" => None
-      "stations" => fixture_stations_way(value)
-      _ => fixture_stations_way(fixture_topic_inner(f, "stations", { "scope": Json::string(text(Some(Json::object(params)), "scope")) }))
+      "stations" => fixture_stations_behind(f, fixture_stations_way(value))
+      _ =>
+        fixture_stations_behind(
+          f,
+          fixture_stations_way(fixture_topic_inner(f, "stations", { "scope": Json::string(text(Some(Json::object(params)), "scope")) })),
+        )
     }
   }
   let value = match name {
@@ -1092,6 +1096,7 @@ fn fixture_answer(f : Fixture, name : String, params : Map[String, Json], versio
         v => v
       }
     "station" => @settings.station_said(wholes(), text(Some(Json::object(params)), "station"), "")
+    "stationUpdates" => Some(fixture_station_updates(f, wholes()))
     "stationPart" => {
       let p = Some(Json::object(params))
       @settings.station_said(wholes(), text(p, "station"), text(p, "part"))
@@ -2377,6 +2382,7 @@ pub fn fixture(mode : String) -> Source {
     asks_devices: fn() { true },
     asks_outline: fn() { true },
     switches_ahead: fn() { true },
+    asks_station_updates: fn() { true },
   }
 }
 
@@ -2574,4 +2580,76 @@ fn fixture_phone_lend(mode : String) -> Json {
     return []
   }
   [{ "station": "ws1/st1", "phase": "offered", "adb": adb, "serial": "127.0.0.1:37762", "tunnels": 0 }]
+}
+
+///|
+/// The stations whole `v` where a mode shows their newer releases waiting (`…station-updates…`): each one's own software
+/// a release behind, not updating itself (its page, its part and `stationUpdates` all saying so); else as they are.
+fn fixture_stations_behind(f : Fixture, v : Json?) -> Json? {
+  guard f.mode.contains("station-updates") && v is Some(Array(stations)) else { return v }
+  let behind = fn(u : Json) -> Json {
+    match u {
+      Object(m) if text(Some(u), "id") == "station" => {
+        let o = m.copy()
+        let version = text(Some(u), "version")
+        o["latest"] = Json::string("0.1.4800")
+        o["newer"] = Json::boolean(version != "0.1.4800")
+        o["auto"] = Json::boolean(false)
+        o["state"] = Json::string("idle")
+        o["tipText"] = Json::string("")
+        Json::object(o)
+      }
+      _ => u
+    }
+  }
+  Some(
+    Json::array(
+      stations.map(fn(s) {
+        match (s, field(Some(s), "overview")) {
+          (Object(m), Some(Object(ov))) => {
+            let o = ov.copy()
+            o["updates"] = Json::array(items(Some(Json::object(ov)), "updates").map(behind))
+            let w = m.copy()
+            w["overview"] = Json::object(o)
+            Json::object(w)
+          }
+          _ => s
+        }
+      }),
+    ),
+  )
+}
+
+///|
+/// The stations' newer releases waiting for this person (the core's `stationUpdates`, views/station-updates.ts), of the
+/// stations whole the made-up cores describe (`wholes`): only where a mode shows them (`…station-updates…`: the
+/// sidebar's and Home's key of them, their dialog), each up whose own software is newer and does not update itself; none
+/// elsewhere, so no other screen shows their key.
+fn fixture_station_updates(f : Fixture, wholes : Json?) -> Json {
+  let listed : Array[Json] = []
+  if f.mode.contains("station-updates") {
+    let stations = match wholes {
+      Some(Array(a)) => a
+      _ => []
+    }
+    for s in stations {
+      let own = items(field(Some(s), "overview"), "updates").iter().find_first(fn(u) { text(Some(u), "id") == "station" })
+      guard flag(Some(s), "online") && own is Some(u) else { continue }
+      guard flag(Some(u), "newer") && flag(Some(u), "updatable") && !flag(Some(u), "auto") else { continue }
+      listed.push({
+        "station": Json::string(text(Some(s), "station")),
+        "name": Json::string(text(Some(s), "name")),
+        "state": "offered",
+        "versionText": Json::string(text(Some(u), "version") + " → " + text(Some(u), "latest")),
+        "canUpdate": true,
+      })
+    }
+  }
+  let n = listed.length()
+  {
+    "items": Json::array(listed),
+    "offered": Json::number(n.to_double()),
+    "labelText": Json::string(if n > 0 { "\{n} 台 station 有新版本" } else { "" }),
+    "titleText": "Station 更新",
+  }
 }

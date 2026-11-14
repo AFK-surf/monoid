@@ -428,6 +428,11 @@ pub fn open_fixture_src(mode : String, src : Source) -> Unit {
   }
   // a new workspace over Home: nothing typed yet; and named, an invite code typed that still.fail cloud found wrong
   // (what is wrong with it under its field)
+  // the stations' newer releases waiting for this person: their key over Home (home-station-updates); their dialog open
+  // over it (station-updates)
+  if mode == "station-updates" {
+    @sfpages.station_updates_dialog(settings_core(src, { id: "ws1", name: "星火工作室", emoji: "", icon: "", email: "lin@example.com" }), "ws1")
+  }
   if mode == "new-workspace" {
     @sfpages.new_workspace_put(src, name="", code="", error_code="")
   }
