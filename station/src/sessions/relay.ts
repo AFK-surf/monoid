@@ -8,7 +8,7 @@ import { log } from "../ops/log.ts";
 import type { ThreadRow } from "../store/rows.ts";
 import { titleOf } from "../read/views.ts";
 import { threadAddress } from "../agents/instructions.ts";
-import type { ChatSurface, Member, Place, ThreadRef } from "./chat.ts";
+import { type ChatSurface, type Member, type Place, type ThreadRef, markNotice } from "./chat.ts";
 import type { Connect } from "./config.ts";
 import type { Hub } from "./hub.ts";
 import { STATION_AUTHOR } from "../store/rows.ts";
@@ -206,7 +206,7 @@ export async function relay(hub: Hub, thread: ThreadRow, relayer: Relayer, targe
   if (here !== undefined) {
     const text = `↗ ${tr(lang, "station.relay.relayed", { who: by, place: named })}`;
     try {
-      const ts = await hub.chat(here.connect).post({ channel: thread.channel, threadTs: thread.threadTs }, text, []);
+      const ts = await hub.chat(here.connect).post({ channel: thread.channel, threadTs: thread.threadTs }, markNotice(text), []);
       hub.store.insertMessage({ thread: thread.id, ts, authorKind: STATION_AUTHOR, author: STATION_AUTHOR, text, attachments: [] });
     } catch (error) {
       log.warn("hub", "a relay was not said in the chat it came from", { thread: thread.id, error: (error as Error).message });

@@ -13,7 +13,7 @@ import type { Inbox } from "../mesh/bus.ts";
 import { log } from "../ops/log.ts";
 import { stationLang, tr } from "../ops/i18n.ts";
 import { Agents } from "../sessions/agents.ts";
-import type { ChatEvent } from "../sessions/chat.ts";
+import { type ChatEvent, markNotice } from "../sessions/chat.ts";
 import type { ConnectKind } from "../sessions/config.ts";
 import type { Hub } from "../sessions/hub.ts";
 import { ControlPlane, Parts, Paths, Peers, StationConfig, Store } from "../services.ts";
@@ -329,7 +329,7 @@ export class WorkspaceConnects {
         } catch (e) {
           log.warn("connects", "an event of a chat on another station did not get there", { connect: id, station: there, error: (e as Error).message });
           if (event.type === "message") {
-            await this.own(id)?.post(thread, `⚠️ ${tr(stationLang(), "station.connect.stationAway", { station: this.nameOf(ws, there) })}`, []).catch(() => {});
+            await this.own(id)?.post(thread, markNotice(`⚠️ ${tr(stationLang(), "station.connect.stationAway", { station: this.nameOf(ws, there) })}`), []).catch(() => {});
           }
         }
         return;

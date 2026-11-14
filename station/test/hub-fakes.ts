@@ -70,6 +70,9 @@ export class FakeChat implements ChatSurface {
   whilePosting: (() => Promise<void>) | null = null;
   async post(thread: ThreadRef, message: string, files: Attachment[], card?: Json | null) {
     if (files.length > 0 && this.noFiles) throw new Error("slack files.getUploadURLExternal: missing_scope");
+    // (a station's ⚠️ words are its notice, which another station must be able to tell from a person's message: one
+    // posted without the mark is refused, so every test that makes one fails)
+    if (message.startsWith("⚠️") && !message.endsWith(NOTICE_MARK)) throw new Error(`a station's notice posted without NOTICE_MARK: ${message}`);
     const meanwhile = this.whilePosting;
     this.whilePosting = null;
     await meanwhile?.();

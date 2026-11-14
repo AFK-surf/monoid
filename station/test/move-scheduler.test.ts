@@ -80,7 +80,7 @@ test("a need's module undeclared is refused as the plan is made", async () => {
   const log: string[] = [];
   const bad = fake("chats", [], [{ id: "c1", label: "c", needs: [{ module: "accounts", id: "sub" }] }], log);
   const acc = fake("accounts", [], [{ id: "sub", label: "s", needs: [] }], log);
-  const s = new Scheduler({ data: mkdtempSync(join(tmpdir(), "move-")), modules: [acc, bad] });
+  const s = new Scheduler({ data: mkdtempSync(join(process.env.STILLFAIL_TEST_TMP ?? tmpdir(), "move-")), modules: [acc, bad] });
   await assert.rejects(s.plan("ws", "B"), /needs accounts sub, of a module it does not declare/);
 });
 
@@ -153,7 +153,7 @@ test("modules may need each other; items may not: a chain of items needing each 
   const log: string[] = [];
   const chats = fake("chats", ["connects"], [{ id: "c1", label: "c", needs: [{ module: "connects", id: "k1" }] }], log);
   const connects = fake("connects", ["chats"], [{ id: "k1", label: "k", needs: [{ module: "chats", id: "c1" }] }, { id: "k2", label: "k2", needs: [] }], log);
-  const s = new Scheduler({ data: mkdtempSync(join(tmpdir(), "move-")), modules: [chats, connects] });
+  const s = new Scheduler({ data: mkdtempSync(join(process.env.STILLFAIL_TEST_TMP ?? tmpdir(), "move-")), modules: [chats, connects] });
   const plan = await given(s.plan("ws", "B"), "the plan answers");
   const chain = /need each other, so none can go first: chats c1 → connects k1 → chats c1|connects k1 → chats c1 → connects k1/;
   assert.match(plan.items.find((x) => x.id === "c1")!.cannot ?? "", chain);
@@ -163,7 +163,7 @@ test("modules may need each other; items may not: a chain of items needing each 
   assert.equal(out.done.length, 0);
   assert.match(out.refused[0]?.why ?? "", chain);
   // (the modules' needs alone, a cycle of their own, are fine)
-  const ok = new Scheduler({ data: mkdtempSync(join(tmpdir(), "move-")), modules: [fake("chats", ["connects"], [], log), fake("connects", ["chats"], [{ id: "k2", label: "k2", needs: [] }], log)] });
+  const ok = new Scheduler({ data: mkdtempSync(join(process.env.STILLFAIL_TEST_TMP ?? tmpdir(), "move-")), modules: [fake("chats", ["connects"], [], log), fake("connects", ["chats"], [{ id: "k2", label: "k2", needs: [] }], log)] });
   assert.equal((await ok.plan("ws", "B")).items.length, 1);
 });
 
@@ -186,7 +186,7 @@ test("an item may go to where what it needs is not (arriveStopped), and is told 
   const told: string[] = [];
   const arrived: string[] = [];
   const w2 = world();
-  const s2 = new Scheduler({ data: mkdtempSync(join(tmpdir(), "move-")), modules: [w2.accounts, w2.chats, w2.jobs], tellArrived: async (to, item) => void arrived.push(`${to}:${item.module}/${item.id}`) });
+  const s2 = new Scheduler({ data: mkdtempSync(join(process.env.STILLFAIL_TEST_TMP ?? tmpdir(), "move-")), modules: [w2.accounts, w2.chats, w2.jobs], tellArrived: async (to, item) => void arrived.push(`${to}:${item.module}/${item.id}`) });
   const out = await s2.move("ws", "B", { module: "chats", item: "c2", arriveStopped: true });
   assert.deepEqual(out.done, [{ module: "chats", id: "c2" }]);
   assert.deepEqual(arrived, ["B:chats/c2"]);

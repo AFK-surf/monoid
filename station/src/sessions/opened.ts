@@ -23,6 +23,7 @@ import { sameModel } from "./config.ts";
 import { contextAsked } from "./context-cap.ts";
 import { type Preset, type PresetCopy, type PresetModel, type Presets, presetCopyInput } from "./presets.ts";
 import { STATION_AUTHOR } from "../store/rows.ts";
+import { markNotice } from "./chat.ts";
 
 type Json = any;
 
@@ -190,7 +191,7 @@ async function sayOpened(hub: Hub, key: string, title: string, link: string | nu
   if (!latest) return;
   const text = tr(stationLang(), "station.session.opened", { chat: chatNamed(latest.thread.surface, title, link) });
   try {
-    const ts = await hub.chat(latest.connect).post({ channel: latest.thread.channel, threadTs: latest.thread.threadTs }, text, []);
+    const ts = await hub.chat(latest.connect).post({ channel: latest.thread.channel, threadTs: latest.thread.threadTs }, markNotice(text), []);
     hub.store.insertMessage({ thread: latest.thread.id, ts, authorKind: STATION_AUTHOR, author: STATION_AUTHOR, text, attachments: [] });
   } catch (error) {
     log.warn("hub", "an opened chat was not said in its opener's", { session: key, error: (error as Error).message });
@@ -407,7 +408,7 @@ export function settled(hub: Hub, key: string, state: Settled, words: string | n
     if (!latest) return;
     const text = tr(stationLang(), "station.session.openerNotTold", { error: (error as Error).message });
     try {
-      const ts = await hub.chat(latest.connect).post({ channel: latest.thread.channel, threadTs: latest.thread.threadTs }, text, []);
+      const ts = await hub.chat(latest.connect).post({ channel: latest.thread.channel, threadTs: latest.thread.threadTs }, markNotice(text), []);
       hub.store.insertMessage({ thread: latest.thread.id, ts, authorKind: STATION_AUTHOR, author: STATION_AUTHOR, text, attachments: [] });
     } catch {}
   });

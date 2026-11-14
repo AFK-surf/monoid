@@ -849,7 +849,7 @@ export class Hub {
       const link = single ? undefined : this.link(key);
       const said = link === undefined ? null : chat.sessionLink ? chat.sessionLink(link, tr(stationLang(), "station.slack.viewSession")) : `<${link}|${tr(stationLang(), "station.slack.viewSession")}>`;
       if (said !== null) {
-        chat.post(here, said, []).catch((error) => log.warn("hub", "session link not posted", { session: key, error: (error as Error).message }));
+        chat.post(here, markNotice(said), []).catch((error) => log.warn("hub", "session link not posted", { session: key, error: (error as Error).message }));
       }
     }
     const thread = existing ?? (await this.openSlackThread(chat, surface, message, createdBy, key));

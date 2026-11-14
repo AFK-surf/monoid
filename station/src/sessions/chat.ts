@@ -9,7 +9,8 @@ export type Json = any;
 
 export type ThreadRef = { channel: string; threadTs: string };
 
-/// What a station's own notice (sessions/actor.ts `notice`, the hub's and the connects' ⚠️ words) ends with as it is
+/// What a station's own words in a thread (sessions/actor.ts `notice`, the hub's and the connects' ⚠️ words, its link
+/// to a new session, what it says of a relay, a chat opened or a copy that failed) end with as they are
 /// posted, and nothing an agent posts does (tools/chat.ts strips it): an invisible separator (U+2063). A station that
 /// sees one come back through another bot's connect, from a bot of the workspace's stations, takes it as no person's
 /// message (hub.ts `stationNotice`): it wakes nothing and brings no chat back. What it cannot tell: a notice edited by

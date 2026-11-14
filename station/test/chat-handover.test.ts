@@ -342,6 +342,25 @@ test("a Slack thread's chat handed over with its connect staying here: what come
   assert.deepEqual(a.rig.said(home.id).map((m) => m.text), ["<@UBOT> look", "and the tests", "on it", "still there?", "back?"], "what was said there, once, in order");
 });
 
+test("a Slack thread's chat handed over, its station not reached: what is said in it is answered here by the station's notice, marked as one (so no station takes it for a person's message)", async () => {
+  const w = world();
+  const a = w.get(A);
+  const b = w.get(B);
+  const first = message({ text: "<@UBOT> look" });
+  await a.connects.receive("cl", { type: "message", message: first });
+  const key = sessionKey("cl", first.channel, first.threadTs);
+  await endTurn(a, key);
+  assert.equal((await a.moves.scheduler.move(WS, B, { module: "chats", item: key })).failed, null);
+  await w.quiet();
+  b.up = false;
+  const posts = a.rig.chat.posts.length;
+  await a.connects.receive("cl", { type: "message", message: reply(first, "1800.1", "still there?") });
+  await w.quiet();
+  assert.equal(a.rig.chat.posts.length, posts + 1, "said in the thread");
+  assert.match(a.rig.chat.lastText(), /^⚠️ /);
+  assert.ok(a.rig.chat.marked.includes(posts), "as the station's notice");
+});
+
 test("two bots' sessions in one thread: one handed over, the other stays; each bot's events go to its own", async () => {
   const w = world();
   const a = w.get(A);
