@@ -28,6 +28,15 @@ test("the MoonBit reader reads sessions' summaries and the session list as the w
   session("a3", { ws: null, runtime: "dsh", createdBy: "slack:team:U1", lastActiveAt: 400 });
   session("s1", { connect: "team", ws: "w", lastActiveAt: 300 });
   session("old", { ws: "w", lastActiveAt: 200 });
+  // Chats of a hand-over (replica/handover.ts): handed here from another station (`came_from`: its `from`; an empty one
+  // none), handed from here to another (`handed:`, out of every list), being handed here and not shown yet (`coming:`).
+  session("came", { ws: "w", lastActiveAt: 250 });
+  session("blank", { ws: "w", lastActiveAt: 240 });
+  session("gone", { ws: "handed:w", lastActiveAt: 600 });
+  session("arriving", { ws: "coming:w", lastActiveAt: 600 });
+  db.prepare("UPDATE sessions SET came_from = 'stB' WHERE key = 'came'").run();
+  db.prepare("UPDATE sessions SET came_from = '' WHERE key = 'blank'").run();
+  db.prepare("INSERT INTO handed_over (session, station, ws, thread, there, at) VALUES ('gone', 'stC', 'w', NULL, 7, 1)").run();
   db.prepare("UPDATE sessions SET archived_at = 900, archived_by = 'manual' WHERE key = 'old'").run();
   db.prepare("UPDATE sessions SET profile_pinned = 1, fast = 1, afresh = 0, context = 200000, context_before = 0, cwd = '/w/sub', title = 'One' WHERE key = 'a1'").run();
   db.prepare("UPDATE sessions SET profiles = '[\"cc\",\"\",3,\"cx\"]', running = 1 WHERE key = 'a2'").run();
@@ -72,7 +81,7 @@ test("the MoonBit reader reads sessions' summaries and the session list as the w
   const all = async (r: Readers) => {
     const out: unknown[] = [];
     for (const lang of ["zh", "en"] as const) {
-      for (const key of ["a1", "a2", "a3", "s1", "old", "nobody"]) out.push(await read(r, "summary", { key }, lang));
+      for (const key of ["a1", "a2", "a3", "s1", "old", "came", "blank", "gone", "arriving", "nobody"]) out.push(await read(r, "summary", { key }, lang));
       for (const connect of [null, "team", "ember"])
         for (const archived of [false, true, 0, 1])
           for (const viewer of [null, { workspace: "w", home: true }, { workspace: "x", home: false }, { workspace: "x" }])
@@ -86,8 +95,11 @@ test("the MoonBit reader reads sessions' summaries and the session list as the w
     const said = JSON.stringify(first);
     for (const sign of ["\"process\":\"running\"", "\"boundTo\":[\"team\",\"other\"]", "\"transcriptLength\":42", "\"usage\":{", "\"watch\":", "\"name\":\"Pat\"", "\"name\":\"Una\"",
       "\"profiles\":[\"cc\",\"cx\"]", "\"profiles\":[\"cc\"]", "\"contextActions\":[\"clear\"]", "\"status\":404", "\"fast\":true", "\"afresh\":false", "\"context\":200000", "\"cwd\":\"/w/sub\"",
-      "\"pending\":1", "\"turns\":2", "\"archivedBy\":\"manual\""])
+      "\"pending\":1", "\"turns\":2", "\"archivedBy\":\"manual\"", "\"from\":\"stB\""])
       assert.ok(said.includes(sign), sign);
+    // (one a station handed here says it; an empty one says none; the lists of `w` have neither one handed away nor one arriving)
+    const listed = (await read(program, "sessions", { connect: null, archived: false, viewer: { workspace: "w", home: true }, lang: "en" }, "en")) as { key: string; from?: string }[];
+    assert.deepEqual(listed.filter((x) => ["came", "blank", "gone", "arriving"].includes(x.key)).map((x) => [x.key, x.from ?? null]), [["came", "stB"], ["blank", null]]);
     // A usage that does not read: none of them.
     db.prepare("INSERT INTO session_usage(session, usage) VALUES ('a2', 'nope')").run();
     assert.deepEqual(await all(program), await all(worker));
