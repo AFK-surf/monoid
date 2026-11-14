@@ -42,6 +42,8 @@ export type Station = {
   on: boolean;
   /// The chats a plan reads at a time (none: the module's own).
   page?: number;
+  /// The repositories found on the machine outside the repository cache (its RepoIndex's, the hub's).
+  elsewhere?: string[];
   /// The holds of its self-update now (updates/holds.ts, its own here); a move of an account that never ends.
   holds: number;
   profileHangs?: boolean;
@@ -242,3 +244,4 @@ export function filesOf(dir: string): Record<string, string> {
 
 export const entries = (st: Station, thread: number) => st.rig.store.entriesAfter(thread, 0).map((e) => `${e.authorKind}:${e.text ?? ""}`);
 export const homeThread = (st: Station, key: string) => st.rig.store.homeChat(key)?.id ?? st.rig.store.sessionThreads(key)[0]!.thread.id;
+
