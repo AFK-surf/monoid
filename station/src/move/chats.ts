@@ -5,7 +5,7 @@
 import { type Handover, liveHereWords } from "../replica/handover.ts";
 import type { Store } from "../store/store.ts";
 import { type SessionRow, comingWs, handedWs } from "../store/rows.ts";
-import type { Item, ItemState, Module, Need, PlanReads, Progress } from "./module.ts";
+import { type Item, type ItemState, type Module, type Need, type PlanReads, type Progress, unanswered } from "./module.ts";
 import { repoItemId } from "./repos.ts";
 import { stationLang, tr } from "../ops/i18n.ts";
 import { accountItemId } from "./accounts.ts";
@@ -67,9 +67,11 @@ export function chatsModule(d: ChatsDeps): Module {
         }
         const grants = d.vaultsOf([...new Set(kept.flatMap((x) => x.keys))], ws);
         // (a chat of a key live there already went on there apart from this one: it cannot go, never merged into;
-        // asked once a page, a station not reached saying nothing, as the hand-over asks it again)
+        // asked once a page; not answered, whether it has them is not guessed: the page's chats here cannot go this turn,
+        // nothing of them tried (the hand-over asks it again at its begin all the same))
         const asking = kept.filter((x) => d.store.handedTo(x.key) === null).flatMap((x) => x.keys);
-        const there = asking.length === 0 || to === "" ? null : await d.ask(to, { method: "move.chats.live", keys: asking }).catch(() => null);
+        let failed: unknown = null;
+        const there = asking.length === 0 || to === "" ? null : await d.ask(to, { method: "move.chats.live", keys: asking }).catch((e) => ((failed = e ?? new Error("no answer")), null));
         const liveThere = new Set<string>(Array.isArray(there?.live) ? there.live.filter((k: unknown): k is string => typeof k === "string") : []);
         const thereName = typeof there?.name === "string" && there.name !== "" ? there.name : to.slice(0, 12);
         for (const { key, row, keys } of kept) {
@@ -98,8 +100,9 @@ export function chatsModule(d: ChatsDeps): Module {
           for (const id of new Set(keys.flatMap((k) => grants.get(k) ?? []))) needs.push({ module: "vault", id });
           const handed = d.store.handedTo(key);
           const live = handed !== null ? [] : keys.filter((k) => liveThere.has(k));
-          const why = handed !== null ? null : live.length > 0 ? liveHereWords(live, thereName) : d.handover.check(key, to, { planning: true, reads });
-          items.push({ module: "chats", id: keys[0]!, label: row.title ?? key, needs, ...(why !== null ? { cannot: why } : {}) });
+          const unknown = handed === null && failed !== null;
+          const why = handed !== null ? null : unknown ? unanswered(failed) : live.length > 0 ? liveHereWords(live, thereName) : d.handover.check(key, to, { planning: true, reads });
+          items.push({ module: "chats", id: keys[0]!, label: row.title ?? key, needs, ...(why !== null ? { cannot: why } : {}), ...(unknown ? { again: true as const } : {}) });
         }
       }
       // (a chat coming here, not shown yet, is out of the pages (its rows `coming:`): listed by its arrival's record,

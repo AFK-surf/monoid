@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, test } from "node:test";
@@ -2144,6 +2144,45 @@ test("a chat that comes back is started with the transcript of what was said whe
   } finally {
     process.env.TMPDIR = was;
   }
+});
+
+test("a chat handed to the other, then put back in sight here by hand (its row here again, where it went and its trip's records set aside), so live on both: the plan toward the other says it cannot go, in its words; asked anyway, refused there", async () => {
+  const w = world();
+  const a = w.get(A);
+  const b = w.get(B);
+  const { key } = await stillfailChat(a);
+  assert.equal((await a.moves.scheduler.move(WS, B, { module: "chats", item: key })).failed, null);
+  await w.quiet();
+  assert.equal(b.rig.store.liveOf([key]).length, 1, "live there");
+  // (by hand, this station stopped: its row in sight again, where it went forgotten, its trip's records moved aside)
+  await a.moves.close();
+  a.rig.store.db.prepare("UPDATE sessions SET ws = NULL WHERE key = ?").run(key);
+  a.rig.store.db.prepare("DELETE FROM handed_over WHERE session = ?").run(key);
+  const out = join(a.rig.dir, "replica", "handover", "out");
+  if (existsSync(out)) renameSync(out, `${out}.aside`);
+  a.moves = a.make();
+  await a.moves.start();
+  assert.deepEqual(a.rig.store.liveOf([key]), [key], "live here too");
+  // (the first ask of B after a start not answered: whether it has the chat is not guessed)
+  let lost = true;
+  w.tamper((to, r) => {
+    if (to === B && r.method === "move.chats.live" && lost) {
+      lost = false;
+      throw new Error("the station was not reached");
+    }
+    return r;
+  });
+  const first = (await a.moves.scheduler.plan(WS, B)).items.find((x) => x.id === key);
+  assert.match(first?.cannot ?? "", /the other station did not answer what it has of it \(the station was not reached\): ask again/, `not answered: it cannot go this turn: ${JSON.stringify(first)}`);
+  w.tamper(null);
+  const plan = await a.moves.scheduler.plan(WS, B);
+  const item = plan.items.find((x) => x.id === key);
+  assert.equal(item?.state, "here", JSON.stringify(item));
+  assert.match(item?.cannot ?? "", /a chat of this key is live on B|key 在「B」上还有一个在继续的对话/i, `the plan says it cannot go: ${JSON.stringify(item)}`);
+  const view = moveView(plan, a.moves.modules.map((m) => m.id), a.moves.scheduler.stopped(), { limit: 50 }, null, false, (id) => id.slice(0, 1).toUpperCase());
+  const row = view.modules.find((m: Json) => m.id === "chats").items.find((x: Json) => x.id === key);
+  assert.match(row?.cannot ?? "", /a chat of this key is live on B|key 在「B」上还有一个在继续的对话/i, `GET /move's row says so: ${JSON.stringify(row)}`);
+  await assert.rejects(a.moves.handover.handOver(key, B, { wait: true }), /a chat of this key is live on B|key 在「B」上还有一个在继续的对话/i);
 });
 
 test("a chat whose key is live where it would go (one that went on there apart from it, as a retirement taken back leaves one) cannot go: the plan says so, the station asked refuses it before anything is written, and the chat goes on here", async () => {
