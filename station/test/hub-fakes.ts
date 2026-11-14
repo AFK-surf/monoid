@@ -273,7 +273,8 @@ export class FakeDriver implements AgentDriver {
 export async function settle(rounds = 100) {
   for (let quiet = 0; quiet < rounds; ) {
     await new Promise((r) => setImmediate(r));
-    quiet = process.getActiveResourcesInfo().some((r) => r === "FSReqPromise" || r === "FSReqCallback") ? 0 : quiet + 1;
+    // (a file handle's close, the last step of fs/promises' writeFile and readFile, is a request of its own: CloseReq)
+    quiet = process.getActiveResourcesInfo().some((r) => r === "FSReqPromise" || r === "FSReqCallback" || r === "CloseReq") ? 0 : quiet + 1;
   }
 }
 
