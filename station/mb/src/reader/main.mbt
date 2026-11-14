@@ -914,6 +914,8 @@ fn main {
       }))
     (None, _, Some(data)) if flag("--agents") is Some(_) =>
       @host.run(shell_dir=data + "/shell", host => serve_agents(host))
+    (None, _, Some(data)) if flag("--actors") is Some(_) =>
+      @host.run(shell_dir=data + "/shell", host => serve_actors(host))
     (None, _, Some(data)) if flag("--serve") is Some(socket) =>
       @host.run(shell_dir=data + "/shell", host => {
         let sep = flag("--sep").unwrap_or("/")

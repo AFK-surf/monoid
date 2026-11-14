@@ -42,7 +42,7 @@ export function parseDeclared(kind: string, wait: number): DeclaredState | null 
 const settled = (d: DeclaredState) => d.kind !== "waiting";
 
 /// The runtime may keep a session open across long waits: say the time with every turn and every steer.
-const timed = (text: string, now: number) => `[Delivered at ${new Date(now).toISOString()} (UTC)]\n${text}`;
+export const timed = (text: string, now: number) => `[Delivered at ${new Date(now).toISOString()} (UTC)]\n${text}`;
 
 /// What a turn ends in, as recorded and as acted on: the state it declared, but a wait only when the turn completed. One
 /// that failed or was stopped after it said it would wait is asked again by nothing (what it went on doing after saying
@@ -265,7 +265,7 @@ export type Snapshot = {
   identity?: { model: string | null; effort: string | null; runtime: RuntimeKind } | null;
 };
 
-const t = (key: string, args?: Record<string, unknown>) => tr(stationLang(), key, args);
+export const t = (key: string, args?: Record<string, unknown>) => tr(stationLang(), key, args);
 
 let places: Places | null = null;
 const defaultPlaces = () => (places ??= new Places());
@@ -273,7 +273,11 @@ const defaultPlaces = () => (places ??= new Places());
 /// Times a process that lost the station's tools is started again before the turn is given up on.
 const MAX_TOOLS_RESTARTS = 1;
 /// The most of the agent's last words shown in its place.
-const FALLBACK_MOST = 4000;
+export const FALLBACK_MOST = 4000;
+
+/// A session's actor as the hub holds it: SessionActor here, or one the MoonBit program runs (mb-actor.ts `MbActor`),
+/// whose snapshot is the program's to give.
+export type Actor = Omit<{ [K in keyof SessionActor]: SessionActor[K] }, "snapshot"> & { snapshot(): Snapshot | Promise<Snapshot> };
 
 export class SessionActor {
   readonly key: string;
@@ -932,9 +936,7 @@ export class SessionActor {
     if (outcome.kind === "completed") await this.notice(t("station.notice.compacted"));
     else if (outcome.kind === "failed") {
       log.warn("session", "compaction failed", { session: this.key, reason: outcome.reason, error: outcome.message });
-      // Claude Code's own reason for compacting nothing is one people can act on.
-      const why = /not enough messages/i.test(outcome.message) ? t("station.context.tooShort") : failureWords(outcome.reason);
-      await this.notice(`⚠️ ${withSaid(t("station.notice.compactFailed", { why }), outcome.message)}`, outcome.reason === "auth" || outcome.reason === "refused" ? this.profile : null);
+      await this.notice(compactFailedNotice(outcome), outcome.reason === "auth" || outcome.reason === "refused" ? this.profile : null);
     }
     else if (stopRequested) await this.notice(t("station.notice.stopped"));
     if (this.archived()) {
@@ -1249,115 +1251,13 @@ export class SessionActor {
     finally { if (!abort && this.formatAbort === controller) this.formatAbort = null; }
   }
 
-  private async formatWithSignal(said: any[], signal: AbortSignal): Promise<[string, [string, string][]]> {
-    const store = this.deps.store;
-    const threads: number[] = said.map((m) => m.message.thread);
-    const heard = new Set(store.heardThreads(this.key, threads));
-    const newThreads = new Set<number>(threads.filter((t) => !heard.has(t)));
-    const names = new Map<string, string>();
-    for (const m of said) {
-      if (names.has(m.message.author)) continue;
-      if (m.message.authorKind === "agent") {
-        // A letter goes by the chat it came from, as its station marked it: its writer may be of another station.
-        const letter = m.message.letter;
-        names.set(m.message.author, letter?.way === "in" && letter.title !== "" ? letter.title : this.agentName(m.message.author, m.message.thread));
-        continue;
-      }
-      if (m.message.authorKind !== "person") continue;
-      const name = await this.deps.chat(m.connect)?.userName?.(m.message.author);
-      if (name) names.set(m.message.author, name);
-    }
-    // What the agent is called in each connect these came through: the bot's name there and its mention.
-    const selves = new Map<string, string>();
-    for (const m of said) {
-      if (selves.has(m.connect)) continue;
-      const chat = this.deps.chat(m.connect);
-      const [name, user] = [chat?.botName?.() ?? "", chat?.botUserId?.() ?? ""];
-      if (name !== "") selves.set(m.connect, user === "" ? name : `${name} (${chat?.mention?.(user) ?? `<@${user}>`})`);
-    }
-    // What it posted in a thread after a message there was said: the message was written without seeing that post.
-    const posts = new Map<PendingMessage, string>();
-    const fromChat = (said as PendingMessage[]).filter((m) => m.message.apart !== true);
-    const positions = fromChat.map((m) => ({ thread: m.message.thread, n: m.message.n }));
-    let laterPosts: (string | null)[];
-    for (;;) {
-      if (signal.aborted) throw new Error("delivery cancelled");
-      try { laterPosts = store.postsAfter(this.key, positions); break; }
-      catch (error) {
-        if (!(error instanceof PostBlocksUnavailable) || !this.deps.preparePostsAfter) throw error;
-        await this.deps.preparePostsAfter(error.positions, signal);
-      }
-    }
-    fromChat.forEach((m, i) => { const ts = laterPosts[i]; if (ts !== undefined && ts !== null) posts.set(m, ts); });
-    const cards = new Map<PendingMessage, { ended: DeliveryCardState["ended"]; current: DeliveryCardState["current"]; special: string | null }>();
-    for (const m of said as PendingMessage[]) {
-      if (m.message.apart === true || m.message.authorKind !== "person") continue;
-      if (signal.aborted) throw new Error("delivery cancelled");
-      const state = await this.deps.deliveryCardState(m.message.thread, m.message.n, signal);
-      if (state === null) continue;
-      const card = state.card;
-      const special = typeof card?.vault?.request === "string" ? `Use secret_reask {request: ${JSON.stringify(card.vault.request)}} if the request is still needed.`
-        : typeof card?.adb?.request === "string" ? `Use phone_use {reason: ${JSON.stringify(card.adb.reason ?? "")}, reask: true} if the request is still needed.`
-        : typeof card?.signin?.site === "string" ? `Use sign_in {site: ${JSON.stringify(card.signin.site)}, reask: true} if the sign-in is still needed.`
-        : card?.type === "login" ? "Check the login with its tool; if it still needs the person, post its login card again."
-        : null;
-      cards.set(m, { ended: state.ended, current: state.current, special });
-    }
-    const text = formatInbound(said, newThreads, names, selves, posts, cards, this.key);
-    let models: any[];
-    for (;;) {
-      if (signal.aborted) throw new Error("delivery cancelled");
-      try { models = store.untoldWidgetModels(this.key); break; }
-      catch (error) {
-        if (!(error instanceof WidgetSourcesUnavailable) || !this.deps.prepareWidgetSources) throw error;
-        await this.deps.prepareWidgetSources(error.threads, signal);
-      }
-    }
-    const widgets = models.map((w: any): [string, string] => [w.path, w.model]);
-    const told = formatWidgetModels(models);
-    return [told === "" ? text : text === "" ? told : `${text}\n\n${told}`, widgets];
+  private formatWithSignal(said: any[], signal: AbortSignal): Promise<[string, [string, string][]]> {
+    return formatDelivery(this.deps, this.key, said, signal);
   }
 
-  /// `text` as the agent is handed it, after what people chose on its cards with an option that closes them (no message
-  /// was sent then, so it has not heard: store.ts closeCard), and what marks those told once it has been handed.
-  private async withChoices(text: string): Promise<[string, () => void]> {
-    const store = this.deps.store;
-    // (its chat moved here from a station retired: said once, before the rest)
-    const moved = store.untoldMovedNote?.(this.key) ?? null;
-    if (moved !== null) {
-      const [rest, told] = await this.choicesWith(text);
-      return [rest === "" ? moved : `${moved}\n\n${rest}`, () => (told(), store.markMovedNoteTold?.(this.key))];
-    }
-    return this.choicesWith(text);
-  }
-
-  private async choicesWith(text: string): Promise<[string, () => void]> {
-    const store = this.deps.store;
-    const chose = store.untoldCardChoices(this.key);
-    if (chose.length === 0) return [text, () => {}];
-    const names = new Map<string, string>();
-    for (const c of chose) {
-      if (names.has(c.by)) continue;
-      const via = store.threadSessions(c.thread).find((m) => m.session === this.key)?.connect;
-      const name = via === undefined ? undefined : await this.deps.chat(via)?.userName?.(c.by);
-      if (name) names.set(c.by, name);
-    }
-    const said = formatCardChoices(chose, names, this.now());
-    return [text === "" ? said : `${said}\n\n${text}`, () => store.markCardChoicesTold(this.key, chose)];
-  }
-
-  /// What another agent goes by in a thread: the bot of the connect it posts there through, with its mention; in the
-  /// station's own chats, its runtime and model.
-  private agentName(key: string, thread: number): string {
-    const via = this.deps.store.threadSessions(thread).find((m) => m.session === key)?.connect;
-    const chat = via && via !== INTERNAL_CONNECT ? this.deps.chat(via) : undefined;
-    const name = chat?.botName?.() ?? "";
-    if (name !== "") {
-      const user = chat?.botUserId?.() ?? "";
-      return user === "" ? name : `${name} (<@${user}>)`;
-    }
-    const row = this.deps.store.getSession(key);
-    return row ? `${runtimeLabel(runtimeKind(row.runtime) ?? "claude")}${row.model ? ` ${row.model}` : ""}` : "another agent";
+  /// `text` as the agent is handed it, after what people chose on its cards (`handedWithChoices`).
+  private withChoices(text: string): Promise<[string, () => void]> {
+    return handedWithChoices(this.deps, this.key, this.now(), text);
   }
 
   /// Starts a turn with `text` for someone. On failure the thread is told and the error thrown, so callers leave their
@@ -1382,41 +1282,17 @@ export class SessionActor {
         await this.clearNow(true, "station.notice.afreshCold", "as its cache is over", true);
       }
       let agent = await this.ensureAgent();
-      const row = store.getSession(this.key);
-      // A session begun in a terminal and continued here: its first turn here says so, with how still.fail works.
-      const continued = row && row.cwd && !store.hasTurns(this.key) ? continuedHere(sessionInstructions(row.workspace, row.cwd, this.deps.reposDir(), this.deps.memoryPath(this.key), await this.deps.linkSkills(row), this.deps.siteInstructions?.(), this.deps.ownName?.())) : null;
       const lost = this.resumeLost;
       this.resumeLost = false;
       // What people chose on its cards without a message since it was last handed anything: before what it is handed.
       const [handed, toldChoices] = await this.withChoices(text);
-      let prompt = lost ? `${this.deps.resumeLost?.(this.key) ?? resumeLost(this.key, [])}\n\n${handed}` : handed;
       const stopped = this.stoppedNote;
       this.stoppedNote = null;
-      if (stopped !== null) prompt = `${stopped}\n\n${prompt}`;
       const afresh = this.afresh;
       this.afresh = null;
       const compacted = this.compactedUntold;
       this.compactedUntold = false;
-      // Gone on in a new conversation, or compacted: in a long chat, told to read back what people said in it.
-      const long = lost || afresh !== null || compacted ? (this.deps.longChat?.(this.key) ?? null) : null;
-      if (long !== null) prompt = `${long}\n\n${prompt}`;
-      if (afresh !== null) prompt = `${afresh}\n\n${prompt}`;
-      if (continued !== null) prompt = `${continued}\n\n${prompt}`;
-      // What changed in how it works since it was last told (migrations): once, before what it is handed.
-      const told = store.toldNotes(this.key) ?? latestNote();
-      if (told < latestNote()) {
-        const full = row ? join(row.workspace, ".stillfail-instructions.md") : "";
-        if (row) {
-          try {
-            const preset = row.cwd ? null : presetCopyOf(row.workspace);
-            const memory = await this.deps.linkSkills(row);
-            await writeFile(full, sessionInstructions(row.workspace, row.cwd ?? null, this.deps.reposDir(), this.deps.memoryPath(this.key), memory, this.deps.siteInstructions?.(), this.deps.ownName?.()) + (preset ? presetInstructions(preset) : ""));
-          } catch {}
-        }
-        store.setToldNotes(this.key, latestNote());
-        prompt = `${untold(told, full)}\n\n${prompt}`;
-      }
-      prompt = timed(prompt, this.now());
+      const prompt = await promptFor(this.deps, this.key, this.now(), handed, lost, stopped, afresh, compacted);
       // The runtime may have started a turn on its own (late input became a turn); join it.
       if (agent.busy() && (await agent.steer(prompt))) return toldChoices();
       this.steered = [];
@@ -1480,16 +1356,11 @@ export class SessionActor {
   private async catchUp(end: boolean) {
     const agent = this.agent;
     if (!agent || !this.stale || agent.session.busy()) return;
-    const row = this.deps.store.getSession(this.key);
-    let profile: ReturnType<SessionDeps["runOn"]> | null = null;
-    try {
-      profile = row ? this.deps.runOn(this.key, this.holding()) : null;
-    } catch {}
-    const ready = row && profile && !this.restart && profile.id === this.profile && agent.session.retune ? await this.deps.linkSkills(row) : "";
-    if (!this.restart && row && profile && profile.id === this.profile && agent.session.retune?.(openOptions(row, profile, this.deps, ready))) {
+    const identity = await retuneAgent(this.deps, this.key, agent.session, this.runtime, this.profile, this.restart, this.holding());
+    if (identity !== null) {
       this.stale = false;
-      this.runningIdentity = { runtime: this.runtime, model: row.model ?? null, effort: row.effort ?? null };
-      log.info("session", "session process takes the change in place", { session: this.key, model: row.model ?? "", effort: row.effort ?? "" });
+      this.runningIdentity = identity;
+      log.info("session", "session process takes the change in place", { session: this.key, model: identity.model ?? "", effort: identity.effort ?? "" });
       return;
     }
     if (!end) return;
@@ -1525,72 +1396,25 @@ export class SessionActor {
     }
     await this.catchUp(true);
     if (this.agent) return this.agent.session;
-    if (await this.deps.archiveIsCold(this.key)) await this.deps.restoreArchive(this.key);
-    const store = this.deps.store;
-    const row = store.getSession(this.key);
-    if (!row) throw new Error(`session ${this.key} disappeared`);
-    const runtime = runtimeKind(row.runtime);
-    if (!runtime) throw new Error(`session ${this.key} runs an unknown runtime ${row.runtime}`);
-    this.runtime = runtime;
-    const driver = this.deps.driver(this.runtime);
-    const profile = this.deps.runOn(this.key);
-    const memory = await this.deps.linkSkills(row);
-    const base = openOptions(row, profile, this.deps, memory);
-    // Its context cleared by hand (clear): no runtime session now, those before on record. A new one, told so; one
-    // continued from a terminal is given still.fail's instructions as a new session is (no cache of its own to keep).
-    const wasCleared = row.runtimeSessionId === null && (store.runtimeSessions?.(this.key).length ?? 0) > 0;
-    if (wasCleared && row.cwd) base.instructions = sessionInstructions(row.workspace, row.cwd, this.deps.reposDir(), this.deps.memoryPath(this.key), memory, this.deps.siteInstructions?.(), this.deps.ownName?.());
-    // A runtime started where the station may not read exits at once with nothing to say why (macOS privacy protection
-    // on a session continued in ~/Documents): told as it is instead. A directory someone named (one continued from a
-    // terminal) is looked at as ops/places.ts does, never on this thread in a folder macOS protects (still.fail Helper
-    // asked for it, its window put up for a grant it lacks); the session's own workspace is the station's.
-    if (row.cwd) await (this.deps.places ?? defaultPlaces()).directory(row.cwd, { lang: stationLang() });
-    else if (unreadableDir(base.cwd)) throw new Said(unreadableDirMessage(stationLang(), base.cwd));
-    const generation = this.nextGeneration();
-    let agent: AgentSession;
-    // Recorded before it may be left, so the history reads on from it.
-    if (row.runtimeSessionId) this.deps.ranIn?.(this.key, row.runtimeSessionId, null);
-    const afresh = row.runtimeSessionId ? (this.deps.startsAfresh?.(this.key, row.runtimeSessionId, profile, this.profile) ?? null) : null;
-    // What its process before had going in the background, stopped with it: its subagents are taken up again in the
-    // runtime session resumed, or taken to the new one.
-    const stopped = this.stopped;
-    const subagents = stopped.filter((t) => t.kind === "agent").map((t) => t.id);
-    let resumable: string[] = [];
-    if (afresh !== null) {
-      log.info("session", "going on in a new runtime session on another account", { session: this.key, left: row.runtimeSessionId, profile: profile.id });
-      agent = await driver.open(base, this.listener(generation));
-      this.afresh = afresh;
-      const from = store.runtimeSessionSource ? store.runtimeSessionSource(this.key, row.runtimeSessionId!) ?? undefined
-        : store.runtimeSessionSources?.(this.key).find((s) => s.id === row.runtimeSessionId);
-      if (from === undefined || from.runtime === row.runtime) resumable = this.deps.carrySubagents?.(row.runtimeSessionId!, agent.id(), profile, subagents) ?? [];
-    } else if (row.runtimeSessionId) {
-      try {
-        agent = await driver.open({ ...base, resume: row.runtimeSessionId }, this.listener(generation));
-        resumable = subagents;
-      } catch (error) {
-        log.warn("session", "resume failed; starting a new runtime session", { session: this.key, id: row.runtimeSessionId, error: (error as Error).message });
-        agent = await driver.open(base, this.listener(generation));
-        this.resumeLost = true;
-      }
-    } else {
-      agent = await driver.open(base, this.listener(generation));
-      if (wasCleared) this.afresh = this.deps.cleared?.(this.key, this.readBack) ?? (this.readBack ? afreshNote(this.key, []) : cleared(this.key, []));
-      this.readBack = false;
-    }
-    // Recorded before it is the one gone on with: its conversation's calls are those from then (store.ts `conversationSince`).
-    this.deps.ranIn?.(this.key, agent.id(), profile.id);
-    if (row.runtimeSessionId !== agent.id()) {
-      store.setRuntimeSessionId(this.key, agent.id());
-      if (row.runtimeSessionId || wasCleared) this.deps.live?.moved?.(this.key);
-    }
+    const opened = await openAgent(this.deps, this.key, {
+      stopped: this.stopped,
+      readBack: this.readBack,
+      profile: this.profile,
+      runtime: (runtime) => { this.runtime = runtime; },
+      generation: () => this.nextGeneration(),
+      listener: (generation) => this.listener(generation),
+    });
+    if (opened.afresh !== null) this.afresh = opened.afresh;
+    if (opened.resumeLost) this.resumeLost = true;
+    if (opened.readBackTold) this.readBack = false;
     this.stopped = [];
-    if (stopped.length > 0) this.stoppedNote = backgroundStopped(stopped, resumable);
-    this.agent = { generation, session: agent };
-    this.runningIdentity = { runtime: this.runtime, model: row.model ?? null, effort: row.effort ?? null };
+    if (opened.stoppedNote !== null) this.stoppedNote = opened.stoppedNote;
+    this.agent = { generation: opened.generation, session: opened.session };
+    this.runningIdentity = opened.identity;
     this.stale = false;
     this.restart = false;
-    this.profile = profile.id;
-    return agent;
+    this.profile = opened.profile;
+    return opened.session;
   }
 
   private isCurrent(generation: number) {
@@ -2050,9 +1874,8 @@ export class SessionActor {
 
   /// Whether the thread people spoke in last ends with these very words of the station's: nothing said since.
   private saidLast(text: string | ((said: string) => boolean)): boolean {
-    const latest = this.deps.store.latestThread(this.key);
-    const last = latest ? this.deps.store.entriesBefore(latest.thread.id, null, 1).at(-1) : undefined;
-    return last !== undefined && last.authorKind === STATION_AUTHOR && (typeof text === "string" ? last.text === text : text(last.text));
+    const last = lastStationSaid(this.deps, this.key);
+    return last !== null && (typeof text === "string" ? last === text : text(last));
   }
 
   /// Its account spent with none to move to: at `at` it goes on there by itself, with what waited meanwhile.
@@ -2089,23 +1912,287 @@ export class SessionActor {
   /// The station's own words (not the agent's) go to the thread people spoke in last, and are recorded there; one about
   /// a profile (`profile`, its id) is linked to that profile's page, one about a runtime not installed (`runtime`)
   /// offers to install it; one that its run changed keeps how (`change`).
-  private async notice(text: string, profile: string | null = null, runtime: RuntimeKind | null = null, recorded?: (where: [number, number, string]) => void, change?: RunChange) {
-    const store = this.deps.store;
-    const latest = store.latestThread(this.key);
-    const chat = latest ? this.deps.chat(latest.connect) : undefined;
-    if (!latest || !chat) {
-      log.warn("session", "no thread to post a notice to", { session: this.key, text });
-      return;
-    }
-    try {
-      const ts = await chat.post({ channel: latest.thread.channel, threadTs: latest.thread.threadTs }, text, []);
-      const [n] = store.insertMessage({ thread: latest.thread.id, ts, authorKind: STATION_AUTHOR, author: STATION_AUTHOR, text, profile, runtime, attachments: [], quotes: [], declared: null, client: null, card: null, options: null, agentIdentity: null, ...(change !== undefined ? { change } : {}) });
-      recorded?.([latest.thread.id, n, ts]);
-    } catch (error) {
-      log.warn("session", "notice failed", { session: this.key, error: (error as Error).message });
-    }
+  private notice(text: string, profile: string | null = null, runtime: RuntimeKind | null = null, recorded?: (where: [number, number, string]) => void, change?: RunChange) {
+    return postNotice(this.deps, this.key, text, profile, runtime, recorded, change);
+  }
+
+}
+
+// ── what the actor asks of the station, here or from the MoonBit program (mb-actor.ts) ────────────────────────────
+
+/// The station's own words (not the agent's) go to the thread people spoke in last, and are recorded there; one about
+/// a profile (`profile`, its id) is linked to that profile's page, one about a runtime not installed (`runtime`)
+/// offers to install it; one that its run changed keeps how (`change`).
+export async function postNotice(deps: SessionDeps, key: string, text: string, profile: string | null = null, runtime: RuntimeKind | null = null, recorded?: (where: [number, number, string]) => void, change?: RunChange) {
+  const store = deps.store;
+  const latest = store.latestThread(key);
+  const chat = latest ? deps.chat(latest.connect) : undefined;
+  if (!latest || !chat) {
+    log.warn("session", "no thread to post a notice to", { session: key, text });
+    return;
+  }
+  try {
+    const ts = await chat.post({ channel: latest.thread.channel, threadTs: latest.thread.threadTs }, text, []);
+    const [n] = store.insertMessage({ thread: latest.thread.id, ts, authorKind: STATION_AUTHOR, author: STATION_AUTHOR, text, profile, runtime, attachments: [], quotes: [], declared: null, client: null, card: null, options: null, agentIdentity: null, ...(change !== undefined ? { change } : {}) });
+    recorded?.([latest.thread.id, n, ts]);
+  } catch (error) {
+    log.warn("session", "notice failed", { session: key, error: (error as Error).message });
   }
 }
+/// What the thread people spoke in last ends with, where the station said it: nothing said since (actor.ts `saidLast`).
+export function lastStationSaid(deps: SessionDeps, key: string): string | null {
+  const latest = deps.store.latestThread(key);
+  const last = latest ? deps.store.entriesBefore(latest.thread.id, null, 1).at(-1) : undefined;
+  return last !== undefined && last.authorKind === STATION_AUTHOR ? last.text : null;
+}
+
+/// Its process takes how its session runs now in place, when it runs on the same profile (`profile`) and can: how it
+/// runs then; else null (actor.ts `catchUp`).
+export async function retuneAgent(deps: SessionDeps, key: string, session: AgentSession, runtime: RuntimeKind, profileNow: string | null, restart: boolean, holding: boolean) {
+  const row = deps.store.getSession(key);
+  let profile: ReturnType<SessionDeps["runOn"]> | null = null;
+  try {
+    profile = row ? deps.runOn(key, holding) : null;
+  } catch {}
+  const ready = row && profile && !restart && profile.id === profileNow && session.retune ? await deps.linkSkills(row) : "";
+  if (!restart && row && profile && profile.id === profileNow && session.retune?.(openOptions(row, profile, deps, ready))) {
+    return { runtime, model: (row.model ?? null) as string | null, effort: (row.effort ?? null) as string | null };
+  }
+  return null;
+}
+
+/// How a session's runtime session is opened (actor.ts `ensureAgent`): `how`, what of the actor it needs.
+export type OpenHow = {
+  stopped: BackgroundTask[];
+  readBack: boolean;
+  /// the profile its process before ran on
+  profile: string | null;
+  /// its runtime, once the session's row says it (before it is opened: what failing to start it is about)
+  runtime(runtime: RuntimeKind): void;
+  generation(): number;
+  listener(generation: number): (event: RuntimeEvent) => void;
+};
+
+export type Opened = {
+  session: AgentSession;
+  generation: number;
+  identity: { model: string | null; effort: string | null; runtime: RuntimeKind };
+  profile: string;
+  /// what it is told of going on afresh with its next prompt; its runtime session not resumed; its read-back told
+  afresh: string | null;
+  resumeLost: boolean;
+  readBackTold: boolean;
+  stoppedNote: string | null;
+};
+
+/// Opens session `key`'s runtime session, as `how` has it (actor.ts `ensureAgent`).
+export async function openAgent(deps: SessionDeps, key: string, how: OpenHow): Promise<Opened> {
+  const told = { afresh: null as string | null, resumeLost: false, readBackTold: false, stoppedNote: null as string | null };
+  if (await deps.archiveIsCold(key)) await deps.restoreArchive(key);
+  const store = deps.store;
+  const row = store.getSession(key);
+  if (!row) throw new Error(`session ${key} disappeared`);
+  const runtime = runtimeKind(row.runtime);
+  if (!runtime) throw new Error(`session ${key} runs an unknown runtime ${row.runtime}`);
+  how.runtime(runtime);
+  const driver = deps.driver(runtime);
+  const profile = deps.runOn(key);
+  const memory = await deps.linkSkills(row);
+  const base = openOptions(row, profile, deps, memory);
+  // Its context cleared by hand (clear): no runtime session now, those before on record. A new one, told so; one
+  // continued from a terminal is given still.fail's instructions as a new session is (no cache of its own to keep).
+  const wasCleared = row.runtimeSessionId === null && (store.runtimeSessions?.(key).length ?? 0) > 0;
+  if (wasCleared && row.cwd) base.instructions = sessionInstructions(row.workspace, row.cwd, deps.reposDir(), deps.memoryPath(key), memory, deps.siteInstructions?.(), deps.ownName?.());
+  // A runtime started where the station may not read exits at once with nothing to say why (macOS privacy protection
+  // on a session continued in ~/Documents): told as it is instead. A directory someone named (one continued from a
+  // terminal) is looked at as ops/places.ts does, never on this thread in a folder macOS protects (still.fail Helper
+  // asked for it, its window put up for a grant it lacks); the session's own workspace is the station's.
+  if (row.cwd) await (deps.places ?? defaultPlaces()).directory(row.cwd, { lang: stationLang() });
+  else if (unreadableDir(base.cwd)) throw new Said(unreadableDirMessage(stationLang(), base.cwd));
+  const generation = how.generation();
+  let agent: AgentSession;
+  // Recorded before it may be left, so the history reads on from it.
+  if (row.runtimeSessionId) deps.ranIn?.(key, row.runtimeSessionId, null);
+  const afresh = row.runtimeSessionId ? (deps.startsAfresh?.(key, row.runtimeSessionId, profile, how.profile) ?? null) : null;
+  // What its process before had going in the background, stopped with it: its subagents are taken up again in the
+  // runtime session resumed, or taken to the new one.
+  const stopped = how.stopped;
+  const subagents = stopped.filter((t) => t.kind === "agent").map((t) => t.id);
+  let resumable: string[] = [];
+  if (afresh !== null) {
+    log.info("session", "going on in a new runtime session on another account", { session: key, left: row.runtimeSessionId, profile: profile.id });
+    agent = await driver.open(base, how.listener(generation));
+    told.afresh = afresh;
+    const from = store.runtimeSessionSource ? store.runtimeSessionSource(key, row.runtimeSessionId!) ?? undefined
+      : store.runtimeSessionSources?.(key).find((s) => s.id === row.runtimeSessionId);
+    if (from === undefined || from.runtime === row.runtime) resumable = deps.carrySubagents?.(row.runtimeSessionId!, agent.id(), profile, subagents) ?? [];
+  } else if (row.runtimeSessionId) {
+    try {
+      agent = await driver.open({ ...base, resume: row.runtimeSessionId }, how.listener(generation));
+      resumable = subagents;
+    } catch (error) {
+      log.warn("session", "resume failed; starting a new runtime session", { session: key, id: row.runtimeSessionId, error: (error as Error).message });
+      agent = await driver.open(base, how.listener(generation));
+      told.resumeLost = true;
+    }
+  } else {
+    agent = await driver.open(base, how.listener(generation));
+    if (wasCleared) told.afresh = deps.cleared?.(key, how.readBack) ?? (how.readBack ? afreshNote(key, []) : cleared(key, []));
+    told.readBackTold = true;
+  }
+  // Recorded before it is the one gone on with: its conversation's calls are those from then (store.ts `conversationSince`).
+  deps.ranIn?.(key, agent.id(), profile.id);
+  if (row.runtimeSessionId !== agent.id()) {
+    store.setRuntimeSessionId(key, agent.id());
+    if (row.runtimeSessionId || wasCleared) deps.live?.moved?.(key);
+  }
+  if (stopped.length > 0) told.stoppedNote = backgroundStopped(stopped, resumable);
+  return { ...told, session: agent, generation, identity: { runtime, model: row.model ?? null, effort: row.effort ?? null }, profile: profile.id };
+}
+
+/// What a turn is prompted with (actor.ts `startTurn`): what it is handed, after what it is told first (its resume
+/// lost, what was stopped, a long chat, going on afresh, a session continued here, what changed in how it works since it
+/// was last told), timed.
+export async function promptFor(deps: SessionDeps, key: string, now: number, handed: string, lost: boolean, stopped: string | null, afresh: string | null, compacted: boolean): Promise<string> {
+  const store = deps.store;
+  const row = store.getSession(key);
+  // A session begun in a terminal and continued here: its first turn here says so, with how still.fail works.
+  const continued = row && row.cwd && !store.hasTurns(key) ? continuedHere(sessionInstructions(row.workspace, row.cwd, deps.reposDir(), deps.memoryPath(key), await deps.linkSkills(row), deps.siteInstructions?.(), deps.ownName?.())) : null;
+  let prompt = lost ? `${deps.resumeLost?.(key) ?? resumeLost(key, [])}\n\n${handed}` : handed;
+  if (stopped !== null) prompt = `${stopped}\n\n${prompt}`;
+  // Gone on in a new conversation, or compacted: in a long chat, told to read back what people said in it.
+  const long = lost || afresh !== null || compacted ? (deps.longChat?.(key) ?? null) : null;
+  if (long !== null) prompt = `${long}\n\n${prompt}`;
+  if (afresh !== null) prompt = `${afresh}\n\n${prompt}`;
+  if (continued !== null) prompt = `${continued}\n\n${prompt}`;
+  // What changed in how it works since it was last told (migrations): once, before what it is handed.
+  const told = store.toldNotes(key) ?? latestNote();
+  if (told < latestNote()) {
+    const full = row ? join(row.workspace, ".stillfail-instructions.md") : "";
+    if (row) {
+      try {
+        const preset = row.cwd ? null : presetCopyOf(row.workspace);
+        const memory = await deps.linkSkills(row);
+        await writeFile(full, sessionInstructions(row.workspace, row.cwd ?? null, deps.reposDir(), deps.memoryPath(key), memory, deps.siteInstructions?.(), deps.ownName?.()) + (preset ? presetInstructions(preset) : ""));
+      } catch {}
+    }
+    store.setToldNotes(key, latestNote());
+    prompt = `${untold(told, full)}\n\n${prompt}`;
+  }
+  return timed(prompt, now);
+}
+
+export async function formatDelivery(deps: SessionDeps, key: string, said: any[], signal: AbortSignal): Promise<[string, [string, string][]]> {
+  const store = deps.store;
+  const threads: number[] = said.map((m) => m.message.thread);
+  const heard = new Set(store.heardThreads(key, threads));
+  const newThreads = new Set<number>(threads.filter((t) => !heard.has(t)));
+  const names = new Map<string, string>();
+  for (const m of said) {
+    if (names.has(m.message.author)) continue;
+    if (m.message.authorKind === "agent") {
+      // A letter goes by the chat it came from, as its station marked it: its writer may be of another station.
+      const letter = m.message.letter;
+      names.set(m.message.author, letter?.way === "in" && letter.title !== "" ? letter.title : agentName(deps, m.message.author, m.message.thread));
+      continue;
+    }
+    if (m.message.authorKind !== "person") continue;
+    const name = await deps.chat(m.connect)?.userName?.(m.message.author);
+    if (name) names.set(m.message.author, name);
+  }
+  // What the agent is called in each connect these came through: the bot's name there and its mention.
+  const selves = new Map<string, string>();
+  for (const m of said) {
+    if (selves.has(m.connect)) continue;
+    const chat = deps.chat(m.connect);
+    const [name, user] = [chat?.botName?.() ?? "", chat?.botUserId?.() ?? ""];
+    if (name !== "") selves.set(m.connect, user === "" ? name : `${name} (${chat?.mention?.(user) ?? `<@${user}>`})`);
+  }
+  // What it posted in a thread after a message there was said: the message was written without seeing that post.
+  const posts = new Map<PendingMessage, string>();
+  const fromChat = (said as PendingMessage[]).filter((m) => m.message.apart !== true);
+  const positions = fromChat.map((m) => ({ thread: m.message.thread, n: m.message.n }));
+  let laterPosts: (string | null)[];
+  for (;;) {
+    if (signal.aborted) throw new Error("delivery cancelled");
+    try { laterPosts = store.postsAfter(key, positions); break; }
+    catch (error) {
+      if (!(error instanceof PostBlocksUnavailable) || !deps.preparePostsAfter) throw error;
+      await deps.preparePostsAfter(error.positions, signal);
+    }
+  }
+  fromChat.forEach((m, i) => { const ts = laterPosts[i]; if (ts !== undefined && ts !== null) posts.set(m, ts); });
+  const cards = new Map<PendingMessage, { ended: DeliveryCardState["ended"]; current: DeliveryCardState["current"]; special: string | null }>();
+  for (const m of said as PendingMessage[]) {
+    if (m.message.apart === true || m.message.authorKind !== "person") continue;
+    if (signal.aborted) throw new Error("delivery cancelled");
+    const state = await deps.deliveryCardState(m.message.thread, m.message.n, signal);
+    if (state === null) continue;
+    const card = state.card;
+    const special = typeof card?.vault?.request === "string" ? `Use secret_reask {request: ${JSON.stringify(card.vault.request)}} if the request is still needed.`
+      : typeof card?.adb?.request === "string" ? `Use phone_use {reason: ${JSON.stringify(card.adb.reason ?? "")}, reask: true} if the request is still needed.`
+      : typeof card?.signin?.site === "string" ? `Use sign_in {site: ${JSON.stringify(card.signin.site)}, reask: true} if the sign-in is still needed.`
+      : card?.type === "login" ? "Check the login with its tool; if it still needs the person, post its login card again."
+      : null;
+    cards.set(m, { ended: state.ended, current: state.current, special });
+  }
+  const text = formatInbound(said, newThreads, names, selves, posts, cards, key);
+  let models: any[];
+  for (;;) {
+    if (signal.aborted) throw new Error("delivery cancelled");
+    try { models = store.untoldWidgetModels(key); break; }
+    catch (error) {
+      if (!(error instanceof WidgetSourcesUnavailable) || !deps.prepareWidgetSources) throw error;
+      await deps.prepareWidgetSources(error.threads, signal);
+    }
+  }
+  const widgets = models.map((w: any): [string, string] => [w.path, w.model]);
+  const told = formatWidgetModels(models);
+  return [told === "" ? text : text === "" ? told : `${text}\n\n${told}`, widgets];
+}
+
+/// `text` as the agent is handed it, after what people chose on its cards with an option that closes them (no message
+/// was sent then, so it has not heard: store.ts closeCard), and what marks those told once it has been handed.
+export async function handedWithChoices(deps: SessionDeps, key: string, now: number, text: string): Promise<[string, () => void]> {
+  const store = deps.store;
+  // (its chat moved here from a station retired: said once, before the rest)
+  const moved = store.untoldMovedNote?.(key) ?? null;
+  if (moved !== null) {
+    const [rest, told] = await choicesWith(deps, key, now, text);
+    return [rest === "" ? moved : `${moved}\n\n${rest}`, () => (told(), store.markMovedNoteTold?.(key))];
+  }
+  return choicesWith(deps, key, now, text);
+}
+
+async function choicesWith(deps: SessionDeps, key: string, now: number, text: string): Promise<[string, () => void]> {
+  const store = deps.store;
+  const chose = store.untoldCardChoices(key);
+  if (chose.length === 0) return [text, () => {}];
+  const names = new Map<string, string>();
+  for (const c of chose) {
+    if (names.has(c.by)) continue;
+    const via = store.threadSessions(c.thread).find((m) => m.session === key)?.connect;
+    const name = via === undefined ? undefined : await deps.chat(via)?.userName?.(c.by);
+    if (name) names.set(c.by, name);
+  }
+  const said = formatCardChoices(chose, names, now);
+  return [text === "" ? said : `${said}\n\n${text}`, () => store.markCardChoicesTold(key, chose)];
+}
+
+/// What another agent goes by in a thread: the bot of the connect it posts there through, with its mention; in the
+/// station's own chats, its runtime and model.
+function agentName(deps: SessionDeps, key: string, thread: number): string {
+  const via = deps.store.threadSessions(thread).find((m) => m.session === key)?.connect;
+  const chat = via && via !== INTERNAL_CONNECT ? deps.chat(via) : undefined;
+  const name = chat?.botName?.() ?? "";
+  if (name !== "") {
+    const user = chat?.botUserId?.() ?? "";
+    return user === "" ? name : `${name} (<@${user}>)`;
+  }
+  const row = deps.store.getSession(key);
+  return row ? `${runtimeLabel(runtimeKind(row.runtime) ?? "claude")}${row.model ? ` ${row.model}` : ""}` : "another agent";
+}
+
 
 /// How a session's runtime session is opened (or taken up) on `profile`: its directory, model as the profile spells it,
 /// effort, instructions and MCP token.
@@ -2155,20 +2242,20 @@ const REFILL_FALLBACK_MS = 60 * 60 * 1000;
 /// The notice that its account is spent; and how stations before 2026-11-03 began it (going on with what the runtime
 /// said), in a thread from then.
 const SPENT_NOTICE = () => `⚠️ ${t("station.notice.rateLimit")}`;
-const SPENT_BEFORE = ["⚠️ 已达到额度或速率限制", "⚠️ Hit a usage or rate limit"];
+export const SPENT_BEFORE = ["⚠️ 已达到额度或速率限制", "⚠️ Hit a usage or rate limit"];
 
 /// That the provider had no room for it: its words, about no account, are of no use to people.
 const OVERLOADED_NOTICE = () => `⚠️ ${t("station.notice.overloaded")}`;
 
 /// Codex relays the provider's exact refusal inside its error message, sometimes wrapped in a JSON response.
-const codexTooOld = (message: string) => /\bmodel requires a newer version of Codex\.\s*Please upgrade to the latest app or CLI and try again\./i.test(message);
+export const codexTooOld = (message: string) => /\bmodel requires a newer version of Codex\.\s*Please upgrade to the latest app or CLI and try again\./i.test(message);
 
 /// A failed turn as its chat is told it: what it means and what to do, by its reason, on its first line (what a
 /// notice shows closed, and a push says); what the runtime said after it, as it said it (`withSaid`). A reason the
 /// station cannot put in words of its own (the model's, any other) has the runtime's first line in it: "模型服务出错"
 /// alone told people nothing (2026-11-05). A model's own limit names the model: "额度已用完" beside quota bars with room
 /// left read as a mistake (#4365).
-function failureNotice(outcome: TurnOutcome): string {
+export function failureNotice(outcome: TurnOutcome): string {
   if (outcome.kind !== "failed") return "";
   const model = outcome.reason === "rate_limit" ? modelLimitOf(outcome.message) : null;
   if (model !== null) return `⚠️ ${withSaid(t("station.notice.modelLimit", { model }), outcome.message)}`;
@@ -2192,7 +2279,7 @@ export function shownLimitOf(detail: string | null): string | null | undefined {
 }
 
 /// The notice of such a failure: what the allowance shows, and the press that moves it (`reassign`).
-function limitShownNotice(model: string | null, said: string): string {
+export function limitShownNotice(model: string | null, said: string): string {
   return `⚠️ ${withSaid(model === null ? t("station.notice.limitShownAccount") : t("station.notice.limitShown", { model }), said)}`;
 }
 
@@ -2205,9 +2292,16 @@ const FIRST_LINE = 200;
 
 /// `words`, and under them what failed said itself (a provider's, a process's, in its own words), as a code block: a
 /// notice opened shows it, for whoever wants to see the error as it was (2026-11-03).
-function withSaid(words: string, said: string): string {
+export function withSaid(words: string, said: string): string {
   const raw = said.trim().replace(/```/g, "ʼʼʼ");
   return raw === "" ? words : `${words}\n\n\`\`\`\n${raw}\n\`\`\``;
+}
+
+/// That its compaction failed, as its chat is told it.
+export function compactFailedNotice(outcome: TurnOutcome & { kind: "failed" }): string {
+  // Claude Code's own reason for compacting nothing is one people can act on.
+  const why = /not enough messages/i.test(outcome.message) ? t("station.context.tooShort") : failureWords(outcome.reason);
+  return `⚠️ ${withSaid(t("station.notice.compactFailed", { why }), outcome.message)}`;
 }
 
 /// A failure's reason in a few words, after what failed ("Couldn't compact the context: …").
@@ -2215,7 +2309,7 @@ const failureWords = (reason: FailureReason) => t(`station.failure.${reason === 
 
 /// Why its agent could not start, as its chat is told it: the station's own words as they are (`Said`); else what the
 /// error means where that is the account, the provider or the network, and otherwise only that it could not.
-function cannotStartWords(error: unknown): string {
+export function cannotStartWords(error: unknown): string {
   if (error instanceof Said) return t("station.notice.cannotStartWhy", { why: error.message });
   const reason = failureOf((error as Error)?.message ?? "");
   const words = reason === "auth" || reason === "refused" || reason === "blocked" || reason === "network" ? t("station.notice.cannotStartWhy", { why: failureWords(reason) }) : t("station.notice.cannotStart");
@@ -2223,11 +2317,11 @@ function cannotStartWords(error: unknown): string {
 }
 
 /// Compaction that could not begin, in words: the station's own as they are, else what kind of failure it was.
-function compactFailed(error: unknown): string {
+export function compactFailed(error: unknown): string {
   if (error instanceof Said) return t("station.notice.compactFailed", { why: error.message });
   log.warn("session", "compaction could not begin", { error: (error as Error)?.message ?? String(error) });
   return t("station.notice.compactFailed", { why: failureWords(failureOf((error as Error)?.message ?? "")) });
 }
 
 /// Who wrote a message, as a creator reference: their email on the page, their Slack user through the connect it came by.
-const personRef = (m: any) => (m.surface === STILLFAIL_SURFACE ? m.message.author : `slack:${m.connect}:${m.message.author}`);
+export const personRef = (m: any) => (m.surface === STILLFAIL_SURFACE ? m.message.author : `slack:${m.connect}:${m.message.author}`);

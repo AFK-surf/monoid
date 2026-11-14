@@ -7,6 +7,11 @@ import { test } from "node:test";
 import { Store } from "../src/store/store.ts";
 import { Rig } from "./hub-fakes.ts";
 
+// SessionActor's own steps are what these look at (its formatting and its checks as it delivers, each replaced here):
+// the actor of a checkout without the MoonBit program, not the program's (sessions/mb-actor.ts), whose steps the
+// hub's tests run.
+process.env.STILLFAIL_ACTORS_HOST = "0";
+
 function setup() {
   const rig = new Rig();
   rig.store.insertSession({ key: "s", connect: "ember", runtime: "claude", profile: "cc", workspace: "/w/s", token: "s", createdAt: 1, lastActiveAt: 1 });

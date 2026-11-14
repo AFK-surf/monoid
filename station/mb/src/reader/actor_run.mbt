@@ -1,0 +1,1996 @@
+// What a session's actor does (station/src/sessions/actor.ts, method by method, in the same order there): what the
+// hub asks of it, what its runtime session says, its turns, its waits. What it asks of Node is actor_base.mbt's.
+
+///|
+fn Actors::idle_now(self : Actors, a : Actor) -> Unit {
+  a.idle_since = self.now
+}
+
+///|
+/// Its runtime session now (actor.ts `agent`'s setter): what it has going in the background told as it is taken up,
+/// and as none once let go of.
+fn Actors::set_agent(self : Actors, a : Actor, agent : Agent?) -> Unit {
+  let was = a.agent.map(g => g.handle)
+  a.agent = agent
+  let now = agent.map(g => g.handle)
+  if was != now {
+    self.tell(a.key, "node.tasks", [match now { Some(h) => jnum(h.to_double()); None => Json::null() }])
+  }
+}
+
+///|
+async fn Actors::busy(self : Actors, a : Actor) -> Bool raise {
+  self.busy_of(a, a.agent)
+}
+
+///|
+async fn Actors::holding(self : Actors, a : Actor) -> Bool raise {
+  match a.agent {
+    Some(g) => truthy(self.agent_do(a, g, "holding", []))
+    None => false
+  }
+}
+
+///|
+fn Actors::closed(self : Actors, a : Actor) -> Bool {
+  ignore(self)
+  a.phase == "closed"
+}
+
+///|
+/// What the hub asks (actor.ts, its public methods): `method` with `args`; what it answers.
+async fn Actors::called(self : Actors, a : Actor, method : String, args : Array[Json]) -> Json raise {
+  let arg = (i : Int) => if i < args.length() { args[i] } else { Json::null() }
+  match method {
+    "flushed" => self.enqueue(a, async fn() { () })
+    "cleanArchive" =>
+      self.enqueue(a, async fn() {
+        if a.agent is Some(_) || a.turn is Some(_) || a.waiting is Some(_) || a.notices.length() > 0 {
+          return
+        }
+        ignore(self.deps(a, "cleanArchive", [jstr(a.key)]))
+      })
+    "kick" => self.enqueue(a, async fn() { self.pump(a) })
+    "notify" => {
+      // (not told where it is archived: Node's to see, as it asks)
+      a.notices.push(str_of(Some(arg(0))).unwrap_or(""))
+      self.enqueue(a, async fn() { self.give_notices(a) })
+    }
+    "putAway" =>
+      self.enqueue(a, async fn() {
+        a.notices.clear()
+        if a.codex_update is Some(_) {
+          a.codex_update = None
+          self.set_running(a, false)
+        }
+        if a.turn is None && !self.busy(a) {
+          self.let_go(a)
+        }
+      })
+    "postedNow" => self.enqueue(a, async fn() { a.posted = true })
+    "postedForTurn" => {
+      let id = str_of(Some(arg(0)))
+      self.enqueue(a, async fn() {
+        if a.turn.map(t => t.id) == id && id is Some(_) {
+          a.posted = true
+        }
+      })
+    }
+    "stateForTurn" => return self.state_for_turn(a, args)
+    "toolsAt" => {
+      let url = str_of(Some(arg(0))).unwrap_or("")
+      self.enqueue(a, async fn() { self.tools_at(a, url) })
+    }
+    "declare" => {
+      let state = arg(0)
+      self.enqueue(a, async fn() {
+        guard a.turn is Some(t) else { return }
+        t.declared = Some(state)
+        self.declare_turn(a, t.id, Some(state))
+      })
+    }
+    "waitFor" => {
+      let what = arg(0)
+      let watch = arg(1)
+      self.enqueue(a, async fn() {
+        if a.turn is Some(t) {
+          ignore(self.store(a, "setWaitFor", [jstr(t.id), what, watch]))
+        }
+      })
+    }
+    "need" => {
+      let what = arg(0)
+      self.enqueue(a, async fn() {
+        if a.turn is Some(t) {
+          ignore(self.store(a, "setNeed", [jstr(t.id), what]))
+        }
+      })
+    }
+    "about" => {
+      let about = arg(0)
+      self.enqueue(a, async fn() {
+        if a.turn is Some(t) {
+          ignore(self.store(a, "setAbout", [jstr(t.id), about]))
+        }
+      })
+    }
+    "stop" => return self.stop(a)
+    "cancelRetry" => {
+      let (thread, seq) = (arg(0), arg(1))
+      self.enqueue(a, async fn() {
+        let last = self.last_turn(a)
+        if a.turn is Some(_) || self.busy(a) || last is Null || !retrying(last) || !about_is(last, thread, seq) {
+          return
+        }
+        self.stop_waiting(a, say=false)
+        self.notice(a, self.t(a, "station.notice.retryCanceled"))
+        self.live_turn_ended(a)
+      })
+    }
+    "retryFailed" => {
+      let (thread, seq) = (arg(0), arg(1))
+      self.enqueue(a, async fn() {
+        if self.blocked(a) || self.has_pending(a) {
+          return
+        }
+        let last = self.last_turn(a)
+        if last is Null || !retryable(last) || !about_is(last, thread, seq) {
+          return
+        }
+        self.log(a, "info", "trying again a failed turn, as asked")
+        self.start_turn(a, "resume", self.words(a, if given_up(last) { "GO_ON_AFTER_UNANSWERED" } else { "GO_ON_AFTER_FAILED" }))
+      })
+    }
+    "reassign" => {
+      let (thread, seq) = (arg(0), arg(1))
+      self.enqueue(a, async fn() { self.reassign(a, thread, seq) })
+    }
+    "stopFromSlack" => return self.stop_from_slack(a, args)
+    "goOn" =>
+      self.enqueue(a, async fn() {
+        if self.blocked(a) {
+          return
+        }
+        a.refill = None
+        if self.has_pending(a) {
+          return self.pump(a)
+        }
+        let last = self.last_turn(a)
+        self.start_turn(a, "resume", self.words(a, if !(last is Null) && retrying(last) { "GO_ON_AFTER_OVERLOADED" } else { "GO_ON_AFTER_SPENT" }))
+      })
+    "allowanceReset" =>
+      self.enqueue(a, async fn() {
+        if a.refill is None || self.archived(a) || a.turn is Some(_) || self.busy(a) {
+          return
+        }
+        if self.held(a) {
+          a.refill_at = self.now
+          return
+        }
+        a.refill = None
+        if self.has_pending(a) {
+          return self.pump(a)
+        }
+        self.start_turn(a, "resume", self.words(a, "GO_ON_AFTER_REFILL"))
+      })
+    "recover" => return self.recover(a)
+    "takeWait" => self.enqueue(a, async fn() { self.take_wait(a) })
+    "takeRefill" =>
+      self.enqueue(a, async fn() {
+        if a.refill is Some(_) || a.turn is Some(_) || self.busy(a) || self.archived(a) {
+          return
+        }
+        let last = self.last_turn(a)
+        if str_of(last.value("outcome")) != Some("failed") ||
+          !str_of(last.value("detail")).unwrap_or("").has_prefix("rate_limit:") ||
+          last.value("endedAt") is (None | Some(Null)) {
+          return
+        }
+        self.await_refill(a, self.refills_at(a))
+      })
+    "release" => return self.release(a)
+    "warm" =>
+      self.enqueue(a, async fn() {
+        if a.agent is Some(_) || a.codex_update is Some(_) || self.held(a) {
+          return
+        }
+        self.log(a, "info", "warming session process")
+        ignore(self.ensure_agent(a))
+        self.idle_now(a)
+        self.notify_store(a)
+        ignore(self.deps(a, "idle", [jstr(a.key)]))
+      })
+    "changed" => {
+      let restart = truthy(arg(0))
+      if a.agent is Some(_) {
+        a.stale = true
+        if restart {
+          a.restart = true
+        }
+      }
+      self.enqueue(a, async fn() { self.catch_up(a, a.turn is None && a.waiting is None) })
+    }
+    "evict" =>
+      self.enqueue(a, async fn() {
+        guard a.agent is Some(g) else { return }
+        if self.busy(a) || a.turn is Some(_) || self.holding(a) {
+          return
+        }
+        self.set_agent(a, None)
+        self.log(a, "info", "evicting idle session process")
+        ignore(self.agent_do(a, g, "dispose", []))
+        self.notify_store(a)
+      })
+    "compact" => {
+      let say = truthy(arg(0))
+      let mut refused : String? = None
+      self.enqueue(a, async fn() {
+        refused = self.begin_compacting(a)
+        if refused is Some(r) && say {
+          self.notice(a, "⚠️ " + r)
+        }
+      })
+      return match refused { Some(r) => jstr(r); None => Json::null() }
+    }
+    "compactToCap" => self.enqueue(a, async fn() { ignore(self.compacting_to_cap(a)) })
+    "clear" => {
+      let say = truthy(arg(0))
+      let read_back = truthy(arg(1))
+      let mut refused : String? = None
+      self.enqueue(a, async fn() {
+        refused = self.clear_now(a, read_back)
+        if refused is Some(r) && say {
+          self.notice(a, "⚠️ " + r)
+        }
+      })
+      return match refused { Some(r) => jstr(r); None => Json::null() }
+    }
+    "suspend" => return self.suspend(a)
+    "runChanged" => self.notice(a, str_of(Some(arg(0))).unwrap_or(""), change=arg(1))
+    "adopt" => self.adopt(a, arg(0), arg(1), arg(2), arg(3))
+    "snapshot" => return self.snapshot(a)
+    "close" => self.close(a)
+    "dispose" => {
+      let agent = a.agent
+      self.set_agent(a, None)
+      self.close(a)
+      if agent is Some(g) {
+        ignore(self.agent_do(a, g, "dispose", []))
+      }
+    }
+    _ => raise Asked({ "message": jstr("no actor method \{method}") })
+  }
+  Json::null()
+}
+
+///|
+fn about_is(last : Json, thread : Json, seq : Json) -> Bool {
+  match last.value("about") {
+    Some(Object(about)) => about.get("thread") == Some(thread) && about.get("seq") == Some(seq)
+    _ => false
+  }
+}
+
+///|
+/// Held, archived, or something runs (actor.ts's guard of what a press asks).
+async fn Actors::blocked(self : Actors, a : Actor) -> Bool raise {
+  self.held(a) || self.archived(a) || a.turn is Some(_) || a.codex_update is Some(_) || self.busy(a)
+}
+
+///|
+/// What instructions.ts says, by its name (`GO_ON_AFTER_*`, `NUDGE`, ...).
+async fn Actors::words(self : Actors, a : Actor, name : String, args? : Array[Json] = []) -> String raise {
+  match self.rpc(a.key, "node.words", [jstr(name)] + args) {
+    String(s) => s
+    _ => ""
+  }
+}
+
+///|
+async fn Actors::refills_at(self : Actors, a : Actor) -> Double raise {
+  match self.deps(a, "refillsAt", [jstr(a.key)]) {
+    Number(n, ..) => n
+    _ => self.now + 3600000.0
+  }
+}
+
+///|
+async fn Actors::live_turn_ended(self : Actors, a : Actor) -> Unit raise {
+  ignore(self.rpc(a.key, "live.turnEnded", [jstr(a.key)]))
+}
+
+///|
+async fn Actors::declare_turn(self : Actors, a : Actor, id : String, state : Json?) -> Unit raise {
+  match state {
+    Some(s) => {
+      let kind = s.value("kind").unwrap_or(Json::null())
+      let wait = if kind_of(Some(s)) == Some("waiting") { s.value("seconds").unwrap_or(Json::null()) } else { Json::null() }
+      ignore(self.store(a, "declareTurn", [jstr(id), kind, wait]))
+    }
+    None => ignore(self.store(a, "declareTurn", [jstr(id), Json::null(), Json::null()]))
+  }
+}
+
+///|
+/// actor.ts `stateForTurn`: recorded (Node writes it, `record` its transaction) only while that same turn runs.
+async fn Actors::state_for_turn(self : Actors, a : Actor, args : Array[Json]) -> Json raise {
+  let id = str_of(args.get(0))
+  let state = args.get(1).unwrap_or(Json::null())
+  let mut recorded = false
+  let mut failure : Error? = None
+  self.enqueue(a, async fn() {
+    guard a.turn is Some(t) && id == Some(t.id) else { return }
+    ignore(self.rpc(a.key, "node.stateWrite", args)) catch {
+      e => {
+        failure = Some(e)
+        return
+      }
+    }
+    t.declared = Some(state)
+    recorded = true
+  })
+  if failure is Some(e) {
+    raise e
+  }
+  jbool(recorded)
+}
+
+///|
+async fn Actors::tools_at(self : Actors, a : Actor, url : String) -> Unit raise {
+  guard a.agent is Some(g) else { return }
+  let was = match self.agent_do(a, g, "mcpUrl", []) {
+    String(s) => s
+    _ => return
+  }
+  if was == url {
+    return
+  }
+  if a.turn is Some(_) || self.busy(a) {
+    if a.tools_lost is None {
+      a.tools_lost = Some("its process was told the station's tools are at \{was}, not \{url}")
+    }
+    self.log(a, "warn", "the process taken up was told another address of the station's tools; it starts again once its turn ends", fields={ "was": jstr(was), "now": jstr(url) })
+    return
+  }
+  self.set_agent(a, None)
+  self.log(a, "warn", "the process taken up was told another address of the station's tools; ending it, its next turn resumes in a new one", fields={ "was": jstr(was), "now": jstr(url) })
+  self.end_process(a, Some(g))
+  self.notify_store(a)
+}
+
+///|
+async fn Actors::undeclare(self : Actors, a : Actor) -> Unit raise {
+  guard a.turn is Some(t) && t.declared is Some(d) else { return }
+  self.log(a, "info", "a message read after the turn said its state: the state no longer stands", fields={ "was": d.value("kind").unwrap_or(Json::null()) })
+  t.declared = None
+  self.declare_turn(a, t.id, None)
+}
+
+///|
+/// actor.ts `stop`.
+async fn Actors::stop(self : Actors, a : Actor) -> Json raise {
+  let stop_recovery = a.recoveries > 0 || a.recovery_deferred
+  a.recovery_deferred = false
+  a.delivery_interruptions += 1
+  // (what is being read and formatted for it: Node's, given up at once there, mb-actor.ts)
+  self.enqueue(a, async fn() {
+    defer {
+      a.delivery_interruptions -= 1
+    }
+    if stop_recovery {
+      self.set_running(a, false)
+    }
+    if a.codex_update is Some(_) {
+      a.codex_update = None
+      self.set_running(a, false)
+      self.notice(a, self.t(a, "station.notice.stopped"))
+      self.live_turn_ended(a)
+      return
+    }
+    if self.busy(a) {
+      a.stop_requested = true
+      ignore(self.agent_do(a, a.agent.unwrap(), "abort", [])) catch {
+        e => {
+          a.stop_requested = false
+          raise e
+        }
+      }
+      return
+    }
+    if a.turn is Some(_) {
+      return
+    }
+    self.stop_waiting(a)
+    self.live_turn_ended(a)
+  })
+  Json::null()
+}
+
+///|
+async fn Actors::reassign(self : Actors, a : Actor, thread : Json, seq : Json) -> Unit raise {
+  if self.blocked(a) || self.has_pending(a) {
+    return
+  }
+  let last = self.last_turn(a)
+  if last is Null || str_of(last.value("outcome")) != Some("failed") || !about_is(last, thread, seq) {
+    return
+  }
+  // (`shownLimitOf`: the model's own limit, null the account's; none: not such a failure)
+  let model = match self.rpc(a.key, "node.words", [jstr("shownLimitOf"), last.value("detail").unwrap_or(Json::null())]) {
+    Object(o) => o.get("model").unwrap_or(Json::null())
+    _ => return
+  }
+  let row = self.store(a, "getSession", [jstr(a.key)])
+  let ran_on = if a.profile is Null { row.value("profile").unwrap_or(Json::null()) } else { a.profile }
+  let moved = self.deps(a, "spend", [jstr(a.key), ran_on, model]) catch {
+    e => {
+      self.log(a, "warn", "could not move off a profile its allowance showed spent", fields={ "error": jstr(e.to_string()) })
+      Json::null()
+    }
+  }
+  if moved is Array(m) {
+    let agent = a.agent
+    self.set_agent(a, None)
+    self.end_process(a, agent)
+    self.log(a, "info", "its allowance showed a limit; going on on another profile, as asked", fields={ "from": m[0], "to": m[1] })
+    a.refill = None
+    return self.start_turn(a, "resume", self.words(a, "GO_ON_AFTER_SPENT"))
+  }
+  let pinned = truthy(row.value("profilePinned").unwrap_or(Json::null()))
+  self.notice(a, "⚠️ " + self.t(a, if pinned { "station.notice.reassignPinned" } else { "station.notice.reassignNone" }), profile=ran_on)
+  self.await_refill(a, self.refills_at(a))
+}
+
+///|
+/// actor.ts `stopFromSlack`.
+async fn Actors::stop_from_slack(self : Actors, a : Actor, args : Array[Json]) -> Json raise {
+  let connect = str_of(args.get(0)).unwrap_or("")
+  let channel = str_of(args.get(1)).unwrap_or("")
+  let thread_ts = str_of(args.get(2)).unwrap_or("")
+  let ts = str_of(args.get(3)).unwrap_or("0")
+  // (absent: undefined, as the ts; null: none)
+  let local_at = args.get(4)
+  let mut failure : Error? = None
+  self.enqueue(a, async fn() {
+    let at = @string.parse_double(ts) catch { _ => 0.0 }
+    let previous = self.store(a, "slackStop", [jstr(a.key), jstr(connect), jstr(channel), jstr(thread_ts)]) catch {
+      e => {
+        failure = Some(e)
+        return
+      }
+    }
+    let prev_ts = str_of(previous.value("ts")).map(s => @string.parse_double(s) catch { _ => 0.0 })
+    if prev_ts is Some(p) && p > at {
+      return
+    }
+    let turn = if prev_ts is Some(p) && p == at {
+      str_of(previous.value("turn"))
+    } else {
+      let work = a.working_for.search_by(w => w.connect == connect && w.channel == channel && w.thread_ts == thread_ts).map(i => a.working_for[i])
+      let since = match work {
+        Some(w) => w.since
+        None => num_of(self.last_turn(a).value("startedAt")).unwrap_or(0.0)
+      }
+      let first = work.map(w => if w.first_ts is Null { w.ts } else { w.first_ts })
+      let timely_ts = match first {
+        Some(String(f)) if f != "" => at >= (@string.parse_double(f) catch { _ => 0.0 })
+        _ => true
+      }
+      let timely_local = match local_at {
+        Some(Null) => true
+        Some(Number(l, ..)) => l >= since
+        _ => at * 1000.0 >= since
+      }
+      let turn = match (work, a.turn) {
+        (Some(_), Some(t)) if timely_ts && timely_local => Some(t.id)
+        _ => None
+      }
+      ignore(self.store(a, "rememberSlackStop", [jstr(a.key), jstr(connect), jstr(channel), jstr(thread_ts), jstr(ts), match turn { Some(t) => jstr(t); None => Json::null() }])) catch {
+        e => {
+          failure = Some(e)
+          return
+        }
+      }
+      turn
+    }
+    guard turn is Some(id) && a.turn.map(t => t.id) == Some(id) else { return }
+    let busy = self.busy(a) catch {
+      e => {
+        failure = Some(e)
+        return
+      }
+    }
+    if !busy || a.stop_requested {
+      return
+    }
+    a.stop_requested = true
+    ignore(self.agent_do(a, a.agent.unwrap(), "abort", [])) catch {
+      e => {
+        a.stop_requested = false
+        failure = Some(e)
+      }
+    }
+  })
+  if failure is Some(e) {
+    raise e
+  }
+  Json::null()
+}
+
+///|
+/// actor.ts `recover`.
+async fn Actors::recover(self : Actors, a : Actor) -> Json raise {
+  a.recoveries += 1
+  self.enqueue(a, async fn() {
+    let mut reading = true
+    defer {
+      if reading {
+        a.recoveries -= 1
+      }
+    }
+    if a.delivery_interruptions > 0 {
+      return
+    }
+    if self.archived(a) {
+      a.recovery_deferred = false
+      self.set_running(a, false)
+      return self.let_go(a)
+    }
+    if self.held(a) {
+      a.recovery_deferred = true
+      return
+    }
+    a.recovery_deferred = false
+    let delivery = self.pending_and_format(a, true)
+    a.recoveries -= 1
+    reading = false
+    guard delivery is Some(d) else { return }
+    if a.delivery_interruptions > 0 || self.closed(a) {
+      return
+    }
+    if self.archived(a) {
+      self.set_running(a, false)
+      return self.let_go(a)
+    }
+    if self.held(a) {
+      a.recovery_deferred = true
+      return
+    }
+    self.set_running(a, false)
+    let resume = self.words(a, "RESUME_AFTER_RESTART")
+    self.start_turn(a, "resume", if d.text == "" { resume } else { resume + "\n\n" + d.text })
+    self.delivered(a, d)
+  })
+  Json::null()
+}
+
+///|
+async fn Actors::take_wait(self : Actors, a : Actor) -> Unit raise {
+  if a.waiting is Some(_) || a.turn is Some(_) || self.archived(a) {
+    return
+  }
+  let last = self.last_turn(a)
+  if last is Null || last.value("endedAt") is (None | Some(Null)) || str_of(last.value("declared")) != Some("waiting") {
+    return
+  }
+  if str_of(last.value("outcome")) != Some("completed") && !retrying(last) {
+    ignore(self.store(a, "forgetWait", [jstr(a.key)]))
+    return
+  }
+  let seconds = num_of(last.value("waitSeconds")).unwrap_or(0.0)
+  self.log(a, "info", "taking up a wait on record", fields={ "seconds": jnum(seconds) })
+  self.wait_ms(a, seconds, num_of(last.value("endedAt")).unwrap_or(0.0) + seconds * 1000.0 - self.now)
+}
+
+///|
+async fn Actors::release(self : Actors, a : Actor) -> Json raise {
+  if a.recovery_deferred {
+    a.recovery_deferred = false
+    if a.recoveries == 0 {
+      return self.recover(a)
+    }
+  }
+  self.enqueue(a, async fn() {
+    if a.waiting is Some(_) && a.waiting_until <= self.now {
+      self.wait_ms(a, a.waiting_seconds, 0.0)
+    }
+    if a.refill is Some(_) && a.refill_at <= self.now {
+      self.await_refill(a, self.now)
+    }
+    self.pump(a)
+    if a.notices.length() > 0 {
+      self.give_notices(a)
+    }
+  })
+  Json::null()
+}
+
+///|
+async fn Actors::compacting_to_cap(self : Actors, a : Actor) -> Bool raise {
+  if self.store(a, "getSession", [jstr(a.key)]).value("contextBefore") is (None | Some(Null)) {
+    return false
+  }
+  if a.turn is Some(_) || a.codex_update is Some(_) || a.compacting || a.waiting is Some(_) || self.busy(a) || self.held(a) || self.archived(a) {
+    return false
+  }
+  guard self.begin_compacting(a) is Some(refused) else { return true }
+  self.log(a, "info", "could not compact down to its most context", fields={ "why": jstr(refused) })
+  ignore(self.store(a, "setSessionContextBefore", [jstr(a.key), Json::null()]))
+  self.notify_store(a)
+  false
+}
+
+///|
+/// Why a thing that failed in Node failed, as its chat is told it (`compactFailed`, `cannotStartWords`).
+async fn Actors::failed_words(self : Actors, a : Actor, how : String, e : Error) -> String raise {
+  let err = match e {
+    Asked(j) => j
+    _ => { "message": jstr(e.to_string()) }
+  }
+  match self.rpc(a.key, "node.words", [jstr(how), err]) {
+    String(s) => s
+    _ => ""
+  }
+}
+
+///|
+async fn Actors::begin_compacting(self : Actors, a : Actor) -> String? raise {
+  if a.turn is Some(_) || a.codex_update is Some(_) || a.compacting || self.busy(a) {
+    return Some(self.t(a, "station.context.busy"))
+  }
+  if self.held(a) {
+    return Some(self.t(a, "station.context.held"))
+  }
+  let row = self.store(a, "getSession", [jstr(a.key)])
+  if !truthy(row.value("runtimeSessionId").unwrap_or(Json::null())) {
+    return Some(self.t(a, "station.context.empty"))
+  }
+  let agent = self.ensure_agent(a) catch { e => return Some(self.failed_words(a, "compactFailed", e)) }
+  if a.afresh is Some(_) {
+    return Some(self.t(a, "station.context.empty"))
+  }
+  if !truthy(self.agent_do(a, agent, "canCompact", [])) {
+    return Some(self.t(a, "station.context.cannotCompact", args={ "name": self.rpc(a.key, "node.words", [jstr("runtimeLabel"), jstr(a.runtime)]) }))
+  }
+  self.log(a, "info", "compacting its context")
+  a.compacting = true
+  self.set_running(a, true)
+  self.notify_store(a)
+  ignore(self.agent_do(a, agent, "compact", [])) catch {
+    e => {
+      a.compacting = false
+      self.set_running(a, false)
+      self.notify_store(a)
+      return Some(self.failed_words(a, "compactFailed", e))
+    }
+  }
+  None
+}
+
+///|
+async fn Actors::compacted(self : Actors, a : Actor, outcome : Json) -> Unit raise {
+  a.compacting = false
+  self.idle_now(a)
+  let stop_requested = a.stop_requested
+  a.stop_requested = false
+  self.set_running(a, false)
+  ignore(self.store(a, "setSessionContextBefore", [jstr(a.key), Json::null()]))
+  self.notify_store(a)
+  let kind = str_of(outcome.value("kind")).unwrap_or("")
+  self.log(a, "info", "compaction ended", fields={ "outcome": jstr(kind) })
+  if kind == "completed" {
+    self.notice(a, self.t(a, "station.notice.compacted"))
+  } else if kind == "failed" {
+    let reason = str_of(outcome.value("reason")).unwrap_or("")
+    self.log(a, "warn", "compaction failed", fields={ "reason": jstr(reason), "error": outcome.value("message").unwrap_or(Json::null()) })
+    let said = match self.rpc(a.key, "node.words", [jstr("compactFailedNotice"), outcome]) {
+      String(s) => s
+      _ => ""
+    }
+    self.notice(a, said, profile=if reason == "auth" || reason == "refused" { a.profile } else { Json::null() })
+  } else if stop_requested {
+    self.notice(a, self.t(a, "station.notice.stopped"))
+  }
+  if self.archived(a) {
+    self.let_go(a)
+    ignore(self.deps(a, "idle", [jstr(a.key)]))
+    return
+  }
+  if a.over_while_compacting {
+    a.over_while_compacting = false
+    if a.waiting is Some(_) {
+      self.wait_ms(a, a.waiting_seconds, 0.0)
+    }
+  }
+  if self.has_pending(a) {
+    return self.pump(a)
+  }
+  if a.notices.length() > 0 {
+    return self.give_notices(a)
+  }
+  ignore(self.deps(a, "idle", [jstr(a.key)]))
+}
+
+///|
+async fn Actors::clear_now(
+  self : Actors,
+  a : Actor,
+  read_back : Bool,
+  said? : String = if read_back { "station.notice.afresh" } else { "station.notice.cleared" },
+  by? : String = "by hand",
+  keep_jobs? : Bool = false,
+) -> String? raise {
+  if a.turn is Some(_) || a.codex_update is Some(_) || a.compacting || self.busy(a) {
+    return Some(self.t(a, "station.context.busy"))
+  }
+  let row = self.store(a, "getSession", [jstr(a.key)])
+  let left = row.value("runtimeSessionId").unwrap_or(Json::null())
+  if !truthy(left) {
+    return Some(self.t(a, "station.context.empty"))
+  }
+  self.stop_waiting(a, say=false, keep_jobs~)
+  let agent = a.agent
+  let background = match agent {
+    Some(g) => self.agent_do(a, g, "background", [])
+    None => Json::array([])
+  }
+  self.set_agent(a, None)
+  self.log(a, "info", "clearing its context, asked \{by}", fields={
+    "left": left,
+    "readBack": jbool(read_back),
+    "background": jnum(match background { Array(b) => b.length().to_double(); _ => 0.0 }),
+  })
+  if agent is Some(g) {
+    ignore(self.agent_do(a, g, "dispose", []))
+  }
+  a.stopped.clear()
+  a.stopped_note = None
+  a.resume_lost = false
+  a.afresh = None
+  a.compacted_untold = false
+  a.nudges = 0
+  a.tools_restarts = 0
+  ignore(self.deps(a, "ranIn", [jstr(a.key), left, Json::null()]))
+  ignore(self.store(a, "setRuntimeSessionId", [jstr(a.key), Json::null()]))
+  a.read_back = read_back
+  self.notify_store(a)
+  self.notice(a, self.t(a, said))
+  None
+}
+
+///|
+/// actor.ts `suspend`.
+async fn Actors::suspend(self : Actors, a : Actor) -> Json raise {
+  a.delivery_interruptions += 1
+  self.enqueue(a, async fn() {
+    defer {
+      a.delivery_interruptions -= 1
+    }
+    let agent = a.agent
+    self.set_agent(a, None)
+    let busy = self.busy_of(a, agent)
+    let turn = a.turn
+    a.turn = None
+    a.tools.clear()
+    a.working_for = []
+    a.stop_requested = false
+    let steered = a.steered
+    a.steered = []
+    a.steered_for = []
+    a.unread = []
+    if agent is None && turn is None {
+      return
+    }
+    let resume = (turn is Some(_) || busy) && !(turn is Some({ declared: Some(d), .. }) && settled_state(d))
+    self.log(a, "info", "ending the runtime process: the station is in no workspace", fields={ "resume": jbool(resume) })
+    if agent is Some(g) {
+      ignore(self.agent_do(a, g, "dispose", []))
+    }
+    if turn is Some(t) {
+      let ended = kind_of(ended_in(t.declared, "aborted"))
+      ignore(self.store(a, "endTurn", [jstr(t.id), jstr("aborted"), jstr("other: the station left its workspace"), match ended { Some(k) => jstr(k); None => Json::null() }, Json::null()]))
+    }
+    self.set_running(a, resume)
+    if turn is Some(_) || busy {
+      ignore(self.store(a, "markUndelivered", [jstr(a.key), Json::array(steered)]))
+    }
+    self.live_turn_ended(a)
+    self.notify_store(a)
+    a.phase = "idle"
+  })
+  Json::null()
+}
+
+///|
+/// Where it stands, for the next station (actor.ts `snapshot`; its runtime session's own is Node's to add); from here on
+/// it does nothing more.
+fn Actors::snapshot(self : Actors, a : Actor) -> Json {
+  let turn = match a.turn {
+    Some(t) =>
+      ({
+        "id": jstr(t.id),
+        "authRetried": jbool(t.auth_retried),
+        "codexRetried": jbool(t.codex_retried),
+        "by": t.by,
+        "declared": match kind_of(t.declared) { Some(k) => jstr(k); None => Json::null() },
+        "wait": if kind_of(t.declared) == Some("waiting") { t.declared.unwrap().value("seconds").unwrap_or(Json::null()) } else { Json::null() },
+      } : Json)
+    None => Json::null()
+  }
+  let max0 = (x : Double) => if x < 0.0 { 0.0 } else { x }
+  let snap : Json = {
+    "key": jstr(a.key),
+    "runtime": jstr(a.runtime),
+    "identity": a.running_identity,
+    "turn": turn,
+    "workingFor": Json::array(a.working_for.map(working_json)),
+    "notices": Json::array(a.notices.map(jstr)),
+    "waitingMs": if a.waiting is Some(_) { jnum(max0(a.waiting_until - self.now)) } else { Json::null() },
+    "waitingSeconds": jnum(a.waiting_seconds),
+    "nudges": jnum(a.nudges.to_double()),
+    "stopRequested": jbool(a.stop_requested),
+    "refillMs": if a.refill is Some(_) { jnum(max0(a.refill_at - self.now)) } else { Json::null() },
+    "idleMs": jnum(max0(self.now - a.idle_since)),
+    "stale": jbool(a.stale),
+    "restart": jbool(a.restart),
+    "compacting": jbool(a.compacting),
+    "agent": match a.agent { Some(g) => jnum(g.handle.to_double()); None => Json::null() },
+  }
+  self.close(a)
+  snap
+}
+
+///|
+/// actor.ts `adopt`: `agent` its runtime session taken up (`{handle, generation}`, or null), on `profile`.
+fn Actors::adopt(self : Actors, a : Actor, snap : Json, agent : Json, profile : Json, row : Json) -> Unit {
+  let runtime = str_of(snap.value("runtime")).unwrap_or(a.runtime)
+  let taken = match agent {
+    Object(g) => Some({ generation: num_of(g.get("generation")).unwrap_or(0.0).to_int(), handle: num_of(g.get("handle")).unwrap_or(0.0).to_int() })
+    _ => None
+  }
+  if taken is Some(_) {
+    a.runtime = runtime
+  }
+  a.running_identity = match (taken, snap.value("identity")) {
+    (None, _) => Json::null()
+    (Some(_), Some(Object(_) as i)) => i
+    _ => { "runtime": jstr(runtime), "model": row.value("model").unwrap_or(Json::null()), "effort": row.value("effort").unwrap_or(Json::null()) }
+  }
+  self.set_agent(a, taken)
+  a.profile = if taken is Some(_) { profile } else { Json::null() }
+  a.turn = match snap.value("turn") {
+    Some(Object(t)) =>
+      Some({
+        id: str_of(t.get("id")).unwrap_or(""),
+        auth_retried: t.get("authRetried") is Some(True),
+        codex_retried: t.get("codexRetried") is Some(True),
+        by: t.get("by").unwrap_or(turn_for_nobody()),
+        declared: match str_of(t.get("declared")) {
+          Some(k) => parse_declared(k, num_of(t.get("wait")).unwrap_or(0.0))
+          None => None
+        },
+      })
+    _ => None
+  }
+  a.phase = if a.turn is Some(_) { "running" } else { "idle" }
+  a.working_for = match snap.value("workingFor") {
+    Some(Array(ws)) => ws.map(working_of)
+    _ => []
+  }
+  let notices = match snap.value("notices") {
+    Some(Array(ns)) => ns.filter_map(n => str_of(Some(n)))
+    _ => []
+  }
+  a.notices = notices + a.notices
+  a.nudges = num_of(snap.value("nudges")).unwrap_or(0.0).to_int()
+  a.stop_requested = snap.value("stopRequested") is Some(True)
+  let runtime_changed = taken is Some(_) && str_of(row.value("runtime")) != Some(runtime)
+  a.stale = runtime_changed || snap.value("stale") is Some(True)
+  a.restart = runtime_changed || snap.value("restart") is Some(True)
+  a.compacting = snap.value("compacting") is Some(True)
+  a.idle_since = self.now - num_of(snap.value("idleMs")).unwrap_or(0.0)
+  if num_of(snap.value("waitingMs")) is Some(ms) {
+    self.wait_ms(a, num_of(snap.value("waitingSeconds")).unwrap_or(0.0), ms)
+  }
+  if num_of(snap.value("refillMs")) is Some(ms) {
+    self.await_refill(a, self.now + ms)
+  }
+}
+
+///|
+/// For shutdown or handover: queued and later tasks are skipped, timers end.
+fn Actors::close(self : Actors, a : Actor) -> Unit {
+  a.phase = "closed"
+  for cancel in a.timers.values() {
+    cancel()
+  }
+  a.timers.clear()
+  self.mirror(a)
+}
+
+// ── inside the queue ──────────────────────────────────────────────────────────────────────────────────────────────
+
+///|
+async fn Actors::take_notices(self : Actors, a : Actor) -> String? raise {
+  let notices = a.notices
+  a.notices = []
+  if notices.length() == 0 {
+    return None
+  }
+  let at = str_of(Some(self.deps(a, "nextTs", []))).unwrap_or("")
+  Some(
+    notices
+    .map(n => "<message via=\"station\" from=\"station\" ts=\"\{at}\">\n\{n}\n</message>")
+    .join("\n"),
+  )
+}
+
+///|
+/// The words handed with what people chose on its cards meanwhile (actor.ts `withChoices`): Node's, which marks them
+/// told once `told` is asked of it.
+async fn Actors::with_choices(self : Actors, a : Actor, text : String) -> (String, Json) raise {
+  let got = self.rpc(a.key, "node.withChoices", [jstr(text)])
+  (str_of(got.value("text")).unwrap_or(text), got.value("told").unwrap_or(Json::null()))
+}
+
+///|
+async fn Actors::told(self : Actors, a : Actor, told : Json) -> Unit raise {
+  if !(told is Null) {
+    ignore(self.rpc(a.key, "node.told", [told]))
+  }
+}
+
+///|
+async fn Actors::timed(self : Actors, a : Actor, text : String) -> String raise {
+  str_of(Some(self.rpc(a.key, "node.timed", [jstr(text)]))).unwrap_or(text)
+}
+
+///|
+async fn Actors::give_notices(self : Actors, a : Actor) -> Unit raise {
+  if self.held(a) || a.compacting || a.codex_update is Some(_) {
+    return
+  }
+  if self.archived(a) {
+    a.notices = []
+    return
+  }
+  if a.refill is Some(_) && !self.busy(a) {
+    return
+  }
+  if self.busy(a) {
+    guard self.take_notices(a) is Some(text) else { return }
+    let (handed, told) = self.with_choices(a, text)
+    if truthy(self.agent_do(a, a.agent.unwrap(), "steer", [jstr(self.timed(a, handed))])) {
+      self.told(a, told)
+    } else {
+      a.notices = [text] + a.notices
+    }
+    return
+  }
+  if self.take_notices(a) is Some(text) {
+    self.start_turn(a, "job", text)
+  }
+}
+
+///|
+priv struct Delivery {
+  /// what each message is (mb-actor.ts `light`): where it came by, its entry, who wrote it
+  pending : Array[Json]
+  text : String
+  widgets : Json
+}
+
+///|
+fn Actors::interrupted(self : Actors, a : Actor) -> Bool {
+  a.delivery_interruptions > 0 || a.recoveries > 0 || a.recovery_deferred || self.closed(a)
+}
+
+///|
+async fn Actors::pump(self : Actors, a : Actor) -> Unit raise {
+  if a.delivery_interruptions > 0 || a.recoveries > 0 || a.recovery_deferred || self.held(a) || self.archived(a) || a.compacting {
+    return
+  }
+  if a.codex_update is Some(u) {
+    if u.finished {
+      self.continue_after_codex_update(a, u)
+    }
+    return
+  }
+  if !self.has_pending(a) || self.compacting_to_cap(a) {
+    return
+  }
+  if self.interrupted(a) || self.held(a) || self.archived(a) || a.compacting {
+    return
+  }
+  let delivery = self.pending_and_format(a, false)
+  guard delivery is Some(d) else { return }
+  if self.interrupted(a) || self.held(a) || self.archived(a) || a.compacting {
+    return
+  }
+  if self.busy(a) {
+    let agent = a.agent.unwrap()
+    if truthy(self.deps(a, "backgroundOnMessage", [jstr(a.key)])) {
+      ignore(self.agent_do(a, agent, "backgroundTools", []))
+    }
+    let (handed, told) = self.with_choices(a, d.text)
+    if truthy(self.agent_do(a, agent, "steer", [jstr(self.timed(a, handed))])) {
+      self.told(a, told)
+      self.work_for(a, d.pending)
+      self.delivered(a, d)
+      for m in d.pending {
+        a.steered.push(m.value("handed").unwrap_or(Json::null()))
+        if !(m.value("apart") is Some(True)) {
+          a.unread.push(m)
+        }
+      }
+      let from = (w : Working) => d.pending.iter().any(m => str_of(m.value("connect")) == Some(w.connect) &&
+        str_of(m.value("channel")) == Some(w.channel) &&
+        str_of(m.value("threadTs")) == Some(w.thread_ts))
+      a.steered_for = a.steered_for.filter(w => !from(w)) + a.working_for.filter(from)
+    }
+    return
+  }
+  a.nudges = 0
+  a.tools_restarts = 0
+  self.work_for(a, d.pending)
+  let by = match d.pending.search_by(m => str_of(m.value("authorKind")) == Some("person")) {
+    Some(i) => ({ "person": d.pending[i].value("person").unwrap_or(Json::null()), "thread": d.pending[i].value("thread").unwrap_or(Json::null()), "profile": Json::null() } : Json)
+    None => turn_for_nobody()
+  }
+  self.start_turn(a, "input", d.text, by~)
+  self.delivered(a, d)
+}
+
+///|
+async fn Actors::work_for(self : Actors, a : Actor, messages : Array[Json]) -> Unit raise {
+  for m in messages {
+    if str_of(m.value("surface")) == Some("stillfail") {
+      continue
+    }
+    let connect = str_of(m.value("connect")).unwrap_or("")
+    let channel = str_of(m.value("channel")).unwrap_or("")
+    let thread_ts = str_of(m.value("threadTs")).unwrap_or("")
+    let ts = m.value("ts").unwrap_or(Json::null())
+    match a.working_for.search_by(w => w.connect == connect && w.channel == channel && w.thread_ts == thread_ts) {
+      Some(i) => a.working_for[i].ts = ts
+      None => a.working_for.push({ connect, channel, thread_ts, ts, first_ts: ts, since: self.now })
+    }
+  }
+  self.say(a, jstr("thinking"))
+}
+
+///|
+/// Its threads' status line (actor.ts `say`), told Node (each thread's surface's `working`): "" none, "thinking", or
+/// `{tool}` what a tool is doing (its words Node's).
+fn Actors::say(self : Actors, a : Actor, status : Json) -> Unit {
+  if a.working_for.length() == 0 {
+    return
+  }
+  self.tell(a.key, "node.working", [Json::array(a.working_for.map(working_json)), status])
+}
+
+///|
+/// A live step of the running turn, for its threads' status line.
+fn Actors::on_live(self : Actors, a : Actor, event : Json) -> Unit {
+  if a.working_for.length() == 0 {
+    return
+  }
+  let kind = str_of(event.value("kind")).unwrap_or("")
+  let id = str_of(event.value("id")).unwrap_or("")
+  if kind == "start" && str_of(event.value("step")) == Some("tool") && str_of(event.value("tool")) is Some(tool) && tool != "" {
+    if !a.tools.iter().any(t => t.0 == id) {
+      a.tools.push((id, tool))
+    }
+  } else if kind == "end" {
+    a.tools = a.tools.filter(t => t.0 != id)
+  } else if kind != "phase" {
+    return
+  }
+  match a.tools.last() {
+    Some((_, tool)) => self.say(a, { "tool": jstr(tool) })
+    None => self.say(a, jstr("thinking"))
+  }
+}
+
+///|
+fn Actors::done_working(self : Actors, a : Actor) -> Unit {
+  if a.working_for.length() > 0 {
+    a.ended_for = a.working_for
+  }
+  self.say(a, jstr(""))
+  a.working_for = []
+  a.tools = []
+}
+
+///|
+async fn Actors::delivered(self : Actors, a : Actor, d : Delivery) -> Unit raise {
+  ignore(self.store(a, "markDelivered", [jstr(a.key), Json::array(d.pending.map(m => m.value("handed").unwrap_or(Json::null())))]))
+  ignore(self.store(a, "markWidgetModelsTold", [jstr(a.key), d.widgets]))
+}
+
+///|
+/// What waits for it, read and formatted as it reads it (Node's: actor.ts `pendingAndFormat`); none (`allowEmpty`
+/// aside) or stopped meanwhile: nothing.
+async fn Actors::pending_and_format(self : Actors, a : Actor, allow_empty : Bool) -> Delivery? raise {
+  match self.rpc(a.key, "node.pendingAndFormat", [jbool(allow_empty)]) {
+    Object(d) =>
+      Some({
+        pending: match d.get("pending") {
+          Some(Array(p)) => p
+          _ => []
+        },
+        text: str_of(d.get("text")).unwrap_or(""),
+        widgets: d.get("widgets").unwrap_or(Json::array([])),
+      })
+    _ => None
+  }
+}
+
+///|
+/// actor.ts `startTurn`.
+async fn Actors::start_turn(self : Actors, a : Actor, kind : String, text : String, by? : Json = turn_for_nobody()) -> Unit raise {
+  let retry_about = if text == self.words(a, "GO_ON_AFTER_OVERLOADED") {
+    self.last_turn(a).value("about").unwrap_or(Json::null())
+  } else {
+    Json::null()
+  }
+  if kind != "input" && self.archived(a) {
+    self.log(a, "info", "archived: no turn of its own", fields={ "kind": jstr(kind) })
+    return
+  }
+  self.start_turn_body(a, kind, text, by, retry_about) catch {
+    e => {
+      let turn = a.turn
+      a.turn = None
+      a.phase = "idle"
+      let message = match e {
+        Asked(j) => str_of(j.value("message")).unwrap_or("")
+        _ => e.to_string()
+      }
+      if turn is Some(t) {
+        ignore(self.store(a, "endTurn", [jstr(t.id), jstr("failed"), jstr("other: " + message), Json::null(), Json::null()]))
+      }
+      self.set_running(a, false)
+      self.live_turn_ended(a)
+      self.done_working(a)
+      let missing = match e {
+        Asked(j) => j.value("missing") is Some(True)
+        _ => false
+      }
+      // (what it is to run, as its row said before it failed to)
+      if e is Asked(j) && str_of(j.value("runtime")) is Some(runtime) {
+        a.runtime = runtime
+      }
+      if missing {
+        ignore(self.deps(a, "runtimeMissing", [jstr(a.runtime)]))
+      }
+      let said = if missing {
+        "⚠️ " + self.t(a, "station.notice.runtimeMissing", args={ "name": self.rpc(a.key, "node.words", [jstr("runtimeLabel"), jstr(a.runtime)]) })
+      } else {
+        "⚠️ " + self.failed_words(a, "cannotStartWords", e)
+      }
+      let cannot_start = "⚠️ " + self.t(a, "station.notice.cannotStart")
+      let last = self.said_last(a)
+      if !(last is Some(l) && (l == said || (!missing && l.has_prefix(cannot_start)))) {
+        self.notice(a, said, runtime=if missing { jstr(a.runtime) } else { Json::null() }, about=turn.map(t => t.id))
+      }
+      raise e
+    }
+  }
+}
+
+///|
+async fn Actors::start_turn_body(self : Actors, a : Actor, kind : String, text : String, by : Json, retry_about : Json) -> Unit raise {
+  self.tell(a.key, "live.event", [jstr(a.key), { "kind": "phase", "phase": "starting" }])
+  if (kind == "input" || kind == "job") && !self.holding(a) && !self.busy(a) &&
+    self.deps(a, "coldAfresh", [jstr(a.key), jnum(self.now)]) is True {
+    ignore(self.clear_now(a, true, said="station.notice.afreshCold", by="as its cache is over", keep_jobs=true))
+  }
+  let mut agent = self.ensure_agent(a)
+  let lost = a.resume_lost
+  a.resume_lost = false
+  let (handed, told_choices) = self.with_choices(a, text)
+  let stopped = a.stopped_note
+  a.stopped_note = None
+  let afresh = a.afresh
+  a.afresh = None
+  let compacted = a.compacted_untold
+  a.compacted_untold = false
+  // (what goes before what it is handed: its resume lost, what was stopped, a long chat, afresh, continued here, what
+  // changed in how it works; Node's words, actor.ts `startTurn`)
+  let prompt = str_of(
+    Some(
+      self.rpc(a.key, "node.prompt", [
+        jstr(handed),
+        jbool(lost),
+        match stopped { Some(s) => jstr(s); None => Json::null() },
+        match afresh { Some(s) => jstr(s); None => Json::null() },
+        jbool(compacted),
+      ]),
+    ),
+  ).unwrap_or(handed)
+  if self.busy_of(a, Some(agent)) && truthy(self.agent_do(a, agent, "steer", [jstr(prompt)])) {
+    return self.told(a, told_choices)
+  }
+  a.steered = []
+  a.steered_for = []
+  a.unread = []
+  self.begin_turn(a, kind, by)
+  if !(retry_about is Null) && a.turn is Some(t) {
+    ignore(self.store(a, "setAbout", [jstr(t.id), [retry_about.value("thread").unwrap_or(Json::null()), retry_about.value("seq").unwrap_or(Json::null()), retry_about.value("ts").unwrap_or(Json::null())]]))
+  }
+  ignore(self.agent_do(a, agent, "prompt", [jstr(prompt)])) catch {
+    e => {
+      self.log(a, "warn", "prompt failed, reopening the runtime", fields={ "error": jstr(e.to_string()) })
+      self.set_agent(a, None)
+      ignore(self.agent_do(a, agent, "dispose", []))
+      agent = self.ensure_agent(a)
+      ignore(self.agent_do(a, agent, "prompt", [jstr(prompt)]))
+    }
+  }
+  self.told(a, told_choices)
+}
+
+///|
+async fn Actors::begin_turn(self : Actors, a : Actor, kind : String, by : Json) -> Unit raise {
+  if kind == "input" || kind == "job" {
+    a.last_said = ""
+    a.posted = false
+  }
+  let id = str_of(Some(self.rpc(a.key, "node.uuid", []))).unwrap_or("")
+  a.turn = Some({ id, declared: None, auth_retried: kind == "auth_retry", codex_retried: kind == "codex_retry", by })
+  a.phase = "running"
+  a.waiting = None
+  let for_ = match by {
+    Object(o) => {
+      let o = Map::from_iter(o.iter())
+      o["profile"] = a.profile
+      Json::object(o)
+    }
+    _ => by
+  }
+  ignore(self.store(a, "startTurnFor", [jstr(id), jstr(a.key), jstr(kind), for_]))
+  self.set_running(a, true)
+}
+
+///|
+/// actor.ts `catchUp`.
+async fn Actors::catch_up(self : Actors, a : Actor, end : Bool) -> Unit raise {
+  guard a.agent is Some(agent) else { return }
+  if !a.stale || self.busy(a) {
+    return
+  }
+  // (taken in place where it can be: Node's, its profile asked of the pool, `retune`)
+  let identity = self.rpc(a.key, "node.retune", [jnum(agent.handle.to_double()), a.profile, jbool(a.restart), jbool(self.holding(a))])
+  if identity is Object(_) {
+    a.stale = false
+    a.running_identity = identity
+    self.log(a, "info", "session process takes the change in place", fields={ "model": identity.value("model").unwrap_or(jstr("")), "effort": identity.value("effort").unwrap_or(jstr("")) })
+    return
+  }
+  if !end {
+    return
+  }
+  a.stale = false
+  a.restart = false
+  let background = self.agent_do(a, agent, "background", [])
+  self.set_agent(a, None)
+  self.log(a, "info", "ending the process from before the session was changed", fields={ "background": jnum(match background { Array(b) => b.length().to_double(); _ => 0.0 }) })
+  self.end_process(a, Some(agent))
+  self.notify_store(a)
+}
+
+///|
+async fn Actors::end_process(self : Actors, a : Actor, agent : Agent?) -> Unit raise {
+  guard agent is Some(g) else { return }
+  match self.agent_do(a, g, "background", []) {
+    Array(tasks) => a.stopped.append(tasks)
+    _ => ()
+  }
+  ignore(self.agent_do(a, g, "dispose", []))
+}
+
+///|
+/// actor.ts `ensureAgent`: its runtime session, opened (Node's: the driver, its options, the words it is told of how it
+/// was opened) where it has none.
+async fn Actors::ensure_agent(self : Actors, a : Actor) -> Agent raise {
+  if a.agent is Some(_) && !a.stale && !self.busy(a) {
+    let on = self.rpc(a.key, "node.profileId", [jbool(self.holding(a))]) catch { _ => Json::null() }
+    if !(on is Null) && on != a.profile {
+      a.stale = true
+    }
+  }
+  self.catch_up(a, true)
+  if a.agent is Some(g) {
+    return g
+  }
+  let opened = self.rpc(a.key, "node.open", [Json::array(a.stopped), jbool(a.read_back), a.profile])
+  let handle = num_of(opened.value("handle")).unwrap_or(0.0).to_int()
+  let generation = num_of(opened.value("generation")).unwrap_or(0.0).to_int()
+  a.runtime = str_of(opened.value("runtime")).unwrap_or(a.runtime)
+  match str_of(opened.value("afresh")) {
+    Some(s) => a.afresh = Some(s)
+    None => ()
+  }
+  if opened.value("resumeLost") is Some(True) {
+    a.resume_lost = true
+  }
+  if opened.value("readBackTold") is Some(True) {
+    a.read_back = false
+  }
+  a.stopped.clear()
+  if str_of(opened.value("stoppedNote")) is Some(note) {
+    a.stopped_note = Some(note)
+  }
+  let g = { generation, handle }
+  self.set_agent(a, Some(g))
+  a.running_identity = opened.value("identity").unwrap_or(Json::null())
+  a.stale = false
+  a.restart = false
+  a.profile = opened.value("profile").unwrap_or(Json::null())
+  g
+}
+
+///|
+fn Actors::is_current(self : Actors, a : Actor, generation : Int) -> Bool {
+  ignore(self)
+  a.agent.map(g => g.generation) == Some(generation)
+}
+
+///|
+/// A runtime session's event (actor.ts `onEvent`), as Node gives it: `read`, for a turn's end, what its live view reads
+/// of it first, started there as it came.
+async fn Actors::on_event(self : Actors, a : Actor, generation : Int, event : Json, read : Json) -> Unit {
+  match str_of(event.value("type")).unwrap_or("") {
+    "turnStarted" =>
+      ignore(
+        self.enqueue(a, async fn() {
+          if !self.is_current(a, generation) || a.turn is Some(_) || a.compacting {
+            return
+          }
+          self.begin_turn(a, "input", turn_for_nobody())
+          if a.working_for.length() == 0 && a.steered_for.length() > 0 {
+            a.working_for = a.steered_for.map(w => { ..w, first_ts: w.ts, since: self.now })
+            a.steered_for = []
+            self.say(a, jstr("thinking"))
+          }
+        }),
+      )
+    "turnEnded" => {
+      self.done_working(a)
+      let outcome = event.value("outcome").unwrap_or(Json::null())
+      ignore(
+        self.enqueue(a, async fn() {
+          ignore(self.rpc(a.key, "node.read", [read]))
+          self.on_turn_ended(a, generation, outcome)
+        }),
+      )
+    }
+    "live" => {
+      let ev = event.value("event").unwrap_or(Json::null())
+      if str_of(ev.value("kind")) == Some("phase") && str_of(ev.value("phase")) == Some("requesting") {
+        if a.unread.length() > 0 {
+          ignore(self.enqueue(a, async fn() { self.undeclare(a) }))
+        }
+        a.unread = []
+      }
+      if self.is_current(a, generation) {
+        self.hear_words(a, ev)
+      }
+      self.on_live(a, ev)
+    }
+    "toolsLost" => {
+      let why = str_of(event.value("why")).unwrap_or("")
+      ignore(
+        self.enqueue(a, async fn() {
+          if !self.is_current(a, generation) || a.tools_lost is Some(_) {
+            return
+          }
+          self.log(a, "warn", "the agent cannot reach the station's tools", fields={ "why": jstr(why) })
+          a.tools_lost = Some(why)
+        }),
+      )
+    }
+    "compacted" => ignore(self.enqueue(a, async fn() { self.on_compacted(a, generation) }))
+    "closed" => {
+      let why = event.value("why").unwrap_or(Json::null())
+      ignore(
+        self.enqueue(a, async fn() {
+          if !self.is_current(a, generation) {
+            return
+          }
+          self.log(a, "info", "session runtime closed", fields={ "reason": why })
+          if a.compacting {
+            a.compacting = false
+            self.set_running(a, false)
+          }
+          let gone = match a.agent {
+            Some(g) =>
+              match self.agent_do(a, g, "background", []) {
+                Array(b) => b
+                _ => []
+              }
+            None => []
+          }
+          a.stopped.append(gone)
+          self.set_agent(a, None)
+          self.notify_store(a)
+          if gone.length() > 0 && a.phase == "waiting" && !self.held(a) {
+            self.log(a, "info", "its background work ended with its process while it waits; going on now", fields={ "stopped": jnum(gone.length().to_double()) })
+            self.start_turn(a, "resume", self.words(a, "BACKGROUND_STOPPED_WAITING"))
+          }
+        }),
+      )
+    }
+    _ => ()
+  }
+}
+
+///|
+async fn Actors::on_compacted(self : Actors, a : Actor, generation : Int) -> Unit raise {
+  if !self.is_current(a, generation) {
+    return
+  }
+  if !a.compacting && self.busy(a) {
+    match self.deps(a, "longChat", [jstr(a.key)]) {
+      String(long) => {
+        let at = str_of(Some(self.deps(a, "nextTs", []))).unwrap_or("")
+        let told = self.timed(a, "<message via=\"station\" from=\"station\" ts=\"\{at}\">\n\{long}\n</message>")
+        if truthy(self.agent_do(a, a.agent.unwrap(), "steer", [jstr(told)])) {
+          return
+        }
+      }
+      _ => return
+    }
+  }
+  a.compacted_untold = true
+}
+
+///|
+/// The agent's own words as they come (not a subagent's, not its thinking).
+fn Actors::hear_words(self : Actors, a : Actor, event : Json) -> Unit {
+  ignore(self)
+  let kind = str_of(event.value("kind")).unwrap_or("")
+  if kind == "start" && str_of(event.value("step")) == Some("text") && !(event.value("subagent") is Some(True)) && event.value("parent") is None {
+    a.saying = Some((str_of(event.value("id")).unwrap_or(""), ""))
+  } else if kind == "delta" && str_of(event.value("field")) == Some("text") {
+    match a.saying {
+      Some((id, text)) if str_of(event.value("id")) == Some(id) => {
+        let text = text + str_of(event.value("text")).unwrap_or("")
+        a.saying = Some((id, text))
+        let trimmed = text.trim_space().to_string()
+        if trimmed != "" {
+          a.last_said = trimmed
+        }
+      }
+      _ => ()
+    }
+  }
+}
+
+///|
+/// actor.ts `onTurnEnded`.
+async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outcome : Json) -> Unit raise {
+  if !self.is_current(a, generation) {
+    return
+  }
+  if a.compacting && a.turn is None {
+    return self.compacted(a, outcome)
+  }
+  let kind = str_of(outcome.value("kind")).unwrap_or("")
+  let reason = str_of(outcome.value("reason")).unwrap_or("")
+  let message = str_of(outcome.value("message")).unwrap_or("")
+  // (undefined: none shown; null: the account's; a name: that model's own)
+  let mut limit : Json? = None
+  if kind == "failed" && reason == "model" && a.turn is Some(_) && !(a.profile is Null) && !a.stop_requested {
+    let after = self.rpc(a.key, "node.limitAfter", [a.profile]) catch { _ => Json::null() }
+    if after is Object(o) && o.get("limit") is Some(l) {
+      limit = Some(l)
+    }
+    if !self.is_current(a, generation) {
+      return
+    }
+    if limit is Some(l) {
+      self.log(a, "info", "a failure its words did not name is where the allowance shows a limit", fields={ "model": if l is Null { jstr("") } else { l } })
+    }
+  }
+  self.idle_now(a)
+  let turn = a.turn
+  a.turn = None
+  a.phase = "idle"
+  let stop_requested = a.stop_requested
+  a.stop_requested = false
+  self.set_running(a, false)
+  let overloaded = turn is Some(_) && kind == "failed" && reason == "overloaded" && !stop_requested
+  let retry : Json? = if overloaded {
+    let n = a.overloads
+    a.overloads += 1
+    Some({ "kind": "waiting", "seconds": jnum(retry_after(n)) })
+  } else {
+    None
+  }
+  if !overloaded {
+    a.overloads = 0
+  }
+  let ends = match retry {
+    Some(_) => retry
+    None =>
+      match turn {
+        Some(t) => ended_in(t.declared, kind)
+        None => None
+      }
+  }
+  let recorded = turn.map(t => t.id)
+  if turn is Some(t) {
+    let detail = if kind != "failed" {
+      Json::null()
+    } else {
+      match limit {
+        Some(l) => jstr("limit:" + (match l { String(s) => s; _ => "" }) + ": " + message)
+        None => jstr(reason + ": " + message)
+      }
+    }
+    let ends_kind = match kind_of(ends) { Some(k) => jstr(k); None => Json::null() }
+    let wait = if kind_of(ends) == Some("waiting") { ends.unwrap().value("seconds").unwrap_or(Json::null()) } else { Json::null() }
+    ignore(self.store(a, "endTurn", [jstr(t.id), jstr(kind), detail, ends_kind, wait]))
+    if retry is Some(_) {
+      ignore(self.store(a, "setWaitFor", [jstr(t.id), jstr(self.t(a, "station.wait.overloaded")), jbool(false)]))
+    }
+  }
+  let lost = a.tools_lost
+  a.tools_lost = None
+  if lost is Some(why) {
+    let agent = a.agent
+    self.set_agent(a, None)
+    self.log(a, "warn", "ending the process that lost the station's tools; the next one resumes it", fields={ "why": jstr(why) })
+    self.end_process(a, agent)
+    self.notify_store(a)
+  }
+  if turn is Some({ declared: Some(_), .. }) {
+    a.tools_restarts = 0
+  }
+  let too_old = a.runtime == "codex" && kind == "failed" && self.rpc(a.key, "node.words", [jstr("codexTooOld"), jstr(message)]) is True
+  if too_old && !stop_requested && !self.held(a) && turn is Some(t) && !t.codex_retried && t.declared is None &&
+    self.rpc(a.key, "node.canUpdateCodex", []) is True {
+    let agent = a.agent
+    a.codex_next += 1
+    let update : CodexUpdate = { id: a.codex_next, by: t.by, finished: false, turn: t.id }
+    a.codex_update = Some(update)
+    self.set_agent(a, None)
+    a.nudges = 0
+    self.notice(a, self.t(a, "station.notice.codexUpdating"), about=Some(t.id))
+    // (its version, and whether it updates where the station's is, asked of it before it ends)
+    let handle = match agent { Some(g) => jnum(g.handle.to_double()); None => Json::null() }
+    ignore(self.rpc(a.key, "node.codexBefore", [handle, jnum(update.id.to_double())]))
+    self.end_process(a, agent)
+    self.set_running(a, true)
+    // (not holding the queue during the install: Node updates it, and tells its end as `codexUpdated`)
+    ignore(self.rpc(a.key, "node.updateCodex", [jnum(update.id.to_double())]))
+    return
+  }
+  if a.runtime == "codex" && kind == "failed" && reason == "auth" && !stop_requested && !(a.profile is Null) {
+    ignore(self.deps(a, "recheck", [a.profile]))
+  }
+  if (a.runtime == "claude" || a.runtime == "codex") && kind == "failed" && reason == "auth" && !stop_requested &&
+    !self.held(a) && turn is Some(t) && !t.auth_retried && t.declared is None {
+    a.nudges = 0
+    let agent = a.agent
+    self.set_agent(a, None)
+    self.end_process(a, agent)
+    if a.runtime == "claude" && !(a.profile is Null) {
+      ignore(self.deps(a, "recheck", [a.profile]))
+    }
+    self.log(a, "info", "authentication failed; reopening and continuing once", fields={ "runtime": jstr(a.runtime) })
+    self.start_turn(a, "auth_retry", self.words(a, "GO_ON_AFTER_AUTH"), by=t.by)
+    if a.turn is Some(nt) && t.codex_retried {
+      nt.codex_retried = true
+    }
+    return
+  }
+  let spent = kind == "failed" && reason == "rate_limit"
+  if !spent {
+    a.refill = None
+  }
+  if spent {
+    a.nudges = 0
+    let model = self.rpc(a.key, "node.words", [jstr("modelLimitOf"), jstr(message)])
+    let moved = self.deps(a, "spend", [jstr(a.key), a.profile, model]) catch {
+      e => {
+        self.log(a, "warn", "could not move off a spent profile", fields={ "error": jstr(e.to_string()) })
+        Json::null()
+      }
+    }
+    if moved is Array(m) {
+      let agent = a.agent
+      self.set_agent(a, None)
+      self.end_process(a, agent)
+      self.log(a, "info", "allowance ran out; going on on another profile", fields={ "from": m[0], "to": m[1] })
+      a.refill = None
+      if self.has_pending(a) {
+        return self.pump(a)
+      }
+      return self.start_turn(a, "resume", self.words(a, "GO_ON_AFTER_SPENT"))
+    }
+    let notice = self.failure_notice(a, outcome)
+    let spent_before = match self.rpc(a.key, "node.words", [jstr("spentBefore")]) {
+      Array(s) => s.filter_map(x => str_of(Some(x)))
+      _ => []
+    }
+    let head = match notice.split("\n\n").next() { Some(h) => h.to_string(); None => notice }
+    let starts = [head] + spent_before
+    let said = self.said_last(a)
+    if !(said is Some(s) && starts.iter().any(p => s.has_prefix(p))) {
+      self.notice(a, notice, profile=a.profile, about=recorded)
+    } else if turn is Some(t) {
+      let latest = self.store(a, "latestThread", [jstr(a.key)])
+      if latest.value("thread") is Some(thread) {
+        let tid = thread.value("id").unwrap_or(Json::null())
+        match self.store(a, "entriesBefore", [tid, Json::null(), jnum(1.0)]) {
+          Array(rows) if rows.length() > 0 => {
+            let last = rows[rows.length() - 1]
+            ignore(self.store(a, "setAbout", [jstr(t.id), [tid, last.value("n").unwrap_or(Json::null()), last.value("ts").unwrap_or(Json::null())]]))
+            self.notify_store(a)
+          }
+          _ => ()
+        }
+      }
+    }
+    self.await_refill(a, self.refills_at(a))
+  } else if overloaded {
+    a.nudges = 0
+    let about = self.last_turn(a).value("about")
+    let latest = self.store(a, "latestThread", [jstr(a.key)])
+    let notice = "⚠️ " + self.t(a, "station.notice.overloaded")
+    let same = match (about, latest.value("thread")) {
+      (Some(Object(ab)), Some(thread)) => {
+        let tid = thread.value("id").unwrap_or(Json::null())
+        match self.store(a, "entriesBefore", [tid, Json::null(), jnum(1.0)]) {
+          Array(rows) if rows.length() > 0 => {
+            let last = rows[rows.length() - 1]
+            ab.get("thread") == Some(tid) && ab.get("seq") == last.value("n") && ab.get("ts") == last.value("ts") &&
+            str_of(last.value("text")) == Some(notice)
+          }
+          _ => false
+        }
+      }
+      _ => false
+    }
+    if !same {
+      self.notice(a, notice, about=recorded, quiet=true)
+    }
+    self.notify_store(a)
+  } else if kind == "failed" {
+    a.nudges = 0
+    let said = match limit {
+      Some(l) =>
+        str_of(Some(self.rpc(a.key, "node.words", [jstr("limitShownNotice"), l, jstr(message)]))).unwrap_or("")
+      None =>
+        if a.runtime == "codex" && turn is Some({ codex_retried: true, .. }) && too_old {
+          str_of(Some(self.rpc(a.key, "node.words", [jstr("codexStillOld"), jstr(message)]))).unwrap_or("")
+        } else {
+          self.failure_notice(a, outcome)
+        }
+    }
+    self.notice(a, said, profile=if reason == "auth" || reason == "refused" { a.profile } else { Json::null() }, about=recorded)
+  } else if kind == "aborted" {
+    a.nudges = 0
+    if stop_requested {
+      self.stop_background(a)
+      self.notice(a, self.t(a, "station.notice.stopped"))
+    }
+  }
+  if turn is Some(t) {
+    let ended = match kind_of(t.declared) {
+      Some("all_done") => Some("all_done")
+      Some("need_help") => Some("need_human")
+      _ =>
+        if retry is Some(_) {
+          None
+        } else if kind == "failed" {
+          Some("failed")
+        } else if kind == "aborted" && stop_requested {
+          Some("stopped")
+        } else {
+          None
+        }
+    }
+    let words = if ended == Some("failed") {
+      jstr(message)
+    } else {
+      self.last_turn(a).value("need").unwrap_or(Json::null())
+    }
+    let stands : Json = match ended {
+      Some("all_done") => { "kind": "done", "words": words }
+      Some("need_human") => { "kind": "need", "words": words }
+      _ => Json::null()
+    }
+    for w in a.ended_for {
+      let left = self.store(a, "leftThread", [jstr(a.key), jstr(w.connect), jstr(w.channel), jstr(w.thread_ts)]) catch { _ => Json::null() }
+      self.tell(a.key, "chat.standsAt", [jstr(w.connect), jstr(w.channel), jstr(w.thread_ts), if left is True { { "kind": "left", "words": Json::null() } } else { stands }])
+    }
+    if ended is Some(e) {
+      ignore(self.deps(a, "settled", [jstr(a.key), jstr(e), words])) catch {
+        err => self.log(a, "warn", "the opener of its chat was not told", fields={ "error": jstr(err.to_string()) })
+      }
+    }
+  }
+  if self.archived(a) {
+    self.let_go(a)
+    ignore(self.deps(a, "idle", [jstr(a.key)]))
+    return
+  }
+  if kind == "completed" && kind_of(ends) != Some("waiting") && self.compacting_to_cap(a) {
+    return
+  }
+  if self.has_pending(a) {
+    return self.pump(a)
+  }
+  if a.notices.length() > 0 {
+    return self.give_notices(a)
+  }
+  let declared = match turn {
+    Some(t) => t.declared
+    None => None
+  }
+  if kind_of(ends) == Some("waiting") {
+    a.nudges = 0
+    if retry is None && a.stopped.length() > 0 && !self.held(a) {
+      self.log(a, "info", "its background work ended with its process while it waits; going on now", fields={ "stopped": jnum(a.stopped.length().to_double()) })
+      return self.start_turn(a, "resume", self.words(a, "BACKGROUND_STOPPED_WAITING"))
+    }
+    self.wait_ms(a, num_of(ends.unwrap().value("seconds")).unwrap_or(0.0), num_of(ends.unwrap().value("seconds")).unwrap_or(0.0) * 1000.0)
+    ignore(self.deps(a, "idle", [jstr(a.key)]))
+    return
+  }
+  ignore(self.deps(a, "idle", [jstr(a.key)]))
+  if kind != "completed" || declared is Some(_) {
+    a.nudges = 0
+    let untitled = if kind == "completed" && !self.held(a) { str_of(Some(self.deps(a, "untitled", [jstr(a.key)]))) } else { None }
+    if untitled is Some(u) && !a.asked_to_name.contains(u) {
+      a.asked_to_name.push(u)
+      self.log(a, "info", "its chat has no title; asking it to name it", fields={ "chat": jstr(u) })
+      return self.start_turn(a, "title", self.words(a, "nameUntitled", args=[jstr(u)]))
+    }
+    return
+  }
+  if self.held(a) {
+    return
+  }
+  if lost is Some(_) {
+    a.nudges = 0
+    if a.tools_restarts < 1 {
+      a.tools_restarts += 1
+      self.log(a, "info", "the turn reached nobody; going on in a new process", fields={ "attempt": jnum(a.tools_restarts.to_double()) })
+      return self.start_turn(a, "resume", self.words(a, "TOOLS_LOST"))
+    }
+    a.tools_restarts = 0
+    return self.give_up(a, recorded)
+  }
+  let most = num_of(Some(self.deps(a, "maxNudges", []))).unwrap_or(0.0).to_int()
+  if a.nudges < most {
+    a.nudges += 1
+    self.log(a, "info", "turn ended without a state; nudging", fields={ "attempt": jnum(a.nudges.to_double()) })
+    return self.start_turn(a, "nudge", self.words(a, "NUDGE"))
+  }
+  a.nudges = 0
+  self.give_up(a, recorded)
+}
+
+///|
+async fn Actors::failure_notice(self : Actors, a : Actor, outcome : Json) -> String raise {
+  str_of(Some(self.rpc(a.key, "node.words", [jstr("failureNotice"), outcome]))).unwrap_or("")
+}
+
+///|
+/// The shared Codex update ended (`codexUpdated` from Node): `why`, why it failed.
+async fn Actors::codex_updated(self : Actors, a : Actor, id : Int, why : String?) -> Unit raise {
+  guard a.codex_update is Some(update) && update.id == id else { return }
+  match why {
+    None => {
+      update.finished = true
+      self.continue_after_codex_update(a, update)
+    }
+    Some(why) => {
+      a.codex_update = None
+      self.set_running(a, false)
+      self.notice(a, "⚠️ " + self.t(a, "station.notice.codexUpdateFailed", args={ "why": jstr(why) }), about=Some(update.turn))
+      ignore(self.deps(a, "settled", [jstr(a.key), jstr("failed"), jstr(why)]))
+      ignore(self.deps(a, "idle", [jstr(a.key)]))
+      if self.has_pending(a) {
+        self.pump(a)
+      }
+    }
+  }
+}
+
+///|
+async fn Actors::continue_after_codex_update(self : Actors, a : Actor, update : CodexUpdate) -> Unit raise {
+  guard a.codex_update is Some(u) && u.id == update.id && update.finished && !self.held(a) else { return }
+  a.codex_update = None
+  self.set_running(a, false)
+  if self.archived(a) {
+    return
+  }
+  self.start_turn(a, "codex_retry", self.words(a, "GO_ON_AFTER_CODEX_UPDATE"), by=update.by)
+  if self.has_pending(a) {
+    self.pump(a)
+  } else if a.notices.length() > 0 {
+    self.give_notices(a)
+  }
+}
+
+///|
+async fn Actors::give_up(self : Actors, a : Actor, turn : String?) -> Unit raise {
+  let said = if a.posted { "" } else { a.last_said }
+  a.last_said = ""
+  if said == "" {
+    return self.notice(a, "⚠️ " + self.t(a, "station.notice.noResult"), about=turn)
+  }
+  self.log(a, "info", "the turn reached nobody; its last words are shown in its place")
+  let quoted = str_of(Some(self.rpc(a.key, "node.words", [jstr("quoted"), jstr(said)]))).unwrap_or("")
+  self.notice(a, "⚠️ " + self.t(a, "station.notice.noResultSaid") + "\n\n" + quoted, about=turn)
+}
+
+///|
+async fn Actors::stop_waiting(self : Actors, a : Actor, say? : Bool = true, keep_jobs? : Bool = false) -> Unit raise {
+  let refill = a.refill is Some(_)
+  let waited = a.waiting is Some(_) || refill
+  a.waiting = None
+  a.refill = None
+  if a.phase == "waiting" {
+    a.phase = "idle"
+  }
+  let last = self.last_turn(a)
+  let recorded = !(last is Null) && !(last.value("endedAt") is (None | Some(Null))) && str_of(last.value("declared")) == Some("waiting")
+  if !waited && !recorded {
+    return
+  }
+  self.log(a, "info", "stopped while waiting")
+  if !(last is Null) && retrying(last) {
+    a.overloads = 0
+  } else if !keep_jobs {
+    ignore(self.deps(a, "stopJobs", [jstr(a.key)]))
+  }
+  a.nudges = 0
+  let agent = a.agent
+  self.set_agent(a, None)
+  if agent is Some(g) {
+    ignore(self.agent_do(a, g, "dispose", []))
+  }
+  ignore(self.store(a, "stopWait", [jstr(a.key), jbool(refill)]))
+  if say {
+    self.notice(a, self.t(a, "station.notice.stopped"))
+  }
+}
+
+///|
+async fn Actors::stop_background(self : Actors, a : Actor) -> Unit raise {
+  let agent = a.agent
+  self.set_agent(a, None)
+  self.end_process(a, agent)
+  ignore(self.deps(a, "stopJobs", [jstr(a.key)]))
+  a.notices = []
+  self.notify_store(a)
+}
+
+///|
+async fn Actors::let_go(self : Actors, a : Actor) -> Unit raise {
+  a.notices = []
+  a.nudges = 0
+  let waited = a.waiting is Some(_)
+  a.waiting = None
+  if a.phase == "waiting" {
+    a.phase = "idle"
+  }
+  let last = self.last_turn(a)
+  if waited || (!(last is Null) && !(last.value("endedAt") is (None | Some(Null))) && str_of(last.value("declared")) == Some("waiting")) {
+    self.log(a, "info", "archived: its wait ends")
+    ignore(self.store(a, "stopWait", [jstr(a.key)]))
+  }
+  ignore(self.deps(a, "endJobs", [jstr(a.key)]))
+}
+
+///|
+/// Asks the agent again after `seconds` (`ms` of it left), unless a turn has started by then: a wait of Node's clock.
+fn Actors::wait_ms(self : Actors, a : Actor, seconds : Double, ms : Double) -> Unit {
+  a.waits += 1
+  let wait = a.waits
+  a.waiting = Some(wait)
+  a.phase = "waiting"
+  a.waiting_until = self.now + ms
+  a.waiting_seconds = seconds
+  self.timer(a, "wait", ms, async fn() {
+    if self.held(a) || a.waiting != Some(wait) {
+      return
+    }
+    if self.archived(a) {
+      return self.let_go(a)
+    }
+    if a.compacting {
+      a.over_while_compacting = true
+      return
+    }
+    a.waiting = None
+    a.phase = "idle"
+    let last = self.last_turn(a)
+    if !(last is Null) && retrying(last) {
+      self.log(a, "info", "trying again a turn the provider had no room for", fields={ "seconds": jnum(seconds) })
+      return self.start_turn(a, "resume", self.words(a, "GO_ON_AFTER_OVERLOADED"))
+    }
+    if !(last.value("waitWatch") is Some(False)) && truthy(self.store(a, "hasSessionActiveWatch", [jstr(a.key)])) {
+      return self.wait_ms(a, seconds, seconds * 1000.0)
+    }
+    self.log(a, "info", "the wait is over without word; asking again", fields={ "seconds": jnum(seconds) })
+    self.start_turn(a, "nudge", self.words(a, "waitOver", args=[jnum(seconds)]))
+  })
+}
+
+///|
+/// What the thread people spoke in last ends with, where the station said it (actor.ts `saidLast`).
+async fn Actors::said_last(self : Actors, a : Actor) -> String? raise {
+  str_of(Some(self.rpc(a.key, "node.saidLast", [])))
+}
+
+///|
+fn Actors::await_refill(self : Actors, a : Actor, at : Double) -> Unit {
+  a.refills += 1
+  let refill = a.refills
+  a.refill = Some(refill)
+  a.refill_at = at
+  self.timer(a, "refill", at - self.now, async fn() {
+    if a.refill != Some(refill) {
+      return
+    }
+    if self.held(a) {
+      return
+    }
+    a.refill = None
+    if self.archived(a) || a.turn is Some(_) || self.busy(a) {
+      return
+    }
+    self.log(a, "info", "its allowance should have refilled; going on")
+    if self.has_pending(a) {
+      return self.pump(a)
+    }
+    self.start_turn(a, "resume", self.words(a, "GO_ON_AFTER_REFILL"))
+  })
+}
+
+///|
+/// A wait of the actor's (`name`: a newer of the same name ends the older's timer, as its number voids it there): at
+/// its time, `then` is queued.
+fn Actors::timer(self : Actors, a : Actor, name : String, ms : Double, then : async () -> Unit raise) -> Unit {
+  if a.timers.get(name) is Some(cancel) {
+    cancel()
+  }
+  let cancel = self.after(ms, () => {
+    a.timers.remove(name)
+    self.spawn(() => self.enqueue(a, then))
+  })
+  a.timers[name] = cancel
+}
+
+///|
+/// The station's own words (not the agent's) in the thread people spoke in last (Node's: actor.ts `notice`); `about`,
+/// the turn it is about (its place recorded on it); `quiet`, recorded without its change told.
+async fn Actors::notice(
+  self : Actors,
+  a : Actor,
+  text : String,
+  profile? : Json = Json::null(),
+  runtime? : Json = Json::null(),
+  change? : Json = Json::null(),
+  about? : String? = None,
+  quiet? : Bool = false,
+) -> Unit raise {
+  ignore(
+    self.rpc(a.key, "node.notice", [
+      jstr(text),
+      profile,
+      runtime,
+      change,
+      match about { Some(t) => jstr(t); None => Json::null() },
+      jbool(quiet),
+    ]),
+  )
+}

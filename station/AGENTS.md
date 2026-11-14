@@ -81,8 +81,13 @@
 
 ## Agents
 
-- One actor per session (`src/sessions/actor.ts`): every change to its state, runtime events, deliveries and what its
-  tools say, goes through its serial queue. Input is a prompt when idle, a steer during a turn, else queued.
+- One actor per session: every change to its state, runtime events, deliveries and what its tools say, goes through its
+  serial queue. Input is a prompt when idle, a steer during a turn, else queued. The actors run in the MoonBit program
+  (`mb/src/reader/actors.mbt`, `actor_run.mbt`; reader `--actors`), the hub holding a shell of each
+  (`src/sessions/mb-actor.ts`) that answers what the program asks of the station (the store, the drivers, the chats,
+  the words, all shared with `src/sessions/actor.ts`) and reads at once what it last told of each; `SessionActor`
+  (`actor.ts`) is the actor where the program is not (`STILLFAIL_ACTORS_HOST=0`). A test's `settle()` waits for the
+  program too (`actorsBusy`); a test that replaces SessionActor's own steps runs on it.
 - Runtimes are drivers behind one seam (`src/agents/runtime.ts`): Claude Code a `claude -p` process per session;
   Codex one app-server per account, a thread per session, whose per-session settings go in `thread/start`'s config,
   never the process's environment; the others in `src/agents/`. A driver owns its child's stdin. Claude Code's output

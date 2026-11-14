@@ -13,7 +13,7 @@ import { LegacyEditsUnavailable, makeStore as makeReadStore, statePendingCard as
 import { iso } from "../read/transcript.ts";
 import { CARD_POSTS_PENDING } from "../store/card-post-index.ts";
 import { type Attachment, type MessageRow, STILLFAIL_SURFACE, type SessionThread, type ThreadRow } from "../store/store.ts";
-import type { DeclaredState, SessionActor } from "./actor.ts";
+import type { Actor, DeclaredState } from "./actor.ts";
 import {
   type Args,
   MAX_WAIT_SECONDS,
@@ -138,7 +138,7 @@ function stateWrite(hub: Hub, write: () => void): void {
 
 /// An answer can arrive after the reader returns, while the actor waits its turn. Confirm it inside the same bounded
 /// transaction as the state write. An old lookup or a busy writer is waited for outside the actor's queue.
-async function recordQuestionForTurn(hub: Hub, key: string, actor: SessionActor, turn: string, kind: DeclaredState,
+async function recordQuestionForTurn(hub: Hub, key: string, actor: Actor, turn: string, kind: DeclaredState,
   words: string | null, about: [number, number, string], watch: boolean, threadsOf: () => number[], ts: string,
   missing: string): Promise<boolean> {
   let delay = 10;
@@ -179,7 +179,7 @@ async function pendingForState(hub: Hub, key: string, threadsOf: () => number[])
 const NEED_VISIBLE_QUESTION = "need_human requires a visible question: post what you need with chat_post kind=need_human, or give about pointing to your question (a pending answer card is used by default). need alone is not a message to the person";
 
 /// As for a named question, the latest default card must be checked in the state-writing transaction.
-async function recordPendingForTurn(hub: Hub, key: string, actor: SessionActor, turn: string, kind: DeclaredState,
+async function recordPendingForTurn(hub: Hub, key: string, actor: Actor, turn: string, kind: DeclaredState,
   words: string | null, about: [number, number, string] | null, watch: boolean, threadsOf: () => number[],
   requireQuestion: boolean): Promise<boolean> {
   let delay = 10;

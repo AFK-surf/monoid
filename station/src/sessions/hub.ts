@@ -37,7 +37,8 @@ import { runShown } from "./run-change.ts";
 import type { PolicyChecks } from "./archive-policy.ts";
 import type { RecentChatList } from "../store/chat-list.ts";
 import { Accounts } from "./accounts.ts";
-import { SessionActor, type SessionDeps, type Snapshot, linkSkills, openOptions } from "./actor.ts";
+import { SessionActor, type Actor, type SessionDeps, type Snapshot, linkSkills, openOptions } from "./actor.ts";
+import { ActorsProgram } from "./mb-actor.ts";
 import { Places } from "../ops/places.ts";
 import { threadCommand, type Args } from "./args.ts";
 import type { CardPage } from "../logins/index.ts";
@@ -221,7 +222,9 @@ export class Hub {
   logins: { page(id: string): CardPage | null; answer(id: string, code: string, by?: Person): void } | null = null;
   /// Stops following the store's sessions starting and stopping (live.ts `running`).
   private unlistenRunning: () => void = () => {};
-  readonly actors = new Map<string, SessionActor>();
+  readonly actors = new Map<string, Actor>();
+  /// The MoonBit program its actors run in (mb-actor.ts), where it is built: opened with the first.
+  private actorsProgram: ActorsProgram | null | undefined;
   /// Installed by the agents' side: older stores finish indexing active keys without holding the station thread.
   waitForWorkspaceActivity: (() => Promise<boolean>) | null = null;
   /// An older store's session totals are built in bounded batches after handover.
@@ -525,11 +528,13 @@ export class Hub {
     // Settled: leave incoming events waiting for old preparation unacknowledged for the next station.
     this.incoming.abort();
     // Snapshotted at once, before anything else is taken in.
-    const sessions: Snapshot[] = [];
+    const taking: (Snapshot | Promise<Snapshot>)[] = [];
     for (const actor of this.actors.values()) {
-      if (actor.processState() !== "cold" || actor.holdsState()) sessions.push(actor.snapshot());
+      if (actor.processState() !== "cold" || actor.holdsState()) taking.push(actor.snapshot());
       else actor.close();
     }
+    const sessions: Snapshot[] = await Promise.all(taking);
+    await this.actorsProgram?.close();
     for (const driver of this.drivers.values()) driver.detach();
     // The next station attaches to their runners once this file is there: every ack is in by then.
     await allLeft();
@@ -618,7 +623,7 @@ export class Hub {
 
   private async adoptOne(row: SessionRow, snap: Snapshot, withProcess: boolean) {
     this.options.taking?.();
-    let actor: SessionActor;
+    let actor: Actor;
     try {
       actor = this.actor(row);
     } catch (error) {
@@ -1230,6 +1235,7 @@ export class Hub {
     await this.sessionDirectories?.close();
     await this.processJobs?.close();
     await Promise.all([...this.actors.values()].map((a) => a.dispose()));
+    await this.actorsProgram?.close();
     await Promise.all([...this.drivers.values()].map((d) => d.shutdown()));
   }
 
@@ -1435,18 +1441,19 @@ export class Hub {
   }
 
   /// The session's actor, made on first use.
-  actor(row: SessionRow): SessionActor {
+  actor(row: SessionRow): Actor {
     const existing = this.actors.get(row.key);
     if (existing) return existing;
     const runtime = runtimeNamed(row.runtime);
     if (!runtime) throw new Error(`session ${row.key} runs an unknown runtime ${row.runtime}`);
-    const actor = new SessionActor(row.key, runtime, this.deps);
+    if (this.actorsProgram === undefined) this.actorsProgram = ActorsProgram.open(this.config().dataDir, this.clock);
+    const actor = this.actorsProgram ? this.actorsProgram.actor(row.key, runtime, this.deps) : new SessionActor(row.key, runtime, this.deps);
     this.actors.set(row.key, actor);
     return actor;
   }
 
   /// Takes a session's actor out (deleted).
-  dropActor(key: string): SessionActor | undefined {
+  dropActor(key: string): Actor | undefined {
     const actor = this.actors.get(key);
     this.actors.delete(key);
     const deadline = this.deadlines.get(key);

@@ -11,6 +11,11 @@ import { addClientColumn } from "../src/store/schema.ts";
 import { Store } from "../src/store/store.ts";
 import { Rig } from "./hub-fakes.ts";
 
+// SessionActor's own steps are what these look at (its formatting and its checks as it delivers, each replaced here):
+// the actor of a checkout without the MoonBit program, not the program's (sessions/mb-actor.ts), whose steps the
+// hub's tests run.
+process.env.STILLFAIL_ACTORS_HOST = "0";
+
 const pending = (readStore as any).pendingDeliveries as (store: readStore.Store, session: string) => any[];
 
 function session(store: Store, key = "worker") {

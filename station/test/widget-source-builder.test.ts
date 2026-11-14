@@ -9,6 +9,11 @@ import { installWidgetSources, widgetSourcesReady, widgetSourcesStep } from "../
 import { Store } from "../src/store/store.ts";
 import { Rig } from "./hub-fakes.ts";
 
+// SessionActor's own steps are what these look at (its formatting and its checks as it delivers, each replaced here):
+// the actor of a checkout without the MoonBit program, not the program's (sessions/mb-actor.ts), whose steps the
+// hub's tests run.
+process.env.STILLFAIL_ACTORS_HOST = "0";
+
 function oldThreads(store: Store): [number, number] {
   const db = store.db;
   const first = store.openThread("ember", "CHAT", "old-first", null, null).id;
