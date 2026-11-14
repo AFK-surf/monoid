@@ -4,6 +4,7 @@
 // the composition root (move/live.ts) and by the tests, given what it needs.
 import { createHash } from "node:crypto";
 import { Refused, bytesOf } from "../mesh/bus.ts";
+import { PeerGone } from "../mesh/peer.ts";
 import type { Fibers } from "../ops/fibers.ts";
 import type { CarriedJob } from "../replica/carry-worker.ts";
 import { type AccountOf, Handover, type HandoverDeps } from "../replica/handover.ts";
@@ -348,8 +349,11 @@ export class Moves {
     if (!this.on()) return tr(lang, "station.move.off");
     const name = () => this.#d.roster(ws)?.find((r) => r.id === station)?.name || station.slice(0, 12);
     let open: Json;
+    // (a connection found gone fails its request, the next is dialed anew: asked once more before it is said to be out
+    // of reach, as the stations' other asks are; a station just started again answers then)
+    const ask = () => this.#d.ask(station, { method: "move.open", workspace: ws });
     try {
-      open = await this.#d.ask(station, { method: "move.open", workspace: ws });
+      open = await ask().catch((e) => (e instanceof PeerGone ? ask() : Promise.reject(e)));
     } catch (e) {
       if (!(e instanceof Refused)) return tr(lang, "station.move.unreachable", { station: name() });
       open = null;

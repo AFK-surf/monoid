@@ -40,6 +40,7 @@ import { claudeProject } from "../src/read/transcript.ts";
 import { Readers } from "../src/read/pool.ts";
 import { elsewhere } from "../src/api/seen.ts";
 import { RETRY_MS } from "../src/replica/retire.ts";
+import { PeerGone } from "../src/mesh/peer.ts";
 import { transcriptAt } from "../src/agents/claude.ts";
 import { hearLines } from "../src/ops/log.ts";
 import { WS, A, B, C, type Station, world, endTurn, stillfailChat, gitEnv, filesOf, entries, homeThread } from "./move-world.ts";
@@ -422,6 +423,29 @@ test("a whole station handed over chat by chat: one whose account cannot go is l
   assert.match(out.refused.find((r) => r.item.id === "machine:mine")?.why ?? "", /this machine's own login/);
   assert.equal(b.rig.store.getSession(mine), null);
   assert.equal(a.rig.hub.handedOver(mine), false, "it works here");
+});
+
+test("a move asked as the connection to the other station is found gone asks once more, dialed anew: it goes; gone again, the other is said out of reach", async () => {
+  const w = world();
+  const a = w.get(A);
+  const b = w.get(B);
+  const { key } = await stillfailChat(a);
+  let gone = 1;
+  w.tamper((to, r) => {
+    if (to === B && r.method === "move.open" && gone > 0) {
+      gone--;
+      throw new PeerGone();
+    }
+    return r;
+  });
+  const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: key });
+  await w.quiet();
+  assert.equal(out.failed, null, JSON.stringify(out));
+  assert.equal(b.rig.session(key).ws, null, "it went");
+  gone = 2;
+  const back = await a.moves.scheduler.back(WS, B, { module: "chats", item: key }).then(() => null, (e: Error) => e.message);
+  assert.match(back ?? "", /cannot be reached now|连不上/, "gone twice: out of reach");
+  assert.equal(a.rig.store.handedTo(key)?.station, B, "nothing moved");
 });
 
 test("a chat held as what it needs moved away says so as its process ends, not that the station is in no workspace", async () => {
