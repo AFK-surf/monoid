@@ -428,7 +428,7 @@ export class Hub {
     this.quieted.add(ws);
     const keys = new Set([...this.deadlines.keys(), ...this.actors.keys()].filter((key) => this.ofWorkspace(key, ws)));
     for (const [key, fiber] of this.deadlines) if (keys.has(key)) (this.interrupt(fiber), this.deadlines.delete(key));
-    await Promise.all([...this.actors.values()].filter((a) => keys.has(a.key)).map((a) => a.suspend()));
+    await Promise.all([...this.actors.values()].filter((a) => keys.has(a.key)).map((a) => a.suspend("its workspace's chats go to another station")));
   }
 
   /// `quiet` taken back (the retirement cancelled): what it cut off resumes and what waited goes on, as `backIn` does.
@@ -473,7 +473,8 @@ export class Hub {
     this.heldChats.set(key, why);
     const fiber = this.deadlines.get(key);
     if (fiber) (this.interrupt(fiber), this.deadlines.delete(key));
-    await this.actors.get(key)?.suspend();
+    // (held for what it is: moving to another station, or stopped as what it needs moved away)
+    await this.actors.get(key)?.suspend(`the chat is held: ${why}`);
   }
 
   /// `holdChat` taken back: what it cut off resumes and what waited goes on, as `unquiet` does. False: it was not held.
@@ -539,7 +540,7 @@ export class Hub {
     const candidates = new Set([...this.deadlines.keys(), ...this.actors.keys()]);
     const keys = new Set([...candidates].filter((key) => this.store.sessionWs(key) === ws));
     for (const [key, fiber] of this.deadlines) if (keys.has(key)) (this.interrupt(fiber), this.deadlines.delete(key));
-    await Promise.all([...this.actors.values()].filter((a) => keys.has(a.key)).map((a) => a.suspend()));
+    await Promise.all([...this.actors.values()].filter((a) => keys.has(a.key)).map((a) => a.suspend("the station left its workspace")));
   }
 
   /// The station is in a workspace again: its sessions' cut-off turns resume, and what waited goes on.

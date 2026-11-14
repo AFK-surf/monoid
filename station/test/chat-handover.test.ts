@@ -35,6 +35,7 @@ import { Rig, given, message, reply, testClock } from "./hub-fakes.ts";
 import { Admin } from "../src/api/admin.ts";
 import { newCtx } from "../src/store/handover.ts";
 import { claudeProject } from "../src/read/transcript.ts";
+import { hearLines } from "../src/ops/log.ts";
 import { WS, A, B, C, type Station, world, endTurn, stillfailChat, gitEnv, filesOf, entries, homeThread } from "./move-world.ts";
 
 type Json = any;
@@ -401,6 +402,25 @@ test("an account that cannot be borrowed moved first: its chats here stop, namin
   // its account cannot go back while a chat there needs it: said, naming it
   const back = await a.moves.scheduler.back(WS, B, { module: "accounts", item: `own:solo@${A}` });
   assert.deepEqual(back.refused.map((r) => r.item.id), [`own:solo@${A}`]);
+test("a chat held as what it needs moved away says so as its process ends, not that the station is in no workspace", async () => {
+  const w = world();
+  const a = w.get(A);
+  const [key, t] = newSession(a.rig.hub, { runtime: "claude", profile: "cc", createdBy: "p@x" });
+  say(a.rig.hub, t.id, "p@x", "work on it");
+  await a.rig.quiet();
+  const lines: string[] = [];
+  hearLines((l) => void lines.push(l.message));
+  try {
+    await a.rig.hub.holdChat(key, "stopped: waits for accounts own:solo@A, moved away");
+    await a.rig.quiet();
+  } finally {
+    hearLines(null);
+  }
+  const ending = lines.filter((m) => m.startsWith("ending the runtime process"));
+  assert.deepEqual(ending, ["ending the runtime process: the chat is held: stopped: waits for accounts own:solo@A, moved away"]);
+  assert.match(a.rig.store.listTurns(key).at(-1)?.summary.detail ?? "", /the chat is held: stopped: waits for accounts/);
+});
+
   assert.match(back.refused[0]!.why, new RegExp(`chats ${one.key}`));
 });
 

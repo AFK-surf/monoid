@@ -991,10 +991,11 @@ export class SessionActor {
     return null;
   }
 
-  /// The station left its workspace: the runtime process ends, and with it whatever the agent was doing or had been
-  /// given (session.rs `suspend`): a turn under way stays marked running (to resume once back), unless it had already
-  /// said a settled state; messages given to it while it ran are pending again.
-  suspend(): Promise<void> {
+  /// The station left its workspace, or this chat is held (`why`: what is said of it, in the log and as the turn's
+  /// end): the runtime process ends, and with it whatever the agent was doing or had been given (session.rs
+  /// `suspend`): a turn under way stays marked running (to resume once back), unless it had already said a settled
+  /// state; messages given to it while it ran are pending again.
+  suspend(why = "the station is in no workspace"): Promise<void> {
     this.deliveryInterruptions++;
     this.formatAbort?.abort();
     return this.enqueue(async () => {
@@ -1014,9 +1015,9 @@ export class SessionActor {
         if (!agent && !turn) return;
         const store = this.deps.store;
         const resume = (turn !== null || busy) && !(turn?.declared && settled(turn.declared));
-        log.info("session", "ending the runtime process: the station is in no workspace", { session: this.key, resume });
+        log.info("session", `ending the runtime process: ${why}`, { session: this.key, resume });
         await agent?.session.dispose();
-        if (turn) store.endTurn(turn.id, "aborted", "other: the station left its workspace", endedIn(turn.declared, "aborted")?.kind ?? null, null);
+        if (turn) store.endTurn(turn.id, "aborted", `other: ${why}`, endedIn(turn.declared, "aborted")?.kind ?? null, null);
         store.setRunning(this.key, resume);
         if (turn || busy) store.markUndelivered(this.key, steered);
         await this.deps.live?.turnEnded(this.key);
