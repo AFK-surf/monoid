@@ -479,7 +479,7 @@ const failuresOf = (l: J): { item: string; error: string }[] =>
   Array.isArray(l?.failures) && l.failures.length > 0 ? l.failures.map((f: J) => ({ item: named(f.item ?? "-"), error: String(f.error) })) : l?.failed ? [{ item: named(l.failed.item ?? "-"), error: String(l.failed.error) }] : [];
 /// What a turn said of item `id` failing ("chats <key>"), else of the first that failed; "" where none did.
 const failedWhy = (l: J, id?: string) => (failuresOf(l).find((f) => id === undefined || f.item === id) ?? (id === undefined ? undefined : failuresOf(l)[0]))?.error ?? "";
-const outcome = (l: J) => `done [${(l?.done ?? []).map(named).join(", ")}] refused [${(l?.refused ?? []).map((r: J) => `${named(r.item)}: ${r.why}`).join(" | ")}] failed ${failuresOf(l).length > 0 ? failuresOf(l).map((f) => `${f.item}: ${f.error}`).join(" | ") : "none"}${l?.stoppedBy !== undefined ? ` stoppedBy ${l.stoppedBy}` : ""}`;
+const outcome = (l: J) => `done [${(l?.done ?? []).map(named).join(", ")}]${(l?.lent ?? []).length > 0 ? ` lent [${l.lent.map(named).join(", ")}]` : ""} refused [${(l?.refused ?? []).map((r: J) => `${named(r.item)}: ${r.why}`).join(" | ")}] failed ${failuresOf(l).length > 0 ? failuresOf(l).map((f) => `${f.item}: ${f.error}`).join(" | ") : "none"}${l?.stoppedBy !== undefined ? ` stoppedBy ${l.stoppedBy}` : ""}`;
 /// Chat `key` back on A from where it is, with what moved with it (its account, its jobs, its repository): the page's
 /// 全部迁回, `move.back {all}` from A's page, until it is live on A and its agent answers there.
 async function home(key: string): Promise<void> {
@@ -734,6 +734,7 @@ try {
     limit("2", 900);
     let arrived = false;
     let movedWith: { module: string; id: string }[] = [];
+    let lentWith: string[] = [];
     // (the other chat of A, made by the harness's up: what an item moved away stops here)
     const k0 = sql("A", "select key from sessions").map((r) => r.key as string).find((k) => k !== k2) ?? "";
     let heldNote = "";
@@ -758,10 +759,20 @@ try {
       if (standing("B", k2) !== "live") throw new Error(`${standings(k2)}; ${outcome(l)}`);
       arrived = true;
       movedWith = (l.done ?? []).filter((d: J) => d.module !== "chats");
+      // (a login that can be shared is lent, not moved: A stays its host, B borrows it, `last.lent`, 5beeaa8cf)
+      lentWith = ((l.lent ?? []) as J[]).map((x: J) => (typeof x === "string" ? x : named(x)));
       const profilesA = (JSON.parse(readFileSync(`${DATA.A}/config.json`, "utf8")).profiles ?? []).map((p: J) => p.id);
       log(`  A's profiles now ${brief(profilesA)}; stopped on A: ${existsSync(`${DATA.A}/move/stopped.json`) ? readFileSync(`${DATA.A}/move/stopped.json`, "utf8").slice(0, 400) : "none"}`);
     });
     if (arrived) {
+      await check("2: the login it needs lent to B, not moved: A still hosts it, B borrows it", async () => {
+        const prof = (n: Name) => (JSON.parse(readFileSync(`${DATA[n]}/config.json`, "utf8")).profiles ?? []).filter((p: J) => p.runtime === "claude").map((p: J) => ({ id: p.id, share: p.share ?? null }));
+        log(`  lent ${brief(lentWith)}; moved ${brief(movedWith.filter((x) => x.module === "accounts"))}; A's ${brief(prof("A"))}; B's ${brief(prof("B"))}`);
+        if (movedWith.some((x) => x.module === "accounts")) throw new Error(`the login moved: ${brief(movedWith)}`);
+        if (lentWith.length === 0) throw new Error("nothing said lent");
+        if (!prof("A").some((p: J) => p.share?.borrowed !== true)) throw new Error(`A hosts no login of its own: ${brief(prof("A"))}`);
+        if (!prof("B").some((p: J) => p.share?.borrowed === true)) throw new Error(`B borrows none: ${brief(prof("B"))}`);
+      });
       await check("2: the device lists the chat once, on B", () => listedOnceOn(k2, "B"));
       await check("2: nothing was posted into the chat by a station and its agent was not woken by the move", async () => {
         const now = texts(await untilChat(k2, (v) => v?.messages && v));
@@ -853,7 +864,7 @@ try {
         // is forward only and neither POST /move nor station_move takes it yet)
         const borrowed = (JSON.parse(readFileSync(`${DATA.A}/config.json`, "utf8")).profiles ?? []).filter((p: J) => p.runtime === "claude");
         if (account !== undefined && standing("A", k2) === "live" && borrowed.length > 0) {
-          log(`  (A borrows the login it moved with, ${brief(borrowed.map((p: J) => ({ id: p.id, share: p.share ?? null })))}: back on A nothing waits for it; the stopped path is 2k's, a login that cannot be shared)`);
+          log(`  (A hosts the login it lent, ${brief(borrowed.map((p: J) => ({ id: p.id, share: p.share ?? null })))}: back on A nothing waits for it; the stopped path is 2k's, a login that cannot be shared)`);
         }
         if (account !== undefined && standing("A", k2) === "live" && borrowed.length === 0) {
           const nonce = randomBytes(3).toString("hex");
@@ -924,6 +935,16 @@ try {
           log(`  B's row: ${brief(onB)}`);
           await listedOnceOn(k2, "A");
         });
+        // (the chat back, its login's lending taken back: unshared again, B keeping no copy; 5beeaa8cf)
+        if (lentWith.length > 0) {
+          await check("2: back on A, the login's lending taken back: B keeps no copy of it, A's is its own again", async () => {
+            const prof = (n: Name) => (JSON.parse(readFileSync(`${DATA[n]}/config.json`, "utf8")).profiles ?? []).filter((p: J) => p.runtime === "claude").map((p: J) => ({ id: p.id, share: p.share ?? null }));
+            const gone = await whenChanged([DATA.B], () => !prof("B").some((p: J) => p.share?.borrowed === true), 30_000, () => `B still borrows: ${brief(prof("B"))}`).then(() => true, (e) => e);
+            log(`  A's ${brief(prof("A"))}; B's ${brief(prof("B"))}`);
+            if (gone !== true) throw gone;
+            if (!prof("A").some((p: J) => p.share?.borrowed !== true)) throw new Error(`A hosts no login of its own: ${brief(prof("A"))}`);
+          });
+        }
       }
     }
   }
