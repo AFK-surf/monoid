@@ -284,14 +284,42 @@ export class Scheduler {
     // (with its needs: what it needs first, and what those need)
     const wanted = new Map<string, Planned>();
     const taking = new Set<string>();
+    // (asked for some items with what they need, not for all: a need whose leaving would stop other items here is not
+    // taken along for their sake, and the item that needs it is refused saying so: that need moves from its own row,
+    // which says what it stops)
+    const chosenNames = new Set(chosen.map(named));
+    const refusedWhy = new Map<string, string>();
+    const wouldStopOthers = (x: Planned) => {
+      if (this.#modules.get(x.module)!.usableHere?.(x) === true) return [];
+      return index.needing(x).filter((y) => y.state !== "there" && !chosenNames.has(named(y)) && this.#modules.get(y.module)!.stop !== undefined);
+    };
     const take = (p: Planned) => {
       const k = named(p);
       if (wanted.has(k) || taking.has(k)) return;
       taking.add(k);
-      if (sel.withNeeds === true || sel.all === true) for (const n of p.needs) { const x = find(n); if (x !== undefined && x.state !== "there") take(x); }
+      if (sel.withNeeds === true || sel.all === true) {
+        for (const n of p.needs) {
+          const x = find(n);
+          if (x === undefined || x.state === "there") continue;
+          // (a need on a round of items needing each other is refused as that round, before this rule speaks)
+          const others = sel.all === true || p.cannot !== undefined || x.cannot !== undefined ? [] : wouldStopOthers(x);
+          if (others.length > 0) {
+            const some = others.slice(0, 3).map((y) => `${named(y)} (${y.label})`).join(", ");
+            const more = others.length > 3 ? ` and ${others.length - 3} more` : "";
+            refusedWhy.set(k, `it needs ${named(x)} (${x.label}), whose move would stop ${some}${more} here: move ${named(x)} itself (its row says what it stops), or make it one that can be shared first`);
+            refusedWhy.set(named(x), `moving it would stop ${some}${more} here, which need it: move it on its own (its row says what it stops), or make it one that can be shared first`);
+            continue;
+          }
+          take(x);
+        }
+      }
       wanted.set(k, p);
     };
     for (const p of chosen) take(p);
+    for (const k of refusedWhy.keys()) {
+      const x = index.find({ module: k.slice(0, k.indexOf(" ")), id: k.slice(k.indexOf(" ") + 1) });
+      if (x !== undefined) out.refused.push({ item: { module: x.module, id: x.id }, why: refusedWhy.get(k)! });
+    }
     const thereNow = new Set(all.filter((x) => x.state === "there").map(named));
     // (an item whose move stops others here goes as late as it can, what it stops right after it: the owner's, an
     // account that cannot be shared followed at once by its chats)
@@ -301,7 +329,7 @@ export class Scheduler {
     let unsaved = false;
     for (const p of going) {
       if (out.failed !== null || this.#stopping !== null) break;
-      if (thereNow.has(named(p))) continue;
+      if (thereNow.has(named(p)) || refusedWhy.has(named(p))) continue;
       if (p.cannot !== undefined) {
         out.refused.push({ item: p, why: p.cannot });
         continue;

@@ -281,3 +281,22 @@ test("the scheduler's own work grows as the items do: a plan, a whole move and a
     assert.ok(three[k] <= 3.5 * one[k] + 50, `${k}: ${one[k]} reads for ${one.items} items, ${three[k]} for ${three.items}: at most 3.5 times as many`);
   }
 });
+
+test("a chat asked to move with what it needs, one of which would stop other chats here as it went, is refused with that need, saying what it would stop and what to do", async () => {
+  const log: string[] = [];
+  const accounts = fake("accounts", [], [{ id: "solo", label: "a login of this machine's", needs: [] }], log, { usable: () => false });
+  const chats = fake("chats", ["accounts"], [
+    { id: "c1", label: "chat one", needs: [{ module: "accounts", id: "solo" }] },
+    { id: "c2", label: "chat two", needs: [{ module: "accounts", id: "solo" }] },
+  ], log);
+  const s = new Scheduler({ data: mkdtempSync(join(process.env.STILLFAIL_TEST_TMP ?? tmpdir(), "move-")), modules: [accounts, chats] });
+  const out = await s.move("ws", "B", { module: "chats", item: "c1", withNeeds: true });
+  assert.deepEqual(out.done, [], "nothing moved");
+  assert.deepEqual(log, [], "nothing stopped");
+  const why = Object.fromEntries(out.refused.map((r) => [`${r.item.module} ${r.item.id}`, r.why]));
+  assert.match(why["chats c1"] ?? "", /it needs accounts solo \(a login of this machine's\), whose move would stop chats c2 \(chat two\) here: move accounts solo itself/);
+  assert.match(why["accounts solo"] ?? "", /moving it would stop chats c2 \(chat two\) here/);
+  // (the two asked together: nothing else stops, so the login goes with them)
+  const both = await s.move("ws", "B", { module: "chats", withNeeds: true });
+  assert.deepEqual(both.done.map((d) => d.id).sort(), ["c1", "c2", "solo"]);
+});
