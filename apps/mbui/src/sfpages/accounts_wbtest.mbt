@@ -2,22 +2,21 @@
 // (ws1/st1) Claude subscription and its API key, wide; ChatGPT 团队's.
 
 ///|
-test "a profile's page, wide: who it is and whether it works, then its allowance, what it spent, who uses it, how it runs, sharing" {
+test "a profile's page, wide: who it is and whether it works, then its allowance and who uses it, sharing, settings" {
   let t = setting_tester(Profile("ws1/st1", "cc"), 1280.0)
   // its head: its name, what it is (the core's words), its last check
   assert_true(t.find("Claude 主账号") is Some(_))
-  assert_true(t.find("订阅账号") is Some(_), msg="what it is")
-  assert_true(t.find("订阅有效") is Some(_), msg="its check in a line")
-  // what is left of its allowance, a dial each
+  assert_true(t.find("订阅账号 · Ultra") is Some(_), msg="what it is")
+  assert_true(t.find("订阅有效 · 5 分钟前检查") is Some(_), msg="its check in a line")
+  // what is left of its allowance, a dial each, and who uses it in the same card
   assert_true(t.find("额度") is Some(_))
   assert_true(t.find("5 小时") is Some(_) && t.find("本周") is Some(_), msg="its windows")
-  // who uses it, how it runs, whom it is shared with
-  scrolled_to(t, 1280.0, "使用它的连接")
-  assert_true(t.find("使用它的连接") is Some(_))
-  scrolled_to(t, 1280.0, "默认 Fast")
-  assert_true(t.find("默认 Fast") is Some(_))
+  assert_true(t.find("星火助手") is Some(_))
+  // whom it is shared with, and its settings
   scrolled_to(t, 1280.0, "分享给其他 station")
   assert_true(t.find("分享给其他 station") is Some(_), msg="sharing")
+  scrolled_to(t, 1280.0, "默认 Fast")
+  assert_true(t.find("默认 Fast") is Some(_))
 }
 
 ///|
@@ -585,22 +584,14 @@ fn long_profile(s : Source) -> Source {
 }
 
 ///|
-test "a profile's page on a phone: its long name, its figures on one line and how many models it runs, nothing squeezed" {
-  // (326, the page android 0.1.6389 cut its name, its Tokens figure and its models' names on, 2026-10-31)
+test "a profile's page on a phone: its long name and how many models it runs, nothing squeezed" {
   for w in [326.0, 390.0] {
     let t = setting_tester(Profile("ws1/st1", "cc"), w, platform=2, over=long_profile, h=2400.0)
     // (its switches' words, beside their switches, are another's)
     let faults = t.squeeze_faults().filter(fn(f) { !f.contains("for what shares their row") })
     assert_eq(faults, [], msg=w.to_string() + faults.join("; "))
-    assert_true(t.find("模型请求次数") is None && t.find("输入、缓存和输出") is None, msg="\{w}: no calls, nor what tokens are")
-    for f in ["$1,735", "49.7 亿", "最多 Opus 5.5", "4 个模型"] {
-      assert_true(t.find(f) is Some(_), msg="\{w}: \{f}")
-    }
-    // its figures side by side
-    let (_, y1, _, _) = t.rect_of("$1,735").unwrap()
-    let (x3, y3, w3, _) = t.rect_of("49.7 亿").unwrap()
-    assert_eq(y3, y1, msg="\{w}: one line")
-    assert_true(x3 + w3 <= w, msg="\{w}: inside the page")
+    assert_true(t.find("近 7 天") is None, msg="\{w}: usage removed from profile page")
+    assert_true(t.find("4 个模型") is Some(_), msg="\{w}: 4 个模型")
   }
 }
 
