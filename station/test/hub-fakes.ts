@@ -8,7 +8,7 @@ import { join } from "node:path";
 import type { Roots } from "../src/read/machine.ts";
 import { CommandMissing } from "../src/agents/runner.ts";
 import type { AgentDriver, AgentSession, BackgroundTask, OpenOptions, RuntimeEvent, TurnOutcome } from "../src/agents/runtime.ts";
-import type { ChatMessage, ChatSurface, InboundFile, InboundMessage, ThreadRef } from "../src/sessions/chat.ts";
+import { type ChatMessage, type ChatSurface, type InboundFile, type InboundMessage, NOTICE_MARK, type ThreadRef } from "../src/sessions/chat.ts";
 import { type HubConfig, hubConfig } from "../src/sessions/config.ts";
 import { type ColdStorage, Hub } from "../src/sessions/hub.ts";
 import { InternalChat } from "../src/sessions/internal.ts";
@@ -38,6 +38,8 @@ export class FakeChat implements ChatSurface {
   files: string[][] = [];
   /// The card each post carried (null: none).
   carried: Json[] = [];
+  /// The posts that were a station's notice, by their place in `posts`.
+  marked: number[] = [];
   /// Like a Slack app without files:write.
   noFiles = false;
   /// The bytes of files shared in messages, by file id (others cannot be read); the ids fetched, in order.
@@ -73,7 +75,9 @@ export class FakeChat implements ChatSurface {
     await meanwhile?.();
     this.files.push(files.map((f) => f.name));
     this.carried.push(card ?? null);
-    this.posts.push([thread, message]);
+    // (a station's notice ends with its mark, chat.ts NOTICE_MARK: recorded as people read it; `marked` says which)
+    if (message.endsWith(NOTICE_MARK)) this.marked.push(this.posts.length);
+    this.posts.push([thread, message.replaceAll(NOTICE_MARK, "")]);
     return `${9_000_000 + next()}.000200`;
   }
   async edit(thread: ThreadRef, ts: string, message: string) {

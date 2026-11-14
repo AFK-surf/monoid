@@ -19,7 +19,7 @@ import type { Hub } from "../sessions/hub.ts";
 import { ControlPlane, Parts, Paths, Peers, StationConfig, Store } from "../services.ts";
 import type { Store as StoreT } from "../store/store.ts";
 import type { NameBook } from "./names.ts";
-import { CALL, EVENT, LIST, MOVED, ROUTE, ROUTED, RemoteConnects, RemoteSurface, TAKE, type Described, type Known, answerCall, describe, knownIn, knownOf, localOf, threadOfEvent } from "./remote.ts";
+import { BOTS, CALL, EVENT, LIST, MOVED, ROUTE, ROUTED, RemoteConnects, RemoteSurface, TAKE, type Described, type Known, answerCall, describe, knownIn, knownOf, localOf, threadOfEvent } from "./remote.ts";
 
 type Json = any;
 
@@ -86,6 +86,13 @@ export class WorkspaceConnects {
       return { has: this.entries().some((c) => this.workspaceOf(c) === workspace && fingerprint(kindOf(c), c?.[kindOf(c)]) === print) };
     });
     d.bus.on(TAKE, (peer, request, workspace) => this.take(peer, request, workspace));
+    // (the bots of another station's connects, told as they change: its notices are no person's message here)
+    d.bus.on(BOTS, async (peer, request, workspace) => {
+      if (typeof workspace !== "string" || !this.inWorkspace(workspace, peer)) throw new Error("not a station of this workspace");
+      const bots = Array.isArray(request?.bots) ? request.bots.filter((b: unknown): b is string => typeof b === "string" && b !== "").slice(0, 200) : [];
+      d.hub().toldBots.set(peer, new Set(bots));
+      return { ok: true };
+    });
     // (one thread's chat runs on another station from now on, or here again: replica/handover.ts)
     d.bus.on(ROUTE, async (peer, request, workspace) => {
       const known = knownIn(request?.connect);
@@ -216,10 +223,31 @@ export class WorkspaceConnects {
     await this.d.bus.ask(station, { method: EVENT, workspace: ws, connect: knownOf(id, this.d.here()), described: d, event });
   }
 
+  /// The bots of this station's connects as last told to the workspace's other stations, by workspace.
+  private readonly botsTold = new Map<string, string>();
+
+  /// This station's connects' bots of `ws` told to its other stations where they changed since they were last told
+  /// (as an event of one comes: its bot is known by then), never asked for.
+  private tellBots(ws: string): void {
+    const bots = [...new Set(this.entries().filter((c) => this.workspaceOf(c) === ws).map((c) => this.own(c.id)?.botUserId() ?? "").filter((b) => b !== ""))].sort();
+    const said = JSON.stringify(bots);
+    if (this.botsTold.get(ws) === said) return;
+    this.botsTold.set(ws, said);
+    for (const p of this.d.stations(ws)) {
+      if (typeof p?.id !== "string" || p.id === this.d.here()) continue;
+      void this.d.bus.ask(p.id, { method: BOTS, workspace: ws, bots }).catch(() => this.botsTold.delete(ws));
+    }
+  }
+
   /// What a connect's platform says: to the station a chat of its thread runs on, or a new conversation's to the
   /// station the connect starts them on; the rest to the hub here.
   async receive(id: string, event: ChatEvent): Promise<void> {
     const hub = this.d.hub();
+    {
+      const entry = this.entryOf(id);
+      const ws = entry === undefined ? null : this.workspaceOf(entry);
+      if (ws !== null) this.tellBots(ws);
+    }
     const connect = hub.config().connects.find((c) => c.id === id);
     const entry = this.entryOf(id);
     const ws = entry === undefined ? null : this.workspaceOf(entry);

@@ -6,6 +6,7 @@
 // Its process is a runner's (src/agents/runner.ts): this actor can go (a station stopping or handing over) and the
 // next take it up (`snapshot` / `adopt`), its turn going on all along.
 import { presetCopyOf, presetInstructions } from "./presets.ts";
+import { markNotice } from "./chat.ts";
 import { sessionSkills } from "./agent-home.ts";
 import { writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -2094,7 +2095,7 @@ export class SessionActor {
       return;
     }
     try {
-      const ts = await chat.post({ channel: latest.thread.channel, threadTs: latest.thread.threadTs }, text, []);
+      const ts = await chat.post({ channel: latest.thread.channel, threadTs: latest.thread.threadTs }, markNotice(text), []);
       const [n] = store.insertMessage({ thread: latest.thread.id, ts, authorKind: STATION_AUTHOR, author: STATION_AUTHOR, text, profile, runtime, attachments: [], quotes: [], declared: null, client: null, card: null, options: null, agentIdentity: null, ...(change !== undefined ? { change } : {}) });
       recorded?.([latest.thread.id, n, ts]);
     } catch (error) {

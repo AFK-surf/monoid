@@ -50,6 +50,7 @@ import { CommaLive } from "./comma/module.ts";
 import { WorkspaceConnectsLive } from "./connects/workspace.ts";
 import { ModelsLive } from "./models/module.ts";
 import { CopiesLive } from "./replica/module.ts";
+import { MovesLive } from "./move/live.ts";
 import { takeBackSoon } from "./replica/restore.ts";
 import { PROVIDERS, type Provider } from "./cloud/provider.ts";
 import { wall } from "./ops/fibers.ts";
@@ -221,7 +222,7 @@ function run() {
   );
   const station = Layer.mergeAll(MeshLive, Loopback(control), StatusLive, AwakeLive, CheckpointsLive, BecameRig).pipe(
     // The station's parts in its own process (parts.ts), made before the mesh answers anyone: each says what it adds.
-    Layer.provideMerge(Layer.mergeAll(VaultLive, AdbLive, BrowserLive, LinksLive, FeedbackLive, AgentHomeLive, LoginsLive, DriveTransfersLive, UsageLive, ElevationLive, ResourcesLive, SearchLive, SlackLive, FeishuLive, CommaLive, WorkspaceConnectsLive, ModelsLive, RigsLive, DevicesLive, CopiesLive)),
+    Layer.provideMerge(Layer.mergeAll(VaultLive, AdbLive, BrowserLive, LinksLive, FeedbackLive, AgentHomeLive, LoginsLive, DriveTransfersLive, UsageLive, ElevationLive, ResourcesLive, SearchLive, SlackLive, FeishuLive, CommaLive, WorkspaceConnectsLive, ModelsLive, RigsLive, DevicesLive, CopiesLive, MovesLive)),
     Layer.provideMerge(AdminApi.layer),
     Layer.provideMerge(AgentsLive(control)),
     // The drive, the admin API's: the platform's, before the agents.

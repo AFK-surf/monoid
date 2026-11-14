@@ -39,7 +39,7 @@ export const agentHomes = (agentHome: string): string[] => [agentHome, ...entrie
 
 /// The skills the station brings, by directory name: about its own tools, so they are rewritten at every start and
 /// change with the station (the team's own skills sit beside them).
-export const BUILTIN_SKILLS = ["stillfail-chats", "stillfail-jobs", "stillfail-show", "stillfail-viz", "stillfail-browser", "stillfail-login", "stillfail-vault", "stillfail-cron", "stillfail-github-ci", "stillfail-retire"];
+export const BUILTIN_SKILLS = ["stillfail-chats", "stillfail-jobs", "stillfail-show", "stillfail-viz", "stillfail-browser", "stillfail-login", "stillfail-vault", "stillfail-cron", "stillfail-github-ci", "stillfail-retire", "stillfail-move"];
 /// When to offer a bug report to the still.fail team: only from a station on the stable channel, beside the
 /// `feedback_send` tool; gone from one on the test channel (the team's own).
 export const FEEDBACK_SKILL = "stillfail-feedback";

@@ -4,6 +4,7 @@
 // skills' (src/skills/), and are held under ceilings (test/tools-weight.test.ts). What they do is src/sessions/.
 // chat_post still takes `options` beside `text` and kind need_decision, from before cards (sessions/args.ts), and
 // declares neither: with them its schema was over what Codex keeps the parameter descriptions of.
+import { NOTICE_MARK } from "../sessions/chat.ts";
 import { RUNTIME_KINDS } from "../agents/runtime.ts";
 import { chatHistory, chatLeave, chatPost, chatState, mayStage, staged, target, unheld, NOT_POSTED } from "../sessions/conversations.ts";
 import type { Hub } from "../sessions/hub.ts";
@@ -476,7 +477,9 @@ export function chatTools(hub: Hub): Tool[] {
   return [
     {
       ...CHAT_POST,
-      run: async (key, args) => {
+      run: async (key, given) => {
+        // (what an agent says never ends as a station's notice does: chat.ts NOTICE_MARK)
+        const args = typeof given.text === "string" && given.text.includes(NOTICE_MARK) ? { ...given, text: given.text.replaceAll(NOTICE_MARK, "") } : given;
         // Its files and local links in a folder macOS protects copied first, never touched on the station's thread
         // (conversations.ts `staged`); links only where they become attachments (still.fail chats).
         let stillfail = false;

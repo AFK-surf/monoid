@@ -96,5 +96,20 @@ below, sends them along).
 - Starting a retirement is switched off (左子健, 2026-11-14, after its first real use: 「我怀疑这个功能根本不能给用户用」):
   POST /retire and station_retire's start and hand_over are refused (module.ts `RETIRE_STARTS`), the rest as above; it is
   switched on again once the fixes have passed a drill.
-- Not here, by the owner's decision (2026-11-09): reading a chat from a copy while its station is away, going on with a
-  chat on another station while both are up, signed heads, a lock entry for a replacement.
+- One chat is handed to another station while both are up (`handover.ts`; 左子健, 2026-11-14, superseding the
+  decision of 2026-11-09 that left this out: a whole-station move is every chat handed over, then its connects and
+  logins by their own moves, and the reverse hand-over is the way back). It is the `chats` module of a migration
+  (`station/src/move/`, its AGENTS.md: independent modules, each item moved and moved back on its own, a scheduler that
+  only orders them by their needs). Its state is a file a hand-over on each side (`handover/out/`, `handover/in/`):
+  nothing of it is in the copies' export or the schema but `handed_over` (where each chat went, store `handOff`). The
+  chat is held alone (sessions/hub.ts `holdChat`), its files gathered alone (carry-worker.ts `gather`'s `keys`) and sent
+  as a retirement's are (`sending.ts`), its rows sent a page at a time and put in through the other's store, hidden
+  until shown (store/handover.ts, `comingWs`): each thread's log goes on past what that station has (n kept where it
+  was this chat's own as it was left, else by ts), so a chat handed back appends what was said there. Only once the
+  other counted what it has does this one say it went; before, a failure undoes it there and the chat goes on here;
+  after, nothing is undone and the rest is told until it is answered. Its platform threads are re-pointed where their
+  connect runs (connects/workspace.ts `route`, `connect.route`); what still comes here of it goes on there
+  (`movedTo`). A device naming it here is answered where it went (409 with `moved`, `GET /moved`, `chat-moved`).
+  Nothing is posted in it; its agent is told once (`moved_notes`).
+- Not here, by the owner's decision (2026-11-09): reading a chat from a copy while its station is away, signed heads, a
+  lock entry for a replacement.

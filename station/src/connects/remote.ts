@@ -40,6 +40,9 @@ export const MOVED = "connect.moved";
 /// One thread of a connect's: its chat runs on another station from now on, or on the connect's own again (a chat
 /// handed over, replica/handover.ts), told to the station the connect runs on.
 export const ROUTE = "connect.route";
+/// The bots of the connects a station runs, told to the workspace's other stations as they change (sessions/hub.ts
+/// `stationNotice`).
+export const BOTS = "connect.bots";
 /// The connects a station runs, as another of the workspace asks before one is added (one connect, one station).
 export const LIST = "connect.list";
 

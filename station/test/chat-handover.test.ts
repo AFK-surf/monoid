@@ -19,6 +19,7 @@ import { RETRY_MS } from "../src/replica/retire.ts";
 import type { CarriedJob } from "../src/replica/carry-worker.ts";
 import { hubConfig } from "../src/sessions/config.ts";
 import { sessionKey } from "../src/sessions/hub.ts";
+import { NOTICE_MARK } from "../src/sessions/chat.ts";
 import { newSession, say } from "../src/sessions/lifecycle.ts";
 import { Moves } from "../src/move/station.ts";
 import { Rig, message, reply, testClock } from "./hub-fakes.ts";
@@ -304,6 +305,20 @@ test("a chat with a running job: stopped as it is held, started there once it is
   assert.deepEqual(a.jobs.map((j) => j.name), ["dev"]);
 });
 
+test("a chat's files are told as they go: their total first, then how far, up to all of it", async () => {
+  const w = world();
+  const a = w.get(A);
+  const { key } = await stillfailChat(a);
+  const told: { done: number; total: number; unit: string }[] = [];
+  await a.moves.handover.handOver(key, B, { progress: (p) => void told.push(p) });
+  await w.quiet();
+  assert.ok(told.length >= 2, JSON.stringify(told));
+  assert.equal(told[0]!.done, 0);
+  assert.ok(told[0]!.total > 0);
+  assert.deepEqual(told.at(-1), { done: told[0]!.total, total: told[0]!.total, unit: "bytes" });
+  assert.ok(told.every((p, i) => i === 0 || p.done >= told[i - 1]!.done), "only forward");
+});
+
 test("an archived chat is handed over archived", async () => {
   const w = world();
   const a = w.get(A);
@@ -509,4 +524,31 @@ test("an account that cannot be borrowed moved, then back: its chats here stoppe
   assert.equal(a.rig.hub.chatHeld(key), null);
   const prompts = a.rig.claude.sessions.flatMap((s) => s.prompts).join("\n");
   assert.equal(prompts.split("while it is away").length - 1, 1, prompts);
+});
+
+test("a station's notice that comes back through another bot's connect wakes nothing and brings no chat back; that bot's ordinary message is taken", async () => {
+  const w = world();
+  const a = w.get(A);
+  const b = w.get(B);
+  // B runs a bot of its own (gpt) in the same channel; A's cl bot is told to B as A's connect hears its first event
+  b.rig.raw.connects = [{ id: "gpt", bind: { runtime: "codex" } }];
+  b.rig.raw.profiles.push({ id: "cxb2", runtime: "codex", home: "homes/cxb2" });
+  const first = message({ text: "<@UGPT> hello", user: "U1" });
+  await b.connects.receive("gpt", { type: "message", message: first });
+  const key = sessionKey("gpt", first.channel, first.threadTs);
+  await endTurn(b, key, "codex");
+  b.rig.store.setArchived(key, true, "auto");
+  await a.connects.receive("cl", { type: "message", message: message({ text: "<@UBOT> elsewhere" }) });
+  await w.quiet();
+  assert.ok(b.rig.hub.toldBots.get(A)?.has("UBOT"), "told, not asked");
+  const prompts = () => b.rig.codex.sessions.flatMap((s) => s.prompts).join("\n");
+  // A's notice, as Slack hands it to B's bot: no person's message
+  await b.connects.receive("gpt", { type: "message", message: reply(first, "1900.1", `⚠️ the chat stopped${NOTICE_MARK}`, { user: "UBOT" }) });
+  await w.quiet();
+  assert.ok(!prompts().includes("the chat stopped"), "woke nothing");
+  assert.equal(b.rig.session(key).archivedBy, "auto", "still archived");
+  // A's agent's own answer through its bot is a message as any other bot's
+  await b.connects.receive("gpt", { type: "message", message: reply(first, "1900.2", "<@UGPT> what do you think?", { user: "UBOT", addressed: true }) });
+  await w.quiet();
+  assert.ok(prompts().includes("what do you think?"), "taken");
 });

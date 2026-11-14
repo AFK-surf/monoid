@@ -72,6 +72,9 @@
 - What must survive of the chats is copied off the machine by an export off the main thread, as opaque batches, to two
   other stations of the workspace; a new station takes a lost one's back before its store
   opens (`src/replica/`, its AGENTS.md). It adds nothing to the main thread's writes: no trigger, no statement.
+- What a station has moves to another of the workspace an item at a time while both work (a chat, an account, a job, a
+  connect), each moved back the same way, a scheduler ordering them by their needs (`src/move/`, its AGENTS.md; the
+  owner, 2026-11-14): a whole station is every item moved.
 
 ## Agents
 
