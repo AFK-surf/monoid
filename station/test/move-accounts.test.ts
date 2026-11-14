@@ -42,6 +42,8 @@ type Station = {
   id: string; rig: Rig; bus: PeerBus; moves: Moves; sharing: Sharing; fibers: Fibers;
   /// share.take asked of another station fails (its answer lost on the way).
   failTake: boolean;
+  /// What this station says of its shares to others (`share.changed`) does not reach them.
+  failChanged: boolean;
   /// The next `move.accounts` this station asks goes unanswered (the other not reached).
   failAccounts: boolean;
   make(): Moves;
@@ -73,7 +75,7 @@ function world(profiles: Json[], o: { third?: boolean; slack?: boolean } = {}) {
   })) as Cloud;
   const make = (id: string): Station => {
     const rig = new Rig({ place: { workspace: WS, station: id }, workspaces: [WS], fileStore: true, clock: t.clock });
-    const st = { id, rig, failTake: false, failAccounts: false } as unknown as Station;
+    const st = { id, rig, failTake: false, failChanged: false, failAccounts: false } as unknown as Station;
     rig.raw.connects = o.slack && id === A ? [{ id: "cl", slack: { botName: "Claude bot" }, bind: { runtime: "claude" } }] : [];
     rig.raw.profiles = id === A ? structuredClone(profiles) : [{ id: "bx", runtime: "codex", home: "homes/bx", env: { OPENAI_API_KEY: "k" } }];
     Object.defineProperty(rig, "config", { get: () => hubConfig(rig.raw, rig.dir), configurable: true });
@@ -91,6 +93,7 @@ function world(profiles: Json[], o: { third?: boolean; slack?: boolean } = {}) {
       data: rig.dir, config, cloud: cloudFor(id),
       ask: async (to, ws, request) => {
         if (st.failTake && request?.method === "share.take") throw new Error("the answer was lost on the way");
+        if (st.failChanged && request?.method === "share.changed") throw new Error("station unreachable");
         const there = stations.get(to);
         if (there === undefined) throw new Error("station unreachable");
         return across(await there.sharing.handle(id, across(request), ws ?? WS));
@@ -513,11 +516,14 @@ test("one shared before with stations the other is not among: it moves as a shar
   assert.equal(shareOf(a, "max").borrowed, true, "borrowed here");
   assert.deepEqual(sorted(ofShare(b, share)?.share.allow), sorted([A, C]), "who may use it as a person had it");
   assert.deepEqual(keptShares(a), [], "not made by the move");
+  // (no word of A's reaches B meanwhile: B keeps no copy by itself, not waiting to be told it is not for it)
+  a.failChanged = true;
   const back = await a.moves.scheduler.back(WS, B, { module: "accounts", item: `share:${share}`, withNeeds: true });
   await quiet();
   assert.equal(back.failed, null, JSON.stringify(back));
   assert.deepEqual(shareOf(a, "max"), { id: share, allow: [A, C] }, "still shared, hosted here");
   assert.equal(ofShare(b, share), undefined, "the other, not allowed, keeps no copy");
+  a.failChanged = false;
 });
 
 test("moveProfile asked to share first a login that cannot be shared: moved as it is, nothing shared, shareFirst never told", async () => {
