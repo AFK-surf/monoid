@@ -24,10 +24,9 @@ const named = (n: Need) => `${n.module} ${n.id}`;
 export const MOVE_TOOL = {
   name: "station_move",
   description:
-    "Move this station's chats, accounts, jobs and connects to another station of the chat's workspace, one item or all, and back. Read the stillfail-move skill first. " +
-    "plan {to}: every item, what it needs moved first, what cannot move and why, what a move would stop here. " +
-    "move {to, module, item}: one item (a chat: its session key; its jobs follow); withNeeds moves what it needs first; all moves everything, after an owner or admin confirms a card in the app. " +
-    "back {module, item, to: where it is}: moves it back here. status: where each stands. stop: the move under way stops (what has not moved stays here). station: another station of the workspace does it (its own items); wait false: a chat in a turn is refused rather than waited for.",
+    "Move this station's chats, accounts, jobs and connects to another station of the chat's workspace, one item or all, and back. Read the stillfail-move skill first: it says each action and option. " +
+    "plan {to}: every item, what it needs, what cannot move and why. move {to, module, item}: one item (a chat: its session key); withNeeds moves its needs first; all moves everything once a card is confirmed in the app. " +
+    "back {module, item, to}: moves it back here. status: where each stands. stop: the move under way stops.",
   inputSchema: {
     type: "object",
     properties: {
