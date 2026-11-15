@@ -121,7 +121,7 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone chat-outline": (527, 592, 106),
   "phone chat-outline-find": (527, 592, 106),
   "phone archived": (440, 503, 92),
-  "phone history": (449, 558, 90),
+  "phone history": (420, 504, 86),
   "phone history-details": (381, 483, 124),
   "phone drive": (44, 26, 0),
   "phone drive-roots": (44, 26, 0),

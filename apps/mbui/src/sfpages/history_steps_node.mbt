@@ -719,7 +719,7 @@ fn item_node(
         failed=fn() { failed },
         rail_next=fn() { ends != "" || rail },
         extra_gap=fn() { gaps },
-        wrap_label=false,
+        wrap_label=true,
         post_lines,
         md_line,
         fn(l) {
@@ -728,7 +728,9 @@ fn item_node(
             Some(Object(_)) as p => place_node(l, station, p)
             _ =>
               steps_box_node(l, h_place, fn(pl) {
-                @sf.drawable_node(pl, "slack", 12.0) |> ignore
+                steps_box_node(pl, h_place_mark, fn(d) {
+                  @sf.drawable_node(d, "slack", 12.0) |> ignore
+                })
                 steps_words(pl, fn() { "Slack" }, h_place_words)
               })
           }
@@ -1409,32 +1411,44 @@ fn place_node(v : @view.View, station : String, place : Json?) -> Unit {
 }
 
 ///|
+fn place_mark_name(surface : String, dark : Bool) -> String {
+  match surface {
+    "chat" | "ember" | "stillfail" => if dark { "stillfail_mark_dark" } else { "stillfail_mark" }
+    "feishu" => "feishu"
+    _ => "slack"
+  }
+}
+
+///|
 fn place_live_node(v : @view.View, station : String, place : () -> Json?, link : Bool) -> Unit {
   let surface_sig = @signals.computed(fn(_) { text(place(), "surface") }, same=fn(a, b) { a == b })
   let name_sig = @signals.computed(fn(_) { text(place(), "name") }, same=fn(a, b) { a == b })
-  let press = if link {
-    Some(fn() {
-      let p = @signals.untracked(place)
-      let url = text(p, "url")
-      let session = text(p, "session")
-      if url != "" {
-        @sfbase.open_slack(text(p, "app"), url) |> ignore
-      } else if session != "" {
-        @sfbase.history_push()
-        app.nav.push(Chat({ station, session, title: text(p, "name"), station_name: "" }))
-      }
-    })
-  } else {
-    None
-  }
-  @sf.place_node(
-    v,
-    fn() { surface_sig.get() },
-    fn() { name_sig.get() },
-    fn(hot) { if hot { h_place_hot } else { h_place } },
-    if link { h_place_link_words } else { h_place_words },
-    press~,
-  )
+  let words = if link { h_place_link_words } else { h_place_words }
+  v.box(fn(p) {
+    @sf.style_node(p, fn() { if link && @sf.lit_node(p) { h_place_hot } else { h_place } })
+    p.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+    if link {
+      @sf.presses_node(p, fn() {
+        let pl = @signals.untracked(place)
+        let url = text(pl, "url")
+        let session = text(pl, "session")
+        if url != "" {
+          @sfbase.open_slack(text(pl, "app"), url) |> ignore
+        } else if session != "" {
+          @sfbase.history_push()
+          app.nav.push(Chat({ station, session, title: text(pl, "name"), station_name: "" }))
+        }
+      })
+    }
+    p.pick(
+      fn() { place_mark_name(surface_sig.get(), @sf.theme().dark) },
+      fn(d, name) {
+        @sf.style_node(d, fn() { h_place_mark })
+        @sf.drawable_node(d, name, 12.0) |> ignore
+      },
+    )
+    @sf.words_node(p, fn() { name_sig.get() }, fn() { words }).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+  })
   |> ignore
 }
 
@@ -2562,7 +2576,7 @@ fn steps_reused_row_node(
                     fn() { "accent" },
                     rail_next=has_rail,
                     extra_gap=fn() { md_preview_gaps(post_md_sig.get(), post_lines) },
-                    wrap_label=false,
+                    wrap_label=true,
                     post_lines,
                     md_line,
                     fn(l) {
@@ -4071,7 +4085,7 @@ let h_reminder : @ui.TextStyle = h_strong.then(@ui.text_style(wrap=false))
 
 ///|
 // kept across runs: a value (no field of it changes)
-let h_label_place : @ui.Style = @ui.css("row min_h=S5 pl=S3 align=ACenter clip")
+let h_label_place : @ui.Style = @ui.css("row min_h=S5 pl=S3 align=AStart clip")
 
 ///|
 fn label_place_dot_shapes(cx : Double, cy : Double, r : Double, fill : Int64) -> Array[@ui.Shape] {
@@ -4117,7 +4131,11 @@ let h_person : @ui.Style = @ui.css("row min_h=S5 gap=S1 align=ACenter")
 ///|
 /// A place (hPlace): its mark and name 4 apart; where it goes, the pointer's ground on it.
 // kept across runs: a value (no field of it changes)
-let h_place : @ui.Style = @ui.css("row min_h=S5 gap=S1 align=ACenter radius=Base clip")
+let h_place : @ui.Style = @ui.css("row min_h=S5 gap=S1 align=AStart radius=Base clip")
+
+///|
+// kept across runs: a value (no field of it changes)
+let h_place_mark : @ui.Style = @ui.css("row min_h=S5 align=ACenter")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -4125,11 +4143,11 @@ let h_place_hot : @ui.Style = h_place.then(@ui.css("bg=Hover"))
 
 ///|
 // kept across runs: a value (no field of it changes)
-let h_place_words : @ui.TextStyle = @ui.text_style(size=Meta, leading=L6, weight=Semibold, color=Fg, wrap=false, w=Cut)
+let h_place_words : @ui.TextStyle = @ui.text_style(size=Meta, leading=L6, weight=Semibold, color=Fg)
 
 ///|
 // kept across runs: a value (no field of it changes)
-let h_place_link_words : @ui.TextStyle = @ui.text_style(size=Meta, leading=L6, weight=Semibold, color=Link, wrap=false, w=Cut)
+let h_place_link_words : @ui.TextStyle = @ui.text_style(size=Meta, leading=L6, weight=Semibold, color=Link)
 
 ///|
 /// A person's words (hWords: 13, the ink); a job's (hOutput: 11 mono on 1.55).
