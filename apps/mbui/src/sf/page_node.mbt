@@ -389,7 +389,7 @@ fn narrow_page_node(
           Top => s.height(By(fn() { Some(frame().top) })) |> ignore
           // back to where it was opened from
           Back => {
-            s.row(Is(true)).padding(Is((pg_back_x, pg_back_top, pg_back_x, pg_back_foot))).lines_up(Is(Some(Middle)))
+            s.row(Is(true)).padding(Is((pg_back_x, pg_back_top, pg_back_end, pg_back_foot))).lines_up(Is(Some(Middle)))
             |> ignore
             nav_back_node(s, fn() { frame().back.unwrap_or("") }, on_back)
             // (what its own head does, at the line's end: own_head's back_line)
@@ -426,7 +426,7 @@ fn narrow_page_node(
             .padding(By(fn() {
               let f = frame()
               let alone = f.back is None && f.top <= 0.0
-              (pg_title_x, if alone { pg_title_alone_top } else { 0.0 }, pg_title_x, pg_title_foot)
+              (pg_title_x, if alone { pg_title_alone_top } else { 0.0 }, pg_title_end, pg_title_foot)
             }))
             |> ignore
             s.box(fn(l) {
@@ -504,11 +504,16 @@ let head_back_holds : @view.Lent[() -> Bool] = @view.Lent::new()
 let pg_block_est : Double = 80.0
 
 ///|
-/// Back's line's room (pg_back_line: 18 in, 6 over, 4 under); the large title's (pg_title_box: 24 in, 6 under; 40 over
+/// Back's line's room (pg_back_line: 18 in, 10 at its end, 6 over, 4 under); the large title's (pg_title_box: 24 in, 16
+/// at its end, 6 under; 40 over
 /// with nothing over it), its line's gap and its words' least (pg_title_line, pg_title_words); what it is for
 /// (pg_lead_box: 12 in, 10 under). The title starts where what is for and the sections' headings do (12 of the page's
 /// room and 12 of their own), back as far in with it (the user, 2026-11-15: a title 8 out of the words under it).
 let pg_back_x : Double = 18.0
+
+///|
+/// Back's line's room at its end, where what it holds there (a page's own head's actions) stays as it was.
+let pg_back_end : Double = 10.0
 
 ///|
 let pg_back_top : Double = 6.0
@@ -531,6 +536,10 @@ let pg_back_foot : Double = 4.0
 
 ///|
 let pg_title_x : Double = 24.0
+
+///|
+/// The title's line's room at its end, where what it does stands (分享, a choice of days) as it was.
+let pg_title_end : Double = 16.0
 
 ///|
 let pg_title_foot : Double = 6.0

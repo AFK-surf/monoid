@@ -716,7 +716,7 @@ test "a page's title with what it does at its line's end, its window narrowed an
     // (the choice's end the line's either way; on one line the title at least 80 wide, before 分享)
     assert_true((sg.0 + sg.2 - (w.to_double() - 16.0)).abs() < 0.01, msg="\{w}: the choice's end the line's: \{Repr(sg)}")
     if one {
-      assert_true(sh.0 - 16.0 >= 80.0 + 10.0 - 0.01, msg="\{w}: the title at its least: \{Repr(title)} \{Repr(sh)}")
+      assert_true(sh.0 - 24.0 >= 80.0 + 10.0 - 0.01, msg="\{w}: the title at its least: \{Repr(title)} \{Repr(sh)}")
     } else {
       assert_true(sh.1 >= title.1 + title.3 && sg.1 >= title.1 + title.3, msg="\{w}: under the title")
     }

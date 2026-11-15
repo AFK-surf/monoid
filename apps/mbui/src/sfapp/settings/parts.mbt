@@ -341,7 +341,7 @@ fn top_back(c : @ui.Ctx, core : Core, label : String, trailing? : () -> Unit, on
 ///|
 /// Back's line at the top of a large-title page: 18 in, 6 over, 4 under (with its title, page_node's pg_back_x).
 // kept across runs: a value (no field of it changes)
-let top_back_line : @ui.Style = @ui.css("row w=Full px=S4_5 pt=S1_5 pb=S1 align=ACenter justify=JBetween")
+let top_back_line : @ui.Style = @ui.css("row w=Full pl=S4_5 pr=S2_5 pt=S1_5 pb=S1 align=ACenter justify=JBetween")
 
 ///|
 /// What a large-title page's top had (top_back), for its head in the wide frame (large_title).
@@ -601,7 +601,7 @@ fn large_title(
 ///|
 /// LargeTitle: 24 in (where the page's words under it start), 6 under it; its small line over its word's.
 // kept across runs: a value (no field of it changes)
-let large_title_box : @ui.Style = @ui.css("w=Full px=S6 pb=S1_5")
+let large_title_box : @ui.Style = @ui.css("w=Full pl=S6 pr=S4 pb=S1_5")
 
 ///|
 /// A wide page's own words over its cards (a section's heading, its large title) in a panel of its own: on the panel's

@@ -2511,17 +2511,17 @@ pub fn row_ripple(c : @ui.Ctx, id : Int) -> Unit {
 ///|
 /// Back's line over the large title (TopBack: 18 in, 6 over, 4 under).
 // kept across runs: a value (no field of it changes)
-let pg_back_line : @ui.Style = @ui.css("row w=Full px=S4_5 pt=S1_5 pb=S1 align=ACenter")
+let pg_back_line : @ui.Style = @ui.css("row w=Full pl=S4_5 pr=S2_5 pt=S1_5 pb=S1 align=ACenter")
 
 ///|
 /// The large title (LargeTitle: 24 in, where the words under it start; 6 under it), what it does at its end.
 // kept across runs: a value (no field of it changes)
-let pg_title_box : @ui.Style = @ui.css("w=Full px=S6 pb=S1_5")
+let pg_title_box : @ui.Style = @ui.css("w=Full pl=S6 pr=S4 pb=S1_5")
 
 ///|
 /// The large title with nothing over it (no back, no frame's bar): 40 under the top, as a wide page's head (desk_head).
 // kept across runs: a value (no field of it changes)
-let pg_title_box_alone : @ui.Style = @ui.css("w=Full px=S6 pt=S10 pb=S1_5")
+let pg_title_box_alone : @ui.Style = @ui.css("w=Full pl=S6 pr=S4 pt=S10 pb=S1_5")
 
 ///|
 // kept across runs: a value (no field of it changes)
