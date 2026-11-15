@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [cc1745615](https://github.com/AFK-surf/monoid/commit/cc17456152f5f68a798c00068e4b4545b2c53066) mbui: audit() holds the one height, the first line | 2.07 | 2.85 | 12.28 | 33.21 | 47.84 | 28.76 | 56.64 | 98.7 | 117.47 |
 | [e28d20c75](https://github.com/AFK-surf/monoid/commit/e28d20c75c78f229155b3d29af86c744cc7bbf91) app: the Android build alone finds libghostty-vt,  | 2.07 | 2.85 | 12.28 | 33.21 | 47.84 | 28.76 | 56.64 | 98.7 | 112.45 |
 | [64d1c4a65](https://github.com/AFK-surf/monoid/commit/64d1c4a65392f90c1e753818342b2b7d3177b3db) station: the remote tasks run in the MoonBit progr | 2.07 | 2.85 | 12.28 | 33.21 | 47.84 | 28.76 | 56.64 | 98.7 | 112.95 |
 | [6222bae5a](https://github.com/AFK-surf/monoid/commit/6222bae5a8c8c3611bbe12cfad6b5c2a25d30049) station, repo rules: put back the rules and decisi | 2.07 | 2.85 | 12.28 | 33.19 | 47.84 | 28.76 | 56.62 | 98.7 | 112.95 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [cede4b07d](https://github.com/AFK-surf/monoid/commit/cede4b07d46fbfd9cb730d9ead1c4700dd58aa8e) core, cloud: a change of a workspace is told with  | 2.03 | 2.79 | 12.03 | 31.92 | 44.66 | 28.53 | 55.91 | 98.45 | 117.59 |
 | [c40e7b9c2](https://github.com/AFK-surf/monoid/commit/c40e7b9c2c06b0c0fdb5bb1b5dbe9ea0c2ad2c27) lock: a workspace with a member who only uses the  | 2.03 | 2.79 | 12.03 | 31.92 | 44.66 | 28.52 | 55.91 | 98.34 | 112.1 |
 | [06809c991](https://github.com/AFK-surf/monoid/commit/06809c991dcae9b24bef5bac28a67255bbdad96d) station: a person's message with quotes written by | 2.03 | 2.79 | 12.03 | 31.92 | 44.65 | 28.52 | 55.91 | 98.7 | 114.74 |
-| [754cfc5d0](https://github.com/AFK-surf/monoid/commit/754cfc5d0997511b1703a2ac0d9a055667b972ed) mbui: words on a halo (View::words_halo), blurred  | 2.03 | 2.79 | 12.03 | 31.92 | 44.65 | 28.52 | 55.91 | 98.55 | 114.74 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [cc1745615](https://github.com/AFK-surf/monoid/commit/cc17456152f5f68a798c00068e4b4545b2c53066) mbui: audit() holds the one height, the first line | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.25 |
 | [e28d20c75](https://github.com/AFK-surf/monoid/commit/e28d20c75c78f229155b3d29af86c744cc7bbf91) app: the Android build alone finds libghostty-vt,  | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.31 |
 | [64d1c4a65](https://github.com/AFK-surf/monoid/commit/64d1c4a65392f90c1e753818342b2b7d3177b3db) station: the remote tasks run in the MoonBit progr | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.31 |
 | [6222bae5a](https://github.com/AFK-surf/monoid/commit/6222bae5a8c8c3611bbe12cfad6b5c2a25d30049) station, repo rules: put back the rules and decisi | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.31 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [cede4b07d](https://github.com/AFK-surf/monoid/commit/cede4b07d46fbfd9cb730d9ead1c4700dd58aa8e) core, cloud: a change of a workspace is told with  | 0.41 | 0.53 | 1.98 | 3.09 | 4.54 | 1.46 | 3.81 | 57.2 |
 | [c40e7b9c2](https://github.com/AFK-surf/monoid/commit/c40e7b9c2c06b0c0fdb5bb1b5dbe9ea0c2ad2c27) lock: a workspace with a member who only uses the  | 0.41 | 0.53 | 1.98 | 3.09 | 4.54 | 1.46 | 3.81 | 57.2 |
 | [06809c991](https://github.com/AFK-surf/monoid/commit/06809c991dcae9b24bef5bac28a67255bbdad96d) station: a person's message with quotes written by | 0.41 | 0.53 | 1.98 | 3.09 | 4.54 | 1.46 | 3.81 | 57.2 |
-| [754cfc5d0](https://github.com/AFK-surf/monoid/commit/754cfc5d0997511b1703a2ac0d9a055667b972ed) mbui: words on a halo (View::words_halo), blurred  | 0.41 | 0.53 | 1.98 | 3.09 | 4.54 | 1.46 | 3.81 | 57.2 |
