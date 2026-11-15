@@ -2879,6 +2879,8 @@ try {
           watchFile(file, { interval: 2 }, () => seen());
           try {
             const h = await handOver("A");
+            // (looked at once as well, the line perhaps written already as the handover's start was seen)
+            seen();
             const ended = handoverEnd(h);
             const first = await Promise.race([handing.then(() => true), ended.then(() => false)]);
             w.close();
