@@ -32,9 +32,13 @@ chats paused 18 minutes, a half-moved state, no way back), whose start stays swi
   lent, not moved (the owner, 2026-11-15: its host never leaves, so nothing of it is stranded on a station that dies or
   leaves the workspace): shared with the station it goes to (with the two alone where it was not shared; that one added
   where it is shared with others), told to it directly and answered once its copy is there (share/index.ts `lendTo`,
-  `share.borrow`), before what needs it goes; kept as lent for those items (`accounts-lent.log`) and taken back by this
-  station alone when the last of them is here again (a move back, a failure, an arrival by any route), the other told
-  then or once it is heard from; the plan and the page say it is here and usable there (`lentTo`), a turn what it lent
+  `share.borrow`), before what needs it goes; kept as lent for those items (`accounts-lent.log`), and for every item a
+  later turn takes there that needs it (scheduler `lentFor`), and taken back by this station alone when the last of them
+  is here again (a move back, a failure, an arrival by any route) and the other says nothing there runs on it
+  (`move.uses`: a chat it began on it too, as a connect moved there begins them; the drill, 2026-11-15, took it back
+  from under five), asked again at each turn's end while it does or does not answer (one lent in the turn under way for
+  what did not go is taken back unanswered); the other told then or once it is heard from. A start mends what a station
+  from before kept: the chats handed to where it is lent that run on it are added; the plan and the page say it is here and usable there (`lentTo`), a turn what it lent
   (`lent`). Asked for by name, or in a whole move, its host moves (share/index.ts `moveProfile`), after what needs it:
   one not shared, shared as it moves with the two stations alone, that share undone as it comes home by any route
   unless a person opened it to another station meanwhile (`accounts-shared.json`). One that cannot be shared

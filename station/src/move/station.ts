@@ -267,7 +267,15 @@ export class Moves {
         return p?.share !== null && typeof p?.share === "object";
       },
       moveProfile: d.moveProfile, ask: this.#ask, here,
-      data: d.data, shareMoves: d.shareMoves,
+      data: d.data,
+      shareMoves: d.shareMoves === undefined ? undefined : {
+        ...d.shareMoves,
+        usesThere: async (to, share) => {
+          const answer = await this.#ask(to, { method: "move.uses", share });
+          return typeof answer?.uses === "number" ? answer.uses : null;
+        },
+        handedOn: (to, pid) => this.#handedOn(to, pid),
+      },
       profile: (id) => d.profiles().find((x) => x?.id === id),
       present: (id) => {
         // (one moved here is known by the id it had there: an own login by its profile's id)
@@ -425,6 +433,16 @@ export class Moves {
     return this.#d.moveOn?.() ?? true;
   }
 
+  /// The chats handed from here to station `to` whose login is profile `pid` (read a page at a time, once, as a start
+  /// mends what it kept lent).
+  #handedOn(to: string, pid: string): string[] {
+    const out: string[] = [];
+    for (let after = "", page = this.#d.store.handedChats("", 500); page.length > 0; after = page.at(-1)!.session, page = this.#d.store.handedChats(after, 500)) {
+      for (const h of page) if (h.station === to && this.#d.store.getSession(h.session)?.profile === pid) out.push(h.session);
+    }
+    return out;
+  }
+
   /// Sessions sized as a move would gather them (in the sizing's thread, unless a test's).
   #sized(keys: string[], sizing: Sizing): Promise<Sized[]> {
     return (this.#d.sizes ?? ((k, z) => sizesSoon(this.#d.data, join(this.#d.data, "stillfail.db"), k, z)))(keys, sizing);
@@ -572,6 +590,12 @@ export class Moves {
       switch (request?.method) {
         case "move.open":
           return { on: this.on(), ...(await (this.#d.room ?? roomHere(this.#d.data))().catch(() => ({}))) };
+        case "move.uses": {
+          // (how many chats here run on a login another station lends this one: kept lent while any do)
+          const share = typeof request.share === "string" ? request.share : "";
+          const pids = this.#d.profiles().filter((p) => p?.share?.id === share && typeof p.id === "string").map((p) => p.id as string);
+          return { uses: pids.reduce((n, pid) => n + this.#d.store.liveSessionsOn(pid, 1).length, 0) };
+        }
         case "move.sizes": {
           // (what this station has where another's chats would go, sized as a move would gather them: a batch at most)
           const from = typeof request.fromData === "string" ? request.fromData : "";

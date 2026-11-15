@@ -110,8 +110,12 @@ export interface Module {
   /// The item made usable at `to` for `forWhom` (the items of the turn that need it there), not moved; answered once it
   /// is (refused in words where it cannot be): `usableThere` says so from then.
   lend?(item: Item, to: string, forWhom: Need[]): Promise<void>;
+  /// Item `item`, lent to `to` before, needed there by `forWhom` too (going there now in a later turn): kept as lent
+  /// for them as well. None: lent for what it was lent for alone.
+  lentFor?(item: Item, to: string, forWhom: Need[]): Promise<void>;
   /// Items `items` are here, or never went (came back, failed, a chat that arrived here): what was lent for them alone is
-  /// taken back.
+  /// taken back, once the other says nothing there runs on it. Asked with none at a turn's end: what was kept lent only
+  /// for what the other runs on it is looked at again.
   left?(items: Need[]): Promise<void>;
   /// Whether the item is on this station now, from what the module keeps (none: its state says `here` or `failed`):
   /// what lets go, as the station starts, what was stopped waiting for it (scheduler `settleStopped`).

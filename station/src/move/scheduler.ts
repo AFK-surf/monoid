@@ -343,7 +343,12 @@ export class Scheduler {
       this.#d.turn?.(true, station);
       await mkdir(dirname(turnFile(this.#d.data)), { recursive: true });
       await writeFile(turnFile(this.#d.data), JSON.stringify({ ws, how, station, by }));
-      return await f();
+      try {
+        return await f();
+      } finally {
+        // (what was kept lent only for what the other station runs on it, looked at again, whatever the turn did)
+        for (const m of this.#modules.values()) await m.left?.([]).catch((e) => log.warn("move", "what is lent not looked at again", { error: (e as Error).message }));
+      }
     }).then(
       async (out) => {
         await this.#keepLast(ws, { at: this.#d.now?.() ?? 0, by, how, station, ...(this.#stopping !== null ? { stoppedBy: this.#stopping.by } : {}), ...out });
@@ -511,6 +516,15 @@ export class Scheduler {
       if (lending.has(named(p))) {
         hostAfter.push(p);
         continue;
+      }
+      // (what it needs that a turn before lent there, kept as lent for it too before it goes: never taken back while it
+      // is there)
+      for (const n of p.needs) {
+        const x = find(n);
+        if (x === undefined || lending.has(named(n)) || thereNow.has(named(n))) continue;
+        const m = this.#modules.get(x.module)!;
+        if (m.lentFor === undefined || m.state(x).lentTo !== to) continue;
+        await m.lentFor(x, to, [{ module: p.module, id: p.id }]).catch((e) => log.warn("move", "an item not kept as one a lent login is lent for", { item: named(p), lent: named(x), error: (e as Error).message }));
       }
       // (what it needs that is lent for it, lent now, before it goes)
       for (const n of p.needs) {
