@@ -198,7 +198,7 @@ pub fn message_files(
           match flight {
             Some(f) => flight_landing(
               c, f, item, key, share=landing_share(a),
-              start_crop=file_kind(a.name) == "image" && image_cropped_from_start(a), paint~,
+              top_crop=file_kind(a.name) == "image" && tall_image_cropped(a), paint~,
             )
             None => ()
           }
@@ -298,24 +298,22 @@ pub fn file_kind(name : String) -> String {
 ///|
 /// The box an image takes in the chat, known before it loads: its own proportions (sent with it, or its
 /// ThumbHash's) within 360×300, a tiny one drawn to 40 on its longer side; a strip thinner than `least` letterboxed in
-/// a box that thick; 240×160 for one sent before sizes were kept. An image at the height limit is cropped to at least
-/// `min_side` across, one at the width limit to at least `min_side` high. (width, height, letterboxed)
+/// a box that thick; 240×160 for one sent before sizes were kept. A tall image at the height limit is cropped to at
+/// least `min_side` across (the owner's, #3097); a wide one at the width limit is shown whole, however thin, as the
+/// web's imageBox.ts drew it (a strip cut across a page cropped to a box would show its bare middle: 2026-11-15).
+/// (width, height, letterboxed)
 pub fn image_box(a : Attachment, least : Double, min_side? : Double = 0.0) -> (Double, Double, Bool) {
   let (w, h) = match own_size(a) {
     Some(s) => s
     None => return (box_unknown_w, box_unknown_h, false)
   }
-  let width_scale = box_most_w / w
   let height_scale = box_most_h / h
-  let scale = dmin(dmin(dmax(1.0, box_tiny / dmax(w, h)), width_scale), height_scale)
+  let scale = dmin(dmin(dmax(1.0, box_tiny / dmax(w, h)), box_most_w / w), height_scale)
   let width = w * scale
   let height = h * scale
   let hash_only = a.width <= 0.0 || a.height <= 0.0
   if (scale == height_scale || hash_only) && w * box_most_h / h < min_side {
     return (min_side.round(), box_most_h, false)
-  }
-  if (scale == width_scale || hash_only) && h * box_most_w / w < min_side {
-    return (box_most_w, min_side.round(), false)
   }
   if width >= least && height >= least {
     return (width.round(), height.round(), false)
@@ -344,16 +342,11 @@ fn own_size(a : Attachment) -> (Double, Double)? {
 }
 
 ///|
-/// Whether the chat's least side crops an image: a tall one at the least width, a wide strip at the least height. Either
-/// shows its beginning (its top, its left), not its middle: the middle of a strip cut from a page is as often its bare
-/// ground (2026-11-15: a window's head cut across, its title at the left and its buttons at the right, shown as a box
-/// of nothing).
-fn image_cropped_from_start(a : Attachment) -> Bool {
+/// Whether the chat's minimum width crops a tall image: show its beginning, at the top of the box.
+fn tall_image_cropped(a : Attachment) -> Bool {
   let (bw, bh, _) = image_box(a, image_least, min_side=image_min_side)
   match own_size(a) {
-    Some((w, h)) =>
-      (bw == image_min_side && bh == box_most_h && w * bh / h < bw) ||
-      (bh == image_min_side && bw == box_most_w && h * bw / w < bh)
+    Some((w, h)) => bw == image_min_side && bh == box_most_h && w * bh / h < bw
     None => false
   }
 }
@@ -483,8 +476,8 @@ fn image_item(c : @ui.Ctx, src : Source, here : MessageHere, a : Attachment, w :
   // what holds it where it is in a corner of that, a quote's card)
   let (sw, sh) = picture_share(a, image_least, min_side=image_min_side)
   let (pw, ph) = (w * sw, h * sh)
-  let start_crop = image_cropped_from_start(a)
-  let fit : @ui.Fit = if start_crop { FitCoverFrom(0.0, 0.0) } else { FitCover }
+  let top_crop = tall_image_cropped(a)
+  let fit : @ui.Fit = if top_crop { FitCoverAt(0.0) } else { FitCover }
   let likeness = image_wait_colours(a.thumbhash, pw, ph, c.color(Neutral), c.color(Bg)).unwrap_or("")
   let picture = fn() { media_content(c, p, pw, ph, fit, 0.0) }
   // one the device holds and not decoded yet: what the app's first page waits for
@@ -528,7 +521,7 @@ fn image_item(c : @ui.Ctx, src : Source, here : MessageHere, a : Attachment, w :
     }
   })
   // where it is and what it shows, for the preview to fly from and back into; hidden while the preview is its picture
-  note_thumb(c, thumb, b, corner, picture=shows, letterbox~, start_crop~, list=list_of(here))
+  note_thumb(c, thumb, b, corner, picture=shows, letterbox~, top_crop~, list=list_of(here))
   c.look(b, @ui.look(alpha=thumb_shows(thumb)))
   // held by a finger for its menu: lifted over the menu's scrim (@sf.lift_over)
   @sf.lift_over(c, b, "file/" + thumb, @sf.lift_of(c, "file/" + thumb, false, file_held_open(open)), file_lift_scale)
@@ -989,8 +982,7 @@ let image_px_most : Double = 8192.0
 pub let image_least : Double = 16.0
 
 ///|
-/// An image at the height limit is at least this wide, one at the width limit at least this high: cropped without
-/// changing its proportions.
+/// A tall image at the height limit is at least this wide, cropped without changing its proportions.
 pub let image_min_side : Double = 160.0
 
 ///|

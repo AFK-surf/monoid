@@ -48,22 +48,24 @@ test "tall chat images have a wider cropped preview while short ones keep their 
 }
 
 ///|
-test "wide chat images have a taller cropped preview while narrow ones keep their size" {
+test "wide chat images are shown whole at the width limit, however thin" {
   let wide = { ..strip("wide.png"), width: 2000.0, height: 400.0 }
   let box = fn(a : Attachment) {
     @sfpages.image_box(a, @sfpages.image_least, min_side=@sfpages.image_min_side)
   }
-  assert_eq(box(wide), (360.0, 160.0, false))
-  assert_eq(box(strip("line.png")), (360.0, 160.0, false))
+  assert_eq(box(wide), (360.0, 72.0, false))
+  // (a window's head cut across: 2952 × 240, 360 × 29 whole)
+  assert_eq(box({ ..wide, width: 2952.0, height: 240.0 }), (360.0, 29.0, false))
+  assert_eq(box(strip("line.png")), (360.0, 16.0, true))
   assert_eq(box({ ..wide, width: 1600.0, height: 900.0 }), (360.0, 203.0, false))
   assert_eq(box({ ..wide, width: 200.0, height: 4.0 }), (200.0, 16.0, true))
   // Its ThumbHash's header here says a 7:1 landscape.
-  assert_eq(box({ ..wide, width: 0.0, height: 0.0, thumbhash: "AAAAAYA=" }), (360.0, 160.0, false))
+  assert_eq(box({ ..wide, width: 0.0, height: 0.0, thumbhash: "AAAAAYA=" }), (360.0, 51.0, false))
   assert_eq(@sfpages.picture_share(wide, @sfpages.image_least, min_side=@sfpages.image_min_side), (1.0, 1.0))
 }
 
 ///|
-test "a wide picture fills its taller chat preview without stretching, its start shown" {
+test "a wide picture is drawn whole in its chat preview, nothing cropped" {
   new_run()
   let a = { ..strip("wide.png"), width: 2000.0, height: 400.0 }
   let src : Source = { ..fixture("chat"), file: fn(_, _, _) { "wide" } }
@@ -86,14 +88,13 @@ test "a wide picture fills its taller chat preview without stretching, its start
   t.draw()
   t.run_for(@sfpages.reveal_ms)
   let images = t.drawn_images()
-  // At 360 × 160, the first 360 points of the 800-point-wide picture are shown (its start, not its middle: a strip
-  // cut from a page is as often bare in its middle).
+  // At 360 × 72, all of the picture.
   assert_true(images.iter().any(fn(i) {
-    (i[2] - 360.0).abs() < 0.5 && (i[3] - 160.0).abs() < 0.5 &&
+    (i[2] - 360.0).abs() < 0.5 && (i[3] - 72.0).abs() < 0.5 &&
     (i[4] - 0.0).abs() < 0.001 && (i[5] - 0.0).abs() < 0.001 &&
-    (i[6] - 0.45).abs() < 0.001 && (i[7] - 1.0).abs() < 0.001
+    (i[6] - 1.0).abs() < 0.001 && (i[7] - 1.0).abs() < 0.001
   }), msg="\{Repr(images)}")
-  assert_true(thumb_of(t.ctx(), "ws1/st1/s-c1/uploads/fx/wide.png").unwrap().start_crop)
+  assert_false(thumb_of(t.ctx(), "ws1/st1/s-c1/uploads/fx/wide.png").unwrap().top_crop)
 }
 
 ///|
@@ -127,7 +128,7 @@ test "a tall picture fills its wider chat preview without stretching" {
     (i[6] - 1.0).abs() < 0.001 && (i[7] - 0.375).abs() < 0.001
   }), msg="\{Repr(images)}")
   let thumb = thumb_of(t.ctx(), "ws1/st1/s-c1/uploads/fx/tall.png").unwrap()
-  assert_true(thumb.start_crop)
+  assert_true(thumb.top_crop)
   t.tap(80.0, 150.0)
   assert_true(viewer.get() is Some(_))
   let file = viewer.get().unwrap().file
@@ -286,7 +287,7 @@ test "a tall sent picture moves its crop to the top as it lands" {
       // (each frame before its list is built, as a chat's list does: their way said once their row is laid out)
       flight_frame(c, f.chat)
       let item = c.box(style=@ui.style(w=Fixed(160.0), h=Fixed(300.0)), fn() {  })
-      flight_landing(c, f, item, path, start_crop=true, paint=Some(fn(w, h, fit, radius) {
+      flight_landing(c, f, item, path, top_crop=true, paint=Some(fn(w, h, fit, radius) {
         c.image("tall", w=Px(w), h=Px(h), fit~, radius~, bg=0L) |> ignore
       }))
       flight_placed(c, f)
