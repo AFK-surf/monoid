@@ -504,10 +504,11 @@ let head_back_holds : @view.Lent[() -> Bool] = @view.Lent::new()
 let pg_block_est : Double = 80.0
 
 ///|
-/// Back's line's room (pg_back_line: 10 in, 6 over, 4 under); the large title's (pg_title_box: 16 in, 6 under; 40 over
+/// Back's line's room (pg_back_line: 18 in, 6 over, 4 under); the large title's (pg_title_box: 24 in, 6 under; 40 over
 /// with nothing over it), its line's gap and its words' least (pg_title_line, pg_title_words); what it is for
-/// (pg_lead_box: 12 in, 10 under).
-let pg_back_x : Double = 10.0
+/// (pg_lead_box: 12 in, 10 under). The title starts where what is for and the sections' headings do (12 of the page's
+/// room and 12 of their own), back as far in with it (the user, 2026-11-15: a title 8 out of the words under it).
+let pg_back_x : Double = 18.0
 
 ///|
 let pg_back_top : Double = 6.0
@@ -529,7 +530,7 @@ fn page_foot(foot : @view.View) -> Double {
 let pg_back_foot : Double = 4.0
 
 ///|
-let pg_title_x : Double = 16.0
+let pg_title_x : Double = 24.0
 
 ///|
 let pg_title_foot : Double = 6.0
