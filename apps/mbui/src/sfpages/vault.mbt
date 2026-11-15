@@ -872,10 +872,21 @@ fn vault_reset() -> Unit {
 
 ///|
 /// A row of 全部密钥: a vault's secret ("it/<vault>/<item>"), or those of a vault it does not name ("hidden/<vault>").
-#derive(Eq)
 priv enum VaultRow {
   Secret(Json, Json, Bool, Bool)
   Hidden(Json, String, String, Bool)
+}
+
+///|
+/// The same row: of the same JSON (the core's deltas keep what they do not touch: one comparison of two references for
+/// each, a row whose JSON changed read whole), as said the same.
+impl Eq for VaultRow with equal(a, b) {
+  let same = fn(x : Json, y : Json) { physical_equal(x, y) || x == y }
+  match (a, b) {
+    (Secret(r, i, m, k), Secret(r2, i2, m2, k2)) => m == m2 && k == k2 && same(i, i2) && same(r, r2)
+    (Hidden(r, i, w, k), Hidden(r2, i2, w2, k2)) => i == i2 && w == w2 && k == k2 && same(r, r2)
+    _ => false
+  }
 }
 
 ///|
@@ -889,6 +900,37 @@ priv enum VaultRow {
 /// profiles 看过了」), open where what is looked for is among them.
 fn vault_all_node(b : @view.View, core : Core, ws : () -> String, view : () -> Json?, tips : @sf.TipLayer?) -> Unit {
   ignore(tips)
+  let all = vault_all_of(core, ws, view)
+  b.box(fn(col) {
+    vault_find_node(col)
+    // (each secret by its vault and id: one added or taken out comes and goes where it is)
+    col.show(fn() { all.rows.get().length() > 0 }, fn(s) {
+      @sf.group_node(s, fn(g) {
+        g.each(fn() { all.rows.get() }, fn(r) { r.0 }, fn(row, r) { vault_row_node(row, core, ws, fn() { r.get().1 }) })
+      })
+    })
+    // the accounts, folded under a row naming them (open where what is looked for is among them)
+    col.show(fn() { all.accounts.get().length() > 0 }, fn(s) { vault_accounts_node(s, core, all) })
+    col.pick(fn() { vault_all_said(all) }, fn(p, what) { vault_all_said_node(p, core, ws, what) })
+  })
+  |> ignore
+}
+
+///|
+/// What 全部密钥 lists, each worked out once for each change of what it reads (the library's view, each vault's
+/// secrets, the profiles' accounts, what is looked for), read by all that shows it: its rows, each with its key; how many of them are named secrets; the accounts; how many the profiles keep in all;
+/// whether a vault's secrets are still read.
+priv struct VaultAll {
+  rows : @signals.Computed[Array[(String, VaultRow)]]
+  named : @signals.Computed[Int]
+  accounts : @signals.Computed[Array[(String, String, String, String, String, @settings.Route)]]
+  kept_accounts : @signals.Computed[Int]
+  reading : @signals.Computed[Bool]
+}
+
+///|
+/// 全部密钥's lists (VaultAll) as the library's view (`view`) and each vault's items say them now.
+fn vault_all_of(core : Core, ws : () -> String, view : () -> Json?) -> VaultAll {
   let find = fn() { vault_find.text().trim(chars=" ").to_lower() }
   let shows = fn(words : Array[String]) {
     let f = find()
@@ -898,9 +940,11 @@ fn vault_all_node(b : @view.View, core : Core, ws : () -> String, view : () -> J
   let said = fn(words : Array[String]) { words.filter(fn(w) { w != "" }).join(" · ") }
   let vaults = fn() { items(view(), "vaults") }
   let topic_of = fn(rv : Json?) { (core.topic)("vaultItems", { "workspace": str(ws()), "vault": str(text(rv, "id")) }).get() }
-  let reading = fn() { vaults().iter().any(fn(r) { topic_of(Some(r)).value is None }) }
+  // (each worked out once for each change of what it reads, read by all that shows it: the card's rows, whether there
+  // are any, what is said in their place)
+  let reading = @signals.computed(fn(_) { vaults().iter().any(fn(r) { topic_of(Some(r)).value is None }) })
   // each vault's secrets, by name (the core's order); those it does not name, a row
-  let rows = fn() {
+  let rows = @signals.computed(fn(_) {
     let plain = flag(view(), "plain")
     let many = vaults().length() > 1
     let out : Array[(String, VaultRow)] = []
@@ -930,14 +974,16 @@ fn vault_all_node(b : @view.View, core : Core, ws : () -> String, view : () -> J
       }
     }
     out + unnamed
-  }
+  })
   // (the secrets found by their names: not found, whatever a vault does not name)
-  let named = fn() { rows().iter().filter(fn(r) { r.1 is Secret(_, _, _, _) }).count() }
+  let named = @signals.computed(fn(_) { rows.get().iter().filter(fn(r) { r.1 is Secret(_, _, _, _) }).count() })
+  // (the profiles' accounts in their groups, as the profiles list them)
+  let groups = @signals.computed(fn(_) { profile_groups(items((core.topic)("profiles", { "scope": str(ws()) }).get().value, "items")) })
   // the profiles' accounts, as the profiles list them: each its key, its title, what is said under it, its trouble, its
   // group, where it goes
-  let accounts = fn() {
+  let accounts = @signals.computed(fn(_) {
     let out : Array[(String, String, String, String, String, @settings.Route)] = []
-    for g in profile_groups(items((core.topic)("profiles", { "scope": str(ws()) }).get().value, "items")) {
+    for g in groups.get() {
       for e in g.1 {
         let ev = Some(e)
         let p = field(ev, "profile")
@@ -958,88 +1004,96 @@ fn vault_all_node(b : @view.View, core : Core, ws : () -> String, view : () -> J
       }
     }
     out
-  }
-  let kept_accounts = fn() {
+  })
+  let kept_accounts = @signals.computed(fn(_) {
     let mut n = 0
-    for g in profile_groups(items((core.topic)("profiles", { "scope": str(ws()) }).get().value, "items")) {
+    for g in groups.get() {
       n += g.1.length()
     }
     n
-  }
-  b.box(fn(col) {
-    col.box(fn(f) {
-      @sf.style_node(f, fn() { vt_find })
-      @sf.input_node(f, vault_find, placeholder=@sf.t("web-pages.vault.find")) |> ignore
-    })
-    |> ignore
-    // (each secret by its vault and id: one added or taken out comes and goes where it is)
-    col.show(fn() { rows().length() > 0 }, fn(s) {
-      @sf.group_node(s, fn(g) { g.each(rows, fn(r) { r.0 }, fn(row, r) { vault_row_node(row, core, ws, fn() { r.get().1 }) }) })
-    })
-    // the accounts, folded under a row naming them (open where what is looked for is among them)
-    col.show(fn() { accounts().length() > 0 }, fn(s) {
-      let open = fn() { vault_accounts_open.get() || find() != "" }
-      @sf.group_node(s, fn(g) {
-        // (its words where the names are, as those of the secrets' row of those it does not name)
-        @sf.link_row_node(
-          g,
-          fn() { @sf.t("web-pages.vault.accounts") },
-          fn() {
-            if @signals.untracked(find) == "" {
-              vault_accounts_open.set(!@signals.untracked(open))
-            }
-          },
-          note=fn() { if open() { "" } else { accounts().map(fn(a) { a.1 }).join("、") } },
-          folds=open,
-          lead=LeadMade(fn(l) { l.width(Is(Some(vt_no_mark_w))) |> ignore }),
-        )
-        g.show(open, fn(o) {
-          o.each(accounts, fn(a) { a.0 }, fn(row, a) {
-            let av = fn() { a.get() }
-            @sf.link_row_node(
-              row,
-              fn() { av().1 },
-              fn() { (core.push)(@signals.untracked(av).5) },
-              note=fn() { av().2 },
-              trouble=fn() { av().3 },
-              lead=LeadMade(fn(l) { l.pick(fn() { av().4 }, fn(m, group) { vt_group_mark_node(m, group) }) }),
-            )
-          })
-        })
-      })
-    })
-    col.pick(
-      fn() {
-        if reading() {
-          1
-        } else if named() + accounts().length() == 0 && find() != "" {
-          2
-        } else if rows().length() + kept_accounts() == 0 {
-          3
-        } else {
-          0
-        }
-      },
-      fn(p, what) {
-        match what {
-          // (a vault's secrets still read: rows' shapes under what is shown)
-          1 =>
-            @sf.waiting_node(p, fn(w) {
-              @sf.group_node(w, fn(g) {
-                for x in vault_sample_items() {
-                  vault_row_node(g, core.quiet(), ws, fn() { Secret(Json::null(), Json::object(x), false, true) })
-                }
-              })
-            }, note=fn() { { reading: true, text: @sf.t("common.reading"), failing: [] } })
-          2 =>
-            @sf.page_note_node(p, fn() { @sf.t("web-pages.vault.noMatch", args=[("q", vault_find.text().trim(chars=" ").to_owned())]) })
-          3 => @sf.page_note_node(p, fn() { @sf.t("web-pages.vault.empty") })
-          _ => ()
-        }
-      },
-    )
+  })
+  { rows, named, accounts, kept_accounts, reading }
+}
+
+///|
+/// What 全部密钥's search is typed in (vault_find).
+fn vault_find_node(b : @view.View) -> Unit {
+  b.box(fn(f) {
+    @sf.style_node(f, fn() { vt_find })
+    @sf.input_node(f, vault_find, placeholder=@sf.t("web-pages.vault.find")) |> ignore
   })
   |> ignore
+}
+
+///|
+/// The profiles' accounts on a card of their own (vault_all_node's), folded under a row naming them, open where what
+/// is looked for is among them.
+fn vault_accounts_node(s : @view.View, core : Core, all : VaultAll) -> Unit {
+  let find = fn() { vault_find.text().trim(chars=" ").to_lower() }
+  let open = fn() { vault_accounts_open.get() || find() != "" }
+  @sf.group_node(s, fn(g) {
+    // (its words where the names are, as those of the secrets' row of those it does not name)
+    @sf.link_row_node(
+      g,
+      fn() { @sf.t("web-pages.vault.accounts") },
+      fn() {
+        if @signals.untracked(find) == "" {
+          vault_accounts_open.set(!@signals.untracked(open))
+        }
+      },
+      note=fn() { if open() { "" } else { all.accounts.get().map(fn(a) { a.1 }).join("、") } },
+      folds=open,
+      lead=LeadMade(fn(l) { l.width(Is(Some(vt_no_mark_w))) |> ignore }),
+    )
+    g.show(open, fn(o) {
+      o.each(fn() { all.accounts.get() }, fn(a) { a.0 }, fn(row, a) {
+        let av = fn() { a.get() }
+        @sf.link_row_node(
+          row,
+          fn() { av().1 },
+          fn() { (core.push)(@signals.untracked(av).5) },
+          note=fn() { av().2 },
+          trouble=fn() { av().3 },
+          lead=LeadMade(fn(l) { l.pick(fn() { av().4 }, fn(m, group) { vt_group_mark_node(m, group) }) }),
+        )
+      })
+    })
+  })
+}
+
+///|
+/// What 全部密钥 says under its rows now: nothing (0); its secrets still read (1); none found by what is looked for (2);
+/// none at all (3).
+fn vault_all_said(all : VaultAll) -> Int {
+  let find = vault_find.text().trim(chars=" ").to_lower()
+  if all.reading.get() {
+    1
+  } else if all.named.get() + all.accounts.get().length() == 0 && find != "" {
+    2
+  } else if all.rows.get().length() + all.kept_accounts.get() == 0 {
+    3
+  } else {
+    0
+  }
+}
+
+///|
+/// What 全部密钥 says under its rows (vault_all_said's `what`), in `p`.
+fn vault_all_said_node(p : @view.View, core : Core, ws : () -> String, what : Int) -> Unit {
+  match what {
+    // (a vault's secrets still read: rows' shapes under what is shown)
+    1 =>
+      @sf.waiting_node(p, fn(w) {
+        @sf.group_node(w, fn(g) {
+          for x in vault_sample_items() {
+            vault_row_node(g, core.quiet(), ws, fn() { Secret(Json::null(), Json::object(x), false, true) })
+          }
+        })
+      }, note=fn() { { reading: true, text: @sf.t("common.reading"), failing: [] } })
+    2 => @sf.page_note_node(p, fn() { @sf.t("web-pages.vault.noMatch", args=[("q", vault_find.text().trim(chars=" ").to_owned())]) })
+    3 => @sf.page_note_node(p, fn() { @sf.t("web-pages.vault.empty") })
+    _ => ()
+  }
 }
 
 ///|

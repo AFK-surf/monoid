@@ -860,10 +860,10 @@ fn screen_views_node(g : @view.View, core : Core, here : () -> Here, address : S
     let vv = fn() { Some(vs.get()) }
     let view = text(@signals.untracked(vv), "id")
     let on = [("view", view)]
-    row.pick(fn() { (flag(vv(), "may"), flag(vv(), "control")) }, fn(r, k) {
-      let (may, control) = k
-      @sf.link_row_node(
-        r,
+    // (made once: 转为只看 and 断开 come and go at its end as the view says it may be let go of and drives it, the row
+    // itself not made again for either)
+    @sf.link_row_node(
+        row,
         fn() { text(vv(), "name") },
         fn() {  },
         // (the device is what tells one's own views apart: in the note, which wraps where 转为只看 and 断开 leave little room)
@@ -873,28 +873,24 @@ fn screen_views_node(g : @view.View, core : Core, here : () -> Here, address : S
           if device == "" { mode + " · " + text(vv(), "ago") } else { device + " · " + mode + " · " + text(vv(), "ago") }
         },
         goes=false,
-        tail?=if may {
-          Some(fn(e) {
-            @sf.line_end_node(e, fn(l) {
-              if control {
-                let what = @sf.t("web-pages.screen.viewWatchOnly")
-                @sf.button_node(l, fn() { what }, fn() { asked("screen.watchOnly", what, [("view", str(view))]) }, tone=Ghost, busy=fn() {
-                  is_doing(core, ["screen.watchOnly"], on)
-                })
-                |> ignore
-              }
-              let what = @sf.t("web-pages.screen.viewEnd")
-              @sf.button_node(l, fn() { what }, fn() { asked("screen.endView", what, [("view", str(view))]) }, tone=Ghost, busy=fn() {
-                is_doing(core, ["screen.endView"], on)
+        tail=fn(e) {
+          @sf.line_end_node(e, fn(l) {
+            l.show(fn() { flag(vv(), "control") }, fn(w) {
+              let what = @sf.t("web-pages.screen.viewWatchOnly")
+              @sf.button_node(w, fn() { what }, fn() { asked("screen.watchOnly", what, [("view", str(view))]) }, tone=Ghost, busy=fn() {
+                is_doing(core, ["screen.watchOnly"], on)
               })
               |> ignore
             })
+            let what = @sf.t("web-pages.screen.viewEnd")
+            @sf.button_node(l, fn() { what }, fn() { asked("screen.endView", what, [("view", str(view))]) }, tone=Ghost, busy=fn() {
+              is_doing(core, ["screen.endView"], on)
+            })
+            |> ignore
           })
-        } else {
-          None
         },
+        tail_shown=fn() { flag(vv(), "may") },
       )
-    })
   })
   g.show(fn() { items(screen(), "views").filter(fn(v) { flag(Some(v), "may") }).length() > 1 }, fn(r) {
     let what = @sf.t("web-pages.screen.viewsEndAll")

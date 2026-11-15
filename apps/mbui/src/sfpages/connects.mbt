@@ -83,14 +83,18 @@ pub fn connects_node(
       }
     })
   }
-  let stations = fn() {
+  // (each list worked out once for each change of what it reads, read by all that asks it: the page's blocks, its
+  // actions, its list)
+  let stations_now = @signals.computed(fn(_) {
     match @settings.stations_of(core, here()).value {
       Some(Array(a)) => if only == "" { a } else { a.filter(fn(x) { text(Some(x), "station") == only }) }
       _ => []
     }
-  }
+  })
+  let stations = fn() { stations_now.get() }
   let view = fn() { topic().value }
-  let shown = fn() { items(view(), "items").filter(fn(x) { only == "" || text(Some(x), "station") == only }) }
+  let shown_now = @signals.computed(fn(_) { items(view(), "items").filter(fn(x) { only == "" || text(Some(x), "station") == only }) })
+  let shown = fn() { shown_now.get() }
   let wait = fn() { field(view(), "wait") }
   let loading = fn() { wait() is None || flag(wait(), "reading") }
   let station_of = fn(address : String) -> Json? {
@@ -98,7 +102,7 @@ pub fn connects_node(
   }
   // the Slack apps the viewer made that no connect has taken yet, each on its station (the connects' `slackApps`: every
   // station's, said with it), with that station's row (its name and whether it is up; till that is read, its name)
-  let waiting = fn() -> Array[(Json, Json)] {
+  let waiting_now : @signals.Computed[Array[(Json, Json)]] = @signals.computed(fn(_) {
     items(view(), "slackApps").filter_map(fn(x) {
       let address = text(Some(x), "station")
       if only != "" && address != only {
@@ -110,7 +114,8 @@ pub fn connects_node(
       }
       Some((field(Some(x), "app").unwrap_or(Json::null()), s))
     })
-  }
+  })
+  let waiting = fn() { waiting_now.get() }
   // none at all yet (not only none of the viewer's): the page is about adding the first
   let first = fn() {
     !loading() && topic().error is None && shown().length() == 0 && !mine.get() && waiting().length() == 0
@@ -128,7 +133,8 @@ pub fn connects_node(
     }
   }
   // where one is added: the stations online
-  let targets = fn() { stations().filter(fn(s) { flag(Some(s), "online") }) }
+  let targets_now = @signals.computed(fn(_) { stations().filter(fn(s) { flag(Some(s), "online") }) })
+  let targets = fn() { targets_now.get() }
   let failing = fn() { items(wait(), "failing").length() > 0 }
   // (its primary action named as what it adds; narrow, the title's ＋)
   let actions = fn(l : @view.View) {
