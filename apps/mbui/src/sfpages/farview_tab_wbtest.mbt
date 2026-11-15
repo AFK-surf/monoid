@@ -1,6 +1,6 @@
 // A chat's Farview tab drawn here (farview_tab.mbt), over a core made up for it: `farview.view` asked as it is shown,
-// the stage's Hello said as it goes live, the host's bytes drawn as tiles of the page, a tap said to the host, and the
-// view let go as the tab goes.
+// the stage's Hello said as it goes live, the host's bytes drawn as nodes of the window's tree, a tap said to the host,
+// a box of the page's that scrolls scrolled here and its place told the host, and the view let go as the tab goes.
 
 ///|
 priv struct FarviewRig {
@@ -14,8 +14,8 @@ priv struct FarviewRig {
 }
 
 ///|
-/// Long enough for the stage to draw the tiles in sight and ahead, a tile a moment a millisecond apart.
-let farview_tiles_ms : Double = 20.0
+/// Long enough for what the host sent to be drawn, and for a box let go of after a drag to come to rest.
+let farview_drawn_ms : Double = 2000.0
 
 ///|
 fn farview_rig() -> FarviewRig {
@@ -65,12 +65,19 @@ fn farview_rig() -> FarviewRig {
 }
 
 ///|
-/// What the host says of a page 390 wide and 1000 tall: its address, then a frame of one piece, red with a white box.
+/// What the host says of a page 390 wide and 1000 tall: its address, then a frame of one piece, red with a white box,
+/// and a box that scrolls (id 7) 300 tall from 400 down, its content 900 tall, a green band at its top.
 fn farview_page_bytes() -> Bytes {
-  let ops : Array[@proto.Op] = [Rect(0.0, 0.0, 390.0, 1000.0, 0xFF0000FF), Rect(20.0, 20.0, 100.0, 40.0, 0xFFFFFFFF)]
+  let ops : Array[@proto.Op] = [
+    Rect(0.0, 0.0, 390.0, 1000.0, 0xFF0000FF),
+    Rect(20.0, 20.0, 100.0, 40.0, 0xFFFFFFFF),
+    ScrollBox(7, 0.0, 400.0, 390.0, 300.0, 390.0, 900.0),
+    Rect(0.0, 400.0, 390.0, 50.0, 0x00FF00FF),
+    Unclip,
+  ]
   let out = Buffer()
   out.write_bytes(@proto.encode(Page("https://example.test/")))
-  out.write_bytes(@proto.encode(Frame(390.0, 1000.0, [(1, 1000.0)], [(1, ops)])))
+  out.write_bytes(@proto.encode(Frame(390.0, 1000.0, [(1, 0.0)], [(1, ops)])))
   out.to_bytes()
 }
 
@@ -87,7 +94,7 @@ fn farview_said(bytes : Bytes) -> Array[@proto.Message] {
 }
 
 ///|
-test "a Farview tab: asked as shown, Hello as it goes live, the page drawn in tiles, a tap the host's, let go as it goes" {
+test "a Farview tab: asked as shown, Hello as it goes live, the page drawn as nodes, a tap the host's, a box scrolled here, let go as it goes" {
   let r = farview_rig()
   // asked as it is shown, of its station and its tab
   assert_eq(r.views.length(), 1)
@@ -101,11 +108,15 @@ test "a Farview tab: asked as shown, Hello as it goes live, the page drawn in ti
   guard hello is [Hello(w, h, scale), ..] else { fail("no Hello: \{hello.length()} said") }
   assert_eq((w, scale), (390.0, 2.0))
   assert_true(h > 600.0 && h < 844.0)
-  // the page: its tiles drawn (1000 tall: three of 400)
-  tell(Json::object({ "data": Json::boolean(true) }), Some(farview_page_bytes()))
-  r.t.run_for(farview_tiles_ms)
-  let tiles = r.t.drawlist_images().filter(fn(i) { i.1.has_prefix("farview-") })
-  assert_true(tiles.length() >= 2)
+  // the page: drawn as nodes (its rectangles), no tiles
+  @ui.answered_from_outside(fn() { tell(Json::object({ "data": Json::boolean(true) }), Some(farview_page_bytes())) })
+  r.t.run_for(farview_drawn_ms)
+  let top = 844.0 - h
+  let green = fn() { r.t.drawn_rects().filter(fn(d) { d.4 == 0x00FF00FFL && d.2 == 390.0 }) }
+  assert_true(r.t.drawn_rects().any(fn(d) { d.4 == 0xFF0000FFL && d.2 == 390.0 }))
+  assert_true(r.t.drawlist_images().all(fn(i) { !i.1.has_prefix("farview-") }))
+  // (the box that scrolls where the host put it, on the window's pixels)
+  assert_true(green() is [band] && (band.1 - (top + 400.0)).abs() < 0.5)
   // a tap on the page: the host's, at that point of the page, as a browser's press and let go
   r.sent.clear()
   r.t.tap(60.0, h / 2.0 + (844.0 - h))
@@ -115,6 +126,17 @@ test "a Farview tab: asked as shown, Hello as it goes live, the page drawn in ti
     .flatten()
     .filter_map(fn(m) { if m is Person(p) && p.contains("\"pointer\"") { Some(p.contains("\"down\"")) } else { None } })
   assert_eq(taps, [true, false])
+  // the box that scrolls, dragged up 120: scrolled here, under the finger, and where it came to told the host
+  r.sent.clear()
+  r.t.drag(200.0, top + 650.0, 200.0, top + 530.0)
+  r.t.run_for(farview_drawn_ms)
+  let told = r.sent
+    .map(fn(b) { farview_said(b) })
+    .flatten()
+    .filter_map(fn(m) { if m is BoxScroll(7, _, y) { Some(y) } else { None } })
+  guard told.last() is Some(y) && y > 60.0 else { fail("box scroll told: \{told.length()}") }
+  // (the green band at the box's top gone up by as much, cut where the box starts)
+  assert_true(green().all(fn(d) { d.1 + d.3 <= top + 400.0 + 50.0 - y + 1.0 }))
   // gone: the view let go
   r.shown.set(false)
   r.t.draw()
