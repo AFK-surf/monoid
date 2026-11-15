@@ -86,6 +86,10 @@ fn invitation_token(words : String) -> String? {
 let invite_buttons : @ui.Style = @ui.css("row w=Full pt=S1_5 pb=S6 gap=S2 justify=JEnd")
 
 ///|
+/// The field the link is pasted in: a rectangle's corners (12), as the sheet's field was, not a capsule.
+let invite_corner : Double = 12.0
+
+///|
 /// What it says (14, muted), the account's label (13, semibold), why it failed (13, red).
 // kept across runs: a value (no field of it changes)
 let invite_lead : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted)
@@ -229,7 +233,11 @@ fn invite_node(v : @view.View, src : Source) -> Unit {
       InvitePaste => {
         lead(fn() { fill("android-misc.invite.pasteLink", [("app", "still.fail")]) })
         let words = @signals.signal(invite.field.text(), same=fn(a, b) { a == b })
-        @sf.input_node(p, invite.field, placeholder="https://app.still.fail/invite#…", edited=fn(w) { words.set(w) }) |> ignore
+        // (the link pasted in a rectangle with rounded corners (invite_corner), two lines of it at most, not a capsule)
+        @sf.textarea_node(p, invite.field, rows=1, most=2, corner=invite_corner, placeholder="https://app.still.fail/invite#…", edited=fn(w) {
+          words.set(w)
+        })
+        |> ignore
         buttons(fn(b) {
           @sf.button_node(b, fn() { tr("common.cancel") }, fn() {
             invite.field.take() |> ignore

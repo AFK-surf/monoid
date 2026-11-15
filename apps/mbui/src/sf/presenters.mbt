@@ -172,6 +172,9 @@ priv struct PanelNodes {
   foot : ((@view.View, () -> Unit) -> Unit)?
   /// a share of the window tall (`tall`): as tall as what it holds up to that share, not that share whatever it holds
   hugs : Bool
+  /// in the middle of the window (a dialog) as tall as what it holds up to its share, whatever `hugs` says on 小屏
+  /// (panel_nodes' `hugs_centred`)
+  hugs_centred : Bool
   /// what it holds goes in steps in it, each made as nodes (panel_nodes' `steps`: panel_go_nodes, panel_back)
   steps : Bool
   /// where it heads itself (PanelOf's `heads_itself`), on a sheet too (the reader's layout): else headed there as ever,
@@ -179,6 +182,9 @@ priv struct PanelNodes {
   sheet_heads : Bool
   /// untitled, what it holds heads itself in the title's place in the middle of the window (panel_nodes' `heads_itself`)
   heads : Bool
+  /// in the middle of the window, this share of its height down from its top, no close button, its room a row's (12)
+  /// all round (panel_nodes' `top_share`; 0: in its middle as a dialog)
+  top : Double
 }
 
 ///|
@@ -668,7 +674,10 @@ pub fn panel(
 /// `fits`, `heads_itself`, `fade_out_together`: beside what opened it, as panel's are: as wide as what it holds, `w` at
 /// most; no head of the panel's, what it holds drawing its own (in the middle of the window too: its own head row in the
 /// title's place, clear of the close button over its corner, untitled_clear_node); the panel and what it holds faded
-/// together as it goes.
+/// together as it goes. `top_share`: in the middle of the window
+/// across, that share of its height down from its top (⌘K's panel's 14%), over the night as a dialog, no close button
+/// (Escape, back and a press outside close it), a row's room (12) in all round, its corner a pane's. `hugs_centred`: as
+/// `hugs` in the middle of the window alone (a sheet on 小屏 keeps its share).
 pub fn panel_nodes(
   title : String,
   body : (@view.View, () -> Unit) -> Unit,
@@ -691,9 +700,11 @@ pub fn panel_nodes(
   along? : @ui.Along = Start,
   offset? : Double = panel_offset,
   hugs? : Bool = false,
+  hugs_centred? : Bool = false,
   match_panel? : Int = 0,
   steps? : Bool = false,
   back? : () -> Unit,
+  top_share? : Double = 0.0,
 ) -> Unit {
   present(
     Panel({
@@ -723,7 +734,7 @@ pub fn panel_nodes(
       match_panel,
       steps: false,
       on_back: back,
-      nodes: Some({ body, foot, hugs, steps, sheet_heads: false, heads: heads_itself }),
+      nodes: Some({ body, foot, hugs, hugs_centred, steps, sheet_heads: false, heads: heads_itself, top: top_share }),
     }),
     from,
     gone~,
@@ -790,7 +801,7 @@ pub fn panel_go_nodes(
         Panel(x) =>
           match x.nodes {
             Some(n) => {
-              let step : PanelOf = { ..x, title, description, live: None, nodes: Some({ body, foot, hugs: n.hugs, steps: false, sheet_heads: false, heads: false }) }
+              let step : PanelOf = { ..x, title, description, live: None, nodes: Some({ body, foot, hugs: n.hugs, hugs_centred: n.hugs_centred, steps: false, sheet_heads: false, heads: false, top: 0.0 }) }
               // (opened by what opened the panel: on a sheet as far in as its first step, sheet_node's `pressed`)
               panel_page(p, step, p.from, left)
             }

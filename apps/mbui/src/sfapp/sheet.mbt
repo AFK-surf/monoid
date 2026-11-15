@@ -69,10 +69,13 @@ fn raise_sheet(
     from~,
     tall=share,
     grows=draggable,
+    // (the invitation in the middle of the window as tall as what it says, no taller; a sheet on 小屏 half the window)
+    hugs_centred=kind == InviteLink,
     live~,
     w=if kind == ShareSheet { share_panel_w } else { @sf.panel_w },
-    // (what is shared, opened from a point at the window's top (share_from): its middle under it, as ⌘K's panel)
-    along=if kind == ShareSheet { Middle } else { Start },
+    // (what is shared in the app, on 中屏 and 大屏: 14% down the window, over its night, no close button, as ⌘K's panel
+    // (sfdesk switcher.mbt); a sheet on 小屏; over another app a dialog in its middle)
+    top_share=if kind == ShareSheet && !share_over.get() { share_panel_top_share } else { 0.0 },
     gone=fn() {
       if s.kind == kind {
         s.kind = NoSheet
@@ -120,18 +123,6 @@ fn sheet_open() -> Bool {
 ///|
 /// What another app shares, its panel's width with a wide window.
 let share_panel_w : Double = 520.0
-
-///|
-/// Where what is shared opens from in a window of `size` (share_in_frame's): in the app, a point at the middle of its
-/// top, 14% down (as ⌘K's panel stands: sfdesk switcher.mbt), its panel under it, no close button of its own; over
-/// another app, nothing (a dialog in the middle, a sheet on 小屏).
-fn share_from(size : (Double, Double)) -> @sf.Anchor {
-  if share_over.get() {
-    Unanchored
-  } else {
-    At(size.0 / 2.0, size.1 * share_panel_top_share - @sf.panel_offset, 0.0, 0.0)
-  }
-}
 
 ///|
 /// How far down the window what is shared stands in the app (⌘K's panel's).

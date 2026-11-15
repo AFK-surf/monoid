@@ -68,6 +68,7 @@ fn dialog_layer_node(
   scrim? : () -> Int64 = fn() { @ui.tree_theme().scrim },
   ground_ms? : Double = confirm_ground_ms,
   night_with_ground? : Bool = false,
+  top_share? : Double = 0.0,
 ) -> Unit {
   parent.show(
     open,
@@ -162,7 +163,15 @@ fn dialog_layer_node(
         (left, top, right, foot)
       }))
       |> ignore
-      layer.box(fn(s) { s.grow(Is(1.0)) |> ignore }) |> ignore
+      // (over it the room `top_share` of the window's height says, where it says one: else as much as under it)
+      layer.box(fn(s) {
+        if top_share > 0.0 {
+          s.height(By(fn() { Some(layer.window().1 * top_share) })).shrink(Is(0.0)) |> ignore
+        } else {
+          s.grow(Is(1.0)) |> ignore
+        }
+      })
+      |> ignore
       gate.collect(fn() {
       layer.box(fn(across) {
         across.row(Is(true)) |> ignore

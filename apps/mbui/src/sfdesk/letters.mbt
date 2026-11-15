@@ -210,9 +210,10 @@ fn letters_list_node(
         est=letters_row_est,
       )
       |> ignore
-      // (room under the last of the chats, as under the tab's: their grounds out of the corners of a dialog's foot)
+      // (room under the last of the chats in a dialog in the middle of the window: their grounds out of the corners of
+      // its foot; none at a sheet's, whose foot goes on past the window's)
       if at == "" {
-        b.box(fn(f) { f.height(Is(Some(letters_foot_h))) |> ignore }) |> ignore
+        b.box(fn(f) { f.height(By(fn() { Some(if @sf.in_dialog_node(f) { letters_foot_h } else { 0.0 }) })) |> ignore }) |> ignore
       }
     })
     |> ignore

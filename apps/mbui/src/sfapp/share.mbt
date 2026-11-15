@@ -190,7 +190,7 @@ fn share_in_frame(c : @ui.Ctx) -> Unit {
   // the presenters have it, the window going from one to the other); filling the window the browser extension opened
   if share_in.shared.get() is Some(_) && !share_in.raised.get() && !share_sinking.val {
     if !share_inline() {
-      raise_sheet(ShareSheet, from=share_from(c.window_size()))
+      raise_sheet(ShareSheet)
     }
     share_in.raised.set(true)
   }
@@ -306,11 +306,11 @@ let share_narrow : ShareLook = {
 }
 
 ///|
-/// (the small panel's own 6 in, then a row's 18 more: a dialog's 24; its rows a row's corner, concentric in it)
+/// (the panel's own 12 in, then a row's 12 more: a dialog's 24)
 // kept across runs: a value (no field of it changes)
 let share_wide_look : ShareLook = {
   wide: true,
-  side: 18.0,
+  side: 12.0,
   col: 20.0,
   icon: 16.0,
   gap: 10.0,
@@ -324,17 +324,17 @@ let share_wide_look : ShareLook = {
   label_pb: 4.0,
   list_pb: 0.0,
   row_h: 38.0,
-  row_padx: 18.0,
+  row_padx: 12.0,
   row_pady: 8.0,
-  row_corner: @sf.row_corner,
+  row_corner: share_row_corner,
   row_line: 20.0,
   row_gap: 2.0,
   model: 18.0,
-  inset: @ui.css("w=Full px=S4_5"),
+  inset: @ui.css("w=Full px=S3"),
   // (in the panel's top left corner on its words' line, as far from its top, concentric with it there: the ladder's
   // row corner)
-  files_in: @sf.panel_words - @sf.panel_pad,
-  files_top: @sf.panel_words - @sf.panel_pad,
+  files_in: @sf.panel_words - 12.0,
+  files_top: @sf.panel_words - 12.0,
   tile_corner: @sf.row_corner,
 }
 
@@ -460,6 +460,11 @@ fn share_opened(
 ///|
 /// How many pictures shared in have been added as images (their keys' numbers).
 let share_files_made : Ref[Int] = { val: 0 }
+
+///|
+/// A wide row's corner, and what lies in the panel's corners: concentric 12 in, the panel's own then a pane's (34, one of
+/// the ladder's).
+let share_row_corner : Double = @ui.concentric(@sf.pane_corner, 12.0)
 
 ///|
 /// The sheet of what is shared (ShareSheet's body, as nodes of the window's tree made once in `v`), as `src` says it now:
