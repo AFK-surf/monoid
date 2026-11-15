@@ -751,11 +751,11 @@ pub fn folder_actions(c : @ui.Ctx, src : Source, f : FolderOf, style? : @ui.Styl
     // (short of room, the preview leaves first, then the view, a new folder and uploading)
     @sf.tool_of(
       "view",
-      fn() { view_switch(c, "files/view", view, fn(v) { set_drive_view(src, "page", v) }, ways~) },
+      fn() { view_switch(c, "files/view", view_pressed("page", view), fn(v) { view_press(c, src, b, v) }, ways~) },
       drop=folder_drop_view,
       instead=view_icons
-        .filter(fn(w) { w.0 != view && ways.contains(w.0) })
-        .map(fn(w) { @sf.menu_item_of(@sf.t("web-pages.drive.view." + w.0), fn() { set_drive_view(src, "page", w.0) }, icon=w.1) }),
+        .filter(fn(w) { w.0 != view_pressed("page", view) && ways.contains(w.0) })
+        .map(fn(w) { @sf.menu_item_of(@sf.t("web-pages.drive.view." + w.0), fn() { view_press(c, src, b, w.0) }, icon=w.1) }),
     ),
   ]
   if pane_fits(f.room) {

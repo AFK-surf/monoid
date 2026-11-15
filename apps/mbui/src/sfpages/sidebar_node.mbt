@@ -119,6 +119,9 @@ pub fn chats_lists_node(
           }
         }))
         .clips(Is(true))
+        // (read out only while it is the list shown: one slid off to a side, or on its way off, is out of view, its rows
+        // none a screen reader is to read, and none of what changes as the filter does)
+        .hides(By(fn() { (frame.shown)() != i }))
         |> ignore
         // (made once it is shown, or as the filter's menu opens (what it would show read by the time one is picked),
         // kept from then while the workspace is: each row only while it is in view; where it is scrolled to its list's

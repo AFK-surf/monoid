@@ -124,7 +124,13 @@ pub fn browse(
   }
   let b = { ..b0, shown: match got { Some(v) => Some(v); None => p.last }, count_text: match got { Some(v) => v.count_text; None => None } }
   let here = view + "\n" + at.station + "\n" + root + "\n" + at.path
-  if p.told != here {
+  // (another way pressed for the place, what it shows read meanwhile: the core told of it at the press, view_press;
+  // once it is shown, what that press asked handed over to what reads it here, let go at this frame's end)
+  let held = views_held.get().contains(owner)
+  if !held {
+    @sfbase.shown_read("drive-view/" + owner)
+  }
+  if p.told != here && !held {
     // (a name being changed lets go as another folder is shown)
     if p.told != "" {
       p.renaming = None

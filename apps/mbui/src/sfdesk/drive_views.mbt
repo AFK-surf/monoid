@@ -103,6 +103,11 @@ fn drag_target(c : @ui.Ctx, src : Source, id : Int, key : String, into : DriveAt
 /// How `place` (page or tab) shows a folder, as last chosen there. The files page starts with the detailed list; a
 /// chat's narrower files tab starts with columns where they fit.
 pub fn drive_view(src : Source, place : String) -> String {
+  // (another way pressed and what it shows not read yet: the one shown till it is, view_press)
+  match views_held.get().get(place) {
+    Some(v) => return v
+    None => ()
+  }
   match text(field(src.topic("prefs", {}).get().value, "driveViews"), place) {
     "columns" => "columns"
     "tree" => "tree"
@@ -141,6 +146,145 @@ pub fn set_drive_view(src : Source, place : String, v : String) -> Unit {
   let o : Map[String, Json] = Map([])
   o[place] = if place != "page" && v == "columns" { Json::null() } else { Json::string(v) }
   (src.call)("prefs.set", { "driveViews": Json::object(o) }, @sfbase.answer_unread)
+}
+
+///|
+/// Each place's way shown while another pressed waits for what it shows (view_press), by place; what it was pressed for,
+/// what the choice shows meanwhile (view_pressed), and its wait.
+// kept across runs: put back by views_held_reset (reset)
+let views_held : @signals.Signal[Map[String, String]] = @signals.signal(Map([]))
+
+///|
+// kept across runs: put back by views_held_reset (reset)
+let views_pressed : @signals.Signal[Map[String, String]] = @signals.signal(Map([]))
+
+///|
+// kept across runs: put back by views_held_reset (reset)
+let views_waits : Map[String, @sfbase.PressWait] = Map([])
+
+///|
+fn views_held_reset() -> Unit {
+  for _, w in views_waits {
+    w.end()
+  }
+  views_waits.clear()
+  views_held.set(Map([]))
+  views_pressed.set(Map([]))
+}
+
+///|
+/// `place`'s entry of a map kept as a signal (`m`) set to `v`, or taken out (None): a new map, told as it changes.
+fn views_put(m : @signals.Signal[Map[String, String]], place : String, v : String?) -> Unit {
+  let now = m.untracked()
+  if now.get(place) == v {
+    return
+  }
+  let next = now.copy()
+  match v {
+    Some(v) => next[place] = v
+    None => next.remove(place)
+  }
+  m.set(next)
+}
+
+///|
+/// The way `place`'s choice shows: the one pressed while what it shows is read (view_press), else the one shown.
+fn view_pressed(place : String, shown : String) -> String {
+  views_pressed.get().get(place).unwrap_or(shown)
+}
+
+///|
+/// Another way pressed for the folder `b` shows (its place `b.owner`): kept as chosen at once (set_drive_view) and the
+/// core told where the place is shown so (`drive.browse` `at`), the choice showing it pressed; the folder shown as it is
+/// till what that way shows is answered (the place's browsing that way and each folder it draws: switch_answered, the
+/// rows pressed for the moment they come), then switched to it whole, in one frame: never a way drawn in its bones.
+/// Pressed again before that, the one pressed before is waited for no more.
+fn view_press(c : @ui.Ctx, src : Source, b : Browse, v : String) -> Unit {
+  let place = b.owner
+  @signals.untracked(fn() {
+    let shown = drive_view(src, place)
+    match views_waits.get(place) {
+      Some(w) => {
+        views_waits.remove(place)
+        w.give_up()
+      }
+      None => ()
+    }
+    views_put(views_pressed, place, None)
+    views_put(views_held, place, None)
+    set_drive_view(src, place, v)
+    if v == shown {
+      return
+    }
+    // (the way shown kept on screen, the one pressed shown by the choice, while what it shows is read)
+    views_put(views_held, place, Some(shown))
+    views_put(views_pressed, place, Some(v))
+    // (the core told at once where the place is shown that way, as the build would tell it once switched: browse's)
+    let to = { ..b, view: v }
+    let p = browse_place(b.key)
+    p.told = v + "\n" + b.at.station + "\n" + b.root + "\n" + b.at.path
+    browse_send(c, src, to, { "act": "at" })
+    let station = b.at.station
+    let root = b.root
+    let folder = fn(path : String) -> (String, Map[String, Json]) {
+      ("drive", { "station": Json::string(station), "root": Json::string(root), "path": Json::string(path) })
+    }
+    // (what the way draws of its folders, as the place's browsing says them: columns the way down to the one shown,
+    // a tree the one shown and each folder opened in it; drive_folder's asks)
+    let then = fn(read : ((String, Map[String, Json])) -> Json?) -> Array[(String, Map[String, Json])] {
+      let got = read(("driveBrowse", to.where_()))
+      guard got is Some(_) else { return [] }
+      let view = @sfbase.browse_view_of(got)
+      match v {
+        "columns" => {
+          let out = [folder("")]
+          let mut so_far = ""
+          if b.at.path != "" {
+            for part in b.at.path.split("/") {
+              so_far = dv_join(so_far, part.to_owned())
+              out.push(folder(so_far))
+            }
+          }
+          out
+        }
+        "tree" => {
+          let out = [folder(b.at.path)]
+          match view {
+            Some(bv) =>
+              for o in bv.open {
+                if b.at.path == "" || o.has_prefix(b.at.path + "/") {
+                  out.push(folder(o))
+                }
+              }
+            None => ()
+          }
+          out
+        }
+        _ => [folder(b.at.path)]
+      }
+    }
+    let w = @sfbase.switch_answered(
+      src,
+      [("driveBrowse", to.where_())],
+      "drive-view/" + place,
+      then~,
+      fn() {
+        views_waits.remove(place)
+        views_put(views_held, place, None)
+        views_put(views_pressed, place, None)
+      },
+      let_go=fn() {
+        views_waits.remove(place)
+        if views_pressed.untracked().get(place) == Some(v) {
+          views_put(views_held, place, None)
+          views_put(views_pressed, place, None)
+        }
+      },
+    )
+    if w.waiting() {
+      views_waits[place] = w
+    }
+  })
 }
 
 ///|
