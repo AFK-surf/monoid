@@ -1979,7 +1979,9 @@ try {
       for (const k of keys) writeFileSync(join(roomOn("A", k)!, "mine.txt"), `${k}\n`);
       jobTag = `all${tag}`;
       await say(keys[0]!, `drill-job:${jobTag}`, `drill-job ${jobTag}`);
-      await whenChanged([DATA.A], () => jobs(jobTag).length > 0, 60_000, () => "no job");
+      // (a job is a process: no file of A's need change as it starts, so looked at each second as well; drill 37's
+      // started as A's directory had gone quiet and was never looked for again)
+      await whenChanged([DATA.A], () => jobs(jobTag).length > 0, 60_000, () => `no job: ${jobEvidence(jobTag)}`, 1000);
       for (const k of keys.slice(7)) {
         const thread = (await untilChat(k, (v) => typeof v?.thread?.id === "number" && v)).thread.id;
         await a.call("chat.archive", { station: A, session: k, thread, archived: true });
@@ -2413,7 +2415,14 @@ try {
         const c = await answerTo(t1, `drill-noted g${tag} `);
         log(`  answered from ${cwdOf(c)} via ${c.station}`);
       });
-      // (the connect A's again, its chats on B, for the next)
+      // (the connect A's again, its chats on B, for the next: once A, started again, has reached B, B's log saying A asked
+      // it which chats are live there; drill 37's asked at once and was refused, A's link to B not yet up)
+      if (holds(dk).join() === "B") {
+        const bLog = `${RUN}/${SHELL_NAME.B}.log`;
+        const from = existsSync(bLog) ? statSync(bLog).size : 0;
+        await a.until(moveT(bId), (v) => v?.modules && v, 60_000).catch(() => {});
+        await whenChanged([RUN], () => new RegExp(`asked which chats are live there station=${aId.slice(0, 12)}`).test(since(bLog, from)), 60_000, () => "", 1000).catch(() => log("  A was not seen asking B within 60 s"));
+      }
       if (holds(dk).join() === "B") await backConnect(dk, "B").then((l) => log(`  the connect back: ${outcome(l)}`), (e) => log(`  the connect not back: ${String(e).slice(0, 300)}`));
       if (holds(dk).join() === "A" && standing("B", k1) === "live") {
         await check("4s fault: A handed over to a fresh process (SIGUSR2) while a routed thread is answered on B: answered once, one socket at a time", async () => {
