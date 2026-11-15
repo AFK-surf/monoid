@@ -27,6 +27,7 @@
 //   6b a chat whose key is live on both: shown as one that cannot move, a move refused, B untouched;
 //   7 one station asking another each second while the other is handed to a new process, stopped and started, and
 //     handed to one that dies at start: each ask answered or refused within 2 s, answered again within 5 s of it ready;
+//     7h: asked as each of 10 handovers begins (its launcher's "handing over from Node"): every such ask answered;
 //   8 a device away while a chat moves A→B, A down as it comes back, with no place in B's stream B can go on from (8:
 //     never told by B; 8r: told, its place taken out as B's log moving past it would): it lists the chat once, on B,
 //     which only B's list read can tell it (its session's `from`).
@@ -35,7 +36,7 @@
 // parts to run (e.g. "1 2 3a 5"; all of them where unset).
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, statfsSync, unlinkSync, watch, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, statfsSync, unlinkSync, unwatchFile, watch, watchFile, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { check as checked, deadline, Device, dir, fail, failures, heldProbe, type J, log, whenChanged, within } from "./device.ts";
 import { type Call, SlackStandIn } from "./slack-stand-in.ts";
@@ -2852,40 +2853,51 @@ try {
       if (why.length > 0) throw new Error(why.join("; "));
     };
 
-    // E2E_MOVE_HANDOVERS=n: 7a's handover n times in a row while B asks A each second (7a to 7c not run), each ask placed
-    // against A's handover windows from its launcher's log: from "handing over from Node" to "has taken over"
-    // (the lead, 2026-11-16: how many asks land in that window, how many of them are not reached)
+    // 7h: A handed over n times in a row (E2E_MOVE_HANDOVERS, 10 where unset) while B asks it, each ask placed against A's
+    // handover windows in its launcher's log, from "handing over from Node" to "has taken over". B asks as the launcher
+    // says it is handing over (that line watched as a file), two asks a handover, each the one before's end: an ask in
+    // the window every time. E2E_MOVE_HANDOVER_ASK=each: B asks each second instead, each handover at its own phase of
+    // that second (a measure: about one window in ten had an ask). With E2E_MOVE_HANDOVERS set, 7h alone runs.
+    // (the lead, 2026-11-16: asked at a handover's first milliseconds, B said 「现在连不上」 on main as on the branch,
+    // 8 of 9 and 10 of 12 such asks: every one is to be answered, the next Node's, not refused)
     const handovers = Number(process.env.E2E_MOVE_HANDOVERS ?? 0);
-    // E2E_MOVE_HANDOVER_ASK=at: B asks A only as A's launcher says it is handing over (its log's line, watched as a
-    // file), two asks a handover, each the one before's end: an ask in the window every time, not by its phase
-    const askAt = process.env.E2E_MOVE_HANDOVER_ASK === "at";
-    if (handovers > 0) await check(`7h: A handed over ${handovers} times while B asks it ${askAt ? "as each handover begins" : "each second"}: every ask in a handover window answered`, async () => {
+    const n7h = handovers > 0 ? handovers : 10;
+    const askAt = process.env.E2E_MOVE_HANDOVER_ASK !== "each";
+    const check7h = () => check(`7h: A handed over ${n7h} times while B asks it ${askAt ? "as each handover begins" : "each second"}: every ask in a handover window answered`, async () => {
       const t0 = Date.now();
       const asks: Ask[] = [];
       if (askAt) {
         const file = `${RUN}/${SHELL_NAME.A}.log`;
-        for (let i = 1; i <= handovers; i++) {
+        for (let i = 1; i <= n7h; i++) {
           const from = statSync(file).size;
-          let w: ReturnType<typeof watch> | null = null;
-          const handing = new Promise<void>((resolve) => {
-            w = watch(file, () => { if (/handing over from Node [0-9]+ to Node/.test(since(file, from))) resolve(); });
-          });
+          const line = () => /^(\S+)[^\n]*handing over from Node [0-9]+ to Node/m.exec(since(file, from));
+          let seen = () => {};
+          const handing = new Promise<void>((resolve) => { seen = () => { if (line() !== null) resolve(); }; });
+          // (its file's events, and its size looked at every 2 ms besides: told by the file's events alone, 11 of 20
+          // asks began over 125 ms after the line, past the window, ho-7h-5)
+          const w = watch(file, () => seen());
+          watchFile(file, { interval: 2 }, () => seen());
           try {
             const h = await handOver("A");
             const ended = handoverEnd(h);
             const first = await Promise.race([handing.then(() => true), ended.then(() => false)]);
-            (w as ReturnType<typeof watch> | null)?.close();
+            w.close();
+            unwatchFile(file);
+            let late = "";
             if (first) {
               const b = asking("B", "A");
               await b.answered(2);
               await b.stop();
               asks.push(...b.asks);
+              const said = Date.parse(line()?.[1] ?? "");
+              late = Number.isFinite(said) ? `; asked ${b.asks[0]!.at - said} ms after the line's own time` : "";
             }
             const end = await ended;
-            log(`  ${i}/${handovers}: ${end}${first ? "" : " (its handing over not seen first: not asked)"}`);
+            log(`  ${i}/${n7h}: ${end}${first ? late : " (its handing over not seen first: not asked)"}`);
             if (!/has taken over/.test(end)) throw new Error(`not handed over at ${i}: ${end}`);
           } finally {
-            (w as ReturnType<typeof watch> | null)?.close();
+            w.close();
+            unwatchFile(file);
           }
         }
       } else {
@@ -2895,11 +2907,11 @@ try {
           // (each handover sent at its own phase of the asks' second, swept across it: sent as an ask ended, every
           // window fell between two asks, 0 of 250 in one, main's first run of it)
           const phased = (ms: number) => new Promise((r) => setTimeout(r, ms)); // det-ok(script-wait): the handovers' phase against the asks' second, swept across it, not a wait for an event
-          for (let i = 1; i <= handovers; i++) {
+          for (let i = 1; i <= n7h; i++) {
             await b.begunFrom(Date.now() + 1);
-            await phased(Math.round(((i - 1) * 1000) / handovers));
+            await phased(Math.round(((i - 1) * 1000) / n7h));
             const end = await handoverEnd(await handOver("A"));
-            log(`  ${i}/${handovers}: ${end}`);
+            log(`  ${i}/${n7h}: ${end}`);
             if (!/has taken over/.test(end)) throw new Error(`not handed over at ${i}: ${end}`);
             await b.answered(3);
           }
@@ -2931,7 +2943,10 @@ try {
       }
       for (const x of [...refused, ...outside].slice(0, 3)) log(`  the ask at ${iso(x.at)} (${x.ms} ms: ${x.said.slice(0, 120)}), both logs:\n${logsBetween(x.at - 1000, x.at + x.ms + 1000) || "  (nothing)"}`);
       if (refused.length + outside.length > 0) throw new Error(`${refused.length} of ${landed.length} asks in a handover window not reached; ${outside.length} outside`);
+      // (asked as each handover began, none in its window is the drill's own failing, said as such: it held nothing)
+      if (askAt && landed.length === 0) throw new Error(`no ask of ${asks.length} began inside a handover window: the drill asked too late, nothing held`);
     });
+    if (handovers > 0) await check7h();
     if (handovers === 0) await check("7a: A handed over to a new process as an update does (SIGUSR2 to its launcher) while B asks it each second: no ask over 2 s, every one answered", async () => {
       const t0 = Date.now();
       const b = asking("B", "A");
@@ -3035,6 +3050,7 @@ try {
       }
       if (errs.length > 0) throw new Error(errs.join(" | "));
     });
+    if (handovers === 0) await check7h();
   }
   if (part("8") && (limit("8", 1200), await clean("8"))) {
     // A device away while a chat moves A→B, A down as it comes back: only B's list read can tell it the chat came from
