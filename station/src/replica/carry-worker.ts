@@ -17,7 +17,7 @@ import { appendFileSync, chmodSync, closeSync, copyFileSync, existsSync, linkSyn
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { isMainThread, parentPort, workerData } from "node:worker_threads";
-import { rebuildable, rebuildableKind, roomOf } from "../sessions/footprint.ts";
+import { ANY_NAME_DEPTH, rebuildableByName, rebuiltByName, rebuiltOfAnyName, roomOf } from "../sessions/footprint.ts";
 import { BUILTIN_SKILLS, FEEDBACK_SKILL } from "../sessions/agent-home.ts";
 import { runtimeKind } from "../agents/runtime.ts";
 import { sessionPlaces, storage, transcriptSources } from "../read/transcript.ts";
@@ -249,8 +249,8 @@ function walked(dataDir: string, db: string, ws: string, home: boolean, scratch:
   let files = 0;
   /// A sizing's entries walked of the session at hand, and its bound.
   let walkedOf = 0;
-  const step = () => {
-    if (sizing !== null && ++walkedOf > sizing.most) throw CUT;
+  const step = sizing === null ? () => {} : () => {
+    if (++walkedOf > sizing.most) throw CUT;
   };
   let bytes = 0;
   // (per session: what its list said before, and what is in its list now)
@@ -313,8 +313,10 @@ function walked(dataDir: string, db: string, ws: string, home: boolean, scratch:
       else add(path);
     }
   };
-  /// Every file under `dir`, but what a build makes again; a git checkout in it as `checkout` takes it.
-  const tree = (dir: string) => {
+  /// Every file under `dir`, but what a build makes again; a git checkout in it as `checkout` takes it. `depth`: under
+  /// the room's top (its own entries 1); what is made again of any name is asked only down to ANY_NAME_DEPTH, by its
+  /// listing (footprint.ts `rebuiltOfAnyName`), and by name from the listing of where it is (`rebuiltByName`).
+  const tree = (dir: string, depth: number) => {
     step();
     let names: string[];
     try {
@@ -323,7 +325,9 @@ function walked(dataDir: string, db: string, ws: string, home: boolean, scratch:
       if (denied(e)) cannotRead(dir);
       return;
     }
-    if (names.includes(".git") && checkout(dir)) return;
+    if (names.includes(".git") && checkout(dir, depth)) return;
+    if (depth <= ANY_NAME_DEPTH && rebuiltOfAnyName(dir, names)) return;
+    const here = new Set(names);
     for (const name of names.sort()) {
       const path = join(dir, name);
       let st;
@@ -333,7 +337,7 @@ function walked(dataDir: string, db: string, ws: string, home: boolean, scratch:
         continue;
       }
       if (st.isDirectory()) {
-        if (name === ".git" || !rebuildable(path)) tree(path);
+        if (name === ".git" || rebuiltByName(name, here) === null) tree(path, depth + 1);
       } else add(path);
     }
   };
@@ -341,7 +345,7 @@ function walked(dataDir: string, db: string, ws: string, home: boolean, scratch:
   /// it lists (a repository in it, a submodule) gone into; its `.git` as its files where it is the checkout's own
   /// repository or a submodule's (a relative `gitdir:`), made again from its remote where it is a linked worktree (an
   /// absolute one). False where git does not read it: its files then go as any others do, `.git` with them.
-  const checkout = (dir: string): boolean => {
+  const checkout = (dir: string, depth: number): boolean => {
     const dotgit = join(dir, ".git");
     let st;
     try {
@@ -359,7 +363,7 @@ function walked(dataDir: string, db: string, ws: string, home: boolean, scratch:
       for (let i = 1; i < parts.length; i++) {
         const at = parts.slice(0, i).join("/");
         let r = made.get(at);
-        if (r === undefined) made.set(at, (r = rebuildableKind(join(dir, at)) === "named"));
+        if (r === undefined) made.set(at, (r = rebuildableByName(join(dir, at))));
         if (r) return true;
       }
       return false;
@@ -374,8 +378,9 @@ function walked(dataDir: string, db: string, ws: string, home: boolean, scratch:
         } catch {
           continue;
         }
+        // (a repository in it git lists: what it ignores of its own, git says there; nothing of any name asked in a checkout)
         if (s.isDirectory()) {
-          if (rebuildableKind(path) !== "named") tree(path);
+          if (!rebuildableByName(path)) tree(path, Math.max(depth + 1, ANY_NAME_DEPTH + 1));
         } else add(path);
       }
     };
@@ -429,6 +434,7 @@ function walked(dataDir: string, db: string, ws: string, home: boolean, scratch:
     try {
       names = readdirSync(room); // sync: in the gathering's own thread (gatherSoon)
     } catch {}
+    const here = new Set(names);
     for (const name of names.sort()) {
       // (its lock, and what is being written as it is looked at, stay)
       if (name === "archive.lock" || name.endsWith(".writing")) continue;
@@ -440,7 +446,7 @@ function walked(dataDir: string, db: string, ws: string, home: boolean, scratch:
         continue;
       }
       if (st.isDirectory()) {
-        if (!rebuildable(path)) tree(path);
+        if (rebuiltByName(name, here) === null) tree(path, 1);
       } else add(path);
     }
   };
@@ -588,6 +594,7 @@ export function homeFiles(agent: string): string[] {
     try {
       names = readdirSync(dir); // sync: in the gathering's own thread (gatherSoon)
     } catch {}
+    const here = new Set(names);
     for (const name of names.sort()) {
       const path = join(dir, name);
       let st;
@@ -597,7 +604,7 @@ export function homeFiles(agent: string): string[] {
         continue;
       }
       if (st.isDirectory()) {
-        if (!rebuildable(path)) walk(path);
+        if (rebuiltByName(name, here) === null) walk(path);
       } else if (st.isFile()) out.push(path);
     }
   };

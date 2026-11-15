@@ -21,6 +21,8 @@ export type SizesDeps = {
   data: string;
   /// Sessions `keys` sized (carry-worker.ts `sizes` in its thread, retire.ts `sizesSoon`).
   measure: (keys: string[]) => Promise<Sized[]>;
+  /// Whether session `key` is gone from here (handed over): its line, not read since, let go after a pass at rest.
+  gone?: (key: string) => boolean;
 };
 
 /// What a set of chats would send, as far as it is known.
@@ -42,13 +44,17 @@ export class Sizes {
   }
 
   /// What a plan read of chat `id`: its sessions, each with its stamp. One whose line is of another stamp, or has none,
-  /// is measured again (the pass, started if none runs).
+  /// is measured again by the pass the plan's end starts (`read`).
   seen(id: string, sessions: { key: string; stamp: string }[]): void {
     this.#keysOf.set(id, sessions.map((s) => s.key));
     for (const s of sessions) {
       if (this.#log.get(s.key)?.stamp === s.stamp) this.#stale.delete(s.key);
       else this.#stale.set(s.key, s.stamp);
     }
+  }
+
+  /// A plan read ended: what it found stale measured, at rest (none started while a turn runs here).
+  read(): void {
     if (!this.#quiet) this.#start();
   }
 
@@ -82,27 +88,26 @@ export class Sizes {
           log.warn("move", "chats' sizes not measured", { sessions: batch.length, error: (e as Error).message });
         }
         const byKey = new Map(got.map((s) => [s.key, s]));
+        const lines: [string, SizeLine][] = [];
         for (const [key, stamp] of batch) {
           // (seen again meanwhile with another stamp: measured again in a later batch)
           if (this.#stale.get(key) === stamp) this.#stale.delete(key);
           const s = byKey.get(key);
           if (s === undefined) continue;
           this.measured++;
-          // (not kept, a write failing: known till the station stops, measured again after)
-          await this.#log.set(key, { bytes: s.bytes, complete: s.complete, stamp, room: s.room, transcripts: s.transcripts }).catch((e) => log.warn("move", "a chat's size not kept", { error: (e as Error).message }));
+          lines.push([key, { bytes: s.bytes, complete: s.complete, stamp, room: s.room, transcripts: s.transcripts }]);
         }
+        // (a batch's lines in one write; not kept, a write failing: known till the station stops, measured again after)
+        await this.#log.many(lines).catch((e) => log.warn("move", "chats' sizes not kept", { error: (e as Error).message }));
+      }
+      // (the lines of sessions gone from here since, not read, let go: a pass at rest's, never one a hand-over writes)
+      if (!this.#quiet && this.#d.gone !== undefined) {
+        const gone = this.#log.keys().filter((k) => this.#d.gone!(k));
+        await this.#log.many(gone.map((k) => [k, undefined])).catch(() => {});
       }
     } finally {
       this.#pass = null;
       log.info("move", "chats' sizes measured", { sessions: this.measured - before, ms: Math.round(performance.now() - t0) });
-    }
-  }
-
-  /// A session gone from here (handed over): its line let go.
-  async forget(keys: string[]): Promise<void> {
-    for (const k of keys) {
-      this.#stale.delete(k);
-      await this.#log.delete(k);
     }
   }
 

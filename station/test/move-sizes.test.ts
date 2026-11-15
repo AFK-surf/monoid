@@ -3,7 +3,7 @@
 // before anything is held where what it would add there does not leave the floor free, counting what the other station
 // has in place already (a room left there by a retirement); each chat refused the same way by what it lacks there.
 import assert from "node:assert/strict";
-import { cpSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -119,6 +119,9 @@ test("a turn reads plans every half second and sizes no room; what changed meanw
   await a.moves.scheduler.plan(WS, B);
   await a.moves.sizes.settled();
   const n0 = a.sized.length;
+  const kept = () => readFileSync(join(a.rig.dir, "move", "sizes.log"), "utf8");
+  const before = kept();
+  assert.notEqual(a.moves.sizes.line(going), undefined);
   // (a turn held as the chat's files are placed there)
   const gate = Promise.withResolvers<void>();
   const at = Promise.withResolvers<void>();
@@ -140,10 +143,12 @@ test("a turn reads plans every half second and sizes no room; what changed meanw
   assert.equal((await turn).failed, null);
   await w.quiet();
   assert.deepEqual(a.sized.slice(n0), [], "nor as it ended");
+  assert.equal(kept(), before, "nothing written of its sizes as the chat went");
   // At rest: the chat that changed, alone (the one that left needs none).
   await a.moves.scheduler.plan(WS, B);
   await a.moves.sizes.settled();
   assert.deepEqual(a.sized.slice(n0), [other]);
+  assert.equal(a.moves.sizes.line(going), undefined, "the line of the chat that left let go by the pass at rest");
 });
 
 test("a chat's trip asks no more of the other than its files need: what it lacks asked first only where all of it might not fit", async () => {

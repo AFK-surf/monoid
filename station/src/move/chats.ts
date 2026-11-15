@@ -49,7 +49,7 @@ export type ChatsDeps = {
   /// What a plan of `ws` reads once (move/station.ts), where the scheduler gave none.
   reads: (ws: string) => PlanReads;
   /// What a move would send of each chat (sizes.ts): told each chat here the plan read, its sessions as they are now.
-  sizes?: { seen(id: string, sessions: { key: string; stamp: string }[]): void };
+  sizes?: { seen(id: string, sessions: { key: string; stamp: string }[]): void; read(): void };
 };
 
 /// What a session's room is measured against (sizes.ts): its last activity (a turn's start and end), whether it is
@@ -122,6 +122,8 @@ export function chatsModule(d: ChatsDeps): Module {
           items.push({ module: "chats", id: keys[0]!, label: row.title ?? key, needs, ...(why !== null ? { cannot: why } : {}), ...(unknown ? { again: true as const } : {}) });
         }
       }
+      // (what it found stale measured from here, the plan read: never while it reads)
+      d.sizes?.read();
       if (askedLive > 0) log.info("move", "the other station asked which chats are live there", { station: to.slice(0, 12), asked: askedLive, live: saidLive });
       // (a chat coming here, not shown yet, is out of the pages (its rows `coming:`): listed by its arrival's record,
       // moving, by the row it had here where it had one)

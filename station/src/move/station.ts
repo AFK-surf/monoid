@@ -184,7 +184,7 @@ export class Moves {
 
   constructor(d: MovesDeps) {
     this.#d = d;
-    this.sizes = new Sizes({ data: d.data, measure: (keys) => this.#sized(keys, { most: SIZE_MOST }) });
+    this.sizes = new Sizes({ data: d.data, measure: (keys) => this.#sized(keys, { most: SIZE_MOST }), gone: (key) => d.store.handedTo(key) !== null });
     let known: Record<string, AccountOf> = {};
     try {
       known = JSON.parse(readFileSync(join(d.data, "move", "accounts-known.json"), "utf8")) as Record<string, AccountOf>; // sync: read once, before the station serves
@@ -240,10 +240,7 @@ export class Moves {
         await d.connects?.arrived?.(keys);
         await this.#accounts.left?.(keys.map((id) => ({ module: "chats", id }))).catch((e) => log.warn("move", "what was lent for a chat back here not taken back", { error: (e as Error).message }));
       },
-      went: (keys) => {
-        void this.sizes.forget(keys).catch(() => {});
-        return this.scheduler.forget(keys.map((id) => ({ module: "chats", id })));
-      },
+      went: (keys) => this.scheduler.forget(keys.map((id) => ({ module: "chats", id }))),
       keptSends: d.keptSends, keepSends: d.keepSends,
       hold: () => (d.hold ?? holdUpdates)(),
       bindingsOf: (keys) => {

@@ -657,9 +657,8 @@ export const JOBS_UP = "SELECT * FROM (SELECT * FROM jobs WHERE state = 'running
 /// other services or commands (jobs.ts startId).
 /// The sessions in sight on profile ?1 not handed away, at most ?2 (by the index of those in sight).
 export const LIVE_ON_PROFILE = "SELECT key FROM sessions INDEXED BY sessions_live WHERE archived_at IS NULL AND profile = ?1 AND key NOT IN (SELECT session FROM handed_over) LIMIT ?2";
-/// Each of sessions ?1's last job made, by its index (its rowid within it), and those jobs by their rowids.
-export const LAST_JOBS_OF = "SELECT session_key AS k, MAX(rowid) AS r FROM jobs INDEXED BY jobs_by_session WHERE session_key IN (SELECT value FROM json_each(?1)) GROUP BY session_key";
-export const JOBS_BY_ROWID = "SELECT rowid AS r, ended_at AS e, state FROM jobs WHERE rowid IN (SELECT value FROM json_each(?1))";
+/// Each of sessions ?1's last job made (its rowid within the session's index) and where it stands: one statement.
+export const LAST_JOBS_OF = "SELECT session_key AS k, rowid AS r, ended_at AS e, state FROM jobs WHERE rowid IN (SELECT MAX(rowid) FROM jobs INDEXED BY jobs_by_session WHERE session_key IN (SELECT value FROM json_each(?1)) GROUP BY session_key)";
 export const JOB_AT_PORT = `SELECT id, name, port FROM (
   SELECT id, name, port, started_at FROM jobs INDEXED BY jobs_up WHERE state = 'running' AND port = ?1
   UNION ALL
