@@ -1,6 +1,7 @@
 // A source session's directory mirrored on this station for its remote tasks (station/src/jobs/dirsync.ts, whose head
-// says how a sync goes): the target's side here, what the mirror has and how a plan is carried out in it. Every file
-// operation is the shell's (off this program's thread); the bytes of the contents sent stay Node's (`putBlobs`).
+// says how a sync goes): the target's side here, what the mirror has, the contents sent unpacked into it and how a plan
+// is carried out in it. Every file operation is the shell's (off this program's thread): Node only lands a request's
+// packed pieces in a file as they come off the transport (remote.ts `answer`), never a piece's write, stat or rename.
 
 ///|
 let file_mode : String = "100644"
@@ -14,6 +15,13 @@ let link_mode : String = "120000"
 ///|
 /// A page of a manifest or a plan, as JSON, at most about this much.
 let page_bytes : Int = 512 * 1024
+
+///|
+/// A request's pieces at most, and their bytes unpacked at most (dirsync.ts PIECES, RAW).
+let max_pieces : Int = 2000
+
+///|
+let max_raw : Int = 16 * 1024 * 1024
 
 ///|
 fn mode_of_bits(mode : Double) -> String {
@@ -526,4 +534,92 @@ async fn Actors::sync_changes(self : Actors, manifest_path : String, base : Stri
     changes.push(Json::object(change))
   }
   { "changes": Json::array(changes), "more": jbool(more) }
+}
+
+///|
+/// sync.put: pieces sent (`index`: [id, size, offset, length] each) unpacked into `blobs`, each content in its own
+/// file, complete when its last piece came and its id checked. Their packed bytes are in the file at `packed` (Node
+/// landed them there), or base64 in `data` from a station from before. A piece that came already (a request asked
+/// again) is skipped; how many pieces there were.
+async fn Actors::put_blobs(self : Actors, blobs : String, index : Json, packed : String?, data : Json) -> Int raise {
+  guard index is Array(index) && index.length() <= max_pieces else { raise refusal("bad pieces") }
+  let pieces : Array[(String, Double, Double, Int)] = []
+  let mut total = 0.0
+  for p in index {
+    guard p is Array([String(hash), size, offset, length, ..]) &&
+      is_blob_id(hash) &&
+      as_u64(size) is Some(size) &&
+      as_u64(offset) is Some(offset) &&
+      as_u64(length) is Some(length) else {
+      raise refusal("bad piece")
+    }
+    if size > max_file || offset + length > size {
+      raise refusal("bad piece")
+    }
+    total += length
+    pieces.push((hash, size, offset, length.to_int()))
+  }
+  if total > max_raw.to_double() {
+    raise refusal("too much in one request")
+  }
+  let unpack = async fn(args : Map[String, Json], bytes : Bytes?) -> Bytes raise {
+    let (_, out) = try {
+      match bytes {
+        Some(b) => self.host.shell("zstd.unpack", Json::object(args), bytes=b)
+        None => self.host.shell("zstd.unpack", Json::object(args))
+      }
+    } catch {
+      e => raise refusal(FsError::of(e))
+    }
+    out.unwrap_or(b"")
+  }
+  let raw = match packed {
+    Some(path) => unpack({ "path": jstr(path), "most": jnum(max_raw.to_double()) }, None)
+    None => {
+      // (STANDARD base64 as the Rust decoded it: padded, nothing else in it)
+      let text = str_of(Some(data)).unwrap_or("")
+      let bytes = if text.length() % 4 != 0 {
+        raise refusal("Invalid input length or symbol")
+      } else {
+        @base64.decode(text) catch { _ => raise refusal("Invalid input length or symbol") }
+      }
+      unpack({ "most": jnum(max_raw.to_double()) }, Some(bytes))
+    }
+  }
+  if raw.length().to_double() != total {
+    raise refusal("pieces do not match their data")
+  }
+  self.mkdirs(blobs)
+  let mut at = 0
+  for p in pieces {
+    let (hash, size, offset, length) = p
+    let piece = raw[at:at + length].to_owned()
+    at += length
+    let done = rjoin([blobs, hash])
+    if self.there(done) {
+      continue
+    }
+    let part = "\{done}.part"
+    let has = match self.lstat(part) {
+      Some(st) => num_of(st.value("size")).unwrap_or(0.0)
+      None => 0.0
+    }
+    let end = offset + length.to_double()
+    if end <= has && !(offset == 0.0 && has == 0.0) {
+      continue
+    }
+    if offset != has {
+      raise refusal("a content's pieces came out of order")
+    }
+    // (from its start a new file, else after what it has: openSync's "w" and "a")
+    ignore(self.fs("fs.put", { "path": jstr(part), "offset": jnum(offset), "truncate": jbool(true), "nofollow": jbool(true) }, bytes=piece))
+    if end == size {
+      if self.file_id(part, size) != hash {
+        self.remove(part)
+        raise refusal("a content sent does not match its id")
+      }
+      self.rename(part, done)
+    }
+  }
+  pieces.length()
 }

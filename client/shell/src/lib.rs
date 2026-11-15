@@ -1272,6 +1272,30 @@ impl Inner {
                 .map_err(err)??;
                 Ok(Answer::bytes(json!({}), out))
             }
+            // What the zstd frames in `bytes` (or in the file at `path`) hold, `most` bytes of it at most: more is refused,
+            // unpacked no further. A sync's pieces as another station sent them (station/mb src/reader/dirsync.mbt
+            // `put_blobs`), off the caller's thread.
+            "zstd.unpack" => {
+                let most = a.get("most").and_then(Value::as_u64).ok_or("most is required")?;
+                let path = a.get("path").and_then(Value::as_str).map(PathBuf::from);
+                let input = bytes.unwrap_or_default();
+                let out = tokio::task::spawn_blocking(move || -> Result<Vec<u8>, String> {
+                    use std::io::Read;
+                    let packed = match path {
+                        Some(path) => std::fs::read(path).map_err(err)?,
+                        None => input,
+                    };
+                    let mut out = Vec::new();
+                    zstd::stream::read::Decoder::new(packed.as_slice()).map_err(err)?.take(most + 1).read_to_end(&mut out).map_err(err)?;
+                    if out.len() as u64 > most {
+                        return Err(format!("more than {most} bytes unpacked"));
+                    }
+                    Ok(out)
+                })
+                .await
+                .map_err(err)??;
+                Ok(Answer::bytes(json!({}), out))
+            }
             // A zstd stream made of what is given it piece by piece (`zstd.push`), each piece flushed: what an event stream
             // a station's program answers goes out as (station/mesh/compress.ts `compressedStream`), `level` and a window of
             // 2^`window` its.
@@ -3497,6 +3521,27 @@ mod tests {
         let id = serde_json::from_str::<Value>(&answer(call + 4).0).unwrap()["id"].as_u64().unwrap();
         shell.call(call + 5, "zstd.push".into(), format!(r#"{{"id":{id}}}"#).as_bytes(), Some(b"not zstd at all".to_vec()));
         assert_ne!(answer(call + 5).1, "");
+    }
+
+    #[test]
+    fn unpacks_zstd_whole_up_to_its_bound() {
+        let dir = TempDir::new();
+        let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+        let plain: Vec<u8> = (0..100_000u32).flat_map(|i| i.to_le_bytes()).collect();
+        let packed = zstd::stream::encode_all(&plain[..], 3).unwrap();
+        // given, or in a file
+        shell.call(9101, "zstd.unpack".into(), br#"{"most":400000}"#, Some(packed.clone()));
+        assert_eq!(answer(9101).2, Some(plain.clone()));
+        let at = dir.path().join("packed.zst");
+        std::fs::write(&at, &packed).unwrap();
+        let args = json!({ "path": at.to_string_lossy(), "most": 400_000 }).to_string();
+        shell.call(9102, "zstd.unpack".into(), args.as_bytes(), None);
+        assert_eq!(answer(9102).2, Some(plain.clone()));
+        // a byte more than its bound is refused, as is what is not zstd
+        shell.call(9103, "zstd.unpack".into(), br#"{"most":399999}"#, Some(packed));
+        assert_eq!(answer(9103).1, "more than 399999 bytes unpacked");
+        shell.call(9104, "zstd.unpack".into(), br#"{"most":10}"#, Some(b"not zstd at all".to_vec()));
+        assert_ne!(answer(9104).1, "");
     }
 
     #[test]

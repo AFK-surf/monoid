@@ -126,8 +126,9 @@
 - The remote tasks (station_task across stations) run there too, as the pseudo-actor `#remote`
   (`mb/src/reader/remote*.mbt`): what other stations ask of this one, the mirrors and their sweep, following tasks
   started from here. Node (`src/jobs/remote.ts`) keeps the mesh bus, the file bytes (written and read at the path the
-  program names), the directory sync's sending side and the pieces it unpacks (`src/jobs/dirsync.ts`; a mirror's
-  manifest, plan and its application are the program's, `mb/src/reader/dirsync.mbt`), protected folders and the load.
+  program names; a sync's packed pieces landed in a file the program unpacks), the directory sync's sending side
+  (`src/jobs/dirsync.ts`; a mirror's manifest, its pieces' unpacking, plan and application are the program's,
+  `mb/src/reader/dirsync.mbt`), protected folders and the load.
 - The live view (what a running turn does, its rate, its background tasks and checklist, its transcript's entries as
   written) runs there too, as the pseudo-actor `#live` (`mb/src/reader/live.mbt`), a Claude session's events given it
   in the program. Node (`src/sessions/live.ts`) keeps what the program asks of it: where a transcript is, what one

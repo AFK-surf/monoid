@@ -33,7 +33,7 @@ import { type Bytes, type Inbox, MESH_WAIT_MS, NoBytes, NoLink, type PeerCall, P
 import type { ActorsProgram } from "../sessions/mb-actor.ts";
 import { version as runningVersion } from "../ops/version.ts";
 import { fileBytes, readBytes, stopBytes, writeBytes } from "../mesh/files.ts";
-import { Bulk, LINK, PACKED, patchOf, putBlobs, syncDir } from "./dirsync.ts";
+import { Bulk, LINK, PACKED, patchOf, syncDir } from "./dirsync.ts";
 import { DEFAULT_LIMIT, WorkspaceReader } from "./workspace-size.ts";
 import { SANDBOX, type Sandbox, ensureIdentity, sandboxDescribed } from "../agents/sandbox.ts";
 
@@ -336,6 +336,24 @@ export async function filePath(root: string, relative: string, create: boolean):
   return out;
 }
 
+/// What processes gone left landed (Remote `answer`): each process's own directory, named by its pid.
+async function tidyLanding(landing: string): Promise<void> {
+  for (const name of await readdir(landing).catch(() => [] as string[])) {
+    const pid = Number(name);
+    if (Number.isSafeInteger(pid) && pid > 0 && (pid === process.pid || alive(pid))) continue;
+    await rm(join(landing, name), { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
 /// STANDARD base64 as the Rust decodes it: padded, nothing else in it.
 function fromBase64(data: string): Buffer {
   if (data.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(data)) throw new Error("Invalid input length or symbol");
@@ -401,6 +419,9 @@ export class Remote {
   private inBytes = new Map<number, Bytes>();
   private outBytes = new Map<number, Bytes>();
   private bytesNext = 0;
+  /// Where this process lands a sync's packed pieces for the program (`answer`): its own, as the next Node of a
+  /// handover answers beside it.
+  private landing: string;
 
   constructor(options: RemoteOptions) {
     this.data = options.data;
@@ -415,6 +436,8 @@ export class Remote {
     this.removeTask = options.removeTask ?? ((path) => rm(path, { recursive: true, force: true }));
     this.root = join(options.data, "remote");
     for (const name of ["incoming", "outgoing", "sessions", "used", "prepared"]) mkdirSync(join(this.root, name), { recursive: true }); // sync: once, as it is made
+    this.landing = join(this.root, "landing", String(process.pid));
+    void tidyLanding(join(this.root, "landing"));
     void readAllUsed(join(this.root, "used"));
     this.scope = Effect.runSync(Scope.make());
     const runtime = Scope.provide(FiberSet.makeRuntimePromise<never, void, never>(), this.scope);
@@ -449,17 +472,33 @@ export class Remote {
   }
 
   /// A request of another station's taken in here (`otherwise`): its bytes, if any, kept for the program to have
-  /// written where it says (`bytes`); an answer's (a file asked for whole) sent after it.
+  /// written where it says (`bytes`); an answer's (a file asked for whole) sent after it. A sync's packed pieces
+  /// (`sync.put`, PACKED at most) are landed in a file first, named to the program (`landed`), which unpacks and writes
+  /// them itself (station/mb src/reader/dirsync.mbt `put_blobs`): its thousands of small files' writes, stats and renames
+  /// held this thread for seconds when they were Node's (2026-11-15: 6.0 s and 4.2 s on a station short of memory).
   private async answer(workspace: string, peer: string, request: Json): Promise<Json> {
     const bytes = bytesOf(request);
-    let asked = request;
+    // (`landed` is only ever this station's own: never a path another station names)
+    const { landed: _, ...asked0 } = request ?? {};
+    let asked: Json = asked0;
     let id = 0;
-    if (bytes !== null) {
-      id = ++this.bytesNext;
-      this.inBytes.set(id, bytes);
-      asked = { ...request, bytes: id };
-    }
+    let landed: string | null = null;
     try {
+      if (bytes !== null && request?.method === "sync.put") {
+        landed = join(this.landing, `${++this.bytesNext}.zst`);
+        await mkdir(this.landing, { recursive: true });
+        const file = await open(landed, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, 0o600);
+        try {
+          await writeBytes(file, bytes, 0, PACKED);
+        } finally {
+          await file.close();
+        }
+        asked = { ...asked, landed };
+      } else if (bytes !== null) {
+        id = ++this.bytesNext;
+        this.inBytes.set(id, bytes);
+        asked = { ...asked, bytes: id };
+      }
       const answer = await this.call("handle", [workspace, peer, asked]);
       const out = typeof answer?.outBytes === "number" ? this.outBytes.get(answer.outBytes) : undefined;
       if (out !== undefined) {
@@ -472,6 +511,7 @@ export class Remote {
       const left = id === 0 ? undefined : this.inBytes.get(id);
       this.inBytes.delete(id);
       if (left !== undefined) await stopBytes(left).catch(() => undefined);
+      if (landed !== null) await rm(landed, { force: true }).catch(() => undefined);
     }
   }
 
@@ -523,11 +563,6 @@ export class Remote {
       case "node.ensureIdentity":
         await ensureIdentity(this.data);
         return null;
-      case "node.putBlobs": {
-        const packed = typeof c === "number" ? this.inBytes.get(c) : undefined;
-        if (packed !== undefined) this.inBytes.delete(c);
-        return await putBlobs(a, b, packed !== undefined ? await readBytes(packed, PACKED) : fromBase64(typeof d === "string" ? d : ""));
-      }
       case "node.filePut":
         return await this.filePut(a, b);
       case "node.fileGet":

@@ -11,17 +11,18 @@
 //   and answers with it and what is there now (a file a command changed is hashed again). The source plans its changes
 //   against the last synced state; the target preserves remote-only changes and refuses conflicting changes.
 // - Sent: only contents the mirror has nowhere, as pieces packed into zstd-compressed requests (`sync.put`), each
-//   within the transport's 1 MiB message; then the plan (`sync.commit`), in pages as well.
+//   within the transport's 1 MiB message; then the plan (`sync.commit`), in pages as well. The target lands each
+//   request's packed bytes in a file and its program unpacks them (station/mb src/reader/dirsync.mbt `put_blobs`).
 // - Written: a changed file goes to a temporary file renamed over it, with its exec bit; a file that left the set is
 //   removed if it did not change remotely; an existing remote result at a new path is checked too. An unchanged file
 //   keeps its mtime, so incremental builds there see exactly what changed.
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { closeSync, createReadStream, existsSync, mkdirSync, openSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
+import { createReadStream } from "node:fs";
 import { chmod, lstat, mkdir, open, readFile, readlink, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
-import { zstdCompress, zstdDecompress } from "node:zlib";
+import { zstdCompress } from "node:zlib";
 import { NoBytes, withBytes } from "../mesh/bus.ts";
 import { oneBytes } from "../mesh/files.ts";
 import { walkBounded } from "../ops/walk.ts";
@@ -55,7 +56,6 @@ export const PACKED = RAW + 1024 * 1024;
 const PAGE = 512 * 1024;
 
 const pack = promisify(zstdCompress);
-const unpack = promisify(zstdDecompress);
 const run = promisify(execFile);
 
 /// A file's content id as Git has it.
@@ -436,53 +436,9 @@ async function sendBlobs(ask: Ask, id: string, dir: string, need: Local[], bulk:
   return sent;
 }
 
-// ── the target: the contents sent (the rest of the mirror is the program's: station/mb src/reader/dirsync.mbt) ──
-
-/// Pieces sent (`index`: id, size, offset, length) unpacked into `blobs`: each content in its own file, complete when
-/// its last piece came and its id checked. A piece that came already (a request asked again) is skipped.
-export async function putBlobs(blobs: string, index: Json, packed: Buffer): Promise<number> {
-  if (!Array.isArray(index) || index.length > PIECES) throw new Error("bad pieces");
-  let total = 0;
-  for (const p of index) {
-    if (!Array.isArray(p) || typeof p[0] !== "string" || !/^[0-9a-f]{40}$/.test(p[0]) || ![p[1], p[2], p[3]].every((n) => Number.isInteger(n) && n >= 0)) {
-      throw new Error("bad piece");
-    }
-    if (p[1] > MAX_FILE || p[2] + p[3] > p[1]) throw new Error("bad piece");
-    total += p[3];
-  }
-  if (total > RAW) throw new Error("too much in one request");
-  const data = await unpack(packed, { maxOutputLength: RAW });
-  if (data.length !== total) throw new Error("pieces do not match their data");
-  mkdirSync(blobs, { recursive: true });
-  let at = 0;
-  for (const [hash, size, offset, length] of index as [string, number, number, number][]) {
-    const piece = data.subarray(at, at + length);
-    at += length;
-    const done = join(blobs, hash);
-    if (existsSync(done)) continue;
-    const part = `${done}.part`;
-    let has = 0;
-    try {
-      has = statSync(part).size;
-    } catch {}
-    if (offset + length <= has && !(offset === 0 && has === 0)) continue;
-    if (offset !== has) throw new Error("a content's pieces came out of order");
-    const fd = openSync(part, offset === 0 ? "w" : "a");
-    try {
-      for (let w = 0; w < piece.length; ) w += writeSync(fd, piece, w, piece.length - w);
-    } finally {
-      closeSync(fd);
-    }
-    if (offset + length === size) {
-      if ((await fileId(part, size)) !== hash) {
-        rmSync(part, { force: true });
-        throw new Error("a content sent does not match its id");
-      }
-      renameSync(part, done);
-    }
-  }
-  return index.length;
-}
+// ── the target ──
+// What the mirror has, the contents sent unpacked into it (`sync.put`) and the plan carried out are the program's
+// (station/mb src/reader/dirsync.mbt): no file of a sync is written, stat'd or renamed on the station's thread.
 
 // ── the source: what a task changed in the mirror, as a patch ──
 

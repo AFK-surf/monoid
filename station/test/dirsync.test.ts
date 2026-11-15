@@ -7,6 +7,7 @@ import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { zstdCompressSync } from "node:zlib";
 import { after, describe, test } from "node:test";
 import { type Clock, type Duration, Effect, Exit, Scope } from "effect";
 import { TestClock } from "effect/testing";
@@ -14,10 +15,12 @@ import { Cloud } from "../src/cloud/state.ts";
 import { signalGroup } from "../src/ops/group.ts";
 import { LOOK_MS } from "../src/jobs/admit.ts";
 import { Jobs, type Machine, STOP_LOOK_MS } from "../src/jobs/jobs.ts";
-import { blobId, listLocal } from "../src/jobs/dirsync.ts";
+import { RAW, blobId, listLocal } from "../src/jobs/dirsync.ts";
 import { MIRROR_IDLE_MS, MIRROR_RECENT_MS, type PeerCall, Refused, Remote, hash, readJson, writeJson, written } from "../src/jobs/remote.ts";
 import { DISK_LOW_BYTES } from "../src/ops/disk.ts";
 import { PEER_ALPN, PEER_BYTES_ALPN, peerCall, servePeer } from "../src/mesh/peer.ts";
+import { withBytes } from "../src/mesh/bus.ts";
+import { oneBytes } from "../src/mesh/files.ts";
 import { type Json, Store } from "../src/store/store.ts";
 import { remoteTools } from "../src/tools/remote.ts";
 import { memoryMesh } from "./memory-mesh.ts";
@@ -505,6 +508,57 @@ describe("dirsync", { concurrency: true }, () => {
     const next = await p.use("station_task", { key: "next", action: "start" });
     assert.equal(next.sync.sent.files, 1);
     assert.equal(readFileSync(join(p.mirror("busy"), "f"), "utf8"), "2\n");
+  });
+
+  test("the target's program unpacks the pieces sent: one asked again skipped, out of order or not its id refused, nothing left of them in Node", async () => {
+    const p = await pair();
+    const dir = join(p.home, "raw");
+    mkdirSync(dir);
+    writeFileSync(join(dir, "f"), "f\n");
+    const prepared = await p.use("station_task", { key: "k", action: "prepare", command: "true", dir });
+    const ask = (method: string, more: Json) => p.a.remote.ask(p.B, { workspace: "ws", session: "s1", key: "k", method, ...more });
+    const { id } = await ask("sync.begin", { safe: 1 });
+    const blobs = join(p.b.remote.room("ws", p.A, "s1"), "sync", prepared.dir, "blobs");
+    const landing = join(p.b.dir, "remote", "landing");
+    type Piece = [string, number, number, number];
+    const put = (index: Piece[], data: Buffer, more: Json = {}) => ask("sync.put", withBytes({ id, blobs: index, ...more }, oneBytes(zstdCompressSync(data))));
+    const content = randomBytes(1000);
+    const hash = blobId(content);
+    const head: Piece = [hash, 1000, 0, 600];
+    const rest: Piece = [hash, 1000, 600, 400];
+    const part = () => (existsSync(join(blobs, `${hash}.part`)) ? statSync(join(blobs, `${hash}.part`)).size : null);
+
+    assert.deepEqual(await put([head], content.subarray(0, 600)), { pieces: 1 });
+    assert.equal(part(), 600);
+    // asked again (its answer lost): nothing written twice
+    assert.deepEqual(await put([head], content.subarray(0, 600)), { pieces: 1 });
+    assert.equal(part(), 600);
+    await assert.rejects(put([[hash, 1000, 900, 100]], content.subarray(900)), /a content's pieces came out of order/);
+    // From a station from before, base64 in the request; a path another station names is never where it is read.
+    const old = { id, blobs: [rest], data: zstdCompressSync(content.subarray(600)).toString("base64"), landed: join(p.a.dir, "nothing") };
+    assert.deepEqual(await ask("sync.put", old), { pieces: 1 });
+    assert.equal(part(), null);
+    assert.ok(readFileSync(join(blobs, hash)).equals(content));
+    assert.deepEqual(await put([head, rest], content), { pieces: 2 }, "a content there already: skipped");
+    assert.ok(readFileSync(join(blobs, hash)).equals(content));
+
+    // A content that is not what its id says is not kept.
+    const other = randomBytes(10);
+    await assert.rejects(put([[blobId(randomBytes(10)), 10, 0, 10]], other), /a content sent does not match its id/);
+    assert.deepEqual(readdirSync(blobs), [hash]);
+    // What is refused before anything is written.
+    await assert.rejects(put(Array.from({ length: 2001 }, (): Piece => [hash, 1, 0, 1]), Buffer.alloc(2001)), /bad pieces/);
+    await assert.rejects(put([["not an id", 1, 0, 1]], Buffer.alloc(1)), /bad piece/);
+    await assert.rejects(put([[hash, 10, 5, 6]], Buffer.alloc(6)), /bad piece/);
+    await assert.rejects(put([[hash, 1024 ** 3 + 1, 0, 1]], Buffer.alloc(1)), /bad piece/);
+    await assert.rejects(put([[hash, RAW + 1, 0, RAW + 1]], Buffer.alloc(1)), /too much in one request/);
+    await assert.rejects(put([[hash, 10, 0, 10]], Buffer.alloc(5)), /pieces do not match their data/);
+    // what unpacks to more than a request may hold is unpacked no further than that
+    await assert.rejects(put([[hash, RAW, 0, RAW]], Buffer.alloc(RAW + 1)), /more than 16777216 bytes unpacked/);
+    await assert.rejects(ask("sync.put", { id, blobs: [rest], data: "abc" }), /Invalid input length or symbol/);
+    assert.deepEqual(readdirSync(blobs), [hash]);
+    // each request's packed bytes landed for the program and let go once it answered
+    assert.deepEqual(readdirSync(landing).flatMap((d) => readdirSync(join(landing, d))), []);
   });
 
   test("to a station from before, contents and files go in chunks of base64, each within its transport's message", async () => {

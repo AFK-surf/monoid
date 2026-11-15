@@ -290,8 +290,10 @@ async fn Actors::task(
     }
     "sync.put" => {
       ignore(ongoing())
-      // The packed pieces after the request (Node keeps them: `bytes`); from a station from before, base64 in it.
-      { "pieces": self.rnode("putBlobs", [jstr(rjoin([syncing, "blobs"])), field_of(request, "blobs"), field_of(request, "bytes"), field_of(request, "data")]) }
+      // The packed pieces after the request (Node landed them in a file: `landed`); from a station from before, base64
+      // in it. Unpacked and written here (dirsync.mbt).
+      let landed = str_of(Some(field_of(request, "landed")))
+      { "pieces": jnum(self.put_blobs(rjoin([syncing, "blobs"]), field_of(request, "blobs"), landed, field_of(request, "data")).to_double()) }
     }
     "sync.commit" => {
       let state = ongoing()
