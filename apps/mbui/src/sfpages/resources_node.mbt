@@ -52,7 +52,10 @@ fn resources_body_node(b : @view.View, core : Core, address : String, v : () -> 
 /// What is seen of the machine (rs_figures_of's): its totals in pairs, the choice of whose and of how on a line apart
 /// at its ends, the table.
 fn rs_figures_node(r : @view.View, core : Core, address : String, v : () -> Json?) -> Unit {
-  let tiles = fn() { items(v(), "tiles") }
+  // (what is counted, and each tile, worked out once as the value changes: a sample that leaves a tile as it was tells
+  // none of what that tile draws)
+  let tiles_now = @signals.computed(fn(_) { items(v(), "tiles") }, same=fn(a, b) { a == b })
+  let tiles = fn() { tiles_now.get() }
   r.box(fn(ts) {
     @sf.style_node(ts, fn() { rs_tiles })
     ts.wraps(Is(Some(rs_flow_lines))) |> ignore
@@ -71,7 +74,8 @@ fn rs_figures_node(r : @view.View, core : Core, address : String, v : () -> Json
         pair.show(fn() { i < tiles().length() }, fn(t) {
           // (as wide as a tile is at least, so a pair that has not the room on its line goes under the other: rs_tile_box's)
           t.grow(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(rs_tile_least))) |> ignore
-          rs_tile_node(t, fn() { tiles().get(i) })
+          let tile = @signals.computed(fn(_) { tiles().get(i) }, same=fn(a, b) { a == b })
+          rs_tile_node(t, fn() { tile.get() })
         })
       }
     })
@@ -107,11 +111,17 @@ fn rs_figures_node(r : @view.View, core : Core, address : String, v : () -> Json
     |> ignore
   })
   |> ignore
-  let groups = fn() {
-    let kind = shown().kind
-    items(v(), "groups").filter(fn(g) { kind == "all" || text(Some(g), "kind") == kind })
-  }
-  r.pick(fn() { shown().flat }, fn(t, flat) { rs_table_node(t, core, address, groups, fn() { rs_columns_of(v()) }, flat) })
+  let groups_now = @signals.computed(
+    fn(_) {
+      let kind = shown().kind
+      items(v(), "groups").filter(fn(g) { kind == "all" || text(Some(g), "kind") == kind })
+    },
+    same=fn(a, b) { a == b },
+  )
+  let groups = fn() { groups_now.get() }
+  let columns_now = @signals.computed(fn(_) { rs_columns_of(v()) }, same=fn(a, b) { a == b })
+  let columns = fn() { columns_now.get() }
+  r.pick(fn() { shown().flat }, fn(t, flat) { rs_table_node(t, core, address, groups, columns, flat) })
 }
 
 ///|
@@ -176,14 +186,17 @@ fn rs_table_node(
     items(group_of(gkey), "processes").iter().find_first(fn(p) { text(Some(p), "key") == key })
   }
   let use_of = fn(j : Json?) { rs_use(field(j, "use"), by()) }
-  let most = fn() {
+  let most_now = @signals.computed(fn(_) {
     if flat {
       groups().fold(init=0.0, fn(m, g) { items(Some(g), "processes").fold(init=m, fn(m, p) { @cmp.maximum(m, use_of(Some(p))) }) })
     } else {
       groups().fold(init=0.0, fn(m, g) { @cmp.maximum(m, use_of(Some(g))) })
     }
-  }
-  let rows = fn() {
+  }, same=fn(a, b) { a == b })
+  let most = fn() { most_now.get() }
+  // (which rows there are and in what order, worked out once as the groups or what is chosen change: a sample that
+  // sorts them as they were tells the list nothing)
+  let rows_now = @signals.computed(fn(_) {
     let out : Array[RsRow] = []
     if flat {
       let all : Array[(Json, String)] = []
@@ -214,7 +227,8 @@ fn rs_table_node(
       }
     }
     out
-  }
+  }, same=fn(a, b) { a == b })
+  let rows = fn() { rows_now.get() }
   // (its heads and rows by how wide it is given to be, laid out in that same layout)
   t.by_room(fn(table, room) {
     @sf.style_node(table, fn() { rs_table })
@@ -239,14 +253,17 @@ fn rs_table_node(
         by(),
         if flat { 2 } else { 1 },
       )
-    })
+    }, same=fn(a, b) { a == b })
     let lay = fn() { lay.get() }
     rs_heads_node(table, address, flat, columns, lay)
     table.each(rows, fn(r) { r }, fn(row, r) {
       let r = r.untracked()
       match r {
         RsGroup(key) => {
-          let g = fn() { group_of(key) }
+          // (its group as the groups say it now, told only as it changes: a sample that leaves it as it was tells this
+          // row nothing)
+          let g_now = @signals.computed(fn(_) { group_of(key) }, same=fn(a, b) { a == b })
+          let g = fn() { g_now.get() }
           let on = fn() { rs_open(rs_shown_of(address), groups(), key) }
           rs_row_node(
             row,
@@ -284,7 +301,8 @@ fn rs_table_node(
           )
         }
         RsUnder(gkey, key) => {
-          let p = fn() { process_of(gkey, key) }
+          let p_now = @signals.computed(fn(_) { process_of(gkey, key) }, same=fn(a, b) { a == b })
+          let p = fn() { p_now.get() }
           rs_row_node(
             row,
             lay,
@@ -301,8 +319,10 @@ fn rs_table_node(
           )
         }
         RsFlat(gkey, key) => {
-          let p = fn() { process_of(gkey, key) }
-          let g = fn() { group_of(gkey) }
+          let p_now = @signals.computed(fn(_) { process_of(gkey, key) }, same=fn(a, b) { a == b })
+          let p = fn() { p_now.get() }
+          let g_now = @signals.computed(fn(_) { group_of(gkey) }, same=fn(a, b) { a == b })
+          let g = fn() { g_now.get() }
           rs_row_node(
             row,
             lay,

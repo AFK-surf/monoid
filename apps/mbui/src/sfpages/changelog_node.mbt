@@ -215,7 +215,10 @@ pub fn changelog_node(
           "error" => @sf.page_said_node(b, fn() { text(value(), "error") }, bad=true)
           "empty" => @sf.page_said_node(b, fn() { @sf.t("web-pages.changelog.empty") })
           _ => {
-            let part = fn() { listed.get().1.get(key) }
+            // (what this block is as the list says it now, told only as that changes: a release come over it tells the
+            // days and changes that stay as they were nothing)
+            let part_now = @signals.computed(fn(_) { listed.get().1.get(key) }, same=fn(a, b) { a == b })
+            let part = fn() { part_now.get() }
             if key.has_prefix("day/") {
               @sf.day_heading_node(b, fn() {
                 match part() {
@@ -250,6 +253,7 @@ pub fn changelog_node(
 ///|
 /// What a block of the changelog's list is: a day's heading, or one of its changes and which piece of the day's card
 /// it is.
+#derive(Eq)
 priv enum ListedPart {
   DayHeading(Json)
   DayChange(Json, @sf.CardPiece)
@@ -297,16 +301,20 @@ fn changelog_sample_node(s : @view.View) -> Unit {
 /// each led by its kind (the accent's for something new), its version, what is not out yet (in the accent where an
 /// update would bring it).
 fn change_node(parent : @view.View, e : () -> Json?, piece : () -> @sf.CardPiece) -> Unit {
-  @sf.day_change_node(
-    parent,
-    piece,
-    fn() {
+  let lines = @signals.computed(
+    fn(_) {
       items(e(), "lines").map(fn(l) {
         let lv = Some(l)
         let line : @sf.ChangeLine = { label: text(lv, "label"), text: text(lv, "text"), fresh: text(lv, "kind") == "new" }
         line
       })
     },
+    same=fn(a, b) { a == b },
+  )
+  @sf.day_change_node(
+    parent,
+    piece,
+    fn() { lines.get() },
     fn() { text(e(), "versionName") },
     fn() { text(e(), "note") },
     fn() { field(e(), "has") is Some(False) },
