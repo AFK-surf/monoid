@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [2cdec0a17](https://github.com/AFK-surf/monoid/commit/2cdec0a17435d68d7dd66c174e73e5fff4b110e5) app: Home's chats as a board, kept per workspace o | 2.16 | 3.02 | 13.06 | 34.19 | 51.76 | 29.98 | 60.22 | 99.5 | 118.56 |
 | [085454ff8](https://github.com/AFK-surf/monoid/commit/085454ff8055f241959ed48b238558cfb28ca643) fix(mbui): keep Windows subpixel glyph keys aligne | 2.15 | 3 | 12.97 | 34.09 | 51.38 | 29.89 | 59.92 | 99.58 | 121.01 |
 | [cc63be808](https://github.com/AFK-surf/monoid/commit/cc63be8087319a8ac7f94065180c63fbbc0c0454) mbui ios: ios-core.sh adds the terminal's include  | 2.15 | 3 | 12.97 | 34.09 | 51.38 | 29.89 | 59.92 | 99.62 | 115.86 |
 | [6ca8d986c](https://github.com/AFK-surf/monoid/commit/6ca8d986cde4fb0a1c303f0fa46b80eabb571573) station: move the TypeScript the MoonBit program r | 2.14 | 2.99 | 12.92 | 34.05 | 51.2 | 29.87 | 59.81 | 99.71 | 118.47 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [4ab7a065a](https://github.com/AFK-surf/monoid/commit/4ab7a065a5683dcb24b4ffa234e139eefa601fb3) app: a Farview tab in a window of its own is drawn | 2.11 | 2.94 | 12.67 | 33.74 | 49.98 | 29.15 | 57.72 | 99.67 | 118.52 |
 | [9955957bd](https://github.com/AFK-surf/monoid/commit/9955957bddc09658c0e73a6f4e2494a0f11e9757) mbui: a paragraph of runs laid out once is kept, w | 2.11 | 2.94 | 12.67 | 33.74 | 49.98 | 29.15 | 57.72 | 99.67 | 118.52 |
 | [4c58007fe](https://github.com/AFK-surf/monoid/commit/4c58007fe78e127ea9c44c74b699406566bc39de) move: what a whole move does for one item looks on | 2.11 | 2.94 | 12.66 | 33.72 | 49.91 | 29.13 | 57.65 | 99.65 | 112.41 |
-| [79bfb1257](https://github.com/AFK-surf/monoid/commit/79bfb12579f5781ebac6174618ee1e379a4d46ef) app: the Wasm app's start compacted as it is built | 2.11 | 2.94 | 12.66 | 33.72 | 49.91 | 29.13 | 57.65 | 99.65 | 112.41 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [2cdec0a17](https://github.com/AFK-surf/monoid/commit/2cdec0a17435d68d7dd66c174e73e5fff4b110e5) app: Home's chats as a board, kept per workspace o | 0.42 | 0.54 | 2.07 | 3.17 | 4.97 | 1.53 | 4.08 | 57.36 |
 | [085454ff8](https://github.com/AFK-surf/monoid/commit/085454ff8055f241959ed48b238558cfb28ca643) fix(mbui): keep Windows subpixel glyph keys aligne | 0.42 | 0.54 | 2.07 | 3.17 | 4.97 | 1.53 | 4.08 | 57.36 |
 | [cc63be808](https://github.com/AFK-surf/monoid/commit/cc63be8087319a8ac7f94065180c63fbbc0c0454) mbui ios: ios-core.sh adds the terminal's include  | 0.42 | 0.54 | 2.07 | 3.17 | 4.97 | 1.53 | 4.08 | 57.33 |
 | [6ca8d986c](https://github.com/AFK-surf/monoid/commit/6ca8d986cde4fb0a1c303f0fa46b80eabb571573) station: move the TypeScript the MoonBit program r | 0.42 | 0.54 | 2.07 | 3.17 | 4.97 | 1.53 | 4.08 | 57.33 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [4ab7a065a](https://github.com/AFK-surf/monoid/commit/4ab7a065a5683dcb24b4ffa234e139eefa601fb3) app: a Farview tab in a window of its own is drawn | 0.41 | 0.53 | 1.99 | 3.1 | 4.58 | 1.47 | 3.83 | 57.36 |
 | [9955957bd](https://github.com/AFK-surf/monoid/commit/9955957bddc09658c0e73a6f4e2494a0f11e9757) mbui: a paragraph of runs laid out once is kept, w | 0.41 | 0.53 | 1.99 | 3.1 | 4.58 | 1.47 | 3.83 | 57.28 |
 | [4c58007fe](https://github.com/AFK-surf/monoid/commit/4c58007fe78e127ea9c44c74b699406566bc39de) move: what a whole move does for one item looks on | 0.41 | 0.53 | 1.99 | 3.1 | 4.58 | 1.47 | 3.83 | 57.28 |
-| [79bfb1257](https://github.com/AFK-surf/monoid/commit/79bfb12579f5781ebac6174618ee1e379a4d46ef) app: the Wasm app's start compacted as it is built | 0.41 | 0.53 | 1.98 | 3.09 | 4.56 | 1.47 | 3.81 | 57.44 |
