@@ -24,14 +24,14 @@ const named = (n: Need) => `${n.module} ${n.id}`;
 export const MOVE_TOOL = {
   name: "station_move",
   description:
-    "Move this station's chats, accounts, jobs and connects to another station of the chat's workspace, one item or all, and back. Read the stillfail-move skill first: it says each action and option. " +
-    "plan {to}: a summary (each module's counts, what cannot move and why, grouped); its items a page at a time with module (after, limit), or one with item. move {to, module, item}: one item (a chat: its session key); withNeeds moves its needs first; all moves everything once a card is confirmed in the app. " +
-    "back {module, item, to}: moves it back here. status: where each stands, as plan. stop: the move under way stops.",
+    "Move this station's chats, accounts, jobs and connects to another station of its workspace, one item or all, and back. Read skill stillfail-move first: it says each option. " +
+    "plan {to}: a summary; module (after, limit) pages, item one. move {to, module, item}: one item (a chat: its session key); withNeeds: its needs first; all: everything, once a card is confirmed in the app. " +
+    "back {module, item, to}: back here. status: where each stands. stop: the move under way stops.",
   inputSchema: {
     type: "object",
     properties: {
       action: { enum: ["plan", "move", "back", "status", "stop"] },
-      to: { type: "string", description: "The other station, by name or id (station_list)." },
+      to: { type: "string", description: "The other station: name or id (station_list)." },
       module: { type: "string" },
       item: { type: "string" },
       withNeeds: { type: "boolean" },
