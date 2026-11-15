@@ -98,5 +98,12 @@ test("an archived session's transcripts are found off the station's thread, as t
     for (const path of before) assert.ok(existsSync(`${path}.zst`) && !existsSync(path), path);
     // And found again where they were put away, to be restored.
     assert.deepEqual(await cold.historyFilesSoon("target", false), before);
+    // A transcript whose directory went after it was located is passed over, the others still found.
+    const locate = rig.hub.live.locateAsync;
+    rig.hub.live.locateAsync = async (key, signal) => {
+      const at = (await locate(key, signal))!;
+      return { ...at, paths: [join(rig.config.profiles[0]!.home, "projects", "gone", "old.jsonl"), ...at.paths] };
+    };
+    assert.deepEqual(await cold.historyFilesSoon("target", false), before);
   } finally { await rig.close(); }
 });

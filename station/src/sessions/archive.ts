@@ -36,6 +36,7 @@ import {
 } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { segments } from "../ops/paths.ts";
+import { walkBounded } from "../ops/walk.ts";
 import { link as symlinkOrStandIn } from "../ops/links.ts";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -461,23 +462,22 @@ export function jsonlFiles(dir: string, out: string[]) {
   }
 }
 
-/// `jsonlFiles`, off the station's thread.
+/// `jsonlFiles`, off the station's thread: walked as every walk is (ops/walk.ts `walkBounded`: on its file system, no
+/// link followed, bounded, yielding), each transcript once.
 export async function jsonlFilesSoon(dir: string, out: string[]): Promise<void> {
-  let entries: Dirent[];
-  try {
-    entries = await readdir(dir, { withFileTypes: true });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-    throw error;
-  }
-  for (const entry of entries) {
-    const path = join(dir, entry.name);
-    if (entry.isDirectory()) await jsonlFilesSoon(path, out);
-    else if (entry.isFile()) {
-      const logical = extension(path) === "zst" ? withExtension(path, "") : path;
-      if (extension(logical) === "jsonl" && !out.includes(logical)) out.push(logical);
+  const seen = new Set(out);
+  await walkBounded(dir, (entry) => {
+    if (entry.depth === 0 || !entry.file) return;
+    const logical = extension(entry.path) === "zst" ? withExtension(entry.path, "") : entry.path;
+    if (extension(logical) === "jsonl" && !seen.has(logical)) {
+      seen.add(logical);
+      out.push(logical);
     }
-  }
+  }, {
+    onError: (_path, error) => {
+      if (error.code !== "ENOENT") throw error;
+    },
+  });
 }
 
 // ── git worktrees ──────────────────────────────────────────────────────────────────────────────────────────────────

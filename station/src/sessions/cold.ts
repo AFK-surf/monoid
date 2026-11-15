@@ -172,8 +172,12 @@ export class ColdRooms implements ColdStorage {
     const files: string[] = [];
     for (const each of located.paths) {
       const [path, runtime] = typeof each === "string" ? [each, located.runtime] : [each.path, each.runtime];
-      const parent = await realpath(dirname(path));
-      if (!within(parent, root)) continue;
+      // (its directory gone since it was located: nothing of it to find, the others still are)
+      const parent = await realpath(dirname(path)).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return null;
+        throw error;
+      });
+      if (parent === null || !within(parent, root)) continue;
       files.push(join(parent, basename(path)));
       if (runtime === "claude") await archive.jsonlFilesSoon(join(parent, basename(path, ".jsonl")), files);
     }
