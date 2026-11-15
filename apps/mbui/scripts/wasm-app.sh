@@ -210,7 +210,7 @@ if [ ! -x "$O/shell" ] || [ "$(cat "$O/shell.src" 2>/dev/null)" != "$shell_src" 
   mkdir -p "$O/obj"
   pids=()
   for f in $host_c $H/wasm_shell.c "$O/thunks.c" $stubs "$moon_root/lib/runtime/runtime.c"; do
-    obj=$O/obj/$(echo "$f" | tr '/' '_').o
+    obj=$O/obj/$(echo "$f" | tr '/.' '__').o
     flags="-O2 -I$moon_root/include -I$WT/include -I$H"
     case "$f" in *.m) flags="$flags -fobjc-arc -fblocks" ;; esac
     clang $flags -c "$f" -o "$obj" &

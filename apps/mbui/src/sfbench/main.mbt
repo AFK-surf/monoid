@@ -40,6 +40,10 @@ fn main {
           @sf.set_dark(Some(true))
         }
         @sf.give_faces()
+        // MBUI_CHAT_PAGE=nodes: the chat's page made as nodes (外观's 试用新对话页), as a person who turned it on has it
+        if @film.arg("MBUI_CHAT_PAGE") == "nodes" {
+          @sfbase.chat_page_nodes.set(true)
+        }
         src.val = Some(s)
         s
       }

@@ -11,6 +11,7 @@
 #   scripts/instrbench.sh compare A B     two runs' OUTs side by side, A before and B after (each from its checkout),
 #                                         both compiled by the same MoonBit (MBUI_TOOLS): another one's code is
 #                                         another's (moon of 2026-10-16 and of 11-04: Home's frame 2.9% apart)
+#   MBUI_CHAT_PAGE=nodes: the chats' scenes on the chat's page made as nodes (外观's 试用新对话页).
 #   TOP=20: how many functions are said. MBUI_PROFILE_EACH=1: each function's counts in each frame too (F lines).
 #   MBUI_PROFILE_FOCUS=NAME (a function's name in the program, one `*` in it for any part): each function's "all
 #   inside its calls" is what it ran where NAME called it itself (wasmgas profile's focus=); MBUI_PROFILE_CALLERS=NAME,
