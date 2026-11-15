@@ -88,10 +88,11 @@ test "every part at rest, light and dark, holds to mbui's audit" {
         }
         tag_node(r, fn() { "Label" }, remove=fn() {  }) |> ignore
         check_node(r, fn() { true }, fn(_) {  }, fn() { "Checkbox" }) |> ignore
-        toggle_node(r, fn() { true }, fn(_) {  }, fn() { "Toggle" }) |> ignore
         avatar_node(r, fn() { "Olivia Rhye" }, online=fn() { Some(true) }) |> ignore
       })
       |> ignore
+      // (the toggle, 20 high, in a row of its own: what is pressed in one row is of one height)
+      toggle_node(p, fn() { true }, fn(_) {  }, fn() { "Toggle" }) |> ignore
       p.box(fn(b) {
         b.width(Is(Some(260.0))) |> ignore
         input_node(b, @ui.Field::new(), placeholder="olivia@untitledui.com", label="Email") |> ignore

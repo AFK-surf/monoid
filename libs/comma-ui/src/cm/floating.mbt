@@ -385,15 +385,13 @@ pub fn dialog_node(
           |> ignore
           s.modal(Is(true)) |> ignore
           // (the scrim: a press on it closes the dialog)
-          s.box(fn(c) {
+          @headless.button(s, fn() { "Close dialog" }, fn(_) { close() }, fn(c, _) {
             c
             .over(Is(true))
             // (Comma's bg-overlay-scrim: the overlay's colour at 60%, generate-css.ts)
             .ground(By(fn() { alpha(colors().bg_overlay, 0.6) }))
             .alpha(By(fn() { e.shown(c) }))
-            .says(Is(Some(@view.said(Button, label="Close dialog"))))
             |> ignore
-            c.presses(Is(true)).on_press(close) |> ignore
           })
           |> ignore
           s.box(fn(p) {

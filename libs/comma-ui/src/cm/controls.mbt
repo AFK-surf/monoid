@@ -3,9 +3,8 @@
 // Collapse (collapse/Collapse), Indicator (indicator/Indicator) and ScrollArea (scroll-area).
 
 ///|
-/// Comma's radio in `parent`, on while `on` says: a 16 circle on the main panel's ground in the menu's edge with the xs
-/// shadow; brand-solid with a white dot 6 across while on; the disabled colours while `disabled`. Pressed, `pick` is
-/// called. Read out a radio named `label`, on or off. The node.
+/// Comma's radio in `parent`, on while `on` says (@headless.choice's radio option, the look radio_look's); pressed,
+/// `pick` is called. Read out a radio named `label`, selected or not. The node.
 #callsite(autofill(loc))
 pub fn radio_node(
   parent : @view.View,
@@ -15,7 +14,17 @@ pub fn radio_node(
   disabled? : () -> Bool = fn() { false },
   loc~ : SourceLoc,
 ) -> @view.View {
-  parent.box(made_for=loc, fn(b) {
+  @headless.choice(made_for=loc, parent, Radio, label, on, fn(_) { pick() }, disabled~, fn(b, _) {
+    radio_look(b, on, disabled)
+  })
+}
+
+///|
+/// Comma's radio's look on `b`, on while `on` says: a 16 circle on the main panel's ground in the menu's edge with the
+/// xs shadow; brand-solid with a white dot 6 across while on; the disabled colours while `disabled`.
+#callsite(autofill(loc))
+fn radio_look(b : @view.View, on : () -> Bool, disabled : () -> Bool, loc~ : SourceLoc) -> Unit {
+  b.box(made_for=loc, fn(b) {
     let fill = eased_by(b, on, ms_state_change, ease_surface_smooth_out)
     b
     .width(Is(Some(16.0)))
@@ -41,9 +50,7 @@ pub fn radio_node(
       }
     }))
     .shadow(By(fn() { cast(shadow_xs, shadow_dark_xs) }))
-    .says(By(fn() { Some(@view.said(Radio, label=label(), check=if on() { On } else { Off })) }))
     |> ignore
-    presses_node(b, pick, on=fn() { !disabled() })
     b.box(fn(d) {
       d
       .width(Is(Some(6.0)))
@@ -56,8 +63,9 @@ pub fn radio_node(
       |> ignore
     })
     |> ignore
-    ring_node(b, fn() { 8.0 })
   })
+  |> ignore
+  ring_node(b, fn() { 8.0 })
 }
 
 ///|
@@ -101,11 +109,15 @@ pub fn radio_group_node(
   label? : String = "",
   loc~ : SourceLoc,
 ) -> @view.View {
-  parent.box(made_for=loc, fn(g) {
-    g.gap(Is(space_lg)).says(Is(Some(@view.said(RadioGroup, label~)))) |> ignore
+  @headless.radio_group(made_for=loc, parent, fn() { label }, fn() { chosen.get() }, fn(i) { chosen.set(i) }, axis=Vertical, fn(
+    g,
+    rg,
+  ) {
+    g.gap(Is(space_lg)) |> ignore
     for i, o in options {
       choice_row(g, o.0, o.1, fn(c) {
-        radio_node(c, fn() { chosen.get() == i }, fn() { chosen.set(i) }, fn() { o.0 }) |> ignore
+        rg.item(c, fn() { i }, fn() { o.0 }, fn(b, it) { radio_look(b, fn() { it.chosen() }, fn() { it.disabled() }) })
+        |> ignore
       })
     }
   })
@@ -148,7 +160,8 @@ pub fn check_group_node(
 /// Comma's button group in `parent`: `labels` side by side in one rounded md box in the primary edge with the xs
 /// shadow, a line of it between them; each at least 40 high, 16 in, its words small semibold; the `chosen` one on the
 /// secondary's ground in the primary's words, the rest on the page's in the secondary's, lit under the hand. A press
-/// chooses one. Each read out a button, pressed while chosen. The node.
+/// chooses one, as do the arrow keys (@headless.radio_group: react-aria's ToggleButtonGroup choosing one, a radio group
+/// of radios). Each read out a radio, on while chosen. The node.
 #callsite(autofill(loc))
 pub fn button_group_node(
   parent : @view.View,
@@ -160,7 +173,7 @@ pub fn button_group_node(
   // (in a row of its own: as wide as its buttons, not stretched across what holds it)
   parent.box(made_for=loc, fn(outer) {
     outer.row(Is(true)) |> ignore
-    outer.box(fn(g) {
+    @headless.radio_group(outer, fn() { "" }, fn() { chosen.get() }, fn(i) { chosen.set(i) }, fn(g, rg) {
       g
       .row(Is(true))
       .radius(Is(radius_md))
@@ -172,8 +185,8 @@ pub fn button_group_node(
         if i > 0 {
           g.box(fn(d) { d.width(Is(Some(1.0))).ground(By(fn() { colors().border_primary })) |> ignore }) |> ignore
         }
-        g.box(fn(b) {
-          let on = fn() { chosen.get() == i }
+        rg.item(g, fn() { i }, fn() { l }, fn(b, it) {
+          let on = fn() { it.chosen() }
           let hand = eased_by(b, fn() { lit(b, fn() { true }) }, ms_state_change, ease_soft_in_out)
           b
           .row(Is(true))
@@ -189,9 +202,7 @@ pub fn button_group_node(
               mix(c.bg_secondary, hand.shown(b), c.bg_primary)
             }
           }))
-          .says(By(fn() { Some(@view.said(Button, label=l, pressed=on())) }))
           |> ignore
-          presses_node(b, fn() { chosen.set(i) })
           if i == dot {
             b.box(fn(d) {
               d.width(Is(Some(8.0))).height(Is(Some(8.0))).radius(Is(4.0)).ground(By(fn() { colors().fg_success_primary }))
@@ -221,7 +232,8 @@ pub fn button_group_node(
 /// Comma's slider in `parent`, `width` wide (Comma's w-80, 320), at `value` between `least` and `most` in steps of `step`: a rail 6 high, rounded, on the
 /// secondary's ground, filled brand-solid up to the value; its handle 20 across on the handle's ground in its edge 2 wide
 /// with the md shadow. Dragged along, or stepped by the arrow keys (Home and End to its ends) and a screen reader's
-/// Increment and Decrement, `value` set as it goes. Read out a slider named `label`, its range and value. The node.
+/// Increment and Decrement, `value` set as it goes (@headless.slider's). Read out a slider named `label`, its range and
+/// value. The node.
 #callsite(autofill(loc))
 pub fn slider_node(
   parent : @view.View,
@@ -234,91 +246,69 @@ pub fn slider_node(
   disabled? : () -> Bool = fn() { false },
   loc~ : SourceLoc,
 ) -> @view.View {
-  let share = fn() { ((value.get() - least) / (most - least)).max(0.0).min(1.0) }
-  let set = fn(v : Double) {
-    let stepped = least + ((v - least) / step).round() * step
-    value.set(stepped.max(least).min(most))
-  }
-  parent.box(made_for=loc, fn(s) {
-    s
-    .width(Is(Some(width)))
-    .height(Is(Some(20.0)))
-    .padding(Is((10.0, 0.0, 10.0, 0.0)))
-    .lines_up(Is(Some(Middle)))
-    .row(Is(true))
-    .alpha(By(fn() { if disabled() { 0.5 } else { 1.0 } }))
-    .presses(By(fn() { !disabled() }))
-    .focusable(By(fn() { !disabled() }))
-    .says(By(fn() {
-      Some(@view.said(Slider, label=label(), range=(least, most, value.get()), actions=[Increment, Decrement]))
-    }))
-    |> ignore
-    // (the rail, under all of it)
-    s.box(fn(r) {
-      r
-      .over(Is(true))
-      .margin(Is((10.0, 7.0, 10.0, 7.0)))
-      .radius(Is(3.0))
-      .ground(By(fn() { colors().bg_secondary }))
-      |> ignore
-    })
-    |> ignore
-    // (the fill up to the value, the handle at its end)
-    s.box(fn(f) {
-      f
-      .width_share(By(share))
-      .height(Is(Some(6.0)))
-      .radius(Is(3.0))
-      .ground(By(fn() { colors().bg_brand_solid }))
-      |> ignore
-    })
-    |> ignore
-    s.box(fn(h) {
-      h
-      .width(Is(Some(20.0)))
+  @headless.slider(
+    made_for=loc,
+    parent,
+    label,
+    fn() { value.get() },
+    min=least,
+    max=most,
+    step~,
+    fn(v) { value.set(v) },
+    thumb_room=20.0,
+    disabled~,
+    fn(s, sl) {
+      s
+      .width(Is(Some(width)))
       .height(Is(Some(20.0)))
-      .shrink(Is(0.0))
-      .margin(Is((-10.0, 0.0, -10.0, 0.0)))
-      .radius(Is(10.0))
-      .ground(By(fn() { colors().slider_handle_bg }))
-      .edge(By(fn() { (2.0, colors().slider_handle_border) }))
-      .shadow(By(fn() { cast(shadow_md, shadow_dark_md) }))
+      .padding(Is((10.0, 0.0, 10.0, 0.0)))
+      .lines_up(Is(Some(Middle)))
+      .row(Is(true))
+      .alpha(By(fn() { if sl.disabled() { 0.5 } else { 1.0 } }))
       |> ignore
-      ring_node(h, fn() { 10.0 })
-    })
-    |> ignore
-    s.on_drag(fn(d) {
-      if @signals.untracked(disabled) || d.kind == Off {
-        return
-      }
-      let inner = (width - 20.0).max(1.0)
-      set(least + (d.x - 10.0) / inner * (most - least))
-    })
-    |> ignore
-    s.on_key(fn(k) {
-      if @signals.untracked(disabled) {
-        return false
-      }
-      let now = value.untracked()
-      if k.code == @ui.key_code_right || k.code == @ui.key_code_up {
-        set(now + step)
-        true
-      } else if k.code == @ui.key_code_left || k.code == @ui.key_code_down {
-        set(now - step)
-        true
-      } else if k.code == @ui.key_code_home {
-        set(least)
-        true
-      } else if k.code == @ui.key_code_end {
-        set(most)
-        true
-      } else {
-        false
-      }
-    })
-    |> ignore
-    s.on_step(fn(by) { if !@signals.untracked(disabled) { set(value.untracked() + by.to_double() * step) } }) |> ignore
-  })
+      // (the rail, under all of it)
+      s.box(fn(r) {
+        r
+        .over(Is(true))
+        .margin(Is((10.0, 7.0, 10.0, 7.0)))
+        .radius(Is(3.0))
+        .ground(By(fn() { colors().bg_secondary }))
+        |> ignore
+      })
+      |> ignore
+      // (the fill up to the value, the handle at its end)
+      s.box(fn(f) {
+        f
+        .width_share(By(fn() { sl.part() }))
+        .height(Is(Some(6.0)))
+        .radius(Is(3.0))
+        .ground(By(fn() { colors().bg_brand_solid }))
+        |> ignore
+      })
+      |> ignore
+      s.box(fn(h) {
+        h
+        .width(Is(Some(20.0)))
+        .height(Is(Some(20.0)))
+        .shrink(Is(0.0))
+        .margin(Is((-10.0, 0.0, -10.0, 0.0)))
+        .radius(Is(10.0))
+        .ground(By(fn() { colors().slider_handle_bg }))
+        .edge(By(fn() { (2.0, colors().slider_handle_border) }))
+        .shadow(By(fn() { cast(shadow_md, shadow_dark_md) }))
+        |> ignore
+        h.show(fn() { sl.focus_shown() }, fn(r) {
+          r
+          .over(Is(true))
+          .margin(Is((-ring_w, -ring_w, -ring_w, -ring_w)))
+          .radius(Is(10.0 + ring_w))
+          .edge(Is((ring_w, focus_brand.1)))
+          |> ignore
+        })
+      })
+      |> ignore
+    },
+  )
 }
 
 ///|
@@ -335,16 +325,14 @@ pub fn collapse_node(
 ) -> @view.View {
   parent.box(made_for=loc, fn(c) {
     c.gap(Is(space_sm)) |> ignore
-    c.box(fn(h) {
+    @headless.disclosure(c, title, fn() { open.get() }, fn(_) { open.set(!open.untracked()) }, fn(h, _) {
       let turn = eased_by(h, fn() { open.get() }, ms_disclosure_turn, ease_surface_smooth_out)
       h
       .row(Is(true))
       .lines_up(Is(Some(Middle)))
       .gap(Is(space_md))
       .padding(Is((0.0, space_xs, 0.0, space_xs)))
-      .says(By(fn() { Some(@view.said(Button, label=title(), expanded=open.get())) }))
       |> ignore
-      presses_node(h, fn() { open.set(!open.untracked()) })
       h.box(fn(w) {
         w
         .grow(Is(1.0))

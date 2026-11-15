@@ -50,11 +50,11 @@ pub fn status_node(
   label? : String = "Status",
   loc~ : SourceLoc,
 ) -> @view.View {
-  parent.box(made_for=loc, fn(g) {
-    g.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(space_xxs)).says(Is(Some(@view.said(RadioGroup, label~)))) |> ignore
+  @headless.radio_group(made_for=loc, parent, fn() { label }, fn() { chosen.get() }, fn(s) { chosen.set(s) }, fn(g, rg) {
+    g.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(space_xxs)) |> ignore
     for s in task_statuses {
-      g.box(fn(item) {
-        let on = fn() { chosen.get() == s }
+      rg.item(g, fn() { s }, fn() { s.label() }, fn(item, it) {
+        let on = fn() { it.chosen() }
         let hand = eased_by(item, fn() { lit(item, fn() { !on() }) }, ms_feedback_in, ease_smooth_out)
         let pill = eased_by(item, on, ms_feedback_out, ease_surface_smooth_out)
         item
@@ -68,9 +68,7 @@ pub fn status_node(
           let c = colors()
           alpha(c.bg_quaternary, pill.shown(item).max(hand.shown(item)))
         }))
-        .says(By(fn() { Some(@view.said(Radio, label=s.label(), check=if on() { On } else { Off })) }))
         |> ignore
-        presses_node(item, fn() { chosen.set(s) })
         item.pick(fn() { on() }, fn(p, chose) {
           p.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(space_xs)) |> ignore
           if chose {

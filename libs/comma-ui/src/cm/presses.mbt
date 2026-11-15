@@ -1,7 +1,7 @@
-// How a part of Comma's answers the hand, as react-aria's usePress and useFocusRing give Comma's own parts: pressed by a
-// tap, a click let go on it, Enter or Space with the keyboard's focus, a screen reader's Activate; lit under a pointer
-// (with a mouse) or while held (with a finger); its ring while the keyboard's focus is on it.
-// (sf's presses_node is the same for still.fail's parts: one to share once the parts' ways are mbui's.)
+// How a part of Comma's answers the hand where mbui has no headless component for it yet (a menu's row, a dropdown's
+// trigger: presses_node), and what every part's look reads of the hand: lit under a pointer (with a mouse) or while
+// held (with a finger), its ring while the keyboard's focus is on it, as react-aria's useHover and useFocusRing give
+// Comma's own parts. A button, a toggle, a disclosure, a choice, a radio group and a slider are mbui's headless ones.
 
 ///|
 /// `v` pressed (`press`, once a press) while `on()`: taking the focus then, and the hand.

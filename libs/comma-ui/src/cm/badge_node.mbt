@@ -154,16 +154,14 @@ pub fn tag_node(
     |> ignore
     match remove {
       Some(remove) =>
-        b.box(fn(x) {
+        @headless.button(b, fn() { "移除 " + label() }, fn(_) { remove() }, fn(x, _) {
           let on = fn() { true }
           let hand = eased_by(x, fn() { lit(x, on) }, ms_state_change, ease_soft_in_out)
           x
           .padding(Is((space_xxs, space_xxs, space_xxs, space_xxs)))
           .radius(Is(radius_xs))
           .ground(By(fn() { alpha(colors().bg_secondary, hand.shown(x)) }))
-          .says(By(fn() { Some(@view.said(Button, label="移除 " + label())) }))
           |> ignore
-          presses_node(x, remove)
           // (Comma's XIcon: Central's cross-small, 12 across)
           icon_node(x, icon_cross, 12.0, fn() {
             let c = colors()

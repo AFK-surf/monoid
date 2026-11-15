@@ -151,7 +151,7 @@ test "a slider steps by a screen reader's Increment and Decrement and by the arr
   t.key(@ui.key_code_left)
   t.key(@ui.key_code_home)
   t.key(@ui.key_code_right)
-  assert_eq((top, value.get(), t.get(Slider, label="Volume").range), (100.0, 1.0, Some((0.0, 100.0, 1.0))))
+  assert_eq((top, value.get(), t.get(Slider, label="Volume").range), (100.0, 1.0, Some((0.0, 1.0, 100.0))))
 }
 
 ///|
@@ -170,17 +170,17 @@ test "a collapse opens and shuts what it holds as its title is activated, read o
 }
 
 ///|
-test "a button group and a radio group choose as one of theirs is activated" {
+test "a button group and a radio group choose as one of theirs is activated, each read out a group of radios" {
   let (segment, plan) = (@signals.signal(0), @signals.signal(0))
   let t = floating_case(fn(p, _) {
     button_group_node(p, ["Day", "Week", "Month"], segment) |> ignore
     radio_group_node(p, [("Basic", ""), ("Business", "")], plan, label="Plan") |> ignore
   })
-  t.act(Button, Activate, label="Month")
+  t.act(Radio, Activate, label="Month")
   t.act(Radio, Activate, label="Business")
   assert_eq(
-    (segment.get(), t.get(Button, label="Month").pressed, plan.get(), t.get(Radio, label="Business").check),
-    (2, Some(true), 1, Some(On)),
+    (segment.get(), t.get(Radio, label="Month").check, plan.get(), t.get(Radio, label="Business").check),
+    (2, Some(On), 1, Some(On)),
   )
 }
 
@@ -191,16 +191,7 @@ test "every one of these parts, its floating ones open, light and dark, holds to
     let toaster = Toaster::new()
     let t = floating_case(dark~, fn(p, layer) {
       p.box(fn(r) {
-        r.row(Is(true)).gap(Is(12.0)).lines_up(Is(Some(Start))) |> ignore
-        let a = button_node(r, fn() { "Options" }, fn() {  }, hierarchy=SecondaryGray)
-        menu_node(layer, a, @signals.signal(true), fn() { [menu_item("Profile", fn() {  }, checked=true), menu_item("Log out", fn() {  }, danger=true, divided=true)] })
-        let b = button_node(r, fn() { "Help" }, fn() {  }, hierarchy=TertiaryGray)
-        tooltip_node(layer, b, fn() { "Get help" }, shown=fn() { true })
-        button_group_node(r, ["Day", "Week"], @signals.signal(0)) |> ignore
-      })
-      |> ignore
-      p.box(fn(r) {
-        r.row(Is(true)).gap(Is(24.0)).lines_up(Is(Some(Start))).margin(Is((0.0, 120.0, 0.0, 0.0))) |> ignore
+        r.row(Is(true)).gap(Is(24.0)).lines_up(Is(Some(Start))) |> ignore
         radio_group_node(r, [("Basic", "Up to 10 users.")], @signals.signal(0), label="Plan") |> ignore
         check_group_node(r, [("Email", "")], @signals.signal([true]), label="Notify") |> ignore
         r.box(fn(s) {
@@ -208,11 +199,26 @@ test "every one of these parts, its floating ones open, light and dark, holds to
           slider_node(s, @signals.signal(40.0), fn() { "Volume" }, width=200.0) |> ignore
         })
         |> ignore
-        indicator_node(r, Good, "Online") |> ignore
+        // (the dot on its line: in a slot a line high, beside the choices' first lines)
+        r.box(fn(i) {
+          i.height(Is(Some(20.0))).lines_up(Is(Some(Middle))).lies_along(Is(Middle)) |> ignore
+          indicator_node(i, Good, "Online") |> ignore
+        })
+        |> ignore
       })
       |> ignore
       collapse_node(p, fn() { "Details" }, @signals.signal(true), fn(b) {
         b.words(Is("More"), look=words_in(type_small)).ink(By(fn() { colors().text_tertiary })) |> ignore
+      })
+      |> ignore
+      // (last, the menu opening into the room under it)
+      p.box(fn(r) {
+        r.row(Is(true)).gap(Is(12.0)).lines_up(Is(Some(Start))) |> ignore
+        let a = button_node(r, fn() { "Options" }, fn() {  }, hierarchy=SecondaryGray)
+        menu_node(layer, a, @signals.signal(true), fn() { [menu_item("Profile", fn() {  }, checked=true), menu_item("Log out", fn() {  }, danger=true, divided=true)] })
+        let b = button_node(r, fn() { "Help" }, fn() {  }, hierarchy=TertiaryGray)
+        tooltip_node(layer, b, fn() { "Get help" }, shown=fn() { true })
+        button_group_node(r, ["Day", "Week"], @signals.signal(0)) |> ignore
       })
       |> ignore
       toaster_node(layer, toaster)

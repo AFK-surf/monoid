@@ -13,9 +13,15 @@ a sample of what mbui needs to carry a second design (the user, 2026-11-13: 先�
   `radius_*`, `type_*`, `ms_*`, `ease_*`). A value Comma's tokens lack is added there first, in Cue. Its icons are Central Icons as Comma has them: `src/cm/icons_made.mbt`, written by `scripts/cm-icons.mjs` from a Cue checkout with its packages installed (Central's are licensed npm packages), drawn by `src/cm/icon.mbt` at Comma's one on-screen stroke.
 - A part takes its look from the Comma component of the same name (its `styles.ts`, its classes), and is read out as
   that component's role (react-aria's). Every part is a node of mbui's window's tree (`libs/mbui/src/view`), never an old view.
-- What each part does with the hand (`src/cm/presses.mbt`) and how a look moves (`src/cm/eased.mbt`) are the same as
-  still.fail's library's `presses_node` and `EdgeWay` (`apps/mbui/src/sf`), copied: they belong in mbui, without a
-  look, shared by both libraries.
+- The library is looks (`libs/mbui/AGENTS.md`, Components): what a control is to the hand, the keyboard and a screen
+  reader is mbui's headless component's (`libs/mbui/src/headless`) where there is one, and the part here is that
+  component with Comma's look, saying no role, press or focus of its own: buttons (the button, a tag's ✕, a toast's ✕,
+  what closes a floating part from outside it) over `@headless.button`; the checkbox and the toggle over
+  `@headless.toggle`; the collapse over `@headless.disclosure`; a lone radio over `@headless.choice`; the radio group,
+  the button group (react-aria's ToggleButtonGroup choosing one) and the status indicator over `@headless.radio_group`;
+  the slider over `@headless.slider`. A menu's rows and the dropdown's trigger have none yet and press by
+  `src/cm/presses.mbt`; they move over once mbui has a menu and a select. How a look moves (`src/cm/eased.mbt`) is
+  still.fail's `EdgeWay` (`apps/mbui/src/sf`), copied: it belongs in mbui, shared by both libraries.
 - What floats (tooltip, menu, dropdown, popup, dialog, toast) is drawn in the layer `layer_node` makes in the window's root: mbui's `View::over_all` puts a node over all else only among what the root holds; made elsewhere it is drawn under the page.
 - mbui's rules hold here as in an app (`libs/mbui/AGENTS.md`): tests declare their moments, warnings are errors or off
   (`moon.mod`'s line), no Python.

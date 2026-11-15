@@ -137,7 +137,7 @@ pub fn button_node(
   let live = fn() { !disabled() }
   let link = hierarchy is (LinkColor | LinkGray)
   let corner = radius_md
-  parent.box(made_for=loc, fn(v) {
+  @headless.button(made_for=loc, parent, label, fn(_) { press() }, disabled~, fn(v, _) {
     let hand = eased_by(v, fn() { lit(v, live) }, ms_state_change, ease_soft_in_out)
     let off = eased_by(v, disabled, ms_state_change, ease_soft_in_out)
     // (its ground, edge and words now: at rest to lit as far as the hand has gone, then to the disabled ones as far as
@@ -158,7 +158,6 @@ pub fn button_node(
     .gap(Is(space_xs))
     .radius(Is(corner))
     .ground(By(fn() { now().0 }))
-    .says(By(fn() { Some(@view.said(Button, label=label())) }))
     |> ignore
     if !link {
       v
@@ -180,7 +179,6 @@ pub fn button_node(
       }))
       |> ignore
     }
-    presses_node(v, press, on=live)
     if dot {
       let side = if size is (Xs | Sm) { 6.0 } else { 8.0 }
       v.box(fn(d) {

@@ -141,15 +141,13 @@ fn toast_card(
         |> ignore
       })
       |> ignore
-      r.box(fn(x) {
+      @headless.button(r, fn() { "Dismiss" }, fn(_) { dismiss() }, fn(x, _) {
         let hand = eased_by(x, fn() { lit(x, fn() { true }) }, ms_state_change, ease_soft_in_out)
         x
         .padding(Is((space_xxs, space_xxs, space_xxs, space_xxs)))
         .radius(Is(radius_xs))
         .ground(By(fn() { alpha(colors().bg_secondary, hand.shown(x)) }))
-        .says(Is(Some(@view.said(Button, label="Dismiss"))))
         |> ignore
-        presses_node(x, dismiss)
         icon_node(x, icon_cross, 16.0, fn() { colors().toast_icon_primary }) |> ignore
       })
       |> ignore

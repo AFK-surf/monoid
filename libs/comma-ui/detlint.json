@@ -95,13 +95,15 @@
     "click-read": {},
     "key-read": {},
     "part-place": {},
+    "button-by-hand": {},
     "layout-told": {},
     "abort-unsaid": {},
     "empty-on-done": {},
     "panic-test": {},
     "read-before-run": {},
     "reset-by-hand": {},
-    "app-word": {}
+    "app-word": {},
+    "frame-walk": {}
   },
   "excused": {
     "frame-request": {},
@@ -162,12 +164,14 @@
     "click-read": {},
     "key-read": {},
     "part-place": {},
+    "button-by-hand": {},
     "layout-told": {},
     "abort-unsaid": {},
     "empty-on-done": {},
     "panic-test": {},
     "read-before-run": {},
     "reset-by-hand": {},
-    "app-word": {}
+    "app-word": {},
+    "frame-walk": {}
   }
 }

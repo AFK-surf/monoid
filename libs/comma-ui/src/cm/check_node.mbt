@@ -27,7 +27,7 @@ pub fn check_node(
 ) -> @view.View {
   let side = if size == ControlSm { 16.0 } else { 20.0 }
   let corner = if size == ControlSm { radius_xs } else { radius_md }
-  parent.box(made_for=loc, fn(b) {
+  @headless.toggle(made_for=loc, parent, Checkbox, label, on, turn, disabled~, fn(b, _) {
     let fill = eased_by(b, on, ms_state_change, ease_surface_smooth_out)
     b
     .width(Is(Some(side)))
@@ -51,9 +51,7 @@ pub fn check_node(
       }
     }))
     .shadow(By(fn() { if is_dark() { shadow_dark_xs } else { shadow_xs } }))
-    .says(By(fn() { Some(@view.said(Checkbox, label=label(), check=if on() { On } else { Off })) }))
     |> ignore
-    presses_node(b, fn() { turn(!@signals.untracked(on)) }, on=fn() { !disabled() })
     // (the tick: Comma's check-large (Central's checkmark-1) in the box's middle, 12.5% in from its sides (15% at Md),
     // at the design's 1.67 stroke)
     b.box(fn(t) {
@@ -92,7 +90,7 @@ pub fn toggle_node(
 ) -> @view.View {
   let (w, h, knob) = if size == ControlSm { (36.0, 20.0, 16.0) } else { (44.0, 24.0, 20.0) }
   let inset = space_xxs
-  parent.box(made_for=loc, fn(b) {
+  @headless.toggle(made_for=loc, parent, Switch, label, on, turn, disabled~, fn(b, _) {
     let live = fn() { !disabled() }
     let across = eased_by(b, on, ms_feedback_in, ease_surface_smooth_out)
     let fill = eased_by(b, on, ms_state_change, ease_surface_smooth_out)
@@ -112,9 +110,7 @@ pub fn toggle_node(
       mix(0x000000FFL, 0.1 * hand.shown(b), track)
     }))
     .alpha(By(fn() { if disabled() { 0.5 } else { 1.0 } }))
-    .says(By(fn() { Some(@view.said(Switch, label=label(), check=if on() { On } else { Off })) }))
     |> ignore
-    presses_node(b, fn() { turn(!@signals.untracked(on)) }, on=live)
     b.box(fn(k) {
       k
       .width(Is(Some(knob)))

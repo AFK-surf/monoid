@@ -57,10 +57,7 @@ fn seen_at(scale : Double) -> Double {
 /// A press anywhere in `h` (over all of the window) closing what floats in it: under it, named for a screen reader.
 #callsite(autofill(loc))
 fn closes_outside(h : @view.View, close : () -> Unit, label : String, loc~ : SourceLoc) -> Unit {
-  h.box(made_for=loc, fn(c) {
-    c.over(Is(true)).says(Is(Some(@view.said(Button, label~)))) |> ignore
-    c.presses(Is(true)).on_press(close) |> ignore
-  })
+  @headless.button(made_for=loc, h, fn() { label }, fn(_) { close() }, fn(c, _) { c.over(Is(true)) |> ignore })
   |> ignore
 }
 
