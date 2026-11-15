@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [36acdd8fb](https://github.com/AFK-surf/monoid/commit/36acdd8fb1807f9d4d494a58406c026e4c3064ee) station: a machine's session gone on with, a chat  | 2.16 | 3.02 | 13.06 | 34.19 | 51.76 | 29.98 | 60.22 | 99.78 | 119.31 |
 | [1e46c5e2f](https://github.com/AFK-surf/monoid/commit/1e46c5e2f18d983a1b094a54a74caaa950f66340) app: the stations' 进程 radio 「对话」 changes once at a | 2.16 | 3.02 | 13.06 | 34.19 | 51.76 | 29.98 | 60.22 | 99.78 | 119.31 |
 | [2cdec0a17](https://github.com/AFK-surf/monoid/commit/2cdec0a17435d68d7dd66c174e73e5fff4b110e5) app: Home's chats as a board, kept per workspace o | 2.16 | 3.02 | 13.06 | 34.19 | 51.76 | 29.98 | 60.22 | 99.5 | 118.56 |
 | [085454ff8](https://github.com/AFK-surf/monoid/commit/085454ff8055f241959ed48b238558cfb28ca643) fix(mbui): keep Windows subpixel glyph keys aligne | 2.15 | 3 | 12.97 | 34.09 | 51.38 | 29.89 | 59.92 | 99.58 | 121.01 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [8f9f38b0a](https://github.com/AFK-surf/monoid/commit/8f9f38b0a536e4e6e5252e694ae904daf09d0480) mbui view: what is laid out where an old view is h | 2.11 | 2.94 | 12.67 | 33.74 | 49.98 | 29.15 | 57.72 | 99.71 | 118.52 |
 | [e55a064bb](https://github.com/AFK-surf/monoid/commit/e55a064bb8b0b33b02eb68b653827bf2a11d4c86) mbui: 对话右侧栏顶栏节点化（side_bar_node） (#6473) | 2.11 | 2.94 | 12.67 | 33.74 | 49.98 | 29.15 | 57.72 | 99.67 | 118.52 |
 | [4ab7a065a](https://github.com/AFK-surf/monoid/commit/4ab7a065a5683dcb24b4ffa234e139eefa601fb3) app: a Farview tab in a window of its own is drawn | 2.11 | 2.94 | 12.67 | 33.74 | 49.98 | 29.15 | 57.72 | 99.67 | 118.52 |
-| [9955957bd](https://github.com/AFK-surf/monoid/commit/9955957bddc09658c0e73a6f4e2494a0f11e9757) mbui: a paragraph of runs laid out once is kept, w | 2.11 | 2.94 | 12.67 | 33.74 | 49.98 | 29.15 | 57.72 | 99.67 | 118.52 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [36acdd8fb](https://github.com/AFK-surf/monoid/commit/36acdd8fb1807f9d4d494a58406c026e4c3064ee) station: a machine's session gone on with, a chat  | 0.42 | 0.54 | 2.08 | 3.17 | 4.97 | 1.53 | 4.08 | 57.51 |
 | [1e46c5e2f](https://github.com/AFK-surf/monoid/commit/1e46c5e2f18d983a1b094a54a74caaa950f66340) app: the stations' 进程 radio 「对话」 changes once at a | 0.42 | 0.54 | 2.07 | 3.17 | 4.97 | 1.53 | 4.08 | 57.36 |
 | [2cdec0a17](https://github.com/AFK-surf/monoid/commit/2cdec0a17435d68d7dd66c174e73e5fff4b110e5) app: Home's chats as a board, kept per workspace o | 0.42 | 0.54 | 2.07 | 3.17 | 4.97 | 1.53 | 4.08 | 57.36 |
 | [085454ff8](https://github.com/AFK-surf/monoid/commit/085454ff8055f241959ed48b238558cfb28ca643) fix(mbui): keep Windows subpixel glyph keys aligne | 0.42 | 0.54 | 2.07 | 3.17 | 4.97 | 1.53 | 4.08 | 57.36 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [8f9f38b0a](https://github.com/AFK-surf/monoid/commit/8f9f38b0a536e4e6e5252e694ae904daf09d0480) mbui view: what is laid out where an old view is h | 0.41 | 0.53 | 1.99 | 3.1 | 4.58 | 1.47 | 3.83 | 57.31 |
 | [e55a064bb](https://github.com/AFK-surf/monoid/commit/e55a064bb8b0b33b02eb68b653827bf2a11d4c86) mbui: 对话右侧栏顶栏节点化（side_bar_node） (#6473) | 0.41 | 0.53 | 1.99 | 3.1 | 4.58 | 1.47 | 3.83 | 57.31 |
 | [4ab7a065a](https://github.com/AFK-surf/monoid/commit/4ab7a065a5683dcb24b4ffa234e139eefa601fb3) app: a Farview tab in a window of its own is drawn | 0.41 | 0.53 | 1.99 | 3.1 | 4.58 | 1.47 | 3.83 | 57.36 |
-| [9955957bd](https://github.com/AFK-surf/monoid/commit/9955957bddc09658c0e73a6f4e2494a0f11e9757) mbui: a paragraph of runs laid out once is kept, w | 0.41 | 0.53 | 1.99 | 3.1 | 4.58 | 1.47 | 3.83 | 57.28 |
