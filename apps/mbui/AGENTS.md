@@ -165,6 +165,13 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
 - A page's list makes a block only while it shows, so a block is a row, not a group of them: a card of a long list
   is made a block a row, each a piece of the card (`@sf.card_piece_node`), as 更新日志's days are (2026-11-11: a day of
   62 changes made one block was made whole in the frame it came into view).
+- The chat's page made as nodes reads its chat by key, as the core sends it (the user, 2026-11-15: 「明显错的，它目前快也要改」):
+  its head alone (sfbase's `chat_head`, `chat_view_now`: no message in it) and its messages each by its key
+  (`ChatMessages`, a subscription's `Sub::keyed`), each row its own message's (sfpages' `chat_body_keyed`), so a word
+  streamed into one message reads none of the others; nothing on that page, its bar, composer or what ticks under it,
+  reads `view_of_chat` as a message changes (`chat_body_keyed_wbtest.mbt` counts it of the page's list). What reads the chat whole at a
+  press reads it then (`chat_whole`). What is sent from here before the core has it, and an outbox, go by the rows made
+  whole (`chat_body_rows`) till they are taken over.
 - What is left of the old is counted by detlint and only falls: `old-island` (`@ui.old` hosting a Ctx in a node),
   `old-list` (`Ctx::list`), `old-panel`, `click-read`, `key-read`, `build-motion`, `layout-read-back`, `ui-current`.
   A change never adds one; one it touches it moves over. A node-made part is never wrapped back into a Ctx.

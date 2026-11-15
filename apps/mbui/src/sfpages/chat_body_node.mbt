@@ -586,9 +586,10 @@ fn chat_body_node(
   place? : @view.ListPlace[String] = @view.ListPlace::new(),
   keeps? : ChatBodyKeeps = { opened: notices_open, copied: @sf.LiveMap::new(), steadies: ActivitySteadies::new(), faces: Map([]), pieces: Map([]), tables: Map([]) },
   made? : (String, @view.View) -> Unit = fn(_, _) {  },
-  read? : (@view.ListPlace[String], @view.Scroll, () -> ChatBodyRows) -> Unit = fn(_, _, _) {  },
+  read? : (@view.ListPlace[String], @view.Scroll, ChatBodyList) -> Unit = fn(_, _, _) {  },
   to? : ChatRef,
   shows? : () -> Bool = fn() { true },
+  msgs? : @sfbase.ChatMessages? = None,
 ) -> @view.View {
   let jump = ChatJump::new()
   // (the list's top: the bar and the room under it, its head; where it opens, where a go-to puts a message and the
@@ -601,20 +602,58 @@ fn chat_body_node(
   // (worked out once as the view, its entries or what is on its way change, from what was worked out last where only
   // rows changed where they stand (chat_body_rows_again); the keys only change as rows come, go or are taken over)
   let made_last : Ref[ChatBodyMade?] = Ref(None)
+  // (how many times the rows were made whole: what was sent from here as, kept, read again by the rows by key as they
+  // go on from them)
+  let made_whole = Ref(0)
   let rows = @signals.computed(fn(_) {
     let view = (here.view)()
     let all = entries()
     let on_way = sending()
     let rs = chat_body_rows_again(kept, made_last.val, view, all, on_way)
     made_last.val = Some({ view, all, sending: !on_way.is_empty(), rows: rs })
+    made_whole.val += 1
     rs
   }, same=fn(_, _) { false })
-  let keys = @signals.computed(fn(_) { rows.get().keys }, same=fn(a, b) { physical_equal(a, b) || a == b })
+  // (by key where the chat's messages are kept so and nothing is sent from here or waits in its outbox (chat_body_keyed:
+  // a message's change reads that message's rows alone); else made whole of its entries, chat_body_rows')
+  let keyed_now = @signals.computed(
+    fn(_) { msgs is Some(_) && sending().is_empty() && (here.view)().outbox.is_empty() },
+    same=fn(a, b) { a == b },
+  )
+  let era = @signals.computed(
+    fn(_) {
+      keyed_now.get() |> ignore
+      made_whole.val
+    },
+    same=fn(a, b) { a == b },
+  )
+  let by_key = msgs.map(fn(m) { chat_body_keyed(kept, era, here.view, m) })
+  let whole = ChatBodyList::of_made(fn() { rows.get() })
+  let list : ChatBodyList = {
+    keys: fn() {
+      match by_key {
+        Some(l) if keyed_now.get() => (l.keys)()
+        _ => (whole.keys)()
+      }
+    },
+    row: fn(k) {
+      match by_key {
+        Some(l) if keyed_now.get() => (l.row)(k)
+        _ => (whole.row)(k)
+      }
+    },
+  }
+  let keys = @signals.computed(fn(_) { (list.keys)() }, same=fn(a, b) { physical_equal(a, b) || a == b })
   // (the keys the core's rows that took over what was sent from here go on by, given the chat's viewer, which names an
   // occurrence of a picture by its row's key here and asks the core by the core's: told again as a row is taken over,
   // which only adds one)
   let taken_over = @signals.computed(fn(_) {
-    rows.get() |> ignore
+    // (what was sent from here is taken over only as the rows are made whole: chat_body_rows writes it)
+    if keyed_now.get() {
+      keys.get() |> ignore
+    } else {
+      rows.get() |> ignore
+    }
     kept.sent_as.length()
   }, same=fn(a, b) { a == b })
   let sent_as = fn() {
@@ -650,7 +689,7 @@ fn chat_body_node(
     let first = match now.first_entry {
       Some(f) => f
       None =>
-        match now.messages.get(0) {
+        match to.map(fn(r) { chat_said_all(src, r, here.view) }).unwrap_or(now.messages).get(0) {
           Some(m) => m.seq
           None => -1.0
         }
@@ -690,7 +729,7 @@ fn chat_body_node(
     let last = match now.last_entry {
       Some(l) => l
       None =>
-        match now.messages.last() {
+        match to.map(fn(r) { chat_said_all(src, r, here.view) }).unwrap_or(now.messages).last() {
           Some(m) => m.seq
           None => -1.0
         }
@@ -734,7 +773,7 @@ fn chat_body_node(
           Some(r) => {
             chat_to_newest_node(f, src, r, jump, place, here.view, width, here.tips)
             chat_outline_node(f, src, r, jump, here.view, width, here.tips, here.stint)
-            chat_ask_node(f, r, src, jump, here.view, fn() { rows.get() }, width, here.tips)
+            chat_ask_node(f, r, src, jump, here.view, list, width, here.tips)
             // (对话目录's rail at the list's right, in its middle, where the page leaves it room)
             chat_rail_node(f, src, r, jump, here.view, width, top, o, here.tips, here.stint)
           }
@@ -751,7 +790,7 @@ fn chat_body_node(
       // entry, an agent at work; the rest, caught up on, read in or there as the chat opened, simply there: what was
       // said before it was shown moves not, sf/motion.mbt's head)
       comes=fn(k) {
-        let comes = match rows.get().rows.get(k) {
+        let comes = match (list.row)(k) {
           Some(r) => chat_body_comes(r.entry)
           None => false
         }
@@ -791,7 +830,7 @@ fn chat_body_node(
       place~,
       near_top=(1.0, wants_older, fn() { ask_older(true) }),
       near_foot=(1.0, wants_newer, ask_newer),
-      fn(slot, k) { chat_body_row(slot, src, here, k, rows, side, top, core, keeps, made, jump, fn() { came_at.get(k) }) },
+      fn(slot, k) { chat_body_row(slot, src, here, k, list, side, top, core, keeps, made, jump, fn() { came_at.get(k) }) },
     )
     |> ignore
   })
@@ -800,16 +839,16 @@ fn chat_body_node(
   // to go to first, chat_goes_to's)
   let chat = here.station + "\u{1}" + here.session
   let opens = @signals.untracked(fn() {
-    chat_open_place(rows.get(), (here.view)(), @sfbase.kept_places.get(chat), v.pixel_scale(), cover(), top(), lead)
+    chat_open_place(list, (here.view)(), @sfbase.kept_places.get(chat), v.pixel_scale(), cover(), top(), lead)
   })
   if opens is Some((k, offset)) && !@sfbase.go_tos.contains(chat) {
     place.bring(k, offset~)
   }
   match to {
     Some(r) => {
-      chat_goes_to(v, src, r, jump, place, fn() { rows.get() }, here.view, cover, top, fn() { ask_older(false) }, shows)
+      chat_goes_to(v, src, r, jump, place, list, here.view, cover, top, fn() { ask_older(false) }, shows)
       // (over the list: a passage a mouse picked in a message quoted by its pill)
-      chat_quote_node(v, src, r, here, fn() { rows.get() })
+      chat_quote_node(v, src, r, here, list)
       // (a picture's 复制图片 chosen in its menu: read whole and put on the clipboard)
       menus_image_node(v)
       // something sent from here into the chat (words, an answer picked on a card: sfbase's sent_here_told), read up
@@ -841,17 +880,17 @@ fn chat_body_node(
         outline_open_keys(
           src,
           r,
-          @signals.untracked(here.view),
+          chat_whole(src, r, @signals.untracked(here.view)),
           stint=@signals.untracked(here.stint),
           button?=jump.outline_at,
           rail?=jump.rail_at,
         )
       })
       .on_action("chat.said.prev", fn(_) {
-        (src.asks_outline)() && said_go(src, r, @signals.untracked(here.view), -1, railed=jump.rail_at is Some(_))
+        (src.asks_outline)() && said_go(src, r, chat_whole(src, r, @signals.untracked(here.view)), -1, railed=jump.rail_at is Some(_))
       })
       .on_action("chat.said.next", fn(_) {
-        (src.asks_outline)() && said_go(src, r, @signals.untracked(here.view), 1, railed=jump.rail_at is Some(_))
+        (src.asks_outline)() && said_go(src, r, chat_whole(src, r, @signals.untracked(here.view)), 1, railed=jump.rail_at is Some(_))
       })
       |> ignore
     }
@@ -859,9 +898,9 @@ fn chat_body_node(
   }
   // the unread line come after it was made (what came while the app was away, read after the chat opened): there once,
   // as at a chat opened with it, while the list is still at its end and no message is asked to be gone to
-  let lined = Ref(@signals.untracked(fn() { rows.get().rows.contains("line") }))
+  let lined = Ref(@signals.untracked(fn() { list.has("line") }))
   v.reacts(
-    fn() { rows.get().rows.contains("line") },
+    fn() { list.has("line") },
     fn(has) {
       guard has && !lined.val else { return }
       lined.val = true
@@ -884,15 +923,15 @@ fn chat_body_node(
   // all of them again for each word streamed into a row)
   let came_last : Ref[(Array[String], String, Bool)?] = Ref(None)
   let newest = fn() -> (String, Bool, Bool)? {
-    let rs = rows.get()
-    if !physical_equal(rs.keys, keys_now.val) {
+    let rs_keys = keys.get()
+    if !physical_equal(rs_keys, keys_now.val) {
       keys_before.val = keys_now.val
-      keys_now.val = rs.keys
+      keys_now.val = rs_keys
     }
     let before = keys_before.val
-    let mut i = rs.keys.length() - 1
+    let mut i = rs_keys.length() - 1
     while i >= 0 {
-      let k = rs.keys[i]
+      let k = rs_keys[i]
       let came = match came_last.val {
         Some((b, ck, c)) if physical_equal(b, before) && ck == k => c
         _ => {
@@ -901,7 +940,7 @@ fn chat_body_node(
           c
         }
       }
-      match rs.rows.get(k).map(fn(r) { r.entry }) {
+      match (list.row)(k).map(fn(r) { r.entry }) {
         Some(State(_, _, _) | Working(_) | Newer) | None => ()
         Some(Out(_)) => return Some((k, true, came))
         Some(Said(m)) => return Some((k, m.mine, came))
@@ -930,7 +969,7 @@ fn chat_body_node(
     },
     at_start=false,
   )
-  read(place, scroll, fn() { rows.get() })
+  read(place, scroll, list)
   v
 }
 
@@ -944,7 +983,7 @@ fn chat_body_row(
   src : Source,
   here : MessageNodeHere,
   k : String,
-  rows : @signals.Computed[ChatBodyRows],
+  rows : ChatBodyList,
   side : () -> Double,
   list_top : () -> Double,
   core : @settings.Core?,
@@ -953,11 +992,11 @@ fn chat_body_row(
   jump : ChatJump,
   came : () -> Double?,
 ) -> Unit {
-  let first = @signals.untracked(fn() { rows.get().rows.get(k) })
+  let first = @signals.untracked(fn() { (rows.row)(k) })
   guard first is Some(first) else { return }
   // (as the list says it now, only as that row changed (chat_body_row_same): what changed in another row reads none of
   // this one again; one let go as its key goes reads what it last was)
-  let now = @signals.computed(fn(_) { rows.get().rows.get(k).unwrap_or(first) }, same=chat_body_row_same)
+  let now = @signals.computed(fn(_) { (rows.row)(k).unwrap_or(first) }, same=chat_body_row_same)
   let row = fn() { now.get() }
   let entry = fn() { row().entry }
   let top = fn() { chat_body_gap_room(row().gap, (here.width)()) }

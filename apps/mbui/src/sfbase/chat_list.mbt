@@ -648,6 +648,7 @@ pub fn chat_inputs_left(r : ChatRef) -> Unit {
     None => ()
   }
   chat_inputs.forget(key)
+  chat_heads.forget(key)
 }
 
 ///|
@@ -659,6 +660,7 @@ pub fn chat_inputs_left_from(src : Source, r : ChatRef) -> Unit {
     None => ()
   }
   chat_inputs.forget_from(src, key)
+  chat_heads.forget_from(src, key)
 }
 
 ///|
@@ -813,6 +815,7 @@ fn chat_read_again(message_json : Array[Json], was : ChatRead) -> (Array[(Json, 
 /// (chat_view_of's `was`).
 // kept across runs: what it keeps is let go of by a run anew and by reset (derived.mbt)
 let chat_read : Derived[ChatRead] = Derived::new("chat", fn(v, was) {
+  chat_read_made.val += 1
   let message_json = items(Some(v), "messages")
   let (read, messages) = match was {
     Some(w) if physical_equal(w.message_json, message_json) && same_chat_messages(message_json, w.read) =>
@@ -902,12 +905,56 @@ pub fn linger_tick(c : @ui.Ctx, src : Source, in_front~ : Bool) -> Unit {
     }
     let r : ChatRef = { station, session, title: "", station_name: "" }
     let page_src = page_source_for_chat(src, r)
-    if physical_equal(page_src, src) || chat_kept_from(page_src, r) is None {
+    if physical_equal(page_src, src) {
       continue
     }
-    match view_of_chat(page_src, r).0 {
-      Some(v) => chat_tick(c, rk, rd, v, shown=rd.was_shown, in_front~)
-      None => ()
+    // (a chat whose messages its page reads by key (ChatMessages, a page made as nodes) by its head and those: no
+    // reading of all of it as a word comes into one; else as its page read it whole)
+    let keyed = match chat_heads.peek_from(page_src, chat_inputs_key(r)) {
+      Some(_) => chat_messages(page_src, r)
+      None => None
+    }
+    match keyed {
+      Some(ms) =>
+        match chat_head(page_src, r).0 {
+          Some(v) => chat_tick(c, rk, rd, v, ms~, shown=rd.was_shown, in_front~)
+          None => ()
+        }
+      _ =>
+        if chat_kept_from(page_src, r) is Some(_) {
+          match view_of_chat(page_src, r).0 {
+            Some(v) => chat_tick(c, rk, rd, v, shown=rd.was_shown, in_front~)
+            None => ()
+          }
+        }
+    }
+  }
+}
+
+///|
+/// Chat view `v`'s messages (those kept by key, `ms`, where it holds none: its head's) from the newest back, each
+/// given to `go` till it says no more.
+fn said_back(v : ChatView, ms : ChatMessages?, go : (Message) -> Bool) -> Unit {
+  match ms {
+    Some(ms) if v.messages.is_empty() => {
+      let keys = ms.peek_keys()
+      let mut i = keys.length() - 1
+      while i >= 0 {
+        match ms.peek(keys[i]) {
+          Some(m) => if !go(m) { return }
+          None => ()
+        }
+        i = i - 1
+      }
+    }
+    _ => {
+      let mut i = v.messages.length() - 1
+      while i >= 0 {
+        if !go(v.messages[i]) {
+          return
+        }
+        i = i - 1
+      }
     }
   }
 }
@@ -915,7 +962,15 @@ pub fn linger_tick(c : @ui.Ctx, src : Source, in_front~ : Bool) -> Unit {
 ///|
 /// A chat's own data, once a build, before its page is built (linger_tick; its page the first build it shows in):
 /// what comes out of its avatars played on, whose activity stays as its turn ends.
-pub fn chat_tick(c : @ui.Ctx, rk : String, rd : Reading, v : ChatView, shown~ : Bool, in_front~ : Bool) -> Unit {
+pub fn chat_tick(
+  c : @ui.Ctx,
+  rk : String,
+  rd : Reading,
+  v : ChatView,
+  ms? : ChatMessages,
+  shown~ : Bool,
+  in_front~ : Bool,
+) -> Unit {
   let lingered = rd.ticked
   let played = rd.played
   if lingered && (played || !shown) {
@@ -953,7 +1008,10 @@ pub fn chat_tick(c : @ui.Ctx, rk : String, rd : Reading, v : ChatView, shown~ : 
     for k, _ in rd.linger {
       showing[k] = true
     }
-    emit_take(c, em, v, showing)
+    match ms {
+      Some(ms) if v.messages.is_empty() => emit_take_keyed(c, em, ms, showing)
+      _ => emit_take(c, em, v, showing)
+    }
     // words sent from here on their way: their landing as declared (-2: not laid out yet), -1 none or landed
     // (emit_step)
     let sending = fn() {
@@ -975,7 +1033,14 @@ pub fn chat_tick(c : @ui.Ctx, rk : String, rd : Reading, v : ChatView, shown~ : 
   // the user, of an answer at once to a card picked: 「点一个决策后上下摇晃」; 「处理中」不再单独收一次).
   let keeps = emit_keeps(em)
   // (the last message here, by seq: an answer past it is on its way)
-  let here = v.messages.iter().fold(init=-1.0, fn(m, x) { if x.seq > m { x.seq } else { m } })
+  let here = match ms {
+    Some(ms) if v.messages.is_empty() =>
+      match ms.peek_keys().last().bind(fn(k) { ms.peek(k) }) {
+        Some(m) => m.seq
+        None => -1.0
+      }
+    _ => v.messages.iter().fold(init=-1.0, fn(m, x) { if x.seq > m { x.seq } else { m } })
+  }
   let on_its_way = fn(a : Agent) {
     match a.about {
       Some(seq) if seq > here && !v.newer => seq
@@ -1040,24 +1105,38 @@ pub fn chat_tick(c : @ui.Ctx, rk : String, rd : Reading, v : ChatView, shown~ : 
       // (one from a turn before, its line gone by now)
       rd.answered_unseen.remove(k) |> ignore
       let idle = rd.idle_here.get(k).unwrap_or(-1.0)
-      rd.turn_from[k] = v.messages
-        .iter()
-        .filter(fn(m) { !(m.author_kind == "agent" && m.by.agent == k && m.said && m.seq > idle) })
-        .fold(init=-1.0, fn(n, m) { if m.seq > n { m.seq } else { n } })
+      // (the newest that is not this turn's own: looked for from the end)
+      let from = Ref(-1.0)
+      said_back(v, ms, fn(m) {
+        if !(m.author_kind == "agent" && m.by.agent == k && m.said && m.seq > idle) {
+          from.val = m.seq
+          false
+        } else {
+          true
+        }
+      })
+      rd.turn_from[k] = from.val
     }
     if rd.answered.contains(k) || keeps.contains(k) {
       continue
     }
     let from = rd.turn_from[k]
-    let came = v.messages.iter().any(fn(m) {
-      m.seq > from &&
-      m.author_kind == "agent" &&
-      m.by.agent == k &&
-      !m.mine &&
-      !m.system &&
-      m.ending != "" &&
-      !emit_goes(em, m.seq)
+    // (looked for from the end, no further back than where its turn began)
+    let came_ = Ref(false)
+    said_back(v, ms, fn(m) {
+      guard m.seq > from else { return false }
+      if m.author_kind == "agent" &&
+        m.by.agent == k &&
+        !m.mine &&
+        !m.system &&
+        m.ending != "" &&
+        !emit_goes(em, m.seq) {
+        came_.val = true
+        return false
+      }
+      true
     })
+    let came = came_.val
     if came {
       rd.answered[k] = a.last_turn
       if first {

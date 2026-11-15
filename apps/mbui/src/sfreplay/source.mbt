@@ -459,6 +459,14 @@ pub fn source() -> @sfapp.Source {
       { value, error: s.error, version: s.version }
     },
     topic_key: fn(name, params) { @sfbase.wire_topic_key(name, replay_topic_params(name, params)) },
+    // (a chat's messages as the run's core sent them, by key; the topics a run of before is answered otherwise, none)
+    topic_keyed: fn(name, params, field, keys) {
+      if name == "chat" {
+        Some(@core.follow_topic(name, params=replay_topic_params(name, params)).keyed(field, keys))
+      } else {
+        None
+      }
+    },
     topic_scope: None,
     topic_alive: fn() { true },
     topic_lease_own: None,

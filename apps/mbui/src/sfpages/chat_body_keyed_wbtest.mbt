@@ -1,0 +1,209 @@
+// A chat's list by key (chat_body_keyed) against the same chat's rows made whole (chat_body_rows): the same keys in the
+// same order, each the same row; and its page as the core changes a message by key: what reads the chat whole
+// (chat_read) not worked out at all, one message read again for each word streamed in, the same in a chat of 50
+// messages as in one of 150.
+
+///|
+/// Chat value `chat`'s messages by key, as a subscription keeps them (@core.Sub::keyed: each by its `seq` and
+/// `outgoing`'s JSON text).
+fn keyed_of(chat : Json) -> @signals.KeyedList[String, Json] {
+  let list : @signals.KeyedList[String, Json] = @signals.keyed_list()
+  let keys : Array[String] = []
+  let vals : Map[String, Json] = Map([])
+  for m in items(Some(chat), "messages") {
+    let k = keyed_key(m)
+    keys.push(k)
+    vals[k] = m
+  }
+  list.reset(keys, vals)
+  list
+}
+
+///|
+/// A message's key's text, as the core keys it.
+fn keyed_key(m : Json) -> String {
+  let f = fn(name : String) {
+    match m {
+      Object(o) => o.get(name).unwrap_or(Json::null())
+      _ => Json::null()
+    }
+  }
+  Json::array([f("seq"), f("outgoing")]).stringify()
+}
+
+///|
+/// Where chat_body_keyed's rows of chat value `chat` are not chat_body_rows' of it made whole.
+fn keyed_faults(chat : Json, name : String) -> Array[String] {
+  let whole = @sfbase.chat_view_made(chat)
+  let head = { ..whole, messages: [] }
+  let msgs = @sfbase.chat_messages_of(keyed_of(chat))
+  let era = @signals.computed(fn(_) { 0 })
+  let keyed = chat_body_keyed({ sent: {}, sent_as: {}, here: {} }, era, fn() { head }, msgs)
+  let made = chat_body_rows({ sent: {}, sent_as: {}, here: {} }, whole, @sfbase.entries_of(whole), [])
+  let watch = @signals.watch(fn() {  })
+  let faults : Array[String] = []
+  watch.read(fn() {
+    let keys = (keyed.keys)()
+    if keys != made.keys {
+      faults.push("\{name}: keys \{Repr(keys)} for \{Repr(made.keys)}")
+    }
+    for k in made.keys {
+      match ((keyed.row)(k), made.rows.get(k)) {
+        (Some(a), Some(b)) =>
+          if !(a.gap == b.gap && a.piece == b.piece && a.entry.id() == b.entry.id()) {
+            faults.push("\{name}: row \{k} otherwise (gap \{a.gap == b.gap}, piece \{a.piece == b.piece}, \{a.entry.id()} \{b.entry.id()})")
+          }
+        _ => faults.push("\{name}: row \{k} missing")
+      }
+    }
+  })
+  watch.stop()
+  faults
+}
+
+///|
+/// Chat value `chat` with `fields` set.
+fn keyed_with(chat : Json, fields : Map[String, Json]) -> Json {
+  guard chat is Object(o) else { return chat }
+  let out = o.copy()
+  for k, v in fields {
+    out[k] = v
+  }
+  Json::object(out)
+}
+
+///|
+test "a chat's rows by key are its rows made whole" {
+  @sfbase.reset()
+  reset()
+  let chat = scale_chat(12)
+  let long = "第一段\n\n第二段\n\n第三段"
+  let md = Json::array([body_para("第一段"), body_para("第二段"), body_para("第三段")])
+  guard chat is Object(o) && o.get("messages") is Some(Array(ms)) else { fail("no messages") }
+  let ms = ms.copy()
+  // (an agent's long answer in pieces, one joined to the one before, one with what went elsewhere after it)
+  guard ms[5] is Object(m5) && ms[7] is Object(m7) && ms[3] is Object(m3) else { fail("no message") }
+  let m5 = m5.copy()
+  m5["text"] = Json::string(long)
+  m5["md"] = md
+  ms[5] = Json::object(m5)
+  let m7 = m7.copy()
+  m7["joined"] = Json::boolean(true)
+  ms[7] = Json::object(m7)
+  let m3 = m3.copy()
+  m3["elsewhere"] = Json::array([Json::object({ "key": Json::string("e1"), "text": Json::string("去了 Slack") })])
+  ms[3] = Json::object(m3)
+  let base = keyed_with(chat, { "messages": Json::array(ms) })
+  let faults : Array[String] = []
+  faults.append(keyed_faults(base, "plain"))
+  faults.append(keyed_faults(keyed_with(base, { "unreadLine": Json::number(6.0) }), "unread line"))
+  faults.append(keyed_faults(keyed_with(base, { "unreadLine": Json::number(1.0) }), "unread line first"))
+  faults.append(keyed_faults(keyed_with(base, { "more": Json::boolean(true) }), "more"))
+  faults.append(keyed_faults(keyed_with(base, { "more": Json::boolean(true), "older": Json::string("failed"), "olderFailed": Json::string("x") }), "older failed"))
+  faults.append(keyed_faults(keyed_with(base, { "newer": Json::boolean(true) }), "newer"))
+  faults.append(keyed_faults(keyed_with(base, { "stateText": Json::string("等你"), "stateLead": Json::string("need") }), "state"))
+  faults.append(
+    keyed_faults(
+      keyed_with(base, {
+        "agents": Json::array([
+          Json::object({ "key": Json::string("a1"), "name": Json::string("Claude"), "status": Json::string("running") }),
+        ]),
+      }),
+      "at work",
+    ),
+  )
+  faults.append(keyed_faults(keyed_with(base, { "messages": Json::array([]) }), "empty"))
+  faults.append(
+    keyed_faults(
+      keyed_with(base, { "elsewhere": Json::array([Json::object({ "key": Json::string("e0"), "text": Json::string("前") })]) }),
+      "elsewhere before",
+    ),
+  )
+  assert_eq(faults, [])
+}
+
+///|
+/// What a chat of `n` messages took, open on 小屏 on a source that keeps its messages by key, for `words` words
+/// streamed into its last message, each a change as the core's: the times it was worked out whole (chat_read), the
+/// messages read again, and what the tree did (bound, made, let go, laid, measured).
+fn keyed_run(n : Int, words : Int) -> (Int, Int, (Int, Int, Int, Int, Int)) raise {
+  @sfbase.reset()
+  reset()
+  @sf.set_words(@sfbase.fill)
+  absolute_times.set(false)
+  let chat = @signals.signal(scale_chat(n))
+  let list = keyed_of(chat.untracked())
+  let src : Source = {
+    ..@sfbase.made_source(call=fn(_, _, done) { done(Ok(Json::null())) }),
+    topic_read: fn(name, _) {
+      if name == "chat" {
+        { value: Some(chat.get()), error: None, version: 1 }
+      } else {
+        { value: None, error: None, version: 0 }
+      }
+    },
+    topic_keyed: fn(name, _, _, _) { if name == "chat" { Some(list) } else { None } },
+  }
+  let t = @ui.Tester::new(
+    fn(c) {
+      @sf.begin(c) |> ignore
+      c.with_theme(@sf.ui_theme(), fn() { @ui.old_views_here(c) })
+    },
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      let tips = @sf.TipLayer::new(fn() { Some(root) })
+      root.box(fn(f) {
+        f.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        chat_page_body_node(f, src, scale_ref, tips~, stint=fn() { 0 }, shows=fn() { true })
+      })
+      |> ignore
+      @sf.presented_nodes(root)
+    },
+    w=390.0,
+    h=844.0,
+    platform=2,
+  )
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find(scale_words(0)) is Some(_), msg="\{n}: its last message shown")
+  let whole0 = @sfbase.chat_read_made.val
+  let read0 = @sfbase.chat_messages_read.val
+  let w0 = scale_work()
+  let mut said = scale_words(0)
+  for i in 0..<words {
+    said = said + "字\{i}"
+    let ops = [
+      Json::object({ "path": Json::array([Json::string("text")]), "set": Json::string(said) }),
+      Json::object({ "path": Json::array([Json::string("md")]), "set": body_md(said) }),
+    ]
+    let k = keyed_key(scale_message(n, ""))
+    // (as the core's delta changes the value whole, and its keyed list by key: @core.Sub's)
+    @signals.start_batch()
+    chat.set(
+      @core.apply_delta(chat.untracked(), [
+        Json::object({
+          "path": Json::array([Json::string("messages")]),
+          "key": Json::array([Json::string("seq"), Json::string("outgoing")]),
+          "patch": scale_key(n),
+          "ops": Json::array(ops),
+        }),
+      ]),
+    )
+    list.put(k, @core.apply_delta(list.peek(k).unwrap(), ops))
+    @signals.end_batch()
+    t.run_for(16.0)
+  }
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find(said) is Some(_), msg="\{n}: the words streamed in shown")
+  (@sfbase.chat_read_made.val - whole0, @sfbase.chat_messages_read.val - read0, scale_did(w0, scale_work()))
+}
+
+///|
+test "words streamed into a chat's last message read that message alone, by key, the same in a chat of 50 as of 150" {
+  let (whole50, read50, did50) = keyed_run(50, 5)
+  let (whole150, read150, did150) = keyed_run(150, 5)
+  // (nothing reads the chat whole: its head and that message alone)
+  assert_eq((whole50, whole150), (0, 0))
+  // (each word: the message it came into read once)
+  assert_eq((read50, read150), (5, 5))
+  assert_true(did150 == did50, msg="150 messages \{Repr(did150)}, 50 \{Repr(did50)}")
+}

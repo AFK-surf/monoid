@@ -47,6 +47,11 @@ pub struct Sub {
   /// with (`have`), what the core's `same` or `{delta, kept}` reads, the one kept being forgotten since or not. None
   /// where it was asked with none (shown from one still being let go of, its version not said yet).
   priv mut held : Json?
+  /// its keyed lists mirrored by key as it changes (Sub::keyed), by their field
+  priv lists : Map[String, KeyedField]
+  /// what the message it took last did to its value: its ops (a `delta` applied to the value it held), or none (taken
+  /// whole, or as what changed from a value it did not hold): what its keyed lists take
+  priv mut told : Array[Json]?
 }
 
 ///|
@@ -62,7 +67,41 @@ pub fn Sub::followed(self : Sub) -> Sub {
 ///|
 /// What reads it told it changed: a message for it, or its end (`ended`: -1, no version of its own).
 fn Sub::changed(self : Sub, ended? : Bool = false) -> Unit {
+  if !ended && self.lists.length() > 0 {
+    @signals.start_batch()
+    for _, l in self.lists {
+      match self.told {
+        Some(ops) => l.take_ops(ops, self.value)
+        None => l.take_whole(self.value)
+      }
+    }
+    self.changes.set(self.version)
+    @signals.end_batch()
+    return
+  }
   self.changes.set(if ended { -1 } else { self.version })
+}
+
+///|
+/// The keyed list of its value at field `field` (one the core keys by `key_fields`, its spec's: a chat's `messages` by
+/// `seq` and `outgoing`), kept by key as the subscription changes: an item's reader told only as that item changes, the
+/// order's only as an item comes, goes or moves (core's keyed.mbt). Its keys are the key's JSON text. Made as it is
+/// first asked, from the value it holds then; kept while the subscription is.
+pub fn Sub::keyed(self : Sub, field : String, key_fields : Array[String]) -> @signals.KeyedList[String, Json] {
+  match self.lists.get(field) {
+    Some(l) => l.list
+    None => {
+      let l : KeyedField = {
+        field,
+        key_fields: key_fields.map(Json::string),
+        // (an item the same object, or, come whole and parsed anew, the same as it was said)
+        list: @signals.keyed_list(same=fn(a, b) { physical_equal(a, b) || a == b }),
+      }
+      l.take_whole(self.value)
+      self.lists[field] = l
+      l.list
+    }
+  }
 }
 
 ///|
@@ -393,7 +432,7 @@ fn Client::subscribe_as(self : Client, topic : String, params : Map[String, Json
       let id = self.next_id
       self.next_id += 1
       let from = self.from_of(t)
-      let s = { id, topic: t, value: None, error: None, version: 0, waiting: false, key, look, changes: @signals.signal(0), manual: false, direct, retiring: false, value_generation: self.generation, from, ending: false, keeping: false, held: None }
+      let s = { id, topic: t, value: None, error: None, version: 0, waiting: false, key, look, changes: @signals.signal(0), manual: false, direct, retiring: false, value_generation: self.generation, from, ending: false, keeping: false, held: None, lists: {}, told: None }
       self.subs[id] = s
       self.by_key[look] = s
       self.show_kept_of(s)
@@ -1075,6 +1114,8 @@ fn Client::take(self : Client, msg : Json) -> Unit {
       s.version = if s.version <= 0 { 1 } else { s.version + 1 }
     }
     Some(s) => {
+      // (taken whole unless it is a delta to the value it holds: what its keyed lists take)
+      s.told = None
       if m.get("waiting") is Some(True) && s.value is None && s.error is None {
         // (no value of it yet: what shows it shows what is to come, the core's wait for it going on)
         s.waiting = true
@@ -1120,7 +1161,10 @@ fn Client::take(self : Client, msg : Json) -> Unit {
         }
         (_, Some(Array(ops)), _) =>
           match (s.value, m.get("from")) {
-            (Some(v), _) if s.version >= 0 => s.value = Some(apply_delta(v, ops))
+            (Some(v), _) if s.version >= 0 => {
+              s.value = Some(apply_delta(v, ops))
+              s.told = Some(ops)
+            }
             // (shown as kept: its first answer changes what it was asked with, or the whole of it comes)
             (Some(_), _) if m.get("kept") is Some(True) =>
               match kept {

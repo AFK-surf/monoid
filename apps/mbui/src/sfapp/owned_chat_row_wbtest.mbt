@@ -26,6 +26,7 @@ fn owned_row_left_case(
   let src : Source = {
     ..base,
     topic_key: fn(name, params) { @sfbase.wire_topic_key(name, normalize(name, params)) },
+    topic_keyed: fn(_, _, _, _) { None },
     topic_read: fn(name, params) {
       if name != "chat" { return (base.topic_read)(name, params) }
       let sub = client.follow_topic(name, params=normalize(name, params))

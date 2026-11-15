@@ -82,6 +82,11 @@ pub(all) struct Source {
   topic_read : (String, Map[String, Json]) -> Topic
   /// This source's subscription identity, after any parameter normalization; equal keys share a subscription.
   topic_key : (String, Map[String, Json]) -> String
+  /// A topic's keyed list (the field of its value the core keys by `keys`: a chat's `messages` by `seq` and
+  /// `outgoing`), kept by key as the core changes it item by item (@core.Sub::keyed): what reads an item told only as
+  /// it changes. None where the source keeps none (a made-up core that gives values whole): its reader works it out of
+  /// the value as before. Read as `topic` is, of the same subscription.
+  topic_keyed : (String, Map[String, Json], String, Array[String]) -> @signals.KeyedList[String, Json]?
   /// A view source distinguishes graph evaluation from an independent read.
   topic_scope : ((TopicReadMode, () -> TopicState) -> TopicState)?
   /// Whether the source can still create a reader (a view-owned source ends with its view).
@@ -786,6 +791,7 @@ pub fn made_source(
       }
     },
     topic_key: exact_topic_key,
+    topic_keyed: fn(_, _, _, _) { None },
     topic_scope: None,
     topic_alive: fn() { true },
     topic_lease_own: None,

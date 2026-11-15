@@ -152,7 +152,7 @@ fn bar_trailing_width(held : @view.View, agents : Array[Agent], station : Statio
 fn chat_bar_of(b : @view.View, src : Source, r : ChatRef, stint : () -> Int) -> Unit {
   let state = chat_bar_state(r)
   let mid_w_sig : @signals.Signal[Double] = @signals.signal(0.0, same=fn(a, b) { a == b })
-  let view = fn() { view_of_chat(src, r).0 }
+  let view = fn() { @sfbase.chat_view_now(src, r) }
   let read = fn() { view() is Some(_) }
   let title_now = fn() {
     match view() {

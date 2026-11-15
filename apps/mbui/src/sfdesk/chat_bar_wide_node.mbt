@@ -56,7 +56,7 @@ pub fn chat_bar_wide_node(
 /// buttons; its margins while the folded sidebar is shown a while), its box (chat_bar_box's: its line under it, the
 /// page's ground; its empty part dragging the window where the window's buttons are the app's), its rooms at its ends.
 fn wide_bar_of(b : @view.View, src : Source, r : ChatRef, ends : ChatBarEnds, tips : @sf.TipLayer, stint : () -> Int) -> Unit {
-  let view = fn() { view_of_chat(src, r).0 }
+  let view = fn() { @sfbase.chat_view_now(src, r) }
   // (what opens under it where the chat's page is made as nodes, as the bar is made: chat_pops_node; else the old
   // page's, beside its buttons as chat_bar_from says)
   let pops = @signals.untracked(fn() { @sfbase.chat_page_nodes.get() })

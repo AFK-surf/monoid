@@ -18,6 +18,7 @@ fn actual_row_handoff(legacy : Bool, end_early : Bool, intermediate : Bool, dupl
     ..base,
     call: fn(name, args, done) { calls.push((name, args)); (base.call)(name, args, done) },
     topic_key: fn(name, p) { @sfbase.wire_topic_key(name, @sfbase.core_topic_params(name, p)) },
+    topic_keyed: fn(_, _, _, _) { None },
     topic_read: fn(name, p) {
       if !which(name, p) { return (base.topic_read)(name, p) }
       let sub = client.follow_topic(name, params=@sfbase.core_topic_params(name, p))

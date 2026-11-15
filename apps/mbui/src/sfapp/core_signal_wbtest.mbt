@@ -236,6 +236,7 @@ test "view owners share normalized chat parameters and release independently" {
   let src : Source = {
     ..base,
     topic_key: fn(name, params) { @sfbase.wire_topic_key(name, normalize(name, params)) },
+    topic_keyed: fn(_, _, _, _) { None },
     topic_read: fn(name, params) { (base.topic_read)(name, normalize(name, params)) },
     waits: fn(name, params) { (base.waits)(name, normalize(name, params)) },
     leave: fn(name, params, __reason) {
@@ -1038,6 +1039,7 @@ fn signal_client_source(client : @core.Client) -> Source {
   {
     ..base,
     topic_key: @sfbase.wire_topic_key,
+    topic_keyed: fn(_, _, _, _) { None },
     topic_read: fn(name, params) {
       let sub = client.follow_topic(name, params~)
       { value: sub.value, error: sub.error, version: sub.version }

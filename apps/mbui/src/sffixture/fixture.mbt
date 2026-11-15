@@ -1777,6 +1777,10 @@ pub fn round_trip_again(
       { value: s.value, error: s.error, version: s.version }
     },
     topic_key: fn(name, params) { wire_key(name, wire(name, params)) },
+    topic_keyed: fn(name, params, field, keys) {
+      serving()
+      Some(@core.follow_topic(name, params=wire(name, params)).keyed(field, keys))
+    },
     waits: fn(name, params) {
       serving()
       @core.follow_topic(name, params=wire(name, params)).waiting
@@ -2041,6 +2045,7 @@ pub fn fixture(mode : String) -> Source {
   {
     topic_read: fn(name, params) { fixture_topic(f, name, params) },
     topic_key: @sfbase.exact_topic_key,
+    topic_keyed: fn(_, _, _, _) { None },
     topic_scope: None,
     topic_alive: fn() { true },
     topic_lease_own: None,

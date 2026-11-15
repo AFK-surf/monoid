@@ -70,7 +70,7 @@ fn chat_goes_to(
   r : ChatRef,
   jump : ChatJump,
   place : @view.ListPlace[String],
-  rows : () -> ChatBodyRows,
+  rows : ChatBodyList,
   view : () -> ChatView,
   cover : () -> Double,
   top : () -> Double,
@@ -91,7 +91,7 @@ fn chat_goes_to(
     // (placed while it shows: sfbase's keep_place_of)
     let rd = @sfbase.reading_of(chat)
     rd.placed = @signals.untracked(shows)
-    match @signals.untracked(rows).rows.get(s.first).map(fn(row) { row.entry }) {
+    match @signals.untracked(fn() { (rows.row)(s.first) }).map(fn(row) { row.entry }) {
       Some(Said(m)) => {
         rd.top_seq = m.seq
         rd.top_off = @sfbase.kept_place_of(-s.into, @signals.untracked(cover))
@@ -119,12 +119,12 @@ fn chat_goes_to(
   v.reacts(shows, fn(on) { @sfbase.reading_of(chat).placed = on && place.sight_now() is Some(_) }, at_start=false)
   let goes = fn() {
     guard @sfbase.go_tos.get(chat) is Some(target) else { return }
-    let rs = @signals.untracked(rows)
+    let rs = @signals.untracked(fn() { rows.read() })
     let cv = @signals.untracked(view)
     let mut first = -1.0
     let mut at : String? = None
     for k in rs.keys {
-      match rs.rows.get(k).map(fn(row) { row.entry }) {
+      match rs.get(k).map(fn(row) { row.entry }) {
         Some(Said(m)) => {
           if first < 0.0 {
             first = m.seq
@@ -141,7 +141,7 @@ fn chat_goes_to(
       Some(k) => {
         // (the passage a quote that led here quoted, where the message's words have it: lit alone as it flashes,
         // chat_passage_lit; else the row lit whole, Chat.tsx Quotes' jump)
-        let passage = match (@sfbase.go_to_passages.get(chat), rs.rows.get(k).map(fn(row) { row.entry })) {
+        let passage = match (@sfbase.go_to_passages.get(chat), rs.get(k).map(fn(row) { row.entry })) {
           (Some(p), Some(Said(m))) if !m.system && @sf.find_passage(m.text, p) is Some(_) => p
           _ => ""
         }
@@ -174,7 +174,7 @@ fn chat_goes_to(
             @sfbase.flash_rest_nodes.val = at + @sfbase.flash_ms
             // (the chat's reading told the message gone to and what of it is lit, as the old page's list tells it:
             // where the reader is, reader_top's)
-            match rs.rows.get(k).map(fn(row) { row.entry }) {
+            match rs.get(k).map(fn(row) { row.entry }) {
               Some(Said(m)) => {
                 let rd = @sfbase.reading_of(chat)
                 rd.flash = m.ts
@@ -208,7 +208,7 @@ fn chat_goes_to(
       }
     }
   }
-  v.reacts(fn() { (rows().keys, @sfbase.go_tos_said.get()) }, fn(_) { goes() })
+  v.reacts(fn() { ((rows.keys)(), @sfbase.go_tos_said.get()) }, fn(_) { goes() })
   // (its latest page come in place of a window short of the chat's end, asked: the list at its end)
   v.reacts(
     fn() { view().newer },
@@ -354,7 +354,7 @@ fn chat_outline_node(
       let cv = @signals.untracked(view)
       guard cv.thread is Some(th) else { return }
       let rd = @sfbase.reading_of(chat)
-      let current = outline_current(said_in_view(cv), rd.top_seq, rd.at_end)
+      let current = outline_current(said_in_view(chat_whole(src, r, cv)), rd.top_seq, rd.at_end)
       open_outline(src, r, th, current, from=Node(button.val), side=Left, stint=@signals.untracked(stint))
     }
     button.val = @sf.float_button_node(o, "list", fn() { @sf.t("web-main.outline.title") }, press, tips~, shortcut="chat.outline")
@@ -370,7 +370,7 @@ fn chat_outline_node(
           let cv = @signals.untracked(view)
           guard cv.thread is Some(th) else { return }
           let rd = @sfbase.reading_of(chat)
-          let current = outline_current(said_now(src, r, cv), rd.top_seq, rd.at_end)
+          let current = outline_current(said_now(src, r, chat_whole(src, r, cv)), rd.top_seq, rd.at_end)
           open_outline(src, r, th, current, from=Node(button.val), side=Left, keys=true, stint=@signals.untracked(stint), typed=words)
         })
         |> ignore
@@ -495,7 +495,7 @@ fn chat_rail_node(
       let ticks = @signals.computed(fn(_) {
         match said.get() {
           Some(s) => {
-            let latest = view().messages.fold(init=-1.0, fn(m, x) { if x.seq > m { x.seq } else { m } })
+            let latest = chat_said_latest(src, r, view)
             let (_, h) = o.window()
             let most = dmax(0.0, (h - top()) * rail_share - 2.0 * rail_pad.px())
             chat_rail_ticks(s, jump.reader.get(), latest, most)
@@ -585,7 +585,7 @@ fn chat_ask_node(
   src : Source,
   jump : ChatJump,
   view : () -> ChatView,
-  rows : () -> ChatBodyRows,
+  rows : ChatBodyList,
   width : () -> Double,
   tips : @sf.TipLayer,
 ) -> Unit {
@@ -593,7 +593,7 @@ fn chat_ask_node(
   let shown = fn() {
     let asks = asks_of(view())
     guard asks.length() > 0 && jump.sight.get() is Some((first, last)) else { return false }
-    let rs = rows()
+    let rs = rows.read()
     let mut inside = false
     let mut seen = false
     for k in rs.keys {
@@ -601,7 +601,7 @@ fn chat_ask_node(
         inside = true
       }
       if inside {
-        match rs.rows.get(k).map(fn(row) { row.entry }) {
+        match rs.get(k).map(fn(row) { row.entry }) {
           Some(Said(m)) if asks.contains(m.seq) => seen = true
           _ => ()
         }
