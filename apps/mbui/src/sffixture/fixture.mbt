@@ -665,6 +665,8 @@ fn fixture_days_head(f : Fixture) -> Array[Json] {
   let earlier = [
     row("c9", "迁移数据库的演练", "ws1/st2", "星期三", {
       "offline": "Maple 离线",
+      // A station without its own mark: the offline icon is the only mark at the end of the title.
+      "stationIcon": "",
       "last": last("演练到第二步时 Maple 断开了"),
       "agents": [agent("anthropic", "claude"), agent("openai", "codex"), agent("deepseek", "dsh"), agent("qwen", "dsh"), agent("kimi", "dsh")],
     }),

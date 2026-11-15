@@ -207,6 +207,26 @@ pub fn has_station_mark(emoji : String, icon : String) -> Bool {
 }
 
 ///|
+/// Whether a station mark has something to draw now. Ask for a picture's decode even while it is not ready, so a row
+/// that leaves its empty mark out of layout can put it in as soon as the picture arrives.
+pub fn station_mark_visible(c : @ui.Ctx, emoji : String, icon : String, size : Double) -> Bool {
+  if emoji != "" {
+    return true
+  }
+  if icon.has_prefix("glyph:") {
+    let rest = icon.exact_view(start=6).to_owned()
+    let name = match rest.find(":") { Some(i) => rest.exact_view(end=i).to_owned(); None => rest }
+    return glyph_paths(name) is Some(_)
+  }
+  let key = if icon.has_prefix("https://") || icon.has_prefix("http://") {
+    (picture_of.val)(icon, c.page_stint())
+  } else {
+    data_image(icon)
+  }
+  key != "" && c.image_ready(key, size * c.scale)
+}
+
+///|
 /// A station where it is named: its `icon` first, a
 /// glyph (glyph:<name>, glyph:<name>:<colour>, in that colour, else `tint`)
 /// or a picture put up (its address, or a data URL); else its emoji.
@@ -218,6 +238,7 @@ pub fn station_mark(
   tint : Int64,
   none? : String,
   still? : Bool = false,
+  visible_only? : Bool = false,
 ) -> Unit {
   if icon.has_prefix("glyph:") {
     let rest = icon.exact_view(start=6).to_owned()
@@ -270,17 +291,18 @@ pub fn station_mark(
   // Parts.kt rememberStationPicture), so a GIF among them moves (mbui's gif.mbt); its emoji (below) while it comes
   if icon.has_prefix("https://") || icon.has_prefix("http://") {
     let key = (picture_of.val)(icon, c.page_stint())
-    if key != "" {
-      c.image(key, w=Px(size), h=Px(size), fit=FitCover, radius=size * 0.24, bg=0L, still~) |> ignore
+    if key != "" && (!visible_only || c.image_ready(key, size * c.scale)) {
+      c.image(key, w=Px(size), h=Px(size), fit=FitCover, radius=size * 0.24, bg=0L, still~, fade=!visible_only) |> ignore
       return
     }
   }
   match data_image(icon) {
     "" => ()
-    key => {
-      c.image(key, w=Px(size), h=Px(size), radius=size * 0.24, bg=0L, still~) |> ignore
+    key if !visible_only || c.image_ready(key, size * c.scale) => {
+      c.image(key, w=Px(size), h=Px(size), radius=size * 0.24, bg=0L, still~, fade=!visible_only) |> ignore
       return
     }
+    _ => ()
   }
   if emoji != "" {
     // A mark keeps its natural width, including Windows' wider emoji. A column's

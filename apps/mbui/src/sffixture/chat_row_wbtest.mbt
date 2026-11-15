@@ -8,9 +8,19 @@ fn chat_row_of_lists(f : Fixture, station : String, session : String) -> Json {
     if hidden {
       asked["hidden"] = Json::boolean(true)
     }
-    match whole_row_in(fixture_chats(f, asked), station, session) {
-      Some(row) => return row
-      None => ()
+    while true {
+      let chats = fixture_chats(f, asked)
+      match whole_row_in(chats, station, session) {
+        Some(row) => return row
+        None => ()
+      }
+      // A chatRow can name a chat beyond the first list window. Read the remaining pages before concluding that the
+      // lists have no such row, just as a list that reaches its end asks for more.
+      if f.mode != "long-paged" || number(chats, "more") <= 0.0 {
+        break
+      }
+      let key = fixture_window_key(asked)
+      f.windows[key] = f.windows.get(key).unwrap_or(fixture_window_untold) + fixture_window_untold
     }
   }
   Json::null()

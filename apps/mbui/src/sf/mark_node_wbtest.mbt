@@ -146,6 +146,53 @@ test "a station's mark as a node, as the old view's: a glyph, a glyph in its col
 }
 
 ///|
+test "an old view can leave a station mark out until it has something to draw" {
+  let picture = @signals.signal("")
+  let icon = @signals.signal("https://example.test/station.png")
+  let emoji = @signals.signal("")
+  let was = picture_of.val
+  picture_of.val = fn(_, _) { picture.get() }
+  defer { picture_of.val = was }
+  let t = @ui.Tester::new(
+    fn(c) {
+      c.box(fn() {
+        if station_mark_visible(c, emoji.get(), icon.get(), 20.0) {
+          station_mark(c, emoji.get(), icon.get(), 20.0, theme().p.text, visible_only=true)
+        }
+      })
+      |> ignore
+    },
+    images=[("picture-a", 64, 64), ("picture-b", 64, 64)],
+    finish=false,
+    w=200.0,
+    h=200.0,
+  )
+  t.draw()
+  assert_eq(t.drawn_images().length(), 0)
+  picture.set("picture-a")
+  t.frame()
+  assert_eq(t.drawn_images().length(), 0)
+  guard t.pending() is [(_, id), ..] else { fail("the picture was not asked for") }
+  t.finish(1, id)
+  t.frame()
+  guard t.drawn_images() is [image, ..] else { fail("the decoded picture is not drawn") }
+  assert_true(image[8] > 0.99, msg="the decoded picture is not visible at once")
+  picture.set("picture-b")
+  t.frame()
+  assert_eq(t.drawn_images().length(), 0, msg="the old picture is still drawn")
+  guard t.pending() is [(_, id), ..] else { fail("the replacement picture was not asked for") }
+  t.finish(1, id, ok=false)
+  t.frame()
+  assert_eq(t.drawn_images().length(), 0)
+  icon.set("glyph:does-not-exist")
+  t.frame()
+  assert_eq(t.shape_boxes().length(), 0)
+  emoji.set("🌿")
+  t.frame()
+  assert_true(t.rect_of("🌿") is Some(_), msg="the fallback emoji is not drawn")
+}
+
+///|
 /// A GIF 2 by 1 of two frames, 100 ms each (ui's gif_test's).
 fn two_frames_gif() -> Bytes {
   Bytes::from_array([

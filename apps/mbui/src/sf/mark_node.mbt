@@ -120,6 +120,7 @@ pub fn station_mark_node(
   size : Double,
   tint : () -> Int64,
   stint : () -> Int,
+  visible_only? : Bool = false,
   loc~ : SourceLoc,
 ) -> Unit {
   // (which it shows: a glyph's paths, a picture's key, its emoji, nothing)
@@ -147,8 +148,23 @@ pub fn station_mark_node(
     (data_image(i), false)
   }
   parent.box(made_for=loc, fn(m) {
-    m.show(fn() { glyph() is Some(_) }, fn(g) { glyph_drawn_node(g, glyph, size, tint) })
-    m.show(fn() { picture().0 != "" }, fn(p) {
+    if visible_only {
+      m.gone_empty(Is(true)) |> ignore
+    }
+    let picture_ready = fn() {
+      let key = picture().0
+      if key == "" {
+        false
+      } else if !visible_only {
+        true
+      } else {
+        let px = size * m.pixel_scale()
+        m.image_ask(key, px)
+        m.image_ready(key, px)
+      }
+    }
+    m.show(fn() { glyph() is Some(_) }, at_once=visible_only, fn(g) { glyph_drawn_node(g, glyph, size, tint) })
+    m.show(picture_ready, at_once=visible_only, fn(p) {
       // (covering its square, an address's and a data URL's alike, and faded in as it is decoded: an old view's
       // picture's way, station_mark's)
       p
@@ -157,10 +173,10 @@ pub fn station_mark_node(
       .radius(Is(size * 0.24))
       .image(By(fn() { Some((picture().0, "", 8192)) }))
       .image_covers(Is(true))
-      .image_fades(Is(true))
+      .image_fades(Is(!visible_only))
       |> ignore
     })
-    m.show(fn() { glyph() is None && picture().0 == "" && emoji() != "" }, fn(e) {
+    m.show(fn() { glyph() is None && !picture_ready() && emoji() != "" }, at_once=visible_only, fn(e) {
       // (as wide as it is set: a mark keeps its natural width, Windows' wider emoji too)
       e
       .width(By(fn() {

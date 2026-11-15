@@ -122,7 +122,7 @@ pub fn state_line_node(
           }
         }
         p.box(fn(line) {
-          @sf.style_node(line, fn() { state_lead_line })
+          @sf.style_node(line, state_lead_line)
           // (read out whole)
           line.says(By(fn() { Some(@view.said(Text, label=text())) })) |> ignore
           line.box(fn(slot) {

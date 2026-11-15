@@ -16,7 +16,8 @@
 /// not draw kept empty, so rows of a kind are as high whatever each says (a station's, up or away); `slotted`: in the
 /// slot it is moved across in (list_row_slot: a finger's swipe), whose corners are its: its own ground square, so
 /// nothing shows between it and what it uncovers beside it as it moves; `end_slot`: how wide what stands at its first
-/// line's end is, in one column with the last of what stands in its corner (`corner_end` wide: a face's by default).
+/// line's end is, in one column with the last of what stands in its corner (`corner_end` is twice the distance from
+/// that part's centre to the end of the corner: a face's width by default).
 /// `foot`: a last line across the row, under the mark's column too. `foot_capsule`: the height of a capsule on that
 /// line, whose foot must be at the corner's inset. Its box, the one pressed.
 pub fn list_row(
@@ -75,9 +76,9 @@ pub fn list_row(
       // what stands in its foot's end corner (a chat's people and agents, concentric with the row's corner: aside_end),
       // their middles on one line down the list, the first line reaching into the row's room for it where it must)
       let reach = match at {
-        Side | Tape if end_slot > 0.0 => {
-          let last = if corner_end > 0.0 { corner_end } else { l.face_d }
-          band_pad_in(at) + end_slot / 2.0 - (l.aside_end + last / 2.0)
+        _ if end_slot > 0.0 => {
+          let inset = if at == Whole { @ui.Space::S4.px() } else { band_pad_in(at) }
+          inset + end_slot / 2.0 - (l.aside_end + l.face_d / 2.0)
         }
         _ => 0.0
       }
@@ -123,7 +124,11 @@ pub fn list_row(
         |> ignore
     }
     match (corner, at) {
-      (Some(k), Side | Tape) => c.box(right=l.aside_end, bottom=l.aside_end, k) |> ignore
+      (Some(k), Side | Tape) => {
+        let last = if corner_end > 0.0 { corner_end } else { l.face_d }
+        let right = if end_slot > 0.0 { l.aside_end + (l.face_d - last) / 2.0 } else { l.aside_end }
+        c.box(right~, bottom=l.aside_end, k) |> ignore
+      }
       _ => ()
     }
     after()

@@ -356,7 +356,7 @@ pub fn chat_row(
         slotted=swipes,
         // (its station's mark at its first line's end, in the column of who is in it under it)
         end_slot=kind_slot_w,
-        corner_end=row_aside_end_w(item, lead),
+        corner_end=row_aside_end_w_at(item, lead, fn(n) { @ui.text_advance("+\{n}", size=c.sp(c.text_size(Meta).0)) }),
         fn() {
             // (renamed, the field takes the head's whole width, its mark's place too: rename_box)
             let tone = @sfbase.row_tone(item)
@@ -429,13 +429,13 @@ pub fn chat_row(
             }
             // the station it runs on, by its mark (the core gives one only with several stations): last, so it stands in
             // the same column at every row's end whatever marks come before it
-            if @sf.has_station_mark(item.station_emoji, item.station_icon) && !renaming {
+            if !renaming && @sf.station_mark_visible(c, item.station_emoji, item.station_icon, kind_mark_of(item.station_icon)) {
               let b = c.box(style=kind_slot, id=kind, taps=false, points=true, fn() {
                 @sf.station_mark(c, item.station_emoji, item.station_icon, kind_mark_of(item.station_icon), if offline {
                   t.p.subtle
                 } else {
                   t.p.muted
-                })
+                }, visible_only=true)
               })
               c.semantics(b, Image, id=kind, label=item.station_name)
               @sf.tip(c, "row/kind-tip/" + key, kind, item.station_name)
@@ -471,7 +471,9 @@ pub fn chat_row(
               c.box(id=time, taps=false, points=true, fn() { c.text(said.ago, style=row_time) |> ignore }) |> ignore
               @sf.tip(c, "row/time-tip/" + key, time, said.full)
             } else if at == Whole {
-              row_aside(c, src, item, lead, face_ground, ground_by?=face_ground_by)
+              let end = row_aside_end_w_at(item, lead, fn(n) { @ui.text_advance("+\{n}", size=c.sp(c.text_size(Meta).0)) })
+              let reach = @ui.Space::S4.px() + end / 2.0 - @sf.row_corner
+              row_aside(c, src, item, lead, face_ground, ground_by?=face_ground_by, reach~)
             }
           })
           |> ignore
