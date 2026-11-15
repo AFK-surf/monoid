@@ -707,3 +707,69 @@ test "a generic's instances pieced by the types they are for" {
   assert_eq(type_args(b"_M0FP0mbui0view0Grid0new"), b"_M0FP0mbui0view0Grid0new")
   assert_eq(type_args(b"_M0FPB10i16x8__add"), b"_M0FPB10i16x8__add")
 }
+
+///|
+/// A program with one static object, its layout at `off` in moonc's table (`table` its words)
+fn prog_object(table : String, off : Int) -> String {
+  prelude_src +
+  "\n" +
+  (
+    $|struct _M0TP11a1T;
+    $|
+    $|struct _M0TP11a1T {
+    $|  int32_t x;
+    $|};
+    $|
+    $|static uint32_t const moonbit_layout_table_data[] = { \{table} };
+    $|
+    $|uint32_t const* moonbit_layout_table;
+    $|
+    $|int32_t _M0FP11a1x;
+    $|
+    $|struct {
+    $|  int32_t rc;
+    $|  uint32_t meta;
+    $|  struct _M0TP11a1T data;
+    $|} _M0FP11a1o$object = {
+    $|  Moonbit_make_static_rc(moonbit_BLOCK_KIND_REGULAR),
+    $|  Moonbit_make_regular_object_header(MOONBIT_REGULAR_LAYOUT_CLASS_INDEXED, \{off}, 3),
+    $|  {.x = 9}
+    $|};
+    $|
+    $|void moonbit_init() {
+    $|  moonbit_layout_table = moonbit_layout_table_data;
+    $|  _M0FP11a1x = 1;
+    $|}
+    $|
+    $|int main(int argc, char** argv) {
+    $|  moonbit_init();
+    $|  return _M0FP11a1o$object.data.x + _M0FP11a1x;
+    $|}
+    $|
+  )
+}
+
+///|
+test "a global's object names its layout by its content, set as moonbit_init begins" {
+  // (moonc's layouts numbered across the program: one put in before it renumbered the object's, and made its data
+  // unit new text)
+  let (x, _) = sp(prog_object("1, 0", 0))
+  let (y, _) = sp(prog_object("2, 0, 1, 0", 2))
+  let data_of = fn(files : Map[String, String]) {
+    let mut d = ""
+    for n, t in files {
+      if n.has_prefix("data_p_") && has(t, "_object") {
+        d = t
+      }
+    }
+    d
+  }
+  let dx = data_of(x)
+  assert_true(has(dx, "LAYOUT_CLASS_INDEXED, 0, 3)"))
+  assert_eq(dx, data_of(y)) // the same text, the layout's number moved
+  assert_true(has(x["data_layout.c"], "csplit_layout_fixes[1]"))
+  assert_true(has(x["data_layout.c"], ".meta, &csplit_layout_"))
+  assert_true(has(x["data_layout.c"], "void csplit_fix_layouts(void)"))
+  let init = x["init.c"]
+  assert_true(has(init, "void moonbit_init() {\ncsplit_fix_layouts();\n"))
+}
