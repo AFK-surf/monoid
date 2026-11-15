@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [8e422a290](https://github.com/AFK-surf/monoid/commit/8e422a290679e5abd9384a6a391d2619ddedb8e9) ci(mbui): move native test builds and corners swee | 2.14 | 2.98 | 12.9 | 34 | 51.1 | 29.82 | 59.67 | 99.44 | 116.13 |
 | [7e846be5b](https://github.com/AFK-surf/monoid/commit/7e846be5b6da2f43a6c4a7d1c10ef0e627d83908) docs: notes for stable 0.1.9229 (#6535) | 2.14 | 2.98 | 12.9 | 34 | 51.1 | 29.82 | 59.67 | 99.6 | 116.04 |
 | [c1b4c36f8](https://github.com/AFK-surf/monoid/commit/c1b4c36f81b511fae126c5f28d66373451cf6f43) mbui: a card's piece changes height on its way; th | 2.14 | 2.98 | 12.9 | 34 | 51.1 | 29.82 | 59.67 | 99.6 | 116.04 |
 | [21cd703cd](https://github.com/AFK-surf/monoid/commit/21cd703cdd40f5a81abd4768db561bf872f2d4d5) mbui: 预览器的音视频播放器改为节点（@sf.player_node，old-island 39 | 2.14 | 2.98 | 12.89 | 34 | 51.08 | 29.82 | 59.67 | 99.53 | 114.51 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [5101e1b84](https://github.com/AFK-surf/monoid/commit/5101e1b84c2e0037d08058932d2641d9da100788) fix(mbui): align wide page own_head mark with firs | 2.1 | 2.92 | 12.58 | 33.52 | 48.8 | 28.82 | 56.61 | 98.85 | 116.7 |
 | [a08946bd9](https://github.com/AFK-surf/monoid/commit/a08946bd900e1a4972bb4e0f1281d910551ea032) mbui: rule 7 reads a card's pieces as one card; 全部 | 2.09 | 2.88 | 12.38 | 33.31 | 48.01 | 28.82 | 56.61 | 98.85 | 145.71 |
 | [f434dc9a7](https://github.com/AFK-surf/monoid/commit/f434dc9a7ef8d3a38905362c308a093070ef9115) station: the front lives through a stream whose No | 2.09 | 2.88 | 12.38 | 33.31 | 48.01 | 28.82 | 56.61 | 98.85 | 145.71 |
-| [4390a1a5c](https://github.com/AFK-surf/monoid/commit/4390a1a5c636af58a8adf01feabf4532e083320b) station, app: an Antigravity CLI (Gemini) sign-in  | 2.09 | 2.88 | 12.37 | 33.31 | 48 | 28.82 | 56.61 | 98.85 | 112.57 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [8e422a290](https://github.com/AFK-surf/monoid/commit/8e422a290679e5abd9384a6a391d2619ddedb8e9) ci(mbui): move native test builds and corners swee | 0.42 | 0.54 | 2.07 | 3.17 | 4.95 | 1.53 | 4.08 | 57.3 |
 | [7e846be5b](https://github.com/AFK-surf/monoid/commit/7e846be5b6da2f43a6c4a7d1c10ef0e627d83908) docs: notes for stable 0.1.9229 (#6535) | 0.42 | 0.54 | 2.07 | 3.17 | 4.95 | 1.53 | 4.08 | 57.3 |
 | [c1b4c36f8](https://github.com/AFK-surf/monoid/commit/c1b4c36f81b511fae126c5f28d66373451cf6f43) mbui: a card's piece changes height on its way; th | 0.42 | 0.54 | 2.07 | 3.17 | 4.95 | 1.53 | 4.08 | 57.43 |
 | [21cd703cd](https://github.com/AFK-surf/monoid/commit/21cd703cdd40f5a81abd4768db561bf872f2d4d5) mbui: 预览器的音视频播放器改为节点（@sf.player_node，old-island 39 | 0.42 | 0.54 | 2.07 | 3.17 | 4.95 | 1.53 | 4.08 | 57.43 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [5101e1b84](https://github.com/AFK-surf/monoid/commit/5101e1b84c2e0037d08058932d2641d9da100788) fix(mbui): align wide page own_head mark with firs | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.43 |
 | [a08946bd9](https://github.com/AFK-surf/monoid/commit/a08946bd900e1a4972bb4e0f1281d910551ea032) mbui: rule 7 reads a card's pieces as one card; 全部 | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.43 |
 | [f434dc9a7](https://github.com/AFK-surf/monoid/commit/f434dc9a7ef8d3a38905362c308a093070ef9115) station: the front lives through a stream whose No | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.28 |
-| [4390a1a5c](https://github.com/AFK-surf/monoid/commit/4390a1a5c636af58a8adf01feabf4532e083320b) station, app: an Antigravity CLI (Gemini) sign-in  | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.28 |
