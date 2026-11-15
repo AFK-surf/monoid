@@ -36,11 +36,17 @@ jobs:
           # and compression another, so its jobs find none of GitHub's)
           - { os: [self-hosted, mbui-render], self: mac, bin: moonbit-darwin-aarch64.tar.gz, core: core-latest.tar.gz }
           - { os: [self-hosted, linux-ci], self: ci-1, bin: moonbit-linux-x86_64.tar.gz, core: core-latest.tar.gz }
-    if: ${{ !(matrix.self != '' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && (matrix.self != 'ci-1' || vars.CI_1 != 'off') }}
-    runs-on: ${{ matrix.os }}
+    # (whether this entry runs: a self-hosted runner never for a fork's pull request, ci-1 not while vars.CI_1 is off.
+    # Said per step and in runs-on, as a job's if is weighed before its matrix is: there it made the workflow invalid,
+    # main 8e422a29's run 43730630974 and the hour's after with no job. An entry left out runs its steps not at all on
+    # GitHub's Ubuntu)
+    env:
+      GO: ${{ !(matrix.self != '' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && (matrix.self != 'ci-1' || vars.CI_1 != 'off') }}
+    runs-on: ${{ (!(matrix.self != '' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && (matrix.self != 'ci-1' || vars.CI_1 != 'off')) && matrix.os || 'ubuntu-24.04' }}
     timeout-minutes: 5
     steps:
-      - name: The latest release's ETags
+      - if: env.GO == 'true'
+        name: The latest release's ETags
         id: tag
         shell: bash
         run: |
@@ -52,14 +58,15 @@ jobs:
             | tr -d '\r' | awk -F': ' 'tolower($1) == "etag" { print $2 }' | tr -d '\n')
           [ "$(printf '%s' "$tag" | tr -cd '"' | wc -c | tr -d ' ')" = 4 ] || { echo "::error::no ETags from $base: $tag"; exit 1; }
           echo "key=moonbit-${{ runner.os }}-${{ runner.arch }}-${{ runner.environment }}-$(printf '%s' "$tag trimmed" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache/restore@v4
+      - if: env.GO == 'true'
+        uses: actions/cache/restore@v4
         id: had
         with:
           path: ${{ runner.environment == 'self-hosted' && 'moon-ci-put' || format('{0}/moon-ci', runner.tool_cache) }}
           key: ${{ steps.tag.outputs.key }}
           lookup-only: true
       - name: "Installed (MOON_HOME: moon-ci in the runner's tool cache)"
-        if: steps.had.outputs.cache-hit != 'true'
+        if: env.GO == 'true' && steps.had.outputs.cache-hit != 'true'
         shell: bash
         run: |
           export MOON_HOME="$RUNNER_TOOL_CACHE/moon-ci"; [ "${{ runner.os }}" != Windows ] || MOON_HOME=$(cygpath -u "$MOON_HOME")
@@ -80,20 +87,23 @@ jobs:
           # (a self-hosted runner's saved from moon-ci-put in its workspace: the path every runner of it asks by,
           # .github/actions/mbui-moonbit)
           if [ "${{ runner.environment }}" = self-hosted ]; then rm -rf moon-ci-put && cp -R "$MOON_HOME" moon-ci-put; fi
-      - if: steps.had.outputs.cache-hit != 'true'
+      - if: env.GO == 'true' && steps.had.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: ${{ runner.environment == 'self-hosted' && 'moon-ci-put' || format('{0}/moon-ci', runner.tool_cache) }}
           key: ${{ steps.tag.outputs.key }}
       # (put in, or this fails: a save that could not be made is only a warning of actions/cache/save's, run 39533061843's
       # every put green with nothing saved)
-      - uses: actions/cache/restore@v4
+      - if: env.GO == 'true'
+        uses: actions/cache/restore@v4
         with:
           path: ${{ runner.environment == 'self-hosted' && 'moon-ci-put' || format('{0}/moon-ci', runner.tool_cache) }}
           key: ${{ steps.tag.outputs.key }}
           lookup-only: true
           fail-on-cache-miss: true
       # (what a job gets: the action over what was put in)
-      - uses: actions/checkout@v4
+      - if: env.GO == 'true'
+        uses: actions/checkout@v4
         with: { sparse-checkout: .github/actions }
-      - uses: ./.github/actions/mbui-moonbit
+      - if: env.GO == 'true'
+        uses: ./.github/actions/mbui-moonbit
