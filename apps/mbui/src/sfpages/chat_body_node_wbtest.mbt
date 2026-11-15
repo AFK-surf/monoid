@@ -736,7 +736,7 @@ fn body_cmp(c : BodyCase, known : Map[String, Int], said : Array[String]) -> Uni
     // list's whole pixels, so what is under its first as much as a few tenths of a point lower a piece; those out of
     // what shows not made)
     let pieces = match c.entries.get(o.key) {
-      Some(e) => chat_body_pieces(e).unwrap_or(1)
+      Some(e) => chat_body_pieces(e).map_or(1, fn(ps) { ps.length() })
       None => 1
     }
     match body_piece_counts.get(o.key) {
@@ -1492,4 +1492,71 @@ test "a long message a block a piece: the pointer on any of its pieces shows its
   t.move_to(2.0, 2.0)
   t.run_for(@ui.move_most_ms)
   assert_false(more(), msg="no ⋯ with the pointer gone")
+}
+
+///|
+/// The core's reading of a paragraph `words` and a table under it of `rows` rows (its head's not counted) and `cols`
+/// columns, each cell's words `r<row>c<col>` and a long run of x, so that it is wider than a pane and scrolls across.
+fn body_long_table(words : String, rows : Int, cols : Int) -> Json {
+  let cell = fn(r : Int, c : Int) {
+    Json::array([Json::string("td"), Json::array([Json::string("r\{r}c\{c}xxxxxxxxxxxxxxxxxxxxxxxxxxxx")])])
+  }
+  let line = fn(r : Int) { Json::array([Json::string("tr"), Json::array(Array::makei(cols, fn(c) { cell(r, c) }))]) }
+  Json::array([
+    body_para(words),
+    Json::array([
+      Json::string("table"),
+      Json::array(Array::makei(rows + 1, line)),
+      Json::object({ "md": Json::string(""), "csv": Json::string("") }),
+    ]),
+  ])
+}
+
+///|
+test "a long table a few rows a piece: each piece a block of the list, all of them scrolled across as one" {
+  @sfbase.reset()
+  reset()
+  let src = @sffixture.fixture("chat")
+  let s = body_screens()[1]
+  let seen : Ref[(ChatView, Array[Entry])?] = Ref(None)
+  body_old(src, s.1, s.2, s.3, seen~) |> ignore
+  let (v0, read0) = seen.val.unwrap()
+  @sfbase.reset()
+  reset()
+  let src = @sffixture.fixture("chat")
+  let md = body_long_table("表格在下面。", 13, 8)
+  let mut last = -1
+  for i, e in read0 {
+    if e is Said(m) && chat_body_pieces(Said({ ..m, text: "表格在下面。\n\n| a |", md: Some(md) })) is Some(_) {
+      last = i
+    }
+  }
+  guard last >= 0 && read0[last] is Said(m) else { fail("no agent's message") }
+  let said : Entry = Said({ ..m, text: "表格在下面。\n\n| a |", md: Some(md) })
+  // (its paragraph, then its 14 rows (its head's with them) 4 a piece: 4, 4, 4, 2)
+  let ps = chat_body_pieces(said).unwrap()
+  assert_eq(ps.map(fn(p) { p.rows }), [None, Some((0, 4)), Some((4, 8)), Some((8, 12)), Some((12, 14))])
+  assert_true(ps[4].last && !ps[3].last)
+  let read = read0.copy()
+  read[last] = said
+  let t = body_new(src, s.1, s.2, s.3, @signals.signal(v0), @signals.signal(read))
+  t.run_for(@ui.move_most_ms)
+  let x_of = fn(words : String) -> Double {
+    match t.run_rects(words).get(0) {
+      Some(r) => r.0
+      None => @halt.saying("no words drawn holding \{words}")
+    }
+  }
+  // (every row drawn, each piece's under the one before, its first column at one place)
+  let first = x_of("r1c0")
+  let low = x_of("r13c0")
+  assert_eq(low, first)
+  // (the wheel across over its first rows: its last rows moved as far)
+  let (_, y, _, _) = t.run_rects("r1c0").get(0).unwrap()
+  t.wheel_with(first + 40.0, y + 4.0, 200.0, 0.0, 0)
+  t.run_for(@ui.move_most_ms)
+  let moved = first - x_of("r1c0")
+  assert_true(moved > 0.0, msg="its first rows scrolled across: \{moved}")
+  assert_eq(first - x_of("r13c0"), moved, msg="its last rows scrolled as far as its first")
+  assert_eq(first - x_of("r7c0"), moved, msg="its middle rows too")
 }

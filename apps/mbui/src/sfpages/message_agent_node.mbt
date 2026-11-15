@@ -61,7 +61,8 @@ fn agent_said_node(
   shown? : (@view.View, Array[(String, String, Int)]) -> Unit,
   core? : @settings.Core? = None,
   out_of? : (@view.View, @motion.Way)? = None,
-  piece? : (Int, Int, Bool)? = None,
+  piece? : @sf.MdPiece? = None,
+  across_of? : (Int) -> @view.Scroll = fn(_) { @view.Scroll::across() },
   pieces_pointed? : () -> Bool = fn() { false },
   piece_made? : (@view.View) -> Unit = fn(_) {  },
 ) -> MessageRowNode {
@@ -69,7 +70,8 @@ fn agent_said_node(
   // (a piece of a long message after its first (chat_body_pieces): its blocks alone, under where its words are drawn,
   // its files and what it asks under them where it is its last; its head, picture and what it quotes the first's)
   match piece {
-    Some((from, upto, last)) if from > 0 => {
+    Some(pc) if pc.from > 0 || (pc.rows is Some((r, _)) && r > 0) => {
+      let last = pc.last
       let row = message_row_frame_node(v, key, side, top, over~, fn(r) {
         r.box(fn(col) {
           @sf.style_node(col, fn() { msg_main })
@@ -88,7 +90,7 @@ fn agent_said_node(
           col.box(fn(p) {
             @ui.picked_of(p, key, whole=true) |> ignore
             @sf.style_node(p, fn() { agent_prose_piece })
-            agent_prose_node(p, src, here, m, found~, found_at~, lit~, code~, screens=screens.unwrap_or(agent_screens(src, here, m)), shown?, range=Some((from, upto)), files_too=last)
+            agent_prose_node(p, src, here, m, found~, found_at~, lit~, code~, screens=screens.unwrap_or(agent_screens(src, here, m)), shown?, piece=Some(pc), across_of~, files_too=last)
           })
           |> ignore
           if last {
@@ -101,12 +103,8 @@ fn agent_said_node(
     }
     _ => ()
   }
-  let range = match piece {
-    Some((from, upto, _)) => Some((from, upto))
-    None => None
-  }
   let last = match piece {
-    Some((_, _, l)) => l
+    Some(pc) => pc.last
     None => true
   }
   let row = message_row_frame_node(v, key, side, top, over~, fn(r) {
@@ -168,7 +166,7 @@ fn agent_said_node(
             // (its words and its files one piece, none apart, as the old list holds them to be picked: pickable's
             // pick_fill; a letter's, drawn by the old view alone, has them 4 apart)
             @sf.style_node(p, fn() { agent_prose_piece })
-            agent_prose_node(p, src, here, m, found~, found_at~, lit~, code~, screens=screens.unwrap_or(agent_screens(src, here, m)), shown?, glyphs=out_glyphs, range~, files_too=last)
+            agent_prose_node(p, src, here, m, found~, found_at~, lit~, code~, screens=screens.unwrap_or(agent_screens(src, here, m)), shown?, glyphs=out_glyphs, piece~, across_of~, files_too=last)
           } else {
             message_card_node(p, here, core, m)
           }
@@ -222,7 +220,8 @@ fn agent_prose_node(
   screens? : @sf.ScreensNode,
   shown? : (@view.View, Array[(String, String, Int)]) -> Unit,
   glyphs? : ((@view.View) -> Double, (Double, @view.GlyphAt) -> @view.GlyphLook)? = None,
-  range? : (Int, Int)? = None,
+  piece? : @sf.MdPiece? = None,
+  across_of? : (Int) -> @view.Scroll = fn(_) { @view.Scroll::across() },
   files_too? : Bool = true,
 ) -> Unit {
   let place = message_files_at(here, fn() { m().said })
@@ -325,7 +324,8 @@ fn agent_prose_node(
       },
       code~,
       screens?,
-      range~,
+      piece~,
+      across_of~,
     )
     |> ignore
   })
