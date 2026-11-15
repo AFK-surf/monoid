@@ -119,6 +119,9 @@
   every line of both: a merge never drops what either had. `test/memory-sync-random.test.ts` holds it over random
   worlds (`MEMORY_RANDOM_SEEDS` for more; it fails on 0.1.9133's code), `test/memory-sync-upgrade.test.ts` that what
   0.1.9133 to 0.1.9168 left (a skill kept apart twice, a station's own file moved) is mended (`#mend`).
+- Its edits are found by a watch of only its own directories (`memoryFollowed`, `src/ops/follow.ts`), never Node's
+  `fs.watch(..., { recursive: true })` over a directory agents fill: on Linux that lists the whole tree on the main
+  thread with an inotify watch a directory, clones and node_modules too (a Linux station lost, 2026-11-15).
 
 ## How a workspace's devices reach its stations (its ways)
 

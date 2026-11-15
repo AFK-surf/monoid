@@ -17,13 +17,14 @@
 // - Each workspace's own: a station in two keeps each one's apart (sessions/agent-home.ts `workspaceAgentHome`), and
 //   gives one only to the stations of its workspace (the transport says which a request is of).
 import { createHash } from "node:crypto";
-import { type Dirent, watch } from "node:fs";
+import type { Dirent } from "node:fs";
 import { chmod, copyFile, lstat, mkdir, readdir, readFile, rename, rmdir, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { Clock } from "effect";
 import type { Cloud } from "../cloud/state.ts";
 import { Fibers } from "../ops/fibers.ts";
 import { PrivateFile, writePrivateSoon } from "../ops/files.ts";
+import { FollowedTree, type Watch } from "../ops/follow.ts";
 import { log } from "../ops/log.ts";
 import { portableName } from "../ops/paths.ts";
 import { BUILTIN_SKILLS, FEEDBACK_SKILL, workspaceAgentHome } from "../sessions/agent-home.ts";
@@ -49,12 +50,15 @@ const PREV_MOST = 16;
 /// Edits are looked at once they have settled this long.
 const SETTLE_MS = 2000;
 /// A station not brought level is tried again after this, twice as long each time up to RETRY_MOST_MS.
-const RETRY_MS = 5_000;
+export const RETRY_MS = 5_000;
 const RETRY_MOST_MS = 10 * 60_000;
 /// What a station writes in a MEMORY.md of nothing yet (agent-home.ts and stations of before): no memory of its own.
 const EMPTY = new Set(["", "# still.fail memory", "# ember memory"]);
 /// What is never part of a skill as shared: what a program makes beside its files.
-const SKIPPED = new Set(["__pycache__", "node_modules", ".venv", ".git", ".DS_Store"]);
+export const SKIPPED = new Set(["__pycache__", "node_modules", ".venv", ".git", ".DS_Store"]);
+/// The most directories of the agents' home watched (an inotify watch each on Linux, of the user's
+/// fs.inotify.max_user_watches, 8192 on older kernels, shared with every program of theirs).
+const FOLLOW_MOST = 1000;
 
 const sha = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -158,7 +162,27 @@ export type MemoryDeps = {
   clock?: Clock.Clock;
   /// Tests: nothing set going by itself (no watch, no station brought level but by `levelNow`).
   still?: boolean;
+  /// Tests: a directory's watch (ops/follow.ts).
+  watch?: Watch;
 };
+
+/// Whether the agents' home's directory at `rel` is followed: skills/ and what is shared of each skill in it, of the home
+/// workspace and of each joined one (workspaces/<id>/skills/…), MEMORY.md being seen by its directory's watch. Nothing
+/// else in the home (a repository, a cache an agent put there) is listed or watched.
+export function memoryFollowed(rel: string): boolean {
+  const parts = rel.split("/");
+  let i = 0;
+  if (parts[0] === "workspaces") {
+    if (parts.length === 1) return true;
+    if (!/^[0-9A-Za-z_-]{1,128}$/.test(parts[1]!)) return false;
+    if (parts.length === 2) return true;
+    i = 2;
+  }
+  if (parts[i] !== "skills") return false;
+  if (parts.length === i + 1) return true;
+  if (BUILTIN.has(parts[i + 1]!)) return false;
+  return parts.slice(i + 1).every((n) => portableName(n) && !SKIPPED.has(n));
+}
 
 /// A station from before the memory was shared: nothing to bring level with it.
 /// (Before 0.1.9133 a station answers a method it does not know as a task's request it lacks the keys of.)
@@ -175,8 +199,9 @@ export class MemorySync {
   readonly #going = new Set<string>();
   readonly #retries = new Map<string, { wait: number; due: boolean; cancel: () => void }>();
   readonly #settle = new Map<string, () => void>();
-  #watcher: { close(): void } | null = null;
-  #watched: string | null = null;
+  #tree: FollowedTree | null = null;
+  #followRetry: { wait: number; due: boolean; cancel: () => void } | null = null;
+  #followOver = false;
   #stops: (() => void)[] = [];
   #stopped = false;
 
@@ -765,31 +790,79 @@ export class MemorySync {
     void this.#lane(ws, () => this.#look(ws)).then(() => this.#lookAll(), (e) => log.warn("memory", "the memory's files not read", { workspace: ws, error: (e as Error).message }));
   }
 
-  /// The agents' home watched: an edit in a workspace's memory, settled, is looked at.
+  /// The agents' home watched: an edit in a workspace's memory, settled, is looked at. Made once for a home (not again
+  /// at each frame of the cloud's): a watch the system would not make is tried again after a while (`#refollow`).
   #follow(): void {
     const root = this.#deps.agentHome();
-    if (this.#watched === root && this.#watcher !== null) return;
-    this.#watcher?.close();
-    this.#watcher = null;
-    this.#watched = root;
-    try {
-      const w = watch(root, { recursive: true, persistent: false }, (_event, name) => {
-        const rel = String(name ?? "").split(/[\\/]/);
-        const home = this.#deps.cloud.home();
-        const ws = rel[0] === "workspaces" ? rel[1] : home;
-        const what = rel[0] === "workspaces" ? rel[2] : rel[0];
-        if (!ws || (what !== "MEMORY.md" && what !== "skills")) return;
-        this.#settle.get(ws)?.();
-        this.#settle.set(ws, this.#time.after(SETTLE_MS, () => (this.#settle.delete(ws), this.#again(ws)))); // timer: a debounce of a burst
-      });
-      w.on("error", (e) => {
+    if (this.#tree?.root === root) return;
+    this.#tree?.close();
+    this.#followRetry?.cancel();
+    this.#followRetry = null;
+    this.#followOver = false;
+    this.#tree = new FollowedTree({
+      root,
+      into: memoryFollowed,
+      most: FOLLOW_MOST,
+      ...(this.#deps.watch ? { watch: this.#deps.watch } : {}),
+      changed: (rel) => this.#changed(rel),
+      failed: (e) => {
         log.warn("memory", "the agents' home no longer followed", { error: e.message });
-        if (this.#watcher === w) this.#watcher = null;
-      });
-      this.#watcher = w;
-    } catch (e) {
-      log.warn("memory", "the agents' home cannot be followed", { error: (e as Error).message });
-    }
+        this.#refollow();
+      },
+    });
+    this.#scanTree();
+  }
+
+  /// The directories followed found again (a directory made or gone, a retry).
+  #scanTree(): void {
+    const tree = this.#tree;
+    if (tree === null || this.#stopped) return;
+    void tree.scan().then((r) => {
+      if (tree !== this.#tree || this.#stopped) return;
+      if (r.over && !this.#followOver) log.warn("memory", "the agents' home has more directories than are followed", { most: FOLLOW_MOST });
+      this.#followOver = r.over === true;
+      if (r.failed === undefined) {
+        if (this.#followRetry?.due) this.#followRetry = null;
+        return;
+      }
+      log.warn("memory", "the agents' home cannot be followed", { error: r.failed.message });
+      this.#refollow();
+    });
+  }
+
+  /// A scan again after a watch failed, twice as long each time up to RETRY_MOST_MS.
+  #refollow(): void {
+    if (this.#stopped) return;
+    const was = this.#followRetry;
+    if (was !== null && !was.due) return;
+    const wait = was === null ? RETRY_MS : Math.min(was.wait * 2, RETRY_MOST_MS);
+    const next = { wait, due: false, cancel: () => {} };
+    next.cancel = this.#time.after(wait, () => { // timer: a retry after a failure, with a backoff
+      next.due = true;
+      this.#scanTree();
+    });
+    this.#followRetry = next;
+  }
+
+  /// What changed at `rel` of the agents' home: an edit of a workspace's memory looked at once it settled.
+  #changed(rel: string): void {
+    const parts = rel.split("/");
+    const ws = parts[0] === "workspaces" ? parts[1] : this.#deps.cloud.home();
+    const what = parts[0] === "workspaces" ? parts[2] : parts[0];
+    // workspaces/<id> made: followed from now on
+    if (parts[0] === "workspaces" && parts.length <= 2) return this.#settleScan();
+    if (!ws || (what !== "MEMORY.md" && what !== "skills")) return;
+    this.#settle.get(ws)?.();
+    this.#settle.set(ws, this.#time.after(SETTLE_MS, () => { // timer: a debounce of a burst
+      this.#settle.delete(ws);
+      this.#scanTree();
+      this.#again(ws);
+    }));
+  }
+
+  #settleScan(): void {
+    this.#settle.get("")?.();
+    this.#settle.set("", this.#time.after(SETTLE_MS, () => (this.#settle.delete(""), this.#scanTree()))); // timer: a debounce of a burst
   }
 
   /// Followed from now on: the files, the rosters (a station come, one back).
@@ -801,7 +874,8 @@ export class MemorySync {
   async stop(): Promise<void> {
     this.#stopped = true;
     for (const s of this.#stops) s();
-    this.#watcher?.close();
+    this.#tree?.close();
+    this.#followRetry?.cancel();
     for (const r of this.#retries.values()) r.cancel();
     await this.#time.close();
     await this.written();
