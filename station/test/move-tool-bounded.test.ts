@@ -28,10 +28,11 @@ function fake(id: string, needs: string[], items: Omit<Item, "module">[], stops 
   };
 }
 
-/// The tool's answers on a station of `n` chats: each on one of two logins, every tenth one that cannot move (each in
-/// words of its own, as a chat's room is named in why), a Slack connect for all, a job for every fifth.
-async function answers(n: number) {
-  const chats = Array.from({ length: n }, (_, i) => ({ id: `chat:c-${String(i).padStart(6, "0")}`, label: `a chat about thing ${i}`, needs: [{ module: "accounts", id: i % 2 === 0 ? "share:sh-a" : "own:grok@A" }], ...(i % 10 === 0 ? { cannot: `its workspace /elsewhere/project-${i} is not this station's own: its files would not go` } : {}) }));
+/// The tool's answers on a station of `n` chats: each on one of two logins, every tenth one that cannot move (for one of
+/// two reasons, or `unique`: each in words of its own, as a chat's room is named in why), a Slack connect for all, a job
+/// for every fifth.
+async function answers(n: number, unique = false) {
+  const chats = Array.from({ length: n }, (_, i) => ({ id: `chat:c-${String(i).padStart(6, "0")}`, label: `a chat about thing ${i}`, needs: [{ module: "accounts", id: i % 2 === 0 ? "share:sh-a" : "own:grok@A" }], ...(i % 10 === 0 ? { cannot: unique ? `its workspace /elsewhere/project-${i} is not this station's own: its files would not go` : i % 20 === 0 ? "its workspace is not this station's own: its files would not go" : "it has a copy going on there apart" } : {}) }));
   const modules = [
     fake("accounts", [], [{ id: "share:sh-a", label: "Claude Max", needs: [] }, { id: "own:grok@A", label: "Grok", needs: [] }]),
     fake("chats", ["accounts"], chats, true),
@@ -59,11 +60,13 @@ test("station_move plan and status answer a summary of the same size with 30 cha
   const many = await bytes(3_000);
   // (the counts' digits aside: 30 against 3,000 is a few bytes more, each of a dozen counts)
   assert.ok(many.plan - few.plan < 200 && many.status - few.status < 200, `the summary grows with the chats: ${few.plan} → ${many.plan} bytes (plan), ${few.status} → ${many.status} (status)`);
-  assert.ok(many.plan < 16_000, `bounded: ${many.plan} bytes`);
+  // (and each in words of its own: a few groups said, how many more)
+  const unique = JSON.stringify(await (await answers(3_000, true)).ask({ action: "plan" })).length;
+  assert.ok(unique < 16_000, `bounded: ${unique} bytes`);
   const { ask, chats } = await answers(3_000);
   const summary = (await ask({ action: "plan" })).summary;
   assert.deepEqual(summary.modules.chats, { here: 3_000, there: 0, moving: 0, stopped: 0, failed: 0, cannot: 300 });
-  assert.equal(summary.cannot.reduce((a: number, g: { count: number }) => a + g.count, 0) + (summary.cannot.more ?? 0) > 0, true);
+  assert.deepEqual(summary.cannot.map((g: { why: string; count: number; examples: string[] }) => [g.why, g.count, g.examples.length]), [["chats: its workspace is not this station's own: its files would not go", 150, 3], ["chats: it has a copy going on there apart", 150, 3]]);
   // (a connect needs every chat: a chat's move stops not it, its threads routed; a login's move stops its chats)
   assert.equal(summary.wouldStop.length, 2, JSON.stringify(summary.wouldStop));
   // A module's items, a page at a time: the next page from where the last ended; at most PAGE_MOST, whatever asked.
