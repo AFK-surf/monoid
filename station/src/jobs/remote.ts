@@ -13,9 +13,8 @@
 // What is retried (a request that did not get through, a closed session's stations every 60 s) and the hourly sweep
 // are Effect schedules; nothing here polls local state.
 import { createHash, randomBytes } from "node:crypto";
-import { constants, createReadStream, lstatSync, mkdirSync, readFileSync, renameSync } from "node:fs";
-import { access, link, lstat, mkdir, open, readFile, readdir, readlink, rename, rm, stat, writeFile } from "node:fs/promises";
-import { createInterface } from "node:readline";
+import { constants, mkdirSync, readFileSync, renameSync } from "node:fs";
+import { access, link, lstat, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { DISK_LOW_BYTES, diskFree } from "../ops/disk.ts";
 import { portableComponent, relativeParts } from "../ops/paths.ts";
@@ -32,7 +31,7 @@ import { type Bytes, type Inbox, MESH_WAIT_MS, NoBytes, NoLink, type PeerCall, P
 import type { ActorsProgram } from "../sessions/mb-actor.ts";
 import { version as runningVersion } from "../ops/version.ts";
 import { fileBytes, readBytes, stopBytes, writeBytes } from "../mesh/files.ts";
-import { Bulk, LINK, PACKED, actual, apply, listed, page, patchOf, planPart, putBlobs, readManifest, syncDir, writeManifest } from "./dirsync.ts";
+import { Bulk, LINK, PACKED, patchOf, putBlobs, syncDir } from "./dirsync.ts";
 import { DEFAULT_LIMIT, WorkspaceReader } from "./workspace-size.ts";
 import { SANDBOX, type Sandbox, ensureIdentity, sandboxDescribed } from "../agents/sandbox.ts";
 
@@ -326,40 +325,6 @@ export async function filePath(root: string, relative: string, create: boolean):
   return out;
 }
 
-/// `filePath` on this thread, for a sync's application (dirsync.ts `apply`), which writes every file it sets so.
-export function filePathHere(root: string, relative: string, create: boolean): string {
-  if (lstatSync(root).isSymbolicLink()) throw new Error("transfer root is a symbolic link");
-  // Path::components: a leading / is the root (and on Windows a drive, a UNC share or a stream: relativeParts), a
-  // leading . is the current directory, a later . is no component.
-  const given = relativeParts(relative);
-  const parts: string[] = [];
-  let bad = given === null;
-  (given ?? []).forEach((part, i) => {
-    if (part === "") return;
-    if (part === ".") {
-      if (i === 0) bad = true;
-      return;
-    }
-    parts.push(part);
-  });
-  if (bad || parts.length === 0) throw new Error("file path must be relative, without . or ..");
-  let out = root;
-  for (const part of parts) {
-    out = join(out, part);
-    if (isLinkHere(out)) throw new Error("file path contains a symbolic link");
-  }
-  if (create) mkdirSync(dirname(out), { recursive: true });
-  return out;
-}
-
-const isLinkHere = (path: string): boolean => {
-  try {
-    return lstatSync(path).isSymbolicLink(); // sync: dirsync's apply (`filePathHere`), not moved in this change
-  } catch {
-    return false;
-  }
-};
-
 /// STANDARD base64 as the Rust decodes it: padded, nothing else in it.
 function fromBase64(data: string): Buffer {
   if (data.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(data)) throw new Error("Invalid input length or symbol");
@@ -503,7 +468,7 @@ export class Remote {
       if (typeof store[method] !== "function") throw new Error(`no store method ${method}`);
       return store[method]!(...args) ?? null;
     }
-    const [a, b, c, d, e, g] = args;
+    const [a, b, c, d, e] = args;
     switch (f) {
       case "node.ask":
         return await this.ask(a, b);
@@ -542,23 +507,11 @@ export class Remote {
       case "node.ensureIdentity":
         await ensureIdentity(this.data);
         return null;
-      case "node.syncBegin":
-        return await this.syncBegin(a, b, c);
-      case "node.listedPage":
-        return page(listed(await readJsonSoon(a)), b);
       case "node.putBlobs": {
         const packed = typeof c === "number" ? this.inBytes.get(c) : undefined;
         if (packed !== undefined) this.inBytes.delete(c);
         return await putBlobs(a, b, packed !== undefined ? await readBytes(packed, PACKED) : fromBase64(typeof d === "string" ? d : ""));
       }
-      case "node.planPart":
-        return planPart(a);
-      case "node.syncCommit":
-        return await this.syncCommit(a, b, c, d, e, g);
-      case "node.syncChanges":
-        return await this.syncChanges(a, b);
-      case "node.readManifest":
-        return readManifest(a);
       case "node.filePut":
         return await this.filePut(a, b);
       case "node.fileGet":
@@ -1147,102 +1100,6 @@ export class Remote {
   }
 
   // ── what a directory's sync is compared and written by (dirsync.ts), for the program ──
-
-  /// sync.begin: what the mirror has now of what its manifest says, and the conflict base, written beside the sync;
-  /// the manifest's version.
-  private async syncBegin(manifestPath: string, mirrorRoot: string, syncing: string): Promise<Json> {
-    const manifest = readManifest(manifestPath);
-    const files = manifest === null ? {} : await actual(mirrorRoot, manifest.files);
-    const base = { ...(manifest?.files ?? {}) };
-    // Refresh the stat only where the content is still the source's: old manifests lacked ctime and must be hashed
-    // once, not at every subsequent sync. A changed file keeps the original content as its conflict base.
-    for (const [path, current] of Object.entries(files)) {
-      const before = base[path];
-      if (before && before[0] === current[0] && before[1] === current[1]) base[path] = current;
-    }
-    await writeJson(join(syncing, "actual.json"), files);
-    await writeJson(join(syncing, "base.json"), base);
-    return { version: manifest?.version ?? 0 };
-  }
-
-  /// sync.commit, its last part: the plan checked against what the mirror has (a task's output changed meanwhile is
-  /// never overwritten) and carried out; the manifest written.
-  private async syncCommit(work: string, mirror: string, syncing: string, manifestPath: string, version0: Json, dir: string): Promise<Json> {
-    const manifest = readManifest(manifestPath);
-    const version = manifest?.version ?? 0;
-    if (version !== version0) throw new Error("the mirror changed while this sync went on; start again");
-    const plan = { set: [] as [string, string, string][], remove: [] as string[] };
-    // Read a line at a time off the station's thread: a plan of a large directory is megabytes.
-    const lines = createInterface({ input: createReadStream(join(syncing, "plan.jsonl"), "utf8"), crlfDelay: Infinity });
-    for await (const line of lines) {
-      if (line === "") continue;
-      const p = JSON.parse(line);
-      plan.set.push(...p.set);
-      plan.remove.push(...p.remove);
-    }
-    const base = await readJsonSoon(join(syncing, "base.json"));
-    const root = join(work, mirror);
-    // Re-read at commit: a task's output may have changed while the source sent its files.
-    const verify = new Set([...plan.set.map(([path]) => path), ...plan.remove]);
-    const files = await actual(root, base, verify);
-    const untracked: Record<string, [string, string, number, number, number, number?]> = {};
-    if (await there(root)) for (const [path] of plan.set) {
-      if (base[path] !== undefined || files[path] !== undefined) continue;
-      let abs: string;
-      try { abs = await filePath(root, path, false); } catch { throw new Error(`sync conflict at ${path}: an existing remote path would be overwritten`); }
-      try {
-        const st = await lstat(abs);
-        if (!st.isFile()) throw new Error(`sync conflict at ${path}: an existing remote path would be overwritten`);
-        untracked[path] = ["", "", 0, 0, 0];
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      }
-    }
-    Object.assign(files, await actual(root, untracked));
-    const equal = (a: readonly unknown[] | undefined, b: readonly unknown[] | undefined) => a?.[0] === b?.[0] && a?.[1] === b?.[1];
-    const safe = { set: [] as [string, string, string][], remove: [] as string[] };
-    for (const [path, hash, mode] of plan.set) {
-      const before = base[path], current = files[path], wanted = [hash, mode];
-      // Old sources send a plan against the actual mirror: an unchanged source must not reset remote output.
-      if (equal(before, wanted) && !equal(before, current)) continue;
-      if (!equal(before, current) && !equal(current, wanted)) throw new Error(`sync conflict at ${path}: source and remote both changed; preserve the remote result and reconcile the files`);
-      safe.set.push([path, hash, mode]);
-    }
-    for (const path of plan.remove) {
-      if (files[path] !== undefined && !equal(base[path], files[path])) throw new Error(`sync conflict at ${path}: the remote file changed before removal`);
-      safe.remove.push(path);
-    }
-    const nextBase = { ...base };
-    let done: { written: number; removed: number };
-    try {
-      done = apply(work, mirror, join(syncing, "scratch"), join(syncing, "blobs"), files, safe);
-    } finally {
-      for (const [path, hash, mode] of safe.set) if (equal(files[path], [hash, mode])) nextBase[path] = files[path];
-      for (const path of safe.remove) if (files[path] === undefined) delete nextBase[path];
-      writeManifest(manifestPath, { dir, name: mirror, version: version + 1, files: nextBase });
-    }
-    return { ...done, version: version + 1 };
-  }
-
-  /// sync.changes: the synced files a finished task's command changed in its mirror (1000 at most).
-  private async syncChanges(manifestPath: string, base: string): Promise<Json> {
-    const manifest = readManifest(manifestPath);
-    const now = manifest === null ? {} : await actual(base, manifest.files);
-    const changes: Json[] = [];
-    let more = false;
-    for (const [path, was] of Object.entries(manifest?.files ?? {}).sort(([a], [b]) => (a < b ? -1 : 1))) {
-      const is = now[path];
-      if (is && is[0] === was[0] && is[1] === was[1]) continue;
-      if (changes.length === 1000) {
-        more = true;
-        break;
-      }
-      const change: Json = { path, old: was[0], mode: was[1], hash: is?.[0] ?? null, newMode: is?.[1] ?? null };
-      if (is?.[1] === LINK) change.link = await readlink(join(base, ...path.split("/")));
-      changes.push(change);
-    }
-    return { changes, more };
-  }
 
   /// file.put: an input of a task, whole after the request (its bytes kept for it: `bytes`), or a chunk of base64 in it
   /// from a station from before; {bytes, whole: whether the file is all there now}.

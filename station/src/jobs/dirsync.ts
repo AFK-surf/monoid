@@ -17,17 +17,13 @@
 //   keeps its mtime, so incremental builds there see exactly what changed.
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import {
-  chmodSync, closeSync, copyFileSync, createReadStream, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync,
-  renameSync, rmSync, rmdirSync, statSync, symlinkSync, writeFileSync, writeSync,
-} from "node:fs";
+import { closeSync, createReadStream, existsSync, mkdirSync, openSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
 import { chmod, lstat, mkdir, open, readFile, readdir, readlink, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { zstdCompress, zstdDecompress } from "node:zlib";
 import { NoBytes, withBytes } from "../mesh/bus.ts";
 import { oneBytes } from "../mesh/files.ts";
-import { filePathHere } from "./remote.ts";
 
 type Json = any;
 
@@ -429,47 +425,7 @@ async function sendBlobs(ask: Ask, id: string, dir: string, need: Local[], bulk:
   return sent;
 }
 
-// ── the target: the mirror ──
-
-/// A file the mirror has: its id, mode, size, mtime, inode and ctime. Older manifests have no ctime.
-export type Entry = [hash: string, mode: string, size: number, mtime: number, ino: number, ctime?: number];
-export type Manifest = { dir: string; name: string; version: number; files: Record<string, Entry> };
-
-export function readManifest(path: string): Manifest | null {
-  try {
-    const m = JSON.parse(readFileSync(path, "utf8"));
-    if (m !== null && typeof m === "object" && typeof m.files === "object" && m.files !== null) return m;
-  } catch {}
-  return null;
-}
-
-const entryOf = (hash: string, mode: string, path: string): Entry => {
-  const st = lstatSync(path);
-  return [hash, mode, st.size, st.mtimeMs, st.ino, st.ctimeMs];
-};
-
-/// What the mirror has of the files it was given, now: one a command changed is hashed again, one it removed (or made
-/// something else) is no longer there. Paths about to be overwritten are checked by content even if their stat matches.
-export async function actual(mirror: string, files: Record<string, Entry>, verify: ReadonlySet<string> = new Set()): Promise<Record<string, Entry>> {
-  const out: Record<string, Entry> = {};
-  for (const [path, e] of Object.entries(files)) {
-    const abs = join(mirror, ...path.split("/"));
-    let st;
-    try {
-      st = lstatSync(abs);
-    } catch {
-      continue;
-    }
-    const same = !verify.has(path) && st.size === e[2] && st.mtimeMs === e[3] && st.ino === e[4] && st.ctimeMs === e[5];
-    if (st.isSymbolicLink()) {
-      out[path] = e[1] === LINK && same ? e : [blobId(Buffer.from(readlinkSync(abs))), LINK, st.size, st.mtimeMs, st.ino, st.ctimeMs];
-    } else if (st.isFile()) {
-      const mode = modeOf(st.mode);
-      out[path] = e[1] === mode && same ? e : [await fileId(abs, st.size), mode, st.size, st.mtimeMs, st.ino, st.ctimeMs];
-    }
-  }
-  return out;
-}
+// ── the target: the contents sent (the rest of the mirror is the program's: station/mb src/reader/dirsync.mbt) ──
 
 /// Pieces sent (`index`: id, size, offset, length) unpacked into `blobs`: each content in its own file, complete when
 /// its last piece came and its id checked. A piece that came already (a request asked again) is skipped.
@@ -515,149 +471,6 @@ export async function putBlobs(blobs: string, index: Json, packed: Buffer): Prom
     }
   }
   return index.length;
-}
-
-/// Checks a plan's entries as they come: [path, id, mode] to have, paths to remove.
-export function planPart(request: Json): { set: [string, string, string][]; remove: string[] } {
-  const set = request?.set ?? [];
-  const remove = request?.remove ?? [];
-  if (!Array.isArray(set) || !Array.isArray(remove)) throw new Error("bad plan");
-  for (const s of set) {
-    if (!Array.isArray(s) || typeof s[0] !== "string" || typeof s[1] !== "string" || !/^[0-9a-f]{40}$/.test(s[1]) || ![FILE, EXEC, LINK].includes(s[2])) {
-      throw new Error("bad plan");
-    }
-  }
-  if (!remove.every((r: unknown) => typeof r === "string")) throw new Error("bad plan");
-  return { set, remove };
-}
-
-/// Removes the empty directories from `path`'s up to the mirror's.
-function prune(mirror: string, path: string) {
-  for (let d = dirname(path); d.length > mirror.length && d.startsWith(mirror); d = dirname(d)) {
-    try {
-      rmdirSync(d);
-    } catch {
-      return;
-    }
-  }
-}
-
-/// Carries out a plan in the mirror (`name` in `work`): every new content made beside it first (in `scratch`, from `blobs` or from a file
-/// of the mirror with the same id), then the files that left removed, then the new ones renamed into place. `files`
-/// (what the mirror has, `actual`) is updated as it goes, also when it stops on an error part way.
-export function apply(
-  work: string,
-  name: string,
-  scratch: string,
-  blobs: string,
-  files: Record<string, Entry>,
-  plan: { set: [string, string, string][]; remove: string[] },
-): { written: number; removed: number } {
-  const mirror = filePathHere(work, name, true);
-  mkdirSync(mirror, { recursive: true });
-  mkdirSync(scratch, { recursive: true });
-  const byHash = new Map<string, string>();
-  for (const [path, e] of Object.entries(files)) byHash.set(e[0], path);
-  const uses = new Map<string, number>();
-  for (const [, hash] of plan.set) uses.set(hash, (uses.get(hash) ?? 0) + 1);
-  type Ready = { path: string; hash: string; mode: string; temp: string | null };
-  const ready: Ready[] = [];
-  plan.set.forEach(([path, hash, mode], i) => {
-    const now = files[path];
-    if (now && now[0] === hash && (now[1] === LINK) === (mode === LINK)) {
-      // The same content: a mode to set, if any.
-      ready.push({ path, hash, mode, temp: null });
-      return;
-    }
-    const temp = join(scratch, String(i));
-    rmSync(temp, { force: true });
-    const blob = join(blobs, hash);
-    const from = existsSync(blob) ? null : byHash.get(hash);
-    if (!existsSync(blob) && from === undefined) throw new Error(`the content of ${path} was not sent`);
-    if (mode === LINK) {
-      const target = from === undefined || from === null ? readFileSync(blob, "utf8") : readlinkSync(join(mirror, ...from.split("/")));
-      if (!linkInside(path, target)) throw new Error(`${path} is a symbolic link leading out of the directory`);
-      symlinkSync(target, temp);
-    } else {
-      const left = (uses.get(hash) ?? 1) - 1;
-      uses.set(hash, left);
-      if (from === null || from === undefined) {
-        if (left === 0) renameSync(blob, temp);
-        else copyFileSync(blob, temp);
-      } else copyFileSync(join(mirror, ...from.split("/")), temp);
-      chmodSync(temp, mode === EXEC ? 0o755 : 0o644);
-    }
-    ready.push({ path, hash, mode, temp });
-  });
-  let removed = 0;
-  for (const path of plan.remove) {
-    if (!(path in files)) continue;
-    let abs: string;
-    try {
-      abs = filePathHere(mirror, path, false);
-    } catch {
-      delete files[path];
-      continue;
-    }
-    try {
-      const st = lstatSync(abs);
-      if (st.isFile() || st.isSymbolicLink()) rmSync(abs, { force: true });
-    } catch {}
-    delete files[path];
-    removed++;
-    prune(mirror, abs);
-  }
-  let written = 0;
-  for (const r of ready) {
-    let abs: string;
-    try {
-      abs = filePathHere(mirror, r.path, true);
-    } catch (error) {
-      throw new Error(`cannot write ${r.path} on the target: ${(error as Error).message}`);
-    }
-    if (r.temp === null) {
-      if (r.mode !== LINK && files[r.path]![1] !== r.mode) chmodSync(abs, r.mode === EXEC ? 0o755 : 0o644);
-      files[r.path] = entryOf(r.hash, r.mode, abs);
-      continue;
-    }
-    try {
-      const st = lstatSync(abs);
-      if (st.isDirectory()) rmdirSync(abs);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new Error(`cannot write ${r.path} on the target: a directory is there`);
-    }
-    renameSync(r.temp, abs);
-    files[r.path] = entryOf(r.hash, r.mode, abs);
-    written++;
-  }
-  return { written, removed };
-}
-
-/// The manifest's entries as pages give them: [path, id, mode], by path.
-export function listed(files: Record<string, Entry>): [string, string, string][] {
-  return Object.keys(files)
-    .sort()
-    .map((p) => [p, files[p]![0], files[p]![1]]);
-}
-
-/// A page of `all` from `after`: as many as about PAGE of JSON, and where the next starts (null at the end).
-export function page<T>(all: T[], after: number): { entries: T[]; next: number | null } {
-  const entries: T[] = [];
-  let size = 0;
-  let i = after;
-  for (; i < all.length; i++) {
-    const n = JSON.stringify(all[i]).length + 1;
-    if (size + n > PAGE && entries.length > 0) break;
-    entries.push(all[i]!);
-    size += n;
-  }
-  return { entries, next: i < all.length ? i : null };
-}
-
-export function writeManifest(path: string, m: Manifest): void {
-  const temp = `${path}.${process.pid}.tmp`;
-  writeFileSync(temp, JSON.stringify(m));
-  renameSync(temp, path);
 }
 
 // ── the source: what a task changed in the mirror, as a patch ──

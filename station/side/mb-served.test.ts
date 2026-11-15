@@ -19,6 +19,7 @@ import { type Endpoint, type Stream, loadMesh } from "../src/mesh/native.ts";
 import { Store, newMessage } from "../src/store/store.ts";
 import { quotesOf } from "../src/api/routes/hub.ts";
 import { Admin } from "../src/api/admin.ts";
+import { REFERENCE_WORKER, readersOf } from "../test/reference.ts";
 
 const binary = mbReaderBinary();
 const skip = binary === null ? "the MoonBit program is not built here (station/mb/build.sh)" : false;
@@ -166,8 +167,7 @@ test("a routed request is answered by the MoonBit program as the admin API answe
   assert.equal(answer.head.status, 200, said);
   assert.equal(answer.head.headers["content-encoding"], "zstd", said);
   assert.equal(answer.head.headers["stillfail-idempotent"], "1");
-  const worker = new Readers(data, 1);
-  worker.mbReader = null;
+  const worker = new Readers(data, 1, REFERENCE_WORKER);
   // (as the admin API learns people's names from who asks)
   worker.names.set(viewer.email, viewer.name);
   t.after(() => worker.close());
@@ -203,8 +203,7 @@ test("a routed request is answered by the MoonBit program as the admin API answe
   ] as const;
   // What a read needs prepared first (a station's pool prepares it as a read is refused for it, and the program gives such
   // a request to Node meanwhile), prepared as the station's own readers do: then the program answers each itself.
-  const pool = new Readers(data, 1);
-  pool.mbReader = binary!;
+  const pool = readersOf(data, binary);
   t.after(() => pool.close());
   for (const [, op, args] of routes) await pool.read(op, args, "en").catch(() => {});
   const givenBefore = given.length;

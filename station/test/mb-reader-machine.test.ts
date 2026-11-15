@@ -37,6 +37,7 @@ function memoryFiles(data: string) {
   skill("zeta", "---\ndescription: \"项目记忆：zeta\"\r\nname: zeta\n---\nbody", { "b.md": "B", "a.md": "A", "SKILL.conflict-1.md": "c", "notes.txt": "n", "bad.md": Buffer.from([0xff, 0xfe]) });
   skill("alpha", "---\ndescription:   plain words  \n---\n");
   skill("stillfail-chats", "---\ndescription: built in\n---\n");
+  skill("stillfail-move", "---\ndescription: built in since the move\n---\n");
   skill("hosted", "---\ndescription: \"\"\"quoted\"\"\n---\n", { "SKILL.conflict-2.md": "x", "SKILL.conflict-.md": "y" });
   skill("plain", "no front matter");
   skill("odd", "---\ndescription: 项目记忆：odd\n");

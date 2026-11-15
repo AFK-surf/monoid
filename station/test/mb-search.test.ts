@@ -70,6 +70,7 @@ function station() {
   writeFileSync(join(agent, "MEMORY.md"), "﻿- always plan ahead\n");
   skill(agent, "deploy", "---\ndescription: \"项目记忆：plan deploys\"\n---\nbody", { "b.md": "plan b", "a.md": "plan a", "SKILL.conflict-1.md": "plan x", "c.txt": "plan" });
   skill(agent, "stillfail-jobs", "---\ndescription: run jobs plan\n---\n");
+  skill(agent, "stillfail-move", "---\ndescription: move plan\n---\n");
   skill(agent, "zeta", "no front plan");
   skill(agent, "alpha", "---\r\ndescription: alpha\r\n---\r\nplan");
   writeFileSync(join(agent, "skills", "bad.md"), "plan");
