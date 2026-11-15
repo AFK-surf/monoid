@@ -1275,6 +1275,45 @@ impl Inner {
                 e.set_parameter(zstd::zstd_safe::CParameter::WindowLog(window)).map_err(err)?;
                 Ok(Answer::json(json!({ "id": self.keep(Handle::Zstd(Arc::new(Mutex::new(e)))) })))
             }
+            // `bytes` written into the file at `path` (station/mb src/reader remote.mbt): at `offset` (none: appended),
+            // made where it is not (`exclusive`: refused where it is), never through a link (`nofollow`), cut to what
+            // ends there with `truncate`, synced to the disk with `sync`; a regular file only. How long it is then.
+            "fs.put" => {
+                let path = PathBuf::from(str_of(&a, "path")?);
+                let input = bytes.unwrap_or_default();
+                let offset = a.get("offset").and_then(Value::as_u64);
+                let flag = |k: &str| a.get(k).and_then(Value::as_bool).unwrap_or(false);
+                let (exclusive, nofollow, truncate, sync) = (flag("exclusive"), flag("nofollow"), flag("truncate"), flag("sync"));
+                let mode = a.get("mode").and_then(Value::as_u64).unwrap_or(0o666) as u32;
+                let size = tokio::task::spawn_blocking(move || -> Result<u64, String> {
+                    use std::io::{Seek, SeekFrom, Write};
+                    let mut o = std::fs::OpenOptions::new();
+                    o.write(true);
+                    if exclusive { o.create_new(true); } else { o.create(true); }
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::OpenOptionsExt;
+                        o.mode(mode);
+                        if nofollow { o.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK); }
+                    }
+                    #[cfg(not(unix))]
+                    let _ = (mode, nofollow);
+                    let mut file = o.open(&path).map_err(err)?;
+                    if !file.metadata().map_err(err)?.is_file() {
+                        return Err("only regular files can be transferred".into());
+                    }
+                    let at = match offset { Some(at) => at, None => file.seek(SeekFrom::End(0)).map_err(err)? };
+                    file.seek(SeekFrom::Start(at)).map_err(err)?;
+                    file.write_all(&input).map_err(err)?;
+                    let end = at + input.len() as u64;
+                    if truncate { file.set_len(end).map_err(err)?; }
+                    if sync { file.sync_all().map_err(err)?; }
+                    Ok(file.metadata().map_err(err)?.len())
+                })
+                .await
+                .map_err(err)??;
+                Ok(Answer::json(json!({ "size": size })))
+            }
             "zstd.open" => Ok(Answer::json(json!({ "id": self.keep(Handle::Unzstd(Arc::new(Mutex::new(Unzstd::new()?)))) }))),
             "zstd.push" => {
                 if let Handle::Zstd(z) = self.handle(id_of(&a)?)? {
@@ -1967,6 +2006,13 @@ impl Inner {
                 }
                 Ok(Answer::json(json!({})))
             }
+            // The filesystem's and a program's run, asked without waiting (`shell`, not `shell_sync`): done off the caller's
+            // thread, so a program that serves many (station/mb's sessions) is not held by a big file or a slow `git`.
+            op if op.starts_with("fs.") || op == "proc.run" => {
+                let (inner, op, a) = (self.clone(), op.to_string(), a);
+                let value = tokio::task::spawn_blocking(move || inner.run_sync(&op, &a)).await.map_err(err)??;
+                Ok(Answer::json(value))
+            }
             other => Err(format!("no operation {other}")),
         }
     }
@@ -2314,7 +2360,16 @@ impl Inner {
             let args: Vec<String> = a.get("args").and_then(Value::as_array).map(|v| v.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
             let timeout = std::time::Duration::from_millis(a.get("timeoutMs").and_then(Value::as_u64).unwrap_or(5000));
             let most = a.get("maxBytes").and_then(Value::as_u64).unwrap_or(1 << 20) as usize;
-            let Ok(mut child) = Command::new(str_of(a, "command")?).args(&args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() else {
+            // `env`: variables set besides the station's; `hex`: its stdout as hex (bytes, not words: `git cat-file`);
+            // `code`: {code, out} for any end it came to (`git check-ignore`'s 1 says something), null still where it did not.
+            let mut command = Command::new(str_of(a, "command")?);
+            command.args(&args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+            if let Some(env) = a.get("env").and_then(Value::as_object) {
+                for (k, v) in env {
+                    if let Some(v) = v.as_str() { command.env(k, v); }
+                }
+            }
+            let Ok(mut child) = command.spawn() else {
                 return Ok(Value::Null);
             };
             let mut stdout = child.stdout.take().expect("piped");
@@ -2336,8 +2391,15 @@ impl Inner {
                 }
             };
             let (out, over) = reading.join().unwrap_or((Vec::new(), true));
+            let said = |out: &[u8]| if a.get("hex").and_then(Value::as_bool).unwrap_or(false) { json!(hex::encode(out)) } else { json!(String::from_utf8_lossy(out)) };
+            if a.get("code").and_then(Value::as_bool).unwrap_or(false) {
+                return Ok(match status.and_then(|s| s.code()) {
+                    Some(code) if !over => json!({ "code": code, "out": said(&out) }),
+                    _ => Value::Null,
+                });
+            }
             return Ok(match status {
-                Some(s) if s.success() && !over => json!(String::from_utf8_lossy(&out)),
+                Some(s) if s.success() && !over => said(&out),
                 _ => Value::Null,
             });
         }
@@ -2467,6 +2529,75 @@ impl Inner {
                     break;
                 }
                 hash.update(&buf[..n]);
+            }
+            return Ok(json!(hex::encode(hash.finalize())));
+        }
+        // What lstat says of `path` (links not followed), as Node's lstat gives it to station/src/jobs/dirsync.ts: its
+        // kind, size, mode, inode, and mtime and ctime in ms (seconds and nanoseconds as Node joins them); null when
+        // nothing is there.
+        if op == "fs.lstat" {
+            let Ok(m) = std::fs::symlink_metadata(str_of(a, "path")?) else { return Ok(Value::Null) };
+            let kind = if m.file_type().is_symlink() { "link" } else if m.is_file() { "file" } else if m.is_dir() { "dir" } else { "other" };
+            #[cfg(unix)]
+            let (mode, ino, mtime, ctime) = {
+                use std::os::unix::fs::MetadataExt;
+                let ms = |s: i64, ns: i64| s as f64 * 1e3 + ns as f64 / 1e6;
+                (m.mode(), m.ino(), ms(m.mtime(), m.mtime_nsec()), ms(m.ctime(), m.ctime_nsec()))
+            };
+            #[cfg(not(unix))]
+            let (mode, ino, mtime, ctime) = {
+                let ms = |t: std::io::Result<std::time::SystemTime>| t.ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0.0, |d| d.as_secs_f64() * 1e3);
+                (if m.permissions().readonly() { 0o444 } else { 0o666 }, 0u64, ms(m.modified()), ms(m.modified()))
+            };
+            return Ok(json!({ "kind": kind, "size": m.len(), "mode": mode, "ino": ino, "mtimeMs": mtime, "ctimeMs": ctime }));
+        }
+        // A symbolic link at `path` naming `target`.
+        if op == "fs.symlink" {
+            let (target, path) = (str_of(a, "target")?, str_of(a, "path")?);
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(target, path).map_err(err)?;
+            #[cfg(windows)]
+            std::os::windows::fs::symlink_file(target, path).map_err(err)?;
+            return Ok(Value::Null);
+        }
+        // The permission bits of `path` set to `mode` (chmodSync); nothing where the system has none.
+        if op == "fs.chmod" {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = a.get("mode").and_then(Value::as_u64).ok_or("mode is required")? as u32;
+                std::fs::set_permissions(str_of(a, "path")?, std::fs::Permissions::from_mode(mode)).map_err(err)?;
+            }
+            return Ok(Value::Null);
+        }
+        // A hard link `to` of `from`: false when `to` is there already (EEXIST), true when made.
+        if op == "fs.link" {
+            return match std::fs::hard_link(str_of(a, "from")?, str_of(a, "to")?) {
+                Ok(()) => Ok(json!(true)),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(json!(false)),
+                Err(e) => Err(err(e)),
+            };
+        }
+        // A file's content id as Git has it (sha1 of "blob <size>\0" and its bytes), read a MiB at a time; `size` is what
+        // it is to be, refused when it reads otherwise (changed while read). Null when it does not open.
+        if op == "fs.gitblob" {
+            use sha1::Digest;
+            use std::io::Read;
+            let Ok(mut file) = std::fs::File::open(str_of(a, "path")?) else { return Ok(Value::Null) };
+            let size = a.get("size").and_then(Value::as_u64).ok_or("size is required")?;
+            let mut hash = sha1::Sha1::new();
+            hash.update(format!("blob {size}\0").as_bytes());
+            let (mut buf, mut read) = (vec![0u8; 1 << 20], 0u64);
+            loop {
+                let n = file.read(&mut buf).map_err(err)?;
+                if n == 0 {
+                    break;
+                }
+                read += n as u64;
+                hash.update(&buf[..n]);
+            }
+            if read != size {
+                return Err(format!("{} changed while it was read", str_of(a, "path")?));
             }
             return Ok(json!(hex::encode(hash.finalize())));
         }
@@ -3388,6 +3519,23 @@ mod tests {
             assert_eq!(sync("fs.stat", json!({ "path": at("a/link"), "lstat": true }))["value"], json!("link"));
             assert_eq!(sync("fs.stat", json!({ "path": at("a/link") }))["value"], json!("file"));
             std::fs::remove_file(at("a/link")).unwrap();
+            // what lstat says, a link made, a mode set, a hard link once, a Git blob id (`printf '中\n' | git hash-object --stdin`)
+            let st = sync("fs.lstat", json!({ "path": at("a/b/plain.txt") }))["value"].clone();
+            assert_eq!((st["kind"].clone(), st["size"].clone()), (json!("file"), json!(4)));
+            assert!(st["ino"].as_u64().unwrap() > 0 && st["mtimeMs"].as_f64().unwrap() > 0.0 && st["ctimeMs"].as_f64().unwrap() > 0.0);
+            assert_eq!(sync("fs.symlink", json!({ "target": "b/plain.txt", "path": at("a/rel") }))["value"], Value::Null);
+            assert_eq!(sync("fs.lstat", json!({ "path": at("a/rel") }))["value"]["kind"], json!("link"));
+            assert_eq!(sync("fs.chmod", json!({ "path": at("a/b/plain.txt"), "mode": 0o755 }))["value"], Value::Null);
+            assert_eq!(sync("fs.lstat", json!({ "path": at("a/b/plain.txt") }))["value"]["mode"].as_u64().unwrap() & 0o777, 0o755);
+            assert_eq!(sync("fs.link", json!({ "from": at("a/b/plain.txt"), "to": at("a/hard") }))["value"], json!(true));
+            assert_eq!(sync("fs.link", json!({ "from": at("a/b/plain.txt"), "to": at("a/hard") }))["value"], json!(false));
+            assert_eq!(sync("fs.gitblob", json!({ "path": at("a/b/plain.txt"), "size": 4 }))["value"], json!("74088efd486cfe7ecada1b668aa911b8f767b99a"));
+            assert!(sync("fs.gitblob", json!({ "path": at("a/b/plain.txt"), "size": 5 }))["error"].is_string());
+            assert_eq!(sync("fs.lstat", json!({ "path": at("nothing") }))["value"], Value::Null);
+            assert_eq!(sync("proc.run", json!({ "command": "sh", "args": ["-c", "printf '\\001'; exit 1"], "hex": true, "code": true }))["value"], json!({ "code": 1, "out": "01" }));
+            assert_eq!(sync("proc.run", json!({ "command": "sh", "args": ["-c", "printf %s \"$X\""], "env": { "X": "y" } }))["value"], json!("y"));
+            std::fs::remove_file(at("a/rel")).unwrap();
+            std::fs::remove_file(at("a/hard")).unwrap();
         }
         // copied, renamed, a folder made, then let go with what it holds; nothing there is no failure
         assert_eq!(sync("fs.copy", json!({ "from": at("a/b/plain.txt"), "to": at("a/copy.txt") }))["value"], Value::Null);

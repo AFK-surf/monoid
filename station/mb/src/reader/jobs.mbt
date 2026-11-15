@@ -111,8 +111,9 @@ async fn Actors::jtell(self : Actors, job : Json, text : String) -> Unit raise {
 
 ///|
 async fn Actors::remote_changed(self : Actors, id : String) -> Unit raise {
+  // (a task of another station's: its source told, remote.mbt `push_out`, in this program)
   if id.has_prefix("remote_") {
-    ignore(self.jnode("remoteChanged", [jstr(id)]))
+    self.push_out(id.view(start_offset=7).to_string())
   }
 }
 

@@ -279,6 +279,8 @@ function errorOf(error: unknown, runtime: RuntimeKind): Json {
     said: error instanceof Said,
     missing: error instanceof CommandMissing && error.command === runtime,
     runtime,
+    // (what it is, for the program to tell apart a peer's refusal from a request that did not get through: bus.ts)
+    kind: (error as Error)?.constructor?.name ?? "Error",
   };
 }
 
