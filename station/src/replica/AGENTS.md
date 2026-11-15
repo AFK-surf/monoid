@@ -43,14 +43,17 @@ below, sends them along).
   shows first what it would move (`GET /retire/preview`, found by the same functions the retirement uses). Each
   session's room whole (an archived one's packed workspace with it; `footprint.ts roomOf`, a session whose directory is
   not the station's own counted and left) and its agents' transcripts go by their bytes to the same places under the
-  other's data directory, only under `sessions/` and `transcripts*/` (`carry-worker.ts`): a checkout's files as git
+  other's data directory, only under `sessions/` and `transcripts*/` (`carry.ts`: the MoonBit program's, `--builder
+  replica-carry`, `station/mb/src/replica/carry.mbt`, a process each, a cancel killing it; built for every system a
+  station runs on, so no worker thread to fall back to; the worker's from before is `station/test/carry-reference.ts`,
+  which `station/test/mb-replica-carry.test.ts` holds it to): a checkout's files as git
   lists them (`rebuildable` stays behind), its own `.git` as files, a repository in it gone into; a linked worktree is
   made again there by git (its remote fetched and pruned first, a bundle of the commits no remote has, `git worktree add`
   and `repair`; one that cannot be keeps its bundle beside it; not begun where that station has no git). A station has
   a million files: nothing of them is one object on a main thread or in one message (a list a session on disk, an
   index of the lists, `retire.lacking` a bounded batch of hashes at a time; `replica-retire.test.ts` counts them). Every
   file is checked by its hash as it is written there, and put in place linked to what was sent, no byte copied
-  (`carry-worker.ts putFile`; one linked already, the same bytes at another path, is copied: two paths never share a
+  (`carry.mbt` `put_file`; one linked already, the same bytes at another path, is copied: two paths never share a
   file; 2026-11-14, Node's clone copied the bytes on APFS and filled a station's disk). The
   copy is put in beside the other's chats by the same restore (`build`'s `merge`: each thread an id there, a
   platform's thread both followed the one there with its own log, a still.fail chat of the same ts given the next free
@@ -102,7 +105,7 @@ below, sends them along).
   (`station/src/move/`, its AGENTS.md: independent modules, each item moved and moved back on its own, a scheduler that
   only orders them by their needs). Its state is a file a hand-over on each side (`handover/out/`, `handover/in/`):
   nothing of it is in the copies' export or the schema but `handed_over` (where each chat went, store `handOff`). The
-  chat is held alone (sessions/hub.ts `holdChat`), its files gathered alone (carry-worker.ts `gather`'s `keys`) and sent
+  chat is held alone (sessions/hub.ts `holdChat`), its files gathered alone (carry.ts `gatherSoon`'s `keys`) and sent
   as a retirement's are (`sending.ts`), its rows sent a page at a time and put in through the other's store, hidden
   until shown (store/handover.ts, `comingWs`): each thread's log goes on past what that station has (n kept where it
   was this chat's own as it was left, else by ts), so a chat handed back appends what was said there. Each station's

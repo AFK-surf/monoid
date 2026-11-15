@@ -2,9 +2,9 @@
 // 2026-11-13: 「搬家主要考虑的场景是要废弃掉一个 station」「要允许用户选择目标迁移 station」; replica/AGENTS.md).
 //
 // On the station retired (`retire`): the other station is told it is coming (`retire.begin`), and what goes along with
-// the chats (their transcripts and their sessions' rooms, carry-worker.ts) is sent while its agents still work, what it
+// the chats (their transcripts and their sessions' rooms, carry.ts) is sent while its agents still work, what it
 // lacks of each session's list a bounded batch at a time (`retire.lacking`), its agent home's own files with them
-// (carry-worker.ts `homeFiles`). Then it is `sent`: all that goes along is there and the chats still work. A retirement
+// (carry.ts `gatherSoon`'s `agent`). Then it is `sent`: all that goes along is there and the chats still work. A retirement
 // a person started in the app's panel goes on from there at once (that panel said the chats would pause); one an agent
 // asked for (station_retire, retire-asks.ts) waits there until an owner or admin confirms the hand-over in the app
 // (the user, 2026-11-14: 「迁移最好能 agent 辅助，因为中途可能出问题，然后人应该只需要在关键节点点卡片来确认就行」).
@@ -41,14 +41,13 @@ import { randomBytes } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import { copyFile, mkdir, readFile, readdir, rename, rm, stat, statfs, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve, sep } from "node:path";
-import { Worker } from "node:worker_threads";
 import { type Bytes, Refused, bytesOf, withBytes } from "../mesh/bus.ts";
 import { stopBytes } from "../mesh/files.ts";
 import type { Fibers } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { platform } from "../platform/index.ts";
 import { knownOf, localOf } from "../connects/remote.ts";
-import type { CarriedJob, CarriedSession, CarryIndex, Gathered } from "./carry-worker.ts";
+import { type CarriedJob, type CarriedSession, type CarryIndex, type Gathered, gatherSoon, placeSoon, previewSoon } from "./carry.ts";
 import { GEN, HASH, STATION, WORKSPACE } from "./format.ts";
 import { FolderPlace } from "./places.ts";
 import type { Ask } from "./peers.ts";
@@ -199,8 +198,8 @@ export type RetireDeps = {
   git?: (dir: string, args: string[]) => Promise<string>;
   /// The most hashes one `retire.lacking` asks of and takes (LACK_MOST unless a test says).
   lackMost?: number;
-  /// carry-worker.ts's gathering, placing and preview (in a thread of their own, a gathering stopped by `signal`, unless a
-  /// test says otherwise).
+  /// carry.ts's gathering, placing and preview (the MoonBit program's, a gathering stopped by `signal`, unless a test
+  /// says otherwise).
   work?: { gather: typeof gatherSoon; place: typeof placeSoon; preview?: typeof previewSoon };
   /// The jobs and services of `ws`'s chats up now (what `quiet` stops), and its connects as the app names them.
   jobsIn: (ws: string) => CarriedJob[];
@@ -279,25 +278,8 @@ const roomHere = (data: string) => async () => {
   return { free: s === null ? null : Number(s.bavail) * Number(s.bsize), clones: platform.clonesFiles };
 };
 
-/// `carry-worker.ts`'s work in a thread of its own, ended at once where `signal` says (a cancel).
-function inThread<T>(asked: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
-  const file = new URL(import.meta.url.endsWith(".ts") ? "./carry-worker.ts" : "./replica/carry-worker.js", import.meta.url);
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) return reject(new Error("called off"));
-    const w = new Worker(file, { workerData: { carry: asked } });
-    const stop = () => {
-      void w.terminate();
-      reject(new Error("called off"));
-    };
-    signal?.addEventListener("abort", stop, { once: true });
-    const done = () => signal?.removeEventListener("abort", stop);
-    w.once("message", (m: { answer?: T; error?: string }) => (done(), m.error !== undefined ? reject(new Error(m.error)) : resolve(m.answer as T)));
-    w.once("error", (e) => (done(), reject(e)));
-  });
-}
-export const gatherSoon = (dataDir: string, db: string, ws: string, home: boolean, scratch: string, signal?: AbortSignal, agent: string | null = null, keys: readonly string[] | null = null) => inThread<Gathered>({ op: "gather", dataDir, db, ws, home, scratch, agent, keys }, signal);
-export const placeSoon = (dataDir: string, index: string, from: string, made: string | null = null, aside: string | null = null, placed: string | null = null, projects = false) => inThread<{ placed: number; missing: number; kept: number }>({ op: "place", dataDir, index, from, made, aside, placed, projects });
-export const previewSoon = (dataDir: string, db: string, ws: string, home: boolean) => inThread<{ chats: number; archived: number; outside: number }>({ op: "preview", dataDir, db, ws, home });
+// (the gathering, placing and preview: carry.ts, the MoonBit program's)
+export { gatherSoon, placeSoon, previewSoon };
 
 /// What a retirement of a workspace would move, as the app shows it before a person retires the station (GET
 /// /retire/preview): found as the retirement finds it (the same predicates), nothing of it moved.

@@ -9,8 +9,7 @@ import { afterEach } from "node:test";
 import { PeerBus, bytesOf, withBytes } from "../src/mesh/bus.ts";
 import { WorkspaceConnects } from "../src/connects/workspace.ts";
 import { Fibers } from "../src/ops/fibers.ts";
-import { gather, place } from "../src/replica/carry-worker.ts";
-import type { CarriedJob } from "../src/replica/carry-worker.ts";
+import { type CarriedJob, gatherSoon, placeSoon } from "../src/replica/carry.ts";
 import { hubConfig } from "../src/sessions/config.ts";
 import { newSession, say } from "../src/sessions/lifecycle.ts";
 import { Moves } from "../src/move/station.ts";
@@ -150,11 +149,11 @@ export function world(ids: string[] = [A, B]) {
         hasGit: async () => true,
         lackMost: 50,
         work: {
-          gather: async (dataDir, db, ws, home, scratch, _signal, agent, keys) => gather(dataDir, db, ws, home, scratch, agent ?? null, keys ?? null),
+          gather: gatherSoon,
           place: async (dataDir, index, from, made, aside, placed, projects) => {
             await st.placing?.(index);
             try {
-              return place(dataDir, index, from, made ?? null, aside ?? null, placed ?? null, projects ?? false);
+              return await placeSoon(dataDir, index, from, made ?? null, aside ?? null, placed ?? null, projects ?? false);
             } finally {
               st.placed?.();
             }

@@ -660,6 +660,72 @@ async fn replica_export(host : @host.Host, db : String, replica : String, data_d
 }
 
 ///|
+/// The files of a retired station's chats, or a chat handed over (replica/carry.ts): one ask on stdin, `{op, …}`
+/// (`gather`, `place`, `preview`), answered `{answer}` or `{error}` on one line, then the program ends. A cancel ends
+/// the process.
+async fn replica_carry(host : @host.Host, sep : String) -> Unit {
+  guard host.line() is Some(line) else { return }
+  let answer : Result[@jsjson.JValue, String] = try {
+    let ask = @jsjson.parse(line)
+    let text = (name : String) => match ask.get(name) {
+      Some(Str(u)) => Some(@jsjson.text(u))
+      _ => None
+    }
+    let texts = (name : String) => match ask.get(name) {
+      Some(Arr(items)) => Some(items.filter_map(v => if v is Str(u) { Some(@jsjson.text(u)) } else { None }))
+      _ => None
+    }
+    let yes = (name : String) => ask.get(name) is Some(Bool(true))
+    let need = (name : String) => match text(name) {
+      Some(t) => t
+      None => raise Failure("\{name} is required")
+    }
+    match text("op") {
+      Some("gather") =>
+        Ok(
+          @replica.carry_gather(
+            host,
+            sep,
+            need("dataDir"),
+            need("db"),
+            text("ws").unwrap_or(""),
+            yes("home"),
+            need("scratch"),
+            text("agent"),
+            texts("keys"),
+            texts("own").unwrap_or([]),
+          ),
+        )
+      Some("place") =>
+        Ok(
+          @replica.carry_place(
+            host,
+            sep,
+            need("dataDir"),
+            need("index"),
+            need("from"),
+            text("made"),
+            text("aside"),
+            text("placed"),
+            yes("projects"),
+          ),
+        )
+      Some("preview") => Ok(@replica.carry_preview(host, sep, need("dataDir"), need("db"), text("ws").unwrap_or(""), yes("home")))
+      _ => Err("no such ask")
+    }
+  } catch {
+    e => Err(message(e))
+  }
+  match answer {
+    Ok(v) => host.say("{\"answer\":\{@jsjson.stringify(v)}}")
+    Err(m) => {
+      let failed : Json = { "error": Json::string(m) }
+      host.say(failed.stringify())
+    }
+  }
+}
+
+///|
 /// The live view's transcript locator (sessions/live-locator.ts): each line a `locate` or a reply to one being looked
 /// for (@locate.Locator).
 async fn live_locator(host : @host.Host, db_path : String, data : String, sep : String) -> Unit {
@@ -879,6 +945,9 @@ fn main {
         }
         host.say(line)
       })
+    (Some("replica-carry"), _, _) =>
+      // (the shell's own files, which this asks for none of, in `--shell-dir`)
+      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => replica_carry(host, flag("--sep").unwrap_or("/")))
     (Some("vault-uses"), Some(db), _) =>
       @host.run(shell_dir=beside(db, "shell"), host => vault_uses(host, db))
     (Some("outflow-chats"), Some(db), _) =>
@@ -983,7 +1052,7 @@ fn main {
         }
       })
     _ => {
-      @host.note("usage: stillfail-reader --data <dir> | --builder archive-marks|session-bindings|session-up-jobs|widget-sources|card-posts|session-list|outflow-chats|turn-counts|said|archive-last|page-letters|cc-index|usage-check|recent-chat|closed-cards|people-since|legacy-edits|legacy-said|session-counts|session-backfill|post-blocks|usage-retire|usage-scope|usage-counter|signin-save|vault-uses|replica-export --db <file> | --builder replica-restore --db <file> --data <dir>")
+      @host.note("usage: stillfail-reader --data <dir> | --builder archive-marks|session-bindings|session-up-jobs|widget-sources|card-posts|session-list|outflow-chats|turn-counts|said|archive-last|page-letters|cc-index|usage-check|recent-chat|closed-cards|people-since|legacy-edits|legacy-said|session-counts|session-backfill|post-blocks|usage-retire|usage-scope|usage-counter|signin-save|vault-uses|replica-export --db <file> | --builder replica-restore --db <file> --data <dir> | --builder replica-carry")
       2
     }
   }

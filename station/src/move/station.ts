@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import { Refused, bytesOf } from "../mesh/bus.ts";
 import { PeerGone } from "../mesh/peer.ts";
 import type { Fibers } from "../ops/fibers.ts";
-import type { CarriedJob } from "../replica/carry-worker.ts";
+import type { CarriedJob } from "../replica/carry.ts";
 import { type AccountOf, Handover, type HandoverDeps } from "../replica/handover.ts";
 import { moved } from "../replica/restore.ts";
 import type { Ask } from "../replica/peers.ts";

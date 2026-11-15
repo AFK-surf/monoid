@@ -1,57 +1,21 @@
-// What of a workspace's chats goes along beside their copy as a station is retired from it (retire.ts; replica/AGENTS.md):
-// their agents' transcripts and each session's own directory (its room: the workspace, and an archived one's packed
-// workspace beside it), gathered on the station retired and put in place on the one its chats go to. Nothing in it is
-// changed on the way: each file is taken by its bytes (by their hash, as a copy's files are) and put at the same place
-// under the other station's data directory. A checkout's own repository (`.git` a directory) goes as its files; a linked
-// worktree's is git's to make again there (retire.ts `rebuildGits`), from what this says of it. What a build or an
-// install makes again (footprint.ts `rebuildable`), and what git ignores, stays behind. Only what is under the data
-// directory's `sessions/` and `transcripts*/` goes, or is put. Run in a thread of its own (retire.ts `gatherSoon`,
-// `placeSoon`), or a test's.
-//
-// A station has a million files under `sessions/`: none of it is one object. Each session's files are a list of their
-// own on disk (a line each), and what goes along is an index of the lists (`CarryIndex`); the main thread reads the
-// index and streams the lists, and what goes between the two stations is a list's piece at a time (retire.ts).
+// The gathering and placing of a retired station's files as a worker thread did them before they were the MoonBit
+// program's (station/src/replica/carry.ts, station/mb src/replica/carry.mbt): the tests' only, what the program is
+// compared with on the same data (mb-replica-carry.test.ts), and the files the tests make to give it. What it does is
+// carry.ts's to say.
 import { execFileSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, chmodSync, closeSync, copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync, writeSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { isMainThread, parentPort, workerData } from "node:worker_threads";
-import { rebuildable, roomOf } from "../sessions/footprint.ts";
-import { BUILTIN_SKILLS, FEEDBACK_SKILL } from "../sessions/agent-home.ts";
-import { runtimeKind } from "../agents/runtime.ts";
-import { sessionPlaces, storage, transcriptSources } from "../read/transcript.ts";
-import { carriedTo, moved } from "./restore.ts";
+import { rebuildable, roomOf } from "../src/sessions/footprint.ts";
+import { BUILTIN_SKILLS, FEEDBACK_SKILL } from "../src/sessions/agent-home.ts";
+import { runtimeKind } from "../src/agents/runtime.ts";
+import { sessionPlaces, storage, transcriptSources } from "../src/read/transcript.ts";
+import { carriedTo, moved } from "../src/replica/restore.ts";
 
-/// A file that goes along, a line of its session's list: where it is (under the station's data directory), its bytes'
-/// hash, how big, its mode and time; a symbolic link its target instead (nothing to send).
-export type CarriedFile = { path: string; hash: string; size: number; mode: number; mtimeMs: number } | { path: string; link: string };
-/// A linked git worktree of a working directory (its `.git` a file naming its repository elsewhere): where it is, the
-/// remote it came from, its branch (null: detached), its commit, and its commits no remote has (a bundle's hash; null:
-/// none).
-export type CarriedGit = { dir: string; remote: string; branch: string | null; head: string; bundle: string | null };
-/// A session whose things go along: its key, its working directory, its room (null: not in the station's layout, so
-/// nothing of its directory goes); its list (the hash of its file, the name it is sent by), how many files and bytes
-/// it names; `at`: where the list is on the station it was gathered on.
-export type CarriedSession = { key: string; workspace: string; room: string | null; list: string; files: number; bytes: number; at: string };
-/// A job or service a session had running as its chats stopped: what it takes to run it again on the station the chats
-/// go to, as one runs again after its station restarted (jobs.ts `relaunch`): where it ran, its port (a web service),
-/// whether it is a watch (retire.ts `#startJobs`). One gathered by a station from before has only its name and command,
-/// and is not started again there (its agent is told it did not move).
-export type CarriedJob = { session: string; name: string; command: string; cwd?: string; port?: number | null; watch?: boolean };
-/// What of a workspace's agent home goes along (its MEMORY.md, presets.json and the skills people or agents made: not
-/// the station's own, nor those of the deployment linked beside them): where it is on the station gathered on, and its
-/// list as a session's (retire.ts merges it into the agent home there, agent-carry.ts).
-export type CarriedHome = { dir: string; list: string; files: number; bytes: number; at: string };
-/// What goes along with a workspace's chats, all but the files: `dataDir` the retired station's; each session and its
-/// list; the linked worktrees; the sessions whose directory is not the station's own (a person's project), which stays;
-/// the jobs that were running; where each worktree's bundle is on the station gathered on; its agent home (none in an
-/// index of a station from before, or where it has none).
-export type CarryIndex = { v: 2; dataDir: string; sessions: CarriedSession[]; gits: CarriedGit[]; skipped: string[]; jobs: CarriedJob[]; bundles: Record<string, string>; files: number; bytes: number; agent?: CarriedHome | null };
-/// What a gathering answers (the rest is on disk): where its index is, and how much it names.
-/// `unreadable`: the files (and directories) of what goes that this station could not read: none goes left out silently,
-/// what gathered them says so (the first few; `unreadableCount` all of them).
-export type Gathered = { index: string; files: number; bytes: number; gits: number; skipped: number; unreadable?: string[]; unreadableCount?: number };
+import { type CarriedFile, type CarriedGit, type CarriedHome, type CarriedSession, type CarryIndex, type Gathered, carriedPlace, indexFile, listFile } from "../src/replica/carry.ts";
+
+export type { CarriedFile, CarryIndex, Gathered };
 
 /// Whether an error reading a file is that this station may not read it (not that it went meanwhile).
 const denied = (e: unknown) => ["EACCES", "EPERM"].includes((e as NodeJS.ErrnoException)?.code ?? "");
@@ -61,39 +25,31 @@ type SessionAt = { key: string; workspace: string; cwd: string | null; runtime: 
 
 const within = (path: string, dir: string) => path === dir || path.startsWith(dir.endsWith(sep) ? dir : dir + sep);
 
-/// Whether `path` is one that goes along, or is put: under `dataDir`'s `sessions/` or a `transcripts*/` of it.
-export function carriedPlace(dataDir: string, path: string): boolean {
-  const rel = relative(dataDir, path);
-  if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) return false;
-  const parts = rel.split(sep);
-  return parts.length > 1 && (parts[0] === "sessions" || parts[0]!.startsWith("transcripts"));
-}
-
 /// A file's hash, read a piece at a time (a room's packed workspace is gigabytes).
 export function hashFile(path: string): string {
   const h = createHash("sha256");
-  const fd = openSync(path, "r"); // sync: in the gathering's or placing's own thread
+  const fd = openSync(path, "r");
   const buf = Buffer.allocUnsafe(1 << 20);
   try {
     for (;;) {
-      const n = readSync(fd, buf, 0, buf.length, null); // sync: in the gathering's or placing's own thread
+      const n = readSync(fd, buf, 0, buf.length, null);
       if (n === 0) break;
       h.update(buf.subarray(0, n));
     }
   } finally {
-    closeSync(fd); // sync: in the gathering's or placing's own thread
+    closeSync(fd);
   }
   return h.digest("hex");
 }
 
 /// The lines of a file, read a piece at a time.
 export function* linesOf(path: string): Generator<string> {
-  const fd = openSync(path, "r"); // sync: in the gathering's or placing's own thread
+  const fd = openSync(path, "r");
   const buf = Buffer.allocUnsafe(1 << 20);
   let rest = Buffer.alloc(0);
   try {
     for (;;) {
-      const n = readSync(fd, buf, 0, buf.length, null); // sync: in the gathering's or placing's own thread
+      const n = readSync(fd, buf, 0, buf.length, null);
       if (n === 0) break;
       let chunk = Buffer.concat([rest, buf.subarray(0, n)]);
       for (let at = chunk.indexOf(10); at >= 0; at = chunk.indexOf(10)) {
@@ -104,7 +60,7 @@ export function* linesOf(path: string): Generator<string> {
     }
     if (rest.length > 0) yield rest.toString("utf8");
   } finally {
-    closeSync(fd); // sync: in the gathering's or placing's own thread
+    closeSync(fd);
   }
 }
 
@@ -119,20 +75,20 @@ class ListFile {
   constructor(path: string) {
     this.path = path;
     this.tmp = `${path}.writing`;
-    this.#fd = openSync(this.tmp, "w"); // sync: in the gathering's own thread (gatherSoon)
+    this.#fd = openSync(this.tmp, "w");
   }
   add(f: CarriedFile): void {
     const line = `${JSON.stringify(f)}\n`;
     this.#hash.update(line);
-    writeSync(this.#fd, line); // sync: in the gathering's own thread (gatherSoon)
+    writeSync(this.#fd, line);
     if ("hash" in f) {
       this.files++;
       this.bytes += f.size;
     }
   }
   close(): string {
-    closeSync(this.#fd); // sync: in the gathering's own thread (gatherSoon)
-    renameSync(this.tmp, this.path); // sync: in the gathering's own thread (gatherSoon)
+    closeSync(this.#fd);
+    renameSync(this.tmp, this.path);
     return this.#hash.digest("hex");
   }
 }
@@ -143,7 +99,7 @@ const FETCH_MS = 120_000;
 
 const git = (dir: string, args: string[], timeout?: number): string | null => {
   try {
-    return execFileSync("git", ["-C", dir, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], env: GIT_ENV, maxBuffer: 256 * 1024 * 1024, timeout }).trim(); // sync: in the gathering's own thread (gatherSoon)
+    return execFileSync("git", ["-C", dir, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], env: GIT_ENV, maxBuffer: 256 * 1024 * 1024, timeout }).trim();
   } catch {
     return null;
   }
@@ -170,7 +126,7 @@ export function preview(dataDir: string, db: string, ws: string, home: boolean):
   const d = new DatabaseSync(db, { readOnly: true, timeout: 30_000 });
   let realData = dataDir;
   try {
-    realData = realpathSync(dataDir); // sync: in the preview's own thread (previewSoon)
+    realData = realpathSync(dataDir);
   } catch {}
   let chats = 0;
   let archived = 0;
@@ -187,10 +143,6 @@ export function preview(dataDir: string, db: string, ws: string, home: boolean):
   return { chats, archived, outside };
 }
 
-/// Where a gathering keeps its index and its lists, in `scratch`.
-export const indexFile = (scratch: string) => join(scratch, "index.json");
-export const listFile = (scratch: string, key: string) => join(scratch, "lists", `${createHash("sha256").update(key).digest("hex").slice(0, 32)}.jsonl`);
-
 /// What goes along with the chats of `ws` on the station whose data directory is `dataDir`: their transcripts and each
 /// one's room, a git checkout in it as git lists its files (tracked and not ignored) with its repository, a linked
 /// worktree's commits no remote has in a bundle; written in `scratch` (a list a session, the index of them). A file of
@@ -204,7 +156,7 @@ export function gather(dataDir: string, db: string, ws: string, home: boolean, s
   const skipped: string[] = [];
   const bundles: Record<string, string> = {};
   const fetched = new Set<string>();
-  mkdirSync(join(scratch, "lists"), { recursive: true }); // sync: in the gathering's own thread (gatherSoon)
+  mkdirSync(join(scratch, "lists"), { recursive: true });
   let files = 0;
   let bytes = 0;
   // (per session: what its list said before, and what is in its list now)
@@ -224,12 +176,12 @@ export function gather(dataDir: string, db: string, ws: string, home: boolean, s
     seen.add(path);
     let st;
     try {
-      st = lstatSync(path); // sync: in the gathering's own thread (gatherSoon)
+      st = lstatSync(path);
     } catch {
       return;
     }
     if (st.isSymbolicLink()) {
-      list.add({ path, link: readlinkSync(path) }); // sync: in the gathering's own thread (gatherSoon)
+      list.add({ path, link: readlinkSync(path) });
       return;
     }
     if (!st.isFile()) return;
@@ -247,7 +199,7 @@ export function gather(dataDir: string, db: string, ws: string, home: boolean, s
   const whole = (dir: string) => {
     let names: string[];
     try {
-      names = readdirSync(dir); // sync: in the gathering's own thread (gatherSoon)
+      names = readdirSync(dir);
     } catch (e) {
       if (denied(e)) cannotRead(dir);
       return;
@@ -256,7 +208,7 @@ export function gather(dataDir: string, db: string, ws: string, home: boolean, s
       const path = join(dir, name);
       let st;
       try {
-        st = lstatSync(path); // sync: in the gathering's own thread (gatherSoon)
+        st = lstatSync(path);
       } catch {
         continue;
       }
@@ -268,7 +220,7 @@ export function gather(dataDir: string, db: string, ws: string, home: boolean, s
   const tree = (dir: string) => {
     let names: string[];
     try {
-      names = readdirSync(dir); // sync: in the gathering's own thread (gatherSoon)
+      names = readdirSync(dir);
     } catch (e) {
       if (denied(e)) cannotRead(dir);
       return;
@@ -278,7 +230,7 @@ export function gather(dataDir: string, db: string, ws: string, home: boolean, s
       const path = join(dir, name);
       let st;
       try {
-        st = lstatSync(path); // sync: in the gathering's own thread (gatherSoon)
+        st = lstatSync(path);
       } catch {
         continue;
       }
@@ -295,7 +247,7 @@ export function gather(dataDir: string, db: string, ws: string, home: boolean, s
     const dotgit = join(dir, ".git");
     let st;
     try {
-      st = lstatSync(dotgit); // sync: in the gathering's own thread (gatherSoon)
+      st = lstatSync(dotgit);
     } catch {
       return false;
     }
@@ -319,7 +271,7 @@ export function gather(dataDir: string, db: string, ws: string, home: boolean, s
         const path = join(dir, f);
         let s;
         try {
-          s = lstatSync(path); // sync: in the gathering's own thread (gatherSoon)
+          s = lstatSync(path);
         } catch {
           continue;
         }
@@ -336,7 +288,7 @@ export function gather(dataDir: string, db: string, ws: string, home: boolean, s
     if (!st.isFile()) return false;
     let said = "";
     try {
-      said = readFileSync(dotgit, "utf8").trim(); // sync: in the gathering's own thread (gatherSoon)
+      said = readFileSync(dotgit, "utf8").trim();
     } catch {}
     const gitdir = said.startsWith("gitdir:") ? said.slice("gitdir:".length).trim() : null;
     const worktree = gitdir !== null && isAbsolute(gitdir) ? linked(dir) : null;
@@ -360,19 +312,19 @@ export function gather(dataDir: string, db: string, ws: string, home: boolean, s
     }
     const branch = git(dir, ["symbolic-ref", "--short", "-q", "HEAD"]);
     const bundle = join(scratch, `${gits.length}.bundle`);
-    rmSync(bundle, { force: true }); // sync: in the gathering's own thread (gatherSoon)
+    rmSync(bundle, { force: true });
     // (git refuses a bundle of nothing: every commit of it is on a remote already)
     let hash: string | null = null;
-    if (git(dir, ["bundle", "create", "-q", bundle, "HEAD", "--not", "--remotes"]) !== null && existsSync(bundle)) { // sync: in the gathering's own thread (gatherSoon)
+    if (git(dir, ["bundle", "create", "-q", bundle, "HEAD", "--not", "--remotes"]) !== null && existsSync(bundle)) {
       hash = hashFile(bundle);
       bundles[hash] = bundle;
-      bytes += lstatSync(bundle).size; // sync: in the gathering's own thread (gatherSoon)
+      bytes += lstatSync(bundle).size;
     }
     return { dir, remote, branch: branch === null || branch === "" ? null : branch, head, bundle: hash };
   };
   let realData = dataDir;
   try {
-    realData = realpathSync(dataDir); // sync: in the gathering's own thread (gatherSoon)
+    realData = realpathSync(dataDir);
   } catch {}
   try {
     const rows = d.prepare(sessionsIn(home, keys)).all(keys !== null ? JSON.stringify(keys) : ws) as SessionAt[];
@@ -381,7 +333,7 @@ export function gather(dataDir: string, db: string, ws: string, home: boolean, s
       const at = listFile(scratch, s.key);
       // (the hashes the list before said, by path: this session's alone)
       before = new Map();
-      if (existsSync(at)) for (const line of linesOf(at)) { // sync: in the gathering's own thread (gatherSoon)
+      if (existsSync(at)) for (const line of linesOf(at)) {
         try {
           const f = JSON.parse(line) as CarriedFile;
           if ("hash" in f) before.set(f.path, { size: f.size, mtimeMs: f.mtimeMs, hash: f.hash });
@@ -410,7 +362,7 @@ export function gather(dataDir: string, db: string, ws: string, home: boolean, s
       else {
         let names: string[] = [];
         try {
-          names = readdirSync(room); // sync: in the gathering's own thread (gatherSoon)
+          names = readdirSync(room);
         } catch {}
         for (const name of names.sort()) {
           // (its lock, and what is being written as it is looked at, stay)
@@ -418,7 +370,7 @@ export function gather(dataDir: string, db: string, ws: string, home: boolean, s
           const path = join(room, name);
           let st;
           try {
-            st = lstatSync(path); // sync: in the gathering's own thread (gatherSoon)
+            st = lstatSync(path);
           } catch {
             continue;
           }
@@ -439,10 +391,10 @@ export function gather(dataDir: string, db: string, ws: string, home: boolean, s
   }
   // The agent home's own files, a list as a session's, in the same way (the hashes of the gathering before kept).
   let carriedHome: CarriedHome | null = null;
-  if (agent !== null && existsSync(agent)) { // sync: in the gathering's own thread (gatherSoon)
+  if (agent !== null && existsSync(agent)) {
     const at = join(scratch, "lists", "agent-home.jsonl");
     before = new Map();
-    if (existsSync(at)) for (const line of linesOf(at)) { // sync: in the gathering's own thread (gatherSoon)
+    if (existsSync(at)) for (const line of linesOf(at)) {
       try {
         const f = JSON.parse(line) as CarriedFile;
         if ("hash" in f) before.set(f.path, { size: f.size, mtimeMs: f.mtimeMs, hash: f.hash });
@@ -461,8 +413,8 @@ export function gather(dataDir: string, db: string, ws: string, home: boolean, s
   }
   const index: CarryIndex = { v: 2, dataDir, sessions, gits, skipped, jobs: [], bundles, files, bytes, agent: carriedHome };
   const path = indexFile(scratch);
-  writeFileSync(`${path}.tmp`, JSON.stringify(index)); // sync: in the gathering's own thread (gatherSoon)
-  renameSync(`${path}.tmp`, path); // sync: in the gathering's own thread (gatherSoon)
+  writeFileSync(`${path}.tmp`, JSON.stringify(index));
+  renameSync(`${path}.tmp`, path);
   return { index: path, files, bytes, gits: gits.length, skipped: skipped.length, ...(unreadableCount > 0 ? { unreadable, unreadableCount } : {}) };
 }
 
@@ -474,7 +426,7 @@ export function homeFiles(agent: string): string[] {
   const out: string[] = [];
   const file = (path: string) => {
     try {
-      if (lstatSync(path).isFile()) out.push(path); // sync: in the gathering's own thread (gatherSoon)
+      if (lstatSync(path).isFile()) out.push(path);
     } catch {}
   };
   file(join(agent, "MEMORY.md"));
@@ -484,13 +436,13 @@ export function homeFiles(agent: string): string[] {
   const walk = (dir: string) => {
     let names: string[] = [];
     try {
-      names = readdirSync(dir); // sync: in the gathering's own thread (gatherSoon)
+      names = readdirSync(dir);
     } catch {}
     for (const name of names.sort()) {
       const path = join(dir, name);
       let st;
       try {
-        st = lstatSync(path); // sync: in the gathering's own thread (gatherSoon)
+        st = lstatSync(path);
       } catch {
         continue;
       }
@@ -501,12 +453,12 @@ export function homeFiles(agent: string): string[] {
   };
   let names: string[] = [];
   try {
-    names = readdirSync(skills); // sync: in the gathering's own thread (gatherSoon)
+    names = readdirSync(skills);
   } catch {}
   for (const name of names.sort()) {
     if (name.startsWith(".") || name === "synced" || own.has(name)) continue;
     try {
-      if (!lstatSync(join(skills, name)).isDirectory()) continue; // sync: in the gathering's own thread (gatherSoon)
+      if (!lstatSync(join(skills, name)).isDirectory()) continue;
     } catch {
       continue;
     }
@@ -526,43 +478,43 @@ export function homeFiles(agent: string): string[] {
 /// time), kept by it: one the index says the same of again is left without being looked at (a hand-over's second
 /// pass touches only what changed since its first).
 export function place(dataDir: string, indexPath: string, from: string, made: string | null = null, aside: string | null = null, placed: string | null = null, projects = false): { placed: number; missing: number; kept: number } {
-  const index = JSON.parse(readFileSync(indexPath, "utf8")) as CarryIndex; // sync: in the placing's own thread (placeSoon)
+  const index = JSON.parse(readFileSync(indexPath, "utf8")) as CarryIndex;
   // (what is there that is this placing's own already, made or put aside before: replaced, not put aside again)
   const ours = new Set<string>();
   for (const at of [made, aside === null ? null : join(aside, "list.txt")]) {
-    if (at !== null && existsSync(at)) for (const line of linesOf(at)) if (line !== "") ours.add(line.split("\t")[0]!); // sync: in the placing's own thread (placeSoon)
+    if (at !== null && existsSync(at)) for (const line of linesOf(at)) if (line !== "") ours.add(line.split("\t")[0]!);
   }
   const known = new Map<string, string>();
-  if (placed !== null && existsSync(placed)) for (const line of linesOf(placed)) { // sync: in the placing's own thread (placeSoon)
+  if (placed !== null && existsSync(placed)) for (const line of linesOf(placed)) {
     const tab = line.indexOf("\t");
     if (tab > 0) known.set(line.slice(0, tab), line.slice(tab + 1));
   }
-  const placedFd = placed === null ? null : openSync(placed, "a"); // sync: in the placing's own thread (placeSoon)
+  const placedFd = placed === null ? null : openSync(placed, "a");
   const same = (_path: string, f: { hash: string; size: number; mtimeMs: number }) => `${f.hash}\t${f.size}\t${Math.trunc(f.mtimeMs)}`;
   const seen = {
     before: (path: string, f: { hash: string; size: number; mtimeMs: number }) => known.get(path) === same(path, f),
     now: (path: string, f: { hash: string; size: number; mtimeMs: number }) => {
-      if (placedFd !== null && known.get(path) !== same(path, f)) writeSync(placedFd, `${path}\t${same(path, f)}\n`); // sync: in the placing's own thread (placeSoon)
+      if (placedFd !== null && known.get(path) !== same(path, f)) writeSync(placedFd, `${path}\t${same(path, f)}\n`);
     },
   };
-  const madeFd = made === null ? null : openSync(made, "a"); // sync: in the placing's own thread (placeSoon)
+  const madeFd = made === null ? null : openSync(made, "a");
   const fresh = (path: string) => {
     ours.add(path);
-    if (madeFd !== null) writeSync(madeFd, `${path}\n`); // sync: in the placing's own thread (placeSoon)
+    if (madeFd !== null) writeSync(madeFd, `${path}\n`);
   };
   const away = (path: string) => {
-    if (aside === null || ours.has(path)) return void rmSync(path, { recursive: true, force: true }); // sync: in the placing's own thread (placeSoon)
-    mkdirSync(aside, { recursive: true }); // sync: in the placing's own thread (placeSoon)
+    if (aside === null || ours.has(path)) return void rmSync(path, { recursive: true, force: true });
+    mkdirSync(aside, { recursive: true });
     const name = `${createHash("sha256").update(path).digest("hex").slice(0, 32)}-${randomBytes(4).toString("hex")}`;
-    renameSync(path, join(aside, name)); // sync: in the placing's own thread (placeSoon)
-    appendFileSync(join(aside, "list.txt"), `${path}\t${name}\n`); // sync: in the placing's own thread (placeSoon)
+    renameSync(path, join(aside, name));
+    appendFileSync(join(aside, "list.txt"), `${path}\t${name}\n`);
     ours.add(path);
   };
   try {
     return placeAll(index, dataDir, from, fresh, away, seen, projects);
   } finally {
-    if (madeFd !== null) closeSync(madeFd); // sync: in the placing's own thread (placeSoon)
-    if (placedFd !== null) closeSync(placedFd); // sync: in the placing's own thread (placeSoon)
+    if (madeFd !== null) closeSync(madeFd);
+    if (placedFd !== null) closeSync(placedFd);
   }
 }
 
@@ -572,7 +524,7 @@ function realOf(path: string): string {
   const rest: string[] = [];
   for (let at = path; ; at = dirname(at)) {
     try {
-      return join(realpathSync(at), ...rest.reverse()); // sync: in the placing's own thread (placeSoon)
+      return join(realpathSync(at), ...rest.reverse());
     } catch {
       if (dirname(at) === at) return path;
       rest.push(basename(at));
@@ -591,7 +543,7 @@ function placeAll(index: CarryIndex, dataDir: string, from: string, fresh: (path
     // (a chat handed over: its Claude transcripts under the project of its room here as the runtime sees it, its real
     // path, whatever project they were under there)
     const room = projects ? realOf(moved(s.workspace, index.dataDir, dataDir)) : null;
-    if (!existsSync(list)) { // sync: in the placing's own thread (placeSoon)
+    if (!existsSync(list)) {
       missing += s.files;
       continue;
     }
@@ -614,19 +566,19 @@ function placeAll(index: CarryIndex, dataDir: string, from: string, fresh: (path
       }
       let there = null;
       try {
-        there = lstatSync(path); // sync: in the placing's own thread (placeSoon)
+        there = lstatSync(path);
       } catch {}
       if ("link" in f) {
         const target = isAbsolute(f.link) ? moved(f.link, index.dataDir, dataDir) : f.link;
         if (there !== null) {
-          if (there.isSymbolicLink() && readlinkSync(path) === target) { // sync: in the placing's own thread (placeSoon)
+          if (there.isSymbolicLink() && readlinkSync(path) === target) {
             kept++;
             continue;
           }
           away(path);
         }
-        mkdirSync(dirname(path), { recursive: true }); // sync: in the placing's own thread (placeSoon)
-        symlinkSync(target, path); // sync: in the placing's own thread (placeSoon)
+        mkdirSync(dirname(path), { recursive: true });
+        symlinkSync(target, path);
         if (there === null) fresh(path);
         placed++;
         continue;
@@ -637,17 +589,17 @@ function placeAll(index: CarryIndex, dataDir: string, from: string, fresh: (path
         continue;
       }
       const blob = join(from, f.hash);
-      if (!existsSync(blob)) { // sync: in the placing's own thread (placeSoon)
+      if (!existsSync(blob)) {
         missing++;
         continue;
       }
-      mkdirSync(dirname(path), { recursive: true }); // sync: in the placing's own thread (placeSoon)
+      mkdirSync(dirname(path), { recursive: true });
       const tmp = `${path}.${randomBytes(4).toString("hex")}.carrying`;
       putFile(blob, tmp);
-      chmodSync(tmp, f.mode); // sync: in the placing's own thread (placeSoon)
-      utimesSync(tmp, f.mtimeMs / 1000, f.mtimeMs / 1000); // sync: in the placing's own thread (placeSoon)
+      chmodSync(tmp, f.mode);
+      utimesSync(tmp, f.mtimeMs / 1000, f.mtimeMs / 1000);
       if (there !== null) away(path);
-      renameSync(tmp, path); // sync: in the placing's own thread (placeSoon)
+      renameSync(tmp, path);
       if (there === null) fresh(path);
       seen?.now(path, f);
       placed++;
@@ -663,23 +615,13 @@ function placeAll(index: CarryIndex, dataDir: string, from: string, fresh: (path
 /// bytes on APFS (measured 2026-11-14: a station's disk filled as a retirement's 55 GB were placed), so no clone is
 /// asked for.
 export function putFile(blob: string, tmp: string): void {
-  if (lstatSync(blob).nlink === 1) { // sync: in the placing's own thread (placeSoon)
+  if (lstatSync(blob).nlink === 1) {
     try {
-      linkSync(blob, tmp); // sync: in the placing's own thread (placeSoon)
+      linkSync(blob, tmp);
       return;
     } catch (e) {
       if (!["EXDEV", "EPERM", "ENOTSUP", "EMLINK", "ENOSYS"].includes((e as NodeJS.ErrnoException).code ?? "")) throw e;
     }
   }
-  copyFileSync(blob, tmp); // sync: in the placing's own thread (placeSoon)
-}
-
-if (!isMainThread && workerData?.carry !== undefined) {
-  const a = workerData.carry;
-  try {
-    const answer = a.op === "gather" ? gather(a.dataDir, a.db, a.ws, a.home, a.scratch, a.agent ?? null, a.keys ?? null) : a.op === "preview" ? preview(a.dataDir, a.db, a.ws, a.home) : place(a.dataDir, a.index, a.from, a.made ?? null, a.aside ?? null, a.placed ?? null, a.projects === true);
-    parentPort!.postMessage({ answer });
-  } catch (e) {
-    parentPort!.postMessage({ error: (e as Error).message });
-  }
+  copyFileSync(blob, tmp);
 }

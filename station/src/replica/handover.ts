@@ -12,7 +12,7 @@
 // 2. the chat held here (sessions/hub.ts `holdChat`): its turn not cut (a busy one refused, or waited for), no new one,
 //    its process ended, its jobs stopped and kept (what the jobs module starts there, move/jobs.ts); what is said to it
 //    meanwhile is kept in its threads' logs, delivered where it ends up;
-// 3. its files gathered alone (carry-worker.ts `gather` with its keys, a scratch of its own), what B lacks sent
+// 3. its files gathered alone (carry.ts `gatherSoon` with its keys, a scratch of its own), what B lacks sent
 //    (sending.ts), each checked by its hash there, placed (what B made kept, to take away where it fails);
 // 4. its rows sent a bounded page at a time (store/handover.ts), put in through B's store, hidden (`comingWs`);
 // 5. B counts what it has; A compares; only then A says it went (store `handOff`, durably, before anyone is told),
@@ -35,7 +35,7 @@ import { CHAT_TABLES, BY_N, MARKS, type ChatTable, type Counts, type ImportCtx, 
 import type { Store } from "../store/store.ts";
 import type { SessionRow } from "../store/rows.ts";
 import { STILLFAIL_SURFACE, comingWs, handedWs } from "../store/rows.ts";
-import { type CarriedJob, type CarryIndex, type Gathered, carriedPlace, listFile } from "./carry-worker.ts";
+import { type CarriedJob, type CarryIndex, type Gathered, carriedPlace, listFile } from "./carry.ts";
 import { HASH, STATION, WORKSPACE } from "./format.ts";
 import type { Ask } from "./peers.ts";
 import { Gone, type Need, Said, UNANSWERED, sayOf } from "../move/module.ts";
@@ -1330,7 +1330,7 @@ export class Handover {
   }
 }
 
-/// `path`'s real path, the part of it not there yet as it is (carry-worker.ts `realOf`, off the main thread's way).
+/// `path`'s real path, the part of it not there yet as it is (station/mb carry.mbt `real_of`, off the main thread's way).
 async function realOfSoon(path: string): Promise<string> {
   const rest: string[] = [];
   for (let at = path; ; at = dirname(at)) {

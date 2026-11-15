@@ -1,5 +1,5 @@
 // A station retired from a workspace (replica/retire.ts): its chats go on on the station picked, beside that one's own,
-// with their agents' transcripts and their rooms (carry-worker.ts), a linked worktree made again there by git from its
+// with their agents' transcripts and their rooms (carry.ts, the MoonBit program's), a linked worktree made again there by git from its
 // remote and its commits no remote has; a thread both stations followed stays the one there; the retired station's
 // connects named as they are there, its accounts moved there first. Each side started again at each step goes on; one
 // that failed is said, not tried again by itself; a cancel calls it off where it can, at once. What goes in one message
@@ -20,7 +20,8 @@ import { TestClock } from "effect/testing";
 import { PeerBus, Refused, bytesOf, withBytes } from "../src/mesh/bus.ts";
 import { Fibers } from "../src/ops/fibers.ts";
 import { claudeProject } from "../src/read/transcript.ts";
-import { type CarriedFile, type CarryIndex, type Gathered, gather, hashFile, linesOf, place, preview } from "../src/replica/carry-worker.ts";
+import { type CarriedFile, type CarryIndex, type Gathered, gatherSoon, placeSoon as place, previewSoon as preview } from "../src/replica/carry.ts";
+import { hashFile, linesOf } from "./carry-reference.ts";
 import { Copies } from "../src/replica/copies.ts";
 import { Exporter, genDir, nothingTold, ownDir } from "../src/replica/export.ts";
 import { keepers } from "../src/replica/peers.ts";
@@ -30,7 +31,7 @@ import { RETIRE_OFF, RetireAsks, chatCards, confirmLabel, declineLabel } from ".
 import { hold, holding } from "../src/updates/holds.ts";
 import { stationLang, tr } from "../src/ops/i18n.ts";
 import { memoryMark } from "../src/replica/agent-carry.ts";
-import type { CarriedJob } from "../src/replica/carry-worker.ts";
+import type { CarriedJob } from "../src/replica/carry.ts";
 import { Admin } from "../src/api/admin.ts";
 import { routes } from "../src/api/routes/copies.ts";
 import type { Request } from "../src/api/request.ts";
@@ -44,6 +45,9 @@ import { Store } from "../src/store/store.ts";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
 import { HOME, ORIGIN, OTHER, chat, dataDir, station } from "./replica-fakes.ts";
 import { Rig, matches, message, reply, settle } from "./hub-fakes.ts";
+
+/// The program's gathering (carry.ts), as the tests ask it: nothing to call it off.
+const gather = (dataDir: string, db: string, ws: string, home: boolean, scratch: string, agent: string | null = null) => gatherSoon(dataDir, db, ws, home, scratch, undefined, agent);
 
 type Json = any;
 const scopes: Scope.Closeable[] = [];
@@ -239,7 +243,7 @@ class Mesh {
             node.hanging?.();
             return going;
           }
-          const g = answered(gather(dataDir, db, ws, home, scratch, agent ?? null));
+          const g = answered(await gather(dataDir, db, ws, home, scratch, agent ?? null));
           node.gathers++;
           node.gathered?.(g, node.gathers);
           return g;
@@ -254,9 +258,9 @@ class Mesh {
             node.placeFails--;
             throw new Error("the disk said no");
           }
-          return answered(place(...a));
+          return answered(await place(...a));
         },
-        preview: async (...a) => preview(...a),
+        preview: (...a) => preview(...a),
       },
     });
     node.asks = new RetireAsks({
@@ -795,7 +799,7 @@ test("a person's message kept while the chats paused is taken on the station the
   }
 });
 
-test("what goes along: an archived chat's room whole, nothing of a directory not the station's own, nothing outside sessions and transcripts; a link to the old place names the new", () => {
+test("what goes along: an archived chat's room whole, nothing of a directory not the station's own, nothing outside sessions and transcripts; a link to the old place names the new", async () => {
   const made = station();
   const { data, db, store } = made;
   // chat:b archived: its workspace packed in its room, its directory empty
@@ -812,7 +816,7 @@ test("what goes along: an archived chat's room whole, nothing of a directory not
   const aws = join(data, "sessions", "chat", "chat:a", "workspace");
   symlinkSync(join(aws, "uploads", "pic.png"), join(aws, "pic-link"));
   store.close();
-  const g = gather(data, db, HOME, true, join(data, "replica", "carrying"));
+  const g = await gather(data, db, HOME, true, join(data, "replica", "carrying"));
   const index = indexOf(g);
   const paths = listedOf(g).map((f) => f.path.slice(data.length + 1));
   for (const want of ["workspace.tar.zst", "chat:b/cold", "workspace-locks.json"]) assert.ok(paths.some((p) => p.endsWith(want)), want);
@@ -821,14 +825,14 @@ test("what goes along: an archived chat's room whole, nothing of a directory not
   assert.deepEqual(index.skipped.sort(), ["chat:data", "chat:out"]);
   assert.equal(index.sessions.find((s) => s.key === "chat:b")!.room, room);
   // the preview counts the same of it, no directory walked
-  assert.equal(preview(data, db, HOME, true).outside, index.skipped.length);
+  assert.equal((await preview(data, db, HOME, true)).outside, index.skipped.length);
   // put in on another station: a path a list says outside sessions and transcripts is put nowhere
   const to = dataDir("to");
   const files = sent(g);
   const keyHash = hashFile(join(data, "station.key"));
   cpSync(join(data, "station.key"), join(files, keyHash));
   appendFileSync(join(files, index.sessions.find((s) => s.key === "chat:a")!.list), `${JSON.stringify({ path: join(data, "station.key"), hash: keyHash, size: 21, mode: 0o600, mtimeMs: 1 })}\n`);
-  const placed = place(to, g.index, files);
+  const placed = await place(to, g.index, files);
   assert.equal(placed.missing, 0);
   assert.equal(existsSync(join(to, "station.key")), false);
   assert.equal(readFileSync(join(to, "sessions", "chat", "chat:b", "workspace.tar.zst"), "utf8"), "packed");
@@ -836,7 +840,7 @@ test("what goes along: an archived chat's room whole, nothing of a directory not
   // (linked to what was sent: its bytes not copied)
   assert.equal(statSync(join(to, "sessions", "chat", "chat:b", "workspace.tar.zst")).ino, statSync(join(files, hashFile(join(room, "workspace.tar.zst")))).ino);
   // put in again (started again after it): what is there with the same bytes stays
-  const again = place(to, g.index, files);
+  const again = await place(to, g.index, files);
   assert.equal(again.placed, 0);
   assert.equal(again.missing, 0);
 });
@@ -880,7 +884,7 @@ function sent(g: Gathered): string {
   return dir;
 }
 
-test("a clone goes along with its own repository (its other branches too), and a repository inside it with its own", () => {
+test("a clone goes along with its own repository (its other branches too), and a repository inside it with its own", async () => {
   const from = dataDir("from");
   const db = join(from, "stillfail.db");
   const store = Store.open(db, join(from, "archive"));
@@ -897,13 +901,13 @@ test("a clone goes along with its own repository (its other branches too), and a
   git(inner, "add", "-A");
   git(inner, "commit", "-q", "-m", "inner");
   writeFileSync(join(inner, "n.txt"), "inner, untracked\n");
-  const g = gather(from, db, HOME, true, join(from, "scratch"));
+  const g = await gather(from, db, HOME, true, join(from, "scratch"));
   const paths = listedOf(g).map((f) => f.path.slice(from.length + 1));
   for (const want of ["repo/a.txt", "repo/b.txt", "repo/new.txt", "repo/.gitignore", "repo/.git/HEAD", "repo/inner/i.txt", "repo/inner/n.txt", "repo/inner/.git/HEAD"]) assert.ok(paths.some((p) => p.endsWith(want)), want);
   for (const not of ["ignored.log", "node_modules"]) assert.ok(!paths.some((p) => p.includes(not)), not);
   assert.equal(g.gits, 0, "its repository goes as its files: nothing made again");
   const to = dataDir("to");
-  place(to, g.index, sent(g));
+  await place(to, g.index, sent(g));
   const there = join(to, repo.slice(from.length + 1));
   assert.equal(git(there, "rev-parse", "HEAD"), head);
   assert.deepEqual(git(there, "branch", "--format=%(refname:short)").split("\n").sort(), ["main", "work"]);
@@ -937,7 +941,7 @@ test("a linked worktree whose branch was deleted on its remote is made again wit
   git(wt, "add", "y.txt");
   git(wt, "commit", "-q", "-m", "y");
   const y = git(wt, "rev-parse", "HEAD");
-  const g = gather(from, db, HOME, true, join(from, "scratch"));
+  const g = await gather(from, db, HOME, true, join(from, "scratch"));
   const index = indexOf(g);
   assert.equal(index.gits.length, 1);
   assert.equal(index.gits[0]!.branch, "feat");
@@ -945,7 +949,7 @@ test("a linked worktree whose branch was deleted on its remote is made again wit
   assert.ok(!listedOf(g).some((f) => f.path === join(wt, ".git")), "its .git is made again there, not carried");
   const to = dataDir("to");
   const files = sent(g);
-  place(to, g.index, files);
+  await place(to, g.index, files);
   assert.deepEqual(await rebuildGits(to, join(to, "repos"), index, files, gitAsync), { made: 1, failed: 0 });
   const there = join(to, wt.slice(from.length + 1));
   assert.equal(git(there, "rev-parse", "HEAD"), y);
@@ -1586,20 +1590,20 @@ test("retiring switched off (module.ts RETIRE_STARTS): POST /retire refused in w
   await mesh.settle();
 });
 
-test("a file put in place is linked to what was sent, no byte of it copied; the same bytes at two paths are two files; placed again, what is there stays; a placing cut between a link and its rename still ends with the right bytes", () => {
+test("a file put in place is linked to what was sent, no byte of it copied; the same bytes at two paths are two files; placed again, what is there stays; a placing cut between a link and its rename still ends with the right bytes", async () => {
   const made = station();
   const aws = join(made.data, "sessions", "chat", "chat:a", "workspace");
   writeFileSync(join(aws, "same-1.txt"), "the same bytes");
   writeFileSync(join(aws, "same-2.txt"), "the same bytes");
   writeFileSync(join(aws, "own.txt"), "bytes of its own");
   made.store.close();
-  const g = gather(made.data, made.db, HOME, true, join(made.data, "replica", "carrying"));
+  const g = await gather(made.data, made.db, HOME, true, join(made.data, "replica", "carrying"));
   const files = sent(g);
   const to = dataDir("to");
   const there = join(to, "sessions", "chat", "chat:a", "workspace");
   const blob = (name: string) => join(files, hashFile(join(aws, name)));
   const ino = (path: string) => statSync(path).ino;
-  assert.equal(place(to, g.index, files).missing, 0);
+  assert.equal((await place(to, g.index, files)).missing, 0);
   // (the first path of some bytes is linked to them; the second has its own file)
   assert.equal(ino(join(there, "own.txt")), ino(blob("own.txt")), "linked to what was sent");
   assert.equal(ino(join(there, "same-1.txt")), ino(blob("same-1.txt")));
@@ -1609,13 +1613,13 @@ test("a file put in place is linked to what was sent, no byte of it copied; the 
   writeFileSync(join(there, "same-1.txt"), "the same bytes");
   // placed again: what is there stays
   const inos = ["own.txt", "same-1.txt", "same-2.txt"].map((n) => ino(join(there, n)));
-  const again = place(to, g.index, files);
+  const again = await place(to, g.index, files);
   assert.equal(again.missing, 0);
   assert.deepEqual(["own.txt", "same-1.txt", "same-2.txt"].map((n) => ino(join(there, n))), inos);
   // cut between its link and its rename: the link left beside it, the file not there
   rmSync(join(there, "own.txt"));
   linkSync(blob("own.txt"), join(there, "own.txt.0a0b0c0d.carrying"));
-  assert.equal(place(to, g.index, files).missing, 0);
+  assert.equal((await place(to, g.index, files)).missing, 0);
   assert.equal(readFileSync(join(there, "own.txt"), "utf8"), "bytes of its own");
   assert.notEqual(ino(join(there, "own.txt")), ino(blob("own.txt")), "copied: what was sent is linked elsewhere already");
 });

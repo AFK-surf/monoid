@@ -15,7 +15,6 @@ import { Cloud } from "../src/cloud/state.ts";
 import { PeerBus, bytesOf, withBytes } from "../src/mesh/bus.ts";
 import type { ConfigFile } from "../src/ops/config.ts";
 import { Fibers } from "../src/ops/fibers.ts";
-import { gather, place } from "../src/replica/carry-worker.ts";
 import { hubConfig } from "../src/sessions/config.ts";
 import { newSession, say } from "../src/sessions/lifecycle.ts";
 import { Moves } from "../src/move/station.ts";
@@ -163,10 +162,6 @@ function world(profiles: Json[], o: { third?: boolean; slack?: boolean; cUp?: bo
         room: async () => ({ free: 1e15 }),
         hasGit: async () => true,
         lackMost: 50,
-        work: {
-          gather: async (dataDir, db, ws, home, scratch, _signal, agent, keys) => gather(dataDir, db, ws, home, scratch, agent ?? null, keys ?? null),
-          place: async (dataDir, index, from, made, aside, placed, projects) => place(dataDir, index, from, made ?? null, aside ?? null, placed ?? null, projects ?? false),
-        },
         hold: () => () => {},
         changed: () => st.onMove?.(),
       });
