@@ -1527,11 +1527,19 @@ class FakeHelperApp {
     this.#where = { path: env.STILLFAIL_HELPER_SOCKET!, token: env.STILLFAIL_HELPER_TOKEN! };
     await this.#listen();
   };
+  /// Never again once closed: a restart's listening again (`setImmediate`) or a launch still under way when the test
+  /// closed it would keep the socket open and the test's process with it, until the runner's limit.
   async #listen() {
+    if (this.#closed) return;
     const { path, token } = this.#where!;
     rmSync(path, { force: true });
     const server = net.createServer((conn) => this.#serve(conn, token));
     await new Promise<void>((resolve) => server.listen(path, resolve));
+    if (this.#closed) {
+      server.close();
+      rmSync(path, { force: true });
+      return;
+    }
     this.#server = server;
   }
   #stop() {
