@@ -11,10 +11,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { mock, test } from "node:test";
+import { Effect, Layer } from "effect";
 import { wall } from "../src/ops/fibers.ts";
 import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
 import { Readers } from "../src/read/pool.ts";
 import { Search } from "../src/search/search.ts";
+import { Previous, Paths, Readers as ReadersService, ReadersAndStore } from "../src/services.ts";
 import { LiveLocator } from "../src/sessions/live-locator.ts";
 import { Store, newMessage } from "../src/store/store.ts";
 import { MinuteReader } from "../src/usage/minute-reader.ts";
@@ -113,6 +115,20 @@ test("with the MoonBit program no reader thread is started: warmed, read, a card
     assert.equal(lines(readers).asked + lines(readers).told, 0);
   } finally {
     readers.close(); store.close(); e.restore(); after.mock.restore();
+    rmSync(data, { recursive: true, force: true });
+  }
+});
+
+test("the station's readers start no usage checker: made and warmed, it waits for a read that finds the statistics incomplete", { skip }, async () => {
+  const data = mkdtempSync(join(tmpdir(), "mb-idle-usage-check-"));
+  try {
+    const paths = Layer.succeed(Paths)({ data, app: data });
+    await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const readers = yield* ReadersService;
+      assert.equal((readers as unknown as { minutes: MinuteReader | null }).minutes, null, "no checker made");
+      assert.equal(running("usage-check"), 0, "no checker's program");
+    })).pipe(Effect.provide(ReadersAndStore.pipe(Layer.provide(Layer.succeed(Previous)({ pid: null, gone: Promise.resolve(), exited: Promise.resolve() })), Layer.provide(paths)))));
+  } finally {
     rmSync(data, { recursive: true, force: true });
   }
 });

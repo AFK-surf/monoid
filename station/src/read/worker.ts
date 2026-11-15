@@ -1,6 +1,6 @@
-// The station's reader thread, only where the MoonBit program is not (read/pool.ts `start`): what of the reads is
-// not in a table of ops (read/serve-reads.ts), a checkpoint and a card's queued pages. Every other read, and these too
-// where it is there, is the program's (read/pool.ts MOVED, HISTORY).
+// The station's reader thread, only where the MoonBit program is not (read/pool.ts `start`): a checkpoint, and nothing
+// else. Every read, a card's queued pages too, is the program's (read/pool.ts MOVED, HISTORY); how a reader thread
+// answered them before is the tests' (test/reference-worker.ts).
 import { serveReads } from "./serve-reads.ts";
 
 serveReads({});

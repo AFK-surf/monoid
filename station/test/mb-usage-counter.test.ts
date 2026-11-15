@@ -1,6 +1,6 @@
 // The usage counter's reads by the MoonBit program (station/mb src/usagecount, reader `--builder usage-counter`;
-// src/usage/counter-mb.ts) against counter.ts's own: the same scenarios on two stores of the same transcripts, one read
-// here (`mb: null`), one by the program, and every usage table of both compared row by row, each value as SQLite keeps
+// src/usage/counter-mb.ts) against the TypeScript reads it replaced (test/usage-counter-reference.ts): the same scenarios
+// on two stores of the same transcripts, one read by the reference, one by the program, and every usage table of both compared row by row, each value as SQLite keeps
 // it (quote(): 1 is not 1.0 is not '1'). Then the program's own life: started at its first read, let go when trimmed,
 // started again by the next.
 import assert from "node:assert/strict";
@@ -15,7 +15,8 @@ import { packFile } from "../src/sessions/archive.ts";
 import { Store } from "../src/store/store.ts";
 import { installCompactUsage } from "../src/store/usage-compact.ts";
 import { retireUsageIndexes } from "../src/store/usage-retire.ts";
-import { UsageCounter, claudeProject } from "../src/usage/counter.ts";
+import { UsageCounter } from "../src/usage/counter.ts";
+import { ReferenceUsageCounter, claudeProject } from "./usage-counter-reference.ts";
 import { keepUsage } from "../src/usage/module.ts";
 import { testClock } from "./hub-fakes.ts";
 
@@ -66,7 +67,7 @@ type World = {
   each(f: (store: Store) => void): void;
   /// A read by both (`only`: of those sessions alone): both counted the same and wrote the same.
   read(only?: string[], why?: string): Promise<number>;
-  ts: Store; mb: Store; tsCounter: UsageCounter; mbCounter: UsageCounter;
+  ts: Store; mb: Store; tsCounter: ReferenceUsageCounter; mbCounter: UsageCounter;
 };
 
 async function today() {
@@ -91,15 +92,9 @@ async function world(options: { compact?: boolean } = {}): Promise<World> {
     installCompactUsage(s.db, () => s.now());
     retireUsageIndexes(s.db);
   }
-  const counter = (store: Store, program: string | null) => {
-    const c = new UsageCounter({ store, config: () => ({ dataDir: data, profiles }), clock: time.clock, mb: program });
-    cleanup.unshift(() => c.stop());
-    return c;
-  };
-  const tsCounter = counter(ts, null);
-  const mbCounter = counter(mb, binary);
-  assert.equal(tsCounter.inProgram, false);
-  assert.equal(mbCounter.inProgram, true);
+  const tsCounter = new ReferenceUsageCounter({ store: ts, config: () => ({ dataDir: data, profiles }), clock: time.clock });
+  const mbCounter = new UsageCounter({ store: mb, config: () => ({ dataDir: data, profiles }), clock: time.clock, mb: binary });
+  cleanup.unshift(() => tsCounter.stop(), () => mbCounter.stop());
   return {
     data, time, now: () => ts.now(), ts, mb, tsCounter, mbCounter,
     each: (f) => { f(ts); f(mb); },
@@ -378,21 +373,16 @@ test("the program starts at its first read, is let go when trimmed or idle, and 
   assert.deepEqual(store.db.prepare("SELECT id FROM usage ORDER BY id").all().map((r) => r.id), ["x1", "x2", "x3"]);
 });
 
-test("in memory, or told not to, the counter reads here", () => {
+test("there is no counter without the program: in memory, or where it was not built, it says so", () => {
   const store = Store.open(":memory:", null);
   cleanup.push(() => { try { store.close(); } catch {} });
-  assert.equal(new UsageCounter({ store, config: () => ({ dataDir: "/nowhere", profiles: [] }), mb: "/bin/true" }).inProgram, false);
+  assert.throws(() => new UsageCounter({ store, config: () => ({ dataDir: "/nowhere", profiles: [] }), mb: "/bin/true" }), /not one in memory/);
   const data = mkdtempSync(join(tmpdir(), "mb-usage-off-"));
   dirs.push(data);
   const file = Store.open(join(data, "stillfail.db"), null);
   cleanup.push(() => { try { file.close(); } catch {} });
-  const was = process.env.STILLFAIL_USAGE_COUNTER_MB;
-  process.env.STILLFAIL_USAGE_COUNTER_MB = "0";
-  try {
-    assert.equal(new UsageCounter({ store: file, config: () => ({ dataDir: data, profiles: [] }), mb: "/bin/true" }).inProgram, false);
-  } finally {
-    if (was === undefined) delete process.env.STILLFAIL_USAGE_COUNTER_MB;
-    else process.env.STILLFAIL_USAGE_COUNTER_MB = was;
-  }
-  assert.equal(new UsageCounter({ store: file, config: () => ({ dataDir: data, profiles: [] }), mb: "/bin/true" }).inProgram, true);
+  assert.throws(() => new UsageCounter({ store: file, config: () => ({ dataDir: data, profiles: [] }), mb: null }), /MoonBit reader/);
+  // Made, it starts nothing before its first read.
+  const counter = new UsageCounter({ store: file, config: () => ({ dataDir: data, profiles: [] }), mb: "/bin/true" });
+  assert.equal(counter.trimIdle(), 0);
 });

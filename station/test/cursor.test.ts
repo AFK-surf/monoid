@@ -18,7 +18,7 @@ import { cursorCall, cursorOutput } from "../src/agents/live.ts";
 import type { AgentSession, OpenOptions, RuntimeEvent } from "../src/agents/runtime.ts";
 import { allLeft } from "../src/agents/runner.ts";
 import { readTimeline, transcriptPath } from "../src/read/transcript.ts";
-import { callsOf } from "../src/usage/counter.ts";
+import { callsOf } from "./usage-counter-reference.ts";
 
 const sdk = join(dirname(fileURLToPath(import.meta.url)), "fake", "cursor-sdk");
 // Inherited, and not to reach the agent.

@@ -13,7 +13,7 @@ import { segmentsFrom } from "../../src/read/packed.ts";
 import * as store from "../../src/read/store.ts";
 import type { JobRow, MessageRow, SessionRow, Store } from "../../src/read/store.ts";
 import { type ReadState, sessionPlaces, timelineOf, transcriptSources, type TimelineEntry } from "../../src/read/transcript.ts";
-import { readFrom } from "../../src/usage/counter.ts";
+import { readFrom } from "../usage-counter-reference.ts";
 import { agentHomeOf, memory } from "../../src/read/memory.ts";
 import { runtimeKind } from "../../src/agents/runtime.ts";
 import { STILLFAIL_SURFACE } from "../../src/read/store.ts";

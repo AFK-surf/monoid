@@ -24,7 +24,8 @@ import { marksOf, rowsMade } from "../../client/core-ts/src/station/rows-made.ts
 import { isDeepStrictEqual } from "node:util";
 import { FakeDriver, settle } from "./hub-fakes.ts";
 import { referenceAnswersSince } from "./card-answer-reference.ts";
-import { UsageCounter, claudeProject } from "../src/usage/counter.ts";
+import { UsageCounter } from "../src/usage/counter.ts";
+import { claudeProject } from "./usage-counter-reference.ts";
 import { keepCounted } from "../src/usage/module.ts";
 
 const viewer = { sub: "u", email: "a@x", name: "A", role: "member", workspace: "w", device: "d" };

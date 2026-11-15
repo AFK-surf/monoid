@@ -358,8 +358,6 @@ export const UsageLive = Layer.effectDiscard(
     const usage = yield* Effect.acquireRelease(
       Effect.sync(() => new UsageCounter({
         store, config: () => ({ dataDir: data, profiles: hubConfig(config.raw(), data).profiles }), clock: hub.clock,
-        // The turns its calls were made in: a reader's (each part of a transcript asked several statements here).
-        turns: async (session, from, until) => JSON.parse(await readers.read("usageTurns", { session, from, until }, "zh")),
       })),
       (u) => Effect.promise(() => u.stop()),
     );
