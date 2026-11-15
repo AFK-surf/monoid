@@ -93,6 +93,11 @@
   asked through Node, so the hub's tests keep theirs in a file (`test/hub-fakes.ts`). The program is built for every
   system a station runs on, so there is no actor in TypeScript to fall back to. A test's `settle()` waits for the
   program too (`actorsBusy`).
+- The background jobs (`src/jobs/jobs.ts`) run in that program too, as the pseudo-actor `#jobs` of the hub's (their
+  own where no hub gives one: a rig's, a test's): a start's checks, the queue for other stations' tasks and the screen
+  (`mb/src/admit`, its tests there), an end told and a service started again, a stop, a restart's taking up
+  (`mb/src/reader/jobs.mbt`). Node keeps what is the machine's, which the program asks for: a command started in a
+  group of its own and followed to its end, a signal, a log, the memory's pressure, the store.
 - Runtimes are drivers behind one seam (`src/agents/runtime.ts`): Claude Code a `claude -p` process per session;
   Codex one app-server per account, a thread per session, whose per-session settings go in `thread/start`'s config,
   never the process's environment; the others in `src/agents/`. A driver owns its child's stdin. Claude Code's output

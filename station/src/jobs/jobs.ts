@@ -9,37 +9,29 @@
 // child) by its exit file appearing (a watch on jobs/exit), with a look at its leader once a second for the one end
 // that writes no file (its shell killed) — Node has no exit event for a process that is not its child.
 import { randomBytes } from "node:crypto";
-import {
-  type FSWatcher, appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync,
-  statSync, watch, writeFileSync,
-} from "node:fs";
+import { type FSWatcher, existsSync, mkdirSync, readFileSync, rmSync, watch } from "node:fs";
+import { access, appendFile, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join, sep } from "node:path";
 import { Clock, Effect, Exit, FiberSet, Schedule, Scope } from "effect";
 import { startEnv } from "../ops/agent-env.ts";
+import { liveClock } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { niced } from "../ops/nice.ts";
 import { startLasting } from "../ops/processes.ts";
 import { platform } from "../platform/index.ts";
 import { type Sandbox, type SandboxPlace, sandboxCommand } from "../agents/sandbox.ts";
 import { outputAt, tail } from "../read/jobs.ts";
+import { ActorsProgram } from "../sessions/mb-actor.ts";
 import { type JobRow, type Json, type ProcessRow, type Store } from "../store/store.ts";
 import { endGroup, groupAlive, pidAlive, signalGroup, stillOurs } from "../ops/group.ts";
-import {
-  type Claim, HELD_LONG_MS, LOOK_MS, PERSON_IDLE_MS, type Pressure, type Started, type Waiting, type Why, claimsOf, overstaying, pick, place,
-  served,
-} from "./admit.ts";
+import type { Pressure, Why } from "./admit.ts";
 
 export { outputAt, tail };
 
-/// At most this many jobs of one session run at once.
-export const MAX_RUNNING = 20;
 /// How many lines job_log gives by default.
 export const LOG_LINES = 50;
 /// How many of a job's notices the pages get with it.
 const NOTICES_SHOWN = 20;
-/// A service that ran this long before it ended starts again at once; one that keeps ending waits longer each time.
-const STEADY_MS = 60_000;
-const MAX_PAUSE_MS = 60_000;
 /// A job stopped from the pages is told to its agent only if the agent was at work this lately: one idle longer is not
 /// woken for it (the job's state shows it stopped when the agent next looks).
 const AWAKE_MS = 5 * 60_000;
@@ -158,18 +150,12 @@ export type JobsOptions = {
   clock?: Clock.Clock;
   /// What the queue measures (the machine's own by default).
   machine?: Machine;
+  /// The program the hub's actors run in (sessions/hub.ts `program`): the jobs' too. None: one of their own.
+  program?: ActorsProgram | null;
 };
 
-type Running = {
-  pgid: number;
-  /// Stopped by request: its end is not news, nor restarted.
-  stopping: boolean;
-  /// Its leader (the wrapper shell) is gone.
-  gone: Promise<void>;
-  /// Its end is taken in (off `running`, its record written).
-  settled: Promise<void>;
-  settle: () => void;
-};
+/// What the program knows the jobs' shell by (as it knows an actor by its session).
+const JOBS_KEY = "#jobs";
 
 const hex = (n: number) => randomBytes(n).toString("hex");
 
@@ -230,7 +216,7 @@ export function readExit(path: string): number | null {
 const SCREEN_FILE = "screen.json";
 
 /// The claims an earlier station left holding the screen (what it wrote of them: none when there is nothing to read).
-function heldClaims(path: string): Claim[] {
+function heldClaims(path: string): Json[] {
   try {
     const kept: unknown = JSON.parse(readFileSync(path, "utf8"));
     if (!Array.isArray(kept)) return [];
@@ -242,13 +228,6 @@ function heldClaims(path: string): Claim[] {
   } catch {
     return [];
   }
-}
-
-/// The chat a session key is (another station's task: that station's chat, `remote:<workspace>:<station>:<key>`),
-/// as an agent reads it (chat_read takes the key).
-export function chatOf(session: string): string {
-  const remote = /^remote:[^:]+:([^:]+):(.+)$/.exec(session);
-  return remote !== null ? `chat ${remote[2]} on station ${remote[1].slice(0, 12)}` : `chat ${session}`;
 }
 
 /// How a job is named to its agent.
@@ -264,13 +243,22 @@ export function movedSaid(why: string, job: Pick<JobRow, "name" | "port"> & { id
   return error === null ? `${why}; ${what} was started again.` : `${why}; ${what} could not be started again: ${error}`;
 }
 
-/// How long a service that ended waits before it starts again: none after a steady run, else 1 s doubling with each
-/// quick end, 60 s at most.
-export function restartPause(restarts: number, ranMs: number): number {
-  if (ranMs >= STEADY_MS) return 0;
-  return Math.min(1000 * 2 ** Math.min(Math.max(restarts, 0), 6), MAX_PAUSE_MS);
-}
+/// A job's command as Node runs it, until its end is taken in by the program.
+type Running = {
+  pgid: number;
+  /// Its leader (the wrapper shell) is gone.
+  gone: Promise<void>;
+  /// Its end is taken in (the program answered its `exited`).
+  settled: Promise<void>;
+  settle: () => void;
+};
 
+/// The station's background jobs. What they are and do (a start's checks, the queue, the screen, an end told and a
+/// service started again, a stop, a restart's taking up) is the MoonBit program's (station/mb's reader `--sessions`,
+/// mb/src/reader/jobs.mbt and admit.mbt), as the pseudo-actor `#jobs` of the program the hub's actors run in (its own
+/// where none is given: a rig's, a test's). This is what of them is the machine's, which the program asks for: a
+/// command started in a group of its own and followed to its end, a signal sent, a log read, the memory and a person
+/// at the machine looked at, the store; and what the station asks of them, said to the program.
 export class Jobs {
   readonly store: Store;
   readonly dir: string;
@@ -282,34 +270,19 @@ export class Jobs {
   /// This station's sandboxes, by name (config.json's, sessions/agents.ts): where a sandbox's task runs.
   private sandboxes: (name: string) => Sandbox | null = () => null;
   private running = new Map<string, Running>();
-  /// Shutting down: jobs go on without the station and stay recorded as running, to be taken up by the next one.
   private closing = false;
   private scope: Scope.Closeable;
-  /// Runs an effect as a fiber of these jobs' (a service's restart pause, a followed job's end): they end with it.
+  /// Runs an effect as a fiber of these jobs' (a followed job's end): they end with it.
   private run: (effect: Effect.Effect<void>) => Promise<void>;
   /// Runs an effect on the jobs' clock but apart from them (a stop's grace goes on through a shutdown).
   private timed: (effect: Effect.Effect<void>) => Promise<void>;
   /// What waits for an exit file to appear, by job id; the watch on jobs/exit that tells them.
   private exitHeard = new Map<string, () => void>();
   private exitWatch: FSWatcher | null = null;
-  /// The queue (jobs/admit.ts): what it measures, what the system last said of its memory, when each session's task
-  /// last started, and why the first waiting waits.
   private machine: Machine;
-  private pressure: Pressure | null = null;
-  private lastOf = new Map<string, number>();
-  private why: Why | null = null;
-  /// The queue looks at the machine (every LOOK_MS) while a task waits, on the jobs' clock.
-  private looking = false;
-  private queueNow: () => number;
-  /// The commands' claims on the screen (`stillfail-job screen`), in the order they asked. Those that hold it are kept
-  /// in jobs/screen.json too: their commands go on through a restart, and the next station knows they have it.
-  private claims: Claim[] = [];
-  /// Whether a person uses the screen (the machine's input idle less than PERSON_IDLE_MS, as last read), and whether it
-  /// is being read.
-  private person = false;
-  private readingPerson = false;
-  /// The claims whose agents were told they had held the screen long while others waited (job, pid, since).
-  private toldLong = new Set<string>();
+  /// The program they run in, and whether it is theirs alone (no hub gave one).
+  private program: ActorsProgram;
+  private own: boolean;
 
   /// Where this station's sandboxes are found (sessions/agents.ts).
   setSandboxes(find: (name: string) => Sandbox | null): void {
@@ -339,8 +312,20 @@ export class Jobs {
     const clock = options.clock;
     this.timed = (effect) => Effect.runPromise(clock ? effect.pipe(Effect.provideService(Clock.Clock, clock)) : effect);
     this.machine = options.machine ?? liveMachine;
-    this.queueNow = clock ? () => clock.currentTimeMillisUnsafe() : () => this.store.now();
-    this.claims = heldClaims(join(dir, SCREEN_FILE));
+    const given = options.program ?? null;
+    const program = given ?? ActorsProgram.open(options.data, clock ?? liveClock);
+    // (the program is built for every system the station runs on: a checkout that did not build it runs no job)
+    if (program === null) throw new Error("the station's MoonBit program is not built here (station/mb: build.sh): no job can run");
+    this.program = program;
+    this.own = given === null;
+    program.shell({ key: JOBS_KEY, runtime: "claude", asked: (f, args) => this.asked(f, args), told: (f, args) => this.told(f, args) });
+    // The claims an earlier station left holding the screen: theirs still.
+    void this.call("claims", [heldClaims(join(dir, SCREEN_FILE))]);
+  }
+
+  /// Asks the program's jobs `method`.
+  private async call(method: string, args: Json[]): Promise<Json> {
+    return await this.program.call(JOBS_KEY, method, args);
   }
 
   /// Where `stillfail-job notify` posts, once the endpoint listens.
@@ -373,11 +358,7 @@ export class Jobs {
   /// A remote task's notices are kept by its job and returned to the source station by Remote, not told here.
   private tell(job: JobRow, text: string): void {
     if (job.sessionKey.startsWith("remote:")) return this.remoteChanged(job.id);
-    try {
-      this.notify(job.sessionKey, text);
-    } catch (error) {
-      log.warn("jobs", "job notice not given", { session: job.sessionKey, error: (error as Error).message });
-    }
+    this.say(job.sessionKey, text);
   }
 
   /// A word of the jobs' for a session's agent from outside them (its chat moved here with jobs started again,
@@ -390,43 +371,109 @@ export class Jobs {
     }
   }
 
+  /// What the program asks of the station for its jobs.
+  private async asked(f: string, args: Json[]): Promise<Json> {
+    if (f.startsWith("store.")) {
+      const method = f.slice("store.".length);
+      const store = this.store as unknown as Record<string, (...a: Json[]) => Json>;
+      if (typeof store[method] !== "function") throw new Error(`no store method ${method}`);
+      return store[method]!(...args) ?? null;
+    }
+    const [a, b, c, d, e, g, h, i, k] = args;
+    switch (f) {
+      case "node.isDir":
+        return await stat(a).then((s) => s.isDirectory(), () => false);
+      case "node.newJob":
+        return this.made(a, b, c, d, e, g, h, i, k);
+      case "node.spawn":
+        return await this.spawn(this.store.getJob(a)!, b === true, c ?? {});
+      case "node.notify":
+        this.say(a, b);
+        return null;
+      case "node.remoteChanged":
+        this.remoteChanged(a);
+        return null;
+      case "node.pressure":
+        return await this.machine.pressure().catch(() => null);
+      case "node.inputIdle":
+        return this.machine.inputIdle === undefined ? null : await this.machine.inputIdle();
+      case "node.pidAlive":
+        return pidAlive(a);
+      case "node.keepClaims":
+        await this.keepClaims(a);
+        return null;
+      case "node.tail":
+        return tail(a, b);
+      case "node.lost":
+        return await access(this.lostFile(a)).then(() => true, () => false);
+      case "node.append":
+        await appendFile(a, b);
+        return null;
+      case "node.signal":
+        signalGroup(a, b);
+        return null;
+      case "node.grace": {
+        const running = this.running.get(a);
+        if (running) await this.timed(this.grace(running));
+        return null;
+      }
+      case "node.endLeftBehind": {
+        const entry = this.leftBehind(a);
+        if (entry) {
+          if (await stillOurs(entry)) {
+            log.warn("jobs", "ending a job an earlier station left running", { job: b, pgid: entry.pgid });
+            await this.timed(endGroup(entry.pgid, STOP_GRACE_MS));
+          }
+          this.store.forgetProcess(entry.pgid);
+        }
+        return null;
+      }
+      case "node.recordedGroups": {
+        const recorded = this.store.listProcesses().filter((p) => p.runtime === "job");
+        // Each group asked after together, none waited on (stillOurs starts a process).
+        return await Promise.all(recorded.map(async (p) => ({ pgid: p.pgid, label: p.label, ours: await stillOurs(p) })));
+      }
+      case "node.follow":
+        this.follow(this.store.getJob(a)!, b);
+        return null;
+      case "node.readExit":
+        return await readFile(this.exitFile(a), "utf8").then((t) => /^[+-]?\d+$/.test(t.trim()) ? Number(t.trim()) : null, () => null);
+    }
+    throw new Error(`no jobs' ask ${f}`);
+  }
+
+  /// What the program tells the station of its jobs, needing no answer.
+  private told(f: string, args: Json[]): void {
+    if (f === "log") {
+      const [level, message, fields] = args;
+      (level === "warn" ? log.warn : level === "error" ? log.error : log.info)("jobs", message, fields ?? {});
+    } else if (f === "node.endGroup") void this.timed(endGroup(args[0], STOP_GRACE_MS));
+  }
+
   /// Starts a job for `session`: `command` run by sh in `cwd`; a web service when it has a port. `checked`: its caller
-  /// looked at `cwd` already (ops/places.ts), which is not looked at again here (in a folder macOS protects, that would
-  /// hold the station's thread).
-  start(session: string, name: string, command: string, cwd: string, port: number | null, watch: boolean, checked = false): JobRow {
+  /// looked at `cwd` already (ops/places.ts), which is not looked at again here.
+  start(session: string, name: string, command: string, cwd: string, port: number | null, watch: boolean, checked = false): Promise<JobRow> {
     return this.startId(session, name, command, cwd, port, watch, null, checked);
   }
 
   /// A remote task supplies a stable id. Its caller serializes starts; an existing record is never spawned again.
-  /// `queue`: it waits in the station's queue (jobs/admit.ts) when there is no room for it now; `screen`: it uses the
+  /// `queue`: it waits in the station's queue (jobs/admit.mbt) when there is no room for it now; `screen`: it uses the
   /// screen, one such at a time. `sandbox`: a sandbox's task, run in the chat's sandbox there (agents/sandbox.ts),
   /// never queued here: it takes nothing of this machine's.
-  startId(
+  async startId(
     session: string, name: string, command: string, cwd: string, port: number | null, watch: boolean, id: string | null, checked = false,
     queue: { screen: boolean; small?: boolean } | null = null, sandbox: SandboxPlace | null = null,
+  ): Promise<JobRow> {
+    const job = await this.call("startId", [session, name, command, cwd, port, watch, id, checked, queue, sandbox]);
+    if (job === null) throw new Error("the station is stopping");
+    return job as JobRow;
+  }
+
+  /// A job's record, made and kept (what the program checked it may be).
+  private made(
+    session: string, name: string, command: string, cwd: string, port: number | null, watch: boolean, id: string | null,
+    queue: { screen: boolean; small?: boolean } | null, sandbox: SandboxPlace | null,
   ): JobRow {
-    if (id !== null) {
-      const job = this.store.getJob(id);
-      if (job) return job;
-    }
-    if (command.trim() === "") throw new Error("command is empty");
-    if (queue?.screen && queue.small) throw new Error("a small task cannot use the screen");
-    let isDir = checked;
-    try {
-      isDir ||= statSync(cwd).isDirectory();
-    } catch {}
-    if (!isDir) throw new Error(`no such directory: ${cwd}`);
-    if (port !== null && port < 1024) throw new Error("a service's port is 1024 or above");
-    if (watch && port !== null) throw new Error("a watch is a job, not a web service: give it no port");
-    if (sandbox !== null && (port !== null || queue !== null)) throw new Error("a sandbox's task is neither a service nor queued here");
-    if (this.store.runningJobsAtLeast(session, MAX_RUNNING)) {
-      throw new Error(`this session runs ${MAX_RUNNING} jobs already; stop some first`);
-    }
-    if (port !== null) {
-      // A service holds its port until it is stopped (between its restarts too).
-      const taken = this.store.jobAtPort(port);
-      if (taken) throw new Error(`port ${port} is ${named(taken)}'s already`);
-    }
     const jobId = id ?? `job_${hex(4)}`;
     const shownName = name.trim() === "" ? (command.trim().split(/\s+/)[0] || "job") : [...name.trim()].slice(0, 60).join("");
     const job: JobRow = {
@@ -450,242 +497,40 @@ export class Jobs {
       ...(sandbox !== null ? { sandbox } : {}),
     };
     this.store.insertJob(job);
-    if (queue !== null) {
-      // Started now if there is room (the memory as last looked at) and it is next, else when it is.
-      this.startNext();
-      const now = this.store.getJob(job.id) ?? job;
-      if (now.queued === true) log.info("jobs", "job queued", { job: job.id, session, name: job.name, why: this.why });
-      return now;
-    }
-    try {
-      this.spawn(job, false);
-    } catch (error) {
-      this.store.jobEnded(job.id, "failed", null);
-      throw error;
-    }
-    log.info("jobs", "job started", { job: job.id, session, name: job.name, port: job.port });
-    return this.store.getJob(job.id) ?? job;
-  }
-
-  // ── the queue (jobs/admit.ts) ──
-
-  /// The tasks waiting, oldest first, and the queue's running.
-  private line(): { waiting: Waiting[]; running: Started[] } {
-    const waiting: Waiting[] = [];
-    const running: Started[] = [];
-    for (const j of this.store.remoteQueueJobs()) {
-      if (j.queued === true) waiting.push({ id: j.id, session: j.sessionKey, screen: j.screen === true, queuedAt: j.startedAt, ...(j.small ? { small: true } : {}) });
-      else running.push({ id: j.id, screen: j.screen === true, ...(j.small ? { small: true } : {}) });
-    }
-    waiting.sort((a, b) => a.queuedAt - b.queuedAt);
-    return { waiting, running };
-  }
-
-  /// What the queue would start now, and why the first waiting waits else (kept for `queueOf`).
-  private chosen(pressure: Pressure | null): ReturnType<typeof pick> {
-    const { waiting, running } = this.line();
-    const chosen = pick(waiting, running, { pressure, person: this.person }, (s) => this.lastOf.get(s) ?? null, claimsOf(this.claims));
-    this.why = chosen !== null && "wait" in chosen ? chosen.wait : null;
-    return chosen;
-  }
-
-  /// A task of the queue starts: noted as its session's last. A small one is told to use one CPU; any other is told
-  /// nothing of the CPUs (jobs/admit.ts), however many run beside it.
-  private admitted(job: JobRow): Record<string, string> {
-    this.lastOf.set(job.sessionKey, this.queueNow());
-    return job.small ? { STILLFAIL_CPUS: "1", MAKEFLAGS: "-j1", CARGO_BUILD_JOBS: "1", CMAKE_BUILD_PARALLEL_LEVEL: "1" } : {};
-  }
-
-  /// While a task waits: every LOOK_MS the memory asked for, the next started if there is room.
-  private watchQueue(): void {
-    if (this.looking || this.closing) return;
-    this.looking = true;
-    const waiting = () => !this.closing && this.line().waiting.length > 0;
-    const look = Effect.promise(async () => {
-      try {
-        this.pressure = await this.machine.pressure();
-      } catch {
-        this.pressure = null;
-      }
-      await this.lookPerson();
-      this.startNext();
-    });
-    void this.run(
-      Effect.sleep(LOOK_MS).pipe(
-        Effect.andThen(Effect.andThen(look, Effect.sync(waiting)).pipe(Effect.repeat({ schedule: Schedule.spaced(LOOK_MS), until: (more) => !more }))),
-        Effect.ensuring(Effect.sync(() => {
-          this.looking = false;
-          // One that came as the looks ended is watched anew.
-          if (waiting()) this.watchQueue();
-          else this.why = null;
-        })),
-      ),
-    ).catch(() => undefined);
+    return job;
   }
 
   /// What the station's memory watch (jobs/memory.ts) read of the memory on its own look: what the queue goes by as a
   /// task asks to start, the queue looking at it itself only while one waits.
   memorySeen(pressure: Pressure | null): void {
-    this.pressure = pressure;
-  }
-
-  /// Starts what the queue picks now. A small task has its own slot beside the rest.
-  /// Then the screen given out to the commands that ask for it, if no task has it now.
-  private startNext(): void {
-    if (this.closing) return;
-    this.prune();
-    this.admitNext();
-    const { waiting, running } = this.line();
-    if (waiting.some((w) => w.small) && !running.some((r) => r.small)) this.admitNext();
-    this.serve();
-    this.tellLong();
-  }
-
-  /// Reads whether a person uses the screen (one read at a time; none where the machine does not say).
-  private async lookPerson(): Promise<void> {
-    if (this.readingPerson || this.machine.inputIdle === undefined) return;
-    this.readingPerson = true;
-    try {
-      const idle = await this.machine.inputIdle();
-      this.person = idle !== null && idle < PERSON_IDLE_MS;
-    } catch {
-      this.person = false;
-    } finally {
-      this.readingPerson = false;
-    }
-  }
-
-  /// The agents of the commands that have held the screen HELD_LONG_MS while others wait told so, once each.
-  private tellLong(): void {
-    for (const c of overstaying(this.claims, this.store.now())) {
-      const key = `${c.job} ${c.pid} ${c.since ?? c.at}`;
-      if (this.toldLong.has(key)) continue;
-      this.toldLong.add(key);
-      const job = this.store.getJob(c.job);
-      if (!job) continue;
-      const waiting = this.claims.filter((w) => !w.held).length;
-      const text = `${named(job)} has held this machine's screen ${Math.round((this.store.now() - (c.since ?? c.at)) / 60_000)} min (its \`stillfail-job screen\` command, pid ${c.pid}) while ${waiting} other command${waiting === 1 ? "" : "s"} wait for it. The screen is for work done in minutes (screenshots, a scripted run, a simulator's tests); a window kept up for a person (a virtual machine, a simulator to look at) is \`stillfail-job show <command>\`'s, which holds nothing. Finish with the screen, or put the window up again that way.`;
-      if (job.sessionKey.startsWith("remote:")) this.store.addJobNotice(job.id, text);
-      else this.tell(job, text);
-      log.info("jobs", "a command told it holds the screen long", { job: job.id, pid: c.pid, waiting });
-    }
-  }
-
-  private admitNext(): void {
-    const chosen = this.chosen(this.pressure);
-    if (chosen !== null && "wait" in chosen) this.watchQueue();
-    if (chosen === null || !("start" in chosen)) return;
-    const job = this.store.getJob(chosen.start.id);
-    if (!job || job.state !== "running" || job.queued !== true) return;
-    try {
-      this.spawn(job, false, this.admitted(job));
-      log.info("jobs", "queued job started", { job: job.id, session: job.sessionKey, name: job.name });
-    } catch (error) {
-      const e = (error as Error).message;
-      log.warn("jobs", "queued job not started", { job: job.id, error: e });
-      try {
-        appendFileSync(job.log, `[still.fail] could not start: ${e}\n`);
-      } catch {}
-      this.store.jobEnded(job.id, "failed", null);
-      this.tell(job, `${named(job)} could not be started: ${e}`);
-    }
-    if (this.line().waiting.length > 0) this.watchQueue();
+    void this.call("memorySeen", [pressure]);
   }
 
   /// A waiting task's place in line (1: the next), what blocks it, and what the queue measured (the memory's pressure);
   /// null for one not waiting. If it could start but another is ahead, `why` is null. Waiting for the screen, who has
-  /// it (screenHolder).
-  queueOf(id: string): { place: number; why: Why | null; holder?: string; decision: { memoryPressure: Pressure | null } } | null {
-    const job = this.store.getJob(id);
-    if (!job || job.state !== "running" || job.queued !== true) return null;
-    const { waiting, running } = this.line();
-    const task = waiting.find((w) => w.id === id);
-    if (task === undefined) return null;
-    const p = place(waiting.filter((w) => !!w.small === !!task.small), id, (s) => this.lastOf.get(s) ?? null);
-    if (p === null) return null;
-    const selected = pick([task], running, { pressure: this.pressure, person: this.person }, (s) => this.lastOf.get(s) ?? null, claimsOf(this.claims));
-    const why = selected !== null && "wait" in selected ? selected.wait : null;
-    const holder = why === "screen" ? this.screenHolder(id) : null;
-    return { place: p, why, ...(holder !== null ? { holder } : {}), decision: { memoryPressure: this.pressure } };
+  /// it.
+  async queueOf(id: string): Promise<{ place: number; why: Why | null; holder?: string; decision: { memoryPressure: Pressure | null } } | null> {
+    return await this.call("queueOf", [id]);
   }
 
   /// Who has the screen, for one waiting for it (not `except`, a job of its own): the task's name, the chat it is
   /// for and since when; a person using it; none when it is free.
-  screenHolder(except: string | null = null): string | null {
-    const now = this.store.now();
-    const ago = (at: number) => `${Math.max(1, Math.round((now - at) / 60_000))} min`;
-    const of = (id: string, since: number) => {
-      const job = this.store.getJob(id);
-      if (!job) return null;
-      // (no quotes: stillfail-job reads it out of the answer as it is)
-      return `${job.name.replace(/"/g, "'")} (${job.id}) of ${chatOf(job.sessionKey)}, for ${ago(since)}`;
-    };
-    for (const c of this.claims) {
-      if (c.held && c.job !== except) {
-        const said = of(c.job, c.since ?? c.at);
-        if (said !== null) return said;
-      }
-    }
-    for (const r of this.line().running) {
-      if (r.screen && r.id !== except) {
-        const job = this.store.getJob(r.id);
-        if (job) return of(r.id, job.startedAt);
-      }
-    }
-    return this.person ? "a person using this machine" : null;
+  async screenHolder(except: string | null = null): Promise<string | null> {
+    return await this.call("screenHolder", [except]);
   }
-
-  // ── the screen (jobs/admit.ts: one task's at a time) ──
 
   /// `stillfail-job screen`: process `pid` of the job with this token asks for the screen (`take`, again each second
   /// while it waits) or gives it back (`give`). Whether it has it now, or where it is in line and who has it.
-  screenAsked(token: string, ask: "take" | "give", pid: number): { screen: "yours" } | { screen: "waiting"; place: number; who: string | null } | { screen: "given" } {
-    const job = this.store.jobByToken(token);
-    if (!job) throw new Error("unknown job token");
-    if (job.state !== "running" || job.queued === true) throw new Error(`${named(job)} is not running`);
-    const mine = (c: Claim) => c.job === job.id && c.pid === pid;
-    if (ask === "give") {
-      this.claims = this.claims.filter((c) => !mine(c));
-      this.keepClaims();
-      this.startNext();
-      return { screen: "given" };
-    }
-    if (!pidAlive(pid)) throw new Error(`no process ${pid} on this machine`);
-    if (!this.claims.some(mine)) this.claims.push({ job: job.id, pid, at: this.store.now(), held: false });
-    // (whether a person uses it, read for the next ask: they come each second while one waits)
-    void this.lookPerson();
-    this.startNext();
-    const waiting = this.claims.filter((c) => !c.held);
-    const at = waiting.findIndex(mine);
-    return at < 0 ? { screen: "yours" } : { screen: "waiting", place: at + 1, who: this.screenHolder(job.id) };
-  }
-
-  /// The claims whose command is gone (killed before it gave the screen back) or whose job is over, dropped.
-  private prune(): void {
-    const kept = this.claims.filter((c) => {
-      const job = this.store.getJob(c.job);
-      return job?.state === "running" && job.queued !== true && pidAlive(c.pid);
-    });
-    if (kept.length === this.claims.length) return;
-    this.claims = kept;
-    this.keepClaims();
-  }
-
-  /// The screen given to the commands waiting for it, if no task has it (jobs/admit.ts `served`).
-  private serve(): void {
-    const screenJobs = new Set(this.line().running.filter((r) => r.screen).map((r) => r.id));
-    const before = this.claims.filter((c) => c.held).length;
-    this.claims = served(this.claims, screenJobs, this.store.now(), this.person);
-    if (this.claims.filter((c) => c.held).length !== before) this.keepClaims();
+  async screenAsked(token: string, ask: "take" | "give", pid: number): Promise<{ screen: "yours" } | { screen: "waiting"; place: number; who: string | null } | { screen: "given" }> {
+    return await this.call("screenAsked", [token, ask, pid]);
   }
 
   /// The claims that hold the screen, written down for the next station (in place: a reader never sees half of it).
-  private keepClaims(): void {
+  private async keepClaims(held: Json[]): Promise<void> {
     const path = join(this.dir, SCREEN_FILE);
-    const held = this.claims.filter((c) => c.held).map(({ job, pid, at, since }) => ({ job, pid, at, ...(since === undefined ? {} : { since }) }));
     try {
-      writeFileSync(`${path}.${process.pid}`, JSON.stringify(held) + "\n");
-      renameSync(`${path}.${process.pid}`, path);
+      await writeFile(`${path}.${process.pid}`, JSON.stringify(held) + "\n");
+      await rename(`${path}.${process.pid}`, path);
     } catch (error) {
       log.warn("jobs", "who has the screen not written down", { error: (error as Error).message });
     }
@@ -704,18 +549,33 @@ export class Jobs {
   private track(id: string, pgid: number, gone: Promise<void>): Running {
     let settle = () => {};
     const settled = new Promise<void>((resolve) => (settle = resolve));
-    const running: Running = { pgid, stopping: false, gone, settled, settle };
+    const running: Running = { pgid, gone, settled, settle };
     this.running.set(id, running);
     return running;
   }
 
-  /// Runs a job's command, and follows it to its end. `extra`: variables it is given besides (the queue's CPUs).
-  private spawn(job: JobRow, restarted: boolean, extra: Record<string, string> = {}): void {
+  /// Its end said to the program, which takes it in (its record, its agent told, a service started again).
+  private ended(id: string, running: Running, code: number | null, ranMs: number): Effect.Effect<void> {
+    return Effect.promise(async () => {
+      try {
+        await this.call("exited", [id, running.pgid, code, ranMs]);
+      } catch (error) {
+        log.warn("jobs", "a job's end not taken in", { job: id, error: (error as Error).message });
+      } finally {
+        if (this.running.get(id) === running) this.running.delete(id);
+        running.settle();
+      }
+    });
+  }
+
+  /// Runs a job's command, and follows it to its end: its group. `extra`: variables it is given besides (the queue's
+  /// CPUs).
+  private async spawn(job: JobRow, restarted: boolean, extra: Record<string, string> = {}): Promise<number> {
     // Made (or found) here, so a log that cannot be written is said now; the shell opens it itself (below).
-    closeSync(openSync(job.log, "a"));
+    await (await open(job.log, "a")).close();
     const exit = this.exitFile(job.id);
-    rmSync(exit, { force: true });
-    rmSync(this.lostFile(job.id), { force: true });
+    await rm(exit, { force: true });
+    await rm(this.lostFile(job.id), { force: true });
     // With the variables the station's owners set for what it starts for its agents (ops/agent-env.ts).
     const env: NodeJS.ProcessEnv = { ...platform.prependPath(startEnv(), join(this.dir, "bin")), ...extra };
     env.STILLFAIL_JOB_ID = job.id;
@@ -753,11 +613,8 @@ export class Jobs {
     const exited = new Promise<number | null>((resolve) => child.once("exit", (code) => resolve(code)));
     const running = this.track(job.id, pgid, exited.then(() => undefined));
     const began = this.store.now();
-    void this.run(
-      Effect.promise(() => exited).pipe(
-        Effect.flatMap((code) => Effect.sync(() => this.ended(job.id, pgid, code, running.stopping, this.store.now() - began))),
-      ),
-    ).catch(() => undefined);
+    void this.run(Effect.promise(() => exited).pipe(Effect.flatMap((code) => this.ended(job.id, running, code, this.store.now() - began)))).catch(() => undefined);
+    return pgid;
   }
 
   /// The end of a job an earlier station started (not this one's child): its exit file appearing (heard from the watch
@@ -813,83 +670,9 @@ export class Jobs {
     const id = job.id;
     void this.run(
       this.leaderGone(id, pgid).pipe(
-        Effect.flatMap(() =>
-          Effect.sync(() => {
-            heard();
-            // What its shell wrote, if it did.
-            this.ended(id, pgid, readExit(this.exitFile(id)), running.stopping, this.store.now() - began);
-          }),
-        ),
-      ),
-    ).catch(() => undefined);
-  }
-
-  /// A job's command ended: said to its agent, and a service started again. `pgid`: its group, when it ended just now
-  /// (what it started itself goes with it).
-  private ended(id: string, pgid: number | null, code: number | null, stopped: boolean, ranMs: number): void {
-    // The station stopping: left as it is on record, for the next one to find it ended (its exit file says how).
-    if (this.closing) return;
-    const running = this.running.get(id);
-    this.running.delete(id);
-    try {
-      this.endedRecord(id, pgid, code, stopped, ranMs);
-    } finally {
-      running?.settle();
-    }
-    // Room for the next task of the queue, maybe.
-    this.startNext();
-  }
-
-  private endedRecord(id: string, pgid: number | null, code: number | null, stopped: boolean, ranMs: number): void {
-    if (pgid !== null) {
-      this.store.forgetProcess(pgid);
-      // What it started itself (a server forked off) goes with it.
-      signalGroup(pgid, "SIGTERM");
-    }
-    const job = this.store.getJob(id);
-    if (!job) return;
-    if (stopped) {
-      this.store.jobEnded(id, "stopped", code);
-      this.remoteChanged(id);
-      return;
-    }
-    const said = code !== null ? `exit code ${code}` : "a signal";
-    const lines = tail(job.log, 20);
-    const last = lines === "" ? "" : `\nIts last lines:\n\`\`\`\n${lines}\n\`\`\``;
-    if (job.port === null) {
-      // The connection to its sandbox lost, not the job ending: started again once there.
-      if (existsSync(this.lostFile(id)) && job.restarts === 0) {
-        this.store.jobEnded(id, "exited", code);
-        this.tell(job, `${named(job)} lost the connection to the sandbox it ran in (what it was running was ended); the station starts it again once.${last}`);
-        log.info("jobs", "job's sandbox connection lost; starting it again", { job: id });
-        this.spawn(this.store.getJob(id)!, true);
-        return;
-      }
-      this.store.jobEnded(id, "exited", code);
-      this.tell(job, `${named(job)} ended with ${said}.${last}`);
-      return;
-    }
-    // A service is kept up: at once after a steady run, else after a pause that grows with each quick end.
-    const pause = restartPause(job.restarts, ranMs);
-    this.store.jobEnded(id, "exited", code);
-    this.tell(job, `${named(job)} ended with ${said}; the station starts it again${pause === 0 ? "" : ` in ${pause / 1000} s`}.${last}`);
-    void this.run(
-      Effect.sleep(pause).pipe(
-        Effect.andThen(
-          Effect.sync(() => {
-            // Stopped meanwhile (job_stop, the session deleted): not again.
-            const now = this.store.getJob(id);
-            if (!now || now.state !== "exited" || this.closing) return;
-            try {
-              this.spawn(now, true);
-            } catch (error) {
-              const e = (error as Error).message;
-              log.warn("jobs", "service not started again", { job: id, error: e });
-              this.store.jobEnded(id, "failed", null);
-              this.tell(now, `${named(now)} could not be started again: ${e}`);
-            }
-          }),
-        ),
+        Effect.andThen(Effect.sync(() => heard())),
+        // What its shell wrote, if it did.
+        Effect.andThen(Effect.suspend(() => this.ended(id, running, readExit(this.exitFile(id)), this.store.now() - began))),
       ),
     ).catch(() => undefined);
   }
@@ -914,28 +697,8 @@ export class Jobs {
 
   /// Stops a job: its process group asked to end, then made to.
   async stop(id: string): Promise<JobRow> {
-    const job = this.store.getJob(id);
-    if (!job) throw new Error(`no job ${id}`);
-    const running = this.running.get(id);
-    if (running) {
-      running.stopping = true;
-      signalGroup(running.pgid, "SIGTERM");
-      await this.timed(this.grace(running));
-    } else if (job.state === "running" || job.state === "exited") {
-      // A service waiting to start again, or one on record only: it stays stopped. One an earlier station left running
-      // and this one does not follow (it started out of its workspace, so took nothing up): its group is ended too.
-      const entry = job.pgid !== null ? this.leftBehind(job.pgid) : null;
-      if (entry) {
-        if (await stillOurs(entry)) {
-          log.warn("jobs", "ending a job an earlier station left running", { job: job.id, pgid: entry.pgid });
-          await this.timed(endGroup(entry.pgid, STOP_GRACE_MS));
-        }
-        this.store.forgetProcess(entry.pgid);
-      }
-      this.store.jobEnded(id, "stopped", job.exitCode);
-      this.remoteChanged(id);
-    }
-    return this.store.getJob(id) ?? job;
+    const job = await this.call("stop", [id]);
+    return (job ?? this.store.getJob(id)) as JobRow;
   }
 
   /// The record of a job's group an earlier station started (not one this station follows).
@@ -967,9 +730,7 @@ export class Jobs {
         log.warn("jobs", "job not stopped", { job: job.id, error: (error as Error).message });
         continue;
       }
-      try {
-        appendFileSync(job.log, `\n[still.fail] stopped: ${why}\n`);
-      } catch {}
+      await appendFile(job.log, `\n[still.fail] stopped: ${why}\n`).catch(() => undefined);
     }
   }
 
@@ -993,87 +754,24 @@ export class Jobs {
   /// running and is gone without a word (the machine restarted, or an older station ended it) runs again, and its agent
   /// is told; a service waiting to start again starts. Groups of jobs no longer running are ended.
   async relaunch(): Promise<void> {
-    const recorded = new Map<number, ProcessRow>(this.store.listProcesses().filter((p) => p.runtime === "job").map((p) => [p.pgid, p]));
-    // Each group asked after together, none waited on (stillOurs starts a process).
-    const ours = new Set((await Promise.all([...recorded.values()].map(async (p) => (await stillOurs(p)) ? [p.pgid] : []))).flat());
-    const followed = new Set<number>();
-    const jobs = this.store.jobsUp();
-    for (const job of jobs.filter((j) => j.state === "running")) {
-      // Still waiting in the queue: it never ran, and starts when there is room.
-      if (job.queued === true) continue;
-      const entry = job.pgid !== null ? recorded.get(job.pgid) : undefined;
-      if (entry) {
-        if (ours.has(entry.pgid)) {
-          log.info("jobs", "job went on through the restart; following it again", { job: job.id, pgid: entry.pgid });
-          this.follow(job, entry.pgid);
-          followed.add(entry.pgid);
-          continue;
-        }
-        this.store.forgetProcess(entry.pgid);
-        const code = readExit(this.exitFile(job.id));
-        if (code !== null) {
-          // It ended while no station was running: as if it had just ended.
-          const ran = Math.max(0, this.store.now() - job.startedAt);
-          const id = job.id;
-          void this.run(Effect.sync(() => this.ended(id, null, code, false, ran))).catch(() => undefined);
-          continue;
-        }
-      }
-      // A remote command may have external effects. A lost process is an uncertain result, not permission to execute
-      // it again. Its stable task id remains queryable and cannot be reused.
-      if (job.id.startsWith("remote_")) {
-        this.store.jobEnded(job.id, "failed", null);
-        this.remoteChanged(job.id);
-        continue;
-      }
-      try {
-        this.spawn(job, true);
-        this.tell(job, `The station restarted; ${named(job)} was started again.`);
-      } catch (error) {
-        const e = (error as Error).message;
-        log.warn("jobs", "job not started again", { job: job.id, error: e });
-        this.store.jobEnded(job.id, "failed", null);
-        this.tell(job, `The station restarted; ${named(job)} could not be started again: ${e}`);
-      }
-    }
-    // A service that ended just before the station stopped, waiting out its pause: it starts now.
-    for (const job of jobs.filter((j) => j.state === "exited" && j.port !== null)) {
-      try {
-        this.spawn(job, true);
-      } catch (error) {
-        log.warn("jobs", "service not started again", { job: job.id, error: (error as Error).message });
-        this.store.jobEnded(job.id, "failed", null);
-      }
-    }
-    for (const [pgid, entry] of recorded) {
-      if (followed.has(pgid)) continue;
-      if (ours.has(pgid)) {
-        log.warn("jobs", "ending the group of a job no longer running", { pgid, label: entry.label });
-        void this.timed(endGroup(pgid, STOP_GRACE_MS));
-      }
-      this.store.forgetProcess(pgid);
-    }
-    // What still waits in the queue starts when there is room.
-    this.startNext();
+    await this.call("relaunch", []);
   }
 
   /// The station stops: its jobs go on (the next station takes them up); what followed them and the services' restart
   /// pauses end here.
   async shutdown(): Promise<void> {
+    if (this.closing) return;
     this.closing = true;
+    await this.call("shutdown", []);
     this.exitWatch?.close();
     this.exitWatch = null;
     await Effect.runPromise(Scope.close(this.scope, Exit.void));
+    if (this.own) await this.program.close();
   }
 
   /// `stillfail-job notify`: the job with this token tells its agent something.
-  notified(token: string, text: string): void {
-    const job = this.store.jobByToken(token);
-    if (!job) throw new Error("unknown job token");
-    const said = [...text.trim()].slice(0, 4000).join("");
-    if (said === "") throw new Error("nothing to say");
-    this.store.addJobNotice(job.id, said);
-    this.tell(job, `${named(job)} says: ${said}`);
+  async notified(token: string, text: string): Promise<void> {
+    await this.call("notified", [token, text]);
   }
 
   /// A job as the agent reads it: a service with its link.
@@ -1087,12 +785,12 @@ export class Jobs {
 /// POST /jobs/notify on the MCP endpoint (server.rs `answer_mcp`): a job's `stillfail-job notify`, its token as the
 /// bearer, its words as the body (at most 64 KiB). The HTTP wiring is the server's: it gives the authorization header
 /// and the body read so far (more than the limit is refused).
-export function notifyEndpoint(jobs: Jobs, authorization: string | undefined, body: Buffer | string): { status: number; body: Json } {
+export async function notifyEndpoint(jobs: Jobs, authorization: string | undefined, body: Buffer | string): Promise<{ status: number; body: Json }> {
   const token = authorization?.startsWith("Bearer ") ? authorization.slice("Bearer ".length) : "";
   const bytes = typeof body === "string" ? Buffer.from(body) : body;
   if (bytes.length > NOTIFY_BODY_LIMIT) return { status: 400, body: { error: "length limit exceeded" } };
   try {
-    jobs.notified(token, new TextDecoder("utf-8").decode(bytes));
+    await jobs.notified(token, new TextDecoder("utf-8").decode(bytes));
     return { status: 200, body: { ok: true } };
   } catch (error) {
     return { status: 400, body: { error: (error as Error).message } };
@@ -1102,12 +800,12 @@ export function notifyEndpoint(jobs: Jobs, authorization: string | undefined, bo
 /// POST /jobs/screen on the MCP endpoint: a job's `stillfail-job screen`, its token as the bearer, `take <pid>` or
 /// `give <pid>` as the body (`Jobs.screenAsked`): `{screen: "yours"}`, `{screen: "waiting", place}`, `{screen:
 /// "given"}`, or `{error}`.
-export function screenEndpoint(jobs: Jobs, authorization: string | undefined, body: Buffer | string): { status: number; body: Json } {
+export async function screenEndpoint(jobs: Jobs, authorization: string | undefined, body: Buffer | string): Promise<{ status: number; body: Json }> {
   const token = authorization?.startsWith("Bearer ") ? authorization.slice("Bearer ".length) : "";
   const asked = /^(take|give) ([0-9]{1,10})\s*$/.exec(typeof body === "string" ? body : body.toString("utf8"));
   if (asked === null) return { status: 400, body: { error: "take <pid> or give <pid>" } };
   try {
-    return { status: 200, body: jobs.screenAsked(token, asked[1] as "take" | "give", Number(asked[2])) };
+    return { status: 200, body: await jobs.screenAsked(token, asked[1] as "take" | "give", Number(asked[2])) };
   } catch (error) {
     return { status: 400, body: { error: (error as Error).message } };
   }

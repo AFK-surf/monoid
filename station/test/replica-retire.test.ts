@@ -179,7 +179,7 @@ class Mesh {
       jobsIn: () => node.up,
       tell: (session, text) => void node.told.push([session, text]),
       jobs: {
-        start: (session, j) => {
+        start: async (session, j) => {
           const why = node.startFails.get(j.name);
           if (why !== undefined) throw new Error(why);
           const made = { session, ...j, id: `job_${node.id.slice(0, 2)}${node.started.length}` };

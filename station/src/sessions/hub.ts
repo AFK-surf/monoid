@@ -1440,16 +1440,23 @@ export class Hub {
     log.info("hub", "session created", { session: key, connect: connect.id, scope, runtime, model: model ?? "", profile: profile.id });
   }
 
+  /// The program its actors run in, the station's jobs too (jobs/jobs.ts), started for its first use (none: not built
+  /// here).
+  program(): ActorsProgram | null {
+    if (this.actorsProgram === undefined) this.actorsProgram = ActorsProgram.open(this.config().dataDir, this.clock, this.store);
+    return this.actorsProgram;
+  }
+
   /// The session's actor, made on first use.
   actor(row: SessionRow): Actor {
     const existing = this.actors.get(row.key);
     if (existing) return existing;
     const runtime = runtimeNamed(row.runtime);
     if (!runtime) throw new Error(`session ${row.key} runs an unknown runtime ${row.runtime}`);
-    if (this.actorsProgram === undefined) this.actorsProgram = ActorsProgram.open(this.config().dataDir, this.clock, this.store);
+    const program = this.program();
     // (the program is built for every system the station runs on: a checkout that did not build it cannot run a session)
-    if (this.actorsProgram === null) throw new Error("the station's MoonBit program is not built here (station/mb: build.sh): no session can run");
-    const actor = this.actorsProgram.actor(row.key, runtime, this.deps);
+    if (program === null) throw new Error("the station's MoonBit program is not built here (station/mb: build.sh): no session can run");
+    const actor = program.actor(row.key, runtime, this.deps);
     this.actors.set(row.key, actor);
     return actor;
   }

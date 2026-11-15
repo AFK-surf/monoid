@@ -40,7 +40,7 @@ test("a remote task's queue position does not read unrelated running jobs", asyn
       add("remote_running", true);
       add("remote_waiting", false, true);
       Object.defineProperty(store, "db", { value: observed });
-      assert.equal(jobs.queueOf("remote_waiting")?.place, 1);
+      assert.equal((await jobs.queueOf("remote_waiting"))?.place, 1);
       reads.push({ all: seen, queue: candidates });
     } finally {
       await jobs.shutdown();
