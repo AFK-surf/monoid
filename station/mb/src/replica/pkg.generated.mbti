@@ -1,0 +1,77 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/replica"
+
+import {
+  "moonbitlang/core/json",
+  "station/host",
+  "station/jsjson",
+  "station/sql",
+}
+
+// Values
+pub fn attached_paths(@jsjson.JValue) -> Array[String]
+
+pub let batch_bytes : Int32
+
+pub fn batch_span(String) -> (Int64, Int64)?
+
+pub fn carry_gather(@host.Host, String, String, String, String, Bool, String, String?, Array[String]?, Array[String]) -> @jsjson.JValue raise
+
+pub fn carry_place(@host.Host, String, String, String, String, String?, String?, String?, Bool) -> @jsjson.JValue raise
+
+pub fn carry_preview(@host.Host, String, String, String, String, Bool) -> @jsjson.JValue raise
+
+pub fn key_columns(String) -> Array[String] raise
+
+pub fn key_of(String, @jsjson.JValue) -> String raise
+
+pub fn moved(Files, String, String, String) -> String
+
+pub fn of_json(@json.Json) -> @jsjson.JValue
+
+pub let restore_order : Array[String]
+
+pub fn sha1_hex(String) -> String
+
+pub fn str(String) -> @jsjson.JValue
+
+pub fn take_back(@host.Host, String, String, String, Double) -> @jsjson.JValue? raise
+
+pub fn utf8_length(String) -> Int32
+
+pub let version : Int32
+
+// Errors
+
+// Types and methods
+pub struct Exporter {
+  run : String
+  // private fields
+}
+pub fn Exporter::close(Self) -> Unit
+pub fn Exporter::empty(Self) -> Bool raise
+pub fn Exporter::heads(Self) -> @jsjson.JValue raise
+pub fn Exporter::new(@host.Host, String, String, String, String, String, () -> Double, batch_bytes? : Int32, fold? : Bool) -> Self raise
+pub fn Exporter::new_generations(Self, Double) -> Unit raise
+pub fn Exporter::pass(Self, @jsjson.JValue) -> @jsjson.JValue raise
+pub fn Exporter::set_places(Self, @jsjson.JValue) -> Unit
+pub fn Exporter::sources(Self, Array[String]) -> @jsjson.JValue raise
+
+pub struct Files {
+  host : @host.Host
+  sep : String
+}
+
+pub struct Folded {
+  db : @sql.Db
+  mut seq : Int64
+}
+pub fn Folded::apply(Self, String) -> Unit raise
+pub fn Folded::close(Self) -> Unit
+pub fn Folded::each_named_file(Self, (String, String, Double) -> Unit raise) -> Unit raise
+pub fn Folded::new(@host.Host, String) -> Self raise
+pub fn Folded::records(Self, (String) -> Unit raise) -> Unit raise
+
+// Type aliases
+
+// Traits

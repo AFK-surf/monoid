@@ -146,7 +146,7 @@
   There is no sending in TypeScript to fall back to: the one it replaced is the tests' (`test/dirsync-reference.ts`),
   which the program's listing and requests are compared with (`test/mb-dirsync.test.ts`).
 - The live view (what a running turn does, its rate, its background tasks and checklist, its transcript's entries as
-  written) runs there too, as the pseudo-actor `#live` (`mb/src/reader/live.mbt`), a Claude session's events given it
+  written) runs there too, as the pseudo-actor `#live` (`mb/src/reader/live.mbt`), a Claude or Codex session's events given it
   in the program. Node (`src/sessions/live.ts`) keeps what the program asks of it: where a transcript is, what one
   gained and a page of its past (the readers', other processes: a long read there would hold up every actor), the
   file's watch, the usage counter, and the listeners it gives what is told (a stream opening is told the sessions at
@@ -166,10 +166,18 @@
   need (a token's renewal, a turn's outcome, told whole with its failure's reason: `mb/src/claude/outcome.mbt`) and
   says it taken (`routed`, mb-actor.ts `#took`), and the program gives the actor and the live view the batch it kept;
   `test/hub-e2e.test.ts` holds that none goes through Node.
-  A Codex app-server's output is read there too, its lines given Node whole but for its diffs (`turn/diff/updated`,
-  of which the station keeps nothing). One program for every driver and the actors, running while one of them uses it,
-  on every system a station runs on (a Windows runner's named pipe opened by the shell as its socket): there is no
-  reading of Claude Code's or Codex's output in TypeScript to fall back to, as there is no actor.
+  A Codex app-server's output is read there too (`mb/src/reader/agents_codex.mbt`, its notifications `mb/src/codex`):
+  Node is given only the lines it answers (replies to its requests, the app-server's own requests, a turn's error), its
+  diffs (`turn/diff/updated`, of which the station keeps nothing) are let go, and each session's thread's notifications
+  come to its events, given its actor in the program as Claude Code's are (a batch a thread, `route` with its thread),
+  Node keeping only its turn's id and where each turn began in the output (codex.ts `Host.heard`); what a crash reads
+  again of the output gives the program each thread's notifications for its live steps (`replay`). What the TypeScript
+  station made of them before is the tests' only (`test/codex-reference.ts`), which the program's reading is compared
+  with (`test/codex-cases.ts` writes `mb/src/codex/as_typescript_said_test.mbt`). A line of the agents' output is put
+  together from its pieces once (`mb/src/pieces`): joined again with each, one of 34 MB took the program to GBs. One
+  program for every driver and the actors, running while one of them uses it, on every system a station runs on (a
+  Windows runner's named pipe opened by the shell as its socket): there is no reading of Claude Code's or Codex's
+  output in TypeScript to fall back to, as there is no actor.
 - Their tools are the station's MCP endpoint (`src/tools/`, HTTP on 127.0.0.1, a bearer token per session). What they
   read of how to work is `src/agents/instructions.ts` and the skills in `src/skills/`. A change to the instructions, a
   tool's parameters or its rules adds a note at the end of `src/agents/migrations.ts` (the next number, a sentence),

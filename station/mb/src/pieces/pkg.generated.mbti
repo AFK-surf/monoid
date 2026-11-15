@@ -1,0 +1,23 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/pieces"
+
+import {
+  "moonbitlang/core/buffer",
+}
+
+// Values
+pub fn base64_into(@buffer.Buffer, Bytes, Bytes) -> Unit
+
+// Errors
+
+// Types and methods
+pub(all) struct Pieces {
+  parts : Array[Bytes]
+  mut size : Int32
+}
+pub fn Pieces::lines(Self, Bytes) -> Array[Bytes]
+pub fn Pieces::new() -> Self
+
+// Type aliases
+
+// Traits

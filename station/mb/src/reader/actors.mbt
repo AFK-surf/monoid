@@ -390,9 +390,13 @@ fn Actors::routed(self : Actors, a : Actor, n : Int, k : Int, generation : Int, 
       _ => ()
     }
     let event = match event {
+      // (what the session's owner keeps of a turn's start and end, not the actor's: Claude Code's turn, a Codex
+      // thread's turn's id and where it is in the output)
       Object(fields) if str_of(event.value("type")) == Some("turnEnded") => {
         let m = fields.copy()
-        m.remove("turn")
+        for k in ["turn", "from", "to"] {
+          m.remove(k)
+        }
         if said.value("outcome") is Some(o) {
           m["outcome"] = o
         }
@@ -400,7 +404,9 @@ fn Actors::routed(self : Actors, a : Actor, n : Int, k : Int, generation : Int, 
       }
       Object(fields) if str_of(event.value("type")) == Some("turnStarted") => {
         let m = fields.copy()
-        m.remove("turn")
+        for k in ["turn", "turnId", "from", "to"] {
+          m.remove(k)
+        }
         Json::object(m)
       }
       Object(_) if str_of(event.value("type")) == Some("live") =>

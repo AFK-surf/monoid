@@ -25,6 +25,8 @@ pub fn Damage::tell(Self, Bool) -> Unit
 pub fn Damage::telling(Self) -> Bool
 pub fn Damage::told(Self) -> String
 pub fn Damage::why(Self) -> Int32
+pub fn Damage::window_fresh(Self) -> Unit
+pub fn Damage::window_take(Self) -> () -> Unit
 
 // Type aliases
 

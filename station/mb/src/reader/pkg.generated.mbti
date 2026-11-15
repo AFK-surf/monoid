@@ -13,6 +13,8 @@ pub async fn serve_sessions(@host.Host) -> Unit
 // Errors
 type Asked
 
+type FsError
+
 // Types and methods
 type Permit
 

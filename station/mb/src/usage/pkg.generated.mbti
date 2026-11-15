@@ -1,0 +1,26 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/usage"
+
+import {
+  "moonbitlang/core/json",
+  "station/sql",
+}
+
+// Values
+pub fn chats_ready(@sql.Db, @json.Json) -> Bool raise
+
+pub fn complete(@sql.Db) -> Bool raise
+
+pub fn detail_ready(@sql.Db, @json.Json) -> Bool raise
+
+pub fn minutes_ready(@sql.Db) -> Bool raise
+
+pub fn remote_ready(@sql.Db) -> Bool raise
+
+// Errors
+
+// Types and methods
+
+// Type aliases
+
+// Traits

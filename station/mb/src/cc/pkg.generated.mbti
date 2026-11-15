@@ -1,0 +1,27 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/cc"
+
+import {
+  "moonbitlang/core/json",
+  "station/sql",
+}
+
+// Values
+pub fn latest_step(@sql.Db, String, existing? : Bool, limit? : Int32) -> Bool raise
+
+pub fn ready(@sql.Db, @json.Json) -> Bool raise
+
+// Errors
+
+// Types and methods
+pub struct Cc {
+  // private fields
+}
+pub fn Cc::cancel(Self, String) -> Unit
+pub fn Cc::names_step(Self, @sql.Db, String, existing? : Bool, limit? : Int32) -> Bool raise
+pub fn Cc::new() -> Self
+pub fn Cc::step(Self, @sql.Db, String, existing? : Bool, limit? : Int32) -> Bool raise
+
+// Type aliases
+
+// Traits

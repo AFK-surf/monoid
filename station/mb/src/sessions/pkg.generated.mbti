@@ -1,0 +1,19 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/sessions"
+
+import {
+  "station/sql",
+}
+
+// Values
+pub fn audit(@sql.Db, limit? : Int32) -> Bool raise
+
+pub fn step(@sql.Db, limit? : Int32) -> Bool raise
+
+// Errors
+
+// Types and methods
+
+// Type aliases
+
+// Traits

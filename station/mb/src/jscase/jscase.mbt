@@ -209,6 +209,12 @@ pub fn is_word_point(c : Int) -> Bool {
 ///|
 /// Whether `w` is one of the words of `s`: `s.split(/[^\p{L}\p{N}]+/u).includes(w)` for a `w` that is not empty.
 pub fn has_word(s : String, w : String) -> Bool {
+  has_word_by(s, w, is_word_point)
+}
+
+///|
+/// Whether `w` is one of the words of `s`, its words the runs of code points `in_word` takes.
+pub fn has_word_by(s : String, w : String, in_word : (Int) -> Bool) -> Bool {
   let word = StringBuilder()
   let check = () => {
     let found = word.to_string() == w
@@ -216,7 +222,7 @@ pub fn has_word(s : String, w : String) -> Bool {
     found
   }
   for c in points(s) {
-    if is_word_point(c) {
+    if in_word(c) {
       write_point(word, c)
     } else if check() {
       return true

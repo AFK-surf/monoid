@@ -1,0 +1,28 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/front"
+
+import {
+  "moonbitlang/core/json",
+  "station/host",
+}
+
+// Values
+pub async fn forward(@host.Host, Listening, Int32) -> Unit
+
+pub async fn listen(@host.Host, fd? : Int32, port? : Int32) -> Listening
+
+pub async fn mesh(@host.Host, String) -> Unit
+
+// Errors
+
+// Types and methods
+type Conn
+
+pub struct Listening {
+  id : @json.Json
+  port : Int32
+}
+
+// Type aliases
+
+// Traits

@@ -71,7 +71,7 @@ pub fn generator_duration(Generator) -> Double
 
 pub fn generator_easing((Double, Double, Double) -> Generator, Double, Double, velocity? : Double, scale? : Double) -> ((Double) -> Double, Double)
 
-pub fn grown_shown(String) -> Double?
+pub fn grown_shown(@ui.Ctx, String) -> Double?
 
 pub fn inertia_generator(Double, velocity? : Double, power? : Double, time_constant? : Double, bounce_damping? : Double, bounce_stiffness? : Double, modify_target? : (Double) -> Double, min? : Double, max? : Double, rest_delta? : Double, rest_speed? : Double) -> Generator
 
@@ -135,9 +135,9 @@ pub fn motion_spring(Double, bounce? : Double, threshold? : Double, delay? : Dou
 
 pub fn motion_to_compose(Double, Double, Double) -> (Double, Double)
 
-pub fn move(points? : Double, over? : Double, delay? : Double) -> Spec
-
 pub let move_spring : Spec
+
+pub fn moved(points? : Double, over? : Double, delay? : Double) -> Spec
 
 pub fn[T : Eq] moves_for(@view.View, () -> T, spec? : Spec, spec_of? : (T, T) -> Spec, carry_of? : (T, T) -> Bool) -> Moves
 
@@ -175,6 +175,8 @@ pub fn progress(Double, Double, Double) -> Double
 
 pub fn reshape(@ui.Ctx, Int32, String, by~ : String, spec~ : Spec, carry? : Bool, foot? : Bool, at? : Double) -> Unit
 
+pub fn reshape_share(@ui.Ctx, String) -> ((Double) -> Double)?
+
 pub fn reshape_way(@ui.Ctx, String) -> (Double, Double)?
 
 pub fn reshaped_over(@ui.Ctx, String) -> Double
@@ -183,7 +185,7 @@ pub fn reveal(@ui.Ctx, String, Double, from_top? : Bool, clip? : Bool, middle? :
 
 pub fn reveal_height(@ui.Ctx, String) -> Double
 
-pub fn reveal_node(@view.View, () -> Bool, (@view.View) -> Unit, lazy? : Bool) -> @view.View
+pub fn reveal_node(@view.View, () -> Bool, (@view.View) -> Unit, deferred? : Bool) -> @view.View
 
 pub fn reverse_easing((Double) -> Double) -> (Double) -> Double
 
@@ -222,6 +224,8 @@ pub fn spring_visual(visual_duration? : Double, bounce? : Double) -> Generator
 
 pub fn steps(Int32, direction? : StepsAt) -> (Double) -> Double
 
+pub fn stop_for(@ui.Ctx, String, Double) -> Unit
+
 #callsite(autofill(loc))
 pub fn told(@ui.Ctx, String, Double, spec? : Spec, loc~ : SourceLoc) -> Anim
 
@@ -234,6 +238,8 @@ pub fn tween_to(duration? : Double, ease? : (Double) -> Double, delay? : Double)
 pub fn velocity_per_second(Double, Double) -> Double
 
 pub fn visual_to_compose(Double, Double) -> (Double, Double)
+
+pub fn ways_said() -> Int32
 
 pub fn wrap(Double, Double, Double) -> Double
 
@@ -256,23 +262,27 @@ pub struct Anim {
   // private fields
 }
 #callsite(autofill(loc))
-pub fn Anim::animate(Self, Double, Spec, velocity? : Double, start_at? : Double, loc~ : SourceLoc) -> Unit
+pub fn Anim::animate(Self, @ui.Ctx, Double, Spec, velocity? : Double, start_at? : Double, loc~ : SourceLoc) -> Unit
+pub fn Anim::ended_at(Self) -> Double
 pub fn Anim::ends(Self) -> Double
 pub fn Anim::ends_at(Self) -> Double
 #callsite(autofill(loc))
-pub fn Anim::follow(Self, Double, Spec, loc~ : SourceLoc) -> Unit
-pub fn Anim::get(Self) -> Double
+pub fn Anim::follow(Self, @ui.Ctx, Double, Spec, loc~ : SourceLoc) -> Unit
+pub fn Anim::get(Self, @ui.Ctx) -> Double
 pub fn Anim::new(Double) -> Self
-pub fn Anim::over(Self) -> Bool
-pub fn Anim::snap(Self, Double) -> Unit
+pub fn Anim::over(Self, @ui.Ctx) -> Bool
+pub fn Anim::snap(Self, @ui.Ctx, Double) -> Unit
+#callsite(autofill(loc))
+pub fn Anim::stop_at(Self, @ui.Ctx, Double, points~ : Double, loc~ : SourceLoc) -> Unit
 pub fn Anim::target(Self) -> Double
 pub fn Anim::value_at(Self, Double) -> Double
 pub impl @ui.Moving for Anim
 
+#derive(Eq, @debug.Debug)
 pub(all) struct GenState {
   done : Bool
   value : Double
-} derive(Eq, Show, @debug.Debug)
+}
 
 pub struct Generator {
   // private fields
@@ -299,13 +309,14 @@ pub fn Moves::moves_with(Self, @view.View) -> Unit
 pub fn Moves::over(Self) -> Bool
 pub fn Moves::reshapes(Self, @view.View, carry? : () -> Bool, foot? : Bool) -> Unit
 
+#derive(Eq, @debug.Debug)
 pub(all) enum Spec {
   Spring(Double, Double, Double, Double)
   Tween(Double, @ui.Ease, Double)
   Moved(Double, Double, Double)
   Snap(Double)
   Motion(Transition)
-} derive(Eq, Show)
+}
 pub fn Spec::delayed(Self, Double) -> Self
 pub fn Spec::duration(Self, Double, Double, Double) -> Double
 pub fn Spec::over(Self, Double) -> Self
@@ -313,11 +324,13 @@ pub fn Spec::per_unit(Self, Double) -> Self
 pub fn Spec::value_at(Self, Double, Double, Double, Double, Double) -> (Double, Double)
 pub fn Spec::way_said(Self) -> Bool
 
+#derive(Eq, @debug.Debug)
 pub(all) enum StepsAt {
   End
   Start
-} derive(Eq, Show)
+}
 
+#derive(Eq)
 pub(all) struct Trans {
   fade : Double
   scale : Double
@@ -328,7 +341,7 @@ pub(all) struct Trans {
   fade_spec : Spec
   spec : Spec
   ground_first : Bool
-} derive(Eq, Show)
+}
 pub fn Trans::at(Self, Double, Double) -> @ui.Look
 
 pub struct Transition {
@@ -341,6 +354,7 @@ pub fn Transition::delayed(Self, Double) -> Self
 pub fn Transition::generator(Self, Double, Double, Double) -> Generator
 pub impl Eq for Transition
 pub impl Show for Transition
+pub impl @debug.Debug for Transition
 
 pub struct Way {
   // private fields
@@ -348,13 +362,15 @@ pub struct Way {
 pub fn Way::at(Self, Double) -> (Double, Double)
 pub fn Way::end(Self) -> Double
 pub fn Way::ends_at(Self) -> Double
-pub fn Way::get(Self) -> Double
+pub fn Way::get(Self, @ui.Ctx) -> Double
 #callsite(autofill(loc))
 pub fn Way::go(Self, Double, Spec, at~ : Double, velocity? : Double, loc~ : SourceLoc) -> Unit
 pub fn Way::goes_at(Self, Double) -> Bool
 pub fn Way::new(Double) -> Self
+#callsite(autofill(loc))
 pub fn Way::put(Self, Double, loc~ : SourceLoc) -> Unit
 pub fn Way::said(Self) -> Unit
+pub fn Way::shown_on(Self, @view.View) -> Double
 pub fn Way::starts_at(Self) -> Double
 pub fn Way::target(Self) -> Double
 pub fn Way::value_at(Self, Double) -> Double

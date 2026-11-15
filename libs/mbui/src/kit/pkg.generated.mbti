@@ -256,6 +256,10 @@ pub fn separator(@ui.Ctx, vertical? : Bool, decorative? : Bool, thickness? : Dou
 
 pub fn sheet(@ui.Ctx, String, Bool, () -> Unit, h? : Double, share? : Double, detents? : Array[Double], close_below? : Double, drag_h? : Double, scrim? : Int64, label? : String, look? : (@ui.Ctx, SheetState, () -> Unit) -> Unit, on_escape? : () -> Bool, raised? : Double, sinks? : Double, in_place? : Double) -> Sheet
 
+pub fn sheet_drag_closes(Double, Double, Double) -> Bool
+
+pub fn sheet_goes_to(Array[Double], Double, Double, Double, Double) -> Double?
+
 pub fn sheet_grabber(@ui.Ctx) -> Unit
 
 pub fn sheet_look(@ui.Ctx, SheetState, () -> Unit) -> Unit
@@ -319,7 +323,8 @@ pub fn toast_rest(String) -> Double
 
 pub fn toaster(@ui.Ctx, String, Array[Toast], duration? : Double, w? : Double, bottom? : Double, label? : String, close_label? : String, look? : (@ui.Ctx, ToastState, () -> Unit, () -> Unit) -> Unit) -> Toasts
 
-pub fn toaster_node(@view.View, () -> Array[Toast], (Toast) -> Double, () -> Double, (@view.View, ToastNode) -> Unit, (String) -> Unit, (String) -> Unit, key? : String, w? : Double, label? : String) -> @view.View
+#callsite(autofill(loc))
+pub fn toaster_node(@view.View, () -> Array[Toast], (Toast) -> Double, () -> Double, (@view.View, ToastNode) -> Unit, (String) -> Unit, (String) -> Unit, key? : String, w? : Double, label? : String, loc~ : SourceLoc) -> @view.View
 
 pub fn toggle(@ui.Ctx, String, Bool, key? : String, disabled? : Bool, look? : (@ui.Ctx, ToggleState) -> Unit, on_change? : (Bool) -> Unit) -> @ui.Changed[Bool]
 
@@ -355,18 +360,20 @@ pub(all) struct Alert {
   confirmed : Bool
 }
 
+#derive(Eq, @debug.Debug)
 pub(all) enum BadgeTone {
   Neutral
   Accent
   Positive
   Danger
-} derive(Eq, Show, @debug.Debug)
+}
 
+#derive(Eq, @debug.Debug)
 pub(all) enum ButtonSize {
   Sm
   Md
   Lg
-} derive(Eq, Show, @debug.Debug)
+}
 
 pub(all) struct ButtonState {
   label : String
@@ -377,10 +384,11 @@ pub(all) struct ButtonState {
   disabled : Bool
 }
 
+#derive(Eq, @debug.Debug)
 pub(all) enum CardTone {
   Plain
   Lifted
-} derive(Eq, Show, @debug.Debug)
+}
 
 pub(all) struct CheckboxState {
   check : @view.Check
@@ -390,10 +398,11 @@ pub(all) struct CheckboxState {
   disabled : Bool
 }
 
+#derive(Eq, @debug.Debug)
 pub(all) enum Density {
   Comfy
   Compact
-} derive(Eq, Show, @debug.Debug)
+}
 
 pub(all) struct DialogState {
   title : String
@@ -424,17 +433,19 @@ pub(all) struct Field {
   submitted : Bool
 }
 
+#derive(Eq, @debug.Debug)
 pub(all) enum FieldKind {
   Words
   Email
   Secret
   Number
-} derive(Eq, Show)
+}
 
+#derive(Eq, @debug.Debug)
 pub(all) enum FieldSize {
   Sm
   Md
-} derive(Eq, Show, @debug.Debug)
+}
 
 pub(all) struct FieldState {
   id : Int32
@@ -478,21 +489,24 @@ pub(all) struct GroupState {
   disabled : Bool
 }
 
+#derive(Eq, @debug.Debug)
 pub(all) enum Indent {
   Page
   Inset
-} derive(Eq, Show, @debug.Debug)
+}
 
+#derive(Eq, @debug.Debug)
 pub(all) struct Item {
   value : String
   label : String
   disabled : Bool
-} derive(Eq, Show)
+}
 
 pub struct Media {
   // private fields
 }
 pub fn Media::close(Self) -> Unit
+pub fn Media::decode_given_up(Self) -> Unit
 pub fn Media::duration(Self) -> Double
 pub fn Media::fills(Self) -> Bool
 pub fn Media::frame(Self, @ui.Ctx) -> MediaFrame
@@ -503,7 +517,7 @@ pub fn Media::native(Self) -> @ui.NativeView?
 pub fn Media::near(Self, Bool) -> Unit
 pub fn Media::new(key? : String, speeds? : Array[Double], nudge_ms? : Double, rest_ms? : Double, double_tap_ms? : Double, note_ms? : Double, wake_ms? : Double, sleep_ms? : Double, wait_ms? : Double) -> Self
 pub fn Media::nudge_ms(Self) -> Double
-pub fn Media::open(Self, MediaTrack, start? : Double) -> Unit
+pub fn Media::open(Self, MediaTrack, start? : Double, play? : Bool) -> Unit
 pub fn Media::pause(Self) -> Unit
 pub fn Media::picture_rect(Self, MediaStatus, Double, Double) -> (Double, Double, Double, Double)
 pub fn Media::pin(Self, MediaStatus) -> Unit
@@ -527,7 +541,9 @@ pub fn Media::started(Self) -> Bool
 pub fn Media::status(Self) -> MediaStatus
 pub fn Media::step_speed(Self) -> Unit
 pub fn Media::subtitle(Self) -> (Bool, Bool)
+pub fn Media::take_ready(Self) -> Bool
 pub fn Media::timeline(Self, @ui.Ctx, Int32, Bool, inset? : Double, snap? : (Double) -> Double) -> Unit
+pub fn Media::times(Self) -> (Double, Double, Double, Double, Double)
 pub fn Media::toggle(Self) -> Unit
 pub fn Media::toggle_fill(Self) -> Unit
 pub fn Media::toggle_mute(Self) -> Unit
@@ -550,13 +566,15 @@ pub(all) struct MediaFrame {
   said : String
 }
 
+#derive(Eq, @debug.Debug)
 pub(all) enum MediaNote {
   Back(Double)
   Ahead(Double)
   Paused
   Played
-} derive(Eq, Show, @debug.Debug)
+}
 
+#derive(Eq, @debug.Debug)
 pub(all) enum MediaPhase {
   Opening
   Buffering
@@ -564,8 +582,9 @@ pub(all) enum MediaPhase {
   Paused
   Ended
   Failed
-} derive(Eq, Show, @debug.Debug)
+}
 
+#derive(Eq, @debug.Debug)
 pub(all) struct MediaStatus {
   state : Int32
   duration : Double
@@ -576,7 +595,7 @@ pub(all) struct MediaStatus {
   ended : Bool
   width : Double
   height : Double
-} derive(Eq, Show, @debug.Debug)
+}
 
 pub(all) struct MediaTrack {
   name : String
@@ -662,10 +681,11 @@ pub(all) struct RadioState {
   disabled : Bool
 }
 
+#derive(Eq, @debug.Debug)
 pub(all) enum RowTone {
   Normal
   Bad
-} derive(Eq, Show, @debug.Debug)
+}
 
 pub(all) struct SelectState {
   text : String
@@ -683,11 +703,12 @@ pub(all) struct Sheet {
   stands : Double
 }
 
+#derive(Eq, @debug.Debug)
 pub(all) enum SheetDrag {
   DraggedClosed
   DraggedBack
   DraggedTo(Double)
-} derive(Eq, Show, @debug.Debug)
+}
 
 pub(all) struct SheetState {
   t : Double
@@ -713,17 +734,19 @@ pub(all) struct SwitchState {
   disabled : Bool
 }
 
+#derive(Eq, @debug.Debug)
 pub(all) enum TipOwner {
   Built(Int32)
   Node(Int32)
-} derive(Eq, @debug.Debug)
+}
 
+#derive(Eq, @debug.Debug)
 pub(all) struct Toast {
   id : String
   title : String
   description : String
   action : String
-} derive(Eq, Show)
+}
 
 pub struct ToastNode {
   // private fields
@@ -766,13 +789,15 @@ pub(all) struct TriggerState {
   disabled : Bool
 }
 
+#derive(Eq, @debug.Debug)
 pub(all) enum Variant {
   Solid
   Soft
   Outline
   Ghost
   Danger
-} derive(Eq, Show, @debug.Debug)
+}
+pub impl Show for Variant
 
 pub struct Zoom {
   mut nw : Double
@@ -797,32 +822,33 @@ pub struct Zoom {
   mut flinging : Bool
   // private fields
 }
-pub fn Zoom::boxed(Self, Double, Double, at? : Double) -> Unit
-pub fn Zoom::double_tap(Self, Double, Double, at? : Double) -> Unit
+pub fn Zoom::boxed(Self, Double, Double, at~ : Double) -> Unit
+pub fn Zoom::double_tap(Self, Double, Double, at~ : Double) -> Unit
 pub fn Zoom::fit(Self) -> Double
-pub fn Zoom::fit_now(Self, at? : Double) -> Unit
-pub fn Zoom::fling(Self, Double, Double, at? : Double) -> Unit
+pub fn Zoom::fit_now(Self, at~ : Double) -> Unit
+pub fn Zoom::fling(Self, Double, Double, at~ : Double) -> Unit
 pub fn Zoom::fling_ends(Self) -> Double
 pub fn Zoom::goes_at(Self, Double) -> Bool
-pub fn Zoom::keep(Self, (Double, Double), Double, when? : Double) -> Unit
+pub fn Zoom::keep(Self, (Double, Double), Double, when~ : Double) -> Unit
 pub fn Zoom::max_scale(Self) -> Double
 pub fn Zoom::min_scale(Self) -> Double
-pub fn Zoom::natural(Self, Double, Double, at? : Double) -> Unit
+pub fn Zoom::natural(Self, Double, Double, at~ : Double) -> Unit
 pub fn Zoom::new(margin? : (Double) -> Double, enlarge? : Bool, min_scale? : (Double) -> Double, max_scale? : (Double) -> Double, free? : Bool, fit_step? : Double) -> Self
-pub fn Zoom::pan(Self, Double, Double, at? : Double) -> Unit
-pub fn Zoom::rect(Self) -> (Double, Double, Double, Double)?
+pub fn Zoom::pan(Self, Double, Double, at~ : Double) -> Unit
+pub fn Zoom::rect(Self, @ui.Ctx) -> (Double, Double, Double, Double)?
 pub fn Zoom::rect_at(Self, Double) -> (Double, Double, Double, Double)?
-pub fn Zoom::reset(Self, at? : Double) -> Unit
-pub fn Zoom::resize_keeping(Self, Double, Double, (Double, Double)?, Double, when? : Double) -> Unit
+pub fn Zoom::reset(Self, at~ : Double) -> Unit
+pub fn Zoom::resize_keeping(Self, Double, Double, (Double, Double)?, Double, when~ : Double) -> Unit
 pub fn Zoom::scale_at(Self, Double) -> Double
-pub fn Zoom::step(Self) -> Unit
-pub fn Zoom::stop_fling(Self, at? : Double) -> Bool
-pub fn Zoom::stop_glide(Self, at? : Double) -> Unit
+pub fn Zoom::sized(Self) -> Bool
+pub fn Zoom::step(Self, @ui.Ctx) -> Unit
+pub fn Zoom::stop_fling(Self, at~ : Double) -> Bool
+pub fn Zoom::stop_glide(Self, at~ : Double) -> Unit
 pub fn Zoom::told(Self) -> Unit
-pub fn Zoom::transform(Self, Double, Double, Double, Double, Double, at? : Double) -> Unit
-pub fn Zoom::under_bars(Self, Double, Double, at? : Double) -> Unit
-pub fn Zoom::zoom_to(Self, Double, Double, Double, Bool, at? : Double) -> Unit
-pub fn Zoom::zoomed(Self) -> Bool
+pub fn Zoom::transform(Self, Double, Double, Double, Double, Double, at~ : Double) -> Unit
+pub fn Zoom::under_bars(Self, Double, Double, at~ : Double) -> Unit
+pub fn Zoom::zoom_to(Self, Double, Double, Double, Bool, at~ : Double) -> Unit
+pub fn Zoom::zoomed(Self, @ui.Ctx) -> Bool
 pub fn Zoom::zoomed_at(Self, Double) -> Bool
 
 // Type aliases

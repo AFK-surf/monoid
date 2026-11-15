@@ -37,6 +37,8 @@ import {
   "station/jsjson",
   "station/jscase",
   "station/claude",
+  "station/codex",
+  "station/pieces",
   "station/admit",
   "moonbitlang/core/encoding/base64",
   "moonbitlang/core/string",

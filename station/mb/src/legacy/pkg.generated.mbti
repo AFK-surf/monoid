@@ -1,0 +1,49 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/legacy"
+
+import {
+  "moonbitlang/core/json",
+  "station/sql",
+}
+
+// Values
+pub fn agent_maintenance(@sql.Db) -> Bool raise
+
+pub fn bounded_edit_key(@sql.Db, @json.Json, @json.Json) -> String? raise
+
+pub fn decision_session_repair_step(@sql.Db) -> Bool raise
+
+pub fn decision_session_step(@sql.Db) -> Bool raise
+
+pub fn decision_time_step(@sql.Db) -> Bool raise
+
+pub fn edits_maintenance(@sql.Db) -> Bool raise
+
+pub fn edits_step(@sql.Db) -> Bool raise
+
+pub fn has_legacy_agent(@sql.Db) -> Bool raise
+
+pub fn login_cards_maintenance(@sql.Db) -> Bool raise
+
+pub fn merged_needs_repair(@sql.Db) -> Bool raise
+
+pub fn merged_read_ready(@sql.Db) -> Bool raise
+
+pub fn policy_step(@sql.Db) -> Bool raise
+
+pub fn said_maintenance(@sql.Db) -> Bool raise
+
+pub fn said_step(@sql.Db) -> Bool raise
+
+// Errors
+pub(all) suberror Fallback
+
+pub(all) suberror Unprepared {
+  Unprepared(String)
+}
+
+// Types and methods
+
+// Type aliases
+
+// Traits

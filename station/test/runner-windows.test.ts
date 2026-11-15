@@ -99,7 +99,7 @@ test("read by the MoonBit program: a station that lets go (leave) and comes back
     let exit = "";
     const options: HostedOptions = {
       label: "test",
-      kind: "lines",
+      kind: "codex",
       heard: (heard) => void lines.push(...(heard.lines ?? []).map((l) => l.text.replace(/\r$/, ""))),
       exit: (s) => void (exit = s),
     };

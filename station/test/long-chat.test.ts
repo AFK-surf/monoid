@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { LONG_CHAT } from "../src/agents/instructions.ts";
-import { codexCompacted } from "../src/agents/codex.ts";
+import { codexCompacted } from "./codex-reference.ts";
 import { Rig, matches, message, reply, settle } from "./hub-fakes.ts";
 
 const READ_BACK = "read back what people said in it";

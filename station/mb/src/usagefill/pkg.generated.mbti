@@ -1,0 +1,24 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/usagefill"
+
+import {
+  "moonbitlang/core/json",
+  "station/sql",
+}
+
+// Values
+pub fn context_change() -> String
+
+pub fn drop_step(@sql.Db, batch? : Int32) -> Bool raise
+
+pub fn fill_step(@sql.Db, batch? : Int32) -> Bool raise
+
+pub fn scope_batch(@sql.Db, @json.Json) -> @json.Json raise
+
+// Errors
+
+// Types and methods
+
+// Type aliases
+
+// Traits
