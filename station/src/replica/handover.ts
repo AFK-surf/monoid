@@ -377,7 +377,7 @@ export class Handover {
     this.#heldAtLoad = held;
     this.#unmended.clear();
     for (const o of this.#outs.values()) {
-      if (o.v === 2 && o.step === "failed" && !o.shown && o.ended !== true && o.keys.some((k) => this.#outsOf.get(k)?.[0] === o && d.store.handedTo(k)?.station === o.to)) this.#unmended.add(o);
+      if (o.v === 2 && (o.step === "failed" || o.step === "gone") && !o.shown && o.ended !== true && o.keys.some((k) => this.#outsOf.get(k)?.[0] === o && d.store.handedTo(k)?.station === o.to)) this.#unmended.add(o);
     }
   }
 
@@ -493,6 +493,16 @@ export class Handover {
       }
       this.#mending.add(o.id);
       try {
+        // (one said gone and not shown yet: only where that station says it does not hold the hand-over (it dropped
+        // it, or never had it) is it looked at more; a show not answered yet, that station away or slow, is left to
+        // its retries)
+        if (o.step === "gone") {
+          const held = await this.#d.ask(o.to, { method: "handover.held", workspace: o.ws, origin: this.#d.here(), id: o.id });
+          if (held?.held !== false) {
+            if (held?.held === true) this.#unmended.delete(o);
+            continue;
+          }
+        }
         const answer = await this.#d.ask(o.to, { method: "move.chats.live", keys });
         const live = new Set<string>(Array.isArray(answer?.live) ? answer.live : []);
         const there = keys.filter((k) => live.has(k));
@@ -510,6 +520,24 @@ export class Handover {
           log.info("handover", "a chat said gone whose hand-over failed here is there after all: it went", { id: o.id, to: o.to, keys: there.length });
         }
         if (here.length > 0) {
+          if (o.step === "gone" && there.length === 0) {
+            // (said gone, dropped there: it did not go. Over as a failure, told nothing more (`#go`), its jobs started
+            // again as a failure starts them (kept ones only: one the next process already started again is not kept))
+            this.#again.get(o.id)?.();
+            this.#again.delete(o.id);
+            o.step = "failed";
+            o.error = tr(stationLang(), "station.move.restartedMidway", { station: o.toName || o.to.slice(0, 12) });
+            o.ended = true;
+            o.dropOwed = false;
+            await this.#save(o);
+            for (const j of o.jobs) {
+              try {
+                this.#d.jobs.start(j);
+              } catch (e) {
+                log.warn("handover", "a job of a chat taken back not started again", { job: j.name, error: (e as Error).message });
+              }
+            }
+          }
           const back = this.#d.store.notGone(here, o.to);
           for (const k of back) this.#d.hub.releaseChat(k);
           log.warn("handover", "a chat said gone whose hand-over failed is not there: in sight here again", { id: o.id, to: o.to, keys: back.length });
@@ -1051,7 +1079,7 @@ export class Handover {
 
   /// What is owed to B told (after it went: the rest; failed: the drop), again until it answers.
   #go(o: Out): void {
-    if (this.#closed || this.#runs.has(o.id)) return;
+    if (this.#closed || this.#runs.has(o.id) || o.ended === true) return;
     this.#again.get(o.id)?.();
     this.#again.delete(o.id);
     const run = (o.step === "gone" ? this.#afterGone(o) : o.dropOwed ? this.#drop(o) : Promise.resolve())
@@ -1061,7 +1089,7 @@ export class Handover {
   }
 
   #retry(o: Out): void {
-    if (this.#closed) return;
+    if (this.#closed || o.ended === true) return;
     const n = this.#tries.get(o.id) ?? 0;
     this.#tries.set(o.id, n + 1);
     this.#again.set(o.id, this.#d.fibers.after(Math.min(RETRY_MS * 2 ** n, RETRY_MOST_MS), () => this.#go(o))); // timer: a retry after a failure
@@ -1150,6 +1178,12 @@ export class Handover {
         if (request.method === "handover.still") {
           const o = this.#outs.get(id);
           return { going: o !== undefined && o.to === peer && o.step !== "failed" };
+        }
+        // (whether this station holds a hand-over of the one asking: coming or shown here, not dropped. Its own word
+        // that it does not is what lets that station take back a chat it said went (`#mend`))
+        if (request.method === "handover.held") {
+          const i = this.#ins.get(id);
+          return { held: i !== undefined && i.origin === peer && i.step !== "dropped" && !this.#dropping.has(id) };
         }
         const i = this.#ins.get(id);
         if (request.method === "handover.drop") return i === undefined ? { ok: true } : await this.#drop1(i);

@@ -135,8 +135,10 @@ below, sends them along).
   (`previous`, every record then read again), and a move turn waits for that too (move/station.ts `refusal`); a
   hand-over's end is decided once, gone or failed, whichever process asks first (`decided`, a file linked into place),
   so `gone` never follows its failure. A chat said gone (`handed_over`) whose latest hand-over failed and was never
-  shown is asked of where it went as the station starts and as that one is heard from: held there, the record is
-  completed; not, it is in sight here again (`#mend`; the real run, 2026-11-15, one chat on neither station). Its platform threads are re-pointed where their
+  shown, or is at `gone` and never shown where that station says it does not hold the hand-over (`handover.held`:
+  dropped, or never had; a show only not answered yet is left to its retries), is asked of where it went as the
+  station starts and as that one is heard from: held there in sight, the record is completed; not, it is in sight
+  here again, the record over as a failure (`#mend`; the real run, 2026-11-15, one chat on neither station). Its platform threads are re-pointed where their
   connect runs (connects/workspace.ts `route`, `connect.route`); what still comes here of it goes on there
   (`movedTo`). A device naming it here is answered where it went (409 with `moved`, `GET /moved`, `chat-moved`),
   only once that station showed it (store `goneTo`, then `shownThere`: told at `gone`, a device read it there before it

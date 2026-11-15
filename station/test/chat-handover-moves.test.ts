@@ -957,3 +957,46 @@ test("a move turn asked while the station process before this one is still there
   assert.equal(out.failed, null, JSON.stringify(out.failed));
   assert.equal(a.rig.store.handedTo(key)?.station, B, "gone, it went");
 });
+
+test("a chat said gone whose show was never answered, left so by two processes of one station (the drill's 9m: the one before wrote `gone` last): where it went dropped the hand-over, it is in sight here again, once; where it holds it and only the show's answer was lost, it is completed, never taken back", async () => {
+  for (const dropped of [true, false]) {
+    const w = world();
+    const a = w.get(A);
+    const b = w.get(B);
+    const { key } = await stillfailChat(a);
+    // (its show not answered: never taken there, or taken and its answer lost)
+    let shows = 0;
+    w.tamper((to, r) => {
+      if (to === B && r.method === "handover.show" && dropped && shows++ === 0) throw new Error("station unreachable");
+      return r;
+    });
+    w.lose((to, r) => (to === B && r.method === "handover.show" && !dropped && shows++ === 0 ? new Error("station unreachable") : null));
+    const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: key });
+    await w.quiet();
+    const o = a.moves.handover.outs()[0]!;
+    assert.equal(o.step, "gone", `${dropped}: said gone, ${JSON.stringify(out.failed)}`);
+    assert.equal(o.shown, false, "not shown");
+    w.tamper(null);
+    w.lose(null);
+    if (dropped) {
+      // (dropped there, as the next process had it dropped)
+      await a.bus.ask(B, { method: "handover.drop", workspace: WS, origin: A, id: o.id });
+      assert.deepEqual(inSight(w, key), ["a"], "only A's row, said gone");
+    } else assert.deepEqual(inSight(w, key), ["a", "b"], "shown there, its answer lost");
+    // A started again (the next process, the one before gone)
+    await a.moves.close();
+    a.moves = a.make();
+    await a.moves.start();
+    await w.quiet();
+    if (dropped) {
+      assert.deepEqual(inSight(w, key), ["a"], "in sight on A, once");
+      assert.equal(a.rig.store.handedTo(key), null, "no longer said to be on B");
+      const after = a.moves.handover.outs().find((x) => x.id === o.id)!;
+      assert.equal(after.step, "failed", "the record over as a failure");
+      assert.equal(after.ended, true);
+    } else {
+      assert.deepEqual(inSight(w, key), ["b"], "in sight on B alone: completed, not taken back");
+      assert.equal(a.rig.store.handedTo(key)?.station, B);
+    }
+  }
+});
