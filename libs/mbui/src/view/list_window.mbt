@@ -1454,8 +1454,17 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   // (held by a block's top a standing limit says, binding as last laid out (ListPlace::follow_from): off its foot then to
   // every rule of it, however near the foot it lies)
   let capped = @signals.signal(false, same=fn(a, b) { a == b })
+  // (held so still: where its fill held it, not moved since by the hand, a fling or an ask; moved, the reader took it,
+  // and it is held no more, whether a fill has run since or not)
+  let capped_now = fn() {
+    capped.get() &&
+    (match anchor_x.val {
+      Some(was) => (at() - was).abs() <= 0.000001
+      None => true
+    })
+  }
   let at_most = @signals.computed(fn(_) {
-    guard !capped.get() else { return false }
+    guard !capped_now() else { return false }
     guard s.seen.get() is Some((_, vh)) else { return false }
     let all = places(laid.get())
     top_now(all, at()) >= foot_top(all, vh) - 0.5 && s.rest_now() is None && s.glides_till() is None
@@ -1465,7 +1474,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   // where it would be at its foot. By its own blocks, so in the same layout as one measured anew or grown there, as
   // its near_foot is; not by how far the scroll went as last laid out, which a block come or grown has not reached yet)
   let at_foot_now = @signals.computed(fn(_) {
-    if capped.get() {
+    if capped_now() {
       return false
     }
     if s.x.get() == @double.infinity {
@@ -1497,7 +1506,17 @@ pub fn[K : Hash + Eq] View::scrolls_window(
         _ => false
       }
       // (the hand's: the scroll moved off where its last fill put it, before a fill has seen it)
-      row_let_go(!glided && anchor_x.val is Some(was) && (@signals.untracked(at) - was).abs() > 0.000001)
+      let hand = !glided && anchor_x.val is Some(was) && (@signals.untracked(at) - was).abs() > 0.000001
+      row_let_go(hand)
+      // (and a limit its foot was followed by let go of: the reader took the list to its foot, as a fill that sees the
+      // hand's move lets it go. Brought there by a move that made no fill run (no slot found again: a key held less
+      // than half a screen off its foot), it stood, and the next key come took the list back up to it)
+      if hand {
+        match place {
+          Some(p) => p.from = None
+          None => ()
+        }
+      }
       s.to_foot()
       glided_foot.val = glided
     }
@@ -1809,6 +1828,15 @@ pub fn[K : Hash + Eq] View::scrolls_window(
     guard !s.at_foot() && anchor_x.val is Some(was) && held_at(all) is Some(_) else { return }
     let x = @signals.untracked(at)
     guard (x - was).abs() > 0.000001 else { return }
+    // (moved off where a limit held it: the reader took it, the limit let go of, before the anchor is put where it is
+    // now and the move is no longer seen)
+    if capped.untracked() {
+      match place {
+        Some(p) => p.from = None
+        None => ()
+      }
+      capped.set(false)
+    }
     let vh = match s.seen.untracked() {
       Some((_, vh)) => vh
       None => 0.0
@@ -2438,7 +2466,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
         }
       None => None
     }
-    let was_capped = capped.untracked()
+    let was_capped = @signals.untracked(capped_now)
     let mut binds = false
     let mut top = 0.0
     let mut vh = 0.0
