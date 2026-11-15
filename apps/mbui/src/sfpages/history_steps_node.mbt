@@ -577,20 +577,10 @@ fn event_stack_node(
       body(b)
     })
     |> ignore
-    v.box(fn(r) {
-      r
-      .over(Is(true))
-      .width(Is(Some(12.0)))
-      .height(By(fn() {
-        let total = head_h() + body_h() + (if rail_next() { 10.0 } else { 0.0 })
-        Some(dmax(0.0, total))
-      }))
-      .lines(By(fn() {
-        let color = @ui.tree_theme().color(if failed() { Danger } else { Line })
-        curved_rail_lines(head_h(), body_h(), rail_next(), color)
-      }))
-      |> ignore
-    })
+    v.lines(By(fn() {
+      let color = @ui.tree_theme().color(if failed() { Danger } else { Line })
+      curved_rail_lines(head_h(), body_h(), rail_next(), color)
+    }))
     |> ignore
   })
   |> ignore
@@ -646,17 +636,10 @@ fn ev_node(
         row_ref.val = Some(e)
         make_ev(e)
       })
-      p.box(fn(r) {
-        r
-        .over(Is(true))
-        .width(Is(Some(12.0)))
-        .height(By(fn() { Some(tall() + (if rail || rail_last { 10.0 } else { 0.0 })) }))
-        .lines(By(fn() {
-          let color = @ui.tree_theme().color(if tone == "red" { Danger } else { Line })
-          curved_rail_lines(tall(), 0.0, rail || rail_last, color)
-        }))
-        |> ignore
-      })
+      p.lines(By(fn() {
+        let color = @ui.tree_theme().color(if tone == "red" { Danger } else { Line })
+        curved_rail_lines(tall(), 0.0, rail || rail_last, color)
+      }))
       |> ignore
     })
     |> ignore
@@ -1741,6 +1724,7 @@ fn ev_live_node(
   icon : String,
   tone : () -> String,
   rail_last? : () -> Bool,
+  fixed_h? : Double,
   body : (@view.View) -> Unit,
 ) -> Unit {
   let ink = fn() {
@@ -1759,8 +1743,17 @@ fn ev_live_node(
     |> ignore
     steps_box_node(e, h_ev_body, body, in_row=true)
   }
-  match rail_last {
-    Some(has_rail) =>
+  match (rail_last, fixed_h) {
+    (Some(has_rail), Some(h)) =>
+      steps_box_node(v, h_ev, fn(e) {
+        make_ev(e)
+        e.lines(By(fn() {
+          let color = @ui.tree_theme().color(if tone() == "red" { Danger } else { Line })
+          curved_rail_lines(h, 0.0, has_rail(), color)
+        }))
+        |> ignore
+      })
+    (Some(has_rail), None) =>
       v.by_room(fn(p, room) {
         p.fills_across(Is(true)) |> ignore
         let row_ref : Ref[@view.View?] = Ref(None)
@@ -1774,21 +1767,14 @@ fn ev_live_node(
           row_ref.val = Some(e)
           make_ev(e)
         })
-        p.box(fn(r) {
-          r
-          .over(Is(true))
-          .width(Is(Some(12.0)))
-          .height(By(fn() { Some(tall() + (if has_rail() { 10.0 } else { 0.0 })) }))
-          .lines(By(fn() {
-            let color = @ui.tree_theme().color(if tone() == "red" { Danger } else { Line })
-            curved_rail_lines(tall(), 0.0, has_rail(), color)
-          }))
-          |> ignore
-        })
+        p.lines(By(fn() {
+          let color = @ui.tree_theme().color(if tone() == "red" { Danger } else { Line })
+          curved_rail_lines(tall(), 0.0, has_rail(), color)
+        }))
         |> ignore
       })
       |> ignore
-    None => steps_box_node(v, h_ev, make_ev)
+    (None, _) => steps_box_node(v, h_ev, make_ev)
   }
 }
 
@@ -1804,10 +1790,13 @@ fn steps_reused_row_node(
   tips : @sf.TipLayer,
   make_row : (@view.View, StepsRow) -> Unit,
 ) -> Unit {
+  ignore(src)
+  ignore(key)
   let picked = @signals.computed(fn(_) { StepsPicked::{ row: row_of(row_key()) } })
   let init_shape = @signals.untracked(fn() { steps_row_shape(picked.get().row) })
+  let init_base = init_shape.unwrap_or(-2) / 2
   let same_shape_sig = @signals.computed(
-    fn(_) { steps_row_shape(picked.get().row, ignore_opened=true) == init_shape },
+    fn(_) { steps_row_shape(picked.get().row, ignore_opened=init_base >= 4) == init_shape },
     same=fn(a, b) { a == b },
   )
   slot.pick(at_once=true, fn() { if same_shape_sig.get() { None } else { Some(picked.get()) } }, fn(p, fallback) {
@@ -1907,79 +1896,71 @@ fn steps_reused_row_node(
                   let open = fn() { open_sig.get() }
                   let summary_sig = @signals.computed(fn(_) { text(content(), "summary") }, same=fn(a, b) { a == b })
                   let summary = fn() { summary_sig.get() }
-                  event_stack_node(
-                    m,
-                    rail_next=has_rail,
-                    fn(gv) {
-                      gv.box(fn(h) {
-                        @sf.style_node(h, fn() { h_group_head })
-                        let hot = fn() { @sf.lit_node(h) }
-                        h.ground(By(fn() { if @sf.lit_in_node(h) { @ui.tree_theme().color(Hover) } else { 0L } }))
-                        |> ignore
-                        steps_pressed(h, fn() { steps_flip(@signals.untracked(gk)) }, label=summary, folds=true, open~)
-                        h.box(fn(i) {
-                          @sf.style_node(i, fn() { h_icon })
-                          steps_chevron_node(
-                            i,
-                            "chevron-right",
-                            14.0,
-                            By(fn() { if hot() { @sf.theme().p.text } else { @sf.theme().p.muted } }),
-                            open,
-                          )
-                        })
-                        |> ignore
-                        steps_box_node(h, h_grow_clip, fn(w) {
-                          w.box(fn(rw) {
-                            rw
-                            .words_runs(By(fn() { [@ui.span(summary(), mono=false)] }))
-                            .words_look(By(fn() { @ui.style_words(h_group_words) }))
-                            .ink(By(fn() { @ui.style_ink(if hot() { h_group_hot } else { h_group_words }) }))
-                            .cuts(Is(true))
-                            .min_width(Is(Some(0.0)))
-                            .allow_ellipsis(Is(true))
-                            |> ignore
-                          })
-                          |> ignore
-                        }, in_row=true)
-                        if has_failures {
-                          let failures_sig = @signals.computed(
-                            fn(_) { number(content(), "failures").to_int() },
-                            same=fn(a, b) { a == b },
-                          )
-                          @sf.badge_node(h, fn() {
-                            @sf.t("web-main.history.failures", args=[("n", failures_sig.get().to_string())])
-                          }, tone=Red)
-                          |> ignore
-                        }
-                        if has_pending {
-                          let pending_sig = @signals.computed(
-                            fn(_) { number(content(), "pending").to_int() },
-                            same=fn(a, b) { a == b },
-                          )
-                          @sf.badge_node(h, fn() {
-                            @sf.t("web-main.history.pending", args=[("n", pending_sig.get().to_string())])
-                          }, tone=Accented)
-                          |> ignore
-                        }
-                        ignore(tips)
+                  steps_box_node(m, h_group, fn(gv) {
+                    gv.lines(By(fn() {
+                      curved_rail_lines(20.0, 0.0, has_rail(), @ui.tree_theme().color(Line))
+                    }))
+                    |> ignore
+                    gv.box(fn(h) {
+                      @sf.style_node(h, fn() { h_group_head })
+                      let hot = fn() { @sf.lit_node(h) }
+                      h.ground(By(fn() { if @sf.lit_in_node(h) { @ui.tree_theme().color(Hover) } else { 0L } }))
+                      |> ignore
+                      steps_pressed(h, fn() { steps_flip(@signals.untracked(gk)) }, label=summary, folds=true, open~)
+                      h.box(fn(i) {
+                        @sf.style_node(i, fn() { h_icon })
+                        steps_chevron_node(
+                          i,
+                          "chevron-right",
+                          14.0,
+                          By(fn() { if hot() { @sf.theme().p.text } else { @sf.theme().p.muted } }),
+                          open,
+                        )
                       })
                       |> ignore
-                    },
-                    fn(gv) {
-                      gv.pick(fn() { if open() { Some(gk()) } else { None } }, fn(s, cur_gk) {
-                        guard cur_gk is Some(cur) else { return }
-                        s.fills_across(Is(true)).cuts_softly(Is(true)) |> ignore
-                        let g = @signals.untracked(content)
-                        let rs = items(g, "rows")
-                        let calls = rs.iter().any(fn(r) { text(Some(r), "kind") == "step" })
-                        group_rows_node(s, src, station, key, cur, rs, calls)
-                      })
-                    },
-                  )
+                      steps_box_node(h, h_grow_clip, fn(w) {
+                        w.box(fn(rw) {
+                          rw
+                          .words_runs(By(fn() { [@ui.span(summary(), mono=false)] }))
+                          .words_look(By(fn() { @ui.style_words(h_group_words) }))
+                          .ink(By(fn() { @ui.style_ink(if hot() { h_group_hot } else { h_group_words }) }))
+                          .cuts(Is(true))
+                          .min_width(Is(Some(0.0)))
+                          .allow_ellipsis(Is(true))
+                          |> ignore
+                        })
+                        |> ignore
+                      }, in_row=true)
+                      if has_failures {
+                        let failures_sig = @signals.computed(
+                          fn(_) { number(content(), "failures").to_int() },
+                          same=fn(a, b) { a == b },
+                        )
+                        @sf.badge_node(h, fn() {
+                          @sf.t("web-main.history.failures", args=[("n", failures_sig.get().to_string())])
+                        }, tone=Red)
+                        |> ignore
+                      }
+                      if has_pending {
+                        let pending_sig = @signals.computed(
+                          fn(_) { number(content(), "pending").to_int() },
+                          same=fn(a, b) { a == b },
+                        )
+                        @sf.badge_node(h, fn() {
+                          @sf.t("web-main.history.pending", args=[("n", pending_sig.get().to_string())])
+                        }, tone=Accented)
+                        |> ignore
+                      }
+                      ignore(src)
+                      ignore(key)
+                      ignore(tips)
+                    })
+                    |> ignore
+                  })
                 }
                 4 => {
                   let line_sig = @signals.computed(fn(_) { text(content(), "line") }, same=fn(a, b) { a == b })
-                  ev_live_node(m, "said", fn() { "" }, rail_last=has_rail, fn(eb) {
+                  ev_live_node(m, "said", fn() { "" }, rail_last=has_rail, fixed_h=20.0, fn(eb) {
                     steps_box_node(eb, h_one, fn(o) { steps_words(o, fn() { line_sig.get() }, h_one_words) })
                   })
                 }
