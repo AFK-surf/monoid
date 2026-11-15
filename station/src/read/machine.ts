@@ -5,7 +5,7 @@
 //
 // Directories are read in the order the file system gives (opendir, as Rust's read_dir), not sorted: which of equally
 // recent files comes first, and which project a Claude session is found in first, stay the Rust's.
-import { type Dirent, closeSync, opendirSync, openSync, readSync, statSync } from "node:fs";
+import { type Dirent, closeSync, lstatSync, opendirSync, openSync, readSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { type Lang, tr } from "../ops/i18n.ts";
 import { type Json, type Store, sessionOfRuntime } from "./store.ts";
@@ -332,7 +332,11 @@ export function rolloutsIn(dir: string, out: string[], most: { depth?: number; e
       const path = join(at, entry.name);
       if (entry.isDirectory()) {
         if (depth >= depthMost) short = true;
-        else if (statSync(path, { throwIfNoEntry: false, bigint: true })?.dev === root.dev) visit(path, depth + 1);
+        else {
+          // (lstat: a directory made a link since it was listed is not followed)
+          const sub = lstatSync(path, { throwIfNoEntry: false, bigint: true });
+          if (sub?.isDirectory() && sub.dev === root.dev) visit(path, depth + 1);
+        }
       } else if (entry.name.startsWith("rollout-") && extension(entry.name) === "jsonl") out.push(path);
     }
   };

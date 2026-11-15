@@ -157,18 +157,21 @@ test("background work is wrapped so its CPU and disk yield: taskpolicy, ionice a
   assert.deepEqual(backgroundedOn({ kind: "none" }, "/bin/x", ["-a"]), ["/bin/x", ["-a"]]);
 });
 
-test("the MoonBit builders run as background work, the readers that answer devices and a restore do not", () => {
-  assert.equal(backgroundByDefault(["--builder", "search", "--db", "x"]), true);
-  assert.equal(backgroundByDefault(["--builder", "replica-export", "--db", "x"]), true);
-  assert.equal(backgroundByDefault(["--builder", "replica-restore", "--db", "x"]), false);
-  assert.equal(backgroundByDefault(["--builder", "mesh"]), false);
+test("only the builders nobody waits on run as background work, not those answering requests or the readers", () => {
+  for (const kind of ["replica-export", "session-backfill", "post-blocks", "session-counts", "usage-retire", "usage-scope", "signin-save"]) {
+    assert.equal(backgroundByDefault(["--builder", kind, "--db", "x"]), true, kind);
+  }
+  for (const kind of ["search", "vault-uses", "usage-check", "live-locator", "outflow-chats", "session-list", "card-posts", "cc-index", "replica-restore", "mesh"]) {
+    assert.equal(backgroundByDefault(["--builder", kind, "--db", "x"]), false, kind);
+  }
   assert.equal(backgroundByDefault(["--data", "d", "--sep", "/"]), false);
   assert.equal(backgroundByDefault(["--data", "d", "--sep", "/", "--serve", "p"]), false);
   assert.equal(backgroundByDefault(["--sessions", "1", "--data", "d"]), false);
   assert.deepEqual(mbSpawned("/r", ["--data", "d"]), ["/r", ["--data", "d"]]);
-  assert.deepEqual(mbSpawned("/r", ["--builder", "cc-index"]), platform.backgrounded("/r", ["--builder", "cc-index"]));
-  assert.deepEqual(mbSpawned("/r", ["--builder", "cc-index"], { background: false }), ["/r", ["--builder", "cc-index"]]);
-  assert.deepEqual(mbSpawned("/r", ["--data", "d"], { background: true }), platform.backgrounded("/r", ["--data", "d"]));
+  assert.deepEqual(mbSpawned("/r", ["--builder", "cc-index"]), ["/r", ["--builder", "cc-index"]]);
+  assert.deepEqual(mbSpawned("/r", ["--builder", "replica-export"]), platform.backgrounded("/r", ["--builder", "replica-export"]));
+  assert.deepEqual(mbSpawned("/r", ["--builder", "replica-export"], { background: false }), ["/r", ["--builder", "replica-export"]]);
+  assert.deepEqual(mbSpawned("/r", ["--builder", "session-list"], { background: true }), platform.backgrounded("/r", ["--builder", "session-list"]));
 });
 
 test("a command started as background work keeps its pid, its stdin and stdout, and its exit code", async () => {
