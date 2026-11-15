@@ -2,8 +2,8 @@
 // nothing: one dialog in the middle of the window (dialog_layer_node, its frame panel_centred_node's) whose steps are
 // pages of it, as a sheet's are on 小屏 (sheet_node: panel_page's `more`): the one that shows in its column, those
 // before it off to its start, kept as they were left; a step in slides in from its end over the one before as that one
-// slides off, the dialog as tall as the one that shows (at once: no way of its height yet); back (its back key, Escape,
-// the system's back) slides it away again, the one before back in place as it was left. Each step its own head (its
+// slides off, the dialog going to the height of the one that shows, the window's middle with it; back (its back key,
+// Escape, the system's back) slides it away again, the one before back in place as it was left. Each step its own head (its
 // back key past the first, its title) under the close button over the dialog's corner, what it says under it, what it
 // holds and its foot on the dialog's words' line, as a titled dialog's. A press outside and its close button close all
 // of it.
@@ -36,169 +36,178 @@ fn steps_centred_node(
   dialog_layer_node(parent, open, cancel, outside=true, shown~, gone~, dims~, covered~, within=back, fn(across, layer, look, veil) {
     let w = fn() { dmin(if x.wide { dialog_wide_w } else { dialog_w }, over_room(layer).0 - dialog_margin) }
     let words_in = panel_words - dialog_pad
-    across.box(fn(d) {
-      d
-      .width(By(fn() { Some(w()) }))
-      .max_height(By(fn() { Some(dmax(0.0, over_room(layer).1 - dialog_room)) }))
-      .padding(Is((0.0, 0.0, 0.0, 0.0)))
-      .radius(Is(dialog_r))
-      .ground(By(fn() { panel_ground() }))
-      .edge(By(fn() { (1.0, @ui.tree_theme().color(Line)) }))
-      .shadow(By(fn() { (dialog_shadow, dialog_shadow_y, library_theme().p.shadow) }))
-      .clips(Is(true))
-      .alpha(By(fn() { look().alpha }))
-      .scale(By(fn() { look().sx }))
-      .offset(By(fn() { (look().dx, look().dy) }))
-      // (read out by its own title: what its steps say is theirs)
-      .says(Is(Some(@view.said(Dialog, label=x.title, description=x.description))))
-      |> ground_node
-      |> ignore
-      // (each page's slide: where it is off to the dialog's side, in its widths (0 in place, -1 off to its start, 1 off
-      // to its end), from where, to where, from when and how long, said as a page is put on or taken off; sheet_node's)
-      let ways : Map[Int, @signals.Signal[(Double, Double, Double, Double)]] = Map([])
-      let way_at = fn(wy : (Double, Double, Double, Double), t : Double) {
-        wy.1 + @ui.move_path(wy.0 - wy.1, 0.0, t - wy.2, wy.3).0
-      }
-      // (each page off to a side once its slide there is over: laid out nowhere then, kept as it was left)
-      let aways : Map[Int, @signals.Signal[Bool]] = Map([])
-      let dues : Map[Int, () -> Unit] = Map([])
-      let away_after = fn(n : Int, wy : (Double, Double, Double, Double)) {
-        match dues.get(n) {
-          Some(f) => f()
-          None => ()
+    // (in a column of its own in the window's middle: its height's way down that column, View::resizes)
+    across.box(fn(column) {
+      column.box(fn(d) {
+        d
+        .width(By(fn() { Some(w()) }))
+        .max_height(By(fn() { Some(dmax(0.0, over_room(layer).1 - dialog_room)) }))
+        .padding(Is((0.0, 0.0, 0.0, 0.0)))
+        .radius(Is(dialog_r))
+        .ground(By(fn() { panel_ground() }))
+        .edge(By(fn() { (1.0, @ui.tree_theme().color(Line)) }))
+        .shadow(By(fn() { (dialog_shadow, dialog_shadow_y, library_theme().p.shadow) }))
+        .clips(Is(true))
+        .alpha(By(fn() { look().alpha }))
+        .scale(By(fn() { look().sx }))
+        .offset(By(fn() { (look().dx, look().dy) }))
+        // (read out by its own title: what its steps say is theirs)
+        .says(Is(Some(@view.said(Dialog, label=x.title, description=x.description))))
+        |> ground_node
+        |> ignore
+        // (another step put on or taken off: the dialog from as tall as it is now to as tall as the one that shows makes
+        // it, one way down the column it stands in (View::resizes), the window's middle following it; said before the
+        // step changes, while it is laid out as it was: steps_reshaping)
+        steps_reshaping[keyed.serial] = fn() { d.resizes() |> ignore }
+        d.owns(fn() { steps_reshaping.remove(keyed.serial) }) |> ignore
+        // (each page's slide: where it is off to the dialog's side, in its widths (0 in place, -1 off to its start, 1 off
+        // to its end), from where, to where, from when and how long, said as a page is put on or taken off; sheet_node's)
+        let ways : Map[Int, @signals.Signal[(Double, Double, Double, Double)]] = Map([])
+        let way_at = fn(wy : (Double, Double, Double, Double), t : Double) {
+          wy.1 + @ui.move_path(wy.0 - wy.1, 0.0, t - wy.2, wy.3).0
         }
-        dues.remove(n)
-        guard aways.get(n) is Some(a) else { return }
-        a.set(false)
-        if wy.1 != 0.0 {
-          dues[n] = layer.at_moment(wy.2 + wy.3, fn() { a.set(true) })
-        }
-      }
-      let made_with : Ref[Bool] = Ref(true)
-      let top = fn() {
-        let all = pages()
-        all[all.length() - 1].0
-      }
-      let shown_was : Ref[Array[Int]] = Ref(@signals.untracked(fn() { pages().map(fn(pg) { pg.0 }) }))
-      d.reacts(at_start=false, fn() { pages().map(fn(pg) { pg.0 }) }, fn(ids) {
-        let was = shown_was.val
-        shown_was.val = ids
-        guard ids.length() > 0 && was.length() > 0 && ids[ids.length() - 1] != was[was.length() - 1] else { return }
-        let at = d.cause_at()
-        let dur = @ui.move_ms(w())
-        let go = fn(n : Int, to : Double) {
-          match ways.get(n) {
-            Some(wy) => {
-              wy.set((way_at(wy.untracked(), at), to, at, dur))
-              away_after(n, wy.untracked())
-            }
+        // (each page off to a side once its slide there is over: laid out nowhere then, kept as it was left)
+        let aways : Map[Int, @signals.Signal[Bool]] = Map([])
+        let dues : Map[Int, () -> Unit] = Map([])
+        let away_after = fn(n : Int, wy : (Double, Double, Double, Double)) {
+          match dues.get(n) {
+            Some(f) => f()
             None => ()
           }
+          dues.remove(n)
+          guard aways.get(n) is Some(a) else { return }
+          a.set(false)
+          if wy.1 != 0.0 {
+            dues[n] = layer.at_moment(wy.2 + wy.3, fn() { a.set(true) })
+          }
         }
-        let showed = was[was.length() - 1]
-        for n in was {
-          if !ids.contains(n) {
-            if n == showed {
-              go(n, 1.0)
-            } else {
-              match ways.get(n) {
-                Some(wy) => wy.set((1.0, 1.0, at, 0.0))
-                None => ()
+        let made_with : Ref[Bool] = Ref(true)
+        let top = fn() {
+          let all = pages()
+          all[all.length() - 1].0
+        }
+        let shown_was : Ref[Array[Int]] = Ref(@signals.untracked(fn() { pages().map(fn(pg) { pg.0 }) }))
+        d.reacts(at_start=false, fn() { pages().map(fn(pg) { pg.0 }) }, fn(ids) {
+          let was = shown_was.val
+          shown_was.val = ids
+          guard ids.length() > 0 && was.length() > 0 && ids[ids.length() - 1] != was[was.length() - 1] else { return }
+          let at = d.cause_at()
+          let dur = @ui.move_ms(w())
+          let go = fn(n : Int, to : Double) {
+            match ways.get(n) {
+              Some(wy) => {
+                wy.set((way_at(wy.untracked(), at), to, at, dur))
+                away_after(n, wy.untracked())
+              }
+              None => ()
+            }
+          }
+          let showed = was[was.length() - 1]
+          for n in was {
+            if !ids.contains(n) {
+              if n == showed {
+                go(n, 1.0)
+              } else {
+                match ways.get(n) {
+                  Some(wy) => wy.set((1.0, 1.0, at, 0.0))
+                  None => ()
+                }
               }
             }
           }
-        }
-        for i, n in ids {
-          go(n, if i + 1 == ids.length() { 0.0 } else { -1.0 })
-        }
-      })
-      // (its pages: the one that shows in its column, as tall as it makes the dialog; the rest over it, off to its sides
-      // (cut off by it), kept as they were left)
-      d.box(fn(stack) {
-        stack.clips(Is(true)).shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
-        stack.each(
-          leave=1.0,
-          fn() { pages().map(fn(pg) { pg.0 }) },
-          fn(k) { k },
-          fn(page, item) {
-            let k = item.untracked()
-            guard @signals.untracked(fn() { pages().iter().find_first(fn(pg) { pg.0 == k }) }) is Some((_, px)) else {
-              return
-            }
-            let shows = fn() { top() == k }
-            let slide = (d.cause_at(), @ui.move_ms(@signals.untracked(w)))
-            let way = @signals.signal(
-              if made_with.val {
-                if k == @signals.untracked(top) {
-                  (0.0, 0.0, 0.0, 0.0)
-                } else {
-                  (-1.0, -1.0, 0.0, 0.0)
-                }
-              } else {
-                (1.0, 0.0, slide.0, slide.1)
-              },
-              same=fn(a, b) { a == b },
-            )
-            ways[k] = way
-            aways[k] = @signals.signal(way.untracked().1 != 0.0)
-            page.owns(fn() {
-              ways.remove(k)
-              aways.remove(k)
-              match dues.get(k) {
-                Some(f) => f()
-                None => ()
+          for i, n in ids {
+            go(n, if i + 1 == ids.length() { 0.0 } else { -1.0 })
+          }
+        })
+        // (its pages: the one that shows in its column, as tall as it makes the dialog; the rest over it, off to its sides
+        // (cut off by it), kept as they were left)
+        d.box(fn(stack) {
+          stack.clips(Is(true)).shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+          stack.each(
+            leave=1.0,
+            fn() { pages().map(fn(pg) { pg.0 }) },
+            fn(k) { k },
+            fn(page, item) {
+              let k = item.untracked()
+              guard @signals.untracked(fn() { pages().iter().find_first(fn(pg) { pg.0 == k }) }) is Some((_, px)) else {
+                return
               }
-              dues.remove(k)
+              let shows = fn() { top() == k }
+              let slide = (d.cause_at(), @ui.move_ms(@signals.untracked(w)))
+              let way = @signals.signal(
+                if made_with.val {
+                  if k == @signals.untracked(top) {
+                    (0.0, 0.0, 0.0, 0.0)
+                  } else {
+                    (-1.0, -1.0, 0.0, 0.0)
+                  }
+                } else {
+                  (1.0, 0.0, slide.0, slide.1)
+                },
+                same=fn(a, b) { a == b },
+              )
+              ways[k] = way
+              aways[k] = @signals.signal(way.untracked().1 != 0.0)
+              page.owns(fn() {
+                ways.remove(k)
+                aways.remove(k)
+                match dues.get(k) {
+                  Some(f) => f()
+                  None => ()
+                }
+                dues.remove(k)
+              })
+              |> ignore
+              let away = aways[k]
+              page
+              .over(By(fn() { !shows() }))
+              .laid_nowhere(By(fn() { away.get() }))
+              // (none of it seen while it is away)
+              .alpha(By(fn() { if away.get() { 0.0 } else { 1.0 } }))
+              .shrink(Is(1.0))
+              .min_height(Is(Some(0.0)))
+              .presses(By(shows))
+              .hides(By(fn() { !shows() }))
+              .moved_by(
+                fn(pw, _, t) { (way_at(way.get(), t) * pw, 0.0) },
+                fn(_, _) {
+                  let wy = way.get()
+                  wy.2 + wy.3
+                },
+                holds_leaving=true,
+              )
+              |> ignore
+              step_page_node(page, px, k, close, keyed, look, words_in, fn() { back() |> ignore })
+            },
+          )
+          made_with.val = false
+        })
+        |> ignore
+        // (its close button over its steps, in its corner concentric with it, laid after them: a step sliding in or away
+        // under it; no stop of Tab's, as the old one's: a press, Escape and back close it)
+        d.box(fn(o) {
+          o.over(Is(true)).width(By(fn() { Some(w()) })) |> ignore
+          o.box(fn(row) {
+            style_node(row, fn() { dialog_close_row })
+            row.alpha(By(fn() { look().words })) |> ignore
+            row.box(fn(at) {
+              style_node(at, fn() { dialog_close_corner() })
+              icon_button_node(at, "close", fn() { t("common.close") }, fn() {
+                field_let_go(keyed)
+                cancel()
+              }, size=dialog_close)
+              .tab_stop(Is(false))
+              |> ignore
             })
-            |> ignore
-            let away = aways[k]
-            page
-            .over(By(fn() { !shows() }))
-            .laid_nowhere(By(fn() { away.get() }))
-            // (none of it seen while it is away)
-            .alpha(By(fn() { if away.get() { 0.0 } else { 1.0 } }))
-            .shrink(Is(1.0))
-            .min_height(Is(Some(0.0)))
-            .presses(By(shows))
-            .hides(By(fn() { !shows() }))
-            .moved_by(
-              fn(pw, _, t) { (way_at(way.get(), t) * pw, 0.0) },
-              fn(_, _) {
-                let wy = way.get()
-                wy.2 + wy.3
-              },
-              holds_leaving=true,
-            )
-            |> ignore
-            step_page_node(page, px, k, close, keyed, look, words_in, fn() { back() |> ignore })
-          },
-        )
-        made_with.val = false
-      })
-      |> ignore
-      // (its close button over its steps, in its corner concentric with it, laid after them: a step sliding in or away
-      // under it; no stop of Tab's, as the old one's: a press, Escape and back close it)
-      d.box(fn(o) {
-        o.over(Is(true)).width(By(fn() { Some(w()) })) |> ignore
-        o.box(fn(row) {
-          style_node(row, fn() { dialog_close_row })
-          row.alpha(By(fn() { look().words })) |> ignore
-          row.box(fn(at) {
-            style_node(at, fn() { dialog_close_corner() })
-            icon_button_node(at, "close", fn() { t("common.close") }, fn() {
-              field_let_go(keyed)
-              cancel()
-            }, size=dialog_close)
-            .tab_stop(Is(false))
             |> ignore
           })
           |> ignore
         })
         |> ignore
+        // (another dialog over it: dimmed over all of itself, its corners its own)
+        d.box(fn(v) { v.over(Is(true)).radius(Is(dialog_r)).ground(By(veil)) |> ignore }) |> ignore
       })
       |> ignore
-      // (another dialog over it: dimmed over all of itself, its corners its own)
-      d.box(fn(v) { v.over(Is(true)).radius(Is(dialog_r)).ground(By(veil)) |> ignore }) |> ignore
     })
     |> ignore
     layer
@@ -303,3 +312,9 @@ fn step_page_node(
     None => ()
   }
 }
+
+///|
+/// What each centred panel in steps (by its presented's serial) says as a step of it is put on or taken off, before
+/// that changes what it shows: its height's way from as it is laid out then (steps_centred_node's).
+// kept across runs: what each dialog in steps says, let go with it
+let steps_reshaping : Map[Int, () -> Unit] = Map([])

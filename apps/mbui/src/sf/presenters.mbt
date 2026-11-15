@@ -1566,6 +1566,11 @@ fn panel_page(p : Presented, x : PanelOf, from : Anchor, gone : () -> Unit) -> U
     Some(f) => p.stands = f()
     None => ()
   }
+  // (a dialog in steps to its new step's height, from as it is now)
+  match steps_reshaping.get(p.serial) {
+    Some(f) => f()
+    None => ()
+  }
   @signals.start_batch()
   p.more.set([..p.more.untracked(), { n: p.steps_made, x, from, gone }])
   presented_told()
@@ -1582,6 +1587,10 @@ fn panel_pop(p : Presented) -> Bool {
   // (how tall it stands now, for the page before to set out from: sheet_node's `stood`)
   match p.stands_now {
     Some(f) => p.stands = f()
+    None => ()
+  }
+  match steps_reshaping.get(p.serial) {
+    Some(f) => f()
     None => ()
   }
   p.more.set(more[:more.length() - 1].to_owned())
