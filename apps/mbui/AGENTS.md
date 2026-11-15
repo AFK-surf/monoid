@@ -23,11 +23,9 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
 
 ## The app
 
-- The released apps are this one: Android's since 2026-10-24, the Mac's and Windows' since 2026-10-26, each built in
-  the place of the one before it. Nothing else of still.fail's apps is developed; the web runs this app too (2026-10-31: mbui's
-  web host draws it on the web's own core, `web/mbui.html`, `scripts/web-app.sh`), so a page is made here once for
-  every screen. What is left in `web/` is the web's host of this app and a few pages of its own (sign-in's way back, the share page,
-  the admin's console), in Preact.
+- This is still.fail's only app, on every platform and on the web (mbui's web host draws it on the web's own core:
+  `web/mbui.html`, `scripts/web-app.sh`), so a page is made here once for every screen. `web/` keeps only that host and
+  a few pages of its own (sign-in's way back, the share page, the admin's console).
 - What the app looks like and how it moves is what it does now; a change means to differ and says why. Nothing in this
   repository compares mbui with itself (#881 took that out); do not bring it back.
 - A change people can see (timing, rhythm, what is shown) says so in its PR with old and new side by side.
@@ -83,7 +81,7 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
   - `src/sf` is the component library (above).
   - `src/sfbase` is the model: the core's topics and calls (`Source`), the views, the pages (`Page`, `app.nav`), the
     app-level things, and the shared machinery. It imports the library and the settings' routes, nothing of the pages.
-  - `src/sfdesk` holds the pages ported from the web, and the Medium and Large frame.
+  - `src/sfdesk` holds the Medium and Large pages not merged yet, and the Medium and Large frame.
   - `src/sfapp` holds the phone's first pages and the Small frame. It takes `sfbase`'s names in by
     `pub using` (`src/sfapp/base.mbt`) and calls `sfdesk`'s as `@sfdesk.…`.
   - `src/sfpages` holds the pages already merged, one for every screen; `sfdesk` and `sfapp` import it.
@@ -98,7 +96,8 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
     parts', the presenters' and the shell's (the same on every screen and what differs); a page
     that needs it asks the library for a part. Nor on `@ui.pointing()`: the hand reaches a page only through the
     library's primitives (`c.lit`, `c.menu_asked`, tips).
-  - A page is designed once from what it is for. The merged page is no worse on either screen than its copy was there, shown before and after.
+  - A page is designed once from what it is for; the merged page is no worse on any screen than its copy in `sfdesk`
+    or `sfapp` was, shown before and after.
   - A place of the bar never opens on its bones when the device holds what it shows (the user, 2026-11-10): the list
     it opens on is one of sfbase's `lasting` (shown again at once) and of `place_reads` (asked ahead of it). A new
     place, or another list a place opens on, goes in both; `src/sfapp/place_first_wbtest.mbt` holds every place.
