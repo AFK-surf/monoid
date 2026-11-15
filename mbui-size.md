@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [fa7b51fd4](https://github.com/AFK-surf/monoid/commit/fa7b51fd4b4b45ffff4a5aa073c69808e0a2faa3) mbui app: the chat's page made as nodes lets go of | 2.07 | 2.84 | 12.23 | 32.11 | 45.29 | 28.7 | 56.46 | 98.63 | 114.98 |
 | [41edf8633](https://github.com/AFK-surf/monoid/commit/41edf86331a001ebf7571a41c4e7e3b705920631) mbui: what is laid out nowhere is not laid out aga | 2.06 | 2.84 | 12.23 | 32.11 | 45.29 | 28.7 | 56.46 | 98.57 | 108.48 |
 | [1a99bf08c](https://github.com/AFK-surf/monoid/commit/1a99bf08c1c9fcdea7e1a5a1182e6ed504c7bfae) mbui: the spacing rules see the window's tree's wo | 2.06 | 2.84 | 12.23 | 32.11 | 45.29 | 28.7 | 56.46 | 98.57 | 108.48 |
 | [d3ae79786](https://github.com/AFK-surf/monoid/commit/d3ae797865d8aac0c8b19ef9e166a114f4d6f6fa) apps/mbui AGENTS.md: nothing points to the apps be | 2.06 | 2.84 | 12.23 | 32.11 | 45.28 | 28.7 | 56.46 | 98.67 | 112.33 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [85119b95f](https://github.com/AFK-surf/monoid/commit/85119b95f7981afd5f533ba68cfb699dd93b819c) core: farview.view and farview.send carry a Farvie | 2.01 | 2.76 | 11.86 | 31.75 | 44.19 | 28.37 | 55.56 | 98.03 | 110.99 |
 | [d9843e2c7](https://github.com/AFK-surf/monoid/commit/d9843e2c718d73954fe8a6c17ee1540040b23421) mbui app: switches_still's tests 52-68 cut at 60,  | 2.01 | 2.76 | 11.86 | 31.73 | 44.19 | 28.34 | 55.51 | 97.99 | 112.55 |
 | [ccb596e15](https://github.com/AFK-surf/monoid/commit/ccb596e15dff188924f64bfc807e284ead6a315a) mbui film, app: a picture says every rule its fram | 2.01 | 2.76 | 11.86 | 31.73 | 43.86 | 28.34 | 55.51 | 97.24 | 106.15 |
-| [dde6fa102](https://github.com/AFK-surf/monoid/commit/dde6fa102d3d2d63bbacb78ed807d2a66b06ba40) mbui app: the chat's page made as nodes has its 对话 | 2.01 | 2.76 | 11.86 | 31.73 | 43.86 | 28.34 | 55.51 | 97.24 | 106.15 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [fa7b51fd4](https://github.com/AFK-surf/monoid/commit/fa7b51fd4b4b45ffff4a5aa073c69808e0a2faa3) mbui app: the chat's page made as nodes lets go of | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.49 |
 | [41edf8633](https://github.com/AFK-surf/monoid/commit/41edf86331a001ebf7571a41c4e7e3b705920631) mbui: what is laid out nowhere is not laid out aga | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.49 |
 | [1a99bf08c](https://github.com/AFK-surf/monoid/commit/1a99bf08c1c9fcdea7e1a5a1182e6ed504c7bfae) mbui: the spacing rules see the window's tree's wo | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.31 |
 | [d3ae79786](https://github.com/AFK-surf/monoid/commit/d3ae797865d8aac0c8b19ef9e166a114f4d6f6fa) apps/mbui AGENTS.md: nothing points to the apps be | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.31 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [85119b95f](https://github.com/AFK-surf/monoid/commit/85119b95f7981afd5f533ba68cfb699dd93b819c) core: farview.view and farview.send carry a Farvie | 0.4 | 0.52 | 1.96 | 3.08 | 4.51 | 1.45 | 3.8 | 57.28 |
 | [d9843e2c7](https://github.com/AFK-surf/monoid/commit/d9843e2c718d73954fe8a6c17ee1540040b23421) mbui app: switches_still's tests 52-68 cut at 60,  | 0.4 | 0.52 | 1.96 | 3.08 | 4.51 | 1.45 | 3.8 | 57.28 |
 | [ccb596e15](https://github.com/AFK-surf/monoid/commit/ccb596e15dff188924f64bfc807e284ead6a315a) mbui film, app: a picture says every rule its fram | 0.4 | 0.52 | 1.96 | 3.08 | 4.51 | 1.45 | 3.8 | 57.28 |
-| [dde6fa102](https://github.com/AFK-surf/monoid/commit/dde6fa102d3d2d63bbacb78ed807d2a66b06ba40) mbui app: the chat's page made as nodes has its 对话 | 0.4 | 0.52 | 1.96 | 3.08 | 4.51 | 1.45 | 3.8 | 57.69 |
