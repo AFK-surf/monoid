@@ -19,7 +19,8 @@ chats paused 18 minutes, a half-moved state, no way back), whose start stays swi
   "needs" is "usable on this station" (an account moved away that this station borrows stops nothing, `usableHere`). A
   stopped chat is held as one being handed over is: no turn, its jobs stopped and kept, what is said to it kept in its
   logs and delivered once where it ends up; nothing posted, its agent not woken. It goes on as what it waits for comes
-  back, or as it moves itself. The plan says what a move would stop (`wouldStop`).
+  back, or as it moves itself. The plan says what a move would stop (`wouldStop`), by the turn's own predicate
+  (scheduler `#stoppable`: only an item whose module has `stop`; a routed connect goes on, its threads routed).
 - An item may go, either way, to where something it needs is not usable: it arrives there stopped, waiting for that,
   and goes on as it arrives (the owner's rule both ways, 2026-11-14). The stopped set is each station's own: the one an
   item arrives at keeps it (a hand-over's `stoppedFor`, scheduler `noteStopped`), and is told as what it waits for
