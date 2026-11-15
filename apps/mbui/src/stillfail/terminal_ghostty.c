@@ -3,7 +3,14 @@
 // place). A terminal: libghostty-vt's, read through its render state as mbui's hostapi/terminal.mbt says the lines
 // come: {"cols","rows","cursor":[x,y,shown],"keys","lines":[[["text","#rrggbb"|"","#rrggbb"|"",flags],…],…]}, a run a
 // stretch of cells of one look, the cursor's cell inverse where it shows. Built without libghostty-vt's headers this
-// file is empty.
+// file is only its mark.
+//
+// The mark: the Mac's link asks for it (src/stillfail/moon.pkg's `-Wl,-u,_sf_terminal_linked`), so this file's object
+// is taken out of the package's archive. A linker takes an archive's object only for a symbol still undefined, and
+// term.h's weak calls define them already: without it the Mac's apps had none of these, so no terminal
+// (0.1.9323-0.1.9417).
+int sf_terminal_linked = 1;
+
 #if __has_include(<ghostty/vt.h>)
 #include <ghostty/vt.h>
 #include <moonbit.h>

@@ -21,10 +21,10 @@ if [ $APP = coredemo ] || [ $APP = stillfail ]; then
     # again)
     exe=$A/_build/native/${MODE:-release}/build/stillfail/$APP/$APP.exe
     [ ! -f "$exe" ] || [ ! "$A/out/core/aarch64-apple-darwin/libmbui_core.a" -nt "$exe" ] || touch "$A/src/$APP/core_engine.m"
-    # (nor libghostty-vt's headers: src/stillfail/terminal_ghostty.c is empty when they are not there, and moon compiles
-    # a stub again only when its mtime changes, which scripts/moon-mtimes.sh makes its content's: one compiled empty
-    # once stayed so in CI's moon cache, and the releases had no terminal, 0.1.9323-0.1.9408. An app without the
-    # library's calls has the stub touched, so it is compiled again with them.)
+    # (nor libghostty-vt's headers: src/stillfail/terminal_ghostty.c is its mark alone when they are not there, and moon
+    # compiles a stub again only when its mtime changes, which scripts/moon-mtimes.sh makes its content's, so one
+    # compiled so once would stay so in CI's moon cache. An app without the library's calls has the stub touched, so it
+    # is compiled again with them.)
     if [ $APP = stillfail ] && [ -f "$exe" ] && ! nm "$exe" 2>/dev/null | grep -q ' _ghostty_terminal_new$'; then
       touch "$A/src/$APP/terminal_ghostty.c"
     fi
