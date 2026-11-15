@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [bb437c67c](https://github.com/AFK-surf/monoid/commit/bb437c67c8db96273a097ec999014f66032bfbcb) base: Reply::tap, tap.opus, forget on closes, a sh | 2.12 | 2.95 | 12.72 | 33.79 | 50.29 | 29.19 | 57.93 | 99.35 | 111.54 |
 | [1923a7666](https://github.com/AFK-surf/monoid/commit/1923a766606f1d35b0d4b6030bc3217a30ec4a34) fix(mbui): improve Windows ClearType rendering and | 2.12 | 2.95 | 12.72 | 33.78 | 50.28 | 29.15 | 57.72 | 99.71 | 117.57 |
 | [3d78e1b6c](https://github.com/AFK-surf/monoid/commit/3d78e1b6c0eb45a1ffbd24b7840121797035f04f) mbui: gate derived lists by sameness so unchanged  | 2.12 | 2.95 | 12.72 | 33.78 | 50.28 | 29.15 | 57.72 | 99.71 | 117.57 |
 | [530753284](https://github.com/AFK-surf/monoid/commit/5307532845a692c34ca3bd1b717cd9b78252d1e5) mbui: ＋ 附件面板、已决定卡片详情、文件重名询问改为节点面板（old-panel 12 → 9 | 2.11 | 2.95 | 12.72 | 33.78 | 50.24 | 29.15 | 57.72 | 99.71 | 117.57 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [74b2a61d5](https://github.com/AFK-surf/monoid/commit/74b2a61d515e916bcc98e05bcfb4d6c85a25b016) perf(mbui): a list drawn whole as one read against | 2.08 | 2.86 | 12.3 | 33.23 | 47.9 | 28.74 | 56.48 | 98.83 | 110.66 |
 | [d27880374](https://github.com/AFK-surf/monoid/commit/d27880374d1f9b85e99b63d9ebd7ba8bfac4c4ef) Windows: a frame's beats counted from the frame be | 2.08 | 2.86 | 12.3 | 33.23 | 47.9 | 28.74 | 56.48 | 98.83 | 110.66 |
 | [676204c3e](https://github.com/AFK-surf/monoid/commit/676204c3e2065ce99ac2db3b00adfe9c4e12f4f0) perf(mbui): avoid per-frame full-tree back walk, s | 2.08 | 2.86 | 12.3 | 33.23 | 47.9 | 28.74 | 56.48 | 98.83 | 110.66 |
-| [f178dd119](https://github.com/AFK-surf/monoid/commit/f178dd1195b314f278ab90347cb0e8d430955310) station: an Antigravity CLI turn that only says it | 2.08 | 2.86 | 12.3 | 33.23 | 47.9 | 28.78 | 56.67 | 98.63 | 110.66 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [bb437c67c](https://github.com/AFK-surf/monoid/commit/bb437c67c8db96273a097ec999014f66032bfbcb) base: Reply::tap, tap.opus, forget on closes, a sh | 0.41 | 0.53 | 1.99 | 3.1 | 4.58 | 1.47 | 3.83 | 57.08 |
 | [1923a7666](https://github.com/AFK-surf/monoid/commit/1923a766606f1d35b0d4b6030bc3217a30ec4a34) fix(mbui): improve Windows ClearType rendering and | 0.41 | 0.53 | 1.99 | 3.1 | 4.58 | 1.47 | 3.83 | 57.08 |
 | [3d78e1b6c](https://github.com/AFK-surf/monoid/commit/3d78e1b6c0eb45a1ffbd24b7840121797035f04f) mbui: gate derived lists by sameness so unchanged  | 0.41 | 0.53 | 1.99 | 3.1 | 4.58 | 1.47 | 3.83 | 57.41 |
 | [530753284](https://github.com/AFK-surf/monoid/commit/5307532845a692c34ca3bd1b717cd9b78252d1e5) mbui: ＋ 附件面板、已决定卡片详情、文件重名询问改为节点面板（old-panel 12 → 9 | 0.41 | 0.53 | 1.99 | 3.1 | 4.58 | 1.47 | 3.83 | 57.41 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [74b2a61d5](https://github.com/AFK-surf/monoid/commit/74b2a61d515e916bcc98e05bcfb4d6c85a25b016) perf(mbui): a list drawn whole as one read against | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.12 |
 | [d27880374](https://github.com/AFK-surf/monoid/commit/d27880374d1f9b85e99b63d9ebd7ba8bfac4c4ef) Windows: a frame's beats counted from the frame be | 0.41 | 0.53 | 1.98 | 3.09 | 4.54 | 1.46 | 3.81 | 57.3 |
 | [676204c3e](https://github.com/AFK-surf/monoid/commit/676204c3e2065ce99ac2db3b00adfe9c4e12f4f0) perf(mbui): avoid per-frame full-tree back walk, s | 0.41 | 0.53 | 1.98 | 3.09 | 4.54 | 1.46 | 3.81 | 57.31 |
-| [f178dd119](https://github.com/AFK-surf/monoid/commit/f178dd1195b314f278ab90347cb0e8d430955310) station: an Antigravity CLI turn that only says it | 0.41 | 0.53 | 1.98 | 3.09 | 4.54 | 1.46 | 3.81 | 57.31 |
