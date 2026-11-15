@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [a21e6b92d](https://github.com/AFK-surf/monoid/commit/a21e6b92d69ff0ac813fd649719c3dc230de72d8) app: a tap on a Farview tab's page where the page  | 2.06 | 2.84 | 12.22 | 32.1 | 45.22 | 28.69 | 56.39 | 98.63 | 115.28 |
 | [3a009ac95](https://github.com/AFK-surf/monoid/commit/3a009ac957a34314f7ad4d9ba4c199b958a4f415) mbui app: words a finger picked on the chat's page | 2.06 | 2.84 | 12.22 | 32.1 | 45.22 | 28.69 | 56.39 | 98.62 | 112.61 |
 | [0c35eeb58](https://github.com/AFK-surf/monoid/commit/0c35eeb58164d1778b742b006e64f5843c7379f4) app: a wide strip in a message shows its start, no | 2.06 | 2.84 | 12.22 | 32.1 | 45.22 | 28.69 | 56.39 | 98.62 | 112.61 |
 | [13a2cad8f](https://github.com/AFK-surf/monoid/commit/13a2cad8f97d5f2179c908f8901c592ef525ac19) mbui: what is cut short in a column is no wider th | 2.06 | 2.84 | 12.22 | 32.1 | 45.21 | 28.69 | 56.39 | 98.7 | 123.89 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [de70d7eb6](https://github.com/AFK-surf/monoid/commit/de70d7eb6f49a20986279a592ae85b484af20f46) station: a MoonBit read's answer goes to Node as i | 2.01 | 2.76 | 11.87 | 31.72 | 43.86 | 28.33 | 55.51 | 97.08 | 109.15 |
 | [cf48243e5](https://github.com/AFK-surf/monoid/commit/cf48243e57cd199702aaac9a10fc9084a8013055) app tests: place-stations' 设置 changes once now (#6 | 2.01 | 2.76 | 11.87 | 31.72 | 43.86 | 28.34 | 55.51 | 96.9 | 116.08 |
 | [8183d3377](https://github.com/AFK-surf/monoid/commit/8183d33773f7fb12825960e5575fe11e177185e7) station: a Farview tab's clipboard both ways for t | 2.01 | 2.76 | 11.87 | 31.71 | 43.86 | 28.32 | 55.51 | 96.86 | 109.12 |
-| [192ae506c](https://github.com/AFK-surf/monoid/commit/192ae506c9422cdb9d1ff33cab286f6dbf83c95b) mbui: one height for what is pressed side by side  | 2.01 | 2.76 | 11.86 | 31.71 | 43.84 | 28.32 | 55.5 | 97.04 | 107.48 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [a21e6b92d](https://github.com/AFK-surf/monoid/commit/a21e6b92d69ff0ac813fd649719c3dc230de72d8) app: a tap on a Farview tab's page where the page  | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.46 |
 | [3a009ac95](https://github.com/AFK-surf/monoid/commit/3a009ac957a34314f7ad4d9ba4c199b958a4f415) mbui app: words a finger picked on the chat's page | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.46 |
 | [0c35eeb58](https://github.com/AFK-surf/monoid/commit/0c35eeb58164d1778b742b006e64f5843c7379f4) app: a wide strip in a message shows its start, no | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.46 |
 | [13a2cad8f](https://github.com/AFK-surf/monoid/commit/13a2cad8f97d5f2179c908f8901c592ef525ac19) mbui: what is cut short in a column is no wider th | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.46 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [de70d7eb6](https://github.com/AFK-surf/monoid/commit/de70d7eb6f49a20986279a592ae85b484af20f46) station: a MoonBit read's answer goes to Node as i | 0.4 | 0.52 | 1.96 | 3.08 | 4.46 | 1.45 | 3.8 | 57.46 |
 | [cf48243e5](https://github.com/AFK-surf/monoid/commit/cf48243e57cd199702aaac9a10fc9084a8013055) app tests: place-stations' 设置 changes once now (#6 | 0.4 | 0.52 | 1.96 | 3.08 | 4.46 | 1.45 | 3.8 | 57.46 |
 | [8183d3377](https://github.com/AFK-surf/monoid/commit/8183d33773f7fb12825960e5575fe11e177185e7) station: a Farview tab's clipboard both ways for t | 0.4 | 0.52 | 1.96 | 3.08 | 4.46 | 1.45 | 3.8 | 57.46 |
-| [192ae506c](https://github.com/AFK-surf/monoid/commit/192ae506c9422cdb9d1ff33cab286f6dbf83c95b) mbui: one height for what is pressed side by side  | 0.4 | 0.52 | 1.96 | 3.08 | 4.46 | 1.45 | 3.8 | 57.46 |
