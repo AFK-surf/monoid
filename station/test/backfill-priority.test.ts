@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { EventEmitter } from "node:events";
-import { syncBuiltinESMExports } from "node:module";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
-import workerThreads from "node:worker_threads";
 import { Store } from "../src/store/store.ts";
 import { giveBackfill, releaseStoppedBackfill, takeBackfill } from "../src/store/backfill.ts";
 import { MinuteReader } from "../src/usage/minute-reader.ts";
@@ -28,42 +28,30 @@ test("the station marks its writes as pending until they finish, including failu
 });
 
 test("a read-only coverage check does not wait for the previous process", async () => {
-  const original = workerThreads.Worker;
-  const workers: FakeWorker[] = [];
-  class FakeWorker extends EventEmitter {
-    posts: any[] = [];
-    constructor() { super(); workers.push(this); }
-    unref() { return this; }
-    postMessage(message: any) { this.posts.push(message); }
-    terminate() { return Promise.resolve(0); }
-  }
+  const dir = mkdtempSync(join(tmpdir(), "backfill-coverage-"));
+  const path = join(dir, "stillfail.db"), store = Store.open(path);
+  // (the minutes not filled: the checker, not the readers' knowing all is complete, answers)
+  store.db.exec("UPDATE usage_minute_all SET done = 0");
   let finish!: () => void;
   const previousGone = new Promise<void>((resolve) => { finish = resolve; });
-  (workerThreads as any).Worker = FakeWorker;
-  syncBuiltinESMExports();
-  const reader = new (MinuteReader as any)("unused", { previousGone }, null);
+  const reader = new MinuteReader(path, { previousGone });
   try {
-    const ready = reader.ready(null);
-    await Promise.resolve();
-    assert.equal(workers.length, 1, "the read-only worker can start before handover ends");
-    assert.equal(workers[0]!.posts.length, 1, "a page requested during handover is sent once");
-    workers[0]!.emit("message", { id: workers[0]!.posts[0].id });
-    await ready;
+    await assert.rejects(reader.ready(null), /historical minute statistics are unavailable/, "answered before handover ends");
     finish();
 
     let finishOther!: () => void;
     const otherHandover = new Promise<void>((resolve) => { finishOther = resolve; });
-    const stopping = new (MinuteReader as any)("unused", { previousGone: otherHandover }, null);
+    const stopping = new MinuteReader(path, { previousGone: otherHandover });
     const waiting = assert.rejects(stopping.ready(null), /station stopping/);
     await stopping.close();
     await waiting;
     finishOther();
     await Promise.resolve();
-    assert.equal(workers.length, 2, "a stopped station does not start another worker when handover later ends");
+    assert.equal(stopping.running, false, "a stopped station starts no checker when handover later ends");
   } finally {
     await reader.close();
-    (workerThreads as any).Worker = original;
-    syncBuiltinESMExports();
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 

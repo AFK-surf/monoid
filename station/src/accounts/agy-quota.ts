@@ -3,9 +3,9 @@
 // (ANTIGRAVITY_GEMINI_DIR=<home>/agy/.gemini; HOME=<home>/agy when its token is in a file, or the user's HOME when
 // kept in the macOS login keychain) without reading or embedding OAuth client credentials in the station.
 import { spawn } from "node:child_process";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { devNull } from "node:os";
-import { AGY_FILE_TOKENS, agyHome, agyTakeBack, geminiDir } from "../agents/agy.ts";
+import { AGY_FILE_TOKENS, agyCompany, agyHome, agyTakeBack, agyToken, geminiDir } from "../agents/agy.ts";
 import { type Env, platform } from "../platform/index.ts";
 import { type Lang, Said, stationLang, tr } from "../ops/i18n.ts";
 import { withShellCommand } from "../ops/shell-path.ts";
@@ -210,7 +210,12 @@ export async function agyQuota(home: string, sourceEnv: Env, urls: Urls, lang: L
   }
   const parsed = parseJsonLine(stdout);
   if (parsed !== null && parsed.status === "SUCCESS") {
-    return okOrUnavailable(agyWindows(parsed), tr(lang, "station.quota.agyNoWindows"));
+    const windows = agyWindows(parsed);
+    // A company's account paying as it goes (a Google Cloud project with no subscription) has no windows to show.
+    if (windows.length === 0 && agyCompany(await readFile(agyToken(home), "utf8").catch(() => ""))) {
+      return { state: "unsupported", windows: [], detail: tr(lang, "station.quota.agyPayAsYouGo"), checkedAt: 0 };
+    }
+    return okOrUnavailable(windows, tr(lang, "station.quota.agyNoWindows"));
   }
   const detail = (typeof parsed?.error === "string" && parsed.error.trim() !== "" ? parsed.error.trim() : stderr.trim() || stdout.trim()).slice(0, 300);
   if (authFailure(detail)) {

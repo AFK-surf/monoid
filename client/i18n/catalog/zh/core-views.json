@@ -144,6 +144,8 @@
   "core-views.flow.key": "API key",
   "core-views.flow.key_card": "API key",
   "core-views.flow.key_card_hint": "使用 {name} 的 API key，按量计费",
+  "core-views.flow.enterprise": "企业版 · Gemini Enterprise",
+  "core-views.flow.enterprise_hint": "公司的 Google Workspace 或 Google Cloud 账号，用于运行 Antigravity CLI。用公司的 Google 账号登录一次，再贴回页面给的授权码；账号没分到许可证时，再填一个 Google Cloud 项目。Google 的条款不允许其他工具这样用，账号可能被停用。",
   "core-views.flow.key_notice": "key 仅保存在此 station 上",
   "core-views.flow.key_optional": "API key（可选）",
   "core-views.flow.not_yours": "此添加流程不属于当前页面",

@@ -8,6 +8,7 @@ import { pathToFileURL } from "node:url";
 import { SessionDirectoryBuilder } from "../src/sessions/session-directory-builder.ts";
 import { installSessionDirectories, sessionDirectoriesReady, sessionDirectoriesStep, sessionDirectory } from "../src/store/session-directory.ts";
 import { Store } from "../src/store/store.ts";
+import { endsAlways, theProgram } from "./programs.ts";
 
 const add = `INSERT INTO sessions(key,connect,scope,runtime,profile,workspace,cwd,token,created_at,last_active_at,archived_at)
   VALUES (?,'connected','thread','codex','default',?,?,?,0,?,?)`;
@@ -179,14 +180,13 @@ test("closing a directory lookup while the previous station is up settles the wa
 test("a later memory check retries a stopped directory worker", async () => {
   const dir = mkdtempSync(join(tmpdir(), "session-dir-retry-"));
   const store = Store.open(join(dir, "store.db")), worker = join(dir, "worker.mjs");
-  writeFileSync(worker, "process.exit(1);\n");
-  const builder = new SessionDirectoryBuilder(store, Promise.resolve(), pathToFileURL(worker));
+  endsAlways(worker);
+  const builder = new SessionDirectoryBuilder(store, Promise.resolve(), worker);
   try {
     store.db.prepare(add).run("session", "/session", null, "token", 1, null);
     assert.equal(builder.find("/session/sub"), null);
     await builder.settled();
-    const actual = new URL("../src/sessions/workspace-activity-worker.ts", import.meta.url).href;
-    writeFileSync(worker, `import ${JSON.stringify(actual)};\n`);
+    theProgram(worker);
     assert.equal(builder.find("/session/sub"), null);
     await builder.settled();
     assert.equal(builder.find("/session/sub")?.key, "session");

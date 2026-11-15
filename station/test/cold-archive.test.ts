@@ -335,12 +335,13 @@ test("a file linked twice counts once", async () => {
   rmSync(root, { recursive: true });
 });
 
-test("what can be made again", () => {
+test("what can be made again", async () => {
   const p = temp();
   write(join(p, "android/build.gradle.kts"), "x");
   write(join(p, "android/settings.gradle.kts"), "x");
-  assert.ok(rebuildable(join(p, "x/node_modules")) && rebuildable(join(p, "android/build")) && rebuildable(join(p, "android/.gradle")));
-  assert.ok(!rebuildable(join(p, "site/build")) && !rebuildable(join(p, "site/target")) && !rebuildable(join(p, "dist")));
+  write(join(p, "rs/Cargo.toml"), "x");
+  for (const dir of ["x/node_modules", "android/build", "android/.gradle", "rs/target"]) assert.equal(await rebuildable(join(p, dir)), true, dir);
+  for (const dir of ["site/build", "site/target", "dist"]) assert.equal(await rebuildable(join(p, dir)), false, dir);
   rmSync(p, { recursive: true });
 });
 

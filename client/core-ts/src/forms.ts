@@ -836,6 +836,10 @@ const PLANS: Record<string, { plan: string; provider: string }> = {
   agy: { plan: "Google AI", provider: "Google" },
 };
 const planOf = (runtime: string) => PLANS[runtime] ?? PLANS.claude!;
+/// Google's tile signs in a company's Google account too (Gemini Enterprise: `login.new` access agy-enterprise).
+const companyPlan = (tile: J): boolean => tile?.id === "google" && tile.hasPlan === true;
+/// How many ways a tile is connected by: a key, a plan, and Google's company plan.
+const waysOf = (tile: J): number => (tile.hasKey === true ? 1 : 0) + (tile.hasPlan === true ? 1 : 0) + (companyPlan(tile) ? 1 : 0);
 
 function usesOf(source: providers.Source, endpoint: string | null, protocol: string | null, runtimes: string[]): string[] {
   const own = source.endpointRequired ? (endpoint ?? providers.example(source.id)) : null;
@@ -941,12 +945,20 @@ function profileView(station: string, draft: J, overview: J, manages = false): J
     out.step = "method";
     out.choices = [
       { id: "plan", title: t("core-views.flow.plan", { plan }), hint: t(`core-views.flow.plan_hint.${opencode ? "opencode" : kimi ? "kimi" : runtime}`) },
-      { id: "key", title: t("core-views.flow.key_card"), hint: t("core-views.flow.key_card_hint", { name }) },
+      ...(companyPlan(tile) ? [{ id: "enterprise", title: t("core-views.flow.enterprise"), hint: t("core-views.flow.enterprise_hint") }] : []),
+      ...(tile.hasKey === true ? [{ id: "key", title: t("core-views.flow.key_card"), hint: t("core-views.flow.key_card_hint", { name }) }] : []),
     ];
     return out;
   }
   out.step = "connect";
   const kind = str(tile.kind, "api-provider");
+  if (method === "enterprise" && companyPlan(tile)) {
+    out.usesLine = t("core-views.flow.uses", { uses: runtimeName(runtime) });
+    const install = present.installView(runtime, arr(get(overview, "updates")), manages);
+    if (install !== null && install.state !== "installed") out.install = install;
+    else out.signIn = { runtime, access: "agy-enterprise", provider: planOf(runtime).provider };
+    return out;
+  }
   if (method === "plan") {
     if (opencode) {
       out.signIn = { runtime: "claude", access: "opencode-go", provider: "OpenCode" };
@@ -1053,17 +1065,17 @@ export class ProfileFlows {
         else {
           const tile = findTile(gs, patch.provider);
           if (tile === undefined) throw CoreError.invalid(t("core-views.flow.unknown_provider"));
-          const method = tile.hasKey === true && tile.hasPlan === true ? "" : tile.hasPlan === true ? "plan" : "key";
+          const method = waysOf(tile) > 1 ? "" : tile.hasPlan === true ? "plan" : "key";
           d.value = { ...blank(), provider: patch.provider, method };
         }
       }
       if (typeof patch.method === "string") {
-        if (!["", "plan", "key"].includes(patch.method)) throw CoreError.invalid(t("core-views.flow.unknown_provider"));
+        if (!["", "plan", "key", "enterprise"].includes(patch.method)) throw CoreError.invalid(t("core-views.flow.unknown_provider"));
         d.value.method = patch.method;
       }
       if (patch.back === true) {
         const tile = typeof d.value.provider === "string" ? findTile(gs, d.value.provider) : undefined;
-        const both = tile !== undefined && tile.hasKey === true && tile.hasPlan === true;
+        const both = tile !== undefined && waysOf(tile) > 1;
         if (both && typeof d.value.method === "string" && d.value.method !== "") d.value.method = "";
         else d.value = blank();
       }

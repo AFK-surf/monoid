@@ -36,6 +36,7 @@ import {
 } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { segments } from "../ops/paths.ts";
+import { walkBounded } from "../ops/walk.ts";
 import { link as symlinkOrStandIn } from "../ops/links.ts";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -247,6 +248,10 @@ const zstd = promisify(zstdCompress);
 
 /// `source` put away into `path` as a transcript is (read/packed.ts): a frame for each SEGMENT of it (up to the end of
 /// its last line), each compressed as `compressor` does, then the frames' table; on disk before this returns.
+/// What of `all` goes on to the next segment, after `cut`: a copy, as a view of `all` would keep the whole of it (SEGMENT
+/// and more) in memory while the next segment comes.
+export const heldAfter = (all: Buffer, cut: number): Buffer[] => (cut < all.length ? [Buffer.from(all.subarray(cut))] : []);
+
 async function segmentInto(path: string, source: AsyncIterable<Buffer>): Promise<void> {
   const file = await open(path, "w", 0o600);
   try {
@@ -260,7 +265,7 @@ async function segmentInto(path: string, source: AsyncIterable<Buffer>): Promise
       const all = Buffer.concat(held, n);
       const cut = last ? all.length : all.lastIndexOf(0x0a, SEGMENT - 1) + 1 || SEGMENT;
       const raw = all.subarray(0, cut);
-      held = cut < all.length ? [all.subarray(cut)] : [];
+      held = heldAfter(all, cut);
       n = all.length - cut;
       const bytes = await zstd(raw, { params: { [constants.ZSTD_c_compressionLevel]: 3, [constants.ZSTD_c_checksumFlag]: 1 } });
       await writeAll(file, bytes);
@@ -455,6 +460,24 @@ export function jsonlFiles(dir: string, out: string[]) {
       if (extension(logical) === "jsonl" && !out.includes(logical)) out.push(logical);
     }
   }
+}
+
+/// `jsonlFiles`, off the station's thread: walked as every walk is (ops/walk.ts `walkBounded`: on its file system, no
+/// link followed, bounded, yielding), each transcript once.
+export async function jsonlFilesSoon(dir: string, out: string[]): Promise<void> {
+  const seen = new Set(out);
+  await walkBounded(dir, (entry) => {
+    if (entry.depth === 0 || !entry.file) return;
+    const logical = extension(entry.path) === "zst" ? withExtension(entry.path, "") : entry.path;
+    if (extension(logical) === "jsonl" && !seen.has(logical)) {
+      seen.add(logical);
+      out.push(logical);
+    }
+  }, {
+    onError: (_path, error) => {
+      if (error.code !== "ENOENT") throw error;
+    },
+  });
 }
 
 // ── git worktrees ──────────────────────────────────────────────────────────────────────────────────────────────────

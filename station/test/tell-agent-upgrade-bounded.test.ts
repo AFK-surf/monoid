@@ -12,6 +12,7 @@ import { buildLegacyEntryLookups } from "../src/store/legacy-said-builder.ts";
 import { addTellIndexes } from "../src/store/schema.ts";
 import { Store } from "../src/store/store.ts";
 import { withoutSaidState } from "./legacy-message-fixture.ts";
+import { endsOnce } from "./programs.ts";
 
 test("an old database does not build the agent-time lookup in an unbounded write", () => {
   const counts: number[] = [];
@@ -181,11 +182,8 @@ test("the time lookup resumes its saved scan when the worker fails", async () =>
     station = Store.open(path);
     assert.deepEqual(legacyAgentStep(old,1),{ ready:false,visited:1 });
     const flag = join(dir,"failed"), script = join(dir,"flaky-worker.mjs");
-    const worker = new URL("../src/sessions/workspace-activity-worker.ts",import.meta.url).href;
-    writeFileSync(script,`import { existsSync, writeFileSync } from 'node:fs';\n` +
-      `if (!existsSync(${JSON.stringify(flag)})) { writeFileSync(${JSON.stringify(flag)}, 'failed'); process.exit(1); }\n` +
-      `await import(${JSON.stringify(worker)});\n`);
-    builder = buildLegacyEntryLookups(station,Promise.resolve(),pathToFileURL(script));
+    endsOnce(script, flag);
+    builder = buildLegacyEntryLookups(station,Promise.resolve(),script);
     assert.equal(await builder.ready,true);
     assert.equal(existsSync(flag),true);
     assert.equal(station.db.prepare("SELECT scanned FROM legacy_agent_meta").get()?.scanned,1);

@@ -18,7 +18,7 @@
 //   (kimi.ts).
 import { shareRefusal } from "../share/index.ts";
 import { HERMES_MODEL_LIMIT } from "../agents/hermes.ts";
-import { agyAccountFile, agyEmailIn, agyToken, classifyFailure as agyClassifyFailure } from "../agents/agy.ts";
+import { agyAccountFile, agyCompany, agyEmailIn, agyPlan, agyToken, classifyFailure as agyClassifyFailure } from "../agents/agy.ts";
 import { expandDevinFusion } from "../agents/devin.ts";
 import { runtimeKind, runtimeLabel } from "../agents/runtime.ts";
 import type { Clock } from "effect";
@@ -122,7 +122,7 @@ export type AccountsDeps = {
   /// Hermes reports its configured providers and model IDs in ACP session/new (no model turn).
   hermes?: () => { models(profile: Profile): Promise<string[]> } | undefined;
   /// The Antigravity CLI says whether it is signed in, and the models it offers, in ACP session/new (no model turn).
-  agy?: () => { models(profile: Profile): Promise<string[]>; catalog?(profile: Profile): Promise<{ models: string[]; efforts: Record<string, string[]>; defaults: Record<string, string> }> } | undefined;
+  agy?: () => { models(profile: Profile): Promise<string[]>; catalog?(profile: Profile): Promise<{ models: string[]; efforts: Record<string, string[]>; defaults: Record<string, string>; tier?: string }> } | undefined;
   /// Whether someone follows the events or a turn runs (allowances are asked again on a round only then).
   following?: () => boolean;
   /// The station's environment (where the machine's logins are, and the CLIs found); process.env by default.
@@ -164,7 +164,7 @@ export type AccountsDeps = {
 /// A sign-in with no profile yet: its runtime, its home while signing in, who started it, what it made.
 /// `access`: an OpenCode Go profile signed in to the OpenCode Console, or a Kimi Code one to Kimi (absent: the runtime's
 /// subscription).
-type Pending = { runtime: Runtime; access?: "opencode-go" | "kimi-code"; home: string; by: Viewer; created: string | null; error: string | null };
+type Pending = { runtime: Runtime; access?: "opencode-go" | "kimi-code" | "agy-enterprise"; home: string; by: Viewer; created: string | null; error: string | null };
 
 const isObject = (v: unknown): v is Record<string, any> => v !== null && typeof v === "object" && !Array.isArray(v);
 const manages = managesStation;
@@ -771,6 +771,12 @@ export class Accounts {
     if (kimi) return this.logins.startKimi({ id, home: profile.home }, lang);
     if (profile.runtime === "cursor") return this.logins.startCursor({ id, home: profile.home }, lang);
     let email: string | null = null;
+    // A company's Google account signs in again the way it did (as it was made, or as its sign-in's file says).
+    if (profile.runtime === "agy") {
+      const access = profile.access as { enterprise?: unknown } | undefined;
+      const enterprise = access?.enterprise === true || agyCompany(await readFile(agyToken(profile.home), "utf8").catch(() => ""));
+      return this.logins.start({ id, runtime: "agy", home: profile.home, ...(enterprise ? { enterprise } : {}) }, lang);
+    }
     if (profile.runtime === "claude") {
       const fromHome = await accountEmailSoon("claude", profile.home);
       const fallback = EMAIL_RE.test(profile.name.trim()) ? profile.name.trim() : null;
@@ -782,7 +788,8 @@ export class Accounts {
 
   /// POST /logins: signing a subscription in before there is a profile; the profile is made once it succeeds.
   /// `access: "opencode-go"`: an OpenCode Go profile signed in to the OpenCode Console instead (no runtime given);
-  /// `access: "kimi-code"`: a Kimi Code profile signed in to Kimi.
+  /// `access: "kimi-code"`: a Kimi Code profile signed in to Kimi; `access: "agy-enterprise"`: an Antigravity CLI one
+  /// signed in to a company's Google account.
   async newLogin(input: Record<string, unknown>, viewer: Viewer, lang: Lang = stationLang()): Promise<{ id: string; job: LoginJob }> {
     const id = `login-${randomBytes(4).toString("hex")}`;
     const home = join(this.deps.data, "homes", id);
@@ -795,6 +802,11 @@ export class Accounts {
       this.pending.set(id, { runtime: "claude", access: "kimi-code", home, by: viewer, created: null, error: null });
       log.info("accounts", "Kimi sign-in for a new profile started", { login: id, by: viewer.email });
       return { id, job: await this.logins.startKimi({ id, home }, lang) };
+    }
+    if (input.access === "agy-enterprise") {
+      this.pending.set(id, { runtime: "agy", access: "agy-enterprise", home, by: viewer, created: null, error: null });
+      log.info("accounts", "company Google sign-in for a new profile started", { login: id, by: viewer.email });
+      return { id, job: await this.logins.start({ id, runtime: "agy", home, enterprise: true }, lang) };
     }
     const runtime = runtimeOf(input.runtime);
     if (!runtime) throw new Refusal(400, `unknown runtime ${text(input.runtime)}`);
@@ -844,7 +856,8 @@ export class Accounts {
       log.warn("accounts", "could not move a new profile's home", { login: id, error: (e as Error).message });
       return this.pendingFailed(id, tr(lang, "station.login.homeFailed", { error: (e as Error).message }));
     }
-    const name = signedIn ? (email ?? "OpenCode Go") : kimi ? "Kimi Code" : (email ?? tr(lang, p.runtime === "claude" ? "station.profile.claudeSubscription" : p.runtime === "grok" ? "station.profile.grokSubscription" : p.runtime === "cursor" ? "station.profile.cursorSubscription" : p.runtime === "devin" ? "station.profile.devinSubscription" : p.runtime === "agy" ? "station.profile.agySubscription" : "station.profile.chatgptSubscription"));
+    const enterprise = p.access === "agy-enterprise";
+    const name = signedIn ? (email ?? "OpenCode Go") : kimi ? "Kimi Code" : enterprise ? (email ?? tr(lang, "station.profile.agyEnterpriseSubscription")) : (email ?? tr(lang, p.runtime === "claude" ? "station.profile.claudeSubscription" : p.runtime === "grok" ? "station.profile.grokSubscription" : p.runtime === "cursor" ? "station.profile.cursorSubscription" : p.runtime === "devin" ? "station.profile.devinSubscription" : p.runtime === "agy" ? "station.profile.agySubscription" : "station.profile.chatgptSubscription"));
     try {
       this.save(p.by, `profile ${profileId} from a sign-in`, (raw) => {
         // An OpenCode Go one runs every runtime its key does (it has none of its own).
@@ -853,7 +866,7 @@ export class Accounts {
           ? { id: profileId, name, access: { kind: "opencode-go", key: signedIn.access, login: true }, home: `homes/${profileId}`, env: {} }
           : kimi
             ? { id: profileId, name, access: { kind: "api-provider", provider: KIMI_CODE, login: true }, home: `homes/${profileId}`, env: {} }
-            : { id: profileId, name, runtime: p.runtime, access: { kind: "subscription" }, home: `homes/${profileId}`, env: {} };
+            : { id: profileId, name, runtime: p.runtime, access: enterprise ? { kind: "subscription", enterprise: true } : { kind: "subscription" }, home: `homes/${profileId}`, env: {} };
         raw.profiles = [...(Array.isArray(raw.profiles) ? raw.profiles : []), made];
       });
     } catch (e) {
@@ -1152,6 +1165,11 @@ export class Accounts {
           const catalog = await agy.catalog(profile);
           check.models = catalog.models;
           check.modelEfforts = { agy: catalog.efforts };
+          // Its plan as `agy` said it, else as its sign-in's file does (profiles.ts).
+          const company = (profile.access as { enterprise?: unknown } | undefined)?.enterprise === true;
+          const plan = catalog.tier !== undefined ? agyPlan(catalog.tier, company) : null;
+          if (plan !== null) check.plan = plan;
+          else if (company && check.plan === undefined) check.plan = "Enterprise";
           if (Object.keys(catalog.defaults).length > 0) check.modelEffortDefaults = { agy: catalog.defaults };
         } else {
           check.models = await agy.models(profile);

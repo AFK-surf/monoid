@@ -12,6 +12,7 @@ import { mbReaderBinary } from "../src/read/mb-reader.ts";
 import { rememberCodexRollout, transcriptSources } from "../src/read/transcript.ts";
 import { LiveLocator } from "../src/sessions/live-locator.ts";
 import { Store } from "../src/store/store.ts";
+import { Worker } from "node:worker_threads";
 
 const binary = mbReaderBinary();
 
@@ -76,7 +77,8 @@ test("the MoonBit live locator finds what the worker finds", { skip: binary === 
     session("unknown", "unknown", null, "/w", [["u-2", "claude", null]], "u-2");
     session("empty", "claude", null, "/w", [], null);
 
-    const worker = new LiveLocator(data, (key) => store.getSession(key), () => profiles, new URL("../src/sessions/live-locator-worker.ts", import.meta.url));
+    const worker = new LiveLocator(data, (key) => store.getSession(key), () => profiles,
+      (at) => new Worker(new URL("./workers/live-locator-worker.ts", import.meta.url), { workerData: { data: at } }));
     const program = new LiveLocator(data, (key) => store.getSession(key), () => profiles);
     try {
       for (const [key] of [...sessions, ["missing"]]) {

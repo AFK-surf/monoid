@@ -952,6 +952,34 @@ test "a subscription signing in: its page's address copied from the ⋯ beside �
 }
 
 ///|
+test "adding a company's Google account: Google's three ways, its sign-in's code, then the Google Cloud project it asks for, sent as a code is" {
+  let t = settings_tester("new-profile:ws1/st1", shows="settings-new-profile-google-ways", platform=2)
+  let y = fn(words : String) { t.find(words).unwrap().1 }
+  assert_true(y("订阅 · Google AI") < y("企业版 · Gemini Enterprise") && y("企业版 · Gemini Enterprise") < y("API key"))
+  t.tap_text("企业版 · Gemini Enterprise")
+  t.run_for(@ui.move_most_ms)
+  // the person's Google account, not Claude's, in its step
+  assert_true(t.find("打开授权页面，用 still.fail 要使用的 Google 账号登录并同意授权") is Some(_))
+  t.tap_text("粘贴授权码")
+  t.type_text("4/0Ab-code")
+  t.tap_text("完成登录")
+  t.run_for(@ui.move_most_ms)
+  // no licence: its project asked, under what it is for
+  assert_true(y("项目 ID，例如 my-project") > y("这个账号没有分到 Gemini Enterprise 许可证。填写要使用的 Google Cloud 项目 ID："))
+  assert_true(t.find("粘贴授权码") is None)
+  t.tap_text("项目 ID，例如 my-project")
+  t.type_text("my-project")
+  t.tap_text("完成登录")
+  t.run_for(@ui.move_most_ms)
+  // its project taken: signed in, on to the profile it made, its plan beside it
+  assert_true(t.find("my-project") is None)
+  t.draw()
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("订阅账号 · Enterprise Ultra") is Some(_))
+  assert_true(t.find("已登录，已添加 Profile") is Some(_))
+}
+
+///|
 test "adding an Anthropic subscription asks before opening its authorization page" {
   let t = settings_tester("new-profile:ws1/st1", shows="settings-new-profile-login", platform=2)
   t.click(Button, label="打开授权页面")

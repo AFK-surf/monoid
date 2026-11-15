@@ -7,6 +7,7 @@ import { test } from "node:test";
 import { pathToFileURL } from "node:url";
 import { SigninSaveBuilder } from "../src/vault/signin-save-builder.ts";
 import { installSigninSaveIndex, queueSigninSave, signinSaveComplete, stepSigninSaveIndex } from "../src/vault/signin-save-index.ts";
+import { endsOnce } from "./programs.ts";
 
 function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "signin-save-"));
@@ -41,14 +42,13 @@ test("a saved decision waits for the previous station even when its index is com
 test("a stopped sign-in index worker retries a persisted decision", async () => {
   const f = fixture(), previous = Promise.withResolvers<void>(), answered = Promise.withResolvers<string | null>();
   const file = join(f.dir, "worker.mjs"), marker = join(f.dir, "exited");
-  const real = new URL("../src/vault/signin-save-worker.ts", import.meta.url).href;
-  writeFileSync(file, `import { existsSync, writeFileSync } from 'node:fs';\nif (!existsSync(${JSON.stringify(marker)})) { writeFileSync(${JSON.stringify(marker)}, '1'); process.exit(1); }\nawait import(${JSON.stringify(real)});\n`);
+  endsOnce(file, marker);
   let builder: SigninSaveBuilder | null = null;
   try {
     for (let n = 0; n < 130; n++) f.add(`old-${n}`, "s", `save-${n}`);
     installSigninSaveIndex(f.db);
     assert.deepEqual(stepSigninSaveIndex(f.db, "s", 2), { done: false, visited: 2 });
-    builder = new SigninSaveBuilder(f.db, (_pending, body) => answered.resolve(body), { previousGone: previous.promise }, pathToFileURL(file));
+    builder = new SigninSaveBuilder(f.db, (_pending, body) => answered.resolve(body), { previousGone: previous.promise }, file);
     builder.wait("s", "save-129", "granted");
     await Promise.resolve();
     assert.equal(existsSync(marker), false);

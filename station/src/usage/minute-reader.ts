@@ -1,7 +1,6 @@
-import { Worker } from "node:worker_threads";
 import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
-import { MbProcess, mbReaderBinary } from "../read/mb-reader.ts";
+import { MbProcess, readerBinary } from "../read/mb-reader.ts";
 import type { InWorkspace } from "../store/rows.ts";
 
 export type MinuteRequest = { id: number; viewer: InWorkspace | null } | { id: number; detail: InWorkspace | null }
@@ -11,14 +10,14 @@ export type MinuteResponse = { id?: number; error?: string; complete?: boolean; 
 /// How long a checker with nothing asked of it is kept.
 const IDLE_MS = 60_000;
 
-/// Check whether previously maintained summaries are complete without writing or filling old history. By the MoonBit
-/// checker (station/mb, src/usage: `--builder usage-check`) where its program is there, else by the worker. One with
+/// Check whether previously maintained summaries are complete without writing or filling old history, by the MoonBit
+/// checker (station/mb, src/usage: `--builder usage-check`; `binary`: the program, a test's own where it gives one). One with
 /// nothing asked of it goes after IDLE_MS (or at once: `trimIdle`) and is started again by the next ask: it keeps
 /// nothing between asks (each is answered from the database as it is then), and what this keeps (`complete`) stays.
 export class MinuteReader {
   readonly #path: string;
-  readonly #mb: string | null;
-  #worker: Worker | MbProcess | null = null;
+  readonly #mb: string | undefined;
+  #worker: MbProcess | null = null;
   #next = 0;
   #closed = false;
   #complete = false;
@@ -28,9 +27,9 @@ export class MinuteReader {
   #idle: (() => void) | null = null;
   readonly #after: (ms: number, f: () => void) => () => void;
   /// `options.after`: the timer of IDLE_MS (a test's own; else the wall's).
-  constructor(path: string, options: { previousGone?: Promise<void>; priority?: SharedArrayBuffer; after?: (ms: number, f: () => void) => () => void } = {}, mb = mbReaderBinary()) {
+  constructor(path: string, options: { previousGone?: Promise<void>; priority?: SharedArrayBuffer; after?: (ms: number, f: () => void) => () => void } = {}, binary?: string) {
     this.#path = path;
-    this.#mb = mb;
+    this.#mb = binary;
     this.#after = options.after ?? wall.after;
   }
 
@@ -65,11 +64,8 @@ export class MinuteReader {
 
   start(): void {
     if (this.#closed || this.#complete || this.#worker !== null) return;
-    const file = new URL(import.meta.url.endsWith(".ts") ? "./minute-worker.ts" : "./usage/minute-worker.js", import.meta.url);
-    const worker = this.#mb !== null ? new MbProcess(this.#mb, ["--builder", "usage-check", "--db", this.#path])
-      : new Worker(file, { workerData: { path: this.#path }, resourceLimits: { maxOldGenerationSizeMb: 128, maxYoungGenerationSizeMb: 8 } });
+    const worker = new MbProcess(this.#mb ?? readerBinary(), ["--builder", "usage-check", "--db", this.#path]);
     this.#worker = worker;
-    if (worker instanceof Worker) worker.unref();
     worker.on("message", (answer: MinuteResponse) => {
       if (answer.complete) {
         this.#complete = true;

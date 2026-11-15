@@ -10,7 +10,7 @@ import { test } from "node:test";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
 import { Readers } from "../src/read/pool.ts";
 import { Store } from "../src/store/store.ts";
-import { REFERENCE_WORKER, readersOf } from "./reference.ts";
+import { REFERENCE, readersOf } from "./reference.ts";
 
 const binary = mbReaderBinary();
 
@@ -31,7 +31,7 @@ test("the MoonBit reader pages a queued card's edits and messages as the reader 
   const message = db.prepare("INSERT INTO entries(thread,n,kind,ts,author_kind,author,text,at) VALUES(?,?,'message',?,'person','p','hi',?)");
   for (let n = 163; n <= 1262; n++) message.run(long, n, `m${n}`, n);
   for (let n = 1; n <= 700; n++) message.run(plain, n, `p${n}`, n);
-  const worker = new Readers(data, 1, REFERENCE_WORKER);
+  const worker = new Readers(data, 1, REFERENCE);
   const program = readersOf(data, binary);
   const raw = (readers: Readers, op: string, args: unknown) => readers.read(op, args, "en").catch((e: Error & { status?: number }) => `error ${e.status} ${e.message}`);
   /// Every page of one search, newest first, as each reader said it.

@@ -67,7 +67,7 @@ test("retirement also removes the separate live index of an incomplete old datab
   } finally { store.close(); }
 });
 
-test("the old indexes stop being written even when their cleanup worker cannot start", async () => {
+test("the old indexes stop being written even when their cleanup program cannot start", async () => {
   const dir = mkdtempSync(join(tmpdir(), "usage-retire-missing-worker-"));
   const store = Store.open(join(dir, "station.db"));
   try {
@@ -77,7 +77,7 @@ test("the old indexes stop being written even when their cleanup worker cannot s
     const before = count();
     let handover!: () => void;
     const fiber = Effect.runFork(retireAfterPrevious(store, new Promise<void>((resolve) => { handover = resolve; }),
-      new URL("./no-such-usage-worker.ts", import.meta.url)));
+      join(tmpdir(), "no-such-usage-program")));
     write(store, "during", 3);
     assert.ok(count() > before, "the previous station can use the indexes until handover");
     const atHandover = count();
@@ -85,7 +85,7 @@ test("the old indexes stop being written even when their cleanup worker cannot s
     await Effect.runPromise(Fiber.join(fiber));
     assert.ok(table(store, "usage_retired_detail"));
     assert.ok(table(store, "usage_compact"), "new statistics start even when cleanup cannot start");
-    assert.ok(table(store, "usage_detail"), "the failed worker did not delete the old rows");
+    assert.ok(table(store, "usage_detail"), "the failed program did not delete the old rows");
     write(store, "after", 4);
     assert.equal(count(), atHandover, "new calls no longer write the old detail");
     assert.deepEqual(store.usageOfSession("a").map((r) => [r.calls, r.input]), [[3, 9]]);
@@ -109,7 +109,7 @@ test("stopping index writers yields to another database writer and retries", asy
       return constants.SQLITE_OK;
     });
     blocker.exec("BEGIN IMMEDIATE");
-    const fiber = Effect.runFork(retireAfterPrevious(store, Promise.resolve(), new URL("./no-such-usage-worker.ts", import.meta.url)));
+    const fiber = Effect.runFork(retireAfterPrevious(store, Promise.resolve(), join(tmpdir(), "no-such-usage-program")));
     await new Promise<void>((resolve) => setImmediate(resolve));
     assert.ok(attempts > 0, "the stop tried while the other connection held the lock");
     assert.equal(table(store, "usage_retired_detail"), undefined);

@@ -13,7 +13,7 @@ import { SlackClient } from "../src/slack/web.ts";
 import { chatTools } from "../src/tools/chat.ts";
 import { Readers } from "../src/read/pool.ts";
 import { installLegacyEdits, legacyEditDrain, legacyEditStep } from "../src/store/legacy-edits-build.ts";
-import { addClientColumn } from "../src/store/schema.ts";
+import { addClientColumn, repairMergedEditLookup } from "../src/store/schema.ts";
 import { Store } from "../src/store/store.ts";
 import { Rig, message, settle, testClock, type Setup } from "./hub-fakes.ts";
 import { FakeSlack } from "./slack-fake.ts";
@@ -352,6 +352,7 @@ async function relayIntoOldThread(disk = false) {
 test("a relay's first post prepares old edits through the background worker", async () => {
   const { r, key, old, db, done, opening } = await relayIntoOldThread(true);
   const readers = new Readers(r.dir, 1, undefined, 1);
+  readers.repairEdits = () => repairMergedEditLookup(r.store.db);
   try {
     let preparations = 0;
     r.hub.prepareLegacyEdits = (signal) => { preparations++; return readers.prepareLegacyEdits(signal); };

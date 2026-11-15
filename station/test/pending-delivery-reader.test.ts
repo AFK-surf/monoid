@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { Readers } from "../src/read/pool.ts";
 import * as readStore from "../src/read/store.ts";
 import { installLegacyEdits } from "../src/store/legacy-edits-build.ts";
-import { addClientColumn } from "../src/store/schema.ts";
+import { addClientColumn, repairMergedEditLookup } from "../src/store/schema.ts";
 import { Store } from "../src/store/store.ts";
 import { Rig } from "./hub-fakes.ts";
 
@@ -107,6 +107,7 @@ test("an agent recovers pending messages through a reader", async () => {
   rig.store = Store.open(join(rig.dir, "stillfail.db"));
   rig.hub = rig.newHub({ chats: () => undefined });
   const readers = new Readers(rig.dir, 1, undefined, 1);
+  readers.repairEdits = () => repairMergedEditLookup(rig.store.db);
   try {
     session(rig.store);
     const thread = chat(rig.store, "recover");
@@ -366,6 +367,7 @@ test("pending readers share old edit preparation after handover when one cancels
   const store = Store.open(join(dir, "stillfail.db")), db = store.db;
   const previous = Promise.withResolvers<void>();
   const readers = new Readers(dir, 1, undefined, 1, { previousGone: previous.promise });
+  readers.repairEdits = () => repairMergedEditLookup(store.db);
   try {
     session(store);
     const thread = chat(store, "old");

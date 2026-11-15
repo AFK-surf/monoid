@@ -10,6 +10,7 @@ import { buildLegacyEntryLookups } from "../src/store/legacy-said-builder.ts";
 import { Store } from "../src/store/store.ts";
 import { withoutSaidState } from "./legacy-message-fixture.ts";
 import { withoutLoginKeys } from "./legacy-login-fixture.ts";
+import { endsOnce } from "./programs.ts";
 
 function populate(store: Store): number {
   const thread=store.openThread("ember","CHAT","legacy-edits-worker",null,null).id;
@@ -68,11 +69,8 @@ test("a stopped edit worker settles handover and retries its saved work", async 
     assert.equal(store.db.prepare("SELECT scanned FROM legacy_edit_meta").get()?.scanned,0);
     previous.resolve();
     const flag=join(dir,"failed"),script=join(dir,"flaky-worker.mjs");
-    const worker=new URL("../src/sessions/workspace-activity-worker.ts",import.meta.url).href;
-    writeFileSync(script,`import { existsSync, writeFileSync } from 'node:fs';\n` +
-      `if (!existsSync(${JSON.stringify(flag)})) { writeFileSync(${JSON.stringify(flag)}, 'failed'); process.exit(1); }\n` +
-      `await import(${JSON.stringify(worker)});\n`);
-    builder=buildLegacyEntryLookups(store,Promise.resolve(),pathToFileURL(script));
+    endsOnce(script, flag);
+    builder=buildLegacyEntryLookups(store,Promise.resolve(),script);
     assert.equal(await builder.ready,true);
     assert.equal(existsSync(flag),true);
     assert.equal(store.db.prepare("SELECT scanned FROM legacy_edit_meta").get()?.scanned,1);

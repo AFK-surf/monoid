@@ -77,7 +77,7 @@ test("a batch asked while the station writes waits its turn, and what it was ask
   const priority = new SharedArrayBuffer(8), flags = new Int32Array(priority);
   // a foreground write announced (store/backfill.ts `foreground`): the builder may not take the permit meanwhile
   Atomics.add(flags, 0, 1);
-  const builder = new ArchiveMarkBuilder(f.path, { priority }, undefined, binary);
+  const builder = new ArchiveMarkBuilder(f.path, { priority }, binary!);
   try {
     const ready = builder.readyIndex();
     let settled = false;
@@ -101,7 +101,7 @@ test("a MoonBit builder that stopped is started again and finishes the request",
   // the first process ends at once, as one the system stopped; the next is the builder
   writeFileSync(program, `#!/bin/sh\nif [ ! -e '${marker}' ]; then : > '${marker}'; exit 1; fi\nexec '${binary}' "$@"\n`);
   chmodSync(program, 0o755);
-  const builder = new ArchiveMarkBuilder(f.path, {}, undefined, program);
+  const builder = new ArchiveMarkBuilder(f.path, {}, program);
   try {
     await builder.readyIndex();
     assert.ok(existsSync(marker), "the first one ended");

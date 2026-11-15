@@ -10,6 +10,7 @@ import { OutflowChatIndex } from "../src/read/chat-index-builder.ts";
 import { installOutflowChatIndex, outflowChatIndexStep } from "../src/store/outflow-index.ts";
 import { openStore } from "../src/read/store.ts";
 import { outflowChats } from "../src/read/outflow.ts";
+import { endsOnce, counted } from "./programs.ts";
 
 function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "outflow-reader-"));
@@ -62,9 +63,8 @@ test("an abandoned chat export does not start an old-chat build after handover",
 test("a stopped chat order worker resumes its pending request", async () => {
   const f = fixture();
   const file = join(f.dir, "worker.mjs"), marker = join(f.dir, "exited");
-  const real = new URL("../src/read/chat-index-worker.ts", import.meta.url).href;
-  writeFileSync(file, `import { existsSync, writeFileSync } from 'node:fs';\nif (!existsSync(${JSON.stringify(marker)})) { writeFileSync(${JSON.stringify(marker)}, '1'); process.exit(1); }\nawait import(${JSON.stringify(real)});\n`);
-  const builder = new OutflowChatIndex(f.path, {}, pathToFileURL(file));
+  endsOnce(file, marker);
+  const builder = new OutflowChatIndex(f.path, {}, file);
   try {
     await builder.ready({ workspace: "A", home: false });
     assert.equal(existsSync(marker), true);
@@ -75,9 +75,8 @@ test("a stopped chat order worker resumes its pending request", async () => {
 test("nearby chat exports reuse their index worker", async () => {
   const f = fixture();
   const file = join(f.dir, "worker.mjs"), starts = join(f.dir, "starts");
-  const real = new URL("../src/read/chat-index-worker.ts", import.meta.url).href;
-  writeFileSync(file, `import { appendFileSync } from 'node:fs';\nappendFileSync(${JSON.stringify(starts)}, 'x');\nawait import(${JSON.stringify(real)});\n`);
-  const builder = new OutflowChatIndex(f.path, {}, pathToFileURL(file));
+  counted(file, starts);
+  const builder = new OutflowChatIndex(f.path, {}, file);
   try {
     await builder.ready({ workspace: "A", home: false });
     f.say(2, 70);

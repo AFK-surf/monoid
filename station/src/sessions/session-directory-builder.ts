@@ -1,5 +1,4 @@
-import { Worker } from "node:worker_threads";
-import { MbBackfill, mbReaderBinary } from "../read/mb-reader.ts";
+import { MbBackfill, readerBinary } from "../read/mb-reader.ts";
 import { log } from "../ops/log.ts";
 import { releaseStoppedBackfill } from "../store/backfill.ts";
 import { installSessionDirectories, sessionDirectoriesReady, sessionDirectoriesStep, sessionDirectory, sessionDirectoryArguments, SESSION_DIR_LIVE_MANY, type DirectorySession } from "../store/session-directory.ts";
@@ -8,14 +7,14 @@ import type { Store } from "../store/store.ts";
 /// A memory check answers immediately while one shared worker prepares the directory lookup after handover.
 export class SessionDirectoryBuilder {
   private pending: Promise<boolean> | null = null;
-  private worker: Worker | MbBackfill | null = null;
+  private worker: MbBackfill | null = null;
   private stopped = false;
   private readonly cancelled = Promise.withResolvers<boolean>();
   private readonly previous: Promise<boolean>;
 
-  constructor(privateStore: Store, previous: Promise<void>, privateWorkerFile?: URL) {
+  constructor(privateStore: Store, previous: Promise<void>, binary?: string) {
     this.store = privateStore;
-    this.workerFile = privateWorkerFile;
+    this.binary = binary;
     this.previous = previous.then(() => true, (error) => {
       log.warn("memory", "could not wait for the previous station before preparing directories", { error: (error as Error).message });
       return false;
@@ -23,7 +22,7 @@ export class SessionDirectoryBuilder {
   }
 
   private readonly store: Store;
-  private readonly workerFile: URL | undefined;
+  private readonly binary: string | undefined;
 
   find(dir: string): DirectorySession | null {
     if (this.stopped) return null;
@@ -82,14 +81,10 @@ export class SessionDirectoryBuilder {
   private runWorker(): Promise<boolean> {
     const path = this.store.db.location();
     if (path === null) return Promise.resolve(false);
-    const file = this.workerFile ?? new URL(import.meta.url.endsWith(".ts")
-      ? "./workspace-activity-worker.ts" : "./sessions/workspace-activity-worker.js", import.meta.url);
     return new Promise<boolean>((resolve) => {
-      // (by the MoonBit builder, station/mb's src/activity, directory.mbt, where its program is there: `MbBackfill`)
-      let current: Worker | MbBackfill;
-      const mb = this.workerFile === undefined ? mbReaderBinary() : null;
-      const thread = () => new Worker(file, { workerData: { path, priority: this.store.backfillPriority } });
-      try { current = mb !== null ? new MbBackfill(mb, ["--builder", "session-backfill", "--db", path], this.store.backfillPriority, 20, thread) : thread(); }
+      // (by the MoonBit builder, station/mb's src/activity, directory.mbt: `MbBackfill`)
+      let current: MbBackfill;
+      try { current = new MbBackfill(this.binary ?? readerBinary(), ["--builder", "session-backfill", "--db", path], this.store.backfillPriority, 20); }
       catch (error) {
         log.warn("memory", "the session directory worker could not start", { error: (error as Error).message });
         resolve(false);

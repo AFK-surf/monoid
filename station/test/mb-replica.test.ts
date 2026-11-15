@@ -13,7 +13,7 @@ import { tell } from "../src/replica/copies.ts";
 import { Exporter, type Told, genDir, nothingTold, ownDir } from "../src/replica/export.ts";
 import { type Head, decodeBatch } from "../src/replica/format.ts";
 import { takeBack, takeBackSoon } from "../src/replica/restore.ts";
-import { WorkerRunner, exportThread } from "../src/replica/runner.ts";
+import { ProgramRunner, exportThread } from "../src/replica/runner.ts";
 import { Store } from "../src/store/store.ts";
 import { HOME, ORIGIN, OTHER, attach, chat, dataDir, station } from "./replica-fakes.ts";
 import { testClock } from "./hub-fakes.ts";
@@ -322,7 +322,7 @@ test("the MoonBit export finds a database rolled back under it as export.ts does
 test("the export's runner runs the MoonBit program where it is built, its time the station's", { skip }, async () => {
   const made = station();
   const replica = join(made.data, "replica");
-  const runner = new WorkerRunner({ db: made.db, replica, dataDir: made.data, origin: ORIGIN }, exportThread);
+  const runner = new ProgramRunner({ db: made.db, replica, dataDir: made.data, origin: ORIGIN }, exportThread);
   await runner.places(places);
   let p = await runner.pass(nothingTold());
   while (p.more) p = await runner.pass(nothingTold());
@@ -408,8 +408,8 @@ test("a copy taken back by the MoonBit program makes what restore.ts makes, from
     const byMb = brought(made, both.replica("ts"), ws, clock);
     const ofMb = brought(made, both.replica("mb"), ws, clock);
     const ready = takeBack(byTs.to, join(byTs.to, "stillfail.db"), 5);
-    assert.deepEqual(await takeBackSoon(byMb.to, join(byMb.to, "stillfail.db"), 5, binary), ready);
-    assert.deepEqual(await takeBackSoon(ofMb.to, join(ofMb.to, "stillfail.db"), 5, binary), { ...ready!, gen: ofMb.head.gen });
+    assert.deepEqual(await takeBackSoon(byMb.to, join(byMb.to, "stillfail.db"), 5, binary!), ready);
+    assert.deepEqual(await takeBackSoon(ofMb.to, join(ofMb.to, "stillfail.db"), 5, binary!), { ...ready!, gen: ofMb.head.gen });
     const want = leftBy(byTs.to);
     assert.equal(want.restored.error, null);
     assert.ok(Object.keys(want.sessions).length > 0 || ws === OTHER, "its files placed");
@@ -427,7 +427,7 @@ test("a copy taken back by the MoonBit program makes what restore.ts makes, from
       writeFileSync(join(to, "restore", "ready.json"), JSON.stringify({ origin: "b".repeat(64), workspace: ws, gen: "1-00000000", name: "other", from: "x" }));
     }
     takeBack(byTs.to, join(byTs.to, "stillfail.db"), 6);
-    await takeBackSoon(byMb.to, join(byMb.to, "stillfail.db"), 6, binary);
+    await takeBackSoon(byMb.to, join(byMb.to, "stillfail.db"), 6, binary!);
     assert.equal(leftBy(byTs.to).restored.reason, "notEmpty");
     assert.deepEqual(leftBy(byMb.to), leftBy(byTs.to), `${ws}: refused alike`);
   }
@@ -439,7 +439,7 @@ test("a copy taken back by the MoonBit program makes what restore.ts makes, from
     writeFileSync(uploads, "in the way");
   }
   takeBack(pending[0]!.to, join(pending[0]!.to, "stillfail.db"), 7);
-  await takeBackSoon(pending[1]!.to, join(pending[1]!.to, "stillfail.db"), 7, binary);
+  await takeBackSoon(pending[1]!.to, join(pending[1]!.to, "stillfail.db"), 7, binary!);
   const [x, y] = pending.map(({ to }) => leftBy(to));
   assert.equal(x.restored.pending, true);
   // (what failed is said in each one's words: Node's and Rust's)
@@ -448,9 +448,9 @@ test("a copy taken back by the MoonBit program makes what restore.ts makes, from
   assert.deepEqual(y, x, "pending alike");
   for (const { to } of pending) rmSync(join(to, "sessions", "chat", "chat:a", "workspace", "uploads"));
   takeBack(pending[0]!.to, join(pending[0]!.to, "stillfail.db"), 8);
-  await takeBackSoon(pending[1]!.to, join(pending[1]!.to, "stillfail.db"), 8, binary);
+  await takeBackSoon(pending[1]!.to, join(pending[1]!.to, "stillfail.db"), 8, binary!);
   assert.deepEqual(leftBy(pending[1]!.to), leftBy(pending[0]!.to), "placed alike");
   // nothing waiting: nothing said
-  assert.equal(await takeBackSoon(pending[1]!.to, join(pending[1]!.to, "stillfail.db"), 9, binary), null);
+  assert.equal(await takeBackSoon(pending[1]!.to, join(pending[1]!.to, "stillfail.db"), 9, binary!), null);
   made.store.close();
 });

@@ -1,10 +1,11 @@
-// Process one bounded workspace move or total batch, then let the station choose who goes next.
+// How a thread made the usage statistics' workspace moves and totals before the MoonBit program (`--builder
+// usage-scope`) took them: one bounded batch at a time, what the program is compared with (test/mb-usage-scope.test.ts).
 import { DatabaseSync } from "node:sqlite";
 import { parentPort, threadId, workerData } from "node:worker_threads";
-import { wall } from "../ops/fibers.ts";
-import { giveBackfill, takeBackfill } from "../store/backfill.ts";
-import { compactTotalsStep, hasCompactUsage, moveCompactStep } from "../store/usage-compact.ts";
-import { hasUsageSummaryBlocks, usageSummaryBlocksPending, usageSummaryBlocksStep, type UsageSummaryKey, type UsageSummaryRange } from "../store/usage-summary-blocks.ts";
+import { wall } from "../../src/ops/fibers.ts";
+import { giveBackfill, takeBackfill } from "../../src/store/backfill.ts";
+import { compactTotalsStep, hasCompactUsage, moveCompactStep } from "../../src/store/usage-compact.ts";
+import { hasUsageSummaryBlocks, usageSummaryBlocksPending, usageSummaryBlocksStep, type UsageSummaryKey, type UsageSummaryRange } from "../../src/store/usage-summary-blocks.ts";
 
 const db = new DatabaseSync(workerData.path as string);
 const priority = new Int32Array(workerData.priority as SharedArrayBuffer);

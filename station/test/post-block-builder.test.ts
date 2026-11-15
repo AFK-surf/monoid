@@ -10,6 +10,7 @@ import { installPostBlocks, postBlocksReady } from "../src/store/post-blocks.ts"
 import { Store } from "../src/store/store.ts";
 import { Rig } from "./hub-fakes.ts";
 import { formatDelivery } from "../src/sessions/actor.ts";
+import { endsOnce } from "./programs.ts";
 
 
 function fromBefore(store: Store, name = "old"): number {
@@ -82,9 +83,8 @@ test("a stopped post block worker retries the requested suffix", async () => {
   const store = Store.open(join(dir, "station.db"));
   const file = join(dir, "worker.mjs");
   const marker = join(dir, "exited");
-  const real = new URL("../src/sessions/post-block-worker.ts", import.meta.url).href;
-  writeFileSync(file, `import { existsSync, writeFileSync } from 'node:fs';\nif (!existsSync(${JSON.stringify(marker)})) { writeFileSync(${JSON.stringify(marker)}, '1'); process.exit(1); }\nawait import(${JSON.stringify(real)});\n`);
-  const builder = new PostBlockBuilder(store, Promise.resolve(), pathToFileURL(file));
+  endsOnce(file, marker);
+  const builder = new PostBlockBuilder(store, Promise.resolve(), file);
   try {
     const thread = fromBefore(store);
     await builder.ready([{ thread, n: 170 }]);

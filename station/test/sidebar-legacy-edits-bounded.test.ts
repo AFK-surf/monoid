@@ -8,7 +8,7 @@ import { Readers } from "../src/read/pool.ts";
 import { sessionOps } from "../src/read/ops-sessions.ts";
 import { firstText, lastSaid, LAST_MESSAGE_RECENT_EDIT, makeStore } from "../src/read/store.ts";
 import { installLegacyEdits, legacyEditDrain, legacyEditStep } from "../src/store/legacy-edits-build.ts";
-import { addClientColumn } from "../src/store/schema.ts";
+import { addClientColumn, repairMergedEditLookup } from "../src/store/schema.ts";
 import { Store } from "../src/store/store.ts";
 
 const viewer = { sub: "me", email: "me", name: "Me", role: "owner", workspace: "w", device: "d" } as const;
@@ -157,6 +157,7 @@ test("a thread read propagates the pending lookup and retries after handover", a
   const args = { id: String(thread), viewer, lang: "en" };
   const previous = Promise.withResolvers<void>();
   const readers = new Readers(dir, 1, undefined, 1, { previousGone: previous.promise });
+  readers.repairEdits = () => repairMergedEditLookup(store.db);
   const controller = new AbortController();
   try {
     assert.throws(() => sessionOps.thread!(makeStore(db, dir), args), { status: 503, message: "legacy edit lookup pending" });

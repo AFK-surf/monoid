@@ -103,7 +103,7 @@ fn new_profile_flow_node(
   }
   let sign = fn() { field(d(), "signIn") }
   let install = fn() { field(d(), "install") }
-  let plan = fn() { step() == "connect" && text(d(), "method") == "plan" }
+  let plan = fn() { step() == "connect" && (text(d(), "method") == "plan" || text(d(), "method") == "enterprise") }
   let planning = fn() { plan() && !(install() is Some(Object(_))) && sign() is Some(Object(_)) }
   // a plan's sign-in starts as its step comes; left unfinished, let go as it goes
   v.reacts(planning, fn(on) {
@@ -376,8 +376,9 @@ fn providers_sample_node(b : @view.View) -> Unit {
 }
 
 ///|
-/// The two ways to connect a vendor that has both (methods) in node `b`, as the core says them (`d`'s choices): each
-/// its title and what it is (ways_node), the plan's by the subscription's mark, a key's by the provider's.
+/// The ways to connect a vendor that has more than one (methods: a plan, Google's company plan too, a key) in node `b`,
+/// as the core says them (`d`'s choices): each its title and what it is (ways_node), a plan's by the subscription's
+/// mark, a key's by the provider's.
 fn new_profile_methods_node(b : @view.View, d : () -> Json?, choose : (String) -> Unit) -> Unit {
   let tile = fn() { field(d(), "tile") }
   @sf.ways_node(
@@ -387,7 +388,7 @@ fn new_profile_methods_node(b : @view.View, d : () -> Json?, choose : (String) -
     mark=fn(m, id) {
       provider_mark_node(m, fn() {
         let t = tile()
-        let kind = if id == "plan" && text(t, "kind") != "opencode-go" && text(t, "id") != "moonshotai" {
+        let kind = if (id == "plan" || id == "enterprise") && text(t, "kind") != "opencode-go" && text(t, "id") != "moonshotai" {
           "subscription"
         } else {
           match text(t, "kind") {
@@ -395,7 +396,9 @@ fn new_profile_methods_node(b : @view.View, d : () -> Json?, choose : (String) -
             k => k
           }
         }
-        (text(field(d(), "signIn"), "runtime"), kind, text(t, "mark"))
+        // (a plan's mark is its runtime's: while its way is chosen there is no sign-in yet, the tile's)
+        let signed = text(field(d(), "signIn"), "runtime")
+        (if signed == "" { text(t, "runtime") } else { signed }, kind, text(t, "mark"))
       }, ap_way_glyph)
     },
   )

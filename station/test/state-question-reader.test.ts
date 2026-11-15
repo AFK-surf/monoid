@@ -9,7 +9,7 @@ import * as readStore from "../src/read/store.ts";
 import { newSession, say } from "../src/sessions/lifecycle.ts";
 import { installLegacyEdits } from "../src/store/legacy-edits-build.ts";
 import { CARD_POSTS_PENDING } from "../src/store/card-post-index.ts";
-import { addClientColumn } from "../src/store/schema.ts";
+import { addClientColumn, repairMergedEditLookup } from "../src/store/schema.ts";
 import { Store } from "../src/store/store.ts";
 import { Rig, settle } from "./hub-fakes.ts";
 
@@ -18,6 +18,7 @@ for (const index of ["entries_cards", "entries_options"] as const) {
     const dir = mkdtempSync(join(tmpdir(), "question-no-card-index-"));
     const store = Store.open(join(dir, "stillfail.db"));
     const readers = new Readers(dir, 1, undefined, 1);
+    readers.repairEdits = () => repairMergedEditLookup(store.db);
     try {
       const thread = store.openThread("ember", "CHAT", "old", null, null).id;
       store.db.prepare(`INSERT INTO entries(thread,n,kind,ts,author_kind,author,text,card,options,at)
@@ -204,6 +205,7 @@ test("a busy external writer is waited for off the actor queue and its answer is
   r.store = Store.open(path);
   r.hub = r.newHub({ chats: () => undefined });
   const readers = new Readers(r.dir, 1, undefined, 1), writer = new DatabaseSync(path);
+  readers.repairEdits = () => repairMergedEditLookup(r.store.db);
   const original = r.store.db, blocked = Promise.withResolvers<void>();
   try {
     const [key, thread] = newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
@@ -356,6 +358,7 @@ test("a question is checked again when another database connection records an an
   r.store = Store.open(path);
   r.hub = r.newHub({ chats: () => undefined });
   const readers = new Readers(r.dir, 1, undefined, 1), writer = new DatabaseSync(path);
+  readers.repairEdits = () => repairMergedEditLookup(r.store.db);
   try {
     const [key, thread] = newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
     say(r.hub, thread.id, "ada@x.com", "please do this");
@@ -387,6 +390,7 @@ test("unrelated writes from another connection do not keep a valid question from
   r.store = Store.open(path);
   r.hub = r.newHub({ chats: () => undefined });
   const readers = new Readers(r.dir, 1, undefined, 1), writer = new DatabaseSync(path);
+  readers.repairEdits = () => repairMergedEditLookup(r.store.db);
   try {
     const [key, thread] = newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
     say(r.hub, thread.id, "ada@x.com", "please do this");
@@ -415,6 +419,7 @@ test("a removed native edit index is not scanned on the station thread during co
   r.store = Store.open(path);
   r.hub = r.newHub({ chats: () => undefined });
   const readers = new Readers(r.dir, 1, undefined, 1), writer = new DatabaseSync(path);
+  readers.repairEdits = () => repairMergedEditLookup(r.store.db);
   const original = r.store.db;
   try {
     const [key, thread] = newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
@@ -459,6 +464,7 @@ test("unrelated writes do not starve a question when the native edit index is re
   r.store = Store.open(path);
   r.hub = r.newHub({ chats: () => undefined });
   const readers = new Readers(r.dir, 1, undefined, 1), writer = new DatabaseSync(path);
+  readers.repairEdits = () => repairMergedEditLookup(r.store.db);
   try {
     const [key, thread] = newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
     say(r.hub, thread.id, "ada@x.com", "please do this");
@@ -487,6 +493,7 @@ test("question readers share old edit preparation, and a cancelled read leaves t
   const store = Store.open(join(dir, "stillfail.db")), db = store.db;
   const previous = Promise.withResolvers<void>();
   const readers = new Readers(dir, 1, undefined, 1, { previousGone: previous.promise });
+  readers.repairEdits = () => repairMergedEditLookup(store.db);
   try {
     const thread = store.openThread("ember", "CHAT", "old", null, null).id;
     db.prepare(`INSERT INTO entries(thread,n,kind,ts,author_kind,author,text,at)

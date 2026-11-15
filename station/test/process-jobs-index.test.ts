@@ -9,6 +9,7 @@ import { watchedJobs } from "../src/jobs/memory.ts";
 import { ProcessJobsBuilder } from "../src/jobs/process-jobs-builder.ts";
 import { installProcessJobs, processJobs, processJobsReady, processJobsStep } from "../src/store/process-jobs.ts";
 import { Store } from "../src/store/store.ts";
+import { endsAlways, theProgram } from "./programs.ts";
 
 const addSql = `INSERT OR REPLACE INTO jobs(rowid,id,token,session_key,state,pgid,name,command,cwd,port,started_at,log)
   VALUES(?,?,?,?,?,?,?,'','',?,?, '')`;
@@ -243,16 +244,15 @@ test("small queues do not install an extra lookup, and closing cancels handover"
 test("a later memory check retries a stopped process job worker", async () => {
   const dir = mkdtempSync(join(tmpdir(), "process-job-retry-")), store = Store.open(join(dir, "stillfail.db"));
   const worker = join(dir, "worker.mjs");
-  writeFileSync(worker, "process.exit(1);\n");
-  const builder = new ProcessJobsBuilder(store, Promise.resolve(), pathToFileURL(worker));
+  endsAlways(worker);
+  const builder = new ProcessJobsBuilder(store, Promise.resolve(), worker);
   try {
     const put = store.db.prepare(addSql);
     for (let i = 1; i <= 40; i++) put.run(i, `j${i}`, `j${i}`, "one", "running", i === 1 ? 101 : null, "job", null, i);
     assert.equal(watchedJobs(store, builder).length, 1);
     await builder.settled();
     assert.equal(store.db.prepare("SELECT 1 FROM sqlite_master WHERE name='process_job_meta'").get(), undefined);
-    const actual = new URL("../src/sessions/workspace-activity-worker.ts", import.meta.url).href;
-    writeFileSync(worker, `import ${JSON.stringify(actual)};\n`);
+    theProgram(worker);
     assert.equal(watchedJobs(store, builder).length, 1);
     await builder.settled();
     assert.equal(processJobsReady(store.db), true);

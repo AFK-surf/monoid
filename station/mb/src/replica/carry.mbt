@@ -475,17 +475,13 @@ fn Files::rebuilt_of_any_name(self : Files, dir : String, names : Array[(String,
     return false
   }
   guard (try self.read(self.join([dir, "CACHEDIR.TAG"])) catch { _ => None }) is Some(tag) else { return false }
-  let lines : Array[String] = tag
-    .split("\n")
-    .map(l => {
-      let t = l.to_string()
-      if t.has_suffix("\r") {
-        t.view(end_offset=t.length() - 1).to_string()
-      } else {
-        t
-      }
-    })
-    .collect()
+  // (footprint.ts: split at `\r?\n`, a `\r` that ends the text kept)
+  let pieces : Array[String] = tag.split("\n").map(l => l.to_string()).collect()
+  let lines = pieces.mapi((k, t) => if k < pieces.length() - 1 && t.has_suffix("\r") {
+    t.view(end_offset=t.length() - 1).to_string()
+  } else {
+    t
+  })
   if !cargo_tag.iter().all(l => lines.contains(l)) {
     return false
   }

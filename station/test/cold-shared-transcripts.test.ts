@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
+import { sessionPlaces, transcriptSources } from "../src/read/transcript.ts";
 import { ColdRooms } from "../src/sessions/cold.ts";
 import { MANUAL, TRANSCRIPT_IN_USE } from "../src/store/store.ts";
 import { Rig } from "./hub-fakes.ts";
@@ -59,5 +60,50 @@ test("packing a transcript only checks sessions that could share it", async () =
     assert.deepEqual(cold.historyFiles("target", false), [canonical], "history remains readable even while another uses it");
     rig.store.setArchived("current-only", true, MANUAL);
     assert.deepEqual(cold.historyFiles("target", true), [canonical]);
+  } finally { await rig.close(); }
+});
+
+test("an archived session's transcripts are found off the station's thread, as they were on it, and packed without being looked for again", async () => {
+  let rig!: Rig;
+  const cold = new ColdRooms(() => rig.hub);
+  rig = new Rig({ cold });
+  try {
+    rig.store.insertSession({ key: "target", connect: "cl", runtime: "claude", profile: "cc", workspace: rig.dir, runtimeSessionId: "main", token: "target", createdAt: 1, lastActiveAt: 1 });
+    rig.store.ranIn("target", "main", "cc");
+    rig.store.setArchived("target", true, MANUAL);
+    const project = join(rig.config.profiles[0]!.home, "projects", "x");
+    mkdirSync(join(project, "main", "subagents", "deep"), { recursive: true });
+    writeFileSync(join(project, "main.jsonl"), "{}\n");
+    writeFileSync(join(project, "main", "subagents", "a.jsonl"), "{}\n");
+    writeFileSync(join(project, "main", "subagents", "deep", "b.jsonl"), "{}\n");
+    writeFileSync(join(project, "main", "subagents", "note.txt"), "not a transcript\n");
+    const config = rig.hub.config();
+    let located = 0;
+    rig.hub.live.locateAsync = async (key) => {
+      located++;
+      const row = rig.store.getSession(key)!;
+      return { runtime: "claude", paths: transcriptSources(config.dataDir, config.profiles, rig.store.runtimeSessionSources(key), sessionPlaces(row)).paths };
+    };
+    const before = cold.historyFiles("target", false);
+    assert.equal(before.length, 3);
+    assert.deepEqual(await cold.historyFilesSoon("target", false), before);
+    assert.deepEqual(await cold.historyFilesSoon("target", true), before);
+    // Another shown session on the same transcript keeps it hot, as it did.
+    rig.store.insertSession({ key: "other", connect: "cl", runtime: "claude", profile: "cc", workspace: rig.dir, runtimeSessionId: "main", token: "other", createdAt: 1, lastActiveAt: 1 });
+    assert.deepEqual(await cold.historyFilesSoon("target", true), []);
+    rig.store.setArchived("other", true, MANUAL);
+    located = 0;
+    assert.equal(await cold["packHistory"]("target", () => true), 0);
+    assert.equal(located, 1, "found once, not again for each file packed");
+    for (const path of before) assert.ok(existsSync(`${path}.zst`) && !existsSync(path), path);
+    // And found again where they were put away, to be restored.
+    assert.deepEqual(await cold.historyFilesSoon("target", false), before);
+    // A transcript whose directory went after it was located is passed over, the others still found.
+    const locate = rig.hub.live.locateAsync;
+    rig.hub.live.locateAsync = async (key, signal) => {
+      const at = (await locate(key, signal))!;
+      return { ...at, paths: [join(rig.config.profiles[0]!.home, "projects", "gone", "old.jsonl"), ...at.paths] };
+    };
+    assert.deepEqual(await cold.historyFilesSoon("target", false), before);
   } finally { await rig.close(); }
 });

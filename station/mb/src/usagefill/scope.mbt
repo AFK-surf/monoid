@@ -1,5 +1,5 @@
-// The usage statistics' workspace upkeep (station/src/usage/scope-worker.ts), here for the MoonBit builder: a
-// session's buckets moved to its new workspace (store/usage-compact.ts `moveCompactStep`), new buckets accounted into
+// The usage statistics' workspace upkeep (station/src/usage/module.ts `watchCompactMoves`; the thread of before,
+// station/test/workers/usage-scope-worker.ts), here for the MoonBit builder: a session's buckets moved to its new workspace (store/usage-compact.ts `moveCompactStep`), new buckets accounted into
 // the totals and their time tree (`compactTotalsStep`), and the grouped summary blocks converted and kept
 // (store/usage-summary-blocks.ts `usageSummaryBlocksStep`), one bounded batch at a time. Values stay in SQLite: each
 // bucket's change is applied there, and only the keys a batch touched are cleaned of empty rows after it.
@@ -559,7 +559,7 @@ fn range_of(j : Json) -> Range? {
 }
 
 ///|
-/// One batch of what scope-worker.ts does for `{scope?, range?}`: a move, a span's blocks, the totals, or the blocks,
+/// One batch of what the scope thread did for `{scope?, range?}`: a move, a span's blocks, the totals, or the blocks,
 /// whichever is pending first; its answer as the worker's.
 pub fn scope_batch(db : @sql.Db, ask : Json) -> Json raise {
   let (scope, range) = match ask {

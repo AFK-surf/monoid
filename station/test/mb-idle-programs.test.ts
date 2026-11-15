@@ -264,7 +264,7 @@ test("the usage checker goes when idle or trimmed, what it found kept, and answe
   store = Store.open(path);
   const t = timers();
   const e = ends();
-  const reader = new MinuteReader(path, { after: t.after }, binary);
+  const reader = new MinuteReader(path, { after: t.after }, binary!);
   const viewer = { workspace: "workspace-a", home: false };
   try {
     await assert.rejects(reader.ready(viewer), /minute.*unavailable/);

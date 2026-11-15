@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { Readers } from "../src/read/pool.ts";
 import { LAST_MESSAGE_RECENT_EDIT, lastMessage, makeStore } from "../src/read/store.ts";
 import { installLegacyEdits, legacyEditDrain, legacyEditStep } from "../src/store/legacy-edits-build.ts";
-import { addClientColumn } from "../src/store/schema.ts";
+import { addClientColumn, repairMergedEditLookup } from "../src/store/schema.ts";
 import { toMessage } from "../src/store/rows.ts";
 import { newMessage, Store } from "../src/store/store.ts";
 
@@ -181,6 +181,7 @@ test("notices share old edit preparation after handover and cancellation", async
   const dir = mkdtempSync(join(tmpdir(), "notice-edit-worker-")), path = join(dir, "stillfail.db");
   const store = Store.open(path), previous = Promise.withResolvers<void>();
   const readers = new Readers(dir, 1, undefined, 1, { previousGone: previous.promise });
+  readers.repairEdits = () => repairMergedEditLookup(store.db);
   const controller = new AbortController();
   try {
     store.insertSession({ key: "k", connect: "ember", runtime: "claude", profile: "cc", workspace: "/w",

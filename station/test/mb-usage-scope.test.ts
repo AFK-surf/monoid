@@ -1,5 +1,5 @@
 // The MoonBit builder of the usage statistics' workspace upkeep (station/mb, src/usagefill scope.mbt) answers each
-// wake as usage/scope-worker.ts does: the same answers and the same rows of the compact statistics, their totals and
+// wake as the scope worker did (test/workers/usage-scope-worker.ts): the same answers and the same rows of the compact statistics, their totals and
 // tree, and the summary blocks, batch by batch, for moves, totals, the blocks' conversion and requested spans, with
 // calls recorded and sessions moved meanwhile.
 import assert from "node:assert/strict";
@@ -53,7 +53,7 @@ const plain = (answer: object) => JSON.parse(JSON.stringify(answer, (_, v) => ty
 test("the MoonBit builder answers the usage workspace wakes as the scope worker does", async () => {
   assert.notEqual(binary, null, "the MoonBit reader is built (station/mb/build.sh, or STILLFAIL_MB_READER)");
   const ts = station(), mb = station();
-  const worker = new Worker(new URL("../src/usage/scope-worker.ts", import.meta.url), { workerData: { path: ts.path, priority: new SharedArrayBuffer(8) } });
+  const worker = new Worker(new URL("./workers/usage-scope-worker.ts", import.meta.url), { workerData: { path: ts.path, priority: new SharedArrayBuffer(8) } });
   const builder = new MbProcess(binary!, ["--builder", "usage-scope", "--db", mb.path]);
   const asked = <T>(target: { once(event: "message", f: (answer: T) => void): unknown; postMessage(message: unknown): void }, message: object) =>
     new Promise<T>((resolve) => { target.once("message", resolve); target.postMessage(message); });

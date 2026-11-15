@@ -32,8 +32,8 @@ export type Effect =
   | { kind: "machineLogins" }
   /// A sign-in for a new profile (the overview's `logins`) started, given its code or dropped: as the station answered,
   /// in place at once until the overview says as much. `id`: the login's (null: the answer names it, as it starts);
-  /// `from`: the state the step moves it on from (null: not listed yet).
-  | { kind: "login"; id: string | null; from: string | null }
+  /// `from`: the state the step moves it on from, or the states it may (null: not listed yet).
+  | { kind: "login"; id: string | null; from: string | string[] | null }
   /// A tab of the station's browser opened here by the id this device made for it (`screen`): listed at once, a view of
   /// it waiting for the station, until the station lists it or refuses it.
   | { kind: "tab"; screen: string };
@@ -631,9 +631,10 @@ function stationOp(name: string, params: unknown): Request | null {
       return op("POST", () => `/profiles/${p.at("id")}/login-code`, p.pick(["code"]), OVERVIEW);
     case "login.new":
       return op("POST", () => "/logins", p.pick(["runtime", "access"]), { kind: "login", id: null, from: null });
-    // A code is taken only while its sign-in waits for one.
+    // A code is taken only while its sign-in waits for one (or, a company's Google account with no licence, for its
+    // Google Cloud project, given the same way).
     case "login.code":
-      return op("POST", () => `/logins/${p.at("id")}/code`, p.pick(["code"]), { kind: "login", id: p.str("id"), from: "needs_code" });
+      return op("POST", () => `/logins/${p.at("id")}/code`, p.pick(["code"]), { kind: "login", id: p.str("id"), from: ["needs_code", "needs_project"] });
     case "login.drop":
       return op("DELETE", () => `/logins/${p.at("id")}`, null, { kind: "login", id: p.str("id"), from: null });
     // A sign-in's page opened in the station's own browser (在 station 的浏览器中登录), for the

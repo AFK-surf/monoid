@@ -154,6 +154,36 @@ export class ColdRooms implements ColdStorage {
     return files;
   }
 
+  /// `historyFiles`, nothing of it on the station's thread: the transcripts found where the live view finds them (live.ts
+  /// `locateAsync`, the MoonBit program's), their directories followed and Claude's subagent files listed off it. Where
+  /// there is no locator (a test's hub) as `historyFiles` finds them.
+  async historyFilesSoon(key: string, packing: boolean): Promise<string[]> {
+    const hub = this.hub();
+    const row = hub.store.getSession(key);
+    if (!row) throw new Error(`unknown session ${key}`);
+    const sources = hub.store.runtimeSessionSources(key);
+    if (sources.length === 0) return [];
+    if (packing && sources.some((source) => hub.store.transcriptInUse(source.runtime, source.id, key))) return [];
+    const locate = hub.live.locateAsync;
+    if (locate === null) return this.historyFiles(key, packing);
+    const located = await locate(key, new AbortController().signal);
+    if (located === null) return [];
+    const root = await realpath(hub.config().dataDir);
+    const files: string[] = [];
+    for (const each of located.paths) {
+      const [path, runtime] = typeof each === "string" ? [each, located.runtime] : [each.path, each.runtime];
+      // (its directory gone since it was located: nothing of it to find, the others still are)
+      const parent = await realpath(dirname(path)).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return null;
+        throw error;
+      });
+      if (parent === null || !within(parent, root)) continue;
+      files.push(join(parent, basename(path)));
+      if (runtime === "claude") await archive.jsonlFilesSoon(join(parent, basename(path, ".jsonl")), files);
+    }
+    return files;
+  }
+
   /// Whether an archived session's directory or transcripts are put away: asked before each of its processes opens, so
   /// off the station's thread, its transcripts found where the live view finds them (live.ts `locateAsync`, a worker's).
   async isCold(key: string): Promise<boolean> {
@@ -178,12 +208,12 @@ export class ColdRooms implements ColdStorage {
   async restore(key: string): Promise<void> {
     const row = this.hub().store.getSession(key);
     if (!row) throw new Error(`unknown session ${key}`);
-    const room = roomOf(this.dataDir(), row.workspace);
+    const room = await roomOfSoon(this.dataDir(), row.workspace);
     if (room === null) return;
     await archive.withLock(room, async () => {
       await archive.restoreWorkspace(room);
       // Restoration must work even after the store has already brought this chat back.
-      for (const path of this.historyFiles(key, false)) await archive.restoreFile(path);
+      for (const path of await this.historyFilesSoon(key, false)) await archive.restoreFile(path);
       await unlink(join(room, "cold")).catch(() => undefined);
     });
   }
@@ -261,9 +291,14 @@ export class ColdRooms implements ColdStorage {
   /// Rust station's copy of them (`archive/transcripts/<key>.jsonl.zst`, which nothing reads) once they all are: the
   /// copy's size, 0 without one.
   private async packHistory(key: string, ready: () => boolean): Promise<number> {
-    const files = this.historyFiles(key, true);
+    const files = await this.historyFilesSoon(key, true);
+    // (asked before each piece of each file is packed: what is in memory and the store alone, no transcript looked for
+    // again, which the files found already are)
+    const hub = this.hub();
+    const sources = hub.store.runtimeSessionSources(key);
+    const unused = () => !sources.some((source) => hub.store.transcriptInUse(source.runtime, source.id, key));
     for (const path of files) {
-      await archive.packFileIf(path, () => ready() && this.historyFiles(key, true).length > 0);
+      await archive.packFileIf(path, () => ready() && unused());
     }
     if (files.length === 0) return 0;
     for (const path of files) if ((await there(path)) || !(await there(archive.packed(path)))) return 0;
@@ -331,7 +366,7 @@ export class ColdRooms implements ColdStorage {
       for (const row of page) {
         let files: string[] = [];
         try {
-          files = this.historyFiles(row.key, false);
+          files = await this.historyFilesSoon(row.key, false);
         } catch {}
         for (const path of files) {
           try {

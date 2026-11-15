@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { test } from "node:test";
-import { Worker } from "node:worker_threads";
-import { pathToFileURL } from "node:url";
+import { platform } from "../src/platform/index.ts";
+import { MbProcess } from "../src/read/mb-reader.ts";
 import { Store } from "../src/store/store.ts";
 import { LiveLocator } from "../src/sessions/live-locator.ts";
 import { installSigninSaveIndex } from "../src/vault/signin-save-index.ts";
@@ -25,11 +25,14 @@ test("the station in a release starts", { skip: !process.env.STATION_BUNDLE }, (
   } finally { rmSync(data, { recursive: true, force: true }); }
 });
 
+/// The release's MoonBit program, beside its main.js.
+const program = () => join(process.env.STATION_BUNDLE!, platform.exe("stillfail-reader"));
+
 test("a release's live locator finds a transcript", { skip: !process.env.STATION_BUNDLE }, async () => {
   const data = mkdtempSync(join(tmpdir(), "station-bundle-live-"));
   const store = Store.open(join(data, "stillfail.db"));
   const locator = new LiveLocator(data, (key) => store.getSession(key), () => [],
-    pathToFileURL(join(process.env.STATION_BUNDLE!, "sessions/live-locator-worker.js")));
+    (at) => new MbProcess(program(), ["--builder", "live-locator", "--db", join(at, "stillfail.db"), "--data", at, "--sep", sep]));
   try {
     store.insertSession({ key: "one", connect: "ember", runtime: "claude", profile: "cc", workspace: "/w",
       token: "one", createdAt: 1, lastActiveAt: 1, ws: "mine" });
@@ -47,8 +50,8 @@ test("a release's live locator finds a transcript", { skip: !process.env.STATION
 });
 
 // The mac-build job calls this on the release it just laid out; the regular test suite has no release directory.
-test("the workers in a station release start and process a batch", { skip: !process.env.STATION_BUNDLE }, async () => {
-  const directory = mkdtempSync(join(tmpdir(), "station-bundle-workers-"));
+test("the builders of a station release's program start and process a batch", { skip: !process.env.STATION_BUNDLE }, async () => {
+  const directory = mkdtempSync(join(tmpdir(), "station-bundle-builders-"));
   const path = join(directory, "station.db");
   const store = Store.open(path);
   try {
@@ -95,49 +98,56 @@ test("the workers in a station release start and process a batch", { skip: !proc
     store.db.prepare("DELETE FROM card_post_scopes WHERE thread=?").run(thread);
     installLegacySaid(store.db);
     installLegacyAgent(store.db);
-    for (const [file, message] of [
-      ["sessions/workspace-activity-worker.js", {}],
-      ["sessions/workspace-activity-worker.js", { kind: "recovery" }],
-      ["sessions/workspace-activity-worker.js", { kind: "sandbox" }],
-      ["sessions/workspace-activity-worker.js", { kind: "directory" }],
-      ["sessions/workspace-activity-worker.js", { kind: "chat-share" }],
-      ["sessions/workspace-activity-worker.js", { kind: "process-jobs" }],
-      ["sessions/workspace-activity-worker.js", { kind: "legacy-said" }],
-      ["sessions/workspace-activity-worker.js", { kind: "legacy-agent" }],
-      ["sessions/session-count-worker.js", {}],
-      ["sessions/post-block-worker.js", { thread, after: 0 }],
-      ["read/said-worker.js", { thread: saidThread }],
-      ["read/said-worker.js", { session: "old-turn" }],
-      ["read/recent-chat-worker.js", { scope: JSON.stringify([null, null]) }],
-      ["search/scope-worker.js", { scope: "all" }],
-      ["read/session-list-worker.js", { scope: "all" }],
-      ["read/session-bindings-worker.js", { scope: "all" }],
-      ["read/session-up-jobs-worker.js", { session: "old-count" }],
-      ["read/session-up-jobs-worker.js", { session: "old-count", first: thread }],
-      ["read/workspace-up-jobs-worker.js", { scope: "all" }],
-      ["read/widget-sources-worker.js", { thread }],
-      ["read/cc-index-worker.js", { session: "old-cc" }],
-      ["read/card-posts-worker.js", { thread }],
-      ["read/card-posts-worker.js", { thread: saidThread, people: true }],
-      ["read/archive-mark-worker.js", { scope: "all" }],
-      ["read/chat-index-worker.js", "H"],
-      ["vault/signin-save-worker.js", "s"],
+    for (const [builder, message] of [
+      ["session-backfill", {}],
+      ["session-backfill", { kind: "recovery" }],
+      ["session-backfill", { kind: "sandbox" }],
+      ["session-backfill", { kind: "directory" }],
+      ["session-backfill", { kind: "chat-share" }],
+      ["session-backfill", { kind: "process-jobs" }],
+      ["session-backfill", { kind: "legacy-said" }],
+      ["session-backfill", { kind: "legacy-agent" }],
+      ["session-counts", {}],
+      ["post-blocks", { thread, after: 0 }],
+      ["said", { thread: saidThread }],
+      ["turn-counts", { session: "old-turn" }],
+      ["recent-chat", { scope: JSON.stringify([null, null]) }],
+      ["search-scope", { scope: "all" }],
+      ["session-list", { scope: "all" }],
+      ["session-bindings", { scope: "all" }],
+      ["session-up-jobs", { session: "old-count" }],
+      ["session-up-jobs", { session: "old-count", first: thread }],
+      ["workspace-up-jobs", { scope: "all" }],
+      ["widget-sources", { thread }],
+      ["cc-index", { session: "old-cc" }],
+      ["card-posts", { thread }],
+      ["people-since", { thread: saidThread, people: true }],
+      ["archive-marks", { scope: "all" }],
+      ["outflow-chats", { scope: "H" }],
+      ["signin-save", "s"],
     ] as const) {
-      const worker = new Worker(join(process.env.STATION_BUNDLE!, file), { workerData: { path, priority: store.backfillPriority } });
+      const builderProcess = new MbProcess(program(), ["--builder", builder, "--db", path]);
       try {
         let done = false;
         for (let batch = 0; batch < 10 && !done; batch++) {
           const result = new Promise<{ done: boolean; error?: string }>((resolve, reject) => {
-            worker.once("message", resolve);
-            worker.once("error", reject);
+            const heard = (answer: { done: boolean; error?: string; take?: boolean; give?: boolean }) => {
+              // (a builder that takes the backfill permit itself, as it is about to write: given it)
+              if (answer.take === true) return void builderProcess.postMessage({ permit: true });
+              if (answer.give === true) return;
+              builderProcess.off("message", heard);
+              resolve(answer);
+            };
+            builderProcess.on("message", heard);
+            builderProcess.once("exit", (code) => reject(new Error(`${builder} ended (${code})`)));
           });
-          worker.postMessage(message);
+          builderProcess.postMessage(message);
           const answer = await result;
-          assert.equal(answer.error, undefined, file);
+          assert.equal(answer.error, undefined, builder);
           done = answer.done;
         }
-        assert.equal(done, true, file);
-      } finally { await worker.terminate(); }
+        assert.equal(done, true, builder);
+      } finally { await builderProcess.terminate(); }
     }
     assert.deepEqual(store.postAfter("s", thread, 0), { n: 1, ts: "post" });
     assert.equal(store.db.prepare("SELECT said_other_n FROM thread_state WHERE thread=?").get(saidThread)?.said_other_n, 1);

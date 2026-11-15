@@ -839,12 +839,14 @@ export class Data {
     return value;
   }
 
-  /// A step of a sign-in for a new profile as its station answered it (`job`), taken from the state `from` (null: the
-  /// login not listed yet): shown while the overview still has it there. No job (dropped): let go.
-  stepLogin(station: string, id: string, job: unknown, from: string | null): void {
+  /// A step of a sign-in for a new profile as its station answered it (`job`), taken from the state `from` (one of them,
+  /// where several; null: the login not listed yet): shown while the overview still has it there. No job (dropped): let go.
+  stepLogin(station: string, id: string, job: unknown, from: string | readonly string[] | null): void {
     const key = join([station, id]);
     this.#loginSteps.delete(key);
-    if (isObject(job) && loginAt(this.#rawOverview({ topic: "overview", station }), id) === from) this.#loginSteps.set(key, { id, job, from });
+    const was = loginAt(this.#rawOverview({ topic: "overview", station }), id);
+    const took = Array.isArray(from) ? was !== null && from.includes(was) : was === from;
+    if (isObject(job) && took) this.#loginSteps.set(key, { id, job, from: was });
     this.#tell({ topic: "overview", station });
     this.#tellQuery({ topic: "$overview-fit", station });
     this.#tellQuery({ topic: "$overview-chat", station });

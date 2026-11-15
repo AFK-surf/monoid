@@ -127,6 +127,65 @@ export async function agyTakeBack(home: string): Promise<boolean> {
   return true;
 }
 
+/// Whether a sign-in's file is one `agy` runs on: a token, and for a company's account (`enterprise`, or a way of signing
+/// in other than a person's Google account, `consumer`) its tier or Google Cloud project too. Such an account's file is
+/// written first with its token alone, before its licence is chosen or its project given, and `agy` takes a file
+/// with neither as signed out ("incomplete GCP onboarding", 1.5.9).
+export function agyTokenReady(text: string, enterprise: boolean): boolean {
+  let parsed: Json;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return false;
+  }
+  const filled = (v: unknown) => typeof v === "string" && v !== "";
+  if (!filled(parsed?.token?.access_token)) return false;
+  const company = enterprise || companyMethod(parsed.auth_method);
+  return !company || filled(parsed.user_tier) || filled(parsed.project_id);
+}
+
+/// A way of signing in that is a company's (Google Cloud's: `gcp`), not a person's Google account (`consumer`; `oauth`
+/// before 1.5).
+const companyMethod = (method: unknown) => typeof method === "string" && method !== "" && method !== "consumer" && method !== "oauth";
+
+/// Whether a sign-in's file is a company's Google account's.
+export function agyCompany(text: string): boolean {
+  try {
+    return companyMethod(JSON.parse(text)?.auth_method);
+  } catch {
+    return false;
+  }
+}
+
+/// The plan a Google account is on, as people know it, from the tier `agy` says (ACP session/new's
+/// `_meta.antigravity.tier.id`, or its sign-in's `user_tier`); a company's account whose tier is not one of these is
+/// Enterprise. Null where nothing says.
+export function agyPlan(tier: string | null | undefined, company = false): string | null {
+  const id = typeof tier === "string" ? tier.trim().toLowerCase() : "";
+  const known: Record<string, string> = {
+    "g1-ultra-tier": "Ultra",
+    "g1-pro-tier": "Pro",
+    "free-tier": "Free",
+    "gcp-ge-ultra-tier": "Enterprise Ultra",
+    "gcp-ge-plus-tier": "Enterprise Plus",
+    "gcp-ge-standard-tier": "Enterprise",
+    "gcp-standard-tier": "Enterprise",
+  };
+  if (known[id] !== undefined) return known[id]!;
+  if (id.startsWith("gcp-") || company) return "Enterprise";
+  return null;
+}
+
+/// The plan of a profile's sign-in as its file says it (`user_tier`, its way of signing in).
+export function agyPlanIn(text: string, enterprise = false): string | null {
+  try {
+    const parsed = JSON.parse(text);
+    return agyPlan(typeof parsed?.user_tier === "string" ? parsed.user_tier : null, enterprise || agyCompany(text));
+  } catch {
+    return enterprise ? "Enterprise" : null;
+  }
+}
+
 /// When the access token of the profile's sign-in runs out (its `token.expiry`), 0 when it has none or none readable.
 export function agyExpiryIn(text: string): number {
   try {
@@ -167,17 +226,22 @@ export async function agyRenew(home: string, command = "agy"): Promise<void> {
     });
     const renewed = await readFile(marked, "utf8");
     if (agyExpiryIn(renewed) <= wall.now()) throw new Error("agy did not renew the sign-in");
-    await writePrivateSoon(agyToken(home), renewed);
+    // What else the sign-in held (a company's project, region and tier) kept where the renewed one leaves it out.
+    const fresh = JSON.parse(renewed);
+    await writePrivateSoon(agyToken(home), JSON.stringify({ ...parsed, ...fresh, token: fresh.token }));
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => {});
   }
 }
 
 /// A sign-in as a borrower keeps it: the access token its host lent, no refresh token (so `agy` never renews it here,
-/// and asks to sign in once it runs out, which the station prevents by asking its host again first).
-export function agyLentFile(lent: { token: Json; email?: string | null; auth_method?: string | null }): string {
+/// and asks to sign in once it runs out, which the station prevents by asking its host again first); with what else
+/// the host's file holds (`stored`: a company's project, region and tier, without which `agy` takes it as signed out),
+/// where a host lends it.
+export function agyLentFile(lent: { token: Json; email?: string | null; auth_method?: string | null; stored?: Json }): string {
   const { refresh_token: _, ...token } = lent.token ?? {};
-  return JSON.stringify({ token, auth_method: lent.auth_method ?? "consumer", ...(lent.email ? { id_token_email: lent.email } : {}) });
+  const stored = lent.stored !== null && typeof lent.stored === "object" && !Array.isArray(lent.stored) ? lent.stored : {};
+  return JSON.stringify({ ...stored, token, auth_method: lent.auth_method ?? stored.auth_method ?? "consumer", ...(lent.email ? { id_token_email: lent.email } : {}) });
 }
 /// How many bytes of the station's tools a session's model is declared (tools/mcp.ts `fitted`). `agy` 1.5.6 in ACP
 /// declares an MCP server's tools only while all of them together stay within about 57-60 KB, dropping the largest
@@ -199,8 +263,10 @@ export const classifyFailure = (text: string): FailureReason =>
 /// A failure Antigravity CLI tells only in words: a turn whose answer is end_turn, all it said one line of its own
 /// notice (⚠). Its spent quota came so on 1.5.9 (2026-11-15: "⚠ Individual quota reached. Please upgrade your
 /// subscription to increase your limits. Resets in 56m33s.", where its log says RESOURCE_EXHAUSTED (code 429)), and a
-/// session went on asking the spent account instead of moving to another. What the model says is never one: a notice
-/// is the whole turn, and only what tells the account, a limit or the provider counts (not `model`, the rest).
+/// session went on asking the spent account instead of moving to another. It comes after the turn's calls too, its
+/// last words (2026-11-15: a turn of tool calls and thinking ending on it was taken as finished). What the model says
+/// is never one: a notice is all of the turn's last words, one line of its own, and only what tells the account, a
+/// limit or the provider counts (not `model`, the rest).
 export function noticeFailure(said: string): FailureReason | null {
   const text = said.trim();
   if (!text.startsWith("⚠") || text.includes("\n")) return null;
@@ -250,7 +316,14 @@ export function agyBaseModel(id: string): { model: string; effort?: string } {
   return effort === undefined ? { model: trimmed } : { model: trimmed.slice(0, -effort.length - 1), effort };
 }
 
-export type AgyCatalog = { models: string[]; efforts: Record<string, string[]>; defaults: Record<string, string> };
+/// `tier`: the plan's tier as session/new said it (`_meta.antigravity.tier.id`), where it did.
+export type AgyCatalog = { models: string[]; efforts: Record<string, string[]>; defaults: Record<string, string>; tier?: string };
+
+/// The tier session/new or session/load said the account is on (`_meta.antigravity.tier`, `{ id, name }`), or null.
+export function agyTierIn(result: Json): string | null {
+  const id = result?._meta?.antigravity?.tier?.id;
+  return typeof id === "string" && id !== "" ? id : null;
+}
 
 /// The base models, their thinking levels (`[]` where at most one variant is offered, e.g. `gpt-oss-120b-medium`), and
 /// any default level reported by `currentModelId`.
@@ -375,7 +448,8 @@ export class AgyDriver extends AcpDriver<AgySession> {
   async catalog(profile: Profile): Promise<AgyCatalog> {
     const session = await this.begin({ key: `models-${profile.id}-${uuid()}`, profile, cwd: agyHome(profile.home), instructions: "", mcpToken: "", mcpUrl: "", route: "model-discovery" }, () => {}, true);
     try {
-      return agyCatalog(session.availableModels, session.currentModelId);
+      const catalog = agyCatalog(session.availableModels, session.currentModelId);
+      return session.tier !== null ? { ...catalog, tier: session.tier } : catalog;
     } finally {
       await session.dispose();
     }
@@ -424,6 +498,8 @@ export class AgySession extends AcpSession {
   currentModelId: string | null = null;
   /// The raw ACP `modelId` the process opened on before any `session/set_model`.
   defaultModelId: string | null = null;
+  /// The account's tier, as session/new or session/load said it (`agyTierIn`).
+  tier: string | null = null;
   /// The context its last call had and the model's window, as usage_update says them.
   private context = { used: 0, size: 0 };
 
@@ -451,6 +527,7 @@ export class AgySession extends AcpSession {
   opened(result: Json) {
     super.opened(result);
     this.availableModels = agyModels(result);
+    this.tier = agyTierIn(result) ?? this.tier;
     const current = result?.models?.currentModelId;
     if (typeof current === "string" && current !== "") {
       this.currentModelId = current;

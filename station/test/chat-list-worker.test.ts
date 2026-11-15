@@ -8,6 +8,7 @@ import { RecentChatBuilder } from "../src/read/recent-chat-builder.ts";
 import { recentChatIds } from "../src/store/chat-list.ts";
 import { readPreparedRecentWorkspace } from "../src/store/chat-list-scope-rows.ts";
 import { Store } from "../src/store/store.ts";
+import { endsOnce } from "./programs.ts";
 
 function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "recent-chat-worker-")), path = join(dir, "station.db");
@@ -55,9 +56,8 @@ test("a short requested scope can finish while another has many sessions to prep
 
 test("a stopped recent chat worker resumes its pending request", async () => {
   const f = fixture(), file = join(f.dir, "worker.mjs"), marker = join(f.dir, "exited");
-  const real = new URL("../src/read/recent-chat-worker.ts", import.meta.url).href;
-  writeFileSync(file, `import { existsSync, writeFileSync } from 'node:fs';\nif (!existsSync(${JSON.stringify(marker)})) { writeFileSync(${JSON.stringify(marker)}, '1'); process.exit(1); }\nawait import(${JSON.stringify(real)});\n`);
-  const builder = new RecentChatBuilder(f.path, {}, pathToFileURL(file));
+  endsOnce(file, marker);
+  const builder = new RecentChatBuilder(f.path, {}, file);
   try {
     await builder.readyScope({ ws: "here", home: "home" });
     assert.ok(existsSync(marker));

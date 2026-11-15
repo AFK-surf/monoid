@@ -1,12 +1,11 @@
 // The MoonBit builder of what the station prepares for its sessions after a handover (station/mb, src/activity) brings
 // an older store across as `workspaceActivityStep`, `recoverWaitsStep` and `awakeWaitsStep` do: the same answers and
-// tables, batch by batch, with sessions and turns written meanwhile; a kind it has not taken over is left to the worker.
+// tables, batch by batch, with sessions and turns written meanwhile; a kind it does not know is an error.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { Worker } from "node:worker_threads";
 import { MbBackfill, MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
 import { awakeWaitsStep } from "../src/store/awake-waits.ts";
 import { recoverWaitsStep } from "../src/store/recover-waits.ts";
@@ -90,25 +89,22 @@ for (const [kind, step] of [["activity", workspaceActivityStep], ["recovery", re
   });
 }
 
-test("a kind the MoonBit builder leaves to the worker is asked of the worker, which answers from then on", async () => {
+test("a kind the MoonBit builder does not know is an error, and it goes on answering the kinds it does", async () => {
   assert.notEqual(binary, null);
   const f = old();
-  const file = new URL("../src/sessions/workspace-activity-worker.ts", import.meta.url);
   const priority = new SharedArrayBuffer(8);
-  const backfill = new MbBackfill(binary!, ["--builder", "session-backfill", "--db", f.path], priority, 20,
-    () => new Worker(file, { workerData: { path: f.path, priority } }));
+  const backfill = new MbBackfill(binary!, ["--builder", "session-backfill", "--db", f.path], priority, 20);
   try {
     const ask = (message: object) => {
-      const answered = new Promise<{ done: boolean; error?: string; kind?: string }>((resolve) => backfill.once("message", resolve));
+      const answered = new Promise<{ done: boolean; error?: string; fallback?: boolean }>((resolve) => backfill.once("message", resolve));
       backfill.postMessage(message);
       return answered;
     };
-    // the program's own kind, then one only the worker has (its answers say their kind)
-    assert.equal((await ask({ kind: "activity" })).kind, undefined);
-    const theirs = await ask({ kind: "not-moved-yet" });
-    assert.equal(theirs.error, undefined);
-    assert.equal(theirs.kind, "not-moved-yet");
-    assert.equal((await ask({ kind: "activity" })).kind, "activity", "the worker answers from then on");
+    assert.equal((await ask({ kind: "activity" })).error, undefined);
+    const unknown = await ask({ kind: "not-a-kind" });
+    assert.match(unknown.error ?? "", /invalid session backfill preparation request/);
+    assert.equal(unknown.fallback, undefined, "nothing is left to a thread of TypeScript");
+    assert.equal((await ask({ kind: "activity" })).error, undefined);
     assert.equal(new Int32Array(priority)[1], 0, "no permit left held");
   } finally {
     await backfill.terminate();

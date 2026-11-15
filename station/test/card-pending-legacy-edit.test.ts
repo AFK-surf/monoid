@@ -8,7 +8,7 @@ import { Readers } from "../src/read/pool.ts";
 import { cardAt, LAST_MESSAGE_RECENT_EDIT, makeStore, pendingCard } from "../src/read/store.ts";
 import { CARD_POST_LATEST } from "../src/store/card-post-index.ts";
 import { installLegacyEdits, legacyEditStep } from "../src/store/legacy-edits-build.ts";
-import { addClientColumn } from "../src/store/schema.ts";
+import { addClientColumn, repairMergedEditLookup } from "../src/store/schema.ts";
 import { Store } from "../src/store/store.ts";
 
 const card = JSON.stringify({ type: "options", options: [{ label: "Pick" }] });
@@ -149,6 +149,7 @@ test("review readers share old edit preparation after handover when one cancels"
   const dir = mkdtempSync(join(tmpdir(), "old-card-reader-")), path = join(dir, "stillfail.db");
   const { store, thread, short } = oldCard(150, path);
   const previous = Promise.withResolvers<void>(), readers = new Readers(dir, 1, undefined, 1, { previousGone: previous.promise });
+  readers.repairEdits = () => repairMergedEditLookup(store.db);
   try {
     const controller = new AbortController();
     const stopped = readers.read("reviewPendingCard", { thread }, "en", { signal: controller.signal });

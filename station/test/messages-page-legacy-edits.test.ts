@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { Readers } from "../src/read/pool.ts";
 import { makeStore, messagesBefore, MESSAGES_FROM_KEYS } from "../src/read/store.ts";
 import { installLegacyEdits, legacyEditDrain, legacyEditStep } from "../src/store/legacy-edits-build.ts";
-import { addClientColumn } from "../src/store/schema.ts";
+import { addClientColumn, repairMergedEditLookup } from "../src/store/schema.ts";
 import { toMessage } from "../src/store/rows.ts";
 import { Store } from "../src/store/store.ts";
 
@@ -128,6 +128,7 @@ test("old message pages share preparation after handover, even if one reader can
   const { store, db, thread } = oldPage(150, path);
   const previous = Promise.withResolvers<void>();
   const readers = new Readers(dir, 1, undefined, 1, { previousGone: previous.promise });
+  readers.repairEdits = () => repairMergedEditLookup(store.db);
   const controller = new AbortController();
   try {
     const args = { thread, limit: 2 };

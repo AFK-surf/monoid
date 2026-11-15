@@ -10,6 +10,7 @@ import { XSHARE_IDLE_MS, liveShare, shareLive, toChatShare } from "../src/store/
 import { Store } from "../src/store/store.ts";
 import { ChatShareIndexBuilder } from "../src/xshare/index-builder.ts";
 import { testClock } from "./hub-fakes.ts";
+import { endsAlways, theProgram } from "./programs.ts";
 
 const add = "INSERT INTO chat_shares(session,shared,write,by,at) VALUES (?,?,0,'a',?)";
 const share = (...to: { workspace: string; used: number }[]) => JSON.stringify(to);
@@ -167,16 +168,15 @@ test("an old share store is prepared on a worker after the previous station leav
 
 test("a later share read retries a stopped preparation worker", async () => {
   const dir = mkdtempSync(join(tmpdir(), "share-worker-retry-")), path = join(dir, "store.db"), worker = join(dir, "worker.mjs");
-  const store = Store.open(path), builder = new ChatShareIndexBuilder(store, Promise.resolve(), pathToFileURL(worker));
+  const store = Store.open(path), builder = new ChatShareIndexBuilder(store, Promise.resolve(), worker);
   try {
     const put = store.db.prepare(add), now = store.now();
     for (let i = 0; i < 40; i++) put.run(`share-${i}`, share({ workspace: "one", used: now }), now);
-    writeFileSync(worker, "process.exit(1);\n");
+    endsAlways(worker);
     builder.request();
     await builder.settled();
     assert.equal(chatShareIndexReady(store.db), false);
-    const actual = new URL("../src/sessions/workspace-activity-worker.ts", import.meta.url).href;
-    writeFileSync(worker, `import ${JSON.stringify(actual)};\n`);
+    theProgram(worker);
     builder.request();
     await builder.settled();
     assert.equal(chatShareIndexReady(store.db), true);

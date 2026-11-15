@@ -77,6 +77,33 @@ test("a new profile's sign-in: started and its code taken show as the calls answ
   core.close();
 });
 
+test("a company's Google sign-in: its Google Cloud project, asked after its code, taken the way a code is and shown at once", async () => {
+  const google = (state: string) => ({ ...job(state), runtime: "agy" });
+  const { host, core, push } = await started({ ...base(), "POST /logins": { id: "login-1", job: google("starting") }, "POST /logins/login-1/code": { job: google("verifying") } });
+  const ui = core.connect();
+  const values = new Map();
+  subscribe(core, ui, 1, { topic: "overview", station: ST });
+  subscribe(core, ui, 2, { topic: "stationPart", scope: "ws", station: ST, part: "logins" });
+  await host.settle();
+  drain(host, values);
+  call(core, ui, 10, "login.new", { station: ST, runtime: "agy", access: "agy-enterprise" });
+  await host.settle();
+  assert.deepEqual(answers(drain(host, values), 10)?.ok, { id: "login-1", job: google("starting") });
+  push("overview", told(google("needs_project")));
+  await host.settle();
+  drain(host, values);
+  assert.equal(shown(values).job.state, "needs_project");
+  call(core, ui, 11, "login.code", { station: ST, id: "login-1", code: "my-project" });
+  await host.settle();
+  assert.ok(answers(drain(host, values), 11)?.ok);
+  assert.equal(shown(values).job.state, "verifying", "the project taken shows at once, not its field again");
+  push("overview", told(google("needs_project")));
+  await host.settle();
+  drain(host, values);
+  assert.equal(shown(values).job.state, "verifying", "an overview made before the project went in does not bring its field back");
+  core.close();
+});
+
 test("a new profile's sign-in: an answer that comes after the station told more is not shown over it; one dropped is let go", async () => {
   const { host, core, push } = await started({ ...base(), "POST /logins/login-1/code": { job: job("verifying") }, "DELETE /logins/login-1": { ok: true } });
   let answer: ((r: HttpResponse) => void) | null = null;

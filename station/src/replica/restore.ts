@@ -5,7 +5,6 @@
 // say. Only into a station that has no chats of its own yet; the station then says it was that one (`formerly`).
 import { claudeProject } from "../read/transcript.ts";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { Worker } from "node:worker_threads";
 import { dirname, join, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { type Head, type Rec, type Row, Folded, OWN_LOG, RESTORE_ORDER, THREAD_COLUMNS, asHead, attachedPaths, bumpedTs, decodeBatch } from "./format.ts";
@@ -28,10 +27,10 @@ export const copyDir = (data: string) => join(restoreDir(data), "copy");
 
 /// A generation folded: its head, and what its batches say now. Throws where a batch the head names is not there.
 export function readCopy(dir: string): { head: Head; folded: Folded } {
-  const head = asHead(JSON.parse(readFileSync(headFile(dir), "utf8"))); // sync: in the restore's own thread (restore-worker.ts)
+  const head = asHead(JSON.parse(readFileSync(headFile(dir), "utf8"))); // sync: the tests' restore (the station's: takeBackSoon)
   if (head === null) throw new Error("no copy here, or one of a newer station's");
   const folded = new Folded();
-  for (const b of head.batches) for (const line of decodeBatch(readFileSync(join(dir, "log", b))).lines) folded.apply(line); // sync: in the restore's own thread (restore-worker.ts)
+  for (const b of head.batches) for (const line of decodeBatch(readFileSync(join(dir, "log", b))).lines) folded.apply(line); // sync: the tests' restore (the station's: takeBackSoon)
   return { head, folded };
 }
 
@@ -95,7 +94,7 @@ const RESTORED = "CREATE TABLE IF NOT EXISTS replica_restored (origin TEXT NOT N
 /// a thread names it by that id, and a row of a key here already is left as it is; each session's `ws` is `ws` where it
 /// is said. `dataDir`: this station's.
 export function build(db: string, dir: string, files: string, dataDir: string, now = 0, merge = false, connects: Record<string, string> = {}, ws?: string | null): Built {
-  const head = asHead(JSON.parse(readFileSync(headFile(dir), "utf8"))); // sync: in the restore's own thread (restore-worker.ts)
+  const head = asHead(JSON.parse(readFileSync(headFile(dir), "utf8"))); // sync: the tests' restore (the station's: takeBackSoon)
   if (head === null) throw new Error("no copy here, or one of a newer station's");
   const d = new DatabaseSync(db, { timeout: 30_000 });
   const rows: Record<string, number> = {};
@@ -131,10 +130,10 @@ export function build(db: string, dir: string, files: string, dataDir: string, n
         // of what went), then each row put in once, table by table in RESTORE_ORDER, in the order it was last said: the
         // store's triggers see what a station that made them saw, whichever batches the copy is.
         const work = `${db}.restore-fold`;
-        rmSync(work, { force: true }); // sync: in the restore's own thread (restore-worker.ts)
+        rmSync(work, { force: true }); // sync: the tests' restore (the station's: takeBackSoon)
         const folded = new Folded(work);
         try {
-          for (const b of head.batches) for (const line of decodeBatch(readFileSync(join(dir, "log", b))).lines) folded.apply(line); // sync: in the restore's own thread (restore-worker.ts)
+          for (const b of head.batches) for (const line of decodeBatch(readFileSync(join(dir, "log", b))).lines) folded.apply(line); // sync: the tests' restore (the station's: takeBackSoon)
           for (const line of folded.records()) {
             const rec = JSON.parse(line) as Rec;
             if ("r" in rec) {
@@ -192,7 +191,7 @@ export function build(db: string, dir: string, files: string, dataDir: string, n
           }
         } finally {
           folded.close();
-          rmSync(work, { force: true }); // sync: in the restore's own thread (restore-worker.ts)
+          rmSync(work, { force: true }); // sync: the tests' restore (the station's: takeBackSoon)
         }
         for (const table of RESTORE_ORDER) if (has(table)) rows[table] = merging ? (put[table] ?? 0) : (d.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
         d.prepare("INSERT INTO replica_restored (origin, gen, at, rows) VALUES (?, ?, ?, ?)").run(head.origin, head.gen, now, JSON.stringify(rows));
@@ -220,18 +219,18 @@ export function build(db: string, dir: string, files: string, dataDir: string, n
               const f = where.get(path) as { hash: string } | undefined;
               if (f === undefined) continue;
               // (placed by a start before this one)
-              if (existsSync(path)) { // sync: in the restore's own thread (restore-worker.ts)
+              if (existsSync(path)) { // sync: the tests' restore (the station's: takeBackSoon)
                 placed++;
                 continue;
               }
               const from = join(files, f.hash);
-              if (!existsSync(from)) { // sync: in the restore's own thread (restore-worker.ts)
+              if (!existsSync(from)) { // sync: the tests' restore (the station's: takeBackSoon)
                 missing++;
                 continue;
               }
-              mkdirSync(dirname(path), { recursive: true }); // sync: in the restore's own thread (restore-worker.ts)
-              copyFileSync(from, `${path}.restoring`); // sync: in the restore's own thread (restore-worker.ts)
-              renameSync(`${path}.restoring`, path); // sync: in the restore's own thread (restore-worker.ts)
+              mkdirSync(dirname(path), { recursive: true }); // sync: the tests' restore (the station's: takeBackSoon)
+              copyFileSync(from, `${path}.restoring`); // sync: the tests' restore (the station's: takeBackSoon)
+              renameSync(`${path}.restoring`, path); // sync: the tests' restore (the station's: takeBackSoon)
               placed++;
             }
           }
@@ -282,7 +281,7 @@ export const outcomeFile = (data: string) => join(data, "replica", "restored.jso
 export function takeBack(data: string, db: string, now = 0): Ready | null {
   let ready: Ready;
   try {
-    ready = JSON.parse(readFileSync(readyFile(data), "utf8")) as Ready; // sync: in the restore's own thread (restore-worker.ts)
+    ready = JSON.parse(readFileSync(readyFile(data), "utf8")) as Ready; // sync: the tests' restore (the station's: takeBackSoon)
   } catch {
     return null;
   }
@@ -302,11 +301,11 @@ export function takeBack(data: string, db: string, now = 0): Ready | null {
       outcome.left = e.left;
     }
   }
-  mkdirSync(dirname(outcomeFile(data)), { recursive: true }); // sync: in the restore's own thread (restore-worker.ts)
-  writeFileSync(`${outcomeFile(data)}.tmp`, JSON.stringify(outcome)); // sync: in the restore's own thread (restore-worker.ts)
-  renameSync(`${outcomeFile(data)}.tmp`, outcomeFile(data)); // sync: in the restore's own thread (restore-worker.ts)
+  mkdirSync(dirname(outcomeFile(data)), { recursive: true }); // sync: the tests' restore (the station's: takeBackSoon)
+  writeFileSync(`${outcomeFile(data)}.tmp`, JSON.stringify(outcome)); // sync: the tests' restore (the station's: takeBackSoon)
+  renameSync(`${outcomeFile(data)}.tmp`, outcomeFile(data)); // sync: the tests' restore (the station's: takeBackSoon)
   // (let go once its files are placed, or where its rows never went in)
-  if (!outcome.pending) rmSync(restoreDir(data), { recursive: true, force: true }); // sync: in the restore's own thread (restore-worker.ts)
+  if (!outcome.pending) rmSync(restoreDir(data), { recursive: true, force: true }); // sync: the tests' restore (the station's: takeBackSoon)
   return ready;
 }
 
@@ -315,38 +314,29 @@ export function addFormerly(data: string, origin: string): void {
   const file = join(data, "replica", "formerly.json");
   let list: string[] = [];
   try {
-    list = JSON.parse(readFileSync(file, "utf8")); // sync: in the restore's own thread (restore-worker.ts)
+    list = JSON.parse(readFileSync(file, "utf8")); // sync: the tests' restore (the station's: takeBackSoon)
   } catch {}
   if (!list.includes(origin)) list.push(origin);
-  mkdirSync(dirname(file), { recursive: true }); // sync: in the restore's own thread (restore-worker.ts)
-  writeFileSync(`${file}.tmp`, JSON.stringify(list)); // sync: in the restore's own thread (restore-worker.ts)
-  renameSync(`${file}.tmp`, file); // sync: in the restore's own thread (restore-worker.ts)
+  mkdirSync(dirname(file), { recursive: true }); // sync: the tests' restore (the station's: takeBackSoon)
+  writeFileSync(`${file}.tmp`, JSON.stringify(list)); // sync: the tests' restore (the station's: takeBackSoon)
+  renameSync(`${file}.tmp`, file); // sync: the tests' restore (the station's: takeBackSoon)
 }
 
-/// `takeBack` off the main thread, where a restore waits (null: none did): by the MoonBit program (station/mb's
-/// src/replica, `--builder replica-restore`) where it is built, else in a worker thread.
-export async function takeBackSoon(data: string, db: string, now: number, given?: string | null): Promise<Ready | null> {
+/// The restore put in off the main thread, where one waits (null: none did), by the MoonBit program (station/mb's
+/// src/replica, `--builder replica-restore`; `given`: a test's own), which does what `takeBack` does.
+export async function takeBackSoon(data: string, db: string, now: number, given?: string): Promise<Ready | null> {
   if (!existsSync(readyFile(data))) return null; // sync: before the station serves (its store not open yet)
-  // (imported here: the restore's own thread, which imports this file, keeps its heap to what it does)
-  const { MbProcess, mbReaderBinary } = await import("../read/mb-reader.ts");
-  const binary = given === undefined ? mbReaderBinary() : given;
-  if (binary !== null) {
-    return new Promise((resolve, reject) => {
-      const p = new MbProcess(binary, ["--builder", "replica-restore", "--db", db, "--data", data, "--now", String(now), "--sep", sep]);
-      let said = false;
-      p.once("message", (m: { ready?: Ready | null; error?: string }) => {
-        said = true;
-        if (m.error !== undefined) reject(new Error(m.error));
-        else resolve(m.ready ?? null);
-      });
-      p.once("error", reject);
-      p.once("exit", (code: number) => { if (!said) reject(new Error(`the restore ended saying nothing (${code})`)); });
-    });
-  }
-  const file = new URL(import.meta.url.endsWith(".ts") ? "./restore-worker.ts" : "./replica/restore-worker.js", import.meta.url);
+  const { MbProcess, readerBinary } = await import("../read/mb-reader.ts");
+  const binary = given ?? readerBinary();
   return new Promise((resolve, reject) => {
-    const w = new Worker(file, { workerData: { data, db, now } });
-    w.once("message", (m: { ready?: Ready | null; error?: string }) => (m.error !== undefined ? reject(new Error(m.error)) : resolve(m.ready ?? null)));
-    w.once("error", reject);
+    const p = new MbProcess(binary, ["--builder", "replica-restore", "--db", db, "--data", data, "--now", String(now), "--sep", sep]);
+    let said = false;
+    p.once("message", (m: { ready?: Ready | null; error?: string }) => {
+      said = true;
+      if (m.error !== undefined) reject(new Error(m.error));
+      else resolve(m.ready ?? null);
+    });
+    p.once("error", reject);
+    p.once("exit", (code: number) => { if (!said) reject(new Error(`the restore ended saying nothing (${code})`)); });
   });
 }

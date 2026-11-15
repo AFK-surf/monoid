@@ -11,7 +11,7 @@ import { test } from "node:test";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
 import { Readers } from "../src/read/pool.ts";
 import { Store } from "../src/store/store.ts";
-import { REFERENCE_WORKER, readersOf } from "./reference.ts";
+import { REFERENCE, readersOf } from "./reference.ts";
 
 const binary = mbReaderBinary();
 const put = (path: string, text: string | Buffer, at?: number) => {
@@ -112,7 +112,7 @@ test("the MoonBit reader reads the agents' memory and the machine's sessions as 
   const saved = { HOME: process.env.HOME, CODEX_HOME: process.env.CODEX_HOME };
   process.env.HOME = home;
   process.env.CODEX_HOME = codex;
-  const worker = new Readers(data, 1, REFERENCE_WORKER);
+  const worker = new Readers(data, 1, REFERENCE);
   const program = readersOf(data, binary);
   const read = (readers: Readers, op: string, args: unknown) => readers.read(op, args, "en").then((t) => JSON.parse(t), (e: Error & { status?: number }) => ({ error: e.message, status: e.status }));
   const all = async (readers: Readers) => {

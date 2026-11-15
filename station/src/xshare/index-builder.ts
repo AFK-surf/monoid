@@ -1,5 +1,4 @@
-import { Worker } from "node:worker_threads";
-import { MbBackfill, mbReaderBinary } from "../read/mb-reader.ts";
+import { MbBackfill, readerBinary } from "../read/mb-reader.ts";
 import { log } from "../ops/log.ts";
 import { releaseStoppedBackfill } from "../store/backfill.ts";
 import { chatShareIndexReady, chatShareIndexStep, hasChatShareIndex, installChatShareIndex, refreshChatShareIndex, SHARE_MANY } from "../store/chat-share-index.ts";
@@ -8,16 +7,16 @@ import type { Store } from "../store/store.ts";
 /// Sharing continues to answer the old way while the preceding station is up or a worker prepares its old grants.
 export class ChatShareIndexBuilder {
   private pending: Promise<boolean> | null = null;
-  private worker: Worker | MbBackfill | null = null;
+  private worker: MbBackfill | null = null;
   private stopped = false;
   private readonly cancelled = Promise.withResolvers<boolean>();
   private readonly previous: Promise<boolean>;
   private readonly store: Store;
-  private readonly workerFile: URL | undefined;
+  private readonly binary: string | undefined;
 
-  constructor(store: Store, previous: Promise<void>, workerFile?: URL) {
+  constructor(store: Store, previous: Promise<void>, binary?: string) {
     this.store = store;
-    this.workerFile = workerFile;
+    this.binary = binary;
     this.previous = previous.then(() => true, (error) => {
       log.warn("xshare", "could not wait for the previous station before preparing shares", { error: (error as Error).message });
       return false;
@@ -57,14 +56,10 @@ export class ChatShareIndexBuilder {
   private runWorker(): Promise<boolean> {
     const path = this.store.db.location();
     if (path === null) return Promise.resolve(false);
-    const file = this.workerFile ?? new URL(import.meta.url.endsWith(".ts")
-      ? "../sessions/workspace-activity-worker.ts" : "./sessions/workspace-activity-worker.js", import.meta.url);
     return new Promise<boolean>((resolve) => {
-      // (by the MoonBit builder, station/mb's src/activity, share.mbt, where its program is there: `MbBackfill`)
-      let worker: Worker | MbBackfill;
-      const mb = this.workerFile === undefined ? mbReaderBinary() : null;
-      const thread = () => new Worker(file, { workerData: { path, priority: this.store.backfillPriority } });
-      try { worker = mb !== null ? new MbBackfill(mb, ["--builder", "session-backfill", "--db", path], this.store.backfillPriority, 20, thread) : thread(); }
+      // (by the MoonBit builder, station/mb's src/activity, share.mbt: `MbBackfill`)
+      let worker: MbBackfill;
+      try { worker = new MbBackfill(this.binary ?? readerBinary(), ["--builder", "session-backfill", "--db", path], this.store.backfillPriority, 20); }
       catch (error) { log.warn("xshare", "the share worker could not start", { error: (error as Error).message }); resolve(false); return; }
       const owner = worker.threadId;
       let done = false;

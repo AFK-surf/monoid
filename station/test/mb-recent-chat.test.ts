@@ -174,7 +174,7 @@ test("the builder prepares a requested scope behind a pending write, and gives t
   const f = station(4);
   const priority = new SharedArrayBuffer(8), flags = new Int32Array(priority);
   Atomics.add(flags, 0, 1);
-  const builder = new RecentChatBuilder(f.path, { priority }, undefined, binary);
+  const builder = new RecentChatBuilder(f.path, { priority }, binary!);
   try {
     const ready = builder.readyScope({ ws: "A", home: "A" });
     let settled = false;

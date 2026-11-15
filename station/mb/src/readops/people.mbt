@@ -47,7 +47,7 @@ fn pairs_of(v : Json?) -> Map[String, String] {
 }
 
 ///|
-/// What the pool gave with a read (read/worker.ts `Ask`: `names`, `processes`, `clientKeys`; `args.words`).
+/// What the pool gave with a read (read/mb-reader.ts `Ask`: `names`, `processes`, `clientKeys`; `args.words`).
 fn Known::of(host : @host.Host, data : String, sep : String, ask : Json) -> Known {
   let words = ask.value("args").unwrap_or(Json::null()).value("words")
   let word = (k : String) => match words {

@@ -2,11 +2,10 @@
 import { execFile } from "node:child_process";
 import { closeSync, existsSync, openSync, readSync, realpathSync, statSync } from "node:fs";
 import { access, lstat, open, realpath, stat } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
-import { wall } from "../ops/fibers.ts";
+import { basename, dirname, join, normalize, sep } from "node:path";
 import { log } from "../ops/log.ts";
 import { fileName, samePath, segments, within } from "../ops/paths.ts";
-import { walkBounded } from "../ops/walk.ts";
+import { MbProcess, readerBinary } from "../read/mb-reader.ts";
 
 /// Path::starts_with: `path` is `dir` or under it.
 export { within };
@@ -227,7 +226,10 @@ export function rebuildableKind(dir: string): Rebuilt | null {
   }
 }
 
-export const rebuildable = (dir: string): boolean => rebuildableKind(dir) !== null;
+/// Whether a directory is one a build or an install makes again (`rebuildableSoon`'s kinds), off the thread.
+export async function rebuildable(dir: string): Promise<boolean> {
+  return (await rebuildableSoon(dir)) !== null;
+}
 
 /// `rebuildableKind`, its looks at the disk off the thread.
 export async function rebuildableSoon(dir: string): Promise<Rebuilt | null> {
@@ -272,101 +274,75 @@ export type Room = {
 
 export const rebuildBytes = (room: Room) => room.rebuild.reduce((sum, [, b]) => sum + b, 0);
 
-/// Counts files once each however many links they have.
-class Seen {
-  private seen = new Set<string>();
-  private total = 0;
-  private readonly stopAfter: number | undefined;
-  constructor(stopAfter?: number) { this.stopAfter = stopAfter; }
-  bytes(meta: import("node:fs").BigIntStats): number {
-    if (meta.nlink > 1n) {
-      const id = `${meta.dev}:${meta.ino}`;
-      if (this.seen.has(id)) return 0;
-      this.seen.add(id);
-    }
-    const bytes = Number(meta.blocks) * 512;
-    this.total += bytes;
-    if (this.stopAfter !== undefined && this.total > this.stopAfter) throw new Enough(this.total);
-    return bytes;
-  }
-}
-
-/// Enough of a workspace was counted to know it exceeds its limit; more work is not needed for a warning.
-class Enough {
-  readonly bytes: number;
-  constructor(bytes: number) { this.bytes = bytes; }
-}
-
-/// How far a measure goes: the walk's limits (ops/walk.ts), shared by the walks of the rebuildable directories in it.
-export type MeasureBudget = { maxEntries?: number; maxDurationMs?: number; now?: () => number };
+/// How far a measure goes: the most entries it visits and how long it takes, shared by every walk in it (those of the
+/// rebuildable directories, `.git` and `uploads` too).
+export type MeasureBudget = { maxEntries?: number; maxDurationMs?: number };
 /// A workspace's size for its soft limit (measuredUpTo): enough for a warning, never minutes of the disk.
-export const MEASURE_UP_TO: Required<Pick<MeasureBudget, "maxEntries" | "maxDurationMs">> = { maxEntries: 100_000, maxDurationMs: 15_000 };
+export const MEASURE_UP_TO: Required<MeasureBudget> = { maxEntries: 100_000, maxDurationMs: 15_000 };
 /// A room measured for its cleanup (measureRoom, measured): what it finds past this is left for the next time.
-export const MEASURE_ROOM: Required<Pick<MeasureBudget, "maxEntries" | "maxDurationMs">> = { maxEntries: 500_000, maxDurationMs: 60_000 };
+export const MEASURE_ROOM: Required<MeasureBudget> = { maxEntries: 500_000, maxDurationMs: 60_000 };
 
-/// What a measure found, and whether it reached everything (not cut short by its budget).
-type Measured = { bytes: number; complete: boolean; reason?: string };
+/// What a measure found: its bytes, whether it reached everything (`reason`: why not, the walk's limit that cut it:
+/// entries, duration, depth), what it found to make again (with `finding`); `enough`: it stopped as it counted past
+/// `stopAfter`.
+type Measured = { bytes: number; complete: boolean; reason?: string; rebuild?: [string, number][]; enough?: true };
+type Ask = { finding: boolean; strict: boolean; stopAfter?: number };
 
-/// The size of `path` and everything under it, on its file system (ops/walk.ts walkBounded: links not followed, another
-/// file system mounted in it not gone into, within `budget`). With `found`, directories that can be made again are listed
-/// there (each counted whole, not looked into further for more); never in a `.git` or `uploads`.
-async function measure(path: string, seen: Seen, found: [string, number][] | null, budget: MeasureBudget, signal?: AbortSignal, strict = false): Promise<Measured> {
-  const now = budget.now ?? (() => wall.now());
-  const until = now() + (budget.maxDurationMs ?? MEASURE_ROOM.maxDurationMs);
-  const most = budget.maxEntries ?? MEASURE_ROOM.maxEntries;
-  let visited = 0;
-  let bytes = 0;
-  let cut: string | undefined;
-  const onError = strict ? (_: string, error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; } : undefined;
-  const walk = async (root: string, finding: boolean): Promise<void> => {
-    const walked = await walkBounded(root, async (entry) => {
-      // (counted here, not by each walk: the walks of the rebuildable directories in it share the budget)
-      if (++visited > most) {
-        cut ??= "entries";
-        return "stop";
-      }
-      if (finding && entry.depth > 0 && entry.directory) {
-        // Never discover cleanup candidates in repository metadata or historical attachments.
-        if (entry.name === ".git" || entry.name === "uploads") {
-          await walk(entry.path, false);
-          return cut !== undefined ? "stop" : "skip";
-        }
-        if ((await rebuildableSoon(entry.path)) !== null) {
-          const before = bytes;
-          await walk(entry.path, false);
-          found!.push([entry.path, bytes - before]);
-          return cut !== undefined ? "stop" : "skip";
-        }
-      }
-      bytes += seen.bytes(entry.stats!);
-    }, { stat: true, maxEntries: Number.POSITIVE_INFINITY, maxDurationMs: Math.max(0, until - now()), now, signal, onError });
-    if (walked.reason !== undefined && walked.reason !== "stopped") cut ??= walked.reason;
-  };
-  await walk(path, found !== null);
-  signal?.throwIfAborted();
-  return cut === undefined ? { bytes, complete: true } : { bytes, complete: false, reason: cut };
+/// The size of `path` and everything under it, on its file system, by the MoonBit program (`--builder footprint`,
+/// station/mb src/footprint), one process a measure under the system's background priority, so none of the walk's
+/// entries are the station's thread's or its heap's: links not followed (a link counted as itself), another file
+/// system mounted in it not gone into, at most 32 deep, each file once however many names it has, within `budget`
+/// (the walks of what it finds sharing it). With `finding`, directories that can be made again are listed (each
+/// counted whole, not looked into further for more); never in a `.git` or `uploads`. `strict`: an error of the file
+/// system but a path gone fails it (else what cannot be read is passed over). `signal` ends the process at once and
+/// fails the measure with its reason. There is no walk in TypeScript to fall back to: the one it replaced is
+/// station/test/footprint-reference.ts, which station/test/mb-footprint.test.ts holds the program to.
+function measure(path: string, ask: Ask, budget: MeasureBudget, signal?: AbortSignal): Promise<Measured> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(signal.reason);
+    const binary = readerBinary();
+    const p = new MbProcess(binary, ["--builder", "footprint", "--sep", sep], { background: true });
+    let settled = false;
+    const done = (f: () => void) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener("abort", stop);
+      f();
+    };
+    const stop = () => done(() => {
+      p.kill();
+      reject(signal!.reason);
+    });
+    signal?.addEventListener("abort", stop, { once: true });
+    // (its bytes said `size`: a line that says `bytes` has a body after it, read/mb-reader.ts `Said`)
+    p.on("message", ({ size, ...m }: Omit<Measured, "bytes"> & { size: number; error?: string; code?: string }) => done(() => {
+      if (m.error === undefined) return resolve({ ...m, bytes: size });
+      reject(Object.assign(new Error(m.error), { code: m.code }));
+    }));
+    p.on("error", (e: Error) => done(() => reject(e)));
+    p.on("exit", (code: number) => done(() => reject(new Error(`the measure's program ended saying nothing (${code})`))));
+    p.postMessage({
+      path, base: normalize(path), ...ask,
+      maxEntries: budget.maxEntries ?? MEASURE_ROOM.maxEntries, maxDurationMs: Math.max(0, budget.maxDurationMs ?? MEASURE_ROOM.maxDurationMs),
+    });
+  });
 }
 
 /// Measures one chat's directory again (after something in it was cleaned).
 export async function measureRoom(dir: string, budget: MeasureBudget = MEASURE_ROOM): Promise<Room> {
-  const rebuild: [string, number][] = [];
-  const { bytes } = await measure(dir, new Seen(), rebuild, budget);
-  return { bytes, rebuild };
+  const { bytes, rebuild } = await measure(dir, { finding: true, strict: false }, budget);
+  return { bytes, rebuild: rebuild ?? [] };
 }
 
 /// The size of a path, each file once.
-export const measured = async (path: string, signal?: AbortSignal, budget: MeasureBudget = MEASURE_ROOM) => (await measure(path, new Seen(), null, budget, signal)).bytes;
+export const measured = async (path: string, signal?: AbortSignal, budget: MeasureBudget = MEASURE_ROOM) => (await measure(path, { finding: false, strict: false }, budget, signal)).bytes;
 
 /// Count the whole path when it fits; once it exceeds `limit`, return a lower bound without traversing the rest. A
 /// workspace too large or too slow to walk within `budget` (MEASURE_UP_TO) is a lower bound too, `truncated`.
 export async function measuredUpTo(path: string, limit: number, signal?: AbortSignal, budget: MeasureBudget = MEASURE_UP_TO): Promise<{ bytes: number; complete: boolean; truncated?: true }> {
-  try {
-    const got = await measure(path, new Seen(limit), null, budget, signal, true);
-    if (got.complete) return { bytes: got.bytes, complete: true };
-    log.info("workspace-size", "workspace walk cut short", { path, bytes: got.bytes, reason: got.reason });
-    return { bytes: got.bytes, complete: false, truncated: true };
-  } catch (error) {
-    if (error instanceof Enough) return { bytes: error.bytes, complete: false };
-    throw error;
-  }
+  const got = await measure(path, { finding: false, strict: true, stopAfter: limit }, budget, signal);
+  if (got.enough) return { bytes: got.bytes, complete: false };
+  if (got.complete) return { bytes: got.bytes, complete: true };
+  log.info("workspace-size", "workspace walk cut short", { path, bytes: got.bytes, reason: got.reason });
+  return { bytes: got.bytes, complete: false, truncated: true };
 }

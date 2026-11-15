@@ -1,5 +1,4 @@
-import { Worker } from "node:worker_threads";
-import { MbBackfill, mbReaderBinary } from "../read/mb-reader.ts";
+import { MbBackfill, readerBinary } from "../read/mb-reader.ts";
 import { log } from "../ops/log.ts";
 import { releaseStoppedBackfill } from "../store/backfill.ts";
 import { disableSandboxIndex, enableSandboxIndex, runnerNameSessions, runnerTakeUpSessions, sandboxIndexEnabled, sandboxIndexReady, sandboxIndexStep, sandboxSessions } from "../store/sandbox-index.ts";
@@ -10,24 +9,24 @@ import type { SessionRow, Store } from "../store/store.ts";
 export class SandboxNameBuilder {
   private pending: Promise<boolean> | null = null;
   private disabling: Promise<boolean> | null = null;
-  private worker: Worker | MbBackfill | null = null;
+  private worker: MbBackfill | null = null;
   private stopped = false;
   private forRunners = false;
   private readonly cancelled = Promise.withResolvers<boolean>();
   private readonly store: Store;
   private readonly previous: Promise<boolean>;
-  private readonly workerFile: URL | undefined;
+  private readonly binary: string | undefined;
   private readonly enabled: () => boolean;
   private previousReady = false;
 
-  constructor(store: Store, previous: Promise<void>, enabled: () => boolean = () => true, workerFile?: URL) {
+  constructor(store: Store, previous: Promise<void>, enabled: () => boolean = () => true, binary?: string) {
     this.store = store;
     this.previous = previous.then(() => { this.previousReady = true; return true; }, (error) => {
       log.warn("hub", "could not wait for the previous station before preparing sandbox names", { error: (error as Error).message });
       return false;
     });
     this.enabled = enabled;
-    this.workerFile = workerFile;
+    this.binary = binary;
   }
 
   async sessions(names: readonly string[]): Promise<Map<string, string> | "fallback" | null> {
@@ -155,14 +154,10 @@ export class SandboxNameBuilder {
   private runWorker(kind: "sandbox" | "sandbox-off"): Promise<boolean> {
     const path = this.store.db.location();
     if (path === null) return Promise.resolve(false);
-    const file = this.workerFile ?? new URL(import.meta.url.endsWith(".ts")
-      ? "./workspace-activity-worker.ts" : "./sessions/workspace-activity-worker.js", import.meta.url);
     return new Promise<boolean>((resolve) => {
-      // (by the MoonBit builder, station/mb's src/activity sandbox.mbt, where its program is there: `MbBackfill`)
-      let current: Worker | MbBackfill;
-      const mb = this.workerFile === undefined ? mbReaderBinary() : null;
-      const thread = () => new Worker(file, { workerData: { path, priority: this.store.backfillPriority } });
-      try { current = mb !== null ? new MbBackfill(mb, ["--builder", "session-backfill", "--db", path], this.store.backfillPriority, 20, thread) : thread(); }
+      // (by the MoonBit builder, station/mb's src/activity sandbox.mbt: `MbBackfill`)
+      let current: MbBackfill;
+      try { current = new MbBackfill(this.binary ?? readerBinary(), ["--builder", "session-backfill", "--db", path], this.store.backfillPriority, 20); }
       catch (error) {
         log.warn("hub", "the sandbox name worker could not start", { error: (error as Error).message });
         resolve(false);

@@ -9,6 +9,7 @@ import { DecisionSessionsUnavailable } from "../src/store/legacy-decision-sessio
 import { decisionTimeIndexStep } from "../src/store/legacy-decision-time.ts";
 import { buildLegacyEntryLookups } from "../src/store/legacy-said-builder.ts";
 import { LEGACY_LATEST_DECISIONS_SCOPED, Store } from "../src/store/store.ts";
+import { endsOnce } from "./programs.ts";
 
 function oldStore(path: string, oldIndex = true): void {
   const store = Store.open(path), db = store.db;
@@ -105,11 +106,8 @@ test("a stopped decision-time worker resumes its saved progress", async () => {
     assert.deepEqual(store.db.prepare("SELECT cursor,complete FROM legacy_decision_time_meta").get(), before);
     previous.resolve();
     const marker = join(dir, "failed"), script = join(dir, "flaky-worker.mjs");
-    const worker = new URL("../src/sessions/workspace-activity-worker.ts", import.meta.url).href;
-    writeFileSync(script, `import { existsSync, writeFileSync } from 'node:fs';\n` +
-      `if (!existsSync(${JSON.stringify(marker)})) { writeFileSync(${JSON.stringify(marker)}, 'failed'); process.exit(1); }\n` +
-      `await import(${JSON.stringify(worker)});\n`);
-    builder = buildLegacyEntryLookups(store, Promise.resolve(), pathToFileURL(script));
+    endsOnce(script, marker);
+    builder = buildLegacyEntryLookups(store, Promise.resolve(), script);
     assert.equal(await builder.ready, true);
     assert.equal(existsSync(marker), true);
     assert.equal(store.db.prepare("SELECT complete FROM legacy_decision_time_meta").get()?.complete, 1);

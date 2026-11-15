@@ -452,6 +452,34 @@ test("a borrowed Antigravity CLI subscription's sign-in is written in its home w
   await assert.rejects(b.sharing.lendAgy({ ...copy, home }), /未能借出/);
 });
 
+test("a borrowed company Google account keeps its project, region and tier: lent and renewed with them, never its refresh token", async () => {
+  const cloud = new FakeCloud();
+  const all = new Map<string, Station>();
+  const AGY = { id: "work", name: "Gemini Enterprise", runtime: "agy", access: { kind: "subscription", enterprise: true }, home: "homes/work", env: {} };
+  const company = { project_id: "company-project", region: "us-central1", user_tier: "gcp-ge-ultra-tier", tier_display_name: "Gemini Enterprise Ultra", wif_provider: "provider" };
+  const signIn = (access: string, minutes: number) => JSON.stringify({ token: { access_token: access, token_type: "Bearer", refresh_token: "refresh-here", expiry: new Date(Date.now() + minutes * 60_000).toISOString() }, auth_method: "gcp", id_token_email: "someone@company.test", ...company });
+  // Its renewal as agents/agy.ts agyRenew leaves it: the rest of the file kept.
+  const a = station(cloud, A, () => all, [AGY], undefined, { agyRenew: async (home) => writeFileSync(agyToken(home), signIn("renewed", 60)) });
+  const b = station(cloud, B, () => all);
+  all.set(A, a).set(B, b);
+  const hostHome = join(a.data, "homes", "work");
+  mkdirSync(join(hostHome, "agy", ".gemini", "antigravity-cli"), { recursive: true });
+  writeFileSync(agyToken(hostHome), signIn("first", 57));
+  await a.sharing.shareProfile("work", true, null);
+  await settle(a, b);
+  const copy = b.config.raw().profiles[0];
+  const home = join(b.data, copy.home);
+  await b.sharing.lendAgy({ ...copy, home });
+  let file = JSON.parse(readFileSync(agyToken(home), "utf8"));
+  assert.deepEqual({ ...file, token: undefined }, { token: undefined, auth_method: "gcp", id_token_email: "someone@company.test", ...company });
+  assert.equal(file.token.access_token, "first");
+  assert.equal(file.token.refresh_token, undefined, "the refresh token stays on its host");
+  writeFileSync(agyToken(hostHome), signIn("closer", 15));
+  await b.sharing.lendAgy({ ...copy, home });
+  file = JSON.parse(readFileSync(agyToken(home), "utf8"));
+  assert.deepEqual([file.token.access_token, file.token.refresh_token, file.project_id, file.user_tier], ["renewed", undefined, "company-project", "gcp-ge-ultra-tier"]);
+});
+
 test("a host's changed Codex login and resets reach borrowers, including one that was offline", { timeout: 45_000 }, async () => {
   const cloud = new FakeCloud();
   const all = new Map<string, Station>();

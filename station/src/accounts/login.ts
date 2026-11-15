@@ -11,9 +11,14 @@
 //   code the person pastes back, as Claude's. It reads the code only from a terminal: it runs in one (platform.terminal).
 //   Its sign-in lands in the profile's devin/data/ (XDG_DATA_HOME, agents/devin.ts).
 // - Antigravity CLI: no login command; `agy` itself, in a terminal of its own as Devin's, with the profile's agy/ as its
-//   HOME (where it then keeps the sign-in in a file: the keychain is the user's home's), asks how to sign in (the station answers its first choice, Google OAuth), prints a link at accounts.google.com and reads
-//   back the code the page shows, which the person pastes, as Claude's. It goes on into its interface once signed in:
-//   the sign-in is done when its file is written (agents/agy.ts agyToken), and the command and those between stopped.
+//   HOME (where it then keeps the sign-in in a file: the keychain is the user's home's), asks how to sign in (the station
+//   answers its first choice, Google OAuth; for a company's Google account, `enterprise`, its second, a Google Cloud
+//   project, then Continue with Google Cloud), prints a link at accounts.google.com and reads back the code the page
+//   shows, which the person pastes, as Claude's. It goes on into its interface once signed in: the sign-in is done when
+//   its file is written whole (agents/agy.ts agyTokenReady), and the command and those between stopped. A company's
+//   account writes the file first with only its token, then fetches its licences: the first is chosen; with none, it
+//   asks how to pay (Pay As You Go chosen) and for a Google Cloud project, which the person gives (`needs_project`,
+//   taken as a code is).
 // - OpenCode Go (`startConsole`): no command; the station asks the OpenCode Console for a code itself (console.ts) and
 //   keeps asking until it is approved, then leaves the tokens in the profile's home. The page shows it as Codex's.
 // - Kimi Code (`startKimi`): the same with Kimi's device grant (kimi.ts).
@@ -34,7 +39,7 @@ import { KIMI_AUTH, kimiDeviceToken, newDeviceId, readKimi, startKimiDevice, wri
 import { CURSOR, type CursorUrls, cursorHandshake, mintCursorKey, pollCursor, writeCursor } from "./cursor.ts";
 import { cleanEnv } from "../agents/runtime.ts";
 import { devinData } from "../agents/devin.ts";
-import { agyHome, agyToken, noteAgyEmail } from "../agents/agy.ts";
+import { agyHome, agyToken, agyTokenReady, noteAgyEmail } from "../agents/agy.ts";
 import type { Runtime } from "../agents/profiles.ts";
 import { type Lang, stationLang, tr } from "../ops/i18n.ts";
 import { log } from "../ops/log.ts";
@@ -45,7 +50,7 @@ import { started } from "../platform/processes.ts";
 import { loopbackOf, urlsIn, webPage } from "../ops/command-output.ts";
 import type { LoginPages } from "../logins/pages.ts";
 
-export type LoginState = "starting" | "needs_code" | "needs_approval" | "verifying" | "done" | "failed" | "cancelled";
+export type LoginState = "starting" | "needs_code" | "needs_project" | "needs_approval" | "verifying" | "done" | "failed" | "cancelled";
 
 export type LoginJob = {
   profile: string;
@@ -80,17 +85,30 @@ export type LoginCommands = { claude: string; codex: string; grok?: string; devi
 /// How often the Antigravity CLI's sign-in file is looked for once its code went in, and for how long.
 const AGY_POLL_MS = 500;
 const AGY_WAIT_MS = 90_000;
+/// Between the arrow down and Enter in its menus.
+const AGY_KEY_GAP_MS = 50;
+/// What the Antigravity CLI says when a company's sign-in fails after its code or project went in (1.5.9).
+/// (Its own errors say `[Auth Error]`.)
+const AGY_FAILURES = ["[Auth Error]", "Couldn't sign in", "Failed to select license", "Failed to save GCP settings", "Permission denied"];
+/// What it says where a Google Cloud account may not list its licences: no failure, it goes on to ask how to pay.
+const AGY_NO_LICENCES = "Could not fetch licenses";
 
 /// Where a profile keeps the cookies and passkeys of its sign-in tab in the station's browser, inside its own home.
 export const LOGIN_BROWSER_FILE = ".stillfail-login-state.json";
 
 /// What a sign-in is for: a profile's id, the runtime it signs in to, its home, and (for Claude) the account email to
 /// pre-populate on the authorize page when known.
-export type LoginProfile = { id: string; runtime: Runtime; home: string; email?: string | null };
+/// `enterprise`: an Antigravity CLI sign-in to a company's Google account (Google Workspace, Gemini Enterprise, Google
+/// Cloud) rather than a person's.
+export type LoginProfile = { id: string; runtime: Runtime; home: string; email?: string | null; enterprise?: boolean };
 
 /// A sign-in under way: its command (none for OpenCode's, which `stop` ends), and the file its stand-in browser writes
 /// the pages it opens to.
-type Running = { run: number; job: LoginJob; child: ChildProcess | null; raw: string; output: string; cancelTimer: () => void; exited: boolean; lang: Lang; stop?: () => void; opened?: string; home?: string; chose?: boolean };
+type Running = { run: number; job: LoginJob; child: ChildProcess | null; raw: string; output: string; cancelTimer: () => void; exited: boolean; lang: Lang; stop?: () => void; opened?: string; home?: string; chose?: boolean; agy?: AgySteps };
+
+/// Where an Antigravity CLI sign-in is in its menus: which it answered, and what it said since its code (or project)
+/// went in (`after`, null before), which is where its licences, how to pay and the project are asked.
+type AgySteps = { enterprise: boolean; cloud: boolean; license: boolean; billing: boolean; after: string | null };
 
 export class LoginManager {
   private jobs = new Map<string, Running>();
@@ -147,7 +165,20 @@ export class LoginManager {
     this.pages = pages;
     pages.changes((key) => {
       const profile = key.startsWith("profile:") ? key.slice("profile:".length) : null;
-      if (profile !== null && this.jobs.has(profile)) this.emit(profile);
+      if (profile === null) return;
+      const running = this.jobs.get(profile);
+      if (running === undefined) return;
+      // The Antigravity CLI's page come back with its code in the station's browser: taken from there, its tab closed,
+      // nothing to paste (its code goes to antigravity.google alone, never back to this machine).
+      if (running.job.runtime === "agy" && running.job.state === "needs_code") {
+        const code = agyCallbackCode(pages.urlOf(key), running.job.url);
+        if (code !== null) {
+          pages.close(key);
+          void this.submitCode(profile, code, running.lang).catch((error) => log.warn("login", "a code read off the station's browser was not taken", { profile, error: (error as Error).message }));
+          return;
+        }
+      }
+      this.emit(profile);
     });
   }
 
@@ -259,6 +290,7 @@ export class LoginManager {
     // The shell lookup can take time. Record the sign-in first so cancelling or replacing it stops this start too.
     const running: Running = {
       run, job, child: null, raw: "", output: "", exited: true, opened, lang, home: profile.home,
+      ...(profile.runtime === "agy" ? { agy: { enterprise: profile.enterprise === true, cloud: false, license: false, billing: false, after: null } } : {}),
       cancelTimer: this.background.after(TIMEOUT_MS, () => this.failRun(id, run, tr(lang, "station.login.timedOut"))),
     };
     this.jobs.set(id, running);
@@ -458,12 +490,17 @@ export class LoginManager {
     return { ...failed };
   }
 
-  /// Claude and Devin: the code the browser showed after approving.
+  /// Claude and Devin: the code the browser showed after approving. The Antigravity CLI's company account with no
+  /// licence: its Google Cloud project, the same way (`needs_project`).
   async submitCode(profile: string, code: string, lang: Lang = stationLang()): Promise<LoginJob> {
     const running = this.jobs.get(profile);
-    if (!running || running.job.state !== "needs_code") throw new Error(tr(lang, "station.login.notWaitingForCode"));
+    if (!running || (running.job.state !== "needs_code" && running.job.state !== "needs_project")) throw new Error(tr(lang, "station.login.notWaitingForCode"));
     const clean = code.trim();
     if (clean === "") throw new Error(tr(lang, "station.login.emptyCode"));
+    // What it says from here on is read for what comes next (its question for the project, which was said, not again).
+    if (running.agy) running.agy.after = "";
+    running.stop?.();
+    running.stop = undefined;
     running.job.state = "verifying";
     const job = { ...running.job };
     await new Promise<void>((resolve, reject) => {
@@ -478,25 +515,85 @@ export class LoginManager {
     return job;
   }
 
-  /// The Antigravity CLI goes on into its interface once signed in: done when it has written its sign-in since the code
-  /// went in; failed when it has not in a while (a code it did not take: it says nothing a program can read of it).
+  /// The Antigravity CLI goes on into its interface once signed in: done when it has written its sign-in whole since the
+  /// code went in (a company's account writes it first with only its token, its licence or project after:
+  /// `agyTokenReady`); failed when it has not in a while (a code it did not take: it says nothing a program can read of
+  /// it). While it waits for a project from the person it is not timed (the sign-in's own expiry still holds).
   private awaitAgy(profile: string, running: Running) {
     // (the file's time is the machine's: compared with the wall's; how long it is waited for, the station's clock)
     const since = wall.now() - 1000;
     const until = this.background.now() + AGY_WAIT_MS;
-    const look = () => {
-      if (this.jobs.get(profile) !== running) return;
+    const enterprise = running.agy?.enterprise === true;
+    const look = async () => {
+      if (this.jobs.get(profile) !== running || running.job.state !== "verifying") return;
       if (running.home !== undefined && writtenSince(agyToken(running.home), since)) {
         const home = running.home;
-        void readFile(agyToken(home), "utf8").then((text) => noteAgyEmail(home, text), () => null).finally(() => {
+        const text = await readFile(agyToken(home), "utf8").catch(() => "");
+        if (this.jobs.get(profile) !== running || running.job.state !== "verifying") return;
+        if (agyTokenReady(text, enterprise)) {
+          await noteAgyEmail(home, text).catch(() => null);
           if (this.jobs.get(profile) === running) this.finish(profile, "done", null);
-        });
-        return;
+          return;
+        }
       }
       if (this.background.now() > until) return this.finish(profile, "failed", tr(running.lang, "station.login.agyCodeRefused"));
-      running.stop = this.background.after(AGY_POLL_MS, look);
+      running.stop = this.background.after(AGY_POLL_MS, () => void look());
     };
-    look();
+    void look();
+  }
+
+  /// What the Antigravity CLI asks, answered (`output`): how to sign in, and for a company's account the way into
+  /// Google Cloud; once its code went in, its licence (the first), how to pay (as it goes) and the project (asked of the
+  /// person); what it says of a failure ends the sign-in at once, saying it.
+  private agyAnswer(profile: string, running: Running, chunk: string) {
+    const steps = running.agy!;
+    const write = (keys: string) => running.child?.stdin?.write(keys);
+    // A choice further down: the arrow, then Enter a moment later (it reads the two apart).
+    const second = () => {
+      write("\u001b[B");
+      const run = running.run;
+      this.background.after(AGY_KEY_GAP_MS, () => {
+        if (this.jobs.get(profile)?.run === run) write("\r");
+      });
+    };
+    if (running.job.state === "starting" && !running.chose && running.output.includes("Select login method")) {
+      running.chose = true;
+      if (steps.enterprise) second();
+      else write("\r");
+      return;
+    }
+    if (steps.enterprise && !steps.cloud && running.job.state === "starting" && (running.output.includes("Google Cloud sign-in method") || running.output.includes("Continue with Google Cloud"))) {
+      steps.cloud = true;
+      write("\r");
+      return;
+    }
+    if (steps.after === null) return;
+    // Read whole: an escape can be cut between two pieces.
+    const raw = [...(steps.after + chunk)];
+    steps.after = raw.slice(Math.max(0, raw.length - 16000)).join("");
+    const said = stripAnsi(steps.after);
+    // (a line of its licences not listed is no failure, whatever it says: it goes on)
+    const failed = said.split(/\r?\n/).find((l) => !l.includes(AGY_NO_LICENCES) && AGY_FAILURES.some((f) => l.includes(f)));
+    if (failed !== undefined && (running.job.state === "verifying" || running.job.state === "needs_project")) {
+      const line = failed.trim().replace(/^\[Auth Error\]\s*/, "").trim();
+      return this.finish(profile, "failed", tr(running.lang, "station.login.agyFailed", { error: line.slice(0, 300) }));
+    }
+    if (!steps.license && said.includes("Can't find your subscription?")) {
+      steps.license = true;
+      write("\r");
+      return;
+    }
+    if (!steps.billing && said.includes("Pay only for the tokens you use")) {
+      steps.billing = true;
+      second();
+      return;
+    }
+    if (running.job.state === "verifying" && said.includes("Provide Google Cloud project")) {
+      running.stop?.();
+      running.stop = undefined;
+      running.job.state = "needs_project";
+      this.emit(profile);
+    }
   }
 
   cancel(profile: string) {
@@ -521,10 +618,9 @@ export class LoginManager {
     const raw = [...running.raw];
     if (raw.length > 16000) running.raw = raw.slice(raw.length - 16000).join("");
     running.output = stripAnsi(running.raw);
-    // The Antigravity CLI asks how to sign in first: Google OAuth, its first choice.
-    if (running.job.runtime === "agy" && running.job.state === "starting" && !running.chose && running.output.includes("Select login method")) {
-      running.chose = true;
-      running.child?.stdin?.write("\r");
+    if (running.agy) {
+      this.agyAnswer(profile, running, chunk);
+      if (this.jobs.get(profile) !== running) return;
     }
     if (parse(running.job, running.output)) this.emit(profile);
   }
@@ -626,6 +722,27 @@ export function parse(job: LoginJob, output: string): boolean {
     }
   }
   return false;
+}
+
+/// The code Google gave an Antigravity CLI sign-in, read off the page its browser came back to
+/// (https://antigravity.google/oauth-callback?code=…&state=…), when that is its sign-in's (`authUrl`'s `state`); else null.
+export function agyCallbackCode(tabUrl: string | null, authUrl: string | null): string | null {
+  if (tabUrl === null) return null;
+  let back: URL;
+  try {
+    back = new URL(tabUrl);
+  } catch {
+    return null;
+  }
+  if (back.origin !== "https://antigravity.google" || back.pathname.replace(/\/+$/, "") !== "/oauth-callback") return null;
+  const code = back.searchParams.get("code")?.trim() ?? "";
+  if (code === "") return null;
+  let state = "";
+  try {
+    state = authUrl !== null ? (new URL(authUrl).searchParams.get("state") ?? "") : "";
+  } catch {}
+  if (state !== "" && back.searchParams.get("state") !== state) return null;
+  return code;
 }
 
 /// A one-time code like ABCD-12345: four capitals or digits, a dash, four to six more.

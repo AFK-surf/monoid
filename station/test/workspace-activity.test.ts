@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Store } from "../src/store/store.ts";
 import { installWorkspaceActivity, workspaceActivityReady, workspaceActivityStep, WORKSPACE_ACTIVITY } from "../src/store/workspace-activity.ts";
+import { endsOnce } from "./programs.ts";
 
 function fixture() {
   const store = Store.open(":memory:");
@@ -277,15 +278,14 @@ test("a stopped workspace activity worker retries and finishes its saved work", 
   const store = Store.open(join(dir, "station.db"));
   const file = join(dir, "worker.mjs");
   const marker = join(dir, "exited");
-  const real = new URL("../src/sessions/workspace-activity-worker.ts", import.meta.url).href;
-  writeFileSync(file, `import { existsSync, writeFileSync } from 'node:fs';\nif (!existsSync(${JSON.stringify(marker)})) { writeFileSync(${JSON.stringify(marker)}, '1'); process.exit(1); }\nawait import(${JSON.stringify(real)});\n`);
+  endsOnce(file, marker);
   let builder: ReturnType<typeof buildWorkspaceActivity> | null = null;
   try {
     store.insertSession({ key: "active", connect: "ember", runtime: "claude", profile: "cc", workspace: "/w", token: "active", createdAt: 1, lastActiveAt: 1, ws: "W2" });
     store.db.prepare("UPDATE sessions SET running=1 WHERE key='active'").run();
     store.db.prepare("DELETE FROM workspace_activity").run();
     store.db.prepare("UPDATE workspace_activity_meta SET cursor=NULL, complete=0 WHERE id=1").run();
-    builder = buildWorkspaceActivity(store, Promise.resolve(), pathToFileURL(file));
+    builder = buildWorkspaceActivity(store, Promise.resolve(), file);
     assert.equal(await builder.ready, true);
     assert.deepEqual(store.returningSessionsIn("W2")?.map((row) => row.key), ["active"]);
   } finally {

@@ -1,15 +1,14 @@
-// The readers: worker threads, each with its own read-only connection, in two lines that share none of them. What the
-// station tells as things change (the event streams, its notices: `told`) is read by a reader of its own; what devices
-// ask, by the others. Neither waits on the other: on a station (2026-11-02) one line served both, and what was told of a
-// message just said waited 50 s behind a usage read and sidebar updates, a push notice 55 s. Among what devices ask,
-// bulk reads leave room for chat reads. None of these reads holds up writes.
-// A reader is a V8 of its own (tens of MB), so they are started when reads come and let go once none has come for a
-// while: an idle station keeps none. One that dies (its heap is bounded) fails what it held and is replaced by the next
-// read. Where the MoonBit program is there it answers every read (MOVED, HISTORY, the checkpoint), so no reader thread
-// is started at all: the threads are for a station without it and for the tests' reference (test/reference-worker.ts).
+// The readers: processes of the MoonBit program (read/mb-reader.ts, `--data`), each with its own read-only connection,
+// in lines that share none of them: the store's log written into the database (`log`), the pages of sessions'
+// histories (`pages`), and every other read (`moved`), what devices ask and what the station tells alike. Among them,
+// bulk reads leave room for chat reads. None of these reads holds up writes. They are started when reads come and let
+// go once none has come for a while, but for the first of `moved`. One that dies fails what it held and is replaced by
+// the next read. There is no reader thread in TypeScript to fall back to: how one answered the reads before the
+// program took them is the tests' (test/reference-worker.ts, given a test's Readers by test/reference.ts as
+// `reference`, which answers on the lines of before: `told` for what the station tells, `asked` for what devices ask).
 import { availableParallelism, homedir } from "node:os";
 import { join } from "node:path";
-import { Worker } from "node:worker_threads";
+import { DatabaseSync } from "node:sqlite";
 import { catalog } from "../accounts/catalog.ts";
 import { tr } from "../ops/i18n.ts";
 import { log } from "../ops/log.ts";
@@ -25,7 +24,7 @@ import { SessionListBuilder } from "./session-list-builder.ts";
 import { SESSION_LIST_PENDING } from "../store/session-list-index.ts";
 import { SessionBindingsBuilder } from "./session-bindings-builder.ts";
 import { ArchiveMarkBuilder } from "./archive-mark-builder.ts";
-import { SessionUpJobsBuilder } from "./session-up-jobs-builder.ts";
+import { JobNameFirstBuilder, SessionUpJobsBuilder } from "./session-up-jobs-builder.ts";
 import { WorkspaceUpJobsBuilder } from "./workspace-up-jobs-builder.ts";
 import { WidgetSourcesBuilder } from "./widget-sources-builder.ts";
 import { CcIndexBuilder } from "./cc-index-builder.ts";
@@ -37,10 +36,10 @@ import { CLOSED_CARDS_PENDING } from "../store/legacy-closed-cards.ts";
 import { PEOPLE_TIME_PENDING } from "../store/legacy-people-since.ts";
 import { SESSION_BINDINGS_PENDING } from "../store/session-bindings-index.ts";
 import { OUTFLOW_CHATS_PENDING } from "./outflow.ts";
-import type { Answer, Ask, Ready } from "./serve-reads.ts";
 import { LAST_MESSAGE_PENDING, LEGACY_EDITS_PENDING, LEGACY_SAID_PENDING, PAGE_LETTER_PENDING, REMOTE_RUNS_PENDING, SAID_PENDING, TURN_COUNT_PENDING, USAGE_CHATS_PENDING, USAGE_DETAIL_PENDING } from "./store.ts";
 import { HttpError } from "./views.ts";
-import { MbReader, type ReaderLike, mbReaderBinary } from "./mb-reader.ts";
+import { repairMergedEditLookup } from "../store/schema.ts";
+import { type Answer, type Ask, MbReader, type ReaderLike, type Ready, readerBinary } from "./mb-reader.ts";
 import { wall } from "../ops/fibers.ts";
 import { roots as machineRoots } from "./machine.ts";
 import { platform } from "../platform/index.ts";
@@ -89,7 +88,7 @@ type Line = { told: boolean; size: number; room: boolean; slots: Slot[]; waiting
 const HOMES = 4096;
 /// How long after the store changes its log is written into the database (`checkpointSoon`): at most this often.
 const CHECKPOINT_MS = 2_000;
-/// Writing the store's log into the database (worker.ts `checkpoint`) is no read and waits for no one: it has a reader
+/// Writing the store's log into the database (main.mbt `checkpoint`) is no read and waits for no one: it has a reader
 /// of its own (`log`). In line behind reads, a checkpoint may wait as the log grows until the main connection writes it
 /// at its next commit (store.ts WAL_PAGES); on a device reader it can hold up interactive reads while reaching disk.
 const CHECKPOINT = "checkpoint";
@@ -130,11 +129,11 @@ const PAGES = new Set(["timeline", "machineSessions"]);
 /// start), so that each reads on from what the reader it was read in last keeps (`homes`). Given the words a Codex
 /// script's calls are said in, in the language its args name (sessions.ts `timeline` says them so).
 const HISTORY = new Set(["timeline", "transcriptState"]);
-/// The reads the MoonBit reader answers itself (station/mb src/readops), on readers of their own (`moved`) where its
-/// program is there; every other read is a worker's.
+/// The reads the MoonBit reader answers itself (station/mb src/readops), on readers of their own (`moved`): with HISTORY
+/// and the checkpoint, every read there is.
 const MOVED = new Set(["job", "jobLog", "historyPendingCard", "statePendingCard", "deliveryCardState", "reviewPendingCard", "stateQuestion", "pendingDeliveries", "latestMessages", "chatHistoryMessages", "openedChatSaid", "widgetState", "transcriptFile", "memory", "machineSessions", "machineSession", "sessionsAtWork", "policyChecks", "recentConnectPeople", "usageTurns", "usageCalls", "outflowMessages", "archiveLook", "recentChatList", "searchChatList", "threadList", "sharedOf", "sharedChats", "chatMarks", "entries", "letters", "summary", "sessions", "session", "threads", "thread", "turnNotices", "saidNotices", "chats", "chatRows", "outflowChats", "openJobs", "resourceChats", "usage", "outflowUsage", "sessionPlace", "changed", "tailRead", "internalCardEditPage", "internalCardMessagePage"]);
 /// The reads of this machine's own Claude Code and Codex sessions: the MoonBit reader is told where they are kept, from
-/// this process's environment (read/machine.ts `roots`), as the worker reads it.
+/// this process's environment (read/machine.ts `roots`).
 const MACHINE = new Set(["machineSessions", "machineSession"]);
 /// A file a session's message names (read/sessions.ts `sessionPlace`): the program is given what only this process
 /// knows (its HOME, its home directory, whether macOS's folder permissions apply), the words of its refusals in the
@@ -207,7 +206,7 @@ export class Readers {
   private archiveMarks: ArchiveMarkBuilder | null = null;
   private sessionUpJobs: SessionUpJobsBuilder | null = null;
   private workspaceUpJobs: WorkspaceUpJobsBuilder | null = null;
-  private jobNameFirst: RequestedBuilder<string> | null = null;
+  private jobNameFirst: JobNameFirstBuilder | null = null;
   private preparingWorkspaceUpJobs = false;
   /// Reads of the same old session share one unattended preparation, including during handover.
   private preparingUpJobs = new Set<string>();
@@ -221,22 +220,27 @@ export class Readers {
   private again = false;
   /// The station's data directory, whose database they read.
   readonly data: string;
-  private readonly workerFile: URL | undefined;
+  /// What answers in a program's place: a test's reference (test/reference.ts).
+  private readonly reference: ((data: string) => ReaderLike) | undefined;
   private readonly backfill: { previousGone?: Promise<void>; priority?: SharedArrayBuffer };
   /// People's names as their credentials say them (the admin API's `deps.names`), given to every read.
   readonly names = new Map<string, string>();
-  /// The MoonBit reader's program (read/mb-reader.ts), which writes the store's log into it (`log`); none: a worker
-  /// does, as it does every other read (and with a worker of its own given, `workerFile`, that one).
+  /// The MoonBit reader's program (read/mb-reader.ts); none where a test's reference answers instead (`reference`).
   mbReader: string | null;
+  /// The store's schema repaired by the station's writer, where a builder leaves it to it (`prepareLegacyEdits`: the
+  /// merged view, an index under it dropped by an older station): store/schema.ts `repairMergedEditLookup` on the main
+  /// connection, waiting for no lock (services.ts); one found busy is tried again after a pause. None given: on a
+  /// connection of its own, made for it.
+  repairEdits: (() => void) | null = null;
   /// What only the hub knows, given to every read: sessions' process states and client keys (the hub sets these).
   processes: () => Map<string, string> = () => new Map();
   clientKeys: () => Map<string, string> = () => new Map();
 
   /// For what devices ask, at most two by default (STILLFAIL_READERS says otherwise); for what is told, `tellers`.
-  constructor(data: string, size = Number(process.env.STILLFAIL_READERS) || Math.min(2, Math.max(1, availableParallelism() - 1)), workerFile?: URL, tellers = 1, backfill: { previousGone?: Promise<void>; priority?: SharedArrayBuffer } = {}) {
+  constructor(data: string, size = Number(process.env.STILLFAIL_READERS) || Math.min(2, Math.max(1, availableParallelism() - 1)), reference?: (data: string) => ReaderLike, tellers = 1, backfill: { previousGone?: Promise<void>; priority?: SharedArrayBuffer } = {}) {
     this.data = data;
-    this.workerFile = workerFile;
-    this.mbReader = workerFile === undefined ? mbReaderBinary() : null;
+    this.reference = reference;
+    this.mbReader = reference === undefined ? readerBinary() : null;
     this.backfill = backfill;
     this.asked = { told: false, size, room: true, slots: [], waiting: [] };
     // Two: one a background page (a history brought on, a stretch filled) may hold, one left for a page someone waits on.
@@ -249,16 +253,12 @@ export class Readers {
   /// Check statistical coverage without occupying a device reader or writing old history.
   startUsageIndex() {
     if (this.closed) return;
-    if (this.minutes === null) this.minutes = new MinuteReader(join(this.data, "stillfail.db"), this.backfill, this.mbReader);
+    if (this.minutes === null) this.minutes = new MinuteReader(join(this.data, "stillfail.db"), this.backfill);
     this.minutes.start();
   }
 
   private start(line: Line): Slot {
-    // From source: worker.ts beside this; bundled (this inside dist/main.js): dist/read/worker.js.
-    const file = this.workerFile ?? new URL(import.meta.url.endsWith(".ts") ? "./worker.ts" : "./read/worker.js", import.meta.url);
-    // A reader's heap stays small: what it builds is answered and dropped.
-    const worker: ReaderLike = (line === this.log || line === this.moved || line === this.pages) && this.mbReader !== null ? new MbReader(this.mbReader, this.data)
-      : new Worker(file, { workerData: { data: this.data }, resourceLimits: { maxOldGenerationSizeMb: 128, maxYoungGenerationSizeMb: 8 } });
+    const worker: ReaderLike = this.mbReader !== null ? new MbReader(this.mbReader, this.data) : this.reference!(this.data);
     const slot: Slot = { worker, held: null, catalogVersion: 0 };
     const begun = wall.now();
     worker.on("message", (answer: Answer | Ready) => {
@@ -269,7 +269,7 @@ export class Readers {
         if (ms >= 1_000) log.warn("readers", "a reader started slowly", { ms, line: line === this.asked ? "asked" : line === this.pages ? "pages" : line === this.log ? "log" : line === this.moved ? "moved" : "told", ...answer.ready });
         return;
       }
-      // An abandoned read may finish while its worker is being stopped. Do not give that worker another read until it exits.
+      // An abandoned read may finish while its reader is being stopped. Do not give that reader another read until it exits.
       if (slot.retiring) return;
       const asked = slot.held;
       slot.held = null;
@@ -327,18 +327,17 @@ export class Readers {
     });
   }
 
-  /// Whether an idle reader stays: where the MoonBit program answers, only the first of its readers (`moved`), a
-  /// process of a few MB started again in milliseconds; else those of what devices ask and what streams tell, threads
-  /// each a V8 of its own. `trimIdle` lets either go when the station is short of memory.
+  /// Whether an idle reader stays: only the first of its readers (`moved`), a process of a few MB started again in
+  /// milliseconds (a test's reference: those of what devices ask and what streams tell, threads each a V8 of its own).
+  /// `trimIdle` lets it go when the station is short of memory.
   private kept(slot: Slot, line: Line): boolean {
     if (this.mbReader !== null) return line === this.moved && line.slots[0] === slot;
     return line === this.asked || line === this.told;
   }
 
   /// The readers kept (`kept`), started before anything is asked: the first reads after the station starts (an
-  /// update), and one beside a slow one, need not wait on them. Where the MoonBit program answers, one of its readers
-  /// and no thread: three threads were kept for it before (2026-11-15, ~150–200 MB of the station's 412–570 MB), one of
-  /// which was never asked anything.
+  /// update), and one beside a slow one, need not wait on them. One of the program's readers: three threads were kept
+  /// before (2026-11-15, ~150–200 MB of the station's 412–570 MB), one of which was never asked anything.
   warm() {
     if (this.closed) return;
     if (this.mbReader !== null) {
@@ -386,23 +385,26 @@ export class Readers {
   /// Prepare only the requested chats' last messages in bounded slices for the archive and notices.
   prepareArchiveLast(threads: readonly number[], signal?: AbortSignal): Promise<void> {
     if (this.closed) return Promise.reject(new HttpError(502, "station stopping"));
-    // (by the MoonBit builder, station/mb's src/archivelast, where its program is there; else by the worker)
-    const path = join(this.data, "stillfail.db"), mb = this.mbReader;
-    this.archiveLast ??= new RequestedBuilder(path, this.backfill, undefined, "thread",
-      "archive last message", (thread, cancel) => ({ thread, archiveLast: true, cancel }),
-      mb === null ? null : { binary: mb, args: ["--builder", "archive-last", "--db", path] });
+    // (by the MoonBit builder, station/mb's src/archivelast)
+    const path = join(this.data, "stillfail.db");
+    this.archiveLast ??= new RequestedBuilder(this.backfill, { binary: readerBinary(), args: ["--builder", "archive-last", "--db", path] },
+      "thread", "archive last message", (thread, cancel) => ({ thread, archiveLast: true, cancel }));
     return this.covered(this.archiveLast.ready(threads, signal), signal);
   }
 
   /// Share the bounded old-edit preparation between notices, and leave a cancelled request unattended.
   prepareLegacyEdits(signal?: AbortSignal): Promise<void> {
     if (this.closed) return Promise.reject(new HttpError(502, "station stopping"));
-    // (by the MoonBit builder, station/mb's src/legacy, where its program is there; else, and for a store whose merged
-    // view must be switched first, by the worker)
-    const path = join(this.data, "stillfail.db"), mb = this.mbReader;
-    this.legacyEdits ??= new RequestedBuilder(path, this.backfill, undefined, "thread",
-      "legacy edits", (thread, cancel) => ({ thread, legacyEdits: true, cancel }),
-      mb === null ? null : { binary: mb, args: ["--builder", "legacy-edits", "--db", path] });
+    // (by the MoonBit builder, station/mb's src/legacy; a store whose merged view must be switched first repaired by
+    // the station's writer, `repairEdits`, and asked again)
+    const path = join(this.data, "stillfail.db");
+    this.legacyEdits ??= new RequestedBuilder(this.backfill, { binary: readerBinary(), args: ["--builder", "legacy-edits", "--db", path],
+      repair: () => {
+        if (this.repairEdits !== null) return this.repairEdits();
+        // (readers given no writer, a test's: a connection of its own for the repair, waiting for no lock)
+        const db = new DatabaseSync(path, { timeout: 0 });
+        try { db.exec("PRAGMA synchronous = NORMAL"); repairMergedEditLookup(db); } finally { db.close(); }
+      } }, "thread", "legacy edits", (thread, cancel) => ({ thread, legacyEdits: true, cancel }));
     return this.covered(this.legacyEdits.ready([0], signal), signal);
   }
 
@@ -418,22 +420,20 @@ export class Readers {
   /// Share the initial old-message scan between pages waiting for it.
   prepareLegacySaid(signal?: AbortSignal): Promise<void> {
     if (this.closed) return Promise.reject(new HttpError(502, "station stopping"));
-    // (by the MoonBit builder, station/mb's src/legacy, where its program is there; else by the worker)
-    const path = join(this.data, "stillfail.db"), mb = this.mbReader;
-    this.legacySaid ??= new RequestedBuilder(path, this.backfill, undefined, "thread",
-      "legacy said", (thread, cancel) => ({ thread, legacySaid: true, cancel }),
-      mb === null ? null : { binary: mb, args: ["--builder", "legacy-said", "--db", path] });
+    // (by the MoonBit builder, station/mb's src/legacy)
+    const path = join(this.data, "stillfail.db");
+    this.legacySaid ??= new RequestedBuilder(this.backfill, { binary: readerBinary(), args: ["--builder", "legacy-said", "--db", path] },
+      "thread", "legacy said", (thread, cancel) => ({ thread, legacySaid: true, cancel }));
     return this.covered(this.legacySaid.ready([0], signal), signal);
   }
 
   /// Prepare only the requested old chats' letter-message keys, sharing progress and handover with other readers.
   preparePageLetters(threads: readonly number[], signal?: AbortSignal): Promise<void> {
     if (this.closed) return Promise.reject(new HttpError(502, "station stopping"));
-    // (by the MoonBit builder, station/mb's src/letters, where its program is there; else by the worker)
-    const path = join(this.data, "stillfail.db"), mb = this.mbReader;
-    this.pageLetters ??= new RequestedBuilder(path, this.backfill, undefined, "thread",
-      "old page letters", (thread, cancel) => ({ thread, pageLetters: true, cancel }),
-      mb === null ? null : { binary: mb, args: ["--builder", "page-letters", "--db", path] });
+    // (by the MoonBit builder, station/mb's src/letters)
+    const path = join(this.data, "stillfail.db");
+    this.pageLetters ??= new RequestedBuilder(this.backfill, { binary: readerBinary(), args: ["--builder", "page-letters", "--db", path] },
+      "thread", "old page letters", (thread, cancel) => ({ thread, pageLetters: true, cancel }));
     return this.covered(this.pageLetters.ready(threads, signal), signal);
   }
 
@@ -458,7 +458,7 @@ export class Readers {
     return this.covered(this.sessionUpJobs.ready(sessions, signal), signal);
   }
 
-  /// Prepare old up jobs without holding the reader that supplied a fallback answer.
+  /// Prepare old up jobs without holding the reader whose answer asked for it.
   prepareWorkspaceUpJobs(signal?: AbortSignal): Promise<void> {
     if (this.closed) return Promise.reject(new HttpError(502, "station stopping"));
     this.workspaceUpJobs ??= new WorkspaceUpJobsBuilder(join(this.data, "stillfail.db"), this.backfill);
@@ -468,9 +468,7 @@ export class Readers {
   /// Prepare a requested own chat's first member after handover, sharing and cancelling its bounded batches.
   prepareJobNameFirst(owner: string, thread: number, signal?: AbortSignal): Promise<void> {
     if (this.closed) return Promise.reject(new HttpError(502, "station stopping"));
-    const file = new URL(import.meta.url.endsWith(".ts") ? "./session-up-jobs-worker.ts" : "./read/session-up-jobs-worker.js", import.meta.url);
-    this.jobNameFirst ??= new RequestedBuilder(join(this.data, "stillfail.db"), this.backfill, file, "scope", "job name first member",
-      (key, cancel) => { const [session, first] = JSON.parse(key) as [string, number]; return { session, first, ...(cancel ? { cancel: true } : {}) }; });
+    this.jobNameFirst ??= new JobNameFirstBuilder(join(this.data, "stillfail.db"), this.backfill);
     return this.covered(this.jobNameFirst.ready([JSON.stringify([owner, thread])], signal), signal);
   }
 
@@ -712,7 +710,9 @@ export class Readers {
     if (this.closed) return Promise.reject(new HttpError(502, "station stopping"));
     if (signal?.aborted) return Promise.reject(cancelled());
     const history = this.mbReader !== null && HISTORY.has(op);
-    const line = op === CHECKPOINT ? this.log : history ? this.pages : this.mbReader !== null && MOVED.has(op) ? this.moved : told ? this.told : PAGES.has(op) ? this.pages : this.asked;
+    if (this.mbReader !== null && op !== CHECKPOINT && !history && !MOVED.has(op)) return Promise.reject(new HttpError(500, `no read ${op}`));
+    // (a test's reference: on the lines of before, what is told on its own, the pages', the rest)
+    const line = op === CHECKPOINT ? this.log : history ? this.pages : this.mbReader !== null ? this.moved : told ? this.told : PAGES.has(op) ? this.pages : this.asked;
     // A session's history read where it was read before: that reader keeps where its reading stands in memory, another
     // reads it from disk (read/transcripts.ts).
     const session = (op === "timeline" || op === "transcriptState") && typeof (args as { key?: unknown })?.key === "string" ? (args as { key: string }).key : null;
@@ -813,7 +813,7 @@ export class Readers {
     slot.worker.postMessage(asked.ask);
   }
 
-  /// The store changed: what its log (the WAL) holds is written into the database shortly, by a reader (worker.ts
+  /// The store changed: what its log (the WAL) holds is written into the database shortly, by a reader (main.mbt
   /// `checkpoint`), one at a time, at most once a CHECKPOINT_MS. The main thread does not (store.ts): there it held
   /// every device while it reached the disk.
   checkpointSoon() {
@@ -833,8 +833,8 @@ export class Readers {
   }
 
   /// What answers nothing now let go at once, not after IDLE_MS (the station short of memory: ops/self-memory.ts): each
-  /// reader with no read held or waiting (but for the threads `kept` where there is no MoonBit program: those a read
-  /// waits seconds for to start, where the program's start takes milliseconds), each builder of old state nobody waits
+  /// reader with no read held or waiting (but for a test's reference threads `kept`: those a read waits seconds for to
+  /// start, where the program's start takes milliseconds), each builder of old state nobody waits
   /// on (RequestedBuilder `trimIdle`), the usage checker, and what `onTrim` gave. A read under way is never stopped. How
   /// many were let go.
   trimIdle(): number {
@@ -864,8 +864,8 @@ export class Readers {
     return trimmed;
   }
 
-  /// The log written into the database waiting a while for the readers, and its file cut (serve-reads.ts
-  /// `checkpoint`'s `hard`): it grew past its bound (ops/storage.ts `walCheckpoint`). What SQLite answered.
+  /// The log written into the database waiting a while for the readers, and its file cut (main.mbt `checkpoint`'s
+  /// `hard`): it grew past its bound (ops/storage.ts `walCheckpoint`). What SQLite answered.
   async checkpointHard(): Promise<unknown> {
     return JSON.parse(await this.read(CHECKPOINT, { hard: true }, "en"));
   }

@@ -1,10 +1,9 @@
-// Where the export's work runs (work.ts): a process of its own as the station runs (the MoonBit program, station/mb's
-// src/replica, where it is built; else a worker thread), so none of its reads, hashing, compressing or writing is on
-// the main thread; in the test's thread in tests.
+// Where the export's work runs: a process of its own as the station runs (the MoonBit program, station/mb's
+// src/replica), so none of its reads, hashing, compressing or writing is on the main thread; the TypeScript it is held
+// to line by line (work.ts) in the test's thread in tests (`InlineRunner`).
 import { sep } from "node:path";
-import { Worker } from "node:worker_threads";
 import { wall } from "../ops/fibers.ts";
-import { MbProcess, mbReaderBinary } from "../read/mb-reader.ts";
+import { MbProcess, readerBinary } from "../read/mb-reader.ts";
 import type { Places, Told } from "./export.ts";
 import { ExportWork, type WorkPassed } from "./work.ts";
 
@@ -25,8 +24,8 @@ export interface Runner {
 
 export type RunnerOptions = { db: string; replica: string; dataDir: string; origin: string };
 
-/// What the work runs in: a worker thread, or the MoonBit program's process, asked and answering the same way (a
-/// message each, `{id, answer}` or `{id, error}`).
+/// What the work runs in: the MoonBit program's process, or a test's own, asked and answering a message each,
+/// `{id, answer}` or `{id, error}`.
 type Thread = {
   on(event: "message", f: (m: { id: number; answer?: unknown; error?: string }) => void): unknown;
   on(event: "error", f: (e: Error) => void): unknown;
@@ -34,20 +33,15 @@ type Thread = {
   postMessage(m: unknown): void;
 };
 
-/// The work in the MoonBit program (`--builder replica-export`), where it is built; else in a worker thread (worker.ts).
+/// The work in the MoonBit program (`--builder replica-export`).
 export function exportThread(o: RunnerOptions): Thread {
-  const binary = mbReaderBinary();
-  if (binary !== null) return new MbProcess(binary, ["--builder", "replica-export", "--db", o.db, "--replica", o.replica, "--data-dir", o.dataDir, "--origin", o.origin, "--sep", sep]);
-  const file = new URL(import.meta.url.endsWith(".ts") ? "./worker.ts" : "./replica/worker.js", import.meta.url);
-  const worker = new Worker(file, { workerData: o, resourceLimits: { maxOldGenerationSizeMb: 256 } });
-  worker.unref();
-  return worker;
+  return new MbProcess(readerBinary(), ["--builder", "replica-export", "--db", o.db, "--replica", o.replica, "--data-dir", o.dataDir, "--origin", o.origin, "--sep", sep]);
 }
 
-/// The work in a thread or process of its own, started again (told the workspaces again) at the next thing asked once
+/// The work in a process of its own, started again (told the workspaces again) at the next thing asked once
 /// it ended: what asked meanwhile failed, and its caller tries again with a backoff (copies.ts `#pass`). Each ask says
 /// the time (`now`): the program's clock is the station's.
-export class WorkerRunner implements Runner {
+export class ProgramRunner implements Runner {
   readonly #o: RunnerOptions;
   readonly #start: (o: RunnerOptions) => Thread;
   #worker: Thread | null = null;
@@ -115,7 +109,7 @@ export class WorkerRunner implements Runner {
   }
 }
 
-/// The work in this thread, one thing at a time as in the worker (a test's: its clock).
+/// The work in this thread, one thing at a time as in the program (a test's: its clock).
 export class InlineRunner implements Runner {
   readonly work: ExportWork;
   #queue: Promise<unknown> = Promise.resolve();

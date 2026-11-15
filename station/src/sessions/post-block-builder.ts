@@ -1,5 +1,4 @@
-import { Worker } from "node:worker_threads";
-import { MbBackfill, mbReaderBinary } from "../read/mb-reader.ts";
+import { MbBackfill, readerBinary } from "../read/mb-reader.ts";
 import { setMaxListeners } from "node:events";
 import { Fibers } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
@@ -16,10 +15,10 @@ const IDLE_MS = 5_000;
 export class PostBlockBuilder {
   readonly #store: Store;
   readonly #previous: Promise<void>;
-  readonly #workerFile: URL | undefined;
+  readonly #binary: string | undefined;
   readonly #timers = new Fibers("post block index");
   readonly #waiting = new Map<number, Set<Waiter>>();
-  #worker: Worker | MbBackfill | null = null;
+  #worker: MbBackfill | null = null;
   #current: Current | null = null;
   #previousReady = false;
   #previousWaiting = false;
@@ -28,10 +27,10 @@ export class PostBlockBuilder {
   #idle: (() => void) | null = null;
   #retryMs = 250;
 
-  constructor(store: Store, previous: Promise<void>, workerFile?: URL) {
+  constructor(store: Store, previous: Promise<void>, binary?: string) {
     this.#store = store;
     this.#previous = previous;
-    this.#workerFile = workerFile;
+    this.#binary = binary;
   }
 
   ready(messages: readonly { thread: number; n: number }[], signal?: AbortSignal): Promise<void> {
@@ -151,13 +150,10 @@ export class PostBlockBuilder {
       return;
     }
     if (this.#worker === null) {
-      const file = this.#workerFile ?? new URL(import.meta.url.endsWith(".ts") ? "./post-block-worker.ts" : "./sessions/post-block-worker.js", import.meta.url);
-      // (by the MoonBit builder, station/mb's src/posts, where its program is there: `MbBackfill`; else by the worker)
-      const mb = this.#workerFile === undefined ? mbReaderBinary() : null;
-      let worker: Worker | MbBackfill;
+      // (by the MoonBit builder, station/mb's src/posts: `MbBackfill`)
+      let worker: MbBackfill;
       try {
-        worker = mb !== null ? new MbBackfill(mb, ["--builder", "post-blocks", "--db", path], this.#store.backfillPriority, REQUEST_BACKFILL_PAUSE_MS)
-          : new Worker(file, { workerData: { path, priority: this.#store.backfillPriority }, resourceLimits: { maxOldGenerationSizeMb: 128, maxYoungGenerationSizeMb: 8 } });
+        worker = new MbBackfill(this.#binary ?? readerBinary(), ["--builder", "post-blocks", "--db", path], this.#store.backfillPriority, REQUEST_BACKFILL_PAUSE_MS);
       }
       catch (error) { this.#answer({ done: false, error: (error as Error).message }); return; }
       const owner = worker.threadId;

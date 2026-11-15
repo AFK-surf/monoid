@@ -15,6 +15,8 @@ export type PagesBrowser = {
   openTab(url: string, options?: OpenTabOptions): Promise<string>;
   hasTab(targetId: string): boolean;
   closeTab(targetId: string): Promise<void>;
+  /// Where a tab is now (its address changing is told as the screens' change).
+  tabUrl?(targetId: string): string | null;
 };
 
 /// The screen a tab of the station's browser is (browser/tabs.ts).
@@ -27,14 +29,23 @@ export class LoginPages {
   readonly #listeners = new Set<(key: string) => void>();
   /// Tabs being opened, by key: asked again meanwhile, the same one.
   readonly #opening = new Map<string, Promise<string>>();
+  /// Where each login's tab was last seen, by key: a change of it is told (the page a sign-in comes back to).
+  readonly #urls = new Map<string, string | null>();
 
   /// `watch`: hears each time the station's screens change (a tab came or went).
   constructor(browser: PagesBrowser, watch: (changed: () => void) => () => void) {
     this.#browser = browser;
     watch(() => {
       for (const [key, id] of [...this.#tabs]) {
-        if (this.#browser.hasTab(id)) continue;
+        if (this.#browser.hasTab(id)) {
+          const url = this.#browser.tabUrl?.(id) ?? null;
+          if (url === (this.#urls.get(key) ?? null)) continue;
+          this.#urls.set(key, url);
+          this.#tell(key);
+          continue;
+        }
         this.#tabs.delete(key);
+        this.#urls.delete(key);
         this.#tell(key);
       }
     });
@@ -49,6 +60,12 @@ export class LoginPages {
   /// Whether a page can be opened here: the station has a browser.
   can(): boolean {
     return this.#browser.available();
+  }
+
+  /// Where the tab open for `key` is now, if one is.
+  urlOf(key: string): string | null {
+    const id = this.#tabs.get(key);
+    return id !== undefined && this.#browser.hasTab(id) ? (this.#browser.tabUrl?.(id) ?? null) : null;
   }
 
   /// The screen of the tab open for `key`, if one is.
@@ -67,6 +84,7 @@ export class LoginPages {
     const opening = (async () => {
       const id = options ? await this.#browser.openTab(url, options) : await this.#browser.openTab(url);
       this.#tabs.set(key, id);
+      this.#urls.set(key, this.#browser.tabUrl?.(id) ?? null);
       log.info("logins", "a login's page opened in the station's browser", { login: key });
       this.#tell(key);
       return tabScreen(id);
@@ -80,6 +98,7 @@ export class LoginPages {
     const id = this.#tabs.get(key);
     if (id === undefined) return;
     this.#tabs.delete(key);
+    this.#urls.delete(key);
     void this.#browser.closeTab(id);
     this.#tell(key);
   }

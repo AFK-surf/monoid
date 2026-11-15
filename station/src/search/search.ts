@@ -3,9 +3,10 @@
 // unrelated chats; their contents are read as asked. The program is started by the first search and let go once none
 // has been asked for IDLE_MS (or at once when the station is short of memory: `trimIdle`): kept from the station's
 // start, it held 234 MB for hours nobody searched (2026-11-15). It keeps nothing a search needs between searches (each
-// reads the database as it is then), so the next is answered by one started again; one that dies is started again too. The machine's files are asked beside it (search/files.ts). A test may give it a
-// thread to look instead (`worker`: the search as the station's thread looked before, test/reference/search-worker.ts).
-import { Worker } from "node:worker_threads";
+// reads the database as it is then), so the next is answered by one started again; one that dies is started again
+// too. The machine's files are asked beside it (search/files.ts). There is no search in TypeScript to fall back to: a
+// test may give a reference to look instead (`reference`: the search as the station's thread looked before,
+// test/reference/search-worker.ts).
 import { rmSync } from "node:fs";
 import { join, sep } from "node:path";
 import { log } from "../ops/log.ts";
@@ -17,7 +18,7 @@ export type Told = { type: "query"; id: number; query: string; asker: Asker; kin
 export type Answered = { id: number; groups?: Group[]; error?: string } | { scopePending: true } | { sessionListPending: true };
 import { SearchScopeBuilder } from "./scope-builder.ts";
 import { SessionListBuilder } from "../read/session-list-builder.ts";
-import { MbProcess, mbReaderBinary } from "../read/mb-reader.ts";
+import { MbProcess, readerBinary } from "../read/mb-reader.ts";
 
 /// How long a search may take before it is answered with nothing.
 const QUERY_MS = 30_000;
@@ -27,14 +28,20 @@ const IDLE_MS = 60_000;
 /// `building`: always false (said to the clients that showed an index still being built).
 export type Found = { groups: Group[]; building: boolean };
 
-type Looker = Worker | MbProcess;
+/// What looks: the program's process, or a test's reference (a thread, cancelled by the buffer it is given).
+export interface Looker {
+  on(event: "message", f: (answer: Answered) => void): this;
+  on(event: "error", f: (error: Error) => void): this;
+  on(event: "exit", f: (code: number) => void): this;
+  postMessage(told: Told | { type: "cancel"; id: number }): void;
+  terminate(): Promise<number>;
+}
 
 export class Search {
   #data: string;
-  /// The program (none: not built here; the worker looks through everything).
-  readonly #mb: string | null;
-  #program: MbProcess | null = null;
-  #worker: Worker | null = null;
+  /// What starts a looker: the program, else a test's reference.
+  readonly #start: () => Looker;
+  #looker: Looker | null = null;
   #next = 0;
   #waiting = new Map<number, { resolve: (found: Found) => void; reject: (error: Error) => void; timer: () => void }>();
   #closed = false;
@@ -48,14 +55,14 @@ export class Search {
   #idle: (() => void) | null = null;
   readonly #after: (ms: number, f: () => void) => () => void;
 
-  readonly #workerFile: URL | null;
-
-  /// `after`: the timer of IDLE_MS (a test's own; else the wall's).
-  constructor(options: { data: string; files?: FileSearch | null; backfill?: { previousGone?: Promise<void>; priority?: SharedArrayBuffer }; worker?: URL; after?: (ms: number, f: () => void) => () => void }) {
+  /// `after`: the timer of IDLE_MS (a test's own; else the wall's); `reference`: what looks in the program's place (a
+  /// test's).
+  constructor(options: { data: string; files?: FileSearch | null; backfill?: { previousGone?: Promise<void>; priority?: SharedArrayBuffer }; reference?: (data: string) => Looker; after?: (ms: number, f: () => void) => () => void }) {
     this.#data = options.data;
     this.#after = options.after ?? wall.after;
-    this.#workerFile = options.worker ?? null;
-    this.#mb = this.#workerFile !== null ? null : mbReaderBinary();
+    const reference = options.reference;
+    this.#start = reference !== undefined ? () => reference(options.data)
+      : () => new MbProcess(readerBinary(), ["--builder", "search", "--db", join(options.data, "stillfail.db"), "--data", options.data, "--sep", sep]);
     this.#files = options.files ?? null;
     this.#scope = new SearchScopeBuilder(join(options.data, "stillfail.db"), options.backfill);
     this.#sessionList = new SessionListBuilder(join(options.data, "stillfail.db"), options.backfill);
@@ -66,8 +73,8 @@ export class Search {
     for (const f of ["search.db", "search.db-wal", "search.db-shm"]) rmSync(join(this.#data, f), { force: true });
   }
 
-  /// Whether a looker runs now (the program, or the test's thread).
-  get running(): boolean { return this.#program !== null || this.#worker !== null; }
+  /// Whether a looker runs now (the program, or the test's reference).
+  get running(): boolean { return this.#looker !== null; }
 
   /// The looker let go at once if no search is under way: 1, else 0 (the station short of memory: read/pool.ts
   /// `trimIdle`). The next search starts it again.
@@ -80,11 +87,9 @@ export class Search {
   #letGo(): void {
     this.#idle?.();
     this.#idle = null;
-    const program = this.#program, worker = this.#worker;
-    this.#program = null;
-    this.#worker = null;
-    void program?.terminate();
-    void worker?.terminate();
+    const looker = this.#looker;
+    this.#looker = null;
+    void looker?.terminate();
   }
 
   /// No search under way: the looker goes after IDLE_MS unless one is asked meanwhile.
@@ -97,27 +102,18 @@ export class Search {
     });
   }
 
-  #spawnProgram(): MbProcess | null {
-    if (this.#closed || this.#mb === null) return null;
-    const program = new MbProcess(this.#mb, ["--builder", "search", "--db", join(this.#data, "stillfail.db"), "--data", this.#data, "--sep", sep]);
-    this.#program = program;
-    this.#listen(program, () => { if (this.#program === program) this.#program = null; });
-    return program;
-  }
-
-  #spawn(): Worker | null {
-    if (this.#closed || this.#workerFile === null) return null;
-    const file = this.#workerFile;
-    const worker = new Worker(file, { workerData: { data: this.#data }, resourceLimits: { maxOldGenerationSizeMb: 384 } });
-    this.#worker = worker;
-    this.#listen(worker, () => { if (this.#worker === worker) this.#worker = null; });
-    return worker;
+  #spawn(): Looker | null {
+    if (this.#closed) return null;
+    const looker = this.#start();
+    this.#looker = looker;
+    this.#listen(looker, () => { if (this.#looker === looker) this.#looker = null; });
+    return looker;
   }
 
   /// A looker's answers: each to the search it is for; its end ends the searches waiting on it.
   #listen(looker: Looker, gone: () => void): void {
     const mine = new Set<number>();
-    (looker as Worker).on("message", (answer: Answered) => {
+    looker.on("message", (answer: Answered) => {
       if ("scopePending" in answer) { if (!this.#closed) this.#prepareScope(); return; }
       if ("sessionListPending" in answer) { if (!this.#closed) this.#prepareSessions(); return; }
       mine.delete(answer.id);
@@ -129,8 +125,8 @@ export class Search {
       else waiter.resolve({ groups: answer.groups ?? [], building: false });
       this.#idleLater();
     });
-    (looker as Worker).on("error", (error: Error) => log.error("search", "the search's thread stopped", { error: error.message }));
-    (looker as Worker).on("exit", () => {
+    looker.on("error", (error: Error) => log.error("search", "the search's looker stopped", { error: error.message }));
+    looker.on("exit", () => {
       gone();
       for (const [id, waiter] of this.#waiting) {
         if (!mine.has(id)) continue;
@@ -178,7 +174,10 @@ export class Search {
   }
 
   #looked(query: string, asker: Asker, options: { kinds?: string[]; limit?: number; offset?: number; archived?: boolean }): Promise<Found> {
-    return this.#ask(this.#mb === null ? this.#worker ?? this.#spawn() : this.#program ?? this.#spawnProgram(), query, asker, options);
+    let looker: Looker | null;
+    try { looker = this.#looker ?? this.#spawn(); }
+    catch (error) { return Promise.reject(error); }
+    return this.#ask(looker, query, asker, options);
   }
 
   #ask(looker: Looker | null, query: string, asker: Asker, options: { kinds?: string[]; limit?: number; offset?: number; archived?: boolean }): Promise<Found> {
@@ -206,8 +205,7 @@ export class Search {
     this.#closed = true;
     this.#idle?.();
     this.#idle = null;
-    await Promise.all([this.#worker?.terminate(), this.#program?.terminate(), this.#scope.close(), this.#sessionList.close()]);
-    this.#worker = null;
-    this.#program = null;
+    await Promise.all([this.#looker?.terminate(), this.#scope.close(), this.#sessionList.close()]);
+    this.#looker = null;
   }
 }

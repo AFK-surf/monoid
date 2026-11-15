@@ -9,4 +9,4 @@ wall.after = (_ms, callback) => {
   return () => { if (resume === callback) resume = undefined; };
 };
 (workerData.control as MessagePort).on("message", () => { const next = resume; resume = undefined; next?.(); });
-await import("../src/vault/use-index-worker.ts");
+await import("./workers/use-index-worker.ts");
