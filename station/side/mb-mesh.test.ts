@@ -352,7 +352,7 @@ test("a stream whose Node end closed first is written to: only that stream goes,
     for (let i = 0; i < 8; i++) await doomed.write(randomBytes(1 << 16)).catch(() => {});
     await Promise.race([end, new Promise((resolve) => setTimeout(resolve, 2000))]);
     assert.equal(ended, null, "the front lives on");
-    assert.equal(await conn.answers(5000), true, "and answers");
+    assert.equal(await conn.answers?.(5000), true, "and answers");
 
     // the stream beside it, and one opened after, carry on
     await other.write(Buffer.from(" still"));
