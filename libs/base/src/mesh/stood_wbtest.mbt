@@ -48,6 +48,11 @@
 //                                          written; `stood.no_entries = true`: the shell cannot be told them.
 //   stood.added                           where the endpoint was told a peer is (`iroh.addAddr`, asked at once):
 //                                          `<endpoint> <addr as written>`.
+//   stood.bind_keys, stood.bound_as       the key each bind was given; what each endpoint bound at once was asked.
+//   far.lag[way] = 25                     a way's dials and answers take that long ("main", a relay whose own
+//                                          endpoint dials it, an address said: `Peer::way_of`); far.deaf[way]: its
+//                                          dials go unanswered; far.direct[way]: its connections go direct
+//                                          (`conn.paths`); far.dialled, far.conn_way, far.conn_of(way): which way.
 //   let conn = far.comes("pair/1")        a peer dials this endpoint on that protocol: the connection the wait for
 //                                          one (`iroh.accept`, the test's to answer) is given; its streams are the
 //                                          peer's to open (`far.open(conn)`), its end the peer's (`far.end`).
@@ -101,6 +106,10 @@ priv struct Stood {
   entries : Array[String]
   /// Where the endpoint was told each peer is (`iroh.addAddr`): `<endpoint> <addr as written>`.
   added : Array[String]
+  /// The key each bind was given, in order (beside `binds`); and what each endpoint bound at once was asked, by
+  /// its handle.
+  bind_keys : Array[Bytes]
+  bound_as : Map[Int, Json]
   /// The shell cannot be told its relays' entries (`iroh.setRelayEntries` fails).
   mut no_entries : Bool
   /// Whether the endpoint is on a relay (`iroh.relayStatus`: no relay at all while true, as a mesh made with none;
@@ -137,6 +146,8 @@ fn Stood::new() -> Stood {
     addrs: [],
     entries: [],
     added: [],
+    bind_keys: [],
+    bound_as: Map([]),
     no_entries: false,
     on_relay: true,
   }
@@ -148,6 +159,7 @@ fn Stood::new() -> Stood {
       stood.said.push("\{op} \{handle}")
       if op == "iroh.bind" {
         stood.binds.push(args.stringify())
+        stood.bind_keys.push(bytes.unwrap_or(b""))
       }
       if op == "iroh.connect" && args is { "addr": addr, .. } {
         stood.addrs.push(addr.stringify())
@@ -168,6 +180,9 @@ fn Stood::new() -> Stood {
             stood.shell.val.unwrap().refuse(id, "connection closed: closed")
           } else {
             stood.last += 1
+            if op == "iroh.bind" {
+              stood.bound_as[stood.last] = args
+            }
             answer(id, { "id": Json::number(stood.last.to_double()) })
           }
         "istream.write" | "istream.finish" | "istream.reset" | "iroh.networkChange" => answer(id, {})
@@ -228,7 +243,12 @@ fn Stood::new() -> Stood {
           } else {
             [{ "url": "https://relay.test/", "connected": false }]
           }
-        "conn.paths" => Json::array([])
+        "conn.paths" =>
+          match stood.peer {
+            Some(far) if far.conn_way.get(handle) is Some(way) && far.direct.contains(way) =>
+              [{ "id": "0", "selected": true, "relay": Json::null(), "ip": "10.0.0.2:1" }]
+            _ => Json::array([])
+          }
         "iroh.addAddr" => {
           let addr = match args {
             { "addr": addr, .. } => addr.stringify()
@@ -465,6 +485,14 @@ priv struct Peer {
   waits : Map[Int, Int64]
   /// The answers kept back (`holds`): the stream each is for, and its pieces.
   kept : Array[(Int, Array[Bytes?])]
+  /// By way (`Peer::way_of`: "main", a relay, an address said): how many ms its dials and every answer on its
+  /// connections take (over `takes`); ways whose dials go unanswered; ways whose connections go direct
+  /// (`conn.paths`); and each connection's way, each dial's in order.
+  lag : Map[String, Int]
+  deaf : Map[String, Unit]
+  direct : Map[String, Unit]
+  conn_way : Map[Int, String]
+  dialled : Array[String]
 }
 
 ///|
@@ -496,9 +524,42 @@ fn Stood::with_peer() -> (Stood, Peer) {
     flows: Map([]),
     waits: Map([]),
     kept: [],
+    lag: Map([]),
+    deaf: Map([]),
+    direct: Map([]),
+    conn_way: Map([]),
+    dialled: [],
   }
   stood.peer = Some(far)
   (stood, far)
+}
+
+///|
+/// The way a dial on endpoint `handle` goes, as its bind says: a relay's own endpoint's, its relay; an endpoint on
+/// no relay, the first address it is dialled at; else (the endpoint) "main".
+fn Peer::way_of(self : Peer, handle : Int, args : Json) -> String {
+  match self.stood.bound_as.get(handle) {
+    Some({ "relayOnly": True, "relayUrls": [String(relay)], .. }) if handle != 1 => relay
+    Some({ "relayUrls": [], .. }) if handle != 1 =>
+      match args {
+        { "addr": { "ips": [String(ip), ..], .. }, .. } => ip
+        _ => "main"
+      }
+    _ => "main"
+  }
+}
+
+///|
+/// The last connection dialled on `way`. The test's mistake where none was.
+fn Peer::conn_of(self : Peer, way : String) -> Int raise {
+  let mut found = None
+  for conn, one in self.conn_way {
+    if one == way {
+      found = Some(conn)
+    }
+  }
+  guard found is Some(conn) else { fail("no connection on \{way}") }
+  conn
 }
 
 ///|
@@ -519,13 +580,20 @@ fn Peer::took(self : Peer, id : Int64, op : String, handle : Int, args : Json, b
     "iroh.connect" => {
       guard !stood.unbound.contains(handle) else { return false }
       self.dials.push(stood.rt.now())
-      if self.away {
+      let way = self.way_of(handle, args)
+      self.dialled.push(way)
+      if self.away || self.deaf.contains(way) {
         // (held as a dial by hand is: given up by `fetch.cancel`, or answered by the test)
         stood.held.push((id, op, handle))
       } else {
         stood.last += 1
-        self.conns[stood.last] = []
-        shell.answer(id, { "id": Json::number(stood.last.to_double()) })
+        let conn = stood.last
+        self.conns[conn] = []
+        self.conn_way[conn] = way
+        match self.lag.get(way) {
+          Some(ms) if ms > 0 => stood.rt.after(ms, () => shell.answer(id, { "id": Json::number(conn.to_double()) }))
+          _ => shell.answer(id, { "id": Json::number(conn.to_double()) })
+        }
       }
     }
     "conn.openBi" => {
@@ -700,10 +768,14 @@ fn Peer::hand(self : Peer, id : Int64, flow : Flow, piece : Bytes?) -> Unit {
 ///|
 /// The peer sends `pieces` on `stream`: now, `takes` ms from now, or once the test releases them (`holds`).
 fn Peer::send(self : Peer, stream : Int, pieces : Array[Bytes?]) -> Unit {
+  let takes = match self.flows.get(stream) {
+    Some(flow) => self.conn_way.get(flow.conn).bind(way => self.lag.get(way)).unwrap_or(self.takes)
+    None => self.takes
+  }
   if self.holds {
     self.kept.push((stream, pieces))
-  } else if self.takes > 0 {
-    self.stood.rt.after(self.takes, () => self.put(stream, pieces))
+  } else if takes > 0 {
+    self.stood.rt.after(takes, () => self.put(stream, pieces))
   } else {
     self.put(stream, pieces)
   }
