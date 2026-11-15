@@ -165,7 +165,7 @@ report() {
       echo "· $name … FAILED (${took} s)"
       # (what a test file said of itself as it ended, before its summary: a process it left running, its station
       # ending; a file that failed whole says nothing more in the summary's last lines)
-      grep -E "left running after its tests|^  [0-9]+ |the program running the sessions ended" "$tmp/step.$i.log" | head -20 | sed 's/^/    /'
+      grep -E "left running after its tests|^  [0-9]+ |the program running the sessions ended|\.test\.ts: as it ended: " "$tmp/step.$i.log" | head -20 | sed 's/^/    /'
       tail -40 "$tmp/step.$i.log" | sed 's/^/    /'
       # (what a test file left running as it ended fails that file with nothing of its own in the tail: said here
       # wherever it is in the log; main 345b3c51's station 4/6, hub-routes failed whole and nothing said why)

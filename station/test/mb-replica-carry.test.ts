@@ -21,6 +21,22 @@ import { HOME, OTHER, chat, dataDir, station } from "./replica-fakes.ts";
 
 const binary = mbReaderBinary();
 const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : false;
+
+// What ends this file's process, said as it ends (scripts/check.sh shows each `as it ended:` line of a failing slice):
+// CI's Linux slice failed this file whole at 299b40fd64 and b6631c119d, every line of its own out of the tail, nothing
+// said why. An error no test took, by where it came from (a monitor: what Node and its runner do with it is unchanged),
+// and a process ending other than 0 with what still held it.
+const endSaid = (what: string) => process.stderr.write(`test/mb-replica-carry.test.ts: as it ended: ${what}\n`);
+const told = (error: unknown) => (error instanceof Error ? (error.stack ?? error.message) : String(error)).split("\n").slice(0, 12).join(" | ");
+process.on("uncaughtExceptionMonitor", (error, origin) => endSaid(`${origin}: ${told(error)}`));
+// (the runner takes a rejection itself, so one more listener changes nothing of what it does with it)
+process.on("unhandledRejection", (reason) => endSaid(`unhandledRejection: ${told(reason)}`));
+process.on("exit", (code) => {
+  if (code === 0 && !process.exitCode) return;
+  const held = (process as unknown as { _getActiveHandles(): { constructor?: { name?: string }; pid?: number; spawnargs?: string[] }[] })._getActiveHandles()
+    .map((h) => (h.constructor?.name === "ChildProcess" ? `ChildProcess ${h.pid} ${(h.spawnargs ?? []).join(" ").slice(0, 120)}` : (h.constructor?.name ?? "?")));
+  endSaid(`exit ${code} (exitCode ${process.exitCode ?? "unset"}), program ${binary ?? "none"}, held: ${held.join(", ") || "nothing"}`);
+});
 // (a bundle made twice of the same commits is the same bytes only when git packs it on one thread)
 Object.assign(process.env, { GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "pack.threads", GIT_CONFIG_VALUE_0: "1" });
 const gitEnv = () => ({ ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@x", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@x", GIT_CONFIG_NOSYSTEM: "1", HOME: dataDir("gh") });
