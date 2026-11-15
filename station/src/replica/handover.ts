@@ -106,7 +106,8 @@ export type Out = {
   /// What was sent and placed of its files (bytes), for the status; of them, the bytes of the room's own files that
   /// went (what was in place there already did not).
   done: number; total: number; sentBytes?: number;
-  /// When each of its steps began (the clock's), in order: `begin`, `first` (the first pass's gathering and sending),
+  /// When each of its steps began (the station's clock, the wall's: a step of that clock as it runs skews one step's ms,
+  /// which a log line can bear), in order: `begin`, `first` (the first pass's gathering and sending),
   /// `turn`, `hold`, `held` (the held pass), `rows`, `counts`, `gone`: what its line at gone says each took; then `show`
   /// (asked there to show it, to its answer) and `done`, kept for whoever reads the record.
   began?: Record<string, number>;

@@ -59,6 +59,8 @@ export type Station = {
   /// Its routes of move/routes.ts, as a device asks them.
   ask(method: string, path: string, body: Json, role?: string, query?: [string, string][]): Promise<{ status: number; body: Json }>;
   jobs: (CarriedJob & { id: string })[]; started: string[]; free: number; fails: Set<string>; onFail: ((step: string) => void) | null;
+  /// The jobs' rows read so far, as the store reads them (live.ts `up`): a session's by its index, a workspace's whole.
+  jobsRead: number;
   /// Its own connects' surfaces, by their id here; git run as the station runs it.
   local: Map<string, Json>;
   git: (dir: string, args: string[]) => Promise<string>;
@@ -79,7 +81,7 @@ export function world(ids: string[] = [A, B]) {
   let tamper: ((to: string, request: Json) => Json) | null = null;
   const make = (id: string): Station => {
     const rig = new Rig({ place: { workspace: WS, station: id }, workspaces: [WS], fileStore: true, clock: t.clock });
-    const st = { id, rig, up: true, on: true, holds: 0, jobs: [], started: [], free: 1e15, fails: new Set<string>(), onFail: null } as unknown as Station;
+    const st = { id, rig, up: true, on: true, holds: 0, jobs: [], started: [], free: 1e15, fails: new Set<string>(), onFail: null, jobsRead: 0 } as unknown as Station;
     st.bus = new PeerBus({ sleep: async () => {} });
     st.bus.attach(async (to, ws, request) => {
       const there = stations.get(to);
@@ -119,7 +121,11 @@ export function world(ids: string[] = [A, B]) {
           own: () => wc.ownIds(), ownIn: (ws) => wc.ownKinds(ws), runsOn: (c) => wc.runsOn(c), move: (c, to, awaiting) => wc.move(c, to, null, undefined, undefined, awaiting ?? []), movedAway: (ws) => wc.movedAway(ws), arrived: (keys) => wc.arrived(keys),
         },
         jobs: {
-          up: (keys, ws) => st.jobs.filter((j) => (keys === null ? ws === undefined || hub.ofWorkspace(j.session, ws) : keys.includes(j.session))),
+          up: (keys, ws) => {
+            const up = st.jobs.filter((j) => (keys === null ? ws === undefined || hub.ofWorkspace(j.session, ws) : keys.includes(j.session)));
+            st.jobsRead += keys === null ? st.jobs.length : up.length;
+            return up;
+          },
           stop: async (jid) => void (st.jobs = st.jobs.filter((j) => j.id !== jid)),
           start: (j) => {
             st.jobs.push({ ...j, id: `${tag}-job-${st.started.length}` });

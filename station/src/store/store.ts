@@ -3907,6 +3907,12 @@ export class Store {
     return this.#all(JOBS_UP).map(toJob);
   }
 
+  /// What sessions `keys` have up (as `jobsUp` gives them, the latest first), each session's by its index: what one
+  /// chat's hold reads, never every job up on the station.
+  jobsUpOf(keys: readonly string[]): JobRow[] {
+    return keys.flatMap((k) => this.upJobIds(k).flatMap((id) => this.getJob(id) ?? [])).sort((a, b) => b.startedAt - a.startedAt);
+  }
+
   /// The service holding a port, including one waiting to restart.
   jobAtPort(port: number): Pick<JobRow, "id" | "name" | "port"> | null {
     const r = this.#one(JOB_AT_PORT, port);

@@ -3,8 +3,9 @@
 // owed), never at all those a station keeps. A whole move back showed each chat slower by the chats already back (4 to
 // 79 ms a chat over 2,384, drill 31): each arrival walked every record, and every ended one against every other.
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { createRequire, syncBuiltinESMExports } from "node:module";
+import { basename, join } from "node:path";
 import { test } from "node:test";
 import { A, B, WS, stillfailChat, world } from "./move-world.ts";
 
@@ -13,11 +14,40 @@ type Looked = Record<string, number>;
 /// What was looked at since `before`, by what looked.
 const since = (now: Looked, before: Looked): Looked => Object.fromEntries(Object.entries(now).map(([k, n]) => [k, n - (before[k] ?? 0)]).filter(([, n]) => n !== 0));
 const sum = (l: Looked) => Object.values(l).reduce((a, b) => a + b, 0);
+const require = createRequire(import.meta.url);
+
+/// The bytes written under `dir` from now on, by file (`stop`): node:fs/promises' writes wrapped, the modules' bindings
+/// of it synced, as move-plan-bounded.test.ts counts its calls.
+function written(dir: string) {
+  const fsp = require("node:fs/promises") as Record<string, Json>;
+  const names = ["writeFile", "appendFile"];
+  const was = new Map(names.map((x) => [x, fsp[x]]));
+  const bytes: Record<string, number> = {};
+  let on = true;
+  for (const x of names) {
+    fsp[x] = (path: unknown, data: unknown, ...rest: unknown[]) => {
+      if (on && typeof path === "string" && path.startsWith(dir)) {
+        const name = basename(path).replace(/\.[0-9a-f]{8}\.tmp$/, "");
+        bytes[name] = (bytes[name] ?? 0) + Buffer.byteLength(typeof data === "string" ? data : String(data ?? ""));
+      }
+      return was.get(x)(path, data, ...rest);
+    };
+  }
+  syncBuiltinESMExports();
+  return {
+    bytes,
+    pause: (paused: boolean) => void (on = !paused),
+    stop: () => {
+      for (const x of names) fsp[x] = was.get(x);
+      syncBuiltinESMExports();
+    },
+  };
+}
 
 /// What A's hand-over of a fresh chat to B and back (its second trip) looks at of A's records, A keeping besides the
 /// records of `n` other chats' trips there and back (each ended where it left, half as a station from before left
 /// them, and shown where it came home), as chats moved about leave them.
-async function lookedWith(n: number): Promise<{ start: number; there: Looked; back: Looked; kept: { outs: number; ins: number } }> {
+async function lookedWith(n: number): Promise<{ start: number; there: Looked; back: Looked; kept: { outs: number; ins: number }; jobs: { read: number; written: Record<string, number>; idle: Record<string, number> } }> {
   const w = world();
   const a = w.get(A);
   const { key } = await stillfailChat(a);
@@ -45,6 +75,12 @@ async function lookedWith(n: number): Promise<{ start: number; there: Looked; ba
       writeFileSync(join(records, side, `${copy.id}.json`), JSON.stringify(copy));
     }
   }
+  // (and as many other chats' jobs up here, kept here as their chats were held, and moved with them: the jobs' log as
+  // a station that moved them keeps it)
+  const job = (session: string) => ({ session, name: "dev", command: "npm run dev", cwd: join(a.rig.dir, "sessions", session, "workspace"), port: null, watch: false });
+  for (let i = 0; i < n; i++) a.jobs.push({ ...job(`up-${i}`), id: `A-up-${i}` } as Json);
+  mkdirSync(join(a.rig.dir, "move"), { recursive: true });
+  writeFileSync(join(a.rig.dir, "move", "jobs.log"), Array.from({ length: n }, (_, i) => `${JSON.stringify({ k: `kept-${i}#dev`, v: { kept: job(`kept-${i}`) } })}\n${JSON.stringify({ k: `moved-${i}#dev`, v: { moved: job(`moved-${i}`), to: B } })}\n`).join(""));
   await a.moves.close();
   a.moves = a.make();
   await a.moves.start();
@@ -58,6 +94,23 @@ async function lookedWith(n: number): Promise<{ start: number; there: Looked; ba
   await w.quiet();
   assert.equal((await a.moves.scheduler.back(WS, B, { module: "chats", item: fresh })).failed, null);
   await w.quiet();
+  // (its job up: held with it, kept, moved and brought back by the jobs' part; what a plan reads, once a turn, apart)
+  a.jobs.push({ ...job(fresh), id: "A-fresh" } as Json);
+  const sched = a.moves.scheduler;
+  const plan = sched.plan.bind(sched);
+  const files = written(join(a.rig.dir, "move"));
+  let planRead = 0;
+  sched.plan = async (...args: Parameters<typeof plan>) => {
+    const was = a.jobsRead;
+    files.pause(true);
+    try {
+      return await plan(...args);
+    } finally {
+      planRead += a.jobsRead - was;
+      files.pause(false);
+    }
+  };
+  const read0 = a.jobsRead;
   const before = a.moves.handover.looked();
   assert.equal((await a.moves.scheduler.move(WS, B, { module: "chats", item: fresh })).failed, null);
   await w.quiet();
@@ -67,7 +120,18 @@ async function lookedWith(n: number): Promise<{ start: number; there: Looked; ba
   await w.quiet();
   const back = since(a.moves.handover.looked(), mid);
   assert.equal(a.rig.store.handedTo(fresh), null, "home again");
-  return { start, there, back, kept };
+  const jobsRead = a.jobsRead - read0 - planRead;
+  const jobsWritten = { ...files.bytes };
+  // A chat with no job there and back: nothing of the jobs written.
+  const { key: idle } = await stillfailChat(a);
+  for (const k of Object.keys(files.bytes)) delete files.bytes[k];
+  assert.equal((await a.moves.scheduler.move(WS, B, { module: "chats", item: idle })).failed, null);
+  await w.quiet();
+  assert.equal((await a.moves.scheduler.back(WS, B, { module: "chats", item: idle })).failed, null);
+  await w.quiet();
+  const idleWritten = { ...files.bytes };
+  files.stop();
+  return { start, there, back, kept, jobs: { read: jobsRead, written: jobsWritten, idle: idleWritten } };
 }
 
 test("a chat handed over and brought home looks at the records of its own sessions: as many at 30 other chats' trips kept as at 300; a start, at each record once", async (t) => {
@@ -79,5 +143,35 @@ test("a chat handed over and brought home looks at the records of its own sessio
   // (a start looks at its records as many times more as there are records more, twice that at most: not their square)
   const records = (many.kept.outs + many.kept.ins) / (few.kept.outs + few.kept.ins);
   assert.ok(many.start / few.start < 2 * records, `a start's looking grows as the records do (${records.toFixed(1)} times), not as their square: ${few.start} at 30, ${many.start} at 300`);
+  // (the jobs' part: what one chat's trip reads of the jobs and writes under move/, the same with 30 and 300 other
+  // chats' jobs up, kept and moved; a chat with none writes nothing of them)
+  assert.deepEqual(many.jobs, few.jobs, `the jobs' part with 30: ${JSON.stringify(few.jobs)}, with 300: ${JSON.stringify(many.jobs)}`);
+  assert.ok(few.jobs.read > 0 && (few.jobs.written["jobs.log"] ?? 0) > 0, `the chat's own job counted: ${JSON.stringify(few.jobs)}`);
+  assert.equal(few.jobs.idle["jobs.log"], undefined, `a chat with no job writes nothing of the jobs: ${JSON.stringify(few.jobs.idle)}`);
   assert.deepEqual({ there: many.there, back: many.back }, { there: few.there, back: few.back }, `looked at with 30 kept: ${JSON.stringify(few)}, with 300: ${JSON.stringify(many)}`);
+});
+
+test("the jobs kept and moved, as a station from before kept them in one file, are taken in a line each and kept so across starts; a line cut short as the station stopped is left out", async () => {
+  const w = world();
+  const a = w.get(A);
+  const { key } = await stillfailChat(a);
+  const job = (name: string) => ({ session: key, name, command: "npm run dev", cwd: join(a.rig.dir, "sessions", "s", "workspace"), port: null, watch: false });
+  const dir = join(a.rig.dir, "move");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "jobs.json"), JSON.stringify({ kept: [job("kept")], moved: [{ job: job("moved"), to: B }] }));
+  const states = async () => Object.fromEntries((await a.moves.scheduler.plan(WS, B)).items.filter((x) => x.module === "jobs").map((x) => [x.id, x.state]));
+  const again = async () => {
+    await a.moves.close();
+    a.moves = a.make();
+    await a.moves.start();
+    await w.quiet();
+  };
+  await again();
+  const want = { [`${key}#kept`]: "stopped", [`${key}#moved`]: "there" };
+  assert.deepEqual(await states(), want, "taken in from the file of before");
+  assert.deepEqual(readdirSync(dir).filter((f) => f.startsWith("jobs.")), ["jobs.log"], "its lines written, the file of before let go");
+  // (a line cut short as the station stopped: left out, what was before it kept)
+  writeFileSync(join(dir, "jobs.log"), `${readFileSync(join(dir, "jobs.log"), "utf8")}{"k":"${key}#kept"`);
+  await again();
+  assert.deepEqual(await states(), want, "across a start, a line cut short left out");
 });

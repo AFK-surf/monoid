@@ -531,7 +531,7 @@ export class Moves {
           if (row === null) throw new Refused("its chat is not here");
           // (in its chat's directory as it is here: what was under the other's data directory is under this one's)
           const cwd = typeof j.cwd === "string" ? moved(j.cwd, String(request.fromData ?? ""), this.#d.data) : row.workspace;
-          if (this.#d.store.jobsUp().some((x) => x.sessionKey === j.session && x.name === j.name && x.command === j.command)) return { ok: true };
+          if (this.#d.store.jobsUpOf([j.session]).some((x) => x.name === j.name && x.command === j.command)) return { ok: true };
           await this.#d.jobs.start({ ...j, cwd });
           return { ok: true };
         }

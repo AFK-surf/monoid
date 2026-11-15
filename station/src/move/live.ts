@@ -71,14 +71,15 @@ export const MovesLive = Layer.effectDiscard(
         arrived: async (keys) => wc()?.arrived(keys),
       },
       jobs: {
-        up: (keys, ws) => store.jobsUp()
-          .filter((j) => !j.sessionKey.startsWith("remote:") && (keys !== null ? keys.includes(j.sessionKey) : ws === undefined || hub.ofWorkspace(j.sessionKey, ws)))
+        // (of sessions `keys`, a chat's: by their index; of a workspace, a plan's: every job up, once a plan)
+        up: (keys, ws) => (keys !== null ? store.jobsUpOf(keys) : store.jobsUp())
+          .filter((j) => !j.sessionKey.startsWith("remote:") && (keys !== null || ws === undefined || hub.ofWorkspace(j.sessionKey, ws)))
           .map((j) => ({ id: j.id, session: j.sessionKey, name: j.name, command: j.command, cwd: j.cwd, port: j.port, watch: j.watch })),
         stop: async (id) => void (await agents.jobs.stop(id)),
         // (the jobs run in the MoonBit program, #6387: a start answers once it went, or with why not)
         start: async (j) => void (await agents.jobs.start(j.session, j.name, j.command, j.cwd ?? store.getSession(j.session)?.workspace ?? data, j.port ?? null, j.watch === true)),
         stopNamed: async (session, name) => {
-          for (const j of store.jobsUp().filter((x) => x.sessionKey === session && x.name === name)) await agents.jobs.stop(j.id);
+          for (const j of store.jobsUpOf([session]).filter((x) => x.name === name)) await agents.jobs.stop(j.id);
         },
       },
       profiles: () => (Array.isArray(agents.config.raw()?.profiles) ? agents.config.raw().profiles : []),
