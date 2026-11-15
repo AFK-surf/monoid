@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [99080b0a8](https://github.com/AFK-surf/monoid/commit/99080b0a84f016e8be1554e8b8e4537c0b369e3e) app: unify execution history fold/expand and align | 2.17 | 3.02 | 13.08 | 34.21 | 51.83 | 30 | 60.27 | 99.65 | 118.23 |
 | [4e5083b16](https://github.com/AFK-surf/monoid/commit/4e5083b16289ad82b394fd489ecc8f7a0feda233) move: what the real run VM-1 → Office-Host-2 and t | 2.16 | 3.02 | 13.06 | 34.2 | 51.77 | 29.98 | 60.22 | 99.68 | 123.41 |
 | [5e093f1bc](https://github.com/AFK-surf/monoid/commit/5e093f1bc6fc4dfcab84eda52d794f22599a7085) fix(mbui): align view_made glyph_x, formula glyphs | 2.16 | 3.02 | 13.06 | 34.2 | 51.77 | 29.98 | 60.22 | 99.47 | 117.31 |
 | [5d5292351](https://github.com/AFK-surf/monoid/commit/5d52923517c78364c737be0c7746be6121eb78e2) ci: Farview's client given its pin's mtime, so moo | 2.16 | 3.02 | 13.06 | 34.2 | 51.77 | 29.98 | 60.22 | 99.7 | 117.67 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [bb437c67c](https://github.com/AFK-surf/monoid/commit/bb437c67c8db96273a097ec999014f66032bfbcb) base: Reply::tap, tap.opus, forget on closes, a sh | 2.12 | 2.95 | 12.72 | 33.79 | 50.29 | 29.19 | 57.93 | 99.35 | 111.54 |
 | [1923a7666](https://github.com/AFK-surf/monoid/commit/1923a766606f1d35b0d4b6030bc3217a30ec4a34) fix(mbui): improve Windows ClearType rendering and | 2.12 | 2.95 | 12.72 | 33.78 | 50.28 | 29.15 | 57.72 | 99.71 | 117.57 |
 | [3d78e1b6c](https://github.com/AFK-surf/monoid/commit/3d78e1b6c0eb45a1ffbd24b7840121797035f04f) mbui: gate derived lists by sameness so unchanged  | 2.12 | 2.95 | 12.72 | 33.78 | 50.28 | 29.15 | 57.72 | 99.71 | 117.57 |
-| [530753284](https://github.com/AFK-surf/monoid/commit/5307532845a692c34ca3bd1b717cd9b78252d1e5) mbui: ＋ 附件面板、已决定卡片详情、文件重名询问改为节点面板（old-panel 12 → 9 | 2.11 | 2.95 | 12.72 | 33.78 | 50.24 | 29.15 | 57.72 | 99.71 | 117.57 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [99080b0a8](https://github.com/AFK-surf/monoid/commit/99080b0a84f016e8be1554e8b8e4537c0b369e3e) app: unify execution history fold/expand and align | 0.42 | 0.54 | 2.08 | 3.17 | 4.97 | 1.53 | 4.1 | 57.28 |
 | [4e5083b16](https://github.com/AFK-surf/monoid/commit/4e5083b16289ad82b394fd489ecc8f7a0feda233) move: what the real run VM-1 → Office-Host-2 and t | 0.42 | 0.54 | 2.08 | 3.17 | 4.97 | 1.53 | 4.1 | 57.31 |
 | [5e093f1bc](https://github.com/AFK-surf/monoid/commit/5e093f1bc6fc4dfcab84eda52d794f22599a7085) fix(mbui): align view_made glyph_x, formula glyphs | 0.42 | 0.54 | 2.08 | 3.17 | 4.97 | 1.53 | 4.1 | 57.31 |
 | [5d5292351](https://github.com/AFK-surf/monoid/commit/5d52923517c78364c737be0c7746be6121eb78e2) ci: Farview's client given its pin's mtime, so moo | 0.42 | 0.54 | 2.08 | 3.17 | 4.97 | 1.53 | 4.08 | 57.51 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [bb437c67c](https://github.com/AFK-surf/monoid/commit/bb437c67c8db96273a097ec999014f66032bfbcb) base: Reply::tap, tap.opus, forget on closes, a sh | 0.41 | 0.53 | 1.99 | 3.1 | 4.58 | 1.47 | 3.83 | 57.08 |
 | [1923a7666](https://github.com/AFK-surf/monoid/commit/1923a766606f1d35b0d4b6030bc3217a30ec4a34) fix(mbui): improve Windows ClearType rendering and | 0.41 | 0.53 | 1.99 | 3.1 | 4.58 | 1.47 | 3.83 | 57.08 |
 | [3d78e1b6c](https://github.com/AFK-surf/monoid/commit/3d78e1b6c0eb45a1ffbd24b7840121797035f04f) mbui: gate derived lists by sameness so unchanged  | 0.41 | 0.53 | 1.99 | 3.1 | 4.58 | 1.47 | 3.83 | 57.41 |
-| [530753284](https://github.com/AFK-surf/monoid/commit/5307532845a692c34ca3bd1b717cd9b78252d1e5) mbui: ＋ 附件面板、已决定卡片详情、文件重名询问改为节点面板（old-panel 12 → 9 | 0.41 | 0.53 | 1.99 | 3.1 | 4.58 | 1.47 | 3.83 | 57.41 |
