@@ -269,7 +269,21 @@ function jobs(tag: string): { pid: number; cwd: string; on: Name | "?" }[] {
   // (the job's own shell alone, whose argv is `sh -c <its command>` (e2e/fake/claude.mjs's drill-job: a loop, then
   // `: drill-job-<tag>`): what started it may carry the line among its own)
   const mine = new RegExp(`^\\s*(\\d+)\\s+(?:\\S*/)?(?:ba|z)?sh -c while :; do [^;]*; done; : drill-job-${tag}$`);
-  const pids = spawnSync("ps", ["-axo", "pid=,args="], { encoding: "utf8" }).stdout.split("\n").map((l) => mine.exec(l)?.[1]).filter((x): x is string => x !== undefined).map(Number);
+  // (-ww: ps cuts a long line to the width it guesses otherwise, the tag at its end among what it cut: drill 38)
+  let pids = spawnSync("ps", ["-axww", "-o", "pid=,args="], { encoding: "utf8" }).stdout.split("\n").map((l) => mine.exec(l)?.[1]).filter((x): x is string => x !== undefined).map(Number);
+  // (else the job as its station keeps it: its process group's leader, where that runs: a station that starts it
+  // otherwise than `sh -c <command>`)
+  if (pids.length === 0) {
+    for (const n of stations()) {
+      for (const j of sql(n, `select pgid from jobs where name = ${lit(`drill-${tag}`)} and state = 'running' and pgid is not null`)) {
+        try {
+          process.kill(Number(j.pgid), 0);
+          pids.push(Number(j.pgid));
+        } catch {}
+      }
+    }
+    pids = [...new Set(pids)];
+  }
   return pids.map((pid) => {
     const l = spawnSync("lsof", ["-nP", "-a", "-p", String(pid), "-d", "cwd", "-Fn"], { encoding: "utf8" }).stdout;
     const cwd = /^n(.*)$/m.exec(l)?.[1] ?? "";
@@ -278,7 +292,7 @@ function jobs(tag: string): { pid: number; cwd: string; on: Name | "?" }[] {
 }
 /// What there is of job `tag` to say where it is not as wanted: every process naming it, and its logs' last lines.
 function jobEvidence(tag: string): string {
-  const ps = spawnSync("ps", ["-axo", "pid=,ppid=,args="], { encoding: "utf8" }).stdout.split("\n").filter((l) => l.includes(`drill-job-${tag}`)).map((l) => l.trim().slice(0, 200));
+  const ps = spawnSync("ps", ["-axww", "-o", "pid=,ppid=,args="], { encoding: "utf8" }).stdout.split("\n").filter((l) => l.includes(`drill-job-${tag}`)).map((l) => l.trim().slice(0, 200));
   const logs: string[] = [];
   for (const n of stations()) {
     const d = `${DATA[n]}/jobs/logs`;
