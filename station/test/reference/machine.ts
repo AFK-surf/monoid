@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { type Lang, tr } from "../../src/ops/i18n.ts";
 import { type Json, type Store, sessionOfRuntime } from "./store.ts";
 import { HttpError } from "./views.ts";
-import { parseIso } from "../../src/read/transcript.ts";
+import { parseIso } from "./transcript.ts";
 import { type Runtime, type Roots, roots, type MachineSession, str, get, parse, extension, readDir, lines, hasCodexEvents, said, stamp, rolloutsIn, read, codexNames, named, find } from "../../src/read/machine.ts";
 
 export * from "../../src/read/machine.ts";
@@ -92,13 +92,15 @@ export function machineSessions(s: Store, source: Roots = roots()): Json {
 
 /// GET /machine-sessions/:runtime/:id: one of them to look at before going on with it: what was said, the latest
 /// `limit` (a usize, default 200, 1–1000).
-export function machineSession(s: Store, lang: Lang, runtime: string, id: string, limitParam: string | undefined): Json {
+/// Asked `found` (POST /machine-sessions, going on with it), only the session with where its transcript is.
+export function machineSession(s: Store, lang: Lang, runtime: string, id: string, limitParam: string | undefined, onlyFound = false): Json {
   if (runtime !== "claude" && runtime !== "codex") throw new HttpError(404, `no runtime ${runtime}`);
   // str::parse::<usize>: digits, a `+` before them at most, no more than a u64 holds; else the default.
   const asked = limitParam !== undefined && /^\+?[0-9]+$/.test(limitParam) && BigInt(limitParam) <= 18446744073709551615n ? BigInt(limitParam) : 200n;
   const limit = Number(asked < 1n ? 1n : asked > 1000n ? 1000n : asked);
   const found = find(roots(), runtime, id);
   if (found === null) throw new HttpError(404, tr(lang, "station.admin.noLocalSession", { id }));
+  if (onlyFound) return { session: found };
   const said = conversation(runtime, found.path);
   found.session = sessionOfRuntime(s, runtime, found.id);
   const total = said.length;

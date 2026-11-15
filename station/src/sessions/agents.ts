@@ -72,7 +72,7 @@ import { stationLang, tr, type Lang } from "../ops/i18n.ts";
 import { type Updates, makeUpdates } from "../updates/updates.ts";
 import { channelOf } from "../updates/versions.ts";
 import { type Connect, hubConfig } from "./config.ts";
-import type { TailState } from "../read/tail.ts";
+import type { TailState } from "../read/transcript.ts";
 import { followLatestThreadRequests } from "../read/latest-thread-requests.ts";
 import { ColdRooms } from "./cold.ts";
 import { Hub } from "./hub.ts";

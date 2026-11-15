@@ -7,7 +7,7 @@ import { after, test } from "node:test";
 import { HermesDriver, hermesEnv, outcomeOf, hermesCatalog, HERMES_MODEL_LIMIT } from "../src/agents/hermes.ts";
 import type { OpenOptions, RuntimeEvent } from "../src/agents/runtime.ts";
 import { allLeft } from "../src/agents/runner.ts";
-import { transcriptPath, readTimeline, isPosting } from "../src/read/transcript.ts";
+import { transcriptPath, readTimeline, isPosting } from "./reference/transcript.ts";
 import { CHAT_CREATE } from "../src/tools/chat.ts";
 import { accessKinds } from "../src/accounts/profiles.ts";
 import { readAgentEnvFrom } from "../src/ops/agent-env.ts";

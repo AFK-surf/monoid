@@ -5,24 +5,22 @@
 // events are read; this is Node's shell of it (`LiveHub`): it says the program what the station tells it (another
 // runtime's events, a session at work, a listener, a deleted session) and answers what the program asks of it: where a
 // session's transcripts are, a read of what one gained, a page of its past and where the readers' reading of it stands
-// (the readers', read/pool.ts: off the station's thread and off the program's, so a long transcript holds up neither),
-// a file watched as it is written (fs.watch: push, not poll), and what is told to each listener, its usage and its
-// entries in brief added here where it has them so.
+// (the readers', read/pool.ts: off the station's thread and off the program's, so a long transcript holds up neither;
+// where there are none, a test's, a reader of the program's of its own), a file watched as it is written (fs.watch:
+// push, not poll), and what is told to each listener, its usage and its entries in brief as the reader made them.
 import type { Clock } from "effect";
 import { type FSWatcher, mkdtempSync, watch } from "node:fs";
-import { access } from "node:fs/promises";
+import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BackgroundTask, LiveEvent, PlanItem } from "../agents/runtime.ts";
 import { liveClock } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
-import { ChainTail, TranscriptTail, type TailState, type TranscriptRef } from "../read/tail.ts";
-import { type TimelineEntry, brief } from "../read/transcript.ts";
+import { type Answer, MbReader, readerBinary } from "../read/mb-reader.ts";
+import type { TailState, TimelineEntry, TranscriptRef } from "../read/transcript.ts";
 import { type SessionUsage, noUsage } from "../read/usage.ts";
 import type { RuntimeKind } from "../agents/runtime.ts";
 import { ActorsProgram } from "./mb-actor.ts";
-
-export { ChainTail, TranscriptTail } from "../read/tail.ts";
 
 type Json = any;
 type Phase = Extract<LiveEvent, { kind: "phase" }>["phase"];
@@ -47,8 +45,8 @@ export type Listener = (message: LiveMessage) => void;
 export const HELD_AFTER_MS = 2 * 60_000;
 
 /// Where a session's history is read off the main thread (the readers: sessions/agents.ts): where the reading of its
-/// transcripts stands there (read/tail.ts `snapshot`; null: none found), to go on from; and up to `limit` entries just
-/// before `before`, in brief or whole, with the index of the first and how many there are (`end`).
+/// transcripts stands there (mb/src/history `Tail` `snapshot`; null: none found), to go on from; and up to `limit`
+/// entries just before `before`, in brief or whole, with the index of the first and how many there are (`end`).
 export type History = {
   state(key: string): Promise<TailState[] | null>;
   page(key: string, before: number, limit: number, brief: boolean): Promise<{ start: number; entries: TimelineEntry[]; end: number }>;
@@ -59,9 +57,10 @@ export type History = {
 export type Locate = (key: string) => { runtime: RuntimeKind; paths: TranscriptRef[]; current?: boolean } | null;
 export type AsyncLocate = (key: string, signal: AbortSignal) => Promise<ReturnType<Locate>>;
 
-/// A read of one transcript on from where its reading stood (none: from its start), as tail.ts `TranscriptTail.read`
-/// gives it, with where it stands after (the readers' `tailRead`).
-export type TailRead = (runtime: RuntimeKind, state: TailState | { path: string; runtime: RuntimeKind }) => Promise<{ start: number; entries: TimelineEntry[]; state: TailState }>;
+/// A read of one transcript on from where its reading stood (none: from its start), with where it stands after (the
+/// readers' `tailRead`, mb/src/history `tail_read`): each entry told otherwise in brief carries that beside it
+/// (`~brief`); a state that says `entries: false` is only counted.
+export type TailRead = (runtime: RuntimeKind, state: TailState | { path: string; runtime: RuntimeKind; entries?: false }) => Promise<{ start: number; entries: TimelineEntry[]; state: TailState }>;
 
 /// A session's checklist as carried over to the next station process (live.mbt `carried_plans`).
 export type CarriedPlan = { key: string; at: number; items: (PlanItem & { id?: string })[]; creating: [string, number][] };
@@ -104,8 +103,10 @@ export class LiveHub {
   lengths: ((key: string, n: number) => void) | null = null;
   /// Where a transcript's past is read (agents.ts: the readers); none (tests): here.
   history: History | null = null;
-  /// Where what a watched transcript gains is read (agents.ts: the readers); none: here.
+  /// Where what a watched transcript gains is read (agents.ts: the readers); none: the program's reader of its own.
   tailRead: TailRead | null = null;
+  /// The program's reader of its own, where no readers are given (a test's): started as it is first asked.
+  readonly #reader = new OwnReader();
   /// Until the station process before has handed over: where a reading stands is what it carries over (`takeTails`),
   /// not asked of the readers before then.
   handover: Promise<void> | null = null;
@@ -241,6 +242,13 @@ export class LiveHub {
     return this.#pageHere(key, before, limit, false);
   }
 
+  /// How many entries a transcript has, read whole where what a watched one gains is read (`tailRead`), only counted:
+  /// none of them parsed or held on this thread.
+  async counted(runtime: RuntimeKind, path: string): Promise<number> {
+    const state = { path, runtime, entries: false as const };
+    return (await (this.tailRead !== null ? this.tailRead(runtime, state) : this.#reader.tailRead(runtime, state))).state.count;
+  }
+
   /// What the program carries over to the next station process (parts.ts `carry`): where each checklist was read to,
   /// and where each transcript's reading stood.
   async carried(): Promise<{ plans: CarriedPlan[]; tails: { key: string; states: TailState[] }[] }> {
@@ -272,6 +280,7 @@ export class LiveHub {
     const own = this.#own;
     this.#own = null;
     if (own !== null) void own.close();
+    void this.#reader.close();
   }
 
   // ── what the program asks ──────────────────────────────────────────────────────────────────────────────────────
@@ -313,9 +322,8 @@ export class LiveHub {
       }
       case "tailRead": {
         const [runtime, state] = args as [RuntimeKind, TailState | { path: string; runtime: RuntimeKind }];
-        const read = this.tailRead !== null ? await this.tailRead(runtime, state) : await tailReadHere(runtime, state);
-        // (each with how it is told in brief, made here as it was read: the program passes it on, `#tellOf`)
-        return { ...read, entries: read.entries.map((e) => withBrief(e)) };
+        // (each with how it is told in brief, made as it was read: the program passes it on, `#tellOf`)
+        return this.tailRead !== null ? this.tailRead(runtime, state) : this.#reader.tailRead(runtime, state);
       }
       case "page": {
         const [key, before, limit, inBrief] = args as [string, number, number, boolean];
@@ -341,8 +349,8 @@ export class LiveHub {
         let briefOf = (m: Json) => m;
         if (message?.type === "timeline") {
           message.usage = this.#usageOf(key);
-          const whole = (message.entries as Json[]).map(({ [BRIEF]: _, ...e }) => e);
-          const briefs = briefed ? whole : (message.entries as Json[]).map((e) => e[BRIEF] ?? brief(e));
+          const whole = (message.entries as Json[]).map(wholeOf);
+          const briefs = briefed ? whole : (message.entries as Json[]).map(briefOfRead);
           message.entries = whole;
           briefOf = (m: Json) => ({ ...m, entries: briefs });
         }
@@ -430,32 +438,106 @@ export class LiveHub {
     return at;
   }
 
-  /// A page of a session's transcripts read here, whole (no readers: a test's): for the program, where it found them.
+  /// A page of a session's transcripts read whole by the program's reader of its own (no readers: a test's): for the
+  /// program, where it found them.
   async #pageHere(key: string, before: number, limit: number, inBrief: boolean, asked = false): Promise<{ start: number; entries: TimelineEntry[]; end: number } | null> {
     const at = (asked ? this.#located.get(key) : undefined) ?? (this.locateAsync !== null ? await this.locateAsync(key, new AbortController().signal) : this.#locate(key));
     if (!at) return null;
-    const tail = new ChainTail(at.runtime, at.paths);
-    await tail.readSoon();
-    const all = tail.entries;
+    const all: Json[] = [];
+    for (const ref of at.paths) {
+      const one = typeof ref === "string" ? { path: ref, runtime: at.runtime } : ref;
+      all.push(...(await this.#reader.tailRead(one.runtime, one)).entries);
+    }
     const end = Math.min(before, all.length);
     const start = Math.max(0, end - limit);
     const entries = all.slice(start, end);
-    return { start, entries: inBrief ? entries.map(brief) : entries, end: all.length };
+    return { start, entries: entries.map(inBrief ? briefOfRead : wholeOf), end: all.length };
   }
 }
 
-/// Where an entry read for the live view carries how it is told in brief (read/transcript.ts `brief`, which says it best
-/// of the entry it read itself), where that is not the entry itself.
+/// Where an entry read for the live view carries how it is told in brief (mb/src/history `brief`, which says it best of
+/// the entry it read itself), where that is not the entry itself.
 const BRIEF = "~brief";
-const withBrief = (e: TimelineEntry): Json => {
-  const b = brief(e);
-  return b === e ? e : { ...e, [BRIEF]: b };
-};
+/// An entry as read, whole.
+const wholeOf = ({ [BRIEF]: _, ...e }: Json): TimelineEntry => e;
+/// An entry as read, in brief.
+const briefOfRead = (e: Json): TimelineEntry => e[BRIEF] ?? wholeOf(e);
 
-/// What a transcript gained since `state`, read here (no readers: a test's) off the main thread, as test/reference/ops-sessions.ts
-/// `tailRead` reads it.
-async function tailReadHere(runtime: RuntimeKind, state: TailState | { path: string; runtime?: RuntimeKind }) {
-  const tail = "offset" in state ? TranscriptTail.from(runtime, state) : new TranscriptTail(state.runtime ?? runtime, state.path, null, false);
-  const [start, entries] = await tail.readSoon();
-  return { start, entries, state: tail.snapshot() };
+/// The MoonBit program's reader of the live view's own, where no readers are given (a test's): what a transcript
+/// gained read there as the readers read it (`tailRead`), off the main thread. Started as it is asked, on a directory of
+/// its own with an empty database (it reads transcripts, nothing of the station's store), and ended as soon as nothing
+/// is asked of it: one left running would outlive what started it (a test that never closes its hub).
+class OwnReader {
+  #dir: Promise<string> | null = null;
+  #reader: MbReader | null = null;
+  /// What is asked and not answered yet, of which process.
+  readonly #waiting = new Map<number, { reader: MbReader; resolve: (answer: Json) => void; reject: (error: Error) => void }>();
+  #next = 0;
+  #closed = false;
+
+  tailRead(runtime: RuntimeKind, state: TailState | { path: string; runtime?: RuntimeKind; entries?: false }): Promise<{ start: number; entries: Json[]; state: TailState }> {
+    return this.#ask("tailRead", { runtime, state });
+  }
+
+  async #ask(op: string, args: unknown): Promise<Json> {
+    if (this.#closed) throw new Error("the live view is closed");
+    const dir = await (this.#dir ??= this.#made());
+    const id = ++this.#next;
+    const reader = (this.#reader ??= this.#start(dir));
+    const answered = new Promise<Json>((resolve, reject) => this.#waiting.set(id, { reader, resolve, reject }));
+    reader.postMessage({ id, op, args, lang: "zh", names: [], processes: [], clientKeys: [] });
+    return answered;
+  }
+
+  async #made(): Promise<string> {
+    const dir = await mkdtemp(join(process.env.STILLFAIL_TEST_TMP ?? tmpdir(), "live-reader-"));
+    await writeFile(join(dir, "stillfail.db"), "");
+    return dir;
+  }
+
+  /// Where the program is, looked for once (`readerBinary` looks at the disk).
+  #binary: string | null = null;
+
+  #start(dir: string): MbReader {
+    const reader = new MbReader((this.#binary ??= readerBinary()), dir);
+    const ended = (error: Error) => {
+      if (this.#reader === reader) this.#reader = null;
+      for (const [id, w] of this.#waiting) {
+        if (w.reader !== reader) continue;
+        this.#waiting.delete(id);
+        w.reject(error);
+      }
+    };
+    reader.on("message", (said: Answer | { ready: unknown }) => {
+      if (!("id" in said)) return;
+      const waiting = this.#waiting.get(said.id);
+      if (waiting?.reader !== reader) return;
+      this.#waiting.delete(said.id);
+      // (nothing more asked of it: ended now, a new one started for what is asked next)
+      if (this.#reader === reader && ![...this.#waiting.values()].some((w) => w.reader === reader)) {
+        this.#reader = null;
+        void reader.terminate();
+      }
+      if (said.error !== undefined) waiting.reject(new Error(said.error));
+      else {
+        try {
+          waiting.resolve(JSON.parse(said.body !== undefined ? said.body.toString("utf8") : (said.text ?? "null")));
+        } catch (error) {
+          waiting.reject(error as Error);
+        }
+      }
+    });
+    reader.on("error", ended);
+    reader.on("exit", (code) => ended(new Error(`the live view's reader ended (${code})`)));
+    return reader;
+  }
+
+  async close(): Promise<void> {
+    this.#closed = true;
+    const reader = this.#reader;
+    this.#reader = null;
+    if (reader !== null) await reader.terminate();
+    const dir = await this.#dir?.catch(() => null);
+    if (dir) await rm(dir, { recursive: true, force: true });
+  }
 }

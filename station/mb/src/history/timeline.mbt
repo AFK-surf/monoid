@@ -1,4 +1,4 @@
-// A runtime's transcript records as timeline entries (station/src/read/transcript.ts `timelineOf`): Claude Code's,
+// A runtime's transcript records as timeline entries (station/test/reference/transcript.ts `timelineOf`): Claude Code's,
 // Codex's (its code mode's scripts read for their calls), DeepSeek Harness's, Grok Build's, and the station's own for
 // Cursor, Devin, Hermes and Antigravity; each record read as JSON.parse reads it (station/mb src/jsjson), what it says
 // written as JSON.stringify writes it.

@@ -209,7 +209,7 @@ test("an execution history is looked through as it is: newest first, numbered as
   // Another workspace's member sees none of it.
   assert.deepEqual((await look("deploy", other)).hits, []);
   // Numbered as the history page numbers them (GET /sessions/:key/timeline).
-  const { readTimeline } = await import("../src/read/transcript.ts");
+  const { readTimeline } = await import("./reference/transcript.ts");
   assert.equal(readTimeline("claude", file)[1]!.text, 'deploy 完了, "quoted" too');
   // Put away: read decompressed.
   writeFileSync(`${file}.zst`, zstdCompressSync(readFileSync(file)));

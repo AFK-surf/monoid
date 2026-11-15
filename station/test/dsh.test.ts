@@ -17,7 +17,7 @@ import type { AgentSession, OpenOptions, Profile, RuntimeEvent } from "../src/ag
 import { allLeft } from "../src/agents/runner.ts";
 import { learn } from "../src/accounts/catalog.ts";
 import { Said, stationLang, tr } from "../src/ops/i18n.ts";
-import { readTimeline, transcriptPath } from "../src/read/transcript.ts";
+import { readTimeline, transcriptPath } from "./reference/transcript.ts";
 
 const fake = join(dirname(fileURLToPath(import.meta.url)), "fake");
 process.env.PATH = `${fake}${delimiter}${process.env.PATH}`;

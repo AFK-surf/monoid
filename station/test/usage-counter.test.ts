@@ -16,7 +16,7 @@ import { zstdCompressSync, zstdDecompressSync } from "node:zlib";
 import { SEGMENT } from "../src/read/packed.ts";
 import { cost, price, priceTable, sessionUsage, usageNow } from "./reference/usage.ts";
 import { packFile } from "../src/sessions/archive.ts";
-import { iso, parseIso, rememberCodexRollout } from "../src/read/transcript.ts";
+import { iso, parseIso, rememberCodexRollout } from "./reference/transcript.ts";
 import { type StoreChange, type UsageGroup, Store, newMessage } from "../src/store/store.ts";
 import { installCompactUsage } from "../src/store/usage-compact.ts";
 import { retireUsageIndexes } from "../src/store/usage-retire.ts";

@@ -5,7 +5,7 @@
 // The drive's videos have theirs made the same way for the modules, made again once the video is
 // newer (`since`).
 import { execFile } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
+import { mkdir, mkdtemp, readdir, rename, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { idOf } from "./thumbs.ts";
 import { platform } from "../platform/index.ts";
@@ -31,16 +31,20 @@ const failed = new Map<string, string>();
 /// Where the video's poster is kept.
 export const posterPath = (video: string, thumbs: string) => join(thumbs, `${idOf(video)}.poster.jpg`);
 
+/// A file's stat, or undefined where there is none to stat.
+const statOf = (path: string) => stat(path).catch(() => undefined);
+
 /// The video's poster (a JPEG), made if it is not there yet (or made again when it is older than `since`, the video's
-/// time); null when none can be made.
+/// time); null when none can be made. Off the main thread throughout: a request of the chat's waits on none of it.
 export async function poster(video: string, thumbs: string, since?: number): Promise<string | null> {
   const path = posterPath(video, thumbs);
-  const had = statSync(path, { throwIfNoEntry: false });
+  const had = await statOf(path);
   if (had?.isFile() && (since === undefined || had.mtimeMs >= since)) return path;
-  const st = statSync(video, { throwIfNoEntry: false });
+  const st = await statOf(video);
   if (!st?.isFile()) return null;
   const stamp = `${st.size}:${st.mtimeMs}`;
   if (failed.get(path) === stamp) return null;
+  // Looked up and set with no wait between: asked twice at once, the second waits on the first's qlmanage or ffmpeg.
   let made = making.get(path);
   if (made === undefined) {
     made = make(video, thumbs, path).finally(() => making.delete(path));
@@ -52,21 +56,21 @@ export async function poster(video: string, thumbs: string, since?: number): Pro
 }
 
 async function make(video: string, thumbs: string, path: string): Promise<string | null> {
-  mkdirSync(thumbs, { recursive: true });
-  const work = mkdtempSync(join(thumbs, ".poster-"));
+  await mkdir(thumbs, { recursive: true });
+  const work = await mkdtemp(join(thumbs, ".poster-"));
   try {
     const jpeg = join(work, "poster.jpg");
     let ok = false;
     if (platform.hasQuickLook && (await run("/usr/bin/qlmanage", ["-t", "-s", String(SIDE), "-o", work, video]))) {
       // QuickLook writes <name>.png into the directory it is given.
-      const png = readdirSync(work).find((f) => f.endsWith(".png"));
+      const png = (await readdir(work)).find((f) => f.endsWith(".png"));
       ok = png !== undefined && (await run("/usr/bin/sips", ["-s", "format", "jpeg", "-s", "formatOptions", "80", join(work, png), "--out", jpeg]));
     }
     if (!ok) ok = await run("ffmpeg", ["-nostdin", "-loglevel", "error", "-y", "-i", video, "-frames:v", "1", "-vf", `scale='if(gt(iw,ih),min(${SIDE},iw),-2)':'if(gt(iw,ih),-2,min(${SIDE},ih))'`, "-q:v", "4", jpeg]);
-    if (!ok || !(statSync(jpeg, { throwIfNoEntry: false })?.size ?? 0)) return null;
-    renameSync(jpeg, path);
+    if (!ok || !((await statOf(jpeg))?.size ?? 0)) return null;
+    await rename(jpeg, path);
     return path;
   } finally {
-    rmSync(work, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
   }
 }

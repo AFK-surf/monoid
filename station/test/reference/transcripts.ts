@@ -17,8 +17,8 @@ import { zstdDecompressSync } from "node:zlib";
 import type { RuntimeKind } from "../../src/agents/runtime.ts";
 import { log } from "../../src/ops/log.ts";
 import { readSegments } from "../../src/read/packed.ts";
-import { type Mark, type TailState, type TranscriptRef, TranscriptTail, recordOf } from "../../src/read/tail.ts";
-import { READING, type ReadState, type TimelineEntry, brief, storage, timelineOf, utf8 } from "../../src/read/transcript.ts";
+import { type Mark, type TailState, type TranscriptRef, TranscriptTail, recordOf } from "./tail.ts";
+import { READING, type ReadState, type TimelineEntry, brief, storage, timelineOf, utf8 } from "./transcript.ts";
 import { fileOf } from "../../src/read/transcripts.ts";
 
 export * from "../../src/read/transcripts.ts";

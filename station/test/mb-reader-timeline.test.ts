@@ -13,7 +13,7 @@ import { zstdCompressSync } from "node:zlib";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
 import { seekTable } from "../src/read/packed.ts";
 import { Readers } from "../src/read/pool.ts";
-import { MARK_EVERY } from "../src/read/tail.ts";
+import { MARK_EVERY } from "./reference/tail.ts";
 import { Store } from "../src/store/store.ts";
 import { readersOf } from "./reference.ts";
 

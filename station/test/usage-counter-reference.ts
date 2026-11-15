@@ -11,7 +11,7 @@ import { createZstdDecompress } from "node:zlib";
 import { liveClock } from "../src/ops/fibers.ts";
 import { log } from "../src/ops/log.ts";
 import { segmentsFrom, writtenLength } from "../src/read/packed.ts";
-import { parseIso, sharedTranscripts, transcriptDir, transcriptPaths } from "../src/read/transcript.ts";
+import { parseIso, sharedTranscripts, transcriptDir, transcriptPaths } from "./reference/transcript.ts";
 import type { SessionRow, Store, UsageCall, UsageFile, UsageFor, UsageTurn, UsageWrite } from "../src/store/store.ts";
 import { runtimeKind, type RuntimeKind } from "../src/agents/runtime.ts";
 import type { UsageConfig } from "../src/usage/counter.ts";

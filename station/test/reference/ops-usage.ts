@@ -47,7 +47,7 @@ export const usageOps: Record<string, ReadOp> = {
   // A chat's messages, as the Router reads it through a Comma connect (`task.read`).
   outflowMessages: (store, a) => outflowMessages(store, num(a.thread), num(a.after), Math.min(Math.max(num(a.limit), 1), 500), outflowOf(a.ws), a.messagesOnly === true),
   machineSessions: (store) => machineSessions(store),
-  machineSession: (store, a) => machineSession(store, a.lang, a.runtime, a.id, a.limit),
+  machineSession: (store, a) => machineSession(store, a.lang, a.runtime, a.id, a.limit, a.found === true),
   memory: (store, a) => {
     try { return memory(store.dataDir, a.workspace); }
     catch (error) {

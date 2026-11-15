@@ -3499,7 +3499,7 @@ function machine(root: string, project: string) {
 test("a session the machine kept goes on in a chat, run in its own directory, with what was said in it", async () => {
   const { find } = await import("./reference/machine.ts");
   const { continueMachineSession } = await import("../src/sessions/lifecycle.ts");
-  const { readTimeline } = await import("../src/read/transcript.ts");
+  const { readTimeline } = await import("./reference/transcript.ts");
   const r = new Rig();
   const root = join(r.dir, "machine");
   const project = join(root, "app");

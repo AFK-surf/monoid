@@ -21,7 +21,7 @@ import { checkQuota } from "../src/accounts/quota.ts";
 import { tr } from "../src/ops/i18n.ts";
 import { platform } from "../src/platform/index.ts";
 import { callsOf } from "./usage-counter-reference.ts";
-import { readTimeline, transcriptPath } from "../src/read/transcript.ts";
+import { readTimeline, transcriptPath } from "./reference/transcript.ts";
 
 const fake = join(dirname(fileURLToPath(import.meta.url)), "fake");
 process.env.PATH = `${fake}${delimiter}${process.env.PATH}`;

@@ -31,7 +31,7 @@ import { PAGE_LETTER_KEYS, PAGE_LETTER_KEYS_AFTER, pageLetterReady } from "../..
 import { legacyMergedReadReady } from "../../src/store/legacy-edits-build.ts";
 import { legacySaidPageState, legacySaidReadBoundary, legacySaidReadHead, legacySaidThreadNeedsDrain, LEGACY_HAS_UNREAD, LEGACY_SAID_SCAN, LEGACY_UNREAD } from "../../src/store/legacy-said-build.ts";
 import { LEGACY_ASKED_DURING } from "../../src/store/legacy-agent-build.ts";
-import { TURN_COUNT_BATCH } from "../../src/store/turn-state.ts";
+import { TURN_COUNT_BATCH } from "./turn-state.ts";
 import { type UsageGroup, usageGroupOf } from "../../src/store/usage.ts";
 import * as rows from "../../src/store/rows.ts";
 import { type CardAnswer, type DeliveryCardState, type EntryRow, type InWorkspace, JOBS_RUNNING, LEGACY_MESSAGE_KEYS_BEFORE, LEGACY_MESSAGES_BEFORE, MESSAGE_KEYS_BEFORE, MESSAGE_PAGE_ENTRIES, MESSAGES_BEFORE, type Membership, type MessageRow, type PendingMessage, PEOPLE_AT, SESSION_JOBS, SESSION_OF_RUNTIME, STILLFAIL_SURFACE, type ThreadRow, I64_MAX, MANUAL, authorKind, cardOf, liveShare, ending, parsed, saidBefore, sees, takeChars, toChatShare, toEntry, letterEntry, letterMessage, toMembership, toMessage, toThread } from "../../src/store/rows.ts";

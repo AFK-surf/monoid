@@ -18,7 +18,7 @@ import { checkProfile, grokModels, loginCommand } from "../src/accounts/profiles
 import { LoginManager, type LoginState } from "../src/accounts/login.ts";
 import { grokQuotaOf } from "../src/accounts/quota.ts";
 import { callsOf } from "./usage-counter-reference.ts";
-import { readTimeline, transcriptPath } from "../src/read/transcript.ts";
+import { readTimeline, transcriptPath } from "./reference/transcript.ts";
 
 const fake = join(dirname(fileURLToPath(import.meta.url)), "fake");
 process.env.PATH = `${fake}${delimiter}${process.env.PATH}`;

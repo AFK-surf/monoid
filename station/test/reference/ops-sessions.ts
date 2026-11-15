@@ -8,7 +8,8 @@ import { recentChatPage } from "./recent-chat.ts";
 import { workspaceSessionsToMeasure } from "../../src/jobs/workspace-size.ts";
 import { policyChecksRead } from "./policy-checks.ts";
 import { archiveLookOf, recentConnectPeople } from "../../src/store/store.ts";
-import { TranscriptTail, type TailState } from "../../src/read/tail.ts";
+import { TranscriptTail, type TailState } from "./tail.ts";
+import { brief } from "./transcript.ts";
 import type { RuntimeKind } from "../../src/agents/runtime.ts";
 import { session, sessionPlace, sessions, summary, thread, threads, timeline, transcriptFile, transcriptState, widgetState } from "./sessions.ts";
 
@@ -91,9 +92,11 @@ export const sessionOps: Record<string, ReadOp> = {
 };
 
 /// tail.ts `TranscriptTail.from(…).read()`: what a transcript gained since `state` (one not read yet: its path and runtime
-/// alone), with where its reading stands after.
-function tailRead(runtime: RuntimeKind, state: TailState | { path: string; runtime?: RuntimeKind }) {
+/// alone), with where its reading stands after; each entry told otherwise in brief with that beside it (`~brief`), none
+/// where the state says `entries: false` (only counted).
+function tailRead(runtime: RuntimeKind, state: TailState | { path: string; runtime?: RuntimeKind; entries?: false }) {
   const tail = "offset" in state ? TranscriptTail.from(runtime, state) : new TranscriptTail(state.runtime ?? runtime, state.path, null, false);
   const [start, entries] = tail.read();
-  return { start, entries, state: tail.snapshot() };
+  const told = "entries" in state && state.entries === false ? [] : entries.map((e) => { const b = brief(e); return b === e ? e : { ...e, "~brief": b }; });
+  return { start, entries: told, state: tail.snapshot() };
 }

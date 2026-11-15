@@ -1,4 +1,4 @@
-// Reading transcripts as they grow (src/read/tail.ts), and where a reader reads the pages of a history from
+// Reading transcripts as they grow (test/reference/tail.ts), and where a reader reads the pages of a history from
 // (src/read/transcripts.ts).
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -8,8 +8,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { zstdCompressSync } from "node:zlib";
 import { SEGMENT, framesOf, seekTable, segmented, segmentedSoon, unpackedWhole } from "../src/read/packed.ts";
-import { ChainTail, MARK_EVERY, PIECE, TranscriptTail } from "../src/read/tail.ts";
-import { READING, brief, readTimeline, scriptCalls } from "../src/read/transcript.ts";
+import { ChainTail, MARK_EVERY, PIECE, TranscriptTail } from "./reference/tail.ts";
+import { READING, brief, readTimeline, scriptCalls } from "./reference/transcript.ts";
 import { chainOf, entriesOf, forgetKept, lengthOf } from "./reference/transcripts.ts";
 import { heldAfter, packFile, segmentFile } from "../src/sessions/archive.ts";
 

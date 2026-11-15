@@ -1,13 +1,13 @@
-// A session's transcripts read as they grow: by the live view as its sessions work
-// (sessions/live.ts), and by the readers for the pages of a history (read/transcripts.ts). Each read goes on from where
-// the last left off.
+// The TypeScript that read a session's transcripts as they grew, for the live view (sessions/live.ts) and the pages of a
+// history (read/transcripts.ts), before the MoonBit program did (mb/src/history `Tail`, `tail_read`): kept for the tests
+// to compare the program with. Each read goes on from where the last left off.
 import { closeSync, existsSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import { access, open, readFile, stat } from "node:fs/promises";
 import { promisify } from "node:util";
 import { zstdDecompress, zstdDecompressSync } from "node:zlib";
-import type { RuntimeKind } from "../agents/runtime.ts";
-import { readSegments, segmentsFrom, writtenLength, writtenSize } from "./packed.ts";
-import { type ReadState, type TimelineEntry, timelineOf, utf8 } from "./transcript.ts";
+import type { RuntimeKind } from "../../src/agents/runtime.ts";
+import { readSegments, segmentsFrom, writtenLength, writtenSize } from "../../src/read/packed.ts";
+import { type ReadState, type TailState, type TimelineEntry, type TranscriptRef, timelineOf, utf8 } from "./transcript.ts";
 
 type Json = any;
 
@@ -26,12 +26,7 @@ export type Mark = { offset: number; index: number; inner: [string, number][] };
 export const MARK_EVERY = 256;
 export const MARK_BYTES = 1 << 20;
 
-/// Where a transcript's reading stands (`snapshot`): where its next read goes on from and what it keeps between reads,
-/// without the entries read. A tail made from it (`TranscriptTail.from`) reads on as the one it was taken of would: what
-/// one thread read, another goes on from.
-export type TailState = { path: string; runtime?: RuntimeKind; offset: number; partial: string; count: number; inner: [string, number][]; packedStamp: string | null };
-/// A transcript and the runtime that wrote it. A plain path uses the chain's default runtime.
-export type TranscriptRef = string | { path: string; runtime: RuntimeKind };
+export type { TailState, TranscriptRef } from "../../src/read/transcript.ts";
 const transcriptRef = (runtime: RuntimeKind, ref: TranscriptRef) => typeof ref === "string" ? { path: ref, runtime } : ref;
 
 /// Reads a transcript as it grows: each read gives the timeline entries of the lines

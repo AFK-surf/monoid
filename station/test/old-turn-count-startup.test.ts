@@ -9,7 +9,7 @@ import { sessions } from "./reference/sessions.ts";
 import * as read from "./reference/store.ts";
 import { addSessionTurns } from "../src/store/schema.ts";
 import { Store } from "../src/store/store.ts";
-import { TURN_COUNT_AFTER, TURN_COUNT_BATCH, TURN_COUNT_EARLIER, TURN_COUNT_FIRST, TURN_COUNT_TAIL_NEWER, TURN_COUNT_TAIL_SAME, turnCountStep, type TurnCountScan } from "../src/store/turn-state.ts";
+import { TURN_COUNT_AFTER, TURN_COUNT_BATCH, TURN_COUNT_EARLIER, TURN_COUNT_FIRST, TURN_COUNT_TAIL_NEWER, TURN_COUNT_TAIL_SAME, turnCountStep, type TurnCountScan } from "./reference/turn-state.ts";
 
 function forgetCounts(db: DatabaseSync) {
   db.exec(`DROP TRIGGER IF EXISTS session_turns_add; DROP TRIGGER IF EXISTS session_turns_drop;

@@ -12,7 +12,7 @@ import { createZstdDecompress } from "node:zlib";
 import { segmentsFrom } from "../../src/read/packed.ts";
 import * as store from "./store.ts";
 import type { JobRow, MessageRow, SessionRow, Store } from "./store.ts";
-import { type ReadState, sessionPlaces, timelineOf, transcriptSources, type TimelineEntry } from "../../src/read/transcript.ts";
+import { type ReadState, sessionPlaces, timelineOf, transcriptSources, type TimelineEntry } from "./transcript.ts";
 import { readFrom } from "../usage-counter-reference.ts";
 import { agentHomeOf, memory } from "./memory.ts";
 import { runtimeKind } from "../../src/agents/runtime.ts";

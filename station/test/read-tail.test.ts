@@ -1,8 +1,9 @@
 // A watched transcript followed by the live view (mb/src/reader/live.mbt `read_soon`), each read of what it gained done
-// by the readers (read/pool.ts `tailRead`: the MoonBit program's, and the worker's where it is not there) or here (none
-// given): the same entries at the same places as a whole read of it (read/tail.ts `ChainTail`), read after read, as a
-// Claude Code transcript is written a piece at a time (a line cut in two), a chain goes on into a Codex transcript, one
-// is written anew shorter, one is put away compressed, and one taken up from where another's reading stood.
+// by the readers (read/pool.ts `tailRead`: the MoonBit program's, and the reference's) or by the live view's reader of
+// its own (none given): the same entries at the same places as a whole read of it (test/reference/tail.ts
+// `ChainTail`), read after read, as a Claude Code transcript is written a piece at a time (a line cut in two), a chain
+// goes on into a Codex transcript, one is written anew shorter, one is put away compressed, and one taken up from where
+// another's reading stood.
 import assert from "node:assert/strict";
 import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -11,7 +12,7 @@ import { test } from "node:test";
 import { zstdCompressSync } from "node:zlib";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
 import { Readers } from "../src/read/pool.ts";
-import { ChainTail, type TranscriptRef } from "../src/read/tail.ts";
+import { ChainTail, type TranscriptRef } from "./reference/tail.ts";
 import type { TimelineEntry } from "../src/read/transcript.ts";
 import { LiveHub, type TailRead } from "../src/sessions/live.ts";
 import { Store } from "../src/store/store.ts";

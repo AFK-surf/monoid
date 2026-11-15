@@ -12,7 +12,7 @@ import { type Answer, type Request, error, json, param, segment, ok, Refused, in
 import type { Route, Tools } from "../admin.ts";
 import { tr } from "../../ops/i18n.ts";
 import { log } from "../../ops/log.ts";
-import { find as findMachineSession, roots as machineRoots } from "../../read/machine.ts";
+import { type MachineSession, roots as machineRoots } from "../../read/machine.ts";
 import { STILLFAIL_SURFACE, handedWs } from "../../store/rows.ts";
 import type { Attachment, Quote, SessionRow } from "../../store/rows.ts";
 import type { Store } from "../../store/store.ts";
@@ -296,6 +296,14 @@ function movedOf(s: Store, keys: readonly string[], r: Request): void {
 
 export const routes = (tools: Tools): Route[] => {
   const { read, store } = tools;
+  /// One of the machine's own sessions with where its transcript is, as the readers find it; none where there is none.
+  const foundMachineSession = async (r: Request, runtime: "claude" | "codex", id: string): Promise<MachineSession | null> => {
+    const a = await read(r, "machineSession", { lang: r.lang, runtime, id, found: true });
+    if (a.status === 404) return null;
+    const said = JSON.parse(String(a.body));
+    if (a.status !== 200) throw new Refused(a.status, said.error ?? "machine session not read");
+    return said.session as MachineSession;
+  };
   /// Answered with the hub, its refusals as `{error}`; 503 while there is none (a station starting). The agents' side as it
   /// is when asked (made after the admin API: services.ts AgentsSide).
   const write = async (f: (s: Store, a: AgentsParts) => Promise<Answer> | Answer): Promise<Answer> => {
@@ -497,8 +505,9 @@ export const routes = (tools: Tools): Route[] => {
           const kind = runtime(r, i);
           const id = text(i.id);
           const roots = machineRoots();
-          // Only Claude Code's and Codex's terminal sessions are read (read/machine.ts).
-          const found = kind === "dsh" || kind === "grok" || kind === "cursor" || kind === "devin" || kind === "hermes" || kind === "agy" ? null : findMachineSession(roots, kind, id);
+          // Only Claude Code's and Codex's terminal sessions are read, found by the readers (mb/src/readops/machine.mbt
+          // `machine_session`): a walk of every project or rollout and their heads read, never on this thread.
+          const found = kind === "claude" || kind === "codex" ? await foundMachineSession(r, kind, id) : null;
           if (found === null) throw new Refused(404, tr(r.lang, "station.admin.noLocalSession", { id }));
           const [key, chat] = await as(400, () => continueMachineSession(a.hub, roots, found, r.viewer.email, r.lang, r.viewer.home === false ? r.viewer.workspace : null));
           log.info("admin", "machine session continued from the admin page", { session: key, from: id, by: r.viewer.email });

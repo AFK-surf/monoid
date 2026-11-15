@@ -8,7 +8,7 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { transcriptPath } from "../src/read/transcript.ts";
 import { packFile, restoreFile } from "../src/sessions/archive.ts";
-import { TranscriptTail } from "../src/sessions/live.ts";
+import { TranscriptTail } from "./reference/tail.ts";
 import { claudeFiles, readFrom } from "./usage-counter-reference.ts";
 
 const temp = () => realpathSync(mkdtempSync(join(tmpdir(), "cold-readers-")));

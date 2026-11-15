@@ -3,7 +3,7 @@ import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { ChainTail } from "../src/read/tail.ts";
+import { ChainTail } from "./reference/tail.ts";
 import { LiveHub, type LiveMessage, type Locate } from "../src/sessions/live.ts";
 import { settle, testClock } from "./hub-fakes.ts";
 

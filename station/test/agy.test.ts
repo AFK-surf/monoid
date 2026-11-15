@@ -20,7 +20,7 @@ import { hubConfig } from "../src/sessions/config.ts";
 import { Store } from "../src/store/store.ts";
 import { tr } from "../src/ops/i18n.ts";
 import { platform } from "../src/platform/index.ts";
-import { transcriptPath, readTimeline, isPosting } from "../src/read/transcript.ts";
+import { transcriptPath, readTimeline, isPosting } from "./reference/transcript.ts";
 import { callsOf } from "./usage-counter-reference.ts";
 import { CHAT_CREATE } from "../src/tools/chat.ts";
 
