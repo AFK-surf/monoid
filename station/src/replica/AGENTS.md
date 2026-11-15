@@ -44,7 +44,8 @@ below, sends them along).
   session's room whole (an archived one's packed workspace with it; `footprint.ts roomOf`, a session whose directory is
   not the station's own counted and left) and its agents' transcripts go by their bytes to the same places under the
   other's data directory, only under `sessions/` and `transcripts*/` (`carry-worker.ts`): a checkout's files as git
-  lists them (`rebuildable` stays behind), its own `.git` as files, a repository in it gone into; a linked worktree is
+  lists them (`rebuildable` stays behind: by its name anywhere, one known by what is in it only outside a checkout,
+  as git ignores it inside one), its own `.git` as files, a repository in it gone into; a linked worktree is
   made again there by git (its remote fetched and pruned first, a bundle of the commits no remote has, `git worktree add`
   and `repair`; one that cannot be keeps its bundle beside it; not begun where that station has no git). A station has
   a million files: nothing of them is one object on a main thread or in one message (a list a session on disk, an

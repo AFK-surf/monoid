@@ -17,7 +17,7 @@ import { appendFileSync, chmodSync, closeSync, copyFileSync, existsSync, linkSyn
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { isMainThread, parentPort, workerData } from "node:worker_threads";
-import { rebuildable, roomOf } from "../sessions/footprint.ts";
+import { rebuildable, rebuildableKind, roomOf } from "../sessions/footprint.ts";
 import { BUILTIN_SKILLS, FEEDBACK_SKILL } from "../sessions/agent-home.ts";
 import { runtimeKind } from "../agents/runtime.ts";
 import { sessionPlaces, storage, transcriptSources } from "../read/transcript.ts";
@@ -301,14 +301,15 @@ export function gather(dataDir: string, db: string, ws: string, home: boolean, s
     }
     const listed = git(dir, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"]);
     if (listed === null) return false;
-    // (what a build or an install makes again stays behind here too, where git does not ignore it)
+    // (what a build or an install makes again by its name stays behind here too, where git does not ignore it; one known
+    // by what is in it goes as git lists it: footprint.ts `Rebuilt`)
     const made = new Map<string, boolean>();
     const rebuilt = (f: string): boolean => {
       const parts = f.split("/");
       for (let i = 1; i < parts.length; i++) {
         const at = parts.slice(0, i).join("/");
         let r = made.get(at);
-        if (r === undefined) made.set(at, (r = rebuildable(join(dir, at))));
+        if (r === undefined) made.set(at, (r = rebuildableKind(join(dir, at)) === "named"));
         if (r) return true;
       }
       return false;
@@ -324,7 +325,7 @@ export function gather(dataDir: string, db: string, ws: string, home: boolean, s
           continue;
         }
         if (s.isDirectory()) {
-          if (!rebuildable(path)) tree(path);
+          if (rebuildableKind(path) !== "named") tree(path);
         } else add(path);
       }
     };

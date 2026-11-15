@@ -12,7 +12,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { appendFileSync, cpSync, existsSync, linkSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, readlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, test } from "node:test";
 import { Effect, Exit, Scope, type Clock } from "effect";
@@ -909,6 +909,41 @@ test("a clone goes along with its own repository (its other branches too), and a
   assert.deepEqual(git(there, "branch", "--format=%(refname:short)").split("\n").sort(), ["main", "work"]);
   assert.deepEqual(git(there, "diff", "HEAD", "--name-only").split("\n"), ["a.txt"]);
   assert.equal(git(join(there, "inner"), "log", "--format=%s"), "inner");
+});
+
+test("a build's output known by what is in it stays behind outside a checkout, and goes inside one where git does not ignore it", () => {
+  const from = dataDir("from");
+  const db = join(from, "stillfail.db");
+  const store = Store.open(db, join(from, "archive"));
+  chat(store, from, "chat:b", null, 1);
+  const ws = (store.getSession("chat:b") as Json).workspace as string;
+  store.close();
+  const put = (path: string, text = "x\n") => {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, text);
+  };
+  const cargo = (dir: string) => {
+    put(join(dir, "CACHEDIR.TAG"), "Signature: 8a477f597d28d172789f06886806bc55\n# This file is a cache directory tag created by cargo.\n");
+    put(join(dir, ".rustc_info.json"), "{}");
+    put(join(dir, "debug", "app"), "built\n");
+  };
+  // (outside any checkout: a MoonBit module's build and packages, a Cargo target named otherwise)
+  put(join(ws, "mb", "moon.mod.json"), "{}");
+  put(join(ws, "mb", "_build", "wasm-gc", "main.wasm"), "built\n");
+  put(join(ws, "mb", ".mooncakes", "lib", "x.mbt"), "fetched\n");
+  put(join(ws, "mb", "src", "main.mbt"), "fn main {}\n");
+  cargo(join(ws, "rs-out"));
+  // (a checkout: one it does not ignore goes as git lists it; a node_modules stays wherever, by its name)
+  const repo = join(ws, "repo");
+  mkdirSync(repo, { recursive: true });
+  git(repo, "init", "-q", "-b", "main");
+  put(join(repo, "Cargo.lock"), "");
+  cargo(join(repo, "tgt"));
+  put(join(repo, "node_modules", "x", "i.js"), "built\n");
+  const g = gather(from, db, HOME, true, join(from, "scratch"));
+  const paths = listedOf(g).map((f) => f.path.slice(ws.length + 1));
+  for (const want of ["mb/moon.mod.json", "mb/src/main.mbt", "repo/Cargo.lock", "repo/tgt/CACHEDIR.TAG", "repo/tgt/debug/app"]) assert.ok(paths.includes(want), `${want} goes: ${paths.join(" ")}`);
+  for (const not of ["mb/_build", "mb/.mooncakes", "rs-out/", "repo/node_modules"]) assert.ok(!paths.some((p) => p.startsWith(not)), `${not} stays: ${paths.join(" ")}`);
 });
 
 test("a linked worktree whose branch was deleted on its remote is made again with its commits", async () => {

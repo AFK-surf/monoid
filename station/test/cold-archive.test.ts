@@ -38,7 +38,7 @@ import {
   workspaceArchive,
   workspaceFile,
 } from "../src/sessions/archive.ts";
-import { measureRoom, measured, rebuildable, roomOf, safeToRemove } from "../src/sessions/footprint.ts";
+import { measureRoom, measured, rebuildable, rebuildableKind, rebuildableSoon, roomOf, safeToRemove } from "../src/sessions/footprint.ts";
 import { settle } from "./hub-fakes.ts";
 
 const temp = () => realpathSync(mkdtempSync(join(tmpdir(), "cold-")));
@@ -342,6 +342,101 @@ test("what can be made again", () => {
   assert.ok(rebuildable(join(p, "x/node_modules")) && rebuildable(join(p, "android/build")) && rebuildable(join(p, "android/.gradle")));
   assert.ok(!rebuildable(join(p, "site/build")) && !rebuildable(join(p, "site/target")) && !rebuildable(join(p, "dist")));
   rmSync(p, { recursive: true });
+});
+
+test("what can be made again known by what is in it or beside it, never by a bare name: Elixir, MoonBit, Xcode, Cargo of any name", async () => {
+  const p = temp();
+  const dir = (path: string) => mkdirSync(join(p, path), { recursive: true });
+  const TAG = "Signature: 8a477f597d28d172789f06886806bc55\n# This file is a cache directory tag created by cargo.\n# For information about cache directory tags see https://bford.info/cachedir/\n";
+  // Elixir: _build and deps beside mix.exs.
+  write(join(p, "ex/mix.exs"), "x");
+  dir("ex/_build/dev");
+  dir("ex/deps/jason");
+  // MoonBit: _build beside its module's manifest or its work's, or above within the checkout; .mooncakes beside.
+  write(join(p, "mb/moon.mod.json"), "{}");
+  dir("mb/_build");
+  dir("mb/.mooncakes");
+  write(join(p, "work/moon.work"), "x");
+  dir("work/_build");
+  dir("repo/.git");
+  write(join(p, "repo/moon.mod.json"), "{}");
+  write(join(p, "repo/src/lib/moon.pkg.json"), "{}");
+  dir("repo/src/lib/sub/_build");
+  // (above the checkout's top: not its; outside a checkout, only beside)
+  write(join(p, "outer/moon.mod.json"), "{}");
+  dir("outer/inner/.git");
+  dir("outer/inner/_build");
+  dir("outer/loose/_build");
+  // Xcode's derived data, of any name: its products and intermediates.
+  dir("DerivedData-App/Build/Products");
+  dir("DerivedData-App/Build/Intermediates.noindex");
+  dir("only-products/Build/Products");
+  // Cargo's target of any name: its CACHEDIR.TAG, and Cargo's own files in it.
+  write(join(p, "rs-a/CACHEDIR.TAG"), TAG);
+  write(join(p, "rs-a/.rustc_info.json"), "{}");
+  write(join(p, "rs-b/CACHEDIR.TAG"), TAG);
+  dir("rs-b/release/.fingerprint");
+  write(join(p, "rs-c/CACHEDIR.TAG"), TAG);
+  dir("rs-c/debug/deps");
+  write(join(p, "rs-tag-only/CACHEDIR.TAG"), TAG);
+  write(join(p, "other-cache/CACHEDIR.TAG"), "Signature: 8a477f597d28d172789f06886806bc55\n# a cache of another program's\n");
+  write(join(p, "other-cache/.rustc_info.json"), "{}");
+  write(join(p, "no-tag/.rustc_info.json"), "{}");
+  dir("no-tag/debug/deps");
+  dir("bare/_build");
+  dir("bare/deps");
+  dir("bare/.mooncakes");
+  const found = ["ex/_build", "ex/deps", "mb/_build", "mb/.mooncakes", "work/_build", "repo/src/lib/sub/_build", "DerivedData-App", "rs-a", "rs-b", "rs-c"];
+  const not = ["outer/inner/_build", "outer/loose/_build", "only-products", "rs-tag-only", "other-cache", "no-tag", "bare/_build", "bare/deps", "bare/.mooncakes", "repo/src", "ex"];
+  for (const d of found) {
+    assert.equal(rebuildableKind(join(p, d)), "found", d);
+    assert.equal(await rebuildableSoon(join(p, d)), "found", `${d} (off the thread)`);
+  }
+  for (const d of not) {
+    assert.equal(rebuildableKind(join(p, d)), null, d);
+    assert.equal(await rebuildableSoon(join(p, d)), null, `${d} (off the thread)`);
+  }
+  // (those by name stay so)
+  write(join(p, "rs/Cargo.toml"), "x");
+  dir("rs/target");
+  assert.equal(rebuildableKind(join(p, "rs/target")), "named");
+  assert.equal(await rebuildableSoon(join(p, "x/node_modules")), "named");
+  // A room's measure lists them, each whole.
+  assert.deepEqual((await measureRoom(join(p, "ex"))).rebuild.map(([d]) => d.slice(p.length + 1)).sort(), ["ex/_build", "ex/deps"]);
+  rmSync(p, { recursive: true });
+});
+
+test("archive cleanup takes one known by what is in it, inside a checkout, only where git ignores it", async () => {
+  const p = temp();
+  const git = (args: string[]) => execFileSync("git", ["-C", p, ...args]);
+  git(["init", "-q"]);
+  const TAG = "Signature: 8a477f597d28d172789f06886806bc55\n# This file is a cache directory tag created by cargo.\n";
+  const cargo = (d: string) => {
+    write(join(p, d, "CACHEDIR.TAG"), TAG);
+    write(join(p, d, ".rustc_info.json"), "{}");
+  };
+  write(join(p, ".gitignore"), "/ignored-out\n_build/\nlogs/\n");
+  cargo("ignored-out");
+  cargo("kept-out");
+  cargo("logs/rs");
+  write(join(p, "mix.exs"), "x");
+  write(join(p, "_build/dev/x.beam"), "x");
+  write(join(p, "deps/jason/mix.exs"), "x");
+  // (by its name, as before: untracked, it goes ignored or not)
+  write(join(p, "node_modules/dependency.js"), "x");
+  assert.equal(await safeToRemove(join(p, "ignored-out")), true, "ignored by its path");
+  assert.equal(await safeToRemove(join(p, "_build")), true, "ignored as a directory");
+  assert.equal(await safeToRemove(join(p, "logs/rs")), true, "in an ignored directory");
+  assert.equal(await safeToRemove(join(p, "kept-out")), false, "not ignored: the project's own");
+  assert.equal(await safeToRemove(join(p, "deps")), false, "not ignored: the project's own");
+  assert.equal(await safeToRemove(join(p, "node_modules")), true);
+  // (outside a checkout, it goes)
+  const q = temp();
+  write(join(q, "out/CACHEDIR.TAG"), TAG);
+  write(join(q, "out/.rustc_info.json"), "{}");
+  assert.equal(await safeToRemove(join(q, "out")), true);
+  rmSync(p, { recursive: true });
+  rmSync(q, { recursive: true });
 });
 
 test("archive cleanup keeps attachments, git and symlink targets", async () => {
