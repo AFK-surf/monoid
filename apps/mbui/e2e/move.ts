@@ -2612,7 +2612,7 @@ try {
     /// pid, %CPU, RSS (MB) and what it is, by station.
     const procs = () => {
       const lines = spawnSync("ps", ["-axww", "-o", "pid=,%cpu=,rss=,args="], { encoding: "utf8" }).stdout.split("\n");
-      return (["A", "B"] as Name[]).map((n) => `${n}: ${lines.filter((l) => l.includes(dirname(DATA[n])) && !/\bps\b/.test(l)).map((l) => {
+      return (["A", "B"] as Name[]).map((n) => `${n}: ${lines.filter((l) => l.includes(`${dirname(DATA[n])}/`) && !/\bps\b/.test(l)).map((l) => {
         const m = /^\s*(\d+)\s+([\d.]+)\s+(\d+)\s+(.*)$/.exec(l);
         if (m === null) return "";
         const what = m[4]!.includes("main.js") ? "node" : (/\/([^/\s]+)(?:\s|$)/.exec(m[4]!.split(" --")[0]!)?.[1] ?? m[4]!.slice(0, 30));
