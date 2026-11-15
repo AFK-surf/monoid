@@ -52,8 +52,14 @@ echo "$$" > "$lock/pid"
   trap 'rm -rf "$lock"' EXIT
   "$ROOT/libs/mbui/scripts/mbc" path >/dev/null
   cd "$D"
-  MOON_CC="$ROOT/libs/mbui/scripts/mbc-stub.sh" MOON_AR="$ROOT/libs/mbui/scripts/mbc-stub.sh" \
-    moon build --target native --release src/reader
+  # moon writes to a file of its own, shown only where it failed: the targets build at once on one stderr, which
+  # another build leaves non-blocking, and moon aborts on the EAGAIN a full pipe gives as it writes a warning
+  # (2026-11-15, CI's win32-x64 reader: "internal rendering error: Os { code: 35 }").
+  if ! MOON_CC="$ROOT/libs/mbui/scripts/mbc-stub.sh" MOON_AR="$ROOT/libs/mbui/scripts/mbc-stub.sh" \
+    moon build --target native --release src/reader >"$work/moon.log" 2>&1; then
+    cat "$work/moon.log" >&2
+    exit 1
+  fi
   cp "$D/_build/native/release/build/station/reader/reader.c" "$work/reader.c"
 )
 
