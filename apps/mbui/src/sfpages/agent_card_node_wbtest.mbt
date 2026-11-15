@@ -313,6 +313,20 @@ fn agent_rooms_known(faults : Array[String], card : Json?) -> (Array[String], Ar
 }
 
 ///|
+/// The lines under its head that start between its mark and its label (mbui's Tester::line_start_faults, which held a
+/// mark of 28 from 2026-11-15): its state's line (its words at 58, the mark's tile at 54 reaching out to be concentric
+/// with the head's ground, the label at 92), its latest lines and its work's line (their words at 70, in from the
+/// ground they light). Known as they are, each by what it is, till the card's lines are put under its mark or its
+/// label; those of `faults` that are these and how many `card` has, and the rest.
+fn agent_line_starts_known(faults : Array[String], card : Json?) -> (Array[String], Int, Array[String]) {
+  let known = faults.filter(fn(f) { f.has_prefix("line start: ") && f.contains(" between the mark a box in 「Claude · Opus 5.5 ") })
+  let expected = 1 +
+    (if items(card, "latest").length() > 0 { 1 } else { 0 }) +
+    (if text(card, "workLine") != "" { 1 } else { 0 })
+  (known, expected, faults.filter(fn(f) { !known.contains(f) }))
+}
+
+///|
 /// How many of agent_rooms_known's each state has (rc2-20): its three latest lines in each but where its card is not
 /// said; its stop where it works or waits; its work's line where it has one; its jobs and its account's link where both.
 fn agent_rooms_expected(_name : String) -> Int {
@@ -348,7 +362,11 @@ test "an agent's card as nodes: the same words where they were and the same rect
     if agent_tile_widths(old_tiles).length() != widths.length() || widths.iter().any(fn(w) { w != widths[0] }) {
       faults.push("\{name}: its figures \{Repr(agent_tile_widths(old_tiles))} as \{Repr(widths)}, not in shares alike")
     }
-    let (known, rest) = agent_rooms_known(t.audit(), card)
+    let (starts, starts_said, audit) = agent_line_starts_known(t.audit(), card)
+    if starts.length() != starts_said {
+      faults.push("\{name}: \{starts.length()} line starts known, \{starts_said} said: \{Repr(starts)}")
+    }
+    let (known, rest) = agent_rooms_known(audit, card)
     if known.length() != agent_rooms_expected(name) {
       faults.push("\{name}: \{known.length()} rooms known, \{agent_rooms_expected(name)} said: \{Repr(known)}")
     }
@@ -401,7 +419,11 @@ test "an agent's card with its station's part in one tile (a finger's hold on th
     if widths.length() != 3 || widths.iter().any(fn(w) { w != widths[0] }) {
       faults.push("\{name}: its figures \{Repr(widths)}, not three shares alike")
     }
-    let (known, rest) = agent_rooms_known(t.audit(), card)
+    let (starts, starts_said, audit) = agent_line_starts_known(t.audit(), card)
+    if starts.length() != starts_said {
+      faults.push("\{name}: \{starts.length()} line starts known, \{starts_said} said: \{Repr(starts)}")
+    }
+    let (known, rest) = agent_rooms_known(audit, card)
     if known.length() != agent_rooms_expected(name) || rest.length() > 0 {
       faults.push("\{name}: \{known.length()} rooms known, \{agent_rooms_expected(name)} said; audit: \{Repr(rest)}")
     }
@@ -509,7 +531,9 @@ test "an activity row's avatar says neither: a finger's tap on it the row's (ope
     "station": Json::string("ws1/st1"),
     "key": Json::string(agent_at),
   }).value
-  let (_, rest) = agent_rooms_known(t.audit(), card)
+  let (starts, starts_said, audit) = agent_line_starts_known(t.audit(), card)
+  assert_eq(starts.length(), starts_said, msg="held: \{Repr(starts)}")
+  let (_, rest) = agent_rooms_known(audit, card)
   // (the card is in this rig's own layer over the row (its TipLayer's, not one presented over all, View::over_all), so
   // from 7 under the avatar and the name it takes the press: they are said as 44×37 and 60×37. Known, these two
   // exactly (the coordinator of the migration, 2026-11-12); none once the card is put in the presented layer, as the
