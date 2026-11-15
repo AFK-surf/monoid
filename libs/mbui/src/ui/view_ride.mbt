@@ -1410,6 +1410,35 @@ fn Ctx::list_ride_end(self : Ctx) -> Unit {
     return
   }
   let e = l.clip
+  let (h0, h1, h2, h3) = (l.hc[0], l.hc[1], l.hc[2], l.hc[3])
+  // drawn out moved and cut in its place: its rows' headers drawn out first, each instance then moved and cut in its
+  // place
+  let flat = fn() {
+    ride_let_go(l.id)
+    self.flat_from(l.k0)
+    let s = self.inst
+    for i in 0..<n {
+      let b = (l.k0 + i) * inst_size
+      list_put(s, b, ride_moves(s, b, e), l.dx, l.dy, h0, h1, h2, h3)
+    }
+    offsets_flat.push(l.by)
+    // (its column going on by itself (a fling, a wheel's notches easing in, what shows past an end going back): painted
+    // anew each frame till that ends, as it is drawn moved so, nothing else telling the paint)
+    match view_app.val {
+      Some(tree) =>
+        match tree.glide_end_of(l.by) {
+          Some(end) => self.now_before(end) |> ignore
+          None => ()
+        }
+      None => ()
+    }
+  }
+  // (what is never kept as one group, known before its instances are gathered for it: drawn out at once, none of them
+  // copied nor their moves worked out for a group it is not, each frame a list holds an old view)
+  if l.spoiled || !groups_on() || dr.mode != 0 || shooting.val {
+    flat()
+    return
+  }
   // (its instances, each of its rows kept among them by a header (Ctx::ride_head) in one place, the room after it
   // passed over: kept so by the host, drawn out whole by a header of it, n of them)
   let src = self.inst
@@ -1451,27 +1480,8 @@ fn Ctx::list_ride_end(self : Ctx) -> Unit {
       q = r
     }
   }
-  let (h0, h1, h2, h3) = (l.hc[0], l.hc[1], l.hc[2], l.hc[3])
-  if l.spoiled || !groups_on() || dr.mode != 0 || shooting.val || !ride_groupable(inst, m) {
-    ride_let_go(l.id)
-    // (its rows' headers drawn out first, each instance then moved and cut in its place)
-    self.flat_from(l.k0)
-    let s = self.inst
-    for i in 0..<n {
-      let b = (l.k0 + i) * inst_size
-      list_put(s, b, ride_moves(s, b, e), l.dx, l.dy, h0, h1, h2, h3)
-    }
-    offsets_flat.push(l.by)
-    // (its column going on by itself (a fling, a wheel's notches easing in, what shows past an end going back): painted
-    // anew each frame till that ends, as it is drawn moved so, nothing else telling the paint)
-    match view_app.val {
-      Some(tree) =>
-        match tree.glide_end_of(l.by) {
-          Some(end) => self.now_before(end) |> ignore
-          None => ()
-        }
-      None => ()
-    }
+  if !ride_groupable(inst, m) {
+    flat()
     return
   }
   let owned = inst_owners_kept()

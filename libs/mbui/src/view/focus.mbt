@@ -32,21 +32,9 @@ pub fn View::focusable(self : View, on : Live[Bool], keys? : Int = focus_enter |
   // changes, as the change saying it is committed, the focus on it let go of then; said anew, what was said before let
   // go of)
   guard self.live() is Some(n) else { return self }
-  match n.props.get(Prop::Focusable.ord()) {
-    Some(stop) => {
-      n.props.remove(Prop::Focusable.ord())
-      stop()
-    }
-    None => ()
-  }
+  n.prop_stop(Prop::Focusable.ord())
   // (its `tab` the last said of Tab's stop on it: View::tab_stop said before let go of)
-  match n.props.get(Prop::TabStop.ord()) {
-    Some(stop) => {
-      n.props.remove(Prop::TabStop.ord())
-      stop()
-    }
-    None => ()
-  }
+  n.prop_stop(Prop::TabStop.ord())
   n.tab_by_stop = false
   // (`tell`: said by this call, not as what a binding read changed (Tree::structured marks the tree for that):
   // what is read out of it told by the frame then owed, where it changed)
@@ -80,7 +68,7 @@ pub fn View::focusable(self : View, on : Live[Bool], keys? : Int = focus_enter |
           self.owning(fn() { set(v, first.val) })
           first.val = false
         })
-        n.props[Prop::Focusable.ord()] = stop
+        n.prop_set(Prop::Focusable.ord(), stop)
       })
   }
   self
@@ -649,13 +637,7 @@ fn Tree::layers_focus_told(self : Tree) -> Unit {
 /// whether that takes the focus changing leaves this alone).
 pub fn View::tab_stop(self : View, on : Live[Bool]) -> View {
   guard self.live() is Some(n) else { return self }
-  match n.props.get(Prop::TabStop.ord()) {
-    Some(stop) => {
-      n.props.remove(Prop::TabStop.ord())
-      stop()
-    }
-    None => ()
-  }
+  n.prop_stop(Prop::TabStop.ord())
   n.tab_by_stop = true
   let set = fn(v : Bool, tell : Bool) {
     guard self.live() is Some(n) else { return }
@@ -674,7 +656,7 @@ pub fn View::tab_stop(self : View, on : Live[Bool]) -> View {
           self.owning(fn() { set(v, first.val) })
           first.val = false
         })
-        n.props[Prop::TabStop.ord()] = stop
+        n.prop_set(Prop::TabStop.ord(), stop)
       })
   }
   self

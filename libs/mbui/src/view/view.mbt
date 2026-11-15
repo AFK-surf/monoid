@@ -386,8 +386,9 @@ struct Node {
   /// its scope (what it was made with, and what is set on it, owned), and what stops it
   mut owner : @signals.ReactiveNode?
   mut stop : (() -> Unit)?
-  /// what else goes with it (View::owns, its structure's binding), run once as it is let go
-  drops : Map[Int, () -> Unit]
+  /// what else goes with it (View::owns, its structure's binding), each by its key, run once as it is let go: a few,
+  /// most of them none (an array: no map made for each node, nor its values copied as it goes)
+  drops : Array[(Int, () -> Unit)]
   /// the key the next of them is kept by
   mut drop_next : Int
   /// what it said to do as it starts leaving (View::on_leaving) and as it comes back from leaving (View::on_back), and
@@ -395,8 +396,8 @@ struct Node {
   leavings : Array[() -> Unit]
   backs : Array[() -> Unit]
   mut leave_told : Bool
-  /// its properties' bindings, by property (Prop::ord): what stops each
-  props : Map[Int, () -> Unit]
+  /// its properties' bindings, by property (Prop::ord): what stops each (Node::prop_set; a few, as `drops`)
+  props : Array[(Int, () -> Unit)]
   mut on_press : (() -> Unit)?
   /// what the second of two presses of it does in place of its press (View::on_double_press)
   mut on_double_press : (() -> Unit)?
@@ -925,8 +926,9 @@ pub struct Tree {
   /// the nodes said to be modal layers (View::modal, on), living: which is topmost asked of where each is among what
   /// holds it (Tree::modal_top)
   modals : Array[Int]
-  /// How many living nodes take back: none means finding its taker needs no walk of the tree.
-  mut backs : Int
+  /// the living nodes that take back (View::takes_back, View::follows_back): which takes it asked of those alone
+  /// (Tree::back_taker), no walk of the tree
+  backs : Array[Int]
   /// how deep in a change being committed (Tree::at_cause, an event) it is now, and whether what a modal layer said is to
   /// be told as all of it is committed (Tree::modals_told): what a change does in between (a row put after the rest,
   /// then put in its place) never seen half done
@@ -1418,7 +1420,7 @@ pub fn Tree::new(
     held_under: -2,
     held_under_of: None,
     modals: [],
-    backs: 0,
+    backs: [],
     committing: 0,
     afters: [],
     modals_due: false,
@@ -1839,12 +1841,12 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
         kids: [],
         owner: None,
         stop: None,
-        drops: {},
+        drops: [],
         drop_next: 0,
         leavings: [],
         backs: [],
         leave_told: false,
-        props: {},
+        props: [],
         on_press: None,
         on_double_press: None,
         on_step: None,
@@ -2438,7 +2440,7 @@ pub fn Tree::dispose(self : Tree) -> Unit {
   self.composed.clear()
   self.hosting = -1
   self.modals.clear()
-  self.backs = 0
+  self.backs.clear()
   // (its nodes but the root and what they keep dropped, their room given back: the tree itself may never be let go of,
   // held by what its arrays were emptied of (moonc's native backend, moonbitlang/core#4611), each Tester's left with
   // all it held; its root kept, holding nothing and let go, for what is asked of it after: it answers none)
@@ -3901,19 +3903,13 @@ fn[T : Eq] View::bind(
       }
       // (one it sets for the first time now: taken as one set the first time is, below, where nothing binds it and it
       // was never its; else left)
-      if g.gone(prop.ord()) || n.props.get(prop.ord()) is Some(_) {
+      if g.gone(prop.ord()) || n.prop_has(prop.ord()) {
         return
       }
     }
     _ => ()
   }
-  match n.props.get(prop.ord()) {
-    Some(stop) => {
-      n.props.remove(prop.ord())
-      stop()
-    }
-    None => ()
-  }
+  n.prop_stop(prop.ord())
   match live {
     Is(v) => {
       apply(v)
@@ -3922,7 +3918,7 @@ fn[T : Eq] View::bind(
         Some(g) => {
           let k = prop.ord()
           g.own(k, true)
-          n.props[k] = fn() { g.own(k, false) }
+          n.prop_set(k, fn() { g.own(k, false) })
         }
         None => ()
       }
@@ -3962,7 +3958,7 @@ fn[T : Eq] View::bind(
           tree.answer_mark(at)
         }
       })
-      n.props[prop.ord()] = stop
+      n.prop_set(prop.ord(), stop)
     }
   }
 }
@@ -4624,7 +4620,7 @@ pub fn Tree::lit_row_state(self : Tree, id : NodeId) -> (Bool, Bool, Bool) {
     return (false, false, false)
   }
   let n = self.nodes[id.at]
-  let has_ground_bind = n.props.contains(Ground.ord())
+  let has_ground_bind = n.prop_has(Ground.ord())
   let watches_hand = n.pointed_cell is Some(_) || n.pressed_cell is Some(_) || n.pointed_in_cell is Some(_)
   let lights = (n.ground_read & (ground_read_hand | ground_read_focus)) != 0 ||
     (has_ground_bind && watches_hand)
@@ -5695,13 +5691,7 @@ pub fn View::presses(self : View, on : Live[Bool]) -> View {
   // (whether it takes input is the logic's: said at the moment it changes, as a structure's change is, a finger held on
   // it or in it let go of then; said anew, what was said before let go of, as any property's binding is)
   guard self.live() is Some(n) else { return self }
-  match n.props.get(Prop::Presses.ord()) {
-    Some(stop) => {
-      n.props.remove(Prop::Presses.ord())
-      stop()
-    }
-    None => ()
-  }
+  n.prop_stop(Prop::Presses.ord())
   let set = fn(on : Bool) {
     guard self.live() is Some(n) else { return }
     n.inert = !on
@@ -5720,7 +5710,7 @@ pub fn View::presses(self : View, on : Live[Bool]) -> View {
     By(f) =>
       self.owning(fn() {
         let stop = self.tree.structured(f, fn(v) { self.owning(fn() { set(v) }) })
-        n.props[Prop::Presses.ord()] = stop
+        n.prop_set(Prop::Presses.ord(), stop)
       })
   }
   self
@@ -5735,13 +5725,7 @@ pub fn View::presses(self : View, on : Live[Bool]) -> View {
 /// A modal layer of its own holds the rest of it, as any. Said at the moment it changes, as whether a layer is modal is.
 pub fn View::over_all(self : View, on : Live[Bool]) -> View {
   guard self.live() is Some(n) else { return self }
-  match n.props.get(Prop::OverAll.ord()) {
-    Some(stop) => {
-      n.props.remove(Prop::OverAll.ord())
-      stop()
-    }
-    None => ()
-  }
+  n.prop_stop(Prop::OverAll.ord())
   let set = fn(on : Bool) {
     guard self.live() is Some(n) else { return }
     n.over_all = on
@@ -5757,7 +5741,7 @@ pub fn View::over_all(self : View, on : Live[Bool]) -> View {
     By(f) =>
       self.owning(fn() {
         let stop = self.tree.structured(f, fn(v) { self.owning(fn() { set(v) }) })
-        n.props[Prop::OverAll.ord()] = stop
+        n.prop_set(Prop::OverAll.ord(), stop)
       })
   }
   self
@@ -5929,13 +5913,7 @@ pub fn Tree::over_all_takes(self : Tree, x : Double, y : Double) -> Bool {
 /// pages their input back as it begins to go, whatever is still drawn of it).
 pub fn View::modal(self : View, on : Live[Bool]) -> View {
   guard self.live() is Some(n) else { return self }
-  match n.props.get(Prop::Modal.ord()) {
-    Some(stop) => {
-      n.props.remove(Prop::Modal.ord())
-      stop()
-    }
-    None => ()
-  }
+  n.prop_stop(Prop::Modal.ord())
   let set = fn(on : Bool) {
     guard self.live() is Some(n) else { return }
     n.modal = on
@@ -5952,7 +5930,7 @@ pub fn View::modal(self : View, on : Live[Bool]) -> View {
     By(f) =>
       self.owning(fn() {
         let stop = self.tree.structured(f, fn(v) { self.owning(fn() { set(v) }) })
-        n.props[Prop::Modal.ord()] = stop
+        n.prop_set(Prop::Modal.ord(), stop)
       })
   }
   self
@@ -6334,7 +6312,7 @@ pub fn View::shorter(self : View, alts : Live[Array[String]], loc~ : SourceLoc) 
   let at = self.at
   let tree = self.tree
   // (how narrow it may be follows how its words look as the system's size of words changes: worked out again then)
-  if self.live() is Some(n) && n.props.get(Prop::Shorter.ord()) is None {
+  if self.live() is Some(n) && !n.prop_has(Prop::Shorter.ord()) {
     self.reacts(fn() { self.words_redone() }, fn(_) { tree.give_way_applied(at) })
   }
   self.bind(loc~, Shorter, alts, Layout, fn(a) {
@@ -6378,7 +6356,7 @@ pub fn View::one_of(self : View, on : Live[Bool], loc~ : SourceLoc) -> View {
     // says nothing)
     if on {
       n.flex.style.fits = true
-    } else if n.props.get(Prop::Fits.ord()) is None {
+    } else if !n.prop_has(Prop::Fits.ord()) {
       n.flex.style.fits = false
     }
   })
@@ -6749,7 +6727,7 @@ pub fn Tree::key_at(
 
 ///|
 /// The nodes from `at` down that `has` says of, the one drawn last first (after what holds it, its later kids before its
-/// earlier): Tree::key_at's, back_taker's.
+/// earlier): Tree::key_at's.
 fn Tree::topmost_from(self : Tree, at : Int, has : (Node) -> Bool, out : Array[Int]) -> Unit {
   let n = self.nodes[at]
   let mut k = n.kids.length() - 1
@@ -6838,13 +6816,7 @@ pub fn View::moves_window(self : View, on : Live[Bool]) -> View {
   n.top_row = true
   self.tree.inputs_own_said(self.at)
   self.tree.hits_bump()
-  match n.props.get(Prop::MovesWindow.ord()) {
-    Some(stop) => {
-      n.props.remove(Prop::MovesWindow.ord())
-      stop()
-    }
-    None => ()
-  }
+  n.prop_stop(Prop::MovesWindow.ord())
   let set = fn(on : Bool) {
     guard self.live() is Some(n) else { return }
     n.moves_window = on
@@ -6854,7 +6826,7 @@ pub fn View::moves_window(self : View, on : Live[Bool]) -> View {
     By(f) =>
       self.owning(fn() {
         let stop = self.tree.structured(f, fn(v) { self.owning(fn() { set(v) }) })
-        n.props[Prop::MovesWindow.ord()] = stop
+        n.prop_set(Prop::MovesWindow.ord(), stop)
       })
   }
   self
@@ -7707,10 +7679,45 @@ fn Tree::tell_back(self : Tree, at : Int) -> Unit {
 }
 
 ///|
+/// The binding of its property `ord` (Prop::ord) stopped, where it has one: taken out first, then stopped.
+fn Node::prop_stop(self : Node, ord : Int) -> Unit {
+  for i, p in self.props {
+    if p.0 == ord {
+      self.props.remove(i) |> ignore
+      (p.1)()
+      return
+    }
+  }
+}
+
+///|
+/// What stops the binding of its property `ord` (Prop::ord) now `stop`, in the place of any it had.
+fn Node::prop_set(self : Node, ord : Int, stop : () -> Unit) -> Unit {
+  for i, p in self.props {
+    if p.0 == ord {
+      self.props[i] = (ord, stop)
+      return
+    }
+  }
+  self.props.push((ord, stop))
+}
+
+///|
+/// Whether its property `ord` (Prop::ord) is bound.
+fn Node::prop_has(self : Node, ord : Int) -> Bool {
+  for p in self.props {
+    if p.0 == ord {
+      return true
+    }
+  }
+  false
+}
+
+///|
 /// `f` run once as it is let go (what it holds that is no effect: a computed to dispose, a resource to close).
 pub fn View::owns(self : View, f : () -> Unit) -> View {
   guard self.live() is Some(n) else { return self }
-  n.drops[n.drop_next] = f
+  n.drops.push((n.drop_next, f))
   n.drop_next = n.drop_next + 1
   self
 }
@@ -7722,14 +7729,17 @@ pub fn View::owns_while(self : View, stop : () -> Unit) -> () -> Unit {
   guard self.live() is Some(n) else { return fn() {  } }
   let key = n.drop_next
   n.drop_next = n.drop_next + 1
-  n.drops[key] = stop
+  n.drops.push((key, stop))
   let tree = self.tree
   let at = self.at
   let gen = self.gen
   fn() {
     let m = tree.nodes[at]
     if m.gen == gen {
-      m.drops.remove(key)
+      match m.drops.search_by(fn(d) { d.0 == key }) {
+        Some(i) => m.drops.remove(i) |> ignore
+        None => ()
+      }
     }
   }
 }
@@ -7767,7 +7777,10 @@ fn View::let_go(self : View) -> Unit {
   self.tree.letting.pop() |> ignore
   n.live = false
   if n.on_back is Some(_) || n.on_back_step is Some(_) {
-    self.tree.backs = self.tree.backs - 1
+    match self.tree.backs.search(self.at) {
+      Some(i) => self.tree.backs.remove(i) |> ignore
+      None => ()
+    }
   }
   // (a modal layer let go: what it kept from taking input, wherever it is held, told anew, as its being said off does)
   match self.tree.modals.search(self.at) {
@@ -7787,15 +7800,20 @@ fn View::let_go(self : View) -> Unit {
   n.takes = None
   self.tree.takes_off(n)
   n.takes_ver = None
-  let props = n.props.values().collect()
-  n.props.clear()
-  for stop in props {
-    stop()
+  // (each taken out before any is run: one may say another of it again, or let go of one)
+  if !n.props.is_empty() {
+    let props = n.props.copy()
+    n.props.clear()
+    for p in props {
+      (p.1)()
+    }
   }
-  let drops = n.drops.values().collect()
-  n.drops.clear()
-  for f in drops {
-    f()
+  if !n.drops.is_empty() {
+    let drops = n.drops.copy()
+    n.drops.clear()
+    for d in drops {
+      (d.1)()
+    }
   }
   n.leavings.clear()
   n.backs.clear()
@@ -9087,7 +9105,7 @@ fn View::comes(
         },
       )
       @signals.set_owner(owner) |> ignore
-      n.props[Comes.ord()] = stop
+      n.prop_set(Comes.ord(), stop)
       s
     }
   }
@@ -9437,13 +9455,7 @@ fn come_done(tree : Tree, v : View, m : Node) -> Unit {
   st.come_k = 1.0
   m.look.clips = m.clips_said
   m.come_said = None
-  match m.props.get(Comes.ord()) {
-    Some(stop) => {
-      m.props.remove(Comes.ord())
-      stop()
-    }
-    None => ()
-  }
+  m.prop_stop(Comes.ord())
   tree.layout_marked_at(v.at)
   tree.look_marked_at(v.at)
 }

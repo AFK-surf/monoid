@@ -4877,11 +4877,36 @@ fn Ctx::back_taker(self : Ctx, brought? : Bool = true) -> BackHeld? {
 }
 
 ///|
-/// Whether what takes back now may take input (Ctx::back_taker, its owner: old_owner_open).
+/// Whether what takes back now may take input (Ctx::back_taker, its owner: old_owner_open). Its owner found as
+/// Ctx::back_taker finds it, nothing more: asked as each frame is painted (back_told_host), where it is and what its
+/// steps do are not worked out for it.
 fn Ctx::back_open(self : Ctx, brought? : Bool = true) -> Bool {
-  match self.back_taker(brought~) {
-    Some(h) => back_owner_open(h.owner)
-    None => false
+  // (what an old view said takes it: its owner, the old view it was said in, none at the old frame's root)
+  let old = match self.back {
+    Some(_) => Some(self.back_owner())
+    None => None
+  }
+  let tree = match view_app.val {
+    Some(t) => t
+    None =>
+      return match old {
+        Some(owner) => back_owner_open(owner)
+        None => false
+      }
+  }
+  if brought {
+    tree.bring_to(view_moment())
+  }
+  match (old, tree.back_taker()) {
+    // (said by a layer of the old frame's over all of it: before anything of the tree's under it in the window's stack
+    // of layers, after what of it is over it there)
+    (Some(None), Some(id)) => back_owner_open(if tree.stack_of(id) > self.back_stack() { Some(id) } else { None })
+    // (of those that may take it now, the one drawn over the other)
+    (Some(Some(island)), Some(id)) =>
+      back_owner_open(Some(if old_owner_open(Some(island)) && tree.drawn_later(island, id) { island } else { id }))
+    (None, Some(id)) => back_owner_open(Some(id))
+    (Some(owner), None) => back_owner_open(owner)
+    (None, None) => false
   }
 }
 
