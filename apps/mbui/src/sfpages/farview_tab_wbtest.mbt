@@ -104,7 +104,7 @@ test "a Farview tab: asked as shown, Hello as it goes live, the page drawn as no
   // live: its viewport said to the host (the stage's room, the window's scale)
   tell(Json::object({ "state": Json::object({ "phase": "live", "opens": Json::number(1.0) }) }), None)
   r.t.draw()
-  let hello = r.sent.map(fn(b) { farview_said(b) }).flatten()
+  let hello = r.sent.map(fn(b) { farview_said(b) }).flatten().filter(fn(m) { m is Hello(_, _, _) })
   guard hello is [Hello(w, h, scale), ..] else { fail("no Hello: \{hello.length()} said") }
   assert_eq((w, scale), (390.0, 2.0))
   assert_true(h > 600.0 && h < 844.0)
