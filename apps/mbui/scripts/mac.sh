@@ -21,6 +21,13 @@ if [ $APP = coredemo ] || [ $APP = stillfail ]; then
     # again)
     exe=$A/_build/native/${MODE:-release}/build/stillfail/$APP/$APP.exe
     [ ! -f "$exe" ] || [ ! "$A/out/core/aarch64-apple-darwin/libmbui_core.a" -nt "$exe" ] || touch "$A/src/$APP/core_engine.m"
+    # (nor libghostty-vt's headers: src/stillfail/terminal_ghostty.c is empty when they are not there, and moon compiles
+    # a stub again only when its mtime changes, which scripts/moon-mtimes.sh makes its content's: one compiled empty
+    # once stayed so in CI's moon cache, and the releases had no terminal, 0.1.9323-0.1.9408. An app without the
+    # library's calls has the stub touched, so it is compiled again with them.)
+    if [ $APP = stillfail ] && [ -f "$exe" ] && ! nm "$exe" 2>/dev/null | grep -q ' _ghostty_terminal_new$'; then
+      touch "$A/src/$APP/terminal_ghostty.c"
+    fi
     # (MBUI_PACKAGES_PENDING: a file the caller takes away once its own pnpm install is over, its going waited for before
     # the bytecode's bundle installs the core's packages into the same store: the release's Mac job restored and
     # installed the store while this ran, and pnpm found a package it was importing gone, ERR_PNPM_ENOENT, main 426cefb1,
@@ -40,6 +47,11 @@ t0=$SECONDS
 bash "$MBUI_DIR/scripts/mac.sh" "$@"
 code=$?
 echo "mac.sh: the app built in $((SECONDS - t0)) s"
+# (an app without libghostty-vt shows no terminal and says nothing of it: one that should have it is not let out so)
+if [ $code = 0 ] && [ -n "${exe:-}" ] && [ $APP = stillfail ] && ! nm "$exe" 2>/dev/null | grep -q ' _ghostty_terminal_new$'; then
+  echo "mac.sh: $exe has no libghostty-vt (src/stillfail/terminal_ghostty.c compiled without out/core/ghostty-vt/include)" >&2
+  code=1
+fi
 t0=$SECONDS
 wait $hbc || { cat "$A/out/core/hermes.log"; echo "mac.sh: the core's bytecode was not made (scripts/core.sh hermes apple)" >&2; exit 1; }
 cat "$A/out/core/hermes.log"
