@@ -4,8 +4,14 @@ import {
   "moonbitlang/core/json",
 }
 
+import {
+  "moonbitlang/core/async",
+} for "wbtest"
+
 options(
   // One shell a target (shell.mbt): the Rust shell natively, a page's own on js.
   targets: { "shell_native.mbt": [ "native" ], "shell_js.mbt": [ "js" ], "shell_js_wbtest.mbt": [ "js" ] },
   "native-stub": ["shell.c"],
+  // (the page's shell's tests in Node wait for its promises: `async test`, js alone)
+  "allow-experimental-packages": ["moonbitlang/core/async"],
 )

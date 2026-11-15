@@ -278,6 +278,7 @@ pub fn Reply::cancel(Self) -> Unit
 pub fn Reply::header(Self, String) -> String?
 pub async fn Reply::rest(Self, most? : Int32) -> Bytes
 pub async fn Reply::take(Self) -> Bytes?
+pub async fn Reply::tap(Self, Int64) -> Bool
 
 #derive(Eq, @debug.Debug)
 pub(all) struct Score {

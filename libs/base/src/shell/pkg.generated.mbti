@@ -30,6 +30,7 @@ pub struct Shell {
 }
 pub fn Shell::answer(Self, Int64, @json.Json, bytes? : Bytes) -> Unit
 pub fn Shell::ask(Self, String, @json.Json) -> @json.Json raise ShellError
+pub fn Shell::attached(@effect.Runtime) -> Self raise ShellError
 pub async fn Shell::call(Self, String, @json.Json, bytes? : Bytes, called? : (Int64) -> Unit) -> Answer
 pub fn Shell::give_up(Self, Int64) -> Unit
 pub fn Shell::pump(Self, Int64) -> Bool

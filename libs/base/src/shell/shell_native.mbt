@@ -22,6 +22,9 @@ extern "C" fn ask_ffi(op : Bytes, json : Bytes) -> Bytes = "bsh_ask"
 extern "C" fn now_ffi() -> Int64 = "bsh_now"
 
 ///|
+extern "C" fn attached_ffi() -> Int = "bsh_attached"
+
+///|
 extern "C" fn random_ffi(n : Int) -> Bytes = "bsh_random"
 
 ///|
@@ -43,6 +46,18 @@ pub fn Shell::start(rt : @effect.Runtime, dir : String) -> Shell raise ShellErro
     raise ShellError("the shell did not start in \{dir}")
   }
   Shell::of_target(rt)
+}
+
+///|
+/// The shell for the fibers of `rt` where the process started it already, for another caller of it, and shared it
+/// with this side (`bsh_attach`, shell.c): nothing is started, this side's calls are numbered past that caller's
+/// (from 2^40), and their answers are those it hands back (`bsh_deliver`), taken as any (`Shell::pump`). Fails
+/// where none was shared.
+pub fn Shell::attached(rt : @effect.Runtime) -> Shell raise ShellError {
+  if attached_ffi() == 0 {
+    raise ShellError("the shell is not attached")
+  }
+  Shell::of_target(rt, base=1L << 40)
 }
 
 ///|

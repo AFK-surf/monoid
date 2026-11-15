@@ -31,6 +31,14 @@ static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t came = PTHREAD_COND_INITIALIZER;
 static answer_t *first = NULL, *last = NULL;
 static void *shell = NULL;
+/// Told after each answer is queued, where the program is woken by its own loop (`bsh_attach`), and what with.
+static void (*on_wake)(void *) = NULL;
+static void *wake_ctx = NULL;
+
+/// Where a shell another caller of this process started is shared (`bsh_attach`), the ids of this side's calls
+/// begin past this: the other caller's are below it (shell.mbt `Shell::attached`). 2^40, an integer JSON says
+/// exactly.
+#define BSH_ATTACHED_BASE (1ULL << 40)
 
 static void completed(void *ctx, uint64_t id, const uint8_t *json, size_t json_len, const uint8_t *error, size_t error_len, const uint8_t *bytes, size_t bytes_len, uint8_t has_bytes) {
   (void)ctx;
@@ -49,7 +57,10 @@ static void completed(void *ctx, uint64_t id, const uint8_t *json, size_t json_l
   if (last) last->next = a; else first = a;
   last = a;
   pthread_cond_signal(&came);
+  void (*woke)(void *) = on_wake;
+  void *wctx = wake_ctx;
   pthread_mutex_unlock(&lock);
+  if (woke != NULL) woke(wctx);
 }
 
 /// Starts the shell, keeping what it keeps in `dir` (NUL-terminated): 1, or 0 where it did not start. What it keeps
@@ -64,6 +75,34 @@ int32_t bsh_start(moonbit_bytes_t dir) {
   shell = sf_shell_start((const char *)dir, completed, NULL);
   if (shell != NULL && made) (void)chmod((const char *)dir, 0700);
   return shell != NULL;
+}
+
+/// Shares a shell another caller of this process started already (the one handle its start gave): this side's
+/// calls go to it, and their answers come back through `bsh_deliver`, which that caller hands each answer of an id
+/// past `BSH_ATTACHED_BASE` to. `woke` (none: nothing) is called with `ctx` after each answer is queued, from
+/// whichever thread queued it, for a program whose own loop takes them (`Shell::pump` with 0).
+void bsh_attach(void *started, void (*woke)(void *), void *ctx) {
+  pthread_mutex_lock(&lock);
+  shell = started;
+  on_wake = woke;
+  wake_ctx = ctx;
+  pthread_mutex_unlock(&lock);
+}
+
+/// 1 where a shell is there to call (started here or shared), else 0.
+int32_t bsh_attached(void) {
+  pthread_mutex_lock(&lock);
+  int32_t there = shell != NULL ? 1 : 0;
+  pthread_mutex_unlock(&lock);
+  return there;
+}
+
+/// An answer the caller that shares its shell was given (as its completion is told one): queued here where `id` is
+/// this side's (past `BSH_ATTACHED_BASE`), 1 then; 0 where it is that caller's own.
+int32_t bsh_deliver(uint64_t id, const uint8_t *json, size_t json_len, const uint8_t *error, size_t error_len, const uint8_t *bytes, size_t bytes_len, uint8_t has_bytes) {
+  if (id <= BSH_ATTACHED_BASE) return 0;
+  completed(NULL, id, json, json_len, error, error_len, bytes, bytes_len, has_bytes);
+  return 1;
 }
 
 /// The next answer, waited for at most `ms` (negative: until one comes); empty where none came in time.
