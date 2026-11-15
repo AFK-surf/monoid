@@ -13,6 +13,7 @@ import { test } from "node:test";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
 import { Readers } from "../src/read/pool.ts";
 import { Store, newMessage } from "../src/store/store.ts";
+import { REFERENCE_WORKER, readersOf } from "./reference.ts";
 
 const binary = mbReaderBinary();
 
@@ -61,10 +62,8 @@ test("the MoonBit reader reads a chat's entries and letters as the worker does",
   store.joinThread(slack, "s1", "team");
   say(slack, "person", "U1", "from slack");
   say(slack, "agent", "s1", "the bot");
-  const worker = new Readers(data, 1);
-  worker.mbReader = null;
-  const program = new Readers(data, 1);
-  program.mbReader = binary;
+  const worker = new Readers(data, 1, REFERENCE_WORKER);
+  const program = readersOf(data, binary);
   for (const r of [worker, program]) r.names.set("p@x", "Pat");
   const read = (r: Readers, op: string, args: unknown, lang: "zh" | "en") => r.read(op, args, lang).then((t) => JSON.parse(t), (e: Error & { status?: number }) => ({ error: e.message, status: e.status }));
   const queries: [string, string][][] = [

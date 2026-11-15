@@ -12,6 +12,7 @@ import { test } from "node:test";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
 import { Readers } from "../src/read/pool.ts";
 import { Store, newMessage } from "../src/store/store.ts";
+import { readersOf } from "./reference.ts";
 
 const binary = mbReaderBinary();
 
@@ -73,8 +74,7 @@ test("the MoonBit reader makes chats' notices as the worker does", { skip: binar
   const plain = say(talk, "ember", "ember", "just a note", 3003);
   const entry = (n: number, kind: string, authorKind: string, author: string, text: string | null, at: number) => ({ n, kind, authorKind, author, text, at });
   const readers = (mb: string | null) => {
-    const r = new Readers(data, 1);
-    r.mbReader = mb;
+    const r = readersOf(data, mb);
     r.names.set("p@x", "Pat");
     return r;
   };

@@ -14,6 +14,7 @@ import { test } from "node:test";
 import { Said, mbReaderBinary } from "../src/read/mb-reader.ts";
 import { Readers } from "../src/read/pool.ts";
 import { Store, newMessage } from "../src/store/store.ts";
+import { REFERENCE_WORKER, readersOf } from "./reference.ts";
 
 const binary = mbReaderBinary();
 
@@ -47,10 +48,8 @@ test("a chat's text with a line or paragraph separator is read by the MoonBit re
   const thread = store.openThread("ember", "CHAT", "c", "Line separated", null).id;
   const texts = ["one\u2028two", "para\u2029graph", "both \u2028\u2029 and \\u2028 written out", "plain"];
   texts.forEach((text, i) => store.insertMessage({ ...newMessage(thread, String(i + 1), "person", "p@x", text), at: (i + 1) * 10 } as ReturnType<typeof newMessage>));
-  const worker = new Readers(data, 1);
-  worker.mbReader = null;
-  const program = new Readers(data, 1);
-  program.mbReader = binary;
+  const worker = new Readers(data, 1, REFERENCE_WORKER);
+  const program = readersOf(data, binary);
   try {
     const said = await programAnswer(binary!, data, { id: 1, op: "latestMessages", args: { thread, limit: 10 }, lang: "en", names: [], processes: [], clientKeys: [] });
     assert.equal((JSON.parse(said.head) as { id: number }).id, 1);

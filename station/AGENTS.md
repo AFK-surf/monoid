@@ -54,8 +54,10 @@
 
 - Everything lasting is one SQLite file, `stillfail.db` (`src/store/store.ts`, schema in `src/store/schema.ts`): one
   write connection on the main thread; reads in reader threads (`src/read/pool.ts`: what is told as it changes and
-  what devices ask each on a line of its own) or the MoonBit program (`mb/`) for the reads moved to it, the worker
-  kept for a checkout without it. A move to the program is compared with the worker on the same data. At a handover
+  what devices ask each on a line of its own) or the MoonBit program (`mb/`) for the reads moved to it: every read a
+  device asks (`src/read/pool.ts` MOVED, HISTORY), the station's reader thread answering only its checkpoint and a
+  card's queued pages (`src/read/worker.ts`). A move to the program is compared with the reads as a reader thread
+  answered them before (`test/reference-worker.ts`, given a test's Readers by `test/reference.ts`) on the same data. At a handover
   the next process opens it while the one serving writes: every connection waits its turn (a busy timeout), and a
   transaction that writes begins `BEGIN IMMEDIATE` (`scripts/check.sh` refuses what a change adds otherwise).
 - A read answers by an index and a limit, never by going through all a station has (a station keeps months of chats):

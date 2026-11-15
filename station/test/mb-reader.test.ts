@@ -8,8 +8,9 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { MbReader, mbReaderBinary } from "../src/read/mb-reader.ts";
 import { Readers } from "../src/read/pool.ts";
-import type { Answer, Ready } from "../src/read/worker.ts";
+import type { Answer, Ready } from "../src/read/serve-reads.ts";
 import { Store } from "../src/store/store.ts";
+import { readersOf } from "./reference.ts";
 
 const binary = mbReaderBinary();
 
@@ -19,8 +20,7 @@ async function checkpoints(mb: string | null): Promise<unknown[]> {
   const data = mkdtempSync(join(tmpdir(), "mb-reader-"));
   const path = join(data, "stillfail.db");
   const store = Store.open(path, join(data, "archive"));
-  const readers = new Readers(data, 1);
-  readers.mbReader = mb;
+  const readers = readersOf(data, mb);
   const said: unknown[] = [];
   const checkpoint = async () => said.push(JSON.parse(await readers.read("checkpoint", {}, "en")));
   try {

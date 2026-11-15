@@ -13,6 +13,7 @@ import { test } from "node:test";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
 import { Readers } from "../src/read/pool.ts";
 import { Store } from "../src/store/store.ts";
+import { REFERENCE_WORKER, readersOf } from "./reference.ts";
 
 const binary = mbReaderBinary();
 const put = (path: string, text = "x") => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, text); };
@@ -56,10 +57,8 @@ test("the MoonBit reader finds a file a session names as the worker does", { ski
     "~/surely-not-here-mb", "~", "", "   ", "a\0b", join(homedir(), "Documents", "none.txt"), "/Volumes/none/x", "/", "..", ".",
     join(w, "cue", "apps", "x", "lib"), 7, null, undefined,
   ];
-  const worker = new Readers(data, 1);
-  worker.mbReader = null;
-  const program = new Readers(data, 1);
-  program.mbReader = binary;
+  const worker = new Readers(data, 1, REFERENCE_WORKER);
+  const program = readersOf(data, binary);
   const read = (r: Readers, args: unknown, lang: "zh" | "en") => r.read("sessionPlace", args, lang).then((t) => JSON.parse(t), (e: Error & { status?: number }) => ({ error: e.message, status: e.status }));
   const all = async (r: Readers) => {
     const out: unknown[] = [];

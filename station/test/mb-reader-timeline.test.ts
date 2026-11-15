@@ -15,6 +15,7 @@ import { seekTable } from "../src/read/packed.ts";
 import { Readers } from "../src/read/pool.ts";
 import { MARK_EVERY } from "../src/read/tail.ts";
 import { Store } from "../src/store/store.ts";
+import { readersOf } from "./reference.ts";
 
 const binary = mbReaderBinary();
 const at = "2026-10-24T00:00:00Z";
@@ -126,9 +127,8 @@ test("the MoonBit reader reads a session's history as the worker does", { skip: 
 
   const open: Readers[] = [];
   const readers = (mb: boolean) => {
-    const r = new Readers(data, 1);
+    const r = readersOf(data, mb ? binary : null);
     open.push(r);
-    r.mbReader = mb ? binary : null;
     return r;
   };
   const read = (r: Readers, op: string, args: unknown, lang: "zh" | "en" = "zh") => r.read(op, args, lang).then((t) => JSON.parse(t), (e: Error & { status?: number }) => ({ error: e.message, status: e.status }));

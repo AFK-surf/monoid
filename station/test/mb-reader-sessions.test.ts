@@ -12,6 +12,7 @@ import { test } from "node:test";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
 import { Readers } from "../src/read/pool.ts";
 import { Store, newMessage } from "../src/store/store.ts";
+import { readersOf } from "./reference.ts";
 
 const binary = mbReaderBinary();
 
@@ -60,8 +61,7 @@ test("the MoonBit reader reads sessions' summaries and the session list as the w
   store.setTranscriptLength("a1", 42);
   db.prepare("INSERT INTO session_usage(session, usage) VALUES ('a1', ?)").run(JSON.stringify({ input: 5, output: 7, models: { opus: 1 } }));
   const readers = (mb: string | null) => {
-    const r = new Readers(data, 1);
-    r.mbReader = mb;
+    const r = readersOf(data, mb);
     r.names.set("p@x", "Pat");
     r.processes = () => new Map([["a1", "running"]]);
     return r;
