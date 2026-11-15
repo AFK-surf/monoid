@@ -39,11 +39,9 @@
 //                  stream, which is neither; a reply's left unread): as the Rust shell lets a connection's go;
 //   a connection   kept as why it ended once it has (asked after, it answers that), until it is closed with
 //                  `forget` (`conn.close {id, forget: true}`: the mesh's, once it was told the end and keeps why
-//                  itself, or at once of one an opening gave up, ended or not) or its endpoint closes. The Rust
-//                  shell reads no `forget` and keeps that of every connection it had: there it is that shell's to
-//                  let go;
-//   an endpoint    as it is closed, with every connection of it and their streams. Nothing is answered of it after
-//                  (the Rust shell still says a closed one's id: the mesh keeps it and asks none).
+//                  itself, or at once of one an opening gave up, ended or not) or its endpoint closes, as the Rust
+//                  shell lets one go;
+//   an endpoint    as it is closed, with every connection of it and their streams. Nothing is answered of it after.
 // As natively, a wait given up is not a call given up but for a dial: a read let go of goes on (iroh-wasm's `read`
 // holds the stream's receiving half), so a stream is not read again after that, but reset.
 //

@@ -70,6 +70,8 @@ of its workspace (`moon.work`); `effect` stays in mbui.
   TypeScript mesh's check) is kept by place in the program's `Store` (`Mesh::make`'s `addresses`), unreadable kept
   values taken for none. A dial given them does not wait to be on a relay (`onto_max_ms`), as in that mesh.
   `iroh.addAddr` is an op answered at once (`Shell::ask`): the Rust shell has it only there, never as a call.
+- The mesh passes `forget: true` on every last `conn.close` and `iroh.close`: both shells then let go of the
+  connection or endpoint whole, its streams with it, so nothing is kept of one the mesh is done with.
 - Ways (`ways.mbt`'s head): a place is dialled on the endpoint alone, as before, unless its endpoint's ways are off
   (`off`), direct is held for flakiness, its last dial there went unanswered given the same addresses, or its link
   there died of missed pings; then every way is raced. The numbers are the TypeScript mesh's: change both together.
@@ -97,15 +99,6 @@ of its workspace (`moon.work`); `effect` stays in mbui.
 What was known as the library was moved here (2026-11-14) is mended, each with a test that failed before; what is
 left is another part's:
 
-- Natively the Rust shell keeps one entry for every connection that ended and every endpoint closed, for its
-  process's life (`client/shell/src/lib.rs`: `Handle::Gone`, `Handle::Unbound`), and has no op that lets one go. The
-  mesh says when it is done with a connection or an endpoint (`forget` on every last `conn.close` and `iroh.close`),
-  which a page's shell goes by; the Rust shell reads no such field. Letting them go there is that shell's to do, for
-  the device base in TypeScript too, which holds them the same. An endpoint bound anew (`Mesh::rebind`) leaves one such entry each
-  time, and that is no rare time: every dial that runs out of time unconnected leaves the endpoint taken for
-  stuck, so a peer that does not answer, asked for again and again, binds it anew at each try (5 s apart at the
-  soonest), as in the device base in TypeScript. The same each time its relays are told again (`Mesh::retune`), and
-  for each endpoint of a way's own let go of (`Mesh::release_pinned`).
 - Natively the Rust shell takes every connection dialled to an endpoint that takes a protocol once `iroh.accept` is
   first asked, queueing those nobody asked for with no bound (`client/shell/src/lib.rs`, `Accepted`); the mesh asks
   one at a time. That shell's to bound. A page's shell has no `iroh.accept` (`Mesh::incoming` fails there).

@@ -91,8 +91,8 @@ priv struct Stood {
   mut last : Int
   /// The connections closed here, and why (what `conn.closeReason` answers of one).
   ended : Map[Int, Json]
-  /// The connections let go of: closed with `forget`, as the mesh does of one whose end it was told. A page's shell
-  /// forgets such a one, and answers nothing of it after.
+  /// The connections let go of: closed with `forget`, as the mesh does of one whose end it was told. Both shells
+  /// forget such a one, and answer nothing of it after.
   forgot : Map[Int, Unit]
   /// An op held back besides (`conn.openBi`, for an opening that stops with its connection made); "": none.
   mut holding : String

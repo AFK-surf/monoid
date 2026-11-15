@@ -928,8 +928,7 @@ async fn Mesh::open(
       }
       ignore(link.gone.succeed(closed))
       // Its end is kept now, and the link answers from that (`Link::ended`): nothing is asked of the connection at
-      // the shell again. Closed once more to be forgotten: what a page's shell lets go of it by; the Rust shell reads
-      // no `forget`, does nothing to one that ended, and keeps what it keeps of it (its end, for the asking).
+      // the shell again. Closed once more to be forgotten: both shells let go of it then, its streams with it.
       shell.tell("conn.close", { "id": link.conn, "code": 0, "reason": "closed", "forget": true })
       self.said(link)
     }),

@@ -14,7 +14,9 @@
 // and counts what crossed it each way (`conn.stats`). What is sent on a stream comes a way's time later, after what
 // went on that connection before it took its turn at the way's speed: a long body comes in pieces over time.
 //
-// The handles are each shell's own, numbered as given out. A stream is offered its peer (`conn.acceptBi`) as the
+// The handles are each shell's own, numbered as given out, and let go of as both shells let go of them: a stream
+// once reset, or read to its end and finished; a connection, its streams with it, closed with `forget`; an endpoint,
+// its connections with it, closed with `forget`. So a test sees what either shell still holds. A stream is offered its peer (`conn.acceptBi`) as the
 // first of what is sent on it comes. A connection closed at one end ends at the other a way's time later with the
 // reason given (its way down: by the transport's idle time, `sim_idle_ms`); an endpoint closed ends its connections.
 
@@ -97,6 +99,8 @@ priv struct SimStream {
   handles : FixedArray[Int]
   /// By the role that sends it.
   flows : FixedArray[SimFlow]
+  /// By role: finished its sending.
+  finished : FixedArray[Bool]
   mut announced : Bool
 }
 
@@ -312,10 +316,34 @@ fn SimNet::wake_reader(self : SimNet, stream : SimStream, role : Int) -> Unit {
     None => {
       flow.read_end = true
       self.answer(side, id, { "end": true })
+      self.settle(stream, 1 - role)
       if stream.flows[role].stopper is Some(stopper) {
         stream.flows[role].stopper = None
         self.answer(stream.conn.ends[role].side, stopper, { "code": Json::null() })
       }
+    }
+  }
+}
+
+///|
+/// The handle of `stream` at its end `role` let go of where both shells let go of one: read to its end and finished.
+fn SimNet::settle(self : SimNet, stream : SimStream, role : Int) -> Unit {
+  guard stream.finished[role] && stream.flows[1 - role].read_end && stream.handles[role] != 0 else { return }
+  self.handles[stream.conn.ends[role].side].remove(stream.handles[role])
+}
+
+///|
+/// `conn` let go of at its end `role` (closed with `forget`, or with its endpoint so): its handle there, and its
+/// streams', as both shells let them go.
+fn SimNet::forget_conn(self : SimNet, conn : SimConn, role : Int) -> Unit {
+  conn.forgot[role] = true
+  let side = conn.ends[role].side
+  if conn.handles[role] != 0 {
+    self.handles[side].remove(conn.handles[role])
+  }
+  for stream in conn.streams {
+    if stream.handles[role] != 0 {
+      self.handles[side].remove(stream.handles[role])
     }
   }
 }
@@ -418,6 +446,9 @@ fn SimNet::call(self : SimNet, side : Int, id : Int64, op : String, args : Json,
       end.accepts.clear()
       if args is { "forget": True, .. } {
         self.handles[side].remove(handle_of(args))
+        for conn in end.conns {
+          self.forget_conn(conn, if physical_equal(conn.ends[0], end) { 0 } else { 1 })
+        }
       }
       self.answer(side, id, {})
     }
@@ -479,6 +510,7 @@ fn SimNet::call(self : SimNet, side : Int, id : Int64, op : String, args : Json,
             conn,
             handles: [0, 0],
             flows: [SimFlow::new(), SimFlow::new()],
+            finished: [false, false],
             announced: false,
           }
           conn.streams.push(stream)
@@ -508,8 +540,7 @@ fn SimNet::call(self : SimNet, side : Int, id : Int64, op : String, args : Json,
       }
       self.close_conn(conn, role, reason)
       if args is { "forget": True, .. } {
-        conn.forgot[role] = true
-        self.handles[side].remove(handle_of(args))
+        self.forget_conn(conn, role)
       }
       self.answer(side, id, {})
     }
@@ -523,6 +554,10 @@ fn SimNet::call(self : SimNet, side : Int, id : Int64, op : String, args : Json,
       }
       self.send(stream, role, if op == "istream.write" { Some(bytes.unwrap_or(b"")) } else { None })
       self.answer(side, id, {})
+      if op == "istream.finish" {
+        stream.finished[role] = true
+        self.settle(stream, role)
+      }
     }
     ("istream.read", Some(Stream(stream, role))) => {
       let flow = stream.flows[1 - role]
@@ -845,8 +880,14 @@ async fn Door::serve(self : Door, inbound : Inbound) -> Unit {
   }
   self.asked.push("\{method_} \{path} \{length}")
   let (status, body) = self.replies.get(path).unwrap_or((200, b"ok"))
-  write_line(inbound.out, { "status": status, "headers": {} })
-  for at = 0; at < body.length(); at = at + body_step {
+  // (its head and the first of its body in one write, as a door's buffered writer sends them: what the reader takes
+  // past its head comes with it)
+  let head = @utf8.encode(({ "status": status, "headers": {} } : Json).stringify() + "\n")
+  let first = if body.length() < body_step { body.length() } else { body_step }
+  let joined = Array::from_fixed_array(head.to_fixedarray())
+  joined.append(Array::from_fixed_array(body[0:first].to_owned().to_fixedarray()))
+  inbound.out.write(Bytes::from_array(joined))
+  for at = first; at < body.length(); at = at + body_step {
     let end = if at + body_step < body.length() { at + body_step } else { body.length() }
     inbound.out.write(body[at:end].to_owned())
   }
@@ -961,6 +1002,18 @@ fn World::source(self : World, scope? : String = "") -> async (String, Bool) -> 
 }
 
 ///|
+/// Both meshes closed: what either shell still holds after (none, where nothing was left behind).
+fn World::close_all(self : World) -> (Int, Int) raise {
+  let closed = self.net.go(() => {
+    self.client.close()
+    self.server.close()
+  })
+  self.net.pass(1_000)
+  given(closed)
+  (self.net.handles[0].length(), self.net.handles[1].length())
+}
+
+///|
 /// The client's link to the server in `scope`, opened as far as it goes by itself.
 fn World::link(self : World, scope? : String = "") -> @effect.Fiber[Link] {
   let peer = self.server.device_id()
@@ -1054,8 +1107,8 @@ test "sim: requests, a body told of as it goes, a duplex, a reply handed to the 
   net.pass(1_000)
   assert_true(given(duplex))
   assert_eq(echoed, ["one", "two"])
-  // A reply handed to the shell to read: what was read past its head goes with it, and what follows is read as
-  // ever by the program, whose reads the shell let be.
+  // A reply handed to the shell to read: what came with its head (the first piece of its body, written with it)
+  // goes with it, and what follows is read as ever by the program, whose reads the shell let be.
   net.taps = Some(true)
   door.replies["/screen"] = (200, Bytes::make(100_000, b's'))
   let tapped = net.go(() => {
@@ -1063,9 +1116,11 @@ test "sim: requests, a body told of as it goes, a duplex, a reply handed to the 
     (reply.tap(7L), reply.rest().length())
   })
   net.pass(1_000)
-  assert_eq(given(tapped), (true, 100_000))
+  let (taken, rest) = given(tapped)
+  assert_true(taken)
   assert_eq(net.tapped.length(), 1)
-  assert_true(net.tapped[0].has_suffix(" 7 0"))
+  assert_true(net.tapped[0].has_suffix(" 7 \{body_step}"))
+  assert_eq(body_step + rest, 100_000)
   // A stream the peer opens, on scope a's connection alone.
   let pushed = net.go(() => {
     let inbound = a.accept().unwrap()
@@ -1117,6 +1172,10 @@ test "sim: requests, a body told of as it goes, a duplex, a reply handed to the 
   // Scope b went on through it all: one connection, let in once.
   assert_true(b.usable())
   assert_true(physical_equal(world.client.current(world.server.device_id(), scope="b").unwrap(), b))
+  // Held now at each shell: the endpoint, scope b's connection, its control stream; every request's stream and
+  // every connection that ended let go of already. Both closed, nothing is left behind at either.
+  assert_eq((net.handles[0].length(), net.handles[1].length()), (3, 3))
+  assert_eq(world.close_all(), (0, 0))
 }
 
 ///|
@@ -1492,4 +1551,8 @@ test "sim: the device key taken over with links open on two ways: all let go of,
   net.pass(1_000)
   assert_eq(@utf8.decode(given(asked)), "ok")
   assert_eq(world.door.asked, ["GET /data 0", "GET /as-new 0"])
+  // Held now at each shell: the endpoint, the link's connection and its control stream; all of the key before let
+  // go of. Both closed, nothing is left behind at either.
+  assert_eq((net.handles[0].length(), net.handles[1].length()), (3, 3))
+  assert_eq(world.close_all(), (0, 0))
 }
