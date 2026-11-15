@@ -658,10 +658,11 @@ describe("dirsync", { concurrency: true }, () => {
     for (const [file, contents] of Object.entries(files)) writeFileSync(join(dir, file), contents);
     return dir;
   };
-  /// Says when a mirror of the session was last used, as the target's record keeps it.
+  /// Says when a mirror of the session was last used, as the target's record keeps it: once written (the program's
+  /// sweep reads the record waiting only for its own writes, not for Node's).
   const usedAt = (p: Awaited<ReturnType<typeof pair>>, at: Record<string, number>) => {
     const record = join(p.b.remote.room("ws", p.A, "s1"), "mirrors-used.json");
-    writeJson(record, { ...readJson(record), ...at });
+    return writeJson(record, { ...readJson(record), ...at });
   };
 
   test("a mirror no task has used for a day goes with what its tasks made; the session's other files stay, the next start syncs it anew", async () => {
