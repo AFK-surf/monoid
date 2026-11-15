@@ -348,7 +348,7 @@ fn recent_photo_node(
   recent_tile_node(parent, small, fn(t) {
     recent_tile_press(
       t,
-      fn() { @sf.t(if p.get().1 { "web-main.preview.kind.video" } else { "android-chat.attach.photos" }) },
+      fn() { @sf.t(if p.get().1 { "web-main.preview.kind.video" } else { "web-main.preview.kind.image" }) },
       fn() {
         let s = @signals.untracked(src)
         if recent.chosen.length() > 0 {
