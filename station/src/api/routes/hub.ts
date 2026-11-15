@@ -531,7 +531,7 @@ export const routes = (tools: Tools): Route[] => {
     ),
     {
       method: "POST",
-      pattern: /^\/*sessions\/+([^/]+)\/+(stop|cancel-retry|retry|evict|warm|compact|clear|settings)(?:\/.*)?$/,
+      pattern: /^\/*sessions\/+([^/]+)\/+(stop|cancel-retry|retry|reassign|evict|warm|compact|clear|settings)(?:\/.*)?$/,
       handle: (r, [k, action]) =>
         write(async (s, a) => {
           const key = segment(k!);
