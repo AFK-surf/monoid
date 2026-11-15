@@ -1,6 +1,7 @@
 // What the agent is told about its situation, appended to the runtime's own system prompt, and how messages are put to
 // it. A change to how agents work gets a note in migrations.ts too, for the sessions begun before it.
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import type { MessageRow, PendingMessage, WidgetModel } from "../store/store.ts";
 import type { BackgroundTask } from "./runtime.ts";
 import { type CardChoice, STILLFAIL_SURFACE } from "../store/rows.ts";
@@ -30,9 +31,50 @@ export async function readSiteInstructions(env: NodeJS.ProcessEnv = process.env)
 }
 
 /// The workspace's memory as it is now, told after the instructions: given with them, not by the runtime's home (a
-/// profile serves every workspace, sessions/agent-home.ts). Read off the station's thread, at each process's opening.
+/// profile serves every workspace, sessions/agent-home.ts). Read off the station's thread, at each process's opening,
+/// with what of it has grown past what an agent can use (`overgrown`) said after it.
 export async function readMemory(path: string): Promise<string> {
-  return (await readFile(path, "utf8").catch(() => "")).trim();
+  const memory = (await readFile(path, "utf8").catch(() => "")).trim();
+  const grown = overgrown([["MEMORY.md", memory], ...(await skillsBeside(path))]);
+  return grown === "" ? memory : `${memory}\n\n${grown}`;
+}
+
+/// The most a memory file holds before an agent is told to condense it, in bytes (MEMORY.md, a team skill's SKILL.md),
+/// and the longest line of one. Every session of the workspace reads MEMORY.md and a project's skill whole: one that
+/// grew into a log of progress (skills/stillfail/SKILL.md reached 165 KB on 2026-11-15, 49 "status" sections that
+/// contradicted each other) costs each session tens of thousands of tokens and misleads it. A merge keeps both
+/// versions where two stations changed one place (share/memory-merge.ts), so what came twice is the agents' to tidy too.
+export const MEMORY_MOST = 8 * 1024;
+export const SKILL_MOST = 24 * 1024;
+export const LINE_MOST = 1500;
+
+/// The team skills' SKILL.md beside the memory at `path` (`skills/<name>/SKILL.md`), as [relative path, text].
+async function skillsBeside(path: string): Promise<[string, string][]> {
+  const dir = join(dirname(path), "skills");
+  const names = await readdir(dir, { withFileTypes: true }).catch(() => []);
+  const out: [string, string][] = [];
+  for (const e of names) {
+    if (!e.isDirectory()) continue;
+    const text = await readFile(join(dir, e.name, "SKILL.md"), "utf8").catch(() => null);
+    if (text !== null) out.push([`skills/${e.name}/SKILL.md`, text]);
+  }
+  return out.sort(([a], [b]) => (a < b ? -1 : 1));
+}
+
+/// What of `files` ([relative path, text]) is past MEMORY_MOST, SKILL_MOST or LINE_MOST, as a note to the agent; "" when
+/// nothing is.
+export function overgrown(files: [string, string][]): string {
+  const kb = (n: number) => `${Math.ceil(n / 1024)} KB`;
+  const said: string[] = [];
+  for (const [rel, text] of files) {
+    const bytes = Buffer.byteLength(text, "utf8");
+    const most = rel === "MEMORY.md" ? MEMORY_MOST : SKILL_MOST;
+    const long = text.split("\n").filter((l) => Buffer.byteLength(l, "utf8") > LINE_MOST).length;
+    const why = [bytes > most ? `${kb(bytes)}, past ${kb(most)}` : "", long > 0 ? `${long} line${long === 1 ? "" : "s"} past ${LINE_MOST} bytes` : ""].filter((x) => x !== "");
+    if (why.length > 0) said.push(`- ${rel}: ${why.join("; ")}`);
+  }
+  if (said.length === 0) return "";
+  return `[still.fail: this memory has grown past what an agent can use: condense it before you add to it]\n${said.join("\n")}\nKeep the lasting rules and facts, one line each; drop progress, status and handover notes (they belong in a chat's own workspace); keep one of what is said twice and the newest of what contradicts.`;
 }
 
 const instructions = (project: string, workspace: string, repos_dir: string, memory_path: string, station: string) => `You work on this machine for people who write to you from still.fail chats, Slack threads, Feishu chats and Comma Tasks.
@@ -79,7 +121,7 @@ Memory:
 - Global memory ${memory_path} (told below): only what would break things if forgotten, one line each.
 - Project memory goes in skills/<project>/SKILL.md beside it, description starting "项目记忆：". Before working out a project's build or workflow from source, search kinds=["skill"].
 - A file named *.conflict-<station>.* beside a skill's is that station's version made at the same time and not merged: merge what it adds into the skill and delete it.
-- Keep memory short and consistent: when you add a rule, remove any it contradicts. No credentials.`;
+- Keep memory short and consistent: lasting rules and facts only, never progress, status or handover notes (those go in your chat's workspace); when you add a rule, remove any it contradicts or repeats. Where two stations changed one place at once the merge keeps both versions: keep one. No credentials.`;
 
 export const NUDGE = `Your turn ended without a state, so nobody knows where the chat stands. Only a real unresolved need requires need_human. A factual answer alone does not need a follow-up question; do not invent one. If you still need something after answering a clarification, visibly ask for it; need alone is only a status summary. If you ask a person to choose or confirm, post the question with a card. Do not reopen a decision the user already made. Decide whether anything in it is still unfinished, then end the turn with exactly one:
 - all_done: nothing in the chat is left unfinished at all. Post the result with chat_post kind "all_done" (or chat_state "all_done" if you already posted it), with done: why nothing is left, naming the evidence (a commit, a release, a person's confirmation, the answer given).

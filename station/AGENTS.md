@@ -138,6 +138,10 @@
   every line of both: a merge never drops what either had. `test/memory-sync-random.test.ts` holds it over random
   worlds (`MEMORY_RANDOM_SEEDS` for more; it fails on 0.1.9133's code), `test/memory-sync-upgrade.test.ts` that what
   0.1.9133 to 0.1.9168 left (a skill kept apart twice, a station's own file moved) is mended (`#mend`).
+- Every session reads MEMORY.md and a project's skill whole, so neither may grow into a log: past `MEMORY_MOST`,
+  `SKILL_MOST` or a line past `LINE_MOST` (`src/agents/instructions.ts` `overgrown`), the memory a session is told ends
+  with which files to condense (2026-11-15: skills/stillfail/SKILL.md had reached 165 KB of status notes). What a merge
+  kept twice is the agents' to tidy; the instructions say so.
 
 ## How a workspace's devices reach its stations (its ways)
 

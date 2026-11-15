@@ -1,6 +1,6 @@
 // The agent's instructions and the migration notes (src/agents/instructions.ts, migrations.ts: their source).
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -23,6 +23,32 @@ test("the session instructions tell the memory they name, as it is now", async (
   writeFileSync(path, "# lessons\n- one\n");
   assert.ok(ts.sessionInstructions("/w/s/workspace", null, "/w/repos", path, await ts.readMemory(path)).endsWith(`\n\n<memory path="${path}">\n# lessons\n- one\n</memory>`));
   rmSync(dir, { recursive: true, force: true });
+});
+
+test("memory grown past what an agent can use is said after it, file by file, and nothing where none is", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "instructions-"));
+  const path = join(dir, "MEMORY.md");
+  writeFileSync(path, "# lessons\n- one\n");
+  mkdirSync(join(dir, "skills", "small"), { recursive: true });
+  writeFileSync(join(dir, "skills", "small", "SKILL.md"), "---\nname: small\n---\n- a fact\n");
+  assert.equal(await ts.readMemory(path), "# lessons\n- one", "nothing said of memory that fits");
+  mkdirSync(join(dir, "skills", "proj"), { recursive: true });
+  writeFileSync(join(dir, "skills", "proj", "SKILL.md"), `---\nname: proj\n---\n${"- 现状：".padEnd(ts.LINE_MOST, "做")}\n${"- fact\n".repeat(ts.SKILL_MOST / 7)}`);
+  writeFileSync(path, `# lessons\n${"- rule\n".repeat(ts.MEMORY_MOST / 7 + 1)}`);
+  const told = await ts.readMemory(path);
+  assert.ok(told.startsWith("# lessons\n- rule\n"), "the memory itself first");
+  const note = told.slice(told.indexOf("[still.fail: this memory has grown"));
+  assert.match(note, /^- MEMORY\.md: 9 KB, past 8 KB$/m);
+  assert.match(note, /^- skills\/proj\/SKILL\.md: \d+ KB, past 24 KB; 1 line past 1500 bytes$/m);
+  assert.ok(!note.includes("skills/small"), "a skill that fits is not named");
+  assert.ok(note.includes("drop progress, status and handover notes"));
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("overgrown says nothing of files within their bounds", () => {
+  const full = "- x\n".repeat(ts.SKILL_MOST / 4);
+  assert.equal(ts.overgrown([["MEMORY.md", "- one"], ["skills/x/SKILL.md", full], ["skills/y/SKILL.md", `- ${"x".repeat(ts.LINE_MOST - 2)}`]]), "");
+  assert.equal(ts.overgrown([["skills/x/SKILL.md", `${full}y`]]).split("\n")[1], "- skills/x/SKILL.md: 25 KB, past 24 KB");
 });
 
 test("what the deployment adds is told after still.fail's own instructions, before the memory, and nothing without it", async () => {
