@@ -56,11 +56,13 @@ import { Refused } from "../mesh/bus.ts";
 import type { ConfigFile } from "../ops/config.ts";
 import { Fibers } from "../ops/fibers.ts";
 import { PrivateFile, writePrivate } from "../ops/files.ts";
+import { FollowedTree } from "../ops/follow.ts";
 import { log } from "../ops/log.ts";
 import { linkSync } from "../ops/links.ts";
 import { joinPath, portableName, relativeParts } from "../ops/paths.ts";
 import { profileFetch } from "../ops/agent-env.ts";
 import { workspaceAgentHome } from "../sessions/agent-home.ts";
+import { SKIPPED } from "./memory.ts";
 import { allowedIn } from "../sessions/config.ts";
 import { type Lang, Said, stationLang, tr } from "../ops/i18n.ts";
 
@@ -78,6 +80,8 @@ const KEEP_LENT_MS = 3600_000;
 const ROSTER_WAIT_MS = 10_000;
 /// Edits to a skill are taken once they have settled this long.
 const SETTLE_MS = 2000;
+/// The most directories of a skill shared from here watched.
+const SKILL_DIRS_MOST = 200;
 /// What could not be done because another station did not answer is tried again after this, then twice as long each
 /// time up to RETRY_MAX_MS (only while there is).
 const RETRY_MS = 60_000;
@@ -873,20 +877,27 @@ export class Sharing {
 
   private watchDir(key: string, dir: string, then: () => void) {
     if (this.watchers.has(key) || !existsSync(dir)) return;
-    try {
-      const w = watch(dir, { recursive: true, persistent: false }, () => {
+    // Its directories each watched, not what a program made beside its files (ops/follow.ts says why).
+    const tree: FollowedTree = new FollowedTree({
+      root: dir,
+      into: (rel) => rel.split("/").every((n) => !SKIPPED.has(n)),
+      most: SKILL_DIRS_MOST,
+      changed: () => {
         this.settle.get(key)?.();
-        this.settle.set(key, this.time.after(SETTLE_MS, () => (this.settle.delete(key), then())));
-      });
+        this.settle.set(key, this.time.after(SETTLE_MS, () => (this.settle.delete(key), void tree.scan(), then()))); // timer: a debounce of a burst
+      },
       // Failing later (macOS turning it down: EMFILE): dropped, for the next reconcile to follow it again.
-      w.on("error", (e) => {
+      failed: (e) => {
         log.warn("share", "a shared skill's directory no longer followed", { dir, error: e.message });
-        if (this.watchers.get(key) === w) this.stopWatch(key);
-      });
-      this.watchers.set(key, w);
-    } catch (e) {
-      log.warn("share", "a shared skill's directory cannot be followed", { dir, error: (e as Error).message });
-    }
+        if (this.watchers.get(key) === tree) this.stopWatch(key);
+      },
+    });
+    this.watchers.set(key, tree);
+    void tree.scan().then((r) => {
+      if (r.failed === undefined) return;
+      log.warn("share", "a shared skill's directory cannot be followed", { dir, error: r.failed.message });
+      if (this.watchers.get(key) === tree) this.stopWatch(key);
+    });
   }
 
   private watchHosted(name: string, dir: string) {

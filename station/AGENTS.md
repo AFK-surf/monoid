@@ -159,6 +159,9 @@
   `SKILL_MOST` or a line past `LINE_MOST` (`src/agents/instructions.ts` `overgrown`), the memory a session is told ends
   with which files to condense (2026-11-15: skills/stillfail/SKILL.md had reached 165 KB of status notes). What a merge
   kept twice is the agents' to tidy; the instructions say so.
+- Its edits are found by a watch of only its own directories (`memoryFollowed`, `src/ops/follow.ts`), never Node's
+  `fs.watch(..., { recursive: true })` over a directory agents fill: on Linux that lists the whole tree on the main
+  thread with an inotify watch a directory, clones and node_modules too (a Linux station lost, 2026-11-15).
 
 ## How a workspace's devices reach its stations (its ways)
 

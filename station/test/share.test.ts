@@ -770,8 +770,8 @@ test("a shared skill's watch failing (macOS turning it down: EMFILE) is dropped,
   const watchers = (a.sharing as any).watchers as Map<string, any>;
   const failed = watchers.get("hosted:ember");
   assert.ok(failed, "the shared skill is followed");
-  // As Node tells it when FSEventStreamStart fails: an 'error' event on the watcher.
-  assert.doesNotThrow(() => failed.emit("error", Object.assign(new Error("EMFILE: too many open files, watch"), { code: "EMFILE" })));
+  // As Node tells it when FSEventStreamStart fails: an 'error' event on a directory's watch.
+  assert.doesNotThrow(() => failed.watchOf("").emit("error", Object.assign(new Error("EMFILE: too many open files, watch"), { code: "EMFILE" })));
   await settle(a, b);
   assert.ok(watchers.get("hosted:ember") && watchers.get("hosted:ember") !== failed, "followed again");
   await a.sharing.close();
