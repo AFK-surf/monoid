@@ -1226,26 +1226,6 @@ fn open_sample() -> Json {
 }
 
 ///|
-/// A station of the workspace not in the lock, taken in once its owner says it is theirs.
-pub fn join_dialog(core : Core, ws : String, station : String, name : String) -> Unit {
-  @sf.confirm(
-    @sf.t("web-pages.security.joinTitle", args=[("name", name)]),
-    @sf.t("web-pages.security.joinBody"),
-    @sf.t("web-pages.security.join"),
-    fn() {
-      lock_call(
-        core,
-        ws,
-        "joinStation",
-        @sf.t("web-pages.security.join"),
-        [("station", station)],
-        done=@sf.t("web-pages.security.joined", args=[("name", name)]),
-      )
-    },
-  )
-}
-
-///|
 /// 关闭安全模式？: what turning it off gives up, a line each, and the workspace's name typed
 /// before it can go (`lock.disable`, Enter too); written in as it opens.
 pub fn turn_off_dialog(core : Core, ws : String, name : String) -> Unit {

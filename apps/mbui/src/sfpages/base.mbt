@@ -167,6 +167,7 @@ using @sfbase {
 
 ///|
 using @settings {
+  join_dialog,
   binding_of,
   policy_forms,
   profile_forms,

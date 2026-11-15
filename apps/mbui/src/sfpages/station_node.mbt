@@ -558,6 +558,15 @@ fn station_actions_node(
       _ => ()
     }
   })
+  // its 加入安全模式 (station_protect's), where its workspace's safe mode does not name it and the viewer could protect it here
+  a.show(fn() { flag(s(), "protect") }, fn(e) {
+    let joining = fn() { is_doing(core, ["lock.joinStation"], [("workspace", here().workspace), ("station", id())]) }
+    @sf.button_node(e, fn() { @sf.t("web-pages.security.joinShort") }, fn() {
+      let now = @signals.untracked(s)
+      join_dialog(core, @signals.untracked(here).workspace, text(now, "id"), text(now, "name"))
+    }, tone=Ghost, busy=joining, disabled=joining)
+    |> ignore
+  })
   if manager {
     let on = fn() { [("station", id())] }
     doing_mark_node(a, fn() { is_doing(core, ["workspace.renameStation", "workspace.removeStation"], on()) }, fn() {

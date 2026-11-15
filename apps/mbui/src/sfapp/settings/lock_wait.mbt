@@ -33,3 +33,24 @@ pub fn lock_call(
   }
   act(core, what, "lock." + name, obj(p), done~)
 }
+
+///|
+/// A station of the workspace not in the lock, taken in once its owner says it is theirs (设置 › 安全, and the station
+/// itself: its page's and its list card's 保护).
+pub fn join_dialog(core : Core, ws : String, station : String, name : String) -> Unit {
+  @sf.confirm(
+    @sf.t("web-pages.security.joinTitle", args=[("name", name)]),
+    @sf.t("web-pages.security.joinBody"),
+    @sf.t("web-pages.security.join"),
+    fn() {
+      lock_call(
+        core,
+        ws,
+        "joinStation",
+        @sf.t("web-pages.security.join"),
+        [("station", station)],
+        done=@sf.t("web-pages.security.joined", args=[("name", name)]),
+      )
+    },
+  )
+}

@@ -116,6 +116,33 @@ fn card_head(c : @ui.Ctx, mark : () -> Unit, name : String, said : String?, end 
 }
 
 ///|
+/// Under its head, where its workspace's safe mode does not name it and the viewer could protect it from here
+/// (`protect`: an owner on a device that signs, it online): 加入安全模式, asked first as 设置 › 安全 asks it
+/// (join_dialog). On the station where it is listed, not only on 设置 › 安全, the button alone saying it (the user,
+/// 2026-11-15: 「在 station 这里要能点成受保护」「不需要写不受保护」; a bare 保护 said nothing of what it does).
+fn station_protect(c : @ui.Ctx, core : Core, s : Json?) -> Unit {
+  guard flag(s, "protect") else { return }
+  let address = text(s, "station")
+  let ws = match address.find("/") {
+    Some(i) => address.unsafe_substring(start=0, end=i)
+    None => ""
+  }
+  let id = text(s, "id")
+  let joining = is_doing(core, ["lock.joinStation"], [("workspace", ws), ("station", id)])
+  c.box(style=protect_row, fn() {
+    @sf.button(c, @sf.t("web-pages.security.joinShort"), key="station-card-protect/" + address, icon="shield-check", busy=joining, disabled=joining, on_press=fn() {
+      join_dialog(core, ws, id, text(s, "name"))
+    })
+  })
+  |> ignore
+}
+
+///|
+/// 加入安全模式's line, 12 under the head.
+// kept across runs: a value (no field of it changes)
+let protect_row : @ui.Style = @ui.css("row w=Full pt=S3")
+
+///|
 /// A card's mark's side.
 let card_mark : Double = 28.0
 
@@ -146,6 +173,7 @@ fn station_card(c : @ui.Ctx, core : Core, st : Json) -> Unit {
         chevron(c)
       },
     )
+    station_protect(c, core, s)
     station_body(c, core, s)
   }, on_press=fn() {
     (core.push)(Station(address))

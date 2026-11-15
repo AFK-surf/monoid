@@ -1275,6 +1275,7 @@
   "web-pages.security.webRisk": "网页版的代码来自 still.fail 的服务器。如果服务器被攻破，在你打开网页期间，它可以以你的身份操作；如有顾虑，请使用桌面或安卓客户端。",
   "web-pages.security.webTitle": "网页版",
   "web-pages.security.join": "保护",
+  "web-pages.security.joinShort": "加入安全模式",
   "web-pages.security.joined": "{name} 已受保护",
   "web-pages.security.joinTitle": "保护 {name}？",
   "web-pages.security.joinBody": "保护后，它只接受受信任设备批准的成员、设备和 station。请确认这是你自己的机器。",

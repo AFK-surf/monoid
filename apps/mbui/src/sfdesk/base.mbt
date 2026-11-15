@@ -144,8 +144,12 @@ using @sf {
 }
 
 ///|
-using @sfpages {
+using @settings {
   join_dialog,
+}
+
+///|
+using @sfpages {
   turn_off_dialog,
   agent_mark,
   bar_foot,

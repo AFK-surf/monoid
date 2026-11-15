@@ -213,6 +213,9 @@ fn station_head(c : @ui.Ctx, core : Core, here : Here, s : Json?, manager : Bool
         Some(_) => station_start(c, core, stopped, address)
         None => if !online || silent { station_retry(c, core, s) }
       }
+      if flag(s, "protect") {
+        station_protect(c, core, here, s)
+      }
       if manager {
         @settings.doing_mark(
           c,
@@ -270,6 +273,17 @@ fn station_retry(c : @ui.Ctx, core : Core, s : Json?) -> Unit {
       "client.wake",
       obj([("away", Json::number(0.0)), ("network", Json::boolean(true)), ("retry", Json::boolean(true))]),
     )
+  }) |> ignore
+}
+
+///|
+/// Its 加入安全模式 where its workspace's safe mode does not name it and the viewer could protect it from here (`protect`: an
+/// owner on a device that signs, it online), as 设置 › 安全 offers it (join_dialog: asked first); while it goes, busy.
+fn station_protect(c : @ui.Ctx, core : Core, here : Here, s : Json?) -> Unit {
+  let id = text(s, "id")
+  let joining = is_doing(core, ["lock.joinStation"], [("workspace", here.workspace), ("station", id)])
+  @sf.button(c, @sf.t("web-pages.security.joinShort"), key="station-protect/" + text(s, "station"), tone=Ghost, busy=joining, disabled=joining, on_press=fn() {
+    join_dialog(core, here.workspace, id, text(s, "name"))
   }) |> ignore
 }
 

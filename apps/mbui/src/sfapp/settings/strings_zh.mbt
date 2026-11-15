@@ -1434,6 +1434,7 @@ let zh : Map[String, String] = {
   "web-pages.security.devices": "设备",
   "web-pages.security.join": "保护",
   "web-pages.security.joinBody": "保护后，它只接受受信任设备批准的成员、设备和 station。请确认这是你自己的机器。",
+  "web-pages.security.joinShort": "加入安全模式",
   "web-pages.security.joinTitle": "保护 {name}？",
   "web-pages.security.joined": "{name} 已受保护",
   "web-pages.security.lead": "谁可以访问此 workspace 的 station 并在其上执行命令",

@@ -1462,6 +1462,7 @@ let en : Map[String, String] = {
   "web-pages.security.devices": "Devices",
   "web-pages.security.join": "Protect",
   "web-pages.security.joinBody": "Once protected, it accepts only members, devices and stations approved by a trusted device. Make sure it's your own machine.",
+  "web-pages.security.joinShort": "Add to security mode",
   "web-pages.security.joinTitle": "Protect {name}?",
   "web-pages.security.joined": "{name} is protected",
   "web-pages.security.lead": "Who can access this workspace's stations and run commands on them",

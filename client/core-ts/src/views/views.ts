@@ -45,6 +45,7 @@ import { KINDS as THING_KINDS, OUTLINE_FOUND, isVideo, mediaDays, thingsHaving, 
 import { archive, archiveSearch } from "./archive.ts";
 import { Local, PENDING_PREFIX } from "./local.ts";
 import { askAnswers } from "./vault.ts";
+import { stationsGuard } from "./lock.ts";
 import * as marks from "./marks.ts";
 import { usageView } from "./usage.ts";
 import { usageSummary } from "./usage-summary.ts";
@@ -748,6 +749,8 @@ export type ViewsEnv = {
   xshareAsked?: (station: string, session: string) => xshare.Asked | undefined;
   /// The name of the home workspace of a station a workspace joined, when the viewer is in it (memberships.ts).
   homeName?: (workspace: string, id: string) => string | null;
+  /// Safe mode in a workspace as its stations' rows say it (views/lock.ts `stationsGuard`); none where not given.
+  guard?: (workspace: string) => { protects: (id: string) => boolean; can: () => boolean } | null;
   /// Whether a workspace's notices are heard of on this device (`notify.set` `workspaces`); every one where not given.
   heard?: (workspace: string) => boolean;
   /// A topic a view watches shown again (its owner asked to bring it up to date, store.ts `resume`).
@@ -799,6 +802,7 @@ export function envOf(core: Inner): ViewsEnv {
     resume: (topic) => core.router.resume(topic),
     xshareAsked: (station, session) => xshare.asked(core, station, session),
     homeName: (workspace, id) => memberships.homeName(core, workspace, id),
+    guard: (workspace) => stationsGuard(core, workspace),
     vaultAnswers: (workspace, asks) => askAnswers(core, workspace, asks),
     heard: (workspace) => core.attention?.attend.heard(workspace) ?? true,
     ways: (workspace) => {
@@ -3116,6 +3120,7 @@ export class Views implements Owner {
     let silentNext = Infinity;
     const byId = new Map(stations.map((s) => [String(s.id), s]));
     const mine = this.#mayChangeMode(scope);
+    const guard = this.#core.guard?.(scope) ?? null;
     const row = kind === "row";
     const items = stations.filter((s) => only === undefined || s.address === only).map((s) => {
       const parts = this.#stationShownOf(s.address);
@@ -3158,6 +3163,8 @@ export class Views implements Owner {
       } else this.#hostless.delete(s.address);
       const blocked = !s.online && cause === "lock" && typeof get(this.link(s.address), "message") === "string" ? (get(this.link(s.address), "message") as string) : null;
       const running = u64(get(get(overview, "counts"), "running")) ?? 0;
+      const unprotected = guard !== null && !guard.protects(String(s.id));
+      const can = unprotected && guard!.can();
       const item: J = {
         station: s.address,
         id: s.id,
@@ -3171,6 +3178,9 @@ export class Views implements Owner {
         reconnecting: s.online && state !== "online" && state !== "error",
         ...stationState(s.online, blocked !== null || cause === "updating", summary, typeof s.lastSeen === "number" ? s.lastSeen : null, read !== undefined, running, c),
         problems: stationProblems(s.online, silent, blocked, typeof s.lastSeen === "number", cause === "updating", unreadable),
+        // Not named by its workspace's safe mode: its 保护 where it is shown, where the viewer could protect it from here
+        // (the user, 2026-11-15: 「在 station 这里要能点成受保护」, 「不需要写不受保护」: the button alone, no words).
+        ...(unprotected && can && s.online ? { protect: true } : {}),
         // Down for a security mode: why, in place of the page's 离线 words.
         ...(blocked !== null ? { blocked } : {}),
         lastSeen: s.lastSeen,

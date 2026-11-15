@@ -1424,6 +1424,7 @@ web-pages.security.denyDevice
 web-pages.security.devices
 web-pages.security.join
 web-pages.security.joinBody
+web-pages.security.joinShort
 web-pages.security.joinTitle
 web-pages.security.joined
 web-pages.security.lead

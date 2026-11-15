@@ -305,6 +305,11 @@ let fx_station_update_failed : Ref[Bool] = Ref(false)
 let fx_station_updated : Ref[Bool] = Ref(false)
 
 ///|
+/// The workspace in safe mode with its stations not named by it: Willow, online, which the viewer could protect here
+/// (the core's `protect`), and Maple, offline, which it could not.
+let fx_unprotected : Ref[Bool] = Ref(false)
+
+///|
 /// The made-up settings as a run starts (reset): none changed, no sheet or scroll to put up.
 fn fixture_reset() -> Unit {
   fx.names.clear()
@@ -316,6 +321,7 @@ fn fixture_reset() -> Unit {
   fx_station_many_profiles.val = false
   fx_station_update_failed.val = false
   fx_station_updated.val = false
+  fx_unprotected.val = false
   fx.restored.clear()
   fx.skills_shared.clear()
   fx.drive_kept = fx_drive_kept
@@ -646,6 +652,8 @@ pub fn fixture_page(mode : String) -> String {
       up("", "settings/station/ws1/st1", 0)
     }
     "settings-stations-add" => up("add", "", 0)
+    // a station its workspace's safe mode does not name, which the viewer could protect: 保护 on its page and its card
+    "settings-station-unprotected" | "settings-stations-unprotected" => fx_unprotected.val = true
     // Profile's ＋ with more than one station online: which to add it on (pressed by the film's step)
     "settings-profiles-pick" => fx.mba_online = true
     // an account's page with the station it is on and its move to another, Maple up to take it: ChatGPT 团队, a
@@ -826,7 +834,8 @@ pub fn fixture_page(mode : String) -> String {
     "settings-notify-off" | "settings-lock-prompt" | "settings-lock-prompt-personal" | "settings-vault-prompt" => "home"
     // (the notifications' page; the system having refused them: its banner's way to allow them)
     "settings-notify" | "settings-notify-denied" => "notifications"
-    "settings-station" | "settings-station-pages" | "settings-station-many-profiles" | "settings-station-own3" => "station:ws1/st1"
+    "settings-station" | "settings-station-pages" | "settings-station-many-profiles" | "settings-station-own3" | "settings-station-unprotected" => "station:ws1/st1"
+    "settings-stations-unprotected" => "stations"
     "settings-station-offline" => "station:ws1/st2"
     "settings-memory" => "memory:ws1/st1"
     "settings-memory-doc" => "memory-doc:ws1/st1#发布流程"
@@ -1657,6 +1666,7 @@ fn fx_station(address : String) -> Json {
           []
         },
       ),
+      ("protect", Json::boolean(fx_unprotected.val && !fx.willow_away)),
       // the runtimes it runs, each with its models (its page's: the connect page asks whether one runs on its runtime)
       ("runtimes", [obj([("runtime", str("claude")), ("models", [str("claude-opus-5-5"), str("claude-sonnet-5")])])]),
       // what its profiles have turned on (Claude 主账号's: Opus 5.5 and Sonnet 5, on claude)

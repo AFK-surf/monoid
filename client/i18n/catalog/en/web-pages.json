@@ -1326,6 +1326,7 @@
   "web-pages.security.webRisk": "The web app's code comes from still.fail's servers. If they were compromised, it could act as you while you have the page open. If that matters, use the desktop or Android app.",
   "web-pages.security.webTitle": "Web app",
   "web-pages.security.join": "Protect",
+  "web-pages.security.joinShort": "Add to security mode",
   "web-pages.security.joined": "{name} is protected",
   "web-pages.security.joinTitle": "Protect {name}?",
   "web-pages.security.joinBody": "Once protected, it accepts only members, devices and stations approved by a trusted device. Make sure it's your own machine.",
