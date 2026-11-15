@@ -8,7 +8,8 @@
 // restore-keys takes the newest of a kind on its ref (then main's), so the older ones of a kind on a ref are never read
 // again: kept is the newest of each kind on each live ref, the rest deleted (one under a megabyte left: it frees
 // nothing). A deleted branch's caches cannot be restored by another branch, so all of its caches are removed once
-// they have not been created or read for 30 minutes. Pull request and other refs keep their own existing rules.
+// they have not been created or read for 30 minutes, and a live branch's once not read for 12 hours. Pull request and
+// other refs keep their own existing rules.
 // (A list of the kinds by name, as .github/cache_prune.py had, missed each new one: on 2026-10-22 mbui-apk-<sha>,
 // android-lint-main-<sha>, android-build-main-<sha> and the mbui-linux-store-… ones were 4 GB of the 22.)
 // setup-gradle's parts of a Gradle home (gradle-transforms-v1-<hash>, gradle-dependencies-v1-…: by their content,
@@ -125,6 +126,22 @@ fn deleted_head_cache(c : Cache, heads : Map[String, Bool], now : Double) -> Boo
   !heads.contains(c.ref_) &&
   c.created > 0.0 && c.accessed > 0.0 &&
   now - c.created >= deleted_head_grace_s && now - c.accessed >= deleted_head_grace_s
+}
+
+///|
+/// A live branch's caches not read for so long: a branch pushed again after it restores main's by restore-keys, as a
+/// new one does. Kept till it is gone, the caches of the 70 branches besides main held 5.4 GB
+/// of the 10 on 2026-11-15, most of it unread for 12-24 hours, and GitHub evicted the emulator's build, read each
+/// scheduled mbui-ci run: android-streams-real, android-devices and android-oldest failed with no emulator (43673780626).
+let idle_branch_s : Double = 12.0 * 3600.0
+
+///|
+/// A branch's cache (not the default branch's) not read for `idle_branch_s`
+fn idle_branch_cache(c : Cache, default_head : String, now : Double) -> Bool {
+  c.ref_.has_prefix("refs/heads/") &&
+  c.ref_ != default_head &&
+  c.accessed > 0.0 &&
+  now - c.accessed >= idle_branch_s
 }
 
 ///|
@@ -278,6 +295,10 @@ fn cache_prune(args : Array[String]) -> Int {
         gone.push(c)
         continue
       }
+    }
+    if idle_branch_cache(c, default_head, now) {
+      gone.push(c)
+      continue
     }
     if is_gradle_part(c.key) {
       let since = match homes_read.get(c.ref_) {
