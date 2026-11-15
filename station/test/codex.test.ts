@@ -229,25 +229,34 @@ describe("the Codex driver", { concurrency: true }, () => {
     await session.dispose();
   });
 
-  test("a new sign-in replaces the app-server after its running turn, and new requests wait for it", async () => {
+  // A profile's app-server is shared by its chats: waiting for its turn held every new chat of the profile back as long
+  // as another chat's turn ran (an hour, 2026-11-15).
+  test("a new sign-in leaves the running turn on the old app-server and starts new requests on a new one at once", async () => {
     const d = driver();
     const p = profile();
     const { events, push, until } = listen();
+    const b = listen();
     const session = await d.open(options(p), push);
+    const idle = await d.open(options(p), b.push);
     await session.prompt("hold:1");
     await until((e) => deltas(e).length > 0);
     await d.loginChanged(p.id);
-    let answered = false;
-    const limits = d.rateLimits(p).then((value) => { answered = true; return value; });
-    await sleep(100);
-    assert.equal(answered, false, "a request does not use the old process while its turn runs");
-    assert.equal(starts(p.dump).length, 1);
-    assert.equal(await session.steer("finish"), true);
+    assert.equal(starts(p.dump).length, 1, "a turn runs on it: it is not restarted under it");
+    assert.deepEqual(await d.rateLimits(p), { rateLimits: { primary: { usedPercent: 5 } } }, "answered while the old turn runs");
+    assert.equal(starts(p.dump).length, 2, "by a new process");
+    // The other chat on it, with no turn, is let go of: opened again on the new one with its next turn.
+    await b.until((e) => e.some((x) => x.type === "closed"));
+    const c = listen();
+    const fresh = await d.open(options(p), c.push);
+    await fresh.prompt("say:back");
+    await c.until(ended(1));
+    assert.equal(outcome(c.events).kind, "completed");
+    assert.equal(await session.steer("finish"), true, "the old turn still runs on the old process");
     await until(ended(1));
     assert.equal(outcome(events).kind, "completed");
-    assert.deepEqual(await limits, { rateLimits: { primary: { usedPercent: 5 } } });
-    assert.equal(starts(p.dump).length, 2, "the next request uses a new process");
-    await session.dispose();
+    await until((e) => e.some((x) => x.type === "closed"));
+    assert.equal(starts(p.dump).length, 2);
+    await Promise.all([session.dispose(), idle.dispose(), fresh.dispose()]);
   });
 
   test("a borrowed login about to run out is lent again under the running app-server, not by starting another", async () => {
@@ -564,7 +573,7 @@ describe("the Codex driver", { concurrency: true }, () => {
     assert.equal(starts(p.dump).length, 2);
   });
 
-  test("a same-version replacement waits for its turn and starts a new app-server", async () => {
+  test("a same-version replacement leaves its turn running and starts new sessions on a new app-server", async () => {
     const d = driver({ installedVersion: async () => "1.0.0" });
     const p = profile();
     writeFileSync(`${p.dump}.version`, "1.0.0");
@@ -575,18 +584,20 @@ describe("the Codex driver", { concurrency: true }, () => {
 
     // A repaired installation can have the same version while its executable and helpers have changed.
     await d.runtimeChanged(true);
-    const b = listen();
-    const next = d.open(options(p), b.push);
     assert.equal(starts(p.dump).length, 1, "the running turn is not interrupted");
-    assert.equal(await one.steer("finish"), true);
-    await a.until(ended(1));
-    assert.equal(outcome(a.events).kind, "completed");
-    const two = await next;
-    assert.equal(starts(p.dump).length, 2);
+    const b = listen();
+    const two = await d.open(options(p), b.push);
+    assert.equal(starts(p.dump).length, 2, "a new session does not wait for it");
     await two.prompt("say:back");
     await b.until(ended(1));
     assert.equal(outcome(b.events).kind, "completed");
+    assert.equal(await one.steer("finish"), true);
+    await a.until(ended(1));
+    assert.equal(outcome(a.events).kind, "completed");
+    await a.until((e) => e.some((x) => x.type === "closed"));
+    assert.equal(starts(p.dump).length, 2);
   });
+
 
   test("an app-server whose output has grown long is replaced once its turn ends, its sessions opened again", async () => {
     // Every app-server has written more than this by its first turn's end.

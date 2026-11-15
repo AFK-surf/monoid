@@ -215,18 +215,6 @@ class Host {
   runtimeStale = false;
   /// Being replaced with turns running on it (`drain`): no new one goes to it, and it ends after its last.
   draining = false;
-  private idleWaiters = new Set<() => void>();
-
-  whenIdle(): Promise<void> {
-    if (this.turns.size === 0 || !this.alive()) return Promise.resolve();
-    return new Promise((resolve) => this.idleWaiters.add(resolve));
-  }
-
-  signalIdle() {
-    if (this.turns.size > 0 && this.alive()) return;
-    for (const resolve of this.idleWaiters) resolve();
-    this.idleWaiters.clear();
-  }
   /// The Codex it runs (null: not known). Updated on the disk, the files it starts its helpers from are gone, and every
   /// tool call of its threads fails: it is replaced once no turn runs on it.
   version: string | null = null;
@@ -398,7 +386,6 @@ class Host {
     const threads = [...this.threads.values()];
     this.threads.clear();
     this.turns.clear();
-    this.signalIdle();
     for (const thread of threads) thread({ kind: "hostExited", reason });
   }
 
@@ -693,7 +680,6 @@ export class CodexDriver implements AgentDriver {
   /// A turn ended on a host: if Codex was updated under it or its output has grown too long, it is replaced now that it
   /// may be idle.
   hostIdle(host: Host) {
-    host.signalIdle();
     if (host.draining) return void this.drain(host).catch((error) => log.warn("agents::codex", "a codex app-server being replaced not let go of", { profile: host.profile, error: String(error) }));
     if (this.hosts.get(host.key) !== host) return;
     // Outgrown with turns running all the while (a profile's app-server, which many chats share: on ccvm one went 19
@@ -834,46 +820,54 @@ export class CodexDriver implements AgentDriver {
     await this.options.takenUp;
     const installed = await this.installedVersion();
     const key = this.hostKey(profile.id, session);
-    for (;;) {
-      const result = await this.serial(async () => {
-        await this.retireStale(key, installed);
-        const current = this.hosts.get(key);
-        // A new caller waits for old turns, rather than joining the process with the previous login.
-        if (current && current.alive() && (current.loginStale || current.runtimeStale)) return { waiting: current };
-        if (current && current.alive()) await this.renewLent(current, profile);
-        if (current && current.alive() && current.signature !== hostSignature(profile)) {
-          // The profile (or the station's variables for its agents) changed. Replace the process once no turn runs on it,
-          // as when Codex was updated under it: its other threads are closed, to be opened again on the new one with their
-          // next turn. Waiting for no thread at all would wait for ever: a session opened meanwhile joins the old one.
-          if (current.turns.size === 0) {
-            log.info("agents::codex", "profile changed; restarting its codex app-server", { profile: profile.id });
-            current.draining = true;
-            this.hosts.delete(key);
-            await current.proc.kill(5000);
-          } else {
-            log.info("agents::codex", "profile changed; its codex app-server restarts once no turn runs on it", { profile: profile.id });
-          }
-        }
-        const alive = this.hosts.get(key);
-        if (alive && alive.alive()) return { host: alive };
-        // Its app-server exited: its runner, on its way out, is not one to take up.
-        if (alive) await alive.proc.released();
-        // One an earlier station left running (its threads may be taken up yet) is taken up rather than replaced.
-        const taken = await this.takeUpLeft(profile, key);
-        const left = taken !== null;
-        const host = taken ?? (await Host.start(profile, key, this.command, this.data, this.env, this.caBundle, this.options.lent, key === profile.id ? profile.home : cwd, await this.runnerFor(key), this.agents));
-        // Taken up on a borrowed login: when that one runs out, as its auth.json says.
-        if (left && this.options.lent?.borrowed(profile)) host.lentUntil = lentExpiry(profile.home);
-        this.hosts.set(key, host);
-        return { host };
-      });
-      if (result.waiting) {
-        await result.waiting.whenIdle();
-        continue;
+    const result = await this.serial(async () => {
+      await this.retireStale(key, installed);
+      let replaced: Host | null = null;
+      const current = this.hosts.get(key);
+      // Signed in again or reinstalled with turns running on it (`retireStale` ends an idle one): those finish there,
+      // a new caller starts on a new one. Waiting for it to be idle waited on every other chat of the profile: a turn
+      // of an hour held each new one back that long, shown as starting (2026-11-15).
+      if (current && current.alive() && (current.loginStale || current.runtimeStale)) {
+        log.info("agents::codex", "login changed or codex reinstalled; new turns go to a new app-server, its own end there", { profile: current.profile, key, turns: current.turns.size, login: current.loginStale });
+        current.draining = true;
+        this.hosts.delete(key);
+        this.draining.add(current);
+        replaced = current;
       }
-      await result.host!.ensureReady();
-      return result.host!;
+      const kept = replaced ? undefined : current;
+      if (kept && kept.alive()) await this.renewLent(kept, profile);
+      if (kept && kept.alive() && kept.signature !== hostSignature(profile)) {
+        // The profile (or the station's variables for its agents) changed. Replace the process once no turn runs on it,
+        // as when Codex was updated under it: its other threads are closed, to be opened again on the new one with their
+        // next turn. Waiting for no thread at all would wait for ever: a session opened meanwhile joins the old one.
+        if (kept.turns.size === 0) {
+          log.info("agents::codex", "profile changed; restarting its codex app-server", { profile: profile.id });
+          kept.draining = true;
+          this.hosts.delete(key);
+          await kept.proc.kill(5000);
+        } else {
+          log.info("agents::codex", "profile changed; its codex app-server restarts once no turn runs on it", { profile: profile.id });
+        }
+      }
+      const alive = this.hosts.get(key);
+      if (alive && alive.alive()) return { host: alive, replaced };
+      // Its app-server exited: its runner, on its way out, is not one to take up.
+      if (alive) await alive.proc.released();
+      // One an earlier station left running (its threads may be taken up yet) is taken up rather than replaced.
+      const taken = await this.takeUpLeft(profile, key);
+      const left = taken !== null;
+      const host = taken ?? (await Host.start(profile, key, this.command, this.data, this.env, this.caBundle, this.options.lent, key === profile.id ? profile.home : cwd, await this.runnerFor(key), this.agents));
+      // Taken up on a borrowed login: when that one runs out, as its auth.json says.
+      if (left && this.options.lent?.borrowed(profile)) host.lentUntil = lentExpiry(profile.home);
+      this.hosts.set(key, host);
+      return { host, replaced };
+    });
+    if (result.replaced) {
+      const replaced = result.replaced;
+      void this.drain(replaced).catch((error) => log.warn("agents::codex", "a codex app-server being replaced not let go of", { profile: replaced.profile, error: String(error) }));
     }
+    await result.host.ensureReady();
+    return result.host;
   }
 
   /// An app-server a runner keeps, with no snapshot: what the previous station had handled of it is read again to know
