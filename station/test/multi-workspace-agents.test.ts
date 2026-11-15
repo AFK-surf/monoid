@@ -11,7 +11,7 @@ import { Cloud } from "../src/cloud/state.ts";
 import { Jobs } from "../src/jobs/jobs.ts";
 import { type PeerCall, Remote } from "../src/jobs/remote.ts";
 import { member, roster } from "../src/mesh/peer.ts";
-import { memory } from "../src/read/memory.ts";
+import { memory } from "./reference/memory.ts";
 import { workspaceAgentHome } from "../src/sessions/agent-home.ts";
 import { profilesFor } from "../src/sessions/config.ts";
 import { sessionKey } from "../src/sessions/hub.ts";

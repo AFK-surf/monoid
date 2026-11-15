@@ -1,7 +1,7 @@
 // What the readers answer, by name: each module of reads adds its own. Every op runs in a reader thread over a
-// read-only store, with the request's language set (`setSpoken`), and returns a JSON value.
+// read-only store, in the request's language (`spokenIn`), and returns a JSON value.
 import type { Store } from "./store.ts";
-import { archivedPage, chatMarks, chatRows, chats, entries, letters, setSpoken, sharedChatRows, sharedOf } from "./views.ts";
+import { archivedPage, chatMarks, chatRows, chats, entries, letters, sharedChatRows, sharedOf } from "./views.ts";
 import { usageOps } from "./ops-usage.ts";
 import { sessionOps } from "./ops-sessions.ts";
 import { saidNotices, turnNotices } from "./notices.ts";

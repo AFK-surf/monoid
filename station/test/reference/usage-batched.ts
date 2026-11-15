@@ -1,10 +1,10 @@
 import type { DatabaseSync } from "node:sqlite";
-import { Refused } from "../api/request.ts";
-import { wall } from "../ops/fibers.ts";
-import type { InWorkspace } from "../store/rows.ts";
-import { compactScopeReady, hasCompactUsage } from "../store/usage-compact.ts";
-import { hasUsageSummaryBlocks, USAGE_SUMMARY_PENDING } from "../store/usage-summary-blocks.ts";
-import { type UsageGroup, usageGroupOf } from "../store/usage.ts";
+import { Refused } from "../../src/api/request.ts";
+import { wall } from "../../src/ops/fibers.ts";
+import type { InWorkspace } from "../../src/store/rows.ts";
+import { compactScopeReady, hasCompactUsage } from "../../src/store/usage-compact.ts";
+import { hasUsageSummaryBlocks, USAGE_SUMMARY_PENDING } from "../../src/store/usage-summary-blocks.ts";
+import { type UsageGroup, usageGroupOf } from "../../src/store/usage.ts";
 import type { Store } from "./store.ts";
 import { usageGroupsFromBlocks } from "./usage-summary-blocks.ts";
 

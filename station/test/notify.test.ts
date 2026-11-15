@@ -9,9 +9,9 @@ import { Effect, Exit, Scope } from "effect";
 import { TestClock } from "effect/testing";
 import { Notifier } from "../src/cloud/notify.ts";
 import { Cloud } from "../src/cloud/state.ts";
-import { ops } from "../src/read/ops.ts";
-import { blockedAsk, openStore } from "../src/read/store.ts";
-import { turnNotice, wentWrong } from "../src/read/notices.ts";
+import { ops } from "./reference/ops.ts";
+import { blockedAsk, openStore } from "./reference/store.ts";
+import { turnNotice, wentWrong } from "./reference/notices.ts";
 import { Store, newMessage } from "../src/store/store.ts";
 
 const turn = (declared: string | null, outcome: string, need?: string) => ({ kind: "message", outcome, declared, need, startedAt: 100, endedAt: 200 });

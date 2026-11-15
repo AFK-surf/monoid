@@ -1,10 +1,10 @@
 // The checks a workspace's archive policy view counts (sessions/archive-policy.ts `policyChecks`), counted in a reader:
 // a week's checks, each chat's latest, by the time index (and, for another workspace's viewer, by its chats' own).
 import type { DatabaseSync } from "node:sqlite";
-import { type PolicyChecks, policyChecks } from "../sessions/archive-policy.ts";
-import { hasLegacyDecisionTime } from "../store/legacy-decision-time.ts";
-import type { InWorkspace } from "../store/rows.ts";
-import { LATEST_DECISIONS_SCOPED, LATEST_DECISIONS_SCOPED_FALLBACK } from "../store/store.ts";
+import { type PolicyChecks, policyChecks } from "../../src/sessions/archive-policy.ts";
+import { hasLegacyDecisionTime } from "../../src/store/legacy-decision-time.ts";
+import type { InWorkspace } from "../../src/store/rows.ts";
+import { LATEST_DECISIONS_SCOPED, LATEST_DECISIONS_SCOPED_FALLBACK } from "../../src/store/store.ts";
 
 const hasIndex = (db: DatabaseSync, name: string) => db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?").get(name) !== undefined;
 

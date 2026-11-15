@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
-import { historySessionSnapshot, makeStore } from "../src/read/store.ts";
+import { historySessionSnapshot, makeStore } from "./reference/store.ts";
 import { type Asker, type Hit, pick } from "../src/search/match.ts";
 import { SearchScopePreparation } from "../src/search/scope-prepare.ts";
 import { Search } from "../src/search/search.ts";

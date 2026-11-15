@@ -69,7 +69,7 @@ function zstdBlocks(): (chunk: Uint8Array) => Uint8Array {
   };
 }
 
-/// What changed of a list as the station answers it (station/src/read/digest.ts `changedOf`): the list as its GET
+/// What changed of a list as the station answers it (station/test/reference/digest.ts `changedOf`): the list as its GET
 /// answers, its order, and its rows whose digest is not the one held.
 function changedOf(whole: HttpResponse, id: string, req: HttpRequest): HttpResponse {
   if (whole.status !== 200) return whole;

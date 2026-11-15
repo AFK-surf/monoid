@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { Readers } from "../src/read/pool.ts";
-import { LEGACY_PAGE_ORDINARY_KEYS, LEGACY_SAID_PAGE_TAIL, makeStore, messagesBefore } from "../src/read/store.ts";
+import { LEGACY_PAGE_ORDINARY_KEYS, LEGACY_SAID_PAGE_TAIL, makeStore, messagesBefore } from "./reference/store.ts";
 import { installLegacyEdits, legacyEditStep } from "../src/store/legacy-edits-build.ts";
 import { installLegacySaid, legacySaidDrainThread, legacySaidStep } from "../src/store/legacy-said-build.ts";
 import { installSaidState } from "../src/store/said-state.ts";

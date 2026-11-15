@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { LATEST_NAMING_ORIGIN, LATEST_NAMING_ORIGIN_POSSIBLE, LATEST_NAMING_ORIGIN_PREPARED, latestNamingOrigins, makeStore } from "../src/read/store.ts";
+import { LATEST_NAMING_ORIGIN, LATEST_NAMING_ORIGIN_POSSIBLE, LATEST_NAMING_ORIGIN_PREPARED, latestNamingOrigins, makeStore } from "./reference/store.ts";
 import { CcIndexPreparation, ccSessionReady } from "../src/store/cc-thread-index.ts";
 import { Store, newMessage } from "../src/store/store.ts";
 

@@ -5,8 +5,8 @@ import { Cloud } from "../src/cloud/state.ts";
 import { peerRead, textOf } from "../src/comma/peer.ts";
 import { CHECK_BYTES, type Bytes, bytesOf, withBytes } from "../src/mesh/bus.ts";
 import { PEER_BYTES_ALPN, member, peerCall, servePeer } from "../src/mesh/peer.ts";
-import { outflowMessages } from "../src/read/outflow.ts";
-import * as read from "../src/read/store.ts";
+import { outflowMessages } from "./reference/outflow.ts";
+import * as read from "./reference/store.ts";
 import { Store, newMessage } from "../src/store/store.ts";
 import { memoryMesh } from "./memory-mesh.ts";
 

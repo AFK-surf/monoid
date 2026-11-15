@@ -2,8 +2,8 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { makeStore } from "../src/read/store.ts";
-import { resourceChats } from "../src/read/usage.ts";
+import { makeStore } from "./reference/store.ts";
+import { resourceChats } from "./reference/usage.ts";
 
 test("naming processes reads only the sessions being named", () => {
   const db = new DatabaseSync(":memory:");

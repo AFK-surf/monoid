@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { jobsNow, LATEST_JOBS, makeStore, PREPARED_UP_JOBS_OF, UP_JOBS_OF } from "../src/read/store.ts";
+import { jobsNow, LATEST_JOBS, makeStore, PREPARED_UP_JOBS_OF, UP_JOBS_OF } from "./reference/store.ts";
 import { sessionUpJobsReady, sessionUpJobsStep } from "../src/store/session-up-jobs.ts";
 import { Store } from "../src/store/store.ts";
 

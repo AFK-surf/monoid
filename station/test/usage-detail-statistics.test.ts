@@ -5,8 +5,8 @@ import { join } from "node:path";
 import { constants } from "node:sqlite";
 import { test } from "node:test";
 import { Readers } from "../src/read/pool.ts";
-import { makeStore, usageGroups } from "../src/read/store.ts";
-import { usage } from "../src/read/usage.ts";
+import { makeStore, usageGroups } from "./reference/store.ts";
+import { usage } from "./reference/usage.ts";
 import { Store } from "../src/store/store.ts";
 import { MinuteReader } from "../src/usage/minute-reader.ts";
 

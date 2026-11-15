@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { Readers } from "../src/read/pool.ts";
-import { LAST_MESSAGE_RECENT_EDIT, lastMessage, makeStore } from "../src/read/store.ts";
+import { LAST_MESSAGE_RECENT_EDIT, lastMessage, makeStore } from "./reference/store.ts";
 import { installLegacyEdits, legacyEditDrain, legacyEditStep } from "../src/store/legacy-edits-build.ts";
 import { addClientColumn, repairMergedEditLookup } from "../src/store/schema.ts";
 import { toMessage } from "../src/store/rows.ts";

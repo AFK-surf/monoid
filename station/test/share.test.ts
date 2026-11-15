@@ -10,7 +10,7 @@ import { ConfigFile } from "../src/ops/config.ts";
 import { Sharing, shareRefusal } from "../src/share/index.ts";
 import { agyAccountFile, agyToken } from "../src/agents/agy.ts";
 import { Refused } from "../src/mesh/bus.ts";
-import { memory } from "../src/read/memory.ts";
+import { memory } from "./reference/memory.ts";
 import { Cloud } from "../src/cloud/state.ts";
 import { allowedIn } from "../src/sessions/config.ts";
 import { until } from "./accounts-fakes.ts";

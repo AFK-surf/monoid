@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { sessions, summary } from "../src/read/sessions.ts";
-import { makeStore } from "../src/read/store.ts";
+import { sessions, summary } from "./reference/sessions.ts";
+import { makeStore } from "./reference/store.ts";
 import { Store } from "../src/store/store.ts";
 
 for (const what of ["summary", "list"] as const) test(`a session ${what} does not traverse unrelated bindings`, () => {

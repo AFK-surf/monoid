@@ -42,9 +42,9 @@ import { activeJobUpgradeStep, ACTIVE_JOB_CONFLICT, ACTIVE_JOB_END, ACTIVE_JOB_F
 import { HAS_SESSION_ACTIVE_WATCH } from "../src/store/watch-jobs.ts";
 import { RECOVER_AWAKE_WAITS, RECOVER_BACKFILL_FIRST, RECOVER_BACKFILL_NEXT, RECOVER_WAITS } from "../src/store/recover-waits.ts";
 import { AWAKE_BACKFILL_FIRST, AWAKE_BACKFILL_NEXT, AWAKE_WAIT_STATUS, reconcileAwakeWaits, syncAwakeWait } from "../src/store/awake-waits.ts";
-import * as read from "../src/read/store.ts";
-import { usageSummaryEdgeQuery } from "../src/read/usage-batched.ts";
-import { usageSummaryBlockOverlayQuery, usageSummaryBlockPendingQuery, usageSummaryBlockQueries } from "../src/read/usage-summary-blocks.ts";
+import * as read from "./reference/store.ts";
+import { usageSummaryEdgeQuery } from "./reference/usage-batched.ts";
+import { usageSummaryBlockOverlayQuery, usageSummaryBlockPendingQuery, usageSummaryBlockQueries } from "./reference/usage-summary-blocks.ts";
 import { recentChatDisplacedEntry } from "../src/store/chat-list-entry-rowid.ts";
 import { HISTORY_AFTER, HISTORY_DAYS, HISTORY_SCOPES, HISTORY_SEED_CALLS, HISTORY_TOTAL } from "../src/store/usage-history.ts";
 import { installRecentChatIndex, RECENT_GLOBAL_PAGE } from "../src/store/chat-list-index.ts";
@@ -1514,7 +1514,7 @@ test("jobs: a session's detail as a device asks it lists its latest and those st
   store.insertJob(job(0, { port: 4000 }));
   store.insertJob(job(1, { state: "running", endedAt: null, exitCode: null }));
   for (let i = 2; i < 62; i++) store.insertJob(job(i));
-  const { session: detail } = await import("../src/read/sessions.ts");
+  const { session: detail } = await import("./reference/sessions.ts");
   const viewer: Viewer = { sub: "u", email: "a@x", name: "A", role: "owner", workspace: "ws", device: "d", home: true };
   const r = read.makeStore(store.db, tempdir());
   const ids = (now: boolean) => detail(r, "a", viewer, "en", 0, now).jobs.map((j: any) => j.id);
@@ -2149,7 +2149,7 @@ test("a session's work is kept as its turns end and go, from when it began to be
   store.endTurn("t2", "completed", null, null, null);
   assert.deepEqual(work(store), { a: 7 * MIN, b: 0 });
   // Its detail without its turns, as a device asks it (`?turns=0`); all of them as one from before does.
-  const { session: detail } = await import("../src/read/sessions.ts");
+  const { session: detail } = await import("./reference/sessions.ts");
   const viewer: Viewer = { sub: "u", email: "a@x", name: "A", role: "owner", workspace: "ws", device: "d", home: true };
   const r = read.makeStore(store.db, tempdir());
   assert.deepEqual(detail(r, "a", viewer, "en", 0).turns, []);

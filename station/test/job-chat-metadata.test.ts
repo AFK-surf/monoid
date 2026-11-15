@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { openJobs } from "../src/read/jobs.ts";
-import { makeStore } from "../src/read/store.ts";
-import { chats } from "../src/read/views.ts";
+import { openJobs } from "./reference/jobs.ts";
+import { makeStore } from "./reference/store.ts";
+import { chats } from "./reference/views.ts";
 import { MANUAL, Store, newMessage } from "../src/store/store.ts";
 
 const viewer = { sub: "ann@x", email: "ann@x", name: "Ann", role: "member", workspace: "A", device: "dev", home: true } as const;

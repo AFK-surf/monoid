@@ -452,7 +452,7 @@ const withBrief = (e: TimelineEntry): Json => {
   return b === e ? e : { ...e, [BRIEF]: b };
 };
 
-/// What a transcript gained since `state`, read here (no readers: a test's) off the main thread, as read/ops-sessions.ts
+/// What a transcript gained since `state`, read here (no readers: a test's) off the main thread, as test/reference/ops-sessions.ts
 /// `tailRead` reads it.
 async function tailReadHere(runtime: RuntimeKind, state: TailState | { path: string; runtime?: RuntimeKind }) {
   const tail = "offset" in state ? TranscriptTail.from(runtime, state) : new TranscriptTail(state.runtime ?? runtime, state.path, null, false);

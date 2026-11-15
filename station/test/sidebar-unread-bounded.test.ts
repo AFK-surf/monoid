@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Store } from "../src/store/store.ts";
-import { listThreads, makeStore } from "../src/read/store.ts";
-import { chats, sharedChatRows } from "../src/read/views.ts";
+import { listThreads, makeStore } from "./reference/store.ts";
+import { chats, sharedChatRows } from "./reference/views.ts";
 
 const viewer = { sub: "me", email: "me", name: "Me", role: "owner", workspace: "w", device: "d" } as const;
 

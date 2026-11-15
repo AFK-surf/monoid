@@ -205,7 +205,7 @@ export const workOfRow = (r: Json | undefined): WorkOf | undefined =>
   r === undefined ? undefined : { pending: r.pending !== 0, lastTurn: r.started_at === null ? null : toTurnSummary(r) };
 
 /// What the auto-archive needs to know of a session idle long enough (sessions/lifecycle.ts), as a reader says it
-/// (read/ops-sessions.ts `archiveFacts`): bound to a connect, pinned, its chats and which of them are kept, its work and
+/// (test/reference/ops-sessions.ts `archiveFacts`): bound to a connect, pinned, its chats and which of them are kept, its work and
 /// whether a job of its is up. Null where the index that says it is not built yet. Its chats are the recent ones
 /// (`recentThreadRows`), as everything the station decides of a session's threads looks at.
 export type ArchiveFacts = { bound: boolean | null; pinned: boolean | null; threads: SessionThread[]; kept: number[] | null; work: WorkOf | null; upJob: boolean | null };

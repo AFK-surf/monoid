@@ -1,7 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
-import { Refused } from "../api/request.ts";
-import type { InWorkspace } from "../store/rows.ts";
-import { hasUsageSummaryBlocks, usageSummaryBlocksReady, USAGE_SUMMARY_PENDING } from "../store/usage-summary-blocks.ts";
+import { Refused } from "../../src/api/request.ts";
+import type { InWorkspace } from "../../src/store/rows.ts";
+import { hasUsageSummaryBlocks, usageSummaryBlocksReady, USAGE_SUMMARY_PENDING } from "../../src/store/usage-summary-blocks.ts";
 
 export type SummaryPart = { day: string | null; session: string; thread: bigint; person: string; profile: string;
   runtime: string; model: string; fast: bigint; calls: bigint; input: bigint; cache_read: bigint;

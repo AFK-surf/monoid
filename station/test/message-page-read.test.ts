@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { entriesAfter, makeStore } from "../src/read/store.ts";
+import { entriesAfter, makeStore } from "./reference/store.ts";
 import { Store, newMessage } from "../src/store/store.ts";
 
 function data() {

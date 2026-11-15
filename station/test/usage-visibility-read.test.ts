@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { makeStore, seenBy } from "../src/read/store.ts";
+import { makeStore, seenBy } from "./reference/store.ts";
 
 test("visibility of usage sessions reads only those named, including missing and old sessions", () => {
   const db = new DatabaseSync(":memory:");

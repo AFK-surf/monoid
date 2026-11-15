@@ -2,14 +2,14 @@
 import type { ReadOp } from "./ops.ts";
 import { job, jobLog, openJobs } from "./jobs.ts";
 import { chatHistoryMessages, deliveryCardState, firstText, getSession, getThread, lastSaid, lastSaidText, listThreads, messagesBefore, openedChatSaid, pendingCard, pendingCardNumber, pendingDeliveries, statePendingCard, stateQuestion, threadSessions } from "./store.ts";
-import { searchChats } from "../store/chat-list.ts";
-import { legacyMergedReadReady } from "../store/legacy-edits-build.ts";
+import { searchChats } from "../../src/store/chat-list.ts";
+import { legacyMergedReadReady } from "../../src/store/legacy-edits-build.ts";
 import { recentChatPage } from "./recent-chat.ts";
-import { workspaceSessionsToMeasure } from "../jobs/workspace-size.ts";
+import { workspaceSessionsToMeasure } from "../../src/jobs/workspace-size.ts";
 import { policyChecksRead } from "./policy-checks.ts";
-import { archiveLookOf, recentConnectPeople } from "../store/store.ts";
-import { TranscriptTail, type TailState } from "./tail.ts";
-import type { RuntimeKind } from "../agents/runtime.ts";
+import { archiveLookOf, recentConnectPeople } from "../../src/store/store.ts";
+import { TranscriptTail, type TailState } from "../../src/read/tail.ts";
+import type { RuntimeKind } from "../../src/agents/runtime.ts";
 import { session, sessionPlace, sessions, summary, thread, threads, timeline, transcriptFile, transcriptState, widgetState } from "./sessions.ts";
 
 /// `?turns=`: how many of a session's latest turns; none (or not a count): all of them, as a device from before reads.

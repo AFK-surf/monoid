@@ -81,7 +81,8 @@
   a builder cannot make (the merged view, an index under it dropped by an older station) is the writer's
   (`Readers.repairEdits`), waiting for no lock: one found busy is tried again after a pause. A move to the program is
   compared with the reads as a reader thread answered them before (`test/reference-worker.ts`, given a test's Readers
-  by `test/reference.ts`), and a builder with what the TypeScript it replaced does (`test/mb-*.test.ts`, the threads
+  by `test/reference.ts`, the reads themselves in `test/reference/`: `src/read/` keeps only what the station runs, the
+  lead 2026-11-16), and a builder with what the TypeScript it replaced does (`test/mb-*.test.ts`, the threads
   of before in `test/workers/`), on the same data. At a handover the next process opens it while the one serving
   writes: every connection waits its turn (a busy timeout), and a transaction that writes begins `BEGIN IMMEDIATE`
   (`scripts/check.sh` refuses what a change adds otherwise).

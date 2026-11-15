@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { memory } from "../src/read/memory.ts";
+import { memory } from "./reference/memory.ts";
 
 test("a_skill_comes_with_its_other_files", () => {
   const data = mkdtempSync(join(tmpdir(), "memory-"));

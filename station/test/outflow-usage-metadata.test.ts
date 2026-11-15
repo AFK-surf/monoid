@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { outflowUsage } from "../src/read/outflow.ts";
-import { makeStore } from "../src/read/store.ts";
-import { usage } from "../src/read/usage.ts";
+import { outflowUsage } from "./reference/outflow.ts";
+import { makeStore } from "./reference/store.ts";
+import { usage } from "./reference/usage.ts";
 import { Store } from "../src/store/store.ts";
 
 for (const count of [4, 40]) test(`a usage export keeps its rows without reading ${count} chat details`, () => {

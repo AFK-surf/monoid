@@ -1,0 +1,20 @@
+// The TypeScript reads the station answered before its reader moved to the MoonBit program, kept for the tests
+// to compare the program with; what the station itself still runs of it is station/src/read/recent-chat.ts's.
+import type { DatabaseSync } from "node:sqlite";
+import { readPreparedRecentHome } from "../../src/store/chat-list-home-overlap.ts";
+import { readGlobalRecentChatIndex, type RecentChatPage } from "../../src/store/chat-list-index.ts";
+import { readPreparedRecentWorkspace } from "../../src/store/chat-list-scope-rows.ts";
+import { RECENT_CHAT_PENDING } from "../../src/read/recent-chat.ts";
+
+export * from "../../src/read/recent-chat.ts";
+export { RECENT_CHAT_PENDING };
+
+/// The readiness check and selected page share the reader's enclosing snapshot. No old history is read here.
+export function recentChatPage(db: DatabaseSync, ws: string | null, home: string | null, limit: number): RecentChatPage {
+  if (!Number.isSafeInteger(limit) || limit < 0) throw new RangeError("recent chat page size must be nonnegative");
+  if (limit === 0) return { ids: [], total: 0 };
+  const page = ws === null ? readGlobalRecentChatIndex(db, limit)
+    : ws === home ? readPreparedRecentHome(db, ws, limit) : readPreparedRecentWorkspace(db, ws, limit);
+  if (page === null) throw new Error(RECENT_CHAT_PENDING);
+  return page;
+}

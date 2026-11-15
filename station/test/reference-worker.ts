@@ -8,9 +8,9 @@ import { DatabaseSync } from "node:sqlite";
 import { parentPort, workerData } from "node:worker_threads";
 import { learn } from "../src/accounts/catalog.ts";
 import type { Answer, Ask, Ready } from "../src/read/mb-reader.ts";
-import { ops, type ReadOp } from "../src/read/ops.ts";
-import { openStore, usageGroupsBatched, UsageSummaryCache } from "../src/read/store.ts";
-import { HttpError, setSpoken } from "../src/read/views.ts";
+import { ops, type ReadOp } from "./reference/ops.ts";
+import { openStore, usageGroupsBatched, UsageSummaryCache } from "./reference/store.ts";
+import { HttpError, spokenIn } from "./reference/views.ts";
 import { cardEditPage, cardMessagePage } from "../src/store/card-outbox.ts";
 
 /// How long a checkpoint of a log past its bound waits for the readers and the writer.
@@ -56,7 +56,6 @@ parentPort!.on("message", async (ask: Ask) => {
       parentPort!.postMessage({ id: ask.id, text: JSON.stringify(checkpoint(ask.args?.hard === true)) } satisfies Answer);
       return;
     }
-    setSpoken(ask.lang);
     if (ask.catalog !== undefined) learn(ask.catalog);
     store.names = new Map(ask.names);
     store.processes = new Map(ask.processes);
@@ -86,7 +85,7 @@ parentPort!.on("message", async (ask: Ask) => {
       const batched = ask.op === "usage" && a.detailsPreparing !== true
         ? await usageGroupsBatched(store, BigInt(a.from), BigInt(a.to), BigInt(a.tz), a.viewer ?? null, undefined, usageCache,
           a.summaryStrict === true ? a.summaryPrepared === true : undefined) : null;
-      answer = { id: ask.id, text: JSON.stringify(op(store, { ...a, ...(batched === null ? {} : { batchedSummary: batched }) })) };
+      answer = { id: ask.id, text: spokenIn(ask.lang, () => JSON.stringify(op(store, { ...a, ...(batched === null ? {} : { batchedSummary: batched }) }))) };
       if (store.prepareUpJobs !== null) answer.prepareUpJobs = store.prepareUpJobs;
       if (store.prepareWorkspaceUpJobs) answer.prepareWorkspaceUpJobs = true;
     } finally {

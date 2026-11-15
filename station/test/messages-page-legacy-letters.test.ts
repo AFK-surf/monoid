@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { Readers } from "../src/read/pool.ts";
-import { makeStore, messagesBefore, PAGE_LETTER_CANDIDATES } from "../src/read/store.ts";
+import { makeStore, messagesBefore, PAGE_LETTER_CANDIDATES } from "./reference/store.ts";
 import { installLegacySaid, legacySaidStep } from "../src/store/legacy-said-build.ts";
 import { PAGE_LETTER_KEYS, pageLetterStep } from "../src/store/page-letter-index.ts";
 import { installSaidState } from "../src/store/said-state.ts";

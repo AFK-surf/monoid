@@ -1,5 +1,5 @@
 // A list read again as what changed of it (POST /changed/<list>, with its GET's query): the client sends what it holds
-// as each row's digest by its id, `{ held }` (src/read/digest.ts), and is answered `{ order, rows }`, the list's ids in
+// as each row's digest by its id, `{ held }` (test/reference/digest.ts), and is answered `{ order, rows }`, the list's ids in
 // order and the rows it does not hold as they are. A client whose events stream could not be resumed reads its lists
 // so: most of each is as it holds it.
 import { clientRuntimes } from "../runtime-compat.ts";

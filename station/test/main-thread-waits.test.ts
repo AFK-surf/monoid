@@ -430,7 +430,7 @@ test("the auto-archive's look is a reader's: here only the sessions it archives 
       keys.push(key);
     }
     await time.adjust(r.hub.config().autoArchiveMs + 60_000);
-    // What a reader read for the look (read/ops-sessions.ts `archiveLook`), as the station has it carried over.
+    // What a reader read for the look (test/reference/ops-sessions.ts `archiveLook`), as the station has it carried over.
     const { autoArchiveMs, slackArchiveMs } = r.hub.config();
     const read = JSON.parse(JSON.stringify(archiveLookOf(r.store.db, r.hub.now(), autoArchiveMs, slackArchiveMs)));
     // (what archiving each sets going counted too, wherever the actor that does it runs: sessions/mb-actor.ts)

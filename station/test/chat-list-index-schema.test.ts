@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { constants, DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { recentChatPage, RECENT_CHAT_PENDING } from "../src/read/recent-chat.ts";
+import { recentChatPage, RECENT_CHAT_PENDING } from "./reference/recent-chat.ts";
 import { installRecentHomeIndex } from "../src/store/chat-list-home-index.ts";
 import { installRecentHomeOverlap } from "../src/store/chat-list-home-overlap.ts";
 import { installRecentChatIndex } from "../src/store/chat-list-index.ts";

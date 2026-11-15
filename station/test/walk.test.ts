@@ -10,7 +10,7 @@ import { after, test } from "node:test";
 import { type WalkEntry, walkBounded } from "../src/ops/walk.ts";
 import { measuredUpTo } from "../src/sessions/footprint.ts";
 import { measuredUpToReference } from "./footprint-reference.ts";
-import { rolloutsIn } from "../src/read/machine.ts";
+import { rolloutsIn } from "./reference/machine.ts";
 import { WINDOWS, platform } from "../src/platform/index.ts";
 import { backgroundedOn } from "../src/platform/unix.ts";
 import { backgroundByDefault, mbSpawned } from "../src/read/mb-reader.ts";

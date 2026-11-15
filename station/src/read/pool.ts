@@ -721,9 +721,9 @@ export class Readers {
       : line !== this.moved ? args
       : MACHINE.has(op) ? { ...(args as object), roots: machineRoots() }
       : op === "sessionPlace" ? placeOf(args)
-      // (what of a list changed: the list read as its own read is, given its words; read/digest.ts `changedOf`)
+      // (what of a list changed: the list read as its own read is, given its words; test/reference/digest.ts `changedOf`)
       : op === "changed" && WORDED.has((args as { op?: string }).op ?? "") ? changedOf(args, lang)
-      // (the usage page says its words in the language its args name, as read/ops-usage.ts reads it)
+      // (the usage page says its words in the language its args name, as test/reference/ops-usage.ts reads it)
       : WORDED.has(op) ? { ...(args as object), words: wordsIn(op, op === "usage" ? argsLang(args) ?? lang : lang), now: wall.now() }
       : args;
     const ask: Ask = { id: this.next++, op, args: given, lang, names: [], processes: [], clientKeys: [] };

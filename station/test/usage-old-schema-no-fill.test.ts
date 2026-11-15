@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { constants, DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { makeStore, sessionUsages } from "../src/read/store.ts";
+import { makeStore, sessionUsages } from "./reference/store.ts";
 import { addUsageColumns, addUsageCompactions, addUsageQuarters, addUsageTotals } from "../src/store/schema.ts";
 import { Store } from "../src/store/store.ts";
 import { installIncrementalUsageTotals } from "../src/store/usage-detail.ts";

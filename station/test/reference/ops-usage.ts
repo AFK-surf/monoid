@@ -6,9 +6,9 @@ import { memory } from "./memory.ts";
 import { HttpError } from "./views.ts";
 import { resourceChats, usage } from "./usage.ts";
 import { usageCallsPage } from "./store.ts";
-import { usageTurns } from "../store/usage.ts";
+import { usageTurns } from "../../src/store/usage.ts";
 import { HOME, type Of, outflowChats, outflowMessages, outflowUsage } from "./outflow.ts";
-import type { PageBase } from "../sessions/page.ts";
+import type { PageBase } from "../../src/sessions/page.ts";
 
 /// A whole number from the args (another station's may say anything), else 0.
 const num = (v: unknown): number => (typeof v === "number" && Number.isSafeInteger(v) ? v : 0);

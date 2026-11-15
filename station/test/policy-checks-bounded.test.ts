@@ -1,9 +1,9 @@
-// An archive policy's checks counted by a reader (read/policy-checks.ts): as the main thread counted them, and what
+// An archive policy's checks counted by a reader (test/reference/policy-checks.ts): as the main thread counted them, and what
 // the main thread is given back is as large whatever the number of chats checked.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { policyChecks, policySince } from "../src/sessions/archive-policy.ts";
-import { policyChecksRead } from "../src/read/policy-checks.ts";
+import { policyChecksRead } from "./reference/policy-checks.ts";
 import { Store } from "../src/store/store.ts";
 
 test("a reader counts a week's checks as the main thread did, and gives back the latest twenty chats of each option at most", () => {

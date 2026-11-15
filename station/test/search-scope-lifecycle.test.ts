@@ -7,7 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 import { setTimeout as delay } from "node:timers/promises";
 import { test } from "node:test";
 import { Worker } from "node:worker_threads";
-import { makeStore, openStore } from "../src/read/store.ts";
+import { makeStore, openStore } from "./reference/store.ts";
 import { type Asker, pick } from "../src/search/match.ts";
 import { SearchScopePreparation } from "../src/search/scope-prepare.ts";
 import { readSearchScopePage, SEARCH_ORPHAN_NEXT, SEARCH_SCOPE_NEXT } from "../src/search/scope-read.ts";

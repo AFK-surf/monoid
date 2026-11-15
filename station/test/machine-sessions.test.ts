@@ -7,8 +7,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { constants, DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
-import { find, machineSessions } from "../src/read/machine.ts";
-import { makeStore } from "../src/read/store.ts";
+import { find, machineSessions } from "./reference/machine.ts";
+import { makeStore } from "./reference/store.ts";
 import { SESSION_OF_RUNTIME } from "../src/store/rows.ts";
 import { Store } from "../src/store/store.ts";
 

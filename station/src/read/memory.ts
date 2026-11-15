@@ -12,7 +12,7 @@ const BUILTIN = ["stillfail-chats", "stillfail-jobs", "stillfail-show", "stillfa
 const PROJECT_PREFIX = "项目记忆：";
 
 /// Path::join as Rust has it: an absolute path replaces, nothing is normalised.
-const joined = joinPath;
+export const joined = joinPath;
 
 /// std::fs::read_to_string: the file as UTF-8, none when it does not read or is not UTF-8.
 const STRICT = new TextDecoder("utf-8", { fatal: true });
@@ -24,7 +24,7 @@ function readText(path: string): string | null {
   }
 }
 
-function readJson(path: string): Json {
+export function readJson(path: string): Json {
   try {
     return JSON.parse(readFileSync(path, "utf8"));
   } catch {
@@ -33,13 +33,8 @@ function readJson(path: string): Json {
 }
 
 /// config.rs: the agents' home, `agentHome` in config.json under the data directory (default `agent`).
-function agentHome(raw: Json, dataDir: string): string {
+export function agentHome(raw: Json, dataDir: string): string {
   return joined(dataDir, typeof raw?.agentHome === "string" ? raw.agentHome : "agent");
-}
-
-/// The agents' home of the station whose data is in `dataDir`: their shared memory and skills.
-export function agentHomeOf(dataDir: string): string {
-  return agentHome(readJson(joined(dataDir, "config.json")), dataDir);
 }
 
 /// What a skill's sharing is (share/index.ts): shared from here (config.json `sharedSkills`), a copy of another
