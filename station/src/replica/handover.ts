@@ -266,8 +266,8 @@ export class Handover {
   /// The hand-overs from here with something owed to the station they went to (gone, or a drop owed), as each is kept
   /// and saved: what `reached` tells, as every request another station makes here says it is heard from.
   readonly #owedOuts = new Set<Out>();
-  /// The records looked at so far, a test's count of what a hand-over reads (`looked`).
-  #looked = 0;
+  /// The records looked at so far by what looked (a test's count of what a hand-over reads, `looked`).
+  readonly #looked = new Map<string, number>();
   /// The chats coming here, each holding the station's self-update until it is shown or dropped.
   readonly #inHeld = new Map<string, () => void>();
   /// What a hand-over coming here does to its files, one at a time (its placing, its pruning, its drop): a drop waits
@@ -302,10 +302,10 @@ export class Handover {
       this.#keepIn(i);
       this.#holdIn(i);
     }
-    for (const o of this.#everyOut()) if ((o.step === "held" || o.step === "files" || o.step === "rows") && o.held !== false) for (const key of o.keys) void d.hub.holdChat(key, `moving to ${o.toName || o.to.slice(0, 8)}`);
+    for (const o of this.#everyOut("start")) if ((o.step === "held" || o.step === "files" || o.step === "rows") && o.held !== false) for (const key of o.keys) void d.hub.holdChat(key, `moving to ${o.toName || o.to.slice(0, 8)}`);
     // (one that went and is not shown there yet, or went as this process stopped before its rows here said so: held
     // until `start` says so, or it is shown there)
-    for (const o of this.#everyOut()) for (const key of this.#notOff(o)) void d.hub.holdChat(key, `moving to ${o.toName || o.to.slice(0, 8)}`);
+    for (const o of this.#everyOut("start")) for (const key of this.#notOff(o)) void d.hub.holdChat(key, `moving to ${o.toName || o.to.slice(0, 8)}`);
   }
 
   /// Begun (the mesh attached): each hand-over goes on where it stood. One cut before it went did not go: undone.
@@ -320,7 +320,7 @@ export class Handover {
 
   /// Whether chat `k` came here since `o` took it away, from where it went.
   #cameBack(o: Out, k: string): boolean {
-    return this.#insAt([k]).some((i) => i.step === "shown" && i.origin === o.to && i.at >= o.at);
+    return this.#insAt([k], "cameBack").some((i) => i.step === "shown" && i.origin === o.to && i.at >= o.at);
   }
 
   async start(): Promise<void> {
@@ -328,7 +328,7 @@ export class Handover {
     for (const name of await readdir(join(dir(this.#d.data), "in")).catch(() => [] as string[])) if (name.startsWith(".gone-")) void rm(join(dir(this.#d.data), "in", name), { recursive: true, force: true }).catch(() => {});
     // (gone, where it went said first, before anything else; shown there, out of sight here and let go as a hand-over
     // lets go once it is shown there; not shown yet, still held, its reads served here, until it is)
-    for (const o of this.#everyOut()) {
+    for (const o of this.#everyOut("start")) {
       const off = this.#notOff(o);
       if (off.length === 0) continue;
       this.#d.store.goneTo(off, o.to, o.there);
@@ -337,7 +337,7 @@ export class Handover {
       this.#d.store.shownThere(off, this.#d.home());
       for (const k of off) this.#d.hub.releaseChat(k);
     }
-    for (const o of this.#everyOut()) {
+    for (const o of this.#everyOut("start")) {
       if (o.step === "held" || o.step === "files" || o.step === "rows") await this.#fail(o, tr(stationLang(), "station.move.restartedMidway", { station: o.toName || o.to.slice(0, 12) }));
       // (one whose chat came back since is over: nothing of it is told any more, as its arrival ended it)
       else if (o.step === "gone" && o.v !== 2 && o.keys.every((k) => this.#cameBack(o, k))) {
@@ -409,8 +409,8 @@ export class Handover {
     else this.#comingIns.delete(i);
   }
   /// Every hand-over from here (counted as looked at): for what is done once a start, a stop or a link opening.
-  #everyOut(): Out[] {
-    this.#looked += this.#outs.size;
+  #everyOut(kind: string): Out[] {
+    this.#look(kind, this.#outs.size);
     return [...this.#outs.values()];
   }
   #owedNow(o: Out): void {
@@ -427,15 +427,15 @@ export class Handover {
     }
   }
   /// The hand-overs from here of any of sessions `keys`, each once, the latest first per session (read by `#outsOf`).
-  #outsAt(keys: readonly string[]): Out[] {
+  #outsAt(keys: readonly string[], kind: string): Out[] {
     const out = new Set<Out>();
-    for (const k of keys) for (const o of this.#outsOf.get(k) ?? []) (this.#looked++, out.add(o));
+    for (const k of keys) for (const o of this.#outsOf.get(k) ?? []) (this.#look(kind, 1), out.add(o));
     return [...out];
   }
   /// The hand-overs coming here of any of sessions `keys`, each once (read by `#insOf`).
-  #insAt(keys: readonly string[]): In[] {
+  #insAt(keys: readonly string[], kind: string): In[] {
     const out = new Set<In>();
-    for (const k of keys) for (const i of this.#insOf.get(k) ?? []) (this.#looked++, out.add(i));
+    for (const k of keys) for (const i of this.#insOf.get(k) ?? []) (this.#look(kind, 1), out.add(i));
     return [...out];
   }
   /// What answering a request of kind `kind` of hand-over `i` took here, since `t0`, added to what it took before.
@@ -448,9 +448,12 @@ export class Handover {
   #mark(o: Out, step: string): void {
     (o.began ??= {})[step] = this.#d.fibers.now();
   }
-  /// How many records what was done so far looked at (a test's: what one chat's hand-over costs).
-  looked(): number {
-    return this.#looked;
+  /// How many records what was done so far looked at, by what looked (a test's: what one chat's hand-over costs).
+  looked(): Record<string, number> {
+    return Object.fromEntries(this.#looked);
+  }
+  #look(kind: string, n: number): void {
+    if (n > 0) this.#looked.set(kind, (this.#looked.get(kind) ?? 0) + n);
   }
   /// The latest hand-over of session `key` from here (none: never).
   outOf(key: string): Out | null {
@@ -469,7 +472,7 @@ export class Handover {
   /// The move under way asked to stop: each hand-over not gone yet gives up at its next step, undone as a failure there
   /// is (the chat goes on here); one gone completes.
   abandon(): void {
-    for (const o of this.#everyOut()) if (o.step === "files" || o.step === "held" || o.step === "rows") o.abandoned = true;
+    for (const o of this.#everyOut("abandon")) if (o.step === "files" || o.step === "held" || o.step === "rows") o.abandoned = true;
   }
 
   /// Thrown where hand-over `o` was asked to stop.
@@ -512,7 +515,7 @@ export class Handover {
     const target = this.#d.roster(ws)?.find((s) => s.id === to);
     if (target === undefined) return why("notOfWorkspace");
     if (target.tasks === true) return why("tasksOnly", { station: target.name });
-    const busy = this.#outsAt([key]).find((o) => o.step === "held" || o.step === "files" || o.step === "rows" || o.step === "gone");
+    const busy = this.#outsAt([key], "check").find((o) => o.step === "held" || o.step === "files" || o.step === "rows" || o.step === "gone");
     if (busy !== undefined) return busy.step === "gone" ? why("goingAlready", { station: busy.toName || busy.to.slice(0, 8) }) : why("handingAlready");
     for (const k of this.together(key, reads)) {
       const s = reads.session(k);
@@ -867,7 +870,7 @@ export class Handover {
 
   /// The other station came up (its link opened): what is owed to it told now.
   reached(station: string): void {
-    this.#looked += this.#owedOuts.size;
+    this.#look("reached", this.#owedOuts.size);
     for (const o of [...this.#owedOuts]) {
       if (o.step !== "gone" && !o.dropOwed) continue;
       // (shown there, only its threads' re-pointing is owed: to the stations their connects run on)
@@ -992,7 +995,7 @@ export class Handover {
     if (live.length > 0) throw new Refused(liveHereWords(live, this.#d.roster(ws)?.find((s) => s.id === this.#d.here())?.name || "this station"));
     // (an older hand-over of the chat still coming here was given up where it began, its drop maybe not here yet: it is
     // dropped now, before this one places anything, so that its drop, coming late, takes nothing this one counted)
-    for (const old of this.#insAt(keys)) {
+    for (const old of this.#insAt(keys, "begin")) {
       if (old.id !== id && old.origin === origin && old.step === "coming") await this.#drop1(old);
     }
     // Its accounts as they are here: each the profile of the same share, or of the same key; one not here refused,
@@ -1146,7 +1149,7 @@ export class Handover {
   /// What is kept of them is bounded: an ended record is dropped once a newer ended one names all its chats (a chat
   /// handed about for a year keeps one), never the newest.
   async #endOuts(keys: readonly string[]): Promise<void> {
-    const theirs = this.#outsAt(keys);
+    const theirs = this.#outsAt(keys, "end");
     for (const o of theirs) {
       if (o.ended === true || (o.step !== "gone" && o.step !== "done")) continue;
       o.step = "done";
@@ -1155,10 +1158,11 @@ export class Handover {
       this.#again.delete(o.id);
       await this.#save(o);
     }
-    // (of these chats' records: one newer that names all of a record's chats is among its first chat's own)
-    for (const o of theirs) {
-      if (o.ended !== true || o.keys.length === 0) continue;
-      const newer = this.#outsAt([o.keys[0]!]).some((n) => n !== o && n.ended === true && n.at >= o.at && n.id !== o.id && o.keys.every((k) => n.keys.includes(k)) && (n.at > o.at || n.id > o.id));
+    // (of these chats' records, as they were looked at: one newer that names all of a record's chats names the one of
+    // them that came here, so it is among these)
+    const ended = theirs.filter((o) => o.ended === true);
+    for (const o of ended) {
+      const newer = ended.some((n) => n !== o && n.at >= o.at && n.id !== o.id && o.keys.every((k) => n.keys.includes(k)) && (n.at > o.at || n.id > o.id));
       if (!newer) continue;
       this.#forgetOut(o);
       await rm(outFile(this.#d.data, o.id), { force: true });
@@ -1168,9 +1172,9 @@ export class Handover {
   /// Of a chat's arrivals here the newest record is kept (`i`, shown): an older one, shown or dropped, goes, never one
   /// still coming, nor while a record from before (no `v: 2`) of that chat that `#cameBack` judges by it stands unended.
   async #trimIns(i: In): Promise<void> {
-    const judged = (k: string) => this.#outsAt([k]).some((o) => o.v !== 2 && o.ended !== true);
+    const judged = (k: string) => this.#outsAt([k], "trimJudged").some((o) => o.v !== 2 && o.ended !== true);
     // (one whose chats are all `i`'s is among `i`'s chats' own)
-    for (const old of this.#insAt(i.keys)) {
+    for (const old of this.#insAt(i.keys, "trim")) {
       if (old.id === i.id || old.step === "coming" || !old.keys.every((k) => i.keys.includes(k)) || old.keys.some(judged)) continue;
       this.#forgetIn(old);
       await rm(inFile(this.#d.data, old.id), { force: true });
@@ -1190,14 +1194,14 @@ export class Handover {
   /// The chats of workspace `ws` coming here now (by their keys, sorted): a hand-over begun here, not shown nor dropped
   /// yet. Few at a time, read from the records kept of them.
   comingIn(ws: string): string[][] {
-    this.#looked += this.#comingIns.size;
+    this.#look("comingIn", this.#comingIns.size);
     return [...this.#comingIns].filter((i) => i.step === "coming" && i.ws === ws).map((i) => [...i.keys].sort());
   }
 
   /// The station chat `key` is coming here from now (a hand-over of it begun here, not shown nor dropped yet): it waits
   /// for that station to go on with it. Null: none.
   comingFrom(key: string): string | null {
-    return this.#insAt([key]).find((i) => i.step === "coming")?.origin ?? null;
+    return this.#insAt([key], "comingFrom").find((i) => i.step === "coming")?.origin ?? null;
   }
 
   /// Once no hand-over of chat `key` coming here is still coming: each shown here (its rows the chat's, `showChat`) or
@@ -1205,7 +1209,7 @@ export class Handover {
   /// answered that it is shown here (its word lost on the way), telling it again by its retry.
   /// `withinMs`: waited no longer (the clock's): false where one is still coming then.
   async arrived(key: string, withinMs?: number): Promise<boolean> {
-    for (const i of this.#insAt([key])) {
+    for (const i of this.#insAt([key], "arrived")) {
       if (i.step !== "coming" || this.#closed) continue;
       let late = () => {};
       const shown = new Promise<boolean>((resolve) => {

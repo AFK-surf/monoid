@@ -9,11 +9,15 @@ import { test } from "node:test";
 import { A, B, WS, stillfailChat, world } from "./move-world.ts";
 
 type Json = any;
+type Looked = Record<string, number>;
+/// What was looked at since `before`, by what looked.
+const since = (now: Looked, before: Looked): Looked => Object.fromEntries(Object.entries(now).map(([k, n]) => [k, n - (before[k] ?? 0)]).filter(([, n]) => n !== 0));
+const sum = (l: Looked) => Object.values(l).reduce((a, b) => a + b, 0);
 
 /// What A's hand-over of a fresh chat to B and back (its second trip) looks at of A's records, A keeping besides the
 /// records of `n` other chats' trips there and back (each ended where it left, half as a station from before left
 /// them, and shown where it came home), as chats moved about leave them.
-async function lookedWith(n: number): Promise<{ start: number; there: number; back: number; kept: { outs: number; ins: number } }> {
+async function lookedWith(n: number): Promise<{ start: number; there: Looked; back: Looked; kept: { outs: number; ins: number } }> {
   const w = world();
   const a = w.get(A);
   const { key } = await stillfailChat(a);
@@ -46,7 +50,7 @@ async function lookedWith(n: number): Promise<{ start: number; there: number; ba
   await a.moves.start();
   await w.quiet();
   // (a start looks at each record once, what is done for each chat by its own records: as many again as there are)
-  const start = a.moves.handover.looked();
+  const start = sum(a.moves.handover.looked());
   const kept = { outs: a.moves.handover.outs().length, ins: a.moves.handover.ins().length };
   // A fresh chat there and back, then again, counted: its arrival home has its trip before to end and trim.
   const { key: fresh } = await stillfailChat(a);
@@ -57,19 +61,21 @@ async function lookedWith(n: number): Promise<{ start: number; there: number; ba
   const before = a.moves.handover.looked();
   assert.equal((await a.moves.scheduler.move(WS, B, { module: "chats", item: fresh })).failed, null);
   await w.quiet();
-  const there = a.moves.handover.looked() - before;
+  const mid = a.moves.handover.looked();
+  const there = since(mid, before);
   assert.equal((await a.moves.scheduler.back(WS, B, { module: "chats", item: fresh })).failed, null);
   await w.quiet();
-  const back = a.moves.handover.looked() - before - there;
+  const back = since(a.moves.handover.looked(), mid);
   assert.equal(a.rig.store.handedTo(fresh), null, "home again");
   return { start, there, back, kept };
 }
 
-test("a chat handed over and brought home looks at the records of its own sessions: as many at 30 other chats' trips kept as at 300; a start, at each record once", async () => {
+test("a chat handed over and brought home looks at the records of its own sessions: as many at 30 other chats' trips kept as at 300; a start, at each record once", async (t) => {
   const few = await lookedWith(30);
   const many = await lookedWith(300);
+  t.diagnostic(`looked at, by what looked: with 30 kept ${JSON.stringify(few)}; with 300 ${JSON.stringify(many)}`);
   assert.ok(many.kept.outs > 300 && many.kept.ins > 300, `the records kept: ${JSON.stringify(many.kept)}`);
-  assert.ok(few.there > 0 && few.back > 0, `counted: ${JSON.stringify(few)}`);
+  assert.ok(sum(few.there) > 0 && sum(few.back) > 0, `counted: ${JSON.stringify(few)}`);
   // (a start looks at its records as many times more as there are records more, twice that at most: not their square)
   const records = (many.kept.outs + many.kept.ins) / (few.kept.outs + few.kept.ins);
   assert.ok(many.start / few.start < 2 * records, `a start's looking grows as the records do (${records.toFixed(1)} times), not as their square: ${few.start} at 30, ${many.start} at 300`);
