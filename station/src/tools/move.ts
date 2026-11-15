@@ -25,8 +25,8 @@ export const MOVE_TOOL = {
   name: "station_move",
   description:
     "Move this station's chats, accounts, jobs and connects to another station of the chat's workspace, one item or all, and back. Read the stillfail-move skill first: it says each action and option. " +
-    "plan {to}: every item, what it needs, what cannot move and why. move {to, module, item}: one item (a chat: its session key); withNeeds moves its needs first; all moves everything once a card is confirmed in the app. " +
-    "back {module, item, to}: moves it back here. status: where each stands. stop: the move under way stops.",
+    "plan {to}: a summary (each module's counts, what cannot move and why, grouped); its items a page at a time with module (after, limit), or one with item. move {to, module, item}: one item (a chat: its session key); withNeeds moves its needs first; all moves everything once a card is confirmed in the app. " +
+    "back {module, item, to}: moves it back here. status: where each stands, as plan. stop: the move under way stops.",
   inputSchema: {
     type: "object",
     properties: {
@@ -39,6 +39,8 @@ export const MOVE_TOOL = {
       all: { type: "boolean" },
       station: { type: "string" },
       wait: { type: "boolean" },
+      after: { type: "string" },
+      limit: { type: "number" },
     },
     required: ["action"],
     additionalProperties: false,
@@ -120,7 +122,15 @@ export class MoveAsks {
       case "status": {
         const to = args.to === undefined && args.action === "status" ? null : this.#station(ws, args.to);
         const plan = await this.#d.scheduler.planShown(ws, to?.id ?? "");
-        return { plan: brief(plan), stopped: this.#d.scheduler.stopped(), say: planWords(plan, to?.name ?? "", args.action === "status") };
+        const status = args.action === "status";
+        // (one item, a module's a page at a time, or the summary: never every item, whatever the station's size)
+        if (sel.item !== undefined) {
+          const x = plan.items.find((i) => i.id === sel.item && (sel.module === undefined || i.module === sel.module));
+          if (x === undefined) throw new Refused(`no item ${sel.item}${sel.module ? ` of ${sel.module}` : ""} in the plan: plan with module lists them`);
+          return { item: brief(x) };
+        }
+        if (sel.module !== undefined) return pageOf(plan, sel.module, typeof args.after === "string" ? args.after : null, typeof args.limit === "number" ? args.limit : PAGE);
+        return { summary: summaryOf(plan, this.#d.scheduler.stopped()), say: planWords(plan, to?.name ?? "", status) };
       }
       case "move": {
         const to = this.#station(ws, args.to);
@@ -132,7 +142,7 @@ export class MoveAsks {
         }
         if (sel.module === undefined || sel.item === undefined) throw new Refused("move: name the module and the item (station_move plan lists them), or all");
         const out = await this.#d.scheduler.move(ws, to.id, { ...sel, follow: sel.module === "chats" ? ["jobs"] : undefined }, session);
-        return { outcome: out, say: outcomeWords(out, "moved to", to.name) };
+        return { outcome: outcomeOf(out), say: outcomeWords(out, "moved to", to.name) };
       }
       case "back": {
         const from = this.#station(ws, args.to);
@@ -140,7 +150,7 @@ export class MoveAsks {
         const why = await this.#d.refusal?.(ws, from.id);
         if (why) throw new Refused(why);
         const out = await this.#d.scheduler.back(ws, from.id, { ...sel, follow: sel.module === "chats" ? ["jobs"] : undefined }, session);
-        return { outcome: out, say: outcomeWords(out, "back here from", from.name) };
+        return { outcome: outcomeOf(out), say: outcomeWords(out, "back here from", from.name) };
       }
       case "stop": {
         if (!this.#d.scheduler.stopTurn(session)) throw new Refused(tr(stationLang(), "station.move.notRunning"));
@@ -211,30 +221,107 @@ export class MoveAsks {
   }
 }
 
-/// A plan as the tool answers it: each item in a line's worth.
-function brief(plan: Plan): Json[] {
-  return plan.items.map((x) => ({ module: x.module, item: x.id, label: x.label, state: x.state, ...(x.needs.length > 0 ? { needs: x.needs.map(named) } : {}), ...(x.cannot !== undefined ? { cannot: x.cannot } : {}), ...(x.error ? { error: x.error } : {}), ...(x.waitsFor ? { waitsFor: named(x.waitsFor) } : {}), ...(x.wouldStop.length > 0 ? { wouldStop: x.wouldStop.map(named) } : {}), ...(x.progress ? { progress: x.progress } : {}) }));
+/// The items of a page the tool answers (module, after, limit), and the most a page asks.
+export const PAGE = 50;
+export const PAGE_MOST = 200;
+/// The most examples a group of the summary names, the most groups it lists, and how long a label it says: whatever a
+/// station has, the summary's size is bounded by these.
+export const EXAMPLES = 3;
+export const GROUPS = 20;
+const LABEL_MOST = 80;
+const short = (s: string) => (s.length > LABEL_MOST ? `${s.slice(0, LABEL_MOST - 1)}…` : s);
+
+/// An item as the tool answers it: a line's worth.
+function brief(x: Plan["items"][number]): Json {
+  return { module: x.module, item: x.id, label: x.label, state: x.state, ...(x.needs.length > 0 ? { needs: x.needs.map(named) } : {}), ...(x.cannot !== undefined ? { cannot: x.cannot } : {}), ...(x.error ? { error: x.error } : {}), ...(x.waitsFor ? { waitsFor: named(x.waitsFor) } : {}), ...(x.wouldStop.length > 0 ? { wouldStop: x.wouldStop.map(named) } : {}), ...(x.progress ? { progress: x.progress } : {}) };
 }
 
+/// A module's items a page at a time, in the plan's order: those after `after` (an item's id), `limit` of them.
+function pageOf(plan: Plan, module: string, after: string | null, limit: number): Json {
+  const mine = plan.items.filter((x) => x.module === module);
+  if (mine.length === 0 && !plan.modules.some((m) => m.id === module)) throw new Refused(`no module ${module}: one of ${plan.modules.map((m) => m.id).join(", ")}`);
+  const from = after === null ? 0 : mine.findIndex((x) => x.id === after) + 1;
+  const n = Math.max(1, Math.min(PAGE_MOST, Math.floor(limit) || PAGE));
+  const page = mine.slice(from, from + n);
+  return { module, total: mine.length, items: page.map(brief), more: from + n < mine.length ? page.at(-1)?.id ?? null : null };
+}
+
+/// Items grouped by what is said of them (a reason), each group counted, a few named.
+function grouped<T>(xs: readonly T[], key: (x: T) => string, example: (x: T) => string): { why: string; count: number; examples: string[] }[] & { more?: number } {
+  const groups = new Map<string, { why: string; count: number; examples: string[] }>();
+  for (const x of xs) {
+    const k = key(x);
+    const g = groups.get(k) ?? { why: short(k), count: 0, examples: [] };
+    g.count++;
+    if (g.examples.length < EXAMPLES) g.examples.push(short(example(x)));
+    groups.set(k, g);
+  }
+  const all = [...groups.values()].sort((a, b) => b.count - a.count);
+  const out: { why: string; count: number; examples: string[] }[] & { more?: number } = all.slice(0, GROUPS);
+  if (all.length > GROUPS) out.more = all.length - GROUPS;
+  return out;
+}
+
+/// What the tool answers of a plan by default: each module's counts, what cannot move and why and what moving one item
+/// alone would stop (grouped), what is lent there and what is stopped here (grouped by what it waits for). Bounded
+/// whatever the station's size: no list of every item (plan with module pages them).
+export function summaryOf(plan: Plan, stopped: { item: Need; waitsFor: Need }[]): Json {
+  const modules: Record<string, Record<string, number>> = {};
+  for (const m of plan.modules) modules[m.id] = { here: 0, there: 0, moving: 0, stopped: 0, failed: 0, cannot: 0 };
+  for (const x of plan.items) {
+    const c = (modules[x.module] ??= { here: 0, there: 0, moving: 0, stopped: 0, failed: 0, cannot: 0 });
+    c[x.state] = (c[x.state] ?? 0) + 1;
+    if (x.cannot !== undefined && x.state !== "there") c.cannot!++;
+  }
+  const left = plan.items.filter((x) => x.state !== "there");
+  return {
+    items: plan.items.length,
+    modules,
+    cannot: grouped(left.filter((x) => x.cannot !== undefined), (x) => `${x.module}: ${x.cannot}`, (x) => x.label),
+    wouldStop: grouped(left.filter((x) => x.wouldStop.length > 0), (x) => `moving ${named(x)} alone stops ${x.wouldStop.length} here`, (x) => x.wouldStop.slice(0, EXAMPLES).map(named).join(", ")),
+    lent: grouped(plan.items.filter((x) => x.lentTo !== undefined), (x) => `${x.module} lent to ${x.lentTo}`, (x) => x.label),
+    stopped: grouped(stopped, (s) => `waits for ${named(s.waitsFor)}`, (s) => named(s.item)),
+  };
+}
+
+/// What the tool says of a plan in words: counts, and what cannot move grouped by why (bounded as `summaryOf`).
 export function planWords(plan: Plan, to: string, status: boolean): string {
   const by = (s: string) => plan.items.filter((x) => x.state === s).length;
-  const cannot = plan.items.filter((x) => x.cannot !== undefined && x.state !== "there");
   const parts = [`${plan.items.length} items${to ? ` for ${to}` : ""}: ${by("here")} here, ${by("there")} there, ${by("moving")} moving, ${by("stopped")} stopped, ${by("failed")} failed.`];
-  if (!status && cannot.length > 0) parts.push(`Cannot move: ${cannot.map((x) => `${x.module} ${x.label}: ${x.cannot}`).join("; ")}.`);
-  const stops = plan.items.filter((x) => x.wouldStop.length > 0 && x.state !== "there");
-  if (!status && stops.length > 0) parts.push(`Moving these alone would stop what needs them here: ${stops.map((x) => `${named(x)} stops ${x.wouldStop.map(named).join(", ")}`).join("; ")}.`);
+  const left = plan.items.filter((x) => x.state !== "there");
+  const cannot = grouped(left.filter((x) => x.cannot !== undefined), (x) => `${x.module}: ${x.cannot}`, (x) => x.label);
+  if (!status && cannot.length > 0) parts.push(`Cannot move: ${cannot.map((g) => `${g.count} (e.g. ${g.examples.join(", ")}): ${g.why}`).join("; ")}${cannot.more ? `; and ${cannot.more} other reasons` : ""}.`);
+  const stops = left.filter((x) => x.wouldStop.length > 0);
+  if (!status && stops.length > 0) parts.push(`${stops.length} items would stop what needs them here if moved alone (e.g. ${stops.slice(0, EXAMPLES).map((x) => `${named(x)} stops ${x.wouldStop.length}`).join(", ")}): move them with what needs them, or all.`);
+  if (plan.items.length > 0) parts.push("plan with module (and after, limit) lists a module's items; with item, one.");
   return parts.join(" ");
 }
 
+/// A turn's outcome as the tool answers it: each list's first page and how many it has (`counts`): a whole station's
+/// back is thousands of items, which no answer carries (mesh/peer.ts MAX_MESSAGE).
+export function outcomeOf(out: Outcome): Json {
+  const lists = { done: out.done, refused: out.refused.map((r) => ({ item: r.item, why: short(r.why) })), stopped: out.stopped, resumed: out.resumed, failures: (out.failures ?? []).map((f) => ({ item: f.item, error: short(f.error) })), returned: out.returned ?? [], lent: out.lent ?? [] };
+  const counts: Record<string, number> = {};
+  const cut: Record<string, unknown[]> = {};
+  for (const [k, xs] of Object.entries(lists)) {
+    counts[k] = xs.length;
+    cut[k] = (xs as unknown[]).slice(0, PAGE);
+  }
+  return { ...cut, failed: out.failed === null ? null : { item: out.failed.item, error: short(out.failed.error) }, counts };
+}
+
+/// A list said in words: a few of it, and how many more (a whole station's turn is thousands of items).
+const some = <T>(xs: readonly T[], said: (x: T) => string, sep = ", ", most = GROUPS) => `${xs.slice(0, most).map(said).join(sep)}${xs.length > most ? `${sep}and ${xs.length - most} more` : ""}`;
+
 export function outcomeWords(out: Outcome, how: string, station: string): string {
   const parts: string[] = [];
-  parts.push(out.done.length === 0 ? `Nothing ${how} ${station}.` : `${how[0]!.toUpperCase()}${how.slice(1)} ${station}: ${out.done.map(named).join(", ")}.`);
-  if (out.refused.length > 0) parts.push(`Not moved: ${out.refused.map((r) => `${named(r.item)}: ${r.why}`).join("; ")}.`);
-  if (out.stopped.length > 0) parts.push(`Stopped here, waiting for what they need: ${out.stopped.map((s) => `${named(s.item)} (waits for ${named(s.waitsFor)})`).join(", ")}.`);
-  if (out.resumed.length > 0) parts.push(`Going on here again: ${out.resumed.map(named).join(", ")}.`);
-  if ((out.returned ?? []).length > 0) parts.push(`Brought back, as what they moved for did not go: ${out.returned!.map(named).join(", ")}.`);
+  parts.push(out.done.length === 0 ? `Nothing ${how} ${station}.` : `${how[0]!.toUpperCase()}${how.slice(1)} ${station} (${out.done.length}): ${some(out.done, named)}.`);
+  if (out.refused.length > 0) parts.push(`Not moved (${out.refused.length}): ${grouped(out.refused, (r) => r.why, (r) => named(r.item)).map((g) => `${g.count} (e.g. ${g.examples.join(", ")}): ${g.why}`).join("; ")}.`);
+  if (out.stopped.length > 0) parts.push(`Stopped here, waiting for what they need (${out.stopped.length}): ${some(out.stopped, (s) => `${named(s.item)} (waits for ${named(s.waitsFor)})`)}.`);
+  if (out.resumed.length > 0) parts.push(`Going on here again (${out.resumed.length}): ${some(out.resumed, named)}.`);
+  if ((out.returned ?? []).length > 0) parts.push(`Brought back, as what they moved for did not go: ${some(out.returned!, named)}.`);
   const failures = out.failures ?? (out.failed !== null ? [out.failed] : []);
-  if (failures.length > 0) parts.push(`Failed: ${failures.map((f) => `${named(f.item)}: ${f.error}`).join("; ")}. Everything else of the turn went on; what needs a failed item was not started (said above). Ask again for those once the cause is fixed.`);
+  if (failures.length > 0) parts.push(`Failed (${failures.length}): ${some(failures, (f) => `${named(f.item)}: ${short(f.error)}`, "; ")}. Everything else of the turn went on; what needs a failed item was not started (said above). Ask again for those once the cause is fixed.`);
   return parts.join(" ");
 }
 

@@ -70,7 +70,9 @@ chats paused 18 minutes, a half-moved state, no way back), whose start stays swi
   answered from the turn's own plan (scheduler `held`: each module's items in order, each one's place, counts kept as
   items end), only the page's rows asked where they stand now: a read during a turn reads no page of the station's chats
   and asks nothing of the other (station/AGENTS.md: a read answers by an index and a limit); station_move plan and status
-  take the same plan, every item asked where it stands. At rest, and from the read the turn's end prompts, planned anew.
+  take the same plan, every item asked where it stands, and answer a summary of it, a module's items a page at a time or
+  one item (tools/move.ts `summaryOf`, `pageOf`): never every item, as an answer is one line of mesh/peer.ts
+  `MAX_MESSAGE` and a station has thousands of chats. At rest, and from the read the turn's end prompts, planned anew.
 - A plan never guesses what the other station has: a question of it not answered (`move.accounts`,
   `move.chats.live`, `move.repo.have`, `move.setting.values`) makes what it asks of unable to go this turn, said so
   (ask again), logged with what it failed with; with no station named it asks nothing. What needs an item that cannot go
