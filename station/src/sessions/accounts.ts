@@ -160,7 +160,7 @@ export class Accounts {
   /// Gemini vs Claude / GPT), only that group's windows weigh on `model`.
   private healthFor(id: string, model: string | null | undefined): ProfileHealth {
     const health = this.healthOf(id);
-    const quota = this.quotaForModel(id, health.quota, model);
+    const quota = this.modelQuota(id, health.quota, model);
     const scoped = quota !== health.quota ? { ...health, quota } : health;
     return this.modelSpentAt(id, model) !== undefined ? { ...scoped, spent: true } : scoped;
   }
@@ -172,6 +172,17 @@ export class Accounts {
     const want = agyScopeForModel(chosen);
     const filtered = wins.filter((w) => w?.scope === undefined || w.scope === want);
     return filtered.length > 0 && filtered.length !== wins.length ? { ...quota, windows: filtered } : quota;
+  }
+
+  /// What weighs on `model` running on profile `id`: `quotaForModel`, and the model's own week under a Claude
+  /// subscription's (`scoped`, Fable's) as one of its windows. Left out, an account whose Fable week was used up looked
+  /// free to a Fable session, which moved there, failed at once and moved again (2026-11-14).
+  private modelQuota(id: string, quota: any, model: string | null | undefined): any {
+    const q = this.quotaForModel(id, quota, model);
+    const runs = model ?? this.deps.config().profiles.find((p) => p.id === id)?.model ?? null;
+    if (runs === null || quota?.state !== "ok" || !Array.isArray(quota.scoped)) return q;
+    const own = quota.scoped.filter((w: any) => typeof w?.scope === "string" && modelWords(w.scope).every((x) => modelWords(modelKey(runs)).includes(x)));
+    return own.length > 0 ? { ...q, windows: [...windowsOf(q), ...own] } : q;
   }
 
   /// Whether profile `id` can run `model` now (pool.ts `usable`).
@@ -412,7 +423,7 @@ export class Accounts {
   /// known, when it stops being passed over (`since`: when it ran into its allowance, where that is not kept).
   private refillOf(id: string, model: string | null, since: number): number {
     const now = this.deps.clock.currentTimeMillisUnsafe();
-    const quota = this.quotaForModel(id, this.healthOf(id).quota, model);
+    const quota = this.modelQuota(id, this.healthOf(id).quota, model);
     const full = windowsOf(quota).filter((w) => Number(w.usedPercent) >= 100 && typeof w.resetsAt === "number" && w.resetsAt > now);
     if (full.length > 0) return Math.max(...full.map((w) => w.resetsAt as number));
     return (this.spent.get(this.accountKey(id)) ?? this.modelSpentAt(id, model) ?? since) + SPENT_FOR_MS;
