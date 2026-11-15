@@ -19,6 +19,7 @@ pub(all) struct OpenTiming {
 
 ///|
 /// The host's, set once as the app starts (src/stillfail reports.mbt).
+// kept across runs: the host's, set once for the process; a test that sets one puts None back itself
 pub let open_timing : Ref[OpenTiming?] = Ref(None)
 
 ///|
