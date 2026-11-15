@@ -1911,7 +1911,8 @@ try {
     const itemOf = (id: string) => `${id}@${aId}`;
     const keyOf = (ts: string) => `${dk}:${CH}:${ts}`;
     const cfgOf = (n: Name): J => JSON.parse(readFileSync(`${DATA[n]}/config.json`, "utf8"));
-    const holds = (id: string) => (["A", "B"] as Name[]).filter((n) => (cfgOf(n).connects ?? []).some((c: J) => c?.id === id));
+    // (as the station it moved to names it: `<id>@<the station it was added on>`, connects/workspace.ts take)
+    const holds = (id: string) => (["A", "B"] as Name[]).filter((n) => (cfgOf(n).connects ?? []).some((c: J) => c?.id === id || c?.id === itemOf(id)));
     /// What was asked in a thread, and whether an answer must come (one said while its chat's station was down need
     /// not: what is said then is the notice's); each is held to one answer at the part's end.
     const asked: { thread: string; word: string; channel: string; must: boolean }[] = [];
@@ -1925,8 +1926,7 @@ try {
     const answerTo = (thread: string, word: string, ms = 180_000, channel = CH) => sl.until(`answer "${word}" in ${thread}`, () => answersTo(thread, word, channel)[0], ms);
     const cwdOf = (c: Call): Name | "?" => at(/cwd=(\S+)/.exec(c.params.text ?? "")?.[1] ?? "");
     const sockets = (app = APP) => sl.live(app).map((s) => `${s.station}#${s.n}`).join(",") || "none";
-    const notices = (thread: string, channel = CH) => sl.posted(channel, thread).filter((c) => /⚠️|NOTICE|已停|暂停/.test(c.params.text ?? "")).map((c) => `${c.station}: ${(c.params.text ?? "").slice(0, 160)}`);
-    const moveConnect = async (id: string, to: Name, withNeeds = false) => {
+    const moveConnect = async (id: string, to: Name, withNeeds = true) => {
       const t0 = Date.now();
       await a.call("move.start", { station: A, to: idOf(to), module: "connects", item: itemOf(id), withNeeds });
       return turnEnds("A", t0);
@@ -2040,7 +2040,16 @@ try {
             await sender;
           }
           log(`  ${outcome(l)}; holds ${holds(dk).join(",")}; sockets ${sockets()}; ${during.length} sent across it`);
-          if (!(l.done ?? []).some((d: J) => named(d) === `connects ${itemOf(dk)}`)) throw new Error(`not moved: ${outcome(l)}`);
+          // (refused for a conversation begun while it moved, its chat made on A after the turn's plan: said, then the
+          // connect moved again with nothing said meanwhile, so the rest is driven)
+          let raced = "";
+          if (!(l.done ?? []).some((d: J) => named(d) === `connects ${itemOf(dk)}`)) {
+            raced = outcome(l);
+            log(`  not moved with conversations begun across it: ${raced}; A's chats of it now ${brief(chatsOn("A"))}`);
+            const again = await moveConnect(dk, "B");
+            log(`  again, nothing said meanwhile: ${outcome(again)}; holds ${holds(dk).join(",")}; sockets ${sockets()}`);
+            if (!(again.done ?? []).some((d: J) => named(d) === `connects ${itemOf(dk)}`)) throw new Error(`not moved even so: ${outcome(again)}; first ${raced}`);
+          }
           switched = true;
           if (holds(dk).join() !== "B") throw new Error(`held by ${holds(dk).join(",") || "none"}`);
           await sl.until("B's socket alone", () => sl.live(APP).length === 1 && sl.live(APP)[0]!.station === "B", 60_000).catch(() => {
@@ -2056,6 +2065,7 @@ try {
           log(`  most sockets at once ${sl.most.get(APP)}; with none open: ${brief((sl.none.get(APP) ?? []).filter((g) => g.from > 0).map((g) => `${g.to === 0 ? "still" : `${g.to - g.from} ms`}`))}`);
           if (lost.length > 0 || twice.length > 0) throw new Error(`unanswered ${brief(lost)}; answered more than once ${brief(twice)}`);
           if ((sl.most.get(APP) ?? 0) > 1) throw new Error(`${sl.most.get(APP)} sockets open at once`);
+          if (raced !== "") throw new Error(`a conversation begun while it moved held the connect back (moved only when asked again with nothing said): ${raced}`);
         });
         if (switched) {
           await check("4s: with the connect on B, its moved chat's thread answered once, through B's own socket", async () => {
@@ -2109,11 +2119,14 @@ try {
         const l = await moveChat(k3, "B");
         if (standing("B", k3) !== "live") throw new Error(`not on B: ${standings(k3)}; ${outcome(l)}`);
         stationDo("crash", "second");
+        const downAt = Date.now();
         sayIn(t3, `drill-note:x${tag}`, `drill-noted x${tag} `, { must: false });
-        await sl.until("the station-away notice", () => notices(t3).length > 0 && notices(t3), 120_000).then(
-          (n) => log(`  told: ${brief(n)}`),
-          () => log(`  nothing posted while B is down: ${brief(sl.posted(CH, t3).map((c) => (c.params.text ?? "").slice(0, 80)))}`),
-        );
+        // (connects/workspace.ts receive: an event of a chat on another station that did not get there is told in its
+        // thread, station.connect.stationAway)
+        const toldNow = () => sl.posted(CH, t3).filter((c) => c.at >= downAt);
+        await sl.until("a notice in the thread while B is down", () => toldNow().length > 0, 120_000).catch(() => {});
+        log(`  posted in its thread since B went down: ${brief(toldNow().map((c) => `${c.station}: ${(c.params.text ?? "").slice(0, 160)}`)) || "nothing"}`);
+        const silent = toldNow().length === 0;
         const lc = await moveConnect(dk, "B").catch((e) => ({ error: String(e) }) as J);
         log(`  the connect to B, B down: ${"error" in lc ? lc.error : outcome(lc)}; holds ${holds(dk).join(",")}; sockets ${sockets()}`);
         if (holds(dk).join() !== "A") throw new Error(`the connect is on ${holds(dk).join(",") || "none"} with B down`);
@@ -2123,6 +2136,7 @@ try {
         const c = await answerTo(t3, `drill-recall y${tag} `);
         if (cwdOf(c) !== "B") throw new Error(`answered from ${cwdOf(c)}`);
         log(`  the message said while B was down: answered ${answersTo(t3, `drill-noted x${tag} `).length}×`);
+        if (silent) throw new Error("nothing said in the thread of a message to a chat whose station was down (the rest held)");
       });
       await check("4s fault: A killed during the connect's move: afterwards one station holds it, one socket, an event answered once", async () => {
         for (const k of chatsOn("A")) {
