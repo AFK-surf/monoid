@@ -94,6 +94,12 @@ yet and you can add one, add it.
   as at 15,000. A change of its keys costs the slots of the keys that came or went among them alone, brought up to the
   keys in the pass that takes the change; they are found anew only as what shows nears their ends or goes far past
   them (`src/view/list_slots_wbtest.mbt`).
+- What makes a view do more than it must is refused where it is written, counted where it is left, those counts only
+  falling (detlint; the user, 2026-11-15: 「尽量想办法使得性能差的代码难以被写出来」): a scoped computed or a bare
+  effect outside the parts said to keep one (`scoped-computed`, `raw-effect`: detlint.json's `signals`): the one
+  lets go of all it read as what made it is parked and works it out whole as it wakes, the other never rests; a loop making nodes in what a pick or a show makes (`pick-loop`), all made again as it
+  picks anew and none of them a list's row; a list's row with its least height and no height (`each-min-height`),
+  its words measured whenever it is laid out. What truly is so says why on its line (`det-ok`).
 - State that what is made reads is a signal: a mutable value read by a binding that is not one is never seen to
   change. No check finds such a read: detlint's `built-by-hand` only refuses the two ways of covering one by hand
   (`Ctx::forget_parts`, `built_from_changed`). What shows one is the Tester keeping rows and parts as a device does

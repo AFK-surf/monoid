@@ -212,6 +212,15 @@
       "new_run"
     ]
   },
+  "signals": {
+    "scoped_ok": [
+      "src/sfbase"
+    ],
+    "effect_ok": [
+      "src/sfbase",
+      "src/sffixture"
+    ]
+  },
   "counts": {
     "frame-request": {},
     "settle": {},
@@ -573,6 +582,37 @@
       "src/sfapp/send_steady_wbtest.mbt": 7,
       "src/sfapp/sent_first_wbtest.mbt": 2,
       "src/sfapp/viewer_flight_wbtest.mbt": 1
+    },
+    "scoped-computed": {},
+    "raw-effect": {
+      "src/sfdesk/drag.mbt": 1
+    },
+    "pick-loop": {
+      "src/sf/image_reveal_node.mbt": 1,
+      "src/sf/quota_lines_node.mbt": 1,
+      "src/sf/seg_node.mbt": 2,
+      "src/sf/table_node.mbt": 1,
+      "src/sf/way_node.mbt": 1,
+      "src/sfapp/chat_bar_node.mbt": 1,
+      "src/sfapp/settings/run_more.mbt": 1,
+      "src/sfapp/settings/vault_ask.mbt": 1,
+      "src/sfbase/viewer_marks_node.mbt": 1,
+      "src/sfbase/viewer_tab.mbt": 1,
+      "src/sfbase/viz_mbui_node.mbt": 3,
+      "src/sfdesk/jobs_pop_node.mbt": 1,
+      "src/sfdesk/letters.mbt": 1,
+      "src/sfdesk/station_pick.mbt": 1,
+      "src/sfpages/accounts.mbt": 1,
+      "src/sfpages/attach.mbt": 1,
+      "src/sfpages/automatic_decisions.mbt": 2,
+      "src/sfpages/history_steps_node.mbt": 2,
+      "src/sfpages/resources_node.mbt": 1,
+      "src/sfpages/sidebar_node.mbt": 1,
+      "src/sfpages/usage_node.mbt": 2,
+      "src/sfpages/workspace.mbt": 1
+    },
+    "each-min-height": {
+      "src/sfpages/usage_node.mbt": 1
     }
   },
   "excused": {
@@ -659,6 +699,10 @@
     "read-before-run": {},
     "reset-by-hand": {},
     "app-word": {},
-    "frame-walk": {}
+    "frame-walk": {},
+    "scoped-computed": {},
+    "raw-effect": {},
+    "pick-loop": {},
+    "each-min-height": {}
   }
 }
