@@ -49,6 +49,7 @@ pub fn markdown_node(
   files? : (String) -> PlacedNode?,
   screens? : ScreensNode,
   glyphs? : ((@view.View) -> Double, (Double, @view.GlyphAt) -> @view.GlyphLook)? = None,
+  range? : (Int, Int)? = None,
   loc~ : SourceLoc,
 ) -> @view.View {
   parent.box(made_for=loc, fn(col) {
@@ -102,9 +103,17 @@ pub fn markdown_node(
       // (its first block's words on one line, cut short: markdown's one_line)
       md_words_node(col, md, fn() { first_words(blocks.get()) }, md.size, 0, wrap=false, cut=true)
     } else {
-      md_blocks_node(col, md, fn() { blocks.get() }, false)
+      md_blocks_node(col, md, fn() { blocks.get() }, false, range~)
     }
   })
+}
+
+///|
+/// How many blocks `text` comes to as the core read it (`tree`, a message's `md`): what a list that makes a long
+/// message a block a piece (markdown_node's `range`) cuts it by. None where it is not read yet.
+pub fn markdown_blocks_count(text : String, tree : Json?) -> Int? {
+  guard tree is Some(_) && text != "" else { return None }
+  Some(blocks_of(text, tree).length())
 }
 
 ///|
@@ -187,9 +196,30 @@ fn md_node_blocks(text : String, tree : Json?) -> Array[MdBlock] {
 /// Blocks (`blocks`, as they change) in `col`, one under another (stack's): each as far under the one before as the
 /// larger of the margins between them (Md::piece's), the first's top and the last's foot the column's own; `tight`: a
 /// tight list's item's (its paragraphs keep no margin of their own). Each by its place among them, made again where its
-/// kind changes.
-fn md_blocks_node(col : @view.View, md : MdNode, blocks : () -> Array[MdBlock], tight : Bool) -> Unit {
-  let count = @signals.computed(fn(_) { Array::makei(blocks().length(), fn(i) { i }) }, same=fn(a, b) { a.length() == b.length() })
+/// kind changes. `range`: only those from its first up to (not) its second, the first as far under the one before it as
+/// among all (a piece of a long message, a block of a page's list: the margin between two blocks of it the piece's own,
+/// so the pieces one under another are the message as drawn whole).
+fn md_blocks_node(
+  col : @view.View,
+  md : MdNode,
+  blocks : () -> Array[MdBlock],
+  tight : Bool,
+  range? : (Int, Int)? = None,
+) -> Unit {
+  let count = @signals.computed(
+    fn(_) {
+      let n = blocks().length()
+      match range {
+        Some((from, upto)) => {
+          let from = if from < n { from } else { n }
+          let upto = if upto < n { upto } else { n }
+          Array::makei(if upto > from { upto - from } else { 0 }, fn(i) { from + i })
+        }
+        None => Array::makei(n, fn(i) { i })
+      }
+    },
+    same=fn(a, b) { a == b },
+  )
   col.each(fn() { count.get() }, fn(i) { i }, fn(slot, i) {
     let i = i.untracked()
     let block = fn() { blocks().get(i) }
