@@ -1790,13 +1790,10 @@ fn steps_reused_row_node(
   tips : @sf.TipLayer,
   make_row : (@view.View, StepsRow) -> Unit,
 ) -> Unit {
-  ignore(src)
-  ignore(key)
   let picked = @signals.computed(fn(_) { StepsPicked::{ row: row_of(row_key()) } })
   let init_shape = @signals.untracked(fn() { steps_row_shape(picked.get().row) })
-  let init_base = init_shape.unwrap_or(-2) / 2
   let same_shape_sig = @signals.computed(
-    fn(_) { steps_row_shape(picked.get().row, ignore_opened=init_base >= 4) == init_shape },
+    fn(_) { steps_row_shape(picked.get().row, ignore_opened=true) == init_shape },
     same=fn(a, b) { a == b },
   )
   slot.pick(at_once=true, fn() { if same_shape_sig.get() { None } else { Some(picked.get()) } }, fn(p, fallback) {
@@ -1951,11 +1948,17 @@ fn steps_reused_row_node(
                         }, tone=Accented)
                         |> ignore
                       }
-                      ignore(src)
-                      ignore(key)
                       ignore(tips)
                     })
                     |> ignore
+                    gv.pick(fn() { if open() { Some(gk()) } else { None } }, fn(s, cur_gk) {
+                      guard cur_gk is Some(cur) else { return }
+                      s.fills_across(Is(true)).cuts_softly(Is(true)) |> ignore
+                      let g = @signals.untracked(content)
+                      let rs = items(g, "rows")
+                      let calls = rs.iter().any(fn(r) { text(Some(r), "kind") == "step" })
+                      group_rows_node(s, src, station, key, cur, rs, calls)
+                    })
                   })
                 }
                 4 => {
