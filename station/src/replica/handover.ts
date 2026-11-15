@@ -993,20 +993,26 @@ export class Handover {
               if (hashes.length > (this.#d.lackMost ?? LACK_MOST) || !hashes.every((h: unknown) => typeof h === "string" && HASH.test(h))) throw new Refused(why("badRequest", { detail: "too many hashes" }));
               const lacking = new Set(await lackingIn(inFiles(this.#d.data, id), hashes));
               // (one in place here already, the same bytes where it goes, is not lacking: a room kept here, or placed
-              // by a hand-over before)
+              // by a hand-over before. Only where every path of it the request names is: the same bytes at two paths,
+              // one of them not in place, are sent, or that one could not be placed (the real run, 2026-11-16: two
+              // pairs of uploads, one of each pair left there by a retirement, "2 files sent are not there"). A path
+              // of a hash already found missing is not looked at: no more than before where no bytes are at two paths)
               const files = (Array.isArray(request.files) ? request.files : []).slice(0, this.#d.lackMost ?? LACK_MOST);
               const rooms = new Map<string, string>();
+              const placed = new Set<string>();
+              const missing = new Set<string>();
               for (const f of files) {
-                if (!lacking.has(f?.hash) || typeof f?.path !== "string") continue;
+                if (!lacking.has(f?.hash) || missing.has(f?.hash) || typeof f?.path !== "string") continue;
                 // (where it lies here by the same answer its placing gives: restore.ts `carriedTo`)
                 let room: string | null = null;
                 if (typeof f.room === "string") {
                   room = rooms.get(f.room) ?? (await realOfSoon(moved(f.room, i.ctx.fromData, this.#d.data)));
                   rooms.set(f.room, room);
                 }
-                if (await inPlace(carriedTo(f.path, i.ctx.fromData, this.#d.data, room), this.#d.data, f)) lacking.delete(f.hash);
+                if (await inPlace(carriedTo(f.path, i.ctx.fromData, this.#d.data, room), this.#d.data, f)) placed.add(f.hash);
+                else missing.add(f.hash);
               }
-              return { lacking: hashes.filter((h: string) => lacking.has(h)) };
+              return { lacking: hashes.filter((h: string) => lacking.has(h) && (missing.has(h) || !placed.has(h))) };
             }
             case "handover.prune":
               return await this.#serialIn(i, () => this.#prune(i));

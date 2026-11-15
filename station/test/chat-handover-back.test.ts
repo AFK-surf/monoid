@@ -751,3 +751,41 @@ test("a thread found there that has an arriving entry already, at a lower number
     }
   }
 });
+
+test("the same bytes at two paths of a room, one of them in place there already (a retirement's leftover): the bytes are sent all the same and both are placed, not sharing a file; so too where the second path comes between the first pass and the held one", async () => {
+  // (the real run, 2026-11-16: two pairs of uploads of the same bytes, Office-Host-2's leftover room holding one of
+  // each pair: "发过去的文件有 2 个在那边不见了")
+  const bytesH = Buffer.alloc(300_000, 7);
+  for (const when of ["at once", "between the passes"] as const) {
+    const w = world();
+    const a = w.get(A);
+    const b = w.get(B);
+    const { key } = await stillfailChat(a);
+    const room = a.rig.session(key).workspace;
+    writeFileSync(join(room, "B.webm"), bytesH);
+    if (when === "at once") writeFileSync(join(room, "A.webm"), bytesH);
+    writeFileSync(join(room, "C.txt"), "only here");
+    // B's leftover of it: its room with B.webm alone, written there at another time
+    retiredCopy(a, b, key);
+    const roomThere = b.rig.session(key).workspace;
+    for (const n of ["A.webm", "C.txt"]) rmSync(join(roomThere, n), { force: true });
+    utimesSync(join(roomThere, "B.webm"), new Date(1_000_000), new Date(1_000_000));
+    // (between the passes: A.webm made here as the first pass's files are placed there)
+    let made = false;
+    w.tamper((to, r) => {
+      if (when === "between the passes" && to === B && r.method === "handover.place" && !made) {
+        made = true;
+        writeFileSync(join(room, "A.webm"), bytesH);
+      }
+      return r;
+    });
+    const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: key });
+    await w.quiet();
+    assert.equal(out.failed, null, `${when}: it went: ${JSON.stringify(out.failed)}`);
+    if (when === "between the passes") assert.ok(made, "the duplicate came between the passes");
+    assert.equal(b.rig.session(key).ws, null, `${when}: shown there`);
+    for (const n of ["A.webm", "B.webm"]) assert.ok(readFileSync(join(roomThere, n)).equals(bytesH), `${when}: ${n} there with its bytes`);
+    assert.equal(readFileSync(join(roomThere, "C.txt"), "utf8"), "only here", `${when}: C.txt there`);
+    assert.notEqual(statSync(join(roomThere, "A.webm")).ino, statSync(join(roomThere, "B.webm")).ino, `${when}: A and B not one file`);
+  }
+});
