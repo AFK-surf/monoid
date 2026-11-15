@@ -193,6 +193,127 @@ fn chat_body_rows(kept : ChatBodyKept, v : ChatView, all : Array[Entry], sending
 }
 
 ///|
+/// What chat_body_rows made last, and of what (chat_body_rows_again's): the chat's view, its entries, whether anything
+/// sent from here was on its way, the rows.
+priv struct ChatBodyMade {
+  view : ChatView
+  all : Array[Entry]
+  sending : Bool
+  rows : ChatBodyRows
+}
+
+///|
+/// chat_body_rows' rows of `v`'s entries `all` and what is on its way from here (`sending`), from what it made last
+/// (`was`) where only entries changed where they stand, each the same row as before by its key (a streamed answer's
+/// words, an agent's line, where the chat stands): those rows put again, their keys the same array, the rest of the
+/// chat looked at no further than to find them. A row that came, went or moved, its gap or its pieces another, what is
+/// sent from here or an outbox (their keys and the agents they set at work are chat_body_rows'): all of it made again.
+/// The rows' map is the one made last, changed in place: what reads them reads them by key as they are now.
+fn chat_body_rows_again(
+  kept : ChatBodyKept,
+  was : ChatBodyMade?,
+  v : ChatView,
+  all : Array[Entry],
+  sending : Array[@sfbase.LocalSent],
+) -> ChatBodyRows {
+  guard was is Some(w) &&
+    !w.sending &&
+    sending.is_empty() &&
+    all.length() == w.all.length() &&
+    v.outbox.is_empty() &&
+    w.view.outbox.is_empty() else {
+    return chat_body_rows(kept, v, all, sending)
+  }
+  let changed : Array[Int] = []
+  for i, e in all {
+    let f = w.all[i]
+    if physical_equal(e, f) || chat_entry_same(e, f) {
+      continue
+    }
+    guard chat_entry_in_place(e, f) else { return chat_body_rows(kept, v, all, sending) }
+    changed.push(i)
+  }
+  for i in changed {
+    let e = all[i]
+    let core_key = match e {
+      Said(m) =>
+        match kept.sent.get(m.seq) {
+          Some(o) => "o:" + o
+          None => e.id()
+        }
+      _ => e.id()
+    }
+    let k = kept.sent_as.get(core_key).unwrap_or(core_key)
+    guard w.rows.rows.get(k) is Some(old) else { return chat_body_rows(kept, v, all, sending) }
+    match (chat_body_pieces(e), chat_body_pieces(w.all[i])) {
+      (Some(ps), Some(was_ps)) if ps.length() == was_ps.length() =>
+        for b, pc in ps {
+          let pk = chat_piece_key(k, b)
+          w.rows.rows[pk] = { entry: e, gap: if b == 0 { old.gap } else { NoGap }, piece: Some(pc) }
+        }
+      (None, None) => w.rows.rows[k] = { entry: e, gap: old.gap, piece: None }
+      _ => return chat_body_rows(kept, v, all, sending)
+    }
+  }
+  { keys: w.rows.keys, rows: w.rows.rows }
+}
+
+///|
+/// Whether entry `b` says what `a` did (chat_body_row_same's entries: a message, what was said elsewhere, what was sent
+/// from here or an agent's line the same one, read again only as it changed; the rest by what they say).
+fn chat_entry_same(a : Entry, b : Entry) -> Bool {
+  match (a, b) {
+    (Top, Top) | (Empty, Empty) | (Line, Line) | (Newer, Newer) | (Foot, Foot) => true
+    (Older(x), Older(y)) => x == y
+    (Said(x), Said(y)) => physical_equal(x, y)
+    (Sent(x), Sent(y)) => physical_equal(x, y)
+    (Out(x), Out(y)) => physical_equal(x, y)
+    (State(w1, l1, r1), State(w2, l2, r2)) => w1 == w2 && l1 == l2 && r1 == r2
+    (Working(x), Working(y)) => physical_equal(x, y)
+    _ => false
+  }
+}
+
+///|
+/// Whether entry `a` is entry `b` changed where it stands, its row's key and the room over it as they were
+/// (chat_body_rows_again's): a message by its time and seq, what it was sent from here as and whether it joins the one
+/// before; what was said elsewhere, an agent's line by their keys; where the chat stands, the page before.
+fn chat_entry_in_place(a : Entry, b : Entry) -> Bool {
+  match (a, b) {
+    (Said(x), Said(y)) => x.ts == y.ts && x.seq == y.seq && x.outgoing == y.outgoing && x.joined == y.joined
+    (Sent(x), Sent(y)) => x.key == y.key
+    (Working(x), Working(y)) => x.key == y.key
+    (State(_, _, _), State(_, _, _)) | (Older(_), Older(_)) => true
+    _ => false
+  }
+}
+
+///|
+/// The rows `said` holds (each a row's own, by its key: chat_body_node's) told what `rows` says of their keys now,
+/// once the computed that worked them out is over (a write in its getter runs what reads it half made): a row told
+/// only as it is another (chat_body_row_same), what changed in another row telling it nothing; one whose key went keeps
+/// what it last was, let go once nothing reads it.
+fn chat_body_said(said : Map[String, @signals.Signal[ChatBodyRow]], rows : ChatBodyRows) -> Unit {
+  @signals.after_computing(fn() {
+    let gone : Array[String] = []
+    let unread = said.length() > chat_body_said_most
+    said.each(fn(k, s) {
+      match rows.rows.get(k) {
+        Some(r) => if unread && !s.watched() { gone.push(k) } else { s.set(r) }
+        None => if !s.watched() { gone.push(k) }
+      }
+    })
+    for k in gone {
+      said.remove(k)
+    }
+  })
+}
+
+///|
+/// How many rows' own signals chat_body_said keeps before those nothing reads (rows scrolled past and let go) are let go.
+let chat_body_said_most : Int = 96
+
+///|
 /// What holds the pieces after the first of the message of key `k` while they are made (ChatBodyKeeps' `pieces`).
 fn chat_pieces_of(
   pieces : Map[String, @signals.Signal[Array[@view.View]]],
@@ -261,18 +382,7 @@ fn chat_body_comes(e : Entry) -> Bool {
 /// only as it changed: sfbase's chat_read; the rest by what they say). What a row reads of its key (chat_body_row's)
 /// changes only so: one row's entry changed, or one more come, none of the others' read again.
 fn chat_body_row_same(a : ChatBodyRow, b : ChatBodyRow) -> Bool {
-  a.gap == b.gap &&
-  a.piece == b.piece &&
-  (match (a.entry, b.entry) {
-    (Top, Top) | (Empty, Empty) | (Line, Line) | (Newer, Newer) | (Foot, Foot) => true
-    (Older(x), Older(y)) => x == y
-    (Said(x), Said(y)) => physical_equal(x, y)
-    (Sent(x), Sent(y)) => physical_equal(x, y)
-    (Out(x), Out(y)) => physical_equal(x, y)
-    (State(w1, l1, r1), State(w2, l2, r2)) => w1 == w2 && l1 == l2 && r1 == r2
-    (Working(x), Working(y)) => physical_equal(x, y)
-    _ => false
-  })
+  a.gap == b.gap && a.piece == b.piece && chat_entry_same(a.entry, b.entry)
 }
 
 ///|
@@ -395,12 +505,22 @@ fn chat_body_node(
   // (when each key came into the list by data, by the list's `comes`, asked at its cause: what its row reads as it is
   // made; none for one there as the chat opened, simply there, or come by an answer at once)
   let came_at : Map[String, Double] = Map([])
-  // (worked out once as the view, its entries or what is on its way change; the keys only change as rows come, go or
-  // are taken over: each row reads its own by its key)
-  let rows = @signals.computed(fn(_) { chat_body_rows(kept, (here.view)(), entries(), sending()) }, same=fn(_, _) {
-    false
-  })
-  let keys = @signals.computed(fn(_) { rows.get().keys }, same=fn(a, b) { a == b })
+  // (worked out once as the view, its entries or what is on its way change, from what was worked out last where only
+  // rows changed where they stand (chat_body_rows_again); the keys only change as rows come, go or are taken over: each
+  // row reads its own by its key, told only as that row is another (`said`, chat_body_said), none of the rest woken by
+  // a streamed word of one)
+  let made_last : Ref[ChatBodyMade?] = Ref(None)
+  let said : Map[String, @signals.Signal[ChatBodyRow]] = Map([])
+  let rows = @signals.computed(fn(_) {
+    let view = (here.view)()
+    let all = entries()
+    let on_way = sending()
+    let rs = chat_body_rows_again(kept, made_last.val, view, all, on_way)
+    made_last.val = Some({ view, all, sending: !on_way.is_empty(), rows: rs })
+    chat_body_said(said, rs)
+    rs
+  }, same=fn(_, _) { false })
+  let keys = @signals.computed(fn(_) { rows.get().keys }, same=fn(a, b) { physical_equal(a, b) || a == b })
   // (the keys the core's rows that took over what was sent from here go on by, given the chat's viewer, which names an
   // occurrence of a picture by its row's key here and asks the core by the core's: told again as a row is taken over,
   // which only adds one)
@@ -582,7 +702,7 @@ fn chat_body_node(
       place~,
       near_top=(1.0, wants_older, fn() { ask_older(true) }),
       near_foot=(1.0, wants_newer, ask_newer),
-      fn(slot, k) { chat_body_row(slot, src, here, k, rows, side, top, core, keeps, made, jump, fn() { came_at.get(k) }) },
+      fn(slot, k) { chat_body_row(slot, src, here, k, rows, said, side, top, core, keeps, made, jump, fn() { came_at.get(k) }) },
     )
     |> ignore
   })
@@ -671,6 +791,9 @@ fn chat_body_node(
   // (the keys as they were before the change that gave these: read again for the same change, the same)
   let keys_now : Ref[Array[String]] = Ref([])
   let keys_before : Ref[Array[String]] = Ref([])
+  // (whether a key came by the change that gave these keys, as last found: the same keys and key, not looked for among
+  // all of them again for each word streamed into a row)
+  let came_last : Ref[(Array[String], String, Bool)?] = Ref(None)
   let newest = fn() -> (String, Bool, Bool)? {
     let rs = rows.get()
     if !physical_equal(rs.keys, keys_now.val) {
@@ -681,7 +804,14 @@ fn chat_body_node(
     let mut i = rs.keys.length() - 1
     while i >= 0 {
       let k = rs.keys[i]
-      let came = !before.contains(k)
+      let came = match came_last.val {
+        Some((b, ck, c)) if physical_equal(b, before) && ck == k => c
+        _ => {
+          let c = !before.contains(k)
+          came_last.val = Some((before, k, c))
+          c
+        }
+      }
       match rs.rows.get(k).map(fn(r) { r.entry }) {
         Some(State(_, _, _) | Working(_) | Newer) | None => ()
         Some(Out(_)) => return Some((k, true, came))
@@ -717,8 +847,8 @@ fn chat_body_node(
 
 ///|
 /// Row `k` of a chat's list in `slot` (entry_row's, its row's room round it: message_row_frame_node), as its kind's
-/// row draws it, reading what it is by its key in `rows` as that changes; made again only as it comes to be another
-/// kind. What it shows of being gone to (its flash, a search's words marked in it) as `jump` says; `came`, when its key
+/// row draws it, reading what it is by its key in `rows` as that changes (its own of `said`, told only as it is
+/// another: chat_body_said); made again only as it comes to be another kind. What it shows of being gone to (its flash, a search's words marked in it) as `jump` says; `came`, when its key
 /// came into the list by data (an agent's line's first words in glyph by glyph from then; none: simply there).
 fn chat_body_row(
   slot : @view.View,
@@ -726,6 +856,7 @@ fn chat_body_row(
   here : MessageNodeHere,
   k : String,
   rows : @signals.Computed[ChatBodyRows],
+  said : Map[String, @signals.Signal[ChatBodyRow]],
   side : () -> Double,
   list_top : () -> Double,
   core : @settings.Core?,
@@ -737,8 +868,16 @@ fn chat_body_row(
   let first = @signals.untracked(fn() { rows.get().rows.get(k) })
   guard first is Some(first) else { return }
   // (as the list says it now, told only as it is another (chat_body_row_same): what changed in another row reads
-  // none of this one again; one let go as its key goes reads what it last was)
-  let now = @signals.computed(fn(_) { rows.get().rows.get(k).unwrap_or(first) }, same=chat_body_row_same)
+  // none of this one again, nor wakes it; one let go as its key goes reads what it last was. The key's own, shared by
+  // its blocks made again)
+  let now = match said.get(k) {
+    Some(s) => s
+    None => {
+      let s = @signals.signal(first, same=chat_body_row_same)
+      said[k] = s
+      s
+    }
+  }
   let row = fn() { now.get() }
   let entry = fn() { row().entry }
   let top = fn() { chat_body_gap_room(row().gap, (here.width)()) }

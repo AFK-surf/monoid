@@ -824,23 +824,40 @@ pub fn chat_view_made(v : Json) -> ChatView {
 /// A chat's view as the core gives it, each of its messages read: for view_of_chat alone (chat_read), so no page
 /// works it out of the topic again, each frame.
 fn chat_view(v : Json) -> ChatView {
-  chat_view_of(v, items(Some(v), "messages").map(message_of))
+  chat_view_of(v, items(Some(v), "messages").map(message_of), None)
+}
+
+///|
+/// Part `name` of a chat's view `v` read by `make`, or as it was read (`kept`, of `was`'s view) where it is the same
+/// JSON as in the value `was` was read from: the core's deltas keep what they do not touch (src/core delta.mbt), so a
+/// streamed word reads none of the chat's people, agents, outbox and the rest again.
+fn[T] chat_part(v : Json, was : (Json, ChatView)?, name : String, kept : (ChatView) -> T, make : () -> T) -> T {
+  match was {
+    Some((raw, view)) =>
+      match (field(Some(v), name), field(Some(raw), name)) {
+        (Some(a), Some(b)) if physical_equal(a, b) => kept(view)
+        (None, None) => kept(view)
+        _ => make()
+      }
+    None => make()
+  }
 }
 
 ///|
 /// A chat's view as the core gives it, its messages read already (`messages`: chat_read's, each read again only as it
-/// changed).
-fn chat_view_of(v : Json, messages : Array[Message]) -> ChatView {
+/// changed), and what else it says read again only where it changed (`was`: the value the view before was read from,
+/// and that view; chat_part's).
+fn chat_view_of(v : Json, messages : Array[Message], was : (Json, ChatView)?) -> ChatView {
   let s = Some(v)
   let thread = field(s, "thread")
   {
     title: text(s, "title"),
     thread: opt_number(thread, "id"),
     unread: number(thread, "unread"),
-    people: items(s, "people").map(person_of),
-    agents: items(s, "agents").map(agent_of),
+    people: chat_part(v, was, "people", fn(w) { w.people }, fn() { items(s, "people").map(person_of) }),
+    agents: chat_part(v, was, "agents", fn(w) { w.agents }, fn() { items(s, "agents").map(agent_of) }),
     messages,
-    elsewhere: items(s, "elsewhere").map(elsewhere_of),
+    elsewhere: chat_part(v, was, "elsewhere", fn(w) { w.elsewhere }, fn() { items(s, "elsewhere").map(elsewhere_of) }),
     more: flag(s, "more"),
     newer: flag(s, "newer"),
     first_entry: opt_number(s, "firstEntry"),
@@ -852,29 +869,7 @@ fn chat_view_of(v : Json, messages : Array[Message]) -> ChatView {
     at_offset: opt_number(s, "atOffset"),
     unread_line: opt_number(s, "unreadLine"),
     unread_above: flag(s, "unreadAbove"),
-    outbox: items(s, "outbox").map(fn(o) {
-      let s = Some(o)
-      {
-        id: text(s, "id"),
-        text: text(s, "text"),
-        words: field(s, "words"),
-        attachments: items(s, "attachments").map(attachment_of),
-        quotes: items(s, "quotes").map(quote_of),
-        state: text(s, "state"),
-        error: text(s, "error"),
-        joined: flag(s, "joined"),
-        followed: flag(s, "followed"),
-        seq: opt_number(s, "seq").unwrap_or(-1.0),
-        time: stamp_of(s, "createdAt"),
-        waits: text(s, "waits"),
-        progress: opt_number(s, "progress"),
-        uploads: items(s, "uploads").map(fn(u) {
-          (text(Some(u), "name"), number(Some(u), "size").to_int(), number(Some(u), "sent").to_int())
-        }),
-        created_at: number(s, "createdAt"),
-        refused: flag(s, "final"),
-      }
-    }),
+    outbox: chat_part(v, was, "outbox", fn(w) { w.outbox }, fn() { chat_outbox_of(s) }),
     joins_until: opt_number(s, "joinsUntil"),
     offline: flag(s, "offline"),
     offline_note: opt_text(s, "offlineNote"),
@@ -891,27 +886,62 @@ fn chat_view_of(v : Json, messages : Array[Message]) -> ChatView {
     ask_clear: flag(s, "askClear"),
     archived: flag(s, "archived"),
     archivable: flag(s, "archivable"),
-    asks: items(s, "asks").map(fn(a) { number(Some(a), "seq") }),
+    asks: chat_part(v, was, "asks", fn(w) { w.asks }, fn() { items(s, "asks").map(fn(a) { number(Some(a), "seq") }) }),
     station_update: field(s, "stationUpdate"),
     me: text(field(s, "me"), "email"),
     pending: flag(s, "pending"),
     key: text(s, "key"),
-    tabs: {
-      open: items(field(s, "tabs"), "open").filter_map(fn(t) { if t is String(k) { Some(k) } else { None } }),
-      shown: opt_text(field(s, "tabs"), "shown"),
-      auto: flag(field(s, "tabs"), "auto"),
-    },
-    cc: items(s, "cc").map(fn(o) {
-      let o = Some(o)
-      { thread: number(o, "thread"), place: text(o, "place"), via: text(o, "via"), on: flag(o, "on") }
+    tabs: chat_part(v, was, "tabs", fn(w) { w.tabs }, fn() {
+      {
+        open: items(field(s, "tabs"), "open").filter_map(fn(t) { if t is String(k) { Some(k) } else { None } }),
+        shown: opt_text(field(s, "tabs"), "shown"),
+        auto: flag(field(s, "tabs"), "auto"),
+      }
     }),
-    screens: items(s, "screens").map(fn(o) {
-      let o = Some(o)
-      { id: text(o, "id"), kind: text(o, "kind"), title: text(o, "title"), line: text(o, "line"), agent: flag(o, "agent") }
-    }),    opener: opener_of(s),
-    opened: opened_of(s),
+    cc: chat_part(v, was, "cc", fn(w) { w.cc }, fn() {
+      items(s, "cc").map(fn(o) {
+        let o = Some(o)
+        { thread: number(o, "thread"), place: text(o, "place"), via: text(o, "via"), on: flag(o, "on") }
+      })
+    }),
+    screens: chat_part(v, was, "screens", fn(w) { w.screens }, fn() {
+      items(s, "screens").map(fn(o) {
+        let o = Some(o)
+        { id: text(o, "id"), kind: text(o, "kind"), title: text(o, "title"), line: text(o, "line"), agent: flag(o, "agent") }
+      })
+    }),
+    opener: chat_part(v, was, "opener", fn(w) { w.opener }, fn() { opener_of(s) }),
+    opened: chat_part(v, was, "opened", fn(w) { w.opened }, fn() { opened_of(s) }),
     opened_text: text(s, "openedText"),
   }
+}
+
+///|
+/// The outbox of a chat's view `s` (ChatView's `outbox`) as the core gives it.
+fn chat_outbox_of(s : Json?) -> Array[Outgoing] {
+  items(s, "outbox").map(fn(o) {
+    let s = Some(o)
+    {
+      id: text(s, "id"),
+      text: text(s, "text"),
+      words: field(s, "words"),
+      attachments: items(s, "attachments").map(attachment_of),
+      quotes: items(s, "quotes").map(quote_of),
+      state: text(s, "state"),
+      error: text(s, "error"),
+      joined: flag(s, "joined"),
+      followed: flag(s, "followed"),
+      seq: opt_number(s, "seq").unwrap_or(-1.0),
+      time: stamp_of(s, "createdAt"),
+      waits: text(s, "waits"),
+      progress: opt_number(s, "progress"),
+      uploads: items(s, "uploads").map(fn(u) {
+        (text(Some(u), "name"), number(Some(u), "size").to_int(), number(Some(u), "sent").to_int())
+      }),
+      created_at: number(s, "createdAt"),
+      refused: flag(s, "final"),
+    }
+  })
 }
 
 ///|

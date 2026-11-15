@@ -684,6 +684,8 @@ pub fn chat_kept_from(src : Source, r : ChatRef) -> ChatView? {
 /// A chat as chat_read made it: its view, its list's entries, and each message with the JSON it was read from (the
 /// next version's same JSON, a message that did not change, not read again: made_again).
 priv struct ChatRead {
+  /// the topic's value it was read from: what of it is the same JSON in the next is not read again (chat_view_of's)
+  raw : Json
   message_json : Array[Json]
   view : ChatView
   list : Array[Entry]
@@ -722,23 +724,52 @@ fn chat_entries_same(a : ChatView, b : ChatView) -> Bool {
 }
 
 ///|
-/// Messages appended after an unchanged history keep its entries. The old array remains untouched, since a frame
-/// may still use it. Other list changes take the ordinary path.
+/// Messages changed where they stand (a streamed answer's words), and appended after the history before, keep the
+/// entries of all the rest: the old ones copied, the changed messages' put in their place and the new ones' after them.
+/// The old array remains untouched, since a frame may still use it. Other list changes take the ordinary path. A
+/// message changed in place keeps its seq (the unread line stays where it was over it) and says nothing elsewhere,
+/// before or now (no Sent entries of its own to put again).
 fn chat_entries_appended(v : ChatView, was : ChatRead) -> (Array[Entry], Int)? {
   let before = was.view.messages
-  if before.is_empty() || before.length() >= v.messages.length() ||
+  if before.is_empty() || before.length() > v.messages.length() ||
      was.view.more != v.more || was.view.unread_line != v.unread_line ||
+     (v.more && (was.view.older != v.older || was.view.older_failed != v.older_failed)) ||
      !was.view.elsewhere.is_empty() || !v.elsewhere.is_empty() {
     return None
   }
-  for i, m in before {
-    if !physical_equal(m, v.messages[i]) {
-      return None
+  // (the messages changed where they stand, the last first)
+  let changed : Array[Int] = []
+  let mut i = before.length() - 1
+  while i >= 0 {
+    let a = before[i]
+    let b = v.messages[i]
+    if !physical_equal(a, b) {
+      guard a.seq == b.seq && a.elsewhere.is_empty() && b.elsewhere.is_empty() else { return None }
+      changed.push(i)
     }
+    i -= 1
   }
   let out = was.list.copy()
   while out.length() > was.message_end {
     out.pop() |> ignore
+  }
+  // (each changed message's entry found from the end of the messages': no more of them gone through than lie after
+  // the first changed)
+  if !changed.is_empty() {
+    let mut m = before.length() - 1
+    let mut c = 0
+    let mut at = out.length() - 1
+    while at >= 0 && c < changed.length() {
+      if out[at] is Said(_) {
+        if m == changed[c] {
+          out[at] = Said(v.messages[m])
+          c += 1
+        }
+        m -= 1
+      }
+      at -= 1
+    }
+    guard c == changed.length() else { return None }
   }
   for i in before.length()..<v.messages.length() {
     chat_entry_message(out, v.messages[i], v.unread_line)
@@ -749,8 +780,37 @@ fn chat_entries_appended(v : ChatView, was : ChatRead) -> (Array[Entry], Int)? {
 }
 
 ///|
+/// The messages of `message_json` read from those of a chat read before (`was`) where they changed only where they
+/// stand or came after them (a streamed answer's words, a message come at the end): each the same JSON as before taken
+/// as it was, each changed where it stands (its key the same) and each come read, no other looked at or keyed. None
+/// where any came or went elsewhere, or moved: made_again's to find.
+fn chat_read_again(message_json : Array[Json], was : ChatRead) -> (Array[(Json, Message)], Array[Message])? {
+  let n = was.read.length()
+  guard n > 0 && message_json.length() >= n && was.view.messages.length() == n else { return None }
+  let read = was.read.copy()
+  let messages = was.view.messages.copy()
+  for i in 0..<n {
+    let j = message_json[i]
+    let (wj, _) = was.read[i]
+    guard !physical_equal(j, wj) else { continue }
+    guard message_key(j) == message_key(wj) else { return None }
+    let m = message_of(j)
+    read[i] = (j, m)
+    messages[i] = m
+  }
+  for i in n..<message_json.length() {
+    let j = message_json[i]
+    let m = message_of(j)
+    read.push((j, m))
+    messages.push(m)
+  }
+  Some((read, messages))
+}
+
+///|
 /// A chat's view and its list's entries, as the core's `chat` topic gives them: its messages read again only as they
-/// changed (one came: that one read).
+/// changed (one came: that one read), and what else it says read again only where it is not the same JSON as before
+/// (chat_view_of's `was`).
 // kept across runs: what it keeps is let go of by a run anew and by reset (derived.mbt)
 let chat_read : Derived[ChatRead] = Derived::new("chat", fn(v, was) {
   let message_json = items(Some(v), "messages")
@@ -758,19 +818,31 @@ let chat_read : Derived[ChatRead] = Derived::new("chat", fn(v, was) {
     Some(w) if physical_equal(w.message_json, message_json) && same_chat_messages(message_json, w.read) =>
       (w.read, w.view.messages)
     _ => {
-      let read = made_again(
-        message_json,
-        match was {
-          Some(w) => w.read
-          None => []
-        },
-        message_key,
-        message_of,
-      )
-      (read, read.map(fn(p) { p.1 }))
+      let again = match was {
+        Some(w) => chat_read_again(message_json, w)
+        None => None
+      }
+      match again {
+        Some(both) => both
+        None => {
+          let read = made_again(
+            message_json,
+            match was {
+              Some(w) => w.read
+              None => []
+            },
+            message_key,
+            message_of,
+          )
+          (read, read.map(fn(p) { p.1 }))
+        }
+      }
     }
   }
-  let view = chat_view_of(v, messages)
+  let view = chat_view_of(v, messages, match was {
+    Some(w) => Some((w.raw, w.view))
+    None => None
+  })
   let (list, message_end) = match was {
     Some(w) if chat_entries_same(w.view, view) => (w.list, w.message_end)
     Some(w) =>
@@ -780,7 +852,7 @@ let chat_read : Derived[ChatRead] = Derived::new("chat", fn(v, was) {
       }
     None => chat_entries(view)
   }
-  { message_json, view, list, message_end, read }
+  { raw: v, message_json, view, list, message_end, read }
 })
 
 ///|

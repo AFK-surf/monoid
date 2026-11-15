@@ -119,7 +119,7 @@ fn patch_all(list : Array[Json], run : ArrayView[Json], first : Map[String, Json
       (Some(i), Some(Array(ops))) => {
         let was = out[i]
         out[i] = apply_delta(was, ops)
-        if key_of(out[i], fields) != key_of(was, fields) {
+        if !same_key(out[i], was, fields) {
           stale = true
         }
       }
@@ -206,17 +206,48 @@ fn index_of(seg : Json) -> Int? {
 ///|
 /// An item's key: the one field's value, or the fields' values in order (a field missing is null).
 fn key_of(item : Json, fields : Array[Json]) -> Json {
-  let field = fn(f : Json) -> Json {
-    match (item, f) {
-      (Object(m), String(name)) => m.get(name).unwrap_or(Json::null())
-      _ => Json::null()
+  if fields.length() == 1 {
+    key_field(item, fields[0])
+  } else {
+    Json::array(fields.map(fn(f) { key_field(item, f) }))
+  }
+}
+
+///|
+/// A field of an item by its key's field `f` (a field missing is null).
+fn key_field(item : Json, f : Json) -> Json {
+  match (item, f) {
+    (Object(m), String(name)) => m.get(name).unwrap_or(Json::null())
+    _ => Json::null()
+  }
+}
+
+///|
+/// Whether `item`'s key is `target` (key_of's, an op's `patch`, `drop`, `move` or `before`), nothing made to tell: a
+/// list's items are looked through for one, and an array made of each one's fields (a chat's messages' `seq` and
+/// `outgoing`) was an allocation an item, hundreds a streamed word.
+fn key_match(item : Json, fields : Array[Json], target : Json) -> Bool {
+  if fields.length() == 1 {
+    return key_field(item, fields[0]) == target
+  }
+  guard target is Array(t) && t.length() == fields.length() else { return false }
+  for i, f in fields {
+    if key_field(item, f) != t[i] {
+      return false
     }
   }
-  if fields.length() == 1 {
-    field(fields[0])
-  } else {
-    Json::array(fields.map(field))
+  true
+}
+
+///|
+/// Whether items `a` and `b` have the same key (key_of's), nothing made to tell.
+fn same_key(a : Json, b : Json, fields : Array[Json]) -> Bool {
+  for f in fields {
+    if key_field(a, f) != key_field(b, f) {
+      return false
+    }
   }
+  true
 }
 
 ///|
@@ -228,7 +259,7 @@ fn apply_keyed(list : Array[Json], op : Map[String, Json]) -> Array[Json] {
   let out = list.copy()
   let find = fn(k : Json) -> Int {
     for i, item in out {
-      if key_of(item, fields) == k {
+      if key_match(item, fields, k) {
         return i
       }
     }
@@ -273,7 +304,13 @@ fn apply_keyed(list : Array[Json], op : Map[String, Json]) -> Array[Json] {
         Some(p) => p
         None => return list
       }
-      let i = find(key_of(put, fields))
+      let mut i = -1
+      for j, item in out {
+        if same_key(item, put, fields) {
+          i = j
+          break
+        }
+      }
       if i >= 0 && !op.contains("before") {
         out[i] = put
       } else {
