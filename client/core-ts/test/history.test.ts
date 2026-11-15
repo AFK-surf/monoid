@@ -827,4 +827,30 @@ test("codex_exec_wrappers_and_multi_runtime_tools_are_unwrapped_and_labeled", ()
     rec.messages[0].text,
     "> 根因找到了。不是 Remotion 渲染慢，是 **Claude Code 的 Bash 工具把后台进程 stdout 管道握住了 12 分钟**。 …\n\n那现在怎么修？\n[附件: shot.png]",
   );
+
+  // 7. Turn-state marks preserve full multi-line / >200-char reasons uncut so the UI can fold to one line and expand the whole text
+  const longDoneReason =
+    "已完成全部执行历史条目的展开收起统一与对齐修复：\n" +
+    "1. 发送消息与收到消息超过 3 行默认折叠，展开与收起按钮固定在标题右侧原位不跳动，收起态保留三行完整预览不裁半行；\n" +
+    "2. 结束、等待人工与等待中状态说明保留完整原因不再在 200 字处硬截断，单行放不下时折叠为单行省略并支持点开在下方浅底圆角框查看全文；\n" +
+    "3. 全部行首图标、行内平台小图标与右侧箭头统一锁在 20pt 首行文字中线上，单行与折行均严格居中对齐（commit 82f108a5，测试版 0.1.9450 已发版并在大屏与小屏实测验证通过）。";
+  assert.ok(longDoneReason.length > 200);
+  const withLongMark = presentHistory(
+    {
+      timeline: [
+        { kind: "user", text: '<message via="web" thread="CHAT/1" from="Ada (ada@x)" ts="1.0">check</message>' },
+        {
+          kind: "tool_call",
+          tool: "mcp__stillfail__chat_state",
+          callId: "st1",
+          text: JSON.stringify({ kind: "all_done", done: longDoneReason }),
+        },
+        { kind: "tool_result", callId: "st1", ok: true, text: "Recorded state all_done." },
+      ],
+    },
+    cx([], [], []),
+  );
+  assert.equal(withLongMark.items[1].body.kind, "mark");
+  assert.equal(withLongMark.items[1].body.content.ends, "done");
+  assert.ok(withLongMark.items[1].body.content.text.endsWith(`：${longDoneReason}`), "full mark reason must be preserved uncut");
 });

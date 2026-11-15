@@ -301,9 +301,14 @@ test "history steps at 1.3x: fold toggle room, task wrap, step meta and tool pat
   t.run_for(@ui.move_most_ms)
   app.nav.push(History(r, "s-c1", None))
   t.run_for(@ui.move_most_ms)
-  // Unwrapped task error wraps across multiple lines instead of clipping to one line.
+  // Long task error folds cleanly to 1 line with chevron and expands full text into a card below on tap.
   let task_rect = t.rect_of("构建任务失败").unwrap()
-  assert_true(task_rect.3 > 25.0, msg="expected wrapped task height > 25, got \{Repr(task_rect)}")
+  assert_true(task_rect.3 <= 27.0, msg="expected folded 1-line task height <= 27, got \{Repr(task_rect)}")
+  t.tap(task_rect.0 + task_rect.2 / 2.0, task_rect.1 + task_rect.3 / 2.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("现在应当在窄屏下完整换行展示出来") is Some(_), msg="expected expanded task error card")
+  t.tap(task_rect.0 + task_rect.2 / 2.0, task_rect.1 + task_rect.3 / 2.0)
+  t.run_for(@ui.move_most_ms)
   // Fold toggle button has >= 44px touch height under 1.3x font scale.
   let fold_btn = t.rect_of("展开 · 还有").unwrap()
   assert_true(fold_btn.3 >= @sf.row_least() - 0.5 || t.room_faults().filter(fn(f) { f.contains("history_steps_node.mbt") }).is_empty(), msg="fold toggle: \{Repr(fold_btn)}")

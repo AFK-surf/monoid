@@ -894,7 +894,7 @@ export function presentHistory(live: J, cx: Context): J {
                     : t("core-logic.history.mark.other", { mark: m });
           v = {
             kind: "mark",
-            text: item.why !== null ? `${baseText}：${line(item.why, 200)}` : baseText,
+            text: item.why !== null ? `${baseText}：${item.why}` : baseText,
           };
           const ends = endsOf(m);
           if (ends !== null) v.ends = ends;

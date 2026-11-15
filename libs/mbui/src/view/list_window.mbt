@@ -716,6 +716,19 @@ pub fn[K : Hash + Eq] View::scrolls_window(
       i = self.tree.nodes[i].parent
     }
   }
+  // (those of a kind another may take put by as they no more show (`reused`), each with what says its key now, what
+  // wakes what it binds (View::rests) and the slot it is still in, none once that slot left what has slots or had its
+  // measured height forgotten and it was taken out of it, held by no node (View::park): so many at most of each, the
+  // rest let go; all let go with the list)
+  let spare : Map[Int, Array[(View, @signals.Signal[K], () -> Unit, View?)]] = Map([])
+  let spare_let_go = fn() {
+    for _, all in spare {
+      for b in all {
+        b.0.let_go()
+      }
+      all.clear()
+    }
+  }
   // (how wide what it holds is given to be, as it is laid out: View::scrolls' fill)
   let room_w : @signals.Signal[Double?] = @signals.signal(None, same=fn(a, b) { a == b })
   self.reacts(fn() { (room_w.get(), self.words_redone()) }, fn(_) {
@@ -726,6 +739,21 @@ pub fn[K : Hash + Eq] View::scrolls_window(
         heights_changed.push(k)
         if tall.get(k) is Some(c) {
           c.set(None)
+        }
+      }
+      // (a block put by in a slot whose height is forgotten: taken out of it so a taller block cannot overflow est)
+      for _, those in spare {
+        for i, sp in those {
+          match sp {
+            (v, key, wake, Some(was_in)) => {
+              let k = key.untracked()
+              if !showing.contains(k) && !heights.contains(k) && v.alive() {
+                was_in.park(v, rest=false) |> ignore
+                those[i] = (v, key, wake, None)
+              }
+            }
+            _ => ()
+          }
         }
       }
       tell()
@@ -1602,18 +1630,6 @@ pub fn[K : Hash + Eq] View::scrolls_window(
       j
     } else {
       i
-    }
-  }
-  // (those of a kind another may take put by as they no more show (`reused`), each with what says its key now, what
-  // wakes what it binds (View::rests) and the slot it is still in, none once that slot left what has slots and it was
-  // taken out of it, held by no node (View::park): so many at most of each, the rest let go; all let go with the list)
-  let spare : Map[Int, Array[(View, @signals.Signal[K], () -> Unit, View?)]] = Map([])
-  let spare_let_go = fn() {
-    for _, all in spare {
-      for b in all {
-        b.0.let_go()
-      }
-      all.clear()
     }
   }
   // (whether each shows, by its key: told only to those that come to show or stop, not each block reading the window,
@@ -3565,14 +3581,15 @@ pub fn[K : Hash + Eq] View::scrolls_window(
                 // (left where it is, in its slot out of sight, what it binds at rest: nothing drawn changes as it goes,
                 // so it is drawn again for nothing; moved only as the next to show takes it)
                 if all.length() < spare_most && v.alive() {
-                  let wake = v.rests()
-                  // (its key gone from the list: let go with its slot, as were every slot kept)
-                  if slot_keys.untracked().contains(k) || !laid_at.contains(k) {
+                  // (its key gone from the list: let go with its slot, as were every slot kept; a slot counted at est
+                  // cannot keep a block that may exceed est and overflow into sight)
+                  if (slot_keys.untracked().contains(k) && heights.contains(k)) || !laid_at.contains(k) {
+                    let wake = v.rests()
                     all.push((v, key, wake, Some(slot)))
                   } else {
-                    // (its slot no more among those kept (found anew in the same change, let go as it is told): taken
-                    // out of it first, held by no node, so the slot's going lets go none of it)
-                    slot.park(v) |> ignore
+                    // (its slot no more among those kept (found anew in the same change, let go as it is told), or its
+                    // height forgotten: taken out of it first, held by no node, so the slot's going lets go none of it)
+                    let wake = slot.park(v)
                     all.push((v, key, wake, None))
                   }
                 } else {

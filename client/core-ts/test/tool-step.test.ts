@@ -179,6 +179,21 @@ test("a_client_asks_the_core_what_a_step_is", async () => {
     ],
   );
 
+  const longCjkCall = JSON.stringify({
+    item: "prod_deploy_key",
+    reason: "用于在东京构建机执行多架构发布包签名与产物校验，仅在自动化流水线跑通全部回归测试后按次申请使用，禁止在本地会话长期保留。",
+  });
+  call(core, ui, 5, "history.tool", { name: "secret_describe", call: longCjkCall, result: null, said: true });
+  await host.settle();
+  const longCjkOk = (answers(host.takeEmitted(), 5) as J).ok;
+  assert.deepEqual(
+    longCjkOk.call[0].rows.map((r: J) => [r.key, r.form]),
+    [
+      ["item", "short"],
+      ["reason", "long"],
+    ],
+  );
+
   const agents = agentsOf([
     {
       kind: "tool_call",

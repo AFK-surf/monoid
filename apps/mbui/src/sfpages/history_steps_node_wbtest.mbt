@@ -42,16 +42,15 @@ test "history reminder keeps its label on one line beside a long note and opens 
       // (its room opened on its way: reveal_node)
       t.run_for(@ui.move_most_ms)
       assert_true(t.rect_of(note) is Some(_), msg="\{at}: whole reminder did not open")
-      assert_eq(
-        t.rect_of(first),
-        t.rect_of(note),
-        msg="\{at}: first-line preview hides on header row while full reminder card is open",
+      let note_y = t.rect_of(note).unwrap().1
+      assert_true(
+        t.rect_of(title).unwrap().3 <= 20.0 && note_y > t.rect_of(title).unwrap().1,
+        msg="\{at}: header row stays on one line while full reminder card opens below",
       )
-      assert_true(t.rect_of(title).unwrap().3 <= 20.0, msg=at)
       t.tap_text(title)
       t.run_for(@ui.move_most_ms)
       assert_true(t.rect_of(note) is None, msg="\{at}: reminder did not close")
-      assert_true(t.rect_of(first).unwrap().1 <= 20.0, msg="\{at}: first-line preview returns when reminder closes")
+      assert_true(t.rect_of(first).unwrap().1 <= 20.0, msg="\{at}: first-line preview stays on header row")
     }
   }
   steps_reset()
@@ -120,7 +119,7 @@ test "a call's code of two lines in the history: on two lines, each where an old
 }
 
 ///|
-test "history task keeps its title visible when opened and toggles from its preview line" {
+test "history task stays one line collapsed and opens its result in a single card below" {
   let title = "后台任务「跑全量测试」已完成"
   let preview = "142 passed (18.4s)"
   let result = "moon test --target wasm-gc\n142 passed (18.4s)"
@@ -153,25 +152,24 @@ test "history task keeps its title visible when opened and toggles from its prev
   })
   t.draw()
   assert_true(t.rect_of(title) is Some(_))
-  assert_true(t.rect_of(preview) is Some(_))
+  assert_true(t.rect_of(preview) is None, msg="collapsed task does not dangle a second preview line")
   assert_true(t.rect_of(result) is None)
-  t.tap_text(preview)
+  let title_y = t.rect_of(title).unwrap().1
+  t.tap_text(title)
   t.run_for(@ui.move_most_ms)
   assert_true(t.rect_of(title) is Some(_), msg="task title stays visible when expanded")
-  assert_true(t.rect_of(result) is Some(_), msg="task result opens when preview is tapped")
+  assert_true(t.rect_of(result) is Some(_), msg="task result card opens below title")
   assert_true(t.rect_of(@sf.t("web-main.fold")) is None, msg="no 收起 words: the title's chevron turns")
-  let title_y = t.rect_of(title).unwrap().1
   t.tap_text(title)
   t.run_for(@ui.move_most_ms)
   assert_true((t.rect_of(title).unwrap().1 - title_y).abs() < 0.5, msg="the title stays where it was pressed")
   assert_true(t.rect_of(title) is Some(_))
-  assert_true(t.rect_of(preview) is Some(_))
   assert_true(t.rect_of(result) is None)
   steps_reset()
 }
 
 ///|
-test "history text expands on its first line and short single-line text omits fold button" {
+test "history text opens in a faint card below its header row and short single-line text omits fold button" {
   let short_words = "先看历史面板这几处样式。"
   let short_item : Json = {
     "body": {
@@ -184,14 +182,17 @@ test "history text expands on its first line and short single-line text omits fo
       },
     },
   }
-  let long_words = "列表只建看得见的行，其余的按估计的高度占位；量过一次的行记住它的高度，滚回来时不再跳。"
+  let long_line = "列表只建看得见的行，其余的按估计的高度占位；量过一次的行记住它的高度。"
+  let long_first_p = "列表只建看得见的行，其余的按估计的高度占位；"
+  let long_detail = "展开后第二段内容收在浅底圆角框内，滚回来时不再跳。"
+  let long_words = long_first_p + "\n" + long_detail
   let long_item : Json = {
     "body": {
       "kind": "text",
       "content": {
         "text": Json::string(long_words),
-        "line": Json::string(long_words),
-        "md": [["p", [Json::string(long_words)]]],
+        "line": Json::string(long_line),
+        "md": [["p", [Json::string(long_first_p)]], ["p", [Json::string(long_detail)]]],
         "subagent": false,
       },
     },
@@ -203,42 +204,56 @@ test "history text expands on its first line and short single-line text omits fo
     @ui.set_tree_theme(@sf.ui_theme_now)
     let tips = @sf.TipLayer::new(fn() { Some(root) })
     root.lines_up(Is(None)) |> ignore
-    root.box(fn(v) { item_node(v, src, "ws1/st1", "s-c1", "short", Some(short_item), false, tips) }) |> ignore
-    root.box(fn(v) { item_node(v, src, "ws1/st1", "s-c1", "long", Some(long_item), false, tips) }) |> ignore
+    steps_box_node(root, steps_row_first, fn(v) { item_node(v, src, "ws1/st1", "s-c1", "short", Some(short_item), false, tips) })
+    steps_box_node(root, steps_row_first, fn(v) { item_node(v, src, "ws1/st1", "s-c1", "long", Some(long_item), false, tips) })
   })
   t.draw()
   let (_, short_y, short_w, _) = t.rect_of(short_words).unwrap()
-  let (_, long_y, long_w, long_h) = t.rect_of(long_words).unwrap()
+  let (_, long_y, long_w, long_h) = t.rect_of(long_line).unwrap()
   assert_true(short_w < 300.0 && long_w > short_w, msg="short single-line text fits on one line without truncation")
   assert_true(short_y < long_y && long_h <= 20.0)
+  assert_true(t.rect_of(long_detail) is None)
   assert_true(t.rect_of(@sf.t("web-main.fold")) is None)
   let collapsed_y = long_y
-  t.tap_text(long_words)
+  t.tap_text(long_line)
   t.run_for(@ui.move_most_ms)
-  let (_, expanded_y, _, expanded_h) = t.rect_of(long_words).unwrap()
+  let (_, head_y, _, head_h) = t.rect_of(long_line).unwrap()
+  let (_, expanded_y, _, _) = t.rect_of(long_detail).unwrap()
   assert_true(t.rect_of(@sf.t("web-main.fold")) is None, msg="no 收起 words: the chevron turns")
-  assert_true(expanded_h > long_h, msg="expanded text wraps across multiple lines: \{expanded_h} vs \{long_h}")
-  assert_true((expanded_y - collapsed_y).abs() <= 4.0, msg="expanded text starts on the first line: \{expanded_y} vs \{collapsed_y}")
-  t.tap_text(long_words)
+  assert_true(head_h <= 20.0 && (head_y - collapsed_y).abs() < 1.5, msg="header row stays on the first line: \{head_y} vs \{collapsed_y}")
+  assert_true(expanded_y > head_y + 18.0, msg="expanded text opens in a card below header: \{expanded_y} vs \{head_y}")
+  t.tap_text(long_line)
   t.run_for(@ui.move_most_ms)
-  let (_, shut_y, _, shut_h) = t.rect_of(long_words).unwrap()
+  let (_, shut_y, _, shut_h) = t.rect_of(long_line).unwrap()
   assert_true(shut_h <= 20.0 && (shut_y - collapsed_y).abs() < 0.5, msg="shut again, one line where it was: \{shut_y} \{shut_h}")
-  // (on a wider desktop panel where long_words fits on one line, it omits the fold button so tapping does not toggle a no-op state)
+  assert_true(t.rect_of(long_detail) is None)
+  // (on a wider desktop panel where single-line long_line fits on one line, it omits the fold button so tapping does not toggle a no-op state)
+  let single_long_item : Json = {
+    "body": {
+      "kind": "text",
+      "content": {
+        "text": Json::string(long_line),
+        "line": Json::string(long_line),
+        "md": [["p", [Json::string(long_line)]]],
+        "subagent": false,
+      },
+    },
+  }
   let wide_t = @ui.Tester::new(fn(c) { @sf.begin(c) |> ignore }, w=760.0, h=300.0, tree=fn(root) {
     @ui.set_tree_theme(@sf.ui_theme_now)
     let tips = @sf.TipLayer::new(fn() { Some(root) })
     root.lines_up(Is(None)) |> ignore
-    root.box(fn(v) { item_node(v, src, "ws1/st1", "s-c1", "wide-long", Some(long_item), false, tips) }) |> ignore
+    steps_box_node(root, steps_row_first, fn(v) { item_node(v, src, "ws1/st1", "s-c1", "wide-long", Some(single_long_item), false, tips) })
   })
   wide_t.draw()
-  wide_t.tap_text(long_words)
+  wide_t.tap_text(long_line)
   wide_t.run_for(@ui.move_most_ms)
   assert_true(!steps_own.opened.contains("wide-long/text"), msg="single-line text that fits on one line at room width is not expandable")
   steps_reset()
 }
 
 ///|
-test "history group thought hides duplicate first-line preview in summary when expanded" {
+test "history group thought keeps first-line summary steady when expanded and empty Read omits dead chevron" {
   let first = "行高先按估计值占位（摘要）"
   let full = "行高先按估计值占位，滚过一次就记住实测高度。"
   let item : Json = {
@@ -273,17 +288,20 @@ test "history group thought hides duplicate first-line preview in summary when e
     @ui.set_tree_theme(@sf.ui_theme_now)
     let tips = @sf.TipLayer::new(fn() { Some(root) })
     root.lines_up(Is(None)) |> ignore
-    root.box(fn(v) { item_node(v, src, "ws1/st1", "s-c1", "g1", Some(item), false, tips) }) |> ignore
+    steps_box_node(root, steps_row_first, fn(v) {
+      item_node(v, src, "ws1/st1", "s-c1", "g1", Some(item), false, tips)
+    })
   })
   t.draw()
   t.tap_text("读取 1 个文件")
   t.run_for(@ui.move_most_ms)
-  assert_true(t.rect_of(first) is Some(_))
+  assert_eq(t.all(Button).length(), 2, msg="only group header and expandable thought are buttons; empty-result Read omits dead chevron")
+  let first_y = t.rect_of(first).unwrap().1
   assert_true(t.rect_of(full) is None)
   t.tap_text(first)
   t.run_for(@ui.move_most_ms)
-  assert_true(t.rect_of(first) is None, msg="summary preview is hidden once full thought is open")
-  assert_true(t.rect_of(full) is Some(_))
+  assert_true((t.rect_of(first).unwrap().1 - first_y).abs() < 1.0, msg="summary preview stays steady on header row")
+  assert_true(t.rect_of(full).unwrap().1 > first_y + 18.0, msg="full thought opens in card below header")
   steps_reset()
 }
 
@@ -540,6 +558,132 @@ test "history turn divider shows deduplicated time only, breaks rail on silent t
   t.tap_text(limit_line)
   t.run_for(@ui.move_most_ms)
   assert_true(!steps_own.opened.contains("t1-txt/text"), msg="50-char proportional English line fits in 390px phone room without chevron")
+  assert_eq(t.corner_faults(), [])
+  assert_eq(t.lit_all_faults(), [])
+  steps_reset()
+}
+
+///|
+test "sent messages, received messages, and long turn-state reasons share stationary header fold toggles and 20pt first-line alignment" {
+  steps_reset()
+  @sf.set_words(@sfbase.fill)
+  let base_src = @sffixture.fixture("history")
+  let long_post = "第一行发送摘要\n第二行关键改动\n第三行风险核对\n第四行回归测试\n第五行截图对比\n第六行等待确认\n第七行补充说明"
+  let long_recv = "收到第一行说明\n收到第二行背景\n收到第三行日志\n收到第四行要求\n收到第五行补充\n收到第六行截止"
+  let long_done = "标记为已完成：已完成所有历史条目的收起与展开统一，并核对全部图标和首行文字严格水平对齐，无嵌套折叠按钮"
+  let items : Array[Json] = [
+    {
+      "key": "m-in",
+      "entries": [0, 0],
+      "turn": { "time": "11/15 23:30" },
+      "body": {
+        "kind": "received",
+        "content": {
+          "note": "",
+          "tasks": [],
+          "messages": [
+            {
+              "key": "m0",
+              "from": { "name": "Zijian Zuo", "bound": false },
+              "place": { "name": "执行历史工具调用展示优化", "surface": "ember", "session": "s-c1" },
+              "text": Json::string(long_recv),
+            },
+          ],
+        },
+      },
+    },
+    {
+      "key": "p-out",
+      "entries": [1, 1],
+      "body": {
+        "kind": "post",
+        "content": {
+          "text": Json::string(long_post),
+          "md": [
+            ["p", ["第一行发送摘要"]],
+            ["p", ["第二行关键改动"]],
+            ["p", ["第三行风险核对"]],
+            ["p", ["第四行回归测试"]],
+            ["p", ["第五行截图对比"]],
+            ["p", ["第六行等待确认"]],
+            ["p", ["第七行补充说明"]],
+          ],
+          "place": { "name": "执行历史工具调用展示优化", "surface": "ember", "session": "s-c1" },
+          "block": false,
+          "failed": false,
+        },
+      },
+    },
+    {
+      "key": "k-done",
+      "entries": [2, 2],
+      "body": {
+        "kind": "mark",
+        "content": {
+          "ends": "done",
+          "text": Json::string(long_done),
+        },
+      },
+    },
+  ]
+  let hist : Json = { "items": Json::array(items), "live": [], "edge": "已到会话开头", "empty": false, "loaded": true, "more": false }
+  let src : @sfbase.Source = {
+    ..base_src,
+    topic_read: fn(name, params) {
+      if name == "history" {
+        { value: Some(hist), error: None, version: 1 }
+      } else {
+        (base_src.topic_read)(name, params)
+      }
+    },
+    topic_keyed: fn(name, params, fld, keys) {
+      if name == "history" {
+        None
+      } else {
+        (base_src.topic_keyed)(name, params, fld, keys)
+      }
+    },
+  }
+  let t = @ui.Tester::new(
+    fn(c) {
+      @sf.begin(c) |> ignore
+      c.with_theme(@sf.ui_theme(), fn() { @ui.old_views_here(c) })
+    },
+    w=390.0,
+    h=844.0,
+    platform=2,
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      let tips = @sf.TipLayer::new(fn() { Some(root) })
+      history_steps_node(root, src, "ws1/st1", "s-c1", tips)
+    },
+  )
+  t.draw()
+  t.draw()
+  // Header fragments on wrapped received header and sent header are 20pt tall (matching 20pt gutter icon)
+  let recv_before = t.rect_of("收到来自").unwrap()
+  let sent_to = t.rect_of("发送到").unwrap()
+  assert_eq(recv_before.3, 20.0)
+  assert_eq(sent_to.3, 20.0)
+  // Both received (>3 lines) and post (>3 lines) have header fold toggles, and long done reason folds to 1 line
+  let btns = t.all(Button, expanded=false)
+  assert_true(btns.length() >= 3, msg="expected >= 3 collapsed toggles (received, post, ended), got \{btns.length()}")
+  // Tapping post fold toggle keeps its header-right y coordinate unchanged while opening and shutting
+  let post_btn = btns.filter(fn(b) { (b.rect.1 - sent_to.1).abs() < 2.0 })
+  assert_eq(post_btn.length(), 1)
+  let p_id = post_btn[0].id
+  let p_y0 = post_btn[0].rect.1
+  t.tap(post_btn[0].rect.0 + post_btn[0].rect.2 / 2.0, post_btn[0].rect.1 + post_btn[0].rect.3 / 2.0)
+  t.run_for(@ui.move_most_ms)
+  let post_after = t.all(Button, expanded=true).filter(fn(b) { b.id == p_id })
+  assert_eq(post_after.length(), 1)
+  assert_true((post_after[0].rect.1 - p_y0).abs() < 0.5, msg="post header toggle y stayed stationary: \{p_y0} -> \{post_after[0].rect.1}")
+  // Long done mark folds to 1 line (20pt) and expands full reason on tap
+  let done_rect = t.rect_of("标记为已完成").unwrap()
+  assert_eq(done_rect.3, 20.0)
+  t.tap(done_rect.0 + 40.0, done_rect.1 + 10.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(steps_own.opened.contains("k-done/mark"), msg="tapping long done mark toggles its card open")
   assert_eq(t.corner_faults(), [])
   assert_eq(t.lit_all_faults(), [])
   steps_reset()
