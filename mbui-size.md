@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [5d5292351](https://github.com/AFK-surf/monoid/commit/5d52923517c78364c737be0c7746be6121eb78e2) ci: Farview's client given its pin's mtime, so moo | 2.16 | 3.02 | 13.06 | 34.2 | 51.77 | 29.98 | 60.22 | 99.7 | 117.67 |
 | [881204a8f](https://github.com/AFK-surf/monoid/commit/881204a8ff14cb3406c142754eefa8fafa5370de) mbui: each cause's layout passes held by every Tes | 2.16 | 3.02 | 13.06 | 34.2 | 51.77 | 29.98 | 60.22 | 99.78 | 115.68 |
 | [36acdd8fb](https://github.com/AFK-surf/monoid/commit/36acdd8fb1807f9d4d494a58406c026e4c3064ee) station: a machine's session gone on with, a chat  | 2.16 | 3.02 | 13.06 | 34.19 | 51.76 | 29.98 | 60.22 | 99.78 | 119.31 |
 | [1e46c5e2f](https://github.com/AFK-surf/monoid/commit/1e46c5e2f18d983a1b094a54a74caaa950f66340) app: the stations' 进程 radio 「对话」 changes once at a | 2.16 | 3.02 | 13.06 | 34.19 | 51.76 | 29.98 | 60.22 | 99.78 | 119.31 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [530753284](https://github.com/AFK-surf/monoid/commit/5307532845a692c34ca3bd1b717cd9b78252d1e5) mbui: ＋ 附件面板、已决定卡片详情、文件重名询问改为节点面板（old-panel 12 → 9 | 2.11 | 2.95 | 12.72 | 33.78 | 50.24 | 29.15 | 57.72 | 99.71 | 117.57 |
 | [adfaecd2e](https://github.com/AFK-surf/monoid/commit/adfaecd2ec58d18dfdb62728f2e0904493050d13) mbui: 待处理、可用模型、本机会话三个面板改为节点（old-panel 15 → 12） (#6 | 2.11 | 2.95 | 12.72 | 33.78 | 50.24 | 29.15 | 57.72 | 99.71 | 117.57 |
 | [8f9f38b0a](https://github.com/AFK-surf/monoid/commit/8f9f38b0a536e4e6e5252e694ae904daf09d0480) mbui view: what is laid out where an old view is h | 2.11 | 2.94 | 12.67 | 33.74 | 49.98 | 29.15 | 57.72 | 99.71 | 118.52 |
-| [e55a064bb](https://github.com/AFK-surf/monoid/commit/e55a064bb8b0b33b02eb68b653827bf2a11d4c86) mbui: 对话右侧栏顶栏节点化（side_bar_node） (#6473) | 2.11 | 2.94 | 12.67 | 33.74 | 49.98 | 29.15 | 57.72 | 99.67 | 118.52 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [5d5292351](https://github.com/AFK-surf/monoid/commit/5d52923517c78364c737be0c7746be6121eb78e2) ci: Farview's client given its pin's mtime, so moo | 0.42 | 0.54 | 2.08 | 3.17 | 4.97 | 1.53 | 4.08 | 57.51 |
 | [881204a8f](https://github.com/AFK-surf/monoid/commit/881204a8ff14cb3406c142754eefa8fafa5370de) mbui: each cause's layout passes held by every Tes | 0.42 | 0.54 | 2.08 | 3.17 | 4.97 | 1.53 | 4.08 | 57.51 |
 | [36acdd8fb](https://github.com/AFK-surf/monoid/commit/36acdd8fb1807f9d4d494a58406c026e4c3064ee) station: a machine's session gone on with, a chat  | 0.42 | 0.54 | 2.08 | 3.17 | 4.97 | 1.53 | 4.08 | 57.51 |
 | [1e46c5e2f](https://github.com/AFK-surf/monoid/commit/1e46c5e2f18d983a1b094a54a74caaa950f66340) app: the stations' 进程 radio 「对话」 changes once at a | 0.42 | 0.54 | 2.07 | 3.17 | 4.97 | 1.53 | 4.08 | 57.36 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [530753284](https://github.com/AFK-surf/monoid/commit/5307532845a692c34ca3bd1b717cd9b78252d1e5) mbui: ＋ 附件面板、已决定卡片详情、文件重名询问改为节点面板（old-panel 12 → 9 | 0.41 | 0.53 | 1.99 | 3.1 | 4.58 | 1.47 | 3.83 | 57.41 |
 | [adfaecd2e](https://github.com/AFK-surf/monoid/commit/adfaecd2ec58d18dfdb62728f2e0904493050d13) mbui: 待处理、可用模型、本机会话三个面板改为节点（old-panel 15 → 12） (#6 | 0.41 | 0.53 | 1.99 | 3.1 | 4.58 | 1.47 | 3.83 | 57.31 |
 | [8f9f38b0a](https://github.com/AFK-surf/monoid/commit/8f9f38b0a536e4e6e5252e694ae904daf09d0480) mbui view: what is laid out where an old view is h | 0.41 | 0.53 | 1.99 | 3.1 | 4.58 | 1.47 | 3.83 | 57.31 |
-| [e55a064bb](https://github.com/AFK-surf/monoid/commit/e55a064bb8b0b33b02eb68b653827bf2a11d4c86) mbui: 对话右侧栏顶栏节点化（side_bar_node） (#6473) | 0.41 | 0.53 | 1.99 | 3.1 | 4.58 | 1.47 | 3.83 | 57.31 |
