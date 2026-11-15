@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [5fd0e6803](https://github.com/AFK-surf/monoid/commit/5fd0e6803ee50d1754cc024539dab1edb900180c) feat(agy): sign in a company's Google account (Gem | 2.14 | 2.99 | 12.92 | 34.05 | 51.19 | 29.87 | 59.79 | 99.67 | 116.2 |
 | [c7b8387a9](https://github.com/AFK-surf/monoid/commit/c7b8387a965451a20bbf36394bb16d044996ce01) station: run the sending side of directory sync in | 2.14 | 2.99 | 12.92 | 34.04 | 51.19 | 29.86 | 59.79 | 99.6 | 110.16 |
 | [56fc65180](https://github.com/AFK-surf/monoid/commit/56fc65180e0fac5e2395bbd047946ba59a0b4976) mbui: a made-up core answers on its channel as a d | 2.14 | 2.99 | 12.92 | 34.02 | 51.19 | 29.84 | 59.77 | 99.58 | 112.52 |
 | [a8713cb6c](https://github.com/AFK-surf/monoid/commit/a8713cb6cc348bd591bc8fbe3e5bf92a87430194) station: gather and place retired sessions' files  | 2.14 | 2.99 | 12.92 | 34.02 | 51.19 | 29.85 | 59.76 | 99.63 | 112.62 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [70e4edbdb](https://github.com/AFK-surf/monoid/commit/70e4edbdbc56e4cde119dc25b232127ebf0b974b) app: farview.pin to 8477782 (a Farview tab's page  | 2.1 | 2.93 | 12.64 | 33.62 | 49.06 | 29.08 | 57.45 | 99.27 | 112.02 |
 | [ae62292a0](https://github.com/AFK-surf/monoid/commit/ae62292a01290f81e79b12a7546a555250500a6d) mbc: a global's object names its layout by its con | 2.11 | 2.93 | 12.64 | 33.62 | 49.05 | 29.08 | 57.44 | 98.68 | 112.4 |
 | [d29ec3cea](https://github.com/AFK-surf/monoid/commit/d29ec3cea9a48a10318ab71a25b9ef7fa990db15) app: the chat's page made as nodes reads its chat  | 2.11 | 2.93 | 12.64 | 33.62 | 49.05 | 29.08 | 57.44 | 98.68 | 112.4 |
-| [b8975535c](https://github.com/AFK-surf/monoid/commit/b8975535ca1add02ffa9d151c69bf47fd8fb0a8c) station: chat_create says whose a chat is, led by  | 2.1 | 2.93 | 12.62 | 33.57 | 48.93 | 29.05 | 57.32 | 99.09 | 110.88 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [5fd0e6803](https://github.com/AFK-surf/monoid/commit/5fd0e6803ee50d1754cc024539dab1edb900180c) feat(agy): sign in a company's Google account (Gem | 0.42 | 0.54 | 2.07 | 3.17 | 4.95 | 1.53 | 4.08 | 57.13 |
 | [c7b8387a9](https://github.com/AFK-surf/monoid/commit/c7b8387a965451a20bbf36394bb16d044996ce01) station: run the sending side of directory sync in | 0.42 | 0.54 | 2.07 | 3.17 | 4.95 | 1.53 | 4.08 | 57.13 |
 | [56fc65180](https://github.com/AFK-surf/monoid/commit/56fc65180e0fac5e2395bbd047946ba59a0b4976) mbui: a made-up core answers on its channel as a d | 0.42 | 0.54 | 2.07 | 3.17 | 4.95 | 1.53 | 4.08 | 57.13 |
 | [a8713cb6c](https://github.com/AFK-surf/monoid/commit/a8713cb6cc348bd591bc8fbe3e5bf92a87430194) station: gather and place retired sessions' files  | 0.42 | 0.54 | 2.07 | 3.17 | 4.95 | 1.53 | 4.08 | 57.3 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [70e4edbdb](https://github.com/AFK-surf/monoid/commit/70e4edbdbc56e4cde119dc25b232127ebf0b974b) app: farview.pin to 8477782 (a Farview tab's page  | 0.41 | 0.53 | 1.98 | 3.09 | 4.56 | 1.46 | 3.81 | 57.53 |
 | [ae62292a0](https://github.com/AFK-surf/monoid/commit/ae62292a01290f81e79b12a7546a555250500a6d) mbc: a global's object names its layout by its con | 0.41 | 0.53 | 1.98 | 3.09 | 4.56 | 1.46 | 3.81 | 57.53 |
 | [d29ec3cea](https://github.com/AFK-surf/monoid/commit/d29ec3cea9a48a10318ab71a25b9ef7fa990db15) app: the chat's page made as nodes reads its chat  | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.23 |
-| [b8975535c](https://github.com/AFK-surf/monoid/commit/b8975535ca1add02ffa9d151c69bf47fd8fb0a8c) station: chat_create says whose a chat is, led by  | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.23 |
