@@ -162,6 +162,9 @@ export class Scheduler {
       const going: Need[] = [];
       const plans = new Map<string, Items<Planned> | null>();
       for (const { waitsFor, ws } of this.#stopped.needs(from)) {
+        // (a need the turn under way is moving is not settled meanwhile: here still as it leaves, what it stopped would
+        // go on with it gone; the turn lets go of what waits for it itself, as it ends either way)
+        if (this.#current !== null && named(this.#current) === named(waitsFor)) continue;
         const m = this.#modules.get(waitsFor.module);
         const bare: Item = { module: waitsFor.module, id: waitsFor.id, label: waitsFor.id, needs: [] };
         const waiting = () => this.#stopped.waitingFor(waitsFor).filter((s) => s.ws === ws).map((s) => s.item);

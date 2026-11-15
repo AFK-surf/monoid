@@ -937,6 +937,28 @@ test("a chat stopped by a move says so once, as a person speaks in it, never by 
   void b;
 });
 
+test("a login that cannot be shared moved alone: the chat on it stopped stays stopped though the other station is heard from before the login has left, and is so after: waiting for it there", async () => {
+  const { a, quiet } = world([KIMI]);
+  signIn(a, "kimi", {});
+  const one = await chatOn(a, "kimi");
+  const account = `own:kimi@${A}`;
+  // (the other station heard from right as the chat is held for its login's leaving, the login still here: what is
+  // stopped settled then, as a request of B's heard then settles it, move/station.ts `heard`)
+  const hold = a.rig.hub.holdChat.bind(a.rig.hub);
+  let settled: unknown[] | null = null;
+  a.rig.hub.holdChat = async (k: string, why: string, notice?: () => string) => {
+    await hold(k, why, notice);
+    if (k === one.key && settled === null) settled = await a.moves.scheduler.settleStopped(B);
+  };
+  const out = await a.moves.scheduler.move(WS, B, { module: "accounts", item: account });
+  await quiet();
+  a.rig.hub.holdChat = hold;
+  assert.equal(out.failed, null, JSON.stringify(out));
+  assert.deepEqual(settled, [], "nothing let go while its login was leaving");
+  assert.deepEqual(a.moves.scheduler.stopped().map((x) => [x.item.module, x.item.id, x.waitsFor.module, x.waitsFor.id, (x.waitsFor as Json).at]), [["chats", one.key, "accounts", account, B]], "stopped, waiting for its login there");
+  assert.notEqual(a.rig.hub.chatHeld(one.key), null, "held");
+});
+
 test("a chat stopped by a move and archived by hand: a person's word to it is refused as it is today, nothing said by the stop and the archive as it was", async () => {
   const { a, quiet } = world([KIMI]);
   signIn(a, "kimi", {});
