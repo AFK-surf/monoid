@@ -67,23 +67,32 @@ pub fn vf_kind_label(kind : PKind?) -> String {
 
 ///|
 /// Whether a preview offers the 预览 / 源码 switch once its bytes are here.
+/// (`.mbui` / `.wasm` mini-programs run without a human-facing source toggle; agents read their source and state directly.)
 pub fn vf_has_source(vw : Viewer) -> Bool {
   match vw.shown_kind() {
     Some(KCsv) | Some(KHtml) => true
-    Some(KMbui) =>
-      match vw.bytes.get() {
-        Some(b) => !is_wasm_bytes(b)
-        None => !@sf.lower(vw.file.name).has_suffix(".wasm")
-      }
     _ => false
+  }
+}
+
+///|
+/// The title shown in the viewer's bar: a `.mbui` / `.wasm` mini-program's resolved app title, else the file's name.
+pub fn vf_title(vw : Viewer) -> String {
+  if vw.shown_kind() == Some(KMbui) || is_mbui_viz(vw.file.name) {
+    viz_mbui_meta_of(vw.station, vw.key, vw.file.path, vw.file.name, vw.bytes.get()).0
+  } else {
+    vw.file.name
   }
 }
 
 ///|
 /// The line under the name: which of how many, its size, its kind; an image's size in pixels
 /// after them, as its message says it (the station read it from its header), else as its whole picture was decoded.
-/// (A film's and a song's are their player's bar's: player.mbt.)
+/// (A film's and a song's are their player's bar's: player.mbt; a `.mbui` mini-program has none.)
 pub fn vf_meta(vw : Viewer, src : Source) -> String {
+  if vw.shown_kind() == Some(KMbui) || is_mbui_viz(vw.file.name) {
+    return ""
+  }
   let (at, count) = viewer_place(vw, src)
   let parts : Array[String] = []
   let first = if count > 1 && at >= 0 { "\{at + 1} / \{count} · " } else { "" }
@@ -125,7 +134,7 @@ fn vf_native(v : Viewer, c : @ui.Ctx, src : Source) -> Unit {
     return
   }
   @sf.native_over_act("close", @sf.t("common.close"), "close", fn() { if !v.closing { v.shut(c) } }, lead=true)
-  if v.coming() {
+  if v.coming() || v.shown_kind() == Some(KMbui) {
     return
   }
   if vf_has_source(v) {

@@ -345,6 +345,7 @@ pub(all) struct VizLoad {
   state_read : @signals.Signal[Bool]
   failed : @signals.Signal[Bool]
   mut asked : Bool
+  mut state_asked : Bool
 }
 
 ///|
@@ -407,12 +408,37 @@ pub fn viz_state_of(station : String, key : String, path : String) -> Json? {
 }
 
 ///|
+/// Ensures `widget.state` has been requested for `(station, key, path)` and returns its signal.
+pub fn viz_ensure_state(src : Source, station : String, key : String, path : String) -> @signals.Signal[Json?] {
+  let l = viz_load_of(viz_id(station, key, path))
+  if !l.state_asked && station != "" && key != "" && path != "" {
+    l.state_asked = true
+    (src.call)(
+      "widget.state",
+      Json::object({ "station": Json::string(station), "key": Json::string(key), "path": Json::string(path) }),
+      fn(r) {
+        match r {
+          Ok(v) =>
+            l.state.set(match field(Some(v), "state") {
+              Some(Null) | None => None
+              Some(s) => Some(s)
+            })
+          Err(_) => ()
+        }
+        l.state_read.set(true)
+      },
+    )
+  }
+  l.state
+}
+
+///|
 /// The load of the file `id` (viz_id), made where there is none.
 fn viz_load_of(id : String) -> VizLoad {
   match viz_loads.get(id) {
     Some(l) => l
     None => {
-      let l : VizLoad = { html: @signals.signal(None), state: @signals.signal(None), state_read: @signals.signal(false), failed: @signals.signal(false), asked: false }
+      let l : VizLoad = { html: @signals.signal(None), state: @signals.signal(None), state_read: @signals.signal(false), failed: @signals.signal(false), asked: false, state_asked: false }
       viz_loads[id] = l
       l
     }
@@ -461,21 +487,24 @@ fn viz_ask(src : Source, l : VizLoad, station : String, key : String, path : Str
       }
     },
   )
-  (src.call)(
-    "widget.state",
-    Json::object({ "station": Json::string(station), "key": Json::string(key), "path": Json::string(path) }),
-    fn(r) {
-      match r {
-        Ok(v) =>
-          l.state.set(match field(Some(v), "state") {
-            Some(Null) | None => None
-            Some(s) => Some(s)
-          })
-        Err(_) => ()
-      }
-      l.state_read.set(true)
-    },
-  )
+  if !l.state_asked {
+    l.state_asked = true
+    (src.call)(
+      "widget.state",
+      Json::object({ "station": Json::string(station), "key": Json::string(key), "path": Json::string(path) }),
+      fn(r) {
+        match r {
+          Ok(v) =>
+            l.state.set(match field(Some(v), "state") {
+              Some(Null) | None => None
+              Some(s) => Some(s)
+            })
+          Err(_) => ()
+        }
+        l.state_read.set(true)
+      },
+    )
+  }
 }
 
 ///|

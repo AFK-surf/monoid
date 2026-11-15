@@ -631,6 +631,28 @@ fn side_bar_row(c : @ui.Ctx, src : Source, r : ChatRef, v : ChatView, tabs : Arr
         |> ignore
       _ => ()
     }
+    // a `.mbui` / `.wasm` mini-program in front: its single bar's 全屏 (no second file toolbar row underneath)
+    match @sfbase.view_tab_file(front) {
+      Some(f) if @sfbase.is_mbui_viz(f.file.name) =>
+        @sf.icon_button(c, "expand", key="side/expand", round=true, label=@sf.t("web-main.preview.fullWindow"), on_press=fn() {
+          let steps = @sfbase.InChat(v.thread, r.session)
+          match @sfbase.tab_viewer(tabs_key(r), front) {
+            Some(vw) => vw.full_window(steps)
+            None =>
+              @sfbase.open_preview(
+                if f.station != "" { f.station } else { r.station },
+                f.key,
+                f.file,
+                drive=f.drive,
+                steps~,
+                named=f.named,
+                beside=false,
+              )
+          }
+        })
+        |> ignore
+      _ => ()
+    }
     // the panel's switch stays in its top right corner, open or closed; in the short column, the column's
     // (histories_ticked)
     if !column_short.get() {
@@ -650,9 +672,16 @@ fn side_tab_names(src : Source, r : ChatRef, v : ChatView, tab : String) -> (Str
     Some(label) => return (label, @sf.t("web-pages.chat.close", args=[("name", label)]))
     None => ()
   }
-  // a file in the viewer: by its name
+  // a file in the viewer: a `.mbui` / `.wasm` mini-program by its resolved app title, else by its file's name
   match @sfbase.view_tab_file(tab) {
-    Some(f) => return (f.file.name, @sf.t("web-pages.chat.close", args=[("name", f.file.name)]))
+    Some(f) => {
+      let label = if @sfbase.is_mbui_viz(f.file.name) {
+        @sfbase.tab_mbui_meta(src, tabs_key(r), tab, f, r.station).0
+      } else {
+        f.file.name
+      }
+      return (label, @sf.t("web-pages.chat.close", args=[("name", label)]))
+    }
     None => ()
   }
   let agent = v.agents.iter().find_first(fn(a) { a.key == tab })
@@ -720,7 +749,9 @@ fn side_tab_mark_of(c : @ui.Ctx, src : Source, r : ChatRef, v : ChatView, tab : 
     None => ()
   }
   let icon = if @sfbase.view_tab_file(tab) is Some(f) {
-    if @sfbase.preview_kind(f.file.name).0 == Some(@sfbase.KImage) {
+    if @sfbase.is_mbui_viz(f.file.name) {
+      @sfbase.tab_mbui_meta(src, tabs_key(r), tab, f, r.station).1
+    } else if @sfbase.preview_kind(f.file.name).0 == Some(@sfbase.KImage) {
       "photo"
     } else {
       "file"

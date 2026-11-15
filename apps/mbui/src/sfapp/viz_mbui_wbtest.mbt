@@ -137,6 +137,7 @@ test "wasm sandbox traps infinite loops deterministically by gas_limit and rejec
     "\",\"root\":{\"type\":\"card\",\"title\":\"沙箱测试\",\"children\":[{\"type\":\"button\",\"label\":\"触发死循环\"}]}}"
   let widget = @sfbase.viz_mbui_parse("loop.mbui", loop_raw).unwrap()
   new_run()
+  let kept_err : Ref[String] = Ref("")
   let t = @ui.Tester::new(
     fn(c) { @sf.begin(c) |> ignore },
     tree=fn(root) {
@@ -145,7 +146,20 @@ test "wasm sandbox traps infinite loops deterministically by gas_limit and rejec
         "test:loop:trap",
         widget,
         fn() { Json::null() },
-        { keep: None, failed: None, follow_up: None },
+        {
+          keep: Some(fn(st) {
+            match st {
+              Object(m) =>
+                match m.get("__error") {
+                  Some(String(s)) => kept_err.val = s
+                  _ => ()
+                }
+              _ => ()
+            }
+          }),
+          failed: None,
+          follow_up: None,
+        },
       )
     },
     w=420.0,
@@ -156,11 +170,12 @@ test "wasm sandbox traps infinite loops deterministically by gas_limit and rejec
   t.tap_text("触发死循环")
   t.frame()
   assert_true(t.find("Wasm 沙箱拦截: wasm gas limit exceeded") is Some(_))
+  assert_eq(kept_err.val, "wasm gas limit exceeded", msg="Wasm trap persisted to widget.state.__error for agent")
   assert_eq(mbui_viz_faults(t), [])
 }
 
 ///|
-test "opening a .mbui widget beside the chat or full screen uses the unified file preview and closes on back" {
+test "opening a .mbui widget beside the chat or full screen uses the mini-program container without human source chrome" {
   let t = beside_tester(mode="chat-mbui")
   t.frame()
   assert_eq(opened_views(t, 2).length(), 0, msg=".mbui uses no WebView")
@@ -183,40 +198,26 @@ test "opening a .mbui widget beside the chat or full screen uses the unified fil
   t.run_for(@ui.move_most_ms)
   assert_true(@sfbase.viewer.get() is None, msg="beside=true opens in side panel, not full window")
   assert_eq(view_tabs(t).length(), 1)
-  assert_eq(t.all(Tab, label="release.mbui", selected=true).length(), 1, msg="side preview tab selected")
-  let side_x = tab_left(t, "release.mbui")
+  assert_eq(t.all(Tab, label="0.25.0 发布与性能看板", selected=true).length(), 1, msg="side tab shows mini-program title")
+  assert_eq(t.all(Toolbar, label="0.25.0 发布与性能看板").length(), 0, msg="no second toolbar row under side bar")
+  let side_x = t.get(Tab, label="0.25.0 发布与性能看板").rect.0 - 20.0
   assert_true(
     t.locate("0.25.0 发布与性能看板").iter().any(fn(p) { p.0 >= side_x }),
-    msg="side preview initially renders native .mbui widget",
+    msg="side container renders native .mbui mini-program",
   )
-  assert_true(t.find(@sf.t("web-main.preview.source")) is Some(_), msg="side preview has 预览 / 源码 toggle")
+  assert_true(t.find(@sf.t("web-main.preview.source")) is None, msg="no human-facing 预览 / 源码 toggle")
+  assert_true(t.all(Button, label=@sf.t("web-main.preview.download")).is_empty(), msg="no file download chrome")
+  assert_eq(t.all(Button, label=@sf.t("web-main.preview.fullWindow")).length(), 1, msg="single-bar 全屏 button in side bar")
   assert_eq(mbui_viz_faults(t), [])
-  for p in t.locate(@sf.t("web-main.preview.source")) {
-    if p.0 >= side_x {
-      t.tap(p.0, p.1)
-    }
-  }
+  t.click(Button, label=@sf.t("web-main.preview.fullWindow"))
   t.run_for(@ui.move_most_ms)
-  assert_true(
-    t.locate("\"title\": \"0.25.0 发布与性能看板\"").iter().any(fn(p) { p.0 >= side_x }),
-    msg="source view shows raw .mbui JSON",
-  )
-  for p in t.locate(@sf.t("web-main.preview.rendered")) {
-    if p.0 >= side_x {
-      t.tap(p.0, p.1)
-    }
-  }
-  t.run_for(@ui.move_most_ms)
-  assert_true(
-    t.locate("0.25.0 发布与性能看板").iter().any(fn(p) { p.0 >= side_x }),
-    msg="preview view renders native .mbui widget",
-  )
-  viz_open_full("release.mbui", "ws1/st1", "s-c1", "work/s-c1/release.mbui", "s-c1")
-  t.run_for(@ui.move_most_ms)
-  assert_true(@sfbase.viewer.get() is Some(_), msg="full screen .mbui opens unified file viewer")
+  assert_true(@sfbase.viewer.get() is Some(_), msg="side bar 全屏 opens full-window mini-program container")
   assert_eq(opened_views(t, 2).length(), 0, msg="full screen .mbui uses no WebView")
-  assert_true(t.find("release.mbui") is Some(_))
   assert_true(t.find("0.25.0 发布与性能看板") is Some(_))
+  assert_true(t.find("release.mbui") is None, msg="full window shows mini-program title instead of raw filename")
+  assert_true(t.find(@sf.t("web-main.preview.source")) is None, msg="full window has no source toggle")
+  assert_true(t.all(Button, label=@sf.t("web-main.preview.download")).is_empty(), msg="full window has no download button")
+  assert_eq(t.all(Button, label=@sf.t("web-main.preview.moveBeside")).length(), 1, msg="full window offers 移到侧边")
   assert_eq(mbui_viz_faults(t), [])
   t.back()
   t.run_for(@ui.move_most_ms)
@@ -229,17 +230,21 @@ test "opening a .mbui widget beside the chat or full screen uses the unified fil
 test "fixture side-panel and full-window .mbui preview modes open cleanly with zero audit faults" {
   let t1 = beside_tester(mode="chat-view-side-memory-mbui")
   t1.frame()
-  assert_eq(t1.all(Tab, label="memory-schemes.mbui", selected=true).length(), 1)
-  let side_x = tab_left(t1, "memory-schemes.mbui")
+  assert_eq(t1.all(Tab, label="设置 › 记忆", selected=true).length(), 1)
+  assert_eq(t1.all(Toolbar, label="设置 › 记忆").length(), 0)
+  let side_x = t1.get(Tab, label="设置 › 记忆").rect.0 - 20.0
   assert_true(t1.locate("全局记忆").iter().any(fn(p) { p.0 >= side_x }))
+  assert_eq(t1.locate("设置 › 记忆").filter(fn(p) { p.0 >= side_x }).length(), 1, msg="title not duplicated below side bar")
   assert_eq(mbui_viz_faults(t1), [])
   let t2 = beside_tester(mode="chat-view-side-mbui")
   t2.frame()
-  assert_eq(t2.all(Tab, label="release.mbui", selected=true).length(), 1)
+  assert_eq(t2.all(Tab, label="0.25.0 发布与性能看板", selected=true).length(), 1)
   assert_eq(mbui_viz_faults(t2), [])
   let t3 = beside_tester(mode="chat-preview-memory-mbui")
   t3.frame()
   assert_true(@sfbase.viewer.get() is Some(_))
+  assert_true(t3.find("设置 › 记忆") is Some(_))
+  assert_true(t3.find("memory-schemes.mbui") is None)
   assert_true(t3.find("全局记忆") is Some(_))
   assert_eq(mbui_viz_faults(t3), [])
 }

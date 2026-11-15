@@ -8,6 +8,7 @@
 pub struct VizMbuiWidget {
   title : String
   subtitle : String
+  icon : String
   init_state : Map[String, Json]
   root : Json
   wasm_bytes : Bytes?
@@ -24,6 +25,7 @@ priv struct VizMbuiStore {
   root_sig : @signals.Signal[Json]
   title_sig : @signals.Signal[String]
   subtitle_sig : @signals.Signal[String]
+  icon_sig : @signals.Signal[String]
   tree_ver : @signals.Signal[Int]
   wasm_error : @signals.Signal[String]
 }
@@ -33,14 +35,155 @@ priv struct VizMbuiStore {
 let viz_mbui_stores : Array[VizMbuiStore] = []
 
 ///|
+// kept across runs: cleared in viz_pages_reset()
+let viz_mbui_meta_cache : Map[String, (Int, String, String)] = Map([])
+
+///|
 pub fn viz_mbui_states_clear() -> Unit {
   viz_mbui_stores.clear()
+  viz_mbui_meta_cache.clear()
 }
 
 ///|
 pub fn is_mbui_viz(name : String) -> Bool {
   let s = @sf.lower(name)
   s.has_suffix(".mbui") || s.has_suffix(".wasm")
+}
+
+///|
+pub fn viz_mbui_stem(name : String) -> String {
+  let low = @sf.lower(name)
+  let cut = if low.has_suffix(".mbui") {
+    5
+  } else if low.has_suffix(".wasm") {
+    5
+  } else {
+    0
+  }
+  if cut > 0 && name.length() > cut {
+    name.exact_view(end=name.length() - cut).to_owned()
+  } else {
+    name
+  }
+}
+
+///|
+fn viz_mbui_valid_icon(raw : String) -> String {
+  if raw != "" && @sf.icon_path(raw) != "" {
+    raw
+  } else {
+    "sparks"
+  }
+}
+
+///|
+fn viz_first_root_title(node : Json) -> String {
+  match node {
+    Object(ro) => {
+      let own = viz_json_str(ro, "title", "")
+      if own != "" {
+        return own
+      }
+      let ch = viz_children_of(ro)
+      if ch.length() == 1 {
+        match ch[0] {
+          Object(co) => viz_json_str(co, "title", "")
+          _ => ""
+        }
+      } else {
+        ""
+      }
+    }
+    _ => ""
+  }
+}
+
+///|
+pub fn viz_mbui_display_title(name : String, widget : VizMbuiWidget?) -> String {
+  match widget {
+    Some(w) =>
+      if w.title != "" {
+        w.title
+      } else {
+        let rt = viz_first_root_title(w.root)
+        if rt != "" {
+          rt
+        } else {
+          viz_mbui_stem(name)
+        }
+      }
+    None => viz_mbui_stem(name)
+  }
+}
+
+///|
+/// Resolved Mini-Program `(title, icon)` for a side-panel tab or full-window bar, reactive on live Wasm/store signals
+/// and cached on raw bytes / `viz_loads` so frames never re-parse JSON needlessly.
+pub fn viz_mbui_meta_of(station : String, key : String, path : String, name : String, bytes : Bytes?) -> (String, String) {
+  let suffix = if path != "" { "/" + path } else { "" }
+  if suffix != "" {
+    for s in viz_mbui_stores {
+      if s.key.has_suffix(suffix) {
+        let live_t = s.title_sig.get()
+        let live_ic = s.icon_sig.get()
+        let raw_t = if live_t != "" {
+          live_t
+        } else {
+          let rt = viz_first_root_title(s.root_sig.get())
+          if rt != "" {
+            rt
+          } else {
+            viz_mbui_stem(name)
+          }
+        }
+        return (viz_interp(s, raw_t), viz_mbui_valid_icon(live_ic))
+      }
+    }
+  }
+  let cache_key = path + "\n" + name
+  match bytes {
+    Some(b) => {
+      let n = b.length()
+      match viz_mbui_meta_cache.get(cache_key) {
+        Some((cached_n, t, ic)) if cached_n == n => return (t, ic)
+        _ => ()
+      }
+      let w = viz_mbui_parse_bytes(name, b)
+      let t = viz_mbui_display_title(name, w)
+      let ic = match w {
+        Some(widget) => widget.icon
+        None => "sparks"
+      }
+      viz_mbui_meta_cache[cache_key] = (n, t, ic)
+      return (t, ic)
+    }
+    None => ()
+  }
+  if station != "" && key != "" && path != "" {
+    match viz_loads.get(viz_id(station, key, path)) {
+      Some(l) =>
+        match l.html.get() {
+          Some(raw) => {
+            let n = raw.length()
+            match viz_mbui_meta_cache.get(cache_key) {
+              Some((cached_n, t, ic)) if cached_n == n => return (t, ic)
+              _ => ()
+            }
+            let w = viz_mbui_parse(name, raw)
+            let t = viz_mbui_display_title(name, w)
+            let ic = match w {
+              Some(widget) => widget.icon
+              None => "sparks"
+            }
+            viz_mbui_meta_cache[cache_key] = (n, t, ic)
+            return (t, ic)
+          }
+          None => ()
+        }
+      None => ()
+    }
+  }
+  (viz_mbui_stem(name), "sparks")
 }
 
 ///|
@@ -241,14 +384,10 @@ fn viz_json_num_arr(obj : Map[String, Json], key : String) -> Array[Double] {
 ///|
 pub fn viz_mbui_parse_bytes(name : String, bytes : Bytes) -> VizMbuiWidget? {
   if is_wasm_bytes(bytes) {
-    let fallback_title = if name.has_suffix(".wasm") {
-      name.unsafe_substring(start=0, end=name.length() - 5)
-    } else {
-      name
-    }
     return Some({
-      title: fallback_title,
+      title: viz_mbui_stem(name),
       subtitle: "",
+      icon: "sparks",
       init_state: Map([]),
       root: Json::object(Map([])),
       wasm_bytes: Some(bytes),
@@ -304,6 +443,7 @@ pub fn viz_mbui_parse(name : String, raw : String) -> VizMbuiWidget? {
       }
       let title = viz_json_str(obj, "title", "")
       let subtitle = viz_json_str(obj, "subtitle", "")
+      let icon = viz_mbui_valid_icon(viz_json_str(obj, "icon", ""))
       let init_state : Map[String, Json] = Map([])
       match obj.get("state") {
         Some(Object(st)) =>
@@ -343,7 +483,7 @@ pub fn viz_mbui_parse(name : String, raw : String) -> VizMbuiWidget? {
             None => parsed
           }
       }
-      Some({ title, subtitle, init_state, root, wasm_bytes, gas_limit })
+      Some({ title, subtitle, icon, init_state, root, wasm_bytes, gas_limit })
     }
     _ => None
   }
@@ -357,19 +497,23 @@ fn viz_extract_state_map(raw : Json) -> Map[String, Json] {
       match obj.get("modelContent") {
         Some(Object(mc)) =>
           for k, v in mc {
-            out[k] = v
+            if k != "__error" {
+              out[k] = v
+            }
           }
         _ => ()
       }
       match obj.get("privateContent") {
         Some(Object(pc)) =>
           for k, v in pc {
-            out[k] = v
+            if k != "__error" {
+              out[k] = v
+            }
           }
         _ => ()
       }
       for k, v in obj {
-        if k != "modelContent" && k != "privateContent" {
+        if k != "modelContent" && k != "privateContent" && k != "__error" {
           out[k] = v
         }
       }
@@ -424,6 +568,11 @@ fn viz_apply_wasm_json_output(
       match obj.get("subtitle") {
         Some(String(sub)) if obj.contains("root") || obj.contains("body") =>
           store.subtitle_sig.set(sub)
+        _ => ()
+      }
+      match obj.get("icon") {
+        Some(String(ic)) if obj.contains("root") || obj.contains("body") =>
+          store.icon_sig.set(viz_mbui_valid_icon(ic))
         _ => ()
       }
       match obj.get("state") {
@@ -688,6 +837,7 @@ fn viz_store_of(
     root_sig: @signals.signal(widget.root),
     title_sig: @signals.signal(widget.title),
     subtitle_sig: @signals.signal(widget.subtitle),
+    icon_sig: @signals.signal(widget.icon),
     tree_ver: @signals.signal(0),
     wasm_error: @signals.signal(""),
   }
@@ -765,9 +915,34 @@ fn viz_state_get(store : VizMbuiStore, key : String) -> Json {
 fn viz_state_snapshot(store : VizMbuiStore) -> Json {
   let obj : Map[String, Json] = Map([])
   for k, sig in store.signals {
-    obj[k] = sig.untracked()
+    if k != "__error" {
+      obj[k] = sig.untracked()
+    }
+  }
+  let err = store.wasm_error.untracked()
+  if err != "" {
+    obj["__error"] = Json::string(err)
   }
   Json::object(obj)
+}
+
+///|
+fn viz_persist_diagnostics(store : VizMbuiStore, hears : VizHears, err : String) -> Unit {
+  if err == "" {
+    return
+  }
+  let snap = viz_state_snapshot(store)
+  if store.synced_raw != snap {
+    store.synced_raw = snap
+    match hears.keep {
+      Some(keep) => keep(snap)
+      None => ()
+    }
+  }
+  match hears.failed {
+    Some(f) => f(err)
+    None => ()
+  }
 }
 
 ///|
@@ -2881,21 +3056,25 @@ pub fn viz_mbui_node(
   hears : VizHears,
 ) -> Unit {
   let store = viz_store_of(place, widget, state())
+  let in_shell = place.has_prefix("beside/") || place.has_prefix("viewer/")
   parent.box(fn(root) {
+    root.reacts(fn() { store.wasm_error.get() }, fn(err) {
+      viz_persist_diagnostics(store, hears, err)
+    })
     @sf.style_node(root, fn() {
       let _ = viz_store_of(place, widget, state())
       viz_root_col
     })
     root.show(
       fn() {
-        let t = store.title_sig.get()
+        let t = if in_shell { "" } else { store.title_sig.get() }
         let sub = store.subtitle_sig.get()
-        !viz_root_has_title(store.root_sig.get(), t) && (t != "" || sub != "")
+        !viz_root_has_title(store.root_sig.get(), store.title_sig.get()) && (t != "" || sub != "")
       },
       fn(head) {
         @sf.style_node(head, fn() { viz_col_s0_5 })
         head.show(
-          fn() { store.title_sig.get() != "" },
+          fn() { !in_shell && store.title_sig.get() != "" },
           fn(w) {
             @sf.words_node(w, fn() { viz_interp(store, store.title_sig.get()) }, fn() { @sf.title }) |> ignore
           },
@@ -2940,15 +3119,18 @@ pub fn viz_mbui_ctx(
   hears : VizHears,
 ) -> Unit {
   let store = viz_store_of(place, widget, state)
+  let in_shell = place.has_prefix("beside/") || place.has_prefix("viewer/")
   let root_json = store.root_sig.get()
   let title = store.title_sig.get()
+  let shown_title = if in_shell { "" } else { title }
   let subtitle = store.subtitle_sig.get()
   let w_err = store.wasm_error.get()
+  viz_persist_diagnostics(store, hears, w_err)
   c.box(style=viz_root_col, fn() {
-    if !viz_root_has_title(root_json, title) && (title != "" || subtitle != "") {
+    if !viz_root_has_title(root_json, title) && (shown_title != "" || subtitle != "") {
       c.box(style=viz_col_s0_5, fn() {
-        if title != "" {
-          c.text(viz_interp(store, title), style=@sf.title) |> ignore
+        if shown_title != "" {
+          c.text(viz_interp(store, shown_title), style=@sf.title) |> ignore
         }
         if subtitle != "" {
           c.text(viz_interp(store, subtitle), style=@sf.caption) |> ignore

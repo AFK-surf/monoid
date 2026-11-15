@@ -431,7 +431,9 @@ pub fn viewer_tab_node(
   })
   let tips_at : Ref[@view.View?] = Ref(None)
   let tips = @sf.TipLayer::new(fn() { tips_at.val })
-  q.box(fn(row) { tab_tools_node(row, src, vw, fn() { vw.full_window(steps()) }, tips) }) |> ignore
+  if !is_mbui_viz(vw.file.name) {
+    q.box(fn(row) { tab_tools_node(row, src, vw, fn() { vw.full_window(steps()) }, tips) }) |> ignore
+  }
   q.box(fn(s) {
     s
     .grow(Is(1.0))
@@ -815,6 +817,29 @@ fn tab_picture_node(s : @view.View, src : Source, vw : Viewer) -> Unit {
 }
 
 ///|
+/// A `.mbui` / `.wasm` side-panel tab's resolved `(title, icon)`, kicking off `vw.fetch(src)` if not yet started so
+/// synchronous fixtures resolve on the very first frame and background `.mbui` tabs show their app title and icon.
+pub fn tab_mbui_meta(
+  src : Source,
+  chat : String,
+  tab : String,
+  f : ViewTab,
+  fallback_station : String,
+) -> (String, String) {
+  let station = if f.station != "" { f.station } else { fallback_station }
+  let bytes = match tab_viewer(chat, tab) {
+    Some(vw) => {
+      if vw.bytes.untracked() is None && !vw.fetching.untracked() && vw.error.untracked() is None {
+        vw.fetch(src)
+      }
+      vw.bytes.get()
+    }
+    None => None
+  }
+  viz_mbui_meta_of(station, f.key, f.file.path, f.file.name, bytes)
+}
+
+///|
 /// Whether viewer `vw` shows a rendered native `.mbui` / `.wasm` widget in the window's tree.
 pub fn viewer_mbui_rendered(vw : Viewer) -> Bool {
   vw.source_told.get() |> ignore
@@ -831,7 +856,7 @@ pub fn viewer_mbui_rendered(vw : Viewer) -> Bool {
 pub fn viewer_mbui_node(parent : @view.View, src : Source, vw : Viewer, bars? : Bool = false) -> Unit {
   parent.over(Is(true)) |> ignore
   let session = vw.chat_session()
-  let state_sig = viz_load_of(viz_id(vw.station, vw.key, vw.file.path)).state
+  let state_sig = viz_ensure_state(src, vw.station, vw.key, vw.file.path)
   let place = (if vw.beside { "beside/" } else { "viewer/" }) + vw.id()
   let scroll = @view.Scroll::new()
   parent.scrolls(scroll, fn(s) {
@@ -842,14 +867,14 @@ pub fn viewer_mbui_node(parent : @view.View, src : Source, vw : Viewer, bars? : 
           let (top, foot) = (@sf.viewer_host().room)()
           let (w, _) = s.window()
           let under = if @sf.native_over.up {
-            top
+            top + s3
           } else if w <= @sf.viewer_small_w {
             top + page_small_top
           } else {
-            dmax(@sf.viewer_bar_h, top) + desk_page_top
+            top + desk_page_top
           }
           let side = if w >= 960.0 { dmax(s3, (w - 880.0) / 2.0) } else { s3 }
-          (side, under + s3, side + @sf.native_clear(), foot + s3 * 2.0)
+          (side, under, side + @sf.native_clear(), foot + s3 * 2.0)
         } else {
           (s3, s3, s3, s3)
         }
