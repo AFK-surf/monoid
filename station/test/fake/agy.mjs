@@ -138,6 +138,7 @@ for await (const line of createInterface({ input: process.stdin })) {
       update({ sessionUpdate: 'user_message_chunk', content: { type: 'text', text } });
     }
     if (text === 'expired') { say({ id: m.id, error: { code: -32603, message: 'Authentication expired. Please log back in.' } }); held = null; continue; }
+    if (text === 'quota-said') { update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '\n⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 56m33s.\n' } }); say({ id: m.id, result: { stopReason: 'end_turn' } }); held = null; continue; }
     if (text === 'quota') { say({ id: m.id, error: { code: -32603, message: 'RESOURCE_EXHAUSTED: You have exhausted your capacity on this model. Your quota will reset after 4h.' } }); held = null; continue; }
     update({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'thinking' } });
     update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'first ' } });

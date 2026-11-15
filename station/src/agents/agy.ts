@@ -140,6 +140,18 @@ const SESSION_ID = /^[a-zA-Z0-9_-]+$/;
 export const classifyFailure = (text: string): FailureReason =>
   failureOf(text, { auth: ["authentication required", "not logged into antigravity", "authentication expired", "couldn't sign in", "invalid_grant", "unauthenticated"], limit: ["resource_exhausted", "quota"] });
 
+/// A failure Antigravity CLI tells only in words: a turn whose answer is end_turn, all it said one line of its own
+/// notice (⚠). Its spent quota came so on 1.5.9 (2026-11-15: "⚠ Individual quota reached. Please upgrade your
+/// subscription to increase your limits. Resets in 56m33s.", where its log says RESOURCE_EXHAUSTED (code 429)), and a
+/// session went on asking the spent account instead of moving to another. What the model says is never one: a notice
+/// is the whole turn, and only what tells the account, a limit or the provider counts (not `model`, the rest).
+export function noticeFailure(said: string): FailureReason | null {
+  const text = said.trim();
+  if (!text.startsWith("⚠") || text.includes("\n")) return null;
+  const reason = classifyFailure(text);
+  return reason === "model" ? null : reason;
+}
+
 /// The process's arguments: the profile's files, no approvals, no telemetry.
 export const agyArgs = (home: string) => ["acp", "--gemini-dir", geminiDir(home), "--dangerously-skip-permissions", "--disable-telemetry"];
 
@@ -336,6 +348,10 @@ export class AgySession extends AcpSession {
 
   protected classify(text: string) {
     return classifyFailure(text);
+  }
+
+  protected failedSaying(said: string) {
+    return noticeFailure(said);
   }
 
   named(id: string) {

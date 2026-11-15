@@ -4,7 +4,7 @@ import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { after, test } from "node:test";
-import { AGY_FILE_TOKENS, AgyDriver, SESSIONS, agyAccountFile, agyKeychain, goKeyringValue, agyBaseModel, agyCatalog, agyConversations, agyEnv, agyHome, agyToken, agyVariant, classifyFailure, geminiDir } from "../src/agents/agy.ts";
+import { AGY_FILE_TOKENS, AgyDriver, SESSIONS, agyAccountFile, agyKeychain, goKeyringValue, agyBaseModel, agyCatalog, agyConversations, agyEnv, agyHome, agyToken, agyVariant, classifyFailure, geminiDir, noticeFailure } from "../src/agents/agy.ts";
 import type { OpenOptions, RuntimeEvent } from "../src/agents/runtime.ts";
 import { allLeft } from "../src/agents/runner.ts";
 import { profileRuntimes } from "../src/agents/profiles.ts";
@@ -123,10 +123,22 @@ test("cancel, a signed-out account, an expired sign-in and a spent quota", async
   await s.prompt("quota");
   await until(() => ended(events).length === 3);
   assert.equal((ended(events)[2] as any).outcome.reason, "rate_limit");
+  // 1.5.9 says a spent quota only in words, its turn ended well (2026-11-15): still a limit, so the session moves on.
+  await s.prompt("quota-said");
+  await until(() => ended(events).length === 4);
+  assert.deepEqual(ended(events)[3], { type: "turnEnded", outcome: { kind: "failed", reason: "rate_limit", message: "⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 56m33s." } });
+  await s.prompt("the quota");
+  await until(() => ended(events).length === 5);
+  assert.deepEqual(ended(events)[4], { type: "turnEnded", outcome: { kind: "completed" } });
   await s.dispose();
   const signedOut = setup({ FAKE_AGY_SIGNED_OUT: "1" });
   await assert.rejects(signedOut.driver.open(signedOut.options, () => {}), /Authentication required/);
   assert.equal(classifyFailure("Authentication required"), "auth");
+  // What the model says of a quota is no notice: not the whole turn, not one line of the CLI's own.
+  assert.equal(noticeFailure("Your quota resets in an hour."), null);
+  assert.equal(noticeFailure("⚠ Check the quota:\nit is low."), null);
+  assert.equal(noticeFailure("⚠ Something else went wrong."), null);
+  assert.equal(noticeFailure("⚠ Authentication expired. Please log back in."), "auth");
 });
 
 test("steering mid-turn injects a prompt, completes once on the steered prompt, and keeps both prompts' usage", async () => {
