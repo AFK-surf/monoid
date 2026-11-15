@@ -101,7 +101,8 @@
 - The remote tasks (station_task across stations) run there too, as the pseudo-actor `#remote`
   (`mb/src/reader/remote*.mbt`): what other stations ask of this one, the mirrors and their sweep, following tasks
   started from here. Node (`src/jobs/remote.ts`) keeps the mesh bus, the file bytes (written and read at the path the
-  program names), the directory sync's file operations, protected folders and the load.
+  program names), the directory sync's sending side and the pieces it unpacks (`src/jobs/dirsync.ts`; a mirror's
+  manifest, plan and its application are the program's, `mb/src/reader/dirsync.mbt`), protected folders and the load.
 - Runtimes are drivers behind one seam (`src/agents/runtime.ts`): Claude Code a `claude -p` process per session;
   Codex one app-server per account, a thread per session, whose per-session settings go in `thread/start`'s config,
   never the process's environment; the others in `src/agents/`. A driver owns its child's stdin. Claude Code's output

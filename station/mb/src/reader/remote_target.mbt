@@ -268,10 +268,9 @@ async fn Actors::task(
       self.mkdirs(syncing)
       self.mkdirs(rjoin([room, "mirrors"]))
       self.used_mirror(workspace, peer, session, m)
-      // (the manifest, what the mirror has now and the conflict base: dirsync.ts's, on Node)
-      let begun = self.rnode("syncBegin", [jstr(manifest_path), jstr(rjoin([work, m])), jstr(syncing)])
+      // (the manifest, what the mirror has now and the conflict base: dirsync.mbt)
+      let version = self.sync_begin(manifest_path, rjoin([work, m]), syncing)
       let sid = self.random_hex(12)
-      let version = num_of(begun.value("version")).unwrap_or(0.0)
       self.write_json(rjoin([syncing, "state.json"]), { "id": jstr(sid), "key": jstr(key), "version": jnum(version) })
       if field_of(request, "safe") == jnum(1.0) {
         self.write_json(record, with_field(meta, "safe", jbool(true)))
@@ -283,7 +282,11 @@ async fn Actors::task(
       let after = as_u64(field_of(request, "after")).unwrap_or(0.0)
       let file = if method == "sync.manifest" { "actual.json" } else { "base.json" }
       self.written(rjoin([syncing, file]))
-      self.rnode("listedPage", [jstr(rjoin([syncing, file])), jnum(after)])
+      let files = match self.read_json(rjoin([syncing, file])) {
+        Object(f) => f
+        _ => {}
+      }
+      page_of(listed_entries(files), after.to_int())
     }
     "sync.put" => {
       ignore(ongoing())
@@ -292,14 +295,14 @@ async fn Actors::task(
     }
     "sync.commit" => {
       let state = ongoing()
-      let part = self.rnode("planPart", [request])
+      let part = plan_part(request)
       ignore(self.fs("fs.put", { "path": jstr(rjoin([syncing, "plan.jsonl"])) }, bytes=@utf8.encode(js_text(part) + "\n")))
       if !(field_of(request, "final") is True) {
         return { "key": jstr(key), "planned": jbool(true) }
       }
       refuse_busy()
-      // (the plan checked against what the mirror has and written: dirsync.ts's, on Node)
-      let done = self.rnode("syncCommit", [jstr(work), jstr(m), jstr(syncing), jstr(manifest_path), field_of(state, "version"), jstr(text_of(field_of(meta, "spec"), "dir"))])
+      // (the plan checked against what the mirror has and written: dirsync.mbt)
+      let done = self.sync_commit(work, m, syncing, manifest_path, field_of(state, "version"), text_of(field_of(meta, "spec"), "dir"))
       self.write_json(record, with_field(meta, "synced", jbool(true)))
       self.remove(syncing, recursive=true)
       self.used_mirror(workspace, peer, session, m)
@@ -315,7 +318,7 @@ async fn Actors::task(
         raise refusal("the task has not finished")
       }
       let base = self.file_path(work, m, false)
-      let found = self.rnode("syncChanges", [jstr(manifest_path), jstr(base)])
+      let found = self.sync_changes(manifest_path, base)
       { "key": jstr(key), "base": jstr(m), "changes": field_of(found, "changes"), "more": field_of(found, "more") }
     }
     "task.collected" => {
@@ -649,9 +652,9 @@ async fn Actors::mirror_name(self : Actors, workspace : String, peer : String, s
   }
   let mirrors = rjoin([self.room(workspace, peer, session), "mirrors"])
   for file in self.readdir_names(mirrors) {
-    match self.rnode("readManifest", [jstr(rjoin([mirrors, file]))]) {
-      Null => ()
-      m => claimed[text_of(m, "name")] = text_of(m, "dir")
+    match self.read_manifest(rjoin([mirrors, file])) {
+      None => ()
+      Some(m) => claimed[text_of(m, "name")] = text_of(m, "dir")
     }
   }
   match claimed.get(name) {
