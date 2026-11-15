@@ -451,12 +451,12 @@ let quarter_arc : Array[(Double, Double)] = [
 ///   `(10.0, head_h)` to `x = 3.0`, runs straight down beside `body` (`pl = S3`), and at the bottom either curves back
 ///   via `╰─╮` to `(10.0, head_h + body_h + 10.0)` (when `rail_next` is true) or finishes with a rounded `╰─` hook to
 ///   `(10.0, head_h + body_h - 1.5)`.
-fn curved_rail_shapes(head_h : Double, body_h : Double, rail_next : Bool) -> Array[@ui.Shape] {
+fn curved_rail_pts(head_h : Double, body_h : Double, rail_next : Bool) -> Array[Double] {
   if body_h <= 2.0 {
     if rail_next {
-      return [@ui.shape_of([([10.0, 20.0, 10.0, head_h + body_h + 10.0], false)], stroke=0x000000FFL, width=1.25)]
+      return [10.0, 20.0, 10.0, head_h + body_h + 10.0]
     } else if head_h > 28.0 {
-      return [@ui.shape_of([([10.0, 20.0, 10.0, head_h - 1.5], false)], stroke=0x000000FFL, width=1.25)]
+      return [10.0, 20.0, 10.0, head_h - 1.5]
     } else {
       return []
     }
@@ -464,7 +464,7 @@ fn curved_rail_shapes(head_h : Double, body_h : Double, rail_next : Bool) -> Arr
   let y_end = head_h + body_h
   if body_h <= 14.0 {
     let end_y = if rail_next { y_end + 10.0 } else { dmax(21.0, y_end - 1.0) }
-    return [@ui.shape_of([([10.0, 20.0, 10.0, end_y], false)], stroke=0x000000FFL, width=1.25)]
+    return [10.0, 20.0, 10.0, end_y]
   }
   let pts : Array[Double] = []
   if head_h > 20.5 {
@@ -474,7 +474,7 @@ fn curved_rail_shapes(head_h : Double, body_h : Double, rail_next : Bool) -> Arr
   let top_idx = 6
   let (c_top, s_top) = quarter_arc[top_idx]
   let r1 = 3.5 / (1.0 - c_top)
-  let span = dmin(r1 * s_top, dmax(2.0, (body_h - 6.0) * 0.5))
+  let span = dmin(3.5, dmax(2.0, (body_h - 4.0) * 0.25))
   for i in 0..<=top_idx {
     let (c, s) = quarter_arc[i]
     pts.push(10.0 - r1 * (1.0 - c))
@@ -485,35 +485,44 @@ fn curved_rail_shapes(head_h : Double, body_h : Double, rail_next : Bool) -> Arr
     pts.push(3.0 + r1 * (1.0 - c))
     pts.push(head_h + 2.0 * span - (s / s_top) * span)
   }
+  let bot_start = dmax(head_h + 2.0 * span, y_end - 2.0 * span)
   if rail_next {
-    let bot_span = r1 * s_top
-    let bot_start = dmax(head_h + 2.0 * span, y_end - 2.5)
     for i in 0..<=top_idx {
       let (c, s) = quarter_arc[i]
       pts.push(3.0 + r1 * (1.0 - c))
-      pts.push(bot_start + (s / s_top) * bot_span)
+      pts.push(bot_start + (s / s_top) * span)
     }
     for j in 1..<=top_idx {
       let (c, s) = quarter_arc[top_idx - j]
       pts.push(10.0 - r1 * (1.0 - c))
-      pts.push(bot_start + 2.0 * bot_span - (s / s_top) * bot_span)
+      pts.push(bot_start + 2.0 * span - (s / s_top) * span)
     }
-    if bot_start + 2.0 * bot_span < y_end + 10.0 {
+    if bot_start + 2.0 * span < y_end + 10.0 {
       pts.push(10.0)
       pts.push(y_end + 10.0)
     }
   } else {
-    let r2 = dmin(4.5, dmax(2.0, body_h - 2.0 * span - 1.5))
-    let bot_y = y_end - 1.5
+    let r2 = span
+    let bot_y = bot_start + r2
     for pair in quarter_arc {
       let (c, s) = pair
       pts.push(3.0 + r2 * (1.0 - c))
-      pts.push(bot_y - r2 + r2 * s)
+      pts.push(bot_start + r2 * s)
     }
     pts.push(10.0)
     pts.push(bot_y)
   }
-  [@ui.shape_of([(pts, false)], stroke=0x000000FFL, width=1.25)]
+  pts
+}
+
+///|
+fn curved_rail_shapes(head_h : Double, body_h : Double, rail_next : Bool) -> Array[@ui.Shape] {
+  let pts = curved_rail_pts(head_h, body_h, rail_next)
+  if pts.is_empty() {
+    []
+  } else {
+    [@ui.shape_of([(pts, false)], stroke=0x000000FFL, width=1.25)]
+  }
 }
 
 ///|
@@ -558,13 +567,13 @@ fn event_stack_node(
     v.box(fn(r) {
       r
       .over(Is(true))
-      .width(Is(Some(12.0)))
+      .width(Is(Some(50.0)))
       .height(By(fn() {
         let total = head_h() + body_h() + (if rail_next() { 10.0 } else { 0.0 })
         Some(dmax(0.0, total))
       }))
       .shapes(By(fn() { curved_rail_shapes(head_h(), body_h(), rail_next()) }))
-      .tint(By(fn() { @ui.tree_theme().color(if failed() { Danger } else { Border }) }))
+      .tint(By(fn() { @ui.tree_theme().color(if failed() { Danger } else { Line }) }))
       |> ignore
     })
     |> ignore
@@ -625,10 +634,10 @@ fn ev_node(
       p.box(fn(r) {
         r
         .over(Is(true))
-        .width(Is(Some(12.0)))
+        .width(Is(Some(50.0)))
         .height(By(fn() { Some(tall() + (if rail || rail_last { 10.0 } else { 0.0 })) }))
         .shapes(By(fn() { curved_rail_shapes(tall(), 0.0, rail || rail_last) }))
-        .tint(By(fn() { @ui.tree_theme().color(if tone == "red" { Danger } else { Border }) }))
+        .tint(By(fn() { @ui.tree_theme().color(if tone == "red" { Danger } else { Line }) }))
         |> ignore
       })
       |> ignore
@@ -1313,7 +1322,7 @@ fn task_node(v : @view.View, key : String, task : Json?, rail : Bool, rail_last 
         p.fills_across(Is(true)).cuts_softly(Is(true)) |> ignore
         if !is_open {
           if preview != "" {
-            steps_box_node(p, h_received_body, fn(rb) {
+            steps_box_node(p, h_task_preview_body, fn(rb) {
               rb.box(fn(s) {
                 @sf.style_node(s, fn() { h_one_press })
                 steps_pressed(s, fn() { steps_flip(key) })
@@ -1324,15 +1333,13 @@ fn task_node(v : @view.View, key : String, task : Json?, rail : Bool, rail_last 
           }
         } else {
           steps_box_node(p, h_post_body, fn(pb) {
-            steps_box_node(pb, if agent { h_one_card } else { h_one_body }, fn(w) {
-              if agent {
-                md_node(w, answer, field(task, "md"), small=true)
-              } else {
-                steps_box_node(w, if failed { tool_box_red } else { tool_box }, fn(bx) {
-                  steps_run(bx, fn() { answer }, h_output, mono=true)
-                })
-              }
-            })
+            if agent {
+              steps_box_node(pb, h_one_card, fn(w) { md_node(w, answer, field(task, "md"), small=true) })
+            } else {
+              steps_box_node(pb, if failed { tool_box_red } else { tool_box }, fn(bx) {
+                steps_run(bx, fn() { answer }, h_output, mono=true)
+              })
+            }
           })
         }
       })
@@ -1699,10 +1706,10 @@ fn ev_live_node(
         p.box(fn(r) {
           r
           .over(Is(true))
-          .width(Is(Some(12.0)))
+          .width(Is(Some(50.0)))
           .height(By(fn() { Some(tall() + (if has_rail() { 10.0 } else { 0.0 })) }))
           .shapes(By(fn() { curved_rail_shapes(tall(), 0.0, has_rail()) }))
-          .tint(By(fn() { @ui.tree_theme().color(if tone() == "red" { Danger } else { Border }) }))
+          .tint(By(fn() { @ui.tree_theme().color(if tone() == "red" { Danger } else { Line }) }))
           |> ignore
         })
         |> ignore
@@ -2120,7 +2127,7 @@ fn opened_node(
   steps_box_node(v, h_step, fn(s) {
     s.box(fn(line) {
       @sf.style_node(line, fn() { h_step_summary })
-      line.ground(By(fn() { if @sf.lit_in_node(line) { @ui.tree_theme().color(Hover) } else { 0L } }))
+      line.ground(By(fn() { if @sf.lit_in_node(line) && !open() { @ui.tree_theme().color(Hover) } else { 0L } }))
       |> ignore
       steps_pressed(line, fn() { steps_flip(rk) }, folds=true, open~)
       summary(line)
@@ -2230,38 +2237,77 @@ fn tool_body_node(v : @view.View, src : Source, station : String, key : String, 
     let parts = @signals.untracked(fn() { steps_own.tools.get(tk) })
     let raw_calls = items(parts, "call")
     let step_hint = text(step, "hint")
-    let call_parts = raw_calls.filter(fn(part) {
-      if raw_calls.length() > 1 && text(Some(part), "kind") == "path" && text(Some(part), "extra") == "" {
+    let step_meta = text(step, "meta")
+    let is_cmd = raw_calls.length() > 0 && text(Some(raw_calls[0]), "kind") == "code"
+    let call_parts : Array[Json] = []
+    for part in raw_calls {
+      let k = text(Some(part), "kind")
+      if raw_calls.length() > 1 && k == "path" && text(Some(part), "extra") == "" {
         let p = text(Some(part), "path")
-        !(step_hint != "" && (p == step_hint || p.has_suffix("/" + step_hint)))
-      } else {
-        true
+        if step_hint != "" && (p == step_hint || p.has_suffix("/" + step_hint)) {
+          continue
+        }
       }
-    })
-    let failed = flag(step, "failed")
-    let result_parts = items(parts, "result").filter(fn(part) {
-      if !failed && text(Some(part), "kind") == "output" {
-        let out = text(Some(part), "text").trim().to_owned()
-        out != "The file has been updated." && out != "File updated successfully."
-      } else {
-        true
+      if is_cmd && k == "facts" {
+        let kept = items(Some(part), "items").filter(fn(it) {
+          let fk = text(Some(it), "key")
+          fk != "timeout" && fk != "timeout_ms" && fk != "timeout_seconds"
+        })
+        if kept.length() > 0 {
+          call_parts.push({ "kind": "facts", "items": Json::array(kept) })
+        }
+        continue
       }
-    })
-    let is_bare_single_box = call_parts.length() + result_parts.length() == 1 &&
-      !failed &&
-      ({
-        let only = if call_parts.length() == 1 { Some(call_parts[0]) } else { Some(result_parts[0]) }
-        let k = text(only, "kind")
-        k == "code" || k == "diff" || k == "output" || k == "json"
-      })
-    let body_style = if is_bare_single_box {
-      tool_body_box
-    } else if failed {
-      tool_body_card_red
-    } else {
-      tool_body_card
+      call_parts.push(part)
     }
-    let in_card = !is_bare_single_box
+    let failed = flag(step, "failed")
+    let result_parts : Array[Json] = []
+    for part in items(parts, "result") {
+      let k = text(Some(part), "kind")
+      if !failed && k == "output" {
+        let out = text(Some(part), "text").trim().to_owned()
+        if out == "The file has been updated." ||
+          out == "File updated successfully." ||
+          (out.has_prefix("Made ") && out.contains(" replacement")) {
+          continue
+        }
+      }
+      if k == "facts" {
+        let kept = items(Some(part), "items").filter(fn(it) {
+          let fk = text(Some(it), "key")
+          if fk == "退出码 0" || fk == "Exit code 0" {
+            false
+          } else if step_meta != "" && (fk == step_meta || (fk.has_prefix("第 ") && fk.contains(" 行 · +"))) {
+            false
+          } else {
+            true
+          }
+        })
+        if kept.length() > 0 {
+          result_parts.push({ "kind": "facts", "items": Json::array(kept) })
+        }
+        continue
+      }
+      result_parts.push(part)
+    }
+    let has_own_box = call_parts.iter().any(fn(p) {
+        let k = text(Some(p), "kind")
+        k == "code" || k == "diff"
+      }) ||
+      result_parts.iter().any(fn(p) {
+        let k = text(Some(p), "kind")
+        k == "code" || k == "diff" || (k == "output" && flag(Some(p), "failed"))
+      }) ||
+      (
+        call_parts.length() == 0 &&
+        result_parts.length() == 1 &&
+        ({
+          let k = text(Some(result_parts[0]), "kind")
+          k == "output" || k == "json"
+        })
+      )
+    let in_card = !has_own_box
+    let body_style = if in_card { tool_body_card } else { tool_body_box }
     steps_box_node(p, body_style, fn(b) {
       if call_parts.length() > 0 {
         steps_box_node(b, if in_card { tool_section_card } else { tool_section }, fn(s) {
@@ -2271,21 +2317,13 @@ fn tool_body_node(v : @view.View, src : Source, station : String, key : String, 
         })
       }
       if result_parts.length() > 0 {
-        let res_style = if call_parts.length() > 0 {
-          if failed {
-            tool_result_card_red
-          } else if in_card {
-            tool_result_card
-          } else {
-            tool_result_box
-          }
-        } else if in_card {
-          tool_section_card
+        let res_style = if in_card && call_parts.length() > 0 {
+          tool_result_card
         } else {
           tool_section
         }
         steps_box_node(b, res_style, fn(s) {
-          if call_parts.length() > 0 || failed {
+          if in_card && (call_parts.length() > 0 || failed) {
             steps_box_node(s, tool_result_head, fn(h) {
               steps_words(
                 h,
@@ -2548,18 +2586,23 @@ fn jump_to_dispatch_target(src : Source, station : String, key : String, current
 ///|
 /// Renders the diff lines of a `"diff"` tool part in `v`.
 fn tool_diff_node(v : @view.View, diff_rows : Array[Json]) -> Unit {
+  let n = diff_rows.length()
   steps_box_node(v, tool_diff, fn(d) {
-    for r in diff_rows {
+    for i, r in diff_rows {
       match r {
         Array([String(mark), String(line)]) =>
           d.box(fn(l) {
+            let is_first = i == 0
+            let is_last = i + 1 == n
             @sf.style_node(l, fn() {
-              match mark {
+              let base = match mark {
                 "-" => tool_diff_out
                 "+" => tool_diff_line.then(@ui.style(bg=Data(@sf.theme().p.green_bg)))
                 "@" => tool_diff_head
                 _ => tool_diff_line
               }
+              let with_top = if is_first { base.then(tool_diff_row_top) } else { base }
+              if is_last { with_top.then(tool_diff_row_bot) } else { with_top }
             })
             // (in the theme's inks as it is now: the dark one's where it is told to be dark)
             let ink = fn() {
@@ -2591,6 +2634,16 @@ fn tool_diff_node(v : @view.View, diff_rows : Array[Json]) -> Unit {
 }
 
 ///|
+/// Renders a code block in `parent` using the history panel's unified `@sf.faint_ground` container background.
+fn tool_code_block_node(parent : @view.View, code_text : String, lang : String) -> Unit {
+  parent.box(fn(b) {
+    @sf.code_block_node(b, fn() { code_text }, fn() { lang }, fn() { None })
+    b.ground(By(fn() { @ui.tree_theme().color(@sf.faint_ground) })) |> ignore
+  })
+  |> ignore
+}
+
+///|
 /// One part of a call or of what came back in `v`.
 fn tool_part_node(
   v : @view.View,
@@ -2602,7 +2655,6 @@ fn tool_part_node(
   in_card? : Bool = false,
 ) -> Unit {
   let fold_key = if rk != "" { rk } else { "tool-part" }
-  let inner_box = if in_card { tool_box_in_card } else { tool_box }
   match text(part, "kind") {
     "code" => {
       let code_text = text(part, "text")
@@ -2613,16 +2665,15 @@ fn tool_part_node(
             steps_words(bar, fn() { if lang != "" { lang } else { "代码" } }, tool_key_words)
             steps_box_node(bar, h_grow, fn(_) {  }, in_row=true)
             tool_expand_btn_node(bar, if lang != "" { "代码 · " + lang } else { "代码" }, code_text, fn(rb) {
-              rb.box(fn(cb) { @sf.code_block_node(cb, fn() { code_text }, fn() { lang }, fn() { None }) }) |> ignore
+              tool_code_block_node(rb, code_text, lang)
             })
           })
           fold_node(stack, fold_key + "/code", 16, words_line, fn(f) {
-            f.box(fn(b) { @sf.code_block_node(b, fn() { code_text }, fn() { lang }, fn() { None }) }) |> ignore
+            tool_code_block_node(f, code_text, lang)
           })
         })
       } else {
-        v.box(fn(b) { @sf.code_block_node(b, fn() { code_text }, fn() { lang }, fn() { None }) })
-        |> ignore
+        tool_code_block_node(v, code_text, lang)
       }
     }
     "facts" =>
@@ -2796,7 +2847,11 @@ fn tool_part_node(
                     })
                   }
                 })
-                  steps_box_node(f, inner_box, render_json_val)
+                if in_card {
+                  render_json_val(f)
+                } else {
+                  steps_box_node(f, tool_box, render_json_val)
+                }
               })
             }
             _ =>
@@ -2818,8 +2873,17 @@ fn tool_part_node(
     "output" => {
       let out_text = text(part, "text")
       let is_failed = flag(part, "failed")
-      let box_look = if is_failed { tool_box_red } else { inner_box }
+      let box_look = if is_failed { tool_box_red } else { tool_box }
       let text_look = if is_failed { tool_mono } else { tool_mono_muted }
+      let render_out = fn(host : @view.View) {
+        if is_long_block(out_text) {
+          fold_node(host, fold_key + "/out", 16, words_line, fn(f) {
+            steps_run(f, fn() { out_text }, text_look, mono=true)
+          })
+        } else {
+          steps_run(host, fn() { out_text }, text_look, mono=true)
+        }
+      }
       if is_long_block(out_text) {
         steps_box_node(v, tool_field_stack, fn(stack) {
           steps_box_node(stack, tool_block_bar, fn(bar) {
@@ -2829,18 +2893,29 @@ fn tool_part_node(
               steps_run(rb, fn() { out_text }, text_look, mono=true)
             })
           })
-          steps_box_node(stack, box_look, fn(b) {
-            fold_node(b, fold_key + "/out", 16, words_line, fn(f) {
-              steps_run(f, fn() { out_text }, text_look, mono=true)
-            })
-          })
+          if in_card && !is_failed {
+            render_out(stack)
+          } else {
+            steps_box_node(stack, box_look, render_out)
+          }
         })
+      } else if in_card && !is_failed {
+        render_out(v)
       } else {
-        steps_box_node(v, box_look, fn(b) { steps_run(b, fn() { out_text }, text_look, mono=true) })
+        steps_box_node(v, box_look, render_out)
       }
     }
     "json" => {
       let json_text = text(part, "text")
+      let render_json = fn(host : @view.View) {
+        if is_long_block(json_text) {
+          fold_node(host, fold_key + "/json", 16, words_line, fn(f) {
+            steps_run(f, fn() { json_text }, tool_mono, mono=true)
+          })
+        } else {
+          steps_run(host, fn() { json_text }, tool_mono, mono=true)
+        }
+      }
       if is_long_block(json_text) {
         steps_box_node(v, tool_field_stack, fn(stack) {
           steps_box_node(stack, tool_block_bar, fn(bar) {
@@ -2850,14 +2925,16 @@ fn tool_part_node(
               steps_run(rb, fn() { json_text }, tool_mono, mono=true)
             })
           })
-          steps_box_node(stack, inner_box, fn(b) {
-            fold_node(b, fold_key + "/json", 16, words_line, fn(f) {
-              steps_run(f, fn() { json_text }, tool_mono, mono=true)
-            })
-          })
+          if in_card {
+            render_json(stack)
+          } else {
+            steps_box_node(stack, tool_box, render_json)
+          }
         })
+      } else if in_card {
+        render_json(v)
       } else {
-        steps_box_node(v, inner_box, fn(b) { steps_run(b, fn() { json_text }, tool_mono, mono=true) })
+        steps_box_node(v, tool_box, render_json)
       }
     }
     _ => ()
@@ -3162,14 +3239,19 @@ let h_main : @ui.Style = @ui.css("w=Full gap=S2_5")
 let h_ev : @ui.Style = @ui.css("row w=Full gap=S2 align=AStart")
 
 ///|
-/// A received message's or task preview's body beside the event's curved side rail (`12px` left offset).
+/// A received message's body beside the event's curved side rail (`12px` left offset).
 // kept across runs: a value (no field of it changes)
-let h_received_body : @ui.Style = @ui.css("w=Full pl=S3 pt=S1 pb=S1")
+let h_received_body : @ui.Style = @ui.css("w=Full pl=S3 pt=S1_5 pb=S1_5")
+
+///|
+/// A collapsed background task preview's body beside the event's curved side rail (`12px` left offset).
+// kept across runs: a value (no field of it changes)
+let h_task_preview_body : @ui.Style = @ui.css("w=Full pl=S3 pt=S1 pb=S1_5")
 
 ///|
 /// A sent card or expanded note/task body beside the event's curved side rail (`12px` left offset).
 // kept across runs: a value (no field of it changes)
-let h_post_body : @ui.Style = @ui.css("w=Full pl=S3 pb=S0_5")
+let h_post_body : @ui.Style = @ui.css("w=Full pl=S3 pt=S1_5 pb=S1_5")
 
 ///|
 /// An event's mark (hIcon): 20 square, on whatever it stands on: the turn's rail runs from under it, so nothing of it
@@ -3246,7 +3328,7 @@ let h_output : @ui.TextStyle = @ui.text_style(size=Caption, color=Fg, w=Full)
 /// A message it sent (hCard): 4 under its line, 8 by 12 in, a line round it, round as a field, on the paper; red when it
 /// failed.
 // kept across runs: a value (no field of it changes)
-let h_card : @ui.Style = @ui.css("w=Full mt=S1 py=S2 px=S3 radius=Xl border=B1 border_color=Line bg=Card")
+let h_card : @ui.Style = @ui.css("w=Full py=S2 px=S3 radius=Xl border=B1 border_color=Line bg=Card")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -3329,7 +3411,7 @@ let h_one_body : @ui.Style = @ui.css("w=Full pt=S1 pb=S1_5")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let h_one_card : @ui.Style = @ui.style(w=Full, mt=S1, mb=S1_5, py=S2, px=S3, radius=@sf.custom_field_r, bg=@sf.faint_ground)
+let h_one_card : @ui.Style = @ui.style(w=Full, py=S2, px=S3, radius=@sf.custom_field_r, bg=@sf.faint_ground)
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -3389,18 +3471,18 @@ let h_group_words : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=
 let h_group_hot : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Fg, wrap=false, w=Cut)
 
 ///|
-/// Its calls, opened (hSteps): 12px left offset beside the group's curved side rail (`x = 10 -> 3 -> 10`), 2 apart.
+/// Its calls, opened (hSteps): 12px left offset beside the group's curved side rail (`x = 10 -> 3 -> 10`), 4 apart.
 // kept across runs: a value (no field of it changes)
-let h_steps : @ui.Style = @ui.css("w=Full pl=S3 pt=S1_5 pb=S1_5 gap=SPx")
+let h_steps : @ui.Style = @ui.css("w=Full pl=S3 pt=S1_25 pb=S1_5 gap=S1")
 
 ///|
-/// A call's line (hStep summary): 4 by 4 in, round 8, 8 apart, 12; the pointer's ground on it.
+/// A call's line (hStep summary): aligned with the card below it, 8 apart, 12.
 // kept across runs: a value (no field of it changes)
 let h_step : @ui.Style = @ui.css("w=Full")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let h_step_summary : @ui.Style = @ui.css("row w=Full py=S1 px=S1 gap=S2 align=ACenter radius=Lg hovered{bg=Hover}").then(@sf.outset(4.0))
+let h_step_summary : @ui.Style = @ui.css("row w=Full py=S0_5 gap=S2 align=ACenter radius=Md")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -3423,17 +3505,17 @@ let h_step_meta : @ui.TextStyle = @ui.text_style(size=Meta, color=Subtle, wrap=f
 let h_step_meta_red : @ui.TextStyle = @ui.text_style(size=Meta, color=Danger, wrap=false)
 
 ///|
-/// A step's or thought's words (hStepBody: 4 over, 8 under, 12; hStepCard: rounded faint surface card); a thought alone (hThinking: 2 over, 6 under, muted).
+/// A step's or thought's words (hStepBody: 4 over, 12; hStepCard: rounded faint surface card); a thought alone (hThinking: muted).
 // kept across runs: a value (no field of it changes)
-let h_step_body : @ui.Style = @ui.css("w=Full pt=S1 pb=S2")
+let h_step_body : @ui.Style = @ui.css("w=Full pt=S1")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let h_step_card : @ui.Style = @ui.style(w=Full, mt=S0_5, mb=S1_5, py=S2, px=S3, radius=@sf.custom_field_r, bg=@sf.faint_ground)
+let h_step_card : @ui.Style = @ui.style(w=Full, mt=S1, py=S2, px=S3, radius=@sf.custom_field_r, bg=@sf.faint_ground)
 
 ///|
 // kept across runs: a value (no field of it changes)
-let h_thinking : @ui.Style = @ui.css("w=Full pt=S0_5 pb=S1_5")
+let h_thinking : @ui.Style = @ui.css("w=Full")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -3458,18 +3540,14 @@ let h_phase_now : @ui.TextStyle = @ui.text_style(size=Meta, color=Fg, wrap=false
 let h_phase_time : @ui.TextStyle = @ui.text_style(size=Meta, color=Subtle, wrap=false)
 
 ///|
-/// A call opened: 2 over, 6 under, the call and what came back 6 apart; multi-part or structured steps sit in a faint
+/// A call opened: 4 over, the call and what came back 6 apart; multi-part or structured steps sit in a faint
 /// rounded container (`tool_body_card`) so each expanded step's start and end are clear without a second vertical line.
 // kept across runs: a value (no field of it changes)
-let tool_body_box : @ui.Style = @ui.css("w=Full pt=S0_5 pb=S1_5 gap=S1_5")
+let tool_body_box : @ui.Style = @ui.css("w=Full mt=S1 gap=S1_5")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let tool_body_card : @ui.Style = @ui.style(w=Full, mt=S0_5, mb=S1_5, py=S2, px=S3, gap=S1_5, radius=@sf.custom_field_r, bg=@sf.faint_ground)
-
-///|
-// kept across runs: a value (no field of it changes)
-let tool_body_card_red : @ui.Style = tool_body_card.then(@ui.css("border=B1 border_color=Danger"))
+let tool_body_card : @ui.Style = @ui.style(w=Full, mt=S1, py=S2, px=S3, gap=S1_5, radius=@sf.custom_field_r, bg=@sf.faint_ground)
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -3481,15 +3559,7 @@ let tool_section_card : @ui.Style = @ui.css("w=Full gap=S1_5")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let tool_result_box : @ui.Style = @ui.css("w=Full pt=S1 gap=S1")
-
-///|
-// kept across runs: a value (no field of it changes)
 let tool_result_card : @ui.Style = @ui.css("w=Full pt=S1 gap=S1")
-
-///|
-// kept across runs: a value (no field of it changes)
-let tool_result_card_red : @ui.Style = @ui.css("w=Full pt=S1 gap=S1")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -3543,10 +3613,6 @@ let tool_box : @ui.Style = @ui.style(w=Full, py=S2, px=S3, radius=@sf.custom_fie
 
 ///|
 // kept across runs: a value (no field of it changes)
-let tool_box_in_card : @ui.Style = @ui.style(w=Full, py=S1_5, px=S2_5, radius=@sf.custom_field_r, bg=@sf.faint_ground)
-
-///|
-// kept across runs: a value (no field of it changes)
 let tool_box_red : @ui.Style = tool_box.then(@ui.css("bg=DangerBg"))
 
 ///|
@@ -3589,7 +3655,7 @@ let tool_path_extra : @ui.TextStyle = @ui.text_style(size=Caption, color=Subtle,
 /// laid over the line, held it 22 and 12); taken out on the red's ground, put in on the green's, a header in the blue,
 /// 4 over it).
 // kept across runs: a value (no field of it changes)
-let tool_diff : @ui.Style = @ui.style(w=Full, py=S1_5, radius=@sf.custom_field_r, bg=@sf.faint_ground, clip=true)
+let tool_diff : @ui.Style = @ui.style(w=Full, radius=@sf.custom_field_r, bg=@sf.faint_ground, clip=true)
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -3603,6 +3669,14 @@ let tool_diff_out : @ui.Style = tool_diff_line.then(@ui.css("bg=DangerBg"))
 ///|
 // kept across runs: a value (no field of it changes)
 let tool_diff_head : @ui.Style = tool_diff_line.then(@ui.css("pt=S1"))
+
+///|
+// kept across runs: a value (no field of it changes)
+let tool_diff_row_top : @ui.Style = @ui.css("pt=S1_5")
+
+///|
+// kept across runs: a value (no field of it changes)
+let tool_diff_row_bot : @ui.Style = @ui.css("pb=S1_5")
 
 ///|
 /// The gutter a line's mark stands in (taken out or put in), 9 in: as far as its words are 22 in.

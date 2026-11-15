@@ -419,4 +419,11 @@ test "curved_rail_shapes connects icon centers at x=10 and curves around body at
   assert_eq(s_next.length(), 1)
   assert_eq(s_end.length(), 1)
   assert_true(s_next != s_end, msg="rail_next=true extends into next icon while rail_next=false hooks at bottom")
+  let pts_next = curved_rail_pts(20.0, 80.0, true)
+  // Top curve starts at (10.0, 20.0) and reaches x = 3.0 at y = 27.0 (span = 3.5);
+  // bottom curve starts at (3.0, 93.0) and returns to x = 10.0 at y = 100.0 (y_end).
+  assert_eq(pts_next[0], 10.0)
+  assert_eq(pts_next[1], 20.0)
+  assert_eq(pts_next[pts_next.length() - 4], 10.0)
+  assert_eq(pts_next[pts_next.length() - 3], 100.0)
 }

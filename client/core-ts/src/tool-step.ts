@@ -638,7 +638,7 @@ export function toolResult(name: string, call: string, result: string, failed: b
       .trim();
     const agyEdit = /^Made \d+ replacements? in .+ starting at line (\d+) \(\+(\d+)\/-(\d+) lines\)\.\s*$/.exec(cleanStripped);
     if (agyEdit) {
-      return [{ kind: "facts", items: [{ key: `第 ${agyEdit[1]} 行 · +${agyEdit[2]} / -${agyEdit[3]}`, plain: true }] }];
+      return [];
     }
     if (cleanStripped.split(/\r?\n/).every((l) => /^Made \d+ replacements? in [^\n]+$/.test(l.trim()))) {
       return [];
