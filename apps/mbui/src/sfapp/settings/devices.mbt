@@ -76,7 +76,12 @@ pub fn device_said(d : Json?) -> String {
 /// A station's 设备 section, made once in `b`: its devices, a row each opening its panel, and 添加设备 where the viewer
 /// may (`can_add`: any member on a whole station, its person on one that only runs tasks).
 pub fn station_devices_node(b : @view.View, core : Core, here : () -> Here, station : String, rig : Bool, can_add : () -> Bool) -> Unit {
-  let mine = fn() { devices_listed(core, here()).filter(fn(d) { text(Some(d), "station") == station && text(Some(d), "via") != "phone" }) }
+  // (worked out once a change, the section's count, its 添加设备 and its list reading it: its rows' own as they were
+  // where what changed is none of this station's)
+  let listed = @signals.computed(fn(_) {
+    devices_listed(core, here()).filter(fn(d) { text(Some(d), "station") == station && text(Some(d), "via") != "phone" })
+  }, same=fn(a, b) { a == b })
+  let mine = fn() { listed.get() }
   let note = fn() { if rig { @sf.t("web-pages.devices.rigNote") } else { "" } }
   let count = fn() { mine().length() }
   @sf.section_node(
