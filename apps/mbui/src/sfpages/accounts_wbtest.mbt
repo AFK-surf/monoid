@@ -465,10 +465,14 @@ test "a profile's models, a narrow page with a mouse: how many in a row; all of 
   t.frame()
   t.frame()
   assert_true(t.query(Button, label="移除 MY-MODEL") is Some(_), msg="the model named, among the rest")
-  // its × takes it off again
+  // its × takes it off again (the sheet grown with it at rest, scrolled to in the list: the last of its rows)
+  t.run_for(@ui.move_most_ms)
+  let (lx, ly, _, _) = t.get(Checkbox, label="喜欢 GPT-6").rect
+  t.wheel(lx, ly, 2000.0)
+  t.run_for(@ui.move_most_ms)
   t.click(Button, label="移除 MY-MODEL")
-  t.frame()
-  t.frame()
+  // (its row closing its room on its way)
+  t.run_for(@ui.move_most_ms)
   assert_true(t.query(Button, label="移除 MY-MODEL") is None, msg="taken off")
 }
 
@@ -479,7 +483,9 @@ test "a profile model's id appears beside the option the pointer is over" {
   t.tap_text("可用模型")
   t.run_for(@kit.presence_in_ms)
   for (name, id) in [("Opus 5.5", "claude-opus-5-5"), ("Sonnet 5", "claude-sonnet-5")] {
-    let (x, y, w, h) = t.rect_of(name).unwrap()
+    // (its name on its box's row in the panel, not where the page under it says it)
+    let (bx, by, _, bh) = t.get(Checkbox, label="喜欢 \{name}").rect
+    let (_, x, y, w, h, _) = t.words().filter(fn(e) { e.0 == name && e.1 > bx && (e.2 + e.4 / 2.0 - (by + bh / 2.0)).abs() < 2.0 })[0]
     t.move_to(x + w / 2.0, y + h / 2.0)
     t.run_for(@sf.tip_delay_ms + @kit.presence_in_ms)
     let tip = t.get(Tooltip, label=id).rect

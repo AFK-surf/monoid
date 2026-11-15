@@ -14,7 +14,8 @@
 /// What the panel keeps: what was let go in it (忽略) until the core no longer lists it, by station and chat; the
 /// stations' trouble as looked at before it opened, as it shows it while open (None: closed).
 priv struct Attention {
-  gone : Array[String]
+  /// (followed: a panel of nodes lists a row no longer once it is let go here, and again if that could not be done)
+  gone : @sf.LiveMap[String, Bool]
   mut trouble_seen : String?
   /// A clearing already asked of this core, until its prefs change or the station has trouble again. A call's
   /// answer can arrive before the prefs topic; no frame in between sends the same write again.
@@ -22,7 +23,7 @@ priv struct Attention {
 }
 
 ///|
-let attention : Attention = { gone: [], trouble_seen: None, trouble_forgotten: {} }
+let attention : Attention = { gone: @sf.LiveMap::new(), trouble_seen: None, trouble_forgotten: {} }
 
 ///|
 fn attention_reset() -> Unit {
@@ -246,26 +247,40 @@ fn attention_read_all(src : Source, list : Array[Json]) -> Unit {
   for i in list {
     let v = Some(i)
     let key = attention_key(i)
-    attention.gone.push(key)
+    attention.gone[key] = true
     act(
       src,
       @sf.t("web-main.attention.readAll"),
       "",
       "chat.read",
       { "station": Json::string(text(v, "station")), "thread": Json::number(number(v, "thread")), "seq": field(v, "seq").unwrap() },
-      failed=fn() { attention.gone.retain(fn(k) { k != key }) },
+      failed=fn() { attention.gone.remove(key) },
     )
   }
 }
 
 ///|
-/// 待处理 as a panel of its own, where there is no bell to open it beside (a phone's Home).
+/// 待处理 as a panel of its own, where there is no bell to open it beside (a phone's Home): its rows and its foot
+/// nodes, each following what it lists (the core's marks, what was let go here) as that changes.
 pub fn open_attention_panel(src : Source, w : Workspace, from : @sf.Anchor) -> Unit {
-  @sf.panel(
+  @sf.panel_nodes(
     @sf.t("web-main.attention.entry"),
-    fn(c, close) { c.box(style=att_sheet, fn() { attention_rows(c, src, w, false, close) }) |> ignore },
+    fn(v, close) {
+      v.box(fn(b) {
+        @sf.style_node(b, fn() { att_sheet })
+        attention_rows_node(b, src, w, close)
+      })
+      |> ignore
+    },
     from~,
-    foot=fn(c, close) { c.box(style=att_sheet, fn() { attention_foot(c, src, w, close) }) |> ignore },
+    foot=fn(v, close) {
+      // (across the foot's row, its words at its start as the old foot's were)
+      v.box(fn(b) {
+        @sf.style_node(b, fn() { att_sheet }, in_row=true)
+        attention_foot_node(b, src, w, close)
+      })
+      |> ignore
+    },
   )
 }
 
@@ -337,70 +352,16 @@ fn attention_rows(c : @ui.Ctx, src : Source, w : Workspace, railed : Bool, close
       for i in g.2 {
         let v = Some(i)
         let key = attention_key(i)
-        let session = text(v, "session")
         let title = text(v, "title")
-        let thread = number(v, "thread")
-        let seq = field(v, "seq")
-        // let go (忽略): a failure, until the chat fails again (kept on this device: prefs' failsGone)
-        let failure = text(v, "failure")
-        let alert = text(v, "kind") == "alert"
-        // a decision waiting on the viewer (the core says where it is in the chat)
-        let dismiss = if alert && failure != "" {
-          Some(fn() {
-            attention.gone.push(key)
-            let m : Map[String, Json] = Map([])
-            m[text(v, "workspace")] = Json::array([Json::string(failure)])
-            act(
-              src,
-              @sf.t("web-main.decisions.dismissWhat"),
-              "",
-              "prefs.set",
-              { "failsGone": Json::object(m) },
-              // not let go: listed again
-              failed=fn() { attention.gone.retain(fn(k) { k != key }) },
-            )
-          })
-        } else if text(v, "kind") == "wait" && thread > 0.0 && seq is Some(Number(_, ..)) {
-          Some(fn() {
-            attention.gone.push(key)
-            act(
-              src,
-              @sf.t("web-main.decisions.dismissWhat"),
-              "",
-              "decision.dismiss",
-              { "station": Json::string(text(v, "station")), "thread": Json::number(thread), "seq": seq.unwrap() },
-              // not let go: listed again
-              failed=fn() { attention.gone.retain(fn(k) { k != key }) },
-            )
-          })
-        } else {
-          None
-        }
         attention_item(
           c,
           "attention/" + key,
           text(v, "kind"),
           if title != "" { title } else { @sf.t("web-main.attention.untitled") },
           attention_line(v),
-          @sf.t(if alert { "web-main.attention.dismissFailNote" } else { "web-main.attention.dismissNote" }),
-          dismiss,
-          fn() {
-            close()
-            @sfbase.history_push()
-            if g.0 != w.id {
-              app.picked.set(g.0)
-              (src.call)("prefs.set", Json::object({ "workspace": Json::string(g.0) }), @sfbase.answer_unread)
-              desk_home()
-            }
-            let chat : ChatRef = {
-              station: text(v, "station"),
-              session: if session != "" { session } else { "thread:" + thread.to_int64().to_string() },
-              title,
-              station_name: text(v, "stationName"),
-            }
-            @sfbase.nav_over_home([Chat(chat)])
-            @sfbase.show_chosen()
-          },
+          attention_note(v),
+          attention_dismiss(src, i),
+          fn() { attention_go(src, w, g.0, i, close) },
         )
       }
     })
@@ -408,13 +369,242 @@ fn attention_rows(c : @ui.Ctx, src : Source, w : Workspace, railed : Bool, close
 }
 
 ///|
+/// What 忽略 does to a row of 待处理 (`i`, the core's item), where it can be let go: a failure, until the chat fails again
+/// (kept on this device: prefs' failsGone); a decision waiting on the viewer (the core says where it is in the chat).
+/// Gone at once, listed again if that could not be done.
+fn attention_dismiss(src : Source, i : Json) -> (() -> Unit)? {
+  let v = Some(i)
+  let key = attention_key(i)
+  let thread = number(v, "thread")
+  let seq = field(v, "seq")
+  let failure = text(v, "failure")
+  if text(v, "kind") == "alert" && failure != "" {
+    Some(fn() {
+      attention.gone[key] = true
+      let m : Map[String, Json] = Map([])
+      m[text(v, "workspace")] = Json::array([Json::string(failure)])
+      act(
+        src,
+        @sf.t("web-main.decisions.dismissWhat"),
+        "",
+        "prefs.set",
+        { "failsGone": Json::object(m) },
+        // not let go: listed again
+        failed=fn() { attention.gone.remove(key) },
+      )
+    })
+  } else if text(v, "kind") == "wait" && thread > 0.0 && seq is Some(Number(_, ..)) {
+    Some(fn() {
+      attention.gone[key] = true
+      act(
+        src,
+        @sf.t("web-main.decisions.dismissWhat"),
+        "",
+        "decision.dismiss",
+        { "station": Json::string(text(v, "station")), "thread": Json::number(thread), "seq": seq.unwrap() },
+        // not let go: listed again
+        failed=fn() { attention.gone.remove(key) },
+      )
+    })
+  } else {
+    None
+  }
+}
+
+///|
+/// What 忽略's tip says of a row of 待处理 (the core's item `v`).
+fn attention_note(v : Json?) -> String {
+  @sf.t(if text(v, "kind") == "alert" { "web-main.attention.dismissFailNote" } else { "web-main.attention.dismissNote" })
+}
+
+///|
+/// A row of 待处理 (`i`, the core's item, of workspace `ws`) pressed: the panel closed, its chat opened over Home, in
+/// its workspace (switched to where it is not `w`).
+fn attention_go(src : Source, w : Workspace, ws : String, i : Json, close : () -> Unit) -> Unit {
+  let v = Some(i)
+  let session = text(v, "session")
+  close()
+  @sfbase.history_push()
+  if ws != w.id {
+    app.picked.set(ws)
+    (src.call)("prefs.set", Json::object({ "workspace": Json::string(ws) }), @sfbase.answer_unread)
+    desk_home()
+  }
+  let chat : ChatRef = {
+    station: text(v, "station"),
+    session: if session != "" { session } else { "thread:" + number(v, "thread").to_int64().to_string() },
+    title: text(v, "title"),
+    station_name: text(v, "stationName"),
+  }
+  @sfbase.nav_over_home([Chat(chat)])
+  @sfbase.show_chosen()
+}
+
+///|
+/// The unread 待处理 lists (what 全部已读 reads), as it lists them now.
+fn attention_unread(src : Source, w : Workspace) -> Array[Json] {
+  attention_groups(src, w, true)
+  .iter()
+  .flat_map(fn(g) { g.2.iter() })
+  .filter(fn(i) { text(Some(i), "kind") == "done" && number(Some(i), "thread") > 0.0 && field(Some(i), "seq") is Some(Number(_, ..)) })
+  .collect()
+}
+
+///|
+/// What 待处理's panel of its own holds (open_attention_panel: no bell, so neither the stations' trouble nor the
+/// services left up long), in node `v`: each workspace's chats that want the viewer, the one in view's first, under
+/// its name where there are several (its mark before it); nothing waiting said where none; each group and row
+/// following the core's marks and what was let go here as they change.
+fn attention_rows_node(v : @view.View, src : Source, w : Workspace, close : () -> Unit) -> Unit {
+  let groups = fn() { attention_groups(src, w, true) }
+  let several = fn() {
+    let gs = groups()
+    gs.length() > 1 || gs.iter().any(fn(g) { g.0 != w.id })
+  }
+  v.show(at_once=true, fn() { groups().length() == 0 }, fn(e) {
+    e.box(fn(b) {
+      @sf.style_node(b, fn() { att_empty })
+      @sf.words_node(b, fn() { @sf.t("web-main.attention.empty") }, fn() { att_empty_words }) |> ignore
+    })
+    |> ignore
+  })
+  v.each(groups, fn(g) { g.0 }, fn(gb, g) {
+    // each workspace's mark before its name, as the core says it with its chats (MarkItem's workspaceEmoji, workspaceIcon)
+    let first_item = fn() { g.get().2.get(0) }
+    @sf.panel_group_node(
+      gb,
+      fn() { if several() { g.get().1 } else { "" } },
+      lead=fn(l) {
+        @sf.workspace_badge_node(
+          l,
+          fn() { g.get().1 },
+          fn() { text(first_item(), "workspaceEmoji") },
+          fn() { text(first_item(), "workspaceIcon") },
+          att_ws_mark,
+        )
+      },
+      fn(rows) {
+        rows.each(fn() { g.get().2 }, attention_key, fn(row, i) {
+          let ws = @signals.untracked(fn() { g.get().0 })
+          attention_item_node(row, src, fn() { i.get() }, fn() { attention_go(src, w, ws, i.untracked(), close) })
+        })
+      },
+    )
+  })
+}
+
+///|
+/// A row of 待处理's panel in node `row` (attention_item's), of the core's item `i` as it is now: its dot (amber
+/// waiting on the viewer, red gone wrong, blue unread, said as an image of its kind), its title (500) and its line; 忽略
+/// at its end where it can be let go, while the hand is on the row (always to a finger, which hovers over nothing),
+/// its note its tip. Pressed, `go`.
+fn attention_item_node(row : @view.View, src : Source, i : () -> Json, go : () -> Unit) -> Unit {
+  let v = fn() { Some(i()) }
+  let title = fn() {
+    match text(v(), "title") {
+      "" => @sf.t("web-main.attention.untitled")
+      t => t
+    }
+  }
+  let tips = @sf.panel_tips_of(row)
+  row.box(fn(r) {
+    @sf.style_node(r, fn() { if @sf.lit_in_node(r) { att_item_on } else { att_item } })
+    @sf.presses_node(r, go)
+    r.says(By(fn() { Some(@view.said(Button, label=title())) })) |> ignore
+    r.box(fn(m) {
+      @sf.style_node(m, fn() { att_mark })
+      m.box(fn(dot) {
+        let look = fn() -> (@ui.Color, String) {
+          match text(v(), "kind") {
+            "alert" => (Data(@sf.theme().p.red), "web-main.attention.alertOne")
+            "done" => (@sf.mark_blue, "web-main.chatMark.done")
+            _ => (Data(@sf.theme().p.warn_ink), "web-main.attention.waitOne")
+          }
+        }
+        @sf.style_node(dot, fn() {
+          let (ground, _) = look()
+          att_dot.then(@ui.style(bg=ground))
+        })
+        dot.says(By(fn() { Some(@view.said(Image, label=@sf.t(look().1))) })) |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+    r.box(fn(words) {
+      @sf.style_node(words, fn() { att_text }, in_row=true)
+      @sf.words_node(words, title, fn() { att_title }) |> ignore
+      words.show(at_once=true, fn() { attention_line(v()) != "" }, fn(l) {
+        @sf.words_node(l, fn() { attention_line(v()) }, fn() { att_line }) |> ignore
+      })
+    })
+    |> ignore
+    r.show(
+      at_once=true,
+      fn() { attention_dismiss(src, i()) is Some(_) && (!@sf.pointer_rests() || @sf.lit_in_node(r)) },
+      fn(d) {
+        d.box(fn(x) {
+          @sf.style_node(x, fn() { if @sf.lit_node(x) { att_dismiss_on } else { att_dismiss } })
+          @sf.presses_node(x, fn() {
+            match attention_dismiss(src, @signals.untracked(i)) {
+              Some(f) => f()
+              None => ()
+            }
+          })
+          x.says(Is(Some(@view.said(Button, label=@sf.t("web-main.attention.dismiss"))))) |> ignore
+          @sf.words_node(x, fn() { @sf.t("web-main.attention.dismiss") }, fn() {
+            if @sf.lit_node(x) {
+              att_dismiss_on_words
+            } else {
+              att_dismiss_words
+            }
+          })
+          |> ignore
+          match tips {
+            Some(layer) => @sf.tip_node(layer, x, fn() { attention_note(v()) }) |> ignore
+            None => ()
+          }
+        })
+        |> ignore
+      },
+    )
+  })
+  |> ignore
+}
+
+///|
+/// 待处理's foot in node `v` (attention_foot's): 全部已读 while it lists unread, 通知设置, small words, quiet, in ink
+/// under the hand; following what it lists as that changes.
+fn attention_foot_node(v : @view.View, src : Source, w : Workspace, close : () -> Unit) -> Unit {
+  v.box(fn(f) {
+    @sf.style_node(f, fn() { att_foot })
+    f.show(at_once=true, fn() { attention_unread(src, w).length() > 0 }, fn(r) {
+      attention_link_node(r, fn() { @sf.t("web-main.attention.readAll") }, fn() {
+        attention_read_all(src, @signals.untracked(fn() { attention_unread(src, w) }))
+      })
+    })
+    attention_link_node(f, fn() { @sf.t("web-main.attention.settings") }, fn() {
+      close()
+      open_settings_at(@settings.Route::Notifications)
+    })
+  })
+  |> ignore
+}
+
+///|
+/// Words to press at 待处理's foot in `parent` (attention_link's), quiet, in ink under the hand; read out a link.
+fn attention_link_node(parent : @view.View, label : () -> String, press : () -> Unit) -> Unit {
+  parent.box(fn(b) {
+    @sf.presses_node(b, press)
+    b.says(By(fn() { Some(@view.said(Link, label=label())) })) |> ignore
+    @sf.words_node(b, label, fn() { if @sf.lit_node(b) { att_link_on } else { att_link } }) |> ignore
+  })
+  |> ignore
+}
+
+///|
 /// 待处理's foot: 全部已读 while it lists unread, 通知设置, small words, quiet (link).
 fn attention_foot(c : @ui.Ctx, src : Source, w : Workspace, close : () -> Unit) -> Unit {
-  let unread = attention_groups(src, w, true)
-    .iter()
-    .flat_map(fn(g) { g.2.iter() })
-    .filter(fn(i) { text(Some(i), "kind") == "done" && number(Some(i), "thread") > 0.0 && field(Some(i), "seq") is Some(Number(_, ..)) })
-    .collect()
+  let unread = attention_unread(src, w)
   c.box(style=att_foot, fn() {
     if unread.length() > 0 {
       attention_link(c, "attention/read-all", @sf.t("web-main.attention.readAll"), on_press=fn() {
