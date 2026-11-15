@@ -28,7 +28,18 @@ test "what the keyboard sends a terminal: words as they are, keys as xterm sends
   // (⌘ with a key: this device's shortcut; a key let go: nothing)
   assert_eq(terminal_keys_of(down("v", "KeyV", @ui.key_in_meta), false), "")
   assert_eq(terminal_keys_of(Key(down=false, key="a", code="KeyA", mods=0), false), "")
-  assert_eq(terminal_cursor_row("{\"cols\":80,\"rows\":24,\"cursor\":[3,17,true],\"keys\":0,\"lines\":[]}"), 17)
+  assert_true(terminal_paste_key(down("v", "KeyV", @ui.key_in_meta)))
+  assert_true(terminal_paste_key(down("V", "KeyV", @ui.key_in_ctrl | @ui.key_in_shift)))
+  assert_false(terminal_paste_key(down("v", "KeyV", @ui.key_in_ctrl)))
+  assert_eq(terminal_pasted_of("echo hi", false), "echo hi")
+  assert_eq(terminal_pasted_of("echo hi", true), "\u{1b}[200~echo hi\u{1b}[201~")
+  assert_eq(terminal_keys_of(terminal_held(Text("cd"), @ui.key_in_ctrl), false), "\u{03}d")
   assert_true(terminal_app_keys("{\"cols\":80,\"rows\":24,\"cursor\":[0,0,true],\"keys\":1,\"lines\":[]}"))
   assert_false(terminal_app_keys("{\"cols\":80,\"rows\":24,\"cursor\":[0,0,true],\"keys\":0,\"lines\":[]}"))
+  assert_true(terminal_bracketed_paste("{\"cols\":80,\"rows\":24,\"cursor\":[0,0,true],\"keys\":0,\"paste\":1,\"lines\":[]}"))
+  assert_false(terminal_bracketed_paste("{\"cols\":80,\"rows\":24,\"cursor\":[0,0,true],\"keys\":0,\"paste\":0,\"lines\":[]}"))
+  assert_eq(
+    terminal_plain_text("{\"cols\":80,\"rows\":24,\"lines\":[[[\"ls\", \"\", \"\", 0], [\" -la\", \"\", \"\", 0]], []]}"),
+    "ls -la",
+  )
 }

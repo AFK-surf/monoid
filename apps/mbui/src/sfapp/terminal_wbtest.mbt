@@ -32,14 +32,32 @@ test "a terminal typed into by someone else: who, and 接管, on a wide window's
 }
 
 ///|
-test "a terminal typed into here: no 控制 nor 接管; its ⋯ holds 复制工作目录 and 结束会话" {
+test "a terminal typed into here: no 控制 nor 接管; its 控制中心 holds 复制工作目录 and 结束会话, and inline 按键 keeps the terminal visible alongside combos and F-keys" {
+  let tp = screen_in("terminal", terminal_windows[0], "zh")
+  tp.get(Button, label="Esc") |> ignore
+  tp.get(Button, label=tr("android-misc.screen.keyboard")) |> ignore
+  tp.get(Button, label=tr("web-pages.terminal.sendCmd")) |> ignore
+  let tkb = screen_in("terminal-kb", terminal_windows[0], "zh")
+  tkb.get(Button, label=tr("android-misc.screen.key.down")) |> ignore
+  tkb.get(Button, label=tr("android-misc.screen.key.right")) |> ignore
+  tkb.get(Button, label=tr("web-pages.terminal.hideKeyboard")) |> ignore
   for win in terminal_windows {
     let t = screen_in("terminal", win, "zh")
     assert_true(t.query(Button, label=tr("android-misc.screen.takeOver")) is None, msg="\{win.0}: 接管 while typing")
     assert_true(t.query(Button, label=tr("web-pages.screen.control")) is None, msg="\{win.0}: 控制 while typing")
-    t.click(Button, label=tr("common.more"))
+    t.click(Button, label=tr("web-pages.screen.panel"))
     t.run_for(@ui.move_most_ms)
+    assert_true(t.find(tr("web-pages.terminal.fit80")) is Some(_), msg="\{win.0}: no 适应 80 列 in 控制中心")
     assert_true(t.find(tr("web-pages.terminal.copyCwd")) is Some(_), msg="\{win.0}: no 复制工作目录")
     assert_true(t.find(tr("web-pages.terminal.end")) is Some(_), msg="\{win.0}: no 结束会话")
   }
+  for win in terminal_windows {
+    let tk = screen_in("terminal-keys", win, "zh")
+    assert_true(tk.find("import { Effect }") is Some(_), msg="\{win.0}: terminal hidden while 按键 open")
+    assert_true(tk.find(tr("web-pages.terminal.combo.interrupt")) is Some(_), msg="\{win.0}: no 中断 · ^C in 按键")
+    assert_true(tk.find("F12") is Some(_), msg="\{win.0}: no F12 in 按键")
+  }
+  let te = screen_in("terminal-ended", terminal_windows[0], "zh")
+  assert_true(te.find(tr("web-pages.terminal.ended")) is Some(_), msg="no 已结束 on ended terminal")
+  te.get(Button, label=tr("web-pages.screen.again")) |> ignore
 }

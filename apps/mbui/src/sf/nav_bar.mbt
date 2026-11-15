@@ -174,15 +174,21 @@ fn nav_bar_in(
 }
 
 ///|
+// kept across runs: a value (no field of it changes)
+let nav_sub_words : @ui.TextStyle = @ui.text_style(size=Caption, leading=L4, color=Muted, wrap=false, w=Cut)
+
+///|
 /// The bar (nav_bar's) as nodes in `parent`: back to where `back` says (nav_back_node), `on_back` as it is pressed;
-/// `title` in the middle, 84 clear of either side, cut short where it has less; what `trailing` makes at its end, on
-/// back's 32 line; on the page's ground, from `top` above it down (the status bar's height as it is).
+/// `title` in the middle (and `sub` under it where said), 84 clear of either side, cut short where it has less; what
+/// `trailing` makes at its end, on back's 32 line; on the page's ground, from `top` above it down (the status bar's
+/// height as it is).
 #callsite(autofill(loc))
 pub fn nav_bar_node(
   parent : @view.View,
   back : () -> String,
   title : () -> String,
   on_back : () -> Unit,
+  sub? : () -> String = fn() { "" },
   top? : () -> Double = fn() { 0.0 },
   trailing? : (@view.View) -> Unit,
   loc~ : SourceLoc,
@@ -198,7 +204,12 @@ pub fn nav_bar_node(
       i.lines_up(Is(Some(Middle))) |> ignore
       // the title, in the flow: as tall as its line makes the bar
       i.box(fn(col) {
-        col.padding(Is((nav_title_x, 0.0, nav_title_x, 0.0))).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+        col
+        .padding(Is((nav_title_x, 0.0, nav_title_x, 0.0)))
+        .lines_up(Is(Some(Middle)))
+        .shrink(Is(1.0))
+        .min_width(Is(Some(0.0)))
+        |> ignore
         col.box(fn(l) {
           l.height(Is(Some(nav_line_h))).lies_along(Is(Middle)).clips(Is(true)).min_width(Is(Some(0.0))) |> ignore
           l.box(fn(w) {
@@ -207,6 +218,10 @@ pub fn nav_bar_node(
           |> ignore
         })
         |> ignore
+        col.show(fn() { sub() != "" }, fn(s) {
+          s.offset(Is((0.0, -4.0))).clips(Is(true)).min_width(Is(Some(0.0))) |> ignore
+          styled_words(s, sub, fn() { nav_sub_words }).cuts(Is(true)).min_width(Is(Some(0.0))) |> ignore
+        })
       })
       |> ignore
       // back and what is at the end, on the 32 line at its top

@@ -96,6 +96,39 @@ fn terminal_keys_of(k : @ui.KeyIn, keys : Bool) -> String {
 }
 
 ///|
+/// Whether key `k` asks to paste the device's clipboard into the terminal (`⌘V` on Mac, `Ctrl+Shift+V` elsewhere; plain
+/// `Ctrl+V` stays the terminal's own literal-next `^V`).
+fn terminal_paste_key(k : @ui.KeyIn) -> Bool {
+  match k {
+    Key(down=true, code="KeyV", mods~, ..) =>
+      (mods & @ui.key_in_alt) == 0 &&
+      ((mods & @ui.key_in_meta) != 0 || ((mods & @ui.key_in_ctrl) != 0 && (mods & @ui.key_in_shift) != 0))
+    _ => false
+  }
+}
+
+///|
+/// Whether the program asked for bracketed paste (`?2004h`), as the host's lines say (`"paste":1` in their head).
+fn terminal_bracketed_paste(said : String) -> Bool {
+  let head = if said.length() > 140 { said.unsafe_substring(start=0, end=140) } else { said }
+  head.contains("\"paste\":1")
+}
+
+///|
+/// What pasting `words` sends the terminal: bracketed (`ESC [ 200 ~ … ESC [ 201 ~`, any bracketed-end inside `words`
+/// stripped so pasted text cannot break out of the bracket) where `bracketed` holds, else `words` as they are.
+fn terminal_pasted_of(words : String, bracketed : Bool) -> String {
+  if words == "" {
+    return ""
+  }
+  if bracketed {
+    "\u{1b}[200~" + words.replace_all(old="\u{1b}[201~", new="") + "\u{1b}[201~"
+  } else {
+    words
+  }
+}
+
+///|
 /// Whether the program asked for the application cursor keys, as the host's lines say (`"keys":1` in their head,
 /// @hostapi.Terminal::lines): read off the head alone, not the lines.
 fn terminal_app_keys(said : String) -> Bool {
@@ -105,8 +138,8 @@ fn terminal_app_keys(said : String) -> Bool {
 
 ///|
 /// What is typed with the keys row's modifiers held (`mods`, key_in_*: ctrl, alt pressed on the row, for the next key):
-/// a single character typed comes as its key with them (ctrl then c: Ctrl+C), a key with them added; more words as
-/// they are.
+/// a single character typed comes as its key with them (ctrl then c: Ctrl+C), a key with them added; more words take
+/// the modifier on their first character and the rest as they are.
 fn terminal_held(k : @ui.KeyIn, mods : Int) -> @ui.KeyIn {
   if mods == 0 {
     return k
@@ -114,28 +147,50 @@ fn terminal_held(k : @ui.KeyIn, mods : Int) -> @ui.KeyIn {
   match k {
     Text(words) if words.length() == 1 =>
       Key(down=true, key=words, code=if words == " " { "Space" } else { "" }, mods~)
+    Text(words) if words.length() > 1 => {
+      let cs = words.to_array()
+      let first = cs[0].to_string()
+      let rest = String::from_array(cs[1:].to_owned())
+      let head = terminal_keys_of(
+        Key(down=true, key=first, code=if first == " " { "Space" } else { "" }, mods~),
+        false,
+      )
+      Text(head + rest)
+    }
     Key(down~, key~, code~, mods=own) => Key(down~, key~, code~, mods=own | mods)
     other => other
   }
 }
 
 ///|
-/// The line the cursor is on, as the host's lines say (`"cursor":[x,y,shown]` in their head); 0 where they say none.
-fn terminal_cursor_row(said : String) -> Int {
-  let head = if said.length() > 120 { said.unsafe_substring(start=0, end=120) } else { said }
-  guard head.find("\"cursor\":[") is Some(i) else { return 0 }
-  // (past its x and the comma after it, its y's digits)
-  let mut commas = 0
-  let mut y = 0
-  for c in head.unsafe_substring(start=i + 10, end=head.length()) {
-    if c == ',' {
-      commas += 1
-      if commas == 2 {
-        break
+/// The visible text of the terminal's screen (`said`, as the host gives it), trailing empty lines dropped, for copying.
+fn terminal_plain_text(said : String) -> String {
+  let parsed = @json.parse(said) catch { _ => return "" }
+  let rows : Array[String] = []
+  match parsed {
+    Object(o) =>
+      match o.get("lines") {
+        Some(Array(lines)) =>
+          for line in lines {
+            let buf = StringBuilder()
+            match line {
+              Array(runs) =>
+                for r in runs {
+                  match r {
+                    Array([String(t), ..]) => buf.write_string(t)
+                    _ => ()
+                  }
+                }
+              _ => ()
+            }
+            rows.push(buf.to_string())
+          }
+        _ => ()
       }
-    } else if commas == 1 && c >= '0' && c <= '9' {
-      y = y * 10 + (c.to_int() - '0'.to_int())
-    }
+    _ => ()
   }
-  y
+  while !rows.is_empty() && rows[rows.length() - 1].trim().is_empty() {
+    rows.pop() |> ignore
+  }
+  rows.join("\n")
 }

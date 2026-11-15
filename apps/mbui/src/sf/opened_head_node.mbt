@@ -1,15 +1,16 @@
 // The head of what is opened over the whole window and laid out under it, as nodes (a station's terminal: its screen
 // under it): in a wide frame, the bar of a file or a screen opened (viewer_bar_node: back by name, the name and the
-// line about it in the middle, its ⋯ at its end, round at the window's corner); in a phone's, a phone's bar
-// (nav_bar_node: back, the name, its ⋯) and the line about it under it, a page's note (page_note_node). Under either,
-// while it says so, a line of what is to be done (who else is at it, and the one thing to do: 接管), its button at its
-// end, alone in its row. Each as tall as it is, in the flow: what comes after it starts under it.
+// line about it in the middle, 按键 and 控制中心 at its end, round at the window's corner); in a phone's, one compact bar
+// (nav_bar_node: back, the name and the line about it under it, 控制中心 at its end). Under either, while it says so, a
+// line of what is to be done (who else is at it, and the one thing to do: 接管 or 控制), its button at its end, alone in
+// its row. Each as tall as it is, in the flow: what comes after it starts under it.
 
 ///|
 /// The head in `parent` (`wide`: in a wide frame, its window's; else a phone's): back to where `back` says, `went` as it
 /// is pressed; `name`, and `meta` about it (`title`, where it is, its tip on a wide bar); under the system's status bar,
-/// `top` high; a ⋯ at its end that gives `more` itself as it is pressed (a menu beside it). Under it while `line` says
-/// words: those, then a button `act` names, `acting` as it is pressed.
+/// `top` high; `keys` (shown on a wide bar while `keys_shown` holds) and 控制中心 at its end that give `keys` and `more`
+/// themselves as they are pressed (a panel beside each). Under it while `line` says words: those, then a button `act`
+/// names, `acting` as it is pressed.
 #callsite(autofill(loc))
 pub fn opened_head_node(
   parent : @view.View,
@@ -24,6 +25,10 @@ pub fn opened_head_node(
   line : () -> String,
   act : () -> String,
   acting : () -> Unit,
+  keys_shown? : () -> Bool = fn() { false },
+  keys_on? : () -> Bool = fn() { false },
+  keys? : (@view.View) -> Unit,
+  paste? : () -> Unit,
   loc~ : SourceLoc,
 ) -> Unit {
   parent.box(made_for=loc, fn(h) {
@@ -46,11 +51,43 @@ pub fn opened_head_node(
           fn() { p.window().0 },
           ink,
           fn(row, corner) {
+            match paste {
+              Some(do_paste) =>
+                row.show(keys_shown, fn(ps) {
+                  tool_node(
+                    ps,
+                    fn() { { icon: "paste", label: t("web-pages.screen.paste"), on: false, disabled: false } },
+                    ink,
+                    corner,
+                    do_paste,
+                    tip=tips,
+                  )
+                  |> ignore
+                })
+              None => ()
+            }
+            match keys {
+              Some(open_keys) =>
+                row.show(keys_shown, fn(k) {
+                  let btn : Ref[@view.View?] = Ref(None)
+                  btn.val = Some(
+                    tool_node(
+                      k,
+                      fn() { { icon: "keycap", label: t("web-pages.screen.keysPanel"), on: keys_on(), disabled: false } },
+                      ink,
+                      corner,
+                      fn() { match btn.val { Some(m) => open_keys(m); None => () } },
+                      tip=tips,
+                    ),
+                  )
+                })
+              None => ()
+            }
             let dots : Ref[@view.View?] = Ref(None)
             dots.val = Some(
               tool_node(
                 row,
-                fn() { { icon: "more", label: t("common.more"), on: false, disabled: false } },
+                fn() { { icon: "sliders", label: t("web-pages.screen.panel"), on: false, disabled: false } },
                 ink,
                 corner,
                 fn() { match dots.val { Some(m) => more(m); None => () } },
@@ -66,10 +103,9 @@ pub fn opened_head_node(
       })
       |> ignore
     } else {
-      nav_bar_node(h, back, name, went, top~, trailing=fn(e) {
-        icon_action_opens_node(e, "more", fn() { t("common.more") }, more) |> ignore
+      nav_bar_node(h, back, name, went, sub=meta, top~, trailing=fn(e) {
+        icon_action_opens_node(e, "sliders", fn() { t("web-pages.screen.panel") }, more) |> ignore
       })
-      h.box(fn(n) { page_note_node(n, meta) }) |> ignore
     }
     // what is to be done, while there is: its words, the button at the line's end
     h.show(fn() { line() != "" }, fn(l) {

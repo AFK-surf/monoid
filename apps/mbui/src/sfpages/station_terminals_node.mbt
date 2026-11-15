@@ -39,15 +39,26 @@ fn terminal_title(t : Json?) -> String {
 }
 
 ///|
-/// Whether this device's host keeps terminals (libghostty-vt linked in: @hostapi.Terminal), asked by opening one and
-/// letting it go: a host with none shows no terminal's row, which would open on nothing.
+// kept across runs: whether this device's host keeps terminals (libghostty-vt linked in), asked once
+let terminals_here_kept : Ref[Bool?] = Ref(None)
+
+///|
+/// Whether this device's host keeps terminals (libghostty-vt linked in: @hostapi.Terminal), asked once by opening one
+/// and letting it go: a host with none shows no terminal's row, which would open on nothing.
 fn terminals_here() -> Bool {
-  match @hostapi.Terminal::open(20, 6) {
-    Some(t) => {
-      t.close()
-      true
+  match terminals_here_kept.val {
+    Some(ok) => ok
+    None => {
+      let ok = match @hostapi.Terminal::open(20, 6) {
+        Some(t) => {
+          t.close()
+          true
+        }
+        None => false
+      }
+      terminals_here_kept.val = Some(ok)
+      ok
     }
-    None => false
   }
 }
 
