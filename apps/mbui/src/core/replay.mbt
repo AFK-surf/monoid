@@ -874,6 +874,13 @@ pub fn Replay::asks_before_step(self : Replay) -> Bool {
 }
 
 ///|
+/// Whether `said` (the step a test says) is the recorded step `recorded`: identical, or both `tapxy` steps when a test
+/// measures the target's coordinates on the current layout.
+fn same_step(recorded : String, said : String) -> Bool {
+  recorded == said || (recorded.has_prefix("tapxy ") && said.has_prefix("tapxy "))
+}
+
+///|
 /// The run's next step not taken again, when it is `line` (step_of: as the test says it), taken: what came after it
 /// may come. Whether it was. Another line (a test that says a step the run did not, or in another order) leaves it
 /// waiting, said by `waiting`.
@@ -882,7 +889,7 @@ pub fn Replay::step_taken(self : Replay, line : String) -> Bool {
   for i in self.first_out..<self.evs.length() {
     let e = self.evs[i]
     if e.out && !e.done && is_step(e.msg) {
-      if e.msg is Object(m) && m.get("step") == Some(Json::string(l)) {
+      if e.msg is Object(m) && m.get("step") is Some(String(s)) && same_step(s, l) {
         e.done = true
         e.at = (self.clock)()
         self.advance()
@@ -1154,7 +1161,7 @@ fn Replay::step_index(self : Replay, line : String) -> Int? {
   for i in self.first_out..<self.evs.length() {
     let e = self.evs[i]
     if e.out && !e.done && is_step(e.msg) {
-      return if e.msg is Object(m) && m.get("step") == Some(Json::string(l)) { Some(i) } else { None }
+      return if e.msg is Object(m) && m.get("step") is Some(String(s)) && same_step(s, l) { Some(i) } else { None }
     }
   }
   None
