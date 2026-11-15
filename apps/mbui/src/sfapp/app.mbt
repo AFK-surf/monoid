@@ -44,6 +44,7 @@ fn init {
 /// before let go of first (its window's tree follows nothing this one says), then the app as at the start (reset).
 fn new_run() -> Unit {
   @ui.run_let_go()
+  @ui.host_let_go()
   reset()
 }
 

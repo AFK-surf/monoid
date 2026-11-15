@@ -58,6 +58,31 @@ pub fn run_let_go() -> Unit {
 }
 
 ///|
+/// The host outside every Tester (the platform's where the program has mbui/host, none in a test's), kept as a Tester
+/// gives its fake where none was there before it: what answers between one run's Tester and the next's.
+// kept across runs: it is no run's
+let host_outside : Ref[&@hostapi.Host?] = Ref(None)
+
+///|
+/// The run before's fake host let go of where a run is begun before its Tester is made (an app's new_run): what is made
+/// then (a page a fixture opens over its made-up core, its words) asks the host outside every Tester, as the first
+/// run's did, never the run before's fake, whose environment said that test's language and window (main b80ec9fc's
+/// day's run, 43674422230: xshare_wbtest's chat menu made in English after station_peek_wbtest's last screen in
+/// English, its 分享… not there, the program stopped). A Tester of that run read after it says it was ended.
+///
+/// A run begun as a Tester's window's tree is first made (its source made then, its fake host in place:
+/// ask_focus_back_wbtest's), before it has drawn a frame, is that Tester's own: its fake stays.
+pub fn host_let_go() -> Unit {
+  match (fake.val, host_outside.val) {
+    (Some(f), Some(h)) if f.drawn => {
+      fake.val = None
+      @hostapi.set_host(h)
+    }
+    _ => ()
+  }
+}
+
+///|
 /// End this test run and restore the host that was current before it began. Release its window tree, bindings and the
 /// faces the run gave to its live host, so a later run starts with its own fonts. An older tester cannot close a newer
 /// one. A live host used here must be dedicated to the test: a face the run replaced on it cannot be restored.
@@ -367,6 +392,7 @@ pub fn Tester::new(
     scale,
     wants: false,
     frames_on: 0,
+    drawn: false,
     paced: 0.0,
     wake: -1.0,
     instances: 0,
@@ -539,6 +565,10 @@ pub fn Tester::new(
   }
   for im in images {
     f.image_sizes[im.0] = (im.1, im.2)
+  }
+  // (the host outside every Tester: what host_let_go gives back between one run's and the next's)
+  if fake.val is None {
+    host_outside.val = Some(@hostapi.host())
   }
   fake.val = Some(f)
   wall_ahead.set(f.wall)
@@ -1205,6 +1235,7 @@ pub fn Tester::frame_shown_at(self : Tester, now : Double, shown : Double) -> Un
   bench_frame_ends()
   self.hold_a11y_whole()
   self.frames = self.frames + 1
+  self.fake.drawn = true
   frames_on_seen.val = self.fake.frames_on
   // (what the window's tree did in it, where a test asked: tester_tree_work.mbt)
   tree_frame_kept()
