@@ -3417,7 +3417,7 @@ try {
         let firing: Promise<void> = Promise.resolve();
         if (phase === "ask") firing = fire();
         else if (phase !== "between") firing = whenChanged([`${DATA.A}/replica/handover/out`], () => atPhase(key, t0, phase) || (lastOn("A", ws)?.at ?? 0) >= t0 && !existsSync(`${DATA.A}/move/turn.json`), 300_000, () => "", 10).then(() => atPhase(key, t0, phase) ? fire() : undefined);
-        const said = await say(driver, `drill-move:${JSON.stringify({ action: "move", to: bId, module: "chats", item: key, withNeeds: true })}`, "drill-move:", 300_000).catch((e) => `no answer: ${(e as Error).message}`);
+        const said = await say(driver, `drill-move:${JSON.stringify({ action: "move", to: bId, module: "chats", item: key, withNeeds: true })}`, "drill-move: ", 300_000).catch((e) => `no answer: ${(e as Error).message}`);
         await firing;
         if (phase === "between") await fire();
         answers.push({ key, said });
@@ -3425,7 +3425,7 @@ try {
       }
       const refusedA = answers.filter((x) => /409|已有一次迁移在进行|under way/.test(x.said));
       tallies.push(`9a agent: ${answers.filter((x) => standing("B", x.key) === "live").length} of ${answers.length} on B after one call each, ${refusedA.length} answered as a move under way`);
-      const status = await say(driver, `drill-move:${JSON.stringify({ action: "status", to: bId })}`, "drill-move:", 300_000).catch((e) => `no answer: ${(e as Error).message}`);
+      const status = await say(driver, `drill-move:${JSON.stringify({ action: "status", to: bId })}`, "drill-move: ", 300_000).catch((e) => `no answer: ${(e as Error).message}`);
       log(`  station_move status after: ${status.slice(0, 400)}`);
       const moved: Moved[] = answers.map((x) => ({ key: x.key, at: 0, askMs: 0, said: x.said, failed: standing("B", x.key) === "live" ? null : x.said, refused: refusedA.includes(x) }));
       const why = await held9("9a", keys, moved, Number.MAX_SAFE_INTEGER);
@@ -3448,7 +3448,8 @@ try {
     const link = `${ST}/app/station`;
     const own = execFileSync("readlink", [link], { encoding: "utf8" }).trim();
     const limboDist = process.env.E2E_MOVE_LIMBO_DIST ?? own;
-    const hold = (process.env.STILLFAIL_DRILL_HOLD ?? "").split(":")[1] ?? "";
+    const holdAt = process.env.STILLFAIL_DRILL_HOLD ?? process.env.E2E_DRILL_HOLD ?? "";
+    const hold = holdAt.split(":")[1] ?? "";
     /// A's next process run from `dist` (its app/station pointed there, then a handover).
     const runA = async (dist: string) => {
       rmSync(link, { force: true });
@@ -3459,7 +3460,7 @@ try {
     };
     let key = "";
     await check(`9m: the limbo made on ${limboDist === own ? "A's own build" : limboDist}: a chat's hand-over held after its counts, A handed to its next process (which fails it and has B drop it), then let go (it writes gone)`, async () => {
-      if (!/^counts:/.test(process.env.STILLFAIL_DRILL_HOLD ?? "")) throw new Error("no hold given (STILLFAIL_DRILL_HOLD=counts:<path>): the limbo cannot be made honestly");
+      if (!/^counts:/.test(holdAt)) throw new Error("no hold given (E2E_DRILL_HOLD=counts:<path>): the limbo cannot be made honestly");
       if (limboDist !== own) await runA(limboDist);
       key = (await seedA(1))[0]!;
       roomsOf([key], 1);

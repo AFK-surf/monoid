@@ -318,6 +318,8 @@ export STILLFAIL_RUNNER=$(native runner)
 # endpoint across handovers (station/native/launcher/src/front.rs)
 export STILLFAIL_MB_READER=$(native reader)
 export FAKE_DUMP=$STATION/fake-claude.jsonl
+# (E2E_DRILL_HOLD: the move drill's hold at a hand-over's step, given to a build of the station that has it: e2e/move.ts 9m)
+${E2E_DRILL_HOLD:+export STILLFAIL_DRILL_HOLD=$E2E_DRILL_HOLD}
 EOF
   (. $RUN/station-env.sh && node $E/station/dist/main.js enroll $ORIGIN $token --data $STATION/data >$RUN/enroll.log 2>&1) \
     || { cat $RUN/enroll.log; die "enrolling the station failed"; }
