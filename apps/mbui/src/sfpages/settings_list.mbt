@@ -12,6 +12,7 @@
 ///|
 /// What a row of the settings' list is by: one of still.fail's line icons, the account's picture, the workspace's mark
 /// (its emoji, its icon).
+#derive(Eq)
 pub(all) enum SettingsLead {
   Icon(String)
   Person
@@ -22,6 +23,7 @@ pub(all) enum SettingsLead {
 /// A row of the settings' list: the page it opens, its key, what it is by, its name, the line under it (the account's
 /// and the workspace's), how things stand at its end (`bad` in red; `dot`, a red dot before it: something there is not
 /// right, nothing wrong to say).
+#derive(Eq)
 pub(all) struct SettingsRow {
   route : @settings.Route
   key : String
@@ -36,6 +38,7 @@ pub(all) struct SettingsRow {
 ///|
 /// A group of the list's rows, a heading over it where it has one; `key`, which group it is, whatever rows it has now
 /// and whatever language its heading is in.
+#derive(Eq)
 pub(all) struct SettingsPart {
   key : String
   heading : String
@@ -701,28 +704,38 @@ pub fn settings_home_node(
   // (the bottom bar's row where the shell says the window has the bar, as that changes; what is kept asked of the core as
   // it is asked to be read again, not as the list is worked out)
   let query = fn() { settings_search_field.text().trim(chars=" \t\n\r").to_owned().to_lower() }
-  let parts = @signals.computed(fn(_) {
-    settings_found(settings_parts_of(core, here(), bars=bars(), kept=@settings.kept_told()), core, query())
-  })
+  // (worked out again as what it reads changes, what reads it told only where its rows come out otherwise: a change of
+  // a topic it reads that its rows do not say wakes nothing under it)
+  let parts = @signals.computed(
+    fn(_) { settings_found(settings_parts_of(core, here(), bars=bars(), kept=@settings.kept_told()), core, query()) },
+    same=fn(a, b) { a == b },
+  )
   v.reacts(fn() { @settings.kept_asked() }, fn(_) { @settings.kept_ask(core) })
   // (its cards: each by its group's key (the account's and the workspace's by their rows'), its heading, its rows' keys; the account and the workspace each a card of
   // their own, as large as who and where they are)
-  let cards = fn() -> Array[(String, String, Array[String])] {
-    let out = []
-    for part in parts.get() {
-      let identity = part.rows.iter().any(fn(r) { !(r.lead is Icon(_)) })
-      let groups = if identity { part.rows.map(fn(r) { [r] }) } else { [part.rows] }
-      for i, rows in groups {
-        if rows.length() > 0 {
-          // (a card by its group's key; the account's and the workspace's each by its own row's too)
-          let id = if identity { part.key + "/" + rows[0].key } else { part.key }
-          out.push((id, if i == 0 { part.heading } else { "" }, rows.map(fn(r) { r.key })))
+  let cards_now : @signals.Computed[Array[(String, String, Array[String])]] = @signals.computed(
+    fn(_) {
+      let out = []
+      for part in parts.get() {
+        let identity = part.rows.iter().any(fn(r) { !(r.lead is Icon(_)) })
+        let groups = if identity { part.rows.map(fn(r) { [r] }) } else { [part.rows] }
+        for i, rows in groups {
+          if rows.length() > 0 {
+            // (a card by its group's key; the account's and the workspace's each by its own row's too)
+            let id = if identity { part.key + "/" + rows[0].key } else { part.key }
+            out.push((id, if i == 0 { part.heading } else { "" }, rows.map(fn(r) { r.key })))
+          }
         }
       }
-    }
-    out
+      out
+    },
+    same=fn(a, b) { a == b },
+  )
+  let cards = fn() { cards_now.get() }
+  let card_of = fn(id : String) {
+    let all = cards()
+    all.search_by(fn(c) { c.0 == id }).map(fn(i) { all[i] })
   }
-  let card_of = fn(id : String) { cards().search_by(fn(c) { c.0 == id }).map(fn(i) { cards()[i] }) }
   let row_of = fn(key : String) -> SettingsRow? {
     for p in parts.get() {
       for r in p.rows {
@@ -779,7 +792,9 @@ fn settings_row_node(
   open : (@settings.Route) -> Unit,
   stint : () -> Int,
 ) -> Unit {
-  let row = fn() { row_of(key) }
+  // (its row looked up once as the list changes, and what of it reads it woken only where this row comes out otherwise)
+  let row_now = @signals.computed(fn(_) { row_of(key) }, same=fn(a, b) { a == b })
+  let row = fn() { row_now.get() }
   let said = fn(f : (SettingsRow) -> String) { fn() { row().map(f).unwrap_or("") } }
   let shown = @signals.untracked(row)
   let lead : @sf.RowLead = match shown.map(fn(r) { r.lead }) {

@@ -772,7 +772,19 @@ pub let rail_closed_w : Double = 42.0
 ///|
 /// What the stations' place says on hover (RailStations): what is wrong with them, else what the core waits on, else
 /// how many and who works.
+/// Worked out once for each change of what it reads, and what reads it told only where it comes out otherwise.
 pub fn rail_stations_label(src : Source, ws : String) -> String {
+  rail_stations_kept.read(src, ws, fn(_) { rail_stations_label_now(src, ws) }, same=fn(a, b) { a == b })
+}
+
+///|
+/// What the stations' place says on hover by workspace (rail_stations_label's), by the source read.
+// kept across runs: what it keeps is let go of by a run anew and by reset (sfbase's derived.mbt)
+let rail_stations_kept : @sfbase.Kept[String] = @sfbase.Kept::new()
+
+///|
+/// What the stations' place says on hover as the topics say it now (rail_stations_label's getter).
+fn rail_stations_label_now(src : Source, ws : String) -> String {
   let chats = @sfbase.chats_topic(src, ws).value
   let status = src.topic("status", { "workspace": Json::string(ws) }).get().value
   let trouble = text(field(chats, "trouble"), "text")

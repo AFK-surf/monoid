@@ -18,6 +18,7 @@ pub using @settings {
 
 ///|
 /// An agent of a row, by what its mark shows: the model's maker, its runtime.
+#derive(Eq)
 pub(all) struct RowAgent {
   /// its session's key
   key : String
@@ -28,6 +29,7 @@ pub(all) struct RowAgent {
 
 ///|
 /// Someone in a chat, as the core names them.
+#derive(Eq)
 pub(all) struct Person {
   id : String
   email : String
@@ -40,6 +42,7 @@ pub(all) struct Person {
 
 ///|
 /// A row of the list (ChatItem).
+#derive(Eq)
 pub(all) struct ChatItem {
   id : String
   session : String
@@ -118,6 +121,7 @@ pub(all) struct ChatItem {
 ///|
 /// The chat an agent opened a chat from (the core's Opener): where it is, as its list names it, and what it is to the
 /// chat it opened in words (由「…」创建); `archived` with what says so (已归档).
+#derive(Eq)
 pub(all) struct Opener {
   chat : ChatRef
   text : String

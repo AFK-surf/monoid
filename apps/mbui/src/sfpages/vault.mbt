@@ -978,11 +978,14 @@ fn vault_all_of(core : Core, ws : () -> String, view : () -> Json?) -> VaultAll 
       }
     }
     out + unnamed
-  })
+  }, same=fn(a, b) { a == b })
   // (the secrets found by their names: not found, whatever a vault does not name)
   let named = @signals.computed(fn(_) { rows.get().iter().filter(fn(r) { r.1 is Secret(_, _, _, _) }).count() })
   // (the profiles' accounts in their groups, as the profiles list them)
-  let groups = @signals.computed(fn(_) { profile_groups(items((core.topic)("profiles", { "scope": str(ws()) }).get().value, "items")) })
+  let groups = @signals.computed(
+    fn(_) { profile_groups(items((core.topic)("profiles", { "scope": str(ws()) }).get().value, "items")) },
+    same=fn(a, b) { a == b },
+  )
   // the profiles' accounts, as the profiles list them: each its key, its title, what is said under it, its trouble, its
   // group, where it goes
   let accounts = @signals.computed(fn(_) {
@@ -1008,7 +1011,7 @@ fn vault_all_of(core : Core, ws : () -> String, view : () -> Json?) -> VaultAll 
       }
     }
     out
-  })
+  }, same=fn(a, b) { a == b })
   let kept_accounts = @signals.computed(fn(_) {
     let mut n = 0
     for g in groups.get() {
@@ -1022,7 +1025,7 @@ fn vault_all_of(core : Core, ws : () -> String, view : () -> Json?) -> VaultAll 
       out[r.0] = i
     }
     out
-  })
+  }, same=fn(a, b) { a == b })
   { rows, at, named, accounts, kept_accounts, reading }
 }
 

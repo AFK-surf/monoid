@@ -282,12 +282,17 @@ fn chats_pane_node(
     guard found is Some(first) else { return }
     // (looked up once as its key or the days change, not by each of what of the row reads it: the last it was where it
     // is gone)
-    let now = @signals.computed(fn(was : ChatItem?) {
-      match item_of(name()) {
-        Some(i) => i
-        None => was.unwrap_or(first)
-      }
-    })
+    // (what reads it woken only where the row comes out otherwise: a row its station's state makes anew at each change
+    // of the list, offline or reconnecting, is the same row)
+    let now = @signals.computed(
+      fn(was : ChatItem?) {
+        match item_of(name()) {
+          Some(i) => i
+          None => was.unwrap_or(first)
+        }
+      },
+      same=fn(a, b) { physical_equal(a, b) || a == b },
+    )
     let item = fn() { now.get() }
     let on = fn() {
       match open_chat() {

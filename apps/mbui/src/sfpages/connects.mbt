@@ -85,15 +85,21 @@ pub fn connects_node(
   }
   // (each list worked out once for each change of what it reads, read by all that asks it: the page's blocks, its
   // actions, its list)
-  let stations_now = @signals.computed(fn(_) {
-    match @settings.stations_of(core, here()).value {
-      Some(Array(a)) => if only == "" { a } else { a.filter(fn(x) { text(Some(x), "station") == only }) }
-      _ => []
-    }
-  })
+  let stations_now = @signals.computed(
+    fn(_) {
+      match @settings.stations_of(core, here()).value {
+        Some(Array(a)) => if only == "" { a } else { a.filter(fn(x) { text(Some(x), "station") == only }) }
+        _ => []
+      }
+    },
+    same=jsons_same,
+  )
   let stations = fn() { stations_now.get() }
   let view = fn() { topic().value }
-  let shown_now = @signals.computed(fn(_) { items(view(), "items").filter(fn(x) { only == "" || text(Some(x), "station") == only }) })
+  let shown_now = @signals.computed(
+    fn(_) { items(view(), "items").filter(fn(x) { only == "" || text(Some(x), "station") == only }) },
+    same=jsons_same,
+  )
   let shown = fn() { shown_now.get() }
   let wait = fn() { field(view(), "wait") }
   let loading = fn() { wait() is None || flag(wait(), "reading") }
@@ -114,7 +120,7 @@ pub fn connects_node(
       }
       Some((field(Some(x), "app").unwrap_or(Json::null()), s))
     })
-  })
+  }, same=fn(a, b) { jsons_same(a.map(fn(x) { x.0 }), b.map(fn(x) { x.0 })) && jsons_same(a.map(fn(x) { x.1 }), b.map(fn(x) { x.1 })) })
   let waiting = fn() { waiting_now.get() }
   // none at all yet (not only none of the viewer's): the page is about adding the first
   let first = fn() {
@@ -133,7 +139,7 @@ pub fn connects_node(
     }
   }
   // where one is added: the stations online
-  let targets_now = @signals.computed(fn(_) { stations().filter(fn(s) { flag(Some(s), "online") }) })
+  let targets_now = @signals.computed(fn(_) { stations().filter(fn(s) { flag(Some(s), "online") }) }, same=jsons_same)
   let targets = fn() { targets_now.get() }
   let failing = fn() { items(wait(), "failing").length() > 0 }
   // (its primary action named as what it adds; narrow, the title's ＋)
@@ -1038,3 +1044,26 @@ let cn_filter_room_narrow : @ui.Style = @ui.css("w=Full pb=S2_5 align=AStart")
 ///|
 // kept across runs: a value (no field of it changes)
 let cn_narrow_state : @ui.Style = @ui.css("row gap=S1_25 align=ACenter")
+
+///|
+/// The same JSON: the same reference (the core's deltas keep what they do not touch), else said the same.
+fn json_same(a : Json, b : Json) -> Bool {
+  physical_equal(a, b) || a == b
+}
+
+///|
+/// The same list of JSON, each as json_same says: a list worked out anew of what did not change tells nothing on.
+fn jsons_same(a : Array[Json], b : Array[Json]) -> Bool {
+  if physical_equal(a, b) {
+    return true
+  }
+  if a.length() != b.length() {
+    return false
+  }
+  for i, x in a {
+    if !json_same(x, b[i]) {
+      return false
+    }
+  }
+  true
+}
