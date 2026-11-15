@@ -125,6 +125,7 @@ fn corners_check(lang : String, press_room~ : Bool = false) -> Unit raise {
   let rooms : Array[String] = []
   let heights : Array[String] = []
   let first_lines : Array[String] = []
+  let line_starts : Array[String] = []
   for win in corner_windows {
     let squeezed = squeeze_windows.contains(win.0)
     for mode in corner_modes {
@@ -209,6 +210,22 @@ fn corners_check(lang : String, press_room~ : Bool = false) -> Unit raise {
           off_line.join("\n  "),
         )
       }
+      // (a line under a marked line starting between its mark and its words, mbui's Tester::line_start_faults, against
+      // its bar)
+      let between = t.line_start_faults()
+      let start_bar = corners_line_start_known.get(at).unwrap_or(0)
+      if between.length() != start_bar {
+        line_starts.push(
+          "\{at}: \{between.length()} lines starting between the mark and the words over them, \{start_bar} known (" +
+          (if between.length() < start_bar {
+            "fewer: its bar comes down in corners_known_wbtest.mbt"
+          } else {
+            "more than its bar: a line under a mark and its words starts where the mark does or where the words do"
+          }) +
+          ")\n  " +
+          between.join("\n  "),
+        )
+      }
       // (words a box with its height said does not hold, mbui's Tester::fixed_outgrown, against its bar)
       match outgrown_wrong(at, t.fixed_outgrown(), corners_outgrown_known, "corners_known_wbtest.mbt") {
         Some(w) => wrong.push(w)
@@ -224,6 +241,7 @@ fn corners_check(lang : String, press_room~ : Bool = false) -> Unit raise {
   }
   wrong.append(heights)
   wrong.append(first_lines)
+  wrong.append(line_starts)
   match gaps_wrong(lang, gaps) {
     Some(w) => wrong.push(w)
     None => ()

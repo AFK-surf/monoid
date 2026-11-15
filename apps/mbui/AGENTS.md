@@ -54,7 +54,9 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
   line, aligned with it, never centred on the block's height (the user, 2026-11-14: 「不应该一个图标或者一行内容跟多行做
   垂直居中对齐」, said before). mbui's `Tester::first_line_faults` holds an icon, a mark and a chevron to it on every
   screen (corners_wbtest.mbt), what broke it then counted in `corners_first_line_known`, only falling; a one-line part
-  is not checked yet.
+  is not checked yet. Under a line that leads with a mark and its words, each line starts where the mark does or where
+  those words do, never between (2026-11-15, a profile's row: 「感觉这个对齐有点问题」): mbui's
+  `Tester::line_start_faults`, on every screen the same way, counted in `corners_line_start_known`.
 
 - A named style (a top-level `let`, and a `.then(…)` of one) whose properties are all tokens and numbers is written
   as its text, `@ui.css("w=Full px=S2 hovered{bg=Hover}")`; `@ui.style(…)` is for one that names a variable or is
