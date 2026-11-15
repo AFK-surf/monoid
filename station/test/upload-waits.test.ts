@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { after, test } from "node:test";
 import { Admin } from "../src/api/admin.ts";
+import { savePart } from "../src/api/routes/hub.ts";
 import type { Request } from "../src/api/request.ts";
 import { Jobs } from "../src/jobs/jobs.ts";
 import { timeFiles } from "../src/ops/file-waits.ts";
@@ -140,22 +141,23 @@ test("uploads, uploads in parts and a message taking a picture and a film wait o
   }
 });
 
+// savePart itself, as the route calls it once a request is in: what comes before it there (the staged uploads swept)
+// waits on the disk, so the order requests reach it in is the machine's, not the order they were sent in.
 test("parts of one upload asked at once are added in turn, each once; other uploads' alongside", async () => {
-  const r = rig();
+  const dir = mkdtempSync(join(tmpdir(), "uw-parts-"));
   try {
     const body = Buffer.from("0123456789");
-    const part = (pid: string, offset: number, end: number) =>
-      r.ask("POST", "/uploads/parts", body.subarray(offset, end), [["id", pid], ["name", "n.txt"], ["size", "10"], ["offset", String(offset)]]);
+    const part = (id: string, offset: number, end: number) => savePart(body.subarray(offset, end), dir, { id, name: "n.txt", size: 10, offset }, "en");
     const answers = await Promise.all([part("sameid0001", 0, 4), part("sameid0001", 0, 4), part("sameid0001", 2, 7), part("otherid001", 0, 10), part("sameid0001", 4, 10)]);
-    assert.deepEqual(answers.slice(0, 3), [[200, { have: 4 }], [200, { have: 4 }], [200, { have: 7 }]]);
-    assert.equal(readFileSync(answers[3]![1].file.path, "utf8"), "0123456789");
-    assert.equal(readFileSync(answers[4]![1].file.path, "utf8"), "0123456789");
+    assert.deepEqual(answers.slice(0, 3), [{ have: 4 }, { have: 4 }, { have: 7 }]);
+    assert.equal(readFileSync(answers[3]!.file!.path, "utf8"), "0123456789");
+    assert.equal(readFileSync(answers[4]!.file!.path, "utf8"), "0123456789");
     // The same content named by its digest as it came in parts: sent again, copied.
     const sha = createHash("sha256").update(body).digest("hex");
-    const [, again] = await r.ask("POST", "/uploads/parts", Buffer.alloc(0), [["id", "sameid0002"], ["name", "n.txt"], ["size", "10"], ["offset", "0"], ["sha256", sha]]);
-    assert.equal(readFileSync(again.file.path, "utf8"), "0123456789");
+    const again = await savePart(Buffer.alloc(0), dir, { id: "sameid0002", name: "n.txt", size: 10, offset: 0, sha256: sha }, "en");
+    assert.equal(readFileSync(again.file!.path, "utf8"), "0123456789");
   } finally {
-    await r.close();
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 
