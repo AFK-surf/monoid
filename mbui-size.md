@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [70e4edbdb](https://github.com/AFK-surf/monoid/commit/70e4edbdbc56e4cde119dc25b232127ebf0b974b) app: farview.pin to 8477782 (a Farview tab's page  | 2.1 | 2.93 | 12.64 | 33.62 | 49.06 | 29.08 | 57.45 | 99.27 | 112.02 |
 | [ae62292a0](https://github.com/AFK-surf/monoid/commit/ae62292a01290f81e79b12a7546a555250500a6d) mbc: a global's object names its layout by its con | 2.11 | 2.93 | 12.64 | 33.62 | 49.05 | 29.08 | 57.44 | 98.68 | 112.4 |
 | [d29ec3cea](https://github.com/AFK-surf/monoid/commit/d29ec3cea9a48a10318ab71a25b9ef7fa990db15) app: the chat's page made as nodes reads its chat  | 2.11 | 2.93 | 12.64 | 33.62 | 49.05 | 29.08 | 57.44 | 98.68 | 112.4 |
 | [b8975535c](https://github.com/AFK-surf/monoid/commit/b8975535ca1add02ffa9d151c69bf47fd8fb0a8c) station: chat_create says whose a chat is, led by  | 2.1 | 2.93 | 12.62 | 33.57 | 48.93 | 29.05 | 57.32 | 99.09 | 110.88 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [e689959d3](https://github.com/AFK-surf/monoid/commit/e689959d36cf952b3cac74096eb15ba7a239a5a8) mbui: Windows' stream sound plays again after a ga | 2.07 | 2.84 | 12.25 | 32.14 | 45.35 | 28.72 | 56.51 | 98.7 | 112.95 |
 | [3da86d090](https://github.com/AFK-surf/monoid/commit/3da86d09023f00b2687f86f947b091f289362826) ci: cache-prune lets a branch's caches go once not | 2.07 | 2.84 | 12.25 | 32.14 | 45.35 | 28.72 | 56.51 | 98.73 | 112.9 |
 | [b80ec9fc2](https://github.com/AFK-surf/monoid/commit/b80ec9fc20d5b06bbe79de7c22edd892e8e5c412) app: the benches' MBUI_CHAT_PAGE=nodes makes the c | 2.07 | 2.84 | 12.25 | 32.14 | 45.35 | 28.72 | 56.51 | 98.73 | 112.9 |
-| [3c6187b01](https://github.com/AFK-surf/monoid/commit/3c6187b0194bb18e909a3cc9b3a1933c3172313a) mbui: a list held by a limit its foot is followed  | 2.07 | 2.84 | 12.25 | 32.14 | 45.35 | 28.72 | 56.51 | 98.81 | 110.98 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [70e4edbdb](https://github.com/AFK-surf/monoid/commit/70e4edbdbc56e4cde119dc25b232127ebf0b974b) app: farview.pin to 8477782 (a Farview tab's page  | 0.41 | 0.53 | 1.98 | 3.09 | 4.56 | 1.46 | 3.81 | 57.53 |
 | [ae62292a0](https://github.com/AFK-surf/monoid/commit/ae62292a01290f81e79b12a7546a555250500a6d) mbc: a global's object names its layout by its con | 0.41 | 0.53 | 1.98 | 3.09 | 4.56 | 1.46 | 3.81 | 57.53 |
 | [d29ec3cea](https://github.com/AFK-surf/monoid/commit/d29ec3cea9a48a10318ab71a25b9ef7fa990db15) app: the chat's page made as nodes reads its chat  | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.23 |
 | [b8975535c](https://github.com/AFK-surf/monoid/commit/b8975535ca1add02ffa9d151c69bf47fd8fb0a8c) station: chat_create says whose a chat is, led by  | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.23 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [e689959d3](https://github.com/AFK-surf/monoid/commit/e689959d36cf952b3cac74096eb15ba7a239a5a8) mbui: Windows' stream sound plays again after a ga | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.53 |
 | [3da86d090](https://github.com/AFK-surf/monoid/commit/3da86d09023f00b2687f86f947b091f289362826) ci: cache-prune lets a branch's caches go once not | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.05 |
 | [b80ec9fc2](https://github.com/AFK-surf/monoid/commit/b80ec9fc20d5b06bbe79de7c22edd892e8e5c412) app: the benches' MBUI_CHAT_PAGE=nodes makes the c | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.25 |
-| [3c6187b01](https://github.com/AFK-surf/monoid/commit/3c6187b0194bb18e909a3cc9b3a1933c3172313a) mbui: a list held by a limit its foot is followed  | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.25 |
