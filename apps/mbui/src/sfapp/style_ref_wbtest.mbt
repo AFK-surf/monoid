@@ -53,39 +53,40 @@ test "styles: the lock's waiting page, every state, drawn as before" {
     }
   }
   inspect(out.to_string(), content=(
-    #|waiting narrow 28275:39622baf
-    #|waiting wide 58561:95cb81f6
-    #|waiting-dark narrow 28193:277c0cc7
-    #|waiting-dark wide 58388:a2810814
-    #|finding narrow 44483:19a881e2
-    #|finding wide 75292:ef31b5ff
-    #|finding-dark narrow 44536:d1f32a7a
-    #|finding-dark wide 75254:5f39daef
-    #|code narrow 31619:9deffdf
-    #|code wide 61977:d3d20b74
-    #|code-dark narrow 31494:1c8c4705
-    #|code-dark wide 61761:b97b01c
-    #|wrong narrow 28240:97d2f231
-    #|wrong wide 58675:b9440a2a
-    #|wrong-dark narrow 28342:6b141516
-    #|wrong-dark wide 58686:1155f0c7
-    #|checking narrow 35321:285a7a7f
-    #|checking wide 66422:9d8764b2
-    #|checking-dark narrow 35413:543f0fd4
-    #|checking-dark wide 66423:5c9c74d5
-    #|none narrow 37542:1dbb1867
-    #|none wide 67714:168f01d1
-    #|none-dark narrow 37420:fd5a9a96
-    #|none-dark wide 67501:fd9fa742
-    #|failed narrow 23502:ede593dd
-    #|failed wide 53789:444ff120
-    #|failed-dark narrow 23504:9d059bad
-    #|failed-dark wide 53700:83d0c2ac
-    #|nocode narrow 28275:39622baf
-    #|nocode wide 58561:95cb81f6
-    #|nocode-dark narrow 28193:277c0cc7
-    #|nocode-dark wide 58388:a2810814
+    #|waiting narrow 28264:ba6ceb2d
+    #|waiting wide 60272:ce67fa3f
+    #|waiting-dark narrow 28182:619bad93
+    #|waiting-dark wide 60098:c1996b47
+    #|finding narrow 46041:a28d2bdf
+    #|finding wide 78588:89078174
+    #|finding-dark narrow 46094:30c3d6b1
+    #|finding-dark wide 78549:99f9a89e
+    #|code narrow 32242:a3becb0b
+    #|code wide 64322:68e29ec6
+    #|code-dark narrow 32117:5652fcc3
+    #|code-dark wide 64105:3e9529dc
+    #|wrong narrow 28229:7e53333f
+    #|wrong wide 60386:60b9fdfb
+    #|wrong-dark narrow 28331:af440018
+    #|wrong-dark wide 60396:6e003ec
+    #|checking narrow 35310:5805713d
+    #|checking wide 68149:6455c673
+    #|checking-dark narrow 35402:3f56047e
+    #|checking-dark wide 68149:6f1925ca
+    #|none narrow 39100:b264c5b2
+    #|none wide 70994:c82eecae
+    #|none-dark narrow 38978:d220c7f5
+    #|none-dark wide 70780:a19a88dd
+    #|failed narrow 23491:4185eecb
+    #|failed wide 55500:f7881e99
+    #|failed-dark narrow 23493:2aa685b9
+    #|failed-dark wide 55410:7e5a192f
+    #|nocode narrow 28264:ba6ceb2d
+    #|nocode wide 60272:ce67fa3f
+    #|nocode-dark narrow 28182:619bad93
+    #|nocode-dark wide 60098:c1996b47
     #|
+
 
 
 
@@ -154,18 +155,19 @@ test "styles: screens with kit's components (switches, a sheet), drawn as before
   // edge where it was one; every glyph at the same place, and what lies under the window's foot made only as it comes)
   // (the wide ones again, 2026-11-10: a sidebar's marks, words and headings 2 in, where its rows' foot capsules start)
   inspect(out.to_string(), content=(
-    #|settings narrow 77022:6f7a84d1
-    #|station narrow 76592:7983c67e
-    #|me-reading narrow 23870:176756e5
-    #|settings wide 169493:802f151e
-    #|station wide 231594:83c45e59
-    #|me-reading wide 164149:d62b64d1
-    #|settings-dark narrow 77290:d382e912
-    #|station-dark narrow 76502:fc111db8
-    #|me-reading-dark narrow 23998:5a45bcb3
-    #|settings-dark wide 169413:9d946751
-    #|station-dark wide 231297:2f22fafe
-    #|me-reading-dark wide 164135:8c5f9435
+    #|settings narrow 79224:1e1c4ba
+    #|station narrow 77764:dfaaba87
+    #|me-reading narrow 24226:63d5a63c
+    #|settings wide 175998:54d528f1
+    #|station wide 239259:21741c54
+    #|me-reading wide 170717:be810a0b
+    #|settings-dark narrow 79492:72dbe261
+    #|station-dark narrow 77674:804e74b
+    #|me-reading-dark narrow 24354:9f80384
+    #|settings-dark wide 175916:e42fab9e
+    #|station-dark wide 238960:270e517b
+    #|me-reading-dark wide 170701:e2edd083
     #|
+
   ))
 }

@@ -168,7 +168,8 @@ pub fn danger_row_node(
     .lines_up(Is(Some(Middle)))
     .ground(By(fn() { if !b.disabled() && lit_node(r) { @ui.tree_theme().color(Hover) } else { 0L } }))
     |> ignore
-    let rippled = press_look(r, Is(row_corner), fn() { false })
+    // (a pointer's press lights its ground: press_ripple's)
+    let rippled = press_look(r, Is(row_corner), fn() { false }, pointer=false)
     let on_it = fn(d : @view.Drag) { r.finger_target(d.wx, d.wy) }
     r.gesture(
       @ui.touch_slop(),

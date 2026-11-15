@@ -114,7 +114,8 @@ pub fn update_key_node(
       .ground(By(fn() { if lit_node(k) && !b.disabled() { @ui.tree_theme().color(Hover) } else { 0L } }))
       |> ignore
       // (pressed while it is not busy: a press's ripple on it, its press then; read out unable to be pressed while busy)
-      let rippled = press_look(k, Is(side / 2.0), fn() { false })
+      // (a pointer's press lights its ground: press_ripple's)
+      let rippled = press_look(k, Is(side / 2.0), fn() { false }, pointer=false)
       let on_it = fn(d : @view.Drag) { k.finger_target(d.wx, d.wy) }
       k.gesture(
         @ui.touch_slop(),
