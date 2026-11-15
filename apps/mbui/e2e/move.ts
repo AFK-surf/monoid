@@ -14,6 +14,8 @@
 //     killed in the first pass, b A killed while the chat is held, c B killed as
 //     it took the chat, d move.stop in the first pass, e C without room, f A handed over to a fresh process (SIGUSR2 to
 //     its launcher) in an agent's turn and in a move's;
+//   3h C on a sparse volume over the floor, its disk filled by allocation once a chat's first pass began there: the
+//     hand-over fails, the chat on A answering, nothing of it on C, C's room back once the filler goes;
 //   4 everything (all) to B and all back; 4s a Slack connect on Slack's stand-in (e2e/slack-stand-in.ts, each station
 //     pointed at a port of its own): a chat of it moved alone and answered from B through A's connect, the connect
 //     refused before its chats and moved after them (an event a second across it), back, B killed between, A killed
@@ -483,6 +485,16 @@ async function newChat(label: string, profile?: string): Promise<string> {
   // (named, as a person does: a chat left unnamed has its agent asked for a title, which is no move's)
   await a.call("chat.rename", { station: A, thread: v.thread.id, title: `drill ${label}` });
   return v.key as string;
+}
+/// A Claude login of station `n`'s own in its config.json (a profile and its home with a credentials file, as the
+/// harness's `up` gives A its `cc`): written while that station is stopped.
+function addLogin(n: Name, id: string): void {
+  const path = `${DATA[n]}/config.json`;
+  const cfg = JSON.parse(readFileSync(path, "utf8"));
+  cfg.profiles = [...(cfg.profiles ?? []).filter((p: J) => p.id !== id), { id, runtime: "claude", home: `homes/${id}`, models: ["claude-sonnet-5-5"] }];
+  writeFileSync(path, JSON.stringify(cfg, null, 2));
+  mkdirSync(`${DATA[n]}/homes/${id}`, { recursive: true });
+  writeFileSync(`${DATA[n]}/homes/${id}/.credentials.json`, "{}");
 }
 /// The device's rows of chat `key` once `ok` holds of them (or the time is up: an error saying what they were).
 async function listed(key: string, ok: (rows: J[]) => boolean, ms = 90_000, what = "as wanted"): Promise<J[]> {
@@ -1650,6 +1662,9 @@ try {
         mounted = true;
         sh("cp", ["-a", `${orig}/.`, DATA.C]);
         rmSync(orig, { recursive: true, force: true });
+        // (a login of C's own, so a chat made there answers with nothing moved to it: what shows C works once nothing
+        // can move there, the floor refusing every chat on a disk this small)
+        addLogin("C", "cc-c");
         stationDo("again", "third");
         await a.until({ topic: "stations", scope: ws }, (v) => (v ?? []).find((s: J) => s.id === cId && s.online), 120_000);
         const s = statfsSync(DATA.C);
@@ -1686,14 +1701,35 @@ try {
             if (at(/cwd=(\S+)/.exec(said)?.[1] ?? "") !== "A") throw new Error(said);
           });
         }
-        await check("3e: C still works after: a small chat moved to C answers there, and comes back", async () => {
+        // (a station keeps the larger of 20 GiB and a tenth of its disk free, handover.ts `floorOf`: C, on 1.6 GB, takes
+        // no chat at all, and says so in numbers before anything of it is held)
+        await check("3e: a small chat's move to C: refused before it is held, in the floor's words with its numbers; on A, nothing of it on C", async () => {
           const small = await newChat(`f3e-small-${tag}`);
-          const l = await moveChat(small, "C");
+          const t0 = Date.now();
+          await a.call("move.start", { station: A, to: cId, module: "chats", item: small, withNeeds: true });
+          const l = await turnEnds("A", t0);
           for (const d of l.done ?? []) if (d.module === "accounts") toC.add(d.id);
-          if (standing("C", small) !== "live") throw new Error(`${standings(small)}; ${outcome(l)}`);
-          const said = await say(small, `drill-note:f3e-small-${tag}`, `drill-noted f3e-small-${tag}`);
-          if (at(/cwd=(\S+)/.exec(said)?.[1] ?? "") !== "C") throw new Error(said);
-          await home(small);
+          const o = outOf(small);
+          const why = failedWhy(l, `chats ${small}`) || (l.refused ?? []).map((r: J) => r.why).join(" | ");
+          log(`  ${outcome(l)}; its hand-over ${o?.step ?? "none"} held=${o?.held ?? "-"}`);
+          const nums = [...why.matchAll(/(\d+(?:\.\d+)?)\s*(?:GB|GiB)/g)].map((m) => m[1]);
+          if (nums.length < 3) throw new Error(`not the floor's words with its three numbers (left there, the chat's, the floor): ${why}`);
+          if (o !== null && o.held !== false) throw new Error("it was held before it was refused");
+          if (standing("A", small) !== "live") throw new Error(standings(small));
+          if (standing("C", small) !== "none") throw new Error(`C has ${standing("C", small)} of it`);
+          if (handovers("C", "in").some((i) => (i.keys ?? []).includes(small) && i.step === "coming")) throw new Error(`C has a hand-over of it coming: ${brief(handovers("C", "in"))}`);
+          log(`  said: ${why.slice(0, 300)} (${nums.join(", ")})`);
+        });
+        await check("3e: C still works where it needs no room for a chat: a chat made on C answers there, and C answers its move page", async () => {
+          const { key: made } = await a.call("chat.create", { station: C, runtime: "claude", profile: "cc-c" });
+          await a.call("chat.send", { station: C, session: made, text: `drill-note:f3e-c-${tag}` });
+          const v = await a.until({ topic: "chat", station: C, session: made }, (v) => failedSend(v, `drill-note:f3e-c-${tag}`) ?? texts(v).find((t) => t.startsWith(`drill-noted f3e-c-${tag}`)), 120_000);
+          if (typeof v !== "string") throw new Error(`what was said on C did not go: ${v.failed}`);
+          if (at(/cwd=(\S+)/.exec(v)?.[1] ?? "") !== "C") throw new Error(v);
+          const t0 = Date.now();
+          const page = await a.until({ topic: "stationMove", station: C, to: aId, module: "chats" }, (p) => p?.modules && p, 60_000);
+          await a.answered(cId, "/move", t0, 10_000, true);
+          log(`  answered on C: ${v.slice(0, 120)}; C's move page: ${page.modules.map((m: J) => `${m.id} ${m.done}/${m.total}`).join(", ")}`);
         });
       }
     } finally {
@@ -1737,6 +1773,120 @@ try {
         log(`  A's profiles: ${brief((JSON.parse(readFileSync(`${DATA.A}/config.json`, "utf8")).profiles ?? []).map((p: J) => ({ id: p.id, share: p.share ?? null })), 400)}`);
         if (lost) throw new Error("A has no login of its own any more: it went to C with a chat and was lost with C");
       });
+    }
+  }
+  // ── 3h: C's disk filled while a chat's files are going (the floor looks only before they go) ──
+  if (part("3h") && (limit("3h", 1800), await clean("3h"))) {
+    const img = `${WORK}/drill-fill`;
+    let mounted = false;
+    let key = "";
+    let freeBefore = 0;
+    const filler = () => `${DATA.C}/drill-filler`;
+    const freeOn = (p: string) => {
+      const s = statfsSync(p);
+      return Number(s.bavail) * Number(s.bsize);
+    };
+    const GiB = 1024 ** 3;
+    const toC = new Set<string>();
+    /// `bytes` of C's volume taken at once by allocation, none of it written (macOS F_PREALLOCATE, then the file's size
+    /// set: the inner volume's free space falls, the sparse image under it does not grow); where that does not take the
+    /// room, written (zeros, a block at a time).
+    const take = (bytes: number): string => {
+      const want = freeOn(DATA.C) - bytes;
+      spawnSync("python3", ["-I", "-c", [
+        "import fcntl, os, struct, sys",
+        "f, n = sys.argv[1], int(sys.argv[2])",
+        "fd = os.open(f, os.O_RDWR | os.O_CREAT, 0o600)",
+        // (fstore_t: F_ALLOCATEALL, F_PEOFPOSMODE, offset 0, length n; F_PREALLOCATE is 42 on macOS)
+        "fcntl.fcntl(fd, 42, struct.pack('IiqqQ', 4, 3, 0, n, 0))",
+        "os.ftruncate(fd, n)",
+        "os.close(fd)",
+      ].join("\n"), filler(), String(bytes)], { encoding: "utf8" });
+      if (freeOn(DATA.C) <= want + 256 * 1048576) return "allocated";
+      const r = spawnSync("dd", ["if=/dev/zero", `of=${filler()}`, "bs=8m", `count=${Math.floor(bytes / (8 * 1048576))}`], { encoding: "utf8" });
+      return `written (allocation took ${((freeOn(DATA.C) - want) / 1048576).toFixed(0)} MB too little; dd ${r.status})`;
+    };
+    try {
+      await check("3h: setup: this machine has the room; C enrolled on a 24 GiB sparse APFS volume of its own, over the floor", async () => {
+        const host = freeOn(WORK);
+        log(`  this machine's disk: ${(host / GiB).toFixed(1)} GiB free`);
+        if (host < 30 * GiB) throw new Error(`not run: this machine has ${(host / GiB).toFixed(1)} GiB free, 30 wanted`);
+        cId = await enroll("C", "move-fill");
+        C = `${ws}/${cId}`;
+        stationDo("second-stop", "third");
+        rmSync(`${img}.sparseimage`, { force: true });
+        sh("hdiutil", ["create", "-quiet", "-type", "SPARSE", "-size", "24g", "-fs", "APFS", "-volname", "drillfill", img]);
+        const orig = `${DATA.C}.orig`;
+        rmSync(orig, { recursive: true, force: true });
+        sh("mv", [DATA.C, orig]);
+        mkdirSync(DATA.C);
+        sh("hdiutil", ["attach", "-quiet", "-nobrowse", "-mountpoint", DATA.C, `${img}.sparseimage`]);
+        mounted = true;
+        sh("cp", ["-a", `${orig}/.`, DATA.C]);
+        rmSync(orig, { recursive: true, force: true });
+        stationDo("again", "third");
+        await a.until({ topic: "stations", scope: ws }, (v) => (v ?? []).find((s: J) => s.id === cId && s.online), 120_000);
+        freeBefore = freeOn(DATA.C);
+        log(`  C ${cId}: ${(freeBefore / GiB).toFixed(2)} GiB free`);
+        if (freeBefore < 21 * GiB) throw new Error(`C's volume has ${(freeBefore / GiB).toFixed(2)} GiB free: not over the floor (20 GiB) with a chat's room`);
+      });
+      if (cId !== "" && mounted) {
+        await check("3h: C's volume filled once the first pass began: the hand-over fails, the chat on A answering, nothing of it on C", async () => {
+          key = await faultChat("f3h", 1000, 400);
+          const t0 = Date.now();
+          await a.call("move.start", { station: A, to: cId, module: "chats", item: key, withNeeds: true });
+          await firstPass(key, t0, "C");
+          const free0 = freeOn(DATA.C);
+          const how = take(free0 - 64 * 1048576);
+          const free1 = freeOn(DATA.C);
+          log(`  C's volume: ${(free0 / 1048576).toFixed(0)} MB free as the first pass began, ${(free1 / 1048576).toFixed(0)} MB once filled (${how}); this machine's disk ${(freeOn(WORK) / GiB).toFixed(1)} GiB free`);
+          if (free1 > 256 * 1048576) throw new Error(`C's volume not filled: ${(free1 / 1048576).toFixed(0)} MB free`);
+          const l = await turnEnds("A", t0, 600_000);
+          for (const d of l.done ?? []) if (d.module === "accounts") toC.add(d.id);
+          const o = outOf(key);
+          log(`  ${outcome(l)}; its hand-over ${o?.step} ${o?.error ?? ""}`);
+          if ((l.done ?? []).some((d: J) => named(d) === `chats ${key}`)) throw new Error(`moved though C's disk was full: ${outcome(l)}`);
+          if (standing("A", key) !== "live") throw new Error(standings(key));
+          await whenChanged([`${DATA.C}/replica`], () => !handovers("C", "in").some((i) => (i.keys ?? []).includes(key) && i.step === "coming") && true, 120_000, () => `C's hand-over in: ${brief(handovers("C", "in"))}`);
+          if (standing("C", key) !== "none") throw new Error(`C has ${standing("C", key)} of it`);
+          const said = await say(key, `drill-note:f3h-${tag}`, `drill-noted f3h-${tag}`);
+          if (at(/cwd=(\S+)/.exec(said)?.[1] ?? "") !== "A") throw new Error(said);
+        });
+        await check("3h: the filler gone, C's room comes back (nothing of the chat left there) and the chat moves there and back", async () => {
+          rmSync(filler(), { force: true });
+          const free = freeOn(DATA.C);
+          log(`  C free before ${(freeBefore / 1048576).toFixed(0)} MB, now ${(free / 1048576).toFixed(0)} MB`);
+          if (free < freeBefore - 100 * 1048576) throw new Error(`C has ${((freeBefore - free) / 1048576).toFixed(0)} MB less free than before: what was placed of the chat stayed`);
+          const l = await moveChat(key, "C");
+          for (const d of l.done ?? []) if (d.module === "accounts") toC.add(d.id);
+          if (standing("C", key) !== "live") throw new Error(`${standings(key)}; ${outcome(l)}`);
+          const said = await say(key, `drill-note:f3h-c-${tag}`, `drill-noted f3h-c-${tag}`);
+          if (at(/cwd=(\S+)/.exec(said)?.[1] ?? "") !== "C") throw new Error(said);
+          await home(key);
+        });
+      }
+    } finally {
+      rmSync(filler(), { force: true });
+      if (cId !== "") {
+        const t0 = Date.now();
+        await a.call("move.back", { station: A, from: cId, all: true }).then(() => turnEnds("A", t0, 120_000)).then((l) => log(`  what moved to C brought back: ${outcome(l)}`), (e) => log(`  what moved to C not brought back: ${String(e).slice(0, 300)}`));
+        for (const id of toC) {
+          const t1 = Date.now();
+          await a.call("move.back", { station: A, from: cId, module: "accounts", item: id }).then(() => turnEnds("A", t1, 120_000)).then((l) => log(`  ${id} back from C: ${outcome(l)}`), (e) => log(`  ${id} not back from C: ${String(e).slice(0, 300)}`));
+        }
+      }
+      try {
+        if (cId !== "") stationDo("second-stop", "third");
+        if (mounted) sh("hdiutil", ["detach", "-quiet", "-force", DATA.C]);
+        rmSync(`${img}.sparseimage`, { force: true });
+        if (cId !== "") {
+          await a.call("workspace.removeStation", { account: a.sub, workspace: ws, station: cId }).catch((e) => log(`  C not taken out: ${e}`));
+          stationDo("second-down", "third");
+        }
+      } catch (e) {
+        log(`  C's end: ${String(e).slice(0, 300)}`);
+      }
+      cId = "";
     }
   }
   if (part("3f") && (limit("3f", 900), await clean("3f"))) {
@@ -2327,7 +2477,7 @@ try {
         });
       }
     }
-    await check("4s: the login lent while chats on B run on it, taken back once they are back (moved from A) or archived (begun there)", async () => {
+    await check("4s: the login lent while chats on B run on it, taken back once they are back (moved from A, or begun there and moved to A)", async () => {
       for (const id of [dk, dks]) {
         if (holds(id).join() === "B") await backConnect(id, "B").then((l) => log(`  ${id} back: ${outcome(l)}`));
       }
@@ -2338,10 +2488,13 @@ try {
         const l = await moveBack(k, "B");
         if (standing("A", k) !== "live") throw new Error(`${k} not back: ${standings(k)}; ${outcome(l)}`);
       }
+      // (a Slack chat is archived by no call of the app's, chat.archive taking only still.fail's own: those begun on B
+      // are moved to A by B's own turn, which ends their use of the login as well)
       for (const k of [...before.dk.begun, ...before.dks.begun]) {
-        const thread = sql("B", `select thread from thread_sessions where session = ${lit(k)} order by joined_at limit 1`)[0]?.thread;
-        if (typeof thread !== "number") throw new Error(`no thread of ${k} on B`);
-        await a.call("chat.archive", { station: B, session: k, thread, archived: true });
+        const t0 = Date.now();
+        await a.call("move.start", { station: B, to: aId, module: "chats", item: k, withNeeds: true });
+        const l = await turnEnds("B", t0);
+        if (chatsOn("B", k.split(":")[0]!).includes(k)) throw new Error(`${k} still on B: ${outcome(l)}`);
       }
       const left = { dk: onB(dk), dks: onB(dks) };
       log(`  then on B: ${brief(left)}`);
@@ -2455,10 +2608,26 @@ try {
     /// often that page was read, and how long each read took. The drill adds no read of its own: drill 27's
     /// timed reads, each a page of another size, stayed live a minute each (the core's grace) and were read again at
     /// every telling, 35 of the 36 reads a second.
+    /// Each station's processes (its Node, its MoonBit programs, whatever runs on its data directory) as `ps` sees them:
+    /// pid, %CPU, RSS (MB) and what it is, by station.
+    const procs = () => {
+      const lines = spawnSync("ps", ["-axww", "-o", "pid=,%cpu=,rss=,args="], { encoding: "utf8" }).stdout.split("\n");
+      return (["A", "B"] as Name[]).map((n) => `${n}: ${lines.filter((l) => l.includes(dirname(DATA[n])) && !/\bps\b/.test(l)).map((l) => {
+        const m = /^\s*(\d+)\s+([\d.]+)\s+(\d+)\s+(.*)$/.exec(l);
+        if (m === null) return "";
+        const what = m[4]!.includes("main.js") ? "node" : (/\/([^/\s]+)(?:\s|$)/.exec(m[4]!.split(" --")[0]!)?.[1] ?? m[4]!.slice(0, 30));
+        const flag = /--(sessions|serve|data|builder|replica|front)\b/.exec(m[4]!)?.[1];
+        return `${what}${flag ? `:${flag}` : ""} ${m[2]}% ${(Number(m[3]) / 1024).toFixed(0)}MB`;
+      }).filter((x) => x !== "").join(", ")}`).join(" | ");
+    };
     const duringMove = () => {
       const from = new Date();
+      // (the stations' processes sampled every 10 s while the move runs, into the log: which works beside the
+      // hand-overs)
+      const sampler = setInterval(() => log(`  cpu: ${procs()}`), 10_000);
       return {
         end: async () => {
+          clearInterval(sampler);
           const to = new Date();
           // (the record says a line's time of day alone, UTC: put on the day `from` is, and on the next where it is
           // over 12 hours before `from`. Drill 29's move there ran from 23:59:03 to 00:09:41, and the times compared as
@@ -2471,7 +2640,9 @@ try {
           };
           const rec = readFileSync(join(dir, a.name, "record.log"), "utf8").split("\n")
             .map((l) => /^asked: (\d\d:\d\d:\d\d\.\d{3}) (\S+) GET \/admin\/api\/move\?(\S*) -> answered(?: \S+)? in (\d+) ms/.exec(l))
-            .filter((m): m is RegExpExecArray => m !== null && m[2] === aId.slice(0, 8) && when(m[1]!) >= from.getTime() && when(m[1]!) <= to.getTime());
+            // (the page's own path alone, toward B: not the drill's own reads of what is stopped, `to=`, which drill 35
+            // counted as three paths more)
+            .filter((m): m is RegExpExecArray => m !== null && m[2] === aId.slice(0, 8) && /^to=[0-9a-f]+&/.test(m[3]!) && when(m[1]!) >= from.getTime() && when(m[1]!) <= to.getTime());
           const perSecond = new Map<string, number>();
           for (const m of rec) perSecond.set(m[1].slice(0, 8), (perSecond.get(m[1].slice(0, 8)) ?? 0) + 1);
           const secs = Math.max(1, (to.getTime() - from.getTime()) / 1000);
