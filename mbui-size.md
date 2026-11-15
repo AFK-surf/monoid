@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [1ac1fad7b](https://github.com/AFK-surf/monoid/commit/1ac1fad7b65317ffc19d5427ca03c15b13333889) perf(station): move UsageCounter transcript reads  | 2.13 | 2.96 | 12.83 | 33.9 | 50.79 | 29.75 | 59.42 | 99.53 | 116.18 |
 | [2a37660b4](https://github.com/AFK-surf/monoid/commit/2a37660b44741e87085af215f3a6b89fb37a8649) station: refresh a Mac mesh front when its launche | 2.13 | 2.96 | 12.83 | 33.9 | 50.79 | 29.75 | 59.42 | 99.57 | 116.81 |
 | [9d5937c45](https://github.com/AFK-surf/monoid/commit/9d5937c45c7f9e0cdd65073c1a0f78286dc79cac) mbui, app: optical stroke width for small icons an | 2.13 | 2.96 | 12.82 | 33.9 | 50.75 | 29.74 | 59.39 | 99.75 | 113.57 |
 | [3e3b93720](https://github.com/AFK-surf/monoid/commit/3e3b9372078fc8c24ba3cebbf185ecbc510c950c) mbui: what an answer marks settled as one change o | 2.13 | 2.96 | 12.81 | 33.9 | 50.74 | 29.19 | 57.93 | 99.35 | 113.26 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [87e6c619b](https://github.com/AFK-surf/monoid/commit/87e6c619b601b6509f60c58416e45b225f28b372) app, mbui: close the side panel before the window  | 2.09 | 2.87 | 12.37 | 33.31 | 48 | 28.82 | 56.61 | 98.85 | 114.68 |
 | [7ea6c3f2b](https://github.com/AFK-surf/monoid/commit/7ea6c3f2bfb4eb3b7f8785aba562e5e84c3a14fe) fix(mbui): a page's list's foot asked outside any  | 2.09 | 2.87 | 12.37 | 33.31 | 48 | 28.82 | 56.61 | 98.85 | 113.64 |
 | [929becb21](https://github.com/AFK-surf/monoid/commit/929becb21da31c890fce015ee86aedde0e1cceee) app: fix the dragged-file preference (#6430) | 2.09 | 2.87 | 12.37 | 33.31 | 48 | 28.82 | 56.61 | 98.85 | 113.64 |
-| [0a91b2091](https://github.com/AFK-surf/monoid/commit/0a91b20914edcf20ff61dff689a094d988af2411) app: orient quote marks by their place (#6438) | 2.09 | 2.87 | 12.37 | 33.31 | 48 | 28.82 | 56.61 | 98.85 | 112.45 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [1ac1fad7b](https://github.com/AFK-surf/monoid/commit/1ac1fad7b65317ffc19d5427ca03c15b13333889) perf(station): move UsageCounter transcript reads  | 0.42 | 0.54 | 2.07 | 3.17 | 4.94 | 1.53 | 4.06 | 57.26 |
 | [2a37660b4](https://github.com/AFK-surf/monoid/commit/2a37660b44741e87085af215f3a6b89fb37a8649) station: refresh a Mac mesh front when its launche | 0.42 | 0.54 | 2.07 | 3.17 | 4.94 | 1.53 | 4.06 | 57.26 |
 | [9d5937c45](https://github.com/AFK-surf/monoid/commit/9d5937c45c7f9e0cdd65073c1a0f78286dc79cac) mbui, app: optical stroke width for small icons an | 0.42 | 0.54 | 2.07 | 3.17 | 4.94 | 1.53 | 4.06 | 57.26 |
 | [3e3b93720](https://github.com/AFK-surf/monoid/commit/3e3b9372078fc8c24ba3cebbf185ecbc510c950c) mbui: what an answer marks settled as one change o | 0.42 | 0.54 | 2.07 | 3.17 | 4.94 | 1.53 | 4.06 | 57.26 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [87e6c619b](https://github.com/AFK-surf/monoid/commit/87e6c619b601b6509f60c58416e45b225f28b372) app, mbui: close the side panel before the window  | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.28 |
 | [7ea6c3f2b](https://github.com/AFK-surf/monoid/commit/7ea6c3f2bfb4eb3b7f8785aba562e5e84c3a14fe) fix(mbui): a page's list's foot asked outside any  | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.28 |
 | [929becb21](https://github.com/AFK-surf/monoid/commit/929becb21da31c890fce015ee86aedde0e1cceee) app: fix the dragged-file preference (#6430) | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.49 |
-| [0a91b2091](https://github.com/AFK-surf/monoid/commit/0a91b20914edcf20ff61dff689a094d988af2411) app: orient quote marks by their place (#6438) | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.49 |
