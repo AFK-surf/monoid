@@ -31,11 +31,13 @@
 //   8 a device away while a chat moves A→B, A down as it comes back, with no place in B's stream B can go on from (8:
 //     never told by B; 8r: told, its place taken out as B's log moving past it would): it lists the chat once, on B,
 //     which only B's list read can tell it (its session's `from`).
-//   9 batches of single-chat moves A→B, one turn each with no pause, while A, then B, then both are handed to their
-//     next process again and again: every chat in sight on one station, what A says went in sight on B, failed moves
-//     told in words and moved on a second ask, no ask unanswered past a handover, and the window counted as met;
-//   9m the real run's limbo (A says it went, its hand-over failed and never shown, B dropped it) made by that race on
-//     E2E_MOVE_LIMBO_DIST's build, then A's own build started on it: in sight on A again, once, nothing on B, moves.
+//   9 single-chat moves A→B, one turn each with no pause: one batch while both stations are handed to their next
+//     process again and again (the invariant), then (9p) one handover a batch, of A or of B, at each phase of a turn,
+//     and (9a) an agent's station_move calls: every chat in sight on one station, what A says went in sight on B,
+//     failed moves told in words and moved on a second ask, the window counted as met; the moves tallied;
+//   9m the real run's limbo (A says it went, its hand-over failed and never shown, B dropped it) made on a build of
+//     main held at its hand-over's test hook (E2E_MOVE_LIMBO_DIST), then A's own build started on it: in sight on A
+//     again, once, nothing on B, and it moves.
 // Each check says PASS or FAIL with what was seen; a failed one does not stop the next where that can go on alone.
 // E2E_SF_SRC, E2E_ORIGIN, E2E_PEER_DATA as peer.ts; E2E_WORK, E2E_STATION as e2e-local.sh's. E2E_MOVE_ONLY: the
 // parts to run (e.g. "1 2 3a 5"; all of them where unset).
@@ -3158,9 +3160,12 @@ try {
   // sight on exactly one station, every chat the sender says went in sight where it went, each failed move told in
   // words and moved on a second ask, no ask unanswered longer than a handover takes; and counted, the hand-overs
   // begun on a process with its next one already started, or the part tested nothing.)
-  // E2E_MOVE_9_CHATS: chats a batch (12); E2E_MOVE_9_BATCHES: batches of each kind (2); E2E_MOVE_9M_BATCHES: batches of
-  // A's handovers at most to make the limbo for 9m (10); E2E_MOVE_LIMBO_DIST: the station build A runs while 9m makes
-  // it (main's, before the fix), where unset A's own.
+  // E2E_MOVE_9_CHATS: chats a batch of 9p (6). 9: one batch of 12 while both stations are handed over again and
+  // again; 9p: one handover a batch, of A then of B, begun at each phase of the third chat's turn in turn (before its
+  // ask, its first pass, held, its rows, gone, between two turns), tallied: moved at the first ask, failed in words
+  // and moved on a second ask, refused (409); 9a: an agent's station_move calls, one at a time, A handed over once in
+  // each turn at each phase. 9m: E2E_MOVE_LIMBO_DIST, the build A runs while the limbo is made (main's with the
+  // drill's hold, STILLFAIL_DRILL_HOLD), where unset A's own.
   /// Station `n`'s launcher's handovers since `t0`, from its log: when the next Node started beside the one serving,
   /// when it began handing over, when it had taken over.
   const handoverWindows = (n: Name, t0: number) => {
@@ -3209,17 +3214,43 @@ try {
   };
   /// Each of `keys` given a room of E2E_MOVE_9_MB MB (20) in 100 files, so that its hand-over's passes take a second
   /// or so: long enough to be under way as the next process starts (seeded rooms alone went in milliseconds).
-  const roomsOf = (keys: string[]) => {
-    const mb = Number(process.env.E2E_MOVE_9_MB ?? 20);
+  const roomsOf = (keys: string[], mb = Number(process.env.E2E_MOVE_9_MB ?? 20)) => {
+    if (mb <= 0) return;
     for (const k of keys) fill(roomOn("A", k)!, "bulk", 100, Math.floor((mb * 1024 * 1024) / 100));
   };
-  type Moved = { key: string; at: number; askMs: number; said: string; failed: string | null };
+  type Moved = { key: string; at: number; askMs: number; said: string; failed: string | null; refused: boolean };
+  /// Where a handover is begun in a chat's turn: before its ask, as its hand-over is at a step (A's out record: its first
+  /// pass, held, its rows, gone), or after its turn ended and before the next ask.
+  type Phase = "ask" | "files" | "held" | "rows" | "gone" | "between";
+  const PHASES: Phase[] = ["ask", "files", "held", "rows", "gone", "between"];
+  /// Whether chat `key`'s hand-over asked at `t0` is at `phase` now (as A's out record says it).
+  const atPhase = (key: string, t0: number, phase: Phase) => {
+    const o = outOn("A", key);
+    if (o === null || o.at < t0 - 1000) return false;
+    if (phase === "files") return o.step === "files" && o.held !== true;
+    if (phase === "held") return o.held === true && o.step === "files";
+    if (phase === "rows") return o.step === "rows";
+    return o.step === "gone" || o.step === "done";
+  };
+  /// What each 409 met (a turn under way): when, what GET /move said then, how long until A's turn under way ended.
+  const met409: string[] = [];
   /// Chats `keys` moved A→B one turn each, the next asked as the one before ended (the move.start's answer, then the
-  /// turn's end on A): what each ask was answered and how long that took, and what its turn said.
-  const batchMoves = async (keys: string[]): Promise<Moved[]> => {
-    const out: Moved[] = [];
-    for (const key of keys) {
+  /// turn's end on A): what each ask was answered and how long that took, and what its turn said. `at`: one handover
+  /// (`fire`) begun at `phase` of the turn of chat `index`; what phase it was begun at is said back (`firedAt`).
+  const batchMoves = async (keys: string[], at?: { index: number; phase: Phase; fire: () => Promise<void> }): Promise<Moved[] & { firedAt?: string }> => {
+    const out: Moved[] & { firedAt?: string } = [];
+    let firing: Promise<void> | null = null;
+    for (const [i, key] of keys.entries()) {
       const t0 = Date.now();
+      if (at?.index === i && at.phase === "ask") (out.firedAt = "ask"), (firing = at.fire());
+      if (at?.index === i && !["ask", "between"].includes(at.phase)) {
+        // (looked at every 10 ms besides the out directory's events: a step of a small chat lasts tens of ms)
+        firing = whenChanged([`${DATA.A}/replica/handover/out`], () => atPhase(key, t0, at.phase) || (lastOn("A", ws)?.at ?? 0) >= t0 && !existsSync(`${DATA.A}/move/turn.json`), 300_000, () => "", 10)
+          .then(() => {
+            out.firedAt = atPhase(key, t0, at.phase) ? at.phase : `${at.phase} missed (${outOn("A", key)?.step ?? "no hand-over"} as the turn ended)`;
+            return out.firedAt.includes("missed") ? undefined : at.fire();
+          });
+      }
       let said = "";
       let failed: string | null = null;
       try {
@@ -3230,6 +3261,7 @@ try {
         failed = said;
       }
       const askMs = Date.now() - t0;
+      const refused = failed !== null && /http_409/.test(failed);
       if (failed === null) {
         // (the turn's end as A says it; one that names no item of its own (a turn cut by a handover, said ended by the
         // next process) is this ask's failing, in its words)
@@ -3238,13 +3270,18 @@ try {
         const named1 = [...(l?.done ?? []), ...(l?.refused ?? []).map((r: J) => r.item)].map((x) => named(x)).concat(failuresOf(l).map((f) => f.item));
         const why = failedWhy(l, `chats ${key}`);
         if (!(l.done ?? []).map(named).includes(`chats ${key}`)) failed = named1.includes(`chats ${key}`) ? why || said : `its turn ended naming nothing of it: ${failedWhy(l) || said}`;
-      } else if (/http_409/.test(failed)) {
-        // (a turn under way, as one at a time is: the next ask waits for its end, as a person would, rather than meet it
-        // again at once)
-        await turnEnds("A", Date.now(), 300_000).catch(() => undefined);
+      } else if (refused) {
+        // (a turn under way, as one at a time is: what the page says of it now, and how long it holds the one turn's
+        // place; the next ask waits for its end, as a person would)
+        const t = Date.now();
+        const page = await a.until(moveT(bId, "chats", 20), (v) => v?.modules && v, 30_000).catch(() => null);
+        const l = await turnEnds("A", t, 300_000).catch(() => null);
+        met409.push(`${key.slice(-8)} at ${new Date(t).toISOString()}: GET /move then moving ${brief(page?.moving ?? null, 200)}, last ${brief({ at: page?.last?.at ?? null }, 80)}; the turn under way ended ${l === null ? "never in 300 s" : `${Date.now() - t} ms later: ${outcome(l).slice(0, 200)}`}`);
       }
-      out.push({ key, at: t0, askMs, said, failed });
+      out.push({ key, at: t0, askMs, said, failed, refused });
+      if (at?.index === i && at.phase === "between") (out.firedAt = "between"), await at.fire();
     }
+    if (firing !== null) await firing;
     return out;
   };
   /// Where each of `keys` is in sight, as both stations' databases say, and what alice's list shows once it agrees.
@@ -3282,78 +3319,136 @@ try {
     const ins = keys.flatMap((k) => handovers("B", "in").filter((i) => (i.keys ?? []).includes(k) && i.at >= t0));
     return { aW: aW.length, bW: bW.length, onA: outs.filter((o) => inside(o.at, aW)).length, onB: ins.filter((i) => inside(i.at, bW)).length, outs: outs.length };
   };
+  /// A's handover (`n`: A, B or both), SIGUSR2 to its launcher until it says it has taken over.
+  const handOne = (who: Name[]) => async () => {
+    await Promise.all(who.map(async (n) => {
+      const end = await handoverEnd(await handOver(n));
+      if (!/has taken over/.test(end)) throw new Error(`${n} not handed over: ${end}`);
+    }));
+  };
+  /// What a batch's moves came to: moved at the first ask, failed in words (then moved on a second ask, held below),
+  /// refused (409: a turn under way).
+  const tally = (moved: Moved[]) => ({ first: moved.filter((m) => m.failed === null).length, failed: moved.filter((m) => m.failed !== null && !m.refused).length, refused: moved.filter((m) => m.refused).length });
+  /// The properties after a batch (`moved`, of `keys`, whose handovers took at most `tookMost` ms): reasons it failed.
+  const held9 = async (label: string, keys: string[], moved: Moved[], tookMost: number): Promise<string[]> => {
+    const why: string[] = [];
+    const held = await heldAfter(label, keys);
+    if (held.stuck.length > 0) why.push(`${held.stuck.length} hand-over(s) still under way 120 s after the batch: ${held.stuck.map((k) => `${k.slice(-8)} (${standings(k)}, out ${outOn("A", k)?.step})`).join(", ")}`);
+    if (held.none.length > 0) why.push(`${held.none.length} chat(s) on neither station: ${held.none.map((x) => `${x.key.slice(-8)} (${x.standings})`).join(", ")}`);
+    if (held.both.length > 0) why.push(`${held.both.length} on both: ${held.both.map((x) => x.key.slice(-8)).join(", ")}`);
+    if (held.notThere.length > 0) why.push(`${held.notThere.length} said gone by A and not in sight on B: ${held.notThere.map((x) => `${x.key.slice(-8)} (${x.standings})`).join(", ")}`);
+    // (an ask is answered within what a handover takes, SIGUSR2 to taken over, and a second's slack for a link dialled anew)
+    const late = moved.filter((m) => m.askMs > tookMost + 1000);
+    if (late.length > 0) why.push(`${late.length} ask(s) answered past the longest handover (${tookMost} ms): ${late.map((m) => `${m.key.slice(-8)} ${m.askMs} ms: ${m.said.slice(0, 120)}`).join(" | ")}`);
+    const failed = moved.filter((m) => m.failed !== null);
+    // (in words: a person's sentence, not a code or a stack alone)
+    const wordless = failed.filter((m) => !/[一-鿿]|[a-z]{3,} [a-z]{3,}/i.test(m.failed ?? ""));
+    if (wordless.length > 0) why.push(`${wordless.length} failed move(s) not told in words: ${wordless.map((m) => m.failed).join(" | ")}`);
+    for (const m of failed) log(`  ${m.key.slice(-8)} ${m.refused ? "refused" : "failed"}: ${m.failed?.slice(0, 200)}`);
+    // (each failed one still in sight on A alone, moved on a second ask with nothing handed over)
+    for (const m of failed.filter((m) => liveOn(m.key).join() === "A")) {
+      const l = await moveChat(m.key, "B");
+      if (standing("B", m.key) !== "live") why.push(`${m.key.slice(-8)} did not move on a second ask: ${outcome(l)}; ${standings(m.key)}`);
+    }
+    if (why.length === 0) await a.until(chatsT(), (v) => v?.days && keys.every((k) => { const r = rowsOf(v).filter((x) => x.session === k); return r.length === 1 && r[0].station === B; }), 90_000).catch(() => {
+      why.push("alice's list does not show each once on B");
+    });
+    return why;
+  };
+  const tallies: string[] = [];
   let met9 = 0;
   if (part("9") && (limit("9", 5400), await clean("9"))) {
-    const perBatch = Number(process.env.E2E_MOVE_9_CHATS ?? 12);
-    const batches = Number(process.env.E2E_MOVE_9_BATCHES ?? 2);
-    const kinds: { label: string; who: Name[] }[] = [{ label: "the sender (A) handed over", who: ["A"] }, { label: "the receiver (B) handed over", who: ["B"] }, { label: "both handed over", who: ["A", "B"] }];
-    for (const kind of kinds) {
-      for (let b = 1; b <= batches; b++) {
-        const label = `9 ${kind.who.join("+")} #${b}`;
-        let keys: string[] = [];
-        await check(`9: ${perBatch} chats moved one turn each, back to back, while ${kind.label} again and again (#${b}): every chat in sight on one station, each failed move told in words and moved on a second ask, no ask unanswered past a handover`, async () => {
-          keys = await seedA(perBatch);
-          if (keys.length !== perBatch) throw new Error(`seeded ${keys.length} chats, not ${perBatch}`);
-          roomsOf(keys);
+    const perBatch = Number(process.env.E2E_MOVE_9_CHATS ?? 6);
+    // (one batch at the pace of a station handed over as soon as it took over, both at once: the invariant alone, as
+    // nearly every move of it fails, on any build)
+    await check(`9: 12 chats moved one turn each, back to back, while both stations are handed over again and again: every chat in sight on one station, each failed move told in words and moved on a second ask, no ask unanswered past a handover`, async () => {
+      const keys = await seedA(12);
+      roomsOf(keys, 5);
+      const t0 = Date.now();
+      let stop = false;
+      const loops = (["A", "B"] as Name[]).map((n) => ({ n, ...handingOver(n, () => stop) }));
+      let moved: Moved[] = [];
+      try {
+        moved = await batchMoves(keys);
+      } finally {
+        stop = true;
+        await Promise.all(loops.map((l) => l.done));
+      }
+      const met = metWindow(keys, t0);
+      met9 += met.onA + met.onB;
+      const t = tally(moved);
+      tallies.push(`9 both, again and again: ${t.first} moved at the first ask, ${t.failed} failed in words, ${t.refused} refused`);
+      measured(`9 both: ${loops.map((l) => `${l.n} handed over ${l.took.length} times`).join(", ")}; hand-overs begun on A with its next process started ${met.onA} of ${met.outs}, come to B so ${met.onB}; ${t.first} moved at the first ask, ${t.failed} failed in words, ${t.refused} refused`);
+      const why = await held9("9 both", keys, moved, Math.max(...loops.flatMap((l) => l.took), 0));
+      if (why.length > 0) throw new Error(why.join("; "));
+    });
+    // (as the real run had it: one handover of the station a batch, begun at a phase of a turn swept batch by batch)
+    for (const who of [["A"], ["B"]] as Name[][]) {
+      for (const phase of PHASES) {
+        const label = `9p ${who.join("+")} at ${phase}`;
+        await check(`9p: ${perBatch} chats moved one turn each, back to back, ${who.join(" and ")} handed over once as the third's turn is at ${phase}: every chat in sight on one station, a failed move told in words and moved on a second ask`, async () => {
+          const keys = await seedA(perBatch);
+          roomsOf(keys, 5);
           const t0 = Date.now();
-          let stop = false;
-          const loops = kind.who.map((n) => ({ n, ...handingOver(n, () => stop) }));
-          let moved: Moved[] = [];
-          try {
-            moved = await batchMoves(keys);
-          } finally {
-            stop = true;
-            await Promise.all(loops.map((l) => l.done));
-          }
-          const tookMost = Math.max(...loops.flatMap((l) => l.took), 0);
+          let took = 0;
+          const fire = handOne(who);
+          const moved = await batchMoves(keys, { index: 2, phase, fire: async () => { const t = Date.now(); await fire(); took = Date.now() - t; } });
           const met = metWindow(keys, t0);
           met9 += met.onA + met.onB;
-          measured(`${label}: ${moved.length} turns, ${loops.map((l) => `${l.n} handed over ${l.took.length} times (longest ${Math.max(...l.took, 0)} ms)`).join(", ")}; hand-overs begun on A with its next process started ${met.onA} of ${met.outs}, come to B with its next started ${met.onB}; asks answered in at most ${Math.max(...moved.map((m) => m.askMs))} ms; failed ${moved.filter((m) => m.failed !== null).length}`);
-          const why: string[] = [];
-          const held = await heldAfter(label, keys);
-          if (held.none.length > 0) why.push(`${held.none.length} chat(s) on neither station: ${held.none.map((x) => `${x.key.slice(-8)} (${x.standings})`).join(", ")}`);
-          if (held.both.length > 0) why.push(`${held.both.length} on both: ${held.both.map((x) => x.key.slice(-8)).join(", ")}`);
-          if (held.stuck.length > 0) why.push(`${held.stuck.length} hand-over(s) still under way 120 s after the batch: ${held.stuck.map((k) => `${k.slice(-8)} (${standings(k)}, out ${outOn("A", k)?.step})`).join(", ")}`);
-          if (held.notThere.length > 0) why.push(`${held.notThere.length} said gone by A and not in sight on B: ${held.notThere.map((x) => `${x.key.slice(-8)} (${x.standings})`).join(", ")}`);
-          // (an ask is answered within what a handover takes, SIGUSR2 to taken over, and the second's slack of a link
-          // dialled anew)
-          const late = moved.filter((m) => m.askMs > tookMost + 1000);
-          if (late.length > 0) why.push(`${late.length} ask(s) answered past the longest handover (${tookMost} ms): ${late.map((m) => `${m.key.slice(-8)} ${m.askMs} ms: ${m.said.slice(0, 120)}`).join(" | ")}`);
-          const failed = moved.filter((m) => m.failed !== null);
-          // (in words: a person's sentence, not a code or a stack alone)
-          const wordless = failed.filter((m) => !/[一-鿿]|[a-z]{3,} [a-z]{3,}/i.test(m.failed ?? ""));
-          if (wordless.length > 0) why.push(`${wordless.length} failed move(s) not told in words: ${wordless.map((m) => m.failed).join(" | ")}`);
-          for (const m of failed) log(`  ${m.key.slice(-8)} failed: ${m.failed?.slice(0, 200)}`);
-          // (each failed one, still in sight on A alone, moved on a second ask with nothing handed over)
-          const again = failed.filter((m) => liveOn(m.key).join() === "A");
-          for (const m of again) {
-            const l = await moveChat(m.key, "B");
-            if (standing("B", m.key) !== "live") why.push(`${m.key.slice(-8)} did not move on a second ask: ${outcome(l)}; ${standings(m.key)}`);
-          }
+          const t = tally(moved);
+          tallies.push(`${label} (begun at ${moved.firedAt ?? "?"}): ${t.first} moved at the first ask, ${t.failed} failed in words, ${t.refused} refused`);
+          measured(`${label}: begun at ${moved.firedAt ?? "?"}, handover ${took} ms; ${t.first} moved at the first ask, ${t.failed} failed in words, ${t.refused} refused; begun on A with its next started ${met.onA}, come to B so ${met.onB}`);
+          const why = await held9(label, keys, moved, Math.max(took, 1));
           if (why.length > 0) throw new Error(why.join("; "));
-          // (alice's list: each once, on B)
-          await a.until(chatsT(), (v) => v?.days && keys.every((k) => { const r = rowsOf(v).filter((x) => x.session === k); return r.length === 1 && r[0].station === B; }), 90_000).catch(() => {
-            throw new Error(`alice's list does not show each once on B`);
-          });
         });
       }
     }
+    // (an agent driving a batch through the station's own tool, one call at a time, each waiting for its answer, as
+    // run_batch.py does; A handed over once in each of its turns, at each phase in turn)
+    await check(`9a: an agent moves ${PHASES.length} chats with station_move one at a time while A is handed over once in each turn, at each phase in turn: what each call answered, every chat in sight on one station`, async () => {
+      const driver = await newChat(`9a-driver-${tag}`);
+      const keys = await seedA(PHASES.length);
+      roomsOf(keys, 5);
+      const answers: { key: string; said: string }[] = [];
+      for (const [i, key] of keys.entries()) {
+        const phase = PHASES[i]!;
+        const t0 = Date.now();
+        const fire = handOne(["A"]);
+        let firing: Promise<void> = Promise.resolve();
+        if (phase === "ask") firing = fire();
+        else if (phase !== "between") firing = whenChanged([`${DATA.A}/replica/handover/out`], () => atPhase(key, t0, phase) || (lastOn("A", ws)?.at ?? 0) >= t0 && !existsSync(`${DATA.A}/move/turn.json`), 300_000, () => "", 10).then(() => atPhase(key, t0, phase) ? fire() : undefined);
+        const said = await say(driver, `drill-move:${JSON.stringify({ action: "move", to: bId, module: "chats", item: key, withNeeds: true })}`, "drill-move:", 300_000).catch((e) => `no answer: ${(e as Error).message}`);
+        await firing;
+        if (phase === "between") await fire();
+        answers.push({ key, said });
+        log(`  ${phase}: ${key.slice(-8)} ${said.slice(0, 300)}`);
+      }
+      const refusedA = answers.filter((x) => /409|已有一次迁移在进行|under way/.test(x.said));
+      tallies.push(`9a agent: ${answers.filter((x) => standing("B", x.key) === "live").length} of ${answers.length} on B after one call each, ${refusedA.length} answered as a move under way`);
+      const status = await say(driver, `drill-move:${JSON.stringify({ action: "status", to: bId })}`, "drill-move:", 300_000).catch((e) => `no answer: ${(e as Error).message}`);
+      log(`  station_move status after: ${status.slice(0, 400)}`);
+      const moved: Moved[] = answers.map((x) => ({ key: x.key, at: 0, askMs: 0, said: x.said, failed: standing("B", x.key) === "live" ? null : x.said, refused: refusedA.includes(x) }));
+      const why = await held9("9a", keys, moved, Number.MAX_SAFE_INTEGER);
+      if (refusedA.length > 0) why.push(`${refusedA.length} call(s) answered as a move under way: ${refusedA.map((x) => `${x.key.slice(-8)}: ${x.said.slice(0, 160)}`).join(" | ")}`);
+      if (why.length > 0) throw new Error(why.join("; "));
+    });
     await check("9: the batches met the window: hand-overs begun on a process whose next one had started (or come to one so)", async () => {
+      for (const t of tallies) log(`  ${t}`);
+      for (const m of met409) log(`  409: ${m}`);
       if (met9 === 0) throw new Error("no hand-over of any batch began on a process with its next one started: the part tested nothing");
       log(`  ${met9} in all`);
     });
   }
 
-  // ── 9m: a chat the sender says went whose hand-over failed and was never shown, the receiver having dropped it (the
-  // real run's limbo), made by the real race on the build that has it, then the station's own build started on it:
-  // the chat in sight on the sender again, once, nothing of it on the receiver, and it then moves as any ──
-  if (part("9m") && (limit("9m", 5400), await clean("9m"))) {
+  // ── 9m: the real run's limbo (A says its chat went, its hand-over failed and never shown, B dropped it), made on the
+  // build before the fix by its own steps, held at the hand-over's own test hook (E2E_MOVE_LIMBO_DIST, a build of main
+  // given STILLFAIL_DRILL_HOLD, the drill's hold at `counts`: the counts answered, before it writes gone); then A's own
+  // build started on that data: the chat in sight on A again, once, nothing of it on B, and it moves as any ──
+  if (part("9m") && (limit("9m", 1800), await clean("9m"))) {
     const link = `${ST}/app/station`;
     const own = execFileSync("readlink", [link], { encoding: "utf8" }).trim();
     const limboDist = process.env.E2E_MOVE_LIMBO_DIST ?? own;
-    const tries = Number(process.env.E2E_MOVE_9M_BATCHES ?? 10);
-    const perBatch = Number(process.env.E2E_MOVE_9_CHATS ?? 12);
-    let limbo: string | null = null;
+    const hold = (process.env.STILLFAIL_DRILL_HOLD ?? "").split(":")[1] ?? "";
     /// A's next process run from `dist` (its app/station pointed there, then a handover).
     const runA = async (dist: string) => {
       rmSync(link, { force: true });
@@ -3362,45 +3457,43 @@ try {
       if (!/has taken over/.test(end)) throw new Error(`A not handed over to ${dist}: ${end}`);
       log(`  A runs ${dist}`);
     };
-    await check(`9m: the limbo made by the real race (A on ${limboDist === own ? "its own build" : limboDist}, batches of ${perBatch} single-chat moves while A is handed over again and again, at most ${tries} batches)`, async () => {
+    let key = "";
+    await check(`9m: the limbo made on ${limboDist === own ? "A's own build" : limboDist}: a chat's hand-over held after its counts, A handed to its next process (which fails it and has B drop it), then let go (it writes gone)`, async () => {
+      if (!/^counts:/.test(process.env.STILLFAIL_DRILL_HOLD ?? "")) throw new Error("no hold given (STILLFAIL_DRILL_HOLD=counts:<path>): the limbo cannot be made honestly");
       if (limboDist !== own) await runA(limboDist);
-      try {
-        for (let b = 1; b <= tries && limbo === null; b++) {
-          const keys = await seedA(perBatch);
-          roomsOf(keys);
-          const t0 = Date.now();
-          let stop = false;
-          const loop = handingOver("A", () => stop);
-          try {
-            await batchMoves(keys);
-          } finally {
-            stop = true;
-            await loop.done;
-          }
-          const held = await heldAfter(`9m #${b}`, keys);
-          const met = metWindow(keys, t0);
-          log(`  batch ${b}: ${met.onA} of ${met.outs} hand-overs begun on a process with its next started; on neither ${held.none.length}, said gone and not there ${held.notThere.length}`);
-          limbo = held.notThere.find((x) => x.live.length === 0)?.key ?? null;
-          if (limbo !== null) measured(`9m: the limbo came in batch ${b} of at most ${tries}: ${limbo.slice(-8)}, ${standings(limbo)}; A's hand-over ${brief(outOn("A", limbo))}`);
-        }
-      } finally {
-        if (limboDist !== own) await runA(own);
-      }
-      if (limbo === null) throw new Error(`no limbo in ${tries} batches: the race was not met (nothing of 9m's mend tested)`);
+      key = (await seedA(1))[0]!;
+      roomsOf([key], 1);
+      rmSync(`${hold}.held`, { force: true });
+      rmSync(`${hold}.go`, { force: true });
+      writeFileSync(`${hold}.arm`, "");
+      const t0 = Date.now();
+      await a.call("move.start", { station: A, to: bId, module: "chats", item: key, withNeeds: true });
+      await whenChanged([dirname(hold)], () => existsSync(`${hold}.held`), 120_000, () => `the hand-over never came to its hold: ${brief(outOn("A", key))}`, 100);
+      log(`  held after its counts in ${readFileSync(`${hold}.held`, "utf8")}: ${brief(outOn("A", key))}`);
+      const h = await handOver("A");
+      // (the next process's start fails it and has B drop it, as at 12:20:13.294)
+      await whenChanged([DATA.A, DATA.B], () => outOn("A", key)?.step === "failed" && handovers("B", "in").some((i) => (i.keys ?? []).includes(key) && i.step === "dropped"), 120_000, () => `the next process did not fail it and have B drop it: A ${brief(outOn("A", key))}; B ${brief(handovers("B", "in").filter((i) => (i.keys ?? []).includes(key)))}`, 100);
+      log(`  the next process failed it and B dropped it: ${brief(outOn("A", key))}`);
+      writeFileSync(`${hold}.go`, "");
+      const end = await handoverEnd(h);
+      log(`  ${end}`);
+      await turnEnds("A", t0, 120_000).catch(() => undefined);
+      await whenChanged([DATA.A], () => standing("A", key).startsWith("handed"), 60_000, () => `the process before never wrote it gone: ${standings(key)}`, 200);
+      log(`  the limbo: ${standings(key)}\n    ${heldOf2(key)}`);
+      if (liveOn(key).length !== 0) throw new Error(`not the limbo: ${standings(key)}`);
     });
-    if (limbo !== null) {
-      const key = limbo as string;
-      await check("9m: the station's own build started on it: the chat in sight on A again, once, nothing of it on B; it then moves to B as any", async () => {
-        // (A was handed over to its own build above, as it would start after the update: what it does as it starts and as
-        // B is heard from)
+    if (key !== "" && liveOn(key).length === 0 && standing("A", key).startsWith("handed")) {
+      await check("9m: A's own build started on it: the chat in sight on A again, once, nothing of it on B; it then moves to B as any", async () => {
+        if (limboDist !== own) await runA(own);
+        else await handoverEnd(await handOver("A"));
         await whenChanged([DATA.A], () => standing("A", key) === "live", 120_000, () => `still not in sight on A: ${standings(key)}\n    ${heldOf2(key)}`, 1000);
-        if (standing("B", key) !== "none" || handovers("B", "in").some((i) => (i.keys ?? []).includes(key) && i.step !== "dropped")) throw new Error(`B holds something of it: ${standings(key)}; ${brief(handovers("B", "in").filter((i) => (i.keys ?? []).includes(key)))}`);
+        if (standing("B", key) !== "none") throw new Error(`B holds it: ${standings(key)}`);
         await listedOnceOn(key, "A");
         const l = await moveChat(key, "B");
         if (standing("B", key) !== "live") throw new Error(`it did not move: ${outcome(l)}; ${standings(key)}`);
         await listedOnceOn(key, "B");
       });
-    }
+    } else if (limboDist !== own) await runA(own).catch((e) => log(`  A not back on its own build: ${e.message}`));
   }
 } catch (e) {
   fail("the run", e);
