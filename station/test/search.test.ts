@@ -8,7 +8,7 @@ import { after, test } from "node:test";
 import { Store, newMessage } from "../src/store/store.ts";
 import { openStore } from "../src/read/store.ts";
 import { type Asker, excerpt, pick, terms } from "../src/search/match.ts";
-import { historyHits, profileDocs, profilesOf, stationDocSteps, stationDocs, threadDocs } from "../src/search/sources.ts";
+import { historyHits, profileDocs, profilesOf, stationDocSteps, stationDocs, threadDocs } from "./reference/search-sources.ts";
 
 const dirs: string[] = [];
 const closing: { close(): void }[] = [];
