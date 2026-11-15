@@ -394,6 +394,27 @@ pub(all) struct Workspace {
 ///|
 /// Every account's workspaces, each once (`workspaces`: AccountWorkspaces), and whether every account has answered.
 pub fn workspaces_of(v : Json?) -> (Array[Workspace], Bool, Bool) {
+  // (the same value as the last read, as the core's deltas keep what they do not touch: what was made of it, not read
+  // again at every read of the workspace in view, a few each frame)
+  match (v, workspaces_made.val) {
+    (Some(j), Some((was, made))) if physical_equal(j, was) => return made
+    _ => ()
+  }
+  let made = workspaces_read(v)
+  if v is Some(j) {
+    workspaces_made.val = Some((j, made))
+  }
+  made
+}
+
+///|
+// kept across runs: made of the value it is kept with alone, the same whichever run reads it
+/// What workspaces_of made last, with the value it read.
+let workspaces_made : Ref[(Json, (Array[Workspace], Bool, Bool))?] = Ref(None)
+
+///|
+/// Every account's workspaces as workspaces_of says them, read out of the `workspaces` value.
+fn workspaces_read(v : Json?) -> (Array[Workspace], Bool, Bool) {
   let all : Array[Workspace] = []
   let mut answered = true
   let mut invited = false

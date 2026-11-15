@@ -299,18 +299,8 @@ fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
       // (a wheel over it, at its moment, where it is on the stage then)
       .on_wheel(fn(w) { vw.wheeled(vw.zoom, w.x, w.y, w.dx, w.dy, w.mods, w.at) })
       |> ignore
-      // (the moment what draws the picture reads the strip and the flight at, in `n`: as each frame draws it while either
-      // goes; where neither goes, the clock read no more)
-      let strip_at = fn(n : @view.View) {
-        vw.fly.said()
-        pv_strip.way.said()
-        let now = n.logic_at()
-        if pv_strip.way.goes_at(now) || vw.fly.goes_at(now) {
-          n.drawn_at()
-        } else {
-          now
-        }
-      }
+      // (the moment what draws the picture reads the strip and the flight at, in `n`: viewer_flight_at)
+      let strip_at = fn(n : @view.View) { viewer_flight_at(vw, n) }
       // (the picture lying flat where its zoom has it, moved across with the strip, its node (but while it flies: its
       // flight's nodes), under what is drawn over it; let go of at once as it is closed back into a thumbnail the
       // window's tree draws, flown back there by the tree as the rest fades: Viewer::tree_back)
@@ -2196,16 +2186,11 @@ fn image_flight(
 
 ///|
 /// The moment what draws viewer `vw`'s picture reads the strip and the flight at, in `n`: as each frame draws it while
-/// either goes; where neither goes, the clock read no more.
+/// either goes; where neither goes, past both their ends (where each went: View::drawn_while), the clock read no more.
 fn viewer_flight_at(vw : Viewer, n : @view.View) -> Double {
   vw.fly.said()
   pv_strip.way.said()
-  let now = n.logic_at()
-  if pv_strip.way.goes_at(now) || vw.fly.goes_at(now) {
-    n.drawn_at()
-  } else {
-    now
-  }
+  n.drawn_while(fn(at) { pv_strip.way.goes_at(at) || vw.fly.goes_at(at) })
 }
 
 ///|

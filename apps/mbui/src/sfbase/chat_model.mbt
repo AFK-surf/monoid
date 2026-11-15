@@ -958,6 +958,30 @@ pub(all) struct Station {
 ///|
 pub fn stations_of(v : Json?) -> Array[Station] {
   match v {
+    // (the same rows as the last read, as the core's deltas keep what they do not touch: what was made of them, not
+    // made again at every read of a chat's bar or page)
+    Some(Array(list)) as j =>
+      match stations_made.val {
+        Some((was, made)) if physical_equal(was, list) => made
+        _ => {
+          let made = stations_read(j)
+          stations_made.val = Some((list, made))
+          made
+        }
+      }
+    _ => []
+  }
+}
+
+///|
+// kept across runs: made of the rows it is kept with alone, the same whichever run reads them
+/// What stations_of made last, with the rows it read.
+let stations_made : Ref[(Array[Json], Array[Station])?] = Ref(None)
+
+///|
+/// The stations' rows as stations_of says them.
+fn stations_read(v : Json?) -> Array[Station] {
+  match v {
     Some(Array(list)) =>
       list.map(fn(x) {
         let s = Some(x)

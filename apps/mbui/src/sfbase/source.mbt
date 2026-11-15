@@ -168,8 +168,10 @@ pub(all) struct Source {
 /// the graph releases it when the last reader leaves. An immediate-mode page holds its untracked frame read until it leaves.
 pub fn Source::topic(src : Source, name : String, params : Map[String, Json]) -> @signals.Computed[TopicState] {
   let key = params.copy()
+  // (the topic's key worked out once, not again at each evaluation)
+  let said = topic_key(name, key)
   @signals.computed_scoped(fn(_) {
-    followed_topic(src, name, key).get()
+    followed_topic(src, name, key, said~).get()
   }, untracked_read=Some(fn() {
     if !held_building.val && src.topic_scope is None {
       return None
@@ -178,7 +180,7 @@ pub fn Source::topic(src : Source, name : String, params : Map[String, Json]) ->
     // can an event of a view's (a press on what its page shows, outside any build) through that view's source: as it
     // is then, held no longer than the graph holds it, not for as long as the view lives (Source::owned_by's raw read).
     if src.topic_scope is None || !held_building.val {
-      match existing_followed_topic(src, name, key) {
+      match existing_followed_topic(src, name, key, said~) {
         Some(holder) if holder.watched() => return Some(holder.get())
         _ => ()
       }
@@ -219,7 +221,7 @@ fn read_topic_state(src : Source, name : String, params : Map[String, Json]) -> 
   }
   // (a view's own source reads through the one it is of, which keeps them: topic_scope none)
   if src.topic_scope is None && lasting.contains(name) && !params.contains("q") && (src.reads_ahead)() {
-    let key = name + "\u{1}" + Json::object(params).stringify()
+    let key = topic_key(name, params)
     match (topic.value, topic.error) {
       (Some(value), _) => last_put(src, key, value)
       (None, None) =>
@@ -338,7 +340,8 @@ fn last_reset() -> Unit {
 /// A page scope already has a graph reader and must not also acquire an untracked frame hold.
 fn scoped_topic(src : Source, name : String, params : Map[String, Json], independent? : Bool = false) -> @signals.Computed[TopicState] {
   let key = params.copy()
-  @signals.computed_scoped(fn(_) { followed_topic(src, name, key, independent~).get() })
+  let said = topic_key(name, key)
+  @signals.computed_scoped(fn(_) { followed_topic(src, name, key, said~, independent~).get() })
 }
 
 ///|
@@ -354,6 +357,12 @@ priv struct FollowedTopic {
 }
 
 ///|
+/// Topic `name` with `params` as one key: what tells its followers (FollowedTopic's `key`) from another's.
+fn topic_key(name : String, params : Map[String, Json]) -> String {
+  name + "\u{1}" + Json::object(params).stringify()
+}
+
+///|
 // kept across runs: an active graph reader may outlive an app reset; its last reader removes the entry.
 let followed_topics : Ref[Array[FollowedTopic]] = Ref([])
 
@@ -361,7 +370,7 @@ let followed_topics : Ref[Array[FollowedTopic]] = Ref([])
 /// Whether a reader holds topic `name` with `params` now (a page's, a graph's: followed and watched). It asks nothing
 /// of the core and acquires nothing.
 fn topic_held(name : String, params : Map[String, Json]) -> Bool {
-  let key = name + "\u{1}" + Json::object(params).stringify()
+  let key = topic_key(name, params)
   followed_topics.val.iter().any(fn(t) { t.key == key && t.holder.watched() })
 }
 
@@ -393,8 +402,8 @@ let declared_topics : Ref[Array[(Source, String, Map[String, Json])]] = Ref([])
 /// or after (the coordinator of the migration, 2026-11-12): a read of its own would be a reader that holds it past its
 /// readers' leaving, its unsubscribe never sent.
 pub fn declare_topic(src : Source, name : String, params : Map[String, Json]) -> TopicState {
-  let key = name + "\u{1}" + Json::object(params).stringify()
-  if !declared_topics.val.iter().any(fn(d) { physical_equal(d.0, src) && d.1 + "\u{1}" + Json::object(d.2).stringify() == key }) {
+  let key = topic_key(name, params)
+  if !declared_topics.val.iter().any(fn(d) { physical_equal(d.0, src) && topic_key(d.1, d.2) == key }) {
     declared_topics.val.push((src, name, params.copy()))
   }
   let owner = @signals.set_owner(None)
@@ -417,7 +426,7 @@ pub fn declared_let_go() -> Unit {
 fn let_go_unread(declared : Array[(Source, String, Map[String, Json])]) -> Unit {
   for d in declared {
     let (src, name, params) = d
-    let key = name + "\u{1}" + Json::object(params).stringify()
+    let key = topic_key(name, params)
     match followed_topics.val.search_by(fn(t) { physical_equal(t.source, src) && t.key == key && !t.independent }) {
       Some(i) if !followed_topics.val[i].holder.watched() => {
         let holder = followed_topics.val[i].holder
@@ -445,8 +454,8 @@ let page_declared : Ref[Array[(Source, String, Map[String, Json])]] = Ref([])
 /// page runs, and taken over by the page's reader as it reads, the same subscription all along. One no reader comes
 /// to is let go of as another page comes on top (page_declared_let_go), or another workspace comes in view.
 pub fn declare_page_topic(src : Source, name : String, params : Map[String, Json]) -> Unit {
-  let key = name + "\u{1}" + Json::object(params).stringify()
-  if page_declared.val.iter().any(fn(d) { physical_equal(d.0, src) && d.1 + "\u{1}" + Json::object(d.2).stringify() == key }) {
+  let key = topic_key(name, params)
+  if page_declared.val.iter().any(fn(d) { physical_equal(d.0, src) && topic_key(d.1, d.2) == key }) {
     return
   }
   page_declared.val.push((src, name, params.copy()))
@@ -519,14 +528,31 @@ pub fn read_held_found(src : Source) -> (String, Map[String, Json]) -> TopicStat
 }
 
 ///|
-fn existing_followed_topic(src : Source, name : String, params : Map[String, Json]) -> @signals.Computed[TopicState]? {
-  let key = name + "\u{1}" + Json::object(params).stringify()
+fn existing_followed_topic(
+  src : Source,
+  name : String,
+  params : Map[String, Json],
+  said? : String,
+) -> @signals.Computed[TopicState]? {
+  let key = match said {
+    Some(k) => k
+    None => topic_key(name, params)
+  }
   followed_topics.val.search_by(fn(t) { physical_equal(t.source, src) && t.key == key && !t.independent }).map(fn(i) { followed_topics.val[i].holder })
 }
 
 ///|
-fn followed_topic(src : Source, name : String, params : Map[String, Json], independent? : Bool = false) -> @signals.Computed[TopicState] {
-  let key = name + "\u{1}" + Json::object(params).stringify()
+fn followed_topic(
+  src : Source,
+  name : String,
+  params : Map[String, Json],
+  said? : String,
+  independent? : Bool = false,
+) -> @signals.Computed[TopicState] {
+  let key = match said {
+    Some(k) => k
+    None => topic_key(name, params)
+  }
   match followed_topics.val.search_by(fn(t) { physical_equal(t.source, src) && t.key == key && t.independent == independent }) {
     Some(i) => followed_topics.val[i].holder
     None => {
