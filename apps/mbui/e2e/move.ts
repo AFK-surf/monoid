@@ -1794,14 +1794,22 @@ try {
     const take = async (bytes: number): Promise<string> => {
       const want = freeOn(DATA.C) - bytes;
       const pa = spawnSync("python3", ["-I", "-c", [
-        "import fcntl, os, struct, sys",
+        "import errno, fcntl, os, struct, sys",
         "f, n = sys.argv[1], int(sys.argv[2])",
         "fd = os.open(f, os.O_RDWR | os.O_CREAT, 0o600)",
-        // (fstore_t: F_ALLOCATEALL, F_PEOFPOSMODE, offset 0, length n; F_PREALLOCATE is 42 on macOS)
-        "r = fcntl.fcntl(fd, 42, struct.pack('IiqqQ', 4, 3, 0, n, 0))",
-        "print('allocated', struct.unpack('IiqqQ', r)[4])",
-        "os.ftruncate(fd, n)",
+        // (fstore_t: F_ALLOCATEALL, F_PEOFPOSMODE, offset 0 from the physical end, a length; F_PREALLOCATE is 42 on
+        // macOS. Asked whole, APFS refuses it, ENOSPC: drill 36. So a piece at a time, each smaller where one does not fit)
+        "got, piece = 0, 1 << 30",
+        "while got < n and piece >= (8 << 20):",
+        "    ask = min(piece, n - got)",
+        "    try:",
+        "        r = fcntl.fcntl(fd, 42, struct.pack('IiqqQ', 4, 3, 0, ask, 0)); got += struct.unpack('IiqqQ', r)[4]",
+        "    except OSError as e:",
+        "        if e.errno != errno.ENOSPC: raise",
+        "        piece //= 2",
+        "os.ftruncate(fd, got)",
         "os.close(fd)",
+        "print('allocated', got)",
       ].join("\n"), filler(), String(bytes)], { encoding: "utf8" });
       const said = `${(pa.stdout ?? "").trim()} ${(pa.stderr ?? "").trim().split("\n").pop() ?? ""}`.trim();
       if (freeOn(DATA.C) <= want + 256 * 1048576) return `allocated (${said})`;
@@ -1863,6 +1871,8 @@ try {
         });
         await check("3h: the filler gone, C's room comes back (nothing of the chat left there) and the chat moves there and back", async () => {
           rmSync(filler(), { force: true });
+          // (APFS gives back what a file took as it gets to it, not at its unlink: drill 36 read C 24 GB short at once)
+          await whenChanged([], () => freeOn(DATA.C) >= freeBefore - 100 * 1048576, 120_000, () => "", 1000).catch(() => {});
           const free = freeOn(DATA.C);
           log(`  C free before ${(freeBefore / 1048576).toFixed(0)} MB, now ${(free / 1048576).toFixed(0)} MB`);
           if (free < freeBefore - 100 * 1048576) throw new Error(`C has ${((freeBefore - free) / 1048576).toFixed(0)} MB less free than before: what was placed of the chat stayed`);
