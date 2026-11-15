@@ -645,48 +645,23 @@ fn item_node(
               @sf.style_node(r, fn() { h_one_press })
               @sf.presses_node(r, fn() { steps_flip(key) })
               r
-              .says(By(fn() {
-                Some(@view.said(Button, label=if open() { @sf.t("web-main.fold") } else { line }, expanded=open()))
-              }))
+              .says(By(fn() { Some(@view.said(Button, label=line, expanded=open())) }))
               .lines_up(By(fn() { if open() { Some(Start) } else { None } }))
               |> ignore
-              r.show(fn() { !open() }, fn(l) {
-                l.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-                @sf.words_node(l, fn() { line }, fn() { if @sf.lit_node(r) { h_one_hot } else { h_one_words } })
-                |> ignore
-              })
-              r.show(fn() { !open() }, fn(i) {
-                @sf.icon_node(
-                  i,
-                  "chevron-down",
-                  12.0,
-                  By(fn() { if @sf.lit_node(r) { @sf.theme().p.blue } else { @sf.theme().p.muted } }),
-                )
-                |> ignore
-              })
-              r.show(open, fn(g) {
-                g.grow(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-                steps_box_node(g, h_one_body, fn(m) { md_node(m, words, field(content, "md"), small=true) })
-              })
-              r.show(open, fn(o) {
-                @sf.style_node(o, fn() { h_one_open })
-                o.min_height(Is(Some(20.0))).shrink(Is(0.0)) |> ignore
-                @sf.words_node(o, fn() { @sf.t("web-main.fold") }, fn() {
-                  if @sf.lit_node(r) {
-                    h_one_fold_hot
+              // (its words one node beside the mark: one line cut short shut, all of it opened)
+              r.box(fn(w) {
+                w.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
+                w.pick(at_once=true, open, fn(p, is_open) {
+                  if is_open {
+                    steps_box_node(p, h_one_body, fn(m) { md_node(m, words, field(content, "md"), small=true) })
                   } else {
-                    h_one_fold
+                    @sf.words_node(p, fn() { line }, fn() { if @sf.lit_node(r) { h_one_hot } else { h_one_words } })
+                    |> ignore
                   }
                 })
-                |> ignore
-                @sf.icon_node(
-                  o,
-                  "chevron-up",
-                  12.0,
-                  By(fn() { if @sf.lit_node(r) { @sf.theme().p.accent } else { @sf.theme().p.blue } }),
-                )
-                |> ignore
               })
+              |> ignore
+              steps_fold_mark_node(r, open)
             })
             |> ignore
           }
@@ -813,8 +788,26 @@ fn steps_chevron_node(
 }
 
 ///|
+/// The mark at the end of a row `r` pressed to open and shut what it holds: a 12 chevron turning as it opens, in a box
+/// as high as the row's first line, so on a row of several lines it stays by the first.
+fn steps_fold_mark_node(r : @view.View, open : () -> Bool) -> Unit {
+  r.box(fn(c) {
+    @sf.style_node(c, fn() { h_one_mark })
+    c.shrink(Is(0.0)) |> ignore
+    steps_chevron_node(
+      c,
+      "chevron-down",
+      12.0,
+      By(fn() { if @sf.lit_node(r) { @sf.theme().p.blue } else { @sf.theme().p.muted } }),
+      open,
+    )
+  })
+  |> ignore
+}
+
+///|
 /// An event in one line in `v`: `lead`, then `line` cut at its end; pressed (where there is more), what
-/// `whole` makes under it beside the side rail, the line giving way to 收起.
+/// `whole` makes under it beside the side rail, the line staying and its chevron turning.
 fn one_line_ev_node(
   v : @view.View,
   icon : String,
@@ -836,35 +829,28 @@ fn one_line_ev_node(
           @sf.style_node(r, fn() { h_one_press })
           @sf.presses_node(r, fn() { steps_flip(key) })
           r
-          .says(By(fn() {
-            Some(@view.said(Button, label=if open() { @sf.t("web-main.fold") } else { line }, expanded=open()))
-          }))
+          .says(By(fn() { Some(@view.said(Button, label=line, expanded=open())) }))
           |> ignore
           lead(r)
-          r.show(fn() { !open() && line != "" }, fn(l) {
-            l.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-            @sf.words_node(l, fn() { line }, fn() {
-              if tone == "red" {
-                h_one_red
-              } else if @sf.lit_node(r) {
-                h_one_hot
-              } else {
-                h_one_words
-              }
+          // (its first line stays, opened or shut: what it says in whole comes under it)
+          if line != "" {
+            r.box(fn(l) {
+              l.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+              @sf.words_node(l, fn() { line }, fn() {
+                if tone == "red" {
+                  h_one_red
+                } else if @sf.lit_node(r) {
+                  h_one_hot
+                } else {
+                  h_one_words
+                }
+              })
+              |> ignore
             })
             |> ignore
-          })
-          r.show(fn() { !open() }, fn(i) {
-            @sf.icon_node(i, "chevron-down", 12.0, By(fn() { if @sf.lit_node(r) { @sf.theme().p.blue } else { @sf.theme().p.muted } })) |> ignore
-          })
-          r.show(open, fn(o) {
-            @sf.style_node(o, fn() { h_one_open })
-            o.grow(Is(1.0)) |> ignore
-            steps_box_node(o, h_grow, fn(_) {  }, in_row=true)
-            @sf.words_node(o, fn() { @sf.t("web-main.fold") }, fn() { if @sf.lit_node(r) { h_one_fold_hot } else { h_one_fold } })
-            |> ignore
-            @sf.icon_node(o, "chevron-up", 12.0, By(fn() { if @sf.lit_node(r) { @sf.theme().p.accent } else { @sf.theme().p.blue } })) |> ignore
-          })
+          }
+          steps_box_node(r, h_grow, fn(_) {  }, in_row=true)
+          steps_fold_mark_node(r, open)
         })
         |> ignore
       })
@@ -1226,12 +1212,10 @@ fn task_node(v : @view.View, key : String, task : Json?, rail : Bool, rail_last 
           @sf.style_node(r, fn() { h_one_press })
           @sf.presses_node(r, fn() { steps_flip(key) })
           r
-          .says(By(fn() {
-            Some(@view.said(Button, label=if open() { @sf.t("web-main.fold") } else { title }, expanded=open()))
-          }))
+          .says(By(fn() { Some(@view.said(Button, label=title, expanded=open())) }))
           |> ignore
           r.box(fn(l) {
-            l.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+            l.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
             @sf.words_node(l, fn() { title }, fn() {
               if failed {
                 h_one_red
@@ -1244,35 +1228,7 @@ fn task_node(v : @view.View, key : String, task : Json?, rail : Bool, rail_last 
             |> ignore
           })
           |> ignore
-          r.show(fn() { !open() }, fn(i) {
-            @sf.icon_node(
-              i,
-              "chevron-down",
-              12.0,
-              By(fn() { if @sf.lit_node(r) { @sf.theme().p.blue } else { @sf.theme().p.muted } }),
-            )
-            |> ignore
-          })
-          r.show(open, fn(o) {
-            @sf.style_node(o, fn() { h_one_open })
-            o.grow(Is(1.0)) |> ignore
-            steps_box_node(o, h_grow, fn(_) {  }, in_row=true)
-            @sf.words_node(o, fn() { @sf.t("web-main.fold") }, fn() {
-              if @sf.lit_node(r) {
-                h_one_fold_hot
-              } else {
-                h_one_fold
-              }
-            })
-            |> ignore
-            @sf.icon_node(
-              o,
-              "chevron-up",
-              12.0,
-              By(fn() { if @sf.lit_node(r) { @sf.theme().p.accent } else { @sf.theme().p.blue } }),
-            )
-            |> ignore
-          })
+          steps_fold_mark_node(r, open)
         })
         |> ignore
       })
@@ -3404,7 +3360,7 @@ let h_toggle_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Link, wrap=
 let h_toggle_hot : @ui.TextStyle = @ui.text_style(size=Meta, color=Accent, wrap=false)
 
 ///|
-/// An event in one line (hOne): 20 high, 12 muted (the ink pointed at, red when it failed), 6 apart; 收起 at its end;
+/// An event in one line (hOne): 20 high, 12 muted (the ink pointed at, red when it failed), 6 apart; a chevron at its end that turns as it opens;
 /// what it says in whole under it, 2 over and 4 under (hOneBody).
 // kept across runs: a value (no field of it changes)
 let h_one : @ui.Style = @ui.css("row w=Full min_h=S5 gap=S1_5 align=ACenter clip")
@@ -3415,7 +3371,7 @@ let h_one_press : @ui.Style = h_one.then(@ui.css("radius=Lg hovered{bg=Hover}"))
 
 ///|
 // kept across runs: a value (no field of it changes)
-let h_one_open : @ui.Style = @ui.css("row gap=S1 align=ACenter")
+let h_one_mark : @ui.Style = @ui.css("row h=S5 align=ACenter")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -3440,14 +3396,6 @@ let h_one_red : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Dang
 ///|
 // kept across runs: a value (no field of it changes)
 let h_one_red_wrap : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Danger, w=Full)
-
-///|
-// kept across runs: a value (no field of it changes)
-let h_one_fold : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Link, wrap=false)
-
-///|
-// kept across runs: a value (no field of it changes)
-let h_one_fold_hot : @ui.TextStyle = h_one_fold.then(@ui.text_style(color=Accent))
 
 ///|
 // kept across runs: a value (no field of it changes)

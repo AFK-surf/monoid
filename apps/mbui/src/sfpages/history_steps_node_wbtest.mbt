@@ -153,9 +153,11 @@ test "history task keeps its title visible when opened and toggles from its prev
   t.run_for(@ui.move_most_ms)
   assert_true(t.rect_of(title) is Some(_), msg="task title stays visible when expanded")
   assert_true(t.rect_of(result) is Some(_), msg="task result opens when preview is tapped")
-  assert_true(t.rect_of(@sf.t("web-main.fold")) is Some(_))
-  t.tap_text(@sf.t("web-main.fold"))
+  assert_true(t.rect_of(@sf.t("web-main.fold")) is None, msg="no 收起 words: the title's chevron turns")
+  let title_y = t.rect_of(title).unwrap().1
+  t.tap_text(title)
   t.run_for(@ui.move_most_ms)
+  assert_true((t.rect_of(title).unwrap().1 - title_y).abs() < 0.5, msg="the title stays where it was pressed")
   assert_true(t.rect_of(title) is Some(_))
   assert_true(t.rect_of(preview) is Some(_))
   assert_true(t.rect_of(result) is None)
@@ -208,10 +210,13 @@ test "history text expands on its first line and short single-line text omits fo
   t.tap_text(long_words)
   t.run_for(@ui.move_most_ms)
   let (_, expanded_y, _, expanded_h) = t.rect_of(long_words).unwrap()
-  let fold_y = t.rect_of(@sf.t("web-main.fold")).unwrap().1
+  assert_true(t.rect_of(@sf.t("web-main.fold")) is None, msg="no 收起 words: the chevron turns")
   assert_true(expanded_h > long_h, msg="expanded text wraps across multiple lines: \{expanded_h} vs \{long_h}")
   assert_true((expanded_y - collapsed_y).abs() <= 4.0, msg="expanded text starts on the first line: \{expanded_y} vs \{collapsed_y}")
-  assert_true((fold_y - expanded_y).abs() <= 6.0, msg="fold button aligns with the first line: \{fold_y} vs \{expanded_y}")
+  t.tap_text(long_words)
+  t.run_for(@ui.move_most_ms)
+  let (_, shut_y, _, shut_h) = t.rect_of(long_words).unwrap()
+  assert_true(shut_h <= 20.0 && (shut_y - collapsed_y).abs() < 0.5, msg="shut again, one line where it was: \{shut_y} \{shut_h}")
   steps_reset()
 }
 
