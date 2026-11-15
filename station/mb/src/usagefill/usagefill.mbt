@@ -1,7 +1,7 @@
-// What the station does once the previous station has left its usage statistics (station/src/usage/module.ts `retireAfterPrevious`):
-// the retired per-call indexes freed in bounded deletes (store/usage-retire.ts `dropUsageIndexStep`), then the calls
-// from before the compact statistics began taken in, newest first, whole quarters at a time (store/usage-fill.ts
-// `fillUsageStep`), here for the MoonBit builder.
+// What the station does once the previous station has left its usage statistics (station/src/usage/module.ts
+// `retireAfterPrevious`): the retired per-call indexes freed in bounded deletes (store/usage-retire.ts
+// `dropUsageIndexStep`), then the calls from before the compact statistics began taken in, newest first, whole quarters
+// at a time (station/test/reference/usage-fill.ts `fillUsageStep`), here for the MoonBit builder.
 
 ///|
 fn get(row : Map[String, Json], name : String) -> Json {
@@ -65,7 +65,8 @@ pub fn drop_step(db : @sql.Db, batch? : Int = 256) -> Bool raise {
   false
 }
 
-// The fill (usage-fill.ts) and what it uses of the compact statistics (usage-compact.ts) and the year (usage-history.ts).
+// The fill (test/reference/usage-fill.ts) and what it uses of the compact statistics (usage-compact.ts) and the year
+// (usage-history.ts).
 
 ///|
 let quarter_ms : Int = 900000

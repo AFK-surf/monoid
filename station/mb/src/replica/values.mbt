@@ -52,7 +52,7 @@ fn get(v : JValue, name : String) -> JValue? {
 }
 
 ///|
-/// `num` of station/src/replica/export.ts: a number as it is, anything else 0.
+/// `num` of station/test/reference/replica-export.ts: a number as it is, anything else 0.
 fn num(v : JValue?) -> Double {
   match v {
     Some(Num(d)) => d
