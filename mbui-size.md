@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [345b3c519](https://github.com/AFK-surf/monoid/commit/345b3c5197075c750a6fe5f546573de2511a4883) mbui: a node's words' torn grounds drawn by their  | 2.06 | 2.84 | 12.23 | 32.11 | 45.28 | 28.7 | 56.46 | 98.67 | 112.33 |
 | [f8641530f](https://github.com/AFK-surf/monoid/commit/f8641530f3b5230ebe537d4f47441de3bb1c968e) app: benches measure the chat's page made as nodes | 2.06 | 2.84 | 12.22 | 32.1 | 45.22 | 28.69 | 56.39 | 98.63 | 115.28 |
 | [a21e6b92d](https://github.com/AFK-surf/monoid/commit/a21e6b92d69ff0ac813fd649719c3dc230de72d8) app: a tap on a Farview tab's page where the page  | 2.06 | 2.84 | 12.22 | 32.1 | 45.22 | 28.69 | 56.39 | 98.63 | 115.28 |
 | [3a009ac95](https://github.com/AFK-surf/monoid/commit/3a009ac957a34314f7ad4d9ba4c199b958a4f415) mbui app: words a finger picked on the chat's page | 2.06 | 2.84 | 12.22 | 32.1 | 45.22 | 28.69 | 56.39 | 98.62 | 112.61 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [2b23c5376](https://github.com/AFK-surf/monoid/commit/2b23c5376c888f0dc29c2fc9ccf4abfd5450cf79) mbc: a generic file's instances pieced by the type | 2.01 | 2.76 | 11.85 | 31.71 | 43.79 | 28.33 | 55.46 | 97.14 | 110.27 |
 | [98178dc57](https://github.com/AFK-surf/monoid/commit/98178dc5725f505c950ae5e74e85728fa39f2543) mbui: settings_rig's sizes_steady bar down to the  | 2.01 | 2.76 | 11.85 | 31.71 | 43.79 | 28.33 | 55.46 | 97.14 | 110.27 |
 | [de70d7eb6](https://github.com/AFK-surf/monoid/commit/de70d7eb6f49a20986279a592ae85b484af20f46) station: a MoonBit read's answer goes to Node as i | 2.01 | 2.76 | 11.87 | 31.72 | 43.86 | 28.33 | 55.51 | 97.08 | 109.15 |
-| [cf48243e5](https://github.com/AFK-surf/monoid/commit/cf48243e57cd199702aaac9a10fc9084a8013055) app tests: place-stations' 设置 changes once now (#6 | 2.01 | 2.76 | 11.87 | 31.72 | 43.86 | 28.34 | 55.51 | 96.9 | 116.08 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [345b3c519](https://github.com/AFK-surf/monoid/commit/345b3c5197075c750a6fe5f546573de2511a4883) mbui: a node's words' torn grounds drawn by their  | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.31 |
 | [f8641530f](https://github.com/AFK-surf/monoid/commit/f8641530f3b5230ebe537d4f47441de3bb1c968e) app: benches measure the chat's page made as nodes | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.31 |
 | [a21e6b92d](https://github.com/AFK-surf/monoid/commit/a21e6b92d69ff0ac813fd649719c3dc230de72d8) app: a tap on a Farview tab's page where the page  | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.46 |
 | [3a009ac95](https://github.com/AFK-surf/monoid/commit/3a009ac957a34314f7ad4d9ba4c199b958a4f415) mbui app: words a finger picked on the chat's page | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.46 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [2b23c5376](https://github.com/AFK-surf/monoid/commit/2b23c5376c888f0dc29c2fc9ccf4abfd5450cf79) mbc: a generic file's instances pieced by the type | 0.4 | 0.52 | 1.96 | 3.08 | 4.51 | 1.45 | 3.8 | 57.69 |
 | [98178dc57](https://github.com/AFK-surf/monoid/commit/98178dc5725f505c950ae5e74e85728fa39f2543) mbui: settings_rig's sizes_steady bar down to the  | 0.4 | 0.52 | 1.96 | 3.08 | 4.46 | 1.45 | 3.8 | 57.46 |
 | [de70d7eb6](https://github.com/AFK-surf/monoid/commit/de70d7eb6f49a20986279a592ae85b484af20f46) station: a MoonBit read's answer goes to Node as i | 0.4 | 0.52 | 1.96 | 3.08 | 4.46 | 1.45 | 3.8 | 57.46 |
-| [cf48243e5](https://github.com/AFK-surf/monoid/commit/cf48243e57cd199702aaac9a10fc9084a8013055) app tests: place-stations' 设置 changes once now (#6 | 0.4 | 0.52 | 1.96 | 3.08 | 4.46 | 1.45 | 3.8 | 57.46 |
