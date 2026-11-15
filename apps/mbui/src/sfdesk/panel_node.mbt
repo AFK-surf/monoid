@@ -2,11 +2,11 @@
 // page made once: page_pane.mbt pane_made), the way there 4: its column as wide as the panel has slid in, a way set off
 // at the change that opens or closes it (side_slides) and read where it is drawn, as the block's fold is (pane_view's
 // fold_goes); over a page too narrow for both, over the page from its right edge, a shadow at its side; its edge the
-// tree's (@sf.edge_node). In it an agent's history in front: its top an old view as tall as it is (the bar, the head,
-// its details: history_top), its steps nodes (sfpages' history_steps_node); a file in the viewer, the panel's bar so
-// too and the file's tools and stage under it (sfbase's viewer_tab_node); 任务, agent 往来 and 图片、文件和链接 so too and
-// what each shows under it (jobs_tab_node, letters_tab_node, sfpages' things_node); any other tab the panel's old view
-// (side_panel), the page's island. On the tape the panel is a panel of its own (tape_view's tape_side_node).
+// tree's (@sf.edge_node). Its bar the tree's over whatever tab is in front (panel_bar_node.mbt), under it: an agent's
+// history, its head and steps nodes (history_head_node, sfpages' history_steps_node); a file in the viewer, its tools
+// and stage (sfbase's viewer_tab_node); 任务, agent 往来 and 图片、文件和链接 what each shows (jobs_tab_node,
+// letters_tab_node, sfpages' things_node); any other tab the panel's old view of what it shows (side_panel), the page's
+// island. On the tape the panel is a panel of its own (tape_view's tape_side_node).
 
 ///|
 /// Whether `front` (one the panel shows: side_shows) is one of the chat's agents' histories: what the panel's old view
@@ -219,17 +219,22 @@ fn side_panel_node(v : @view.View, src : Source, serial : Int, tips : @sf.TipLay
       let island = fn(n : @view.View, build : (@ui.Ctx) -> Unit, natural : Bool) {
         app.nav.page_island(n, serial, fn(c, _page) { build(c) }, key=tape_island_key, natural~)
       }
+      // its bar over whatever tab is in front, the tree's; none where what is in front has its own (side_own_bar_node)
+      p.show(at_once=true, fn() {
+        let (tabs, front) = side_shown(src, r)
+        !side_own_bar_node(p, tabs, front, false)
+      }, fn(b) { side_bar_node(b, src, r, fn() { side_shown(src, r) }, false, tips) })
       p.pick(at_once=true, fn() { history_in_front(src, r) }, fn(q, agent) {
-        q.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        q.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
         if agent == "" {
-          // (every other tab: the panel's old view, all of it)
+          // (every other tab: the panel's old view of what it shows)
           island(
             q,
             fn(c) {
               match (@sfbase.workspace_in_view(src).0, view_of_chat(src, r).0) {
-                (Some(w), Some(view)) => {
+                (Some(w), Some(_)) => {
                   let (tabs, front) = side_shown(src, r)
-                  side_panel(c, src, w, r, view, tabs, front)
+                  side_panel(c, src, w, r, tabs, front)
                 }
                 _ => ()
               }
@@ -242,11 +247,11 @@ fn side_panel_node(v : @view.View, src : Source, serial : Int, tips : @sf.TipLay
         } else if @sfbase.view_tab_file(agent) is Some(_) {
           side_view_node(q, src, r, agent, island)
         } else if side_farview_tab(agent) is Some((station, screen)) {
-          side_farview_node(q, src, r, agent, station, screen, island)
+          side_farview_node(q, src, station, screen)
         } else if side_own_tab(agent) {
-          side_own_node(q, src, r, agent, tips, island, @sf.pane_foot_card)
+          side_own_node(q, src, r, agent, tips, @sf.pane_foot_card)
         } else {
-          side_history_node(q, src, r, agent, tips, island)
+          side_history_node(q, src, r, agent, tips)
         }
       })
     })
@@ -267,29 +272,9 @@ fn history_in_front(src : Source, r : ChatRef) -> String {
 }
 
 ///|
-/// Agent `agent`'s history in chat `r`'s panel, in node `q` (as large as the panel): the panel's bar an old view as tall
-/// as it is (side_bar_row, as `island` hosts one, every tab's), then its head (history_head_node) and its steps the
-/// rest (sfpages' history_steps_node), nodes.
-fn side_history_node(
-  q : @view.View,
-  src : Source,
-  r : ChatRef,
-  agent : String,
-  tips : @sf.TipLayer,
-  island : (@view.View, (@ui.Ctx) -> Unit, Bool) -> @view.View,
-) -> Unit {
-  island(
-    q,
-    fn(c) {
-      match view_of_chat(src, r).0 {
-        Some(view) => c.box(style=history_top_box, fn() { side_bar_row(c, src, r, view, side_shown(src, r).0, agent) }) |> ignore
-        None => ()
-      }
-    },
-    true,
-  )
-  .shrink(Is(0.0))
-  |> ignore
+/// Agent `agent`'s history in chat `r`'s panel, in node `q` (as large as the panel under its bar, side_bar_node): its
+/// head (history_head_node) and its steps the rest (sfpages' history_steps_node), nodes.
+fn side_history_node(q : @view.View, src : Source, r : ChatRef, agent : String, tips : @sf.TipLayer) -> Unit {
   history_head_node(q, src, r, agent, tips)
   q.box(fn(s) {
     s.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
@@ -299,9 +284,9 @@ fn side_history_node(
 }
 
 ///|
-/// File tab `tab` in chat `r`'s panel, in node `q` (as large as the panel): the panel's bar as an agent's history has it
-/// (side_bar_row, as `island` hosts one), then the file's tools and its stage the rest (sfbase's viewer_tab_node, what
-/// it hosts of the old view in `island` too); its picture over the whole window (its 全屏) stepping through the chat's.
+/// File tab `tab` in chat `r`'s panel, in node `q` (as large as the panel under its bar, side_bar_node): the file's
+/// tools and its stage (sfbase's viewer_tab_node, what it hosts of the old view in `island`); its picture over the whole
+/// window (its 全屏) stepping through the chat's.
 fn side_view_node(
   q : @view.View,
   src : Source,
@@ -309,18 +294,6 @@ fn side_view_node(
   tab : String,
   island : (@view.View, (@ui.Ctx) -> Unit, Bool) -> @view.View,
 ) -> Unit {
-  island(
-    q,
-    fn(c) {
-      match view_of_chat(src, r).0 {
-        Some(view) => c.box(style=history_top_box, fn() { side_bar_row(c, src, r, view, side_shown(src, r).0, tab) }) |> ignore
-        None => ()
-      }
-    },
-    true,
-  )
-  .shrink(Is(0.0))
-  |> ignore
   q.box(fn(s) {
     s.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
     @sfbase.viewer_tab_node(s, src, tabs_key(r), tab, island, fn() {
@@ -368,29 +341,9 @@ fn side_edge_node(n : @view.View, src : Source, r : ChatRef, tips : @sf.TipLayer
 }
 
 ///|
-/// Farview tab `tab` in chat `r`'s panel, in node `q` (as large as the panel): the panel's bar as an agent's history
-/// has it (side_bar_row, as `island` hosts one), then the tab drawn here the rest (sfpages' farview_tab_node).
-fn side_farview_node(
-  q : @view.View,
-  src : Source,
-  r : ChatRef,
-  tab : String,
-  station : String,
-  screen : String,
-  island : (@view.View, (@ui.Ctx) -> Unit, Bool) -> @view.View,
-) -> Unit {
-  island(
-    q,
-    fn(c) {
-      match view_of_chat(src, r).0 {
-        Some(view) => c.box(style=history_top_box, fn() { side_bar_row(c, src, r, view, side_shown(src, r).0, tab) }) |> ignore
-        None => ()
-      }
-    },
-    true,
-  )
-  .shrink(Is(0.0))
-  |> ignore
+/// A Farview tab, `station`'s `screen`, in a chat's panel, in node `q` (as large as the panel under its bar,
+/// side_bar_node): the tab drawn here (sfpages' farview_tab_node).
+fn side_farview_node(q : @view.View, src : Source, station : String, screen : String) -> Unit {
   q.box(fn(s) {
     s.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
     @sfpages.farview_tab_node(s, src, station, screen)
@@ -399,31 +352,17 @@ fn side_farview_node(
 }
 
 ///|
-/// One of chat `r`'s own tabs (`tab`: side_own_tab) in its panel, in node `q` (as large as the panel): the panel's bar as
-/// an agent's history has it (side_bar_row, as `island` hosts one), then what the tab shows the rest, nodes: 任务 (a
-/// service pressed opening its own tab, in front), agent 往来 and 图片、文件和链接 once the chat's thread is known (在对话
-/// 里看 going to the message in the chat). A card across its foot is laid as `foot_card` says (in the panel's corners).
+/// One of chat `r`'s own tabs (`tab`: side_own_tab) in its panel, in node `q` (as large as the panel under its bar,
+/// side_bar_node): what the tab shows, nodes: 任务 (a service pressed opening its own tab, in front), agent 往来 and
+/// 图片、文件和链接 once the chat's thread is known (在对话里看 going to the message in the chat). A card across its foot is laid as `foot_card` says (in the panel's corners).
 fn side_own_node(
   q : @view.View,
   src : Source,
   r : ChatRef,
   tab : String,
   tips : @sf.TipLayer,
-  island : (@view.View, (@ui.Ctx) -> Unit, Bool) -> @view.View,
   foot_card : () -> @ui.Style,
 ) -> Unit {
-  island(
-    q,
-    fn(c) {
-      match view_of_chat(src, r).0 {
-        Some(view) => c.box(style=history_top_box, fn() { side_bar_row(c, src, r, view, side_shown(src, r).0, tab) }) |> ignore
-        None => ()
-      }
-    },
-    true,
-  )
-  .shrink(Is(0.0))
-  |> ignore
   q.box(fn(s) {
     s.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))).clips(Is(true)) |> ignore
     if tab == "jobs" {

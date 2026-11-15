@@ -112,3 +112,55 @@ test "中屏: a Farview tab on the tape's panel is its screen drawn here, not an
   // (the panel's body under its bar: the tab's screen, Farview's bar over its stage)
   assert_true(t.query(Button, label=@sf.t("web-pages.screen.reloadShort")) is Some(_), msg="its screen's bar")
 }
+
+///|
+/// The panel's tabs as a screen reader has them (their bar's: side_bar_node), each its name, whether it is in front,
+/// and where it is.
+fn side_tabs_said(t : @ui.Tester) -> Array[(String, Bool, (Double, Double, Double, Double))] {
+  t.semantics().filter(fn(s) { s.role == @ui.Role::Tab && !s.hidden }).map(fn(s) { (s.label, s.selected == Some(true), s.rect) })
+}
+
+///|
+test "大屏: the panel's bar, nodes: a tab pressed comes in front; one's × closes it alone, the one in front staying; its empty part drags the window" {
+  // (a Mac's window: no title bar of the system's, the app's top row moving it)
+  let t = wide_tester([], mode="chat-tabs-side", window_inset=true)
+  t.run_for(@ui.move_most_ms)
+  let tabs = side_tabs_said(t)
+  assert_eq(tabs.length(), 2, msg="\{Repr(tabs)}")
+  assert_eq(side_now(side_tab_chat), (["s-c1", "jobs"], "jobs"))
+  let (agent, agent_front, (ax, ay, _, ah)) = tabs[0]
+  assert_true(!agent_front && tabs[1].1, msg="\{Repr(tabs)}")
+  // (pressed: in front)
+  t.tap(ax + 16.0, ay + ah / 2.0)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(side_now(side_tab_chat).1, "s-c1")
+  assert_eq(side_tabs_said(t).map(fn(x) { (x.0, x.1) }), [(agent, true), (tabs[1].0, false)])
+  // (任务's × behind: it closes, the agent's history staying in front)
+  let x = t.get(Button, label=@sf.t("web-pages.chat.closeJobs")).rect
+  t.tap(x.0 + x.2 / 2.0, x.1 + x.3 / 2.0)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(side_now(side_tab_chat), (["s-c1"], "s-c1"))
+  assert_eq(side_tabs_said(t).map(fn(x) { (x.0, x.1) }), [(agent, true)])
+  // (its empty part, past the tabs, before the panel's switch: the window's)
+  let close_panel = t.get(Button, label=@sf.t("web-pages.chat.closePanel")).rect
+  let (bx, _, bw, _) = side_tabs_said(t)[0].2
+  let empty = (bx + bw + close_panel.0) / 2.0
+  assert_true(t.drags_window_at(empty, ay + ah / 2.0), msg="the bar's empty part at \{empty}")
+  assert_true(!t.drags_window_at(ax + 16.0, ay + ah / 2.0), msg="a tab")
+  assert_true(!t.drags_window_at(close_panel.0 + close_panel.2 / 2.0, close_panel.1 + close_panel.3 / 2.0), msg="the switch")
+}
+
+///|
+test "中屏: on the tape's panel a tab alone is its bar's title, a heading with no × of its own, the bar's close its only one; two are tabs, each its own ×" {
+  let t = side_tab_at("chat-history-side", side_tab_windows[1])
+  assert_eq(side_tabs_said(t), [])
+  assert_eq(side_now(side_tab_chat).0.length(), 1)
+  assert_true(t.query(Heading, label="Claude · Opus 5.5") is Some(_), msg="its title")
+  assert_true(t.semantics().filter(fn(s) { s.role == @ui.Role::Button && s.label.has_prefix("关闭") && !s.hidden }).length() == 0, msg="no tab's ×")
+  t.click(Button, label=@sf.t("web-pages.chat.closePanel"))
+  t.run_for(@ui.move_most_ms)
+  assert_eq(side_now(side_tab_chat).0, [])
+  let t = side_tab_at("chat-tabs-side", side_tab_windows[1])
+  assert_eq(side_tabs_said(t).length(), 2)
+  assert_true(t.query(Button, label=@sf.t("web-pages.chat.closeJobs")) is Some(_), msg="任务's ×")
+}

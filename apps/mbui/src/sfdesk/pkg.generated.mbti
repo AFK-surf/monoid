@@ -338,8 +338,6 @@ pub fn side_place() -> String
 
 pub fn side_slide_reset() -> Unit
 
-pub let side_tab : @ui.Style
-
 pub let side_tab_close : @ui.Style
 
 pub let side_tab_front : @ui.TextStyle
@@ -410,7 +408,7 @@ pub fn tape_shows_left() -> Double
 
 pub fn tape_shows_right() -> Double
 
-pub fn tape_side(@ui.Ctx, @sfbase.Source, @sfbase.Workspace, SideOf, leaving? : Bool) -> Unit
+pub fn tape_side(@ui.Ctx, @sfbase.Source, @sfbase.Workspace, SideOf) -> Unit
 
 pub let tape_side_max : Double
 

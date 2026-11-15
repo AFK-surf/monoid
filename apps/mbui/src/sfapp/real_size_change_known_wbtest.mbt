@@ -1594,7 +1594,7 @@ let real_size_change_known : Map[String, (Int, Int, Int, Int, Int, Int)] = {
   "wide chat-jobs chatJobs compact/job": (0, 0, 11, 0, 11, 59),
   "wide chat-jobs live/step": (0, 0, 0, 0, 22, 25),
   "wide chat-jobs-pop chatJobs compact/minute": (0, 0, 0, 0, 0, 29),
-  "wide chat-jobs-pop chatJobs compact/job": (0, 0, 0, 0, 0, 63),
+  "wide chat-jobs-pop chatJobs compact/job": (0, 0, 0, 0, 0, 41),
   "wide chat-letters-info chatThings/thing": (0, 0, 17, 0, 5, 42),
   "wide chat-letters-pop chatThings/thing": (0, 0, 0, 0, 6, 50),
   "wide chat-things chatThings/thing": (4, 0, 30, 2, 0, 0),
