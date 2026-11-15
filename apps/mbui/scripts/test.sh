@@ -240,7 +240,7 @@ for t in $targets; do
     # pages and packages at 120, its 小屏 pair was 118 s and the others 218 and 224, main af1435b8 43476543010)
     # (switches_still's 68-90, cut at 79: as screens came that run grew from 106-113 s to 163-279 s on main's runs of
     # 2026-11-15, app switches part 4/4 292 s of its 5 minutes on 927e8653 43692601857)
-    sweeps=(src/sfapp/screens_wbtest.mbt:1 src/sfapp/corners_wbtest.mbt:3 src/sfapp/squeeze_said_wbtest.mbt:1
+    sweeps=(src/sfapp/screens_wbtest.mbt:1 src/sfapp/corners_wbtest.mbt:5 src/sfapp/squeeze_said_wbtest.mbt:1
       src/sfapp/contrast_wbtest.mbt:1 src/sfapp/kept_rows_kinds_wbtest.mbt:@2@3@4@5@8 src/sfapp/preview_tree_wbtest.mbt:@54
       src/sfapp/words_large_wbtest.mbt:2 src/sfapp/real_size_wbtest.mbt:2 src/sfapp/send_steady_wbtest.mbt:@1@2
       src/sfapp/chat_page_nodes_wbtest.mbt:2 src/sfapp/answers_still_wbtest.mbt:@2@3@4@5

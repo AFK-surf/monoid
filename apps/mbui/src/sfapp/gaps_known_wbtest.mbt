@@ -4,7 +4,7 @@
 // across what holds it the theme's lit_reach in from its edges, 8 the other words on a list card aligned with its rows)
 // on the same screens and windows
 // the corner rule is held on (corners_wbtest.mbt, each screen opened once for both). Each rule's faults, all screens
-// in all windows in a language, keep to the bar here: one more fails, and one less until the bar comes down to it.
+// in a language, in each half of the windows (corners_check), keep to the bar here: one more fails, and one less until the bar comes down to it.
 // Every fault is printed (`at: rule n: …`) when a count is off its bar.
 
 ///|
@@ -29,42 +29,62 @@
 /// tree's words and drawings, not their boxes alone (the words laid out as drawn, Ctx::with_tree_nodes `facts`), and
 /// rule 4 leaving what is seen as far in from both sides: rule 4 13 and 15 fewer (the player's bar, a command's box
 /// now 8 all round), rule 8 eight more, newly seen: a small panel's title 16 in over rows whose marks are 22 in
-/// (选择运行的 station, 标签页; its group labels' line, so moved with them or not at all)).
+/// (选择运行的 station, 标签页; its group labels' line, so moved with them or not at all)); the same day, each language's
+/// windows in two halves, a run each (corners_check): rule 4's 84 Chinese 4 and 80, its 86 English 5 and 81, the two
+/// wide windows' chats' heads in the second half).
 let gaps_known : Map[String, Int] = {
-  "zh rule 1": 0,
-  "zh rule 2": 0,
-  "zh rule 3": 0,
-  "zh rule 4": 84,
-  "en rule 1": 0,
-  "en rule 2": 0,
-  "en rule 3": 0,
-  "en rule 4": 86,
-  "zh rule 5": 1,
-  "en rule 5": 1,
-  "zh rule 6": 0,
-  "en rule 6": 0,
-  "zh rule 7": 0,
-  "en rule 7": 0,
-  "zh rule 8": 10,
-  "en rule 8": 10,
-  "zh rule 9": 0,
-  "en rule 9": 0,
+  "zh 0/2 rule 1": 0,
+  "zh 0/2 rule 2": 0,
+  "zh 0/2 rule 3": 0,
+  "zh 0/2 rule 4": 4,
+  "zh 0/2 rule 5": 1,
+  "zh 0/2 rule 6": 0,
+  "zh 0/2 rule 7": 0,
+  "zh 0/2 rule 8": 5,
+  "zh 0/2 rule 9": 0,
+  "zh 1/2 rule 1": 0,
+  "zh 1/2 rule 2": 0,
+  "zh 1/2 rule 3": 0,
+  "zh 1/2 rule 4": 80,
+  "zh 1/2 rule 5": 0,
+  "zh 1/2 rule 6": 0,
+  "zh 1/2 rule 7": 0,
+  "zh 1/2 rule 8": 5,
+  "zh 1/2 rule 9": 0,
+  "en 0/2 rule 1": 0,
+  "en 0/2 rule 2": 0,
+  "en 0/2 rule 3": 0,
+  "en 0/2 rule 4": 5,
+  "en 0/2 rule 5": 1,
+  "en 0/2 rule 6": 0,
+  "en 0/2 rule 7": 0,
+  "en 0/2 rule 8": 5,
+  "en 0/2 rule 9": 0,
+  "en 1/2 rule 1": 0,
+  "en 1/2 rule 2": 0,
+  "en 1/2 rule 3": 0,
+  "en 1/2 rule 4": 81,
+  "en 1/2 rule 5": 0,
+  "en 1/2 rule 6": 0,
+  "en 1/2 rule 7": 0,
+  "en 1/2 rule 8": 5,
+  "en 1/2 rule 9": 0,
 }
 
 ///|
 test "the spacing sweep counts row and heading alignment faults" {
   let faults : Array[String] = []
   for rule in ["rule 1", "rule 2", "rule 3", "rule 4", "rule 5", "rule 6", "rule 7", "rule 8", "rule 9"] {
-    for _ in 0..<gaps_known.get("zh \{rule}").unwrap_or(0) {
+    for _ in 0..<gaps_known.get("zh 1/2 \{rule}").unwrap_or(0) {
       faults.push("example: \{rule}: known")
     }
   }
-  assert_true(gaps_wrong("zh", faults) is None)
+  assert_true(gaps_wrong("zh 1/2", faults) is None)
   faults.push("example: rule 8: a heading is not aligned with its rows")
-  assert_true(gaps_wrong("zh", faults) is Some(_))
+  assert_true(gaps_wrong("zh 1/2", faults) is Some(_))
   faults.pop() |> ignore
   faults.push("example: rule 10: a new kind of spacing fault")
-  assert_true(gaps_wrong("zh", faults) is Some(_))
+  assert_true(gaps_wrong("zh 1/2", faults) is Some(_))
 }
 
 ///|
