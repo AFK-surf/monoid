@@ -405,7 +405,9 @@ export class WorkspaceConnects {
     const handed = this.handing.get(id);
     if (handed !== undefined) {
       const to = await handed.to;
-      if (to !== null) return void (await this.d.bus.ask(to, { method: EVENT, workspace: handed.ws, connect: knownOf(id, this.d.here()), kept: true, event }));
+      // (only while it is not this station's: one of that id here again, added anew by a person, is this one's)
+      if (to !== null && (this.entryOf(id) === undefined || this.asking.has(id))) return void (await this.d.bus.ask(to, { method: EVENT, workspace: handed.ws, connect: knownOf(id, this.d.here()), kept: true, event }));
+      if (to !== null && this.handing.get(id) === handed) this.handing.delete(id);
     }
     const hub = this.d.hub();
     {

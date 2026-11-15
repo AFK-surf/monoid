@@ -213,6 +213,21 @@ test("across a connect's move every event is handled once, by the station that h
   await close();
 });
 
+test("a connect moved away and added here again by a person: what its socket here gives is this station's again, not sent where it went", async () => {
+  const { h, s, close } = workspace();
+  s.rig.hub = s.rig.newHub({ chats: (c) => (c === `cl@${H}` ? s.rig.chat : s.connects.remote.surface(c)) });
+  const entry = structuredClone(h.rig.raw.connects.find((c: Json) => c.id === "cl"));
+  await h.connects.move("cl", S, "ws");
+  // (a person adds the same bot here again, as config.json had it)
+  h.rig.raw.connects.push(entry);
+  const again = message({ text: "<@UBOT> here again", threadTs: "2000.1", ts: "2000.1" });
+  await h.connects.receive("cl", { type: "message", message: again });
+  await settle();
+  assert.equal(s.rig.store.listSessions().some((x) => x.key.includes("2000.1")), false, "not sent to where it went");
+  assert.equal(h.rig.store.listSessions().filter((x) => x.key.includes("2000.1")).length, 1, "taken here, once");
+  await close();
+});
+
 /// What station `st` keeps of connects' moves under way.
 const kept = (st: Station) => {
   try {
