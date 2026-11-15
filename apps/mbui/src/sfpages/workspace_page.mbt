@@ -4,8 +4,9 @@
 // who have not signed in, the invitations out), each pressed by a manager for what can be done about them (their role
 // by the owner, moving them out: a panel, popover or sheet as the presenters say); 添加成员 at the title's end; its
 // 中继 a row, its relays and the ways to its stations in a panel it opens (2026-10-29 the user: 不要平铺这么多
-// 设置); leaving or deleting it in red at its foot, asked first. Its rows a list card's on either width (group_node),
-// laid out by the page's width; made once as nodes of the window's tree (page_node).
+// 设置); leaving or deleting it in red at its foot, asked first. Its rows a list card's on either width (group_node; its
+// people a block each, a piece of their card: card_piece_node), laid out by the page's width; made once as nodes of the
+// window's tree (page_node).
 
 ///|
 /// The workspace's page (WorkspaceSettings, WorkspaceScreen) made once as nodes (page_node, laid out by the `width` its
@@ -33,6 +34,8 @@ pub fn workspace_node(
   }
   // (how its members' devices reach its stations: the core's `workspaceWays`, from what `/v1/me` said, there at once)
   let ways = fn() { (core.topic)("workspaceWays", { "workspace": str(text(view(), "id")) }).get().value }
+  // (its people each by who they are, and where each is among them: one computed for every row's block)
+  let people = ws_people_at(view, manager)
   @sf.page_node(
     v,
     fn() {
@@ -86,14 +89,7 @@ pub fn workspace_node(
     fn() {
       match view() {
         None => ["waiting"]
-        w => {
-          let out = ["name", "people"]
-          if manager() || strings(w, "relays").length() > 0 || number(ways(), "off") > 0.0 {
-            out.push("ways")
-          }
-          out.push("leave")
-          out
-        }
+        w => ws_block_keys(people().0, manager() || strings(w, "relays").length() > 0 || number(ways(), "off") > 0.0)
       }
     },
     fn(b, key) {
@@ -103,8 +99,9 @@ pub fn workspace_node(
           b,
           fn(s) {
             let sample = Some(workspace_sample())
-            for k in ["name", "people", "leave"] {
-              workspace_block_node(s, core.quiet(), here, fn() { sample }, stint, tips, k)
+            let sample_people = ws_people_at(fn() { sample }, fn() { false })
+            for k in ws_block_keys(@signals.untracked(sample_people).0, false) {
+              s.box(fn(k_b) { workspace_block_node(k_b, core.quiet(), here, fn() { sample }, sample_people, stint, tips, k) }) |> ignore
             }
           },
           error=fn() {
@@ -115,7 +112,7 @@ pub fn workspace_node(
           },
         )
       } else {
-        workspace_block_node(b, core, here, view, stint, tips, key)
+        workspace_block_node(b, core, here, view, people, stint, tips, key)
       }
     },
   )
@@ -130,6 +127,7 @@ fn workspace_block_node(
   core : Core,
   here : () -> Here,
   view : () -> Json?,
+  people : () -> (Array[(String, Json)], Map[String, Int]),
   stint : () -> Int,
   tips : @sf.TipLayer?,
   key : String,
@@ -200,81 +198,36 @@ fn workspace_block_node(
           }
         })
       })
-    // its people in one list
+    // its people: its heading, then each of them a block, a piece of their list card each (a block is a row)
     "people" =>
-      @sf.section_node(
-        b,
-        fn() { @sf.t("android-settings.members.title") },
-        note=fn() {
-          let n = items(view(), "members").length().to_string()
-          let waiting = if manager() { items(view(), "added").length() + items(view(), "invitations").length() } else { 0 }
-          if waiting > 0 {
-            @sf.t("android-settings.members.waiting", args=[("n", n), ("waiting", waiting.to_string())])
-          } else {
-            @sf.t("android-settings.members.count", args=[("n", n)])
-          }
-        },
-        fn(s) {
-          @sf.group_node(s, fn(g) {
-            // each by who it is: one who joins or leaves comes and goes where they are
-            g.each(fn() { ws_people(view(), manager()) }, fn(p) { p.0 }, fn(row, p) {
-              let pv = fn() { Some(p.get().1) }
-              match @signals.untracked(fn() { p.get().0 }) {
-                k if k.has_prefix("m/") => ws_member_row_node(row, core, here, view, pv, stint, tips)
-                k if k.has_prefix("a/") => {
-                  let email = fn() { text(pv(), "email") }
-                  let on = fn() { [("workspace", ws()), ("email", email())] }
-                  ws_person_node(
-                    row,
-                    fn(l) { ws_avatar_node(l, core, email, email, fn() { "" }, stint) },
-                    email,
-                    fn() { @sf.t("android-settings.members.added", args=[("role", role_label(text(pv(), "role")))]) },
-                    control=fn(e) {
-                      ws_row_action_node(e, @sf.t("android-settings.members.remove"), core, ["workspace.removeAdded"], on, tips, fn() {
-                        @settings.act(
-                          core,
-                          @sf.t("android-settings.members.removeWhat"),
-                          "workspace.removeAdded",
-                          obj([("workspace", str(@signals.untracked(ws))), ("email", str(@signals.untracked(email))), ("account", str(@signals.untracked(here).sub))]),
-                          done=@sf.t("android-settings.members.removed"),
-                        )
-                      })
-                    },
-                  )
-                }
-                _ => {
-                  let id = fn() { text(pv(), "id") }
-                  let email = fn() { text(pv(), "email") }
-                  let on = fn() { [("workspace", ws()), ("invitation", id())] }
-                  ws_person_node(
-                    row,
-                    fn(l) {
-                      ws_avatar_node(l, core, fn() { if email() != "" { email() } else { id() } }, fn() { if email() != "" { email() } else { "?" } }, fn() {
-                        ""
-                      }, stint)
-                    },
-                    fn() { if email() != "" { email() } else { @sf.t("android-settings.members.anyone") } },
-                    fn() {
-                      @sf.t("android-settings.members.invitation", args=[("role", role_label(text(pv(), "role"))), ("until", stamp(pv(), "expires_at", "until"))])
-                    },
-                    control=fn(e) {
-                      ws_row_action_node(e, @sf.t("android-settings.members.revoke"), core, ["workspace.revokeInvitation"], on, tips, fn() {
-                        @settings.act(
-                          core,
-                          @sf.t("android-settings.members.revokeWhat"),
-                          "workspace.revokeInvitation",
-                          obj([("workspace", str(@signals.untracked(ws))), ("invitation", str(@signals.untracked(id))), ("account", str(@signals.untracked(here).sub))]),
-                          done=@sf.t("android-settings.members.revoked"),
-                        )
-                      })
-                    },
-                  )
-                }
-              }
-            })
-          })
-        },
-      )
+      @sf.section_heading_node(b, fn() { @sf.t("android-settings.members.title") }, note=fn() {
+        let n = items(view(), "members").length().to_string()
+        let waiting = if manager() { items(view(), "added").length() + items(view(), "invitations").length() } else { 0 }
+        if waiting > 0 {
+          @sf.t("android-settings.members.waiting", args=[("n", n), ("waiting", waiting.to_string())])
+        } else {
+          @sf.t("android-settings.members.count", args=[("n", n)])
+        }
+      })
+    k if k.has_prefix("p/") => {
+      let who = k.exact_view(start=2).to_owned()
+      // (where they stand among them and what they are: as last, once gone, while their block goes)
+      let last : Ref[(@sf.CardPiece, Json)?] = Ref(None)
+      let now = fn() {
+        let (all, at) = people()
+        match at.get(who) {
+          Some(i) => last.val = Some((@sf.card_piece_of(i, all.length()), all[i].1))
+          None => ()
+        }
+        last.val
+      }
+      guard @signals.untracked(now) is Some(_) else { return }
+      // (as tall as its block, its piece of the card in it as tall: card_piece_node)
+      b.grow(Is(1.0)) |> ignore
+      @sf.card_piece_node(b, fn() { now().map(fn(n) { n.0 }).unwrap_or(@sf.CardPiece::CardWhole) }, wide_group=true, fn(card) {
+        ws_people_row_node(card, core, here, view, ws, who, fn() { now().map(fn(n) { n.1 }) }, stint, tips)
+      })
+    }
     // how its members' devices reach its stations: one row, how many ways are turned off at its end; pressed, its relays
     // and the ways in a panel (ws_ways_panel)
     "ways" =>
@@ -353,6 +306,104 @@ fn workspace_block_node(
           )
         })
       })
+  }
+}
+
+///|
+/// The workspace's blocks (`people`: its people each by who they are, ws_people's; `ways`: its 中继 row shown): its
+/// name, its people's heading and each of them ("p/<who>"), its 中继, leaving it.
+fn ws_block_keys(people : Array[(String, Json)], ways : Bool) -> Array[String] {
+  let out = ["name", "people"]
+  for p in people {
+    out.push("p/" + p.0)
+  }
+  if ways {
+    out.push("ways")
+  }
+  out.push("leave")
+  out
+}
+
+///|
+/// The workspace's people as its view (`view`) says them now (ws_people's, `manager` read as it is now), each by who
+/// they are, and where each is among them: one computed for what each of their blocks reads.
+fn ws_people_at(view : () -> Json?, manager : () -> Bool) -> () -> (Array[(String, Json)], Map[String, Int]) {
+  let c = @signals.computed(fn(_) {
+    let all = ws_people(view(), manager())
+    let at : Map[String, Int] = Map([])
+    for i, p in all {
+      at[p.0] = i
+    }
+    (all, at)
+  })
+  fn() { c.get() }
+}
+
+///|
+/// A person among the workspace's people (`who`: "m/" one in it, "a/" one added who has not signed in, "i/" an
+/// invitation out; `pv` what the view says of them now) as a row of their list card in `row`.
+fn ws_people_row_node(
+  row : @view.View,
+  core : Core,
+  here : () -> Here,
+  view : () -> Json?,
+  ws : () -> String,
+  who : String,
+  pv : () -> Json?,
+  stint : () -> Int,
+  tips : @sf.TipLayer?,
+) -> Unit {
+  match who {
+    k if k.has_prefix("m/") => ws_member_row_node(row, core, here, view, pv, stint, tips)
+    k if k.has_prefix("a/") => {
+      let email = fn() { text(pv(), "email") }
+      let on = fn() { [("workspace", ws()), ("email", email())] }
+      ws_person_node(
+        row,
+        fn(l) { ws_avatar_node(l, core, email, email, fn() { "" }, stint) },
+        email,
+        fn() { @sf.t("android-settings.members.added", args=[("role", role_label(text(pv(), "role")))]) },
+        control=fn(e) {
+          ws_row_action_node(e, @sf.t("android-settings.members.remove"), core, ["workspace.removeAdded"], on, tips, fn() {
+            @settings.act(
+              core,
+              @sf.t("android-settings.members.removeWhat"),
+              "workspace.removeAdded",
+              obj([("workspace", str(@signals.untracked(ws))), ("email", str(@signals.untracked(email))), ("account", str(@signals.untracked(here).sub))]),
+              done=@sf.t("android-settings.members.removed"),
+            )
+          })
+        },
+      )
+    }
+    _ => {
+      let id = fn() { text(pv(), "id") }
+      let email = fn() { text(pv(), "email") }
+      let on = fn() { [("workspace", ws()), ("invitation", id())] }
+      ws_person_node(
+        row,
+        fn(l) {
+          ws_avatar_node(l, core, fn() { if email() != "" { email() } else { id() } }, fn() { if email() != "" { email() } else { "?" } }, fn() {
+            ""
+          }, stint)
+        },
+        fn() { if email() != "" { email() } else { @sf.t("android-settings.members.anyone") } },
+        fn() {
+          @sf.t("android-settings.members.invitation", args=[("role", role_label(text(pv(), "role"))), ("until", stamp(pv(), "expires_at", "until"))])
+        },
+        control=fn(e) {
+          ws_row_action_node(e, @sf.t("android-settings.members.revoke"), core, ["workspace.revokeInvitation"], on, tips, fn() {
+            @settings.act(
+              core,
+              @sf.t("android-settings.members.revokeWhat"),
+              "workspace.revokeInvitation",
+              obj([("workspace", str(@signals.untracked(ws))), ("invitation", str(@signals.untracked(id))), ("account", str(@signals.untracked(here).sub))]),
+              done=@sf.t("android-settings.members.revoked"),
+            )
+          })
+        },
+      )
+    }
   }
 }
 
