@@ -10914,9 +10914,11 @@ fn Tree::walk(self : Tree, at : Int, gen : Int, holder_laid : Bool) -> Unit {
 
 ///|
 /// How wide node `at` may be at most, of what is said of it (View::max_width) and what it is, as an old view's box is
-/// (ui/layout.mbt's `capped`): words on one line (not wrapped, plain or in pieces) in a column (past any slot), no width
-/// said of them (View::width), no wider than the column (all of its width; what is said, where the column has less:
-/// Within), cut short there; else what is said, else none.
+/// (ui/layout.mbt's `capped`): words on one line (not wrapped, plain or in pieces), or anything cut short (View::cuts,
+/// an old view's `w=Cut`: a card as wide as what it says), in a column (past any slot), no width said of them
+/// (View::width), no wider than the column (all of its width; what is said, where the column has less: Within), cut
+/// short there; else what is said, else none. (Cut short alone was left out till 2026-11-15: an agent's request's card
+/// as wide as its one-line command, said 560 at most, was 560 on a phone's column of 390, past the screen's edge.)
 fn Tree::capped_applied(self : Tree, at : Int) -> Unit {
   let n = self.nodes[at]
   guard n.live else { return }
@@ -10931,7 +10933,7 @@ fn Tree::capped_applied(self : Tree, at : Int) -> Unit {
     Some(Some(w)) => Some(w)
     _ => None
   }
-  let max : @flex.Dim = if (one_line && in_column && st.width_kind() == @flex.LEN_AUTO) || n.max_w_within {
+  let max : @flex.Dim = if ((one_line || n.cut) && in_column && st.width_kind() == @flex.LEN_AUTO) || n.max_w_within {
     match said {
       Some(w) => Within(w)
       None => Pct(100.0)
