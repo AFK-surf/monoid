@@ -502,7 +502,8 @@ fn signin_ask_card(c : @ui.Ctx, here : MessageHere, m : Message, card : Card, as
         fn() {
           signin_outcome(c, ask, here.inline, history=Some(("signin/" + key, fn(id) {
             card_history(c, id, fn(p) {
-              @sf.ask_words(p, @sf.t("android-misc.signin.title", args=[("site", ask.site)]), ask.reason)
+              @sf.ask_words_node(p, fn() { @sf.t("android-misc.signin.title", args=[("site", ask.site)]) }, fn() { ask.reason })
+              |> ignore
             })
           })))
         },

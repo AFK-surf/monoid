@@ -411,7 +411,6 @@
       "src/sfpages/hover.mbt": 4,
       "src/sfpages/message.mbt": 1,
       "src/sfpages/message_files.mbt": 1,
-      "src/sfpages/recent.mbt": 1,
       "src/sfpages/resources.mbt": 2,
       "src/sfpages/screen_stage.mbt": 3,
       "src/sfpages/screen_view.mbt": 1,
@@ -465,7 +464,6 @@
       "src/sfpages/message.mbt": 3,
       "src/sfpages/message_files.mbt": 2,
       "src/sfpages/publish.mbt": 1,
-      "src/sfpages/recent.mbt": 4,
       "src/sfpages/search.mbt": 1
     },
     "old-list": {
@@ -524,9 +522,6 @@
     "old-panel": {
       "src/sfapp/sheet.mbt": 1,
       "src/sfapp/sheets.mbt": 4,
-      "src/sfdesk/drag.mbt": 1,
-      "src/sfpages/attach.mbt": 1,
-      "src/sfpages/decision.mbt": 1,
       "src/sfpages/model_triple.mbt": 1,
       "src/sfpages/screen_debug.mbt": 1,
       "src/sfpages/settings_page.mbt": 1,

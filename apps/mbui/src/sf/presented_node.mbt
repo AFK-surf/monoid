@@ -484,6 +484,20 @@ pub fn panel_words_at_node(v : @view.View) -> Double {
 }
 
 ///|
+/// Whether node `v` is made in the body of a small panel beside what opened it (in_small_panel's, where the body is
+/// nodes): its rows at its padding, as a menu's are; not in a sheet, a dialog or outside a panel.
+pub fn in_small_panel_node(v : @view.View) -> Bool {
+  panel_in_of(v).small
+}
+
+///|
+/// What reaches a panel's sides on purpose in node `v` of its body (panel_bleed's, where the body is nodes: a strip that
+/// scrolls under them, attach's photos): out across the room the panel leaves at its sides; none outside a panel.
+pub fn panel_bleed_node(v : @view.View) -> @ui.Style {
+  @ui.style(mx=room(-panel_in_of(v).sides))
+}
+
+///|
 /// Node `v` of a panel's body clear of an untitled dialog's close button at its end (untitled_clear's, where the body is
 /// nodes); none elsewhere.
 pub fn untitled_clear_node(v : @view.View) -> @ui.Style {

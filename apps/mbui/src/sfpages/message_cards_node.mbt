@@ -66,16 +66,27 @@ fn mine_to_node(here : MessageNodeHere, assignee : String) -> Bool {
 /// A request read again in a panel (card_history's, as nodes; a sheet on a small screen) opened from `from`: `body` in
 /// the panel's words' room.
 fn card_history_node(from : @view.View, body : (@view.View) -> Unit) -> Unit {
+  card_history_from(Node(from), body)
+}
+
+///|
+/// What was asked read again in a panel of nodes opened from `from` (a sheet on a small screen): `body` in the panel's
+/// words' room (`padded`), or across it as a card the panel holds lays itself out (an options card: not padded).
+fn card_history_from(from : @sf.Anchor, padded? : Bool = true, body : (@view.View) -> Unit) -> Unit {
   @sf.panel_nodes(
     @sf.t("web-main.history.details"),
     fn(p, _) {
-      p.box(fn(b) {
-        @sf.style_node(b, fn() { @sf.panel_words_in_node(b) })
-        body(b)
-      })
-      |> ignore
+      if padded {
+        p.box(fn(b) {
+          @sf.style_node(b, fn() { @sf.panel_words_in_node(b) })
+          body(b)
+        })
+        |> ignore
+      } else {
+        body(p)
+      }
     },
-    from=Node(from),
+    from~,
   )
 }
 

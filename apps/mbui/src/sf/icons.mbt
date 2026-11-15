@@ -114,6 +114,24 @@ pub fn play_mark(c : @ui.Ctx, side : Double, shade : @ui.Color) -> Int {
 }
 
 ///|
+/// A video's play mark over its picture in `parent` (play_mark's, as nodes): a disc `side` across of `shade`, the solid
+/// triangle in it white, its weight in the disc's middle. The node.
+#callsite(autofill(loc))
+pub fn play_mark_node(parent : @view.View, side : Double, shade : @ui.Color, loc~ : SourceLoc) -> @view.View {
+  parent.box(made_for=loc, fn(d) {
+    d
+    .width(Is(Some(side)))
+    .height(Is(Some(side)))
+    .radius(Is(side / 2.0))
+    .ground(By(fn() { @ui.tree_theme().color(shade) }))
+    .lines_up(Is(Some(Middle)))
+    .lies_along(Is(Middle))
+    |> ignore
+    icon_node(d, "play-mark", side * play_mark_share, Is(white)) |> ignore
+  })
+}
+
+///|
 /// A video's capsule over its picture, in its foot's start corner concentric with its `corner` (a message's file's: the
 /// chat's media tiles' and a message's video's; a quote's picture's): a small play mark and how long it is (`duration`, none where that is
 /// not known) on the video's shade. `coming`: how far the core has brought it here, a ring of that share and the share

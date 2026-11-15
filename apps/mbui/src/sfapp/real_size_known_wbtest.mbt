@@ -9,6 +9,8 @@
 // station_terminals_node.mbt), a row of a new thing it shows, not more done for what it showed before.
 // Again that day, a wide chat's screens: its side panel's bar made as nodes (sfdesk panel_bar_node.mbt), what its old
 // view built as it opened now made, laid out and measured by the window's tree, nothing more shown.
+// Raised once, 2026-11-15: files-clash's dialog (sfdesk drag.mbt) made as nodes of the window's tree, what the old
+// view built of it before (and measured as it drew) now made and measured in the tree's count.
 
 ///|
 let real_size_known : Map[String, (Int, Int, Int)] = {
@@ -490,7 +492,7 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "wide drive-upload": (205, 180, 8),
   "wide files": (201, 178, 8),
   "wide files-add-folder": (266, 261, 32),
-  "wide files-clash": (226, 218, 8),
+  "wide files-clash": (267, 226, 20),
   "wide files-columns": (205, 180, 8),
   "wide files-list": (205, 180, 8),
   "wide files-preview": (205, 180, 8),

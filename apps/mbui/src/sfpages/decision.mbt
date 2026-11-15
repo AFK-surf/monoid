@@ -207,15 +207,15 @@ fn message_decision(c : @ui.Ctx, src : Source, here : MessageHere, m : Message, 
                   let line = c.sp(c.theme().leading(settled_leading).unwrap_or(c.text_size(settled_size).1))
                   let id = @sf.ask_history_trigger(c, "options/" + key, [@ui.span(w)], settled_line, line)
                   card_history(c, id, padded=false, fn(p) {
-                    @sf.options_card(
+                    @sf.options_card_node(
                       p,
-                      "history-options/" + key,
-                      list.map(fn(o) { (o.label, o.detail, o.recommended) }),
-                      false,
-                      None,
-                      chosen=list.search_by(fn(o) { Some(o.label) == chosen }),
+                      fn() { list.map(fn(o) { (o.label, o.detail, o.recommended) }) },
+                      fn() { false },
+                      fn() { None },
+                      chosen=fn() { list.search_by(fn(o) { Some(o.label) == chosen }) },
                       history=true,
                     )
+                    |> ignore
                   })
                 }) |> ignore
               }
@@ -234,20 +234,8 @@ fn message_decision(c : @ui.Ctx, src : Source, here : MessageHere, m : Message, 
 /// A result's read-only history: a press on the line opens it in a panel (a sheet on a small screen), the original
 /// card's content rather than its now-inactive actions. Only a press: no hover card as well, two boxes of the same
 /// (the user, 2026-11-03: 「改成只允许点击吧」).
-fn card_history(c : @ui.Ctx, id : Int, padded? : Bool = true, body : (@ui.Ctx) -> Unit) -> Unit {
-  c.on_press(id, fn() {
-    @sf.panel(
-      @sf.t("web-main.history.details"),
-      fn(p, _) {
-        if padded {
-          p.box(style=@sf.panel_words_in(), fn() { body(p) }) |> ignore
-        } else {
-          body(p)
-        }
-      },
-      from=Of(id),
-    )
-  })
+fn card_history(c : @ui.Ctx, id : Int, padded? : Bool = true, body : (@view.View) -> Unit) -> Unit {
+  c.on_press(id, fn() { card_history_from(Of(id), padded~, body) })
 }
 
 ///|
@@ -335,9 +323,7 @@ fn vault_ask_card(c : @ui.Ctx, here : MessageHere, m : Message, card : Card, ask
         close=@motion.Snap(0.0),
         fn() {
           ended(Some(("vault/" + key, fn(id) {
-            card_history(c, id, fn(p) {
-              @settings.vault_ask_details(p, asked)
-            })
+            card_history(c, id, fn(p) { @settings.vault_ask_details_node(p, fn() { asked }) })
           })))
         },
       )
@@ -411,7 +397,7 @@ fn phone_ask_card(c : @ui.Ctx, here : MessageHere, m : Message, card : Card, ask
         fn() {
           ended(Some(("phone/" + key, fn(id) {
             card_history(c, id, fn(p) {
-              @sf.ask_words(p, @sf.t("android-misc.adb.ask.chat.title"), ask.reason)
+              @sf.ask_words_node(p, fn() { @sf.t("android-misc.adb.ask.chat.title") }, fn() { ask.reason }) |> ignore
             })
           })))
         },
@@ -491,7 +477,8 @@ fn rig_ask_card(c : @ui.Ctx, here : MessageHere, m : Message, card : Card, ask :
         fn() {
           ended(Some(("rig/" + key, fn(id) {
             card_history(c, id, fn(p) {
-              @sf.ask_words(p, @sf.t("web-pages.rigs.ask.title", args=[("name", ask.name)]), ask.reason)
+              @sf.ask_words_node(p, fn() { @sf.t("web-pages.rigs.ask.title", args=[("name", ask.name)]) }, fn() { ask.reason })
+              |> ignore
             })
           })))
         },

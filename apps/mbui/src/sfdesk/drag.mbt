@@ -96,6 +96,7 @@ fn drag_reset() -> Unit {
   }
   fdrag.later.clear()
   fclash_shown.val = 0
+  fclash_last.val = None
   clash_changed()
 }
 
@@ -561,19 +562,20 @@ fn fdrag_send(
 
 ///|
 /// What is asked about a name already where files go: each name in turn (or all the rest
-/// the same way): 跳过, 保留两者, 替换; let go, nothing goes. The library's dialog (@sf.panel, opened by nothing), up
-/// while something is asked: its title and what it is about as the name asked about now says them.
+/// the same way): 跳过, 保留两者, 替换; let go, nothing goes. The library's dialog of nodes (@sf.panel_nodes, opened by
+/// nothing), up while something is asked: its title, what it is about, what it holds and its foot as the name asked
+/// about now says them.
 fn clash_dialog(c : @ui.Ctx) -> Unit {
   ignore(c)
   // (read as told: what builds it, a part kept as its nodes too, built again as something is asked or all answered)
   clash_told.get() |> ignore
   match fdrag.asking {
     Some(_) if fclash_shown.val == 0 => {
-      @sf.panel(
+      @sf.panel_nodes(
         "",
-        fn(c, _) { clash_body(c) },
+        fn(v, _) { clash_body_node(v) },
         from=Unanchored,
-        foot=fn(c, _) { clash_foot(c) },
+        foot=fn(v, _) { clash_foot_node(v) },
         live=fn() {
           match clash_now() {
             (Some(a), Some(n)) =>
@@ -677,64 +679,111 @@ fn clash_answer(a : Asking, n : Clash, said : String) -> Unit {
 }
 
 ///|
-/// What the dialog holds: what comes and what is there (size or folder, where from, when), what replacing does, the
-/// rest the same way.
-fn clash_body(c : @ui.Ctx) -> Unit {
-  let t = @sf.theme()
+/// What is asked now and the name asked about, for what the dialog shows (clash_now's): as it was last asked while
+/// nothing is (the dialog going as all are answered shows the last name to the end).
+fn clash_shown() -> (Asking, Clash)? {
   match clash_now() {
     (Some(a), Some(n)) => {
-      c.box(style=fclash_facts, fn() {
-        c.box(style=fclash_said_column, fn() {
-          c.text(@sf.t("web-pages.files.coming"), style=fclash_said) |> ignore
-          c.text(@sf.t("web-pages.files.there"), style=fclash_said) |> ignore
-        })
-        |> ignore
-        c.box(style=fclash_values_column, fn() {
-          let coming = if n.dir { @sf.t("web-pages.files.folder") } else { @sf.file_size(n.size) }
-          c.text(coming + " · " + n.station, style=fclash_value) |> ignore
-          let there = if n.there.dir { @sf.t("web-pages.files.folder") } else { n.there.size_text }
-          c.text(there + " · " + n.there.time_text, style=fclash_value) |> ignore
-        })
-        |> ignore
-      })
-      |> ignore
-      c.text(@sf.t("web-pages.files.replaceNote"), style=clash_note) |> ignore
-      let left = a.clashes.filter(fn(x) { !a.answers.contains(x.name) })
-      if left.length() > 1 {
-        let id = c.id("files-clash/all")
-        c.on_press(id, fn() {
-          a.all = !a.all
-          clash_changed()
-        })
-        c.box(style=fclash_all, id~, fn() {
-          @sf.icon(c, if a.all { "check-circle" } else { "square" }, size=drag_icon, color=if a.all { t.p.accent } else { t.p.muted })
-          |> ignore
-          c.text(@sf.t("web-pages.files.applyAll", args=[("n", (left.length() - 1).to_string())]), style=clash_note) |> ignore
-        })
-        |> ignore
-      }
+      fclash_last.val = Some((a, n))
+      Some((a, n))
     }
-    _ => ()
+    _ => fclash_last.val
   }
 }
 
 ///|
-/// 跳过, 保留两者, 替换.
-fn clash_foot(c : @ui.Ctx) -> Unit {
-  match clash_now() {
-    (Some(a), Some(n)) => {
-      @sf.button(c, @sf.t("web-pages.files.skip"), key="files-clash/skip", tone=Ghost, on_press=fn() {
-        clash_answer(a, n, "skip")
-      }) |> ignore
-      @sf.button(c, @sf.t("web-pages.drive.keepBoth"), key="files-clash/keep", on_press=fn() {
-        clash_answer(a, n, "keep")
-      }) |> ignore
-      @sf.button(c, @sf.t("web-pages.drive.replace"), key="files-clash/replace", tone=Primary, icon="trash", on_press=fn() {
-        clash_answer(a, n, "replace")
-      }) |> ignore
-    }
-    _ => ()
+/// The name the dialog last asked about (clash_shown).
+// kept across runs: put back by drag_reset
+let fclash_last : Ref[(Asking, Clash)?] = Ref(None)
+
+///|
+/// How many names are left to answer of what is asked now (the one asked about among them).
+fn clash_left() -> Int {
+  match clash_shown() {
+    Some((a, _)) => a.clashes.filter(fn(x) { !a.answers.contains(x.name) }).length()
+    None => 0
   }
+}
+
+///|
+/// What the dialog holds, in `v`: what comes and what is there (size or folder, where from, when), what replacing
+/// does, the rest the same way (while more than the one asked about are left), each as the name asked about now says.
+fn clash_body_node(v : @view.View) -> Unit {
+  let name = fn() { clash_shown().map(fn(s) { s.1 }) }
+  v.box(fn(facts) {
+    @sf.style_node(facts, fn() { fclash_facts })
+    facts.box(fn(said) {
+      @sf.style_node(said, fn() { fclash_said_column }, in_row=true)
+      @sf.words_node(said, fn() { @sf.t("web-pages.files.coming") }, fn() { fclash_said }) |> ignore
+      @sf.words_node(said, fn() { @sf.t("web-pages.files.there") }, fn() { fclash_said }) |> ignore
+    })
+    |> ignore
+    facts.box(fn(values) {
+      @sf.style_node(values, fn() { fclash_values_column }, in_row=true)
+      @sf.words_node(
+        values,
+        fn() {
+          match name() {
+            Some(n) => (if n.dir { @sf.t("web-pages.files.folder") } else { @sf.file_size(n.size) }) + " · " + n.station
+            None => ""
+          }
+        },
+        fn() { fclash_value },
+      )
+      |> ignore
+      @sf.words_node(
+        values,
+        fn() {
+          match name() {
+            Some(n) => (if n.there.dir { @sf.t("web-pages.files.folder") } else { n.there.size_text }) + " · " + n.there.time_text
+            None => ""
+          }
+        },
+        fn() { fclash_value },
+      )
+      |> ignore
+    })
+    |> ignore
+  })
+  |> ignore
+  @sf.words_node(v, fn() { @sf.t("web-pages.files.replaceNote") }, fn() { clash_note }) |> ignore
+  v.show(fn() { clash_left() > 1 }, fn(s) {
+    let all = fn() { clash_shown().map(fn(x) { x.0.all }).unwrap_or(false) }
+    let words = fn() { @sf.t("web-pages.files.applyAll", args=[("n", (clash_left() - 1).to_string())]) }
+    let turn = fn(on : Bool) {
+      match @signals.untracked(clash_shown) {
+        Some((a, _)) => {
+          a.all = on
+          clash_changed()
+        }
+        None => ()
+      }
+    }
+    s.box(fn(row) {
+      @sf.style_node(row, fn() { fclash_all })
+      // (the whole row pressed, past its box: all the rest the same way or not, as its box would)
+      @sf.presses_node(row, fn() { turn(!@signals.untracked(all)) })
+      @sf.check_node(row, all, turn, words)
+      @sf.words_node(row, words, fn() { clash_note }) |> ignore
+    })
+    |> ignore
+  })
+}
+
+///|
+/// 跳过, 保留两者, 替换, in `v`: each answers the name asked about as it is pressed.
+fn clash_foot_node(v : @view.View) -> Unit {
+  let answer = fn(said : String) {
+    fn() {
+      match clash_now() {
+        (Some(a), Some(n)) => clash_answer(a, n, said)
+        _ => ()
+      }
+    }
+  }
+  @sf.button_node(v, fn() { @sf.t("web-pages.files.skip") }, answer("skip"), tone=Ghost) |> ignore
+  @sf.button_node(v, fn() { @sf.t("web-pages.drive.keepBoth") }, answer("keep")) |> ignore
+  @sf.button_node(v, fn() { @sf.t("web-pages.drive.replace") }, answer("replace"), tone=Primary, icon="trash") |> ignore
 }
 
 ///|
@@ -826,8 +875,9 @@ let fdrag_ghost_off : Double = 12.0
 let fclash_facts : @ui.Style = @ui.css("row w=Full px=S3 py=S2_5 gap=S3 radius=Xl bg=Neutral")
 
 ///|
+/// 对其余 n 项都这样做: its box and its words, the whole row pressed (36 high: its box's room to be pressed in).
 // kept across runs: a value (no field of it changes)
-let fclash_all : @ui.Style = @ui.css("row gap=S2 align=ACenter")
+let fclash_all : @ui.Style = @ui.css("row min_h=S9 gap=S2 align=ACenter")
 
 ///|
 // kept across runs: a value (no field of it changes)
