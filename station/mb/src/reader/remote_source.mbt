@@ -183,8 +183,8 @@ fn Actors::later(self : Actors, path : String, at : Double) -> Unit {
     return
   }
   self.spawn(() => {
-    let now = self.stored_now() catch { _ => at }
-    ignore(self.after(if at - now < 0.0 { 0.0 } else { at - now }, () => self.check(path)))
+    let now = self.remote_now() catch { _ => at }
+    ignore(self.rafter(if at - now < 0.0 { 0.0 } else { at - now }, () => self.check(path)))
   })
 }
 
@@ -196,12 +196,9 @@ async fn Actors::unfollowed(self : Actors, path : String) -> Unit raise {
     return
   }
   let message = "Remote task \{text_of(entry, "key")} on \{text_of(entry, "station")}: that station is from before it tells how its tasks go, so this one is not followed. Update that station, or ask with get."
-  try {
-    ignore(self.rnode("notify", [jstr(text_of(entry, "session")), jstr(message)]))
-  } catch {
+  self.told_then_written(path, text_of(entry, "session"), message, with_field(entry, "delivered", jbool(true))) catch {
     _ => return
   }
-  self.write_json(path, with_field(entry, "delivered", jbool(true))) catch { _ => () }
 }
 
 ///|
@@ -278,7 +275,7 @@ async fn Actors::settle(self : Actors, path : String, entry : Json, got : Json) 
   if got is Null {
     return jstr("again")
   }
-  let now = self.stored_now()
+  let now = self.remote_now()
   let entry = if field_of(entry, "since") is Number(_, ..) {
     entry
   } else {
@@ -299,12 +296,9 @@ async fn Actors::settle(self : Actors, path : String, entry : Json, got : Json) 
     }
     let why = if unknown { "that station does not know it" } else { "it is prepared there but was never started" }
     let message = "Remote task \{text_of(entry, "key")} on \{text_of(entry, "station")}: \{why} \{(give_up_ms / 60000.0).to_int()} minutes after its start was asked for, and is no longer followed. Ask with get, or prepare and start it again."
-    try {
-      ignore(self.rnode("notify", [jstr(text_of(entry, "session")), jstr(message)]))
-    } catch {
+    self.told_then_written(path, text_of(entry, "session"), message, with_field(with_field(entry, "delivered", jbool(true)), "lost", jbool(true))) catch {
       _ => return jstr("again")
     }
-    self.write_json(path, with_field(with_field(entry, "delivered", jbool(true)), "lost", jbool(true))) catch { _ => () }
     return jstr("over")
   }
   if result is Null {
@@ -356,12 +350,9 @@ async fn Actors::settle(self : Actors, path : String, entry : Json, got : Json) 
   let new_notices = match notices { Array(n) => n.length() > 0 && !json_equal(field_of(entry, "notices"), notices); _ => false }
   if finished || new_notices {
     let message = "Remote task \{text_of(entry, "key")} on \{text_of(entry, "station")}: \{js_text(result)}"
-    try {
-      ignore(self.rnode("notify", [jstr(text_of(entry, "session")), jstr(message)]))
-    } catch {
+    self.told_then_written(path, text_of(entry, "session"), message, with_field(with_field(entry, "notices", notices), "delivered", jbool(finished))) catch {
       _ => return jstr("again")
     }
-    self.write_json(path, with_field(with_field(entry, "notices", notices), "delivered", jbool(finished))) catch { _ => () }
   }
   jstr(if finished { "over" } else { "wait" })
 }
@@ -396,7 +387,7 @@ fn Actors::outgoing_path(self : Actors, workspace : String, session : String, st
 /// The sync of a directory to a station for task `key` (Node's dirsync, `syncDir`): the one under way, or ended and not
 /// yet taken, when it is that task's; otherwise a new one, begun once the one before it (another task's) has ended.
 async fn Actors::sync_of(self : Actors, id : String, key : String, args : Array[Json]) -> SyncRun raise {
-  let now = self.stored_now()
+  let now = self.remote_now()
   let was = self.remote.syncs.get(id)
   if was is Some(w) && w.key == key && (w.ended_at is None || now - w.ended_at.unwrap_or(0.0) < sync_kept_ms) {
     return w
@@ -415,7 +406,7 @@ async fn Actors::sync_of(self : Actors, id : String, key : String, args : Array[
         _ => { "error": { "message": jstr(Asked::message(e)) } }
       }
     }
-    let at = self.stored_now() catch { _ => 0.0 }
+    let at = self.remote_now() catch { _ => 0.0 }
     run.ended_at = Some(at)
     ignore(run.result.succeed(got))
   })
@@ -650,7 +641,7 @@ async fn Actors::tool(self : Actors, tool : String, session : String, args : Jso
     let path = self.outgoing_path(workspace, session, station, key)
     let was = self.read_json(path) catch { _ => Json::null() }
     if was is Null || field_of(was, "refused") is True {
-      let e : Map[String, Json] = { "workspace": jstr(workspace), "session": jstr(session), "station": jstr(station), "key": jstr(key), "delivered": jbool(false), "since": jnum(self.stored_now()) }
+      let e : Map[String, Json] = { "workspace": jstr(workspace), "session": jstr(session), "station": jstr(station), "key": jstr(key), "delivered": jbool(false), "since": jnum(self.remote_now()) }
       if !(local is Null) {
         e["dir"] = field_of(local, "dir")
         e["back"] = field_of(local, "back")
@@ -676,7 +667,7 @@ async fn Actors::tool(self : Actors, tool : String, session : String, args : Jso
       // An uncertain start: asked about once its station would have started it.
       if action == "start" && !refused(e) {
         let entry = self.read_json(path) catch { _ => Json::null() }
-        let since = as_i64(field_of(entry, "since")).unwrap_or(self.stored_now())
+        let since = as_i64(field_of(entry, "since")).unwrap_or(self.remote_now())
         self.later(path, since + give_up_ms)
       }
       if action == "start" && refused(e) {

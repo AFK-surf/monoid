@@ -231,9 +231,15 @@ function inTurn<T>(path: string, work: () => Promise<T>): Promise<T> {
   return mine;
 }
 
-/// Once what was asked of `path` before is written (or failed).
+/// The program's writes of each record under way (told `writing`, then `wrote`, before and after each: in the order
+/// it says things, so a write told before what it tells next is waited for by what that wakes here).
+const programWriting = new Map<string, Map<number, { done: Promise<void>; end: () => void }>>();
+
+/// Once what was asked of `path` before is written (or failed), here or by the program.
 export async function written(path: string): Promise<void> {
   await writing.get(path);
+  const theirs = programWriting.get(path);
+  if (theirs) await Promise.all([...theirs.values()].map((w) => w.done));
 }
 
 /// `json` written whole or not at all, off the station's thread: a private temporary file, synced, renamed over. The
@@ -444,7 +450,7 @@ export class Remote {
       write: async (at) => { await writeFile(tidiedAt, JSON.stringify(at)); },
     });
     this.program = this.jobs.program;
-    this.program.shell({ key: REMOTE_KEY, runtime: "claude", asked: (f, args) => this.asked(f, args), told: (f, args) => this.told(f, args) });
+    this.program.shell({ key: REMOTE_KEY, runtime: "claude", clock: options.clock, asked: (f, args) => this.asked(f, args), told: (f, args) => this.told(f, args) });
     void this.call("start", [this.root]);
     this.bus = options.bus ?? new PeerBus({ waitMs: options.meshWaitMs ?? MESH_WAIT_MS, sleep: (ms) => this.run(Effect.sleep(Duration.millis(ms))).catch(() => undefined) });
     // What this answers: how this station is and what it takes, and the tasks (whatever no other part answers).
@@ -501,8 +507,15 @@ export class Remote {
     switch (f) {
       case "node.ask":
         return await this.ask(a, b);
-      case "node.seen":
-        return this.seen(a, b, c);
+      case "node.seen": {
+        // (its record, written off this thread, there before the program reads it)
+        const work = this.seen(a, b, c);
+        await written(join(this.room(a, b, c), "session.json"));
+        return work;
+      }
+      case "node.written":
+        await written(a);
+        return null;
       case "node.seenAt":
         return this.seenAt.get(a) ?? null;
       case "node.forgetSeen":
@@ -591,6 +604,23 @@ export class Remote {
 
   /// What the program tells the station of the remote tasks, needing no answer.
   private told(f: string, args: Json[]): void {
+    if (f === "writing") {
+      const [path, id] = args as [string, number];
+      let end!: () => void;
+      const done = new Promise<void>((resolve) => (end = resolve));
+      const theirs = programWriting.get(path) ?? new Map();
+      theirs.set(id, { done, end });
+      programWriting.set(path, theirs);
+      return;
+    }
+    if (f === "wrote") {
+      const [path, id] = args as [string, number];
+      const theirs = programWriting.get(path);
+      theirs?.get(id)?.end();
+      theirs?.delete(id);
+      if (theirs?.size === 0) programWriting.delete(path);
+      return;
+    }
     if (f === "log") {
       const [level, message, fields] = args;
       (level === "warn" ? log.warn : level === "error" ? log.error : log.info)("remote", message, fields ?? {});

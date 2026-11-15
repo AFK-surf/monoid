@@ -280,12 +280,12 @@ fn Actors::sweep_hourly(self : Actors) -> Unit {
       return
     }
     try {
-      let now = self.stored_now()
+      let now = self.remote_now()
       self.sweep(now)
     } catch {
       _ => ()
     }
-    ignore(self.after(sweep_every_ms, () => self.sweep_hourly()))
+    ignore(self.rafter(sweep_every_ms, () => self.sweep_hourly()))
   })
 }
 
@@ -303,7 +303,7 @@ fn Actors::again(self : Actors, once : async () -> Bool, ended : (Bool) -> Unit,
     for i = 0; i < tries && wait < 60000.0; i = i + 1 {
       wait = wait * 2.0
     }
-    ignore(self.after(if wait > 60000.0 { 60000.0 } else { wait }, () => self.again(once, ended, tries=tries + 1)))
+    ignore(self.rafter(if wait > 60000.0 { 60000.0 } else { wait }, () => self.again(once, ended, tries=tries + 1)))
   })
 }
 
@@ -315,7 +315,7 @@ async fn Actors::clean_request(self : Actors, workspace : String, peer : String,
   let session = text_of(request, "session")
   let mirror = text_of(request, "mirror")
   let id = rhash(Json::array([jstr(workspace), jstr(peer), jstr(session), jstr(mirror)]))
-  let now = self.stored_now()
+  let now = self.remote_now()
   let gone = self.remote.cleans.to_array().filter(e => e.1.ended_at is Some(at) && now - at >= clean_kept_ms).map(e => e.0)
   for k in gone {
     self.remote.cleans.remove(k)
@@ -331,7 +331,7 @@ async fn Actors::clean_request(self : Actors, workspace : String, peer : String,
         } catch {
           e => ({ "error": jstr(FsError::of(e)) } : Json)
         }
-        let at = self.stored_now() catch { _ => 0.0 }
+        let at = self.remote_now() catch { _ => 0.0 }
         c.ended_at = Some(at)
         ignore(c.result.succeed(got))
       })
@@ -355,7 +355,7 @@ async fn[X] Actors::bounded(self : Actors, d : @effect.Deferred[X], ms : Double)
     return d.poll() catch { _ => None }
   }
   let woke : @effect.Deferred[Unit] = @effect.Deferred::new()
-  let cancel = self.after(ms, () => {
+  let cancel = self.rafter(ms, () => {
     if !woke.is_done() {
       self.active += 1
       ignore(woke.succeed(()))
@@ -376,4 +376,16 @@ async fn[X] Actors::bounded(self : Actors, d : @effect.Deferred[X], ms : Double)
   } else {
     None
   }
+}
+
+///|
+/// A wait of the remote tasks', on their clock (Node's `Remote`'s, which may not be the hub's: a test's own).
+fn Actors::rafter(self : Actors, ms : Double, then : () -> Unit) -> () -> Unit {
+  self.after(ms, then, on=remote_key)
+}
+
+///|
+/// Now on the remote tasks' clock (their store's).
+async fn Actors::remote_now(self : Actors) -> Double raise {
+  num_of(Some(self.rstore("now", []))).unwrap_or(self.now)
 }

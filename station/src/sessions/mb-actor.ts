@@ -51,6 +51,8 @@ export type ProgramShell = {
   readonly runtime: RuntimeKind;
   asked(f: string, args: Json[]): Promise<Json>;
   told(f: string, args: Json[]): void;
+  /// Its waits' clock (`after` said `on` it), where it is not the hub's: a part of the station's on a clock of its own.
+  readonly clock?: Clock.Clock;
 };
 
 /// The program, one a hub (`ActorsProgram.open`).
@@ -194,13 +196,15 @@ export class ActorsProgram {
     }
     if (typeof said?.after === "number") {
       const id = said.after;
-      // timer: a wait of an actor's (its wait, a refill), on the hub's clock
+      const on = typeof said.on === "string" ? this.#actors.get(said.on) : undefined;
+      const clock = on !== undefined && !(on instanceof MbActor) && on.clock !== undefined ? on.clock : this.#clock;
+      // timer: a wait of an actor's (its wait, a refill), on the hub's clock (or its shell's own)
       const fiber = Effect.runFork(Effect.sleep(said.ms).pipe(
         Effect.andThen(Effect.sync(() => {
           this.#timers.delete(id);
           this.post({ due: id });
         })),
-        Effect.provideService(Clock.Clock, this.#clock),
+        Effect.provideService(Clock.Clock, clock),
       ));
       this.#timers.set(id, fiber);
       return;

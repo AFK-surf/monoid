@@ -164,10 +164,15 @@ async fn[X] Actors::in_turn(self : Actors, path : String, work : async () -> X r
   let before = self.remote.writing.get(path)
   let mine : @effect.Deferred[Unit] = @effect.Deferred::new()
   self.remote.writing[path] = mine
+  // (Node told of it first, so that what waits there on the record's write, told after this, waits for it too)
+  self.next += 1
+  let id = jnum(self.next.to_double())
+  self.tell(remote_key, "writing", [jstr(path), id])
   if before is Some(b) {
     b.wait() catch { _ => () }
   }
   defer {
+    self.tell(remote_key, "wrote", [jstr(path), id])
     ignore(mine.succeed(()))
     if self.remote.writing.get(path) is Some(now) && physical_equal(now, mine) {
       self.remote.writing.remove(path)
@@ -209,6 +214,22 @@ async fn Actors::write_json(self : Actors, path : String, value : Json) -> Unit 
     self.remote.used[path] = @json.parse(json) catch { _ => Json::null() }
   }
   self.in_turn(path, () => self.write_whole(path, json))
+}
+
+///|
+/// `session` told `message`, then `value` written as the record at `path`, in one turn of the record's: Node hears
+/// of the write (`writing`) before the session is told, so what the telling wakes there waits for it (remote.ts
+/// `written`). A telling that fails raises, nothing written; a write that fails after it is let go, as before.
+async fn Actors::told_then_written(self : Actors, path : String, session : String, message : String, value : Json) -> Unit raise {
+  let json = js_text(value)
+  self.in_turn(path, () => {
+    ignore(self.rnode("notify", [jstr(session), jstr(message)]))
+    self.remote.writes[path] = self.remote.writes.get(path).unwrap_or(0) + 1
+    if self.remote.used.contains(path) {
+      self.remote.used[path] = @json.parse(json) catch { _ => Json::null() }
+    }
+    self.write_whole(path, json) catch { _ => () }
+  })
 }
 
 ///|

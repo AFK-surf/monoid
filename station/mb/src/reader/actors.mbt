@@ -187,11 +187,15 @@ fn Actors::tell(self : Actors, key : String, f : String, args : Array[Json]) -> 
 
 ///|
 /// A wait of Node's clock (`after`): `then` once its time comes; the function given back lets it go.
-fn Actors::after(self : Actors, ms : Double, then : () -> Unit) -> () -> Unit {
+fn Actors::after(self : Actors, ms : Double, then : () -> Unit, on? : String) -> () -> Unit {
   self.next += 1
   let id = self.next
   self.timers[id] = then
-  self.say_node({ "after": Json::number(id.to_double()), "ms": Json::number(if ms < 0.0 { 0.0 } else { ms }) })
+  let said : Map[String, Json] = { "after": Json::number(id.to_double()), "ms": Json::number(if ms < 0.0 { 0.0 } else { ms }) }
+  if on is Some(key) {
+    said["on"] = Json::string(key)
+  }
+  self.say_node(said)
   () => {
     if self.timers.contains(id) {
       self.timers.remove(id)

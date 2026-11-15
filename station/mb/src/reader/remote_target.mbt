@@ -48,6 +48,8 @@ async fn Actors::task(
     session_needed()
     let room = self.room(workspace, peer, session)
     self.written(rjoin([room, "session.json"]))
+    // (and what Node wrote of it: a room used by work() there)
+    ignore(self.rnode("written", [jstr(rjoin([room, "session.json"]))]))
     if !self.there(rjoin([room, "session.json"])) {
       return { "present": jbool(false) }
     }
@@ -63,7 +65,9 @@ async fn Actors::task(
     session_needed()
     let room = self.room(workspace, peer, session)
     self.written(rjoin([room, "session.json"]))
-    let mirrors = if self.there(rjoin([room, "session.json"])) { self.mirrors_of(workspace, peer, session, self.stored_now()) } else { [] }
+    // (and what Node wrote of it: a room used by work() there)
+    ignore(self.rnode("written", [jstr(rjoin([room, "session.json"]))]))
+    let mirrors = if self.there(rjoin([room, "session.json"])) { self.mirrors_of(workspace, peer, session, self.remote_now()) } else { [] }
     // Unlike the automatic sweep's age-based recovery, an explicit cleanup must not interrupt even a slow sync.
     let syncing_now : Map[String, Bool] = {}
     for m in mirrors {
@@ -429,7 +433,7 @@ async fn Actors::visit_files(self : Actors, cwd : String, rel : String, files : 
         "file" => files.push(Json::array([jstr(rel), st.value("size").unwrap_or(jnum(0.0))]))
         "dir" => {
           let names = self.readdir_names(rjoin([cwd, rel]))
-          names.sort()
+          names.sort_by(@search.compare_units) // (as JavaScript sorts them: MoonBit's compare puts the shorter first)
           let base = trim_slashes(rel)
           for name in names {
             self.visit_files(cwd, "\{base}/\{name}", files)
@@ -463,6 +467,11 @@ async fn Actors::said(self : Actors, id : String) -> Json raise {
 ///|
 /// What a task waiting in the queue is told of it: its place, what blocks it, and the measured machine's capacity.
 async fn Actors::queued(self : Actors, job_id : String, load : @effect.Deferred[Json]?) -> Map[String, Json] raise {
+  // (one not waiting is told at once, not behind the jobs' permit: a stop holds it while it signals)
+  let job = self.jstore("getJob", [jstr(job_id)])
+  if job is Null || str_of(job.value("state")) != Some("running") || !(job.value("queued") is Some(True)) {
+    return {}
+  }
   if self.locked(() => self.queue_of(job_id)) is Null {
     return {}
   }
@@ -656,7 +665,7 @@ async fn Actors::mirror_name(self : Actors, workspace : String, peer : String, s
 /// A task ran in or synced `mirror` now. Callers are in the session's lane.
 async fn Actors::used_mirror(self : Actors, workspace : String, peer : String, session : String, mirror : String) -> Unit raise {
   let record = rjoin([self.room(workspace, peer, session), "mirrors-used.json"])
-  let now = self.stored_now()
+  let now = self.remote_now()
   ignore(self.update_json(record, used => Some(with_field(used, mirror, jnum(now))), missing={}))
 }
 
