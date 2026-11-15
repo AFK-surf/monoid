@@ -271,7 +271,10 @@ yet and you can add one, add it.
   not only whether it is due). A made-up core that answers at once (an app's fixture, a replay's kept answers)
   answers through ui's `answered_from_outside`: what a computed's getter asked it is given once that getter is over
   (`@signals.after_computing`), never in it, where what it told ran what reads that computed and read it again half
-  made (`src/ui/answered_in_read_wbtest.mbt`).
+  made (`src/ui/answered_in_read_wbtest.mbt`). A core in the same process on a runtime of its own (its fibers turned
+  by its own loop, so it goes on while no frame is drawn) hands what it came to over to the frames through
+  `@ui.on_frame_take`, said by `@ui.wake_frame`: one frame asked for however often it is said, taken once as that
+  frame begins (`src/ui/frame_take_wbtest.mbt`), never through the host's post or a timer of its own.
 - What runs in the app never asks whether a Tester runs it: no `fake.val`, no switch only a Tester sets. What differs
   under a Tester is its fake host's answer (`impl Host for FakeHost`, a capability such as `rows_on_pixels`,
   `answers_by_frame`, answered as a device would unless the test says otherwise) or what the Tester does itself after a

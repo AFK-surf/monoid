@@ -114,6 +114,29 @@ pub fn Shell::pump(self : Shell, ms : Int64) -> Bool {
 }
 
 ///|
+/// One turn for a program whose own loop runs this thread (a window's), never waiting: takes every answer of the
+/// shell's that is in, fires what is due on the runtime's clock and runs what is ready, again until no answer came and
+/// nothing is ready. When the runtime's next timer is due (`next_timer`), for that loop to come back by then; none
+/// where none is set. An answer that comes later wakes that loop by what `bsh_on_wake` (shell.c) was given.
+pub fn Shell::turn(self : Shell) -> Int64? {
+  self.turn_taking(() => self.pump(0L))
+}
+
+///|
+/// `Shell::turn` with what takes the answers in (`take`: whether any came), a test's where no shell is linked.
+fn Shell::turn_taking(self : Shell, take : () -> Bool) -> Int64? {
+  ignore(take())
+  while true {
+    self.rt.tick()
+    // (what the turn asked the shell may be answered by now: taken in this turn too)
+    if !take() && self.rt.idle() {
+      break
+    }
+  }
+  self.rt.next_timer()
+}
+
+///|
 /// A clock that never goes back, in ms: what a runtime of the shell's programs goes by.
 pub fn now() -> Int64 {
   now_ffi()

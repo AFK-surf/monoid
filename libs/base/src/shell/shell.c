@@ -89,6 +89,20 @@ void bsh_attach(void *started, void (*woke)(void *), void *ctx) {
   pthread_mutex_unlock(&lock);
 }
 
+/// Who is told an answer was queued, for a program whose own loop takes them without waiting (a window's run loop:
+/// shell.mbt `Shell::turn`): `woke` (none: nobody) is called with `ctx` after each answer is queued, from
+/// whichever thread queued it, and once at once where answers wait already, so none queued before it
+/// goes untold. Whoever it is told must not call into MoonBit on that thread: only bring the program's own thread to
+/// its turn.
+void bsh_on_wake(void (*woke)(void *), void *ctx) {
+  pthread_mutex_lock(&lock);
+  on_wake = woke;
+  wake_ctx = ctx;
+  int has = first != NULL && woke != NULL;
+  pthread_mutex_unlock(&lock);
+  if (has) woke(ctx);
+}
+
 /// 1 where a shell is there to call (started here or shared), else 0.
 int32_t bsh_attached(void) {
   pthread_mutex_lock(&lock);

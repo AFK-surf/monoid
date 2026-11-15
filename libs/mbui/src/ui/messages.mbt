@@ -69,6 +69,65 @@ let between_frames : Ref[(() -> Unit)?] = Ref(None)
 let outside_due : Ref[(() -> Double)?] = Ref(None)
 
 ///|
+// kept across runs: as message_handlers, the app's code
+let frame_take : Ref[(() -> Unit)?] = Ref(None)
+
+///|
+/// What a frame takes as it begins once something said it has something for it (`wake_frame`): a core on a runtime of
+/// its own (its fibers turned by its own loop, not the frames) that changes its state many times between two frames
+/// hands it over here, all of it at once, so the frame after draws it in one change. Run as a message's handler is,
+/// outside the frame's reading and as one batch of signals, at the frame's start (an offscreen frame's none), before
+/// it is decided what the frame does. One a run: the last given.
+pub fn on_frame_take(take : () -> Unit) -> Unit {
+  frame_take.val = Some(take)
+}
+
+///|
+/// Whether the next frame takes (`on_frame_take`): said since a frame last took.
+let frame_woken : Ref[Bool] = Ref(false)
+
+///|
+/// Whether the host was asked for the frame that takes: once, however many say it before then.
+let frame_wake_asked : Ref[Bool] = Ref(false)
+
+///|
+/// The next frame is to take what `on_frame_take` hands over: that frame asked for of the host, once till it is drawn,
+/// however many times this is said before then, from any of the run's code (a fiber of a core's runtime, a handler,
+/// the take itself, which asks for the frame after). Said in an offscreen frame, which asks the host for nothing, the
+/// frame is asked for the next time it is said elsewhere, and taken by the next drawn all the same.
+pub fn wake_frame() -> Unit {
+  frame_woken.val = true
+  if frame_wake_asked.val || offscreen_frame() {
+    return
+  }
+  frame_wake_asked.val = true
+  // (only signals change by it: asked as the frames' watch asks, nothing come from outside said)
+  h_frame_owed()
+}
+
+///|
+/// As a frame begins (messages_arrive): what `on_frame_take` hands over, where it was said to be there. Cleared first,
+/// so a take that says it again asks for the frame after.
+fn frame_takes() -> Unit {
+  guard frame_woken.val else { return }
+  frame_woken.val = false
+  frame_wake_asked.val = false
+  guard frame_take.val is Some(take) else { return }
+  view_event(
+    fn() {
+      let was = @signals.set_active_sub(None)
+      let owner = @signals.set_owner(None)
+      @signals.start_batch()
+      take()
+      @signals.end_batch()
+      @signals.set_active_sub(was) |> ignore
+      @signals.set_owner(owner) |> ignore
+    },
+    what="messages",
+  )
+}
+
+///|
 fn messages_reset() -> Unit {
   fake_posted.clear()
   messages_in.clear()
@@ -78,6 +137,8 @@ fn messages_reset() -> Unit {
   tape.val = None
   between_frames.val = None
   outside_due.val = None
+  frame_woken.val = false
+  frame_wake_asked.val = false
   system_bars_now.set({ top: 0.0, bottom: 0.0, left: 0.0, right: 0.0 })
   system_size_class_now.val = None
   system_fold_now.set({ hinge: NoHinge, divisions: [] })
@@ -142,6 +203,8 @@ fn messages_arrive() -> Unit {
     }
   }
   messages_take(came)
+  // (and what a core of its own runtime hands over, said to be there since the last: wake_frame)
+  frame_takes()
   if messages_in.length() > 0 {
     outside_counted()
   }

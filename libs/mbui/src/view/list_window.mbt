@@ -1884,6 +1884,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   let slots_cover = fn(all : Places[K], need : Array[K], top : Double, vh : Double) {
     let n = all.length()
     if n == 0 {
+      slots_found.val = None
       if slot_keys.untracked().length() > 0 {
         slot_keys.set([])
       }
@@ -2163,7 +2164,8 @@ pub fn[K : Hash + Eq] View::scrolls_window(
       let all = places(laid.untracked())
       let stale = match slots_found.val {
         Some((col, at, _)) => !physical_equal(col, all.col) || at != all.col.refills
-        None => slot_keys.untracked().length() > 0
+        // (none found: slots there for no keys, or keys there with no slots, the first come to a list that had none)
+        None => slot_keys.untracked().length() > 0 || all.length() > 0
       }
       if stale {
         let top = foot_top(all, vh)
