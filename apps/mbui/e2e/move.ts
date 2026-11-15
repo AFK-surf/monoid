@@ -1948,10 +1948,12 @@ try {
     const unreached = /连不上|没有应答|unreachable|out of reach|not reached|timed out|connection lost|answered nothing|did not answer|does not answer/i;
     /// Station `asker` (an address) asking station `other` (an id) once a second until `stop`.
     /// The end of station `n`'s turn asked at `since` (its move/last.json once move/turn.json is gone).
+    // (on its directory's file events and every second besides, as turnEnds: part 7 of 57db57fe3's run saw both
+    // stations' turns of one moment only at its 35 s deadline, no file event told for them)
     const turnEndOn = (n: Name, since: number, ms: number) => whenChanged([DATA[n]], () => {
       const l = lastOn(n, ws);
       return l !== null && l.at >= since && !existsSync(`${DATA[n]}/move/turn.json`) && l;
-    }, ms, () => `${n}'s turn asked at ${since} not ended`);
+    }, ms, () => `${n}'s turn asked at ${since} not ended`, 1000);
     /// Station `askerN` asking station `otherN` once a second until `stop`: each ask its POST and, where it was taken,
     /// the turn it began (its plan asks the other too), to its end, so that no ask overlaps the one before (drill 12's
     /// asks after the first were all "a move is under way here", answered by B alone).
@@ -1969,9 +1971,11 @@ try {
           const t = Date.now();
           begun = t;
           told();
+          // (how long an ask took is the station's own: its turn's end as it wrote it, `last.at`, where it began one)
+          let end = 0;
           let said = (await within(a.call("move.back", { station: asker, from: other, module: "chats", item: "chat:c-drill-not-there" }).then(() => "202", (e) => String(e).replace(/^Error: [A-Z]+ move\.back: /, "").slice(0, 200)), 35_000)) ?? "no answer in 35 s";
-          if (said === "202") said = await turnEndOn(askerN, t, 35_000).then((l) => `202, its turn: ${outcome(l)}`, () => "202, its turn not ended in 35 s");
-          asks.push({ at: t, ms: Date.now() - t, said, reached: !unreached.test(said) && !/no answer|not ended|under way|进行|没有应答/.test(said) });
+          if (said === "202") said = await turnEndOn(askerN, t, 35_000).then((l) => ((end = typeof l?.at === "number" ? l.at : 0), `202, its turn: ${outcome(l)}`), () => "202, its turn not ended in 35 s");
+          asks.push({ at: t, ms: (end || Date.now()) - t, said, reached: !unreached.test(said) && !/no answer|not ended|under way|进行|没有应答/.test(said) });
           told();
           const wait = 1000 - (Date.now() - t);
           if (wait > 0) await new Promise((r) => setTimeout(r, wait));
@@ -2052,9 +2056,9 @@ try {
       await b.stop();
       judge(b.asks, t0, t0, null);
     });
-    /// B asking A across A's whole station stopped and started again: held down until B has `held` of it (an ask begun
-    /// in the stop: one answered as A is back; or that ask answered while A is still down: what one gets), the asks, and
-    /// when A was ready.
+    /// B asking A across A's whole station stopped and started again: held down until alice's device sees it down and B
+    /// has `held` of it (an ask begun in the stop: one answered as A is back; or that ask answered while A is still down:
+    /// what one gets), the asks, and when A was ready.
     const acrossStop = async (held: "begun" | "answered") => {
       const t0 = Date.now();
       const b = asking("B", "A");
@@ -2064,7 +2068,9 @@ try {
       try {
         stationDo("halt", "station");
         downAt = Date.now();
-        log(`  A stopped (launcher, front and Node), till an ask of B's begun in the stop is ${held}`);
+        log(`  A stopped (launcher, front and Node), till alice's device sees it down and an ask of B's begun in the stop is ${held}`);
+        await a.stationState(ws, (s) => s.state !== "online", 120_000, aId);
+        log("  alice's device sees A down");
         await (held === "begun" ? b.begunFrom(downAt) : b.answeredFrom(downAt, 300_000));
       } finally {
         stationDo("again", "station");
@@ -2077,7 +2083,7 @@ try {
     };
     // (the lead, 2026-11-14: an ask held while A is down and answered once it is back is answered, not failed; what is
     // held is that each is answered or refused in words, none by a timeout, by 5 s after A is ready)
-    await check("7b: A's whole station stopped while B asks it, started again once an ask of B's is held in the stop: every ask answered or refused in words, none timed out, each by 5 s after A is ready", async () => {
+    await check("7b: A's whole station stopped while B asks it, started again once alice's device sees it down and an ask of B's is held in the stop: every ask answered or refused in words, none timed out, each by 5 s after A is ready", async () => {
       const { asks, upAt } = await acrossStop("begun");
       // (a station that did not answer, in its words in either language: station.move.noAnswer and .gone, 「…没有应答…」)
       const timedOut = asks.filter((x) => /timed out|no answer in|not ended|answered nothing|没有应答|did not answer|does not answer/.test(x.said));
