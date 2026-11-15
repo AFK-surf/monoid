@@ -364,11 +364,14 @@ pub(all) struct Work {
   mut inputs_walked : Int
   /// entries of the drawing order put in it again as a run of it is made again, kept or worked out (Tree::order_from)
   mut order_copied : Int
-  /// layout passes run (Tree::laid_out, each that had something due), and of them those run again inside one for what
-  /// it told as it ended, by what told it (`again_names`' order): for a hang's report to say whether a pass is done
-  /// over and over and for what
+  /// layout passes run (Tree::laid_out, each that laid out or placed something), and of them those run again inside
+  /// one for what it told as it ended, by what told it (`again_names`' order): for a hang's report to say whether a pass
+  /// is done over and over and for what
   mut passes : Int
   again : FixedArray[Int]
+  /// the tree's bindings run (Tree::queued's, each read again as it is due or pulled, and the first as it is made):
+  /// what a hang's frame calls its tree bindings, counted (a change no binding of what shows reads runs none)
+  mut bindings_run : Int
 }
 
 ///|
@@ -824,6 +827,28 @@ pub struct Tree {
   /// how deep the passes given to the bindings a layout told are, one inside another (Tree::laid_out: at most
   /// `told_passes_most`)
   mut told_passes : Int
+  /// where the tree keeps sources (a Tester's): each layout pass since the log was last taken, what ran it again inside
+  /// another (`again_names`' index; -1 none: a pass of its own), the node whose layout was first marked for it and the
+  /// node whose binding was first due in it (-1: none), for what says a frame's passes by their causes (passes.mbt)
+  pass_log : Array[PassSaid]
+  /// what the next pass is run again inside another for (`again_names`' index, -1 none), and the node whose layout was
+  /// first marked since the last pass (-1 none): kept only where the tree keeps sources
+  mut pass_again : Int
+  mut layout_first : Int
+  /// what laid it out outside any pass (`pass_vias`' index: a frame, an input brought to its moment, where things are
+  /// as of now, settled after a change, what is under the pointer): kept only where the tree keeps sources
+  mut pass_via : Int
+  /// the passes run in the events taken whole since they were last asked (Tree::event_said's, outside any other), all
+  /// of them and the most one of them ran (Tree::event_passes_taken)
+  mut event_passes : Int
+  mut event_passes_most : Int
+  /// how deep in events taken whole it is (Tree::event_said's, outside any other), and, where the tree keeps sources,
+  /// the passes run outside them by the moment each was laid out as of, since they were last asked
+  /// (Tree::moment_passes_taken)
+  mut in_events : Int
+  /// what the changes of the moment its logic is at owe of what is under the pointer, owed (Tree::withins_settled)
+  mut withins_owed : Bool
+  moment_passes : Array[(Double, Int)]
   /// how many runs through `bindings_due` are under way (Tree::laid_out, Tree::measured_now): while one is, a room's
   /// layout come of a binding it ran leaves the queue as it stands (Tree::room_bindings_run)
   mut draining : Int
@@ -1372,6 +1397,15 @@ pub fn Tree::new(
     places_due: [],
     bindings_due: [],
     told_passes: 0,
+    pass_log: [],
+    pass_again: -1,
+    layout_first: -1,
+    pass_via: -1,
+    event_passes: 0,
+    event_passes_most: 0,
+    in_events: 0,
+    withins_owed: false,
+    moment_passes: [],
     draining: 0,
     bindings: 0,
     pulls_marked: [],
@@ -1604,6 +1638,7 @@ pub fn Tree::new(
       order_copied: 0,
       passes: 0,
       again: FixedArray::make(8, 0),
+      bindings_run: 0,
     },
   }
   // (the clock held while it is read, as a core's topic is: what reads it at rest (put by, View::park; rested in place,
@@ -2314,9 +2349,17 @@ pub fn Tree::cycle_read(self : Tree) -> Bool {
 ///|
 /// The clock set to `ms` (a frame's time).
 pub fn Tree::at(self : Tree, ms : Double) -> Unit {
+  // (what the changes of the moment it was at owe, settled as of it before the clock goes on: Tree::withins_owed_now)
+  if ms > self.clock.untracked() && !self.advancing && self.committing == 0 {
+    self.withins_owed_now()
+  }
   self.frame_ms = ms
   self.clock_to(ms)
   self.beat_set(ms)
+  // (and what the clock set so told left owed, settled as the host's setting it ends, as an event's is)
+  if !self.advancing && self.committing == 0 {
+    self.withins_owed_now()
+  }
 }
 
 ///|
@@ -2599,6 +2642,9 @@ fn Tree::layout_marked_at(self : Tree, at : Int, within? : Bool = false) -> Unit
   if self.rooming >= 0 {
     self.room_marked_at(at)
     return
+  }
+  if self.sources && !self.layout_due && self.layout_first < 0 {
+    self.layout_first = at
   }
   self.layout_due = true
   // (what was laid out to be read no more where it stands)
@@ -3207,6 +3253,7 @@ fn[T] Tree::queued(self : Tree, read : () -> T, then : (T) -> Unit, at? : Int = 
     if !b.live || w.resting() {
       return
     }
+    self.work.bindings_run += 1
     let reading_was = self.binding_reading
     self.binding_reading = at
     let v = w.read(read)
@@ -3440,7 +3487,8 @@ fn Tree::at_cause(self : Tree, f : () -> Bool) -> Unit {
   self.change_ended()
   if was < 0.0 {
     self.pairs_after(at)
-    self.hand_now()
+    // (what a still pointer is over, owed as of this moment with what else the changes of it owe: worked out once,
+    // before anything of another moment, an event or a frame, Tree::withins_owed_now)
     self.sights_now()
   }
   if changed {
@@ -5991,20 +6039,27 @@ fn Tree::modals_marked(self : Tree) -> Unit {
 
 ///|
 /// A change committed whole (the outermost Tree::at_cause or event ending, its moment still the cause's): what a modal
-/// layer said in it told now.
-fn Tree::modals_settled(self : Tree) -> Unit {
+/// layer said in it told now; and where things are under the pointer, unless another change of the same moment comes
+/// next (`withins` false: Tree::advance_loop), settled once that one is.
+fn Tree::modals_settled(self : Tree, withins? : Bool = true) -> Unit {
   if self.committing == 0 && self.modals_due {
     self.modals_due = false
     self.modals_now()
   }
-  self.withins_settled()
+  if withins {
+    self.withins_settled()
+  }
 }
 
 ///|
 /// A change committed whole (outside any other being committed): where what is under the pointer is read
-/// (View::pointer_within) and the change laid out or placed anything again, laid out now as of the change's moment
+/// (View::pointer_within) and the change laid out or placed anything again, laid out as of the change's moment
 /// (Tree::laid_now: what it told pulled in, laid out, placed; what is under the pointer told then, laid_out's), so what
-/// reads it has it as the change left it, no frame waited for. Nothing laid out where nothing reads it.
+/// reads it next has it as the change left it, no frame waited for. Nothing laid out where nothing reads it. In an
+/// event or a moment of the timeline at once; a change of its own outside them (a core's answer, a signal set) owes it
+/// (`withins_owed`), and the changes of one moment so told are settled once, as of that moment, before anything of
+/// another moment, an event or a frame comes (Tree::withins_owed_now): told one by one at one moment they are not laid
+/// out one by one, and no rate of frames moves the moment they are settled at.
 fn Tree::withins_settled(self : Tree) -> Unit {
   // A clock reaction can commit another structure while an immediate layout is standing. That layout will finish
   // the work; entering it again here can alternate the drawn clock and exhaust the stack.
@@ -6013,8 +6068,11 @@ fn Tree::withins_settled(self : Tree) -> Unit {
     !self.withins_passing &&
     (!self.withins_at.is_empty() || !self.bar_cols.is_empty()) &&
     (self.layout_due || !self.places_due.is_empty() || !self.bindings_due.is_empty() || !self.pulls_marked.is_empty()) {
-    self.laid_now()
-    self.withins_restored()
+    if self.in_events == 0 && !self.advancing {
+      self.withins_owed = true
+    } else {
+      self.withins_laid()
+    }
   }
   // (what takes input changed with nothing else to lay out: which column's bar the pointer is along told now, at the
   // change's end)
@@ -6023,6 +6081,36 @@ fn Tree::withins_settled(self : Tree) -> Unit {
     self.bars_near_told() |> ignore
     self.withins_passing = false
   }
+}
+
+///|
+/// Laid out as of the change's moment for what is under the pointer (Tree::withins_settled), and finished at the clock
+/// put back where that laid out or placed anything (nothing so, nothing under the pointer moved: what putting the
+/// clock back told is the next frame's).
+fn Tree::withins_laid(self : Tree) -> Unit {
+  if self.laid_now(via=if self.advancing { 6 } else { 5 }) {
+    self.withins_restored()
+  }
+}
+
+///|
+/// What the changes of the moment the tree's logic is at owe of what is under the pointer (Tree::withins_settled) and of
+/// what a still pointer is over (Tree::hand_now), settled now, as of that moment: before anything of another moment, an
+/// event or a frame.
+fn Tree::withins_owed_now(self : Tree) -> Unit {
+  guard self.withins_owed else {
+    self.hand_now()
+    return
+  }
+  self.withins_owed = false
+  if self.committing == 0 &&
+    !self.standing &&
+    !self.withins_passing &&
+    (!self.withins_at.is_empty() || !self.bar_cols.is_empty()) &&
+    (self.layout_due || !self.places_due.is_empty() || !self.bindings_due.is_empty() || !self.pulls_marked.is_empty()) {
+    self.withins_laid()
+  }
+  self.hand_now()
 }
 
 ///|
@@ -6038,6 +6126,7 @@ fn Tree::withins_restored(self : Tree) -> Unit {
     self.standing = true
     @signals.untracked(fn() {
       self.pull()
+      self.pass_via = 4
       self.laid_out(self.clock.get())
     })
     self.standing = was_standing
@@ -6602,7 +6691,7 @@ pub fn Tree::wheel_at(
   wheel_last.took_at = -1
   self.event(t, fn() {
     // (where things are as of then, what the change under way set before it counted: Tree::asked_at's)
-    self.laid_now()
+    self.laid_now(via=7) |> ignore
     let found : Ref[NodeId?] = Ref(None)
     let now = self.logic_said()
     self.each_drawn_scaled(fn(c, cx, cy, _, s) {
@@ -6777,7 +6866,7 @@ fn Tree::asked_at(
   let asked = Ref(false)
   self.event(t, fn() {
     // (where things are as of then, what the change under way set before it counted)
-    self.laid_now()
+    self.laid_now(via=8) |> ignore
     let found : Ref[NodeId?] = Ref(None)
     let now = self.logic_said()
     self.each_drawn_scaled(fn(c, cx, cy, _, s) {
@@ -7189,10 +7278,11 @@ pub fn Tree::hold_lost_in(self : Tree, at : Int) -> Unit {
 /// Laid out as of the logic's moment (Tree::logic_at), what the change under way set so far pulled into its properties (as a
 /// computed read in a batch is: nothing told, no structure or effect run before the change ends), the clock put back
 /// where it was drawn at: for where things are as an event finds them (View::laid_size, Tree::drag_at).
-fn Tree::laid_now(self : Tree) -> Unit {
+fn Tree::laid_now(self : Tree, via? : Int = 2) -> Bool {
   if self.last_w <= 0.0 {
-    return
+    return false
   }
+  let passes_was = self.work.passes
   let at = self.logic_said()
   let shown = self.clock.untracked()
   // (its clock set to the moment and back: what that tells is no change of its own to settle after)
@@ -7202,6 +7292,7 @@ fn Tree::laid_now(self : Tree) -> Unit {
     self.clock_to(at)
     self.beat.set(at)
     self.pull()
+    self.pass_via = via
     self.laid_out(at)
   })
   if shown != at {
@@ -7211,6 +7302,7 @@ fn Tree::laid_now(self : Tree) -> Unit {
     })
   }
   self.standing = was_standing
+  self.work.passes > passes_was
 }
 
 ///|
@@ -7237,7 +7329,7 @@ pub fn Tree::drag_at(
   let took = Ref(false)
   self.event(t, fn() {
     // (where things are as of then, what the change under way set before it counted: an event inside another too)
-    self.laid_now()
+    self.laid_now(via=9) |> ignore
     let holding = match self.held {
       Some(h) => h == id
       None => false
@@ -9969,6 +10061,10 @@ pub fn Tree::event_said(self : Tree, at : Double, said : () -> Unit, f : () -> U
     @signals.end_batch()
     return
   }
+  let passes_was = self.work.passes
+  self.in_events += 1
+  // (what the changes before it at its moment owe, settled before it finds anything)
+  self.withins_owed_now()
   self.settle(at)
   let was = self.cause_at
   self.cause_at = at
@@ -10012,6 +10108,12 @@ pub fn Tree::event_said(self : Tree, at : Double, said : () -> Unit, f : () -> U
     }
     self.sights_now()
   }
+  // (and what a change told in it as it was laid out left owed, as it ends: what follows finds it settled)
+  self.withins_owed_now()
+  self.in_events -= 1
+  if was < 0.0 {
+    self.event_passes_counted(self.work.passes - passes_was)
+  }
 }
 
 ///|
@@ -10033,8 +10135,9 @@ fn Tree::settle_after_change(self : Tree, at : Double) -> Unit {
   self.settle_asked = true
   @signals.after_flush(fn() {
     self.settle_asked = false
-    // (inside an event or a moment's change: done as that one ends, Tree::event_said, Tree::advance_loop)
-    if self.committing > 0 || self.cause_at >= 0.0 || self.standing {
+    // (inside an event or a moment's change: done as that one ends, Tree::event_said, Tree::advance_loop; told as a
+    // frame or an input's bringing lays the tree out: that pass lays out and places what it told, Tree::brought)
+    if self.committing > 0 || self.cause_at >= 0.0 || self.standing || self.laying {
       return
     }
     self.settle_now(self.settle_at)
@@ -10053,11 +10156,13 @@ fn Tree::settle_now(self : Tree, at : Double) -> Unit {
   }
   self.standing = true
   self.work.settles = self.work.settles + 1
+  let passes_was = self.work.passes
   let shown = self.clock.untracked()
   @signals.untracked(fn() {
     self.clock_to(at)
     self.beat.set(at)
     self.pull()
+    self.pass_via = 3
     self.laid_out(at)
   })
   if shown != at {
@@ -10067,7 +10172,9 @@ fn Tree::settle_now(self : Tree, at : Double) -> Unit {
     })
   }
   self.standing = false
-  self.withins_restored()
+  if self.work.passes > passes_was {
+    self.withins_restored()
+  }
   // (what the bindings it ran asked for, a change told outside every event so ending: Tree::change_ended)
   self.change_ended()
 }
@@ -10209,6 +10316,10 @@ pub fn Tree::advance(self : Tree, upto : Double) -> Unit {
 /// What was due before a new change, committed before that change reads or writes anything. The drawing clock is
 /// told separately so a structure can tell it together with its own change (Tree::at_cause).
 fn Tree::advance_logic(self : Tree, upto : Double) -> Unit {
+  // (what the changes of the moment it was at owe, settled as of it before anything of a later one)
+  if upto > self.logic && !self.advancing {
+    self.withins_owed_now()
+  }
   // (one thing due at a time, all it does committed before the next is chosen: asked again while one is being done (a
   // structure it changed committing), the loop doing it goes on from where it is once that one is done)
   if self.advancing {
@@ -10233,6 +10344,9 @@ fn Tree::advance_clock(self : Tree, upto : Double) -> Unit {
 
 ///|
 fn Tree::advance_loop(self : Tree, upto : Double) -> Unit {
+  // (a moment whose last change was to be settled with the next of it, that next gone before it came due: settled as
+  // the loop ends)
+  let mut owed = -1.0
   while true {
     let mut next = -1
     let mut next_at = 0.0
@@ -10259,6 +10373,12 @@ fn Tree::advance_loop(self : Tree, upto : Double) -> Unit {
       i = i + 1
     }
     if next < 0 {
+      if owed >= 0.0 {
+        self.withins_settled()
+        self.settle_now(owed)
+        self.hand_now()
+        self.sights_now()
+      }
       return
     }
     let d = self.timeline[next]
@@ -10305,19 +10425,35 @@ fn Tree::advance_loop(self : Tree, upto : Double) -> Unit {
       }
     }
     self.committing -= 1
-    self.modals_settled()
+    // (another due at this same moment: where things stand under the pointer and once all of it is told worked out
+    // once, after the last of them, as of the moment: nothing can come between two changes of one moment to read where
+    // things stood after the first)
+    let same_next = was < 0.0 && self.due_at_too(next_at)
+    owed = if same_next { next_at } else { -1.0 }
+    self.modals_settled(withins=!same_next)
     if was < 0.0 {
       self.pairs_now()
     }
     self.cause_at = was
     self.change_ended()
     // (where things stand once it is told whole, as of its moment, for the next change: Tree::settle_after_change)
-    if was < 0.0 {
+    if was < 0.0 && !same_next {
       self.settle_now(next_at)
       self.hand_now()
       self.sights_now()
     }
   }
+}
+
+///|
+/// Whether something on the timeline is due at `at` itself (Tree::advance_loop: another change of that same moment).
+fn Tree::due_at_too(self : Tree, at : Double) -> Bool {
+  for d in self.timeline {
+    if self.due_at(d) == at {
+      return true
+    }
+  }
+  false
 }
 
 ///|
@@ -10446,7 +10582,7 @@ pub fn Tree::bring_to(self : Tree, at : Double) -> Unit {
   // finds things where they are then, nothing else told before the change ends)
   self.pull()
   if self.last_w >= 0.0 {
-    self.brought(at)
+    self.brought(at, via=1)
     // (what that layout told in turn (a page's list's fill telling its blocks' heights to what places them), in the
     // change's batch: pulled and laid out again here, as a frame's passes lay out what its layout tells (its bindings
     // run as told there, told_passes_most of them one inside another); else a press found things where they stood
@@ -10456,18 +10592,21 @@ pub fn Tree::bring_to(self : Tree, at : Double) -> Unit {
     while self.pulls_marked.length() > 0 && passes < told_passes_most {
       passes = passes + 1
       self.pull()
-      self.brought(at)
+      self.brought(at, via=1)
     }
   }
 }
 
 ///|
 /// What was marked done, at the clock's now (Tree::frame, Tree::bring_to).
-fn Tree::brought(self : Tree, upto : Double) -> Unit {
+fn Tree::brought(self : Tree, upto : Double, via? : Int = 0) -> Unit {
   // what is due by now done (and the logic at `upto`, nothing due or not: what is said next is of then)
   self.advance(upto)
   let laying_was = self.laying
   self.laying = true
+  self.pass_via = via
+  // (what the changes of this moment owed of what is under the pointer: this pass lays it out and tells it)
+  self.withins_owed = false
   self.laid_out(upto)
   self.laying = laying_was
   // (what was asked for in its layout, where it still stands: View::image_ask; in a change, as it is committed)
@@ -10500,7 +10639,8 @@ fn Tree::laid_out(self : Tree, upto : Double) -> Unit {
   if !self.due {
     return
   }
-  self.work.passes = self.work.passes + 1
+  // (what is first due in it, for a pass said by its causes: pass_logged)
+  let bound_first = if self.sources && !self.bindings_due.is_empty() { self.bindings_due[0].at } else { -1 }
   // the bindings whose reads changed since, each once, in the order they were told (what they make runs its own now,
   // what they set again marks what it marks)
   let t_bound = self.part_began()
@@ -10526,6 +10666,13 @@ fn Tree::laid_out(self : Tree, upto : Double) -> Unit {
   self.boxes_flushed()
   // (what goes beside another placed by it only where anything was laid out or placed again: View::beside)
   let placing = self.layout_due || !self.places_due.is_empty()
+  // (a pass is one that lays out or places something: one that only runs bindings or changes looks is none)
+  if placing {
+    self.work.passes = self.work.passes + 1
+    if self.sources {
+      self.pass_logged(upto, bound_first)
+    }
+  }
   if self.layout_due {
     // (what is laid out may come out another size: Tree::sizes_told)
     self.sizes_due = true
@@ -10619,7 +10766,7 @@ fn Tree::laid_out(self : Tree, upto : Double) -> Unit {
   if !self.bindings_due.is_empty() && self.told_passes < told_passes_most {
     self.told_passes = self.told_passes + 1
     self.due = true
-    self.work.again[0] += 1
+    self.again_said(0)
     self.laid_out(upto)
     self.told_passes = self.told_passes - 1
   }
@@ -10628,13 +10775,13 @@ fn Tree::laid_out(self : Tree, upto : Double) -> Unit {
   if self.outs_changed {
     self.outs_told()
     if self.due {
-      self.work.again[1] += 1
+      self.again_said(1)
       self.laid_out(upto)
     }
   }
   // (the sizes followed told once all of it is laid out, and what that tells laid out in this same pass)
   if self.sizes_due && self.sized.length() > 0 && self.sizes_told() && self.due {
-    self.work.again[2] += 1
+    self.again_said(2)
     self.laid_out(upto)
   }
   // (what waited on all of it laid out, told once now, whether any size it follows came out otherwise or not; what that
@@ -10646,7 +10793,7 @@ fn Tree::laid_out(self : Tree, upto : Double) -> Unit {
       @signals.untracked(f)
     }
     if self.due {
-      self.work.again[3] += 1
+      self.again_said(3)
       self.laid_out(upto)
     }
   }
@@ -10655,14 +10802,14 @@ fn Tree::laid_out(self : Tree, upto : Double) -> Unit {
   if self.shows_due.length() > 0 {
     self.shown_now()
     if self.due {
-      self.work.again[4] += 1
+      self.again_said(4)
       self.laid_out(upto)
     }
   }
   // (what the focus has kept in sight by the column it was brought into sight by, where that column's room came out
   // another: placed so it is, in this same pass)
   if self.focus_holds.length() > 0 && self.holds_now() && self.due {
-    self.work.again[5] += 1
+    self.again_said(5)
     self.laid_out(upto)
   }
   if ordered || self.changed.length() > 0 || self.composed.length() > 0 {
@@ -10674,7 +10821,7 @@ fn Tree::laid_out(self : Tree, upto : Double) -> Unit {
   if placing && !self.withins_passing {
     self.withins_passing = true
     while self.withins_told() && self.due {
-      self.work.again[6] += 1
+      self.again_said(6)
       self.laid_out(upto)
     }
     self.withins_passing = false
@@ -10683,7 +10830,7 @@ fn Tree::laid_out(self : Tree, upto : Double) -> Unit {
     // placed: an order, what bounds input, what takes it; in this same pass)
     self.withins_passing = true
     while self.bars_near_told() && self.due {
-      self.work.again[7] += 1
+      self.again_said(7)
       self.laid_out(upto)
     }
     self.withins_passing = false

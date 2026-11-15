@@ -70,7 +70,7 @@ pub fn View::shown_across(self : View, but? : View) -> (Double, Double)? {
   // (held by no node from the root (put by: View::park): nothing of it shows)
   guard self.alive() && self.tree.held_from_root(self.at) else { return None }
   // (laid out as of the moment it is read, what changed since the last frame with it: where an event finds things)
-  self.tree.laid_now()
+  self.tree.laid_now(via=11) |> ignore
   let (left, top, w0, h0) = self.rect()
   let right = left + w0
   let foot = top + h0
@@ -161,7 +161,7 @@ pub fn Tree::seen_bounds(self : Tree, id : NodeId) -> (Double, Double, Double, D
 /// Laid out as of the logic's moment, what the change under way set so far counted (Tree::laid_now): where an event
 /// finds things, for what reads where they are then (what words a press picks).
 pub fn Tree::laid_as_now(self : Tree) -> Unit {
-  self.laid_now()
+  self.laid_now(via=12) |> ignore
 }
 
 ///|

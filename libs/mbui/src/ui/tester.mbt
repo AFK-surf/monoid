@@ -605,6 +605,7 @@ pub fn Tester::new(
   // (each frame of the looks by the clock alone drawn whole after it as well, and the two compared: frame_watch.mbt)
   looks_check.val = true
   looks_made_at.val = loc.to_string()
+  passes_begin()
   focus_off_begun()
   // (the file each bar of its is held by: motion_runs)
   if motion_runs() {
@@ -1250,6 +1251,8 @@ fn Tester::frame_shown_first(self : Tester, now : Double, shown : Double) -> Uni
   on_frame(self.w, self.h, self.fake.scale, if shown > at { shown } else { at })
   // (a bench's measured frame ends here: what follows is the Tester's own checks of it, which a device runs not)
   bench_frame_ends()
+  // (how many times it laid the window's tree out, and each event since the frame before: tester_passes.mbt)
+  self.hold_passes()
   self.hold_a11y_whole()
   self.frames = self.frames + 1
   self.fake.drawn = true
@@ -1314,6 +1317,8 @@ fn Tester::frame_shown_first(self : Tester, now : Double, shown : Double) -> Uni
       }
     _ => ()
   }
+  // (what the Tester's own checks of it ran, none of the next frame's: tester_passes.mbt)
+  passes_counted_now()
 }
 
 ///|

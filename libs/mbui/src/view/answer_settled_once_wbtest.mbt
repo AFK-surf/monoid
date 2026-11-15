@@ -40,6 +40,8 @@ fn answer_laid(shows : Int) -> (Int, Int) {
   t.frame(300.0, 300.0, now=60.0) |> ignore
   let before = t.work().laid
   answering(fn() { answer.set(1) })
+  // (and what it owes of what is under the pointer, settled as the next thing of its moment comes: an event)
+  t.event(now.val, fn() {  })
   let laid = t.work().laid - before
   let nodes = t.nodes.length()
   t.dispose()
