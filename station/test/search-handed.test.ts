@@ -1,15 +1,28 @@
+// The station's search (the MoonBit program's, #6381: search/search.ts) leaves out the chats it handed to another
+// station: it reads a chat's workspace off its sessions' rows, which say `handed:<ws>` once it went (store `handOff`),
+// so no asker sees it, before and after the candidate scopes and the session list are prepared. The reference walk
+// (test/reference/search-sources.ts, what the program's answers are compared with) is held to the same.
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
+import { mbReaderBinary } from "../src/read/mb-reader.ts";
 import { historySessionSnapshot, makeStore } from "../src/read/store.ts";
-import { type Asker, pick } from "../src/search/match.ts";
+import { type Asker, type Hit, pick } from "../src/search/match.ts";
 import { SearchScopePreparation } from "../src/search/scope-prepare.ts";
-import { stationDocs } from "../src/search/sources.ts";
+import { Search } from "../src/search/search.ts";
 import { auditSessionListStep } from "../src/store/session-list-index.ts";
 import { Store } from "../src/store/store.ts";
+import { stationDocs } from "./reference/search-sources.ts";
 
-/// Two chats of workspace w and two of the home one, each with a job; one of each handed to station b.
+const binary = mbReaderBinary();
+
+/// Two chats of workspace w and two of the home one, each with a job; one of each handed to station b. In a file, for
+/// the program reads the station's database as the station keeps it.
 function station() {
-  const writer = Store.open(":memory:");
+  const data = mkdtempSync(join(tmpdir(), "search-handed-"));
+  const writer = Store.open(join(data, "stillfail.db"), join(data, "archive"));
   const job = writer.db.prepare(`INSERT INTO jobs(id,session_key,name,command,cwd,token,state,started_at,log)
     VALUES(?,?,'needle','run','/work',?,'exited',1,'')`);
   const threads: Record<string, number> = {};
@@ -22,38 +35,56 @@ function station() {
   }
   writer.handOff(["gone"], "b", "home", { gone: { thread: threads.gone!, there: 9 } });
   writer.handOff(["gone-home"], "b", "home", { "gone-home": { thread: threads["gone-home"]!, there: 10 } });
-  return { writer, threads };
+  return { data, writer, threads, close: () => { writer.close(); rmSync(data, { recursive: true, force: true }); } };
 }
 
-const found = (read: ReturnType<typeof makeStore>, asker: Asker, kind: string) =>
-  pick(stationDocs(read, ".", {}, new Set([kind]), asker), ["needle"], asker, { limit: 50 }).flatMap((g) => g.hits);
+const askers: Asker[] = [{ workspace: "w", home: false, scopes: [] }, { workspace: "w", home: true, scopes: [] }];
+const wanted = (asker: Asker) => asker.home ? ["kept", "kept-home"] : ["kept"];
 
-test("the station's search leaves out the chats it handed to another station: their chats, messages, jobs and histories", () => {
-  const { writer, threads } = station();
-  try {
-    const read = makeStore(writer.db, ".");
-    for (const prepared of [false, true]) {
-      if (prepared) {
-        const preparation = new SearchScopePreparation(writer.db);
-        let done = false;
-        for (let i = 0; i < 100 && !done; i++) done = preparation.step().done;
-        assert.ok(done);
-        for (let i = 0; i < 20 && !auditSessionListStep(writer.db, 64).done; i++);
-      }
-      for (const asker of [{ workspace: "w", home: false, scopes: [] }, { workspace: "w", home: true, scopes: [] }] satisfies Asker[]) {
-        const want = asker.home ? ["kept", "kept-home"] : ["kept"];
-        const chats = found(read, asker, "chat").map((h) => h.thread).sort();
-        assert.deepEqual(chats, want.map((k) => threads[k]).sort(), `chats, ${prepared ? "prepared" : "not prepared"}, home ${asker.home}`);
-        const jobs = found(read, asker, "job").map((h) => h.key).sort();
-        assert.deepEqual(jobs, want.map((k) => `j:job-${k}`).sort(), `jobs, home ${asker.home}`);
-        const histories = historySessionSnapshot(read, asker);
+/// The candidate scopes and the session list prepared, as the station's builders prepare them.
+function prepare(db: Store["db"]) {
+  const preparation = new SearchScopePreparation(db);
+  let done = false;
+  for (let i = 0; i < 100 && !done; i++) done = preparation.step().done;
+  assert.ok(done);
+  for (let i = 0; i < 20 && !auditSessionListStep(db, 64).done; i++);
+}
+
+/// What each asker finds of chats and jobs, by `find`, held to the chats kept.
+async function holds(find: (asker: Asker, kind: string) => Hit[] | Promise<Hit[]>, threads: Record<string, number>, said: string) {
+  for (const asker of askers) {
+    const want = wanted(asker);
+    const chats = (await find(asker, "chat")).map((h) => h.thread as number).sort();
+    assert.deepEqual(chats, want.map((k) => threads[k]!).sort(), `chats, ${said}, home ${asker.home}`);
+    const jobs = (await find(asker, "job")).map((h) => h.key).sort();
+    assert.deepEqual(jobs, want.map((k) => `j:job-${k}`).sort(), `jobs, ${said}, home ${asker.home}`);
+  }
+}
+
+test("the station's search leaves out the chats it handed to another station: their chats, messages, jobs and histories",
+  { skip: binary === null ? "the MoonBit program is not built here" : false }, async () => {
+    const f = station();
+    try {
+      const read = makeStore(f.writer.db, f.data);
+      for (const prepared of [false, true]) {
+        if (prepared) prepare(f.writer.db);
+        const said = prepared ? "prepared" : "not prepared";
+        // The program, started on the station's data as it is now (stopped with its builders before it is prepared here).
+        const program = new Search({ data: f.data });
+        program.start();
         try {
-          assert.deepEqual([...histories].map((s) => s.key).sort(), want.sort(), `histories, home ${asker.home}`);
-        } finally { histories.close(); }
+          await holds((asker, kind) => program.query("needle", asker, { kinds: [kind], limit: 50 }).then((found) => found.groups.flatMap((g) => g.hits)), f.threads, `the program, ${said}`);
+        } finally { await program.stop(); }
+        await holds((asker, kind) => pick(stationDocs(read, f.data, {}, new Set([kind]), asker), ["needle"], asker, { limit: 50 }).flatMap((g) => g.hits), f.threads, `the reference, ${said}`);
+        for (const asker of askers) {
+          const histories = historySessionSnapshot(read, asker);
+          try {
+            assert.deepEqual([...histories].map((s) => s.key).sort(), wanted(asker).sort(), `histories, ${said}, home ${asker.home}`);
+          } finally { histories.close(); }
+        }
       }
-    }
-  } finally { writer.close(); }
-});
+    } finally { f.close(); }
+  });
 
 test("a chat's row stops saying the station it came from as soon as it is handed on, wherever to", () => {
   const writer = Store.open(":memory:");
