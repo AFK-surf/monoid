@@ -1445,7 +1445,11 @@ test "a chat's list as nodes given the same entries again reads none of its rows
   // every message another: every row's
   let all = one.map(fn(e : Entry) -> Entry {
     match e {
-      Said(m) => Said({ ..m, text: m.text + "。" })
+      Said(m) => {
+        // (its Markdown made here, as the one changed above: nothing asked of the core)
+        let words = m.text + "。"
+        Said({ ..m, text: words, md: Some(body_md(words)) })
+      }
       e => e
     }
   })
