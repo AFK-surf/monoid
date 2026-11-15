@@ -4,8 +4,8 @@
 // canvas, src/ui/native.mbt), its bytes read through the core a part at a time (`station.file.part`); PDFs drawn by the
 // system page by page; HTML in a page of its own (a native web view: its scripts on, nothing of the app's reachable);
 // Markdown rendered; CSV as a table; code and text as they are. Anything else says it cannot be shown and offers the
-// download. One bar floats at the top with its name and tools and fades when left alone; a tap brings it back. Back (or
-// ×) closes it.
+// download. One bar floats at the top with its name and tools. Back (or ×) closes it; a picture closes as well by a
+// tap on it, a finger taking it down or a trackpad's two going down it (darksky, 2026-11-15).
 //
 // An image or a video flies from the chat's thumbnail and back into it; a video closed
 // so keeps the frame it was left at, which its thumbnail shows and where it goes on from when opened again
@@ -191,7 +191,8 @@ pub(all) struct Viewer {
   asked_told : @signals.Signal[Int]
   /// …or to be installed (an APK)
   mut install_after : Bool
-  /// the bars shown: till a tap (a click) hides them, and another brings them back (the user, 2026-10-28); told as it
+  /// the bars shown: till a tap (a click) hides them, and another brings them back (the user, 2026-10-28; a picture's
+  /// tap closes it instead, darksky 2026-11-15); told as it
   /// changes (`awake_told`: what shows the bars follows it)
   mut awake : Bool
   awake_told : @signals.Signal[Int]
@@ -240,6 +241,12 @@ pub(all) struct Viewer {
   at : String
   /// a finger moving it sideways to the one before or after (fitted, not zoomed)
   mut swiping : Bool
+  /// a finger (fitted) taking it down to close it (Zoom::pull), or a trackpad's two doing so (`wheel_pulling`, how far
+  /// across and down they have it: `pull_x`, `pull_y`)
+  mut pulling : Bool
+  mut wheel_pulling : Bool
+  mut pull_x : Double
+  mut pull_y : Double
   /// where the finger went down (in the window's terms; on the stage, `down_lx`, `down_ly`: the canvas's own)
   mut down_x : Double
   mut down_y : Double
@@ -301,6 +308,10 @@ pub(all) struct Viewer {
   fingers : Map[Int, (Double, Double)]
   speed : @ui.Velocity
   mut hold_off : () -> Unit
+  /// what calls off a tap's close waited for (a second tap zooms instead), and a trackpad's pull let go of (back, once
+  /// its wheel rests)
+  mut tap_off : () -> Unit
+  mut wheel_off : () -> Unit
   /// how far the picture is lifted over the keyboard while marking (its way said as the keyboard or what is written
   /// changes, at that moment: viewer_tree.mbt)
   lift : @motion.Way
@@ -1013,6 +1024,10 @@ pub fn new_viewer(
     steps,
     at,
     swiping: false,
+    pulling: false,
+    wheel_pulling: false,
+    pull_x: 0.0,
+    pull_y: 0.0,
     down_x: 0.0,
     down_y: 0.0,
     down_lx: 0.0,
@@ -1051,6 +1066,8 @@ pub fn new_viewer(
     fingers: Map([]),
     speed: @ui.Velocity::new(),
     hold_off: fn() {  },
+    tap_off: fn() {  },
+    wheel_off: fn() {  },
     lift: @motion.Way::new(0.0),
     beside,
     plays_now: !beside,

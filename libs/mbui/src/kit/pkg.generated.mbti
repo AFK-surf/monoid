@@ -352,6 +352,8 @@ pub fn visually_hidden(@ui.Ctx, String) -> Unit
 
 pub let zoom_fling_ms : Double
 
+pub let zoom_pull_least : Double
+
 // Errors
 
 // Types and methods
@@ -835,6 +837,8 @@ pub fn Zoom::min_scale(Self) -> Double
 pub fn Zoom::natural(Self, Double, Double, at~ : Double) -> Unit
 pub fn Zoom::new(margin? : (Double) -> Double, enlarge? : Bool, min_scale? : (Double) -> Double, max_scale? : (Double) -> Double, free? : Bool, fit_step? : Double) -> Self
 pub fn Zoom::pan(Self, Double, Double, at~ : Double) -> Unit
+pub fn Zoom::pull(Self, Double, Double, at~ : Double) -> Unit
+pub fn Zoom::pulled_at(Self, Double) -> Double
 pub fn Zoom::rect(Self, @ui.Ctx) -> (Double, Double, Double, Double)?
 pub fn Zoom::rect_at(Self, Double) -> (Double, Double, Double, Double)?
 pub fn Zoom::reset(Self, at~ : Double) -> Unit

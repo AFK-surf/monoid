@@ -122,6 +122,8 @@ fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
       vw.in_tree = false
     }
     (vw.hold_off)()
+    (vw.tap_off)()
+    (vw.wheel_off)()
     vw.fingers.clear()
   })
   |> ignore
@@ -244,11 +246,14 @@ fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
     .ground(By(fn() {
       vw.fly.said()
       vw.fade.said()
-      let t = g.drawn_while(fn(at) { vw.fly.goes_at(at) || vw.fade.goes_at(at) })
+      // (and a picture taken down: the page under it shows through as far as it is down, Zoom::pulled_at)
+      vw.zoom.told()
+      let t = g.drawn_while(fn(at) { vw.fly.goes_at(at) || vw.fade.goes_at(at) || vw.zoom.goes_at(at) })
       // (a flying film's under its player's fade too; a song or non-flying film fades ground-first via way_at so words
       // never draw seen over the page's words)
       let under = if vw.played() && vw.flies { vw.fade.value_at(t) } else { 1.0 }
-      @sf.alpha(vw.ground_ink(), vw.ground_share(vw.in_at(t)) * under)
+      let pulled = 1.0 - (vw.zoom.pulled_at(t) * pull_ground_rate).clamp(min=0.0, max=pull_ground_most)
+      @sf.alpha(vw.ground_ink(), vw.ground_share(vw.in_at(t)) * under * pulled)
     }))
     |> ignore
   })
@@ -296,8 +301,13 @@ fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
       .on_drag(fn(d) { vw.finger_on(canvas, src, d) }, fingers=2)
       // (the pointer's secondary button on the picture: its menu, as a finger held still on it opens it)
       .on_menu(fn(m) { vw.menu_on(m) })
-      // (a wheel over it, at its moment, where it is on the stage then)
-      .on_wheel(fn(w) { vw.wheeled(vw.zoom, w.x, w.y, w.dx, w.dy, w.mods, w.at) })
+      // (a wheel over it, at its moment, where it is on the stage then: a trackpad's two fingers taking it down, else
+      // what the wheel does to the picture)
+      .on_wheel(fn(w) {
+        if !vw.wheel_pull(canvas, w) {
+          vw.wheeled(vw.zoom, w.x, w.y, w.dx, w.dy, w.mods, w.at)
+        }
+      })
       |> ignore
       // (the moment what draws the picture reads the strip and the flight at, in `n`: viewer_flight_at)
       let strip_at = fn(n : @view.View) { viewer_flight_at(vw, n) }
@@ -720,6 +730,9 @@ fn Viewer::finger_on(self : Viewer, canvas : @view.View, src : Source, d : @view
     Down => {
       v.fingers[d.finger] = (x, y)
       if v.fingers.length() == 1 {
+        // (a tap's close waited for called off: this press is a second tap, or a drag)
+        (v.tap_off)()
+        v.tap_off = fn() {  }
         v.held = true
         v.down_x = x
         v.down_y = y
@@ -782,6 +795,8 @@ fn Viewer::finger_on(self : Viewer, canvas : @view.View, src : Source, d : @view
           v.swiping = false
           strip.go(0.0, @motion.sheet_spring, at~)
         }
+        // (a pull going on: the pinch takes the picture from where it has it, back to fitted if let go smaller)
+        v.pulling = false
         v.held = false
       }
     }
@@ -815,6 +830,10 @@ fn Viewer::finger_on(self : Viewer, canvas : @view.View, src : Source, d : @view
         // called off: nothing it would have come to (a mark being drawn dropped, one moved back)
         v.pinched = false
         marks_finger_off()
+        if v.pulling {
+          v.pulling = false
+          v.zoom.reset(at~)
+        }
         if v.swiping {
           strip.go(0.0, @motion.sheet_spring, at~)
         }
@@ -886,7 +905,17 @@ fn Viewer::one_finger_at(self : Viewer, d : @view.Drag, has_before : Bool, has_a
       // fitted, one finger sideways moves the strip, under the finger from where it went down; past the first or
       // the last a third as far
       let mut dx = dx
+      // (or, going down more than across, it takes the picture down with it, to close it: Viewer::image_let_go)
       if !v.swiping &&
+        !v.pulling &&
+        v.moved > tap_slop &&
+        y - v.down_y > (x - v.down_x).abs() &&
+        !v.pinched {
+        v.pulling = true
+      }
+      if v.pulling {
+        v.zoom.pull(x - v.down_x, y - v.down_y, at~)
+      } else if !v.swiping &&
         v.moved > tap_slop &&
         (x - v.down_x).abs() > (y - v.down_y).abs() &&
         (has_before || has_after) &&
@@ -900,7 +929,7 @@ fn Viewer::one_finger_at(self : Viewer, d : @view.Drag, has_before : Bool, has_a
         let next = s + dx
         let none = if next > 0.0 { !has_before } else { !has_after }
         strip.put(if none { s + dx / 3.0 } else { next })
-      } else if v.moved > tap_slop && (dx != 0.0 || dy != 0.0) {
+      } else if !v.pulling && v.moved > tap_slop && (dx != 0.0 || dy != 0.0) {
         z.pan(dx, dy, at~)
       }
     }
@@ -991,6 +1020,10 @@ fn Viewer::image_let_go(
   let zoomed = z.zoomed_at(at)
   let (vx, vy) = v.speed.get_at(at)
   let s = strip.value_at(at)
+  if v.pulling {
+    v.pull_let_go(c, d, vy)
+    return
+  }
   if v.held && (v.swiping || s != 0.0) && (!zoomed || s != 0.0) {
     // on to the one beside it (this press's way far enough, or flung that way), else back
     let width = z.bw + slide_gap
@@ -1027,12 +1060,96 @@ fn Viewer::image_let_go(
       canvas.twice_forgot()
       v.shut(c)
     } else if canvas.twice(d) {
-      v.toggle()
       z.double_tap(d.x, d.y, at~)
-    } else {
-      v.toggle()
+    } else if !marking.on {
+      // a tap closes it, once a second would have come (two zoom it: Viewer::finger_on's next press calls this off)
+      let due = at + canvas.twice_ms()
+      v.tap_off = canvas.at_moment(due, fn() {
+        v.tap_off = fn() {  }
+        v.shut_tree()
+      })
     }
   }
+}
+
+///|
+/// How far down a finger or a trackpad's two take a picture before it closes as they let it go (points), and how
+/// fast a finger flung down closes it from less (points a ms).
+let pull_shut : Double = 100.0
+
+///|
+let pull_fling : Double = 0.5
+
+///|
+/// A picture taken down (Viewer::pulling) let go (`d`, at its moment, as fast as `vy` down): closed from where it is,
+/// back into its thumbnail or fading, where it went far enough down or was flung down; else back to fitted.
+fn Viewer::pull_let_go(self : Viewer, c : @ui.Ctx, d : @view.Drag, vy : Double) -> Unit {
+  self.pulling = false
+  self.held = false
+  self.swiping = false
+  let down = d.wy - self.down_y
+  if down >= pull_shut || (vy >= pull_fling && down > tap_slop) {
+    self.shut(c)
+  } else {
+    self.zoom.reset(at=d.at)
+  }
+}
+
+///|
+/// A wheel over the canvas of viewer `vw` (node `canvas`) as a pull (a trackpad's two fingers going down a fitted
+/// picture, as a finger takes it down, the picture going with them): closed once they have it pull_shut down, back to
+/// fitted where they stop short (wheel_rest_ms with none come). Whether it was one: a mouse's wheel, one with a key held,
+/// one going up or across, or over a picture zoomed in is none (the wheel's, Viewer::wheeled).
+fn Viewer::wheel_pull(self : Viewer, canvas : @view.View, w : @view.Wheel) -> Bool {
+  let z = self.zoom
+  if self.closing {
+    // (closed by it: what of its way is left goes nowhere, not to the page under it)
+    return self.wheel_pulling
+  }
+  if !@sf.pointer_rests() || marking.on || z.nw <= 0.0 || w.mods != 0 || self.held {
+    return false
+  }
+  // (as the fingers go: a wheel's dy is the way the page goes under them, the other way)
+  let (dx, dy) = (-w.dx, -w.dy)
+  if !self.wheel_pulling {
+    if z.zoomed_at(w.at) || dy <= dx.abs() || notched(w.dx, w.dy) {
+      return false
+    }
+    self.wheel_pulling = true
+    self.pull_x = 0.0
+    self.pull_y = 0.0
+  }
+  self.pull_x = self.pull_x + dx
+  self.pull_y = self.pull_y + dy
+  (self.wheel_off)()
+  self.wheel_off = fn() {  }
+  if self.pull_y >= pull_shut {
+    self.shut_tree()
+    return true
+  }
+  z.pull(self.pull_x, self.pull_y, at=w.at)
+  let due = w.at + wheel_rest_ms
+  self.wheel_off = canvas.at_moment(due, fn() {
+    self.wheel_off = fn() {  }
+    self.wheel_pulling = false
+    if !self.closing {
+      z.reset(at=due)
+    }
+  })
+  true
+}
+
+///|
+/// How long a trackpad's pull waits with no wheel come before it is let go (its fingers off and its momentum spent:
+/// a browser says neither).
+pub let wheel_rest_ms : Double = 160.0
+
+///|
+/// Whether a wheel's (dx, dy) is a mouse's notch said in points (a browser's: 100 or 120 a notch, a multiple of them
+/// straight down), not a trackpad's way.
+fn notched(dx : Double, dy : Double) -> Bool {
+  let a = dy.abs()
+  dx == 0.0 && a >= 100.0 && (a % 100.0 == 0.0 || a % 120.0 == 0.0)
 }
 
 ///|
@@ -2355,3 +2472,11 @@ fn strip_step(dx : Double, vx : Double, bw : Double, from_edge : Bool) -> Int {
     0
   }
 }
+
+///|
+/// How much of a viewer's ground a picture taken down lets the page show through, by how far down it is (of the
+/// stage's height, Zoom::pulled_at), and the most it lets through.
+let pull_ground_rate : Double = 2.5
+
+///|
+let pull_ground_most : Double = 0.9

@@ -90,20 +90,27 @@ test "desk: Esc closes a chat's film as it flies in, before its player is up" {
 }
 
 ///|
-test "desk: a click on the image hides the bar, another brings it back; one round it closes the preview" {
+test "desk: a click on the image closes the preview once a second would have come, two zoom it; one round it closes it at once" {
   let t = desk_tester("chat-preview-image")
   let v = viewer.get().unwrap()
   // left alone, the bar stays
   t.run_for(left_alone_ms)
   assert_true(v.bars_shown())
-  // 600 × 400 in 1280 × 800, fitted 32 in: in the middle as it is
+  // 600 × 400 in 1280 × 800, fitted 32 in: in the middle as it is; two clicks zoom it, open still
+  t.tap(640.0, 400.0)
   t.tap(640.0, 400.0)
   t.run_for(@ui.double_click_ms)
   assert_true(viewer.get() is Some(_))
-  assert_true(!v.bars_shown())
-  t.tap(640.0, 400.0)
-  t.run_for(@ui.double_click_ms)
+  assert_true(v.zoom.zoomed_at(t.time()))
   assert_true(v.bars_shown())
+  // one click on it: closed once a second would have come, not before
+  t.tap(640.0, 400.0)
+  t.run_for(@ui.double_click_ms / 2.0)
+  assert_true(viewer.get() is Some(_))
+  t.run_for(@ui.double_click_ms)
+  assert_true(viewer.get() is None)
+  // opened again, a click round it closes it at once
+  let t = desk_tester("chat-preview-image")
   t.tap(150.0, 700.0)
   assert_true(viewer.get() is None)
 }
@@ -112,8 +119,9 @@ test "desk: a click on the image hides the bar, another brings it back; one roun
 test "desk: the bar hidden by a click shows while the pointer is along the top, where it is, and hides again past it" {
   let t = desk_tester("chat-preview-image")
   let v = viewer.get().unwrap()
-  t.tap(640.0, 400.0)
-  t.run_for(@ui.double_click_ms)
+  // (an image's click closes it: its bars hidden as a click on another kind hides them)
+  v.toggle()
+  t.draw()
   assert_true(!v.bars_shown())
   t.move_to(640.0, 20.0)
   t.draw()
@@ -213,4 +221,33 @@ test "desk: a drive's text over the whole window, back to its folder; 目录 doc
   assert_true(r.panel == @sf.ReaderPanel::NoPanel)
   t.key(@ui.key_escape)
   assert_false(app.nav.top() is DriveRead(_))
+}
+
+///|
+test "desk: a trackpad's two fingers going down a picture take it down; stopped short it goes back, far enough it closes; a mouse's wheel takes it nowhere" {
+  let t = desk_tester("chat-preview-image")
+  let v = viewer.get().unwrap()
+  // (the fingers going down: the wheel says the page under them goes up)
+  t.wheel(640.0, 400.0, -20.0)
+  t.run_for(@ui.input_step_ms)
+  t.wheel(640.0, 400.0, -20.0)
+  t.run_for(@ui.input_step_ms)
+  assert_true(v.zoom.pulled_at(t.time()) > 0.0, msg="taken down")
+  assert_true(viewer.get() is Some(_), msg="a short way: open")
+  t.run_for(@sfbase.wheel_rest_ms + @ui.move_most_ms)
+  assert_eq(v.zoom.pulled_at(t.time()), 0.0, msg="stopped short: back")
+  assert_true(viewer.get() is Some(_), msg="stopped short: open")
+  t.wheel(640.0, 400.0, -50.0)
+  t.run_for(@ui.input_step_ms)
+  t.wheel(640.0, 400.0, -50.0)
+  assert_true(viewer.get() is None, msg="far enough down: closed")
+  // (a mouse's notches, a browser's in points or the system's: nothing)
+  let t = desk_tester("chat-preview-image")
+  let v = viewer.get().unwrap()
+  t.wheel(640.0, 400.0, -100.0)
+  t.wheel_phase(640.0, 400.0, -40.0, 4)
+  t.draw()
+  assert_eq(v.zoom.pulled_at(t.time()), 0.0, msg="a mouse's wheel: not taken down")
+  t.run_for(@ui.move_most_ms)
+  assert_true(viewer.get() is Some(_), msg="a mouse's wheel: open")
 }

@@ -1985,6 +1985,8 @@ pub fn window_front(Page) -> Bool
 
 pub fn window_opens_for(Page) -> Bool
 
+pub let wheel_rest_ms : Double
+
 pub fn window_page(String) -> Page?
 
 pub fn window_text(Page) -> String?

@@ -4,7 +4,8 @@
 let preview_src : Ref[Source?] = Ref(None)
 
 ///|
-/// Long past any wait the viewer's bars ever had: left alone this long they are still there (only a tap hides them).
+/// Long past any wait the viewer's bars ever had: left alone this long they are still there (nothing hides them but a
+/// tap on a kind a tap does not close).
 let left_alone_ms : Double = 10000.0
 
 ///|
@@ -824,8 +825,9 @@ test "a swipe carries the picture under the finger from where it went down; a se
 ///|
 test "a step keeps the bars as they were: hidden by a tap, the next comes without them" {
   let t = preview_tester("step")
-  t.tap(195.0, 422.0)
-  t.run_for(@ui.double_tap_ms)
+  // (a tap on a picture closes it: its bars hidden as a tap on another kind hides them)
+  viewer.get().unwrap().toggle()
+  t.draw()
   assert_true(!viewer.get().unwrap().awake)
   t.drag(300.0, 422.0, 100.0, 422.0)
   assert_eq(viewer.get().unwrap().file.name, "第二版.png")
@@ -1298,4 +1300,63 @@ test "a picture said not to decode: why, its glyphs drawn in the theme's muted i
   assert_true(inks.length() > 0, msg="its glyphs drawn where it is: \{x} \{y} \{w} \{h}")
   let muted = @sf.theme().p.muted
   assert_true(inks.iter().all(fn(i) { i == muted }), msg="each in the theme's muted ink \{muted}: \{Repr(inks)}")
+}
+
+///|
+test "a tap on the picture closes the preview once a second tap would have come; two zoom it, open still" {
+  let t = preview_tester("image", platform=2)
+  t.tap(195.0, 422.0)
+  t.tap(195.0, 422.0)
+  t.run_for(@ui.double_tap_ms * 2.0)
+  assert_true(viewer.get() is Some(_), msg="two taps: open")
+  assert_true(viewer.get().unwrap().zoom.zoomed_at(t.time()), msg="two taps: zoomed in")
+  let t = preview_tester("image", platform=2)
+  t.tap(195.0, 422.0)
+  t.run_for(@ui.double_tap_ms / 2.0)
+  assert_true(viewer.get() is Some(_), msg="one tap: open till a second could have come")
+  t.run_for(@ui.double_tap_ms)
+  assert_true(viewer.get() is None, msg="one tap: closed")
+}
+
+///|
+test "a finger taking the picture down takes it with it, smaller, the page showing through; let go far enough down, it closes; a short slow way, back" {
+  let t = preview_tester("image", platform=2)
+  let v = viewer.get().unwrap()
+  let fit = shown_scale(t, v.zoom)
+  // (a short slow way down: back to fitted, open)
+  t.drag(195.0, 422.0, 195.0, 472.0)
+  assert_true(viewer.get() is Some(_), msg="a short way: open")
+  t.run_for(@ui.move_most_ms)
+  assert_true((shown_scale(t, v.zoom) - fit).abs() < 0.001, msg="a short way: back to fitted")
+  assert_eq(v.zoom.pulled_at(t.time()), 0.0)
+  // (held 200 down: with the finger, smaller, the ground let through)
+  t.touch(0, 195.0, 422.0)
+  t.draw()
+  t.touch(1, 195.0, 432.0)
+  t.draw()
+  t.touch(1, 195.0, 622.0)
+  t.draw()
+  assert_true(shown_scale(t, v.zoom) < fit, msg="down: smaller")
+  assert_true(v.zoom.pulled_at(t.time()) > 0.2, msg="down: as far as the finger")
+  assert_true(viewer.get() is Some(_), msg="held down: open")
+  t.touch(2, 195.0, 622.0)
+  t.draw()
+  assert_true(viewer.get() is None, msg="let go far enough down: closed")
+}
+
+///|
+test "a finger flinging the picture down a little closes it" {
+  let t = preview_tester("image", platform=2)
+  t.drag(195.0, 422.0, 195.0, 482.0, steps=2)
+  assert_true(viewer.get() is None)
+}
+
+///|
+test "a finger taking a zoomed picture down pans it, never closing it" {
+  let t = preview_tester("image", platform=2)
+  let z = zoom_in_middle(t)
+  t.drag(195.0, 300.0, 195.0, 600.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(viewer.get() is Some(_))
+  assert_true(z.zoomed_at(t.time()))
 }
