@@ -2542,7 +2542,12 @@ try {
   // ── 5: measured ──
   if (part("5")) {
     limit("5", 10800);
-    await check("5: one chat with a 500 MB / 5,000-file room: its first pass and its pause, measured", async () => {
+    // (E2E_MOVE_CHATS: the whole move's size, shown and archived as the real station's 149 of 2,384; E2E_MOVE_WHOLE_ONLY:
+    // that move alone, there and back, its tables and totals: a trip of a few minutes to set two trees side by side)
+    const many = Number(process.env.E2E_MOVE_CHATS ?? 2384);
+    const manyShown = Math.round((many * 149) / 2384);
+    const wholeOnly = process.env.E2E_MOVE_WHOLE_ONLY === "1";
+    if (!wholeOnly) await check("5: one chat with a 500 MB / 5,000-file room: its first pass and its pause, measured", async () => {
       const key = await newChat(`big-${tag}`);
       const t1 = Date.now();
       fill(roomOn("A", key)!, "bulk", 5000, 100 * 1024);
@@ -2654,15 +2659,15 @@ try {
       };
     };
     let timer = "";
-    await check("5: 300 chats (40 shown, 260 archived): GET /move timed", async () => {
+    if (!wholeOnly) await check("5: 300 chats (40 shown, 260 archived): GET /move timed", async () => {
       timer = await newChat(`timer-${tag}`);
       await seed(40, 260);
       await timeMove("300 chats", timer);
     });
-    await check("5: a real station's shape, 2,384 chats (149 shown, 2,235 archived): GET /move timed, all of it moved with `all` and back, timed", async () => {
+    await check(`5: a real station's shape, ${many} chats (${manyShown} shown, ${many - manyShown} archived): GET /move timed, all of it moved with \`all\` and back, timed`, async () => {
       if (timer === "") timer = await newChat(`timer-${tag}`);
-      await seed(149, 2235);
-      await timeMove("2,384 chats", timer);
+      await seed(manyShown, many - manyShown);
+      await timeMove(`${many} chats`, timer);
       // (E2E_MOVE_TIMING_ONLY: the pages and the plan timed, the whole moved neither way: a timing run of its own)
       if (process.env.E2E_MOVE_TIMING_ONLY === "1") return log("  (timing only: the 2,384 chats not moved)");
       const n = sql("A", "select count(*) n from sessions where (ws is null or (ws not like 'handed:%' and ws not like 'coming:%'))")[0].n as number;
@@ -2673,7 +2678,7 @@ try {
       await a.call("move.start", { station: A, to: bId, all: true });
       const there = duringMove();
       const l = await turnEnds("A", t0, 3_600_000);
-      measured(`2,384 chats there, during the move: ${await there.end()}`);
+      measured(`${many} chats there, during the move: ${await there.end()}`);
       const seenS = (Date.now() - t0) / 1000;
       // (what is measured is the station's: its turn's end as it wrote it)
       const s = typeof l?.at === "number" ? (l.at - t0) / 1000 : seenS;
@@ -2691,7 +2696,7 @@ try {
       await a.call("move.back", { station: A, from: bId, all: true });
       const back = duringMove();
       const lb = await turnEnds("A", t1, 3_600_000);
-      measured(`2,384 chats back, during the move: ${await back.end()}`);
+      measured(`${many} chats back, during the move: ${await back.end()}`);
       log(`  the watched page took ${watching.values.length} values through both moves`);
       watching.stop();
       const seenB = (Date.now() - t1) / 1000;
