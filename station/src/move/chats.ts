@@ -5,7 +5,7 @@
 import { type Handover, liveHereWords } from "../replica/handover.ts";
 import type { Store } from "../store/store.ts";
 import { type SessionRow, comingWs, handedWs } from "../store/rows.ts";
-import { type Item, type ItemState, type Module, type Need, type PlanReads, type Progress, unanswered, notAnswered } from "./module.ts";
+import { type Item, type ItemState, type Module, type Need, type PlanReads, type Progress, Said, unanswered, notAnswered } from "./module.ts";
 import { repoItemId } from "./repos.ts";
 import { stationLang, tr } from "../ops/i18n.ts";
 import { log } from "../ops/log.ts";
@@ -141,7 +141,7 @@ export function chatsModule(d: ChatsDeps): Module {
       // that does not come in the time the other is told again, the other gone since, is on its way, said so)
       for (const k of keysOf(item)) {
         if (await d.handover.arrived(k, ARRIVE_WAIT_MS)) continue;
-        throw new Error(tr(stationLang(), "station.move.onItsWay", { station: d.name?.(from) ?? from.slice(0, 12) }));
+        throw new Said(tr(stationLang(), "station.move.onItsWay", { station: d.name?.(from) ?? from.slice(0, 12) }));
       }
     },
     state(item): ItemState {

@@ -1417,12 +1417,12 @@ export class Sharing {
   async moveProfile(profileId: string, to: string, lang = stationLang(), shareFirst?: (share: string) => Promise<void>): Promise<{ id: string; share?: string }> {
     const t = (key: string, args?: Record<string, unknown>) => tr(lang, key, args);
     const p = this.profiles().find((x) => x.id === profileId);
-    if (!p) throw new Error(t("station.share.moveUnknown"));
-    if (p.machine === true) throw new Error(t("station.share.moveMachine"));
-    if (isObject(p.share) && p.share.borrowed === true) throw new Error(t("station.share.moveBorrowed"));
+    if (!p) throw new Said(t("station.share.moveUnknown"));
+    if (p.machine === true) throw new Said(t("station.share.moveMachine"));
+    if (isObject(p.share) && p.share.borrowed === true) throw new Said(t("station.share.moveBorrowed"));
     if (to === this.me()) return { id: profileId };
     const ws = this.reach({ kind: "profile", profile: p }, to);
-    if (ws === null) throw new Error(t("station.share.moveWhere"));
+    if (ws === null) throw new Said(t("station.share.moveWhere"));
     const credentials: Record<string, string> = {};
     const home = this.home(p);
     for (const name of signInFiles(p)) {
@@ -1435,7 +1435,7 @@ export class Sharing {
     const sharing = !isObject(p.share) && shareFirst !== undefined && shareRefusal(p) === null && me !== null;
     if (!isObject(p.share) && !sharing) return this.moveOwn(p, to, ws, credentials, t, lang);
     const id = sharing ? newId() : (p.share.id as string);
-    if (this.moving.has(id)) throw new Error(t("station.share.moving"));
+    if (this.moving.has(id)) throw new Said(t("station.share.moving"));
     const allow: string[] | null = sharing ? [me!, to] : Array.isArray(p.share.allow) ? p.share.allow : null;
     const state = this.readState();
     const was = sharing ? undefined : state.hosted[id];
@@ -1588,12 +1588,12 @@ export class Sharing {
   /// A profile not shared moved to `to`: the other station takes it as its own, then it is gone from here.
   private async moveOwn(p: Json, to: string, ws: string, credentials: Record<string, string>, t: (key: string, args?: Record<string, unknown>) => string, lang: Lang): Promise<{ id: string }> {
     const key = `own:${p.id}`;
-    if (this.moving.has(key)) throw new Error(t("station.share.moving"));
+    if (this.moving.has(key)) throw new Said(t("station.share.moving"));
     this.moving.add(key);
     let there: string;
     try {
       const answer = await this.deps.ask(to, ws, { method: "share.take", own: true, profileId: p.id, profile: { ...portable(p), access: p.access }, served: this.sharedIn(p), lang, email: this.emailOf(p), credentials });
-      if (answer?.taken !== true || typeof answer.id !== "string") throw new Error(t("station.share.moveNotTaken"));
+      if (answer?.taken !== true || typeof answer.id !== "string") throw new Said(t("station.share.moveNotTaken"));
       there = answer.id;
       // (the other has it now: the login here goes, so that one station alone renews it)
       const home = this.home(p);

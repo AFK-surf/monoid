@@ -14,6 +14,8 @@ import { sessionKey } from "../src/sessions/hub.ts";
 import { say } from "../src/sessions/lifecycle.ts";
 import { given, message, reply } from "./hub-fakes.ts";
 import { RETRY_MS } from "../src/replica/retire.ts";
+import { stationLang, tr } from "../src/ops/i18n.ts";
+import { hearLines } from "../src/ops/log.ts";
 import { WS, A, B, C, world, endTurn, stillfailChat, gitEnv, filesOf, entries, homeThread, startedAgainChangesNothing } from "./move-world.ts";
 
 type Json = any;
@@ -379,7 +381,7 @@ test("a failure in the first pass of its files: the chat was never held, works h
   a.fails.add("files");
   const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: key });
   await w.quiet();
-  assert.match(out.failed?.error ?? "", /the test failed files/);
+  assert.ok((out.failed?.error ?? "").includes(tr(stationLang(), "station.move.why.failedHere")) && !(out.failed?.error ?? "").includes("the test failed"), `in the station's words, the cause the log's alone: ${out.failed?.error}`);
   assert.equal(a.rig.hub.chatHeld(key), null);
   assert.equal(b.rig.store.getSession(key), null);
   say(a.rig.hub, thread, "p@x", "still here?");
@@ -387,6 +389,50 @@ test("a failure in the first pass of its files: the chat was never held, works h
   // (never held, its agent's process went on: the turn is in it)
   assert.equal(a.rig.claude.count(), 1);
   assert.ok(a.rig.claude.last().prompts.join("\n").includes("still here?"), "it works here");
+});
+
+test("the other station not answering as a chat's files go, or their carrying failing otherwise: said in the station's words (what happened, what to do), the cause in the log alone; the chat goes on here", async () => {
+  for (const [how, thrown, key] of [
+    ["no answer", "the other station answered nothing", "carryUnanswered"],
+    ["its connection gone", "the other station's connection was gone: the request got no answer from it (asked again, it is dialed anew)", "carryUnanswered"],
+    // (no answer in time is the turn's own reading of it: the station gone for the turn, move/station.ts `#ask`)
+    ["no answer in time", "peer request timed out; execution may have happened — query the same task key", "gone"],
+    ["something else", "EIO: i/o error, read", "carryFailed"],
+  ] as const) {
+    const w = world();
+    const a = w.get(A);
+    const b = w.get(B);
+    const { key: chat, thread } = await stillfailChat(a);
+    // (its first file's request there fails as the transport would have it)
+    let puts = 0;
+    w.tamper((to, r) => {
+      if (to === B && r.method === "handover.put" && ++puts === 1) throw new Error(thrown);
+      return r;
+    });
+    const lines: string[] = [];
+    hearLines((l) => void lines.push(`${l.message} ${JSON.stringify(l.fields ?? {})}`));
+    let out: Awaited<ReturnType<typeof a.moves.scheduler.move>> | undefined;
+    try {
+      out = await a.moves.scheduler.move(WS, B, { module: "chats", item: chat });
+      await w.quiet();
+    } finally {
+      hearLines(null);
+      w.tamper(null);
+    }
+    const said = out?.failed?.error ?? "";
+    assert.ok(puts >= 1, `${how}: its files' requests went (${puts})`);
+    const words = key === "gone" ? new RegExp(tr(stationLang(), "station.move.gone", { station: "\u0000" }).replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace("\u0000", ".+")) : null;
+    assert.ok(words !== null ? words.test(said) : said.includes(tr(stationLang(), `station.move.why.${key}`)), `${how}: in the station's words: ${said}`);
+    assert.ok(!said.includes(thrown), `${how}: the cause not said to people: ${said}`);
+    // (the files' failure logs its cause; the station found gone, the turn's own log line its cause)
+    const logged = key === "gone" ? "a station found gone in a turn" : "could not be carried";
+    assert.ok(lines.some((l) => l.includes(logged) && l.includes(thrown.slice(0, 20))), `${how}: the cause in the log: ${lines.filter((l) => l.includes(logged)).join(" | ")}`);
+    assert.equal(a.rig.hub.chatHeld(chat), null, `${how}: not held`);
+    assert.equal(b.rig.store.getSession(chat), null, `${how}: nothing of it there`);
+    say(a.rig.hub, thread, "p@x", "still here?");
+    await w.quiet();
+    assert.ok(a.rig.claude.last().prompts.join("\n").includes("still here?"), `${how}: it works here`);
+  }
 });
 
 test("a chat that went as its station stopped, before its rows here said so: started again, it is handed here and shown there once", async () => {

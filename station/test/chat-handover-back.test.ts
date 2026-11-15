@@ -8,6 +8,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpath
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
+import { stationLang, tr } from "../src/ops/i18n.ts";
 import { place } from "../src/replica/carry-worker.ts";
 import { newSession, say } from "../src/sessions/lifecycle.ts";
 import { moveView } from "../src/move/routes.ts";
@@ -231,7 +232,7 @@ test("a station holding a retired copy of the chat (older log, same thread keys,
     const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: key });
     await w.quiet();
     if (failing) {
-      assert.match(out.failed?.error ?? "", /the test failed counts/);
+      assert.ok((out.failed?.error ?? "").includes(tr(stationLang(), "station.move.why.failedHere")) && !(out.failed?.error ?? "").includes("the test failed"), `in the station's words, the error the log's: ${out.failed?.error}`);
       assert.equal(b.rig.store.getSession(key)!.ws, `retired:${WS}`, "the copy as it was");
       assert.deepEqual(entries(b, there), copied);
       assert.deepEqual(roomOf(roomThere), filesBefore, "its files as they were");

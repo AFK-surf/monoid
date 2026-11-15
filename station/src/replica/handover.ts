@@ -38,7 +38,7 @@ import { STILLFAIL_SURFACE, comingWs, handedWs } from "../store/rows.ts";
 import { type CarriedJob, type CarryIndex, type Gathered, carriedPlace, listFile } from "./carry-worker.ts";
 import { HASH, STATION, WORKSPACE } from "./format.ts";
 import type { Ask } from "./peers.ts";
-import { type Need, Said } from "../move/module.ts";
+import { type Need, Said, UNANSWERED, sayOf } from "../move/module.ts";
 import type { KeptSend } from "../api/admin.ts";
 import { HEADROOM, LACK_MOST, type MadeGit, RETRY_MOST_MS, RETRY_MS, connectsThere, gatherSoon, placeSoon, rebuildGits } from "./retire.ts";
 import { lackingIn, receiveFile, sendGathered } from "./sending.ts";
@@ -60,15 +60,19 @@ export const liveHereWords = (_keys: readonly string[], name: string) => why("li
 /// Why a hand-over did not go, in the station's language (`station.move.why.*`): every reason the chat's failure gives.
 const why = (key: string, args: Record<string, unknown> = {}) => tr(stationLang(), `station.move.why.${key}`, args);
 
-/// What carrying a chat's files failed of, in words: what a person can act on of its own (a file this station cannot
-/// read, no room left), else one reason with the detail as it came; what the other station said, or the move's own
-/// words, as they are.
+/// What carrying a chat's files failed of, in the station's words (`station.move.why.*`), what happened and what to do:
+/// what a person can act on of its own (a file this station cannot read, no room left), the other station not
+/// answering as they went (its connection gone, no answer, no answer in time), else that they could not be carried;
+/// what the other station said, or the move's own words, as they are. The error as it came is the log's alone.
 const carryWords = (e: unknown): Error => {
   if (e instanceof Refused || e instanceof Said) return e;
   const err = e as NodeJS.ErrnoException;
   if (err?.code === "EACCES" || err?.code === "EPERM") return new Said(why("cannotRead", { path: err.path ?? "", count: 1 }));
   if (err?.code === "ENOSPC") return new Said(why("noSpace"));
-  return new Said(why("carryFailed", { detail: err?.message ?? String(e) }));
+  const cause = err?.message ?? String(e);
+  log.warn("handover", "a chat's files could not be carried", { error: cause, code: err?.code ?? null });
+  // (mesh/peer.ts PeerGone says its connection was gone and the request got no answer)
+  return new Said(why(UNANSWERED.test(cause) ? "carryUnanswered" : "carryFailed"));
 };
 
 /// What a session's account is known by across the workspace: the share it is a copy of or the host of (`share`), the
@@ -374,7 +378,7 @@ export class Handover {
 
   /// Thrown where hand-over `o` was asked to stop.
   #given(o: Out): void {
-    if (o.abandoned === true) throw new Error(why("abandoned"));
+    if (o.abandoned === true) throw new Said(why("abandoned"));
   }
 
   /// The sessions handed over with `key`: those that share its still.fail home chat (threads.home).
@@ -469,16 +473,16 @@ export class Handover {
       await this.#files(o, begun, opts.progress, false);
       for (const k of keys) {
         if (!this.#d.hub.busy(k)) continue;
-        if (opts.wait !== true) throw new Error(why("inTurn", { chat: this.#chatName(k) }));
+        if (opts.wait !== true) throw new Said(why("inTurn", { chat: this.#chatName(k) }));
         let late: () => void = () => {};
         const deadline = new Promise<"late">((resolve) => (late = this.#d.fibers.after(TURN_WAIT_MS, () => resolve("late")))); // timer: a deadline for the turn's end
         this.#waitingTurn.add(o.id);
         const ended = await Promise.race([this.#d.hub.turnEnded(k).then(() => "ended" as const), deadline]).finally(() => this.#waitingTurn.delete(o.id));
         late();
-        if (ended === "late") throw new Error(why("turnLate", { chat: this.#chatName(k), minutes: TURN_WAIT_MS / 60_000 }));
+        if (ended === "late") throw new Said(why("turnLate", { chat: this.#chatName(k), minutes: TURN_WAIT_MS / 60_000 }));
       }
     } catch (e) {
-      const error = (e as Error).message;
+      const error = sayOf(e, `chat ${keys[0] ?? ""}`);
       if (this.#closed) throw new Refused(tr(stationLang(), "station.move.stoppedMidway", { station: name || to.slice(0, 12) }));
       await this.#fail(o, error);
       throw new Refused(tr(stationLang(), "station.move.chatStayed", { station: name || to.slice(0, 12), why: error }));
@@ -486,8 +490,9 @@ export class Handover {
     try {
       this.#given(o);
     } catch (e) {
-      await this.#fail(o, (e as Error).message);
-      throw new Refused(tr(stationLang(), "station.move.chatStayed", { station: name || to.slice(0, 12), why: (e as Error).message }));
+      const error = sayOf(e, `chat ${keys[0] ?? ""}`);
+      await this.#fail(o, error);
+      throw new Refused(tr(stationLang(), "station.move.chatStayed", { station: name || to.slice(0, 12), why: error }));
     }
     for (const k of keys) await this.#d.hub.holdChat(k, `moving to ${name || to.slice(0, 8)}`);
     o.held = true;
@@ -499,7 +504,7 @@ export class Handover {
     try {
       await this.#send(o, opts.progress, begun);
     } catch (e) {
-      const error = (e as Error).message;
+      const error = sayOf(e, `chat ${keys[0] ?? ""}`);
       // (this process stopping: the next goes on from where it stood, `start`)
       if (this.#closed) throw new Refused(tr(stationLang(), "station.move.stoppedHeld", { station: name || to.slice(0, 12) }));
       await this.#fail(o, error);
@@ -550,8 +555,8 @@ export class Handover {
     // (a file of its room this station cannot read: the chat does not go, rather than go without it)
     if ((g.unreadableCount ?? 0) > 0) throw new Said(why("cannotRead", { path: (g.unreadable ?? []).join("、"), count: g.unreadableCount }));
     const need = HEADROOM + g.bytes + Math.ceil(g.bytes / 20);
-    if (g.gits > 0 && begun?.git === false) throw new Error(why("noGit", { station: o.toName || o.to.slice(0, 12), n: g.gits }));
-    if (typeof begun?.free === "number" && need > begun.free) throw new Error(why("noRoom", { station: o.toName || o.to.slice(0, 12), free: gb(begun.free), need: gb(need) }));
+    if (g.gits > 0 && begun?.git === false) throw new Said(why("noGit", { station: o.toName || o.to.slice(0, 12), n: g.gits }));
+    if (typeof begun?.free === "number" && need > begun.free) throw new Said(why("noRoom", { station: o.toName || o.to.slice(0, 12), free: gb(begun.free), need: gb(need) }));
     d.fail?.("files");
     const carry = await sendGathered(g, {
       // (where each goes and how big, so that what is in place there already is not sent again)
@@ -567,9 +572,9 @@ export class Handover {
       done: (bytes) => void (held || (o.done += bytes, progress?.({ done: o.done, total: o.total, unit: "bytes" }))),
     }, held, [], true).catch((e) => Promise.reject(carryWords(e)));
     this.#given(o);
-    if (carry === null) throw new Error(why("stopping"));
+    if (carry === null) throw new Said(why("stopping"));
     const placed = await ask({ method: "handover.place", carry });
-    if (held && typeof placed?.missing === "number" && placed.missing > 0) throw new Error(why("filesMissing", { n: placed.missing }));
+    if (held && typeof placed?.missing === "number" && placed.missing > 0) throw new Said(why("filesMissing", { n: placed.missing }));
   }
 
   /// Held, steps 3 to 5 up to `gone`: its files again (what changed since the first pass), its rows, the counts.
@@ -590,7 +595,7 @@ export class Handover {
     d.fail?.("counts");
     this.#given(o);
     const differs = counts === undefined ? "it said nothing" : differ(sent, counts);
-    if (differs !== null) throw new Error(why("notWhatSent", { what: differs }));
+    if (differs !== null) throw new Said(why("notWhatSent", { what: differs }));
     // Gone: said here first, durably, before anything else is told.
     o.counts = counts!;
     o.there = Object.fromEntries(o.keys.map((k) => [k, { thread: d.store.homeChat(k)?.id ?? null, there: typeof (counts as Json).homes?.[k] === "number" ? (counts as Json).homes[k] : null }]));

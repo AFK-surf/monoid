@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, afterEach, test } from "node:test";
+import { stationLang, tr } from "../src/ops/i18n.ts";
 import { Cloud } from "../src/cloud/state.ts";
 import { PeerBus, bytesOf, withBytes } from "../src/mesh/bus.ts";
 import type { ConfigFile } from "../src/ops/config.ts";
@@ -764,7 +765,8 @@ test("share.borrow failing after the share was made: the share undone, the login
   const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: one.key, withNeeds: true });
   await quiet();
   assert.equal(out.failed?.item.id, `own:max@${A}`);
-  assert.match(out.failed!.error, /lost on the way/);
+  // (the transport's error as it came: logged, said in the station's words)
+  assert.equal(out.failed!.error, tr(stationLang(), "station.move.why.failedHere"));
   assert.deepEqual(present(a, "max"), MAX, "not shared, as it was");
   assert.equal(JSON.parse(readFileSync(join(a.rig.dir, "homes", "max", ".credentials.json"), "utf8")).claudeAiOauth.refreshToken, "r", "its login here");
   assert.deepEqual(keptShares(a), []);
@@ -793,7 +795,7 @@ test("a login asked for by name, share.take failing after the share made for its
   const out = await a.moves.scheduler.move(WS, B, { module: "accounts", item: account });
   await quiet();
   assert.equal(out.failed?.item.id, account, JSON.stringify(out));
-  assert.match(out.failed!.error, /lost on the way/);
+  assert.equal(out.failed!.error, tr(stationLang(), "station.move.why.failedHere"));
   assert.deepEqual(present(a, "max"), MAX, "not shared, as it was");
   assert.equal(JSON.parse(readFileSync(join(a.rig.dir, "homes", "max", ".credentials.json"), "utf8")).claudeAiOauth.refreshToken, "r", "its login here");
   assert.deepEqual(keptShares(a), [], "no share kept as made by a move");

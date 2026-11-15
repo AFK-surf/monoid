@@ -4,7 +4,8 @@
 // moved and moved back on its own, where each stands.
 
 import { log } from "../ops/log.ts";
-import { stationLang, tr } from "../ops/i18n.ts";
+import { Said, stationLang, tr } from "../ops/i18n.ts";
+import { Refused } from "../mesh/bus.ts";
 
 /// An item a module's needs name, by its module and its id there (an id the workspace knows it by, the same on every
 /// station: a chat's session key, a share's id, a connect as `<id>@<origin>`).
@@ -21,7 +22,22 @@ export type Item = { module: string; id: string; label: string; needs: Need[]; c
 /// Why an item cannot go where the other station did not answer what it has of it, as a plan asked (a station enrolled a
 /// moment ago, not reached): a plan is never made on a guess of what is there, so it is not tried; asked again it is.
 /// What a move says to people, in the station's language, already: passed on as it is, never worded again.
-export class Said extends Error {}
+// (one class with ops/i18n.ts's, which the rest of the station says its words by)
+export { Said };
+
+/// What an item's failure says to people (move/AGENTS.md: every word a move says is the catalog's): the station's own
+/// words (`Said`) and the other station's answer (a refusal, said there in its words) as they are; anything else (an
+/// error as it came: a file's, a request's, a process's) logged whole and said in the catalog's: the other station not
+/// answering, or that it could not be done, with what to do.
+export function sayOf(e: unknown, what: string): string {
+  const message = (e as Error)?.message ?? String(e);
+  if (e instanceof Said || e instanceof Refused) return message;
+  log.warn("move", "an item failed: the error, said to people in the station's words", { item: what, error: message });
+  return tr(stationLang(), UNANSWERED.test(message) ? "station.move.why.unanswered" : "station.move.why.failedHere");
+}
+/// What the transport says of a station that did not answer (mesh/peer.ts: no answer, its connection gone, no answer in
+/// time; a test's transport: unreachable).
+export const UNANSWERED = /answered nothing|got no answer|timed out|station unreachable|connection (was )?(gone|lost|closed|reset)|stream (was )?(reset|closed|stopped)/i;
 
 /// A plan's question of the other station not answered (`method`, of `to`): said once in the log as it fails, the error
 /// as it came, so what a start or a dead station did is read there (a plan says only that it was not answered).

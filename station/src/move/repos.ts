@@ -10,7 +10,8 @@ import { mkdir, open, readFile, readdir, realpath, rename, rm, stat, writeFile }
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { Refused, withBytes, type Bytes } from "../mesh/bus.ts";
 import { fileBytes } from "../mesh/files.ts";
-import { type Item, type ItemState, type Module, type PlanReads, type Progress, unanswered, notAnswered } from "./module.ts";
+import { stationLang, tr } from "../ops/i18n.ts";
+import { type Item, type ItemState, type Module, type PlanReads, type Progress, Said, unanswered, notAnswered } from "./module.ts";
 
 type Json = any;
 
@@ -48,7 +49,7 @@ export async function worktreesKept(dir: string): Promise<{ repo: string; url: s
 export function cloneLogin(error: string, url: string, station: string): string | null {
   if (!/Authentication failed|could not read Username|terminal prompts disabled|Permission denied \(publickey|Repository not found|access denied/i.test(error)) return null;
   const host = /^[a-z]+:\/\/(?:[^@/]*@)?([^/:]+)/i.exec(url)?.[1] ?? /^[^@]+@([^:]+):/.exec(url)?.[1] ?? url;
-  return `${station} could not clone ${url}: it is not signed in to ${host}. Sign in to ${host} on ${station} (its git credentials or an SSH key there), then move it again`;
+  return tr(stationLang(), "station.move.why.cloneLogin", { station, url, host });
 }
 
 /// The remote of the canonical clone a linked worktree at `dir` hangs on (its `.git` a file naming it), as its config
@@ -135,7 +136,8 @@ export class ReposModule implements Module {
   readonly #local = new Map<string, string>();
   readonly #moving = new Map<string, Progress>();
   /// The clones asked of another station and not told ended yet, by remote.
-  readonly #cloning = new Map<string, { done: (error: string | null) => void }>();
+  /// Each clone there waited for, done with what it failed of (`said`: in the station's words, else the error as it came).
+  readonly #cloning = new Map<string, { done: (failed: { error: string; said: boolean } | null) => void }>();
   /// The clones under way here for another station, by remote.
   readonly #clones = new Map<string, Promise<void>>();
   #made: Made;
@@ -176,14 +178,17 @@ export class ReposModule implements Module {
     if (repo === undefined) throw new Error(`repository ${item.label} is not here`);
     const url = item.id.slice(5);
     // (cloned there by itself, told back as it ends: a clone of minutes waits on no request's answer)
-    const told = new Promise<string | null>((resolve) => this.#cloning.set(url, { done: resolve }));
+    const told = new Promise<{ error: string; said: boolean } | null>((resolve) => this.#cloning.set(url, { done: resolve }));
     let late = () => {};
-    const deadline = new Promise<string | null>((resolve) => (late = this.#d.after?.(CLONE_WAIT_MS, () => resolve(`the clone of ${url} there did not end in ${CLONE_WAIT_MS / 60_000} min: move it again`)) ?? (() => {}))); // timer: a deadline for the clone there
+    const there = this.#d.name?.(to) ?? to.slice(0, 12);
+    const deadline = new Promise<{ error: string; said: boolean } | null>((resolve) => (late = this.#d.after?.(CLONE_WAIT_MS, () => resolve({ error: tr(stationLang(), "station.move.why.cloneLate", { url, station: there, minutes: CLONE_WAIT_MS / 60_000 }), said: true })) ?? (() => {}))); // timer: a deadline for the clone there
     try {
       const made = await this.#d.ask(to, { method: "move.repo.make", url, name: basename(repo) });
       if (made?.cloning === true) {
-        const error = await Promise.race([told, deadline]);
-        if (error !== null) throw new Error(error);
+        const failed = await Promise.race([told, deadline]);
+        // (a clone refused for want of a login says what to do, `cloneLogin`; anything else is the error as it came,
+        // said in the station's words by the scheduler and logged: move/module.ts `sayOf`)
+        if (failed !== null) throw failed.said ? new Said(failed.error) : new Error(failed.error);
       }
     } finally {
       late();
@@ -259,7 +264,7 @@ export class ReposModule implements Module {
     const url = typeof request.url === "string" ? request.url : "";
     switch (request.method) {
       case "move.repo.made": {
-        this.#cloning.get(url)?.done(typeof request.error === "string" ? request.error : null);
+        this.#cloning.get(url)?.done(typeof request.error === "string" ? { error: request.error, said: request.said === true } : null);
         return { ok: true };
       }
       case "move.repo.have": {
@@ -274,8 +279,11 @@ export class ReposModule implements Module {
         // (answered at once: the clone goes on by itself, and its end is told to the station that asked)
         const clone = this.#clone(url, String(request.name ?? "")).then(
           () => null,
-          (e: Error) => cloneLogin(e.message, url, this.#d.name?.(this.#d.here()) ?? "this station") ?? `the clone of ${url} failed there: ${e.message.split("\n").filter(Boolean).at(-1) ?? e.message}`,
-        ).then((error) => this.#d.ask(peer, { method: "move.repo.made", url, ...(error !== null ? { error } : {}) }).catch(() => {}));
+          (e: Error) => {
+            const said = cloneLogin(e.message, url, this.#d.name?.(this.#d.here()) ?? this.#d.here()?.slice(0, 12) ?? "");
+            return said !== null ? { error: said, said: true } : { error: `the clone of ${url} failed there: ${e.message.split("\n").filter(Boolean).at(-1) ?? e.message}`, said: false };
+          },
+        ).then((failed) => this.#d.ask(peer, { method: "move.repo.made", url, ...(failed !== null ? failed : {}) }).catch(() => {}));
         this.#clones.set(url, clone.finally(() => this.#clones.delete(url)));
         return { cloning: true };
       }

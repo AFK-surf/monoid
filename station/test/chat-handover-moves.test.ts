@@ -14,6 +14,7 @@ import { MoveAsks } from "../src/tools/move.ts";
 import { plainStore } from "../src/vault/plain.ts";
 import { given, message } from "./hub-fakes.ts";
 import { PeerGone } from "../src/mesh/peer.ts";
+import { Refused } from "../src/mesh/bus.ts";
 import { stationLang, tr } from "../src/ops/i18n.ts";
 import { hearLines } from "../src/ops/log.ts";
 import { WS, A, B, C, type Station, world, endTurn, stillfailChat, gitEnv, homeThread, entries } from "./move-world.ts";
@@ -47,7 +48,7 @@ test("a failed item stops only what needs it: of three chats and their logins mo
   const [three] = newSession(a.rig.hub, { runtime: "codex", profile: "cx", createdBy: "p@x" });
   a.jobs.push({ id: "a-dev", session: mid.key, name: "dev", command: "npm run dev", cwd: a.rig.session(mid.key).workspace, port: 3000, watch: false });
   w.tamper((to, r) => {
-    if (to === B && r.method === "handover.begin" && Array.isArray(r.keys) && r.keys.includes(mid.key)) throw new Error("the middle one refused");
+    if (to === B && r.method === "handover.begin" && Array.isArray(r.keys) && r.keys.includes(mid.key)) throw new Refused("the middle one refused"); // (as the other station answers a refusal: its words)
     return r;
   });
   const out = await a.moves.scheduler.move(WS, B, { all: true, follow: ["jobs"] });
@@ -60,7 +61,7 @@ test("a failed item stops only what needs it: of three chats and their logins mo
   assert.equal(a.rig.store.handedTo(mid.key), null, "it goes on here");
   // Back whole, the first chat not coming back: the rest come back.
   w.tamper((to, r) => {
-    if (to === A && r.method === "handover.begin" && Array.isArray(r.keys) && r.keys.includes(one.key)) throw new Error("the first one refused");
+    if (to === A && r.method === "handover.begin" && Array.isArray(r.keys) && r.keys.includes(one.key)) throw new Refused("the first one refused");
     return r;
   });
   const there = (await a.moves.scheduler.plan(WS, B)).items.filter((x) => x.state === "there").map((x) => `${x.module} ${x.id}`);
@@ -620,7 +621,7 @@ test("a chat stopped for its account whose hand-over fails in the first pass of 
   a.fails.add("files");
   const moved = await a.moves.scheduler.move(WS, B, { module: "chats", item: key, arriveStopped: true });
   await w.quiet();
-  assert.match(moved.failed?.error ?? "", /the test failed files/);
+  assert.ok((moved.failed?.error ?? "").includes(tr(stationLang(), "station.move.why.failedHere")) && !(moved.failed?.error ?? "").includes("the test failed"), `in the station's words, the cause the log's alone: ${moved.failed?.error}`);
   assert.notEqual(a.rig.hub.chatHeld(key), null, "still stopped, waiting for its account");
   const turns = a.rig.claude.count();
   say(a.rig.hub, t.id, "p@x", "while it waits");

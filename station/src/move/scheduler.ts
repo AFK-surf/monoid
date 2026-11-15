@@ -10,7 +10,7 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { log } from "../ops/log.ts";
 import { stationLang, tr } from "../ops/i18n.ts";
-import { type Item, type ItemState, type Module, type Need, type PlanReads, type Progress, type Waits, named, sameItem } from "./module.ts";
+import { type Item, type ItemState, type Module, type Need, type PlanReads, type Progress, type Waits, named, sameItem, Said, sayOf } from "./module.ts";
 
 /// An item as a plan shows it: what it is, where it stands, and what would be stopped here if it moved alone.
 export type Planned = Item & ItemState & { wouldStop: Need[] };
@@ -303,7 +303,7 @@ export class Scheduler {
     let letGo: (() => void) | null = null;
     const run = this.#turn.then(async () => {
       const why = await this.#d.refusal?.(ws, station);
-      if (why) throw new Error(why);
+      if (why) throw new Said(why);
       // (held from its first item to its end: an update would cut it)
       letGo = this.#d.hold?.() ?? null;
       this.#d.turn?.(true, station);
@@ -316,7 +316,7 @@ export class Scheduler {
         return out;
       },
       async (e) => {
-        await this.#keepLast(ws, { at: this.#d.now?.() ?? 0, by, how, station, ...(this.#stopping !== null ? { stoppedBy: this.#stopping.by } : {}), done: [], refused: [], stopped: [], resumed: [], failed: { item: null, error: (e as Error).message } });
+        await this.#keepLast(ws, { at: this.#d.now?.() ?? 0, by, how, station, ...(this.#stopping !== null ? { stoppedBy: this.#stopping.by } : {}), done: [], refused: [], stopped: [], resumed: [], failed: { item: null, error: sayOf(e, "the turn") } });
         throw e;
       },
     ).finally(async () => {
@@ -355,7 +355,7 @@ export class Scheduler {
     const index = new Items(all);
     const find = (n: Need) => index.find(n);
     const chosen = select(all, sel);
-    if (chosen.length === 0) throw new Error(sel.item !== undefined ? say("noItem", { item: called({ module: sel.module ?? "", label: sel.item }) }) : say("nothing"));
+    if (chosen.length === 0) throw new Said(sel.item !== undefined ? say("noItem", { item: called({ module: sel.module ?? "", label: sel.item }) }) : say("nothing"));
     // (with its needs: what it needs first, and what those need)
     const wanted = new Map<string, Planned>();
     const taking = new Set<string>();
@@ -484,7 +484,7 @@ export class Scheduler {
           out.lent = [...(out.lent ?? []), { module: l.x.module, id: l.x.id }];
           this.#d.changed?.();
         } catch (e) {
-          fail(l.x, (e as Error).message);
+          fail(l.x, sayOf(e, named(l.x)));
         }
       }
       const waits = p.needs.find((n) => !thereNow.has(named(n)) && find(n) !== undefined && this.#modules.get(n.module)!.usableThere?.(find(n)!) !== true);
@@ -515,7 +515,7 @@ export class Scheduler {
       try {
         await m.move(p, to, (progress) => this.#d.progress?.(p, progress), waits === undefined ? undefined : { stoppedFor: { module: waits.module, id: waits.id, label: find(waits)?.label } });
       } catch (e) {
-        fail(p, (e as Error).message);
+        fail(p, sayOf(e, named(p)));
         await this.#letGo(stops.flatMap((x) => this.#stopped.get(x) ?? []).filter((s) => sameItem(s.waitsFor, p)), true);
         unsaved = false;
         continue;
@@ -537,7 +537,7 @@ export class Scheduler {
       try {
         await this.#modules.get(p.module)!.move(p, to, (progress) => this.#d.progress?.(p, progress));
       } catch (e) {
-        fail(p, (e as Error).message);
+        fail(p, sayOf(e, named(p)));
         continue;
       }
       thereNow.add(named(p));
@@ -568,7 +568,7 @@ export class Scheduler {
         try {
           await this.#modules.get(p.module)!.back(p, to);
         } catch (e) {
-          fail(p, say("notBroughtBack", { for: forWhom.map(called).join("、"), what: called(p), why: (e as Error).message }));
+          fail(p, say("notBroughtBack", { for: forWhom.map(called).join("、"), what: called(p), why: sayOf(e, named(p)) }));
           continue;
         }
         out.done = out.done.filter((d) => !sameItem(d, x));
@@ -597,7 +597,7 @@ export class Scheduler {
           this.#ended(p, 1);
           if (this.#stopped.remove(p) !== undefined) unsaved = true;
         } catch (e) {
-          fail(p, (e as Error).message);
+          fail(p, sayOf(e, named(p)));
         }
       }
     }
@@ -615,7 +615,7 @@ export class Scheduler {
     const find = (n: Need) => index.find(n);
     // (what is there now: one whose move failed is here, no item of a move back)
     const chosen = select(all, sel).filter((x) => x.state === "there");
-    if (chosen.length === 0) throw new Error(sel.item !== undefined ? say("notThere", { item: called({ module: sel.module ?? "", label: sel.item }) }) : say("nothingThere"));
+    if (chosen.length === 0) throw new Said(sel.item !== undefined ? say("notThere", { item: called({ module: sel.module ?? "", label: sel.item }) }) : say("nothingThere"));
     const backing = new Set(chosen.map(named));
     // (what follows what goes back: the items of `follow` there that need it, a chat's jobs, go back first, each arriving
     // stopped until it is here)
@@ -644,7 +644,7 @@ export class Scheduler {
       try {
         await this.#modules.get(p.module)!.back(p, from, waits === undefined ? undefined : { stoppedFor: { module: waits.module, id: waits.id, label: waits.label } });
       } catch (e) {
-        const error = (e as Error).message;
+        const error = sayOf(e, named(p));
         out.failures = [...(out.failures ?? []), { item: { module: p.module, id: p.id }, error }];
         out.failed ??= { item: { module: p.module, id: p.id }, error };
         failedThere.set(named(p), error);

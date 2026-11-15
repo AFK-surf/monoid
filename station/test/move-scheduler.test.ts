@@ -12,7 +12,10 @@ import { type Selection, Scheduler } from "../src/move/scheduler.ts";
 import { moveView } from "../src/move/routes.ts";
 import { cloneLogin } from "../src/move/repos.ts";
 import { given } from "./hub-fakes.ts";
-import { setStationLang } from "../src/ops/i18n.ts";
+import { setStationLang, stationLang, tr } from "../src/ops/i18n.ts";
+import { hearLines } from "../src/ops/log.ts";
+import { Refused } from "../src/mesh/bus.ts";
+import { Said, sayOf } from "../src/move/module.ts";
 
 // (the scheduler's words in English here, as this file reads them)
 setStationLang("en");
@@ -170,7 +173,9 @@ test("a whole move: everything in its needs' order, what cannot move listed with
   assert.deepEqual(out.done.map((d) => `${d.module}/${d.id}`), ["accounts/sub", "accounts/grok", "chats/c1", "jobs/j1"]);
   assert.equal(out.failed?.item.id, "c2");
   assert.deepEqual((out.failures ?? []).map((f) => f.item.id), ["c2"]);
-  assert.match(out.failed!.error, /would not go/);
+  // (a module's error as it came: logged, said in the station's words)
+  assert.equal(out.failed!.error, tr(stationLang(), "station.move.why.failedHere"));
+  assert.ok(!out.failed!.error.includes("would not go"));
   assert.deepEqual(w.log, ["move accounts/sub", "stop chats/c2", "move accounts/grok", "stop jobs/j1", "move chats/c1", "move jobs/j1"], "what needs what goes stopped first (c1's job before c1, going right after it); the failure stops nothing that does not need it");
   // (a whole station, the failure fixed, then all of it back)
   const ok = world();
@@ -298,7 +303,7 @@ test("a need usable there though it is not there (an account the other station b
 
 test("a clone refused for want of a login says to sign in to that host on that station", () => {
   assert.equal(cloneLogin("fatal: could not read Username for 'https://github.com': terminal prompts disabled", "https://github.com/o/r.git", "Office-Host-2"),
-    "Office-Host-2 could not clone https://github.com/o/r.git: it is not signed in to github.com. Sign in to github.com on Office-Host-2 (its git credentials or an SSH key there), then move it again");
+    tr(stationLang(), "station.move.why.cloneLogin", { station: "Office-Host-2", url: "https://github.com/o/r.git", host: "github.com" }));
   assert.match(cloneLogin("git@gitlab.com: Permission denied (publickey).", "git@gitlab.com:o/r.git", "B") ?? "", /not signed in to gitlab\.com/);
   assert.equal(cloneLogin("fatal: destination path exists", "https://x/y", "B"), null);
 });
@@ -390,4 +395,20 @@ test("a chat asked with what it needs: a login shared as it moves (usable here a
   assert.equal(accounts.where.get("borrowed"), "here");
   assert.deepEqual(s.stopped(), [], "nothing stopped for either");
   assert.deepEqual(log.filter((l) => l.startsWith("stop")), []);
+});
+
+test("an item's failure is said in the station's words: its own and the other station's as they are, an error as it came logged and worded by the catalog", () => {
+  const lines: string[] = [];
+  hearLines((l) => void lines.push(`${l.message} ${JSON.stringify(l.fields ?? {})}`));
+  try {
+    assert.equal(sayOf(new Said("its own words"), "chats/x"), "its own words");
+    assert.equal(sayOf(new Refused("the other station's words"), "chats/x"), "the other station's words");
+    assert.equal(lines.length, 0, `nothing logged of words said as they are: ${lines.join(" | ")}`);
+    for (const cause of ["the other station answered nothing", "peer request timed out; execution may have happened — query the same task key", "the other station's connection was gone: the request got no answer from it (asked again, it is dialed anew)"])
+      assert.equal(sayOf(new Error(cause), "chats/x"), tr(stationLang(), "station.move.why.unanswered"), cause);
+    assert.equal(sayOf(new Error("EIO: i/o error, read"), "chats/x"), tr(stationLang(), "station.move.why.failedHere"));
+    assert.ok(lines.some((l) => l.includes("EIO: i/o error, read") && l.includes("chats/x")), lines.join(" | "));
+  } finally {
+    hearLines(null);
+  }
 });
