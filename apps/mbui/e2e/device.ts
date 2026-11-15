@@ -17,7 +17,7 @@ import { type ChildProcess, execFileSync, fork } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
 import type { Socket } from "node:net";
 import { join } from "node:path";
-import { brotliDecompressSync, gunzipSync, inflateSync } from "node:zlib";
+import { brotliDecompressSync, gunzipSync, inflateSync, zstdDecompressSync } from "node:zlib";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 export const src = process.env.E2E_SF_SRC!;
@@ -193,7 +193,8 @@ function watchRequests(told: (station: string, method: string, path: string, sta
 
 /// What a GET /move answer read off its stream says is stopped on its station (`stopped`, routes.ts moveView: each
 /// `{item, waitsFor}` named `module id`); undefined for another answer (a refusal, a POST's). The stream is mesh/wire.ts's:
-/// a head line `{status, headers}`, then the body, compressed where its headers say so.
+/// a head line `{status, headers}`, then the body, compressed where its headers say so (zstd, as the core asks every
+/// answer: client/core-ts/src/station/requests.ts `ZSTD`).
 function moveStopped(raw: Buffer): { item: string; waitsFor: string }[] | undefined {
   const end = raw.indexOf(10);
   if (end < 0) return undefined;
@@ -202,7 +203,7 @@ function moveStopped(raw: Buffer): { item: string; waitsFor: string }[] | undefi
     if (head?.status !== 200) return undefined;
     const enc = String(Object.entries(head.headers ?? {}).find(([k]) => k.toLowerCase() === "content-encoding")?.[1] ?? "").toLowerCase();
     const b = raw.subarray(end + 1);
-    const body = enc === "gzip" ? gunzipSync(b) : enc === "br" ? brotliDecompressSync(b) : enc === "deflate" ? inflateSync(b) : b;
+    const body = enc === "zstd" ? zstdDecompressSync(b) : enc === "gzip" ? gunzipSync(b) : enc === "br" ? brotliDecompressSync(b) : enc === "deflate" ? inflateSync(b) : b;
     const v = JSON.parse(body.toString("utf8"));
     return Array.isArray(v?.stopped) && Array.isArray(v?.modules) ? v.stopped : undefined;
   } catch {

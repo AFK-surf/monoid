@@ -317,7 +317,7 @@ async function stoppedOn(n: Name): Promise<{ item: string; waitsFor: string }[]>
   const t0 = Date.now();
   const last = a.moves.findLast((x) => x.station === idOf(n));
   if (last !== undefined && last.asked > moveChanged(n)) return last.stopped;
-  const w = a.watch({ topic: "stationMove", station: idOf(n), to: "", module: "chats", limit: 51 + Math.floor(Math.random() * 140) });
+  const w = a.watch({ topic: "stationMove", station: addr(n), to: "", module: "chats", limit: 51 + Math.floor(Math.random() * 140) });
   try {
     return (await a.moveSaid(idOf(n), t0, 60_000)).stopped;
   } finally {
