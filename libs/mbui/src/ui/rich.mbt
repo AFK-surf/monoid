@@ -1484,7 +1484,7 @@ fn Ctx::emit_rich_glyphs(
   alpha : Double,
   cy0 : Double,
   cy1 : Double,
-  unplaced? : Array[(Int, Double, Double, Double, Double, Double)],
+  unplaced? : Array[(Int, Double, Double, Double, Double, Double, Double)],
   center_in? : Double = -1.0,
 ) -> Unit {
   let sc = self.scale
@@ -1557,7 +1557,7 @@ fn Ctx::emit_rich_glyphs(
     if g.gw <= 0.0 {
       continue
     }
-    let gx = glyph_x(ox + lay.xs[c] + lay.pre[c] + g.ox / z, sc)
+    let gx = glyph_x(ox + lay.xs[c] + lay.pre[c], g.ox / z, sc)
     let gy = glyph_row(oy, lay.line_y[l] + lay.line_base[l], g.oy / z, sc)
     let (gw, gh) = (g.gw / z, g.gh / z)
     // (the uniform scale is about its ink's middle; an extra horizontal scale is about its advance's middle, so a
@@ -1575,7 +1575,7 @@ fn Ctx::emit_rich_glyphs(
     // (where it is before it is set on the pixels, for what places it again elsewhere (view_blit), and what its own
     // look moves it by after that)
     match unplaced {
-      Some(u) => u.push((self.ninst, ox + lay.xs[c] + lay.pre[c] + g.ox / z, top + lay.line_base[l], g.oy / z, gx - set_x, gy - set_y))
+      Some(u) => u.push((self.ninst, ox + lay.xs[c] + lay.pre[c], g.ox / z, top + lay.line_base[l], g.oy / z, gx - set_x, gy - set_y))
       None => ()
     }
     // (its halo's, where its words have one: halo.mbt)

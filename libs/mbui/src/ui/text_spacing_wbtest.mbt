@@ -185,3 +185,62 @@ test "words with letter spacing are copied as they were written: what is shaped 
   // and the plain text's lines, as shown and read out
   assert_eq(t.lines_of("office").join(""), words)
 }
+
+///|
+test "windows glyph subpixel phase: ViewBlock updates when ancestor ux shifts and on_glyph_col agrees with glyph_sub at 1.5x" {
+  let sc = 1.5
+  let gox = -1.0 / sc
+  for n in [10, 44, 73, 128] {
+    let x = (n.to_double() + 0.5) / sc
+    glyph_origin_x.val = 0.0
+    glyphs_carried[0] = 0.0
+    let tx = x * sc
+    let rx = tx.round()
+    let col = on_glyph_col(x, gox, sc)
+    assert_eq((col * sc).round(), rx - 1.0)
+  }
+  let build = fn(x0 : Double, shift_to : Double?) -> (Array[Double], Array[Int], Array[Int]) {
+    let off = @signals.signal(x0, same=fn(a, b) { a == b })
+    let plain_id : Ref[@view.NodeId?] = Ref(None)
+    let rich_id : Ref[@view.NodeId?] = Ref(None)
+    let t = Tester::new(fn(_c) {  }, w=400.0, h=200.0, platform=3, scale=1.5)
+    set_view_app(fn(root) {
+      root.box(fn(p) {
+        p.width(Is(Some(200.0))).height(Is(Some(60.0))).offset(By(fn() { (off.get(), 10.0) })) |> ignore
+        p.box(fn(b) {
+          plain_id.val = Some(b.id())
+          b.width(Is(Some(200.0))).height(Is(Some(24.0))).words(Is("Tick apps")) |> ignore
+        })
+        |> ignore
+        p.box(fn(b) {
+          rich_id.val = Some(b.id())
+          b
+          .width(Is(Some(200.0)))
+          .height(Is(Some(24.0)))
+          .words_runs(Is([@view.words_run("Chat "), @view.words_run("sidebar", weight=600)]))
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+    })
+    t.draw()
+    match shift_to {
+      Some(x1) => {
+        off.set(x1)
+        t.draw()
+      }
+      None => ()
+    }
+    let xs = t.drawn_glyphs().map(fn(g) { g.0 })
+    let plain_subs = view_blocks.get(plain_id.val.unwrap()).unwrap().kept.map(fn(k) { (k.0 >> 26) & 7 })
+    let rich_subs = view_blocks.get(rich_id.val.unwrap()).unwrap().kept.map(fn(k) { (k.0 >> 26) & 7 })
+    (xs, plain_subs, rich_subs)
+  }
+  let initial = build(0.0, None)
+  let shifted = build(0.0, Some(10.25))
+  let fresh = build(10.25, None)
+  assert_true(shifted.0.length() > 10)
+  assert_true(initial.1 != fresh.1)
+  assert_eq(shifted, fresh)
+}
