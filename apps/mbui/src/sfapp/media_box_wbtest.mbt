@@ -63,7 +63,7 @@ test "wide chat images have a taller cropped preview while narrow ones keep thei
 }
 
 ///|
-test "a wide picture fills its taller chat preview without stretching, its middle shown" {
+test "a wide picture fills its taller chat preview without stretching, its start shown" {
   new_run()
   let a = { ..strip("wide.png"), width: 2000.0, height: 400.0 }
   let src : Source = { ..fixture("chat"), file: fn(_, _, _) { "wide" } }
@@ -86,13 +86,14 @@ test "a wide picture fills its taller chat preview without stretching, its middl
   t.draw()
   t.run_for(@sfpages.reveal_ms)
   let images = t.drawn_images()
-  // At 360 × 160, the middle 360 points of the 800-point-wide picture are shown.
+  // At 360 × 160, the first 360 points of the 800-point-wide picture are shown (its start, not its middle: a strip
+  // cut from a page is as often bare in its middle).
   assert_true(images.iter().any(fn(i) {
     (i[2] - 360.0).abs() < 0.5 && (i[3] - 160.0).abs() < 0.5 &&
-    (i[4] - 0.275).abs() < 0.001 && (i[5] - 0.0).abs() < 0.001 &&
+    (i[4] - 0.0).abs() < 0.001 && (i[5] - 0.0).abs() < 0.001 &&
     (i[6] - 0.45).abs() < 0.001 && (i[7] - 1.0).abs() < 0.001
   }), msg="\{Repr(images)}")
-  assert_false(thumb_of(t.ctx(), "ws1/st1/s-c1/uploads/fx/wide.png").unwrap().top_crop)
+  assert_true(thumb_of(t.ctx(), "ws1/st1/s-c1/uploads/fx/wide.png").unwrap().start_crop)
 }
 
 ///|
@@ -126,7 +127,7 @@ test "a tall picture fills its wider chat preview without stretching" {
     (i[6] - 1.0).abs() < 0.001 && (i[7] - 0.375).abs() < 0.001
   }), msg="\{Repr(images)}")
   let thumb = thumb_of(t.ctx(), "ws1/st1/s-c1/uploads/fx/tall.png").unwrap()
-  assert_true(thumb.top_crop)
+  assert_true(thumb.start_crop)
   t.tap(80.0, 150.0)
   assert_true(viewer.get() is Some(_))
   let file = viewer.get().unwrap().file
@@ -285,7 +286,7 @@ test "a tall sent picture moves its crop to the top as it lands" {
       // (each frame before its list is built, as a chat's list does: their way said once their row is laid out)
       flight_frame(c, f.chat)
       let item = c.box(style=@ui.style(w=Fixed(160.0), h=Fixed(300.0)), fn() {  })
-      flight_landing(c, f, item, path, top_crop=true, paint=Some(fn(w, h, fit, radius) {
+      flight_landing(c, f, item, path, start_crop=true, paint=Some(fn(w, h, fit, radius) {
         c.image("tall", w=Px(w), h=Px(h), fit~, radius~, bg=0L) |> ignore
       }))
       flight_placed(c, f)

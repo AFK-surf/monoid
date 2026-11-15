@@ -877,7 +877,7 @@ pub fn icon_path(String) -> String
 
 pub let identity_mark : Double
 
-pub fn image_reveal_node(@view.View, () -> String, () -> String, Double, Double, cover? : Bool, held? : () -> Bool, top_crop? : Bool) -> @view.View
+pub fn image_reveal_node(@view.View, () -> String, () -> String, Double, Double, cover? : Bool, held? : () -> Bool, start_crop? : Bool) -> @view.View
 
 pub fn in_line(Double) -> @ui.Style
 

@@ -1,4 +1,4 @@
-// A node's picture covering it from a side said along its height (View::image_covers_at): drawn as an old view's
+// A node's picture covering it from a side said along its height, centred across (View::image_covers_at): drawn as an old view's
 // picture covering its box from there (Ctx::image's FitCoverAt) is, instance for instance (where, how big, which part of
 // the image); told another side, or none, the frame after drawing it so.
 
@@ -19,7 +19,7 @@ fn cover_at_drawn(old : Bool, src : String, iw : Int, ih : Int, at : Double) -> 
         .width(Is(Some(60.0)))
         .height(Is(Some(40.0)))
         .image(Is(Some((src, "", 4096))))
-        .image_covers_at(Is(Some(at)))
+        .image_covers_at(Is(Some((0.5, at))))
         .image_fades(Is(false))
         |> ignore
       })
@@ -45,7 +45,7 @@ test "a node's picture covering it from its top, its foot or its middle: the ins
 
 ///|
 test "a node's picture told another side to cover it from, or none: the frame after, drawn so" {
-  let at : @signals.Signal[Double?] = @signals.signal(Some(0.0))
+  let at : @signals.Signal[(Double, Double)?] = @signals.signal(Some((0.5, 0.0)))
   let t = Tester::new(fn(_c) {  }, images=[("tall", 300, 3000)])
   set_view_app(fn(root) {
     root.box(fn(n) {
@@ -74,7 +74,7 @@ test "a node's picture told another side to cover it from, or none: the frame af
   // (60 by 40 of a picture 300 by 3000: as wide as it, about 1/15 of its height shown, as decoded)
   let top = part()
   assert_true(top.0 == 0.0 && top.1 > 0.0 && top.1 < 0.1, msg="from its top: \{Repr(top)}")
-  at.set(Some(1.0))
+  at.set(Some((0.5, 1.0)))
   t.frame()
   // (as much of it, from its foot)
   assert_true((part().1 - top.1).abs() < 1.0e-9 && (part().0 + part().1 - 1.0).abs() < 1.0e-9, msg="from its foot: \{Repr(part())}")

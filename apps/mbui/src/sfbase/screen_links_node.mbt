@@ -371,7 +371,7 @@ fn screen_peek_node(
         i
         .over(Is(true))
         .image(By(fn() { Some((k.get(), "", peek_size.to_int())) }))
-        .image_covers_at(Is(Some(0.0)))
+        .image_covers_at(Is(Some((0.5, 0.0))))
         |> ignore
       },
       at_once=true,

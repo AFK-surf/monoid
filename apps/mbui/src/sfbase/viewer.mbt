@@ -323,8 +323,8 @@ pub(all) struct Thumb {
   corners : @motion.MeasuredCorners
   /// its picture letterboxed in it: fitted inside its box, not cropped to it
   letterbox : Bool
-  /// a cropped picture starts at its top, rather than its middle
-  top_crop : Bool
+  /// a cropped picture starts at its start (a tall one its top, a wide one its left), rather than its middle
+  start_crop : Bool
   /// the picture it shows (its image's key), what the viewer shows of it until it has the whole: "" none of its own
   picture : String
   /// the part of its box that shows, cut by what it is in (its list, its card), where that was last drawn: what the
@@ -343,7 +343,7 @@ pub(all) struct Thumb {
 pub(all) struct ThumbLook {
   radius : Double
   letterbox : Bool
-  top_crop : Bool
+  start_crop : Bool
   picture : String
   /// its node's id, where it is pressed (0 none): where it showed, cut, as the last frame drew it (Ctx::rect_of)
   id : Int
@@ -634,7 +634,7 @@ pub fn note_thumb(
   radius : Double,
   picture~ : String,
   letterbox? : Bool = false,
-  top_crop? : Bool = false,
+  start_crop? : Bool = false,
   list? : String = "",
   over? : (Double) -> Unit = fn(_) {  },
   said? : String = "",
@@ -644,7 +644,7 @@ pub fn note_thumb(
     Some(was) => was.said != said
     None => said != ""
   }
-  pv_thumbs[id] = { radius, letterbox, top_crop, picture, id: c.node_id(node), list, over, said }
+  pv_thumbs[id] = { radius, letterbox, start_crop, picture, id: c.node_id(node), list, over, said }
   if changed {
     match thumbs_said.get(id) {
       Some(s) => s.set(said)
@@ -767,7 +767,7 @@ pub fn thumb_of(c : @ui.Ctx, id : String) -> Thumb? {
         h,
         corners: @motion.measured_radii(c, "pv-thumb/" + id).unwrap_or(@motion.MeasuredCorners::uniform(l.radius)),
         letterbox: l.letterbox,
-        top_crop: l.top_crop,
+        start_crop: l.start_crop,
         picture: l.picture,
         seen: if l.id != 0 { c.rect_of(l.id) } else { None },
         over: l.over,
@@ -2430,7 +2430,11 @@ fn flight_box(
   // where the picture lies in the thumbnail's box: covering it, or fitted inside it
   let k = if from.letterbox { dmin(from.w / tw, from.h / th) } else { dmax(from.w / tw, from.h / th) }
   let (pw0, ph0) = (tw * k, th * k)
-  let (px0, py0) = (from.x + (from.w - pw0) / 2.0, from.y + (if from.top_crop { 0.0 } else { (from.h - ph0) / 2.0 }))
+  let (px0, py0) = if from.start_crop {
+    (from.x, from.y)
+  } else {
+    (from.x + (from.w - pw0) / 2.0, from.y + (from.h - ph0) / 2.0)
+  }
   let along = fn(a : Double, b : Double) { a + (b - a) * p }
   // (the box to what the stage shows of a picture zoomed past it: its round corners on what is seen all the way; out
   // past the stage's cut they were square till it landed)

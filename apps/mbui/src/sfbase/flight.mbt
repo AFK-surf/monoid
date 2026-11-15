@@ -1334,7 +1334,7 @@ fn flight_files_of(c : @ui.Ctx, f : SendFlight) -> Unit {
         None
       }
       let to = flight_to_key(f, ff.key)
-      let (sw, sh, top_crop) = landing_shares.get(to).unwrap_or((1.0, 1.0, false))
+      let (sw, sh, start_crop) = landing_shares.get(to).unwrap_or((1.0, 1.0, false))
       match (landing, ff.picture, ff.paint) {
         (Some((_, _, bw, bh)), Some(_), Some(paint)) => {
           // (its size goes with them as it is built: its box's room, laid out)
@@ -1352,7 +1352,8 @@ fn flight_files_of(c : @ui.Ctx, f : SendFlight) -> Unit {
           }
           let corner = @sf.composer_inner() + (lands - @sf.composer_inner()) * up
           let pic = c.box(style=@ui.style(w=Fixed(w), h=Fixed(h), radius=@sf.radius_between(corner), clip=true), fn() {
-            let fit : @ui.Fit = if top_crop { FitCoverAt(0.5 * (1.0 - up)) } else { FitCover }
+            let crop_at = 0.5 * (1.0 - up)
+            let fit : @ui.Fit = if start_crop { FitCoverFrom(crop_at, crop_at) } else { FitCover }
             paint(w, h, fit, corner)
           })
           // between its tile and its place as this frame lays it out (not a frame behind), on the words' way: a new
@@ -1458,7 +1459,7 @@ pub fn flight_landing(
   i : Int,
   key : String,
   share? : (Double, Double) = (1.0, 1.0),
-  top_crop? : Bool = false,
+  start_crop? : Bool = false,
   paint? : ((Double, Double, @ui.Fit, Double) -> Unit)? = None,
 ) -> Unit {
   let ff = match flight_file_of(f, key) {
@@ -1471,7 +1472,7 @@ pub fn flight_landing(
     if paint is None { return }
   }
   @motion.measure(c, i, flight_to_key(f, key))
-  landing_shares[flight_to_key(f, key)] = (share.0, share.1, top_crop)
+  landing_shares[flight_to_key(f, key)] = (share.0, share.1, start_crop)
   let (fx, fy, fw, fh) = ff.from
   if ff.picture is Some(_) || !flight_going(c, f) {
     // the moment it is placed (and a picture all the way): not seen here
