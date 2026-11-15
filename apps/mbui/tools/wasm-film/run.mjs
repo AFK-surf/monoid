@@ -191,7 +191,7 @@ const imports = { probe, film, mbhost, __moonbit_fs_unstable: fsUnstable, __moon
 } } };
 const source = fs.readFileSync(path.join(directory, 'scene.wasm'));
 mark('read');
-if (!WebAssembly.validate(source)) throw new Error('invalid source Wasm module');
+// V8's WebAssembly.validate rejects a start function past 50,000 locals before compactStart folds them.
 const wasm = compactStart(source);
 if (!WebAssembly.validate(wasm)) throw new Error('invalid compacted Wasm module');
 mark('compact');
