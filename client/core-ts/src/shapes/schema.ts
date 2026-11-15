@@ -778,7 +778,7 @@ export const SHAPES: Record<string, Shape> = {
     ["profile", "String"],
     ["runtime", "RuntimeKind"],
     ["provider", opt("String"), { doc: "opencode: a sign-in to the OpenCode Console (an OpenCode Go profile); kimi: to Kimi (a Kimi Code profile); none: the\nruntime's subscription." }],
-    ["state", "String", { doc: "starting | needs_code | needs_approval | verifying | done | failed | cancelled" }],
+    ["state", "String", { doc: "starting | needs_code | needs_project | needs_approval | verifying | done | failed | cancelled" }],
     ["url", opt("String")],
     ["userCode", opt("String"), { doc: "needs_approval: the code to enter on `url` (Codex, Grok, OpenCode); none where the page only asks to confirm\n(Cursor)." }],
     ["error", opt("String"), { said: true }],
@@ -1098,7 +1098,7 @@ export const SHAPES: Record<string, Shape> = {
   ], { doc: "The add-profile pages, as the core keeps them for one device: the picker, how to connect what was picked (a plan or\na key), and the form with what it will be usable for. The views draw it and name what changed (`profile.flow.edit`)." }),
   FlowSignIn: struct([
     ["runtime", "RuntimeKind", { doc: "The runtime whose subscription is signed in to (`login.new` runtime)." }],
-    ["access", opt("String"), { doc: "opencode-go: the OpenCode Console instead; kimi-code: Kimi (`login.new` access)." }],
+    ["access", opt("String"), { doc: "opencode-go: the OpenCode Console instead; kimi-code: Kimi; agy-enterprise: a company's Google account (`login.new` access)." }],
     ["provider", "String", { doc: "Who is signed in to, as the steps name it: Claude, ChatGPT, OpenCode, Kimi, Grok, Cursor, Devin." }],
   ], { doc: "A sign-in the add-profile pages start." }),
   FlowChoice: struct([

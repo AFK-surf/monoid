@@ -18,7 +18,7 @@ import { claudeOAuthToken, claudeToken as tokenOf } from "./oauth.ts";
 import { CONSOLE, RenewRefused } from "./console.ts";
 import { CURSOR, type CursorUrls, cursorMe, cursorModels, readCursor } from "./cursor.ts";
 import { type DevinFusion, devinCatalog, devinData } from "../agents/devin.ts";
-import { agyHome, agyTakeBack, agyToken, noteAgyEmail } from "../agents/agy.ts";
+import { agyHome, agyPlanIn, agyTakeBack, agyToken, agyTokenReady, noteAgyEmail } from "../agents/agy.ts";
 import { platform } from "../platform/index.ts";
 import { profileFetch } from "../ops/agent-env.ts";
 import { withShellCommand } from "../ops/shell-path.ts";
@@ -351,12 +351,19 @@ async function checkInner(o: CheckOptions, lang: Lang): Promise<ProfileCheck> {
     // `agy` had moved it (`agyTakeBack`); whether it works, and its models, a session opened only to ask says (index.ts).
     if (!(await agyTakeBack(o.home))) return check("login", t("station.profile.signedOut"), null);
     let email: string | null = null;
+    let text = "";
     try {
-      email = await noteAgyEmail(o.home, await readFile(agyToken(o.home), "utf8"));
+      text = await readFile(agyToken(o.home), "utf8");
+      email = await noteAgyEmail(o.home, text);
     } catch {
       return check("login", t("station.profile.signedOut"), null);
     }
-    return check("ok", [t("station.profile.signedIn"), email ?? ""].filter((s) => s !== "").join(t("station.list.comma")), null);
+    // A company's account whose licence or project was never given is signed out to `agy` (agents/agy.ts).
+    if (!agyTokenReady(text, false)) return check("login", t("station.profile.signedOut"), null);
+    const plan = agyPlanIn(text);
+    const result = check("ok", [t("station.profile.signedIn"), email ?? ""].filter((s) => s !== "").join(t("station.list.comma")), null);
+    if (plan !== null) result.plan = plan;
+    return result;
   }
   return check("unknown", t("station.profile.envUnchecked"), null);
 }

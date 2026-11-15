@@ -395,7 +395,7 @@ export interface LoginJob {
 	 * runtime's subscription.
 	 */
 	provider?: string;
-	/** starting | needs_code | needs_approval | verifying | done | failed | cancelled */
+	/** starting | needs_code | needs_project | needs_approval | verifying | done | failed | cancelled */
 	state: string;
 	url?: string;
 	/**

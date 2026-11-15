@@ -2317,6 +2317,8 @@ web-pages.profiles.onStation
 web-pages.profiles.openAuth
 web-pages.profiles.pasteCode
 web-pages.profiles.pasteKey
+web-pages.profiles.projectPlaceholder
+web-pages.profiles.projectStep
 web-pages.profiles.quota
 web-pages.profiles.quotaAbout
 web-pages.profiles.quotaReset
@@ -2346,6 +2348,7 @@ web-pages.profiles.signedInSwitch
 web-pages.profiles.signingIn
 web-pages.profiles.signingInNote
 web-pages.profiles.step1Devin
+web-pages.profiles.step1Google
 web-pages.profiles.step2
 web-pages.profiles.step2Devin
 web-pages.profiles.subscriptionSignIn

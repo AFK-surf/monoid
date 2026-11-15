@@ -340,8 +340,17 @@ test("a_google_account_is_googles_plan_running_the_antigravity_cli_beside_its_ke
   // The plan (signed in with Google) or the key.
   flows.change(topic, 1, "edit", { provider: "google" });
   view = flows.value(topic);
-  assert.deepEqual([view.step, view.choices.map((c: J) => [c.id, c.title])], ["method", [["plan", "订阅 · Google AI"], ["key", "API key"]]]);
+  // A person's plan, a company's (Gemini Enterprise: signed in with a work Google account), or the key.
+  assert.deepEqual([view.step, view.choices.map((c: J) => [c.id, c.title])], ["method", [["plan", "订阅 · Google AI"], ["enterprise", "企业版 · Gemini Enterprise"], ["key", "API key"]]]);
   assert.match(view.choices[0].hint, /^Google AI Pro \/ Ultra.*Antigravity CLI.*账号可能被停用。$/);
+  assert.match(view.choices[1].hint, /^公司的 Google Workspace 或 Google Cloud 账号.*Google Cloud 项目.*账号可能被停用。$/);
+  flows.change(topic, 1, "edit", { method: "enterprise" });
+  view = flows.value(topic);
+  assert.ok("ok" in conform("ProfileFlowView", view), JSON.stringify(conform("ProfileFlowView", view)));
+  assert.deepEqual([view.step, view.signIn, view.usesLine], ["connect", { runtime: "agy", access: "agy-enterprise", provider: "Google" }, "添加后可用于：Antigravity CLI"]);
+  // Back: to the ways again.
+  flows.change(topic, 1, "edit", { back: true });
+  assert.deepEqual([flows.value(topic).step, flows.value(topic).choices.length], ["method", 3]);
   flows.change(topic, 1, "edit", { method: "plan" });
   view = flows.value(topic);
   assert.ok("ok" in conform("ProfileFlowView", view), JSON.stringify(conform("ProfileFlowView", view)));
@@ -350,6 +359,12 @@ test("a_google_account_is_googles_plan_running_the_antigravity_cli_beside_its_ke
   flows.change(topic, 1, "edit", { key: "AIza-1" });
   assert.deepEqual(flows.begin(topic, 1), { access: { kind: "api-provider", key: "AIza-1", provider: "google" } });
   flows.finish(topic, 1, null);
+  // A station that runs it but takes no Google key: the two plans, no key; a company's not installed yet is installed first.
+  s.set(overview, { ok: { apiProviders: [], updates: [{ id: "station" }, { id: "dsh" }, { id: "agy", name: "Antigravity CLI", installed: true }] } });
+  flows.change(topic, 1, "edit", { provider: "google" });
+  view = flows.value(topic);
+  assert.deepEqual([view.step, view.choices.map((c: J) => c.id)], ["method", ["plan", "enterprise"]]);
+  flows.change(topic, 1, "edit", { provider: "" });
   // A station that does not run it: no plan, the key straight to its form.
   s.set(overview, { ok: { apiProviders: [{ id: "google" }], updates: [{ id: "station" }, { id: "dsh" }] } });
   flows.change(topic, 1, "edit", { provider: "google" });

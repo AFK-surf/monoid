@@ -2,8 +2,9 @@
 // the instructions in _meta.antigravity.systemPrompt.append, session/set_model, a turn's usage in the prompt's answer.
 // Without `acp`, its terminal interface signing in as 1.4.12's does (in a terminal, not signed in, not in a remote session):
 // how to sign in asked, Google's page printed, the code read back (`bad`: nothing comes of it), its sign-in written to
-// $HOME/.gemini/antigravity-cli, and the interface going on until it is stopped.
-import { appendFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+// $HOME/.gemini/antigravity-cli, and the interface going on until it is stopped; a company's account as 1.5.9 signs it
+// in (below). FAKE_AGY_TIER: the tier session/new says (`_meta.antigravity.tier`).
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
@@ -11,7 +12,17 @@ const dump = process.env.FAKE_DUMP;
 const args = process.argv.slice(2);
 const promptAt = args.indexOf('-p');
 if (promptAt >= 0 && args[promptAt + 1] === '/usage') await printUsage();
+if (args[0] === 'models') renew();
 if (args[0] !== 'acp') await signIn();
+// `agy models` on a sign-in that ran out: renewed in place, written back with its token and way of signing in alone (as
+// a renewal may leave the rest out).
+function renew() {
+  const path = join(process.env.ANTIGRAVITY_GEMINI_DIR, 'antigravity-cli', 'antigravity-oauth-token');
+  const had = JSON.parse(readFileSync(path, 'utf8'));
+  writeFileSync(path, JSON.stringify({ token: { ...had.token, access_token: 'renewed', expiry: new Date(Date.now() + 3600_000).toISOString() }, auth_method: had.auth_method }));
+  process.stdout.write('gemini-3.5-flash\n');
+  process.exit(0);
+}
 async function printUsage() {
   if (dump) appendFileSync(dump, JSON.stringify({ args, home: process.env.HOME ?? null, geminiDir: process.env.ANTIGRAVITY_GEMINI_DIR ?? null, cloudCodeUrl: process.env.CLOUD_CODE_URL ?? null, key: process.env.GEMINI_API_KEY ?? null, updates: process.env.AGY_CLI_DISABLE_AUTO_UPDATE ?? null, fileTokens: process.env.SSH_CLIENT ?? null }) + '\n');
   if (process.env.FAKE_AGY_SIGNED_OUT) {
@@ -28,6 +39,11 @@ async function printUsage() {
   if (!existsSync(tokenPath)) {
     process.stdout.write('Authentication required. Please visit the URL to log in:\n  https://accounts.google.com/o/oauth2/auth\n\nWaiting for authentication (timeout 60s)...\n');
     await new Promise(() => {});
+  }
+  // A company's account paying as it goes: no windows.
+  if (process.env.FAKE_AGY_USAGE_EMPTY) {
+    process.stdout.write(JSON.stringify({ conversation_id: '', status: 'SUCCESS', command: { name: 'usage', data: { groups: [] } } }) + '\n');
+    process.exit(0);
   }
   process.stdout.write(JSON.stringify({
     conversation_id: '',
@@ -64,21 +80,66 @@ async function signIn() {
   process.stdout.write('\u001b[?1049h Welcome to the Antigravity CLI. You are currently not signed in.\n\n Select login method:\n > 1. Google OAuth\n2. Use a Google Cloud project\n');
   let typed = '';
   let step = 'menu';
+  const at = join(process.env.HOME, '.gemini', 'antigravity-cli');
+  const token = (fields) => {
+    mkdirSync(at, { recursive: true });
+    writeFileSync(join(at, 'antigravity-oauth-token'), JSON.stringify({ ...fields }));
+  };
+  let access = '';
+  const signedIn = (fields) => {
+    token({ token: { access_token: access, token_type: 'Bearer', refresh_token: 'refresh' }, auth_method: 'gcp', id_token_email: 'someone@company.com', ...fields });
+    step = 'in';
+    process.stdout.write('\u001b[2J Welcome to Antigravity CLI!\n');
+  };
+  const codeAsked = () => process.stdout.write(` Signing in...Your browser should open automatically. If not:\n\n ${url}\n\n If you aren't automatically redirected, paste the authorization code below:\n\n authorization code...\n`);
+  // A company's account (1.5.9): the second way (a Google Cloud project), Continue with Google Cloud; once its code is in,
+  // its file written with only its token, then its licences (FAKE_AGY_LICENSES: one, chosen with Enter) or, with none, how
+  // to pay (Pay As You Go, the second) and its project asked (`bad-project`: refused).
   process.stdin.on('data', (chunk) => {
     typed += chunk.toString('utf8');
     let enter;
     while ((enter = typed.indexOf('\r')) >= 0) {
-      const line = typed.slice(0, enter).trim();
+      const down = typed.slice(0, enter).includes('\u001b[B');
+      const line = typed.slice(0, enter).replaceAll('\u001b[B', '').trim();
       typed = typed.slice(enter + 1);
-      if (step === 'menu') {
+      if (dump) appendFileSync(dump + '.keys', JSON.stringify({ step, down, line }) + '\n');
+      if (step === 'menu' && down) {
+        step = 'cloud';
+        process.stdout.write(' Select Google Cloud sign-in method:\n > 1. Continue with Google Cloud\n 2. Use advanced SSO config\n');
+      } else if (step === 'menu') {
         step = 'code';
-        process.stdout.write(` Signing in...Your browser should open automatically. If not:\n\n ${url}\n\n If you aren't automatically redirected, paste the authorization code below:\n\n authorization code...\n`);
+        codeAsked();
+      } else if (step === 'cloud') {
+        step = 'gcp-code';
+        codeAsked();
       } else if (step === 'code' && line !== 'bad') {
-        const at = join(process.env.HOME, '.gemini', 'antigravity-cli');
-        mkdirSync(at, { recursive: true });
-        writeFileSync(join(at, 'antigravity-oauth-token'), JSON.stringify({ token: { access_token: `ya29.${line}`, token_type: 'Bearer' }, auth_method: 'oauth', id_token_email: 'someone@gmail.com' }));
+        token({ token: { access_token: `ya29.${line}`, token_type: 'Bearer' }, auth_method: 'oauth', id_token_email: 'someone@gmail.com' });
         step = 'in';
         process.stdout.write('\u001b[2J Welcome to Antigravity CLI!\n');
+      } else if (step === 'gcp-code' && line !== 'bad') {
+        access = `ya29.${line}`;
+        token({ token: { access_token: access, token_type: 'Bearer', refresh_token: 'refresh' }, auth_method: 'gcp', id_token_email: 'someone@company.com' });
+        process.stdout.write(' Fetching licenses...\n');
+        // (as a Google Cloud account that may not list licences: said, and gone on)
+        if (!process.env.FAKE_AGY_LICENSES) process.stdout.write(' Could not fetch licenses: Permission denied (403)\n');
+        if (process.env.FAKE_AGY_LICENSES) {
+          step = 'license';
+          process.stdout.write(' Select a license:\n > Gemini Enterprise Ultra (company-project)\n\n Can\'t find your subscription?\n');
+        } else {
+          step = 'billing';
+          process.stdout.write(' How do you want to pay?\n > 1. Subscriptions\n 2. Pay As You Go\n   Pay only for the tokens you use\n');
+        }
+      } else if (step === 'license' && process.env.FAKE_AGY_AUTH_ERROR) {
+        process.stdout.write(' [Auth Error] Failed to select license: 403 PERMISSION_DENIED\n');
+      } else if (step === 'license') {
+        signedIn({ project_id: 'company-project', region: 'us-central1', user_tier: 'gcp-ge-ultra-tier', tier_display_name: 'Gemini Enterprise Ultra' });
+      } else if (step === 'billing' && down) {
+        step = 'project';
+        process.stdout.write(' Provide Google Cloud project: \n');
+      } else if (step === 'project' && line === 'bad-project') {
+        process.stdout.write(' Permission denied on project bad-project\n');
+      } else if (step === 'project') {
+        signedIn({ project_id: line, region: 'global' });
       }
     }
   });
@@ -118,7 +179,7 @@ for await (const line of createInterface({ input: process.stdin })) {
     if (process.env.FAKE_AGY_SIGNED_OUT) { say({ id: m.id, error: { code: -32000, message: 'Authentication required' } }); continue; }
     sessionId = randomUUID();
     writeFileSync(join(conversations, sessionId), 'conversation');
-    reply(m.id, { sessionId, models });
+    reply(m.id, { sessionId, models, ...(process.env.FAKE_AGY_TIER ? { _meta: { antigravity: { tier: { id: process.env.FAKE_AGY_TIER, name: 'Google AI Ultra' } } } } : {}) });
   } else if (m.method === 'session/load') {
     sessionId = p.sessionId;
     if (!existsSync(join(conversations, sessionId))) { say({ id: m.id, error: { code: -32602, message: 'conversation not found' } }); continue; }

@@ -4,14 +4,15 @@ import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { after, test } from "node:test";
-import { AGY_FILE_TOKENS, AgyDriver, SESSIONS, agyAccountFile, agyKeychain, goKeyringValue, agyBaseModel, agyCatalog, agyConversations, agyEnv, agyHome, agyToken, agyVariant, classifyFailure, geminiDir, noticeFailure } from "../src/agents/agy.ts";
+import { AGY_FILE_TOKENS, AgyDriver, SESSIONS, agyAccountFile, agyLentFile, agyPlan, agyRenew, agyTierIn, agyTokenReady, agyKeychain, goKeyringValue, agyBaseModel, agyCatalog, agyConversations, agyEnv, agyHome, agyToken, agyVariant, classifyFailure, geminiDir, noticeFailure } from "../src/agents/agy.ts";
 import type { OpenOptions, RuntimeEvent } from "../src/agents/runtime.ts";
 import { allLeft } from "../src/agents/runner.ts";
 import { profileRuntimes } from "../src/agents/profiles.ts";
 import { Accounts, accountEmail, accountEmailSoon } from "../src/accounts/index.ts";
 import { uncheckOutdated } from "../src/accounts/models.ts";
 import { accessKinds, checkProfile, loginCommand } from "../src/accounts/profiles.ts";
-import { LoginManager, type LoginState } from "../src/accounts/login.ts";
+import { LoginManager, type LoginState, agyCallbackCode } from "../src/accounts/login.ts";
+import { fakeBrowser } from "./accounts-fakes.ts";
 import { checkQuota } from "../src/accounts/quota.ts";
 import { ConfigFile } from "../src/ops/config.ts";
 import { Accounts as SessionAccounts } from "../src/sessions/accounts.ts";
@@ -355,6 +356,198 @@ test("a Google account: signed in in its terminal interface (the way chosen, Goo
   assert.equal(agyEnv(signed).GEMINI_API_KEY, undefined);
   const s = await driver.open(signed, () => {});
   await s.dispose();
+});
+
+test("a company's Google account: signed in by Google Cloud's way, its licence chosen, not done on its first file with only a token", { skip: process.platform === "win32" && "no terminal to sign in in" }, async () => {
+  const home = join(data, "company");
+  const dump = join(data, "company-dump");
+  const env = { ...process.env, PATH: fake, FAKE_DUMP: dump, FAKE_AGY_LICENSES: "1" } as Record<string, string>;
+  const logins = new LoginManager(data, { claude: "claude", codex: "codex", agy: "agy" }, () => env);
+  const wait = async (state: LoginState) => until(() => logins.get("c")?.state === state);
+  try {
+    await logins.start({ id: "c", runtime: "agy", home, enterprise: true }, "en");
+    await wait("needs_code");
+    assert.match(logins.get("c")!.url ?? "", /^https:\/\/accounts\.google\.com\/o\/oauth2\/auth\?/);
+    await logins.submitCode("c", "4/0Ab-company", "en");
+    await wait("done");
+    // Its second way (the arrow down, then Enter), Continue with Google Cloud, the code, then its licence.
+    const keys = readFileSync(dump + ".keys", "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    assert.deepEqual(keys.map((k) => [k.step, k.down]), [["menu", true], ["cloud", false], ["gcp-code", false], ["license", false]]);
+    // Done only once the licence was written: the sign-in stopped on the file with only its token would be signed out.
+    const file = JSON.parse(readFileSync(agyToken(home), "utf8"));
+    assert.deepEqual([file.project_id, file.user_tier, file.auth_method], ["company-project", "gcp-ge-ultra-tier", "gcp"]);
+    assert.equal(JSON.parse(readFileSync(agyAccountFile(home), "utf8")).email, "someone@company.com");
+    const checked = await checkProfile({ runtime: "agy", kind: "subscription", key: "", via: {}, home, env, machine: false, lang: "en" });
+    assert.deepEqual([checked.state, checked.plan], ["ok", "Enterprise Ultra"]);
+    // A file with only its token (the licence never chosen) is signed out, as `agy` takes it.
+    writeFileSync(agyToken(home), JSON.stringify({ token: { access_token: "ya29.x" }, auth_method: "gcp", id_token_email: "someone@company.com" }));
+    assert.equal((await checkProfile({ runtime: "agy", kind: "subscription", key: "", via: {}, home, env, machine: false, lang: "en" })).state, "login");
+  } finally {
+    await logins.close();
+  }
+});
+
+test("a company's Google account with no licence: Pay As You Go chosen, its Google Cloud project asked of the person; one refused ends the sign-in saying why", { skip: process.platform === "win32" && "no terminal to sign in in" }, async () => {
+  const home = join(data, "paygo");
+  const dump = join(data, "paygo-dump");
+  const env = { ...process.env, PATH: fake, FAKE_DUMP: dump } as Record<string, string>;
+  const logins = new LoginManager(data, { claude: "claude", codex: "codex", agy: "agy" }, () => env);
+  const wait = async (state: LoginState) => until(() => logins.get("p")?.state === state);
+  try {
+    await logins.start({ id: "p", runtime: "agy", home, enterprise: true }, "en");
+    await wait("needs_code");
+    await logins.submitCode("p", "4/0Ab-paygo", "en");
+    await wait("needs_project");
+    await assert.rejects(logins.submitCode("p", "  ", "en"), new RegExp(tr("en", "station.login.emptyCode")));
+    await logins.submitCode("p", "bad-project", "en");
+    await wait("failed");
+    assert.match(logins.get("p")!.error ?? "", /Permission denied on project bad-project/);
+
+    await logins.start({ id: "p", runtime: "agy", home, enterprise: true }, "en");
+    await wait("needs_code");
+    await logins.submitCode("p", "4/0Ab-paygo", "en");
+    await wait("needs_project");
+    await logins.submitCode("p", " my-project ", "en");
+    await wait("done");
+    const file = JSON.parse(readFileSync(agyToken(home), "utf8"));
+    assert.deepEqual([file.project_id, file.auth_method, file.token.access_token], ["my-project", "gcp", "ya29.4/0Ab-paygo"]);
+    const keys = readFileSync(dump + ".keys", "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    assert.deepEqual(keys.slice(-4).map((k) => [k.step, k.down]), [["cloud", false], ["gcp-code", false], ["billing", true], ["project", false]]);
+    // A company's account on no tier is Enterprise.
+    const checked = await checkProfile({ runtime: "agy", kind: "subscription", key: "", via: {}, home, env, machine: false, lang: "en" });
+    assert.deepEqual([checked.state, checked.plan], ["ok", "Enterprise"]);
+  } finally {
+    await logins.close();
+  }
+});
+
+test("a company's Google account through the accounts: made a profile that remembers it, signed in again the same way; its plan as `agy` says it", { skip: process.platform === "win32" && "no terminal to sign in in" }, async (t) => {
+  const dir = join(data, "company-accounts");
+  mkdirSync(dir, { recursive: true });
+  const dump = join(dir, "dump");
+  const saved = { PATH: process.env.PATH, FAKE_DUMP: process.env.FAKE_DUMP, FAKE_AGY_LICENSES: process.env.FAKE_AGY_LICENSES };
+  Object.assign(process.env, { PATH: fake, FAKE_DUMP: dump, FAKE_AGY_LICENSES: "1" });
+  t.after(() => {
+    for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k]; else process.env[k] = v;
+  });
+  const store = Store.open(":memory:", null);
+  const config = new ConfigFile(dir);
+  let tier: string | undefined = "gcp-ge-plus-tier";
+  const accounts = new Accounts({
+    data: dir,
+    store,
+    config,
+    machine: null,
+    checkOnStart: false,
+    loginCommands: { claude: "claude", codex: "codex", agy: "agy" },
+    check: (req, lang) => checkProfile({ ...req, env: {}, machine: false, lang }),
+    quota: async () => ({ state: "ok", windows: [], detail: null, checkedAt: 0 }),
+    agy: () => ({ models: async () => ["gemini-3.5-flash"], catalog: async () => ({ models: ["gemini-3.5-flash"], efforts: {}, defaults: {}, ...(tier !== undefined ? { tier } : {}) }) }),
+  });
+  const viewer = { email: "owner@company.com" } as never;
+  accounts.start();
+  try {
+    const { id } = await accounts.newLogin({ access: "agy-enterprise" }, viewer, "en");
+    await until(() => accounts.logins.get(id)?.state === "needs_code");
+    await accounts.logins.submitCode(id, "4/0Ab-made", "en");
+    await until(() => (config.raw().profiles ?? []).length === 1);
+    const made = config.raw().profiles[0];
+    assert.deepEqual([made.runtime, made.access, made.name], ["agy", { kind: "subscription", enterprise: true }, "someone@company.com"]);
+    // Its plan: as `agy` said it; where it says none, its sign-in's.
+    assert.equal((await accounts.check(made.id, "en")).plan, "Enterprise Plus");
+    tier = undefined;
+    assert.equal((await accounts.check(made.id, "en")).plan, "Enterprise Ultra");
+    // Signed in again: Google Cloud's way, without being told.
+    await accounts.startLogin(made.id, viewer, "en");
+    await until(() => accounts.logins.get(made.id)?.state === "needs_code");
+    const keys = readFileSync(dump + ".keys", "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    assert.deepEqual(keys.slice(-2).map((k) => [k.step, k.down]), [["menu", true], ["cloud", false]]);
+    accounts.logins.cancel(made.id);
+  } finally {
+    await accounts.close();
+    store.close();
+  }
+});
+
+test("a Google sign-in done in the station's browser: its code read off the page Google comes back to, its tab closed, nothing to paste; another sign-in's page left alone", { skip: process.platform === "win32" && "no terminal to sign in in" }, async () => {
+  const home = join(data, "in-station");
+  const env = { ...process.env, PATH: fake, FAKE_AGY_LICENSES: "1" } as Record<string, string>;
+  const logins = new LoginManager(data, { claude: "claude", codex: "codex", agy: "agy" }, () => env);
+  const b = fakeBrowser();
+  logins.attach(b.pages);
+  const wait = async (state: LoginState) => until(() => logins.get("s")?.state === state);
+  try {
+    await logins.start({ id: "s", runtime: "agy", home, enterprise: true }, "en");
+    await wait("needs_code");
+    assert.equal(logins.get("s")!.browser, true);
+    await logins.openPage("s", "en");
+    const [tab] = [...b.tabs.keys()];
+    const state = new URL(logins.get("s")!.url!).searchParams.get("state");
+    // Another sign-in's page (its state not this one's): nothing taken.
+    b.went(tab!, "https://antigravity.google/oauth-callback?code=4%2F0Ab-other&state=someone-else");
+    assert.equal(logins.get("s")!.state, "needs_code");
+    assert.ok(b.tabs.has(tab!));
+    // This one's: its code sent, its tab closed, and on through its licence to done.
+    b.went(tab!, `https://antigravity.google/oauth-callback?code=4%2F0Ab-station&state=${state}`);
+    assert.equal(logins.get("s")!.state, "verifying");
+    assert.ok(!b.tabs.has(tab!), "its tab closed");
+    await wait("done");
+    const file = JSON.parse(readFileSync(agyToken(home), "utf8"));
+    assert.deepEqual([file.token.access_token, file.project_id], ["ya29.4/0Ab-station", "company-project"]);
+  } finally {
+    await logins.close();
+  }
+  assert.equal(agyCallbackCode("https://antigravity.google/oauth-callback/?code=c&state=s", "https://accounts.google.com/o/oauth2/auth?state=s"), "c");
+  assert.equal(agyCallbackCode("https://antigravity.google/oauth-callback?state=s", "https://accounts.google.com/o/oauth2/auth?state=s"), null);
+  assert.equal(agyCallbackCode("https://evil.example/oauth-callback?code=c&state=s", "https://accounts.google.com/o/oauth2/auth?state=s"), null);
+  assert.equal(agyCallbackCode("https://antigravity.google/oauth-callback?code=c&state=t", "https://accounts.google.com/o/oauth2/auth?state=s"), null);
+  assert.equal(agyCallbackCode(null, null), null);
+});
+
+test("a company's sign-in that `agy` refuses after its code ends at once saying why, without its `[Auth Error]`", { skip: process.platform === "win32" && "no terminal to sign in in" }, async () => {
+  const home = join(data, "auth-error");
+  const env = { ...process.env, PATH: fake, FAKE_AGY_LICENSES: "1", FAKE_AGY_AUTH_ERROR: "1" } as Record<string, string>;
+  const logins = new LoginManager(data, { claude: "claude", codex: "codex", agy: "agy" }, () => env);
+  try {
+    await logins.start({ id: "e", runtime: "agy", home, enterprise: true }, "en");
+    await until(() => logins.get("e")?.state === "needs_code");
+    await logins.submitCode("e", "4/0Ab-x", "en");
+    await until(() => logins.get("e")?.state === "failed");
+    assert.equal(logins.get("e")!.error, tr("en", "station.login.agyFailed", { error: "Failed to select license: 403 PERMISSION_DENIED" }));
+  } finally {
+    await logins.close();
+  }
+});
+
+test("a Google account's tier, as people know its plan; a sign-in's file whole only with a company's licence or project; renewed and lent with what it holds", async () => {
+  assert.deepEqual(
+    ["g1-ultra-tier", "g1-pro-tier", "free-tier", "gcp-ge-ultra-tier", "gcp-ge-plus-tier", "gcp-ge-standard-tier", "gcp-standard-tier", "gcp-other-tier", "", "unknown"].map((t) => agyPlan(t)),
+    ["Ultra", "Pro", "Free", "Enterprise Ultra", "Enterprise Plus", "Enterprise", "Enterprise", "Enterprise", null, null],
+  );
+  assert.equal(agyPlan(null, true), "Enterprise");
+  assert.equal(agyTierIn({ sessionId: "s", _meta: { antigravity: { tier: { id: "g1-ultra-tier", name: "Google AI Ultra" } } } }), "g1-ultra-tier");
+  assert.equal(agyTierIn({ sessionId: "s" }), null);
+  const token = { access_token: "ya29.x" };
+  assert.equal(agyTokenReady(JSON.stringify({ token, auth_method: "consumer" }), false), true);
+  assert.equal(agyTokenReady(JSON.stringify({ token, auth_method: "oauth" }), false), true);
+  assert.equal(agyTokenReady(JSON.stringify({ token, auth_method: "gcp" }), false), false);
+  assert.equal(agyTokenReady(JSON.stringify({ token, auth_method: "gcp", project_id: "p" }), false), true);
+  assert.equal(agyTokenReady(JSON.stringify({ token, auth_method: "gcp", user_tier: "gcp-ge-ultra-tier" }), true), true);
+  assert.equal(agyTokenReady(JSON.stringify({ token }), true), false);
+  assert.equal(agyTokenReady(JSON.stringify({ token: { access_token: "" }, project_id: "p" }), false), false);
+  assert.equal(agyTokenReady("not json", false), false);
+  // Lent: the rest of the host's file kept, never its refresh token; a host from before lends none of it.
+  const stored = { auth_method: "gcp", id_token_email: "a@company.com", project_id: "p", region: "us-central1", user_tier: "gcp-ge-ultra-tier", tier_display_name: "Gemini Enterprise Ultra", wif_provider: "w" };
+  const lent = JSON.parse(agyLentFile({ token: { access_token: "a", refresh_token: "r" }, email: "a@company.com", auth_method: "gcp", stored }));
+  assert.deepEqual(lent, { ...stored, token: { access_token: "a" } });
+  assert.deepEqual(JSON.parse(agyLentFile({ token: { access_token: "a", refresh_token: "r" }, email: null, auth_method: null })), { token: { access_token: "a" }, auth_method: "consumer" });
+  // Renewed by `agy models`, which writes back its token alone: the company's project and tier kept.
+  const home = join(data, "renew-company");
+  mkdirSync(join(geminiDir(home), "antigravity-cli"), { recursive: true });
+  writeFileSync(agyToken(home), JSON.stringify({ ...stored, token: { access_token: "old", refresh_token: "r", expiry: "2020-01-01T00:00:00Z" } }));
+  await agyRenew(home, join(fileURLToPath(new URL("./fake", import.meta.url)), "agy"));
+  const renewed = JSON.parse(readFileSync(agyToken(home), "utf8"));
+  assert.deepEqual([renewed.token.access_token, renewed.token.refresh_token, renewed.project_id, renewed.region, renewed.user_tier, renewed.tier_display_name], ["renewed", "r", "p", "us-central1", "gcp-ge-ultra-tier", "Gemini Enterprise Ultra"]);
 });
 
 test("a Google account's sign-in: refused at once where there is no terminal; without a sign-in its allowance says signed out; its login command", async () => {

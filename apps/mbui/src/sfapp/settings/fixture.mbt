@@ -287,6 +287,22 @@ let fixture_open : FixtureOpen = { sheet: "", list: "", block: 0, frames: 0, des
 let fx_connect_step : Ref[String] = Ref("team")
 
 ///|
+/// Where a new profile's draft for Google is (settings-new-profile-google…): "" none; "pick" (the providers, Google
+/// among them), "method" (its ways), or the way chosen ("plan", "enterprise", "key"); moved on as the page edits it.
+// kept across runs: the fixture's state, reset with the rest of it (fixture_reset)
+let fx_google : Ref[String] = Ref("")
+
+///|
+/// Its sign-in's state ("" none started; "needs_code", "needs_project", "verifying"), moved on as the page sends it.
+// kept across runs: the fixture's state, reset with the rest of it (fixture_reset)
+let fx_google_login : Ref[String] = Ref("")
+
+///|
+/// Whether Google accounts are among the profiles (settings-profiles-google): a company's and a person's.
+// kept across runs: the fixture's state, reset with the rest of it (fixture_reset)
+let fx_google_profiles : Ref[Bool] = Ref(false)
+
+///|
 /// 连接 (MBUI_FIXTURE=settings-connects): a Slack app made and not connected yet over the connects, one connect with its
 /// own picture and one with its platform's mark.
 let fx_connects_waiting : Ref[Bool] = Ref(false)
@@ -393,6 +409,9 @@ fn fixture_reset() -> Unit {
   fixture_open.frames = 0
   fixture_open.desk = ""
   fx_connect_step.val = "team"
+  fx_google.val = ""
+  fx_google_login.val = ""
+  fx_google_profiles.val = false
   fx_connects_waiting.val = false
 }
 
@@ -702,6 +721,22 @@ pub fn fixture_page(mode : String) -> String {
       up("", "settings/profile/ws1/st1/cc", 0)
     }
     "settings-new-profile-login" => fx.new_login = true
+    // Google's: from the providers on (pressed through), at its ways, at a company account's code and its project
+    "settings-new-profile-google" => fx_google.val = "pick"
+    "settings-new-profile-google-ways" => fx_google.val = "method"
+    "settings-new-profile-google-code" => {
+      fx_google.val = "enterprise"
+      fx_google_login.val = "needs_code"
+    }
+    "settings-new-profile-google-plan" => {
+      fx_google.val = "plan"
+      fx_google_login.val = "needs_code"
+    }
+    "settings-new-profile-google-project" => {
+      fx_google.val = "enterprise"
+      fx_google_login.val = "needs_project"
+    }
+    "settings-profiles-google" => fx_google_profiles.val = true
     // a key's form for a provider with a choice of region and of protocol (Kimi's: 中国 / 国际, OpenAI / Anthropic
     // 兼容)
     "settings-new-profile-key" => fx.new_key = true
@@ -799,7 +834,8 @@ pub fn fixture_page(mode : String) -> String {
     "settings-adb-second" => "adb:ws1/st2"
     "settings-profile-menu" | "settings-profile-lower" | "settings-profile-share" | "settings-profile-login" | "settings-profile-login-station" =>
       "profile:ws1/st1#cc"
-    "settings-new-profile" | "settings-new-profile-hermes" | "settings-new-profile-stations" | "settings-new-profile-login" | "settings-new-profile-login-station" | "settings-new-profile-key" => "new-profile:ws1/st1"
+    "settings-new-profile" | "settings-new-profile-hermes" | "settings-new-profile-stations" | "settings-new-profile-login" | "settings-new-profile-login-station" | "settings-new-profile-key" | "settings-new-profile-google" | "settings-new-profile-google-ways"
+    | "settings-new-profile-google-code" | "settings-new-profile-google-plan" | "settings-new-profile-google-project" => "new-profile:ws1/st1"
     "settings-connect-menu" | "settings-connect-mode" => "connect:ws1/st1#k1"
     "settings-connect-run" | "settings-connect-switch" | "settings-slack-app" => "connect:ws1/st1#k1"
     // the page of a connect of another kind, none of its sessions yet
@@ -848,7 +884,8 @@ pub fn fixture_page(mode : String) -> String {
     "settings-profile-quota-kinds" => "profile:ws1/st1#cc"
     "settings-me-reading" => "me"
     "settings-usage-details-pending" => "usage"
-    "settings-profiles-pick" | "settings-profiles-monthly" | "settings-profiles-fable" | "settings-profiles-own3" | "settings-profiles-week-fable" | "settings-profiles-several" | "settings-profiles-offer" => "profiles"
+    "settings-profiles-pick" | "settings-profiles-monthly" | "settings-profiles-fable" | "settings-profiles-own3" | "settings-profiles-week-fable" | "settings-profiles-several" | "settings-profiles-offer"
+    | "settings-profiles-google" => "profiles"
     "settings-connect" | "settings-connect-borrow" => "connect:ws1/st1#k1"
     _ =>
       if m.has_prefix("settings-") {
@@ -1024,6 +1061,23 @@ fn fx_profiles() -> Array[Json] {
       ("usedBy", []),
     ]),
   ]
+  if fx_google_profiles.val {
+    // Google accounts signed in to (settings-profiles-google): a company's on Gemini Enterprise, a person's on Ultra,
+    // their plans as the station's check says them
+    for g in [("gw", "lin@company.example", "Enterprise Ultra"), ("gp", "lin@gmail.example", "Ultra")] {
+      profiles.push(
+        fx_profile(g.0, g.1, "subscription", "green", "可用", "google", "Google 订阅", [
+          ("runtime", str("agy")),
+          ("runtimes", [str("agy")]),
+          ("email", str(g.1)),
+          ("planText", str(g.2)),
+          ("signInProvider", str("Google")),
+          ("usesText", str("Antigravity CLI")),
+          ("usedBy", []),
+        ]),
+      )
+    }
+  }
   if fx.copy_shown {
     // Maple's Claude subscription borrowed here (share role user): its station pauses it (`enabled`), edits nothing else.
     profiles.push(
@@ -1739,7 +1793,21 @@ fn fx_station(address : String) -> Json {
           ("connects", [fx_connect("k1", "星火助手", "online", "在线", "multi-session")]),
           ("profiles", Json::array(profiles)),
           // a new profile's sign-in under way (settings-new-profile-login…)
-          ("logins", if fx.new_login { [obj([("id", str("login-new")), ("runtime", str("claude")), ("job", fx_login_job("login-new", "needs_code"))])] } else { [] }),
+          (
+            "logins",
+            if fx_google_login.val != "" {
+              [
+                obj([
+                  ("id", str("login-new")), ("runtime", str("agy")), ("job", fx_google_job(fx_google_login.val)),
+                  ("created", if fx_google_login.val == "done" { str("gw") } else { Json::null() }),
+                ]),
+              ]
+            } else if fx.new_login {
+              [obj([("id", str("login-new")), ("runtime", str("claude")), ("job", fx_login_job("login-new", "needs_code"))])]
+            } else {
+              []
+            },
+          ),
           ("processesText", str("2 个 agent 进程 · claude 1.2 GB")),
           (
             "slackApps",
@@ -2606,6 +2674,7 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
           ),
         ]),
       )
+    "profileFlow" if fx_google.val != "" => Some(fx_profile_flow_google(fx_google.val))
     "profileFlow" if fx.new_login => Some(fx_profile_flow_plan())
     "profileFlow" if fx.new_key => Some(fx_profile_flow_key())
     "profileFlow" => Some(fx_profile_flow(hermes=mode == "settings-new-profile-hermes"))
@@ -3412,6 +3481,50 @@ pub fn fixture_call(name : String, params : Json) -> Result[Json, Json]? {
     // the drafts' forms (a new profile's, a new connect's, the decisions' and the archive policy's), opened and edited
     // an Anthropic plan's sign-in for a new profile, begun (settings-new-profile-login…)
     "login.new" if fx.new_login => Some(Ok(obj([("id", str("login-new")), ("job", fx_login_job("login-new", "needs_code"))])))
+    // Google's sign-in, begun; its code taken (a company's then asks for its project), its project taken
+    "login.new" if fx_google.val != "" => {
+      // (one under way already, as a mode put it: as it is)
+      if fx_google_login.val == "" {
+        fx_google_login.val = "needs_code"
+      }
+      fx_changed()
+      Some(Ok(obj([("id", str("login-new")), ("job", fx_google_job(fx_google_login.val))])))
+    }
+    "login.code" if fx_google_login.val != "" => {
+      // (a company's code: then its project; its project, or a person's code: signed in, its profile made, as gw)
+      fx_google_login.val = if fx_google_login.val == "needs_code" && fx_google.val == "enterprise" { "needs_project" } else { "done" }
+      if fx_google_login.val == "done" {
+        fx_google_profiles.val = true
+      }
+      fx_changed()
+      Some(Ok(obj([("job", fx_google_job(fx_google_login.val))])))
+    }
+    "login.drop" if fx_google_login.val != "" => {
+      fx_google_login.val = ""
+      fx_changed()
+      Some(Ok(obj([])))
+    }
+    // Google's draft moved on as the core moves it (forms.ts): its provider picked, a way chosen, back
+    "profile.flow.edit" if fx_google.val != "" => {
+      let patch = field(p, "input")
+      let was = fx_google.val
+      fx_google.val = if text(patch, "provider") == "google" {
+        "method"
+      } else if has(patch, "provider") && text(patch, "provider") == "" {
+        "pick"
+      } else if text(patch, "method") != "" {
+        text(patch, "method")
+      } else if flag(patch, "back") {
+        if was == "method" || was == "pick" { "pick" } else { "method" }
+      } else {
+        was
+      }
+      if fx_google.val != was {
+        fx_google_login.val = ""
+        fx_changed()
+      }
+      Some(Ok(obj([])))
+    }
     "profile.flow.open" | "profile.flow.edit" | "profile.flow.drop" | "connect.flow.open" | "connect.flow.edit"
     | "connect.flow.drop" | "automaticDecisions.form.open" | "automaticDecisions.form.edit"
     | "automaticDecisions.form.drop" | "automaticDecisions.policy.open" | "automaticDecisions.policy.drop" =>
@@ -3656,6 +3769,99 @@ fn fx_profile_flow_plan() -> Json {
     ("submitLabel", str("")),
     ("usesLine", str("")),
   ])
+}
+
+///|
+/// Google's sign-in under way in `state` (settings-new-profile-google…): its page at accounts.google.com.
+fn fx_google_job(state : String) -> Json {
+  obj([
+    ("profile", str("login-new")),
+    ("runtime", str("agy")),
+    ("state", str(state)),
+    ("url", str("https://accounts.google.com/o/oauth2/auth")),
+    ("startedAt", Json::number(0.0)),
+    ("expiresAt", Json::number(0.0)),
+  ])
+}
+
+///|
+/// A new profile's draft for Google at `at` (fx_google): the providers with Google among them, its ways (a person's
+/// plan, a company's, a key) as the core says them, or the way chosen: a plan's sign-in, or the key's form.
+fn fx_profile_flow_google(at : String) -> Json {
+  if at == "pick" {
+    guard fx_profile_flow() is Object(m) else { return fx_profile_flow() }
+    let google = obj([
+      ("id", str("google")), ("name", str("Google Gemini")), ("group", str("labs")), ("kind", str("api-provider")),
+      ("runtime", str("agy")), ("mark", str("gemini")), ("hasKey", Json::boolean(true)), ("hasPlan", Json::boolean(true)),
+    ])
+    let groups = match m.get("groups") {
+      Some(Array(gs)) =>
+        gs.mapi(fn(i, g) {
+          match g {
+            Object(o) if i == 0 =>
+              match o.get("providers") {
+                Some(Array(ps)) => {
+                  let o2 = o.copy()
+                  o2["providers"] = Json::array([..ps, google])
+                  Json::object(o2)
+                }
+                _ => g
+              }
+            _ => g
+          }
+        })
+      _ => []
+    }
+    let m2 = m.copy()
+    m2["groups"] = Json::array(groups)
+    return Json::object(m2)
+  }
+  let choice = fn(id : String, title : String, hint : String) { obj([("id", str(id)), ("title", str(title)), ("hint", str(hint))]) }
+  let way = if at == "method" { "" } else { at }
+  let fields : Array[(String, Json)] = [
+    ("step", str(if at == "method" { "method" } else { "connect" })),
+    ("station", str("ws1/st1")),
+    ("title", str("连接 Google Gemini")),
+    ("hint", str("")),
+    ("method", str(way)),
+    (
+      "tile",
+      obj([
+        ("id", str("google")), ("name", str("Google Gemini")), ("kind", str("api-provider")), ("runtime", str("agy")),
+        ("mark", str("gemini")), ("hasKey", Json::boolean(true)), ("hasPlan", Json::boolean(true)),
+      ]),
+    ),
+    ("groups", []),
+    (
+      "choices",
+      if at == "method" {
+        [
+          choice("plan", "订阅 · Google AI", "Google AI Pro / Ultra 或免费 Google 账号，用于运行 Antigravity CLI。用 Google 账号登录一次，再贴回页面给的授权码。Google 的条款不允许其他工具这样用，账号可能被停用。"),
+          choice("enterprise", "企业版 · Gemini Enterprise", "公司的 Google Workspace 或 Google Cloud 账号，用于运行 Antigravity CLI。用公司的 Google 账号登录一次，再贴回页面给的授权码；账号没分到许可证时，再填一个 Google Cloud 项目。Google 的条款不允许其他工具这样用，账号可能被停用。"),
+          choice("key", "API key", "使用 Google Gemini 的 API key，按量计费"),
+        ]
+      } else {
+        []
+      },
+    ),
+    ("showEndpoint", Json::boolean(false)),
+    ("endpoint", str("")),
+    ("protocols", []),
+    ("showKey", Json::boolean(at == "key")),
+    ("key", str("")),
+    ("keyLabel", str(if at == "key" { "API key" } else { "" })),
+    ("canSubmit", Json::boolean(false)),
+    ("pending", Json::boolean(false)),
+    ("submitLabel", str(if at == "key" { "验证并添加" } else { "" })),
+    ("usesLine", str(if at == "method" { "" } else { "添加后可用于：Antigravity CLI" })),
+  ]
+  if at == "plan" || at == "enterprise" {
+    fields.push((
+      "signIn",
+      obj([("runtime", str("agy")), ("provider", str("Google")), ("access", str(if at == "enterprise" { "agy-enterprise" } else { "" }))]),
+    ))
+  }
+  obj(fields)
 }
 
 ///|

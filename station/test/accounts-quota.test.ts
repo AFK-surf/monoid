@@ -160,6 +160,13 @@ describe("allowances and renewing", { concurrency: true }, () => {
     const blockedQ = await checkQuota(profile, { PATH: fakePath, FAKE_AGY_USAGE_ERROR: "Your account has been suspended (typeof check)" }, undefined, URLS, "zh");
     assert.deepEqual([blockedQ.state, blockedQ.unanswered], ["blocked", undefined]);
 
+    // No windows: a person's account says it could not read them; a company's paying as it goes has none to show.
+    const emptyQ = await checkQuota(profile, { PATH: fakePath, FAKE_AGY_USAGE_EMPTY: "1" }, undefined, URLS, "zh");
+    assert.deepEqual([emptyQ.state, emptyQ.detail], ["unavailable", "Antigravity CLI 没有返回额度信息"]);
+    writeFileSync(tokenPath, JSON.stringify({ token: { access_token: "ya29.ok", token_type: "Bearer", refresh_token: "1//refresh" }, auth_method: "gcp", id_token_email: "me@company.test", project_id: "company-project" }));
+    const payGo = await checkQuota(profile, { PATH: fakePath, FAKE_AGY_USAGE_EMPTY: "1" }, undefined, URLS, "zh");
+    assert.deepEqual([payGo.state, payGo.windows, payGo.detail], ["unsupported", [], "这个企业账号按用量计费，没有固定额度"]);
+
     assert.equal(agyScopeForModel("google/gemini-3.1-pro"), "gemini");
     assert.equal(agyScopeForModel("us.google.gemma-3-27b"), "gemini");
     assert.equal(agyScopeForModel("anthropic/claude-opus-4-6"), "3p");

@@ -311,6 +311,11 @@ export class StationBrowser implements ScreenBrowser {
     return this.#up?.tabs.contextOf(targetId);
   }
 
+  /// Where tab `targetId` is now, or null where it is not there.
+  tabUrl(targetId: string): string | null {
+    return this.#up?.tabs.urlOf(targetId) ?? null;
+  }
+
   /// Whether tab `targetId` is there.
   hasTab(targetId: string): boolean {
     return this.#up?.tabs.has(targetId) ?? false;

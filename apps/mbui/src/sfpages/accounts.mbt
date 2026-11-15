@@ -205,7 +205,7 @@ fn profile_pausable(p : Json?) -> Bool {
 /// Whether a subscription's sign-in is under way (its `login`'s state).
 fn signing_in(p : Json?) -> Bool {
   let ls = text(field(p, "login"), "state")
-  ["starting", "waiting", "needs_code", "needs_approval", "verifying"].contains(ls) ||
+  ["starting", "waiting", "needs_code", "needs_project", "needs_approval", "verifying"].contains(ls) ||
   (ls == "done" && text(field(p, "check"), "state") == "login") ||
   ["starting", "waiting"].contains(text(field(p, "afterSignIn"), "state"))
 }
@@ -750,11 +750,13 @@ pub fn login_steps_node(
 ) -> Unit {
   let state = fn() { text(job(), "state") }
   let url = fn() { text(job(), "url") }
-  // (1 a code to paste back, 2 a device's code, else a wait: 3 checked, 4 added, 5 its link made)
+  // (1 a code to paste back, 2 a device's code, 6 a Google Cloud project to give (a company's Google account with no
+  // licence), else a wait: 3 checked, 4 added, 5 its link made)
   let step = fn() {
     match state() {
       "needs_code" if url() != "" => 1
       "needs_approval" if url() != "" => 2
+      "needs_project" => 6
       "verifying" => 3
       "done" => 4
       _ => 5
@@ -813,6 +815,36 @@ pub fn login_steps_node(
     })
     |> ignore
   }
+  // what is typed in and sent by its button (or Enter) under the step's words: a code pasted back, a project's id
+  let typed_step = fn(q : @view.View, words : () -> String, placeholder : String) {
+    q.box(fn(st) {
+      @sf.style_node(st, fn() { pf_step })
+      @sf.words_node(st, words, fn() { pf_words }) |> ignore
+      let f = @ui.Field::new()
+      let typed = fn() { f.text().trim(chars=" \t\n").to_owned() }
+      let go = fn() {
+        let code = @signals.untracked(typed)
+        if code != "" && !@signals.untracked(sending) {
+          send(code, fn() { f.set("") })
+        }
+      }
+      st.box(fn(r) {
+        @sf.style_node(r, fn() { pf_input_row })
+        // (as wide as the step, its steps standing at their start: the field what the button leaves)
+        r.width_share(Is(1.0)) |> ignore
+        r.box(fn(g) {
+          @sf.style_node(g, fn() { pf_input_grow }, in_row=true)
+          g.min_width(Is(Some(0.0))) |> ignore
+          @sf.input_node(g, f, placeholder~, submitted=fn(_) { go() }) |> ignore
+        })
+        |> ignore
+        @sf.button_node(r, fn() { @sf.t("web-pages.profiles.finish") }, go, tone=Primary, busy=sending, disabled=fn() { typed().is_empty() })
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  }
   v.pick(at_once=true, step, fn(q, k) {
     q.gap(Is(pf_card_gap)) |> ignore
     match k {
@@ -822,6 +854,8 @@ pub fn login_steps_node(
           @sf.words_node(st, fn() {
             if provider() == "Devin" {
               @sf.t("web-pages.profiles.step1Devin", args=[("name", "still.fail")])
+            } else if provider() == "Google" {
+              @sf.t("web-pages.profiles.step1Google", args=[("name", "still.fail")])
             } else {
               @sf.t("web-pages.profiles.step1", args=[("name", "still.fail")])
             }
@@ -841,41 +875,19 @@ pub fn login_steps_node(
           |> ignore
         })
         |> ignore
-        q.box(fn(st) {
-          @sf.style_node(st, fn() { pf_step })
-          @sf.words_node(st, fn() {
+        typed_step(
+          q,
+          fn() {
             if provider() == "Devin" {
               @sf.t("web-pages.profiles.step2Devin")
             } else {
               @sf.t("web-pages.profiles.step2")
             }
-          }, fn() { pf_words })
-          |> ignore
-          let f = @ui.Field::new()
-          let typed = fn() { f.text().trim(chars=" \t\n").to_owned() }
-          let go = fn() {
-            let code = @signals.untracked(typed)
-            if code != "" && !@signals.untracked(sending) {
-              send(code, fn() { f.set("") })
-            }
-          }
-          st.box(fn(r) {
-            @sf.style_node(r, fn() { pf_input_row })
-            // (as wide as the step, its steps standing at their start: the field what the button leaves)
-            r.width_share(Is(1.0)) |> ignore
-            r.box(fn(g) {
-              @sf.style_node(g, fn() { pf_input_grow }, in_row=true)
-              g.min_width(Is(Some(0.0))) |> ignore
-              @sf.input_node(g, f, placeholder=@sf.t("web-pages.profiles.pasteCode"), submitted=fn(_) { go() }) |> ignore
-            })
-            |> ignore
-            @sf.button_node(r, fn() { @sf.t("web-pages.profiles.finish") }, go, tone=Primary, busy=sending, disabled=fn() { typed().is_empty() })
-            |> ignore
-          })
-          |> ignore
-        })
-        |> ignore
+          },
+          @sf.t("web-pages.profiles.pasteCode"),
+        )
       }
+      6 => typed_step(q, fn() { @sf.t("web-pages.profiles.projectStep") }, @sf.t("web-pages.profiles.projectPlaceholder"))
       2 => {
         // no code where the page only asks to confirm (Cursor's); OpenCode's and Kimi's carry it in their address
         let code = fn() { text(job(), "userCode") }

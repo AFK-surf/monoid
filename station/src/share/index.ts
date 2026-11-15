@@ -1185,7 +1185,10 @@ export class Sharing {
     if (expiresAt - this.time.now() < AGY_MIN_MS) throw new Error("the Antigravity CLI sign-in here runs out soon and cannot be renewed now");
     const had = JSON.parse(text);
     const { refresh_token: _, ...token } = had.token ?? {};
-    return { runtime: "agy", token, email: typeof had.id_token_email === "string" ? had.id_token_email : null, auth_method: typeof had.auth_method === "string" ? had.auth_method : null, expiresAt };
+    // `stored`: the rest of its file (a company's project, region and tier) for the borrower's (agents/agy.ts
+    // agyLentFile); the fields beside it for borrowers from before.
+    const { token: __, ...rest } = had;
+    return { runtime: "agy", token, email: typeof had.id_token_email === "string" ? had.id_token_email : null, auth_method: typeof had.auth_method === "string" ? had.auth_method : null, stored: rest, expiresAt };
   }
 
   /// `renewed` waited for LEND_BOUND_MS at most: past it, what is lent is the login as it is, which is said.
