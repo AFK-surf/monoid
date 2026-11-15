@@ -64,7 +64,7 @@ pub fn quote_card_node(
         } else {
           p.box(fn(mark) {
             style_node(mark, fn() { quote_mark })
-            icon_node(mark, "quote", quote_icon, By(fn() { theme().p.accent })) |> ignore
+            icon_node(mark, "quote-open", quote_icon, By(fn() { theme().p.accent })) |> ignore
           })
           |> ignore
           let look = fn() { if jumps() && lit_node(hit) { quote_text_hot } else { quote_text } }

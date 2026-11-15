@@ -425,6 +425,10 @@ export function Quota(props: IconProps) {
   return <Svg {...props}><path d="M6.5 6H16Q19.5 6 19.5 9.5V14.5Q19.5 18 16 18H6.5Q3 18 3 14.5V9.5Q3 6 6.5 6Z M22 10V14 M7 10V14 M11 10V14" /></Svg>;
 }
 
+export function QuoteOpen(props: IconProps) {
+  return <Svg {...props}><path d="M4.5 13H9.5V18.5H4.5V12Q4.5 7.5 9 5.5 M15 13H20V18.5H15V12Q15 7.5 19.5 5.5" /></Svg>;
+}
+
 export function Quote(props: IconProps) {
   return <Svg {...props}><path d="M9.5 11H4.5V5.5H9.5V12Q9.5 16.5 5 18.5 M20 11H15V5.5H20V12Q20 16.5 15.5 18.5" /></Svg>;
 }
@@ -726,6 +730,7 @@ export const ICONS: Record<string, (props: IconProps) => React.JSX.Element> = {
   "plus": Plus,
   "power": Power,
   "quota": Quota,
+  "quote-open": QuoteOpen,
   "quote": Quote,
   "read": Read,
   "received": Received,

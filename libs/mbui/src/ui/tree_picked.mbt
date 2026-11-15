@@ -17,6 +17,8 @@ pub struct WordsPicked {
   /// the node of the tree's whose words it ends in (where the pointer let it go: dragged down, its last; dragged up,
   /// its first), as it was shown when that paragraph was last found (picked_end_piece: where in it)
   ends_in : @view.NodeId
+  /// the pointer let go at the start of what is picked, rather than its end
+  ends_at_start : Bool
   /// picked by a finger (held on its words: its handles and the system's text menu over it)
   finger : Bool
   /// which selection it is (Ctx::selection_made): another number for each a press begins
@@ -143,7 +145,7 @@ fn picked_now_worked() -> WordsPicked? {
       _ => ()
     }
   }
-  Some({ text: selected_words(), of, ends_in, finger: picked.finger, made: picked.made })
+  Some({ text: selected_words(), of, ends_in, ends_at_start: spot_cmp(picked.from, picked.to) > 0, finger: picked.finger, made: picked.made })
 }
 
 ///|

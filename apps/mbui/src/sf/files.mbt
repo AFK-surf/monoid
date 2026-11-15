@@ -768,7 +768,7 @@ pub fn quote_card(
           c.box(style=quote_pin, fn() { c.text(pin, style=quote_pin_words) |> ignore }) |> ignore
           c.text(words.split("\n").next().map(fn(s) { s.to_owned() }).unwrap_or(""), style=quote_text) |> ignore
         } else {
-          c.box(style=quote_mark, fn() { icon(c, "quote", size=quote_icon, color=p.accent) |> ignore }) |> ignore
+          c.box(style=quote_mark, fn() { icon(c, "quote-open", size=quote_icon, color=p.accent) |> ignore }) |> ignore
           c.rich(
             [
               @ui.span(t("web-main.quote.author", args=[("author", author)]), weight=500, color=p.text),

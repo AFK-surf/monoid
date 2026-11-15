@@ -603,7 +603,7 @@ fn pick_pop(c : @ui.Ctx, quote : (String, String, String, String) -> Unit) -> Un
         c.box(tx=pop_x - fw / 2.0, fn() {
           let hot = c.lit(pop)
           c.box(style=if hot { pick_pop_hot } else { pick_pop_box }, id=pop, fn() {
-            @sf.icon(c, "quote", size=12.0, color=@sf.theme().p.on_primary) |> ignore
+            @sf.icon(c, if c.selection_ends_at_start() { "quote-open" } else { "quote" }, size=12.0, color=@sf.theme().p.on_primary) |> ignore
             c.text(@sf.t("web-main.chat.quote"), style=pick_pop_words) |> ignore
           })
           |> ignore

@@ -1260,6 +1260,19 @@ fn quote_nodes_pill(t : @ui.Tester) -> (Double, Double, Double, Double)? {
 }
 
 ///|
+/// The quote mark actually drawn in the pill over the picked words.
+fn quote_nodes_mark(t : @ui.Tester) -> String {
+  guard quote_nodes_pill(t) is Some((x, y, w, h)) && @ui.view_tree() is Some(tree) else { return "" }
+  for d in tree.drawn() {
+    let name = tree.drawn_name(d.id)
+    if name.has_prefix("/icon/quote") && d.x >= x && d.y >= y && d.x + d.w <= x + w && d.y + d.h <= y + h {
+      return name
+    }
+  }
+  ""
+}
+
+///|
 /// Words `s` of a message in a chat's page made with its inside nodes on 大屏, its list wheeled up till they are drawn
 /// well within the window (pick_pill_kept_wbtest's way): where they are drawn.
 fn quote_nodes_words(t : @ui.Tester, s : String) -> (Double, Double, Double, Double) raise {
@@ -1295,6 +1308,16 @@ test "大屏, a chat's page made with its inside nodes: words of an agent's mess
   )
   t.run_for(@ui.move_most_ms)
   assert_true(quote_nodes_pill(t) is Some(_), msg="引用 gone once at rest")
+  assert_eq(quote_nodes_mark(t), "/icon/quote/", msg="the pill over the end has a closing quote")
+  // The same words picked in the other direction put the pill at their start and use an opening quote.
+  t.run_for(@ui.double_click_ms)
+  t.drag(px + pw - 1.0, py + ph / 2.0, px + 1.0, py + ph / 2.0)
+  t.frame()
+  assert_true(@ui.picked_now().map(fn(p) { p.text.contains("90") }).unwrap_or(false))
+  assert_eq(quote_nodes_mark(t), "/icon/quote-open/", msg="the pill over the start has an opening quote")
+  t.run_for(@ui.double_click_ms)
+  t.drag(px + 1.0, py + ph / 2.0, px + pw - 1.0, py + ph / 2.0)
+  t.frame()
   // pressed (a click of its own, not a second of the drag's): the quote in the chat's draft (composer.quote), whose
   // words, which message and as what; nothing picked, the pill gone
   t.run_for(@ui.double_click_ms)

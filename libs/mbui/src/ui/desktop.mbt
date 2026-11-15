@@ -1603,6 +1603,14 @@ pub fn Ctx::selection_end(self : Ctx, loc~ : SourceLoc) -> (Double, Double, Doub
 }
 
 ///|
+/// Whether the pointer let go at the start of what is picked, rather than its end. Read with selection_end, while a
+/// selection stands.
+pub fn Ctx::selection_ends_at_start(self : Ctx) -> Bool {
+  ignore(self)
+  spot_cmp(picked.from, picked.to) > 0
+}
+
+///|
 /// How far the words what is picked ends in have moved since they were drawn, as this frame lays them out
 /// (Ctx::selection_moved_now): what Ctx::selection_end adds to where they were drawn. None moved as a frame draws them.
 // kept across runs: worked out as a frame is laid out, read as the next pass builds

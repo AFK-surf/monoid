@@ -87,7 +87,7 @@ fn chat_quote_node(v : @view.View, src : Source, r : ChatRef, here : MessageNode
     at.pick(fn() { chat_finger_picked(rows).map(fn(q) { q.0 }) }, fn(holds, picked) {
       guard picked is Some(p) && @signals.untracked(fn() { chat_finger_picked(rows) }) is Some((_, m)) else { return }
       let items : Array[@sf.PickBarItem] = [
-        { label: @sf.t("android-chat.pick.quote"), icon: "quote", mark: false, press: fn() { chat_quote_of(src, draft, p, m) } },
+        { label: @sf.t("android-chat.pick.quote"), icon: if p.ends_at_start { "quote-open" } else { "quote" }, mark: false, press: fn() { chat_quote_of(src, draft, p, m) } },
         {
           label: @sf.t("common.copy"),
           icon: "copy",
@@ -171,7 +171,7 @@ fn chat_quote_node(v : @view.View, src : Source, r : ChatRef, here : MessageNode
       .beside(p.ends_in, side=Top, offset=8.0, piece=@ui.picked_end_piece(p))
       .on_press(fn() { chat_quote_take(src, draft, rows) })
       |> ignore
-      @sf.icon_node(b, "quote", chat_quote_icon, By(fn() { @sf.theme().p.on_primary })) |> ignore
+      @sf.icon_node(b, if p.ends_at_start { "quote-open" } else { "quote" }, chat_quote_icon, By(fn() { @sf.theme().p.on_primary })) |> ignore
       @sf.words_node(b, fn() { @sf.t("web-main.chat.quote") }, fn() { chat_quote_words }) |> ignore
     })
     |> ignore
