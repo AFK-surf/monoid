@@ -165,7 +165,8 @@ pub fn connects_node(
         } else if shown().length() == 0 {
           out.push("none")
         } else {
-          out.push("list")
+          // (a block a row: a station's heading, then each of its connects, a piece of its card: connects_list_keys)
+          out.append(connects_list_keys(shown(), only))
           // what the list still waits on: a row's shape for a station not read yet, each failure said
           if flag(wait(), "reading") || failing() {
             out.push("more")
@@ -243,7 +244,7 @@ pub fn connects_node(
             |> ignore
           })
           |> ignore
-        "list" => connects_list_node(b, core, look, shown, only, station_of, tips, stint)
+        k if k.has_prefix("c/") || k.has_prefix("s/") => connects_row_block(b, core, look, shown, station_of, tips, stint, k)
         _ =>
           cn_gutter_node(b, look, fn(g) {
             @sf.wait_more_node(g, fn() { { reading: flag(wait(), "reading"), text: "", failing: failing_of(wait()) } }, fn(s) {
@@ -350,6 +351,120 @@ fn connects_list_node(
       })
     }
   }
+}
+
+///|
+/// The blocks of 连接's list (a block is a row), each by its key: narrow, for each station in the order its connects
+/// come, its heading ("s/<station>", where the page is of no one station) and each of its connects
+/// ("c/<station>/<connect>"), a piece of its station's card; wide, the connects alone on one card (connects_list_node's).
+fn connects_list_keys(shown : Array[Json], only : String) -> Array[String] {
+  let out : Array[String] = []
+  for row in connects_list_rows(shown) {
+    let (address, keys) = row
+    if only == "" {
+      out.push("s/" + address)
+    }
+    for k in keys {
+      out.push("c/" + address + "/" + k.0)
+    }
+  }
+  out
+}
+
+///|
+/// The connects `shown` by station, in the order they come: each station's address and its connects, each by its key
+/// (its id, "#<at>" where it has none) with its row.
+fn connects_list_rows(shown : Array[Json]) -> Array[(String, Array[(String, Json)])] {
+  let out : Array[(String, Array[(String, Json)])] = []
+  for x in shown {
+    let address = text(Some(x), "station")
+    let at = match out.search_by(fn(r) { r.0 == address }) {
+      Some(i) => i
+      None => {
+        out.push((address, []))
+        out.length() - 1
+      }
+    }
+    let rows = out[at].1
+    let id = text(field(Some(x), "connect"), "id")
+    rows.push((if id != "" { id } else { "#" + rows.length().to_string() }, x))
+  }
+  out
+}
+
+///|
+/// Block `key` of 连接's list (connects_list_keys'): a station's heading, narrow; a connect's row, a piece of its
+/// station's card narrow and of the one card wide, as it is now (as it was last, while it goes).
+fn connects_row_block(
+  b : @view.View,
+  core : Core,
+  look : Look,
+  shown : () -> Array[Json],
+  station_of : (String) -> Json?,
+  tips : @sf.TipLayer,
+  stint : () -> Int,
+  key : String,
+) -> Unit {
+  if key.has_prefix("s/") {
+    let address = key.exact_view(start=2).to_owned()
+    @sf.narrow_heading_node(b, fn() {
+      let name = match shown().iter().find_first(fn(x) { text(Some(x), "station") == address }) {
+        Some(x) => text(Some(x), "stationName")
+        None => ""
+      }
+      let sv = station_of(address)
+      if sv is None || flag(sv, "online") {
+        name
+      } else {
+        @sf.t("android-settings.connects.offline", args=[("name", name)])
+      }
+    })
+    return
+  }
+  // (where it stands: its row, which of its station's and of all of them it is; as last, once gone)
+  let last : Ref[(Json, @sf.CardPiece, @sf.CardPiece)?] = Ref(None)
+  let now = fn() {
+    let rows = connects_list_rows(shown())
+    let mut all = 0
+    let mut at_all = -1
+    let mut found : (Json, Int, Int)? = None
+    for row in rows {
+      let (address, keys) = row
+      for i, k in keys {
+        if found is None && "c/" + address + "/" + k.0 == key {
+          found = Some((k.1, i, keys.length()))
+          at_all = all
+        }
+        all += 1
+      }
+    }
+    match found {
+      Some((x, i, n)) => last.val = Some((x, @sf.card_piece_of(i, n), @sf.card_piece_of(at_all, all)))
+      None => ()
+    }
+    last.val
+  }
+  guard @signals.untracked(now) is Some((x0, _, _)) else { return }
+  let address = text(Some(x0), "station")
+  // (as tall as its block, its piece of the card in it as tall: card_piece_node)
+  b.grow(Is(1.0)) |> ignore
+  @sf.card_piece_node(
+    b,
+    fn() { now().map(fn(n) { n.1 }).unwrap_or(@sf.CardPiece::CardWhole) },
+    wide_group=true,
+    wide_group_foot=false,
+    wide_piece=fn() { now().map(fn(n) { n.2 }).unwrap_or(@sf.CardPiece::CardWhole) },
+    fn(card) {
+      cn_row_node(card, core, look, address, fn() { now().map(fn(n) { text(Some(n.0), "stationName") }).unwrap_or("") }, fn() {
+        station_of(address)
+      }, fn() {
+        match now() {
+          Some((x, _, _)) => field(Some(x), "connect")
+          None => None
+        }
+      }, tips, stint)
+    },
+  )
 }
 
 ///|

@@ -184,7 +184,7 @@ fn station_view_node(
     match key {
       "parts" => station_parts_node(b, chosen, press)
       "resources" => station_resources_node(b, core, here, s, fn() { press("processes") })
-      "allScreens" => station_all_screens_node(b, core, here, s)
+      k if k == "allScreens" || k.has_prefix("allScreens/") => all_screens_block(b, core, here, s, k)
       "userPages" => station_user_pages_node(b, core, here, s)
       "agentPages" => station_agent_pages_node(b, core, here, s)
       "screens" => station_screens_node(b, core, here, s)
@@ -272,7 +272,11 @@ fn station_overview_keys_by(s : Json?, screens : Json?, terminals? : Bool = fals
       let can_open = flag(v, "browser") && flag(v, "control")
       // (its terminals there too, while it is up: 打开终端 at least)
       if !all.is_empty() || can_open || text(v, "note") != "" || (terminals && flag(s, "online")) {
+        // (its heading, then a block a row: all_screens_block)
         out.push("allScreens")
+        for row in all_screens_rows_by(s, v, terminals) {
+          out.push("allScreens/" + row)
+        }
       }
     }
     _ => ()
@@ -667,69 +671,173 @@ fn screen_row_icon(sv : Json?) -> String {
 }
 
 ///|
-/// Unified "屏幕与浏览器" section: physical/simulator screens, agent-opened browser tabs, and station browser entry.
+/// Unified "屏幕与浏览器" section: physical/simulator screens, agent-opened browser tabs, and station browser entry, all
+/// of it in one node (a test's: the page has it a block a row, all_screens_keys).
+// (held by its tests, not used by the app yet)
+#warnings("-unused_value")
 fn station_all_screens_node(b : @view.View, core : Core, here : () -> Here, s : () -> Json?) -> Unit {
   let address = text(@signals.untracked(s), "station")
-  let v = fn() { (core.topic)("screens", { "station": str(address) }).get().value }
-  let screens = fn() { items(v(), "screens").filter(fn(sc) { !is_browser_screen(Some(sc)) }) }
-  let agent_tabs = fn() { items(v(), "screens").filter(fn(sc) { is_agent_screen(Some(sc)) }) }
-  let user_tabs = fn() { items(v(), "screens").filter(fn(sc) { is_user_screen(Some(sc)) }) }
-  let can_open = fn() { flag(v(), "browser") && flag(v(), "control") }
-  let terminals_counted = fn() {
-    guard (core.terminals_on)() && flag(s(), "online") else { return 0 }
-    let tv = (core.topic)("terminals", { "station": str(address) }).get().value
-    if terminals_shown(s(), tv) { items(tv, "terminals").length() } else { 0 }
-  }
-  st_section_node(b, fn() { "屏幕、浏览器与终端" }, count=fn() { screens().length() + agent_tabs().length() + terminals_counted() }, fn(sec) {
+  st_section_node(b, fn() { all_screens_title }, count=fn() { all_screens_count(core, address, s) }, fn(sec) {
     @sf.group_node(sec, fn(g) {
-      g.each(screens, fn(sc) { text(Some(sc), "id") }, fn(row, sc) {
-        let sv = fn() { Some(sc.get()) }
-        let id = text(@signals.untracked(sv), "id")
-        let lacks = fn() {
-          let access = field(sv(), "access")
-          access is Some(Object(_)) && (!flag(access, "capture") || !flag(access, "control"))
-        }
-        // (its row made again as it comes to be this machine's own or lacks what it may, who is on it under it made
-        // once, whatever of that changes)
-        @sf.group_rows_node(row, fn(r) {
-          r.pick(fn() { (own_screen(address, id), lacks()) }, fn(p, k) {
-            let (own, lacks) = k
-            @sf.link_row_node(
-              p,
-              fn() { text(sv(), "title") },
-              fn() {
-                if !own {
-                  @sfbase.open_page(Screen({ station: address, screen: id, title: text(@signals.untracked(sv), "title"), until_gone: false }))
-                }
-              },
-              note=fn() { if own { @sf.t("android-misc.screen.here") } else { text(sv(), "line") } },
-              lacks=!own && lacks,
-              goes=!own,
-              lead=LeadLine(fn(l) { st_mark_node(l, fn() { screen_row_icon(sv()) }) }),
-            )
-          })
-          screen_views_node(r, core, here, address, sv)
-        })
-      })
-      g.each(agent_tabs, fn(sc) { text(Some(sc), "id") }, fn(row, sc) {
-        station_browser_row_node(row, core, here, address, fn() { Some(sc.get()) })
-      })
-      g.show(fn() { !user_tabs().is_empty() || can_open() }, fn(n) {
-        @sf.link_row_node(
-          n,
-          fn() { @sf.t("web-pages.screen.openBrowserRow") },
-          fn() { @settings.open_station_browser(core, address) },
-          note=fn() { browser_tabs_note(user_tabs().length()) },
-          lead=LeadLine(fn(l) { st_mark_node(l, fn() { "web" }) }),
-        )
-      })
-      // its terminals, then 打开终端 (station_terminals_node.mbt)
-      station_terminal_rows_node(g, core, address, s)
-      g.show(fn() { screens().length() == 0 && agent_tabs().length() == 0 && items(v(), "screens").is_empty() && text(v(), "note") != "" }, fn(n) {
-        said_row_node(n, fn() { text(v(), "note") }, lead=LeadLine(fn(l) { st_mark_node(l, fn() { "monitor" }) }))
+      g.each(fn() { all_screens_rows(core, address, s()) }, fn(k) { k }, fn(row, k) {
+        all_screens_row_node(row, core, here, s, k.untracked())
       })
     })
   })
+}
+
+///|
+let all_screens_title : String = "屏幕、浏览器与终端"
+
+///|
+/// Its screens' topic (`screens`).
+fn all_screens_v(core : Core, address : String) -> Json? {
+  (core.topic)("screens", { "station": str(address) }).get().value
+}
+
+///|
+/// How many 屏幕、浏览器与终端 counts: its screens, the agents' tabs and its terminals.
+fn all_screens_count(core : Core, address : String, s : () -> Json?) -> Int {
+  let v = all_screens_v(core, address)
+  let screens = items(v, "screens").filter(fn(sc) { !is_browser_screen(Some(sc)) }).length()
+  let tabs = items(v, "screens").filter(fn(sc) { is_agent_screen(Some(sc)) }).length()
+  let terminals = if (core.terminals_on)() && flag(s(), "online") {
+    let tv = (core.topic)("terminals", { "station": str(address) }).get().value
+    if terminals_shown(s(), tv) { items(tv, "terminals").length() } else { 0 }
+  } else {
+    0
+  }
+  screens + tabs + terminals
+}
+
+///|
+/// The rows of 屏幕、浏览器与终端 by their keys, in order (as `screens`, `v`, and station `s` say them, `terminals`:
+/// terminals_to_show's): each screen ("screen/<id>"), each agent's tab ("tab/<id>"), opening its browser ("browser"),
+/// its terminals and 打开终端 ("terminals"), what it says where it has none ("note").
+fn all_screens_rows_by(s : Json?, v : Json?, terminals : Bool) -> Array[String] {
+  let all = items(v, "screens")
+  let out : Array[String] = []
+  for sc in all {
+    if !is_browser_screen(Some(sc)) {
+      out.push("screen/" + text(Some(sc), "id"))
+    }
+  }
+  for sc in all {
+    if is_agent_screen(Some(sc)) {
+      out.push("tab/" + text(Some(sc), "id"))
+    }
+  }
+  if all.iter().any(fn(sc) { is_user_screen(Some(sc)) }) || (flag(v, "browser") && flag(v, "control")) {
+    out.push("browser")
+  }
+  if terminals && flag(s, "online") {
+    out.push("terminals")
+  }
+  if all.is_empty() && text(v, "note") != "" {
+    out.push("note")
+  }
+  out
+}
+
+///|
+/// The rows of 屏幕、浏览器与终端 of station `address` (`s` whole) as they are now (all_screens_rows_by's).
+fn all_screens_rows(core : Core, address : String, s : Json?) -> Array[String] {
+  all_screens_rows_by(s, all_screens_v(core, address), terminals_to_show(core, address, s))
+}
+
+///|
+/// Row `key` of 屏幕、浏览器与终端 (all_screens_rows_by's) in `row`: a screen's with who is on it, an agent's tab's, opening
+/// the browser, the terminals, its note. One whose screen is gone draws it as it was last, while it goes.
+fn all_screens_row_node(row : @view.View, core : Core, here : () -> Here, s : () -> Json?, key : String) -> Unit {
+  let address = text(@signals.untracked(s), "station")
+  let v = fn() { all_screens_v(core, address) }
+  // (the screen `id` as `screens` has it now, else as it was last)
+  let screen_of = fn(id : String) -> () -> Json? {
+    let last : Ref[Json?] = Ref(None)
+    fn() {
+      match items(v(), "screens").iter().find_first(fn(sc) { text(Some(sc), "id") == id }) {
+        Some(sc) => {
+          last.val = Some(sc)
+          Some(sc)
+        }
+        None => last.val
+      }
+    }
+  }
+  match key {
+    k if k.has_prefix("screen/") => {
+      let id = k.exact_view(start=7).to_owned()
+      let sv = screen_of(id)
+      let lacks = fn() {
+        let access = field(sv(), "access")
+        access is Some(Object(_)) && (!flag(access, "capture") || !flag(access, "control"))
+      }
+      // (its row made again as it comes to be this machine's own or lacks what it may, who is on it under it made
+      // once, whatever of that changes)
+      @sf.group_rows_node(row, fn(r) {
+        r.pick(fn() { (own_screen(address, id), lacks()) }, fn(p, k) {
+          let (own, lacks) = k
+          @sf.link_row_node(
+            p,
+            fn() { text(sv(), "title") },
+            fn() {
+              if !own {
+                @sfbase.open_page(Screen({ station: address, screen: id, title: text(@signals.untracked(sv), "title"), until_gone: false }))
+              }
+            },
+            note=fn() { if own { @sf.t("android-misc.screen.here") } else { text(sv(), "line") } },
+            lacks=!own && lacks,
+            goes=!own,
+            lead=LeadLine(fn(l) { st_mark_node(l, fn() { screen_row_icon(sv()) }) }),
+          )
+        })
+        screen_views_node(r, core, here, address, sv)
+      })
+    }
+    k if k.has_prefix("tab/") => station_browser_row_node(row, core, here, address, screen_of(k.exact_view(start=4).to_owned()))
+    "browser" => {
+      let user_tabs = fn() { items(v(), "screens").filter(fn(sc) { is_user_screen(Some(sc)) }) }
+      @sf.link_row_node(
+        row,
+        fn() { @sf.t("web-pages.screen.openBrowserRow") },
+        fn() { @settings.open_station_browser(core, address) },
+        note=fn() { browser_tabs_note(user_tabs().length()) },
+        lead=LeadLine(fn(l) { st_mark_node(l, fn() { "web" }) }),
+      )
+    }
+    // its terminals, then 打开终端 (station_terminals_node.mbt)
+    "terminals" => @sf.group_rows_node(row, fn(r) { station_terminal_rows_node(r, core, address, s) })
+    "note" => said_row_node(row, fn() { text(v(), "note") }, lead=LeadLine(fn(l) { st_mark_node(l, fn() { "monitor" }) }))
+    _ => ()
+  }
+}
+
+///|
+/// 屏幕、浏览器与终端 as blocks of the page's list (a block is a row): its heading ("allScreens"), then each of its rows
+/// ("allScreens/<row>", all_screens_rows'), a piece of its card each.
+fn all_screens_block(b : @view.View, core : Core, here : () -> Here, s : () -> Json?, key : String) -> Unit {
+  let address = text(@signals.untracked(s), "station")
+  if key == "allScreens" {
+    @sf.section_heading_node(b, fn() { all_screens_title }, title_after=fn(l) {
+      l.show(fn() { all_screens_count(core, address, s) > 0 }, fn(n) {
+        @sf.words_node(n, fn() { all_screens_count(core, address, s).to_string() }, fn() { st_count }) |> ignore
+      })
+    })
+    return
+  }
+  let row = key.exact_view(start=11).to_owned()
+  // (as tall as its block, its piece of the card in it as tall: card_piece_node)
+  b.grow(Is(1.0)) |> ignore
+  let last : Ref[@sf.CardPiece] = Ref(@sf.CardPiece::CardWhole)
+  let piece = fn() {
+    let rows = all_screens_rows(core, address, s())
+    match rows.search(row) {
+      Some(i) => last.val = @sf.card_piece_of(i, rows.length())
+      None => ()
+    }
+    last.val
+  }
+  @sf.card_piece_node(b, piece, wide_group=true, fn(card) { all_screens_row_node(card, core, here, s, row) })
 }
 
 ///|

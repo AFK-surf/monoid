@@ -40,7 +40,9 @@ pub fn card_piece_of(i : Int, n : Int) -> CardPiece {
 /// a wide list card of rows that light up (wide_group_node's list: `list_pad` in, concentric with its corner as
 /// gaps.mbt's rule 7 holds them, each piece's row as far in from its top and foot, drawn as a list's rows, the
 /// section's foot under it); or, `wide_group`, a piece of wide_group_node's list card as group_node lays it out (its
-/// ends' rooms over the first row and under the last, the list's 2 between), drawn the same as that card whole.
+/// ends' rooms over the first row and under the last, the list's 2 between), drawn the same as that card whole, the
+/// section's foot under it unless `wide_group_foot` is false (list_card_node's, standing in none); `wide_piece`: which
+/// piece of the wide card it is, where the wide card is one and the narrow ones several (a heading's group each).
 #callsite(autofill(loc))
 pub fn card_piece_node(
   parent : @view.View,
@@ -50,9 +52,17 @@ pub fn card_piece_node(
   wide_list? : Bool = false,
   wide_gap? : Double = 0.0,
   wide_group? : Bool = false,
+  wide_group_foot? : Bool = true,
+  wide_piece? : () -> CardPiece,
   loc~ : SourceLoc,
 ) -> Unit {
   let at = part_of(parent)
+  // (wide, the piece it is of the wide card where that card holds more than the narrow one: a list cut into cards
+  // narrow, one card wide)
+  let piece = match wide_piece {
+    Some(w) if at.look is Wide => w
+    _ => piece
+  }
   let top = fn() { piece() is (CardWhole | CardTop) }
   let foot = fn() { piece() is (CardWhole | CardFoot) }
   // (top left, then round it)
@@ -127,7 +137,7 @@ pub fn card_piece_node(
   if at.look is Wide && wide_group {
     let (pad, corner) = list_card_in(parent)
     parent.box(made_for=loc, fn(room) {
-      room.grow(Is(1.0)).padding(By(fn() { (0.0, 0.0, 0.0, if foot() && !at.section { section_foot } else { 0.0 }) })) |> ignore
+      room.grow(Is(1.0)).padding(By(fn() { (0.0, 0.0, 0.0, if foot() && !at.section && wide_group_foot { section_foot } else { 0.0 }) })) |> ignore
       room.box(fn(card) {
         // (as wide_group_node's card: its rows `pad` in from its sides, its ends' rooms over its first and under its
         // last, the list's gap under each but the last, so that laid out one under another they are that card)
