@@ -352,7 +352,7 @@ test("a chat goes only where it leaves the floor free there: the larger of 20 Gi
       assert.equal(a.rig.store.handedTo(key)?.station, B, at);
       continue;
     }
-    assert.match(error ?? "", new RegExp(`has ${(free / GiB).toFixed(1)} GB free and this chat needs 0\\.0 GB, which would leave less than the ${(Math.max(20, (total ?? 0) / 10)).toFixed(1)} GB kept free there: free some room there|只剩 ${(free / GiB).toFixed(1)} GB.*要留出的 ${(Math.max(20, (total ?? 0) / 10)).toFixed(1)} GB`), at);
+    assert.match(error ?? "", new RegExp(`has ${(free / GiB).toFixed(1)} GB free and this chat needs 0\\.0 GB, which would leave less than the ${Math.max(20, (total ?? 0) / GiB / 10).toFixed(1)} GB kept free there: free some room there|只剩 ${(free / GiB).toFixed(1)} GB.*要留出的 ${Math.max(20, (total ?? 0) / GiB / 10).toFixed(1)} GB`), at);
     assert.equal(a.rig.store.handedTo(key), null, at);
     assert.equal(b.rig.store.getSession(key), null, at);
   }
