@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [74b2a61d5](https://github.com/AFK-surf/monoid/commit/74b2a61d515e916bcc98e05bcfb4d6c85a25b016) perf(mbui): a list drawn whole as one read against | 2.08 | 2.86 | 12.3 | 33.23 | 47.9 | 28.74 | 56.48 | 98.83 | 110.66 |
 | [d27880374](https://github.com/AFK-surf/monoid/commit/d27880374d1f9b85e99b63d9ebd7ba8bfac4c4ef) Windows: a frame's beats counted from the frame be | 2.08 | 2.86 | 12.3 | 33.23 | 47.9 | 28.74 | 56.48 | 98.83 | 110.66 |
 | [676204c3e](https://github.com/AFK-surf/monoid/commit/676204c3e2065ce99ac2db3b00adfe9c4e12f4f0) perf(mbui): avoid per-frame full-tree back walk, s | 2.08 | 2.86 | 12.3 | 33.23 | 47.9 | 28.74 | 56.48 | 98.83 | 110.66 |
 | [f178dd119](https://github.com/AFK-surf/monoid/commit/f178dd1195b314f278ab90347cb0e8d430955310) station: an Antigravity CLI turn that only says it | 2.08 | 2.86 | 12.3 | 33.23 | 47.9 | 28.78 | 56.67 | 98.63 | 110.66 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [66b6a8406](https://github.com/AFK-surf/monoid/commit/66b6a8406dd9d559d22a5c2cd8aaea9a2a1d7316) app: a Farview tab's tiles drawn one a moment, at  | 2.06 | 2.84 | 12.22 | 32.1 | 45.21 | 28.69 | 56.39 | 98.7 | 123.89 |
 | [7b151c314](https://github.com/AFK-surf/monoid/commit/7b151c3145aa99a7727896c8d94c2d58fb546a22) feat(mbui): native .mbui declarative widgets & san | 2.06 | 2.84 | 12.22 | 32.1 | 45.21 | 28.69 | 56.39 | 98.55 | 114.83 |
 | [fded3ea86](https://github.com/AFK-surf/monoid/commit/fded3ea86094cd0b00655b5cb229537c9ea47349) app: a station's terminals, among its screens, and | 2.04 | 2.8 | 12.05 | 31.95 | 44.76 | 28.55 | 56 | 98.63 | 116.15 |
-| [b978947a2](https://github.com/AFK-surf/monoid/commit/b978947a2fc63b01648e630c0a435eed5df5d1db) station: a job's log told to a stream read by the  | 2.03 | 2.79 | 12.03 | 31.92 | 44.66 | 28.53 | 55.91 | 98.68 | 118.42 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [74b2a61d5](https://github.com/AFK-surf/monoid/commit/74b2a61d515e916bcc98e05bcfb4d6c85a25b016) perf(mbui): a list drawn whole as one read against | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.12 |
 | [d27880374](https://github.com/AFK-surf/monoid/commit/d27880374d1f9b85e99b63d9ebd7ba8bfac4c4ef) Windows: a frame's beats counted from the frame be | 0.41 | 0.53 | 1.98 | 3.09 | 4.54 | 1.46 | 3.81 | 57.3 |
 | [676204c3e](https://github.com/AFK-surf/monoid/commit/676204c3e2065ce99ac2db3b00adfe9c4e12f4f0) perf(mbui): avoid per-frame full-tree back walk, s | 0.41 | 0.53 | 1.98 | 3.09 | 4.54 | 1.46 | 3.81 | 57.31 |
 | [f178dd119](https://github.com/AFK-surf/monoid/commit/f178dd1195b314f278ab90347cb0e8d430955310) station: an Antigravity CLI turn that only says it | 0.41 | 0.53 | 1.98 | 3.09 | 4.54 | 1.46 | 3.81 | 57.31 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [66b6a8406](https://github.com/AFK-surf/monoid/commit/66b6a8406dd9d559d22a5c2cd8aaea9a2a1d7316) app: a Farview tab's tiles drawn one a moment, at  | 0.41 | 0.53 | 1.98 | 3.09 | 4.54 | 1.46 | 3.81 | 57.25 |
 | [7b151c314](https://github.com/AFK-surf/monoid/commit/7b151c3145aa99a7727896c8d94c2d58fb546a22) feat(mbui): native .mbui declarative widgets & san | 0.41 | 0.53 | 1.98 | 3.09 | 4.54 | 1.46 | 3.81 | 57.25 |
 | [fded3ea86](https://github.com/AFK-surf/monoid/commit/fded3ea86094cd0b00655b5cb229537c9ea47349) app: a station's terminals, among its screens, and | 0.41 | 0.53 | 1.98 | 3.09 | 4.54 | 1.46 | 3.81 | 57.25 |
-| [b978947a2](https://github.com/AFK-surf/monoid/commit/b978947a2fc63b01648e630c0a435eed5df5d1db) station: a job's log told to a stream read by the  | 0.41 | 0.53 | 1.98 | 3.09 | 4.54 | 1.46 | 3.81 | 57.2 |
