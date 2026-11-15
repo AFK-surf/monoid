@@ -160,6 +160,11 @@ fn gated_pages() -> Array[Page] {
 
 ///|
 test "every page opened where what opens waits for what it shows: all its gate asks read once it is at rest, the gate told then, on 小屏, 中屏 and 大屏" {
+  // (a sweep of what each page reads at rest, as the screens' sweeps are: at the default rate alone; what a page's
+  // opening does frame by frame is its own tests')
+  if @ui.test_at_a_rate() {
+    return
+  }
   @ui.host_image_bytes_known([("src/sfapp/declared_read_wbtest.mbt", 40000000)])
   let faults : Array[String] = []
   for s in switch_screens {
