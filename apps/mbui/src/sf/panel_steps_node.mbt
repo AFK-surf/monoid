@@ -209,6 +209,7 @@ fn steps_centred_node(
 /// A step of a centred panel that goes in steps in its page `page` (steps_centred_node's): its head (its back key, `back`,
 /// past the first; its title, under the close button over the dialog's corner), what it says, what it holds (a share of the window tall
 /// where `px` says one, as tall as what it holds up to it where it `hugs`) and its foot, on the dialog's words' line.
+#callsite(autofill(loc))
 fn step_page_node(
   page : @view.View,
   px : PanelOf,
@@ -218,6 +219,7 @@ fn step_page_node(
   look : () -> @ui.Look,
   words_in : Double,
   back : () -> Unit,
+  loc~ : SourceLoc,
 ) -> Unit {
   let now = fn() {
     match px.live {
@@ -225,7 +227,7 @@ fn step_page_node(
       None => (px.title, "", px.description)
     }
   }
-  page.box(fn(part) {
+  page.box(made_for=loc, fn(part) {
     // (from under the close button over the dialog's corner, as an untitled dialog's body is: dialog_untitled_top)
     style_node(part, fn() { centred_part_in(@ui.capsule_in(dialog_r, dialog_close) + dialog_close, 0.0) })
     part.alpha(By(fn() { look().words })) |> ignore
@@ -260,7 +262,7 @@ fn step_page_node(
   |> ignore
   let nodes = px.nodes
   let footed = nodes.bind(fn(n) { n.foot }) is Some(_)
-  page.box(fn(b) {
+  page.box(made_for=loc, fn(b) {
     style_node(b, fn() { centred_part_in(0.0, 0.0) })
     b.shrink(Is(1.0)).min_height(Is(Some(0.0))).alpha(By(fn() { look().words })) |> ignore
     b.box(fn(col) {
@@ -288,7 +290,7 @@ fn step_page_node(
   |> ignore
   match nodes.bind(fn(n) { n.foot }) {
     Some(f) =>
-      page.box(fn(fv) {
+      page.box(made_for=loc, fn(fv) {
         style_node(fv, fn() { centred_part_in(0.0, 0.0) })
         fv.alpha(By(fn() { look().words })) |> ignore
         fv.box(fn(row) {
