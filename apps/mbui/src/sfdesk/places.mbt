@@ -93,10 +93,8 @@ fn place_reads(src : Source, ws : String, place : String) -> @sfbase.OpenReads {
   match place {
     "stations" => {
       let rows = @sfbase.station_rows_ask(ws)
+      // (the workspace's devices under the stations in the list, as they come: not waited for)
       let side = [rows, ("workspace", { "workspace": of })]
-      if (src.asks_devices)() {
-        side.push(("devices", { "workspace": of }))
-      }
       @sfbase.reads_then({ asks: side, then: None }, fn(read) {
         let listed = match read(rows) {
           Some(Array(a)) => a.map(fn(s) { text(Some(s), "station") })

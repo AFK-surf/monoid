@@ -148,15 +148,9 @@ pub fn route_reads(src : Source, ws : String, r : @settings.Route) -> OpenReads 
     }
     SecurityOpen => reads_of([("lockDraft", { "workspace": of })])
     Vault => reads_of([("vaults", { "workspace": of })])
-    // (how each station up is reached, sampled, is asked by its card alone: never waited for)
-    Stations =>
-      reads_of(
-        if (src.asks_devices)() {
-          [stations, ("workspace", { "workspace": of }), ("devices", { "workspace": of })]
-        } else {
-          [stations, ("workspace", { "workspace": of })]
-        },
-      )
+    // (how each station up is reached, sampled, is asked by its card alone; the workspace's devices are listed under
+    // the stations, a block made as it comes into view: neither waited for)
+    Stations => reads_of([stations, ("workspace", { "workspace": of })])
     // (its station whole, then what its part shown reads as it is first drawn: sfpages' station_open_more)
     Station(address) => {
       let ask = station_ask(ws, address)
@@ -165,7 +159,12 @@ pub fn route_reads(src : Source, ws : String, r : @settings.Route) -> OpenReads 
         then: Some(fn(read) {
           match read(ask) {
             Some(Object(_)) as s =>
-              (station_open_more.val)(src, { id: ws, name: "", emoji: "", icon: "", email: "" }, address, s.unwrap())
+              // (the workspace's devices, its overview's last block, made as it comes into view: not waited for)
+              (station_open_more.val)(src, { id: ws, name: "", emoji: "", icon: "", email: "" }, address, s.unwrap()).filter(fn(
+                a,
+              ) {
+                a.0 != "devices"
+              })
             _ => []
           }
         }),

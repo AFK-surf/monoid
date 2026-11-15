@@ -521,12 +521,16 @@ fn station_head_node(
     name,
     rename?=if manager { Some(fn() { station_rename(core, @signals.untracked(here), @signals.untracked(s)) }) } else { None },
     rename_label=fn() { @sf.t("web-pages.settings.stations.rename") },
+    // (what the machine is, none for one never reached: no line, and no dot before nothing)
     lines=fn() {
-      [station_head_facts(s())]
+      match station_head_facts(s()) {
+        "" => []
+        facts => [facts]
+      }
     },
     // its dot before what it says of how it is (reconnecting …; this machine's, how it stands here: 已停止, 正在更新),
     // else before what the machine is
-    dot=fn() { if state().0 == "" { dot() } else { "" } },
+    dot=fn() { if state().0 == "" && station_head_facts(s()) != "" { dot() } else { "" } },
     state=fn(k) {
       @sf.state_dot_node(k, fn() { if state().1 && stopped() is Some(_) { "busy" } else { dot() } })
       @sf.words_node(k, fn() { state().0 }, fn() { if state().1 { st_fact_busy } else { st_fact } }) |> ignore

@@ -148,7 +148,9 @@ fn station_head(c : @ui.Ctx, core : Core, here : Here, s : Json?, manager : Bool
     Some(_) => (local_stopped_words(stopped), text(stopped, "doing") != "")
     None => (text(s, "stateText"), flag(s, "stateBusy"))
   }
-  let lines = [station_head_facts(s)]
+  // (what the machine is, none for one never reached: no line, and no dot before nothing)
+  let facts = station_head_facts(s)
+  let lines = if facts == "" { [] } else { [facts] }
   @sf.own_head(
     c,
     fn(side) {
@@ -198,7 +200,7 @@ fn station_head(c : @ui.Ctx, core : Core, here : Here, s : Json?, manager : Bool
     lines~,
     // its dot before what it says of how it is (reconnecting …; this machine's, how it stands here: 已停止, 正在更新),
     // else before what the machine is
-    dot=if state_text == "" { dot } else { "" },
+    dot=if state_text == "" && facts != "" { dot } else { "" },
     state?=if state_text != "" {
       Some(fn() {
         @sf.status_dot(c, if state_busy && stopped is Some(_) { "busy" } else { dot })
