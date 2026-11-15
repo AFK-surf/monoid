@@ -860,10 +860,56 @@ fn Ctx::gap_rules(self : Ctx) -> Array[String] {
         None => rows[q] = [i]
       }
     }
+    // (a card's pieces, a row a block each, are one card (rule 9's `one`): a piece's ground edge to edge with another's
+    // over or under it, of one ground, as wide, no edge round either, is a seam in the card, not its top or its foot)
+    let piece_by = fn(q : Int, above : Bool) -> Int? {
+      let a = self.nodes[q]
+      let g = self.nodes[ground_of(q).unwrap_or(q)]
+      for o in 0..<n {
+        if o == q || layer[o] != layer[q] || !whole[o] {
+          continue
+        }
+        guard ground_of(o) is Some(go) else { continue }
+        let b = self.nodes[o]
+        let gb = self.nodes[go]
+        let meets = if above { (a.y - (b.y + b.fh)).abs() <= gap_slack } else { (b.y - (a.y + a.fh)).abs() <= gap_slack }
+        if meets &&
+          gb.bg == g.bg &&
+          gb.border_w <= 0.0 &&
+          g.border_w <= 0.0 &&
+          (b.x - a.x).abs() <= gap_slack &&
+          (b.fw - a.fw).abs() <= gap_slack {
+          return Some(o)
+        }
+      }
+      None
+    }
+    // (the corner of the card a piece is of: the roundest of its pieces')
+    let card_corner = fn(q : Int) {
+      let mut most = self.nodes[ground_of(q).unwrap_or(q)].corner()
+      for above in [true, false] {
+        let mut at = q
+        let mut steps = 0
+        while steps < n {
+          match piece_by(at, above) {
+            Some(o) => {
+              most = dmax(most, self.nodes[ground_of(o).unwrap_or(o)].corner())
+              at = o
+            }
+            None => break
+          }
+          steps += 1
+        }
+      }
+      most
+    }
     for entry in rows {
       let (q, list) = entry
       let a = self.nodes[q]
-      let reach_of = fn(i : Int) { self.lit_reach_in(ground_of(q).unwrap_or(q), i) }
+      let seam_over = piece_by(q, true) is Some(_)
+      let seam_under = piece_by(q, false) is Some(_)
+      let corner = if seam_over || seam_under { card_corner(q) } else { self.nodes[ground_of(q).unwrap_or(q)].corner() }
+      let reach_of = fn(i : Int) { self.lit_reach_by(corner, i) }
       let top = fn(i : Int) { self.nodes[i].y - a.y }
       let foot = fn(i : Int) { a.y + a.fh - (self.nodes[i].y + self.nodes[i].fh) }
       let mut first = list[0]
@@ -884,10 +930,10 @@ fn Ctx::gap_rules(self : Ctx) -> Array[String] {
       for i in list {
         let b = self.nodes[i]
         let sides = [("left", b.x - a.x), ("right", a.x + a.fw - (b.x + b.fw))]
-        if i == first {
+        if i == first && !seam_over {
           sides.push(("top", top(i)))
         }
-        if i == last {
+        if i == last && !seam_under {
           sides.push(("foot", foot(i)))
         }
         let off : Array[String] = []
@@ -1272,8 +1318,15 @@ fn Ctx::island_scrolls(_self : Ctx, i : Int) -> Bool {
 /// ground `ground` (its corner less the row's), the theme's `lit_reach` where it is not round or no rounder than the
 /// row (a list's square card).
 fn Ctx::lit_reach_in(self : Ctx, ground : Int, i : Int) -> Double {
-  let d = self.nodes[ground].corner() - self.nodes[i].corner()
-  if self.nodes[ground].corner() <= gap_slack || d <= gap_slack {
+  self.lit_reach_by(self.nodes[ground].corner(), i)
+}
+
+///|
+/// How far in rule 7's row `i` stands from the sides of a ground round it of corner `corner` (lit_reach_in's; a card of
+/// pieces, its roundest piece's).
+fn Ctx::lit_reach_by(self : Ctx, corner : Double, i : Int) -> Double {
+  let d = corner - self.nodes[i].corner()
+  if corner <= gap_slack || d <= gap_slack {
     self.lit_reach
   } else {
     d

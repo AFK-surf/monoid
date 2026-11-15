@@ -688,11 +688,13 @@ fn station_all_screens_node(b : @view.View, core : Core, here : () -> Here, s : 
           let access = field(sv(), "access")
           access is Some(Object(_)) && (!flag(access, "capture") || !flag(access, "control"))
         }
-        row.pick(fn() { (own_screen(address, id), lacks()) }, fn(p, k) {
-          let (own, lacks) = k
-          @sf.group_rows_node(p, fn(r) {
+        // (its row made again as it comes to be this machine's own or lacks what it may, who is on it under it made
+        // once, whatever of that changes)
+        @sf.group_rows_node(row, fn(r) {
+          r.pick(fn() { (own_screen(address, id), lacks()) }, fn(p, k) {
+            let (own, lacks) = k
             @sf.link_row_node(
-              r,
+              p,
               fn() { text(sv(), "title") },
               fn() {
                 if !own {
@@ -704,8 +706,8 @@ fn station_all_screens_node(b : @view.View, core : Core, here : () -> Here, s : 
               goes=!own,
               lead=LeadLine(fn(l) { st_mark_node(l, fn() { screen_row_icon(sv()) }) }),
             )
-            screen_views_node(r, core, here, address, sv)
           })
+          screen_views_node(r, core, here, address, sv)
         })
       })
       g.each(agent_tabs, fn(sc) { text(Some(sc), "id") }, fn(row, sc) {
@@ -770,10 +772,11 @@ fn station_agent_pages_node(b : @view.View, core : Core, here : () -> Here, s : 
 /// and any active viewer rows under it.
 fn station_browser_row_node(row : @view.View, core : Core, here : () -> Here, address : String, sv : () -> Json?) -> Unit {
   let id = text(@signals.untracked(sv), "id")
-  row.pick(fn() { flag(sv(), "closable") }, fn(p, close_on) {
-    @sf.group_rows_node(p, fn(r) {
+  // (its row made again as it comes to be closable or not, who is on it under it made once)
+  @sf.group_rows_node(row, fn(r) {
+    r.pick(fn() { flag(sv(), "closable") }, fn(p, close_on) {
       @sf.link_row_node(
-        r,
+        p,
         fn() { text(sv(), "title") },
         fn() {
           @sfbase.open_page(Screen({ station: address, screen: id, title: text(@signals.untracked(sv), "title"), until_gone: true }))
@@ -796,8 +799,8 @@ fn station_browser_row_node(row : @view.View, core : Core, here : () -> Here, ad
           None
         },
       )
-      screen_views_node(r, core, here, address, sv)
     })
+    screen_views_node(r, core, here, address, sv)
   })
 }
 
@@ -819,11 +822,11 @@ fn station_screens_node(b : @view.View, core : Core, here : () -> Here, s : () -
           let access = field(sv(), "access")
           access is Some(Object(_)) && (!flag(access, "capture") || !flag(access, "control"))
         }
-        row.pick(fn() { (own_screen(address, id), lacks()) }, fn(p, k) {
+        @sf.group_rows_node(row, fn(r) {
+          r.pick(fn() { (own_screen(address, id), lacks()) }, fn(p, k) {
           let (own, lacks) = k
-          @sf.group_rows_node(p, fn(r) {
           @sf.link_row_node(
-            r,
+            p,
             fn() { text(sv(), "title") },
             fn() {
               if !own {
@@ -837,8 +840,8 @@ fn station_screens_node(b : @view.View, core : Core, here : () -> Here, s : () -
             // (its mark the page's own row mark, st_row_mark's 16 in the muted ink, by its first line, as the old page's)
             lead=LeadLine(fn(l) { st_mark_node(l, fn() { screen_row_icon(sv()) }) }),
           )
-          screen_views_node(r, core, here, address, sv)
           })
+          screen_views_node(r, core, here, address, sv)
         })
       })
       g.show(fn() { screens().length() == 0 && items(v(), "screens").is_empty() && text(v(), "note") != "" }, fn(n) {

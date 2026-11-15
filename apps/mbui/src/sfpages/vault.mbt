@@ -635,6 +635,7 @@ pub fn vault_items_node(
   let ws = fn() { here().workspace }
   let view = fn() { (core.topic)("vaults", { "workspace": str(ws()) }).get() }
   let usable = fn() { vault_first_keys(ws(), view().value) is None }
+  let all = vault_all_of(core, ws, fn() { view().value })
   @sf.page_node(
     v,
     fn() { @sf.t("web-pages.vault.all") },
@@ -670,7 +671,7 @@ pub fn vault_items_node(
     fn() {
       match vault_first_keys(ws(), view().value) {
         Some(keys) => keys
-        None => ["all"]
+        None => vault_all_keys(all)
       }
     },
     fn(b, key) {
@@ -679,7 +680,7 @@ pub fn vault_items_node(
         }) {
         return
       }
-      vault_all_node(b, core, ws, fn() { view().value }, tips)
+      vault_all_block(b, core, ws, all, key)
     },
   )
 }
@@ -918,10 +919,12 @@ fn vault_all_node(b : @view.View, core : Core, ws : () -> String, view : () -> J
 
 ///|
 /// What 全部密钥 lists, each worked out once for each change of what it reads (the library's view, each vault's
-/// secrets, the profiles' accounts, what is looked for), read by all that shows it: its rows, each with its key; how many of them are named secrets; the accounts; how many the profiles keep in all;
+/// secrets, the profiles' accounts, what is looked for), read by all that shows it: its rows, each with its key, and
+/// where each is among them; how many of them are named secrets; the accounts; how many the profiles keep in all;
 /// whether a vault's secrets are still read.
 priv struct VaultAll {
   rows : @signals.Computed[Array[(String, VaultRow)]]
+  at : @signals.Computed[Map[String, Int]]
   named : @signals.Computed[Int]
   accounts : @signals.Computed[Array[(String, String, String, String, String, @settings.Route)]]
   kept_accounts : @signals.Computed[Int]
@@ -1012,7 +1015,14 @@ fn vault_all_of(core : Core, ws : () -> String, view : () -> Json?) -> VaultAll 
     }
     n
   })
-  { rows, named, accounts, kept_accounts, reading }
+  let at = @signals.computed(fn(_) {
+    let out : Map[String, Int] = Map([])
+    for i, r in rows.get() {
+      out[r.0] = i
+    }
+    out
+  })
+  { rows, at, named, accounts, kept_accounts, reading }
 }
 
 ///|
@@ -1093,6 +1103,59 @@ fn vault_all_said_node(p : @view.View, core : Core, ws : () -> String, what : In
     2 => @sf.page_note_node(p, fn() { @sf.t("web-pages.vault.noMatch", args=[("q", vault_find.text().trim(chars=" ").to_owned())]) })
     3 => @sf.page_note_node(p, fn() { @sf.t("web-pages.vault.empty") })
     _ => ()
+  }
+}
+
+///|
+/// 全部密钥's blocks on a page's list (a block is a row: its list card made a piece of it a row, as far as it shows):
+/// its search, each of its rows by its key, the accounts' card, what it says under them.
+fn vault_all_keys(all : VaultAll) -> Array[String] {
+  let out = ["find"]
+  for r in all.rows.get() {
+    out.push(r.0)
+  }
+  if all.accounts.get().length() > 0 {
+    out.push("accounts")
+  }
+  if vault_all_said(all) != 0 {
+    out.push("said")
+  }
+  out
+}
+
+///|
+/// 全部密钥's block `key` (vault_all_keys') in `b`: a row of its list card, the piece of the card it is where it is
+/// among them now, as it is now (as it was last where its key is gone, while it goes).
+fn vault_all_block(b : @view.View, core : Core, ws : () -> String, all : VaultAll, key : String) -> Unit {
+  match key {
+    "find" => vault_find_node(b)
+    "accounts" => vault_accounts_node(b, core, all)
+    "said" => b.pick(fn() { vault_all_said(all) }, fn(p, what) { vault_all_said_node(p, core, ws, what) })
+    _ => {
+      let last : Ref[(Int, VaultRow)?] = Ref(None)
+      let now = fn() {
+        match all.at.get().get(key) {
+          Some(i) => {
+            let made = (i, all.rows.get()[i].1)
+            last.val = Some(made)
+            Some(made)
+          }
+          None => last.val
+        }
+      }
+      guard @signals.untracked(now) is Some(_) else { return }
+      // (as tall as its block, its piece of the card in it as tall: card_piece_node)
+      b.grow(Is(1.0)) |> ignore
+      let piece = fn() {
+        match now() {
+          Some((i, _)) => @sf.card_piece_of(i, all.rows.get().length())
+          None => @sf.CardPiece::CardWhole
+        }
+      }
+      @sf.card_piece_node(b, piece, wide_group=true, fn(card) {
+        vault_row_node(card, core, ws, fn() { now().unwrap().1 })
+      })
+    }
   }
 }
 
