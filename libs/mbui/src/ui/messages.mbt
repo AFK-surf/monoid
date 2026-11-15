@@ -228,9 +228,16 @@ fn take_messages() -> Unit {
   messages_in.clear()
   let was = @signals.set_active_sub(None)
   let owner = @signals.set_owner(None)
-  for m in taken {
-    hand_on(m.0, m.1, m.2)
-  }
+  // (one event, as messages_take's between frames: what they tell is one change of the window's tree, committed whole
+  // once all of them are handed on, not a change of its own for each structure each marks)
+  view_event(
+    fn() {
+      for m in taken {
+        hand_on(m.0, m.1, m.2)
+      }
+    },
+    what="messages",
+  )
   @signals.set_active_sub(was) |> ignore
   @signals.set_owner(owner) |> ignore
 }
