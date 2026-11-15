@@ -7,6 +7,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { stationLang, tr } from "../src/ops/i18n.ts";
 import { newSession, say } from "../src/sessions/lifecycle.ts";
@@ -658,4 +659,95 @@ test("the tell that an item came is lost: the station it came from heard again, 
   await w.quiet();
   assert.equal(b.rig.hub.chatHeld(key), null, "it goes on there");
   assert.deepEqual(b.moves.scheduler.stopped(), []);
+});
+
+/// The import's look-ups of an entry or a letter by its ts on `st`'s database while it runs (store/handover.ts).
+function countByTs(st: Station) {
+  // (the store's database is timed.ts's proxy over it: its own prepare, set on what it stands for, called by it)
+  const db = st.rig.store.db as unknown as { prepare?(sql: string): unknown };
+  const real = DatabaseSync.prototype.prepare;
+  const counted = { n: 0, stop: () => void delete db.prepare };
+  db.prepare = function (this: DatabaseSync, sql: string) {
+    if (/FROM entries WHERE thread = \? AND ts = \?/.test(sql)) counted.n++;
+    return real.call(this, sql);
+  };
+  return counted;
+}
+
+test("a thread found there that has an arriving entry already, at a lower number of its own (heard there itself, a retirement's leftover): found by its ts, not numbered on; the rest numbered on, every entry once, a turn's and an edit's number following it; forth and back again, every entry once on each side", async () => {
+  // (the real run, 2026-11-16: Office-Host-2 had heard the Slack message itself at its n=1, Office-VM-1's thread had it
+  // alone at n=2: "UNIQUE constraint failed: entries.thread, entries.ts")
+  const X = "1794627297.417069";
+  for (const shape of ["alone", "among others"] as const) {
+    const w = world();
+    const a = w.get(A);
+    const b = w.get(B);
+    const [key, made] = newSession(a.rig.hub, { runtime: "claude", profile: "cc", createdBy: "p@x" });
+    const thread = made.id;
+    mkdirSync(a.rig.session(key).workspace, { recursive: true });
+    // B's leftover of it (a retirement's): the session and its thread, found there by what it is
+    retiredCopy(a, b, key);
+    const there = homeThread(b, key);
+    const put = (st: Station, t: number, n: number, ts: string | null, author: string, at: number, text: string, target: number | null = null) =>
+      st.rig.store.db.prepare("INSERT INTO entries (thread, n, kind, target, ts, author_kind, author, text, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(t, n, target === null ? "message" : "edit", target, ts, target === null && author !== "U0C4CNJMRP1" ? "ember" : "person", author, text, at);
+    put(b, there, 1, X, "U0C4CNJMRP1", 1794627313642, "heard there itself");
+    if (shape === "alone") put(a, thread, 2, X, "gpt-ember", 1794627297648, "the message");
+    else {
+      put(a, thread, 1, "1794627290.000001", "gpt-ember", 1794627290000, "before it");
+      put(a, thread, 2, X, "gpt-ember", 1794627297648, "the message");
+      put(a, thread, 3, "1794627299.000003", "gpt-ember", 1794627299000, "after it");
+      put(a, thread, 4, null, "gpt-ember", 1794627300000, "the message, edited", 2);
+    }
+    // (a turn about the message, by its number here)
+    a.rig.store.db.prepare("INSERT INTO turns (id, session_key, kind, started_at, ended_at, about_thread, about_n, about_ts) VALUES ('turn-x', ?, 'message', 1, 2, ?, 2, ?)").run(key, thread, X);
+    const once = (st: Station, t: number, how: string) => {
+      const rows = st.rig.store.db.prepare("SELECT n, kind, target, ts, text FROM entries WHERE thread = ? ORDER BY n").all(t) as { n: number; kind: string; target: number | null; ts: string | null; text: string }[];
+      const tss = rows.filter((r) => r.ts !== null).map((r) => r.ts);
+      assert.equal(new Set(tss).size, tss.length, `${shape}, ${how}: every entry once by its ts: ${JSON.stringify(rows)}`);
+      const edits = rows.filter((r) => r.kind === "edit");
+      assert.equal(edits.length, shape === "alone" ? 0 : 1, `${shape}, ${how}: the edit once`);
+      const at = rows.find((r) => r.ts === X)!.n;
+      for (const e of edits) assert.equal(e.target, at, `${shape}, ${how}: the edit's target the message`);
+      const turn = st.rig.store.db.prepare("SELECT about_n FROM turns WHERE id = 'turn-x'").get() as { about_n: number } | undefined;
+      if (turn !== undefined) assert.equal(turn.about_n, at, `${shape}, ${how}: the turn about the message`);
+      return rows;
+    };
+    // (what the import looks up by ts there, counted: a fresh thread's own log pays none)
+    const byTs = countByTs(b);
+    const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: key });
+    await w.quiet();
+    byTs.stop();
+    assert.equal(out.failed, null, `${shape}: it went: ${JSON.stringify(out.failed)}`);
+    console.log(`# ${shape}: looked up by ts there: ${byTs.n}`);
+    if (shape === "alone") {
+      // A chat whose thread is put in fresh there, three entries: none looked up by its ts.
+      const [fresh, freshThread] = newSession(a.rig.hub, { runtime: "claude", profile: "cc", createdBy: "p@x" });
+      mkdirSync(a.rig.session(fresh).workspace, { recursive: true });
+      for (let k = 1; k <= 3; k++) put(a, freshThread.id, k, `1794627400.00000${k}`, "gpt-ember", 1794627400000 + k, `fresh ${k}`);
+      const freshByTs = countByTs(b);
+      const went = await a.moves.scheduler.move(WS, B, { module: "chats", item: fresh });
+      await w.quiet();
+      freshByTs.stop();
+      assert.equal(went.failed, null, JSON.stringify(went.failed));
+      assert.equal(entries(b, homeThread(b, fresh)).length, 3);
+      assert.equal(freshByTs.n, 0, "a fresh thread's entries looked up by ts: none");
+    }
+    assert.equal(homeThread(b, key), there, `${shape}: the thread found there`);
+    const rows = once(b, there, "there");
+    assert.deepEqual(rows.map((r) => [r.n, r.ts]), shape === "alone" ? [[1, X]] : [[1, X], [2, "1794627290.000001"], [3, "1794627299.000003"], [4, null]],
+      `${shape}: the message where it was there, the rest numbered on`);
+    assert.equal(rows[0]!.text, "heard there itself", `${shape}: what was there kept`);
+    // forth and back again, twice
+    for (let i = 0; i < 2; i++) {
+      const back = await a.moves.scheduler.back(WS, B, { module: "chats", item: key });
+      await w.quiet();
+      assert.equal(back.failed, null, `${shape}: back ${i}: ${JSON.stringify(back.failed)}`);
+      once(a, thread, `back ${i}`);
+      const forth = await a.moves.scheduler.move(WS, B, { module: "chats", item: key });
+      await w.quiet();
+      assert.equal(forth.failed, null, `${shape}: forth ${i}: ${JSON.stringify(forth.failed)}`);
+      once(b, there, `forth ${i}`);
+    }
+  }
 });

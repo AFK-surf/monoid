@@ -289,7 +289,21 @@ export function importRows(db: DatabaseSync, ctx: ImportCtx, table: ChatTable, r
         // (this chat's own log as it was left there: what it has is the copy's, and the rest goes on from its last)
         if (linear && same !== undefined && same.ts === (r.ts ?? null) && same.author === r.author) break;
         let to: number;
-        if (linear && same === undefined && was === last + 1) to = was;
+        // (an entry's ts is the message's own, one a thread (entries_ts): a thread found there, not put in by this copy,
+        // may have the arriving one already at another number of its own (heard there itself, a retirement's leftover's).
+        // Looked for by its ts before it is numbered on, as off the linear path; a fresh thread's own log has none and
+        // pays nothing for it. Not a letter: two of one ts are two (another machine's clock), kept by number)
+        const onward = linear && same === undefined && was === last + 1;
+        const there = onward && table === "entries" && !t.fresh && r.ts !== null && r.ts !== undefined
+          ? (db.prepare("SELECT n FROM entries WHERE thread = ? AND ts = ?").get(t.id, r.ts as string) as { n: number } | undefined)
+          : undefined;
+        if (there !== undefined) {
+          // (the copy's numbers are not this log's from here: what follows is found as off the linear path)
+          t.linear = false;
+          map[String(was)] = there.n;
+          break;
+        }
+        if (onward) to = was;
         else {
           if (table === "entries") t.linear = false;
           else t.lettersLinear = false;
