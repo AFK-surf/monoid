@@ -99,6 +99,11 @@ async function sendBatch(to: Sending, batch: { hash: string; path: string; size:
           return to.put(f.hash, fileBytes(f.path, 0, size), f.path, size);
         });
       } catch (e) {
+        // (gone between its `stat` and its open: as one gone since it was gathered, above)
+        if ((e as NodeJS.ErrnoException)?.code === "ENOENT") {
+          if (strict) throw new Error("a file went as it was sent: gathered again");
+          continue;
+        }
         if (!(e instanceof Refused && /changed/.test(e.message)) && !/got shorter/.test((e as Error).message)) throw e;
         if (strict) throw new Error("a file changed as it was sent: gathered again");
         continue;

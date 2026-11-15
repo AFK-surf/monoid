@@ -139,15 +139,22 @@ class Incoming implements AsyncIterableIterator<Buffer> {
 }
 
 /// `bytes` written to `stream` as they come, each piece taken within IDLE_MS, and the stream finished; reset when they
-/// fail on the way (a file that changed while it was read, the other end gone).
-async function sendBytes(stream: Stream, bytes: Bytes): Promise<void> {
+/// fail on the way (a file that changed while it was read, the other end gone). `failed`, told before the reset (at
+/// once: a read waiting on the stream is given its end as it is reset, front.ts `FrontStream.reset`) whether it was
+/// the bytes' own source that failed (reading them, `CHECK_BYTES`) or the stream taking them, and with what.
+async function sendBytes(stream: Stream, bytes: Bytes, failed?: (source: boolean, error: Error) => void): Promise<void> {
+  let source = true;
   try {
     for await (const piece of bytes) {
       bytes[CHECK_BYTES]?.();
+      source = false;
       await within(IDLE_MS, stream.write(piece), "the other station took nothing for 30 s");
+      source = true;
     }
+    source = false;
     await stream.finish();
   } catch (error) {
+    failed?.(source, error as Error);
     await stream.reset(FAILED).catch(() => {});
     throw error;
   }
@@ -347,7 +354,13 @@ export function peerCall(
         const answered = reader.line();
         answered.catch(() => {});
         let sent = false;
-        const sending = sendBytes(stream, body).then(() => void (sent = true));
+        // (the bytes' own source failing, as they went: what the caller is told, not that the other answered nothing,
+        // which the stream's reset makes the reader read; the stream taking them failing is the other end's, as before)
+        let sourceFailed: Error | null = null;
+        const sending = sendBytes(stream, body, (source, error) => {
+          if (source) sourceFailed = error;
+          log.info("mesh", source ? "a request's bytes failed at their source: its stream reset" : "a request's bytes were not taken by the stream: its stream reset", { peer: target.slice(0, 12), method: String(request?.method ?? ""), error: error.message });
+        }).then(() => void (sent = true));
         await Promise.race([sending, answered]);
         const watched = watch(target, conn, before);
         answer = await within(answerMs, Promise.race([answered, watched.gone]), late).finally(watched.stop);
@@ -355,6 +368,8 @@ export function peerCall(
           await stream.reset(STOPPED).catch(() => {});
           sending.catch(() => {});
         }
+        // (no answer came, its bytes having failed at their source: that is why, as it is)
+        if (answer === null && sourceFailed !== null) throw sourceFailed;
       }
       if (answer === null) throw new Error("the other station answered nothing");
       if (typeof answer?.error === "string") throw new Refused(answer.error);
@@ -516,7 +531,7 @@ export async function servePeer(conn: Connection, cloud: Cloud, remote: Pick<Pee
       else await stream.finish();
     } catch (error) {
       // The caller gone (it gave up, the connection closed, it stopped reading), or the answer's bytes failed on the way.
-      log.info("mesh", "peer answer not sent", { error: (error as Error).message });
+      log.info("mesh", "peer answer not sent", { error: (error as Error).message, ...(answer.error !== undefined ? { failed: answer.error } : {}) });
       void incoming?.return();
       return;
     }
