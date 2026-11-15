@@ -592,8 +592,8 @@ static NSCursor *cursor_of(int kind) {
 // ---- keys ----
 
 // A key with ⌘ is the view's first, as it was before the app had a menu bar (the app's shortcuts, a field's editing
-// keys, a key catcher's): only those the menu bar keeps for the system go on to it (⌘Q, ⌘W, ⌘H, ⌥⌘H, ⌘M, ⌃⌘F), and
-// with no menu bar given (a bare run) they come back here as keys (keyDown).
+// keys, a key catcher's): only those the menu bar keeps for the system go on to it (⌘Q, ⌘W, ⌘H, ⌥⌘H, ⌘M, ⌃⌘F).
+// The menu first offers ⌘W to the app (mac_menu_keys.h); with no menu bar they come back here as keys (keyDown).
 - (BOOL)performKeyEquivalent:(NSEvent *)e {
   if (e.type != NSEventTypeKeyDown || !(e.modifierFlags & NSEventModifierFlagCommand) || self.window.firstResponder != self)
     return [super performKeyEquivalent:e];
@@ -1489,26 +1489,7 @@ static NSMenuItem *menu_item(NSDictionary *it) {
   return item;
 }
 
-// The canvas takes its own keys first. If a native page has focus, offer window-wide keys to the app before the page.
-@interface MBShownKeysMenu : NSMenu
-@end
-@implementation MBShownKeysMenu
-- (BOOL)performKeyEquivalent:(NSEvent *)e {
-  if (!window_key || e.type != NSEventTypeKeyDown || !the_view.window.isKeyWindow ||
-      the_view.window.firstResponder == the_view)
-    return NO;
-  NSEventModifierFlags m = e.modifierFlags;
-  int mods = ((m & NSEventModifierFlagShift) ? 1 : 0) | ((m & NSEventModifierFlagControl) ? 2 : 0) |
-             ((m & NSEventModifierFlagOption) ? 4 : 0) | ((m & NSEventModifierFlagCommand) ? 8 : 0);
-  int code = e.keyCode == 123 ? 3 : e.keyCode == 124 ? 4 : e.keyCode == 126 ? 5 : e.keyCode == 125 ? 6 :
-             e.keyCode == 36 || e.keyCode == 76 ? 7 : e.keyCode == 53 ? 17 : 0;
-  if (!code) {
-    NSString *key = e.charactersIgnoringModifiers.lowercaseString;
-    if (key.length == 1) code = 1000 + [key characterAtIndex:0];
-  }
-  return code && window_key(code, mods);
-}
-@end
+#include "mac_menu_keys.h"
 
 void mb_host_menu_setup(moonbit_string_t json_s) {
   [NSApplication sharedApplication];

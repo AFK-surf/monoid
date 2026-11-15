@@ -86,6 +86,21 @@ pub fn frame_actions(v : @view.View, src : Source) -> Unit {
   }
   // Esc: what the frame opened first, then in the open chat (chat_layers.mbt)
   act("frame.escape", fn(_) { frame_escape(blur) || (framed() && chat_escape(src, blur)) })
+  // The Mac's ⌘W is offered here before the system closes the window. Only a visible side panel takes it.
+  act("window.close_panel", fn(w) {
+    guard framed() && (!wide.tape.get() || wide.tape_at.get() != Side) else { return false }
+    match app.nav.top() {
+      Chat(r) if side_now(src, r).0.length() > 0 => {
+        side_change(src, r, "clear", None)
+        true
+      }
+      NewChat if new_drive_station(src, w) is Some(_) && new_files_open(src, w.id) => {
+        new_files_set(src, w.id, false)
+        true
+      }
+      _ => false
+    }
+  })
 }
 
 ///|

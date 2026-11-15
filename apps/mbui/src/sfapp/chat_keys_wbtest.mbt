@@ -180,6 +180,75 @@ test "Escape in a chat with its side panel open closes all of its tabs (chat.tab
 }
 
 ///|
+test "⌘W closes the visible side panel, including a file and several tabs, without closing the window" {
+  for nodes in [false, true] {
+    for mode in ["chat-history-side", "chat-tabs-side", "chat-view-side"] {
+      let calls : Array[Made] = []
+      let t = wide_tester(calls, mode~, before=fn(_) { if nodes { @sfbase.chat_page_nodes.set(true) } })
+      t.run_for(@ui.move_most_ms)
+      // The composer may have focus when the shortcut is pressed.
+      t.click(TextField, label="发消息")
+      t.key(@ui.key_of_char('w'), mods=@ui.mod_cmd)
+      assert_eq(named(calls, "chat.tabs.clear").length(), 1, msg="\{mode}, nodes=\{nodes}")
+      assert_true(t.window_acts().is_empty(), msg="\{mode}, nodes=\{nodes}")
+      // Once the core has closed the tabs, the panel action declines the next close, for the window to take it.
+      assert_false(@ui.view_action("window.close_panel"), msg="\{mode}, nodes=\{nodes}")
+    }
+  }
+}
+
+///|
+test "⌘W on 中屏 closes the panel in use, but leaves a panel hidden behind the sidebar alone" {
+  let calls : Array[Made] = []
+  let t = wide_tester(calls, mode="chat-history-side", w=720.0)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(@sfdesk.wide.tape_at.get(), @sfdesk.TapePane::Side)
+  assert_false(@ui.view_action("window.close_panel"))
+  t.key(@ui.key_of_char('w'), mods=@ui.mod_cmd)
+  assert_eq(named(calls, "chat.tabs.clear").length(), 0)
+  page_over(t, 720.0)
+  t.tap(720.0 - @sfdesk.tape_shows / 2.0, 400.0)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(@sfdesk.wide.tape_at.get(), @sfdesk.TapePane::Panel)
+  t.key(@ui.key_of_char('w'), mods=@ui.mod_cmd)
+  assert_eq(named(calls, "chat.tabs.clear").length(), 1)
+}
+
+///|
+test "⌘W closes the new chat's files panel; with no side panel it is left to the window" {
+  let calls : Array[Made] = []
+  let t = wide_tester(calls, mode="newchat-files")
+  t.run_for(@ui.move_most_ms)
+  t.key(@ui.key_of_char('w'), mods=@ui.mod_cmd)
+  let closed = named(calls, "chat.tabs.close")
+  assert_eq(closed.length(), 1)
+  assert_eq(text(Some(closed[0].params), "chat"), "new:ws1")
+  assert_eq(text(Some(closed[0].params), "tab"), "files")
+  assert_true(t.window_acts().is_empty())
+  assert_false(@ui.view_action("window.close_panel"))
+  let calls : Array[Made] = []
+  let t = wide_tester(calls, mode="chat")
+  t.run_for(@ui.move_most_ms)
+  assert_false(@ui.view_action("window.close_panel"))
+  t.key(@ui.key_of_char('w'), mods=@ui.mod_cmd)
+  assert_eq(named(calls, "chat.tabs.clear").length(), 0)
+}
+
+///|
+test "⌘W's panel priority is the Mac's, and does not take other modifiers" {
+  let calls : Array[Made] = []
+  let t = wide_tester(calls, mode="chat-history-side")
+  t.run_for(@ui.move_most_ms)
+  t.key(@ui.key_of_char('w'), mods=@ui.mod_cmd | @ui.mod_shift_key)
+  assert_eq(named(calls, "chat.tabs.clear").length(), 0)
+  let calls : Array[Made] = []
+  let t = wide_tester(calls, mode="chat-history-side", platform=3)
+  t.run_for(@ui.move_most_ms)
+  t.key(@ui.key_of_char('w'), mods=@ui.mod_cmd)
+  assert_eq(named(calls, "chat.tabs.clear").length(), 0)
+}
+
+///|
 test "Escape with ⌘F's bar open closes that bar and nothing else (no panel asked to close)" {
   let calls : Array[Made] = []
   let t = keyed_chat(calls, mode="chat-find")

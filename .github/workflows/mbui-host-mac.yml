@@ -12,6 +12,7 @@ on:
       - "libs/mbui/src/host/apple_*"
       - "libs/mbui/src/host/apple.h"
       - "libs/mbui/src/host/mac_app.m"
+      - "libs/mbui/src/host/mac_menu_keys.h"
       - "libs/mbui/src/host/mini_json.h"
       - "apps/mbui/src/host/station_install.h"
       - "apps/mbui/scripts/station_install_test.c"
@@ -70,6 +71,7 @@ jobs:
               - "src/host/apple_*"
               - "src/host/apple.h"
               - "src/host/mac_app.m"
+              - "src/host/mac_menu_keys.h"
               - "src/host/mini_json.h"
               - "src/host/done_watch.h"
               - "src/ui/drive.mbt"
@@ -117,6 +119,11 @@ jobs:
           cc -Wall -Werror -Isrc/host -I../../libs/mbui/src/host scripts/station_install_test.c -o out/station_install_test
           out/station_install_test
       - uses: ./.github/actions/mbui-moonbit
+      - name: "The app gets ⌘W before the system close item"
+        run: |
+          mkdir -p out
+          cc -Wall -Werror -fobjc-arc -Isrc/host test/host/mac_menu_keys_test.m -framework Cocoa -o out/mac_menu_keys_test
+          out/mac_menu_keys_test
       - name: kitdemo
         run: scripts/host_contract.sh mac build
       - name: "The host's contract: a run's tape = a Tester's frames"
