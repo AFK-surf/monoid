@@ -874,6 +874,11 @@ test("a chat stopped by a move says so once, as a person speaks in it, never by 
   await quiet();
   assert.notEqual(a.rig.hub.chatHeld(one.key), null, "stopped");
   assert.equal(stationSaid(a, one.thread).length, said0, "nobody spoke: nothing said");
+  // (the station's own hold let go of meanwhile wakes every chat: this one, nobody having spoken, says nothing by that)
+  a.rig.hub.hold("drain");
+  a.rig.hub.release("drain");
+  await quiet();
+  assert.equal(stationSaid(a, one.thread).length, said0, "woken with nobody having spoken: nothing said");
   // A person speaks twice: said once, in the station's words; no turn starts.
   const before = handed(a);
   say(a.rig.hub, one.thread, "p@x", "are you there?");

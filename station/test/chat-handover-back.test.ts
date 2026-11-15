@@ -626,7 +626,8 @@ test("the station stopped in the middle of a turn: started again, what waited fo
   await w.quiet();
   assert.deepEqual(a.moves.scheduler.stopped(), [], "its account is here: it goes on");
   assert.equal(a.rig.hub.chatHeld(key), null);
-  const last = a.moves.scheduler.last(WS)!;
+  const last = a.moves.scheduler.last(WS);
+  assert.ok(last !== null, "the turn the restart cut is kept as the last, its outcome said");
   assert.equal(last.how, "move");
   assert.match(last.failed?.error ?? "", /restarted during the move|迁移进行中这台 station 重启了/);
   say(a.rig.hub, t.id, "p@x", "still here");

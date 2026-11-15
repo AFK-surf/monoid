@@ -384,7 +384,11 @@ test("a station retired: its chats, transcripts and rooms go on on the station p
   assert.equal(readFileSync(join(there, "notes.md"), "utf8"), "what I was doing, more and more");
   assert.equal(statSync(join(there, "notes.md")).nlink, 2, "linked to what was sent: its bytes not copied");
   assert.equal(existsSync(join(there, "node_modules")), false, "a build's output stays behind");
-  assert.equal(readFileSync(join(bData, "transcripts", "claude", claudeProject(ws)!, "run-1.jsonl"), "utf8"), '{"type":"user"}\n');
+  // (a retirement's transcript keeps its place under the workspace's own project there, not its room's: a chat handed over is
+  // the one put under its room's)
+  const carried = join(bData, "transcripts", "claude", claudeProject(ws)!, "run-1.jsonl");
+  assert.ok(existsSync(carried), `the transcript under the workspace's project on B: ${carried}`);
+  assert.equal(readFileSync(carried, "utf8"), '{"type":"user"}\n');
 
   // B started again before it put them in (as if it stopped then): it goes on, and keeps A's copy meanwhile, though it is
   // not one of those that keep it

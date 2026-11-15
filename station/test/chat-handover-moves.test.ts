@@ -223,7 +223,7 @@ test("a chat held as what it needs moved away says so as its process ends, not t
   const lines: string[] = [];
   hearLines((l) => void lines.push(l.message));
   try {
-    await a.rig.hub.holdChat(key, "stopped: waits for accounts own:solo@A, moved away");
+    await a.rig.hub.holdChat(key, "stopped: waits for accounts own:solo@A, moved away", () => "waits for its account");
     await a.rig.quiet();
   } finally {
     hearLines(null);
@@ -231,6 +231,9 @@ test("a chat held as what it needs moved away says so as its process ends, not t
   const ending = lines.filter((m) => m.startsWith("ending the runtime process"));
   assert.deepEqual(ending, ["ending the runtime process: the chat is held: stopped: waits for accounts own:solo@A, moved away"]);
   assert.match(a.rig.store.listTurns(key).at(-1)?.summary.detail ?? "", /the chat is held: stopped: waits for accounts/);
+  // (what it waits for is said as a person next speaks in it, never as its turn is cut: move-accounts.test.ts)
+  const said = (a.rig.store.db.prepare("SELECT text FROM entries WHERE thread = ? AND author_kind = 'ember'").all(t.id) as { text: string }[]).map((r) => r.text);
+  assert.ok(!said.some((x) => x.includes("waits for its account")), `nothing said by the stop itself: ${JSON.stringify(said)}`);
 });
 
 test("an account that cannot be borrowed moved first: its chats here stop, naming it; a message to one is delivered once after it moved; moved back, the others go on here", async () => {
@@ -448,6 +451,7 @@ test("a linked worktree with commits no remote has: its repository moves first, 
   run(clone, "remote", "remove", "origin");
   assert.equal((await a.moves.scheduler.back(WS, B, { module: "chats", item: key })).failed, null);
   await w.quiet();
+  assert.ok(existsSync(join(ws, "proj", ".git")), "the worktree's .git stays, never put aside as not named");
   assert.equal(run(join(ws, "proj"), "rev-parse", "HEAD"), head, "the worktree here still git's");
   run(clone, "remote", "add", "origin", bare);
   await a.moves.scheduler.back(WS, B, { module: "repos", item: repo });
