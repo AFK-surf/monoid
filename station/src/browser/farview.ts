@@ -48,12 +48,13 @@ export function farviewConfig(raw: any): FarviewConfig | null {
   return { dir: b.farview, host: join(b.farview, "bin", "host.exe"), agent: join(b.farview, "bin", "agent.exe"), engine: b.engine === "farview" ? "farview" : "chrome", sessions };
 }
 
-/// Whether `session`'s chat has Farview for its browser: every chat's where the config says so, else the sessions it
-/// lists and those whose agent chose it (`chosen`).
+/// Whether `session`'s chat has Farview for its browser: what its agent chose (`chosen`) where it chose, else every
+/// chat's where the config says so, else the sessions it lists. A chat the config gives Farview goes back to Chrome
+/// by choosing it.
 export function farviewFor(config: FarviewConfig | null, session: string, chosen: Engine | undefined): boolean {
   if (config === null) return false;
-  if (chosen !== undefined && config.engine !== "farview" && !config.sessions.includes(session)) return chosen === "farview";
-  return config.engine === "farview" || config.sessions.includes(session) || chosen === "farview";
+  if (chosen !== undefined) return chosen === "farview";
+  return config.engine === "farview" || config.sessions.includes(session);
 }
 
 /// What a host writes into its state directory once it listens: its process and its ports.

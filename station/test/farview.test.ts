@@ -30,6 +30,9 @@ test("Farview is on only where config.json says where it is, every chat's browse
   assert.equal(farviewFor(some, "chat:b", undefined), false);
   assert.equal(farviewFor(some, "chat:b", "farview"), true);
   assert.equal(farviewFor(some, "chat:b", "chrome"), false);
+  // a chat the config gives Farview goes back to Chrome by choosing it: one it lists, and every chat's
+  assert.equal(farviewFor(some, "chat:a", "chrome"), false);
+  assert.equal(farviewFor(farviewConfig({ browser: { engine: "farview", farview: "/opt/fv" } }), "chat:x", "chrome"), false);
   assert.equal(farviewFor(null, "chat:a", "farview"), false);
 });
 
@@ -187,11 +190,12 @@ test("a person's paste goes to the tab as typed, and what they copy there reache
 });
 
 test("the browser tool gives Farview to the chats it is for and Chrome to the others, its tabs opened, listed and closed", async () => {
+  const chromeStopped: string[] = [];
   const chrome: ToolBrowsers = {
     endpoint: async () => ({ running: true, http: "http://127.0.0.1:9222", ws: "ws://127.0.0.1:9222/devtools/browser/x" }),
     tabs: () => [],
     status: () => ({ running: false }),
-    stop: async () => {},
+    stop: async (s: string) => void chromeStopped.push(s),
   };
   const config = { dir: "/opt/fv", host: "/opt/fv/bin/host.exe", agent: "/opt/fv/bin/agent.exe", engine: "chrome" as const, sessions: ["chat:c-1"] };
   const chosen = new Map<string, string>();
@@ -236,6 +240,8 @@ test("the browser tool gives Farview to the chats it is for and Chrome to the ot
   await assert.rejects(tool!.run("chat:c-2", { action: "open", url: "https://b.test/" }), /Farview's/);
   assert.match(String(await tool!.run("chat:c-2", { engine: "farview" })), /This chat's browser runs: Farview/);
   assert.equal(chosen.get("chat:c-2"), "farview");
+  // (its Chrome closed as it chose Farview, as choosing Chrome ends its Farview)
+  assert.deepEqual(chromeStopped, ["chat:c-2"]);
   assert.match(String(await tool!.run("chat:c-2", { engine: "chrome" })), /DevTools for this chat/);
 });
 
@@ -309,6 +315,28 @@ test("a chat's Farview is for it as the config lists it or its agent chose it, t
     assert.equal(next.activeFor("chat:listed"), false);
     await assert.rejects(next.choose("chat:listed", "farview"), /not on this station/);
   } finally {
+    await rm(fv.root, { recursive: true, force: true });
+  }
+});
+
+test("a chat the config lists goes back to Chrome by choosing it, its Farview ended", { skip: process.platform === "win32" && "a made-up host is a script with a #! line" }, async () => {
+  const fv = await fakeFarview();
+  const session = "chat:listed";
+  const tabs = fv.make();
+  try {
+    await tabs.endpoint(session);
+    const chat = join(fv.root, "data", chatDir(session));
+    const pid = JSON.parse(await readFile(join(chat, "tabs", "0", "host.json"), "utf8")).pid;
+    assert.equal(groupAlive(pid), true);
+    await tabs.choose(session, "chrome");
+    assert.equal(tabs.activeFor(session), false);
+    assert.equal(groupAlive(pid), false);
+    assert.deepEqual(tabs.tabs(session), []);
+    // (and Farview again by choosing it)
+    await tabs.choose(session, "farview");
+    assert.equal(tabs.activeFor(session), true);
+  } finally {
+    await tabs.closeOf(session).catch(() => {});
     await rm(fv.root, { recursive: true, force: true });
   }
 });

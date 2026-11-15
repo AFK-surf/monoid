@@ -75,6 +75,8 @@ export function browserTools(browser: ToolBrowsers, doorUrl: () => string | null
         if (args.engine === "chrome" || args.engine === "farview") {
           if (farview === null || farview.active() === null) throw new Error("This station has no Farview (config.json `browser.farview`): this chat's browser is Chrome.");
           await farview.choose(session, args.engine);
+          // (Farview chosen: the chat's Chrome closed, as choosing Chrome ends its Farview; its sign-ins stay)
+          if (args.engine === "farview") await browser.stop(session);
         }
         const fv = farview?.active() ?? null;
         if (farview !== null && fv !== null && farview.activeFor(session)) {
