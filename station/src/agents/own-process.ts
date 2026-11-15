@@ -316,7 +316,7 @@ export abstract class OwnProcessSession<T extends TurnState = TurnState> impleme
   }
 
   /// What the program read of its lines: the lines it gives this to read, then its events in order, each turn's end
-  /// said once what is written of the turn is (`settled`).
+  /// said once what is written of the turn is (`settled`), and the whole taken once what it gave to be written is.
   protected heardHosted(heard: Heard): void | Promise<void> {
     for (const line of heard.lines ?? []) this.heard(line.text);
     return this.told(heard, 0);
@@ -338,6 +338,9 @@ export abstract class OwnProcessSession<T extends TurnState = TurnState> impleme
       this.event(heard, e);
     }
     this.take(heard.turn);
+    // (acknowledged once what it gave to be written is: a crash reads again what is not, a handover's `drained` waits
+    // for it, and what the program says after, its process's exit too, comes after it)
+    return this.settled() ?? undefined;
   }
 
   private event(heard: Heard, e: Json) {
