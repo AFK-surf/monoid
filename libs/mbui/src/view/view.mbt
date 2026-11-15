@@ -2611,7 +2611,10 @@ fn Tree::layout_marked_at(self : Tree, at : Int, within? : Bool = false) -> Unit
     n.flex.dirty = true
     // (in what lays out alone, laid out as big as it was asked before: laid out again from it, nothing above it)
     if (i != at || within) && n.alone && n.flex.laid_given() {
-      self.alone_due.push(i)
+      // (once a pass however much under it is marked: what is made in it marks each node it makes)
+      if !self.alone_due.contains(i) {
+        self.alone_due.push(i)
+      }
       return
     }
     i = n.parent
@@ -9104,9 +9107,14 @@ fn View::comes(
             return
           }
           m.flex.style.come_now = now
-          m.look.clips = m.clips_said || (m.coming && !m.come_uncut)
           tree.layout_marked_at(vat)
-          tree.look_marked_at(vat)
+          // (how it is cut told again only as that changes: as tall as it is laid out at each step of its way, it is made
+          // again where it is placed, Tree::place)
+          let clips = m.clips_said || (m.coming && !m.come_uncut)
+          if clips != m.look.clips {
+            m.look.clips = clips
+            tree.look_marked_at(vat)
+          }
           // (what draws its ground by how tall this shows: drawn again by it, View::shown_by)
           match tree.shown_followers.get(vat) {
             Some(fs) =>
