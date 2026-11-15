@@ -373,7 +373,9 @@
   `src/resources/module.ts`. Under the machine's pressure or past its soft limit it lets go only what answers nothing
   (`Readers.trimIdle`, `src/read/pool.ts`): never a read under way, never a reader of what devices ask or streams tell,
   and never the browser, whose chats' contexts are kept in memory only (`src/browser/browsers.ts`): closing it would sign
-  them out. Node held past its hard limit asks the launcher to hand over (`src/ops/restart.ts` `restarter`), never
+  them out. The machine under pressure (high, critical), not the station past only its own limit, also ends every idle
+  session's process (`Hub.evictAllIdle`): those are gigabytes, and their conversations resume on the next message.
+  Node held past its hard limit asks the launcher to hand over (`src/ops/restart.ts` `restarter`), never
   `becomeOther` or an exit, which would end the sessions where there is no launcher.
 - What is written to a program's stdin is bounded both sides: Node ends a program that left `STDIN_MOST` unread
   (`src/read/mb-reader.ts`), and the program's own queue stops reading stdin past its bound (`mb/src/host/host.c`

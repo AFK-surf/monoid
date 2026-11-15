@@ -700,6 +700,9 @@ export class Hub {
         waitingSeconds: 0,
         nudges: 0,
         stopRequested: false,
+        // Idle since its session was last active (its turn's end set it), not from now: one found idle for hours is not
+        // kept warmMs more. (A turn it has running sets its idle time again as it ends.)
+        idleMs: Math.max(0, this.now() - row.lastActiveAt),
       };
       await this.adoptOne(row, snap, true);
     }
@@ -742,7 +745,8 @@ export class Hub {
     }
     // Its runtime not taken up: a turn it had is resumed the usual way (recover).
     if (withProcess && !agent) return;
-    actor.adopt(snap, agent, ranOn);
+    // (taken up whole before its idle time is looked at: `idleNow`)
+    await actor.adopt(snap, agent, ranOn);
     log.info("hub", "session taken up from the previous station", { session: row.key, withAgent: agent !== null });
     if (agent) {
       this.adopted.add(row.key);
@@ -1132,7 +1136,8 @@ export class Hub {
     const row = this.store.getSession(key);
     if (row && row.archivedAt !== null) {
       const actor = this.actor(row);
-      void actor.evict().then(() => actor.cleanArchive());
+      // (what it left in the background ends with it: an archived session keeps nothing running)
+      void actor.evict(true).then(() => actor.cleanArchive());
     }
     const old = this.deadlines.get(key);
     if (old) this.interrupt(old);
@@ -1152,6 +1157,20 @@ export class Hub {
     );
     this.deadlines.set(key, fiber);
     this.evictIdle();
+  }
+
+  /// The machine short of memory (high, critical: ops/self-memory.ts): every idle claude and dsh process let go now,
+  /// whatever the warm limit and however briefly idle; how many were asked to end. Each ends only if still idle as its
+  /// queue reaches it, and keeps what it runs in the background (`holding`); its conversation resumes on its next message.
+  evictAllIdle(): number {
+    const now = this.now();
+    let asked = 0;
+    for (const actor of this.actors.values()) {
+      if (actor.runtime === "codex" || actor.idleMs(now) === null) continue;
+      void actor.evict();
+      asked++;
+    }
+    return asked;
   }
 
   /// Ends the session's runtime process if it is idle; the conversation resumes on the next message.

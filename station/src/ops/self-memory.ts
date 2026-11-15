@@ -4,7 +4,10 @@
 //
 // - Soft: the machine under pressure (high, critical), or the station's whole (Node's resident memory and its programs')
 //   past softLimitOf: what answers nothing is let go at once (Readers.trimIdle), at most once a RELIEF_MS. Nothing that
-//   answers is stopped.
+//   answers is stopped. Under the machine's pressure alone, every idle session's process goes too (`evictWarm`, hub.ts
+//   `evictAllIdle`): gigabytes where the readers are megabytes (2026-11-15: nine idle ones held 5.3 GiB of a station
+//   whose machine had 2 GiB left). The station past its own soft limit leaves them: they are not its memory, and a
+//   machine with room to spare keeps its warm sessions.
 // - Hard: Node itself past hardRssOf or HEAP_MOST in SUSTAINED samples in a row (a leak, not a transfer's or a pack's
 //   moment), STARTUP_MS after it started: its launcher asked to hand over (ops/restart.ts `restarter`), as an update
 //   does, once, the next process taking the sessions up. Never an exit: where there is no launcher (a checkout, a
@@ -42,6 +45,8 @@ export type SelfMemoryOptions = {
   pressure(): Promise<Pressure | null>;
   /// Lets go what answers nothing; how many were.
   trimIdle(): number | Promise<number>;
+  /// Lets every idle session's process go, the machine under pressure (high, critical); how many were asked to end.
+  evictWarm?(): number | Promise<number>;
   /// How to ask the launcher to hand over (ops/restart.ts `restarter`); null where there is none.
   handover(): Promise<(() => Promise<void>) | null>;
   sampleMs?: number;
@@ -53,9 +58,10 @@ export type SelfMemoryOptions = {
   reliefMs?: number;
 };
 
-/// What a sample did: how many were let go (null: nothing was asked), and whether the launcher was asked to hand over
-/// (`asked`), there was none to ask (`none`), or neither.
-export type SelfVerdict = { trimmed: number | null; handover: "asked" | "none" | null };
+/// What a sample did: how many were let go (null: nothing was asked), how many idle sessions' processes were asked to end
+/// (`evictedWarm`, null: none was asked), and whether the launcher was asked to hand over (`asked`), there was none to
+/// ask (`none`), or neither.
+export type SelfVerdict = { trimmed: number | null; evictedWarm: number | null; handover: "asked" | "none" | null };
 
 export class SelfMemoryGovernor {
   readonly #o: SelfMemoryOptions;
@@ -91,12 +97,13 @@ export class SelfMemoryGovernor {
       nodeRssMb: Math.round(node.rss / MiB), heapUsedMb: Math.round(node.heapUsed / MiB), externalMb: Math.round(node.external / MiB),
       arrayBuffersMb: Math.round(node.arrayBuffers / MiB), mbChildrenRssMb: Math.round(children.bytes / MiB), mbCount: children.count, pressure,
     };
-    const verdict: SelfVerdict = { trimmed: null, handover: null };
+    const verdict: SelfVerdict = { trimmed: null, evictedWarm: null, handover: null };
     const pressed = pressure === "high" || pressure === "critical";
     if ((pressed || whole > this.#soft) && (this.#lastRelief === null || now - this.#lastRelief >= (this.#o.reliefMs ?? RELIEF_MS))) {
       this.#lastRelief = now;
       verdict.trimmed = await this.#o.trimIdle();
-      log.info("memory", "station trimmed idle helpers under memory pressure", { ...fields, softMb: Math.round(this.#soft / MiB), trimmed: verdict.trimmed });
+      if (pressed && this.#o.evictWarm) verdict.evictedWarm = await this.#o.evictWarm();
+      log.info("memory", "station trimmed idle helpers under memory pressure", { ...fields, softMb: Math.round(this.#soft / MiB), trimmed: verdict.trimmed, evictedWarm: verdict.evictedWarm });
     }
     this.#over = node.rss > this.#hardRss || node.heapUsed > this.#hardHeap ? this.#over + 1 : 0;
     if (this.#handedOver || this.#over < (this.#o.sustained ?? SUSTAINED) || now - this.#o.startedAt < (this.#o.startupMs ?? STARTUP_MS)) return verdict;

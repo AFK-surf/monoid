@@ -1,0 +1,188 @@
+// Idle sessions' processes let go (hub.ts `evictIdle`, `idleNow`, `evictAllIdle`): taken up by the next station, a
+// process keeps the time it had idled (a station updated every 12 to 20 minutes never reached warmMs' 30, 2026-11-15:
+// nine idle processes held 5.3 GiB for up to six hours); one of an archived session is ended once its turn is over,
+// even with work left in its background (an archived session's 679 MiB `claude -p` and its `bfs /` ran on); and the
+// machine under pressure lets every idle one go at once.
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import type { BackgroundTask } from "../src/agents/runtime.ts";
+import { runnerId } from "../src/agents/process.ts";
+import { type ColdStorage, sessionKey } from "../src/sessions/hub.ts";
+import { archive } from "../src/sessions/lifecycle.ts";
+import { FakeDriver, Rig, type Setup, message, settle, testClock } from "./hub-fakes.ts";
+
+const MIN = 60_000;
+
+/// A session whose turn ended (it said it is done): its process idle.
+async function idleSession(r: Rig, driver = r.claude) {
+  const m = message();
+  await r.accept(m);
+  await settle();
+  const key = sessionKey("cl", "C1", m.threadTs);
+  await r.call(key, "chat_state", { kind: "all_done", done: "answered" });
+  driver.last().complete();
+  await settle();
+  return key;
+}
+
+/// The station updated: this hub hands over, the next (its own drivers, the same store and clock) takes up.
+async function updated(r: Rig): Promise<FakeDriver> {
+  await r.hub.handOver();
+  await r.hub.shutdown();
+  const claude = new FakeDriver("claude");
+  r.hub = r.newHub({ chats: (id) => (id === "cl" ? r.chat : undefined), drivers: [claude, new FakeDriver("codex")], internal: false });
+  await r.hub.takeUp();
+  r.hub.recover();
+  await settle();
+  return claude;
+}
+
+function rig(o: Setup) {
+  const time = testClock();
+  return { time, r: new Rig({ ...o, clock: time.clock }) };
+}
+
+test("handed over every 12 minutes, idle processes beyond the warm limit still end once idle past warmMs", async () => {
+  const { time, r } = rig({ maxWarmClaude: 1, warmMinutes: 30 });
+  await idleSession(r);
+  await time.adjust(5);
+  await idleSession(r);
+  const [oldest, newer] = r.claude.sessions.map((s) => s.sessionId);
+  let claude = r.claude;
+  for (let i = 0; i < 2; i++) {
+    await time.adjust(12 * MIN);
+    claude = await updated(r);
+    assert.ok(claude.sessions.every((s) => !s.disposed), `idle ${12 * (i + 1)} minutes: within warmMs`);
+  }
+  // 30 minutes idle in all, 6 after the last handover: the oldest is let go then, the other stays warm.
+  await time.adjust(6 * MIN - 5);
+  await settle();
+  const by = (id: string) => claude.sessions.find((s) => s.sessionId === id)!;
+  assert.ok(by(oldest!).disposed, "the oldest idle one, past warmMs and beyond the limit, ended at its deadline");
+  assert.ok(!by(newer!).disposed, "within the limit: kept warm");
+  await r.close();
+});
+
+test("taken up beyond the warm limit, idle processes already past warmMs end at once", async () => {
+  const { time, r } = rig({ maxWarmClaude: 2, warmMinutes: 30 });
+  await idleSession(r);
+  await time.adjust(5);
+  await idleSession(r);
+  const [oldest, newer] = r.claude.sessions.map((s) => s.sessionId);
+  await time.adjust(36 * MIN);
+  await settle();
+  assert.ok(r.claude.sessions.every((s) => !s.disposed), "within the limit of two");
+  // The next station keeps one warm: the one idle longest is let go as it is taken up.
+  r.edit((raw) => void (raw.maxWarmClaude = 1));
+  const claude = await updated(r);
+  const by = (id: string) => claude.sessions.find((s) => s.sessionId === id)!;
+  assert.ok(by(oldest!).disposed, "beyond the limit and idle 36 minutes: ended as it is taken up");
+  assert.ok(!by(newer!).disposed);
+  await r.close();
+});
+
+test("taken up, an idle process is let go at its own deadline, counted from when it went idle", async () => {
+  const { time, r } = rig({ maxWarmClaude: 0, warmMinutes: 30 });
+  await idleSession(r);
+  await time.adjust(20 * MIN);
+  const claude = await updated(r);
+  assert.ok(!claude.last().disposed, "idle 20 minutes");
+  await time.adjust(10 * MIN - 1);
+  await settle();
+  assert.ok(!claude.last().disposed, "not idle long enough yet");
+  await time.adjust(1);
+  await settle();
+  assert.ok(claude.last().disposed, "30 minutes idle in all: ended, not 30 more after the handover");
+  await r.close();
+});
+
+test("taken up after a crash with no snapshot, an idle runner keeps the time since its session was last active", async () => {
+  const { time, r } = rig({ maxWarmClaude: 0, warmMinutes: 30 });
+  const key = await idleSession(r);
+  const old = r.claude.last();
+  await time.adjust(20 * MIN);
+  // Killed (no handover file); its runner keeps the idle process, which the next station finds.
+  const claude = new FakeDriver("claude");
+  claude.left = { id: old.sessionId, busy: false };
+  const first = r.hub;
+  r.hub = r.newHub({ chats: (id) => (id === "cl" ? r.chat : undefined), drivers: [claude, new FakeDriver("codex")], internal: false, runners: [runnerId("claude", key)] });
+  await first.shutdown();
+  await r.hub.takeUp();
+  r.hub.recover();
+  await settle();
+  assert.ok(!claude.last().disposed);
+  await time.adjust(10 * MIN);
+  await settle();
+  assert.ok(claude.last().disposed, "idle since it was last active, 30 minutes ago: ended");
+  await r.close();
+});
+
+/// Cold storage that only counts what it was asked to pack (hub `cleanArchive`).
+function packs(): ColdStorage & { packed: string[] } {
+  const packed: string[] = [];
+  return { packed, isCold: async () => false, restore: () => {}, pack: (key) => void packed.push(key) };
+}
+
+const task: BackgroundTask = { id: "bfs-1", kind: "command", description: "bfs / -name x" };
+
+test("archived while idle with work left in its background, its process is ended and its session packed", async () => {
+  const cold = packs();
+  const { r } = rig({ cold });
+  const key = await idleSession(r);
+  const session = r.claude.last();
+  session.tasks = [task];
+  await archive(r.hub, key, true);
+  await r.quiet();
+  assert.ok(session.disposed, "ended despite what it has in the background");
+  assert.deepEqual(cold.packed, [key], "packed cold");
+  assert.equal(r.hub.processState(key), "cold");
+  await r.close();
+});
+
+test("archived during its turn with work left in its background, its process is ended once the turn ends, then packed", async () => {
+  const cold = packs();
+  const { r } = rig({ cold });
+  const m = message();
+  await r.accept(m);
+  await settle();
+  const key = sessionKey("cl", "C1", m.threadTs);
+  const session = r.claude.last();
+  session.tasks = [task];
+  await archive(r.hub, key, true);
+  await r.quiet();
+  assert.ok(!session.disposed, "its turn runs on");
+  assert.deepEqual(cold.packed, []);
+  await r.call(key, "chat_state", { kind: "all_done", done: "answered" });
+  session.complete();
+  await r.quiet();
+  assert.ok(session.disposed, "ended as its turn ended");
+  assert.deepEqual(cold.packed, [key]);
+  await r.close();
+});
+
+test("an idle process that is not archived keeps what it runs in the background through an ordinary eviction", async () => {
+  const { r } = rig({});
+  const key = await idleSession(r);
+  const session = r.claude.last();
+  session.tasks = [task];
+  await r.hub.evict(key);
+  await r.quiet();
+  assert.ok(!session.disposed, "its background work goes on");
+  await r.close();
+});
+
+test("under the machine's pressure every idle process is let go, whatever the warm limit, and a running turn is not", async () => {
+  const { r } = rig({ maxWarmClaude: 4, warmMinutes: 30 });
+  await idleSession(r);
+  await idleSession(r);
+  const busy = message();
+  await r.accept(busy);
+  await settle();
+  const [a, b, running] = r.claude.sessions;
+  assert.ok([a, b].every((s) => !s!.disposed), "within the warm limit");
+  assert.equal(r.hub.evictAllIdle(), 2, "the two idle ones");
+  await r.quiet();
+  assert.ok(a!.disposed && b!.disposed);
+  assert.ok(!running!.disposed, "its turn goes on");
+  await r.close();
+});

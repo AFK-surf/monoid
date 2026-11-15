@@ -107,6 +107,7 @@ export const ResourcesLive = Layer.effectDiscard(
           children: async () => programsIn(await platform.processTable(false), MbProcess.live().map((p) => p.pid)),
           pressure: () => platform.memoryPressure(),
           trimIdle: () => readers.trimIdle(),
+          evictWarm: () => hub.evictAllIdle(),
           handover: () => restarter(data),
         });
         governor.start();
