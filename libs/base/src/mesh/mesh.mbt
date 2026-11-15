@@ -31,12 +31,11 @@
 // Where a peer said a device dials it straight is kept, told the endpoint and given to its dials, and where its
 // program says a peer is told each endpoint bound (`Mesh::add_addr`, addrs.mbt).
 //
-// One connection to a peer in a scope, on the one endpoint, through the relays given (and direct, where the endpoint
-// may): what that mesh does beside that is not here yet (the choice among several ways and relays, each relay's own
-// endpoint, an endpoint of its own for a peer's addresses, peers looked up on the LAN and in the DHT, traces, the
-// day's tally). `Options` and `Link` are where those go: a way more is a link
-// more to the same place, chosen among under `Mesh::link` (`Mesh::ways`, health.mbt, is where they are counted, and
-// what asks whether any way, or no other way, is up goes by it).
+// A place may have several ways, each a link: on the endpoint, on an endpoint bound on one relay alone, at the
+// addresses the peer said on an endpoint of their own; requests go on the one in `links`, moved among them as they
+// answer (ways.mbt). `Mesh::ways` (health.mbt) counts them for what asks whether any way, or no other way, is up.
+// What that mesh does beside that is not here yet: peers looked up on the LAN and in the DHT, a way's speed, traces,
+// the day's tally.
 
 ///|
 /// The key the device's key is kept under.
@@ -223,6 +222,15 @@ pub struct Mesh {
   priv keeping : @effect.Semaphore
   priv known : Array[Known]
   priv unanswered_at : Map[Place, String]
+  /// The ways to each place and what is kept of them (ways.mbt); the endpoints of a way's own, by way, and the dials
+  /// under way on them (none is let go of meanwhile); the ways no more gone on, closed `retire_ms` after; the dials
+  /// on the endpoint beside a place's link (`Mesh::explore`); and what a relay's endpoint's key is made with.
+  priv ways_of : Map[Place, Ways]
+  priv pinned : Map[String, Pinned]
+  priv mut dialing : Int
+  priv retiring : Array[Link]
+  priv mut dialling_main : Int
+  priv pinned_prefix : Bytes
   priv mut closed : Bool
 }
 
@@ -232,12 +240,15 @@ pub struct Mesh {
 /// `binding`: what else the endpoint is bound with (bind.mbt); none said: nothing looked up, no connection taken,
 /// no entries, as before there was any. `addresses`: the key what peers say of where they are dialled straight is
 /// kept under in `store` (addrs.mbt), read here: what is not there or cannot be read is taken for nothing.
+/// `pinned_prefix`: what the key of an endpoint on one relay alone is made with, beside the device's key and the
+/// relay (ways.mbt, `pinned_key`).
 pub async fn Mesh::make(
   shell : @shell.Shell,
   store : Store,
   options : Options,
   binding? : Binding = Binding::none(),
   addresses? : String = addresses_key,
+  pinned_prefix? : Bytes = relay_key_prefix,
 ) -> Mesh {
   if options.says is Some(says) {
     for field in own_fields {
@@ -297,6 +308,12 @@ pub async fn Mesh::make(
     keeping: @effect.Semaphore::new(1),
     known: [],
     unanswered_at: Map([]),
+    ways_of: Map([]),
+    pinned: Map([]),
+    dialing: 0,
+    retiring: [],
+    dialling_main: 0,
+    pinned_prefix,
     closed: false,
   }
 }
@@ -328,13 +345,21 @@ fn is_id(id : String) -> Bool {
 ///
 /// `scope`: what the program tells its links to one peer apart by, a string of its own; the same peer in another
 /// scope has a link of its own, opened with that one's credential. None said: the one scope of a program with one.
+///
+/// `theirs`, `off`: what its program says of the ways there, as `Mesh::set_ways` (ways.mbt); not said, as they were.
+/// A link no more usable with another way open there that answered: requests go on that one at once.
 pub async fn Mesh::link(
   self : Mesh,
   peer : String,
   credentials : async (String, Bool) -> Presented,
   scope? : String = "",
+  theirs? : Array[String],
+  off? : Array[String],
 ) -> Link {
   let place : Place = { scope, peer }
+  if theirs is Some(_) || off is Some(_) {
+    self.set_ways(peer, scope~, theirs?, off?)
+  }
   let mut fresh = false
   if self.links.get(place) is Some(existing) {
     match existing.result {
@@ -361,6 +386,14 @@ pub async fn Mesh::link(
         }
         // (refused for something its user named, the credential was fine: no new one asked of its source)
         fresh = link.refused is Some(_) && !link.control.named
+        // Gone, with another way still open: requests go on that one at once.
+        if !fresh {
+          let up = self.live_ways(place).filter(way => !physical_equal(way.link, link) && way.link.missed == 0)
+          if best(self.takeable(place, up)) is Some(way) {
+            self.promote(place, way, "lost")
+            return way.link
+          }
+        }
       }
       Some(Failed(e, _)) => fresh = code_of(e) == "credential_refused"
     }
@@ -425,7 +458,7 @@ fn Mesh::dial(self : Mesh, place : Place, credentials : async (String, Bool) -> 
   opening.dials = 1
   opening.first = Some(
     self.scope.fork(name="mesh open", () => {
-      let made = attempt(() => self.open(place, credentials, fresh))
+      let made = attempt(() => self.dial_all(place, credentials, fresh))
       self.dialled(place, opening, false, made)
     }),
   )
@@ -572,6 +605,16 @@ fn Mesh::let_go(self : Mesh, place : Place, reason : String) -> Unit {
     Some(Failed(_, _)) => ()
   }
   self.links.remove(place)
+  // (its other ways go with it, and the endpoints of a way's own no way is on any more)
+  if self.ways_of.get(place) is Some(ways) {
+    for way in ways.all {
+      if !(opening.result is Some(Open(link)) && physical_equal(link, way.link)) {
+        way.link.close(reason~)
+      }
+    }
+    ways.all.clear()
+  }
+  self.release_pinned()
   // (a link raced beside the one let go of goes with it: its place is no more to be taken)
   self.end_race(place)
   self.changed()
@@ -582,8 +625,8 @@ fn Mesh::let_go(self : Mesh, place : Place, reason : String) -> Unit {
 ///|
 /// Whether the endpoint is on one of its relays (at once with none). A dial given addresses does not ask
 /// (`Mesh::open`): it goes on them at once, as the TypeScript mesh's.
-fn Mesh::on_a_relay(self : Mesh) -> Bool {
-  let said = self.shell.ask("iroh.relayStatus", { "id": self.endpoint }) catch { _ => return true }
+fn Mesh::on_a_relay(self : Mesh, endpoint : Json) -> Bool {
+  let said = self.shell.ask("iroh.relayStatus", { "id": endpoint }) catch { _ => return true }
   guard said is Array(relays) else { return true }
   if relays.length() == 0 {
     return true
@@ -600,7 +643,16 @@ fn Mesh::on_a_relay(self : Mesh) -> Bool {
 /// Connects, presents the first credential, and starts renewing it. The credential is asked for while the connection
 /// is being made; the link is handed out as soon as the credential is sent (the peer reads it before any request
 /// stream). A refusal closes the connection; the requests on it fail, and the next `link` starts over.
-async fn Mesh::open(self : Mesh, place : Place, credentials : async (String, Bool) -> Presented, fresh : Bool) -> Link {
+///
+/// `on`: dialled on the endpoint of a way's own (ways.mbt) and its handle: through that relay alone, or at the
+/// addresses the peer said of that kind alone; not said, on the endpoint.
+async fn Mesh::open(
+  self : Mesh,
+  place : Place,
+  credentials : async (String, Bool) -> Presented,
+  fresh : Bool,
+  on? : (String, Json),
+) -> Link {
   let peer = place.peer
   guard is_id(peer) else {
     raise MeshError(code="invalid_params", message=say("bad_station_id", args={ "id": peer }), cause="")
@@ -614,8 +666,12 @@ async fn Mesh::open(self : Mesh, place : Place, credentials : async (String, Boo
   let connection : Ref[Json?] = Ref(None)
   let dialled : @effect.Deferred[Json] = @effect.Deferred::new()
   // (and where the peer said it is dialled straight, where the endpoint may: then its time counts from now)
-  let ips = self.ips(place)
-  let addr : Map[String, Json] = { "id": Json::string(peer), "relays": strings(self.relays) }
+  let (pin, endpoint, relays, ips) = match on {
+    None => (None, self.endpoint, self.relays_for(place), self.ips(place))
+    Some((kind, endpoint)) if kind == lan || kind == tailnet => (Some(kind), endpoint, [], self.said_at(place, kind))
+    Some((relay, endpoint)) => (Some(relay), endpoint, [relay], [])
+  }
+  let addr : Map[String, Json] = { "id": Json::string(peer), "relays": strings(relays) }
   if ips.length() > 0 {
     addr["ips"] = strings(ips)
   }
@@ -627,7 +683,7 @@ async fn Mesh::open(self : Mesh, place : Place, credentials : async (String, Boo
       guard !abandoned.val else { return }
       let made = attempt(() => shell.call(
         "iroh.connect",
-        { "id": self.endpoint, "addr": addr },
+        { "id": endpoint, "addr": addr },
         bytes=@utf8.encode(self.options.alpn),
         called=id => call.val = Some(id),
       ))
@@ -690,6 +746,7 @@ async fn Mesh::open(self : Mesh, place : Place, credentials : async (String, Boo
         came: 0,
         missed: 0,
         pinging: false,
+        pinged_at: 0L,
         rx: 0,
         samples: 0,
         srtt: 0.0,
@@ -698,6 +755,7 @@ async fn Mesh::open(self : Mesh, place : Place, credentials : async (String, Boo
         warm: false,
         lan: [],
         tailnet: [],
+        pin,
         fibers: self.scope,
         accepts: @effect.Semaphore::new(1),
         coming: None,
@@ -707,7 +765,7 @@ async fn Mesh::open(self : Mesh, place : Place, credentials : async (String, Boo
     // The opening's time: counted from when the endpoint is on a relay (getting onto one takes several round trips to
     // it), and it covers the whole opening, a handshake made whose credential or first stream never goes too.
     () => {
-      for waited = 0; ips.length() == 0 && waited < onto_max_ms && !self.on_a_relay(); waited = waited + onto_recheck_ms {
+      for waited = 0; ips.length() == 0 && waited < onto_max_ms && !self.on_a_relay(endpoint); waited = waited + onto_recheck_ms {
         @effect.sleep(onto_recheck_ms)
       }
       @effect.sleep(connect_timeout_ms)
@@ -808,6 +866,7 @@ fn Mesh::adopt(self : Mesh, place : Place, opening : Opening, link : Link) -> Un
   }
   self.tell_health(place)
   ignore(self.scope.fork(name="mesh pings", () => self.steer(place, opening, link)))
+  self.now_on(place, link)
 }
 
 ///|
@@ -846,7 +905,17 @@ async fn Mesh::steer(self : Mesh, place : Place, opening : Opening, link : Link)
     self.suspect(place, opening, link)
     // (while it is raced the race says what becomes of it: let go where neither answers, kept where it does)
     if link.missed >= dead_pings && !self.racing.contains(place) {
+      // Another way up takes its place at once; else it is let go and the place dialled anew, every way raced
+      // where it was the endpoint's (ways.mbt, `Mesh::dial_all`).
+      let up = self.live_ways(place).filter(way => !physical_equal(way.link, link) && way.link.missed == 0)
+      if best(self.takeable(place, up)) is Some(way) {
+        self.promote(place, way, "lost")
+        return
+      }
       link.close()
+      if link.pin is None && self.main_on(place) {
+        self.ways_at(place).lost_main = true
+      }
       ignore(self.dial(place, link.credentials, false))
       return
     }
@@ -860,6 +929,11 @@ async fn Mesh::steer(self : Mesh, place : Place, opening : Opening, link : Link)
 /// answered in time counts as that time, and again as what it took if it is answered after; the first answered is
 /// not counted (it carried the link's own start).
 async fn Mesh::ping(self : Mesh, link : Link) -> Unit {
+  // (one under way that is not late yet is another's, a measuring asked meanwhile, ways.mbt `Mesh::sample`: not
+  // counted twice)
+  if link.pinging && self.shell.rt.now() - link.pinged_at < ping_timeout_ms.to_int64() {
+    return
+  }
   if link.pinging {
     if !link.brought() {
       link.missed += 1
@@ -868,6 +942,7 @@ async fn Mesh::ping(self : Mesh, link : Link) -> Unit {
     return
   }
   link.pinging = true
+  link.pinged_at = self.shell.rt.now()
   ignore(link.brought())
   // (how long it took; none: it failed)
   let answered : @effect.Deferred[Int?] = @effect.Deferred::new()
@@ -954,6 +1029,11 @@ pub async fn Mesh::close(self : Mesh) -> Unit {
   }
   self.live.clear()
   self.racing.clear()
+  // (the ways' own endpoints, closed below; one still being bound is closed as the shell answers, `pinned_endpoint`)
+  let pinned = self.pinned.values().filter_map(one => one.endpoint).to_array()
+  self.pinned.clear()
+  self.ways_of.clear()
+  self.retiring.clear()
   let taken = self.incomings.copy()
   self.incomings.clear()
   for incoming in taken {
@@ -987,6 +1067,9 @@ pub async fn Mesh::close(self : Mesh) -> Unit {
     }
     // (with it go the connections on it nobody took, and the wait for the next: `iroh.close`, in both shells)
     ignore(attempt(() => self.shell.call("iroh.close", { "id": self.endpoint })))
+    for endpoint in pinned {
+      ignore(attempt(() => self.shell.call("iroh.close", { "id": endpoint })))
+    }
   })
 }
 

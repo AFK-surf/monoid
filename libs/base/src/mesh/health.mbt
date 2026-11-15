@@ -3,14 +3,21 @@
 // numbers, but for how the old link is asked whether it answers (`Mesh::race` says).
 
 ///|
-/// The usable links to a place: the ways requests may go there. Today the one in `links`, where it is usable; where
-/// a place comes to have several ways, the others are counted here, and what goes by "any way" or "no other way"
-/// (`standing`, `healthy`, `suspect`) goes by all of them with nothing else changed.
+/// The usable links to a place: the ways requests may go there, the one in `links` and those beside it (ways.mbt).
+/// What goes by "any way" or "no other way" (`standing`, `healthy`, `suspect`) goes by all of them.
 fn Mesh::ways(self : Mesh, place : Place) -> Array[Link] {
-  match self.links.get(place) {
+  let out = match self.links.get(place) {
     Some({ result: Some(Open(link)), .. }) if link.usable() => [link]
     _ => []
   }
+  if self.ways_of.get(place) is Some(ways) {
+    for way in ways.all {
+      if way.link.usable() && !out.iter().any(one => physical_equal(one, way.link)) {
+        out.push(way.link)
+      }
+    }
+  }
+  out
 }
 
 ///|
@@ -110,6 +117,9 @@ priv enum First {
 /// each. Asked of a link that is usable (`Mesh::steer`): one that ended is not a way, and is not raced.
 fn Mesh::suspect(self : Mesh, place : Place, opening : Opening, link : Link) -> Unit {
   guard !self.racing.contains(place) else { return }
+  // (raced on the endpoint: only its own link, and only where the place is dialled there; another way's is the
+  // ways' to replace, ways.mbt)
+  guard link.pin is None && self.main_on(place) else { return }
   guard link.missed == 1 && link.answered_ms is Some(took) && took < ping_timeout_ms / 2 else { return }
   // (no other way up: with one link a place there is never another, `Mesh::ways`)
   guard !self.ways(place).iter().any(way => !physical_equal(way, link) && way.missed == 0) else { return }
@@ -258,6 +268,10 @@ fn Mesh::switch(self : Mesh, place : Place, opening : Opening, old : Link, next 
   taken.result = Some(Open(next))
   ignore(taken.done.succeed(next))
   self.links[place] = taken
+  // (no more a way to go back to)
+  if self.ways_of.get(place) is Some(ways) {
+    ways.all.retain(way => !physical_equal(way.link, old))
+  }
   self.changed()
   self.adopt(place, taken, next)
   // (cut as the mesh closes, which closes every link not ended itself: `live`)

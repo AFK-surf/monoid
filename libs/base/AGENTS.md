@@ -13,8 +13,9 @@ of its workspace (`moon.work`); `effect` stays in mbui.
 - `src/wire`: pure stream framing and event-stream parsing (`lines`, request/reply heads, SSE text) with no transport.
 - `src/mesh`: the device side of the mesh on top of `shell` and `wire` (endpoints, scoped peer links, hello/pings/renewal,
   requests/streams/duplex, health racing in `health.mbt`, wake/rebind in `wake.mbt`, what the endpoint is bound
-  with, relays told again and connections peers dial to it in `bind.mbt`, and where peers are dialled straight in
-  `addrs.mbt`).
+  with, relays told again and connections peers dial to it in `bind.mbt`, where peers are dialled straight in
+  `addrs.mbt`, and the ways to a place and the choice among them in `ways.mbt`, with `sha256.mbt` for the keys of
+  relays' own endpoints).
 
 ## It knows no program
 
@@ -60,6 +61,13 @@ of its workspace (`moon.work`); `effect` stays in mbui.
   TypeScript mesh's check) is kept by place in the program's `Store` (`Mesh::make`'s `addresses`), unreadable kept
   values taken for none. A dial given them does not wait to be on a relay (`onto_max_ms`), as in that mesh.
   `iroh.addAddr` is an op answered at once (`Shell::ask`): the Rust shell has it only there, never as a call.
+- Ways (`ways.mbt`'s head): a place is dialled on the endpoint alone, as before, unless its endpoint's ways are off
+  (`off`), direct is held for flakiness, its last dial there went unanswered given the same addresses, or its link
+  there died of missed pings; then every way is raced. The numbers are the TypeScript mesh's: change both together.
+  A relay endpoint's key is SHA-256 of `pinned_prefix`, the device key and the relay, so the TypeScript prefix gives
+  its keys. On purpose unlike it: the endpoint's way, missing where it is on again, is redialled every
+  `redial_main_ms` (dead code at `mesh.ts` `#steer`); `relay_only` does not turn the endpoint's ways off; LAN and
+  tailnet endpoints get a drawn key; a relay's entries are no ways.
 - The device's key file is its user's alone whatever the umask, by the Rust shell's doing alone
   (`client/shell/src/lib.rs` `create_private`): a program linked to a shell from before keeps its key as its umask has
   it. `shell.c` has been compiled and run on macOS on arm64 alone.
@@ -76,7 +84,8 @@ left is another part's:
   TypeScript too, which holds them the same. An endpoint bound anew (`Mesh::rebind`) leaves one such entry each
   time, and that is no rare time: every dial that runs out of time unconnected leaves the endpoint taken for
   stuck, so a peer that does not answer, asked for again and again, binds it anew at each try (5 s apart at the
-  soonest), as in the device base in TypeScript. The same each time its relays are told again (`Mesh::retune`).
+  soonest), as in the device base in TypeScript. The same each time its relays are told again (`Mesh::retune`), and
+  for each endpoint of a way's own let go of (`Mesh::release_pinned`).
 - Natively the Rust shell takes every connection dialled to an endpoint that takes a protocol once `iroh.accept` is
   first asked, queueing those nobody asked for with no bound (`client/shell/src/lib.rs`, `Accepted`); the mesh asks
   one at a time. That shell's to bound. A page's shell has no `iroh.accept` (`Mesh::incoming` fails there).
@@ -121,5 +130,8 @@ left is another part's:
     (`iroh.setRelayEntries`) are told one telling at a time, never rebinding.
   - The wait for `iroh.accept` outlives an endpoint: it is let go of in the step the endpoint changes
     (`Mesh::forget_coming`), and its fiber and asker both check it is still the one kept before taking its answer.
+  - After every wait in `ways.mbt` the mesh, the place in `links` and the entry in `pinned` are looked at anew; what a
+    dial brings is a way or closed in the step it comes (`Mesh::adopt_way`); `release_pinned` closes nothing while
+    `dialing`. A ping not late yet is not counted again (`Mesh::remeasure` pings links their ticks ping too).
   - Native device keys written by the Rust shell are `0600` (`create_private`), and `shell.c` requires POSIX (`pthread`,
     `arc4random_buf`, glibc >= 2.36 on Linux).

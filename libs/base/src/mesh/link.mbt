@@ -199,6 +199,7 @@ pub struct Link {
   /// replies had brought as it was last pinged.
   priv mut missed : Int
   priv mut pinging : Bool
+  priv mut pinged_at : Int64
   priv mut rx : Int
   /// Its pings' round trips (`Link::note`): how many were counted, their mean and mean deviation smoothed, how long
   /// the last one answered took (none answered: none), and whether one was answered yet (the first is not counted).
@@ -210,6 +211,8 @@ pub struct Link {
   /// Where the peer said it is dialled straight, in its answer to the first line (addrs.mbt).
   priv mut lan : Array[String]
   priv mut tailnet : Array[String]
+  /// The endpoint of a way's own it is on (ways.mbt: a relay, "lan", "tailnet"); none: the endpoint.
+  priv pin : String?
   /// The mesh's fibers: where the wait for a stream the peer opens runs (`Link::accept`).
   priv fibers : @effect.Scope
   /// One asks for the next stream the peer opens at a time; and the shell's answer to the wait under way, kept

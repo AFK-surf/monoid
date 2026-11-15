@@ -28,7 +28,7 @@ pub fn Mesh::wake(self : Mesh) -> Unit {
   for place, opening in self.links {
     match opening.result {
       Some(Open(link)) =>
-        if link.usable() && !self.racing.contains(place) {
+        if link.usable() && link.pin is None && !self.racing.contains(place) {
           self.begin_race(place, opening, link, false)
         }
       None => self.hedge(place, opening)
@@ -59,7 +59,9 @@ fn Mesh::hedge(self : Mesh, place : Place, opening : Opening) -> Unit {
 /// under way (with the dial tried beside it), no race, no connection a peer dialled that its program took and that
 /// has not ended (`incomings`, bind.mbt). What comes to hold the endpoint otherwise is counted here.
 fn Mesh::idle(self : Mesh) -> Bool {
-  self.live.length() == 0 &&
+  // (a link on an endpoint of a way's own is not on this one: ways.mbt)
+  self.live.iter().all(link => link.pin is Some(_)) &&
+  self.dialling_main == 0 &&
   self.racing.length() == 0 &&
   self.incomings.length() == 0 &&
   !self.links.values().any(opening => opening.result is None)
@@ -73,7 +75,9 @@ fn Mesh::idle(self : Mesh) -> Bool {
 /// whose answer is not said yet (its read fails with it). A connection open has no such time: with one, the
 /// endpoint is dialled on as it is.
 fn Mesh::settling(self : Mesh) -> Bool {
-  !self.idle() && self.incomings.length() == 0 && !self.live.iter().any(link => !link.gone.is_done())
+  !self.idle() &&
+  self.incomings.length() == 0 &&
+  !self.live.iter().any(link => link.pin is None && !link.gone.is_done())
 }
 
 ///|

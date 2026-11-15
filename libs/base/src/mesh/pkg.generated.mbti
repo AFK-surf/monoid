@@ -3,6 +3,7 @@ package "base/mesh"
 
 import {
   "base/shell",
+  "moonbitlang/core/debug",
   "moonbitlang/core/json",
 }
 
@@ -11,15 +12,35 @@ pub let addresses_key : String
 
 pub let body_step : Int32
 
+pub fn clearly_better(Score, Score) -> Bool
+
 pub fn code_of(Error) -> String
 
 pub let connect_timeout_ms : Int32
 
 pub let device_key : String
 
+pub let direct_hold_max_ms : Int32
+
+pub let direct_hold_ms : Int32
+
+pub let direct_recall_ms : Int32
+
+pub let explore_ms : Int32
+
 pub let first_ms : Int32
 
+pub let keep_ways : Int32
+
+pub let lan_recall_ms : Int32
+
 pub let max_body : Int32
+
+pub let min_samples : Int32
+
+pub let min_stay_ms : Int32
+
+pub let move_gain : Double
 
 pub let onto_max_ms : Int32
 
@@ -28,6 +49,10 @@ pub let ping_timeout_ms : Int32
 pub let probe_ms : Int32
 
 pub let rebind_ms : Int32
+
+pub let redial_main_ms : Int32
+
+pub let relay_key_prefix : Bytes
 
 pub let renew_ms : Int32
 
@@ -108,6 +133,18 @@ pub fn Link::tailnet(Self) -> Array[String]
 pub fn Link::usable(Self) -> Bool
 pub fn Link::via(Self) -> String?
 
+#derive(Eq, @debug.Debug)
+pub(all) struct MeasuredWay {
+  way : String
+  kind : String
+  active : Bool
+  healthy : Bool
+  samples : Int32
+  srtt : Double
+  dev : Double
+  missed : Int32
+}
+
 pub struct Mesh {
   // private fields
 }
@@ -120,10 +157,13 @@ pub async fn Mesh::health_change(Self, String, Bool, scope? : String) -> Bool
 pub fn Mesh::healthy(Self, String, scope? : String) -> Bool
 pub async fn Mesh::incoming(Self) -> Incoming?
 pub fn Mesh::lan(Self, String, scope? : String) -> Array[String]
-pub async fn Mesh::link(Self, String, async (String, Bool) -> Presented, scope? : String) -> Link
-pub async fn Mesh::make(@shell.Shell, Store, Options, binding? : Binding, addresses? : String) -> Self
+pub async fn Mesh::link(Self, String, async (String, Bool) -> Presented, scope? : String, theirs? : Array[String], off? : Array[String]) -> Link
+pub async fn Mesh::make(@shell.Shell, Store, Options, binding? : Binding, addresses? : String, pinned_prefix? : Bytes) -> Self
+pub fn Mesh::measured(Self, String, scope? : String) -> Array[MeasuredWay]
+pub fn Mesh::remeasure(Self) -> Unit
 pub async fn Mesh::replaced(Self, Link) -> Unit
 pub fn Mesh::retune(Self, Array[String], entries? : Array[RelayEntry], reason? : String) -> Unit
+pub fn Mesh::set_ways(Self, String, scope? : String, theirs? : Array[String], off? : Array[String]) -> Unit
 pub fn Mesh::standing(Self, String, scope? : String) -> Bool
 pub fn Mesh::tailnet(Self, String, scope? : String) -> Array[String]
 pub fn Mesh::wake(Self) -> Unit
@@ -171,6 +211,12 @@ pub fn Reply::cancel(Self) -> Unit
 pub fn Reply::header(Self, String) -> String?
 pub async fn Reply::rest(Self, most? : Int32) -> Bytes
 pub async fn Reply::take(Self) -> Bytes?
+
+#derive(Eq, @debug.Debug)
+pub(all) struct Score {
+  cost : Double
+  dev : Double
+}
 
 pub(all) struct Store {
   get : async (String) -> Bytes?

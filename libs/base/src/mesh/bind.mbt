@@ -168,6 +168,8 @@ fn Mesh::rehome(self : Mesh, reason : String) -> Unit {
     incoming.close(reason~)
     ends.push(() => ignore(incoming.gone.wait()))
   }
+  // (the endpoints of a way's own no way is on any more go too)
+  self.release_pinned()
   self.rebind(after=ends)
 }
 
