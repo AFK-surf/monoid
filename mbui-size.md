@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [b7829ee84](https://github.com/AFK-surf/monoid/commit/b7829ee8439d56abcaf026538fd3c894146edf9b) station tests: the move's and the retirement's tes | 2.08 | 2.87 | 12.34 | 33.28 | 47.88 | 28.82 | 56.61 | 98.85 | 113.42 |
 | [dfdd617eb](https://github.com/AFK-surf/monoid/commit/dfdd617eb11399e57712396f5d7544e1de8d065b) app: the history's rail one straight line, its row | 2.08 | 2.87 | 12.34 | 33.28 | 47.88 | 28.82 | 56.61 | 99.22 | 116.49 |
 | [832dfa290](https://github.com/AFK-surf/monoid/commit/832dfa2903242fad5d75b66d79d34fc740f83d81) station: an actor does nothing to a runtime sessio | 2.08 | 2.87 | 12.34 | 33.28 | 47.88 | 28.82 | 56.61 | 99.22 | 116.49 |
 | [6c9755ef0](https://github.com/AFK-surf/monoid/commit/6c9755ef052deadcf720cf8c12a7b10b23fce457) app: show intermediate profile states, non-window  | 2.08 | 2.86 | 12.31 | 33.21 | 47.76 | 28.76 | 56.53 | 98.91 | 117.11 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [a21e6b92d](https://github.com/AFK-surf/monoid/commit/a21e6b92d69ff0ac813fd649719c3dc230de72d8) app: a tap on a Farview tab's page where the page  | 2.06 | 2.84 | 12.22 | 32.1 | 45.22 | 28.69 | 56.39 | 98.63 | 115.28 |
 | [3a009ac95](https://github.com/AFK-surf/monoid/commit/3a009ac957a34314f7ad4d9ba4c199b958a4f415) mbui app: words a finger picked on the chat's page | 2.06 | 2.84 | 12.22 | 32.1 | 45.22 | 28.69 | 56.39 | 98.62 | 112.61 |
 | [0c35eeb58](https://github.com/AFK-surf/monoid/commit/0c35eeb58164d1778b742b006e64f5843c7379f4) app: a wide strip in a message shows its start, no | 2.06 | 2.84 | 12.22 | 32.1 | 45.22 | 28.69 | 56.39 | 98.62 | 112.61 |
-| [13a2cad8f](https://github.com/AFK-surf/monoid/commit/13a2cad8f97d5f2179c908f8901c592ef525ac19) mbui: what is cut short in a column is no wider th | 2.06 | 2.84 | 12.22 | 32.1 | 45.21 | 28.69 | 56.39 | 98.7 | 123.89 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [b7829ee84](https://github.com/AFK-surf/monoid/commit/b7829ee8439d56abcaf026538fd3c894146edf9b) station tests: the move's and the retirement's tes | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.23 |
 | [dfdd617eb](https://github.com/AFK-surf/monoid/commit/dfdd617eb11399e57712396f5d7544e1de8d065b) app: the history's rail one straight line, its row | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.23 |
 | [832dfa290](https://github.com/AFK-surf/monoid/commit/832dfa2903242fad5d75b66d79d34fc740f83d81) station: an actor does nothing to a runtime sessio | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.12 |
 | [6c9755ef0](https://github.com/AFK-surf/monoid/commit/6c9755ef052deadcf720cf8c12a7b10b23fce457) app: show intermediate profile states, non-window  | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.12 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [a21e6b92d](https://github.com/AFK-surf/monoid/commit/a21e6b92d69ff0ac813fd649719c3dc230de72d8) app: a tap on a Farview tab's page where the page  | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.46 |
 | [3a009ac95](https://github.com/AFK-surf/monoid/commit/3a009ac957a34314f7ad4d9ba4c199b958a4f415) mbui app: words a finger picked on the chat's page | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.46 |
 | [0c35eeb58](https://github.com/AFK-surf/monoid/commit/0c35eeb58164d1778b742b006e64f5843c7379f4) app: a wide strip in a message shows its start, no | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.46 |
-| [13a2cad8f](https://github.com/AFK-surf/monoid/commit/13a2cad8f97d5f2179c908f8901c592ef525ac19) mbui: what is cut short in a column is no wider th | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.46 |
