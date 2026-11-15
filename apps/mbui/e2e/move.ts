@@ -1793,16 +1793,19 @@ try {
     /// room, written (zeros, a block at a time).
     const take = (bytes: number): string => {
       const want = freeOn(DATA.C) - bytes;
-      spawnSync("python3", ["-I", "-c", [
+      const pa = spawnSync("python3", ["-I", "-c", [
         "import fcntl, os, struct, sys",
         "f, n = sys.argv[1], int(sys.argv[2])",
         "fd = os.open(f, os.O_RDWR | os.O_CREAT, 0o600)",
         // (fstore_t: F_ALLOCATEALL, F_PEOFPOSMODE, offset 0, length n; F_PREALLOCATE is 42 on macOS)
-        "fcntl.fcntl(fd, 42, struct.pack('IiqqQ', 4, 3, 0, n, 0))",
+        "r = fcntl.fcntl(fd, 42, struct.pack('IiqqQ', 4, 3, 0, n, 0))",
+        "print('allocated', struct.unpack('IiqqQ', r)[4])",
         "os.ftruncate(fd, n)",
         "os.close(fd)",
       ].join("\n"), filler(), String(bytes)], { encoding: "utf8" });
-      if (freeOn(DATA.C) <= want + 256 * 1048576) return "allocated";
+      const said = `${(pa.stdout ?? "").trim()} ${(pa.stderr ?? "").trim().split("\n").pop() ?? ""}`.trim();
+      if (freeOn(DATA.C) <= want + 256 * 1048576) return `allocated (${said})`;
+      log(`  allocation took too little: ${said}; ${((freeOn(DATA.C) - want) / 1048576).toFixed(0)} MB over what was wanted`);
       const r = spawnSync("dd", ["if=/dev/zero", `of=${filler()}`, "bs=8m", `count=${Math.floor(bytes / (8 * 1048576))}`], { encoding: "utf8" });
       return `written (allocation took ${((freeOn(DATA.C) - want) / 1048576).toFixed(0)} MB too little; dd ${r.status})`;
     };
