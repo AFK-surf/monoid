@@ -1,17 +1,20 @@
 // What of this machine still.fail uses (resources/watch.ts), as a part of the station (parts.ts): looked at while a
-// page asks; GET /resources.
+// page asks; GET /resources. And the station's watch over its own memory (ops/self-memory.ts).
 import { execFile } from "node:child_process";
 import { readFile, rm } from "node:fs/promises";
-import { homedir } from "node:os";
+import { homedir, totalmem } from "node:os";
 import { basename, join } from "node:path";
 import { promisify } from "node:util";
 import { Effect, Layer } from "effect";
 import { resourceRoutes } from "../api/routes/usage.ts";
 import { runnerSessions, runnersWithSessions, watchedJobs } from "../jobs/memory.ts";
 import { loadMesh } from "../mesh/native.ts";
-import { platform } from "../platform/index.ts";
+import { type ProcessInfo, platform, treeOf } from "../platform/index.ts";
 import { Agents } from "../sessions/agents.ts";
-import { Parts, Paths, Store } from "../services.ts";
+import { restarter } from "../ops/restart.ts";
+import { SelfMemoryGovernor } from "../ops/self-memory.ts";
+import { MbProcess } from "../read/mb-reader.ts";
+import { Parts, Paths, Readers, Store } from "../services.ts";
 import { linuxUsage } from "./linux.ts";
 import { ResourceWatch } from "./watch.ts";
 
@@ -60,6 +63,22 @@ export function parseNettop(text: string): Map<number, { in: number; out: number
   return out;
 }
 
+/// The resident bytes of the MoonBit programs this process runs (MbProcess.live) and all under them, in `table`.
+export function programsIn(table: readonly ProcessInfo[] | null, pids: readonly number[]): { bytes: number; count: number } {
+  if (table === null) return { bytes: 0, count: pids.length };
+  const { byPid, children } = treeOf(table);
+  const seen = new Set<number>();
+  let bytes = 0;
+  for (const queue = [...pids]; queue.length > 0; ) {
+    const pid = queue.pop()!;
+    if (seen.has(pid)) continue;
+    seen.add(pid);
+    bytes += byPid.get(pid)?.bytes ?? 0;
+    queue.push(...(children.get(pid) ?? []));
+  }
+  return { bytes, count: pids.length };
+}
+
 /// Whether this process's parent is its launcher (stillfail-station), not a shell or launchd, whose all under it is not
 /// the station's.
 async function launcher(): Promise<boolean> {
@@ -76,6 +95,25 @@ export const ResourcesLive = Layer.effectDiscard(
     const { data } = yield* Paths;
     const store = yield* Store;
     const { hub } = yield* Agents;
+    const readers = yield* Readers;
+    // The station's own memory (ops/self-memory.ts), wherever it runs: on Windows only Node's own is read.
+    yield* Effect.acquireRelease(
+      Effect.sync(() => {
+        const governor = new SelfMemoryGovernor({
+          clock: hub.clock,
+          totalBytes: totalmem(),
+          startedAt: hub.clock.currentTimeMillisUnsafe() - Math.round(process.uptime() * 1000),
+          memory: () => process.memoryUsage(),
+          children: async () => programsIn(await platform.processTable(false), MbProcess.live().map((p) => p.pid)),
+          pressure: () => platform.memoryPressure(),
+          trimIdle: () => readers.trimIdle(),
+          handover: () => restarter(data),
+        });
+        governor.start();
+        return governor;
+      }),
+      (g) => Effect.promise(() => g.close()),
+    );
     // What processes used is read on macOS and Linux; elsewhere (Windows) there is nothing to look at.
     const linux = platform.os === "linux";
     if (platform.os !== "macos" && !linux) {

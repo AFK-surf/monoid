@@ -199,6 +199,17 @@ export class RequestedBuilder<K extends number | string> {
     else this.#worker.postMessage(message);
   }
 
+  /// Its worker or builder process let go now, not IDLE_MS after its last answer, when it answers nothing and nobody
+  /// waits on it (the station short of memory: ops/self-memory.ts); whether it was. One answering is never stopped.
+  trimIdle(): boolean {
+    const worker = this.#worker;
+    if (this.#closed || worker === null || this.#current !== null || this.#waiting.size > 0 || this.#holding) return false;
+    if (this.#idle !== null) { this.#idle(); this.#idle = null; }
+    this.#worker = null;
+    void worker.terminate();
+    return true;
+  }
+
   /// The worker or builder process ended: what it held is asked again of another, after a growing wait.
   #gone(worker: Worker | MbProcess): void {
     if (this.#worker !== worker) return;

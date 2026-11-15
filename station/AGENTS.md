@@ -346,3 +346,16 @@
   (`test/lock-fork-choice.test.ts`, `test/lock-roster.test.ts`, `test/lock-roster4.test.ts`) print what they measure
   and assert only the models' soundness; their envs (`LOCK_FORK_*`, `LOCK_ROSTER_*`, `LOCK_ROSTER4_*`) give the full
   counts.
+
+## The station's own memory
+
+- The watch over the agents' processes leaves the station out (`src/jobs/memory.ts`); its own memory, Node's and its
+  MoonBit programs' (`src/read/mb-reader.ts` `MbProcess.live`), is `src/ops/self-memory.ts`'s, run by
+  `src/resources/module.ts`. Under the machine's pressure or past its soft limit it lets go only what answers nothing
+  (`Readers.trimIdle`, `src/read/pool.ts`): never a read under way, never a reader of what devices ask or streams tell,
+  and never the browser, whose chats' contexts are kept in memory only (`src/browser/browsers.ts`): closing it would sign
+  them out. Node held past its hard limit asks the launcher to hand over (`src/ops/restart.ts` `restarter`), never
+  `becomeOther` or an exit, which would end the sessions where there is no launcher.
+- What is written to a program's stdin is bounded both sides: Node ends a program that left `STDIN_MOST` unread
+  (`src/read/mb-reader.ts`), and the program's own queue stops reading stdin past its bound (`mb/src/host/host.c`
+  `STDIN_MOST`). Only that reading thread waits there: the shell's answers come on its tokio threads, which never wait.

@@ -813,6 +813,31 @@ export class Readers {
     });
   }
 
+  /// What answers nothing now let go at once, not after IDLE_MS (the station short of memory: ops/self-memory.ts): each
+  /// reader of a line nobody keeps (`kept`) with no read held or waiting, and each builder of old state nobody waits on
+  /// (RequestedBuilder `trimIdle`). A read under way is never stopped. How many were let go.
+  trimIdle(): number {
+    if (this.closed) return 0;
+    let trimmed = 0;
+    for (const line of [this.pages, this.log, this.moved]) {
+      if (line.waiting.length > 0) continue;
+      for (const slot of line.slots.filter((s) => s.held === null && !s.retiring)) {
+        slot.idle?.();
+        slot.idle = undefined;
+        slot.retiring = true;
+        // (out of its line at once: no read is given it as it ends)
+        line.slots = line.slots.filter((s) => s !== slot);
+        void slot.worker.terminate();
+        trimmed++;
+      }
+    }
+    const builders = [this.said, this.archiveLast, this.legacyEdits, this.legacySaid, this.pageLetters, this.turns, this.recentChats, this.sessionList,
+      this.sessionBindings, this.archiveMarks, this.sessionUpJobs, this.workspaceUpJobs, this.jobNameFirst, this.widgetSources, this.cardPosts,
+      this.closedCards, this.peopleSince, this.ccIndex];
+    for (const b of builders) if (b?.trimIdle()) trimmed++;
+    return trimmed;
+  }
+
   /// Each running reader's JS heap in use, in bytes (for the memory log).
   heaps(): Promise<number[]> {
     return Promise.all([...this.asked.slots, ...this.told.slots, ...this.log.slots, ...this.pages.slots, ...this.moved.slots].map((s) => s.worker.getHeapStatistics().then((h) => h.used_heap_size, () => 0)));

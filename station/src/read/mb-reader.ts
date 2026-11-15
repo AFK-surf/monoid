@@ -122,33 +122,66 @@ export function mbSpawned(binary: string, args: string[], options: { background?
   return (options.background ?? backgroundByDefault(args)) ? platform.backgrounded(binary, args) : [binary, args];
 }
 
+/// The most of what is written to a program's stdin that it has not read yet, which Node keeps: a program that stopped
+/// reading (stuck in a query, hung) past it is ended, its users told by its exit (a reader started again, a read
+/// failed), not let grow the station's memory with every ask given it meanwhile. The program's own queue of stdin is
+/// bounded too (mb/src/host/host.c STDIN_MOST): past it the rest waits in the pipe, then here.
+export const STDIN_MOST = 64 * 1024 * 1024;
+
+/// A program's process that runs, as the station's watch over its own memory counts them (ops/self-memory.ts).
+export type LiveProgram = { pid: number; args: readonly string[]; background: boolean; startedAt: number };
+
 /// The program's process, a line of JSON each way: told its lines as "message"s, its end as "exit".
 export class MbProcess extends EventEmitter {
-  readonly #child: ChildProcess;
-  #exited = false;
+  /// Every program's process this station runs, until its end.
+  static readonly #live = new Map<MbProcess, LiveProgram>();
+  /// Those running now, by their pids, arguments and since when.
+  static live(): ReadonlyArray<LiveProgram> { return [...MbProcess.#live.values()]; }
 
-  /// `options.background`: whether it runs as the system's background work (mbSpawned), else as its args say.
-  constructor(binary: string, args: string[], options: { background?: boolean } = {}) {
+  readonly #child: ChildProcess;
+  readonly #args: readonly string[];
+  readonly #stdinMost: number;
+  #exited = false;
+  #stalled = false;
+
+  /// `options.background`: whether it runs as the system's background work (mbSpawned), else as its args say;
+  /// `stdinMost`: STDIN_MOST but in tests.
+  constructor(binary: string, args: string[], options: { background?: boolean; stdinMost?: number } = {}) {
     super();
-    const [command, given] = mbSpawned(binary, args, options);
+    const background = options.background ?? backgroundByDefault(args);
+    const [command, given] = mbSpawned(binary, args, { background });
+    this.#args = args;
+    this.#stdinMost = options.stdinMost ?? STDIN_MOST;
     this.#child = spawn(command, given, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    if (this.#child.pid !== undefined) MbProcess.#live.set(this, { pid: this.#child.pid, args, background, startedAt: wall.now() });
     const said = new Said((answer) => this.emit("message", answer));
     this.#child.stdout!.on("data", (bytes: Buffer) => said.push(bytes));
     createInterface({ input: this.#child.stderr! }).on("line", (line) => log.warn("readers", "a MoonBit reader said", { line }));
     // (a failed write is the process gone, told by its exit)
     this.#child.stdin!.on("error", () => {});
-    this.#child.on("error", (error) => this.emit("error", error));
+    this.#child.on("error", (error) => {
+      if (this.#child.pid === undefined) MbProcess.#live.delete(this);
+      this.emit("error", error);
+    });
     // Its end once its output is read whole (`close`: after `exit` and its streams' ends): what it said last, then that it
     // ended. On `exit` a line it wrote just before could still be on its way, its answer taken for none.
     this.#child.on("close", (code, signal) => {
       this.#exited = true;
+      MbProcess.#live.delete(this);
       this.emit("exit", code ?? (signal !== null ? 1 : 0));
     });
   }
 
   /// (a bigint, as a worker would have been posted it, said as its digits)
+  /// One that has left more than its `stdinMost` unread is ended (STDIN_MOST), what is posted after dropped.
   postMessage(message: unknown) {
-    this.#child.stdin!.write(`${JSON.stringify(message, (_, v) => typeof v === "bigint" ? v.toString() : v)}\n`);
+    if (this.#stalled || this.#exited) return;
+    const stdin = this.#child.stdin!;
+    stdin.write(`${JSON.stringify(message, (_, v) => typeof v === "bigint" ? v.toString() : v)}\n`);
+    if (stdin.writableLength <= this.#stdinMost) return;
+    this.#stalled = true;
+    log.error("readers", "a MoonBit program stopped reading what it is asked; ending it", { args: this.#args.slice(0, 6), pid: this.#child.pid ?? null, unreadBytes: stdin.writableLength });
+    this.#child.kill("SIGKILL");
   }
 
   /// Whether the station's process waits on it to end: not for one that lives as long as what uses it, while that has
@@ -176,7 +209,7 @@ export class MbProcess extends EventEmitter {
     });
   }
 
-  /// No JS heap: what it holds is not the station's to count (the memory log counts V8's).
+  /// No JS heap: the memory log counts V8's; its resident memory is counted from MbProcess.live (ops/self-memory.ts).
   getHeapStatistics(): Promise<{ used_heap_size: number }> {
     return Promise.resolve({ used_heap_size: 0 });
   }

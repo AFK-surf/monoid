@@ -16,6 +16,7 @@ typedef CONDITION_VARIABLE cond_t;
 static void lock(lock_t *l) { AcquireSRWLockExclusive(l); }
 static void unlock(lock_t *l) { ReleaseSRWLockExclusive(l); }
 static void signal_one(cond_t *c) { WakeConditionVariable(c); }
+static void wait_cond(cond_t *c, lock_t *l) { SleepConditionVariableSRW(c, l, INFINITE, 0); }
 #else
 #include <pthread.h>
 #include <sys/resource.h>
@@ -34,6 +35,7 @@ typedef pthread_cond_t cond_t;
 static void lock(lock_t *l) { pthread_mutex_lock(l); }
 static void unlock(lock_t *l) { pthread_mutex_unlock(l); }
 static void signal_one(cond_t *c) { pthread_cond_signal(c); }
+static void wait_cond(cond_t *c, lock_t *l) { pthread_cond_wait(c, l); }
 #endif
 
 // client/shell's C ABI (client/shell/src/lib.rs).
@@ -57,19 +59,48 @@ static cond_t queue_cond = COND_INIT;
 static event_t *head = NULL, *tail = NULL;
 static void *shell = NULL;
 
-static void push(uint8_t kind, uint64_t id, const uint8_t *a, size_t al, const uint8_t *b, size_t bl) {
+/// The most of stdin's pieces (kind 1) the queue holds before read_input stops reading: the parent's lines wait in the
+/// pipe meanwhile, and the parent's writes behind them (Node's own bound: read/mb-reader.ts STDIN_MOST), while the
+/// program's thread is busy and takes none. Only read_input waits for room, a thread of its own; the shell's answers
+/// (completed, from its tokio threads) never wait, as a tokio thread held would hold the tasks the program waits on.
+#define STDIN_MOST (16u * 1024u * 1024u)
+/// The bytes of stdin's pieces in the queue, and what read_input waits on for room (both under queue_lock).
+static size_t stdin_queued = 0;
+static cond_t stdin_cond = COND_INIT;
+
+static event_t *event_of(uint8_t kind, uint64_t id, size_t len) {
   event_t *e = malloc(sizeof *e);
   e->next = NULL;
   e->kind = kind;
   e->id = id;
-  e->len = al + bl;
-  e->data = malloc(e->len ? e->len : 1);
-  if (al) memcpy(e->data, a, al);
-  if (bl) memcpy(e->data + al, b, bl);
-  lock(&queue_lock);
+  e->len = len;
+  e->data = malloc(len ? len : 1);
+  return e;
+}
+
+/// `e` at the queue's end (queue_lock held).
+static void enqueue(event_t *e) {
   if (tail) tail->next = e; else head = e;
   tail = e;
   signal_one(&queue_cond);
+}
+
+static void push(uint8_t kind, uint64_t id, const uint8_t *a, size_t al) {
+  event_t *e = event_of(kind, id, al);
+  if (al) memcpy(e->data, a, al);
+  lock(&queue_lock);
+  enqueue(e);
+  unlock(&queue_lock);
+}
+
+/// A piece of stdin, once the queue has room for it (read_input's thread alone).
+static void push_stdin(const uint8_t *a, size_t al) {
+  event_t *e = event_of(1, 0, al);
+  memcpy(e->data, a, al);
+  lock(&queue_lock);
+  while (stdin_queued >= STDIN_MOST) wait_cond(&stdin_cond, &queue_lock);
+  stdin_queued += al;
+  enqueue(e);
   unlock(&queue_lock);
 }
 
@@ -79,11 +110,12 @@ static void put_len(uint8_t *at, size_t n) {
   for (int i = 0; i < 8; i++) at[i] = (uint8_t)((uint64_t)n >> (8 * i));
 }
 
+// Written once, into the event itself: a large answer (a database's bytes) is not held twice.
 static void completed(void *ctx, uint64_t id, const uint8_t *json, size_t jl, const uint8_t *error, size_t el, const uint8_t *bytes, size_t bl, uint8_t has) {
   (void)ctx;
   size_t carried = has ? bl : 0;
-  size_t len = 8 + el + 8 + jl + 1 + carried;
-  uint8_t *all = malloc(len), *at = all;
+  event_t *e = event_of(3, id, 8 + el + 8 + jl + 1 + carried);
+  uint8_t *at = e->data;
   put_len(at, el);
   at += 8;
   if (el) memcpy(at, error, el);
@@ -94,8 +126,9 @@ static void completed(void *ctx, uint64_t id, const uint8_t *json, size_t jl, co
   at += jl;
   *at++ = has ? 1 : 0;
   if (carried) memcpy(at, bytes, carried);
-  push(3, id, all, len, NULL, 0);
-  free(all);
+  lock(&queue_lock);
+  enqueue(e);
+  unlock(&queue_lock);
 }
 
 #ifdef _WIN32
@@ -104,8 +137,8 @@ static DWORD WINAPI read_input(LPVOID arg) {
   HANDLE in = GetStdHandle(STD_INPUT_HANDLE);
   uint8_t buf[65536];
   DWORD n;
-  while (ReadFile(in, buf, sizeof buf, &n, NULL) && n > 0) push(1, 0, buf, n, NULL, 0);
-  push(2, 0, NULL, 0, NULL, 0);
+  while (ReadFile(in, buf, sizeof buf, &n, NULL) && n > 0) push_stdin(buf, n);
+  push(2, 0, NULL, 0);
   return 0;
 }
 #else
@@ -116,9 +149,9 @@ static void *read_input(void *arg) {
     ssize_t n = read(0, buf, sizeof buf);
     if (n < 0 && errno == EINTR) continue;
     if (n <= 0) break;
-    push(1, 0, buf, (size_t)n, NULL, 0);
+    push_stdin(buf, (size_t)n);
   }
-  push(2, 0, NULL, 0, NULL, 0);
+  push(2, 0, NULL, 0);
   return NULL;
 }
 #endif
@@ -189,6 +222,10 @@ moonbit_bytes_t sfh_wait(int64_t ms) {
   if (e) {
     head = e->next;
     if (head == NULL) tail = NULL;
+    if (e->kind == 1) {
+      stdin_queued -= e->len;
+      if (stdin_queued < STDIN_MOST) signal_one(&stdin_cond);
+    }
   }
   unlock(&queue_lock);
   if (e == NULL) return moonbit_make_bytes(0, 0);
