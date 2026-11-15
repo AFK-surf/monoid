@@ -538,6 +538,64 @@ export class Sharing {
     return out;
   }
 
+  /// Updates `state.hosted` and file watchers for what this station currently shares, writing `state.json` synchronously
+  /// when anything changed so callers (`shareProfile`, `shareSkill`, `lendTo`) and `deps.changed()` see the new version
+  /// immediately without waiting on slow or unanswered peers.
+  private syncHosted(state: State = this.readState()): Map<string, Own> {
+    const own = this.ownShares();
+    let dirty = false;
+    for (const id of this.loginDirs.keys()) if (!own.has(id)) {
+      this.stopWatch(`login:${id}`);
+      this.loginDirs.delete(id);
+    }
+    for (const [id, now] of own) {
+      if (this.unannounced.has(id)) continue;
+      if (now.kind === "skill") this.watchHosted(now.skill!, join(this.skillsDir(), now.skill!));
+      if (now.kind === "profile" && now.profile?.runtime === "codex" && now.profile?.access?.kind === "subscription") this.watchLogin(id, this.codexFile(now.profile));
+      else if (this.loginDirs.has(id)) { this.stopWatch(`login:${id}`); this.loginDirs.delete(id); }
+      const was = state.hosted[id];
+      const hosted: Hosted = was ?? { version: 0, hash: "", kind: now.kind, name: now.name, allow: now.allow, told: {} };
+      if (!was) dirty = true;
+      if (now.hash === null) {
+        if (hosted.unread !== now.unread) {
+          hosted.unread = now.unread;
+          dirty = true;
+        }
+        state.hosted[id] = hosted;
+        continue;
+      }
+      if (hosted.unread !== undefined) {
+        delete hosted.unread;
+        dirty = true;
+      }
+      // Its name is part of what it is: a skill renamed is linked under its new name where it is copied.
+      if (hosted.hash !== now.hash || hosted.name !== now.name) {
+        hosted.version += 1;
+        hosted.hash = now.hash;
+        dirty = true;
+      }
+      if (now.kind === "skill") {
+        const nextDir = dirKey(join(this.skillsDir(), now.skill!)) ?? hosted.dir;
+        if (hosted.dir !== nextDir) {
+          hosted.dir = nextDir;
+          dirty = true;
+        }
+      }
+      if (JSON.stringify(hosted.allow) !== JSON.stringify(now.allow)) {
+        hosted.allow = now.allow;
+        dirty = true;
+      }
+      if (hosted.name !== now.name) {
+        hosted.name = now.name;
+        dirty = true;
+      }
+      state.hosted[id] = hosted;
+    }
+    // Written before anyone is told, so what they ask for is that version.
+    if (dirty) this.writeState(state);
+    return own;
+  }
+
   // ── running ──
 
   start() {
@@ -602,36 +660,12 @@ export class Sharing {
 
     // What this station shares: its version raised when what it is changed, each station that may use it told
     // (again, one that did not answer), in a workspace it is for, one that no longer may told so.
-    const own = this.ownShares();
-    for (const id of this.loginDirs.keys()) if (!own.has(id)) {
-      this.stopWatch(`login:${id}`);
-      this.loginDirs.delete(id);
-    }
+    const own = this.syncHosted(state);
     for (const [id, now] of own) {
-      if (this.unannounced.has(id)) continue;
-      if (now.kind === "skill") this.watchHosted(now.skill!, join(this.skillsDir(), now.skill!));
-      if (now.kind === "profile" && now.profile?.runtime === "codex" && now.profile?.access?.kind === "subscription") this.watchLogin(id, this.codexFile(now.profile));
-      else if (this.loginDirs.has(id)) { this.stopWatch(`login:${id}`); this.loginDirs.delete(id); }
-      const was = state.hosted[id];
-      const hosted: Hosted = was ?? { version: 0, hash: "", kind: now.kind, name: now.name, allow: now.allow, told: {} };
-      if (now.hash === null) {
-        hosted.unread = now.unread;
-        state.hosted[id] = hosted;
-        continue;
-      }
-      delete hosted.unread;
-      // Its name is part of what it is: a skill renamed is linked under its new name where it is copied.
-      if (hosted.hash !== now.hash || hosted.name !== now.name) {
-        hosted.version += 1;
-        hosted.hash = now.hash;
-      }
-      if (now.kind === "skill") hosted.dir = dirKey(join(this.skillsDir(), now.skill!)) ?? hosted.dir;
-      hosted.allow = now.allow;
-      hosted.name = now.name;
-      state.hosted[id] = hosted;
-      // Written before anyone is told, so what they ask for is that version.
-      this.writeState();
-      if (rosters === null) continue;
+      if (this.unannounced.has(id) || now.hash === null || rosters === null) continue;
+      const hosted = state.hosted[id];
+      if (!hosted) continue;
+      const peers: Promise<void>[] = [];
       for (const peer of rosters.keys()) {
         // (a station retired into this one: its copies came here with it)
         if (itself(peer)) continue;
@@ -639,32 +673,59 @@ export class Sharing {
         if (ws !== null && this.mayUse(now.allow, peer)) {
           const version = hosted.version;
           if (hosted.told[peer] === version) continue;
-          if (!((await tell(peer, ws, { method: "share.changed", id, kind: now.kind, name: now.name, version, allow: now.allow }, hosted)) instanceof Error)) hosted.told[peer] = version;
+          peers.push(
+            tell(peer, ws, { method: "share.changed", id, kind: now.kind, name: now.name, version, allow: now.allow }, hosted).then((r) => {
+              if (!(r instanceof Error)) hosted.told[peer] = version;
+            }),
+          );
         } else {
           miss(hosted, peer, null);
-          if (peer in hosted.told && !((await tell(peer, null, { method: "share.changed", id, gone: true })) instanceof Error)) delete hosted.told[peer];
+          if (peer in hosted.told) {
+            peers.push(
+              tell(peer, null, { method: "share.changed", id, gone: true }).then((r) => {
+                if (!(r instanceof Error)) delete hosted.told[peer];
+              }),
+            );
+          }
         }
       }
+      if (peers.length > 0) await Promise.all(peers);
       // Stations in none of this station's workspaces now: forgotten.
       for (const peer of Object.keys(hosted.told)) if (!rosters.has(peer)) delete hosted.told[peer];
       for (const peer of Object.keys(hosted.missing ?? {})) if (!rosters.has(peer)) miss(hosted, peer, null);
     }
     // No longer shared: each station told is told so, then it is forgotten.
+    // Re-read ownShares() after awaiting peer notifications so a share turned on while peers were told is kept.
+    const currentOwn = this.ownShares();
     for (const [id, hosted] of Object.entries(state.hosted)) {
-      if (own.has(id)) continue;
+      if (currentOwn.has(id)) continue;
+      const peers: Promise<void>[] = [];
       for (const peer of Object.keys(hosted.told)) {
         if (itself(peer) || (rosters !== null && !rosters.has(peer))) delete hosted.told[peer];
-        else if (!((await tell(peer, null, { method: "share.changed", id, gone: true })) instanceof Error)) delete hosted.told[peer];
+        else {
+          peers.push(
+            tell(peer, null, { method: "share.changed", id, gone: true }).then((r) => {
+              if (!(r instanceof Error)) delete hosted.told[peer];
+            }),
+          );
+        }
       }
-      if (Object.keys(hosted.told).length === 0) delete state.hosted[id];
+      if (peers.length > 0) await Promise.all(peers);
+      if (!this.ownShares().has(id) && Object.keys(hosted.told).length === 0) delete state.hosted[id];
     }
     // Handed to another station: the stations told of it hear where it went.
     for (const [id, moved] of Object.entries(state.moved)) {
       const left: string[] = [];
+      const peers: Promise<void>[] = [];
       for (const peer of moved.tell) {
         if (peer === moved.to || itself(peer) || (rosters !== null && !rosters.has(peer))) continue;
-        if ((await tell(peer, null, { method: "share.changed", id, host: moved.to })) instanceof Error) left.push(peer);
+        peers.push(
+          tell(peer, null, { method: "share.changed", id, host: moved.to }).then((r) => {
+            if (r instanceof Error) left.push(peer);
+          }),
+        );
       }
+      if (peers.length > 0) await Promise.all(peers);
       if (left.length === 0) delete state.moved[id];
       else moved.tell = left;
     }
@@ -1441,7 +1502,9 @@ export class Sharing {
     });
     const who = stored.allow === null ? "every station" : stored.allow.map((s) => s.slice(0, 8)).join(",");
     log.info("share", "who may use a shared profile changed", { profile: profileId, shared: on, allow: on ? who : null, by });
-    await this.reconcile();
+    this.syncHosted();
+    this.deps.changed();
+    void this.reconcile();
   }
 
   /// Who may use profile `p` once a person chose among stations `among` (shareProfile): those of them `allow` names
@@ -1480,7 +1543,9 @@ export class Sharing {
       raw.sharedSkills = skills;
     });
     if (!on) this.stopWatch(`hosted:${name}`);
-    await this.reconcile();
+    this.syncHosted();
+    this.deps.changed();
+    void this.reconcile();
   }
 
   /// A profile of this station's moved to another whole station of a workspace it serves (`to`): its login handed over

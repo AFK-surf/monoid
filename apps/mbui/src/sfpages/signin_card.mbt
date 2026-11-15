@@ -406,19 +406,26 @@ fn signin_foot(c : @ui.Ctx, core : @settings.Core, station : String, ask : SignI
     _ => ()
   }
   let asking = step == "listing" || step == "getting" || step == "otp" || step == "sending"
-  @sf.ask_buttons(c, fn() {
-    if step == "choosing" {
+  if step == "choosing" {
+    c.box(style=signin_typed.then(@sf.over_foot_reach(@sf.button_height())), fn() {
       for i, l in signin_run(id).choices.get() {
         let words = if l.username == "" { l.title } else { l.title + " · " + l.username }
         let picked = l
-        @sf.button(c, words, key="signin/" + id + "/pick/\{i}", tone=if i == 0 { Primary } else { Ghost }, on_press=fn() {
+        signin_choice(c, "signin/" + id + "/pick/\{i}", words, fn() {
           signin_pick(core, station, ask, picked)
         })
-        |> ignore
       }
-      return
-    }
-    if signin_manager() {
+    })
+    |> ignore
+  }
+  @sf.ask_buttons(c, fn() {
+    if step == "choosing" {
+      @sf.button(c, @sf.t("android-misc.signin.onScreen"), key="signin/" + id + "/self", tone=Ghost, disabled=step == "sending", on_press=fn() {
+        signin_stop(id)
+        signin_self(core, station, ask, false)
+      })
+      |> ignore
+    } else if signin_manager() {
       let label = @sf.t(if @hostapi.passwords() { "android-misc.signin.withOp" } else { "android-misc.signin.withAuto" })
       @sf.button(c, label, key="signin/" + id + "/go", tone=Primary, busy=asking, disabled=asking, on_press=fn() {
         signin_start(core, station, ask)
@@ -514,6 +521,52 @@ fn signin_ask_card(c : @ui.Ctx, here : MessageHere, m : Message, card : Card, as
 }
 
 ///|
-/// A code's field over the card's buttons, as wide as the card's foot (vault_ask's ask_typed).
+/// A code's field or a site's logins over the card's buttons, as wide as the card's foot (vault_ask's ask_typed).
 // kept across runs: a value (no field of it changes)
 let signin_typed : @ui.Style = @ui.css("w=Full gap=S2")
+
+///|
+/// One of 1Password's logins for the site, in their order: a full-width capsule on the faint ground, its words on one
+/// line cut short where an OAuth client id is long, a chevron at its end.
+// kept across runs: a value (no field of it changes)
+let signin_choice_base : @ui.Style = @ui.css("row w=Full radius=Full gap=S2 align=ACenter justify=JBetween")
+
+///|
+// kept across runs: a value (no field of it changes)
+let signin_choice_ground : @ui.Style = @ui.css("bg=Faint hovered{bg=Hover} pressed{bg=Hover} focused{bg=Over(Faint,Hover)}")
+
+///|
+fn signin_choice_box() -> @ui.Style {
+  let h = @sf.button_height()
+  let padx = @sf.card_pad - @sf.card_foot_in(h)
+  signin_choice_base.then(
+    @ui.style(
+      h=Fixed(h),
+      pl=@sf.room_of(padx),
+      pr=@sf.room_of(padx),
+    ),
+  )
+}
+
+///|
+fn signin_choice_words() -> @ui.TextStyle {
+  @ui.text_style(
+    size=Ui,
+    leading=L5,
+    weight=if @sf.theme().touch { Semibold } else { Medium },
+    color=Fg,
+    wrap=false,
+    w=Cut,
+  )
+}
+
+///|
+fn signin_choice(c : @ui.Ctx, key : String, words : String, on_press : () -> Unit) -> Unit {
+  let id = c.id(key)
+  let row = c.box(style=signin_choice_box().then(signin_choice_ground), id~, fn() {
+    c.text(words, style=signin_choice_words()) |> ignore
+    @sf.icon(c, "chevron-right", size=16.0, color=c.color(Muted)) |> ignore
+  })
+  c.semantics(row, Button, id~, label=words, actions=[Activate])
+  c.on_press(id, on_press)
+}

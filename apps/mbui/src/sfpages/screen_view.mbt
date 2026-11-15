@@ -380,13 +380,24 @@ pub fn screen_page(
       })
       |> ignore
     } else if !@sf.soft_keyboard() {
-      // keyboard and mouse: the viewer's bar across the window's top, always there, the picture under it (what is at
-      // the top of the screen, its windows' title bars, never under the bar); the keyboard and the mouse its own
-      screen_viewer_bar(c, s, u, title, close)
-      if browser_shown(s) {
-        browser_bar(c, s, u, close)
+      if u.in_tab {
+        // beside a chat in its side panel: the panel's own tab bar above already names the screen, closes it and opens
+        // it in a window of its own, so only one compact toolbar row (browser controls + 控制中心, or desktop status +
+        // 组合键 + 控制中心) stands over the picture
+        screen_tab_bar(c, s, u, title, close)
+        if s.can_take_over() {
+          c.box(style=take_over_place, fn() { take_over(c, s, u) }) |> ignore
+        }
+        screen_content(c, s, u, key)
+      } else {
+        // keyboard and mouse: the viewer's bar across the window's top, always there, the picture under it (what is at
+        // the top of the screen, its windows' title bars, never under the bar); the keyboard and the mouse its own
+        screen_viewer_bar(c, s, u, title, close)
+        if browser_shown(s) {
+          browser_bar(c, s, u, close)
+        }
+        screen_content(c, s, u, key)
       }
-      screen_content(c, s, u, key)
     } else if sideways {
       c.box(style=screen_row, fn() {
         screen_rail(c, s, u, catching, catcher, close)
@@ -941,6 +952,68 @@ fn screen_top_bar(c : @ui.Ctx, s : ScreenSess, u : ScreenUi, title : String, clo
     }
   })
   |> ignore
+}
+
+///|
+/// With keyboard and mouse inside a chat's side panel (`u.in_tab`): one row, no traffic-light indent, no `< 返回`, and
+/// (where `u.own_bar` is None and the panel's tab row stands above) no duplicate title or close button.
+fn screen_tab_bar(c : @ui.Ctx, s : ScreenSess, u : ScreenUi, title : String, close : () -> Unit) -> Unit {
+  u.narrow_bar = true
+  if !s.open_now() && u.own_bar is None {
+    return
+  }
+  let browser = browser_shown(s)
+  let style = match u.own_bar {
+    Some(own) => own
+    None => if browser { screen_tab_browser_bar } else { screen_tab_status_bar }
+  }
+  c.box(style~, fn() {
+    if browser {
+      browser_seen(s)
+      c.box(style=screen_bar_tools, fn() { browser_tools(c, s, u, close, true) }) |> ignore
+    } else {
+      c.box(style=screen_bar_words, fn() {
+        let said = match opt_text(s.state, "title") {
+          Some(t) if t != "" => t
+          _ => if title != "" { title } else { @sf.t("android-misc.screen.title") }
+        }
+        if u.own_bar is Some(_) {
+          c.text(said, style=screen_title_words) |> ignore
+        }
+        let line = text(s.state, "line")
+        if line != "" && s.open_now() && !s.can_take_over() {
+          c.text(line, style=screen_line_words) |> ignore
+        }
+      })
+      |> ignore
+      let (tabs, _) = view_tabs(s)
+      if !tabs.is_empty() {
+        tabs_button(c, s, u, tabs.length(), close)
+      }
+      if s.driving() && !s.simulator() {
+        combos_button(c, s, u)
+      }
+    }
+    if s.open_now() {
+      center_button(c, s, u, close)
+    }
+    if u.own_bar is Some(_) {
+      round_button(c, "screen-close", "close", @sf.t("android-misc.screen.close"), on_press=fn() {
+        close()
+      })
+    }
+  })
+  |> ignore
+}
+
+///|
+/// 组合键 as a round button in the side panel's compact bar while driving a desktop.
+fn combos_button(c : @ui.Ctx, s : ScreenSess, u : ScreenUi) -> Unit {
+  let key = "screen-combos"
+  let id = c.id(key)
+  round_button(c, key, "keycap", @sf.t("web-pages.screen.combos"), on=screen_panel_on(u, "keys"), on_press=fn() {
+    keys_open(s, u, Of(id), combos_only=true)
+  })
 }
 
 ///|

@@ -13,11 +13,30 @@ pub fn source(arg : (String) -> String) -> () -> @sfapp.Source {
         if arg("MBUI_FILM_AUTOFILL") == "1" { @ui.fake_autofill.val = true }
         // 1Password as a scene has it (none unless said): asked and slow to answer, or allowed but its servers not
         // reached
-        match arg("MBUI_FILM_OP") {
+        let op_mode = if mode == "chat-signin-many" { "many" } else { arg("MBUI_FILM_OP") }
+        match op_mode {
           "slow" => {
             @ui.fake_op.val = Some(fn(_) { (0, "[]", "") })
             @ui.fake_op_pending.val = true
           }
+          "many" =>
+            @ui.fake_op.val = Some(fn(args) {
+              if args.contains("list") {
+                (
+                  0,
+                  "[{\"id\":\"gh1\",\"title\":\"GitHub\",\"additional_information\":\"lin@example.com\",\"urls\":[{\"href\":\"https://github.com\"}]},{\"id\":\"gh2\",\"title\":\"GitHub\",\"additional_information\":\"lin.personal@example.com\",\"urls\":[{\"href\":\"https://github.com/login\"}]},{\"id\":\"gh3\",\"title\":\"GitHub\",\"additional_information\":\"team1@example.com\",\"urls\":[{\"href\":\"https://github.com\"}]},{\"id\":\"gh4\",\"title\":\"GitHub\",\"additional_information\":\"team2@example.com\",\"urls\":[{\"href\":\"https://github.com\"}]},{\"id\":\"gh5\",\"title\":\"GitHub OAuth\",\"additional_information\":\"524783491799-i2nuidv1m2jssguh64lopn8g1kd7a8oe.apps.example.com\",\"urls\":[{\"href\":\"https://github.com\"}]}]",
+                  "",
+                )
+              } else if args.contains("--otp") {
+                (1, "", "[ERROR] no one-time password")
+              } else {
+                (
+                  0,
+                  "[{\"id\":\"username\",\"label\":\"username\",\"value\":\"lin@example.com\"},{\"id\":\"password\",\"purpose\":\"PASSWORD\",\"label\":\"password\",\"value\":\"s3cret\"}]",
+                  "",
+                )
+              }
+            })
           "unreached" =>
             @ui.fake_op.val = Some(fn(_) {
               (1, "", "[ERROR] 2026/11/03 16:43:31 Get \"https://my.1password.com/api/v2/account/keysets\": unexpected EOF\n")

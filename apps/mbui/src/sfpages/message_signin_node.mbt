@@ -101,7 +101,7 @@ priv enum SignInButtons {
   /// the person's own step: the screen, and 我已登录
   Person
   /// the password manager's logins of the site to pick from
-  Choosing(Array[@hostapi.PasswordLogin])
+  Choosing
   /// waiting: the password manager (where there is one here), on the screen, and whether to keep it
   Asking(Bool)
 }
@@ -197,7 +197,7 @@ fn signin_foot_node(v : @view.View, core : @settings.Core, station : String, ask
       "person" => Person
       _ =>
         if step() == "choosing" {
-          Choosing(signin_runs.get(id()).map(fn(r) { r.choices.get() }).unwrap_or([]))
+          Choosing
         } else {
           Asking(signin_manager())
         }
@@ -229,60 +229,72 @@ fn signin_foot_node(v : @view.View, core : @settings.Core, station : String, ask
     })
     f.show(fn() { buttons() != NoButtons }, fn(s) {
       s.width_share(Is(1.0)) |> ignore
-      s.pick(buttons, fn(p, kind) {
+      s.pick(at_once=true, buttons, fn(p, kind) {
         p.width_share(Is(1.0)) |> ignore
-        let button = fn(
-          label : () -> String,
-          press : () -> Unit,
-          tone : @sf.Tone,
-          busy : () -> Bool,
-          disabled : () -> Bool,
-        ) -> (@view.View) -> Unit {
-          fn(at) { @sf.button_node(at, label, press, tone~, busy~, disabled~, card_words=true) |> ignore }
-        }
-        let never = fn() { false }
-        let sending = fn() { step() == "sending" }
-        let parts = match kind {
-          NoButtons => []
-          Filling => [button(fn() { @sf.t("android-misc.signin.filling") }, fn() {  }, Primary, fn() { true }, fn() { true })]
-          Code =>
-            [
-              button(
-                fn() { @sf.t("android-misc.signin.codeSend") },
-                fn() { send(field.text()) },
-                Primary,
-                sending,
-                fn() { field.text().trim(chars=" ").to_owned() == "" || sending() },
-              ),
-              button(fn() { @sf.t("android-misc.signin.openScreen") }, screen, Ghost, never, never),
-            ]
-          Person =>
-            [
-              button(fn() { @sf.t("android-misc.signin.openScreen") }, screen, Primary, never, never),
-              button(fn() { @sf.t("android-misc.signin.doneSelf") }, fn() { signin_self(core, station, now(), true) }, Ghost, never, never),
-            ]
-          Choosing(logins) =>
-            logins.mapi(fn(i, l) {
-              let words = if l.username == "" { l.title } else { l.title + " · " + l.username }
-              button(fn() { words }, fn() { signin_pick(core, station, now(), l) }, if i == 0 { Primary } else { Ghost }, never, never)
-            })
-          Asking(manager) => {
-            let asking = fn() {
-              match step() {
-                "listing" | "getting" | "otp" | "sending" => true
-                _ => false
-              }
+        p.box(fn(col) {
+          @sf.style_node(col, fn() { signin_foot_room })
+          let button = fn(
+            label : () -> String,
+            press : () -> Unit,
+            tone : @sf.Tone,
+            busy : () -> Bool,
+            disabled : () -> Bool,
+          ) -> (@view.View) -> Unit {
+            fn(at) { @sf.button_node(at, label, press, tone~, busy~, disabled~, card_words=true) |> ignore }
+          }
+          let never = fn() { false }
+          let sending = fn() { step() == "sending" }
+          let keep_chooser = fn(at : @view.View) {
+            let keep = fn() { signin_keep.get(id()).unwrap_or(true) }
+            let words = fn(k : Bool) { @sf.t(if k { "android-misc.signin.keep" } else { "android-misc.signin.keepNot" }) }
+            @sf.chooser_button_node(
+              at,
+              fn() { words(keep()) },
+              fn() { [("keep", words(true)), ("not", words(false))] },
+              fn() { if keep() { "keep" } else { "not" } },
+              fn(k) { signin_keep[now().id] = k == "keep" },
+              side=Top,
+              card_words=true,
+            )
+            |> ignore
+          }
+          if kind is Choosing {
+            let choices = fn() {
+              signin_runs.get(id()).map(fn(r) { r.choices.get().mapi(fn(i, l) { (i, l) }) }).unwrap_or([])
             }
-            let parts = if manager {
+            col.box(fn(list) {
+              @sf.style_node(list, fn() { signin_typed.then(@sf.over_foot_reach(@sf.button_height())) })
+              list.each(at_once=true, choices, fn(p) { (p.0, p.1.id) }, fn(r, item) {
+                let words = fn() {
+                  let l = item.get().1
+                  if l.username == "" { l.title } else { l.title + " · " + l.username }
+                }
+                signin_choice_node(r, words, fn() { signin_pick(core, station, now(), item.untracked().1) })
+              })
+            })
+            |> ignore
+          }
+          let parts = match kind {
+            NoButtons => []
+            Filling => [button(fn() { @sf.t("android-misc.signin.filling") }, fn() {  }, Primary, fn() { true }, fn() { true })]
+            Code =>
               [
                 button(
-                  fn() { @sf.t(if @hostapi.passwords() { "android-misc.signin.withOp" } else { "android-misc.signin.withAuto" }) },
-                  fn() { signin_start(core, station, now()) },
+                  fn() { @sf.t("android-misc.signin.codeSend") },
+                  fn() { send(field.text()) },
                   Primary,
-                  asking,
-                  asking,
+                  sending,
+                  fn() { field.text().trim(chars=" ").to_owned() == "" || sending() },
                 ),
-                // (while 1Password is asked too: it is let go of then)
+                button(fn() { @sf.t("android-misc.signin.openScreen") }, screen, Ghost, never, never),
+              ]
+            Person =>
+              [
+                button(fn() { @sf.t("android-misc.signin.openScreen") }, screen, Primary, never, never),
+                button(fn() { @sf.t("android-misc.signin.doneSelf") }, fn() { signin_self(core, station, now(), true) }, Ghost, never, never),
+              ]
+            Choosing =>
+              [
                 button(
                   fn() { @sf.t("android-misc.signin.onScreen") },
                   fn() {
@@ -293,33 +305,50 @@ fn signin_foot_node(v : @view.View, core : @settings.Core, station : String, ask
                   never,
                   sending,
                 ),
+                keep_chooser,
               ]
-            } else {
-              [button(fn() { @sf.t("android-misc.signin.onScreen") }, fn() { signin_self(core, station, now(), false) }, Primary, never, never)]
+            Asking(manager) => {
+              let asking = fn() {
+                match step() {
+                  "listing" | "getting" | "otp" | "sending" => true
+                  _ => false
+                }
+              }
+              let parts = if manager {
+                [
+                  button(
+                    fn() { @sf.t(if @hostapi.passwords() { "android-misc.signin.withOp" } else { "android-misc.signin.withAuto" }) },
+                    fn() { signin_start(core, station, now()) },
+                    Primary,
+                    asking,
+                    asking,
+                  ),
+                  // (while 1Password is asked too: it is let go of then)
+                  button(
+                    fn() { @sf.t("android-misc.signin.onScreen") },
+                    fn() {
+                      signin_stop(now().id)
+                      signin_self(core, station, now(), false)
+                    },
+                    Ghost,
+                    never,
+                    sending,
+                  ),
+                ]
+              } else {
+                [button(fn() { @sf.t("android-misc.signin.onScreen") }, fn() { signin_self(core, station, now(), false) }, Primary, never, never)]
+              }
+              parts.push(keep_chooser)
+              parts
             }
-            // kept in the vault once signed in, unless said otherwise
-            let keep = fn() { signin_keep.get(id()).unwrap_or(true) }
-            let words = fn(k : Bool) { @sf.t(if k { "android-misc.signin.keep" } else { "android-misc.signin.keepNot" }) }
-            parts.push(fn(at) {
-              @sf.chooser_button_node(
-                at,
-                fn() { words(keep()) },
-                fn() { [("keep", words(true)), ("not", words(false))] },
-                fn() { if keep() { "keep" } else { "not" } },
-                fn(k) { signin_keep[now().id] = k == "keep" },
-                side=Top,
-                card_words=true,
-              )
-              |> ignore
-            })
-            parts
           }
-        }
-        // (each line over the one before it, the first at the foot: the old ask_buttons')
-        @sf.ask_buttons_node(p, fn(f) {
-          for part in parts {
-            part(f)
-          }
+          // (each line over the one before it, the first at the foot: the old ask_buttons')
+          @sf.ask_buttons_node(col, fn(f) {
+            for part in parts {
+              part(f)
+            }
+          })
+          |> ignore
         })
         |> ignore
       })
@@ -332,3 +361,26 @@ fn signin_foot_node(v : @view.View, core : @settings.Core, station : String, ask
 /// A sign-in's foot: what is on it 14 apart (a card's), across the card.
 // kept across runs: a value (no field of it changes)
 let signin_foot_room : @ui.Style = @ui.css("w=Full gap=S3_5")
+
+///|
+/// One of 1Password's logins for the site, as a node of the window's tree (signin_choice's).
+fn signin_choice_node(v : @view.View, words : () -> String, on_press : () -> Unit) -> Unit {
+  @headless.button(v, words, fn(_) { on_press() }, fn(row, b) {
+    @sf.style_node(row, signin_choice_box)
+    row.ground(
+      By(fn() {
+        @ui.tree_theme().color(
+          if b.focus_shown() || b.hovered() || b.pressed() {
+            Over(Faint, Hover)
+          } else {
+            Faint
+          },
+        )
+      }),
+    )
+    |> ignore
+    @sf.words_node(row, words, signin_choice_words) |> ignore
+    @sf.icon_node(row, "chevron-right", 16.0, By(fn() { @ui.tree_theme().color(Muted) })).shrink(Is(0.0)) |> ignore
+  })
+  |> ignore
+}

@@ -65,6 +65,10 @@ pub fn open_screen_fixture(mode : String) -> Unit {
     screen_fix_mode.val = "screen-live"
     return
   }
+  if mode == "chat-browser-tab" {
+    screen_fix_mode.val = "screen-pages"
+    return
+  }
   if !mode.has_prefix("screen-") {
     return
   }

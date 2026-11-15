@@ -1016,3 +1016,57 @@ test("a pass that asks this station itself, answered here at once, never begins 
   assert.equal(most, 1, "no pass begun inside another");
   await a.sharing.close();
 });
+
+test("sharing a profile updates hosted state and notifies local listeners at once even while another peer hangs, and reachable peers get it concurrently", async () => {
+  const C = "c".repeat(64);
+  const cloud = new FakeCloud();
+  cloud.peers = [{ id: A, name: "studio" }, { id: B, name: "hung" }, { id: C, name: "mini" }];
+  const all = new Map<string, Station>();
+  let releaseB!: () => void;
+  const bGate = new Promise<void>((r) => { releaseB = r; });
+  let changedCalls = 0;
+  const a = station(cloud, A, () => all, [KEY]);
+  // Override changed listener on A's sharing deps to count immediate notifications.
+  (a.sharing as any).deps.changed = () => { changedCalls += 1; };
+  const c = station(cloud, C, () => all);
+  all.set(A, a).set(C, c).set(B, {
+    sharing: {
+      handle: async () => {
+        await bGate;
+        throw new Error("peer timed out");
+      },
+    },
+  } as any);
+
+  // Start an in-flight reconcile first, then reset changedCalls right before toggling share ON.
+  const first = a.sharing.reconcile();
+  await new Promise((r) => setImmediate(r));
+  await first;
+  changedCalls = 0;
+
+  // Toggling share ON must resolve immediately without waiting for hung peer B, fire changed(), and deliver to C concurrently!
+  await a.sharing.shareProfile("deepseek", true, null);
+  assert.equal(changedCalls, 1, "changed() fired before the hung peer answered");
+  const shareId = a.config.raw().profiles[0].share?.id;
+  assert.equal(typeof shareId, "string");
+  assert.equal(a.sharing.profileView(a.config.raw().profiles[0])?.id, shareId);
+
+  // While B is STILL hung on bGate, reachable peer C receives `share.changed` concurrently and borrows the profile!
+  await until(() => c.config.raw().profiles.length === 1, "C borrowed deepseek while B hung");
+  assert.equal(c.config.raw().profiles[0].share.id, shareId, "reachable peer C received the shared profile while B was still hung");
+
+  // Also toggle share ON for a second profile while B is STILL mid-reconcile on bGate, proving an in-flight hung reconcile never blocks a second toggle either!
+  a.config.update((raw) => {
+    raw.profiles.push({ ...KEY, id: "gemini", name: "Gemini" });
+  });
+  changedCalls = 0;
+  await a.sharing.shareProfile("gemini", true, null);
+  assert.equal(changedCalls, 1, "second toggle also fired changed() immediately while B was hung in reconcile");
+
+  releaseB();
+  await settle(a, c);
+  assert.equal(a.config.raw().profiles[0].share.id, shareId, "share remained active after slow peer settled");
+  assert.equal(c.config.raw().profiles.length, 2, "C borrowed both shared profiles");
+  await a.sharing.close();
+  await c.sharing.close();
+});
