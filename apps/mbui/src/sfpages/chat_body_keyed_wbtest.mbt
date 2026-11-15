@@ -190,7 +190,7 @@ fn keyed_run(n : Int, words : Int) -> (Int, Int, (Int, Int, Int, Int, Int)) rais
     )
     list.put(k, @core.apply_delta(list.peek(k).unwrap(), ops))
     @signals.end_batch()
-    t.run_for(16.0)
+    t.run_for(@ui.frame_period_default)
   }
   t.run_for(@ui.move_most_ms)
   assert_true(t.find(said) is Some(_), msg="\{n}: the words streamed in shown")

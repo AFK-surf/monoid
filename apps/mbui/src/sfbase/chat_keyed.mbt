@@ -85,6 +85,7 @@ fn ChatMessages::of(self : ChatMessages, k : String, j : Json) -> Message {
 ///|
 /// How many messages chat_messages has read as Messages (message_of) in this run: what a test of the work a change
 /// costs counts.
+// kept across runs: a count a test reads as the difference over what it does, never its value
 pub let chat_messages_read : Ref[Int] = Ref(0)
 
 ///|
@@ -232,4 +233,5 @@ pub fn chat_messages_of(list : @signals.KeyedList[String, Json]) -> ChatMessages
 ///|
 /// How many times chat_read worked a chat out whole in this run (its view, its entries): what a test of the work a
 /// change costs counts.
+// kept across runs: a count a test reads as the difference over what it does, never its value
 pub let chat_read_made : Ref[Int] = Ref(0)
