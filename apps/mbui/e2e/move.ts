@@ -14,7 +14,10 @@
 //     killed in the first pass, b A killed while the chat is held, c B killed as
 //     it took the chat, d move.stop in the first pass, e C without room, f A handed over to a fresh process (SIGUSR2 to
 //     its launcher) in an agent's turn and in a move's;
-//   4 everything (all) to B and all back;
+//   4 everything (all) to B and all back; 4s a Slack connect on Slack's stand-in (e2e/slack-stand-in.ts, each station
+//     pointed at a port of its own): a chat of it moved alone and answered from B through A's connect, the connect
+//     refused before its chats and moved after them (an event a second across it), back, B killed between, A killed
+//     during, A handed over while B answers; a single-session one moved first with what is said meanwhile kept;
 //   5 measured, printed: a 500 MB / 5,000-file room's first pass and pause, 300 chats moved with all, GET /move (the
 //     `stationMove` topic's first answer, and station_move plan) with 300 and 2,400 chats.
 //   6 a chat moved to a B that still holds a retired copy of it (its row `retired:`, entries only B has, an older room
@@ -33,6 +36,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, statfsSync, unlinkSync, watch, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { check as checked, deadline, Device, dir, fail, failures, heldProbe, type J, log, whenChanged, within } from "./device.ts";
+import { type Call, SlackStandIn } from "./slack-stand-in.ts";
 
 const WORK = process.env.E2E_WORK!;
 // The last line the drill said: what a limit that passes names as waited for (each wait says itself as it begins).
@@ -1890,7 +1894,366 @@ try {
         if (sql("B", "select count(*) n from vault_plain")[0].n > 0) throw new Error("B kept the vault item it was given");
       });
     }
-    log("SKIP 4: a connect moved with it: not built, the harness has no Slack, Feishu or Comma fake a connect could run against; no connect was part of `all`");
+    log("SKIP 4: a connect moved with `all`: no connect is part of this part's station; a Slack connect's chats and the connect itself are part 4s's, on Slack's stand-in");
+  }
+
+  // ── 4s: a Slack connect, its chats and itself moved, on real processes, Slack being its stand-in ──
+  // (e2e/slack-stand-in.ts: each station pointed at a port of its own, so every call and socket is known by the station
+  // that made it)
+  if (part("4s") && (limit("4s", 5400), await clean("4s"))) {
+    const APP = "xapp-1-drill";
+    const APP1 = "xapp-2-drill";
+    const sl = new SlackStandIn(process.env.E2E_SF_SRC!, [{ app: APP, bot: "xoxb-1-drill", user: "UBOT" }, { app: APP1, bot: "xoxb-2-drill", user: "UBOT2" }]);
+    const CH = "C1";
+    const CH1 = "C2";
+    const dk = "dk";
+    const dks = "dks";
+    const itemOf = (id: string) => `${id}@${aId}`;
+    const keyOf = (ts: string) => `${dk}:${CH}:${ts}`;
+    const cfgOf = (n: Name): J => JSON.parse(readFileSync(`${DATA[n]}/config.json`, "utf8"));
+    const holds = (id: string) => (["A", "B"] as Name[]).filter((n) => (cfgOf(n).connects ?? []).some((c: J) => c?.id === id));
+    /// What was asked in a thread, and whether an answer must come (one said while its chat's station was down need
+    /// not: what is said then is the notice's); each is held to one answer at the part's end.
+    const asked: { thread: string; word: string; channel: string; must: boolean }[] = [];
+    const sayIn = (thread: string | undefined, text: string, word: string, o: { app?: string; channel?: string; must?: boolean } = {}) => {
+      const s = sl.say(o.app ?? APP, o.channel ?? CH, text, thread);
+      asked.push({ thread: thread ?? s.ts, word, channel: o.channel ?? CH, must: o.must ?? true });
+      log(`  Slack: ${thread === undefined ? "a new conversation" : `in ${thread}`}: ${text} (${s.id})`);
+      return s;
+    };
+    const answersTo = (thread: string, word: string, channel = CH) => sl.posted(channel, thread).filter((c) => (c.params.text ?? "").startsWith(word));
+    const answerTo = (thread: string, word: string, ms = 180_000, channel = CH) => sl.until(`answer "${word}" in ${thread}`, () => answersTo(thread, word, channel)[0], ms);
+    const cwdOf = (c: Call): Name | "?" => at(/cwd=(\S+)/.exec(c.params.text ?? "")?.[1] ?? "");
+    const sockets = (app = APP) => sl.live(app).map((s) => `${s.station}#${s.n}`).join(",") || "none";
+    const notices = (thread: string, channel = CH) => sl.posted(channel, thread).filter((c) => /⚠️|NOTICE|已停|暂停/.test(c.params.text ?? "")).map((c) => `${c.station}: ${(c.params.text ?? "").slice(0, 160)}`);
+    const moveConnect = async (id: string, to: Name, withNeeds = false) => {
+      const t0 = Date.now();
+      await a.call("move.start", { station: A, to: idOf(to), module: "connects", item: itemOf(id), withNeeds });
+      return turnEnds("A", t0);
+    };
+    const backConnect = async (id: string, from: Name) => {
+      const t0 = Date.now();
+      await a.call("move.back", { station: A, from: idOf(from), module: "connects", item: itemOf(id) });
+      return turnEnds("A", t0);
+    };
+    /// The connect's chats live on `n` now (by their sessions there).
+    const chatsOn = (n: Name, id = dk) => sql(n, `select key from sessions where key like ${lit(`${id}:%`)} and (ws is null or (ws not like 'handed:%' and ws not like 'coming:%'))`).map((r) => r.key as string);
+    let ok = false;
+    await check("4s: setup: A and B pointed at Slack's stand-in, a Slack connect (multi-session) and a single-session one on A, each app's one socket A's", async () => {
+      for (const n of ["A", "B"] as Name[]) writeFileSync(join(dirname(DATA[n]), "slack-api"), await sl.listen(n));
+      stationDo("halt", "station");
+      try {
+        const cfg = cfgOf("A");
+        const own = (cfg.connects ?? []).filter((c: J) => c?.id !== dk && c?.id !== dks);
+        cfg.connects = [
+          ...own,
+          { id: dk, name: "Drill Slack", mode: "multi-session", bind: { runtime: "claude" }, createdBy: { id: "alice@example.test" }, slack: { appToken: APP, botToken: "xoxb-1-drill", appId: "A1" } },
+          { id: dks, name: "Drill Slack one", mode: "single-session", bind: { runtime: "claude" }, createdBy: { id: "alice@example.test" }, slack: { appToken: APP1, botToken: "xoxb-2-drill", appId: "A2" } },
+        ];
+        writeFileSync(`${DATA.A}/config.json`, JSON.stringify(cfg, null, 2));
+      } finally {
+        await up("A");
+      }
+      stationDo("halt", "second");
+      await up("B");
+      await sl.until("A's sockets", () => sl.live(APP).length === 1 && sl.live(APP1).length === 1, 120_000);
+      log(`  sockets: ${sockets(APP)} / ${sockets(APP1)}; calls so far: ${[...new Set(sl.calls.map((c) => `${c.station}:${c.method}`))].join(" ")}`);
+      if (sl.live(APP)[0]!.station !== "A" || sl.live(APP1)[0]!.station !== "A") throw new Error(`a socket not A's: ${sockets(APP)} / ${sockets(APP1)}`);
+      ok = true;
+    });
+    let t1 = "";
+    let t2 = "";
+    let k1 = "";
+    let k2 = "";
+    if (ok) {
+      await check("4s: a conversation in Slack on A: its chat made on A, answered once in its thread, by an agent on A", async () => {
+        t1 = sayIn(undefined, `drill-remember:s${tag}`, `drill-remembered s${tag}`).ts;
+        const c = await answerTo(t1, `drill-remembered s${tag}`);
+        k1 = keyOf(t1);
+        log(`  answered by ${c.station}'s connect; ${standings(k1)}; posts in it ${brief(sl.posted(CH, t1).map((p) => (p.params.text ?? "").slice(0, 60)))}`);
+        if (standing("A", k1) !== "live") throw new Error(`its chat: ${standings(k1)}`);
+        t2 = sayIn(undefined, `drill-note:a${tag}`, `drill-noted a${tag} `).ts;
+        const c2 = await answerTo(t2, `drill-noted a${tag} `);
+        k2 = keyOf(t2);
+        if (cwdOf(c2) !== "A") throw new Error(`the second answered from ${cwdOf(c2)}: ${c2.params.text}`);
+      });
+    }
+    if (k1 !== "" && k2 !== "") {
+      let moved = false;
+      await check("4s: its chat moved alone to B: the connect stays on A, nothing posted into the thread by the move", async () => {
+        const before = sl.posted(CH, t1).length;
+        const l = await moveChat(k1, "B");
+        log(`  ${outcome(l)}; ${standings(k1)}; holds ${holds(dk).join(",")}; sockets ${sockets()}`);
+        if (standing("B", k1) !== "live") throw new Error(`not on B: ${standings(k1)}; ${outcome(l)}`);
+        if ((l.done ?? []).some((d: J) => named(d).startsWith("connects "))) throw new Error(`the connect went with it: ${outcome(l)}`);
+        moved = true;
+        if (holds(dk).join() !== "A") throw new Error(`the connect is on ${holds(dk).join(",") || "none"}`);
+        const after = sl.posted(CH, t1).slice(before);
+        if (after.length > 0) throw new Error(`posted into its thread by the move: ${brief(after.map((c) => `${c.station}: ${c.params.text}`))}`);
+      });
+      if (moved) {
+        await check("4s: a message in its thread afterwards: taken by A's connect, answered once, from B, in the same thread, the agent going on from its context", async () => {
+          const nonce = randomBytes(3).toString("hex");
+          const s = sayIn(t1, `drill-recall:${nonce}`, `drill-recall ${nonce} `);
+          const c = await answerTo(t1, `drill-recall ${nonce} `);
+          const e = sl.sent.get(s.id)!;
+          log(`  delivered ${brief(e.deliveries)}, acknowledged by ${e.acked?.station}; posted by ${c.station}'s connect: ${(c.params.text ?? "").slice(0, 200)}`);
+          if (e.acked?.station !== "A") throw new Error(`acknowledged by ${e.acked?.station ?? "nobody"}, not A's connect`);
+          if (cwdOf(c) !== "B") throw new Error(`answered from ${cwdOf(c)}: ${c.params.text}`);
+          if (!(c.params.text ?? "").includes(`secret=s${tag}`)) throw new Error(`not from its context: ${c.params.text}`);
+          if (c.station !== "A") throw new Error(`posted through ${c.station}, where the connect is not`);
+        });
+        await check("4s: a second chat of the connect still on A works as before", async () => {
+          sayIn(t2, `drill-note:b${tag}`, `drill-noted b${tag} `);
+          const c = await answerTo(t2, `drill-noted b${tag} `);
+          if (cwdOf(c) !== "A") throw new Error(`answered from ${cwdOf(c)}`);
+        });
+        await check("4s: the connect moved before its other chat: refused, naming it; still A's, its socket A's", async () => {
+          const l = await moveConnect(dk, "B");
+          log(`  ${outcome(l)}; holds ${holds(dk).join(",")}; sockets ${sockets()}`);
+          const r = (l.refused ?? []).find((x: J) => named(x.item) === `connects ${itemOf(dk)}`);
+          if (r === undefined) throw new Error(`not refused: ${outcome(l)}`);
+          if (!String(r.why).includes(k2.slice(-8)) && !/chat|对话/.test(String(r.why))) throw new Error(`refused, not naming its chat: ${r.why}`);
+          if (holds(dk).join() !== "A" || sockets() !== `A#${sl.live(APP)[0]?.n}`) throw new Error(`holds ${holds(dk).join(",")}, sockets ${sockets()}`);
+        });
+        let switched = false;
+        await check("4s: its other chat moved, then the connect: events at B's socket, A's closed, one socket at a time, an event a second across it none lost or doubled", async () => {
+          const l2 = await moveChat(k2, "B");
+          if (standing("B", k2) !== "live") throw new Error(`the other chat not on B: ${standings(k2)}; ${outcome(l2)}`);
+          // (a new conversation a second from before the connect's move to after its turn's end)
+          const during: { ts: string; id: string; word: string }[] = [];
+          let stop = false;
+          const sender = (async () => {
+            for (let i = 0; !stop && i < 120; i++) {
+              const word = `drill-noted w${i}${tag} `;
+              during.push({ ...sayIn(undefined, `drill-note:w${i}${tag}`, word), word });
+              await new Promise((r) => setTimeout(r, 1000));
+            }
+          })();
+          await new Promise((r) => setTimeout(r, 3000));
+          let l: J;
+          try {
+            l = await moveConnect(dk, "B");
+          } finally {
+            await new Promise((r) => setTimeout(r, 5000));
+            stop = true;
+            await sender;
+          }
+          log(`  ${outcome(l)}; holds ${holds(dk).join(",")}; sockets ${sockets()}; ${during.length} sent across it`);
+          if (!(l.done ?? []).some((d: J) => named(d) === `connects ${itemOf(dk)}`)) throw new Error(`not moved: ${outcome(l)}`);
+          switched = true;
+          if (holds(dk).join() !== "B") throw new Error(`held by ${holds(dk).join(",") || "none"}`);
+          await sl.until("B's socket alone", () => sl.live(APP).length === 1 && sl.live(APP)[0]!.station === "B", 60_000).catch(() => {
+            throw new Error(`sockets ${sockets()}`);
+          });
+          const answered = await Promise.all(during.map((d) => answerTo(d.ts, d.word, 300_000).then((c) => ({ d, c }), () => ({ d, c: null }))));
+          for (const { d, c } of answered) {
+            const e = sl.sent.get(d.id)!;
+            log(`    ${d.word.trim()}: delivered ${e.deliveries.map((x) => `${x.station}#${x.n}${x.attempt > 0 ? `(retry ${x.attempt})` : ""}`).join(" ")}, acked ${e.acked?.station ?? "never"}, answered ${answersTo(d.ts, d.word).length}× ${c === null ? "" : `from ${cwdOf(c)} via ${c.station}`}`);
+          }
+          const lost = answered.filter((x) => x.c === null).map((x) => x.d.word.trim());
+          const twice = answered.filter((x) => answersTo(x.d.ts, x.d.word).length > 1).map((x) => x.d.word.trim());
+          log(`  most sockets at once ${sl.most.get(APP)}; with none open: ${brief((sl.none.get(APP) ?? []).filter((g) => g.from > 0).map((g) => `${g.to === 0 ? "still" : `${g.to - g.from} ms`}`))}`);
+          if (lost.length > 0 || twice.length > 0) throw new Error(`unanswered ${brief(lost)}; answered more than once ${brief(twice)}`);
+          if ((sl.most.get(APP) ?? 0) > 1) throw new Error(`${sl.most.get(APP)} sockets open at once`);
+        });
+        if (switched) {
+          await check("4s: with the connect on B, its moved chat's thread answered once, through B's own socket", async () => {
+            sayIn(t1, `drill-note:c${tag}`, `drill-noted c${tag} `);
+            const c = await answerTo(t1, `drill-noted c${tag} `);
+            if (cwdOf(c) !== "B" || c.station !== "B") throw new Error(`answered from ${cwdOf(c)} via ${c.station}`);
+          });
+          await check("4s: back: the connect first while its chats are on B (refused with its reason, or taken back and still routing them), then the chats, then the connect: on A again, A's socket alone, both threads answered once", async () => {
+            const lc = await backConnect(dk, "B");
+            log(`  the connect back first: ${outcome(lc)}; holds ${holds(dk).join(",")}; sockets ${sockets()}`);
+            const refused = (lc.refused ?? []).find((x: J) => named(x.item) === `connects ${itemOf(dk)}`);
+            if (refused !== undefined) log(`  refused: ${refused.why}`);
+            for (const k of [k1, k2]) {
+              const l = await moveBack(k, "B");
+              log(`  ${k.slice(-17)} back: ${outcome(l)}; ${standings(k)}`);
+              if (standing("A", k) !== "live") throw new Error(`${k} not back: ${standings(k)}; ${outcome(l)}`);
+            }
+            if (holds(dk).join() !== "A") {
+              const l = await backConnect(dk, "B");
+              log(`  the connect back: ${outcome(l)}; holds ${holds(dk).join(",")}`);
+            }
+            if (holds(dk).join() !== "A") throw new Error(`the connect is on ${holds(dk).join(",") || "none"}`);
+            await sl.until("A's socket alone", () => sl.live(APP).length === 1 && sl.live(APP)[0]!.station === "A", 60_000).catch(() => {
+              throw new Error(`sockets ${sockets()}`);
+            });
+            sayIn(t1, `drill-note:d${tag}`, `drill-noted d${tag} `);
+            const c = await answerTo(t1, `drill-noted d${tag} `);
+            if (cwdOf(c) !== "A") throw new Error(`answered from ${cwdOf(c)}`);
+            // (a conversation begun while the connect was on B: its chat is B's, routed there from A now)
+            const w = asked.find((x) => x.word.startsWith("drill-noted w") && chatsOn("B").includes(keyOf(x.thread)));
+            if (w !== undefined) {
+              sayIn(w.thread, `drill-note:e${tag}`, `drill-noted e${tag} `);
+              const c2 = await answerTo(w.thread, `drill-noted e${tag} `);
+              log(`  a conversation begun on B, after: answered from ${cwdOf(c2)} via ${c2.station}`);
+              if (cwdOf(c2) !== "B" || c2.station !== "A") throw new Error(`answered from ${cwdOf(c2)} via ${c2.station}`);
+            } else log("  (no conversation begun while the connect was on B is on B)");
+            if ((sl.most.get(APP) ?? 0) > 1) throw new Error(`${sl.most.get(APP)} sockets open at once`);
+          });
+        }
+      }
+    }
+
+    // ── its faults, as part 3 has them for chats ──
+    if (k1 !== "" && holds(dk).join() === "A") {
+      let t3 = "";
+      let k3 = "";
+      await check("4s fault: B killed between a chat's move and the connect's: told in the thread while B is down, the connect stays A's, answered from B once B is back", async () => {
+        t3 = sayIn(undefined, `drill-remember:f${tag}`, `drill-remembered f${tag}`).ts;
+        await answerTo(t3, `drill-remembered f${tag}`);
+        k3 = keyOf(t3);
+        const l = await moveChat(k3, "B");
+        if (standing("B", k3) !== "live") throw new Error(`not on B: ${standings(k3)}; ${outcome(l)}`);
+        stationDo("crash", "second");
+        sayIn(t3, `drill-note:x${tag}`, `drill-noted x${tag} `, { must: false });
+        await sl.until("the station-away notice", () => notices(t3).length > 0 && notices(t3), 120_000).then(
+          (n) => log(`  told: ${brief(n)}`),
+          () => log(`  nothing posted while B is down: ${brief(sl.posted(CH, t3).map((c) => (c.params.text ?? "").slice(0, 80)))}`),
+        );
+        const lc = await moveConnect(dk, "B").catch((e) => ({ error: String(e) }) as J);
+        log(`  the connect to B, B down: ${"error" in lc ? lc.error : outcome(lc)}; holds ${holds(dk).join(",")}; sockets ${sockets()}`);
+        if (holds(dk).join() !== "A") throw new Error(`the connect is on ${holds(dk).join(",") || "none"} with B down`);
+        if (sl.live(APP).length !== 1 || sl.live(APP)[0]!.station !== "A") throw new Error(`sockets ${sockets()}`);
+        await up("B");
+        sayIn(t3, `drill-recall:y${tag}`, `drill-recall y${tag} `);
+        const c = await answerTo(t3, `drill-recall y${tag} `);
+        if (cwdOf(c) !== "B") throw new Error(`answered from ${cwdOf(c)}`);
+        log(`  the message said while B was down: answered ${answersTo(t3, `drill-noted x${tag} `).length}×`);
+      });
+      await check("4s fault: A killed during the connect's move: afterwards one station holds it, one socket, an event answered once", async () => {
+        for (const k of chatsOn("A")) {
+          const l = await moveChat(k, "B");
+          if (standing("B", k) !== "live") throw new Error(`${k} not on B: ${outcome(l)}`);
+        }
+        await a.call("move.start", { station: A, to: bId, module: "connects", item: itemOf(dk), withNeeds: false });
+        stationDo("crash", "station");
+        const heldThen = holds(dk);
+        await up("A");
+        await a.stationState(ws, (s) => s.state === "online", 120_000, aId);
+        log(`  held as A died: ${heldThen.join(",") || "none"}; now ${holds(dk).join(",") || "none"}; sockets ${sockets()}`);
+        await sl.until("one socket", () => sl.live(APP).length === 1, 120_000).catch(() => {
+          throw new Error(`sockets ${sockets()}`);
+        });
+        if (holds(dk).length !== 1) throw new Error(`held by ${holds(dk).join(",") || "none"}`);
+        if (sl.live(APP)[0]!.station !== holds(dk)[0]) throw new Error(`the socket is ${sockets()}, the connect ${holds(dk)[0]}'s`);
+        sayIn(t1, `drill-note:g${tag}`, `drill-noted g${tag} `);
+        const c = await answerTo(t1, `drill-noted g${tag} `);
+        log(`  answered from ${cwdOf(c)} via ${c.station}`);
+      });
+      // (the connect A's again, its chats on B, for the next)
+      if (holds(dk).join() === "B") await backConnect(dk, "B").then((l) => log(`  the connect back: ${outcome(l)}`), (e) => log(`  the connect not back: ${String(e).slice(0, 300)}`));
+      if (holds(dk).join() === "A" && standing("B", k1) === "live") {
+        await check("4s fault: A handed over to a fresh process (SIGUSR2) while a routed thread is answered on B: answered once, one socket at a time", async () => {
+          const gate = `${FAKE}.gate-s${tag}`;
+          sayIn(t1, `drill-gate:s${tag}`, `drill-gated s${tag} `);
+          await whenChanged([dirname(FAKE)], () => existsSync(`${FAKE}.turns`) && readFileSync(`${FAKE}.turns`, "utf8").includes(`drill-gate:s${tag}`), 120_000, () => "the gated turn not begun");
+          const before = sl.most.get(APP) ?? 0;
+          const opens = sl.sockets.length;
+          const h = await handOver("A");
+          log(`  ${await handoverEnd(h)}`);
+          writeFileSync(gate, "");
+          const c = await answerTo(t1, `drill-gated s${tag} `);
+          const during = sl.sockets.slice(opens).map((s) => `${s.station}#${s.n} ${s.opened}-${s.closed || "open"}`);
+          log(`  answered via ${c.station}; sockets opened since: ${brief(during)}; now ${sockets()}; most at once ${sl.most.get(APP)} (before ${before})`);
+          if ((sl.most.get(APP) ?? 0) > 1) throw new Error(`${sl.most.get(APP)} sockets open at once across the handover: ${brief(during)}`);
+        });
+      } else fail("4s fault: A handed over while a routed thread is answered on B", new Error(`not run: it needs the connect on A and its chat on B, and the connect is on ${holds(dk).join(",") || "none"}, the chat ${standings(k1)}`));
+    }
+
+    // ── a single-session connect: not routed, so it goes first, its chat stopped, and what Slack says meanwhile kept ──
+    {
+      let ks = "";
+      let ts1 = "";
+      await check("4s single: a single-session Slack connect's chat on A answered", async () => {
+        ts1 = sayIn(undefined, `drill-remember:o${tag}`, `drill-remembered o${tag}`, { app: APP1, channel: CH1 }).ts;
+        await answerTo(ts1, `drill-remembered o${tag}`, 180_000, CH1);
+        ks = sql("A", `select key from sessions where key like ${lit(`${dks}:%`)}`)[0]?.key ?? "";
+        if (ks === "") throw new Error("no session of it on A");
+      });
+      if (ks !== "") {
+        await check("4s single: its chat moved with what it needs: the connect first, then the chat; what is said meanwhile kept, taken there once, in order", async () => {
+          const words: string[] = [];
+          let stop = false;
+          const sender = (async () => {
+            for (let i = 0; !stop && i < 60; i++) {
+              words.push(`q${i}${tag}`);
+              sayIn(ts1, `drill-note:q${i}${tag}`, `drill-noted q${i}${tag} `, { app: APP1, channel: CH1, must: false });
+              await new Promise((r) => setTimeout(r, 1000));
+            }
+          })();
+          let l: J;
+          try {
+            l = await moveChat(ks, "B");
+          } finally {
+            await new Promise((r) => setTimeout(r, 3000));
+            stop = true;
+            await sender;
+          }
+          log(`  ${outcome(l)}; ${standings(ks)}; holds ${holds(dks).join(",")}; sockets ${sockets(APP1)}`);
+          if (standing("B", ks) !== "live" || holds(dks).join() !== "B") throw new Error(`${standings(ks)}, the connect ${holds(dks).join(",") || "none"}'s`);
+          const order = (l.done ?? []).map(named);
+          if (order.indexOf(`connects ${itemOf(dks)}`) > order.indexOf(`chats ${ks}`)) throw new Error(`the chat before its connect: ${order.join(", ")}`);
+          const last = words.at(-1)!;
+          await whenChanged([DATA.B], () => sql("B", `select count(*) n from entries where text like ${lit(`%drill-note:${last}%`)}`)[0].n > 0, 120_000, () => "the last said not in B's log");
+          const said = sql("B", `select text from entries where text like ${lit(`%drill-note:q%${tag}%`)} order by thread, n`).map((r) => /drill-note:(q\d+)/.exec(String(r.text))?.[1]);
+          const want = words.map((w) => w.replace(tag, ""));
+          log(`  in B's log: ${brief(said)}; said: ${brief(want)}`);
+          const twice = want.filter((w) => said.filter((x) => x === w).length > 1);
+          const missing = want.filter((w) => !said.includes(w));
+          if (twice.length > 0 || missing.length > 0) throw new Error(`missing ${brief(missing)}, twice ${brief(twice)}`);
+          if (said.join() !== want.join()) throw new Error(`out of order: ${brief(said)}`);
+        });
+        await check("4s single: back: on A, its connect A's, one socket, answered there", async () => {
+          const l = await moveBack(ks, "B");
+          log(`  ${outcome(l)}; ${standings(ks)}; holds ${holds(dks).join(",")}`);
+          if (holds(dks).join() !== "A") {
+            const lc = await backConnect(dks, "B");
+            log(`  the connect back: ${outcome(lc)}; holds ${holds(dks).join(",")}`);
+          }
+          if (standing("A", ks) !== "live" || holds(dks).join() !== "A") throw new Error(`${standings(ks)}, the connect ${holds(dks).join(",") || "none"}'s`);
+          await sl.until("A's socket alone", () => sl.live(APP1).length === 1 && sl.live(APP1)[0]!.station === "A", 60_000).catch(() => {
+            throw new Error(`sockets ${sockets(APP1)}`);
+          });
+          sayIn(ts1, `drill-note:r${tag}`, `drill-noted r${tag} `, { app: APP1, channel: CH1 });
+          const c = await answerTo(ts1, `drill-noted r${tag} `, 180_000, CH1);
+          if (cwdOf(c) !== "A") throw new Error(`answered from ${cwdOf(c)}`);
+        });
+      }
+    }
+    log("SKIP 4s: a Comma connect moved: not built, the harness has no Comma stand-in (and Feishu's routed connect is Slack's path with another platform's client, not driven here)");
+
+    await check("4s: every message said in Slack answered exactly once (but those said to a station that was down, which need not be)", async () => {
+      // (what is still to come comes within the minute, else it is counted as it is)
+      await sl.until("every answer", () => asked.every((x) => !x.must || answersTo(x.thread, x.word, x.channel).length > 0), 60_000).catch(() => {});
+      const none = asked.filter((x) => x.must && answersTo(x.thread, x.word, x.channel).length === 0).map((x) => x.word.trim());
+      const more = asked.filter((x) => answersTo(x.thread, x.word, x.channel).length > 1).map((x) => `${x.word.trim()} ×${answersTo(x.thread, x.word, x.channel).length}`);
+      const unacked = [...sl.sent.values()].filter((e) => e.acked === null).map((e) => e.id);
+      const again = [...sl.sent.values()].filter((e) => e.deliveries.length > 1).map((e) => `${e.id}×${e.deliveries.length}`);
+      log(`  ${asked.length} said; sent again by Slack ${brief(again)}; never acknowledged ${brief(unacked)}`);
+      log(`  answered by the stand-in with { ok: true } and nothing else: ${[...sl.generic].map(([m, n]) => `${m} ×${n}`).join(", ") || "none"}`);
+      log(`  sockets: ${sl.sockets.map((s) => `${s.app === APP ? "dk" : "dks"} ${s.station}#${s.n} ${((s.closed || Date.now()) - s.opened) / 1000}s`).join(", ")}`);
+      if (none.length > 0 || more.length > 0) throw new Error(`unanswered ${brief(none)}; more than once ${brief(more)}`);
+    });
+
+    // (the stations as part 4 left them: no connect, nothing pointed at the stand-in; the chats Slack made stay)
+    await check("4s: end: the connects taken out of A's and B's config and the stand-in let go", async () => {
+      for (const [n, shell] of [["A", "station"], ["B", "second"]] as const) {
+        stationDo("halt", shell);
+        try {
+          const cfg = cfgOf(n);
+          cfg.connects = (cfg.connects ?? []).filter((c: J) => c?.id !== dk && c?.id !== dks);
+          writeFileSync(`${DATA[n]}/config.json`, JSON.stringify(cfg, null, 2));
+          rmSync(join(dirname(DATA[n]), "slack-api"), { force: true });
+        } finally {
+          await up(n);
+        }
+      }
+      await sl.close();
+    });
   }
 
   // ── 5: measured ──

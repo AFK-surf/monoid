@@ -198,6 +198,9 @@ start_cloud() {
 }
 
 # the test station (enrolled), its launcher over its own data
+# Where a station's Slack is: the move drill's stand-in for it (e2e/slack-stand-in.ts), a port a station, as
+# `<its dir>/slack-api` names it (the station's own seam, $STILLFAIL_SLACK_API, station/src/slack/web.ts); none, Slack.
+slack_api() { [ ! -f "$1/slack-api" ] || export STILLFAIL_SLACK_API="$(cat "$1/slack-api")"; }
 start_station() {
   local launcher=$(native launcher)
   # The launcher's takeover means the station has initialized and is serving. Deliver that event directly: the
@@ -205,7 +208,7 @@ start_station() {
   rm -f "$RUN/station.ready"
   mkfifo "$RUN/station.ready"
   exec 9<> "$RUN/station.ready"
-  (. $RUN/station-env.sh && detach node "$D/waitfor.mjs" --tee "$RUN/station.log" \
+  (. $RUN/station-env.sh && slack_api $STATION && detach node "$D/waitfor.mjs" --tee "$RUN/station.log" \
     --line 'Node [0-9]+ has taken over' --mark "$RUN/station.ready" -- \
     "$launcher" run --app "$STATION/app" --data "$STATION/data" 9>&- & echo $! > "$RUN/station.pid")
   if ! IFS= read -r -t 60 ready <&9; then
@@ -827,7 +830,7 @@ more_launch() {
   rm -f "$RUN/$n.ready"
   mkfifo "$RUN/$n.ready"
   exec 9<> "$RUN/$n.ready"
-  (. $RUN/station-env.sh && export HOME=$B/home STILLFAIL_DATA=$B/data && detach node "$D/waitfor.mjs" --tee "$RUN/$n.log" \
+  (. $RUN/station-env.sh && export HOME=$B/home STILLFAIL_DATA=$B/data && slack_api $B && detach node "$D/waitfor.mjs" --tee "$RUN/$n.log" \
     --line 'Node [0-9]+ has taken over' --mark "$RUN/$n.ready" -- \
     "$launcher" run --app $B/app --data $B/data 9>&- >/dev/null 2>&1 & echo $! > $RUN/$n.pid)
   if ! IFS= read -r -t 60 ready <&9; then
