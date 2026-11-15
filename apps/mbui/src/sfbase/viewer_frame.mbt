@@ -58,9 +58,24 @@ pub fn vf_kind_label(kind : PKind?) -> String {
     Some(KMarkdown) => "Markdown"
     Some(KCsv) => @sf.t("web-main.preview.kind.csv")
     Some(KHtml) => @sf.t("web-main.preview.kind.html")
+    Some(KMbui) => "mbui"
     Some(KCode) => @sf.t("web-main.preview.kind.code")
     Some(KText) => @sf.t("web-main.preview.kind.text")
     None => ""
+  }
+}
+
+///|
+/// Whether a preview offers the 预览 / 源码 switch once its bytes are here.
+pub fn vf_has_source(vw : Viewer) -> Bool {
+  match vw.shown_kind() {
+    Some(KCsv) | Some(KHtml) => true
+    Some(KMbui) =>
+      match vw.bytes.get() {
+        Some(b) => !is_wasm_bytes(b)
+        None => !@sf.lower(vw.file.name).has_suffix(".wasm")
+      }
+    _ => false
   }
 }
 
@@ -72,7 +87,15 @@ pub fn vf_meta(vw : Viewer, src : Source) -> String {
   let (at, count) = viewer_place(vw, src)
   let parts : Array[String] = []
   let first = if count > 1 && at >= 0 { "\{at + 1} / \{count} · " } else { "" }
-  parts.push(first + @sf.file_size(vw.file.size))
+  let size = if vw.file.size > 0.0 {
+    vw.file.size
+  } else {
+    match vw.bytes.get() {
+      Some(b) => b.length().to_double()
+      None => 0.0
+    }
+  }
+  parts.push(first + @sf.file_size(size))
   let kind = vf_kind_label(vw.shown_kind())
   if kind != "" {
     parts.push(kind)
@@ -105,7 +128,7 @@ fn vf_native(v : Viewer, c : @ui.Ctx, src : Source) -> Unit {
   if v.coming() {
     return
   }
-  if v.shown_kind() == Some(KHtml) {
+  if vf_has_source(v) {
     if v.bytes.get() is Some(_) {
       @sf.native_over_act("source", @sf.t(if v.source { "web-main.preview.rendered" } else { "web-main.preview.source" }), "code", fn() {
         v.set_source(!v.source)

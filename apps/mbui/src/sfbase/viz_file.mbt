@@ -401,6 +401,12 @@ pub fn viz_load_node(
 }
 
 ///|
+/// The current saved widget state for `(station, key, path)` if loaded.
+pub fn viz_state_of(station : String, key : String, path : String) -> Json? {
+  viz_load_of(viz_id(station, key, path)).state.get()
+}
+
+///|
 /// The load of the file `id` (viz_id), made where there is none.
 fn viz_load_of(id : String) -> VizLoad {
   match viz_loads.get(id) {
@@ -439,7 +445,8 @@ fn viz_ask(src : Source, l : VizLoad, station : String, key : String, path : Str
     Json::object(p),
     fn(r) {
       match r {
-        Ok((_, bytes)) =>
+        Ok((_, bytes)) => {
+          keep_read(station + "/" + key + "/" + path, bytes)
           l.html.set(
             Some(
               if is_wasm_bytes(bytes) {
@@ -449,6 +456,7 @@ fn viz_ask(src : Source, l : VizLoad, station : String, key : String, path : Str
               },
             ),
           )
+        }
         Err(_) => l.failed.set(true)
       }
     },

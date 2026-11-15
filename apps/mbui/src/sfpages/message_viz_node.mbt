@@ -76,7 +76,7 @@ fn viz_shown_node(
           b,
           place,
           widget,
-          fn() { state.unwrap_or(Json::null()) },
+          fn() { @sfbase.viz_state_of(station, key, a.path).unwrap_or(state.unwrap_or(Json::null())) },
           {
             keep: Some(fn(s) { @sfbase.viz_keep(src, station, key, a.path, s) }),
             failed: None,
@@ -167,7 +167,13 @@ fn viz_shown_node(
         ways,
         "expand",
         fn() { @sfbase.viz_tr("android-misc.viz.fullscreen") },
-        fn() { viz_open_full(a.name, station, key, a.path, session) },
+        fn() {
+          if @sfbase.is_mbui_viz(a.name) {
+            @sfbase.open_preview(station, key, a, steps=@sfbase.InChat(None, session), beside=false)
+          } else {
+            viz_open_full(a.name, station, key, a.path, session)
+          }
+        },
         tips~,
         size=viz_way_px,
         icon_size=14.0,
@@ -177,7 +183,13 @@ fn viz_shown_node(
         ways,
         "panel-open",
         fn() { @sfbase.viz_tr("android-misc.viz.openAside") },
-        fn() { open_page(@sfbase.PreviewFile(station, key, a.path, a.name)) },
+        fn() {
+          if @sfbase.is_mbui_viz(a.name) {
+            @sfbase.open_preview(station, key, a, steps=@sfbase.InChat(None, session), beside=true)
+          } else {
+            open_page(@sfbase.PreviewFile(station, key, a.path, a.name))
+          }
+        },
         tips~,
         size=viz_way_px,
         icon_size=14.0,

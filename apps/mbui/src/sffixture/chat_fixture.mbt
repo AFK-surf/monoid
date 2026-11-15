@@ -475,8 +475,10 @@ pub fn fixture_chat_topic(f : Fixture, name : String, params : Map[String, Json]
             with_md_message(rich_chat(f.older))
           } else if f.mode == "chat-viz" {
             with_viz_message(rich_chat(f.older))
-          } else if f.mode == "chat-mbui" || f.mode == "chat-mbui-dark" {
+          } else if f.mode == "chat-mbui" || f.mode == "chat-mbui-dark" || f.mode == "chat-view-side-mbui" || f.mode == "chat-preview-mbui" {
             with_mbui_viz_message(rich_chat(f.older))
+          } else if f.mode == "chat-view-side-memory-mbui" || f.mode == "chat-preview-memory-mbui" {
+            with_memory_mbui_viz_message(rich_chat(f.older))
           } else if f.mode == "chat-file-links" {
             with_file_links(rich_chat(f.older))
           } else if f.mode == "chat-table-images" {
@@ -2143,6 +2145,171 @@ pub let mbui_viz_answer : String =
   #|[发布与性能看板](release.mbui)
 
 ///|
+pub fn with_memory_mbui_viz_message(v : Json) -> Json {
+  match v {
+    Object(m) => {
+      let o = m.copy()
+      let all = match m.get("messages") {
+        Some(Array(a)) => a.copy()
+        _ => []
+      }
+      all.push(
+        msg(12, "agent", by_agent("anthropic", "claude", "s-c1"), memory_mbui_viz_answer, "1 分钟前", {
+          "attachments": [file("memory-schemes.mbui", 0, 0, 2400)],
+          "placed": ["memory-schemes.mbui"],
+          "md": [
+            ["p", [[0, 39]]],
+            ["p", [["a", [[42, 51]], { "href": "memory-schemes.mbui", "path": "memory-schemes.mbui" }]]],
+          ],
+          "ending": "all_done",
+        }),
+      )
+      o["messages"] = Json::array(all)
+      Json::object(o)
+    }
+    _ => v
+  }
+}
+
+///|
+pub let memory_mbui_viz_answer : String =
+  #|整理了设置里「记忆」页的 3 种设计方案对比，可直接切换方案或展开规则行查看：
+  #|
+  #|[记忆页方案对比](memory-schemes.mbui)
+
+///|
+pub let fixture_viz_memory_mbui : String =
+  #|{
+  #|  "title": "设置 › 记忆",
+  #|  "subtitle": "点击切换 3 种方案预览（各行均可点击展开）",
+  #|  "state": { "scheme": "a" },
+  #|  "body": [
+  #|    {
+  #|      "type": "tabs",
+  #|      "id": "scheme_tabs",
+  #|      "state_key": "scheme",
+  #|      "active": "a",
+  #|      "items": [
+  #|        {
+  #|          "id": "a",
+  #|          "label": "方案 A：直接列规则（推荐）",
+  #|          "body": [
+  #|            {
+  #|              "type": "card",
+  #|              "title": "全局记忆",
+  #|              "subtitle": "每次对话都会读取",
+  #|              "badge": "23 条",
+  #|              "children": [
+  #|                { "type": "text", "text": "记忆和 skill 只写长期有效的规则和事实，不写进度、现状、交接段落" },
+  #|                { "type": "divider" },
+  #|                {
+  #|                  "type": "row",
+  #|                  "gap": 6,
+  #|                  "children": [
+  #|                    { "type": "badge", "text": "ccvm", "tone": "blue" },
+  #|                    { "type": "text", "text": "本机 ccvm（4 核 8G、盘小）不编译、不跑测试，都用 station_task 到 Studio" }
+  #|                  ]
+  #|                },
+  #|                { "type": "divider" },
+  #|                {
+  #|                  "type": "row",
+  #|                  "gap": 6,
+  #|                  "children": [
+  #|                    { "type": "badge", "text": "Studio", "tone": "accent" },
+  #|                    { "type": "text", "text": "查 ~/.stillfail/repos/*.git 裸仓库先在 workspace 建 detached worktree" }
+  #|                  ]
+  #|                },
+  #|                { "type": "divider" },
+  #|                {
+  #|                  "type": "details",
+  #|                  "id": "a_more_rules",
+  #|                  "title": "展开其余 17 条规则",
+  #|                  "subtitle": "点击原地展开全部 23 条",
+  #|                  "open": false,
+  #|                  "body": [
+  #|                    { "type": "text", "text": "/tmp 各会话共用，大文件放自己的 workspace" },
+  #|                    { "type": "divider" },
+  #|                    { "type": "text", "text": "改项目代码、跑测试、出图前先读对应 SKILL.md 与 AGENTS.md" }
+  #|                  ]
+  #|                }
+  #|              ]
+  #|            },
+  #|            {
+  #|              "type": "card",
+  #|              "title": "Skill",
+  #|              "subtitle": "处理对应事情时读取",
+  #|              "badge": "13 个",
+  #|              "children": [
+  #|                {
+  #|                  "type": "details",
+  #|                  "id": "sk_rel",
+  #|                  "title": "发布流程",
+  #|                  "subtitle": "skills/release/SKILL.md · 构建、公证并发布桌面端与移动端安装包",
+  #|                  "open": false,
+  #|                  "body": [
+  #|                    { "type": "code", "text": "scripts/release.sh --notarize --channel stable" }
+  #|                  ]
+  #|                },
+  #|                { "type": "divider" },
+  #|                {
+  #|                  "type": "details",
+  #|                  "id": "sk_bench",
+  #|                  "title": "性能基准",
+  #|                  "subtitle": "skills/instrbench/SKILL.md · 在 Studio 上对比改前改后的指令数与布局次数",
+  #|                  "open": false,
+  #|                  "body": [
+  #|                    { "type": "code", "text": "bash apps/mbui/scripts/instrbench.sh compare" }
+  #|                  ]
+  #|                },
+  #|                { "type": "divider" },
+  #|                {
+  #|                  "type": "details",
+  #|                  "id": "sk_builtin",
+  #|                  "title": "内置 skill",
+  #|                  "subtitle": "10 个（默认收起）",
+  #|                  "open": false,
+  #|                  "body": [
+  #|                    { "type": "text", "text": "stillfail-chats · stillfail-jobs · stillfail-viz · stillfail-vault" }
+  #|                  ]
+  #|                }
+  #|              ]
+  #|            }
+  #|          ]
+  #|        },
+  #|        {
+  #|          "id": "b",
+  #|          "label": "方案 B：通用 + 机器专属两行",
+  #|          "body": [
+  #|            {
+  #|              "type": "card",
+  #|              "title": "全局记忆",
+  #|              "badge": "23 条",
+  #|              "children": [
+  #|                { "type": "text", "text": "通用规则（18 条）与各机器专属（5 条）拆为两行入口" }
+  #|              ]
+  #|            }
+  #|          ]
+  #|        },
+  #|        {
+  #|          "id": "c",
+  #|          "label": "方案 C：单行入口",
+  #|          "body": [
+  #|            {
+  #|              "type": "card",
+  #|              "title": "全局记忆",
+  #|              "badge": "23 条",
+  #|              "children": [
+  #|                { "type": "text", "text": "只保留一行「全局记忆（23 条）」入口，点进去看全文" }
+  #|              ]
+  #|            }
+  #|          ]
+  #|        }
+  #|      ]
+  #|    }
+  #|  ]
+  #|}
+
+///|
 /// MBUI_FIXTURE=chat-image-coming: a last message's two pictures still coming from their station (fixture.mbt's
 /// `file`): a photograph (its ThumbHash's field a sky over a meadow), 8400 of its thumbnail's 24000 bytes heard, and a
 /// light screenshot (a report's, 780 × 2600, its ThumbHash's field the page's colour), 0 of its 13249.
@@ -2411,6 +2578,30 @@ pub let fixture_viz_mbui : String =
   #|        "bind": "canary_only",
   #|        "label": "仅向 Canary 渠道灰度推送",
   #|        "note": "开启后由 Wasm 切换 10% 灰度验证"
+  #|      },
+  #|      {
+  #|        "type": "details",
+  #|        "id": "rules",
+  #|        "title": "展开其余 17 条规则",
+  #|        "open": false,
+  #|        "children": [
+  #|          {
+  #|            "type": "row",
+  #|            "gap": 8,
+  #|            "children": [
+  #|              { "type": "badge", "label": "通用", "tone": "accent" },
+  #|              { "type": "text", "text": "语言跟随用户最新消息；Slack 时间用 UTC+8；发图发全窗口截图" }
+  #|            ]
+  #|          },
+  #|          {
+  #|            "type": "row",
+  #|            "gap": 8,
+  #|            "children": [
+  #|              { "type": "badge", "label": "架构", "tone": "info" },
+  #|              { "type": "text", "text": "多端共用一套 TS core 接口，组件圆角与间距遵循 mbui 阶梯" }
+  #|            ]
+  #|          }
+  #|        ]
   #|      },
   #|      {
   #|        "type": "row",

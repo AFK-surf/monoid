@@ -540,6 +540,8 @@ fn Viewer::flight_share_at(self : Viewer, t : Double) -> Double {
 fn Viewer::ground_ink(self : Viewer) -> Int64 {
   if self.dark() {
     0x000000FFL
+  } else if viewer_mbui_rendered(self) {
+    @sf.theme().p.bg
   } else if self.shown_kind() == Some(KPdf) {
     let t = @sf.theme()
     @sf.mix(t.p.text, 0.05, t.p.bg)
@@ -1282,9 +1284,9 @@ fn image_tools(
   // (copied: a check from the press, its end its own, another press another end)
   let copied : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
   let copied_end : Ref[() -> Unit] = Ref(fn() {  })
-  // 预览 / 源码: a table's, a page's once read (Markdown read in the reader, its own bar): the library's
+  // 预览 / 源码: a table's, a page's, an mbui widget's once read (Markdown read in the reader, its own bar): the library's
   // segmented choice, its nodes (@sf.seg_node), what it chooses told (Viewer::set_source)
-  row.show(fn() { whole() && (vw.shown_kind() == Some(KCsv) || vw.shown_kind() == Some(KHtml)) }, fn(r) {
+  row.show(fn() { whole() && vf_has_source(vw) }, fn(r) {
     // (giving way as it does where the bar is short of room: its track fitted to what there is)
     r.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
     @sf.seg_node(
@@ -1361,7 +1363,7 @@ fn image_tools(
   })
   // 分享 on a phone (shares_out): what is here handed to the system's share sheet; one told of, read whole first. Not
   // beside 预览 / 源码 (a table, a page): a phone's floating bar has no room for both with the name (words at 1.3)
-  row.show(fn() { shares_out() && !vw.coming() && !downloading(dl()) && (whole() || vw.told_of()) && !(whole() && (vw.shown_kind() == Some(KCsv) || vw.shown_kind() == Some(KHtml))) }, fn(r) {
+  row.show(fn() { shares_out() && !vw.coming() && !downloading(dl()) && (whole() || vw.told_of()) && !(whole() && vf_has_source(vw)) }, fn(r) {
     @sf.tool_node(
       r,
       fn() {
@@ -1591,7 +1593,10 @@ fn viewer_hosted(n : @view.View, src : Source, vw : Viewer) -> Unit {
       }
     }))
     |> ignore
-    s.show(fn() { stage() == Hosted }, fn(h) {
+    s.show(fn() { stage() == Hosted && viewer_mbui_rendered(vw) }, fn(m) {
+      viewer_mbui_node(m, src, vw, bars=true)
+    })
+    s.show(fn() { stage() == Hosted && !viewer_mbui_rendered(vw) }, fn(h) {
       h.over(Is(true)) |> ignore
       @ui.old(h, fn(c) {
         // (what marking and what reads stamp by: this source's clock, as the old frame's layer said it each frame)

@@ -23,7 +23,8 @@ pub fn tab_file(tab : String) -> (String, String, String)? {
     return None
   }
   match (try Some(@json.parse(tab.exact_view(start="file:".length()).to_owned())) catch { _ => None }) {
-    Some(Array([String(session), String(path), String(name)])) => Some((session, path, name))
+    Some(Array([String(session), String(path), String(name)])) if !@sfbase.is_mbui_viz(name) && !@sfbase.is_mbui_viz(path) =>
+      Some((session, path, name))
     _ => None
   }
 }
@@ -233,7 +234,27 @@ fn beside_follow(v : @view.View, src : Source) -> Unit {
         }
         Some((Service(station, job), session, now)) if session != "" =>
           tab_beside(src, station, session, "service:" + job, now)
-        Some((PreviewFile(station, key, path, name), _, now)) => tab_beside(src, station, key, file_tab(key, path, name), now)
+        Some((PreviewFile(station, key, path, name), _, now)) => {
+          let tab = if @sfbase.is_mbui_viz(name) || @sfbase.is_mbui_viz(path) {
+            let a : @sfbase.Attachment = {
+              name: if name != "" { name } else { @sfbase.viz_base_name(path) },
+              path,
+              size: 0.0,
+              width: 0.0,
+              height: 0.0,
+              thumbhash: "",
+              owner: "",
+              upload: "",
+              duration: 0.0,
+              frames: 0,
+              held: false,
+            }
+            @sfbase.view_tab_key(station, key, a, None, false)
+          } else {
+            file_tab(key, path, name)
+          }
+          tab_beside(src, station, key, tab, now)
+        }
         _ => ()
       }
     },

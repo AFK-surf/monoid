@@ -160,20 +160,88 @@ test "wasm sandbox traps infinite loops deterministically by gas_limit and rejec
 }
 
 ///|
-test "opening a .mbui widget full screen renders natively without a WebView and closes on back" {
-  let t = chat_tester("chat-mbui")
+test "opening a .mbui widget beside the chat or full screen uses the unified file preview and closes on back" {
+  let t = beside_tester(mode="chat-mbui")
   t.frame()
+  assert_eq(opened_views(t, 2).length(), 0, msg=".mbui uses no WebView")
+  match t.find("展开其余 17 条规则") {
+    Some((dx, dy)) => {
+      t.move_to(dx, dy)
+      t.frame()
+      assert_eq(mbui_viz_faults(t), [], msg="hovering details header has rounded background with zero corner faults")
+      t.tap(dx, dy)
+      t.run_for(@ui.move_most_ms)
+      assert_true(t.find("语言跟随用户最新消息；Slack 时间用 UTC+8；发图发全窗口截图") is Some(_))
+      assert_eq(mbui_viz_faults(t), [], msg="expanded details rows align cleanly with zero faults")
+      t.tap_text("展开其余 17 条规则")
+      t.run_for(@ui.move_most_ms)
+      assert_eq(mbui_viz_faults(t), [], msg="collapsing details closes smoothly with zero rows_steady jolts")
+    }
+    None => fail("details header not found")
+  }
+  @sfbase.open_preview("ws1/st1", "s-c1", made_file("release.mbui"), beside=true)
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.viewer.get() is None, msg="beside=true opens in side panel, not full window")
+  assert_eq(view_tabs(t).length(), 1)
+  assert_eq(t.all(Tab, label="release.mbui", selected=true).length(), 1, msg="side preview tab selected")
+  let side_x = tab_left(t, "release.mbui")
+  assert_true(
+    t.locate("0.25.0 发布与性能看板").iter().any(fn(p) { p.0 >= side_x }),
+    msg="side preview initially renders native .mbui widget",
+  )
+  assert_true(t.find(@sf.t("web-main.preview.source")) is Some(_), msg="side preview has 预览 / 源码 toggle")
+  assert_eq(mbui_viz_faults(t), [])
+  for p in t.locate(@sf.t("web-main.preview.source")) {
+    if p.0 >= side_x {
+      t.tap(p.0, p.1)
+    }
+  }
+  t.run_for(@ui.move_most_ms)
+  assert_true(
+    t.locate("\"title\": \"0.25.0 发布与性能看板\"").iter().any(fn(p) { p.0 >= side_x }),
+    msg="source view shows raw .mbui JSON",
+  )
+  for p in t.locate(@sf.t("web-main.preview.rendered")) {
+    if p.0 >= side_x {
+      t.tap(p.0, p.1)
+    }
+  }
+  t.run_for(@ui.move_most_ms)
+  assert_true(
+    t.locate("0.25.0 发布与性能看板").iter().any(fn(p) { p.0 >= side_x }),
+    msg="preview view renders native .mbui widget",
+  )
   viz_open_full("release.mbui", "ws1/st1", "s-c1", "work/s-c1/release.mbui", "s-c1")
-  t.frame()
-  t.frame()
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.viewer.get() is Some(_), msg="full screen .mbui opens unified file viewer")
   assert_eq(opened_views(t, 2).length(), 0, msg="full screen .mbui uses no WebView")
   assert_true(t.find("release.mbui") is Some(_))
   assert_true(t.find("0.25.0 发布与性能看板") is Some(_))
   assert_eq(mbui_viz_faults(t), [])
   t.back()
   t.run_for(@ui.move_most_ms)
+  t.run_for(@sfpages.reveal_ms)
   t.frame()
-  assert_true(@sfbase.viz_full.get() is None)
+  assert_true(@sfbase.viewer.get() is None && @sfbase.pv_leaving.get() is None)
+}
+
+///|
+test "fixture side-panel and full-window .mbui preview modes open cleanly with zero audit faults" {
+  let t1 = beside_tester(mode="chat-view-side-memory-mbui")
+  t1.frame()
+  assert_eq(t1.all(Tab, label="memory-schemes.mbui", selected=true).length(), 1)
+  let side_x = tab_left(t1, "memory-schemes.mbui")
+  assert_true(t1.locate("全局记忆").iter().any(fn(p) { p.0 >= side_x }))
+  assert_eq(mbui_viz_faults(t1), [])
+  let t2 = beside_tester(mode="chat-view-side-mbui")
+  t2.frame()
+  assert_eq(t2.all(Tab, label="release.mbui", selected=true).length(), 1)
+  assert_eq(mbui_viz_faults(t2), [])
+  let t3 = beside_tester(mode="chat-preview-memory-mbui")
+  t3.frame()
+  assert_true(@sfbase.viewer.get() is Some(_))
+  assert_true(t3.find("全局记忆") is Some(_))
+  assert_eq(mbui_viz_faults(t3), [])
 }
 
 ///|

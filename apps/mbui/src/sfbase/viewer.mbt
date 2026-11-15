@@ -47,6 +47,7 @@ pub(all) enum PKind {
   KMarkdown
   KCsv
   KHtml
+  KMbui
   KCode
   KText
 }
@@ -91,10 +92,12 @@ pub fn preview_kind(name : String) -> (PKind?, String, String) {
     "csv" => Some((KCsv, "text/csv"))
     "tsv" => Some((KCsv, "text/tab-separated-values"))
     "html" | "htm" => Some((KHtml, "text/html"))
+    "mbui" => Some((KMbui, "application/json"))
+    "wasm" => Some((KMbui, "application/wasm"))
     _ => None
   }
   match media {
-    Some((k, t)) => return (Some(k), t, if k == KHtml { "html" } else { "" })
+    Some((k, t)) => return (Some(k), t, if k == KHtml { "html" } else if ext == "mbui" { "json" } else { "" })
     None => ()
   }
   if ["txt", "text", "log", "out", "err", "lock"].contains(ext) {
@@ -2044,7 +2047,20 @@ pub fn Viewer::bars_shown(self : Viewer) -> Bool {
   self.awake_told.get() |> ignore
   self.source_told.get() |> ignore
   marks_said()
-  self.awake || self.near_bar || self.coming() || (self.shown_kind() == Some(KHtml) && !self.source) || marking.on
+  self.awake ||
+  self.near_bar ||
+  self.coming() ||
+  ((self.shown_kind() == Some(KHtml) || self.shown_kind() == Some(KMbui)) && !self.source) ||
+  marking.on
+}
+
+///|
+/// The chat session this viewer was opened from (else its own session key).
+pub fn Viewer::chat_session(self : Viewer) -> String {
+  match self.steps {
+    InChat(_, session) if session != "" => session
+    _ => self.key
+  }
 }
 
 ///|
@@ -2147,6 +2163,21 @@ pub fn Viewer::content(self : Viewer, c : @ui.Ctx, src : Source, stage : Int) ->
       // a text and Markdown read in the reader, as a drive's are
       (_, Some(b)) if vf_reads(v) => vf_read(v, c, src, b)
       (Some(KPdf), Some(b)) => v.pdf_stage(c, b, stage)
+      (Some(KMbui), Some(b)) if !v.source =>
+        match viz_mbui_parse_bytes(v.file.name, b) {
+          Some(widget) => {
+            let place = (if v.beside { "beside/" } else { "full/" }) + v.id()
+            c.box(style=viewer_mbui_ctx_room, fn() {
+              viz_mbui_ctx(c, place, widget, Json::null(), {
+                keep: Some(fn(s) { viz_keep(src, v.station, v.key, v.file.path, s) }),
+                failed: None,
+                follow_up: Some(viz_follow_up(v.station, v.chat_session())),
+              })
+            })
+            |> ignore
+          }
+          None => v.text_stage(c, KMbui, b, stage)
+        }
       (Some(k), Some(b)) => v.text_stage(c, k, b, stage)
       _ => ()
     }
@@ -2178,6 +2209,10 @@ pub fn reading_pill(c : @ui.Ctx, words : String) -> Unit {
   })
   |> ignore
 }
+
+///|
+// kept across runs: a value (no field of it changes)
+let viewer_mbui_ctx_room : @ui.Style = @ui.css("w=Full p=S4")
 
 ///|
 // kept across runs: a value (no field of it changes)

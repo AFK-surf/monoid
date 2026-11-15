@@ -602,10 +602,22 @@ pub fn viz_file_of(
         // under the page, out of its way: the ways to open it on its own, icons in the chat's grey
         c.box(style=viz_ways, fn() {
           let full = c.id("viz/full/" + place)
-          c.on_press(full, fn() { viz_open_full(a.name, station, key, a.path, session) })
+          c.on_press(full, fn() {
+            if is_mbui_viz(a.name) {
+              open_preview(station, key, a, steps=InChat(None, session), beside=false)
+            } else {
+              viz_open_full(a.name, station, key, a.path, session)
+            }
+          })
           viz_icon(c, full, "expand", viz_tr("android-misc.viz.fullscreen"), subtle)
           let aside = c.id("viz/aside/" + place)
-          c.on_press(aside, fn() { open_page(PreviewFile(station, key, a.path, a.name)) })
+          c.on_press(aside, fn() {
+            if is_mbui_viz(a.name) {
+              open_preview(station, key, a, steps=InChat(None, session), beside=true)
+            } else {
+              open_page(PreviewFile(station, key, a.path, a.name))
+            }
+          })
           viz_icon(c, aside, "panel-open", viz_tr("android-misc.viz.openAside"), subtle)
         })
         |> ignore
@@ -678,6 +690,23 @@ pub let viz_full : @signals.Signal[VizFull?] = @signals.signal(None)
 
 ///|
 pub fn viz_open_full(name : String, station : String, key : String, path : String, session : String, linked? : Bool = false) -> Unit {
+  if is_mbui_viz(name) || is_mbui_viz(path) {
+    let a : Attachment = {
+      name: if name != "" { name } else { base_name(path) },
+      path,
+      size: 0.0,
+      width: 0.0,
+      height: 0.0,
+      thumbhash: "",
+      owner: "",
+      upload: "",
+      duration: 0.0,
+      frames: 0,
+      held: false,
+    }
+    open_preview(station, key, a, steps=InChat(None, session), beside=beside_held())
+    return
+  }
   viz_close("full/")
   viz_full.set(Some({ name, station, key, path, session, linked }))
 }

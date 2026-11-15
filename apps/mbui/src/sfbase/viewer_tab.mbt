@@ -99,6 +99,27 @@ pub(all) struct ViewTab {
 ///|
 /// The file tab `tab` is (None: no file's tab, or one that does not read).
 pub fn view_tab_file(tab : String) -> ViewTab? {
+  if tab.has_prefix("file:") {
+    match (try Some(@json.parse(tab.exact_view(start="file:".length()).to_owned())) catch { _ => None }) {
+      Some(Array([String(session), String(path), String(name)])) if (is_mbui_viz(name) || is_mbui_viz(path)) && path != "" => {
+        let file : Attachment = {
+          name: if name != "" { name } else { base_name(path) },
+          path,
+          size: 0.0,
+          width: 0.0,
+          height: 0.0,
+          thumbhash: "",
+          owner: "",
+          upload: "",
+          duration: 0.0,
+          frames: 0,
+          held: false,
+        }
+        return Some({ station: "", key: session, file, drive: None, named: false })
+      }
+      _ => return None
+    }
+  }
   guard tab.has_prefix("view:") else { return None }
   let v = @json.parse(tab.exact_view(start="view:".length()).to_owned()) catch { _ => return None }
   guard v is Array(xs) && xs.length() >= 6 else { return None }
@@ -143,7 +164,7 @@ pub fn view_tab_file(tab : String) -> ViewTab? {
 /// Whether two files' tabs are of the same file, whatever its size said (a drive's changed since it was opened): which
 /// of the three, its station, its session (a drive's root), its path.
 pub fn ViewTab::same_file(self : ViewTab, other : ViewTab) -> Bool {
-  self.station == other.station &&
+  (self.station == other.station || self.station == "" || other.station == "") &&
   self.key == other.key &&
   self.file.path == other.file.path &&
   self.named == other.named &&
@@ -178,7 +199,13 @@ pub fn tab_viewer(chat : String, tab : String) -> Viewer? {
     None =>
       match view_tab_file(tab) {
         Some(f) if opens_beside(f.file.path, f.file.name) => {
-          let v = new_viewer(f.station, f.key, f.file, f.drive, NoSteps, named=f.named, beside=true)
+          let (chat_station, chat_session) = match chat.find(":") {
+            Some(i) => (chat.exact_view(end=i).to_owned(), chat.exact_view(start=i + 1).to_owned())
+            None => ("", chat)
+          }
+          let station = if f.station != "" { f.station } else { chat_station }
+          let steps = if chat_session != "" { InChat(None, chat_session) } else { NoSteps }
+          let v = new_viewer(station, f.key, f.file, f.drive, steps, named=f.named, beside=true)
           tab_viewers[id] = { viewer: v, drawn: 0, closing: false }
           Some(v)
         }
@@ -436,8 +463,10 @@ pub fn viewer_tab_node(
     let picture = fn() { vw.markable() }
     s.show(picture, fn(p) { tab_picture_node(p, src, vw) })
     let stage = fn() { vw.outer_stage() }
+    let mbui = fn() { !played && !picture() && stage() == Hosted && viewer_mbui_rendered(vw) }
+    s.show(mbui, fn(m) { viewer_mbui_node(m, src, vw) })
     // (what the old views show of it: hosted in the panel's island, its words picked as a page's are)
-    s.show(fn() { !played && !picture() && stage() == Hosted }, fn(h) {
+    s.show(fn() { !played && !picture() && stage() == Hosted && !viewer_mbui_rendered(vw) }, fn(h) {
       h.over(Is(true)) |> ignore
       island(
         h,
@@ -518,9 +547,9 @@ fn tab_tools_node(
   |> ignore
   row.box(fn(r) {
     r.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(@sf.keys_apart())).shrink(Is(0.0)) |> ignore
-    // 预览 / 源码: a table's, a page's, once read (the library's segmented choice, what it chooses told:
+    // 预览 / 源码: a table's, a page's, an mbui widget's, once read (the library's segmented choice, what it chooses told:
     // Viewer::set_source)
-    r.show(fn() { vw.bytes.get() is Some(_) && (vw.shown_kind() == Some(KCsv) || vw.shown_kind() == Some(KHtml)) }, fn(x) {
+    r.show(fn() { vw.bytes.get() is Some(_) && vf_has_source(vw) }, fn(x) {
       x.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
       @sf.seg_node(
         x,
@@ -783,4 +812,88 @@ fn tab_picture_node(s : @view.View, src : Source, vw : Viewer) -> Unit {
     |> ignore
     f.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
   })
+}
+
+///|
+/// Whether viewer `vw` shows a rendered native `.mbui` / `.wasm` widget in the window's tree.
+pub fn viewer_mbui_rendered(vw : Viewer) -> Bool {
+  vw.source_told.get() |> ignore
+  vw.shown_kind() == Some(KMbui) &&
+  !vw.source &&
+  !vw.told_of() &&
+  vw.bytes.get() is Some(b) &&
+  viz_mbui_parse_bytes(vw.file.name, b) is Some(_)
+}
+
+///|
+/// A rendered `.mbui` / `.wasm` widget in viewer `vw`'s stage (`bars`: true over the whole window under `image_bar`,
+/// false in a side-panel tab under `tab_tools_node`).
+pub fn viewer_mbui_node(parent : @view.View, src : Source, vw : Viewer, bars? : Bool = false) -> Unit {
+  parent.over(Is(true)) |> ignore
+  let session = vw.chat_session()
+  let state_sig = viz_load_of(viz_id(vw.station, vw.key, vw.file.path)).state
+  let place = (if vw.beside { "beside/" } else { "viewer/" }) + vw.id()
+  let scroll = @view.Scroll::new()
+  parent.scrolls(scroll, fn(s) {
+    s.padding(
+      By(fn() {
+        let s3 = @ui.Space::px(S3)
+        if bars {
+          let (top, foot) = (@sf.viewer_host().room)()
+          let (w, _) = s.window()
+          let under = if @sf.native_over.up {
+            top
+          } else if w <= @sf.viewer_small_w {
+            top + page_small_top
+          } else {
+            dmax(@sf.viewer_bar_h, top) + desk_page_top
+          }
+          let side = if w >= 960.0 { dmax(s3, (w - 880.0) / 2.0) } else { s3 }
+          (side, under + s3, side + @sf.native_clear(), foot + s3 * 2.0)
+        } else {
+          (s3, s3, s3, s3)
+        }
+      }),
+    )
+    |> ignore
+    s.pick(
+      fn() {
+        match vw.bytes.get() {
+          Some(b) => b.length()
+          None => 0
+        }
+      },
+      fn(p, _) {
+        @sf.style_node(p, fn() { @ui.style(w=Full) })
+        match vw.bytes.untracked() {
+          Some(b) =>
+            match viz_mbui_parse_bytes(vw.file.name, b) {
+              Some(widget) =>
+                viz_mbui_node(
+                  p,
+                  place,
+                  widget,
+                  fn() { state_sig.get().unwrap_or(Json::null()) },
+                  {
+                    keep: if vw.station != "" && vw.key != "" {
+                      Some(fn(st) { viz_keep(src, vw.station, vw.key, vw.file.path, st) })
+                    } else {
+                      None
+                    },
+                    failed: None,
+                    follow_up: if vw.station != "" && session != "" {
+                      Some(viz_follow_up(vw.station, session))
+                    } else {
+                      None
+                    },
+                  },
+                )
+              None => ()
+            }
+          None => ()
+        }
+      },
+    )
+  })
+  |> ignore
 }
