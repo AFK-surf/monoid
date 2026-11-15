@@ -3424,11 +3424,13 @@ try {
         log(`  ${phase}: ${key.slice(-8)} ${said.slice(0, 300)}`);
       }
       const refusedA = answers.filter((x) => /409|已有一次迁移在进行|under way/.test(x.said));
+      const unanswered = answers.filter((x) => x.said.startsWith("no answer"));
       tallies.push(`9a agent: ${answers.filter((x) => standing("B", x.key) === "live").length} of ${answers.length} on B after one call each, ${refusedA.length} answered as a move under way`);
       const status = await say(driver, `drill-move:${JSON.stringify({ action: "status", to: bId })}`, "drill-move: ", 300_000).catch((e) => `no answer: ${(e as Error).message}`);
       log(`  station_move status after: ${status.slice(0, 400)}`);
       const moved: Moved[] = answers.map((x) => ({ key: x.key, at: 0, askMs: 0, said: x.said, failed: standing("B", x.key) === "live" ? null : x.said, refused: refusedA.includes(x) }));
       const why = await held9("9a", keys, moved, Number.MAX_SAFE_INTEGER);
+      if (unanswered.length > 0) why.push(`${unanswered.length} call(s) never answered in 300 s: ${unanswered.map((x) => `${x.key.slice(-8)}: ${x.said.slice(0, 120)}`).join(" | ")}`);
       if (refusedA.length > 0) why.push(`${refusedA.length} call(s) answered as a move under way: ${refusedA.map((x) => `${x.key.slice(-8)}: ${x.said.slice(0, 160)}`).join(" | ")}`);
       if (why.length > 0) throw new Error(why.join("; "));
     });
@@ -3479,15 +3481,20 @@ try {
       const end = await handoverEnd(h);
       log(`  ${end}`);
       await turnEnds("A", t0, 120_000).catch(() => undefined);
-      await whenChanged([DATA.A], () => standing("A", key).startsWith("handed"), 60_000, () => `the process before never wrote it gone: ${standings(key)}`, 200);
+      // (gone as the process before wrote it: A's handed_over naming B, store.goneTo, the row's ws as that leaves it)
+      const said = () => sql("A", `select station from handed_over where session = ${lit(key)}`).some((r) => String(r.station) === bId);
+      await whenChanged([DATA.A], said, 60_000, () => `the process before never wrote it gone: ${standings(key)}`, 200);
       log(`  the limbo: ${standings(key)}\n    ${heldOf2(key)}`);
-      if (liveOn(key).length !== 0) throw new Error(`not the limbo: ${standings(key)}`);
+      if (standing("B", key) !== "none") throw new Error(`not the limbo: B has it, ${standings(key)}`);
+      // (out of A's lists as it says it went: alice's list shows it on neither)
+      let seen: J[] = [];
+      await a.until(chatsT(), (v) => { seen = rowsOf(v).filter((r) => r.session === key); return v?.days && seen.length === 0; }, 60_000).then(() => log("  alice's list shows it on neither station"), () => log(`  alice's list still shows it: ${brief(seen.map((r) => ({ station: r.station, title: r.title })))}`));
     });
-    if (key !== "" && liveOn(key).length === 0 && standing("A", key).startsWith("handed")) {
+    if (key !== "" && standing("B", key) === "none" && sql("A", `select station from handed_over where session = ${lit(key)}`).length > 0) {
       await check("9m: A's own build started on it: the chat in sight on A again, once, nothing of it on B; it then moves to B as any", async () => {
         if (limboDist !== own) await runA(own);
         else await handoverEnd(await handOver("A"));
-        await whenChanged([DATA.A], () => standing("A", key) === "live", 120_000, () => `still not in sight on A: ${standings(key)}\n    ${heldOf2(key)}`, 1000);
+        await whenChanged([DATA.A], () => standing("A", key) === "live" && sql("A", `select station from handed_over where session = ${lit(key)}`).length === 0, 120_000, () => `still not in sight on A: ${standings(key)}\n    ${heldOf2(key)}`, 1000);
         if (standing("B", key) !== "none") throw new Error(`B holds it: ${standings(key)}`);
         await listedOnceOn(key, "A");
         const l = await moveChat(key, "B");
