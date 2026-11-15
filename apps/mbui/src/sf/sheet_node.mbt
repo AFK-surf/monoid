@@ -710,8 +710,9 @@ fn sheet_node(
               }
           }
         }))
-        // (another in its place: none of it drawn from then, where it is, till its layer is let go)
-        .alpha(By(fn() { if vanished() { 0.0 } else { 1.0 } }))
+        // (another in its place: none of it drawn from then, where it is, till its layer is let go; none of it drawn
+        // either while it waits under the window for what it reads (OpenGate's holding): nothing of it till it rises)
+        .alpha(By(fn() { if vanished() || gate.holding() { 0.0 } else { 1.0 } }))
         // (below its place by its own height as it comes and goes, over the time that height takes, as tall as it is
         // laid out in the frame drawing it; down where a finger has its top, or going back)
         // (what is leaving with it, its layer, kept till it has sunk away, however tall: as the host's is, gone once it
