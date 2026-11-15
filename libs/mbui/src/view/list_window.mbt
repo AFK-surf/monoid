@@ -1494,7 +1494,10 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   // to be; else where the top of what shows is by its anchor, as its blocks are counted now, within half a point of
   // where it would be at its foot. By its own blocks, so in the same layout as one measured anew or grown there, as
   // its near_foot is; not by how far the scroll went as last laid out, which a block come or grown has not reached yet)
-  let at_foot_now = @signals.computed(fn(_) {
+  // (scoped: read once outside any reader (Scroll::at_foot_now, untracked), it lets go of what it read again, so that
+  // what it reads (its blocks, its keys) is followed by nothing once nothing else follows it: a plain one kept on
+  // them for good, the keys' topic with them, past the list's going)
+  let at_foot_now = @signals.computed_scoped(fn(_) {
     if capped_now() {
       return false
     }

@@ -848,7 +848,8 @@ pub fn View::scrolls(
   // (at its foot, told only as that changes: a page's list says it by its blocks (View::scrolls_window); else by how
   // far it can go as last laid out, where it is drawn)
   if s.at_foot_said is None && !s.across {
-    let at_foot = @signals.computed(fn(_) {
+    // (scoped: read once outside any reader, it lets go of what it read again, as a page's list's does)
+    let at_foot = @signals.computed_scoped(fn(_) {
       let most = s.most_now()
       s.x.get() == @double.infinity || s.drawn(self.tree) >= most - 0.5
     }, same=fn(a, b) { a == b })
@@ -1264,6 +1265,9 @@ pub fn View::scrolls(
     s.pressed_said = fn(_) { fn() {  } }
     s.read_from_said = fn(_) {  }
     s.sought_said = fn(_, _) {  }
+    // (whether it is at its foot, by what it held: said again by what scrolls in it next; till then where it is put.
+    // Kept, it held all it read (a page's list's blocks and keys) past its going, read again by any that asks it)
+    s.at_foot_said = None
     s.fill = fn(_, _, _) {  }
     s.fill_put = fn() {  }
     s.whole = None
