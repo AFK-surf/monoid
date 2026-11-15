@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [ee5c2431a](https://github.com/AFK-surf/monoid/commit/ee5c2431ab810aae2c4f8f318b45f12e828e94b1) station: a post that goes on after all_done or nee | 2.07 | 2.84 | 12.25 | 32.14 | 45.35 | 28.72 | 56.51 | 98.7 | 112.95 |
 | [b62bd0ca3](https://github.com/AFK-surf/monoid/commit/b62bd0ca3adc9185480ec0015d0986bd66c942bf) mbui, app: a run begun before its Tester asks no h | 2.07 | 2.84 | 12.25 | 32.14 | 45.35 | 28.72 | 56.51 | 98.7 | 112.95 |
 | [e689959d3](https://github.com/AFK-surf/monoid/commit/e689959d36cf952b3cac74096eb15ba7a239a5a8) mbui: Windows' stream sound plays again after a ga | 2.07 | 2.84 | 12.25 | 32.14 | 45.35 | 28.72 | 56.51 | 98.7 | 112.95 |
 | [3da86d090](https://github.com/AFK-surf/monoid/commit/3da86d09023f00b2687f86f947b091f289362826) ci: cache-prune lets a branch's caches go once not | 2.07 | 2.84 | 12.25 | 32.14 | 45.35 | 28.72 | 56.51 | 98.73 | 112.9 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [0b107ce1f](https://github.com/AFK-surf/monoid/commit/0b107ce1fbefd762befd5ca2a9a71d2a492af9f5) mbui: View::flies_in; the chat's page made as node | 2.03 | 2.79 | 11.99 | 31.89 | 44.56 | 28.5 | 55.85 | 98.44 | 114.08 |
 | [234892c88](https://github.com/AFK-surf/monoid/commit/234892c8818ad533d014f4e8fa52e2010021327a) station: a member's own marks written by the MoonB | 2.03 | 2.79 | 11.99 | 31.89 | 44.56 | 28.5 | 55.85 | 98.44 | 114.08 |
 | [7746223b6](https://github.com/AFK-surf/monoid/commit/7746223b6be1f4b43c9a2ebb824cedb8c26134b5) ci: a native part coming slower than 200 KB/s is a | 2.03 | 2.78 | 11.99 | 31.89 | 44.54 | 28.5 | 55.83 | 98.55 | 111.76 |
-| [3118f7685](https://github.com/AFK-surf/monoid/commit/3118f7685e1a0dcac39464b236dfe4eac893516c) app: a chat's Farview tab drawn by the app itself, | 2.03 | 2.78 | 11.99 | 31.89 | 44.54 | 28.5 | 55.83 | 98.39 | 112.14 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [ee5c2431a](https://github.com/AFK-surf/monoid/commit/ee5c2431ab810aae2c4f8f318b45f12e828e94b1) station: a post that goes on after all_done or nee | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.21 |
 | [b62bd0ca3](https://github.com/AFK-surf/monoid/commit/b62bd0ca3adc9185480ec0015d0986bd66c942bf) mbui, app: a run begun before its Tester asks no h | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.53 |
 | [e689959d3](https://github.com/AFK-surf/monoid/commit/e689959d36cf952b3cac74096eb15ba7a239a5a8) mbui: Windows' stream sound plays again after a ga | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.53 |
 | [3da86d090](https://github.com/AFK-surf/monoid/commit/3da86d09023f00b2687f86f947b091f289362826) ci: cache-prune lets a branch's caches go once not | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.05 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [0b107ce1f](https://github.com/AFK-surf/monoid/commit/0b107ce1fbefd762befd5ca2a9a71d2a492af9f5) mbui: View::flies_in; the chat's page made as node | 0.4 | 0.52 | 1.96 | 3.08 | 4.52 | 1.45 | 3.8 | 57.48 |
 | [234892c88](https://github.com/AFK-surf/monoid/commit/234892c8818ad533d014f4e8fa52e2010021327a) station: a member's own marks written by the MoonB | 0.4 | 0.52 | 1.96 | 3.08 | 4.51 | 1.45 | 3.8 | 57.39 |
 | [7746223b6](https://github.com/AFK-surf/monoid/commit/7746223b6be1f4b43c9a2ebb824cedb8c26134b5) ci: a native part coming slower than 200 KB/s is a | 0.4 | 0.52 | 1.96 | 3.08 | 4.51 | 1.45 | 3.8 | 57.39 |
-| [3118f7685](https://github.com/AFK-surf/monoid/commit/3118f7685e1a0dcac39464b236dfe4eac893516c) app: a chat's Farview tab drawn by the app itself, | 0.4 | 0.52 | 1.96 | 3.08 | 4.51 | 1.45 | 3.8 | 57.39 |
