@@ -170,9 +170,54 @@ pub(all) struct Source {
 /// A read-only signal of one core subscription. Readers of the same source, name and params share its subscription;
 /// the graph releases it when the last reader leaves. An immediate-mode page holds its untracked frame read until it leaves.
 pub fn Source::topic(src : Source, name : String, params : Map[String, Json]) -> @signals.Computed[TopicState] {
+  let said = topic_key(name, params)
+  // (read by what follows it, as a binding or a computed reads it again at each of its evaluations: the same signal as
+  // the last such read of it, so the reader's link to it is the one it had (no signal made, followed and let go of
+  // again each time). One read outside any reader, which may keep it and let it go itself, is a signal of its own.)
+  if @signals.active_sub() is Some(_) {
+    match topic_readers.get(said) {
+      Some(readers) =>
+        match readers.search_by(fn(r) { physical_equal(r.0, src) }) {
+          Some(i) => return readers[i].1
+          None => ()
+        }
+      None => ()
+    }
+    let made = topic_signal(src, name, params, said)
+    match topic_readers.get(said) {
+      Some(readers) => readers.push((src, made))
+      None => topic_readers[said] = [(src, made)]
+    }
+    return made
+  }
+  topic_signal(src, name, params, said)
+}
+
+///|
+// kept across runs: each made of the source it is kept with, let go of as that source's topic is (topic_readers_drop)
+/// The signal of each topic Source::topic made for what follows it, by its key (topic_key) and source.
+let topic_readers : Map[String, Array[(Source, @signals.Computed[TopicState])]] = Map([])
+
+///|
+/// Topic `said` of `src` let go of: the signal Source::topic kept for it with it, so one made anew follows the next.
+fn topic_readers_drop(src : Source, said : String) -> Unit {
+  match topic_readers.get(said) {
+    Some(readers) => {
+      let left = readers.filter(fn(r) { !physical_equal(r.0, src) })
+      if left.is_empty() {
+        topic_readers.remove(said)
+      } else {
+        topic_readers[said] = left
+      }
+    }
+    None => ()
+  }
+}
+
+///|
+/// Topic `name` with `params` (its key `said`) of `src` as a signal (Source::topic's).
+fn topic_signal(src : Source, name : String, params : Map[String, Json], said : String) -> @signals.Computed[TopicState] {
   let key = params.copy()
-  // (the topic's key worked out once, not again at each evaluation)
-  let said = topic_key(name, key)
   @signals.computed_scoped(fn(_) {
     followed_topic(src, name, key, said~).get()
   }, untracked_read=Some(fn() {
@@ -362,6 +407,10 @@ priv struct FollowedTopic {
 ///|
 /// Topic `name` with `params` as one key: what tells its followers (FollowedTopic's `key`) from another's.
 fn topic_key(name : String, params : Map[String, Json]) -> String {
+  // (none: what an empty object is written as, the same text)
+  if params.is_empty() {
+    return name + "\u{1}{}"
+  }
   name + "\u{1}" + Json::object(params).stringify()
 }
 
@@ -434,6 +483,7 @@ fn let_go_unread(declared : Array[(Source, String, Map[String, Json])]) -> Unit 
       Some(i) if !followed_topics.val[i].holder.watched() => {
         let holder = followed_topics.val[i].holder
         followed_topics.val = followed_topics.val.filter(fn(t) { !(physical_equal(t.source, src) && t.key == key && !t.independent) })
+        topic_readers_drop(src, key)
         (src.release)(name, params)
         // (its holder, read once as it was declared and by no reader since, let go of what it read: else that read
         // still follows the subscription, which the client then never ends, its unsubscribe never sent; till
@@ -570,6 +620,9 @@ fn followed_topic(
               Some(i) if !followed_topics.val[i].holder.watched() => {
                 // A removed Array slot keeps its old value alive; replace the array before releasing.
                 followed_topics.val = followed_topics.val.filter(fn(t) { !physical_equal(t.token, token) })
+                if !independent {
+                  topic_readers_drop(src, key)
+                }
                 (src.release)(name, params)
               }
               _ => ()
