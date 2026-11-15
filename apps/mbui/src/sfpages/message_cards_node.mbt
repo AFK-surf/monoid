@@ -328,13 +328,20 @@ fn vault_asked_of(ask : VaultAsk) -> @settings.Asked {
 /// core), the card without its answer; decided, a line saying how it ended in the card's place, pressed for what was
 /// asked. Not here: one asking for a file to be picked (message_card_node's NotYet).
 fn vault_ask_node(v : @view.View, here : MessageNodeHere, core : @settings.Core?, m : () -> Message) -> Unit {
-  let ask = fn() {
-    match m().card {
-      Some({ ask: Some(a), .. }) => a
-      _ => vault_ask_none
-    }
-  }
-  let asked = fn() { vault_asked_of(ask()) }
+  // (what it asks, and that as its card says it, worked out once as the message changes: what the card makes of it
+  // reads them over and over, each reading a field)
+  let asking = @signals.computed_scoped(
+    fn(_) {
+      match m().card {
+        Some({ ask: Some(a), .. }) => a
+        _ => vault_ask_none
+      }
+    },
+    same=physical_equal,
+  )
+  let ask = fn() { asking.get() }
+  let asked_now = @signals.computed_scoped(fn(_) { vault_asked_of(ask()) })
+  let asked = fn() { asked_now.get() }
   let card = fn() { m().card }
   v.pick(fn() { ask().status != "" }, fn(p, decided) {
     @sf.style_node(p, fn() { under_post_room })
