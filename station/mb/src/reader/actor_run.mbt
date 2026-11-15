@@ -1597,7 +1597,9 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
   if a.runtime == "codex" && kind == "failed" && reason == "auth" && !stop_requested && !(a.profile is Null) {
     ignore(self.deps(a, "recheck", [a.profile]))
   }
-  if (a.runtime == "claude" || a.runtime == "codex") && kind == "failed" && reason == "auth" && !stop_requested &&
+  // (agy: a sign-in lent by another station runs out under a process that never reads it again; a new one opens on
+  // one lent anew, agents/agy.ts AGY_LENT_RENEW_MS)
+  if (a.runtime == "claude" || a.runtime == "codex" || a.runtime == "agy") && kind == "failed" && reason == "auth" && !stop_requested &&
     !self.held(a) && turn is Some(t) && !t.auth_retried && t.declared is None {
     a.nudges = 0
     let agent = a.agent

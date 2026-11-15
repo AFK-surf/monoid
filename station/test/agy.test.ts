@@ -139,6 +139,38 @@ test("cancel, a signed-out account, an expired sign-in and a spent quota", async
   assert.equal(noticeFailure("⚠ Check the quota:\nit is low."), null);
   assert.equal(noticeFailure("⚠ Something else went wrong."), null);
   assert.equal(noticeFailure("⚠ Authentication expired. Please log back in."), "auth");
+  // A sign-in lent by another station run out under the process (1.5.9's words): a sign-in's failure, which reopens it.
+  assert.equal(noticeFailure('⚠ agent executor error: generating and executing: request failed: Post "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse": oauth2: token expired and refresh token is not set'), "auth");
+});
+
+test("a borrowed Google account: a process opens on a sign-in lent anew once the one it has runs out soon, and goes on with one that lasts", async () => {
+  const { options } = setup();
+  const profile = { ...options.profile, access: { kind: "subscription" }, share: { borrowed: true, host: "h", id: "sh" } };
+  const signIn = (minutes: number) => JSON.stringify({ token: { access_token: `a${minutes}`, expiry: new Date(Date.now() + minutes * 60_000).toISOString() }, auth_method: "consumer" });
+  const writes: number[] = [];
+  let lend = 55;
+  const driver = new AgyDriver({ data, lent: { borrowed: () => true, write: async (p) => { writes.push(lend); writeFileSync(agyToken(p.home), signIn(lend)); return Date.now() + lend * 60_000; } } });
+  drivers.push(driver);
+  mkdirSync(join(geminiDir(profile.home), "antigravity-cli"), { recursive: true });
+  // 50 minutes left: opened on it, its host not asked.
+  writeFileSync(agyToken(profile.home), signIn(50));
+  let session = await driver.open({ ...options, profile }, () => {});
+  await session.dispose();
+  assert.deepEqual(writes, []);
+  // 20 left: lent anew first.
+  writeFileSync(agyToken(profile.home), signIn(20));
+  session = await driver.open({ ...options, profile }, () => {});
+  await session.dispose();
+  assert.deepEqual(writes, [55]);
+  assert.equal(JSON.parse(readFileSync(agyToken(profile.home), "utf8")).token.access_token, "a55");
+  // Its host away: 20 left is still enough to start on; 3 is not.
+  const away = new AgyDriver({ data, lent: { borrowed: () => true, write: async () => { throw new Error("未能借出"); } } });
+  drivers.push(away);
+  writeFileSync(agyToken(profile.home), signIn(20));
+  session = await away.open({ ...options, profile }, () => {});
+  await session.dispose();
+  writeFileSync(agyToken(profile.home), signIn(3));
+  await assert.rejects(away.open({ ...options, profile }, () => {}), /未能借出/);
 });
 
 test("steering mid-turn injects a prompt, completes once on the steered prompt, and keeps both prompts' usage", async () => {

@@ -1011,6 +1011,8 @@
   "web-pages.profiles.share.hereNote": "Let chats on this station use this shared account",
   "web-pages.profiles.share.whereNote": "Move this account to another station",
   "web-pages.profiles.share.switchNote": "Let chats on other stations use this account",
+  "web-pages.profiles.share.unsupported": "Not supported",
+  "web-pages.profiles.share.unsupportedNote": "This kind of sign-in can't be shared with other stations yet",
   "web-pages.profiles.share.stationsNote": "Choose which stations can use this account",
   "web-pages.profiles.share.copy": "This profile is shared from {station}; edit it there",
   "web-pages.profiles.share.goHost": "Go to {station}",

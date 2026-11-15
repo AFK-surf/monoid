@@ -918,6 +918,11 @@ export interface Profile {
 	/** Shared with the workspace's other stations, or another station's (absent: neither, or a station older than sharing). */
 	share?: ProfileShare;
 	/**
+	 * Whether its login can be shared with the workspace's other stations (false: its kind of login cannot be lent yet,
+	 * which its page says in place of the switch); absent on a station from before, which refuses such a share when asked.
+	 */
+	shareable?: boolean;
+	/**
 	 * The workspaces the station joined whose chats may run on it too (none: its home's
 	 * only), as its home's managers set it (`profile.put` `input.workspaces`); to a member of a joined one, that one.
 	 */

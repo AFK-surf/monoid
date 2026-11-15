@@ -9,8 +9,9 @@
 // - the station keeps the transcript (acp.ts KeptTranscript), with each turn's usage: the prompt's answer says it.
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
-import { lstat, rm, writeFile, readFile } from "node:fs/promises";
+import { lstat, mkdir, rm, writeFile, readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { wall } from "../ops/fibers.ts";
 import { writePrivateSoon } from "../ops/files.ts";
 import { log } from "../ops/log.ts";
 import { platform } from "../platform/index.ts";
@@ -30,7 +31,9 @@ export const agyHome = (home: string) => join(home, "agy");
 export const geminiDir = (home: string) => join(agyHome(home), ".gemini");
 /// Where its sign-in to a Google account lands in that home (its TUI's, `agy` with the profile's agy/ as its HOME:
 /// accounts/login.ts), which the ACP server reads from `--gemini-dir`: a file, `id_token_email` whose account it is.
-export const agyToken = (home: string) => join(geminiDir(home), "antigravity-cli", "antigravity-oauth-token");
+export const agyToken = (home: string) => agyTokenIn(geminiDir(home));
+/// The sign-in's file in a `--gemini-dir`.
+export const agyTokenIn = (gemini: string) => join(gemini, "antigravity-cli", "antigravity-oauth-token");
 /// Where the station notes the Google account's email when `agyToken` is written or checked: the account's name, and
 /// which keychain item is this profile's (`agyTakeBack`).
 export const agyAccountFile = (home: string) => join(agyHome(home), "account.json");
@@ -123,6 +126,59 @@ export async function agyTakeBack(home: string): Promise<boolean> {
   log.info("agents::agy", "a profile's sign-in moved back from the keychain to its file", { home });
   return true;
 }
+
+/// When the access token of the profile's sign-in runs out (its `token.expiry`), 0 when it has none or none readable.
+export function agyExpiryIn(text: string): number {
+  try {
+    const at = Date.parse(JSON.parse(text)?.token?.expiry);
+    return Number.isFinite(at) ? at : 0;
+  } catch {
+    return 0;
+  }
+}
+
+export async function agyExpiry(home: string): Promise<number> {
+  try {
+    return agyExpiryIn(await readFile(agyToken(home), "utf8"));
+  } catch {
+    return 0;
+  }
+}
+
+/// The profile's sign-in renewed by `agy` itself, which holds the OAuth client Google renews it for (the station has
+/// none of its own): a copy of it, marked run out, given to `agy models` in a directory of its own, which renews it
+/// there (1.5.9: 2-3 s), and the renewed one written over the profile's, whose running sessions read it again as it
+/// changes. The profile's own file is never marked run out, so nothing running on it is made to renew it too. A
+/// failure leaves the profile's file as it was.
+export async function agyRenew(home: string, command = "agy"): Promise<void> {
+  const had = await readFile(agyToken(home), "utf8");
+  const parsed = JSON.parse(had);
+  if (typeof parsed?.token?.refresh_token !== "string" || parsed.token.refresh_token === "") throw new Error("no refresh token");
+  const dir = join(agyHome(home), "renewing");
+  await rm(dir, { recursive: true, force: true });
+  try {
+    const gemini = join(dir, ".gemini");
+    await mkdir(join(gemini, "antigravity-cli"), { recursive: true });
+    const marked = agyTokenIn(gemini);
+    await writePrivateSoon(marked, JSON.stringify({ ...parsed, token: { ...parsed.token, expiry: "1970-01-01T00:00:00Z" } }));
+    const env: Record<string, string> = { ...cleanEnv(SCRUBBED), HOME: dir, ANTIGRAVITY_GEMINI_DIR: gemini, AGY_CLI_DISABLE_AUTO_UPDATE: "1", ...AGY_FILE_TOKENS };
+    await new Promise<void>((resolve, reject) => {
+      execFile(command, ["models"], { env, cwd: dir, timeout: 30_000 }, (error) => (error ? reject(error) : resolve()));
+    });
+    const renewed = await readFile(marked, "utf8");
+    if (agyExpiryIn(renewed) <= wall.now()) throw new Error("agy did not renew the sign-in");
+    await writePrivateSoon(agyToken(home), renewed);
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+/// A sign-in as a borrower keeps it: the access token its host lent, no refresh token (so `agy` never renews it here,
+/// and asks to sign in once it runs out, which the station prevents by asking its host again first).
+export function agyLentFile(lent: { token: Json; email?: string | null; auth_method?: string | null }): string {
+  const { refresh_token: _, ...token } = lent.token ?? {};
+  return JSON.stringify({ token, auth_method: lent.auth_method ?? "consumer", ...(lent.email ? { id_token_email: lent.email } : {}) });
+}
 /// How many bytes of the station's tools a session's model is declared (tools/mcp.ts `fitted`). `agy` 1.5.6 in ACP
 /// declares an MCP server's tools only while all of them together stay within about 57-60 KB, dropping the largest
 /// beyond that, and offers no call_mcp_tool for those it dropped: measured 2026-11-12 with the station's 42 tools
@@ -138,7 +194,7 @@ const SESSION_ID = /^[a-zA-Z0-9_-]+$/;
 
 /// What failed a turn, from what it said of it.
 export const classifyFailure = (text: string): FailureReason =>
-  failureOf(text, { auth: ["authentication required", "not logged into antigravity", "authentication expired", "couldn't sign in", "invalid_grant", "unauthenticated"], limit: ["resource_exhausted", "quota"] });
+  failureOf(text, { auth: ["authentication required", "not logged into antigravity", "authentication expired", "couldn't sign in", "invalid_grant", "unauthenticated", "token expired"], limit: ["resource_exhausted", "quota"] });
 
 /// A failure Antigravity CLI tells only in words: a turn whose answer is end_turn, all it said one line of its own
 /// notice (⚠). Its spent quota came so on 1.5.9 (2026-11-15: "⚠ Individual quota reached. Please upgrade your
@@ -273,14 +329,42 @@ export type AgyDriverOptions = {
   data: string;
   /// The CLI, by name on the agent's PATH or a path.
   command?: string;
+  /// Another station's subscription, borrowed (share/index.ts): its sign-in file written with the access token the
+  /// station signed in on it lent (`write`, when it runs out).
+  lent?: { borrowed(profile: Profile): boolean; write(profile: Profile): Promise<number> };
 };
+
+/// A borrowed sign-in is asked of its host again as a process opens on it once it has less than this left. A running
+/// `agy` never reads its sign-in's file again (1.5.9, measured 2026-11-15: a file renewed under it, its next call still
+/// "oauth2: token expired and refresh token is not set"), so one that runs out under a process fails its turn as a
+/// sign-in's failure (`classifyFailure`), which the session's actor answers by ending the process and going on once in a
+/// new one (actor_run.mbt `auth_retry`), opened here on a sign-in lent anew. Google's access tokens last an hour; `agy`
+/// refuses to start on one with under 5 minutes.
+export const AGY_LENT_RENEW_MS = 40 * 60_000;
+/// What `agy` needs left of a sign-in to start on it (it asks to sign in under 5 minutes, 1.5.9), with a margin.
+const AGY_LENT_LEAST_MS = 10 * 60_000;
 
 export class AgyDriver extends AcpDriver<AgySession> {
   private readonly command: string;
+  private readonly lent: AgyDriverOptions["lent"];
 
   constructor(options: AgyDriverOptions) {
     super(options.data);
     this.command = options.command ?? "agy";
+    this.lent = options.lent;
+  }
+
+  /// A borrowed sign-in with little left (AGY_LENT_RENEW_MS) lent again before a process opens on it. Where none is lent,
+  /// one that still lasts long enough for `agy` to start on is gone on with (said), else the failure is the opening's.
+  private async renewLent(profile: Profile): Promise<void> {
+    const until = await agyExpiry(profile.home);
+    if (until - wall.now() >= AGY_LENT_RENEW_MS) return;
+    try {
+      await this.lent!.write(profile);
+    } catch (error) {
+      if (until - wall.now() < AGY_LENT_LEAST_MS) throw error;
+      log.warn("agents::agy", "its borrowed sign-in runs out soon and no new one was lent; it goes on with the one it has", { profile: profile.id, error: (error as Error).message });
+    }
   }
 
   runtime(): "agy" {
@@ -307,7 +391,8 @@ export class AgyDriver extends AcpDriver<AgySession> {
   }
 
   protected async begin(options: OpenOptions, events: Events, probe: boolean): Promise<AgySession> {
-    if (accessKind(options.profile) === "subscription") await agyTakeBack(options.profile.home);
+    if (this.lent?.borrowed(options.profile)) await this.renewLent(options.profile);
+    else if (accessKind(options.profile) === "subscription") await agyTakeBack(options.profile.home);
     return super.begin(options, events, probe);
   }
 

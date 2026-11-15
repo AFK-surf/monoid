@@ -7,7 +7,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { checkConfig } from "../src/accounts/check.ts";
 import { ConfigFile } from "../src/ops/config.ts";
-import { Sharing } from "../src/share/index.ts";
+import { Sharing, shareRefusal } from "../src/share/index.ts";
+import { agyAccountFile, agyToken } from "../src/agents/agy.ts";
 import { Refused } from "../src/mesh/bus.ts";
 import { memory } from "../src/read/memory.ts";
 import { Cloud } from "../src/cloud/state.ts";
@@ -56,7 +57,7 @@ class FakeCloud {
 
 type Station = { data: string; config: ConfigFile; sharing: Sharing; lent: string[] };
 
-function station(cloud: FakeCloud, id: string, others: () => Map<string, Station>, profiles: any[] = [], codexRenewRunning: (id: string) => Promise<boolean> = async () => false, extra: { profileChanged?: (id: string, reset: boolean) => Promise<void>; quotaReset?: (id: string) => Promise<void>; machineEmail?: (runtime: string) => string | null; profileGone?: (id: string) => Promise<void>; itself?: (station: string) => boolean } = {}): Station {
+function station(cloud: FakeCloud, id: string, others: () => Map<string, Station>, profiles: any[] = [], codexRenewRunning: (id: string) => Promise<boolean> = async () => false, extra: { profileChanged?: (id: string, reset: boolean) => Promise<void>; quotaReset?: (id: string) => Promise<void>; machineEmail?: (runtime: string) => string | null; profileGone?: (id: string) => Promise<void>; itself?: (station: string) => boolean; agyRenew?: (home: string) => Promise<void> } = {}): Station {
   const data = mkdtempSync(join(tmpdir(), "share-"));
   writeFileSync(join(data, "config.json"), JSON.stringify({ profiles }));
   const config = new ConfigFile(data);
@@ -404,6 +405,51 @@ test("a borrowed Codex subscription's login is written in its home, the profile 
   auth.tokens.access_token = jwt({ exp: Math.floor(Date.now() / 1000) + 600 });
   writeFileSync(join(home, "auth.json"), JSON.stringify(auth));
   await assert.rejects(b.sharing.lendCodex({ ...copy, home }), /未能借出/);
+});
+
+test("a borrowed Antigravity CLI subscription's sign-in is written in its home without its refresh token, renewed on its host first when it runs out soon", async () => {
+  const cloud = new FakeCloud();
+  const all = new Map<string, Station>();
+  const AGY = { id: "gem", name: "Google AI Pro", runtime: "agy", access: { kind: "subscription" }, home: "homes/gem", env: {} };
+  assert.equal(shareRefusal(AGY), null, "an Antigravity CLI sign-in can be shared");
+  assert.match(String(shareRefusal({ ...AGY, runtime: "grok" })), /cannot be shared/);
+  const signIn = (access: string, minutes: number) => JSON.stringify({ token: { access_token: access, token_type: "Bearer", refresh_token: "refresh-here", expiry: new Date(Date.now() + minutes * 60_000).toISOString(), expires_in: 3599 }, auth_method: "consumer", id_token_email: "someone@gmail.test" });
+  const renewed: string[] = [];
+  const a = station(cloud, A, () => all, [AGY], undefined, { agyRenew: async (home) => { renewed.push(home); writeFileSync(agyToken(home), signIn("renewed", 60)); } });
+  const b = station(cloud, B, () => all);
+  all.set(A, a).set(B, b);
+  const hostHome = join(a.data, "homes", "gem");
+  mkdirSync(join(hostHome, "agy", ".gemini", "antigravity-cli"), { recursive: true });
+  writeFileSync(agyToken(hostHome), signIn("first", 57));
+  await a.sharing.shareProfile("gem", true, null);
+  await settle(a, b);
+  const copy = b.config.raw().profiles[0];
+  assert.equal(copy.runtime, "agy");
+  const home = join(b.data, copy.home);
+  const lentFor = async (rejected = false) => {
+    const until = await b.sharing.lendAgy({ ...copy, home }, rejected);
+    return { until, file: JSON.parse(readFileSync(agyToken(home), "utf8")) };
+  };
+  // 57 minutes left: lent as it is.
+  let got = await lentFor();
+  assert.equal(got.file.token.access_token, "first");
+  assert.equal(got.file.token.refresh_token, undefined, "the refresh token stays on its host");
+  assert.equal(got.file.id_token_email, "someone@gmail.test");
+  assert.equal(JSON.parse(readFileSync(agyAccountFile(home), "utf8")).email, "someone@gmail.test");
+  assert.ok(got.until > Date.now() + 55 * 60_000);
+  assert.deepEqual(renewed, []);
+  // 15 minutes left: renewed on its host first, the renewed one lent.
+  writeFileSync(agyToken(hostHome), signIn("closer", 15));
+  got = await lentFor();
+  assert.deepEqual(renewed, [hostHome]);
+  assert.equal(got.file.token.access_token, "renewed");
+  assert.equal(JSON.parse(readFileSync(agyToken(hostHome), "utf8")).token.refresh_token, "refresh-here");
+  // The host away: the one lent before is used while it lasts, not where it was refused or runs out soon.
+  all.delete(A);
+  assert.ok((await b.sharing.lendAgy({ ...copy, home })) > Date.now() + 55 * 60_000);
+  await assert.rejects(b.sharing.lendAgy({ ...copy, home }, true), /未能借出/);
+  writeFileSync(agyToken(home), signIn("old", 5));
+  await assert.rejects(b.sharing.lendAgy({ ...copy, home }), /未能借出/);
 });
 
 test("a host's changed Codex login and resets reach borrowers, including one that was offline", { timeout: 45_000 }, async () => {

@@ -16,6 +16,7 @@
 //   shortly after start and every few hours (console.ts).
 // - a Kimi Code profile signed in to Kimi: its token (minutes) renewed with half its life left, looked at every minute
 //   (kimi.ts).
+import { shareRefusal } from "../share/index.ts";
 import { HERMES_MODEL_LIMIT } from "../agents/hermes.ts";
 import { agyAccountFile, agyEmailIn, agyToken, classifyFailure as agyClassifyFailure } from "../agents/agy.ts";
 import { expandDevinFusion } from "../agents/devin.ts";
@@ -149,6 +150,8 @@ export type AccountsDeps = {
     status(profile: Profile): Promise<{ check: Json; quota: Json }>;
     view(profile: Json): Json | null;
     lendCodex?(profile: Profile, rejected: boolean): Promise<number>;
+    /// A borrowed Antigravity CLI subscription's sign-in written with what its host lends now.
+    lendAgy?(profile: Profile, rejected: boolean): Promise<number>;
     quotaReset?(profile: Profile, key: string): Promise<void>;
     /// A borrowed Claude subscription's token, lent by its host (to use one of its resets with).
     lendClaude?(profile: Profile, rejected?: string): Promise<MachineToken>;
@@ -1424,6 +1427,8 @@ export class Accounts {
       await this.readQuota(id, true);
       if (reset) await this.deps.hub?.allowanceReset?.(id);
     }
+    // Its sessions read the file again as it changes: another account signed in on the host is used from their next call.
+    if (profile.runtime === "agy" && this.deps.shared.lendAgy) await this.deps.shared.lendAgy(profile, true).catch(() => {});
     await this.checkBorrowed(profile, stationLang());
   }
 
@@ -1684,6 +1689,9 @@ export class Accounts {
         quota: this.quotas.get(p.id) ?? null,
         // Shared with the workspace's other stations, or another station's (absent: neither; old clients ignore it).
         share: this.deps.shared?.view(p) ?? null,
+        // Whether its login can be lent to the workspace's other stations (share/index.ts shareRefusal): its page says
+        // so where it cannot, rather than a switch that is refused.
+        shareable: shareRefusal(p) === null,
         // The joined workspaces whose sessions may run on it, and whether the viewer's may.
         workspaces: others.filter((w) => allowedIn(p, w, home)),
         serves: allowedIn(p, joined, home),

@@ -2772,6 +2772,8 @@ let zh : Map[String, String] = {
   "web-pages.profiles.share.hereNote": "允许此 station 上的对话使用此共享账号",
   "web-pages.profiles.share.whereNote": "将此账号迁移到其他 station",
   "web-pages.profiles.share.switchNote": "允许其他 station 上的对话使用此账号",
+  "web-pages.profiles.share.unsupported": "不支持",
+  "web-pages.profiles.share.unsupportedNote": "这类账号的登录暂时不能分享给其他 station",
   "web-pages.profiles.share.stationsNote": "选择哪些 station 可以使用此账号",
   "web-pages.screen.look": "只看",
   "web-pages.screen.controlling": "{names} 正在控制",

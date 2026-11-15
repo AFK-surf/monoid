@@ -37,7 +37,7 @@ chats paused 18 minutes, a half-moved state, no way back), whose start stays swi
   (`lent`). Asked for by name, or in a whole move, its host moves (share/index.ts `moveProfile`), after what needs it:
   one not shared, shared as it moves with the two stations alone, that share undone as it comes home by any route
   unless a person opened it to another station meanwhile (`accounts-shared.json`). One that cannot be shared
-  (SuperGrok, Cursor, Devin, Antigravity, a Kimi sign-in) moves as it is, gone from here, what needs it stopped first.
+  (SuperGrok, Cursor, Devin, a Kimi sign-in) moves as it is, gone from here, what needs it stopped first.
   What each was known by is kept as it moves away (`accounts-known.json`); one that is no profile here and the other
   does not have either is no item and no need of anything: its chats go as chats whose account is missing. There once
   the other hosts it: one it only borrows is here, this station's still, and usable there, `usableThere`), `chats` (needs accounts, connects, repos, vault: one chat by

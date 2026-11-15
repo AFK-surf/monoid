@@ -38,7 +38,7 @@
 // (made and removed only here). Shared skills are config.json `sharedSkills: {name: {id, allow}}`.
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, unlinkSync, watch, writeFileSync } from "node:fs";
-import { rm } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import { basename, dirname, join, relative, sep } from "node:path";
 import type { Clock } from "effect";
 import type { Env, MachineToken } from "../agents/machine-logins.ts";
@@ -47,7 +47,7 @@ import { CONSOLE_FILE } from "../accounts/console.ts";
 import { authFile as cursorAuthFile } from "../accounts/cursor.ts";
 import { KIMI_FILE, KIMI_TOKEN_FILE } from "../accounts/kimi.ts";
 import { cursorEmail, devinAccountFile, grokAuthFile, grokEmail } from "../accounts/profiles.ts";
-import { agyAccountFile, agyToken } from "../agents/agy.ts";
+import { agyAccountFile, agyExpiryIn, agyLentFile, agyToken } from "../agents/agy.ts";
 import { LEND_BOUND_MS } from "../accounts/oauth.ts";
 import { devinData } from "../agents/devin.ts";
 import { kimiSignedIn } from "../agents/profiles.ts";
@@ -55,7 +55,7 @@ import type { Cloud } from "../cloud/state.ts";
 import { Refused } from "../mesh/bus.ts";
 import type { ConfigFile } from "../ops/config.ts";
 import { Fibers } from "../ops/fibers.ts";
-import { PrivateFile, writePrivate } from "../ops/files.ts";
+import { PrivateFile, writePrivate, writePrivateSoon } from "../ops/files.ts";
 import { FollowedTree } from "../ops/follow.ts";
 import { log } from "../ops/log.ts";
 import { linkSync } from "../ops/links.ts";
@@ -74,8 +74,16 @@ const MAX_SKILL_FILES = 200;
 /// A host lends a Codex token it has for at least this long; one closer to its end is renewed first (when it can be).
 const CODEX_LEND_MS = 24 * 3600_000;
 const CODEX_MIN_MS = 3600_000;
+/// A host lends an Antigravity CLI sign-in it has for at least this long (Google's access tokens last an hour), one
+/// closer to its end renewed first; one with less than AGY_MIN_MS waits for its renewal. A borrower asks again as a
+/// process opens with 40 minutes left (agents/agy.ts AGY_LENT_RENEW_MS), so what is lent lasts longer than that.
+const AGY_LEND_MS = 50 * 60_000;
+const AGY_MIN_MS = 42 * 60_000;
 /// A login lent before is used again while its host does not answer, if it still has this long.
 const KEEP_LENT_MS = 3600_000;
+/// A borrower goes on with the Antigravity CLI sign-in lent before while its host is away, if it lasts this long still
+/// (`agy` refuses one with under 5 minutes; a turn begun on it has the rest).
+const KEEP_AGY_MS = 10 * 60_000;
 /// How long a login wanted waits for the cloud to say the workspace's stations.
 const ROSTER_WAIT_MS = 10_000;
 /// Edits to a skill are taken once they have settled this long.
@@ -116,6 +124,8 @@ export type SharingDeps = {
   /// Has the Codex app-server running on a profile here renew its login (it holds the refresh token, which must not be
   /// renewed under it); false: none runs on it.
   codexRenewRunning: (profileId: string) => Promise<boolean>;
+  /// Has `agy` renew an Antigravity CLI profile's sign-in here (agents/agy.ts `agyRenew`: it holds the OAuth client).
+  agyRenew?: (home: string) => Promise<void>;
   /// A profile's check and allowance as this station has them, its allowance asked again when old (for the stations
   /// borrowing it).
   status: (profileId: string) => Promise<{ check: Json; quota: Json }>;
@@ -300,14 +310,13 @@ function keptCodexExpiry(file: string): number {
 /// copy of another station's is not this station's to share.
 export function shareRefusal(p: Json): string | null {
   if (isObject(p?.share) && p.share.borrowed === true) return "this profile is another station's";
-  // Grok Build's sign-in is not lent yet (only Claude Code's and Codex's are: lendClaude, lendCodex).
+  // Grok Build's sign-in is not lent yet (only Claude Code's, Codex's and the Antigravity CLI's are: lendClaude,
+  // lendCodex, lendAgy).
   if (p?.access?.kind === "subscription" && p.runtime === "grok") return "a SuperGrok subscription cannot be shared with other stations yet";
   // Nor Cursor's (its key stays where it was minted).
   if (p?.access?.kind === "subscription" && p.runtime === "cursor") return "a Cursor account cannot be shared with other stations yet";
   // Nor Devin's.
   if (p?.access?.kind === "subscription" && p.runtime === "devin") return "a Devin account cannot be shared with other stations yet";
-  // Nor the Antigravity CLI's Google account.
-  if (p?.access?.kind === "subscription" && p.runtime === "agy") return "an Antigravity CLI sign-in cannot be shared with other stations yet";
   // Nor a Kimi sign-in (its token is renewed every few minutes here, accounts/kimi.ts).
   if (p?.access?.provider === "kimi-code" && p?.access?.login === true) return "a Kimi Code sign-in cannot be shared with other stations yet";
   return null;
@@ -1132,22 +1141,21 @@ export class Sharing {
       const t = await this.deps.claudeToken(p, rejected);
       return { runtime: "claude", token: t.token, expiresAt: t.expiresAt };
     }
+    if (p.runtime === "agy") return this.lendAgyHere(p);
     const file = this.codexFile(p);
     let auth = JSON.parse(readFileSync(file, "utf8"));
     let expiresAt = jwtExpiry(auth?.tokens?.access_token) ?? 0;
     if (expiresAt - this.time.now() < CODEX_LEND_MS) {
-      const renewed = this.renewCodexOnce(p, file, auth, expiresAt);
+      // By the Codex running on it, asked to (else it would only when its own token runs out, the station's borrowers
+      // refused till then), or here where none runs.
+      const renewed = this.renewOnce(p, "Codex", expiresAt, async () => {
+        if (!(await this.deps.codexRenewRunning(p.id))) await this.renewCodex(file, auth);
+      });
       // One that still lasts CODEX_MIN_MS waits for its renewal LEND_BOUND_MS at most, then is lent as it is, the renewal
       // going on behind: the station that asked waits 30 s for the answer (mesh/peer.ts ANSWER_MS), as long as the
       // renewal's call may take (Claude's lend, 2026-11-14). One with less waits for it.
-      if (expiresAt - this.time.now() >= CODEX_MIN_MS) {
-        const began = this.time.now();
-        let stop = () => {};
-        const bound = new Promise<boolean>((resolve) => (stop = this.time.after(LEND_BOUND_MS, () => resolve(false))));
-        const inTime = await Promise.race([renewed.then(() => true), bound]);
-        stop();
-        if (!inTime) log.warn("share", "a shared Codex login's renewal outlasted the lend's bound; the login it has was lent, the renewal goes on", { profile: p.id, ms: this.time.now() - began, lastsMin: Math.round((expiresAt - this.time.now()) / 60_000) });
-      } else await renewed;
+      if (expiresAt - this.time.now() >= CODEX_MIN_MS) await this.withinBound(p, "Codex", expiresAt, renewed);
+      else await renewed;
       // Read again either way: Codex may have renewed it and then failed a step after (it answers with that error).
       auth = JSON.parse(readFileSync(file, "utf8"));
       expiresAt = jwtExpiry(auth?.tokens?.access_token) ?? 0;
@@ -1157,33 +1165,63 @@ export class Sharing {
     return { runtime: "codex", tokens: { id_token: tokens.id_token, access_token: tokens.access_token, account_id: tokens.account_id }, expiresAt };
   }
 
-  /// A shared Codex login renewed: by the Codex running on it, asked to (else it would only when its own token runs out,
-  /// the station's borrowers refused till then), or here where none runs. A failure is said: which login, how long it
-  /// took, how long what it has still lasts (what is lent meanwhile).
-  private async renewCodexNow(p: Json, file: string, auth: Json, expiresAt: number): Promise<void> {
-    const began = this.time.now();
-    try {
-      if (!(await this.deps.codexRenewRunning(p.id))) await this.renewCodex(file, auth);
-    } catch (e) {
-      log.warn("share", "renewing a shared Codex login failed", { profile: p.id, ms: this.time.now() - began, lastsMin: Math.round((expiresAt - this.time.now()) / 60_000), error: (e as Error).message });
+  /// An Antigravity CLI sign-in's access token, renewed first when it has less than AGY_LEND_MS left: one that still
+  /// lasts AGY_MIN_MS waits for its renewal LEND_BOUND_MS at most and is lent as it is, the renewal going on behind (as
+  /// Codex's). Its refresh token stays here.
+  private async lendAgyHere(p: Json): Promise<Json> {
+    const file = agyToken(this.home(p));
+    let text = await readFile(file, "utf8");
+    let expiresAt = agyExpiryIn(text);
+    if (expiresAt - this.time.now() < AGY_LEND_MS) {
+      const renewed = this.renewOnce(p, "Antigravity CLI", expiresAt, () => {
+        if (!this.deps.agyRenew) throw new Error("this station renews no Antigravity CLI sign-in");
+        return this.deps.agyRenew(this.home(p));
+      });
+      if (expiresAt - this.time.now() >= AGY_MIN_MS) await this.withinBound(p, "Antigravity CLI", expiresAt, renewed);
+      else await renewed;
+      text = await readFile(file, "utf8");
+      expiresAt = agyExpiryIn(text);
     }
+    if (expiresAt - this.time.now() < AGY_MIN_MS) throw new Error("the Antigravity CLI sign-in here runs out soon and cannot be renewed now");
+    const had = JSON.parse(text);
+    const { refresh_token: _, ...token } = had.token ?? {};
+    return { runtime: "agy", token, email: typeof had.id_token_email === "string" ? had.id_token_email : null, auth_method: typeof had.auth_method === "string" ? had.auth_method : null, expiresAt };
   }
 
-  /// The renewals of shared Codex logins going on, by profile: one at a time, what is lent meanwhile waiting on it.
-  private codexRenewing = new Map<string, Promise<void>>();
+  /// `renewed` waited for LEND_BOUND_MS at most: past it, what is lent is the login as it is, which is said.
+  private async withinBound(p: Json, what: string, expiresAt: number, renewed: Promise<void>): Promise<void> {
+    const began = this.time.now();
+    let stop = () => {};
+    const bound = new Promise<boolean>((resolve) => (stop = this.time.after(LEND_BOUND_MS, () => resolve(false))));
+    const inTime = await Promise.race([renewed.then(() => true), bound]);
+    stop();
+    if (!inTime) log.warn("share", `a shared ${what} login's renewal outlasted the lend's bound; the login it has was lent, the renewal goes on`, { profile: p.id, ms: this.time.now() - began, lastsMin: Math.round((expiresAt - this.time.now()) / 60_000) });
+  }
 
-  private renewCodexOnce(p: Json, file: string, auth: Json, expiresAt: number): Promise<void> {
+  /// One renewal of a profile's login at a time (`renew`), what is lent meanwhile waiting on it; a failure is said:
+  /// which login, how long it took, how long what it has still lasts.
+  private renewOnce(p: Json, what: string, expiresAt: number, renew: () => Promise<unknown>): Promise<void> {
     const id = String(p.id);
-    const going = this.codexRenewing.get(id);
+    const going = this.renewing.get(id);
     if (going !== undefined) return going;
-    const done = this.renewCodexNow(p, file, auth, expiresAt).finally(() => this.codexRenewing.delete(id));
-    this.codexRenewing.set(id, done);
+    const began = this.time.now();
+    const done = Promise.resolve()
+      .then(renew)
+      .then(
+        () => {},
+        (e) => log.warn("share", `renewing a shared ${what} login failed`, { profile: p.id, ms: this.time.now() - began, lastsMin: Math.round((expiresAt - this.time.now()) / 60_000), error: (e as Error).message }),
+      )
+      .finally(() => this.renewing.delete(id));
+    this.renewing.set(id, done);
     return done;
   }
 
+  /// The renewals of shared logins going on, by profile: one at a time, what is lent meanwhile waiting on it.
+  private renewing = new Map<string, Promise<void>>();
+
   /// Once a renewal of profile `id` going on, if any, is over (tests).
   renewedBehind(id: string): Promise<void> {
-    return this.codexRenewing.get(id) ?? Promise.resolve();
+    return this.renewing.get(id) ?? Promise.resolve();
   }
 
   /// Codex's own renewal of its ChatGPT login, done here while no Codex runs on it (it would hold the old refresh token).
@@ -1292,6 +1330,35 @@ export class Sharing {
     };
     mkdirSync(home, { recursive: true });
     writePrivate(join(home, "auth.json"), JSON.stringify(auth, null, 2));
+    return Number(got.expiresAt ?? 0);
+  }
+
+  /// A borrowed Antigravity CLI subscription: its home's sign-in file written with the host's current access token (no
+  /// refresh token, so `agy` never renews it here); when it runs out. `rejected`: the one there was refused, so it is not
+  /// used again while the host is away.
+  async lendAgy(profile: Json, rejected = false): Promise<number> {
+    const host = this.hostOf(profile);
+    const file = agyToken(this.home(profile));
+    const kept = () => readFile(file, "utf8").then(agyExpiryIn, () => 0);
+    if ((await kept()) - this.time.now() < KEEP_AGY_MS) await this.rosterSaid();
+    let got: Json;
+    try {
+      got = await this.deps.ask(host, null, { method: "share.lend", id: profile.share.id });
+      this.unreachable.delete(host);
+    } catch (e) {
+      this.unreachable.set(host, this.time.now());
+      this.deps.changed();
+      const until = await kept();
+      if (!rejected && until - this.time.now() >= KEEP_AGY_MS) {
+        log.warn("share", "the host did not lend a new sign-in; the one lent before is used", { profile: profile.id, error: (e as Error).message });
+        return until;
+      }
+      log.warn("share", "the host did not lend it", { profile: profile.id, error: (e as Error).message });
+      throw new Said(tr(stationLang(), "station.share.notLent"));
+    }
+    if (got?.runtime !== "agy" || typeof got?.token?.access_token !== "string") throw new Said(tr(stationLang(), "station.share.notLent"));
+    await writePrivateSoon(file, agyLentFile(got));
+    if (typeof got.email === "string" && got.email !== "") await writePrivateSoon(agyAccountFile(this.home(profile)), `${JSON.stringify({ email: got.email })}\n`);
     return Number(got.expiresAt ?? 0);
   }
 

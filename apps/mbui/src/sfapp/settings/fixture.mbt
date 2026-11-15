@@ -124,6 +124,9 @@ priv struct SettingsFixture {
   mut offer_quota : Bool
   /// The same subscription independently signed in and borrowed on several stations.
   mut profile_hosts : Bool
+  /// ChatGPT 团队 of a kind of login that cannot be shared (the station's `shareable` false:
+  /// settings-profile-unshareable): its page says so in place of the switch.
+  mut profile_unshareable : Bool
   /// Only one station is signed in; another borrows it.
   mut profile_one_owner : Bool
   /// A borrowing station cannot reach its source, and another station is offline.
@@ -201,6 +204,7 @@ let fx : SettingsFixture = {
   several: false,
   offer_quota: false,
   profile_hosts: false,
+  profile_unshareable: false,
   profile_one_owner: false,
   profile_away: false,
   profile_pending: false,
@@ -371,6 +375,7 @@ fn fixture_reset() -> Unit {
   fx.several = false
   fx.offer_quota = false
   fx.profile_hosts = false
+  fx.profile_unshareable = false
   fx.profile_one_owner = false
   fx.profile_away = false
   fx.profile_pending = false
@@ -662,6 +667,10 @@ pub fn fixture_page(mode : String) -> String {
     "settings-profile-lower" => up("", "settings/profile/ws1/st1/cc", 2)
     // The sharing section of the made-up subscription, for reviewing its on-screen layout.
     "settings-profile-share" => up("", "settings/profile/ws1/st1/cc", 6)
+    "settings-profile-unshareable" => {
+      fx.profile_unshareable = true
+      up("", "settings/profile/ws1/st1/cx", 0)
+    }
     "settings-profile-hosts" | "settings-profile-hosts-one" | "settings-profile-hosts-away" | "settings-profile-hosts-pending" | "settings-profile-hosts-cutoff" => {
       fx.profile_hosts = true
       fx.profile_one_owner = m == "settings-profile-hosts-one"
@@ -826,7 +835,7 @@ pub fn fixture_page(mode : String) -> String {
     "settings-profile-key" | "settings-profile-move-key" => "profile:ws1/st1#k2"
     "settings-profile-move" => "profile:ws1/st1#cx"
     "settings-profile-copy" => "profile:ws1/st1#bx"
-    "settings-profile-quota" | "settings-profile-quota-login" | "settings-profile-quota-expiry" => "profile:ws1/st1#cx"
+    "settings-profile-quota" | "settings-profile-quota-login" | "settings-profile-quota-expiry" | "settings-profile-unshareable" => "profile:ws1/st1#cx"
     "settings-profile-quota-kinds" => "profile:ws1/st1#cc"
     "settings-me-reading" => "me"
     "settings-usage-details-pending" => "usage"
@@ -1327,6 +1336,7 @@ fn fx_cx_more() -> Array[(String, Json)] {
   }
   let left = 2 - fx.resets_used
   [
+    ("shareable", Json::boolean(!fx.profile_unshareable)),
     ("modelsText", str("\{ids.length()} 个模型")),
     ("models", Json::array(ids.map(str))),
     ("named", Json::array(fx.models_added.map(str))),

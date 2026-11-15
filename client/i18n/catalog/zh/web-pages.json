@@ -960,6 +960,8 @@
   "web-pages.profiles.share.hereNote": "允许此 station 上的对话使用此共享账号",
   "web-pages.profiles.share.whereNote": "将此账号迁移到其他 station",
   "web-pages.profiles.share.switchNote": "允许其他 station 上的对话使用此账号",
+  "web-pages.profiles.share.unsupported": "不支持",
+  "web-pages.profiles.share.unsupportedNote": "这类账号的登录暂时不能分享给其他 station",
   "web-pages.profiles.share.stationsNote": "选择哪些 station 可以使用此账号",
   "web-pages.profiles.share.copy": "此 Profile 由 {station} 分享，请在该 station 上修改",
   "web-pages.profiles.share.goHost": "去 {station}",

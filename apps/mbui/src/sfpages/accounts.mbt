@@ -1358,7 +1358,21 @@ fn profile_station_rows_node(
       )
     })
   })
-  g.show(at_once=true, fn() { has_sharing() && !user() }, fn(x) {
+  // A kind of login that cannot be lent yet (the station's `shareable`, absent on one from before) says so in place of
+  // the switch, which its station would refuse (the user, 2026-11-15: 「不支持共享的应该有直接提示，而不是依然是一个看起
+  // 来能开的开关」); one shared already keeps its switch, to stop sharing it.
+  let shareable = fn() { shared() || !(field(p(), "shareable") is Some(False)) }
+  g.show(at_once=true, fn() { has_sharing() && !user() && !shareable() }, fn(x) {
+    @sf.link_row_node(
+      x,
+      fn() { @sf.t("web-pages.profiles.share.switch") },
+      fn() {  },
+      value=fn() { @sf.t("web-pages.profiles.share.unsupported") },
+      note=fn() { @sf.t("web-pages.profiles.share.unsupportedNote") },
+      goes=false,
+    )
+  })
+  g.show(at_once=true, fn() { has_sharing() && !user() && shareable() }, fn(x) {
     @sf.switch_row_node(
       x,
       fn() { @sf.t("web-pages.profiles.share.switch") },
