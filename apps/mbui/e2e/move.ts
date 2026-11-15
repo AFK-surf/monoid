@@ -2543,11 +2543,12 @@ try {
   if (part("5")) {
     limit("5", 10800);
     // (E2E_MOVE_CHATS: the whole move's size, shown and archived as the real station's 149 of 2,384; E2E_MOVE_WHOLE_ONLY:
-    // that move alone, there and back, its tables and totals: a trip of a few minutes to set two trees side by side)
+    // the 500 MB chat's trip and that move alone, there and back, their tables and totals, the 300 chats' timing left
+    // out: a trip of a few minutes to set two trees side by side)
     const many = Number(process.env.E2E_MOVE_CHATS ?? 2384);
     const manyShown = Math.round((many * 149) / 2384);
     const wholeOnly = process.env.E2E_MOVE_WHOLE_ONLY === "1";
-    if (!wholeOnly) await check("5: one chat with a 500 MB / 5,000-file room: its first pass and its pause, measured", async () => {
+    await check("5: one chat with a 500 MB / 5,000-file room: its first pass and its pause, measured", async () => {
       const key = await newChat(`big-${tag}`);
       const t1 = Date.now();
       fill(roomOn("A", key)!, "bulk", 5000, 100 * 1024);
