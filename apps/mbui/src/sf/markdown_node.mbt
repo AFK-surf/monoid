@@ -114,7 +114,8 @@ pub fn markdown_node(
 
 ///|
 /// A piece of what a markdown_node draws (markdown_node's `piece`): its blocks from `from` up to (not) `upto`; where
-/// it is some rows of a table (`rows`: from, up to, not, its head's row 0), that table alone, `from` its block; `last`,
+/// it is some rows of a table or some items of a list (`rows`: from, up to, not; a table's head's row its 0), that
+/// table or list alone, `from` its block; `last`,
 /// whether it is the last piece.
 #derive(Eq, Debug)
 pub(all) struct MdPiece {
@@ -129,8 +130,14 @@ pub(all) struct MdPiece {
 let md_table_piece_rows : Int = 4
 
 ///|
+/// How many items of a list a piece of it holds at most (markdown_pieces'): a list of 17 items with links' cards made
+/// 241 nodes in the frame it came into view (2026-11-15).
+let md_list_piece_items : Int = 3
+
+///|
 /// The pieces `text` is drawn in as the core read it (`tree`, a message's `md`) where a list makes it a block a piece
-/// (markdown_node's `piece`): a block each, a table md_table_piece_rows of its rows a piece. None where it is not read
+/// (markdown_node's `piece`): a block each, a table md_table_piece_rows of its rows a piece, a list md_list_piece_items
+/// of its items a piece (what an item holds, a list in it too, with it). None where it is not read
 /// yet, or it is one piece.
 pub fn markdown_pieces(text : String, tree : Json?) -> Array[MdPiece]? {
   guard tree is Some(_) && text != "" else { return None }
@@ -142,6 +149,15 @@ pub fn markdown_pieces(text : String, tree : Json?) -> Array[MdPiece]? {
         let mut r = 0
         while r < all {
           let upto = if r + md_table_piece_rows < all { r + md_table_piece_rows } else { all }
+          out.push({ from: i, upto: i + 1, rows: Some((r, upto)), last: false })
+          r = upto
+        }
+      }
+      List(l) if l.items.length() > md_list_piece_items => {
+        let all = l.items.length()
+        let mut r = 0
+        while r < all {
+          let upto = if r + md_list_piece_items < all { r + md_list_piece_items } else { all }
           out.push({ from: i, upto: i + 1, rows: Some((r, upto)), last: false })
           r = upto
         }
@@ -190,7 +206,8 @@ priv struct MdNode {
   glyphs : ((@view.View) -> Double, (Double, @view.GlyphAt) -> @view.GlyphLook)?
   /// which of the blocks it is drawn for (md_blocks_node's: none, -1)
   block_at : Int
-  /// the rows of its table it draws where it is a piece of one (markdown_node's `piece`): none, all of them
+  /// the rows of its table or the items of its list it draws where it is a piece of one (markdown_node's `piece`):
+  /// none, all of them; none in what a block holds (a list's item, a quote)
   table_rows : (Int, Int)?
   /// what the table at a block scrolls across with (markdown_node's `across_of`: the pieces of one table as one)
   across_of : (Int) -> @view.Scroll
@@ -268,7 +285,8 @@ fn md_blocks_node(
   col.each(fn() { count.get() }, fn(i) { i }, fn(slot, i) {
     let i = i.untracked()
     let block = fn() { blocks().get(i) }
-    // (the first, or a table's rows after its first piece's: right under the rows over them)
+    // (the first, or a table's rows or a list's items after its first piece's: right under those over them, as far as
+    // its first row or item keeps itself)
     if i == 0 || (md.table_rows is Some((r, _)) && r > 0) {
       slot.padding(Is((0.0, 0.0, 0.0, 0.0))) |> ignore
     } else {
@@ -500,7 +518,7 @@ fn md_block_node(
           Some(List(l)) => Some(l)
           _ => None
         }
-      }, 1)
+      }, 1, items=md.table_rows)
     4 => {
       let lang = fn() {
         match block() {
@@ -784,8 +802,14 @@ fn md_line(md : MdNode, size : Double) -> Double {
 /// A list (`list`, as it changes) at `depth` (Md::list's): each item a row, its marker in a 20 indent (a number right
 /// up to 5 from its words, as wide as the last one's; a disc, a circle, a square by depth), a task's box after it, its
 /// blocks beside them; its tables in its indent.
-fn md_list_node(p : @view.View, md : MdNode, list : () -> MdList?, depth : Int) -> Unit {
-  let inner_md = { ..md, bleed: 0.0 }
+fn md_list_node(
+  p : @view.View,
+  md : MdNode,
+  list : () -> MdList?,
+  depth : Int,
+  items? : (Int, Int)? = None,
+) -> Unit {
+  let inner_md = { ..md, bleed: 0.0, table_rows: None }
   let s = md.size
   let ordered = fn() { list().map(fn(l) { l.ordered }).unwrap_or(false) }
   let tight = fn() { list().map(fn(l) { l.tight }).unwrap_or(false) }
@@ -796,7 +820,17 @@ fn md_list_node(p : @view.View, md : MdNode, list : () -> MdList?, depth : Int) 
       _ => md_marker_w
     }
   }
-  let count = fn() { Array::makei(list().map(fn(l) { l.items.length() }).unwrap_or(0), fn(i) { i }) }
+  // (all its items, or those of them its piece draws (`items`), each by its place among all)
+  let count = fn() {
+    let n = list().map(fn(l) { l.items.length() }).unwrap_or(0)
+    match items {
+      Some((from, upto)) => {
+        let upto = if upto < n { upto } else { n }
+        Array::makei(if upto > from { upto - from } else { 0 }, fn(i) { from + i })
+      }
+      None => Array::makei(n, fn(i) { i })
+    }
+  }
   p.each(count, fn(i) { i }, fn(row, i) {
     let i = i.untracked()
     let item = fn() { list().bind(fn(l) { l.items.get(i) }) }

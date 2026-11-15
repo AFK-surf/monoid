@@ -1560,3 +1560,57 @@ test "a long table a few rows a piece: each piece a block of the list, all of th
   assert_eq(first - x_of("r13c0"), moved, msg="its last rows scrolled as far as its first")
   assert_eq(first - x_of("r7c0"), moved, msg="its middle rows too")
 }
+
+///|
+test "a long list a few items a piece: each piece a block of the list, numbered on and in one indent as drawn whole" {
+  @sfbase.reset()
+  reset()
+  let src = @sffixture.fixture("chat")
+  let s = body_screens()[1]
+  let seen : Ref[(ChatView, Array[Entry])?] = Ref(None)
+  body_old(src, s.1, s.2, s.3, seen~) |> ignore
+  let (v0, read0) = seen.val.unwrap()
+  @sfbase.reset()
+  reset()
+  let src = @sffixture.fixture("chat")
+  let item = fn(i : Int) { Json::array([Json::string("li"), Json::array([Json::string("第\{i + 1}项要做的事")])]) }
+  let md = Json::array([
+    body_para("要做的有十件。"),
+    Json::array([
+      Json::string("list"),
+      Json::array(Array::makei(10, item)),
+      Json::object({ "ordered": Json::boolean(true), "start": Json::number(1.0) }),
+    ]),
+  ])
+  let mut last = -1
+  for i, e in read0 {
+    if e is Said(m) && chat_body_pieces(Said({ ..m, text: "要做的有十件。\n\n1. a", md: Some(md) })) is Some(_) {
+      last = i
+    }
+  }
+  guard last >= 0 && read0[last] is Said(m) else { fail("no agent's message") }
+  let said : Entry = Said({ ..m, text: "要做的有十件。\n\n1. a", md: Some(md) })
+  // (its paragraph, then its ten items 3 a piece: 3, 3, 3, 1)
+  let ps = chat_body_pieces(said).unwrap()
+  assert_eq(ps.map(fn(p) { p.rows }), [None, Some((0, 3)), Some((3, 6)), Some((6, 9)), Some((9, 10))])
+  let read = read0.copy()
+  read[last] = said
+  let t = body_new(src, s.1, s.2, s.3, @signals.signal(v0), @signals.signal(read))
+  t.run_for(@ui.move_most_ms)
+  let rect = fn(words : String) {
+    match t.run_rects(words).get(0) {
+      Some(r) => r
+      None => @halt.saying("no words drawn holding \{words}")
+    }
+  }
+  // (numbered on across its pieces, every item's words in one indent, each under the one before)
+  assert_true(t.find("10.") is Some(_), msg="its last item numbered 10")
+  let first = rect("第1项")
+  let mut y = first.1
+  for i in 1..<10 {
+    let r = rect("第\{i + 1}项")
+    assert_eq(r.0, first.0, msg="item \{i + 1} in the first's indent")
+    assert_true(r.1 > y, msg="item \{i + 1} under the one before")
+    y = r.1
+  }
+}
