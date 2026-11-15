@@ -38,6 +38,7 @@
 //   stood.rx[2] = 100.0                   what the transport says came on connection 2 so far (`conn.stats`);
 //                                          stood.tx[2] what went out; stood.paths_of[2] its ways (`conn.paths`).
 //   stood.dht = Some({"lines": …})        what the shell's DHT says once (`dht.said`), then nothing; none: no op.
+//   stood.signs = Some({…}), stood.opus   what `ed25519.sign` and `iroh.opus` answer; none: the shell has no such op.
 //   stood.on_relay = false                the endpoint is on no relay yet (`iroh.relayStatus`): an opening's time
 //                                          is not counted until it is.
 //   stood.holding = "iroh.bind" … stood.bound()        an endpoint bound again is the test's to answer: the next
@@ -108,6 +109,11 @@ priv struct Stood {
   /// asking's `keep`.
   mut dht : Json?
   dht_keeps : Array[Bool]
+  /// What the shell answers `ed25519.sign` (none: it has no such op) and what it was asked; whether the endpoint
+  /// decodes Opus (`iroh.opus`; none: no such op).
+  mut signs : Json?
+  sign_asks : Array[String]
+  mut opus : Bool?
   /// The endpoints closed (`iroh.close`).
   unbound : Map[Int, Unit]
   /// What each bind was asked with, where each dial was told its peer is, and the entries told, as written.
@@ -155,6 +161,9 @@ fn Stood::new() -> Stood {
     paths_of: Map([]),
     dht: None,
     dht_keeps: [],
+    signs: None,
+    sign_asks: [],
+    opus: None,
     unbound: Map([]),
     binds: [],
     addrs: [],
@@ -264,6 +273,15 @@ fn Stood::new() -> Stood {
               [{ "id": "0", "selected": true, "relay": Json::null(), "ip": "10.0.0.2:1" }]
             _ => Json::array([])
           }
+        "ed25519.sign" => {
+          guard stood.signs is Some(answer) else { raise @shell.ShellError("the stood-in shell has no ed25519.sign") }
+          stood.sign_asks.push(args.stringify())
+          answer
+        }
+        "iroh.opus" => {
+          guard stood.opus is Some(opus) else { raise @shell.ShellError("the stood-in shell has no iroh.opus") }
+          Json::boolean(opus)
+        }
         "dht.said" => {
           guard stood.dht is Some(said) else { raise @shell.ShellError("the stood-in shell has no dht.said") }
           stood.dht_keeps.push(args is { "keep": True, .. })

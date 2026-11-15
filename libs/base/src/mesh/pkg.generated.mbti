@@ -29,11 +29,15 @@ pub let direct_hold_ms : Int32
 
 pub let direct_recall_ms : Int32
 
+pub fn ed25519_sign(Bytes, Bytes) -> (Bytes, Bytes)
+
 pub let explore_ms : Int32
 
 pub let first_ms : Int32
 
 pub fn format_traceparent(Bytes, Bytes, Bool) -> String
+
+pub let hedge_floor_ms : Int32
 
 pub let keep_ways : Int32
 
@@ -187,25 +191,31 @@ pub struct Mesh {
 pub fn Mesh::add_addr(Self, String, relays? : Array[String], ips? : Array[String]) -> Unit
 pub async fn Mesh::close(Self) -> Unit
 pub fn Mesh::current(Self, String, scope? : String) -> Link?
+pub fn Mesh::decodes_opus(Self) -> Bool
 pub fn Mesh::device_id(Self) -> String
 pub fn Mesh::drop_link(Self, String, scope? : String, reason? : String) -> Unit
 pub async fn Mesh::health_change(Self, String, Bool, scope? : String) -> Bool
 pub fn Mesh::healthy(Self, String, scope? : String) -> Bool
+pub fn Mesh::hedge_after(Self, Link) -> Int32
 pub async fn Mesh::incoming(Self) -> Incoming?
 pub fn Mesh::lan(Self, String, scope? : String) -> Array[String]
 pub async fn Mesh::link(Self, String, async (String, Bool) -> Presented, scope? : String, theirs? : Array[String], off? : Array[String], asker? : String, traceparent? : String) -> Link
 pub async fn Mesh::make(@shell.Shell, Store, Options, binding? : Binding, addresses? : String, pinned_prefix? : Bytes, clock? : WallClock, speeds_key? : String, days_key? : String, trace? : Trace, recorder? : Recorder) -> Self
 pub fn Mesh::measured(Self, String, scope? : String) -> Array[MeasuredWay]
 pub fn Mesh::measuring(Self, String, scope? : String) -> Bool
+pub async fn Mesh::migrate(Self, Bytes) -> Unit
 pub fn Mesh::moved(Self, String, scope? : String) -> String?
 pub fn Mesh::moves(Self, String, scope? : String) -> Int32
 pub fn Mesh::note_speed(Self, String, String, Int32, Int32) -> Unit
+pub fn Mesh::outran(Self, Link, Int32) -> Unit
 pub fn Mesh::remeasure(Self) -> Unit
 pub async fn Mesh::remeasure_peer(Self, String, scope? : String) -> Unit
 pub async fn Mesh::replaced(Self, Link) -> Unit
 pub fn Mesh::retune(Self, Array[String], entries? : Array[RelayEntry], reason? : String) -> Unit
 pub fn Mesh::set_ways(Self, String, scope? : String, theirs? : Array[String], off? : Array[String]) -> Unit
+pub fn Mesh::sign(Self, Bytes) -> (Bytes, Bytes)
 pub fn Mesh::speed(Self, String, String) -> Double?
+pub fn Mesh::standby(Self, Link) -> Link?
 pub fn Mesh::standing(Self, String, scope? : String) -> Bool
 pub fn Mesh::tailnet(Self, String, scope? : String) -> Array[String]
 pub fn Mesh::timed(Self, String, String, Reply) -> Reply

@@ -15,8 +15,8 @@ of its workspace (`moon.work`); `effect` stays in mbui.
   requests/streams/duplex, health racing in `health.mbt`, wake/rebind in `wake.mbt`, what the endpoint is bound
   with, relays told again and connections peers dial to it in `bind.mbt`, where peers are dialled straight in
   `addrs.mbt`, the ways to a place and the choice among them in `ways.mbt`, with `sha256.mbt` for the keys of
-  relays' own endpoints, ways' speeds and the day's tally in `speed.mbt`, and what it tells of itself in
-  `trace.mbt`).
+  relays' own endpoints, ways' speeds and the day's tally in `speed.mbt`, what it tells of itself in `trace.mbt`,
+  and a program's other asks in `hooks.mbt`, with Ed25519 and SHA-512 in `sign.mbt`).
 
 ## It knows no program
 
@@ -77,6 +77,9 @@ of its workspace (`moon.work`); `effect` stays in mbui.
   named by `Trace.peer_key` (`"peer"` unless given): this library never says another program's word for it. A record
   line is worked out only while `Recorder.on`; a place is observed (paths, `conn ways`, `dht`) once a tick, by the
   ways' fiber while they are steered, by its link's otherwise.
+- `Mesh::sign` asks the shell (`ed25519.sign`, the Rust shell's) and signs in `sign.mbt` only where it cannot (a
+  page): that code is TweetNaCl's, not constant-time beyond what it was, and signs nothing it is not given.
+  `Mesh::migrate` binds the endpoint anew on the key given and lets go of everything on the one before at once.
 - The device's key file is its user's alone whatever the umask, by the Rust shell's doing alone
   (`client/shell/src/lib.rs` `create_private`): a program linked to a shell from before keeps its key as its umask has
   it. `shell.c` has been compiled and run on macOS on arm64 alone.

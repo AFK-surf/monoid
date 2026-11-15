@@ -34,8 +34,9 @@
 // A place may have several ways, each a link: on the endpoint, on an endpoint bound on one relay alone, at the
 // addresses the peer said on an endpoint of their own; requests go on the one in `links`, moved among them as they
 // answer (ways.mbt). `Mesh::ways` (health.mbt) counts them for what asks whether any way, or no other way, is up.
-// What that mesh does beside that is not here yet: peers looked up on the LAN and in the DHT, a way's speed, traces,
-// the day's tally.
+// Each way's speed and each peer's bytes today (speed.mbt), what the mesh tells its program's tracer and record
+// (trace.mbt), and what else a program asks of it (a slow read's other way, signing with the device key, the key
+// taken over: hooks.mbt, sign.mbt) are that mesh's too. Peers are looked up by the shell (`Binding.lookup`).
 
 ///|
 /// The key the device's key is kept under.
@@ -177,9 +178,9 @@ pub struct Mesh {
   /// The endpoint at the shell, and its id. The endpoint is bound anew where it is stuck (`Mesh::rebind`,
   /// wake.mbt): only while nothing is on it, so nothing holds the handle of before.
   priv mut endpoint : Json
-  priv id : String
+  priv mut id : String
   /// The device's key: what the endpoint is bound with, each time.
-  priv secret : Bytes
+  priv mut secret : Bytes
   /// The relays the endpoint is on and a peer is dialled through, and their entries: as it was made with, then as
   /// it was last told (`Mesh::retune`, bind.mbt). And what else it is bound with, which stays.
   priv mut relays : Array[String]
