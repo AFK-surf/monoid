@@ -2626,13 +2626,24 @@ fn Tree::alone_laid_out(self : Tree) -> Unit {
     let n = self.nodes[at]
     if n.live && n.flex.dirty {
       let mut anc_dirty = false
+      // (in what is laid out nowhere (a page under the one on top, a pane switched off): not laid out at all, its change
+      // kept (dirty) for when it shows, and laid out whole then with what holds it; what it holds otherwise laid out
+      // alone for each change of it, for nothing seen, 2026-11-15: Home's lists under a chat, 295 nodes a change)
+      let mut nowhere = false
       let mut p = n.parent
       while p >= 0 {
-        if !self.nodes[p].slot && self.nodes[p].flex.dirty {
-          anc_dirty = true
+        let pn = self.nodes[p]
+        if !pn.slot && pn.flex.style.display == @flex.DisplayNone {
+          nowhere = true
           break
         }
-        p = self.nodes[p].parent
+        if !pn.slot && pn.flex.dirty {
+          anc_dirty = true
+        }
+        p = pn.parent
+      }
+      if nowhere {
+        continue
       }
       if !anc_dirty && n.flex.laid_given() {
         if n.flex.children.is_empty() && n.flex.measure is None {
