@@ -26,7 +26,7 @@ import {
   byBytes, cardOf, entryColumns, jsonList, letterEntry, letterMessage, mergeEntries, optionsCard, parsed, stored, takeChars, toEntry, toJob, toMembership,
   LAST_MESSAGE, LEGACY_LAST_MESSAGE, LEGACY_MESSAGES_BEFORE, LETTER_SQL, MESSAGES_BEFORE, MESSAGE_PAGE_ENTRIES, isLetter, liveShare, shareLive, toChatShare, toMessage, toOpened, toSession, toSessionThread, toThread, toTurnSummary, JOBS_RUNNING, JOBS_UP, JOB_AT_PORT, SESSION_JOBS, CARD_BEFORE, OPTIONS_BEFORE, SESSION_OF_RUNTIME, PEOPLE_AT,
 } from "./rows.ts";
-import { SCHEMA, SCHEMA_VERSION, addArchiveColumns, addEditIndex, repairMergedEditLookup, addRuntimeSessionRuntime, hasRuntimeOrderIndex, addCardOutcomes, addListState, addLetters, addPendingCards, addSessionTurns, addSessionWork, addTellIndexes, addThreadIndexes, addUsageCompactions, addAutoTitleColumns, addClientColumn, addLetterColumn, addQueueColumns, addSizeColumn, addSmallJobColumn, addUsageColumns, addUsageQuarters, addUsageTotals, addWaitWatchColumn, addWatchColumn, addWorkspaceColumns, addOpenerTitle, addLeftColumn } from "./schema.ts";
+import { SCHEMA, SCHEMA_VERSION, addArchiveColumns, addEditIndex, repairMergedEditLookup, addRuntimeSessionRuntime, hasRuntimeOrderIndex, addCardOutcomes, addListState, addLetters, addPendingCards, addSessionTurns, addSessionWork, addTellIndexes, addThreadIndexes, addUsageCompactions, addAutoTitleColumns, addClientColumn, addLetterColumn, addQueueColumns, addSizeColumn, addSmallJobColumn, addUsageColumns, addUsageQuarters, addUsageTotals, addWaitWatchColumn, addWatchColumn, addWorkspaceColumns, addOpenerTitle, addLedColumn, addLeftColumn } from "./schema.ts";
 import { installUsageCompactions, usageCompactionsReady } from "./usage-compactions.ts";
 import { installPeopleSinceIndex } from "./legacy-people-since.ts";
 import { ARCHIVE_POLICY, LEGACY_ARCHIVE_POLICY, hasLegacyArchivePolicy, installArchivePolicyIndex } from "./archive-policy-index.ts";
@@ -753,6 +753,7 @@ export class Store {
       addWorkspaceColumns(db);
       installArchivePolicyIndex(db);
       addOpenerTitle(db);
+      addLedColumn(db);
       addLeftColumn(db);
       addUsageColumns(db);
       installUsageSpan(db);
@@ -1403,12 +1404,12 @@ export class Store {
   // ── chats agents opened (opened_chats; sessions/opened.ts) ──
 
   /// Records a chat opened for a session: by its station and key, and its parent's ('' for this station).
-  insertOpened(o: Omit<Opened, "state" | "createdAt" | "openerTitle"> & { openerTitle?: string | null }): void {
+  insertOpened(o: Omit<Opened, "state" | "createdAt" | "openerTitle" | "led"> & { openerTitle?: string | null; led: boolean | null }): void {
     this.#with((changes) => {
       const at = this.now();
       this.#run(
-        `INSERT INTO opened_chats (child_station, child, parent_station, parent, key, title, link, opener_title, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        o.childStation, o.child, o.parentStation, o.parent, o.key, o.title, o.link, o.openerTitle ?? null, at,
+        `INSERT INTO opened_chats (child_station, child, parent_station, parent, key, title, link, opener_title, led, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        o.childStation, o.child, o.parentStation, o.parent, o.key, o.title, o.link, o.openerTitle ?? null, o.led === null ? null : o.led ? 1 : 0, at,
       );
       // Told of the chat it was opened from, here (the parent's station is this one: '').
       if (o.parentStation === "") {

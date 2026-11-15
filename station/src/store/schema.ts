@@ -380,6 +380,8 @@ CREATE TABLE IF NOT EXISTS usage_files (
 -- opened it (parent), each by its station ('' for this one) and key, with the key the opener gave the call. The station
 -- of either keeps a row: the child's to tell its parent how its turns end, the parent's to know its children by. The
 -- child's also keeps what its parent was called then (opener_title, addOpenerTitle), for its chat's way back to it.
+-- led (addLedColumn): 1 for a chat its opener leads (chat_create for me), 0 for one opened for its person; NULL
+-- before it.
 CREATE TABLE IF NOT EXISTS opened_chats (
   child_station TEXT NOT NULL,
   child TEXT NOT NULL,
@@ -736,6 +738,12 @@ export function addWaitWatchColumn(db: DatabaseSync): void {
 /// it was called when it did; NULL before it.
 export function addOpenerTitle(db: DatabaseSync): void {
   if (!has(db, "opened_chats", "opener_title")) db.exec("ALTER TABLE opened_chats ADD COLUMN opener_title TEXT");
+}
+
+/// The column chat_create's `for` came with (opened_chats.led): 1 a chat its opener leads, 0 one opened for its
+/// person, NULL before it (its opener told as a leader is, its asks its person's).
+export function addLedColumn(db: DatabaseSync): void {
+  if (!has(db, "opened_chats", "led")) db.exec("ALTER TABLE opened_chats ADD COLUMN led INTEGER");
 }
 
 /// The column leaving a thread came with (thread_sessions.left_at, chat_leave): NULL for a session that hears it.

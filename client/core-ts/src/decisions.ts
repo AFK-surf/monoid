@@ -211,7 +211,14 @@ export function decider(card: J, creator: J): string | null {
   return trimmed(get(card, "assignee")) ?? trimmed(get(creator, "email")) ?? trimmed(get(creator, "id"));
 }
 
+/// Whether an agent leads the row's chat (chat_create `for: "me"`, its station's `opener.led`): what it asks is its
+/// leader's to take up, so it waits for no person (the user, 2026-11-15).
+export function led(row: J): boolean {
+  return get(get(row, "opener"), "led") === true;
+}
+
 export function forViewer(row: J, me: J): J | null {
+  if (led(row)) return null;
   const d = asked(row);
   if (d === null || dismissed(d)) return null;
   const who = decider(d.card, get(row, "creator"));
@@ -234,7 +241,7 @@ export function askOf(row: J, d: J, me: J): J {
     .find((n) => typeof n === "string" && n.trim() !== "");
   const text = typeof need === "string" ? need.trim() : question(str(get(d.message, "text")) ?? "");
   const who = decider(d.card, get(row, "creator"));
-  return { seq: d.seq, card: ofRow(row) !== null, mine: who !== null && present.isViewer(me, who, []), text };
+  return { seq: d.seq, card: ofRow(row) !== null, mine: !led(row) && who !== null && present.isViewer(me, who, []), text };
 }
 
 export function asked(row: J): J | null {

@@ -35,9 +35,11 @@ export function chatNamed(surface: string, title: string, link: string | null): 
 }
 
 /// Who a message comes from, as its header shows it: the sender's chat by its title, linked when it has a link. The
-/// first message of a chat an agent opened (chat_create) says it opened it.
-function header(surface: string, title: string, link: string | null, opened = false): string {
-  return tr(stationLang(), opened ? "station.session.openedBy" : "station.session.from", { from: chatNamed(surface, title, link) });
+/// first message of a chat an agent opened (chat_create) says it opened it, and how (`led`: it leads it; false: opened
+/// for its person; null: from before that was said).
+function header(surface: string, title: string, link: string | null, opened = false, led: boolean | null = null): string {
+  const key = !opened ? "station.session.from" : led === true ? "station.session.ledBy" : led === false ? "station.session.openedForYou" : "station.session.openedBy";
+  return tr(stationLang(), key, { from: chatNamed(surface, title, link) });
 }
 
 /// The name of a session once its preferred conversation is known.
@@ -187,7 +189,8 @@ export async function fromPeer(hub: Hub, peer: string, request: Json, ws: string
 export async function postFrom(hub: Hub, thread: SessionThread, author: string, title: string, link: string | null, text: string, targets: string[], given: Attachment[] = [], opened = false): Promise<string> {
   const identity = hub.actors.get(author)?.messageIdentity() ?? undefined;
   const row = thread.thread;
-  let said = `${header(row.surface, title, link, opened)}\n\n${text}`;
+  const led = opened && targets[0] !== undefined ? (hub.store.openerOf(targets[0])?.led ?? null) : null;
+  let said = `${header(row.surface, title, link, opened, led)}\n\n${text}`;
   const files = await keep(given, thumbsDir(hub.config().dataDir));
   const here = { channel: row.channel, threadTs: row.threadTs };
   let ts: string;

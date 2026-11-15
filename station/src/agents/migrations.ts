@@ -166,6 +166,7 @@ export const NOTES: [number, string][] = [
   [159, "station_move has no module agent-home any more: the memory and skills are the same on every station of the workspace already, and each person's presets go with their devices, so nothing of them moves."],
   [160, "station_move takes arriveStopped (move): an item whose need is not there goes all the same, arriving there stopped, waiting for it; a chat stopped by a move answers once, as someone speaks in it, what it waits for and where."],
   [161, "secret_save takes oauth: \"slack\" (kind token, no value, command or path): the card has the person sign in to Slack in the still.fail app, and their own Slack token is kept in their vault, given through the proxy to slack.com, for calling Slack's API as them; skill stillfail-vault says how."],
+  [162, "chat_create needs for: me for a chat you lead (it asks you, not a person, and its claims are yours to check before you pass them on: skill stillfail-leading), person for one opened for your person (theirs: you are told nothing of it). A chat headed 由…领导的/Led by <a chat's link> asks its leader (need_human reaches it, not a person) and gives what it would drop as a proposal; one headed …为你开的/Opened for you by is your person's."],
 ];
 
 /// The last note that replaces every one before it (the instructions rewritten whole): a session behind it hears only

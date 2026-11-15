@@ -336,13 +336,18 @@ export const SESSION_SEND = {
 export const CHAT_CREATE = {
   name: "chat_create",
   description:
-    "Open a new still.fail chat with an agent of its own, on this station or another station of the workspace, for work that should go on visibly beside yours (a part to do in parallel, something another machine is better placed for). It begins with your message. You are told how each of its turns ends: to wait for it, end your turn waiting. Write to its agent with session_send to its link. When an answer was uncertain, call again with the same key, which gives the chat made then rather than opening another. Skill stillfail-chats (Other agents) says more.",
+    "Open a new still.fail chat with an agent of its own, here or on another station of the workspace: a part of your work you lead (for: me; you are told how each of its turns ends, so wait by ending your turn waiting, and it asks you, not a person), or one for your person (for: person; theirs, you are told nothing). It begins with your message. Write to its agent with session_send to its link. Uncertain answer: call again with the same key. Skills stillfail-chats (Other agents) and stillfail-leading say more.",
   inputSchema: {
     "type": "object",
     "properties": {
+      "for": {
+        "type": "string",
+        "enum": ["me", "person"],
+        "description": "me: you lead it; person: your person's."
+      },
       "key": {
         "type": "string",
-        "description": "A name of your choosing for this chat (e.g. build-android): the same key again gives the same chat; a new one opens another."
+        "description": "Your name for it: the same key again gives the same chat."
       },
       "text": {
         "type": "string",
@@ -390,6 +395,7 @@ export const CHAT_CREATE = {
       }
     },
     "required": [
+      "for",
       "key",
       "text"
     ],

@@ -527,7 +527,7 @@ export function chatMarks(station: Store, viewer: Viewer, scope: { sessions: str
   stage("answered");
   const kept = [...store.keptChats(s, viewer.email, own.map((t) => t.thread.id))];
   const pins = Object.fromEntries(store.pins(s, viewer.email, scope === null ? null : keys));
-  const named = (o: { station: string | null; session: string; title: string | null }) => ({ ...(o.station !== null ? { station: o.station } : {}), session: o.session, ...(o.title !== null ? { title: o.title } : {}) });
+  const named = (o: { station: string | null; session: string; title: string | null; led?: true }) => ({ ...(o.station !== null ? { station: o.station } : {}), session: o.session, ...(o.title !== null ? { title: o.title } : {}), ...(o.led === true ? { led: true } : {}) });
   const openers = Object.fromEntries([...store.openers(s, keys)].map(([k, o]) => [k, named(o)]));
   const opened = Object.fromEntries([...store.openedChats(s, keys)].map(([k, list]) => [k, list.map(named)]));
   const shares = Object.fromEntries([...store.chatShares(s, keys)].map(([k, v]) => [k, { to: v.to.map((t) => t.workspace), write: v.write }]));
@@ -811,7 +811,7 @@ export function sharedChats(station: Store, archived: boolean, scope: Scope | nu
   const openers = store.openers(s, ids);
   // and the chats it opened, the first first, for its own list of them
   const opened = store.openedChats(s, ids);
-  const named = (o: { station: string | null; session: string; title: string | null }) => ({ ...(o.station !== null ? { station: o.station } : {}), session: o.session, ...(o.title !== null ? { title: o.title } : {}) });
+  const named = (o: { station: string | null; session: string; title: string | null; led?: true }) => ({ ...(o.station !== null ? { station: o.station } : {}), session: o.session, ...(o.title !== null ? { title: o.title } : {}), ...(o.led === true ? { led: true } : {}) });
   for (const row of rows) {
     if (typeof row.id !== "string") continue;
     const o = openers.get(row.id);

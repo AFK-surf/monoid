@@ -1535,7 +1535,7 @@ test("what is written of a chat beside what is said in it is told as written: ar
   store.setArchiveVerdict("a", 7, 12, { picked: "archive" });
   store.clearArchiveSuggestion("a", 7);
   store.setChatShare("a", [{ workspace: "w2", name: "Two" }], true, "a@x");
-  store.insertOpened({ childStation: "", child: "b", parentStation: "", parent: "a", key: "k", title: "子对话", link: null, openerTitle: null });
+  store.insertOpened({ childStation: "", child: "b", parentStation: "", parent: "a", key: "k", title: "子对话", link: null, openerTitle: null, led: true });
   h.stop();
   const marks = h.changes.filter((c) => c.type === "chatMark").map(({ type: _, ...m }: any) => m);
   assert.deepEqual(marks.map((m: any) => m.opened ? { ...m, opened: { ...m.opened, createdAt: 0 } } : m), [

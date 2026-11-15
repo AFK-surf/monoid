@@ -1228,7 +1228,7 @@ export function archiveVerdict(s: Store, thread: number): Json | null {
 // What a sidebar's items a change touched, or a chat, are read by: theirs alone, each by its key (`?`: a JSON list of
 // them). The rows of every chat ever shared or opened were read at each sidebar change and each chat told.
 export const SHARES_OF = "SELECT * FROM chat_shares WHERE session IN (SELECT value FROM json_each(?))";
-const OPENERS = "SELECT o.child, o.parent_station, o.parent, o.opener_title, p.title AS parent_title FROM opened_chats o LEFT JOIN sessions p ON o.parent_station = '' AND p.key = o.parent";
+const OPENERS = "SELECT o.child, o.parent_station, o.parent, o.opener_title, o.led, p.title AS parent_title FROM opened_chats o LEFT JOIN sessions p ON o.parent_station = '' AND p.key = o.parent";
 export const OPENERS_OF = `${OPENERS} WHERE o.child_station = '' AND o.child IN (SELECT value FROM json_each(?))`;
 const OPENED = "SELECT o.parent, o.child_station, o.child, o.title, c.title AS child_title FROM opened_chats o LEFT JOIN sessions c ON o.child_station = '' AND c.key = o.child";
 export const OPENED_OF = `${OPENED} WHERE o.parent_station = '' AND o.parent IN (SELECT value FROM json_each(?)) ORDER BY o.created_at, o.rowid`;
@@ -1256,9 +1256,10 @@ export function chatShares(s: Store, sessions: string[] | null = null): Map<stri
 
 /// The chats of this station another agent opened (chat_create), by their session's key: the session that opened each,
 /// on its station (null: this one), and what it was called then, else (one of this station's, opened before that was
-/// kept) its session's title. None on a database from before the table or the column.
+/// kept) its session's title, and `led` where its opener leads it (chat_create `for: "me"`: what it asks is no
+/// person's to decide). None on a database from before the table or the columns.
 /// Of those `children` name alone (a sidebar's items a change touched), or of all.
-export function openers(s: Store, children: string[] | null = null): Map<string, { station: string | null; session: string; title: string | null }> {
+export function openers(s: Store, children: string[] | null = null): Map<string, { station: string | null; session: string; title: string | null; led?: true }> {
   let rows: Json[];
   try {
     rows = children === null ? all(s, `${OPENERS} WHERE o.child_station = ''`) : all(s, OPENERS_OF, JSON.stringify(children));
@@ -1268,7 +1269,7 @@ export function openers(s: Store, children: string[] | null = null): Map<string,
   return new Map(
     rows.map((r) => [
       r.child as string,
-      { station: r.parent_station === "" ? null : (r.parent_station as string), session: r.parent as string, title: (r.opener_title ?? r.parent_title ?? null) as string | null },
+      { station: r.parent_station === "" ? null : (r.parent_station as string), session: r.parent as string, title: (r.opener_title ?? r.parent_title ?? null) as string | null, ...(Number(r.led) === 1 ? { led: true as const } : {}) },
     ]),
   );
 }

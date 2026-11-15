@@ -1,8 +1,11 @@
 // Chats an agent opens for another (chat_create): a new session in a still.fail chat of its own, on this station or on
 // another of the workspace (`session.create` there, its files and first message after it as session_send sends them).
 // The chat begins with the opener's message, headed as its opening; its starter is the person who started the opener's
-// chat, so what it asks goes to them. Each time a turn of it ends all_done or need_human (or fails, or is stopped), the
-// opener is told (`settled`, `session.notice` from another station). Nothing is sent again by itself: a call whose answer
+// chat. It is opened one of two ways (`for`, the user 2026-11-15: an agent leading others had become a blind merger of
+// their reports): for that person (`person`), theirs from then on, what it asks theirs and its opener told nothing; or
+// led by its opener (`me`), each time a turn of it ends all_done or need_human (or fails, or is stopped) the opener told
+// (`settled`, `session.notice` from another station) with what a leader does with it, and what it asks its opener's
+// to take up, in no person's 待处理 (the core's decisions.forViewer, `opener.led`) and pushed to nobody (cloud/notify.ts). Nothing is sent again by itself: a call whose answer
 // was uncertain is the agent's to repeat with the same key, which gives the chat made then rather than another.
 import { log } from "../ops/log.ts";
 import { tr, stationLang } from "../ops/i18n.ts";
@@ -46,6 +49,14 @@ type RuntimeName = RuntimeKind;
 export type Settled = "all_done" | "need_human" | "failed" | "stopped";
 
 type Made = { session: string; link: string | null; thread: string };
+
+/// chat_create `for`: whether the opener leads the chat (`me`) or opens it for its person (`person`).
+function ledOf(args: Json): boolean {
+  const f = given(args, "for");
+  if (f === "me") return true;
+  if (f === "person") return false;
+  throw new Error(`for is required, "me" or "person": "me" for a chat you lead (a part of your work: it reports to you, what it asks is yours to decide or take to your person, and you check what it says before you tell anyone: skill stillfail-leading), "person" for a chat opened for your person (theirs from then on: you are told nothing of it)`);
+}
 
 /// A string argument, trimmed; null when left out or empty.
 function given(args: Json, name: string): string | null {
@@ -179,17 +190,18 @@ async function stationNamed(hub: Hub, key: string, named: string | null): Promis
 }
 
 /// What the agent is told of a chat it opened.
-function opened(made: Made, station: string | null, again: boolean): string {
+function opened(made: Made, station: string | null, again: boolean, led: boolean): string {
   const where = station === null ? "this station" : `station ${station}`;
   const first = again ? `This key already opened ${made.link ?? made.session} (${made.thread} on ${where}); nothing new was opened or sent.` : `Opened ${made.link ?? made.session} (${made.thread} on ${where}); its agent is ${made.session}.`;
-  return `${first} Each time a turn there ends all_done or need_human (or fails), you are told here: wait for it by ending your turn waiting. Write to its agent with session_send to its link; read it with chat_read.`;
+  if (!led) return `${first} It is your person's chat now: they work with it there, what it asks goes to them and you are told nothing of it. Say where it is in your chat and do not take up or pass on its work.`;
+  return `${first} You lead it: put it in your goal ledger (the direction it is of, what counts as done, the evidence it is to bring: skill stillfail-leading). Each time a turn there ends all_done or need_human (or fails), you are told here: wait for it by ending your turn waiting. What it asks is yours to decide, or to take to your person yourself. Write to its agent with session_send to its link; read it with chat_read.`;
 }
 
 /// Says in the opener's chat, for people, that it opened a chat (the station's words, like its notices).
-async function sayOpened(hub: Hub, key: string, title: string, link: string | null) {
+async function sayOpened(hub: Hub, key: string, title: string, link: string | null, led: boolean) {
   const latest = hub.store.latestThread(key);
   if (!latest) return;
-  const text = tr(stationLang(), "station.session.opened", { chat: chatNamed(latest.thread.surface, title, link) });
+  const text = tr(stationLang(), led ? "station.session.opened" : "station.session.openedForPerson", { chat: chatNamed(latest.thread.surface, title, link) });
   try {
     const ts = await hub.chat(latest.connect).post({ channel: latest.thread.channel, threadTs: latest.thread.threadTs }, markNotice(text), []);
     hub.store.insertMessage({ thread: latest.thread.id, ts, authorKind: STATION_AUTHOR, author: STATION_AUTHOR, text, attachments: [] });
@@ -226,8 +238,11 @@ async function firstMessageInTurn(hub: Hub, thread: number, send: () => Promise<
 export async function chatCreate(hub: Hub, key: string, args: Args): Promise<string> {
   const row = hub.store.getSession(key);
   if (!row) throw new Error("unknown session");
-  if (hub.store.openerOf(key) !== null) throw new Error("this chat was opened by another agent, and opens none itself: ask its opener (session_send) or a person to open more");
+  // (one opened for its person is theirs, and opens chats as theirs do)
+  const openedBy = hub.store.openerOf(key);
+  if (openedBy !== null && openedBy.led !== false) throw new Error("this chat was opened by another agent, and opens none itself: ask its opener (session_send) or a person to open more");
   const k = keyOf(args);
+  const led = ledOf(args);
   const text = given(args, "text");
   if (text === null) throw new Error("text is required: the first message, what the new chat's agent is to do, standing on its own");
   if (chars(text) > MAX_TEXT) throw new Error(`text is too long (at most ${MAX_TEXT} characters): put the rest in a file and attach it`);
@@ -277,7 +292,7 @@ export async function chatCreate(hub: Hub, key: string, args: Args): Promise<str
       await sendHere(before.child, chat);
       thread = addressOf(chat);
     }
-    return opened({ session: before.child, link: before.link, thread }, there, true);
+    return opened({ session: before.child, link: before.link, thread }, there, true, before.led !== false);
   }
   if (there === null) {
     const bound = preset?.model ? boundHere(hub, row.ws ?? null, preset.model, preset.name) : null;
@@ -285,11 +300,11 @@ export async function chatCreate(hub: Hub, key: string, args: Args): Promise<str
     const more = { ...(preset !== null ? { preset: preset.id } : {}), fast, context, ...bound?.more };
     const [child, chat] = makeChat(hub, { ...choice, ...chosen, title, createdBy, ws: row.ws ?? null }, more);
     const link = hub.link(child) ?? null;
-    hub.store.insertOpened({ childStation: "", child, parentStation: "", parent: key, key: k, title, link, openerTitle: from });
+    hub.store.insertOpened({ childStation: "", child, parentStation: "", parent: key, key: k, title, link, openerTitle: from, led });
     const thread: SessionThread = { thread: chat, connect: INTERNAL_CONNECT };
     await sendHere(child, thread);
-    await sayOpened(hub, key, title ?? text.split("\n")[0]!.slice(0, 60), link);
-    return opened({ session: child, link, thread: addressOf(thread) }, null, false);
+    await sayOpened(hub, key, title ?? text.split("\n")[0]!.slice(0, 60), link, led);
+    return opened({ session: child, link, thread: addressOf(thread) }, null, false, led);
   }
 
   const call = peersOf(hub, key)!;
@@ -298,7 +313,7 @@ export async function chatCreate(hub: Hub, key: string, args: Args): Promise<str
   // With a preset, its copy (`presetCopy`), whose model configuration, where it names one, the station there runs.
   const request: Json = {
     method: preset !== null ? CREATE_PRESET : CREATE,
-    session: key, key: k, title, ...choice, choose: model === null, runtimeGiven: runtime !== null, createdBy, from: { title: from, link: fromLink },
+    session: key, key: k, title, ...choice, choose: model === null, runtimeGiven: runtime !== null, createdBy, from: { title: from, link: fromLink }, led,
     ...(fast !== null ? { fast } : {}),
     ...(context !== null ? { context } : {}),
     ...(preset !== null ? { presetCopy: copyFor(hub.presets, preset, hub.station() ?? "", there) } : {}),
@@ -325,9 +340,9 @@ export async function chatCreate(hub: Hub, key: string, args: Args): Promise<str
       throw new Error(`opened ${link ?? child} on station ${there}, but its first message was not sent: ${(error as Error).message}. Call chat_create again with the same key: it sends it once, if it has not arrived`);
     }
   }
-  hub.store.insertOpened({ childStation: there, child, parentStation: "", parent: key, key: k, title, link });
-  await sayOpened(hub, key, title ?? text.split("\n")[0]!.slice(0, 60), link);
-  return opened(result, there, false);
+  hub.store.insertOpened({ childStation: there, child, parentStation: "", parent: key, key: k, title, link, led });
+  await sayOpened(hub, key, title ?? text.split("\n")[0]!.slice(0, 60), link, led);
+  return opened(result, there, false, led);
 }
 
 /// A chat another station's session opens here (chat_create there, from station `peer`): made once per its key, in the
@@ -365,15 +380,25 @@ export async function createForPeer(hub: Hub, peer: string, request: Json, ws: s
   const [child] = makeChat(hub, { effort: given(request, "effort"), ...chosen, inherited: request?.inherited === true, title, createdBy, ws }, more);
   // What its opener was called (its chat's way back to it says so while that chat is not in the viewer's list).
   const openerTitle = typeof request?.from?.title === "string" && request.from.title !== "" ? (request.from.title as string) : null;
-  hub.store.insertOpened({ childStation: "", child, parentStation: peer, parent, key: k, title, link: hub.link(child) ?? null, openerTitle });
+  // (a station from before `for` sends none: told and asked as before it, led)
+  const led = request?.led === false ? false : request?.led === true ? true : null;
+  hub.store.insertOpened({ childStation: "", child, parentStation: peer, parent, key: k, title, link: hub.link(child) ?? null, openerTitle, led });
   log.info("hub", "chat opened for another station's session", { session: child, station: peer, opener: parent });
   return answer(child);
 }
 
 /// What an opener is told of a turn of a chat it opened.
-function notice(title: string, link: string | null, state: Settled, words: string | null): string {
+function notice(title: string, link: string | null, state: Settled, words: string | null, led: boolean | null): string {
   const chat = link !== null ? `"${title}" (${link})` : `"${title}"`;
   const said = words !== null && words !== "" ? `: ${words}` : "";
+  if (led === true) {
+    const ended =
+      state === "need_human" ? `asks you${said}. It is yours to decide (session_send it your answer), or to take to your person in your own chat, with what you checked; no person was asked`
+      : state === "failed" ? `stopped with an error${said}`
+      : state === "stopped" ? "was stopped by a person"
+      : `ended its turn all_done${said}`;
+    return `The chat you lead, ${chat}, ${ended}. Its words are its claims: check against your goal ledger before you tell anyone, yourself in the code or data any it gives up, finds no gain in or says needs your person, and anything against your person's rules (skill stillfail-leading). Read it with chat_read; write to its agent with session_send to its link.`;
+  }
   const ended =
     state === "need_human" ? `needs a person${said}. They are asked there; help if you can, or wait`
     : state === "failed" ? `stopped with an error${said}`
@@ -386,11 +411,13 @@ function notice(title: string, link: string | null, state: Settled, words: strin
 export function settled(hub: Hub, key: string, state: Settled, words: string | null) {
   const opener = hub.store.openerOf(key);
   if (opener === null) return;
+  // (opened for its person: its opener is told nothing of it)
+  if (opener.led === false) return;
   const [title, link] = sender(hub, key);
   if (opener.parentStation === "") {
     hub.store.setOpenedState("", key, state);
     try {
-      hub.notify(opener.parent, notice(title, link, state, words));
+      hub.notify(opener.parent, notice(title, link, state, words, opener.led));
     } catch (error) {
       log.warn("hub", "the opener of a chat was not told", { session: key, opener: opener.parent, error: (error as Error).message });
     }
@@ -426,6 +453,6 @@ export function noticeForPeer(hub: Hub, peer: string, request: Json, ws: string 
   if (!record) throw new Error(`${parent} opened no chat ${child} on that station`);
   hub.store.setOpenedState(peer, child, state);
   const title = given(request, "title") ?? record.title ?? child;
-  hub.notify(parent, notice(title, record.link, state, given(request, "words")));
+  hub.notify(parent, notice(title, record.link, state, given(request, "words"), record.led));
   return { told: true };
 }

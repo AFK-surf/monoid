@@ -443,12 +443,16 @@ export type Opened = {
   link: string | null; state: string | null; createdAt: number;
   /// What the parent was called when it opened the child (kept by the child's station only; null before it).
   openerTitle: string | null;
+  /// Whether its opener leads it (chat_create `for: "me"`): its asks are its opener's to take up, not its person's.
+  /// Null on a row from before it (its opener told as a leader is, its asks its person's).
+  led: boolean | null;
 };
 
 export function toOpened(r: Json): Opened {
   return {
     childStation: r.child_station, child: r.child, parentStation: r.parent_station, parent: r.parent, key: r.key, title: r.title,
     link: r.link, state: r.state, createdAt: r.created_at, openerTitle: r.opener_title ?? null,
+    led: r.led === undefined || r.led === null ? null : Number(r.led) === 1,
   };
 }
 

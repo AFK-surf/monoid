@@ -47,6 +47,16 @@ test("only_the_assignee_gets_a_card_but_anyone_can_answer_in_chat", () => {
   assert.equal(old.assigneeText, "尚未指定决策人");
 });
 
+test("what a chat an agent leads asks waits for its leader, not a person", () => {
+  const starter = { id: "owner@x.com", name: "小王", email: "owner@x.com", via: "cloud" };
+  const asked: J = { card: textCard(6), creator: starter, opener: { session: "lead", title: "性能", led: true } };
+  assert.equal(d.forViewer(asked, { email: "owner@x.com" }), null);
+  assert.equal(d.askOf(asked, d.asked(asked), { email: "owner@x.com" }).mine, false);
+  // one an agent opened for its person (no led) is theirs as any chat is
+  const theirs: J = { ...asked, opener: { session: "lead", title: "性能" } };
+  assert.notEqual(d.forViewer(theirs, { email: "owner@x.com" }), null);
+});
+
 test("a_card_no_one_was_assigned_is_its_starters", () => {
   const starter = { id: "owner@x.com", name: "小王", email: "owner@x.com", via: "cloud" };
   const row: J = { card: textCard(6), creator: starter };

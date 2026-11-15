@@ -259,7 +259,7 @@ let shares_of_sql : String =
 ///|
 /// read/store.ts OPENERS_OF.
 let openers_of_sql : String =
-  #|SELECT o.child, o.parent_station, o.parent, o.opener_title, p.title AS parent_title FROM opened_chats o LEFT JOIN sessions p ON o.parent_station = '' AND p.key = o.parent WHERE o.child_station = '' AND o.child IN (SELECT value FROM json_each(?))
+  #|SELECT o.child, o.parent_station, o.parent, o.opener_title, o.led, p.title AS parent_title FROM opened_chats o LEFT JOIN sessions p ON o.parent_station = '' AND p.key = o.parent WHERE o.child_station = '' AND o.child IN (SELECT value FROM json_each(?))
 
 ///|
 /// read/store.ts OPENED_OF.
