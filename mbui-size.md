@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [a08946bd9](https://github.com/AFK-surf/monoid/commit/a08946bd900e1a4972bb4e0f1281d910551ea032) mbui: rule 7 reads a card's pieces as one card; 全部 | 2.09 | 2.88 | 12.38 | 33.31 | 48.01 | 28.82 | 56.61 | 98.85 | 145.71 |
 | [f434dc9a7](https://github.com/AFK-surf/monoid/commit/f434dc9a7ef8d3a38905362c308a093070ef9115) station: the front lives through a stream whose No | 2.09 | 2.88 | 12.38 | 33.31 | 48.01 | 28.82 | 56.61 | 98.85 | 145.71 |
 | [4390a1a5c](https://github.com/AFK-surf/monoid/commit/4390a1a5c636af58a8adf01feabf4532e083320b) station, app: an Antigravity CLI (Gemini) sign-in  | 2.09 | 2.88 | 12.37 | 33.31 | 48 | 28.82 | 56.61 | 98.85 | 112.57 |
 | [87e6c619b](https://github.com/AFK-surf/monoid/commit/87e6c619b601b6509f60c58416e45b225f28b372) app, mbui: close the side panel before the window  | 2.09 | 2.87 | 12.37 | 33.31 | 48 | 28.82 | 56.61 | 98.85 | 114.68 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [012d73161](https://github.com/AFK-surf/monoid/commit/012d731614df1747268d790734cd3d2900353730) feat(history): wrap expanded steps in unified surf | 2.07 | 2.84 | 12.25 | 32.14 | 45.33 | 28.72 | 56.49 | 99.08 | 113.05 |
 | [b2718f752](https://github.com/AFK-surf/monoid/commit/b2718f7525b188439ab9a1f798ed6623a4beb6a7) app: a long table of the chat's page made as nodes | 2.07 | 2.84 | 12.24 | 32.12 | 45.31 | 28.71 | 56.48 | 98.65 | 80.4 |
 | [902229e18](https://github.com/AFK-surf/monoid/commit/902229e180240bc12d24e0a07233046bc53931a9) app: a long message of the chat's page made as nod | 2.07 | 2.84 | 12.24 | 32.12 | 45.31 | 28.71 | 56.48 | 98.65 | 80.4 |
-| [976a444e2](https://github.com/AFK-surf/monoid/commit/976a444e268bbe318fbcb6d044c14d3bb716352f) station: a spent session goes on on another runtim | 2.06 | 2.84 | 12.23 | 32.11 | 45.29 | 28.7 | 56.46 | 98.6 | 108.19 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [a08946bd9](https://github.com/AFK-surf/monoid/commit/a08946bd900e1a4972bb4e0f1281d910551ea032) mbui: rule 7 reads a card's pieces as one card; 全部 | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.43 |
 | [f434dc9a7](https://github.com/AFK-surf/monoid/commit/f434dc9a7ef8d3a38905362c308a093070ef9115) station: the front lives through a stream whose No | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.28 |
 | [4390a1a5c](https://github.com/AFK-surf/monoid/commit/4390a1a5c636af58a8adf01feabf4532e083320b) station, app: an Antigravity CLI (Gemini) sign-in  | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.28 |
 | [87e6c619b](https://github.com/AFK-surf/monoid/commit/87e6c619b601b6509f60c58416e45b225f28b372) app, mbui: close the side panel before the window  | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.28 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [012d73161](https://github.com/AFK-surf/monoid/commit/012d731614df1747268d790734cd3d2900353730) feat(history): wrap expanded steps in unified surf | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.1 |
 | [b2718f752](https://github.com/AFK-surf/monoid/commit/b2718f7525b188439ab9a1f798ed6623a4beb6a7) app: a long table of the chat's page made as nodes | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.1 |
 | [902229e18](https://github.com/AFK-surf/monoid/commit/902229e180240bc12d24e0a07233046bc53931a9) app: a long message of the chat's page made as nod | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.13 |
-| [976a444e2](https://github.com/AFK-surf/monoid/commit/976a444e268bbe318fbcb6d044c14d3bb716352f) station: a spent session goes on on another runtim | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.13 |
