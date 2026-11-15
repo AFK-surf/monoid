@@ -576,12 +576,19 @@ impl<O: Os> Lifecycle<O> {
         self.probing = None;
         self.front_misses = 0;
         self.front_probe_at = None;
+        self.schedule_front_retry();
+        self.tick();
+    }
+
+    /// No front runs where the release has one (it did not start as the launcher did): one is started again after
+    /// `front_retry`. No Node is linked to a front that is gone, so none hands over for it now (`front_gone` is for one
+    /// that ended under the Nodes).
+    pub fn schedule_front_retry(&mut self) {
         if self.front_retry_at.is_none() {
             let delay = self.front_retry_delay();
             log::info(&format!("the front is started again in {} s", delay.as_secs()));
             self.front_retry_at = Some(self.os.now() + delay);
         }
-        self.tick();
     }
 
     fn front_retry_delay(&self) -> Duration {
@@ -1659,5 +1666,37 @@ mod tests {
         assert_eq!(station.os.probed.len(), 6);
         station.pass(s(30));
         assert_eq!(station.os.probed.len(), 7);
+    }
+    #[test]
+    fn a_front_that_did_not_start_with_a_launcher_taking_up_a_node_is_tried_later_with_one_handover_now() {
+        let mut station = station("frontabsent", false);
+        station.current = None;
+        let told = Rc::new(RefCell::new(vec![]));
+        station.os.told.push((50, told.clone()));
+        station.adopt(FakeNode { pid: 50, told }, "0.1.0".into(), vec![("admin".into(), 5002), ("mcp".into(), 5001)], true);
+        // resume(): its front did not start; the handover it was asked for goes on, once.
+        station.schedule_front_retry();
+        let before = station.last();
+        station.start_next();
+        let next = station.last();
+        assert_eq!(next, before + 1, "one Node started beside");
+        assert!(station.file("handoff-failed").is_none());
+        station.said(Slot::Next, heartbeat());
+        station.said(Slot::Next, ready("0.2.0"));
+        assert_eq!(station.told(50), ["handover"]);
+        station.ended(50, EXITED_0);
+        station.serves(Slot::Current, 6000);
+        assert_eq!(station.serving(), next);
+        assert_eq!(station.last(), next, "no other handover meanwhile");
+        // At its time the front starts, and the Node serving hands over to one linked to it.
+        station.pass(s(300) - MS);
+        station.said(Slot::Current, heartbeat());
+        assert_eq!(station.os.started_fronts, 0);
+        station.pass(MS);
+        assert_eq!(station.os.started_fronts, 1);
+        let linked = station.last();
+        assert_eq!(linked, next + 1);
+        station.said(Slot::Next, ready("0.2.0"));
+        assert_eq!(station.told(next), ["handover"]);
     }
 }

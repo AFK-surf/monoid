@@ -594,9 +594,9 @@ pub fn run(mut options: Options) -> i32 {
     let front = crate::front::Front::start(&options.app, &options.data);
     let wanted = front.is_none() && crate::front::Front::in_release(&options.app);
     let mut station = Lifecycle::new(System { options, lock, mcp, admin, parent, own, front, probed: channel() }, Times::of_env(), run, with_parent);
-    // One the release has that did not start: tried again later, as one that ended as it started.
+    // One the release has that did not start: tried again later (no Node is linked to it, so none hands over for it).
     if wanted {
-        station.front_gone();
+        station.schedule_front_retry();
     }
     station.start();
     serve(&mut station, signals)
@@ -633,7 +633,7 @@ fn resume(options: Options, run: PathBuf, state: &str) -> i32 {
     let mut station = Lifecycle::new(System { options, lock, mcp, admin, parent, own, front, probed: channel() }, Times::of_env(), run, with_parent);
     station.adopt(node, version, served, heartbeats);
     if wanted {
-        station.front_gone();
+        station.schedule_front_retry();
     }
     // A Node that ended meanwhile (its SIGCHLD held, then come) is reaped as signals come.
     station.start_next();
