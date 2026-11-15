@@ -313,7 +313,6 @@ let switches_known : Map[String, Int] = Map([
     ("中屏 player-opening: toggle 「下一个」", 2),
     ("中屏 player-video: toggle 「上一个」", 3),
     ("中屏 player-video: toggle 「下一个」", 3),
-    ("中屏 settings-station-processes: radio 「Station」", 2),
     ("大屏 chat-history-side: toggle 「详情」", 2),
     ("大屏 chat-history-side-working: toggle 「详情」", 2),
     ("大屏 chat-jobs-side: radio 「输出」", 2),
@@ -382,7 +381,6 @@ let switches_known : Map[String, Int] = Map([
     ("大屏 player-video: toggle 「上一个」", 3),
     ("大屏 player-video: toggle 「下一个」", 3),
     ("大屏 player-video: toggle 「关闭」", 2),
-    ("大屏 settings-station-processes: radio 「Station」", 2),
     ("小屏 chat-preview-apk: toggle 「关闭（Esc）」", 2),
     ("小屏 chat-preview-code: toggle 「关闭（Esc）」", 2),
     ("小屏 chat-preview-csv: toggle 「关闭（Esc）」", 2),
@@ -401,7 +399,6 @@ let switches_known : Map[String, Int] = Map([
     ("小屏 player-opening: toggle 「上一个」", 3),
     ("小屏 player-video: toggle 「上一个」", 3),
     ("小屏 player-video: toggle 「下一个」", 3),
-    ("小屏 settings-station-processes: radio 「Station」", 2),
     // (a terminal's 按键 on a wide page, #6361: its tray of keys comes at once a padding's height, its keys under it,
     // then grows as they make their way in, the terminal over it giving way twice; its own mending the terminal's)
     ("中屏 terminal: toggle 「按键」", 2),
