@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [5b9c3734d](https://github.com/AFK-surf/monoid/commit/5b9c3734daa8026f03201693ef05c1dc47b44195) app: a station its safe mode does not name offers  | 2.12 | 2.95 | 12.73 | 33.8 | 50.33 | 29.19 | 57.93 | 99.35 | 119.61 |
 | [7574a2a49](https://github.com/AFK-surf/monoid/commit/7574a2a49e0db019a910b3084e7db99aaeb99492) ci: mbui-size's measures uploaded continue-on-erro | 2.12 | 2.95 | 12.72 | 33.79 | 50.29 | 29.19 | 57.93 | 99.35 | 119.09 |
 | [f8375af62](https://github.com/AFK-surf/monoid/commit/f8375af62631893867e733dc158ffeef7dee247c) mac: the app's terminal stub compiled again where  | 2.12 | 2.95 | 12.72 | 33.79 | 50.29 | 29.19 | 57.93 | 99.35 | 119.01 |
 | [bb437c67c](https://github.com/AFK-surf/monoid/commit/bb437c67c8db96273a097ec999014f66032bfbcb) base: Reply::tap, tap.opus, forget on closes, a sh | 2.12 | 2.95 | 12.72 | 33.79 | 50.29 | 29.19 | 57.93 | 99.35 | 111.54 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [dfdd617eb](https://github.com/AFK-surf/monoid/commit/dfdd617eb11399e57712396f5d7544e1de8d065b) app: the history's rail one straight line, its row | 2.08 | 2.87 | 12.34 | 33.28 | 47.88 | 28.82 | 56.61 | 99.22 | 116.49 |
 | [832dfa290](https://github.com/AFK-surf/monoid/commit/832dfa2903242fad5d75b66d79d34fc740f83d81) station: an actor does nothing to a runtime sessio | 2.08 | 2.87 | 12.34 | 33.28 | 47.88 | 28.82 | 56.61 | 99.22 | 116.49 |
 | [6c9755ef0](https://github.com/AFK-surf/monoid/commit/6c9755ef052deadcf720cf8c12a7b10b23fce457) app: show intermediate profile states, non-window  | 2.08 | 2.86 | 12.31 | 33.21 | 47.76 | 28.76 | 56.53 | 98.91 | 117.11 |
-| [74b2a61d5](https://github.com/AFK-surf/monoid/commit/74b2a61d515e916bcc98e05bcfb4d6c85a25b016) perf(mbui): a list drawn whole as one read against | 2.08 | 2.86 | 12.3 | 33.23 | 47.9 | 28.74 | 56.48 | 98.83 | 110.66 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [5b9c3734d](https://github.com/AFK-surf/monoid/commit/5b9c3734daa8026f03201693ef05c1dc47b44195) app: a station its safe mode does not name offers  | 0.41 | 0.53 | 1.99 | 3.1 | 4.58 | 1.47 | 3.83 | 57.08 |
 | [7574a2a49](https://github.com/AFK-surf/monoid/commit/7574a2a49e0db019a910b3084e7db99aaeb99492) ci: mbui-size's measures uploaded continue-on-erro | 0.41 | 0.53 | 1.99 | 3.1 | 4.58 | 1.47 | 3.83 | 57.08 |
 | [f8375af62](https://github.com/AFK-surf/monoid/commit/f8375af62631893867e733dc158ffeef7dee247c) mac: the app's terminal stub compiled again where  | 0.41 | 0.53 | 1.99 | 3.1 | 4.58 | 1.47 | 3.83 | 57.08 |
 | [bb437c67c](https://github.com/AFK-surf/monoid/commit/bb437c67c8db96273a097ec999014f66032bfbcb) base: Reply::tap, tap.opus, forget on closes, a sh | 0.41 | 0.53 | 1.99 | 3.1 | 4.58 | 1.47 | 3.83 | 57.08 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [dfdd617eb](https://github.com/AFK-surf/monoid/commit/dfdd617eb11399e57712396f5d7544e1de8d065b) app: the history's rail one straight line, its row | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.23 |
 | [832dfa290](https://github.com/AFK-surf/monoid/commit/832dfa2903242fad5d75b66d79d34fc740f83d81) station: an actor does nothing to a runtime sessio | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.12 |
 | [6c9755ef0](https://github.com/AFK-surf/monoid/commit/6c9755ef052deadcf720cf8c12a7b10b23fce457) app: show intermediate profile states, non-window  | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.12 |
-| [74b2a61d5](https://github.com/AFK-surf/monoid/commit/74b2a61d515e916bcc98e05bcfb4d6c85a25b016) perf(mbui): a list drawn whole as one read against | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.12 |
