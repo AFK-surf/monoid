@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { basename, delimiter, dirname, join } from "node:path";
 import { after, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { ClaudeDriver, type ClaudeDriverOptions, SILENT_SUBAGENTS, SUBAGENT_HOOK, type Turn, backgroundOf, classifyResult, hooksOf, onFrame } from "../src/agents/claude.ts";
+import { ClaudeDriver, type ClaudeDriverOptions, SILENT_SUBAGENTS, SUBAGENT_HOOK, type Turn, backgroundOf, hooksOf, turnAfter } from "../src/agents/claude.ts";
 import { RenewRefused } from "../src/accounts/console.ts";
 import { Said } from "../src/ops/i18n.ts";
 import { REPO_RULES_COMMAND, REPO_RULES_HOOK, hookCommand, hookNode } from "../src/agents/repo-rules.ts";
@@ -96,7 +96,7 @@ const stdin = (dump: string) => readFileSync(`${dump}.stdin`, "utf8").trim().spl
 // Each test has its own driver, profile and runners: they run side by side.
 test("what a process runs in the background, as its task frames tell it", () => {
   const turn: Turn = { busy: false, aborting: false, authFailure: null, closed: false };
-  const feed = (frame: object) => onFrame(frame, turn, () => {}, () => {});
+  const feed = (frame: object) => turnAfter(frame, turn);
   const ids = () => backgroundOf(turn).map((t) => `${t.kind}:${t.id}:${t.description}`);
   feed({ type: "system", subtype: "init" });
   feed({ type: "system", subtype: "task_started", task_id: "a1", task_type: "local_agent", description: "gaps", is_backgrounded: true });
@@ -119,55 +119,29 @@ test("what a process runs in the background, as its task frames tell it", () => 
   assert.deepEqual(ids(), ["command:b2:build"]);
 });
 
-test("what it has going in the background is said again as it changes, each with when it was seen starting", () => {
+test("what it has going in the background, each with when it was seen starting", () => {
   const turn: Turn = { busy: false, aborting: false, authFailure: null, closed: false };
-  const told: unknown[] = [];
   let now = 1_000;
-  const feed = (frame: object) => onFrame(frame, turn, (e) => void (e.type === "live" && e.event.kind === "tasks" && told.push(e.event.tasks)), () => {}, () => now);
+  const feed = (frame: object) => turnAfter(frame, turn, () => now);
   feed({ type: "system", subtype: "init" });
   feed({ type: "system", subtype: "task_started", task_id: "a1", task_type: "local_agent", description: "gaps", is_backgrounded: true });
   now = 5_000;
-  // One the turn waits on is not in the background: nothing said of it, until it is moved there.
+  // One the turn waits on is not in the background, until it is moved there.
   feed({ type: "system", subtype: "task_started", task_id: "b1", task_type: "local_bash", description: "build", is_backgrounded: false });
-  assert.equal(told.length, 1);
+  assert.deepEqual(backgroundOf(turn), [{ id: "a1", kind: "agent", description: "gaps", startedAt: 1_000 }]);
   now = 9_000;
   feed({ type: "system", subtype: "task_updated", task_id: "b1", patch: { is_backgrounded: true } });
   feed({ type: "result", result: "ok" });
+  assert.deepEqual(backgroundOf(turn), [{ id: "a1", kind: "agent", description: "gaps", startedAt: 1_000 }, { id: "b1", kind: "command", description: "build", startedAt: 5_000 }]);
   feed({ type: "system", subtype: "task_notification", task_id: "a1", status: "completed" });
-  assert.deepEqual(told, [
-    [{ id: "a1", kind: "agent", description: "gaps", startedAt: 1_000 }],
-    [{ id: "a1", kind: "agent", description: "gaps", startedAt: 1_000 }, { id: "b1", kind: "command", description: "build", startedAt: 5_000 }],
-    [{ id: "b1", kind: "command", description: "build", startedAt: 5_000 }],
-  ]);
-});
-
-test("a /compact that compacted nothing ends failed, saying why; one that did, completed", () => {
-  const ended: unknown[] = [];
-  const emit = (e: RuntimeEvent) => e.type === "turnEnded" && ended.push(e.outcome);
-  const turn: Turn = { busy: true, aborting: false, authFailure: null, closed: false, compacting: true };
-  // As Claude Code 2.1.289 says it: compacting, how it went, then a result of success all the same.
-  onFrame({ type: "system", subtype: "status", status: "compacting" }, turn, emit, () => {});
-  onFrame({ type: "system", subtype: "status", status: null, compact_result: "failed", compact_error: "Not enough messages to compact." }, turn, emit, () => {});
-  onFrame({ type: "system", subtype: "init" }, turn, emit, () => {});
-  onFrame({ type: "result", subtype: "success", is_error: false }, turn, emit, () => {});
-  assert.deepEqual(ended, [{ kind: "failed", reason: "other", message: "Not enough messages to compact." }]);
-  assert.equal(turn.compacting, false);
-  Object.assign(turn, { busy: true, compacting: true });
-  onFrame({ type: "system", subtype: "status", status: null, compact_result: "success" }, turn, emit, () => {});
-  onFrame({ type: "system", subtype: "compact_boundary", compact_metadata: { trigger: "manual" } }, turn, emit, () => {});
-  onFrame({ type: "result", subtype: "success", is_error: false }, turn, emit, () => {});
-  assert.deepEqual(ended[1], { kind: "completed" });
-  // A failed compaction in a turn of its own (automatic) is not this turn's failure.
-  Object.assign(turn, { busy: true });
-  onFrame({ type: "system", subtype: "status", status: null, compact_result: "failed", compact_error: "x" }, turn, emit, () => {});
-  onFrame({ type: "result", subtype: "success", is_error: false }, turn, emit, () => {});
-  assert.deepEqual(ended[2], { kind: "completed" });
+  assert.deepEqual(backgroundOf(turn), [{ id: "b1", kind: "command", description: "build", startedAt: 5_000 }]);
+  assert.equal(turn.busy, false);
 });
 
 test("a command a turn waited on and was never told ended does not outlive the turn", () => {
   const turn: Turn = { busy: false, aborting: false, authFailure: null, closed: false };
-  onFrame({ type: "system", subtype: "task_started", task_id: "b1", task_type: "local_bash", description: "x", is_backgrounded: false }, turn, () => {}, () => {});
-  onFrame({ type: "result", result: "ok" }, turn, () => {}, () => {});
+  turnAfter({ type: "system", subtype: "task_started", task_id: "b1", task_type: "local_bash", description: "x", is_backgrounded: false }, turn);
+  turnAfter({ type: "result", result: "ok" }, turn);
   assert.deepEqual(backgroundOf(turn), []);
   assert.deepEqual(turn.tasks, {});
 });
@@ -408,36 +382,17 @@ describe("the Claude Code driver", { concurrency: true }, () => {
     assert.deepEqual(outcome(events, 1), { kind: "failed", reason: "rate_limit", message: "You've hit your weekly limit · resets Oct 8" });
     assert.deepEqual(outcome(events, 2), { kind: "failed", reason: "context", message: "prompt is too long" });
     assert.deepEqual(outcome(events, 3), { kind: "completed" }, "a successful text saying a limit is no failure");
-    assert.equal(classifyResult("Claude AI usage limit reached"), "rate_limit");
-    assert.equal(classifyResult("You've reached your Fable limit. Switch to another model, or manage usage credits at https://claude.ai/settings/usage?from=cc_cli_limit_message, to continue."), "rate_limit");
     // A model's own limit names the model; an account's window is no model (#4365).
     assert.equal(modelLimitOf("You've reached your Fable limit. Switch to another model, or manage usage credits at https://claude.ai/settings/usage, to continue."), "Fable");
     assert.equal(modelLimitOf("Claude usage limit reached: you have reached your weekly usage limit"), null);
     assert.equal(modelLimitOf("You've hit your session limit · resets 3:40am"), null);
     // Claude Code's words for it since 2026-11-14: told as the model's limit too, not the model failing.
     const hit = "You've hit your Fable limit · resets Nov 20 at 9am (Asia/Tokyo). Switch to another model to continue.";
-    assert.equal(classifyResult(hit), "rate_limit");
     assert.equal(modelLimitOf(hit), "Fable");
     for (const text of ["You've hit your weekly limit · resets Oct 8", "You've hit your 5-hour limit · resets 7:50am (UTC)", "You've hit your daily limit"]) {
       assert.equal(modelLimitOf(text), null, text);
     }
-    assert.equal(classifyResult("session limit configuration is invalid"), "model");
-    assert.equal(classifyResult('API Error: 403 {"error":{"type":"forbidden","message":"Request not allowed"}}'), "refused");
-    assert.equal(classifyResult("API Error: 403 OAuth token does not meet scope requirement"), "auth");
-    assert.equal(classifyResult('API Error: 529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}'), "overloaded");
     await session.dispose();
-  });
-
-  test("an hourly allowance failure is a rate limit; the same words in a reply are not", () => {
-    for (const text of ["You've hit your 5-hour limit · resets 7:50am (UTC)", "You've hit your 5 hour limit", "You've hit your 3-hour limit"]) {
-      for (const is_error of [true, false]) {
-        const { events, push } = listen();
-        const turn: Turn = { busy: true, aborting: false, authFailure: null, closed: false };
-        onFrame({ type: "result", subtype: "success", is_error, result: text }, turn, push, () => {});
-        assert.deepEqual(outcome(events), is_error ? { kind: "failed", reason: "rate_limit", message: text } : { kind: "completed" });
-      }
-    }
-    assert.equal(classifyResult("5-hour limit configuration is invalid"), "model");
   });
 
   test("a session that ran in another directory is resumed from where claude looks, its cwd's project; none at all is refused", async () => {
@@ -456,18 +411,6 @@ describe("the Claude Code driver", { concurrency: true }, () => {
     assert.equal(readFileSync(join(before, `${id}.jsonl`), "utf8"), '{"type":"user"}\n{"type":"assistant"}\n', "one file, under both names");
     await session.dispose();
     await assert.rejects(d.open({ ...options(), resume: "0c0c0c0c-0000-4000-8000-000000000002" }, listen().push), /no claude transcript/);
-  });
-
-  test("a turn that failed with no result says claude's errors, not just error_during_execution", () => {
-    // As claude 2.1.321 ends a turn it could not run (here --resume of a session it has not).
-    const said = "No conversation found with session ID: 11111111-1111-1111-1111-111111111111";
-    const { events, push } = listen();
-    const turn: Turn = { busy: true, aborting: false, authFailure: null, closed: false };
-    onFrame({ type: "result", subtype: "error_during_execution", is_error: true, num_turns: 0, errors: [said] }, turn, push, () => {});
-    assert.deepEqual(outcome(events), { kind: "failed", reason: classifyResult(said), message: said });
-    const none = listen();
-    onFrame({ type: "result", subtype: "error_during_execution", is_error: true, errors: [] }, { busy: true, aborting: false, authFailure: null, closed: false }, none.push, () => {});
-    assert.equal((outcome(none.events) as { message: string }).message, "error_during_execution");
   });
 
   test("the first api_retry 401 interrupts the turn, which fails as auth", async () => {

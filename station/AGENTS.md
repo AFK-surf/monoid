@@ -5,7 +5,8 @@
 - Processes: the launcher (`native/launcher`, Rust) keeps the pid, the data directory's lock and the ports, and on an
   update starts the next Node before letting the old one go; each agent process runs under a runner
   (`native/runner`), so a turn goes on while the station restarts or crashes and the next one takes it up
-  (`src/agents/runner.ts`; `adopt` in `src/agents/process.ts`). The station's iroh endpoint is kept by the MoonBit
+  (`src/agents/runner.ts`; `adopt` in `src/agents/process.ts`); a runner no driver holds once it has (`ownedRunners`),
+  or later, is ended (`src/sessions/hub.ts` `takeUp`, `endOrphan`). The station's iroh endpoint is kept by the MoonBit
   front (`mb/src/front/mesh.mbt`), which the launcher starts and keeps across Node's handovers
   (`native/launcher/src/front.rs`), for each Node in turn (`src/mesh/front.ts`, its streams carried by the shell and
   none of their bytes by the program); where none runs (Windows, a checkout without the program) Node binds it itself
@@ -143,13 +144,15 @@
   the program's reads are compared with (`test/mb-usage-counter.test.ts`).
 - Runtimes are drivers behind one seam (`src/agents/runtime.ts`): Claude Code a `claude -p` process per session;
   Codex one app-server per account, a thread per session, whose per-session settings go in `thread/start`'s config,
-  never the process's environment; the others in `src/agents/`. A driver owns its child's stdin. Claude Code's output
-  is read by the MoonBit program (`src/agents/mb-agents.ts`, `mb/src/reader/agents.mbt`, its frames `mb/src/claude`),
-  off the station's thread: Node starts and ends the processes and is told the events, each line
-  acknowledged to its runner once Node took them; a handover holds its reading first (`freeze`, hub.ts `handOver`).
+  never the process's environment, ended once idle (`WARM_MS`, its threads opened again with their next turn); the
+  others in `src/agents/`. A driver owns its child's stdin. Claude Code's output is read by the MoonBit program
+  (`src/agents/mb-agents.ts`, `mb/src/reader/agents.mbt`, its frames `mb/src/claude`), off the station's thread: Node
+  starts and ends the processes and is told the events, each line acknowledged to its runner once Node took them; a
+  handover holds its reading first (`freeze`, hub.ts `handOver`).
   A Claude session's events go to its actor in the program itself: Node is told each batch, takes what its own parts
-  need (a token's renewal, a turn's outcome) and says it taken (`routed`, mb-actor.ts `#took`), and the
-  program gives the actor and the live view the batch it kept; `test/hub-e2e.test.ts` holds that none goes through Node.
+  need (a token's renewal, a turn's outcome, told whole with its failure's reason: `mb/src/claude/outcome.mbt`) and
+  says it taken (`routed`, mb-actor.ts `#took`), and the program gives the actor and the live view the batch it kept;
+  `test/hub-e2e.test.ts` holds that none goes through Node.
   A Codex app-server's output is read there too, its lines given Node whole but for its diffs (`turn/diff/updated`,
   of which the station keeps nothing). One program for every driver and the actors, running while one of them uses it,
   on every system a station runs on (a Windows runner's named pipe opened by the shell as its socket): there is no
@@ -382,7 +385,8 @@
   thread of what devices ask or streams tell (one started again took seconds; the program's reader, milliseconds, may
   go), and never the browser, whose chats' contexts are kept in memory only (`src/browser/browsers.ts`): closing it would sign
   them out. The machine under pressure (high, critical), not the station past only its own limit, also ends every idle
-  session's process (`Hub.evictAllIdle`): those are gigabytes, and their conversations resume on the next message.
+  session's process and every app-server no turn runs on (`Hub.evictAllIdle`, a driver's `evictIdle`): those are
+  gigabytes, and their conversations resume on the next message.
   Node held past its hard limit asks the launcher to hand over (`src/ops/restart.ts` `restarter`), never
   `becomeOther` or an exit, which would end the sessions where there is no launcher.
 - What is written to a program's stdin is bounded both sides: Node ends a program that left `STDIN_MOST` unread

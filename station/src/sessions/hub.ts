@@ -26,8 +26,8 @@ import { homedir } from "node:os";
 import { Clock, Effect, Fiber } from "effect";
 import { liveClock, within } from "../ops/fibers.ts";
 import { RUNTIME_KINDS, type AgentDriver, type AgentSession, type RuntimeKind } from "../agents/runtime.ts";
-import { runnerId } from "../agents/process.ts";
-import { allLeft, isTerminalRunner, liveRunners } from "../agents/runner.ts";
+import { endRunner, runnerId } from "../agents/process.ts";
+import { RUNNER_LEFT_MS, allLeft, isTerminalRunner, liveRunners, type RunnerInfo } from "../agents/runner.ts";
 import { log } from "../ops/log.ts";
 import { tr, stationLang } from "../ops/i18n.ts";
 import { iso, sessionPlaces, transcriptSources } from "../read/transcript.ts";
@@ -136,6 +136,9 @@ export type HubOptions = {
   stationName?: (id: string) => string | null;
   /// The runners alive on this machine now, by id (default: <data>/run/runners).
   runners?: () => string[];
+  /// How a runner of an agent's that nobody holds is ended (`takeUp`, `endOrphan`; default: process.ts `endRunner`, that
+  /// runner alone).
+  endRunner?: (info: RunnerInfo) => Promise<unknown>;
   /// Another session being taken up: the launcher hears the station gets on with it (ops/launcher.ts `taking`).
   taking?: () => void;
   cold?: ColdStorage;
@@ -256,6 +259,11 @@ export class Hub {
   private holdsNow = new Set<Hold>();
   /// Sessions taken up from the previous station: their turns run on, not cut off.
   private adopted = new Set<string>();
+  /// Whether its drivers hold every agent's process of this station's that goes on (`ownsRunner`): from the end of
+  /// `takeUp` to a handover or the end.
+  private holdsRunners = false;
+  /// The runners `takeUp` found that nobody took up, being ended (tests wait for it).
+  orphansEnded: Promise<void> = Promise.resolve();
   /// Chats made lately by session key: the key their client gave them, and when (NewChat.clientKey).
   readonly clientKeysMade = new Map<string, [string, number]>();
   /// Conversations a chat was relayed to whose agent has not posted there yet, by thread: the session and the station's
@@ -602,6 +610,8 @@ export class Hub {
   /// does nothing more.
   async handOver(limitMs = 30_000): Promise<Handover> {
     this.hold("drain");
+    // (what its drivers let go is the next station's)
+    this.holdsRunners = false;
     try {
       await this.settled(limitMs);
     } catch (error) {
@@ -668,9 +678,11 @@ export class Hub {
       }
       rmSync(file, { force: true });
     }
+    // Found before anything is taken up or started: what nobody takes up of these is ended, nothing started meanwhile.
+    const before = (this.options.runners ? this.options.runners().map((id) => ({ id }) as RunnerInfo) : await liveRunners(this.config().dataDir, { strict: true })).filter((r) => !isTerminalRunner(r.id));
     await this.adopt(handed);
     // A crash left runners without a snapshot: what they keep is taken up as it stands.
-    const runners = new Set(this.options.runners ? this.options.runners() : (await liveRunners(this.config().dataDir, { strict: true })).map((r) => r.id).filter((id) => !isTerminalRunner(id)));
+    const runners = new Set(before.map((r) => r.id));
     const taken = new Set(handed.sessions.map((s) => s.key));
     // A shared Codex host can only have a session to recover when that session was marked running. Without a
     // session-owned runner there is no reason to load the station's idle and archived sessions.
@@ -706,6 +718,46 @@ export class Hub {
       };
       await this.adoptOne(row, snap, true);
     }
+    this.holdsRunners = true;
+    this.orphansEnded = this.endOrphans(before);
+  }
+
+  /// What a station left running that nobody took up (a session deleted or moved to another station since, one whose
+  /// taking up failed, an app-server none of whose sessions had a turn): ended, off the way of what goes on. A runner
+  /// left so went on for good, nothing ever asking for it again (a `claude -p` of 109 MB idle 35 hours, 2026-11-15).
+  private async endOrphans(found: RunnerInfo[]) {
+    const ending = found.filter((info) => !this.ownsRunner(info.id)).map(async (info) => {
+      log.info("hub", "a runtime process nobody took up, ended", { runner: info.id });
+      try {
+        await this.endRunnerOf(info);
+      } catch (error) {
+        log.warn("hub", "a runtime process nobody took up was not ended", { runner: info.id, error: (error as Error).message });
+      }
+    });
+    await Promise.all(ending);
+  }
+
+  private endRunnerOf(info: RunnerInfo): Promise<unknown> {
+    return this.options.endRunner ? this.options.endRunner(info) : endRunner(this.config().dataDir, info.id, "a runtime process nobody took up", info);
+  }
+
+  /// Whether one of its drivers holds runner `id` (or may: a driver that does not say holds every one of its runtime's).
+  ownsRunner(id: string): boolean {
+    for (const driver of this.drivers.values()) {
+      const owned = driver.ownedRunners?.();
+      if (owned === undefined ? id.startsWith(`${driver.runtime()}-`) : owned.has(id)) return true;
+    }
+    return false;
+  }
+
+  /// A runner of an agent's alive past what takes it up that none of its drivers holds, while they hold all that goes on
+  /// (Upkeep's sweep, agents/runner.ts `sweepRunners`): ended. One started RUNNER_LEFT_MS ago or less is left, its driver
+  /// may not hold it yet. Whether it was.
+  async endOrphan(info: RunnerInfo, now: number): Promise<boolean> {
+    if (!this.holdsRunners || isTerminalRunner(info.id) || now - info.startedAt < RUNNER_LEFT_MS || this.ownsRunner(info.id)) return false;
+    log.info("hub", "a runtime process nobody holds, ended", { runner: info.id });
+    await this.endRunnerOf(info);
+    return true;
   }
 
   /// Takes up a handover's snapshots (sessions handed over by the previous station).
@@ -1160,9 +1212,10 @@ export class Hub {
   }
 
   /// The machine short of memory (high, critical: ops/self-memory.ts): every idle claude and dsh process let go now,
-  /// whatever the warm limit and however briefly idle; how many were asked to end. Each ends only if still idle as its
-  /// queue reaches it, and keeps what it runs in the background (`holding`); its conversation resumes on its next message.
-  evictAllIdle(): number {
+  /// whatever the warm limit and however briefly idle; then what the drivers keep running with no turn on it (Codex's
+  /// app-servers: `evictIdle`); how many were asked to end. Each session's ends only if still idle as its queue reaches
+  /// it, and keeps what it runs in the background (`holding`); its conversation resumes on its next message.
+  async evictAllIdle(): Promise<number> {
     const now = this.now();
     let asked = 0;
     for (const actor of this.actors.values()) {
@@ -1170,7 +1223,11 @@ export class Hub {
       void actor.evict();
       asked++;
     }
-    return asked;
+    const ended = await Promise.all([...this.drivers.values()].map((d) => d.evictIdle?.().catch((error) => {
+      log.warn("hub", "what a driver keeps idle was not ended", { runtime: d.runtime(), error: (error as Error).message });
+      return 0;
+    }) ?? 0));
+    return ended.reduce((a, b) => a + b, asked);
   }
 
   /// Ends the session's runtime process if it is idle; the conversation resumes on the next message.
@@ -1360,6 +1417,7 @@ export class Hub {
   }
 
   async shutdown() {
+    this.holdsRunners = false;
     this.incoming.abort();
     this.stopTimers();
     this.unlistenRunning();

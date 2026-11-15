@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { classifyResult } from "../src/agents/claude.ts";
 import { Rig, message, settle } from "./hub-fakes.ts";
 
 test("switching accounts looks up only the runtime source it is leaving", async () => {
@@ -28,7 +27,7 @@ test("switching accounts looks up only the runtime source it is leaving", async 
     // is said to be over). Measure the later account switch itself.
     const ended = rig.hub.live.turnEnded.bind(rig.hub.live);
     rig.hub.live.turnEnded = (session) => ended(session).then(() => { visited = 0; });
-    first.end({ kind: "failed", reason: classifyResult("usage limit reached"), message: "usage limit reached" });
+    first.end({ kind: "failed", reason: "rate_limit", message: "usage limit reached" });
     await settle();
     const second = rig.claude.last();
     assert.notEqual(second.options.profile.id, first.options.profile.id);
@@ -65,7 +64,7 @@ for (const source of ["without point lookup", "missing", "other runtime", "witho
         else if (source === "missing") rig.store.runtimeSessionSource = () => null;
         return next;
       };
-      first.end({ kind: "failed", reason: classifyResult("usage limit reached"), message: "usage limit reached" });
+      first.end({ kind: "failed", reason: "rate_limit", message: "usage limit reached" });
       await settle();
       const second = rig.claude.last();
       assert.notEqual(second.id(), first.id());

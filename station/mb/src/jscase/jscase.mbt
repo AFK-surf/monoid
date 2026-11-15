@@ -1,6 +1,6 @@
 // Text as JavaScript cases and splits it, for what the station's programs match as the TypeScript station matched it:
 // String.prototype.toLowerCase (V8's, by tables.mbt: U+0130 to two, U+03A3 to the final sigma by its context, a lone
-// surrogate kept) and the white space of a regular expression's `\s`.
+// surrogate kept), the white space of a regular expression's `\s` and its words (`\p{L}\p{N}`).
 
 ///|
 fn in_ranges(ranges : FixedArray[Int], c : Int) -> Bool {
@@ -198,4 +198,29 @@ pub fn split_by(s : String, space : (Int) -> Bool) -> Array[String] {
 /// Whether a word has a character whose upper and lower case differ (search/sources.ts `finder`).
 pub fn has_cases(s : String) -> Bool {
   points(s).iter().any(c => in_ranges(changing_ranges, c))
+}
+
+///|
+/// Whether a code point is a letter or a number (/[\p{L}\p{N}]/u, by words.mbt).
+pub fn is_word_point(c : Int) -> Bool {
+  in_ranges(word_ranges, c)
+}
+
+///|
+/// Whether `w` is one of the words of `s`: `s.split(/[^\p{L}\p{N}]+/u).includes(w)` for a `w` that is not empty.
+pub fn has_word(s : String, w : String) -> Bool {
+  let word = StringBuilder()
+  let check = () => {
+    let found = word.to_string() == w
+    word.reset()
+    found
+  }
+  for c in points(s) {
+    if is_word_point(c) {
+      write_point(word, c)
+    } else if check() {
+      return true
+    }
+  }
+  check()
 }

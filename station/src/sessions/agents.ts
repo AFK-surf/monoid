@@ -913,7 +913,7 @@ export const AgentsLive = (control: Control) =>
       const upkeep = new Upkeep({
         data,
         clock: hub.clock,
-        runners: (now) => sweepRunners(data, now),
+        runners: (now) => sweepRunners(data, now, (info) => hub.endOrphan(info, now)),
         jobs: (now) => jobs.upkeep(now),
         remote: (now, disk) => remote.upkeep(now, disk),
         checkpoint: () => readers.checkpointHard(),

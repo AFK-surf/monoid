@@ -85,6 +85,8 @@ export class Waiting {
 export abstract class OwnProcessDriver<S extends OwnProcessSession = OwnProcessSession> implements AgentDriver {
   protected readonly data: string;
   protected readonly live = new Set<S>();
+  /// The runners of processes it is starting or taking up, not yet a session's of `live`.
+  private readonly claimed = new Set<string>();
 
   constructor(data: string) {
     this.data = data;
@@ -103,17 +105,42 @@ export abstract class OwnProcessDriver<S extends OwnProcessSession = OwnProcessS
     return `${this.runtime()} ${options.key}`;
   }
 
+  /// The runner `id` is this driver's while `work` starts or takes up its process, which is then a session's of `live`.
+  protected async claiming<T>(id: string, work: () => Promise<T>): Promise<T> {
+    this.claimed.add(id);
+    try {
+      return await work();
+    } finally {
+      this.claimed.delete(id);
+    }
+  }
+
+  ownedRunners(): ReadonlySet<string> {
+    const owned = new Set(this.claimed);
+    for (const session of this.live) {
+      const id = session.runner();
+      if (id !== undefined) owned.add(id);
+    }
+    return owned;
+  }
+
   /// Starts the process of a session being opened, which is one of this driver's from now on.
   protected async start(session: S, options: OpenOptions, command: string, args: string[], env: Record<string, string>) {
     const id = runnerId(this.runtime(), options.key);
-    session.attach(await AgentProcess.start(this.data, id, command, args, env, options.cwd, session.processOptions(this.label(options, session))));
-    this.live.add(session);
+    await this.claiming(id, async () => {
+      session.attach(await AgentProcess.start(this.data, id, command, args, env, options.cwd, session.processOptions(this.label(options, session))));
+      this.live.add(session);
+    });
   }
 
   async adopt(options: OpenOptions, snapshot: unknown | null, events: Events): Promise<S> {
-    const kind = this.runtime();
     const handed = snapshot as ProcessSnapshot | null;
-    const id = handed?.runner ?? runnerId(kind, options.key);
+    const id = handed?.runner ?? runnerId(this.runtime(), options.key);
+    return this.claiming(id, () => this.adoptOn(id, options, handed, events));
+  }
+
+  private async adoptOn(id: string, options: OpenOptions, handed: ProcessSnapshot | null, events: Events): Promise<S> {
+    const kind = this.runtime();
     const info = await findRunner(this.data, id);
     if (!info) throw new Error(`no runner keeps ${kind} for ${options.key}`);
     let session: S;
@@ -188,6 +215,11 @@ export abstract class OwnProcessSession<T extends TurnState = TurnState> impleme
 
   attach(proc: AgentProcess | HostedProcess) {
     this.proc = proc;
+  }
+
+  /// Its process's runner, once it has one.
+  runner(): string | undefined {
+    return (this.proc as AgentProcess | HostedProcess | undefined)?.info.id;
   }
 
   named(id: string) {

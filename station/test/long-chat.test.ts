@@ -3,8 +3,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { LONG_CHAT } from "../src/agents/instructions.ts";
-import { type RuntimeEvent } from "../src/agents/runtime.ts";
-import { type Turn, onFrame } from "../src/agents/claude.ts";
 import { codexCompacted } from "../src/agents/codex.ts";
 import { Rig, matches, message, reply, settle } from "./hub-fakes.ts";
 
@@ -25,13 +23,6 @@ async function chat(r: Rig, count: number) {
   }
   return m;
 }
-
-test("Claude Code's compact_boundary, automatic or by hand, says it compacted", () => {
-  const told: RuntimeEvent[] = [];
-  const turn: Turn = { busy: true, aborting: false, authFailure: null, closed: false };
-  onFrame({ type: "system", subtype: "compact_boundary", compact_metadata: { trigger: "auto", pre_tokens: 180000 } }, turn, (e) => told.push(e), () => {});
-  assert.deepEqual(told, [{ type: "compacted" }]);
-});
 
 test("Codex's contextCompaction item, done, says it compacted", () => {
   assert.equal(codexCompacted("item/completed", { threadId: "t", turnId: "u", item: { type: "contextCompaction", id: "c" } }), true);

@@ -180,7 +180,8 @@ test("under the machine's pressure every idle process is let go, whatever the wa
   await settle();
   const [a, b, running] = r.claude.sessions;
   assert.ok([a, b].every((s) => !s!.disposed), "within the warm limit");
-  assert.equal(r.hub.evictAllIdle(), 2, "the two idle ones");
+  r.codex.evictIdle = async () => 1;
+  assert.equal(await r.hub.evictAllIdle(), 3, "the two idle ones, and what the codex driver keeps idle");
   await r.quiet();
   assert.ok(a!.disposed && b!.disposed);
   assert.ok(!running!.disposed, "its turn goes on");

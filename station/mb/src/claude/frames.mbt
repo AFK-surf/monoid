@@ -1,9 +1,8 @@
-// What Claude Code's stream-json frames do to a session, as station/src/agents/claude.ts (`onFrame`, `toolsLostIn`)
-// and station/src/agents/live.ts (`LiveFromClaude`) say: where its turn stands, its tasks, the live steps a device is
+// What Claude Code's stream-json frames do to a session, as the TypeScript station had it (station/src/agents/claude.ts:
+// `turnAfter` keeps where its turn stands for a crash's reading again, `toolsLostIn`) and station/src/agents/live.ts (`LiveFromClaude`) say: where its turn stands, its tasks, the live steps a device is
 // shown, the station's tools out of reach. Frames are read as JSON.parse reads them and what is said of them written
-// as JSON.stringify writes it (station/jsjson), so what is told Node is what the TypeScript made of the same lines.
-// What needs the TypeScript's regular expressions (a failure's reason, whether a tool's error says it was out of reach)
-// is left to Node with the text it is of (`classify`, `lostIf`).
+// as JSON.stringify writes it (station/jsjson), so what is told Node is what the TypeScript made of the same lines. A
+// turn's outcome is told whole, its failure's reason too (outcome.mbt).
 
 ///|
 using @jsjson {type JValue}
@@ -211,7 +210,7 @@ pub fn background_of(turn : Turn) -> J {
 const RENEW_ATTEMPTS : Double = 2.0
 
 ///|
-/// What a frame does to the turn (claude.ts `onFrame`): events said with `emit`, `interrupt` how an authentication
+/// What a frame does to the turn (claude.ts `turnAfter`, and what it tells): events said with `emit`, `interrupt` how an authentication
 /// failure stops the turn, `now` the time a task starts, `note` what is logged.
 pub fn on_frame(
   frame : J,
@@ -313,14 +312,13 @@ fn frame_does(
       _ => if errors.length() > 0 { join_units(errors, [0x0a]) } else { subtype }
     }
     let outcome = if turn.auth_failure is Some(failure) {
-      // (refused or auth: claude.ts `refused`, Node's to say)
-      obj([("kind", jstr("failed")), ("auth", Str(failure))])
+      auth_outcome(failure)
     } else if turn.aborting {
       obj([("kind", jstr("aborted"))])
     } else if is_true(field(f, "is_error")) {
-      obj([("kind", jstr("failed")), ("classify", Str(text))])
+      error_outcome(text)
     } else if turn.compact_error is Some(e) && e.length() > 0 {
-      obj([("kind", jstr("failed")), ("reason", jstr("other")), ("message", Str(chars(e, 1000)))])
+      failed("other", chars(e, 1000))
     } else {
       obj([("kind", jstr("completed"))])
     }

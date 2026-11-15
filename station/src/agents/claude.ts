@@ -32,7 +32,7 @@ import { accessKind, expandRoute, isMachine, keyFile, profileEnv, profileFast, p
 import type { RunnerInfo } from "./runner.ts";
 import { AgentsHost, HostedProcess, type Heard, type Router } from "./mb-agents.ts";
 import { ackedOffset, findRunner, linesBefore, outFile, runnerId } from "./process.ts";
-import { OVERLOADED, TOOL_SERVERS, cleanEnv, failureRest, unreachable, uuid, type BackgroundTask, type FailureReason, type OpenOptions, type Profile, type RuntimeEvent, type TurnOutcome } from "./runtime.ts";
+import { TOOL_SERVERS, cleanEnv, unreachable, uuid, type BackgroundTask, type OpenOptions, type Profile, type RuntimeEvent } from "./runtime.ts";
 import { wall } from "../ops/fibers.ts";
 import { peerHttpBase } from "../tools/http.ts";
 import { Said, stationLang, tr } from "../ops/i18n.ts";
@@ -140,35 +140,6 @@ export async function bringTranscript(home: string, sessionId: string, cwd: stri
   } catch (e) {
     log.warn("agents::claude", "could not bring a session's transcript to where claude resumes it", { session: sessionId, error: (e as Error).message });
   }
-}
-
-/// Anthropic turning the request away before any account is looked at (a region it does not serve, a proxy's address
-/// it refuses): a 403 "Request not allowed", "forbidden". Signing in again changes nothing; the network does.
-export function refused(text: string): boolean {
-  const lower = text.toLowerCase();
-  return lower.includes("request not allowed") || /\bforbidden\b/.test(lower);
-}
-
-export function classifyResult(text: string): FailureReason {
-  const lower = text.toLowerCase();
-  const words = lower.split(/[^\p{L}\p{N}]+/u);
-  const word = (w: string) => words.includes(w);
-  if (refused(text)) return "refused";
-  if (word("401") || word("403") || lower.includes("authenticat") || lower.includes("api key")) return "auth";
-  if (
-    word("429") ||
-    ["rate limit", "rate-limit", "rate_limit", "ratelimit", "usage limit"].some((s) => lower.includes(s)) ||
-    ["session", "weekly", "daily"].some((window) => lower.includes(`hit your ${window} limit`)) ||
-    /\bhit your \d+[- ]hour limit\b/.test(lower) ||
-    // A model's own allowance: "You've reached your Fable limit. Switch to another model, or manage usage credits…",
-    // since 2026-11-14 also "You've hit your Fable limit · resets Nov 20 at 9am (Asia/Tokyo). Switch to another model…"
-    /\b(?:reached|hit) your [\w.\- ]+ limit\b/.test(lower) ||
-    lower.includes("you've hit your limit")
-  ) {
-    return "rate_limit";
-  }
-  if (word("529") || OVERLOADED.some((s) => lower.includes(s))) return "overloaded";
-  return failureRest(text);
 }
 
 /// `renews`: its token is handed over and renewed while it runs (RENEWED): a first 401 is left to that.
@@ -305,24 +276,14 @@ export type ClaudeDriverOptions = {
 
 const interruptRequest = () => JSON.stringify({ type: "control_request", request_id: `interrupt-${uuid()}`, request: { subtype: "interrupt" } });
 
-/// What a frame does to the turn. `interrupt` is how an auth failure stops the turn; `now` when a
-/// task it tells of starts. What it has going in the background, said again (a `tasks` live event) as it changes.
-export function onFrame(frame: Json, turn: Turn, emit: (event: RuntimeEvent) => void, interrupt: () => void, now: () => number = wall.now) {
-  const before = JSON.stringify(backgroundOf(turn));
-  frameDoes(frame, turn, emit, interrupt, now);
-  const tasks = backgroundOf(turn);
-  if (JSON.stringify(tasks) !== before) emit({ type: "live", event: { kind: "tasks", tasks } });
-}
-
-function frameDoes(frame: Json, turn: Turn, emit: (event: RuntimeEvent) => void, interrupt: () => void, now: () => number) {
+/// Where the turn stands after a frame, as a station reads again what the one before it had handled when it crashed
+/// (`crashed`): what the frames say as they come (the turn's events, its outcome) is the MoonBit program's to tell
+/// (mb/src/claude `on_frame`), none of it here. `now`: when a task it tells of starts.
+export function turnAfter(frame: Json, turn: Turn, now: () => number = wall.now) {
   const kind = typeof frame?.type === "string" ? frame.type : "";
   const subtype = typeof frame?.subtype === "string" ? frame.subtype : "";
-  // A control request it refused (a model it cannot switch to, say): the turns go on as they were.
-  if (kind === "control_response" && frame.response?.subtype === "error") log.warn("agents::claude", "claude refused a control request", { request: String(frame.response.request_id ?? ""), error: String(frame.response.error ?? "") });
   if (kind === "system" && subtype === "init") {
-    const was = turn.busy;
     turn.busy = true;
-    if (!was) emit({ type: "turnStarted" });
   } else if (kind === "system" && subtype === "api_retry") {
     const status = Number.isInteger(frame.error_status) ? (frame.error_status as number) : 0;
     const attempt = Number.isInteger(frame.attempt) ? (frame.attempt as number) : 1;
@@ -331,7 +292,6 @@ function frameDoes(frame: Json, turn: Turn, emit: (event: RuntimeEvent) => void,
     if ((status === 401 || status === 403) && turn.authFailure === null && !renewing) {
       const error = frame.error === undefined ? "authentication failed" : typeof frame.error === "string" ? frame.error : JSON.stringify(frame.error);
       turn.authFailure = `${status} ${error}`;
-      interrupt();
       turn.aborting = true;
     }
   } else if (kind === "system" && subtype === "task_started" && typeof frame.task_id === "string" && frame.owned_by_subagent !== true) {
@@ -345,19 +305,7 @@ function frameDoes(frame: Json, turn: Turn, emit: (event: RuntimeEvent) => void,
   } else if (kind === "system" && subtype === "status" && turn.compacting === true && frame.compact_result === "failed") {
     // `/compact` that compacted nothing still ends in a result of success: only this says so (2.1.289).
     turn.compactError = typeof frame.compact_error === "string" && frame.compact_error !== "" ? frame.compact_error : "compaction failed";
-  } else if (kind === "system" && subtype === "compact_boundary") {
-    emit({ type: "compacted" });
   } else if (kind === "result") {
-    // A turn that failed outside the model's reply (`error_during_execution`: a session it could not resume, a request
-    // it could not make) has no `result`; what went wrong is in `errors`, the subtype only says that something did.
-    const errors = Array.isArray(frame.errors) ? frame.errors.filter((e: unknown): e is string => typeof e === "string" && e.trim() !== "") : [];
-    const text = typeof frame.result === "string" && frame.result.trim() !== "" ? frame.result : errors.length > 0 ? errors.join("\n") : subtype;
-    let outcome: TurnOutcome;
-    if (turn.authFailure !== null) outcome = { kind: "failed", reason: refused(turn.authFailure) ? "refused" : "auth", message: turn.authFailure };
-    else if (turn.aborting) outcome = { kind: "aborted" };
-    else if (frame.is_error === true) outcome = { kind: "failed", reason: classifyResult(text), message: chars(text, 1000) };
-    else if (turn.compactError) outcome = { kind: "failed", reason: "other", message: chars(turn.compactError, 1000) };
-    else outcome = { kind: "completed" };
     turn.busy = false;
     turn.aborting = false;
     turn.authFailure = null;
@@ -366,7 +314,6 @@ function frameDoes(frame: Json, turn: Turn, emit: (event: RuntimeEvent) => void,
     turn.compactError = null;
     // What it waited on in the turn has ended with it; what goes on is in the background.
     if (turn.tasks) turn.tasks = Object.fromEntries(Object.entries(turn.tasks).filter(([, t]) => t.background));
-    emit({ type: "turnEnded", outcome });
   }
 }
 
@@ -401,13 +348,19 @@ export class ClaudeDriver extends OwnProcessDriver<ClaudeSession> {
   /// Read by the program (mb-agents.ts).
   protected async start(session: ClaudeSession, options: OpenOptions, command: string, args: string[], env: Record<string, string>) {
     const id = runnerId("claude", options.key);
-    session.attach(await HostedProcess.start(this.agents, this.data, id, command, args, env, options.cwd, session.hostedOptions(this.label(options, session)), session.turnNow()));
-    this.live.add(session);
+    await this.claiming(id, async () => {
+      session.attach(await HostedProcess.start(this.agents, this.data, id, command, args, env, options.cwd, session.hostedOptions(this.label(options, session)), session.turnNow()));
+      this.live.add(session);
+    });
   }
 
   async adopt(options: OpenOptions, snapshot: unknown | null, events: Events): Promise<ClaudeSession> {
     const handed = snapshot as ClaudeSnapshot | null;
     const id = handed?.runner ?? runnerId("claude", options.key);
+    return this.claiming(id, () => this.adoptRunner(id, options, handed, events));
+  }
+
+  private async adoptRunner(id: string, options: OpenOptions, handed: ClaudeSnapshot | null, events: Events): Promise<ClaudeSession> {
     const info = await findRunner(this.data, id);
     if (!info) throw new Error(`no runner keeps claude for ${options.key}`);
     let session: ClaudeSession;
@@ -573,7 +526,7 @@ export class ClaudeDriver extends OwnProcessDriver<ClaudeSession> {
       const frame = parseLine("claude", line);
       if (frame === undefined) continue;
       live.feed(frame);
-      onFrame(frame, turn, () => {}, () => {});
+      turnAfter(frame, turn);
     }
     const flag = info.args.findIndex((a) => a === "--session-id" || a === "--resume");
     const sessionId = flag >= 0 ? info.args[flag + 1]! : (options.resume ?? "");
@@ -642,7 +595,6 @@ export class ClaudeSession extends OwnProcessSession<Turn> {
       }
       const { turn, ...event } = e;
       if (turn !== undefined) take(turn);
-      if (event.type === "turnEnded") event.outcome = outcomeOf(event.outcome);
       // (given its actor by the program: here only what the station's own parts take of it)
       if (heard.routed === true) event.routed = true;
       this.events(event as RuntimeEvent);
@@ -757,12 +709,4 @@ export class ClaudeSession extends OwnProcessSession<Turn> {
       live: this.live.state(),
     };
   }
-}
-
-/// A turn's outcome as the program says it, with what it leaves to the TypeScript (mb/src/claude: `auth`, a failure on
-/// authentication whose words say whether it was refused; `classify`, a failed result whose words say why).
-function outcomeOf(said: Json): TurnOutcome {
-  if (said?.kind === "failed" && typeof said.auth === "string") return { kind: "failed", reason: refused(said.auth) ? "refused" : "auth", message: said.auth };
-  if (said?.kind === "failed" && typeof said.classify === "string") return { kind: "failed", reason: classifyResult(said.classify), message: chars(said.classify, 1000) };
-  return said as TurnOutcome;
 }

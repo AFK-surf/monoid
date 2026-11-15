@@ -20,6 +20,7 @@ import type { OpenOptions, Profile, RuntimeEvent } from "../src/agents/runtime.t
 import { readAgentEnvFrom } from "../src/ops/agent-env.ts";
 import { transcriptPaths } from "../src/read/transcript.ts";
 import { tempDir } from "./temp-dir.ts";
+import { settle, testClock } from "./hub-fakes.ts";
 
 const fake = join(dirname(fileURLToPath(import.meta.url)), "fake");
 process.env.PATH = `${fake}${delimiter}${process.env.PATH}`;
@@ -227,6 +228,60 @@ describe("the Codex driver", { concurrency: true }, () => {
     const session = await d.open(options(profile(), { textOnly: true }), listen().push);
     assert.equal(probed, false);
     await session.dispose();
+  });
+
+  // An app-server once up never ended: three left idle went on 35 to 49 hours, some 107 MB (2026-11-15).
+  test("an app-server idle warmMs ends, its idle threads closed with no turn ended; the next opens it again, resuming", async () => {
+    const time = testClock();
+    const d = driver({ clock: time.clock, warmMs: 60_000 });
+    const p = profile();
+    const a = listen();
+    const session = await d.open(options(p), a.push);
+    await session.prompt("say:hi");
+    await a.until(ended(1));
+    const runner = existingRunners(data).find((r) => r.id === runnerId("codex", p.id))!;
+    assert.ok(runner, "its app-server runs");
+    await time.begun(1);
+    await time.adjust(59_000);
+    await settle();
+    assert.ok(!a.events.some((e) => e.type === "closed"), "idle less than warmMs");
+    await time.adjust(1_000);
+    await a.until((e) => e.some((x) => x.type === "closed"));
+    assert.equal(ends(a.events).length, 1, "no turn ended by it");
+    await eventually(() => !existingRunners(data).some((r) => r.id === runner.id && r.runner === runner.runner));
+    const b = listen();
+    const again = await d.open(options(p, { resume: session.id() }), b.push);
+    await again.prompt("say:back");
+    await b.until(ended(1));
+    assert.equal(outcome(b.events).kind, "completed");
+    assert.equal(again.id(), session.id(), "the same thread");
+    assert.equal(starts(p.dump).length, 2, "on a new app-server");
+    await again.dispose();
+  });
+
+  test("the machine short of memory ends the app-servers no turn runs on at once; one with a turn running goes on", async () => {
+    const d = driver();
+    const idle = profile();
+    const busy = profile();
+    const a = listen();
+    const b = listen();
+    const one = await d.open(options(idle), a.push);
+    const other = await d.open(options(busy), b.push);
+    await other.prompt("hold:1");
+    await b.until((e) => deltas(e).length > 0);
+    assert.equal(await d.evictIdle(), 1);
+    assert.ok(a.events.some((e) => e.type === "closed"), "the idle one's thread closed");
+    assert.equal(ends(a.events).length, 0);
+    assert.ok(!b.events.some((e) => e.type === "closed"));
+    assert.equal(await other.steer("finish"), true, "its turn goes on");
+    await b.until(ended(1));
+    assert.equal(outcome(b.events).kind, "completed");
+    const c = listen();
+    const again = await d.open(options(idle, { resume: one.id() }), c.push);
+    await again.prompt("say:back");
+    await c.until(ended(1));
+    assert.equal(outcome(c.events).kind, "completed");
+    await Promise.all([again.dispose(), other.dispose()]);
   });
 
   // A profile's app-server is shared by its chats: waiting for its turn held every new chat of the profile back as long
