@@ -233,6 +233,7 @@ fn chat_body_rows_again(
     guard chat_entry_in_place(e, f) else { return chat_body_rows(kept, v, all, sending) }
     changed.push(i)
   }
+  let updates : Array[(String, ChatBodyRow)] = []
   for i in changed {
     let e = all[i]
     let core_key = match e {
@@ -249,11 +250,14 @@ fn chat_body_rows_again(
       (Some(ps), Some(was_ps)) if ps.length() == was_ps.length() =>
         for b, pc in ps {
           let pk = chat_piece_key(k, b)
-          w.rows.rows[pk] = { entry: e, gap: if b == 0 { old.gap } else { NoGap }, piece: Some(pc) }
+          updates.push((pk, { entry: e, gap: if b == 0 { old.gap } else { NoGap }, piece: Some(pc) }))
         }
-      (None, None) => w.rows.rows[k] = { entry: e, gap: old.gap, piece: None }
+      (None, None) => updates.push((k, { entry: e, gap: old.gap, piece: None }))
       _ => return chat_body_rows(kept, v, all, sending)
     }
+  }
+  for u in updates {
+    w.rows.rows[u.0] = u.1
   }
   { keys: w.rows.keys, rows: w.rows.rows }
 }
@@ -287,31 +291,6 @@ fn chat_entry_in_place(a : Entry, b : Entry) -> Bool {
     _ => false
   }
 }
-
-///|
-/// The rows `said` holds (each a row's own, by its key: chat_body_node's) told what `rows` says of their keys now,
-/// once the computed that worked them out is over (a write in its getter runs what reads it half made): a row told
-/// only as it is another (chat_body_row_same), what changed in another row telling it nothing; one whose key went keeps
-/// what it last was, let go once nothing reads it.
-fn chat_body_said(said : Map[String, @signals.Signal[ChatBodyRow]], rows : ChatBodyRows) -> Unit {
-  @signals.after_computing(fn() {
-    let gone : Array[String] = []
-    let unread = said.length() > chat_body_said_most
-    said.each(fn(k, s) {
-      match rows.rows.get(k) {
-        Some(r) => if unread && !s.watched() { gone.push(k) } else { s.set(r) }
-        None => if !s.watched() { gone.push(k) }
-      }
-    })
-    for k in gone {
-      said.remove(k)
-    }
-  })
-}
-
-///|
-/// How many rows' own signals chat_body_said keeps before those nothing reads (rows scrolled past and let go) are let go.
-let chat_body_said_most : Int = 96
 
 ///|
 /// What holds the pieces after the first of the message of key `k` while they are made (ChatBodyKeeps' `pieces`).
@@ -506,18 +485,14 @@ fn chat_body_node(
   // made; none for one there as the chat opened, simply there, or come by an answer at once)
   let came_at : Map[String, Double] = Map([])
   // (worked out once as the view, its entries or what is on its way change, from what was worked out last where only
-  // rows changed where they stand (chat_body_rows_again); the keys only change as rows come, go or are taken over: each
-  // row reads its own by its key, told only as that row is another (`said`, chat_body_said), none of the rest woken by
-  // a streamed word of one)
+  // rows changed where they stand (chat_body_rows_again); the keys only change as rows come, go or are taken over)
   let made_last : Ref[ChatBodyMade?] = Ref(None)
-  let said : Map[String, @signals.Signal[ChatBodyRow]] = Map([])
   let rows = @signals.computed(fn(_) {
     let view = (here.view)()
     let all = entries()
     let on_way = sending()
     let rs = chat_body_rows_again(kept, made_last.val, view, all, on_way)
     made_last.val = Some({ view, all, sending: !on_way.is_empty(), rows: rs })
-    chat_body_said(said, rs)
     rs
   }, same=fn(_, _) { false })
   let keys = @signals.computed(fn(_) { rows.get().keys }, same=fn(a, b) { physical_equal(a, b) || a == b })
@@ -702,7 +677,7 @@ fn chat_body_node(
       place~,
       near_top=(1.0, wants_older, fn() { ask_older(true) }),
       near_foot=(1.0, wants_newer, ask_newer),
-      fn(slot, k) { chat_body_row(slot, src, here, k, rows, said, side, top, core, keeps, made, jump, fn() { came_at.get(k) }) },
+      fn(slot, k) { chat_body_row(slot, src, here, k, rows, side, top, core, keeps, made, jump, fn() { came_at.get(k) }) },
     )
     |> ignore
   })
@@ -847,8 +822,8 @@ fn chat_body_node(
 
 ///|
 /// Row `k` of a chat's list in `slot` (entry_row's, its row's room round it: message_row_frame_node), as its kind's
-/// row draws it, reading what it is by its key in `rows` as that changes (its own of `said`, told only as it is
-/// another: chat_body_said); made again only as it comes to be another kind. What it shows of being gone to (its flash, a search's words marked in it) as `jump` says; `came`, when its key
+/// row draws it, reading what it is by its key in `rows` as that changes; made again only as it comes to be another
+/// kind. What it shows of being gone to (its flash, a search's words marked in it) as `jump` says; `came`, when its key
 /// came into the list by data (an agent's line's first words in glyph by glyph from then; none: simply there).
 fn chat_body_row(
   slot : @view.View,
@@ -856,7 +831,6 @@ fn chat_body_row(
   here : MessageNodeHere,
   k : String,
   rows : @signals.Computed[ChatBodyRows],
-  said : Map[String, @signals.Signal[ChatBodyRow]],
   side : () -> Double,
   list_top : () -> Double,
   core : @settings.Core?,
@@ -867,17 +841,9 @@ fn chat_body_row(
 ) -> Unit {
   let first = @signals.untracked(fn() { rows.get().rows.get(k) })
   guard first is Some(first) else { return }
-  // (as the list says it now, told only as it is another (chat_body_row_same): what changed in another row reads
-  // none of this one again, nor wakes it; one let go as its key goes reads what it last was. The key's own, shared by
-  // its blocks made again)
-  let now = match said.get(k) {
-    Some(s) => s
-    None => {
-      let s = @signals.signal(first, same=chat_body_row_same)
-      said[k] = s
-      s
-    }
-  }
+  // (as the list says it now, only as that row changed (chat_body_row_same): what changed in another row reads none of
+  // this one again; one let go as its key goes reads what it last was)
+  let now = @signals.computed(fn(_) { rows.get().rows.get(k).unwrap_or(first) }, same=chat_body_row_same)
   let row = fn() { now.get() }
   let entry = fn() { row().entry }
   let top = fn() { chat_body_gap_room(row().gap, (here.width)()) }

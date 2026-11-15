@@ -2,7 +2,7 @@
 // apply_delta, as a device applies them): a streamed word patched into its last message, a message put at its end. What
 // the tree does for each (bindings looked at, nodes made and let go, laid out and measured) is that of the rows the
 // change reached, the same in a chat of 50 messages as in one of 500: nothing along the way (the delta, chat_read,
-// chat_view_of, its entries, chat_body_rows, each row's own of `said`) works through the chat's other messages again
+// chat_view_of, its entries, chat_body_rows, each row's computed) works through the chat's other messages again
 // so as to wake what shows them.
 
 ///|
