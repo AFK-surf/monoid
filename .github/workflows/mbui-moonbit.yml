@@ -32,9 +32,11 @@ jobs:
           - { os: ubuntu-24.04-arm, bin: moonbit-linux-aarch64.tar.gz, core: core-latest.tar.gz }
           - { os: macos-15, bin: moonbit-darwin-aarch64.tar.gz, core: core-latest.tar.gz }
           - { os: windows-latest, bin: moonbit-windows-x86_64.zip, core: core-latest.zip }
-          # (macos-ci's own entry: a self-hosted runner's cache is not the same entry as macos-15's, its tar and
-          # compression another, so its jobs find none of macos-15's)
-          - { os: [self-hosted, mbui-render], bin: moonbit-darwin-aarch64.tar.gz, core: core-latest.tar.gz }
+          # (macos-ci's and ci-1's own entries: a self-hosted runner's cache is not the same entry as GitHub's, its tar
+          # and compression another, so its jobs find none of GitHub's)
+          - { os: [self-hosted, mbui-render], self: mac, bin: moonbit-darwin-aarch64.tar.gz, core: core-latest.tar.gz }
+          - { os: [self-hosted, linux-ci], self: ci-1, bin: moonbit-linux-x86_64.tar.gz, core: core-latest.tar.gz }
+    if: ${{ !(matrix.self != '' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && (matrix.self != 'ci-1' || vars.CI_1 != 'off') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 5
     steps:

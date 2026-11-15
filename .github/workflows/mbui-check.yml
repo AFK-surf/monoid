@@ -63,7 +63,7 @@ jobs:
   # parts: the apps are not built with it (scripts/mbc's lto_for, 2026-10-24).
   native:
     name: native (${{ matrix.part }}${{ matrix.group && format(' {0}', matrix.group) || '' }}${{ matrix.fps && format(' at {0} fps', matrix.fps) || '' }})
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(github.event.pull_request.head.repo.fork != true && vars.CI_1 != 'off' && '["self-hosted", "linux-ci"]' || '"ubuntu-24.04"') }}
     # (a push's 5 minutes, the pipeline's call of a branch's push too; the day's, its pages in one process, 10)
     timeout-minutes: ${{ github.event_name != 'schedule' && 5 || 10 }}
     strategy:
@@ -106,9 +106,22 @@ jobs:
         run: |
           clang++ -std=c++20 -O2 apps/mbui/engine/tests/ready_queue.cpp -o "$RUNNER_TEMP/core-ready-queue-test"
           "$RUNNER_TEMP/core-ready-queue-test"
-      - uses: ./.github/actions/node
-      # (from the Actions cache the moonbit workflow fills, never downloaded here)
+      - if: runner.environment == 'self-hosted'
+        uses: ./.github/actions/setup-linux
+      - if: runner.environment != 'self-hosted'
+        uses: ./.github/actions/node
+      # (from the Actions cache the moonbit workflow fills, never downloaded here; on ci-1, local NVMe _tool/moon-ci + ~/stillfail-ci/mbui-tools)
       - uses: ./.github/actions/mbui-moonbit
+      # (on ci-1: one content-addressed MBC_STORE and per-part moon _build seed on local NVMe, shared by ci-1-1 and ci-1-2)
+      - if: runner.environment == 'self-hosted'
+        run: |
+          mkdir -p "$HOME/stillfail-ci/mbc-store" "$HOME/stillfail-ci/moon-build"
+          echo "MBC_STORE=$HOME/stillfail-ci/mbc-store" >> "$GITHUB_ENV"
+          seed="$HOME/stillfail-ci/moon-build/$CACHE_PREFIX"
+          if [ -d "$seed" ]; then
+            mkdir -p apps/mbui/_build
+            cp -a "$seed/." apps/mbui/_build/
+          fi
       # moon's own build (moonc's C and what it checked) as main's newest run left it: without, moonc made all of it
       # again each run, 46-53 s of the tests' build with every unit and link kept, and the check's type-check from
       # nothing (2026-10-23, 40018743319); over it, moon makes again what changed (on a branch over its own: the app
@@ -121,6 +134,7 @@ jobs:
       # again on main's: #5410, 2026-11-11)
       - uses: actions/cache/restore@v4
         id: moon
+        if: runner.environment != 'self-hosted'
         with:
           path: |
             apps/mbui/_build
@@ -138,6 +152,7 @@ jobs:
       # (mbui-wide-sidebar, 39991582878, 2026-10-23).
       - uses: actions/cache/restore@v4
         id: main
+        if: runner.environment != 'self-hosted'
         with:
           path: ${{ env.MBC_STORE }}
           key: ${{ env.CACHE_PREFIX }}m-${{ github.sha }}
@@ -147,29 +162,29 @@ jobs:
           restore-keys: |
             ${{ env.CACHE_PREFIX }}m-
             mbui-linux-store-${{ env.PART }}-m-
-      - if: env.OWN != 'm-'
+      - if: runner.environment != 'self-hosted' && env.OWN != 'm-'
         run: |
           mkdir -p "$MBC_STORE"
           mv "$MBC_STORE" "$RUNNER_TEMP/store-main"
       # (and a branch's, arch/next's newest beside main's: a branch off it has most of its units there, none of main's)
       - uses: actions/cache/restore@v4
-        if: env.OWN == 'b-'
+        if: runner.environment != 'self-hosted' && env.OWN == 'b-'
         with:
           path: ${{ env.MBC_STORE }}
           key: ${{ env.CACHE_PREFIX }}a-${{ github.sha }}
           restore-keys: ${{ env.CACHE_PREFIX }}a-
-      - if: env.OWN == 'b-'
+      - if: runner.environment != 'self-hosted' && env.OWN == 'b-'
         run: |
           mkdir -p "$MBC_STORE"
           mv "$MBC_STORE" "$RUNNER_TEMP/store-arch"
       - uses: actions/cache/restore@v4
         id: own
-        if: env.OWN != 'm-'
+        if: runner.environment != 'self-hosted' && env.OWN != 'm-'
         with:
           path: ${{ env.MBC_STORE }}
           key: ${{ env.CACHE_PREFIX }}${{ env.OWN }}${{ github.sha }}
           restore-keys: ${{ env.CACHE_PREFIX }}${{ env.OWN }}
-      - if: env.OWN != 'm-'
+      - if: runner.environment != 'self-hosted' && env.OWN != 'm-'
         run: |
           mkdir -p "$MBC_STORE" "$RUNNER_TEMP/store-arch"
           # (linked, not copied: a unit's files are never written again once kept, and the three are on one disk. Copied,
@@ -184,7 +199,7 @@ jobs:
       # 156-162 s, app build 267-311 s of its 5 minutes (1bf02b58, 16c0c777 stopped, f150a1db, 2026-11-11), the branch
       # having compiled the same units by their content already. What is not found is compiled, as before.
       - name: The units the merged branches compiled
-        if: env.OWN == 'm-' && github.event_name == 'push'
+        if: runner.environment != 'self-hosted' && env.OWN == 'm-' && github.event_name == 'push'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
@@ -215,7 +230,7 @@ jobs:
       # (what main's store had: a branch puts all its units main's lacks, its earlier pushes' too, so a change that
       # compiled over several pushes (each stopped at its 5 minutes, its units kept) is main's whole once merged)
       - name: The units main's store had
-        if: env.OWN == 'b-'
+        if: runner.environment != 'self-hosted' && env.OWN == 'b-'
         run: |
           mkdir -p "$RUNNER_TEMP/store-main" "$RUNNER_TEMP/store-arch"
           # (and arch/next's: everyone's already, a cache on main's ref)
@@ -242,20 +257,27 @@ jobs:
             TIMES=1 MBC_REAL_CC=clang TARGETS=native PARTS=${{ env.PART }} APP_GROUP=${{ env.GROUP == 'build' && '1/4' || env.GROUP }} APP_BUILD_OUT=${{ env.GROUP == 'build' && env.PART == 'app' && format('{0}/app-test', runner.temp) || '' }} PKGS_BUILD_OUT=${{ env.GROUP == 'pkgs' && format('{0}/pkgs-test', runner.temp) || '' }} REPLAY_BUILD_OUT=${{ env.GROUP == 'build' && env.PART == 'replay' && format('{0}/replay-test', runner.temp) || '' }} SFAPP_SHARDS=${{ github.event_name == 'schedule' && 1 || 4 }} LINES_OUT=40 bash apps/mbui/scripts/test.sh 2>&1 | tee -a "$RUNNER_TEMP/mbui-test.log" || code=1
           done
           exit $code
-      # (sfapp's test program and its tests' list, for the app job's runs)
+      # (sfapp's test program and its tests' list, for the app job's runs; stripped & zstd -6 so home upload takes ~3 s,
+      # and kept locally on ci-1 for corners' run right after app-build)
+      - if: runner.environment == 'self-hosted' && env.GROUP == 'build' && env.PART == 'app'
+        run: |
+          local_dir="$HOME/stillfail-ci/app-test/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          rm -rf "$local_dir" && mkdir -p "$(dirname "$local_dir")"
+          cp -a "$RUNNER_TEMP/app-test" "$local_dir"
+          find "$HOME/stillfail-ci/app-test" -mindepth 1 -maxdepth 1 -type d -mmin +120 -exec rm -rf {} + 2>/dev/null || true
       - if: env.GROUP == 'build' && env.PART == 'app'
         uses: actions/upload-artifact@v4
-        with: { name: "mbui-app-test-${{ github.run_id }}-${{ github.run_attempt }}", path: "${{ runner.temp }}/app-test", retention-days: 1, compression-level: 1 }
+        with: { name: "mbui-app-test-${{ github.run_id }}-${{ github.run_attempt }}", path: "${{ runner.temp }}/app-test", retention-days: 1, compression-level: 6 }
       # (the small packages' test programs and their tests' lists, for app-rates' 1/4's runs: after red tests too, the
       # programs put there before they ran, so the rates' runs still say what they find; none put, the build failed.
       # None where app-rates does not run)
       - if: always() && env.GROUP == 'pkgs' && github.event_name != 'workflow_run' && inputs.rates != 'no'
         uses: actions/upload-artifact@v4
-        with: { name: "mbui-pkgs-test-${{ github.run_id }}-${{ github.run_attempt }}", path: "${{ runner.temp }}/pkgs-test", retention-days: 1, compression-level: 1, if-no-files-found: ignore }
+        with: { name: "mbui-pkgs-test-${{ github.run_id }}-${{ github.run_attempt }}", path: "${{ runner.temp }}/pkgs-test", retention-days: 1, compression-level: 6, if-no-files-found: ignore }
       # (the flows' test program and its tests' list, for the replay-fps job's runs)
       - if: env.GROUP == 'build' && env.PART == 'replay'
         uses: actions/upload-artifact@v4
-        with: { name: "mbui-replay-test-${{ github.run_id }}-${{ github.run_attempt }}", path: "${{ runner.temp }}/replay-test", retention-days: 1, compression-level: 1 }
+        with: { name: "mbui-replay-test-${{ github.run_id }}-${{ github.run_attempt }}", path: "${{ runner.temp }}/replay-test", retention-days: 1, compression-level: 6 }
       - name: The mbui app's check (detlint, then native type-checked)
         # (on replay-build's runner alone: the same check on each rate's was 17-21 s of each of their 200-300 in the
         # same push, 2026-11-09)
@@ -267,14 +289,14 @@ jobs:
       # is its branch's alone; main's run is helped by it, never waits on it: a failed upload fails nothing)
       - name: The units this run compiled, for main's
         id: queue-units
-        if: always() && env.OWN == 'b-'
+        if: always() && runner.environment != 'self-hosted' && env.OWN == 'b-'
         run: |
           (cd "$MBC_STORE" && find . -mindepth 2 -maxdepth 2 -type d | sort) > "$RUNNER_TEMP/units-after"
           comm -13 "$RUNNER_TEMP/units-before" "$RUNNER_TEMP/units-after" > "$RUNNER_TEMP/units-new"
           echo "units main's store lacks: $(wc -l < "$RUNNER_TEMP/units-new")"
           mkdir -p "$RUNNER_TEMP/queue-units"
           [ ! -s "$RUNNER_TEMP/units-new" ] || tar -cf "$RUNNER_TEMP/queue-units/units.tar" -C "$MBC_STORE" -T "$RUNNER_TEMP/units-new"
-      - if: always() && steps.queue-units.outcome == 'success'
+      - if: always() && runner.environment != 'self-hosted' && steps.queue-units.outcome == 'success'
         uses: actions/upload-artifact@v4
         continue-on-error: true
         with: { name: "mbui-units-${{ env.CACHE_PREFIX }}${{ github.sha }}", path: "${{ runner.temp }}/queue-units", retention-days: 1, compression-level: 1, if-no-files-found: ignore }
@@ -291,20 +313,34 @@ jobs:
         if: always()
         run: |
           S=$MBC_STORE
-          [ ! -d $S ] || find $S -name '*.lock' -delete
-          # (arch/next's run after a red test too: its tests ran on all it built, and red ones are its own to mend, its
-          # store grown with each push else)
           went=${{ steps.tests.outcome }}
           [ "$OWN" != a- ] || [ "$went" != failure ] || went=success
-          # (main's keeps what its runs used for the last twelve hours, not only this run's: a branch off main of an hour
-          # or two before found few of its units in main's newest store, main having changed them since, and compiled
-          # them all again, 644 of sfapp's 899 in 141 s, app build 275-276 s of its 5 minutes, core-connect-rows
-          # 42934469629 and mbui-app-part-balance, 2026-11-10 and 11, where main's own was 41-227)
-          old=$( [ "$OWN" = m- ] && echo "-mmin +720" || echo "")
-          [ ! -d $S ] || [ "$went" != success ] || find $S -mindepth 2 -maxdepth 2 -type d ! -newer "$RUNNER_TEMP/start" $old -exec rm -rf {} +
-          c=$( (cd $S 2>/dev/null && find . -mindepth 2 -maxdepth 2 -type d | sort) | sha256sum | cut -c1-16)
-          echo "BUILD_KEY=$CACHE_PREFIX$OWN$c" >> "$GITHUB_ENV"
-      - if: always() && env.BUILD_KEY != steps.main.outputs.cache-matched-key && env.BUILD_KEY != steps.own.outputs.cache-matched-key
+          if [ "${{ runner.environment }}" = self-hosted ]; then
+            [ ! -d "$S" ] || find "$S" -name '*.lock' -mmin +120 -delete 2>/dev/null || true
+            [ ! -d "$S" ] || [ "$went" != success ] || find "$S" -mindepth 2 -maxdepth 2 -type d ! -newer "$RUNNER_TEMP/start" -mmin +4320 -exec rm -rf {} +
+            seed="$HOME/stillfail-ci/moon-build/$CACHE_PREFIX"
+            if [ "$went" = success ] && { [ "$OWN" = m- ] || [ ! -d "$seed" ]; } && [ -d apps/mbui/_build ]; then
+              tmp="$HOME/stillfail-ci/moon-build/.tmp-$CACHE_PREFIX-$$"
+              rm -rf "$tmp" && mkdir -p "$tmp"
+              cp -a apps/mbui/_build/. "$tmp/"
+              find "$tmp" -type d \( -name '*.mbc' -o -name mbc-store \) -prune -exec rm -rf {} +
+              rm -rf "$seed.old"
+              [ ! -d "$seed" ] || mv "$seed" "$seed.old" || true
+              mv "$tmp" "$seed" || rm -rf "$tmp"
+              rm -rf "$seed.old"
+            fi
+          else
+            [ ! -d "$S" ] || find "$S" -name '*.lock' -delete
+            # (main's keeps what its runs used for the last twelve hours, not only this run's: a branch off main of an hour
+            # or two before found few of its units in main's newest store, main having changed them since, and compiled
+            # them all again, 644 of sfapp's 899 in 141 s, app build 275-276 s of its 5 minutes, core-connect-rows
+            # 42934469629 and mbui-app-part-balance, 2026-11-10 and 11, where main's own was 41-227)
+            old=$( [ "$OWN" = m- ] && echo "-mmin +720" || echo "")
+            [ ! -d "$S" ] || [ "$went" != success ] || find "$S" -mindepth 2 -maxdepth 2 -type d ! -newer "$RUNNER_TEMP/start" $old -exec rm -rf {} +
+            c=$( (cd "$S" 2>/dev/null && find . -mindepth 2 -maxdepth 2 -type d | sort) | sha256sum | cut -c1-16)
+            echo "BUILD_KEY=$CACHE_PREFIX$OWN$c" >> "$GITHUB_ENV"
+          fi
+      - if: always() && runner.environment != 'self-hosted' && env.BUILD_KEY != steps.main.outputs.cache-matched-key && env.BUILD_KEY != steps.own.outputs.cache-matched-key
         uses: actions/cache/save@v4
         with:
           path: ${{ env.MBC_STORE }}
@@ -313,11 +349,11 @@ jobs:
       # paths' exclusions did not hold them: the store by its absolute path, MBC_STORE, 2.0 GB of it restored with
       # moon's, and five units' directories, 632 MB, past '**/*.mbc/**': most of the cache's 640 MB, where moon's own
       # was 166 MB (#5429, 2026-11-11). The store was saved above; nothing after this reads either)
-      - if: always() && env.OWN == 'm-' && steps.moon.outputs.cache-hit != 'true'
+      - if: always() && runner.environment != 'self-hosted' && env.OWN == 'm-' && steps.moon.outputs.cache-hit != 'true'
         run: |
           rm -rf "$MBC_STORE"
           find apps/mbui/_build -type d -name '*.mbc' -prune -exec rm -rf {} +
-      - if: always() && env.OWN == 'm-' && steps.moon.outputs.cache-hit != 'true'
+      - if: always() && runner.environment != 'self-hosted' && env.OWN == 'm-' && steps.moon.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: |
@@ -362,7 +398,7 @@ jobs:
   # sfapp's test program built once (scripts/test.sh APP_BUILD_OUT), its units kept as the native job keeps its own
   app-build:
     name: native (app build)
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(github.event.pull_request.head.repo.fork != true && vars.CI_1 != 'off' && '["self-hosted", "linux-ci"]' || '"ubuntu-24.04"') }}
     timeout-minutes: 5
     env:
       PART: app
@@ -380,7 +416,7 @@ jobs:
   # 2dbd62da, 42734298401, 2026-11-10), every unit a change made compiled twice.
   replay-build:
     name: native (replay build)
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(github.event.pull_request.head.repo.fork != true && vars.CI_1 != 'off' && '["self-hosted", "linux-ci"]' || '"ubuntu-24.04"') }}
     timeout-minutes: 5
     env:
       PART: replay
@@ -452,7 +488,9 @@ jobs:
     needs: app-build
     # (arch/next's run keeps its units: its tests are its pipeline's; a call with rates: only runs the rates alone)
     if: github.event_name != 'workflow_run' && inputs.rates != 'only'
-    runs-on: ubuntu-24.04
+    # (corners' five processes with motion judged again were 293 s of 300 on GitHub's 4-core Ubuntu (#5567); on ci-1's 16
+    # Zen 4 threads right after app-build, ~103 s)
+    runs-on: ${{ fromJSON(matrix.group == 'corners' && github.event.pull_request.head.repo.fork != true && vars.CI_1 != 'off' && '["self-hosted", "linux-ci"]' || '"ubuntu-24.04"') }}
     # (a push's 5 minutes; the day's, its pages in one process, 10)
     timeout-minutes: ${{ github.event_name != 'schedule' && 5 || 10 }}
     strategy:
@@ -472,7 +510,19 @@ jobs:
       MOTION_OUT: ${{ github.workspace }}/motion.txt
     steps: &app-steps
       - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v4
+      - if: runner.environment == 'self-hosted'
+        uses: ./.github/actions/setup-linux
+      - id: local-app
+        if: runner.environment == 'self-hosted'
+        run: |
+          local_dir="$HOME/stillfail-ci/app-test/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          if [ -f "$local_dir/sfapp.whitebox_test.exe" ]; then
+            mkdir -p "$RUNNER_TEMP/app-test"
+            cp -a "$local_dir/." "$RUNNER_TEMP/app-test/"
+            echo "hit=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.local-app.outputs.hit != 'true'
+        uses: actions/download-artifact@v4
         with: { name: "mbui-app-test-${{ github.run_id }}-${{ github.run_attempt }}", path: "${{ runner.temp }}/app-test" }
       - if: env.PKGS == 'yes'
         uses: actions/download-artifact@v4

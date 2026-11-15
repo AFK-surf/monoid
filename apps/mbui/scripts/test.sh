@@ -141,7 +141,8 @@ for t in $targets; do
     [ -f $b/sfapp.whitebox_test.exe ] || { moon test $mode $pkgs --build-only 2>&1 | grep -v "$F" | tail -40; exit 1; }
     mkdir -p "$APP_BUILD_OUT" && cp $b/sfapp.whitebox_test.exe $b/__whitebox_test_info.json "$APP_BUILD_OUT/" &&
       cp "$(bash "$D/testexe" path)" "$APP_BUILD_OUT/testexe" || exit 1
-    echo "test.sh: sfapp's test program put in $APP_BUILD_OUT ($(du -h $b/sfapp.whitebox_test.exe | cut -f1))"
+    ! command -v strip >/dev/null 2>&1 || [ "$(uname -s)" != Linux ] || strip --strip-unneeded "$APP_BUILD_OUT/sfapp.whitebox_test.exe" "$APP_BUILD_OUT/testexe" || true
+    echo "test.sh: sfapp's test program put in $APP_BUILD_OUT ($(du -h "$APP_BUILD_OUT/sfapp.whitebox_test.exe" | cut -f1))"
     exit 0
   fi
   # (the flows' test program and its tests' list put where REPLAY_BUILD_OUT says, the same way)
@@ -150,7 +151,8 @@ for t in $targets; do
     [ -f $b/flows.blackbox_test.exe ] || { moon test $mode $pkgs --build-only 2>&1 | grep -v "$F" | tail -40; exit 1; }
     mkdir -p "$REPLAY_BUILD_OUT" && cp $b/flows.blackbox_test.exe $b/__blackbox_test_info.json "$REPLAY_BUILD_OUT/" &&
       cp "$(bash "$D/testexe" path)" "$REPLAY_BUILD_OUT/testexe" || exit 1
-    echo "test.sh: the flows' test program put in $REPLAY_BUILD_OUT ($(du -h $b/flows.blackbox_test.exe | cut -f1))"
+    ! command -v strip >/dev/null 2>&1 || [ "$(uname -s)" != Linux ] || strip --strip-unneeded "$REPLAY_BUILD_OUT/flows.blackbox_test.exe" "$REPLAY_BUILD_OUT/testexe" || true
+    echo "test.sh: the flows' test program put in $REPLAY_BUILD_OUT ($(du -h "$REPLAY_BUILD_OUT/flows.blackbox_test.exe" | cut -f1))"
     # (then the core's tests here, the flows' left to replay-fps's runs of it)
     pkgs="${pkgs/ -p stillfail\/sfreplay\/flows/}"
   fi
@@ -165,9 +167,11 @@ for t in $targets; do
         [[ " $MBC_EMPTY_TESTS " = *" $q/$n.${k}_test "* ]] && continue
         [ -f $b/$n.${k}_test.exe ] || { echo "test.sh: no $b/$n.${k}_test.exe to put in $PKGS_BUILD_OUT" >&2; exit 1; }
         mkdir -p "$PKGS_BUILD_OUT/$q" && cp $b/$n.${k}_test.exe $b/__${k}_test_info.json "$PKGS_BUILD_OUT/$q/" || exit 1
+        ! command -v strip >/dev/null 2>&1 || [ "$(uname -s)" != Linux ] || strip --strip-unneeded "$PKGS_BUILD_OUT/$q/$n.${k}_test.exe" || true
       done
     done
     cp "$(bash "$D/testexe" path)" "$PKGS_BUILD_OUT/testexe" || exit 1
+    ! command -v strip >/dev/null 2>&1 || [ "$(uname -s)" != Linux ] || strip --strip-unneeded "$PKGS_BUILD_OUT/testexe" || true
     echo "test.sh: the packages' test programs put in $PKGS_BUILD_OUT ($(du -sh "$PKGS_BUILD_OUT" | cut -f1))"
   fi
   s=$(date +%s)
