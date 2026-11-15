@@ -1871,10 +1871,18 @@ try {
       return {
         end: async () => {
           const to = new Date();
-          const day = (d: Date) => d.toISOString().slice(11, 23);
+          // (the record says a line's time of day alone, UTC: put on the day `from` is, and on the next where it is
+          // over 12 hours before `from`. Drill 29's move there ran from 23:59:03 to 00:09:41, and the times compared as
+          // words read none of its 1,190 reads)
+          const midnight = Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), from.getUTCDate());
+          const when = (t: string) => {
+            const [h, m, s] = t.split(":").map(Number);
+            const at = midnight + ((h! * 60 + m!) * 60 + s!) * 1000;
+            return at < from.getTime() - 43_200_000 ? at + 86_400_000 : at;
+          };
           const rec = readFileSync(join(dir, a.name, "record.log"), "utf8").split("\n")
             .map((l) => /^asked: (\d\d:\d\d:\d\d\.\d{3}) (\S+) GET \/admin\/api\/move\?(\S*) -> answered(?: \S+)? in (\d+) ms/.exec(l))
-            .filter((m): m is RegExpExecArray => m !== null && m[2] === aId.slice(0, 8) && m[1] >= day(from) && m[1] <= day(to));
+            .filter((m): m is RegExpExecArray => m !== null && m[2] === aId.slice(0, 8) && when(m[1]!) >= from.getTime() && when(m[1]!) <= to.getTime());
           const perSecond = new Map<string, number>();
           for (const m of rec) perSecond.set(m[1].slice(0, 8), (perSecond.get(m[1].slice(0, 8)) ?? 0) + 1);
           const secs = Math.max(1, (to.getTime() - from.getTime()) / 1000);
