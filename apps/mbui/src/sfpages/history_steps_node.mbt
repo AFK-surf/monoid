@@ -440,7 +440,7 @@ fn steps_main_node(v : @view.View, body : (@view.View) -> Unit) -> Unit {
 
 ///|
 /// The side rail's points for an event whose header row is `head_h` tall (its `20×20` icon pulled `6px` left, centred
-/// at `x = 4.0`) and whose subordinate body below it (`pl = S3_5`, clear of the rail) is `body_h` tall. The rail is one
+/// at `x = 4.0`) and whose subordinate body below it (`pl = S5`, clear of the rail) is `body_h` tall. The rail is one
 /// straight line at `x = 4.0` from the icon's bottom `(4.0, 20.0)`:
 /// - on to the next event's icon (`head_h + body_h + 10.0`) when `rail_next` is true;
 /// - otherwise down beside the body to `2px` above its end, or nothing when there is no body.
@@ -466,7 +466,7 @@ fn rail_shapes(head_h : Double, body_h : Double, rail_next : Bool, color : Int64
 
 ///|
 /// Full-width event stack in `parent`: `head` renders the top event row (with its `20×20` `h_icon` centered at
-/// `x = 4.0`), `body` renders the subordinate block below it (indented by `pl = S3_5`), and an overlay rail runs
+/// `x = 4.0`), `body` renders the subordinate block below it (indented by `pl = S5`, the column of the head's words), and an overlay rail runs
 /// straight down at `x = 4.0` from `(4.0, 20.0)` beside `body` and on to the next event (`+10.0`) when `rail_next` is
 /// true.
 fn event_stack_node(
@@ -3278,24 +3278,24 @@ let h_turn_words : @ui.TextStyle = @ui.text_style(size=Caption, color=Muted, wra
 let h_main : @ui.Style = @ui.css("w=Full gap=S2_5")
 
 ///|
-/// An event (hEv): its 20 gutter and what it is, 8 apart, pulled 6 left so its icon centres on the rail at `x = 4.0`.
+/// An event (hEv): its 20 gutter and what it is, 6 apart, pulled 6 left so its icon centres on the rail at `x = 4.0` and its words start at `x = 20`, the column of what it holds below.
 // kept across runs: a value (no field of it changes)
-let h_ev : @ui.Style = @ui.css("row w=Full gap=S2 align=AStart").then(@sf.outset_start(6.0))
+let h_ev : @ui.Style = @ui.css("row w=Full gap=S1_5 align=AStart").then(@sf.outset_start(6.0))
 
 ///|
-/// A received message's body beside the event's side rail (`14px` left offset, clear of the rail at `x = 4.0`).
+/// A received message's body beside the event's side rail (`20px` left offset: the column of the event's words, clear of the rail at `x = 4.0`).
 // kept across runs: a value (no field of it changes)
-let h_received_body : @ui.Style = @ui.css("w=Full pl=S3_5 pt=S1 pb=S0_5")
+let h_received_body : @ui.Style = @ui.css("w=Full pl=S5 pt=S1 pb=S0_5")
 
 ///|
-/// A collapsed background task preview's body beside the event's side rail (`14px` left offset, clear of the rail at `x = 4.0`).
+/// A collapsed background task preview's body beside the event's side rail (`20px` left offset: the column of the event's words, clear of the rail at `x = 4.0`).
 // kept across runs: a value (no field of it changes)
-let h_task_preview_body : @ui.Style = @ui.css("w=Full pl=S3_5 pt=S0_5 pb=S0_5")
+let h_task_preview_body : @ui.Style = @ui.css("w=Full pl=S5 pt=S0_5 pb=S0_5")
 
 ///|
-/// A sent card or expanded note/task body beside the event's side rail (`14px` left offset, clear of the rail at `x = 4.0`).
+/// A sent card or expanded note/task body beside the event's side rail (`20px` left offset: the column of the event's words, clear of the rail at `x = 4.0`).
 // kept across runs: a value (no field of it changes)
-let h_post_body : @ui.Style = @ui.css("w=Full pl=S3_5 pt=S1 pb=S0_5")
+let h_post_body : @ui.Style = @ui.css("w=Full pl=S5 pt=S1 pb=S0_5")
 
 ///|
 /// An event's mark (hIcon): 20 square, on whatever it stands on: the turn's rail runs from under it, so nothing of it
@@ -3504,7 +3504,7 @@ let h_group : @ui.Style = @ui.css("w=Full")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let h_group_head : @ui.Style = @ui.css("row w=Full pr=S1_5 gap=S2 align=ACenter radius=Lg hovered{bg=Hover}").then(@sf.outset(6.0))
+let h_group_head : @ui.Style = @ui.css("row w=Full pr=S1_5 gap=S1_5 align=ACenter radius=Lg hovered{bg=Hover}").then(@sf.outset(6.0))
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -3515,9 +3515,9 @@ let h_group_words : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=
 let h_group_hot : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Fg, wrap=false, w=Cut)
 
 ///|
-/// Its calls, opened (hSteps): 14px left offset beside the group's straight side rail at `x = 4.0`, 4 apart.
+/// Its calls, opened (hSteps): 20px left offset (the group head's words' column) beside the group's straight side rail at `x = 4.0`, 4 apart.
 // kept across runs: a value (no field of it changes)
-let h_steps : @ui.Style = @ui.css("w=Full pl=S3_5 pt=S1 pb=S1 gap=S1")
+let h_steps : @ui.Style = @ui.css("w=Full pl=S5 pt=S1 pb=S1 gap=S1")
 
 ///|
 /// A call's line (hStep summary): aligned with the card below it, 8 apart, 12.
