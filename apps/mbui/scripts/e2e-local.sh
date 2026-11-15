@@ -417,9 +417,13 @@ move() {
    E2E_SF_SRC=$E E2E_ORIGIN=$ORIGIN E2E_PEER_DATA=$WORK/move E2E_WORK=$WORK E2E_STATION=$STATION E2E_PORT=$PORT \
      E2E_RELAY=$RELAY_PORT E2E_MOVE_LIMIT=$most node ${E2E_DRILL_NODE:-} $ROOT/e2e/move.ts </dev/null &
    local pid=$! rc
-   (sleep $most; kill -0 $pid 2>/dev/null || exit 0  # timer: the run's deadline
+   # (the drill's end as the system tells it, mbui's scripts/chk logwait --pid; past the run's limit, 2: killed, given
+   # 10 s to end on TERM)
+   (rc=0; "$MBUI_DIR/scripts/chk" logwait --pid $pid --deadline $most > /dev/null 2>&1 || rc=$?
+    [ $rc = 2 ] || exit 0
     echo "FAIL the run: over its limit of $most s (scripts/e2e-local.sh move); the drill's process killed, its last line above"
-    kill -TERM $pid; sleep 10; kill -KILL $pid 2>/dev/null) &
+    kill -TERM $pid
+    "$MBUI_DIR/scripts/chk" logwait --pid $pid --deadline 10 > /dev/null 2>&1 || kill -KILL $pid 2>/dev/null) &
    local dog=$!
    wait $pid; rc=$?
    pkill -P $dog 2>/dev/null; kill $dog 2>/dev/null

@@ -32,7 +32,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, statfsSync, unlinkSync, watch, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { check as checked, Device, dir, fail, failures, heldProbe, type J, log, whenChanged, within } from "./device.ts";
+import { check as checked, deadline, Device, dir, fail, failures, heldProbe, type J, log, whenChanged, within } from "./device.ts";
 
 const WORK = process.env.E2E_WORK!;
 // The last line the drill said: what a limit that passes names as waited for (each wait says itself as it begins).
@@ -52,13 +52,12 @@ const over = (what: string, s: number) => {
   process.exit(1);
 };
 const runLimit = Math.max(60, Number(process.env.E2E_MOVE_LIMIT ?? 14400) - 60);
-setTimeout(() => over("the run", runLimit), runLimit * 1000).unref();
-let partTimer: ReturnType<typeof setTimeout> | undefined;
+deadline(runLimit * 1000, () => over("the run", runLimit));
+let partOver = () => {};
 const limit = (what: string, s: number) => {
-  clearTimeout(partTimer);
+  partOver();
   log(`${what}: begins, its limit ${s} s`);
-  partTimer = setTimeout(() => over(what, s), s * 1000);
-  partTimer.unref();
+  partOver = deadline(s * 1000, () => over(what, s));
 };
 /// scripts/e2e-local.sh's words (crash, again, halt, second-station …), its last line logged; failed past `ms` (a
 /// station that does not start, or a child that keeps the pipe open: drill 8's `again station` held it 2 h 38 min).
@@ -205,8 +204,9 @@ function turns(since = 0): { at: number; pid: number; session: string; resumed: 
 /// The processes of the job tagged `tag` (its command line says drill-job-<tag>), each with the station its working
 /// directory is of.
 function jobs(tag: string): { pid: number; cwd: string; on: Name | "?" }[] {
-  // (the job's own shell alone, whose argv is `sh -c <its command>`: what started it may carry the line among its own)
-  const mine = new RegExp(`^\\s*(\\d+)\\s+(?:\\S*/)?(?:ba|z)?sh -c while :; do sleep 3600; done; : drill-job-${tag}$`);
+  // (the job's own shell alone, whose argv is `sh -c <its command>` (e2e/fake/claude.mjs's drill-job: a loop, then
+  // `: drill-job-<tag>`): what started it may carry the line among its own)
+  const mine = new RegExp(`^\\s*(\\d+)\\s+(?:\\S*/)?(?:ba|z)?sh -c while :; do [^;]*; done; : drill-job-${tag}$`);
   const pids = spawnSync("ps", ["-axo", "pid=,args="], { encoding: "utf8" }).stdout.split("\n").map((l) => mine.exec(l)?.[1]).filter((x): x is string => x !== undefined).map(Number);
   return pids.map((pid) => {
     const l = spawnSync("lsof", ["-nP", "-a", "-p", String(pid), "-d", "cwd", "-Fn"], { encoding: "utf8" }).stdout;
@@ -1960,17 +1960,48 @@ try {
       const other = idOf(otherN);
       const asks: Ask[] = [];
       let on = true;
+      // (what waits on the asks: looked at again as an ask begins and as one ends)
+      const waiting = new Set<() => void>();
+      const told = () => { for (const f of [...waiting]) f(); };
+      let begun = 0;
       const done = (async () => {
         while (on) {
           const t = Date.now();
+          begun = t;
+          told();
           let said = (await within(a.call("move.back", { station: asker, from: other, module: "chats", item: "chat:c-drill-not-there" }).then(() => "202", (e) => String(e).replace(/^Error: [A-Z]+ move\.back: /, "").slice(0, 200)), 35_000)) ?? "no answer in 35 s";
           if (said === "202") said = await turnEndOn(askerN, t, 35_000).then((l) => `202, its turn: ${outcome(l)}`, () => "202, its turn not ended in 35 s");
           asks.push({ at: t, ms: Date.now() - t, said, reached: !unreached.test(said) && !/no answer|not ended|under way|进行|没有应答/.test(said) });
+          told();
           const wait = 1000 - (Date.now() - t);
           if (wait > 0) await new Promise((r) => setTimeout(r, wait));
         }
       })();
-      return { asks, stop: async () => { on = false; await done; } };
+      /// Once `ok` holds, looked at as each ask begins and ends; failed past `ms` (a deadline), saying `what`.
+      const until = (ok: () => boolean, what: string, ms = 120_000): Promise<void> => new Promise((resolve, reject) => {
+        const look = () => {
+          if (!ok()) return;
+          waiting.delete(look);
+          over();
+          resolve();
+        };
+        const over = deadline(ms, () => {
+          waiting.delete(look);
+          reject(new Error(`${askerN} asking ${otherN}: ${what}, not by ${ms / 1000} s`));
+        });
+        waiting.add(look);
+        look();
+      });
+      return {
+        asks,
+        stop: async () => { on = false; await done; },
+        /// `n` more asks answered (or refused) from now
+        answered: (n: number) => { const from = asks.length; return until(() => asks.length >= from + n, `${n} more asks answered`); },
+        /// an ask begun at `t` or after
+        begunFrom: (t: number) => until(() => begun >= t, "an ask begun"),
+        /// an ask begun at `t` or after answered (or refused)
+        answeredFrom: (t: number, ms?: number) => until(() => asks.some((x) => x.at >= t), "an ask begun then answered", ms),
+      };
     };
     const iso = (t: number) => new Date(t).toISOString();
     /// Both stations' log lines from `from` to `to` (their launchers' logs, each line's own time).
@@ -2007,7 +2038,7 @@ try {
     await check("7a: A handed over to a new process as an update does (SIGUSR2 to its launcher) while B asks it each second: no ask over 2 s, every one answered", async () => {
       const t0 = Date.now();
       const b = asking("B", "A");
-      await new Promise((r) => setTimeout(r, 3000));
+      await b.answered(3);
       try {
         const end = await handoverEnd(await handOver("A"));
         log(`  ${end}`);
@@ -2016,37 +2047,38 @@ try {
         await b.stop();
         throw e;
       }
-      log("  waiting 10 s more of asks");
-      await new Promise((r) => setTimeout(r, 10_000));
+      log("  waiting for 10 more asks answered");
+      await b.answered(10);
       await b.stop();
       judge(b.asks, t0, t0, null);
     });
-    /// B asking A across A's whole station stopped for `downMs` and started again: the asks, and when A was ready.
-    const acrossStop = async (downMs: number) => {
+    /// B asking A across A's whole station stopped and started again: held down until B has `held` of it (an ask begun
+    /// in the stop: one answered as A is back; or that ask answered while A is still down: what one gets), the asks, and
+    /// when A was ready.
+    const acrossStop = async (held: "begun" | "answered") => {
       const t0 = Date.now();
       const b = asking("B", "A");
-      await new Promise((r) => setTimeout(r, 3000));
+      await b.answered(3);
       let downAt = 0;
       let upAt = 0;
       try {
         stationDo("halt", "station");
         downAt = Date.now();
-        log(`  A stopped (launcher, front and Node); ${downMs / 1000} s of asks while it is down`);
-        await new Promise((r) => setTimeout(r, downMs));
+        log(`  A stopped (launcher, front and Node), till an ask of B's begun in the stop is ${held}`);
+        await (held === "begun" ? b.begunFrom(downAt) : b.answeredFrom(downAt, 300_000));
       } finally {
         stationDo("again", "station");
         upAt = Date.now();
-        log("  A ready again (its new Node took over); 15 s of asks");
-        await new Promise((r) => setTimeout(r, 15_000));
-        await b.stop();
+        log("  A ready again (its new Node took over); 15 more asks answered");
+        await b.answered(15).finally(() => b.stop());
       }
       log(`  A down from +${((downAt - t0) / 1000).toFixed(1)}s, ready at +${((upAt - t0) / 1000).toFixed(1)}s; ${b.asks.length} asks: ${said(b.asks, t0).slice(0, 3000)}`);
       return { asks: b.asks, t0, downAt, upAt };
     };
     // (the lead, 2026-11-14: an ask held while A is down and answered once it is back is answered, not failed; what is
     // held is that each is answered or refused in words, none by a timeout, by 5 s after A is ready)
-    await check("7b: A's whole station stopped 10 s and started again while B asks it: every ask answered or refused in words, none timed out, each by 5 s after A is ready", async () => {
-      const { asks, upAt } = await acrossStop(10_000);
+    await check("7b: A's whole station stopped while B asks it, started again once an ask of B's is held in the stop: every ask answered or refused in words, none timed out, each by 5 s after A is ready", async () => {
+      const { asks, upAt } = await acrossStop("begun");
       // (a station that did not answer, in its words in either language: station.move.noAnswer and .gone, 「…没有应答…」)
       const timedOut = asks.filter((x) => /timed out|no answer in|not ended|answered nothing|没有应答|did not answer|does not answer/.test(x.said));
       const late = asks.filter((x) => x.at + x.ms > upAt && x.at + x.ms > Math.max(upAt + 5000, x.at + 2000));
@@ -2056,9 +2088,9 @@ try {
       if (late.length > 0) why.push(`${late.length} not answered by 5 s after A was ready: ${late.map((x) => `${iso(x.at)} ended ${((x.at + x.ms - upAt) / 1000).toFixed(1)} s after`).join(", ")}`);
       if (why.length > 0) throw new Error(why.join("; "));
     });
-    await check("7b: A stopped 45 s while B asks it: what an ask begun in the stop gets, and when (measured, no bound yet)", async () => {
-      const { asks, downAt, upAt } = await acrossStop(45_000);
-      for (const x of asks.filter((x) => x.at >= downAt && x.at < upAt)) measured(`7b 45 s stop: an ask begun ${((x.at - downAt) / 1000).toFixed(1)} s into it got after ${(x.ms / 1000).toFixed(1)} s (${((x.at + x.ms - upAt) / 1000).toFixed(1)} s from A ready): ${x.said.slice(0, 160)}`);
+    await check("7b: A stopped while B asks it till an ask begun in the stop has its answer: what that ask gets, and when (measured, no bound yet)", async () => {
+      const { asks, downAt, upAt } = await acrossStop("answered");
+      for (const x of asks.filter((x) => x.at >= downAt && x.at < upAt)) measured(`7b long stop: an ask begun ${((x.at - downAt) / 1000).toFixed(1)} s into it got after ${(x.ms / 1000).toFixed(1)} s (${((x.at + x.ms - upAt) / 1000).toFixed(1)} s from A ready): ${x.said.slice(0, 160)}`);
     });
     await check("7c: A's new process dies at start beside the serving one (not handed over; going on as before), then B asks A and A asks B: no ask over 2 s, every one answered", async () => {
       log("  waiting for A online on alice's device's link (7b stopped it)");
@@ -2086,8 +2118,8 @@ try {
       const t0 = Date.now();
       const b = asking("B", "A");
       const ab = asking("A", "B");
-      log("  15 s of asks each way");
-      await new Promise((r) => setTimeout(r, 15_000));
+      log("  15 asks answered each way");
+      await Promise.all([b.answered(15), ab.answered(15)]);
       await Promise.all([b.stop(), ab.stop()]);
       const errs: string[] = [];
       try {
@@ -2196,7 +2228,7 @@ try {
 } catch (e) {
   fail("the run", e);
 }
-clearTimeout(partTimer);
+partOver();
 steps.A?.close();
 for (const r of report) log(`MEASURED ${r}`);
 log(failures() === 0 ? "ALL PASSED" : `${failures()} FAILED`);

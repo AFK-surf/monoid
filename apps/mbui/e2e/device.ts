@@ -28,6 +28,13 @@ export type J = any;
 
 /// What `p` gives, or nothing once `ms` have gone by (a deadline: a core or a process that would not end).
 export const within = <T>(p: Promise<T>, ms: number): Promise<T | undefined> => Promise.race([p, new Promise<undefined>((r) => setTimeout(r, ms))]);
+/// `over` once `ms` have gone by, unless what it gives back is called first: a run's or a part's deadline (what it is
+/// given before it fails, not what it is expected to take), keeping no process up by itself.
+export function deadline(ms: number, over: () => void): () => void {
+  const t = setTimeout(over, ms);
+  t.unref();
+  return () => clearTimeout(t);
+}
 
 /// The watch of a directory waited on, kept for the rest of the run and shared by its waits: one stream of the file
 /// system's events for the run, not one begun and ended by each wait. It is only as good as the Mac's file events. On
