@@ -110,6 +110,57 @@ test("a room past its bound is said at least: what was found so far, not all of 
   assert.ok(cut!.bytes < all!.bytes, `${cut!.bytes} of ${all!.bytes}`);
 });
 
+test("a turn reads plans every half second and sizes no room; what changed meanwhile is sized at the next plan read at rest", async () => {
+  const w = world();
+  const a = w.get(A);
+  const b = w.get(B);
+  const { key: going } = await stillfailChat(a);
+  const { key: other } = await stillfailChat(a);
+  await a.moves.scheduler.plan(WS, B);
+  await a.moves.sizes.settled();
+  const n0 = a.sized.length;
+  // (a turn held as the chat's files are placed there)
+  const gate = Promise.withResolvers<void>();
+  const at = Promise.withResolvers<void>();
+  b.placing = async () => {
+    at.resolve();
+    await gate.promise;
+  };
+  const turn = a.moves.scheduler.move(WS, B, { module: "chats", item: going });
+  await at.promise;
+  // (another chat changes meanwhile; plans read every half second, as a page polled would)
+  a.rig.store.setArchived(other, true, "p@x");
+  for (let i = 0; i < 4; i++) {
+    await a.moves.scheduler.plan(WS, B);
+    await w.t.adjust(500);
+  }
+  assert.deepEqual(a.sized.slice(n0), [], "no room sized during the turn");
+  b.placing = undefined;
+  gate.resolve();
+  assert.equal((await turn).failed, null);
+  await w.quiet();
+  assert.deepEqual(a.sized.slice(n0), [], "nor as it ended");
+  // At rest: the chat that changed, alone (the one that left needs none).
+  await a.moves.scheduler.plan(WS, B);
+  await a.moves.sizes.settled();
+  assert.deepEqual(a.sized.slice(n0), [other]);
+});
+
+test("a chat's trip asks no more of the other than its files need: what it lacks asked first only where all of it might not fit", async () => {
+  const asked = async (margin: number) => {
+    const s = await full(200 * 1024, margin, true);
+    const n0 = s.a.sized.length;
+    assert.equal(await s.a.moves.handover.handOver(s.key, B).then(() => null, (e: Error) => e.message), null);
+    await s.w.quiet();
+    assert.deepEqual(s.a.sized.slice(n0), [], "no room sized");
+    assert.deepEqual(s.toB.filter((m) => m === "move.sizes" || m === "move.open" || m === "move.uses"), [], "nothing asked of its size");
+    return s.toB.filter((m) => m === "handover.lacking").length;
+  };
+  const ample = await asked(1024 ** 3);
+  const tight = await asked(50 * 1024);
+  assert.ok(ample > 0 && tight > ample, `lacking asked ${ample} times with room to spare, ${tight} where it had to be asked first`);
+});
+
 /// A station of one chat whose room holds `bytes` more, B with FLOOR_MIN and `margin` free; with `copy`, B holds a copy of
 /// the chat's room at the same place (a retirement's leftover).
 async function full(bytes: number, margin: number, copy: boolean) {

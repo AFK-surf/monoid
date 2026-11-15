@@ -79,6 +79,8 @@ async function lookedWith(n: number): Promise<{ start: number; there: Looked; ba
   };
   const plans = [sched, w.get(B).moves.scheduler];
   const trip = counting(join(a.rig.dir, "move"), plans);
+  // (the rooms sized on either station meanwhile: none, a turn's plan starting no sizing, move/sizes.ts)
+  const sized0 = [a.sized.length, w.get(B).sized.length];
   const read0 = a.jobsRead;
   const plan0 = planRead;
   const before = a.moves.handover.looked();
@@ -92,6 +94,7 @@ async function lookedWith(n: number): Promise<{ start: number; there: Looked; ba
   assert.equal(a.rig.store.handedTo(fresh), null, "home again");
   const jobsRead = a.jobsRead - read0 - (planRead - plan0);
   const tripCost = trip.stop();
+  assert.deepEqual([...a.sized.slice(sized0[0]!), ...w.get(B).sized.slice(sized0[1]!)], [], "a chat's trip there and back sizes no room");
   // A chat with no job there and back: nothing of the jobs written.
   const { key: idle } = await stillfailChat(a);
   const idleTrip = counting(join(a.rig.dir, "move"), plans);

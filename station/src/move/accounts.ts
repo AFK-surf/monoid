@@ -248,7 +248,7 @@ export function accountsModule(d: AccountsDeps): Module & { cameHome(share: stri
       // (the shares lent for these items, by their names: each item's line taken off; no other item's looked at; and
       // those kept lent only for what the other runs on them, a few)
       const shares = new Set(items.flatMap((x) => lent.sharesFor(named(x))));
-      for (const [share] of lent.entries()) if (lent.forCount(share) === 0) shares.add(share);
+      if (items.length === 0) for (const [share] of lent.entries()) if (lent.forCount(share) === 0) shares.add(share);
       for (const share of shares) {
         const l = lent.base(share);
         if (l === undefined || l.hostMoved === true) continue;

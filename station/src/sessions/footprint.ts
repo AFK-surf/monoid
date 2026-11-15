@@ -130,7 +130,9 @@ const HEAD_BYTES = 512;
 const answerNow = (p: Probe): Answer => {
   try {
     if ("there" in p) return existsSync(p.there); // sync: rebuildableKind's, for the gathering's own thread (carry-worker.ts)
-    if ("dir" in p) return statSync(p.dir).isDirectory(); // sync: rebuildableKind's, for the gathering's own thread (carry-worker.ts)
+    // (most directories have neither: no exception thrown for each)
+    if ("dir" in p) return statSync(p.dir, { throwIfNoEntry: false })?.isDirectory() === true; // sync: rebuildableKind's, for the gathering's own thread (carry-worker.ts)
+    if (!existsSync(p.head)) return null; // sync: rebuildableKind's, for the gathering's own thread (carry-worker.ts)
     const fd = openSync(p.head, "r"); // sync: rebuildableKind's, for the gathering's own thread (carry-worker.ts)
     try {
       const buf = Buffer.alloc(HEAD_BYTES);

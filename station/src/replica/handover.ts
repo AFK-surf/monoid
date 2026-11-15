@@ -685,7 +685,8 @@ export class Handover {
         return answer;
       },
       most: d.lackMost ?? LACK_MOST,
-      ...(held ? {} : { adds: fits }),
+      // (what it lacks there asked first only where all of it might not fit: else no more is asked than it sends)
+      ...(held || typeof begun?.free !== "number" || begun.free - (g.bytes + Math.ceil(g.bytes / 20)) >= floor ? {} : { adds: fits }),
       stopping: () => this.#closed || o.abandoned === true,
       total: (bytes) => void (held || (o.total = bytes, o.done = 0, progress?.({ done: 0, total: bytes, unit: "bytes" }))),
       done: (bytes) => void (held || (o.done += bytes, progress?.({ done: o.done, total: o.total, unit: "bytes" }))),

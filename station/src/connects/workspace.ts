@@ -83,7 +83,10 @@ export class WorkspaceConnects {
       if (known === null || typeof workspace !== "string" || !this.inWorkspace(workspace, peer)) throw new Error("no such connect");
       return { holds: this.entryOf(localOf(known, d.here())) !== undefined };
     });
-    d.bus.heard?.((peer) => void this.settleMoving(peer));
+    // (a request heard: nothing asked of anyone unless a move of this station's is under way with that one)
+    d.bus.heard?.((peer) => {
+      if (this.moving.size > 0) void this.settleMoving(peer);
+    });
     void this.settleMoving();
     d.bus.on(EVENT, (peer, request, workspace) => this.taken(peer, request, workspace));
     d.bus.on(MOVED, async (_peer, request) => {

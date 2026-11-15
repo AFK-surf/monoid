@@ -49,15 +49,29 @@ export class Sizes {
       if (this.#log.get(s.key)?.stamp === s.stamp) this.#stale.delete(s.key);
       else this.#stale.set(s.key, s.stamp);
     }
+    if (!this.#quiet) this.#start();
+  }
+
+  /// While a turn moves chats, no pass starts by a plan read (what is read then is no plan at rest, and the rooms it
+  /// would measure are moving): what is stale waits for a plan read at rest, or for a whole move's own ask (`settled`).
+  #quiet = false;
+  set quiet(on: boolean) {
+    this.#quiet = on;
+  }
+
+  #start(): void {
     if (this.#stale.size > 0 && this.#pass === null) this.#pass = this.#run().catch((e) => log.warn("move", "the chats' sizing stopped", { error: (e as Error).message }));
   }
 
-  /// The pass under way, ended (none: at once).
+  /// What is stale measured now, a turn under way or not (a whole move's own ask, before anything is held), and ended.
   async settled(): Promise<void> {
+    this.#start();
     while (this.#pass !== null) await this.#pass;
   }
 
   async #run(): Promise<void> {
+    const t0 = performance.now();
+    const before = this.measured;
     try {
       while (this.#stale.size > 0) {
         const batch = [...this.#stale].slice(0, SIZES_BATCH);
@@ -80,6 +94,7 @@ export class Sizes {
       }
     } finally {
       this.#pass = null;
+      log.info("move", "chats' sizes measured", { sessions: this.measured - before, ms: Math.round(performance.now() - t0) });
     }
   }
 

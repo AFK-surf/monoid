@@ -320,6 +320,7 @@ export class Moves {
       // (a turn's stations found gone are its own: forgotten as it begins and ends)
       turn: (on) => {
         this.#inTurn = on;
+        this.sizes.quiet = on;
         this.#gone.clear();
         this.#suspect.clear();
         this.#sentAgain.clear();
