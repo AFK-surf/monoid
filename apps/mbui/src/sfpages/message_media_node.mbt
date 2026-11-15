@@ -51,7 +51,7 @@ fn message_image_node(
   // (the picture's share of the box: all of it, or a letterboxed one's own proportions in its middle)
   let (sw, sh) = @signals.untracked(fn() { picture_share(a(), image_least, min_side=image_min_side) })
   let (pw, ph) = (w * sw, h * sh)
-  let top_crop = @signals.untracked(fn() { tall_image_cropped(a()) })
+  let start_crop = @signals.untracked(fn() { image_cropped_from_start(a()) })
   let likeness = fn() {
     let th = @ui.tree_theme()
     image_wait_colours(a().thumbhash, pw, ph, th.color(Neutral), th.color(Bg)).unwrap_or("")
@@ -132,7 +132,7 @@ fn message_image_node(
           })
           @sf.breathe_node(s, waits=asked)
           let picture = fn(v : @view.View) {
-            @sf.image_reveal_node(v, key, likeness, pw, ph, held=as_is, comes=place.said, top_crop~) |> ignore
+            @sf.image_reveal_node(v, key, likeness, pw, ph, held=as_is, comes=place.said, start_crop~) |> ignore
           }
           if sw < 1.0 || sh < 1.0 {
             s.box(fn(l) {

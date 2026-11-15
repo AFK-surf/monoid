@@ -374,6 +374,18 @@ fn vault_card_cases() -> Array[(String, Message, String)] {
     ("refused", vault_card_post(vault_use(more={ "status": "denied" })), ""),
     ("not kept", vault_card_post(vault_keep("login", username="demo-user", more={ "status": "denied" })), ""),
     ("expired", vault_card_post(vault_use(more={ "status": "expired" })), ""),
+    // (all it says long, its command on one line far past a phone's column: no wider than the column, 2026-11-15)
+    (
+      "long",
+      vault_card_post(
+        vault_use(more={
+          "name": "使用 PostHog 个人 API key（still.fail 查询卡顿上报）",
+          "reason": "查你手机上新对话页卡顿的上报（ui_hang 里每次卡顿时间、页面、帧数），看是不是某处设计导致的",
+          "command": "sh /Users/someone/.stillfail/sessions/chat/c-0123456789abcdef/workspace/scratch/posthog-ui-hang-query.sh --days 3 --kind chat",
+        }),
+      ),
+      "",
+    ),
   ]
 }
 

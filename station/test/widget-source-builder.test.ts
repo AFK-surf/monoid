@@ -8,11 +8,8 @@ import { WidgetSourcesBuilder } from "../src/read/widget-sources-builder.ts";
 import { installWidgetSources, widgetSourcesReady, widgetSourcesStep } from "../src/store/widget-sources.ts";
 import { Store } from "../src/store/store.ts";
 import { Rig } from "./hub-fakes.ts";
+import { formatDelivery } from "../src/sessions/actor.ts";
 
-// SessionActor's own steps are what these look at (its formatting and its checks as it delivers, each replaced here):
-// the actor of a checkout without the MoonBit program, not the program's (sessions/mb-actor.ts), whose steps the
-// hub's tests run.
-process.env.STILLFAIL_ACTORS_HOST = "0";
 
 function oldThreads(store: Store): [number, number] {
   const db = store.db;
@@ -101,8 +98,7 @@ test("delivery prepares old widget sources again if membership changes while it 
       if (calls.length === 1) rig.store.joinThread(second, "wanted", "ember");
       for (const thread of threads) while (!widgetSourcesStep(rig.store.db, thread).done) {}
     };
-    const actor = rig.hub.actor(rig.session("wanted"));
-    const [text, widgets] = await (actor as any).format([]) as [string, [string, string][]];
+    const [text, widgets] = await formatDelivery(rig.hub.deps, "wanted", [], new AbortController().signal) as [string, [string, string][]];
     assert.deepEqual(calls, [[first], [second]]);
     assert.ok(text.includes("second.html"));
     assert.deepEqual(widgets, [["/w/pick.html", "blue"]]);
@@ -118,8 +114,7 @@ test("a failed widget preparation leaves the model untold", async () => {
     rig.store.joinThread(thread, "wanted", "ember");
     rig.store.putWidgetState("wanted", "/w/pick.html", "{}", "blue");
     rig.hub.prepareWidgetSources = async () => { throw new Error("preparation failed"); };
-    const actor = rig.hub.actor(rig.session("wanted"));
-    await assert.rejects((actor as any).format([]), /preparation failed/);
+    await assert.rejects(formatDelivery(rig.hub.deps, "wanted", [], new AbortController().signal), /preparation failed/);
     assert.equal(rig.store.db.prepare("SELECT told_at FROM widget_states WHERE session='wanted'").get()?.told_at, null);
   } finally { await rig.close(); }
 });

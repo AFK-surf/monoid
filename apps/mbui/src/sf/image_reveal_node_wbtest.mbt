@@ -161,7 +161,7 @@ test "a tall picture cut to its top: covering its box from its top, the part of 
     fn(c) { @ui.old_views_here(c) },
     tree=fn(root) {
       root.show(fn() { shown.get() }, fn(v) {
-        image_reveal_node(v, fn() { src.get() }, fn() { "" }, w, h, top_crop=true) |> ignore
+        image_reveal_node(v, fn() { src.get() }, fn() { "" }, w, h, start_crop=true) |> ignore
       })
       |> ignore
     },

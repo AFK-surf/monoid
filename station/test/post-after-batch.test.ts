@@ -6,11 +6,8 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { Store } from "../src/store/store.ts";
 import { Rig } from "./hub-fakes.ts";
+import { formatDelivery } from "../src/sessions/actor.ts";
 
-// SessionActor's own steps are what these look at (its formatting and its checks as it delivers, each replaced here):
-// the actor of a checkout without the MoonBit program, not the program's (sessions/mb-actor.ts), whose steps the
-// hub's tests run.
-process.env.STILLFAIL_ACTORS_HOST = "0";
 
 function setup() {
   const rig = new Rig();
@@ -23,8 +20,7 @@ function setup() {
   const put = rig.store.db.prepare("INSERT INTO entries (thread, n, kind, author_kind, author, ts, text, at) VALUES (?, ?, 'message', ?, ?, ?, 'hello', ?)");
   const deliver = rig.store.db.prepare("INSERT INTO deliveries (thread, n, session) VALUES (?, ?, 's')");
   const format = async () => {
-    const actor = rig.hub.actor(rig.session("s"));
-    return (await (actor as any).format(rig.store.pendingMessages("s")))[0] as string;
+    return (await formatDelivery(rig.hub.deps, "s", rig.store.pendingMessages("s"), new AbortController().signal))[0] as string;
   };
   return { rig, thread, put, deliver, format };
 }

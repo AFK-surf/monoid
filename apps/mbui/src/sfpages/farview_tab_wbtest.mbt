@@ -14,6 +14,10 @@ priv struct FarviewRig {
 }
 
 ///|
+/// Long enough for the stage to draw the tiles in sight and ahead, a tile a moment a millisecond apart.
+let farview_tiles_ms : Double = 20.0
+
+///|
 fn farview_rig() -> FarviewRig {
   @sfbase.reset()
   @sf.presenters_reset()
@@ -99,7 +103,7 @@ test "a Farview tab: asked as shown, Hello as it goes live, the page drawn in ti
   assert_true(h > 600.0 && h < 844.0)
   // the page: its tiles drawn (1000 tall: three of 400)
   tell(Json::object({ "data": Json::boolean(true) }), Some(farview_page_bytes()))
-  r.t.draw()
+  r.t.run_for(farview_tiles_ms)
   let tiles = r.t.drawlist_images().filter(fn(i) { i.1.has_prefix("farview-") })
   assert_true(tiles.length() >= 2)
   // a tap on the page: the host's, at that point of the page, as a browser's press and let go

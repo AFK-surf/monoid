@@ -2686,7 +2686,8 @@ let field_hint : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Mut
 /// A line to type in (controls.css.ts input, a one-line one: a pill as the buttons beside it are, 36 high at least,
 /// 16 in, a line of the strong grey, the field's hover grey pointed at or written in, on the canvas, its words 14, the
 /// placeholder subtle): mbui's field (@kit.text_field), its editor `key`'s; `field`: what it holds, the view's own;
-/// `small`: 34 high (a small panel's, as its rows: input_box_small); `solid`: on a card's ground in a chat (field_solid);
+/// `small`: 34 high (a small panel's, as its rows: input_box_small); `high`: as high as what is pressed beside it in
+/// its row, where that is not a field's height (a browser's round ← → ⟳ beside its address); `solid`: on a card's ground in a chat (field_solid);
 /// `shorter`: other ways to say the placeholder where the field has less room (Ctx::editor's); `leaves`: the keys it
 /// leaves to a menu it offers as it is typed in (text_field's); `on_submit`: what Enter giving its words up does, given
 /// them, as the key is taken (text_field's); `on_change`: what typing in it does, given its words, as they are typed.
@@ -2699,6 +2700,7 @@ pub fn input(
   secret? : Bool = false,
   disabled? : Bool = false,
   small? : Bool = false,
+  high? : Double,
   solid? : Bool = false,
   leaves? : Array[Int] = [],
   field? : @ui.Field,
@@ -2714,6 +2716,10 @@ pub fn input(
       (false, true) => input_box_hot.then(control_height()).then(field_corner())
       (true, false) => input_box_small
       (true, true) => input_box_small_hot
+    }
+    let look = match high {
+      Some(h) => look.then(@ui.style(h=Fixed(h)))
+      None => look
     }
     let look = if card_foot_words_now.val { look.then(@ui.style(px=room(card_foot_words_in(button_height())))) } else { look }
     c.box(

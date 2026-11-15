@@ -2229,8 +2229,15 @@ fn layout_flex(
     // none above, so nothing else says it is back)
     for c in node.children {
       if c.style.display == DisplayNone {
-        left_out(c)
-        zero(c)
+        // (laid out nowhere already, and by nothing since: as it is, of no size, all it holds forgotten (none of its last
+        // layouts kept, p_ok), none of it walked again, whatever changed in it meanwhile, which is laid out as it shows
+        // again; a page under the one on top was forgotten whole again for each change of it or of the page over it,
+        // 2026-11-15: Home's lists under a chat, 295 nodes a change. What is made in it meanwhile is of no size as made)
+        if !(c.hidden_gen >= 0 && c.hidden_gen == c.laid_gen) {
+          left_out(c)
+          zero(c)
+          c.hidden_gen = c.laid_gen
+        }
       } else if c.line < 0 && c.style.position == Absolute {
         c.line = 0
       }

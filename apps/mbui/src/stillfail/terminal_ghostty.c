@@ -188,13 +188,16 @@ moonbit_string_t mb_host_term_lines(int32_t id) {
     ghostty_render_state_get(t->render, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_X, &cx);
     ghostty_render_state_get(t->render, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_Y, &cy);
   }
-  // (the arrows as ESC O A where the program asked for the cursor keys' application mode: DECCKM)
+  // (the arrows as ESC O A where the program asked for the cursor keys' application mode: DECCKM; pasted words wrapped
+  // in ESC [ 200 ~ … ESC [ 201 ~ where it asked for bracketed paste: ?2004h)
   GhosttyTerminalModeConfig keys = {.mode = GHOSTTY_MODE_CURSOR_KEYS, .value = false};
   ghostty_terminal_get(t->term, GHOSTTY_TERMINAL_DATA_MODE, &keys);
+  GhosttyTerminalModeConfig paste = {.mode = GHOSTTY_MODE_BRACKETED_PASTE, .value = false};
+  ghostty_terminal_get(t->term, GHOSTTY_TERMINAL_DATA_MODE, &paste);
   sf_out o = {0};
-  char head[160];
-  snprintf(head, sizeof head, "{\"cols\":%u,\"rows\":%u,\"cursor\":[%u,%u,%s],\"keys\":%d,\"lines\":[", cols, rows, cx, cy,
-           shown && at ? "true" : "false", keys.value ? 1 : 0);
+  char head[192];
+  snprintf(head, sizeof head, "{\"cols\":%u,\"rows\":%u,\"cursor\":[%u,%u,%s],\"keys\":%d,\"paste\":%d,\"lines\":[", cols, rows, cx, cy,
+           shown && at ? "true" : "false", keys.value ? 1 : 0, paste.value ? 1 : 0);
   sf_puts(&o, head);
   if (ghostty_render_state_get(t->render, GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR, &t->rows) == GHOSTTY_SUCCESS) {
     bool first_row = true;

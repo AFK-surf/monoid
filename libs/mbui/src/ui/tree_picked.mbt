@@ -214,3 +214,31 @@ fn picked_menu_own() -> Array[(String, () -> Unit)] {
 pub fn picked_let_go() -> Unit {
   select_none()
 }
+
+///|
+/// Whether what holds node `v` draws its own bar over words a finger picked in it (picked_bar), the nearest that says it.
+// kept across runs: what each node lends (View::lends), let go with it
+let picked_bars : @view.Lent[Bool] = @view.Lent::new()
+
+///|
+/// Words a finger picked in what node `v` holds (the node they end in, or what holds it) have a bar of the page's own
+/// over them (a chat's 引用, 复制, 全选: drawn by the page beside where they end, picked_now saying when), not the
+/// system's floating text menu: none is put up over them. `v`.
+pub fn picked_bar(v : @view.View) -> @view.View {
+  v.lends(picked_bars, true)
+}
+
+///|
+/// Whether words a finger picked of the tree's, let go of, end in what draws its own bar over them (picked_bar).
+fn picked_bar_own() -> Bool {
+  guard picked.finger && picked_now_worked() is Some(p) && view_app.val is Some(tree) else { return false }
+  guard tree.view_of(p.ends_in) is Some(v) else { return false }
+  v.lent(picked_bars) == Some(true)
+}
+
+///|
+/// All the words of what a finger picked is in, picked, by a handler (a bar's 全选: the system's menu's select all,
+/// finger_select_all's: a message's alone where its words are said whole of it).
+pub fn picked_select_all() -> Unit {
+  g().finger_select_all()
+}

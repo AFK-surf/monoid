@@ -1330,7 +1330,7 @@ test "大屏, a chat's page made with its inside nodes: words dragged over with 
 }
 
 ///|
-test "小屏, a chat's page made with its inside nodes: a finger held still on a message's words picks; lifted, the system's text menu offers 引用 after its own and no pill is drawn; chosen, quoted into the chat's draft as that message's, nothing picked" {
+test "小屏, a chat's page made with its inside nodes: a finger held still on a message's words picks; lifted, the page's own bar over it offers 引用, no system's text menu; pressed, quoted into the chat's draft as that message's, nothing picked" {
   let calls : Array[(String, Json)] = []
   let (w, h) = (390.0, 844.0)
   let t = find_nodes_open(calls, w, h, 2)
@@ -1349,14 +1349,16 @@ test "小屏, a chat's page made with its inside nodes: a finger held still on a
   t.press_at(px + 6.0, py + ph / 2.0)
   t.run_for(@ui.long_press_ms)
   t.release(px + 6.0, py + ph / 2.0)
-  t.draw()
+  t.run_for(@ui.move_most_ms)
   guard @ui.picked_now() is Some(p) else { fail("nothing picked by the finger held still") }
   assert_true(p.finger && p.text != "" && p.of.length() == 1, msg="\{p.text} of \{@ui.list_text(p.of)}, a finger's \{p.finger}")
-  assert_true(t.text_menu().0, msg="no text menu over what the finger picked")
-  assert_eq(t.text_menu_own(), ["引用", "多选", "复制链接"])
-  assert_true(quote_nodes_pill(t) is None, msg="a pill over a finger's pick")
+  assert_false(t.text_menu().0, msg="the system's text menu over what the finger picked")
+  assert_eq(pick_bar_offers(t), ["引用", "复制", "全选", "多选", "复制链接"])
+  guard pick_bar_button(t, "引用") is Some((bx, by, bw, bh)) else { fail("no 引用 over the pick") }
+  // (over the words picked)
+  assert_true(by + bh <= py, msg="the bar at \{by}+\{bh}, the words at \{py}")
   let picked = p.text
-  t.key(@hostapi.key_menu_own)
+  t.tap(bx + bw / 2.0, by + bh / 2.0)
   t.run_for(@ui.move_most_ms)
   let quoted = calls.filter(fn(c) { c.0 == "composer.quote" })
   assert_eq(quoted.length(), 1, msg="\{Repr(calls.map(fn(c) { c.0 }))}")
@@ -1364,12 +1366,28 @@ test "小屏, a chat's page made with its inside nodes: a finger held still on a
   let q = field(Some(quoted[0].1), "quote")
   assert_eq((text(q, "text"), text(q, "ts"), text(q, "author"), text(q, "role")), (picked.trim(chars=" \n\t").to_owned(), "ts8", "Claude", "agent"))
   assert_eq(@ui.picked_now(), None)
-  assert_false(t.text_menu().0)
+  assert_eq(pick_bar_offers(t), [])
+}
+
+///|
+/// What the bar over a finger's pick offers, its buttons' words in its order (left to right); none where no bar is.
+fn pick_bar_offers(t : @ui.Tester) -> Array[String] {
+  let found = ["引用", "复制", "全选", "多选", "复制链接"].filter_map(fn(l) {
+    pick_bar_button(t, l).map(fn(r) { (r.0, l) })
+  })
+  found.sort_by(fn(a, b) { a.0.compare(b.0) })
+  found.map(fn(f) { f.1 })
+}
+
+///|
+/// Where the bar's button `label` is drawn.
+fn pick_bar_button(t : @ui.Tester, label : String) -> (Double, Double, Double, Double)? {
+  t.query(Button, label~).map(fn(s) { s.rect })
 }
 
 ///|
 /// 小屏, the chat's page made with its inside nodes: a finger held still on the first character of the words `s` of a
-/// message, lifted (what is picked then, the system's text menu over it).
+/// message, lifted (what is picked then, the bar over it).
 fn finger_held_nodes(t : @ui.Tester, s : String) -> Unit raise {
   guard t.run_rects(s) is [(px, py, _, ph), ..] else { fail("「\{s}」 not drawn") }
   t.press_at(px + 6.0, py + ph / 2.0)
@@ -1379,26 +1397,40 @@ fn finger_held_nodes(t : @ui.Tester, s : String) -> Unit raise {
 }
 
 ///|
-test "小屏, a chat's page made with its inside nodes: a finger's pick in a message has its turn shared and its link copied in the system's text menu after 引用, as the old bar over it had; chosen, done for that message and nothing picked" {
+test "小屏, a chat's page made with its inside nodes: a finger's pick in a message has the bar's 复制, 全选, its turn shared and its link copied, as the old bar over it had; each pressed, done for that message" {
   let calls : Array[(String, Json)] = []
   let t = find_nodes_open(calls, 390.0, 844.0, 2)
   let words = "做完了：列表、跳到最新的按钮"
   finger_held_nodes(t, words)
   guard @ui.picked_now() is Some(p) else { fail("nothing picked by the finger held still") }
   assert_true(p.finger && p.of.length() == 1, msg="\{p.text} of \{@ui.list_text(p.of)}")
-  assert_eq(t.text_menu_own(), ["引用", "多选", "复制链接"])
+  // 全选: all of that message's words picked, the bar over them again without it
+  guard pick_bar_button(t, "全选") is Some((x, y, w, h)) else { fail("no 全选") }
+  t.tap(x + w / 2.0, y + h / 2.0)
+  t.run_for(@ui.move_most_ms)
+  guard @ui.picked_now() is Some(all) else { fail("全选 let go of what was picked") }
+  assert_true(all.text.length() > p.text.length() && all.of == p.of, msg="\{Repr(all.text)} of \{@ui.list_text(all.of)}")
+  assert_eq(pick_bar_offers(t), ["引用", "复制", "多选", "复制链接"])
+  // 复制: the words picked on the clipboard, nothing picked
+  guard pick_bar_button(t, "复制") is Some((x, y, w, h)) else { fail("no 复制") }
+  t.tap(x + w / 2.0, y + h / 2.0)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.clipboard(), all.text)
+  assert_eq(@ui.picked_now(), None)
   // 复制链接: the message's link on the clipboard (message_items' link), nothing quoted, nothing picked
-  t.key(@hostapi.key_menu_own + 2)
+  finger_held_nodes(t, words)
+  t.run_for(@ui.move_most_ms)
+  guard pick_bar_button(t, "复制链接") is Some((x, y, w, h)) else { fail("no 复制链接") }
+  t.tap(x + w / 2.0, y + h / 2.0)
   t.run_for(@ui.move_most_ms)
   assert_eq(t.clipboard(), "https://app.still.fail/o/ws1/st1/s-c1?message=11")
   assert_eq(@ui.picked_now(), None)
-  assert_false(t.text_menu().0)
   assert_eq(calls.filter(fn(c) { c.0 == "composer.quote" || c.0 == "chat.publishPreview" }).length(), 0)
-  // held again, 多选: the chat's picture asked of the whole chat (its thread) as it is chosen, nothing picked (read
-  // then: the picture it opens is another page's, its pictures decoded as it comes)
+  // held again, 多选: the chat's picture asked of the whole chat (its thread) as it is pressed, nothing picked
   finger_held_nodes(t, words)
-  assert_eq(t.text_menu_own(), ["引用", "多选", "复制链接"])
-  t.key(@hostapi.key_menu_own + 1)
+  t.run_for(@ui.move_most_ms)
+  guard pick_bar_button(t, "多选") is Some((x, y, w, h)) else { fail("no 多选") }
+  t.tap(x + w / 2.0, y + h / 2.0)
   let asked = calls.filter(fn(c) { c.0 == "chat.publishPreview" })
   assert_eq(asked.length(), 1, msg="\{Repr(calls.map(fn(c) { c.0 }))}")
   assert_eq(number(Some(asked[0].1), "thread"), 7.0)

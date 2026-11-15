@@ -682,6 +682,35 @@ test("a login card names its login, and closes for everyone as the login ends", 
   await r.close();
 });
 
+test("a card waits for no account an agent runs on, unless that person wrote in the chat", async () => {
+  const r = new Rig();
+  // As Claude Code tells its model: the account it runs on, its email "the user's".
+  r.edit((raw) => {
+    raw.profiles[0].name = "Model@Example.com";
+    raw.profiles[1].email = "codex@example.com";
+  });
+  const [key, thread] = newSession(r.hub, web("local"));
+  const to = `CHAT/${thread.threadTs}`;
+  r.store.insertMessage({ thread: thread.id, ts: r.hub.nextTs(), authorKind: "person", author: "person@example.com", text: "要不要修？" });
+  const card = (assignee: string) => ({ type: "options", options: [{ label: "修" }], assignee });
+  const kept = () => {
+    const n = r.said(thread.id).at(-1)!.n;
+    return r.store.entriesBetween(thread.id, n, n)[0]!.card.assignee;
+  };
+  for (const runner of ["model@example.com", "Codex@example.com"]) {
+    const refused = await r.refused(key, "chat_post", { to, text: "要修吗？", card: card(runner) });
+    assert.ok(refused.includes("is an account agents run on here") && refused.includes("person@example.com"), refused);
+  }
+  assert.equal(r.store.pendingCard(thread.id), null, "nothing posted");
+  await r.call(key, "chat_post", { to, text: "要修吗？", card: card("person@example.com") });
+  assert.equal(kept(), "person@example.com");
+  // One who runs agents on their own account and writes here is asked as anyone.
+  r.store.insertMessage({ thread: thread.id, ts: r.hub.nextTs(), authorKind: "person", author: "Model@example.com", text: "我来定" });
+  await r.call(key, "chat_post", { to, text: "你来定？", card: card("model@example.com") });
+  assert.equal(kept(), "model@example.com");
+  await r.close();
+});
+
 test("an agent can withdraw its own card without posting or finishing work", async () => {
   const r = new Rig();
   const [key, thread] = newSession(r.hub, web("local"));

@@ -24,6 +24,7 @@ test("what is typed comes as text or as bytes beside the call", () => {
   assert.throws(() => parseTerminal("terminal.input", { view: "v1" }));
   assert.deepEqual(parseTerminal("terminal.resize", { view: "v1", cols: 100, rows: 30 }), { kind: "resize", view: "v1", cols: 100, rows: 30 });
   assert.deepEqual(parseTerminal("terminal.take", { view: "v1" }), { kind: "take", view: "v1" });
+  assert.deepEqual(parseTerminal("terminal.take", { view: "v1", control: false }), { kind: "take", view: "v1", control: false });
 });
 
 test("the station's frames are read whole however their bytes come", () => {

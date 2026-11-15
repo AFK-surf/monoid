@@ -25,24 +25,28 @@
 /// the others' edge, as a request card stood on main, unswept; 2026-11-14, the rules measuring the window's tree's nodes
 /// and the old views it holds: rule 4's 89 more, mostly a wide chat's head (its title 12 in, its faces 6 from its end),
 /// a command's box (12, 8) and the player's bar; rule 8's two, an outline's 8 found 6 in where its rows' words are 15;
-/// rule 9's four, a message's words right on its file's card, none since #6285).
+/// rule 9's four, a message's words right on its file's card, none since #6285; 2026-11-15, the rules seeing the
+/// tree's words and drawings, not their boxes alone (the words laid out as drawn, Ctx::with_tree_nodes `facts`), and
+/// rule 4 leaving what is seen as far in from both sides: rule 4 13 and 15 fewer (the player's bar, a command's box
+/// now 8 all round), rule 8 eight more, newly seen: a small panel's title 16 in over rows whose marks are 22 in
+/// (选择运行的 station, 标签页; its group labels' line, so moved with them or not at all)).
 let gaps_known : Map[String, Int] = {
   "zh rule 1": 0,
   "zh rule 2": 0,
   "zh rule 3": 0,
-  "zh rule 4": 99,
+  "zh rule 4": 84,
   "en rule 1": 0,
   "en rule 2": 0,
   "en rule 3": 0,
-  "en rule 4": 99,
+  "en rule 4": 86,
   "zh rule 5": 1,
   "en rule 5": 1,
   "zh rule 6": 0,
   "en rule 6": 0,
   "zh rule 7": 0,
   "en rule 7": 0,
-  "zh rule 8": 2,
-  "en rule 8": 2,
+  "zh rule 8": 10,
+  "en rule 8": 10,
   "zh rule 9": 0,
   "en rule 9": 0,
 }

@@ -238,6 +238,86 @@ fn Actors::local_store(self : Actors, f : String, args : Array[Json]) -> Json? r
       }
       Some(Json::null())
     }
+    "markDelivered" => {
+      db.exec("BEGIN IMMEDIATE")
+      let marked = (fn() raise {
+        let mut marked = 0
+        let handed = match arg(1) {
+          Array(h) => h
+          _ => []
+        }
+        for m in handed {
+          let table = if m.value("apart") is Some(True) { "letter_deliveries" } else { "deliveries" }
+          marked += db.run(
+            "UPDATE \{table} SET delivered_at = ? WHERE thread = ? AND n = ? AND session = ? AND delivered_at IS NULL",
+            [jnum(self.now), m.value("thread").unwrap_or(Json::null()), m.value("n").unwrap_or(Json::null()), arg(0)],
+          )
+        }
+        if handed.length() > 0 {
+          let pending = match db.all("SELECT (SELECT COUNT(*) FROM deliveries INDEXED BY deliveries_pending WHERE session = ?1 AND delivered_at IS NULL) + (SELECT COUNT(*) FROM letter_deliveries WHERE session = ?1 AND delivered_at IS NULL) AS n", [arg(0)]) {
+            [r, ..] => col(r, "n")
+            _ => jnum(0.0)
+          }
+          Some((marked, pending))
+        } else {
+          None
+        }
+      })() catch {
+        e => {
+          db.exec("ROLLBACK") catch { _ => () }
+          raise e
+        }
+      }
+      db.exec("COMMIT")
+      match marked {
+        Some((n, pending)) => {
+          self.changed_store([{ "type": "session", "key": jstr(key), "pending": pending }])
+          Some(jnum(n.to_double()))
+        }
+        None => Some(jnum(0.0))
+      }
+    }
+    "markUndelivered" => {
+      let handed = match arg(1) {
+        Array(h) => h
+        _ => []
+      }
+      for m in handed {
+        let table = if m.value("apart") is Some(True) { "letter_deliveries" } else { "deliveries" }
+        ignore(db.run("UPDATE \{table} SET delivered_at = NULL WHERE thread = ? AND n = ? AND session = ?", [m.value("thread").unwrap_or(Json::null()), m.value("n").unwrap_or(Json::null()), arg(0)]))
+      }
+      if handed.length() > 0 {
+        self.changed_store([session_changed(key)])
+      }
+      Some(Json::null())
+    }
+    "markWidgetModelsTold" => {
+      match arg(1) {
+        Array(told) =>
+          for pair in told {
+            if pair is Array([path, model]) {
+              ignore(db.run("UPDATE widget_states SET told_at = ? WHERE session = ? AND path = ? AND model = ?", [jnum(self.now), arg(0), path, model]))
+            }
+          }
+        _ => ()
+      }
+      Some(Json::null())
+    }
+    "entriesBefore" => {
+      // (what of each entry an actor reads: its number, its ts, its words)
+      let before = match arg(1) {
+        Null => jnum(9007199254740991.0)
+        n => n
+      }
+      let rows = db.all("SELECT n, ts, text FROM entries WHERE thread = ? AND n < ? ORDER BY n DESC LIMIT ?", [arg(0), before, arg(2)])
+      Some(Json::array(rows.rev().map(r => ({ "n": col(r, "n"), "ts": col(r, "ts"), "text": col(r, "text") } : Json))))
+    }
+    "hasSessionActiveWatch" => {
+      let found = db.all("SELECT 1 FROM active_watch_jobs INDEXED BY active_watch_jobs_session WHERE session = ? LIMIT 1", [arg(0)]) catch {
+        _ => db.all("SELECT 1 FROM jobs INDEXED BY jobs_by_session WHERE session_key = ? AND state = 'running' AND watch <> 0 LIMIT 1", [arg(0)])
+      }
+      Some(jbool(found.length() > 0))
+    }
     _ => None
   }
 }

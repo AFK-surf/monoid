@@ -203,7 +203,10 @@ pub fn table_node(
 /// A table (`table`, as it changes) as nodes in `outer` (table_node's, whatever reads its Markdown: a table alone, or
 /// one of a message's blocks, markdown_node's): its columns' widths from the room `outer` is given (View::by_room), `bleed` past
 /// it either side where it scrolls across; its copy key where `copy`; its links taken by `on_link` (`on_link_hold`); a
-/// cell of only the message's images drawn as those (`cell_images`: md_cell_images, Md::cell_images').
+/// cell of only the message's images drawn as those (`cell_images`: md_cell_images, Md::cell_images'). `rows`: only
+/// those of its rows (from, up to, not; its head's row 0), a piece of it a block of a page's list, its columns' widths
+/// those of all of it, scrolled across with the others (`across`: what they scroll beside, Scroll::beside), its copy key
+/// with its head's row and its bar under its last row.
 #callsite(autofill(loc))
 fn md_table_body_node(
   outer : @view.View,
@@ -214,8 +217,22 @@ fn md_table_body_node(
   on_link_hold : ((String, (Double, Double, Double, Double)) -> Unit)?,
   fit? : Bool = false,
   cell_images? : (Array[MdInline]) -> Array[(Double, (@view.View, () -> Double) -> Unit)]?,
+  rows? : (Int, Int)? = None,
+  across? : @view.Scroll = @view.Scroll::across(),
   loc~ : SourceLoc,
 ) -> Unit {
+    let has_head = match rows {
+      Some((r, _)) => r == 0
+      None => true
+    }
+    let has_foot = match rows {
+      Some((_, upto)) => @signals.untracked(fn() { table().map_or(true, fn(t) { upto >= t.rows.length() + 1 }) })
+      None => true
+    }
+    let across = match rows {
+      Some(_) => across.beside()
+      None => across
+    }
     outer.margin(Is((-bleed, 0.0, -bleed, 0.0))) |> ignore
     // (its columns by the room it is given, laid out in that same layout)
     outer.by_room(fn(outer, given) {
@@ -283,6 +300,7 @@ fn md_table_body_node(
               on_link~,
               on_link_hold~,
               cell_images?,
+              rows~,
             )
           })
           |> ignore
@@ -293,7 +311,7 @@ fn md_table_body_node(
       // (its own key, whatever its words: two tables of the same each their own menu, copy and picture)
       table_nodes_made.val += 1
       let key = "sf-table/\{table_nodes_made.val}"
-      outer.scrolls(@view.Scroll::across(), slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), bar_in=bleed, fn(held) {
+      let in_rows = fn(held : @view.View) {
         held.padding(Is((bleed, 0.0, bleed, 0.0))) |> ignore
         // (it, then its copy key past it, from their tops: table_beside's; the key hung out in `bleed` where that has its
         // whole room, as Md::table has it)
@@ -305,8 +323,8 @@ fn md_table_body_node(
           .points(Is(copy))
           .margin(Is((0.0, 0.0, if copy && bleed >= table_key_room { -table_key_room } else { 0.0 }, 0.0)))
           |> ignore
-        table_frame_node(beside, table, widths, head_h~, on_link~, on_link_hold~, cell_images?)
-        if copy {
+        table_frame_node(beside, table, widths, head_h~, on_link~, on_link_hold~, cell_images?, rows~)
+        if copy && has_head {
           table_key_node(beside, key, fn() { table() }, fn() {
             match head_h.val {
               Some(h) => given.tall(h)
@@ -316,8 +334,13 @@ fn md_table_body_node(
         }
         })
         |> ignore
-      })
-      |> ignore
+      }
+      // (its bar under its last row alone, where it is in pieces)
+      if has_foot {
+        outer.scrolls(across, slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), bar_in=bleed, in_rows) |> ignore
+      } else {
+        outer.scrolls(across, slop=@ui.touch_slop(), in_rows) |> ignore
+      }
       })
     })
     |> ignore
@@ -338,14 +361,22 @@ fn table_frame_node(
   on_link_hold? : ((String, (Double, Double, Double, Double)) -> Unit)? = None,
   scale? : () -> Double = fn() { 1.0 },
   cell_images? : (Array[MdInline]) -> Array[(Double, (@view.View, () -> Double) -> Unit)]?,
+  rows? : (Int, Int)? = None,
   loc~ : SourceLoc,
 ) -> Unit {
+  let some = rows
   beside.box(made_for=loc, fn(frame) {
     frame.width(By(fn() { Some(widths().1) })) |> ignore
+    // (all its rows, its head's 0: how many, the last ruled under by none)
+    let all = fn() { table().map_or(0, fn(t) { t.rows.length() + 1 }) }
     let rows = fn() {
-      match table() {
-        Some(t) => Array::makei(t.rows.length() + 1, fn(i) { i })
-        None => []
+      let n = all()
+      match some {
+        Some((from, upto)) => {
+          let upto = if upto < n { upto } else { n }
+          Array::makei(if upto > from { upto - from } else { 0 }, fn(i) { from + i })
+        }
+        None => Array::makei(n, fn(i) { i })
       }
     }
     frame.each(rows, fn(r) { r }, fn(line, r) {
@@ -440,7 +471,7 @@ fn table_frame_node(
       })
       |> ignore
       // (a rule under each but the last, as faint as is seen)
-      line.show(fn() { r < rows().length() - 1 }, fn(rule) {
+      line.show(fn() { r < all() - 1 }, fn(rule) {
         rule
         .width(By(fn() { Some(widths().1) }))
         .height(By(fn() { Some(scale()) }))

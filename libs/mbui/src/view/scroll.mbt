@@ -160,6 +160,24 @@ pub fn Scroll::list() -> Scroll {
 }
 
 ///|
+/// Another column or row that scrolls with `self` as one (a long table cut a few rows a block of a page's list, each
+/// block's piece of it scrolled across where the others are): how far it is scrolled, its fling, the hand on it and
+/// what brings it on past its edge the same, whichever of them the hand moves; how far it can go, how big it shows what
+/// it holds and the node it scrolls in its own (all of them as wide, each goes as far). Each host takes its own, one
+/// node each; `self` itself may be scrolled by none of them (only what they share).
+pub fn Scroll::beside(self : Scroll) -> Scroll {
+  {
+    ..Scroll::made(self.as_list, across=self.across),
+    x: self.x,
+    fling: self.fling,
+    hand_on: self.hand_on,
+    edge: self.edge,
+    notch: self.notch,
+    past: self.past,
+  }
+}
+
+///|
 fn Scroll::made(as_list : Bool, across? : Bool = false) -> Scroll {
   {
     across,

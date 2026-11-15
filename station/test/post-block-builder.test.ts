@@ -9,11 +9,8 @@ import { PostBlockBuilder } from "../src/sessions/post-block-builder.ts";
 import { installPostBlocks, postBlocksReady } from "../src/store/post-blocks.ts";
 import { Store } from "../src/store/store.ts";
 import { Rig } from "./hub-fakes.ts";
+import { formatDelivery } from "../src/sessions/actor.ts";
 
-// SessionActor's own steps are what these look at (its formatting and its checks as it delivers, each replaced here):
-// the actor of a checkout without the MoonBit program, not the program's (sessions/mb-actor.ts), whose steps the
-// hub's tests run.
-process.env.STILLFAIL_ACTORS_HOST = "0";
 
 function fromBefore(store: Store, name = "old"): number {
   const thread = store.openThread("ember", "CHAT", name, null, null).id;
@@ -105,8 +102,7 @@ test("a delivery from an old thread waits for its indexed suffix before formatti
     rig.store.db.prepare("INSERT INTO deliveries(thread,n,session) VALUES (?,170,'wanted')").run(thread);
     const prepared: { thread: number; n: number }[] = [];
     rig.hub.preparePostsAfter = (positions, signal) => { prepared.push(...positions); return builder.ready(positions, signal); };
-    const actor = rig.hub.actor(rig.session("wanted"));
-    const [text] = await (actor as any).format(rig.store.pendingMessages("wanted")) as [string, unknown];
+    const [text] = await formatDelivery(rig.hub.deps, "wanted", rig.store.pendingMessages("wanted"), new AbortController().signal) as [string, unknown];
     assert.ok(text.includes('ts="m170" before="m180">'));
     assert.deepEqual(prepared, [{ thread, n: 170 }]);
     assert.equal(postBlocksReady(rig.store.db, thread, 100), false);
@@ -122,8 +118,7 @@ test("a delivery at the end of an old thread needs no history work", async () =>
     rig.store.db.prepare("INSERT INTO deliveries(thread,n,session) VALUES (?,?,'wanted')").run(thread, 179);
     rig.store.db.prepare("INSERT INTO deliveries(thread,n,session) VALUES (?,?,'wanted')").run(thread, 200);
     rig.hub.preparePostsAfter = async () => { throw new Error("unneeded history work"); };
-    const actor = rig.hub.actor(rig.session("wanted"));
-    const [text] = await (actor as any).format(rig.store.pendingMessages("wanted")) as [string, unknown];
+    const [text] = await formatDelivery(rig.hub.deps, "wanted", rig.store.pendingMessages("wanted"), new AbortController().signal) as [string, unknown];
     assert.ok(text.includes('ts="m179" before="m180">'));
     assert.ok(text.includes('ts="m200">'));
     assert.equal(postBlocksReady(rig.store.db, thread, 179), false);
@@ -152,8 +147,7 @@ test("a batch prepares only the missing old suffixes and reads again after anoth
       rig.store.db.prepare("INSERT INTO entries(thread,n,kind,author_kind,author,ts,at) VALUES (?,201,'message','agent','wanted','m201',201)").run(last);
       return builder.ready(positions, signal);
     };
-    const actor = rig.hub.actor(rig.session("wanted"));
-    const [text] = await (actor as any).format(rig.store.pendingMessages("wanted")) as [string, unknown];
+    const [text] = await formatDelivery(rig.hub.deps, "wanted", rig.store.pendingMessages("wanted"), new AbortController().signal) as [string, unknown];
     assert.equal(calls, 1);
     assert.ok(text.includes('ts="m200" before="m201">'));
     assert.equal(postBlocksReady(rig.store.db, last, 200), false);
@@ -183,7 +177,7 @@ test("unindexed quick answers still share one read snapshot", () => {
   } finally { other.close(); store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
-test("closing an actor cancels its pending old-history work", async () => {
+test("a delivery given up on (its actor stopped or closed) cancels its pending old-history work", async () => {
   const rig = new Rig();
   const previous = Promise.withResolvers<void>();
   const builder = new PostBlockBuilder(rig.store, previous.promise);
@@ -193,10 +187,10 @@ test("closing an actor cancels its pending old-history work", async () => {
     rig.store.joinThread(thread, "wanted", "ember");
     rig.store.db.prepare("INSERT INTO deliveries(thread,n,session) VALUES (?,170,'wanted')").run(thread);
     rig.hub.preparePostsAfter = (positions, signal) => builder.ready(positions, signal);
-    const actor = rig.hub.actor(rig.session("wanted"));
-    const rejected = assert.rejects((actor as any).format(rig.store.pendingMessages("wanted")), /delivery cancelled/);
+    const stopped = new AbortController();
+    const rejected = assert.rejects(formatDelivery(rig.hub.deps, "wanted", rig.store.pendingMessages("wanted"), stopped.signal), /delivery cancelled/);
     await new Promise<void>((resolve) => setImmediate(resolve));
-    actor.close();
+    stopped.abort();
     await rejected;
     previous.resolve();
     assert.equal(postBlocksReady(rig.store.db, thread, 170), false);

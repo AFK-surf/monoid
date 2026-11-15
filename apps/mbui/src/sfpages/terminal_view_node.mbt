@@ -189,14 +189,16 @@ pub fn terminal_node(
   let types = fn() { flag(s(), "types") }
   let typing = fn() { text(s(), "typing") }
   let ended = fn() {
-    let p = text(s(), "phase")
-    p == "ended" || p == "failed"
+    match text(s(), "phase") {
+      "ended" | "failed" | "gone" | "denied" | "outdated" => true
+      _ => false
+    }
   }
   let listed = src.topic("terminals", { "station": str(at.station) })
   let may = fn() { flag(listed.get().value, "open") }
   let typing_here : @signals.Computed[Bool] = @signals.computed(fn(was) {
     match text(s(), "phase") {
-      "ended" | "failed" => false
+      "ended" | "failed" | "gone" | "denied" | "outdated" => false
       "live" => types()
       _ => was.unwrap_or(false)
     }
@@ -239,13 +241,19 @@ pub fn terminal_node(
     terminal_cells(w, h, top(), cell=cell_now(), head=head_h(), foot=foot_h(), line_h=line_now())
   })
   let kept : Ref[@hostapi.Terminal?] = Ref(@hostapi.Terminal::open(cols, rows))
-  let screen : @signals.Computed[String] = @signals.computed(fn(_) {
-    drawn.get() |> ignore
-    match kept.val {
-      Some(t) => t.lines()
-      None => ""
+  let last_lines : Ref[String] = Ref("")
+  let last_drawn : Ref[Int] = Ref(-1)
+  let read_screen = fn() -> String {
+    let d = drawn.untracked()
+    if d != last_drawn.val {
+      last_drawn.val = d
+      last_lines.val = match kept.val {
+        Some(t) => t.lines()
+        None => ""
+      }
     }
-  })
+    last_lines.val
+  }
   let fresh = fn() {
     match kept.val { Some(t) => t.close(); None => () }
     let st = @signals.untracked(fn() { state.get() })
@@ -253,32 +261,49 @@ pub fn terminal_node(
     let r = number(st, "rows").to_int()
     kept.val = @hostapi.Terminal::open(if c > 0 { c } else { cols }, if r > 0 { r } else { rows })
   }
-  let params : Array[(String, Json)] = [
-    ("station", str(at.station)),
-    ("terminal", str(at.terminal)),
-    ("view", str(view)),
-    ("cols", Json::number(cols.to_double())),
-    ("rows", Json::number(rows.to_double())),
-    ("control", Json::boolean(!at.watch)),
-    ..if at.cwd != "" && at.terminal == "new" { [("cwd", str(at.cwd))] } else { [] },
-  ]
-  let call = (src.stream)("terminal.view", obj(params), None, fn(value, bytes) {
-    match value {
-      Object(o) if o.contains("state") => state.set(o.get("state"))
-      Object(o) if o.contains("screen") => {
-        fresh()
-        match (kept.val, bytes) { (Some(t), Some(b)) => t.write(b); _ => () }
-        drawn.set(drawn.untracked() + 1)
-      }
-      Object(o) if o.contains("out") => {
-        match (kept.val, bytes) { (Some(t), Some(b)) => t.write(b); _ => () }
-        drawn.set(drawn.untracked() + 1)
-      }
-      _ => ()
+  let call_ref : Ref[Int?] = Ref(None)
+  let open_stream = fn(term_id : String, watch_mode : Bool, init_cwd : String) {
+    match call_ref.val {
+      Some(c) => (src.cancel)(c)
+      None => ()
     }
-  }, @sfbase.answer_unread)
+    state.set(None)
+    fresh()
+    drawn.set(drawn.untracked() + 1)
+    let params : Array[(String, Json)] = [
+      ("station", str(at.station)),
+      ("terminal", str(term_id)),
+      ("view", str(view)),
+      ("cols", Json::number(cols.to_double())),
+      ("rows", Json::number(rows.to_double())),
+      ("control", Json::boolean(!watch_mode)),
+      ..if init_cwd != "" && term_id == "new" { [("cwd", str(init_cwd))] } else { [] },
+    ]
+    call_ref.val = Some(
+      (src.stream)("terminal.view", obj(params), None, fn(value, bytes) {
+        match value {
+          Object(o) if o.contains("state") => state.set(o.get("state"))
+          Object(o) if o.contains("screen") => {
+            fresh()
+            match (kept.val, bytes) { (Some(t), Some(b)) => t.write(b); _ => () }
+            drawn.set(drawn.untracked() + 1)
+          }
+          Object(o) if o.contains("out") => {
+            match (kept.val, bytes) { (Some(t), Some(b)) => t.write(b); _ => () }
+            drawn.set(drawn.untracked() + 1)
+          }
+          _ => ()
+        }
+      }, @sfbase.answer_unread),
+    )
+  }
+  open_stream(at.terminal, at.watch, at.cwd)
   v.owns(fn() {
-    (src.cancel)(call)
+    match call_ref.val {
+      Some(c) => (src.cancel)(c)
+      None => ()
+    }
+    call_ref.val = None
     match kept.val { Some(t) => t.close(); None => () }
     kept.val = None
   })
@@ -286,6 +311,13 @@ pub fn terminal_node(
   let cwd = fn() {
     let said = text(s(), "cwd")
     if said == "" { at.cwd } else { said }
+  }
+  let go_terminal = fn(term_id : String, watch_mode : Bool, next_cwd : String) {
+    if term_id == at.terminal {
+      open_stream(term_id, watch_mode, next_cwd)
+    } else {
+      @sfbase.app.nav.replace(Terminal({ station: at.station, terminal: term_id, watch: watch_mode, cwd: next_cwd }))
+    }
   }
   let title = fn() {
     let shown = cwd()
@@ -297,6 +329,9 @@ pub fn terminal_node(
   let meta = fn() {
     if ended() { @sf.t("web-pages.terminal.ended") } else { cwd() }
   }
+  let set_control = fn(control : Bool) {
+    (src.call)("terminal.take", obj([("view", str(view)), ("control", Json::boolean(control))]), @sfbase.answer_unread)
+  }
   let take = fn() { (src.call)("terminal.take", obj([("view", str(view))]), @sfbase.answer_unread) }
   let raw_send = fn(said : String) {
     guard @signals.untracked(types) && !@signals.untracked(ended) && said != "" else { return }
@@ -305,7 +340,7 @@ pub fn terminal_node(
   // Clipboard reading state (poll on frame or immediate in Tester)
   let clip_reading : Ref[@ui.ClipboardRead?] = Ref(None)
   let finish_paste = fn(words : String) {
-    let pasted = terminal_pasted_of(words, terminal_bracketed_paste(screen.untracked()))
+    let pasted = terminal_pasted_of(words, terminal_bracketed_paste(read_screen()))
     raw_send(pasted)
   }
   let paste_clipboard = fn() {
@@ -331,7 +366,7 @@ pub fn terminal_node(
       paste_clipboard()
       return
     }
-    let app_keys = terminal_app_keys(screen.untracked())
+    let app_keys = terminal_app_keys(read_screen())
     let mods = once.untracked() | kept_mods.untracked()
     let said = terminal_keys_of(terminal_held(k, mods), app_keys)
     if !(k is Key(down=false, ..)) {
@@ -385,14 +420,7 @@ pub fn terminal_node(
                 fn() {
                   done()
                   if !@signals.untracked(here) {
-                    @sfbase.app.nav.replace(
-                      Terminal({
-                        station: at.station,
-                        terminal: tid,
-                        watch: !flag(listed.untracked().value, "open"),
-                        cwd: text(@signals.untracked(tv), "cwd"),
-                      }),
-                    )
+                    go_terminal(tid, !flag(listed.untracked().value, "open"), text(@signals.untracked(tv), "cwd"))
                   }
                 },
                 icon=fn() { if here() { "check" } else { "terminal" } },
@@ -405,7 +433,7 @@ pub fn terminal_node(
                 fn() { @sf.t("web-pages.terminal.new") },
                 fn() {
                   done()
-                  @sfbase.app.nav.replace(Terminal({ station: at.station, terminal: "new", watch: false, cwd: @signals.untracked(cwd) }))
+                  go_terminal("new", false, @signals.untracked(cwd))
                 },
                 icon=fn() { "plus" },
               )
@@ -422,34 +450,27 @@ pub fn terminal_node(
             },
             icon=fn() { if full.get() { "shrink" } else { "expand" } },
           )
+          if !wide {
+            g.show(fn() { types() && !ended() }, fn(kp) {
+              @sf.panel_switch_row_node(kp, fn() { @sf.t("web-pages.screen.keysPanel") }, fn() { keys_open.get() }, fn(on) {
+                keys_open.set(on)
+                done()
+              })
+            })
+          }
           @sf.panel_switch_row_node(g, fn() { @sf.t("web-pages.terminal.fit80") }, fn() { fit80.get() }, fn(on) {
             fit80.set(on)
           })
           g.show(fn() { may() && !ended() && (types() || typing() == "") }, fn(m) {
             @sf.panel_switch_row_node(m, fn() { @sf.t("android-misc.screen.look") }, fn() { !types() }, fn(look_only) {
-              if !look_only {
-                take()
-              } else {
-                done()
-                @sfbase.app.nav.replace(
-                  Terminal({
-                    station: at.station,
-                    terminal: {
-                      let cur = text(@signals.untracked(s), "id")
-                      if cur == "" { at.terminal } else { cur }
-                    },
-                    watch: true,
-                    cwd: @signals.untracked(cwd),
-                  }),
-                )
-              }
+              set_control(!look_only)
             })
           })
           @sf.panel_row_node(
             g,
             fn() { @sf.t("web-pages.terminal.copyScreen") },
             fn() {
-              let text = terminal_plain_text(screen.untracked())
+              let text = terminal_plain_text(read_screen())
               if text != "" {
                 @ui.clipboard_set(text)
               }
@@ -590,14 +611,8 @@ pub fn terminal_node(
     parent.box(fn(cl) {
       cl.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(6.0)) |> ignore
       cl.box(fn(arrows) {
-        arrows.gap(Is(4.0)) |> ignore
-        arrows.box(fn(top_r) {
-          top_r.row(Is(true)).gap(Is(4.0)) |> ignore
-          top_r.box(fn(sp) { sp.width(Is(Some(key_w))).height(Is(Some(key_h))) |> ignore }) |> ignore
-          pad_key(top_r, "↑", @sf.t("android-misc.screen.key.up"), fn() { tap("ArrowUp", "ArrowUp") }, key_w, key_h, false, None, "")
-          top_r.box(fn(sp) { sp.width(Is(Some(key_w))).height(Is(Some(key_h))) |> ignore }) |> ignore
-        })
-        |> ignore
+        arrows.lines_up(Is(Some(Middle))).gap(Is(4.0)) |> ignore
+        pad_key(arrows, "↑", @sf.t("android-misc.screen.key.up"), fn() { tap("ArrowUp", "ArrowUp") }, key_w, key_h, false, None, "")
         arrows.box(fn(bot_r) {
           bot_r.row(Is(true)).gap(Is(4.0)) |> ignore
           pad_key(bot_r, "←", @sf.t("android-misc.screen.key.left"), fn() { tap("ArrowLeft", "ArrowLeft") }, key_w, key_h, false, None, "")
@@ -668,6 +683,7 @@ pub fn terminal_node(
       @ui.touch_slop(),
       tap=fn(_) {
         if @signals.untracked(fn() { typing_here.get() }) {
+          keys_open.set(false)
           kb_up.set(true)
           @ui.key_catcher_focus_set(k, true)
         }
@@ -713,7 +729,7 @@ pub fn terminal_node(
       .words_runs(
         By(fn() {
           drawn.get() |> ignore
-          terminal_runs(screen.get(), line_ratio=line_now() / size_now())
+          terminal_runs(read_screen(), line_ratio=line_now() / size_now())
         }),
       )
       .words_look(
@@ -758,14 +774,18 @@ pub fn terminal_node(
       ov.box(fn(card) {
         @sf.style_node(card, fn() { ended_box })
         @sf.words_node(card, fn() { @sf.t("web-pages.terminal.ended") }, fn() { ended_title }) |> ignore
-        card.show(fn() { cwd() != "" }, fn(sub) {
-          @sf.words_node(sub, cwd, fn() { ended_why }).allow_ellipsis(Is(true)) |> ignore
+        let sub_text = fn() {
+          let msg = text(s(), "message")
+          if msg != "" { msg } else { cwd() }
+        }
+        card.show(fn() { sub_text() != "" }, fn(sub) {
+          @sf.words_node(sub, sub_text, fn() { ended_why }).allow_ellipsis(Is(true)) |> ignore
         })
         card.show(may, fn(act) {
           @sf.button_node(
             act,
             fn() { @sf.t("web-pages.screen.again") },
-            fn() { @sfbase.app.nav.replace(Terminal({ station: at.station, terminal: "new", watch: false, cwd: @signals.untracked(cwd) })) },
+            fn() { go_terminal("new", false, @signals.untracked(cwd)) },
             tone=Primary,
           )
           |> ignore
@@ -777,88 +797,91 @@ pub fn terminal_node(
   |> ignore
   // Bottom control deck on touch devices and inline 按键 tray on wide desktop
   v.show(deck_shown, fn(tray) {
-    tray.box(fn(deck) {
-      deck
-      .gap(Is(6.0))
-      .padding(By(fn() {
-        let side = if wide { 12.0 } else { 8.0 }
-        let top_pad = if wide { 8.0 } else { 6.0 }
-        (side, top_pad, side, 6.0 + v.clear().2)
-      }))
-      |> ignore
+    tray
+    .gap(Is(6.0))
+    .padding(By(fn() {
+      let side = if wide { 12.0 } else { 8.0 }
+      let top_pad = if wide { 8.0 } else { 6.0 }
+      (side, top_pad, side, 6.0 + v.clear().2)
+    }))
+    |> ignore
+    if !wide {
+      tray.pick(fn() { (kb_shown(), keys_open.get()) }, fn(area, mode_state) {
+        let (is_kb, is_keys) = mode_state
+        if is_keys {
+          ()
+        } else if is_kb {
+          // Keyboard Up: Single-row full-visibility strip (no cut-off arrow keys!)
+          area.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(4.0)) |> ignore
+          pad_key(area, "Esc", "Esc", fn() { tap("Escape", "Escape") }, 0.0, 42.0, false, None, "")
+          pad_key(area, "Tab", "Tab", fn() { tap("Tab", "Tab") }, 0.0, 42.0, false, None, "")
+          pad_key(area, "Ctrl", @sf.t("android-misc.screen.key.control"), fn() { held_press(@ui.key_in_ctrl) }, 0.0, 42.0, false, Some(held(@ui.key_in_ctrl)), "")
+          pad_key(area, "Alt", @sf.t("android-misc.screen.key.option"), fn() { held_press(@ui.key_in_alt) }, 0.0, 42.0, false, Some(held(@ui.key_in_alt)), "")
+          pad_key(area, "←", @sf.t("android-misc.screen.key.left"), fn() { tap("ArrowLeft", "ArrowLeft") }, 0.0, 42.0, false, None, "")
+          pad_key(area, "↓", @sf.t("android-misc.screen.key.down"), fn() { tap("ArrowDown", "ArrowDown") }, 0.0, 42.0, false, None, "")
+          pad_key(area, "↑", @sf.t("android-misc.screen.key.up"), fn() { tap("ArrowUp", "ArrowUp") }, 0.0, 42.0, false, None, "")
+          pad_key(area, "→", @sf.t("android-misc.screen.key.right"), fn() { tap("ArrowRight", "ArrowRight") }, 0.0, 42.0, false, None, "")
+          pad_key(area, "", @sf.t("web-pages.terminal.hideKeyboard"), fn() {
+            kb_up.set(false)
+            match catcher_ref.val {
+              Some(k) => @ui.key_catcher_focus_set(k, false)
+              None => ()
+            }
+          }, 0.0, 42.0, false, None, "chevron-down")
+        } else {
+          // Keyboard Down Default: Left 2x3 Action Grid + Right Inverted-T Arrow Pad & Tall Enter
+          area.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(8.0)) |> ignore
+          area.box(fn(left) {
+            left.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))).gap(Is(4.0)) |> ignore
+            left.box(fn(r1) {
+              r1.row(Is(true)).gap(Is(5.0)) |> ignore
+              pad_key(r1, "Esc", "Esc", fn() { tap("Escape", "Escape") }, 0.0, 41.0, false, None, "")
+              pad_key(r1, "Tab", "Tab", fn() { tap("Tab", "Tab") }, 0.0, 41.0, false, None, "")
+              pad_key(r1, "^C", @sf.t("web-pages.terminal.combo.interrupt"), fn() { raw_send("\u{03}") }, 0.0, 41.0, false, None, "")
+            })
+            |> ignore
+            left.box(fn(r2) {
+              r2.row(Is(true)).gap(Is(5.0)) |> ignore
+              pad_key(r2, "键盘", @sf.t("android-misc.screen.keyboard"), fn() { kb_up.set(true) }, 0.0, 41.0, false, None, "")
+              pad_key(r2, "粘贴", @sf.t("web-pages.screen.paste"), paste_clipboard, 0.0, 41.0, false, None, "")
+              pad_key(r2, "Ctrl", @sf.t("android-misc.screen.key.control"), fn() { held_press(@ui.key_in_ctrl) }, 0.0, 41.0, false, Some(held(@ui.key_in_ctrl)), "")
+            })
+            |> ignore
+          })
+          |> ignore
+          dpad_cluster(area, 38.0, 41.0, 44.0, 86.0)
+        }
+      })
+    }
+    tray.show(fn() { keys_open.get() }, fn(ext) {
+      ext.gap(Is(6.0)) |> ignore
       if !wide {
-        deck.pick(fn() { (kb_shown(), keys_open.get()) }, fn(area, mode_state) {
-          let (is_kb, is_keys) = mode_state
-          if is_keys {
-            ()
-          } else if is_kb {
-            // Keyboard Up: Single-row full-visibility strip (no cut-off arrow keys!)
-            area.box(fn(row) {
-              row.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(4.0)) |> ignore
-              pad_key(row, "Esc", "Esc", fn() { tap("Escape", "Escape") }, 0.0, 42.0, false, None, "")
-              pad_key(row, "Tab", "Tab", fn() { tap("Tab", "Tab") }, 0.0, 42.0, false, None, "")
-              pad_key(row, "Ctrl", @sf.t("android-misc.screen.key.control"), fn() { held_press(@ui.key_in_ctrl) }, 0.0, 42.0, false, Some(held(@ui.key_in_ctrl)), "")
-              pad_key(row, "Alt", @sf.t("android-misc.screen.key.option"), fn() { held_press(@ui.key_in_alt) }, 0.0, 42.0, false, Some(held(@ui.key_in_alt)), "")
-              pad_key(row, "←", @sf.t("android-misc.screen.key.left"), fn() { tap("ArrowLeft", "ArrowLeft") }, 0.0, 42.0, false, None, "")
-              pad_key(row, "↓", @sf.t("android-misc.screen.key.down"), fn() { tap("ArrowDown", "ArrowDown") }, 0.0, 42.0, false, None, "")
-              pad_key(row, "↑", @sf.t("android-misc.screen.key.up"), fn() { tap("ArrowUp", "ArrowUp") }, 0.0, 42.0, false, None, "")
-              pad_key(row, "→", @sf.t("android-misc.screen.key.right"), fn() { tap("ArrowRight", "ArrowRight") }, 0.0, 42.0, false, None, "")
-              pad_key(row, "", @sf.t("web-pages.terminal.hideKeyboard"), fn() {
-                kb_up.set(false)
-                match catcher_ref.val {
-                  Some(k) => @ui.key_catcher_focus_set(k, false)
-                  None => ()
-                }
-              }, 0.0, 42.0, false, None, "chevron-down")
-            })
-            |> ignore
-          } else {
-            // Keyboard Down Default: Left 2x3 Action Grid + Right Inverted-T Arrow Pad & Tall Enter
-            area.box(fn(row) {
-              row.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(8.0)) |> ignore
-              row.box(fn(left) {
-                left.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))).gap(Is(4.0)) |> ignore
-                left.box(fn(r1) {
-                  r1.row(Is(true)).gap(Is(5.0)) |> ignore
-                  pad_key(r1, "Esc", "Esc", fn() { tap("Escape", "Escape") }, 0.0, 41.0, false, None, "")
-                  pad_key(r1, "Tab", "Tab", fn() { tap("Tab", "Tab") }, 0.0, 41.0, false, None, "")
-                  pad_key(r1, "^C", @sf.t("web-pages.terminal.combo.interrupt"), fn() { raw_send("\u{03}") }, 0.0, 41.0, false, None, "")
-                })
-                |> ignore
-                left.box(fn(r2) {
-                  r2.row(Is(true)).gap(Is(5.0)) |> ignore
-                  pad_key(r2, "键盘", @sf.t("android-misc.screen.keyboard"), fn() { kb_up.set(true) }, 0.0, 41.0, false, None, "")
-                  pad_key(r2, "粘贴", @sf.t("web-pages.screen.paste"), paste_clipboard, 0.0, 41.0, false, None, "")
-                  pad_key(r2, "Ctrl", @sf.t("android-misc.screen.key.control"), fn() { held_press(@ui.key_in_ctrl) }, 0.0, 41.0, false, Some(held(@ui.key_in_ctrl)), "")
-                })
-                |> ignore
-              })
-              |> ignore
-              dpad_cluster(row, 38.0, 41.0, 44.0, 86.0)
-            })
-            |> ignore
-          }
+        ext.box(fn(bar) {
+          bar.row(Is(true)).gap(Is(6.0)) |> ignore
+          pad_key(bar, "键盘", @sf.t("android-misc.screen.keyboard"), fn() {
+            keys_open.set(false)
+            kb_up.set(true)
+          }, 0.0, 38.0, false, None, "")
+          pad_key(bar, "粘贴", @sf.t("web-pages.screen.paste"), paste_clipboard, 0.0, 38.0, false, None, "")
+          pad_key(bar, "", @sf.t("web-pages.terminal.hideKeyboard"), fn() { keys_open.set(false) }, 48.0, 38.0, false, None, "chevron-down")
         })
+        |> ignore
       }
-      deck.show(fn() { keys_open.get() }, fn(ext) {
-        ext.gap(Is(6.0)) |> ignore
-        let combo_cols = if wide { combos.length() } else { 3 }
-        tiles_node(ext, combos.length(), combo_cols, key_tile_gap, fn(row, i) {
-          let (label, seq) = combos[i]
-          center_tile_node(row, key_tile_box, label, fn() { raw_send(seq) }, fn(t) {
-            @sf.words_node(t, fn() { label }, fn() { key_tile_words }).allow_ellipsis(Is(true)) |> ignore
-          })
+      let combo_cols = if wide { combos.length() } else { 3 }
+      tiles_node(ext, combos.length(), combo_cols, key_tile_gap, fn(row, i) {
+        let (label, seq) = combos[i]
+        center_tile_node(row, key_tile_box, label, fn() { raw_send(seq) }, fn(t) {
+          @sf.words_node(t, fn() { label }, fn() { key_tile_words }).allow_ellipsis(Is(true)) |> ignore
         })
-        let fn_cols = if wide { nav_and_fn.length() } else { 6 }
-        tiles_node(ext, nav_and_fn.length(), fn_cols, key_tile_gap, fn(row, i) {
-          let (label, act) = nav_and_fn[i]
-          center_tile_node(row, key_tile_box, label, act, fn(t) {
-            @sf.words_node(t, fn() { label }, fn() { key_tile_words }).allow_ellipsis(Is(true)) |> ignore
-          })
+      })
+      let fn_cols = if wide { nav_and_fn.length() } else { 6 }
+      tiles_node(ext, nav_and_fn.length(), fn_cols, key_tile_gap, fn(row, i) {
+        let (label, act) = nav_and_fn[i]
+        center_tile_node(row, key_tile_box, label, act, fn(t) {
+          @sf.words_node(t, fn() { label }, fn() { key_tile_words }).allow_ellipsis(Is(true)) |> ignore
         })
       })
     })
-    |> ignore
   })
   // Open fixture center panel when asked by open_fixture ("keys" is now inline via keys_open signal!)
   if asked == "center" {

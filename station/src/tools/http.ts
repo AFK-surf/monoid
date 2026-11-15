@@ -15,7 +15,7 @@ import { wall } from "../ops/fibers.ts";
 
 /// What /jobs/notify does with a job's words, or /jobs/screen with its command's ask: a status and a body (jobs.ts
 /// `notifyEndpoint`, `screenEndpoint`).
-export type Notified = (authorization: string | undefined, body: Buffer) => { status: number; body: unknown };
+export type Notified = (authorization: string | undefined, body: Buffer) => { status: number; body: unknown } | Promise<{ status: number; body: unknown }>;
 
 /// A job's words: no more than this is read.
 const NOTIFY_LIMIT = 64 * 1024;
@@ -156,12 +156,12 @@ export function openAgentsDoor(
         const body = await bodyOf(req, NOTIFY_LIMIT);
         if (body === null) send(400, { error: "length limit exceeded" });
         else {
-          const answer = notified(req.headers.authorization, body);
+          const answer = await notified(req.headers.authorization, body);
           send(answer.status, answer.body);
         }
       } else if (path === "/jobs/screen" && req.method === "POST") {
         const body = await bodyOf(req, SCREEN_LIMIT);
-        const answer = body === null ? { status: 400, body: { error: "length limit exceeded" } } : screened(req.headers.authorization, body);
+        const answer = body === null ? { status: 400, body: { error: "length limit exceeded" } } : await screened(req.headers.authorization, body);
         send(answer.status, answer.body);
       } else if (path === "/mcp") {
         const stop = new AbortController();

@@ -14,6 +14,7 @@ import { Readers } from "../src/read/pool.ts";
 import { ReadTail, type TailRead } from "../src/read/read-tail.ts";
 import { ChainTail, type TailState } from "../src/read/tail.ts";
 import { Store } from "../src/store/store.ts";
+import { readersOf } from "./reference.ts";
 
 const binary = mbReaderBinary();
 const at = "2026-11-14T00:00:00Z";
@@ -52,9 +53,8 @@ test("a watched transcript is read by the readers as it was read here, read afte
   const open: Readers[] = [];
   t.after(() => Promise.all(open.map((r) => r.close())));
   const reading = (mb: boolean): TailRead => {
-    const r = new Readers(data, 1);
+    const r = readersOf(data, mb ? binary : null);
     open.push(r);
-    r.mbReader = mb ? binary : null;
     return async (runtime, state) => JSON.parse(await r.read("tailRead", { runtime, state }, "zh", { told: true }));
   };
   const ways = [reading(false), ...(binary !== null ? [reading(true)] : [])];

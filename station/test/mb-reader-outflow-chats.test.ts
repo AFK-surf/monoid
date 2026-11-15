@@ -12,6 +12,7 @@ import { test } from "node:test";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
 import { Readers } from "../src/read/pool.ts";
 import { Store, newMessage } from "../src/store/store.ts";
+import { REFERENCE_WORKER, readersOf } from "./reference.ts";
 
 const binary = mbReaderBinary();
 
@@ -71,10 +72,8 @@ test("the MoonBit reader reads the chats a Comma connect sends as the worker doe
   say(slack, "person", "U1", "<@U9>  first   line\nmore", 2400);
   const far = chat("far", "Far", ["far"]);
   say(far, "person", "z@x", "elsewhere", 2500);
-  const worker = new Readers(data, 1);
-  worker.mbReader = null;
-  const program = new Readers(data, 1);
-  program.mbReader = binary;
+  const worker = new Readers(data, 1, REFERENCE_WORKER);
+  const program = readersOf(data, binary);
   const read = (r: Readers, op: string, args: unknown, lang: "zh" | "en") => r.read(op, args, lang).then((t) => JSON.parse(t), (e: Error & { status?: number }) => ({ error: e.message, status: e.status }));
   const pages = { origin: "https://app.x", workspace: "home ws", station: "st1" };
   const all = async (r: Readers) => {

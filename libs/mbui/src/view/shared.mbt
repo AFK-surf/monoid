@@ -89,7 +89,7 @@ priv struct Lift {
 /// sets out (else where it comes to).
 priv struct StaysEnd {
   cover : Bool
-  cover_at : Double?
+  cover_at : (Double, Double)?
   contain : Bool
   cut : (Double, Double, Double, Double)
   at_start : Bool

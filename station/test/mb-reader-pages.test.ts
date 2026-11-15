@@ -9,6 +9,7 @@ import { test } from "node:test";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
 import { Readers } from "../src/read/pool.ts";
 import { Store, newMessage } from "../src/store/store.ts";
+import { REFERENCE_WORKER, readersOf } from "./reference.ts";
 
 const binary = mbReaderBinary();
 
@@ -31,10 +32,8 @@ test("the MoonBit reader reads pages of messages as the worker does", { skip: bi
     if (i % 23 === 0) store.editMessage("ember", "CHAT", "long", at, `message ${i}, edited`);
   }
   say(short, "person", "a@x", "only one");
-  const worker = new Readers(data, 1);
-  worker.mbReader = null;
-  const program = new Readers(data, 1);
-  program.mbReader = binary;
+  const worker = new Readers(data, 1, REFERENCE_WORKER);
+  const program = readersOf(data, binary);
   const read = (readers: Readers, op: string, args: unknown) => readers.read(op, args, "en").then((t) => JSON.parse(t), (e: Error & { status?: number }) => ({ error: e.message, status: e.status }));
   const all = async (readers: Readers) => {
     const out: unknown[] = [];

@@ -223,8 +223,7 @@ fn steps_list_node(
               })
             Live(l, rail) =>
               steps_main_node(r, fn(m) {
-                ignore(rail)
-                ev_node(m, "think", "", "", rail_last=true, fn(b) {
+                ev_node(m, "think", "", "", rail_last=rail, fn(b) {
                   steps_words(b, fn() { text(Some(l), "text") }, live_words) |> ignore
                 })
               })
@@ -440,8 +439,155 @@ fn steps_main_node(v : @view.View, body : (@view.View) -> Unit) -> Unit {
 }
 
 ///|
-/// One event in `v`: its mark in the gutter and what `body` makes beside it; the turn's rail from under its mark
-/// (`rail`: to the next event's; `rail_last`: on to the next item), or a state's block in its colour behind it.
+// kept across runs: a value (no field of it changes)
+let quarter_arc : Array[(Double, Double)] = [
+  (1.0, 0.0),
+  (0.980785, 0.195090),
+  (0.923880, 0.382683),
+  (0.831470, 0.555570),
+  (0.707107, 0.707107),
+  (0.555570, 0.831470),
+  (0.382683, 0.923880),
+  (0.195090, 0.980785),
+  (0.0, 1.0),
+]
+
+///|
+/// Builds the single continuous side-rail stroke for an event whose header row is `head_h` tall (`20×20` icon centered
+/// at `x = 10.0`) and whose subordinate body below it is `body_h` tall:
+/// - When `body_h <= 2.0`: draws a straight vertical connector from `(10.0, 20.0)` to `head_h + 10.0` when `rail_next`
+///   is true (or to `head_h - 1.5` when the header row itself expanded across multiple lines).
+/// - When `body_h > 2.0`: starts at `(10.0, 20.0)`, glides smoothly via two tangent `67.5°` circular arcs (`╭─╯`) from
+///   `(10.0, head_h)` to `x = 3.0`, runs straight down beside `body` (`pl = S3`), and at the bottom either curves back
+///   via `╰─╮` to `(10.0, head_h + body_h + 10.0)` (when `rail_next` is true) or finishes with a rounded `╰─` hook to
+///   `(10.0, head_h + body_h - 1.5)`.
+fn curved_rail_pts(head_h : Double, body_h : Double, rail_next : Bool) -> Array[Double] {
+  if body_h <= 2.0 {
+    if rail_next {
+      return [10.0, 20.0, 10.0, head_h + body_h + 10.0]
+    } else if head_h > 28.0 {
+      return [10.0, 20.0, 10.0, head_h - 1.5]
+    } else {
+      return []
+    }
+  }
+  let y_end = head_h + body_h
+  if body_h <= 14.0 {
+    let end_y = if rail_next { y_end + 10.0 } else { dmax(21.0, y_end - 1.0) }
+    return [10.0, 20.0, 10.0, end_y]
+  }
+  let pts : Array[Double] = []
+  if head_h > 20.5 {
+    pts.push(10.0)
+    pts.push(20.0)
+  }
+  let top_idx = 6
+  let (c_top, s_top) = quarter_arc[top_idx]
+  let r1 = 3.5 / (1.0 - c_top)
+  let span = dmin(3.5, dmax(2.0, (body_h - 4.0) * 0.25))
+  for i in 0..<=top_idx {
+    let (c, s) = quarter_arc[i]
+    pts.push(10.0 - r1 * (1.0 - c))
+    pts.push(head_h + (s / s_top) * span)
+  }
+  for j in 1..<=top_idx {
+    let (c, s) = quarter_arc[top_idx - j]
+    pts.push(3.0 + r1 * (1.0 - c))
+    pts.push(head_h + 2.0 * span - (s / s_top) * span)
+  }
+  let bot_start = dmax(head_h + 2.0 * span, y_end - span)
+  if rail_next {
+    for i in 0..<=top_idx {
+      let (c, s) = quarter_arc[i]
+      pts.push(3.0 + r1 * (1.0 - c))
+      pts.push(bot_start + (s / s_top) * span)
+    }
+    for j in 1..<=top_idx {
+      let (c, s) = quarter_arc[top_idx - j]
+      pts.push(10.0 - r1 * (1.0 - c))
+      pts.push(bot_start + 2.0 * span - (s / s_top) * span)
+    }
+    if bot_start + 2.0 * span < y_end + 10.0 {
+      pts.push(10.0)
+      pts.push(y_end + 10.0)
+    }
+  } else {
+    let r2 = span
+    let bot_y = bot_start + r2
+    for pair in quarter_arc {
+      let (c, s) = pair
+      pts.push(3.0 + r2 * (1.0 - c))
+      pts.push(bot_start + r2 * s)
+    }
+    pts.push(10.0)
+    pts.push(bot_y)
+  }
+  pts
+}
+
+///|
+fn curved_rail_lines(head_h : Double, body_h : Double, rail_next : Bool, color : Int64) -> Array[@ui.Line] {
+  let pts = curved_rail_pts(head_h, body_h, rail_next)
+  if pts.is_empty() {
+    return []
+  }
+  let pairs : Array[(Double, Double)] = []
+  for i in 0..<(pts.length() / 2) {
+    pairs.push((pts[2 * i], pts[2 * i + 1]))
+  }
+  [@ui.line(pairs, width=1.25, color~)]
+}
+
+///|
+/// Full-width event stack in `parent`: `head` renders the top event row (with its `20×20` `h_icon` centered at
+/// `x = 10.0`), `body` renders the subordinate block below it (indented by `pl = S3`), and an overlay rail connects
+/// from `(10.0, 20.0)` around `body` (`x = 10 -> 3 -> 10`) and on to the next event (`+10.0`) when `rail_next` is true.
+fn event_stack_node(
+  parent : @view.View,
+  failed? : () -> Bool = fn() { false },
+  rail_next? : () -> Bool = fn() { false },
+  head : (@view.View) -> Unit,
+  body : (@view.View) -> Unit,
+) -> Unit {
+  parent.by_room(fn(v, room) {
+    @sf.style_node(v, fn() { h_group })
+    let head_ref : Ref[@view.View?] = Ref(None)
+    let body_ref : Ref[@view.View?] = Ref(None)
+    let head_h = fn() {
+      match head_ref.val {
+        Some(h) => dmax(20.0, room.tall(h))
+        None => 20.0
+      }
+    }
+    let body_h = fn() {
+      match body_ref.val {
+        Some(b) => dmax(0.0, room.tall(b))
+        None => 0.0
+      }
+    }
+    v.box(fn(h) {
+      h.fills_across(Is(true)) |> ignore
+      head_ref.val = Some(h)
+      head(h)
+    })
+    |> ignore
+    v.box(fn(b) {
+      b.fills_across(Is(true)) |> ignore
+      body_ref.val = Some(b)
+      body(b)
+    })
+    |> ignore
+    v.lines(By(fn() {
+      let color = @ui.tree_theme().color(if failed() { Danger } else { Line })
+      curved_rail_lines(head_h(), body_h(), rail_next(), color)
+    }))
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
+/// One event in `v`: its mark in the gutter and what `body` makes beside it.
 fn ev_node(
   v : @view.View,
   icon : String,
@@ -463,10 +609,8 @@ fn ev_node(
       _ => t.p.muted
     }
   }
-  steps_box_node(v, h_ev, fn(e) {
-    ignore(rail)
-    ignore(rail_last)
-    ignore(row)
+  ignore(row)
+  let make_ev = fn(e : @view.View) {
     e.box(fn(i) {
       @sf.style_node(i, fn() { h_icon })
       if icon == "pulse" {
@@ -477,7 +621,31 @@ fn ev_node(
     })
     |> ignore
     steps_box_node(e, h_ev_body, body, in_row=true)
-  })
+  }
+  if rail || rail_last || icon == "said" || icon == "wait" {
+    v.by_room(fn(p, room) {
+      p.fills_across(Is(true)) |> ignore
+      let row_ref : Ref[@view.View?] = Ref(None)
+      let tall = fn() {
+        match row_ref.val {
+          Some(r) => dmax(20.0, room.tall(r))
+          None => 20.0
+        }
+      }
+      steps_box_node(p, h_ev, fn(e) {
+        row_ref.val = Some(e)
+        make_ev(e)
+      })
+      p.lines(By(fn() {
+        let color = @ui.tree_theme().color(if tone == "red" { Danger } else { Line })
+        curved_rail_lines(tall(), 0.0, rail || rail_last, color)
+      }))
+      |> ignore
+    })
+    |> ignore
+  } else {
+    steps_box_node(v, h_ev, make_ev)
+  }
 }
 
 ///|
@@ -507,11 +675,11 @@ fn item_node(
       }
       if note != "" {
         let more = next()
-        ev_node(v, "bell", "", "", rail=more, rail_last=!more && rail, row=true, fn(b) {
-          one_line_node(b, ik + "/note", fn(l) {
-            steps_words(l, fn() { @sf.t("web-main.history.reminder", args=[("name", "still.fail")]) }, h_reminder)
-          }, first_line(note), "", fn(w) { steps_words(w, fn() { note }, h_note_plain) })
-        })
+        one_line_ev_node(v, "bell", "", ik + "/note", more || rail, fn(l) {
+          @sf.words_node(l, fn() { @sf.t("web-main.history.reminder", args=[("name", "still.fail")]) }, fn() { h_reminder })
+          .shrink(Is(0.0))
+          |> ignore
+        }, first_line(note), "", fn(w) { steps_words(w, fn() { note }, h_note_plain) })
       }
       for k, task in tasks {
         let more = next()
@@ -523,111 +691,123 @@ fn item_node(
       }
     }
     // the agent's own words reach no one (only what it posts does): a grey line, whole as it is opened
-    "text" =>
-      ev_node(v, "said", "", "", rail_last=rail, row=true, fn(b) {
-        let words = text(content, "text")
-        let line = text(content, "line")
-        let sub = flag(content, "subagent")
-        if !sub && words == line && !words.contains("\n") && words.length() <= 24 {
-          steps_box_node(b, h_one, fn(o) { steps_words(o, fn() { line }, h_one_words) })
-        } else if sub {
-          one_line_node(b, ik + "/text", fn(l) {
-            // (a chip: in bones one piece)
-            l.box(fn(tag) {
-              @sf.style_node(tag, fn() { h_tag })
-              tag.bone_whole(Is(true)) |> ignore
-              steps_words(tag, fn() { @sf.t("web-main.history.subagent") }, h_tag_words)
-            })
-            |> ignore
-          }, line, "", fn(w) { md_node(w, words, field(content, "md"), small=true) })
-        } else {
-          let key = ik + "/text"
-          let open = fn() { steps_own.opened.contains(key) }
-          b.pick(open, fn(p, is_open) {
-            p.fills_across(Is(true)).cuts_softly(Is(true)) |> ignore
-            p.box(fn(r) {
-              @sf.style_node(r, fn() { h_one_press })
-              @sf.presses_node(r, fn() { steps_flip(key) })
-              r
-              .says(By(fn() {
-                Some(@view.said(Button, label=if is_open { @sf.t("web-main.fold") } else { line }, expanded=is_open))
-              }))
-              |> ignore
-              if !is_open {
-                r.box(fn(l) {
-                  l.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-                  @sf.words_node(l, fn() { line }, fn() { if @sf.lit_node(r) { h_one_hot } else { h_one_words } })
-                  |> ignore
-                })
+    "text" => {
+      let words = text(content, "text")
+      let line = text(content, "line")
+      let sub = flag(content, "subagent")
+      if sub {
+        one_line_ev_node(v, "said", "", ik + "/text", rail, fn(l) {
+          // (a chip: in bones one piece)
+          l.box(fn(tag) {
+            @sf.style_node(tag, fn() { h_tag })
+            tag.bone_whole(Is(true)) |> ignore
+            steps_words(tag, fn() { @sf.t("web-main.history.subagent") }, h_tag_words)
+          })
+          |> ignore
+        }, line, "", fn(w) { md_node(w, words, field(content, "md"), small=true) })
+      } else {
+        ev_node(v, "said", "", "", rail_last=rail, row=true, fn(b) {
+          if words == line && !words.contains("\n") && words.length() <= 24 {
+            steps_box_node(b, h_one, fn(o) { steps_words(o, fn() { line }, h_one_words) })
+          } else {
+            let key = ik + "/text"
+            let open = fn() { steps_own.opened.contains(key) }
+            b.pick(open, fn(p, is_open) {
+              p.fills_across(Is(true)).cuts_softly(Is(true)) |> ignore
+              p.box(fn(r) {
+                @sf.style_node(r, fn() { h_one_press })
+                @sf.presses_node(r, fn() { steps_flip(key) })
+                r
+                .says(By(fn() {
+                  Some(@view.said(Button, label=if is_open { @sf.t("web-main.fold") } else { line }, expanded=is_open))
+                }))
                 |> ignore
-                @sf.icon_node(
-                  r,
-                  "chevron-down",
-                  12.0,
-                  By(fn() { if @sf.lit_node(r) { @sf.theme().p.blue } else { @sf.theme().p.muted } }),
-                )
-                |> ignore
-              } else {
-                r.lines_up(Is(Some(Start))) |> ignore
-                steps_box_node(r, h_grow, fn(w) {
-                  steps_box_node(w, h_one_body, fn(m) { md_node(m, words, field(content, "md"), small=true) })
-                }, in_row=true)
-                r.box(fn(o) {
-                  @sf.style_node(o, fn() { h_one_open })
-                  o.min_height(Is(Some(20.0))).shrink(Is(0.0)) |> ignore
-                  @sf.words_node(o, fn() { @sf.t("web-main.fold") }, fn() {
-                    if @sf.lit_node(r) {
-                      h_one_fold_hot
-                    } else {
-                      h_one_fold
-                    }
+                if !is_open {
+                  r.box(fn(l) {
+                    l.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+                    @sf.words_node(l, fn() { line }, fn() { if @sf.lit_node(r) { h_one_hot } else { h_one_words } })
+                    |> ignore
                   })
                   |> ignore
                   @sf.icon_node(
-                    o,
-                    "chevron-up",
+                    r,
+                    "chevron-down",
                     12.0,
-                    By(fn() { if @sf.lit_node(r) { @sf.theme().p.accent } else { @sf.theme().p.blue } }),
+                    By(fn() { if @sf.lit_node(r) { @sf.theme().p.blue } else { @sf.theme().p.muted } }),
                   )
                   |> ignore
-                })
-                |> ignore
-              }
+                } else {
+                  r.lines_up(Is(Some(Start))) |> ignore
+                  steps_box_node(r, h_grow, fn(w) {
+                    steps_box_node(w, h_one_body, fn(m) { md_node(m, words, field(content, "md"), small=true) })
+                  }, in_row=true)
+                  r.box(fn(o) {
+                    @sf.style_node(o, fn() { h_one_open })
+                    o.min_height(Is(Some(20.0))).shrink(Is(0.0)) |> ignore
+                    @sf.words_node(o, fn() { @sf.t("web-main.fold") }, fn() {
+                      if @sf.lit_node(r) {
+                        h_one_fold_hot
+                      } else {
+                        h_one_fold
+                      }
+                    })
+                    |> ignore
+                    @sf.icon_node(
+                      o,
+                      "chevron-up",
+                      12.0,
+                      By(fn() { if @sf.lit_node(r) { @sf.theme().p.accent } else { @sf.theme().p.blue } }),
+                    )
+                    |> ignore
+                  })
+                  |> ignore
+                }
+              })
+              |> ignore
             })
-            |> ignore
-          })
-        }
-      })
+          }
+        })
+      }
+    }
     "post" => {
       let ends = text(content, "ends")
       let failed = flag(content, "failed")
-      steps_box_node(v, h_ev_stack, fn(ev) {
-        ev_node(ev, "send", "", if failed { "red" } else { "accent" }, rail=ends != "", rail_last=ends == "" && rail, fn(b) {
-          steps_box_node(b, h_label, fn(l) {
-            label_wraps(l)
-            steps_words(l, fn() { @sf.t("web-main.history.sentTo") }, h_label_words)
-            match field(content, "place") {
-              Some(Object(_)) as p => place_node(l, station, p)
-              _ =>
-                steps_box_node(l, h_place, fn(pl) {
-                  @sf.drawable_node(pl, "slack", 12.0) |> ignore
-                  steps_words(pl, fn() { "Slack" }, h_place_words)
-                })
-            }
-            if flag(content, "block") && ends == "" {
-              @sf.badge_node(l, fn() { "Block" }, tone=Blue) |> ignore
-            }
-            if failed {
-              @sf.badge_node(l, fn() { @sf.t("web-main.history.sendFailed") }, tone=Red) |> ignore
-            }
+      event_stack_node(
+        v,
+        failed=fn() { failed },
+        rail_next=fn() { ends != "" || rail },
+        fn(ev) {
+          ev_node(ev, "send", "", if failed { "red" } else { "accent" }, fn(b) {
+            steps_box_node(b, h_label, fn(l) {
+              label_wraps(l)
+              steps_words(l, fn() { @sf.t("web-main.history.sentTo") }, h_label_words)
+              match field(content, "place") {
+                Some(Object(_)) as p => place_node(l, station, p)
+                _ =>
+                  steps_box_node(l, h_place, fn(pl) {
+                    @sf.drawable_node(pl, "slack", 12.0) |> ignore
+                    steps_words(pl, fn() { "Slack" }, h_place_words)
+                  })
+              }
+              if flag(content, "block") && ends == "" {
+                @sf.badge_node(l, fn() { "Block" }, tone=Blue) |> ignore
+              }
+              if failed {
+                @sf.badge_node(l, fn() { @sf.t("web-main.history.sendFailed") }, tone=Red) |> ignore
+              }
+            })
           })
-        })
-        steps_box_node(ev, if failed { h_card_failed } else { h_card }, fn(card) {
-          card.edge(By(fn() { (1.0, @ui.tree_theme().color(if failed { Danger } else { Line })) })) |> ignore
-          let words = text(content, "text")
-          fold_node(card, ik + "/post", post_lines, md_line, fn(f) { md_node(f, words, field(content, "md")) })
-        })
-      })
+        },
+        fn(ev) {
+          steps_box_node(ev, h_post_body, fn(pb) {
+            steps_box_node(pb, if failed { h_card_failed } else { h_card }, fn(card) {
+              card.edge(By(fn() { (1.0, @ui.tree_theme().color(if failed { Danger } else { Line })) })) |> ignore
+              let words = text(content, "text")
+              fold_node(card, ik + "/post", post_lines, md_line, fn(f) { md_node(f, words, field(content, "md")) })
+            })
+          })
+        },
+      )
       if ends != "" {
         ended_node(
           v,
@@ -710,53 +890,68 @@ fn steps_chevron_node(
 
 ///|
 /// An event in one line in `v`: `lead`, then `line` cut at its end; pressed (where there is more), what
-/// `whole` makes under it, the line giving way to 收起.
-fn one_line_node(
+/// `whole` makes under it beside the curved side rail, the line giving way to 收起.
+fn one_line_ev_node(
   v : @view.View,
+  icon : String,
+  ev_tone : String,
   key : String,
+  rail_next : Bool,
   lead : (@view.View) -> Unit,
   line : String,
   tone : String,
   whole : (@view.View) -> Unit,
 ) -> Unit {
   let open = fn() { steps_own.opened.contains(key) }
-  v.box(fn(r) {
-    @sf.style_node(r, fn() { h_one_press })
-    @sf.presses_node(r, fn() { steps_flip(key) })
-    r
-    .says(By(fn() {
-      Some(@view.said(Button, label=if open() { @sf.t("web-main.fold") } else { line }, expanded=open()))
-    }))
-    |> ignore
-    lead(r)
-    r.show(fn() { !open() && line != "" }, fn(l) {
-      l.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-      @sf.words_node(l, fn() { line }, fn() {
-        if tone == "red" {
-          h_one_red
-        } else if @sf.lit_node(r) {
-          h_one_hot
-        } else {
-          h_one_words
-        }
+  event_stack_node(
+    v,
+    rail_next=fn() { rail_next },
+    fn(ev) {
+      ev_node(ev, icon, "", ev_tone, row=true, fn(b) {
+        b.box(fn(r) {
+          @sf.style_node(r, fn() { h_one_press })
+          @sf.presses_node(r, fn() { steps_flip(key) })
+          r
+          .says(By(fn() {
+            Some(@view.said(Button, label=if open() { @sf.t("web-main.fold") } else { line }, expanded=open()))
+          }))
+          |> ignore
+          lead(r)
+          r.show(fn() { !open() && line != "" }, fn(l) {
+            l.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+            @sf.words_node(l, fn() { line }, fn() {
+              if tone == "red" {
+                h_one_red
+              } else if @sf.lit_node(r) {
+                h_one_hot
+              } else {
+                h_one_words
+              }
+            })
+            |> ignore
+          })
+          r.show(fn() { !open() }, fn(i) {
+            @sf.icon_node(i, "chevron-down", 12.0, By(fn() { if @sf.lit_node(r) { @sf.theme().p.blue } else { @sf.theme().p.muted } })) |> ignore
+          })
+          r.show(open, fn(o) {
+            @sf.style_node(o, fn() { h_one_open })
+            o.grow(Is(1.0)) |> ignore
+            steps_box_node(o, h_grow, fn(_) {  }, in_row=true)
+            @sf.words_node(o, fn() { @sf.t("web-main.fold") }, fn() { if @sf.lit_node(r) { h_one_fold_hot } else { h_one_fold } })
+            |> ignore
+            @sf.icon_node(o, "chevron-up", 12.0, By(fn() { if @sf.lit_node(r) { @sf.theme().p.accent } else { @sf.theme().p.blue } })) |> ignore
+          })
+        })
+        |> ignore
       })
-      |> ignore
-    })
-    r.show(fn() { !open() }, fn(i) {
-      @sf.icon_node(i, "chevron-down", 12.0, By(fn() { if @sf.lit_node(r) { @sf.theme().p.blue } else { @sf.theme().p.muted } })) |> ignore
-    })
-    r.show(open, fn(o) {
-      @sf.style_node(o, fn() { h_one_open })
-      o.grow(Is(1.0)) |> ignore
-      steps_box_node(o, h_grow, fn(_) {  }, in_row=true)
-      @sf.words_node(o, fn() { @sf.t("web-main.fold") }, fn() { if @sf.lit_node(r) { h_one_fold_hot } else { h_one_fold } })
-      |> ignore
-      @sf.icon_node(o, "chevron-up", 12.0, By(fn() { if @sf.lit_node(r) { @sf.theme().p.accent } else { @sf.theme().p.blue } })) |> ignore
-    })
-  })
-  |> ignore
-  // (opening and closing across its full width with a soft bottom cut)
-  steps_reveal_node(v, open, fn(b) { steps_box_node(b, h_one_body, whole) })
+    },
+    fn(ev) {
+      // (opening and closing across its full width with a soft bottom cut)
+      steps_reveal_node(ev, open, fn(b) {
+        steps_box_node(b, h_post_body, fn(pb) { steps_box_node(pb, h_one_card, whole) })
+      })
+    },
+  )
 }
 
 ///|
@@ -784,7 +979,7 @@ fn fold_node(
         None => 0.0
       }
     }
-    let long_sig = @signals.computed(fn(_) { tall() > most() + 4.0 }, same=fn(a, b) { a == b })
+    let long_sig = @signals.computed(fn(_) { tall() > most() + 2.2 * line_h() }, same=fn(a, b) { a == b })
     let long = fn() { long_sig.get() }
     steps_box_node(v, h_fold, fn(f) {
       steps_box_node(f, h_fold_room, fn(room) {
@@ -925,54 +1120,62 @@ fn received_node(
 ) -> Unit {
   let notice = text(m, "notice")
   let job = notice == "job"
-  steps_box_node(v, h_ev_stack, fn(ev) {
-    ev_node(ev, "received", "", "", rail~, rail_last~, fn(b) {
-      steps_box_node(b, h_label, fn(l) {
-        label_wraps(l)
-        steps_words(l, fn() {
-          @sf.t(if job { "web-main.history.jobMessage.before" } else { "web-main.history.message.before" })
-        }, h_label_words)
-        let from = field(m, "from")
-        let user = text(from, "slackUser")
-        if user != "" {
-          slack_name_node(l, src, station, user, text(from, "name"), flag(from, "bound"), tips)
-        } else {
-          steps_words(l, fn() { if notice == "stillfail" { @sf.product() } else { text(from, "name") } }, h_strong)
-        }
-        steps_words(l, fn() {
-          @sf.t(if job { "web-main.history.jobMessage.after" } else { "web-main.history.message.after" })
-        }, h_label_words)
-        match field(m, "place") {
-          Some(Object(_)) as p =>
-            // (the dot going on with its place, never left at a line's end)
-            steps_box_node(l, h_label_place, fn(dp) {
-              dp.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-              steps_words(dp, fn() { "·" }, h_label_words)
-              place_node(dp, station, p)
-            })
-          _ => ()
-        }
-      })
-    })
-    let words = text(m, "text")
-    match field(m, "md") {
-      Some(Array(_)) as md => fold_node(ev, key, words_lines, md_line, fn(f) { md_node(f, words, md) })
-      _ if short_plain_words(words) =>
-        if job {
-          steps_run(ev, fn() { words }, h_output, mono=true)
-        } else {
-          steps_words(ev, fn() { words }, h_words)
-        }
-      _ =>
-        fold_node(ev, key, words_lines, words_line, fn(f) {
-          if job {
-            steps_run(f, fn() { words }, h_output, mono=true)
+  event_stack_node(
+    v,
+    rail_next=fn() { rail || rail_last },
+    fn(ev) {
+      ev_node(ev, "received", "", "", fn(b) {
+        steps_box_node(b, h_label, fn(l) {
+          label_wraps(l)
+          steps_words(l, fn() {
+            @sf.t(if job { "web-main.history.jobMessage.before" } else { "web-main.history.message.before" })
+          }, h_label_words)
+          let from = field(m, "from")
+          let user = text(from, "slackUser")
+          if user != "" {
+            slack_name_node(l, src, station, user, text(from, "name"), flag(from, "bound"), tips)
           } else {
-            steps_words(f, fn() { words }, h_words)
+            steps_words(l, fn() { if notice == "stillfail" { @sf.product() } else { text(from, "name") } }, h_strong)
+          }
+          steps_words(l, fn() {
+            @sf.t(if job { "web-main.history.jobMessage.after" } else { "web-main.history.message.after" })
+          }, h_label_words)
+          match field(m, "place") {
+            Some(Object(_)) as p =>
+              // (the dot going on with its place, never left at a line's end)
+              steps_box_node(l, h_label_place, fn(dp) {
+                dp.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+                steps_words(dp, fn() { "·" }, h_label_words)
+                place_node(dp, station, p)
+              })
+            _ => ()
           }
         })
-    }
-  })
+      })
+    },
+    fn(ev) {
+      steps_box_node(ev, h_received_body, fn(body) {
+        let words = text(m, "text")
+        match field(m, "md") {
+          Some(Array(_)) as md => fold_node(body, key, words_lines, md_line, fn(f) { md_node(f, words, md) })
+          _ if short_plain_words(words) =>
+            if job {
+              steps_run(body, fn() { words }, h_output, mono=true)
+            } else {
+              steps_words(body, fn() { words }, h_words)
+            }
+          _ =>
+            fold_node(body, key, words_lines, words_line, fn(f) {
+              if job {
+                steps_run(f, fn() { words }, h_output, mono=true)
+              } else {
+                steps_words(f, fn() { words }, h_words)
+              }
+            })
+        }
+      })
+    },
+  )
 }
 
 ///|
@@ -1076,89 +1279,108 @@ fn task_node(v : @view.View, key : String, task : Json?, rail : Bool, rail_last 
   let answer = text(task, "result")
   let has = field(task, "md") is Some(Array(_)) && answer != ""
   let agent = flag(task, "agent")
-  ev_node(v, if agent { "agent" } else { "command" }, "", if failed { "red" } else { "" }, rail~, rail_last~, row=has, fn(b) {
-    if !has {
-      steps_box_node(b, h_one_wrap, fn(o) { steps_words(o, fn() { text(task, "text") }, if failed { h_one_red_wrap } else { h_one_words_wrap }) })
-    } else {
-      let open = fn() { steps_own.opened.contains(key) }
-      let title = text(task, "text")
-      let preview = text(task, "line")
-      b.box(fn(r) {
-        @sf.style_node(r, fn() { h_one_press })
-        @sf.presses_node(r, fn() { steps_flip(key) })
-        r
-        .says(By(fn() {
-          Some(@view.said(Button, label=if open() { @sf.t("web-main.fold") } else { title }, expanded=open()))
-        }))
-        |> ignore
-        r.box(fn(l) {
-          l.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-          @sf.words_node(l, fn() { title }, fn() {
-            if failed {
-              h_one_red
-            } else if @sf.lit_node(r) {
-              h_one_hot
-            } else {
-              h_one_words
-            }
-          })
-          |> ignore
-        })
-        |> ignore
-        r.show(fn() { !open() }, fn(i) {
-          @sf.icon_node(
-            i,
-            "chevron-down",
-            12.0,
-            By(fn() { if @sf.lit_node(r) { @sf.theme().p.blue } else { @sf.theme().p.muted } }),
-          )
-          |> ignore
-        })
-        r.show(open, fn(o) {
-          @sf.style_node(o, fn() { h_one_open })
-          o.grow(Is(1.0)) |> ignore
-          steps_box_node(o, h_grow, fn(_) {  }, in_row=true)
-          @sf.words_node(o, fn() { @sf.t("web-main.fold") }, fn() {
-            if @sf.lit_node(r) {
-              h_one_fold_hot
-            } else {
-              h_one_fold
-            }
-          })
-          |> ignore
-          @sf.icon_node(
-            o,
-            "chevron-up",
-            12.0,
-            By(fn() { if @sf.lit_node(r) { @sf.theme().p.accent } else { @sf.theme().p.blue } }),
-          )
-          |> ignore
-        })
+  let icon = if agent { "agent" } else { "command" }
+  let tone = if failed { "red" } else { "" }
+  if !has {
+    ev_node(v, icon, "", tone, rail~, rail_last~, fn(b) {
+      steps_box_node(b, h_one_wrap, fn(o) {
+        steps_words(o, fn() { text(task, "text") }, if failed { h_one_red_wrap } else { h_one_words_wrap })
       })
-      |> ignore
-      b.pick(open, fn(p, is_open) {
+    })
+    return
+  }
+  let open = fn() { steps_own.opened.contains(key) }
+  let title = text(task, "text")
+  let preview = text(task, "line")
+  event_stack_node(
+    v,
+    failed=fn() { failed },
+    rail_next=fn() { rail || rail_last },
+    fn(ev) {
+      ev_node(ev, icon, "", tone, row=true, fn(b) {
+        b.box(fn(r) {
+          @sf.style_node(r, fn() { h_one_press })
+          @sf.presses_node(r, fn() { steps_flip(key) })
+          r
+          .says(By(fn() {
+            Some(@view.said(Button, label=if open() { @sf.t("web-main.fold") } else { title }, expanded=open()))
+          }))
+          |> ignore
+          r.box(fn(l) {
+            l.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+            @sf.words_node(l, fn() { title }, fn() {
+              if failed {
+                h_one_red
+              } else if @sf.lit_node(r) {
+                h_one_hot
+              } else {
+                h_one_words
+              }
+            })
+            |> ignore
+          })
+          |> ignore
+          r.show(fn() { !open() }, fn(i) {
+            @sf.icon_node(
+              i,
+              "chevron-down",
+              12.0,
+              By(fn() { if @sf.lit_node(r) { @sf.theme().p.blue } else { @sf.theme().p.muted } }),
+            )
+            |> ignore
+          })
+          r.show(open, fn(o) {
+            @sf.style_node(o, fn() { h_one_open })
+            o.grow(Is(1.0)) |> ignore
+            steps_box_node(o, h_grow, fn(_) {  }, in_row=true)
+            @sf.words_node(o, fn() { @sf.t("web-main.fold") }, fn() {
+              if @sf.lit_node(r) {
+                h_one_fold_hot
+              } else {
+                h_one_fold
+              }
+            })
+            |> ignore
+            @sf.icon_node(
+              o,
+              "chevron-up",
+              12.0,
+              By(fn() { if @sf.lit_node(r) { @sf.theme().p.accent } else { @sf.theme().p.blue } }),
+            )
+            |> ignore
+          })
+        })
+        |> ignore
+      })
+    },
+    fn(ev) {
+      ev.pick(open, fn(p, is_open) {
         p.fills_across(Is(true)).cuts_softly(Is(true)) |> ignore
         if !is_open {
           if preview != "" {
-            p.box(fn(s) {
-              @sf.style_node(s, fn() { h_one_press })
-              steps_pressed(s, fn() { steps_flip(key) })
-              steps_run(s, fn() { preview }, h_one_words, mono=!agent)
+            steps_box_node(p, h_task_preview_body, fn(rb) {
+              rb.box(fn(s) {
+                @sf.style_node(s, fn() { h_one_press })
+                steps_pressed(s, fn() { steps_flip(key) })
+                steps_run(s, fn() { preview }, h_one_words, mono=!agent)
+              })
+              |> ignore
             })
-            |> ignore
           }
         } else {
-          steps_box_node(p, h_one_body, fn(w) {
+          steps_box_node(p, h_post_body, fn(pb) {
             if agent {
-              md_node(w, answer, field(task, "md"), small=true)
+              steps_box_node(pb, h_one_card, fn(w) { md_node(w, answer, field(task, "md"), small=true) })
             } else {
-              steps_run(w, fn() { answer }, h_output, mono=true)
+              steps_box_node(pb, if failed { tool_box_red } else { tool_box }, fn(bx) {
+                steps_run(bx, fn() { answer }, h_output, mono=true)
+              })
             }
           })
         }
       })
-    }
-  })
+    },
+  )
 }
 
 ///|
@@ -1269,7 +1491,7 @@ fn ended_node(v : @view.View, ends : String, words : String, rail : Bool) -> Uni
 
 ///|
 /// A group of calls and thoughts in `v`: its line, all of it opening the group (its title its tip, in
-/// `tips`); opened, a line each beside the turn's rail.
+/// `tips`); opened, a line each beside the group's side line.
 fn group_node(
   v : @view.View,
   src : Source,
@@ -1286,53 +1508,58 @@ fn group_node(
   let pending = number(g, "pending").to_int()
   let rows = items(g, "rows")
   let calls = rows.iter().any(fn(r) { text(Some(r), "kind") == "step" })
-  steps_box_node(v, h_group, fn(gv) {
-    ignore(rail)
-    gv.box(fn(h) {
-      @sf.style_node(h, fn() { h_group_head })
-      let hot = fn() { @sf.lit_node(h) }
-      h.ground(By(fn() { if @sf.lit_in_node(h) { @ui.tree_theme().color(Hover) } else { 0L } }))
-      |> ignore
-      steps_pressed(h, fn() { steps_flip(gk) }, label=fn() { text(g, "summary") }, folds=true, open~)
-      h.box(fn(i) {
-        @sf.style_node(i, fn() { h_icon })
-        steps_chevron_node(
-          i,
-          "chevron-right",
-          14.0,
-          By(fn() { if hot() { @sf.theme().p.text } else { @sf.theme().p.muted } }),
-          open,
-        )
-      })
-      |> ignore
-      steps_box_node(h, h_grow_clip, fn(w) {
-        w.box(fn(r) {
-          r
-          .words_runs(By(fn() { [@ui.span(text(g, "summary"), mono=false)] }))
-          .words_look(By(fn() { @ui.style_words(h_group_words) }))
-          .ink(By(fn() { @ui.style_ink(if hot() { h_group_hot } else { h_group_words }) }))
-          .cuts(Is(true))
-          .min_width(Is(Some(0.0)))
-          .allow_ellipsis(Is(true))
-          |> ignore
+  event_stack_node(
+    v,
+    rail_next=fn() { rail },
+    fn(gv) {
+      gv.box(fn(h) {
+        @sf.style_node(h, fn() { h_group_head })
+        let hot = fn() { @sf.lit_node(h) }
+        h.ground(By(fn() { if @sf.lit_in_node(h) { @ui.tree_theme().color(Hover) } else { 0L } }))
+        |> ignore
+        steps_pressed(h, fn() { steps_flip(gk) }, label=fn() { text(g, "summary") }, folds=true, open~)
+        h.box(fn(i) {
+          @sf.style_node(i, fn() { h_icon })
+          steps_chevron_node(
+            i,
+            "chevron-right",
+            14.0,
+            By(fn() { if hot() { @sf.theme().p.text } else { @sf.theme().p.muted } }),
+            open,
+          )
         })
         |> ignore
-      }, in_row=true)
-      if failures > 0 {
-        @sf.badge_node(h, fn() { @sf.t("web-main.history.failures", args=[("n", failures.to_string())]) }, tone=Red)
-        |> ignore
-      }
-      if pending > 0 {
-        @sf.badge_node(h, fn() { @sf.t("web-main.history.pending", args=[("n", pending.to_string())]) }, tone=Accented)
-        |> ignore
-      }
-      ignore(tips)
-    })
-    |> ignore
-    steps_reveal_node(gv, open, fn(s) {
-      group_rows_node(s, src, station, key, gk, rows, calls)
-    })
-  })
+        steps_box_node(h, h_grow_clip, fn(w) {
+          w.box(fn(r) {
+            r
+            .words_runs(By(fn() { [@ui.span(text(g, "summary"), mono=false)] }))
+            .words_look(By(fn() { @ui.style_words(h_group_words) }))
+            .ink(By(fn() { @ui.style_ink(if hot() { h_group_hot } else { h_group_words }) }))
+            .cuts(Is(true))
+            .min_width(Is(Some(0.0)))
+            .allow_ellipsis(Is(true))
+            |> ignore
+          })
+          |> ignore
+        }, in_row=true)
+        if failures > 0 {
+          @sf.badge_node(h, fn() { @sf.t("web-main.history.failures", args=[("n", failures.to_string())]) }, tone=Red)
+          |> ignore
+        }
+        if pending > 0 {
+          @sf.badge_node(h, fn() { @sf.t("web-main.history.pending", args=[("n", pending.to_string())]) }, tone=Accented)
+          |> ignore
+        }
+        ignore(tips)
+      })
+      |> ignore
+    },
+    fn(gv) {
+      steps_reveal_node(gv, open, fn(s) {
+        group_rows_node(s, src, station, key, gk, rows, calls)
+      })
+    },
+  )
 }
 
 ///|
@@ -1352,12 +1579,17 @@ fn group_rows_node(
       let rk = gk + "/" + i.to_string()
       if text(rv, "kind") == "thought" {
         if calls {
+          let thought_words = text(content, "text")
           opened_node(list, src, station, key, rk, content, fn(sum) {
             steps_words(sum, fn() { @sf.t("web-main.history.thinking") }, h_step_name)
             steps_box_node(sum, h_grow_clip, fn(c) {
               steps_words(c, fn() { if steps_own.opened.contains(rk) { "" } else { text(content, "first") } }, h_step_hint_line)
             }, in_row=true)
-          }, fn(body) { steps_box_node(body, h_step_body, fn(t) { md_node(t, text(content, "text"), field(content, "md"), small=true) }) })
+          }, fn(body) {
+            steps_box_node(body, h_step_card, fn(t) {
+              md_node(t, thought_words, field(content, "md"), small=true)
+            })
+          })
         } else {
           whole_node(list, src, station, key, rk, content, fn(body) {
             steps_box_node(body, h_thinking, fn(t) { md_node(t, text(content, "text"), field(content, "md"), small=true) })
@@ -1491,7 +1723,8 @@ fn ev_live_node(
   v : @view.View,
   icon : String,
   tone : () -> String,
-  rail_last : () -> Bool,
+  rail_last? : () -> Bool,
+  fixed_h? : Double,
   body : (@view.View) -> Unit,
 ) -> Unit {
   let ink = fn() {
@@ -1502,15 +1735,47 @@ fn ev_live_node(
       _ => t.p.muted
     }
   }
-  steps_box_node(v, h_ev, fn(e) {
-    ignore(rail_last)
+  let make_ev = fn(e : @view.View) {
     e.box(fn(i) {
       @sf.style_node(i, fn() { h_icon })
       @sf.icon_node(i, icon, 14.0, By(ink)) |> ignore
     })
     |> ignore
     steps_box_node(e, h_ev_body, body, in_row=true)
-  })
+  }
+  match (rail_last, fixed_h) {
+    (Some(has_rail), Some(h)) =>
+      steps_box_node(v, h_ev, fn(e) {
+        make_ev(e)
+        e.lines(By(fn() {
+          let color = @ui.tree_theme().color(if tone() == "red" { Danger } else { Line })
+          curved_rail_lines(h, 0.0, has_rail(), color)
+        }))
+        |> ignore
+      })
+    (Some(has_rail), None) =>
+      v.by_room(fn(p, room) {
+        p.fills_across(Is(true)) |> ignore
+        let row_ref : Ref[@view.View?] = Ref(None)
+        let tall = fn() {
+          match row_ref.val {
+            Some(r) => dmax(20.0, room.tall(r))
+            None => 20.0
+          }
+        }
+        steps_box_node(p, h_ev, fn(e) {
+          row_ref.val = Some(e)
+          make_ev(e)
+        })
+        p.lines(By(fn() {
+          let color = @ui.tree_theme().color(if tone() == "red" { Danger } else { Line })
+          curved_rail_lines(tall(), 0.0, has_rail(), color)
+        }))
+        |> ignore
+      })
+      |> ignore
+    (None, _) => steps_box_node(v, h_ev, make_ev)
+  }
 }
 
 ///|
@@ -1576,9 +1841,17 @@ fn steps_reused_row_node(
           same=fn(a, b) { a == b },
         )
         let has_rail = fn() { has_rail_sig.get() }
+        let item_key = fn() {
+          let k = row_key()
+          if k.has_prefix("i/") {
+            k.unsafe_substring(start=2, end=k.length())
+          } else {
+            k
+          }
+        }
         let marked = fn() {
           let l = lit.get()
-          l != "" && l == row_key()
+          l != "" && l == item_key()
         }
         steps_box_node(p, steps_row, fn(r) {
           r.box(fn(b) {
@@ -1615,13 +1888,16 @@ fn steps_reused_row_node(
                 0 | 1 | 2 | 3 => {
                   let has_failures = base == 2 || base == 3
                   let has_pending = base == 1 || base == 3
-                  let gk = fn() { row_key() + "/group" }
+                  let gk = fn() { item_key() + "/group" }
                   let open_sig = @signals.computed(fn(_) { steps_opened_contains_fn(gk) }, same=fn(a, b) { a == b })
                   let open = fn() { open_sig.get() }
                   let summary_sig = @signals.computed(fn(_) { text(content(), "summary") }, same=fn(a, b) { a == b })
                   let summary = fn() { summary_sig.get() }
                   steps_box_node(m, h_group, fn(gv) {
-                    ignore(has_rail)
+                    gv.lines(By(fn() {
+                      curved_rail_lines(20.0, 0.0, has_rail(), @ui.tree_theme().color(Line))
+                    }))
+                    |> ignore
                     gv.box(fn(h) {
                       @sf.style_node(h, fn() { h_group_head })
                       let hot = fn() { @sf.lit_node(h) }
@@ -1687,7 +1963,7 @@ fn steps_reused_row_node(
                 }
                 4 => {
                   let line_sig = @signals.computed(fn(_) { text(content(), "line") }, same=fn(a, b) { a == b })
-                  ev_live_node(m, "said", fn() { "" }, has_rail, fn(eb) {
+                  ev_live_node(m, "said", fn() { "" }, rail_last=has_rail, fixed_h=20.0, fn(eb) {
                     steps_box_node(eb, h_one, fn(o) { steps_words(o, fn() { line_sig.get() }, h_one_words) })
                   })
                 }
@@ -1697,7 +1973,7 @@ fn steps_reused_row_node(
                   let failed_sig = @signals.computed(fn(_) { flag(task(), "failed") }, same=fn(a, b) { a == b })
                   let failed = fn() { failed_sig.get() }
                   let task_words_sig = @signals.computed(fn(_) { text(task(), "text") }, same=fn(a, b) { a == b })
-                  ev_live_node(m, if agent { "agent" } else { "command" }, fn() { if failed() { "red" } else { "" } }, has_rail, fn(eb) {
+                  ev_live_node(m, if agent { "agent" } else { "command" }, fn() { if failed() { "red" } else { "" } }, rail_last=has_rail, fn(eb) {
                     steps_box_node(eb, h_one_wrap, fn(o) {
                       @sf.words_node(o, fn() { task_words_sig.get() }, fn() {
                         if failed() {
@@ -1725,62 +2001,78 @@ fn steps_reused_row_node(
                     },
                     same=fn(a, b) { a == b },
                   )
-                  steps_box_node(m, h_ev_stack, fn(ev) {
-                    ev_live_node(ev, "received", fn() { "" }, has_rail, fn(eb) {
-                      steps_box_node(eb, h_label, fn(l) {
-                        label_wraps(l)
-                        steps_words(l, fn() { @sf.t("web-main.history.message.before") }, h_label_words)
-                        steps_words(l, fn() { from_name_sig.get() }, h_strong)
-                        steps_words(l, fn() { @sf.t("web-main.history.message.after") }, h_label_words)
-                        if place_kind > 0 {
-                          steps_box_node(l, h_label_place, fn(dp) {
-                            dp.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-                            steps_words(dp, fn() { "·" }, h_label_words)
-                            place_live_node(dp, station, fn() { field(msg(), "place") }, place_kind == 2)
+                  event_stack_node(
+                    m,
+                    rail_next=has_rail,
+                    fn(ev) {
+                      ev_live_node(ev, "received", fn() { "" }, fn(eb) {
+                        steps_box_node(eb, h_label, fn(l) {
+                          label_wraps(l)
+                          steps_words(l, fn() { @sf.t("web-main.history.message.before") }, h_label_words)
+                          steps_words(l, fn() { from_name_sig.get() }, h_strong)
+                          steps_words(l, fn() { @sf.t("web-main.history.message.after") }, h_label_words)
+                          if place_kind > 0 {
+                            steps_box_node(l, h_label_place, fn(dp) {
+                              dp.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+                              steps_words(dp, fn() { "·" }, h_label_words)
+                              place_live_node(dp, station, fn() { field(msg(), "place") }, place_kind == 2)
+                            })
+                          }
+                        })
+                      })
+                    },
+                    fn(ev) {
+                      steps_box_node(ev, h_received_body, fn(body) {
+                        let words_sig = @signals.computed(fn(_) { text(msg(), "text") }, same=fn(a, b) { a == b })
+                        let words = fn() { words_sig.get() }
+                        if msg_kind == 0 {
+                          steps_words(body, words, h_words)
+                        } else if msg_kind == 1 || msg_kind == 2 {
+                          let fk = fn() { item_key() + "/message/0" }
+                          fold_node(body, "", words_lines, words_line, key_fn=fk, fn(f) { steps_words(f, words, h_words) })
+                        } else {
+                          let fk = fn() { item_key() + "/message/0" }
+                          let md_sig = @signals.computed(fn(_) { field(msg(), "md") })
+                          fold_node(body, "", words_lines, md_line, key_fn=fk, fn(f) {
+                            md_live_node(f, words, fn() { md_sig.get() })
                           })
                         }
                       })
-                    })
-                    let words_sig = @signals.computed(fn(_) { text(msg(), "text") }, same=fn(a, b) { a == b })
-                    let words = fn() { words_sig.get() }
-                    if msg_kind == 0 {
-                      steps_words(ev, words, h_words)
-                    } else if msg_kind == 1 || msg_kind == 2 {
-                      let fk = fn() { row_key() + "/message/0" }
-                      fold_node(ev, "", words_lines, words_line, key_fn=fk, fn(f) { steps_words(f, words, h_words) })
-                    } else {
-                      let fk = fn() { row_key() + "/message/0" }
-                      let md_sig = @signals.computed(fn(_) { field(msg(), "md") })
-                      fold_node(ev, "", words_lines, md_line, key_fn=fk, fn(f) {
-                        md_live_node(f, words, fn() { md_sig.get() })
-                      })
-                    }
-                  })
+                    },
+                  )
                 }
                 19 | 20 => {
                   let link = base == 19
                   let post_words_sig = @signals.computed(fn(_) { text(content(), "text") }, same=fn(a, b) { a == b })
                   let post_md_sig = @signals.computed(fn(_) { field(content(), "md") })
-                  steps_box_node(m, h_ev_stack, fn(ev) {
-                    ev_live_node(ev, "send", fn() { "accent" }, has_rail, fn(eb) {
-                      steps_box_node(eb, h_label, fn(l) {
-                        label_wraps(l)
-                        steps_words(l, fn() { @sf.t("web-main.history.sentTo") }, h_label_words)
-                        place_live_node(l, station, fn() { field(content(), "place") }, link)
+                  event_stack_node(
+                    m,
+                    rail_next=has_rail,
+                    fn(ev) {
+                      ev_live_node(ev, "send", fn() { "accent" }, fn(eb) {
+                        steps_box_node(eb, h_label, fn(l) {
+                          label_wraps(l)
+                          steps_words(l, fn() { @sf.t("web-main.history.sentTo") }, h_label_words)
+                          place_live_node(l, station, fn() { field(content(), "place") }, link)
+                        })
                       })
-                    })
-                    steps_box_node(ev, h_card, fn(card) {
-                      card.edge(By(fn() { (1.0, @ui.tree_theme().color(Line)) })) |> ignore
-                      let fk = fn() { row_key() + "/post" }
-                      fold_node(card, "", post_lines, md_line, key_fn=fk, fn(f) {
-                        md_live_node(f, fn() { post_words_sig.get() }, fn() { post_md_sig.get() })
+                    },
+                    fn(ev) {
+                      steps_box_node(ev, h_post_body, fn(pb) {
+                        steps_box_node(pb, h_card, fn(card) {
+                          card.edge(By(fn() { (1.0, @ui.tree_theme().color(Line)) })) |> ignore
+                          let fk = fn() { item_key() + "/post" }
+                          fold_node(card, "", post_lines, md_line, key_fn=fk, fn(f) {
+                            md_live_node(f, fn() { post_words_sig.get() }, fn() { post_md_sig.get() })
+                          })
+                        })
                       })
-                    })
-                  })
+                    },
+                  )
                 }
                 21 => {
                   let mark_words_sig = @signals.computed(fn(_) { text(content(), "text") }, same=fn(a, b) { a == b })
-                  ev_live_node(m, "wait", fn() { "" }, has_rail, fn(eb) {
+                  ev_live_node(m, "wait", fn() { "" }, rail_last=has_rail, fn(eb) {
                     steps_box_node(eb, h_state_line, fn(l) {
                       steps_words(l, fn() { mark_words_sig.get() }, h_state_words)
                     })
@@ -1954,7 +2246,7 @@ fn opened_node(
   steps_box_node(v, h_step, fn(s) {
     s.box(fn(line) {
       @sf.style_node(line, fn() { h_step_summary })
-      line.ground(By(fn() { if @sf.lit_in_node(line) { @ui.tree_theme().color(Hover) } else { 0L } }))
+      line.ground(By(fn() { if @sf.lit_in_node(line) && !open() { @ui.tree_theme().color(Hover) } else { 0L } }))
       |> ignore
       steps_pressed(line, fn() { steps_flip(rk) }, folds=true, open~)
       summary(line)
@@ -2064,35 +2356,82 @@ fn tool_body_node(v : @view.View, src : Source, station : String, key : String, 
     let parts = @signals.untracked(fn() { steps_own.tools.get(tk) })
     let raw_calls = items(parts, "call")
     let step_hint = text(step, "hint")
-    let call_parts = raw_calls.filter(fn(part) {
-      if raw_calls.length() > 1 && text(Some(part), "kind") == "path" && text(Some(part), "extra") == "" {
+    let step_meta = text(step, "meta")
+    let call_parts : Array[Json] = []
+    for part in raw_calls {
+      let k = text(Some(part), "kind")
+      if raw_calls.length() > 1 && k == "path" && text(Some(part), "extra") == "" {
         let p = text(Some(part), "path")
-        !(step_hint != "" && (p == step_hint || p.has_suffix("/" + step_hint)))
-      } else {
-        true
+        if step_hint != "" && (p == step_hint || p.has_suffix("/" + step_hint)) {
+          continue
+        }
       }
-    })
+      call_parts.push(part)
+    }
     let failed = flag(step, "failed")
-    let result_parts = items(parts, "result").filter(fn(part) {
-      if !failed && text(Some(part), "kind") == "output" {
+    let result_parts : Array[Json] = []
+    for part in items(parts, "result") {
+      let k = text(Some(part), "kind")
+      if !failed && k == "output" {
         let out = text(Some(part), "text").trim().to_owned()
-        out != "The file has been updated." && out != "File updated successfully."
-      } else {
-        true
+        if out == "The file has been updated." ||
+          out == "File updated successfully." ||
+          (out.has_prefix("Made ") && out.contains(" replacement")) {
+          continue
+        }
       }
-    })
-    steps_box_node(p, tool_body_box, fn(b) {
+      if k == "facts" {
+        let kept = items(Some(part), "items").filter(fn(it) {
+          let fk = text(Some(it), "key")
+          if fk == "退出码 0" || fk == "Exit code 0" {
+            false
+          } else if step_meta != "" && (fk == step_meta || (fk.has_prefix("第 ") && fk.contains(" 行 · +"))) {
+            false
+          } else {
+            true
+          }
+        })
+        if kept.length() > 0 {
+          result_parts.push({ "kind": "facts", "items": Json::array(kept) })
+        }
+        continue
+      }
+      result_parts.push(part)
+    }
+    let has_own_box = call_parts.iter().any(fn(p) {
+        let k = text(Some(p), "kind")
+        k == "code" || k == "diff"
+      }) ||
+      result_parts.iter().any(fn(p) {
+        let k = text(Some(p), "kind")
+        k == "code" || k == "diff" || (k == "output" && flag(Some(p), "failed"))
+      }) ||
+      (
+        call_parts.length() == 0 &&
+        result_parts.length() == 1 &&
+        ({
+          let k = text(Some(result_parts[0]), "kind")
+          k == "output" || k == "json"
+        })
+      )
+    let in_card = !has_own_box
+    let body_style = if in_card { tool_body_card } else { tool_body_box }
+    steps_box_node(p, body_style, fn(b) {
       if call_parts.length() > 0 {
-        steps_box_node(b, tool_section, fn(s) {
+        steps_box_node(b, if in_card { tool_section_card } else { tool_section }, fn(s) {
           for idx, part in call_parts {
-            tool_part_node(s, Some(part), rk=rk + "/c" + idx.to_string(), src~, station~, key~)
+            tool_part_node(s, Some(part), rk=rk + "/c" + idx.to_string(), src~, station~, key~, in_card~)
           }
         })
       }
       if result_parts.length() > 0 {
-        steps_box_node(b, tool_result_box, fn(s) {
-          if call_parts.length() > 0 || failed {
-            steps_box_node(s, tool_result_rule, fn(_) {  })
+        let res_style = if in_card && call_parts.length() > 0 {
+          tool_result_card
+        } else {
+          tool_section
+        }
+        steps_box_node(b, res_style, fn(s) {
+          if in_card && (call_parts.length() > 0 || failed) {
             steps_box_node(s, tool_result_head, fn(h) {
               steps_words(
                 h,
@@ -2102,7 +2441,7 @@ fn tool_body_node(v : @view.View, src : Source, station : String, key : String, 
             })
           }
           for idx, part in result_parts {
-            tool_part_node(s, Some(part), rk=rk + "/r" + idx.to_string(), src~, station~, key~)
+            tool_part_node(s, Some(part), rk=rk + "/r" + idx.to_string(), src~, station~, key~, in_card~)
           }
         })
       }
@@ -2206,6 +2545,39 @@ fn render_md_or_words(v : @view.View, words : String, md : Json?, small? : Bool 
   } else {
     steps_words(v, fn() { words }, if small { tool_long_words } else { h_words })
   }
+}
+
+///|
+/// Renders a short prose value inline, turning `code` spans into monospace runs instead of showing raw backticks.
+fn steps_prose_inline(parent : @view.View, words : String, style : @ui.TextStyle) -> Unit {
+  if !words.contains("`") {
+    steps_words(parent, fn() { words }, style)
+    return
+  }
+  parent.box(fn(w) {
+    w
+    .words_runs(By(fn() {
+      let runs = []
+      let parts = words.split("`").to_array()
+      for i, part in parts {
+        let s = part.to_owned()
+        if s != "" {
+          if i % 2 == 1 && i + 1 < parts.length() {
+            runs.push(@ui.span(s, mono=true, color=@sf.theme().p.text))
+          } else {
+            runs.push(@ui.span(s))
+          }
+        }
+      }
+      if runs.is_empty() { [@ui.span(words)] } else { runs }
+    }))
+    .words_look(By(fn() { @ui.style_words(style) }))
+    .ink(By(fn() { @ui.style_ink(style) }))
+    .shrink(Is(1.0))
+    .min_width(Is(Some(0.0)))
+    |> ignore
+  })
+  |> ignore
 }
 
 ///|
@@ -2322,18 +2694,23 @@ fn jump_to_dispatch_target(src : Source, station : String, key : String, current
 ///|
 /// Renders the diff lines of a `"diff"` tool part in `v`.
 fn tool_diff_node(v : @view.View, diff_rows : Array[Json]) -> Unit {
+  let n = diff_rows.length()
   steps_box_node(v, tool_diff, fn(d) {
-    for r in diff_rows {
+    for i, r in diff_rows {
       match r {
         Array([String(mark), String(line)]) =>
           d.box(fn(l) {
+            let is_first = i == 0
+            let is_last = i + 1 == n
             @sf.style_node(l, fn() {
-              match mark {
+              let base = match mark {
                 "-" => tool_diff_out
                 "+" => tool_diff_line.then(@ui.style(bg=Data(@sf.theme().p.green_bg)))
                 "@" => tool_diff_head
                 _ => tool_diff_line
               }
+              let with_top = if is_first { base.then(tool_diff_row_top) } else { base }
+              if is_last { with_top.then(tool_diff_row_bot) } else { with_top }
             })
             // (in the theme's inks as it is now: the dark one's where it is told to be dark)
             let ink = fn() {
@@ -2365,6 +2742,16 @@ fn tool_diff_node(v : @view.View, diff_rows : Array[Json]) -> Unit {
 }
 
 ///|
+/// Renders a code block in `parent` using the history panel's unified `@sf.faint_ground` container background.
+fn tool_code_block_node(parent : @view.View, code_text : String, lang : String) -> Unit {
+  parent.box(fn(b) {
+    @sf.code_block_node(b, fn() { code_text }, fn() { lang }, fn() { None })
+    b.ground(By(fn() { @ui.tree_theme().color(@sf.faint_ground) })) |> ignore
+  })
+  |> ignore
+}
+
+///|
 /// One part of a call or of what came back in `v`.
 fn tool_part_node(
   v : @view.View,
@@ -2373,10 +2760,8 @@ fn tool_part_node(
   src? : Source = @sfbase.sample_source,
   station? : String = "",
   key? : String = "",
+  in_card? : Bool = false,
 ) -> Unit {
-  let mono_box = fn(look : @ui.Style, words : String, style : @ui.TextStyle) {
-    steps_box_node(v, look, fn(b) { steps_run(b, fn() { words }, style, mono=true) })
-  }
   let fold_key = if rk != "" { rk } else { "tool-part" }
   match text(part, "kind") {
     "code" => {
@@ -2388,16 +2773,15 @@ fn tool_part_node(
             steps_words(bar, fn() { if lang != "" { lang } else { "代码" } }, tool_key_words)
             steps_box_node(bar, h_grow, fn(_) {  }, in_row=true)
             tool_expand_btn_node(bar, if lang != "" { "代码 · " + lang } else { "代码" }, code_text, fn(rb) {
-              rb.box(fn(cb) { @sf.code_block_node(cb, fn() { code_text }, fn() { lang }, fn() { None }) }) |> ignore
+              tool_code_block_node(rb, code_text, lang)
             })
           })
-          fold_node(stack, fold_key + "/code", 10, words_line, fn(f) {
-            f.box(fn(b) { @sf.code_block_node(b, fn() { code_text }, fn() { lang }, fn() { None }) }) |> ignore
+          fold_node(stack, fold_key + "/code", 16, words_line, fn(f) {
+            tool_code_block_node(f, code_text, lang)
           })
         })
       } else {
-        v.box(fn(b) { @sf.code_block_node(b, fn() { code_text }, fn() { lang }, fn() { None }) })
-        |> ignore
+        tool_code_block_node(v, code_text, lang)
       }
     }
     "facts" =>
@@ -2440,7 +2824,7 @@ fn tool_part_node(
       })
     "diff" => {
       let diff_rows = items(part, "rows")
-      if diff_rows.length() > 12 {
+      if diff_rows.length() > 16 {
         let raw_diff = diff_rows
           .map(fn(r) {
             match r {
@@ -2455,7 +2839,7 @@ fn tool_part_node(
             steps_box_node(bar, h_grow, fn(_) {  }, in_row=true)
             tool_expand_btn_node(bar, "变更对比", raw_diff, fn(rb) { tool_diff_node(rb, diff_rows) })
           })
-          fold_node(stack, fold_key + "/diff", 10, words_line, fn(f) { tool_diff_node(f, diff_rows) })
+          fold_node(stack, fold_key + "/diff", 16, words_line, fn(f) { tool_diff_node(f, diff_rows) })
         })
       } else {
         tool_diff_node(v, diff_rows)
@@ -2468,59 +2852,52 @@ fn tool_part_node(
       let target_id = text(part, "targetId")
       let nav_target = if target_id != "" { target_id } else { target }
       let summary = text(part, "summary")
-      if target != "" || summary != "" {
-        steps_box_node(v, tool_dispatch_card, fn(card) {
-          card.edge(By(fn() { (1.0, @ui.tree_theme().color(Line)) })) |> ignore
-          steps_box_node(card, tool_dispatch_head, fn(head) {
-            steps_box_node(head, tool_dispatch_bar, fn(bar) {
-              if target != "" {
-                bar.box(fn(badge) {
-                  @sf.style_node(badge, fn() { tool_dispatch_badge })
-                  steps_pressed(
-                    badge,
-                    fn() { jump_to_dispatch_target(src, station, key, rk, nav_target) },
-                    label=fn() { "→ " + target },
-                  )
-                  @sf.icon_node(badge, "agent", 12.0, By(fn() { @sf.theme().p.accent })) |> ignore
-                  steps_words(badge, fn() { "→ " + target }, tool_dispatch_target_words)
+      let long = is_long_block(words)
+      let render_md_body = fn(host : @view.View) {
+        if long {
+          fold_node(host, fold_key + "/md", 16, md_line, fn(f) { render_md_or_words(f, words, md, small=true) })
+        } else {
+          render_md_or_words(host, words, md, small=true)
+        }
+      }
+      if target != "" || long {
+        steps_box_node(v, tool_field_stack, fn(stack) {
+          steps_box_node(stack, tool_block_bar, fn(bar) {
+            if target != "" {
+              bar.box(fn(badge) {
+                @sf.style_node(badge, fn() { tool_dispatch_badge })
+                steps_pressed(
+                  badge,
+                  fn() { jump_to_dispatch_target(src, station, key, rk, nav_target) },
+                  label=fn() { "→ " + target },
+                )
+                let ink = fn() { if @sf.lit_node(badge) { @sf.theme().p.blue } else { @sf.theme().p.accent } }
+                @sf.icon_node(badge, "agent", 12.0, By(ink)) |> ignore
+                @sf.words_node(badge, fn() { "→ " + target }, fn() {
+                  if @sf.lit_node(badge) {
+                    tool_dispatch_target_words_hot
+                  } else {
+                    tool_dispatch_target_words
+                  }
                 })
                 |> ignore
-              }
-              steps_box_node(bar, h_grow, fn(_) {  }, in_row=true)
+              })
+              |> ignore
+            }
+            steps_box_node(bar, h_grow, fn(_) {  }, in_row=true)
+            if long {
               tool_expand_btn_node(
                 bar,
-                if summary != "" { summary } else if target != "" { "→ " + target } else { "指令详情" },
+                if summary != "" { summary } else if target != "" { "→ " + target } else { "查看内容" },
                 words,
                 fn(rb) { render_md_or_words(rb, words, md, small=false) },
               )
-            })
-            if summary != "" {
-              steps_box_node(head, tool_dispatch_summary_box, fn(sb) {
-                steps_words(sb, fn() { summary }, tool_dispatch_summary)
-              })
             }
           })
-          steps_box_node(card, tool_result_rule, fn(_) {  })
-          steps_box_node(card, tool_dispatch_body, fn(body) {
-            if is_long_block(words) {
-              fold_node(body, fold_key + "/md", 8, md_line, fn(f) { render_md_or_words(f, words, md, small=true) })
-            } else {
-              render_md_or_words(body, words, md, small=true)
-            }
-          })
-        })
-      } else if is_long_block(words) {
-        steps_box_node(v, tool_field_stack, fn(stack) {
-          steps_box_node(stack, tool_block_bar, fn(bar) {
-            steps_box_node(bar, h_grow, fn(_) {  }, in_row=true)
-            tool_expand_btn_node(bar, "查看内容", words, fn(rb) { render_md_or_words(rb, words, md, small=false) })
-          })
-          steps_box_node(stack, tool_box, fn(b) {
-            fold_node(b, fold_key + "/md", 8, md_line, fn(f) { render_md_or_words(f, words, md, small=true) })
-          })
+          render_md_body(stack)
         })
       } else {
-        steps_box_node(v, tool_box, fn(b) { render_md_or_words(b, words, md, small=true) })
+        render_md_body(v)
       }
     }
     "plan" => plan_node(v, fn() { items(part, "items") })
@@ -2533,52 +2910,64 @@ fn tool_part_node(
           let form = text(rv, "form")
           let prose = flag(rv, "prose") || is_prose_key(k)
           match form {
-            "long" =>
+            "long" => {
+              let long = is_long_block(val)
+              let render_long_val = fn(host : @view.View) {
+                if long {
+                  fold_node(host, fold_key + "/f/" + idx.to_string(), 16, md_line, fn(inner) {
+                    render_md_or_words(inner, val, field(rv, "md"), small=true)
+                  })
+                } else {
+                  render_md_or_words(host, val, field(rv, "md"), small=true)
+                }
+              }
               steps_box_node(fs, tool_field_stack, fn(f) {
                 steps_box_node(f, tool_field_head, fn(head) {
                   steps_words(head, fn() { k }, tool_key_words)
                   steps_box_node(head, h_grow, fn(_) {  }, in_row=true)
-                  tool_expand_btn_node(head, k, val, fn(rb) {
-                    render_md_or_words(rb, val, field(rv, "md"), small=false)
-                  })
-                })
-                steps_box_node(f, tool_box, fn(b) {
-                  if is_long_block(val) {
-                    fold_node(b, fold_key + "/f/" + idx.to_string(), 8, md_line, fn(inner) {
-                      render_md_or_words(inner, val, field(rv, "md"), small=true)
+                  if long {
+                    tool_expand_btn_node(head, k, val, fn(rb) {
+                      render_md_or_words(rb, val, field(rv, "md"), small=false)
                     })
-                  } else {
-                    render_md_or_words(b, val, field(rv, "md"), small=true)
                   }
                 })
+                render_long_val(f)
               })
-            "json" =>
+            }
+            "json" => {
+              let long = is_long_block(val)
+              let render_json_val = fn(host : @view.View) {
+                if long {
+                  fold_node(host, fold_key + "/f/" + idx.to_string(), 16, words_line, fn(inner) {
+                    steps_run(inner, fn() { val }, tool_mono, mono=true)
+                  })
+                } else {
+                  steps_run(host, fn() { val }, tool_mono, mono=true)
+                }
+              }
               steps_box_node(fs, tool_field_stack, fn(f) {
                 steps_box_node(f, tool_field_head, fn(head) {
                   steps_words(head, fn() { k }, tool_key_words)
                   steps_box_node(head, h_grow, fn(_) {  }, in_row=true)
-                  if val.length() > 80 || val.contains("\n") {
+                  if long {
                     tool_expand_btn_node(head, k, val, fn(rb) {
                       steps_run(rb, fn() { val }, tool_mono, mono=true)
                     })
                   }
                 })
-                steps_box_node(f, tool_box, fn(b) {
-                  if is_long_block(val) {
-                    fold_node(b, fold_key + "/f/" + idx.to_string(), 8, words_line, fn(inner) {
-                      steps_run(inner, fn() { val }, tool_mono, mono=true)
-                    })
-                  } else {
-                    steps_run(b, fn() { val }, tool_mono, mono=true)
-                  }
-                })
+                if in_card {
+                  render_json_val(f)
+                } else {
+                  steps_box_node(f, tool_box, render_json_val)
+                }
               })
+            }
             _ =>
               steps_box_node(fs, tool_field, fn(f) {
                 steps_box_node(f, tool_field_key, fn(kb) { steps_words(kb, fn() { k }, tool_key_words) })
                 steps_box_node(f, h_grow, fn(g) {
                   if prose {
-                    steps_words(g, fn() { val }, tool_value)
+                    steps_prose_inline(g, val, tool_value)
                   } else {
                     steps_run(g, fn() { val }, tool_value, mono=true)
                   }
@@ -2587,13 +2976,22 @@ fn tool_part_node(
           }
         }
       })
-    "lead" => mono_box(tool_lead, text(part, "text"), tool_lead_words)
+    "lead" => steps_box_node(v, tool_lead, fn(b) { steps_run(b, fn() { text(part, "text") }, tool_lead_words, mono=true) })
     "none" => steps_box_node(v, tool_lead, fn(b) { steps_words(b, fn() { text(part, "text") }, tool_none) })
     "output" => {
       let out_text = text(part, "text")
       let is_failed = flag(part, "failed")
       let box_look = if is_failed { tool_box_red } else { tool_box }
       let text_look = if is_failed { tool_mono } else { tool_mono_muted }
+      let render_out = fn(host : @view.View) {
+        if is_long_block(out_text) {
+          fold_node(host, fold_key + "/out", 16, words_line, fn(f) {
+            steps_run(f, fn() { out_text }, text_look, mono=true)
+          })
+        } else {
+          steps_run(host, fn() { out_text }, text_look, mono=true)
+        }
+      }
       if is_long_block(out_text) {
         steps_box_node(v, tool_field_stack, fn(stack) {
           steps_box_node(stack, tool_block_bar, fn(bar) {
@@ -2603,16 +3001,29 @@ fn tool_part_node(
               steps_run(rb, fn() { out_text }, text_look, mono=true)
             })
           })
-          steps_box_node(stack, box_look, fn(b) {
-            fold_node(b, fold_key + "/out", 8, words_line, fn(f) { steps_run(f, fn() { out_text }, text_look, mono=true) })
-          })
+          if in_card && !is_failed {
+            render_out(stack)
+          } else {
+            steps_box_node(stack, box_look, render_out)
+          }
         })
+      } else if in_card && !is_failed {
+        render_out(v)
       } else {
-        mono_box(box_look, out_text, text_look)
+        steps_box_node(v, box_look, render_out)
       }
     }
     "json" => {
       let json_text = text(part, "text")
+      let render_json = fn(host : @view.View) {
+        if is_long_block(json_text) {
+          fold_node(host, fold_key + "/json", 16, words_line, fn(f) {
+            steps_run(f, fn() { json_text }, tool_mono, mono=true)
+          })
+        } else {
+          steps_run(host, fn() { json_text }, tool_mono, mono=true)
+        }
+      }
       if is_long_block(json_text) {
         steps_box_node(v, tool_field_stack, fn(stack) {
           steps_box_node(stack, tool_block_bar, fn(bar) {
@@ -2622,12 +3033,16 @@ fn tool_part_node(
               steps_run(rb, fn() { json_text }, tool_mono, mono=true)
             })
           })
-          steps_box_node(stack, tool_box, fn(b) {
-            fold_node(b, fold_key + "/json", 8, words_line, fn(f) { steps_run(f, fn() { json_text }, tool_mono, mono=true) })
-          })
+          if in_card {
+            render_json(stack)
+          } else {
+            steps_box_node(stack, tool_box, render_json)
+          }
         })
+      } else if in_card {
+        render_json(v)
       } else {
-        mono_box(tool_box, json_text, tool_mono)
+        steps_box_node(v, tool_box, render_json)
       }
     }
     _ => ()
@@ -2932,9 +3347,19 @@ let h_main : @ui.Style = @ui.css("w=Full gap=S2_5")
 let h_ev : @ui.Style = @ui.css("row w=Full gap=S2 align=AStart")
 
 ///|
-/// A full-width event stack (header line with icon on top, full-width message/card below).
+/// A received message's body beside the event's curved side rail (`12px` left offset).
 // kept across runs: a value (no field of it changes)
-let h_ev_stack : @ui.Style = @ui.css("w=Full gap=SPx")
+let h_received_body : @ui.Style = @ui.css("w=Full pl=S3 pt=S1 pb=S1")
+
+///|
+/// A collapsed background task preview's body beside the event's curved side rail (`12px` left offset).
+// kept across runs: a value (no field of it changes)
+let h_task_preview_body : @ui.Style = @ui.css("w=Full pl=S3 pt=S1 pb=S1")
+
+///|
+/// A sent card or expanded note/task body beside the event's curved side rail (`12px` left offset).
+// kept across runs: a value (no field of it changes)
+let h_post_body : @ui.Style = @ui.css("w=Full pl=S3 pt=S1 pb=S0_5")
 
 ///|
 /// An event's mark (hIcon): 20 square, on whatever it stands on: the turn's rail runs from under it, so nothing of it
@@ -3011,7 +3436,7 @@ let h_output : @ui.TextStyle = @ui.text_style(size=Caption, color=Fg, w=Full)
 /// A message it sent (hCard): 4 under its line, 8 by 12 in, a line round it, round as a field, on the paper; red when it
 /// failed.
 // kept across runs: a value (no field of it changes)
-let h_card : @ui.Style = @ui.css("w=Full mt=S1 py=S2 px=S3 radius=Xl border=B1 border_color=Line bg=Card")
+let h_card : @ui.Style = @ui.css("w=Full py=S2 px=S3 radius=Xl border=B1 border_color=Line bg=Card")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -3090,7 +3515,11 @@ let h_one_fold_hot : @ui.TextStyle = h_one_fold.then(@ui.text_style(color=Accent
 
 ///|
 // kept across runs: a value (no field of it changes)
-let h_one_body : @ui.Style = @ui.css("w=Full pt=S0_5 pb=S1")
+let h_one_body : @ui.Style = @ui.css("w=Full pt=S1 pb=S1_5")
+
+///|
+// kept across runs: a value (no field of it changes)
+let h_one_card : @ui.Style = @ui.style(w=Full, py=S2, px=S3, radius=@sf.custom_field_r, bg=@sf.faint_ground)
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -3150,18 +3579,18 @@ let h_group_words : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=
 let h_group_hot : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Fg, wrap=false, w=Cut)
 
 ///|
-/// Its calls, opened (hSteps): full width aligned with the left edge, 2 apart, 2 under its line.
+/// Its calls, opened (hSteps): 12px left offset beside the group's curved side rail (`x = 10 -> 3 -> 10`), 4 apart.
 // kept across runs: a value (no field of it changes)
-let h_steps : @ui.Style = @ui.css("w=Full pt=S0_5 gap=SPx")
+let h_steps : @ui.Style = @ui.css("w=Full pl=S3 pt=S1_25 pb=S1_5 gap=S1")
 
 ///|
-/// A call's line (hStep summary): 4 by 6 in, round 8, 8 apart, 12; the pointer's ground on it.
+/// A call's line (hStep summary): aligned with the card below it, 8 apart, 12.
 // kept across runs: a value (no field of it changes)
 let h_step : @ui.Style = @ui.css("w=Full")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let h_step_summary : @ui.Style = @ui.css("row w=Full py=S1 px=S1_5 gap=S2 align=ACenter radius=Lg hovered{bg=Hover}").then(@sf.outset(6.0))
+let h_step_summary : @ui.Style = @ui.css("row w=Full py=S0_5 gap=S2 align=ACenter radius=Md")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -3184,13 +3613,17 @@ let h_step_meta : @ui.TextStyle = @ui.text_style(size=Meta, color=Subtle, wrap=f
 let h_step_meta_red : @ui.TextStyle = @ui.text_style(size=Meta, color=Danger, wrap=false)
 
 ///|
-/// A step's or thought's words (hStepBody: 4 over, 8 under, 12); a thought alone (hThinking: 2 over, 6 under, muted).
+/// A step's or thought's words (hStepBody: 4 over, 12; hStepCard: rounded faint surface card); a thought alone (hThinking: muted).
 // kept across runs: a value (no field of it changes)
-let h_step_body : @ui.Style = @ui.css("w=Full pt=S1 pb=S2")
+let h_step_body : @ui.Style = @ui.css("w=Full pt=S1")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let h_thinking : @ui.Style = @ui.css("w=Full pt=S0_5 pb=S1_5")
+let h_step_card : @ui.Style = @ui.style(w=Full, mt=S1, py=S2, px=S3, radius=@sf.custom_field_r, bg=@sf.faint_ground)
+
+///|
+// kept across runs: a value (no field of it changes)
+let h_thinking : @ui.Style = @ui.css("w=Full")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -3215,10 +3648,14 @@ let h_phase_now : @ui.TextStyle = @ui.text_style(size=Meta, color=Fg, wrap=false
 let h_phase_time : @ui.TextStyle = @ui.text_style(size=Meta, color=Subtle, wrap=false)
 
 ///|
-/// A call opened: 2 over, 6 under, the call and what came back 6 apart; each a section, its
-/// parts 6 apart (what came back 4).
+/// A call opened: 4 over, the call and what came back 6 apart; multi-part or structured steps sit in a faint
+/// rounded container (`tool_body_card`) so each expanded step's start and end are clear without a second vertical line.
 // kept across runs: a value (no field of it changes)
-let tool_body_box : @ui.Style = @ui.css("w=Full pt=S0_5 pb=S1_5 gap=S1_5")
+let tool_body_box : @ui.Style = @ui.css("w=Full mt=S1 gap=S1_5")
+
+///|
+// kept across runs: a value (no field of it changes)
+let tool_body_card : @ui.Style = @ui.style(w=Full, mt=S1, py=S2, px=S3, gap=S1_5, radius=@sf.custom_field_r, bg=@sf.faint_ground)
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -3226,15 +3663,15 @@ let tool_section : @ui.Style = @ui.css("w=Full gap=S1_5")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let tool_result_box : @ui.Style = @ui.css("w=Full pt=S0_5 gap=S1")
+let tool_section_card : @ui.Style = @ui.css("w=Full gap=S1_5")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let tool_result_rule : @ui.Style = @ui.css("w=Full h=SPx bg=Line")
+let tool_result_card : @ui.Style = @ui.css("w=Full pt=S1 gap=S1")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let tool_result_head : @ui.Style = @ui.css("row w=Full pt=S0_5 px=S0_5 gap=S1_5 align=ACenter")
+let tool_result_head : @ui.Style = @ui.css("row w=Full px=S0_5 gap=S1_5 align=ACenter")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -3250,7 +3687,7 @@ let tool_reader_body : @ui.Style = @ui.css("w=Full py=S2 gap=S2")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let tool_expand_btn : @ui.Style = @ui.css("row h=S5 px=S2 gap=S1 align=ACenter radius=Full hovered{bg=Hover}")
+let tool_expand_btn : @ui.Style = @ui.css("row py=S0_5 gap=S1 align=ACenter")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -3266,28 +3703,7 @@ let tool_block_bar : @ui.Style = @ui.css("row w=Full px=S0_5 gap=S2 align=ACente
 
 ///|
 // kept across runs: a value (no field of it changes)
-let tool_dispatch_card : @ui.Style = @ui.style(
-  w=Full,
-  radius=@sf.row_radius,
-  border=B1,
-  border_color=Line,
-  bg=Card,
-  clip=true,
-)
-
-///|
-// kept across runs: a value (no field of it changes)
-let tool_dispatch_head : @ui.Style = @ui.css("w=Full p=S2 gap=S1_5")
-
-///|
-// kept across runs: a value (no field of it changes)
-let tool_dispatch_bar : @ui.Style = @ui.css("row w=Full gap=S2 align=ACenter")
-
-///|
-// kept across runs: a value (no field of it changes)
-let tool_dispatch_badge : @ui.Style = @ui.css(
-  "row h=S5 px=S2 gap=S1 align=ACenter radius=Full bg=Neutral hovered{bg=Hover} clip",
-)
+let tool_dispatch_badge : @ui.Style = @ui.css("row py=S0_5 gap=S1 align=ACenter clip")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -3295,15 +3711,7 @@ let tool_dispatch_target_words : @ui.TextStyle = @ui.text_style(size=Caption, we
 
 ///|
 // kept across runs: a value (no field of it changes)
-let tool_dispatch_summary_box : @ui.Style = @ui.css("w=Full px=S1")
-
-///|
-// kept across runs: a value (no field of it changes)
-let tool_dispatch_summary : @ui.TextStyle = @ui.text_style(size=Meta, weight=Semibold, color=Fg, w=Full)
-
-///|
-// kept across runs: a value (no field of it changes)
-let tool_dispatch_body : @ui.Style = @ui.css("w=Full py=S2_5 px=S3")
+let tool_dispatch_target_words_hot : @ui.TextStyle = @ui.text_style(size=Caption, weight=Semibold, color=Link, wrap=false, w=Cut)
 
 ///|
 /// A box of words (box): 8 by 12 in, round 10, the ink at 4% over the canvas, 12 mono on 1.55; red's ground when it
@@ -3355,7 +3763,7 @@ let tool_path_extra : @ui.TextStyle = @ui.text_style(size=Caption, color=Subtle,
 /// laid over the line, held it 22 and 12); taken out on the red's ground, put in on the green's, a header in the blue,
 /// 4 over it).
 // kept across runs: a value (no field of it changes)
-let tool_diff : @ui.Style = @ui.style(w=Full, py=S1_5, radius=@sf.custom_field_r, bg=@sf.faint_ground, clip=true)
+let tool_diff : @ui.Style = @ui.style(w=Full, radius=@sf.custom_field_r, bg=@sf.faint_ground, clip=true)
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -3369,6 +3777,14 @@ let tool_diff_out : @ui.Style = tool_diff_line.then(@ui.css("bg=DangerBg"))
 ///|
 // kept across runs: a value (no field of it changes)
 let tool_diff_head : @ui.Style = tool_diff_line.then(@ui.css("pt=S1"))
+
+///|
+// kept across runs: a value (no field of it changes)
+let tool_diff_row_top : @ui.Style = @ui.css("pt=S1_5")
+
+///|
+// kept across runs: a value (no field of it changes)
+let tool_diff_row_bot : @ui.Style = @ui.css("pb=S1_5")
 
 ///|
 /// The gutter a line's mark stands in (taken out or put in), 9 in: as far as its words are 22 in.

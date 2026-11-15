@@ -598,8 +598,10 @@ test "the preset's screens keep every rule, on a phone and on a desk" {
 /// holds, which scrolls (panel_centred_node's body). Named by its files and how far, not by their lines: a line moved
 /// in either file by another change is no fault of these screens.
 fn preset_dialog_known(f : String) -> Bool {
-  // (and its field over the folders' rows 8 in from the edge the rows stand on, its two sides: rule 5 of the window's
-  // tree's nodes, said once the spacing rules measured them, 2026-11-14; left for its own change)
+  // (and its field over the folders' rows, under a mouse on a row: the row's ground lit reaches lit_reach past its
+  // icon, the field's edge on the icons' as every list's head is (rule 7), so 8 short of the lit ground's at both
+  // sides: rule 5, said once the spacing rules measured the window's tree's nodes, 2026-11-14; looked at 2026-11-15,
+  // as meant)
   (f.has_prefix("rule 5: a box in 「") && f.contains(" falls short 8 at its ") && f.contains("(at 404,") && f.contains(" 472×36,")) ||
   (
     f.has_prefix("apart: a box (a node of the window's tree's at ") &&

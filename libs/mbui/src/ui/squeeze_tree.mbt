@@ -66,6 +66,12 @@ let tree_nodes_from : Ref[Int] = Ref(-1)
 let tree_draws_at : Set[Int] = Set([])
 
 ///|
+/// Of those, what draws a mark of its own (a drawing, a picture: no glass, shadow or old view hosted), what the
+/// spacing rules hold as content, as an old view's node's shapes (Ctx::tree_draws).
+// kept across runs: filled and emptied with tree_draws_at
+let tree_marks_at : Set[Int] = Set([])
+
+///|
 /// The nodes of the window's tree among the frame's where they are drawn is their own to say (LaidFacts' `moves_own`):
 /// apart from the flow on purpose, as an old view's node drawn off its place is (Ctx::squeeze_aside_at).
 // kept across runs: filled and emptied round one asking of the squeeze (Ctx::with_tree_nodes)
@@ -95,7 +101,7 @@ fn Ctx::tree_facts(
     _ => d.alpha
   }
   match contents.get(d.id.at) {
-    Some((c, _)) =>
+    Some((c, _)) => {
       if c.image is Some(_) ||
         c.picture is Some(_) ||
         !c.shapes.is_empty() ||
@@ -105,6 +111,10 @@ fn Ctx::tree_facts(
         c.hosted {
         tree_draws_at.add(i)
       }
+      if c.image is Some(_) || c.picture is Some(_) || !c.shapes.is_empty() || !c.lines.is_empty() {
+        tree_marks_at.add(i)
+      }
+    }
     None => ()
   }
   if tree_fields.contains(d.id) {
@@ -122,6 +132,9 @@ fn Ctx::tree_facts(
   n.dir = if f.row { Row } else { Column }
   n.rtl = f.row && f.reverse
   n.flow = f.row && f.wraps
+  if f.spread {
+    n.justify = JBetween
+  }
   n.pad_l = f.pad.0
   n.pad_t = f.pad.1
   n.pad_r = f.pad.2

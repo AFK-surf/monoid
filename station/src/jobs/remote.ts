@@ -821,11 +821,11 @@ export class Remote {
 
   /// What a task waiting in the queue is told of it: its place, what blocks it, and the measured machine's capacity.
   private async queued(jobId: string, readLoad: () => Promise<Json> = () => this.measuredLoad()): Promise<Json> {
-    let q = this.jobs.queueOf(jobId);
+    let q = await this.jobs.queueOf(jobId);
     if (q === null) return {};
     const load = await readLoad();
     // It may have started while the host was being read; do not return its old queued state.
-    q = this.jobs.queueOf(jobId);
+    q = await this.jobs.queueOf(jobId);
     if (q === null) return {};
     const why =
       q.why === "memory" ? "the machine's memory is under pressure"
@@ -1608,8 +1608,8 @@ export class Remote {
         const back = field(spec, "back");
         if (inSandbox) await ensureIdentity(this.data);
         const started = inSandbox
-          ? this.jobs.startId(owner, text(spec, "name"), text(spec, "command"), cwd, null, false, jobId, false, null, { sandbox: peer.slice(SANDBOX.length), session, back: Array.isArray(back) ? back.filter((b: unknown): b is string => typeof b === "string") : [] })
-          : this.jobs.startId(owner, text(spec, "name"), text(spec, "command"), cwd, null, false, jobId, false, { screen: field(spec, "screen") === true, small: field(spec, "small") === true });
+          ? await this.jobs.startId(owner, text(spec, "name"), text(spec, "command"), cwd, null, false, jobId, false, null, { sandbox: peer.slice(SANDBOX.length), session, back: Array.isArray(back) ? back.filter((b: unknown): b is string => typeof b === "string") : [] })
+          : await this.jobs.startId(owner, text(spec, "name"), text(spec, "command"), cwd, null, false, jobId, false, { screen: field(spec, "screen") === true, small: field(spec, "small") === true });
         // Where its source wants to be told of it (`pushOut`): from its first start, as it is then (a start asked again
         // keeps what was told).
         const push = text(request, "push");

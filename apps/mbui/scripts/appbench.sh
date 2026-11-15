@@ -17,6 +17,7 @@ mkdir -p out/bench bench
 # scene   fixture    window     platform pointing
 table="idle chat-long 1280x800 0 mouse
 fling chat-long 390x844 2 finger
+chat-real chat-real 390x844 2 finger
 backswipe chat 390x844 2 finger
 newchat home 390x844 2 finger
 switch home 351x805 2 finger

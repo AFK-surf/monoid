@@ -12,7 +12,7 @@ import { type Asker, pick } from "../src/search/match.ts";
 import { SearchScopePreparation } from "../src/search/scope-prepare.ts";
 import { readSearchScopePage, SEARCH_ORPHAN_NEXT, SEARCH_SCOPE_NEXT } from "../src/search/scope-read.ts";
 import { Search } from "../src/search/search.ts";
-import { stationDocs } from "../src/search/sources.ts";
+import { stationDocs } from "./reference/search-sources.ts";
 import { Store } from "../src/store/store.ts";
 
 const mine: Asker = { workspace: "mine", home: false, scopes: [] };
@@ -54,7 +54,7 @@ test("the search worker requests preparation before answering and only while it 
       token: "s", createdAt: 1, lastActiveAt: 1, ws: "mine" });
     const thread = writer.openThreadOf("ember", "CHAT", "chat", "needle", null, "s").id;
     writer.joinThread(thread, "s", "ember");
-    worker = new Worker(new URL("../src/search/worker.ts", import.meta.url), { workerData: { data } });
+    worker = new Worker(new URL("./reference/search-worker.ts", import.meta.url), { workerData: { data } });
     const tell = (id: number) => worker!.postMessage({ type: "query", id, query: "needle", asker: mine, kinds: ["chat"] });
     tell(1);
     const [pending] = await once(worker, "message") as [{ scopePending?: boolean }];

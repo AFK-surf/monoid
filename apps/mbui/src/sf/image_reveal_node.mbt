@@ -22,8 +22,8 @@ priv enum RevealPhase {
 /// the moment its host says it is decoded; `likeness` what it waits on ("" the neutral ground; a field of a few colours,
 /// a ThumbHash's, decoded once at the least size: reveal_likeness_px); `held` one the device
 /// had (a decode away): as it is, no brushing; `comes`, read the moment it is decoded: whether it is brushed in then
-/// (else there whole at once). `top_crop`: covering it from its top, not its middle (a tall one at the chat's least
-/// width: an old view's FitCoverAt(0), View::image_covers_at). The node.
+/// (else there whole at once). `start_crop`: covering it from its start (its top, or its left), not its middle (a tall one
+/// at the chat's least width, a wide strip at its least height: an old view's FitCoverFrom(0, 0), View::image_covers_at). The node.
 #callsite(autofill(loc))
 pub fn image_reveal_node(
   parent : @view.View,
@@ -34,7 +34,7 @@ pub fn image_reveal_node(
   cover? : Bool = true,
   held? : () -> Bool = fn() { false },
   comes? : () -> Bool = fn() { true },
-  top_crop? : Bool = false,
+  start_crop? : Bool = false,
   loc~ : SourceLoc,
 ) -> @view.View {
   parent.box(made_for=loc, fn(b) {
@@ -56,7 +56,7 @@ pub fn image_reveal_node(
       .height(Is(Some(h)))
       .image(By(fn() { if key() == "" { None } else { Some((key(), "", px().to_int())) } }))
       .image_covers(Is(cover))
-      .image_covers_at(Is(if top_crop { Some(0.0) } else { None }))
+      .image_covers_at(Is(if start_crop { Some((0.0, 0.0)) } else { None }))
       .image_contains(Is(!cover))
       .image_fades(Is(false))
       .scale(By(fn() { 1.0 + reveal_grow * (1.0 - e()) }))

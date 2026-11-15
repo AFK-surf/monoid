@@ -15,23 +15,17 @@ Whose vault: whoever started the chat, unless you name another with `person` (th
 secret when that is not the starter, and always where the chat was started in Slack and the person now writes from
 still.fail (a card for a Slack starter cannot be approved in the app).
 
-## When to offer it
+## When to use `secret_save`
 
-As soon as you see a credential will be needed more than once, before using it another way:
+Call `secret_save` when:
 
-- you are about to read one with a password manager's CLI (`op`, `bw`), above all where each read needs the person
-  (1Password's approval on a station's screen);
-- a person pastes or tells you a token, password or key: keep it rather than leave it to be pasted again;
-- you created one (a deploy token, an API key from a console you signed in to);
-- a script you write logs in somewhere (a router, a dashboard, an API);
-- you need one nobody gave you and you cannot read (an API key from a console only they sign in to): ask them to type it
-  in on the card (below), not to add it in the vault page themselves or paste it in the chat.
+- you need a credential nobody gave you and you cannot read on the machine: `secret_save` with no `value`, `command` or
+  `path` puts a card in the chat where the person types or pastes it (never ask them to paste a secret in the chat);
+- the person asks you to save a credential (or one read from `op`/`bw` or newly created) in their vault for future chats.
 
-Say it in a line (我把 UX7 的密码存进你的密钥库，以后用它在卡片上批准就行，不用再点 1Password) and call
-`secret_save`: its card is the question, so ask nothing separately.
-
-Not for what the station keeps itself: CLI logins (`login`, skill stillfail-login), the agents' model accounts (the
-station's profiles), or anything the person said not to keep.
+Do not interrupt ongoing work with unsolicited `secret_save` cards for credentials that are already configured and
+working in the environment or CLI, and never use it for CLI logins (`login`, skill stillfail-login), the agents' model
+accounts (the station's profiles), or anything the person said not to keep.
 
 ## Keeping one
 

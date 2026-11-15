@@ -106,10 +106,10 @@ test "a tall preview opens from the top of its picture and returns there" {
   let t = photo_sent(Ref(0.0), held, tall=true)
   let id = "ws1/st1/s-c1/uploads/fx/photo.jpg"
   let thumb = thumb_of(t.ctx(), id).unwrap()
-  assert_true(thumb.top_crop)
+  assert_true(thumb.start_crop)
   assert_true(t.drawn_images().iter().any(fn(i) { (i[5] - 0.0).abs() < 0.001 && (i[7] - 0.375).abs() < 0.001 }))
   t.tap(thumb.x + thumb.w / 2.0, thumb.y + thumb.h / 2.0)
-  assert_true(viewer.get().unwrap().fly_from.unwrap().top_crop)
+  assert_true(viewer.get().unwrap().fly_from.unwrap().start_crop)
   t.run_for(@ui.move_most_ms)
   t.back()
   t.run_for(@ui.move_most_ms)

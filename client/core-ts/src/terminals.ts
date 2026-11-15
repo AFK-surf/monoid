@@ -36,8 +36,8 @@ export type TerminalCall =
   | { kind: "view"; station: string; terminal: string; view: string; ask: TerminalAsk }
   | { kind: "input"; view: string; data: Uint8Array }
   | { kind: "resize"; view: string; cols: number; rows: number }
-  /// 接管: the view types from now on, taking it from whoever did.
-  | { kind: "take"; view: string };
+  /// 接管: the view types from now on, taking it from whoever did; `control: false` steps back to looking only.
+  | { kind: "take"; view: string; control?: boolean };
 
 const within = (v: unknown, [lo, hi]: readonly [number, number]): v is number => typeof v === "number" && Number.isInteger(v) && v >= lo && v <= hi;
 
@@ -81,8 +81,10 @@ export function parseTerminal(name: string, params: unknown, bytes?: Uint8Array)
     }
     case "terminal.resize":
       return { kind: "resize", view: text(params, "view"), ...size(params) };
-    case "terminal.take":
-      return { kind: "take", view: text(params, "view") };
+    case "terminal.take": {
+      const control = get(params, "control");
+      return { kind: "take", view: text(params, "view"), ...(typeof control === "boolean" ? { control } : {}) };
+    }
     default:
       return null;
   }
@@ -125,7 +127,7 @@ type Open = {
   station: string;
   input(data: Uint8Array): void;
   resize(cols: number, rows: number): void;
-  take(): void;
+  take(control?: boolean): void;
 };
 
 const opened = new WeakMap<Inner, Map<string, Open>>();
@@ -163,7 +165,7 @@ export function install(): void {
     if (!target) return Effect.fail(new CoreError("not_found", t("core-misc.terminal.closed")));
     if (c.kind === "input") target.input(c.data);
     else if (c.kind === "resize") target.resize(c.cols, c.rows);
-    else target.take();
+    else target.take(c.control);
     return Effect.succeed(null);
   };
 }
@@ -196,9 +198,9 @@ function view(inner: Inner, c: Extract<TerminalCall, { kind: "view" }>, progress
         ask = { ...ask, cols, rows };
         if (state.types) write(frame(KIND.resize, utf8(JSON.stringify({ cols, rows }))));
       },
-      // Opened again asking to take it; asked once (its reopens after it ask as any).
-      take: () => {
-        ask = { ...ask, control: true, taken: true };
+      // Opened again asking to take it (or to look only when `control` is false); asked once (its reopens after it ask as any).
+      take: (control = true) => {
+        ask = control ? { ...ask, control: true, taken: true } : { ...ask, control: false, taken: undefined };
         if (again !== null) Deferred.doneUnsafe(again, Effect.void);
       },
     });

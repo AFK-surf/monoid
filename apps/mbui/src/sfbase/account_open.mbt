@@ -7,6 +7,37 @@
 // opening an account's page draws no bones). So too a choice that switches what its page reads (switch_answered).
 
 ///|
+/// What the host is told of an account's page opened by a press (still.fail's Android app's BarTiming, as a switch of
+/// the bar is: PostHog's `bar_switch`, its `to` "account"): `asked` as the press asks what the page reads (the topics
+/// subscribed after it timed, each to its first value), `opened` after the frame that put the page up. How long the
+/// press waited, and for which answer, is then the host's to say (2026-11-15: opening an account's page waited a second
+/// and more now and then, nothing said where). Nothing here reads a clock; None under a Tester.
+pub(all) struct OpenTiming {
+  asked : (String) -> Unit
+  opened : (String) -> Unit
+}
+
+///|
+/// The host's, set once as the app starts (src/stillfail reports.mbt).
+// kept across runs: the host's, set once for the process; a test that sets one puts None back itself
+pub let open_timing : Ref[OpenTiming?] = Ref(None)
+
+///|
+/// `open` (what puts the page `what` up) told to the host once done, after the frame that drew it, as open_timing says.
+fn timed_open(what : String, open : () -> Unit) -> () -> Unit {
+  match open_timing.val {
+    Some(t) => {
+      (t.asked)(what)
+      fn() {
+        open()
+        @ui.after_frame(fn() { (t.opened)(what) })
+      }
+    }
+    None => open
+  }
+}
+
+///|
 /// The workspace a station's topics are asked of (settings' station_scope): its address's, `ws` for one without it.
 fn account_scope(ws : String, station : String) -> String {
   if station.contains("/") {

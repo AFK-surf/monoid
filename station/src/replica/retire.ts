@@ -192,7 +192,7 @@ export type RetireDeps = {
   /// not), whether one like it runs there already, and a word told to a session's agent as theirs are (`say`). None: a
   /// station's jobs not started again (a test's).
   jobs?: {
-    start(session: string, j: { name: string; command: string; cwd: string; port: number | null; watch: boolean }): { id: string; name: string; port: number | null };
+    start(session: string, j: { name: string; command: string; cwd: string; port: number | null; watch: boolean }): Promise<{ id: string; name: string; port: number | null }>;
     running(session: string, name: string, command: string): boolean;
     say(session: string, text: string): void;
   };
@@ -854,14 +854,14 @@ export class Retire {
     }
     await this.#save();
     this.#d.unquiet(ws);
-    const back = this.#jobsBack(s, jobs, `The move of this chat to station ${s.toName || s.to.slice(0, 12)} did not go through, and it works here again`);
+    const back = await this.#jobsBack(s, jobs, `The move of this chat to station ${s.toName || s.to.slice(0, 12)} did not go through, and it works here again`);
     log.warn("retire", "a hand-over did not go through: the chats work here again", { to: s.to, reason: s.reason, error: s.error });
     await this.#toDriver(s, `Retiring this station: the hand-over to ${s.toName || "the other station"} failed (${s.reason}): ${s.error}. The station already put the chats back to work here${back === "" ? "" : ` (${back})`}; what was sent stays there, so the next hand-over sends only what changed. Fix the cause, then call station_retire hand_over again (a person confirms it again), or cancel.`);
   }
 
   /// The jobs a chat stopped as its chats did, started again here (the move called off or failed: `why`), each told to
   /// its agent; what came of them in a few words.
-  #jobsBack(s: State, jobs: CarriedJob[], why: string): string {
+  async #jobsBack(s: State, jobs: CarriedJob[], why: string): Promise<string> {
     const j = this.#d.jobs;
     if (j === undefined) return "";
     let started = 0;
@@ -870,7 +870,7 @@ export class Retire {
       let error: string | null = null;
       let made: { id: string; name: string; port: number | null } | null = null;
       try {
-        made = j.start(job.session, { name: job.name, command: job.command, cwd: job.cwd, port: job.port ?? null, watch: job.watch === true });
+        made = await j.start(job.session, { name: job.name, command: job.command, cwd: job.cwd, port: job.port ?? null, watch: job.watch === true });
         started++;
       } catch (e) {
         error = (e as Error).message;
@@ -1091,7 +1091,7 @@ export class Retire {
     // (at `sent` the chats work already: a hand-over that failed put them back)
     if (stopped(s.step)) {
       this.#d.unquiet(ws);
-      this.#jobsBack(s, s.jobs, `The move of this chat to station ${name} was called off, and it works here again`);
+      await this.#jobsBack(s, s.jobs, `The move of this chat to station ${name} was called off, and it works here again`);
     }
     this.#state = null;
     // (nothing written of it after it is gone: what the driver's telling writes is of the state, none now; it is not
@@ -1541,7 +1541,7 @@ export class Retire {
       await this.#saveTaking(t);
     }
     if (index !== null && t.jobs === null) {
-      t.jobs = this.#startJobs(index);
+      t.jobs = await this.#startJobs(index);
       await this.#saveTaking(t);
     }
     const bindings: Record<string, string> = {};
@@ -1586,7 +1586,7 @@ export class Retire {
   /// this data directory (`moved`, as the moved note says them): one that ran outside the retired station's data
   /// directory (a person's project, which stayed) is not; one like it running already (started before a start again
   /// of this station) is not twice; one gathered by a station from before is not tried. What came of each.
-  #startJobs(index: CarryIndex): JobOutcome[] {
+  async #startJobs(index: CarryIndex): Promise<JobOutcome[]> {
     const out: JobOutcome[] = [];
     const keys = new Set(index.sessions.map((s) => s.key));
     const from = resolve(index.dataDir);
@@ -1608,7 +1608,7 @@ export class Retire {
         continue;
       }
       try {
-        const made = jobs.start(j.session, { name: j.name, command: j.command, cwd: moved(cwd, from, this.#d.data), port: j.port ?? null, watch: j.watch === true });
+        const made = await jobs.start(j.session, { name: j.name, command: j.command, cwd: moved(cwd, from, this.#d.data), port: j.port ?? null, watch: j.watch === true });
         out.push({ ...o, started: true, id: made.id, name: made.name, port: made.port });
       } catch (e) {
         log.warn("retire", "a moved chat's job not started again", { session: j.session, job: j.name, error: (e as Error).message });

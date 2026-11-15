@@ -108,8 +108,8 @@ export const CopiesLive = Layer.effectDiscard(
       },
       tell: (session, text) => agents.hub.notify(session, text),
       jobs: {
-        start: (session, j) => {
-          const job = agents.jobs.start(session, j.name, j.command, j.cwd, j.port, j.watch);
+        start: async (session, j) => {
+          const job = await agents.jobs.start(session, j.name, j.command, j.cwd, j.port, j.watch);
           return { id: job.id, name: job.name, port: job.port };
         },
         running: (session, name, command) => store.jobsUp().some((j) => j.sessionKey === session && j.name === name && j.command === command),

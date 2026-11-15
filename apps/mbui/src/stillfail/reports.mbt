@@ -84,6 +84,11 @@ fn reports_start() -> Unit {
     placed: fn(from, to) { host_tell("placed", from, to, 0, 0) |> ignore },
     built: fn(place) { host_tell("built", place, "", 0, 0) |> ignore },
   })
+  // (an account's page opened by a press, timed as a switch is: its asks the topics followed)
+  @sfbase.open_timing.val = Some({
+    asked: fn(to) { host_tell("placed", "", to, 0, 0) |> ignore },
+    opened: fn(to) { host_tell("built", to, "", 0, 0) |> ignore },
+  })
   @core.time_topics(
     Some(fn(id, topic, value, first) {
       if !first {

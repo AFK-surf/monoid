@@ -1,4 +1,4 @@
-// The sessions' actors (station/src/sessions/actor.ts `SessionActor`) run here, in the `--agents` program: each
+// The sessions' actors (station/src/sessions/actor.ts `SessionActor`) run here, in the sessions' program (`--sessions`, with agents.mbt): each
 // session's state and its serial queue, every change of it going through the queue as there (a runtime's events, what
 // its tools say, what the hub asks). What an actor needs of the station that is not here yet (the store, the drivers
 // and their runtime sessions, the chat surfaces, the account pool, the live view, the words) it asks of Node (`rpc`),
@@ -120,11 +120,13 @@ priv struct Actors {
   mut seen : Int
   /// the station's database, where Node said it is (a store in memory is Node's alone)
   mut db : @sql.Db?
+  /// the station's background jobs (jobs.mbt), Node's shell of them the pseudo-actor `#jobs`
+  mut jobs : JobsState
 }
 
 ///|
 fn Actors::new(host : @host.Host) -> Actors {
-  { host, actors: Map([]), asked: Map([]), timers: Map([]), next: 0, now: 0.0, active: 0, seen: 0, db: None }
+  { host, actors: Map([]), asked: Map([]), timers: Map([]), next: 0, now: 0.0, active: 0, seen: 0, db: None, jobs: JobsState::new() }
 }
 
 ///|
@@ -342,14 +344,27 @@ async fn Actors::enqueue(self : Actors, a : Actor, task : async () -> Unit raise
 }
 
 ///|
-pub async fn serve_actors(host : @host.Host) -> Unit {
+/// The sessions' program (`--sessions`): the agents' output read (agents.mbt) and the actors (this file) in one, each
+/// line of Node's to the one it is for: an actor's says `actor`, or is an answer, a wait's time, the database's place.
+pub async fn serve_sessions(host : @host.Host) -> Unit {
   let s = Actors::new(host)
+  let a = Agents::new(host)
   host.say(({ "ready": true } : Json).stringify())
   while host.line() is Some(line) {
-    s.heard(line)
-    s.quiet()
+    if actors_line(line) {
+      s.heard(line)
+      s.quiet()
+    } else {
+      a.told(line)
+    }
   }
   @host.exit(0)
+}
+
+///|
+/// Whether a line of Node's is for the actors: what Node says them begins so (mb-actor.ts `post`, its keys first).
+fn actors_line(line : String) -> Bool {
+  ["{\"call\":", "{\"answer\":", "{\"due\":", "{\"db\":", "{\"runtime\":", "{\"event\":", "{\"codexUpdated\":"].iter().any(p => line.has_prefix(p))
 }
 
 ///|
@@ -361,12 +376,26 @@ fn Actors::heard(self : Actors, line : String) -> Unit {
     self.now = now
   }
   match said {
-    { "db": String(path), .. } => {
-      self.db = Some(@sql.Db::attach(self.host, path, wait=5000)) catch {
-        e => {
-          @host.note("actors: the station's database not opened: " + (match e { @wire.ShellError(m) => m }))
-          None
-        }
+    { "db": place, .. } => {
+      // (a hub's actors begin: those of one before it, closed, go, and what it is told is counted from here)
+      self.actors.clear()
+      self.asked.clear()
+      self.timers.clear()
+      self.seen = 1
+      self.active = 0
+      self.jobs = JobsState::new()
+      if self.db is Some(db) {
+        db.close()
+      }
+      self.db = match place {
+        String(path) =>
+          Some(@sql.Db::attach(self.host, path, wait=5000)) catch {
+            e => {
+              @host.note("actors: the station's database not opened: " + (match e { @wire.ShellError(m) => m }))
+              None
+            }
+          }
+        _ => None
       }
       return
     }
@@ -391,6 +420,30 @@ fn Actors::heard(self : Actors, line : String) -> Unit {
     _ => ()
   }
   guard said.value("actor") is Some(String(key)) else { return }
+  if key == jobs_key {
+    // (the jobs' calls: each a fiber of its own, as an actor's call is before it is queued)
+    if said is { "call": Number(id, ..), "method": String(method), .. } {
+      let args = match said.value("args") {
+        Some(Array(args)) => args
+        _ => []
+      }
+      self.spawn(() => {
+        let answer : Map[String, Json] = { "returned": Json::number(id) }
+        let value = self.jobs_called(method, args) catch {
+          e => {
+            answer["error"] = Json::string(Asked::message(e))
+            if e is Asked(j) {
+              answer["cause"] = j
+            }
+            Json::null()
+          }
+        }
+        answer["value"] = value
+        self.say_node(answer)
+      })
+    }
+    return
+  }
   let a = match said.value("runtime") {
     Some(String(runtime)) => self.actor(key, runtime)
     _ =>

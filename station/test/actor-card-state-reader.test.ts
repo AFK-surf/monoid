@@ -11,11 +11,8 @@ import { installLegacyEdits } from "../src/store/legacy-edits-build.ts";
 import { addClientColumn } from "../src/store/schema.ts";
 import { Store } from "../src/store/store.ts";
 import { Rig } from "./hub-fakes.ts";
+import { formatDelivery } from "../src/sessions/actor.ts";
 
-// SessionActor's own steps are what these look at (its formatting and its checks as it delivers, each replaced here):
-// the actor of a checkout without the MoonBit program, not the program's (sessions/mb-actor.ts), whose steps the
-// hub's tests run.
-process.env.STILLFAIL_ACTORS_HOST = "0";
 
 const card = JSON.stringify({ type: "options", options: [{ label: "yes" }], vault: { request: "request-1" } });
 const state = readStore.deliveryCardState;
@@ -150,8 +147,7 @@ test("delivery formats card state through its reader", async () => {
     };
     rig.store.cardEndedByMessage = () => { throw new Error("station ended card lookup used"); };
     rig.store.pendingCard = () => { throw new Error("station pending card lookup used"); };
-    const actor = rig.hub.actor(rig.session("worker"));
-    const [text] = await (actor as any).format(rig.store.pendingMessages("worker")) as [string, unknown];
+    const [text] = await formatDelivery(rig.hub.deps, "worker", rig.store.pendingMessages("worker"), new AbortController().signal) as [string, unknown];
     assert.deepEqual(asked, [2]);
     assert.match(text, /Your card is no longer pending/);
     assert.match(text, /message ts 3\.1/);
@@ -177,8 +173,7 @@ test("delivery formats a real reader's card state", async () => {
     rig.hub.deliveryCardState = async (id, n, signal) => JSON.parse(await readers.read("deliveryCardState", { thread: id, n }, "en", { signal }));
     rig.store.cardEndedByMessage = () => { throw new Error("station ended card lookup used"); };
     rig.store.pendingCard = () => { throw new Error("station pending card lookup used"); };
-    const actor = rig.hub.actor(rig.session("worker"));
-    const [text] = await (actor as any).format(rig.store.pendingMessages("worker")) as [string, unknown];
+    const [text] = await formatDelivery(rig.hub.deps, "worker", rig.store.pendingMessages("worker"), new AbortController().signal) as [string, unknown];
     assert.match(text, /Your card is no longer pending/);
     assert.match(text, /message ts 3\.1/);
     assert.match(text, /secret_reask/);

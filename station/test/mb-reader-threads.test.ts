@@ -13,6 +13,7 @@ import { wall } from "../src/ops/fibers.ts";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
 import { Readers } from "../src/read/pool.ts";
 import { Store, newMessage } from "../src/store/store.ts";
+import { readersOf } from "./reference.ts";
 
 const binary = mbReaderBinary();
 
@@ -56,8 +57,7 @@ test("the MoonBit reader reads a session's page and the threads as the worker do
     db.prepare("INSERT INTO jobs(id,session_key,name,command,cwd,port,token,state,started_at,restarts,log,watch) VALUES (?,'a1',?,'true','/',?,?,?,?,0,'/dev/null',0)")
       .run(`j${i}`, `job ${i}`, i === 2 ? 9000 : null, `t${i}`, i < 3 ? "running" : "exited", i === 5 ? 50 : 100 + i);
   const readers = (mb: string | null) => {
-    const r = new Readers(data, 1);
-    r.mbReader = mb;
+    const r = readersOf(data, mb);
     r.names.set("p@x", "Pat");
     return r;
   };

@@ -1175,6 +1175,10 @@ pub(all) struct Node {
   // was the one before, reused
   mut laid_gen : Int
   mut skip_gen : Int
+  // the compute() that laid it out nowhere (DisplayNone: forgotten, of no size, all it holds so; -1 none), while it has
+  // been laid out by none since: laid out nowhere again, it is as it was, walked again for nothing (a page under the one
+  // on top, a pane switched off, held as they were)
+  mut hidden_gen : Int
   // Whether any of its children may take no room holding nothing (Style's gone_empty): set as one is added so or said so,
   // worked out again as its children are put again (none: what lays it out reads none of theirs for it, one test a
   // container, however many it holds). Never false where one is; true where none is any more only lays it out the
@@ -1216,6 +1220,7 @@ pub fn Node::new() -> Node {
     p_w: 0.0,
     p_h: 0.0,
     laid_gen: -1,
+    hidden_gen: -1,
     pre_gen: -1,
     pre: no_pre,
     skip_gen: -1,
