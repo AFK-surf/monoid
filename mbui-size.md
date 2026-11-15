@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [5b3a42708](https://github.com/AFK-surf/monoid/commit/5b3a4270808e000a7d8c45ca3db8cc61b61b82c9) mbui app: design .mbui/.wasm shell as mini-program | 2.1 | 2.93 | 12.62 | 33.57 | 48.93 | 29.05 | 57.32 | 99.09 | 110.88 |
 | [c730077c8](https://github.com/AFK-surf/monoid/commit/c730077c816fc977889416efa77f51f0f73e3064) station: launcher runtime supervision, front probe | 2.1 | 2.92 | 12.59 | 33.52 | 48.81 | 28.82 | 56.61 | 98.85 | 112.11 |
 | [5101e1b84](https://github.com/AFK-surf/monoid/commit/5101e1b84c2e0037d08058932d2641d9da100788) fix(mbui): align wide page own_head mark with firs | 2.1 | 2.92 | 12.58 | 33.52 | 48.8 | 28.82 | 56.61 | 98.85 | 116.7 |
 | [a08946bd9](https://github.com/AFK-surf/monoid/commit/a08946bd900e1a4972bb4e0f1281d910551ea032) mbui: rule 7 reads a card's pieces as one card; 全部 | 2.09 | 2.88 | 12.38 | 33.31 | 48.01 | 28.82 | 56.61 | 98.85 | 145.71 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [aafb7fa27](https://github.com/AFK-surf/monoid/commit/aafb7fa27d46f91faa1f322610482625923709a2) app tests: the made-up core keeps a chat to the wi | 2.07 | 2.84 | 12.25 | 32.14 | 45.34 | 28.72 | 56.51 | 98.67 | 112.48 |
 | [ee6fc242b](https://github.com/AFK-surf/monoid/commit/ee6fc242b698faeeebbe43a350f34c497309f035) ci: put runs whatever the Mac's build came to, as  | 2.07 | 2.84 | 12.25 | 32.14 | 45.34 | 28.73 | 56.51 | 98.63 | 117.76 |
 | [3ae4ef14c](https://github.com/AFK-surf/monoid/commit/3ae4ef14c0018b864533e103ac0bf3fe69c9171a) app: a long list of the chat's page made as nodes, | 2.07 | 2.84 | 12.25 | 32.14 | 45.33 | 28.72 | 56.49 | 99.08 | 113.05 |
-| [012d73161](https://github.com/AFK-surf/monoid/commit/012d731614df1747268d790734cd3d2900353730) feat(history): wrap expanded steps in unified surf | 2.07 | 2.84 | 12.25 | 32.14 | 45.33 | 28.72 | 56.49 | 99.08 | 113.05 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [5b3a42708](https://github.com/AFK-surf/monoid/commit/5b3a4270808e000a7d8c45ca3db8cc61b61b82c9) mbui app: design .mbui/.wasm shell as mini-program | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.43 |
 | [c730077c8](https://github.com/AFK-surf/monoid/commit/c730077c816fc977889416efa77f51f0f73e3064) station: launcher runtime supervision, front probe | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.43 |
 | [5101e1b84](https://github.com/AFK-surf/monoid/commit/5101e1b84c2e0037d08058932d2641d9da100788) fix(mbui): align wide page own_head mark with firs | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.43 |
 | [a08946bd9](https://github.com/AFK-surf/monoid/commit/a08946bd900e1a4972bb4e0f1281d910551ea032) mbui: rule 7 reads a card's pieces as one card; 全部 | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.43 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [aafb7fa27](https://github.com/AFK-surf/monoid/commit/aafb7fa27d46f91faa1f322610482625923709a2) app tests: the made-up core keeps a chat to the wi | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.16 |
 | [ee6fc242b](https://github.com/AFK-surf/monoid/commit/ee6fc242b698faeeebbe43a350f34c497309f035) ci: put runs whatever the Mac's build came to, as  | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.16 |
 | [3ae4ef14c](https://github.com/AFK-surf/monoid/commit/3ae4ef14c0018b864533e103ac0bf3fe69c9171a) app: a long list of the chat's page made as nodes, | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.16 |
-| [012d73161](https://github.com/AFK-surf/monoid/commit/012d731614df1747268d790734cd3d2900353730) feat(history): wrap expanded steps in unified surf | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.1 |
