@@ -102,7 +102,11 @@ chats paused 18 minutes, a half-moved state, no way back), whose start stays swi
   is offered only where it is on (the overview's `move.offered`) until the real run between our own stations has
   passed; then the switch goes (the lead, 2026-11-14). Off, every turn is refused before anything is held (the
   scheduler asks `refusal` first: here, then `move.open` there, one that refuses it being from before and off, one not reached said to be out of reach), and a
-  station that is off takes no `handover.begin` and sends nothing back; `GET /move` still answers.
+  station that is off takes no `handover.begin` and sends nothing back; `GET /move` still answers. A turn waits in `refusal`
+  until the station process before this one is gone (a launcher's hand-over between processes: one process at a time
+  acts on a move, replica/handover.ts `previous`), and so does every `move.*` and `handover.*` request answered here;
+  past `PREVIOUS_LIMIT_MS` (ops/previous.ts, on the station's clock) each is refused in words, ask again in a moment
+  (`station.move.previousStill`), the process before named once in the log. The station itself goes on waiting.
 - A message a device wrote under its idempotency key (api/admin.ts `once`) goes with its chat: what was kept of it is
   sent with `handover.show` and kept there under the thread's id there, so the device's retry there is answered as
   here, not posted again (`keptSends`, `keepSends`).

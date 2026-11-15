@@ -802,6 +802,7 @@
   "station.move.noAnswer": "{station} did not answer this step: its connection was gone; the next step dials it anew.",
   "station.move.gone": "{station} does not answer: nothing more is asked of it in this move. Move again once it is up.",
   "station.move.onItsWay": "This chat is on its way here from {station}, which does not answer: once it is up, the chat is shown here, or, if it took the hand-over back, stays there.",
+  "station.move.previousStill": "This station is still switching to its new process: moving cannot begin yet. Ask again in a moment.",
   "station.move.restartedMidway": "This station started again as the chat was being handed over to {station}: it goes on here, nothing of it went. Hand it over again (station_move, or the move page) when you want it there.",
   "station.move.stoppedMidway": "This station stopped as the chat was being handed over to {station}: it goes on here, nothing of it went. Hand it over again once this station is up.",
   "station.move.stoppedHeld": "This station stopped as the chat was being handed over to {station}: it goes on here once this station is up again, nothing of it went; then hand it over again.",

@@ -47,7 +47,7 @@ export const MovesLive = Layer.effectDiscard(
       });
     };
     const moves = new Moves({
-      data, store, fibers, roster, previous: previous.exited,
+      data, store, fibers, roster, previous: previous.exited, previousPid: previous.pid,
       here: () => key.id,
       home: () => cloud.home(),
       ask: (station, request) => bus.ask(station, request),

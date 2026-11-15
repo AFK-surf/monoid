@@ -29,6 +29,7 @@ import { type Bytes, Refused, bytesOf, withBytes } from "../mesh/bus.ts";
 import { stopBytes } from "../mesh/files.ts";
 import type { Fibers } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
+import { PREVIOUS_LIMIT_MS } from "../ops/previous.ts";
 import { knownOf } from "../connects/remote.ts";
 import type { Described, Known } from "../connects/remote.ts";
 import { CHAT_TABLES, BY_N, MARKS, type ChatTable, type Counts, type ImportCtx, afterOf, newCtx } from "../store/handover.ts";
@@ -204,6 +205,8 @@ export type HandoverDeps = {
   /// The station process this one took over from gone (ops/previous.ts `previousExited`): until then this one acts on
   /// no hand-over, begins none and answers none of another station's (none: no process before it).
   previous?: Promise<void>;
+  /// That process's pid, for what is said of it while it is waited for.
+  previousPid?: number | null;
 };
 
 const dir = (data: string) => join(data, "replica", "handover");
@@ -454,10 +457,25 @@ export class Handover {
     void this.#mend();
   }
 
-  /// Once the process before is gone and the records read again (`previous`): what a move turn waits for to begin.
-  loaded(): Promise<void> {
-    return this.#loaded;
+  /// Once the process before is gone and the records read again (`previous`), for what a person or another station
+  /// waits for (a move turn, a request of theirs): PREVIOUS_LIMIT_MS at most on the station's clock, then refused in
+  /// words, ask again (a pid `run/hub.json` names that another program has after a reboot would else hold every move
+  /// for good, saying nothing). What this process acts on itself (its start, its records read again) waits as long as
+  /// it takes.
+  async loadedWithin(): Promise<void> {
+    if (this.#ready) return;
+    let late: () => void = () => {};
+    const deadline = new Promise<"late">((resolve) => (late = this.#d.fibers.after(PREVIOUS_LIMIT_MS, () => resolve("late")))); // timer: a deadline for the process before to be gone
+    const came = await Promise.race([this.#loaded.then(() => "loaded" as const), deadline]);
+    late();
+    if (came === "loaded") return;
+    if (!this.#saidStill) {
+      this.#saidStill = true;
+      log.warn("handover", "the station process before this one is still there: moves are refused until it is gone", { pid: this.#d.previousPid ?? null, waitedMs: PREVIOUS_LIMIT_MS });
+    }
+    throw new Refused(tr(stationLang(), "station.move.previousStill"));
   }
+  #saidStill = false;
 
   /// The chats this station says went to a station (`handed_over`) where their latest hand-over from here failed and was
   /// never shown there: asked of that station, which either holds it in sight (the record completed: it went) or does
@@ -712,7 +730,7 @@ export class Handover {
   /// that, its accounts there or not.
   async handOver(key: string, to: string, opts: { wait?: boolean; ignoreFiles?: boolean; progress?: (p: { done: number; total: number; unit: string }) => void; stoppedFor?: Need } = {}): Promise<Out> {
     // (begun only once the process before is gone: never two processes of this station on one chat's hand-over)
-    await this.#loaded;
+    await this.loadedWithin();
     const refused = this.check(key, to, { ...opts, stoppedFor: opts.stoppedFor ?? null });
     if (refused !== null) throw new Refused(refused);
     const keys = this.together(key);
@@ -1113,8 +1131,8 @@ export class Handover {
   answers(inWorkspace: (peer: string, ws: string) => boolean) {
     return async (peer: string, request: Json, workspace?: string): Promise<Json> => {
       // (answered once the process before is gone: it may be answering the same hand-over still; meanwhile the asker
-      // waits the seconds a hand-over between processes takes)
-      await this.#loaded;
+      // waits the seconds a hand-over between processes takes, refused in words past PREVIOUS_LIMIT_MS)
+      await this.loadedWithin();
       const bytes = bytesOf(request);
       try {
         const ws = typeof request?.workspace === "string" ? request.workspace : "";

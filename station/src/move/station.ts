@@ -79,8 +79,9 @@ export type MovesDeps = {
   lackMost?: number;
   work?: HandoverDeps["work"];
   fail?: HandoverDeps["fail"];
-  /// The station process this one took over from gone (handover.ts `previous`).
+  /// The station process this one took over from gone (handover.ts `previous`), and its pid.
   previous?: Promise<void>;
+  previousPid?: number | null;
   changed?: () => void;
   /// config.json as written, for the settings that move (settings.ts).
   config?: { raw(): Json; update(f: (raw: Json) => void): void };
@@ -255,7 +256,7 @@ export class Moves {
         here: (a) => this.accountHere(a),
         present: (id) => d.profiles().some((p) => p?.id === id),
       },
-      reposDir: d.reposDir, room: d.room, hasGit: d.hasGit, git: d.git, lackMost: d.lackMost, work: d.work, fail: d.fail, previous: d.previous,
+      reposDir: d.reposDir, room: d.room, hasGit: d.hasGit, git: d.git, lackMost: d.lackMost, work: d.work, fail: d.fail, previous: d.previous, previousPid: d.previousPid,
       changed: () => d.changed?.(),
       arrivedStopped: (keys, need, ws) => this.scheduler.noteStopped({ module: "chats", id: keys[0]! }, need, ws),
       // (a chat here again by any route: what was lent for it alone is taken back)
@@ -588,7 +589,13 @@ export class Moves {
     if (!this.on()) return tr(lang, "station.move.off");
     // (every turn asks this first: begun only once the station process before this one is gone, so that two processes
     // of this station never act on one move; meanwhile it waits the seconds that takes)
-    await this.handover.loaded();
+    // (refused in words past PREVIOUS_LIMIT_MS: the station still switching to its new process, ask again)
+    try {
+      await this.handover.loadedWithin();
+    } catch (e) {
+      if (e instanceof Refused) return e.message;
+      throw e;
+    }
     const name = () => this.#d.roster(ws)?.find((r) => r.id === station)?.name || station.slice(0, 12);
     let open: Json;
     // (a connection found gone fails its request, the next is dialed anew: asked once more before it is said to be out
@@ -608,6 +615,8 @@ export class Moves {
   answers(inWorkspace: (peer: string) => boolean) {
     const each = this.#answers(inWorkspace);
     return async (peer: string, request: Json, workspace?: string): Promise<Json> => {
+      // (answered once the station process before this one is gone, refused in words past PREVIOUS_LIMIT_MS)
+      await this.handover.loadedWithin();
       // (another station's request taken whole before this station updates itself)
       const letGo = this.#hold();
       try {
