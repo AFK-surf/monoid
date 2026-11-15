@@ -23,8 +23,9 @@ pub(all) struct MessageShare {
 /// changes (message_inline). Where it offers itself (`share`) and a mouse is the native input (not @sf.more_held: a
 /// finger has these on the bar over what it holds picked), its ⋯ at the head's end, shown while the pointer is on the
 /// row or its menu is open (its words, its link, its turn shared: @sfbase.message_items, beside the ⋯'s room), and a
-/// right click on the row offers the same to the window's menu (@sfbase.share_offer, at the click's moment). The row's
-/// node, and whether its ⋯'s menu is open (as that changes: presented_from).
+/// right click on the row offers the same to the window's menu (@sfbase.share_offer, at the click's moment); the ⋯
+/// shown as well while `pointed_also` says (the pointer on another piece of the same message). The row's node, and
+/// whether its ⋯'s menu is open (as that changes: presented_from).
 fn message_others_node(
   v : @view.View,
   here : MessageNodeHere,
@@ -34,6 +35,7 @@ fn message_others_node(
   route : ((@view.View) -> Unit)?,
   body : (@view.View) -> Unit,
   share? : MessageShare? = None,
+  pointed_also? : () -> Bool = fn() { false },
 ) -> (@view.View, () -> Bool) {
   // (its ⋯ where a mouse is the native input: laid out by it, the head as it is whichever hand is on it now; a right
   // click whichever: message_menu_node)
@@ -74,7 +76,7 @@ fn message_others_node(
               menu_on.val = open
               // (at once, as the old row's hand_shown: shown by where the hand is, no coming or going of its own, so
               // the ⋯ of a row the pointer left is gone as it leaves, not still there beside the next's)
-              room.show(fn() { @sf.hovered_in_node(row) || open() }, at_once=true, fn(m) {
+              room.show(fn() { @sf.hovered_in_node(row) || pointed_also() || open() }, at_once=true, fn(m) {
                 @sf.icon_button_node(m, "more", fn() { @sf.t("web-main.menu.more") }, fn() {
                   @sf.menu(
                     @sfbase.message_items(@signals.untracked(s.link), @signals.untracked(s.words), s.go),

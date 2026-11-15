@@ -61,8 +61,54 @@ fn agent_said_node(
   shown? : (@view.View, Array[(String, String, Int)]) -> Unit,
   core? : @settings.Core? = None,
   out_of? : (@view.View, @motion.Way)? = None,
+  piece? : (Int, Int, Bool)? = None,
+  pieces_pointed? : () -> Bool = fn() { false },
+  piece_made? : (@view.View) -> Unit = fn(_) {  },
 ) -> MessageRowNode {
   let menu_on : Ref[() -> Bool] = Ref(fn() { false })
+  // (a piece of a long message after its first (chat_body_pieces): its blocks alone, under where its words are drawn,
+  // its files and what it asks under them where it is its last; its head, picture and what it quotes the first's)
+  match piece {
+    Some((from, upto, last)) if from > 0 => {
+      let row = message_row_frame_node(v, key, side, top, over~, fn(r) {
+        r.box(fn(col) {
+          @sf.style_node(col, fn() { msg_main })
+          // (pointed at as its first piece is, that one's ⋯ shown while the pointer is on it (`piece_made`, what the
+          // first's `pieces_pointed` reads); a right click on it offers what one on the first does)
+          match share {
+            Some(s) => {
+              if !@sf.more_held() {
+                col.points(Is(true)).as_ground() |> ignore
+                piece_made(col)
+              }
+              message_menu_node(col, s)
+            }
+            None => ()
+          }
+          col.box(fn(p) {
+            @ui.picked_of(p, key, whole=true) |> ignore
+            @sf.style_node(p, fn() { agent_prose_piece })
+            agent_prose_node(p, src, here, m, found~, found_at~, lit~, code~, screens=screens.unwrap_or(agent_screens(src, here, m)), shown?, range=Some((from, upto)), files_too=last)
+          })
+          |> ignore
+          if last {
+            agent_asks_node(col, src, here, m, core)
+          }
+        })
+        |> ignore
+      })
+      return row
+    }
+    _ => ()
+  }
+  let range = match piece {
+    Some((from, upto, _)) => Some((from, upto))
+    None => None
+  }
+  let last = match piece {
+    Some((_, _, l)) => l
+    None => true
+  }
   let row = message_row_frame_node(v, key, side, top, over~, fn(r) {
     // (come by data while its agent was at work: out of that agent's picture on its line (`out_of`), as emit.mbt's, each
     // step from the cause's moment: the line folds into its picture (Fold); its own picture glides there from that one
@@ -122,29 +168,38 @@ fn agent_said_node(
             // (its words and its files one piece, none apart, as the old list holds them to be picked: pickable's
             // pick_fill; a letter's, drawn by the old view alone, has them 4 apart)
             @sf.style_node(p, fn() { agent_prose_piece })
-            agent_prose_node(p, src, here, m, found~, found_at~, lit~, code~, screens=screens.unwrap_or(agent_screens(src, here, m)), shown?, glyphs=out_glyphs)
+            agent_prose_node(p, src, here, m, found~, found_at~, lit~, code~, screens=screens.unwrap_or(agent_screens(src, here, m)), shown?, glyphs=out_glyphs, range~, files_too=last)
           } else {
             message_card_node(p, here, core, m)
           }
         })
-        // (what it asks under it, where it asks anything: nothing else made, as no gap is wanted for nothing; a login's
-        // card where there is a core to read it with)
-        b.show(
-          fn() {
-            match decision_asks(m()) {
-              Nothing => false
-              Login => core is Some(_)
-              _ => true
-            }
-          },
-          fn(d) { message_decision_node(d, src, here, m, core~) },
-        )
+        // (what it asks under it: its last piece's)
+        if last {
+          agent_asks_node(b, src, here, m, core)
+        }
       },
       share~,
+      pointed_also=pieces_pointed,
     )
     menu_on.val = on
   })
   { ..row, menu_on: menu_on.val }
+}
+
+///|
+/// What agent's message `m` asks under it in `b`, where it asks anything: nothing else made, as no gap is wanted for
+/// nothing; a login's card where there is a core to read it with.
+fn agent_asks_node(b : @view.View, src : Source, here : MessageNodeHere, m : () -> Message, core : @settings.Core?) -> Unit {
+  b.show(
+    fn() {
+      match decision_asks(m()) {
+        Nothing => false
+        Login => core is Some(_)
+        _ => true
+      }
+    },
+    fn(d) { message_decision_node(d, src, here, m, core~) },
+  )
 }
 
 ///|
@@ -167,6 +222,8 @@ fn agent_prose_node(
   screens? : @sf.ScreensNode,
   shown? : (@view.View, Array[(String, String, Int)]) -> Unit,
   glyphs? : ((@view.View) -> Double, (Double, @view.GlyphAt) -> @view.GlyphLook)? = None,
+  range? : (Int, Int)? = None,
+  files_too? : Bool = true,
 ) -> Unit {
   let place = message_files_at(here, fn() { m().said })
   let at = message_place(@signals.untracked(m)) + "/f"
@@ -268,10 +325,14 @@ fn agent_prose_node(
       },
       code~,
       screens?,
+      range~,
     )
     |> ignore
   })
-  message_files_node(v, src, here.tips, place, rest, fn() { false }, by, at, over=fn() { if m().text != "" { files_under_words } else { 0.0 } })
+  // (the rest of its files under its words: under its last piece's, where it is in pieces)
+  if files_too {
+    message_files_node(v, src, here.tips, place, rest, fn() { false }, by, at, over=fn() { if m().text != "" { files_under_words } else { 0.0 } })
+  }
 }
 
 ///|
