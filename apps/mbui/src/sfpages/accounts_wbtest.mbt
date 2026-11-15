@@ -671,3 +671,132 @@ test "a Devin profile's models panel asks Fusion pairs on demand, switches lead 
   assert_true(calls[3].1.stringify().contains(uid), msg="profile.put saves \{uid}: \{calls[3].1.stringify()}")
   assert_true(calls[4].1.stringify().contains("\"liked\":true"), msg="pick.like likes \{uid}: \{calls[4].1.stringify()}")
 }
+
+///|
+test "profile page shows non-quota explanations and intermediate checking states" {
+  // 1. Subscription with unsupported quota (e.g. Devin / Kimi Code) and no usedBy still shows the quota card and detail.
+  let t_unsupported = setting_tester(Profile("ws1/st1", "cc"), 1280.0, over=fn(s) {
+    fn shaped(v : Json) -> Json {
+      match v {
+        Object(o) if o.get("id") == Some(Json::string("cc")) => {
+          let p = o.copy()
+          p["quota"] = {
+            "state": "unsupported",
+            "detail": "Devin 不向 station 提供套餐用量，请在 app.devin.ai 的 Usage 页查看",
+            "windows": [],
+          }
+          Json::object(p)
+        }
+        Object(o) if o.get("connects") is Some(_) => {
+          let p = o.copy()
+          for k, x in o {
+            p[k] = shaped(x)
+          }
+          p["connects"] = Json::array([])
+          p["presets"] = Json::array([])
+          Json::object(p)
+        }
+        Object(o) => {
+          let p = o.copy()
+          for k, x in o {
+            p[k] = shaped(x)
+          }
+          Json::object(p)
+        }
+        Array(a) => Json::array(a.map(shaped))
+        _ => v
+      }
+    }
+    {
+      ..s,
+      topic_read: fn(name, params) {
+        let r = s.topic(name, params).get().snapshot()
+        { ..r, value: r.value.map(shaped) }
+      },
+    }
+  })
+  assert_true(t_unsupported.find("额度") is Some(_))
+  assert_true(t_unsupported.find("Devin 不向 station 提供套餐用量，请在 app.devin.ai 的 Usage 页查看") is Some(_))
+
+  // 2. Subscription with unchecked quota (quota: null) shows 尚未查询额度, modelsReading shows 正在读取, and clicking 重新检查 dispatches both profile.check and profile.quota.
+  let calls : Array[String] = []
+  let t_unchecked = setting_tester(Profile("ws1/st1", "cc"), 1280.0, h=2400.0, over=fn(s) {
+    fn shaped(v : Json) -> Json {
+      match v {
+        Object(o) if o.get("id") == Some(Json::string("cc")) => {
+          let p = o.copy()
+          p["quota"] = Json::null()
+          p["available"] = Json::array([])
+          p["modelsReading"] = Json::boolean(true)
+          Json::object(p)
+        }
+        Object(o) => {
+          let p = o.copy()
+          for k, x in o {
+            p[k] = shaped(x)
+          }
+          Json::object(p)
+        }
+        Array(a) => Json::array(a.map(shaped))
+        _ => v
+      }
+    }
+    {
+      ..s,
+      topic_read: fn(name, params) {
+        let r = s.topic(name, params).get().snapshot()
+        { ..r, value: r.value.map(shaped) }
+      },
+      call: fn(name, params, done) {
+        if name == "profile.check" || name == "profile.quota" {
+          calls.push(name)
+        }
+        (s.call)(name, params, done)
+      },
+    }
+  })
+  assert_true(t_unchecked.find("订阅账号 · Ultra") is Some(_))
+  assert_true(t_unchecked.find("尚未查询额度") is Some(_))
+  assert_true(t_unchecked.find("正在读取") is Some(_))
+  t_unchecked.click(Button, label="重新检查")
+  t_unchecked.frame()
+  assert_eq(calls, ["profile.check", "profile.quota"])
+
+  // 3. Plain API key with check.state == "ok" and quota.detail shows its capabilities in the facts line and quota.detail in the header state line without a quota card.
+  let t_key = setting_tester(Profile("ws1/st1", "k2"), 1280.0, over=fn(s) {
+    fn shaped(v : Json) -> Json {
+      match v {
+        Object(o) if o.get("id") == Some(Json::string("k2")) => {
+          let p = o.copy()
+          p["checkTone"] = Json::string("green")
+          p["checkText"] = Json::string("可用")
+          p["checkLine"] = Json::string("8 个模型")
+          p["check"] = { "state": "ok", "time": { "checkedAt": { "ago": "5 分钟前" } } }
+          p["quota"] = { "state": "unsupported", "detail": "按量计费，无额度上限", "windows": [] }
+          Json::object(p)
+        }
+        Object(o) => {
+          let p = o.copy()
+          for k, x in o {
+            p[k] = shaped(x)
+          }
+          Json::object(p)
+        }
+        Array(a) => Json::array(a.map(shaped))
+        _ => v
+      }
+    }
+    {
+      ..s,
+      topic_read: fn(name, params) {
+        let r = s.topic(name, params).get().snapshot()
+        { ..r, value: r.value.map(shaped) }
+      },
+    }
+  })
+  assert_true(t_key.find("API key · Anthropic") is Some(_))
+  assert_true(t_key.find("可用于：") is Some(_))
+  assert_true(t_key.find("Claude Code") is Some(_))
+  assert_true(t_key.find("按量计费，无额度上限 · 5 分钟前检查") is Some(_))
+  assert_true(t_key.boxes_held().filter(fn(b) { b.text == "额度" }).is_empty())
+}

@@ -25,20 +25,6 @@ let corners_everywhere_known : Map[String, Int] = {
   // words' and the window's, no place it is stood at: the rule holds what does not scroll to the corner, and nothing
   // here stands it elsewhere. Gone as the page's height is any other (English's has none).
   known["touch-zh lock-security"] = 3
-  // settings-profile-move in the tablet's 600×900 window, and place-profiles / settings-profile-key (备用 key, without
-  // an empty 额度 card) in the 600×760 desktop windows: with Station rows merged into 设置, the page is just short of its
-  // panel, so it does not scroll and its last card (设置's, 16 in from the panel's sides, 26 round) stands over the
-  // panel's 42-round foot.
-  known["touch-zh settings-profile-move"] = 3
-  known["touch-en settings-profile-move"] = 3
-  known["desk-zh place-profiles"] = 1
-  known["desk-en place-profiles"] = 1
-  known["desk-zh settings-profile-key"] = 1
-  known["desk-en settings-profile-key"] = 1
-  known["desk-win-zh place-profiles"] = 3
-  known["desk-win-en place-profiles"] = 3
-  known["desk-win-zh settings-profile-key"] = 3
-  known["desk-win-en settings-profile-key"] = 3
   // A request for the phone waiting (chat-phone-lacks, swept since 2026-11-11; the same card as chat-phone's, on main
   // unswept): its length's chooser, the last of its answer's row, stands in the card's foot end corner off concentric
   // with it where its words are long (闲置 1 小时后失效 on a phone; Until idle for 1 hour wherever English is), as the
@@ -451,53 +437,4 @@ let corners_first_line_known : Map[String, Int] = Map([
 /// every window (corners_wbtest.mbt), by window, language and screen: the bar it may only fall from, counted as the
 /// rule first ran (2026-11-15). A screen not listed has none. Listed: a profile's row in the profiles' list, its line
 /// of what is wrong (没能使用) from the row's words' inset, under its logo drawn out to its chips' capsules.
-let corners_line_start_known : Map[String, Int] = Map([
-  ("phone-en place-profiles", 1),
-  ("phone-en settings-profiles", 1),
-  ("phone-en settings-profiles-fable", 1),
-  ("phone-en settings-profiles-monthly", 1),
-  ("phone-en settings-profiles-own3", 1),
-  ("phone-en settings-profiles-week-fable", 1),
-  ("phone-zh place-profiles", 1),
-  ("phone-zh settings-profiles", 1),
-  ("phone-zh settings-profiles-fable", 1),
-  ("phone-zh settings-profiles-monthly", 1),
-  ("phone-zh settings-profiles-own3", 1),
-  ("phone-zh settings-profiles-week-fable", 1),
-  ("tablet-en settings-profiles", 1),
-  ("tablet-en settings-profiles-fable", 1),
-  ("tablet-en settings-profiles-monthly", 1),
-  ("tablet-en settings-profiles-own3", 1),
-  ("tablet-en settings-profiles-several", 1),
-  ("tablet-en settings-profiles-week-fable", 1),
-  ("tablet-zh settings-profiles", 1),
-  ("tablet-zh settings-profiles-fable", 1),
-  ("tablet-zh settings-profiles-monthly", 1),
-  ("tablet-zh settings-profiles-own3", 1),
-  ("tablet-zh settings-profiles-several", 1),
-  ("tablet-zh settings-profiles-week-fable", 1),
-  ("wide-en settings-profiles", 1),
-  ("wide-en settings-profiles-fable", 1),
-  ("wide-en settings-profiles-monthly", 1),
-  ("wide-en settings-profiles-own3", 1),
-  ("wide-en settings-profiles-several", 1),
-  ("wide-en settings-profiles-week-fable", 1),
-  ("wide-win-en settings-profiles", 1),
-  ("wide-win-en settings-profiles-fable", 1),
-  ("wide-win-en settings-profiles-monthly", 1),
-  ("wide-win-en settings-profiles-own3", 1),
-  ("wide-win-en settings-profiles-several", 1),
-  ("wide-win-en settings-profiles-week-fable", 1),
-  ("wide-win-zh settings-profiles", 1),
-  ("wide-win-zh settings-profiles-fable", 1),
-  ("wide-win-zh settings-profiles-monthly", 1),
-  ("wide-win-zh settings-profiles-own3", 1),
-  ("wide-win-zh settings-profiles-several", 1),
-  ("wide-win-zh settings-profiles-week-fable", 1),
-  ("wide-zh settings-profiles", 1),
-  ("wide-zh settings-profiles-fable", 1),
-  ("wide-zh settings-profiles-monthly", 1),
-  ("wide-zh settings-profiles-own3", 1),
-  ("wide-zh settings-profiles-several", 1),
-  ("wide-zh settings-profiles-week-fable", 1),
-])
+let corners_line_start_known : Map[String, Int] = Map([])

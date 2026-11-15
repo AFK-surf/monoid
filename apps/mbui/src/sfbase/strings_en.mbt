@@ -726,6 +726,7 @@ let en : Map[String, String] = {
   "common.noMatch": "No matches",
   "common.opening": "Opening",
   "common.pathOn": "File on {station}: {path}",
+  "common.provider.uses": "Works for: {uses}",
   "common.reading": "Loading",
   "common.recommended": "Recommended",
   "common.reconnecting": "Reconnecting",

@@ -121,7 +121,7 @@ let page_connect_fields : Array[String] = ["id", "name", "team", "presence", "st
 ///|
 // kept across runs: a table, never written
 let page_profile_dropped : Array[String] = [
-  "home", "homeExists", "models", "group", "groupTitle", "usesText", "modelsReading", "serves",
+  "home", "homeExists", "models", "group", "groupTitle", "usesText", "serves",
 ]
 
 ///|

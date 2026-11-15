@@ -716,6 +716,7 @@ let zh : Map[String, String] = {
   "common.noMatch": "没有匹配的结果",
   "common.opening": "正在打开",
   "common.pathOn": "{station} 上的文件：{path}",
+  "common.provider.uses": "可用于：{uses}",
   "common.reading": "正在读取",
   "common.recommended": "推荐",
   "common.reconnecting": "正在重新连接",

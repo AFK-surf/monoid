@@ -866,6 +866,7 @@ export const SHAPES: Record<string, Shape> = {
     ["modelsText", "String", { doc: "How many models it runs, in words." }],
     ["available", vec("String"), { default: true, doc: "Its models (`models`), as an older page read them." }],
     ["added", vec("String"), { default: true, doc: "As Profile's." }],
+    ["modelsReading", "bool", { default: true, doc: "As Profile's." }],
     ["uses", vec("String"), { default: true, doc: "As Profile's." }],
     ["providerName", opt("String"), { doc: "As Profile's." }],
     ["providerMark", opt("String")],
@@ -879,7 +880,7 @@ export const SHAPES: Record<string, Shape> = {
     ["planText", "String", { said: true, default: true, doc: "As Profile's." }],
     ["signInProvider", "String", { default: true, doc: "As Profile's." }],
     ["checkLine", "String", { said: true, default: true, doc: "As Profile's." }],
-  ], { doc: "A profile as a station's page sends it (`StationView.overview.profiles`), for the profile's page and the station's\nprofiles panel (accounts.mbt, station_page.mbt). The rest of a Profile is not sent there: its home and the models its\ncheck found (`home`, `homeExists`, `models`), its check's reasoning levels, models, plan and decision probe\n(`check.modelEfforts`: 10 KB of the workspace's list at its real size), its kind of account (`group`, `groupTitle`,\n`usesText`: the station part's list reads those), whether its models are read and whom it serves." }),
+  ], { doc: "A profile as a station's page sends it (`StationView.overview.profiles`), for the profile's page and the station's\nprofiles panel (accounts.mbt, station_page.mbt). The rest of a Profile is not sent there: its home and the models its\ncheck found (`home`, `homeExists`, `models`), its check's reasoning levels, models, plan and decision probe\n(`check.modelEfforts`: 10 KB of the workspace's list at its real size), its kind of account (`group`, `groupTitle`,\n`usesText`: the station part's list reads those) and whom it serves." }),
   StationCheck: struct([
     ["state", "String", { doc: "As ProfileCheck's: ok | login | failed | unknown." }],
     ["time", opt(map("Ago")), { doc: "When it was checked (`checkedAt`), in words." }],
@@ -3477,8 +3478,9 @@ export const SHAPES: Record<string, Shape> = {
   RowQuota: struct([
     ["state", "String", { doc: "As Quota's: chips only where ok." }],
     ["windows", vec("PickQuotaWindow")],
+    ["detail", opt("String"), { said: true }],
     ["creditsText", opt("String")],
-  ], { doc: "An allowance as an account's row draws it: its windows' chips, its credits where it has no window." }),
+  ], { doc: "An allowance as an account's row draws it: its windows' chips, why it has none, its credits." }),
   StationMachineLogins: struct([
     ["station", "String", { doc: "Its station (address)." }],
     ["stationName", "String", { said: true }],

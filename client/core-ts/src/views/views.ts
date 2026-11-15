@@ -311,7 +311,7 @@ const PROFILE_ROW_FIELDS = [
   "providerMark", "usesText", "kindText", "planText", "quota",
 ] as const;
 /// Of an allowance, what a row draws (RowQuota), its windows' `resetsAt` beside (what its refills are said of at read).
-const ROW_QUOTA_FIELDS = ["state", "creditsText", "windows"] as const;
+const ROW_QUOTA_FIELDS = ["state", "detail", "creditsText", "windows"] as const;
 const ROW_WINDOW_FIELDS = ["label", "scope", "mark", "left", "level", "resetsAt"] as const;
 
 const picked = (v: J, keys: readonly string[]): J => {

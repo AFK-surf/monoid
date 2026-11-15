@@ -199,7 +199,10 @@ fn profile_pausable(p : Json?) -> Bool {
 ///|
 /// Whether a subscription's sign-in is under way (its `login`'s state).
 fn signing_in(p : Json?) -> Bool {
-  ["starting", "needs_code", "needs_approval", "verifying"].contains(text(field(p, "login"), "state"))
+  let ls = text(field(p, "login"), "state")
+  ["starting", "waiting", "needs_code", "needs_approval", "verifying"].contains(ls) ||
+  (ls == "done" && text(field(p, "check"), "state") == "login") ||
+  ["starting", "waiting"].contains(text(field(p, "afterSignIn"), "state"))
 }
 
 ///|
@@ -209,10 +212,27 @@ fn sign_asked(p : Json?) -> Bool {
 }
 
 ///|
+/// Whether this profile is a plain API-key / custom-env profile that does not use OAuth sign-in or subscription quota.
+fn plain_key(p : Json?) -> Bool {
+  let access = field(p, "access")
+  let kind = if text(access, "kind") != "" { text(access, "kind") } else { text(p, "kind") }
+  let login = flag(access, "login") || flag(p, "login")
+  ["anthropic-api", "api-provider", "env"].contains(kind) && !login
+}
+
+///|
 /// Whether its allowance has anything to show: windows, credits, or resets.
 fn has_quota(p : Json?) -> Bool {
   let q = field(p, "quota")
   (text(q, "state") == "ok" && items(q, "windows").length() > 0) || text(q, "creditsText") != "" || items(q, "resets").length() > 0
+}
+
+///|
+/// Whether the profile page should show the quota card (including unchecked, unavailable, or unsupported states).
+fn shows_quota(p : Json?) -> Bool {
+  !plain_key(p) ||
+  has_quota(p) ||
+  (field(p, "quota") is Some(Object(_)) && text(field(p, "quota"), "state") != "unsupported")
 }
 
 ///|
@@ -236,7 +256,7 @@ fn profile_keys(core : Core, here : () -> Here, o : () -> Json?, p : () -> Json?
   } else if field(pv, "trouble") is Some(Object(_)) && text(field(pv, "trouble"), "action") != "login" {
     out.push("trouble")
   }
-  if has_quota(pv) || profile_users(o(), pv).length() > 0 {
+  if shows_quota(pv) || profile_users(o(), pv).length() > 0 {
     out.push("quota")
   }
   let has_sharing = has(o(), "sharing") && !(field(o(), "sharing") is Some(Null))
@@ -315,9 +335,17 @@ fn profile_head_node(
   tips : @sf.TipLayer?,
 ) -> Unit {
   let on = [("station", address), ("id", id)]
-  // what it is, in a line: its kind, the address signed in (when not its name), where it is
+  // what it is, in a line: its kind, its plan, the address signed in (when not its name), where it is
   let facts = fn() {
     let pv = p()
+    let ak = text(field(pv, "access"), "kind")
+    let kind_word = if ak == "api-provider" && text(pv, "providerName") != "" {
+      "API key · " + text(pv, "providerName")
+    } else if ak == "anthropic-api" {
+      "API key · Anthropic"
+    } else {
+      text(pv, "kindText")
+    }
     let email = text(pv, "email")
     // of an account on several stations, this station's (each's own part is under Station), not all of them
     let several = items(entry(), "members").filter(fn(m) { text(Some(m), "role") != "user" }).length() > 1
@@ -326,7 +354,7 @@ fn profile_head_node(
     } else {
       ""
     }
-    join([text(pv, "kindText"), text(pv, "planText"), if email != text(pv, "name") { email } else { "" }, place], " · ")
+    join([kind_word, text(pv, "planText"), if email != text(pv, "name") { email } else { "" }, place], " · ")
   }
   @sf.own_head_node(
     h,
@@ -349,12 +377,57 @@ fn profile_head_node(
 }
 
 ///|
+/// The runtimes and uses this profile serves (runtimeTags) in node `t`: a clear label followed by a tag with its icon
+/// for each runtime and automatic decisions.
+fn runtime_tags_node(t : @view.View, p : () -> Json?) -> Unit {
+  let pairs = fn() -> Array[(String, Bool)] {
+    let pv = p()
+    let out : Array[(String, Bool)] = []
+    for r in items(pv, "runtimes") {
+      if r is String(rt) && rt != "" {
+        out.push((rt, false))
+      }
+    }
+    if items(pv, "uses").iter().any(fn(u) { u == "decision" }) {
+      out.push(("decision", true))
+    }
+    out
+  }
+  t.show(fn() { !pairs().is_empty() }, fn(row) {
+    @sf.style_node(row, fn() { pf_tags })
+    row.wraps(Is(Some(pf_tags_line_gap))) |> ignore
+    @sf.words_node(
+      row,
+      fn() { @sf.t("common.provider.uses", args=[("uses", "")]).trim(chars=" ").to_owned() },
+      fn() { pf_tags_lead },
+    )
+    |> ignore
+    row.each(pairs, fn(x) { x.0 }, fn(item, x) {
+      let (id, is_decision) = @signals.untracked(fn() { x.get() })
+      @sf.tag_node(
+        item,
+        fn() { if is_decision { @sf.t("common.decision") } else { @settings.runtime_label(id) } },
+        lead=fn(m) {
+          if is_decision {
+            @sf.icon_node(m, "sparks", pf_tag_icon, By(fn() { @sf.theme().p.muted })) |> ignore
+          } else {
+            @sf.maker_mark_node(m, "", id, pf_tag_icon) |> ignore
+          }
+        },
+      )
+    })
+  })
+}
+
+///|
 /// How it stands under its head (profileState) in node `st`: its check's pill where it is not well, what the check said
 /// and when, words of one line (short of room, cut from its end: when it was checked first; nothing of it moving under
 /// the rest as what the check said changes), checking again (its allowance read again with it), a spinner while it is.
 fn profile_state_node(st : @view.View, core : Core, address : String, id : String, p : () -> Json?, tips : @sf.TipLayer?) -> Unit {
   let on = [("station", address), ("id", id)]
+  let acting = fn() { is_doing(core, ["profile.check", "profile.quota"], on) }
   let checking = fn() { is_doing(core, ["profile.check"], on) }
+  let refreshing_quota = fn() { is_doing(core, ["profile.quota"], on) }
   st.show(at_once=true, fn() { text(p(), "checkTone") != "green" }, fn(x) {
     // (its tone as the check has it now: the pill made again in it)
     x.pick(at_once=true, fn() { pill_tone(text(p(), "checkTone")) }, fn(y, tone) { @sf.pill_node(y, fn() { text(p(), "checkText") }, tone~) |> ignore })
@@ -363,33 +436,59 @@ fn profile_state_node(st : @view.View, core : Core, address : String, id : Strin
     @sf.style_node(b, fn() { pf_state })
     b.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
     @sf.words_node(b, fn() {
-      let ago = text(field(field(field(p(), "check"), "time"), "checkedAt"), "ago")
-      let when = if ago != "" { @sf.t("web-pages.profiles.checkedAt", args=[("time", ago)]) } else { "" }
-      let line = if text(p(), "checkTone") == "green" || text(field(p(), "check"), "state") != "ok" {
-        text(p(), "checkLine")
+      let pv = p()
+      let ago = text(field(field(field(pv, "check"), "time"), "checkedAt"), "ago")
+      let when = if checking() {
+        @sf.t("android-settings.version.checking")
+      } else if refreshing_quota() {
+        @sf.t("android-settings.quota.checking")
+      } else if ago != "" {
+        @sf.t("web-pages.profiles.checkedAt", args=[("time", ago)])
+      } else {
+        ""
+      }
+      let line = if text(pv, "checkTone") == "green" && !checking() {
+        if !shows_quota(pv) {
+          let detail = opt_text(field(pv, "quota"), "detail").unwrap_or("")
+          if detail != "" { detail } else { text(pv, "checkText") }
+        } else {
+          let email = text(pv, "email")
+          let raw = text(pv, "checkLine")
+          if email != "" {
+            raw.replace_all(old="，" + email, new="").replace_all(old=", " + email, new="")
+          } else {
+            raw
+          }
+        }
       } else {
         ""
       }
       join([line, when], " · ")
     }, fn() { pf_check_words })
     |> ignore
-    @sf.icon_action_node(
-      b,
-      "refresh",
-      fn() { @sf.t("web-pages.profiles.recheck") },
-      fn() {
-        @settings.act(core, @sf.t("web-pages.profiles.recheck"), "profile.check", obj([("station", str(address)), ("id", str(id))]))
-        // (its allowance read again with it: how much is left, as of now)
-        let q = field(@signals.untracked(p), "quota")
-        if q is Some(Object(_)) && text(q, "state") != "unsupported" {
-          @settings.act(core, @sf.t("web-pages.profiles.refresh"), "profile.quota", obj([("station", str(address)), ("id", str(id))]))
-        }
-      },
-      disabled=fn() { checking() || (has(p(), "enabled") && !flag(p(), "enabled")) },
-      tips?,
-    )
-    |> ignore
-    b.show(at_once=true, checking, fn(x) { @sf.spinner_node(x, size=pf_spin) |> ignore })
+    b.pick(at_once=true, acting, fn(x, busy) {
+      if busy {
+        @sf.spinner_node(x, size=pf_spin) |> ignore
+      } else {
+        @sf.icon_action_node(
+          x,
+          "refresh",
+          fn() { @sf.t("web-pages.profiles.recheck") },
+          fn() {
+            @settings.act(core, @sf.t("web-pages.profiles.recheck"), "profile.check", obj([("station", str(address)), ("id", str(id))]))
+            // (its allowance read again with it: how much is left, as of now)
+            let pv = @signals.untracked(p)
+            let q = field(pv, "quota")
+            if shows_quota(pv) && !(q is Some(Object(_)) && text(q, "state") == "unsupported") {
+              @settings.act(core, @sf.t("web-pages.profiles.refresh"), "profile.quota", obj([("station", str(address)), ("id", str(id))]))
+            }
+          },
+          disabled=fn() { has(p(), "enabled") && !flag(p(), "enabled") },
+          tips?,
+        )
+        |> ignore
+      }
+    })
   })
   |> ignore
 }
@@ -403,42 +502,6 @@ fn pill_tone(tone : String) -> @sf.PillTone {
     "blue" => Blue
     "green" => Green
     _ => Neutral
-  }
-}
-
-///|
-/// The runtimes it serves (ui.tsx RuntimeTags) in node `t`, a tag each (its short name: its maker's mark is the head's),
-/// and 自动决策's, as it says them now.
-fn runtime_tags_node(t : @view.View, p : () -> Json?) -> Unit {
-  let tags = fn() {
-    let out = items(p(), "runtimes").filter_map(fn(r) { if r is String(rt) { Some(runtime_tag(rt)) } else { None } })
-    if items(p(), "uses").iter().any(fn(u) { u == "decision" }) {
-      out.push(@sf.t("common.decision"))
-    }
-    out.mapi(fn(i, w) { (i, w) })
-  }
-  t.box(fn(r) {
-    @sf.style_node(r, fn() { pf_tags })
-    r.each(tags, fn(x) { x.0 }, fn(tag, x) {
-      @sf.tag_node(tag, fn() { x.get().1 })
-    })
-  })
-  |> ignore
-}
-
-///|
-/// A runtime's short name on its tag (ui.tsx RUNTIME_TAG).
-fn runtime_tag(r : String) -> String {
-  match r {
-    "claude" => "CC"
-    "codex" => "Codex"
-    "dsh" => "DSH"
-    "grok" => "GROK"
-    "cursor" => "Cursor"
-    "devin" => "Devin"
-    "hermes" => "Hermes"
-    "agy" => "AGY"
-    _ => r
   }
 }
 
@@ -964,10 +1027,35 @@ fn profile_quota_node(
   let quota = fn() { field(p(), "quota") }
   let windows = fn() { items(quota(), "windows") }
   let credits = fn() { text(quota(), "creditsText") }
+  let refreshing = fn() {
+    is_doing(core, ["profile.quota"], on) ||
+    (is_doing(core, ["profile.check"], on) && text(quota(), "state") != "unsupported")
+  }
+  let what = fn() -> Int {
+    if !shows_quota(p()) {
+      -1
+    } else {
+      match quota() {
+        None | Some(Null) => 0
+        Some(q) => {
+          let st = text(Some(q), "state")
+          if st == "ok" && windows().length() > 0 {
+            2
+          } else if st == "ok" &&
+            opt_text(Some(q), "detail").unwrap_or("") == "" &&
+            (credits() != "" || items(Some(q), "resets").length() > 0) {
+            3
+          } else {
+            1
+          }
+        }
+      }
+    }
+  }
   @sf.section_node(
     b,
     fn() {
-      if has_quota(p()) {
+      if shows_quota(p()) {
         @sf.t("web-pages.profiles.quota")
       } else {
         @sf.t("web-pages.profiles.usedBy")
@@ -975,10 +1063,76 @@ fn profile_quota_node(
     },
     fn(sec) {
       @sf.group_node(sec, fn(g) {
-        g.show(at_once=true, fn() { text(quota(), "state") == "ok" && windows().length() > 0 }, fn(x) {
-          @sf.block_node(x, fn(bl) {
-            @sf.dials_node(bl, fn() { quota_dials_of(windows()) }, lines=2)
-          })
+        g.pick(at_once=true, what, fn(x, w) {
+          if w == 0 {
+            @sf.link_row_node(
+              x,
+              fn() {
+                if refreshing() {
+                  @sf.t("android-settings.quota.checking")
+                } else {
+                  @sf.t("web-main.quota.unchecked")
+                }
+              },
+              fn() {  },
+              chevron=false,
+              goes=false,
+              tail=fn(rt) {
+                doing_mark_node(rt, refreshing, fn() { failed_of(core, ["profile.quota", "profile.check"], on) }, tips?)
+              },
+              tail_shown=fn() { refreshing() || failed_of(core, ["profile.quota", "profile.check"], on) is Some(_) },
+            )
+          } else if w == 1 {
+            @sf.link_row_node(
+              x,
+              fn() {
+                if refreshing() && opt_text(quota(), "detail").unwrap_or("") == "" {
+                  @sf.t("android-settings.quota.checking")
+                } else {
+                  let q = quota()
+                  let st = text(q, "state")
+                  if st == "blocked" {
+                    @sf.t("web-main.profile.blocked")
+                  } else if st == "unavailable" {
+                    @sf.t("android-settings.quota.unavailable")
+                  } else if st == "unsupported" || opt_text(q, "detail").unwrap_or("") != "" {
+                    @sf.t("android-settings.quota.none")
+                  } else {
+                    @sf.t("web-main.quota.unknown")
+                  }
+                }
+              },
+              fn() {  },
+              note=fn() {
+                let q = quota()
+                let st = text(q, "state")
+                let detail = opt_text(q, "detail").unwrap_or("")
+                join(
+                  [
+                    detail,
+                    if refreshing() && detail != "" {
+                      @sf.t("android-settings.quota.checking")
+                    } else if !refreshing() && st != "unsupported" {
+                      text(field(q, "checkedAt"), "ago")
+                    } else {
+                      ""
+                    },
+                  ],
+                  " · ",
+                )
+              },
+              chevron=false,
+              goes=false,
+              tail=fn(rt) {
+                doing_mark_node(rt, refreshing, fn() { failed_of(core, ["profile.quota", "profile.check"], on) }, tips?)
+              },
+              tail_shown=fn() { refreshing() || failed_of(core, ["profile.quota", "profile.check"], on) is Some(_) },
+            )
+          } else if w == 2 {
+            @sf.block_node(x, fn(bl) {
+              @sf.dials_node(bl, fn() { quota_dials_of(windows()) }, lines=2)
+            })
+          }
         })
         g.show(at_once=true, fn() { credits() != "" }, fn(x) {
           @sf.link_row_node(x, fn() { @sf.t("android-settings.quota.credits") }, fn() {  }, value=credits, goes=false)
@@ -1504,7 +1658,19 @@ fn profile_settings_node(
                   @sf.t("web-pages.profiles.modelsNote")
                 }
               },
-              value=fn() { if all().length() == 0 { @sf.t("web-pages.profiles.noModels") } else { text(p(), "modelsText") } },
+              value=fn() {
+                if !(field(p(), "modelsSaving") is (None | Some(Null))) || is_doing(core, ["profile.addModel"], on) {
+                  @sf.t("common.saving")
+                } else if all().length() == 0 {
+                  if flag(p(), "modelsReading") || is_doing(core, ["profile.check"], on) {
+                    @sf.t("common.reading")
+                  } else {
+                    @sf.t("web-pages.profiles.noModels")
+                  }
+                } else {
+                  text(p(), "modelsText")
+                }
+              },
             )
             g.show(at_once=true, machine, fn(m_row) {
               let runtime = fn() { @settings.runtime_label(text(p(), "runtime")) }
@@ -2111,9 +2277,19 @@ let pf_check_words : @ui.TextStyle = @ui.text_style(size=Meta, leading=L6, color
 let pf_state : @ui.Style = @ui.css("row gap=S2 align=ACenter")
 
 ///|
-/// The runtimes' tags (runtimeTags: 4 apart, 8 after the name; each the library's tag_node).
+/// The runtimes and uses this profile serves, under its first line.
 // kept across runs: a value (no field of it changes)
-let pf_tags : @ui.Style = @ui.css("row gap=S1 align=ACenter")
+let pf_tags : @ui.Style = @ui.css("row w=Full gap=S1_5 align=ACenter")
+
+///|
+let pf_tags_line_gap : Double = 6.0
+
+///|
+let pf_tag_icon : Double = 12.0
+
+///|
+// kept across runs: a value (no field of it changes)
+let pf_tags_lead : @ui.TextStyle = @ui.text_style(size=Meta, leading=L6, color=Muted, wrap=false)
 
 ///|
 // kept across runs: a value (no field of it changes)

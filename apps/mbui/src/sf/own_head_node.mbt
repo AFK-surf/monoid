@@ -34,17 +34,11 @@ pub fn own_head_node(
   let narrow = look_node(parent) is Narrow
   let shown = fn() { lines().filter(fn(l) { l != "" }) }
   let line_look = fn() { if narrow { head_line_narrow } else { head_line } }
-  // what is under its name: the first line (narrow its tags, what it is), the others, how it stands
+  // what is under its name: the first line (what it is), the others, its tags, how it stands
   let below = fn(b : @view.View) {
-    b.show(fn() { shown().length() > 0 || (narrow && tags is Some(_)) || dot() != "" }, fn(r) {
+    b.show(fn() { shown().length() > 0 || dot() != "" }, fn(r) {
       style_node(r, fn() { head_line_row })
       r.show(fn() { dot() != "" }, fn(d) { state_dot_node(d, dot) })
-      if narrow {
-        match tags {
-          Some(f) => f(r)
-          None => ()
-        }
-      }
       r.show(fn() { shown().length() > 0 }, fn(w) {
         w.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
         words_node(w, fn() { shown().get(0).unwrap_or("") }, line_look) |> ignore
@@ -53,6 +47,10 @@ pub fn own_head_node(
     b.each(fn() { shown().mapi(fn(i, l) { (i, l) }).filter(fn(x) { x.0 > 0 }) }, fn(x) { x.0 }, fn(w, x) {
       words_node(w, fn() { x.get().1 }, line_look) |> ignore
     })
+    match tags {
+      Some(f) => f(b)
+      None => ()
+    }
     match state {
       Some(f) =>
         b.show(state_shown, fn(x) {
@@ -152,16 +150,6 @@ pub fn own_head_node(
           // (short of room, its name is cut short, what follows it kept)
           words_node(l, name, fn() { head_name_wide }).shrink(Is(1.0)) |> ignore
           l.show(busy, fn(s) { spinner_node(s, size=spinner_inline) |> ignore })
-          match tags {
-            Some(f) =>
-              l.box(fn(t) {
-                style_node(t, fn() { head_tags_wide })
-                t.row(Is(true)) |> ignore
-                f(t)
-              })
-              |> ignore
-            None => ()
-          }
           match rename {
             Some(f) => l.show(renames, fn(e) { icon_action_node(e, "edit", rename_label, f) |> ignore })
             None => ()

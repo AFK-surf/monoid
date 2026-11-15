@@ -340,8 +340,25 @@ fn profiles_side(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
               if trouble != "" {
                 @sf.list_row_line(c, fn() { c.text(trouble, style=nav_meta().then(trouble_ink(tone)).then(place_fill)) |> ignore })
               }
-              if credits {
-                @sf.list_row_line(c, fn() { c.text(text(quota, "creditsText"), style=nav_meta()) |> ignore })
+              let sub_line = if credits {
+                text(quota, "creditsText")
+              } else if usable && trouble == "" && !windows && text(e, "group") != "key" {
+                if quota is (None | Some(Null)) {
+                  @sf.t("web-main.quota.unchecked")
+                } else if text(quota, "detail") != "" {
+                  text(quota, "detail")
+                } else if text(quota, "state") == "unsupported" {
+                  @sf.t("android-settings.quota.none")
+                } else if text(quota, "state") != "ok" {
+                  @sf.t("web-main.quota.unknown")
+                } else {
+                  ""
+                }
+              } else {
+                ""
+              }
+              if sub_line != "" {
+                @sf.list_row_line(c, fn() { c.text(sub_line, style=nav_meta()) |> ignore })
               }
             },
             more~,

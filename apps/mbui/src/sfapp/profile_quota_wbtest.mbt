@@ -452,3 +452,123 @@ test "allowance layout is chosen per provider: a four-window vendor does not shr
   assert_true(row_in_line("ChatGPT 团队", "agy@example.com", ["5H", "W"]))
   assert_eq(t.squeeze_faults(), [])
 }
+
+///|
+test "profiles list and sidebar show non-window quota explanations and uninspected states" {
+  new_run()
+  let base = fixture("settings")
+  let raw_items : Array[Json] = [
+    {
+      "key": "ws1/st1/devin-1",
+      "group": "devin",
+      "groupTitle": "Devin",
+      "title": "devin@example.com",
+      "station": "ws1/st1",
+      "usable": true,
+      "look": false,
+      "state": Json::null(),
+      "where": "Willow 可用",
+      "members": [{ "station": "ws1/st1", "role": "own" }],
+      "profile": {
+        "id": "devin-1",
+        "name": "Devin 团队",
+        "runtime": "devin",
+        "access": { "kind": "subscription" },
+        "checkText": "可用",
+        "checkTone": "green",
+        "usesText": "Devin",
+        "kindText": "Devin",
+        "planText": "Team",
+        "quota": {
+          "state": "unsupported",
+          "windows": [],
+          "detail": "Devin 不向 station 提供套餐用量，请在 app.devin.ai 的 Usage 页查看",
+        },
+      },
+    },
+    {
+      "key": "ws1/st1/cursor-1",
+      "group": "cursor",
+      "groupTitle": "Cursor",
+      "title": "cursor@example.com",
+      "station": "ws1/st1",
+      "usable": true,
+      "look": false,
+      "state": Json::null(),
+      "where": "Willow 可用",
+      "members": [{ "station": "ws1/st1", "role": "own" }],
+      "profile": {
+        "id": "cursor-1",
+        "name": "Cursor Pro",
+        "runtime": "cursor",
+        "access": { "kind": "subscription" },
+        "checkText": "可用",
+        "checkTone": "green",
+        "usesText": "Cursor",
+        "kindText": "Cursor",
+        "planText": "Pro",
+        "quota": Json::null(),
+      },
+    },
+    {
+      "key": "ws1/st1/grok-1",
+      "group": "grok",
+      "groupTitle": "SuperGrok 订阅",
+      "title": "grok@example.com",
+      "station": "ws1/st1",
+      "usable": true,
+      "look": false,
+      "state": { "text": "尚未检查", "tone": "neutral" },
+      "where": "Willow 可用",
+      "members": [{ "station": "ws1/st1", "role": "own" }],
+      "profile": {
+        "id": "grok-1",
+        "name": "SuperGrok",
+        "runtime": "grok",
+        "access": { "kind": "subscription" },
+        "checkText": "未检查",
+        "checkTone": "neutral",
+        "usesText": "Grok Build",
+        "kindText": "SuperGrok 订阅",
+        "planText": "",
+        "quota": Json::null(),
+      },
+    },
+  ]
+  let shaped = @settings.profiles_rows(Some({
+    "items": Json::array(raw_items),
+    "attention": 0,
+    "wait": { "reading": false, "failing": [], "empty": false },
+  }))
+  let src : Source = {
+    ..base,
+    topic_read: fn(name, params) {
+      if name == "profiles" {
+        { value: shaped, error: None, version: 1 }
+      } else {
+        base.topic(name, params).get().snapshot()
+      }
+    },
+  }
+  // 1. Desktop sidebar (Place("profiles"))
+  let t_desk = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+  app.nav.replace(Place("profiles"))
+  t_desk.run_for(@ui.move_most_ms)
+  assert_true(t_desk.find("Devin 不向 station 提供套餐用量") is Some(_))
+  assert_true(t_desk.find("尚未查询额度") is Some(_))
+  assert_true(t_desk.find("尚未检查") is Some(_))
+
+  // 2. Settings profiles list (Setting(Profiles(""))) on phone
+  new_run()
+  let t_phone = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  app.nav.replace(Setting(Profiles("")))
+  t_phone.run_for(@ui.move_most_ms)
+  let runs = t_phone.text_runs()
+  let x_of = fn(prefix : String) -> Double {
+    runs.iter().find_first(fn(r) { r.text.has_prefix(prefix) }).unwrap().x0
+  }
+  let mark_x = x_of("Devin 团队") - 18.0 - 6.0
+  assert_eq(x_of("Devin 不向 station 提供套餐用量"), mark_x)
+  assert_eq(x_of("尚未查询额度"), mark_x)
+  assert_eq(x_of("尚未检查"), mark_x)
+}

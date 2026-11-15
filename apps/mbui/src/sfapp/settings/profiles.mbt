@@ -8,7 +8,7 @@
 /// Why an allowance could not be read, in the provider's words.
 fn quota_trouble(q : Json?) -> String {
   match text(q, "state") {
-    "blocked" | "unavailable" => text(q, "detail")
+    "blocked" | "unavailable" | "unsupported" => text(q, "detail")
     _ => ""
   }
 }
@@ -263,20 +263,48 @@ fn profile_list_blocks(c : @ui.Ctx, core : Core, list : Array[Json]) -> Array[()
                   chevron(c)
                 })
                 |> ignore
-                if flag(ev, "look") && text(state, "text") != "" {
-                  let ink = match text(state, "tone") {
-                    "red" => t.p.red
-                    "neutral" | "" => t.p.muted
-                    _ => 0xD9962BFFL
+                let quota = field(p, "quota")
+                let no_windows = !(text(quota, "state") == "ok" && items(quota, "windows").length() > 0)
+                let sub_line = if text(state, "text") != "" {
+                  text(state, "text")
+                } else if usable && no_windows && text(quota, "state") == "ok" && text(quota, "creditsText") != "" {
+                  text(quota, "creditsText")
+                } else if usable && no_windows && text(ev, "group") != "key" {
+                  if quota is (None | Some(Null)) {
+                    @sf.t("web-main.quota.unchecked")
+                  } else if text(quota, "detail") != "" {
+                    text(quota, "detail")
+                  } else if text(quota, "state") == "unsupported" {
+                    tr("android-settings.quota.none")
+                  } else if text(quota, "state") != "ok" {
+                    @sf.t("web-main.quota.unknown")
+                  } else {
+                    ""
                   }
-                  c.text(text(state, "text"), size=t.t.meta, color=ink, wrap=false, w=Fill(1.0), line=18.0) |> ignore
+                } else {
+                  ""
+                }
+                if sub_line != "" {
+                  let ink = if text(state, "text") == "" {
+                    t.p.muted
+                  } else {
+                    match text(state, "tone") {
+                      "red" => t.p.red
+                      "neutral" | "" => t.p.muted
+                      _ => 0xD9962BFFL
+                    }
+                  }
+                  c.box(style=@sf.full_width.then(mark_out()), fn() {
+                    c.text(sub_line, size=t.t.meta, color=ink, wrap=false, w=Fill(1.0), line=18.0, allow_ellipsis=true) |> ignore
+                  })
+                  |> ignore
                 }
                 // its allowance a line of its own, so the name keeps the row's width
-                if usable && text(field(p, "quota"), "state") == "ok" && items(field(p, "quota"), "windows").length() > 0 {
+                if usable && text(quota, "state") == "ok" && items(quota, "windows").length() > 0 {
                   // (in its row's corner, 12 in: the row's corner concentric round its own, @sf.fill_chip_corner)
                   // (each window in words, 每周剩余 78%: a row has the room, and a touch has no tip to say what W is)
                   c.box(style=quota_line.then(quota_line_out()), fn() {
-                    @sf.quota_chips(c, field(p, "quota"), worded=true, key="ws-profile/" + text(ev, "key"))
+                    @sf.quota_chips(c, quota, worded=true, key="ws-profile/" + text(ev, "key"))
                   })
                   |> ignore
                 }
@@ -397,9 +425,24 @@ fn quota_section(c : @ui.Ctx, core : Core, station : String, pv : Json?) -> Arra
   let refreshing = is_doing(core, ["profile.quota"], on)
   let trouble = quota_trouble(q)
   let windows = if text(q, "state") == "ok" { items(q, "windows") } else { [] }
+  let no_windows = windows.length() == 0 && !has(q, "creditsText") && !has(q, "resetCount")
   let blocks : Array[() -> Unit] = []
-  if trouble != "" {
+  if trouble != "" || no_windows {
     let blocked = text(q, "state") == "blocked"
+    let detail = if trouble != "" { trouble } else { opt_text(q, "detail").unwrap_or("") }
+    let head = if refreshing {
+      tr("android-settings.quota.checking")
+    } else if q is (None | Some(Null)) {
+      @sf.t("web-main.quota.unchecked")
+    } else if blocked {
+      tr("android-settings.quota.blocked")
+    } else if text(q, "state") == "unsupported" {
+      tr("android-settings.quota.none")
+    } else if text(q, "state") != "ok" {
+      tr("android-settings.quota.unavailable")
+    } else {
+      tr("android-settings.quota.none")
+    }
     blocks.push(fn() {
       list_card(c, fn() {
         list_row(c, fn() {
@@ -407,7 +450,7 @@ fn quota_section(c : @ui.Ctx, core : Core, station : String, pv : Json?) -> Arra
             c.box(dir=Row, gap=6.0, align=ACenter, fn() {
               presence_dot(c, if blocked { "error" } else { "offline" })
               c.text(
-                tr(if blocked { "android-settings.quota.blocked" } else { "android-settings.quota.unavailable" }),
+                head,
                 size=t.t.body,
                 color=t.p.text,
                 line=21.0,
@@ -415,16 +458,15 @@ fn quota_section(c : @ui.Ctx, core : Core, station : String, pv : Json?) -> Arra
               |> ignore
             })
             |> ignore
-            c.text(trouble, size=t.t.meta, color=t.p.muted, w=Fill(1.0), line=18.0) |> ignore
+            if detail != "" {
+              c.text(detail, size=t.t.meta, color=t.p.muted, w=Fill(1.0), line=18.0) |> ignore
+            }
           })
           |> ignore
         })
         |> ignore
       })
     })
-    return blocks
-  }
-  if windows.length() == 0 && !has(q, "creditsText") && !has(q, "resetCount") {
     return blocks
   }
   blocks.push(fn() {

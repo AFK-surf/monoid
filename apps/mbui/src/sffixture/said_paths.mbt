@@ -912,6 +912,7 @@ pub let said_paths : Map[String, Array[String]] = {
   "profiles": [
     "items.*.profile.name",
     "items.*.profile.planText",
+    "items.*.profile.quota.detail",
     "items.*.title",
     "items.*.state.text",
     "items.*.where",
