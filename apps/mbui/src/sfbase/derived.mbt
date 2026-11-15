@@ -291,11 +291,31 @@ pub fn[T] Derived::new_by(name : String, work : (Json, T?) -> T, same~ : (T, T) 
 
 ///|
 /// Topic `name` with `params` (Source.topic), and what `work` makes of its value: None while it has none. Its key
-/// written once (topic_key), for the topic and for what is kept of it.
+/// written once (topic_key), for the topic and for what is kept of it. What reads it follows the topic too (its
+/// version, its error): what reads only what `work` made reads Derived::value.
 pub fn[T] Derived::read(self : Derived[T], src : Source, params : Map[String, Json]) -> (T?, Topic) {
   let said = topic_key(self.name, params)
   let topic = src.topic_said(self.name, params, said).get().snapshot()
-  let value = self.kept.read(src, said, fn(was) {
+  (self.made(src, params, said), topic)
+}
+
+///|
+/// What `work` makes of topic `name` with `params`, None while it has none: what reads it follows what was made alone,
+/// told only as that comes out another value (`same`), never as the topic changes where `work` does not read. The
+/// topic is followed by what is kept (its computed reads it), held as long as that is read. A card or a panel opened
+/// as this is read waits for the topic as Source::topic says (@sf.OpenGate), as Derived::read does.
+pub fn[T] Derived::value(self : Derived[T], src : Source, params : Map[String, Json]) -> T? {
+  let said = topic_key(self.name, params)
+  if @sf.open_gate_collecting() {
+    src.topic_said(self.name, params, said).get() |> ignore
+  }
+  self.made(src, params, said)
+}
+
+///|
+/// What is kept of topic `said` from `src`: worked out as it changes, from what was made last.
+fn[T] Derived::made(self : Derived[T], src : Source, params : Map[String, Json], said : String) -> T? {
+  self.kept.read(src, said, fn(was) {
     match src.topic_said(self.name, params, said).get().value {
       Some(v) =>
         Some(
@@ -307,7 +327,6 @@ pub fn[T] Derived::read(self : Derived[T], src : Source, params : Map[String, Js
       None => None
     }
   }, same=self.same)
-  (value, topic)
 }
 
 ///|

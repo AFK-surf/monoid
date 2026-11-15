@@ -73,7 +73,7 @@ pub(all) struct DvStation {
 /// Folder `path` of `root` on `station`: its entries as the station said them (the core's `drive` topic), worked out
 /// once for each version of it; None while it has not said them.
 pub fn dv_entries(src : Source, station : String, root : String, path : String) -> Array[DvEntry]? {
-  dv_entries_read.read(src, drive_params(station, root, path)).0
+  dv_entries_read.value(src, drive_params(station, root, path))
 }
 
 ///|

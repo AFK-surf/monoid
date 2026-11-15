@@ -91,3 +91,43 @@ test "a Derived's own value tells nothing where work makes the same again, by it
   assert_eq(ran.val, 2)
   stop()
 }
+
+///|
+test "what reads a Derived's value alone, a watch over it, is not told as its topic changes where work does not read" {
+  kept_reset()
+  let _tester = @ui.Tester::new(fn(_) {  })
+  let value = Ref(({ "n": 1, "noise": 0 } : Json))
+  let changes = @signals.signal(0)
+  let src = same_source(value, changes)
+  let d : Derived[(Int, String)] = Derived::new("same", same_work)
+  let params : Map[String, Json] = { "k": "1" }
+  let w = @signals.watch(fn() {  })
+  assert_eq(w.read(fn() { d.value(src, params) }), Some((1, "n=1")))
+  // the topic changes in what `work` does not read: the watch not told
+  value.val = { "n": 1, "noise": 1 }
+  changes.set(1)
+  assert_false(w.is_stale())
+  // what `work` reads changes: told, and read anew it has it
+  value.val = { "n": 2, "noise": 1 }
+  changes.set(2)
+  assert_true(w.is_stale())
+  assert_eq(w.read(fn() { d.value(src, params) }), Some((2, "n=2")))
+  w.stop()
+}
+
+///|
+test "what reads Derived::read follows its topic as well: told as the topic changes, whatever work made" {
+  kept_reset()
+  let _tester = @ui.Tester::new(fn(_) {  })
+  let value = Ref(({ "n": 1, "noise": 0 } : Json))
+  let changes = @signals.signal(0)
+  let src = same_source(value, changes)
+  let d : Derived[(Int, String)] = Derived::new("same", same_work)
+  let params : Map[String, Json] = { "k": "1" }
+  let w = @signals.watch(fn() {  })
+  w.read(fn() { d.read(src, params).0 }) |> ignore
+  value.val = { "n": 1, "noise": 1 }
+  changes.set(1)
+  assert_true(w.is_stale())
+  w.stop()
+}
