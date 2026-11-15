@@ -268,6 +268,20 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
             gone~,
             covered~,
           )
+        // (one of nodes that goes in steps in the middle of the window: its steps pages of one dialog)
+        Panel({ nodes: Some({ steps: true, .. }), .. } as x) if p.from == Unanchored || x.form =>
+          steps_centred_node(
+            row,
+            open,
+            x,
+            fn() { done(fn() {  }) },
+            fn() { dismissed_now(serial) },
+            p,
+            shown~,
+            gone~,
+            dims~,
+            covered~,
+          )
         Panel(x) if p.from == Unanchored || x.form =>
           panel_centred_node(
             row,
@@ -434,6 +448,18 @@ pub fn presented_tree(page : (@ui.Ctx) -> Unit) -> (@view.View) -> Unit {
 /// panel_nodes); none outside a panel.
 pub fn panel_words_in_node(v : @view.View) -> @ui.Style {
   @ui.style(px=room(panel_words_at_node(v)))
+}
+
+///|
+/// How far apart a panel's body's parts stand in node `v` of it, where the body lays them out itself (one share of
+/// the window tall, its parts in a box of its own): as its presenter lays out a body's parts, a dialog's in the middle
+/// of the window 16 apart (dialog_body), a sheet's 10 (sheet_panel); none outside a panel.
+pub fn panel_parts_gap_node(v : @view.View) -> Double {
+  match v.lent(panel_in_lent) {
+    Some(p) if p.centred => @ui.Space::px(S4)
+    Some(_) => @ui.Space::px(S2_5)
+    None => 0.0
+  }
 }
 
 ///|

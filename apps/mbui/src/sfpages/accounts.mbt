@@ -2034,11 +2034,11 @@ fn profile_models_node(
     shown
   }
   // (one more named by hand over them, where it can be: under them it stood in the panel's corner)
-  // (what is named by hand and the models 16 apart, as a dialog's body's parts are; giving way, as tall as the panel
-  // leaves them, the models scrolling in that)
+  // (what is named by hand and the models as far apart as the panel's body's parts are, on its words' line; giving
+  // way, as tall as the panel leaves them, the models scrolling in that)
   v.box(fn(body) {
-    @sf.style_node(body, fn() { pf_models_body })
-    body.shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+    @sf.style_node(body, fn() { pf_models_body.then(@sf.panel_words_in_node(body)) })
+    body.gap(Is(@sf.panel_parts_gap_node(body))).shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
     body.show(at_once=true, fn() { flag(p(), "canAddModel") }, fn(a) {
       a.box(fn(b) {
         @sf.style_node(b, fn() { pf_models_add })
@@ -2468,9 +2468,9 @@ let pf_chip : @ui.Style = @ui.css("row px=S2_5 py=S1 gap=S1_5 align=ACenter radi
 let pf_models_most : Double = 1.0e6
 
 ///|
-/// What is named by hand over the models and the models, 16 apart (a dialog body's gap).
+/// What is named by hand over the models and the models (as far apart as the panel's body's parts: panel_parts_gap_node).
 // kept across runs: a value (no field of it changes)
-let pf_models_body : @ui.Style = @ui.css("w=Full gap=S4")
+let pf_models_body : @ui.Style = @ui.css("w=Full")
 
 ///|
 // kept across runs: a value (no field of it changes)

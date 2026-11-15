@@ -172,6 +172,8 @@ priv struct PanelNodes {
   foot : ((@view.View, () -> Unit) -> Unit)?
   /// a share of the window tall (`tall`): as tall as what it holds up to that share, not that share whatever it holds
   hugs : Bool
+  /// what it holds goes in steps in it, each made as nodes (panel_nodes' `steps`: panel_go_nodes, panel_back)
+  steps : Bool
 }
 
 ///|
@@ -649,6 +651,10 @@ pub fn panel(
 /// The window's tree draws it on every screen: on 小屏 a sheet from the window's foot (sheet_node), as the host draws an
 /// old-bodied panel there. Beside @sf.panel only while panels with old bodies are left (detlint's old-panel):
 /// as the last goes, the old body's path goes and this takes the name `panel`.
+/// `steps`: what it holds goes in steps in it (panel's `steps`, made as nodes): a step in by panel_go_nodes, as what it
+/// holds is pressed, slides in over the one before in the same dialog or sheet, back (its back key, Escape, the system's
+/// back) slides it off again, the one before as it was left (steps_centred_node; on 小屏 the sheet's pages, sheet_node).
+/// `back`: what back does on its first step where its steps follow a flow kept elsewhere (panel's `back`).
 pub fn panel_nodes(
   title : String,
   body : (@view.View, () -> Unit) -> Unit,
@@ -669,6 +675,8 @@ pub fn panel_nodes(
   offset? : Double = panel_offset,
   hugs? : Bool = false,
   match_panel? : Int = 0,
+  steps? : Bool = false,
+  back? : () -> Unit,
 ) -> Unit {
   present(
     Panel({
@@ -697,8 +705,8 @@ pub fn panel_nodes(
       offset,
       match_panel,
       steps: false,
-      on_back: None,
-      nodes: Some({ body, foot, hugs }),
+      on_back: back,
+      nodes: Some({ body, foot, hugs, steps }),
     }),
     from,
     gone~,
@@ -734,6 +742,43 @@ pub fn panel_go(
           nav.push({ n: p.steps_made, title, description, body, foot, left, count, on_back: back, live })
         }
         None => ()
+      }
+    None => ()
+  }
+}
+
+///|
+/// In a panel of nodes that goes in steps (panel_nodes' `steps`), as what it holds is pressed: a step in, in the same
+/// panel, titled `title` (`description` under it), what it holds `body` and what is at its foot `foot` made as nodes
+/// (each given what closes the panel), as tall as the panel's first step says (its `tall`, `hugs`): it slides in over
+/// the step it is in, back (its back key, Escape, the system's back) taking it off again, back to the step before as it
+/// was left; a press outside, the sheet dragged down, its close button close the panel, all its steps with it. `left`:
+/// what is let go of as it is left for good (gone back from, or the panel closed), once.
+pub fn panel_go_nodes(
+  title : String,
+  body : (@view.View, () -> Unit) -> Unit,
+  description? : String = "",
+  foot? : (@view.View, () -> Unit) -> Unit,
+  left? : () -> Unit = fn() {  },
+) -> Unit {
+  let steps_of = fn(q : Presented) {
+    match q.shows {
+      Panel({ nodes: Some({ steps: true, .. }), .. }) => true
+      _ => false
+    }
+  }
+  match presented_now.iter().filter(fn(q) { q.open && steps_of(q) }).last() {
+    Some(p) =>
+      match p.shows {
+        Panel(x) =>
+          match x.nodes {
+            Some(n) => {
+              let step : PanelOf = { ..x, title, description, live: None, nodes: Some({ body, foot, hugs: n.hugs, steps: false }) }
+              panel_page(p, step, Unanchored, left)
+            }
+            None => ()
+          }
+        _ => ()
       }
     None => ()
   }

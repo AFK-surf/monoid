@@ -89,3 +89,31 @@ test "machine sessions at 大屏 with a mouse: the folders' pick over the dialog
   }
   assert_eq(seen, steps.map(fn(s) { (s, (true, true), (true, false)) }))
 }
+
+///|
+test "machine sessions at 大屏: one looked at slides in within the same dialog, never a second one; back slides it off, the list scrolled as it was left" {
+  let t = machine_dialog()
+  let dialog = t.get(Dialog).id
+  // (the list scrolled a way down, where the folder's line stays)
+  let row = "确认沉星之序大地图解密知识锁"
+  let unscrolled = t.get(Button, label=row).rect
+  let (rx, ry, _, _) = t.rect_of("检查线程并操作应用内浏览器").unwrap()
+  t.move_to(rx, ry)
+  t.wheel(rx, ry, 120.0)
+  t.run_for(@ui.move_most_ms)
+  let at = t.get(Button, label=row).rect
+  assert_true(at.1 < unscrolled.1, msg="scrolled: \{Repr(at)} from \{Repr(unscrolled)}")
+  t.click(Button, label=row)
+  // (half way: one dialog, the look sliding in over the list)
+  t.run_for(@ui.move_most_ms / 2.0)
+  assert_eq(t.semantics().filter(fn(n) { n.role == Dialog }).length(), 1)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.get(Dialog).id, dialog, msg="the same dialog")
+  assert_true(t.find("继续此会话") is Some(_))
+  assert_true(t.query(Button, label=row) is None, msg="the list off to its side, not read out")
+  t.back()
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.get(Dialog).id, dialog, msg="the same dialog, back")
+  assert_true(t.find("继续此会话") is None)
+  assert_eq(t.get(Button, label=row).rect, at, msg="the list as it was left, scrolled")
+}

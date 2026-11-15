@@ -512,7 +512,9 @@ pub fn open_machine_sessions(core : Core, station : String, name : String) -> Un
     from=Unanchored,
     wide=true,
     tall=0.75,
-    fn(v, close) {
+    // (one looked at a step of the same panel: panel_go_nodes)
+    steps=true,
+    fn(v, _) {
       // the filters, in view over the list
       v.box(fn(f) {
         @sf.style_node(f, fn() { @sf.panel_words_in_node(f).then(machine_filters) })
@@ -622,10 +624,7 @@ pub fn open_machine_sessions(core : Core, station : String, name : String) -> Un
                   // (the look a step further in, in the same dialog)
                   press=fn() {
                     match @signals.untracked(sv) {
-                      Some(s) => {
-                        close()
-                        look_at_machine_session(core, station, s)
-                      }
+                      Some(s) => look_at_machine_session(core, station, s)
                       None => ()
                     }
                   },
@@ -707,8 +706,8 @@ let machine_when : @ui.TextStyle = @ui.text_style(size=Caption, color=Muted, wra
 let machine_own : String = "\u{0}own"
 
 ///|
-/// One of them looked at before going on with it (lookAtMachineSession), a step further in from their list (the panel
-/// it closes for: back goes back to it as it was left): what was said in it, the latest at the bottom, the list
+/// One of them looked at before going on with it (lookAtMachineSession), a step of their list's panel (panel_go_nodes:
+/// sliding in over the list in the same dialog or sheet, back sliding it off, the list as it was left): what was said in it, the latest at the bottom, the list
 /// standing at its end as it comes (`machineSessions.read`); 继续 makes the chat that goes on with it
 /// (`machineSessions.continue`) and opens it. Where it ran and how long ago under its title.
 fn look_at_machine_session(core : Core, station : String, s : Json) -> Unit {
@@ -729,12 +728,9 @@ fn look_at_machine_session(core : Core, station : String, s : Json) -> Unit {
     "" => runtime_label(runtime)
     m => m
   }
-  @sf.panel_nodes(
+  @sf.panel_go_nodes(
     first_text(sv, ["title", "first"], ""),
     description=text(sv, "meta"),
-    from=Unanchored,
-    wide=true,
-    tall=0.75,
     fn(v, close) {
       v.box(fn(main) {
         @sf.style_node(main, fn() { @sf.panel_words_in_node(main).then(machine_said_box) })
@@ -763,11 +759,9 @@ fn look_at_machine_session(core : Core, station : String, s : Json) -> Unit {
                 None => []
               }
             }
-            let place : @view.ListPlace[Int] = @view.ListPlace::new()
-            @sf.panel_list_node(p, blocks, fn(b, i) { machine_said_node(b, said, i, runtime, model) }, est=machine_said_est, fills=true, place~)
+            // (standing at its end, the latest, as it comes and as its words are measured: stick_end)
+            @sf.panel_list_node(p, blocks, fn(b, i) { machine_said_node(b, said, i, runtime, model) }, est=machine_said_est, fills=true, stick_end=true)
             |> ignore
-            // (standing at its end, the latest, as it comes)
-            place.to_end(glide=false)
           }
         })
       })

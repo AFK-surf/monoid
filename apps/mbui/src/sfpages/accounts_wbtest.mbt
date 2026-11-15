@@ -465,10 +465,7 @@ test "a profile's models, a narrow page with a mouse: how many in a row; all of 
   t.frame()
   t.frame()
   assert_true(t.query(Button, label="移除 MY-MODEL") is Some(_), msg="the model named, among the rest")
-  // its × takes it off again (the sheet grown with it at rest, scrolled to in the list: the last of its rows)
-  t.run_for(@ui.move_most_ms)
-  let (lx, ly, _, _) = t.get(Checkbox, label="喜欢 GPT-6").rect
-  t.wheel(lx, ly, 2000.0)
+  // its × takes it off again (the sheet grown to hold it, on its way from as tall as it was: at rest)
   t.run_for(@ui.move_most_ms)
   t.click(Button, label="移除 MY-MODEL")
   // (its row closing its room on its way)
