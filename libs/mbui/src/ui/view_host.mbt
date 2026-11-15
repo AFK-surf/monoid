@@ -1932,11 +1932,13 @@ fn Ctx::view_drawn(
       (!tree_streams.is_empty() && tree_streams.contains(c.id))
     )
   let block = match view_blocks.get(c.id) {
-    // (made as glass was drawn then: solid or not; a picture for the pixels it is drawn at now; its edge where it was;
-    // on Windows, its glyphs' subpixel keys made at this horizontal origin and scale)
+    // (made as glass was drawn then: solid or not; a picture or glyphs for the pixels it is drawn at now; its edge where
+    // it was; on Windows, or with a halo or per-glyph look, its glyphs made at this horizontal pixel phase)
     Some(b) if (c.glass is None || b.solid == glass_paint.solid) &&
       (c.picture is None || b.scale == self.scale) &&
-      (h_platform() != 3 || b.glyphs.is_empty() || (b.scale == self.scale && b.ux == ux)) &&
+      (b.glyphs.is_empty() ||
+        (b.scale == self.scale &&
+          ((h_platform() != 3 && c.halo.0 <= 0.0 && tree.glyphs_of(c.id) is None) || ride_whole(ux - b.ux, self.scale)))) &&
       b.edge_after == edge_after => b
     _ => {
       // (made where it is its own, cut by nothing it is drawn in: what cuts it is the clip it is composed in, as each
@@ -2596,7 +2598,16 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
     let halo_at = self.halo_start(c.halo.0, c.halo.1)
     let from = self.ninst - start
     // (each line in the middle of its width where it says so, as an old view's centred words: Ctx::text's `center`)
-    self.emit_text(tl, 0.0, 0.0, c.ink, 1.0, unplaced=glyphs, center_in=if c.words_center { c.w } else { -1.0 })
+    self.emit_text(
+      tl,
+      0.0,
+      0.0,
+      c.ink,
+      1.0,
+      unplaced=glyphs,
+      center_in=if c.words_center { c.w } else { -1.0 },
+      font=(size, k.weight, style, spacing),
+    )
     self.halo_fill(halo_at, c.halo.0)
     // (cut short to less than its ellipsis: no further than its box, as an old view's line is in the box that clips it;
     // or, said so, its ellipsis drawn past it as an old view's words cut short (`w=Cut`) are: View::ellipsis_past)

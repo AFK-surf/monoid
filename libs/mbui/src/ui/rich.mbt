@@ -1517,7 +1517,7 @@ fn Ctx::emit_rich_glyphs(
           for path in d.paths { self.emit_shape(x, y, path, true, 0.0, false, color, alpha) }
           for word in d.words {
             let tl = layout_text(word.0, word.3, 400, 100000.0, false, style=@hostapi.style_serif)
-            self.emit_text(tl, x + word.1, y + word.2 - tl.ascent, color, alpha, font=(word.3, 400, @hostapi.style_serif, 0.0))
+            self.emit_text(tl, x + word.1, y + word.2 - tl.ascent, color, alpha, font=(word.3, 400, @hostapi.style_serif, 0.0), unplaced?)
           }
         }
         None => ()

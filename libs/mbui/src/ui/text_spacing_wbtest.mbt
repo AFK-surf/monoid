@@ -244,3 +244,103 @@ test "windows glyph subpixel phase: ViewBlock updates when ancestor ux shifts an
   assert_true(initial.1 != fresh.1)
   assert_eq(shifted, fresh)
 }
+
+///|
+test "view_made glyph_x uses glyph_origin_x for words_halo, glyphs_by, inline drawing words, and glyphs_ahead skips subpixel-drawn keys" {
+  // 1. View::words_halo at fractional ux (10.5) aligns halo quad with first glyph and updates when ux shifts by 0.5
+  let off = @signals.signal(10.5, same=fn(a, b) { a == b })
+  let t = Tester::new(fn(_c) {  }, w=400.0, h=200.0, platform=3, scale=1.0)
+  set_view_app(fn(root) {
+    root.box(fn(p) {
+      p.width(Is(Some(200.0))).height(Is(Some(60.0))).offset(By(fn() { (off.get(), 10.0) })) |> ignore
+      p.box(fn(b) {
+        b
+        .width(Is(Some(200.0)))
+        .height(Is(Some(24.0)))
+        .words(Is("Halo text"), look={ ..@view.words_plain, size: 13.0, line: 18.0, wrap: false })
+        .words_halo(Is((4.0, 0xFF0000FFL)))
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  let gs0 = t.drawn_instances().filter(fn(i) { i[5] == 1.0 })
+  assert_true(gs0.length() > 2)
+  // halo quad is exactly 3 * blur (12 px) to the left of the first glyph (which is on a whole pixel)
+  assert_eq(gs0[1][0] - gs0[0][0], 12.0)
+  assert_eq(gs0[0][0] - gs0[0][0].round(), 0.0)
+  off.set(10.0)
+  t.draw()
+  let gs1 = t.drawn_instances().filter(fn(i) { i[5] == 1.0 })
+  assert_eq(gs1[1][0] - gs1[0][0], 12.0)
+  assert_eq(gs1[0][0] - gs1[0][0].round(), 0.0)
+
+  // 2. View::glyphs_by with sx != 1.0 at fractional ux (10.5) matches Ctx::glyphs_by at 10.5
+  let look_fn = fn(at : GlyphAt) -> GlyphLook {
+    { alpha: 1.0, dx: 0.0, dy: 0.0, scale: 1.0, sx: if at.index % 2 == 0 { 1.0 } else { 0.5 } }
+  }
+  let t_old = Tester::new(
+    fn(c) {
+      c.row(w=Px(300.0), h=Px(100.0), fn() {
+        c.box(w=Px(10.5), h=Px(10.0), fn() {  }) |> ignore
+        let col = c.column(w=Px(200.0), align=AStart, fn() { c.text("Glyphs scale", size=15.0, line=22.0) |> ignore })
+        c.glyphs_by(col, look_fn)
+      })
+      |> ignore
+    },
+    w=400.0,
+    h=200.0,
+  )
+  t_old.check_looks(false)
+  t_old.draw()
+  let old_xs = t_old.drawn_glyphs().map(fn(g) { (g.0 * 1000.0).round() })
+
+  let t_new = Tester::new(fn(_c) {  }, w=400.0, h=200.0)
+  t_new.check_looks(false)
+  set_view_app(fn(root) {
+    root.box(fn(p) {
+      p.width(Is(Some(200.0))).height(Is(Some(60.0))).offset(Is((10.5, 0.0))) |> ignore
+      p.box(fn(v) {
+        v.words(Is("Glyphs scale")) |> ignore
+        v.glyphs_by(Is(0), fn(_, at) { look_fn(at) }) |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  t_new.draw()
+  let new_xs = t_new.drawn_glyphs().map(fn(g) { (g.0 * 1000.0).round() })
+  assert_eq(new_xs, old_xs)
+
+  // 3. InlineDrawing words in View::words_runs at fractional (10.5, 10.5) snap onto whole pixels via unplaced
+  let drawing : InlineDrawing = { width: 2.0, height: 1.2, baseline: 0.9, paths: [], words: [("sin", 0.2, 0.9, 1.0)] }
+  let t_math = Tester::new(fn(_c) {  }, w=400.0, h=200.0, platform=3, scale=1.5)
+  set_view_app(fn(root) {
+    root.box(fn(p) {
+      p.width(Is(Some(200.0))).height(Is(Some(60.0))).offset(Is((10.25, 10.25))) |> ignore
+      p.box(fn(v) {
+        v.words_runs(Is([span("sin", drawing=Some(drawing))])) |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  t_math.draw()
+  let math_gs = t_math.drawn_glyphs()
+  assert_eq(math_gs.length(), 3)
+  for g in math_gs {
+    let px = g.0 * 1.5
+    let py = g.1 * 1.5
+    assert_true((px - px.round()).abs() < 1.0e-6, msg="px=\{px}")
+    assert_true((py - py.round()).abs() < 1.0e-6, msg="py=\{py}")
+  }
+
+  // 4. glyph_drawn_any_sub recognizes base keys already drawn at subpixel phases 1..4 on Windows
+  for k, _ in text_cache.glyphs {
+    if (k >> 26) != 0 {
+      assert_true(glyph_drawn_any_sub(k & 0x03FFFFFF))
+    }
+  }
+}

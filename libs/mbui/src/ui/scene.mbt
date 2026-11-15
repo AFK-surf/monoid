@@ -741,9 +741,9 @@ fn on_glyph_col(x : Double, ox : Double, sc : Double) -> Double {
 
 ///|
 /// Where a glyph's picture goes across, `x` as painted and its own offset `ox`: on the pixels where it is laid out
-/// (glyphs_carried).
+/// (glyph_origin_x, glyphs_carried).
 fn glyph_x(x : Double, ox : Double, sc : Double) -> Double {
-  let m = glyphs_carried[0]
+  let m = glyphs_carried[0] - glyph_origin_x.val
   on_glyph_col(x - m, ox, sc) + m
 }
 

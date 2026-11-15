@@ -805,7 +805,7 @@ fn shape(text : String, size : Double, weight : Int, style? : Int = 0, spacing? 
       text_cache.shaped = text_cache.shaped + 1
       // its glyphs not drawn yet: drawn ahead unless this frame draws them (glyphs_ahead)
       for k in keys {
-        if k >= 0 && text_cache.fresh.length() < glyphs_ahead_most && !text_cache.glyphs.contains(k) {
+        if k >= 0 && text_cache.fresh.length() < glyphs_ahead_most && !glyph_drawn_any_sub(k) {
           text_cache.fresh.push(k)
         }
       }
@@ -969,6 +969,21 @@ fn bidi_offset_at(
 let glyphs_ahead_most : Int = 4096
 
 ///|
+/// Whether base glyph `k` has already been placed in the atlas at any horizontal subpixel phase.
+fn glyph_drawn_any_sub(k : Int) -> Bool {
+  text_cache.glyphs.contains(k) ||
+  (
+    h_platform() == 3 &&
+    (
+      text_cache.glyphs.contains(k | (1 << 26)) ||
+      text_cache.glyphs.contains(k | (2 << 26)) ||
+      text_cache.glyphs.contains(k | (3 << 26)) ||
+      text_cache.glyphs.contains(k | (4 << 26))
+    )
+  )
+}
+
+///|
 /// The glyphs of what the frame shaped and did not draw (a page pushed, still off the screen; the lines below what a
 /// list shows), handed to the host as the frame's painting is over, to draw them ahead, off the frames' thread: there
 /// when they come into view, a frame or more later, not all drawn in the frame they first show in. What is drawn is the
@@ -981,7 +996,7 @@ fn glyphs_ahead() -> Unit {
   let keys = FixedArray::make(fresh.length(), 0)
   let mut n = 0
   for k in fresh {
-    if !text_cache.glyphs.contains(k) {
+    if !glyph_drawn_any_sub(k) {
       keys[n] = k
       n = n + 1
     }
