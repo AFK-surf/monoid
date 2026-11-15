@@ -172,8 +172,13 @@ export class Scheduler {
         const x = plans.get(s.ws)?.find(s.waitsFor);
         if (x !== undefined && (x.state === "here" || x.state === "failed" || m?.usableHere?.(x) === true)) going.push(s.item);
       }
+      // (what waits for an item a move back under way brings here is that turn's to let go, as the item arrives:
+      // its outcome says it went on, `resumed`)
+      const ours = going.flatMap((g) => this.#stopped.get(g) ?? []).filter((s) => !this.#bringing.has(named(s.waitsFor)));
+      going.length = 0;
+      going.push(...ours.map((s) => s.item));
       if (going.length > 0) {
-        await this.#letGo(going.flatMap((g) => this.#stopped.get(g) ?? []), true);
+        await this.#letGo(ours, true);
         this.#d.changed?.();
       }
       return going;
@@ -186,6 +191,8 @@ export class Scheduler {
     }
   }
   #settling: Promise<Need[]> | null = null;
+  /// What the move back under way brings here (each item's name): what waits for one of them it lets go itself.
+  #bringing = new Set<string>();
 
   /// What waits for what here.
   stopped(): { item: Need; waitsFor: Need }[] {
@@ -326,6 +333,7 @@ export class Scheduler {
       this.#asked--;
       this.#stopping = null;
       this.#current = null;
+      this.#bringing = new Set();
       this.#held = null;
       this.#d.changed?.();
     });
@@ -627,6 +635,7 @@ export class Scheduler {
         for (const x of index.needing(queue[i]!)) if (x.state === "there" && !backing.has(named(x))) (backing.add(named(x)), queue.push(x));
       }
     }
+    this.#bringing = backing;
     const stillThere = new Set(all.filter((x) => x.state === "there").map(named));
     // (an item that fails stops only what needs it: every other item of the turn goes on)
     const failedThere = new Map<string, string>();
