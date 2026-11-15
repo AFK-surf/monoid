@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, wri
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { Admin } from "../src/api/admin.ts";
 import { Events } from "../src/api/events.ts";
 import type { Viewer } from "../src/mesh/credential.ts";
@@ -1498,6 +1498,14 @@ test("Windows' desktop, for real: stillfail-screen gives a picture of the displa
 /// and token; `status` as `status` is, `permissions.show` noted (its window then up), `quit` noted, `screen.view`
 /// (and `simulator.view`) answering with made-up frames and noting the input. `restartOnce`: its next view asks to start again (a grant taken
 /// since it started), and it is back on its socket a moment later, as the app started again is.
+after(() => {
+  for (const fake of FakeHelperApp.made) {
+    try {
+      fake.close();
+    } catch {}
+  }
+});
+
 class FakeHelperApp {
   launches = 0;
   quits = 0;
@@ -1518,7 +1526,12 @@ class FakeHelperApp {
   watching = 0;
   constructor(status: any) {
     this.status = status;
+    FakeHelperApp.made.add(this);
   }
+  /// Every one made, closed as the file ends: one a test left open (it failed before its `close`) would keep its socket
+  /// and connections, and the test's process with them, until CI's limit, saying nothing of the test that failed
+  /// (check-station (0) cancelled at 5 minutes on #6574, helper.sock left listening with 5 pipes, as on #6028).
+  static readonly made = new Set<FakeHelperApp>();
   #closed = false;
   launch = async (_app: string, env: Record<string, string>) => {
     // Closed with the test: a station still watching it must not have it listen again (the test would never end).
