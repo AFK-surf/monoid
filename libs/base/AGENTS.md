@@ -9,7 +9,10 @@ of its workspace (`moon.work`); `effect` stays in mbui.
 
 - `src/shell`: the binding of the Rust shell (`client/shell`, through its C interface) for a program on `@effect`:
   `shell.mbt` is the surface, shared across `shell_native.mbt` (with `shell.c`), `shell_js.mbt` (with `client/iroh-wasm`
-  and browser APIs), and `Shell::stood_in` for deterministic tests.
+  and browser APIs), and `Shell::stood_in` for deterministic tests. Natively a process whose host started the Rust
+  shell already shares it (`bsh_attach`, `Shell::attached`): this side's call ids start past 2^40, and the host hands
+  each answer of such an id to `bsh_deliver`. On js iroh is loaded from an address (`Shell::start`) or given, the
+  module or what loads it (`Shell::start_with`, `IrohJs`); a worker has no localStorage, so `storage.*` fails there.
 - `src/wire`: pure stream framing and event-stream parsing (`lines`, request/reply heads, SSE text) with no transport.
 - `src/mesh`: the device side of the mesh on top of `shell` and `wire` (endpoints, scoped peer links, hello/pings/renewal,
   requests/streams/duplex, health racing in `health.mbt`, wake/rebind in `wake.mbt`, what the endpoint is bound
@@ -42,10 +45,13 @@ of its workspace (`moon.work`); `effect` stays in mbui.
   deterministic clock. A native test that reaches the shell's C (`Shell::start`, the package's `random` and `now`)
   fails to link, naming `sf_shell_start`: it is not skipped. What depends on which of two fibers comes first in one
   turn is set up without running and then run at once (its `start`, `answered`, `run`): a test that runs to rest
-  after every step never sees a fiber cut before its first.
-- No Rust shell or real network is linked in unit tests (`shell.c` is compiled as a stub only, and `extern "js"` iroh
-  glue in `shell_js.mbt` runs only in real browser/e2e suites outside this repo). When changing `src/shell` or what
-  `src/mesh` asks of a shell, state what external suite or environment verified it.
+  after every step never sees a fiber cut before its first. `src/mesh/sim_wbtest.mbt` runs two meshes end to end, a
+  peer's taking connections and serving them, over a network of the test's (relays and addresses, each with its
+  delay, speed and outages), whose head says what it models.
+- No Rust shell or real network is linked in unit tests (`shell.c` is compiled as a stub only, and the `extern "js"`
+  iroh glue in `shell_js.mbt` runs in Node against a fake module alone, `shell_js_wbtest.mbt`: its async tests run at
+  once in one process, and a page has one shell, so they are one test). When changing `src/shell` or what `src/mesh`
+  asks of a shell, state what external suite or environment verified it.
 
 ## What a program on it gets with it
 
@@ -53,7 +59,9 @@ of its workspace (`moon.work`); `effect` stays in mbui.
   block of an event stream (`Sse::new`, `max_event`), 16 MiB each unless said, past which each fails (`too_long`,
   `TooLong`). What is longer is read as it comes (`Reply::take`, a duplex's reply, `Inbound::take`), keeping none: a
   reader that stops asking holds its peer back by the transport's own window, and a body told of (`Link::request`'s
-  `wrote`) has one step of 64 KiB waiting at most.
+  `wrote`) has one step of 64 KiB waiting at most. A reply not yet read is handed to the shell to read itself
+  (`Reply::tap`, `istream.tap`) with what was read past its head; where the shell does not take it, that is kept
+  and the reply read as ever.
 - A connection a peer dials to the endpoint (`Mesh::incoming`, only where `Binding.takes` names a protocol) is never a
   link: no credential, ping or `links` entry knows it. The mesh keeps one the shell brought that no asker took yet;
   its first line is held to `first_ms` (30 s) and 64 KiB (`Incoming::first`). How long a taken one stays and how
@@ -91,9 +99,9 @@ left is another part's:
 
 - Natively the Rust shell keeps one entry for every connection that ended and every endpoint closed, for its
   process's life (`client/shell/src/lib.rs`: `Handle::Gone`, `Handle::Unbound`), and has no op that lets one go. The
-  mesh says when it is done with a connection (`conn.close` with `forget`, `Mesh::open`), which a page's shell goes
-  by; the Rust shell reads no such field. Letting them go there is that shell's to do, for the device base in
-  TypeScript too, which holds them the same. An endpoint bound anew (`Mesh::rebind`) leaves one such entry each
+  mesh says when it is done with a connection or an endpoint (`forget` on every last `conn.close` and `iroh.close`),
+  which a page's shell goes by; the Rust shell reads no such field. Letting them go there is that shell's to do, for
+  the device base in TypeScript too, which holds them the same. An endpoint bound anew (`Mesh::rebind`) leaves one such entry each
   time, and that is no rare time: every dial that runs out of time unconnected leaves the endpoint taken for
   stuck, so a peer that does not answer, asked for again and again, binds it anew at each try (5 s apart at the
   soonest), as in the device base in TypeScript. The same each time its relays are told again (`Mesh::retune`), and
