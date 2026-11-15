@@ -20,6 +20,7 @@ let op_told : Int = 15
 ///|
 /// How a run of `op` ended: its exit code (-1: it could not be started, or there is no `op` here), its standard output
 /// and its error output.
+#derive(Eq)
 pub(all) struct OpDone {
   code : Int
   out : String

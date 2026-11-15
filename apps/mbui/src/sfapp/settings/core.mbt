@@ -12,6 +12,13 @@ pub(all) struct Read {
 }
 
 ///|
+/// The same topic as it stood: what derive(Eq) says, its version looked at first and its value last, the one JSON or
+/// equal (a value set again is mostly the one it was).
+pub impl Eq for Read with equal(a, b) {
+  a.version == b.version && a.error == b.error && @signals.same_value(a.value, b.value)
+}
+
+///|
 /// What the pages need of the app around them.
 pub(all) struct Core {
   /// the topic `name` with its params (the core's `subscribe`)

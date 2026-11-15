@@ -15,6 +15,7 @@
 /// for; one to keep a secret, what it is (`save_kind`: login, token, ssh_key, file), its account (a file: its name),
 /// and whether the person types it in (`typed`; a file: picks it); another station of the workspace its commands run
 /// on, by name (empty: the chat's).
+#derive(Eq)
 pub(all) struct Asked {
   name : String
   reason : String

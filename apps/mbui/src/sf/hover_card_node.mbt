@@ -100,13 +100,13 @@ pub fn hover_card_node(
   let owner = owner.unwrap_or(anchor)
   // (a row of it opening a menu beside it (submenu_row_node): its menu open, the card kept open as by `held`, the pointer
   // gone on to the menu, outside the card; as kit's hover_card was held by what opened from it)
-  let row_open : @signals.Signal[@view.View?] = @signals.signal(None, same=same_view)
+  let row_open : @signals.Signal[@view.View?] = @signals.signal_by(None, same=same_view)
   let held = fn() { held() || row_open.get() is Some(_) }
   let open : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
   // (opened by a finger's hold: stays till a press outside, Escape, or its anchor takes no input)
   let by_hand = Ref(false)
   // (the card's panel while it is made: what the pointer may be on)
-  let card : @signals.Signal[@view.View?] = @signals.signal(None, same=fn(a, b) {
+  let card : @signals.Signal[@view.View?] = @signals.signal_by(None, same=fn(a, b) {
     match (a, b) {
       (None, None) => true
       (Some(x), Some(y)) => x.id() == y.id()

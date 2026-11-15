@@ -408,11 +408,17 @@ fn init {
 /// An effect made as the frame's watch reads (a build, an after_build, a Ctx::tell: frame_body under frame_watch_of's
 /// read) is that watch's, let go as it reads the next frame, whatever owner is set: a fault (@signals.effect_in_watch).
 /// (What is handed on as the frame begins, the messages left for it and the window's runtime's timers and fibers, runs
-/// outside that reading: take_messages, fx_frame_start.)
+/// outside that reading: take_messages, fx_frame_start.) So is one made as a computed's getter runs
+/// (@signals.effect_in_computed).
 fn init {
   @signals.effect_in_watch.val = Some(fn(loc) {
     @view.fault(
       "an effect made as a frame is read (a build, an after_build, a Ctx::tell) is let go as the next frame is read: make it in a handler, or in @signals.untracked with its owner set (@signals.set_owner); made at \{loc}",
+    )
+  })
+  @signals.effect_in_computed.val = Some(fn(loc) {
+    @view.fault(
+      "an effect made as a computed's getter runs is made again each time it runs and stopped by nothing that reads it: a getter only works out its value; follow what changes where the value is read (a watch, View::reacts, a binding), or make the effect where its owner is made; made at \{loc}",
     )
   })
 }

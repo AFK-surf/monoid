@@ -1130,7 +1130,7 @@ priv struct ArchivedHere {
 /// The chat archived last from a row, its 撤销 offered where its row was till that is pressed, its time is out
 /// (toast_action_ms: chats_lists_node) or another is archived so (one at a time).
 // kept across runs: put back by sidebar_reset
-let archived_here : @signals.Signal[ArchivedHere?] = @signals.signal(None, same=fn(a, b) {
+let archived_here : @signals.Signal[ArchivedHere?] = @signals.signal_by(None, same=fn(a, b) {
   match (a, b) {
     (Some(x), Some(y)) => x.n == y.n && x.undone == y.undone
     (None, None) => true

@@ -267,7 +267,7 @@ priv struct ChatsRead {
 /// The chats' list as the core's `chats` topic gives it: its rows read again only as they changed (one chat said
 /// something: its row read).
 // kept across runs: what it keeps is let go of by a run anew and by reset (derived.mbt)
-let chats_read : Derived[ChatsRead] = Derived::new("chats", fn(v, was) {
+let chats_read : Derived[ChatsRead] = Derived::new_ref("chats", fn(v, was) {
   let jsons : Array[Json] = []
   for d in items(Some(v), "days") {
     for j in items(Some(d), "items") {

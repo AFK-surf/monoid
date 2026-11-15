@@ -867,7 +867,8 @@ pub(all) enum Stepping {
 }
 
 ///|
-pub let viewer : @signals.Signal[Viewer?] = @signals.signal(None)
+// (by the one viewer: it holds signals of its own and what is set on it as its file comes)
+pub let viewer : @signals.Signal[Viewer?] = @signals.signal_ref(None)
 
 ///|
 /// Whether this viewer is still the one open and not closing (what it said in the system's bars still its own).
@@ -881,7 +882,8 @@ pub fn Viewer::up_still(self : Viewer) -> Bool {
 ///|
 /// The viewer closed and still drawn going (its fade or its flight back), no longer the one open: closing takes it
 /// out of `viewer` at once, and what is under it is the page's again.
-pub let pv_leaving : @signals.Signal[Viewer?] = @signals.signal(None)
+// (by the one viewer, as `viewer`)
+pub let pv_leaving : @signals.Signal[Viewer?] = @signals.signal_ref(None)
 
 ///|
 /// When the preview's way in or out is over (the frames' clock): the latest end told its fade and its flight, the one
@@ -3595,7 +3597,7 @@ pub fn video_still(c : @ui.Ctx, src : Source, station : String, owner : String, 
 pub fn video_still_node(v : @view.View, src : Source, station : String, owner : String, a : Attachment, thumb : String) -> () -> String {
   let known = fn() { video_still_known(src, station, owner, a, thumb, told=true) }
   // (its first frame's, asked as the station is known to have made none: then, once)
-  let first : @signals.Signal[(() -> String)?] = @signals.signal(None, same=fn(x, y) { physical_equal(x, y) })
+  let first : @signals.Signal[(() -> String)?] = @signals.signal_ref(None)
   v.reacts(fn() { known() == "!" }, fn(none) {
     if none && first.untracked() is None {
       first.set(Some(first_frame_node(v, src, station, owner, a, thumb)))

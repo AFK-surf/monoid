@@ -43,7 +43,7 @@ fn waits_quietly(t : Tester) -> Unit raise {
 
 ///|
 test "a native call's answer: what reads it in the tree told at the moment the host's event says it came, at any rate" {
-  let call : @signals.Signal[NativeCall?] = @signals.signal(None)
+  let call : @signals.Signal[NativeCall?] = @signals.signal_ref(None)
   let told : Array[(String, Double)] = []
   let t = Tester::new(fn(_c) {  })
   set_view_app(fn(root) {
@@ -89,7 +89,7 @@ test "a native call's answer: what reads it in the tree told at the moment the h
 
 ///|
 test "a pick's answer: what reads it in the tree told at the moment the host's event says it came, at any rate" {
-  let asked : @signals.Signal[Pick?] = @signals.signal(None)
+  let asked : @signals.Signal[Pick?] = @signals.signal_ref(None)
   let told : Array[(Int, Double)] = []
   let t = Tester::new(fn(_c) {  })
   set_view_app(fn(root) {
@@ -207,7 +207,7 @@ fn native_read_by(call : @signals.Signal[NativeCall?], told : Array[(String, Dou
 
 ///|
 test "the test's own answer to a native call told at the moment it gives it, at any rate (Tester::answer_native, refuse_native)" {
-  let call : @signals.Signal[NativeCall?] = @signals.signal(None)
+  let call : @signals.Signal[NativeCall?] = @signals.signal_ref(None)
   let told : Array[(String, Double)] = []
   let t = Tester::new(fn(_c) {  })
   native_read_by(call, told)
@@ -234,7 +234,7 @@ test "the test's own answer to a native call told at the moment it gives it, at 
 
 ///|
 test "a native call the test answers as it is asked told at the moment it is asked, at any rate (Tester::native_answers)" {
-  let call : @signals.Signal[NativeCall?] = @signals.signal(None)
+  let call : @signals.Signal[NativeCall?] = @signals.signal_ref(None)
   let told : Array[(String, Double)] = []
   let t = Tester::new(fn(_c) {  })
   t.native_answers("adb.phone", fn(_) { { "wireless": false } })
@@ -251,7 +251,7 @@ test "a native call the test answers as it is asked told at the moment it is ask
 
 ///|
 test "what the test's pickers give told at the moment of the ask, or of the answer it says, at any rate (Tester::picks, pick_answer)" {
-  let asked : @signals.Signal[Pick?] = @signals.signal(None)
+  let asked : @signals.Signal[Pick?] = @signals.signal_ref(None)
   let told : Array[(Int, Double)] = []
   let t = Tester::new(fn(_c) {  })
   set_view_app(fn(root) {

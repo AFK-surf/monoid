@@ -13,7 +13,7 @@ fn side_by_side(card : @view.View, make : (@view.View) -> Unit) -> Unit {
 
 ///|
 /// A story's state: a part's own state kept with it, from its first making.
-fn[T] kept(v : T) -> @signals.Signal[T] {
+fn[T : Eq] kept(v : T) -> @signals.Signal[T] {
   @signals.signal(v)
 }
 

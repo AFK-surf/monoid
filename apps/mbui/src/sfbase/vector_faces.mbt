@@ -7,6 +7,7 @@
 /// Where the face for Chinese and Japanese in pictures is.
 // CjkComing and CjkNotHad are states matched only by `_`: asked once, not again
 #warnings("-unused_constructor")
+#derive(Eq)
 priv enum VectorCjk {
   CjkUnwanted
   CjkWanted

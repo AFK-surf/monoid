@@ -672,6 +672,7 @@ pub let viz_way : @ui.Style = @ui.style(
 ///|
 /// A visualization open over the whole screen: its name, its file (to fetch, or fetched), the chat whose composer its
 /// words go to.
+#derive(Eq)
 pub(all) struct VizFull {
   name : String
   station : String

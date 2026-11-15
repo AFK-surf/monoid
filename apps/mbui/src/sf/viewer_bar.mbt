@@ -9,6 +9,7 @@
 /// The colours a bar is drawn in: the file's ground under it, its words, what is quieter, its line; a button's ground
 /// under the pointer (`hover`) and while what it opens is open (`chosen`), over that ground (a film's black has its
 /// own: the page's hover on it is dark on black, or near none: Player.css.ts's film --hover and --selected).
+#derive(Eq)
 pub(all) struct ViewerInk {
   ground : Int64
   ink : Int64

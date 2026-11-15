@@ -183,7 +183,8 @@ pub(all) struct ReportingHost {
 
 ///|
 /// The host's, set once as the app starts (src/stillfail main); None under a Tester (reset), unless its test sets one.
-pub let reporting_host : @signals.Signal[ReportingHost?] = @signals.signal(None)
+// (by the one host: functions, no value to compare)
+pub let reporting_host : @signals.Signal[ReportingHost?] = @signals.signal_ref(None)
 
 ///|
 /// Whether this device's core sends what people use (the prefs' `counted`, client/core-ts/src/use-counts.ts: a build

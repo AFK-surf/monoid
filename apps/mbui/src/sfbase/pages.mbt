@@ -884,7 +884,7 @@ pub let app : App = {
 
 ///|
 fn toast_said_new() -> @signals.Signal[ToastSaid] {
-  @signals.signal(toast_none, same=fn(a, b) { physical_equal(a, b) })
+  @signals.signal_ref(toast_none)
 }
 
 ///|

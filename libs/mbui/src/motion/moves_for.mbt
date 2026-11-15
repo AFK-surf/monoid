@@ -142,7 +142,7 @@ pub fn Moves::reshapes(
 /// Node `v` goes for the cause (an old view's layout with the same `by`): as it changes, from where it was drawn to
 /// where the change lays it out, what it holds with it (View::drawn_off). Nothing cuts it on its way: drawn whole.
 pub fn Moves::moves_with(self : Moves, v : @view.View) -> Unit {
-  let p : Part = { v, x: NodeWay::new(0.0), y: NodeWay::new(0.0), ride: @signals.signal(None, same=same_ride) }
+  let p : Part = { v, x: NodeWay::new(0.0), y: NodeWay::new(0.0), ride: @signals.signal_by(None, same=same_ride) }
   self.parts.push(p)
   // (made for a change while a shape it is in goes with what it holds, after that set off: carried on its ground, by
   // the edges of it it is nearer as the change lays it out, worked out at that change's moment once it is laid out)

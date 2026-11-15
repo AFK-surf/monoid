@@ -7,6 +7,7 @@
 ///|
 /// A folder typed by its path, worked out (`files.go`'s Typed): the station, the folder it names, the folder it is in
 /// and what is typed of its last part.
+#derive(Eq)
 priv struct Typed {
   station : String
   abs : String

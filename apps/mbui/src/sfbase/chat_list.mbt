@@ -6,6 +6,7 @@
 ///|
 /// An entry of the list, with the room above the first (the bar's) and below the last (the
 /// composer's).
+#derive(Eq)
 pub(all) enum Entry {
   Top
   /// the page before coming, or why it could not be read ("" coming)
@@ -814,7 +815,7 @@ fn chat_read_again(message_json : Array[Json], was : ChatRead) -> (Array[(Json, 
 /// changed (one came: that one read), and what else it says read again only where it is not the same JSON as before
 /// (chat_view_of's `was`).
 // kept across runs: what it keeps is let go of by a run anew and by reset (derived.mbt)
-let chat_read : Derived[ChatRead] = Derived::new("chat", fn(v, was) {
+let chat_read : Derived[ChatRead] = Derived::new_ref("chat", fn(v, was) {
   chat_read_made.val += 1
   let message_json = items(Some(v), "messages")
   let (read, messages) = match was {

@@ -39,7 +39,7 @@ pub fn tree_corner_roots_now() -> CornerRoots {
 /// frame began (view_frame); told as it changes (another width's, the system's dark coming), what read it worked out
 /// again.
 // kept across runs: set as each frame begins
-let tree_theme_said : Ref[@signals.Signal[Theme?]] = Ref(@signals.signal(None, same=fn(a, b) {
+let tree_theme_said : Ref[@signals.Signal[Theme?]] = Ref(@signals.signal_by(None, same=fn(a, b) {
   match (a, b) {
     (Some(x), Some(y)) => physical_equal(x, y)
     (None, None) => true
@@ -66,7 +66,7 @@ pub fn tree_theme() -> Theme {
 /// The app's theme for its window's tree (set_tree_theme), none told: told to what read the theme by it (another way
 /// to it, what it reads followed from then).
 // kept across runs: told by the app as its tree is made; let go as a tree is (view_forget)
-let tree_theme_of : Ref[@signals.Signal[(() -> Theme)?]] = Ref(@signals.signal(None, same=fn(a, b) {
+let tree_theme_of : Ref[@signals.Signal[(() -> Theme)?]] = Ref(@signals.signal_by(None, same=fn(a, b) {
   match (a, b) {
     (Some(x), Some(y)) => physical_equal(x, y)
     (None, None) => true

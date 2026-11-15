@@ -8,7 +8,7 @@
 /// read, made again as it comes or another workspace's comes: put up before there was one, it is not left without it).
 /// The same workspace's is the same core, told to none again (said every frame).
 // kept across runs: said again by every frame (panels_frame), taken back as a run begins (on_reset) and by reset
-let panels_core : @signals.Signal[(String, Core)?] = @signals.signal(None, same=fn(a, b) {
+let panels_core : @signals.Signal[(String, Core)?] = @signals.signal_by(None, same=fn(a, b) {
   match (a, b) {
     (None, None) => true
     (Some((x, _)), Some((y, _))) => x == y

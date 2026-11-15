@@ -93,7 +93,15 @@ pub(all) struct TermLine {
 }
 
 ///|
+/// The same line: its number and the line the core gave (its runs are made of that, on the ink its output is kept by),
+/// the one it was kept as first (job_output_of keeps a line while it is the same JSON).
+pub impl Eq for TermLine with equal(a, b) {
+  physical_equal(a, b) || (a.n == b.n && @signals.same_value(a.line, b.line))
+}
+
+///|
 /// A job's output a line at a time, the oldest first.
+#derive(Eq)
 pub(all) struct TermLines {
   lines : Array[TermLine]
 }

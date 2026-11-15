@@ -620,7 +620,7 @@ fn clash_dialog(c : @ui.Ctx) -> Unit {
 /// the asking itself, how many names it has answered, whether all the rest go one way. What reads it (clash_now: the
 /// dialog's title and what it says, what it holds, its foot) follows it, as that changes.
 // kept across runs: said again as it changes (drag_reset among them)
-let clash_told : @signals.Signal[(Asking?, Int, Bool)] = @signals.signal((None, 0, false), same=fn(a, b) {
+let clash_told : @signals.Signal[(Asking?, Int, Bool)] = @signals.signal_by((None, 0, false), same=fn(a, b) {
   let same_asking = match (a.0, b.0) {
     (Some(x), Some(y)) => physical_equal(x, y)
     (None, None) => true

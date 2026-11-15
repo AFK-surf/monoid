@@ -824,7 +824,8 @@ fn login_active_node(card : @view.View, core : Core, station : String, l : () ->
       login_paste_node(x, core, station, l, place)
       return
     }
-    let shows = @signals.computed(fn(_) { login_shows(core, station, l(), relay()) })
+    // (by the one it made: its step's press is a function made with it, no value to compare)
+    let shows = @signals.computed_ref(fn(_) { login_shows(core, station, l(), relay()) })
     let shows = fn() { shows.get() }
     x.each(fn() { shows().said.mapi(fn(i, _) { i }) }, fn(i) { i }, fn(r, i) {
       let i = i.untracked()
@@ -927,7 +928,8 @@ fn login_paste_node(x : @view.View, core : Core, station : String, l : () -> Jso
   let id = text(@signals.untracked(l), "id")
   let field = login_field(place + "\u{1}" + station + "\u{1}" + id)
   let words = fn() { field.text().trim(chars=" \n").to_owned() }
-  let shows = @signals.computed(fn(_) { login_paste_shows(core, station, l(), words() != "") })
+  // (by the one it made: its step's press is a function made with it, no value to compare)
+  let shows = @signals.computed_ref(fn(_) { login_paste_shows(core, station, l(), words() != "") })
   let shows = fn() { shows.get() }
   login_said_node(x, fn() { shows().lead })
   login_step_node(x, fn() { shows().step })

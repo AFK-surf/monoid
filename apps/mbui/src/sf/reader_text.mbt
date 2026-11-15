@@ -211,6 +211,7 @@ pub(all) struct TextMatch {
 /// A book as the reader draws it: the core's (its id, for a search), the text, its blocks and where
 /// each starts (a Markdown file's: its tree's nodes too), its length, its chapters (by block and offset in it), the
 /// heading lines' starts, how it was decoded, whether it was cut.
+#derive(Eq)
 pub struct Book {
   title : String
   id : Int

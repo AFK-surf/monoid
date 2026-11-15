@@ -466,7 +466,7 @@ fn archiving_with(fields : Array[(String, Json)]) -> (Json) -> Json {
 fn station_archiving_tester(
   platform : Int,
   scale? : Double = 1.0,
-  f? : @signals.Signal[(Json) -> Json] = @signals.signal(fn(a) { a }),
+  f? : @signals.Signal[(Json) -> Json] = @signals.signal_ref(fn(a) { a }),
   busy? : @signals.Signal[Bool] = @signals.signal(false),
   calls? : Array[String] = [],
 ) -> @ui.Tester {
@@ -486,7 +486,7 @@ test "一台 station 的归档 made once, with a finger and with keyboard and mo
   ]
   for c in cases {
     let (what, platform, scale, f, shown, none) = c
-    let made = station_archiving_tester(platform, scale~, f=@signals.signal(f))
+    let made = station_archiving_tester(platform, scale~, f=@signals.signal_ref(f))
     assert_true(app.nav.top() == Setting(@settings.Route::StationArchiving("ws1/st1")), msg="\{what}")
     for w in shown() {
       assert_true(made.find(w) is Some(_), msg="\{what}: \{w} at \{platform} \{scale}")
@@ -502,7 +502,7 @@ test "一台 station 的归档 made once, with a finger and with keyboard and mo
 /// words), as its archiving is (`f`) and a save of it on its way or not (`busy`).
 fn station_archiving_saves(f : (Json) -> Json, busy : Bool, act : (@ui.Tester) -> Unit) -> Int {
   let calls : Array[String] = []
-  let t = station_archiving_tester(2, f=@signals.signal(f), busy=@signals.signal(busy), calls~)
+  let t = station_archiving_tester(2, f=@signals.signal_ref(f), busy=@signals.signal(busy), calls~)
   act(t)
   t.run_for(@ui.move_most_ms)
   calls.filter(fn(n) { n == "archiving.save" }).length()
@@ -545,7 +545,7 @@ test "一台 station 的归档 made once: chosen: a way, after how long, Slack's
 ///|
 test "一台 station 的归档 made once: as the core says it anew, the same nodes say it: the way and the while chosen, its note" {
   let anew = archiving_with([("mode", Json::string("reviewed")), ("days", Json::number(7.0)), ("modeNote", Json::string("按模型判断，空闲七天以上"))])
-  let f : @signals.Signal[(Json) -> Json] = @signals.signal(fn(a) { a })
+  let f : @signals.Signal[(Json) -> Json] = @signals.signal_ref(fn(a) { a })
   let t = station_archiving_tester(2, f~)
   let ids = fn(w : String) {
     @ui.view_tree().unwrap().drawn().filter(fn(d) { d.words == w }).map(fn(d) { (d.id.at, d.id.gen) })

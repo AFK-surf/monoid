@@ -773,7 +773,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   let laid_grid = Ref(-1.0)
   // (how many times they were worked out: what shows by them worked out again each time)
   let laid_rev = Ref(0)
-  let laid = @signals.computed(fn(_) {
+  let laid = @signals.computed_by(fn(_) {
     laid_rev.val = laid_rev.val + 1
     told.get() |> ignore
     let ks = keys()

@@ -33,6 +33,7 @@ pub fn chosen_none() -> Chosen {
 
 ///|
 /// The `driveBrowse` topic's value (BrowseView).
+#derive(Eq)
 pub(all) struct BrowseView {
   arrangement : Arrangement
   folders : Map[String, Array[String]]

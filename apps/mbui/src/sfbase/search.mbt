@@ -5,6 +5,7 @@
 ///|
 /// A chat the words found (SearchView.items): as Home lists it, and the part of it that has them when its title
 /// shows them late or not at all (`foundText`, `foundMarks`), and whether it was found in its station's archive.
+#derive(Eq)
 pub(all) struct FoundChat {
   item : ChatItem
   found : String?
@@ -14,6 +15,7 @@ pub(all) struct FoundChat {
 
 ///|
 /// A message the words found (FoundMessage): its chat opens at it.
+#derive(Eq)
 pub(all) struct FoundMessage {
   station : String
   seq : Double
@@ -27,6 +29,7 @@ pub(all) struct FoundMessage {
 ///|
 /// Something found besides a chat or a message (SearchItem), and where it opens (`open`, the core's: None where it
 /// opens nowhere).
+#derive(Eq)
 pub(all) struct FoundItem {
   kind : String
   key : String
@@ -60,6 +63,7 @@ pub(all) struct FoundOpen {
 
 ///|
 /// A kind of what was found (SearchGroup): its heading, what of it is listed, whether there is more of it.
+#derive(Eq)
 pub(all) struct FoundGroup {
   kind : String
   title : String
@@ -69,6 +73,7 @@ pub(all) struct FoundGroup {
 
 ///|
 /// What a few words find in a workspace (the `search` topic: SearchView).
+#derive(Eq)
 pub(all) struct SearchView {
   chats : Array[FoundChat]
   chats_more : Bool

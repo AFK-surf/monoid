@@ -100,6 +100,13 @@ yet and you can add one, add it.
   (`Tester::frame`; a pass that kept rows compared with one built whole, `src/ui/tester_rows.mbt`): a test that changes
   the value and looks sees what a device would, the old (sfdesk's `wide.tape`, a plain field read by the rail's
   corners till 2026-11-11).
+- A signal or a computed tells what follows it only as its value changes (the user, 2026-11-15: 性能差的代码难以被写出来):
+  `signal` and `computed` (and what an app keeps over them) ask `T : Eq` and take a value made anew but equal as no change
+  (`@signals.same_value`). What has no value to compare (a handle, functions, a record mutated in place, a read made
+  again from what it made last) says so where it is made, `signal_ref`/`computed_ref` (the object) or `*_by` (its own
+  `same`), with why on the line above; a value type derives `Eq` instead. A computed's getter only works out its
+  value: an effect made in it is a fault (`@signals.effect_in_computed`) but for what a computed holds while it is
+  read, said so (`@signals.held_while_read`).
 - Layout goes one way (the user, 2026-11-05): what is laid out is never told back as a change to make things by. What
   is made by the width a node is given, or by how tall something in it comes to, is made in `View::by_room`
   (`src/view/room.mbt`) as that layout comes to it; what it would change outside its room is a fault. Nothing outside
