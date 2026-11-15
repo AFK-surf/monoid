@@ -981,3 +981,32 @@ test("a session's summary says what its calls used as recorded: added up and pri
   keepUsage(store, "k", true);
   assert.deepEqual(context(), [6, 116, began + 1000], "its first call");
 });
+
+test("a session deleted leaves nothing in the counter: one made again with its key has its turn's end read", async () => {
+  const time = await today();
+  const r = rig({ settleMs: 20, safetyMs: 60_000, clock: time.clock });
+  const calls = () => r.store.usageGroups(0, MAX, 0).reduce((s, g) => s + g.calls, 0);
+  session(r.store, "k", join(r.data, "w"), r.store.now() - 1000);
+  r.usage.start();
+  await time.begun(1);
+  r.store.startTurn("t1", "k", "input");
+  append(join(r.data, "transcripts/claude", claudeProject(join(r.data, "w")), "r.jsonl"), [claudeLine("m1", r.store.now() + 1, "claude-opus-5-5", usage(1, 0, 0, 0, 1))]);
+  r.store.endTurn("t1", "completed", null, null, null);
+  // Its turn's end as the counter keeps it: later than the next one's of a session made again with its key.
+  r.store.db.prepare("UPDATE turns SET ended_at = ? WHERE id = 't1'").run(r.store.now() + 3_600_000);
+  await time.begun(2);
+  await time.adjust(20);
+  await time.begun(3);
+  assert.equal(calls(), 1);
+  r.store.deleteSession("k");
+  const again = join(r.data, "w-again");
+  session(r.store, "k", again, r.store.now());
+  r.store.startTurn("t2", "k", "input");
+  append(join(r.data, "transcripts/claude", claudeProject(again), "r.jsonl"), [claudeLine("m2", r.store.now() + 1, "claude-opus-5-5", usage(1, 0, 0, 0, 1))]);
+  r.store.endTurn("t2", "completed", null, null, null);
+  await time.begun(4);
+  await time.adjust(20);
+  await time.begun(5);
+  assert.equal(calls(), 2, "the new session's turn is read as it ends, not held back by the deleted one's");
+  await r.usage.stop();
+});

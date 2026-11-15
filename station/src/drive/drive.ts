@@ -523,7 +523,7 @@ export class Drive {
   /// A file copied to `into` (where a chat's uploads wait for the message that sends them), for a member to send it in a
   /// chat as if it had been uploaded: a clone where the disk can make one (APFS, btrfs), so even a big one costs nothing.
   /// `zip`: a folder put into a zip of its own name instead (links not followed, the station's own data left out).
-  stage(root: string, path: string, into: (name: string) => { safe: string; path: string }, most: number, anywhere = false, zip = false): Promise<{ name: string; path: string; size: number }> {
+  stage(root: string, path: string, into: (name: string) => { safe: string; path: string } | Promise<{ safe: string; path: string }>, most: number, anywhere = false, zip = false): Promise<{ name: string; path: string; size: number }> {
     return this.#run(async () => {
       const at = await this.place(root, path, anywhere);
       const fs = at.fs;
@@ -531,7 +531,7 @@ export class Drive {
       try {
         const s = await fs.stat(at.found);
         if (s.dir && zip) {
-          const to = into(`${name}.zip`);
+          const to = await into(`${name}.zip`);
           const protect = await this.protectedNow();
           const skip = async (p: string, n: string) => PART.test(n) || (await this.isProtected(p, await this.#real(p, fs), protect));
           try {
@@ -543,7 +543,7 @@ export class Drive {
         }
         if (s.dir) throw new DriveError("is_a_directory", "that is a folder");
         if (s.size > most) throw new DriveError("too_large", TOO_BIG);
-        const to = into(name);
+        const to = await into(name);
         await fs.copyTo(at.found, to.path);
         return { name: to.safe, path: to.path, size: s.size };
       } catch (e) {

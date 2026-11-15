@@ -4,8 +4,8 @@
 // (jobs/remote.ts), with no more trust than the chats' pages need: a chat's attachments are what any member of the
 // workspace sees on its page.
 import { randomUUID } from "node:crypto";
-import { closeSync, constants, copyFileSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
-import { open, rename, rm } from "node:fs/promises";
+import { constants } from "node:fs";
+import { copyFile, mkdir, open, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { anyBaseName, clean, samePath } from "../ops/paths.ts";
 import { iso } from "../read/transcript.ts";
@@ -14,9 +14,9 @@ import { CHUNK, hash } from "../jobs/remote.ts";
 import { NoBytes, bytesOf, withBytes } from "../mesh/bus.ts";
 import { fileBytes, writeBytes } from "../mesh/files.ts";
 import { withLock, workspaceFile } from "./archive.ts";
-import { roomOf } from "./footprint.ts";
+import { roomOfSoon } from "./footprint.ts";
 import type { Hub } from "./hub.ts";
-import { shownFacts } from "./image-size.ts";
+import { shownFactsSoon } from "./image-size.ts";
 import { Refused } from "./neighbours.ts";
 import { fromBefore, named, reachable } from "./others.ts";
 
@@ -49,8 +49,32 @@ function uploadName(hub: Hub, name: string): string {
 
 /// An attachment as messages keep it: pictures and films measured, so pages hold their place (a film's length and
 /// frames with it).
-function attachment(name: string, path: string, size: number): Attachment {
-  return { name, path, size, ...shownFacts(path) };
+async function attachment(name: string, path: string, size: number): Promise<Attachment> {
+  return { name, path, size, ...(await shownFactsSoon(path)) };
+}
+
+/// What is at `path`, or null where nothing is.
+const statOf = (path: string) => stat(path).catch(() => null);
+
+/// A chunk of the file at `path` from `offset` for a station from before (`whole`: all of it from there, after the
+/// answer), of a file `isFile` is asked of first.
+async function chunkOf(path: string, flags: number, offset: number, whole: boolean, notFile: () => Error): Promise<Json> {
+  const file = await open(path, flags);
+  let size: number;
+  try {
+    const st = await file.stat();
+    if (!st.isFile()) throw notFile();
+    size = st.size;
+    if (offset > size) throw new Error("offset past end");
+    if (!whole) {
+      const buffer = Buffer.alloc(CHUNK);
+      const { bytesRead: n } = await file.read(buffer, 0, CHUNK, offset);
+      return { data: buffer.subarray(0, n).toString("base64"), size, eof: offset + n >= size };
+    }
+  } finally {
+    await file.close();
+  }
+  return withBytes({ size }, fileBytes(path, offset, size));
 }
 
 // ── a chat's attachments, read from another station ──────────────────────────────────────────────────────────────
@@ -69,45 +93,23 @@ export async function fileForPeer(hub: Hub, request: Json, ws: string | null = n
   const base = basename(path);
   const row = sessions.map((k) => hub.store.getSession(k)).find((s) => s !== null && samePath(clean(join(s.workspace, "uploads")), dirname(path)));
   if (!row || base === "" || base === "." || base === "..") throw new Error(`${given} is not a file of that chat`);
-  if (existsSync(path)) {
-    const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-    try {
-      const stat = fstatSync(fd);
-      if (!stat.isFile()) throw new Error(`${given} is not a file of that chat`);
-      if (offset > stat.size) throw new Error("offset past end");
-      if (request?.whole === true) return withBytes({ size: stat.size }, fileBytes(path, offset, stat.size));
-      const buffer = Buffer.alloc(CHUNK);
-      const n = readSync(fd, buffer, 0, CHUNK, offset);
-      return { data: buffer.subarray(0, n).toString("base64"), size: stat.size, eof: offset + n >= stat.size };
-    } finally {
-      closeSync(fd);
-    }
-  }
+  const whole = request?.whole === true;
+  if ((await statOf(path)) !== null) return chunkOf(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK, offset, whole, () => new Error(`${given} is not a file of that chat`));
   // Packed with its archived workspace: read out of the archive once, under its lock (as the pages read it), and kept
   // a while for the chunks after the first, which would each go through the archive again.
   const dir = join(hub.config().dataDir, "remote", "served");
   const kept = join(dir, hash([path]));
-  if (offset === 0 || !existsSync(kept)) {
-    const room = roomOf(hub.config().dataDir, row.workspace);
+  if (offset === 0 || (await statOf(kept)) === null) {
+    const room = await roomOfSoon(hub.config().dataDir, row.workspace);
     const bytes = room === null ? null : await withLock(room, async () => workspaceFile(room, `uploads/${base}`));
     if (bytes === null) throw new Error(`${given} is gone from that chat`);
-    mkdirSync(dir, { recursive: true });
-    sweep(hub, dir);
+    await mkdir(dir, { recursive: true });
+    await sweep(hub, dir);
     const part = `${kept}.part-${randomUUID().slice(0, 8)}`;
-    writeFileSync(part, bytes);
-    renameSync(part, kept);
+    await writeFile(part, bytes);
+    await rename(part, kept);
   }
-  const fd = openSync(kept, constants.O_RDONLY);
-  try {
-    const size = fstatSync(fd).size;
-    if (offset > size) throw new Error("offset past end");
-    if (request?.whole === true) return withBytes({ size }, fileBytes(kept, offset, size));
-    const buffer = Buffer.alloc(CHUNK);
-    const n = readSync(fd, buffer, 0, CHUNK, offset);
-    return { data: buffer.subarray(0, n).toString("base64"), size, eof: offset + n >= size };
-  } finally {
-    closeSync(fd);
-  }
+  return chunkOf(kept, constants.O_RDONLY, offset, whole, () => new Error(`${given} is gone from that chat`));
 }
 
 /// A chat's attachment as another station lists it (chat_read's answer there).
@@ -130,7 +132,7 @@ export async function fetchAttachments(hub: Hub, key: string, call: Call, statio
     const asked = wanted.includes(file.path);
     // Another station's path, Unix's or Windows'.
     const local = join(dir, anyBaseName(file.path));
-    if (existsSync(local) && statSync(local).size === file.size) {
+    if ((await statOf(local))?.size === file.size) {
       here.set(file.path, local);
       continue;
     }
@@ -152,7 +154,7 @@ export async function fetchAttachments(hub: Hub, key: string, call: Call, statio
     seen.add(path);
     const local = join(dir, anyBaseName(path));
     try {
-      if (!existsSync(local)) await download(call, station, chat, path, local);
+      if ((await statOf(local)) === null) await download(call, station, chat, path, local);
       here.set(path, local);
     } catch (error) {
       left.push(`${path} (${why(error)})`);
@@ -167,7 +169,7 @@ const why = (error: unknown) => (error instanceof Refused && fromBefore((error a
 /// One file of a chat there into `local`, which appears only once all of it came: whole after one answer (a station from
 /// before answers a chunk, and is asked for each).
 async function download(call: Call, station: string, chat: string, path: string, local: string): Promise<void> {
-  mkdirSync(dirname(local), { recursive: true });
+  await mkdir(dirname(local), { recursive: true });
   const part = `${local}.part-${randomUUID().slice(0, 8)}`;
   const file = await open(part, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o644);
   try {
@@ -199,22 +201,20 @@ async function download(call: Call, station: string, chat: string, path: string,
 // ── files sent along with a message to another station ──────────────────────────────────────────────────────────
 
 /// Files a message takes along, checked as chat_post checks them: absolute or in session `key`'s workspace.
-export function sendable(hub: Hub, key: string, given: string[]): { path: string; name: string; size: number }[] {
+export async function sendable(hub: Hub, key: string, given: string[]): Promise<{ path: string; name: string; size: number }[]> {
   const row = hub.store.getSession(key);
   if (!row) throw new Error("unknown session");
   if (given.length > MAX_FILES) throw new Error(`at most ${MAX_FILES} files per message`);
-  return given.map((g) => {
+  const out: { path: string; name: string; size: number }[] = [];
+  for (const g of given) {
     const path = isAbsolute(g) ? g : join(row.workspace, g);
-    let meta;
-    try {
-      meta = statSync(path);
-    } catch {
-      throw new Error(`no such file: ${g}`);
-    }
+    const meta = await statOf(path);
+    if (meta === null) throw new Error(`no such file: ${g}`);
     if (!meta.isFile()) throw new Error(`not a file: ${g}`);
     if (meta.size > MAX_SENT) throw new Error(`too large (over 50 MB): ${g}`);
-    return { path, name: basename(path), size: meta.size };
-  });
+    out.push({ path, name: basename(path), size: meta.size });
+  }
+  return out;
 }
 
 /// Sends `files` ahead of a message from session `key` to session `to` on station `station`, each whole after one
@@ -226,7 +226,7 @@ export async function sendAlong(call: Call, station: string, key: string, to: st
     const id = randomUUID();
     if (after) {
       try {
-        const size = statSync(file.path).size;
+        const size = (await stat(file.path)).size;
         await call(station, withBytes({ method: PUT, session: key, to, id, name: file.name, size }, fileBytes(file.path, 0, size)));
         sent.push({ id, name: file.name });
         continue;
@@ -235,19 +235,19 @@ export async function sendAlong(call: Call, station: string, key: string, to: st
         after = false;
       }
     }
-    const fd = openSync(file.path, constants.O_RDONLY);
+    const fd = await open(file.path, constants.O_RDONLY);
     try {
-      const size = fstatSync(fd).size;
+      const size = (await fd.stat()).size;
       const buffer = Buffer.alloc(CHUNK);
       for (let offset = 0; ; ) {
-        const n = readSync(fd, buffer, 0, CHUNK, offset);
+        const { bytesRead: n } = await fd.read(buffer, 0, CHUNK, offset);
         const final = n === 0 || offset + n >= size;
         await call(station, { method: PUT, session: key, to, id, name: file.name, offset, data: buffer.subarray(0, n).toString("base64"), final });
         offset += n;
         if (final) break;
       }
     } finally {
-      closeSync(fd);
+      await fd.close();
     }
     sent.push({ id, name: file.name });
   }
@@ -271,8 +271,8 @@ export async function putForPeer(hub: Hub, peer: string, request: Json, ws: stri
     if (size > MAX_SENT) throw new Error("too large (over 50 MB)");
     if (hub.store.getSession(to) === null || !reachable(hub, to, ws, true)) throw new Error(`no session ${to} on this station (it may have been deleted)`);
     const dir = stagedDir(hub);
-    mkdirSync(dir, { recursive: true });
-    sweep(hub, dir);
+    await mkdir(dir, { recursive: true });
+    await sweep(hub, dir);
     const path = staged(hub, peer, from, id);
     const file = await open(`${path}.part`, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, 0o644);
     try {
@@ -289,51 +289,54 @@ export async function putForPeer(hub: Hub, peer: string, request: Json, ws: stri
   const data = Buffer.from(typeof request?.data === "string" ? request.data : "", "base64");
   if (data.length > CHUNK || offset + data.length > MAX_SENT) throw new Error("too large (over 50 MB)");
   const dir = stagedDir(hub);
-  mkdirSync(dir, { recursive: true });
-  if (offset === 0) sweep(hub, dir);
+  await mkdir(dir, { recursive: true });
+  if (offset === 0) await sweep(hub, dir);
   const path = staged(hub, peer, from, id);
-  const fd = openSync(`${path}.part`, constants.O_WRONLY | constants.O_CREAT | constants.O_NOFOLLOW, 0o644);
+  const fd = await open(`${path}.part`, constants.O_WRONLY | constants.O_CREAT | constants.O_NOFOLLOW, 0o644);
   try {
-    if (offset > fstatSync(fd).size) throw new Error("file offset leaves a gap");
-    for (let at = 0; at < data.length; ) at += writeSync(fd, data, at, data.length - at, offset + at);
+    if (offset > (await fd.stat()).size) throw new Error("file offset leaves a gap");
+    for (let at = 0; at < data.length; ) at += (await fd.write(data, at, data.length - at, offset + at)).bytesWritten;
   } finally {
-    closeSync(fd);
+    await fd.close();
   }
-  if (request?.final === true) renameSync(`${path}.part`, path);
+  if (request?.final === true) await rename(`${path}.part`, path);
   return { bytes: data.length };
 }
 
 /// Files sent along that no message claimed in a day; archived attachments read out a day ago.
-function sweep(hub: Hub, dir: string) {
-  for (const name of readdirSync(dir)) {
+async function sweep(hub: Hub, dir: string) {
+  for (const name of await readdir(dir)) {
     const path = join(dir, name);
     try {
-      if (hub.now() - statSync(path).mtimeMs > STAGED_MS) rmSync(path, { force: true });
+      if (hub.now() - (await stat(path)).mtimeMs > STAGED_MS) await rm(path, { force: true });
     } catch {}
   }
 }
 
 /// The files a message from another station's session `from` names (`sendAlong` there), moved into session `to`'s
 /// uploads.
-export function claim(hub: Hub, peer: string, from: string, to: string, given: Json): Attachment[] {
+export async function claim(hub: Hub, peer: string, from: string, to: string, given: Json): Promise<Attachment[]> {
   if (given === undefined || given === null) return [];
   if (!Array.isArray(given) || given.length > MAX_FILES) throw new Error(`files: at most ${MAX_FILES}, each {id, name}`);
   const row = hub.store.getSession(to);
   if (!row) throw new Error(`no session ${to} on this station (it may have been deleted)`);
-  const found = given.map((f: Json) => {
+  const found: { path: string; name: string }[] = [];
+  for (const f of given as Json[]) {
     const id = typeof f?.id === "string" ? f.id : "";
     const name = typeof f?.name === "string" && f.name.trim() !== "" ? f.name : "file";
     const path = staged(hub, peer, from, id);
-    if (id === "" || !existsSync(path)) throw new Error(`file ${name} did not all arrive: send it again`);
-    return { path, name };
-  });
+    if (id === "" || (await statOf(path)) === null) throw new Error(`file ${name} did not all arrive: send it again`);
+    found.push({ path, name });
+  }
   const dir = join(row.workspace, "uploads");
-  mkdirSync(dir, { recursive: true });
-  return found.map(({ path, name }) => {
+  await mkdir(dir, { recursive: true });
+  const out: Attachment[] = [];
+  for (const { path, name } of found) {
     const into = join(dir, uploadName(hub, name));
     // Copied, not moved: a workspace may be on another disk than the station's data.
-    copyFileSync(path, into);
-    rmSync(path, { force: true });
-    return attachment(name, into, statSync(into).size);
-  });
+    await copyFile(path, into);
+    await rm(path, { force: true });
+    out.push(await attachment(name, into, (await stat(into)).size));
+  }
+  return out;
 }

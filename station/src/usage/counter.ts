@@ -93,6 +93,13 @@ export class UsageCounter {
     if (this.#fiber !== null) return;
     this.#startedAt = this.#clock.currentTimeMillisUnsafe();
     this.#unsubscribe = this.#store.subscribe((change) => {
+      // (a session deleted: nothing of it kept, so one of its key made again is counted as new)
+      if (change.type === "sessionRemoved") {
+        this.#ended.delete(change.key);
+        this.#changed.delete(change.key);
+        this.#asked.delete(change.key);
+        return;
+      }
       if (change.type !== "session") return;
       this.#changed.add(change.key);
       Queue.offerUnsafe(this.#wake, undefined);
