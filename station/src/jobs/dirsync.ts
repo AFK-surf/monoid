@@ -18,12 +18,13 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { closeSync, createReadStream, existsSync, mkdirSync, openSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
-import { chmod, lstat, mkdir, open, readFile, readdir, readlink, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, readFile, readlink, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { zstdCompress, zstdDecompress } from "node:zlib";
 import { NoBytes, withBytes } from "../mesh/bus.ts";
 import { oneBytes } from "../mesh/files.ts";
+import { walkBounded } from "../ops/walk.ts";
 
 type Json = any;
 
@@ -35,6 +36,9 @@ export const IGNORED = new Set([".git", ".hg", ".svn", ".jj", "node_modules", "t
 const IGNORED_FILES = new Set([".DS_Store"]);
 /// At most this many files in a directory synced.
 export const MAX_FILES = 200_000;
+/// A walk outside Git lists at most this many entries (directories too), at most this deep.
+const WALK_ENTRIES = 2 * MAX_FILES;
+const WALK_DEPTH = 64;
 const MAX_FILE = 1024 * 1024 * 1024;
 /// A file goes in pieces of at most this much.
 const PIECE = 512 * 1024;
@@ -195,19 +199,26 @@ export async function listLocal(dir: string): Promise<Listing> {
     await pool(hash, async (path) => take(await onDisk(dir, path), path));
     return { files: files.sort(byPath), git: true, prefix, skipped };
   }
+  // Walked bounded (ops/walk.ts), yielding the station's thread as it goes: a directory on another file system mounted
+  // in it is left out (said in `skipped`), no link followed. What would leave the listing short is an error, never a
+  // listing short of files, whose absence the mirror would take for files removed.
   const found: string[] = [];
-  const visit = async (rel: string) => {
-    for (const e of await readdir(rel === "" ? dir : join(dir, ...rel.split("/")), { withFileTypes: true })) {
-      const path = rel === "" ? e.name : `${rel}/${e.name}`;
-      if (e.isDirectory()) {
-        if (!IGNORED.has(e.name)) await visit(path);
-      } else if (!IGNORED_FILES.has(e.name)) {
-        found.push(path);
-        if (found.length > MAX_FILES) throw new Error(`${dir} has more than ${MAX_FILES} files to sync`);
-      }
+  const walked = await walkBounded(dir, (e) => {
+    if (e.depth === 0) return;
+    if (e.directory) {
+      if (IGNORED.has(e.name)) return "skip";
+      return;
     }
-  };
-  await visit("");
+    if (IGNORED_FILES.has(e.name)) return;
+    found.push(e.rel);
+    if (found.length > MAX_FILES) throw new Error(`${dir} has more than ${MAX_FILES} files to sync`);
+  }, {
+    followRoot: true, maxEntries: WALK_ENTRIES, maxDepth: WALK_DEPTH, maxDurationMs: Number.POSITIVE_INFINITY,
+    onError: (_, error, op) => { if (op === "readdir") throw error; },
+    onCrossed: (e) => skipped.push({ path: e.rel, why: "another file system" }),
+  });
+  if (walked.reason === "entries") throw new Error(`${dir} has more than ${WALK_ENTRIES} entries to walk`);
+  if (walked.reason === "depth") throw new Error(`${dir} is deeper than ${WALK_DEPTH} directories`);
   await pool(found, async (path) => take(await onDisk(dir, path), path));
   return { files: files.sort(byPath), git: false, prefix: "", skipped };
 }

@@ -53,7 +53,9 @@ export function workspaceSessionsToMeasure(db: DatabaseSync, processes: readonly
   return rows.map((r) => ({ key: (r as { key: string }).key, workspace: (r as { workspace: string }).workspace }));
 }
 
-export type WorkspaceSize = { bytes: number; complete: boolean };
+/// `truncated`: a lower bound for the walk's own limits (sessions/footprint.ts MEASURE_UP_TO), not the soft limit: walked
+/// again only after CHECK_MS, as a complete one is.
+export type WorkspaceSize = { bytes: number; complete: boolean; truncated?: true };
 type Measurement = { size: WorkspaceSize | null; at: number; pending: boolean; limit: number };
 
 /// A single asynchronous disk walk at a time, shared by local and incoming remote requests. A caller never waits for
@@ -74,7 +76,7 @@ export class WorkspaceReader {
   size(path: string, limit = DEFAULT_LIMIT): WorkspaceSize | null {
     if (this.#abort.signal.aborted) return null;
     let entry = this.#entries.get(path);
-    if (entry?.size && this.#now() - entry.at < CHECK_MS && (entry.size.complete || entry.size.bytes > limit)) return entry.size;
+    if (entry?.size && this.#now() - entry.at < CHECK_MS && (entry.size.complete || entry.size.truncated || entry.size.bytes > limit)) return entry.size;
     if (!entry) {
       entry = { size: null, at: 0, pending: false, limit };
       this.#entries.set(path, entry);

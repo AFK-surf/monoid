@@ -86,6 +86,12 @@ export type Platform = {
   /// A command started `by` lower in CPU priority than this process (ops/nice.ts): under nice where there is one; as
   /// it is on Windows (no nice).
   lowered(program: string, args: string[], by: number): [string, string[]];
+  /// A command started as the system's background work (the station's own builders and indexers, read/mb-reader.ts):
+  /// its CPU and its disk's reads and writes both yield to the foreground's. macOS: under `/usr/sbin/taskpolicy -b`
+  /// (PRIO_DARWIN_BG: background CPU QoS and IOPOL_THROTTLE, for it and all it starts), where nice alone leaves APFS's
+  /// IO as it was; Linux: under `ionice -t -c2 -n7` and `nice -n 10` (best-effort's lowest IO, a lower CPU priority);
+  /// else as `lowered` by 10; as it is on Windows. Each wrapper execs the command, which keeps its pid.
+  backgrounded(program: string, args: string[]): [string, string[]];
   /// A shell script at `path` runnable by name from any shell: on Windows a `.cmd` beside it too, running it with the
   /// POSIX shell, or doing nothing when `noop`. The name a program is to be given for it (the .cmd on Windows).
   makeCommand(path: string, script: string, noop?: boolean): string;

@@ -101,14 +101,34 @@ export class Said {
   }
 }
 
+/// Builders a person waits on as they run, kept in the foreground: a station's chats taken back before its store opens
+/// (replica/restore.ts) and the mesh's.
+const FOREGROUND_BUILDERS = new Set(["replica-restore", "mesh"]);
+
+/// Whether the program with `args` is the station's background work by default: a builder (`--builder <kind>`), but for
+/// FOREGROUND_BUILDERS. The readers that answer devices as they ask (`--data`, `--serve`, `--sessions`) are not.
+export function backgroundByDefault(args: readonly string[]): boolean {
+  const at = args.indexOf("--builder");
+  return at >= 0 && !FOREGROUND_BUILDERS.has(args[at + 1] ?? "");
+}
+
+/// What is spawned for the program `binary` with `args`: under platform.backgrounded when it is background work
+/// (`background`, else backgroundByDefault), so twenty builders scanning the database and the disk yield the CPU and
+/// the disk to the station's foreground and the agents'; as it is otherwise.
+export function mbSpawned(binary: string, args: string[], options: { background?: boolean } = {}): [string, string[]] {
+  return (options.background ?? backgroundByDefault(args)) ? platform.backgrounded(binary, args) : [binary, args];
+}
+
 /// The program's process, a line of JSON each way: told its lines as "message"s, its end as "exit".
 export class MbProcess extends EventEmitter {
   readonly #child: ChildProcess;
   #exited = false;
 
-  constructor(binary: string, args: string[]) {
+  /// `options.background`: whether it runs as the system's background work (mbSpawned), else as its args say.
+  constructor(binary: string, args: string[], options: { background?: boolean } = {}) {
     super();
-    this.#child = spawn(binary, args, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    const [command, given] = mbSpawned(binary, args, options);
+    this.#child = spawn(command, given, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
     const said = new Said((answer) => this.emit("message", answer));
     this.#child.stdout!.on("data", (bytes: Buffer) => said.push(bytes));
     createInterface({ input: this.#child.stderr! }).on("line", (line) => log.warn("readers", "a MoonBit reader said", { line }));

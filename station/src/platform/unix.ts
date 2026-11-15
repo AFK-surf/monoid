@@ -33,6 +33,34 @@ const real = (p: string) => {
   }
 };
 
+/// How this machine starts a command as background work (Platform.backgrounded): which wrapper is here, looked for
+/// once. macOS's taskpolicy; Linux's ionice (util-linux's: busybox's has no `-t`, without which a container that refuses
+/// the IO class would refuse to run the command) and nice; nice alone; nothing.
+export type Background = { kind: "taskpolicy" } | { kind: "ionice"; ionice: string; nice: string } | { kind: "nice"; nice: string } | { kind: "none" };
+
+let backgroundFound: Background | null = null;
+function background(): Background {
+  if (backgroundFound !== null) return backgroundFound;
+  const there = (p: string) => existsSync(p); // sync: a stat or two, once for the process
+  const nice = ["/usr/bin/nice", "/bin/nice"].find(there);
+  if (MACOS && there("/usr/sbin/taskpolicy")) backgroundFound = { kind: "taskpolicy" };
+  else {
+    const ionice = MACOS ? undefined : ["/usr/bin/ionice", "/bin/ionice"].find((p) => there(p) && !/busybox/.test(real(p) ?? p));
+    backgroundFound = ionice !== undefined && nice !== undefined ? { kind: "ionice", ionice, nice } : nice !== undefined ? { kind: "nice", nice } : { kind: "none" };
+  }
+  return backgroundFound;
+}
+
+/// `program` with `args` under the wrapper `how`.
+export function backgroundedOn(how: Background, program: string, args: string[]): [string, string[]] {
+  switch (how.kind) {
+    case "taskpolicy": return ["/usr/sbin/taskpolicy", ["-b", program, ...args]];
+    case "ionice": return [how.ionice, ["-t", "-c2", "-n7", how.nice, "-n", "10", program, ...args]];
+    case "nice": return [how.nice, ["-n", "10", program, ...args]];
+    case "none": return [program, args];
+  }
+}
+
 /// files.rs `clean` on Unix: the path absolute (a leading `/`), `.` and `..` worked out lexically.
 function clean(path: string): string {
   const out: string[] = [];
@@ -321,6 +349,7 @@ export const unix: Platform = {
   posixShell: () => "/bin/sh",
   grouped: (program, args) => [program, args],
   lowered: (program, args, by) => (by === 0 || !existsSync("/usr/bin/nice") ? [program, args] : ["/usr/bin/nice", ["-n", String(by), program, ...args]]),
+  backgrounded: (program, args) => backgroundedOn(background(), program, args),
   makeCommand(path, script) {
     writeFileSync(path, script);
     chmodSync(path, 0o755);

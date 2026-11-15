@@ -1,9 +1,12 @@
 // Workspace file helpers for automatic cleanup of archived sessions.
 import { execFile } from "node:child_process";
 import { existsSync, lstatSync, realpathSync } from "node:fs";
-import { lstat, readdir, realpath } from "node:fs/promises";
+import { realpath } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
+import { wall } from "../ops/fibers.ts";
+import { log } from "../ops/log.ts";
 import { fileName, samePath, segments, within } from "../ops/paths.ts";
+import { walkBounded } from "../ops/walk.ts";
 
 /// Path::starts_with: `path` is `dir` or under it.
 export { within };
@@ -126,56 +129,74 @@ class Enough {
   constructor(bytes: number) { this.bytes = bytes; }
 }
 
-/// The size of `path` and everything under it; links are not followed. With `found`, directories that can be made
-/// again are listed there (each counted whole, not looked into further).
-async function measure(path: string, seen: Seen, found: [string, number][] | null, signal?: AbortSignal, strict = false): Promise<number> {
+/// How far a measure goes: the walk's limits (ops/walk.ts), shared by the walks of the rebuildable directories in it.
+export type MeasureBudget = { maxEntries?: number; maxDurationMs?: number; now?: () => number };
+/// A workspace's size for its soft limit (measuredUpTo): enough for a warning, never minutes of the disk.
+export const MEASURE_UP_TO: Required<Pick<MeasureBudget, "maxEntries" | "maxDurationMs">> = { maxEntries: 100_000, maxDurationMs: 15_000 };
+/// A room measured for its cleanup (measureRoom, measured): what it finds past this is left for the next time.
+export const MEASURE_ROOM: Required<Pick<MeasureBudget, "maxEntries" | "maxDurationMs">> = { maxEntries: 500_000, maxDurationMs: 60_000 };
+
+/// What a measure found, and whether it reached everything (not cut short by its budget).
+type Measured = { bytes: number; complete: boolean; reason?: string };
+
+/// The size of `path` and everything under it, on its file system (ops/walk.ts walkBounded: links not followed, another
+/// file system mounted in it not gone into, within `budget`). With `found`, directories that can be made again are listed
+/// there (each counted whole, not looked into further for more); never in a `.git` or `uploads`.
+async function measure(path: string, seen: Seen, found: [string, number][] | null, budget: MeasureBudget, signal?: AbortSignal, strict = false): Promise<Measured> {
+  const now = budget.now ?? (() => wall.now());
+  const until = now() + (budget.maxDurationMs ?? MEASURE_ROOM.maxDurationMs);
+  const most = budget.maxEntries ?? MEASURE_ROOM.maxEntries;
+  let visited = 0;
+  let bytes = 0;
+  let cut: string | undefined;
+  const onError = strict ? (_: string, error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; } : undefined;
+  const walk = async (root: string, finding: boolean): Promise<void> => {
+    const walked = await walkBounded(root, async (entry) => {
+      // (counted here, not by each walk: the walks of the rebuildable directories in it share the budget)
+      if (++visited > most) {
+        cut ??= "entries";
+        return "stop";
+      }
+      if (finding && entry.depth > 0 && entry.directory) {
+        // Never discover cleanup candidates in repository metadata or historical attachments.
+        if (entry.name === ".git" || entry.name === "uploads") {
+          await walk(entry.path, false);
+          return cut !== undefined ? "stop" : "skip";
+        }
+        if (rebuildable(entry.path)) {
+          const before = bytes;
+          await walk(entry.path, false);
+          found!.push([entry.path, bytes - before]);
+          return cut !== undefined ? "stop" : "skip";
+        }
+      }
+      bytes += seen.bytes(entry.stats!);
+    }, { stat: true, maxEntries: Number.POSITIVE_INFINITY, maxDurationMs: Math.max(0, until - now()), now, signal, onError });
+    if (walked.reason !== undefined && walked.reason !== "stopped") cut ??= walked.reason;
+  };
+  await walk(path, found !== null);
   signal?.throwIfAborted();
-  let meta;
-  try {
-    meta = await lstat(path, { bigint: true });
-  } catch (error) {
-    if (strict && (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    return 0;
-  }
-  let bytes = seen.bytes(meta);
-  if (!meta.isDirectory()) return bytes;
-  let entries;
-  try {
-    entries = await readdir(path, { withFileTypes: true });
-  } catch (error) {
-    if (strict && (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    return bytes;
-  }
-  for (const entry of entries) {
-    const child = join(path, entry.name);
-    // Never discover cleanup candidates in repository metadata or historical attachments.
-    if (found !== null && (entry.name === ".git" || entry.name === "uploads")) {
-      bytes += await measure(child, seen, null, signal, strict);
-      continue;
-    }
-    if (found !== null && entry.isDirectory() && rebuildable(child)) {
-      const size = await measure(child, seen, null, signal, strict);
-      found.push([child, size]);
-      bytes += size;
-    } else bytes += await measure(child, seen, found, signal, strict);
-  }
-  return bytes;
+  return cut === undefined ? { bytes, complete: true } : { bytes, complete: false, reason: cut };
 }
 
 /// Measures one chat's directory again (after something in it was cleaned).
-export async function measureRoom(dir: string): Promise<Room> {
+export async function measureRoom(dir: string, budget: MeasureBudget = MEASURE_ROOM): Promise<Room> {
   const rebuild: [string, number][] = [];
-  const bytes = await measure(dir, new Seen(), rebuild);
+  const { bytes } = await measure(dir, new Seen(), rebuild, budget);
   return { bytes, rebuild };
 }
 
 /// The size of a path, each file once.
-export const measured = (path: string, signal?: AbortSignal) => measure(path, new Seen(), null, signal);
+export const measured = async (path: string, signal?: AbortSignal, budget: MeasureBudget = MEASURE_ROOM) => (await measure(path, new Seen(), null, budget, signal)).bytes;
 
-/// Count the whole path when it fits; once it exceeds `limit`, return a lower bound without traversing the rest.
-export async function measuredUpTo(path: string, limit: number, signal?: AbortSignal): Promise<{ bytes: number; complete: boolean }> {
+/// Count the whole path when it fits; once it exceeds `limit`, return a lower bound without traversing the rest. A
+/// workspace too large or too slow to walk within `budget` (MEASURE_UP_TO) is a lower bound too, `truncated`.
+export async function measuredUpTo(path: string, limit: number, signal?: AbortSignal, budget: MeasureBudget = MEASURE_UP_TO): Promise<{ bytes: number; complete: boolean; truncated?: true }> {
   try {
-    return { bytes: await measure(path, new Seen(limit), null, signal, true), complete: true };
+    const got = await measure(path, new Seen(limit), null, budget, signal, true);
+    if (got.complete) return { bytes: got.bytes, complete: true };
+    log.info("workspace-size", "workspace walk cut short", { path, bytes: got.bytes, reason: got.reason });
+    return { bytes: got.bytes, complete: false, truncated: true };
   } catch (error) {
     if (error instanceof Enough) return { bytes: error.bytes, complete: false };
     throw error;
