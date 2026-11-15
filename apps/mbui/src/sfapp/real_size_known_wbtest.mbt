@@ -11,6 +11,8 @@
 // view built as it opened now made, laid out and measured by the window's tree, nothing more shown.
 // Raised once, 2026-11-15: files-clash's dialog (sfdesk drag.mbt) made as nodes of the window's tree, what the old
 // view built of it before (and measured as it drew) now made and measured in the tree's count.
+// Again that day, a phone's film and song in the viewer: its player made as nodes (sf player_node.mbt), what its old
+// view built as it opened now made, laid out and measured by the window's tree, nothing more shown.
 
 ///|
 let real_size_known : Map[String, (Int, Int, Int)] = {
@@ -80,7 +82,7 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone chat-peek": (685, 822, 168),
   "phone chat-pick": (527, 592, 106),
   "phone chat-preview-apk": (607, 697, 122),
-  "phone chat-preview-audio": (543, 604, 106),
+  "phone chat-preview-audio": (615, 679, 116),
   "phone chat-preview-code": (570, 638, 108),
   "phone chat-preview-csv": (580, 658, 112),
   "phone chat-preview-html": (580, 658, 112),
@@ -90,7 +92,7 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone chat-preview-pdf": (570, 638, 108),
   "phone chat-preview-step": (596, 660, 108),
   "phone chat-preview-swipe": (596, 660, 108),
-  "phone chat-preview-video": (543, 604, 106),
+  "phone chat-preview-video": (620, 680, 114),
   "phone chat-publish": (527, 592, 106),
   "phone chat-quote": (527, 592, 106),
   "phone chat-screens": (527, 592, 106),

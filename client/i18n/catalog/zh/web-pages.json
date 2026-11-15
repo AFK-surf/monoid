@@ -1101,6 +1101,7 @@
   "web-pages.drive.player.mute": "静音",
   "web-pages.drive.player.unmute": "取消静音",
   "web-pages.drive.player.volume": "音量",
+  "web-pages.drive.player.position": "播放进度",
   "web-pages.drive.reader.contentsNote": "共 {n} 章 · 已读 {read}%",
   "web-pages.drive.reader.margin": "边距",
   "web-pages.drive.reader.indentLabel": "缩进",

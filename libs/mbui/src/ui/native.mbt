@@ -61,6 +61,8 @@ pub struct NativeView {
   /// a video's frames' times asked of the host, and read once it said them (asked for in every frame it plays)
   priv mut frames_asked : Bool
   priv mut frame_times : Array[Double]?
+  /// told as they come to be read (views_arrive): what a node of the window's tree binds of them is done again then
+  priv frames_told : @signals.Signal[Bool]
   /// a site's: who answers its requests, who hears of a link left by, the replies under way, where its page is
   priv serve : ((SiteRequest, SiteReply) -> Unit)?
   priv leave : (String) -> Unit
@@ -256,6 +258,7 @@ fn NativeView::make(
     closed: false,
     frames_asked: false,
     frame_times: None,
+    frames_told: @signals.signal(false, same=fn(a, b) { a == b }),
   }
   if v.id == 0 {
     v.state.set(-1)
@@ -483,6 +486,8 @@ pub fn NativeView::frames(self : NativeView) -> Array[Double]? {
   if self.id == 0 || self.closed {
     return None
   }
+  // (followed: read again as views_arrive finds them come)
+  self.frames_told.get() |> ignore
   if !self.frames_asked {
     self.frames_asked = true
     h_view_control(self.id, 20, 0.0)
@@ -965,6 +970,13 @@ fn view_stood(id : Int, state : Int) -> Unit {
 /// As a frame begins, before it is decided what it does again (frame_watch.mbt): each view whose host said how it
 /// stands changed read of it (its signals set: what reads them is built again).
 fn views_arrive() -> Unit {
+  // (a video's frames' times asked and not read yet: read as the host has them, what follows them told; the host says
+  // nothing of its own as they come but a frame)
+  for v in open_views {
+    if !v.closed && v.frames_asked && v.frame_times is None && v.frames() is Some(_) {
+      v.frames_told.set(true)
+    }
+  }
   if views_stirred.is_empty() {
     return
   }

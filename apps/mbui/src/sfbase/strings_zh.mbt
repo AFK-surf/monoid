@@ -2101,6 +2101,7 @@ let zh : Map[String, String] = {
   "web-pages.drive.player.mute": "静音",
   "web-pages.drive.player.next": "下一个",
   "web-pages.drive.player.nextIn": "{n} 秒后播放",
+  "web-pages.drive.player.position": "播放进度",
   "web-pages.drive.player.prev": "上一个",
   "web-pages.drive.player.rate": "播放速度",
   "web-pages.drive.player.unfull": "退出全屏",

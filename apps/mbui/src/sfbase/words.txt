@@ -2089,6 +2089,7 @@ web-pages.drive.player.list
 web-pages.drive.player.mute
 web-pages.drive.player.next
 web-pages.drive.player.nextIn
+web-pages.drive.player.position
 web-pages.drive.player.prev
 web-pages.drive.player.rate
 web-pages.drive.player.unfull

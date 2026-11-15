@@ -279,6 +279,8 @@ pub(all) struct Viewer {
   mut leaving_pic : String
   /// told as leaving_grab or leaving_pic changes (Viewer::grab_set): what is done at its going's end follows it
   grab_told : @signals.Signal[Int]
+  /// told as `flies` changes (Viewer::flies_set): what its player's nodes draw while it flies follows it
+  flies_told : @signals.Signal[Int]
   /// a desktop's song: played in the player a drive's is, not the phone's strip
   mut media : @kit.Media?
   /// a desktop's image put on the clipboard: how many times (its check shown a while after each)
@@ -1033,6 +1035,7 @@ pub fn new_viewer(
     leaving_pic: "",
     left_at: 0.0,
     grab_told: @signals.signal(0),
+    flies_told: @signals.signal(0),
     media: None,
     copied: 0,
     head_w: 0.0,
@@ -1664,7 +1667,7 @@ pub fn Viewer::fetch(self : Viewer, src : Source) -> Unit {
     return
   }
   match v.shown_kind() {
-    // a film or a song: the one player (@sf.player_view), read through the core a part at a time (never the whole file
+    // a film or a song: the one player (@sf.player_node; a tab's @sf.player_view), read through the core a part at a time (never the whole file
     // first, a seek far ahead one more ranged read), from the frame it was left at (the thumbnail's)
     // (a tab's its own, by its viewer: its view and what its player's view holds not the whole window's, nor another
     // tab's)
@@ -1798,7 +1801,7 @@ pub fn Viewer::set_out(self : Viewer, c : @ui.Ctx, src : Source, at : Double) ->
       Some(to) =>
         match thumb_of(c, v.thumb_id()) {
           Some(t) => {
-            v.flies = true
+            v.flies_set(true)
             v.fly_back = false
             v.fly_from = Some(t)
             // a video's: its still (the frame it was left at, else what its thumbnail shows), the black where it has
@@ -1934,7 +1937,7 @@ fn Viewer::fly_home_from(
   window : (Double, Double),
 ) -> Unit {
   if !self.flies {
-    self.flies = true
+    self.flies_set(true)
     self.fly_lift = 0.0
     self.fly.put(1.0)
   }
@@ -2008,6 +2011,15 @@ pub fn Viewer::left_with_picture(
     self.fly_home(key, at, window)
   } else {
     self.fly_home(self.still(src), at, window)
+  }
+}
+
+///|
+/// Whether its picture flies (`flies`), told (flies_told).
+fn Viewer::flies_set(self : Viewer, on : Bool) -> Unit {
+  if self.flies != on {
+    self.flies = on
+    self.flies_told.set(self.flies_told.untracked() + 1)
   }
 }
 

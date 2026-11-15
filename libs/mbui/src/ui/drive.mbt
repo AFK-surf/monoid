@@ -375,7 +375,7 @@ fn tree_on_screen(c : Ctx, what : String) -> Array[(Double, Double, @view.NodeId
     } else if what.has_prefix("=") && what.length() > 1 {
       let exact = what.unsafe_substring(start=1, end=what.length())
       words == exact || (label != "" && label == exact)
-    } else if what.contains(":") {
+    } else if step_kind_of(what) {
       false
     } else {
       (words != "" && words.contains(what)) || (label != "" && label == what)
@@ -390,6 +390,16 @@ fn tree_on_screen(c : Ctx, what : String) -> Array[(Double, Double, @view.NodeId
   hits
   .filter(fn(h) { h.3 || !hits.iter().any(fn(w) { w.3 && w.2 != h.2 && tree.holds(h.2, w.2) }) })
   .map(fn(h) { (h.0, h.1, h.2) })
+}
+
+///|
+/// Whether `what` names a kind of thing a step looks for (`kind:`, the letters before its first colon), not words: a
+/// time's words (`0:00 / 0:04`) are words, as an old view's are found by them.
+fn step_kind_of(what : String) -> Bool {
+  match what.find(":") {
+    Some(k) if k > 0 => what.unsafe_substring(start=0, end=k).iter().all(fn(ch) { ch >= 'a' && ch <= 'z' })
+    _ => false
+  }
 }
 
 ///|
