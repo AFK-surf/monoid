@@ -50,6 +50,7 @@
 /// key beside the app's update) off in all 81 as it came.
 /// MBUI_STATION_MOVE (2026-11-15: a station's page asks what of it moves, `stationMove`, for its 迁移 row) off in all
 /// 81 as it came.
+/// MBUI_TERMINALS (2026-11-15: a station's terminals among its screens on its page) off in all 81 as it came.
 let switches_known : Map[String, Int] = {
   "MBUI_PLACES_BAR": 72,
   "MBUI_DEVICES": 73,
@@ -66,6 +67,7 @@ let switches_known : Map[String, Int] = {
   "MBUI_SWITCH_AHEAD": 81,
   "MBUI_STATION_UPDATES": 81,
   "MBUI_STATION_MOVE": 81,
+  "MBUI_TERMINALS": 81,
 }
 
 ///|

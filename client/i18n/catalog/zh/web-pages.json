@@ -2016,5 +2016,13 @@
   "web-pages.stations.move.need.connects": "连接",
   "web-pages.stations.move.needs": "依赖 {names}",
   "web-pages.stations.move.stop": "停止",
-  "web-pages.stations.move.stopping": "正在停止…"
+  "web-pages.stations.move.stopping": "正在停止…",
+  "web-pages.terminal.title": "终端",
+  "web-pages.terminal.openRow": "打开终端",
+  "web-pages.terminal.copyCwd": "复制工作目录",
+  "web-pages.terminal.end": "结束会话",
+  "web-pages.terminal.typing": "{name} 控制中",
+  "web-pages.terminal.looking": "另有 {count} 人在看",
+  "web-pages.terminal.nobody": "没人在看",
+  "web-pages.terminal.ended": "已结束"
 }

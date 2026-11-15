@@ -651,6 +651,7 @@ pub fn source() -> @sfapp.Source {
     switches_ahead: fn() { @sfcore.trace_switch("MBUI_SWITCH_AHEAD") },
     asks_station_updates: fn() { @sfcore.trace_switch("MBUI_STATION_UPDATES") },
     asks_station_move: fn() { @sfcore.trace_switch("MBUI_STATION_MOVE") },
+    asks_terminals: fn() { @sfcore.trace_switch("MBUI_TERMINALS") },
   }
 }
 

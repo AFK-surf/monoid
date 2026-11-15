@@ -101,6 +101,8 @@ pub(all) struct Core {
   /// whether a station's page asks what of it moves (`stationMove`, its 迁移 row: sfpages station_node.mbt): the source's
   /// `asks_station_move`, not in a replay of a run from before
   move_on : () -> Bool
+  /// whether a station's terminals are asked for (the source's `asks_terminals`: not in a replay of a run from before)
+  terminals_on : () -> Bool
 }
 
 ///|

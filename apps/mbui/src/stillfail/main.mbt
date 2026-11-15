@@ -316,6 +316,7 @@ let core_source : @sfapp.Source = {
   switches_ahead: fn() { true },
   asks_station_updates: fn() { true },
   asks_station_move: fn() { true },
+  asks_terminals: fn() { true },
 }
 
 ///|

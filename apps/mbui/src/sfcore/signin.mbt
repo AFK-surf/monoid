@@ -552,6 +552,9 @@ pub let trace_switches : Array[String] = [
   // something is stopped or a turn failed, sfpages station_node.mbt. A trace without it has none asked, as its run's
   // app did)
   "MBUI_STATION_MOVE",
+  // (a station's terminals among its screens on its page, `terminals`: sfpages station_terminals_node.mbt. A trace
+  // without it has none asked, as its run's app did)
+  "MBUI_TERMINALS",
 ]
 
 ///|

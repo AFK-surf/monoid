@@ -147,6 +147,7 @@ fn settings_core_of(
     read_only: if src.read_only { read_only_words } else { "" },
     devices_on: src.asks_devices,
     move_on: src.asks_station_move,
+    terminals_on: src.asks_terminals,
   }
 }
 

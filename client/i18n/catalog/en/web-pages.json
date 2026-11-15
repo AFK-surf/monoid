@@ -2067,5 +2067,13 @@
   "web-pages.stations.move.need.connects": "connects",
   "web-pages.stations.move.needs": "Needs {names}",
   "web-pages.stations.move.stop": "Stop",
-  "web-pages.stations.move.stopping": "Stopping…"
+  "web-pages.stations.move.stopping": "Stopping…",
+  "web-pages.terminal.title": "Terminal",
+  "web-pages.terminal.openRow": "Open a terminal",
+  "web-pages.terminal.copyCwd": "Copy working folder",
+  "web-pages.terminal.end": "End session",
+  "web-pages.terminal.typing": "{name} is typing",
+  "web-pages.terminal.looking": "{count} more watching",
+  "web-pages.terminal.nobody": "Nobody watching",
+  "web-pages.terminal.ended": "Ended"
 }
