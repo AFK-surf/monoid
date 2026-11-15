@@ -46,11 +46,17 @@ static int catch_vk(WPARAM vk) {
   return code;
 }
 
-// (the window of the run in front, its canvas focused, a key catcher in it)
+// Which windows are the run's (KEYS_OURS: win_app.c's windows of one run; else the one, hwnd) and whether one's canvas
+// has a field taking keys with nothing composed in it (KEYS_TYPING: else ime_active, marked_len)
+#ifndef KEYS_OURS
+#define KEYS_OURS(h) ((h) == hwnd)
+#define KEYS_TYPING(h) (ime_active && !marked_len)
+#endif
+
+// The window of the run in front, its canvas focused, a key catcher in it (NULL: none)
 static HWND catch_window(void) {
-  int k = win_of(GetForegroundWindow());
-  if (k < 0 || GetFocus() != win_slots[k].h) return NULL;
-  return key_catching && win_slots[k].ime_active && !win_slots[k].marked_len ? win_slots[k].h : NULL;
+  HWND h = GetForegroundWindow();
+  return key_catching && h && GetFocus() == h && KEYS_OURS(h) && KEYS_TYPING(h) ? h : NULL;
 }
 static int catch_canvas(void) { return catch_window() != NULL; }
 
@@ -103,5 +109,6 @@ static void catch_keys_focus(int focused) {
 
 void mb_host_key_catch(int32_t on) {
   key_catching = on != 0;
-  catch_keys_focus(GetForegroundWindow() == ws->h && GetFocus() == ws->h);
+  HWND h = GetForegroundWindow();
+  catch_keys_focus(h && GetFocus() == h && KEYS_OURS(h));
 }

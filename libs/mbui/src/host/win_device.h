@@ -182,7 +182,7 @@ int32_t mb_host_clip_read(void) {
   } else {
     r->done = 1;
   }
-  ws->want_frame = 1;
+  want_frame = 1;
   return r->id;
 }
 

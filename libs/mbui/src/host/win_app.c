@@ -444,7 +444,17 @@ static void paste(void) {
 // files from outside: the system's dialog, let go on the window
 #include "win_files.h"
 // the device beyond the window (device.mbt): a key catcher's keys, the clipboard, awake
+// (a key catcher's windows: each of the run's, its own field and composition: win_keys.h)
+static int keys_typing(HWND h) {
+  int k = win_of(h);
+  return k >= 0 && win_slots[k].ime_active && !win_slots[k].marked_len;
+}
+#define KEYS_OURS(h) (win_of(h) >= 0)
+#define KEYS_TYPING(h) keys_typing(h)
+// (its frame the window in place's, as a test of it has its one)
+#define want_frame ws->want_frame
 #include "win_device.h"
+#undef want_frame
 // its log files: what it says on stderr, its performance record
 #include "win_logs.h"
 // the app's life: once for its person, put away to the notification area, links, in front or not, light or dark

@@ -158,18 +158,18 @@ static gboolean on_tick(GtkWidget *w, GdkFrameClock *clock, gpointer data) {
 
 // The window held out of sight as it opens (@hostapi.window_hold, said before mb_host_run): realized, not shown (its
 // canvas's context made, nothing of it on the screen), its frames drawn meanwhile into the canvas's picture at the size
-// it is to have (held_w × held_h points: held_frame), till the app shows it (mb_host_window_show): then it is presented
+// it is to have (held_w × held_h points: held_frame, as each is asked), till the app shows it (mb_host_window_show): then it is presented
 // as that frame ends, its first picture on the screen the app's page drawn (at its size as laid out: drawn again in the
 // snapshot where that is another), not its ground for the page's first moments.
 static int window_held, window_shown, window_to_show;
 static int held_w, held_h;
 static guint held_source;
 static gboolean held_frame(gpointer data);
-// (a frame asked of the first window while it is held: no frame clock ticks for a window not shown, so a frame is drawn
-// a display's frame later, as the clock would have had it; timer: what tells nothing by itself, the clock not there)
+// (a frame asked of the first window while it is held: no frame clock ticks for a window not shown, so it is drawn as
+// the loop is next idle, once however often it was asked; a held window is held for its first page's few moments)
 static void held_tick(void) {
   if (!window_held || window_shown || held_source) return;
-  held_source = g_timeout_add(16, held_frame, NULL);
+  held_source = g_idle_add(held_frame, NULL);
 }
 
 // A frame of the window in place asked for.
