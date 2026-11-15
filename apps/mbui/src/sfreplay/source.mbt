@@ -557,7 +557,14 @@ pub fn source() -> @sfapp.Source {
       let s = @sfcore.sign_in_now()
       @sfbase.SignInStep::of(busy=s.busy, verifying=s.verifying, waiting=s.waiting, failed=s.failed)
     },
-    picture: fn(url, stint) { picture(url, stint) },
+    picture: fn(url, stint) {
+      let key = picture(url, stint)
+      // (waited for by a card, a panel or a sheet made with it, as the app has it since MBUI_OPEN_WHOLE)
+      if @sfcore.trace_switch("MBUI_OPEN_WHOLE") {
+        @sfbase.picture_gated(key)
+      }
+      key
+    },
     fatal: fn() { @core.fatal() },
     file: fn(station, key, name) {
       let params : Map[String, Json] = {
@@ -653,6 +660,7 @@ pub fn source() -> @sfapp.Source {
     asks_station_move: fn() { @sfcore.trace_switch("MBUI_STATION_MOVE") },
     asks_terminals: fn() { @sfcore.trace_switch("MBUI_TERMINALS") },
     swr_views: fn() { @sfcore.trace_switch("MBUI_SWR_VIEWS") },
+    gates_opens: fn() { @sfcore.trace_switch("MBUI_OPEN_WHOLE") },
   }
 }
 

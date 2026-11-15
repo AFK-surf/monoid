@@ -183,6 +183,7 @@ fn scene_arg(name : String) -> String {
     "MBUI_FIX_PACE" => option(18)
     "MBUI_FIX_CORE" => option(19)
     "MBUI_FIXTURE_JSON" => option(20)
+    "MBUI_OPEN_WHOLE" => option(21)
     // (1Password's answers in a scene: the native film's only)
     "MBUI_FILM_OP" => ""
     _ => @halt.saying("picture: unsupported scene option \{name}")

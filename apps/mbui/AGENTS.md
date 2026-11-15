@@ -110,6 +110,10 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
     let go of and shown again at once as it is asked again, till the core answers (`@core.Client::show_kept`,
     MBUI_SWR_VIEWS); a chat's value kept waits for the core, and the lists above are shown again by `last_said`, never
     through the client (what names a station by them takes no kept value: `station_marks`).
+  - A card, a panel, a sheet or a dialog opened the first time comes in once what its nodes read as they are made is
+    answered, `open_hold_ms` at most, never held for what waits on a station (`src/sf/open_gate.mbt`: what reads a topic
+    tells it through sfbase's `Source::topic`; MBUI_OPEN_WHOLE, `src/sfapp/open_whole_wbtest.mbt`). What an old body
+    (an `@ui.old` island) reads is read as frames build it, after, and is not waited for.
   - On 小屏 a place of the bottom bar switched away from is kept, not let go (2026-11-12: making Home, 连接 or 用量
     anew at each switch was the largest cause of hangs on Home): its page's nodes put on the stack's shelf at rest and
     taken back as it is switched to (sfbase's `nav_root_kept`: the bar, back to the chats, the history; the rail and the

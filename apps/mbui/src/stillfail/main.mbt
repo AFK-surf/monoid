@@ -297,7 +297,12 @@ let core_source : @sfapp.Source = {
     let s = @sfcore.sign_in_now()
     @sfbase.SignInStep::of(busy=s.busy, verifying=s.verifying, waiting=s.waiting, failed=s.failed)
   },
-  picture,
+  // (a picture the device holds, put up as a card, a panel or a sheet is made: waited for by it till decoded, @sf.OpenGate)
+  picture: fn(url, stint) {
+    let key = picture(url, stint)
+    @sfbase.picture_gated(key)
+    key
+  },
   fatal: fn() { @core.fatal() },
   file: chat_file,
   poster: chat_poster,
@@ -318,6 +323,7 @@ let core_source : @sfapp.Source = {
   asks_station_move: fn() { true },
   asks_terminals: fn() { true },
   swr_views: fn() { true },
+  gates_opens: fn() { true },
 }
 
 ///|

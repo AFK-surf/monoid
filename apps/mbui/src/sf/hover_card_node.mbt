@@ -115,6 +115,9 @@ pub fn hover_card_node(
   })
   // (how far it is in, and which way it goes: in as hover_card_in, out as hover_card_out)
   let way = EdgeWay::new(0.0)
+  // (what the card it opens holds made first, what it reads then waited for before it comes in: OpenGate; a card
+  // made anew each time it opens from none)
+  let gate : Ref[OpenGate] = Ref(OpenGate::new())
   // (the moment pending: its rest's end while closed, its leave's while open)
   let due : Ref[(() -> Unit)?] = Ref(None)
   let stop_due = fn() {
@@ -195,6 +198,7 @@ pub fn hover_card_node(
       // it scrolls, which would cut them and what takes their presses)
       t.lends(panel_submenus_lent, row_open) |> ignore
       t.lends(submenu_layer_lent, holder) |> ignore
+      gate.val.collect(fn() {
       t.box(fn(b) {
         b.alpha(By(fn() { look().words })) |> ignore
         b.scrolls(@view.Scroll::new(), slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(s) {
@@ -211,6 +215,8 @@ pub fn hover_card_node(
         |> ignore
       })
       |> ignore
+      })
+      gate.val.seal(t)
     })
     true
   }
@@ -227,8 +233,13 @@ pub fn hover_card_node(
       guard made.val else { return }
     }
     if on {
-      way.go(anchor, 1.0, hover_card_in_ms, ease=Out)
+      // (none made: made as it is opened, coming in once what it holds is: OpenGate; one still going, at once)
+      if card.untracked() is None {
+        gate.val = OpenGate::new()
+      }
+      gate.val.go(anchor, fn() { way.go(anchor, 1.0, hover_card_in_ms, ease=Out) })
     } else {
+      gate.val.stop()
       way.go(anchor, 0.0, hover_card_out_ms, ease=Leave)
     }
     open.set(on)

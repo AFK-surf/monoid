@@ -53,6 +53,8 @@
 /// MBUI_TERMINALS (2026-11-15: a station's terminals among its screens on its page) off in all 81 as it came.
 /// MBUI_SWR_VIEWS (2026-11-15: a view's own topic kept and shown again at once, a chat's services' pop read from its
 /// bar's summary till its own comes, an agent's card asking ahead its model's menu) off in all 81 as it came.
+/// MBUI_OPEN_WHOLE (2026-11-15: a card, a panel or a sheet opened the first time comes in once what it reads is answered,
+/// a station's or a connect's page opened once what it shows is) off in all 81 as it came.
 let switches_known : Map[String, Int] = {
   "MBUI_PLACES_BAR": 71,
   "MBUI_DEVICES": 72,
@@ -71,6 +73,7 @@ let switches_known : Map[String, Int] = {
   "MBUI_STATION_MOVE": 81,
   "MBUI_TERMINALS": 80,
   "MBUI_SWR_VIEWS": 81,
+  "MBUI_OPEN_WHOLE": 81,
 }
 
 ///|

@@ -82,13 +82,18 @@ fn dialog_layer_node(
       let veiled = EdgeWay::new(0.0)
       layer.reacts(covered, fn(on) { veiled.go(layer, if on { 1.0 } else { 0.0 }, confirm_ground_ms) }) |> ignore
       let veil = fn() { confirm_faded(@ui.tree_theme().scrim, veiled.shown(layer)) }
+      // (what it holds made first, what it reads then waited for before it comes in: OpenGate)
+      let gate = OpenGate::new()
       layer.reacts(fn() { layer.leaving() }, fn(going) {
         if going {
+          gate.stop()
           shown.go(layer, 0.0, @kit.pop_out_ms, ease=Leave)
           dim.go(layer, 0.0, @kit.pop_out_ms, ease=Leave)
         } else {
-          shown.go(layer, 1.0, @kit.dialog_ms)
-          dim.go(layer, 1.0, ground_ms)
+          gate.go(layer, fn() {
+            shown.go(layer, 1.0, @kit.dialog_ms)
+            dim.go(layer, 1.0, ground_ms)
+          })
         }
       })
       let look = fn() {
@@ -158,6 +163,7 @@ fn dialog_layer_node(
       }))
       |> ignore
       layer.box(fn(s) { s.grow(Is(1.0)) |> ignore }) |> ignore
+      gate.collect(fn() {
       layer.box(fn(across) {
         across.row(Is(true)) |> ignore
         across.box(fn(s) { s.grow(Is(1.0)) |> ignore }) |> ignore
@@ -172,6 +178,8 @@ fn dialog_layer_node(
         across.box(fn(s) { s.grow(Is(1.0)) |> ignore }) |> ignore
       })
       |> ignore
+      })
+      gate.seal(layer)
       layer.box(fn(s) { s.grow(Is(1.0)) |> ignore }) |> ignore
     },
     leave=@kit.pop_out_ms,

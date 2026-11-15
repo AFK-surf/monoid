@@ -2440,6 +2440,7 @@ pub fn fixture(mode : String) -> Source {
     asks_station_move: fn() { true },
     asks_terminals: fn() { true },
     swr_views: fn() { false },
+    gates_opens: fn() { false },
   }
 }
 

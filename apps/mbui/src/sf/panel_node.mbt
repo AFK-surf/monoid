@@ -42,8 +42,11 @@ fn panel_node(
       let way = EdgeWay::new(0.0)
       let leave_from = Ref(0.0)
       let leave_look = Ref(@kit.pop_in.at(0.0, 0.0))
+      // (what it holds made first, what it reads then waited for before it comes in: OpenGate)
+      let gate = OpenGate::new()
       layer.reacts(fn() { layer.leaving() }, fn(going) {
         if going {
+          gate.stop()
           if x.fade_out_together {
             // Keep the appearance reached if it is closed before its entrance finishes.
             let p = way.way.value_at(layer.cause_at())
@@ -52,7 +55,7 @@ fn panel_node(
           }
           way.go(layer, 0.0, @kit.pop_out_ms, ease=Leave)
         } else {
-          way.go(layer, 1.0, @kit.pop_ms)
+          gate.go(layer, fn() { way.go(layer, 1.0, @kit.pop_ms) })
         }
       })
       let look = fn() {
@@ -134,6 +137,7 @@ fn panel_node(
           { alpha: 1.0, dx: 0.0, dy: 0.0, sx: 1.0, sy: 1.0, ox: 0.5, oy: 0.5, rot: 0.0, circle: 0.0, words: look().words }
         })
       }
+      gate.collect(fn() {
       layer.box(fn(p) {
         presented_popovers[keyed.serial] = p
         p
@@ -398,6 +402,8 @@ fn panel_node(
         }
       })
       |> ignore
+      })
+      gate.seal(layer)
     },
     leave=@kit.pop_out_ms,
   )

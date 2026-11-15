@@ -482,8 +482,12 @@ fn sheet_node(
         placed.set(Some((stood, at, left, v)))
         reach.set(dmax(reach.untracked(), sheet_under + stood))
       }
+      // (what it holds made first, what it reads then waited for before it rises: OpenGate; one in another's place,
+      // seen there from the first, waits for nothing)
+      let gate = OpenGate::new()
       layer.reacts(fn() { layer.leaving() }, fn(going) {
         if going {
+          gate.stop()
           dim.go(layer, 0.0, @kit.sheet_scrim_ms, ease=Out)
           // (closed on its way from as tall as it stood: it sinks away from where it is seen then, as fast as it went)
           let carried_off = carried()
@@ -492,8 +496,15 @@ fn sheet_node(
           below.go(sheet_box, layer, 1.0, reach.untracked(), speed?=let_go_speed.val, off~)
           let_go_speed.val = None
         } else {
-          dim.go(layer, 1.0, @kit.sheet_scrim_ms, ease=Out)
-          below.go(sheet_box, layer, 0.0, reach.untracked(), late=@signals.untracked(fn() { top().nodes is None }))
+          let rise = fn() {
+            dim.go(layer, 1.0, @kit.sheet_scrim_ms, ease=Out)
+            below.go(sheet_box, layer, 0.0, reach.untracked(), late=@signals.untracked(fn() { top().nodes is None }))
+          }
+          if in_place is Some(_) {
+            rise()
+          } else {
+            gate.go(layer, rise)
+          }
         }
       })
       // (a sheet over it: it steps back, as far up as that one's height makes it (push_of), its veil over it as far as
@@ -631,6 +642,7 @@ fn sheet_node(
       |> ignore
       // (the room over it: what a press closes it on)
       layer.box(fn(s) { s.grow(Is(1.0)) |> ignore }) |> ignore
+      gate.collect(fn() {
       layer.box(fn(sheet) {
         sheet_box.val = Some(sheet)
         // (how tall it stands, asked as it closes: where it was last placed)
@@ -1189,6 +1201,8 @@ fn sheet_node(
         |> ignore
       })
       |> ignore
+      })
+      gate.seal(layer)
       // (the keys on the field it opens to be typed in, where it says one, given back as it goes; else, a search at
       // hand or none, the focus left where it is: Enter its foot's action)
       match field.val {

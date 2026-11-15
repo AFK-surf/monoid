@@ -604,6 +604,10 @@ pub let trace_switches : Array[String] = [
   // card asking ahead what its model's menu lists (`pick`), and what the accounts said anew forgets of what is kept.
   // A trace without it has none of these, as its run's app did)
   "MBUI_SWR_VIEWS",
+  // (a card, a panel or a sheet opened the first time comes in once what it reads of the device is answered (@sf.OpenGate,
+  // open_hold_ms at most), and a station's or a connect's page opened by a press once what it shows is (sfbase's
+  // route_open_asks). A trace without it opens each at once, as its run's app did)
+  "MBUI_OPEN_WHOLE",
 ]
 
 ///|

@@ -35,6 +35,9 @@ pub fn source(arg : (String) -> String) -> () -> @sfapp.Source {
         if arg("MBUI_UPDATES_MS") != "" { @sffixture.fixture_updates(ms=whole_ms(arg("MBUI_UPDATES_MS"))) }
         if arg("MBUI_UPDATE") != "" { @sffixture.fixture_update(arg("MBUI_UPDATE")) }
         let s = if late > 0.0 { @sffixture.round_trip(s, late) } else { s }
+        // MBUI_OPEN_WHOLE=1: a card, a panel or a sheet opened the first time waits for what it reads, as the app does
+        // (@sf.OpenGate; a fixture's own tests say what shows before the core answers, so not without it)
+        let s = if arg("MBUI_OPEN_WHOLE") == "1" { { ..s, gates_opens: fn() { true } } } else { s }
         let held = arg("MBUI_HOLD")
         let s = if held != "" { @sffixture.held_topics(s, held.split(",").map(fn(x) { x.to_owned() }).collect()) } else { s }
         let failed = arg("MBUI_FAILED")

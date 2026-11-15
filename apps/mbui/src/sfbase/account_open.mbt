@@ -77,6 +77,30 @@ pub fn route_asks(ws : String, r : @settings.Route) -> Array[(String, Map[String
 }
 
 ///|
+/// What a press opening the settings' route `r` asks before the page opens (open_answered), on `src`: route_asks, and
+/// where a card, a panel or a sheet waits for what it reads too (gates_opens, MBUI_OPEN_WHOLE) a station's page its
+/// station whole and a connect's page that connect (settings' station_read, connect_read), so neither opens on its bones
+/// while the core reads what the device holds; one that waits on a station opens at once, showing that it waits.
+pub fn route_open_asks(src : Source, ws : String, r : @settings.Route) -> Array[(String, Map[String, Json])] {
+  let asks = route_asks(ws, r)
+  if !(src.gates_opens)() {
+    return asks
+  }
+  match r {
+    Station(address) =>
+      [("station", { "scope": Json::string(account_scope(ws, address)), "station": Json::string(address) })]
+    Connect(address, id) =>
+      [
+        (
+          "connect",
+          { "scope": Json::string(account_scope(ws, address)), "station": Json::string(address), "id": Json::string(id) },
+        ),
+      ]
+    _ => asks
+  }
+}
+
+///|
 /// `asks` asked of `src` now and held by what is returned till what opens has read them: whether each is answered (a
 /// value, or an error the page says), and what holds them. A press that waits by press_wait itself takes them so (an
 /// agent's history's 详情: what it opens keeps its own way, sfpages' history_details_open). With `then`, each time all
@@ -98,7 +122,7 @@ pub fn asked_now(
   let keys = asks.map(key)
   let told = fn(l : TopicLease) {
     match l.follow() {
-      Some(t) => t.value is Some(_) || t.error is Some(_)
+      Some(t) => t.value is Some(_) || t.error is Some(_) || ((src.gates_opens)() && t.waiting)
       // (let go of: nothing to wait for)
       None => true
     }

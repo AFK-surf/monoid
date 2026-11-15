@@ -168,6 +168,11 @@ pub(all) struct Source {
   /// bar's summary till its own comes, an agent's card what its model's menu lists, asked ahead): not of a run seen
   /// again that was recorded before the app did (MBUI_SWR_VIEWS)
   swr_views : () -> Bool
+  /// whether a card, a panel or a sheet opened the first time waits for what it reads of the device before it comes in, and
+  /// a page opened by a press for what it shows (@sf.OpenGate: as made, Source::topic; route_open_asks): not of a run seen
+  /// again that was recorded before the app did (MBUI_OPEN_WHOLE), nor of a fixture, whose tests say what a page shows
+  /// before the core answers
+  gates_opens : () -> Bool
 }
 
 ///|
@@ -175,6 +180,32 @@ pub(all) struct Source {
 /// the graph releases it when the last reader leaves. An immediate-mode page holds its untracked frame read until it leaves.
 pub fn Source::topic(src : Source, name : String, params : Map[String, Json]) -> @signals.Computed[TopicState] {
   let said = topic_key(name, params)
+  // (read as a card, a panel or a sheet is made: waited for by it before it comes in, @sf.OpenGate)
+  if @sf.open_gate_collecting() && (src.gates_opens)() {
+    let sig = topic_read_by(src, name, params, said)
+    @sf.open_gate_note(fn() { topic_told(sig.get()) })
+    return sig
+  }
+  topic_read_by(src, name, params, said)
+}
+
+///|
+/// Whether what the core said of a topic lets what waits for it go on (@sf.OpenGate, a page opened by a press): its
+/// value or why not, or that it waits on a station for it (what shows that it waits, at once, never held for a station).
+pub fn topic_told(st : TopicState) -> Bool {
+  st.value is Some(_) || st.error is Some(_) || st.waiting
+}
+
+///|
+/// Picture `key` (an image's key, "" none) put up as what a card, a panel or a sheet holds is made: waited for by it where
+/// the device holds it not decoded yet (@sf.OpenGate), as a source that gates opens (gates_opens) has its pictures.
+pub fn picture_gated(key : String) -> Unit {
+  @sf.open_gate_picture(key)
+}
+
+///|
+/// Source::topic's, its key `said`.
+fn topic_read_by(src : Source, name : String, params : Map[String, Json], said : String) -> @signals.Computed[TopicState] {
   // (read by what follows it, as a binding or a computed reads it again at each of its evaluations: the same signal as
   // the last such read of it, so the reader's link to it is the one it had (no signal made, followed and let go of
   // again each time). One read outside any reader, which may keep it and let it go itself, is a signal of its own.)
@@ -824,6 +855,7 @@ pub fn made_source(
     asks_station_move: fn() { true },
     asks_terminals: fn() { true },
     swr_views: fn() { true },
+    gates_opens: fn() { true },
   }
 }
 
