@@ -54,8 +54,11 @@ export class SlackStandIn {
   }
 
   readonly apps: App[];
-  constructor(src: string, apps: App[]) {
+  /// Told each socket's opening and closing as it happens, with how many of its app's are open then.
+  told: (line: string) => void;
+  constructor(src: string, apps: App[], told: (line: string) => void = () => {}) {
     this.apps = apps;
+    this.told = told;
     // (the station's own `ws`, as its stand-in uses it: nothing installed for the drill)
     this.WebSocketServer = createRequire(join(src, "station", "package.json"))("ws").WebSocketServer;
   }
@@ -152,6 +155,7 @@ export class SlackStandIn {
     this.most.set(app, Math.max(this.most.get(app) ?? 0, open));
     const gap = this.gaps(app).at(-1);
     if (gap !== undefined && gap.to === 0) gap.to = s.opened;
+    this.told(`Slack: ${app} socket ${station}#${n} opened at ${new Date(s.opened).toISOString().slice(11, 23)}, ${open} open: ${this.live(app).map((x) => `${x.station}#${x.n}`).join(",")}`);
     // (Socket Mode's first word on a socket: https://api.slack.com/apis/socket-mode, "hello")
     ws.send(JSON.stringify({ type: "hello", num_connections: open, debug_info: { host: "drill", approximate_connection_time: 18060 }, connection_info: { app_id: "A1" } }));
     ws.on("message", (data: J) => {
@@ -171,6 +175,7 @@ export class SlackStandIn {
     ws.on("close", () => {
       s.closed = Date.now();
       if (this.live(app).length === 0) this.gaps(app).push({ from: s.closed, to: 0 });
+      this.told(`Slack: ${app} socket ${station}#${n} closed at ${new Date(s.closed).toISOString().slice(11, 23)}, ${this.live(app).length} open: ${this.live(app).map((x) => `${x.station}#${x.n}`).join(",") || "none"}`);
       // (what went down it and was not acknowledged: Slack sends it again on another of the app's sockets)
       for (const e of this.sent.values()) {
         const last = e.deliveries.at(-1);

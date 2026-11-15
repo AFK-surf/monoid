@@ -1903,7 +1903,7 @@ try {
   if (part("4s") && (limit("4s", 5400), await clean("4s"))) {
     const APP = "xapp-1-drill";
     const APP1 = "xapp-2-drill";
-    const sl = new SlackStandIn(process.env.E2E_SF_SRC!, [{ app: APP, bot: "xoxb-1-drill", user: "UBOT" }, { app: APP1, bot: "xoxb-2-drill", user: "UBOT2" }]);
+    const sl = new SlackStandIn(process.env.E2E_SF_SRC!, [{ app: APP, bot: "xoxb-1-drill", user: "UBOT" }, { app: APP1, bot: "xoxb-2-drill", user: "UBOT2" }], (line) => log(`  ${line}`));
     const CH = "C1";
     const CH1 = "C2";
     const dk = "dk";
