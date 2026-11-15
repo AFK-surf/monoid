@@ -32,7 +32,16 @@ fn launcher() -> &'static str {
 /// The Node the station runs on (.node-version), where scripts/node-here.sh puts it, unless STILLFAIL_NODE says another.
 fn node() -> String {
     let version = include_str!("../../../../.node-version").trim();
-    std::env::var("STILLFAIL_NODE").unwrap_or_else(|_| format!("{}/.local/node-v{version}-darwin-arm64/bin/node", std::env::var("HOME").unwrap()))
+    let platform = match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => "darwin-arm64",
+        ("linux", "x86_64") => "linux-x64",
+        ("linux", "aarch64") => "linux-arm64",
+        _ => return std::env::var("STILLFAIL_NODE").unwrap_or_else(|_| "node".to_string()),
+    };
+    std::env::var("STILLFAIL_NODE").unwrap_or_else(|_| {
+        let here = format!("{}/.local/node-v{version}-{platform}/bin/node", std::env::var("HOME").unwrap());
+        if Path::new(&here).is_file() { here } else { "node".to_string() }
+    })
 }
 
 /// Held while a socket is made or a process started. On macOS a socket is made close-on-exec only after it is made: a

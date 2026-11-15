@@ -496,10 +496,10 @@ if [ $full = 1 ]; then
   # The station: it and its tests run whenever it, one of its native parts or the words it says changed (station_paths:
   # scripts/plan.sh reads it from this line for CI's check-station).
   station_paths='^station/|^vendor/|^client/i18n/|^client/shell/|^libs/mbui/src/effect/|^rules/js/|^scripts/native\.ts$|^scripts/station-slice\.sh$'
-  # Its tests' native parts, prebuilt (mesh addon, runner, the reader in MoonBit; on a Mac the Rust station's archive
-  # command too, for the compatibility tests, which skip themselves without it: it is prebuilt for darwin alone).
+  # Its tests' native parts, prebuilt (mesh addon, runner, the reader in MoonBit, and the Rust station's archive
+  # command for darwin-arm64 and linux-x64).
   station_natives="mesh runner reader"
-  [ "$(uname -s)" = Darwin ] && station_natives="mesh runner archive-rs reader"
+  case "$(uname -s)-$(uname -m)" in Darwin-*|Linux-x86_64) station_natives="mesh runner archive-rs reader" ;; esac
   if part station && touches "$station_paths"; then
     prep station deps station
     # Its programs in MoonBit (station/mb): what of them runs without a host (src/wire, src/claude and the rest below).
@@ -509,12 +509,6 @@ if [ $full = 1 ]; then
     # driver (agents/cursor-bridge.mjs) and the sandbox bridge (agents/sandbox-bridge.mjs) run in processes of their own,
     # not the station's.
     step "station: time through its clock" sh -c '! git grep -nE "Date\.now\(|new Date\(\)|setTimeout\(|setInterval\(" -- station/src ":!station/src/ops/fibers.ts" ":!station/src/agents/cursor-bridge.mjs" ":!station/src/agents/sandbox-bridge.mjs"'
-    # Where the station's tests are another run's (CI: check-station's, on Linux), the ones only a Mac can run are
-    # this one's: those of the Rust station's archive command (test/cold-compat.test.ts, 8 tests; every other test
-    # ran on Linux as on a Mac, 2026-11-10).
-    if ! part station-tests && [ "$(uname -s)" = Darwin ]; then
-      remembered "tests: station, a Mac's alone" "station scripts/native.ts" after station sh -c 'cd station && node ../scripts/native.ts run mesh runner archive-rs reader -- node --import ./test/setup-env.mjs --test --test-timeout=600000 test/cold-compat.test.ts'
-    fi
   fi
   # The station's tests (station/test): every file, or one slice of them (STILLFAIL_STATION_SHARD="<i>/<n>": the
   # files dealt by what each costs, the longest first, each onto the slice with the least: scripts/station-slice.sh). CI runs them in slices on Linux runners of their own (pipeline.yml,

@@ -801,6 +801,17 @@ mod tests {
         let (ours, theirs) = socketpair().unwrap();
         nonblocking(ours.as_raw_fd()).unwrap();
         nonblocking(theirs.as_raw_fd()).unwrap();
+        let sndbuf: c_int = 8192;
+        // SAFETY: shrinking our send buffer on a live socket descriptor so 200 KB exceeds it on Linux (wmem_default 208 KB) as on macOS.
+        unsafe {
+            libc::setsockopt(
+                ours.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_SNDBUF,
+                (&raw const sndbuf).cast(),
+                std::mem::size_of_val(&sndbuf) as libc::socklen_t,
+            );
+        }
         let node = Node { pid: 0, control: ours, pending: vec![], outgoing: RefCell::new(vec![]), open: true };
         let carried = json!({ "op": "carried", "carried": { "grants": "g".repeat(200_000) } });
         node.send(&carried);

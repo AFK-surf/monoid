@@ -1,9 +1,11 @@
 #!/bin/bash
-# Builds the station's reader in MoonBit (station/mb) for TARGET (darwin-arm64 by default, linux-x64, linux-arm64,
-# win32-x64), on a Mac, into OUT (default _build/stillfail-reader-TARGET). MoonBit makes the program's C here; it is
-# compiled and linked here too, for each target (zig cc for Linux, glibc 2.28 on, and for Windows, MinGW's), with
-# MoonBit's runtime from its source, its reference cycles collected (MOONBIT_TRIAL_DELETION) on the system allocator.
-# Linked to the shell's static library (client/shell), which SHELL_LIB names, or scripts/native.ts gets for the target
+# Builds the station's reader in MoonBit (station/mb) for TARGET (this machine's by default: darwin-arm64, linux-x64,
+# linux-arm64, win32-x64), on a Mac or a Linux x86-64 machine, into OUT (default _build/stillfail-reader-TARGET).
+# MoonBit makes the program's C here (with mbc-stub.sh so moon skips its host compile and link); libs/mbui/scripts/mbc
+# splits it into units and compiles them in parallel across all cores (moonbit_init at -O0, unchanged units kept in
+# MBC_STORE), then links for each target (zig cc for Linux, glibc 2.28 on, and for Windows, MinGW's), with MoonBit's
+# runtime from its source, its reference cycles collected (MOONBIT_TRIAL_DELETION) on the system allocator. Linked to
+# the shell's static library (client/shell), which SHELL_LIB names, or scripts/native.ts gets for the target
 # (shell-apple on the Mac, shell-station elsewhere). MBUI_TOOLS, as apps/mbui's scripts have it, says where moon is when
 # it is not on PATH.
 #   build.sh [TARGET] [OUT]
@@ -11,40 +13,94 @@ set -euo pipefail
 D="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$D/../.." && pwd)"
 [ -n "${MBUI_TOOLS:-}" ] && export MOON_HOME=$MBUI_TOOLS/moon PATH=$MBUI_TOOLS/moon/bin:$PATH
-target=${1:-darwin-arm64}
+default_target=darwin-arm64
+case "$(uname -s)-$(uname -m)" in
+  Linux-x86_64) default_target=linux-x64 ;;
+  Linux-aarch64|Linux-arm64) default_target=linux-arm64 ;;
+esac
+target=${1:-$default_target}
 out=${2:-$D/_build/stillfail-reader-$target}
 case "$target" in
-  darwin-arm64) cc=(cc -arch arm64 -mmacosx-version-min=11.0); ar=(ar); part=shell-apple
+  darwin-arm64) cc=(cc -arch arm64 -mmacosx-version-min=11.0); ar=(ar); part=shell-apple; init_flags="-O0"
     libs=(-framework SystemConfiguration -framework Security -framework CoreFoundation -framework Foundation -liconv -lobjc -Wl,-dead_strip) ;;
-  linux-x64) cc=(zig cc -target x86_64-linux-gnu.2.28); ar=(zig ar); part=shell-station
+  # zig cc turns on UBSan at -O0 while the -O2 link leaves its runtime out: -fno-sanitize=undefined on moonbit_init.
+  linux-x64) cc=(zig cc -target x86_64-linux-gnu.2.28); ar=(zig ar); part=shell-station; init_flags="-O0 -fno-sanitize=undefined"
     libs=(-lunwind -lutil -lrt -lpthread -lm -ldl -lc -Wl,--gc-sections -s) ;;
-  linux-arm64) cc=(zig cc -target aarch64-linux-gnu.2.28); ar=(zig ar); part=shell-station
+  linux-arm64) cc=(zig cc -target aarch64-linux-gnu.2.28); ar=(zig ar); part=shell-station; init_flags="-O0 -fno-sanitize=undefined"
     libs=(-lunwind -lutil -lrt -lpthread -lm -ldl -lc -Wl,--gc-sections -s) ;;
-  win32-x64) cc=(zig cc -target x86_64-windows-gnu); ar=(zig ar); part=shell-station
+  win32-x64) cc=(zig cc -target x86_64-windows-gnu); ar=(zig ar); part=shell-station; init_flags="-O0 -fno-sanitize=undefined"
     libs=(-lshell32 -liphlpapi -lbcrypt -ladvapi32 -lkernel32 -lntdll -luserenv -lws2_32 -ldbghelp -lunwind -s) ;;
   *) echo "build.sh: no target $target" >&2; exit 2 ;;
 esac
 shell_lib=${SHELL_LIB:-$(node "$ROOT/scripts/native.ts" path $part $target)/libstillfail_shell.a}
-mac_lib=$shell_lib
-[ "$target" = darwin-arm64 ] || mac_lib=$(node "$ROOT/scripts/native.ts" path shell-apple darwin-arm64)/libstillfail_shell.a
 
-# The program's C, by moon (which links it for the Mac as well: its link flags take the Mac's shell from out/, as
-# src/reader/moon.pkg says; copied only when it differs, moon linking again when what it links is newer).
-mkdir -p "$D/out"
-cmp -s "$mac_lib" "$D/out/libstillfail_shell.a" || cp "$mac_lib" "$D/out/libstillfail_shell.a"
-(cd "$D" && moon build --target native --release src/reader)
+work="$D/_build/link-$target-$$"
+rm -rf "$work"
+mkdir -p "$work/runtime" "$work/obj" "$D/_build" "$(dirname "$out")"
+trap 'rm -rf "$work"' EXIT
+
+# Serialize moon's C generation (and any first-time build of mbc) across concurrent target builds, copying reader.c into
+# this build's own directory before releasing the lock so another target's `moon build` never rewrites reader.c under cc.
+lock="$D/_build/moon-gen.lock"
+while ! mkdir "$lock" 2>/dev/null; do
+  pid=$(cat "$lock/pid" 2>/dev/null || echo 0)
+  if [ "${pid:-0}" -gt 0 ] 2>/dev/null && ! kill -0 "$pid" 2>/dev/null; then rm -rf "$lock"; continue; fi
+  sleep 0.1
+done
+echo "$$" > "$lock/pid"
+(
+  trap 'rm -rf "$lock"' EXIT
+  "$ROOT/libs/mbui/scripts/mbc" path >/dev/null
+  cd "$D"
+  MOON_CC="$ROOT/libs/mbui/scripts/mbc-stub.sh" MOON_AR="$ROOT/libs/mbui/scripts/mbc-stub.sh" \
+    moon build --target native --release src/reader
+  cp "$D/_build/native/release/build/station/reader/reader.c" "$work/reader.c"
+)
+
 moon_home=${MOON_HOME:-$(dirname "$(dirname "$(command -v moon)")")}
 flags=(-I"$moon_home/include" -O2 -fwrapv -fno-strict-aliasing -ffp-contract=off -Wno-unused-value -DMOONBIT_TRIAL_DELETION=1)
+cflags="-I\"$moon_home/include\" -O2 -fwrapv -fno-strict-aliasing -ffp-contract=off -Wno-unused-value -DMOONBIT_TRIAL_DELETION=1"
+
+if [ -z "${MBC_STORE:-}" ]; then
+  if [ -d "$HOME/stillfail-ci" ]; then
+    export MBC_STORE="$HOME/stillfail-ci/reader-mbc-store"
+  else
+    export MBC_STORE="${XDG_CACHE_HOME:-$HOME/.cache}/stillfail-reader-mbc"
+  fi
+fi
+mkdir -p "$MBC_STORE"
+
+extras=()
+for c in "$D"/src/*/*.c; do
+  extras+=("--extra=$c")
+done
+
+"$ROOT/libs/mbui/scripts/mbc" compile \
+  "--cc=${cc[*]}" \
+  "--cflags=$cflags" \
+  "--init-flags=$init_flags" \
+  "--obj=$work/obj" \
+  "--link-flags=$work/link-flags.txt" \
+  "${extras[@]}" \
+  "$work/reader.c" > "$work/objs.txt"
+
+objs=()
+while IFS= read -r o; do
+  [ -n "$o" ] && objs+=("$o")
+done < "$work/objs.txt"
+
+link_extra=()
+if [ -s "$work/link-flags.txt" ]; then
+  # shellcheck disable=SC2206
+  link_extra=($(cat "$work/link-flags.txt"))
+fi
 
 # MoonBit's runtime for the target: each of its files that builds there (the others are moonbitlang/async's, which the
 # program does not use, and which on Windows build with MSVC only), in an archive the link takes what it needs from.
-work="$D/_build/link-$target"
-rm -rf "$work"
-mkdir -p "$work/runtime"
 for c in "$moon_home"/lib/runtime/*.c; do
   "${cc[@]}" "${flags[@]}" -c "$c" -o "$work/runtime/$(basename "$c" .c).o" 2> /dev/null || true
 done
 "${ar[@]}" rcs "$work/libruntime.a" "$work"/runtime/*.o
-"${cc[@]}" "${flags[@]}" -o "$out" "$D/_build/native/release/build/station/reader/reader.c" "$D/src/host/host.c" "$D/src/sql/sql.c" "$D/src/replica/carry.c" "$D/src/footprint/footprint.c" \
+"${cc[@]}" "${flags[@]}" -o "$out" "${objs[@]}" ${link_extra[@]+"${link_extra[@]}"} \
   "$work/libruntime.a" "$shell_lib" "${libs[@]}"
 echo "$out"
