@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [ee6fc242b](https://github.com/AFK-surf/monoid/commit/ee6fc242b698faeeebbe43a350f34c497309f035) ci: put runs whatever the Mac's build came to, as  | 2.07 | 2.84 | 12.25 | 32.14 | 45.34 | 28.73 | 56.51 | 98.63 | 117.76 |
 | [3ae4ef14c](https://github.com/AFK-surf/monoid/commit/3ae4ef14c0018b864533e103ac0bf3fe69c9171a) app: a long list of the chat's page made as nodes, | 2.07 | 2.84 | 12.25 | 32.14 | 45.33 | 28.72 | 56.49 | 99.08 | 113.05 |
 | [012d73161](https://github.com/AFK-surf/monoid/commit/012d731614df1747268d790734cd3d2900353730) feat(history): wrap expanded steps in unified surf | 2.07 | 2.84 | 12.25 | 32.14 | 45.33 | 28.72 | 56.49 | 99.08 | 113.05 |
 | [b2718f752](https://github.com/AFK-surf/monoid/commit/b2718f7525b188439ab9a1f798ed6623a4beb6a7) app: a long table of the chat's page made as nodes | 2.07 | 2.84 | 12.24 | 32.12 | 45.31 | 28.71 | 56.48 | 98.65 | 80.4 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [46c6d9b18](https://github.com/AFK-surf/monoid/commit/46c6d9b189993ee1f96d734583a5de48f749a17c) station: a device's jobs and a list's changes read | 2.01 | 2.77 | 11.91 | 31.83 | 44.34 | 28.44 | 55.68 | 98.55 | 111.3 |
 | [a0dfc9e45](https://github.com/AFK-surf/monoid/commit/a0dfc9e45228f7bc11109989637120492ff1211a) mbui, app tests: what kept_rows_kinds compares rea | 2.01 | 2.76 | 11.87 | 31.75 | 44.2 | 28.37 | 55.56 | 97.86 | 111.44 |
 | [aa163a4d3](https://github.com/AFK-surf/monoid/commit/aa163a4d30c4ac75c420c16c4928c847b64d07cc) mbui: what goes or comes under a page's list goes  | 2.01 | 2.76 | 11.87 | 31.75 | 44.2 | 28.37 | 55.56 | 97.86 | 111.44 |
-| [b3989e2e3](https://github.com/AFK-surf/monoid/commit/b3989e2e32459dcb986de39468ead32d11209231) mbui: a tooltip takes no system back (Ctx::overlay | 2.01 | 2.76 | 11.87 | 31.75 | 44.2 | 28.37 | 55.56 | 97.86 | 111.44 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [ee6fc242b](https://github.com/AFK-surf/monoid/commit/ee6fc242b698faeeebbe43a350f34c497309f035) ci: put runs whatever the Mac's build came to, as  | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.16 |
 | [3ae4ef14c](https://github.com/AFK-surf/monoid/commit/3ae4ef14c0018b864533e103ac0bf3fe69c9171a) app: a long list of the chat's page made as nodes, | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.16 |
 | [012d73161](https://github.com/AFK-surf/monoid/commit/012d731614df1747268d790734cd3d2900353730) feat(history): wrap expanded steps in unified surf | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.1 |
 | [b2718f752](https://github.com/AFK-surf/monoid/commit/b2718f7525b188439ab9a1f798ed6623a4beb6a7) app: a long table of the chat's page made as nodes | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.1 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [46c6d9b18](https://github.com/AFK-surf/monoid/commit/46c6d9b189993ee1f96d734583a5de48f749a17c) station: a device's jobs and a list's changes read | 0.4 | 0.52 | 1.96 | 3.08 | 4.51 | 1.45 | 3.8 | 57.26 |
 | [a0dfc9e45](https://github.com/AFK-surf/monoid/commit/a0dfc9e45228f7bc11109989637120492ff1211a) mbui, app tests: what kept_rows_kinds compares rea | 0.4 | 0.52 | 1.96 | 3.08 | 4.51 | 1.45 | 3.8 | 57.26 |
 | [aa163a4d3](https://github.com/AFK-surf/monoid/commit/aa163a4d30c4ac75c420c16c4928c847b64d07cc) mbui: what goes or comes under a page's list goes  | 0.4 | 0.52 | 1.96 | 3.08 | 4.51 | 1.45 | 3.8 | 57.26 |
-| [b3989e2e3](https://github.com/AFK-surf/monoid/commit/b3989e2e32459dcb986de39468ead32d11209231) mbui: a tooltip takes no system back (Ctx::overlay | 0.4 | 0.52 | 1.96 | 3.08 | 4.51 | 1.45 | 3.8 | 57.18 |
