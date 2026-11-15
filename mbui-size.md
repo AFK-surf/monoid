@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [4986225f9](https://github.com/AFK-surf/monoid/commit/4986225f96d59292aa03e36dd2037ea323adda6f) app: incrementalize chat data pipeline and per-row | 2.08 | 2.86 | 12.3 | 33.23 | 47.9 | 28.78 | 56.67 | 98.63 | 110.66 |
 | [6dad75eff](https://github.com/AFK-surf/monoid/commit/6dad75eff024868d56a0f7724edc37543654a8ea) station: a mirror's directory sync runs in the Moo | 2.08 | 2.86 | 12.29 | 33.23 | 47.88 | 28.77 | 56.67 | 98.96 | 112.96 |
 | [fbb9060de](https://github.com/AFK-surf/monoid/commit/fbb9060de88a6773835eec44d8a848728138a4f6) app: a Farview tab's page drawn as nodes, what scr | 2.08 | 2.86 | 12.29 | 33.23 | 47.88 | 28.76 | 56.64 | 98.7 | 111.71 |
 | [cc1745615](https://github.com/AFK-surf/monoid/commit/cc17456152f5f68a798c00068e4b4545b2c53066) mbui: audit() holds the one height, the first line | 2.07 | 2.85 | 12.28 | 33.21 | 47.84 | 28.76 | 56.64 | 98.7 | 117.47 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [1f33147ef](https://github.com/AFK-surf/monoid/commit/1f33147efeddf2449c6e82496cf30bb60037eb9b) station: a Codex item's deltas told Node a while a | 2.03 | 2.79 | 12.03 | 31.92 | 44.66 | 28.53 | 55.91 | 98.58 | 109.52 |
 | [ab5e69b41](https://github.com/AFK-surf/monoid/commit/ab5e69b4101ec5b27aca72296c45aa8d328b129a) lock: a workspace of any size is upgraded, and a d | 2.03 | 2.79 | 12.03 | 31.92 | 44.66 | 28.53 | 55.91 | 98.67 | 114.15 |
 | [b34eff235](https://github.com/AFK-surf/monoid/commit/b34eff2353bc321f3b1a92fbfe9e3f7854a9cf42) rules: a chain is read in time that grows with its | 2.03 | 2.79 | 12.03 | 31.92 | 44.66 | 28.53 | 55.91 | 98.62 | 112.56 |
-| [cede4b07d](https://github.com/AFK-surf/monoid/commit/cede4b07d46fbfd9cb730d9ead1c4700dd58aa8e) core, cloud: a change of a workspace is told with  | 2.03 | 2.79 | 12.03 | 31.92 | 44.66 | 28.53 | 55.91 | 98.45 | 117.59 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [4986225f9](https://github.com/AFK-surf/monoid/commit/4986225f96d59292aa03e36dd2037ea323adda6f) app: incrementalize chat data pipeline and per-row | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.25 |
 | [6dad75eff](https://github.com/AFK-surf/monoid/commit/6dad75eff024868d56a0f7724edc37543654a8ea) station: a mirror's directory sync runs in the Moo | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.25 |
 | [fbb9060de](https://github.com/AFK-surf/monoid/commit/fbb9060de88a6773835eec44d8a848728138a4f6) app: a Farview tab's page drawn as nodes, what scr | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.25 |
 | [cc1745615](https://github.com/AFK-surf/monoid/commit/cc17456152f5f68a798c00068e4b4545b2c53066) mbui: audit() holds the one height, the first line | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.25 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [1f33147ef](https://github.com/AFK-surf/monoid/commit/1f33147efeddf2449c6e82496cf30bb60037eb9b) station: a Codex item's deltas told Node a while a | 0.41 | 0.53 | 1.98 | 3.09 | 4.54 | 1.46 | 3.81 | 57.2 |
 | [ab5e69b41](https://github.com/AFK-surf/monoid/commit/ab5e69b4101ec5b27aca72296c45aa8d328b129a) lock: a workspace of any size is upgraded, and a d | 0.41 | 0.53 | 1.98 | 3.09 | 4.54 | 1.46 | 3.81 | 57.2 |
 | [b34eff235](https://github.com/AFK-surf/monoid/commit/b34eff2353bc321f3b1a92fbfe9e3f7854a9cf42) rules: a chain is read in time that grows with its | 0.41 | 0.53 | 1.98 | 3.09 | 4.54 | 1.46 | 3.81 | 57.2 |
-| [cede4b07d](https://github.com/AFK-surf/monoid/commit/cede4b07d46fbfd9cb730d9ead1c4700dd58aa8e) core, cloud: a change of a workspace is told with  | 0.41 | 0.53 | 1.98 | 3.09 | 4.54 | 1.46 | 3.81 | 57.2 |
