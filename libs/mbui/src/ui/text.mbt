@@ -1011,6 +1011,7 @@ fn glyph_keys() -> Map[String, Int] {
 ///|
 /// The horizontal origin (in points) of the View node being built in `view_made` (`ux`, which `view_blit`
 /// rounds from as `lx`), 0 outside `view_made`.
+// kept across runs: set and put back around view_made
 let glyph_origin_x : Ref[Double] = Ref(0.0)
 
 ///|
