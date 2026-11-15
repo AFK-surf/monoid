@@ -147,6 +147,38 @@ const filesIn = (n: Name, id: string) => {
   return existsSync(d) ? readdirSync(d).length : 0;
 };
 
+/// Of the hand-overs out of `sender` begun from `from` to `to` (their id's time), in the order begun, cut in ten: each
+/// tenth's median of what each step took as the sender's own record says (`began`, its clock: from a step's begin to
+/// the next one's, the last to `done`), and of what each kind of request took the receiver to answer (its in record's
+/// `spent`), with the whole run's mean of each beside: the stations' own times, through no file event.
+function recordTenths(sender: Name, receiver: Name, from: number, to: number): string[] {
+  const begun = (id: string) => parseInt(String(id).split("-")[0] ?? "", 36);
+  const outs = handovers(sender, "out").filter((o) => begun(o.id) >= from && begun(o.id) <= to && o.began && typeof o.began === "object").sort((x, y) => begun(x.id) - begun(y.id));
+  if (outs.length < 10) return [`${outs.length} hand-overs with their steps' times: too few to cut in ten (a station from before keeps none)`];
+  const ins = new Map(handovers(receiver, "in").map((i) => [i.id, i] as const));
+  const rows = new Map<string, number[][]>();
+  const put = (k: string, tenth: number, ms: number) => {
+    const r = rows.get(k) ?? Array.from({ length: 10 }, () => [] as number[]);
+    r[tenth]!.push(ms);
+    rows.set(k, r);
+  };
+  outs.forEach((o, i) => {
+    const tenth = Math.min(9, Math.floor((i * 10) / outs.length));
+    const steps = Object.entries(o.began as Record<string, number>).sort((x, y) => x[1] - y[1]);
+    for (let j = 0; j + 1 < steps.length; j++) put(`${sender}: ${steps[j]![0]}`, tenth, steps[j + 1]![1] - steps[j]![1]);
+    if (steps.length > 1) put(`${sender}: begin to its last (${steps.at(-1)![0]})`, tenth, steps.at(-1)![1] - steps[0]![1]);
+    const spent = ins.get(o.id)?.spent as Record<string, number> | undefined;
+    for (const [k, ms] of Object.entries(spent ?? {})) put(`${receiver} answering: ${k}`, tenth, ms);
+  });
+  const median = (xs: number[]) => (xs.length === 0 ? "-" : String([...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)]));
+  const mean = (r: number[][]) => {
+    const all = r.flat();
+    return all.length === 0 ? "-" : (all.reduce((a, b) => a + b, 0) / all.length).toFixed(1);
+  };
+  return [`${outs.length} hand-overs by their stations' own times, by tenths, median ms | the run's mean (how many):`,
+    ...[...rows.entries()].map(([k, r]) => `${k}: ${r.map(median).join(" ")} | ${mean(r)} (${r.reduce((n, x) => n + x.length, 0)})`)];
+}
+
 /// What each hand-over out of a station went through and when (this driver's clock), told by its directory's events.
 class Steps {
   readonly seen = new Map<string, { step: string; held: boolean; at: number }[]>();
@@ -1860,7 +1892,9 @@ try {
       // (and the device's link to it usable again: a request of its answered by the new process. Online is the cloud's
       // word, which comes first: drill 28's link to A, dialled into the endpoint as it closed, sat three beats (15 s) on
       // a dead connection, and the page's first answer timed after online read 16,446 ms where GET /move took 15)
-      const ready = await a.answered(aId, "/", up, 120_000);
+      // (a request asked after A was up, not one asked of the process before and answered as A came back: p5-5a0d's
+      // 300 chats took one of those for the link usable, and its first answer waited 14 s on the dead link)
+      const ready = await a.answered(aId, "/", up, 120_000, true);
       log(`  A's link usable again ${ready.at - up} ms after A was up (${ready.method} ${ready.path.replace(/\?.*$/, "")})`);
     };
     /// What the stations' logs say of their main thread held since `from` (each log's byte offset): how often, the longest.
@@ -1952,6 +1986,7 @@ try {
       measured(`${n} chats moved with all: ${s.toFixed(0)} s, ${((n - left) / (s / 60)).toFixed(0)} chats a minute, ${left} left on A; ${ends(l, t0, seenS)}; main thread: ${holds(from)}; ${notDone(l)}`);
       // (each chat's hand-over by its steps, A's records as the drill saw them change: which step a chat's time is in)
       for (const line of steps.A!.tenths(t0, Date.now())) log(`  there: ${line}`);
+      for (const line of recordTenths("A", "B", t0, Date.now())) log(`  there, own times: ${line}`);
       from = offsets();
       const t1 = Date.now();
       await a.call("move.back", { station: A, from: bId, all: true });
@@ -1964,6 +1999,7 @@ try {
       const sb = typeof lb?.at === "number" ? (lb.at - t1) / 1000 : seenB;
       measured(`and back: ${sb.toFixed(0)} s, ${(n / (sb / 60)).toFixed(0)} chats a minute; ${ends(lb, t1, seenB)}; main thread: ${holds(from)}; ${notDone(lb)}`);
       for (const line of steps.B!.tenths(t1, Date.now())) log(`  back: ${line}`);
+      for (const line of recordTenths("B", "A", t1, Date.now())) log(`  back, own times: ${line}`);
       if (left > 0) throw new Error(`${left} chats not moved`);
     });
   }

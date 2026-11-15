@@ -199,7 +199,7 @@ if (process.argv[2] === "device") {
   // (before the core is loaded: it loads the addon as its host is made)
   watchRequests((station, method, path, status, ms) => {
     appendFileSync(record, `asked: ${new Date().toISOString().slice(11, 23)} ${station.slice(0, 8)} ${method} ${path} -> answered${status !== "" && status !== "-" ? ` ${status}` : ""} in ${ms} ms\n`);
-    if (process.connected) process.send!({ answered: { station, method, path } });
+    if (process.connected) process.send!({ answered: { station, method, path, ms } });
   });
   // (how long this process's own loop was held, where over a second: drill 24 saw a turn's end minutes late and could not
   // tell whose loop it was)
@@ -291,7 +291,7 @@ export class Device {
   build: string | undefined;
   /// Each request of its core's to a station whose answer it read to its end (`watchRequests`), across its restarts,
   /// as this driver heard of it (`at`: its clock then); and the waits for one (`answered`).
-  answers: { station: string; method: string; path: string; at: number }[] = [];
+  answers: { station: string; method: string; path: string; at: number; ms?: number }[] = [];
   #heard = new Set<() => void>();
   constructor(name: string, user = "alice", opts: { sealed?: boolean; page?: boolean; build?: string } = {}) {
     this.name = name;
@@ -478,8 +478,10 @@ export class Device {
   /// The first request of its core's to station `station` whose path (less `/admin/api`) begins with `path`, answered
   /// and read to its end since `since` (this driver's clock), as soon as it is (or an error by `ms` saying those there
   /// were): what a read of the station that ends in it has been given, its core's own handling of it to follow.
-  answered(station: string, path: string, since: number, ms = 60_000): Promise<{ station: string; method: string; path: string; at: number }> {
-    const find = () => this.answers.find((a) => a.at >= since && a.station === station && a.path.replace(/^\/admin\/api/, "").startsWith(path));
+  /// `begunSince`: one asked since `since` as well (its answer's time less how long it took), not one asked before and
+  /// answered after (a link that answered across a station's restart proves nothing of the link to the new process).
+  answered(station: string, path: string, since: number, ms = 60_000, begunSince = false): Promise<{ station: string; method: string; path: string; at: number; ms?: number }> {
+    const find = () => this.answers.find((a) => a.at >= since && (!begunSince || a.at - (a.ms ?? Infinity) >= since) && a.station === station && a.path.replace(/^\/admin\/api/, "").startsWith(path));
     return new Promise((resolve, reject) => {
       const look = () => {
         const a = find();
