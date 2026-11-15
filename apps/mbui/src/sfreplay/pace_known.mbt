@@ -205,7 +205,6 @@ let frames_unrecorded_known : Array[String] = [
   "drive-upload",
   "drive-zip",
   "glass",
-  "history",
   "home-new-chat",
   "lock-wait",
   "mark-read",
