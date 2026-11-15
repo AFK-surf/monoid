@@ -40,15 +40,16 @@ static IDWriteFontFallback *fallback;
 static IDWriteRenderingParams *params, *params_ct;
 static ID2D1Factory *d2d;
 static IWICImagingFactory *wic;
-// Where a glyph is drawn: a bitmap of RT_SIZE pixels, Direct2D's target over it at the scale it was made for, a white
-// brush. The frames' thread has its own (the factories made in init); each thread drawing ahead its own, of its own
-// factories (Direct2D's single-threaded one, WIC's).
+// Where a glyph is drawn: a bitmap of RT_SIZE pixels, Direct2D's target over it at the scale it was made for, white
+// and black brushes. The frames' thread has its own (the factories made in init); each thread drawing ahead its own, of
+// its own factories (Direct2D's single-threaded one, WIC's).
 struct Target {
   ID2D1Factory *d2d;
   IWICImagingFactory *wic;
   IWICBitmap *bitmap;
   ID2D1RenderTarget *rt;
   ID2D1SolidColorBrush *white;
+  ID2D1SolidColorBrush *black;
   double scale;
 };
 static Target main_target;
@@ -68,7 +69,7 @@ static int n_formats;
 
 static void init(void) {
   if (dw) return;
-  DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory2), (IUnknown **)&dw);
+  DWriteCreateFactory(DWRITE_FACTORY_TYPE_ISOLATED, __uuidof(IDWriteFactory2), (IUnknown **)&dw);
   IDWriteFontFallbackBuilder *b = NULL;
   IDWriteFontFallback *sys = NULL;
   dw->CreateFontFallbackBuilder(&b);
@@ -94,10 +95,11 @@ static void init(void) {
   params = p2;
   // A glyph in one colour drawn with ClearType, as Windows draws any app's text (the user, 2026-10-29, beside Chrome:
   // gray coverage looked soft): each of a pixel's three stripes, red, green, blue left to right, covered on its own,
-  // the same plain coverage otherwise; a colour glyph (an emoji) in gray as before.
+  // with vertical grid-fitting and Windows' standard ClearType gamma (1.8) and contrast (0.5); a colour glyph (an
+  // emoji) in gray as before.
   IDWriteRenderingParams2 *c2 = NULL;
-  dw->CreateCustomRenderingParams(1.0f, 0.0f, 0.0f, 1.0f, DWRITE_PIXEL_GEOMETRY_RGB,
-                                  DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC, DWRITE_GRID_FIT_MODE_DISABLED, &c2);
+  dw->CreateCustomRenderingParams(1.8f, 0.5f, 0.5f, 1.0f, DWRITE_PIXEL_GEOMETRY_RGB,
+                                  DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC, DWRITE_GRID_FIT_MODE_DEFAULT, &c2);
   params_ct = c2;
   D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, __uuidof(ID2D1Factory), NULL, (void **)&d2d);
   CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
@@ -647,12 +649,12 @@ struct ColorProbe : public IDWriteTextRenderer {
     *p = 1;
     return S_OK;
   }
-  STDMETHOD(DrawGlyphRun)(void *, FLOAT, FLOAT, DWRITE_MEASURING_MODE, DWRITE_GLYPH_RUN const *run,
-                          DWRITE_GLYPH_RUN_DESCRIPTION const *, IUnknown *) override {
-    IDWriteFontFace2 *f2 = NULL;
-    if (SUCCEEDED(run->fontFace->QueryInterface(__uuidof(IDWriteFontFace2), (void **)&f2))) {
-      if (f2->IsColorFont()) color = 1;
-      f2->Release();
+  STDMETHOD(DrawGlyphRun)(void *, FLOAT x, FLOAT y, DWRITE_MEASURING_MODE mode, DWRITE_GLYPH_RUN const *run,
+                          DWRITE_GLYPH_RUN_DESCRIPTION const *desc, IUnknown *) override {
+    IDWriteColorGlyphRunEnumerator *runs = NULL;
+    if (SUCCEEDED(dw->TranslateColorGlyphRun(x, y, run, desc, mode, NULL, 0, &runs))) {
+      color = 1;
+      runs->Release();
     }
     return S_OK;
   }
@@ -670,8 +672,10 @@ struct ColorProbe : public IDWriteTextRenderer {
 static void target_ensure(Target *t, double scale) {
   if (t->rt && t->scale == scale) return;
   if (t->white) t->white->Release();
+  if (t->black) t->black->Release();
   if (t->rt) t->rt->Release();
   t->white = NULL;
+  t->black = NULL;
   t->rt = NULL;
   if (!t->bitmap && FAILED(t->wic->CreateBitmap(RT_SIZE, RT_SIZE, GUID_WICPixelFormat32bppPBGRA,
                                                   WICBitmapCacheOnDemand, &t->bitmap)))
@@ -684,6 +688,7 @@ static void target_ensure(Target *t, double scale) {
   t->rt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
   t->rt->SetTextRenderingParams(params);
   t->rt->CreateSolidColorBrush(D2D1::ColorF(1, 1, 1, 1), &t->white);
+  t->rt->CreateSolidColorBrush(D2D1::ColorF(0, 0, 0, 1), &t->black);
   t->scale = scale;
 }
 
@@ -733,17 +738,18 @@ static void draw_layout(IDWriteTextLayout *l, double sc, Target *t, Drawn *d) {
   if (pw <= 0 || ph <= 0 || pw > RT_SIZE || ph > RT_SIZE) return;
   target_ensure(t, sc);
   if (!t->rt) return;
-  // One colour: drawn white with ClearType on opaque black, each stripe's coverage in its channel (the shader blends a
-  // mask stripe by stripe: win_render.cpp fmain), its alpha their mean. Straight on the black: in a layer made for
-  // ClearType (D2D1_LAYER_OPTIONS_INITIALIZE_FOR_CLEARTYPE) Direct2D drew it gray after all.
+  // One colour: drawn black with ClearType on opaque white so Direct2D's gamma (1.8) and contrast (0.5) shape coverage
+  // as on a light page, each stripe's coverage (255 - s) in its channel (the shader blends a mask stripe by stripe:
+  // win_render.cpp fmain), its alpha their mean. Straight on the target: in a layer made for ClearType
+  // (D2D1_LAYER_OPTIONS_INITIALIZE_FOR_CLEARTYPE) Direct2D drew it gray after all.
   bool stripes = params_ct && !color;
   t->rt->BeginDraw();
-  t->rt->Clear(D2D1::ColorF(0, 0, 0, stripes ? 1.0f : 0.0f));
+  t->rt->Clear(stripes ? D2D1::ColorF(1, 1, 1, 1) : D2D1::ColorF(0, 0, 0, 0));
   if (stripes) {
     t->rt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE);
     t->rt->SetTextRenderingParams(params_ct);
   }
-  t->rt->DrawTextLayout(D2D1::Point2F((FLOAT)-x0, (FLOAT)-y0), l, t->white,
+  t->rt->DrawTextLayout(D2D1::Point2F((FLOAT)-x0, (FLOAT)-y0), l, stripes ? t->black : t->white,
                         D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT | D2D1_DRAW_TEXT_OPTIONS_NO_SNAP);
   t->rt->EndDraw();
   if (stripes) {
@@ -762,9 +768,9 @@ static void draw_layout(IDWriteTextLayout *l, double sc, Target *t, Drawn *d) {
       const BYTE *s = src + (size_t)y * stride;
       uint8_t *o = px + (size_t)y * pw * 4;
       for (int x = 0; x < pw; x++, s += 4, o += 4) {
-        o[0] = s[2];
-        o[1] = s[1];
-        o[2] = s[0];
+        o[0] = stripes ? (uint8_t)(255 - s[2]) : s[2];
+        o[1] = stripes ? (uint8_t)(255 - s[1]) : s[1];
+        o[2] = stripes ? (uint8_t)(255 - s[0]) : s[0];
         o[3] = stripes ? (uint8_t)((o[0] + o[1] + o[2] + 1) / 3) : s[3];
         // premultiplied: drawn in white, a mask's pixel has its colour equal to its alpha; an emoji's does not
         if (color == 1 && o[3] > 64 && (o[0] + 32 < o[3] || o[1] + 32 < o[3] || o[2] + 32 < o[3])) color = 2;
