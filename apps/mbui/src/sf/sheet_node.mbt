@@ -1121,7 +1121,12 @@ fn sheet_node(
                         panel_in_lend(col, Narrow, sheet_panel_sides, sides=0.0)
                         col.lends(sheet_win_lent, body_win_h) |> ignore
                         match pg.nodes {
-                          Some(n) => (n.body)(col, close)
+                          Some(n) => {
+                            // (what it holds come to another height for a cause of its own: the sheet from as tall as
+                            // it is seen, where it shows, panel_reshaped_node)
+                            col.lends(panel_reshape_lent, fn() { page_reshaped(0.0) }) |> ignore
+                            (n.body)(col, close)
+                          }
                           None => ()
                         }
                       })
@@ -1182,7 +1187,11 @@ fn sheet_node(
                           }
                           col.lends(sheet_win_lent, body_win_h) |> ignore
                           match pg.nodes {
-                            Some(n) => (n.body)(col, close)
+                            Some(n) => {
+                              // (what it holds come to another height for a cause of its own: panel_reshaped_node)
+                              col.lends(panel_reshape_lent, fn() { page_reshaped(0.0) }) |> ignore
+                              (n.body)(col, close)
+                            }
                             None => ()
                           }
                         })

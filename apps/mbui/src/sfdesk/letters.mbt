@@ -90,6 +90,15 @@ pub fn letters_tab_node(
   let key = chat_key(r)
   let value = fn() { src.topic("chatLetters", { "station": Json::string(r.station), "thread": Json::number(thread) }).get().value }
   v.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+  // (in a panel: told at last, a chat come or gone, one opened or back to the list: what it holds another height for
+  // that cause, the sheet going on from as tall as it is seen then, @sf.panel_reshaped_node; made before what it shows,
+  // so it is said before that is made anew)
+  if panel {
+    v.reacts(at_start=false, fn() { (letters_state(value()), items(value(), "chats").length(), letters_opened.get(key)) }, fn(_) {
+      @sf.panel_reshaped_node(v)
+    })
+    |> ignore
+  }
   v.pick(fn() { letters_state(value()) }, fn(p, state) {
     p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
     match state {

@@ -238,7 +238,7 @@ fn invite_node(v : @view.View, src : Source) -> Unit {
       }
       InvitePaste => {
         lead(fn() { fill("android-misc.invite.pasteLink", [("app", "still.fail")]) })
-        let words = @signals.signal(invite.field.text(), same=fn(a, b) { a == b })
+        let words = @signals.signal(invite.field.text())
         // (the link pasted in a rectangle with rounded corners (invite_corner), two lines of it at most, not a capsule)
         @sf.textarea_node(p, invite.field, rows=1, most=2, corner=invite_corner, placeholder="https://app.still.fail/invite#…", edited=fn(w) {
           words.set(w)

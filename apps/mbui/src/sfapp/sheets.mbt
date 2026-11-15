@@ -1036,7 +1036,7 @@ fn reveal_part_node(
   let share = @sf.EdgeWay::new(0.0)
   let made = Ref(false)
   // (while it closes, what it holds still there, let go once it has)
-  let closing = @signals.signal(false, same=fn(a, b) { a == b })
+  let closing = @signals.signal(false)
   let stop : Ref[() -> Unit] = Ref(fn() {  })
   parent.by_room(fn(b, room) {
     let inner : Ref[@view.View?] = Ref(None)
@@ -1506,6 +1506,10 @@ fn jobs_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit) -> U
       _ => None
     }
   }
+  // (told at last, or a job come or gone: what it holds another height for that cause, the sheet going on from as tall
+  // as it is seen then, @sf.panel_reshaped_node; made before what it shows, so it is said before that is made anew)
+  v.reacts(at_start=false, fn() { (view() is Some(_), items(view(), "jobs").length()) }, fn(_) { @sf.panel_reshaped_node(v) })
+  |> ignore
   v.pick(fn() { view() is Some(_) }, fn(p, told) {
     p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
     if !told {
@@ -1535,7 +1539,7 @@ fn jobs_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit) -> U
       |> ignore
       return
     }
-    let rows = @signals.computed(fn(_) { jobs_rows(items(view(), "jobs")) }, same=fn(a, b) { a == b })
+    let rows = @signals.computed(fn(_) { jobs_rows(items(view(), "jobs")) })
     // (its rows on the panel's words' line, as tall as they come to up to the panel's share, scrolling in it past that)
     @sf.panel_list_node(p, fn() { rows.get() }, fn(b, row) { jobs_row_node(b, src, r, row, view, close) }, est=jobs_row_est)
     |> ignore
@@ -1625,8 +1629,9 @@ fn job_press(src : Source, r : ChatRef, j : Json?, close : () -> Unit) -> Unit {
 /// were 2.3 to 1: mbui ui/contrast.mbt). Pressed, `press`.
 fn job_row_node(k : @view.View, job : () -> Json?, press : () -> Unit) -> Unit {
   info_row_node(k, fn() { text(job(), "name") }, look=job_row_look, press~, fn(row) {
+    // (its dot and its chevron each down the middle of its name's first line, at the system's size of words)
     row.box(fn(d) {
-      @sf.style_node(d, fn() { job_row_dot })
+      agent_first_line(d)
       job_dot_node(d, fn() { text(job(), "tone") })
     })
     |> ignore
@@ -1644,7 +1649,7 @@ fn job_row_node(k : @view.View, job : () -> Json?, press : () -> Unit) -> Unit {
     })
     |> ignore
     row.box(fn(c) {
-      @sf.style_node(c, fn() { job_row_chevron })
+      agent_first_line(c)
       chevron_node(c)
     })
     |> ignore
@@ -1653,21 +1658,13 @@ fn job_row_node(k : @view.View, job : () -> Json?, press : () -> Unit) -> Unit {
 }
 
 ///|
-/// A job's row: its dot on its name's line (`job_dot_over` down), its words 1 apart, its chevron 4 down.
+/// A job's row: its dot and its chevron on its name's first line, its words 1 apart.
 // kept across runs: a value (no field of it changes)
 let job_row_look : @ui.Style = info_row_style.then(info_row_dot).then(@ui.css("align=AStart"))
 
 ///|
 // kept across runs: a value (no field of it changes)
-let job_row_dot : @ui.Style = @ui.style(pt=@sf.room_of(job_dot_over))
-
-///|
-// kept across runs: a value (no field of it changes)
 let job_row_words : @ui.Style = @ui.css("w=Full gap=SPx")
-
-///|
-// kept across runs: a value (no field of it changes)
-let job_row_chevron : @ui.Style = @ui.css("pt=S1")
 
 ///|
 /// A job's name (15, medium, on a line cut short), muted where it is over.

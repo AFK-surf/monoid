@@ -115,6 +115,25 @@ pub fn panel_opens_on_node(v : @view.View) -> Unit {
 }
 
 ///|
+/// What a panel's way does as what it holds comes to another height for a cause of its own (the core's answer, a row
+/// come or gone), at that cause: a sheet goes from as tall as it is seen to as tall as it comes to, on a Move as long
+/// as that is far (sheet_node's `reshaped`), never a frame's step; lent by the sheet to what it holds (its nodes), none
+/// elsewhere (a dialog and a popover lay out what they hold as it comes).
+// kept across runs: what each sheet lends, let go with it
+let panel_reshape_lent : @view.Lent[() -> Unit] = @view.Lent::new()
+
+///|
+/// What node `v` (in what a panel holds) holds comes to another height now, for a cause of its own (what it reads told
+/// anew, a row come or gone): said where that cause is taken, so the panel's way follows it from that moment
+/// (panel_reshape_lent). Never said of a size measured: only of what changed it.
+pub fn panel_reshaped_node(v : @view.View) -> Unit {
+  match v.lent(panel_reshape_lent) {
+    Some(f) => f()
+    None => ()
+  }
+}
+
+///|
 /// Which field of what a panel holds has the keys as the panel opens (panel_opens_in_node, panel_search_at_hand_node):
 /// lent by each of the panel's ways (panel_centred_node, sheet_node, panel_node) to what it holds, read as all it holds
 /// is made.

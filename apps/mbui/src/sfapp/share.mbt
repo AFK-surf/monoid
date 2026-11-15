@@ -627,7 +627,6 @@ fn share_parts_node(v : @view.View, src : Source, scope : String, look : ShareLo
       }
       out
     },
-    same=fn(a, b) { a == b },
   )
   // (its rows one under another, each made by what it is: a few, the panel scrolling them where it is short of room,
   // as the old sheet's column did)
