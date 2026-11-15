@@ -1505,8 +1505,30 @@ impl Inner {
                     let listener = tokio::net::UnixListener::bind(path).map_err(err)?;
                     Ok(Answer::json(json!({ "id": self.keep(Handle::Listener(Arc::new(Listener::Unix(listener)))) })))
                 }
-                #[cfg(not(unix))]
-                Err("Unix sockets are Unix's".into())
+                // Windows: a named pipe (`\\.\pipe\…`, a runner's: station/native/runner), its instances one connection
+                // each. All taken a moment (the runner makes its next as it takes one): waited for, up to a bound.
+                #[cfg(windows)]
+                {
+                    use tokio::net::windows::named_pipe::ClientOptions;
+                    const ERROR_PIPE_BUSY: i32 = 231;
+                    let path = str_of(&a, "path")?;
+                    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+                    let pipe = loop {
+                        match ClientOptions::new().open(path) {
+                            Ok(pipe) => break pipe,
+                            // timer: a retry after a failure (every instance busy), up to a deadline
+                            Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) && tokio::time::Instant::now() < deadline => {
+                                tokio::time::sleep(std::time::Duration::from_millis(20)).await
+                            }
+                            Err(e) => return Err(err(e)),
+                        }
+                    };
+                    let (read, write) = tokio::io::split(pipe);
+                    let id = self.keep(Handle::Tcp { read: Arc::new(tokio::sync::Mutex::new(Box::new(read))), write: Arc::new(tokio::sync::Mutex::new(Box::new(write))) });
+                    Ok(Answer::json(json!({ "id": id })))
+                }
+                #[cfg(not(any(unix, windows)))]
+                Err("no local sockets here".into())
             }
             // Two sockets carried into each other, both ways, here (each side's end said to the other as it comes),
             // answered once both ways ended: what a station's program passes on whole, with no step of its own per piece.
@@ -1536,7 +1558,11 @@ impl Inner {
             "tcp.read" => {
                 let Handle::Tcp { read, .. } = self.handle(id_of(&a)?)? else { return Err("not a tcp connection".into()) };
                 let mut buf = vec![0u8; 64 * 1024];
-                let n = read.lock().await.read(&mut buf).await.map_err(err)?;
+                // (a pipe whose other side closed says so as broken, not as an end: the same to a reader)
+                let n = match read.lock().await.read(&mut buf).await {
+                    Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => 0,
+                    n => n.map_err(err)?,
+                };
                 if n == 0 {
                     return Ok(Answer::json(json!({ "end": true })));
                 }
@@ -1974,8 +2000,30 @@ impl Inner {
                     let id = self.keep(Handle::Tcp { read: Arc::new(tokio::sync::Mutex::new(Box::new(read))), write: Arc::new(tokio::sync::Mutex::new(Box::new(write))) });
                     Ok(Answer::json(json!({ "id": id })))
                 }
-                #[cfg(not(unix))]
-                Err("Unix sockets are Unix's".into())
+                // Windows: a named pipe (`\\.\pipe\…`, a runner's: station/native/runner), its instances one connection
+                // each. All taken a moment (the runner makes its next as it takes one): waited for, up to a bound.
+                #[cfg(windows)]
+                {
+                    use tokio::net::windows::named_pipe::ClientOptions;
+                    const ERROR_PIPE_BUSY: i32 = 231;
+                    let path = str_of(&a, "path")?;
+                    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+                    let pipe = loop {
+                        match ClientOptions::new().open(path) {
+                            Ok(pipe) => break pipe,
+                            // timer: a retry after a failure (every instance busy), up to a deadline
+                            Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) && tokio::time::Instant::now() < deadline => {
+                                tokio::time::sleep(std::time::Duration::from_millis(20)).await
+                            }
+                            Err(e) => return Err(err(e)),
+                        }
+                    };
+                    let (read, write) = tokio::io::split(pipe);
+                    let id = self.keep(Handle::Tcp { read: Arc::new(tokio::sync::Mutex::new(Box::new(read))), write: Arc::new(tokio::sync::Mutex::new(Box::new(write))) });
+                    Ok(Answer::json(json!({ "id": id })))
+                }
+                #[cfg(not(any(unix, windows)))]
+                Err("no local sockets here".into())
             }
             // A stream carried whole into a socket (`to`, taken), both ways, here: what comes on it written to the socket
             // in frames (PIPE_END its end, PIPE_FAILED what failed it), and the frames the socket sends written on it, its
@@ -3269,6 +3317,52 @@ mod tests {
             }
             answers = ANSWERED.wait(answers).unwrap();
         }
+    }
+
+    /// A named pipe (a runner's on Windows, station/native/runner) opened as `unix.open`, read and written as a socket:
+    /// what one side wrote is read by the other, and the server's closing is the client's end.
+    #[cfg(windows)]
+    #[test]
+    fn opens_a_named_pipe_as_a_socket() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::windows::named_pipe::ServerOptions;
+        let dir = TempDir::new();
+        let shell = Shell::start(dir.path().join("shell"), complete, ctx()).unwrap();
+        let call = |id: u64, op: &str, a: Value, bytes: Option<Vec<u8>>| {
+            shell.call(id, op.into(), a.to_string().as_bytes(), bytes);
+            let (json, error, bytes) = answer(id);
+            assert_eq!(error, "", "{op}");
+            (serde_json::from_str::<Value>(&json).unwrap(), bytes)
+        };
+        let path = format!(r"\\.\pipe\stillfail-shell-test-{}", std::process::id());
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let server = rt.block_on(async { ServerOptions::new().first_pipe_instance(true).create(&path).unwrap() });
+        let served = std::thread::spawn(move || {
+            rt.block_on(async move {
+                let mut server = server;
+                server.connect().await.unwrap();
+                let mut got = [0u8; 4];
+                server.read_exact(&mut got).await.unwrap();
+                assert_eq!(&got, b"ping");
+                server.write_all(b"pong").await.unwrap();
+                server.flush().await.unwrap();
+                // (read up to what the client sends last, then closed: the client reads its end)
+                let mut last = [0u8; 5];
+                server.read_exact(&mut last).await.unwrap();
+                assert_eq!(&last, b"leave");
+                server.disconnect().unwrap();
+            })
+        });
+        let (opened, _) = call(97_001, "unix.open", json!({ "path": path }), None);
+        let conn = opened["id"].as_u64().unwrap();
+        call(97_002, "tcp.write", json!({ "id": conn }), Some(b"ping".to_vec()));
+        let (_, got) = call(97_003, "tcp.read", json!({ "id": conn }), None);
+        assert_eq!(got.unwrap(), b"pong");
+        call(97_004, "tcp.write", json!({ "id": conn }), Some(b"leave".to_vec()));
+        let (end, _) = call(97_005, "tcp.read", json!({ "id": conn }), None);
+        assert_eq!(end, json!({ "end": true }));
+        call(97_006, "tcp.close", json!({ "id": conn }), None);
+        served.join().unwrap();
     }
 
     #[test]

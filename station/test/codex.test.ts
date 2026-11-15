@@ -4,7 +4,7 @@
 // up by a next driver (with a snapshot, and after a crash) with the turn's end told once and no live event twice.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import fs from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { after, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { CodexDriver, classifyCodexError, type CodexDriverOptions } from "../src/agents/codex.ts";
+import { CodexDriver, classifyCodexError, hostSkillsOff, type CodexDriverOptions } from "../src/agents/codex.ts";
 import { REPO_RULES_COMMAND } from "../src/agents/repo-rules.ts";
 import { ackedOffset, outFile, runnerId } from "../src/agents/process.ts";
 import { allLeft, existingRunners, type RunnerInfo } from "../src/agents/runner.ts";
@@ -1138,6 +1138,28 @@ describe("the Codex driver", { concurrency: true }, () => {
 });
 
 // Alone: the station's variables are the whole process's, and every app-server above would be out of date under them.
+// The user's own skills turned off by file, found off the station's thread: linked folders followed, each real folder
+// once (a link back to its parent ends there), six levels down at most, in the order comparePaths gives.
+test("the host's skills are found off the station's thread", async () => {
+  const root = tempDir(join(tmpdir(), "cx-skills-"));
+  const deep = join(root, "a", "b", "c", "d", "e", "f");
+  mkdirSync(join(deep, "g"), { recursive: true });
+  writeFileSync(join(deep, "SKILL.md"), "");
+  writeFileSync(join(deep, "g", "SKILL.md"), "");
+  mkdirSync(join(root, "Mine"));
+  writeFileSync(join(root, "Mine", "SKILL.md"), "");
+  writeFileSync(join(root, "Mine", "notes.md"), "");
+  const linked = tempDir(join(tmpdir(), "cx-linked-"));
+  writeFileSync(join(linked, "SKILL.md"), "");
+  symlinkSync(linked, join(root, "linked"), "junction");
+  symlinkSync(root, join(root, "Mine", "back"), "junction");
+  symlinkSync(join(root, "nowhere"), join(root, "broken"), "junction");
+  const off = await hostSkillsOff(root);
+  assert.ok(off.every((s) => s.enabled === false));
+  assert.deepEqual(off.map((s) => s.path), [join(root, "Mine", "SKILL.md"), join(deep, "SKILL.md"), join(root, "linked", "SKILL.md")]);
+  assert.deepEqual(await hostSkillsOff(join(root, "nowhere")), []);
+});
+
 describe("the Codex driver under the station's variables", () => {
   test("the station's variables for its agents: an app-server starts with them, again once idle when they change; a profile's own win", async (t) => {
     t.after(() => readAgentEnvFrom(() => null));

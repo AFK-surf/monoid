@@ -10,7 +10,7 @@
 // Node says on stdin, a line of JSON each: `wall` (its clock), `attach` (a session's runner: its socket, the turn and
 // the live steps as Node knows them), `ack` (what of a session's Node took), `write` (a line to its stdin), `signal`,
 // `begin` (a prompt's turn begun: `compact` for a /compact), `aborting`, `renewed`, `done` (read to the end: its runner
-// may go), `detach` (let go for the next station), `freeze` and `thaw` (its lines held while the station hands over).
+// may go), `detach` (let go for the next station; `leave`: the runner asked to close, a pipe's), `freeze` and `thaw` (its lines held while the station hands over).
 // It says on stdout `lines` (a session's events, its turn, up to where), `exit` (how its process ended, its last lines
 // of stderr), `closed` (the runner's socket closed with no exit said), `left` (let go), `frozen` (each session's turn
 // and live steps as they stand).
@@ -175,6 +175,10 @@ fn Agents::told(self : Agents, line : String) -> Unit {
       h.frozen = true
       h.left = true
       h.held.clear()
+      // (a pipe has no closing of one side: the runner is asked to close once it read to here, runner.ts `detach`)
+      if said.value("leave") is Some(True) {
+        self.send(h, { "op": "leave" })
+      }
       self.end(h)
     }
     { "thaw": _, .. } => {

@@ -173,7 +173,7 @@ test("a command a turn waited on and was never told ended does not outlive the t
 });
 
 test("its processes are read by the MoonBit program where it is built, else here (claude-here.test.ts)", () => {
-  const hosted = process.env.STILLFAIL_AGENTS_HOST !== "0" && mbReaderBinary() !== null && platform.runnerSocketVisible;
+  const hosted = process.env.STILLFAIL_AGENTS_HOST !== "0" && mbReaderBinary() !== null;
   assert.equal((driver() as unknown as { agents: unknown }).agents !== null, hosted);
 });
 

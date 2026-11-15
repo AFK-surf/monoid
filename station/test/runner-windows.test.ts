@@ -1,6 +1,7 @@
 // runner.test.ts's case on Windows, where the runner's socket is a named pipe: agents are Node scripts (no sh, no
 // fifos); a station lets go (`leave`, a pipe having no one-way close) and the next reads on where it acknowledged; and
-// ending an agent takes what it started with it (its job).
+// ending an agent takes what it started with it (its job); the same read by the MoonBit program (mb-agents.ts), its
+// pipe opened by the shell.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
@@ -8,7 +9,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { AgentProcess, findRunner } from "../src/agents/process.ts";
-import { RunnerConnection, existingRunners, runnerBinary, startRunner } from "../src/agents/runner.ts";
+import { AgentsHost, HostedProcess, type HostedOptions } from "../src/agents/mb-agents.ts";
+import { RunnerConnection, allLeft, existingRunners, runnerBinary, startRunner } from "../src/agents/runner.ts";
+import { mbReaderBinary } from "../src/read/mb-reader.ts";
 import { keepRunnerIn } from "../src/platform/processes.ts";
 
 const skip = process.platform !== "win32" && "Windows only";
@@ -70,6 +73,57 @@ test("lines in order; a station that lets go and comes back reads on where it ac
   assert.ok(second.includes("err:oops"));
   b.done();
   await until(() => existingRunners(data).length === 0);
+});
+
+test("read by the MoonBit program: a station that lets go (leave) and comes back reads on where it acknowledged", { skip: skip || (mbReaderBinary() === null && "no stillfail-reader built") }, async () => {
+  const data = mkdtempSync(join(tmpdir(), "runner-test-"));
+  const go = join(data, "go");
+  const said = join(data, "said");
+  const script = `
+    const fs = require("fs");
+    console.log("line1"); console.log("line2");
+    const wait = () => fs.existsSync(${JSON.stringify(go)}) ? more() : setTimeout(wait, 20);
+    const more = () => {
+      for (const i of [3, 4, 5, 6]) console.log("line" + i);
+      fs.writeFileSync(${JSON.stringify(said)}, "");
+      process.stdin.once("data", (b) => { console.log("got:" + String(b).trim()); process.exit(3); });
+    };
+    wait();`;
+  const [program, args] = node(script);
+  const host = AgentsHost.where(data);
+  assert.ok(host !== null, "the program reads agents on Windows too");
+  const owner = {};
+  host.use(owner);
+  try {
+    const lines: string[] = [];
+    let exit = "";
+    const options: HostedOptions = {
+      label: "test",
+      kind: "lines",
+      heard: (heard) => void lines.push(...(heard.lines ?? []).map((l) => l.text.replace(/\r$/, ""))),
+      exit: (s) => void (exit = s),
+    };
+    const a = await HostedProcess.start(host, data, "h1", program, [...args], process.env as Record<string, string>, data, options, null);
+    await until(() => lines.length === 2);
+    a.detach();
+    // (the runner closes the pipe once it reads `leave`: a pipe has no one-way close)
+    await allLeft();
+    assert.equal(host.program(), null, "nothing left to read: the program let go");
+
+    writeFileSync(go, "");
+    await until(() => existsSync(said));
+    assert.ok(alive(a.info.runner), "the runner outlives the connection");
+    assert.equal((await findRunner(data, "h1"))?.runner, a.info.runner);
+    const b = HostedProcess.adopt(host, a.info, options, null, null);
+    await until(() => lines.includes("line6"));
+    b.write("hello");
+    assert.equal(await b.exited, "3");
+    await until(() => exit !== "");
+    assert.deepEqual(lines, ["line1", "line2", "line3", "line4", "line5", "line6", "got:hello"], "no line twice, none lost");
+    await until(() => existingRunners(data).length === 0);
+  } finally {
+    await host.close(owner);
+  }
 });
 
 test("killing an agent ends what it started too", { skip }, async () => {

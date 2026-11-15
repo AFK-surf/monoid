@@ -2,8 +2,9 @@
 // on the station's thread: the program attaches to each process's runner, reads its stream-json and says what it comes
 // to (the runtime's events, where the turn stands, up to where it read), which this hands the session and acknowledges
 // once handed, the line then acknowledged to the runner. A process is started and ended here as process.ts does it;
-// only reading it, and writing to it, go through the program. One that is not there (Windows, whose runners listen on
-// a pipe; a checkout without the program; STILLFAIL_AGENTS_HOST=0) leaves the drivers reading as before.
+// only reading it, and writing to it, go through the program (a runner's pipe on Windows opened by the shell as a Unix
+// socket is elsewhere). One that is not there (a checkout without the program; STILLFAIL_AGENTS_HOST=0) leaves the
+// drivers reading as before.
 import { log } from "../ops/log.ts";
 import { wall } from "../ops/fibers.ts";
 import { mbReaderBinary } from "../read/mb-reader.ts";
@@ -66,7 +67,7 @@ export class AgentsHost {
   /// The program for `data`'s processes, where it can read them: one for every driver of the station (each taking
   /// it, `close` letting it go; it ends with the last).
   static where(data: string): AgentsHost | null {
-    if (process.env.STILLFAIL_AGENTS_HOST === "0" || !platform.runnerSocketVisible) return null;
+    if (process.env.STILLFAIL_AGENTS_HOST === "0") return null;
     if (mbReaderBinary() === null) return null;
     let host = AgentsHost.#shared.get(data);
     if (host === undefined || host.#closed) AgentsHost.#shared.set(data, (host = new AgentsHost(data)));
@@ -365,7 +366,8 @@ export class HostedProcess {
     this.gone = true;
     leave(new Promise<void>((resolve) => {
       this.#left = resolve;
-      this.#host.post({ detach: this.n });
+      // (a pipe has no closing of one side: the runner is asked to close, runner.ts `detach`)
+      this.#host.post({ detach: this.n, ...(platform.runnerSaysLeave ? { leave: true } : {}) });
     }));
   }
 

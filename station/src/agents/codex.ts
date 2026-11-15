@@ -6,8 +6,8 @@
 // - per-session settings (the MCP endpoint and token) travel in the thread/start|resume `config`, not the process
 //   environment;
 // - threads need sandbox "danger-full-access" with approvalPolicy "never", or MCP tool calls are refused.
-import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
-import { open } from "node:fs/promises";
+import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { open, readdir, realpath, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { agentEnv } from "../ops/agent-env.ts";
 import { log } from "../ops/log.ts";
@@ -55,14 +55,16 @@ function comparePaths(a: string, b: string): number {
 /// Codex also loads the skills in the user's own ~/.agents/skills. The station's agents share skills through the agent
 /// home instead, and the personal ones pull them off course, so each is turned off by path: codex's skills.config takes
 /// files, not directories.
-export function hostSkillsOff(root: string): { path: string; enabled: false }[] {
+/// Read off the station's thread (it is walked each time a thread opens): one directory at a time, so `visited` keeps
+/// a linked folder from being walked twice as before.
+export async function hostSkillsOff(root: string): Promise<{ path: string; enabled: false }[]> {
   const found: string[] = [];
   const visited = new Set<string>();
-  const walk = (dir: string, depth: number) => {
+  const walk = async (dir: string, depth: number): Promise<void> => {
     if (depth > 6) return;
     let real: string;
     try {
-      real = realpathSync(dir);
+      real = await realpath(dir);
     } catch {
       return;
     }
@@ -70,24 +72,21 @@ export function hostSkillsOff(root: string): { path: string; enabled: false }[] 
     visited.add(real);
     let entries: string[];
     try {
-      entries = readdirSync(dir);
+      entries = await readdir(dir);
     } catch {
       return;
     }
-    for (const name of entries) {
+    // Follows links: skill folders are often linked in.
+    const kinds = await Promise.all(entries.map((name) => stat(join(dir, name)).then((s) => s.isDirectory(), () => null)));
+    for (const [i, name] of entries.entries()) {
+      const isDir = kinds[i];
+      if (isDir === null) continue;
       const path = join(dir, name);
-      // Follows links: skill folders are often linked in.
-      let isDir: boolean;
-      try {
-        isDir = statSync(path).isDirectory();
-      } catch {
-        continue;
-      }
-      if (isDir) walk(path, depth + 1);
+      if (isDir) await walk(path, depth + 1);
       else if (name === "SKILL.md") found.push(path);
     }
   };
-  walk(root, 0);
+  await walk(root, 0);
   return found.sort(comparePaths).map((path) => ({ path, enabled: false as const }));
 }
 
@@ -997,7 +996,7 @@ export class CodexDriver implements AgentDriver {
     }
     const host = await this.host(options.profile, options.key, options.cwd);
     const model = options.model ?? profileModel(options.profile);
-    const skillsOff = hostSkillsOff(this.hostSkills);
+    const skillsOff = await hostSkillsOff(this.hostSkills);
     const config: Json = options.textOnly ? {
       "features.shell_tool": false,
       "features.unified_exec": false,
