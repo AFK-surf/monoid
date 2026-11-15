@@ -17,6 +17,9 @@
 // picked in it the same page as wide settings-station's, what its old view built now made in the tree's count.
 // Lowered 2026-11-16, the wide window's: what the changes of one moment owe of what is under the pointer and what a
 // still pointer is over settled once as of it (mbui's Tree::withins_owed_now), not laid out again for each change.
+// Raised once, 2026-11-16: a new chat's model panel (sfpages model_triple.mbt): its body and foot made as nodes, what its
+// old view built as it opened now made, laid out and measured by the window's tree, nothing more shown; what the old
+// view laid out again at each change of it is none now (real_size_change_known_wbtest.mbt, brought down).
 
 ///|
 let real_size_known : Map[String, (Int, Int, Int)] = {
@@ -151,7 +154,7 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone newchat-lend": (451, 509, 92),
   "phone share-card": (445, 690, 138),
   "phone share-card-dark": (445, 690, 138),
-  "phone newchat-model": (451, 509, 92),
+  "phone newchat-model": (797, 787, 122),
   "phone newchat-profiles": (451, 509, 92),
   "phone newchat-reading": (451, 509, 92),
   "phone newchat-station": (698, 711, 150),
@@ -521,7 +524,7 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "wide newchat-lend": (1321, 1337, 142),
   "wide share-card": (1334, 1799, 213),
   "wide share-card-dark": (1334, 1799, 213),
-  "wide newchat-model": (1333, 1359, 142),
+  "wide newchat-model": (1682, 1632, 182),
   "wide newchat-profiles": (1321, 1337, 142),
   "wide newchat-reading": (1321, 1337, 142),
   "wide newchat-station": (1554, 1528, 200),

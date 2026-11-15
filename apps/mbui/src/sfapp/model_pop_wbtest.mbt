@@ -71,12 +71,14 @@ test "a frequent model with a different runtime is applied as its panel leaves w
   assert_eq(t.find("常用搭配"), Some(before), msg="the model rows stay where they were as the panel starts to close")
   assert_true(t.find("DeepSeek Harness") is Some(_), msg="the leaving panel keeps the runtime that was shown")
   t.run_for(@kit.pop_out_ms / 2.0)
-  // The rows' layout stays fixed while the panel fades and shrinks.
+  // The rows' layout stays fixed while the panel fades and shrinks: drawn smaller with it, all alike (as much smaller
+  // as its words are), never laid out anew.
   let heading_out = words("常用搭配")
   let row_out = words("SWE-2")
   let other_out = words("DeepSeek V4.1 Flash")
-  assert_true(((row_out.2 - heading_out.2) - (row.2 - heading.2)).abs() < 1.0, msg="the model rows keep their layout")
-  assert_true(((other_out.2 - heading_out.2) - (other.2 - heading.2)).abs() < 1.0, msg="the other model row keeps its layout")
+  let k = heading_out.4 / heading.4
+  assert_true(((row_out.2 - heading_out.2) - k * (row.2 - heading.2)).abs() < 1.0, msg="the model rows keep their layout")
+  assert_true(((other_out.2 - heading_out.2) - k * (other.2 - heading.2)).abs() < 1.0, msg="the other model row keeps its layout")
   assert_true(t.find("DeepSeek Harness") is Some(_), msg="the runtime stays with the leaving panel")
   // Open it again while the first panel is still leaving: the new one has its own, current contents.
   t.tap_text("GPT-6 Astra")
@@ -159,7 +161,7 @@ fn wholly_in_view(t : @ui.Tester, r : (Double, Double, Double, Double)) -> Bool 
   let (x, y, w, h) = r
   let (dx, _, dw, _) = t.get(@ui.Role::Dialog).rect
   t
-  .boxes()
+  .boxes_held()
   .iter()
   .all(fn(b) {
     let holds = b.x >= dx - 0.5 && b.x + b.w <= dx + dw + 0.5 &&
@@ -198,7 +200,7 @@ fn starred_beside(t : @ui.Tester, r : (Double, Double, Double, Double)) -> Bool 
 ///|
 /// The words `name` drawn in the rect `r`.
 fn words_in(t : @ui.Tester, r : (Double, Double, Double, Double), name : String) -> @ui.Laid? {
-  t.boxes().rev().iter().find_first(fn(b) { b.kind == "text" && b.text == name && b.x >= r.0 && b.x < r.0 + r.2 && b.y >= r.1 && b.y < r.1 + r.3 })
+  t.boxes_held().rev().iter().find_first(fn(b) { b.kind == "text" && b.text == name && b.x >= r.0 && b.x < r.0 + r.2 && b.y >= r.1 && b.y < r.1 + r.3 })
 }
 
 ///|

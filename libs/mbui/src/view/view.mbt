@@ -4275,8 +4275,10 @@ pub fn Tree::clear_of(self : Tree, top : Double, right : Double, foot : Double, 
 ///|
 /// Laid out over what holds it (true), filling all of its room whatever else it holds, or in its turn among them: what
 /// lies one over another (a stack's pages, what floats over them) said so, drawn in the order they are held.
+/// `from_top`: over it from its top across all of its width, as tall as what it holds rather than as tall as it (a page
+/// of a stack laid aside as another shows, kept as tall as it stood).
 #callsite(autofill(loc))
-pub fn View::over(self : View, on : Live[Bool], loc~ : SourceLoc) -> View {
+pub fn View::over(self : View, on : Live[Bool], from_top? : Bool = false, loc~ : SourceLoc) -> View {
   self.bind(loc~, Over, on, Layout, fn(on) {
     let s = self.tree.nodes[self.at].flex.style
     let inset : @flex.Dim = if on { Pt(0.0) } else { Auto }
@@ -4284,7 +4286,7 @@ pub fn View::over(self : View, on : Live[Bool], loc~ : SourceLoc) -> View {
     s.set_inset_left(inset)
     s.set_inset_top(inset)
     s.set_inset_right(inset)
-    s.set_inset_bottom(inset)
+    s.set_inset_bottom(if from_top { Auto } else { inset })
   })
   self
 }

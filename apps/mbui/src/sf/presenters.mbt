@@ -174,6 +174,9 @@ priv struct PanelNodes {
   hugs : Bool
   /// what it holds goes in steps in it, each made as nodes (panel_nodes' `steps`: panel_go_nodes, panel_back)
   steps : Bool
+  /// where it heads itself (PanelOf's `heads_itself`), on a sheet too (the reader's layout): else headed there as ever,
+  /// heading itself beside what opened it alone (panel_nodes' `heads_itself`)
+  sheet_heads : Bool
 }
 
 ///|
@@ -660,11 +663,16 @@ pub fn panel(
 /// holds is pressed, slides in over the one before in the same dialog or sheet, back (its back key, Escape, the system's
 /// back) slides it off again, the one before as it was left (steps_centred_node; on 小屏 the sheet's pages, sheet_node).
 /// `back`: what back does on its first step where its steps follow a flow kept elsewhere (panel's `back`).
+/// `fits`, `heads_itself`, `fade_out_together`: beside what opened it, as panel's are: as wide as what it holds, `w` at
+/// most; no head of the panel's, what it holds drawing its own; the panel and what it holds faded together as it goes.
 pub fn panel_nodes(
   title : String,
   body : (@view.View, () -> Unit) -> Unit,
   from~ : Anchor,
   w? : Double = panel_w,
+  fits? : Bool = false,
+  heads_itself? : Bool = false,
+  fade_out_together? : Bool = false,
   description? : String = "",
   foot? : (@view.View, () -> Unit) -> Unit,
   wide? : Bool = false,
@@ -690,7 +698,7 @@ pub fn panel_nodes(
       body: fn(_, _) {  },
       foot: None,
       w,
-      fits: false,
+      fits,
       wide,
       live,
       tall,
@@ -698,20 +706,20 @@ pub fn panel_nodes(
       focus,
       ruled,
       lists: false,
-      fade_out_together: false,
+      fade_out_together,
       form,
       field: "",
       stage: false,
       above: None,
       title_row: None,
-      heads_itself: false,
+      heads_itself,
       side,
       along,
       offset,
       match_panel,
       steps: false,
       on_back: back,
-      nodes: Some({ body, foot, hugs, steps }),
+      nodes: Some({ body, foot, hugs, steps, sheet_heads: false }),
     }),
     from,
     gone~,
@@ -778,8 +786,9 @@ pub fn panel_go_nodes(
         Panel(x) =>
           match x.nodes {
             Some(n) => {
-              let step : PanelOf = { ..x, title, description, live: None, nodes: Some({ body, foot, hugs: n.hugs, steps: false }) }
-              panel_page(p, step, Unanchored, left)
+              let step : PanelOf = { ..x, title, description, live: None, nodes: Some({ body, foot, hugs: n.hugs, steps: false, sheet_heads: false }) }
+              // (opened by what opened the panel: on a sheet as far in as its first step, sheet_node's `pressed`)
+              panel_page(p, step, p.from, left)
             }
             None => ()
           }
@@ -2406,6 +2415,22 @@ let sheet_long_pick : Double = 0.66
 /// The window height in force while building what a sheet holds (0 outside a sheet).
 // kept across runs: put back by presenters_reset
 let sheet_win_h : Ref[Double] = Ref(0.0)
+
+///|
+/// The height of the window a sheet's body made of nodes is laid out by (sheet_window_h's), lent by sheet_node to it.
+// kept across runs: what each sheet lends its body, let go with it
+let sheet_win_lent : @view.Lent[() -> Double] = @view.Lent::new()
+
+///|
+/// The height of the window for what node `v` of a sheet's body made of nodes is laid out by (sheet_window_h's: the
+/// screen's full height while no field in the sheet has the focus, the room over the soft keyboard while one does);
+/// outside a sheet, the window's.
+pub fn sheet_window_h_node(v : @view.View) -> Double {
+  match v.lent(sheet_win_lent) {
+    Some(f) => f()
+    None => v.window().1
+  }
+}
 
 ///|
 /// The height of the window for what a sheet holds (`present_sheet`, `sheet_node`): the screen's full height while no

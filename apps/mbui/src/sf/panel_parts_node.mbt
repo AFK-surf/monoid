@@ -574,3 +574,37 @@ pub fn panel_switch_row_node(
   })
   |> ignore
 }
+
+///|
+/// A small panel's head in `parent` (panel_head's, where its body is nodes and heads itself: panel_nodes'
+/// `heads_itself`): its title (13, 600) in by a row's padding, as far under the panel's top as a menu's first item's
+/// words, 4 over what follows; `end`: what stands beside the title at the rest of its line, a row's capsule in the
+/// panel's top corner, concentric with it (a search), as panel_head's `end`.
+#callsite(autofill(loc))
+pub fn panel_head_node(
+  parent : @view.View,
+  title : () -> String,
+  end? : (@view.View) -> Unit,
+  loc~ : SourceLoc,
+) -> @view.View {
+  parent.box(made_for=loc, fn(h) {
+    match end {
+      Some(f) => {
+        style_node(h, fn() {
+          let r = menu_row_reach(theme().rows.pick)
+          panel_head_line.then(@ui.style(mt=room(-r), mr=room(-r)))
+        })
+        words_node(h, title, fn() { panel_title }) |> ignore
+        h.box(fn(e) {
+          style_node(e, fn() { panel_head_end }, in_row=true)
+          f(e)
+        })
+        |> ignore
+      }
+      None => {
+        style_node(h, fn() { panel_head_box })
+        words_node(h, title, fn() { panel_title }) |> ignore
+      }
+    }
+  })
+}

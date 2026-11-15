@@ -33,9 +33,16 @@ pub fn choice_row_node(
   let card = on_card_node(parent)
   let goes = fn() { !disabled() }
   // (its words as a page's row has them: the label, what follows it on its line, a note under them, its end on that
-  // line where a note is under them unless `compact` centres it across a two-line panel row)
-  let under = fn() { body is None && !compact && note() != "" }
+  // line where a note is under them, a `compact` panel row's too: what is beside two lines on the first of them, never
+  // across their middle, the user, 2026-11-14)
+  let under = fn() { body is None && note() != "" }
   let chevron = if narrow { pg_chevron } else { desk_chevron }
+  // (how tall its first line is, its label's line: what is beside it there laid out across that line's middle)
+  let first_line = fn(v : @view.View) {
+    v.words_redone() |> ignore
+    let th = @ui.tree_theme()
+    node_sp(v, if narrow { th.text_size(Body).1 } else { th.leading(L6).unwrap_or(th.text_size(Ui).1) })
+  }
   // (where it stands across in a panel's body, row_line's: panel_row_at, not on a card; elsewhere a page's row's; on a
   // page's list in a panel's card its ground reaching past it over and under: link_reach)
   let in_panel = panel_row_at(at, own=if narrow { card_pad - corner_inset } else { desk_list_out }, card~)
@@ -130,15 +137,7 @@ pub fn choice_row_node(
                   l
                   .row(Is(true))
                   .lines_up(Is(Some(Middle)))
-                  .min_height(By(fn() {
-                    if under() {
-                      l.words_redone() |> ignore
-                      let th = @ui.tree_theme()
-                      Some(node_sp(l, if narrow { th.text_size(Body).1 } else { th.leading(L6).unwrap_or(th.text_size(Ui).1) }))
-                    } else {
-                      None
-                    }
-                  }))
+                  .min_height(By(fn() { if under() { Some(first_line(l)) } else { None } }))
                   |> ignore
                   f(l)
                 })
@@ -196,9 +195,17 @@ pub fn choice_row_node(
                   }
                 })
                 |> ignore
-                // (its end on its first line where a note is under it)
+                // (its end on its first line where a note is under it; a `compact` row's, its sides and its top
+                // nearer, there by the row's top corner out of that corner's arc: as far in from the row's side as the
+                // corner is round, a capsule in it not standing nearer its top than its side, unlike the row's corner)
                 first.show(fn() { under() && ended() }, at_once=true, fn(e) {
                   e.row(Is(true)).gap(Is(12.0)).lines_up(Is(Some(Middle))) |> ignore
+                  if compact {
+                    e.margin(Is((0.0, 0.0, dmax(0.0, corner - side), 0.0))) |> ignore
+                  }
+                  // (as tall as that line, what is taller in it (a button) standing over and under it alike: the line
+                  // no taller for it, its label and its lead across the same middle)
+                  e.height(By(fn() { Some(first_line(e)) })) |> ignore
                   end(e)
                 })
               })

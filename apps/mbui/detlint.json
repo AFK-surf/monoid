@@ -531,7 +531,6 @@
     "old-panel": {
       "src/sfapp/sheet.mbt": 1,
       "src/sfapp/sheets.mbt": 4,
-      "src/sfpages/model_triple.mbt": 1,
       "src/sfpages/screen_debug.mbt": 1,
       "src/sfpages/settings_page.mbt": 1,
       "src/sfpages/stations_now.mbt": 1
