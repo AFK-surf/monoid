@@ -72,17 +72,17 @@ pub fn chat_page_body_node(
   // here is on its way and its outbox is empty, its view is its head alone (sfbase's chat_head: a word streamed into a
   // message reads none of it again) and its rows are by key (chat_body_keyed); else its view and entries whole, as
   // view_of_chat works them out)
-  let msgs = @signals.untracked(fn() { @sfbase.chat_messages(src, r) })
   let sending = fn() { @sfbase.sending_now(r.station + "\u{1}" + r.session) }
   let read : @signals.Computed[(ChatView, Array[Entry])?] = @signals.computed(
     fn(was) {
-      let head = match msgs {
-        Some(_) if sending().is_empty() && @sfbase.fresh_view(r) is None =>
-          match @sfbase.chat_head(src, r) {
-            (Some(h), _) if h.outbox.is_empty() => Some((h, chat_no_entries))
-            _ => None
-          }
-        _ => None
+      // (the head read first: what holds the topic, whose messages by key are then there)
+      let head = if sending().is_empty() && @sfbase.fresh_view(r) is None {
+        match @sfbase.chat_head(src, r) {
+          (Some(h), _) if h.outbox.is_empty() && @sfbase.chat_messages(src, r) is Some(_) => Some((h, chat_no_entries))
+          _ => None
+        }
+      } else {
+        None
       }
       match head {
         Some(h) => Some(h)
@@ -180,7 +180,7 @@ pub fn chat_page_body_node(
         read=fn(place, scroll, rows) { chat_read_node(o, src, r, view, place, scroll, rows, shows, cover) },
         to=r,
         shows~,
-        msgs~,
+        msgs=@signals.untracked(fn() { @sfbase.chat_messages(src, r) }),
       )
       |> ignore
     })

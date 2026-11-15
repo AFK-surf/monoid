@@ -462,7 +462,7 @@ pub fn source() -> @sfapp.Source {
     // (a chat's messages as the run's core sent them, by key; the topics a run of before is answered otherwise, none)
     topic_keyed: fn(name, params, field, keys) {
       if name == "chat" {
-        Some(@core.follow_topic(name, params=replay_topic_params(name, params)).keyed(field, keys))
+        @core.keyed_of(name, replay_topic_params(name, params), field, keys)
       } else {
         None
       }

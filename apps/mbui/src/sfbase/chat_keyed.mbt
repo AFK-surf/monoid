@@ -212,12 +212,11 @@ pub fn chat_head(src : Source, r : ChatRef) -> (ChatView?, Json?) {
 /// works it out (what is on its way answering its last card: sent_here_view). Told as the head changes, not as a word
 /// comes into a message.
 pub fn chat_view_now(src : Source, r : ChatRef) -> ChatView? {
-  if sending_now(r.station + "\u{1}" + r.session).is_empty() &&
-    fresh_view(r) is None &&
-    chat_messages(src, r) is Some(_) {
+  if sending_now(r.station + "\u{1}" + r.session).is_empty() && fresh_view(r) is None {
+    // (the head read first: what holds the topic, whose messages by key are then there)
     match chat_head(src, r).0 {
-      Some(h) => return Some(h)
-      None => ()
+      Some(h) if chat_messages(src, r) is Some(_) => return Some(h)
+      _ => ()
     }
   }
   view_of_chat(src, r).0

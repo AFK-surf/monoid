@@ -84,8 +84,9 @@ pub(all) struct Source {
   topic_key : (String, Map[String, Json]) -> String
   /// A topic's keyed list (the field of its value the core keys by `keys`: a chat's `messages` by `seq` and
   /// `outgoing`), kept by key as the core changes it item by item (@core.Sub::keyed): what reads an item told only as
-  /// it changes. None where the source keeps none (a made-up core that gives values whole): its reader works it out of
-  /// the value as before. Read as `topic` is, of the same subscription.
+  /// it changes. None where the source keeps none (a made-up core that gives values whole) or the topic is not held:
+  /// its reader works it out of the value as before. Of the subscription `topic` reads, acquiring none (what reads it
+  /// reads the topic, which holds it).
   topic_keyed : (String, Map[String, Json], String, Array[String]) -> @signals.KeyedList[String, Json]?
   /// A view source distinguishes graph evaluation from an independent read.
   topic_scope : ((TopicReadMode, () -> TopicState) -> TopicState)?

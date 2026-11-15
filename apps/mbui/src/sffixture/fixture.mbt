@@ -1779,7 +1779,7 @@ pub fn round_trip_again(
     topic_key: fn(name, params) { wire_key(name, wire(name, params)) },
     topic_keyed: fn(name, params, field, keys) {
       serving()
-      Some(@core.follow_topic(name, params=wire(name, params)).keyed(field, keys))
+      @core.keyed_of(name, wire(name, params), field, keys)
     },
     waits: fn(name, params) {
       serving()

@@ -619,3 +619,15 @@ pub fn query_of(url : String) -> String {
     None => q.to_owned()
   }
 }
+
+///|
+/// The keyed list of topic `topic`'s value at `field` (Sub::keyed), of its subscription where there is one: none
+/// acquired for it (what reads it reads the topic as well, which holds it).
+pub fn keyed_of(
+  topic : String,
+  params : Map[String, Json],
+  field : String,
+  keys : Array[String],
+) -> @signals.KeyedList[String, Json]? {
+  client.peek_topic(topic, params~).map(fn(s) { s.keyed(field, keys) })
+}
