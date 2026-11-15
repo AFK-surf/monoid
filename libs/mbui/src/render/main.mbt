@@ -292,12 +292,18 @@ fn instances(dl : Dl, path : String, atlas : @hostapi.Atlas, colour_atlas : @hos
       unknown = unknown + 1
       return
     }
-    let sadv = @hostapi.measure(" ", size, weight, style)
+    let sadv = if !colour_atlas.sized() && @hostapi.shape(" ", size, weight, style, shaped) > 0 {
+      shaped[2]
+    } else {
+      0.0
+    }
     let (key, gadv) = if cluster < 0 {
-      (
-        @hostapi.text_key(text, size, weight, style),
-        @hostapi.measure(text, size, weight, style),
-      )
+      let adv = if !colour_atlas.sized() && @hostapi.shape(text, size, weight, style, shaped) > 0 {
+        shaped[2]
+      } else {
+        0.0
+      }
+      (@hostapi.text_key(text, size, weight, style), adv)
     } else {
       let n = @hostapi.shape(text, size, weight, style, shaped)
       if cluster < n {
