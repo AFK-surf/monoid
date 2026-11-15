@@ -79,6 +79,8 @@ export type MovesDeps = {
   lackMost?: number;
   work?: HandoverDeps["work"];
   fail?: HandoverDeps["fail"];
+  /// The station process this one took over from gone (handover.ts `previous`).
+  previous?: Promise<void>;
   changed?: () => void;
   /// config.json as written, for the settings that move (settings.ts).
   config?: { raw(): Json; update(f: (raw: Json) => void): void };
@@ -253,7 +255,7 @@ export class Moves {
         here: (a) => this.accountHere(a),
         present: (id) => d.profiles().some((p) => p?.id === id),
       },
-      reposDir: d.reposDir, room: d.room, hasGit: d.hasGit, git: d.git, lackMost: d.lackMost, work: d.work, fail: d.fail,
+      reposDir: d.reposDir, room: d.room, hasGit: d.hasGit, git: d.git, lackMost: d.lackMost, work: d.work, fail: d.fail, previous: d.previous,
       changed: () => d.changed?.(),
       arrivedStopped: (keys, need, ws) => this.scheduler.noteStopped({ module: "chats", id: keys[0]! }, need, ws),
       // (a chat here again by any route: what was lent for it alone is taken back)
@@ -584,6 +586,9 @@ export class Moves {
   /// answer at all is said to be out of reach, which is what is known of it. Nothing is held either way.
   async refusal(ws: string, station: string, lang: Lang = stationLang()): Promise<string | null> {
     if (!this.on()) return tr(lang, "station.move.off");
+    // (every turn asks this first: begun only once the station process before this one is gone, so that two processes
+    // of this station never act on one move; meanwhile it waits the seconds that takes)
+    await this.handover.loaded();
     const name = () => this.#d.roster(ws)?.find((r) => r.id === station)?.name || station.slice(0, 12);
     let open: Json;
     // (a connection found gone fails its request, the next is dialed anew: asked once more before it is said to be out

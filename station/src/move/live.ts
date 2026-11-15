@@ -3,7 +3,7 @@
 import { Effect, Layer } from "effect";
 import { Fibers } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
-import { AdminApi, ControlPlane, Events, Key, Parts, Paths, Peers, Store } from "../services.ts";
+import { AdminApi, ControlPlane, Events, Key, Parts, Paths, Peers, Previous, Store } from "../services.ts";
 import { Agents } from "../sessions/agents.ts";
 import { chatCards } from "../replica/retire-asks.ts";
 import { gitHere, gitRun } from "../replica/retire.ts";
@@ -26,6 +26,8 @@ export const MovesLive = Layer.effectDiscard(
     const key = yield* Key;
     const agents = yield* Agents;
     const admin = yield* AdminApi;
+    // (the station process handing over to this one: its move turns and hand-overs its own until it is gone)
+    const previous = yield* Previous;
     const fibers = yield* Effect.acquireRelease(Effect.sync(() => new Fibers("move")), (f) => Effect.promise(() => f.close()));
     const roster = (ws: string) => {
       const m = cloud.membership(ws);
@@ -45,7 +47,7 @@ export const MovesLive = Layer.effectDiscard(
       });
     };
     const moves = new Moves({
-      data, store, fibers, roster,
+      data, store, fibers, roster, previous: previous.exited,
       here: () => key.id,
       home: () => cloud.home(),
       ask: (station, request) => bus.ask(station, request),

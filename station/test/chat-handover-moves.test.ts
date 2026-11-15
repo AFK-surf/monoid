@@ -16,7 +16,7 @@ import { PeerGone, PeerStopped } from "../src/mesh/peer.ts";
 import { Refused } from "../src/mesh/bus.ts";
 import { stationLang, tr } from "../src/ops/i18n.ts";
 import { hearLines } from "../src/ops/log.ts";
-import { WS, A, B, C, type Station, world, endTurn, stillfailChat, gitEnv, homeThread, entries } from "./move-world.ts";
+import { WS, A, B, C, type Station, world, endTurn, stillfailChat, gitEnv, homeThread, entries, retiredCopy } from "./move-world.ts";
 
 type Json = any;
 
@@ -799,4 +799,119 @@ test("a move stopped once a chat went: that chat completes there, nothing after 
   assert.equal(a.rig.store.handedTo(third), null);
   assert.equal(a.moves.scheduler.last(WS)!.stoppedBy, "owner@x");
   assert.equal(a.moves.scheduler.stopping(), false, "said no more once the turn ended");
+});
+
+/// Station `st`'s next process (a launcher's hand-over): another Moves on its data directory, begun, the process before it
+/// gone as `previous` says.
+function nextProcess(st: Station, previous: Promise<void>) {
+  const next = st.make(previous);
+  return { next, started: next.start() };
+}
+
+/// Where chat `key` is in sight: the stations whose own row of it is live.
+const inSight = (w: ReturnType<typeof world>, key: string) => [...w.stations.values()].filter((s) => s.rig.store.liveOf([key]).length > 0).map((s) => s.id.slice(0, 1));
+
+test("a station handing over to its next process as one of its chats is handed to another station: the next process acts on it only once the one before is gone; the chat in sight on exactly one station", async () => {
+  const w = world();
+  const a = w.get(A);
+  const b = w.get(B);
+  const { key } = await stillfailChat(a);
+  // (the next process begins as the hand-over has its counts there, between `rows` and `gone`)
+  let gone!: () => void;
+  const previous = new Promise<void>((r) => (gone = r));
+  let next = null as ReturnType<typeof nextProcess> | null;
+  a.onFail = (step) => {
+    if (step === "counts" && next === null) next = nextProcess(a, previous);
+  };
+  const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: key });
+  a.onFail = null;
+  assert.ok(next !== null, "the next process began during the hand-over");
+  // The process before stops and is gone; the next goes on.
+  await a.moves.close();
+  gone();
+  await next!.started;
+  a.moves = next!.next;
+  await w.quiet();
+  assert.equal(out.failed, null, JSON.stringify(out.failed));
+  assert.deepEqual(inSight(w, key), ["b"], "in sight on B alone");
+  assert.equal(a.rig.store.handedTo(key)?.station, B, "A says it is on B");
+  assert.equal(b.rig.store.handedTo(key), null);
+});
+
+test("two processes of one station deciding one hand-over at once (the next not waiting for the one before): whichever decides first, the chat is in sight on exactly one station, never said gone where it failed", async () => {
+  const w = world();
+  const a = w.get(A);
+  const { key } = await stillfailChat(a);
+  // (the next process begins as the hand-over has its counts there, not waiting for this one (as a gate given up
+  // would); this one, about to decide, waits for it to have begun: it decides first)
+  let next = null as ReturnType<typeof nextProcess> | null;
+  a.onFail = (step) => {
+    if (step === "counts" && next === null) next = nextProcess(a, Promise.resolve());
+    if (step === "decide" && next !== null) return next.started;
+  };
+  const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: key }).then((o) => o, (e: Error) => ({ failed: { error: e.message } }));
+  a.onFail = null;
+  await next!.started;
+  await a.moves.close();
+  a.moves = next!.next;
+  await w.quiet();
+  const seen = inSight(w, key);
+  assert.equal(seen.length, 1, `in sight on exactly one station: ${JSON.stringify(seen)} (${JSON.stringify(out.failed)})`);
+  const handed = a.rig.store.handedTo(key);
+  assert.equal(handed === null, seen[0] === "a", "said gone from A exactly where it is on B");
+});
+
+/// A hand-over record of A's of chat `key` to B as a process writes it (handover.ts `Out`).
+function outRecord(st: Station, key: string, o: { id: string; step: string; at: number; shown?: boolean; ended?: boolean }) {
+  const path = join(st.rig.dir, "replica", "handover", "out", `${o.id}.json`);
+  mkdirSync(join(path, ".."), { recursive: true });
+  writeFileSync(path, JSON.stringify({
+    id: o.id, keys: [key], to: B, toName: "B", ws: WS, at: o.at, step: o.step, error: o.step === "failed" ? "the station restarted midway" : null, jobs: [], dropOwed: false,
+    sent: {}, counts: null, there: {}, routes: [], routed: 0, shown: o.shown ?? false, done: 0, total: 0, held: true, v: 2, ...(o.ended ? { ended: true } : {}),
+  }));
+}
+
+test("a chat this station says went to another where its hand-over failed and the other does not hold it (the real run's, 2026-11-15) is in sight here again as this station starts, once; one the other holds is completed", async () => {
+  for (const there of [false, true]) {
+    const w = world();
+    const a = w.get(A);
+    const b = w.get(B);
+    const { key } = await stillfailChat(a);
+    // A as Office-VM-1 was left: its record failed, its handed_over row naming B, B holding nothing of it in sight
+    outRecord(a, key, { id: "mwhsykk6-x-bbbbbbbb-1", step: "failed", at: 1000 });
+    a.rig.store.goneTo([key], B, { [key]: { thread: null, there: null } });
+    if (there) {
+      // (B holds it after all: a chat of that key in sight there)
+      retiredCopy(a, b, key, null);
+    }
+    assert.equal(a.rig.store.handedTo(key)?.station, B);
+    a.moves = a.make();
+    await a.moves.start();
+    await w.quiet();
+    if (!there) {
+      assert.equal(a.rig.store.handedTo(key), null, "no longer said to be on B");
+      assert.deepEqual(inSight(w, key), ["a"], "in sight here, once");
+    } else {
+      assert.equal(a.rig.store.handedTo(key)?.station, B, "it went");
+      assert.deepEqual(inSight(w, key), ["b"], "in sight there alone");
+    }
+  }
+});
+
+test("a failed hand-over of a chat that went later by another is left as it is: the chat stays where it went", async () => {
+  const w = world();
+  const a = w.get(A);
+  const b = w.get(B);
+  const { key } = await stillfailChat(a);
+  // (older than the move after it: its chat's latest record is that one's)
+  outRecord(a, key, { id: "old-failed-bbbbbbbb-1", step: "failed", at: -1 });
+  const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: key });
+  await w.quiet();
+  assert.equal(out.failed, null);
+  a.moves = a.make();
+  await a.moves.start();
+  await w.quiet();
+  assert.equal(a.rig.store.handedTo(key)?.station, B, "still said to be on B");
+  assert.deepEqual(inSight(w, key), ["b"], "in sight on B alone");
+  assert.equal(JSON.parse(readFileSync(join(a.rig.dir, "replica", "handover", "out", "old-failed-bbbbbbbb-1.json"), "utf8")).step, "failed", "the old record as it was");
 });

@@ -130,7 +130,13 @@ below, sends them along).
   station the turn found gone, owed until answered). The station it goes to drops it by itself where its own disk fails
   what it is sent (full, over quota, read-only: refused in numbers, never a stream reset: mesh/peer.ts `Incoming.held`),
   and where one still coming as it starts, or as its sender is heard from, no longer goes on there (`handover.still`);
-  after, nothing is undone and the rest is told until it is answered. Its platform threads are re-pointed where their
+  after, nothing is undone and the rest is told until it is answered. One process of a station acts on its hand-overs
+  at a time: the next one a launcher starts begins, answers and goes on with none until the one before is gone
+  (`previous`, every record then read again), and a move turn waits for that too (move/station.ts `refusal`); a
+  hand-over's end is decided once, gone or failed, whichever process asks first (`decided`, a file linked into place),
+  so `gone` never follows its failure. A chat said gone (`handed_over`) whose latest hand-over failed and was never
+  shown is asked of where it went as the station starts and as that one is heard from: held there, the record is
+  completed; not, it is in sight here again (`#mend`; the real run, 2026-11-15, one chat on neither station). Its platform threads are re-pointed where their
   connect runs (connects/workspace.ts `route`, `connect.route`); what still comes here of it goes on there
   (`movedTo`). A device naming it here is answered where it went (409 with `moved`, `GET /moved`, `chat-moved`),
   only once that station showed it (store `goneTo`, then `shownThere`: told at `gone`, a device read it there before it

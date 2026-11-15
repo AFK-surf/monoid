@@ -1800,6 +1800,31 @@ export class Store {
     });
   }
 
+  /// Sessions `keys` said gone to `station` (`goneTo`) whose hand-over did not go after all, nor are they there: no longer
+  /// said to be there, in sight here as they were (replica/handover.ts `#mend`). One out of sight here, or said to be at
+  /// another station, is left as it is.
+  notGone(keys: readonly string[], station: string): string[] {
+    const back: string[] = [];
+    this.#with((changes) => {
+      this.#tx(() => {
+        for (const key of keys) {
+          const row = this.#one("SELECT ws FROM sessions WHERE key = ?", key);
+          if (row === undefined || (row.ws as string | null)?.startsWith(handedWs("")) === true) continue;
+          if (this.#run("DELETE FROM handed_over WHERE session = ? AND station = ?", key, station) === 0) continue;
+          back.push(key);
+          changes.push({ type: "moved", key, station: null, ws: (row.ws as string | null) ?? null, thread: null, there: null });
+        }
+      });
+      for (const key of back) {
+        this.#handed.delete(key);
+        this.#wsOf.delete(key);
+        changes.push({ type: "session", key });
+      }
+      if (back.length > 0) this.#sessionWorkspaceChanged();
+    });
+    return back;
+  }
+
   /// Sessions `keys` handed to `station`: where each went kept with its chat's thread here and there, then out of sight
   /// here (`goneTo`, then `shownThere`, at once).
   handOff(keys: readonly string[], station: string, home: string | null, threads: Record<string, { thread: number | null; there: number | null }>): void {

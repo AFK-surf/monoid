@@ -23,7 +23,7 @@
 // Nothing is posted in its threads nor said in the chat; its agent is told once as its next turn starts (moved_notes).
 import { createHash, randomBytes } from "node:crypto";
 import { createReadStream, readFileSync, readdirSync } from "node:fs";
-import { appendFile, mkdir, readFile, readdir, realpath, rename, rm, rmdir, stat, statfs, writeFile } from "node:fs/promises";
+import { appendFile, link, mkdir, readFile, readdir, realpath, rename, rm, rmdir, stat, statfs, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { type Bytes, Refused, bytesOf, withBytes } from "../mesh/bus.ts";
 import { stopBytes } from "../mesh/files.ts";
@@ -200,13 +200,40 @@ export type HandoverDeps = {
   /// The single-session connects bound to sessions here (store `binding`), by connect.
   bindingsOf?: (keys: string[]) => Record<string, string>;
   /// For a test: a step's failure made there (`files`, `rows`, `counts`, `show`; taking: `put`, `import`).
-  fail?: (step: string) => void;
+  fail?: (step: string) => void | Promise<void>;
+  /// The station process this one took over from gone (ops/previous.ts `previousExited`): until then this one acts on
+  /// no hand-over, begins none and answers none of another station's (none: no process before it).
+  previous?: Promise<void>;
 };
 
 const dir = (data: string) => join(data, "replica", "handover");
 const outFile = (data: string, id: string) => join(dir(data), "out", `${id}.json`);
 const inFile = (data: string, id: string) => join(dir(data), "in", `${id}.json`);
 const inFiles = (data: string, id: string) => join(dir(data), "in", id, "files");
+/// How a hand-over from here ended, decided once (`decided`): gone, or failed.
+const endFile = (data: string, id: string) => join(dir(data), "out", `${id}.end`);
+
+/// The one end of hand-over `id`, whichever process asks first: `want` where none was decided yet, else the one that was.
+/// A file linked into place (link fails where one is there): two processes of this station never both decide, so
+/// `gone` never follows a failure of the same hand-over, nor a failure its `gone` (the real run, 2026-11-15: the next
+/// process failed a hand-over the one before was still running, which then said it went; the chat on neither station).
+async function decided(data: string, id: string, want: "gone" | "failed"): Promise<"gone" | "failed"> {
+  const path = endFile(data, id);
+  await mkdir(dirname(path), { recursive: true });
+  const tmp = `${path}.${randomBytes(4).toString("hex")}.tmp`;
+  await writeFile(tmp, want);
+  try {
+    await link(tmp, path);
+    return want;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+    const was = (await readFile(path, "utf8").catch(() => "")).trim();
+    return was === "gone" ? "gone" : "failed";
+  } finally {
+    await rm(tmp, { force: true });
+  }
+}
+
 const inMade = (data: string, id: string) => join(dir(data), "in", id, "made.txt");
 /// What was here that a hand-over coming in replaced or pruned, kept until it is shown (put back where it is dropped).
 const inAside = (data: string, id: string) => join(dir(data), "in", id, "aside");
@@ -313,6 +340,23 @@ export class Handover {
       },
       ranOn: (k) => [...new Set(d.store.chatPage("runtime_sessions", k, null, 500).flatMap((r) => (typeof r.profile === "string" ? [r.profile as string] : [])))],
     };
+    this.#load();
+    // (a station process handing over to this one may still be acting on its hand-overs: nothing of them is acted on
+    // here, nor a hand-over begun or answered, until it is gone, every record then read again as it left them)
+    this.#loaded = d.previous === undefined ? Promise.resolve() : d.previous.then(() => this.#reload(), () => this.#reload());
+    this.#ready = d.previous === undefined;
+    void this.#loaded.then(() => void (this.#ready = true));
+  }
+
+  /// Gone (`previous`) and read again: what this process acts on of its hand-overs only once the one before it is gone.
+  readonly #loaded: Promise<void>;
+  #ready: boolean;
+  /// The chats held as the records were read, by the records that held them.
+  #heldAtLoad = new Set<string>();
+
+  /// The records read: each hand-over's chats held again as it stood (before their agents are taken up).
+  #load(): void {
+    const d = this.#d;
     for (const o of readAll<Out>(join(dir(d.data), "out"))) this.#keepOut(o);
     for (const i of readAll<In>(join(dir(d.data), "in"))) {
       // (what its rows' pages put in, as kept with them: newer than its file where a stop came between the two)
@@ -321,10 +365,34 @@ export class Handover {
       this.#keepIn(i);
       this.#holdIn(i);
     }
-    for (const o of this.#everyOut("start")) if ((o.step === "held" || o.step === "files" || o.step === "rows") && o.held !== false) for (const key of o.keys) void d.hub.holdChat(key, `moving to ${o.toName || o.to.slice(0, 8)}`);
+    const held = new Set<string>();
+    for (const o of this.#everyOut("start")) if ((o.step === "held" || o.step === "files" || o.step === "rows") && o.held !== false) for (const key of o.keys) held.add(key);
     // (one that went and is not shown there yet, or went as this process stopped before its rows here said so: held
     // until `start` says so, or it is shown there)
-    for (const o of this.#everyOut("start")) for (const key of this.#notOff(o)) void d.hub.holdChat(key, `moving to ${o.toName || o.to.slice(0, 8)}`);
+    for (const o of this.#everyOut("start")) for (const key of this.#notOff(o)) held.add(key);
+    for (const key of held) void d.hub.holdChat(key, `moving to ${this.#outsOf.get(key)?.[0]?.toName || this.#outsOf.get(key)?.[0]?.to.slice(0, 8) || ""}`);
+    this.#heldAtLoad = held;
+    this.#unmended.clear();
+    for (const o of this.#outs.values()) {
+      if (o.v === 2 && o.step === "failed" && !o.shown && o.ended !== true && o.keys.some((k) => this.#outsOf.get(k)?.[0] === o && d.store.handedTo(k)?.station === o.to)) this.#unmended.add(o);
+    }
+  }
+
+  /// The records read again, the process before gone: what it moved on since is as it left it, and a chat held here
+  /// for a record it ended meanwhile let go.
+  #reload(): void {
+    const before = this.#heldAtLoad;
+    for (const letGo of this.#inHeld.values()) letGo();
+    this.#inHeld.clear();
+    this.#outs.clear();
+    this.#outsOf.clear();
+    this.#ins.clear();
+    this.#insOf.clear();
+    this.#comingIns.clear();
+    this.#owedOuts.clear();
+    this.#unsure.clear();
+    this.#load();
+    for (const key of before) if (!this.#heldAtLoad.has(key)) this.#d.hub.releaseChat(key);
   }
 
   /// Begun (the mesh attached): each hand-over goes on where it stood. One cut before it went did not go: undone.
@@ -343,6 +411,20 @@ export class Handover {
   }
 
   async start(): Promise<void> {
+    // (only once the process before is gone, every record read again as it left them: one process of this station
+    // acts on a hand-over at a time)
+    await this.#loaded;
+    // (cut as this station stopped: failed, but one whose end was decided gone (the process before stopped between that
+    // and saying so) went, what it went with kept before that)
+    for (const o of this.#everyOut("start")) {
+      if (o.step !== "held" && o.step !== "files" && o.step !== "rows") continue;
+      if (o.counts !== null && (await decided(this.#d.data, o.id, "failed")) === "gone") {
+        o.step = "gone";
+        o.error = null;
+        await this.#save(o);
+        log.info("handover", "a chat went as this station stopped: it went", { id: o.id, to: o.to });
+      } else await this.#fail(o, tr(stationLang(), "station.move.restartedMidway", { station: o.toName || o.to.slice(0, 12) }));
+    }
     // (what was coming here as this station stopped: asked of where it came from whether it still goes on)
     for (const id of this.#unsure) {
       const i = this.#ins.get(id);
@@ -362,15 +444,69 @@ export class Handover {
       for (const k of off) this.#d.hub.releaseChat(k);
     }
     for (const o of this.#everyOut("start")) {
-      if (o.step === "held" || o.step === "files" || o.step === "rows") await this.#fail(o, tr(stationLang(), "station.move.restartedMidway", { station: o.toName || o.to.slice(0, 12) }));
       // (one whose chat came back since is over: nothing of it is told any more, as its arrival ended it)
-      else if (o.step === "gone" && o.v !== 2 && o.keys.every((k) => this.#cameBack(o, k))) {
+      if (o.step === "gone" && o.v !== 2 && o.keys.every((k) => this.#cameBack(o, k))) {
         o.step = "done";
         o.ended = true;
         await this.#save(o);
       } else if (o.step === "gone" || (o.step === "failed" && o.dropOwed)) this.#go(o);
     }
+    void this.#mend();
   }
+
+  /// Once the process before is gone and the records read again (`previous`): what a move turn waits for to begin.
+  loaded(): Promise<void> {
+    return this.#loaded;
+  }
+
+  /// The chats this station says went to a station (`handed_over`) where their latest hand-over from here failed and was
+  /// never shown there: asked of that station, which either holds it in sight (the record completed: it went) or does
+  /// not (in sight here again, as a failure leaves it, said no more to be there). As this station starts, and as
+  /// `only` is heard from. Only a v2 record that is its chat's latest from here: an older one whose chat went later by
+  /// another hand-over, or came back, is over (the real run, 2026-11-15: a chat failed by this station's next process
+  /// while the one before said it went, seen by neither station).
+  async #mend(only?: string): Promise<void> {
+    for (const o of [...this.#unmended]) {
+      if ((only !== undefined && o.to !== only) || this.#mending.has(o.id)) continue;
+      const keys = o.keys.filter((k) => this.#outsOf.get(k)?.[0] === o && this.#d.store.handedTo(k)?.station === o.to);
+      if (keys.length === 0) {
+        this.#unmended.delete(o);
+        continue;
+      }
+      this.#mending.add(o.id);
+      try {
+        const answer = await this.#d.ask(o.to, { method: "move.chats.live", keys });
+        const live = new Set<string>(Array.isArray(answer?.live) ? answer.live : []);
+        const there = keys.filter((k) => live.has(k));
+        const here = keys.filter((k) => !live.has(k));
+        if (there.length > 0) {
+          // (it is there: it went, as it was decided there)
+          o.step = "done";
+          o.shown = true;
+          o.ended = true;
+          o.error = null;
+          o.dropOwed = false;
+          await this.#save(o);
+          this.#d.store.shownThere(there, this.#d.home());
+          for (const k of there) this.#d.hub.releaseChat(k);
+          log.info("handover", "a chat said gone whose hand-over failed here is there after all: it went", { id: o.id, to: o.to, keys: there.length });
+        }
+        if (here.length > 0) {
+          const back = this.#d.store.notGone(here, o.to);
+          for (const k of back) this.#d.hub.releaseChat(k);
+          log.warn("handover", "a chat said gone whose hand-over failed is not there: in sight here again", { id: o.id, to: o.to, keys: back.length });
+        }
+        this.#unmended.delete(o);
+      } catch (e) {
+        log.info("handover", "a chat said gone whose hand-over failed: its station not asked yet", { id: o.id, to: o.to, error: (e as Error).message });
+      } finally {
+        this.#mending.delete(o.id);
+      }
+    }
+  }
+  readonly #mending = new Set<string>();
+  /// What `#mend` looks at, found as the records are read: few, each its chat's latest record from here.
+  readonly #unmended = new Set<Out>();
 
   async close(): Promise<void> {
     this.#closed = true;
@@ -575,6 +711,8 @@ export class Handover {
   /// `stoppedFor`: what it needs is not usable there yet (the scheduler says so): it arrives there stopped, waiting for
   /// that, its accounts there or not.
   async handOver(key: string, to: string, opts: { wait?: boolean; ignoreFiles?: boolean; progress?: (p: { done: number; total: number; unit: string }) => void; stoppedFor?: Need } = {}): Promise<Out> {
+    // (begun only once the process before is gone: never two processes of this station on one chat's hand-over)
+    await this.#loaded;
     const refused = this.check(key, to, { ...opts, stoppedFor: opts.stoppedFor ?? null });
     if (refused !== null) throw new Refused(refused);
     const keys = this.together(key);
@@ -746,6 +884,12 @@ export class Handover {
         o.routes.push({ connect: t.connect, channel: t.thread.channel, threadTs: t.thread.threadTs });
       }
     }
+    // (what it went with kept first, then its end decided once: where this station's next process failed it meanwhile
+    // (`decided`), it did not go, and nothing of it is said gone)
+    await this.#save(o);
+    // (a test's: what another process of this station does as this one is about to decide, waited for)
+    await d.fail?.("decide");
+    if ((await decided(d.data, o.id, "gone")) !== "gone") throw new Said(tr(stationLang(), "station.move.restartedMidway", { station: o.toName || o.to.slice(0, 12) }));
     this.#mark(o, "gone");
     o.step = "gone";
     await this.#save(o);
@@ -857,6 +1001,11 @@ export class Handover {
   /// It did not go: B told to take out what it put in (told until it answers), the chat back to work here, its jobs
   /// started again; why kept.
   async #fail(o: Out, error: string): Promise<void> {
+    // (one decided gone already, by this process or the one before, is not failed: it went)
+    if ((await decided(this.#d.data, o.id, "failed")) === "gone") {
+      log.warn("handover", "a hand-over that went is not failed", { id: o.id, to: o.to, error });
+      return;
+    }
     log.warn("handover", "a chat was not handed over: it goes on here", { id: o.id, to: o.to, error });
     o.step = "failed";
     o.error = error;
@@ -924,6 +1073,9 @@ export class Handover {
 
   /// The other station came up (its link opened): what is owed to it told now.
   reached(station: string): void {
+    // (the process before not gone yet: `start` tells what is owed, once it is)
+    if (!this.#ready) return;
+    void this.#mend(station);
     for (const id of this.#unsure) {
       const i = this.#ins.get(id);
       if (i === undefined || i.step !== "coming") this.#unsure.delete(id);
@@ -960,6 +1112,9 @@ export class Handover {
   /// What this station answers of it (`handover.*`), from stations of the chat's workspace, of their own chats.
   answers(inWorkspace: (peer: string, ws: string) => boolean) {
     return async (peer: string, request: Json, workspace?: string): Promise<Json> => {
+      // (answered once the process before is gone: it may be answering the same hand-over still; meanwhile the asker
+      // waits the seconds a hand-over between processes takes)
+      await this.#loaded;
       const bytes = bytesOf(request);
       try {
         const ws = typeof request?.workspace === "string" ? request.workspace : "";
@@ -1252,6 +1407,7 @@ export class Handover {
       if (!newer) continue;
       this.#forgetOut(o);
       await rm(outFile(this.#d.data, o.id), { force: true });
+      await rm(endFile(this.#d.data, o.id), { force: true });
     }
   }
 

@@ -57,13 +57,13 @@ export type Station = {
   placed?: () => void;
   /// Its routes of move/routes.ts, as a device asks them.
   ask(method: string, path: string, body: Json, role?: string, query?: [string, string][]): Promise<{ status: number; body: Json }>;
-  jobs: (CarriedJob & { id: string })[]; started: string[]; free: number; total?: number; sized: string[]; fails: Set<string>; onFail: ((step: string) => void) | null;
+  jobs: (CarriedJob & { id: string })[]; started: string[]; free: number; total?: number; sized: string[]; fails: Set<string>; onFail: ((step: string) => void | Promise<void>) | null;
   /// The jobs' rows read so far, as the store reads them (live.ts `up`): a session's by its index, a workspace's whole.
   jobsRead: number;
   /// Its own connects' surfaces, by their id here; git run as the station runs it.
   local: Map<string, Json>;
   git: (dir: string, args: string[]) => Promise<string>;
-  make(): Moves;
+  make(previous?: Promise<void>): Moves;
 };
 
 const open: (() => Promise<void>)[] = [];
@@ -113,10 +113,11 @@ export function world(ids: string[] = [A, B]) {
     });
     st.fibers = new Fibers("move", t.clock);
     st.admin = new Admin({ names: new Map(), read: async () => "{}" } as Json, { store: rig.store, agents: () => ({ hub: rig.hub }) as Json, clock: t.clock });
-    st.make = () => {
+    st.make = (previous?: Promise<void>) => {
       const wc = st.connects;
       const hub = rig.hub;
       const moves = new Moves({
+        previous,
         data: rig.dir, store: rig.store, fibers: st.fibers, here: () => id, home: () => WS, roster: () => roster,
         ask: (s, r) => st.bus.ask(s, r),
         hub: { holdChat: (k, w, n) => hub.holdChat(k, w, n), releaseChat: (k) => hub.releaseChat(k), wakeChat: (k) => hub.wakeChat(k), busy: (k) => hub.busy(k), turnEnded: (k) => hub.turnEnded(k), drained: (c, ch, ts) => hub.drained(c, ch, ts), wsOf: (k) => hub.wsOf(k) },
@@ -170,8 +171,9 @@ export function world(ids: string[] = [A, B]) {
           },
         },
         fail: (step) => {
-          st.onFail?.(step);
+          const waited = st.onFail?.(step);
           if (st.fails.delete(step)) throw new Error(`the test failed ${step}`);
+          return waited;
         },
         git: st.git,
         config: { raw: () => rig.raw, update: (f) => (st.onUpdate?.(), f(rig.raw)) },
