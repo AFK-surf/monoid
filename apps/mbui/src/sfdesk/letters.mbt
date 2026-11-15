@@ -104,6 +104,11 @@ pub fn letters_tab_node(
               }
             })
             |> ignore
+            // (room under the last of them in a dialog in the middle of the window, as under the chats' list there)
+            if panel {
+              w.box(fn(f) { f.height(By(fn() { Some(if @sf.in_dialog_node(f) { letters_foot_h } else { 0.0 }) })) |> ignore })
+              |> ignore
+            }
           },
           fill=true,
         )

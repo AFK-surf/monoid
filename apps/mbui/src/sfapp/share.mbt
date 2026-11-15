@@ -188,11 +188,13 @@ fn share_in_frame(c : @ui.Ctx) -> Unit {
   }
   // put up once shared: the library's panel (a sheet on 小屏, a dialog in the middle of the window on 中屏 and 大屏, as
   // the presenters have it, the window going from one to the other); filling the window the browser extension opened
+  // (up before its nodes are made: what they read, the core's shareIn, read as they are made, waited for as it opens:
+  // OpenGate)
   if share_in.shared.get() is Some(_) && !share_in.raised.get() && !share_sinking.val {
+    share_in.raised.set(true)
     if !share_inline() {
       raise_sheet(ShareSheet)
     }
-    share_in.raised.set(true)
   }
   if share_sinking.val && !@sf.presented_drawn() {
     share_sinking.val = false
@@ -217,10 +219,9 @@ priv struct ShareLook {
   icon : Double
   /// between a mark and its words
   gap : Double
-  /// what is shared: room over and under it, its mark's box's height, its title's and its words' lines
+  /// what is shared: room over and under it, its words' room over them, its title's and its words' lines
   head_pt : Double
   head_pb : Double
-  head_mark_h : Double
   head_words_pt : Double
   title_line : Double
   source_line : Double
@@ -283,7 +284,6 @@ let share_narrow : ShareLook = {
   gap: 12.0,
   head_pt: 2.0,
   head_pb: 10.0,
-  head_mark_h: 36.0,
   head_words_pt: 1.0,
   title_line: 22.0,
   source_line: 17.0,
@@ -316,7 +316,6 @@ let share_wide_look : ShareLook = {
   gap: 10.0,
   head_pt: 12.0,
   head_pb: 6.0,
-  head_mark_h: 20.0,
   head_words_pt: 0.0,
   title_line: 20.0,
   source_line: 18.0,
@@ -796,8 +795,25 @@ fn shared_words_head_node(h : @view.View, source : String, head : String?, look 
         ),
       )
     })
+    // (its mark on the first line of its words, whichever it is: its title's, what is shared alone's, its link's; as far
+    // down as that line, as tall as it at the system's size of words, never on the middle of all its lines)
+    let (first_top, first_line) = match head {
+      Some(_) => (look.head_words_pt, look.title_line)
+      None if alone =>
+        (
+          look.head_words_pt + (if look.wide { 0.0 } else { share_alone_over }),
+          @ui.tree_theme().leading(L5).unwrap_or(look.title_line),
+        )
+      None => (look.head_words_pt, look.source_line)
+    }
     row.box(fn(m) {
-      m.width(Is(Some(look.col))).height(Is(Some(look.head_mark_h))).shrink(Is(0.0)).lines_up(Is(Some(Middle))).lies_along(Is(Middle))
+      m
+      .width(Is(Some(look.col)))
+      .margin(Is((0.0, first_top, 0.0, 0.0)))
+      .height(By(fn() { Some(first_line * m.words_scale()) }))
+      .shrink(Is(0.0))
+      .lines_up(Is(Some(Middle)))
+      .lies_along(Is(Middle))
       |> ignore
       @sf.icon_node(m, if link { "web" } else { "text" }, look.icon, By(fn() { @sf.theme().p.muted })) |> ignore
     })

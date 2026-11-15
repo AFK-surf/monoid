@@ -95,9 +95,10 @@ let info_title_line : @ui.Style = @ui.css("row w=Full gap=S2 align=AStart")
 let info_title_words : @ui.Style = @ui.css("w=Cut pt=S1")
 
 ///|
-/// An agent's mark, name and where it stands in a line, what it did under it 16 down (panel_card_in).
+/// An agent's mark, name and where it stands in a line on their tops, its mark and its stop on its name's line
+/// (agent_name_line), what it did under it 16 down (panel_card_in).
 // kept across runs: a value (no field of it changes)
-let agent_title_line : @ui.Style = @ui.css("row w=Full pt=S1 gap=S3 align=ACenter").then(
+let agent_title_line : @ui.Style = @ui.css("row w=Full pt=S1 gap=S3 align=AStart").then(
   @ui.style(pb=@sf.room_of(@sf.panel_card_in)),
 )
 
@@ -975,8 +976,10 @@ fn agent_title_node(h : @view.View, src : Source, r : ChatRef, key : String, a :
   let s = fn() { field(a(), "session") }
   h.box(fn(line) {
     @sf.style_node(line, fn() { agent_title_line })
+    // (its mark on its name's line, not on the middle of its two lines: the user, 2026-11-14)
+    let mark_at = line.box(fn(m) { agent_name_line(m) })
     model_mark_big_node(
-      line,
+      mark_at,
       fn() { text(field(s(), "maker"), "id") },
       fn() { text(s(), "runtime") },
       agent_title_mark,
@@ -994,9 +997,26 @@ fn agent_title_node(h : @view.View, src : Source, r : ChatRef, key : String, a :
     })
     |> ignore
     line.show(at_once=true, fn() { text(a(), "status") == "running" || text(a(), "status") == "queued" }, fn(b) {
-      stop_button_node(b, src, r.station, key)
+      // (its stop on its name's line too)
+      b.box(fn(at) {
+        agent_name_line(at)
+        stop_button_node(at, src, r.station, key)
+      })
+      |> ignore
     })
   })
+  |> ignore
+}
+
+///|
+/// Node `c` as tall as the agent's name's line (agent_title_name's, at the system's size of words), what it holds down
+/// its middle, however tall (the stop overhangs it alike over and under).
+fn agent_name_line(c : @view.View) -> Unit {
+  c
+  .height(By(fn() { Some(@sf.theme().t.title_line * c.words_scale()) }))
+  .shrink(Is(0.0))
+  .lies_along(Is(Middle))
+  .lines_up(Is(Some(Middle)))
   |> ignore
 }
 

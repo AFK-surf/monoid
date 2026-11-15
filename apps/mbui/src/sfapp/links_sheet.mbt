@@ -86,6 +86,11 @@ fn invitation_token(words : String) -> String? {
 let invite_buttons : @ui.Style = @ui.css("row w=Full pt=S1_5 pb=S6 gap=S2 justify=JEnd")
 
 ///|
+/// The same in a dialog in the middle of the window, nothing under them: the dialog's foot is 24 from them as its sides.
+// kept across runs: a value (no field of it changes)
+let invite_buttons_in_dialog : @ui.Style = @ui.css("row w=Full pt=S1_5 gap=S2 justify=JEnd")
+
+///|
 /// The field the link is pasted in: a rectangle's corners (12), as the sheet's field was, not a capsule.
 let invite_corner : Double = 12.0
 
@@ -214,7 +219,8 @@ fn invite_node(v : @view.View, src : Source) -> Unit {
     let lead = fn(words : () -> String) { @sf.words_node(p, words, fn() { invite_lead }) |> ignore }
     let buttons = fn(make : (@view.View) -> Unit) {
       p.box(fn(b) {
-        @sf.style_node(b, fn() { invite_buttons })
+        // (24 under them on a sheet; in a dialog its own room under what it holds is that already)
+        @sf.style_node(b, fn() { if @sf.in_dialog_node(b) { invite_buttons_in_dialog } else { invite_buttons } })
         make(b)
       })
       |> ignore
