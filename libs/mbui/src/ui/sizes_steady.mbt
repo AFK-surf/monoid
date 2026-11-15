@@ -190,8 +190,8 @@ fn Ctx::sizes_steady_made(self : Ctx, i : Int) -> String {
 
 ///|
 /// How many times more speed a measure stopped dead loses in its last frame than it lost in each frame before it, at the
-/// least (sizes_steady_fault): one slowing at one rate to rest loses as much each frame, once the frames' lengths are
-/// taken out, up to 1.21 where a frame half again as long as the rest falls between (新建 workspace's sheet, its invite
+/// least (sizes_steady_fault): one slowing at one rate to rest loses as much each frame, once the frames' lengths and
+/// the time between their middles are taken out, up to 1.21 where a frame half again as long as the rest falls between (新建 workspace's sheet, its invite
 /// code's field turned back, 2026-11-11), and a half more than that is what no slowing at one rate comes to; every dead
 /// stop CI's runs count, and each this check was there to find, loses more (1.66 times at the least) or was still
 /// going as fast or faster the frame before.
@@ -245,16 +245,26 @@ fn sizes_steady_fault(
     // falls among the frames; what it does after, turning back or not, no part of it))
     if v0.abs() > least && v1.abs() > least && v0 * v1 > 0.0 && v2.abs() < 0.2 * v1.abs() {
       let toward = if v1 > 0.0 { 1.0 } else { -1.0 }
-      let d1 = (v0 - v1) * toward
-      let d2 = (v1 - v2) * toward
+      // (each loss of speed over the time between the middles of the two frames it is between, in two frames' time: a
+      // slowing at one rate loses as much over the same time, a frame twice as long as the rest between them or not;
+      // frames all `period` apart, as they were)
+      let d1 = (v0 - v1) * toward * (2.0 * period) / (seen[2].1 - seen[0].1)
+      let d2 = (v1 - v2) * toward * (2.0 * period) / (seen[3].1 - seen[1].1)
       // (the frame before those too, where it was seen moving then: one stopped dead at a moment between two frames is
       // sampled as at speed, a piece, still (10, 10, 5, 0), the piece as long as where that moment fell makes it, the
       // same numbers as a slowing set in at once and over in two frames; both are said, or one falling between frames
       // would go unsaid)
+      // (one that set out in it, from rest at a moment between those two frames, a piece of a frame at speed (2, 25, …):
+      // no slowing of its to go by, the frame after its first the one before)
       let back = all.length() > 4 && all[all.length() - 5].1 < seen[0].1
       let d0 = if back {
-        let vb = (seen[0].2 - all[all.length() - 5].2) / (seen[0].1 - all[all.length() - 5].1) * period
-        (vb - v0) * toward
+        let tb = all[all.length() - 5].1
+        let vb = (seen[0].2 - all[all.length() - 5].2) / (seen[0].1 - tb) * period
+        if vb * v0 >= 0.0 && vb.abs() < 0.25 * v0.abs() {
+          d1
+        } else {
+          (vb - v0) * toward * (2.0 * period) / (seen[1].1 - tb)
+        }
       } else {
         d1
       }

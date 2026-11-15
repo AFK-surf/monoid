@@ -71,3 +71,34 @@ test "stopped dead: what it does after has no part in it" {
   assert_true(dead_said([10.0, 10.0, 0.0], period))
   assert_true(dead_said([10.0, 10.0, -0.5], period))
 }
+
+///|
+test "stopped dead: slowing at one rate through its top with frames twice as long between, not said; at speed then still, said" {
+  let period = 1000.0 / 60.0
+  // (a sheet's top slowing at one rate as it came, through where it turns back, drawn every frame and then every other:
+  // a test's run walking the host's frames, then going on to what is due next; drive_wbtest's ＋ sheet, 2026-11-15)
+  // (as it was drawn: slowing 6.9 a 60th of a second each 60th, through its top between the last two)
+  let seen = [
+    (1300.0, 1300.0, 254.0781395200147),
+    (1316.6666666666667, 1316.6666666666667, 222.5948057883727),
+    (1333.3333333333333, 1333.3333333333333, 198.00475242425284),
+    (1366.6666666666667, 1366.6666666666667, 169.58126872420496),
+    (1400.0, 1400.0, 172.07559340467776),
+  ]
+  let (said, _) = sizes_steady_fault(seen, period, turned=-1.0)
+  assert_true(!(said is Some(s) && s.contains("stopped dead")), msg="\{Repr(said)}")
+  // (the same way set out between the first two frames, a piece of a frame at speed in the first: not said)
+  let set_out = [
+    (1300.0, 1300.0, 791.7271589377052),
+    (1316.6666666666667, 1316.6666666666667, 789.3539697013215),
+    (1333.3333333333333, 1333.3333333333333, 764.7639163372016),
+    (1366.6666666666667, 1366.6666666666667, 736.3404326371538),
+    (1400.0, 1400.0, 738.8347573176266),
+  ]
+  let (said, _) = sizes_steady_fault(set_out, period, turned=-1.0)
+  assert_true(!(said is Some(s) && s.contains("stopped dead")), msg="set out: \{Repr(said)}")
+  // (the same frames, at speed then still in the longer one: said)
+  let still = [(1300.0, 1300.0, 254.0), (1316.0, 1316.0, 224.0), (1333.0, 1333.0, 194.0), (1366.0, 1366.0, 134.0), (1400.0, 1400.0, 134.0)]
+  let (said, _) = sizes_steady_fault(still, period, turned=-1.0)
+  assert_true(said is Some(s) && s.contains("stopped dead"), msg="\{Repr(said)}")
+}
