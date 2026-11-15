@@ -101,6 +101,51 @@ pub fn route_open_asks(src : Source, ws : String, r : @settings.Route) -> Array[
 }
 
 ///|
+/// What follows the station's answer for a station's page opened by a press (route_open_then): what its part shown reads
+/// as it is first drawn, by the code it reads it by (sfpages' station_node.mbt, set as the app starts), given the source,
+/// the workspace, the station's address and the station whole as answered.
+// kept across runs: set once for the process by sfpages' init, what reads a station's page there
+pub let station_open_more : Ref[(Source, Workspace, String, Json) -> Array[(String, Map[String, Json])]] = Ref(fn(
+  _,
+  _,
+  _,
+  _,
+) {
+  []
+})
+
+///|
+/// What a press opening the settings' route `r` in workspace `w` asks once what route_open_asks asked is answered
+/// (asked_now's `then`): a station's page, where what opens waits for what it shows (gates_opens), what its part shown
+/// reads as it is first drawn (station_open_more), so it never draws its overview's blocks one by one as the core answers
+/// them; None for any other.
+pub fn route_open_then(
+  src : Source,
+  w : Workspace,
+  r : @settings.Route,
+) -> ((((String, Map[String, Json])) -> Json?) -> Array[(String, Map[String, Json])])? {
+  guard (src.gates_opens)() && r is Station(address) else { return None }
+  let ask = ("station", { "scope": Json::string(account_scope(w.id, address)), "station": Json::string(address) })
+  Some(fn(read) {
+    match read(ask) {
+      Some(Object(_)) as s => (station_open_more.val)(src, w, address, s.unwrap())
+      _ => []
+    }
+  })
+}
+
+///|
+/// How long at most a press opening route `r` waits for what it shows where it waits for it as a card or a panel does
+/// (route_open_asks' own, not an account's: @sf.open_hold_ms), else as long as it takes.
+pub fn route_open_most(src : Source, ws : String, r : @settings.Route) -> Double? {
+  if (src.gates_opens)() && route_asks(ws, r).is_empty() && !route_open_asks(src, ws, r).is_empty() {
+    Some(@sf.open_hold_ms)
+  } else {
+    None
+  }
+}
+
+///|
 /// `asks` asked of `src` now and held by what is returned till what opens has read them: whether each is answered (a
 /// value, or an error the page says), and what holds them. A press that waits by press_wait itself takes them so (an
 /// agent's history's 详情: what it opens keeps its own way, sfpages' history_details_open). With `then`, each time all
@@ -179,6 +224,7 @@ pub fn open_answered(
   open : () -> Unit,
   let_go? : () -> Unit = fn() {  },
   then? : (((String, Map[String, Json])) -> Json?) -> Array[(String, Map[String, Json])],
+  most? : Double,
 ) -> PressWait {
   if asks.is_empty() || src.read_only {
     return press_wait(fn() { true }, open)
@@ -187,7 +233,7 @@ pub fn open_answered(
   press_wait(answered, fn() { hand_over(leases, open) }, let_go=fn() {
     leases.each(fn(l) { l.cancel() })
     let_go()
-  })
+  }, most?)
 }
 
 ///|

@@ -2112,3 +2112,27 @@ let st_env_foot : @ui.Style = @ui.css("row w=Full gap=S2 justify=JEnd align=ACen
 ///|
 /// The software's foot's lines apart where checking again goes under (software_list's line_gap).
 let sw_foot_lines : Double = 4.0
+
+///|
+/// A station's page opened by a press, where what opens waits for what it shows (sfbase's route_open_then): once the
+/// station is answered, what the part shown reads as it is first drawn, as a press on that part asks it
+/// (station_part_asks), so the page opens with every block of it whole. Read once, as it is (nothing followed: what
+/// it read of the workspace's is held by the app).
+fn init {
+  @sfbase.station_open_more.val = fn(src, w, address, s) {
+    @signals.untracked(fn() {
+      let core = @sfbase.settings_core(src, w)
+      let here = @settings.here_of(core, w.id, w.name)
+      let part = match @settings.station_parts.get(address) {
+        Some(p) if station_part_names.contains(p) => p
+        _ => "overview"
+      }
+      // (whether it is managed matters to its 设置 alone)
+      let manager = part == "settings" && {
+        let r = role_of(core, here)
+        r == "owner" || r == "admin"
+      }
+      station_part_asks(core, here, address, Some(s), manager, part)
+    })
+  }
+}

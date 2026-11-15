@@ -233,14 +233,14 @@ test "大屏: an agent's card hovered the first time over a core 40 ms late: not
 /// client, a station whole (`station`) `open_late_ms` late, each else at once; `gates` as open_whole_tester's. Willow's
 /// page then opened as a press on its row opens it (the settings' push): from that press to rest, each display's frame,
 /// the most bones any draws, and whether the page on top changed before the core answered.
-fn station_open(wide : Bool, gates : Bool) -> (Int, Bool, @ui.Tester) {
+fn station_open(wide : Bool, gates : Bool, late? : (String) -> Double = station_late) -> (Int, Bool, @ui.Tester) {
   new_run()
   // (小屏 over the stations' place; 大屏 over Home, the pane showing no station yet)
   if !wide {
     app.nav.replace(Place("stations"))
   }
   let src : Source = {
-    ..round_trip_again(fixture("settings"), 0.0, late=fn(name, _) { if name == "station" { open_late_ms } else { 0.0 } }),
+    ..round_trip_again(fixture("settings"), 0.0, late=fn(name, _) { late(name) }),
     reads_ahead: fn() { true },
     gates_opens: fn() { gates },
   }
@@ -264,13 +264,57 @@ fn station_open(wide : Bool, gates : Bool) -> (Int, Bool, @ui.Tester) {
     early = early || app.nav.top() != before
     most = @cmp.maximum(most, t.bones_drawn())
   }
+  // (from then on, each frame: and in the first the page is on top in, whether its screens' block is in it, what the
+  // overview reads after the station whole, not come in under the rest a moment later)
   let till = t.time() + @ui.move_most_ms * 2.0
   while t.time() < till {
     t.run_for(@ui.frame_period_default)
     most = @cmp.maximum(most, t.bones_drawn())
+    if station_first_seen.val is None && app.nav.top() != before {
+      station_first_seen.val = Some(t.find(station_screens_head) is Some(_))
+    }
   }
   (most, early, t)
 }
+
+///|
+/// Whether the first frame Willow's page was on top in held its screens' block (station_open's), None before it is.
+let station_first_seen : Ref[Bool?] = Ref(None)
+
+///|
+fn init {
+  @ui.on_reset(fn() { station_first_seen.val = None })
+}
+
+///|
+/// The head of a station's overview's block of its screens, its browser and its terminals.
+let station_screens_head : String = "屏幕、浏览器与终端"
+
+///|
+/// How late the made-up core answers what a station's page reads as it opens: the station whole, its screens and its
+/// terminals and its resources each `open_late_ms` (the screens asked only once the station is answered: two of them
+/// late in a row, within open_hold_ms), all else at once.
+fn station_late(name : String) -> Double {
+  if name is ("station" | "screens" | "terminals" | "resources" | "stationNet") {
+    open_late_ms
+  } else {
+    0.0
+  }
+}
+
+///|
+/// The same, its screens never answered: what opens waits open_hold_ms at most.
+fn station_screens_never(name : String) -> Double {
+  if name == "screens" {
+    station_never_ms
+  } else {
+    station_late(name)
+  }
+}
+
+///|
+/// Later than any test looks.
+let station_never_ms : Double = 600000.0
 
 ///|
 test "a station's page opened over a core 40 ms late: the screen as it was till the station is answered, then the page whole, no bones in any frame; before MBUI_OPEN_WHOLE, opened at once on its bones" {
@@ -281,6 +325,8 @@ test "a station's page opened over a core 40 ms late: the screen as it was till 
       assert_true(app.nav.top() == Setting(@settings.Route::Station("ws1/st1")), msg="\{at}: open at rest")
       if gates {
         assert_eq((most, early), (0, false), msg=at)
+        // (its overview whole as it comes on top: its screens' block in it from its first frame)
+        assert_eq(station_first_seen.val, Some(true), msg="\{at}: its screens there as it came on top")
       } else {
         assert_true(early && most > 0, msg="\{at}: opened at the press, on its bones (\{most})")
       }
@@ -289,5 +335,17 @@ test "a station's page opened over a core 40 ms late: the screen as it was till 
         assert_eq(t.audit().filter(fn(f) { !f.contains("stillfail/src/sf/edge_node.mbt") }), [], msg=at)
       }
     }
+  }
+}
+
+///|
+test "a station's page whose screens the core never answers opens open_hold_ms after the press, not before its station is answered, and never waits on" {
+  for wide in [false, true] {
+    let at = if wide { "大屏" } else { "小屏" }
+    let (_, early, t) = station_open(wide, true, late=station_screens_never)
+    assert_false(early, msg="\{at}: opened before the station was answered")
+    assert_true(app.nav.top() == Setting(@settings.Route::Station("ws1/st1")), msg="\{at}: open once open_hold_ms went by")
+    assert_eq(station_first_seen.val, Some(false), msg="\{at}: its screens still to come as it opened")
+    ignore(t)
   }
 }
