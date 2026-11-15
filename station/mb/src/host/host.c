@@ -22,6 +22,7 @@ static void signal_one(cond_t *c) { WakeConditionVariable(c); }
 #include <time.h>
 #include <unistd.h>
 #include <errno.h>
+#include <signal.h>
 #include <stdio.h>
 #ifdef __APPLE__
 #include <crt_externs.h>
@@ -143,6 +144,11 @@ static void raise_nofile(void) {
 int32_t sfh_start(moonbit_bytes_t dir) {
 #ifndef _WIN32
   raise_nofile();
+  // A write to a pipe or socket whose other end closed fails (EPIPE) and ends nothing else: the shell's are a Unix
+  // socket a stream to Node each (the front), and the program's main is MoonBit's, so nothing of Rust's start ignores
+  // SIGPIPE for the shell. One stream's Node end closed first ended the whole front, every device's connection with it
+  // (twice in a second after an update on a Linux station, 2026-11-15). sfh_out says such a write failed.
+  signal(SIGPIPE, SIG_IGN);
 #endif
   if (Moonbit_array_length(dir) > 1) {
     shell = sf_shell_start((const char *)dir, completed, NULL);

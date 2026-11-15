@@ -176,6 +176,9 @@ pub struct Lifecycle<O: Os> {
     parent_at: Option<Instant>,
     /// The launcher's exit once nothing runs.
     exit: i32,
+    /// The front gone and none in its place (`front_gone`): the Nodes running are linked to it, so the one serving is
+    /// replaced, by a handover once none is under way, with one that binds the station's endpoint itself.
+    front_gone: bool,
 }
 
 impl<O: Os> Lifecycle<O> {
@@ -196,6 +199,7 @@ impl<O: Os> Lifecycle<O> {
             restart_floor: None,
             parent_at,
             exit: 0,
+            front_gone: false,
         }
     }
 
@@ -487,6 +491,14 @@ impl<O: Os> Lifecycle<O> {
         }
     }
 
+    /// The front (front.rs) ended and none runs in its place: a Node linked to it would try its socket for as long as it
+    /// runs, and a station with one serving was out of reach until it was asked to hand over by hand (15 h on a Linux
+    /// station, 2026-11-15). The Node started next binds the endpoint itself (spawn), so a handover to one mends it.
+    pub fn front_gone(&mut self) {
+        self.front_gone = true;
+        self.tick();
+    }
+
     /// Asks every Node to stop; the launcher exits once none runs.
     pub fn stop(&mut self) {
         if self.stopping.is_some() {
@@ -594,6 +606,14 @@ impl<O: Os> Lifecycle<O> {
         }
         if self.restart_at.is_some_and(|at| now >= at) && self.stopping.is_none() {
             self.start();
+        }
+        if self.front_gone && self.stopping.is_none() && self.next.is_none() && self.retiring.is_none() {
+            self.front_gone = false;
+            // None serving: the one started next binds the endpoint itself.
+            if self.current.is_some() {
+                log::warn("the front is gone: the Node serving hands over to one that binds the station's endpoint itself");
+                self.start_next();
+            }
         }
         if let Some(at) = self.drained_at
             && now >= at + self.times.drained
@@ -818,6 +838,39 @@ mod tests {
         station.pass(s(3600));
         assert_eq!(station.os.killed, [old]);
         assert_eq!(station.serving(), new);
+    }
+
+    #[test]
+    fn the_front_gone_the_node_serving_hands_over_once_no_handover_is_under_way() {
+        let mut station = station("frontgone", false);
+        let first = station.last();
+        station.up(Slot::Current, "0.1.0", 5000);
+        station.front_gone();
+        let second = station.last();
+        assert_ne!(second, first, "a handover at once");
+        station.said(Slot::Next, ready("0.1.0"));
+        assert_eq!(station.told(first), ["handover"]);
+        station.ended(first, EXITED_0);
+        station.serves(Slot::Current, 6000);
+        assert_eq!(station.serving(), second);
+        // Gone again during a handover (its next Node started linked to it): the one that took over hands over too,
+        // once the one before it is gone.
+        station.front_gone();
+        let third = station.last();
+        assert_ne!(third, second);
+        station.said(Slot::Next, ready("0.1.0"));
+        assert_eq!(station.told(second), ["handover"]);
+        station.front_gone();
+        assert_eq!(station.last(), third, "not while the one before is retiring");
+        station.ended(second, EXITED_0);
+        station.tick();
+        let fourth = station.last();
+        assert_ne!(fourth, third, "then the one serving hands over");
+        station.said(Slot::Next, ready("0.1.0"));
+        assert_eq!(station.told(third), ["handover"]);
+        station.ended(third, EXITED_0);
+        station.pass(s(3600));
+        assert_eq!(station.last(), fourth, "once");
     }
 
     #[test]

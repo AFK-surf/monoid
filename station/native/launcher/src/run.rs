@@ -657,6 +657,9 @@ fn reap(station: &mut Lifecycle<System>) {
             let front = station.os.front.take().unwrap();
             let (app, data) = (station.os.options.app.clone(), station.os.options.data.clone());
             station.os.front = front.ended(&app, &data, &describe(status), Times::of_env().front);
+            if station.os.front.is_none() {
+                station.front_gone();
+            }
             continue;
         }
         // What it said before it ended (what it carried over at a handover) is the lifecycle's first.
