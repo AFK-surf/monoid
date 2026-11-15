@@ -185,11 +185,12 @@ export class LentLog<T extends { for: string[] }> {
 
   /// `from`: the file of before (each share's record whole, its items in `for`).
   constructor(path: string, from: string) {
-    this.#log = new KeptLog(path, {
+    type Line = Omit<T, "for"> | string;
+    this.#log = new KeptLog<Line>(path, {
       path: from,
-      records: (raw) => Object.entries((raw ?? {}) as Record<string, T>).flatMap(([share, l]) => {
+      records: (raw) => Object.entries((raw ?? {}) as Record<string, T>).flatMap(([share, l]): [string, Line][] => {
         const { for: items, ...base } = l;
-        return [[`s:${share}`, base] as [string, Omit<T, "for">], ...(items ?? []).map((n): [string, string] => [`f:${share}\n${n}`, share])];
+        return [[`s:${share}`, base], ...(items ?? []).map((n): [string, Line] => [`f:${share}\n${n}`, share])];
       }),
     });
     for (const k of this.#log.keys()) if (k.startsWith("s:")) this.#shares.add(k.slice(2));
