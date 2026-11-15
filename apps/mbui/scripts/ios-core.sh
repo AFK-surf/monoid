@@ -19,8 +19,14 @@ fi
 # mbui/core's queue and the app's engine (its core_engine.m, which includes
 # src/sfcore/apple_engine.m)
 APP_EXTRA="--extra=src/core/core_native.c --extra=src/$PKG/core_engine.m"
+# the app's terminals (src/stillfail/terminal_ghostty.c over libghostty-vt, put in out/core by scripts/core.sh apple)
+if [ "$PKG" = stillfail ]; then
+  APP_EXTRA="$APP_EXTRA --extra=src/stillfail/terminal_ghostty.c"
+  APP_LINK_TERM="out/core/$CORE_TARGET/libghostty-vt.a"
+  CFLAGS="$CFLAGS -Iout/core/ghostty-vt/include"
+fi
 # the engine, the shell (and what it needs of the system: scripts/core.sh shell's native-static-libs for iOS), Hermes
-APP_LINK="out/core/$CORE_TARGET/libmbui_core.a out/core/$CORE_TARGET/libstillfail_shell.a -F$HERMES_SLICE -framework hermes \
+APP_LINK="${APP_LINK_TERM:-} out/core/$CORE_TARGET/libmbui_core.a out/core/$CORE_TARGET/libstillfail_shell.a -F$HERMES_SLICE -framework hermes \
   -Wl,-rpath,@executable_path/Frameworks -lc++ -framework AuthenticationServices -framework Security -framework LocalAuthentication \
   -framework SystemConfiguration -framework Network -framework CoreFoundation -framework MetricKit -liconv -Wl,-dead_strip"
 

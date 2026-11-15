@@ -16,6 +16,14 @@ APP_EXTRA="--extra=src/core/core_native.c --extra=src/$PKG/android_engine.c"
 APP_LINK="-L$jni -lstillfail_hermes"
 # (the engine's C API, engine.h)
 CFLAGS="$CFLAGS -I$H/../engine"
+# the app's terminals (src/stillfail/terminal_ghostty.c over libghostty-vt: still.fail's natives by its key, prebuilt
+# by hand), its headers and its static library
+if [ "$PKG" = stillfail ]; then
+  GHOSTTY_VT=$(cd "$SF_SRC" && node scripts/native.ts path ghostty-vt android-arm64) || exit 1
+  APP_EXTRA="$APP_EXTRA --extra=src/stillfail/terminal_ghostty.c"
+  APP_LINK="$APP_LINK $GHOSTTY_VT/lib/libghostty-vt.a"
+  CFLAGS="$CFLAGS -I$GHOSTTY_VT/include"
+fi
 
 # A .so of an AAR on Maven Central (GROUP/ARTIFACT VERSION FILE LIB SHA-256), fetched once and checked (mbui's
 # scripts/apk fetch: kept in $APK_CACHE), into $jni.

@@ -524,6 +524,10 @@ priv struct Catcher {
   mut island : @view.NodeId?
   /// where the input method's own windows go, in the window's points (x, y, h of a caret); none: the window's foot
   mut place : (Double, Double, Double)?
+  /// a node of the window's tree's (key_catcher_node): the node it is, whose modal layers keep its focus from input as
+  /// a field's are, and what is told each key and word as it comes, at its moment (none read as a frame builds)
+  mut node : @view.NodeId?
+  mut told : ((KeyIn) -> Unit)?
 }
 
 ///|
@@ -531,7 +535,7 @@ fn Ctx::catcher_of(self : Ctx, id : Int) -> Catcher {
   match self.dev.catchers.get(id) {
     Some(st) => st
     None => {
-      let st = { composing: "", came: [], keys: [], frame: -1, island: None, place: None }
+      let st = { composing: "", came: [], keys: [], frame: -1, island: None, place: None, node: None, told: None }
       self.dev.catchers[id] = st
       st
     }
@@ -670,10 +674,19 @@ fn code_of_char(ch : Int) -> String {
 }
 
 ///|
+/// What came: told at once to a node's (key_catcher_node), else kept for the frame that reads it (Ctx::key_catcher).
+fn Catcher::put(self : Catcher, k : KeyIn) -> Unit {
+  match self.told {
+    Some(f) => f(k)
+    None => self.came.push(k)
+  }
+}
+
+///|
 /// A key pressed and let go.
 fn Catcher::tap(self : Catcher, key : String, code : String, mods : Int) -> Unit {
-  self.came.push(Key(down=true, key~, code~, mods~))
-  self.came.push(Key(down=false, key~, code~, mods~))
+  self.put(Key(down=true, key~, code~, mods~))
+  self.put(Key(down=false, key~, code~, mods~))
 }
 
 ///|
@@ -687,7 +700,7 @@ fn Catcher::type_words(self : Catcher, s : String) -> Unit {
     first = false
     let l = line.to_owned()
     if l != "" {
-      self.came.push(Text(l))
+      self.put(Text(l))
     }
   }
 }
@@ -714,7 +727,7 @@ fn catcher_key(c : Ctx, code : Int, mods : Int) -> Bool {
           }
           st.tap(key, code_of_char(lower), m)
         } else {
-          st.came.push(Text(ch.unsafe_to_char().to_string()))
+          st.put(Text(ch.unsafe_to_char().to_string()))
         }
       }
   }
