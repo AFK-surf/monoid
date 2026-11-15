@@ -142,3 +142,38 @@ test "a Farview tab: asked as shown, Hello as it goes live, the page drawn as no
   r.t.draw()
   assert_eq(r.cancelled.length(), 1)
 }
+
+///|
+test "a Farview tab: the host's bytes cut anywhere, frames one after another, each a message of its own: the page as the last says" {
+  let r = farview_rig()
+  let (_, tell) = r.views[0]
+  tell(Json::object({ "state": Json::object({ "phase": "live", "opens": Json::number(1.0) }) }), None)
+  r.t.draw()
+  let white = fn(n : Int, y : Double) {
+    let ops : Array[@proto.Op] = [Rect(0.0, 0.0, 390.0, 1000.0, 0xFF0000FF), Rect(20.0, y, 100.0, 40.0, 0xFFFFFFFF)]
+    @proto.encode(Frame(390.0, 1000.0, [(n, 0.0)], [(n, ops)]))
+  }
+  let all = Buffer()
+  all.write_bytes(farview_page_bytes())
+  all.write_bytes(white(2, 30.0))
+  all.write_bytes(white(3, 40.0))
+  all.write_bytes(white(4, 50.0))
+  let bytes = all.to_bytes()
+  // (in pieces of 7 bytes, cut through the messages, each told as the core tells one, before the next frame)
+  let mut at = 0
+  while at < bytes.length() {
+    let cut = Buffer()
+    for k in at..<(at + 7).min(bytes.length()) {
+      cut.write_byte(bytes[k])
+    }
+    let piece = cut.to_bytes()
+    @ui.answered_from_outside(fn() { tell(Json::object({ "data": Json::boolean(true) }), Some(piece)) })
+    at += 7
+  }
+  r.t.draw()
+  let whites = r.t.drawn_rects().filter(fn(d) { d.4 == 0xFFFFFFFFL && d.2 == 100.0 })
+  guard whites is [w] else { fail("white boxes: \{whites.length()}") }
+  // (50 down the page, as the last frame put it)
+  guard r.t.drawn_rects().filter(fn(d) { d.4 == 0xFF0000FFL && d.2 == 390.0 }) is [red, ..] else { fail("no page") }
+  assert_eq(w.1 - red.1, 50.0)
+}
