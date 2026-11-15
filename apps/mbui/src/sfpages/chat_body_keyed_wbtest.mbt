@@ -33,13 +33,13 @@ fn keyed_key(m : Json) -> String {
 
 ///|
 /// Where chat_body_keyed's rows of chat value `chat` are not chat_body_rows' of it made whole.
-fn keyed_faults(chat : Json, name : String) -> Array[String] {
+fn keyed_faults(chat : Json, name : String, sending? : Array[@sfbase.LocalSent] = []) -> Array[String] {
   let whole = @sfbase.chat_view_made(chat)
   let head = { ..whole, messages: [] }
   let msgs = @sfbase.chat_messages_of(keyed_of(chat))
   let era = @signals.computed(fn(_) { 0 })
-  let keyed = chat_body_keyed({ sent: {}, sent_as: {}, here: {} }, era, fn() { head }, msgs)
-  let made = chat_body_rows({ sent: {}, sent_as: {}, here: {} }, whole, @sfbase.entries_of(whole), [])
+  let keyed = chat_body_keyed({ sent: {}, sent_as: {}, here: {} }, era, fn() { head }, msgs, sending=fn() { sending })
+  let made = chat_body_rows({ sent: {}, sent_as: {}, here: {} }, whole, @sfbase.entries_of(whole), sending)
   let watch = @signals.watch(fn() {  })
   let faults : Array[String] = []
   watch.read(fn() {
@@ -49,10 +49,18 @@ fn keyed_faults(chat : Json, name : String) -> Array[String] {
     }
     for k in made.keys {
       match ((keyed.row)(k), made.rows.get(k)) {
-        (Some(a), Some(b)) =>
-          if !(a.gap == b.gap && a.piece == b.piece && a.entry.id() == b.entry.id()) {
-            faults.push("\{name}: row \{k} otherwise (gap \{a.gap == b.gap}, piece \{a.piece == b.piece}, \{a.entry.id()} \{b.entry.id()})")
+        (Some(a), Some(b)) => {
+          let followed = fn(e : Entry) {
+            match e {
+              Said(m) => m.followed
+              Out(o) => o.followed
+              _ => false
+            }
           }
+          if !(a.gap == b.gap && a.piece == b.piece && a.entry.id() == b.entry.id() && followed(a.entry) == followed(b.entry)) {
+            faults.push("\{name}: row \{k} otherwise (gap \{a.gap == b.gap}, piece \{a.piece == b.piece}, followed \{followed(a.entry)} \{followed(b.entry)}, \{a.entry.id()} \{b.entry.id()})")
+          }
+        }
         _ => faults.push("\{name}: row \{k} missing")
       }
     }
@@ -119,6 +127,19 @@ test "a chat's rows by key are its rows made whole" {
       "elsewhere before",
     ),
   )
+  // (what was sent from here: on its way, after the outbox; taken over by the core's message after the newest there
+  // as it was sent; taken over by the core's outbox entry; one joined, the row before it followed)
+  let sent = fn(id : String, newest : Double, joined : Bool) -> @sfbase.LocalSent {
+    { row: { ..chat_body_no_out, id, text: "刚发的", joined, state: "sending" }, before: Map([]), newest }
+  }
+  let outbox = Json::array([
+    Json::object({ "id": Json::string("out1"), "text": Json::string("发件箱里的"), "state": Json::string("sending"), "createdAt": Json::number(0.0) }),
+  ])
+  faults.append(keyed_faults(base, "sending", sending=[sent("local:1", 12.0, false)]))
+  faults.append(keyed_faults(base, "sending joined", sending=[sent("local:1", 12.0, true), sent("local:2", 12.0, true)]))
+  faults.append(keyed_faults(keyed_with(base, { "outbox": outbox }), "outbox"))
+  faults.append(keyed_faults(keyed_with(base, { "outbox": outbox }), "outbox taken", sending=[sent("local:1", 12.0, false)]))
+  faults.append(keyed_faults(base, "taken by a message", sending=[sent("local:1", 10.0, false)]))
   assert_eq(faults, [])
 }
 

@@ -174,8 +174,9 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
   (`ChatMessages`, a subscription's `Sub::keyed`), each row its own message's (sfpages' `chat_body_keyed`), so a word
   streamed into one message reads none of the others; nothing on that page, its bar, composer or what ticks under it,
   reads `view_of_chat` as a message changes (`chat_body_keyed_wbtest.mbt` counts it of the page's list). What reads the chat whole at a
-  press reads it then (`chat_whole`). What is sent from here before the core has it, and an outbox, go by the rows made
-  whole (`chat_body_rows`) till they are taken over.
+  press reads it then (`chat_whole`). What is sent from here before the core has it, and an outbox, are rows by key too
+  (`chat_body_keyed`'s `taken`, sfbase's `chat_sent_here`): the core's rows that take them over looked for from the
+  newest back. `chat_body_rows` is the list's only where its source keeps no messages by key.
 - What is left of the old is counted by detlint and only falls: `old-island` (`@ui.old` hosting a Ctx in a node),
   `old-list` (`Ctx::list`), `old-panel`, `click-read`, `key-read`, `build-motion`, `layout-read-back`, `ui-current`.
   A change never adds one; one it touches it moves over. A node-made part is never wrapped back into a Ctx.

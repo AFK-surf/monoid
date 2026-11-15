@@ -207,16 +207,21 @@ pub fn chat_head(src : Source, r : ChatRef) -> (ChatView?, Json?) {
 
 ///|
 /// Chat `r`'s view for what reads its head alone (its bar, its composer, whether it needs the viewer): its head
-/// (chat_head) while nothing sent from here is on its way, it is no chat just made from here and `src` keeps its
-/// messages by key (what wants them reads them so: chat_messages), else as view_of_chat
-/// works it out (what is on its way answering its last card: sent_here_view). Told as the head changes, not as a word
+/// (chat_head, what is on its way from here answering its last card as the core will say: chat_sent_here) where it is
+/// no chat just made from here and `src` keeps its messages by key (what wants them reads them so: chat_messages), else
+/// as view_of_chat works it out (sent_here_view's the same). Told as the head changes, not as a word
 /// comes into a message.
 pub fn chat_view_now(src : Source, r : ChatRef) -> ChatView? {
-  if sending_now(r.station + "\u{1}" + r.session).is_empty() && fresh_view(r) is None {
-    // (the head read first: what holds the topic, whose messages by key are then there)
+  if fresh_view(r) is None {
+    // (the head read first: what holds the topic, whose messages by key are then there; what is on its way from here
+    // answering its last card, as the core will say once it has it)
     match chat_head(src, r).0 {
-      Some(h) if chat_messages(src, r) is Some(_) => return Some(h)
-      _ => ()
+      Some(h) =>
+        match chat_messages(src, r) {
+          Some(ms) => return Some(chat_sent_here(r, h, ms).0)
+          None => ()
+        }
+      None => ()
     }
   }
   view_of_chat(src, r).0
@@ -234,3 +239,44 @@ pub fn chat_messages_of(list : @signals.KeyedList[String, Json]) -> ChatMessages
 /// change costs counts.
 // kept across runs: a count a test reads as the difference over what it does, never its value
 pub let chat_read_made : Ref[Int] = Ref(0)
+
+///|
+/// What words sent from here before the core has them make of chat `r`'s head `head` and its messages by key `ms`
+/// (sent_here_view's, by key): where the chat's last card still waits and they were sent as it showed, with no
+/// person's words after it, they answer it at once (no more asked, its decision theirs, the chat's asks without it,
+/// where it stands gone as its agent has words to take), as the core will say once it has them. The head so, and the
+/// card's message so by its key (none where they answer none). Looked for from the newest back no further than that card
+/// or a person's words after it.
+pub fn chat_sent_here(
+  r : ChatRef,
+  head : ChatView,
+  ms : ChatMessages,
+) -> (ChatView, (String, Message)?) {
+  let sending = sending_now(r.station + "\u{1}" + r.session)
+  guard !sending.is_empty() else { return (head, None) }
+  let keys = ms.keys()
+  let mut i = keys.length() - 1
+  let mut card : (String, Message)? = None
+  while i >= 0 {
+    match ms.get(keys[i]) {
+      Some(m) if m.card is Some(_) => {
+        card = Some((keys[i], m))
+        break
+      }
+      // (a person's words after the last card: the core's word stands)
+      Some(m) if m.author_kind == "person" => return (head, None)
+      _ => ()
+    }
+    i = i - 1
+  }
+  guard card is Some((k, m)) else { return (head, None) }
+  guard m.decision is Some(d) && !d.resolved else { return (head, None) }
+  guard sending.iter().any(fn(l) { m.seq <= l.newest }) else { return (head, None) }
+  let said = @sf.t("core-logic.decisions.replied", args=[("name", @sf.t("core-logic.decisions.you"))])
+  let answered = { ..m, asked: false, decision: Some({ resolved: true, dismissed: false, text: Some(said), chosen: None }) }
+  let asks = head.asks.filter(fn(seq) { seq != m.seq })
+  (
+    { ..head, asks, ask_clear: head.ask_clear && !asks.is_empty(), state: None, state_ask: None },
+    Some((k, answered)),
+  )
+}

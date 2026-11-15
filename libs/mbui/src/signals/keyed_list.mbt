@@ -85,10 +85,13 @@ fn[K, V] KeyedList::ordered(self : KeyedList[K, V], order : Array[K]) -> Unit {
 ///|
 /// Where `k` is in the order (-1: not in it). Walks the order: for what changes it, never for what reads an item.
 fn[K : Eq, V] KeyedList::index(self : KeyedList[K, V], k : K) -> Int {
-  for i, o in self.order {
-    if o == k {
+  // (from the end: what comes, goes or moves is mostly what is new)
+  let mut i = self.order.length() - 1
+  while i >= 0 {
+    if self.order[i] == k {
       return i
     }
+    i = i - 1
   }
   -1
 }

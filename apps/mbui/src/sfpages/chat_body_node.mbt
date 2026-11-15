@@ -614,12 +614,9 @@ fn chat_body_node(
     made_whole.val += 1
     rs
   }, same=fn(_, _) { false })
-  // (by key where the chat's messages are kept so and nothing is sent from here or waits in its outbox (chat_body_keyed:
-  // a message's change reads that message's rows alone); else made whole of its entries, chat_body_rows')
-  let keyed_now = @signals.computed(
-    fn(_) { msgs is Some(_) && sending().is_empty() && (here.view)().outbox.is_empty() },
-    same=fn(a, b) { a == b },
-  )
+  // (by key where the chat's messages are kept so (chat_body_keyed: a message's change reads that message's rows alone,
+  // what is sent from here and the outbox too); else made whole of its entries, chat_body_rows')
+  let keyed_now = @signals.computed(fn(_) { msgs is Some(_) }, same=fn(a, b) { a == b })
   let era = @signals.computed(
     fn(_) {
       keyed_now.get() |> ignore
@@ -627,9 +624,20 @@ fn chat_body_node(
     },
     same=fn(a, b) { a == b },
   )
-  let by_key = msgs.map(fn(m) { chat_body_keyed(kept, era, here.view, m) })
+  let chat_ref : ChatRef = { station: here.station, session: here.session, title: "", station_name: "" }
+  let by_key = msgs.map(fn(m) {
+    // (the last card that words sent from here answer, answered: sfbase's chat_sent_here)
+    let card = @signals.computed(fn(_) { @sfbase.chat_sent_here(chat_ref, (here.view)(), m).1 })
+    chat_body_keyed(kept, era, here.view, m, sending~, card=fn() { card.get() })
+  })
   let whole = ChatBodyList::of_made(fn() { rows.get() })
   let list : ChatBodyList = {
+    taken: fn() {
+      match by_key {
+        Some(l) if keyed_now.get() => (l.taken)()
+        _ => (whole.taken)()
+      }
+    },
     keys: fn() {
       match by_key {
         Some(l) if keyed_now.get() => (l.keys)()
@@ -648,12 +656,8 @@ fn chat_body_node(
   // occurrence of a picture by its row's key here and asks the core by the core's: told again as a row is taken over,
   // which only adds one)
   let taken_over = @signals.computed(fn(_) {
-    // (what was sent from here is taken over only as the rows are made whole: chat_body_rows writes it)
-    if keyed_now.get() {
-      keys.get() |> ignore
-    } else {
-      rows.get() |> ignore
-    }
+    // (what was sent from here is taken over as the rows are worked out: chat_body_rows and chat_body_keyed write it)
+    (list.taken)() |> ignore
     kept.sent_as.length()
   }, same=fn(a, b) { a == b })
   let sent_as = fn() {

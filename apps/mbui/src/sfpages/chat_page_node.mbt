@@ -76,9 +76,14 @@ pub fn chat_page_body_node(
   let read : @signals.Computed[(ChatView, Array[Entry])?] = @signals.computed(
     fn(was) {
       // (the head read first: what holds the topic, whose messages by key are then there)
-      let head = if sending().is_empty() && @sfbase.fresh_view(r) is None {
+      let head = if @sfbase.fresh_view(r) is None {
         match @sfbase.chat_head(src, r) {
-          (Some(h), _) if h.outbox.is_empty() && @sfbase.chat_messages(src, r) is Some(_) => Some((h, chat_no_entries))
+          (Some(h), _) =>
+            match @sfbase.chat_messages(src, r) {
+              // (what is on its way from here answering its last card: as the core will say once it has it)
+              Some(ms) => Some((@sfbase.chat_sent_here(r, h, ms).0, chat_no_entries))
+              None => None
+            }
           _ => None
         }
       } else {
