@@ -2861,7 +2861,12 @@ try {
       const b = asking("B", "A");
       await b.answered(3);
       try {
+        // (each handover sent at its own phase of the asks' second, swept across it: sent as an ask ended, every
+        // window fell between two asks, 0 of 250 in one, main's first run of it)
+        const phased = (ms: number) => new Promise((r) => setTimeout(r, ms)); // det-ok(script-wait): the handovers' phase against the asks' second, swept across it, not a wait for an event
         for (let i = 1; i <= handovers; i++) {
+          await b.begunFrom(Date.now() + 1);
+          await phased(Math.round(((i - 1) * 1000) / handovers));
           const end = await handoverEnd(await handOver("A"));
           log(`  ${i}/${handovers}: ${end}`);
           if (!/has taken over/.test(end)) throw new Error(`not handed over at ${i}: ${end}`);
