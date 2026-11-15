@@ -37,8 +37,10 @@ chats paused 18 minutes, a half-moved state, no way back), whose start stays swi
   is here again (a move back, a failure, an arrival by any route) and the other says nothing there runs on it
   (`move.uses`: a chat it began on it too, as a connect moved there begins them; the drill, 2026-11-15, took it back
   from under five), asked again at each turn's end while it does or does not answer (one lent in the turn under way for
-  what did not go is taken back unanswered); the other told then or once it is heard from. A start mends what a station
-  from before kept: the chats handed to where it is lent that run on it are added; the plan and the page say it is here and usable there (`lentTo`), a turn what it lent
+  what did not go is taken back unanswered); the other told then or once it is heard from. The station it is lent to tells it, once and kept until told, as its last chat on it
+  ends there (handed away, archived, moved to another login, deleted: `move.unused`), and a chat arriving from there
+  has it looked at again (`lookAt`); either takes it back where nothing of this station's it was lent for is there.
+  A start mends what a station from before kept: the chats handed to where it is lent that run on it are added; the plan and the page say it is here and usable there (`lentTo`), a turn what it lent
   (`lent`). Asked for by name, or in a whole move, its host moves (share/index.ts `moveProfile`), after what needs it:
   one not shared, shared as it moves with the two stations alone, that share undone as it comes home by any route
   unless a person opened it to another station meanwhile (`accounts-shared.json`). One that cannot be shared

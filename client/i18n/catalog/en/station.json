@@ -779,6 +779,7 @@
   "station.move.why.turnLate": "chat “{chat}” was still in its turn after {minutes} min: ask again later",
   "station.move.why.noGit": "{station} has no git, and this chat has {n} git worktree(s) to be made again there: install git there first",
   "station.move.why.allNoRoom": "Moving all {n} chats would add about {adds} to {station}, which has {free} free: that would leave less than the {floor} kept free there. Free about {short} there and move all again, or move chats one at a time (each goes only where it fits).",
+  "station.move.why.fullThere": "{station} ran out of room as this chat's files arrived ({error}; {free} free there now): nothing of it was kept there and it goes on here; free some room there and move it again, or pick another station",
   "station.move.why.noRoom": "{station} has {free} free and this chat needs {need}, which would leave less than the {floor} kept free there: free some room there, or pick another station",
   "station.move.why.stopping": "This station is stopping",
   "station.move.why.filesMissing": "{n} of its files are not there after they were sent",

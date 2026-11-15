@@ -100,7 +100,12 @@ const within = wall.within;
 class Incoming implements AsyncIterableIterator<Buffer> {
   /// All of it came.
   ended = false;
+  /// Held by the station answering a request whose bytes these are: a handler that stops reading them (it failed as
+  /// they came: its disk full) stops the stream only once its answer is through (`letGo`), so that the asker is told
+  /// why, not that the stream was reset.
+  held = false;
   #over = false;
+  #stopLater = false;
   readonly #reader: Reader;
   constructor(reader: Reader) {
     this.#reader = reader;
@@ -132,9 +137,19 @@ class Incoming implements AsyncIterableIterator<Buffer> {
   async return(): Promise<IteratorResult<Buffer>> {
     if (!this.#over) {
       this.#over = true;
-      await this.#reader.stream.reset(STOPPED).catch(() => {});
+      if (this.held) this.#stopLater = true;
+      else await this.#reader.stream.reset(STOPPED).catch(() => {});
     }
     return { done: true, value: undefined };
+  }
+  /// The answer through (or not to be sent): what was not read of it stopped now.
+  async letGo(): Promise<void> {
+    this.held = false;
+    if (this.#stopLater || (!this.#over && !this.ended)) {
+      this.#stopLater = false;
+      this.#over = true;
+      await this.#reader.stream.reset(STOPPED).catch(() => {});
+    }
   }
 }
 
@@ -476,6 +491,7 @@ export async function servePeer(conn: Connection, cloud: Cloud, remote: Pick<Pee
       if (bytes && envelope.bytes === true) {
         if (envelope.request === null || typeof envelope.request !== "object") throw new Error("bytes after a request that is no object");
         incoming = new Incoming(reader);
+        incoming.held = true;
         envelope.request[BYTES] = incoming;
       }
       // A rig asks nothing of a station: it tells what became of a task it was sent and of its own grants and
@@ -532,12 +548,13 @@ export async function servePeer(conn: Connection, cloud: Cloud, remote: Pick<Pee
     } catch (error) {
       // The caller gone (it gave up, the connection closed, it stopped reading), or the answer's bytes failed on the way.
       log.info("mesh", "peer answer not sent", { error: (error as Error).message, ...(answer.error !== undefined ? { failed: answer.error } : {}) });
-      void incoming?.return();
+      void incoming?.letGo();
       return;
     }
-    // Bytes of the request not read (refused before): once the answer is through, the caller is stopped sending them.
+    // Bytes of the request not read (refused before, or its handler failed as they came): once the answer is through,
+    // the caller is stopped sending them.
     void within(10_000, stream.stopped(), "")
       .catch(() => {})
-      .finally(() => void (incoming !== null && !incoming.ended && incoming.return()));
+      .finally(() => void incoming?.letGo());
   }
 }

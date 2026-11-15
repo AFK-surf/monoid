@@ -395,6 +395,41 @@ test("a login lent stays lent while anything on the other station runs on it: a 
   assert.deepEqual(lentShares(a), {}, "nothing kept lent");
 });
 
+test("a lent login is taken back as its last use on the station it is lent to ends by that station's doing: its chat handed to the lender by its own turn, archived there, or moved to another login there; one told while the lender is down is told as it is heard from", async () => {
+  for (const how of ["handed home", "archived", "another login", "lender down"] as const) {
+    const { a, b, quiet } = world([MAX]);
+    signIn(a, "max", CLAUDE_LOGIN);
+    const one = await chatOn(a, "max");
+    assert.equal((await a.moves.scheduler.move(WS, B, { module: "chats", item: one.key, withNeeds: true })).failed, null);
+    await quiet();
+    const share = present(a, "max").share.id as string;
+    // (a chat B begins on the login it borrows; the one it was lent for back: lent still, for B's)
+    const [mine] = newSession(b.rig.hub, { runtime: "claude", profile: ofShare(b, share).id, createdBy: "p@x" });
+    await quiet();
+    await a.moves.scheduler.back(WS, B, { module: "chats", item: one.key });
+    await quiet();
+    assert.equal(ofShare(b, share)?.share.borrowed, true, `${how}: lent still, for B's own chat`);
+    // Its last use there ends, by B's doing alone.
+    if (how === "handed home") assert.equal((await b.moves.scheduler.move(WS, A, { module: "chats", item: mine })).failed, null);
+    else if (how === "another login") b.rig.store.setSessionProfile(mine, "bx", false);
+    else {
+      if (how === "lender down") a.dead = true;
+      b.rig.store.setArchived(mine, true, "p@x");
+    }
+    await quiet();
+    if (how === "lender down") {
+      assert.equal(ofShare(b, share)?.share.borrowed, true, "not told yet: the lender down");
+      a.dead = false;
+      // (A heard from again: it asks B something, as a plan does)
+      await a.moves.scheduler.plan(WS, B);
+      await quiet();
+    }
+    assert.equal(b.rig.raw.profiles.some((p: Json) => p.share?.id === share), false, `${how}: B keeps no copy`);
+    assert.equal(present(a, "max").share, undefined, `${how}: not shared any more`);
+    assert.deepEqual(lentShares(a), {}, `${how}: nothing kept lent`);
+  }
+});
+
 test("what a station kept lent before it kept later turns' chats is mended as it starts: the chats handed to where it is lent that run on it", async () => {
   const { a, quiet } = world([MAX]);
   signIn(a, "max", CLAUDE_LOGIN);

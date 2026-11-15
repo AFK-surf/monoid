@@ -143,3 +143,27 @@ test("a chat's files' pass, not held, leaves a file truncated and rewritten as i
   }
 });
 
+
+test("a request whose handler fails as its bytes come (its disk full) is answered with the handler's refusal, not a stream reset", async () => {
+  const { source, target } = await pair();
+  serving(target, [source.id()], async (r) => {
+    // (a piece taken, then the write failing as a full disk fails it)
+    let n = 0;
+    for await (const _ of bytesOf(r)!) {
+      if (++n === 2) throw Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC" });
+    }
+    return { ok: true };
+  });
+  const call = peerCall(source, cloudOf(source.id(), [target.id()]), (id) => ({ id }), undefined, 60_000, { checkMs: 60_000 });
+  try {
+    // (more than the handler reads: what it does not read is stopped once its answer is through)
+    async function* plenty(): Bytes {
+      for (let i = 0; i < 64; i++) yield Buffer.alloc(64 * 1024, i);
+    }
+    const got = await given(settled(call(target.id(), "ws", withBytes({ method: "put", name: "0".repeat(64) }, plenty()))), "the request failed");
+    assert.ok("e" in got, "it failed");
+    assert.match(got.e.message, /ENOSPC: no space left on device/, `the handler's own words, not a reset: ${got.e.message}`);
+  } finally {
+    await Promise.all([source.close(), target.close()]);
+  }
+});

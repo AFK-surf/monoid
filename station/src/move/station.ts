@@ -27,6 +27,7 @@ import { readFileSync } from "node:fs";
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { Scheduler } from "./scheduler.ts";
+import { KeptSet } from "./kept.ts";
 import { type Lang, stationLang, tr } from "../ops/i18n.ts";
 import { log } from "../ops/log.ts";
 import { hold as holdUpdates } from "../updates/holds.ts";
@@ -142,6 +143,8 @@ export class Moves {
   /// The stations a request was sent again to in this turn, after the first that met their connection gone: once a
   /// turn a station, not once a request.
   readonly #sentAgain = new Set<string>();
+  /// The stations found gone in this turn asked a drop all the same (once a turn a station).
+  readonly #dropAsked = new Set<string>();
   #inTurn = false;
 
   /// What this station's moves ask of another: in a turn, a station found gone is asked nothing more until it ends,
@@ -149,7 +152,10 @@ export class Moves {
   readonly #ask: Ask = async (station, request) => {
     if (!this.#inTurn) return await this.#d.ask(station, request);
     const gone = this.#gone.get(station);
-    if (gone !== undefined) throw gone;
+    // (what undoes a hand-over there is asked all the same, once a turn a station: a station only slow to answer, not
+    // gone, takes it (drill rr34: a chat's files there left 502 MB as the turn asked nothing more); a gone one costs that
+    // one ask, the rest owed and told as it is heard from, or at their retry)
+    if (gone !== undefined && !(request?.method === "handover.drop" && !this.#dropAsked.has(station) && this.#dropAsked.add(station))) throw gone;
     try {
       const answer = await this.#d.ask(station, request);
       this.#suspect.delete(station);
@@ -184,6 +190,11 @@ export class Moves {
 
   constructor(d: MovesDeps) {
     this.#d = d;
+    this.#unusedOwed = new KeptSet(join(d.data, "move", "unused-owed.json"));
+    // (a borrowed login's last use here may end with any change of a session: looked at as one changes)
+    d.store.subscribe?.((c) => {
+      if (c.type === "session" || c.type === "sessionRemoved" || c.type === "moved") this.#usesMayEnd();
+    });
     this.sizes = new Sizes({ data: d.data, measure: (keys) => this.#sized(keys, { most: SIZE_MOST }), gone: (key) => d.store.handedTo(key) !== null });
     let known: Record<string, AccountOf> = {};
     try {
@@ -236,9 +247,11 @@ export class Moves {
       changed: () => d.changed?.(),
       arrivedStopped: (keys, need, ws) => this.scheduler.noteStopped({ module: "chats", id: keys[0]! }, need, ws),
       // (a chat here again by any route: what was lent for it alone is taken back)
-      shown: async (keys) => {
+      shown: async (keys, from) => {
         await d.connects?.arrived?.(keys);
         await this.#accounts.left?.(keys.map((id) => ({ module: "chats", id }))).catch((e) => log.warn("move", "what was lent for a chat back here not taken back", { error: (e as Error).message }));
+        // (a chat from a station a login is lent to: that login looked at, where it is lent there for nothing of ours)
+        if (from !== undefined) await this.#accounts.lookAt(from).catch((e) => log.warn("move", "a login lent not looked at as a chat came", { error: (e as Error).message }));
       },
       went: (keys) => this.scheduler.forget(keys.map((id) => ({ module: "chats", id }))),
       keptSends: d.keptSends, keepSends: d.keepSends,
@@ -316,6 +329,7 @@ export class Moves {
       restarted: () => tr(stationLang(), "station.move.restarted"),
       // (a turn's stations found gone are its own: forgotten as it begins and ends)
       turn: (on) => {
+        this.#dropAsked.clear();
         this.#inTurn = on;
         this.sizes.quiet = on;
         this.#gone.clear();
@@ -328,6 +342,49 @@ export class Moves {
         return r;
       },
     });
+  }
+
+  /// The logins this station borrows (lent it for what moved here) whose last chat here ended (handed away, archived,
+  /// moved to another login, deleted) and whose lender is not told yet: `share\nhost`, kept until it answers (it may be
+  /// down: told as it is heard from), and those told since their last use ended (told once).
+  readonly #unusedOwed: KeptSet;
+  readonly #unusedTold = new Set<string>();
+  #lookingUses = false;
+
+  /// A session changed here: the borrowed logins looked at, once a turn of the loop, where there are any.
+  #usesMayEnd(): void {
+    if (this.#lookingUses) return;
+    this.#lookingUses = true;
+    setImmediate(() => {
+      this.#lookingUses = false;
+      for (const p of this.#d.profiles()) {
+        const s = p?.share;
+        if (s?.borrowed !== true || typeof s.id !== "string" || typeof s.host !== "string" || typeof p.id !== "string") continue;
+        const key = `${s.id}\n${s.host}`;
+        if (this.#d.store.liveSessionsOn(p.id, 1).length > 0) {
+          this.#unusedTold.delete(key);
+          if (this.#unusedOwed.has(key)) void this.#unusedOwed.delete(key);
+          continue;
+        }
+        if (this.#unusedTold.has(key) || this.#unusedOwed.has(key)) continue;
+        void this.#unusedOwed.add(key).then(() => this.#tellUnused(s.host));
+      }
+    });
+  }
+
+  /// What is owed to `host` of the borrowed logins' last uses told.
+  #tellUnused(host: string): void {
+    for (const key of this.#unusedOwed.values()) {
+      const [share, to] = key.split("\n");
+      if (to !== host) continue;
+      void this.#ask(host, { method: "move.unused", share }).then(
+        async () => {
+          this.#unusedTold.add(key);
+          await this.#unusedOwed.delete(key);
+        },
+        () => {},
+      );
+    }
   }
 
   /// The plan under way of each workspace's reads (`reads`), for what plans without being given them.
@@ -548,6 +605,8 @@ export class Moves {
   /// A station heard from: what is stopped here for what may have come from it meanwhile (a tell of its coming lost) is
   /// looked at (scheduler `settleStopped`), a burst of requests heard as one: while one look goes on, one more after it.
   heard(peer: string): void {
+    // (what this station owes it of a borrowed login's last use told now; nothing owed: a size check)
+    if (this.#unusedOwed.size > 0) this.#tellUnused(peer);
     // (only what waits for what is at that station: each need it waits for looked at once)
     if (!this.scheduler.hasStopped(peer)) return;
     this.#heardFrom.add(peer);
@@ -588,6 +647,12 @@ export class Moves {
       switch (request?.method) {
         case "move.open":
           return { on: this.on(), ...(await (this.#d.room ?? roomHere(this.#d.data))().catch(() => ({}))) };
+        case "move.unused": {
+          // (the station a login is lent to says its last chat on it ended: taken back where nothing here is lent for)
+          if (typeof request.share !== "string") throw new Refused("move.unused: which share");
+          await this.#accounts.lookAt(peer, { share: request.share, uses: 0 });
+          return { ok: true };
+        }
         case "move.uses": {
           // (how many chats here run on a login another station lends this one: kept lent while any do)
           const share = typeof request.share === "string" ? request.share : "";

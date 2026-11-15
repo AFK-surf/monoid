@@ -78,7 +78,7 @@ export type AccountsDeps = {
   shareMoves?: ShareMoves;
 };
 
-export function accountsModule(d: AccountsDeps): Module & { cameHome(share: string, from: string): Promise<void> } {
+export function accountsModule(d: AccountsDeps): Module & { cameHome(share: string, from: string): Promise<void>; lookAt(from: string, said?: { share: string; uses: number }): Promise<void> } {
   /// What the other station said it has, as each plan asked it: by item id, its profile there and whether it hosts the
   /// login (false: it borrows it; null: a station from before, which does not say, taken as hosting it); null: none.
   const there = new Map<string, { id: string; hosts: boolean | null } | null>();
@@ -241,6 +241,22 @@ export function accountsModule(d: AccountsDeps): Module & { cameHome(share: stri
       const l = lent.base(share);
       if (l === undefined || l.to !== to || l.hostMoved === true) return;
       for (const n of new Set(forWhom.map(named))) await lent.lentFor(share, n);
+    },
+    /// A login lent to station `from`, kept lent for nothing of this station's (only for what `from` runs on it), looked
+    /// at again as `from` is heard of: a chat came from it, or it said its last chat on that login ended (`said`, its
+    /// `move.unused`): taken back where nothing there runs on it.
+    async lookAt(from, said) {
+      if (lent === null) return;
+      await mended;
+      for (const [share, l] of lent.entries()) {
+        if (l.to !== from || l.hostMoved === true || lent.forCount(share) > 0 || (said !== undefined && said.share !== share)) continue;
+        const uses = said !== undefined ? said.uses : ((await d.shareMoves!.usesThere?.(from, share).catch(() => null)) ?? null);
+        if (uses !== 0) continue;
+        log.info("move", "a login lent taken back: nothing on the station it was lent to runs on it", { share, to: from.slice(0, 12) });
+        await d.shareMoves!.unlend!(share, l.to, l.made, l.widened).catch((e) => log.warn("move", "a login lent for a move not taken back", { share, error: (e as Error).message }));
+        await lent.delete(share);
+        lentNow.delete(l.item);
+      }
     },
     async left(items) {
       if (lent === null) return;

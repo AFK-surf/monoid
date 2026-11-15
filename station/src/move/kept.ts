@@ -22,6 +22,13 @@ export class KeptSet {
     return this.#ids.has(id);
   }
 
+  values(): string[] {
+    return [...this.#ids];
+  }
+  get size(): number {
+    return this.#ids.size;
+  }
+
   async add(id: string): Promise<void> {
     if (this.#ids.has(id)) return;
     this.#ids.add(id);

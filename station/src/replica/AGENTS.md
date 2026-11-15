@@ -118,7 +118,10 @@ below, sends them along).
   other counted what it has does this one say it went; before, a failure undoes it there and the chat goes on here
   (`handover.drop`: after the placing under way, what it placed and the directories made for it, a linked worktree
   git made with its registration, branch and ref, the repository staying; what it put aside back; a newer hand-over
-  of the chat drops an older one still coming first, so the older's drop, late, takes nothing of it);
+  of the chat drops an older one still coming first, so the older's drop, late, takes nothing of it; asked even of a
+  station the turn found gone, owed until answered). The station it goes to drops it by itself where its own disk fails
+  what it is sent (full, over quota, read-only: refused in numbers, never a stream reset: mesh/peer.ts `Incoming.held`),
+  and where one still coming as it starts, or as its sender is heard from, no longer goes on there (`handover.still`);
   after, nothing is undone and the rest is told until it is answered. Its platform threads are re-pointed where their
   connect runs (connects/workspace.ts `route`, `connect.route`); what still comes here of it goes on there
   (`movedTo`). A device naming it here is answered where it went (409 with `moved`, `GET /moved`, `chat-moved`),

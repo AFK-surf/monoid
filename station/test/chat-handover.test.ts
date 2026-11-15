@@ -15,6 +15,7 @@ import { sessionKey } from "../src/sessions/hub.ts";
 import { say } from "../src/sessions/lifecycle.ts";
 import { given, message, reply } from "./hub-fakes.ts";
 import { RETRY_MS } from "../src/replica/retire.ts";
+import { PeerGone } from "../src/mesh/peer.ts";
 import { stationLang, tr } from "../src/ops/i18n.ts";
 import { hearLines } from "../src/ops/log.ts";
 import { WS, A, B, C, world, endTurn, stillfailChat, gitEnv, filesOf, entries, homeThread, startedAgainChangesNothing } from "./move-world.ts";
@@ -356,6 +357,72 @@ test("a chat goes only where it leaves the floor free there: the larger of 20 Gi
     assert.equal(a.rig.store.handedTo(key), null, at);
     assert.equal(b.rig.store.getSession(key), null, at);
   }
+});
+
+test("the station it goes to running out of room as a chat's files arrive refuses in numbers, drops what it took itself and keeps no record coming; the chat goes on here", async () => {
+  const w = world();
+  const a = w.get(A);
+  const b = w.get(B);
+  const { key } = await stillfailChat(a);
+  for (let n = 0; n < 6; n++) writeFileSync(join(a.rig.session(key).workspace, `f${n}.txt`), `file ${n}\n`);
+  // (B's disk full at its third file: the write fails as a full disk fails it; A's own drop never reaching B, so that
+  // what B keeps is B's own doing)
+  w.tamper((to, r) => {
+    if (to === B && r.method === "handover.drop") throw new Error("station unreachable");
+    return r;
+  });
+  let puts = 0;
+  b.onFail = (step) => {
+    if (step === "put" && ++puts === 3) throw Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC" });
+  };
+  const error = await a.moves.handover.handOver(key, B).then(() => null, (e: Error) => e.message);
+  await w.quiet();
+  assert.match(error ?? "", /ran out of room as this chat's files arrived \(ENOSPC; .* free there now\)|磁盘满了（ENOSPC/, `B's own words: ${error}`);
+  assert.equal(a.rig.store.handedTo(key), null, "it goes on here");
+  assert.deepEqual(b.moves.handover.ins().filter((i) => i.step === "coming").map((i) => i.id), [], "no record coming on B");
+  assert.equal(existsSync(join(b.rig.dir, "handover", "in", a.moves.handover.outOf(key)!.id)), false, "nothing B took of it kept");
+});
+
+test("a chat's failed carry asks its drop of the other even where the turn found that station gone a moment before", async () => {
+  const w = world();
+  const a = w.get(A);
+  const b = w.get(B);
+  const { key } = await stillfailChat(a);
+  // (the files' requests found gone twice: the turn says B gone; the drop that follows is asked all the same)
+  const toB: string[] = [];
+  w.tamper((to, r) => {
+    if (to === B) toB.push(r.method);
+    if (to === B && r.method === "handover.lacking") throw new PeerGone();
+    return r;
+  });
+  const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: key });
+  await w.quiet();
+  assert.notEqual(out.failed, null);
+  assert.ok(toB.includes("handover.drop"), `the drop asked: ${toB.join(" ")}`);
+  assert.deepEqual(b.moves.handover.ins().filter((i) => i.step === "coming").map((i) => i.id), [], "nothing left coming on B");
+});
+
+test("a hand-over coming here whose sender failed and never told its drop is dropped as this station starts, asked of the sender", async () => {
+  const w = world();
+  const a = w.get(A);
+  const b = w.get(B);
+  const { key } = await stillfailChat(a);
+  // (the carry fails at its placing, and the drop never reaches B)
+  b.fails.add("import");
+  w.tamper((to, r) => {
+    if (to === B && r.method === "handover.drop") throw new Error("station unreachable");
+    return r;
+  });
+  assert.notEqual(await a.moves.handover.handOver(key, B).then(() => null, (e: Error) => e.message), null);
+  await w.quiet();
+  assert.equal(b.moves.handover.ins().filter((i) => i.step === "coming").length, 1, "B still holds it coming");
+  // (B started again: it asks A, which says that hand-over failed)
+  w.tamper((_to, r) => r);
+  await b.moves.close();
+  b.moves = b.make();
+  await b.moves.start();
+  await w.quiet();
+  assert.deepEqual(b.moves.handover.ins().filter((i) => i.step === "coming").map((i) => i.id), [], "dropped as B started");
 });
 
 test("the station it goes to started again in the middle goes on from where it stood", async () => {

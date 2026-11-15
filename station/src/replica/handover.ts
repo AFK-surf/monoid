@@ -189,13 +189,13 @@ export type HandoverDeps = {
   /// What keeps the station from updating itself while a chat comes here (updates/holds.ts `hold`): its let-go.
   hold?: () => () => void;
   /// Chats `keys` shown here (what their connect kept for them while they were on their way, taken: move/station.ts).
-  shown?: (keys: string[]) => Promise<void> | void;
+  shown?: (keys: string[], from?: string) => Promise<void> | void;
   /// Chats `keys` went from here (`gone`): what kept them stopped here is no longer this station's (the scheduler's
   /// stopped set): one that comes back is stopped anew as it arrives.
   went?: (keys: string[]) => Promise<void> | void;
   /// The single-session connects bound to sessions here (store `binding`), by connect.
   bindingsOf?: (keys: string[]) => Record<string, string>;
-  /// For a test: a step's failure made there (`files`, `rows`, `counts`, `show`).
+  /// For a test: a step's failure made there (`files`, `rows`, `counts`, `show`; taking: `put`, `import`).
   fail?: (step: string) => void;
 };
 
@@ -231,6 +231,10 @@ function readAll<T>(at: string): T[] {
   }
   return out;
 }
+
+/// What this station's disk failing a write it was sent is (full, over its quota, read-only): the hand-over's own end
+/// here, told the asker in numbers.
+const WRITE_FAILED = new Set(["ENOSPC", "EDQUOT", "EROFS"]);
 
 export const roomHere = (data: string) => async () => {
   const s = await statfs(data).catch(() => null);
@@ -309,6 +313,7 @@ export class Handover {
     for (const i of readAll<In>(join(dir(d.data), "in"))) {
       // (what its rows' pages put in, as kept with them: newer than its file where a stop came between the two)
       if (i.step === "coming") i.ctx = d.store.importCtx(i.id) ?? i.ctx;
+      if (i.step === "coming") this.#unsure.add(i.id);
       this.#keepIn(i);
       this.#holdIn(i);
     }
@@ -334,6 +339,11 @@ export class Handover {
   }
 
   async start(): Promise<void> {
+    // (what was coming here as this station stopped: asked of where it came from whether it still goes on)
+    for (const id of this.#unsure) {
+      const i = this.#ins.get(id);
+      if (i !== undefined) this.#askStill(i);
+    }
     // (what was left to remove as a chat came here was shown, where this process stopped before it was gone)
     for (const name of await readdir(join(dir(this.#d.data), "in")).catch(() => [] as string[])) if (name.startsWith(".gone-")) void rm(join(dir(this.#d.data), "in", name), { recursive: true, force: true }).catch(() => {});
     // (gone, where it went said first, before anything else; shown there, out of sight here and let go as a hand-over
@@ -885,8 +895,35 @@ export class Handover {
     this.#again.set(o.id, this.#d.fibers.after(Math.min(RETRY_MS * 2 ** n, RETRY_MOST_MS), () => this.#go(o))); // timer: a retry after a failure
   }
 
+  /// The hand-overs coming here that were under way as this station started: whether each still goes on is asked of
+  /// the station it comes from as this one starts and as that one is heard from, and one that does not is dropped here
+  /// (its sender failed and its drop never came, or it lost its record). One begun in this process is the sender's
+  /// own to drop, as it does on failure, told until it is answered.
+  readonly #unsure = new Set<string>();
+  #asking = new Set<string>();
+
+  #askStill(i: In): void {
+    if (i.step !== "coming" || this.#asking.has(i.id) || this.#inWork.has(i.id)) return;
+    this.#asking.add(i.id);
+    void this.#d.ask(i.origin, { method: "handover.still", workspace: i.ws, origin: this.#d.here(), id: i.id })
+      .then(async (a) => {
+        this.#unsure.delete(i.id);
+        if (a?.going === false && i.step === "coming") {
+          log.info("handover", "a chat coming here no longer goes on where it came from: dropped here", { id: i.id, from: i.origin.slice(0, 12) });
+          await this.#drop1(i);
+        }
+      })
+      .catch(() => {})
+      .finally(() => void this.#asking.delete(i.id));
+  }
+
   /// The other station came up (its link opened): what is owed to it told now.
   reached(station: string): void {
+    for (const id of this.#unsure) {
+      const i = this.#ins.get(id);
+      if (i === undefined || i.step !== "coming") this.#unsure.delete(id);
+      else if (i.origin === station) this.#askStill(i);
+    }
     this.#look("reached", this.#owedOuts.size);
     for (const o of [...this.#owedOuts]) {
       if (o.step !== "gone" && !o.dropOwed) continue;
@@ -930,6 +967,12 @@ export class Handover {
           this.#spent(this.#ins.get(id), "begin", t0);
           return answer;
         }
+        // (whether a hand-over of this station's to the one asking still goes on: one asked as that station starts, or
+        // hears from this one again, holding what it began to take of it)
+        if (request.method === "handover.still") {
+          const o = this.#outs.get(id);
+          return { going: o !== undefined && o.to === peer && o.step !== "failed" };
+        }
         const i = this.#ins.get(id);
         if (request.method === "handover.drop") return i === undefined ? { ok: true } : await this.#drop1(i);
         if (i === undefined || i.origin !== peer) throw new Refused(why("badRequest", { detail: "not begun: handover.begin first" }));
@@ -965,6 +1008,7 @@ export class Handover {
             case "handover.put": {
               const name = String(request.name ?? "");
               if (bytes === null || !HASH.test(name)) throw new Refused(why("badRequest", { detail: "not a file's hash" }));
+              this.#d.fail?.("put");
               await receiveFile(inFiles(this.#d.data, id), name, bytes as Bytes);
               return { ok: true };
             }
@@ -993,6 +1037,15 @@ export class Handover {
         };
         try {
           return await answer();
+        } catch (e) {
+          // (this station's own disk failing what it is sent (full, over its quota, read-only): nothing of the chat is
+          // kept here, dropped now by this station itself, and the asker told so in numbers, never as a stream reset)
+          if (!WRITE_FAILED.has((e as NodeJS.ErrnoException)?.code ?? "")) throw e;
+          log.warn("handover", "a chat coming here could not be written: dropped here", { id: i.id, error: (e as Error).message });
+          void this.#drop1(i).catch((d) => log.warn("handover", "a chat coming here not dropped after its write failed", { id: i.id, error: (d as Error).message }));
+          const room = await (this.#d.room ?? roomHere(this.#d.data))().catch(() => ({ free: null }));
+          const name = this.#d.roster(i.ws)?.find((s) => s.id === this.#d.here())?.name || (this.#d.here() ?? "").slice(0, 12);
+          throw new Refused(why("fullThere", { station: name, free: typeof room.free === "number" ? gb(room.free) : "?", error: (e as NodeJS.ErrnoException).code }));
         } finally {
           if (kind !== "show") this.#spent(i, kind, t0);
         }
@@ -1150,7 +1203,7 @@ export class Handover {
     await rename(join(dir(this.#d.data), "in", i.id), gone).catch(() => {});
     void rm(gone, { recursive: true, force: true }).catch(() => {});
     for (const k of i.keys) this.#d.hub.wakeChat(k);
-    await this.#d.shown?.(i.keys);
+    await this.#d.shown?.(i.keys, i.origin);
     this.#spent(i, "show", t0);
     const ms = { ...(i.spent ?? {}) };
     log.info("handover", "a chat handed here goes on here", { id: i.id, origin: i.origin, keys: i.keys.length, ms, total: Math.round(this.#d.fibers.now() - i.at) });
