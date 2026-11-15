@@ -3,8 +3,8 @@
 // to (the runtime's events, where the turn stands, up to where it read), which this hands the session and acknowledges
 // once handed, the line then acknowledged to the runner. A process is started and ended here as process.ts does it;
 // only reading it, and writing to it, go through the program (a runner's pipe on Windows opened by the shell as a Unix
-// socket is elsewhere). One that is not there (a checkout without the program; STILLFAIL_AGENTS_HOST=0) leaves the
-// drivers reading as before.
+// socket is elsewhere). The program is built for every system a station runs on, so there is no reading of a process's
+// lines in TypeScript to fall back to (as with the actors, mb-actor.ts).
 import { log } from "../ops/log.ts";
 import { wall } from "../ops/fibers.ts";
 import { mbReaderBinary } from "../read/mb-reader.ts";
@@ -64,11 +64,10 @@ export class AgentsHost {
     this.#data = data;
   }
 
-  /// The program for `data`'s processes, where it can read them: one for every driver of the station (each taking
-  /// it, `close` letting it go; it ends with the last).
-  static where(data: string): AgentsHost | null {
-    if (process.env.STILLFAIL_AGENTS_HOST === "0") return null;
-    if (mbReaderBinary() === null) return null;
+  /// The program for `data`'s processes: one for every driver of the station (each taking it, `close` letting it go;
+  /// it ends with the last). A checkout that did not build the program runs no Claude Code or Codex session.
+  static where(data: string): AgentsHost {
+    if (mbReaderBinary() === null) throw new Error("the station's MoonBit program (stillfail-reader) is not built here: Claude Code and Codex are read by its --sessions");
     let host = AgentsHost.#shared.get(data);
     if (host === undefined || host.#closed) AgentsHost.#shared.set(data, (host = new AgentsHost(data)));
     return host;

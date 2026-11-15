@@ -77,6 +77,7 @@ export function mcpUrlOf(args: string[]): string | null {
 /// What a frame says of the station's tools being out of reach (null: nothing): their server failed to connect as a
 /// turn started, or a call to one of them (`calls`: the ids of those made, noted here as they are) failed as
 /// unreachable. Seen in the field as `ECONNREFUSED: Unable to connect…`, then `MCP server "stillfail" is not connected`.
+/// What the program reads a process by does this (mb/src/claude/frames.mbt); this is what it is held to (tools-reach.test.ts).
 export function toolsLostIn(frame: Json, calls: Set<string>): string | null {
   const kind = frame?.type;
   const content: Json[] = Array.isArray(frame?.message?.content) ? frame.message.content : [];
@@ -295,9 +296,8 @@ export type ClaudeDriverOptions = {
   /// A local subscription profile's current token, renewed under one lock by the station so concurrent `claude -p`
   /// processes neither race on a single-use refresh token nor delete `.credentials.json` on failure.
   subscriptionToken?: (profile: Profile, rejected?: string) => Promise<MachineToken>;
-  /// What reads its processes' output off the station's thread (mb-agents.ts): by default the MoonBit program where it
-  /// is there; null reads it here.
-  agents?: AgentsHost | null;
+  /// What reads its processes' output off the station's thread (mb-agents.ts): the MoonBit program by default.
+  agents?: AgentsHost;
   /// Another station's subscription, borrowed (share/index.ts): a token lent by the station signed in on it, handed
   /// to the process as the machine's is.
   lent?: { borrowed(profile: Profile): boolean; token(profile: Profile, rejected?: string): Promise<MachineToken> };
@@ -376,12 +376,12 @@ export class ClaudeDriver extends OwnProcessDriver<ClaudeSession> {
   private readonly machineToken: (env: Env, rejected?: string) => Promise<MachineToken>;
   private readonly subscriptionToken: ClaudeDriverOptions["subscriptionToken"];
   private readonly lent: ClaudeDriverOptions["lent"];
-  private readonly agents: AgentsHost | null;
+  private readonly agents: AgentsHost;
 
   constructor(options: ClaudeDriverOptions) {
     super(options.data);
-    this.agents = options.agents === undefined ? AgentsHost.where(options.data) : options.agents;
-    this.agents?.use(this);
+    this.agents = options.agents ?? AgentsHost.where(options.data);
+    this.agents.use(this);
     this.command = options.command ?? "claude";
     this.env = options.env ?? process.env;
     this.machineToken = options.machineToken ?? machineClaudeToken;
@@ -398,16 +398,14 @@ export class ClaudeDriver extends OwnProcessDriver<ClaudeSession> {
     return `claude ${session.id()}`;
   }
 
-  /// Read by the program where it is there (mb-agents.ts), else as every such driver reads.
+  /// Read by the program (mb-agents.ts).
   protected async start(session: ClaudeSession, options: OpenOptions, command: string, args: string[], env: Record<string, string>) {
-    if (this.agents === null) return super.start(session, options, command, args, env);
     const id = runnerId("claude", options.key);
     session.attach(await HostedProcess.start(this.agents, this.data, id, command, args, env, options.cwd, session.hostedOptions(this.label(options, session)), session.turnNow()));
     this.live.add(session);
   }
 
   async adopt(options: OpenOptions, snapshot: unknown | null, events: Events): Promise<ClaudeSession> {
-    if (this.agents === null) return super.adopt(options, snapshot, events);
     const handed = snapshot as ClaudeSnapshot | null;
     const id = handed?.runner ?? runnerId("claude", options.key);
     const info = await findRunner(this.data, id);
@@ -429,21 +427,21 @@ export class ClaudeDriver extends OwnProcessDriver<ClaudeSession> {
 
   /// Its processes' lines held while the station hands over (hub.ts `handOver`), and read on where it does not.
   async freeze() {
-    await this.agents?.freeze(this.hostedProcs());
+    await this.agents.freeze(this.hostedProcs());
   }
 
   thaw() {
-    this.agents?.thaw(this.hostedProcs());
+    this.agents.thaw(this.hostedProcs());
   }
 
   /// Its sessions' processes the program reads.
   private hostedProcs(): HostedProcess[] {
-    return [...this.live].flatMap((s) => s.hostedProc() ?? []);
+    return [...this.live].map((s) => s.hostedProc());
   }
 
   async shutdown() {
     await super.shutdown();
-    await this.agents?.close(this);
+    await this.agents.close(this);
   }
 
   async open(options: OpenOptions, events: Events): Promise<ClaudeSession> {
@@ -593,6 +591,8 @@ export class ClaudeDriver extends OwnProcessDriver<ClaudeSession> {
 type Renew = (rejected?: string) => Promise<MachineToken>;
 
 export class ClaudeSession extends OwnProcessSession<Turn> {
+  /// Its process, always as the program reads it (mb-agents.ts).
+  protected declare proc: HostedProcess;
   /// The machine login's token this process runs on (machine profiles): when it runs out.
   private machineExpires: number | null;
   private live: LiveFromClaude;
@@ -600,8 +600,6 @@ export class ClaudeSession extends OwnProcessSession<Turn> {
   private effort: string | undefined;
   /// The Fast it was started with (fastFor; none: an account that does not take it), fixed for the process too.
   fast: boolean | undefined;
-  /// Its calls to the station's tools not answered yet (toolsLostIn).
-  private calls = new Set<string>();
   /// Where it gets a new token when it asks (RENEWED), and the one it was given last (null when not known here).
   private renew: Renew | null;
   private token: string | null;
@@ -652,15 +650,8 @@ export class ClaudeSession extends OwnProcessSession<Turn> {
     take(heard.turn);
   }
 
-  protected heard(line: string) {
-    const frame = parseLine("claude", line);
-    if (frame === undefined) return;
-    for (const event of this.live.feed(frame)) this.events({ type: "live", event });
-    const lost = toolsLostIn(frame, this.calls);
-    if (lost !== null) this.events({ type: "toolsLost", why: lost });
-    if (frame?.type === "control_request" && frame.request?.subtype === "oauth_token_refresh") void this.renewToken(String(frame.request_id ?? ""));
-    onFrame(frame, this.turn, this.events, () => this.proc.write(interruptRequest()));
-  }
+  /// Never called: its lines are the program's to read (`heardHosted`), none given here as a line.
+  protected heard(_line: string) {}
 
   /// It was refused with its token and asks for a new one (RENEWED): given one other than the token refused, or told
   /// why not, when its turn ends failed on authentication as before.
@@ -672,7 +663,7 @@ export class ClaudeSession extends OwnProcessSession<Turn> {
       if (got.token === this.token) throw new Error("no newer token");
       this.token = got.token;
       this.turn.renewed = true;
-      this.hosted()?.tell("renewed");
+      this.proc.tell("renewed");
       response = { accessToken: got.token };
       log.info("agents::claude", "gave claude a new token", { session: this.sessionId });
     } catch (error) {
@@ -697,7 +688,7 @@ export class ClaudeSession extends OwnProcessSession<Turn> {
     this.begin();
     this.turn.compacting = true;
     this.turn.compactError = null;
-    this.hosted()?.tell("compact");
+    this.proc.tell("compact");
     this.proc.write(userMessage("/compact"));
   }
 
@@ -708,21 +699,16 @@ export class ClaudeSession extends OwnProcessSession<Turn> {
     if (this.machineExpires !== null && this.machineExpires - wall.now() < CLAUDE_TOKEN_MARGIN_MS) throw new Said(tr(stationLang(), "station.claudeAuth.machineRunsOut"));
     this.turn.renewed = false;
     this.turn.busy = true;
-    this.hosted()?.tell("begin");
+    this.proc.tell("begin");
   }
 
-  hostedProc(): HostedProcess | null {
-    return this.hosted();
+  hostedProc(): HostedProcess {
+    return this.proc;
   }
 
   /// What its process reads is given its actor in the program too (mb-actor.ts), where that reads it.
   route(router: Router | null) {
-    this.hosted()?.route(router);
-  }
-
-  /// Its process as the program reads it, if it is.
-  private hosted(): HostedProcess | null {
-    return this.proc instanceof HostedProcess ? this.proc : null;
+    this.proc.route(router);
   }
 
   async steer(text: string) {
@@ -741,7 +727,7 @@ export class ClaudeSession extends OwnProcessSession<Turn> {
   async abort() {
     if (this.turn.closed || !this.turn.busy || this.turn.aborting) return;
     this.turn.aborting = true;
-    this.hosted()?.tell("aborting");
+    this.proc.tell("aborting");
     this.proc.write(interruptRequest());
   }
 
@@ -757,7 +743,7 @@ export class ClaudeSession extends OwnProcessSession<Turn> {
   snapshot(): ClaudeSnapshot {
     this.handOver();
     // (read by the program: where it stood as its lines were held)
-    const frozen = this.hosted()?.frozenState();
+    const frozen = this.proc.frozenState();
     if (frozen) {
       const t = frozen.turn ?? {};
       return { runtime: "claude", id: this.sessionId, runner: this.proc.info.id, turn: { busy: t.busy === true, aborting: t.aborting === true, authFailure: t.authFailure ?? null, renews: t.renews, tasks: t.tasks, compacting: t.compacting, compactError: t.compactError }, machineExpires: this.machineExpires, live: frozen.live };

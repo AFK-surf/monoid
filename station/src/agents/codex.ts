@@ -7,14 +7,15 @@
 //   environment;
 // - threads need sandbox "danger-full-access" with approvalPolicy "never", or MCP tool calls are refused.
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
-import { open, readdir, realpath, stat } from "node:fs/promises";
+import { open } from "node:fs/promises";
 import { join } from "node:path";
 import { agentEnv } from "../ops/agent-env.ts";
 import { log } from "../ops/log.ts";
+import { walkBounded } from "../ops/walk.ts";
 import { rememberCodexRollout } from "../read/transcript.ts";
 import { LiveFromCodex, chars, type CodexLiveState } from "./live.ts";
 import { linkCodexAuth, type Env } from "./machine-logins.ts";
-import { AgentProcess, ackedOffset, bytesWithin, debug, findRunner, outFile, runnerId } from "./process.ts";
+import { ackedOffset, bytesWithin, debug, findRunner, outFile, runnerId } from "./process.ts";
 import { AgentsHost, HostedProcess } from "./mb-agents.ts";
 import { accessKind, codexOverrides, expandRoute, isMachine, profileEnv, profileFast, profileModel, profileVia } from "./profiles.ts";
 import { TOOL_SERVERS, cleanEnv, failureOf, unreachable, type AgentDriver, type AgentSession, type FailureReason, type OpenOptions, type Profile, type RuntimeEvent, type TurnOutcome } from "./runtime.ts";
@@ -55,38 +56,21 @@ function comparePaths(a: string, b: string): number {
 /// Codex also loads the skills in the user's own ~/.agents/skills. The station's agents share skills through the agent
 /// home instead, and the personal ones pull them off course, so each is turned off by path: codex's skills.config takes
 /// files, not directories.
-/// Read off the station's thread (it is walked each time a thread opens): one directory at a time, so `visited` keeps
-/// a linked folder from being walked twice as before.
-export async function hostSkillsOff(root: string): Promise<{ path: string; enabled: false }[]> {
+/// Walked each time a thread opens, a tree the station does not own: bounded (`walkBounded`), its links followed as
+/// skill folders are often linked in, each real folder once (a link back up ends there), six folders down at most (a
+/// SKILL.md in the sixth found), a clone's or an environment's insides left out. What a walk cut short found is what is
+/// turned off.
+export const HOST_SKILLS_WALK = { maxDepth: 7, maxEntries: 4_000, maxDurationMs: 2_000 };
+const NOT_SKILLS = new Set([".git", "node_modules", ".venv"]);
+
+export async function hostSkillsOff(root: string, bounds: Partial<typeof HOST_SKILLS_WALK> = {}): Promise<{ path: string; enabled: false }[]> {
   const found: string[] = [];
-  const visited = new Set<string>();
-  const walk = async (dir: string, depth: number): Promise<void> => {
-    if (depth > 6) return;
-    let real: string;
-    try {
-      real = await realpath(dir);
-    } catch {
-      return;
-    }
-    if (visited.has(real)) return;
-    visited.add(real);
-    let entries: string[];
-    try {
-      entries = await readdir(dir);
-    } catch {
-      return;
-    }
-    // Follows links: skill folders are often linked in.
-    const kinds = await Promise.all(entries.map((name) => stat(join(dir, name)).then((s) => s.isDirectory(), () => null)));
-    for (const [i, name] of entries.entries()) {
-      const isDir = kinds[i];
-      if (isDir === null) continue;
-      const path = join(dir, name);
-      if (isDir) await walk(path, depth + 1);
-      else if (name === "SKILL.md") found.push(path);
-    }
-  };
-  await walk(root, 0);
+  const walked = await walkBounded(root, (e) => {
+    if (e.depth === 0) return;
+    if (e.directory) return NOT_SKILLS.has(e.name) ? "skip" : undefined;
+    if (e.file && e.name === "SKILL.md") found.push(e.path);
+  }, { ...HOST_SKILLS_WALK, ...bounds, followRoot: true, followLinks: true, sameDevice: false });
+  if (walked.truncated && walked.reason !== "depth") log.warn("agents::codex", "the host's skills only partly walked", { root, reason: walked.reason, visited: walked.visited });
   return found.sort(comparePaths).map((path) => ({ path, enabled: false as const }));
 }
 
@@ -207,7 +191,7 @@ type Pending = { method: string; resolve: (v: Json) => void; reject: (e: Error) 
 
 /// One app-server process and its JSON-RPC connection.
 class Host {
-  proc!: AgentProcess | HostedProcess;
+  proc!: HostedProcess;
   readonly pending = new Map<number, Pending>();
   readonly threads = new Map<string, Sink>();
   /// Its threads in a turn (one asked to start counts).
@@ -251,10 +235,6 @@ class Host {
     this.ready = ready;
   }
 
-  processOptions(label: string) {
-    return { label, line: (line: string, from: number, to: number) => this.onLine(line, from, to), exit: (said: string, stderr: string) => this.onExit(said, stderr) };
-  }
-
   /// Its output read by the MoonBit program (mb-agents.ts): its lines given here as they are, but for its diffs.
   hostedOptions(label: string) {
     return {
@@ -272,7 +252,7 @@ class Host {
 
   /// `cwd`: where it runs, its profile's home.
   /// `id`: its runner's (`runnerId`, or another while one of the same key is being replaced: `runnerFor`).
-  static async start(profile: Profile, key: string, command: string, data: string, env: Env, caBundle: string, lent?: CodexDriverOptions["lent"], cwd = profile.home, id = runnerId("codex", key), agents: AgentsHost | null = null): Promise<Host> {
+  static async start(profile: Profile, key: string, command: string, data: string, env: Env, caBundle: string, lent: CodexDriverOptions["lent"], cwd = profile.home, id: string, agents: AgentsHost): Promise<Host> {
     mkdirSync(profile.home, { recursive: true });
     if (isMachine(profile)) linkCodexAuth(profile.home, env);
     const until = lent?.borrowed(profile) ? await lent.write(profile) : null;
@@ -282,9 +262,7 @@ class Host {
     const host = new Host(profile.id, hostSignature(profile), 1, false, key);
     host.lentUntil = until;
     const label = `codex app-server ${key}`;
-    host.proc = agents
-      ? await HostedProcess.start(agents, data, id, command, hostArgs(profile), childEnv, cwd, host.hostedOptions(label), null)
-      : await AgentProcess.start(data, id, command, hostArgs(profile), childEnv, cwd, host.processOptions(label));
+    host.proc = await HostedProcess.start(agents, data, id, command, hostArgs(profile), childEnv, cwd, host.hostedOptions(label), null);
     return host;
   }
 
@@ -292,7 +270,7 @@ class Host {
   /// `nextId`.
   /// `from`: where the station before kept that a crash reads from (handed over): kept there until its sessions are
   /// taken up, those with a turn running then held there (`running`).
-  static adopt(profile: string, info: RunnerInfo, signature: string, nextId: number, ready: boolean, recovered?: Map<string, Recovered>, key = profile, from?: number, agents: AgentsHost | null = null): Host {
+  static adopt(profile: string, info: RunnerInfo, signature: string, nextId: number, ready: boolean, recovered: Map<string, Recovered> | undefined, key: string, from: number | undefined, agents: AgentsHost): Host {
     log.info("agents::codex", "taking up a codex app-server", { profile, key, pgid: info.pgid, crashed: recovered !== undefined });
     const host = new Host(profile, signature, nextId, ready, key);
     if (recovered) host.recovered = recovered;
@@ -307,9 +285,7 @@ class Host {
       if (dropped > 0) log.warn("agents::codex", "notifications for threads nobody took up, dropped", { profile, threads: host.orphans?.size, dropped });
       host.orphans = null;
     });
-    host.proc = agents
-      ? HostedProcess.adopt(agents, info, host.hostedOptions(`codex app-server ${profile}`), null, null)
-      : AgentProcess.adopt(info, host.processOptions(`codex app-server ${profile}`));
+    host.proc = HostedProcess.adopt(agents, info, host.hostedOptions(`codex app-server ${profile}`), null, null);
     if (from !== undefined) host.reckon(from);
     return host;
   }
@@ -511,8 +487,8 @@ export type CodexDriverOptions = {
   /// A missing code-mode host (tests can supply a probe); told so the station refreshes its software status.
   missingHost?: typeof findMissingCodexHost;
   incompleteInstallation?: () => void;
-  /// What reads its app-servers' output off the station's thread: by default the MoonBit program where it is there.
-  agents?: AgentsHost | null;
+  /// What reads its app-servers' output off the station's thread: the MoonBit program by default.
+  agents?: AgentsHost;
   /// Bytes of output an app-server may have before it is replaced (OUTPUT_LIMIT).
   outputLimit?: number;
   /// Settled once what the station before this one left is taken up (sessions/agents.ts `start`). Until then an
@@ -569,8 +545,8 @@ export class CodexDriver implements AgentDriver {
   private readonly hostSkills: string;
   private readonly caBundle: string;
   readonly options: CodexDriverOptions;
-  /// What reads its app-servers' output off the station's thread (mb-agents.ts); null: read here.
-  private readonly agents: AgentsHost | null;
+  /// What reads its app-servers' output off the station's thread (mb-agents.ts).
+  private readonly agents: AgentsHost;
   private hosts = new Map<string, Host>();
   /// App-servers being replaced while turns run on them (`drain`): out of `hosts`, each ending after its last turn.
   private draining = new Set<Host>();
@@ -586,8 +562,8 @@ export class CodexDriver implements AgentDriver {
     this.env = options.env ?? process.env;
     this.hostSkills = options.hostSkills ?? join(this.env.HOME ?? "", ".agents", "skills");
     this.caBundle = options.caBundle ?? CA_BUNDLE;
-    this.agents = options.agents === undefined ? AgentsHost.where(options.data) : options.agents;
-    this.agents?.use(this);
+    this.agents = options.agents ?? AgentsHost.where(options.data);
+    this.agents.use(this);
   }
 
   runtime(): "codex" {
@@ -1193,7 +1169,7 @@ export class CodexDriver implements AgentDriver {
     this.hosts.clear();
     this.draining.clear();
     await Promise.all(hosts.map((h) => h.proc.kill(5000)));
-    await this.agents?.close(this);
+    await this.agents.close(this);
   }
 
   detach() {

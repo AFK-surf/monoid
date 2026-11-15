@@ -16,7 +16,7 @@ import { Said } from "../src/ops/i18n.ts";
 import { REPO_RULES_COMMAND, REPO_RULES_HOOK, hookCommand, hookNode } from "../src/agents/repo-rules.ts";
 import { SLACK_SPOKEN, SPEAKS } from "../src/tools/mcp.ts";
 import { claudeProject } from "../src/read/transcript.ts";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { AgentsHost } from "../src/agents/mb-agents.ts";
 import { platform } from "../src/platform/index.ts";
 import { allLeft, existingRunners } from "../src/agents/runner.ts";
 import { modelLimitOf } from "../src/agents/runtime.ts";
@@ -172,9 +172,8 @@ test("a command a turn waited on and was never told ended does not outlive the t
   assert.deepEqual(turn.tasks, {});
 });
 
-test("its processes are read by the MoonBit program where it is built, else here (claude-here.test.ts)", () => {
-  const hosted = process.env.STILLFAIL_AGENTS_HOST !== "0" && mbReaderBinary() !== null;
-  assert.equal((driver() as unknown as { agents: unknown }).agents !== null, hosted);
+test("its processes are read by the MoonBit program, with nothing read here to fall back to", () => {
+  assert.ok((driver() as unknown as { agents: unknown }).agents instanceof AgentsHost);
 });
 
 describe("the Claude Code driver", { concurrency: true }, () => {

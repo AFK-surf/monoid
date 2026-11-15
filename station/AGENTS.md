@@ -58,8 +58,10 @@
   (`src/read/requested-builder.ts`) or is waited on by a person stays as it is, as do the readers that answer devices
   (`--data`, `--serve`, `--sessions`): throttled on a busy Mac, each would hold up a person or the permit. A walk of a tree the station does not own (a
   workspace, the home, a mirrored directory) goes through `src/ops/walk.ts` `walkBounded`: on its root's file system,
-  no link followed, bounded in entries, depth and time, yielding as it goes; a new walk does too, never a recursion of
-  its own (`src/read/machine.ts` `rolloutsIn`, synchronous on a reader thread, keeps the same bounds by itself).
+  no link followed (`followLinks` where a tree's folders are linked in by design, as ~/.agents/skills, codex.ts
+  `hostSkillsOff`: each real directory gone into once, so a link back up ends), bounded in entries, depth and time,
+  yielding as it goes; a new walk does too, never a recursion of its own (`src/read/machine.ts` `rolloutsIn`,
+  synchronous on a reader thread, keeps the same bounds by itself).
 - Time is the Clock's (a `TestClock` in tests): `Date.now`, `new Date()`, `setTimeout`, `setInterval` only in
   `src/ops/fibers.ts` (`wall`, for what is shared with other programs: mtimes, expiries, deadlines to processes).
   `scripts/check.sh` refuses them elsewhere.
@@ -135,23 +137,23 @@
   gained and a page of its past (the readers', other processes: a long read there would hold up every actor), the
   file's watch, the usage counter, and the listeners it gives what is told (a stream opening is told the sessions at
   work as they are now once the program answers, what they did meanwhile after it: api/events.ts `heldWaits`). The
-  usage counter's reads are a program's too, where it is built and the store is a file (`src/usage/counter-mb.ts`,
-  reader `--builder usage-counter`, `mb/src/usagecount`: the transcripts read and their calls written there, Node only
-  told what changed; started at a read, let go idle); `STILLFAIL_USAGE_COUNTER_MB=0` and a store in memory read in
-  `src/usage/counter.ts`, which the program's reads are compared with (`test/mb-usage-counter.test.ts`).
+  usage counter's reads are a program's too (`src/usage/counter-mb.ts`, reader `--builder usage-counter`,
+  `mb/src/usagecount`: the transcripts read and their calls written there, Node only told what changed; started at a
+  read, let go idle), with no reading in TypeScript to fall back to: the one it replaced is the tests' only, which
+  the program's reads are compared with (`test/mb-usage-counter.test.ts`).
 - Runtimes are drivers behind one seam (`src/agents/runtime.ts`): Claude Code a `claude -p` process per session;
   Codex one app-server per account, a thread per session, whose per-session settings go in `thread/start`'s config,
   never the process's environment; the others in `src/agents/`. A driver owns its child's stdin. Claude Code's output
-  is read by the MoonBit program (`src/agents/mb-agents.ts`, `mb/src/reader/agents.mbt`, its frames `mb/src/claude`)
-  where it is built, off the station's thread: Node starts and ends the processes and is told the events, each line
+  is read by the MoonBit program (`src/agents/mb-agents.ts`, `mb/src/reader/agents.mbt`, its frames `mb/src/claude`),
+  off the station's thread: Node starts and ends the processes and is told the events, each line
   acknowledged to its runner once Node took them; a handover holds its reading first (`freeze`, hub.ts `handOver`).
   A Claude session's events go to its actor in the program itself: Node is told each batch, takes what its own parts
   need (a token's renewal, a turn's outcome) and says it taken (`routed`, mb-actor.ts `#took`), and the
   program gives the actor and the live view the batch it kept; `test/hub-e2e.test.ts` holds that none goes through Node.
   A Codex app-server's output is read there too, its lines given Node whole but for its diffs (`turn/diff/updated`,
-  of which the station keeps nothing). One program for every driver and the actors, running while one of them uses it.
-  `test/claude-here.test.ts` and `test/codex-here.test.ts` run the drivers' tests with it read here, as where the
-  program is not.
+  of which the station keeps nothing). One program for every driver and the actors, running while one of them uses it,
+  on every system a station runs on (a Windows runner's named pipe opened by the shell as its socket): there is no
+  reading of Claude Code's or Codex's output in TypeScript to fall back to, as there is no actor.
 - Their tools are the station's MCP endpoint (`src/tools/`, HTTP on 127.0.0.1, a bearer token per session). What they
   read of how to work is `src/agents/instructions.ts` and the skills in `src/skills/`. A change to the instructions, a
   tool's parameters or its rules adds a note at the end of `src/agents/migrations.ts` (the next number, a sentence),

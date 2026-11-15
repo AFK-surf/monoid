@@ -1160,6 +1160,40 @@ test("the host's skills are found off the station's thread", async () => {
   assert.deepEqual(await hostSkillsOff(join(root, "nowhere")), []);
 });
 
+// A walk of a tree the station does not own (station/AGENTS.md, walkBounded): links into one another end at the first
+// real folder, a clone's or an environment's insides are not gone into, and a tree too big is cut at its bound.
+test("the host's skills are walked bounded: links round in a ring end, node_modules is left out, too many entries cut it", async () => {
+  const root = tempDir(join(tmpdir(), "cx-skills-bounded-"));
+  mkdirSync(join(root, "a"));
+  mkdirSync(join(root, "b"));
+  writeFileSync(join(root, "a", "SKILL.md"), "");
+  writeFileSync(join(root, "b", "SKILL.md"), "");
+  // a → b → a: followed without a ring's end it would go round to its depth, each folder again under a longer path.
+  symlinkSync(join(root, "b"), join(root, "a", "to-b"), "junction");
+  symlinkSync(join(root, "a"), join(root, "b", "to-a"), "junction");
+  for (const left of ["node_modules", ".git", ".venv"]) {
+    mkdirSync(join(root, "a", left, "pkg"), { recursive: true });
+    writeFileSync(join(root, "a", left, "pkg", "SKILL.md"), "");
+  }
+  // A link to a file named SKILL.md is a skill as the file it names.
+  const elsewhere = tempDir(join(tmpdir(), "cx-skill-file-"));
+  writeFileSync(join(elsewhere, "SKILL.md"), "");
+  mkdirSync(join(root, "c"));
+  symlinkSync(join(elsewhere, "SKILL.md"), join(root, "c", "SKILL.md"), "file");
+  const off = (await hostSkillsOff(root)).map((s) => s.path);
+  assert.deepEqual(off, [join(root, "a", "SKILL.md"), join(root, "b", "SKILL.md"), join(root, "c", "SKILL.md")]);
+
+  const many = tempDir(join(tmpdir(), "cx-skills-many-"));
+  for (let i = 0; i < 40; i++) {
+    mkdirSync(join(many, `s${String(i).padStart(2, "0")}`));
+    writeFileSync(join(many, `s${String(i).padStart(2, "0")}`, "SKILL.md"), "");
+  }
+  // The root, its 40 folders, then 9 of their SKILL.md: what was found before the bound is what is turned off.
+  const cut = await hostSkillsOff(many, { maxEntries: 50 });
+  assert.equal(cut.length, 9);
+  assert.equal((await hostSkillsOff(many)).length, 40);
+});
+
 describe("the Codex driver under the station's variables", () => {
   test("the station's variables for its agents: an app-server starts with them, again once idle when they change; a profile's own win", async (t) => {
     t.after(() => readAgentEnvFrom(() => null));
