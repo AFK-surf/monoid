@@ -83,7 +83,7 @@
 
 - One actor per session: every change to its state, runtime events, deliveries and what its tools say, goes through its
   serial queue. Input is a prompt when idle, a steer during a turn, else queued. The actors run in the MoonBit program
-  (`mb/src/reader/actors.mbt`, `actor_run.mbt`; reader `--actors`), the hub holding a shell of each
+  (`mb/src/reader/actors.mbt`, `actor_run.mbt`; reader `--sessions`, one program with the agents' output, `src/agents/mb-program.ts`), the hub holding a shell of each
   (`src/sessions/mb-actor.ts`) that answers what the program asks of the station (the store, the drivers, the chats,
   the words, all shared with `src/sessions/actor.ts`) and reads at once what it last told of each. What of the store
   it reads and writes most (its turns, running, its session's row) it does itself on the station's database
@@ -98,7 +98,7 @@
   where it is built, off the station's thread: Node starts and ends the processes and is told the events, each line
   acknowledged to its runner once Node took them; a handover holds its reading first (`freeze`, hub.ts `handOver`).
   A Codex app-server's output is read there too, its lines given Node whole but for its diffs (`turn/diff/updated`,
-  of which the station keeps nothing). One program for every driver, running while it has a process to read.
+  of which the station keeps nothing). One program for every driver and the actors, running while one of them uses it.
   `test/claude-here.test.ts` and `test/codex-here.test.ts` run the drivers' tests with it read here, as where the
   program is not.
 - Their tools are the station's MCP endpoint (`src/tools/`, HTTP on 127.0.0.1, a bearer token per session). What they

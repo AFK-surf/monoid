@@ -1,4 +1,4 @@
-// The sessions' actors run in the MoonBit program (station/mb's reader `--actors`, mb/src/reader/actors.mbt and
+// The sessions' actors run in the MoonBit program (station/mb's reader `--sessions`, mb/src/reader/actors.mbt and
 // actor_run.mbt): each session's state and its serial queue are there, as actor.ts keeps them here where the program is
 // not (a checkout without it, Windows; STILLFAIL_ACTORS_HOST=0). This is what the hub holds of each (`MbActor`, with
 // SessionActor's methods): what it is asked it says to the program (`call`, answered `returned`), with its runtime
@@ -10,7 +10,8 @@
 import { Clock, Effect, Fiber } from "effect";
 import { log } from "../ops/log.ts";
 import { Said, stationLang } from "../ops/i18n.ts";
-import { MbProcess, mbReaderBinary } from "../read/mb-reader.ts";
+import { SessionsProgram, type ProgramUser } from "../agents/mb-program.ts";
+import { mbReaderBinary } from "../read/mb-reader.ts";
 import { CommandMissing } from "../agents/runner.ts";
 import { modelLimitOf, runtimeLabel, type AgentSession, type RuntimeEvent, type RuntimeKind } from "../agents/runtime.ts";
 import { chars } from "../agents/live.ts";
@@ -47,7 +48,13 @@ type Mirror = {
 
 /// The program, one a hub (`ActorsProgram.open`).
 export class ActorsProgram {
-  readonly #proc: MbProcess;
+  readonly #proc: SessionsProgram;
+  /// What it is to the program (agents/mb-program.ts): the actors' part.
+  readonly #user: ProgramUser = {
+    actors: true,
+    said: (said) => this.#said(said),
+    exited: (code) => this.#lost(code),
+  };
   readonly #clock: Clock.Clock;
   readonly #actors = new Map<string, MbActor>();
   readonly #timers = new Map<number, Fiber.Fiber<void>>();
@@ -65,26 +72,25 @@ export class ActorsProgram {
   private constructor(data: string, clock: Clock.Clock, store: { told(changes: any[]): void; db: any } | null) {
     this.#clock = clock;
     this.#store = store;
-    this.#proc = new MbProcess(mbReaderBinary()!, ["--actors", "1", "--data", data]);
     // (it ends with its hub, which closes it: the process waits on it only while it has something going)
-    this.#proc.ref(false);
-    this.#proc.on("message", (said: Json) => this.#said(said));
-    this.#proc.on("error", (error: Error) => log.error("session", "the program running the sessions failed", { error: error.message }));
-    this.#proc.on("exit", (code: number) => {
-      const lost = !this.#closed;
-      this.#ended();
-      if (!lost) return;
-      // Its sessions' state went with it: the station ends as in a crash, and the next takes up their runners and resumes
-      // their turns (hub.ts `takeUp`, `recover`), as it would have of this one's.
-      log.error("session", "the program running the sessions ended; the station ends with it, as in a crash", { code });
-      process.exit(70);
-    });
+    this.#proc = SessionsProgram.of(data, true)!;
+    this.#proc.use(this.#user);
     programs.add(this);
     endAll();
     // Where the station's database is, for what of the store an actor reads and writes itself (actor_store.mbt); one in
-    // memory (a test's) is this process's alone, asked as the rest is.
+    // memory (a test's) is this process's alone, asked as the rest is. Said first: the program's actors begin here.
     const main = store === null ? undefined : (store.db.prepare("PRAGMA database_list").all() as { name: string; file: string }[]).find((d) => d.name === "main");
-    if (main !== undefined && main.file !== "") this.post({ db: main.file });
+    this.post({ db: main !== undefined && main.file !== "" ? main.file : null });
+  }
+
+  #lost(code: number) {
+    const lost = !this.#closed;
+    this.#ended();
+    if (!lost) return;
+    // Its sessions' state went with it: the station ends as in a crash, and the next takes up their runners and resumes
+    // their turns (hub.ts `takeUp`, `recover`), as it would have of this one's.
+    log.error("session", "the program running the sessions ended; the station ends with it, as in a crash", { code });
+    process.exit(70);
   }
 
   /// Ends it at once (the station's process ends).
@@ -122,7 +128,7 @@ export class ActorsProgram {
     if (this.#closed) return false;
     this.#sent++;
     if (TRACE) process.stderr.write(`actors < ${JSON.stringify(message).slice(0, 400)}\n`);
-    this.#proc.postMessage({ ...message, now: this.now() });
+    this.#proc.post({ ...message, now: this.now() });
     this.#held();
     return true;
   }
@@ -133,7 +139,7 @@ export class ActorsProgram {
     const on = this.busy() || this.#calls.size > 0;
     if (on === this.#refd || this.#closed) return;
     this.#refd = on;
-    this.#proc.ref(on);
+    this.#proc.hold(this.#user, on);
   }
 
   /// Asks it `method` of actor `key`: what it answers (null where it is gone).
@@ -228,7 +234,7 @@ export class ActorsProgram {
   async close() {
     if (this.#closed) return;
     this.#ended();
-    await this.#proc.terminate();
+    await this.#proc.release(this.#user);
   }
 }
 

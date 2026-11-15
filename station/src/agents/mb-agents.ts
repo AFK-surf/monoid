@@ -1,4 +1,4 @@
-// Claude Code processes read by the MoonBit program (station/mb's reader `--agents`, mb/src/reader/agents.mbt), not
+// Claude Code processes read by the MoonBit program (station/mb's reader `--sessions`, mb/src/reader/agents.mbt; agents/mb-program.ts), not
 // on the station's thread: the program attaches to each process's runner, reads its stream-json and says what it comes
 // to (the runtime's events, where the turn stands, up to where it read), which this hands the session and acknowledges
 // once handed, the line then acknowledged to the runner. A process is started and ended here as process.ts does it;
@@ -6,7 +6,8 @@
 // a pipe; a checkout without the program; STILLFAIL_AGENTS_HOST=0) leaves the drivers reading as before.
 import { log } from "../ops/log.ts";
 import { wall } from "../ops/fibers.ts";
-import { MbProcess, mbReaderBinary } from "../read/mb-reader.ts";
+import { mbReaderBinary } from "../read/mb-reader.ts";
+import { SessionsProgram, type ProgramUser } from "./mb-program.ts";
 import { platform } from "../platform/index.ts";
 import { describeExit, endRunner, groupAlive } from "./process.ts";
 import { leave, listening, startRunner, type RunnerInfo } from "./runner.ts";
@@ -40,7 +41,13 @@ const sleep = wall.sleep;
 
 export class AgentsHost {
   readonly #data: string;
-  #proc: MbProcess | null = null;
+  #proc: SessionsProgram | null = null;
+  /// What it is to the program (mb-program.ts): the agents' part.
+  readonly #user: ProgramUser = {
+    actors: false,
+    said: (said) => this.#said(said),
+    exited: (code) => this.#exited(code),
+  };
   #next = 0;
   readonly #sessions = new Map<number, HostedProcess>();
   readonly #freezes = new Map<number, (states: Record<string, { turn: Json; live: Json }>) => void>();
@@ -69,29 +76,27 @@ export class AgentsHost {
   }
 
   /// The program, started if it is not running: what is said to it before it is ready waits in its stdin.
-  #ensure(): MbProcess {
-    if (this.#proc) return this.#proc;
-    const proc = new MbProcess(mbReaderBinary()!, ["--agents", "1", "--data", this.#data]);
+  #ensure(): SessionsProgram {
+    if (this.#proc && !this.#proc.ended) return this.#proc;
+    const proc = SessionsProgram.of(this.#data)!;
     this.#proc = proc;
-    proc.postMessage({ wall: wall.now() });
-    proc.on("message", (said: Json) => {
-      if (said?.ready !== true) this.#said(said);
-    });
-    proc.on("error", (error: Error) => log.warn("agents", "the program reading agents failed", { error: error.message }));
-    proc.on("exit", (code: number) => {
-      // (ended here: it had nothing left to read, or the drivers are gone)
-      if (this.#closed || this.#proc !== proc) return;
-      log.warn("agents", "the program reading agents ended; starting it again", { code });
-      this.#proc = null;
-      // (each process read again from where it was acknowledged, the turn as its session knows it)
-      const again = [...this.#sessions.values()];
-      // timer: a retry after a failure, with a backoff (one that keeps ending is started again each second at most)
-      wall.after(1_000, () => {
-        if (this.#closed) return;
-        for (const p of again) if (!p.gone) this.attach(p);
-      });
-    });
+    proc.use(this.#user);
+    proc.post({ wall: wall.now() });
     return proc;
+  }
+
+  #exited(code: number) {
+    // (ended here: it had nothing left to read, or the drivers are gone)
+    if (this.#closed) return;
+    log.warn("agents", "the program reading agents ended; starting it again", { code });
+    this.#proc = null;
+    // (each process read again from where it was acknowledged, the turn as its session knows it)
+    const again = [...this.#sessions.values()];
+    // timer: a retry after a failure, with a backoff (one that keeps ending is started again each second at most)
+    wall.after(1_000, () => {
+      if (this.#closed) return;
+      for (const p of again) if (!p.gone) this.attach(p);
+    });
   }
 
   #said(said: Json) {
@@ -124,12 +129,12 @@ export class AgentsHost {
   }
 
   post(message: Json) {
-    this.#proc?.postMessage(message);
+    this.#proc?.post(message);
   }
 
   /// Reads `p`'s process (again, after the program started again: from where it was acknowledged).
   attach(p: HostedProcess) {
-    this.#ensure();
+    this.#ensure().hold(this.#user, true);
     this.#sessions.set(p.n, p);
     this.post({ attach: p.n, socket: p.info.socket, turn: p.turnNow(), live: p.liveNow(), kind: p.kind });
   }
@@ -144,7 +149,7 @@ export class AgentsHost {
     if (this.#sessions.size === 0 && this.#proc !== null) {
       const proc = this.#proc;
       this.#proc = null;
-      void proc.terminate();
+      void proc.release(this.#user);
     }
   }
 
@@ -175,7 +180,9 @@ export class AgentsHost {
     if (this.#users.size > 0 || this.#closed) return;
     this.#closed = true;
     if (AgentsHost.#shared.get(this.#data) === this) AgentsHost.#shared.delete(this.#data);
-    await this.#proc?.terminate();
+    const proc = this.#proc;
+    this.#proc = null;
+    await proc?.release(this.#user);
   }
 }
 

@@ -6,11 +6,9 @@ import {
 }
 
 // Values
-pub async fn serve_actors(@host.Host) -> Unit
-
-pub async fn serve_agents(@host.Host) -> Unit
-
 pub async fn serve_reads(@host.Host, Reader, String) -> Unit
+
+pub async fn serve_sessions(@host.Host) -> Unit
 
 // Errors
 type Asked

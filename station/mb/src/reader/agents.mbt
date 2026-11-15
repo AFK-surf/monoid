@@ -1,4 +1,4 @@
-// The Claude Code processes' output read here, not by the station's Node (`--agents`): Node starts each process under
+// The Claude Code processes' output read here, not by the station's Node (`--sessions`): Node starts each process under
 // its runner (station/src/agents/runner.ts) and tells this program to attach to the runner's socket, which it reads as
 // station/src/agents/runner.ts `RunnerConnection` does (its messages a line of JSON each, stdout and stderr in base64,
 // from where the last station acknowledged). Each line of stdout is a frame of Claude Code's stream-json, which it
@@ -69,13 +69,9 @@ fn Agents::now(self : Agents) -> Double {
 }
 
 ///|
-pub async fn serve_agents(host : @host.Host) -> Unit {
-  let a : Agents = { host, sessions: Map([]), wall: 0.0, at: @host.now() }
-  host.say(({ "ready": true } : Json).stringify())
-  while host.line() is Some(line) {
-    a.told(line)
-  }
-  @host.exit(0)
+///|
+fn Agents::new(host : @host.Host) -> Agents {
+  { host, sessions: Map([]), wall: 0.0, at: @host.now() }
 }
 
 ///|
