@@ -17,7 +17,7 @@ import { claudeProject } from "../src/read/transcript.ts";
 import { type CarryIndex, type Gathered, gatherSoon, inProgram, placeSoon, previewSoon, sizesSoon } from "../src/replica/carry.ts";
 import { Store } from "../src/store/store.ts";
 import { gather, linesOf, place, preview, sizes } from "./carry-reference.ts";
-import { HOME, OTHER, chat, dataDir, station } from "./replica-fakes.ts";
+import { HOME, OTHER, chat, dataDir as madeDir, station as madeStation } from "./replica-fakes.ts";
 
 const binary = mbReaderBinary();
 const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : false;
@@ -37,6 +37,20 @@ process.on("exit", (code) => {
     .map((h) => (h.constructor?.name === "ChildProcess" ? `ChildProcess ${h.pid} ${(h.spawnargs ?? []).join(" ").slice(0, 120)}` : (h.constructor?.name ?? "?")));
   endSaid(`exit ${code} (exitCode ${process.exitCode ?? "unset"}), program ${binary ?? "none"}, held: ${held.join(", ") || "nothing"}`);
 });
+// What this file makes on the disk, each directory, so that its last test holds that nothing of it is left its station
+// could not remove (CI's Linux slice, 0ece7318d1: setup-env.mjs's exit hook failed removing the run's directory, a
+// directory of no permission left in it).
+const mine: string[] = [];
+const dataDir = (name?: string) => {
+  const dir = madeDir(name);
+  mine.push(dir);
+  return dir;
+};
+const station = (...args: Parameters<typeof madeStation>) => {
+  const made = madeStation(...args);
+  mine.push(made.data);
+  return made;
+};
 // (a bundle made twice of the same commits is the same bytes only when git packs it on one thread)
 Object.assign(process.env, { GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "pack.threads", GIT_CONFIG_VALUE_0: "1" });
 const gitEnv = () => ({ ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@x", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@x", GIT_CONFIG_NOSYSTEM: "1", HOME: dataDir("gh") });
@@ -314,6 +328,9 @@ test("the program sizes what the worker thread's walk would gather (move/sizes.t
     const places = ref.map((x) => ({ key: x.key, room: x.room, transcripts: x.transcripts }));
     assert.deepEqual(await sizesSoon(data, "", [], { most, places }), sizes(data, "", [], { most, places }), "the same, by places");
   }
+  // (what the world closed opened again, as the other tests do)
+  chmodSync(join(wsOf2(data, "chat:a"), "closed"), 0o755);
+  chmodSync(join(wsOf2(data, "chat:a"), "secret.txt"), 0o644);
 });
 
 test("the program gathers a chat handed over alone, another workspace's, and counts a preview as the worker thread did", { skip }, async () => {
@@ -403,4 +420,18 @@ test("a gathering called off is answered at once, its program ended; one called 
   assert.equal(programs(), 0, "the program called off has ended as it is answered");
   await gatherSoon(made.data, made.db, HOME, true, dataDir("scratch-2"));
   assert.equal(programs(), 0, "the program that answered has ended as its answer is given");
+});
+
+test("nothing this file made is left that its station could not remove: every directory open to its owner", () => {
+  // (a directory its owner cannot write or search keeps what is in it: Linux's rm of the run's directory failed on
+  // one, the fixture's `closed` left at 0 by a test; a room placed so could not be dropped or deleted either)
+  const closed: string[] = [];
+  const walk = (dir: string) => {
+    const st = lstatSync(dir);
+    if (!st.isDirectory()) return;
+    if ((st.mode & 0o700) !== 0o700) return void closed.push(`${dir} (${(st.mode & 0o777).toString(8)})`);
+    for (const name of readdirSync(dir)) walk(join(dir, name));
+  };
+  for (const dir of mine) if (existsSync(dir)) walk(dir);
+  assert.deepEqual(closed, [], "every directory this file made open to its owner");
 });
