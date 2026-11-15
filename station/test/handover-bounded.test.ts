@@ -110,7 +110,9 @@ async function lookedWith(n: number): Promise<{ start: number; there: Looked; ba
   const aloneRead0 = a.jobsRead;
   const alonePlan0 = planRead;
   const alone = counting(join(a.rig.dir, "move"), plans);
-  assert.equal((await a.moves.scheduler.move(WS, B, { module: "jobs", item: `${lone}#dev` })).failed, null);
+  // (asked of the jobs' part itself: a plan lists a job up here only while its chat is here, the job of a chat away
+  // being one kept here, so a job up here of a chat there is moved by the module as the scheduler would move it)
+  await a.moves.jobs.move({ module: "jobs", id: `${lone}#dev`, label: "dev", needs: [{ module: "chats", id: lone }] }, B);
   await w.quiet();
   const aloneCost = alone.stop();
   const aloneRead = a.jobsRead - aloneRead0 - (planRead - alonePlan0);

@@ -1115,15 +1115,16 @@ async function tripWith(n: number, kind: "lent" | "stopped"): Promise<Cost & { s
   const looked0 = a.moves.scheduler.stoppedLooked();
   const trip = counting(join(a.rig.dir, "move"), [a.moves.scheduler, b.moves.scheduler]);
   if (kind === "lent") {
-    // A second chat of the login there (lent for it too) and back (taken off what it is lent for, the login still lent).
-    assert.equal((await a.moves.scheduler.move(WS, B, { module: "chats", item: two.key, withNeeds: true })).failed, null);
+    // The chat it was lent for back (taken off what the login is lent for, the login still lent for the others).
+    const back = await a.moves.scheduler.back(WS, B, { module: "chats", item: one.key });
     await quiet();
-    assert.equal((await a.moves.scheduler.back(WS, B, { module: "chats", item: two.key })).failed, null);
-    await quiet();
+    assert.equal(back.failed, null, JSON.stringify(back));
+    void two;
   } else {
     // A chat there with its login, back alone: it arrives stopped, waiting for its login there; the login back: it goes on.
-    assert.equal((await a.moves.scheduler.move(WS, B, { module: "chats", item: two.key, withNeeds: true })).failed, null);
+    const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: two.key, withNeeds: true });
     await quiet();
+    assert.deepEqual([out.failed, out.refused], [null, []], JSON.stringify(out));
     const back = await a.moves.scheduler.back(WS, B, { module: "chats", item: two.key });
     await quiet();
     assert.deepEqual(back.stopped.map((x) => x.item.id), [two.key], "arrived stopped");
