@@ -390,8 +390,13 @@ pub fn open_fixture_mode(mode : String) -> Unit {
 /// The app as src/sffix starts it for `mode`, for a Tester made next (screens_wbtest.mbt): the app as at the start (reset:
 /// whatever ran before in the process), the made-up source of the mode and what it opens before the first frame
 /// (open_fixture_mode). The Tester keeps it as it starts (reset by hand).
-pub fn fixture_app(mode : String) -> Source {
+pub fn fixture_app(mode : String, chat_nodes? : Bool = false) -> Source {
   reset()
+  // (the chat's page made as nodes, as one who turned 外观's 试用新对话页 on has it: said before the mode opens a chat,
+  // which is made as the choice stands then)
+  if chat_nodes {
+    @sfbase.chat_page_nodes.set(true)
+  }
   let src = @sffixture.fixture(mode)
   open_fixture_over(mode, src)
   src
@@ -673,11 +678,22 @@ pub fn open_mode(mode : String) -> Unit {
     // the profiles' place with Willow's own Codex login offered with its allowance (settings-profiles-offer's)
     @settings.fixture_page("settings-profiles-offer") |> ignore
     app.nav.replace(Place("profiles"))
-  } else if mode == "terminal" || mode == "terminal-taken" {
-    // one of its terminals: typed into here (terminal), or by someone else, its 接管 over it (terminal-taken)
-    // (over Willow's page, as it is opened from there)
+  } else if mode == "terminal" || mode.has_prefix("terminal-") {
+    // one of its terminals: typed into here (terminal, terminal-kb, terminal-keys, terminal-center), by someone else
+    // with 接管 over it (terminal-taken), or ended with 重新打开 (terminal-ended)
+    match mode {
+      "terminal-kb" => @sfpages.terminal_fixture_ask("kb")
+      "terminal-keys" => @sfpages.terminal_fixture_ask("keys")
+      "terminal-center" => @sfpages.terminal_fixture_ask("center")
+      _ => ()
+    }
+    let tid = match mode {
+      "terminal-taken" => "term-1"
+      "terminal-ended" => "term-ended"
+      _ => "term-2"
+    }
     open_setting("station:ws1/st1")
-    app.nav.push(Terminal({ station: "ws1/st1", terminal: if mode == "terminal" { "term-2" } else { "term-1" }, watch: false, cwd: "" }))
+    app.nav.push(Terminal({ station: "ws1/st1", terminal: tid, watch: false, cwd: "" }))
   } else if mode.has_prefix("place-") {
     // a place of the rail's in the wide frame: place-stations, place-profiles, place-connects,
     // place-usage

@@ -76,6 +76,16 @@ async fn Actors::called(self : Actors, a : Actor, method : String, args : Array[
         }
       })
     }
+    // A post with no state after all_done or need_human in the same turn: it goes on, so that end no longer stands
+    // (instructions.ts: a post that says what you do next means you go on doing it now).
+    "goesOn" =>
+      self.enqueue(a, async fn() {
+        guard a.turn is Some(t) && t.declared is Some(d) else { return }
+        guard kind_of(Some(d)) is Some("all_done" | "need_help") else { return }
+        self.log(a, "info", "a post after the turn said it ended goes on: that state no longer stands", fields={ "was": d.value("kind").unwrap_or(Json::null()) })
+        t.declared = None
+        self.declare_turn(a, t.id, None)
+      })
     "stateForTurn" => return self.state_for_turn(a, args)
     "toolsAt" => {
       let url = str_of(Some(arg(0))).unwrap_or("")

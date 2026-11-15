@@ -252,16 +252,22 @@ describe("remote", { concurrency: true }, () => {
     await writeJson(record, { ...readJson(record), seen: now - IDLE_MS - 1000 });
     writeFileSync(join(work, "keep"), "the session's work");
 
-    const remote = r.remote as unknown as { tasksOf: (...args: [string, string, string]) => Promise<unknown[]> };
-    const tasksOf = remote.tasksOf.bind(r.remote);
+    // The sweep is the program's: held once it read the room's use, before it reads its tasks and closes it.
+    const remote = r.remote as unknown as { asked(f: string, args: Json[]): Promise<Json> };
+    const asked = remote.asked.bind(r.remote);
     let entered!: () => void;
     let release!: () => void;
     const reading = new Promise<void>((resolve) => (entered = resolve));
     const held = new Promise<void>((resolve) => (release = resolve));
-    remote.tasksOf = async (...args) => {
-      entered();
-      await held;
-      return tasksOf(...args);
+    let first = true;
+    remote.asked = async (f, args) => {
+      const answer = await asked(f, args);
+      if (f === "node.seenAt" && first) {
+        first = false;
+        entered();
+        await held;
+      }
+      return answer;
     };
     const sweeping = r.remote.sweep(now);
     await reading;
@@ -564,10 +570,12 @@ describe("remote", { concurrency: true }, () => {
     const r = station();
     let release!: () => void;
     const released = new Promise<void>((resolve) => (release = resolve));
-    const stop = r.jobs.stop.bind(r.jobs);
-    r.jobs.stop = async (id: string) => {
-      await released;
-      return stop(id);
+    // The stop is the program's: held where it asks Node to signal the task's group.
+    const jobs = r.jobs as unknown as { asked(f: string, args: Json[]): Promise<Json> };
+    const asked = jobs.asked.bind(jobs);
+    jobs.asked = async (f, args) => {
+      if (f === "node.signal") await released;
+      return asked(f, args);
     };
     await callAs(r, "s", "long", "task.prepare", { spec: { command: FOREVER } });
     await callAs(r, "s", "long", "task.start");

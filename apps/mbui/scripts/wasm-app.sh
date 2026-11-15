@@ -200,7 +200,7 @@ fi
 bash "$D/core.sh" apple-native aarch64-apple-darwin > "$O/core.log" 2>&1 || { cat "$O/core.log"; exit 1; }
 moon_root=${MOON_HOME:-$(dirname "$(dirname "$(command -v moon)")")}
 host_c=$(ls $H/apple_*.m $H/mac_app.m)
-stubs="src/core/core_native.c src/sfreplay/trace_files.c src/stillfail/core_engine.m"
+stubs="src/core/core_native.c src/sfreplay/trace_files.c src/stillfail/core_engine.m src/stillfail/terminal_ghostty.c"
 shell_src=$(cat $host_c $H/*.h $H/wasm_shell.c "$O/thunks.c" $stubs "$moon_root/lib/runtime/runtime.c" "$moon_root/include/moonbit.h" \
   out/core/aarch64-apple-darwin/*.a "$WT/lib/libwasmtime.dylib" "$0" | cksum)
 if [ ! -x "$O/shell" ] || [ "$(cat "$O/shell.src" 2>/dev/null)" != "$shell_src" ]; then
@@ -211,7 +211,7 @@ if [ ! -x "$O/shell" ] || [ "$(cat "$O/shell.src" 2>/dev/null)" != "$shell_src" 
   pids=()
   for f in $host_c $H/wasm_shell.c "$O/thunks.c" $stubs "$moon_root/lib/runtime/runtime.c"; do
     obj=$O/obj/$(echo "$f" | tr '/.' '__').o
-    flags="-O2 -I$moon_root/include -I$WT/include -I$H"
+    flags="-O2 -I$moon_root/include -I$WT/include -I$H -Iout/core/ghostty-vt/include"
     case "$f" in *.m) flags="$flags -fobjc-arc -fblocks" ;; esac
     clang $flags -c "$f" -o "$obj" &
     pids+=($!)
@@ -224,7 +224,7 @@ if [ ! -x "$O/shell" ] || [ "$(cat "$O/shell.src" 2>/dev/null)" != "$shell_src" 
     -framework AuthenticationServices -framework SystemConfiguration -framework Security -framework LocalAuthentication \
     -framework CoreFoundation -framework Foundation -liconv \
     out/core/aarch64-apple-darwin/libmbui_core.a out/core/aarch64-apple-darwin/libstillfail_shell.a \
-    -Fout/core/hermes/Library/Frameworks/macosx -framework hermes -lc++ \
+    out/core/aarch64-apple-darwin/libghostty-vt.a -Fout/core/hermes/Library/Frameworks/macosx -framework hermes -lc++ \
     -Wl,-rpath,"$A/out/core/hermes/Library/Frameworks/macosx"
   echo "$shell_src" > "$O/shell.src"
   echo "wasm-app: the shell in $((SECONDS - t0)) s"

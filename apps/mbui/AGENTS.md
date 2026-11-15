@@ -54,7 +54,9 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
   line, aligned with it, never centred on the block's height (the user, 2026-11-14: 「不应该一个图标或者一行内容跟多行做
   垂直居中对齐」, said before). mbui's `Tester::first_line_faults` holds an icon, a mark and a chevron to it on every
   screen (corners_wbtest.mbt), what broke it then counted in `corners_first_line_known`, only falling; a one-line part
-  is not checked yet.
+  is not checked yet. Under a line that leads with a mark and its words, each line starts where the mark does or where
+  those words do, never between (2026-11-15, a profile's row: 「感觉这个对齐有点问题」): mbui's
+  `Tester::line_start_faults`, on every screen the same way, counted in `corners_line_start_known`.
 
 - A named style (a top-level `let`, and a `.then(…)` of one) whose properties are all tokens and numbers is written
   as its text, `@ui.css("w=Full px=S2 hovered{bg=Hover}")`; `@ui.style(…)` is for one that names a variable or is
@@ -274,11 +276,14 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
   out of them; without `MBUI_CONNECT_ROWS` one connect and its choice's sessions are read out of the run's `connects
   {scope, mine:false}`, without `MBUI_PROFILE_ROWS` the accounts' rows and one account out of the run's `profiles
   {scope}` (`src/sfreplay/source.mbt`).
-- For development stills, prepare a `scripts/media-job.sh picture` job for each source state and reuse its Wasm
-  renderer across scenes; use a `film` job for video (`scripts/media-job.sh` says how). A renderer not published is
-  built on the build station by `scripts/media-dev-build.sh KEY INBOX "" mbui-film-wasm` (the job's `runtime.key`),
-  in a station task's mirror as it is: no `.git`, no `MBUI_TOOLS` needed. Never the native `sffix` (`scripts/mac.sh`)
-  for a still: it compiles the whole framework's C, 45-90 s a build against the Wasm renderer's 10-20 s (2026-11-14).
+- Stills and video for people come after the code logic is read and changed. Prepare a `scripts/media-job.sh picture`
+  job for each source state and reuse its Wasm renderer across scenes; use a `film` job for video
+  (`scripts/media-job.sh` says how). A renderer not published is built on the build station by
+  `scripts/media-dev-build.sh KEY INBOX "" mbui-film-wasm` (the job's `runtime.key`), in a station task's mirror as it
+  is: no `.git`, no `MBUI_TOOLS` needed. Never the native `sffix` (`scripts/mac.sh`) for a still: it compiles the
+  whole framework's C, 45-90 s a build against the Wasm renderer's 10-20 s (2026-11-14).
+- A proposal or mock-up of this app's UI is real mbui code (a view, `src/sffixture`) rendered as above, never HTML or
+  CSS.
 - A picture says what every rule finds in the frame it drew (`rules:` lines, `Tester::audit`), after it is written. One
   made for people is drawn at 3 (`MBUI_FILM_SCALE=3`; the user, 2026-11-14), at rest (not a way's middle frame), in
   the state asked about (a menu or panel open where that is the change), and is sent with none of those lines that its

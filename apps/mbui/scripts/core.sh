@@ -458,7 +458,27 @@ APPLE_ENTRY=$ROOT/core/hermes.ts
 apple_native() {
   local target=${1:-aarch64-apple-darwin}
   engine $target || return 1
-  shell_prebuilt $target || [ -f $OUT/$target/libstillfail_shell.a ] || shell $target
+  shell_prebuilt $target || [ -f $OUT/$target/libstillfail_shell.a ] || shell $target || return 1
+  ghostty_vt $target
+}
+
+# libghostty-vt for TARGET (the app's terminals: src/stillfail/terminal_ghostty.c), still.fail's natives by its key
+# (prebuilt by hand, scripts/native.ts's ghostty-vt): its library in out/core/TARGET beside the engine's, its headers
+# (the same for every target) in out/core/ghostty-vt/include, each copied only when it differs. The app's link takes
+# the library; its C finds the headers there.
+ghostty_vt() {
+  local t dir g=$OUT/ghostty-vt
+  case $1 in
+    aarch64-apple-darwin) t=darwin-arm64 ;;
+    aarch64-apple-ios) t=ios-arm64 ;;
+    aarch64-apple-ios-sim) t=ios-sim-arm64 ;;
+    *) return 0 ;;
+  esac
+  dir=$(node "$SF_SRC/scripts/native.ts" path ghostty-vt $t) || return 1
+  mkdir -p $OUT/$1 $g/include
+  cmp -s "$dir/lib/libghostty-vt.a" $OUT/$1/libghostty-vt.a || cp "$dir/lib/libghostty-vt.a" $OUT/$1/ || return 1
+  rsync -a --checksum "$dir/include/" $g/include/ || return 1
+  echo "ghostty-vt $1: still.fail's natives, ghostty-vt $t ($dir)"
 }
 apple() {
   apple_native "${1:-}" || return 1

@@ -220,6 +220,7 @@ pub(open) trait Host {
   st_audio(Self, Int, Bytes) -> Unit = _
   st_audio_played(Self, Int) -> Double = _
   st_audio_queued(Self, Int) -> Double = _
+  st_audio_wanted(Self, Int) -> Double = _
   st_audio_volume(Self, Int, Double) -> Unit = _
   st_frame_shown(Self, Int, Bytes, Int, Double, Int) -> Int = _
   st_flush(Self, Int, Int) -> Unit = _
@@ -3303,6 +3304,9 @@ impl Host with st_audio_played(_, _) { 0.0 }
 impl Host with st_audio_queued(_, _) { 0.0 }
 
 ///|
+impl Host with st_audio_wanted(_, _) { 0.0 }
+
+///|
 impl Host with st_audio_volume(_, _, _) { () }
 
 ///|
@@ -3310,6 +3314,9 @@ fn st_audio_played(id : Int) -> Double { current.val.st_audio_played(id) }
 
 ///|
 fn st_audio_queued(id : Int) -> Double { current.val.st_audio_queued(id) }
+
+///|
+fn st_audio_wanted(id : Int) -> Double { current.val.st_audio_wanted(id) }
 
 ///|
 fn st_audio_volume(id : Int, v : Double) -> Unit { current.val.st_audio_volume(id, v) }

@@ -5,8 +5,8 @@
 //
 // The lines come as JSON: `{"cols":C,"rows":R,"cursor":[x,y,shown],"keys":K,"lines":[[["text",fg,bg,flags],…],…]}`,
 // `fg` and `bg` "#rrggbb" or "" (the terminal's own), `flags` bold 1, italic 2, underline 4, inverse 8, faint 16; `keys`
-// 1 where the program asked for the application cursor keys (DECCKM: an arrow sent as ESC O A, not ESC [ A). A host
-// with no terminal answers none (0) as it opens: the app cannot show one there.
+// 1 where the program asked for the application cursor keys (DECCKM: an arrow sent as ESC O A, not ESC [ A); the
+// cursor's cell, where it shows, comes inverse (its flags' 8 turned: a block where it is). A host with no terminal answers none (0) as it opens: the app cannot show one there.
 
 ///|
 /// A terminal the host keeps.

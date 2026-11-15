@@ -598,6 +598,9 @@ test "the preset's screens keep every rule, on a phone and on a desk" {
 /// holds, which scrolls (panel_centred_node's body). Named by its files and how far, not by their lines: a line moved
 /// in either file by another change is no fault of these screens.
 fn preset_dialog_known(f : String) -> Bool {
+  // (a folder's row of two lines, its icon and its chevron centred on them: the first line's rule, counted in
+  // corners_first_line_known (newchat-preset-new-browse), said here once audit() held that rule too, 2026-11-15)
+  (f.has_prefix("first line: ") && f.contains("「下载 station") && f.contains(" off the first of the 2 lines beside it")) ||
   // (and its field over the folders' rows, under a mouse on a row: the row's ground lit reaches lit_reach past its
   // icon, the field's edge on the icons' as every list's head is (rule 7), so 8 short of the lit ground's at both
   // sides: rule 5, said once the spacing rules measured the window's tree's nodes, 2026-11-14; looked at 2026-11-15,

@@ -2186,10 +2186,27 @@ pub fn fixture(mode : String) -> Source {
         // a visualization's widget kept nothing yet; what it keeps is taken (viz.mbt)
         "widget.state" => done(Ok({ "state": Json::null() }))
         "widget.setState" => done(Ok(Json::object({})))
-        // (how many of a chat's last messages it opens on: its made-up chats are short, each given whole)
-        "chat.window" => done(Ok(Json::null()))
+        // how many of a chat's last messages it opens on, as the core's window (fix_window_of)
+        "chat.window" => {
+          match (fix_session_of(params), field(Some(params), "rows")) {
+            (Some(session), Some(Number(n, ..))) => fix_windows[session] = n.to_int()
+            _ => ()
+          }
+          done(Ok(Json::null()))
+        }
         "chat.older" => {
-          f.older += 1
+          // a chat its window holds less of than the device does grows the window, as the core's does; one given
+          // whole brings a page more of what the device holds (rich_chat's)
+          match fix_session_of(params) {
+            Some(session) if fix_windowed.get(session) is Some(true) => {
+              let rows = match field(Some(params), "rows") {
+                Some(Number(n, ..)) => n.to_int()
+                _ => fix_window_grows
+              }
+              fix_windows[session] = fix_windows.get(session).unwrap_or(0) + rows
+            }
+            _ => f.older += 1
+          }
           f.changed()
           done(Ok(Json::object({})))
         }

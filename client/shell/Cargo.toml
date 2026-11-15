@@ -41,6 +41,7 @@ libcrux-ecdsa = { version = "=0.0.9", default-features = false }
 zstd = { version = "0.13", default-features = false }
 # What the station's programs write and hash (fs.write, fs.hash) and draw at random (crypto.random).
 sha2 = "0.10"
+sha1 = "0.10"
 getrandom = "0.3"
 # A screen view's sound asked as Opus (ScreenTap), decoded here into the PCM every host plays, one decoder for every
 # platform (the hosts' own differ, and Windows may have none). Pure Rust, a port of libopus 1.6: on the Mac's helper's

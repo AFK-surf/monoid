@@ -281,7 +281,7 @@ export class Jobs {
   private exitWatch: FSWatcher | null = null;
   private machine: Machine;
   /// The program they run in, and whether it is theirs alone (no hub gave one).
-  private program: ActorsProgram;
+  readonly program: ActorsProgram;
   private own: boolean;
 
   /// Where this station's sandboxes are found (sessions/agents.ts).

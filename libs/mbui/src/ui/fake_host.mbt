@@ -2058,6 +2058,17 @@ impl @hostapi.Host for FakeHost with st_audio_queued(self, id) {
 }
 
 ///|
+impl @hostapi.Host for FakeHost with st_audio_wanted(self, id) {
+  if !self.audio_here {
+    return 0.0
+  }
+  match self.stream_audio_wanted.get(id) {
+    Some(ms) => ms
+    None => self.stream_audio_wanted.get(0).unwrap_or(0.0)
+  }
+}
+
+///|
 impl @hostapi.Host for FakeHost with st_audio_volume(self, id, v) {
   fake_fed(self, id, "volume \{v}")
 }

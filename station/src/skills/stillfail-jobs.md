@@ -210,4 +210,5 @@ Called again once granted, `phone_use` says how the phone is reached now (its ad
 chats cannot reach). A grant ends when its time is up, when this chat has used the device for nothing for the idle
 time, when its owner takes it back, or when this chat is archived; you are told. Done with a device (what it was asked
 for is finished), hand it back with `done: true`: its port here closes and, for a phone, it is no longer lent for this
-chat and you are no longer told how it comes and goes.
+chat and you are no longer told how it comes and goes. Hand it back only once the whole of that is done: one grant covers its time,
+so do not give it back between steps nor ask for it again for each use.

@@ -22,10 +22,10 @@
 // decodebin, live, where it has a decoder of it; JPEG by gdk-pixbuf).
 //
 // A frame decoded and not shown (`stream_frame_shown`: what a seek decodes up to its picture) and a decoder emptied
-// (`stream_flush`) are Windows' alone so far, as are its sound's clock and volume (`stream_audio_played`, `_queued`,
-// `_volume`). The other hosts that decode take a frame not to be shown as any (decoded, so what comes after it has
-// what it refers to; said "f", which ui's Stream takes as "d" and never shows) and have nothing for the rest; a host
-// with no decoder at all (Host's defaults) does not take one.
+// (`stream_flush`) are Windows' alone so far, as are its sound's clock, reserve and volume (`stream_audio_played`,
+// `_queued`, `_wanted`, `_volume`). The other hosts that decode take a frame not to be shown as any (decoded, so what
+// comes after it has what it refers to; said "f", which ui's Stream takes as "d" and never shows) and have nothing for
+// the rest; a host with no decoder at all (Host's defaults) does not take one.
 
 ///|
 /// What an instance's image (scene.mbt's slot 20) is when it draws a stream: this plus the stream's id (images' own ids
@@ -153,6 +153,12 @@ pub fn stream_audio_played(id : Int) -> Double { st_audio_played(id) }
 /// Milliseconds of stream `id`'s sound queued and not played yet (20 a packet). 0 where there is none, or the host
 /// says none (Windows' alone says it).
 pub fn stream_audio_queued(id : Int) -> Double { st_audio_queued(id) }
+
+///|
+/// Milliseconds of stream `id`'s sound the host's player wants queued before it starts (Windows': 100 ms at first, up
+/// to 300 ms after late packets, coming back to 100 ms once calm; `id` 0: the initial 100 ms before a stream opens).
+/// 0 where the host plays none or says none (Windows' alone says it so far).
+pub fn stream_audio_wanted(id : Int) -> Double { st_audio_wanted(id) }
 
 ///|
 /// Stream `id`'s sound played at volume `v` (1 as it came, 0 silent), from now and for its sound started later too.

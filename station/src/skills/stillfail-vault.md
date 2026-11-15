@@ -57,8 +57,8 @@ station's profiles), or anything the person said not to keep.
     `file` for a file: each command gets it written out where only it reads it, removed when it ends, its path in
     `env` (`KUBECONFIG`, `GOOGLE_APPLICATION_CREDENTIALS`) and `$STILLFAIL_SECRET`.
   - `name`: what a person and the next agent know at a glance: the service and the account or site, and where it is
-    reached when that is not plain (测试服务 admin 登录, GitHub deploy token · AFK-surf/still.fail, UniFi 后台登录态（经
-    Studio 转发到 127.0.0.1:8443）). Never a bare host (`127.0.0.1 登录态`): nobody knows what it was.
+    reached when that is not plain (测试服务 admin 登录, GitHub deploy token · acme/web, 路由器后台登录态（经
+    家里那台 Mac 转发到 127.0.0.1:8443）). Never a bare host (`127.0.0.1 登录态`): nobody knows what it was.
   - `about` (required): what it is for and how it is used, in the person's language: what it opens, the steps to reach it
     (a forward from which station, a tunnel, the page to open), the tool or command that takes it. `secret_list` shows
     it to every agent after you beside the name; never a secret in it.

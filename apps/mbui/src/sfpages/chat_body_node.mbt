@@ -26,7 +26,7 @@ priv struct ChatBodyRow {
   gap : ChatBodyGap
   /// which of its message's blocks it draws (chat_body_pieces): from, up to (not), and whether it is the message's last
   /// piece; none, all of it
-  piece : (Int, Int, Bool)?
+  piece : @sf.MdPiece?
 }
 
 ///|
@@ -177,15 +177,12 @@ fn chat_body_rows(kept : ChatBodyKept, v : ChatView, all : Array[Entry], sending
     match chat_body_pieces(e) {
       // (a long message a block a piece, each a block of the list: made as it comes to show, not all of it in the
       // frame its first line does; the room between two pieces the piece's own, as among its blocks drawn whole)
-      Some(n) => {
-        rows[k] = { entry: e, gap, piece: Some((0, 1, n == 1)) }
-        keys.push(k)
-        for b in 1..<n {
+      Some(ps) =>
+        for b, pc in ps {
           let pk = chat_piece_key(k, b)
-          rows[pk] = { entry: e, gap: NoGap, piece: Some((b, b + 1, b == n - 1)) }
+          rows[pk] = { entry: e, gap: if b == 0 { gap } else { NoGap }, piece: Some(pc) }
           keys.push(pk)
         }
-      }
       None => {
         rows[k] = { entry: e, gap, piece: None }
         keys.push(k)
@@ -231,18 +228,16 @@ fn chat_piece_of(k : String) -> String {
 }
 
 ///|
-/// How many pieces entry `e` is drawn in, a block of the list each (none: one, as ever): an agent's message whose words
-/// the core read as more than one block (sf's markdown_blocks_count), its card in their place none. A long message
+/// The pieces entry `e` is drawn in, a block of the list each (none: one, as ever): an agent's message whose words
+/// the core read as more than one piece (sf's markdown_pieces: a block each, a table a few rows each), its card in
+/// their place none. A long message
 /// made whole as its first line came to show made a frame of hundreds of nodes (a table's, a fling over one: 229 on the
 /// workspace of real size; a phone's hang reports 400 to 600, 2026-11-15).
-fn chat_body_pieces(e : Entry) -> Int? {
+fn chat_body_pieces(e : Entry) -> Array[@sf.MdPiece]? {
   guard e is Said(m) && !m.mine && !m.system && m.author_kind != "person" && agent_card_kind(m) == "" else {
     return None
   }
-  match @sf.markdown_blocks_count(m.text, m.md) {
-    Some(n) if n > 1 => Some(n)
-    _ => None
-  }
+  @sf.markdown_pieces(m.text, m.md)
 }
 
 ///|
@@ -351,6 +346,9 @@ priv struct ChatBodyKeeps {
   /// what holds each piece after the first of a long message, by its message's key, while it is made: whether the
   /// pointer is on one of them, the first's ⋯ shown as it is on the first (agent_said_node's `pieces_pointed`)
   pieces : Map[String, @signals.Signal[Array[@view.View]]]
+  /// what the pieces of each long table scroll across beside, by its message's key and its block (agent_said_node's
+  /// `across_of`): all of them as one
+  tables : Map[String, @view.Scroll]
 }
 
 ///|
@@ -383,7 +381,7 @@ fn chat_body_node(
   lead? : Double = unread_lead,
   scroll? : @view.Scroll = @view.Scroll::list(),
   place? : @view.ListPlace[String] = @view.ListPlace::new(),
-  keeps? : ChatBodyKeeps = { opened: notices_open, copied: @sf.LiveMap::new(), steadies: ActivitySteadies::new(), faces: Map([]), pieces: Map([]) },
+  keeps? : ChatBodyKeeps = { opened: notices_open, copied: @sf.LiveMap::new(), steadies: ActivitySteadies::new(), faces: Map([]), pieces: Map([]), tables: Map([]) },
   made? : (String, @view.View) -> Unit = fn(_, _) {  },
   read? : (@view.ListPlace[String], @view.Scroll, () -> ChatBodyRows) -> Unit = fn(_, _, _) {  },
   to? : ChatRef,
@@ -843,7 +841,17 @@ fn chat_body_row(
       KPerson =>
         more.val = person_said_node(p, src, here, k, side, top, m, found~, found_at~, lit~, share=message_share_of(src, here, m), over~).menu_on
       KAgent =>
-        more.val = agent_said_node(p, src, here, chat_piece_of(k), side, top, m, found~, found_at~, lit~, share=message_share_of(src, here, m), core~, over~, out_of=agent_out_of(keeps.faces, here, m, came), piece=@signals.untracked(row).piece, pieces_pointed=fn() {
+        more.val = agent_said_node(p, src, here, chat_piece_of(k), side, top, m, found~, found_at~, lit~, share=message_share_of(src, here, m), core~, over~, out_of=agent_out_of(keeps.faces, here, m, came), piece=@signals.untracked(row).piece, across_of=fn(b) {
+          let tk = chat_piece_of(k) + "#" + b.to_string()
+          match keeps.tables.get(tk) {
+            Some(s) => s
+            None => {
+              let s = @view.Scroll::across()
+              keeps.tables[tk] = s
+              s
+            }
+          }
+        }, pieces_pointed=fn() {
           chat_pieces_of(keeps.pieces, chat_piece_of(k)).get().iter().any(@sf.hovered_in_node)
         }, piece_made=fn(at) {
           let held = chat_pieces_of(keeps.pieces, chat_piece_of(k))

@@ -20,6 +20,8 @@ struct FakeHost {
   /// how many times the app asked for the host's next frame for what goes on by the clock (h_request_frame_on): owed
   /// no frame at this moment, as a host draws one at its next display frame (Tester::frames_on)
   mut frames_on : Int
+  /// whether its Tester has drawn a frame: its run under way, so a run begun after it is another's (host_let_go)
+  mut drawn : Bool
   /// how many frames a second what moves on by the clock was last said to need (@hostapi.frames_paced), as a host is
   /// told it after the frame it asked for (0: none said since a frame was last asked for: the display's every frame)
   mut paced : Double
@@ -323,9 +325,10 @@ struct FakeHost {
   streams_fed : Map[Int, Array[String]]
   stream_said : Map[Int, Array[String]]
   /// whether it takes a frame not to be shown (Tester::set_stream_hides), and what each stream says of its sound
-  /// (Tester::set_stream_audio_clock: samples played, ms queued)
+  /// (Tester::set_stream_audio_clock: samples played, ms queued; Tester::set_stream_audio_wanted: ms wanted)
   mut stream_hides : Bool
   stream_audio_clock : Map[Int, (Double, Double)]
+  stream_audio_wanted : Map[Int, Double]
   /// the device beyond the window (device.mbt): awake, haptics, the clipboard's picture and reads, the keyboard's height
   dev : FakeDevice
   /// pictures' pixels as the test made them up (Tester::add_pixels), by source; and those of the images loaded from

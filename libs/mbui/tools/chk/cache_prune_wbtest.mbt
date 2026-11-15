@@ -57,3 +57,14 @@ test "only old caches of deleted branches are removed" {
 test "a branch name is one shell argument" {
   assert_eq(shell_arg("can't;$(echo bad)"), "'can'\\''t;$(echo bad)'")
 }
+
+///|
+test "a branch's caches not read for 12 hours go, the default branch's and pull requests' stay" {
+  let h = 3600.0
+  let cache : Cache = { id: "1", key: "k-0123456789abcdef", ref_: "refs/heads/done", size: 5000000L, created: 1.0, accessed: 1.0 }
+  assert_true(idle_branch_cache(cache, "refs/heads/main", 1.0 + 12.0 * h))
+  assert_false(idle_branch_cache(cache, "refs/heads/main", 12.0 * h))
+  assert_false(idle_branch_cache({ ..cache, ref_: "refs/heads/main" }, "refs/heads/main", 1.0 + 24.0 * h))
+  assert_false(idle_branch_cache({ ..cache, ref_: "refs/pull/1/merge" }, "refs/heads/main", 1.0 + 24.0 * h))
+  assert_false(idle_branch_cache({ ..cache, accessed: 0.0 }, "refs/heads/main", 1.0 + 24.0 * h))
+}

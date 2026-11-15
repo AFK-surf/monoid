@@ -1241,10 +1241,12 @@ jobs:
   # (the Mac's beta holds no other part's back: its job waits on Apple's notary service, which took the whole of its five
   # minutes four runs in a row from 12:29 UTC on 2026-11-12 (41 s before), and put skipped every part's release with it,
   # none out for over an hour and a half. A desktop failed or cancelled leaves the Mac's feed as it was, handing nothing;
-  # it is main's red as any job's, and `done` waits for it, so deployed/beta stays and the next run plans the Mac again)
+  # it is main's red as any job's, and `done` waits for it, so deployed/beta stays and the next run plans the Mac again.
+  # So with its build, desktop-build: it hands put nothing, and one cut at its five minutes would hold every part's release
+  # back as the notary did; its Mac build ran 276-287 s on main's releases of 2026-11-14 and 15)
   put:
     needs: [plan, check, check-linux, check-station, check-core, api, static, station, android, desktop-build, desktop, desktop-win, deltas]
-    if: always() && github.ref == 'refs/heads/main' && needs.check.result == 'success' && needs.check-linux.result == 'success' && (needs.plan.outputs.station_tests != 'true' || needs.check-station.result == 'success') && (needs.plan.outputs.core_tests != 'true' || needs.check-core.result == 'success') && contains(fromJSON('["success","skipped"]'), needs.api.result) && contains(fromJSON('["success","skipped"]'), needs.static.result) && contains(fromJSON('["success","skipped"]'), needs.station.result) && contains(fromJSON('["success","skipped"]'), needs.android.result) && contains(fromJSON('["success","skipped"]'), needs.desktop-build.result) && contains(fromJSON('["success","skipped"]'), needs.desktop-win.result) && (needs.station.result == 'success' || needs.android.result == 'success' || needs.desktop.result == 'success' || needs.desktop-win.result == 'success')
+    if: always() && github.ref == 'refs/heads/main' && needs.check.result == 'success' && needs.check-linux.result == 'success' && (needs.plan.outputs.station_tests != 'true' || needs.check-station.result == 'success') && (needs.plan.outputs.core_tests != 'true' || needs.check-core.result == 'success') && contains(fromJSON('["success","skipped"]'), needs.api.result) && contains(fromJSON('["success","skipped"]'), needs.static.result) && contains(fromJSON('["success","skipped"]'), needs.station.result) && contains(fromJSON('["success","skipped"]'), needs.android.result) && contains(fromJSON('["success","skipped"]'), needs.desktop-win.result) && (needs.station.result == 'success' || needs.android.result == 'success' || needs.desktop.result == 'success' || needs.desktop-win.result == 'success')
     runs-on: ubuntu-24.04
     environment: production
     timeout-minutes: 5

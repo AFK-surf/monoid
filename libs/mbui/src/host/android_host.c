@@ -2360,9 +2360,9 @@ int32_t mb_host_passkeys_get(moonbit_string_t ask) { (void)ask; return 0; }
 moonbit_string_t mb_host_passkeys_out(int32_t id) { (void)id; return moonbit_make_string_raw(0); }
 void mb_host_passkeys_end(int32_t id) { (void)id; }
 
-// A frame not to be shown, a decoder emptied, the sound's clock and volume (@hostapi.stream_frame_shown, stream_flush,
-// stream_audio_played, _queued, _volume): win_stream.cpp's alone so far. Here a frame not to be shown is decoded as
-// any (below); the rest nothing, or 0.
+// A frame not to be shown, a decoder emptied, the sound's clock, reserve and volume (@hostapi.stream_frame_shown,
+// stream_flush, stream_audio_played, _queued, _wanted, _volume): win_stream.cpp's alone so far. Here a frame not to be
+// shown is decoded as any (below); the rest nothing, or 0.
 int32_t mb_host_stream_frame_shown(int32_t id, moonbit_bytes_t data, int32_t key, double ts, int32_t show) {
   // (no frame decoded unseen here: decoded as any, and its "f" taken as "d" by @ui.Stream, which never asks it shown;
   // the references the frames after it need are there, the path the frames shown take is as before)
@@ -2373,4 +2373,5 @@ int32_t mb_host_stream_frame_shown(int32_t id, moonbit_bytes_t data, int32_t key
 void mb_host_stream_flush(int32_t id, int32_t drain) { (void)id; (void)drain; }
 double mb_host_stream_audio_played(int32_t id) { (void)id; return 0; }
 double mb_host_stream_audio_queued(int32_t id) { (void)id; return 0; }
+double mb_host_stream_audio_wanted(int32_t id) { (void)id; return 0; }
 void mb_host_stream_audio_volume(int32_t id, double v) { (void)id; (void)v; }

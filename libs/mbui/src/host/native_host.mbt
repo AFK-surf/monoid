@@ -1260,4 +1260,7 @@ impl @hostapi.Host for Native with st_audio_played(_, id) { st_audio_played(id) 
 impl @hostapi.Host for Native with st_audio_queued(_, id) { st_audio_queued(id) }
 
 ///|
+impl @hostapi.Host for Native with st_audio_wanted(_, id) { st_audio_wanted(id) }
+
+///|
 impl @hostapi.Host for Native with st_audio_volume(_, id, v) { st_audio_volume(id, v) }

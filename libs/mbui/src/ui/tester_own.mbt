@@ -12,7 +12,7 @@ pub fn Tester::own_read_said(self : Tester) -> String {
     Some(f) if physical_equal(f, self.fake) => ""
     Some(_) =>
       "a Tester read after another was made: what it reads is the frame of the one made after it, not its own; read all of it before making the next"
-    None => "a Tester read after its run was ended (Tester::end_run): what it would read is no frame of its own"
+    None => "a Tester read after its run was ended (Tester::end_run, or the next run begun: host_let_go): what it would read is no frame of its own"
   }
 }
 

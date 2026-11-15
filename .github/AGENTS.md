@@ -25,7 +25,7 @@
 - A release's deltas (`scripts/release-deltas.ts`: the `deltas` job, `put_feed` in `scripts/release.sh`) never fail
   or hold back a release: what goes wrong is a warning and that delta is left out, the feed whole without it. Their
   time is bounded by `--deadline` inside the job's own 5 minutes; a part that needs more gets fewer bases, not longer.
-- The Mac's beta never holds back the others' (`put` runs whatever `desktop` came to): its signing waits on Apple's
+- The Mac's beta never holds back the others' (`put` runs whatever `desktop` and its build, `desktop-build`, came to): its signing waits on Apple's
   notary service, which can take a job's five minutes (2026-11-12, four runs in a row). A failed or cancelled
   `desktop` leaves the Mac's feed as it was; it is main's red, and `done` waits for it, so the next run plans it again.
 - The Android delta's deflater is part of the format: JZlib's version (`libs/mbui/android/jzlib`) and the level and settings

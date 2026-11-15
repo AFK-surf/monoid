@@ -643,6 +643,17 @@ jobs:
           d=$(sh apps/mbui/scripts/mbui.sh)
           c=$(sha256sum "$d/out/win/app/_build/native/release/build/stillfail/stillfail/stillfail.c" | cut -c1-16)
           echo "BUILD_KEY=mbui-win-build-mono-$c" >> "$GITHUB_ENV"
+      # main's, saved when its C is new (a branch reads main's: its own would be its alone), as soon as it is built:
+      # after the checks and the put below, a run cut at its five minutes saved none, and every run after built from
+      # the last one saved again, 159-178 s where it had taken 72, and was cut the same (main 7f153d7b and 6222bae5,
+      # and each branch after them, 2026-11-15)
+      - if: github.ref == 'refs/heads/main' && env.BUILD_KEY != steps.build-cache.outputs.cache-matched-key
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            libs/mbui/_build
+            libs/mbui/out
+          key: ${{ env.BUILD_KEY }}
       # the installer (apps/mbui/windows/setup.c) made of the app as built, put into a folder of this run's, put again
       # over it, taken away (e2e/win/setup.sh: ~5 s)
       - name: The installer, installed and taken away (win.sh setup, e2e/win/setup.sh)
@@ -693,14 +704,6 @@ jobs:
         with:
           path: .ci/hbc
           key: ${{ env.HBC_KEY }}
-      # main's, saved when its C is new (a branch reads main's: its own would be its alone)
-      - if: github.ref == 'refs/heads/main' && env.BUILD_KEY != steps.build-cache.outputs.cache-matched-key
-        uses: actions/cache/save@v4
-        with:
-          path: |
-            libs/mbui/_build
-            libs/mbui/out
-          key: ${{ env.BUILD_KEY }}
       - name: The branch's units, by what they hold
         if: github.ref != 'refs/heads/main'
         run: |

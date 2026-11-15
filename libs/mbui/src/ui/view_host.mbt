@@ -2949,6 +2949,8 @@ fn Ctx::focus_allowed(self : Ctx) -> Int {
     return 0
   }
   let island = match self.dev.catchers.get(self.focus) {
+    // (a node's own: kept from input as a node of the tree is, by the modal layers over it)
+    Some({ node: Some(n), .. }) => Some(n)
     Some(st) => st.island
     None => self.island_of_id(self.focus)
   }

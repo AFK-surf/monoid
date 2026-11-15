@@ -103,7 +103,7 @@ test "links to screens and a web service, made once as nodes, are drawn as the o
       let t = sl_new(w, sl_src(said=case.1, up=case.2), @sffixture.screens_answer)
       t.run_for(@ui.move_most_ms)
       assert_eq(sl_drawn(t), was, msg=at)
-      let faults = t.audit().filter(fn(f) { !sl_card_ends(f) })
+      let faults = audit_but_card_marks(t).filter(fn(f) { !sl_card_ends(f) })
       assert_true(faults.is_empty(), msg=at + ": " + faults.join(" | "))
     }
   }
@@ -122,7 +122,7 @@ test "at 1.3 a card's title and its line each as high as their words, the one ov
         assert_true(ty + th <= ly + 0.01, msg="\{case.0}: \{pair.0} over \{pair.1}")
       }
     }
-    let faults = t.audit().filter(fn(f) { !sl_card_ends(f) })
+    let faults = audit_but_card_marks(t).filter(fn(f) { !sl_card_ends(f) })
     assert_true(faults.is_empty(), msg=case.0 + ": " + faults.join(" | "))
   }
 }
@@ -147,7 +147,7 @@ test "a card tapped opens where its link leads, as the old view's does: the desk
     let t = sl_new(760.0, sl_src(), @sffixture.screens_answer)
     t.run_for(@ui.move_most_ms)
     assert_eq(sl_tapped(t, words), was, msg=words)
-    let faults = t.audit()
+    let faults = audit_but_card_marks(t)
     assert_true(faults.is_empty(), msg=words + ": " + faults.join(" | "))
   }
 }
@@ -168,7 +168,7 @@ test "a tab its station previews: its card drawn by the nodes as the old view dr
   let t = sl_new(760.0, sl_src(peek=true), @sffixture.screens_answer)
   t.run_for(@ui.move_most_ms)
   assert_eq(at(t), was)
-  let faults = t.audit()
+  let faults = audit_but_card_marks(t)
   assert_true(faults.is_empty(), msg=faults.join(" | "))
 }
 

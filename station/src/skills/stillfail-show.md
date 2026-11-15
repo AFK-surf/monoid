@@ -5,14 +5,15 @@ description: Show evidence of visible work such as a UI, animation or generated 
 
 # Show visible work
 
-Show the result, not just a description or a request that the user check it themselves. Say what changed, where
-the evidence came from and what to look at.
+When building or fixing UI, read its code and the components it already has first: pictures show the result to people,
+they do not replace reading the code.
+
+Show the result, not just a description or a request that the user check it themselves. Say what changed, where the evidence came from and what to look at.
 
 | To judge | Show |
 |---|---|
 | Layout, spacing, colours, a state | Images, compared at a glance |
 | Animation, transitions, a sequence | Short video; a frame strip for detailed study |
-| `still.fail` UI changes or UI proposals | Real `mbui` fixture/code rendered via `apps/mbui/scripts/media.sh` (or `media-job.sh` on a build station) |
 | Web app / service to click, type in or resize | Web service via `stillfail-jobs` |
 | Data, charts, comparisons or interactive choices | Native `.mbui` widget via `stillfail-viz` |
 
@@ -36,11 +37,8 @@ Images plus a service or `.mbui` widget often work together: quick visual review
   capture each step and assemble a video or contact sheet. Real-time-dependent motion can instead be slowed with
   CDP `Animation.setPlaybackRate` and recorded live.
 
-## `still.fail` UI proposals & Native `.mbui` widgets
+## Interactive widgets & Web services
 
-- When proposing or verifying `still.fail` client UI (`apps/mbui`), never mock it up in HTML/CSS. Write or edit the
-  `mbui` view/fixture in `apps/mbui` and render real full-window screenshots or recordings via
-  `apps/mbui/scripts/media.sh` (`apps/mbui/scripts/media-job.sh` on the build station).
 - Use `stillfail-viz` (`.mbui` declarative widgets) for inline charts, metrics, comparisons and interactive option
   widgets (`follow_up` puts a choice in the user's composer).
 - Use `stillfail-jobs` to start, verify, share and keep a web service available when reviewing a web project.
