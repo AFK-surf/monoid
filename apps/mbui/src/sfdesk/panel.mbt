@@ -547,8 +547,9 @@ pub fn tape_side(c : @ui.Ctx, src : Source, w : Workspace, side : SideOf, leavin
 }
 
 ///|
-/// The panel (sidePanel) of every tab but an agent's history, an old view: its tabs and its switch over what the one in
-/// front shows. Its edge is the tree's (side_panel_node's), as an agent's history is (side_body_node).
+/// The panel (sidePanel) of every tab the window's tree does not show (panel_node.mbt side_node_tab: an agent's history,
+/// a file in the viewer, a Farview tab, 任务, agent 往来, 图片、文件和链接 are its), an old view: its tabs and its switch
+/// over what the one in front shows. Its edge is the tree's (side_panel_node's).
 fn side_panel(
   c : @ui.Ctx,
   src : Source,
@@ -564,25 +565,9 @@ fn side_panel(
       side_bar_row(c, src, r, v, tabs, front)
     }
     c.box(style=side_pane, fn() {
-      if front == "jobs" {
-        // a service up pressed: its own tab, in front (JobsTab onOpen)
-        jobs_tab(c, src, r.station, chat_key(r), src.topic("chatJobs", chat_params(r)).get().value, fn(job) {
-          c.tell("jobs-open/" + job, fn() { side_change(src, r, "open", Some("service:" + job)) })
-        })
-      } else if front == "files" {
+      if front == "files" {
         // the workspace's stations' files (drive_tab.mbt), what is added from them going into the chat's draft
         files_tab(c, src, w.id, tabs_key(r), r.station)
-      } else if front == "letters" {
-        match v.thread {
-          Some(th) => letters_tab(c, src, r, v, th)
-          None => ()
-        }
-      } else if front == "things" {
-        // what was said in it besides words (sfpages things.mbt): 在对话里看 goes to the message beside it
-        match v.thread {
-          Some(th) => @sfpages.things_body(c, src, r, th, false, fn(seq) { @sfbase.go_to(r, seq) })
-          None => ()
-        }
       } else if tab_service(front) is Some(job) {
         service_pane(c, src, r, job, close=if own_bar && !column_short.get() {
           Some(fn() { c.tell("side/close", fn() { side_change(src, r, "clear", None) }) })
@@ -594,7 +579,7 @@ fn side_panel(
       } else if station_tab_pane(c, src, w, r, front, own_bar=if screen_alone { Some(side_bar_tape()) } else { None }) {
         ()
       }
-      // (an agent's history: the tree's, side_body_node)
+      // (an agent's history, 任务, agent 往来, 图片、文件和链接: the tree's, panel_node.mbt)
     })
     |> ignore
   })

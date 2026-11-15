@@ -416,8 +416,7 @@
       "src/sfpages/screen_stage.mbt": 3,
       "src/sfpages/screen_view.mbt": 1,
       "src/sfpages/search.mbt": 2,
-      "src/sfpages/service.mbt": 3,
-      "src/sfpages/things.mbt": 2
+      "src/sfpages/service.mbt": 3
     },
     "motion-length": {},
     "tester-branch": {},
@@ -481,8 +480,6 @@
       "src/sfbase/viewer.mbt": 3,
       "src/sfdesk/drive_pane.mbt": 2,
       "src/sfdesk/files_nav.mbt": 1,
-      "src/sfdesk/jobs.mbt": 3,
-      "src/sfdesk/letters.mbt": 1,
       "src/sfdesk/lists.mbt": 1,
       "src/sfkit/glass.mbt": 1,
       "src/sfkit/kit.mbt": 2,
@@ -490,8 +487,7 @@
       "src/sfpages/new_chat.mbt": 1,
       "src/sfpages/publish.mbt": 1,
       "src/sfpages/screen_debug.mbt": 2,
-      "src/sfpages/switcher.mbt": 1,
-      "src/sfpages/things.mbt": 1
+      "src/sfpages/switcher.mbt": 1
     },
     "list-comes-off": {
       "src/sf/page_node.mbt": 1,

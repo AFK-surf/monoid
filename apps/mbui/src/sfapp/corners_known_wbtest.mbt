@@ -136,18 +136,14 @@ let corners_outgrown_known : Map[String, Int] = Map([])
 /// icon's button beside it 32. And what old views hosted in the window's tree show, not measured till the spacing rules
 /// took the tree's nodes in each after its parent (2026-11-14): 屏幕's pages in the wide windows, a tab's × 40 beside
 /// its tabs' 36 (their address field 36 beside 后退's 40 till it was as high, 2026-11-15); a chat's 任务 beside it in the
-/// wide windows.
+/// wide windows till it was made of nodes (2026-11-15).
 let corners_heights_known : Map[String, Int] = Map([
-  ("wide-en chat-jobs-side", 1),
   ("wide-en screen-user-pages", 1),
   ("wide-en screen-user-tabs", 1),
-  ("wide-win-en chat-jobs-side", 1),
   ("wide-win-en screen-user-pages", 1),
   ("wide-win-en screen-user-tabs", 1),
-  ("wide-win-zh chat-jobs-side", 1),
   ("wide-win-zh screen-user-pages", 1),
   ("wide-win-zh screen-user-tabs", 1),
-  ("wide-zh chat-jobs-side", 1),
   ("wide-zh screen-user-pages", 1),
   ("wide-zh screen-user-tabs", 1),
   ("wide-zh settings-connects", 1),

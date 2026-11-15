@@ -1198,8 +1198,8 @@ fn tape_side_at(side : @view.View) -> SideAt {
 /// A chat's side panel on the tape in node `pane` (tape_panel_box's, 6 in from the bars, 8 from the page's): an agent's
 /// history in front, the tree's, its ground, corners and line round what is in it as the page's panel's are
 /// (tape_page_pane), the panel's room beside the system's column its ground alone (side_history_node, its top an
-/// island built as tape_panel_built builds); a file in the viewer so too (side_view_node); else its island
-/// (tape_panel_built).
+/// island built as tape_panel_built builds); a file in the viewer so too (side_view_node), a Farview tab
+/// (side_farview_node), 任务, agent 往来 and 图片、文件和链接 (side_own_node); else its island (tape_panel_built).
 fn tape_side_node(pane : @view.View, src : Source) -> Unit {
   let tips = @sf.TipLayer::new(fn() { tape_goes.node })
   let history = fn() {
@@ -1252,9 +1252,19 @@ fn tape_side_node(pane : @view.View, src : Source) -> Unit {
         natural,
       )
     }
-    // (a file in the viewer: the panel's bar, then the file's tools and stage, as beside the page)
+    // (a file in the viewer: the panel's bar, then the file's tools and stage, as beside the page; a Farview tab, its
+    // screen drawn here; 任务, agent 往来, 图片、文件和链接 each its nodes, a card across the foot in the panel's corners)
     if @sfbase.view_tab_file(agent) is Some(_) {
       side_view_node(q, src.owned_by(q), r, agent, behind)
+    } else if side_farview_tab(agent) is Some((station, screen)) {
+      side_farview_node(q, src.owned_by(q), r, agent, station, screen, behind)
+    } else if side_own_tab(agent) {
+      side_own_node(q, src.owned_by(q), r, agent, tips, behind, fn() {
+        @sf.pane_round.val = Some(beside_column(tape_pane_corners(Panel, true), tape_room_now().under))
+        let s = @sf.pane_foot_card()
+        @sf.pane_round.val = None
+        s
+      })
     } else {
       side_history_node(q, src.owned_by(q), r, agent, tips, behind)
     }

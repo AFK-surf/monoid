@@ -1,6 +1,7 @@
 // What was said in a chat besides words (the core's `chatThings` view, things.ts): its pictures and videos, its other
 // files, the web links in its messages and the pull requests among them, each once and the latest first. One body for
-// the wide frame's tab beside the chat (sfdesk panel.mbt) and the narrow frame's sheet (sfapp sheets.mbt): the kinds it
+// 中屏's and 大屏's tab beside the chat (sfdesk panel_node.mbt) and 小屏's sheet (sfapp sheets.mbt), made once as nodes
+// (things_node): the kinds it
 // has to choose from, a field finding among the chosen kind's by their words, then that kind's: the pictures a grid,
 // the rest a row each. Pressed, a picture or a file opens in the preview (an image stepping through the chat's), a
 // link or a pull request in the browser; held or right clicked, its menu goes to the message it was last said in (在对话
@@ -10,20 +11,15 @@
 // 」).
 
 ///|
-/// Each chat's page of things as it was left: the kind chosen ("" the first it has) and the words found by.
+/// Each chat's page of things as it was left: the kind chosen ("" the first it has: a signal, what a page made of it
+/// reads, told as things_choose chooses another while it shows) and the words found by.
 priv struct ThingsAt {
-  mut kind : String
+  kind : @signals.Signal[String]
   field : @ui.Field
 }
 
 ///|
 let things_at : Map[String, ThingsAt] = Map([])
-
-///|
-/// Told as a page of things' old body has another kind chosen (ThingsAt's `kind`): what it built read again, as an old
-/// view in a node of the window's tree is built again only as what it read changes.
-// kept across runs: a counter (only what reads it is told)
-let things_kind_told : @signals.Signal[Int] = @signals.signal(0)
 
 ///|
 fn things_reset() -> Unit {
@@ -35,7 +31,7 @@ fn things_of(key : String) -> ThingsAt {
   match things_at.get(key) {
     Some(t) => t
     None => {
-      let t = { kind: "", field: @ui.Field::new() }
+      let t = { kind: @signals.signal("", same=fn(a, b) { a == b }), field: @ui.Field::new() }
       things_at[key] = t
       t
     }
@@ -45,7 +41,7 @@ fn things_of(key : String) -> ThingsAt {
 ///|
 /// Chat `r`'s page of things to show its `kind` next (the info's 全部 N 个 for its pull requests).
 pub fn things_choose(r : ChatRef, kind : String) -> Unit {
-  things_of(r.station + "\u{1}" + r.session).kind = kind
+  things_of(r.station + "\u{1}" + r.session).kind.set(kind)
 }
 
 ///|
@@ -123,118 +119,6 @@ fn pull_meta(pull : Json?) -> String {
     parts.push(ago)
   }
   parts.join(" · ")
-}
-
-///|
-/// Chat `r`'s things (its thread `thread`), as the page shows them, `key` naming its list; `sheet`: in the narrow
-/// frame's sheet (its sides the sheet's words'), else in the wide frame's tab. `away` goes to the chat at a message
-/// (the sheet closed first).
-pub fn things_body(c : @ui.Ctx, src : Source, r : ChatRef, thread : Double, sheet : Bool, away : (Double) -> Unit) -> Unit {
-  let key = r.station + "\u{1}" + r.session
-  let at = things_of(key)
-  let q = at.field.text()
-  let topic = src.topic("chatThings", things_params(r.station, thread, q~)).get().snapshot()
-  let v = topic.value
-  let has = things_has(v)
-  let side = if sheet { @sf.panel_words_in() } else { things_side }
-  match things_state(v) {
-    ThingsWaiting => {
-      @sf.waiting(c, fill=true, fn() { things_sample(c, side) })
-      return
-    }
-    ThingsNone => {
-      @sf.empty(c, fn() { c.text(@sf.t("web-main.things.none"), style=things_none) |> ignore })
-      return
-    }
-    ThingsShown => ()
-  }
-  let whole = flag(v, "whole")
-  things_kind_told.get() |> ignore
-  let kind = things_kind_of(at.kind, has)
-  let shown = items(v, kind)
-  let rows : Array[() -> Unit] = []
-  // (the field's box: as wide as the room the grid's tiles share; named here, where the rows are not yet each a scope
-  // of their own)
-  let room_id = c.id("things/grid/" + key)
-  // the kinds it has to choose from, each with how many; the field finding among the chosen kind's
-  rows.push(fn() {
-    c.box(style=things_head.then(side), fn() {
-      if has.length() > 1 {
-        let labels = things_labels(v, has)
-        // (across the row, as the field under it is: their columns share it)
-        let item_w = match c.laid_size(room_id) {
-          Some((w, _)) if w > 0.0 => @sf.segmented_item_w(w, labels.length())
-          _ => 0.0
-        }
-        let chosen = @sf.segmented(c, "things/kinds/" + key, labels, has.search(kind).unwrap_or(0), item_w~)
-        match has.get(chosen) {
-          Some(k) if k != kind => {
-            at.kind = k
-            things_kind_told.set(things_kind_told.untracked() + 1)
-          }
-          _ => ()
-        }
-      } else {
-        c.text(thing_kind_name(kind), style=things_kind_alone) |> ignore
-      }
-      c.box(style=things_measure, id=room_id, fn() {
-        @sf.input(c, "things/find/" + key, placeholder=@sf.t("web-main.things.find"), small=true, field=at.field) |> ignore
-      })
-      |> ignore
-    })
-    |> ignore
-  })
-  if shown.length() == 0 {
-    rows.push(fn() {
-      c.box(style=things_found_none.then(side), fn() { c.text(@sf.t("web-main.find.none"), style=things_none) |> ignore })
-      |> ignore
-    })
-  } else if kind == "media" {
-    // by the day and the message they were sent with, each message's in lines as high as fill the room (their own
-    // shapes, a phone's screenshot narrow and a desktop's wide), the last as high as the rest would be
-    let room = match c.laid_size(room_id) {
-      Some((w, _)) if w > 0.0 => w
-      _ => c.width - 32.0
-    }
-    for d in items(v, "mediaDays") {
-      let day = Some(d)
-      if text(day, "day") != "" {
-        rows.push(fn() {
-          c.box(style=things_day.then(side), fn() { c.text(text(day, "day"), style=things_day_words) |> ignore }) |> ignore
-        })
-      }
-      for g in items(day, "groups") {
-        let group = Some(g)
-        rows.push(fn() { c.box(style=things_said_line.then(side), fn() { media_said(c, group) }) |> ignore })
-        let tiles = items(group, "items")
-        for line in media_lines(tiles.map(media_aspect), room, things_line_high, things_gap) {
-          let (from, to, high) = line
-          rows.push(fn() {
-            c.box(style=things_grid_line.then(side), fn() {
-              c.box(style=things_grid_row, fn() {
-                for j in from..<to {
-                  media_tile(c, src, r, thread, Some(tiles[j]), media_aspect(tiles[j]) * high, high, away)
-                }
-              })
-              |> ignore
-            })
-            |> ignore
-          })
-        }
-      }
-    }
-  } else {
-    for t in shown {
-      let tv = Some(t)
-      rows.push(fn() { c.box(style=things_line.then(side), fn() { thing_row(c, src, r, kind, tv, away) }) |> ignore })
-    }
-  }
-  // not all of the chat is here yet: more may come, older ones
-  if !whole {
-    rows.push(fn() { c.box(style=things_more, fn() { @sf.spinner(c, size=16.0) |> ignore }) |> ignore })
-  }
-  rows.push(fn() { c.box(style=things_foot, fn() {  }) |> ignore })
-  c.list("things/" + key + "/" + kind, rows.length(), 48.0, fn(i) { (rows[i])() }) |> ignore
 }
 
 ///|
@@ -320,7 +204,7 @@ fn things_kind_of(chosen : String, has : Array[String]) -> String {
 }
 
 ///|
-/// A file's, a link's or a pull request's row's name and the line under it (thing_row's).
+/// A file's, a link's or a pull request's row's name and the line under it (thing_row_node's).
 fn thing_words(kind : String, t : Json?) -> (String, String) {
   let ago = text(field(field(t, "time"), "createdAt"), "ago")
   let with_ago = fn(parts : Array[String]) {
@@ -345,7 +229,7 @@ fn thing_words(kind : String, t : Json?) -> (String, String) {
 }
 
 ///|
-/// What pressing a file's, a link's or a pull request's row does (thing_row's): a file in the preview, a link and a pull
+/// What pressing a file's, a link's or a pull request's row does (thing_row_node's): a file in the preview, a link and a pull
 /// request in the browser.
 fn thing_open(src : Source, r : ChatRef, kind : String, t : Json?) -> Unit {
   if kind == "files" {
@@ -365,22 +249,6 @@ fn thing_beside(r : ChatRef, kind : String, t : Json?) -> (() -> Unit)? {
   guard @sfbase.beside_offered(a.path, a.name) else { return None }
   let owner = if a.owner != "" { a.owner } else { r.session }
   Some(fn() { @sfbase.open_preview(r.station, owner, a, beside=true) })
-}
-
-///|
-/// What a message sent its pictures and videos with says, over them: when and who (in the quiet grey), then its first
-/// words, cut to the line.
-fn media_said(c : @ui.Ctx, group : Json?) -> Unit {
-  let when = [text(group, "clock"), text(group, "by")].filter(fn(s) { s != "" })
-  c.box(style=things_said, fn() {
-    if when.length() > 0 {
-      c.text(when.join(" · "), style=things_said_when, allow_ellipsis=true) |> ignore
-    }
-    if text(group, "words") != "" {
-      c.text(text(group, "words"), style=things_said_words, allow_ellipsis=true) |> ignore
-    }
-  })
-  |> ignore
 }
 
 ///|
@@ -423,123 +291,13 @@ fn media_lines(aspects : Array[Double], room : Double, high : Double, gap : Doub
 }
 
 ///|
-/// A picture or a video of the chat's, a tile `w` by `h`: its picture (a video's still) covering it, a part where it is
-/// longer than its tile (its top: what a screenshot is known by), round as a message's file is; a video's length in its
-/// foot corner. Pressed, the preview, a picture stepping through the chat's.
-fn media_tile(c : @ui.Ctx, src : Source, r : ChatRef, thread : Double, t : Json?, w : Double, h : Double, away : (Double) -> Unit) -> Unit {
-  let a = @sfbase.attachment_of(field(t, "file").unwrap_or(Json::object({})))
-  let owner = if a.owner != "" { a.owner } else { r.session }
-  let id = c.id("things/tile/" + text(t, "key"))
-  c.on_press(id, fn() {
-    @sfbase.open_preview(r.station, owner, a, steps=InChat(Some(thread), r.session))
-  })
-  thing_menu(c, id, number(t, "seq"), "", away, beside=thing_beside(r, "media", t))
-  let video = file_kind(a.name) == "video"
-  let picture = if video {
-    @sfbase.video_still(c, src, r.station, owner, a, r.station + "/" + owner + "/" + a.path)
-  } else {
-    (src.file)(r.station, owner, stored_name(a.path))
-  }
-  // (held off the page as a message's: a light screenshot's is the page's colour)
-  let likeness = @gallery.thumbhash_image(a.thumbhash, ground=c.color(Neutral), under=c.color(Bg)).unwrap_or("")
-  // (longer than its tile: as wide as it, its top showing)
-  let tall = a.width > 0.0 && a.height > 0.0 && a.height / a.width > h / w + 0.01
-  let shown = fn(img : String, fade : Bool) {
-    if tall {
-      c.image(img, w=Px(w), h=Px(w * a.height / a.width), fit=FitFill, bg=0L, fade~) |> ignore
-    } else {
-      c.image(img, w=Px(w), h=Px(h), fit=FitCover, bg=0L, fade~) |> ignore
-    }
-  }
-  let b = c.box(style=things_tile.then(@ui.style(w=Fixed(w), h=Fixed(h))), id~, fn() {
-    if picture != "" && picture != "!" {
-      shown(picture, true)
-    } else if likeness != "" {
-      shown(likeness, false)
-    } else if picture == "!" {
-      c.box(style=things_tile_none, fn() { @sf.icon(c, if video { "file-video" } else { "photo" }, size=20.0, color=@sf.theme().p.muted) |> ignore })
-      |> ignore
-    }
-    if video {
-      @sf.video_capsule(c, "things/length/" + text(t, "key"), a.duration)
-    }
-  })
-  c.semantics(b, Button, id~, label=@sf.t(if video { "web-main.file.play" } else { "web-main.file.view" }, args=[("name", a.name)]))
-}
-
-///|
-/// A file, a link or a pull request of the chat's, a row: its mark, what it is called (cut to its line) and a line
-/// under it of what else is known of it, 在对话中查看 at its end; a link's card at its left while it is pointed at, its
-/// copy and 在对话中查看 under it. Pressed, a file opens in the preview, a link and a pull
-/// request in the browser.
-fn thing_row(c : @ui.Ctx, src : Source, r : ChatRef, kind : String, t : Json?, away : (Double) -> Unit) -> Unit {
-  let p = @sf.theme().p
-  let id = c.id("things/row/" + kind + "/" + text(t, "key"))
-  let seq = number(t, "seq")
-  let url = text(t, "url")
-  let (name, meta) = thing_words(kind, t)
-  c.on_press(id, fn() { thing_open(src, r, kind, t) })
-  thing_menu(c, id, seq, url, away, beside=thing_beside(r, kind, t))
-  // pointed at, a link's card over it, a pull request's as a message's link to it shows it (peeks.mbt)
-  if kind != "files" {
-    // (at its left: under it, it would cover the rows after it)
-    web_peek(c, src, r.station, url, name, id, side=Left, peek=text(t, "peek"))
-  }
-  let show = c.id("things/show/" + kind + "/" + text(t, "key"))
-  c.on_press(show, fn() {
-    away(seq)
-  })
-  let b = c.box(style=things_row, id~, fn() {
-    c.box(style=things_row_mark, fn() {
-      match kind {
-        "pulls" => pull_mark(c, t, 16.0)
-        "files" => @sf.icon(c, "file", size=16.0, color=p.muted) |> ignore
-        _ => @sf.icon(c, "link", size=16.0, color=p.muted) |> ignore
-      }
-    })
-    |> ignore
-    c.box(style=things_row_words, fn() {
-      c.text(name, style=things_row_name) |> ignore
-      if meta != "" {
-        c.text(meta, style=things_row_meta) |> ignore
-      }
-    })
-    |> ignore
-    @sf.icon_button(c, "chat", key="things/show/" + kind + "/" + text(t, "key"), round=true, label=@sf.t("web-main.things.show"), on_press=fn() {
-      away(seq)
-    }) |> ignore
-  })
-  c.semantics(b, Button, id~, label=name)
-}
-
-///|
-/// Things made up, for what the page shows while they are read (things_body in its bones): the kinds' choice and a few
-/// rows.
-fn things_sample(c : @ui.Ctx, side : @ui.Style) -> Unit {
-  c.box(style=things_head.then(side), fn() {
-    @sf.segmented(c, "things/sample", ["media", "files", "links"].map(fn(k) { thing_kind_name(k) + " 0" }), 0) |> ignore
-  })
-  |> ignore
-  for n in [18, 24, 14, 20, 16] {
-    c.box(style=things_line.then(side), fn() {
-      c.box(style=things_row, fn() {
-        c.box(style=things_row_mark, fn() { @sf.icon(c, "link", size=16.0, color=@sf.theme().p.muted) |> ignore }) |> ignore
-        c.box(style=things_row_words, fn() {
-          c.text(@sf.sample_words(n), style=things_row_name) |> ignore
-          c.text(@sf.sample_words(10), style=things_row_meta) |> ignore
-        })
-        |> ignore
-      })
-      |> ignore
-    })
-    |> ignore
-  }
-}
-
-///|
-/// How far its rows stand in from the tab's sides (16, as the letters' messages do), the sheet's words' in a sheet.
+/// How far its rows stand in from the tab's sides beside the chat (16, as the letters' messages do: things_side_w), the
+/// sheet's words' in a sheet.
 // kept across runs: a value (no field of it changes)
 let things_side : @ui.Style = @ui.css("px=S4")
+
+///|
+let things_side_w : Double = 16.0
 
 ///|
 /// The kinds and the field over the rest: 12 over, 12 under, 8 apart.
@@ -654,9 +412,9 @@ let things_more : @ui.Style = @ui.css("row w=Full py=S2 justify=JCenter")
 // kept across runs: a value (no field of it changes)
 let things_foot : @ui.Style = @ui.css("w=Full h=S6")
 
-// The same page made once as nodes of the window's tree (things_node: the narrow frame's sheet, a panel whose body is
-// nodes), laid out from the same styles as things_body lays out its rows: what it shows follows the core's
-// `chatThings` as it changes, its rows each made as it comes into sight (View::scrolls_window).
+// The page made once as nodes of the window's tree (things_node: 小屏's sheet, a panel whose body is nodes; 中屏's and
+// 大屏's tab beside the chat): what it shows follows the core's `chatThings` as it changes, its rows each made as it
+// comes into sight (View::scrolls_window).
 
 ///|
 /// One of the rows of a chat's page of things made once (things_node's): the kinds and the field over them, words saying
@@ -674,19 +432,27 @@ priv enum ThingsRow {
 }
 
 ///|
-/// Chat `r`'s things (its thread `thread`) as nodes of the window's tree in `v` (things_body's, in a panel's body: its
-/// sides its words'), made once. `away` goes to the chat at a message (the sheet closed first). The kind chosen and the
-/// words found by are the chat's page's (things_at), as things_body keeps them.
-pub fn things_node(v : @view.View, src : Source, r : ChatRef, thread : Double, away : (Double) -> Unit) -> Unit {
+/// Chat `r`'s things (its thread `thread`) as nodes of the window's tree in `v`, made once: in a panel's body (小屏's
+/// sheet) its sides its words'; `beside` the chat (中屏's and 大屏's tab), 16 in from the tab's (things_side). `away`
+/// goes to the chat at a message (the sheet closed first). The kind chosen (told as things_choose chooses another) and
+/// the words found by are the chat's page's (things_at), kept as it is left.
+pub fn things_node(
+  v : @view.View,
+  src : Source,
+  r : ChatRef,
+  thread : Double,
+  away : (Double) -> Unit,
+  beside? : Bool = false,
+) -> Unit {
   let key = r.station + "\u{1}" + r.session
   let at = things_of(key)
-  let side = fn() { @sf.panel_words_in_node(v) }
-  let sides = @sf.panel_words_at_node(v)
+  let side = fn() { if beside { things_side } else { @sf.panel_words_in_node(v) } }
+  let sides = if beside { things_side_w } else { @sf.panel_words_at_node(v) }
   let value = fn() {
     src.topic("chatThings", things_params(r.station, thread, q=at.field.text())).get().value
   }
-  // (the kind chosen, as it is kept for the chat's page: told as another is chosen)
-  let chosen = @signals.signal(at.kind)
+  // (the kind chosen, as it is kept for the chat's page: told as another is chosen, here or by things_choose)
+  let chosen = at.kind
   let has = fn() { things_has(value()) }
   let kind = fn() {
     let h = has()
@@ -697,7 +463,7 @@ pub fn things_node(v : @view.View, src : Source, r : ChatRef, thread : Double, a
     }
   }
   v.pick(fn() { things_state(value()) }, fn(p, state) {
-    // (filling the room the panel gives it, as things_body fills it)
+    // (filling the room the panel or the tab gives it)
     p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
     match state {
       ThingsWaiting => @sf.waiting_node(p, fn(w) { things_sample_node(w, side) }, fill=true)
@@ -845,15 +611,15 @@ fn things_list_node(
 }
 
 ///|
-/// How tall a row of the list is taken to be till it is laid out (things_body's), and its spinner's side.
+/// How tall a row of the list is taken to be till it is laid out, and its spinner's side.
 let things_row_est : Double = 48.0
 
 ///|
 let things_more_spin : Double = 16.0
 
 ///|
-/// The kinds a chat has to choose from, each with how many, and the field finding among the chosen kind's (things_body's
-/// first row, as nodes) in `row`: their choice across the row as the field under it is (a single kind its name alone).
+/// The kinds a chat has to choose from, each with how many, and the field finding among the chosen kind's (the list's
+/// first row) in `row`: their choice across the row as the field under it is (a single kind its name alone).
 fn things_head_node(
   row : @view.View,
   at : ThingsAt,
@@ -866,7 +632,7 @@ fn things_head_node(
 ) -> Unit {
   @sf.style_node(row, fn() { things_head.then(side()) })
   // (made again only as how many kinds it has changes, or how wide each is to be: their words as they are now; the
-  // web's Segmented, as things_body's rows have it (drawn by its list, outside the sheet's narrow arrangement), each
+  // web's Segmented (drawn by its list, outside the sheet's narrow arrangement), each
   // option as wide as spans the row as the field under it does)
   row.pick(fn() { (has().length(), @sf.segmented_item_w(room(), has().length())) }, fn(choice, made) {
     let (n, item_w) = made
@@ -879,10 +645,7 @@ fn things_head_node(
           fn() { has().search(kind()).unwrap_or(0) },
           fn(i) {
             match @signals.untracked(has).get(i) {
-              Some(k) => {
-                at.kind = k
-                chosen.set(k)
-              }
+              Some(k) => chosen.set(k)
               None => ()
             }
           },
@@ -903,7 +666,7 @@ fn things_head_node(
 }
 
 ///|
-/// What a message sent its pictures and videos with says (media_said's, as nodes) in `row`: when and who, then its
+/// What a message sent its pictures and videos with says in `row`: when and who, then its
 /// first words, cut to the line.
 fn media_said_node(row : @view.View, group : Json?) -> Unit {
   let when = [text(group, "clock"), text(group, "by")].filter(fn(s) { s != "" })
@@ -920,7 +683,7 @@ fn media_said_node(row : @view.View, group : Json?) -> Unit {
 }
 
 ///|
-/// A picture or a video of the chat's (media_tile's, as a node) in `line`, a tile `w` by `h`: its picture covering it
+/// A picture or a video of the chat's in `line`, a tile `w` by `h`: its picture covering it
 /// (its top where it is longer than its tile), its likeness till it is here, round as a message's file is; a video's
 /// still (the station's, else its first frame drawn here: video_still_node) and its length in its foot corner.
 /// Pressed, the preview, a picture stepping through the chat's; held or right clicked, its menu.
@@ -946,7 +709,7 @@ fn media_tile_node(
   // (longer than its tile: as wide as it, its top showing)
   let tall = a.width > 0.0 && a.height > 0.0 && a.height / a.width > h / w + things_tall_by
   line.box(fn(b) {
-    // (a video's still: the station's, else its first frame drawn here, as media_tile's video_still)
+    // (a video's still: the station's, else its first frame drawn here)
     let picture = if video {
       @sfbase.video_still_node(b, src, r.station, owner, a, thumb)
     } else {
@@ -979,7 +742,7 @@ fn media_tile_node(
         }
       }))
       .image_covers(Is(!tall))
-      // (its picture fading in as it comes, its likeness there at once: media_tile's)
+      // (its picture fading in as it comes, its likeness there at once)
       .image_fades(By(fn() { picture() != "" && picture() != "!" }))
       |> ignore
     })
@@ -998,7 +761,7 @@ fn media_tile_node(
 }
 
 ///|
-/// How much longer than its tile a picture is before its tile shows its top (media_tile's), how faint a tile pointed at
+/// How much longer than its tile a picture is before its tile shows its top, how faint a tile pointed at
 /// is, its mark's side where there is nothing to show, and how many pixels its picture is asked at most.
 let things_tall_by : Double = 0.01
 
@@ -1012,7 +775,7 @@ let things_tile_mark : Double = 20.0
 let things_tile_most : Int = 8192
 
 ///|
-/// A file, a link or a pull request of the chat's (thing_row's, as a node) in `row`: its mark, what it is called and the
+/// A file, a link or a pull request of the chat's in `row`: its mark, what it is called and the
 /// line under it, 在对话中查看 at its end; the pointer's ground on it. Pressed, a file opens in the preview, a link and
 /// a pull request in the browser; held or right clicked, its menu.
 fn thing_row_node(row : @view.View, src : Source, r : ChatRef, kind : String, t : () -> Json?, away : (Double) -> Unit) -> Unit {
@@ -1027,7 +790,7 @@ fn thing_row_node(row : @view.View, src : Source, r : ChatRef, kind : String, t 
       thing_menu_at(m.wx, m.wy, number(tn, "seq"), text(tn, "url"), away, beside=thing_beside(r, kind, tn))
     })
     |> ignore
-    // pointed at, a link's card over it, a pull request's as a message's link to it shows it (thing_row's web_peek: at
+    // pointed at, a link's card over it, a pull request's as a message's link to it shows it (web_peek_node: at
     // its left, under it it would cover the rows after it)
     if kind != "files" {
       web_peek_node(b, src, r.station, fn() { text(t(), "url") }, fn() { words().0 }, side=Left, peek=fn() { text(t(), "peek") })
@@ -1079,11 +842,11 @@ fn thing_row_node(row : @view.View, src : Source, r : ChatRef, kind : String, t 
 }
 
 ///|
-/// A row's mark's side (thing_row's).
+/// A row's mark's side (thing_row_node's).
 let things_mark_side : Double = 16.0
 
 ///|
-/// Things made up, for what the page shows while they are read (things_sample's, as nodes) in `v`: the kinds' choice
+/// Things made up, for what the page shows while they are read in `v`: the kinds' choice
 /// and a few rows, `side`'s sides.
 fn things_sample_node(v : @view.View, side : () -> @ui.Style) -> Unit {
   v.box(fn(h) {
@@ -1122,7 +885,7 @@ fn things_sample_node(v : @view.View, side : () -> @ui.Style) -> Unit {
 }
 
 ///|
-/// How many made-up words each of the sample's rows is called (things_sample's), and its line under it.
+/// How many made-up words each of the sample's rows is called (things_sample_node's), and its line under it.
 // kept across runs: a value (no field of it changes)
 let things_sample_words : Array[Int] = [18, 24, 14, 20, 16]
 

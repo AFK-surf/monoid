@@ -1,31 +1,37 @@
 // A chat's web services and background jobs on the desktop: status a small dot
 // before the name and a word on the line under it; the chat bar's popover shows what matters now (JobsPopover), the
 // 任务 tab beside the chat everything (JobsTab). What a job's dot says, its word, the line under its name and every
-// time in words are the core's (its `chatJobs` view, `jobLog`); what is done goes through its calls.
+// time in words are the core's (its `chatJobs` view, `jobLog`); what is done goes through its calls. The 任务 tab is made
+// as nodes (jobs_tab_node.mbt), the popover too (jobs_pop_node.mbt); the old view's parts here are what is left of it.
 
 ///|
-/// What the jobs keep of their own: the job open in the popover ("" none: a signal, what the popover's nodes read,
-/// jobs_pop_node), the one picked in the 任务 tab ("" the first), whether the tab shows its output (else what it said).
+/// What the jobs keep of their own, each a signal (what the nodes read: jobs_pop_node, jobs_tab_node): the job open in
+/// the popover ("" none), the one picked in the 任务 tab ("" the first), whether the tab shows its output (else what it
+/// said).
 priv struct JobsOwn {
   open : @signals.Signal[String]
-  mut picked : String
-  mut output : Bool
+  picked : @signals.Signal[String]
+  output : @signals.Signal[Bool]
 }
 
 ///|
-let jobs_own : JobsOwn = { open: @signals.signal("", same=fn(a, b) { a == b }), picked: "", output: false }
+let jobs_own : JobsOwn = {
+  open: @signals.signal("", same=fn(a, b) { a == b }),
+  picked: @signals.signal("", same=fn(a, b) { a == b }),
+  output: @signals.signal(false, same=fn(a, b) { a == b }),
+}
 
 ///|
 fn jobs_reset() -> Unit {
   jobs_own.open.set("")
-  jobs_own.picked = ""
-  jobs_own.output = false
+  jobs_own.picked.set("")
+  jobs_own.output.set(false)
 }
 
 ///|
 /// The job picked in the 任务 tab (a row of the popover, a search's find).
 pub fn pick_job(id : String) -> Unit {
-  jobs_own.picked = id
+  jobs_own.picked.set(id)
 }
 
 ///|
@@ -380,168 +386,6 @@ fn job_action(c : @ui.Ctx, key : String, mark : () -> Unit, words : String, on :
 }
 
 ///|
-/// The 任务 tab beside the chat (JobsTab): every service and job that matters now; a service up or restarting
-/// opens its tab (`service`); a job picked (the first while none is) shows what it said, or its output as it grows,
-/// under its name, state and command.
-pub fn jobs_tab(c : @ui.Ctx, src : Source, station : String, chat : String, view : Json?, service : (String) -> Unit) -> Unit {
-  let all = items(view, "jobs")
-  if all.length() == 0 {
-    @sf.empty(c, fn() { c.text(@sf.t("web-main.jobs.noneInChat"), style=jobs_empty_words) |> ignore })
-    return
-  }
-  let services = all.filter(fn(j) { flag(Some(j), "service") })
-  let plain = all.filter(fn(j) { !flag(Some(j), "service") })
-  let job = match plain.iter().find_first(fn(j) { text(Some(j), "id") == jobs_own.picked }) {
-    Some(j) => Some(j)
-    None => plain.get(0)
-  }
-  c.box(style=jobs_tab_box, fn() {
-    // the list, 45% of the tab at most, scrolling past that (as tall as its rows and heads are, less)
-    let most = c.height * jobs_list_most
-    let heads = (if services.length() > 0 { 1 } else { 0 }) + (if plain.length() > 0 { 1 } else { 0 })
-    let tall = (services.length() + plain.length()).to_double() * job_row_h +
-      heads.to_double() * jobs_head_h +
-      jobs_list_room
-    let h = if tall < most { tall } else { most }
-    c.box(style=jobs_tab_list_room.then(@ui.style(h=Fixed(h))), fn() {
-      c.list("jobs-tab/" + chat, 1, 200.0, fn(_) {
-        c.box(style=jobs_tab_list, fn() {
-          if services.length() > 0 {
-            c.box(style=jobs_group, fn() {
-              jobs_head(c, @sf.t("web-main.jobs.services"), "")
-              for j in services {
-                let jv = Some(j)
-                let opens = text(jv, "tone") == "up" || text(jv, "tone") == "restart"
-                job_row(c, "jobs-tab/" + text(jv, "id"), jv, end=if opens { "arrow-right" } else { "" }, press=opens, on_press=fn() {
-                  service(text(jv, "id"))
-                })
-              }
-            })
-            |> ignore
-          }
-          if plain.length() > 0 {
-            c.box(style=if services.length() > 0 { jobs_group_after } else { jobs_group }, fn() {
-              jobs_head(c, @sf.t("web-main.jobs.jobs"), "")
-              for j in plain {
-                let jv = Some(j)
-                let id = text(jv, "id")
-                let on = match job {
-                  Some(p) => text(Some(p), "id") == id
-                  None => false
-                }
-                job_row(c, "jobs-tab/" + id, jv, selected=on, on_press=fn() {
-                  jobs_own.picked = id
-                })
-              }
-            })
-            |> ignore
-          }
-        })
-        |> ignore
-      })
-      |> ignore
-    })
-    |> ignore
-    match job {
-      Some(j) => job_detail(c, src, station, Some(j))
-      None => ()
-    }
-  })
-  |> ignore
-}
-
-///|
-/// A job picked in the 任务 tab (jobDetail): on the paper, its dot, name and state, what it said or its output (a
-/// choice of the two), its stop while it runs; its command under them, whole in its tip; then what it said with the
-/// time of day and its last output, or its output as it grows.
-fn job_detail(c : @ui.Ctx, src : Source, station : String, job : Json?) -> Unit {
-  let id = text(job, "id")
-  let running = text(job, "state") == "running"
-  c.box(style=job_detail_box.then(@sf.pane_foot_card()).then(job_detail_at(running)), fn() {
-    c.box(style=job_detail_head, fn() {
-      job_dot(c, text(job, "tone"))
-      c.text(text(job, "name"), style=job_detail_name) |> ignore
-      c.text(text(job, "detail"), style=job_detail_state) |> ignore
-      c.box(style=job_detail_grow, fn() {  }) |> ignore
-      // (kept as it is: the name and the state are what is cut short, as the web's segmented, flex: none)
-      c.box(style=job_detail_choice, keep=true, fn() {
-        let labels = [@sf.t("web-main.jobs.notices"), @sf.t("web-main.jobs.output")]
-        let picked = @sf.segmented(c, "jobs-tab/show", labels, if jobs_own.output { 1 } else { 0 })
-        jobs_own.output = picked == 1
-      })
-      |> ignore
-      if running {
-        let (stopping, failed) = job_stopping(src, station, job)
-        let sid = c.id("jobs-tab/stop")
-        c.on_press(sid, fn() {
-          if !stopping {
-            job_stop(src, station, job)
-          }
-        })
-        let b = c.box(style=job_detail_stop, id=sid, fn() {
-          if stopping || failed is Some(_) {
-            @settings.doing_mark(c, stopping, failed)
-          } else {
-            @sf.icon(c, "stop", size=16.0, color=if c.lit(sid) {
-              @sf.theme().p.text
-            } else {
-              @sf.theme().p.muted
-            })
-            |> ignore
-          }
-        })
-        c.semantics(b, Button, id=sid, label=@sf.t("web-main.jobs.stop"))
-        @sf.tip(c, "jobs-tab/stop", sid, @sf.t("web-main.jobs.stop"))
-      }
-    })
-    |> ignore
-    let command = text(job, "command")
-    if command != "" {
-      let cid = c.id("jobs-tab/command")
-      c.box(style=job_detail_command, id=cid, taps=false, points=true, fn() {
-        c.rich([@ui.span(command, mono=true)], style=job_command_words) |> ignore
-      })
-      |> ignore
-      @sf.tip(c, "jobs-tab/command", cid, command, repeats=true)
-    }
-    if jobs_own.output {
-      job_output(c, src, station, id)
-    } else {
-      c.box(style=job_detail_notices, fn() {
-        c.list("jobs-tab/notices/" + id, 1, 200.0, fn(_) { job_notices(c, job, clock=true) }) |> ignore
-      })
-      |> ignore
-      c.box(style=job_detail_last, fn() { job_last(c, src, station, job) }) |> ignore
-    }
-  })
-  |> ignore
-}
-
-///|
-/// A job's output (Output: its last 400 lines), in a terminal's colours as the core says them, following its end
-/// while it is scrolled there. (An old view's list, by the lines' places: built again each frame whatever came, each
-/// line's runs worked out once as it came, job_output_lines'.)
-fn job_output(c : @ui.Ctx, src : Source, station : String, id : String) -> Unit {
-  let t = @sf.theme()
-  c.box(style=job_output_box, fn() {
-    match @sfbase.job_output_lines(src, station, id, job_output_lines, t.p.text, t.dark) {
-      Some(o) if o.lines.is_empty() => c.text(@sf.t("web-main.jobs.noOutput"), style=job_output_none) |> ignore
-      Some(o) =>
-        c.list(
-          "jobs-tab/output/" + id,
-          o.lines.length(),
-          job_output_line,
-          fn(i) { c.rich(o.lines[i].runs, style=job_output_words) |> ignore },
-          stick_end=true,
-        )
-        |> ignore
-      None => @sf.wait_line(c, "", key="jobs-tab/output/" + id)
-    }
-  })
-  |> ignore
-}
-
-///|
 /// How much of a job's output is read (Output: 400), how tall a line of it is (11.5 on 1.6, about 18), how much of
 /// the tab its list may take (jobsTabList: 45%).
 let job_output_lines : Double = 400.0
@@ -745,10 +589,6 @@ let jobs_head_note : @ui.TextStyle = @ui.text_style(size=Meta, color=Subtle, wra
 let jobs_group : @ui.Style = @ui.css("w=Full gap=S1")
 
 ///|
-// kept across runs: a value (no field of it changes)
-let jobs_group_after : @ui.Style = @ui.css("w=Full pt=S1_5 gap=S1")
-
-///|
 /// The popover's groups, and a job opened in it (jobFold): its row and its body under it one piece on the pointer's
 /// ground, round as a row, 4 under it; the body 4 by 8 in, its words in the names' column (jobs_names_in).
 // kept across runs: a value (no field of it changes)
@@ -826,10 +666,6 @@ let jobs_tab_box : @ui.Style = @ui.css("w=Full h=Full")
 ///|
 // kept across runs: a value (no field of it changes)
 let jobs_tab_list_room : @ui.Style = @ui.css("w=Full")
-
-///|
-// kept across runs: a value (no field of it changes)
-let jobs_tab_list : @ui.Style = @ui.css("w=Full pt=S1 px=S2 pb=S2")
 
 ///|
 /// The job picked (jobDetail): a card across the tab's foot (in a panel's foot corners, concentric with them:
