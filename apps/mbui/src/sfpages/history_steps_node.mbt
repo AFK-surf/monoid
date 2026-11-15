@@ -439,94 +439,24 @@ fn steps_main_node(v : @view.View, body : (@view.View) -> Unit) -> Unit {
 }
 
 ///|
-/// Builds the single continuous side-rail path from the anchor points of an event whose header row is `head_h` tall
-/// (`20×20` icon centered at `x = 10.0`) and whose subordinate body below it is `body_h` tall:
-/// - When `body_h <= 2.0`: connects the icon's bottom anchor `(10.0, 20.0)` straight to the next event's top anchor
-///   `(10.0, head_h + 10.0)` when `rail_next` is true, or draws nothing when `rail_next` is false.
-/// - When `body_h > 2.0`: starts at the icon's bottom anchor `(10.0, 20.0)` (extending straight to `(10.0, head_h)` if
-///   the header wrapped), curves smoothly via a cubic Bézier to `(3.0, head_h + d)`, runs straight down beside `body`
-///   (`pl = S3`) to `(3.0, y_end - d)`, and at the bottom either curves symmetrically back to `(10.0, y_end)` and down
-///   to `(10.0, y_end + 10.0)` (when `rail_next` is true) or finishes with a rounded corner to `(10.0, y_end - d * 0.5)`.
-fn curved_rail_pts(head_h : Double, body_h : Double, rail_next : Bool) -> Array[Double] {
-  if body_h <= 2.0 {
-    if rail_next {
-      return [10.0, 20.0, 10.0, head_h + body_h + 10.0]
-    } else {
-      return []
-    }
-  }
-  let y_end = head_h + body_h
-  if body_h <= 14.0 {
-    let end_y = if rail_next { y_end + 10.0 } else { dmax(21.0, y_end - 1.0) }
-    return [10.0, 20.0, 10.0, end_y]
-  }
-  let d = dmin(6.0, dmax(4.0, (body_h - 4.0) * 0.5))
-  let top_end = head_h + d
-  let pts : Array[Double] = [10.0, 20.0]
-  if head_h > 20.5 {
-    pts.push(10.0)
-    pts.push(head_h)
-  }
-  @pixels.cubic_points(
-    pts,
-    10.0,
-    head_h,
-    10.0,
-    head_h + d * 0.5,
-    3.0,
-    top_end - d * 0.5,
-    3.0,
-    top_end,
-    2.0,
-  )
-  let bot_start = dmax(top_end, y_end - d)
-  if bot_start > top_end + 0.01 {
-    pts.push(3.0)
-    pts.push(bot_start)
-  }
+/// The side rail's points for an event whose header row is `head_h` tall (its `20×20` icon pulled `6px` left, centred
+/// at `x = 4.0`) and whose subordinate body below it (`pl = S3_5`, clear of the rail) is `body_h` tall. The rail is one
+/// straight line at `x = 4.0` from the icon's bottom `(4.0, 20.0)`:
+/// - on to the next event's icon (`head_h + body_h + 10.0`) when `rail_next` is true;
+/// - otherwise down beside the body to `2px` above its end, or nothing when there is no body.
+fn rail_pts(head_h : Double, body_h : Double, rail_next : Bool) -> Array[Double] {
   if rail_next {
-    let bot_end = bot_start + d
-    @pixels.cubic_points(
-      pts,
-      3.0,
-      bot_start,
-      3.0,
-      bot_start + d * 0.5,
-      10.0,
-      bot_end - d * 0.5,
-      10.0,
-      bot_end,
-      2.0,
-    )
-    if bot_end < y_end + 10.0 {
-      pts.push(10.0)
-      pts.push(y_end + 10.0)
-    }
+    [4.0, 20.0, 4.0, head_h + body_h + 10.0]
+  } else if body_h <= 2.0 {
+    []
   } else {
-    let r = d * 0.5
-    let k = r * 0.55228475
-    let bot_y = bot_start + r
-    @pixels.cubic_points(
-      pts,
-      3.0,
-      bot_start,
-      3.0,
-      bot_start + k,
-      3.0 + r - k,
-      bot_y,
-      3.0 + r,
-      bot_y,
-      2.0,
-    )
-    pts.push(10.0)
-    pts.push(bot_y)
+    [4.0, 20.0, 4.0, dmax(21.0, head_h + body_h - 2.0)]
   }
-  pts
 }
 
 ///|
-fn curved_rail_shapes(head_h : Double, body_h : Double, rail_next : Bool, color : Int64) -> Array[@ui.Shape] {
-  let pts = curved_rail_pts(head_h, body_h, rail_next)
+fn rail_shapes(head_h : Double, body_h : Double, rail_next : Bool, color : Int64) -> Array[@ui.Shape] {
+  let pts = rail_pts(head_h, body_h, rail_next)
   if pts.is_empty() {
     []
   } else {
@@ -536,8 +466,9 @@ fn curved_rail_shapes(head_h : Double, body_h : Double, rail_next : Bool, color 
 
 ///|
 /// Full-width event stack in `parent`: `head` renders the top event row (with its `20×20` `h_icon` centered at
-/// `x = 10.0`), `body` renders the subordinate block below it (indented by `pl = S3`), and an overlay rail connects
-/// from `(10.0, 20.0)` around `body` (`x = 10 -> 3 -> 10`) and on to the next event (`+10.0`) when `rail_next` is true.
+/// `x = 4.0`), `body` renders the subordinate block below it (indented by `pl = S3_5`), and an overlay rail runs
+/// straight down at `x = 4.0` from `(4.0, 20.0)` beside `body` and on to the next event (`+10.0`) when `rail_next` is
+/// true.
 fn event_stack_node(
   parent : @view.View,
   failed? : () -> Bool = fn() { false },
@@ -575,7 +506,7 @@ fn event_stack_node(
     |> ignore
     v.shapes(By(fn() {
       let color = @ui.tree_theme().color(if failed() { Danger } else { Line })
-      curved_rail_shapes(head_h(), body_h(), rail_next(), color)
+      rail_shapes(head_h(), body_h(), rail_next(), color)
     }))
     |> ignore
   })
@@ -634,7 +565,7 @@ fn ev_node(
       })
       p.shapes(By(fn() {
         let color = @ui.tree_theme().color(if tone == "red" { Danger } else { Line })
-        curved_rail_shapes(tall(), 0.0, rail || rail_last, color)
+        rail_shapes(tall(), 0.0, rail || rail_last, color)
       }))
       |> ignore
     })
@@ -883,7 +814,7 @@ fn steps_chevron_node(
 
 ///|
 /// An event in one line in `v`: `lead`, then `line` cut at its end; pressed (where there is more), what
-/// `whole` makes under it beside the curved side rail, the line giving way to 收起.
+/// `whole` makes under it beside the side rail, the line giving way to 收起.
 fn one_line_ev_node(
   v : @view.View,
   icon : String,
@@ -1742,7 +1673,7 @@ fn ev_live_node(
         make_ev(e)
         e.shapes(By(fn() {
           let color = @ui.tree_theme().color(if tone() == "red" { Danger } else { Line })
-          curved_rail_shapes(h, 0.0, has_rail(), color)
+          rail_shapes(h, 0.0, has_rail(), color)
         }))
         |> ignore
       })
@@ -1762,7 +1693,7 @@ fn ev_live_node(
         })
         p.shapes(By(fn() {
           let color = @ui.tree_theme().color(if tone() == "red" { Danger } else { Line })
-          curved_rail_shapes(tall(), 0.0, has_rail(), color)
+          rail_shapes(tall(), 0.0, has_rail(), color)
         }))
         |> ignore
       })
@@ -3347,24 +3278,24 @@ let h_turn_words : @ui.TextStyle = @ui.text_style(size=Caption, color=Muted, wra
 let h_main : @ui.Style = @ui.css("w=Full gap=S2_5")
 
 ///|
-/// An event (hEv): its 20 gutter and what it is, 8 apart.
+/// An event (hEv): its 20 gutter and what it is, 8 apart, pulled 6 left so its icon centres on the rail at `x = 4.0`.
 // kept across runs: a value (no field of it changes)
-let h_ev : @ui.Style = @ui.css("row w=Full gap=S2 align=AStart")
+let h_ev : @ui.Style = @ui.css("row w=Full gap=S2 align=AStart").then(@sf.outset_start(6.0))
 
 ///|
-/// A received message's body beside the event's curved side rail (`12px` left offset).
+/// A received message's body beside the event's side rail (`14px` left offset, clear of the rail at `x = 4.0`).
 // kept across runs: a value (no field of it changes)
-let h_received_body : @ui.Style = @ui.css("w=Full pl=S3 pt=S1_5 pb=S1_5")
+let h_received_body : @ui.Style = @ui.css("w=Full pl=S3_5 pt=S1 pb=S0_5")
 
 ///|
-/// A collapsed background task preview's body beside the event's curved side rail (`12px` left offset).
+/// A collapsed background task preview's body beside the event's side rail (`14px` left offset, clear of the rail at `x = 4.0`).
 // kept across runs: a value (no field of it changes)
-let h_task_preview_body : @ui.Style = @ui.css("w=Full pl=S3 pt=S1_5 pb=S1_5")
+let h_task_preview_body : @ui.Style = @ui.css("w=Full pl=S3_5 pt=S0_5 pb=S0_5")
 
 ///|
-/// A sent card or expanded note/task body beside the event's curved side rail (`12px` left offset).
+/// A sent card or expanded note/task body beside the event's side rail (`14px` left offset, clear of the rail at `x = 4.0`).
 // kept across runs: a value (no field of it changes)
-let h_post_body : @ui.Style = @ui.css("w=Full pl=S3 pt=S1_5 pb=S1_5")
+let h_post_body : @ui.Style = @ui.css("w=Full pl=S3_5 pt=S1 pb=S0_5")
 
 ///|
 /// An event's mark (hIcon): 20 square, on whatever it stands on: the turn's rail runs from under it, so nothing of it
@@ -3573,7 +3504,7 @@ let h_group : @ui.Style = @ui.css("w=Full")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let h_group_head : @ui.Style = @ui.css("row w=Full px=S1_5 gap=S2 align=ACenter radius=Lg hovered{bg=Hover}").then(@sf.outset(6.0))
+let h_group_head : @ui.Style = @ui.css("row w=Full pr=S1_5 gap=S2 align=ACenter radius=Lg hovered{bg=Hover}").then(@sf.outset(6.0))
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -3584,9 +3515,9 @@ let h_group_words : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=
 let h_group_hot : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Fg, wrap=false, w=Cut)
 
 ///|
-/// Its calls, opened (hSteps): 12px left offset beside the group's curved side rail (`x = 10 -> 3 -> 10`), 4 apart.
+/// Its calls, opened (hSteps): 14px left offset beside the group's straight side rail at `x = 4.0`, 4 apart.
 // kept across runs: a value (no field of it changes)
-let h_steps : @ui.Style = @ui.css("w=Full pl=S3 pt=S1_5 pb=S1_5 gap=S1")
+let h_steps : @ui.Style = @ui.css("w=Full pl=S3_5 pt=S1 pb=S1 gap=S1")
 
 ///|
 /// A call's line (hStep summary): aligned with the card below it, 8 apart, 12.

@@ -404,26 +404,16 @@ test "reused history rows strip i/ prefix when expanding groups and messages" {
 }
 
 ///|
-test "curved_rail_shapes connects icon anchors at x=10 and curves around body at x=3" {
-  // Single-line header with next event: straight vertical connector at x = 10
-  let s1 = curved_rail_shapes(20.0, 0.0, true, 0x000000FFL)
-  assert_eq(s1, [@ui.shape_of([([10.0, 20.0, 10.0, 30.0], false)], stroke=0x000000FFL, width=1.25)])
-  // Single-line or wrapped terminal header without subordinate body: no rail
-  assert_eq(curved_rail_shapes(20.0, 0.0, false, 0x000000FFL).length(), 0)
-  assert_eq(curved_rail_shapes(44.0, 0.0, false, 0x000000FFL).length(), 0)
-  // Event with body followed by next event vs terminal event with body
-  let s_next = curved_rail_shapes(20.0, 80.0, true, 0x000000FFL)
-  let s_end = curved_rail_shapes(20.0, 80.0, false, 0x000000FFL)
-  assert_eq(s_next.length(), 1)
-  assert_eq(s_end.length(), 1)
-  assert_true(s_next != s_end, msg="rail_next=true extends into next icon while rail_next=false hooks at bottom")
-  let pts_next = curved_rail_pts(20.0, 80.0, true)
-  // Top cubic curve starts at (10.0, 20.0) and reaches x = 3.0 at y = 26.0 (d = 6.0);
-  // bottom cubic curve starts at (3.0, 94.0), returns to x = 10.0 at y = 100.0, and continues to (10.0, 110.0).
-  assert_eq(pts_next[0], 10.0)
-  assert_eq(pts_next[1], 20.0)
-  assert_eq(pts_next[pts_next.length() - 4], 10.0)
-  assert_eq(pts_next[pts_next.length() - 3], 100.0)
-  assert_eq(pts_next[pts_next.length() - 2], 10.0)
-  assert_eq(pts_next[pts_next.length() - 1], 110.0)
+test "rail_shapes draws one straight line at x=4 from the icon down" {
+  let c = 0x000000FFL
+  // On to the next event: from the icon's bottom to the next icon, past any body
+  assert_eq(rail_shapes(20.0, 0.0, true, c), [@ui.shape_of([([4.0, 20.0, 4.0, 30.0], false)], stroke=c, width=1.25)])
+  assert_eq(rail_pts(20.0, 80.0, true), [4.0, 20.0, 4.0, 110.0])
+  assert_eq(rail_pts(44.0, 0.0, true), [4.0, 20.0, 4.0, 54.0])
+  // Last event without a body: no rail
+  assert_eq(rail_shapes(20.0, 0.0, false, c).length(), 0)
+  assert_eq(rail_shapes(44.0, 2.0, false, c).length(), 0)
+  // Last event with a body: down beside it, 2px short of its end
+  assert_eq(rail_pts(20.0, 80.0, false), [4.0, 20.0, 4.0, 98.0])
+  assert_eq(rail_pts(18.0, 3.0, false), [4.0, 20.0, 4.0, 21.0])
 }
