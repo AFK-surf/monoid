@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [891879d7a](https://github.com/AFK-surf/monoid/commit/891879d7a50ddc510fb9a0d022dfd51c6174dee7) app: a keyed op finds its item in a long list by w | 2.11 | 2.93 | 12.65 | 33.71 | 49.87 | 29.12 | 57.69 | 99.47 | 121.74 |
 | [9ac3baeb4](https://github.com/AFK-surf/monoid/commit/9ac3baeb4ee6fe958a997c1e2ab5379b3ce03b86) mbui view: a way's step tells how it is cut only a | 2.11 | 2.93 | 12.65 | 33.71 | 49.87 | 29.12 | 57.69 | 99.47 | 121.74 |
 | [dd46489e1](https://github.com/AFK-surf/monoid/commit/dd46489e1673879ef6adb0653a022a3ad0991ecc) base: what a program asks beside its links: a slow | 2.11 | 2.93 | 12.65 | 33.71 | 49.87 | 29.12 | 57.69 | 99.47 | 121.74 |
 | [6afb80ee2](https://github.com/AFK-surf/monoid/commit/6afb80ee2684720443af6369b1a7b29d5482d30e) app: what is sent from here and an outbox go by ke | 2.1 | 2.93 | 12.64 | 33.62 | 49.06 | 29.08 | 57.45 | 99.27 | 112.02 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [0d20e0816](https://github.com/AFK-surf/monoid/commit/0d20e081676812eb5e084c1f48df80b35d274f0c) station: what every agent should do, said to every | 2.07 | 2.85 | 12.28 | 33.19 | 47.84 | 28.76 | 56.62 | 98.7 | 112.95 |
 | [7f153d7b1](https://github.com/AFK-surf/monoid/commit/7f153d7b1cc3d7033af2cbf342440dd6478819a3) app: a station's terminal on the Mac, Android and  | 2.07 | 2.85 | 12.28 | 33.19 | 47.84 | 28.76 | 56.62 | 98.7 | 112.95 |
 | [ee5c2431a](https://github.com/AFK-surf/monoid/commit/ee5c2431ab810aae2c4f8f318b45f12e828e94b1) station: a post that goes on after all_done or nee | 2.07 | 2.84 | 12.25 | 32.14 | 45.35 | 28.72 | 56.51 | 98.7 | 112.95 |
-| [b62bd0ca3](https://github.com/AFK-surf/monoid/commit/b62bd0ca3adc9185480ec0015d0986bd66c942bf) mbui, app: a run begun before its Tester asks no h | 2.07 | 2.84 | 12.25 | 32.14 | 45.35 | 28.72 | 56.51 | 98.7 | 112.95 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [891879d7a](https://github.com/AFK-surf/monoid/commit/891879d7a50ddc510fb9a0d022dfd51c6174dee7) app: a keyed op finds its item in a long list by w | 0.41 | 0.53 | 1.98 | 3.09 | 4.56 | 1.47 | 3.81 | 57.44 |
 | [9ac3baeb4](https://github.com/AFK-surf/monoid/commit/9ac3baeb4ee6fe958a997c1e2ab5379b3ce03b86) mbui view: a way's step tells how it is cut only a | 0.41 | 0.53 | 1.98 | 3.09 | 4.56 | 1.46 | 3.81 | 57.36 |
 | [dd46489e1](https://github.com/AFK-surf/monoid/commit/dd46489e1673879ef6adb0653a022a3ad0991ecc) base: what a program asks beside its links: a slow | 0.41 | 0.53 | 1.98 | 3.09 | 4.56 | 1.46 | 3.81 | 57.48 |
 | [6afb80ee2](https://github.com/AFK-surf/monoid/commit/6afb80ee2684720443af6369b1a7b29d5482d30e) app: what is sent from here and an outbox go by ke | 0.41 | 0.53 | 1.98 | 3.09 | 4.56 | 1.46 | 3.81 | 57.48 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [0d20e0816](https://github.com/AFK-surf/monoid/commit/0d20e081676812eb5e084c1f48df80b35d274f0c) station: what every agent should do, said to every | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.31 |
 | [7f153d7b1](https://github.com/AFK-surf/monoid/commit/7f153d7b1cc3d7033af2cbf342440dd6478819a3) app: a station's terminal on the Mac, Android and  | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.21 |
 | [ee5c2431a](https://github.com/AFK-surf/monoid/commit/ee5c2431ab810aae2c4f8f318b45f12e828e94b1) station: a post that goes on after all_done or nee | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.21 |
-| [b62bd0ca3](https://github.com/AFK-surf/monoid/commit/b62bd0ca3adc9185480ec0015d0986bd66c942bf) mbui, app: a run begun before its Tester asks no h | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.53 |
