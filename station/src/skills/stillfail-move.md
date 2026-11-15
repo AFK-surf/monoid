@@ -37,7 +37,10 @@ How to go about it:
    moving, stopped, failed, cannot), what cannot move grouped by why (a count and a few examples each), what moving an
    item alone would stop here, what is lent there and what is stopped here (grouped by what it waits for). A module's
    items a page at a time: `plan {to, module, limit}` (at most 200; `more` names the last, give it as `after` for the
-   next page); one item: `plan {to, module, item}`. Tell the person what you found before moving anything big.
+   next page); one item: `plan {to, module, item}`. `room` says the chats' files in bytes (as far as measured: a
+   plan read starts measuring what changed) and what is free there. A whole move that would not leave that station
+   20 GB (or a tenth of its disk) free is refused before anything moves, counting only what it lacks (a room it has
+   already is not sent again); so is each chat. Tell the person what you found before moving anything big.
 2. One chat (try an unimportant one first on real stations): `move {to, module: "chats", item: "<session key>"}`. An
    account it needs that is not there yet is named in the answer: move it first (`withNeeds: true` does it in order).
 3. A batch: one `move` per item, or `withNeeds`. A whole station: `move {to, all: true}` posts a card in this chat that

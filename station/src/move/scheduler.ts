@@ -49,6 +49,9 @@ export type SchedulerDeps = {
   /// Why a turn with that station of `ws` cannot begin (move/station.ts `refusal`: switched off here or there); null:
   /// it can. Asked before anything is held.
   refusal?: (ws: string, station: string) => Promise<string | null>;
+  /// Why moving all of a plan's chats to that station does not fit on its disk (move/station.ts `roomForAll`); null: it
+  /// fits, or cannot be known. Asked of a whole move once its plan is read, before anything is held.
+  roomForAll?: (ws: string, station: string, plan: Plan) => Promise<string | null>;
   /// What keeps the station from updating itself while a turn goes on (updates/holds.ts `hold`): its let-go.
   hold?: () => () => void;
   /// What a turn under way as the station stopped says as its outcome, in the viewer's words.
@@ -382,6 +385,10 @@ export class Scheduler {
   async #move(ws: string, to: string, sel: Selection): Promise<Outcome> {
     const out: Outcome = { done: [], refused: [], stopped: [], resumed: [], failed: null };
     const plan = await this.plan(ws, to);
+    if (sel.all === true) {
+      const why = await this.#d.roomForAll?.(ws, to, plan);
+      if (why) throw new Said(why);
+    }
     this.#hold(ws, to, plan);
     const all = plan.items;
     const index = new Items(all);

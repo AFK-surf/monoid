@@ -145,6 +145,7 @@ export const MovesLive = Layer.effectDiscard(
       ask: (station, request) => bus.ask(station, request),
       setWait: (w) => void (moves.wait = w),
       refusal: (ws, station) => moves.refusal(ws, station),
+      room: (ws, station, ids) => moves.room(ws, station, ids),
     });
     bus.on("move.tool", async (peer, request, workspace) => {
       if (!inWorkspace(peer) || typeof workspace !== "string") throw new Error("not a station of this workspace");

@@ -35,12 +35,25 @@ let dir = "";
     fsp[x] = (path: unknown, data: unknown, ...rest: unknown[]) => {
       if (on.files && typeof path === "string" && dir !== "" && path.startsWith(dir)) {
         const name = basename(path).replace(/\.[0-9a-f]{8}\.tmp$/, "");
+        // (the chats' sizes, measured in the background a plan read starts (move/sizes.ts): no trip's)
+        if (name === "sizes.log") return was(path, data, ...rest);
         bytes[name] = (bytes[name] ?? 0) + Buffer.byteLength(typeof data === "string" ? data : String(data ?? ""));
       }
       return was(path, data, ...rest);
     };
   }
   syncBuiltinESMExports();
+}
+
+/// `f` done uncounted: the chats' sizing a plan read starts (move/sizes.ts), done at once in a test, is no trip's.
+export function uncounted<T>(f: () => T): T {
+  const was = { ...on };
+  on.files = on.rows = false;
+  try {
+    return f();
+  } finally {
+    Object.assign(on, was);
+  }
 }
 
 /// What a trip costs, counted from `start` to `stop`: bytes written under `under` by file, rows read by table.

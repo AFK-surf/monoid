@@ -24,7 +24,7 @@ import {
   type SessionBusy, type SessionRow, type SessionStats, type SessionThread, type StoreChange, type ThreadRow, type ThreadSummary,
   type CardChoice, type TurnFor, type TurnRow, type TurnSummary, type WidgetModel, type InWorkspace, AUTO, XSHARE_IDLE_MS, I64_MAX, MANUAL, STATION_AUTHOR, STILLFAIL_SURFACE, attachment, handedWs,
   byBytes, cardOf, entryColumns, jsonList, letterEntry, letterMessage, mergeEntries, optionsCard, parsed, stored, takeChars, toEntry, toJob, toMembership,
-  LAST_MESSAGE, LEGACY_LAST_MESSAGE, LEGACY_MESSAGES_BEFORE, LETTER_SQL, MESSAGES_BEFORE, MESSAGE_PAGE_ENTRIES, isLetter, liveShare, shareLive, toChatShare, toMessage, toOpened, toSession, toSessionThread, toThread, toTurnSummary, JOBS_RUNNING, JOBS_UP, JOB_AT_PORT, SESSION_JOBS, CARD_BEFORE, OPTIONS_BEFORE, SESSION_OF_RUNTIME, PEOPLE_AT,
+  LAST_MESSAGE, LEGACY_LAST_MESSAGE, LEGACY_MESSAGES_BEFORE, LETTER_SQL, MESSAGES_BEFORE, MESSAGE_PAGE_ENTRIES, isLetter, liveShare, shareLive, toChatShare, toMessage, toOpened, toSession, toSessionThread, toThread, toTurnSummary, JOBS_RUNNING, JOBS_UP, JOB_AT_PORT, LAST_JOBS_OF, JOBS_BY_ROWID, SESSION_JOBS, CARD_BEFORE, OPTIONS_BEFORE, SESSION_OF_RUNTIME, PEOPLE_AT,
 } from "./rows.ts";
 import { SCHEMA, SCHEMA_VERSION, addArchiveColumns, addEditIndex, repairMergedEditLookup, addRuntimeSessionRuntime, hasRuntimeOrderIndex, addCardOutcomes, addListState, addLetters, addPendingCards, addSessionTurns, addSessionWork, addTellIndexes, addThreadIndexes, addUsageCompactions, addAutoTitleColumns, addClientColumn, addLetterColumn, addQueueColumns, addSizeColumn, addSmallJobColumn, addUsageColumns, addUsageQuarters, addUsageTotals, addWaitWatchColumn, addWatchColumn, addWorkspaceColumns, addOpenerTitle, addLedColumn, addLeftColumn } from "./schema.ts";
 import { installUsageCompactions, usageCompactionsReady } from "./usage-compactions.ts";
@@ -3911,6 +3911,18 @@ export class Store {
   /// chat's hold reads, never every job up on the station.
   jobsUpOf(keys: readonly string[]): JobRow[] {
     return keys.flatMap((k) => this.upJobIds(k).flatMap((id) => this.getJob(id) ?? [])).sort((a, b) => b.startedAt - a.startedAt);
+  }
+
+  /// Of each of sessions `keys` that has had a job, its last job made (by the index) and where that stands (its end, or
+  /// its state): what a room's size is kept against (move/sizes.ts), as a job's build writes in it. Two statements
+  /// whatever the keys.
+  jobsMarkOf(keys: readonly string[]): Map<string, string> {
+    const out = new Map<string, string>();
+    if (keys.length === 0) return out;
+    const last = this.#all(LAST_JOBS_OF, JSON.stringify(keys)) as { k: string; r: number }[];
+    const at = new Map((this.#all(JOBS_BY_ROWID, JSON.stringify(last.map((x) => x.r))) as { r: number; e: number | null; state: string }[]).map((x) => [x.r, x]));
+    for (const x of last) out.set(x.k, `${x.r}/${at.get(x.r)?.e ?? at.get(x.r)?.state ?? ""}`);
+    return out;
   }
 
   /// The service holding a port, including one waiting to restart.

@@ -232,7 +232,7 @@ function readAll<T>(at: string): T[] {
   return out;
 }
 
-const roomHere = (data: string) => async () => {
+export const roomHere = (data: string) => async () => {
   const s = await statfs(data).catch(() => null);
   return { free: s === null ? null : Number(s.bavail) * Number(s.bsize), total: s === null ? null : Number(s.blocks) * Number(s.bsize) };
 };
@@ -667,11 +667,14 @@ export class Handover {
     const g: Gathered = await this.#work.gather(d.data, db, o.ws, false, scratch(d.data, o.id), undefined, null, o.keys).catch((e) => Promise.reject(carryWords(e)));
     // (a file of its room this station cannot read: the chat does not go, rather than go without it)
     if ((g.unreadableCount ?? 0) > 0) throw new Said(why("cannotRead", { path: (g.unreadable ?? []).join("、"), count: g.unreadableCount }));
-    // (what it takes there: its bytes and a twentieth more for what placing them makes, leaving the floor free)
-    const need = g.bytes + Math.ceil(g.bytes / 20);
     const floor = floorOf(typeof begun?.total === "number" ? begun.total : null);
+    // (what it adds there, held before it is placed: what that station lacks of it, a twentieth more for what placing
+    // makes; what it has in place already, a room left there before, is not sent and adds nothing)
+    const fits = (adds: number) => {
+      const need = adds + Math.ceil(adds / 20);
+      if (typeof begun?.free === "number" && begun.free - need < floor) throw new Said(why("noRoom", { station: o.toName || o.to.slice(0, 12), free: gb(begun.free), need: gb(need), floor: gb(floor) }));
+    };
     if (g.gits > 0 && begun?.git === false) throw new Said(why("noGit", { station: o.toName || o.to.slice(0, 12), n: g.gits }));
-    if (typeof begun?.free === "number" && begun.free - need < floor) throw new Said(why("noRoom", { station: o.toName || o.to.slice(0, 12), free: gb(begun.free), need: gb(need), floor: gb(floor) }));
     d.fail?.("files");
     const carry = await sendGathered(g, {
       // (where each goes and how big, so that what is in place there already is not sent again)
@@ -682,6 +685,7 @@ export class Handover {
         return answer;
       },
       most: d.lackMost ?? LACK_MOST,
+      ...(held ? {} : { adds: fits }),
       stopping: () => this.#closed || o.abandoned === true,
       total: (bytes) => void (held || (o.total = bytes, o.done = 0, progress?.({ done: 0, total: bytes, unit: "bytes" }))),
       done: (bytes) => void (held || (o.done += bytes, progress?.({ done: o.done, total: o.total, unit: "bytes" }))),

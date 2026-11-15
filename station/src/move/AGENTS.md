@@ -93,8 +93,17 @@ chats paused 18 minutes, a half-moved state, no way back), whose start stays swi
   here, not posted again (`keptSends`, `keepSends`).
 - A chat's files go twice (`station/src/replica/handover.ts`): first while it works, then held only for what changed
   since, the station it goes to keeping what the first placed (`placed.txt`), so its pause does not grow with its room.
-  It goes only where it leaves the floor free (handover.ts `floorOf`: the larger of 20 GiB and a tenth of that disk),
-  refused in numbers before it is held.
+  It goes only where what it adds there leaves the floor free (handover.ts `floorOf`: the larger of 20 GiB and a tenth
+  of that disk): what that station lacks of it (sending.ts `adds`, asked before anything is sent), never its whole
+  size, as a room left there before (a retirement's, the same paths) takes what arrives in its place (the real run,
+  2026-11-15: 110 chats moved to Office-Host-2 and its free bytes did not fall). Refused in numbers before it is held.
+- What a move would send of each chat is known before it starts (`sizes.ts`): sized by the gathering's own walk in its
+  thread (carry-worker.ts `sizes`, so the same files, bounded a session, said at least past it), kept a line a session
+  (`sizes.log`) against the session as it was (chats.ts `stampOf`: its last activity, archived or not, its last job and
+  where that stands); a plan read starts one pass over those whose stamp changed and looks at no other room. A whole
+  move waits for that pass, asks the other what it has where each chat would go (`move.sizes`, sized there the same
+  way) and its disk (`move.open`), and is refused before anything is held where what it adds would leave less than the
+  floor (`roomForAll`); one that answers neither is refused by no sum, each chat checked as it goes.
 - A turn holds the station's self-update from its first item to its end, and the station taking a request or a chat
   holds it while it does (`station/src/updates/holds.ts`). A turn cut by a stop is kept as `last` saying so (`turn.json`); as
   the station starts, and as a station is heard from again, what waits for an item that is here goes on

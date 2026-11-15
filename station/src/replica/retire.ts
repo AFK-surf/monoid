@@ -48,7 +48,7 @@ import type { Fibers } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { platform } from "../platform/index.ts";
 import { knownOf, localOf } from "../connects/remote.ts";
-import type { CarriedJob, CarriedSession, CarryIndex, Gathered } from "./carry-worker.ts";
+import type { CarriedJob, CarriedSession, CarryIndex, Gathered, Sized, Sizing } from "./carry-worker.ts";
 import { GEN, HASH, STATION, WORKSPACE } from "./format.ts";
 import { FolderPlace } from "./places.ts";
 import type { Ask } from "./peers.ts";
@@ -297,6 +297,8 @@ function inThread<T>(asked: Record<string, unknown>, signal?: AbortSignal): Prom
 }
 export const gatherSoon = (dataDir: string, db: string, ws: string, home: boolean, scratch: string, signal?: AbortSignal, agent: string | null = null, keys: readonly string[] | null = null) => inThread<Gathered>({ op: "gather", dataDir, db, ws, home, scratch, agent, keys }, signal);
 export const placeSoon = (dataDir: string, index: string, from: string, made: string | null = null, aside: string | null = null, placed: string | null = null, projects = false) => inThread<{ placed: number; missing: number; kept: number }>({ op: "place", dataDir, index, from, made, aside, placed, projects });
+/// carry-worker.ts `sizes` in a thread of its own.
+export const sizesSoon = (dataDir: string, db: string, keys: readonly string[], sizing: Sizing) => inThread<Sized[]>({ op: "sizes", dataDir, db, keys, sizing });
 export const previewSoon = (dataDir: string, db: string, ws: string, home: boolean) => inThread<{ chats: number; archived: number; outside: number }>({ op: "preview", dataDir, db, ws, home });
 
 /// What a retirement of a workspace would move, as the app shows it before a person retires the station (GET

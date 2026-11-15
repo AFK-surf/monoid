@@ -64,6 +64,8 @@ export type MoveAsksDeps = {
   setWait?: (wait: boolean) => void;
   /// Why a move or a move back with that station cannot begin (move/station.ts `refusal`: switched off here or there).
   refusal?: (ws: string, station: string) => Promise<string | null>;
+  /// What a move to that station would send of chats `ids` and what is free there (move/station.ts `room`).
+  room?: (ws: string, station: string, ids: string[]) => Promise<Json>;
 };
 
 export class MoveAsks {
@@ -130,7 +132,10 @@ export class MoveAsks {
           return { item: brief(x) };
         }
         if (sel.module !== undefined) return pageOf(plan, sel.module, typeof args.after === "string" ? args.after : null, typeof args.limit === "number" ? args.limit : PAGE);
-        return { summary: summaryOf(plan, this.#d.scheduler.stopped()), say: planWords(plan, to?.name ?? "", status) };
+        // (the bytes of the chats that would go, as far as they are measured, and the free bytes there)
+        const going = plan.items.filter((x) => x.module === "chats" && x.state !== "there").map((x) => x.id);
+        const room = (await this.#d.room?.(ws, to?.id ?? "", going).catch(() => null)) ?? null;
+        return { summary: { ...summaryOf(plan, this.#d.scheduler.stopped()), ...(room !== null ? { room } : {}) }, say: `${planWords(plan, to?.name ?? "", status)}${room !== null ? ` ${roomWords(room)}` : ""}` };
       }
       case "move": {
         const to = this.#station(ws, args.to);
@@ -308,6 +313,13 @@ export function outcomeOf(out: Outcome): Json {
     cut[k] = (xs as unknown[]).slice(0, PAGE);
   }
   return { ...cut, failed: out.failed === null ? null : { item: out.failed.item, error: short(out.failed.error) }, counts };
+}
+
+/// What a move would send and what is free there, in words.
+export function roomWords(r: Json): string {
+  const known = r.measuring > 0 ? `${r.known} of ${r.of} chats measured, ${r.measuring} being measured` : `all ${r.of} chats measured`;
+  const there = typeof r.freeThere === "string" ? ` ${r.freeThere} free there, ${r.floorThere} of it kept free; what is in place there already is not sent again, so a whole move asks it first what it has of each room.` : "";
+  return `Their files: ${r.sends} (${known}).${there}`;
 }
 
 /// A list said in words: a few of it, and how many more (a whole station's turn is thousands of items).

@@ -236,6 +236,8 @@ for (const n of [300, 2_384]) {
     const first = watchFiles();
     const before = await a.moves.scheduler.plan(WS, B);
     first.stop();
+    // (the chats' sizes the first read set measuring, in their own thread on a station: measured before the count)
+    await a.moves.sizes.settled();
     assert.ok(first.total() <= filesMost(worktrees), `${first.total()} calls of the file system for the first plan of ${n} chats: at most ${filesMost(worktrees)}, a worktree's gitdir read once`);
     const w = watch(a.rig.store);
     const f = watchFiles();

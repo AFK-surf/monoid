@@ -1,6 +1,7 @@
 // The stations of a workspace as the migration's tests make them (chat-handover*.test.ts, move-plan-bounded.test.ts):
 // each a Rig (hub-fakes.ts) with its connects (connects/workspace.ts) and its moves (move/station.ts), over a transport
 // of the test's; and a station shaped like the one moving was measured for (`officeShape`).
+import { uncounted } from "./move-bounded.ts";
 import { execFileSync } from "node:child_process";
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, readdirSync, statSync, utimesSync, writeFileSync } from "node:fs";
@@ -9,7 +10,7 @@ import { afterEach } from "node:test";
 import { PeerBus, bytesOf, withBytes } from "../src/mesh/bus.ts";
 import { WorkspaceConnects } from "../src/connects/workspace.ts";
 import { Fibers } from "../src/ops/fibers.ts";
-import { gather, place } from "../src/replica/carry-worker.ts";
+import { gather, place, sizes } from "../src/replica/carry-worker.ts";
 import type { CarriedJob } from "../src/replica/carry-worker.ts";
 import { hubConfig } from "../src/sessions/config.ts";
 import { newSession, say } from "../src/sessions/lifecycle.ts";
@@ -58,7 +59,7 @@ export type Station = {
   placed?: () => void;
   /// Its routes of move/routes.ts, as a device asks them.
   ask(method: string, path: string, body: Json, role?: string, query?: [string, string][]): Promise<{ status: number; body: Json }>;
-  jobs: (CarriedJob & { id: string })[]; started: string[]; free: number; total?: number; fails: Set<string>; onFail: ((step: string) => void) | null;
+  jobs: (CarriedJob & { id: string })[]; started: string[]; free: number; total?: number; sized: string[]; fails: Set<string>; onFail: ((step: string) => void) | null;
   /// The jobs' rows read so far, as the store reads them (live.ts `up`): a session's by its index, a workspace's whole.
   jobsRead: number;
   /// Its own connects' surfaces, by their id here; git run as the station runs it.
@@ -81,7 +82,7 @@ export function world(ids: string[] = [A, B]) {
   let tamper: ((to: string, request: Json) => Json) | null = null;
   const make = (id: string): Station => {
     const rig = new Rig({ place: { workspace: WS, station: id }, workspaces: [WS], fileStore: true, clock: t.clock });
-    const st = { id, rig, up: true, on: true, holds: 0, jobs: [], started: [], free: 1e15, fails: new Set<string>(), onFail: null, jobsRead: 0 } as unknown as Station;
+    const st = { id, rig, up: true, on: true, holds: 0, jobs: [], started: [], free: 1e15, sized: [], fails: new Set<string>(), onFail: null, jobsRead: 0 } as unknown as Station;
     st.bus = new PeerBus({ sleep: async () => {} });
     st.bus.attach(async (to, ws, request) => {
       const there = stations.get(to);
@@ -147,6 +148,11 @@ export function world(ids: string[] = [A, B]) {
         reposDir: join(rig.dir, "repos"),
         clonesElsewhere: async () => st.elsewhere ?? [],
         room: async () => ({ free: st.free, total: st.total ?? null }),
+        // (sized as a move would gather them, at once; each session sized here named, the other side's by its places)
+        sizes: async (keys, sizing) => {
+          st.sized.push(...keys, ...(sizing.places ?? []).map((p) => `there:${p.key}`));
+          return uncounted(() => sizes(rig.dir, join(rig.dir, "stillfail.db"), keys, sizing));
+        },
         hasGit: async () => true,
         lackMost: 50,
         work: {

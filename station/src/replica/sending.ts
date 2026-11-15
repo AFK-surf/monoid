@@ -28,7 +28,49 @@ export type Sending = {
   /// The bytes the index names, as it is read (`total`), and `done` of them as each goes (or was there).
   total(bytes: number): void;
   done(bytes: number): void;
+  /// Told, before any file is sent, the bytes of what the other lacks (each file it has not in place, once): what the
+  /// sending adds to its disk at the most, all of it held there before it is placed. Throws to send nothing.
+  adds?(bytes: number): Promise<void> | void;
 };
+
+/// The bytes of what the other lacks of `index`'s sessions' files (each by its hash once), asked as the sending asks.
+async function lackingBytes(index: CarryIndex, to: Sending): Promise<number> {
+  const counted = new Set<string>();
+  let bytes = 0;
+  const ask = async (batch: { hash: string; path: string; size: number; mtimeMs?: number; room?: string }[]) => {
+    if (batch.length === 0) return;
+    const asked = [...new Set(batch.map((f) => f.hash))];
+    const answer = await to.lacking(asked, batch);
+    const lacking = new Set<string>(Array.isArray(answer?.lacking) ? answer.lacking : asked);
+    for (const f of batch) {
+      if (!lacking.has(f.hash) || counted.has(f.hash)) continue;
+      counted.add(f.hash);
+      bytes += f.size;
+    }
+  };
+  for (const session of [...index.sessions, ...(index.agent ? [index.agent] : [])]) {
+    let batch: { hash: string; path: string; size: number; mtimeMs?: number; room?: string }[] = [];
+    const room = "workspace" in session && typeof session.workspace === "string" ? session.workspace : undefined;
+    const lines = createInterface({ input: createReadStream(session.at), crlfDelay: Infinity });
+    try {
+      for await (const line of lines) {
+        if (to.stopping()) return bytes;
+        if (line === "") continue;
+        const f = JSON.parse(line);
+        if (typeof f?.hash !== "string") continue;
+        batch.push({ hash: f.hash, path: f.path, size: f.size, mtimeMs: f.mtimeMs, ...(room !== undefined ? { room } : {}) });
+        if (batch.length >= to.most) {
+          await ask(batch);
+          batch = [];
+        }
+      }
+    } finally {
+      lines.close();
+    }
+    await ask(batch);
+  }
+  return bytes;
+}
 
 /// What the gathering `g` names that the other station lacks, sent: each session's list as it streams, then the list
 /// itself (`strict`); the bundles; the index last (with `jobs` in it), its hash said back (null: stopped, or not
@@ -37,6 +79,7 @@ export type Sending = {
 /// `indexed`: the index put (its hash said back) where not `strict` too, so what was sent can be placed already.
 export async function sendGathered(g: Gathered, to: Sending, strict: boolean, jobs: unknown[] = [], indexed = false): Promise<string | null> {
   const index = JSON.parse(await readFile(g.index, "utf8")) as CarryIndex;
+  if (to.adds !== undefined) await to.adds(await lackingBytes(index, to));
   to.total(index.bytes);
   for (const session of [...index.sessions, ...(index.agent ? [index.agent] : [])]) {
     let batch: { hash: string; path: string; size: number; mtimeMs?: number; room?: string }[] = [];

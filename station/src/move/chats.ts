@@ -48,7 +48,13 @@ export type ChatsDeps = {
   wait?: () => boolean;
   /// What a plan of `ws` reads once (move/station.ts), where the scheduler gave none.
   reads: (ws: string) => PlanReads;
+  /// What a move would send of each chat (sizes.ts): told each chat here the plan read, its sessions as they are now.
+  sizes?: { seen(id: string, sessions: { key: string; stamp: string }[]): void };
 };
+
+/// What a session's room is measured against (sizes.ts): its last activity (a turn's start and end), whether it is
+/// archived (its workspace packed), and its last job and where that stands.
+export const stampOf = (row: { lastActiveAt: number; archivedAt: number | null } | null, job: string | undefined) => (row === null ? "" : `${row.lastActiveAt}/${row.archivedAt ?? ""}/${job ?? ""}`);
 
 export function chatsModule(d: ChatsDeps): Module {
   const keysOf = (item: Item) => d.handover.together(item.id);
@@ -73,6 +79,8 @@ export function chatsModule(d: ChatsDeps): Module {
           kept.push({ key, row, keys });
         }
         const grants = d.vaultsOf([...new Set(kept.flatMap((x) => x.keys))], ws);
+        // (each chat's sessions' jobs as they stand, for its size's stamp: two statements a page)
+        const jobs = d.sizes === undefined ? new Map<string, string>() : d.store.jobsMarkOf([...new Set(kept.filter((x) => d.store.handedTo(x.key) === null).flatMap((x) => x.keys))]);
         // (a chat of a key live there already went on there apart from this one: it cannot go, never merged into;
         // asked once a page; not answered, whether it has them is not guessed: the page's chats here cannot go this turn,
         // nothing of them tried (the hand-over asks it again at its begin all the same))
@@ -107,6 +115,7 @@ export function chatsModule(d: ChatsDeps): Module {
           for (const id of repos) needs.push({ module: "repos", id });
           for (const id of new Set(keys.flatMap((k) => grants.get(k) ?? []))) needs.push({ module: "vault", id });
           const handed = d.store.handedTo(key);
+          if (handed === null) d.sizes?.seen(keys[0]!, keys.map((k) => ({ key: k, stamp: stampOf(reads.session(k), jobs.get(k)) })));
           const live = handed !== null ? [] : keys.filter((k) => liveThere.has(k));
           const unknown = handed === null && failed !== null;
           const why = handed !== null ? null : unknown ? unanswered(failed) : live.length > 0 ? liveHereWords(live, thereName) : d.handover.check(key, to, { planning: true, reads });
