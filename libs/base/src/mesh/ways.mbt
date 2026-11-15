@@ -996,7 +996,7 @@ async fn Mesh::pinned_endpoint(self : Mesh, way : String) -> Json? {
       Some(endpoint)
     }
     Did(endpoint) => {
-      self.shell.tell("iroh.close", { "id": endpoint })
+      self.shell.tell("iroh.close", { "id": endpoint, "forget": true })
       ignore(one.ready.succeed(None))
       None
     }
@@ -1033,7 +1033,7 @@ fn Mesh::release_pinned(self : Mesh) -> Unit {
   for way in self.pinned.keys().to_array() {
     guard !used.contains(way) && self.pinned.get(way) is Some({ endpoint: Some(endpoint), .. }) else { continue }
     self.pinned.remove(way)
-    self.shell.tell("iroh.close", { "id": endpoint })
+    self.shell.tell("iroh.close", { "id": endpoint, "forget": true })
   }
 }
 

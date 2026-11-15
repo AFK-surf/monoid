@@ -257,6 +257,8 @@ pub struct Reply {
   priv stream : Stream
   /// What came with the head line and was not taken yet.
   priv mut carry : Bytes?
+  /// Its body was asked for (`take`, `rest`): nothing of it is the shell's to read for another (`tap`) after.
+  priv mut started : Bool
   priv mut done : Bool
   /// Let go of (`cancel`, a read that failed): nothing more goes out on its stream either (`Out`).
   priv mut gone : Bool
@@ -292,6 +294,7 @@ pub async fn Reply::take(self : Reply) -> Bytes? {
 
 ///|
 async fn Reply::taken(self : Reply) -> Bytes? {
+  self.started = true
   if self.carry is Some(carry) {
     self.carry = None
     return Some(carry)
@@ -353,6 +356,33 @@ fn joined(pieces : Array[Bytes], length : Int) -> Bytes {
 ///|
 /// `all` as the bytes they are, not copied: nothing writes it after.
 fn as_bytes(all : FixedArray[Byte]) -> Bytes = "%identity"
+
+///|
+/// Hands what follows its head to the shell to read itself (`istream.tap`), for its program's call `call`: what
+/// came with the head line goes with it, so the shell reads from the body's first byte. True where the shell took
+/// it: what `take` gives after is what the shell reads on past it for the program. False, with nothing changed (its
+/// body still read whole from its first byte), where the shell would not or has no such op (a page's), or where it
+/// is too late: its body was asked for already (`take`, `rest`), it ended or was let go of, or `call` is negative.
+pub async fn Reply::tap(self : Reply, call : Int64) -> Bool {
+  if self.started || self.done || self.gone || call < 0L {
+    return false
+  }
+  let prefix = self.carry.unwrap_or(b"")
+  self.carry = None
+  let said = attempt(() => self.stream.shell.call(
+    "istream.tap",
+    { "id": self.stream.id, "call": Json::number(call.to_double()) },
+    bytes=prefix,
+  ))
+  if said is Did({ json: { "tapped": True, .. }, .. }) {
+    return true
+  }
+  // (not taken: what came with the head is its program's again, unless something took the body meanwhile)
+  if prefix.length() > 0 && !self.started && !self.gone {
+    self.carry = Some(prefix)
+  }
+  false
+}
 
 ///|
 /// Lets go of it: its stream is stopped both ways (nothing more is read, the peer stops sending).
@@ -496,6 +526,7 @@ async fn Link::sent(self : Link, head : String, body : Bytes, finish : Bool, wro
         link: self,
         stream,
         carry: if with_head.length() > 0 { Some(with_head) } else { None },
+        started: false,
         done: false,
         gone: false,
         went: @effect.Deferred::new(),

@@ -1214,15 +1214,15 @@ pub async fn Mesh::close(self : Mesh) -> Unit {
   self.rebinding = false
   @effect.uninterruptible(() => {
     for link in open {
-      ignore(attempt(() => self.shell.call("conn.close", { "id": link.conn, "code": 0, "reason": "closed" })))
+      ignore(attempt(() => self.shell.call("conn.close", { "id": link.conn, "code": 0, "reason": "closed", "forget": true })))
     }
     for incoming in taken {
-      ignore(attempt(() => self.shell.call("conn.close", { "id": incoming.conn, "code": 0, "reason": "closed" })))
+      ignore(attempt(() => self.shell.call("conn.close", { "id": incoming.conn, "code": 0, "reason": "closed", "forget": true })))
     }
     // (with it go the connections on it nobody took, and the wait for the next: `iroh.close`, in both shells)
-    ignore(attempt(() => self.shell.call("iroh.close", { "id": self.endpoint })))
+    ignore(attempt(() => self.shell.call("iroh.close", { "id": self.endpoint, "forget": true })))
     for endpoint in pinned {
-      ignore(attempt(() => self.shell.call("iroh.close", { "id": endpoint })))
+      ignore(attempt(() => self.shell.call("iroh.close", { "id": endpoint, "forget": true })))
     }
   })
 }

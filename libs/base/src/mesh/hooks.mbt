@@ -103,9 +103,9 @@ fn bytes_of_hex(text : String) -> Bytes {
 }
 
 ///|
-/// Whether a view's sound may be asked as Opus: what the shell says the endpoint decodes (`iroh.opus`).
+/// Whether a view's sound may be asked as Opus: what the shell says it decodes (`tap.opus`, answered at once).
 pub fn Mesh::decodes_opus(self : Mesh) -> Bool {
-  (self.shell.ask("iroh.opus", { "id": self.endpoint }) catch { _ => Json::boolean(false) }) is True
+  (self.shell.ask("tap.opus", {}) catch { _ => Json::boolean(false) }) is True
 }
 
 ///|
@@ -127,17 +127,17 @@ pub async fn Mesh::migrate(self : Mesh, secret : Bytes) -> Unit {
   let endpoint = bind(self.shell, self.relays, self.options.relay_only, self.binding, self.entries, secret)
   // (this waited: closed meanwhile, or taken over by another, the endpoint that came is nobody's)
   guard !self.closed && !self.rebinding else {
-    self.shell.tell("iroh.close", { "id": endpoint })
+    self.shell.tell("iroh.close", { "id": endpoint, "forget": true })
     raise failed("closed")
   }
   (self.store.set)(device_key, secret) catch {
     e => {
-      self.shell.tell("iroh.close", { "id": endpoint })
+      self.shell.tell("iroh.close", { "id": endpoint, "forget": true })
       raise MeshError(code="host", message=text_of(e), cause="")
     }
   }
   guard !self.closed && !self.rebinding else {
-    self.shell.tell("iroh.close", { "id": endpoint })
+    self.shell.tell("iroh.close", { "id": endpoint, "forget": true })
     raise failed("closed")
   }
   let id = match (self.shell.ask("iroh.endpointId", { "id": endpoint }) catch { _ => Json::null() }) {
@@ -164,7 +164,7 @@ pub async fn Mesh::migrate(self : Mesh, secret : Bytes) -> Unit {
   self.forget_coming()
   for way in self.pinned.keys().to_array() {
     if self.pinned.get(way) is Some({ endpoint: Some(pinned), .. }) {
-      self.shell.tell("iroh.close", { "id": pinned })
+      self.shell.tell("iroh.close", { "id": pinned, "forget": true })
     }
   }
   self.pinned.clear()
@@ -175,5 +175,5 @@ pub async fn Mesh::migrate(self : Mesh, secret : Bytes) -> Unit {
   self.stuck = false
   self.changed()
   self.eased()
-  self.shell.tell("iroh.close", { "id": old })
+  self.shell.tell("iroh.close", { "id": old, "forget": true })
 }

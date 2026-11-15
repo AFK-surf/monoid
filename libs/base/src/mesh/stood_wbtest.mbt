@@ -20,6 +20,9 @@
 //   far.sends(4, b"…"), far.finish(4)       the peer sends on stream 4, ends its sending there;
 //   far.reset(4, 7)                       stops it both ways with that code: the device's read and write there fail.
 //   far.got(4)                            what the device wrote on stream 4 since it was open both ways, taken.
+//   far.taps = Some(true)                 a stream handed to the shell to read itself (`istream.tap`) is taken
+//                                          (false: answered not taken; none, as unless said: no such op), each
+//                                          kept in far.tapped (`<stream> <call> <bytes handed>`); its reads go on.
 //   far.cut_as_end = true                 a read that waits as its connection ends is answered the stream's end,
 //                                          not a failure: as the Rust shell can answer one it wakes then.
 //
@@ -38,7 +41,7 @@
 //   stood.rx[2] = 100.0                   what the transport says came on connection 2 so far (`conn.stats`);
 //                                          stood.tx[2] what went out; stood.paths_of[2] its ways (`conn.paths`).
 //   stood.dht = Some({"lines": …})        what the shell's DHT says once (`dht.said`), then nothing; none: no op.
-//   stood.signs = Some({…}), stood.opus   what `ed25519.sign` and `iroh.opus` answer; none: the shell has no such op.
+//   stood.signs = Some({…}), stood.opus   what `ed25519.sign` and `tap.opus` answer; none: the shell has no such op.
 //   stood.on_relay = false                the endpoint is on no relay yet (`iroh.relayStatus`): an opening's time
 //                                          is not counted until it is.
 //   stood.holding = "iroh.bind" … stood.bound()        an endpoint bound again is the test's to answer: the next
@@ -110,7 +113,7 @@ priv struct Stood {
   mut dht : Json?
   dht_keeps : Array[Bool]
   /// What the shell answers `ed25519.sign` (none: it has no such op) and what it was asked; whether the endpoint
-  /// decodes Opus (`iroh.opus`; none: no such op).
+  /// decodes Opus (`tap.opus`; none: no such op).
   mut signs : Json?
   sign_asks : Array[String]
   mut opus : Bool?
@@ -278,8 +281,8 @@ fn Stood::new() -> Stood {
           stood.sign_asks.push(args.stringify())
           answer
         }
-        "iroh.opus" => {
-          guard stood.opus is Some(opus) else { raise @shell.ShellError("the stood-in shell has no iroh.opus") }
+        "tap.opus" => {
+          guard stood.opus is Some(opus) else { raise @shell.ShellError("the stood-in shell has no tap.opus") }
           Json::boolean(opus)
         }
         "dht.said" => {
@@ -536,6 +539,9 @@ priv struct Peer {
   direct : Map[String, Unit]
   conn_way : Map[Int, String]
   dialled : Array[String]
+  /// What `istream.tap` is answered (none: no such op), and each asked: `<stream> <call> <bytes handed>`.
+  mut taps : Bool?
+  tapped : Array[String]
 }
 
 ///|
@@ -572,6 +578,8 @@ fn Stood::with_peer() -> (Stood, Peer) {
     direct: Map([]),
     conn_way: Map([]),
     dialled: [],
+    taps: None,
+    tapped: [],
   }
   stood.peer = Some(far)
   (stood, far)
@@ -775,6 +783,23 @@ fn Peer::took(self : Peer, id : Int64, op : String, handle : Int, args : Json, b
       } else {
         flow.reader = Some(id)
       }
+    }
+    "istream.tap" => {
+      guard self.flows.get(handle) is Some(flow) else { return false }
+      guard self.taps is Some(taps) else {
+        shell.refuse(id, "the stood-in shell has no istream.tap")
+        return true
+      }
+      if flow.dropped {
+        shell.refuse(id, "no handle \{handle}")
+        return true
+      }
+      let call = match args {
+        { "call": Number(call, ..), .. } => call.to_int64()
+        _ => -1L
+      }
+      self.tapped.push("\{handle} \{call} \{bytes.unwrap_or(b"").length()}")
+      shell.answer(id, { "tapped": Json::boolean(taps) })
     }
     "istream.reset" => {
       guard self.flows.get(handle) is Some(flow) else { return false }

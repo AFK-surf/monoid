@@ -182,7 +182,7 @@ fn Mesh::rebind(self : Mesh, after? : Array[async () -> Unit] = []) -> Unit {
         self.rebinding = false
         self.eased()
         for endpoint in gone {
-          ignore(attempt(() => self.shell.call("iroh.close", { "id": endpoint })))
+          ignore(attempt(() => self.shell.call("iroh.close", { "id": endpoint, "forget": true })))
         }
       })
     }),
