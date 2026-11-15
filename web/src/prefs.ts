@@ -21,7 +21,7 @@ export type Prefs = Required<Omit<PrefsView, "productName" | "product" | "worksp
 type PrefsPatch = { [K in keyof Omit<Prefs, "device">]?: NonNullable<Prefs[K]> extends Record<string, infer V> ? Record<string, V | null> : Prefs[K] | null };
 
 const DEFAULTS: Prefs = {
-  onlyMine: false, onlyWatching: false, listFilter: {}, appearance: "system", rowPicture: "auto", absoluteTime: false, keys: {}, lastChat: {}, openChat: {}, chatTabs: {}, dropFiles: {}, driveViews: {}, filesTabs: {}, driveFavorites: {}, driveFavoritesHidden: {}, resume: {}, stationUpdatesDismissed: {}, rails: {}, barsBy: {}, fonts: {}, previewSizes: {}, sidebars: {}, trouble: {}, jobsSeen: {}, failsGone: {},
+  onlyMine: false, onlyWatching: false, listFilter: {}, appearance: "system", rowPicture: "auto", absoluteTime: false, keys: {}, lastChat: {}, openChat: {}, chatTabs: {}, dropFiles: {}, driveViews: {}, filesTabs: {}, driveFavorites: {}, driveFavoritesHidden: {}, resume: {}, stationUpdatesDismissed: {}, rails: {}, barsBy: {}, fonts: {}, previewSizes: {}, sidebars: {}, trouble: {}, jobsSeen: {}, failsGone: {}, moveTo: {},
   // As the core fills it in (prefs.ts readerOf), before it has answered.
   reader: { size: 16, line: 1.7, margin: 22, face: "sans", indent: true, paper: "follow" },
   // As the core fills it in (prefs.ts barsOf).
