@@ -1004,8 +1004,34 @@ let no_glyph : Glyph = {
 /// The glyphs in the atlas by their places ("u v", as an instance has them): their keys.
 fn glyph_keys() -> Map[String, Int] {
   let at : Map[String, Int] = Map([])
-  text_cache.glyphs.each(fn(key, g) { if g.plot >= 0 { at["\{g.u} \{g.v}"] = key } })
+  text_cache.glyphs.each(fn(key, g) { if g.plot >= 0 { at["\{g.u} \{g.v}"] = key & 0x03FFFFFF } })
   at
+}
+
+///|
+/// The horizontal origin (in points) of the View node being built in `view_made` (`ux`, which `view_blit`
+/// rounds from as `lx`), 0 outside `view_made`.
+let glyph_origin_x : Ref[Double] = Ref(0.0)
+
+///|
+/// Glyph `key` with its horizontal quarter-pixel phase on Windows (bits 26..28: 0 for 0, 1 for +1/4, 2 for
+/// +1/2, 3 for -1/4, 4 for -1/2 of a device pixel) for a cluster at `x` points (`sc` pixels a point, `z` zoom),
+/// so its quad stays on the whole pixel `on_pixels` puts it on while DirectWrite draws its ink within 1/8 px of
+/// `x * sc`. Unchanged on other platforms or when zoomed.
+fn glyph_sub(key : Int, x : Double, sc : Double, z : Double) -> Int {
+  if key < 0 || z != 1.0 || h_platform() != 3 {
+    return key
+  }
+  let tx = (glyph_origin_x.val + x - glyphs_carried[0]) * sc
+  let q = ((tx - tx.round()) * 4.0).round().to_int()
+  let sub = match q {
+    1 => 1
+    2 => 2
+    -1 => 3
+    -2 => 4
+    _ => 0
+  }
+  (key & 0x03FFFFFF) | (sub << 26)
 }
 
 ///|

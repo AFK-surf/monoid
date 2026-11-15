@@ -28,6 +28,9 @@ case "${1:-run}" in
     # loads it before the system's: the pictures drawn by one WARP whatever the runner's image has (an image rolled
     # out to some runners and not others drew the same commit two ways, 39416332991)
     if [ -n "${WARP_DLL:-}" ]; then cp "$WARP_DLL" "$(dirname $EXE)/d3d10warp.dll"; fi
+    # lines drawn as they are (no reference: checked); also warms DirectWrite's FontCache before controls-1/2 are compared
+    MBUI_DL="$(cygpath -w "$PWD/$O/lines.dl")" MBUI_DL_PNG="$(cygpath -w "$PWD/$O/lines.png")" ./$EXE
+    "$D/chk" lines $O/lines.png
     for n in 1 2; do
       MBUI_DL="$(cygpath -w "$PWD/$O/controls.dl")" MBUI_DL_PNG="$(cygpath -w "$PWD/$O/controls-$n.png")" ./$EXE 2> $O/run-$n.err ||
         { cat $O/run-$n.err; exit 1; }
@@ -38,9 +41,6 @@ case "${1:-run}" in
     if [ -n "${WARP_DLL:-}" ] && ! printf '%s' "$warp_dll" | grep -qi 'build.render.d3d10warp.dll$'; then
       echo "render_windows: drawn by $warp_dll, not the pinned WARP beside the program"; exit 1
     fi
-    # lines drawn as they are (no reference: checked); Windows' python is `python`
-    MBUI_DL="$(cygpath -w "$PWD/$O/lines.dl")" MBUI_DL_PNG="$(cygpath -w "$PWD/$O/lines.png")" ./$EXE
-    "$D/chk" lines $O/lines.png
     MBUI_DL="$(cygpath -w "$PWD/$O/shapes.dl")" MBUI_DL_PNG="$(cygpath -w "$PWD/$O/shapes.png")" ./$EXE
     "$D/chk" shapes $O/shapes.png
     MBUI_DL="$(cygpath -w "$PWD/$O/contained.dl")" MBUI_DL_PNG="$(cygpath -w "$PWD/$O/contained.png")" ./$EXE

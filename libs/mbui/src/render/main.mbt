@@ -370,6 +370,10 @@ fn instances(dl : Dl, path : String, atlas : @hostapi.Atlas, colour_atlas : @hos
         Some((u, v, gw, gh)) => {
           if gw != inst[k * inst_size + 14] || gh != inst[k * inst_size + 15] {
             resized = resized + 1
+            if @hostapi.platform() == 3 {
+              inst[k * inst_size + 2] = gw / dl.scale
+              inst[k * inst_size + 3] = gh / dl.scale
+            }
           }
           inst[k * inst_size + 12] = u
           inst[k * inst_size + 13] = v

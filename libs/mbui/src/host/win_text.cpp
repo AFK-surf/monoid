@@ -91,7 +91,7 @@ static void init(void) {
   IDWriteRenderingParams2 *p2 = NULL;
   dw->CreateCustomRenderingParams(1.0f, 0.0f, 0.0f, 0.0f, DWRITE_PIXEL_GEOMETRY_FLAT,
                                   DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC,
-                                  DWRITE_GRID_FIT_MODE_DISABLED, &p2);
+                                  DWRITE_GRID_FIT_MODE_DEFAULT, &p2);
   params = p2;
   // A glyph in one colour drawn with ClearType, as Windows draws any app's text (the user, 2026-10-29, beside Chrome:
   // gray coverage looked soft): each of a pixel's three stripes, red, green, blue left to right, covered on its own,
@@ -701,8 +701,9 @@ struct Drawn {
   int color;
 };
 
-// A cluster's layout drawn in white at `sc` pixels a point, a pixel round its bounds, on `t`.
-static void draw_layout(IDWriteTextLayout *l, double sc, Target *t, Drawn *d) {
+// A cluster's layout drawn in white at `sc` pixels a point (shifted horizontally by `dx` points for its
+// quarter-pixel subpixel phase), a pixel round its bounds, on `t`.
+static void draw_layout(IDWriteTextLayout *l, double sc, double dx, Target *t, Drawn *d) {
   *d = {};
   ColorProbe probe;
   l->Draw(NULL, &probe, 0, 0);
@@ -749,7 +750,7 @@ static void draw_layout(IDWriteTextLayout *l, double sc, Target *t, Drawn *d) {
     t->rt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE);
     t->rt->SetTextRenderingParams(params_ct);
   }
-  t->rt->DrawTextLayout(D2D1::Point2F((FLOAT)-x0, (FLOAT)-y0), l, stripes ? t->black : t->white,
+  t->rt->DrawTextLayout(D2D1::Point2F((FLOAT)(-x0 + dx), (FLOAT)-y0), l, stripes ? t->black : t->white,
                         D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT | D2D1_DRAW_TEXT_OPTIONS_NO_SNAP);
   t->rt->EndDraw();
   if (stripes) {
@@ -865,7 +866,7 @@ static DWORD WINAPI ahead_thread(void *) {
     Drawn d = {};
     IDWriteTextLayout *l = t.d2d && t.wic ? layout_with(a->text, a->len, a->format, a->typography) : NULL;
     if (l) {
-      draw_layout(l, a->scale, &t, &d);
+      draw_layout(l, a->scale, 0.0, &t, &d);
       l->Release();
     }
     EnterCriticalSection(&ahead_lock);
@@ -1019,23 +1020,37 @@ extern "C" void mb_host_glyphs_ahead(int32_t *keys, int32_t n) {
   if (asked) WakeAllConditionVariable(&ahead_more);
 }
 
-// Glyph `key` drawn in white, a pixel round its bounds: its box (in its entry) and its picture, held for
-// mb_host_glyph_put (where it goes in the atlas is MoonBit's: hostapi's atlas.mbt). From what was drawn ahead of it,
-// else drawn here.
-static void rasterize(int key) {
+// Horizontal quarter-pixel shift (in device pixels) encoded in bits 26..28 of a glyph key:
+// 0 -> 0.0, 1 -> +0.25, 2 -> +0.50, 3 -> -0.25, 4 -> -0.50.
+static double sub_dx(int sub) {
+  switch (sub) {
+    case 1: return 0.25;
+    case 2: return 0.50;
+    case 3: return -0.25;
+    case 4: return -0.50;
+    default: return 0.0;
+  }
+}
+
+// Glyph `full_key` drawn in white, a pixel round its bounds: its box (in its entry) and its picture, held for
+// mb_host_glyph_put (where it goes in the atlas is MoonBit's: hostapi's atlas.mbt). From what was drawn ahead of it
+// when at phase 0, else drawn here.
+static void rasterize(int full_key) {
+  int key = full_key & 0x03FFFFFF;
+  int sub = (full_key >> 26) & 7;
   glyph_entry *e = &entries[key];
   free(held_px);
   held_px = NULL;
   held_key = -1;
   e->w = e->h = 0;
   Drawn d = {};
-  if (!drawn_ahead(key, &d)) {
+  if (sub != 0 || !drawn_ahead(key, &d)) {
     IDWriteTextLayout *l = make_layout(pool + e->off, e->len, e->size, e->weight, e->style);
-    draw_layout(l, text_scale, &main_target, &d);
+    draw_layout(l, text_scale, sub_dx(sub) / text_scale, &main_target, &d);
     l->Release();
   }
   if (d.px) {
-    held_key = key;
+    held_key = full_key;
     held_w = d.pw;
     held_h = d.ph;
     held_px = d.px;
@@ -1048,12 +1063,13 @@ static void rasterize(int key) {
 }
 
 extern "C" void mb_host_glyph(int32_t key, double *out) {
-  if (key < 0 || key >= n_entries) {
+  int base_key = key >= 0 ? (key & 0x03FFFFFF) : key;
+  if (base_key < 0 || base_key >= n_entries) {
     for (int i = 0; i < 7; i++) out[i] = 0;
     return;
   }
   rasterize(key);
-  glyph_entry *e = &entries[key];
+  glyph_entry *e = &entries[base_key];
   out[0] = 0;
   out[1] = 0;
   out[2] = e->w;

@@ -1169,6 +1169,13 @@ fn Ctx::emit_text(
       left_out()
       continue
     }
+    // centred: each line by half of what it leaves of the box
+    let dx = if center_in >= 0.0 && line < tl.line_w.length() {
+      dmax((center_in - tl.line_w[line]) / 2.0, 0.0)
+    } else {
+      0.0
+    }
+    let key = glyph_sub(key, ox + dx + tl.xs[c] + s.pad, sc, z)
     if rec_whole.val {
       if rec_glyph_early(key, sc / zoom, ox + tl.xs[c], top, ox + tl.xs[c] + s.adv[c], top + tl.line_h) {
         rec_skip(top, top + tl.line_h)
@@ -1182,12 +1189,6 @@ fn Ctx::emit_text(
       continue
     }
     let (gw, gh) = (g.gw / z, g.gh / z)
-    // centred: each line by half of what it leaves of the box
-    let dx = if center_in >= 0.0 && line < tl.line_w.length() {
-      dmax((center_in - tl.line_w[line]) / 2.0, 0.0)
-    } else {
-      0.0
-    }
     let gx = glyph_x(ox + dx + tl.xs[c] + s.pad + g.ox / z, sc)
     let gy = glyph_row(oy, line.to_double() * tl.line_h + tl.ascent, g.oy / z, sc)
     let adaptive = glass_paint.ink_r > 0.0 && !g.color

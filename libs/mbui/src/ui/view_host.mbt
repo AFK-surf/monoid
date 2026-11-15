@@ -1926,7 +1926,10 @@ fn Ctx::view_drawn(
       // (made where it is its own, cut by nothing it is drawn in: what cuts it is the clip it is composed in, as each
       // frame composes it, view_blit; its words never left out for where a clip once was)
       push_unclipped()
+      let prev_origin_x = glyph_origin_x.val
+      glyph_origin_x.val = ux
       let b = self.view_made(tree, c, edge_after~)
+      glyph_origin_x.val = prev_origin_x
       pop_clip()
       view_blocks[c.id] = b
       b

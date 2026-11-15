@@ -1353,6 +1353,7 @@ fn Ctx::emit_rich_glyphs(
       Some(big) if big[c] >= 0 => (big[c], zoom)
       _ => (key, 1.0)
     }
+    let key = glyph_sub(key, ox + lay.xs[c] + lay.pre[c], sc, z)
     if rec_glyph_early(key, sc / zoom, ox + lay.xs[c], top, ox + lay.xs[c] + lay.adv[c], top + lay.line_h[l]) {
       rec_skip(top, top + lay.line_h[l])
       continue
