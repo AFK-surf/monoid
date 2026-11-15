@@ -114,12 +114,20 @@ export function domainOf(url: string): string | null {
   return parsed(url)?.host ?? null;
 }
 
-/// A device code in some output, whichever tool says it: a `user_code=` in a page's address (Vercel's); one like
-/// ABCD-1234 (four capitals or digits, a dash, four to six more: gh, Docker, AWS, Cloudflare); else on a line that says
-/// "code", a word of six to ten capitals and digits right after the word "code" or with a digit in it (az). Never one in
-/// a page's other parameters (a PKCE challenge, a state).
-export function deviceCodeIn(said: string): string | null {
-  const given = /[?&]user_code=([A-Z0-9]{4,}-?[A-Z0-9]{4,})/.exec(said);
+/// A device code in some output, whichever tool says it, or in a page it opened: a `user_code=` in a page's address
+/// (RFC 8628's verification_uri_complete: Vercel's, Wrangler's), its case kept; one like ABCD-1234 (four capitals or
+/// digits, a dash, four to six more: gh, Docker, AWS, Cloudflare); a word of six to twelve letters and digits alone on
+/// the line under one ending "code:" (Wrangler's vFA9uVPF, a blank line between); else on a line that says "code", a
+/// word right after it (after a colon one that is no word of prose, after a space capitals and digits or one with a
+/// digit in it: az's GQGFJ2QXM), or of six to ten capitals and digits with a digit in it anywhere on it. Never one in a
+/// page's other parameters (a PKCE challenge, a state).
+export function deviceCodeIn(said: string, opened: readonly string[] = []): string | null {
+  const whole = /^[A-Za-z0-9]{4,12}(?:-[A-Za-z0-9]{3,8})?$/;
+  for (const u of [...opened, ...urlsIn(said)]) {
+    const given = parsed(u)?.searchParams.get("user_code");
+    if (given && whole.test(given)) return given;
+  }
+  const given = /[?&]user_code=([A-Za-z0-9]{4,12}(?:-[A-Za-z0-9]{3,8})?)(?![A-Za-z0-9_-])/.exec(said);
   if (given) return given[1]!;
   const text = said.replace(/https?:\/\/[^\s"'<>`]+/g, " ");
   for (const word of text.split(/[^A-Za-z0-9_-]/)) {
@@ -127,8 +135,21 @@ export function deviceCodeIn(said: string): string | null {
     const code = (s: string, min: number, max: number) => s.length >= min && s.length <= max && /^[A-Z0-9]+$/.test(s);
     for (let i = 0; i + 1 < parts.length; i++) if (code(parts[i]!, 4, 4) && code(parts[i + 1]!, 4, 6)) return `${parts[i]}-${parts[i + 1]}`;
   }
-  for (const line of text.split("\n")) {
+  // No word of prose: letters (and digits), not all small, not a capitalised word (Continue, Devin).
+  const codeWord = (w: string) => /^[A-Za-z0-9]{6,12}$/.test(w) && /[A-Za-z]/.test(w) && !/^[a-z]+$/.test(w) && !/^[A-Z][a-z]+$/.test(w);
+  const lines = text.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    if (!/\bcode\s*:\s*$/i.test(lines[i]!)) continue;
+    const next = lines[i + 1]?.trim() === "" ? lines[i + 2] : lines[i + 1];
+    const alone = next !== undefined ? /^\s*([A-Za-z0-9]{6,12})\s*$/.exec(next) : null;
+    if (alone && codeWord(alone[1]!)) return alone[1]!;
+  }
+  for (const line of lines) {
     if (!/code/i.test(line)) continue;
+    const marked = /\bcode(?:\s+is)?\s*[:=]\s*([A-Za-z0-9]{6,12})\b/i.exec(line);
+    if (marked && codeWord(marked[1]!)) return marked[1]!;
+    const spaced = /\bcode(?:\s+is)?\s+([A-Za-z0-9]{6,12})\b/i.exec(line);
+    if (spaced && (/^[A-Z0-9]{6,10}$/.test(spaced[1]!) || (/[0-9]/.test(spaced[1]!) && codeWord(spaced[1]!)))) return spaced[1]!;
     const after = /code[^A-Za-z0-9]{1,3}([A-Z0-9]{6,10})\b/i.exec(line);
     if (after && /^[A-Z0-9]+$/.test(after[1]!)) return after[1]!;
     for (const word of line.split(/[^A-Za-z0-9]+/)) if (/^[A-Z0-9]{6,10}$/.test(word) && /[0-9]/.test(word) && /[A-Z]/.test(word)) return word;
