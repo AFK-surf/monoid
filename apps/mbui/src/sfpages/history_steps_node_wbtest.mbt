@@ -42,10 +42,16 @@ test "history reminder keeps its label on one line beside a long note and opens 
       // (its room opened on its way: reveal_node)
       t.run_for(@ui.move_most_ms)
       assert_true(t.rect_of(note) is Some(_), msg="\{at}: whole reminder did not open")
+      assert_eq(
+        t.rect_of(first),
+        t.rect_of(note),
+        msg="\{at}: first-line preview hides on header row while full reminder card is open",
+      )
       assert_true(t.rect_of(title).unwrap().3 <= 20.0, msg=at)
       t.tap_text(title)
       t.run_for(@ui.move_most_ms)
       assert_true(t.rect_of(note) is None, msg="\{at}: reminder did not close")
+      assert_true(t.rect_of(first).unwrap().1 <= 20.0, msg="\{at}: first-line preview returns when reminder closes")
     }
   }
   steps_reset()
@@ -217,6 +223,17 @@ test "history text expands on its first line and short single-line text omits fo
   t.run_for(@ui.move_most_ms)
   let (_, shut_y, _, shut_h) = t.rect_of(long_words).unwrap()
   assert_true(shut_h <= 20.0 && (shut_y - collapsed_y).abs() < 0.5, msg="shut again, one line where it was: \{shut_y} \{shut_h}")
+  // (on a wider desktop panel where long_words fits on one line, it omits the fold button so tapping does not toggle a no-op state)
+  let wide_t = @ui.Tester::new(fn(c) { @sf.begin(c) |> ignore }, w=760.0, h=300.0, tree=fn(root) {
+    @ui.set_tree_theme(@sf.ui_theme_now)
+    let tips = @sf.TipLayer::new(fn() { Some(root) })
+    root.lines_up(Is(None)) |> ignore
+    root.box(fn(v) { item_node(v, src, "ws1/st1", "s-c1", "wide-long", Some(long_item), false, tips) }) |> ignore
+  })
+  wide_t.draw()
+  wide_t.tap_text(long_words)
+  wide_t.run_for(@ui.move_most_ms)
+  assert_true(!steps_own.opened.contains("wide-long/text"), msg="single-line text that fits on one line at room width is not expandable")
   steps_reset()
 }
 

@@ -450,6 +450,7 @@ export function parsePrompt(text: string): [Sourced[], string] {
   rest += second.slice(at);
   const note = rest
     .replace(/<card-state\b[^>]*>[\s\S]*?(?:<\/card-state>|$)/g, "")
+    .replace(/^\[Delivered at [^\n]+\]\n?/gm, "")
     .split("\n")
     .filter((l) => !(l.startsWith("(Thread ") && l.endsWith(")") && l.includes(" had messages before you were brought in;")))
     .join("\n");

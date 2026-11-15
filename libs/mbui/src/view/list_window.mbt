@@ -1278,8 +1278,9 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   let pin_up : Ref[Array[(View, Int, Double)]] = Ref([])
   let pin_less = Ref(0.0)
   // (where it was held at the foot of the room kept under its blocks once what was pressed held it no more (its fill's
-  // `top`): followed again once what comes at its foot has taken that room, unless the hand moved it from there)
-  let room_held : Ref[Double?] = Ref(None)
+  // `top` and keys then): followed again once keys come at its foot have taken that room, unless the hand moved it from
+  // there or another row was pressed)
+  let room_held : Ref[(Double, Int, K?)?] = Ref(None)
   let unpin : Ref[() -> Unit] = Ref(fn() {  })
   let pin_ends = Ref(false)
   // (where it was scrolled to as it was pressed: moved from there by the hand, held no more; and how many blocks it had,
@@ -1408,6 +1409,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
     let foot_then = s.at_foot() && @signals.untracked(follows)
     fn() {
       (unpin.val)()
+      room_held.val = None
       pin.val = Some((k, below, over, was))
       pin_node.val = Some(v)
       pin_up.val = up
@@ -3002,19 +3004,29 @@ pub fn[K : Hash + Eq] View::scrolls_window(
         vh > 0.0 &&
         s.rest_now() is None &&
         s.glides_till() is None {
-        if room_held.val is Some(t0) && (t0 - top).abs() > 0.5 {
+        if room_held.val is Some((t0, _, _)) && (t0 - top).abs() > 0.5 {
           room_held.val = None
         }
         let at_end = top >= dmax(0.0, whole_now() - vh) - 0.5
         if foot_room.untracked() > 0.5 {
-          if at_end {
-            room_held.val = Some(top)
+          if at_end && room_held.val is None {
+            let ks = @signals.untracked(keys)
+            room_held.val = Some((top, ks.length(), ks.last()))
           }
-        } else if at_end || room_held.val is Some(_) {
+        } else {
+          let room_taken = match room_held.val {
+            Some((_, len0, last0)) => {
+              let ks = @signals.untracked(keys)
+              (len0, last0) != (ks.length(), ks.last())
+            }
+            None => false
+          }
           room_held.val = None
-          s.held = false
-          row_let_go(false)
-          s.to_foot()
+          if at_end || room_taken {
+            s.held = false
+            row_let_go(false)
+            s.to_foot()
+          }
         }
       }
       // (gliding back to its foot, its foot moved since the glide set out or went on (a block measured or come at its

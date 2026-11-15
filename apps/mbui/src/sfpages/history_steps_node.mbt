@@ -602,11 +602,13 @@ fn item_node(
       }
       if note != "" {
         let more = next()
-        one_line_ev_node(v, "bell", "", ik + "/note", more || rail, fn(l) {
+        let first = first_line(note)
+        let has_more = note != first || note.contains("\n") || single_line_px(note, prefix_px=84.0) > 280.0
+        one_line_ev_node(v, "bell", "", ik + "/note", more || rail, has_more~, fn(l) {
           @sf.words_node(l, fn() { @sf.t("web-main.history.reminder", args=[("name", "still.fail")]) }, fn() { h_reminder })
           .shrink(Is(0.0))
           |> ignore
-        }, first_line(note), "", fn(w) { steps_words(w, fn() { note }, h_note_plain) })
+        }, first, "", fn(w) { steps_words(w, fn() { note }, h_note_plain) })
       }
       for k, task in tasks {
         let more = next()
@@ -623,7 +625,8 @@ fn item_node(
       let line = text(content, "line")
       let sub = flag(content, "subagent")
       if sub {
-        one_line_ev_node(v, "said", "", ik + "/text", rail, fn(l) {
+        let has_more = words != line || words.contains("\n") || single_line_px(words, prefix_px=56.0) > 280.0
+        one_line_ev_node(v, "said", "", ik + "/text", rail, has_more~, fn(l) {
           // (a chip: in bones one piece)
           l.box(fn(tag) {
             @sf.style_node(tag, fn() { h_tag })
@@ -634,34 +637,47 @@ fn item_node(
         }, line, "", fn(w) { md_node(w, words, field(content, "md"), small=true) })
       } else {
         ev_node(v, "said", "", "", rail_last=rail, row=true, fn(b) {
-          if words == line && !words.contains("\n") && words.length() <= 24 {
+          let single = words == line && !words.contains("\n")
+          let need_px = if single { single_line_px(words) } else { 0.0 }
+          if single && need_px <= 220.0 {
             steps_box_node(b, h_one, fn(o) { steps_words(o, fn() { line }, h_one_words) })
           } else {
             let key = ik + "/text"
             let open = fn() { steps_own.opened.contains(key) }
-            // (the pressed row stays the same node opened and shut, so the list keeps it where it was: mbui's
-            // press_stays.mbt; only what it shows inside comes and goes)
-            b.box(fn(r) {
-              @sf.style_node(r, fn() { h_one_press })
-              @sf.presses_node(r, fn() { steps_flip(key) })
-              r
-              .says(By(fn() { Some(@view.said(Button, label=line, expanded=open())) }))
-              .lines_up(By(fn() { if open() { Some(Start) } else { None } }))
-              |> ignore
-              // (its words one node beside the mark: one line cut short shut, all of it opened)
-              r.box(fn(w) {
-                w.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
-                w.pick(at_once=true, open, fn(p, is_open) {
-                  if is_open {
-                    steps_box_node(p, h_one_body, fn(m) { md_node(m, words, field(content, "md"), small=true) })
-                  } else {
-                    @sf.words_node(p, fn() { line }, fn() { if @sf.lit_node(r) { h_one_hot } else { h_one_words } })
+            b.by_room(fn(b, room) {
+              b.fills_across(Is(true)) |> ignore
+              let fits = fn() { single && need_px <= dmax(180.0, room.width() - 24.0) }
+              b.pick(at_once=true, fits, fn(p, is_short) {
+                if is_short {
+                  steps_box_node(p, h_one, fn(o) { steps_words(o, fn() { line }, h_one_words) })
+                } else {
+                  // (the pressed row stays the same node opened and shut, so the list keeps it where it was: mbui's
+                  // press_stays.mbt; only what it shows inside comes and goes)
+                  p.box(fn(r) {
+                    @sf.style_node(r, fn() { h_one_press })
+                    @sf.presses_node(r, fn() { steps_flip(key) })
+                    r
+                    .says(By(fn() { Some(@view.said(Button, label=line, expanded=open())) }))
+                    .lines_up(By(fn() { if open() { Some(Start) } else { None } }))
                     |> ignore
-                  }
-                })
+                    // (its words one node beside the mark: one line cut short shut, all of it opened)
+                    r.box(fn(w) {
+                      w.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
+                      w.pick(at_once=true, open, fn(wp, is_open) {
+                        if is_open {
+                          steps_box_node(wp, h_one_body, fn(m) { md_node(m, words, field(content, "md"), small=true) })
+                        } else {
+                          @sf.words_node(wp, fn() { line }, fn() { if @sf.lit_node(r) { h_one_hot } else { h_one_words } })
+                          |> ignore
+                        }
+                      })
+                    })
+                    |> ignore
+                    steps_fold_mark_node(r, open)
+                  })
+                  |> ignore
+                }
               })
-              |> ignore
-              steps_fold_mark_node(r, open)
             })
             |> ignore
           }
@@ -806,19 +822,31 @@ fn steps_fold_mark_node(r : @view.View, open : () -> Bool) -> Unit {
 }
 
 ///|
-/// An event in one line in `v`: `lead`, then `line` cut at its end; pressed (where there is more), what
-/// `whole` makes under it beside the side rail, the line staying and its chevron turning.
+/// An event in one line in `v`: `lead`, then `line` cut at its end; pressed (where `has_more`), what
+/// `whole` makes under it beside the side rail, the preview line hiding while `whole` is open and its chevron turning.
 fn one_line_ev_node(
   v : @view.View,
   icon : String,
   ev_tone : String,
   key : String,
   rail_next : Bool,
+  has_more? : Bool = true,
   lead : (@view.View) -> Unit,
   line : String,
   tone : String,
   whole : (@view.View) -> Unit,
 ) -> Unit {
+  if !has_more {
+    ev_node(v, icon, "", ev_tone, rail_last=rail_next, row=true, fn(b) {
+      steps_box_node(b, h_one, fn(r) {
+        lead(r)
+        if line != "" {
+          steps_words(r, fn() { line }, if tone == "red" { h_one_red } else { h_one_words })
+        }
+      })
+    })
+    return
+  }
   let open = fn() { steps_own.opened.contains(key) }
   event_stack_node(
     v,
@@ -832,23 +860,19 @@ fn one_line_ev_node(
           .says(By(fn() { Some(@view.said(Button, label=line, expanded=open())) }))
           |> ignore
           lead(r)
-          // (its first line stays, opened or shut: what it says in whole comes under it)
-          if line != "" {
-            r.box(fn(l) {
-              l.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-              @sf.words_node(l, fn() { line }, fn() {
-                if tone == "red" {
-                  h_one_red
-                } else if @sf.lit_node(r) {
-                  h_one_hot
-                } else {
-                  h_one_words
-                }
-              })
-              |> ignore
+          r.show(fn() { !open() && line != "" }, fn(l) {
+            l.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+            @sf.words_node(l, fn() { line }, fn() {
+              if tone == "red" {
+                h_one_red
+              } else if @sf.lit_node(r) {
+                h_one_hot
+              } else {
+                h_one_words
+              }
             })
             |> ignore
-          }
+          })
           steps_box_node(r, h_grow, fn(_) {  }, in_row=true)
           steps_fold_mark_node(r, open)
         })
@@ -969,6 +993,15 @@ fn fold_node(
     })
   })
   |> ignore
+}
+
+///|
+fn single_line_px(words : String, prefix_px? : Double = 0.0) -> Double {
+  let mut w = prefix_px
+  for c in words {
+    w = w + (if c <= '\u{7f}' { 6.6 } else { 12.2 })
+  }
+  w
 }
 
 ///|
@@ -1234,7 +1267,7 @@ fn task_node(v : @view.View, key : String, task : Json?, rail : Bool, rail_last 
       })
     },
     fn(ev) {
-      ev.pick(open, fn(p, is_open) {
+      ev.pick(at_once=true, open, fn(p, is_open) {
         p.fills_across(Is(true)).cuts_softly(Is(true)) |> ignore
         if !is_open {
           if preview != "" {
@@ -1487,16 +1520,32 @@ fn group_rows_node(
       if text(rv, "kind") == "thought" {
         if calls {
           let thought_words = text(content, "text")
-          opened_node(list, src, station, key, rk, content, fn(sum) {
-            steps_words(sum, fn() { @sf.t("web-main.history.thinking") }, h_step_name)
-            steps_box_node(sum, h_grow_clip, fn(c) {
-              steps_words(c, fn() { if steps_own.opened.contains(rk) { "" } else { text(content, "first") } }, h_step_hint_line)
-            }, in_row=true)
-          }, fn(body) {
-            steps_box_node(body, h_step_card, fn(t) {
-              md_node(t, thought_words, field(content, "md"), small=true)
+          let first = text(content, "first")
+          let has_more = flag(content, "brief") ||
+            thought_words != first ||
+            thought_words.contains("\n") ||
+            single_line_px(thought_words, prefix_px=48.0) > 280.0
+          if !has_more {
+            steps_box_node(list, h_step, fn(s) {
+              steps_box_node(s, h_step_summary, fn(sum) {
+                steps_words(sum, fn() { @sf.t("web-main.history.thinking") }, h_step_name)
+                steps_box_node(sum, h_grow_clip, fn(c) {
+                  steps_words(c, fn() { first }, h_step_hint_line)
+                }, in_row=true)
+              })
             })
-          })
+          } else {
+            opened_node(list, src, station, key, rk, content, fn(sum) {
+              steps_words(sum, fn() { @sf.t("web-main.history.thinking") }, h_step_name)
+              steps_box_node(sum, h_grow_clip, fn(c) {
+                steps_words(c, fn() { if steps_own.opened.contains(rk) { "" } else { first } }, h_step_hint_line)
+              }, in_row=true)
+            }, fn(body) {
+              steps_box_node(body, h_step_card, fn(t) {
+                md_node(t, thought_words, field(content, "md"), small=true)
+              })
+            })
+          }
         } else {
           whole_node(list, src, station, key, rk, content, fn(body) {
             steps_box_node(body, h_thinking, fn(t) { md_node(t, text(content, "text"), field(content, "md"), small=true) })
@@ -1552,7 +1601,7 @@ fn steps_row_shape(row : StepsRow?, ignore_opened? : Bool = false) -> Int? {
           let words = text(content, "text")
           let line = text(content, "line")
           let sub = flag(content, "subagent")
-          if !sub && words == line && !words.contains("\n") && words.length() <= 24 {
+          if !sub && words == line && !words.contains("\n") && single_line_px(words) <= 220.0 {
             4
           } else {
             return None
@@ -1873,13 +1922,20 @@ fn steps_reused_row_node(
                       |> ignore
                     },
                     fn(gv) {
-                      gv.pick(fn() { if open() { Some(gk()) } else { None } }, fn(s, cur_gk) {
-                        guard cur_gk is Some(cur) else { return }
-                        s.fills_across(Is(true)).cuts_softly(Is(true)) |> ignore
-                        let g = @signals.untracked(content)
-                        let rs = items(g, "rows")
-                        let calls = rs.iter().any(fn(r) { text(Some(r), "kind") == "step" })
-                        group_rows_node(s, src, station, key, cur, rs, calls)
+                      steps_reveal_node(gv, open, fn(s) {
+                        s.pick(
+                          at_once=true,
+                          fn() { (gk(), picked.get()) },
+                          fn(p, cur) {
+                            let g = match cur.1.row {
+                              Some(Item(item, _)) => field(field(Some(item), "body"), "content")
+                              _ => None
+                            }
+                            let rs = items(g, "rows")
+                            let calls = rs.iter().any(fn(r) { text(Some(r), "kind") == "step" })
+                            group_rows_node(p, src, station, key, cur.0, rs, calls)
+                          },
+                        )
                       })
                     },
                   )
@@ -2229,7 +2285,7 @@ fn whole_node(
       },
     )
   })
-  v.pick(fn() {
+  v.pick(at_once=true, fn() {
     match steps_own.detail.get(rk) {
       Some((-2.0, why)) => why
       _ => "\u{0}"
@@ -2270,7 +2326,7 @@ fn tool_body_node(v : @view.View, src : Source, station : String, key : String, 
       }
     })
   })
-  v.pick(fn() { steps_own.tools.contains(tk) }, fn(p, has) {
+  v.pick(at_once=true, fn() { steps_own.tools.contains(tk) }, fn(p, has) {
     p.fills_across(Is(true)).cuts_softly(Is(true)) |> ignore
     guard has else {
       steps_box_node(p, h_step_body, fn(b) { @sf.wait_line_node(b, fn() { "" }) |> ignore })
@@ -2278,22 +2334,12 @@ fn tool_body_node(v : @view.View, src : Source, station : String, key : String, 
     }
     let parts = @signals.untracked(fn() { steps_own.tools.get(tk) })
     let raw_calls = items(parts, "call")
+    let raw_results = items(parts, "result")
     let step_hint = text(step, "hint")
     let step_meta = text(step, "meta")
-    let call_parts : Array[Json] = []
-    for part in raw_calls {
-      let k = text(Some(part), "kind")
-      if raw_calls.length() > 1 && k == "path" && text(Some(part), "extra") == "" {
-        let p = text(Some(part), "path")
-        if step_hint != "" && (p == step_hint || p.has_suffix("/" + step_hint)) {
-          continue
-        }
-      }
-      call_parts.push(part)
-    }
     let failed = flag(step, "failed")
     let result_parts : Array[Json] = []
-    for part in items(parts, "result") {
+    for part in raw_results {
       let k = text(Some(part), "kind")
       if !failed && k == "output" {
         let out = text(Some(part), "text").trim().to_owned()
@@ -2320,6 +2366,25 @@ fn tool_body_node(v : @view.View, src : Source, station : String, key : String, 
         continue
       }
       result_parts.push(part)
+    }
+    let call_parts : Array[Json] = []
+    for part in raw_calls {
+      let k = text(Some(part), "kind")
+      if (raw_calls.length() > 1 || result_parts.length() > 0) && k == "path" && text(Some(part), "extra") == "" {
+        let p = text(Some(part), "path")
+        if step_hint != "" && (p == step_hint || p.has_suffix("/" + step_hint)) {
+          continue
+        }
+      }
+      call_parts.push(part)
+    }
+    if call_parts.is_empty() && result_parts.is_empty() {
+      for part in raw_results {
+        result_parts.push(part)
+      }
+    }
+    if call_parts.is_empty() && result_parts.is_empty() {
+      return
     }
     let has_own_box = call_parts.iter().any(fn(p) {
         let k = text(Some(p), "kind")
