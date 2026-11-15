@@ -183,6 +183,30 @@ class Steps {
   of(id: string) {
     return this.seen.get(id) ?? [];
   }
+  /// Of the hand-overs begun from `from` to `to` (their id's time, the station's clock), in the order begun, cut in ten:
+  /// each tenth's median of each change of step (`files>held*`, … as seen here), of begun to its first record seen, and
+  /// of begun to its end, in ms; what a whole move's per-chat time is made of, and which of it grows along the run.
+  tenths(from: number, to: number): string[] {
+    const begun = (id: string) => parseInt(id.split("-")[0] ?? "", 36);
+    const outs = [...this.seen.entries()].filter(([id, l]) => l.length > 0 && begun(id) >= from && begun(id) <= to).sort((x, y) => begun(x[0]) - begun(y[0]));
+    if (outs.length < 10) return [`${outs.length} hand-overs seen: too few to cut in ten`];
+    const name = (x: { step: string; held: boolean }) => `${x.step}${x.held ? "*" : ""}`;
+    const rows = new Map<string, number[][]>();
+    const put = (k: string, tenth: number, ms: number) => {
+      const r = rows.get(k) ?? Array.from({ length: 10 }, () => [] as number[]);
+      r[tenth]!.push(ms);
+      rows.set(k, r);
+    };
+    outs.forEach(([id, l], i) => {
+      const tenth = Math.min(9, Math.floor((i * 10) / outs.length));
+      put("begun>seen", tenth, l[0]!.at - begun(id));
+      for (let j = 1; j < l.length; j++) put(`${name(l[j - 1]!)}>${name(l[j]!)}`, tenth, l[j]!.at - l[j - 1]!.at);
+      put("begun>end", tenth, l.at(-1)!.at - begun(id));
+    });
+    const median = (xs: number[]) => (xs.length === 0 ? "-" : String([...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)]));
+    return [`${outs.length} hand-overs, by tenths, median ms (how many of the ${outs.length} had the change):`,
+      ...[...rows.entries()].map(([k, r]) => `${k} (${r.reduce((n, x) => n + x.length, 0)}): ${r.map(median).join(" ")}`)];
+  }
   close() {
     this.#w?.close();
   }
@@ -332,7 +356,7 @@ let B = "";
 let C = "";
 const addr = (n: Name) => (n === "A" ? A : n === "B" ? B : C);
 const idOf = (n: Name) => (n === "A" ? aId : n === "B" ? bId : cId);
-const steps: { A?: Steps } = {};
+const steps: { A?: Steps; B?: Steps } = {};
 const report: string[] = [];
 const measured = (s: string) => {
   report.push(s);
@@ -702,6 +726,7 @@ try {
     log(`  on B after ${((Date.now() - t0) / 1000).toFixed(1)} s`);
   });
   steps.A = new Steps("A");
+  steps.B = new Steps("B");
 
   // ── 1: the page's data ──
   if (part("1")) {
@@ -1925,6 +1950,8 @@ try {
       const ends = (x: J, t: number, seen: number) => `the station's turn ended at ${typeof x?.at === "number" ? ((x.at - t) / 1000).toFixed(1) : "?"} s, seen at ${seen.toFixed(1)} s`;
       const notDone = (x: J) => `refused [${(x?.refused ?? []).map((r: J) => `${named(r.item)}: ${r.why}`).join(" | ")}] failed ${failuresOf(x).map((f) => `${f.item}: ${f.error}`).join(" | ") || "none"}`;
       measured(`${n} chats moved with all: ${s.toFixed(0)} s, ${((n - left) / (s / 60)).toFixed(0)} chats a minute, ${left} left on A; ${ends(l, t0, seenS)}; main thread: ${holds(from)}; ${notDone(l)}`);
+      // (each chat's hand-over by its steps, A's records as the drill saw them change: which step a chat's time is in)
+      for (const line of steps.A!.tenths(t0, Date.now())) log(`  there: ${line}`);
       from = offsets();
       const t1 = Date.now();
       await a.call("move.back", { station: A, from: bId, all: true });
@@ -1936,6 +1963,7 @@ try {
       const seenB = (Date.now() - t1) / 1000;
       const sb = typeof lb?.at === "number" ? (lb.at - t1) / 1000 : seenB;
       measured(`and back: ${sb.toFixed(0)} s, ${(n / (sb / 60)).toFixed(0)} chats a minute; ${ends(lb, t1, seenB)}; main thread: ${holds(from)}; ${notDone(lb)}`);
+      for (const line of steps.B!.tenths(t1, Date.now())) log(`  back: ${line}`);
       if (left > 0) throw new Error(`${left} chats not moved`);
     });
   }
@@ -2238,6 +2266,7 @@ try {
 }
 partOver();
 steps.A?.close();
+steps.B?.close();
 for (const r of report) log(`MEASURED ${r}`);
 log(failures() === 0 ? "ALL PASSED" : `${failures()} FAILED`);
 await within(Promise.all([a.close(), bob.close()]), 5000);
