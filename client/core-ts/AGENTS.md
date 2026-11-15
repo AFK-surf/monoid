@@ -177,34 +177,82 @@ another; the accounts' list's merge across stations and its refills.
   (`#letBe`), never silently drop it.
 - **No background prompts for sealed secrets**: Background work (incoming lock updates, retries, background writers)
   must never read a value sealed for user presence or prompt the user; only an explicit user action on this device reads
-  a sealed secret once, and background rekeying waits until the key is next unsealed (`src/views/vault.ts`).
+  a sealed secret once, and background rekeying waits until the key is next unsealed (`src/views/vault.ts`). Why
+  (2026-11-13): `rekeyGone` read the box key each time the lock came, on a device nobody was using.
 - **Station acceptance vs. cloud**: The cloud taking an entry never counts as acceptance. An entry not yet taken or
   refused by a named station within the call's wait is kept in `src/lock-pending.ts` (never on the chain itself), shown
   as pending, and delivered when a station is next read (`deliver`), never on a timer. The cloud is sent an entry only
-  after a station takes it (except when a lock names no stations at all, or a personal lock is begun anew).
+  after a station takes it (except when a lock names no stations at all, or a personal lock is begun anew: 2026-11-13,
+  a lock whose one station retired could never be changed again).
 - **Moved workspaces (`moved {root}`)**:
   - Once a workspace chain holds `moved {root}`, the state in force is computed by `rules` (`state4_moved` in
     `src/lock-moved.ts`, read via `src/views/lock.ts` `stateOf`) from the moved chain plus members' personal logs
     (`lockLogs`) and statement bodies (`lockBodies`, synced by head hashes via `GET /lock/heads` and `POST /lock/given`).
-    Nothing is ever signed on the moved chain itself (`Lock.append` returns `lock_moved`).
+    Nothing is ever signed on the moved chain itself (`Lock.append` returns `lock_moved`). Whether a workspace is in
+    safe mode is views/lock.ts `safeMode`, by the lock held (`lockSafe`), the cloud's `locked` only where none is held
+    (2026-11-14).
   - Workspace changes after a move are statements in the acting person's own log (`src/lock-statements.ts`, `sayMoved`),
-    checked by the model before prompting the user, and sent only to stations named by the workspace's list.
+    which ask the person each time (the owner, 2026-11-13: a phone taken while unlocked, its screen lock not known, then
+    changes no list, approves no web page and cannot undo its own removal). Before asking, the rules work out what it
+    would do: whoever it would take out besides is said again first (removing someone takes nobody else out), and one
+    that would not do what it means is refused. The body goes only to the stations its list names, on that
+    workspace's address, never to the cloud nor a station of another workspace.
+  - Off and on again are the root's person's alone, on the log that binds them (`lock_root_only`, naming them and the
+    way out, `stillfail lock reset`). Turning a moved workspace off asks twice (the lead, 2026-11-13: the person's own
+    secrets opened first, then `off` signed; one ask for both needs the host to open two sealed values under one
+    prompt, not built).
   - Web sessions in a moved workspace require at least one app device on that person's log (`web` statement approved face
-    to face by their own app device; if they have no app device, return `lock_needs_app` / `needsAppIn`).
+    to face by their own app device; if they have no app device, return `lock_needs_app` / `needsAppIn`). A member with
+    only a web page holds nothing back and is told nothing before the move (the owner, 2026-11-13: 「开了安全模式那就需要
+    app」): their page is carried until its `exp`.
   - When admitting a newcomer (`member {sub, email, lock, role}`), never trust the cloud view's role alone: use the role
-    noted when adding them on this device (`notedRole`, defaulting to `member`), capped by the cloud view's role.
+    noted when adding them on this device (`notedRole`, defaulting to `member`), capped by the cloud view's role. So
+    someone added as an admin on one device and approved from another comes in a member; an owner makes them an admin
+    by changing their role.
   - Before removing a device or member, level vaults from reachable stations (`levelVaults`, `takeBefore`) so valid
-    versions written before removal are preserved before rekeying.
+    versions written before removal are preserved before rekeying, taken only where they check by the state just before
+    that removal, no wider than a chain's (the lead, 2026-11-14: a moved workspace does for people what an unmoved one
+    does). A removal said there reads no box key; a vault keyed for someone taken out waits and is keyed anew by its
+    owner's device as its key is next unsealed for something the person does.
+  - What people are told: a change asked from a device on no log of theirs answers in the words of one not trusted
+    (`core-misc.lock.notSigner`, views/lock.ts `notTrustedHere`), one of another member's app devices says it is
+    theirs alone (`core-misc.lock.othersDevice`). A device refused where the chain moved asks that station again at its
+    link's own retry: nobody is to open the app or press because of a move (the lead, 2026-11-14).
 - **Seamless handover (`handOver`, 无感迁移)**:
   - `handOver` (`src/lock-handover.ts`, `src/views/lock.ts`) runs automatically from `HAND_OVER_FROM` once all stations named
     by the chain advertise the required capabilities (`bodies`, `logs`, `builds`, `carried`, `bind`, plus `heads` for
     large workspaces above `LOGS_BEFORE`) and this device is at least at `MOVED_FROM_BUILD` (`LOGS_ANY_FROM_BUILD` for
-    large workspaces).
+    large workspaces). It says nothing in anyone's log and asks nobody (the lead, 2026-11-14); `lock.handOver` answers
+    `unknown_call` unless chains are handed over by themselves or the host says `handOverByTests` (never the
+    environment nor a preference); a `moved` that lost its place is never signed again (`#lost`). Builds between this
+    code's and `MOVED_FROM_BUILD` move nothing (the lead, 2026-11-14); a workspace of any size is handed over (the lead,
+    2026-11-15).
+  - Who hands over (the user, 2026-11-14, 「都按推荐」): the person who turned safe mode on (`genesisPerson`); another
+    owner's device only once that person has not in 14 days from the later of `HAND_OVER_FROM` and the genesis, or is
+    no owner on the chain any more (`mayHandOver`). To people it is 安全模式的升级 (the owner, 2026-11-14), never a
+    handover; its pending row is 完成安全模式的升级.
   - **Do not bring a wait for people's devices back**: never block handover on offline or older member app devices. Any
     app device below the floor is simply told to update (`movedTooOld`) when it next talks to a station, and rejoins
-    without re-approval once updated.
-  - After a move, the genesis (`root`) person is an ordinary member (`~root` in `rules/AGENTS.md`): once stations serve
-    `rootout`, another owner can remove and re-admit them like any other member.
+    without re-approval once updated. Why (the user, 2026-11-14): his own unused phone held his workspace back seven
+    days with nothing saying why (「用户要是有个设备离线不用了要等 7 天？」).
+  - After the move a person's devices the chain named and their log does not are put on that log by their other
+    device; a member the chain bound to no log is bound by `bind` riding the next thing they do on their own lock, in
+    its one ask (views/lock.ts `bindsFor`; the lead, 2026-11-14: nothing more asked, nobody else involved), and one with
+    no log has it begun on such an act (personal-lock.ts `seedFor`); their own new app asks them, never owners and
+    admins.
+  - After a move, the genesis (`root`) person is an ordinary member (`~root` in `rules/AGENTS.md`): once every station
+    the state names serves `rootout` (views/lock.ts `rootOutServed`), another owner can remove and re-admit them like
+    any other member. Their new app begins its lock anew and brings the pinned chain to the stations again only for a
+    reason that changed since one took it (`#bringPinned`; 2026-11-14: each read and refusal brought it, 878 POSTs in
+    91 s).
+- **Known, not built for**: a station of another workspace from before build 8799 keeps a stale copy of the person's
+  log once they say a statement; a root log holding statements of a half-done handover of builds 9040-9054 that the
+  chain has since contradicted is held back silently (the lead, 2026-11-14); a workspace already moved that grows past
+  `LOGS_BEFORE` logs while one of its stations is from before is read wrong there by a core from before (the lead,
+  2026-11-15).
+- **What holds it**: `test/lock-moved-state.test.ts` (the state, to the model), `test/lock-statements-made.test.ts` (the
+  bodies and the take-over), `test/lock-handover.test.ts` and `test/lock-handover-model.test.ts` (the hand-over, on the
+  station's own code and to the model's `m8`), `test/lock-left-out.test.ts` (a device left out, and the asks counted).
 
 ## The base stands apart
 

@@ -223,7 +223,10 @@
 
 - **Pinning and replacement**: A lock this station pinned (home or joined workspace) is released or replaced only by the
   lock's own `disable` entry or a local CLI command on this machine (`stillfail lock reset [--workspace ID]`,
-  `enroll --join --lock`), never by the control plane's frames or an unauthenticated mesh request.
+  `enroll --join --lock`), never by the control plane's frames or an unauthenticated mesh request. Each other way let
+  in a device the lock never named, until 2026-11-12: a workspace left out of a frame and named again unlocked, or made
+  the home one (`src/cloud/state.ts` `leftJoined`, `src/cloud/presence.ts` `took`), and an ask over the mesh, where who
+  manages the station may be the plane's word (`src/cli.ts` `nameJoinedLock`).
 - **Active chain and fork choice**: Every lock (home, joined workspace, or personal log) follows the rules' active chain
   (`src/cloud/log-keep.ts`, forks kept in `aside` up to `ASIDE_MOST`). It switches branches only for entries accepted by
   another keeper (another station of the lock, or a device with `keep`); fresh entries from a device or the control
@@ -231,20 +234,37 @@
 - **Moved workspaces (`moved {root}`)**:
   - When a workspace chain ends in `moved {root}`, `Cloud.locked` (`src/cloud/lock.ts` `state4Moved`, `roster4Moved`)
     computes the state in force from the moved chain, members' personal logs, and statement bodies (`src/cloud/lock-bodies.ts`),
-    while `Cloud.chain` reads the raw chain.
+    while `Cloud.chain` reads the raw chain. The control plane's `locked` never says whether such a workspace is on: a
+    station that pinned the chain goes by the state in force (`leftOut`), and so does `enroll --join` (`src/cli.ts`
+    `joinWorkspace`).
   - Statement bodies are accepted only when committed by a kept log entry (`bodyRefusal`) and served only within their
     workspace to stations/devices named by the state (`Cloud.givenTo`), or—for a removed device—only the removal chain
-    that took it out (`toldOut`).
+    that took it out (`toldOut`). A device reads logs and bodies by their heads (the lead, 2026-11-15; GET /lock/heads,
+    POST /lock/given), each only where the whole reads give it; the whole reads stay for cores from before.
   - Devices not in the state receive no logs/bodies and get a `left` refusal (`leftOf`) listing only the app devices
-    that can approve them (up to 16) plus `apps` (whether the person has any app device in the list).
+    that can approve them (up to 16) plus `apps` (whether the person has any app device in the list). Before a chain
+    moves, `GET /lock/logs` gives a device it lets in the logs it binds its members by (`Cloud.logsOf`), so the owner's
+    device that hands it over drops no member's device.
   - A joined station without a prior pin never pins a moved chain from the control plane's word alone: it pins only once
     logs and bodies from a workspace station produce a state that names this station's key (`src/mesh/moved-pin.ts`).
+    No wider than before a move (the lead, 2026-11-14): a station pinning no lock of a workspace is unprotected and lets
+    in whoever the plane's credentials say, so its first pin is the plane's word either way (trust on first use); its
+    home, enrolled by its token alone, pins only what its owner's device brings (POST /lock with the logs and bodies,
+    `pinBrought`: their state must let that device in as an owner's and name this station); one enrolled with a lock's
+    hash only a chain holding it.
+  - After a move the root's person is a member like any other (rules/AGENTS.md `~root`; the lead, 2026-11-14): which of
+    their logs is theirs is the state's to say (`src/mesh/serve.ts` `ownChainsOf`), and the root's log is never let go
+    as a person's oldest (`CHAINS_A_PERSON`, `src/mesh/person-chains.ts`).
 - **Device builds and version floors (`src/api/moved-from.ts`)**:
   - Each station records the latest build seen per device (`src/mesh/device-builds.ts`) and serves `builds`, `heads`,
-    `carried`, `bind`, and `rootout` in `GET /lock`.
+    `carried`, `bind`, and `rootout` in `GET /lock`: what a core hands a workspace over by (the user, 2026-11-14: 无感迁移,
+    no date, no switch, nobody told to update), nothing of a device the asker's lock does not name.
   - Clients below the applicable floor for a moved workspace (`MOVED_FROM_BUILD`, `LOGS_ANY_FROM_BUILD` when logs exceed
     `LOGS_BEFORE`, or `ROOT_OUT_FROM_BUILD` when the genesis person is removed from `~root`) receive `426` (`movedTooOld`
     / `movedFloor`) so their app prompts them to update.
+- **What holds it**: `test/lock-moved-model.test.ts` (the state in force, to the model), `test/lock-left-out.test.ts` (a
+  refusal's `left`), `test/lock-moved-joined.test.ts`, `test/lock-moved-pin.test.ts`, `test/device-builds.test.ts`,
+  `test/lock-heads.test.ts`, `test/lock-root-out.test.ts`.
 
 ## Screens
 

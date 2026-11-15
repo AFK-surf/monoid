@@ -21,7 +21,9 @@ of its workspace (`moon.work`); `effect` stays in mbui.
 - `scripts/mb-base.ts` (`scripts/check.sh`) enforces that packages import only their own packages, `mbui/effect`, and
   MoonBit's core, and that no line under `src/` names `still.fail` or application-specific vocabulary (`member`,
   `conversation`, `im`). Legacy exceptions in `NAMED` (`sf_shell_start`, etc.) may only shrink; never add a name chosen
-  by this library, and ask the owner before adding any external symbol.
+  by this library, and ask the owner before adding any external symbol. The script counts what is there, not what
+  was, so that the table only falls is this file's rule: a count is raised or an entry added only in the change that
+  needs it, its entry saying what takes it away.
 - The station's MoonBit programs keep their own host binding (`station/mb/src/host`) until moved onto this base whole.
 
 ## What is checked here, and what is not
@@ -31,10 +33,56 @@ of its workspace (`moon.work`); `effect` stays in mbui.
   `scripts/mb-base-sse.ts --check` (verifying `src/wire/sse_made_test.mbt` matches `client/core-ts/src/sse.ts` byte for
   byte). Edit the source files and run the generator scripts; never hand-edit `words_made.mbt` or `sse_made_test.mbt`.
 - In CI and full checks: every package under `src/` is type-checked and tested on both `native` and `js` targets using
-  `Shell::stood_in` (`src/mesh/stood_wbtest.mbt`) on the test's deterministic clock.
+  `Shell::stood_in` (`src/mesh/stood_wbtest.mbt`, whose head says how a test scripts its peer) on the test's
+  deterministic clock. A native test that reaches the shell's C (`Shell::start`, the package's `random` and `now`)
+  fails to link, naming `sf_shell_start`: it is not skipped. What depends on which of two fibers comes first in one
+  turn is set up without running and then run at once (its `start`, `answered`, `run`): a test that runs to rest
+  after every step never sees a fiber cut before its first.
 - No Rust shell or real network is linked in unit tests (`shell.c` is compiled as a stub only, and `extern "js"` iroh
   glue in `shell_js.mbt` runs only in real browser/e2e suites outside this repo). When changing `src/shell` or what
   `src/mesh` asks of a shell, state what external suite or environment verified it.
+
+## What a program on it gets with it
+
+- A peer's bytes are kept up to a bound, the caller's to say: a reply read whole (`Reply::rest`, `max_body`) and one
+  block of an event stream (`Sse::new`, `max_event`), 16 MiB each unless said, past which each fails (`too_long`,
+  `TooLong`). What is longer is read as it comes (`Reply::take`, a duplex's reply, `Inbound::take`), keeping none: a
+  reader that stops asking holds its peer back by the transport's own window, and a body told of (`Link::request`'s
+  `wrote`) has one step of 64 KiB waiting at most.
+- The device's key file is its user's alone whatever the umask, by the Rust shell's doing alone
+  (`client/shell/src/lib.rs` `create_private`): a program linked to a shell from before keeps its key as its umask has
+  it. `shell.c` has been compiled and run on macOS on arm64 alone.
+
+## Known, and left
+
+What was known as the library was moved here (2026-11-14) is mended, each with a test that failed before; what is
+left is another part's:
+
+- Natively the Rust shell keeps one entry for every connection that ended and every endpoint closed, for its
+  process's life (`client/shell/src/lib.rs`: `Handle::Gone`, `Handle::Unbound`), and has no op that lets one go. The
+  mesh says when it is done with a connection (`conn.close` with `forget`, `Mesh::open`), which a page's shell goes
+  by; the Rust shell reads no such field. Letting them go there is that shell's to do, for the device base in
+  TypeScript too, which holds them the same. An endpoint bound anew (`Mesh::rebind`) leaves one such entry each
+  time, and that is no rare time: every dial that runs out of time unconnected leaves the endpoint taken for
+  stuck, so a peer that does not answer, asked for again and again, binds it anew at each try (5 s apart at the
+  soonest), as in the device base in TypeScript.
+- A write given up lets go of its stream: that is the mesh's intent (`Out::write` resets it), and both shells' only
+  once that write moves. `istream.write` holds the sending half while it writes, and `istream.reset` waits for it
+  (`client/shell/src/lib.rs`, `client/iroh-wasm/src/lib.rs`): given up because the peer is not reading, the write
+  stays, and the reset behind it, until the peer reads, stops the stream or the connection ends. The Rust shell's
+  and iroh-wasm's to mend, for the device base in TypeScript too.
+- A read that waits as its connection ends can be answered the stream's end by the Rust shell, not a failure (it
+  wakes the read as it lets go of the connection's streams). The mesh is told an end and has no length of its own
+  to hold a body to, so a reply cut so passes for whole (`requests_wbtest.mbt` scripts it): what a reply's head
+  says of its length is its program's to hold it to, until that shell answers a failure there. As in the device
+  base in TypeScript.
+- On js under Hermes, MoonBit's own `Array` costs the square of its length as it grows: a full one is copied into a
+  `new Array(n)` from its last place down, which that engine takes badly (40,000 pushes 0.6 s, 80,000 2.7 s, where
+  the engine's own `push` takes 3 and 6 ms; the hermes of React Native 0.81.4, 2026-11-14), and its `StringBuilder`
+  and `join` make their string again at each piece. The reader of an event stream keeps one event's lines out of
+  both (`sse_js.mbt`); what `Sse::feed` gives is still an `Array`, so a chunk that ends tens of thousands of events
+  at once pays it there, as does anything else here that grows one. MoonBit's core's to mend; no program runs
+  this library under Hermes.
 
 ## Working here
 

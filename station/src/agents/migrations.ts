@@ -158,6 +158,7 @@ export const NOTES: [number, string][] = [
   [151, "card.assignee is the email in the from of the deciding person's message, never the email your runtime gives as its user's (the account you run on): chat_post refuses an account of this station's as assignee unless that person wrote in the chat."],
   [152, "When a request or change will take more than a couple of minutes, reply briefly first with the cause and plan rather than staying silent until the end; in stillfail-browser, never register a new passkey on a person's account unless they explicitly ask you to."],
   [153, "A chat_post with no kind after all_done or need_human in the same turn means you go on: that state no longer stands, so end the turn with a state again when you are done."],
+  [154, "stillfail-cron: set a schedule up in one turn without asking how, saying what you picked. stillfail-vault: as soon as you see a credential will be needed again, offer to keep it (secret_save). stillfail-show: compare before and after at the same size and data, and send fresh evidence after each revision."],
 ];
 
 /// The last note that replaces every one before it (the instructions rewritten whole): a session behind it hears only

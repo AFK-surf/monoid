@@ -43,7 +43,7 @@ is the one way to ask:
   they typed. You are told in your session when the page has left its sign-in: look whether it is signed in, then call
   `sign_in {site, done: true, name, about}` (it is kept in their vault if they chose so on the card, with no other card;
   other chats then ask for it instead of signing in again; `name` and `about` as skill stillfail-vault says, so that they
-  know what it is: UniFi 后台登录态（经 Studio 转发到 127.0.0.1:8443）, not 127.0.0.1 登录态), or `sign_in {site, stuck: "what is left"}` in their language.
+  know what it is: 路由器后台登录态（经家里那台 Mac 转发到 127.0.0.1:8443）, not 127.0.0.1 登录态), or `sign_in {site, stuck: "what is left"}` in their language.
 - It does not wait: go on with what does not need it, else end your turn need_human (about the card). Do not post the
   tab's screen for a sign-in yourself, and never ask for a password or a code in the chat.
 - The vault's sign-in ran out (the site asks you to sign in although it was granted): sign in with the site's passkey if

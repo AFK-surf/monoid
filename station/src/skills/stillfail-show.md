@@ -5,7 +5,8 @@ description: Show evidence of visible work such as a UI, animation or generated 
 
 # Show visible work
 
-When building or fixing UI, always read the code logic, state/data flow, and existing components first. Screenshots and recordings are for showing finished work to people or verifying a known issue — never a substitute for reading code or a loop for pixel-fitting.
+When building or fixing UI, read its code and the components it already has first: pictures show the result to people,
+they do not replace reading the code.
 
 Show the result, not just a description or a request that the user check it themselves. Say what changed, where the evidence came from and what to look at.
 
@@ -54,6 +55,9 @@ browser's DevTools (stillfail-browser), and when you are stuck hand the screen t
 ## Evidence
 
 - Capture the actual build/page with realistic data, intended sizes and light/dark themes. Label mock-ups as proposals.
+- Compare before/after at the same size, data and scroll position. Design alternatives should differ in structure,
+  not just a few pixels.
 - Inspect images and motion frames yourself: check the change is visible, the build/cache is current, the server
-  belongs to you, and nothing else broke.
+  belongs to you, and nothing else broke. Measured values alone do not demonstrate motion.
 - Name the environment and branch/commit. State anything not shown, why, and how it can be checked later.
+- Send fresh evidence after each revision.

@@ -15,17 +15,23 @@ Whose vault: whoever started the chat, unless you name another with `person` (th
 secret when that is not the starter, and always where the chat was started in Slack and the person now writes from
 still.fail (a card for a Slack starter cannot be approved in the app).
 
-## When to use `secret_save`
+## When to offer it
 
-Call `secret_save` when:
+As soon as you see a credential will be needed more than once, before using it another way:
 
-- you need a credential nobody gave you and you cannot read on the machine: `secret_save` with no `value`, `command` or
-  `path` puts a card in the chat where the person types or pastes it (never ask them to paste a secret in the chat);
-- the person asks you to save a credential (or one read from `op`/`bw` or newly created) in their vault for future chats.
+- you are about to read one with a password manager's CLI (`op`, `bw`), above all where each read needs the person
+  (1Password's approval on a station's screen);
+- a person pastes or tells you a token, password or key: keep it rather than leave it to be pasted again;
+- you created one (a deploy token, an API key from a console you signed in to);
+- a script you write logs in somewhere (a router, a dashboard, an API);
+- you need one nobody gave you and you cannot read (an API key from a console only they sign in to): ask them to type it
+  in on the card (below), not to add it in the vault page themselves or paste it in the chat.
 
-Do not interrupt ongoing work with unsolicited `secret_save` cards for credentials that are already configured and
-working in the environment or CLI, and never use it for CLI logins (`login`, skill stillfail-login), the agents' model
-accounts (the station's profiles), or anything the person said not to keep.
+Say it in a line (我把 UX7 的密码存进你的密钥库，以后用它在卡片上批准就行，不用再点 1Password) and call
+`secret_save`: its card is the question, so ask nothing separately.
+
+Not for what the station keeps itself: CLI logins (`login`, skill stillfail-login), the agents' model accounts (the
+station's profiles), or anything the person said not to keep.
 
 ## Keeping one
 
@@ -51,8 +57,8 @@ accounts (the station's profiles), or anything the person said not to keep.
     `file` for a file: each command gets it written out where only it reads it, removed when it ends, its path in
     `env` (`KUBECONFIG`, `GOOGLE_APPLICATION_CREDENTIALS`) and `$STILLFAIL_SECRET`.
   - `name`: what a person and the next agent know at a glance: the service and the account or site, and where it is
-    reached when that is not plain (测试服务 admin 登录, GitHub deploy token · AFK-surf/still.fail, UniFi 后台登录态（经
-    Studio 转发到 127.0.0.1:8443）). Never a bare host (`127.0.0.1 登录态`): nobody knows what it was.
+    reached when that is not plain (测试服务 admin 登录, GitHub deploy token · acme/web, 路由器后台登录态（经
+    家里那台 Mac 转发到 127.0.0.1:8443）). Never a bare host (`127.0.0.1 登录态`): nobody knows what it was.
   - `about` (required): what it is for and how it is used, in the person's language: what it opens, the steps to reach it
     (a forward from which station, a tunnel, the page to open), the tool or command that takes it. `secret_list` shows
     it to every agent after you beside the name; never a secret in it.

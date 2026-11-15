@@ -175,6 +175,15 @@ yet and you can add one, add it.
   `*_known` bars and `@ui.motion_counted` list may only shrink as faults are fixed; never add a file to
   `motion_counted` or raise a bar. Immediate data answers (`@view.answering`, `src/view/answer_marked.mbt`) are treated
   as answer changes, while nodes mid-transition (`Tree::on_way_at`) are still checked for mid-motion jumps.
+- Why the runs are split so (the user): the rates run on main after a merge, red there mended forward (2026-11-11:
+  「直接合，帧率在 main 上合并后跑」), and on a branch only for the app's test files it changed (2026-11-14); the sweeps
+  at the default rate alone because a rate found nothing in them the default run did not (2026-11-11), and for now
+  not judged for motion (`Tester::motion_unjudged`, 2026-11-12: 「先省吧，明天加机器，再改回来」, judged again once CI
+  has more runners); smoothness on the default run's frames (2026-11-09: 平滑度另开一条线), and a step half way
+  through a motion is a jump (「动画执行到一半突变也算突变」). Only `run_for`'s way gets the extra frames: a test that
+  walks its own frames to judge motion returns at once at a rate (`@ui.test_at_a_rate()`). A bar's key is the file
+  its Testers are made in; `scripts/motion_bars.sh` fails main where a bar should fall or a counted file shows none,
+  naming the line to change, so the change that mended a fault lowers its bar or takes its file off the list itself.
 - Time nothing happens in is skipped, never walked (the user, 2026-11-14: 「无意义的时间直接跳过是这个项目第一天就开始强调的」).
   A test that looks at every frame after a cause (`Tester::each_frame`) runs the clock on with the frames a host
   draws (`Tester::run_shown`: the display's while the app asks for frames, none while it is at rest, one at what is
