@@ -37,7 +37,7 @@ import { runShown } from "./run-change.ts";
 import type { PolicyChecks } from "./archive-policy.ts";
 import type { RecentChatList } from "../store/chat-list.ts";
 import { Accounts } from "./accounts.ts";
-import { SessionActor, type Actor, type SessionDeps, type Snapshot, linkSkills, openOptions } from "./actor.ts";
+import { type Actor, type SessionDeps, type Snapshot, linkSkills, openOptions } from "./actor.ts";
 import { ActorsProgram } from "./mb-actor.ts";
 import { Places } from "../ops/places.ts";
 import { threadCommand, type Args } from "./args.ts";
@@ -387,7 +387,7 @@ export class Hub {
 
   /// The station left its workspace (turns are held first): every runtime process ends, running or idle, then what the
   /// drivers run themselves (codex's app-servers), so no agent goes on outside the workspace. Turns cut off stay marked
-  /// running and messages given to them pending again (SessionActor.suspend): `recover` resumes them once the station
+  /// running and messages given to them pending again (mb-actor.ts `suspend`): `recover` resumes them once the station
   /// is back in its workspace.
   async suspendAll() {
     for (const fiber of this.deadlines.values()) this.interrupt(fiber);
@@ -919,7 +919,7 @@ export class Hub {
   }
 
   /// The station's tools are open at `url`: a process taken up that was told another address (the station before had
-  /// them elsewhere) starts again, as it can (SessionActor `toolsAt`).
+  /// them elsewhere) starts again, as it can (actor_run.mbt `tools_at`).
   toolsAt(url: string) {
     for (const actor of this.actors.values()) void actor.toolsAt(url);
   }
@@ -1061,7 +1061,7 @@ export class Hub {
     await this.actors.get(key)?.evict();
   }
 
-  /// How a session runs changed: its process ends now if idle, else before its next turn (SessionActor.changed); `restart`:
+  /// How a session runs changed: its process ends now if idle, else before its next turn (the actor's `changed`); `restart`:
   /// what changed is what its process started with, which only a new one takes.
   async changed(key: string, restart = false) {
     await this.actors.get(key)?.changed(restart);
@@ -1113,7 +1113,7 @@ export class Hub {
     }
   }
 
-  /// Starts a session's runtime ahead of a message (SessionActor.warm).
+  /// Starts a session's runtime ahead of a message (the actor's `warm`).
   async warm(key: string) {
     const row = this.store.getSession(key);
     if (row) await this.actor(row).warm();
@@ -1148,7 +1148,7 @@ export class Hub {
     await this.actor(row).reassign(thread, seq);
   }
 
-  /// Compacts the session's context between turns, as `-compact` in a thread would (SessionActor.compact): why not,
+  /// Compacts the session's context between turns, as `-compact` in a thread would (the actor's `compact`): why not,
   /// when it cannot now.
   async compact(key: string): Promise<string | null> {
     const row = this.store.getSession(key);
@@ -1156,7 +1156,7 @@ export class Hub {
     return this.actor(row).compact();
   }
 
-  /// Clears the session's context between turns, as `-clear` in a thread would (SessionActor.clear; `readBack`: to go on
+  /// Clears the session's context between turns, as `-clear` in a thread would (the actor's `clear`; `readBack`: to go on
   /// afresh): why not, when it cannot now.
   async clear(key: string, readBack = false): Promise<string | null> {
     const row = this.store.getSession(key);
@@ -1164,7 +1164,7 @@ export class Hub {
     return this.actor(row).clear(false, readBack);
   }
 
-  /// A word from the station for a session's agent, outside any conversation (SessionActor.notify).
+  /// A word from the station for a session's agent, outside any conversation (the actor's `notify`).
   notify(key: string, text: string) {
     const row = this.store.getSession(key);
     if (!row) throw new Error(`unknown session ${key}`);
@@ -1447,7 +1447,9 @@ export class Hub {
     const runtime = runtimeNamed(row.runtime);
     if (!runtime) throw new Error(`session ${row.key} runs an unknown runtime ${row.runtime}`);
     if (this.actorsProgram === undefined) this.actorsProgram = ActorsProgram.open(this.config().dataDir, this.clock, this.store);
-    const actor = this.actorsProgram ? this.actorsProgram.actor(row.key, runtime, this.deps) : new SessionActor(row.key, runtime, this.deps);
+    // (the program is built for every system the station runs on: a checkout that did not build it cannot run a session)
+    if (this.actorsProgram === null) throw new Error("the station's MoonBit program is not built here (station/mb: build.sh): no session can run");
+    const actor = this.actorsProgram.actor(row.key, runtime, this.deps);
     this.actors.set(row.key, actor);
     return actor;
   }

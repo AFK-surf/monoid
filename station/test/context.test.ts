@@ -1,4 +1,4 @@
-// A session's context by hand (SessionActor compact, clear; `-compact`, `-clear` in a thread; POST
+// A session's context by hand (its actor's compact, clear; `-compact`, `-clear` in a thread; POST
 // /sessions/:key/compact, /clear): compacted between turns as a turn of the runtime's own, cleared to a new runtime
 // session the next turn starts.
 import assert from "node:assert/strict";

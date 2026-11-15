@@ -88,9 +88,9 @@
   the words, all shared with `src/sessions/actor.ts`) and reads at once what it last told of each. What of the store
   it reads and writes most (its turns, running, its session's row) it does itself on the station's database
   (`mb/src/reader/actor_store.mbt`, store.ts's statements), telling Node's store what changed; a store in memory is
-  asked through Node, so the hub's tests keep theirs in a file (`test/hub-fakes.ts`). `SessionActor`
-  (`actor.ts`) is the actor where the program is not (`STILLFAIL_ACTORS_HOST=0`). A test's `settle()` waits for the
-  program too (`actorsBusy`); a test that replaces SessionActor's own steps runs on it.
+  asked through Node, so the hub's tests keep theirs in a file (`test/hub-fakes.ts`). The program is built for every
+  system a station runs on, so there is no actor in TypeScript to fall back to. A test's `settle()` waits for the
+  program too (`actorsBusy`).
 - Runtimes are drivers behind one seam (`src/agents/runtime.ts`): Claude Code a `claude -p` process per session;
   Codex one app-server per account, a thread per session, whose per-session settings go in `thread/start`'s config,
   never the process's environment; the others in `src/agents/`. A driver owns its child's stdin. Claude Code's output

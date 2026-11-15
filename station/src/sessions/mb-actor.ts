@@ -1,12 +1,11 @@
 // The sessions' actors run in the MoonBit program (station/mb's reader `--sessions`, mb/src/reader/actors.mbt and
-// actor_run.mbt): each session's state and its serial queue are there, as actor.ts keeps them here where the program is
-// not (a checkout without it, Windows; STILLFAIL_ACTORS_HOST=0). This is what the hub holds of each (`MbActor`, with
-// SessionActor's methods): what it is asked it says to the program (`call`, answered `returned`), with its runtime
-// session's events as they come (`event`); what the program asks of the station it answers (`rpc`): the store, the hub's
-// deps, its runtime sessions (kept here by a number, `handle`), its chats, and the words and formats of what agents are
-// told (actor.ts's functions, shared with SessionActor). What the hub reads of an actor at once (where it stands, its
-// queue run out) is what the program last told of it (`mirror`). Its time is the hub's clock: said with every line
-// (`now`), its waits that clock's (`after`, told `due`), so a test's TestClock moves them as the rest.
+// actor_run.mbt): each session's state and its serial queue are there. This is what the hub holds of each (`MbActor`):
+// what it is asked it says to the program (`call`, answered `returned`), with its runtime session's events as they come
+// (`event`); what the program asks of the station it answers (`rpc`): the store, the hub's deps, its runtime sessions
+// (kept here by a number, `handle`), its chats, and the words and formats of what agents are told (actor.ts's
+// functions). What the hub reads of an actor at once (where it stands, its queue run out) is what the program last
+// told of it (`mirror`). Its time is the hub's clock: said with every line (`now`), its waits that clock's (`after`,
+// told `due`), so a test's TestClock moves them as the rest.
 import { Clock, Effect, Fiber } from "effect";
 import { log } from "../ops/log.ts";
 import { Said, stationLang } from "../ops/i18n.ts";
@@ -98,9 +97,9 @@ export class ActorsProgram {
     this.#proc.kill();
   }
 
-  /// The program for a hub on `data`, where it is built (none: the hub's actors are SessionActor's).
+  /// The program for a hub on `data`, where it is built (none: a checkout that did not build it runs no session).
   static open(data: string, clock: Clock.Clock, store: { told(changes: any[]): void; db: any } | null = null): ActorsProgram | null {
-    if (process.env.STILLFAIL_ACTORS_HOST === "0" || mbReaderBinary() === null) return null;
+    if (mbReaderBinary() === null) return null;
     return new ActorsProgram(data, clock, store);
   }
 
@@ -114,7 +113,7 @@ export class ActorsProgram {
     return this.#sent > this.#seen || this.#active > 0 || this.#answering > 0;
   }
 
-  /// What it asked that is being answered here: its actor waits on it, as SessionActor waits on what it awaits.
+  /// What it asked that is being answered here: its actor waits on it.
   #answering = 0;
 
   actor(key: string, runtime: RuntimeKind, deps: SessionDeps): MbActor {
@@ -280,7 +279,7 @@ function errorBack(error: Json): Error {
   return error?.said === true ? new Said(message) : new Error(message);
 }
 
-/// A session's actor as the hub holds it (SessionActor's methods), run by the program.
+/// A session's actor as the hub holds it, run by the program.
 export class MbActor {
   readonly key: string;
   runtime: RuntimeKind;
@@ -324,7 +323,7 @@ export class MbActor {
   }
 
   /// What it had been given that its model had not read, read as its model is asked (`requesting`): so at once here,
-  /// as SessionActor has it, its tools asking next; a mirror said before the program took that in does not say it again.
+  /// its tools asking next; a mirror said before the program took that in does not say it again.
   #readAt = 0;
 
   mirrored(state: Mirror) {
