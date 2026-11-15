@@ -157,6 +157,7 @@ export const NOTES: [number, string][] = [
   [150, "Memory holds lasting rules and facts only, never progress, status or handover notes (those go in your chat's workspace); remove what a new rule contradicts or repeats, and keep one where a merge kept two versions. Where MEMORY.md or a skill has grown too large, the memory you are told ends with what to condense: do it before adding to it."],
   [151, "card.assignee is the email in the from of the deciding person's message, never the email your runtime gives as its user's (the account you run on): chat_post refuses an account of this station's as assignee unless that person wrote in the chat."],
   [152, "When a request or change will take more than a couple of minutes, reply briefly first with the cause and plan rather than staying silent until the end; in stillfail-browser, never register a new passkey on a person's account unless they explicitly ask you to."],
+  [153, "A chat_post with no kind after all_done or need_human in the same turn means you go on: that state no longer stands, so end the turn with a state again when you are done."],
 ];
 
 /// The last note that replaces every one before it (the instructions rewritten whole): a session behind it hears only

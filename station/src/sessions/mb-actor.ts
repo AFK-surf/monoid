@@ -402,6 +402,7 @@ export class MbActor {
   putAway() { return this.#call("putAway").then(() => undefined); }
   postedNow() { return this.#call("postedNow").then(() => undefined); }
   postedForTurn(id: string) { return this.#call("postedForTurn", [id]).then(() => undefined); }
+  goesOn() { return this.#call("goesOn").then(() => undefined); }
   async stateForTurn(id: string, state: DeclaredState, words: string | null, about: [number, number, string] | null,
     watch = false, record?: (write: (about: [number, number, string] | null) => void) => void): Promise<boolean> {
     const token = ++this.#next;

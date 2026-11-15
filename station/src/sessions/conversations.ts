@@ -478,6 +478,8 @@ export async function chatPost(hub: Hub, key: string, args: Args, held: Held = {
   if (guarded) {
     if (actor && questionTurn !== null && hub.actors.get(key) === actor) await actor.postedForTurn(questionTurn);
   } else await actor?.postedNow();
+  // A post with no state after one that ended the turn says it goes on: the end said before no longer stands.
+  if (kind === null) await actor?.goesOn();
   if (!guarded && need !== null) await actor?.need(need);
   let recorded = true;
   let stateError: string | null = null;

@@ -208,6 +208,38 @@ test("a state said before the turn read a message no longer stands: the turn tha
   await r.close();
 });
 
+test("all_done said and then a post that goes on no longer stands: the turn that ends so is asked again", async () => {
+  const r = new Rig();
+  const first = message();
+  await r.accept(first);
+  await settle();
+  const key = sessionKey("cl", "C1", first.threadTs);
+  const session = r.claude.last();
+  await r.call(key, "chat_post", { to: `C1/${first.threadTs}`, text: "查完了，清单如下", kind: "all_done", done: "排查清单已发在本 chat，6 处问题和改法都列了" });
+  await r.call(key, "chat_post", { to: `C1/${first.threadTs}`, text: "好，我接着按清单改" });
+  session.complete();
+  await settle();
+  assert.equal(session.prompts.length, 2, "asked where it stands, as any turn ending in no state");
+  assert.equal(r.store.listTurns(key).at(-1)?.summary.declared ?? null, null);
+  await r.close();
+});
+
+test("a progress post before all_done leaves it standing", async () => {
+  const r = new Rig();
+  const first = message();
+  await r.accept(first);
+  await settle();
+  const key = sessionKey("cl", "C1", first.threadTs);
+  const session = r.claude.last();
+  await r.call(key, "chat_post", { to: `C1/${first.threadTs}`, text: "在查" });
+  await r.call(key, "chat_post", { to: `C1/${first.threadTs}`, text: "查完了", kind: "all_done", done: "答案已发在本 chat：原因是索引缺失，已给出查询" });
+  session.complete();
+  await settle();
+  assert.equal(session.prompts.length, 1, "nothing asked again");
+  assert.equal(r.store.listTurns(key).at(-1)?.summary.declared, "final");
+  await r.close();
+});
+
 test("a state said after the turn read a message stands", async () => {
   const r = new Rig();
   const first = message();

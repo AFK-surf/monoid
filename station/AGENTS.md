@@ -130,7 +130,9 @@
   (`client/core-ts/src/feedback-replies.ts`), no station reads or holds them, and an agent sees one only as a person
   quotes it into what they send. An agent may answer with `feedback_reply` when the person asks it to.
 - An agent's own answer is never forwarded: it posts with `chat_post` and ends each turn with a state (`all_done`,
-  `need_human`, `waiting`); a turn ended without one is asked again.
+  `need_human`, `waiting`); a turn ended without one is asked again, and so is one where a post with no state
+  came after its `all_done` or `need_human` (it said it goes on: `goesOn`, 2026-11-15, a chat shown done that worked on
+  for 78 minutes).
 
 ## The agents' memory
 
