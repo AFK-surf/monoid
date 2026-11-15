@@ -388,6 +388,8 @@ function launcherOf(n: Name): number | undefined {
   }
   return undefined;
 }
+/// (Both looked at every 200 ms besides the run directory's events: on the Studio the launcher's lines written by
+/// waitfor's tee went untold for whole seconds, a handover seen only at its 10 s deadline, parts 7h and 9, 2026-11-16.)
 /// Station `n` sent SIGUSR2 by its launcher's pid, as an update does, and the launcher's word on it from its log (each
 /// station's `<name>.log`): it began a handover (a Node started beside the one serving), or the error at once where it
 /// said nothing of one in 10 s.
@@ -402,7 +404,7 @@ async function handOver(n: Name): Promise<{ from: number; log: string }> {
   process.kill(pid, "SIGUSR2");
   log(`  SIGUSR2 to ${n}'s launcher ${pid}; waiting for it to begin a handover`);
   await whenChanged([RUN], () => /handover: Node [0-9]+ started beside|not handed over; going on as before/.test(since(file, from)), 10_000,
-    () => `${n}'s launcher said nothing of a handover in 10 s: ${since(file, from).split("\n").slice(-5).join(" | ")}`);
+    () => `${n}'s launcher said nothing of a handover in 10 s: ${since(file, from).split("\n").slice(-5).join(" | ")}`, 200);
   return { from, log: file };
 }
 /// What `n`'s launcher said since `from` once it said how the handover ended: taken over, or not handed over (its own
@@ -410,7 +412,7 @@ async function handOver(n: Name): Promise<{ from: number; log: string }> {
 function handoverEnd(h: { from: number; log: string }, ms = 120_000): Promise<string> {
   log("  waiting for the handover's end in the launcher's log");
   return whenChanged([RUN], () => /Node [0-9]+ has taken over|not handed over; going on as before[^\n]*|Node [0-9]+ did not take over[^\n]*/.exec(since(h.log, h.from))?.[0], ms,
-    () => `no end of the handover said: ${since(h.log, h.from).split("\n").slice(-6).join(" | ")}`);
+    () => `no end of the handover said: ${since(h.log, h.from).split("\n").slice(-6).join(" | ")}`, 200);
 }
 
 /// A room filled with `count` files of `bytes` bytes each, each its own random bytes (two the same would be sent once).
@@ -3205,6 +3207,12 @@ try {
     await a.answered(aId, "/", upAt, 120_000, true);
     return sql("A", "select key from sessions where archived_at is null").map((r) => String(r.key)).filter((k) => !before.has(k));
   };
+  /// Each of `keys` given a room of E2E_MOVE_9_MB MB (20) in 100 files, so that its hand-over's passes take a second
+  /// or so: long enough to be under way as the next process starts (seeded rooms alone went in milliseconds).
+  const roomsOf = (keys: string[]) => {
+    const mb = Number(process.env.E2E_MOVE_9_MB ?? 20);
+    for (const k of keys) fill(roomOn("A", k)!, "bulk", 100, Math.floor((mb * 1024 * 1024) / 100));
+  };
   type Moved = { key: string; at: number; askMs: number; said: string; failed: string | null };
   /// Chats `keys` moved A→B one turn each, the next asked as the one before ended (the move.start's answer, then the
   /// turn's end on A): what each ask was answered and how long that took, and what its turn said.
@@ -3223,7 +3231,13 @@ try {
       }
       const askMs = Date.now() - t0;
       if (failed === null) {
-        const l = await turnEnds("A", t0, 300_000);
+        // (the end of this chat's own turn: a turn of the one before, cut by a handover and said ended by the next
+        // process after this ask began, is not it; taken for it, the next asks met this one's turn as under way)
+        const mine = (l: J) => [...(l?.done ?? []), ...(l?.refused ?? []).map((r: J) => r.item), ...failuresOf(l).map((f) => f.item)].some((x) => named(x) === `chats ${key}` || x === `chats ${key}`);
+        const l = await whenChanged([`${DATA.A}/move`], () => {
+          const x = lastOn("A", ws);
+          return x !== null && x.at >= t0 && !existsSync(`${DATA.A}/move/turn.json`) && (mine(x) || (x.done ?? []).length + (x.refused ?? []).length + failuresOf(x).length === 0) && x;
+        }, 300_000, () => `no end of ${key.slice(-8)}'s turn: last ${brief(lastOn("A", ws))}`, 200);
         const why = failedWhy(l, `chats ${key}`);
         said = outcome(l);
         if (why !== "" || (l.done ?? []).length === 0) failed = why || said;
@@ -3240,18 +3254,22 @@ try {
   });
   /// What a batch left: chats on none, on both, said gone and not there; and, the stations settled, alice's list.
   const heldAfter = async (label: string, keys: string[]) => {
-    // (settled: no hand-over of these chats under way on either side)
-    await whenChanged([DATA.A, DATA.B], () => keys.every((k) => {
+    // (settled: no hand-over of these chats under way on either side; one still under way after 120 s is said, and
+    // what is in sight then is held as it is)
+    const underWay = (k: string) => {
       const o = outOn("A", k);
       const coming = handovers("B", "in").some((i) => (i.keys ?? []).includes(k) && i.step === "coming");
-      return !coming && (o === null || !["held", "files", "rows"].includes(o.step));
-    }) && !existsSync(`${DATA.A}/move/turn.json`), 300_000, () => `${label}: hand-overs of its chats still under way: ${brief(keys.map((k) => ({ k: k.slice(-8), out: outOn("A", k)?.step })))}`, 1000);
+      return coming || (o !== null && ["held", "files", "rows"].includes(o.step));
+    };
+    const settled = await whenChanged([DATA.A, DATA.B], () => !keys.some(underWay) && !existsSync(`${DATA.A}/move/turn.json`), 120_000, () => "", 1000).then(() => true, () => false);
+    const stuck = settled ? [] : keys.filter(underWay);
+    for (const k of stuck.slice(0, 3)) log(`  ${label}: ${k.slice(-8)} still under way after 120 s: ${standings(k)}; turn ${existsSync(`${DATA.A}/move/turn.json`) ? readFileSync(`${DATA.A}/move/turn.json`, "utf8") : "none"}\n    ${heldOf2(k)}; B's in ${brief(handovers("B", "in").filter((i) => (i.keys ?? []).includes(k)).map((i) => ({ id: i.id, step: i.step, at: i.at, error: i.error })))}`);
     const s = sightOf(keys);
     const none = s.filter((x) => x.live.length === 0);
     const both = s.filter((x) => x.live.length > 1);
     const notThere = s.filter((x) => x.saysWent && !x.live.includes("B"));
     for (const x of [...none, ...both, ...notThere].slice(0, 3)) log(`  ${x.key.slice(-8)}: ${x.standings}\n    ${heldOf2(x.key)}`);
-    return { none, both, notThere };
+    return { none, both, notThere, stuck };
   };
   /// Of the hand-overs of `keys` since `t0`, how many began (A's out record's `at`) on a process of A with its next one
   /// already started, and how many came to B (B's in record's `at`) while B's was: the turns that met the window.
@@ -3275,6 +3293,7 @@ try {
         await check(`9: ${perBatch} chats moved one turn each, back to back, while ${kind.label} again and again (#${b}): every chat in sight on one station, each failed move told in words and moved on a second ask, no ask unanswered past a handover`, async () => {
           keys = await seedA(perBatch);
           if (keys.length !== perBatch) throw new Error(`seeded ${keys.length} chats, not ${perBatch}`);
+          roomsOf(keys);
           const t0 = Date.now();
           let stop = false;
           const loops = kind.who.map((n) => ({ n, ...handingOver(n, () => stop) }));
@@ -3293,6 +3312,7 @@ try {
           const held = await heldAfter(label, keys);
           if (held.none.length > 0) why.push(`${held.none.length} chat(s) on neither station: ${held.none.map((x) => `${x.key.slice(-8)} (${x.standings})`).join(", ")}`);
           if (held.both.length > 0) why.push(`${held.both.length} on both: ${held.both.map((x) => x.key.slice(-8)).join(", ")}`);
+          if (held.stuck.length > 0) why.push(`${held.stuck.length} hand-over(s) still under way 120 s after the batch: ${held.stuck.map((k) => `${k.slice(-8)} (${standings(k)}, out ${outOn("A", k)?.step})`).join(", ")}`);
           if (held.notThere.length > 0) why.push(`${held.notThere.length} said gone by A and not in sight on B: ${held.notThere.map((x) => `${x.key.slice(-8)} (${x.standings})`).join(", ")}`);
           // (an ask is answered within what a handover takes, SIGUSR2 to taken over, and the second's slack of a link
           // dialled anew)
@@ -3346,6 +3366,7 @@ try {
       try {
         for (let b = 1; b <= tries && limbo === null; b++) {
           const keys = await seedA(perBatch);
+          roomsOf(keys);
           const t0 = Date.now();
           let stop = false;
           const loop = handingOver("A", () => stop);
