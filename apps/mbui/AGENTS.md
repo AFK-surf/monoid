@@ -128,14 +128,13 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
     over by the reader that comes to read it, the same subscription all along; what no reader took is let go of as
     another workspace comes in view. So a shell's function says only what its first screen reads, all of it read once
     it is at rest (`src/sfapp/declared_read_wbtest.mbt`). So is what a page reads as it is first built, declared as it
-    comes on top (sfbase's `page_opens`, by `page_opens_node`; a chat's so far, another only with the coordinator of
-    the migration), let go of where no reader took it as another comes on top. A bridge while pages are built by the
-    old view: a page made as nodes says what it reads where it is made, and writes nothing here (the coordinator of
-    the migration, 2026-11-12).
+    comes on top (sfbase's `page_opens`, by `page_opens_node`), let go of where no reader took it as another comes on top.
+    A bridge while pages are built by the old view: a page made as nodes says what it reads where it is made, and writes
+    nothing here.
   - A press that waits for the core before it opens something (a menu, a panel, a question) goes through sfbase's
     `press_wait` (`src/sfbase/press_wait.mbt`), never a wait of its own: it waits only while what it was pressed in
     stays as it was (the page, the workspace, nothing else put up) and lets go of what it asked when it stops
-    (`src/sfapp/press_waits_wbtest.mbt`; the coordinator of the migration, 2026-11-12).
+    (`src/sfapp/press_waits_wbtest.mbt`).
   - A step further in is the presenters', never a page's (弹层里往里走: the user, 2026-11-02, and 2026-11-10 「系统性
     全修一下」 once the chat's own sheet and a menu's 分享… were found never to have had it). A page says `close()` and
     opens the next, and keeps no step number and no 返回 button of its own; `src/sf/presenters.mbt` does the rest on
@@ -153,6 +152,10 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
   (mbui's `libs/mbui/src/view`; `libs/mbui/AGENTS.md`, Two views). What is new or rewritten is nodes: a page is `@sf.page_node`, a
   panel `@sf.panel_nodes` (drawn on 小屏 as a sheet from the foot), a long list `View::each` in what scrolls
   (`View::scrolls_window`); the library's parts are its `*_node.mbt` ones. A press does its work in its handler (`on_press`, `on_pick`, `on_change`).
+- Rewriting a page or part onto nodes, or fixing a UI bug, starts by reading the code logic (how the current or old view
+  works, its state and core subscriptions, and `git log`/`git blame` for why its rules were written) and expressing it
+  with the window's tree's and the library's own mechanisms — never by comparing `drawn_rects()` or frame-by-frame
+  coordinates between two worktrees, pixel-fitting the old view, or guessing from screenshots (the user, 2026-11-15).
 - A page's list makes a block only while it shows, so a block is a row, not a group of them: a card of a long list
   is made a block a row, each a piece of the card (`@sf.card_piece_node`), as 更新日志's days are (2026-11-11: a day of
   62 changes made one block was made whole in the frame it came into view).
@@ -164,8 +167,7 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
   没法用」); `chat_page_nodes_at_start` stays false meanwhile.
 - What changes with the width a row or a part is given is a binding (`By`: a gap's height, a margin, a size), never a
   structure switched by a value worked out of that width (`pick`, `show` on `width() <= …`): a structure switched makes
-  its way in and out, and what the window or the system's bars do to the width is no motion of the thing's (found by
-  #5767; the coordinator of the migration, 2026-11-12).
+  its way in and out, and what the window or the system's bars do to the width is no motion of the thing's (#5767).
 
 ## Motion
 
@@ -211,8 +213,8 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
 
 - The app's screens are tested in the Tester: its draw list at the declared moment.
 - A screen changed is checked by `t.audit()` (every rule at once, each fault saying where what it names was made), not
-  by judging a picture; what people point at (their words on a screenshot) is found back to its line by
-  `t.sources_of(words)` or `t.sources_at(x, y)` on the same screen in the Tester (mbui's AGENTS.md: What is seen).
+  by judging a picture; `t.sources_of(words)` and `t.sources_at(x, y)` trace an audit fault or a label on a built screen
+  back to its callsite (mbui's AGENTS.md: What is seen), after reading the page's code logic.
 - Every screen is swept at the default size of words (corners_wbtest.mbt) and, in a phone's window, at the system's
   words set to 1.3 (`src/sfapp/words_large_wbtest.mbt`: what fits and words over words at rest; the user, 2026-11-10).
   A new state a report shows gets a fixture mode in `corner_modes`, so both sweeps see it.
@@ -225,10 +227,9 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
   of their line at the system's size of words, as `list_looks_at` does), or, where they are part of a mark of a size
   said (a letter in its square, a badge's `!`), they are drawn by its points as it is (`@sf.mark_words_node`: mbui's
   `View::box(words_as_said=true)`, whose words and all made in it are at 1); each screen's bar is in
-  `corners_outgrown_known` and `words_large_outgrown_known`, and only falls (the coordinator of the migration,
-  2026-11-11).
+  `corners_outgrown_known` and `words_large_outgrown_known`, and only falls.
 - Every screen's switches are pressed as well over a core answering 400 ms late, each press looked at on each frame
-  till its answers have come (`src/sfapp/switches_still_wbtest.mbt`; the coordinator of the migration, 2026-11-13): a
+  till its answers have come (`src/sfapp/switches_still_wbtest.mbt`): a
   press is to change what is seen once, and one seen to change more is a row of `switches_known_wbtest.mbt`, which only
   falls. Main's alone, after a merge (mbui-check.yml's `switches`). What is no page's own is left out by its kind in
   that file's one judge, never by a screen's name: a notice, a tip, a number running while seen.
@@ -263,8 +264,7 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
   `src/sfapp/account_open_wbtest.mbt`), so it never opens on its bones.
 - A call whose answer nobody reads gives none to read it (`@core.call` with no `on_done`; a source's call
   `answer_unread`, sfbase's `source.mbt`): its answer is taken as it comes, awaited by nothing, building nothing. An
-  empty `on_done` is no reader's and is refused (detlint's `empty-on-done`; the coordinator of the migration,
-  2026-11-11).
+  empty `on_done` is no reader's and is refused (detlint's `empty-on-done`).
 - A replay asks the core what its run's app asked, so a way of asking brought in after a trace was recorded is
   switched by the trace's head (`@sfcore.trace_switch`, one of `trace_switches`; a recording says all of them on), and
   how many traces still replay without each only falls (`src/sfreplay/flows/trace_switches_test.mbt`; the user,
@@ -305,7 +305,7 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
 - What the host gives the app as it runs (its window and scale, the system and its settings, its time zone) is kept in
   a recorded trace (`{"settings":…}`, mbui's `@ui.trace_settings`) and given back by its replay, never a default in its
   place: a trace without it is refused (`Flow::start`). A recording is made in UTC (`e2e/run.sh`). Traces kept before
-  it say `"from":"replay"`, what their replays had always used (the coordinator of the migration, 2026-11-10).
+  it say `"from":"replay"`, what their replays had always used.
 
 ## Where the tests run (the user, 2026-11-08)
 
