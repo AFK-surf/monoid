@@ -1093,14 +1093,15 @@ async function tripWith(n: number, kind: "lent" | "stopped"): Promise<Cost & { s
   const { a, b, quiet } = world([kind === "lent" ? MAX : KIMI]);
   const pid = kind === "lent" ? "max" : "kimi";
   signIn(a, pid, kind === "lent" ? CLAUDE_LOGIN : {});
-  const one = await chatOn(a, pid);
+  // (the lent login's first chat; the other kind's one chat alone on its login: moving that login with it stops nothing)
+  const one = kind === "lent" ? await chatOn(a, pid) : null;
   const two = await chatOn(a, pid);
   const account = `own:${pid}@${A}`;
   const log = join(a.rig.dir, "move", kind === "lent" ? "accounts-lent.log" : "stopped.log");
   mkdirSync(join(a.rig.dir, "move"), { recursive: true });
   if (kind === "lent") {
     // (its login lent for a chat moved with what it needs, then for `n` other chats there: the lines kept so)
-    assert.equal((await a.moves.scheduler.move(WS, B, { module: "chats", item: one.key, withNeeds: true })).failed, null);
+    assert.equal((await a.moves.scheduler.move(WS, B, { module: "chats", item: one!.key, withNeeds: true })).failed, null);
     await quiet();
     const share = shareOf(a, pid).id as string;
     appendFileSync(log, Array.from({ length: n }, (_, i) => `${JSON.stringify({ k: `f:${share}\nchats other-${i}`, v: share })}\n`).join(""));
@@ -1116,7 +1117,7 @@ async function tripWith(n: number, kind: "lent" | "stopped"): Promise<Cost & { s
   const trip = counting(join(a.rig.dir, "move"), [a.moves.scheduler, b.moves.scheduler]);
   if (kind === "lent") {
     // The chat it was lent for back (taken off what the login is lent for, the login still lent for the others).
-    const back = await a.moves.scheduler.back(WS, B, { module: "chats", item: one.key });
+    const back = await a.moves.scheduler.back(WS, B, { module: "chats", item: one!.key });
     await quiet();
     assert.equal(back.failed, null, JSON.stringify(back));
     void two;
