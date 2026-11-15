@@ -219,18 +219,18 @@ fn chat_body_rows_again(
   guard was is Some(w) &&
     !w.sending &&
     sending.is_empty() &&
-    all.length() == w.all.length() &&
     v.outbox.is_empty() &&
     w.view.outbox.is_empty() else {
     return chat_body_rows(kept, v, all, sending)
   }
+  guard all.length() == w.all.length() else { return chat_body_rows_tail(kept, w, v, all) }
   let changed : Array[Int] = []
   for i, e in all {
     let f = w.all[i]
     if physical_equal(e, f) || chat_entry_same(e, f) {
       continue
     }
-    guard chat_entry_in_place(e, f) else { return chat_body_rows(kept, v, all, sending) }
+    guard chat_entry_in_place(e, f) else { return chat_body_rows_tail(kept, w, v, all) }
     changed.push(i)
   }
   let updates : Array[(String, ChatBodyRow)] = []
@@ -260,6 +260,120 @@ fn chat_body_rows_again(
     w.rows.rows[u.0] = u.1
   }
   { keys: w.rows.keys, rows: w.rows.rows }
+}
+
+///|
+/// The key chat_body_rows gives entry `e` with nothing sent from here on its way (its core key, or the key what was sent
+/// from here as goes by once the core's row took it over).
+fn chat_body_key(kept : ChatBodyKept, e : Entry) -> String {
+  let core_key = match e {
+    Said(m) =>
+      match kept.sent.get(m.seq) {
+        Some(o) => "o:" + o
+        None => e.id()
+      }
+    _ => e.id()
+  }
+  kept.sent_as.get(core_key).unwrap_or(core_key)
+}
+
+///|
+/// The keys chat_body_rows gives entry `e` (its pieces' where it is in pieces), its Top and Foot none.
+fn chat_body_keys_of(kept : ChatBodyKept, e : Entry, out : Array[String]) -> Unit {
+  if e is Top || e is Foot {
+    return
+  }
+  let k = chat_body_key(kept, e)
+  match chat_body_pieces(e) {
+    Some(ps) => for b in 0..<ps.length() { out.push(chat_piece_key(k, b)) }
+    None => out.push(k)
+  }
+}
+
+///|
+/// chat_body_rows_again's where entries came or went at the chat's end (a message come, an agent's line under it), with
+/// nothing sent from here on its way and no outbox (then nothing is put among them, no agent set at work by what is on
+/// its way: chat_body_rows' `still` and answered_at have nothing): the rows of the entries over the first that is not
+/// as it was kept as they are, those from it on made again as chat_body_rows makes them, the rest of the chat looked at
+/// no further. Where the entries before that are not a row of the list and its Top over it, or what the rows were made
+/// of is not what this would say they were (their keys as they end), chat_body_rows' all of it again.
+fn chat_body_rows_tail(kept : ChatBodyKept, w : ChatBodyMade, v : ChatView, all : Array[Entry]) -> ChatBodyRows {
+  let whole = fn() { chat_body_rows(kept, v, all, []) }
+  // (what is sent from here as it is told among the chat's messages: a key of one more means a row's key another,
+  // anywhere in it)
+  let sent_was = kept.sent.length()
+  for m in v.messages {
+    if m.outgoing != "" {
+      kept.sent[m.seq] = m.outgoing
+    }
+  }
+  guard kept.sent.length() == sent_was else { return whole() }
+  let n = all.length()
+  let was_n = w.all.length()
+  let mut p = 0
+  while p < n && p < was_n && (physical_equal(all[p], w.all[p]) || chat_entry_same(all[p], w.all[p])) {
+    p = p + 1
+  }
+  // (a row of the list kept over what is made again, its Top first: each made again has a row over it, its gap its
+  // own, never the first's; nothing on its way from here among them, none set at work by it)
+  guard p >= 2 && all[0] is Top else { return whole() }
+  let mut rows_before = false
+  for i in 1..<p {
+    if !(all[i] is Top || all[i] is Foot) {
+      rows_before = true
+      break
+    }
+  }
+  guard rows_before else { return whole() }
+  for i in p..<n {
+    if all[i] is (Top | Out(_)) {
+      return whole()
+    }
+  }
+  for i in p..<was_n {
+    if w.all[i] is (Top | Out(_)) {
+      return whole()
+    }
+  }
+  let old_keys : Array[String] = []
+  for i in p..<was_n {
+    chat_body_keys_of(kept, w.all[i], old_keys)
+  }
+  let keep = w.rows.keys.length() - old_keys.length()
+  guard keep >= 0 else { return whole() }
+  for j, k in old_keys {
+    guard w.rows.keys[keep + j] == k else { return whole() }
+  }
+  let rows = w.rows.rows
+  for k in old_keys {
+    rows.remove(k)
+  }
+  let keys = w.rows.keys[0:keep].to_owned()
+  for i in p..<n {
+    let e = all[i]
+    if e is Foot {
+      continue
+    }
+    let joined = match e {
+      Said(m) => m.joined
+      _ => false
+    }
+    let gap = if joined { Joined } else { Apart }
+    let k = chat_body_key(kept, e)
+    match chat_body_pieces(e) {
+      Some(ps) =>
+        for b, pc in ps {
+          let pk = chat_piece_key(k, b)
+          rows[pk] = { entry: e, gap: if b == 0 { gap } else { NoGap }, piece: Some(pc) }
+          keys.push(pk)
+        }
+      None => {
+        rows[k] = { entry: e, gap, piece: None }
+        keys.push(k)
+      }
+    }
+  }
+  { keys, rows }
 }
 
 ///|
@@ -361,7 +475,7 @@ fn chat_body_comes(e : Entry) -> Bool {
 /// only as it changed: sfbase's chat_read; the rest by what they say). What a row reads of its key (chat_body_row's)
 /// changes only so: one row's entry changed, or one more come, none of the others' read again.
 fn chat_body_row_same(a : ChatBodyRow, b : ChatBodyRow) -> Bool {
-  a.gap == b.gap && a.piece == b.piece && chat_entry_same(a.entry, b.entry)
+  physical_equal(a, b) || (a.gap == b.gap && a.piece == b.piece && chat_entry_same(a.entry, b.entry))
 }
 
 ///|
