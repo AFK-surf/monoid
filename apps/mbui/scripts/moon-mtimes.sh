@@ -8,6 +8,10 @@
 # from apps/mbui in #6013 and was left out: from then on moon built every mbui package and all after them again each
 # run (80 tasks, 69-181 s of the Mac release job, which was 300 s of its 5 minutes on main 49206681, 43530878166).
 # CI only: the content is the index's (a file changed and not committed keeps its old one, and moon would not see it).
+# Farview's client (deps/farview, fetched by scripts/farview.sh at farview.pin's commit, no index of its own here) has
+# each file the pin's mtime, which only a new pin changes: left out, moon built fvclient's four packages and every one
+# over them (sfpages, sfapp, sfdesk, the app) again each run, on main's Mac release too (124be6db, 43744569494: 138 s of
+# moon's build where 17 of 988 C units had changed).
 #   scripts/moon-mtimes.sh
 set -e
 cd "$(git rev-parse --show-toplevel)"
@@ -18,3 +22,10 @@ git ls-files -s -z apps/mbui libs/mbui | perl -0ne '
   next if -l $path || ! -e $path;
   utime($t, $t, $path) or die "moon-mtimes: $path: $!\n"; $n++;
   END { print "moon-mtimes: $n files of apps/mbui and libs/mbui given their content'"'"'s mtime\n" }'
+pin=apps/mbui/deps/farview/.pin
+if [ -f "$pin" ]; then
+  find apps/mbui/deps/farview -type f -print0 | perl -0ne '
+    BEGIN { open(my $f, "<", shift @ARGV) or die; my $p = <$f>; $p =~ s/\s//g; $t = 946684800 + hex(substr($p, 0, 7)); }
+    chomp; next if -l $_; utime($t, $t, $_) or die "moon-mtimes: $_: $!\n"; $n++;
+    END { print "moon-mtimes: $n files of deps/farview given its pin'"'"'s mtime\n" }' "$pin"
+fi
