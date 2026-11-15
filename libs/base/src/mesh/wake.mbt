@@ -20,8 +20,13 @@ pub let rebind_ms : Int = 5_000
 /// What else a wake comes to do goes here, each with what it is of: speeds seen on the network of before
 /// forgotten (there only where the network changed: a word this call is given then), the addresses a peer said
 /// tried again, and the endpoints of other ways told as this one is.
-pub fn Mesh::wake(self : Mesh) -> Unit {
+///
+/// `network`: on another network now; the speeds seen on the one before are forgotten (speed.mbt).
+pub fn Mesh::wake(self : Mesh, network? : Bool = false) -> Unit {
   guard !self.closed else { return }
+  if network {
+    self.forget_speeds()
+  }
   // (being bound anew: the endpoint that comes is new to its network, and nothing is on either)
   guard !self.rebinding else { return }
   self.shell.tell("iroh.networkChange", { "id": self.endpoint })

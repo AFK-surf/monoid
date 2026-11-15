@@ -3,6 +3,7 @@ package "base/mesh"
 
 import {
   "base/shell",
+  "mbui/effect",
   "moonbitlang/core/debug",
   "moonbitlang/core/json",
 }
@@ -17,6 +18,8 @@ pub fn clearly_better(Score, Score) -> Bool
 pub fn code_of(Error) -> String
 
 pub let connect_timeout_ms : Int32
+
+pub fn cost(Double, Double?) -> Double
 
 pub let device_key : String
 
@@ -34,6 +37,8 @@ pub let keep_ways : Int32
 
 pub let lan_recall_ms : Int32
 
+pub fn local_day(Int64, Int32) -> Int64
+
 pub let max_body : Int32
 
 pub let min_samples : Int32
@@ -41,6 +46,8 @@ pub let min_samples : Int32
 pub let min_stay_ms : Int32
 
 pub let move_gain : Double
+
+pub let net_day_key : String
 
 pub let onto_max_ms : Int32
 
@@ -66,7 +73,21 @@ pub fn set_language(String) -> Unit
 
 pub fn shell_store(@shell.Shell) -> Store
 
+pub let speed_fresh_ms : Int32
+
+pub let speed_kept_ms : Int32
+
+pub let speed_key : String
+
+pub let speed_min_bytes : Int32
+
+pub let speed_said_ms : Int32
+
+pub let tally_every_ms : Int32
+
 pub let tick_ms : Int32
+
+pub let typical_bytes : Int32
 
 // Errors
 pub(all) suberror MeshError {
@@ -125,6 +146,7 @@ pub async fn Link::duplex(Self, String, String, headers? : Array[(String, String
 pub fn Link::ended(Self) -> Closed?
 pub async fn Link::exchange(Self, String) -> @json.Json
 pub fn Link::lan(Self) -> Array[String]
+pub fn Link::net(Self) -> LinkNet
 pub fn Link::path(Self) -> String?
 pub fn Link::paths(Self) -> Array[@json.Json]
 pub fn Link::pings(Self) -> Pings
@@ -132,6 +154,16 @@ pub async fn Link::request(Self, String, String, headers? : Array[(String, Strin
 pub fn Link::tailnet(Self) -> Array[String]
 pub fn Link::usable(Self) -> Bool
 pub fn Link::via(Self) -> String?
+
+#derive(Eq, @debug.Debug)
+pub(all) struct LinkNet {
+  path : String?
+  relay : String?
+  rtt_ms : Double?
+  rx_bytes : Int64
+  tx_bytes : Int64
+  packets : Packets?
+}
 
 #derive(Eq, @debug.Debug)
 pub(all) struct MeasuredWay {
@@ -158,19 +190,23 @@ pub fn Mesh::healthy(Self, String, scope? : String) -> Bool
 pub async fn Mesh::incoming(Self) -> Incoming?
 pub fn Mesh::lan(Self, String, scope? : String) -> Array[String]
 pub async fn Mesh::link(Self, String, async (String, Bool) -> Presented, scope? : String, theirs? : Array[String], off? : Array[String]) -> Link
-pub async fn Mesh::make(@shell.Shell, Store, Options, binding? : Binding, addresses? : String, pinned_prefix? : Bytes) -> Self
+pub async fn Mesh::make(@shell.Shell, Store, Options, binding? : Binding, addresses? : String, pinned_prefix? : Bytes, clock? : WallClock, speeds_key? : String, days_key? : String) -> Self
 pub fn Mesh::measured(Self, String, scope? : String) -> Array[MeasuredWay]
 pub fn Mesh::measuring(Self, String, scope? : String) -> Bool
 pub fn Mesh::moved(Self, String, scope? : String) -> String?
 pub fn Mesh::moves(Self, String, scope? : String) -> Int32
+pub fn Mesh::note_speed(Self, String, String, Int32, Int32) -> Unit
 pub fn Mesh::remeasure(Self) -> Unit
 pub async fn Mesh::remeasure_peer(Self, String, scope? : String) -> Unit
 pub async fn Mesh::replaced(Self, Link) -> Unit
 pub fn Mesh::retune(Self, Array[String], entries? : Array[RelayEntry], reason? : String) -> Unit
 pub fn Mesh::set_ways(Self, String, scope? : String, theirs? : Array[String], off? : Array[String]) -> Unit
+pub fn Mesh::speed(Self, String, String) -> Double?
 pub fn Mesh::standing(Self, String, scope? : String) -> Bool
 pub fn Mesh::tailnet(Self, String, scope? : String) -> Array[String]
-pub fn Mesh::wake(Self) -> Unit
+pub fn Mesh::timed(Self, String, String, Reply) -> Reply
+pub fn Mesh::today(Self, String) -> (Int64, Int64)
+pub fn Mesh::wake(Self, network? : Bool) -> Unit
 
 pub(all) struct Options {
   alpn : String
@@ -186,6 +222,13 @@ pub struct Out {
 pub async fn Out::finish(Self) -> Unit
 pub async fn Out::stopped(Self) -> Int32?
 pub async fn Out::write(Self, Bytes) -> Unit
+
+#derive(Eq, @debug.Debug)
+pub(all) struct Packets {
+  path : String
+  sent : Int64
+  lost : Int64
+}
 
 pub(all) struct Pings {
   samples : Int32
@@ -226,6 +269,12 @@ pub(all) struct Store {
   get : async (String) -> Bytes?
   set : async (String, Bytes) -> Unit
 }
+
+pub(all) struct WallClock {
+  now_ms : () -> Int64
+  utc_offset_min : (Int64) -> Int32
+}
+pub fn WallClock::of(@effect.Runtime) -> Self
 
 // Type aliases
 

@@ -231,6 +231,17 @@ pub struct Mesh {
   priv retiring : Array[Link]
   priv mut dialling_main : Int
   priv pinned_prefix : Bytes
+  /// The wall's clock; the speeds seen on each peer's ways and the days counted of what its links carried, kept
+  /// under their keys; what came through each (peer, relay) of replies timed (speed.mbt); and whether they are
+  /// counted now (`Mesh::tally_if`).
+  priv clock : WallClock
+  priv speeds : Map[String, Map[String, Speed]]
+  priv speeds_key : String
+  priv came_by : Map[String, Int]
+  priv days : Map[String, Day]
+  priv days_key : String
+  priv mut days_changed : Bool
+  priv mut tallying : Bool
   priv mut closed : Bool
 }
 
@@ -249,6 +260,9 @@ pub async fn Mesh::make(
   binding? : Binding = Binding::none(),
   addresses? : String = addresses_key,
   pinned_prefix? : Bytes = relay_key_prefix,
+  clock? : WallClock,
+  speeds_key? : String = speed_key,
+  days_key? : String = net_day_key,
 ) -> Mesh {
   if options.says is Some(says) {
     for field in own_fields {
@@ -270,6 +284,8 @@ pub async fn Mesh::make(
     }
   }
   let said = said_of((store.get)(addresses) catch { _ => None })
+  let speeds = speeds_of((store.get)(speeds_key) catch { _ => None })
+  let days = days_of((store.get)(days_key) catch { _ => None })
   let relays = options.relays.copy()
   let entries = binding.entries.copy()
   let endpoint = bind(shell, relays, options.relay_only, binding, entries, secret)
@@ -314,6 +330,14 @@ pub async fn Mesh::make(
     retiring: [],
     dialling_main: 0,
     pinned_prefix,
+    clock: clock.unwrap_or(WallClock::of(shell.rt)),
+    speeds,
+    speeds_key,
+    came_by: Map([]),
+    days,
+    days_key,
+    days_changed: false,
+    tallying: false,
     closed: false,
   }
 }
@@ -389,7 +413,7 @@ pub async fn Mesh::link(
         // Gone, with another way still open: requests go on that one at once.
         if !fresh {
           let up = self.live_ways(place).filter(way => !physical_equal(way.link, link) && way.link.missed == 0)
-          if best(self.takeable(place, up)) is Some(way) {
+          if self.best_way(place, self.takeable(place, up)) is Some(way) {
             self.promote(place, way, "lost")
             return way.link
           }
@@ -450,6 +474,10 @@ fn Mesh::dial(self : Mesh, place : Place, credentials : async (String, Bool) -> 
   // (a race there was deciding of the link this is put over, ended meanwhile: it has nothing left to decide, and
   // one dial is made for a place, not two)
   self.end_race(place)
+  // (what the link put over carried is counted first: speed.mbt)
+  if self.links.get(place) is Some({ result: Some(Open(before)), .. }) {
+    self.count(place.peer, before)
+  }
   let opening = Opening::new(credentials, fresh)
   self.links[place] = opening
   self.changed()
@@ -604,7 +632,10 @@ fn Mesh::let_go(self : Mesh, place : Place, reason : String) -> Unit {
         }
       }
     }
-    Some(Open(link)) => link.close(reason~)
+    Some(Open(link)) => {
+      self.count(place.peer, link)
+      link.close(reason~)
+    }
     Some(Failed(_, _)) => ()
   }
   self.links.remove(place)
@@ -756,6 +787,7 @@ async fn Mesh::open(
         dev: 0.0,
         answered_ms: None,
         warm: false,
+        counted: (0L, 0L),
         lan: [],
         tailnet: [],
         pin,
@@ -870,6 +902,7 @@ fn Mesh::adopt(self : Mesh, place : Place, opening : Opening, link : Link) -> Un
   self.tell_health(place)
   ignore(self.scope.fork(name="mesh pings", () => self.steer(place, opening, link)))
   self.now_on(place, link)
+  self.tally_if()
 }
 
 ///|
@@ -911,7 +944,7 @@ async fn Mesh::steer(self : Mesh, place : Place, opening : Opening, link : Link)
       // Another way up takes its place at once; else it is let go and the place dialled anew, every way raced
       // where it was the endpoint's (ways.mbt, `Mesh::dial_all`).
       let up = self.live_ways(place).filter(way => !physical_equal(way.link, link) && way.link.missed == 0)
-      if best(self.takeable(place, up)) is Some(way) {
+      if self.best_way(place, self.takeable(place, up)) is Some(way) {
         self.promote(place, way, "lost")
         return
       }
@@ -1008,6 +1041,9 @@ async fn Mesh::ping(self : Mesh, link : Link) -> Unit {
 /// stops as the close ends, not half way with a mesh that says it is closed, its fibers going and its endpoint
 /// open.
 pub async fn Mesh::close(self : Mesh) -> Unit {
+  // (what the links carried is counted, and kept as it can be)
+  self.count_open()
+  self.keep_days()
   self.closed = true
   // (the openings as they are now: none is made from here)
   let openings = self.links.values().to_array()

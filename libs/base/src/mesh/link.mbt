@@ -208,6 +208,8 @@ pub struct Link {
   priv mut dev : Double
   priv mut answered_ms : Int?
   priv mut warm : Bool
+  /// What its connection carried both ways as it was last counted (speed.mbt).
+  priv mut counted : (Int64, Int64)
   /// Where the peer said it is dialled straight, in its answer to the first line (addrs.mbt).
   priv mut lan : Array[String]
   priv mut tailnet : Array[String]
@@ -257,6 +259,8 @@ pub struct Reply {
   /// Done as it is let go of, however it is: whether for something that failed (a read, a write, a body too long)
   /// and not by its program's own `cancel`. What a wait on its stream is told then (`Out::stopped`).
   priv went : @effect.Deferred[Bool]
+  /// Told each piece of its body as it is taken, and its end (`Mesh::timed`).
+  priv mut on_piece : ((Bytes?) -> Unit)?
 }
 
 ///|
@@ -275,6 +279,15 @@ pub fn Reply::header(self : Reply, name : String) -> String? {
 /// given up while it waits is to be cancelled, not taken again; one whose `take` failed is let go of here (its stream
 /// reset: the shell keeps a stream until it is, or is read to its end), and has ended.
 pub async fn Reply::take(self : Reply) -> Bytes? {
+  let chunk = self.taken()
+  if self.on_piece is Some(told) {
+    told(chunk)
+  }
+  chunk
+}
+
+///|
+async fn Reply::taken(self : Reply) -> Bytes? {
   if self.carry is Some(carry) {
     self.carry = None
     return Some(carry)
@@ -482,6 +495,7 @@ async fn Link::sent(self : Link, head : String, body : Bytes, finish : Bool, wro
         done: false,
         gone: false,
         went: @effect.Deferred::new(),
+        on_piece: None,
       }
     }
   }

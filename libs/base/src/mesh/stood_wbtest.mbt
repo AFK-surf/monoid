@@ -35,7 +35,8 @@
 //   far.lose(2)                           the peer is gone from under connection 2 without a word: what the device
 //                                          writes there is taken (and kept in `heard`, `asked`), nothing comes
 //                                          back, and the connection does not end. Other connections are answered.
-//   stood.rx[2] = 100.0                   what the transport says came on connection 2 so far (`conn.stats`).
+//   stood.rx[2] = 100.0                   what the transport says came on connection 2 so far (`conn.stats`);
+//                                          stood.tx[2] what went out; stood.paths_of[2] its ways (`conn.paths`).
 //   stood.on_relay = false                the endpoint is on no relay yet (`iroh.relayStatus`): an opening's time
 //                                          is not counted until it is.
 //   stood.holding = "iroh.bind" … stood.bound()        an endpoint bound again is the test's to answer: the next
@@ -98,6 +99,10 @@ priv struct Stood {
   /// The bytes that came on each connection so far, as the transport counts them (`conn.stats`): the test's to say
   /// (`stood.rx[2] = 100`); 0 of one it said nothing of.
   rx : Map[Int, Double]
+  /// What the transport says went out on each connection (`conn.stats`), and each connection's ways as the shell
+  /// says them (`conn.paths`): the test's to say.
+  tx : Map[Int, Double]
+  paths_of : Map[Int, Json]
   /// The endpoints closed (`iroh.close`).
   unbound : Map[Int, Unit]
   /// What each bind was asked with, where each dial was told its peer is, and the entries told, as written.
@@ -141,6 +146,8 @@ fn Stood::new() -> Stood {
     cancels: true,
     peer: None,
     rx: Map([]),
+    tx: Map([]),
+    paths_of: Map([]),
     unbound: Map([]),
     binds: [],
     addrs: [],
@@ -245,6 +252,7 @@ fn Stood::new() -> Stood {
           }
         "conn.paths" =>
           match stood.peer {
+            _ if stood.paths_of.get(handle) is Some(paths) => paths
             Some(far) if far.conn_way.get(handle) is Some(way) && far.direct.contains(way) =>
               [{ "id": "0", "selected": true, "relay": Json::null(), "ip": "10.0.0.2:1" }]
             _ => Json::array([])
@@ -258,7 +266,11 @@ fn Stood::new() -> Stood {
           Json::null()
         }
         "conn.remoteId" => Json::string("ef".repeat(32))
-        "conn.stats" => { "rxBytes": Json::number(stood.rx.get(handle).unwrap_or(0.0)), "txBytes": 0 }
+        "conn.stats" =>
+          {
+            "rxBytes": Json::number(stood.rx.get(handle).unwrap_or(0.0)),
+            "txBytes": Json::number(stood.tx.get(handle).unwrap_or(0.0)),
+          }
         "conn.closeReason" => {
           if stood.forgot.contains(handle) {
             raise @shell.ShellError("no handle \{handle}")

@@ -14,8 +14,8 @@ of its workspace (`moon.work`); `effect` stays in mbui.
 - `src/mesh`: the device side of the mesh on top of `shell` and `wire` (endpoints, scoped peer links, hello/pings/renewal,
   requests/streams/duplex, health racing in `health.mbt`, wake/rebind in `wake.mbt`, what the endpoint is bound
   with, relays told again and connections peers dial to it in `bind.mbt`, where peers are dialled straight in
-  `addrs.mbt`, and the ways to a place and the choice among them in `ways.mbt`, with `sha256.mbt` for the keys of
-  relays' own endpoints).
+  `addrs.mbt`, the ways to a place and the choice among them in `ways.mbt`, with `sha256.mbt` for the keys of
+  relays' own endpoints, and ways' speeds and the day's tally in `speed.mbt`).
 
 ## It knows no program
 
@@ -69,6 +69,9 @@ of its workspace (`moon.work`); `effect` stays in mbui.
   `redial_main_ms` (dead code at `mesh.ts` `#steer`); `relay_only` does not turn the endpoint's ways off; LAN and
   tailnet endpoints get a drawn key. Only the endpoint's own dial says whether it is stuck or its addresses
   unanswered, raced or not (`Mesh::dial_main_raced`); a race and a wake's second dial go by `Mesh::dial_all`.
+- Speeds and days (`speed.mbt`) go by the program's wall clock (`Mesh::make`'s `clock`, the runtime's at UTC unless
+  given) and are kept under their keys in its `Store`; a speed is noted only from replies its program times
+  (`Mesh::timed`) and weighs in a way's `Score.cost`. The day's tally runs only while a link is open.
 - The device's key file is its user's alone whatever the umask, by the Rust shell's doing alone
   (`client/shell/src/lib.rs` `create_private`): a program linked to a shell from before keeps its key as its umask has
   it. `shell.c` has been compiled and run on macOS on arm64 alone.

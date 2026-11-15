@@ -140,10 +140,6 @@ priv struct Way {
   mut better : Int
 }
 
-///|
-fn Way::score(self : Way) -> Score {
-  { cost: self.link.srtt + 2.0 * self.link.dev, dev: self.link.dev }
-}
 
 ///|
 /// Where it goes: "lan", "tailnet", its relay (as a key), "direct" (a path iroh punched), or "main" (the endpoint's
@@ -412,14 +408,26 @@ fn Mesh::takeable(self : Mesh, place : Place, ways : Array[Way]) -> Array[Way] {
 }
 
 ///|
+/// A way as compared with another: its round trip and what a `typical_bytes` reply takes through its relay at the
+/// speed seen there (speed.mbt), and twice its deviation.
+fn Mesh::score_of(self : Mesh, place : Place, way : Way) -> Score {
+  let speed = match way.link.via() {
+    Some(via) => self.speed(place.peer, via)
+    None => None
+  }
+  { cost: cost(way.link.srtt, speed) + 2.0 * way.link.dev, dev: way.link.dev }
+}
+
+///|
 /// Of `ways`, the one scoring best of those pinged; none pinged yet: the first.
-fn best(ways : Array[Way]) -> Way? {
+fn Mesh::best_way(self : Mesh, place : Place, ways : Array[Way]) -> Way? {
   let mut best : Way? = None
   for way in ways {
     match best {
       None => best = Some(way)
       Some(b) =>
-        if way.link.samples > 0 && (b.link.samples == 0 || way.score().cost < b.score().cost) {
+        if way.link.samples > 0 &&
+          (b.link.samples == 0 || self.score_of(place, way).cost < self.score_of(place, b).cost) {
           best = Some(way)
         }
     }
@@ -604,7 +612,7 @@ fn Mesh::choose(self : Mesh, place : Place, asked : String?) -> Unit {
   }
   guard cur is Some(cur) && cur.usable() && mine is Some(mine) && mine.link.missed < dead_pings else {
     let others = up.filter(way => !(cur is Some(c) && physical_equal(c, way.link)))
-    if best(self.takeable(place, others)) is Some(way) {
+    if self.best_way(place, self.takeable(place, others)) is Some(way) {
       self.promote(place, way, "lost")
     }
     return
@@ -614,7 +622,7 @@ fn Mesh::choose(self : Mesh, place : Place, asked : String?) -> Unit {
       way.link.pin == Some(lan) &&
       way.link.samples > 0 &&
       way.link.missed == 0)
-    if found is Some(i) && (mine.key() == direct || clearly_better(mine.score(), up[i].score())) {
+    if found is Some(i) && (mine.key() == direct || clearly_better(self.score_of(place, mine), self.score_of(place, up[i]))) {
       self.promote(place, up[i], lan)
       return
     }
@@ -624,7 +632,7 @@ fn Mesh::choose(self : Mesh, place : Place, asked : String?) -> Unit {
         way.link.missed == 0 &&
         way.key() == direct &&
         !self.avoided(place, way))
-      if best(directs) is Some(way) && clearly_better(mine.score(), way.score()) {
+      if self.best_way(place, directs) is Some(way) && clearly_better(self.score_of(place, mine), self.score_of(place, way)) {
         self.promote(place, way, direct)
         return
       }
@@ -635,14 +643,14 @@ fn Mesh::choose(self : Mesh, place : Place, asked : String?) -> Unit {
   let challengers = up.filter(way => !physical_equal(way.link, cur) &&
     way.link.samples >= min_samples &&
     !self.avoided(place, way))
-  let top = best(challengers)
+  let top = self.best_way(place, challengers)
   for way in ways {
     if !(top is Some(t) && physical_equal(t, way)) {
       way.better = 0
     }
   }
   guard top is Some(top) else { return }
-  if !clearly_better(mine.score(), top.score()) {
+  if !clearly_better(self.score_of(place, mine), self.score_of(place, top)) {
     top.better = 0
     return
   }
@@ -666,8 +674,11 @@ fn Mesh::promote(self : Mesh, place : Place, way : Way, why : String) -> Unit {
   if why == "lost" && ways.moved_direct {
     self.lost_direct(place, self.since(ways.moved_at))
   }
-  // (a race of the link before has nothing left to decide)
+  // (a race of the link before has nothing left to decide; what it carried is counted)
   self.end_race(place)
+  if self.current(place.peer, scope=place.scope) is Some(before) {
+    self.count(place.peer, before)
+  }
   let taken = Opening::new(way.link.credentials, false)
   taken.result = Some(Open(way.link))
   ignore(taken.done.succeed(way.link))
@@ -728,6 +739,7 @@ fn Mesh::retire(self : Mesh, place : Place, way : Way) -> Unit {
       // (this waited: requests may have gone back to it)
       self.retiring.retain(one => !physical_equal(one, link))
       if !self.is_current(link) {
+        self.count(place.peer, link)
         link.close()
       }
       self.release_pinned()
@@ -760,7 +772,7 @@ fn Mesh::prune(self : Mesh, place : Place) -> Unit {
           other
         } else if is_cur(way) {
           way
-        } else if way.score().cost < other.score().cost {
+        } else if self.score_of(place, way).cost < self.score_of(place, other).cost {
           way
         } else {
           other
@@ -776,7 +788,7 @@ fn Mesh::prune(self : Mesh, place : Place) -> Unit {
     if avoid != 0 {
       avoid
     } else {
-      a.score().cost.compare(b.score().cost)
+      self.score_of(place, a).cost.compare(self.score_of(place, b).cost)
     }
   })
   for i in (keep_ways - 1)..<others.length() {

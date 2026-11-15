@@ -157,7 +157,7 @@ test "requests move to a way clearly better only after min_samples, min_stay_ms 
   assert_true(at >= (10 + min_stay_ms + (better_ticks - 1) * tick_ms).to_int64())
   assert_true(at <= (10 + min_stay_ms + (better_ticks + 1) * (tick_ms + 25)).to_int64())
   assert_eq(ended_as(told), "ok")
-  assert_true(clearly_better(mesh.live_ways(here)[0].score(), mesh.live_ways(here)[1].score()))
+  assert_true(clearly_better(mesh.score_of(here, mesh.live_ways(here)[0]), mesh.score_of(here, mesh.live_ways(here)[1])))
   // The way before stays open beside it.
   assert_eq(mesh.open_ways(), [r1, r2])
   // Better by less than move_gain: never moved to.
