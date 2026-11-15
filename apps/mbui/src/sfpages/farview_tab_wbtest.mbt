@@ -1,37 +1,44 @@
 // A chat's Farview tab drawn here (farview_tab.mbt), over a core made up for it: `farview.view` asked as it is shown,
-// the stage's Hello said as it goes live, the host's bytes drawn as nodes of the window's tree, a tap said to the host,
-// a box of the page's that scrolls scrolled here and its place told the host, and the view let go as the tab goes.
+// the stage's Hello and viewport said as it goes live (the viewport as tall as the window less the tab's bar), the
+// host's document (fvclient's doc wire, made as a host makes it: fvclient/doc's Mirror) laid out and drawn here as
+// nodes, a tap said to the host on the element under it, a box of the page's that scrolls scrolled here and its place
+// told the host, the view let go as the tab goes; the same tab shown twice at once, each a stage and a view of its own.
 
 ///|
 priv struct FarviewRig {
   t : @ui.Tester
-  /// what was sent by `farview.send`, in order
-  sent : Array[Bytes]
+  /// what was sent by `farview.send`, in order, each with the view it was sent for
+  sent : Array[(String, Bytes)]
   /// the views asked (`farview.view`): what each is told, and how many were let go
   views : Array[(Json, (Json, Bytes?) -> Unit)]
   cancelled : Array[Int]
-  shown : @signals.Signal[Bool]
+  /// how many places show the tab
+  places : @signals.Signal[Int]
 }
 
 ///|
 /// Long enough for what the host sent to be drawn, and for a box let go of after a drag to come to rest.
-let farview_drawn_ms : Double = 2000.0
+let farview_drawn_ms : Double = 3000.0
 
 ///|
-fn farview_rig(screen? : String = "browser:fv_t1") -> FarviewRig {
+fn farview_rig(screen? : String = "browser:fv_t1", places? : Int = 1) -> FarviewRig {
   @sfbase.reset()
   @sf.presenters_reset()
   @sf.set_words(@sfbase.fill)
   @sf.set_dark(Some(false))
-  let sent : Array[Bytes] = []
+  let sent : Array[(String, Bytes)] = []
   let views : Array[(Json, (Json, Bytes?) -> Unit)] = []
   let cancelled : Array[Int] = []
   let base = @sfbase.made_source(topic=fn(name, _) { if name == "prefs" { Some(Json::object({})) } else { None } })
   let src : Source = {
     ..base,
-    call_bytes: fn(name, _, bytes, done) {
+    call_bytes: fn(name, params, bytes, done) {
       if name == "farview.send" {
-        sent.push(bytes)
+        let view = match params {
+          Object(o) => match o.get("view") { Some(String(v)) => v; _ => "" }
+          _ => ""
+        }
+        sent.push((view, bytes))
       }
       done(Ok(Json::null()))
     },
@@ -44,7 +51,7 @@ fn farview_rig(screen? : String = "browser:fv_t1") -> FarviewRig {
     },
     cancel: fn(id) { cancelled.push(id) },
   }
-  let shown = @signals.signal(true)
+  let shown = @signals.signal(places)
   let t = @ui.Tester::new(
     fn(c) {
       @sf.begin(c) |> ignore
@@ -52,144 +59,279 @@ fn farview_rig(screen? : String = "browser:fv_t1") -> FarviewRig {
     },
     tree=fn(root) {
       @ui.set_tree_theme(@sf.ui_theme_now)
-      root.show(fn() { shown.get() }, fn(p) {
-        p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
-        farview_tab_node(p, src, "ws-1/st-1", screen)
+      root.box(fn(row) {
+        row.row(Is(true)).grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        for i in 0..<2 {
+          row.show(fn() { shown.get() > i }, fn(p) {
+            p.grow(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
+            farview_tab_node(p, src, "ws-1/st-1", screen)
+          })
+        }
       })
+      |> ignore
     },
     w=390.0,
     h=844.0,
   )
   t.draw()
-  { t, sent, views, cancelled, shown }
+  { t, sent, views, cancelled, places: shown }
 }
 
 ///|
-/// What the host says of a page 390 wide and 1000 tall: its address, then a frame of one piece, red with a white box,
-/// and a box that scrolls (id 7) 300 tall from 400 down, its content 900 tall, a green band at its top.
-fn farview_page_bytes() -> Bytes {
-  let ops : Array[@proto.Op] = [
-    Rect(0.0, 0.0, 390.0, 1000.0, 0xFF0000FF),
-    Rect(20.0, 20.0, 100.0, 40.0, 0xFFFFFFFF),
-    ScrollBox(7, 0.0, 400.0, 390.0, 300.0, 390.0, 900.0),
-    Rect(0.0, 400.0, 390.0, 50.0, 0x00FF00FF),
-    Unclip,
-  ]
+/// What a host of a page says of it as it sends it whole, then as it changes (fvclient/doc's Mirror).
+priv struct FarviewHost {
+  doc : @html.Node
+  mirror : @doc.Mirror
+  mut seq : Int
+}
+
+///|
+/// A page of a red block 1000 tall (its body's margin none), a white box in it at 20 down, and a box that scrolls
+/// (id `box`) 300 tall from 400 down, its content 900 tall, a green band at its top.
+let farview_page_html : String = "<!doctype html><html><head><link rel=stylesheet href=s.css></head><body>" +
+  "<div id=page class=page><div id=white class=white></div><div id=box class=box><div class=band></div>" +
+  "<div class=rest></div></div></div></body></html>"
+
+///|
+let farview_page_css : String = "body { margin: 0 } .page { position: relative; height: 1000px; background: rgb(255, 0, 0) } " +
+  ".white { position: absolute; left: 20px; top: 20px; width: 100px; height: 40px; background: rgb(255, 255, 255) } " +
+  ".box { position: absolute; left: 0; right: 0; top: 400px; height: 300px; overflow: auto } " +
+  ".band { height: 50px; background: rgb(0, 255, 0) } .rest { height: 850px }"
+
+///|
+fn FarviewHost::new() -> FarviewHost {
+  { doc: @html.parse(farview_page_html), mirror: @doc.Mirror::new(), seq: 0 }
+}
+
+///|
+fn FarviewHost::state(self : FarviewHost) -> @doc.DocState {
+  {
+    base: "https://example.test/",
+    root: self.doc,
+    frames: [],
+    sheets: [("https://example.test/s.css", farview_page_css)],
+    cssom: [],
+    defined: fn(_) { false },
+    states: fn(_) { 0 },
+    target: "",
+  }
+}
+
+///|
+/// The tab's address, then the document whole.
+fn FarviewHost::reset(self : FarviewHost) -> Bytes {
+  self.seq += 1
   let out = Buffer()
-  out.write_bytes(@proto.encode(Page("https://example.test/")))
-  out.write_bytes(@proto.encode(Frame(390.0, 1000.0, [(1, 0.0)], [(1, ops)])))
+  out.write_bytes(@proto.encode_host(Meta("https://example.test/", "Example", false, false, false)))
+  out.write_bytes(@proto.encode_host(Reset(self.seq, 0, self.mirror.reset(self.state()))))
   out.to_bytes()
 }
 
 ///|
-/// What `bytes` say, as messages.
-fn farview_said(bytes : Bytes) -> Array[@proto.Message] {
+/// What changed since.
+fn FarviewHost::patch(self : FarviewHost) -> Bytes {
+  self.seq += 1
+  @proto.encode_host(Patch(self.seq, 0, self.mirror.diff(self.state()).unwrap()))
+}
+
+///|
+fn FarviewHost::find(self : FarviewHost, id : String) -> @html.Node {
+  fn walk(n : @html.Node) -> @html.Node? {
+    if n.attr("id") == Some(id) {
+      return Some(n)
+    }
+    for c in n.children {
+      if walk(c) is Some(x) {
+        return Some(x)
+      }
+    }
+    None
+  }
+
+  walk(self.doc).unwrap()
+}
+
+///|
+/// What `bytes` say, as the client's messages.
+fn farview_said(sent : Array[(String, Bytes)], view? : String = "") -> Array[@proto.ClientMsg] {
   let framer = @proto.Framer::new()
-  framer.push(bytes)
+  for s in sent {
+    if view == "" || s.0 == view {
+      framer.push(s.1[:])
+    }
+  }
   let out = []
   while framer.next() is Some(body) {
-    out.push(@proto.decode(body))
+    if @proto.decode_client(body) is Some(m) {
+      out.push(m)
+    }
   }
   out
 }
 
 ///|
-test "a Farview tab: asked as shown, Hello as it goes live, the page drawn as nodes, a tap the host's, a box scrolled here, let go as it goes" {
+fn farview_live(tell : (Json, Bytes?) -> Unit) -> Unit {
+  tell(Json::object({ "state": Json::object({ "phase": "live", "opens": Json::number(1.0) }) }), None)
+}
+
+///|
+fn farview_feed(tell : (Json, Bytes?) -> Unit, bytes : Bytes) -> Unit {
+  @ui.answered_from_outside(fn() { tell(Json::object({ "data": Json::boolean(true) }), Some(bytes)) })
+}
+
+///|
+fn farview_view_of(params : Json) -> String {
+  match params {
+    Object(o) => match o.get("view") { Some(String(v)) => v; _ => "" }
+    _ => ""
+  }
+}
+
+///|
+test "a Farview tab: asked as shown, its viewport as tall as the window less its bar, the page drawn as nodes, a tap the host's, a box scrolled here, let go as it goes" {
   let r = farview_rig()
   // asked as it is shown, of its station and its tab
   assert_eq(r.views.length(), 1)
   let (params, tell) = r.views[0]
   guard params is Object(p) else { fail("no params") }
   assert_eq((p.get("station"), p.get("screen")), (Some(Json::string("ws-1/st-1")), Some(Json::string("browser:fv_t1"))))
-  // live: its viewport said to the host (the stage's room, the window's scale)
-  tell(Json::object({ "state": Json::object({ "phase": "live", "opens": Json::number(1.0) }) }), None)
-  r.t.draw()
-  let hello = r.sent.map(fn(b) { farview_said(b) }).flatten().filter(fn(m) { m is Hello(_, _, _) })
-  guard hello is [Hello(w, h, scale), ..] else { fail("no Hello: \{hello.length()} said") }
-  assert_eq((w, scale), (390.0, 2.0))
-  assert_true(h > 600.0 && h < 844.0)
-  // the page: drawn as nodes (its rectangles), no tiles
-  @ui.answered_from_outside(fn() { tell(Json::object({ "data": Json::boolean(true) }), Some(farview_page_bytes())) })
+  // live: its wire said, then its viewport (the stage's room, the window's scale)
+  farview_live(tell)
   r.t.run_for(farview_drawn_ms)
-  let top = 844.0 - h
-  let green = fn() { r.t.drawn_rects().filter(fn(d) { d.4 == 0x00FF00FFL && d.2 == 390.0 }) }
-  assert_true(r.t.drawn_rects().any(fn(d) { d.4 == 0xFF0000FFL && d.2 == 390.0 }))
+  guard farview_said(r.sent) is [Hello(@proto.VERSION, "doc"), ..] else { fail("no Hello first") }
+  let ports = farview_said(r.sent).filter_map(fn(m) { if m is Viewport(w, h, s) { Some((w, h, s)) } else { None } })
+  guard ports.last() is Some((w, h, scale)) else { fail("no Viewport") }
+  assert_eq((w, scale), (390.0, 2.0))
+  // the page: laid out and drawn here as nodes (its rectangles), no pictures of it
+  let host = FarviewHost::new()
+  farview_feed(tell, host.reset())
+  r.t.run_for(farview_drawn_ms)
+  let red = r.t.drawn_rects().filter(fn(d) { d.4 == 0xFF0000FFL && d.2 == 390.0 })
+  guard red is [page, ..] else { fail("no page drawn") }
+  let top = page.1
+  assert_true(top > 0.0)
+  // (the viewport exactly the window's height less the bar over the page)
+  assert_true((h - (844.0 - top)).abs() < 0.01)
   assert_true(r.t.drawlist_images().all(fn(i) { !i.1.has_prefix("farview-") }))
-  // (the box that scrolls where the host put it, on the window's pixels)
+  let green = fn() { r.t.drawn_rects().filter(fn(d) { d.4 == 0x00FF00FFL && d.2 == 390.0 }) }
   assert_true(green() is [band] && (band.1 - (top + 400.0)).abs() < 0.5)
-  // a tap on the page: the host's, at that point of the page, as a browser's press and let go
+  // a tap on the white box: the host's, on that element, pressed and let go
   r.sent.clear()
-  r.t.tap(60.0, h / 2.0 + (844.0 - h))
-  r.t.draw()
-  let taps = r.sent
-    .map(fn(b) { farview_said(b) })
-    .flatten()
-    .filter_map(fn(m) { if m is Person(p) && p.contains("\"pointer\"") { Some(p.contains("\"down\"")) } else { None } })
-  assert_eq(taps, [true, false])
+  r.t.tap(60.0, top + 40.0)
+  r.t.run_for(farview_drawn_ms)
+  let white = host.find("white").uid
+  let presses = farview_said(r.sent).filter_map(fn(m) {
+    if m is Pointer(_, kind, _, _, id, _, _, _, _) && id == white && kind != @proto.POINTER_MOVE {
+      Some(kind)
+    } else {
+      None
+    }
+  })
+  assert_true(presses.contains(@proto.POINTER_DOWN) && presses.contains(@proto.POINTER_UP))
   // the box that scrolls, dragged up 120: scrolled here, under the finger, and where it came to told the host
   r.sent.clear()
   r.t.drag(200.0, top + 650.0, 200.0, top + 530.0)
   r.t.run_for(farview_drawn_ms)
-  let told = r.sent
-    .map(fn(b) { farview_said(b) })
-    .flatten()
-    .filter_map(fn(m) { if m is BoxScroll(7, _, y) { Some(y) } else { None } })
+  let box = host.find("box").uid
+  let told = farview_said(r.sent).filter_map(fn(m) { if m is ScrollSync(id, _, y) && id == box { Some(y) } else { None } })
   guard told.last() is Some(y) && y > 60.0 else { fail("box scroll told: \{told.length()}") }
   // (the green band at the box's top gone up by as much, cut where the box starts)
   assert_true(green().all(fn(d) { d.1 + d.3 <= top + 400.0 + 50.0 - y + 1.0 }))
   // gone: the view let go
-  r.shown.set(false)
+  r.places.set(0)
   r.t.draw()
   assert_eq(r.cancelled.length(), 1)
 }
 
 ///|
-test "a Farview tab: the host's bytes cut anywhere, frames one after another, each a message of its own: the page as the last says" {
-  let r = farview_rig()
+test "a Farview tab: the host's bytes cut anywhere, changes one after another: the page as the last says" {
+  let r = farview_rig(screen="browser:fv_cut")
   let (_, tell) = r.views[0]
-  tell(Json::object({ "state": Json::object({ "phase": "live", "opens": Json::number(1.0) }) }), None)
+  farview_live(tell)
   r.t.draw()
-  let white = fn(n : Int, y : Double) {
-    let ops : Array[@proto.Op] = [Rect(0.0, 0.0, 390.0, 1000.0, 0xFF0000FF), Rect(20.0, y, 100.0, 40.0, 0xFFFFFFFF)]
-    @proto.encode(Frame(390.0, 1000.0, [(n, 0.0)], [(n, ops)]))
-  }
+  let host = FarviewHost::new()
   let all = Buffer()
-  all.write_bytes(farview_page_bytes())
-  all.write_bytes(white(2, 30.0))
-  all.write_bytes(white(3, 40.0))
-  all.write_bytes(white(4, 50.0))
+  all.write_bytes(host.reset())
+  let white = host.find("white")
+  let style : @html.Attr = { prefix: "", name: "style", value: "", ns: "" }
+  white.attrs.push(style)
+  for y in [30, 40, 50] {
+    style.value = "top: \{y}px"
+    all.write_bytes(host.patch())
+  }
   let bytes = all.to_bytes()
-  // (in pieces of 7 bytes, cut through the messages, each told as the core tells one, before the next frame)
+  // (in pieces of 7 bytes, cut through the messages, each told as the core tells one)
   let mut at = 0
   while at < bytes.length() {
     let cut = Buffer()
     for k in at..<(at + 7).min(bytes.length()) {
       cut.write_byte(bytes[k])
     }
-    let piece = cut.to_bytes()
-    @ui.answered_from_outside(fn() { tell(Json::object({ "data": Json::boolean(true) }), Some(piece)) })
+    farview_feed(tell, cut.to_bytes())
     at += 7
   }
-  r.t.draw()
+  r.t.run_for(farview_drawn_ms)
   let whites = r.t.drawn_rects().filter(fn(d) { d.4 == 0xFFFFFFFFL && d.2 == 100.0 })
   guard whites is [w] else { fail("white boxes: \{whites.length()}") }
-  // (50 down the page, as the last frame put it)
   guard r.t.drawn_rects().filter(fn(d) { d.4 == 0xFF0000FFL && d.2 == 390.0 }) is [red, ..] else { fail("no page") }
   assert_eq(w.1 - red.1, 50.0)
 }
 
 ///|
-test "a Farview tab widened with its window says its new width to the host" {
-  // (a tab of its own: a tab's stage is kept while the app runs, by its id)
+test "a Farview tab widened with its window says its new width to the host, laid out here at once" {
   let r = farview_rig(screen="browser:fv_wide")
   let (_, tell) = r.views[0]
-  tell(Json::object({ "state": Json::object({ "phase": "live", "opens": Json::number(1.0) }) }), None)
-  r.t.draw()
+  farview_live(tell)
+  farview_feed(tell, FarviewHost::new().reset())
+  r.t.run_for(farview_drawn_ms)
   let widths = fn() {
-    r.sent.map(fn(b) { farview_said(b) }).flatten().filter_map(fn(m) { if m is Hello(w, _, _) { Some(w) } else { None } })
+    farview_said(r.sent).filter_map(fn(m) { if m is Viewport(w, _, _) { Some(w) } else { None } })
   }
-  assert_eq(widths(), [390.0])
+  assert_eq(widths().last(), Some(390.0))
   r.t.resize(900.0, 844.0)
+  r.t.draw()
+  // (the page as wide as the tab in the frame of the resize, before the host has said anything)
+  assert_true(r.t.drawn_rects().any(fn(d) { d.4 == 0xFF0000FFL && d.2 == 900.0 }))
   r.t.run_for(farview_drawn_ms)
   assert_eq(widths().last(), Some(900.0))
+}
+
+///|
+test "a Farview tab shown in two places at once: each a stage and a view of its own, its own viewport; idle ones taken again" {
+  let r = farview_rig(screen="browser:fv_two", places=2)
+  assert_eq(r.views.length(), 2)
+  let (p0, tell0) = r.views[0]
+  let (p1, tell1) = r.views[1]
+  let v0 = farview_view_of(p0)
+  let v1 = farview_view_of(p1)
+  assert_true(v0 != v1)
+  farview_live(tell0)
+  farview_live(tell1)
+  r.t.run_for(farview_drawn_ms)
+  // each says its own viewport, half the window wide
+  let width_of = fn(view : String) {
+    farview_said(r.sent, view~).filter_map(fn(m) { if m is Viewport(w, _, _) { Some(w) } else { None } }).last()
+  }
+  assert_eq((width_of(v0), width_of(v1)), (Some(195.0), Some(195.0)))
+  // the page given to one alone is drawn in that one alone
+  farview_feed(tell0, FarviewHost::new().reset())
+  r.t.run_for(farview_drawn_ms)
+  let reds = r.t.drawn_rects().filter(fn(d) { d.4 == 0xFF0000FFL && d.2 == 195.0 })
+  assert_true(reds.length() > 0 && reds.all(fn(d) { d.0 < 195.0 }))
+  // given its page too, a tap on the other: said on its own view, not the first's
+  farview_feed(tell1, FarviewHost::new().reset())
+  r.t.run_for(farview_drawn_ms)
+  r.sent.clear()
+  r.t.tap(195.0 + 60.0, reds[0].1 + 40.0)
+  r.t.run_for(farview_drawn_ms)
+  assert_true(r.sent.length() > 0 && r.sent.all(fn(s) { s.0 == v1 }))
+  // both gone, then one shown again: an idle stage taken again, no new one made
+  r.places.set(0)
+  r.t.draw()
+  assert_eq(r.cancelled.length(), 2)
+  r.places.set(1)
+  r.t.draw()
+  assert_eq(r.views.length(), 3)
+  let again = farview_view_of(r.views[2].0)
+  assert_true(again == v0 || again == v1)
 }

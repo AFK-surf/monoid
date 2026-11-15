@@ -21,4 +21,4 @@ import {
   "fvclient/stage",
 }
 
-import { "stillfail/sffixture", "stillfail/sfkept", "stillfail/core", "mbui/halt", "fvclient/proto" } for "wbtest"
+import { "stillfail/sffixture", "stillfail/sfkept", "stillfail/core", "mbui/halt", "fvclient/proto", "fvclient/html", "fvclient/doc" } for "wbtest"
