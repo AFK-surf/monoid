@@ -19,16 +19,6 @@ pub(all) enum Fit {
 }
 
 ///|
-/// Where a covering fit places its crop, across and down (0 the start, 1 the end; 0.5 its middle).
-fn Fit::cover_from(self : Fit) -> (Double, Double) {
-  match self {
-    FitCoverAt(y) => (0.5, dclamp(y, 0.0, 1.0))
-    FitCoverFrom(x, y) => (dclamp(x, 0.0, 1.0), dclamp(y, 0.0, 1.0))
-    _ => (0.5, 0.5)
-  }
-}
-
-///|
 priv struct ImageEntry {
   id : Int
   mut px : Int // the long side it was asked for (0: drawn again since, shown only until that drawing is ready)
@@ -1002,4 +992,14 @@ pub fn forget_image(key : String) -> Unit {
     None => ()
   }
   image_forget(key)
+}
+
+///|
+/// Where a covering fit places its crop, across and down (0 the start, 1 the end; 0.5 its middle).
+fn Fit::cover_from(self : Fit) -> (Double, Double) {
+  match self {
+    FitCoverAt(y) => (0.5, dclamp(y, 0.0, 1.0))
+    FitCoverFrom(x, y) => (dclamp(x, 0.0, 1.0), dclamp(y, 0.0, 1.0))
+    _ => (0.5, 0.5)
+  }
 }
