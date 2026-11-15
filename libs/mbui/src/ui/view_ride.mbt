@@ -556,28 +556,39 @@ fn ride_clip_square(c : FixedArray[Double]) -> Bool {
 /// fades), so it moves with them (a field's words fading at its edges, in a list scrolled: drawn where the field was
 /// laid out, faded out wholly where it is drawn, till 2026-11-13).
 fn ride_moves(a : FixedArray[Double], b : Int, e : FixedArray[Double]) -> Int {
+  // (read unchecked, once known to lie in `a`: worked out for each instance of each row and list kept, each frame
+  // one is drawn anew)
+  guard b >= 0 && b + inst_size <= a.length() && e.length() >= 16 else {
+    @halt.saying("ride_moves: an instance past its frame")
+  }
   let mut m = 0
   for j in 0..<4 {
-    if a[b + 16 + j] != e[j] {
+    if a.unsafe_get(b + 16 + j) != e.unsafe_get(j) {
       m = m | (1 << j)
     }
   }
-  let none = a[b + 40] == 0.0 && a[b + 41] == 0.0 && a[b + 42] == 0.0 && a[b + 43] == 0.0
+  let none = a.unsafe_get(b + 40) == 0.0 &&
+    a.unsafe_get(b + 41) == 0.0 &&
+    a.unsafe_get(b + 42) == 0.0 &&
+    a.unsafe_get(b + 43) == 0.0
   // (`e`'s own outer, where it has one: none, every edge of the instance's its own)
-  let e_none = e[12] == 0.0 && e[13] == 0.0 && e[14] == 0.0 && e[15] == 0.0
+  let e_none = e.unsafe_get(12) == 0.0 &&
+    e.unsafe_get(13) == 0.0 &&
+    e.unsafe_get(14) == 0.0 &&
+    e.unsafe_get(15) == 0.0
   if !none {
     for j in 0..<4 {
-      let v = a[b + 40 + j]
-      if v != e[j] && (e_none || v != e[12 + j]) {
+      let v = a.unsafe_get(b + 40 + j)
+      if v != e.unsafe_get(j) && (e_none || v != e.unsafe_get(12 + j)) {
         m = m | (1 << (4 + j))
       }
     }
   }
-  if a[b + 32] != 0.0 {
+  if a.unsafe_get(b + 32) != 0.0 {
     m = m | 256
   }
   for j in 0..<4 {
-    if a[b + 53 + 2 * j] > 0.0 {
+    if a.unsafe_get(b + 53 + 2 * j) > 0.0 {
       m = m | (512 << j)
     }
   }
@@ -1445,8 +1456,10 @@ fn Ctx::list_ride_end(self : Ctx) -> Unit {
   let mut m = 0
   let mut heads = false
   let mut q = 0
+  list_ride_at.clear()
   while q < n {
     let b = (l.k0 + q) * inst_size
+    list_ride_at.push(b)
     let c = if src[b + 5] == 13.0 {
       heads = true
       src[b + 14].to_int()
@@ -1456,33 +1469,48 @@ fn Ctx::list_ride_end(self : Ctx) -> Unit {
     q = q + (if c < 1 { 1 } else { c })
     m = m + 1
   }
-  let inst = FixedArray::make(m * inst_size, 0.0)
-  let moves = FixedArray::make(m, 0)
-  let mut q = 0
-  let mut i = 0
-  while q < n {
-    let b = (l.k0 + q) * inst_size
-    if src[b + 5] == 13.0 {
-      src.blit_to(inst, len=inst_size, src_offset=b, dst_offset=i * inst_size)
-      let c = src[b + 14].to_int()
-      q = q + (if c < 1 { 1 } else { c })
-      i = i + 1
-    } else {
-      let mut r = q + 1
-      while r < n && src[(l.k0 + r) * inst_size + 5] != 13.0 {
-        r = r + 1
-      }
-      src.blit_to(inst, len=(r - q) * inst_size, src_offset=b, dst_offset=i * inst_size)
-      for j in i..<(i + r - q) {
-        moves[j] = ride_moves(inst, j * inst_size, e)
-      }
-      i = i + r - q
-      q = r
-    }
+  // (the group it was kept as before, where it drew the same (its instances, their moves): read where they are against
+  // that one's, none of them copied, its own kept again as they were; else, or where none was kept, gathered anew)
+  let was = match ride_kept.get(l.id) {
+    Some(k) if k.group >= 0 &&
+      k.moves.length() == m &&
+      k.inst.length() == m * inst_size &&
+      list_ride_same(src, list_ride_at, k.inst, k.moves, e) => Some(k)
+    _ => None
   }
-  if !ride_groupable(inst, m) {
-    flat()
-    return
+  let (inst, moves) = match was {
+    Some(k) => (k.inst, k.moves)
+    None => {
+      let inst = FixedArray::make(m * inst_size, 0.0)
+      let moves = FixedArray::make(m, 0)
+      let mut q = 0
+      let mut i = 0
+      while q < n {
+        let b = (l.k0 + q) * inst_size
+        if src[b + 5] == 13.0 {
+          src.blit_to(inst, len=inst_size, src_offset=b, dst_offset=i * inst_size)
+          let c = src[b + 14].to_int()
+          q = q + (if c < 1 { 1 } else { c })
+          i = i + 1
+        } else {
+          let mut r = q + 1
+          while r < n && src[(l.k0 + r) * inst_size + 5] != 13.0 {
+            r = r + 1
+          }
+          src.blit_to(inst, len=(r - q) * inst_size, src_offset=b, dst_offset=i * inst_size)
+          for j in i..<(i + r - q) {
+            moves[j] = ride_moves(inst, j * inst_size, e)
+          }
+          i = i + r - q
+          q = r
+        }
+      }
+      if !ride_groupable(inst, m) {
+        flat()
+        return
+      }
+      (inst, moves)
+    }
   }
   let owned = inst_owners_kept()
   let owners : Array[(Int, (Double, Double), @view.NodeId?, Int)] = []
@@ -1503,13 +1531,9 @@ fn Ctx::list_ride_end(self : Ctx) -> Unit {
     }
   }
   let segs = self.segs_from(l.seg0)
-  // (the group it was kept as before, where it drew the same: the host's kept, nothing told it again)
-  let was = match ride_kept.get(l.id) {
-    Some(k) if k.group >= 0 && k.moves == moves && k.inst == inst => Some(k.group)
-    _ => None
-  }
+  // (where it drew the same as the group it was kept as: the host's kept, nothing told it again)
   let group = match was {
-    Some(g) => g
+    Some(k) => k.group
     None => {
       ride_groups_made.val = ride_groups_made.val + 1
       ride_groups_made.val
@@ -1563,6 +1587,46 @@ fn Ctx::list_ride_end(self : Ctx) -> Unit {
   ride_spans.push(l.k0)
   ride_heads.val = ride_heads.val + 1
   self.list_head_put(l.k0, group, 0, n, 0.0, 0.0, 0.0, l.id, l.s, l.dx, l.dy, l.hc)
+}
+
+///|
+/// Where each instance a list drawn whole as one gathers lies among the frame's (Ctx::list_ride_end): its rows' headers
+/// each standing for those it holds. Worked out anew by each list as it ends.
+// kept across runs: emptied as each list drawn whole as one ends
+let list_ride_at : Array[Int] = []
+
+///|
+/// Whether the instances of `src` gathered for a list drawn whole as one (each where `at` says) are `inst` and their
+/// moves in clip `e` `moves`: read where they lie, none copied, up to the first number that differs. Its first looked at
+/// first, then from its last back: what moves the whole of it (a page sliding) moves its first, and what changes in it as
+/// it stays (a mark turning, a line coming in) is most often at its foot, so a list that changed is found to have soon.
+/// `inst` and `moves` are as many as gathered (said by the caller).
+fn list_ride_same(
+  src : FixedArray[Double],
+  at : Array[Int],
+  inst : FixedArray[Double],
+  moves : FixedArray[Int],
+  e : FixedArray[Double],
+) -> Bool {
+  let m = at.length()
+  guard m * inst_size == inst.length() && m == moves.length() else { return false }
+  for t in 0..<m {
+    let i = if t == 0 { 0 } else { m - t }
+    let b = at[i]
+    guard b >= 0 && b + inst_size <= src.length() else { return false }
+    let o = i * inst_size
+    for j in 0..<inst_size {
+      if src.unsafe_get(b + j) != inst.unsafe_get(o + j) {
+        return false
+      }
+    }
+    // (a header: its moves none)
+    let mv = if src.unsafe_get(b + 5) == 13.0 { 0 } else { ride_moves(src, b, e) }
+    if moves[i] != mv {
+      return false
+    }
+  }
+  true
 }
 
 ///|
