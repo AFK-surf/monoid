@@ -1271,6 +1271,15 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   let pin : Ref[(K, Double, Array[View], Double)?] = Ref(None)
   // (what was pressed: let go, or what was over it, held no more)
   let pin_node : Ref[View?] = Ref(None)
+  // (what holds what was pressed, up to its block, each with where what lies over it starts among `over` and how tall
+  // what lies over what was pressed under it was then: what was pressed let go by what it was in (a pick's branch made
+  // anew as the press shuts or opens it), held by the nearest of them still there, by what lies over that, as tall as
+  // that was then)
+  let pin_up : Ref[Array[(View, Int, Double)]] = Ref([])
+  let pin_less = Ref(0.0)
+  // (where it was held at the foot of the room kept under its blocks once what was pressed held it no more (its fill's
+  // `top`): followed again once what comes at its foot has taken that room, unless the hand moved it from there)
+  let room_held : Ref[Double?] = Ref(None)
   let unpin : Ref[() -> Unit] = Ref(fn() {  })
   let pin_ends = Ref(false)
   // (where it was scrolled to as it was pressed: moved from there by the hand, held no more; and how many blocks it had,
@@ -1352,9 +1361,11 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   s.pressed_said = fn(v) {
     // (the block it is in, made here, and what lies over it there: none, nothing held)
     let over : Array[View] = []
+    let up_at : Array[(View, Int)] = []
     let mut found : K? = None
     let mut i = v.at
     while i >= 0 && i != self.at && found is None {
+      up_at.push((self.tree.handle(i), over.length()))
       for b in blocks {
         if b.0.at == i && b.0.alive() {
           found = Some(@signals.untracked(b.1))
@@ -1384,13 +1395,23 @@ pub fn[K : Hash + Eq] View::scrolls_window(
       top_now(all, @signals.untracked(at))
     }
     let below = all.top(j) - shown_top
-    let was = over_h(over)
+    let each_h = over.map(fn(o) { over_h([o]) })
+    let was = each_h.fold(init=0.0, fn(a, h) { a + h })
+    let up = up_at.map(fn(u) {
+      let mut under = 0.0
+      for n in 0..<u.1 {
+        under = under + each_h[n]
+      }
+      (u.0, u.1, under)
+    })
     let x_then = @signals.untracked(at)
     let foot_then = s.at_foot() && @signals.untracked(follows)
     fn() {
       (unpin.val)()
       pin.val = Some((k, below, over, was))
       pin_node.val = Some(v)
+      pin_up.val = up
+      pin_less.val = 0.0
       pin_x.val = x_then
       let ks = @signals.untracked(keys)
       pin_with.val = (ks.length(), ks.last())
@@ -2411,6 +2432,23 @@ pub fn[K : Hash + Eq] View::scrolls_window(
       s.held = false
       held = false
     }
+    // (what was pressed let go: held by the nearest of what held it still there, what lay over it under that let go
+    // with it and no longer counted)
+    match (pin.val, pin_node.val) {
+      (Some((_, _, over, _)), Some(v)) if !v.alive() =>
+        match pin_up.val.iter().find_first(fn(u) { u.0.alive() }) {
+          Some((a, from, under)) if from <= over.length() => {
+            over.drain(0, from) |> ignore
+            pin_less.val = under
+            pin_node.val = Some(a)
+            pin_up.val = pin_up.val
+              .filter(fn(u) { u.1 >= from })
+              .map(fn(u) { (u.0, u.1 - from, u.2 - under) })
+          }
+          _ => ()
+        }
+      _ => ()
+    }
     match (pin.val, pin_node.val) {
       (Some((_, _, over, _)), Some(v)) if !v.alive() || over.iter().any(fn(o) { !o.alive() }) => {
         pin.val = None
@@ -2523,7 +2561,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
       if !asked && pin.val is Some((k, below, over, was)) && laid_at.get(k) is Some(i) && i < all.length() {
         ai = i
         pressed_holds = true
-        aoff = over_h(over) - was - below
+        aoff = over_h(over) - (was - pin_less.val) - below
         foot_room.set(dmax(0.0, all.top(i) + aoff + vh - blocks_foot(all)))
       } else if floor.val is Some((lk, e0)) {
         // (a key come at its foot: the stretch from the last that stayed as long as it was, it and what is under it and
@@ -2948,7 +2986,10 @@ pub fn[K : Hash + Eq] View::scrolls_window(
         }
       }
       // (back at its foot at rest, where it follows its foot: kept there from now as what it holds grows; not where an
-      // ask cut short by its foot still going down was put back, the next fill going on with it)
+      // ask cut short by its foot still going down was put back, the next fill going on with it. At the foot of the room
+      // kept under its blocks for what was pressed it is not at its own: followed from there, it would drop by that room
+      // as soon as anything at its foot changed. Held there instead, as long as the hand leaves it where it is, what comes
+      // at its foot taking that room as it grows; once it is all taken, followed again from where that leaves it)
       if !follows_foot &&
         !held &&
         !binds &&
@@ -2956,12 +2997,22 @@ pub fn[K : Hash + Eq] View::scrolls_window(
         !has_pin &&
         @signals.untracked(follows) &&
         vh > 0.0 &&
-        top >= dmax(0.0, whole_now() - vh) - 0.5 &&
         s.rest_now() is None &&
         s.glides_till() is None {
-        s.held = false
-        row_let_go(false)
-        s.to_foot()
+        if room_held.val is Some(t0) && (t0 - top).abs() > 0.5 {
+          room_held.val = None
+        }
+        let at_end = top >= dmax(0.0, whole_now() - vh) - 0.5
+        if foot_room.untracked() > 0.5 {
+          if at_end {
+            room_held.val = Some(top)
+          }
+        } else if at_end || room_held.val is Some(_) {
+          room_held.val = None
+          s.held = false
+          row_let_go(false)
+          s.to_foot()
+        }
       }
       // (gliding back to its foot, its foot moved since the glide set out or went on (a block measured or come at its
       // end, its pinned foot grown or shrunk, a way under it): on to where it is now, from where the glide has it and as
@@ -3135,7 +3186,9 @@ pub fn[K : Hash + Eq] View::scrolls_window(
       came_row[k] = row
     }
     let r = foot_room.untracked()
-    guard r > 0.0 && came_by_data.val.contains(k) else { return 0.0 }
+    // (only at its foot, followed: held off it (the room kept for what was pressed, the press's ways ended), the room
+    // stays where it shows and what comes under it takes it as it grows, nothing over it moving)
+    guard r > 0.0 && came_by_data.val.contains(k) && @signals.untracked(fn() { s.at_foot() }) else { return 0.0 }
     foot_room.set(0.0)
     took_room[k] = (row, r)
     r

@@ -2642,7 +2642,8 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
       }
       // (an icon or a line by the whole shape its pieces are of, not by a piece, nor by what else its node draws)
       let (sw, sh) = shape_extent(s)
-      shape_marks.push((piece_from - start, self.ninst - start, if sw <= icon_most && sh <= icon_most { 1 } else { 2 }))
+      let is_icon = sw <= icon_most && sh <= icon_most && (s.fill != 0L || (c.w <= icon_most && c.h <= icon_most))
+      shape_marks.push((piece_from - start, self.ninst - start, if is_icon { 1 } else { 2 }))
     }
   } else {
     // (none drawn now: the bands of those it drew before let go)

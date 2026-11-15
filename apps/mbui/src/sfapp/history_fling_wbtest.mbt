@@ -358,11 +358,13 @@ test "the desk's history beside a chat: scrolling across turns reuses row views 
   t.check_looks(false)
   let tree = @ui.view_tree().unwrap()
   let w0 = tree.work()
-  for _ in 0..<18 {
+  // (warmed until the slots that come in round its 18th turn are made: the rows over it made once as they near, from
+  // then on scrolled over, nothing made or let go)
+  for _ in 0..<22 {
     t.wheel(1100.0, 500.0, -30.0)
   }
   let w1 = tree.work()
-  for _ in 0..<12 {
+  for _ in 0..<8 {
     t.wheel(1100.0, 500.0, -30.0)
   }
   let w2 = tree.work()
