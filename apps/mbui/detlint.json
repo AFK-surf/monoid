@@ -580,7 +580,9 @@
     "frame-request": {},
     "settle": {},
     "flow-wait": {},
-    "script-wait": {},
+    "script-wait": {
+      "e2e/move.ts": 1
+    },
     "page-settle": {},
     "device-shot": {},
     "host-import": {},

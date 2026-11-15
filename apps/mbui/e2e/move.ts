@@ -1963,6 +1963,10 @@ try {
       }
       return null;
     };
+    /// Whether A's login is lent to B now (A's config: cc shared with B, A its host), and the chats of a connect on B by
+    /// whose they are: moved from A (named as A names them) or begun there (`<id>@<A's id>`, B's name of a connect it took).
+    const lentToB = () => (cfgOf("A").profiles ?? []).some((p: J) => p.id === "cc" && p.share != null && p.share.borrowed !== true && (p.share.allow ?? []).some((x: string) => bId.startsWith(x) || x.startsWith(bId.slice(0, 8))));
+    const onB = (id: string) => ({ fromA: chatsOn("B", id).filter((k) => k.startsWith(`${id}:`)), begun: sql("B", `select key from sessions where key like ${lit(`${itemOf(id)}:%`)} and archived_at is null and (ws is null or (ws not like 'handed:%' and ws not like 'coming:%'))`).map((r) => r.key as string) });
     /// How many of the app's sockets an envelope was acknowledged on.
     const ackedOn = (id: string) => sl.sockets.filter((s) => s.acked.has(id)).map((s) => `${s.station}#${s.n}`);
     const moveConnect = async (id: string, to: Name, withNeeds = true) => {
@@ -1977,6 +1981,15 @@ try {
     };
     /// The connect's chats live on `n` now (by their sessions there).
     const chatsOn = (n: Name, id = dk) => sql(n, `select key from sessions where key like ${lit(`${id}:%`)} and (ws is null or (ws not like 'handed:%' and ws not like 'coming:%'))`).map((r) => r.key as string);
+    /// People's pace in Slack: a message a second while a move runs, a cadence of the drill's, no wait for anything.
+    const cadence = () => new Promise((r) => setTimeout(r, 1000)); // det-ok(script-wait): a cadence (a message a second across a move), not a wait for an event
+    /// Once the turn asked at `after` ended: that what was said since got to the station that holds the connect now,
+    /// `n` of them acknowledged there (so the cadence ran past the move, not before it alone).
+    const takenSince = (sent: { id: string }[], after: number, n: number, station: string) =>
+      sl.until(`${n} said after the move taken on ${station}`, () => sent.filter((d) => {
+        const e = sl.sent.get(d.id)!;
+        return (e.deliveries[0]?.at ?? 0) >= after && e.acked?.station === station;
+      }).length >= n, 60_000);
     let ok = false;
     await check("4s: setup: A and B pointed at Slack's stand-in, a Slack connect (multi-session) and a single-session one on A, each app's one socket A's", async () => {
       for (const n of ["A", "B"] as Name[]) writeFileSync(join(dirname(DATA[n]), "slack-api"), await sl.listen(n));
@@ -2069,10 +2082,12 @@ try {
             for (let i = 0; !stop && i < 120; i++) {
               const word = `drill-noted w${i}${tag} `;
               during.push({ ...sayIn(undefined, `drill-note:w${i}${tag}`, word), word });
-              await new Promise((r) => setTimeout(r, 1000));
+              await cadence();
             }
           })();
-          await new Promise((r) => setTimeout(r, 3000));
+          // (the cadence under way before the move: its first conversation answered)
+          await sl.until("the first conversation said", () => during.length > 0, 10_000);
+          await answerTo(during[0]!.ts, during[0]!.word);
           // (the window's two ends: one event down A's socket the moment B asks for its own, one the first down B's)
           L = sl.message(APP, CH, `drill-note:l${tag}`);
           F = sl.message(APP, CH, `drill-note:f${tag}`);
@@ -2082,8 +2097,8 @@ try {
           let l: J;
           try {
             l = await moveConnect(dk, "B");
+            await takenSince(during, Date.now(), 2, holds(dk)[0] ?? "B");
           } finally {
-            await new Promise((r) => setTimeout(r, 5000));
             stop = true;
             await sender;
           }
@@ -2148,6 +2163,11 @@ try {
               log(`  ${k.slice(-17)} back: ${outcome(l)}; ${standings(k)}`);
               if (standing("A", k) !== "live") throw new Error(`${k} not back: ${standings(k)}; ${outcome(l)}`);
             }
+            // (the login it was lent for k1 and k2 stays lent while what the connect's move took there, and what was
+            // begun there on it, runs on it: move.uses)
+            const still = onB(dk);
+            log(`  on B still: ${still.fromA.length} moved from A, ${still.begun.length} begun there; A's login lent to B: ${lentToB()}`);
+            if (still.fromA.length + still.begun.length > 0 && !lentToB()) throw new Error(`A took its login back with chats on B still on it: ${brief(still)}`);
             if (holds(dk).join() !== "A") {
               const l = await backConnect(dk, "B");
               log(`  the connect back: ${outcome(l)}; holds ${holds(dk).join(",")}`);
@@ -2259,19 +2279,20 @@ try {
       if (ks !== "") {
         await check("4s single: its chat moved with what it needs: the connect first, then the chat; what is said meanwhile kept, taken there once, in order", async () => {
           const words: string[] = [];
+          const qs: { id: string }[] = [];
           let stop = false;
           const sender = (async () => {
             for (let i = 0; !stop && i < 60; i++) {
               words.push(`q${i}${tag}`);
-              sayIn(ts1, `drill-note:q${i}${tag}`, `drill-noted q${i}${tag} `, { app: APP1, channel: CH1, must: false });
-              await new Promise((r) => setTimeout(r, 1000));
+              qs.push(sayIn(ts1, `drill-note:q${i}${tag}`, `drill-noted q${i}${tag} `, { app: APP1, channel: CH1, must: false }));
+              await cadence();
             }
           })();
           let l: J;
           try {
             l = await moveChat(ks, "B");
+            await takenSince(qs, Date.now(), 1, "B");
           } finally {
-            await new Promise((r) => setTimeout(r, 3000));
             stop = true;
             await sender;
           }
@@ -2306,6 +2327,27 @@ try {
         });
       }
     }
+    await check("4s: the login lent while chats on B run on it, taken back once they are back (moved from A) or archived (begun there)", async () => {
+      for (const id of [dk, dks]) {
+        if (holds(id).join() === "B") await backConnect(id, "B").then((l) => log(`  ${id} back: ${outcome(l)}`));
+      }
+      const before = { dk: onB(dk), dks: onB(dks) };
+      log(`  on B: ${brief(before)}; lent to B: ${lentToB()}`);
+      if ([...before.dk.fromA, ...before.dk.begun, ...before.dks.fromA, ...before.dks.begun].length > 0 && !lentToB()) throw new Error(`not lent with chats on B on it: ${brief(before)}`);
+      for (const k of [...before.dk.fromA, ...before.dks.fromA]) {
+        const l = await moveBack(k, "B");
+        if (standing("A", k) !== "live") throw new Error(`${k} not back: ${standings(k)}; ${outcome(l)}`);
+      }
+      for (const k of [...before.dk.begun, ...before.dks.begun]) {
+        const thread = sql("B", `select id from threads where home = ${lit(k)}`)[0]?.id;
+        if (typeof thread !== "number") throw new Error(`no thread of ${k} on B`);
+        await a.call("chat.archive", { station: B, session: k, thread, archived: true });
+      }
+      const left = { dk: onB(dk), dks: onB(dks) };
+      log(`  then on B: ${brief(left)}`);
+      await whenChanged([DATA.A], () => !lentToB(), 120_000, () => `still lent to B: ${brief((cfgOf("A").profiles ?? []).map((p: J) => ({ id: p.id, share: p.share ?? null })))}; on B ${brief(left)}`, 1000);
+      log("  A's login taken back");
+    });
     log("SKIP 4s: a Comma connect moved: not built, the harness has no Comma stand-in (and Feishu's routed connect is Slack's path with another platform's client, not driven here)");
 
     await check("4s: every message said in Slack answered exactly once (but those said to a station that was down, which need not be)", async () => {
