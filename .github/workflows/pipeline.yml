@@ -333,6 +333,9 @@ jobs:
   # each, the same whatever else runs; every test passes here as on a Mac but the 8 of the Rust station's archive
   # command (prebuilt for darwin alone), which `check` keeps. More files: more slices (here, in `shard` and in
   # STILLFAIL_STATION_SHARD), not a longer job.
+  # On linux-ci (2026-11-15, the user: 先试 check-station): ci-1, a Linux machine of ours (16 threads, 32 GB) with six
+  # runners, one a slice; GitHub's ubuntu-24.04 ran the slices in 117 to 233 s (main 43709688885). pipeline is pushes
+  # alone, so no fork's code reaches it (contributions runs forks' on GitHub's runners).
   check-station:
     needs: [plan, natives]
     if: ${{ !cancelled() && !failure() && needs.plan.outputs.station_tests == 'true' }}
@@ -340,7 +343,7 @@ jobs:
       fail-fast: false
       matrix:
         shard: [0, 1, 2, 3, 4, 5]
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux-ci]
     timeout-minutes: 5
     env:
       STILLFAIL_CHECK_PART: station-tests

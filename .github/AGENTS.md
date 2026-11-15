@@ -14,9 +14,11 @@
 - Every job says `timeout-minutes`, 5 at most (`scripts/ci-timeouts.py`; only its `LONGER`, runs of the day's or by
   hand, 10). A job that needs longer is made faster.
 - No paid runners (GitHub's larger ones): Linux on GitHub's standard runners, the rest on the self-hosted machines
-  the workflows name. Those machines' runners share one Mac each, so what a job takes there depends on its
-  neighbours: what runs on Linux as well goes to Linux runners, in slices when it is long (the station's tests,
-  `check-station`, and the core's, `check-core`: more test files, more slices).
+  the workflows name. The Macs' runners share one Mac each, so what a job takes there depends on its neighbours: what
+  runs on Linux as well goes to Linux runners, in slices when it is long (the station's tests, `check-station`, and
+  the core's, `check-core`: more test files, more slices). `linux-ci` is ci-1, a Linux machine of ours with six
+  runners (`check-station` there since 2026-11-15, more as it proves faster); only what forks cannot trigger
+  (pipeline's pushes) may name it.
 - A check that failed and passed on the same commit is never rerun green (the root AGENTS.md). Do not rerun an old
   commit's main pipeline: it deploys that commit's beta over the newer one.
 - An artifact uploaded for people to look at (pictures, logs, what moved) says `continue-on-error: true`: a runner's
