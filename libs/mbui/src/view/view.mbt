@@ -12133,10 +12133,12 @@ pub fn Tree::laid_held_toward(self : Tree, wanted : (Content) -> Bool) -> Array[
   let at_out : Array[Int] = Array::make(len, -1)
   self.each_drawn_in_order(fn(i, c, x, y, a, _, _, _) {
     let h0 = self.order_holder[i]
+    // (one left out that is not kept holds nothing kept: none wanted under it, as what holds one wanted is kept, and none
+    // laid out as its holder is, its holder left out; what it holds passed over whole)
     let (lx, ly) = if keep[i] || (h0 >= 0 && at_out[h0] >= 0) {
       self.laid_origin(c.id).unwrap_or((x, y))
     } else {
-      return false
+      return true
     }
     // (one not wanted nor holding one: kept only laid out as its holder is, kept, as big)
     if !keep[i] {
@@ -12145,7 +12147,7 @@ pub fn Tree::laid_held_toward(self : Tree, wanted : (Content) -> Bool) -> Array[
         (hd.y - ly).abs() > 0.5 ||
         (hd.w - c.w).abs() > 0.5 ||
         (hd.h - c.h).abs() > 0.5 {
-        return false
+        return true
       }
     }
     let mut h = h0
