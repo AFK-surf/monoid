@@ -684,16 +684,17 @@ fn view_rich(runs : Array[@text.Run], look : @view.WordsLook, set : @view.RunsLo
   // (on one line where they do not wrap: what breaks them run on with a space across all of them at once, a break and
   // what blanks follow it perhaps in two of them, as Ctx::rich's; each as weighty and inked as it was; on their lines
   // as written where they keep their breaks, as Ctx::rich's `breaks`)
-  let texts = if look.wrap || kept || !runs.iter().any(fn(r) { has_nl(r.text) }) {
-    runs.map(fn(r) { r.text })
+  // (as given where nothing breaks them: no copy of them made)
+  let runs = if look.wrap || kept || !runs.iter().any(fn(r) { has_nl(r.text) }) {
+    runs
   } else {
     match one_line(runs.map(fn(r) { r.text })) {
-      Some(t) => t
-      None => runs.map(fn(r) { r.text })
+      Some(texts) => runs.mapi(fn(k, r) { { ..r, text: texts[k] } })
+      None => runs
     }
   }
   {
-    runs: runs.mapi(fn(k, r) { { ..r, text: texts[k] } }),
+    runs,
     size: view_sp(scale, look.size),
     weight: look.weight,
     color: 0L,

@@ -27,7 +27,9 @@ pub using @text {
 }
 
 ///|
-/// A paragraph as its node keeps it: its runs and its own look.
+/// A paragraph as its node keeps it: its runs and its own look (each of it what it is laid out by: layout_rich keeps a
+/// layout for a paragraph the same in all of it).
+#derive(Eq)
 priv struct Rich {
   runs : Array[Run]
   size : Double
@@ -302,7 +304,143 @@ fn torn_outline(w : Double, h : Double, corner : Double, from : Bool, on : Bool)
 }
 
 ///|
+/// Paragraph `r` laid out in `max_w`: as it was where it was laid out before the same, at the same scale, its lines set
+/// the same way and its faces measured the same (rich_kept), in a width that gives it the same lines; else what any
+/// width shares of it as it was (its text, where it breaks, its bidi levels), laid out in this one.
 fn layout_rich(r : Rich, max_w : Double) -> RichLayout {
+  let sc = g().scale
+  let web = web_lines.val
+  let gen = text_cache.generation
+  let key = rich_key(r)
+  let k = match rich_kept.get(key) {
+    Some(k) if k.sc == sc && k.web == web && k.gen == gen && k.r == r => k
+    _ => {
+      if !rich_kept.contains(key) && rich_kept.length() >= rich_kept_most {
+        rich_kept_thin()
+      }
+      // (its runs as they are now: what it was given may be changed in place after)
+      let k = { r: { ..r, runs: r.runs.copy() }, sc, web, gen, prep: rich_prep(r), lays: [], used: 0 }
+      rich_kept[key] = k
+      k
+    }
+  }
+  k.used = text_cache.frame
+  // (greedy wrapping gives the same lines in any width from the widest line up to the one they were made in, a label
+  // kept whole in it too: what is not wrapped, in any)
+  for i, e in k.lays {
+    let (made, lay) = e
+    if !r.wrap || (lay.w <= max_w + 0.01 && max_w <= made) {
+      if i > 0 {
+        k.lays.remove(i) |> ignore
+        k.lays.insert(0, e)
+      }
+      return lay
+    }
+  }
+  let lay = rich_lines(r, k.prep, max_w)
+  k.lays.insert(0, (max_w, lay))
+  if k.lays.length() > rich_lays_most {
+    k.lays.pop() |> ignore
+  }
+  lay
+}
+
+///|
+/// What of a paragraph is the same in whatever width it is laid out in: its runs' clusters and metrics end to end, its
+/// text, where UAX #14 lets its lines break, its bidirectional levels (UAX #9, None: all left to right).
+priv struct RichPrep {
+  text : String
+  run_start : Array[Int]
+  run_c0 : Array[Int]
+  run_c1 : Array[Int]
+  run_size : Array[Double]
+  run_a : Array[Double]
+  run_d : Array[Double]
+  run_lasc : Array[Double]
+  run_ldesc : Array[Double]
+  drawings : Array[InlineDrawing?]
+  starts : Array[Int]
+  lens : Array[Int]
+  adv : Array[Double]
+  pre : Array[Double]
+  keys : Array[Int]
+  cu : Array[Int]
+  brk : Array[Int]
+  run_of : Array[Int]
+  len : Int
+  base_asc : Double
+  base_desc : Double
+  extra : Double
+  bidi : @text.Bidi?
+}
+
+///|
+/// A paragraph laid out before (layout_rich), as it was given then (`r`, at the scale, the lines' way and the faces
+/// measured in then), what of it any width shares, the layouts made of it (the latest asked first, each with the width
+/// it was made in) and the last frame that asked for it.
+priv struct RichKept {
+  r : Rich
+  sc : Double
+  web : Bool
+  gen : Int
+  prep : RichPrep
+  lays : Array[(Double, RichLayout)]
+  mut used : Int
+}
+
+///|
+/// The paragraphs laid out, by rich_key: a frame measures a node's paragraph as the tree is laid out and lays it out
+/// again to draw it (view_runs_measure_set, view_runs_laid), in a width or two, frame after frame; each of those after
+/// the first is what it was. Kept till they come to rich_kept_most, then those the frame did not ask for let go.
+// kept across runs: what is kept is told apart by all it was laid out by, so another run's is no other's
+let rich_kept : Map[Int64, RichKept] = Map([])
+
+///|
+let rich_kept_most : Int = 1024
+
+///|
+let rich_lays_most : Int = 3
+
+///|
+/// What tells a paragraph from others (rich_kept's key; its whole compared as it is found).
+fn rich_key(r : Rich) -> Int64 {
+  let mix = fn(h : Int64, v : Int64) { h * 1099511628211L + v }
+  let mut h = r.size.reinterpret_as_int64()
+  h = mix(h, r.weight.to_int64())
+  h = mix(h, r.line.reinterpret_as_int64())
+  h = mix(h, if r.wrap { 1L } else { 0L })
+  h = mix(h, r.spacing.reinterpret_as_int64())
+  h = mix(h, r.faces.to_int64())
+  h = mix(h, r.shaped_in.to_int64())
+  for run in r.runs {
+    h = mix(h, stable_hash(run.text))
+    h = mix(h, run.weight.to_int64())
+    h = mix(h, run.scale.reinterpret_as_int64())
+  }
+  h
+}
+
+///|
+/// What the frame did not ask for of the paragraphs laid out let go; all of them where it asked for each.
+fn rich_kept_thin() -> Unit {
+  let now = text_cache.frame
+  let old = []
+  for key, k in rich_kept {
+    if k.used != now {
+      old.push(key)
+    }
+  }
+  if old.length() == 0 {
+    rich_kept.clear()
+  }
+  for key in old {
+    rich_kept.remove(key)
+  }
+}
+
+///|
+/// What of paragraph `r` any width shares (RichPrep).
+fn rich_prep(r : Rich) -> RichPrep {
   let sc = g().scale
   let (_, _, own0) = font_metrics(r.size, r.weight)
   // Chinese in it: measured by the CJK font's too (taller), as Android measures a line by the fonts it draws in (as a
@@ -409,6 +547,60 @@ fn layout_rich(r : Rich, max_w : Double) -> RichLayout {
     }
   }
   // a label (a run on a ground of its own shape) is one thing, as CSS's inline-block is: a line breaks before it
+  // (right to left: each line's clusters put in their visual order, rich_lines)
+  let bd = @text.Bidi::new(text)
+  {
+    text,
+    run_start,
+    run_c0,
+    run_c1,
+    run_size,
+    run_a,
+    run_d,
+    run_lasc,
+    run_ldesc,
+    drawings,
+    starts,
+    lens,
+    adv,
+    pre,
+    keys,
+    cu,
+    brk,
+    run_of,
+    len: off,
+    base_asc,
+    base_desc,
+    extra,
+    bidi: if bd.is_mixed() { Some(bd) } else { None },
+  }
+}
+
+///|
+/// Paragraph `r` (what any width shares of it: `p`) laid out in `max_w`.
+fn rich_lines(r : Rich, p : RichPrep, max_w : Double) -> RichLayout {
+  let text = p.text
+  let run_start = p.run_start
+  let run_c0 = p.run_c0
+  let run_c1 = p.run_c1
+  let run_size = p.run_size
+  let run_a = p.run_a
+  let run_d = p.run_d
+  let run_lasc = p.run_lasc
+  let run_ldesc = p.run_ldesc
+  let drawings = p.drawings
+  let starts = p.starts
+  let lens = p.lens
+  let adv = p.adv
+  let pre = p.pre
+  let keys = p.keys
+  let cu = p.cu
+  let brk = p.brk
+  let run_of = p.run_of
+  let base_asc = p.base_asc
+  let base_desc = p.base_desc
+  let extra = p.extra
+  let n = starts.length()
   // rather than within it, unless it is wider than a whole line; each cluster in one kept whole: where it starts
   let whole = Array::make(n, -1)
   if r.wrap {
@@ -462,7 +654,7 @@ fn layout_rich(r : Rich, max_w : Double) -> RichLayout {
     line_h: [],
     line_base: [],
     lv: [],
-    len: off,
+    len: p.len,
     w: 0.0,
     h: 0.0,
   }
@@ -521,19 +713,22 @@ fn layout_rich(r : Rich, max_w : Double) -> RichLayout {
     finish(ls, n)
   }
   // right to left: each line's clusters in their visual order
-  let bd = @text.Bidi::new(text)
-  if bd.is_mixed() {
-    for _ in 0..<n {
-      lay.lv.push(0)
-    }
-    for l in 0..<line_start.length() {
-      let a = line_start[l]
-      let mut e = line_end[l]
-      while e > a && (cu[e - 1] == 32 || is_nl(cu[e - 1])) {
-        e = e - 1
+  // right to left: each line's clusters in their visual order
+  match p.bidi {
+    Some(bd) => {
+      for _ in 0..<n {
+        lay.lv.push(0)
       }
-      bidi_line(bd, starts, lens, adv, xs, lay.lv, a, e, 0.0)
+      for l in 0..<line_start.length() {
+        let a = line_start[l]
+        let mut e = line_end[l]
+        while e > a && (cu[e - 1] == 32 || is_nl(cu[e - 1])) {
+          e = e - 1
+        }
+        bidi_line(bd, starts, lens, adv, xs, lay.lv, a, e, 0.0)
+      }
     }
+    None => ()
   }
   // each line as high as its tallest run needs, its baseline shared
   let mut y = 0.0
