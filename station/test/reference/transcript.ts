@@ -16,8 +16,8 @@
 // JSON is read with JSON.parse, so a value shows as JavaScript has it: a number written `1.0` shows `1`, a key that is
 // an integer comes first, a number past 2^53 rounds (serde_json keeps each as written). Transcripts rarely have them.
 import { closeSync, openSync, readSync, statSync } from "node:fs";
-import { isPlanTool } from "../../src/read/plan.ts";
-import { tr } from "../../src/read/spoken.ts";
+import { isPlanTool } from "./plan.ts";
+import { tr } from "../../src/read/views.ts";
 import type { Json } from "../../src/read/store.ts";
 import type { RuntimeKind } from "../../src/agents/runtime.ts";
 import { unpackedWhole } from "../../src/read/packed.ts";
@@ -209,7 +209,7 @@ function toText(v: Json): string {
 
 /// A post: shown whole in the history, where the agent made it (its words are what people read, not a call to cut).
 export const isPosting = (tool: string) => tool === "mcp__stillfail__chat_post" || tool === "mcp__ember__chat_post";
-/// A call kept whole, never cut short: a post (what it said), and a checklist's (read/plan.ts reads the list from it).
+/// A call kept whole, never cut short: a post (what it said), and a checklist's (the live view reads the list from it: mb/src/reader/live.mbt `read_plan`).
 const keptWhole = (tool: string) => isPosting(tool) || isPlanTool(tool);
 
 /// What reading keeps between lines: calls taken out of a script.
