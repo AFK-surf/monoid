@@ -51,6 +51,10 @@ fn message_files_node(
   at : String,
   over? : () -> Double = fn() { 0.0 },
 ) -> Unit {
+  // (the files as they are now, worked out once as what they are worked out of changes: each file's every reading of
+  // itself below goes through this, not through the message again)
+  let listed = @signals.computed_scoped(fn(_) { list() }, same=physical_equal)
+  let list = fn() { listed.get() }
   parent.show(fn() { list().length() > 0 }, fn(s) {
     s.by_room(fn(r, room) {
       r.box(fn(files) {
@@ -62,14 +66,19 @@ fn message_files_node(
         files.wraps(Is(Some(files_gap))) |> ignore
         let keys = fn() { list().map(fn(a) { @sfbase.file_key(a) }) }
         files.each(keys, fn(k) { k }, fn(slot, k) {
-          // (its key read through what it is given, never kept: a block may be taken to show another key)
-          let a = fn() {
-            let key = k.get()
-            match list().iter().find_first(fn(x) { @sfbase.file_key(x) == key }) {
-              Some(x) => x
-              None => attachment_of({ "name": Json::string(""), "path": Json::string(key) })
-            }
-          }
+          // (its key read through what it is given, never kept: a block may be taken to show another key; found once
+          // as that or the files change, what reads it many times over reading that)
+          let found = @signals.computed_scoped(
+            fn(_) {
+              let key = k.get()
+              match list().iter().find_first(fn(x) { @sfbase.file_key(x) == key }) {
+                Some(x) => x
+                None => attachment_of({ "name": Json::string(""), "path": Json::string(key) })
+              }
+            },
+            same=physical_equal,
+          )
+          let a = fn() { found.get() }
           slot.box(fn(item) {
             item.max_width(By(fn() { Some(room.width()) })).shrink(Is(0.0)) |> ignore
             item.pick(fn() { file_kind(a().name) }, fn(p, kind) {

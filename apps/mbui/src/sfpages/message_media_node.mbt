@@ -33,12 +33,18 @@ fn message_image_node(
   let going_up = fn() { a().upload != "" && a().path == @sfbase.upload_path(a().upload) }
   let sent = fn() { @sfbase.sent_picture_told(station(), a()) }
   // its image's key: one sent from here the picture it was picked as; else its station's ("" while it comes, "!" none)
-  let key = fn() {
-    match sent() {
-      Some(k) => k
-      None => if going_up() { "" } else { src.file_told(station(), owner(), name()) }
-    }
-  }
+  // (worked out once as what it reads changes: what stands in for the picture, its frame and the picture itself each
+  // read it, again and again)
+  let keyed = @signals.computed_scoped(
+    fn(_) {
+      match sent() {
+        Some(k) => k
+        None => if going_up() { "" } else { src.file_told(station(), owner(), name()) }
+      }
+    },
+    same=fn(x, y) { x == y },
+  )
+  let key = fn() { keyed.get() }
   let unreached = fn() { key() == "!" && sent() is None && src.images.unreached_told(id()) }
   // (one sent from here or the device's: as it is, no brushing in)
   let as_is = fn() { sent() is Some(_) || src.images.held_told(id()) }
