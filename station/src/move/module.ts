@@ -24,6 +24,12 @@ export type Item = { module: string; id: string; label: string; needs: Need[]; c
 /// What a move says to people, in the station's language, already: passed on as it is, never worded again.
 // (one class with ops/i18n.ts's, which the rest of the station says its words by)
 export { Said };
+/// A request with bytes that met the other station's connection gone, the first time in a turn (move/station.ts
+/// `#ask`): nothing of it was taken, and its body is read, so its caller sends it once more from its start, on the
+/// connection dialed anew (replica/sending.ts `sendBatch`). Its words, where a caller does not, say so.
+export class AskAgain extends Said {}
+/// The other station found gone in a turn (`#ask`): this step, and every later one toward it, fails with these words.
+export class Gone extends Said {}
 
 /// What an item's failure says to people (move/AGENTS.md: every word a move says is the catalog's): the station's own
 /// words (`Said`) and the other station's answer (a refusal, said there in its words) as they are; anything else (an

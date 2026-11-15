@@ -7,7 +7,8 @@
 // transport of the test's (move-world.ts). The rest of the hand-over's tests are chat-handover-back, -moves and -told.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { sessionKey } from "../src/sessions/hub.ts";
@@ -395,18 +396,20 @@ test("the other station not answering as a chat's files go, or their carrying fa
   for (const [how, thrown, key] of [
     ["no answer", "the other station answered nothing", "carryUnanswered"],
     ["its connection gone", "the other station's connection was gone: the request got no answer from it (asked again, it is dialed anew)", "carryUnanswered"],
-    // (no answer in time is the turn's own reading of it: the station gone for the turn, move/station.ts `#ask`)
-    ["no answer in time", "peer request timed out; execution may have happened — query the same task key", "gone"],
+    // (no answer in time is the turn's own reading of it: the station gone for the turn, move/station.ts `#ask`, said
+    // for the files as the other not answering as they went)
+    ["no answer in time", "peer request timed out; execution may have happened — query the same task key", "carryUnanswered"],
     ["something else", "EIO: i/o error, read", "carryFailed"],
   ] as const) {
     const w = world();
     const a = w.get(A);
     const b = w.get(B);
     const { key: chat, thread } = await stillfailChat(a);
-    // (its first file's request there fails as the transport would have it)
+    // (every file's request there fails as the transport would have it: no answer is sent again once, and is the
+    // station gone the second time)
     let puts = 0;
     w.tamper((to, r) => {
-      if (to === B && r.method === "handover.put" && ++puts === 1) throw new Error(thrown);
+      if (to === B && r.method === "handover.put" && ++puts >= 1) throw new Error(thrown);
       return r;
     });
     const lines: string[] = [];
@@ -421,17 +424,123 @@ test("the other station not answering as a chat's files go, or their carrying fa
     }
     const said = out?.failed?.error ?? "";
     assert.ok(puts >= 1, `${how}: its files' requests went (${puts})`);
-    const words = key === "gone" ? new RegExp(tr(stationLang(), "station.move.gone", { station: "\u0000" }).replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace("\u0000", ".+")) : null;
-    assert.ok(words !== null ? words.test(said) : said.includes(tr(stationLang(), `station.move.why.${key}`)), `${how}: in the station's words: ${said}`);
+    assert.ok(said.includes(tr(stationLang(), `station.move.why.${key}`)), `${how}: in the station's words: ${said}`);
     assert.ok(!said.includes(thrown), `${how}: the cause not said to people: ${said}`);
     // (the files' failure logs its cause; the station found gone, the turn's own log line its cause)
-    const logged = key === "gone" ? "a station found gone in a turn" : "could not be carried";
+    const logged = how === "no answer in time" || how === "no answer" ? "a station found gone in a turn" : "could not be carried";
     assert.ok(lines.some((l) => l.includes(logged) && l.includes(thrown.slice(0, 20))), `${how}: the cause in the log: ${lines.filter((l) => l.includes(logged)).join(" | ")}`);
     assert.equal(a.rig.hub.chatHeld(chat), null, `${how}: not held`);
     assert.equal(b.rig.store.getSession(chat), null, `${how}: nothing of it there`);
     say(a.rig.hub, thread, "p@x", "still here?");
     await w.quiet();
     assert.ok(a.rig.claude.last().prompts.join("\n").includes("still here?"), `${how}: it works here`);
+  }
+});
+
+/// A chat of A's with files enough in its room for several of them to be sent, by key and thread.
+async function roomyChat(a: ReturnType<ReturnType<typeof world>["get"]>) {
+  const { key, thread } = await stillfailChat(a);
+  const room = a.rig.session(key).workspace;
+  for (let i = 0; i < 4; i++) writeFileSync(join(room, `part-${i}.md`), `part ${i} of what it was doing\n`.repeat(50 + i));
+  return { key, thread };
+}
+
+test("a file's request that meets the other station's connection gone (no answer) is sent again once from its start, dialed anew: the chat goes, each file taken there once, none sent before it sent again", async () => {
+  const w = world();
+  const a = w.get(A);
+  const b = w.get(B);
+  const { key } = await roomyChat(a);
+  const tried: string[] = [];
+  const taken: string[] = [];
+  w.tamper((to, r) => {
+    if (to !== B || r.method !== "handover.put") return r;
+    tried.push(String(r.name));
+    if (tried.length === 2) throw new Error("the other station answered nothing");
+    taken.push(String(r.name));
+    return r;
+  });
+  const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: key });
+  await w.quiet();
+  w.tamper(null);
+  assert.equal(out.failed, null, JSON.stringify(out));
+  assert.equal(a.rig.store.handedTo(key)?.station, B, "it went");
+  assert.notEqual(b.rig.store.getSession(key), null, "it is there");
+  assert.ok(tried.length >= 3, `its files' requests: ${tried.length}`);
+  assert.equal(tried.length, taken.length + 1, `one request more than taken, the one that met no answer: tried ${JSON.stringify(tried.map((h) => h.slice(0, 8)))}, taken ${JSON.stringify(taken.map((h) => h.slice(0, 8)))}`);
+  assert.equal(tried[2], tried[1], "the file that met no answer sent again, next");
+  // (each of the room's own files taken there once: the session's list and the index are sent with each pass by
+  // design, the held one too, so they are not counted here)
+  const room = a.rig.session(key).workspace;
+  const roomFiles = readdirSync(room).filter((n) => statSync(join(room, n)).isFile()).map((n) => createHash("sha256").update(readFileSync(join(room, n))).digest("hex"));
+  for (const h of roomFiles) assert.equal(taken.filter((t) => t === h).length, 1, `the room's file ${h.slice(0, 8)} taken there once: ${JSON.stringify(taken.map((t) => t.slice(0, 8)))}`);
+  assert.ok(roomFiles.includes(tried[1]!), "the file that met no answer is one of the room's");
+  assert.equal(taken.filter((h) => h === tried[0]).length, 1, "the one taken before it not sent again");
+});
+
+test("a request with no bytes that meets the other station's connection gone is sent again once, dialed anew; the station's second in the turn makes it gone, and the hand-over fails in the station's words, nothing held, nothing left there", async () => {
+  // (once: a page of its rows)
+  {
+    const w = world();
+    const a = w.get(A);
+    const { key } = await stillfailChat(a);
+    let rows = 0;
+    w.tamper((to, r) => {
+      if (to === B && r.method === "handover.rows" && ++rows === 1) throw new Error("the other station answered nothing");
+      return r;
+    });
+    const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: key });
+    await w.quiet();
+    w.tamper(null);
+    assert.equal(out.failed, null, JSON.stringify(out));
+    assert.equal(a.rig.store.handedTo(key)?.station, B, "it went");
+    assert.ok(rows >= 2, "the page asked again");
+  }
+  // (twice in the turn, a file and then the file again: gone)
+  {
+    const w = world();
+    const a = w.get(A);
+    const b = w.get(B);
+    const { key, thread } = await roomyChat(a);
+    let puts = 0;
+    w.tamper((to, r) => {
+      if (to === B && r.method === "handover.put" && (++puts === 2 || puts === 3)) throw new Error("the other station answered nothing");
+      return r;
+    });
+    const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: key });
+    await w.quiet();
+    w.tamper(null);
+    assert.equal(puts, 3, "the file sent once more, no more");
+    assert.ok((out.failed?.error ?? "").includes(tr(stationLang(), "station.move.why.carryUnanswered")), `in the station's words: ${out.failed?.error}`);
+    assert.equal(a.rig.hub.chatHeld(key), null, "not held");
+    assert.equal(a.rig.store.handedTo(key), null, "it stayed");
+    assert.equal(b.rig.store.getSession(key), null, "nothing of it there");
+    say(a.rig.hub, thread, "p@x", "still here?");
+    await w.quiet();
+    assert.ok(a.rig.claude.last().prompts.join("\n").includes("still here?"), "it works here");
+  }
+  // (once a turn, not once a file: a file sent again and taken, then a later, other file meeting no answer: gone)
+  {
+    const w = world();
+    const a = w.get(A);
+    const b = w.get(B);
+    const { key } = await roomyChat(a);
+    const tried: string[] = [];
+    w.tamper((to, r) => {
+      if (to !== B || r.method !== "handover.put") return r;
+      tried.push(String(r.name));
+      if (tried.length === 2 || tried.length === 5) throw new Error("the other station answered nothing");
+      return r;
+    });
+    const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: key });
+    await w.quiet();
+    w.tamper(null);
+    assert.equal(tried.length, 5, `no request after the second no-answer of the turn: ${tried.length}`);
+    assert.equal(tried[2], tried[1], "the first sent again");
+    assert.notEqual(tried[4], tried[1], "the second no-answer is another file's");
+    assert.ok((out.failed?.error ?? "").includes(tr(stationLang(), "station.move.why.carryUnanswered")), `in the station's words: ${out.failed?.error}`);
+    assert.equal(a.rig.hub.chatHeld(key), null, "not held");
+    assert.equal(a.rig.store.handedTo(key), null, "it stayed");
+    assert.equal(b.rig.store.getSession(key), null, "nothing of it there");
   }
 });
 

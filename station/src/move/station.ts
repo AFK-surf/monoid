@@ -16,7 +16,7 @@ import { type ShareMoves, accountItemId, accountsModule } from "./accounts.ts";
 import { PLAN_PAGE, chatsModule, giveBack } from "./chats.ts";
 import { connectsModule } from "./connects.ts";
 import { JobsModule } from "./jobs.ts";
-import { type Module, type PlanReads, Said } from "./module.ts";
+import { AskAgain, Gone, type Module, type PlanReads, Said } from "./module.ts";
 import { ReposModule, repoItemId, worktreesOfClones } from "./repos.ts";
 import { SettingsModule } from "./settings.ts";
 import { type VaultDeps, VaultModule, vaultItemId } from "./vault.ts";
@@ -130,6 +130,9 @@ export class Moves {
   /// connection was found gone once (`PeerGone`: the next ask dials anew). Out of a turn, asks go as they are.
   readonly #gone = new Map<string, Error>();
   readonly #suspect = new Set<string>();
+  /// The stations a request was sent again to in this turn, after the first that met their connection gone: once a
+  /// turn a station, not once a request.
+  readonly #sentAgain = new Set<string>();
   #inTurn = false;
 
   /// What this station's moves ask of another: in a turn, a station found gone is asked nothing more until it ends,
@@ -147,15 +150,21 @@ export class Moves {
         this.#suspect.delete(station);
         throw e;
       }
-      // (found gone once: asked again, it is dialed anew; that failing too, or no answer in time, it is gone)
+      // (its connection found gone: a stream ended with no answer is that too, mesh/peer.ts having let the connection go,
+      // so the next request dials anew. Once a turn a station the request is sent again on it: one with no bytes here,
+      // one with bytes by its caller from its start (`AskAgain`); that failing too, or no answer in time, it is gone)
       const timedOut = e instanceof Error && e.message.startsWith("peer request timed out");
+      const unanswered = e instanceof PeerGone || (e instanceof Error && e.message === "the other station answered nothing");
       const name = this.#d.roster(this.#d.home() ?? "")?.find((r) => r.id === station)?.name || station.slice(0, 12);
-      if (e instanceof PeerGone && !this.#suspect.has(station)) {
+      if (unanswered && !this.#sentAgain.has(station)) {
+        this.#sentAgain.add(station);
         this.#suspect.add(station);
-        throw new Said(tr(stationLang(), "station.move.noAnswer", { station: name }));
+        log.info("move", "a request met the other station's connection gone: sent again once, dialed anew", { station: station.slice(0, 12), error: (e as Error).message });
+        if (bytesOf(request) !== null) throw new AskAgain(tr(stationLang(), "station.move.noAnswer", { station: name }));
+        return await this.#ask(station, request);
       }
-      if (e instanceof PeerGone || timedOut || this.#suspect.has(station)) {
-        const gone = new Said(tr(stationLang(), "station.move.gone", { station: name }));
+      if (unanswered || timedOut || this.#suspect.has(station)) {
+        const gone = new Gone(tr(stationLang(), "station.move.gone", { station: name }));
         this.#gone.set(station, gone);
         log.warn("move", "a station found gone in a turn: asked nothing more of it till it ends", { station: station.slice(0, 12), error: (e as Error).message });
         throw gone;
@@ -291,6 +300,7 @@ export class Moves {
         this.#inTurn = on;
         this.#gone.clear();
         this.#suspect.clear();
+        this.#sentAgain.clear();
       },
       reads: (ws) => {
         const r = this.reads(ws);

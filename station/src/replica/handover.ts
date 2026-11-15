@@ -38,7 +38,7 @@ import { STILLFAIL_SURFACE, comingWs, handedWs } from "../store/rows.ts";
 import { type CarriedJob, type CarryIndex, type Gathered, carriedPlace, listFile } from "./carry-worker.ts";
 import { HASH, STATION, WORKSPACE } from "./format.ts";
 import type { Ask } from "./peers.ts";
-import { type Need, Said, UNANSWERED, sayOf } from "../move/module.ts";
+import { Gone, type Need, Said, UNANSWERED, sayOf } from "../move/module.ts";
 import type { KeptSend } from "../api/admin.ts";
 import { HEADROOM, LACK_MOST, type MadeGit, RETRY_MOST_MS, RETRY_MS, connectsThere, gatherSoon, placeSoon, rebuildGits } from "./retire.ts";
 import { lackingIn, receiveFile, sendGathered } from "./sending.ts";
@@ -65,6 +65,8 @@ const why = (key: string, args: Record<string, unknown> = {}) => tr(stationLang(
 /// answering as they went (its connection gone, no answer, no answer in time), else that they could not be carried;
 /// what the other station said, or the move's own words, as they are. The error as it came is the log's alone.
 const carryWords = (e: unknown): Error => {
+  // (the other found gone as its files went, `#ask`'s: said as what it means here)
+  if (e instanceof Gone) return new Said(why("carryUnanswered"));
   if (e instanceof Refused || e instanceof Said) return e;
   const err = e as NodeJS.ErrnoException;
   if (err?.code === "EACCES" || err?.code === "EPERM") return new Said(why("cannotRead", { path: err.path ?? "", count: 1 }));

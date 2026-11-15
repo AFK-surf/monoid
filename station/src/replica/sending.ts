@@ -8,6 +8,7 @@ import { mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { type Bytes, Refused, withBytes } from "../mesh/bus.ts";
+import { AskAgain } from "../move/module.ts";
 import { fileBytes, oneBytes } from "../mesh/files.ts";
 import type { CarryIndex, Gathered } from "./carry-worker.ts";
 
@@ -66,7 +67,10 @@ export async function sendGathered(g: Gathered, to: Sending, strict: boolean, jo
   index.jobs = jobs as CarryIndex["jobs"];
   const text = Buffer.from(JSON.stringify(index));
   const hash = createHash("sha256").update(text).digest("hex");
-  await to.put(hash, oneBytes(text), "", text.length);
+  await to.put(hash, oneBytes(text), "", text.length).catch((e) => {
+    if (!(e instanceof AskAgain)) throw e;
+    return to.put(hash, oneBytes(text), "", text.length);
+  });
   return hash;
 }
 
@@ -89,7 +93,11 @@ async function sendBatch(to: Sending, batch: { hash: string; path: string; size:
         continue;
       }
       try {
-        await to.put(f.hash, fileBytes(f.path, 0, size), f.path, size);
+        // (its request meeting the other's connection gone, the first time in a turn: sent again from its start)
+        await to.put(f.hash, fileBytes(f.path, 0, size), f.path, size).catch((e) => {
+          if (!(e instanceof AskAgain)) throw e;
+          return to.put(f.hash, fileBytes(f.path, 0, size), f.path, size);
+        });
       } catch (e) {
         if (!(e instanceof Refused && /changed/.test(e.message)) && !/got shorter/.test((e as Error).message)) throw e;
         if (strict) throw new Error("a file changed as it was sent: gathered again");

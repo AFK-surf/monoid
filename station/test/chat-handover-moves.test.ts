@@ -130,7 +130,11 @@ test("the other station killed in the middle of a turn: found gone once and dial
   const later = [first.key, second.key].find((k) => k !== under);
   assert.ok(under !== undefined && !asked.some((r) => r.method === "handover.begin" && Array.isArray(r.keys) && r.keys.includes(later!)), `one chat asked nothing of B once it was gone: ${JSON.stringify(asked.map((r) => r.method))}`);
   assert.match(failures.get(later!) ?? "", /B does not answer: nothing more is asked of it in this move|「B」没有应答：这次迁移不再向它发出任何请求/, "the station's own words, naming it");
-  assert.match(failures.get(under!) ?? "", /B did not answer this step|「B」没有应答这一步/, "the one under way: the station's words too");
+  // (the one under way met its connection gone and was sent again once, B then found gone for the turn: where that
+  // was a request of its files (a `put`, handover.ts `carryWords`), said as the other not answering as its files
+  // went, `carryUnanswered`; where it was any other step of its hand-over (begin, rows, show), the turn's own words for
+  // a station gone, `station.move.gone`)
+  assert.ok([tr(stationLang(), "station.move.why.carryUnanswered")].some((w) => (failures.get(under!) ?? "").includes(w)) || /B does not answer: nothing more is asked of it in this move|「B」没有应答：这次迁移不再向它发出任何请求/.test(failures.get(under!) ?? ""), `the one under way: the station's words too: ${failures.get(under!)}`);
   for (const k of [under!, later!]) assert.ok(!/execution may have happened|connection was gone/.test(failures.get(k) ?? ""), `people's words, not the transport's: ${failures.get(k)}`);
   assert.ok(asked.length <= 3, `the request under way found gone, dialed anew once, then nothing more: ${JSON.stringify(asked.map((r) => r.method))}`);
   for (const k of [first.key, second.key]) {
