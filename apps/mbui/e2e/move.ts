@@ -1687,8 +1687,10 @@ try {
       const why = failedWhy(l, `chats ${k3}`) || String(outOf(k3)?.error ?? "");
       // (what to do, as the station says it in its language: a hand-over's own, station.move.restartedMidway /
       // stoppedMidway / stoppedHeld, zh 「…再迁移一次」, en "…hand it over again"; or the turn's, a station restarted mid-move,
-      // zh 「…再发起一次即可继续」 (drill 23), en "…ask again to go on")
-      if (!/再迁移一次|再发起一次|再交接一次|over again|ask again/i.test(why)) throw new Error(`it stayed on A, but what the turn says does not say what to do: ${why || outcome(l)}`);
+      // zh 「…再发起一次即可继续」 (drill 23), en "…ask again to go on"; or an error worded by the move, station.move.why
+      // .unanswered / failedHere / carryUnanswered / carryFailed, zh 「…再试一次」「…再迁一次」, en "…try again", "…move it
+      // again")
+      if (!/再迁移一次|再发起一次|再交接一次|再试一次|再迁一次|over again|ask again|try again|move it again/i.test(why)) throw new Error(`it stayed on A, but what the turn says does not say what to do: ${why || outcome(l)}`);
     });
     if (k3 !== "") await endsWell("3f", k3);
     log("SKIP 3f: the station's own self-update waits for a move's turn (updates/holds.ts): not built, the harness's stations have autoUpdate off and no newer release to update to; only the launcher's handover (SIGUSR2) is reachable, above");
