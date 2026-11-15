@@ -1,8 +1,8 @@
 draw list 73704faa64b3ff76b909931d527c38bc
-picture d1cedf390711bd62fe8eeef0ad3a38c5
+picture a5c5cc0516db82e15aa2181eeff79dfc
 image win25-vs2026 20261103.298.1
 system Microsoft Windows NT 10.0.26100.0
 warp 1.0.21.0.20260922.2
 dwrite 10.0.26100.1 (WinBuild.160101.0800)
 fonts dd6d10eafb0a4cadca02b22ab335d816
-cpu AMD EPYC 7763 64-Core Processor                
+cpu AMD EPYC 9V45 96-Core Processor                
