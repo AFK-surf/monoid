@@ -164,6 +164,9 @@ report() {
     if [ "$rc" = 0 ]; then echo "· $name … ok (${took} s)"; else
       echo "· $name … FAILED (${took} s)"
       tail -40 "$tmp/step.$i.log" | sed 's/^/    /'
+      # (what a test file left running as it ended fails that file with nothing of its own in the tail: said here
+      # wherever it is in the log; main 345b3c51's station 4/6, hub-routes failed whole and nothing said why)
+      grep -A6 ': left running after its tests' "$tmp/step.$i.log" | head -60 | sed 's/^/    /'
       failed="$failed $name"
     fi
   done
