@@ -45,6 +45,8 @@ pub fn fixture_reset() -> Unit {
   new_fix.others.push_iter(fix_others().iter())
   new_fix.others_reading = false
   fix_chats.clear()
+  fix_windows.clear()
+  fix_windowed.clear()
   fix_timers.clear()
   fix_downloads.clear()
   fix_keeping_reset()

@@ -535,10 +535,10 @@ pub fn fixture_chat_topic(f : Fixture, name : String, params : Map[String, Json]
         } else {
           sent
         }
-        Some(with_cards(f, sent, session))
+        Some(fix_window_of(with_cards(f, sent, session), session))
       } else if session.has_prefix("new:") {
         // one just made from a new chat (newChat.create): nothing in it but what is sent to it
-        Some(with_sent(made_chat(session), session))
+        Some(fix_window_of(with_sent(made_chat(session), session), session))
       } else {
         // its row's title
         let mut title = ""
@@ -553,7 +553,7 @@ pub fn fixture_chat_topic(f : Fixture, name : String, params : Map[String, Json]
         if title == "" {
           title = archived_title(session)
         }
-        Some(with_sent(small_chat(title, session), session))
+        Some(fix_window_of(with_sent(small_chat(title, session), session), session))
       }
     "stations" =>
       Some([
@@ -829,6 +829,46 @@ pub let fix_chats : Map[String, FixChat] = Map([])
 ///|
 /// The made-up chats' threads, by id: their sessions (what is sent by thread goes to its session's chat).
 pub let fix_threads : Map[Int, String] = Map([])
+
+///|
+/// How many of each chat's last messages the app asked it to open on (`chat.window`), grown by `chat.older`: the core
+/// sends only those, and `more` past them (views.ts: a chat's window), so a chat opened again holds only its last ones.
+pub let fix_windows : Map[String, Int] = Map([])
+
+///|
+/// The chats whose window held less than the device holds, the last time each was sent.
+pub let fix_windowed : Map[String, Bool] = Map([])
+
+///|
+/// How many a chat's window grows by where `chat.older` says no `rows`.
+let fix_window_grows : Int = 30
+
+///|
+/// The session a call names, by its session or its thread.
+pub fn fix_session_of(params : Json) -> String? {
+  match (field(Some(params), "session"), field(Some(params), "thread")) {
+    (Some(String(s)), _) => Some(s)
+    (_, Some(Number(n, ..))) => fix_threads.get(n.to_int())
+    _ => None
+  }
+}
+
+///|
+/// Chat `v` as the core sends it of session's window: its last messages only, `more` where it holds others.
+pub fn fix_window_of(v : Json, session : String) -> Json {
+  guard fix_windows.get(session) is Some(rows) && rows > 0 && v is Object(m) && m.get("messages") is Some(Array(all)) else {
+    return v
+  }
+  if all.length() <= rows {
+    fix_windowed.remove(session)
+    return v
+  }
+  fix_windowed[session] = true
+  let o = m.copy()
+  o["messages"] = Json::array(all.exact_view(start=all.length() - rows).to_owned())
+  o["more"] = Json::boolean(true)
+  Json::object(o)
+}
 
 ///|
 pub fn fix_chat(session : String) -> FixChat {
