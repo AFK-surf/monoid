@@ -32,7 +32,7 @@ export type LiveEvent =
   /// What it has going in the background now, all of it (said again whenever it changes; none once its process ends).
   | { kind: "tasks"; tasks: BackgroundTask[] }
   /// Its checklist as it said it last, whole (an ACP runtime's `plan` update): a runtime that writes it with a tool
-  /// call says it in its transcript instead (read/plan.ts).
+  /// call says it in its transcript instead (mb/src/reader/live.mbt `read_plan`).
   | { kind: "plan"; plan: PlanItem[] };
 
 /// What a session's runtime says, in order.

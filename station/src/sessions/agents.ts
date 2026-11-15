@@ -644,7 +644,7 @@ export const AgentsLive = (control: Control) =>
         state: async (key) => (JSON.parse(await readers.read("transcriptState", { key }, "zh")) as { states: TailState[] | null }).states,
         page: async (key, before, limit, brief) => JSON.parse(await readers.read("timeline", { key, before: String(before), limit: String(limit), lang: "zh", ...(brief ? { brief: "1" } : {}) }, "zh")),
       };
-      // And what a watched transcript gains as it is written (read/read-tail.ts): parsed by them, not here.
+      // And what a watched transcript gains as it is written (mb/src/reader/live.mbt `read_soon`): parsed by them, not here.
       hub.live.tailRead = async (runtime, state) => JSON.parse(await readers.read("tailRead", { runtime, state }, "zh", { told: true }));
       // Resolving a live session's older transcript files may take a while; keep it off the station's thread.
       const liveLocator = new LiveLocator(data, (key) => store.getSession(key), () => hub.config().profiles);
@@ -652,10 +652,11 @@ export const AgentsLive = (control: Control) =>
       yield* Effect.addFinalizer(() => Effect.promise(() => liveLocator.close()));
       // Not asked of them before the process before has handed over: what it carries says where each reading stands.
       hub.live.handover = previous;
-      // Where each checklist was read to, for the next process to read on from (not back, at each update).
-      parts.carry("live.plans", () => hub.live.carriedPlans(), (what) => hub.live.takePlans(what));
-      // And where each transcript's reading stood, for it to read on from there (not ask the readers, at each update).
-      parts.carry("live.tails", () => hub.live.carriedTails(), (what) => hub.live.takeTails(what));
+      // Where each checklist was read to, for the next process to read on from (not back, at each update), and where each
+      // transcript's reading stood, for it to read on from there (not ask the readers, at each update).
+      const liveCarried = () => hub.live.carried();
+      parts.carry("live.plans", async () => (await liveCarried()).plans, (what) => hub.live.takePlans(what));
+      parts.carry("live.tails", async () => (await liveCarried()).tails, (what) => hub.live.takeTails(what));
       hub.threadList = async () => JSON.parse(await readers.read("threadList", {}, "zh"));
       hub.recentChatList = async (ws, home, limit, signal) => JSON.parse(await readers.read("recentChatList", { ws, home, limit }, "zh", { signal }));
       hub.searchChatList = async (ws, home, limit, query) => JSON.parse(await readers.read("searchChatList", { ws, home, limit, query }, "zh"));
@@ -701,7 +702,7 @@ export const AgentsLive = (control: Control) =>
         },
         // The sessions at work, followed by the station itself: told to the streams that follow them, in brief.
         held: () => hub.live.held(),
-        heldNow: (key) => hub.live.now(key),
+        heldNow: (keys) => hub.live.nowOf(keys),
         overview: view,
         processState: (key) => hub.processState(key),
         followed: () => accounts.followed(),

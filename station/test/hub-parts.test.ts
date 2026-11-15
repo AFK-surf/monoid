@@ -16,7 +16,7 @@ import { completionQuestion, parse, request } from "../src/sessions/decision.ts"
 import { sizeOf } from "../src/sessions/image-size.ts";
 import { nextTsAt } from "../src/sessions/internal.ts";
 import { LiveFromClaude } from "../src/agents/live.ts";
-import { HELD_AFTER_MS, type History, type LiveMessage, LiveHub, briefInput, inBrief, tokensOf } from "../src/sessions/live.ts";
+import { HELD_AFTER_MS, type History, type LiveMessage, LiveHub } from "../src/sessions/live.ts";
 import type { SessionUsage } from "../src/read/usage.ts";
 import { chainOf, entriesOf, lengthOf, stateOf } from "../src/read/transcripts.ts";
 import { prepare, prepareHere } from "../src/sessions/local-links.ts";
@@ -216,9 +216,11 @@ test("a watched session's usage is what the counter recorded, told again as it r
   counted = { modelCalls: 4, inputTokens: 900, cachedTokens: 800, outputTokens: 40, cost: 1.5, unpricedCalls: 0, model: "m", contextTokens: 10, contextWindow: null };
   got.length = 0;
   hub.usageCounted();
+  await hub.idle();
   assert.equal(got.length, 1);
   assert.deepEqual([got[0].entries, got[0].start, got[0].usage], [[], 1, counted]);
   hub.usageCounted();
+  await hub.idle();
   assert.equal(got.length, 1, "told only when it changed");
   appendFileSync(path, line("two", "m2"));
   (hub as any).soon("s");
@@ -263,6 +265,7 @@ test("a watcher gets what it lacks, the steps in flight, then new entries as the
   assert.equal((got[1] as any).steps[0].step, "text", "what a step is, not what it wrote");
   got.length = 0;
   hub.event("s", { kind: "delta", id: "x", field: "text", text: "ting" });
+  await hub.idle();
   assert.equal(got.length, 0, "a delta sends nothing");
   hub.event("s", { kind: "end", id: "x" });
   appendFileSync(path, line("writing", "m3"));
@@ -290,7 +293,7 @@ test("a watcher in brief is told the entries in brief, those it lacks and those 
   const time = testClock();
   const hub = new LiveHub(() => ({ runtime: "claude", paths: [path] }), time.clock);
   const got: LiveMessage[] = [];
-  hub.subscribe("s", 0, null, inBrief((m) => void got.push(m)));
+  hub.subscribe("s", 0, null, (m) => void got.push(m), true);
   await hub.idle();
   appendFileSync(path, bash("b", 300));
   watched(hub, "s");
@@ -327,7 +330,7 @@ test("a session at work is followed by the station itself: told from where it en
   assert.ok(told.some((m) => m.type === "steps"));
   assert.deepEqual(lengths, [["s", 2]]);
   // As a stream that opens finds it.
-  assert.deepEqual(hub.now("s").map((m: any) => [m.type, m.start ?? null]), [["timeline", 2], ["steps", null], ["work", null]]);
+  assert.deepEqual((await hub.nowOf(["s"])).s!.map((m: any) => [m.type, m.start ?? null]), [["timeline", 2], ["steps", null], ["work", null]]);
   told.length = 0;
   // Its last entry, written as its turn ends, is told before it is told to be done (no 40 ms wait).
   appendFileSync(path, line("three", "m3"));
@@ -338,6 +341,8 @@ test("a session at work is followed by the station itself: told from where it en
   assert.deepEqual(lengths.at(-1), ["s", 3]);
   // Done: still followed a while, and at work again within it, not read again from the start.
   hub.running("s", false);
+  // (its wait set in the program before the clock moves)
+  await hub.idle();
   await time.adjust(HELD_AFTER_MS - 1);
   await settle();
   await hub.idle();
@@ -351,6 +356,8 @@ test("a session at work is followed by the station itself: told from where it en
   assert.equal(reads, 1, "located and read once");
   // Done for longer than the while: let go.
   hub.running("s", false);
+  // (its wait set in the program before the clock moves)
+  await hub.idle();
   await time.adjust(HELD_AFTER_MS);
   await settle();
   await hub.idle();
@@ -358,6 +365,7 @@ test("a session at work is followed by the station itself: told from where it en
   told.length = 0;
   appendFileSync(path, line("four", "m4"));
   watched(hub, "s");
+  await hub.idle();
   await time.adjust(40);
   await settle();
   await hub.idle();
@@ -402,13 +410,11 @@ test("where the readers keep a session's history the live view reads none of its
   assert.equal(got[1]!.type, "steps");
   // Its checklist read back from the latest page, whole; then what it lacks, in brief.
   assert.deepEqual(asked, ["state", "page 3 3 false", "page 3 2 true"]);
-  // None of it kept here: only where it stands.
-  const watching = (hub as any).watched.get("s");
-  assert.deepEqual([watching.tail.keeps, watching.tail.length, watching.tail.entries.length], [false, 3, 0]);
   // Written on: read here from where the readers stood, told in brief.
   got.length = 0;
   appendFileSync(path, bash("d", 300));
   watched(hub, "s");
+  await hub.idle();
   await time.adjust(40);
   await settle();
   await hub.idle();
@@ -456,8 +462,8 @@ test("a session watched again, or by the next station process, reads its transcr
   const next = new LiveHub(() => ({ runtime: "claude", paths: [path] }), time.clock);
   const nextAsked: string[] = [];
   next.history = historyOf(path, nextAsked);
-  next.takePlans(JSON.parse(JSON.stringify(hub.carriedPlans())));
-  next.takeTails(JSON.parse(JSON.stringify(hub.carriedTails())));
+  next.takePlans(JSON.parse(JSON.stringify((await hub.carried()).plans)));
+  next.takeTails(JSON.parse(JSON.stringify((await hub.carried()).tails)));
   const nextGot: LiveMessage[] = [];
   next.subscribe("s", 5, null, (m) => void nextGot.push(m));
   await settle();
@@ -476,8 +482,8 @@ test("a session watched again, or by the next station process, reads its transcr
   late.subscribe("s", 5, null, (m) => void lateGot.push(m));
   await settle();
   assert.equal(lateGot.length, 0, "waiting on the process before");
-  late.takePlans(JSON.parse(JSON.stringify(hub.carriedPlans())));
-  late.takeTails(JSON.parse(JSON.stringify(hub.carriedTails())));
+  late.takePlans(JSON.parse(JSON.stringify((await hub.carried()).plans)));
+  late.takeTails(JSON.parse(JSON.stringify((await hub.carried()).tails)));
   await settle();
   assert.deepEqual(lateGot.map((m) => m.type).slice(0, 1), ["timeline"], "joined without the readers");
   handedOver();
@@ -773,14 +779,19 @@ test("how fast the model writes is told once half a second of it has come", asyn
   hub.event("s", { kind: "start", id: "x", step: "text" });
   hub.event("s", { kind: "delta", id: "x", field: "text", text: "x".repeat(400) });
   const rates = () => got.flatMap((m) => (m.type === "rate" ? [m.tokensPerSecond] : []));
+  await hub.idle();
   assert.deepEqual(rates(), [], "a first few bytes say nothing of the pace");
   t.mock.timers.tick(600);
   hub.event("s", { kind: "delta", id: "x", field: "text", text: "x".repeat(400) });
   hub.event("s", { kind: "delta", id: "x", field: "text", text: "x".repeat(400) });
+  await hub.idle();
   assert.equal(rates().length, 1, "then told, and not again within the second");
+  await hub.idle();
   assert.ok(rates()[0]! > 0);
   hub.event("s", { kind: "end", id: "x" });
+  await hub.idle();
   assert.equal(rates().at(-1), 0);
+  await hub.idle();
   assert.ok(!got.some((m) => m.type === "step" && m.event.kind === "delta"), "no delta is told");
   hub.close();
   await settle(1);
@@ -804,22 +815,27 @@ test("thinking left out of the stream has a rate too, by the tokens its empty de
   const [first] = delta(50);
   assert.deepEqual(first, { kind: "delta", id: "m:0", field: "text", text: "", tokens: 50 });
   hub.event("s", first!);
+  await hub.idle();
   assert.deepEqual(rates(), [50], "50 tokens in the second since the block began");
   // A pause of four seconds, then 100 tokens: 25 a second, not 100 in a quarter.
   t.mock.timers.tick(4000);
   for (const e of delta(100)) hub.event("s", e);
+  await hub.idle();
   assert.equal(rates().at(-1), 25);
   // Each count over the time it covers, the window's two: 200 tokens in the five seconds since the first began.
   t.mock.timers.tick(1000);
   for (const e of delta(100)) hub.event("s", e);
+  await hub.idle();
   assert.equal(rates().at(-1), 40);
   // The pause out of the window, 100 a second.
   for (let i = 0; i < 2; i++) {
     t.mock.timers.tick(1000);
     for (const e of delta(100)) hub.event("s", e);
   }
+  await hub.idle();
   assert.equal(rates().at(-1), 100);
   for (const e of claude.feed(frame({ type: "content_block_stop", index: 0 }))) hub.event("s", e);
+  await hub.idle();
   assert.equal(rates().at(-1), 0);
   hub.close();
   await settle(1);
@@ -837,6 +853,7 @@ test("the rate counts what the model writes, not what a call outputs, in tokens 
     hub.event("s", { kind: "delta", id: "cmd", field: "output", text: "x".repeat(100_000) });
     t.mock.timers.tick(500);
   }
+  await hub.idle();
   assert.deepEqual(rates(), [], "a call's output is no rate");
   // 40 tokens a quarter second of English, then of Chinese: 160 token/s each (each long enough to fill the window).
   hub.event("s", { kind: "start", id: "a", step: "text" });
@@ -844,13 +861,14 @@ test("the rate counts what the model writes, not what a call outputs, in tokens 
     hub.event("s", { kind: "delta", id: "a", field: "text", text: "x".repeat(160) });
     t.mock.timers.tick(250);
   }
+  await hub.idle();
   assert.equal(rates().at(-1), 160);
   for (let i = 0; i < 12; i++) {
     hub.event("s", { kind: "delta", id: "a", field: "text", text: "字".repeat(60) });
     t.mock.timers.tick(250);
   }
+  await hub.idle();
   assert.equal(rates().at(-1), 160, "a Chinese character is not 3/4 of a token");
-  assert.equal(tokensOf("abcd字字字"), 3);
   // A subagent writing beside it adds to it; one of them ending leaves the other's.
   hub.event("s", { kind: "start", id: "b", step: "text", subagent: true, parent: "agent" });
   for (let i = 0; i < 12; i++) {
@@ -859,33 +877,43 @@ test("the rate counts what the model writes, not what a call outputs, in tokens 
     t.mock.timers.tick(250);
   }
   // Told as the first of the two writes of a quarter comes: the other's of that quarter not in yet.
+  await hub.idle();
   assert.equal(rates().at(-1), 300);
   hub.event("s", { kind: "end", id: "a" });
+  await hub.idle();
   assert.notEqual(rates().at(-1), 0, "the subagent still writes");
   for (let i = 0; i < 12; i++) {
     hub.event("s", { kind: "delta", id: "b", field: "text", text: "x".repeat(160) });
     t.mock.timers.tick(250);
   }
+  await hub.idle();
   assert.equal(rates().at(-1), 160);
   hub.event("s", { kind: "end", id: "b" });
+  await hub.idle();
   assert.equal(rates().at(-1), 0);
   hub.close();
   await settle(1);
 });
 
 // For client cores before 0.1.2301, which say what a running call does by its step (a newer one: by its transcript entry).
-test("a call's step carries what says what it runs, whole, however long the command before it", () => {
+test("a call's step carries what says what it runs, whole, however long the command before it", async () => {
   const description = "Run account-proxy tests 3 times with new mock clock";
   const command = `cd station && ${"node --test test/account-proxy.test.ts && ".repeat(8)}true`;
   const hub = new LiveHub(() => null);
   const got: LiveMessage[] = [];
   hub.subscribe("s", 0, null, (m) => void got.push(m));
   hub.event("s", { kind: "start", id: "t", step: "tool", tool: "Bash", input: JSON.stringify({ command, description, timeout: 600000 }) });
-  const told = got.flatMap((m) => (m.type === "step" && m.event.kind === "start" ? [m.event.input] : []));
-  assert.deepEqual(JSON.parse(told[0]!), { command: [...command].slice(0, 300).join(""), description });
-  assert.equal(briefInput("ls -la"), "ls -la", "a runtime's plain input stays as it is");
-  assert.equal(briefInput("x".repeat(400)), "x".repeat(300));
-  assert.equal(briefInput('{"command": "echo hi", "descrip'), '{"command": "echo hi", "descrip', "an input cut short stays cut short");
+  const told = () => got.flatMap((m) => (m.type === "step" && m.event.kind === "start" ? [m.event.input] : []));
+  await hub.idle();
+  assert.deepEqual(JSON.parse(told()[0]!), { command: [...command].slice(0, 300).join(""), description });
+  const briefInput = async (input: string) => {
+    hub.event("s", { kind: "start", id: "t", step: "tool", tool: "Bash", input });
+    await hub.idle();
+    return told().at(-1);
+  };
+  assert.equal(await briefInput("ls -la"), "ls -la", "a runtime's plain input stays as it is");
+  assert.equal(await briefInput("x".repeat(400)), "x".repeat(300));
+  assert.equal(await briefInput('{"command": "echo hi", "descrip'), '{"command": "echo hi", "descrip', "an input cut short stays cut short");
   hub.close();
 });
 
@@ -1292,20 +1320,24 @@ test("what a session has going in the background and its checklist are told whol
   // As it joins: its checklist as its transcript says it, nothing in the background.
   assert.deepEqual(work().at(-1), { type: "work", tasks: [], plan: [{ text: "Read", status: "completed" }, { text: "Fix", status: "in_progress" }] });
   hub.event("s", { kind: "tasks", tasks: [{ id: "a1", kind: "agent", description: "gaps" }] });
+  await hub.idle();
   await time.adjust(65_000);
   hub.event("s", { kind: "tasks", tasks: [{ id: "a1", kind: "agent", description: "gaps" }, { id: "b1", kind: "command", description: "watch CI", startedAt: 60_000 }] });
+  await hub.idle();
   assert.deepEqual(work().at(-1)!.tasks, [
     { id: "a1", kind: "agent", description: "gaps", startedAt: 0, elapsedMs: 65_000 },
     { id: "b1", kind: "command", description: "watch CI", startedAt: 60_000, elapsedMs: 5_000 },
   ]);
   // The turn ends: they stay.
   await hub.turnEnded("s");
-  assert.equal(hub.now("s").find((m) => m.type === "work") !== undefined, true);
-  assert.equal((hub.now("s").find((m) => m.type === "work") as any).tasks.length, 2);
+  const now = (await hub.nowOf(["s"])).s!;
+  assert.equal(now.find((m) => m.type === "work") !== undefined, true);
+  assert.equal((now.find((m) => m.type === "work") as any).tasks.length, 2);
   // Its checklist written again: told.
   const before = work().length;
   appendFileSync(path, todos("p2", [["Read", "completed"], ["Fix", "completed"], ["Ship", "in_progress"]]));
   watched(hub, "s");
+  await hub.idle();
   await time.adjust(40);
   await settle();
   await hub.idle();
@@ -1313,9 +1345,11 @@ test("what a session has going in the background and its checklist are told whol
   assert.deepEqual(work().at(-1)!.plan.map((p) => p.status), ["completed", "completed", "in_progress"]);
   // Its process ended: nothing in the background.
   hub.event("s", { kind: "tasks", tasks: [] });
+  await hub.idle();
   assert.deepEqual(work().at(-1)!.tasks, []);
   // A runtime that says its plan apart (ACP): that one is told.
   hub.event("s", { kind: "plan", plan: [{ text: "Survey", status: "pending" }] });
+  await hub.idle();
   assert.deepEqual(work().at(-1)!.plan, [{ text: "Survey", status: "pending" }]);
   hub.close();
   rmSync(dir, { recursive: true, force: true });

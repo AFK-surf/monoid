@@ -12,6 +12,8 @@ test("switching accounts looks up only the runtime source it is leaving", async 
     await rig.accept(message());
     await settle();
     const first = rig.claude.last(), key = first.options.route;
+    // (the live view finds a session's transcripts off the main thread, as the station's does: agents.ts LiveLocator)
+    rig.hub.live.locateAsync = async () => null;
     const db = rig.store.db, put = db.prepare("INSERT INTO runtime_sessions(session_key,id,profile,at,runtime) VALUES(?,?,?,?,?)");
     db.exec("BEGIN");
     for (let i = 0; i < 513; i++) put.run(key, `old-${i}`, "cc", i, "claude");
@@ -44,6 +46,8 @@ for (const source of ["without point lookup", "missing", "other runtime", "witho
       await rig.accept(message());
       await settle();
       const first = rig.claude.last(), key = first.options.route;
+    // (the live view finds a session's transcripts off the main thread, as the station's does: agents.ts LiveLocator)
+    rig.hub.live.locateAsync = async () => null;
       const project = join(rig.config.profiles[0]!.home, "projects", "-w");
       mkdirSync(join(project, first.id(), "subagents"), { recursive: true });
       writeFileSync(join(project, `${first.id()}.jsonl`), "{}\n");

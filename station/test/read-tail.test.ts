@@ -1,8 +1,8 @@
-// A watched transcript read as it grows by the readers (read/read-tail.ts `ReadTail`, read/pool.ts `tailRead`: the
-// MoonBit program's, and the worker's where it is not there) as the live view read it here (read/tail.ts `ChainTail`):
-// the same entries at the same places, read after read, as a Claude Code transcript is written a piece at a time (a
-// line cut in two), a chain goes on into a Codex transcript, one is written anew shorter, one is put away compressed,
-// kept or only counted, and one taken up from where another's reading stood.
+// A watched transcript followed by the live view (mb/src/reader/live.mbt `read_soon`), each read of what it gained done
+// by the readers (read/pool.ts `tailRead`: the MoonBit program's, and the worker's where it is not there) or here (none
+// given): the same entries at the same places as a whole read of it (read/tail.ts `ChainTail`), read after read, as a
+// Claude Code transcript is written a piece at a time (a line cut in two), a chain goes on into a Codex transcript, one
+// is written anew shorter, one is put away compressed, and one taken up from where another's reading stood.
 import assert from "node:assert/strict";
 import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -11,8 +11,9 @@ import { test } from "node:test";
 import { zstdCompressSync } from "node:zlib";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
 import { Readers } from "../src/read/pool.ts";
-import { ReadTail, type TailRead } from "../src/read/read-tail.ts";
-import { ChainTail, type TailState } from "../src/read/tail.ts";
+import { ChainTail, type TranscriptRef } from "../src/read/tail.ts";
+import type { TimelineEntry } from "../src/read/transcript.ts";
+import { LiveHub, type TailRead } from "../src/sessions/live.ts";
 import { Store } from "../src/store/store.ts";
 import { readersOf } from "./reference.ts";
 
@@ -46,6 +47,19 @@ const codexLines = (n: number) => [
   ]).flat(),
 ];
 
+/// A live view following `paths()`, read by `reading` (none: here): the entries it was told, put together.
+function follow(paths: () => TranscriptRef[], reading: TailRead | null) {
+  const hub = new LiveHub(() => ({ runtime: "claude", paths: paths(), current: true }));
+  hub.tailRead = reading;
+  const told: TimelineEntry[] = [];
+  hub.subscribe("s", 0, null, (m) => {
+    if (m.type !== "timeline") return;
+    told.length = Math.min(told.length, m.start);
+    told.push(...m.entries);
+  });
+  return { hub, told };
+}
+
 test("a watched transcript is read by the readers as it was read here, read after read", async (t) => {
   const data = mkdtempSync(join(tmpdir(), "read-tail-"));
   const store = Store.open(join(data, "stillfail.db"), join(data, "archive"));
@@ -57,19 +71,21 @@ test("a watched transcript is read by the readers as it was read here, read afte
     open.push(r);
     return async (runtime, state) => JSON.parse(await r.read("tailRead", { runtime, state }, "zh", { told: true }));
   };
-  const ways = [reading(false), ...(binary !== null ? [reading(true)] : [])];
+  const ways: (TailRead | null)[] = [null, reading(false), ...(binary !== null ? [reading(true)] : [])];
 
   const a = join(data, "a.jsonl"), b = join(data, "b.jsonl"), z = join(data, "z.jsonl");
   writeFileSync(a, "");
+  let paths: TranscriptRef[] = [a];
   const lines = claudeLines(60, "a");
-  // Each way follows the same files: here, and as each reader reads them, kept and only counted.
-  const chains = (keeps: boolean) => [new ChainTail("claude", [a], null, keeps), ...ways.map((w) => new ReadTail("claude", [a], w, keeps))];
-  const kept = chains(true), counted = chains(false);
+  const whole = new ChainTail("claude", [a], null, true);
+  const views = ways.map((w) => follow(() => paths, w));
+  t.after(() => { for (const v of views) v.hub.close(); });
+  for (const v of views) await v.hub.idle();
   const step = async (label: string) => {
-    for (const set of [kept, counted]) {
-      const got = [];
-      for (const c of set) got.push({ read: await c.readSoon(), length: c.length, bytes: c.readBytes, paths: c.paths, ...(c.keeps ? { entries: c.entries } : {}) });
-      for (let i = 1; i < got.length; i++) assert.deepEqual(got[i], got[0], `${label} (${set === kept ? "kept" : "counted"}, way ${i})`);
+    await whole.readSoon();
+    for (const [i, v] of views.entries()) {
+      await v.hub.turnEnded("s");
+      assert.deepEqual(v.told, whole.entries, `${label} (way ${i})`);
     }
   };
   // Written a few lines at a time, the last of each cut in two.
@@ -84,7 +100,9 @@ test("a watched transcript is read by the readers as it was read here, read afte
   await step("nothing new");
   // On into a Codex transcript of the same session.
   writeFileSync(b, codexLines(3).join(""));
-  for (const c of [...kept, ...counted]) assert.equal(c.extend([a, { path: b, runtime: "codex" }]), true);
+  paths = [a, { path: b, runtime: "codex" }];
+  assert.equal(whole.extend(paths), true);
+  for (const v of views) v.hub.moved("s");
   await step("chain");
   appendFileSync(b, codexLines(4).slice(1).join(""));
   await step("chain grows");
@@ -94,18 +112,28 @@ test("a watched transcript is read by the readers as it was read here, read afte
   // Written anew, shorter.
   writeFileSync(a, claudeLines(6, "r").join(""));
   await step("written anew");
+  // Taken up from where the reading stood (the next station process): it reads on as it would have.
+  const carried = await views[0]!.hub.carried();
+  appendFileSync(a, claudeLines(9, "u").join(""));
+  await whole.readSoon();
+  for (const [i, w] of ways.entries()) {
+    const next = follow(() => paths, w);
+    next.hub.takeTails(JSON.parse(JSON.stringify(carried.tails)));
+    await next.hub.idle();
+    await next.hub.turnEnded("s");
+    assert.deepEqual(next.told, whole.entries, `taken up, way ${i}`);
+    next.hub.close();
+  }
   // One put away compressed, read whole.
   const zl = claudeLines(30, "z").join("");
   writeFileSync(`${z}.zst`, zstdCompressSync(Buffer.from(zl)));
-  const packed = [new ChainTail("claude", [z], null, true), ...ways.map((w) => new ReadTail("claude", [z], w, true))];
-  const reads = [];
-  for (const c of packed) reads.push({ read: await c.readSoon(), entries: c.entries, again: await c.readSoon() });
-  for (let i = 1; i < reads.length; i++) assert.deepEqual(reads[i], reads[0], `compressed, way ${i}`);
-  // Taken up from where the reading here stood: it reads on as it would have.
-  const states: TailState[] = counted[0]!.snapshot() as TailState[];
-  appendFileSync(a, claudeLines(9, "u").join(""));
-  const from = [ChainTail.from("claude", states), ...ways.map((w) => ReadTail.from("claude", states, w))];
-  const taken = [];
-  for (const c of from) taken.push({ read: await c.readSoon(), length: c.length, snapshot: c.snapshot() });
-  for (let i = 1; i < taken.length; i++) assert.deepEqual(taken[i], taken[0], `taken up, way ${i}`);
+  const packed = new ChainTail("claude", [z], null, true);
+  await packed.readSoon();
+  for (const [i, w] of ways.entries()) {
+    const v = follow(() => [z], w);
+    await v.hub.idle();
+    await v.hub.turnEnded("s");
+    assert.deepEqual(v.told, packed.entries, `compressed, way ${i}`);
+    v.hub.close();
+  }
 });

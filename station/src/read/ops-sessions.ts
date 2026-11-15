@@ -78,7 +78,7 @@ export const sessionOps: Record<string, ReadOp> = {
   session: (s, a) => session(s, a.key, a.viewer, a.lang, latest(a.turns), a.jobs === "now"),
   timeline: (s, a) => timeline(s, a.key, a.before, a.limit, a.lang, a.from, a.to, a.brief, a.after),
   transcriptState: (s, a) => transcriptState(s, a.key),
-  /// A transcript read on from where it stood (the live view's, sessions/live.ts `ReadTail`): what it gained.
+  /// A transcript read on from where it stood (the live view's, mb/src/reader/live.mbt `read_soon`): what it gained.
   tailRead: (_s, a) => tailRead(a.runtime, a.state),
   transcriptFile: (s, a) => transcriptFile(s, a.key, a.lang),
   widgetState: (s, a) => widgetState(s, a.key, a.path, a.lang),

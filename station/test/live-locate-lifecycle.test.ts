@@ -64,8 +64,9 @@ test("unsubscribing during location preserves handover state, while deleting a s
     await settle(2);
     hub.takeTails([{ key: "s", states }]);
     hub.unsubscribe("s", first);
+    await settle(2);
     assert.equal(requests[0]!.signal.aborted, true);
-    assert.deepEqual(hub.carriedTails(), [{ key: "s", states }]);
+    assert.deepEqual((await hub.carried()).tails, [{ key: "s", states }]);
     const joined: LiveMessage[] = [];
     hub.subscribe("s", 1, null, (m) => joined.push(m));
     await settle(2);
@@ -77,17 +78,18 @@ test("unsubscribing during location preserves handover state, while deleting a s
     assert.equal(stateReads, 0, "the next watch resumes the carried reading");
     assert.equal(joined[0]?.type, "timeline");
     hub.forget("s");
-    assert.deepEqual(hub.carriedTails(), []);
+    assert.deepEqual((await hub.carried()).tails, []);
 
     hub.subscribe("gone", 0, null, () => {});
     await settle(2);
     hub.takeTails([{ key: "gone", states }]);
     hub.forget("gone");
+    await settle(2);
     assert.equal(requests[2]!.signal.aborted, true);
     requests[2]!.pending.resolve({ runtime: "claude", paths: [path], current: true });
     await settle();
     await hub.idle();
-    assert.deepEqual(hub.carriedTails(), [], "a late answer cannot restore a deleted session's state");
+    assert.deepEqual((await hub.carried()).tails, [], "a late answer cannot restore a deleted session's state");
   } finally { hub.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 

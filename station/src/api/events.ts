@@ -95,7 +95,7 @@ export type EventsDeps = {
   /// The sessions at work the station follows itself (sessions/live.ts `running`), and each as it is now (where its
   /// transcript ends, the steps in flight): what a stream that follows them is told as it opens.
   held?(): string[];
-  heldNow?(key: string): unknown[];
+  heldNow?(keys: string[]): Promise<Record<string, unknown[]>>;
   /// Whether a session is still there (a summary is told only of one that is).
   sessionExists(key: string): boolean;
   /// Whether a live result still belongs to a session visible to this viewer, in one lookup when available.
@@ -182,6 +182,8 @@ type Client = {
   host: boolean;
   /// Told what every session at work its viewer sees does (`running=1`, FOLLOWS).
   running: boolean;
+  /// What is told of those it is told as they are now meanwhile, until it is (`heldNow`): then, after it.
+  heldWaits?: Map<string, unknown[]>;
   /// Its client makes its sidebar of the chat list the station makes once for everyone (`shared=1`, read/views.ts
   /// `sharedChats`) and what is its viewer's own (client/core-ts/src/chat-row.ts): told each row as it changes.
   shared: boolean;
@@ -385,7 +387,12 @@ export class Events {
   /// sessions at work and whose viewer sees it. Not of the log: one that comes back is told each as it is now, and reads
   /// what it lacks.
   heldTold(key: string, message: unknown) {
-    for (const c of this.clients) if (c.running && this.sees(c, { session: key })) c.send("live", { ...(message as object), key });
+    for (const c of this.clients) {
+      if (!c.running || !this.sees(c, { session: key })) continue;
+      const waits = c.heldWaits?.get(key);
+      if (waits !== undefined) waits.push(message);
+      else c.send("live", { ...(message as object), key });
+    }
   }
 
   /// Whether what is told is made and kept: someone follows, or may come back to what they missed.
@@ -508,10 +515,16 @@ export class Events {
     // Afresh: their overview is told as it next is.
     if (!resumes) this.overviewTold.delete(k);
     // The sessions at work its viewer sees, as each is now: from here on what each does comes as it does it (heldTold).
-    if (follows) {
-      for (const key of this.deps.held!()) {
-        if (!this.sees(client, { session: key })) continue;
-        for (const message of this.deps.heldNow?.(key) ?? []) client.send("live", { ...(message as object), key });
+    if (follows && this.deps.heldNow !== undefined) {
+      const keys = this.deps.held!().filter((key) => this.sees(client, { session: key }));
+      if (keys.length > 0) {
+        const waits = new Map(keys.map((key) => [key, [] as unknown[]]));
+        client.heldWaits = waits;
+        void this.deps.heldNow(keys).catch(() => ({}) as Record<string, unknown[]>).then((now) => {
+          if (client.heldWaits !== waits) return;
+          client.heldWaits = undefined;
+          for (const key of keys) for (const message of [...(now[key] ?? []), ...waits.get(key)!]) client.send("live", { ...(message as object), key });
+        });
       }
     }
     // Those sessions as they run, on this same stream: each message a `live` event with its key.

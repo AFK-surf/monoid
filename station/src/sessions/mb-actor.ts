@@ -54,6 +54,9 @@ export type ProgramShell = {
   told(f: string, args: Json[]): void;
   /// Its waits' clock (`after` said `on` it), where it is not the hub's: a part of the station's on a clock of its own.
   readonly clock?: Clock.Clock;
+  /// What it is asked is not counted as the program's going on (`busy`): it waits on what is not the program's (where a
+  /// transcript is, found by a worker), and says itself when it is done (the live view's `idle`).
+  readonly uncounted?: boolean;
 };
 
 /// The program, one a hub (`ActorsProgram.open`).
@@ -241,10 +244,11 @@ export class ActorsProgram {
     if (said.mirror !== undefined) (actor as MbActor).mirrored?.(said.state);
     else if (typeof said.rpc === "number") {
       const id = said.rpc;
-      this.#answering++;
+      const counted = !(actor instanceof MbActor) && actor.uncounted === true ? 0 : 1;
+      this.#answering += counted;
       actor.asked(said.fn, Array.isArray(said.args) ? said.args : []).then(
-        (value) => { this.#answering--; this.post({ answer: id, value: value === undefined ? null : value }); },
-        (error) => { this.#answering--; this.post({ answer: id, error: errorOf(error, actor.runtime) }); },
+        (value) => { this.#answering -= counted; this.post({ answer: id, value: value === undefined ? null : value }); },
+        (error) => { this.#answering -= counted; this.post({ answer: id, error: errorOf(error, actor.runtime) }); },
       );
     } else if (typeof said.tell === "string") {
       try {
@@ -331,8 +335,8 @@ export class MbActor {
   readonly #told = new Map<number, () => void>();
   readonly #records = new Map<number, { words: string | null; about: [number, number, string] | null; watch: boolean; record?: (write: (about: [number, number, string] | null) => void) => void }>();
   readonly #reads = new Map<number, Promise<void> | void>();
-  /// What it decided of the batch of routed events it is taking (`#event`): a turn's outcome, the read its end waits on.
-  #routing: { outcome?: Json; read?: number; cleared?: boolean } = {};
+  /// What it decided of the batch of routed events it is taking (`#event`): a turn's outcome, its unread cleared.
+  #routing: { outcome?: Json; cleared?: boolean } = {};
   readonly #codex = new Map<number, { version: string | null; matches: (() => Promise<boolean>) | undefined }>();
 
   constructor(program: ActorsProgram, key: string, runtime: RuntimeKind, deps: SessionDeps) {
@@ -526,26 +530,21 @@ export class MbActor {
     if (this.#closed || n === undefined) return false;
     // (what it read clears the unread as the program takes the batch: a mirror from before that is not taken)
     if (routing.cleared === true) this.#readAt = this.#sent + 1;
-    this.#post({ routed: n, batch, generation, ...(routing.read !== undefined ? { read: routing.read } : {}), ...(routing.outcome !== undefined ? { outcome: routing.outcome } : {}) });
+    this.#post({ routed: n, batch, generation, ...(routing.outcome !== undefined ? { outcome: routing.outcome } : {}) });
     return true;
   }
 
   #event(generation: number, event: RuntimeEvent) {
     if (this.#closed) return;
     if ((event as { routed?: boolean }).routed === true) {
-      // (the program gives it the actor once the batch is said taken: here what the station's own parts take of it)
+      // (the program gives it the actor and the live view once the batch is said taken: here what the station's own parts
+      // take of it, its unread cleared and a turn's outcome)
       if (event.type === "live") {
-        this.#deps.live?.event(this.key, event.event);
         if (event.event.kind === "phase" && event.event.phase === "requesting" && this.#mirror.unread.length > 0) {
           this.#mirror = { ...this.#mirror, unread: [] };
           this.#routing.cleared = true;
         }
-      } else if (event.type === "turnEnded") {
-        const read = ++this.#next;
-        this.#reads.set(read, this.#deps.live?.turnEnded(this.key));
-        this.#routing.outcome = event.outcome;
-        this.#routing.read = read;
-      }
+      } else if (event.type === "turnEnded") this.#routing.outcome = event.outcome;
       return;
     }
     if (event.type === "live") {
@@ -582,9 +581,6 @@ export class MbActor {
         (level === "error" ? log.error : level === "warn" ? log.warn : log.info)("session", message, fields ?? {});
         return;
       }
-      case "live.event":
-        deps.live?.event(args[0], args[1]);
-        return;
       case "node.tasks": {
         const session = args[0] === null ? null : this.#agents.get(args[0])?.session ?? null;
         deps.live?.event(this.key, { kind: "tasks", tasks: session?.background?.() ?? [] });
@@ -642,10 +638,6 @@ export class MbActor {
       }
     }
     if (f === "t") return t(args[0], args[1] ?? undefined);
-    if (f === "live.turnEnded") {
-      await deps.live?.turnEnded(this.key);
-      return null;
-    }
     switch (name) {
       case "words": return this.#words(args[0], args.slice(1));
       case "uuid": return crypto.randomUUID();

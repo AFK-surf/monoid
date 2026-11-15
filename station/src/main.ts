@@ -249,7 +249,7 @@ function run() {
     Layer.provideMerge(parts),
   );
   // What the parts hold only in memory (the vault's grants), carried over to the next process at a handover.
-  let carry = () => {};
+  let carry = async () => {};
   // Said of this process in <data>/run/health.json (ops/health.ts) until it stops or hands over: what the next one says
   // from then on.
   let healthSaid = true;
@@ -260,7 +260,7 @@ function run() {
     stationKey = plane.state.state?.station ?? null;
     plane.state.listen((s) => void (stationKey = s?.station ?? null));
     control.carried((what) => stationParts.takeUp(what));
-    carry = () => control.carry(stationParts.carried());
+    carry = async () => control.carry(await stationParts.carried());
     // How this process is (ops/health.ts), said now (before it is ready: a handover's new process says it before the
     // one before stops saying it), with each sample of its thread, and as the cloud is heard or not.
     const mesh = yield* MeshNative;
@@ -368,8 +368,8 @@ function run() {
   };
   control.on("stop", () => stop("asked to stop"));
   control.on("handover", () => {
-    if (!stopping) carry();
-    stop("handed over to the next station process");
+    // (what the parts carry is given first: some is asked of the sessions' program, which answers at once)
+    void (stopping ? Promise.resolve() : carry().catch((error) => log.warn("station", "nothing carried over", { error: (error as Error).message }))).then(() => stop("handed over to the next station process"));
   });
   fiber.addObserver((exit) => {
     if (!stopping) {

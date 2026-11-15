@@ -308,7 +308,7 @@ async fn Actors::refills_at(self : Actors, a : Actor) -> Double raise {
 
 ///|
 async fn Actors::live_turn_ended(self : Actors, a : Actor) -> Unit raise {
-  ignore(self.rpc(a.key, "live.turnEnded", [jstr(a.key)]))
+  self.live_turn_end(a.key)
 }
 
 ///|
@@ -1207,7 +1207,7 @@ async fn Actors::start_turn(self : Actors, a : Actor, kind : String, text : Stri
 
 ///|
 async fn Actors::start_turn_body(self : Actors, a : Actor, kind : String, text : String, by : Json, retry_about : Json) -> Unit raise {
-  self.tell(a.key, "live.event", [jstr(a.key), { "kind": "phase", "phase": "starting" }])
+  self.live_event(a.key, { "kind": "phase", "phase": "starting" })
   if (kind == "input" || kind == "job") && !self.holding(a) && !self.busy(a) &&
     self.deps(a, "coldAfresh", [jstr(a.key), jnum(self.now)]) is True {
     ignore(self.clear_now(a, true, said="station.notice.afreshCold", by="as its cache is over", keep_jobs=true))
@@ -1387,7 +1387,10 @@ async fn Actors::on_event(self : Actors, a : Actor, generation : Int, event : Js
       let outcome = event.value("outcome").unwrap_or(Json::null())
       ignore(
         self.enqueue(a, async fn() {
-          ignore(self.rpc(a.key, "node.read", [read]))
+          match read {
+            { "live": Number(n, ..), .. } => self.live_ended(n.to_int())
+            _ => ignore(self.rpc(a.key, "node.read", [read]))
+          }
           self.on_turn_ended(a, generation, outcome)
         }),
       )

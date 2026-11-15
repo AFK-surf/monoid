@@ -128,6 +128,12 @@
   started from here. Node (`src/jobs/remote.ts`) keeps the mesh bus, the file bytes (written and read at the path the
   program names), the directory sync's sending side and the pieces it unpacks (`src/jobs/dirsync.ts`; a mirror's
   manifest, plan and its application are the program's, `mb/src/reader/dirsync.mbt`), protected folders and the load.
+- The live view (what a running turn does, its rate, its background tasks and checklist, its transcript's entries as
+  written) runs there too, as the pseudo-actor `#live` (`mb/src/reader/live.mbt`), a Claude session's events given it
+  in the program. Node (`src/sessions/live.ts`) keeps what the program asks of it: where a transcript is, what one
+  gained and a page of its past (the readers', other processes: a long read there would hold up every actor), the
+  file's watch, the usage counter, and the listeners it gives what is told (a stream opening is told the sessions at
+  work as they are now once the program answers, what they did meanwhile after it: api/events.ts `heldWaits`).
 - Runtimes are drivers behind one seam (`src/agents/runtime.ts`): Claude Code a `claude -p` process per session;
   Codex one app-server per account, a thread per session, whose per-session settings go in `thread/start`'s config,
   never the process's environment; the others in `src/agents/`. A driver owns its child's stdin. Claude Code's output
@@ -135,8 +141,8 @@
   where it is built, off the station's thread: Node starts and ends the processes and is told the events, each line
   acknowledged to its runner once Node took them; a handover holds its reading first (`freeze`, hub.ts `handOver`).
   A Claude session's events go to its actor in the program itself: Node is told each batch, takes what its own parts
-  need (the live view, a token's renewal, a turn's outcome) and says it taken (`routed`, mb-actor.ts `#took`), and the
-  program gives the actor the batch it kept; `test/hub-e2e.test.ts` holds that none goes through Node.
+  need (a token's renewal, a turn's outcome) and says it taken (`routed`, mb-actor.ts `#took`), and the
+  program gives the actor and the live view the batch it kept; `test/hub-e2e.test.ts` holds that none goes through Node.
   A Codex app-server's output is read there too, its lines given Node whole but for its diffs (`turn/diff/updated`,
   of which the station keeps nothing). One program for every driver and the actors, running while one of them uses it.
   `test/claude-here.test.ts` and `test/codex-here.test.ts` run the drivers' tests with it read here, as where the

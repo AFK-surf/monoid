@@ -329,6 +329,7 @@ export class Hub {
         return paths.length === 0 ? null : { runtime, paths, current };
       },
       this.clock,
+      () => this.program(),
     );
     // The sessions at work are followed by the station itself (live.ts `running`): as the store says each starts and
     // stops, and those at work now. Each transcript's length goes where its summary reads it (its usage, the usage

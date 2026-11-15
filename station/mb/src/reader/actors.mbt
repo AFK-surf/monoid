@@ -126,11 +126,13 @@ priv struct Actors {
   mut remote : RemoteState
   /// the agents' processes read here (agents.mbt): what each read, once Node took it, is given its actor here
   mut agents : Agents?
+  /// the live view of the sessions (live.mbt), Node's shell of it `#live`
+  mut live : LiveState
 }
 
 ///|
 fn Actors::new(host : @host.Host) -> Actors {
-  { host, actors: Map([]), asked: Map([]), timers: Map([]), next: 0, now: 0.0, active: 0, seen: 0, db: None, jobs: JobsState::new(), remote: RemoteState::new(), agents: None }
+  { host, actors: Map([]), asked: Map([]), timers: Map([]), next: 0, now: 0.0, active: 0, seen: 0, db: None, jobs: JobsState::new(), remote: RemoteState::new(), agents: None, live: LiveState::new() }
 }
 
 ///|
@@ -373,13 +375,20 @@ pub async fn serve_sessions(host : @host.Host) -> Unit {
 ///|
 /// A batch of what its runtime session's process said, read here (agents.mbt `tell`) and taken by Node (mb-actor.ts
 /// `routed`): each event given the actor as Node gave it before, in order. Node says what it decides of them: a turn's
-/// outcome (`outcome`, the failure's reason by its words) and what its live view reads first (`read`).
+/// outcome (`outcome`, the failure's reason by its words). The live view here takes each first (live.mbt), and a turn's
+/// end waits for what its transcript said last there (`live_end`).
 fn Actors::routed(self : Actors, a : Actor, n : Int, k : Int, generation : Int, said : Json) -> Unit {
   guard self.agents is Some(agents) else { return }
   guard agents.take(n, k) is Some((events, _)) else { return }
-  let read = said.value("read").unwrap_or(Json::null())
   for e in events {
     let event = @json.parse(@jsjson.stringify(e)) catch { _ => continue }
+    // (the live view takes each first, as it is: live.mbt)
+    let mut read = Json::null()
+    match str_of(event.value("type")) {
+      Some("live") => self.live_event(a.key, event.value("event").unwrap_or(Json::null()))
+      Some("turnEnded") => read = { "live": jnum(self.live_end(a.key).to_double()) }
+      _ => ()
+    }
     let event = match event {
       Object(fields) if str_of(event.value("type")) == Some("turnEnded") => {
         let m = fields.copy()
@@ -402,7 +411,6 @@ fn Actors::routed(self : Actors, a : Actor, n : Int, k : Int, generation : Int, 
       Object(_) if str_of(event.value("type")) == Some("renew") => continue
       _ => event
     }
-    let read = if str_of(event.value("type")) == Some("turnEnded") { read } else { Json::null() }
     self.spawn(() => self.on_event(a, generation, event, read) catch {
       e => self.log(a, "error", "session event failed", fields={ "error": Json::string(Asked::message(e)) })
     })
@@ -459,6 +467,7 @@ fn Actors::heard(self : Actors, line : String) -> Unit {
       self.active = 0
       self.jobs = JobsState::new()
       self.remote = RemoteState::new()
+      self.live = LiveState::new()
       if self.db is Some(db) {
         db.close()
       }
@@ -495,6 +504,17 @@ fn Actors::heard(self : Actors, line : String) -> Unit {
     _ => ()
   }
   guard said.value("actor") is Some(String(key)) else { return }
+  if key == live_key {
+    // (each as it comes, in order: what of it waits goes on as a fiber of its own)
+    if said is { "call": Number(id, ..), "method": String(method), .. } {
+      let args = match said.value("args") {
+        Some(Array(args)) => args
+        _ => []
+      }
+      self.live_called(id, method, args)
+    }
+    return
+  }
   if key == jobs_key || key == remote_key {
     // (the jobs' calls: each a fiber of its own, as an actor's call is before it is queued)
     if said is { "call": Number(id, ..), "method": String(method), .. } {

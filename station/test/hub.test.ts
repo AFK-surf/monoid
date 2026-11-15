@@ -727,24 +727,21 @@ test("a turn that cannot start is not left starting, and stop clears what is sti
   await r.accept(m);
   await settle();
   const key = sessionKey("cl", "C1", m.threadTs);
-  const phase = () => {
-    let said: unknown = "untold";
-    const id = r.hub.live.subscribe(key, 0, 0, (l: any) => {
-      if (l.type === "steps") said = l.phase;
-    });
-    r.hub.live.unsubscribe(key, id);
-    return said;
+  // (what a stream opening is told of it now: its steps and what is said to be under way)
+  const phase = async () => {
+    await r.hub.live.idle();
+    return (((await r.hub.live.nowOf([key]))[key] ?? []).find((l: any) => l.type === "steps") as any)?.phase;
   };
-  assert.equal(phase(), null, "the failed start ended what was said to be starting");
+  assert.equal(await phase(), null, "the failed start ended what was said to be starting");
   assert.equal(r.hub.processState(key), "cold");
   // What the station said of it is its own, in English: not said; that it could not start is.
   assert.equal(r.chat.lastText(), "⚠️ 无法启动 agent\n\n```\nthe station this subscription is signed in on did not lend it: station mesh is not ready\n```");
   // Said to be under way some other way: stop, with nothing running, clears it.
   r.hub.live.event(key, { kind: "phase", phase: "starting" });
-  assert.notEqual(phase(), null);
+  assert.notEqual(await phase(), null);
   await r.hub.stop(key);
   await settle();
-  assert.equal(phase(), null);
+  assert.equal(await phase(), null);
   await r.close();
 });
 
