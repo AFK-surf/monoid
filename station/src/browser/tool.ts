@@ -7,16 +7,19 @@ import type { BrowserStatus } from "./browser.ts";
 import { sessionPath } from "./proxy.ts";
 import type { TabInfo } from "./tabs.ts";
 import type { Tool } from "../tools/mcp.ts";
-import { type FarviewTabs, farviewHowTo } from "./farview.ts";
+import { type FarviewConfig, type FarviewTab, type FarviewTabs, farviewHowTo } from "./farview.ts";
 
 export const BROWSER = {
   name: "browser",
   description:
-    "This chat's own browser: a real Google Chrome with a profile of this chat's, so sign-ins made in it stay for this chat (no other chat sees them; they go when the chat is archived). action endpoint (default) starts it if needed and gives its DevTools endpoint and how to connect; tabs lists its tabs; status says whether it runs; stop closes it (its sign-ins stay). Use it for web work that needs a login or should look like a person's browser (skill stillfail-browser). To be signed in to a site, open its sign-in page here and call `sign_in`; when a page needs a person for anything else (a captcha, a consent), give them the tab with the `screen` tool.",
+    "This chat's own browser (Chrome, or Farview where the station has it), its sign-ins this chat's alone until it is archived. action endpoint (default) starts it and says how to drive it; tabs lists its tabs; status says whether it runs; stop closes it (sign-ins stay). Skill stillfail-browser. Sign in to a site with `sign_in` on its sign-in page; a captcha or consent: give a person the tab with `screen`.",
   inputSchema: {
     type: "object",
     properties: {
-      action: { type: "string", enum: ["endpoint", "tabs", "status", "stop"], description: "Default endpoint." },
+      action: { type: "string", enum: ["endpoint", "tabs", "status", "stop", "open", "close"], description: "Default endpoint. open, close: Farview's." },
+      tab: { type: "string", description: "Farview tab id (default: first)." },
+      url: { type: "string" },
+      engine: { type: "string", enum: ["chrome", "farview"], description: "This chat's browser from now on." },
     },
     additionalProperties: false,
   },
@@ -62,15 +65,21 @@ export type ToolBrowsers = {
 };
 
 /// `doorUrl`: the agents' door's MCP URL once it is open (parts.ts `doorUrl`), where each session is given its address.
-/// `farview`: the chats' Farview (farview.ts), used in place of Chrome while the station's config names it.
+/// `farview`: the chats' Farview (farview.ts), used in place of Chrome for the chats it is the browser of (`activeFor`).
 export function browserTools(browser: ToolBrowsers, doorUrl: () => string | null = () => null, farview: FarviewTabs | null = null): Tool[] {
   return [
     {
       ...BROWSER,
       async run(session, args) {
         const action = typeof args.action === "string" ? args.action : "endpoint";
+        if (args.engine === "chrome" || args.engine === "farview") {
+          if (farview === null || farview.active() === null) throw new Error("This station has no Farview (config.json `browser.farview`): this chat's browser is Chrome.");
+          await farview.choose(session, args.engine);
+        }
         const fv = farview?.active() ?? null;
-        if (farview !== null && fv !== null) return farviewRun(farview, fv, session, action);
+        if (farview !== null && fv !== null && farview.activeFor(session)) {
+          return farviewRun(farview, fv, session, action, typeof args.tab === "string" ? args.tab : "", typeof args.url === "string" ? args.url : "");
+        }
         switch (action) {
           case "endpoint":
             return howTo(await browser.endpoint(session), sessionWs(doorUrl(), session));
@@ -85,6 +94,9 @@ export function browserTools(browser: ToolBrowsers, doorUrl: () => string | null
           case "stop":
             await browser.stop(session);
             return "This chat's browser is closed (its profile and sign-ins stay).";
+          case "open":
+          case "close":
+            throw new Error(`${action} is Farview's: in Chrome, open and close tabs over its DevTools (action endpoint)`);
           default:
             throw new Error(`unknown action ${action}: endpoint, tabs, status or stop`);
         }
@@ -93,22 +105,39 @@ export function browserTools(browser: ToolBrowsers, doorUrl: () => string | null
   ];
 }
 
-async function farviewRun(farview: FarviewTabs, config: NonNullable<ReturnType<FarviewTabs["active"]>>, session: string, action: string): Promise<string> {
+const farviewTabsText = (tabs: FarviewTab[]): string =>
+  tabs.length === 0
+    ? "No tabs open (or the browser is not running): `browser` (action endpoint) starts it."
+    : tabs.map((t) => `- ${t.id} ${t.title ? `${JSON.stringify(t.title)} ` : ""}${t.url} (agent port ${t.agent})`).join("\n");
+
+async function farviewRun(farview: FarviewTabs, config: FarviewConfig, session: string, action: string, tab: string, url: string): Promise<string> {
   switch (action) {
     case "endpoint": {
       await farview.endpoint(session);
-      return farviewHowTo(config, farview.agentPort(session)!);
+      if (tab !== "" && farview.agentPort(session, tab) === null) throw new Error(`no such tab in this chat's browser: ${tab}`);
+      return farviewHowTo(config, farview.tabs(session));
     }
     case "tabs":
-      return tabsText(farview.tabs(session));
+      return farviewTabsText(farview.tabs(session));
+    case "open": {
+      await farview.endpoint(session);
+      const t = await farview.open(session, url);
+      return `Opened ${t.id} on ${url || "about:blank"}. Drive it with: \`${config.agent} 127.0.0.1 ${t.agent} <step>...\``;
+    }
+    case "close":
+      if (tab === "") throw new Error("close: say which tab (`tab`, an id from tabs)");
+      await farview.closeTab(session, tab);
+      return `Closed ${tab}.`;
     case "status": {
       const s = farview.status(session);
-      return s.running ? `Running: Farview, agent port ${farview.agentPort(session)}, ${s.viewing} view(s) by people.` : "Not running: `browser` (action endpoint) starts it.";
+      if (!s.running) return "Not running: `browser` (action endpoint) starts it.";
+      const port = farview.agentPort(session, tab);
+      return `Running: Farview, ${s.tabs} tab(s)${port === null ? "" : `, agent port ${port}`}, ${s.viewing} view(s) by people.`;
     }
     case "stop":
       await farview.stop(session);
       return "This chat's browser is closed (its cookies and storage stay).";
     default:
-      throw new Error(`unknown action ${action}: endpoint, tabs, status or stop`);
+      throw new Error(`unknown action ${action}: endpoint, tabs, open, close, status or stop`);
   }
 }

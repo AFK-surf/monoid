@@ -1,20 +1,26 @@
 // Farview (AFK-surf/farview, a browser whose pages run on a host and draw on the person's device) as a chat's browser,
-// in place of its Chrome context, where the station's config says so: config.json `browser: { engine: "farview",
-// farview: "<the unpacked release: bin/host.exe, bin/agent.exe, lib/>" }`. Without it, nothing here runs and the chats
-// have Chrome as before (the user, 2026-11-14: a switch of its own first, so nobody else is touched).
+// in place of its Chrome context, where the station's config says so: config.json `browser: { farview: "<the unpacked
+// release: bin/host.exe, bin/agent.exe, lib/>", engine?: "chrome" | "farview", sessions?: [<session>...] }`. Released
+// to chats one at a time (the lead, 2026-11-16): `engine: "farview"` makes it every chat's; else Chrome stays the
+// chats' browser but for the sessions listed and those whose agent chose Farview (the `browser` tool's `engine`, kept
+// in the chat's directory). Without `farview`, nothing here runs and the chats have Chrome as before.
 //
-// Each chat gets one host process (`host.exe --tab`): one tab that lasts with nobody connected, its cookies, local
-// storage and address kept in the chat's own directory (<data>/browser/farview/<chat>), gone with the chat. The host
-// listens on 127.0.0.1 only: its agent port (driven with `agent.exe`, which the `browser` tool tells the agent of) and
-// its frame port (JSON lines; what the tab's screen is made of, farview-screen.ts). It is started as a job is, in a
-// group of its own, and outlives a station process: the next one takes it up by the `host.json` it wrote.
+// A chat's Farview is a tab or several, each a host process (`host.exe --tab`) that lasts with nobody connected, in a
+// directory of its own (<data>/browser/farview/<chat>/tabs/<n>: its address, host.json while it runs), all of them
+// one profile (<chat>/profile: cookies and local storage, shared as they change, FV_PROFILE_DIR), gone with the chat.
+// Tab 0 is the chat's first, started as its agent asks for its browser; the others are opened by the agent or by a
+// page (a link to a new window, window.open: the host says `openTab` on its frame port, FV_NEW_TABS), each one of the
+// screens. A host listens on 127.0.0.1 only: its agent port (driven with `agent.exe`, which the `browser` tool tells
+// the agent of) and its frame port (JSON lines; what the tab's screen is made of, farview-screen.ts). It is started as
+// a job is, in a group of its own, and outlives a station process: the next one takes it up by the `host.json` it
+// wrote.
 //
 // Sign-ins ( 登录态) go into the tab as they go into a chat's Chrome context (browsers.ts): a sign-in the vault grants
 // is its cookies set in the host's jar, taken out again as the grant ends; one kept is read from it; a card's sign-in
 // fills the tab's form (farview-form.ts). Farview has no authenticator: a sign-in's passkeys are not put in.
 // Not yet: the login pages a station opens of its own are Chrome's.
 import { createHash } from "node:crypto";
-import { access, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { connect } from "node:net";
 import { join } from "node:path";
 import { Clock, Effect } from "effect";
@@ -30,13 +36,24 @@ import { FarviewScreen } from "./farview-screen.ts";
 import { type CookieParam, allCookies, ofSites } from "./signins.ts";
 import type { TabInfo } from "./tabs.ts";
 
-/// Where Farview is, as the config says it; null: the chats have Chrome.
-export type FarviewConfig = { dir: string; host: string; agent: string };
+export type Engine = "chrome" | "farview";
+
+/// Where Farview is and whose browser it is, as the config says it; null: the chats have Chrome.
+export type FarviewConfig = { dir: string; host: string; agent: string; engine: Engine; sessions: string[] };
 
 export function farviewConfig(raw: any): FarviewConfig | null {
   const b = raw?.browser;
-  if (b === null || typeof b !== "object" || b.engine !== "farview" || typeof b.farview !== "string" || b.farview === "") return null;
-  return { dir: b.farview, host: join(b.farview, "bin", "host.exe"), agent: join(b.farview, "bin", "agent.exe") };
+  if (b === null || typeof b !== "object" || typeof b.farview !== "string" || b.farview === "") return null;
+  const sessions = Array.isArray(b.sessions) ? b.sessions.filter((s: unknown): s is string => typeof s === "string" && s !== "") : [];
+  return { dir: b.farview, host: join(b.farview, "bin", "host.exe"), agent: join(b.farview, "bin", "agent.exe"), engine: b.engine === "farview" ? "farview" : "chrome", sessions };
+}
+
+/// Whether `session`'s chat has Farview for its browser: every chat's where the config says so, else the sessions it
+/// lists and those whose agent chose it (`chosen`).
+export function farviewFor(config: FarviewConfig | null, session: string, chosen: Engine | undefined): boolean {
+  if (config === null) return false;
+  if (chosen !== undefined && config.engine !== "farview" && !config.sessions.includes(session)) return chosen === "farview";
+  return config.engine === "farview" || config.sessions.includes(session) || chosen === "farview";
 }
 
 /// What a host writes into its state directory once it listens: its process and its ports.
@@ -59,7 +76,11 @@ const START_MS = 20_000;
 const END_MS = 5_000;
 const LOOK_MS = 100;
 
-type Host = HostFile & { started: number | null; dir: string; screen: FarviewScreen; unscreen: () => void };
+type Host = HostFile & { started: number | null; dir: string; n: number; screen: FarviewScreen; unscreen: () => void };
+
+/// A tab of a chat's Farview as the `browser` tool lists it: its id (as its screen's after `browser:`), and the port
+/// its agent drives it on.
+export type FarviewTab = TabInfo & { agent: number };
 
 export type FarviewOptions = {
   /// <data>/browser/farview: a directory a chat.
@@ -83,58 +104,128 @@ function answers(port: number): Promise<boolean> {
 
 export class FarviewTabs {
   readonly #o: FarviewOptions;
-  readonly #hosts = new Map<string, Host>();
-  /// Starts under way, by session: asked again meanwhile, the same one.
+  /// Each chat's tabs that run, by session and number.
+  readonly #hosts = new Map<string, Map<number, Host>>();
+  /// Starts under way, by session and number: asked again meanwhile, the same one.
   readonly #starting = new Map<string, Promise<Host>>();
+  /// What each chat's agent chose (`engine` in its directory), read as the station starts and as it is chosen.
+  readonly #chosen = new Map<string, Engine>();
+  /// A chat's tabs opened one at a time (each takes the next number).
+  readonly #opening = new Map<string, Promise<unknown>>();
 
   constructor(o: FarviewOptions) {
     this.#o = o;
   }
 
+  /// Where Farview is, where the config names it (whoever's browser it is).
   active(): FarviewConfig | null {
     return this.#o.config();
   }
 
-  #dirOf(session: string): string {
+  /// Whether `session`'s chat has Farview for its browser (its tabs, sign-ins and form are here, not in Chrome).
+  activeFor(session: string): boolean {
+    return farviewFor(this.active(), session, this.#chosen.get(session));
+  }
+
+  /// `session`'s agent chose `engine` for its chat's browser: kept in its directory, for this station process and the
+  /// next. Choosing Chrome ends its Farview tabs (their profile stays).
+  async choose(session: string, engine: Engine): Promise<void> {
+    if (this.active() === null) throw new Error("Farview is not on this station (config.json `browser.farview`): this chat's browser is Chrome.");
+    const chat = this.#chatOf(session);
+    await mkdir(chat, { recursive: true, mode: 0o700 });
+    await writeFile(join(chat, "session"), session, { mode: 0o600 });
+    await writeFile(join(chat, "engine"), engine, { mode: 0o600 });
+    this.#chosen.set(session, engine);
+    if (!this.activeFor(session)) await this.stop(session);
+  }
+
+  #chatOf(session: string): string {
     return join(this.#o.dir, chatDir(session));
   }
 
+  #tabDir(session: string, n: number): string {
+    return join(this.#chatOf(session), "tabs", String(n));
+  }
+
+  #profileOf(session: string): string {
+    return join(this.#chatOf(session), "profile");
+  }
+
+  #tabsOf(session: string): Map<number, Host> {
+    let m = this.#hosts.get(session);
+    if (m === undefined) {
+      m = new Map();
+      this.#hosts.set(session, m);
+    }
+    return m;
+  }
+
   /// The host `dir` says runs, if it is still that process and answers on its agent port.
-  async #find(session: string, dir: string): Promise<Host | null> {
+  async #find(session: string, n: number, dir: string): Promise<Host | null> {
+    const file = await this.#alive(dir);
+    return file === null ? null : this.#up(session, n, dir, file, await startTimeOf(file.pid));
+  }
+
+  async #alive(dir: string): Promise<HostFile | null> {
     let file: HostFile | null;
     try {
       file = hostFileOf(JSON.parse(await readFile(join(dir, "host.json"), "utf8")));
     } catch {
       return null;
     }
-    if (file === null || !groupAlive(file.pid) || !(await answers(file.agent))) return null;
-    return this.#up(session, dir, file, await startTimeOf(file.pid));
+    return file !== null && groupAlive(file.pid) && (await answers(file.agent)) ? file : null;
   }
 
-  #up(session: string, dir: string, file: HostFile, started: number | null): Host {
-    const screen = new FarviewScreen({ session, port: file.frame });
+  #up(session: string, n: number, dir: string, file: HostFile, started: number | null): Host {
+    const screen = new FarviewScreen({ session, port: file.frame, n });
+    // (a page that asks for a new tab: opened beside it, one of the screens)
+    screen.opened = (url) => {
+      void this.open(session, url).catch((e) => log.warn("browser", "a tab a page asked for could not be opened", { session, error: (e as Error).message }));
+    };
     const unscreen = this.#o.screens?.add(screen) ?? (() => {});
     screen.watch();
-    const host: Host = { ...file, started, dir, screen, unscreen };
-    this.#hosts.set(session, host);
+    const host: Host = { ...file, started, dir, n, screen, unscreen };
+    this.#tabsOf(session).set(n, host);
     return host;
   }
 
-  /// `session`'s chat's host: the one that runs (this process's, or one an earlier station process left), else started.
-  async host(session: string): Promise<Host> {
-    const had = this.#hosts.get(session);
+  /// `session`'s chat's tab `n` (0: its first): the one that runs (this process's, or one an earlier station process
+  /// left), else started.
+  async host(session: string, n = 0): Promise<Host> {
+    const had = this.#hosts.get(session)?.get(n);
     if (had !== undefined) {
       if (groupAlive(had.pid)) return had;
-      this.#forget(session);
+      this.#forget(session, n);
     }
-    const starting = this.#starting.get(session);
+    const key = `${n}\n${session}`;
+    const starting = this.#starting.get(key);
     if (starting) return starting;
-    const made = this.#start(session).finally(() => this.#starting.delete(session));
-    this.#starting.set(session, made);
+    const made = this.#start(session, n).finally(() => this.#starting.delete(key));
+    this.#starting.set(key, made);
     return made;
   }
 
-  async #start(session: string): Promise<Host> {
+  /// A chat's directory as a station from before kept it (one tab, its profile and address beside its host.json):
+  /// its host ended, its profile and address moved where they go now.
+  async #moveOld(session: string): Promise<void> {
+    const chat = this.#chatOf(session);
+    const old = await this.#alive(chat);
+    if (old !== null) await this.#end(old.pid);
+    await rm(join(chat, "host.json"), { force: true });
+    const profile = this.#profileOf(session);
+    const tab = this.#tabDir(session, 0);
+    for (const [name, to] of [["cookies.txt", profile], ["storage.json", profile], ["url", tab]] as const) {
+      try {
+        await access(join(chat, name));
+      } catch {
+        continue;
+      }
+      await mkdir(to, { recursive: true, mode: 0o700 });
+      await rename(join(chat, name), join(to, name));
+    }
+  }
+
+  async #start(session: string, n: number, url?: string): Promise<Host> {
     const config = this.active();
     if (config === null) throw new Error("Farview is not this station's browser (config.json `browser`).");
     try {
@@ -142,21 +233,35 @@ export class FarviewTabs {
     } catch {
       throw new Error(`Farview's host is not at ${config.host}: unpack its release there, or take \`browser\` out of config.json for Chrome.`);
     }
-    const dir = this.#dirOf(session);
-    const found = await this.#find(session, dir);
+    const dir = this.#tabDir(session, n);
+    const found = await this.#find(session, n, dir);
     if (found !== null) return found;
+    const chat = this.#chatOf(session);
+    if (n === 0) await this.#moveOld(session);
     await mkdir(dir, { recursive: true, mode: 0o700 });
+    await mkdir(this.#profileOf(session), { recursive: true, mode: 0o700 });
     await rm(join(dir, "host.json"), { force: true });
-    // (whose chat it is, for the next station process to take its host up as it starts: `resume`)
-    await writeFile(join(dir, "session"), session, { mode: 0o600 });
-    let url = FIRST_PAGE;
-    try {
-      url = (await readFile(join(dir, "url"), "utf8")).trim() || FIRST_PAGE;
-    } catch {}
+    // (whose chat it is, for the next station process to take its hosts up as it starts: `resume`)
+    await writeFile(join(chat, "session"), session, { mode: 0o600 });
+    if (url === undefined) {
+      try {
+        url = (await readFile(join(dir, "url"), "utf8")).trim() || FIRST_PAGE;
+      } catch {
+        url = FIRST_PAGE;
+      }
+    }
     const child = startLasting(config.host, ["--tab", "0", url], {
       cwd: dir,
       stdio: "ignore",
-      env: { ...process.env, FV_STATE_DIR: dir, FV_AGENT_PORT: "0", FV_FRAME_PORT: "0", FV_BIND: "127.0.0.1" },
+      env: {
+        ...process.env,
+        FV_STATE_DIR: dir,
+        FV_PROFILE_DIR: this.#profileOf(session),
+        FV_NEW_TABS: "1",
+        FV_AGENT_PORT: "0",
+        FV_FRAME_PORT: "0",
+        FV_BIND: "127.0.0.1",
+      },
     });
     let ended: number | null | undefined;
     child.once("exit", (code) => (ended = code));
@@ -173,28 +278,67 @@ export class FarviewTabs {
       try {
         const file = hostFileOf(JSON.parse(await readFile(join(dir, "host.json"), "utf8")));
         if (file !== null && (pid === null || file.pid === pid)) {
-          log.info("browser", "a chat's Farview started", { session, pid: file.pid, agent: file.agent });
-          return this.#up(session, dir, file, pid === null ? null : await startTimeOf(pid));
+          log.info("browser", "a chat's Farview tab started", { session, tab: n, pid: file.pid, agent: file.agent });
+          return this.#up(session, n, dir, file, pid === null ? null : await startTimeOf(pid));
         }
       } catch {}
     }
+  }
+
+  /// A new tab of `session`'s chat on `url` (its agent's, or a page's that asked for one): the next number after every
+  /// tab its directory holds.
+  async open(session: string, url: string): Promise<FarviewTab> {
+    const before = this.#opening.get(session) ?? Promise.resolve();
+    const made = before.catch(() => {}).then(async () => {
+      let n = 1;
+      try {
+        for (const name of await readdir(join(this.#chatOf(session), "tabs"))) if (/^\d+$/.test(name)) n = Math.max(n, Number(name) + 1);
+      } catch {}
+      for (const k of this.#hosts.get(session)?.keys() ?? []) n = Math.max(n, k + 1);
+      const host = await this.#start(session, n, url || FIRST_PAGE);
+      return this.#tabOf(session, host);
+    });
+    this.#opening.set(session, made);
+    try {
+      return await made;
+    } finally {
+      if (this.#opening.get(session) === made) this.#opening.delete(session);
+    }
+  }
+
+  /// Closes tab `id` of `session`'s chat (not its first: `stop` closes the browser); its directory goes.
+  async closeTab(session: string, id: string): Promise<void> {
+    const host = this.#byId(session, id);
+    if (host === undefined) throw new Error(`no such tab in this chat's browser: ${id}`);
+    if (host.n === 0) throw new Error("the chat's first tab stays: `stop` closes the browser");
+    this.#forget(session, host.n);
+    await this.#end(host.pid);
+    await rm(host.dir, { recursive: true, force: true });
+  }
+
+  #byId(session: string, id: string): Host | undefined {
+    const want = id.replace(/^browser:/, "");
+    for (const host of this.#hosts.get(session)?.values() ?? []) if (host.screen.id.replace(/^browser:/, "") === want) return host;
+    return undefined;
   }
 
   async #end(pid: number) {
     if (groupAlive(pid)) await Effect.runPromise(endGroup(pid, END_MS).pipe(Effect.provideService(Clock.Clock, liveClock)));
   }
 
-  #forget(session: string) {
-    const host = this.#hosts.get(session);
-    if (host === undefined) return;
-    this.#hosts.delete(session);
+  #forget(session: string, n: number) {
+    const tabs = this.#hosts.get(session);
+    const host = tabs?.get(n);
+    if (tabs === undefined || host === undefined) return;
+    tabs.delete(n);
+    if (tabs.size === 0) this.#hosts.delete(session);
     host.unscreen();
     host.screen.close();
   }
 
   /// Takes up the hosts an earlier station process left running, as this one starts: their tabs stay among the
   /// screens a person has open (an update restarted the station, and a person's view of a tab found it gone until its
-  /// chat's agent asked for its browser again). Each chat's directory says whose it is.
+  /// chat's agent asked for its browser again). Each chat's directory says whose it is and what its agent chose.
   async resume(): Promise<void> {
     if (this.active() === null) return;
     let dirs: string[];
@@ -204,50 +348,66 @@ export class FarviewTabs {
       return;
     }
     for (const name of dirs) {
-      const dir = join(this.#o.dir, name);
+      const chat = join(this.#o.dir, name);
       let session: string;
       try {
-        session = (await readFile(join(dir, "session"), "utf8")).trim();
+        session = (await readFile(join(chat, "session"), "utf8")).trim();
       } catch {
         continue;
       }
-      if (session === "" || chatDir(session) !== name || this.#hosts.has(session)) continue;
-      const found = await this.#find(session, dir).catch(() => null);
-      if (found !== null) log.info("browser", "a chat's Farview taken up", { session, pid: found.pid });
+      if (session === "" || chatDir(session) !== name) continue;
+      try {
+        const engine = (await readFile(join(chat, "engine"), "utf8")).trim();
+        if (engine === "farview" || engine === "chrome") this.#chosen.set(session, engine);
+      } catch {}
+      let tabs: string[] = [];
+      try {
+        tabs = (await readdir(join(chat, "tabs"))).filter((t) => /^\d+$/.test(t));
+      } catch {}
+      for (const t of tabs) {
+        const n = Number(t);
+        if (this.#hosts.get(session)?.has(n)) continue;
+        const found = await this.#find(session, n, join(chat, "tabs", t)).catch(() => null);
+        if (found !== null) log.info("browser", "a chat's Farview tab taken up", { session, tab: n, pid: found.pid });
+      }
     }
   }
 
-  /// Takes up the hosts an earlier station process left running (each chat's, as it asks: `host`).
+  /// `session`'s chat's first tab, started if it does not run.
   async endpoint(session: string): Promise<BrowserStatus> {
     await this.host(session);
     return this.status(session);
   }
 
   status(session: string): BrowserStatus {
-    const host = this.#hosts.get(session);
-    if (host === undefined || !groupAlive(host.pid)) return { running: false };
-    return { running: true, binary: "Farview", headless: true, pid: host.pid, tabs: 1, viewing: host.screen.viewing() };
+    const tabs = [...(this.#hosts.get(session)?.values() ?? [])].filter((h) => groupAlive(h.pid));
+    if (tabs.length === 0) return { running: false };
+    return { running: true, binary: "Farview", headless: true, pid: tabs[0]!.pid, tabs: tabs.length, viewing: tabs.reduce((k, h) => k + h.screen.viewing(), 0) };
   }
 
   /// The port of the host whose tab is screen `id` that a person's client speaks Farview's protocol on (null: none
   /// runs): an app that draws the tab itself is carried to it (`{"farview": …}` streams, module.ts).
   clientPort(id: string): number | null {
-    for (const host of this.#hosts.values()) if (host.screen.id === id && groupAlive(host.pid)) return host.port;
+    for (const tabs of this.#hosts.values()) for (const host of tabs.values()) if (host.screen.id === id && groupAlive(host.pid)) return host.port;
     return null;
   }
 
-  /// Its agent port, for the agent's `agent.exe` (null: not running).
-  agentPort(session: string): number | null {
-    return this.#hosts.get(session)?.agent ?? null;
+  /// The agent port of `session`'s chat's tab `id` (its first where none is said), for the agent's `agent.exe` (null:
+  /// not running).
+  agentPort(session: string, id?: string): number | null {
+    const host = id === undefined || id === "" ? this.#hosts.get(session)?.get(0) : this.#byId(session, id);
+    return host?.agent ?? null;
   }
 
-  /// Its one tab, by the id its screen goes by after `browser:` (as a Chrome tab's: a sign-in's card opens
-  /// `browser:<tab>`).
-  tabs(session: string): TabInfo[] {
-    const host = this.#hosts.get(session);
-    if (host === undefined) return [];
+  #tabOf(session: string, host: Host): FarviewTab {
     const page = host.screen.page();
-    return [{ id: host.screen.id.replace(/^browser:/, ""), title: page.title, url: page.url, attached: false, session }];
+    return { id: host.screen.id.replace(/^browser:/, ""), title: page.title, url: page.url, attached: false, session, agent: host.agent };
+  }
+
+  /// Its tabs that run, its first first, each by the id its screen goes by after `browser:` (as a Chrome tab's: a
+  /// sign-in's card opens `browser:<tab>`).
+  tabs(session: string): FarviewTab[] {
+    return [...(this.#hosts.get(session)?.values() ?? [])].sort((a, b) => a.n - b.n).map((h) => this.#tabOf(session, h));
   }
 
   async #cookies(session: string, verb: "get" | "set" | "clear", arg: string): Promise<string> {
@@ -258,7 +418,7 @@ export class FarviewTabs {
     return a.value;
   }
 
-  /// The cookies of the chat's tab (its host started if it is not running).
+  /// The cookies of the chat's profile, as its first tab has them (its host started if it is not running).
   async cookies(session: string): Promise<CookieParam[]> {
     let read: unknown = [];
     try {
@@ -267,16 +427,16 @@ export class FarviewTabs {
     return allCookies(read);
   }
 
-  /// `cookies` set in the chat's tab (a sign-in granted).
+  /// `cookies` set in the chat's profile (a sign-in granted): every tab of it has them.
   async putCookies(session: string, cookies: CookieParam[]): Promise<void> {
     if (cookies.length > 0) await this.#cookies(session, "set", JSON.stringify(cookies));
   }
 
-  /// The cookies of `sites` taken out of the chat's tab where its host runs (a sign-in's grant ended): them, as they
-  /// were.
+  /// The cookies of `sites` taken out of the chat's profile where its first tab runs (a sign-in's grant ended): them,
+  /// as they were.
   async takeOut(session: string, sites: string[]): Promise<CookieParam[]> {
-    if (!this.#hosts.has(session)) {
-      const found = await this.#find(session, this.#dirOf(session));
+    if (!this.#hosts.get(session)?.has(0)) {
+      const found = await this.#find(session, 0, this.#tabDir(session, 0));
       if (found === null) return [];
     }
     const taken = (await this.cookies(session)).filter((c) => ofSites(c.domain, sites));
@@ -285,43 +445,62 @@ export class FarviewTabs {
     return taken;
   }
 
-  /// The tab's sign-in form, filled from a card.
-  async form(session: string): Promise<FarviewForm> {
-    return new FarviewForm((await this.host(session)).agent);
+  /// The sign-in form of the chat's tab `id` (its first where none is said), filled from a card.
+  async form(session: string, id?: string): Promise<FarviewForm> {
+    const host = id === undefined ? undefined : this.#byId(session, id);
+    return new FarviewForm((host ?? (await this.host(session))).agent);
   }
 
-  /// Ends `session`'s chat's host; its directory (cookies, storage, where it was) stays for when it asks again.
+  /// Ends `session`'s chat's tabs; its profile and its first tab's address stay for when it asks again, the others go.
   async stop(session: string): Promise<void> {
-    const host = this.#hosts.get(session);
-    this.#forget(session);
-    if (host !== undefined) await this.#end(host.pid);
+    const tabs = [...(this.#hosts.get(session)?.values() ?? [])];
+    for (const host of tabs) {
+      this.#forget(session, host.n);
+      await this.#end(host.pid);
+      if (host.n !== 0) await rm(host.dir, { recursive: true, force: true });
+    }
   }
 
-  /// `session`'s chat was archived or deleted: its host ends and its directory goes, its sign-ins with it.
+  /// `session`'s chat was archived or deleted: its tabs end and its directory goes, its sign-ins with it.
   async closeOf(session: string): Promise<void> {
-    const dir = this.#dirOf(session);
-    const host = this.#hosts.get(session) ?? (await this.#find(session, dir));
-    this.#forget(session);
-    if (host !== null) await this.#end(host.pid);
-    await rm(dir, { recursive: true, force: true });
+    const chat = this.#chatOf(session);
+    const pids = new Set([...(this.#hosts.get(session)?.values() ?? [])].map((h) => h.pid));
+    for (const n of [...(this.#hosts.get(session)?.keys() ?? [])]) this.#forget(session, n);
+    // (and those no process of this station took up)
+    let tabs: string[] = [];
+    try {
+      tabs = await readdir(join(chat, "tabs"));
+    } catch {}
+    for (const dir of [chat, ...tabs.map((t) => join(chat, "tabs", t))]) {
+      const file = await this.#alive(dir);
+      if (file !== null) pids.add(file.pid);
+    }
+    for (const pid of pids) await this.#end(pid);
+    this.#chosen.delete(session);
+    await rm(chat, { recursive: true, force: true });
   }
 
   /// This station process ends: the hosts go on for the next one to take up.
   close(): void {
-    for (const session of [...this.#hosts.keys()]) this.#forget(session);
+    for (const [session, tabs] of [...this.#hosts]) for (const n of [...tabs.keys()]) this.#forget(session, n);
   }
 }
 
-/// What the `browser` tool tells an agent of its chat's Farview.
-export function farviewHowTo(config: FarviewConfig, port: number): string {
-  const run = `${config.agent} 127.0.0.1 ${port}`;
+/// What the `browser` tool tells an agent of its chat's Farview: its tabs, each with the port it is driven on.
+export function farviewHowTo(config: FarviewConfig, tabs: FarviewTab[]): string {
+  const first = tabs[0];
+  const run = (port: number) => `${config.agent} 127.0.0.1 ${port}`;
   return [
-    "This chat's browser runs: Farview (a browser whose pages run on this station and draw on people's devices), one tab.",
-    `Drive it with: \`${run} <step>...\` — each step prints what the page says after it (its address, title and an outline of its content).`,
+    "This chat's browser runs: Farview (a browser whose pages run on this station and draw on people's devices).",
+    `Its tabs (\`browser\` action tabs lists them again):`,
+    ...tabs.map((t) => `- ${t.id}${t.title ? ` ${JSON.stringify(t.title)}` : ""} ${t.url || FIRST_PAGE} — agent port ${t.agent}`),
+    `Drive a tab with: \`${run(first?.agent ?? 0)} <step>...\` (that tab's agent port) — each step prints what the page says after it (its address, title and an outline of its content).`,
     "Steps: `look`, `go:<address>`, `click:<selector>`, `fill:<selector>=<words>`, `submit:<selector>`, `key:<key>` or `key:<key>@<selector>`, `back`, `forward`, `reload`, `wait:<ms>`, `shot:<file.png>`, `eval:<js>` (its result as JSON).",
-    `For example: \`${run} go:https://example.com look\`.`,
+    `For example: \`${run(first?.agent ?? 0)} go:https://example.com look\`.`,
+    "More tabs: `browser` action open (with `url`) opens one and gives its port; action close (with `tab`) closes one. A page that opens a new window (a link to _blank, window.open) gets a tab of its own: action tabs shows it.",
     "There is no DevTools address: Playwright and chrome-devtools-mcp do not drive it.",
-    "Its cookies and storage are this chat's alone and stay until the chat is archived. A site's sign-in: `sign_in` puts one the vault keeps into this tab, or asks a person on a card, as with Chrome.",
-    "A person can see and drive the tab from their app (the `screen` tool gives the link); when they act on it, it is theirs: the agent is told \"the person took the tab back\" and waits until they say it is done.",
+    "Its tabs share one profile: cookies and storage are this chat's alone and stay until the chat is archived. A site's sign-in: `sign_in` puts one the vault keeps into it, or asks a person on a card, as with Chrome.",
+    "A person can see and drive each tab from their app (the `screen` tool gives the link, by the tab's id); when they act on it, it is theirs: the agent is told \"the person took the tab back\" and waits until they say it is done.",
+    "`browser` with engine chrome gives this chat Chrome instead (Farview's tabs end; its profile stays).",
   ].join("\n");
 }
