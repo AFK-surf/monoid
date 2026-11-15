@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [3c6187b01](https://github.com/AFK-surf/monoid/commit/3c6187b0194bb18e909a3cc9b3a1933c3172313a) mbui: a list held by a limit its foot is followed  | 2.07 | 2.84 | 12.25 | 32.14 | 45.35 | 28.72 | 56.51 | 98.81 | 110.98 |
 | [aafb7fa27](https://github.com/AFK-surf/monoid/commit/aafb7fa27d46f91faa1f322610482625923709a2) app tests: the made-up core keeps a chat to the wi | 2.07 | 2.84 | 12.25 | 32.14 | 45.34 | 28.72 | 56.51 | 98.67 | 112.48 |
 | [ee6fc242b](https://github.com/AFK-surf/monoid/commit/ee6fc242b698faeeebbe43a350f34c497309f035) ci: put runs whatever the Mac's build came to, as  | 2.07 | 2.84 | 12.25 | 32.14 | 45.34 | 28.73 | 56.51 | 98.63 | 117.76 |
 | [3ae4ef14c](https://github.com/AFK-surf/monoid/commit/3ae4ef14c0018b864533e103ac0bf3fe69c9171a) app: a long list of the chat's page made as nodes, | 2.07 | 2.84 | 12.25 | 32.14 | 45.33 | 28.72 | 56.49 | 99.08 | 113.05 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [ba23979ed](https://github.com/AFK-surf/monoid/commit/ba23979ed094039a10f69bc6723c42777220dd3f) mbui app: the fourth group's pages fewer at the de | 2.01 | 2.77 | 11.91 | 31.83 | 44.34 | 28.45 | 55.68 | 98.45 | 118.41 |
 | [0487f79c6](https://github.com/AFK-surf/monoid/commit/0487f79c6950898c89c26b4ebb869e6d2060b6a9) ci: the stable Mac job's local zip cleanup never f | 2.01 | 2.77 | 11.91 | 31.83 | 44.34 | 28.44 | 55.68 | 98.62 | 118.41 |
 | [46c6d9b18](https://github.com/AFK-surf/monoid/commit/46c6d9b189993ee1f96d734583a5de48f749a17c) station: a device's jobs and a list's changes read | 2.01 | 2.77 | 11.91 | 31.83 | 44.34 | 28.44 | 55.68 | 98.55 | 111.3 |
-| [a0dfc9e45](https://github.com/AFK-surf/monoid/commit/a0dfc9e45228f7bc11109989637120492ff1211a) mbui, app tests: what kept_rows_kinds compares rea | 2.01 | 2.76 | 11.87 | 31.75 | 44.2 | 28.37 | 55.56 | 97.86 | 111.44 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [3c6187b01](https://github.com/AFK-surf/monoid/commit/3c6187b0194bb18e909a3cc9b3a1933c3172313a) mbui: a list held by a limit its foot is followed  | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.25 |
 | [aafb7fa27](https://github.com/AFK-surf/monoid/commit/aafb7fa27d46f91faa1f322610482625923709a2) app tests: the made-up core keeps a chat to the wi | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.16 |
 | [ee6fc242b](https://github.com/AFK-surf/monoid/commit/ee6fc242b698faeeebbe43a350f34c497309f035) ci: put runs whatever the Mac's build came to, as  | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.16 |
 | [3ae4ef14c](https://github.com/AFK-surf/monoid/commit/3ae4ef14c0018b864533e103ac0bf3fe69c9171a) app: a long list of the chat's page made as nodes, | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.16 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [ba23979ed](https://github.com/AFK-surf/monoid/commit/ba23979ed094039a10f69bc6723c42777220dd3f) mbui app: the fourth group's pages fewer at the de | 0.4 | 0.52 | 1.96 | 3.08 | 4.51 | 1.45 | 3.8 | 57.26 |
 | [0487f79c6](https://github.com/AFK-surf/monoid/commit/0487f79c6950898c89c26b4ebb869e6d2060b6a9) ci: the stable Mac job's local zip cleanup never f | 0.4 | 0.52 | 1.96 | 3.08 | 4.51 | 1.45 | 3.8 | 57.26 |
 | [46c6d9b18](https://github.com/AFK-surf/monoid/commit/46c6d9b189993ee1f96d734583a5de48f749a17c) station: a device's jobs and a list's changes read | 0.4 | 0.52 | 1.96 | 3.08 | 4.51 | 1.45 | 3.8 | 57.26 |
-| [a0dfc9e45](https://github.com/AFK-surf/monoid/commit/a0dfc9e45228f7bc11109989637120492ff1211a) mbui, app tests: what kept_rows_kinds compares rea | 0.4 | 0.52 | 1.96 | 3.08 | 4.51 | 1.45 | 3.8 | 57.26 |
