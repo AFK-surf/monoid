@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [9955957bd](https://github.com/AFK-surf/monoid/commit/9955957bddc09658c0e73a6f4e2494a0f11e9757) mbui: a paragraph of runs laid out once is kept, w | 2.11 | 2.94 | 12.67 | 33.74 | 49.98 | 29.15 | 57.72 | 99.67 | 118.52 |
 | [4c58007fe](https://github.com/AFK-surf/monoid/commit/4c58007fe78e127ea9c44c74b699406566bc39de) move: what a whole move does for one item looks on | 2.11 | 2.94 | 12.66 | 33.72 | 49.91 | 29.13 | 57.65 | 99.65 | 112.41 |
 | [79bfb1257](https://github.com/AFK-surf/monoid/commit/79bfb12579f5781ebac6174618ee1e379a4d46ef) app: the Wasm app's start compacted as it is built | 2.11 | 2.94 | 12.66 | 33.72 | 49.91 | 29.13 | 57.65 | 99.65 | 112.41 |
 | [891879d7a](https://github.com/AFK-surf/monoid/commit/891879d7a50ddc510fb9a0d022dfd51c6174dee7) app: a keyed op finds its item in a long list by w | 2.11 | 2.93 | 12.65 | 33.71 | 49.87 | 29.12 | 57.69 | 99.47 | 121.74 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [e28d20c75](https://github.com/AFK-surf/monoid/commit/e28d20c75c78f229155b3d29af86c744cc7bbf91) app: the Android build alone finds libghostty-vt,  | 2.07 | 2.85 | 12.28 | 33.21 | 47.84 | 28.76 | 56.64 | 98.7 | 112.45 |
 | [64d1c4a65](https://github.com/AFK-surf/monoid/commit/64d1c4a65392f90c1e753818342b2b7d3177b3db) station: the remote tasks run in the MoonBit progr | 2.07 | 2.85 | 12.28 | 33.21 | 47.84 | 28.76 | 56.64 | 98.7 | 112.95 |
 | [6222bae5a](https://github.com/AFK-surf/monoid/commit/6222bae5a8c8c3611bbe12cfad6b5c2a25d30049) station, repo rules: put back the rules and decisi | 2.07 | 2.85 | 12.28 | 33.19 | 47.84 | 28.76 | 56.62 | 98.7 | 112.95 |
-| [0d20e0816](https://github.com/AFK-surf/monoid/commit/0d20e081676812eb5e084c1f48df80b35d274f0c) station: what every agent should do, said to every | 2.07 | 2.85 | 12.28 | 33.19 | 47.84 | 28.76 | 56.62 | 98.7 | 112.95 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [9955957bd](https://github.com/AFK-surf/monoid/commit/9955957bddc09658c0e73a6f4e2494a0f11e9757) mbui: a paragraph of runs laid out once is kept, w | 0.41 | 0.53 | 1.99 | 3.1 | 4.58 | 1.47 | 3.83 | 57.28 |
 | [4c58007fe](https://github.com/AFK-surf/monoid/commit/4c58007fe78e127ea9c44c74b699406566bc39de) move: what a whole move does for one item looks on | 0.41 | 0.53 | 1.99 | 3.1 | 4.58 | 1.47 | 3.83 | 57.28 |
 | [79bfb1257](https://github.com/AFK-surf/monoid/commit/79bfb12579f5781ebac6174618ee1e379a4d46ef) app: the Wasm app's start compacted as it is built | 0.41 | 0.53 | 1.98 | 3.09 | 4.56 | 1.47 | 3.81 | 57.44 |
 | [891879d7a](https://github.com/AFK-surf/monoid/commit/891879d7a50ddc510fb9a0d022dfd51c6174dee7) app: a keyed op finds its item in a long list by w | 0.41 | 0.53 | 1.98 | 3.09 | 4.56 | 1.47 | 3.81 | 57.44 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [e28d20c75](https://github.com/AFK-surf/monoid/commit/e28d20c75c78f229155b3d29af86c744cc7bbf91) app: the Android build alone finds libghostty-vt,  | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.31 |
 | [64d1c4a65](https://github.com/AFK-surf/monoid/commit/64d1c4a65392f90c1e753818342b2b7d3177b3db) station: the remote tasks run in the MoonBit progr | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.31 |
 | [6222bae5a](https://github.com/AFK-surf/monoid/commit/6222bae5a8c8c3611bbe12cfad6b5c2a25d30049) station, repo rules: put back the rules and decisi | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.31 |
-| [0d20e0816](https://github.com/AFK-surf/monoid/commit/0d20e081676812eb5e084c1f48df80b35d274f0c) station: what every agent should do, said to every | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.31 |
