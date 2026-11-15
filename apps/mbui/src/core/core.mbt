@@ -294,8 +294,8 @@ pub fn fatal() -> String? {
 /// frame sees depends on frames, not on when the core's thread answered. A kept conversation given again (replay.mbt)
 /// comes this way too.
 pub fn receive(text : String, bytes : Bytes?) -> Unit {
-  // (for an id nothing holds: let be, unread)
-  if unheld(text) {
+  // (for an id nothing holds: let be, unread; for one let go of, kept unread)
+  if unheld(text, bytes) {
     return
   }
   let t0 = if perf_counts() { ffi_now() } else { -1.0 }
@@ -306,10 +306,12 @@ pub fn receive(text : String, bytes : Bytes?) -> Unit {
 }
 
 ///|
-/// Whether message `text` is for an id nothing holds (Client::unheld): let be unread, a kept conversation's clock told
-/// it came all the same (receive_hook).
-fn unheld(text : String) -> Bool {
-  guard client.unheld(text) else { return false }
+/// Whether message `text` is for an id nothing holds (Client::unheld), or for a subscription let go of (Client::later):
+/// taken unread, a kept conversation's clock told it came all the same (receive_hook). One for a subscription let go of
+/// is read as ever while a conversation is recorded, whose trace says each message as it was read, and with bytes
+/// beside it (none of these has any).
+fn unheld(text : String, bytes : Bytes?) -> Bool {
+  guard client.taken_unread(text, later=tracer.val is None && bytes is None) else { return false }
   match receive_hook.val {
     Some(f) => f()
     None => ()
@@ -439,8 +441,8 @@ pub fn perf_said(span : Double) -> String {
 /// answer nobody reads), before the frame decides what it does: what read the topic is built again, nothing else
 /// (@ui.on_message_said, "core"). Whether it was; else it is left for `receive`, as the frame is built.
 pub fn receive_said(text : String, bytes : Bytes?) -> Bool {
-  // (for an id nothing holds: taken as it comes, unread, nothing built for it)
-  if unheld(text) {
+  // (for an id nothing holds: taken as it comes, unread, nothing built for it; for one let go of, kept unread)
+  if unheld(text, bytes) {
     return true
   }
   let t0 = if perf_counts() { ffi_now() } else { -1.0 }

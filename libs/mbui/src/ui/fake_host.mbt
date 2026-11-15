@@ -745,6 +745,11 @@ impl @hostapi.Host for FakeHost with image_load_bytes(self, data, max_px) {
         _ => fake_image(self, 400, 300, max_px)
       }
   }
+  // (said to take a while: done that long after it is asked for, Tester::decode_bytes_after)
+  match fake_decode_bytes_after.val.search_by(fn(d) { d.0 == data }) {
+    Some(i) => self.decode_due[id] = self.time + fake_decode_bytes_after.val[i].1
+    None => ()
+  }
   self.image_bytes[id] = data.length()
   self.image_bytes_now += data.length()
   if self.image_bytes_now > self.image_bytes_most {
@@ -1671,6 +1676,11 @@ impl @hostapi.Host for FakeHost with ga_read_end(self, a0) {
 
 // This device's password manager (@hostapi passwords.mbt) as a test has it: none, unless it says how `op` answers
 // (`fake_op`: its exit code, output and error output for the arguments given), each run ended at once.
+
+///|
+/// Bytes said to take a while to decode (Tester::decode_bytes_after; a film's scene says so of its own): the bytes and
+/// how many ms after each decode of them is asked for it is done. None, as a Tester begins.
+pub let fake_decode_bytes_after : Ref[Array[(Bytes, Double)]] = Ref([])
 
 ///|
 /// How `op` answers a test, given its arguments: None, no password manager here.

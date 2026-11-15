@@ -79,6 +79,25 @@ pub fn reads_told(reads : OpenReads, ask : (String, Map[String, Json]) -> TopicS
 }
 
 ///|
+/// Whether each picture at `urls` (a person's face) that a page shows as it opens (chat_opens') is in to be drawn,
+/// each said by `waits` (Source.picture_waits): none that the device holds being read by the core, or its decode not
+/// done; each asked, so all come at once. Waited for as what the page reads is, `page_local_ms` at most (2026-11-16: a
+/// face came a frame after the words, from its initial to the picture); never one the device has not (the network's to
+/// bring) nor one that could not be had.
+fn pictures_in(waits : (String) -> Bool, urls : Array[String]) -> Bool {
+  let seen : Map[String, Bool] = Map([])
+  let mut all = true
+  for url in urls {
+    if url == "" || seen.contains(url) {
+      continue
+    }
+    seen[url] = true
+    all = !waits(url) && all
+  }
+  all
+}
+
+///|
 /// What the settings' list reads (sfpages' settings_parts_of: 小屏's settings page, the settings' sidebar on 中屏 and
 /// 大屏): the workspace, its stations' rows, its connects, its vaults, its accounts (its lock is every shell's).
 pub fn settings_list_asks(ws : String) -> Array[(String, Map[String, Json])] {

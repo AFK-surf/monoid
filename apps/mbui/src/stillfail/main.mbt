@@ -71,16 +71,26 @@ fn logged(name : String, v : Json) -> String {
 
 ///|
 /// Pictures by their address as the core gives them (`picture`): kept as images, one that could not be had asked
-/// again when it is put up anew (@sfapp.core_pictures).
-let picture : (String, Int) -> String = @sfapp.core_pictures(fn(url, done) {
-  let params : Map[String, Json] = { "url": Json::string(url) }
-  @core.call_bytes("picture", params=Json::object(params), on_done=fn(r) {
-    match r {
-      Ok((_, bytes)) => done(bytes)
-      Err(_) => done(None)
+/// again when it is put up anew, and what a page opening waits for of them (@sfapp.core_pictures_waited).
+let pictures : @sfapp.CorePictures = @sfapp.core_pictures_waited(picture_asked(false), picture_asked(true))
+
+///|
+/// The core's `picture` asked for the bytes at a URL: `done` gets them, or None when it could not be had. `kept`: as the
+/// device holds it, at once (no bytes where it has none: core-ts asks.ts pictureKept).
+fn picture_asked(kept : Bool) -> (String, (Bytes?) -> Unit) -> Unit {
+  fn(url, done) {
+    let params : Map[String, Json] = { "url": Json::string(url) }
+    if kept {
+      params["kept"] = Json::boolean(true)
     }
-  })
-})
+    @core.call_bytes("picture", params=Json::object(params), on_done=fn(r) {
+      match r {
+        Ok((_, bytes)) => done(bytes)
+        Err(_) => done(None)
+      }
+    })
+  }
+}
 
 ///|
 /// Chats' images as their messages show them (`station.file` with `thumb`: the station's thumbnail where it keeps one,
@@ -308,10 +318,12 @@ let core_source : @sfapp.Source = {
   },
   // (a picture the device holds, put up as a card, a panel or a sheet is made: waited for by it till decoded, @sf.OpenGate)
   picture: fn(url, stint) {
-    let key = picture(url, stint)
+    let key = (pictures.shown)(url, stint)
     @sfbase.picture_gated(key)
     key
   },
+  // (a page opening waits for a picture it shows the device holds: on its way from the core, or not decoded yet)
+  picture_waits: pictures.waits,
   fatal: fn() { @core.fatal() },
   file: chat_file,
   poster: chat_poster,

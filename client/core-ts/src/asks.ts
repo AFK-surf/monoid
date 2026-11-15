@@ -79,7 +79,7 @@ export class Asks {
         // (youdid.wtf's builds are its platform's beta feed; an app of its own on the test channel names its feed whole)
         return this.update(ask.platform, ask.version, ask.now, brand.testApp(), ask.keys);
       case "picture":
-        return Effect.map(this.picture(ask.url), ([kind, bytes]) => new Beside({ type: kind }, bytes));
+        return Effect.map(ask.kept ? this.pictureKept(ask.url) : this.picture(ask.url), ([kind, bytes]) => new Beside({ type: kind }, bytes));
       case "buddies":
         return Effect.succeed(buddies());
       case "devSignIn":
@@ -184,6 +184,26 @@ export class Asks {
       }
       this.#pictureFailed.delete(url);
       return got.success;
+    });
+  }
+
+  /// A picture by its address as the device holds it, never waiting on the network: kept (or what stands in for it),
+  /// else none (no bytes, the kind ""), its fetch set off meanwhile as `picture` does it, so that the asking that follows
+  /// shares it. What the app's page opening waits for (apps/mbui's core_pictures.mbt: a page waits for a face the device
+  /// has, never for one the network is to bring).
+  pictureKept(url: string): Effect.Effect<[string, Uint8Array], CoreError> {
+    return Effect.gen({ self: this }, function* () {
+      if (!(url.startsWith("https://") || url.startsWith("http://"))) return yield* Effect.fail(CoreError.invalid(t("core-misc.ask.bad_picture_url")));
+      const kept = yield* this.#keptPicture(pictureName(url));
+      if (kept !== null) return kept;
+      const failed = this.#pictureFailed.get(url);
+      if (failed !== undefined && this.#host.nowMs() - failed[0] < PICTURE_RETRY_MS) {
+        const standing = yield* Effect.result(this.#standIn(url, failed[1]));
+        return standing._tag === "Success" ? standing.success : (["", new Uint8Array(0)] as [string, Uint8Array]);
+      }
+      // (not on the device: fetched as `picture` fetches it, once, whoever asks; answered none now)
+      if (!this.#pictures.has(url)) Effect.runFork(Effect.ignore(this.picture(url)));
+      return ["", new Uint8Array(0)] as [string, Uint8Array];
     });
   }
 

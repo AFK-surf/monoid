@@ -146,7 +146,12 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
     `page_opens_by`), the pane's on 中屏 and 大屏 (sfdesk's `pane_opens`, with what a place's list picks: `place_reads`),
     a press through `open_answered` (`route_open_asks`) and declared as it comes on top (`page_opens_node`). It says
     only what the page reads at rest whatever is answered, each the way the page asks it, what follows from an answer
-    by `then`; `declared_read_wbtest.mbt` opens every page on each screen and holds all of it read.
+    by `then`; `declared_read_wbtest.mbt` opens every page on each screen and holds all of it read. A chat's page waits
+    as well for the faces it shows that the device holds (its people's, its posts' authors'), while the core reads them
+    (`picture` with `kept`: never waiting on the network, client/core-ts asks.ts `pictureKept`) or their decode is not
+    done; one the device has not comes as the network brings it, as before (sfbase's `pictures_in`,
+    `Source.picture_waits`; 2026-11-16: a face came a frame after the words, from its initial to the picture;
+    `src/sfapp/page_pictures_wbtest.mbt`).
   - A press that waits for the core before it opens something (a menu, a panel, a question) goes through sfbase's
     `press_wait` (`src/sfbase/press_wait.mbt`), never a wait of its own: it waits only while what it was pressed in
     stays as it was (the page, the workspace, nothing else put up) and lets go of what it asked when it stops

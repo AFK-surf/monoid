@@ -30,7 +30,19 @@ pub fn opens_answered(s : TopicState) -> Bool {
 ///|
 /// The ask a page opens by (what its `opens` says it reads): each topic as `src` has it now, read where it is read.
 pub fn read_now(src : Source) -> (String, Map[String, Json]) -> TopicState {
+  opening_pictures.val = src.picture_waits
   fn(name, params) { src.topic(name, params).get() }
+}
+
+///|
+/// What a chat's page opening waits for of the pictures it shows (Source.picture_waits, chat_opens'), of the source the
+/// shells' waits read by (read_now: what a chat opening is asked by holds no source of its own to ask it of).
+// kept across runs: put back as a run begins, said again by each read_now
+let opening_pictures : Ref[(String) -> Bool] = Ref(fn(_) { false })
+
+///|
+fn init {
+  @ui.on_reset(fn() { opening_pictures.val = fn(_) { false } })
 }
 
 ///|

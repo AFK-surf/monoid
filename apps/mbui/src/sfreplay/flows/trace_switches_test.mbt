@@ -55,6 +55,8 @@
 /// bar's summary till its own comes, an agent's card asking ahead its model's menu) off in all 81 as it came.
 /// MBUI_OPEN_WHOLE (2026-11-15: a card, a panel or a sheet opened the first time comes in once what it reads is answered,
 /// a station's or a connect's page opened once what it shows is) off in all 81 as it came.
+/// MBUI_PAGE_PICTURES (2026-11-16: a chat's page opening waits as well for the faces it shows the device holds) off in
+/// all 81 as it came.
 let switches_known : Map[String, Int] = {
   "MBUI_PLACES_BAR": 71,
   "MBUI_DEVICES": 72,
@@ -74,6 +76,7 @@ let switches_known : Map[String, Int] = {
   "MBUI_TERMINALS": 80,
   "MBUI_SWR_VIEWS": 81,
   "MBUI_OPEN_WHOLE": 81,
+  "MBUI_PAGE_PICTURES": 81,
 }
 
 ///|
