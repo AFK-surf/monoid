@@ -85,3 +85,45 @@ test "spacing: a message's words right on a file's card over and under it, the c
   apart.frame()
   assert_eq((said.length(), tree_rule(apart, "rule 9")), (2, []), msg=said.join("\n"))
 }
+
+///|
+/// A bar of the tree, 400 wide, 44 high, its own ground: a row of words `title_in` in from its start (its row's
+/// padding), and at its end a button's room (32, no ground at rest) `end_in` from its end, its icon (16) in its middle.
+fn tree_bar(title_in : Double, end_in : Double) -> Tester {
+  let t = Tester::new(fn(_c) {  }, w=400.0, h=100.0, platform=0)
+  set_view_app(fn(root) {
+    root.box(fn(bar) {
+      bar.width(Is(Some(400.0))).height(Is(Some(44.0))).row(Is(true)).ground(Is(0xFFFFFFFFL)).lines_up(Is(Some(Middle)))
+      .padding(Is((4.0, 0.0, end_in, 0.0)))
+      |> ignore
+      bar.box(fn(r) {
+        r.grow(Is(1.0)).row(Is(true)).padding(Is((title_in - 4.0, 0.0, 0.0, 0.0))) |> ignore
+        r.box(fn(w) { w.words(Is("A title")) |> ignore }) |> ignore
+      })
+      |> ignore
+      bar.box(fn(k) {
+        k.width(Is(Some(32.0))).height(Is(Some(32.0))).lines_up(Is(Some(Middle))).lies_along(Is(Middle)) |> ignore
+        k.box(fn(i) {
+          i
+          .width(Is(Some(16.0)))
+          .height(Is(Some(16.0)))
+          .shapes(Is([@paint.shape_of([([0.0, 0.0, 16.0, 0.0, 16.0, 16.0, 0.0, 16.0], true)], fill=0x000000FFL)]))
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  t
+}
+
+///|
+test "spacing on the window's tree: a bar's title and its last button's icon as far in, the button's room nearer its end, nothing (rule 4); the icon nearer, said" {
+  // (title 20 in; the button's room 6 from the end, its icon 14: said; 12 from it, its icon 20: what is seen as far in)
+  let near = tree_rule(tree_bar(20.0, 6.0), "rule 4")
+  let even = tree_rule(tree_bar(20.0, 12.0), "rule 4")
+  assert_eq((near.length(), even), (1, []), msg=near.join("\n"))
+}

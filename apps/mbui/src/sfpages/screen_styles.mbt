@@ -82,6 +82,11 @@ let round_button_box : @ui.Style = @ui.css((
 let round_icon : Double = 20.0
 
 ///|
+/// How high a round button is (round_button_box's S10): what is pressed beside it in its row is as high (the address
+/// field beside ← → ⟳, 36 till 2026-11-15: what is pressed side by side is one height, the user, 2026-10-30).
+let round_side : Double = 40.0
+
+///|
 /// Upright: the bar, 56 high, 6 in at its start and 10 at its end, 8 between.
 // kept across runs: a value (no field of it changes)
 let screen_bar : @ui.Style = @ui.css("row w=Full h=S14 pl=S1_5 pr=S2_5 gap=S2 align=ACenter")

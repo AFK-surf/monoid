@@ -20,6 +20,8 @@ pub(all) struct LaidFacts {
   reverse : Bool
   /// a row going on in lines where what it holds has not the room on one (View::wraps)
   wraps : Bool
+  /// what it holds spread from its start to its end, what is left of its room between them (View::lies_along Between)
+  spread : Bool
   /// the room inside its edges and round it (left, top, right, bottom: View::padding, View::margin)
   pad : (Double, Double, Double, Double)
   margin : (Double, Double, Double, Double)
@@ -83,6 +85,7 @@ pub fn Tree::laid_facts(self : Tree, id : NodeId) -> LaidFacts? {
     row: st.direction is (Row | RowReverse),
     reverse: st.direction is (RowReverse | ColumnReverse),
     wraps: !(st.wrap is NoWrap),
+    spread: st.justify is SpaceBetween,
     pad: (st.padding_left_value(), st.padding_top_value(), st.padding_right_value(), st.padding_bottom_value()),
     margin: (st.margin_left_value(), st.margin_top_value(), st.margin_right_value(), st.margin_bottom_value()),
     width_points: st.width_kind() == @flex.LEN_PT,

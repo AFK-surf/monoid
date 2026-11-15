@@ -450,6 +450,7 @@ fn[T] Ctx::with_tree_nodes(
   tree_scaled_at.clear()
   corner_scale_at.clear()
   tree_draws_at.clear()
+  tree_marks_at.clear()
   tree_fixed_h_at.clear()
   tree_moved_at.clear()
   tree_scroll_held_at.clear()

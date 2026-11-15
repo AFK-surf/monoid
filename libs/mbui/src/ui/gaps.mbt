@@ -84,8 +84,10 @@ pub fn Tester::gap_faults(self : Tester) -> Array[String] {
   ignore(self)
   let c = g()
   // (the window's tree's nodes put among the frame's as the corner rule has them (Ctx::with_tree_nodes): a page made
-  // as nodes is held to every rule as an old view's is; till 2026-11-14 rules 2 to 8 saw the old view's alone)
-  let out = c.with_tree_nodes(fn() { c.gap_rules() })
+  // as nodes is held to every rule as an old view's is; till 2026-11-14 rules 2 to 8 saw the old view's alone, and till
+  // 2026-11-15 its words and drawings neither, its words laid out as none and its icons drawing nothing: `facts`, its
+  // words as drawn and what spreads its own (tree_marks_at, LaidFacts' spread))
+  let out = c.with_tree_nodes(facts=true, fn() { c.gap_rules() })
   c.tree_lit_apart_faults(out)
   out
 }
@@ -264,6 +266,14 @@ fn Node::gap_content(self : Node) -> Bool {
   } else {
     self.kind == kind_box && (self.shapes.length() > 0 || self.lines.length() > 0)
   }
+}
+
+///|
+/// Whether node `i` is one of the window's tree's that draws a mark of its own (an icon, a picture, as
+/// Ctx::with_tree_nodes `facts` tells it: tree_marks_at), what an old view's node says by its shapes.
+fn Ctx::tree_draws(self : Ctx, i : Int) -> Bool {
+  let n = self.nodes[i]
+  tree_marks_at.contains(i) && n.fw > 0.0 && n.fh > 0.0 && n.opacity > 0.01
 }
 
 ///|
@@ -527,7 +537,7 @@ fn Ctx::gap_rules(self : Ctx) -> Array[String] {
   let held : Map[Int, Array[Int]] = Map([])
   for i in 0..<n {
     let c = self.nodes[i]
-    if !whole[i] || !c.gap_content() || self.in_picture(i, pictures) {
+    if !whole[i] || !(c.gap_content() || self.tree_draws(i)) || self.in_picture(i, pictures) {
       continue
     }
     let mut q = c.parent
@@ -559,6 +569,8 @@ fn Ctx::gap_rules(self : Ctx) -> Array[String] {
     }
     let mut y0 = 1.0e9
     let mut y1 = -1.0e9
+    let mut sx0 = 1.0e9
+    let mut sx1 = -1.0e9
     let mut tallest = 0.0
     let touched : Array[String] = []
     for k in kids {
@@ -573,6 +585,8 @@ fn Ctx::gap_rules(self : Ctx) -> Array[String] {
       }
       y0 = dmin(y0, cy0)
       y1 = dmax(y1, cy1)
+      sx0 = dmin(sx0, cx0)
+      sx1 = dmax(sx1, cx1)
       tallest = dmax(tallest, cy1 - cy0)
       let words = self.nodes[k].kind != kind_box
       let l = cx0 - gb.x
@@ -692,9 +706,22 @@ fn Ctx::gap_rules(self : Ctx) -> Array[String] {
       }
       (x0 - gb.x, gb.x + gb.fw - x1)
     }
+    // (and where those boxes are not as far in, what is seen in it may be: its words, drawings and blocks with a ground,
+    // wherever in it (its held, as above), not a row's padding nor a button's room whose ground only the hand shows. A
+    // wide chat's bar: its title's row 12 in, its last button's room 6 from its end, concentric with the window's corner
+    // as the corner rule has it, its title and that button's icon each 20 in where the window's corner is round; 2026-11-15)
+    let seen = if sx0 < sx1 { Some((sx0 - gb.x, gb.x + gb.fw - sx1)) } else { None }
+    let seen_even = match seen {
+      Some((sl, sr)) => (sl - sr).abs() <= 2.0 * gap_slack
+      None => false
+    }
     let one_line = y1 - y0 <= tallest + gap_slack
-    if bx0 < bx1 && one_line && l < gb.fw / 4.0 && r < gb.fw / 4.0 && (l - r).abs() > 2.0 * gap_slack {
-      out.push("rule 4: what \{self.named(gi)} holds stands \{l} in from its left, \{r} from its right")
+    if bx0 < bx1 && one_line && l < gb.fw / 4.0 && r < gb.fw / 4.0 && (l - r).abs() > 2.0 * gap_slack && !seen_even {
+      let shown = match seen {
+        Some((sl, sr)) => " (what is seen of it \{sl} and \{sr})"
+        None => ""
+      }
+      out.push("rule 4: what \{self.named(gi)} holds stands \{l} in from its left, \{r} from its right" + shown)
     }
   }
   // 5. one column's blocks aligned: the blocks that show their edges (a ground, an edge, what lights up) half as wide
