@@ -1505,30 +1505,8 @@ impl Inner {
                     let listener = tokio::net::UnixListener::bind(path).map_err(err)?;
                     Ok(Answer::json(json!({ "id": self.keep(Handle::Listener(Arc::new(Listener::Unix(listener)))) })))
                 }
-                // Windows: a named pipe (`\\.\pipe\…`, a runner's: station/native/runner), its instances one connection
-                // each. All taken a moment (the runner makes its next as it takes one): waited for, up to a bound.
-                #[cfg(windows)]
-                {
-                    use tokio::net::windows::named_pipe::ClientOptions;
-                    const ERROR_PIPE_BUSY: i32 = 231;
-                    let path = str_of(&a, "path")?;
-                    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
-                    let pipe = loop {
-                        match ClientOptions::new().open(path) {
-                            Ok(pipe) => break pipe,
-                            // timer: a retry after a failure (every instance busy), up to a deadline
-                            Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) && tokio::time::Instant::now() < deadline => {
-                                tokio::time::sleep(std::time::Duration::from_millis(20)).await
-                            }
-                            Err(e) => return Err(err(e)),
-                        }
-                    };
-                    let (read, write) = tokio::io::split(pipe);
-                    let id = self.keep(Handle::Tcp { read: Arc::new(tokio::sync::Mutex::new(Box::new(read))), write: Arc::new(tokio::sync::Mutex::new(Box::new(write))) });
-                    Ok(Answer::json(json!({ "id": id })))
-                }
-                #[cfg(not(any(unix, windows)))]
-                Err("no local sockets here".into())
+                #[cfg(not(unix))]
+                Err("Unix sockets are Unix's".into())
             }
             // Two sockets carried into each other, both ways, here (each side's end said to the other as it comes),
             // answered once both ways ended: what a station's program passes on whole, with no step of its own per piece.
