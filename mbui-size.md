@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [832dfa290](https://github.com/AFK-surf/monoid/commit/832dfa2903242fad5d75b66d79d34fc740f83d81) station: an actor does nothing to a runtime sessio | 2.08 | 2.87 | 12.34 | 33.28 | 47.88 | 28.82 | 56.61 | 99.22 | 116.49 |
 | [6c9755ef0](https://github.com/AFK-surf/monoid/commit/6c9755ef052deadcf720cf8c12a7b10b23fce457) app: show intermediate profile states, non-window  | 2.08 | 2.86 | 12.31 | 33.21 | 47.76 | 28.76 | 56.53 | 98.91 | 117.11 |
 | [74b2a61d5](https://github.com/AFK-surf/monoid/commit/74b2a61d515e916bcc98e05bcfb4d6c85a25b016) perf(mbui): a list drawn whole as one read against | 2.08 | 2.86 | 12.3 | 33.23 | 47.9 | 28.74 | 56.48 | 98.83 | 110.66 |
 | [d27880374](https://github.com/AFK-surf/monoid/commit/d27880374d1f9b85e99b63d9ebd7ba8bfac4c4ef) Windows: a frame's beats counted from the frame be | 2.08 | 2.86 | 12.3 | 33.23 | 47.9 | 28.74 | 56.48 | 98.83 | 110.66 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [0c35eeb58](https://github.com/AFK-surf/monoid/commit/0c35eeb58164d1778b742b006e64f5843c7379f4) app: a wide strip in a message shows its start, no | 2.06 | 2.84 | 12.22 | 32.1 | 45.22 | 28.69 | 56.39 | 98.62 | 112.61 |
 | [13a2cad8f](https://github.com/AFK-surf/monoid/commit/13a2cad8f97d5f2179c908f8901c592ef525ac19) mbui: what is cut short in a column is no wider th | 2.06 | 2.84 | 12.22 | 32.1 | 45.21 | 28.69 | 56.39 | 98.7 | 123.89 |
 | [66b6a8406](https://github.com/AFK-surf/monoid/commit/66b6a8406dd9d559d22a5c2cd8aaea9a2a1d7316) app: a Farview tab's tiles drawn one a moment, at  | 2.06 | 2.84 | 12.22 | 32.1 | 45.21 | 28.69 | 56.39 | 98.7 | 123.89 |
-| [7b151c314](https://github.com/AFK-surf/monoid/commit/7b151c3145aa99a7727896c8d94c2d58fb546a22) feat(mbui): native .mbui declarative widgets & san | 2.06 | 2.84 | 12.22 | 32.1 | 45.21 | 28.69 | 56.39 | 98.55 | 114.83 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [832dfa290](https://github.com/AFK-surf/monoid/commit/832dfa2903242fad5d75b66d79d34fc740f83d81) station: an actor does nothing to a runtime sessio | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.12 |
 | [6c9755ef0](https://github.com/AFK-surf/monoid/commit/6c9755ef052deadcf720cf8c12a7b10b23fce457) app: show intermediate profile states, non-window  | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.12 |
 | [74b2a61d5](https://github.com/AFK-surf/monoid/commit/74b2a61d515e916bcc98e05bcfb4d6c85a25b016) perf(mbui): a list drawn whole as one read against | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.12 |
 | [d27880374](https://github.com/AFK-surf/monoid/commit/d27880374d1f9b85e99b63d9ebd7ba8bfac4c4ef) Windows: a frame's beats counted from the frame be | 0.41 | 0.53 | 1.98 | 3.09 | 4.54 | 1.46 | 3.81 | 57.3 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [0c35eeb58](https://github.com/AFK-surf/monoid/commit/0c35eeb58164d1778b742b006e64f5843c7379f4) app: a wide strip in a message shows its start, no | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.46 |
 | [13a2cad8f](https://github.com/AFK-surf/monoid/commit/13a2cad8f97d5f2179c908f8901c592ef525ac19) mbui: what is cut short in a column is no wider th | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.46 |
 | [66b6a8406](https://github.com/AFK-surf/monoid/commit/66b6a8406dd9d559d22a5c2cd8aaea9a2a1d7316) app: a Farview tab's tiles drawn one a moment, at  | 0.41 | 0.53 | 1.98 | 3.09 | 4.54 | 1.46 | 3.81 | 57.25 |
-| [7b151c314](https://github.com/AFK-surf/monoid/commit/7b151c3145aa99a7727896c8d94c2d58fb546a22) feat(mbui): native .mbui declarative widgets & san | 0.41 | 0.53 | 1.98 | 3.09 | 4.54 | 1.46 | 3.81 | 57.25 |
