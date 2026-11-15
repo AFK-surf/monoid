@@ -1735,6 +1735,8 @@ pub fn[K : Hash + Eq] View::scrolls_window(
           None => 0.0
         }
         let most = dmax(0.0, whole_now() - vh)
+        // (no further up than the hand takes it: what is tucked over its top kept out of sight, Scroll::top_now)
+        let top = dmin(@signals.untracked(fn() { s.top_now() }), most)
         let to = match ask {
           // (its offset from under what covers its top, as the fill's)
           Bring(k, off, _) =>
@@ -1751,8 +1753,8 @@ pub fn[K : Hash + Eq] View::scrolls_window(
             match (ask, end_glide.val, s.notch.untracked()) {
               // (back to its foot again while it glides there: on from where it is, as fast as it goes)
               (ToEnd, Some(g), Some(n)) if physical_equal(g, n) =>
-                s.glide_on(self, self.cause_at(), dclamp(to, 0.0, most), most)
-              _ => s.glide_to(self, self.cause_at(), dclamp(to, 0.0, most))
+                s.glide_on(self, self.cause_at(), dclamp(to, top, most), most)
+              _ => s.glide_to(self, self.cause_at(), dclamp(to, top, most))
             }
             end_glide.val = match ask {
               ToEnd => s.notch.untracked()

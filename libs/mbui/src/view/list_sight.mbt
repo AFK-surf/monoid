@@ -96,7 +96,7 @@ fn[K] sight_counted(
       _ => s.where_at(t)
     }
   }
-  let x = dclamp(x, 0.0, most)
+  let x = dclamp(x, dmin(s.top_now(), most), most)
   let below = x + vh
   // (the first with something showing under what covers its top (Scroll::top_covered: the bar it runs under), how far
   // down it that edge is)
