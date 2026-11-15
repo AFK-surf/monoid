@@ -511,6 +511,8 @@ pub fn View::shrink(self : View, s : Live[Double], loc~ : SourceLoc) -> View {
     self.tree.nodes[self.at].cut = false
     self.tree.nodes[self.at].shrink_said = Some(s)
     self.tree.give_way_applied(self.at)
+    // (no longer held to its column's width as cut short: Tree::capped_applied)
+    self.tree.capped_applied(self.at)
   })
   self
 }
@@ -518,8 +520,10 @@ pub fn View::shrink(self : View, s : Live[Double], loc~ : SourceLoc) -> View {
 ///|
 /// Cut short where what holds it has not the room across (an old view's w=Cut: ui's layout.mbt, `Cut => if in_row {
 /// shrink = 1.0 }`): in a row it gives way along the row's length; in a column it keeps its own height, never squeezed
-/// down. That alone: how wide it may be and whether its words end in an ellipsis are their own properties
-/// (View::min_width, View::max_width, View::allow_ellipsis). As what holds it lays out now (View::row), as it changes.
+/// down, and is no wider than the column, no width said of it (an old view's `capped`: a most said is that where the
+/// column has the room, the column's where it has less, CSS's min(100%, 560px); Tree::capped_applied). Whether its
+/// words end in an ellipsis is their own property (View::allow_ellipsis). As what holds it lays out now (View::row), as
+/// it changes.
 /// How much it gives way said otherwise (View::shrink) or this said again: the one said last.
 #callsite(autofill(loc))
 pub fn View::cuts(self : View, on : Live[Bool], loc~ : SourceLoc) -> View {
@@ -541,6 +545,8 @@ pub fn View::cuts(self : View, on : Live[Bool], loc~ : SourceLoc) -> View {
       }
       self.tree.give_way_applied(self.at)
     }
+    // (no wider than its column while cut short there, or as it was: Tree::capped_applied)
+    self.tree.capped_applied(self.at)
   })
   self
 }

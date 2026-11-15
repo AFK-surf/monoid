@@ -198,7 +198,7 @@ pub fn message_files(
           match flight {
             Some(f) => flight_landing(
               c, f, item, key, share=landing_share(a),
-              top_crop=file_kind(a.name) == "image" && tall_image_cropped(a), paint~,
+              start_crop=file_kind(a.name) == "image" && image_cropped_from_start(a), paint~,
             )
             None => ()
           }
@@ -344,11 +344,16 @@ fn own_size(a : Attachment) -> (Double, Double)? {
 }
 
 ///|
-/// Whether the chat's minimum width crops a tall image: show its beginning, at the top of the box.
-fn tall_image_cropped(a : Attachment) -> Bool {
+/// Whether the chat's least side crops an image: a tall one at the least width, a wide strip at the least height. Either
+/// shows its beginning (its top, its left), not its middle: the middle of a strip cut from a page is as often its bare
+/// ground (2026-11-15: a window's head cut across, its title at the left and its buttons at the right, shown as a box
+/// of nothing).
+fn image_cropped_from_start(a : Attachment) -> Bool {
   let (bw, bh, _) = image_box(a, image_least, min_side=image_min_side)
   match own_size(a) {
-    Some((w, h)) => bw == image_min_side && bh == box_most_h && w * bh / h < bw
+    Some((w, h)) =>
+      (bw == image_min_side && bh == box_most_h && w * bh / h < bw) ||
+      (bh == image_min_side && bw == box_most_w && h * bw / w < bh)
     None => false
   }
 }
@@ -478,8 +483,8 @@ fn image_item(c : @ui.Ctx, src : Source, here : MessageHere, a : Attachment, w :
   // what holds it where it is in a corner of that, a quote's card)
   let (sw, sh) = picture_share(a, image_least, min_side=image_min_side)
   let (pw, ph) = (w * sw, h * sh)
-  let top_crop = tall_image_cropped(a)
-  let fit : @ui.Fit = if top_crop { FitCoverAt(0.0) } else { FitCover }
+  let start_crop = image_cropped_from_start(a)
+  let fit : @ui.Fit = if start_crop { FitCoverFrom(0.0, 0.0) } else { FitCover }
   let likeness = image_wait_colours(a.thumbhash, pw, ph, c.color(Neutral), c.color(Bg)).unwrap_or("")
   let picture = fn() { media_content(c, p, pw, ph, fit, 0.0) }
   // one the device holds and not decoded yet: what the app's first page waits for
@@ -523,7 +528,7 @@ fn image_item(c : @ui.Ctx, src : Source, here : MessageHere, a : Attachment, w :
     }
   })
   // where it is and what it shows, for the preview to fly from and back into; hidden while the preview is its picture
-  note_thumb(c, thumb, b, corner, picture=shows, letterbox~, top_crop~, list=list_of(here))
+  note_thumb(c, thumb, b, corner, picture=shows, letterbox~, start_crop~, list=list_of(here))
   c.look(b, @ui.look(alpha=thumb_shows(thumb)))
   // held by a finger for its menu: lifted over the menu's scrim (@sf.lift_over)
   @sf.lift_over(c, b, "file/" + thumb, @sf.lift_of(c, "file/" + thumb, false, file_held_open(open)), file_lift_scale)

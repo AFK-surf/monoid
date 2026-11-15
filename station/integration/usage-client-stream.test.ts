@@ -12,7 +12,8 @@ import { base, started } from "../../client/core-ts/test/station-fixture.ts";
 import { error, json, type Request } from "../src/api/request.ts";
 import { usageRoutes } from "../src/api/routes/usage.ts";
 import { compressed } from "../src/mesh/compress.ts";
-import { Readers } from "../src/read/pool.ts";
+import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { readersOf } from "../test/reference.ts";
 import { Store } from "../src/store/store.ts";
 import { installCompactUsage } from "../src/store/usage-compact.ts";
 import { installUsageSummaryBlocks } from "../src/store/usage-summary-blocks.ts";
@@ -21,7 +22,8 @@ import { watchCompactMoves } from "../src/usage/module.ts";
 for (const cancel of [false, true]) test(`a client receives compressed usage from the station${cancel ? " and can leave" : " through preparation"}`, async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "usage-client-stream-"));
   const store = Store.open(join(dir, "stillfail.db"));
-  const readers = new Readers(dir, 1);
+  // (the station's readers where the program is built here, else the reads as the reader thread answered them before)
+  const readers = readersOf(dir, mbReaderBinary());
   let handover!: () => void, noteWait!: () => void, noteAbort!: () => void;
   const waitStarted = new Promise<void>((resolve) => { noteWait = resolve; });
   const waitAborted = new Promise<void>((resolve) => { noteAbort = resolve; });

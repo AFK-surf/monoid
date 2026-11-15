@@ -626,7 +626,7 @@ pub fn flight_grounded(@ui.Ctx, SendFlight) -> Bool
 
 pub fn flight_hint_away(@ui.Ctx, String) -> Bool
 
-pub fn flight_landing(@ui.Ctx, SendFlight, Int32, String, share? : (Double, Double), top_crop? : Bool, paint? : ((Double, Double, @ui.Fit, Double) -> Unit)?) -> Unit
+pub fn flight_landing(@ui.Ctx, SendFlight, Int32, String, share? : (Double, Double), start_crop? : Bool, paint? : ((Double, Double, @ui.Fit, Double) -> Unit)?) -> Unit
 
 pub fn flight_landing_words(@ui.Ctx, SendFlight, Int32) -> Unit
 
@@ -1106,7 +1106,7 @@ pub let note_pop_ms : Double
 
 pub let note_subtle : Int64
 
-pub fn note_thumb(@ui.Ctx, String, Int32, Double, picture~ : String, letterbox? : Bool, top_crop? : Bool, list? : String, over? : (Double) -> Unit, said? : String) -> Unit
+pub fn note_thumb(@ui.Ctx, String, Int32, Double, picture~ : String, letterbox? : Bool, start_crop? : Bool, list? : String, over? : (Double) -> Unit, said? : String) -> Unit
 
 pub let notice_host : @ref.Ref[NoticeHost]
 
@@ -3484,7 +3484,7 @@ pub(all) struct Thumb {
   h : Double
   corners : @motion.MeasuredCorners
   letterbox : Bool
-  top_crop : Bool
+  start_crop : Bool
   picture : String
   seen : (Double, Double, Double, Double)?
   clear : (Double, Double)?
@@ -3497,7 +3497,7 @@ type ThumbDrawn
 pub(all) struct ThumbLook {
   radius : Double
   letterbox : Bool
-  top_crop : Bool
+  start_crop : Bool
   picture : String
   id : Int32
   list : String

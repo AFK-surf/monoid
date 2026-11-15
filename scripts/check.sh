@@ -163,6 +163,9 @@ report() {
     read -r rc took < "$tmp/step.$i.done"
     if [ "$rc" = 0 ]; then echo "· $name … ok (${took} s)"; else
       echo "· $name … FAILED (${took} s)"
+      # (what a test file said of itself as it ended, before its summary: a process it left running, its station
+      # ending; a file that failed whole says nothing more in the summary's last lines)
+      grep -E "left running after its tests|^  [0-9]+ |the program running the sessions ended" "$tmp/step.$i.log" | head -20 | sed 's/^/    /'
       tail -40 "$tmp/step.$i.log" | sed 's/^/    /'
       failed="$failed $name"
     fi

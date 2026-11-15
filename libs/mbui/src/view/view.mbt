@@ -91,9 +91,9 @@ pub(all) struct Look {
   /// its picture contained in it, all of it shown as wide for as tall as it is, in its middle (View::image_contains);
   /// else filling it (covering it said, covering it)
   mut image_contain : Bool
-  /// its picture covering it from a side said along its height (0 its top, 1 its foot): cut where it is not as wide
+  /// its picture covering it from where it says, across and down (0 its start, 1 its end): cut where it is not as wide
   /// for as tall, as much of it as shows taken from there (View::image_covers_at); None as image_cover says
-  mut image_cover_at : Double?
+  mut image_cover_at : (Double, Double)?
   /// its picture fading in as it is decoded (View::image_fades); else there at once
   mut image_fade : Bool
   /// where in it its picture lies (x, y, w, h, in its own terms) and the matte filling the rest of it, drawn with the
@@ -187,8 +187,8 @@ pub(all) struct Content {
   image_cover : Bool
   /// its picture contained in it, not stretched to it (View::image_contains)
   image_contain : Bool
-  /// its picture covering it from a side along its height (View::image_covers_at)
-  image_cover_at : Double?
+  /// its picture covering it from where it says, across and down (View::image_covers_at)
+  image_cover_at : (Double, Double)?
   /// its picture fading in as it is decoded (View::image_fades)
   image_fade : Bool
   /// where in it its picture lies and the matte round it (View::image_in)
@@ -295,8 +295,8 @@ pub(all) struct Drawn {
   image_cover : Bool
   /// its picture contained in it, not stretched to it (View::image_contains)
   image_contain : Bool
-  /// its picture covering it from a side along its height (View::image_covers_at)
-  image_cover_at : Double?
+  /// its picture covering it from where it says, across and down (View::image_covers_at)
+  image_cover_at : (Double, Double)?
   /// its picture fading in as it is decoded (View::image_fades)
   image_fade : Bool
   /// where in it its picture lies and the matte round it (View::image_in)
@@ -4716,11 +4716,11 @@ pub fn View::image_covers(self : View, on : Live[Bool], loc~ : SourceLoc) -> Vie
 
 ///|
 /// Its picture (View::image) covering it as it changes, cut where it is not as wide for as tall, as much of it as shows
-/// taken from `at` along its height (0: its top, as a long screenshot is shown from its start; 1: its foot; 0.5: its
-/// middle, as covering it is) and across it from its middle (an old view's FitCoverAt): what the box shows of it, its
-/// box the picture drawn; None, as View::image_covers says. Said, it covers it whatever else is said. Paint's.
+/// taken from `at`, across and down (0: its start, as a long screenshot is shown from its top and a wide strip from its
+/// left; 1: its end; 0.5: its middle, as covering it is; only the side that is cut moves; an old view's FitCoverFrom):
+/// what the box shows of it, its box the picture drawn; None, as View::image_covers says. Said, it covers it whatever else is said. Paint's.
 #callsite(autofill(loc))
-pub fn View::image_covers_at(self : View, at : Live[Double?], loc~ : SourceLoc) -> View {
+pub fn View::image_covers_at(self : View, at : Live[(Double, Double)?], loc~ : SourceLoc) -> View {
   self.bind(loc~, ImageCoverAt, at, Paint, fn(at) { self.tree.nodes[self.at].look.image_cover_at = at })
   self
 }
@@ -10914,9 +10914,11 @@ fn Tree::walk(self : Tree, at : Int, gen : Int, holder_laid : Bool) -> Unit {
 
 ///|
 /// How wide node `at` may be at most, of what is said of it (View::max_width) and what it is, as an old view's box is
-/// (ui/layout.mbt's `capped`): words on one line (not wrapped, plain or in pieces) in a column (past any slot), no width
-/// said of them (View::width), no wider than the column (all of its width; what is said, where the column has less:
-/// Within), cut short there; else what is said, else none.
+/// (ui/layout.mbt's `capped`): words on one line (not wrapped, plain or in pieces), or anything cut short (View::cuts,
+/// an old view's `w=Cut`: a card as wide as what it says), in a column (past any slot), no width said of them
+/// (View::width), no wider than the column (all of its width; what is said, where the column has less: Within), cut
+/// short there; else what is said, else none. (Cut short alone was left out till 2026-11-15: an agent's request's card
+/// as wide as its one-line command, said 560 at most, was 560 on a phone's column of 390, past the screen's edge.)
 fn Tree::capped_applied(self : Tree, at : Int) -> Unit {
   let n = self.nodes[at]
   guard n.live else { return }
@@ -10931,7 +10933,7 @@ fn Tree::capped_applied(self : Tree, at : Int) -> Unit {
     Some(Some(w)) => Some(w)
     _ => None
   }
-  let max : @flex.Dim = if (one_line && in_column && st.width_kind() == @flex.LEN_AUTO) || n.max_w_within {
+  let max : @flex.Dim = if ((one_line || n.cut) && in_column && st.width_kind() == @flex.LEN_AUTO) || n.max_w_within {
     match said {
       Some(w) => Within(w)
       None => Pct(100.0)

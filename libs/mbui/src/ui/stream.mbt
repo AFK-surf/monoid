@@ -839,12 +839,12 @@ fn Ctx::paint_stream(self : Ctx, i : Int, n : Node, alpha : Double) -> Bool {
   }
   let (x, y, w, h, u0, v0, du, dv) = match fit {
     FitFill => (bx, by, bw, bh, 0.0, 0.0, 1.0, 1.0)
-    FitCover | FitCoverAt(_) => {
+    FitCover | FitCoverAt(_) | FitCoverFrom(_, _) => {
       let k = dmax(bw / pw, bh / ph)
       let du = bw / k / pw
       let dv = bh / k / ph
-      let vertical = match fit { FitCoverAt(y) => dclamp(y, 0.0, 1.0); _ => 0.5 }
-      (bx, by, bw, bh, (1.0 - du) / 2.0, (1.0 - dv) * vertical, du, dv)
+      let (across, down) = fit.cover_from()
+      (bx, by, bw, bh, (1.0 - du) * across, (1.0 - dv) * down, du, dv)
     }
     FitContain => {
       let k = dmin(bw / pw, bh / ph)

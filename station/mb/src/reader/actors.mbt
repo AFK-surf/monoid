@@ -1,4 +1,4 @@
-// The sessions' actors (station/src/sessions/actor.ts `SessionActor`) run here, in the `--agents` program: each
+// The sessions' actors (station/src/sessions/actor.ts `SessionActor`) run here, in the sessions' program (`--sessions`, with agents.mbt): each
 // session's state and its serial queue, every change of it going through the queue as there (a runtime's events, what
 // its tools say, what the hub asks). What an actor needs of the station that is not here yet (the store, the drivers
 // and their runtime sessions, the chat surfaces, the account pool, the live view, the words) it asks of Node (`rpc`),
@@ -342,14 +342,27 @@ async fn Actors::enqueue(self : Actors, a : Actor, task : async () -> Unit raise
 }
 
 ///|
-pub async fn serve_actors(host : @host.Host) -> Unit {
+/// The sessions' program (`--sessions`): the agents' output read (agents.mbt) and the actors (this file) in one, each
+/// line of Node's to the one it is for: an actor's says `actor`, or is an answer, a wait's time, the database's place.
+pub async fn serve_sessions(host : @host.Host) -> Unit {
   let s = Actors::new(host)
+  let a = Agents::new(host)
   host.say(({ "ready": true } : Json).stringify())
   while host.line() is Some(line) {
-    s.heard(line)
-    s.quiet()
+    if actors_line(line) {
+      s.heard(line)
+      s.quiet()
+    } else {
+      a.told(line)
+    }
   }
   @host.exit(0)
+}
+
+///|
+/// Whether a line of Node's is for the actors: what Node says them begins so (mb-actor.ts `post`, its keys first).
+fn actors_line(line : String) -> Bool {
+  ["{\"call\":", "{\"answer\":", "{\"due\":", "{\"db\":", "{\"runtime\":", "{\"event\":", "{\"codexUpdated\":"].iter().any(p => line.has_prefix(p))
 }
 
 ///|
@@ -361,12 +374,25 @@ fn Actors::heard(self : Actors, line : String) -> Unit {
     self.now = now
   }
   match said {
-    { "db": String(path), .. } => {
-      self.db = Some(@sql.Db::attach(self.host, path, wait=5000)) catch {
-        e => {
-          @host.note("actors: the station's database not opened: " + (match e { @wire.ShellError(m) => m }))
-          None
-        }
+    { "db": place, .. } => {
+      // (a hub's actors begin: those of one before it, closed, go, and what it is told is counted from here)
+      self.actors.clear()
+      self.asked.clear()
+      self.timers.clear()
+      self.seen = 1
+      self.active = 0
+      if self.db is Some(db) {
+        db.close()
+      }
+      self.db = match place {
+        String(path) =>
+          Some(@sql.Db::attach(self.host, path, wait=5000)) catch {
+            e => {
+              @host.note("actors: the station's database not opened: " + (match e { @wire.ShellError(m) => m }))
+              None
+            }
+          }
+        _ => None
       }
       return
     }

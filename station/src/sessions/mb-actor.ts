@@ -1,16 +1,16 @@
-// The sessions' actors run in the MoonBit program (station/mb's reader `--actors`, mb/src/reader/actors.mbt and
-// actor_run.mbt): each session's state and its serial queue are there, as actor.ts keeps them here where the program is
-// not (a checkout without it, Windows; STILLFAIL_ACTORS_HOST=0). This is what the hub holds of each (`MbActor`, with
-// SessionActor's methods): what it is asked it says to the program (`call`, answered `returned`), with its runtime
-// session's events as they come (`event`); what the program asks of the station it answers (`rpc`): the store, the hub's
-// deps, its runtime sessions (kept here by a number, `handle`), its chats, and the words and formats of what agents are
-// told (actor.ts's functions, shared with SessionActor). What the hub reads of an actor at once (where it stands, its
-// queue run out) is what the program last told of it (`mirror`). Its time is the hub's clock: said with every line
-// (`now`), its waits that clock's (`after`, told `due`), so a test's TestClock moves them as the rest.
+// The sessions' actors run in the MoonBit program (station/mb's reader `--sessions`, mb/src/reader/actors.mbt and
+// actor_run.mbt): each session's state and its serial queue are there. This is what the hub holds of each (`MbActor`):
+// what it is asked it says to the program (`call`, answered `returned`), with its runtime session's events as they come
+// (`event`); what the program asks of the station it answers (`rpc`): the store, the hub's deps, its runtime sessions
+// (kept here by a number, `handle`), its chats, and the words and formats of what agents are told (actor.ts's
+// functions). What the hub reads of an actor at once (where it stands, its queue run out) is what the program last
+// told of it (`mirror`). Its time is the hub's clock: said with every line (`now`), its waits that clock's (`after`,
+// told `due`), so a test's TestClock moves them as the rest.
 import { Clock, Effect, Fiber } from "effect";
 import { log } from "../ops/log.ts";
 import { Said, stationLang } from "../ops/i18n.ts";
-import { MbProcess, mbReaderBinary } from "../read/mb-reader.ts";
+import { SessionsProgram, type ProgramUser } from "../agents/mb-program.ts";
+import { mbReaderBinary } from "../read/mb-reader.ts";
 import { CommandMissing } from "../agents/runner.ts";
 import { modelLimitOf, runtimeLabel, type AgentSession, type RuntimeEvent, type RuntimeKind } from "../agents/runtime.ts";
 import { chars } from "../agents/live.ts";
@@ -47,7 +47,13 @@ type Mirror = {
 
 /// The program, one a hub (`ActorsProgram.open`).
 export class ActorsProgram {
-  readonly #proc: MbProcess;
+  readonly #proc: SessionsProgram;
+  /// What it is to the program (agents/mb-program.ts): the actors' part.
+  readonly #user: ProgramUser = {
+    actors: true,
+    said: (said) => this.#said(said),
+    exited: (code) => this.#lost(code),
+  };
   readonly #clock: Clock.Clock;
   readonly #actors = new Map<string, MbActor>();
   readonly #timers = new Map<number, Fiber.Fiber<void>>();
@@ -65,26 +71,25 @@ export class ActorsProgram {
   private constructor(data: string, clock: Clock.Clock, store: { told(changes: any[]): void; db: any } | null) {
     this.#clock = clock;
     this.#store = store;
-    this.#proc = new MbProcess(mbReaderBinary()!, ["--actors", "1", "--data", data]);
     // (it ends with its hub, which closes it: the process waits on it only while it has something going)
-    this.#proc.ref(false);
-    this.#proc.on("message", (said: Json) => this.#said(said));
-    this.#proc.on("error", (error: Error) => log.error("session", "the program running the sessions failed", { error: error.message }));
-    this.#proc.on("exit", (code: number) => {
-      const lost = !this.#closed;
-      this.#ended();
-      if (!lost) return;
-      // Its sessions' state went with it: the station ends as in a crash, and the next takes up their runners and resumes
-      // their turns (hub.ts `takeUp`, `recover`), as it would have of this one's.
-      log.error("session", "the program running the sessions ended; the station ends with it, as in a crash", { code });
-      process.exit(70);
-    });
+    this.#proc = SessionsProgram.of(data, true)!;
+    this.#proc.use(this.#user);
     programs.add(this);
     endAll();
     // Where the station's database is, for what of the store an actor reads and writes itself (actor_store.mbt); one in
-    // memory (a test's) is this process's alone, asked as the rest is.
+    // memory (a test's) is this process's alone, asked as the rest is. Said first: the program's actors begin here.
     const main = store === null ? undefined : (store.db.prepare("PRAGMA database_list").all() as { name: string; file: string }[]).find((d) => d.name === "main");
-    if (main !== undefined && main.file !== "") this.post({ db: main.file });
+    this.post({ db: main !== undefined && main.file !== "" ? main.file : null });
+  }
+
+  #lost(code: number) {
+    const lost = !this.#closed;
+    this.#ended();
+    if (!lost) return;
+    // Its sessions' state went with it: the station ends as in a crash, and the next takes up their runners and resumes
+    // their turns (hub.ts `takeUp`, `recover`), as it would have of this one's.
+    log.error("session", "the program running the sessions ended; the station ends with it, as in a crash", { code });
+    process.exit(70);
   }
 
   /// Ends it at once (the station's process ends).
@@ -92,9 +97,9 @@ export class ActorsProgram {
     this.#proc.kill();
   }
 
-  /// The program for a hub on `data`, where it is built (none: the hub's actors are SessionActor's).
+  /// The program for a hub on `data`, where it is built (none: a checkout that did not build it runs no session).
   static open(data: string, clock: Clock.Clock, store: { told(changes: any[]): void; db: any } | null = null): ActorsProgram | null {
-    if (process.env.STILLFAIL_ACTORS_HOST === "0" || mbReaderBinary() === null) return null;
+    if (mbReaderBinary() === null) return null;
     return new ActorsProgram(data, clock, store);
   }
 
@@ -108,7 +113,7 @@ export class ActorsProgram {
     return this.#sent > this.#seen || this.#active > 0 || this.#answering > 0;
   }
 
-  /// What it asked that is being answered here: its actor waits on it, as SessionActor waits on what it awaits.
+  /// What it asked that is being answered here: its actor waits on it.
   #answering = 0;
 
   actor(key: string, runtime: RuntimeKind, deps: SessionDeps): MbActor {
@@ -122,7 +127,7 @@ export class ActorsProgram {
     if (this.#closed) return false;
     this.#sent++;
     if (TRACE) process.stderr.write(`actors < ${JSON.stringify(message).slice(0, 400)}\n`);
-    this.#proc.postMessage({ ...message, now: this.now() });
+    this.#proc.post({ ...message, now: this.now() });
     this.#held();
     return true;
   }
@@ -133,7 +138,7 @@ export class ActorsProgram {
     const on = this.busy() || this.#calls.size > 0;
     if (on === this.#refd || this.#closed) return;
     this.#refd = on;
-    this.#proc.ref(on);
+    this.#proc.hold(this.#user, on);
   }
 
   /// Asks it `method` of actor `key`: what it answers (null where it is gone).
@@ -228,7 +233,7 @@ export class ActorsProgram {
   async close() {
     if (this.#closed) return;
     this.#ended();
-    await this.#proc.terminate();
+    await this.#proc.release(this.#user);
   }
 }
 
@@ -274,7 +279,7 @@ function errorBack(error: Json): Error {
   return error?.said === true ? new Said(message) : new Error(message);
 }
 
-/// A session's actor as the hub holds it (SessionActor's methods), run by the program.
+/// A session's actor as the hub holds it, run by the program.
 export class MbActor {
   readonly key: string;
   runtime: RuntimeKind;
@@ -318,7 +323,7 @@ export class MbActor {
   }
 
   /// What it had been given that its model had not read, read as its model is asked (`requesting`): so at once here,
-  /// as SessionActor has it, its tools asking next; a mirror said before the program took that in does not say it again.
+  /// its tools asking next; a mirror said before the program took that in does not say it again.
   #readAt = 0;
 
   mirrored(state: Mirror) {

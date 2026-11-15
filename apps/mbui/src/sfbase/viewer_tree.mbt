@@ -179,7 +179,7 @@ fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
       // corners, how its picture sits in it, which; what it draws over its picture goes with it)
       let at = vw
         .flight_from(@ui.current())
-        .map(fn(t) -> ThumbDrawn { { box: (t.x, t.y, t.w, t.h), seen: t.seen, clear: t.clear, corners: t.corners.each(), letterbox: t.letterbox, top_crop: t.top_crop, picture: t.picture } })
+        .map(fn(t) -> ThumbDrawn { { box: (t.x, t.y, t.w, t.h), seen: t.seen, clear: t.clear, corners: t.corners.each(), letterbox: t.letterbox, start_crop: t.start_crop, picture: t.picture } })
       if vw.flies {
         at
       } else {
@@ -1539,7 +1539,7 @@ struct ThumbDrawn {
   clear : (Double, Double)?
   corners : (Double, Double, Double, Double)
   letterbox : Bool
-  top_crop : Bool
+  start_crop : Bool
   picture : String
 }
 

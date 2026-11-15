@@ -54,8 +54,10 @@
 
 - Everything lasting is one SQLite file, `stillfail.db` (`src/store/store.ts`, schema in `src/store/schema.ts`): one
   write connection on the main thread; reads in reader threads (`src/read/pool.ts`: what is told as it changes and
-  what devices ask each on a line of its own) or the MoonBit program (`mb/`) for the reads moved to it, the worker
-  kept for a checkout without it. A move to the program is compared with the worker on the same data. At a handover
+  what devices ask each on a line of its own) or the MoonBit program (`mb/`) for the reads moved to it: every read a
+  device asks (`src/read/pool.ts` MOVED, HISTORY), the station's reader thread answering only its checkpoint and a
+  card's queued pages (`src/read/worker.ts`). A move to the program is compared with the reads as a reader thread
+  answered them before (`test/reference-worker.ts`, given a test's Readers by `test/reference.ts`) on the same data. At a handover
   the next process opens it while the one serving writes: every connection waits its turn (a busy timeout), and a
   transaction that writes begins `BEGIN IMMEDIATE` (`scripts/check.sh` refuses what a change adds otherwise).
 - A read answers by an index and a limit, never by going through all a station has (a station keeps months of chats):
@@ -86,14 +88,14 @@
 
 - One actor per session: every change to its state, runtime events, deliveries and what its tools say, goes through its
   serial queue. Input is a prompt when idle, a steer during a turn, else queued. The actors run in the MoonBit program
-  (`mb/src/reader/actors.mbt`, `actor_run.mbt`; reader `--actors`), the hub holding a shell of each
+  (`mb/src/reader/actors.mbt`, `actor_run.mbt`; reader `--sessions`, one program with the agents' output, `src/agents/mb-program.ts`), the hub holding a shell of each
   (`src/sessions/mb-actor.ts`) that answers what the program asks of the station (the store, the drivers, the chats,
   the words, all shared with `src/sessions/actor.ts`) and reads at once what it last told of each. What of the store
   it reads and writes most (its turns, running, its session's row) it does itself on the station's database
   (`mb/src/reader/actor_store.mbt`, store.ts's statements), telling Node's store what changed; a store in memory is
-  asked through Node, so the hub's tests keep theirs in a file (`test/hub-fakes.ts`). `SessionActor`
-  (`actor.ts`) is the actor where the program is not (`STILLFAIL_ACTORS_HOST=0`). A test's `settle()` waits for the
-  program too (`actorsBusy`); a test that replaces SessionActor's own steps runs on it.
+  asked through Node, so the hub's tests keep theirs in a file (`test/hub-fakes.ts`). The program is built for every
+  system a station runs on, so there is no actor in TypeScript to fall back to. A test's `settle()` waits for the
+  program too (`actorsBusy`).
 - Runtimes are drivers behind one seam (`src/agents/runtime.ts`): Claude Code a `claude -p` process per session;
   Codex one app-server per account, a thread per session, whose per-session settings go in `thread/start`'s config,
   never the process's environment; the others in `src/agents/`. A driver owns its child's stdin. Claude Code's output
@@ -101,7 +103,7 @@
   where it is built, off the station's thread: Node starts and ends the processes and is told the events, each line
   acknowledged to its runner once Node took them; a handover holds its reading first (`freeze`, hub.ts `handOver`).
   A Codex app-server's output is read there too, its lines given Node whole but for its diffs (`turn/diff/updated`,
-  of which the station keeps nothing). One program for every driver, running while it has a process to read.
+  of which the station keeps nothing). One program for every driver and the actors, running while one of them uses it.
   `test/claude-here.test.ts` and `test/codex-here.test.ts` run the drivers' tests with it read here, as where the
   program is not.
 - Their tools are the station's MCP endpoint (`src/tools/`, HTTP on 127.0.0.1, a bearer token per session). What they
@@ -141,6 +143,10 @@
   every line of both: a merge never drops what either had. `test/memory-sync-random.test.ts` holds it over random
   worlds (`MEMORY_RANDOM_SEEDS` for more; it fails on 0.1.9133's code), `test/memory-sync-upgrade.test.ts` that what
   0.1.9133 to 0.1.9168 left (a skill kept apart twice, a station's own file moved) is mended (`#mend`).
+- Every session reads MEMORY.md and a project's skill whole, so neither may grow into a log: past `MEMORY_MOST`,
+  `SKILL_MOST` or a line past `LINE_MOST` (`src/agents/instructions.ts` `overgrown`), the memory a session is told ends
+  with which files to condense (2026-11-15: skills/stillfail/SKILL.md had reached 165 KB of status notes). What a merge
+  kept twice is the agents' to tidy; the instructions say so.
 
 ## How a workspace's devices reach its stations (its ways)
 

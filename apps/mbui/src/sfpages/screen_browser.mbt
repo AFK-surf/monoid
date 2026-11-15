@@ -266,7 +266,7 @@ fn address_bar(c : @ui.Ctx, s : ScreenSess, u : ScreenUi) -> Unit {
       u.address_asked = false
       field.focus()
     }
-    @sf.input(c, key, placeholder=@sf.t("web-pages.screen.addressHint"), field~, small=true, on_submit=fn(words) {
+    @sf.input(c, key, placeholder=@sf.t("web-pages.screen.addressHint"), field~, small=true, high=round_side, on_submit=fn(words) {
       let go = words.trim().to_owned()
       if go == "" {
         return

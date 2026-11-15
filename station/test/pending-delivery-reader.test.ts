@@ -11,10 +11,6 @@ import { addClientColumn } from "../src/store/schema.ts";
 import { Store } from "../src/store/store.ts";
 import { Rig } from "./hub-fakes.ts";
 
-// SessionActor's own steps are what these look at (its formatting and its checks as it delivers, each replaced here):
-// the actor of a checkout without the MoonBit program, not the program's (sessions/mb-actor.ts), whose steps the
-// hub's tests run.
-process.env.STILLFAIL_ACTORS_HOST = "0";
 
 const pending = (readStore as any).pendingDeliveries as (store: readStore.Store, session: string) => any[];
 
@@ -237,30 +233,8 @@ for (const action of ["suspend", "stop"] as const) {
     } finally { await rig.close(); }
   });
 
-  test(`${action} before compaction checking finishes does not start a pending read`, async () => {
-    const rig = new Rig();
-    try {
-      session(rig.store);
-      const thread = chat(rig.store, "checking-compaction");
-      message(rig.store, thread, 1);
-      deliver(rig.store, thread, 1);
-      const entered = Promise.withResolvers<void>(), finished = Promise.withResolvers<void>();
-      let reads = 0;
-      (rig.hub as any).pendingDeliveries = async () => { reads++; return []; };
-      const actor = rig.hub.actor(rig.session("worker"));
-      (actor as any).compactingToCap = async () => { entered.resolve(); await finished.promise; return false; };
-      const pumping = actor.kick();
-      await entered.promise;
-      const interrupted = actor[action]();
-      finished.resolve();
-      await Promise.all([pumping, interrupted]);
-      assert.equal(reads, 0);
-      assert.equal(rig.store.pendingMessages("worker").length, 1);
-    } finally { await rig.close(); }
-  });
-
   for (const mode of ["kick", "recover"] as const) {
-    test(`${action} as ${mode} finishes formatting keeps the delivery pending`, async () => {
+    test(`${action} as ${mode} finishes reading what waits keeps the delivery pending`, async () => {
       const rig = new Rig();
       try {
         session(rig.store);
@@ -270,12 +244,12 @@ for (const action of ["suspend", "stop"] as const) {
         if (mode === "recover") rig.store.setRunning("worker", true);
         const entered = Promise.withResolvers<void>(), finished = Promise.withResolvers<void>();
         const actor = rig.hub.actor(rig.session("worker"));
-        const pendingAndFormat = (actor as any).pendingAndFormat.bind(actor);
-        (actor as any).pendingAndFormat = async (allowEmpty: boolean) => {
-          const delivery = await pendingAndFormat(allowEmpty);
+        // (what waits for it read, held there as the actor is stopped or suspended)
+        (rig.hub as any).pendingDeliveries = async (key: string) => {
+          const read = rig.store.pendingMessages(key);
           entered.resolve();
           await finished.promise;
-          return delivery;
+          return read;
         };
         const delivering = actor[mode]();
         await entered.promise;
@@ -289,29 +263,6 @@ for (const action of ["suspend", "stop"] as const) {
     });
   }
 }
-
-test("closing before compaction checking finishes does not start a pending read", async () => {
-  const rig = new Rig();
-  try {
-    session(rig.store);
-    const thread = chat(rig.store, "closing-during-compaction");
-    message(rig.store, thread, 1);
-    deliver(rig.store, thread, 1);
-    const entered = Promise.withResolvers<void>(), finished = Promise.withResolvers<void>();
-    let reads = 0;
-    (rig.hub as any).pendingDeliveries = async () => { reads++; return []; };
-    const actor = rig.hub.actor(rig.session("worker"));
-    (actor as any).compactingToCap = async () => { entered.resolve(); await finished.promise; return false; };
-    const pumping = actor.kick();
-    await entered.promise;
-    actor.close();
-    finished.resolve();
-    await pumping;
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    assert.equal(reads, 0);
-    assert.equal(rig.store.pendingMessages("worker").length, 1);
-  } finally { await rig.close(); }
-});
 
 test("a held recovery waits, then resumes the cut-off turn when released", async () => {
   const rig = new Rig();

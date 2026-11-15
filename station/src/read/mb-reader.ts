@@ -14,7 +14,7 @@ import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { platform } from "../platform/index.ts";
 import { giveBackfill, releaseStoppedBackfill, takeBackfill } from "../store/backfill.ts";
-import type { Answer, Ask, Ready } from "./worker.ts";
+import type { Answer, Ask, Ready } from "./serve-reads.ts";
 
 /// The program: STILLFAIL_MB_READER, else beside the station's code in a release, else where `moon build` puts it in
 /// a checkout (station/mb/build.sh, for the Mac). None: not built here.
