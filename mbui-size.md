@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [9d5937c45](https://github.com/AFK-surf/monoid/commit/9d5937c45c7f9e0cdd65073c1a0f78286dc79cac) mbui, app: optical stroke width for small icons an | 2.13 | 2.96 | 12.82 | 33.9 | 50.75 | 29.74 | 59.39 | 99.75 | 113.57 |
 | [3e3b93720](https://github.com/AFK-surf/monoid/commit/3e3b9372078fc8c24ba3cebbf185ecbc510c950c) mbui: what an answer marks settled as one change o | 2.13 | 2.96 | 12.81 | 33.9 | 50.74 | 29.19 | 57.93 | 99.35 | 113.26 |
 | [244004774](https://github.com/AFK-surf/monoid/commit/244004774fd2414fc0202a87ca32a72e06bf95fc) base, mbui: a window's loop turns the shell and ta | 2.13 | 2.96 | 12.81 | 33.9 | 50.74 | 29.19 | 57.93 | 99.35 | 113.26 |
 | [3e5fefe9b](https://github.com/AFK-surf/monoid/commit/3e5fefe9baccfaa67c2e7908715fdc60cf408dd6) fix(mbui): open viewer when tapping restored draft | 2.13 | 2.96 | 12.81 | 33.9 | 50.74 | 29.19 | 57.93 | 99.35 | 113.26 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [929becb21](https://github.com/AFK-surf/monoid/commit/929becb21da31c890fce015ee86aedde0e1cceee) app: fix the dragged-file preference (#6430) | 2.09 | 2.87 | 12.37 | 33.31 | 48 | 28.82 | 56.61 | 98.85 | 113.64 |
 | [0a91b2091](https://github.com/AFK-surf/monoid/commit/0a91b20914edcf20ff61dff689a094d988af2411) app: orient quote marks by their place (#6438) | 2.09 | 2.87 | 12.37 | 33.31 | 48 | 28.82 | 56.61 | 98.85 | 112.45 |
 | [90cfea097](https://github.com/AFK-surf/monoid/commit/90cfea097030058f2369f106a18f2d8c50f8f57e) move: a move back lets go itself what waited for t | 2.09 | 2.87 | 12.36 | 33.3 | 47.97 | 28.82 | 56.61 | 98.85 | 149.5 |
-| [fef9e6eca](https://github.com/AFK-surf/monoid/commit/fef9e6eca29f41c497bdfff34df5a07785978510) perf(mbui): a page's list holding pictures drawn a | 2.09 | 2.87 | 12.36 | 33.3 | 47.97 | 28.82 | 56.61 | 98.85 | 149.5 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [9d5937c45](https://github.com/AFK-surf/monoid/commit/9d5937c45c7f9e0cdd65073c1a0f78286dc79cac) mbui, app: optical stroke width for small icons an | 0.42 | 0.54 | 2.07 | 3.17 | 4.94 | 1.53 | 4.06 | 57.26 |
 | [3e3b93720](https://github.com/AFK-surf/monoid/commit/3e3b9372078fc8c24ba3cebbf185ecbc510c950c) mbui: what an answer marks settled as one change o | 0.42 | 0.54 | 2.07 | 3.17 | 4.94 | 1.53 | 4.06 | 57.26 |
 | [244004774](https://github.com/AFK-surf/monoid/commit/244004774fd2414fc0202a87ca32a72e06bf95fc) base, mbui: a window's loop turns the shell and ta | 0.42 | 0.54 | 2.07 | 3.17 | 4.94 | 1.53 | 4.06 | 57.26 |
 | [3e5fefe9b](https://github.com/AFK-surf/monoid/commit/3e5fefe9baccfaa67c2e7908715fdc60cf408dd6) fix(mbui): open viewer when tapping restored draft | 0.42 | 0.54 | 2.07 | 3.17 | 4.94 | 1.52 | 4.06 | 57.41 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [929becb21](https://github.com/AFK-surf/monoid/commit/929becb21da31c890fce015ee86aedde0e1cceee) app: fix the dragged-file preference (#6430) | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.49 |
 | [0a91b2091](https://github.com/AFK-surf/monoid/commit/0a91b20914edcf20ff61dff689a094d988af2411) app: orient quote marks by their place (#6438) | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.49 |
 | [90cfea097](https://github.com/AFK-surf/monoid/commit/90cfea097030058f2369f106a18f2d8c50f8f57e) move: a move back lets go itself what waited for t | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.49 |
-| [fef9e6eca](https://github.com/AFK-surf/monoid/commit/fef9e6eca29f41c497bdfff34df5a07785978510) perf(mbui): a page's list holding pictures drawn a | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.38 |
