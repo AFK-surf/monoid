@@ -1558,9 +1558,10 @@ impl Inner {
             "tcp.read" => {
                 let Handle::Tcp { read, .. } = self.handle(id_of(&a)?)? else { return Err("not a tcp connection".into()) };
                 let mut buf = vec![0u8; 64 * 1024];
-                // (a pipe whose other side closed says so as broken, not as an end: the same to a reader)
+                // (a pipe whose other side closed says so as broken, or as not connected where it was disconnected
+                // (ERROR_PIPE_NOT_CONNECTED), not as an end: the same to a reader)
                 let n = match read.lock().await.read(&mut buf).await {
-                    Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => 0,
+                    Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe || (cfg!(windows) && e.raw_os_error() == Some(233)) => 0,
                     n => n.map_err(err)?,
                 };
                 if n == 0 {
