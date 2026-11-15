@@ -36,6 +36,12 @@ let corners_everywhere_known : Map[String, Int] = {
   known["tablet-en chat-phone-lacks"] = 1
   known["wide-en chat-phone-lacks"] = 2
   known["wide-win-en chat-phone-lacks"] = 2
+  // The board in a Windows window's 大屏, its sidebar closed (sfdesk's place_bare_now): the rail alone at the window's
+  // corners, round as it is wide (21) 6 in where the window's are 8 round, its top and foot ends and its dock's: the
+  // frame's for every place without a sidebar (place-connects and place-usage have the same 4 there, not swept), not
+  // the board's.
+  known["wide-win-zh board"] = 4
+  known["wide-win-en board"] = 4
   known
 }
 
@@ -50,7 +56,7 @@ let corners_everywhere_known : Map[String, Int] = {
 let corners_tape_rail : Array[String] = [
   // (a station's terminals among its screens, a terminal's page over the frame: the rail on the tape under them)
   "settings-station-terminals", "terminal", "terminal-taken",
-  "webdemo", "home", "home-bars", "home-jobs", "home-sheet", "home-news", "new-workspace", "new-workspace-code", "rail-menu",
+  "webdemo", "home", "board", "home-bars", "home-jobs", "home-sheet", "home-news", "new-workspace", "new-workspace-code", "rail-menu",
   "home-station-updates", "station-updates", "home-station-updates-app", "station-updates-app", "place", "switcher", "switcher-found", "keys-dialog", "search", "search-jobs", "search-results", "chat", "chat-agent",
   "chat-agent-unsaid", "chat-answering", "chat-attach", "chat-attach-row", "chat-cards", "chat-compose",
   "chat-download", "chat-failed", "chat-feedback", "chat-image-coming", "chat-file-links", "chat-find", "chat-flash", "chat-flash-mine", "chat-flash-notice",

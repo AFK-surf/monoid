@@ -1921,6 +1921,13 @@ export const SHAPES: Record<string, Shape> = {
   Appearance: words(["system","light","dark"], { doc: "How the pages look: as the system does (the default), or always light, or always dark.", default: "system" }),
   RowPictureSetting: words(["auto","agents","people"], { doc: "Whose pictures lead a chat's row: by how many people the scope has (the default), or always the agents', or the\npeople's.", default: "auto" }),
   ListFilter: words(["all","mine","watching","hidden","archive"], { doc: "What a workspace's chat list shows: all, the viewer's (我参与的), the watching ones (监控中), the viewer's hidden chats (已隐藏), or archived chats (已归档).", default: "all" }),
+  BoardGroup: words(["state","station","person"], { doc: "How a workspace's board columns are grouped: by where each chat stands, by its station, or by who is in it." }),
+  BoardDraft: struct([
+    ["id", "String"],
+    ["title", "String"],
+    ["station", "String"],
+    ["stationName", "String"],
+  ], { doc: "An unstarted task kept in a workspace's 待派发 column on this device: its key, its words, the station it is to run on and that station's name." }),
   Lead: words(["agents","people"], { doc: "Whose pictures lead the rows of a list (`ChatsView::leading`)." }),
   KeptTabs: struct([
     ["tabs", vec("String")],
@@ -2617,6 +2624,9 @@ export const SHAPES: Record<string, Shape> = {
   PrefsView: struct([
     ["onlyMine", "bool", { default: true, doc: "The lists show only the chats and connects the viewer takes part in." }],
     ["onlyWatching", "bool", { default: true, doc: "The chat list shows only the watching chats (监控中); never with `only_mine`." }],
+    ["boardViews", map("String"), { default: true, doc: "How a workspace's chats are shown on this device, by workspace: `board` (by columns), or none (its list)." }],
+    ["boardGroups", map("BoardGroup"), { default: true, doc: "How a workspace's board columns are grouped on this device, by workspace; none: `state`." }],
+    ["boardDrafts", map(vec("BoardDraft")), { default: true, doc: "Unstarted tasks kept in a workspace's 待派发 column on this device, by workspace, newest first (at most 200)." }],
     ["listFilter", map("ListFilter"), { default: true, doc: "The list filter chosen in each workspace, by workspace; one not there goes by `only_mine` and `only_watching`\n(one filter for all, as devices kept it before)." }],
     ["appearance", "Appearance", { default: true }],
     ["accent", opt("String"), { doc: "The app's colour theme on this device: `blue`, `teal`, `purple`, `pink`, `custom:<hue>` (0 to 359: a theme the app\nmakes of that hue), or none for still.fail's orange." }],

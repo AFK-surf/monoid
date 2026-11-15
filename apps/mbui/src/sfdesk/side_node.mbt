@@ -267,6 +267,13 @@ fn lists_band_node(
           }
         }, offered=fn() { true })
       })
+      // the chats as a board (board.mbt): the sidebar closed to its bar, the board the pane's whole
+      // (the first to go where the line has not the room: the stations' newer releases beside it, on the tape)
+      line.fits(Is(true)) |> ignore
+      line.show(at_once=true, fn() { !band_at().in_bar && !@sf.native_on() }, fn(k) {
+        k.drops(Is(1)) |> ignore
+        k.box(fn(f) { board_key_node(f, src, tips) }) |> ignore
+      })
       // the filter: its menu (sfpages' filter_menu), a filter its list, 已归档 the archive's list
       line.show(at_once=true, fn() { view().map(fn(v) { v.stations > 0 }).unwrap_or(false) }, fn(k) {
         k.box(fn(f) {

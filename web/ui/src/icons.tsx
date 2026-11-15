@@ -410,7 +410,7 @@ export function PlayMark(props: IconProps) {
 }
 
 export function Play(props: IconProps) {
-  return <Svg {...props}><path d="M7 5.8Q7 4.3 8.3 5L18.4 11Q19.6 12 18.4 13L8.3 19Q7 19.7 7 18.2Z" /></Svg>;
+  return <Svg {...props}><path d="M6.7 8.3C6.7 5.04 8.03 4.27 10.86 5.9L17.24 9.6C20.07 11.23 20.07 12.77 17.24 14.4L10.86 18.1C8.03 19.73 6.7 18.96 6.7 15.7Z" /></Svg>;
 }
 
 export function Plug(props: IconProps) {

@@ -20,6 +20,9 @@ fn init {
     ("src/sfapp/stations_now_wbtest.mbt", "描述要做的事。它会在 Willow 上使用所选模型新建会话。", "10/26"),
   ])
   @ui.words_over_known([
+    // (the board: a chat's card flying to the column its chat goes on to (View::shared), its words as they were over
+    // its words as they are now where the two meet on the way)
+    ("src/sfapp/board_wbtest.mbt", 2),
     ("src/sfapp/composer_wbtest.mbt", 2),
     ("src/sfapp/preview_wbtest.mbt", 1),
     ("src/sfapp/wide_wbtest.mbt", 1),

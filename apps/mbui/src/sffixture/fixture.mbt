@@ -559,6 +559,9 @@ fn fixture_days_head(f : Fixture) -> Array[Json] {
   if f.mode == "webdemo" {
     return webdemo_days()
   }
+  if board_mode(f.mode) {
+    return board_days(f)
+  }
   let today = [
     row("c1", "整理发布清单", "ws1/st1", "2 分钟前", {
       "state": "run",
@@ -1392,6 +1395,8 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
           _ => Json::null()
         },
       }
+      // the board's (board_fixture.mbt)
+      board_prefs_into(o)
       // the drive's ways, the files' page's tabs and favourites (browse_fixture.mbt)
       fix_browse_prefs_into(o)
       // whether what was opened and let go is brought, up to how big (downloads_fixture.mbt)
@@ -1946,6 +1951,9 @@ fn made_fixture(mode : String) -> Fixture {
 pub fn fixture(mode : String) -> Source {
   fixture_answers.clear()
   paged_days.val = None
+  board_started_rows.clear()
+  // the board shown and its drafts, as the prefs keep them (but board-list: the same chats as Home's list)
+  board_prefs_seed(mode)
   paged_rows.clear()
   fixture_preview(mode)
   let f = made_fixture(mode)
@@ -2118,6 +2126,13 @@ pub fn fixture(mode : String) -> Source {
         }
         done(Ok(Json::null()))
         return
+      }
+      match fixture_board_call(f, name, params) {
+        Some(r) => {
+          done(r)
+          return
+        }
+        None => ()
       }
       match fixture_kept(name, params, None) {
         Some(r) => {
@@ -2358,6 +2373,8 @@ pub fn fixture(mode : String) -> Source {
               }
             _ => ()
           }
+          // the board's (board_fixture.mbt)
+          board_prefs_set(params)
           // the drive's ways, the files' page's tabs, its favourites
           fix_browse_prefs_set(params) |> ignore
           fix_fill_prefs_set(params)

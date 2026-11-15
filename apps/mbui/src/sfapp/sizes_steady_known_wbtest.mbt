@@ -5,6 +5,9 @@
 ///|
 fn init {
   @ui.sizes_steady_known([
+    // (the board, at 60 and 120: its columns going from one width to another as the chat beside them slides, a card's
+    // words a line fewer once they have the room (words wrap a line at a time, a card's height a line's at once))
+    ("src/sfapp/board_wbtest.mbt", 8),
     // (each screen walked over a core answering late, at 60 and 120, as an answer comes: 中屏's 按天 goes -68 along its
     // row in a frame, 折合费用's -130, the workspace's column -130 in height; the framework's change for answers)
     ("src/sfapp/answers_still_wbtest.mbt", 4),

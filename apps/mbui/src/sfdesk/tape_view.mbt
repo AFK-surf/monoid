@@ -645,6 +645,21 @@ fn tape_settle(chat : String, open : String, known : Bool, at : Double) -> Unit 
 /// ms after it was put there at the latest.
 pub fn tape_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : Double) -> Unit {
   wide.tape.set(true)
+  board_frame_src.val = Some(src)
+  // (a workspace come in view that shows its chats as the board: its page's panel brought over, the board what it
+  // holds; at once as the frame is made, on the tape's way as another workspace comes in view)
+  let board_ws = Ref("")
+  v.reacts(fn() { @sfbase.workspace_in_view(src).0.map(fn(w) { w.id }).unwrap_or("") }, fn(ws) {
+    let first = board_ws.val == ""
+    board_ws.val = ws
+    guard ws != "" && @signals.untracked(fn() { @sfbase.board_on_of(src, ws) }) else { return }
+    guard app.nav.depth() == 1 && app.nav.top() is Home else { return }
+    if first {
+      wide.tape_at.set(Page)
+    } else if wide.tape_at.untracked() != Page {
+      wide.tape_ask.set(Some(Page))
+    }
+  })
   tape_goes.node = Some(v)
   tape_goes.ready = ready
   tape_goes.most = most

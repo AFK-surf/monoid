@@ -197,6 +197,7 @@ fn wide_reset() -> Unit {
   wide.peek_top.set(None)
   wide.side_place = "chats"
   wide.side_key = ""
+  board_frame_src.val = None
   wide.kept_w.set(0.0)
   wide.kept_folded.set(false)
   wide.in_bar = false
@@ -1037,14 +1038,14 @@ pub let closed_edge : Double = 46.0
 /// Whether the chats' place of workspace `w` has nothing open yet and is still to land on its chat (land: the core's
 /// mark of it not come): what is beside the list is not known till then.
 pub fn landing(w : Workspace) -> Bool {
-  app.nav.depth() == 1 && app.nav.top() == Home && wide.landed.get() != w.id
+  app.nav.depth() == 1 && app.nav.top() == Home && wide.landed.get() != w.id && !board_on_in(w.id)
 }
 
 ///|
 /// The chats' place with nothing open: the chat the core says was open last in this workspace, else a new chat
 /// (once per workspace, so closing the chat goes back to the list on a phone).
 fn land(src : Source, w : Workspace) -> Unit {
-  if app.nav.depth() != 1 || app.nav.top() != Home {
+  if app.nav.depth() != 1 || app.nav.top() != Home || @sfbase.board_on_of(src, w.id) {
     return
   }
   // come back to the chats (a chat closed, settings left): a new chat, as the web's empty place is
@@ -1106,7 +1107,14 @@ pub fn pane_opens(
 /// waits for it (sfapp's tape_shell.mbt: sfbase's workspace_switch_node).
 pub fn frame_opens(src : Source, ws : String, ask : (String, Map[String, Json]) -> @sfbase.TopicState) -> Bool {
   // (come back to a workspace landed on last: a new chat, as land has it)
-  let landed : Page? = if wide.landed.get() == ws { Some(NewChat) } else { land_page(ws, ask) }
+  // (the board where the workspace shows it: Home itself, landing nowhere)
+  let landed : Page? = if @sfbase.board_on_of(src, ws) {
+    Some(Home)
+  } else if wide.landed.get() == ws {
+    Some(NewChat)
+  } else {
+    land_page(ws, ask)
+  }
   frame_opens_on(src, ws, landed, ask)
 }
 
@@ -1116,7 +1124,7 @@ pub fn frame_opens(src : Source, ws : String, ask : (String, Map[String, Json]) 
 /// declared), for what waits for the first screen as it is answered, not as a frame lands the pane (sfapp's
 /// first_page_node).
 pub fn landing_opens(src : Source, ws : String, ask : (String, Map[String, Json]) -> @sfbase.TopicState) -> Bool {
-  frame_opens_on(src, ws, land_page(ws, ask), ask)
+  frame_opens_on(src, ws, if @sfbase.board_on_of(src, ws) { Some(Home) } else { land_page(ws, ask) }, ask)
 }
 
 ///|
@@ -1138,7 +1146,9 @@ pub fn frame_opens_on(
   // (and what the wide frame round them reads as it is first built, asked with it and not waited for: sfbase's
   // shell_opens)
   @sfbase.shell_opens(src, ws, ask) |> ignore
-  rail && side && pane
+  // (the board where the workspace shows it: its chats, all of them, and its stations)
+  let board = @sfbase.board_opens(src, ws, ask)
+  rail && side && pane && board
 }
 
 ///|

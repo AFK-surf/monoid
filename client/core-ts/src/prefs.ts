@@ -13,13 +13,33 @@ import { ofAddress } from "./workspace.ts";
 import { equal, isObject } from "./util.ts";
 import { setOwnBuild } from "./station/oldest.ts";
 
-const FIELDS = ["onlyMine", "onlyWatching", "listFilter", "appearance", "accent", "windowZoom", "motion", "haptics", "appUpdate", "rowPicture", "absoluteTime", "language", "keys", "workspace", "lastChat", "chatTabs", "dropFiles", "dropAs", "archiveHint", "screenTouch", "screenQuality", "screenFps", "screenCodec", "screenMouse", "driveViews", "filesTabs", "driveFavorites", "driveFavoritesHidden", "resume", "invite", "badge", "badgeKinds", "reader", "lockNotice", "rail", "rails", "bars", "barsBy", "fonts", "previewSizes", "sidebars", "trouble", "jobsSeen", "failsGone", "fillOff", "fillMax", "shareLook", "sendKey", "moveTo", "chatPage", "reports"];
-const MAPS = ["listFilter", "keys", "lastChat", "chatTabs", "dropFiles", "driveViews", "filesTabs", "driveFavorites", "driveFavoritesHidden", "resume", "lockNotice", "rails", "barsBy", "previewSizes", "sidebars", "trouble", "jobsSeen", "failsGone", "moveTo"];
+const FIELDS = ["onlyMine", "onlyWatching", "listFilter", "boardViews", "boardGroups", "boardDrafts", "appearance", "accent", "windowZoom", "motion", "haptics", "appUpdate", "rowPicture", "absoluteTime", "language", "keys", "workspace", "lastChat", "chatTabs", "dropFiles", "dropAs", "archiveHint", "screenTouch", "screenQuality", "screenFps", "screenCodec", "screenMouse", "driveViews", "filesTabs", "driveFavorites", "driveFavoritesHidden", "resume", "invite", "badge", "badgeKinds", "reader", "lockNotice", "rail", "rails", "bars", "barsBy", "fonts", "previewSizes", "sidebars", "trouble", "jobsSeen", "failsGone", "fillOff", "fillMax", "shareLook", "sendKey", "moveTo", "chatPage", "reports"];
+const MAPS = ["listFilter", "boardViews", "boardGroups", "boardDrafts", "keys", "lastChat", "chatTabs", "dropFiles", "driveViews", "filesTabs", "driveFavorites", "driveFavoritesHidden", "resume", "lockNotice", "rails", "barsBy", "previewSizes", "sidebars", "trouble", "jobsSeen", "failsGone", "moveTo"];
 const TABS_KEPT = 200;
 /// At most this many jobs kept as looked at in one workspace's bell.
 const JOBS_SEEN_KEPT = 200;
 /// At most this many failures kept as let go in one workspace's 待处理.
 const FAILS_GONE_KEPT = 200;
+/// The drafts a workspace's 待派发 keeps on this device: the newest of them.
+const BOARD_DRAFTS_KEPT = 200;
+const BOARD_GROUPS = ["state", "station", "person"];
+
+/// A workspace's drafts as given, each whole and within its bounds (newest first, the newest kept), or null where one
+/// is not.
+function boardDraftsOf(v: unknown): Map_[] | null {
+  if (!Array.isArray(v)) return null;
+  const out: Map_[] = [];
+  for (const d of v) {
+    if (!isObject(d)) return null;
+    const { id, title, station, stationName } = d;
+    if (typeof id !== "string" || id === "" || id.length > 120) return null;
+    if (typeof title !== "string" || title.trim() === "" || title.length > 4000) return null;
+    if (typeof station !== "string" || station === "" || station.length > 200) return null;
+    if (typeof stationName !== "string" || stationName.length > 200) return null;
+    out.push({ id, title, station, stationName });
+  }
+  return out.slice(0, BOARD_DRAFTS_KEPT);
+}
 const PREFS = { topic: "prefs" };
 /// The app's colour themes other than still.fail's orange (`accent`; none: the orange), or a hue of one's own
 /// (`custom:<0..359>`, the app makes the theme of it).
@@ -192,6 +212,18 @@ export function set(data: Data, patch: unknown, fill: boolean, now: number): voi
         if (field === "failsGone" && Array.isArray(entry)) {
           const was = Array.isArray(map[key]) ? (map[key] as unknown[]) : [];
           entry = [...new Set([...was, ...entry])].slice(-FAILS_GONE_KEPT);
+        }
+        // A workspace's board: shown as one, grouped otherwise than by state, its drafts (none: as without).
+        if (field === "boardViews" && entry !== "board") throw CoreError.invalid(t("core-misc.params.invalid", { error: `boardViews.${key}` }));
+        if (field === "boardGroups" && !BOARD_GROUPS.includes(entry as string)) throw CoreError.invalid(t("core-misc.params.invalid", { error: `boardGroups.${key}` }));
+        if (field === "boardDrafts") {
+          const drafts = boardDraftsOf(entry);
+          if (drafts === null) throw CoreError.invalid(t("core-misc.params.invalid", { error: `boardDrafts.${key}` }));
+          if (drafts.length === 0) {
+            delete map[key];
+            continue;
+          }
+          entry = drafts;
         }
         // A workspace's bottom bars, kept as they read (as `bars`).
         if (field === "barsBy") entry = barsOf(entry);

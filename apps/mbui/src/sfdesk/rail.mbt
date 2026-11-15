@@ -65,6 +65,14 @@ pub fn place_bare(place : String) -> Bool {
 }
 
 ///|
+/// Whether the place is drawn with no sidebar of its own now: place_bare's, and the chats as the board off the tape
+/// (Large: the sidebar closed to its bar, the board the pane's whole; on the tape the board is the page's panel's, the
+/// sidebar beside it as ever).
+pub fn place_bare_now(place : String) -> Bool {
+  place_bare(place) || (place == "chats" && board_bare() && !wide.tape.get())
+}
+
+///|
 /// The place lit in the rail: what the stack's root is, settings while a settings page is open.
 pub fn lit_place() -> String {
   let pages = app.nav.pages()
@@ -124,7 +132,7 @@ fn rail_lit(src : Source, w : Workspace, place : String) -> Bool {
 /// sidebar there. The frame keeps it as it is built (wide.side_place).
 pub fn side_place() -> String {
   let lit = lit_place()
-  if place_bare(lit) {
+  if place_bare_now(lit) {
     wide.side_place
   } else if lit == "chats" && app.nav.pages().contains(Archived) {
     "archive"

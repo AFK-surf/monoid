@@ -62,7 +62,15 @@ fn home_node(v : @view.View, src : Source, tips : @sf.TipLayer, stint : () -> In
   let away = @sfpages.search_away_node(v)
   v.box(fn(lists) {
     lists.over(Is(true)) |> ignore
-    @sfpages.chats_lists_node(lists, src, workspace, frame, tips, stint)
+    // (the chats as a board where it is chosen: sfpages' board_node, under the bar, over the bottom bar)
+    lists.pick(fn() { @sfbase.board_on_now(src) }, fn(l, board) {
+      l.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      if board {
+        @sfpages.board_node(l, src, tips, workspace, fn() { l.window().0 }, top=fn() { (frame.under)() }, foot=fn() { (frame.foot)() })
+      } else {
+        @sfpages.chats_lists_node(l, src, workspace, frame, tips, stint)
+      }
+    }, at_once=true)
   })
   |> ignore
   v.box(fn(bar) {
@@ -89,7 +97,9 @@ fn home_opens(src : Source, ws : String, ask : (String, Map[String, Json]) -> @s
   // (and what the narrow shell round it reads as it is first built, asked with it and not waited for: Home shows,
   // and the splash goes, as it did before they were asked here: sfbase's shell_opens)
   @sfbase.shell_opens(src, ws, ask) |> ignore
-  list && news && long
+  // (the board where the workspace shows it: its chats, all of them, and its stations)
+  let board = @sfbase.board_opens(src, ws, ask)
+  list && news && long && board
 }
 
 ///|
@@ -135,7 +145,8 @@ fn home_top_bar_node(
         |> ignore
       }
       // the filter, and the archive in its menu: nothing to narrow or look back on with no station
-      row.show(fn() { view().map(fn(v) { v.stations > 0 }).unwrap_or(false) }, fn(f) {
+      // (not on the board: it narrows the list, which the board is not)
+      row.show(fn() { !@sfbase.board_on_now(src) && view().map(fn(v) { v.stations > 0 }).unwrap_or(false) }, fn(f) {
         let key : Ref[@view.View?] = Ref(None)
         let opener = @sf.Opener::new()
         f.box(fn(k) {
@@ -165,7 +176,9 @@ fn home_top_bar_node(
             fn() {
               guard @signals.untracked(workspace) is Some(w) else { return }
               let (x, y, wd, h) = key.val.map(fn(k) { k.placed_window_now() }).unwrap_or((0.0, 0.0, 0.0, 0.0))
-              @sfpages.filter_menu(At(x, y, wd, h), filter_of(src, w.id), fn(f) { home_filter_go(src, w, f) })
+              @sfpages.filter_menu(At(x, y, wd, h), filter_of(src, w.id), fn(f) { home_filter_go(src, w, f) }, board=fn() {
+                @sfbase.board_set(src, true)
+              })
               opener.mark()
             },
             icon_size=20.0,
@@ -173,6 +186,10 @@ fn home_top_bar_node(
           )
         })
         |> ignore
+      })
+      // the board shown: back to the list, in the filter's place (the list shown, the filter's menu has 看板)
+      row.show(fn() { @sfbase.board_on_now(src) }, fn(k) {
+        @sf.round_key_node(k, "list", fn() { @sf.t("web-main.board.list") }, fn() { @sfbase.board_set(src, false) }, icon_size=20.0)
       })
       // catching up beside the filter (laid nowhere while it is not there)
       @sf.sync_key_node(row, tips, 34.0, 20.0, fn() {

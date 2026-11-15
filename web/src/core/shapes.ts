@@ -1447,6 +1447,17 @@ export interface Overview {
 	move?: StationMoveOffer;
 }
 
+/** How a workspace's board columns are grouped: by where each chat stands, by its station, or by who is in it. */
+export type BoardGroup = "state" | "station" | "person";
+
+/** An unstarted task kept in a workspace's 待派发 column on this device: its key, its words, the station it is to run on and that station's name. */
+export interface BoardDraft {
+	id: string;
+	title: string;
+	station: string;
+	stationName: string;
+}
+
 /** What a workspace's chat list shows: all, the viewer's (我参与的), the watching ones (监控中), the viewer's hidden chats (已隐藏), or archived chats (已归档). */
 export type ListFilter = "all" | "mine" | "watching" | "hidden" | "archive";
 
@@ -1632,6 +1643,12 @@ export interface PrefsView {
 	onlyMine?: boolean;
 	/** The chat list shows only the watching chats (监控中); never with `only_mine`. */
 	onlyWatching?: boolean;
+	/** How a workspace's chats are shown on this device, by workspace: `board` (by columns), or none (its list). */
+	boardViews?: Record<string, string>;
+	/** How a workspace's board columns are grouped on this device, by workspace; none: `state`. */
+	boardGroups?: Record<string, BoardGroup>;
+	/** Unstarted tasks kept in a workspace's 待派发 column on this device, by workspace, newest first (at most 200). */
+	boardDrafts?: Record<string, BoardDraft[]>;
 	/**
 	 * The list filter chosen in each workspace, by workspace; one not there goes by `only_mine` and `only_watching`
 	 * (one filter for all, as devices kept it before).

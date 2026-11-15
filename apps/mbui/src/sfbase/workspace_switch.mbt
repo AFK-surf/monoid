@@ -209,6 +209,8 @@ fn switch_picked(src : Source, ws : String) -> Unit {
   history_act(fn() {
     app.picked.set(ws)
     (src.call)("prefs.set", Json::object({ "workspace": Json::string(ws) }), answer_unread)
+    // (what was open, in hand or being written on the board of the workspace left: none in the one come to)
+    board_transient_reset()
     nav_home()
   })
 }

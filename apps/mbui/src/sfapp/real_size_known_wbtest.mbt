@@ -19,6 +19,7 @@
 ///|
 let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone webdemo": (434, 499, 92),
+  "phone board": (410, 486, 114),
   "phone home": (434, 499, 92),
   "phone home-bars": (435, 500, 92),
   "phone home-jobs": (434, 499, 92),
@@ -388,6 +389,7 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone share-card-senren-class": (445, 690, 138),
   "phone share-card-senren-night": (445, 690, 138),
   "wide webdemo": (1294, 2207, 271),
+  "wide board": (1805, 3469, 932),
   "wide home": (1301, 2223, 279),
   "wide home-bars": (1301, 2223, 279),
   "wide home-jobs": (1301, 2223, 279),

@@ -60,8 +60,9 @@ fn tape_page_pane(v : @view.View, src : Source) -> Unit {
       // (a page's bar on the tape the tree's, over its own view: what the page says of it, collected as it is built)
       // (a chat's page made once holds its old view, which says its bar as it is built, as an old view's page does)
       head=fn(b, k, made) {
-        let chat = @signals.untracked(fn() { app.nav.page_of(k) is Some((p, _)) && @sfbase.chat_page_is(p) })
-        tape_bar_head(b, k, made && !chat, tips)
+        // (and Home, whose board has its bar of its own: board.mbt's board_tape_made)
+        let own_bar = @signals.untracked(fn() { app.nav.page_of(k) is Some((p, _)) && (@sfbase.chat_page_is(p) || p is Home) })
+        tape_bar_head(b, k, made && !own_bar, tips)
       },
       // (a page of the library's made once in its place, where it is: its bar the tape's, from what the page is)
       made=fn(p) { tape_made(src, p, tips) },
@@ -361,6 +362,8 @@ fn tape_made(
     )
   }
   match page {
+    // (Home: the board while it is chosen, else the panel's ground: board.mbt)
+    Home if pane_makes.val => Some(board_tape_made(src, tips, width))
     // (laid out by the page's width, narrow or wide: page_node's)
     Setting(About) if pane_makes.val =>
       made("about", fn(p, core, _here, _stint, told, _acts) {

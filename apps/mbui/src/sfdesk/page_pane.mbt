@@ -230,6 +230,8 @@ fn pane_made(
     )
   }
   match page {
+    // (Home: the board while it is chosen, else its ground: board.mbt)
+    Home => Some(board_home_made(src, tips))
     Setting(About) =>
       made("about", fn(a, core, _here, _stint, frame, width) {
         @sfpages.about_node(a, core, on_back=core.pop, frame~, width~)

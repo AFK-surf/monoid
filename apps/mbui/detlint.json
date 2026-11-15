@@ -141,6 +141,7 @@
       "src/sfapp/tabletop.mbt",
       "src/sfapp/tape_shell.mbt",
       "src/sfdesk/attention.mbt",
+      "src/sfdesk/board.mbt",
       "src/sfdesk/brand.mbt",
       "src/sfdesk/chats.mbt",
       "src/sfdesk/context_menu.mbt",

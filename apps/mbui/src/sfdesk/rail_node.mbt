@@ -463,7 +463,7 @@ fn rail_place_node(item : @view.View, src : Source, tips : @sf.TipLayer, place :
     guard ws() is Some(w) else { return }
     // the lit place pressed again (not 待处理, a panel): its sidebar folded or opened, not gone to; folded so with the
     // pointer on the rail, it is shown a while; on the tape, the page brought over
-    if rail_lit(src, w, place) && place != "attention" && !place_bare(lit_place()) {
+    if rail_lit(src, w, place) && place != "attention" && !place_bare_now(lit_place()) {
       if wide.crowded {
         wide.peeking.set(!wide.peeking.get())
       } else {
@@ -474,7 +474,7 @@ fn rail_place_node(item : @view.View, src : Source, tips : @sf.TipLayer, place :
       rail_go_told(src, w, place, fn(_, g) { g() })
       // (pressed into a place whose sidebar is folded for the page's room: shown a while from the start, as the web's
       // pressed into a folded one)
-      wide.peek_next.set(wide.crowded && !place_bare(place) && place != "attention")
+      wide.peek_next.set(wide.crowded && !place_bare_now(place) && place != "attention")
     }
   }
   // what wants the person in a list, as its rows' marks: while the sidebar is folded (open, the rows show it;

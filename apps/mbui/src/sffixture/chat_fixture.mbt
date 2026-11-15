@@ -451,7 +451,9 @@ pub fn fixture_chat_topic(f : Fixture, name : String, params : Map[String, Json]
   }
   match name {
     "chat" =>
-      if f.mode == "chat-loading" {
+      if board_mode(f.mode) && session != "" && !session.has_prefix("new:") {
+        Some(fix_window_of(with_cards(f, with_sent(board_chat(f, session), session), session), session))
+      } else if f.mode == "chat-loading" {
         None
       } else if f.mode == "chat-long" {
         Some(kept_chat("long", fn() { long_chat(3000) }))

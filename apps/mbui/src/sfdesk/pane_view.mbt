@@ -151,7 +151,7 @@ priv struct PaneRoom {
 ///|
 fn pane_room(src : Source, w : Workspace, ww : Double) -> PaneRoom {
   let gated = lit_place() != "settings" && @settings.lock_waiting(settings_core(src, w), w.id)
-  let bare = place_bare(lit_place())
+  let bare = place_bare_now(lit_place())
   let own = !gated && !bare
   let crowded = own &&
     (@sf.native_input() is Finger) &&
@@ -453,6 +453,7 @@ fn fold_built(c : @ui.Ctx, now : FoldLook) -> FoldLook {
 /// in view (its file's head).
 pub fn pane_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : Double) -> Unit {
   wide.tape.set(false)
+  board_frame_src.val = Some(src)
   // (its tips over all of the window, as the old frame's are: none cut by the pane, the sidebar's edge's and its pages')
   let tips = @sf.TipLayer::new(fn() { Some(v) })
   fold_goes.node = Some(v)

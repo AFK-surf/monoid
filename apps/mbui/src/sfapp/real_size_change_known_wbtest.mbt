@@ -8,6 +8,8 @@
 
 ///|
 let real_size_change_known : Map[String, (Int, Int, Int, Int, Int, Int)] = {
+  "phone board stations/host": (0, 0, 0, 0, 0, 0),
+  "phone board stations/down": (0, 0, 0, 0, 0, 0),
   "phone home lock/member": (0, 0, 0, 0, 0, 1),
   "phone home lock/approved": (0, 0, 0, 0, 0, 1),
   "phone home longJobs/job": (0, 0, 9, 6, 0, 0),
@@ -23,8 +25,6 @@ let real_size_change_known : Map[String, (Int, Int, Int, Int, Int, Int)] = {
   "phone home workspaceMarks/card": (0, 0, 0, 0, 0, 1),
   "phone home stationUpdates/down": (0, 8, 16, 1, 0, 0),
   "phone place workspace/member": (0, 0, 0, 0, 0, 10),
-  "phone place stations/host": (0, 0, 0, 0, 0, 10),
-  "phone place stations/down": (0, 0, 0, 0, 0, 10),
   "phone switcher search/renamed": (0, 0, 0, 0, 0, 75),
   "phone switcher search/down": (0, 0, 0, 0, 0, 0),
   "phone switcher search/card": (0, 0, 0, 0, 0, 61),
@@ -1505,6 +1505,8 @@ let real_size_change_known : Map[String, (Int, Int, Int, Int, Int, Int)] = {
   "phone newchat-preset-theirs-long newChat/host": (0, 0, 0, 0, 0, 18),
   "phone newchat-preset-theirs-long newChat/down": (0, 0, 0, 0, 0, 18),
   "phone newchat-preset-theirs-long newChat/carried": (0, 0, 0, 0, 0, 18),
+  "wide board stations/host": (0, 0, 0, 0, 0, 0),
+  "wide board stations/down": (0, 0, 0, 0, 0, 0),
   "wide home lock/member": (0, 0, 0, 0, 0, 15),
   "wide home lock/approved": (0, 0, 0, 0, 0, 15),
   "wide home workspaceMarks/thing": (0, 0, 0, 0, 0, 15),
@@ -1549,8 +1551,6 @@ let real_size_change_known : Map[String, (Int, Int, Int, Int, Int, Int)] = {
   "wide new-workspace-code newChat/down": (0, 0, 0, 0, 0, 15),
   "wide rail-menu newChat/host": (0, 0, 0, 0, 0, 16),
   "wide rail-menu newChat/down": (0, 0, 0, 0, 0, 16),
-  "wide place stations/host": (0, 0, 0, 0, 0, 20),
-  "wide place stations/down": (0, 0, 0, 0, 0, 20),
   "wide place workspace/member": (0, 0, 0, 0, 0, 20),
   "wide switcher newChat/host": (0, 0, 0, 0, 0, 21),
   "wide switcher newChat/down": (0, 0, 0, 0, 0, 21),

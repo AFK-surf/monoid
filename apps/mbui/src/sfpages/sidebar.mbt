@@ -105,20 +105,29 @@ pub fn filter_menu_open() -> Bool {
 ///|
 /// The filter's menu, opened by `from`: 全部会话,
 /// 我参与的, 监控中, then 已归档, a menu of choices, the list `shown` (all, mine, watching, archive) checked. Chosen, `go` is
-/// given which: where it goes is the frame's (a filter its list, 已归档 its page or list).
-pub fn filter_menu(from : @sf.Beside, shown : String, go : (String) -> Unit) -> Unit {
+/// given which: where it goes is the frame's (a filter its list, 已归档 its page or list). `board`: 看板 under them, the
+/// chats shown as the board (a narrow Home's, whose bar has no room for a key of its own beside the filter).
+pub fn filter_menu(from : @sf.Beside, shown : String, go : (String) -> Unit, board? : () -> Unit) -> Unit {
   let item = fn(key : String, words : String) -> @sf.MenuItem? {
     Some(@sf.menu_item_of(@sf.t(words), chosen=shown == key, fn() { go(key) }))
   }
+  let items = [
+    item("all", "web-main.filter.chats.all"),
+    item("mine", "web-main.filter.chats.mine"),
+    item("watching", "web-main.filter.watching"),
+    item("hidden", "web-main.filter.hidden"),
+    None,
+    item("archive", "web-main.filter.archived"),
+  ]
+  match board {
+    Some(b) => {
+      items.push(None)
+      items.push(Some(@sf.menu_item_of(@sf.t("web-main.board.board"), b, icon="view-columns")))
+    }
+    None => ()
+  }
   @sf.menu(
-    [
-      item("all", "web-main.filter.chats.all"),
-      item("mine", "web-main.filter.chats.mine"),
-      item("watching", "web-main.filter.watching"),
-      item("hidden", "web-main.filter.hidden"),
-      None,
-      item("archive", "web-main.filter.archived"),
-    ],
+    items,
     from~,
     along=End,
   )

@@ -13,6 +13,8 @@ fn init {
     // most, 2026-11-14)
     ("src/sfapp/switches_still_wbtest.mbt", 2906925),
     ("src/sfapp/chat_bar_wide_wbtest.mbt", 89156),
+    // (the board's chat beside it: the first row's chat's pictures, as chat_bar_wide's)
+    ("src/sfapp/board_wbtest.mbt", 89156),
     ("src/sfapp/chat_images_told_wbtest.mbt", 57845),
     ("src/sfapp/chat_keys_wbtest.mbt", 127704),
     // (the chat's page made as nodes hands over the pictures of the rows its list has made round what shows, a screen
