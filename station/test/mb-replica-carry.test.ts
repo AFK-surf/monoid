@@ -369,7 +369,7 @@ test("the program puts in what the worker thread put: the same files, modes, tim
   await both("projects", { projects: true });
 });
 
-test("a gathering called off is answered at once, its program ended; one called off before it began starts none", { skip }, async () => {
+test("a gathering called off is answered at once, its program ended; one called off before it began starts none; one answered has ended as it is", { skip }, async () => {
   const made = station();
   made.store.close();
   // (this station's: each program says its shell's folder, in the data directory)
@@ -383,4 +383,8 @@ test("a gathering called off is answered at once, its program ended; one called 
   assert.equal(programs(), 1);
   c.abort();
   await assert.rejects(going, /called off/);
+  // (settled only once it has ended: nothing of it left running as its caller goes on, setup-env.mjs's leftover)
+  assert.equal(programs(), 0, "the program called off has ended as it is answered");
+  await gatherSoon(made.data, made.db, HOME, true, dataDir("scratch-2"));
+  assert.equal(programs(), 0, "the program that answered has ended as its answer is given");
 });

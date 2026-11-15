@@ -21,6 +21,10 @@ pub fn carry_place(@host.Host, String, String, String, String, String?, String?,
 
 pub fn carry_preview(@host.Host, String, String, String, String, Bool) -> @jsjson.JValue raise
 
+pub fn carry_sizes(@host.Host, String, String, String, Array[String], Int32, Array[(String, String?, Array[String])]?) -> @jsjson.JValue raise
+
+pub fn count_looks() -> Unit
+
 pub fn key_columns(String) -> Array[String] raise
 
 pub fn key_of(String, @jsjson.JValue) -> String raise

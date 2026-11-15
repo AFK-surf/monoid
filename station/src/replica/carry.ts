@@ -84,27 +84,42 @@ export const listFile = (scratch: string, key: string) => join(scratch, "lists",
 const OWN_SKILLS = [...BUILTIN_SKILLS, FEEDBACK_SKILL];
 
 /// One ask of the program (`--builder replica-carry`): its answer, or its error; ended at once where `signal` says (a
-/// cancel: "called off"). `binary`: the program (mbReaderBinary unless a test says).
+/// cancel: "called off"). `binary`: the program (mbReaderBinary unless a test says). Settled only once the program has
+/// ended (it ends as it answers; a cancel kills it): what asked never goes on while it still runs (a test file's end
+/// found one so on Linux, setup-env.mjs's leftover, and failed the file).
 export function inProgram<T>(asked: Record<string, unknown> & { dataDir: string }, signal?: AbortSignal, binary: string | null = mbReaderBinary()): Promise<T> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(new Error("called off"));
     if (binary === null) return reject(new Error("the station's MoonBit program (stillfail-reader) is not here: its files cannot be gathered or placed"));
     const p = new MbProcess(binary, ["--builder", "replica-carry", "--sep", sep, "--shell-dir", join(asked.dataDir, "shell")]);
-    let settled = false;
-    const done = (f: () => void) => {
-      if (settled) return;
-      settled = true;
+    // (what it comes to, the first thing told: given as the program has ended)
+    let outcome: (() => void) | null = null;
+    const decide = (f: () => void) => {
+      if (outcome !== null) return;
+      outcome = f;
       signal?.removeEventListener("abort", stop);
-      f();
     };
-    const stop = () => done(() => {
+    const stop = () => {
+      decide(() => reject(new Error("called off")));
       p.kill();
-      reject(new Error("called off"));
-    });
+    };
     signal?.addEventListener("abort", stop, { once: true });
-    p.on("message", (m: { answer?: T; error?: string }) => done(() => (m.error !== undefined ? reject(new Error(m.error)) : resolve(m.answer as T))));
-    p.on("error", (e: Error) => done(() => reject(e)));
-    p.on("exit", (code: number) => done(() => reject(new Error(`the gathering's program ended saying nothing (${code})`))));
+    p.on("message", (m: { answer?: T; error?: string }) => decide(() => (m.error !== undefined ? reject(new Error(m.error)) : resolve(m.answer as T))));
+    // (an error is one that could not be started: no end of it to wait for)
+    let ended = false;
+    const end = () => {
+      if (ended) return;
+      ended = true;
+      outcome!();
+    };
+    p.on("error", (e: Error) => {
+      decide(() => reject(e));
+      end();
+    });
+    p.on("exit", (code: number) => {
+      decide(() => reject(new Error(`the gathering's program ended saying nothing (${code})`)));
+      end();
+    });
     p.postMessage(asked);
   });
 }
