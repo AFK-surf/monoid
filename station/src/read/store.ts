@@ -1257,8 +1257,7 @@ export function chatShares(s: Store, sessions: string[] | null = null): Map<stri
 /// The chats of this station another agent opened (chat_create), by their session's key: the session that opened each,
 /// on its station (null: this one), and what it was called then, else (one of this station's, opened before that was
 /// kept) its session's title, and `led` where its opener leads it (chat_create `for: "me"`: what it asks is no
-/// person's to decide), as one opened before `for` is (led NULL: its opener told how its turns end as a leader is,
-/// sessions/opened.ts). None on a database from before the table or the columns.
+/// person's to decide). None on a database from before the table or the columns.
 /// Of those `children` name alone (a sidebar's items a change touched), or of all.
 export function openers(s: Store, children: string[] | null = null): Map<string, { station: string | null; session: string; title: string | null; led?: true }> {
   let rows: Json[];
@@ -1270,7 +1269,7 @@ export function openers(s: Store, children: string[] | null = null): Map<string,
   return new Map(
     rows.map((r) => [
       r.child as string,
-      { station: r.parent_station === "" ? null : (r.parent_station as string), session: r.parent as string, title: (r.opener_title ?? r.parent_title ?? null) as string | null, ...(r.led === null || r.led === undefined || Number(r.led) === 1 ? { led: true as const } : {}) },
+      { station: r.parent_station === "" ? null : (r.parent_station as string), session: r.parent as string, title: (r.opener_title ?? r.parent_title ?? null) as string | null, ...(Number(r.led) === 1 ? { led: true as const } : {}) },
     ]),
   );
 }
