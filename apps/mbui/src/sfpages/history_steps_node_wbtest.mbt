@@ -1,6 +1,36 @@
 // A reminder in an agent's history: its label stays readable beside a long first line, and its whole text opens below.
 
 ///|
+test "a web call's history row names the tool and the pages opened" {
+  for case in [("zh", "联网", "打开 2 个网页"), ("en", "Web", "Opening 2 web pages")] {
+    let (lang, label, said) = case
+    for w in [390.0, 900.0] {
+      steps_reset()
+      @sf.set_words(@sfbase.fill)
+      let src = @sffixture.fixture("history")
+      let step : Json = {
+        "name": "WebSearch",
+        "said": Json::string(said),
+        "hint": "",
+        "meta": "",
+        "call": "{\"open\":[{\"ref_id\":\"turn8search2\"},{\"ref_id\":\"turn6search1\"}]}",
+        "result": "",
+        "failed": false,
+      }
+      let t = @ui.Tester::new(fn(c) { @sf.begin(c) |> ignore }, w~, h=160.0, env=[("MBUI_LOCALE", lang)], tree=fn(root) {
+        @ui.set_tree_theme(@sf.ui_theme_now)
+        root.box(fn(v) { step_node(v, src, "ws1/st1", "s-c1", "web", Some(step)) }) |> ignore
+      })
+      t.draw()
+      assert_true(t.rect_of(label) is Some(_), msg="\{lang}, \{w}: web tool label")
+      assert_true(t.rect_of(said) is Some(_), msg="\{lang}, \{w}: page count")
+      assert_eq(t.audit(), [])
+    }
+  }
+  steps_reset()
+}
+
+///|
 test "history reminder keeps its label on one line beside a long note and opens it whole" {
   let first = "This is a new conversation: your earlier one in this session is no longer available."
   let note = first + "\nThe agent can continue here."
