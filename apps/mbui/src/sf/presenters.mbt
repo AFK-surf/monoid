@@ -2785,7 +2785,7 @@ fn sheet_step(
       if x.ruled {
         c.box(style=sheet_foot_rule, fn() {  }) |> ignore
       }
-      c.box(style=sheet_foot_at, flow=true, line_gap=ask_foot_lines(), fn() {
+      c.box(style=if x.ruled { sheet_ruled_foot_at } else { sheet_foot_at }, flow=true, line_gap=ask_foot_lines(), fn() {
         // its buttons across it, each its share (in a thumb's reach)
         foot_fills.val = true
         f(c, close)
@@ -3208,6 +3208,12 @@ let sheet_hint : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted)
 /// a form's last field) as over the sheet's foot, 24, across it (each its share: parts.mbt foot_fills), 8 apart.
 // kept across runs: a value (no field of it changes)
 let sheet_foot_at : @ui.Style = @ui.css("row w=Full px=S5 pt=S6 pb=S6 gap=S2 justify=JEnd")
+
+///|
+/// The same under a ruled foot (`sheet_foot_rule`): as far under the rule as the rule is under what is over it, 16 over
+/// the sheet's foot.
+// kept across runs: a value (no field of it changes)
+let sheet_ruled_foot_at : @ui.Style = @ui.css("row w=Full px=S5 pt=S3 pb=S4 gap=S2 justify=JEnd")
 
 ///|
 /// What a panel of `lists` holds in a sheet held to its most: all the room left in it.

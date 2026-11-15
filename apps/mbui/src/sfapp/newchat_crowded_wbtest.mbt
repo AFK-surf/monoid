@@ -444,3 +444,29 @@ test "narrower still, a station of no mark of its own: its control keeps a mark 
   let shown = t.boxes().filter(fn(b) { b.parent == station.index && b.opacity > 0.0 && b.w > 0.0 })
   assert_true(shown.length() >= 2, msg="\{Repr(shown.map(fn(b) { (b.kind, b.x, b.w) }))}")
 }
+
+///|
+test "narrow: how hard it thinks shares its row with its stops and the models' list gets the sheet's height over a compact foot" {
+  // (2026-11-15 the user: 「最重要的其实是模型选择，但下面那些比如思考深度之类的，结果占了更多空间」)
+  let t = crowded("newchat-providers-model-liked", w=466.0, h=678.0)
+  run_to_sheet_rest(t)
+  let sheet = t.get(@ui.Role::Dialog).rect
+  let effort_slider = t.get(Slider, label="思考深度").rect
+  let effort_label = words_whole(t, "思考深度", sheet).unwrap()
+  // Title and slider sit on the same horizontal row, title to the left of the slider.
+  assert_true(
+    effort_label.0 + effort_label.2 <= effort_slider.0 + 0.5 &&
+    effort_label.1 >= effort_slider.1 - 2.0 &&
+    effort_label.1 + effort_label.3 <= effort_slider.1 + effort_slider.3 + 2.0,
+    msg="label \{Repr(effort_label)} slider \{Repr(effort_slider)}",
+  )
+  // The fixed controls below 全部模型 take far less height than the models' room above it.
+  let all = t.get(Button, label="全部模型").rect
+  let below_models_h = sheet.1 + sheet.3 - (all.1 + all.3)
+  let models_and_all_h = all.1 + all.3 - sheet.1
+  assert_true(
+    below_models_h <= 145.0 && models_and_all_h > 2.0 * below_models_h,
+    msg="models+all \{models_and_all_h}, below \{below_models_h}, sheet \{Repr(sheet)}",
+  )
+}
+

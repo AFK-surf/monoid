@@ -171,7 +171,7 @@ fn sheet_old_foot(c : @ui.Ctx, ruled : Bool, f : (@ui.Ctx, () -> Unit) -> Unit, 
     if ruled {
       c.box(style=sheet_foot_rule, fn() {  }) |> ignore
     }
-    c.box(style=sheet_foot_at, flow=true, line_gap=ask_foot_lines(), fn() {
+    c.box(style=if ruled { sheet_ruled_foot_at } else { sheet_foot_at }, flow=true, line_gap=ask_foot_lines(), fn() {
       foot_fills.val = true
       f(c, close)
       foot_fills.val = false
@@ -1150,7 +1150,7 @@ fn sheet_node(
                         |> ignore
                       }
                       page.box(fn(row) {
-                        style_node(row, fn() { sheet_foot_at })
+                        style_node(row, fn() { if x.ruled { sheet_ruled_foot_at } else { sheet_foot_at } })
                         foot_stays(row, shows)
                         // (its buttons across it, each its share, in a thumb's reach: the host's sheet's foot_fills; where they have not the
                         // room each as wide as its words, a line each, as the old foot's flow and line_gap: ask_foot_lines)

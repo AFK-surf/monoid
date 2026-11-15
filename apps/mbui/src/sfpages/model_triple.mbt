@@ -966,7 +966,20 @@ fn triple_body(
   let t = @sf.theme()
   let row_h = t.rows.pick + 1.0
   let list_most = if sheet {
-    dmax(3.0 * row_h, dmin(triple_sheet_rows * row_h, @sf.sheet_window_h(c) * @sf.sheet_most - triple_sheet_rest))
+    let foot_chips = 1 +
+      (if !flag(v, "runtimeFixed") && items(v, "runtimes").length() > 1 { 1 } else { 0 }) +
+      (if !items(v, "sidekicks").is_empty() { 1 } else { 0 }) +
+      (if flag(v, "fastAvailable") { 1 } else { 0 }) +
+      (if !items(v, "contexts").is_empty() { 1 } else { 0 })
+    let foot_two_lines = (foot_chips >= 2 && c.width < 340.0) || (foot_chips >= 3 && c.width < 440.0) || foot_chips >= 4
+    let sheet_rest = (if at == "" { 60.0 } else { 72.0 }) +
+      (if at == "" && options.length() > 8 { 42.0 } else { 0.0 }) +
+      (if all_efforts.length() > 0 { 50.0 } else { 0.0 }) +
+      (if field(v, "borrow") is Some(Object(_)) { 30.0 } else { 0.0 }) +
+      85.0 +
+      (if foot_two_lines { 52.0 } else { 0.0 }) +
+      @ui.system_bars().bottom
+    dmax(3.0 * row_h, dmin(triple_sheet_rows * row_h, @sf.sheet_window_h(c) * @sf.sheet_most - sheet_rest))
   } else {
     triple_list_h
   }
@@ -1217,10 +1230,10 @@ fn triple_body(
   if sheet {
     models()
     if all_efforts.length() > 0 {
-      // its name, and under it a stop for each level across the sheet, the one it is at said in the thumb (@sf.stops):
+      // its name and a stop for each level on one row across the sheet, the one it is at said in the thumb (@sf.stops):
       // as many levels as a model has on one line in any language, nothing opened over the sheet to pick one
       c.box(style=triple_effort_block, fn() {
-        c.box(style=triple_effort_name, fn() { c.text(h_effort, style=triple_head) |> ignore }) |> ignore
+        c.text(h_effort, style=triple_head, keep=true) |> ignore
         let stops = match contents.effort_stops.get(at) {
           Some(st) => st
           None => {
@@ -2822,20 +2835,13 @@ let triple_no_kind : String = "\u{1}"
 let triple_flat_most : Int = 12
 
 ///|
-/// How many rows the models' room shows in a sheet at most: eight and a half, the half saying there is more.
-let triple_sheet_rows : Double = 8.5
+/// How many rows the models' room shows in a sheet at most: eleven and a half, the half saying there is more.
+let triple_sheet_rows : Double = 11.5
 
 ///|
 /// Between those used most and the rest of a few, in their one list.
 // kept across runs: a value (no field of it changes)
 let triple_apart : @ui.Style = @ui.css("w=Full h=S2")
-
-///|
-/// What a sheet of it holds besides its models' room, about: its grab and title, its search, how hard it thinks, its
-/// foot on two lines. The models' room is the sheet's most less this at most, so the sheet is never taller than its
-/// most and the room is as tall as it says (one that gave way after it was laid out was brought to its foot for a
-/// taller one, its last row cut off, 2026-11-10).
-let triple_sheet_rest : Double = 350.0
 
 ///|
 /// The models' room (as tall as what it holds, to its most: triple_body's `list_most`; beside what opened it, where
@@ -2844,14 +2850,9 @@ let triple_sheet_rest : Double = 350.0
 let triple_room : @ui.Style = @ui.css("w=Full gap=SPx")
 
 ///|
-/// How hard it thinks in a sheet, under the models: its name, and under it its stops across the sheet.
+/// How hard it thinks in a sheet, under the models: its name before its stops on one line across the sheet.
 // kept across runs: a value (no field of it changes)
-let triple_effort_block : @ui.Style = @ui.css("w=Full pt=S3 gap=S1_5")
-
-///|
-/// Its name, as far in as the rows' words.
-// kept across runs: a value (no field of it changes)
-let triple_effort_name : @ui.Style = @ui.css("px=S2_5")
+let triple_effort_block : @ui.Style = @ui.css("row w=Full pl=S2_5 pt=S1_5 gap=S3 align=ACenter")
 
 ///|
 /// The accounts' sub-panel width on 中屏/大屏, wide enough for multi-window quota summaries on one line.
