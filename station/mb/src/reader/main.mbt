@@ -538,6 +538,37 @@ async fn usage_scope(host : @host.Host, db_path : String) -> Unit {
 }
 
 ///|
+/// The usage counter's reads (usage/counter-mb.ts `MbUsageCounter`, in usage/counter.ts's place where this program is):
+/// each line an ask `{id, op: "read", …}` (@usagecount.Counter::read), answered `{id, …}` or `{id, error}`, one at a
+/// time. What it writes it writes in transactions of its own; nothing is kept between asks but where each transcript
+/// was read to.
+async fn usage_counter(host : @host.Host, db_path : String) -> Unit {
+  let db = @sql.Db::attach(host, db_path, wait=5000)
+  db.exec("PRAGMA synchronous = NORMAL")
+  let counter = @usagecount.Counter::new(host, db, flag("--sep").unwrap_or("/"))
+  while host.line() is Some(line) {
+    if line == "" {
+      continue
+    }
+    let ask : Json = @json.parse(line) catch { _ => Json::null() }
+    let id = match ask {
+      { "id": id, .. } => id
+      _ => Json::null()
+    }
+    let answer : Json = try counter.read(ask) catch {
+      e => { "id": id, "error": Json::string(message(e)) }
+    } noraise {
+      Object(m) => {
+        m["id"] = id
+        Json::object(m)
+      }
+      other => other
+    }
+    host.say(answer.stringify())
+  }
+}
+
+///|
 /// The vault's use reader (vault/use-index.ts `UseIndex`): each line an operation (@vaultuses.operate), answered
 /// `{"busy": true}` while another's write holds the database, `{"error"}` when it failed.
 async fn vault_uses(host : @host.Host, db_path : String) -> Unit {
@@ -781,6 +812,8 @@ fn main {
         { "drop": True, .. } => Some(@usagefill.drop_step(db))
         _ => Some(@usagefill.fill_step(db))
       }))
+    (Some("usage-counter"), Some(db), _) =>
+      @host.run(shell_dir=beside(db, "shell"), host => usage_counter(host, db))
     (Some("usage-scope"), Some(db), _) =>
       @host.run(shell_dir=beside(db, "shell"), host => usage_scope(host, db))
     (Some("signin-save"), Some(db), _) =>
@@ -950,7 +983,7 @@ fn main {
         }
       })
     _ => {
-      @host.note("usage: stillfail-reader --data <dir> | --builder archive-marks|session-bindings|session-up-jobs|widget-sources|card-posts|session-list|outflow-chats|turn-counts|said|archive-last|page-letters|cc-index|usage-check|recent-chat|closed-cards|people-since|legacy-edits|legacy-said|session-counts|session-backfill|post-blocks|usage-retire|usage-scope|signin-save|vault-uses|replica-export --db <file> | --builder replica-restore --db <file> --data <dir>")
+      @host.note("usage: stillfail-reader --data <dir> | --builder archive-marks|session-bindings|session-up-jobs|widget-sources|card-posts|session-list|outflow-chats|turn-counts|said|archive-last|page-letters|cc-index|usage-check|recent-chat|closed-cards|people-since|legacy-edits|legacy-said|session-counts|session-backfill|post-blocks|usage-retire|usage-scope|usage-counter|signin-save|vault-uses|replica-export --db <file> | --builder replica-restore --db <file> --data <dir>")
       2
     }
   }

@@ -287,7 +287,7 @@ fn homes_first(profiles : Array[(String, String)], first : String?) -> Array[Str
 
 ///|
 /// transcript.ts `transcriptPaths` for one id: its path, if found (`anywhere` false: a Claude one in its places alone).
-fn Finder::transcript_path(
+pub fn Finder::transcript_path(
   self : Finder,
   runtime : String,
   data : String,

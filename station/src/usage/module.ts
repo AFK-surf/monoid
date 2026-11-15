@@ -364,6 +364,8 @@ export const UsageLive = Layer.effectDiscard(
       (u) => Effect.promise(() => u.stop()),
     );
     usage.start();
+    // The counter's program, when it reads nothing, is let go when the station is short of memory.
+    readers.onTrim(() => usage.trimIdle());
     yield* Effect.acquireRelease(
       Effect.sync(() => keepCounted(store, hub.live, usage)),
       (unsubscribe) => Effect.sync(unsubscribe),

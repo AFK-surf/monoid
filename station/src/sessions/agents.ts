@@ -649,6 +649,7 @@ export const AgentsLive = (control: Control) =>
       // Resolving a live session's older transcript files may take a while; keep it off the station's thread.
       const liveLocator = new LiveLocator(data, (key) => store.getSession(key), () => hub.config().profiles);
       hub.live.locateAsync = (key, signal) => liveLocator.locate(key, signal);
+      readers.onTrim(() => liveLocator.trimIdle());
       yield* Effect.addFinalizer(() => Effect.promise(() => liveLocator.close()));
       // Not asked of them before the process before has handed over: what it carries says where each reading stands.
       hub.live.handover = previous;

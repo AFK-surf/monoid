@@ -12,13 +12,15 @@
 // The prices (what a call costs) are the usage page's: src/read/usage.ts.
 import { Clock, Effect, Fiber, Queue } from "effect";
 import { liveClock } from "../ops/fibers.ts";
-import { createReadStream, existsSync } from "node:fs";
+import { createReadStream } from "node:fs";
 import { type FileHandle, open, readdir, realpath, stat } from "node:fs/promises";
 import { basename, dirname, join, sep } from "node:path";
 import { createZstdDecompress } from "node:zlib";
 import { log } from "../ops/log.ts";
 import { segmentsFrom, writtenLength } from "../read/packed.ts";
-import { parseIso, sharedTranscripts, transcriptDir, transcriptPaths } from "../read/transcript.ts";
+import { allTranscriptHints, parseIso, sharedTranscripts, takeTranscriptHints, transcriptDir, transcriptPaths } from "../read/transcript.ts";
+import { mbReaderBinary } from "../read/mb-reader.ts";
+import { MbCounterStopped, MbUsageCounter } from "./counter-mb.ts";
 import type { SessionRow, Store, UsageCall, UsageFile, UsageFor, UsageTurn, UsageWrite } from "../store/store.ts";
 import { runtimeKind, type RuntimeKind } from "../agents/runtime.ts";
 
@@ -54,6 +56,12 @@ export type UsageCounterOptions = {
   clock?: Clock.Clock;
   /// The turns a part's calls were made in (store/usage.ts `usageTurns`), asked of a reader (none: of the store, here).
   turns?: (session: string, from: number, until: number) => Promise<UsageTurn[]>;
+  /// The MoonBit program that reads in its place (counter-mb.ts; none: read here): by default the station's
+  /// (mbReaderBinary) where the store is a file and STILLFAIL_USAGE_COUNTER_MB is not 0, on the store's file (`dbPath`).
+  mb?: string | null;
+  dbPath?: string | null;
+  /// The program's idle timer (a test's own; else the wall's).
+  after?: (ms: number, f: () => void) => () => void;
 };
 
 // ── reading transcripts ──
@@ -581,7 +589,19 @@ export class UsageCounter {
     this.#safetyMs = options.safetyMs ?? SAFETY_MS;
     this.#clock = options.clock ?? liveClock;
     this.#turns = options.turns ?? null;
+    const location = options.dbPath !== undefined ? options.dbPath : (this.#store.db.location() ?? null);
+    const binary = options.mb !== undefined ? options.mb : mbReaderBinary();
+    this.#mb = location !== null && location !== "" && location !== ":memory:" && binary !== null && process.env.STILLFAIL_USAGE_COUNTER_MB !== "0"
+      ? new MbUsageCounter(binary, location, { after: options.after }) : null;
   }
+  /// The program that reads in its place, if one does.
+  readonly #mb: MbUsageCounter | null;
+
+  /// Whether the MoonBit program reads (counter-mb.ts), not this.
+  get inProgram(): boolean { return this.#mb !== null; }
+
+  /// The program let go if nothing is asked of it (read/pool.ts `onTrim`): 1, else 0.
+  trimIdle(): number { return this.#mb?.trimIdle() ?? 0; }
   readonly #turns: ((session: string, from: number, until: number) => Promise<UsageTurn[]>) | null;
 
   /// Reads sessions that ran since the previous sweep, then those whose turn ended (shortly after), and all that ran
@@ -653,6 +673,7 @@ export class UsageCounter {
     this.#abort.abort();
     if (this.#fiber !== null) await Effect.runPromise(Fiber.interrupt(this.#fiber));
     this.#fiber = null;
+    await this.#mb?.close();
     await this.#reading.catch(() => {});
   }
 
@@ -665,7 +686,7 @@ export class UsageCounter {
     try {
       await this.read(only);
     } catch (e) {
-      if (!(e instanceof Stopped)) log.warn("usage", "usage not read", { error: (e as Error).message });
+      if (!(e instanceof Stopped) && !(e instanceof MbCounterStopped)) log.warn("usage", "usage not read", { error: (e as Error).message });
     }
   }
 
@@ -678,6 +699,7 @@ export class UsageCounter {
   }
 
   async #read(only: ReadonlySet<string> | null): Promise<number> {
+    if (this.#mb !== null) return this.#readInProgram(this.#mb, only);
     const started = this.#clock.currentTimeMillisUnsafe();
     const last = this.#last;
     if (only === null) this.#first = last === 0;
@@ -747,7 +769,7 @@ export class UsageCounter {
         if (!transcript) continue;
         const files: [string, boolean][] = runtime === "claude" ? await claudeFiles(dirname(transcript), source.id) : [[runtime === "grok" ? join(dirname(transcript), "stillfail-usage.jsonl") : transcript, false]];
         for (const [path, subagent] of files) {
-          if (runtime === "grok" && !existsSync(path)) continue;
+          if (runtime === "grok" && !(await exists(path))) continue;
           const real = await canonical(path);
           if (seenFiles.has(real)) continue;
           seenFiles.add(real);
@@ -797,7 +819,7 @@ export class UsageCounter {
       for (const { id } of store.runtimeSessionSources(s.key, s).filter((source) => source.runtime === runtime)) {
         const transcript = transcriptPaths(runtime, config.dataDir, homes, [id]).paths[0];
         const path = transcript !== undefined && runtime === "grok" ? join(dirname(transcript), "stillfail-usage.jsonl") : transcript;
-        if (path === undefined || (runtime === "grok" && !existsSync(path))) continue;
+        if (path === undefined || (runtime === "grok" && !(await exists(path)))) continue;
         const real = await canonical(path);
         if (seenFiles.has(real)) continue;
         seenFiles.add(real);
@@ -815,6 +837,28 @@ export class UsageCounter {
       store.usageChanged([...this.#counted], Number.isFinite(this.#from) ? this.#from : undefined);
     }
     return added;
+  }
+
+  /// `#read` by the program: what it found written there, told here.
+  async #readInProgram(mb: MbUsageCounter, only: ReadonlySet<string> | null): Promise<number> {
+    const started = this.#clock.currentTimeMillisUnsafe();
+    const last = this.#last;
+    if (only === null) this.#first = last === 0;
+    const config = this.#config();
+    const answer = await mb.read({
+      only: only === null ? null : [...only], started, last, dataDir: config.dataDir, homes: config.profiles.map((p) => p.home),
+      hints: allTranscriptHints(),
+    });
+    takeTranscriptHints(answer.hints);
+    if (only === null) {
+      this.#last = started;
+      this.#first = false;
+    }
+    if (answer.sessions.length > 0) {
+      if (last === 0 && only === null) log.info("usage", "usage read from recent transcripts", { calls: answer.added, ms: this.#clock.currentTimeMillisUnsafe() - started });
+      this.#store.usageChanged(answer.sessions, answer.from ?? undefined);
+    }
+    return answer.added;
   }
 
   /// Writes what the read gathered (`#pending`), in one transaction; how many calls were new. Not written (a failure):

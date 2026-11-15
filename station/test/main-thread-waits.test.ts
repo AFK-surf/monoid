@@ -94,10 +94,10 @@ const STATEMENTS = {
   seenTold: 0,
   // 20 before: each tool call asked the session of its token.
   tokenResolved: 0,
-  // The counter's cursor, the sessions in one statement, their runtime sources (one each), and one transaction: BEGIN,
-  // for each call as a usage record is (5), COMMIT; the turns are a reader's. (Before: a transaction for each transcript,
-  // each session's row read again for its sources, the turns of each part (5 statements) here, and a usage record's 11.)
-  usageRead: 16,
+  // None: the MoonBit program reads the transcripts and writes what it found (usage/counter-mb.ts), only told here.
+  // (Before it, 16 here: the counter's cursor, the sessions, their runtime sources and one transaction of the calls; and
+  // before that a transaction for each transcript, the turns of each part here and a usage record's 11.)
+  usageRead: 0,
   // 53 before (3 sessions archived, one at work): every session shown and chat of its own, and of each idle one its
   // bindings, pin, chats, row, jobs, keeps and work, read here. Now the look is a reader's; here only the archiving of each
   // session it archives: BEGIN, its row and its chat out of the lists, COMMIT, its chats and row for what is told, its

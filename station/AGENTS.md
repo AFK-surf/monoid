@@ -134,7 +134,11 @@
   in the program. Node (`src/sessions/live.ts`) keeps what the program asks of it: where a transcript is, what one
   gained and a page of its past (the readers', other processes: a long read there would hold up every actor), the
   file's watch, the usage counter, and the listeners it gives what is told (a stream opening is told the sessions at
-  work as they are now once the program answers, what they did meanwhile after it: api/events.ts `heldWaits`).
+  work as they are now once the program answers, what they did meanwhile after it: api/events.ts `heldWaits`). The
+  usage counter's reads are a program's too, where it is built and the store is a file (`src/usage/counter-mb.ts`,
+  reader `--builder usage-counter`, `mb/src/usagecount`: the transcripts read and their calls written there, Node only
+  told what changed; started at a read, let go idle); `STILLFAIL_USAGE_COUNTER_MB=0` and a store in memory read in
+  `src/usage/counter.ts`, which the program's reads are compared with (`test/mb-usage-counter.test.ts`).
 - Runtimes are drivers behind one seam (`src/agents/runtime.ts`): Claude Code a `claude -p` process per session;
   Codex one app-server per account, a thread per session, whose per-session settings go in `thread/start`'s config,
   never the process's environment; the others in `src/agents/`. A driver owns its child's stdin. Claude Code's output
