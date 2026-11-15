@@ -78,8 +78,8 @@ const STATEMENTS = {
   // pool is not asked to pick and no longer reads each running session's row (hub.ts `running`, `getSession`).
   // 97 until sessions stopped running in sandboxes: a turn no longer reads its session's row to copy its files there.
   // 96 until the sessions' actors read and wrote their turns, running and sessions' rows themselves, in the MoonBit
-  // program (mb/src/reader/actor_store.mbt): not on this thread.
-  turn: 76,
+  // program (mb/src/reader/actor_store.mbt): not on this thread. 74 since it marks what it was given delivered there too.
+  turn: 74,
   toolCall: 4,
   // A call recorded with compact usage installed, as a station has it: BEGIN, whether it was recorded before, its
   // session's context as kept, the call, its context, its file's position, COMMIT. (12 before: sqlite_master asked twice,
