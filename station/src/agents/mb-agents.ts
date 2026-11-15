@@ -17,7 +17,13 @@ type Json = any;
 /// What the program says of a process's lines: the events, the turn as it left it, up to where.
 /// `lines`: a process read as lines (a Codex app-server's, `kind` "lines"), its lines given whole, each with where it
 /// begins and ends, but for those nothing is kept of (mb `given`).
-export type Heard = { events: Json[]; turn: Json; to: number; lines?: { text: string; from: number; to: number }[] };
+/// `batch`: the events are kept by the program to give the session's actor there once its owner took them (`route`);
+/// `routed`: they are, so the session's owner says it took them (its router) and the program, not Node, acknowledges.
+export type Heard = { events: Json[]; turn: Json; to: number; lines?: { text: string; from: number; to: number }[]; batch?: number; routed?: boolean };
+
+/// What takes a batch the program keeps for the actor in the same program (mb-actor.ts): told the batch, once its
+/// events are had here; false: it was not, so it is acknowledged as before (its events not given there).
+export type Router = { program: SessionsProgram; took: (batch: number) => boolean };
 
 export type HostedOptions = {
   label: string;
@@ -120,7 +126,7 @@ export class AgentsHost {
           return { text, from, to };
         });
       }
-      if (p.heard({ events: Array.isArray(said.events) ? said.events : [], turn: said.turn, to: said.to, lines })) this.post({ ack: n, to: said.to });
+      if (p.heard({ events: Array.isArray(said.events) ? said.events : [], turn: said.turn, to: said.to, lines, batch: typeof said.batch === "number" ? said.batch : undefined })) this.post({ ack: n, to: said.to });
     } else if (said.exit !== undefined) p.exited_(said.code ?? null, said.signal ?? null, typeof said.stderr === "string" ? said.stderr : "");
     else if (said.closed !== undefined) p.closed_();
     // (its socket closed once it was read to its end: nothing more of it to read)
@@ -137,6 +143,12 @@ export class AgentsHost {
     this.#ensure().hold(this.#user, true);
     this.#sessions.set(p.n, p);
     this.post({ attach: p.n, socket: p.info.socket, turn: p.turnNow(), live: p.liveNow(), kind: p.kind });
+    if (p.routed) this.post({ route: p.n, on: true });
+  }
+
+  /// The program its processes are read by now (null: none running).
+  program(): SessionsProgram | null {
+    return this.#proc;
   }
 
   number() {
@@ -204,6 +216,7 @@ export class HostedProcess {
   readonly exited: Promise<string>;
   #resolveExit!: (said: string) => void;
   #left: (() => void) | null = null;
+  #router: Router | null = null;
 
   private constructor(host: AgentsHost, info: RunnerInfo, options: HostedOptions, turn: Json, live: Json) {
     this.#host = host;
@@ -232,6 +245,19 @@ export class HostedProcess {
     return p;
   }
 
+  /// What it reads is given its session's actor in the program, where that is the program reading it (`router`):
+  /// told here, as before, then taken there; null: told here only.
+  route(router: Router | null) {
+    if (router !== null && (this.kind !== "claude" || this.#host.program() !== router.program)) router = null;
+    if (router === null && this.#router === null) return;
+    this.#router = router;
+    this.#host.post({ route: this.n, on: router !== null });
+  }
+
+  get routed() {
+    return this.#router !== null;
+  }
+
   get kind(): "claude" | "lines" {
     return this.#options.kind ?? "claude";
   }
@@ -257,8 +283,11 @@ export class HostedProcess {
   heard(heard: Heard): boolean {
     if (this.gone || this.#frozen) return false;
     if (heard.turn !== undefined) this.#turn = heard.turn;
+    const router = heard.batch !== undefined ? this.#router : null;
+    if (router !== null) heard.routed = true;
     this.#options.heard(heard);
-    return true;
+    // (acknowledged by the program as its actor takes them)
+    return router === null || !router.took(heard.batch!);
   }
 
   froze(turn: Json, live: Json) {

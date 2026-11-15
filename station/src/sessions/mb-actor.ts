@@ -10,6 +10,7 @@ import { Clock, Effect, Fiber } from "effect";
 import { log } from "../ops/log.ts";
 import { Said, stationLang } from "../ops/i18n.ts";
 import { SessionsProgram, type ProgramUser } from "../agents/mb-program.ts";
+import type { HostedProcess, Router } from "../agents/mb-agents.ts";
 import { mbReaderBinary } from "../read/mb-reader.ts";
 import { CommandMissing } from "../agents/runner.ts";
 import { modelLimitOf, runtimeLabel, type AgentSession, type RuntimeEvent, type RuntimeKind } from "../agents/runtime.ts";
@@ -107,6 +108,11 @@ export class ActorsProgram {
     this.#proc.kill();
   }
 
+  /// The program it is: where a runtime session's process read there gives its events its actor (`MbActor` `route`).
+  get program(): SessionsProgram {
+    return this.#proc;
+  }
+
   /// The program for a hub on `data`, where it is built (none: a checkout that did not build it runs no session).
   static open(data: string, clock: Clock.Clock, store: { told(changes: any[]): void; db: any } | null = null): ActorsProgram | null {
     if (mbReaderBinary() === null) return null;
@@ -139,9 +145,14 @@ export class ActorsProgram {
   }
 
   /// Says `message` to it: whether it is there to be told.
+  /// How many lines of each kind (their first key) were said to it: what a test counts of what goes through Node.
+  readonly posted = new Map<string, number>();
+
   post(message: Json): boolean {
     if (this.#closed) return false;
     this.#sent++;
+    const kind = Object.keys(message)[0] ?? "";
+    this.posted.set(kind, (this.posted.get(kind) ?? 0) + 1);
     if (TRACE) process.stderr.write(`actors < ${JSON.stringify(message).slice(0, 400)}\n`);
     this.#proc.post({ ...message, now: this.now() });
     this.#held();
@@ -320,6 +331,8 @@ export class MbActor {
   readonly #told = new Map<number, () => void>();
   readonly #records = new Map<number, { words: string | null; about: [number, number, string] | null; watch: boolean; record?: (write: (about: [number, number, string] | null) => void) => void }>();
   readonly #reads = new Map<number, Promise<void> | void>();
+  /// What it decided of the batch of routed events it is taking (`#event`): a turn's outcome, the read its end waits on.
+  #routing: { outcome?: Json; read?: number; cleared?: boolean } = {};
   readonly #codex = new Map<number, { version: string | null; matches: (() => Promise<boolean>) | undefined }>();
 
   constructor(program: ActorsProgram, key: string, runtime: RuntimeKind, deps: SessionDeps) {
@@ -470,6 +483,7 @@ export class MbActor {
       taken = { handle, generation: this.#generation };
     }
     void this.#call("adopt", [{ ...snap, agent: null }, taken, profile, this.#deps.store.getSession(this.key)]);
+    if (agent) this.#route(agent, this.#generation);
   }
 
   close() {
@@ -494,8 +508,46 @@ export class MbActor {
 
   // ── its runtime sessions' events ─────────────────────────────────────────────────────────────────────────────
 
+  /// Its runtime session's process, read in this program, gives the actor its events there (agents.mbt `tell`,
+  /// actors.mbt `routed`): each batch of them is had here first (`#event`), then said taken.
+  #route(session: AgentSession, generation: number) {
+    const s = session as AgentSession & { route?: (router: Router | null) => void };
+    s.route?.({ program: this.#program.program, took: (batch) => this.#took(batch, s, generation) });
+  }
+
+  #unroute(session: AgentSession) {
+    (session as AgentSession & { route?: (router: Router | null) => void }).route?.(null);
+  }
+
+  #took(batch: number, session: AgentSession, generation: number): boolean {
+    const routing = this.#routing;
+    this.#routing = {};
+    const n = (session as AgentSession & { hostedProc?: () => HostedProcess | null }).hostedProc?.()?.n;
+    if (this.#closed || n === undefined) return false;
+    // (what it read clears the unread as the program takes the batch: a mirror from before that is not taken)
+    if (routing.cleared === true) this.#readAt = this.#sent + 1;
+    this.#post({ routed: n, batch, generation, ...(routing.read !== undefined ? { read: routing.read } : {}), ...(routing.outcome !== undefined ? { outcome: routing.outcome } : {}) });
+    return true;
+  }
+
   #event(generation: number, event: RuntimeEvent) {
     if (this.#closed) return;
+    if ((event as { routed?: boolean }).routed === true) {
+      // (the program gives it the actor once the batch is said taken: here what the station's own parts take of it)
+      if (event.type === "live") {
+        this.#deps.live?.event(this.key, event.event);
+        if (event.event.kind === "phase" && event.event.phase === "requesting" && this.#mirror.unread.length > 0) {
+          this.#mirror = { ...this.#mirror, unread: [] };
+          this.#routing.cleared = true;
+        }
+      } else if (event.type === "turnEnded") {
+        const read = ++this.#next;
+        this.#reads.set(read, this.#deps.live?.turnEnded(this.key));
+        this.#routing.outcome = event.outcome;
+        this.#routing.read = read;
+      }
+      return;
+    }
     if (event.type === "live") {
       // (the live view takes each at once; the program only what moves its status line and its words)
       this.#deps.live?.event(this.key, event.event);
@@ -581,6 +633,7 @@ export class MbActor {
         case "canCompact": return typeof session.compact === "function";
         case "dispose":
           this.#agents.delete(handle);
+          this.#unroute(session);
           await session.dispose();
           return null;
         default:
@@ -627,6 +680,7 @@ export class MbActor {
         });
         const handle = ++this.#next;
         this.#agents.set(handle, { generation, session: opened.session });
+        this.#route(opened.session, generation);
         const { session: _, ...rest } = opened;
         return { ...rest, handle, runtime: this.runtime };
       }

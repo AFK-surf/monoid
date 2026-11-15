@@ -30,7 +30,7 @@ import { fileCredentials, takeBack, takeBackMissing } from "./no-keychain.ts";
 import { type Events, OwnProcessDriver, OwnProcessSession, parseLine } from "./own-process.ts";
 import { accessKind, expandRoute, isMachine, keyFile, profileEnv, profileFast, profileModel, takesFast } from "./profiles.ts";
 import type { RunnerInfo } from "./runner.ts";
-import { AgentsHost, HostedProcess, type Heard } from "./mb-agents.ts";
+import { AgentsHost, HostedProcess, type Heard, type Router } from "./mb-agents.ts";
 import { ackedOffset, findRunner, linesBefore, outFile, runnerId } from "./process.ts";
 import { OVERLOADED, TOOL_SERVERS, cleanEnv, failureRest, unreachable, uuid, type BackgroundTask, type FailureReason, type OpenOptions, type Profile, type RuntimeEvent, type TurnOutcome } from "./runtime.ts";
 import { wall } from "../ops/fibers.ts";
@@ -645,6 +645,8 @@ export class ClaudeSession extends OwnProcessSession<Turn> {
       const { turn, ...event } = e;
       if (turn !== undefined) take(turn);
       if (event.type === "turnEnded") event.outcome = outcomeOf(event.outcome);
+      // (given its actor by the program: here only what the station's own parts take of it)
+      if (heard.routed === true) event.routed = true;
       this.events(event as RuntimeEvent);
     }
     take(heard.turn);
@@ -711,6 +713,11 @@ export class ClaudeSession extends OwnProcessSession<Turn> {
 
   hostedProc(): HostedProcess | null {
     return this.hosted();
+  }
+
+  /// What its process reads is given its actor in the program too (mb-actor.ts), where that reads it.
+  route(router: Router | null) {
+    this.hosted()?.route(router);
   }
 
   /// Its process as the program reads it, if it is.

@@ -112,6 +112,9 @@
   is read by the MoonBit program (`src/agents/mb-agents.ts`, `mb/src/reader/agents.mbt`, its frames `mb/src/claude`)
   where it is built, off the station's thread: Node starts and ends the processes and is told the events, each line
   acknowledged to its runner once Node took them; a handover holds its reading first (`freeze`, hub.ts `handOver`).
+  A Claude session's events go to its actor in the program itself: Node is told each batch, takes what its own parts
+  need (the live view, a token's renewal, a turn's outcome) and says it taken (`routed`, mb-actor.ts `#took`), and the
+  program gives the actor the batch it kept; `test/hub-e2e.test.ts` holds that none goes through Node.
   A Codex app-server's output is read there too, its lines given Node whole but for its diffs (`turn/diff/updated`,
   of which the station keeps nothing). One program for every driver and the actors, running while one of them uses it.
   `test/claude-here.test.ts` and `test/codex-here.test.ts` run the drivers' tests with it read here, as where the

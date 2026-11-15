@@ -53,6 +53,10 @@ test("a message in the station's chat: a turn starts, the agent posts through th
     assert.deepEqual([turns[0]!.summary.outcome, turns[0]!.summary.ending, turns[0]!.summary.need], ["completed", "all_done", "answered the question that was asked"]);
     assert.ok(!store.getSession(key)!.running);
     assert.deepEqual(store.pendingMessages(key), []);
+    // Its process read in the program, its events were given its actor there: Node only said each batch taken.
+    const posted = hub.program()!.posted;
+    assert.equal(posted.get("event") ?? 0, 0, `events said through Node: ${JSON.stringify([...posted])}`);
+    assert.ok((posted.get("routed") ?? 0) > 0, JSON.stringify([...posted]));
   } finally {
     await hub.shutdown();
     await served.close(1000);

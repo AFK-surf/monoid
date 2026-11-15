@@ -52,6 +52,10 @@ priv struct Hosted {
   mut left : Bool
   mut exited : Bool
   stderr : Array[String]
+  /// its session's actor is in this program (Node said `route`): what it reads is told Node as a batch, kept here
+  /// until Node says it took it (`routed`, actors.mbt), then given that actor here, not by Node
+  mut routed : Bool
+  batches : Map[Int, (Array[@jsjson.JValue], Int64)]
 }
 
 ///|
@@ -61,6 +65,7 @@ priv struct Agents {
   /// the wall's time when Node last said it, and this clock's then
   mut wall : Double
   mut at : Int64
+  mut next_batch : Int
 }
 
 ///|
@@ -71,7 +76,7 @@ fn Agents::now(self : Agents) -> Double {
 ///|
 ///|
 fn Agents::new(host : @host.Host) -> Agents {
-  { host, sessions: Map([]), wall: 0.0, at: @host.now() }
+  { host, sessions: Map([]), wall: 0.0, at: @host.now(), next_batch: 0 }
 }
 
 ///|
@@ -113,7 +118,8 @@ fn Agents::told(self : Agents, line : String) -> Unit {
     | { "done": Number(n, ..), .. }
     | { "detach": Number(n, ..), .. }
     | { "thaw": Number(n, ..), .. }
-    | { "keep": Number(n, ..), .. } => n.to_int()
+    | { "keep": Number(n, ..), .. }
+    | { "route": Number(n, ..), .. } => n.to_int()
     { "freeze": Number(id, ..), .. } => {
       let states : Map[String, Json] = {}
       let only = match said.value("only") {
@@ -140,11 +146,11 @@ fn Agents::told(self : Agents, line : String) -> Unit {
   }
   guard self.sessions.get(n) is Some(h) else { return }
   match said {
-    { "ack": _, "to": Number(to, ..), .. } => {
-      let to = to.to_int64()
-      if to > h.acked_out {
-        h.acked_out = to
-        self.ack(h)
+    { "ack": _, "to": Number(to, ..), .. } => self.acked(h, to.to_int64())
+    { "route": _, "on": on, .. } => {
+      h.routed = on is True
+      if !h.routed {
+        h.batches.clear()
       }
     }
     { "write": _, "line": String(text), .. } => self.write(h, text)
@@ -181,6 +187,30 @@ fn Agents::told(self : Agents, line : String) -> Unit {
     }
     _ => ()
   }
+}
+
+///|
+/// Node took what was read of it up to `to`: what was told it before is let go, and the runner told so.
+fn Agents::acked(self : Agents, h : Hosted, to : Int64) -> Unit {
+  let done = h.batches.iter().filter_map(kv => if kv.1.1 <= to { Some(kv.0) } else { None }).collect()
+  for k in done {
+    h.batches.remove(k)
+  }
+  if to > h.acked_out {
+    h.acked_out = to
+    self.ack(h)
+  }
+}
+
+///|
+/// The events of batch `k` of process `n`, which Node took (`routed`), let go here: none when it was not kept (told
+/// by a program before this one).
+fn Agents::take(self : Agents, n : Int, k : Int) -> (Array[@jsjson.JValue], Int64)? {
+  guard self.sessions.get(n) is Some(h) else { return None }
+  guard h.batches.get(k) is Some(batch) else { return None }
+  h.batches.remove(k)
+  self.acked(h, batch.1)
+  Some(batch)
 }
 
 ///|
@@ -247,6 +277,8 @@ fn hosted(n : Int, turn : @claude.Turn, live : @claude.Live, lines_only~ : Bool)
     left: false,
     exited: false,
     stderr: [],
+    routed: false,
+    batches: Map([]),
   }
 }
 
@@ -458,8 +490,16 @@ const DELTAS_MS : Int = 200
 
 ///|
 fn Agents::tell(self : Agents, h : Hosted, to : Int64, turn : @jsjson.JValue, events : Array[@jsjson.JValue]) -> Unit {
+  let batch = if h.routed && events.length() > 0 {
+    let k = self.next_batch
+    self.next_batch += 1
+    h.batches[k] = (events, to)
+    ",\"batch\":\{k}"
+  } else {
+    ""
+  }
   self.host.say(
-    "{\"lines\":\{h.n},\"to\":\{to},\"turn\":\{@jsjson.stringify(turn)},\"events\":\{@jsjson.stringify(Arr(events))}}",
+    "{\"lines\":\{h.n},\"to\":\{to},\"turn\":\{@jsjson.stringify(turn)},\"events\":\{@jsjson.stringify(Arr(events))}\{batch}}",
   )
 }
 
