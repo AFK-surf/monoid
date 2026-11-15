@@ -1430,10 +1430,22 @@ test "a chat's list as nodes given the same entries again reads none of its rows
   t.run_for(@ui.move_most_ms)
   let one_row = body_bound() - b1
   assert_true(t.find(words) is Some(_), msg="its new words drawn")
-  // every message another (each as it was, read anew): every row's
-  let all = one.map(fn(e : Entry) -> Entry {
+  // every message made anew as it was (read again from its JSON): the same, no row's binding looked at again
+  let anew = one.map(fn(e : Entry) -> Entry {
     match e {
       Said(m) => Said({ ..m, text: m.text })
+      e => e
+    }
+  })
+  let b_anew = body_bound()
+  entries.set(anew)
+  t.run_for(@ui.move_most_ms)
+  let anew_rows = body_bound() - b_anew
+  assert_eq(anew_rows, 0, msg="every message made anew as it was looked at \{anew_rows} bindings")
+  // every message another: every row's
+  let all = one.map(fn(e : Entry) -> Entry {
+    match e {
+      Said(m) => Said({ ..m, text: m.text + "。" })
       e => e
     }
   })
