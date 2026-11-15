@@ -98,6 +98,10 @@
   (`mb/src/admit`, its tests there), an end told and a service started again, a stop, a restart's taking up
   (`mb/src/reader/jobs.mbt`). Node keeps what is the machine's, which the program asks for: a command started in a
   group of its own and followed to its end, a signal, a log, the memory's pressure, the store.
+- The remote tasks (station_task across stations) run there too, as the pseudo-actor `#remote`
+  (`mb/src/reader/remote*.mbt`): what other stations ask of this one, the mirrors and their sweep, following tasks
+  started from here. Node (`src/jobs/remote.ts`) keeps the mesh bus, the file bytes (written and read at the path the
+  program names), the directory sync's file operations, protected folders and the load.
 - Runtimes are drivers behind one seam (`src/agents/runtime.ts`): Claude Code a `claude -p` process per session;
   Codex one app-server per account, a thread per session, whose per-session settings go in `thread/start`'s config,
   never the process's environment; the others in `src/agents/`. A driver owns its child's stdin. Claude Code's output
