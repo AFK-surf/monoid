@@ -2008,8 +2008,8 @@ try {
           const c = await answerTo(t2, `drill-noted b${tag} `);
           if (cwdOf(c) !== "A") throw new Error(`answered from ${cwdOf(c)}`);
         });
-        await check("4s: the connect moved before its other chat: refused, naming it; still A's, its socket A's", async () => {
-          const l = await moveConnect(dk, "B");
+        await check("4s: the connect moved alone before its other chat: refused, naming it; still A's, its socket A's", async () => {
+          const l = await moveConnect(dk, "B", false);
           log(`  ${outcome(l)}; holds ${holds(dk).join(",")}; sockets ${sockets()}`);
           const r = (l.refused ?? []).find((x: J) => named(x.item) === `connects ${itemOf(dk)}`);
           if (r === undefined) throw new Error(`not refused: ${outcome(l)}`);
@@ -2176,7 +2176,7 @@ try {
           if ((sl.most.get(APP) ?? 0) > 1) throw new Error(`${sl.most.get(APP)} sockets open at once across the handover: ${brief(during)}`);
         });
       } else fail("4s fault: A handed over while a routed thread is answered on B", new Error(`not run: it needs the connect on A and its chat on B, and the connect is on ${holds(dk).join(",") || "none"}, the chat ${standings(k1)}`));
-    }
+    } else fail("4s faults", new Error(`not run: they begin with the connect on A, and it is on ${holds(dk).join(",") || "none"}${k1 === "" ? ", no chat of it made" : ""}`));
 
     // ── a single-session connect: not routed, so it goes first, its chat stopped, and what Slack says meanwhile kept ──
     {
@@ -2213,7 +2213,7 @@ try {
           if (order.indexOf(`connects ${itemOf(dks)}`) > order.indexOf(`chats ${ks}`)) throw new Error(`the chat before its connect: ${order.join(", ")}`);
           const last = words.at(-1)!;
           await whenChanged([DATA.B], () => sql("B", `select count(*) n from entries where text like ${lit(`%drill-note:${last}%`)}`)[0].n > 0, 120_000, () => "the last said not in B's log");
-          const said = sql("B", `select text from entries where text like ${lit(`%drill-note:q%${tag}%`)} order by thread, n`).map((r) => /drill-note:(q\d+)/.exec(String(r.text))?.[1]);
+          const said = sql("B", `select text from entries where text like ${lit(`%drill-note:q%${tag}%`)} order by thread, n`).map((r) => new RegExp(`drill-note:(q\\d+)${tag}`).exec(String(r.text))?.[1]);
           const want = words.map((w) => w.replace(tag, ""));
           log(`  in B's log: ${brief(said)}; said: ${brief(want)}`);
           const twice = want.filter((w) => said.filter((x) => x === w).length > 1);
