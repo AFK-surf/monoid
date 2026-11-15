@@ -404,26 +404,28 @@ test "reused history rows strip i/ prefix when expanding groups and messages" {
 }
 
 ///|
-test "curved_rail_shapes connects icon centers at x=10 and curves around body at x=3" {
+test "curved_rail_lines connects icon centers at x=10 and curves around body at x=3" {
   // Single-line header with next event: straight vertical connector at x = 10
-  let s1 = curved_rail_shapes(20.0, 0.0, true)
-  assert_eq(s1, [@ui.shape_of([([10.0, 20.0, 10.0, 30.0], false)], stroke=0x000000FFL, width=1.25)])
+  let s1 = curved_rail_lines(20.0, 0.0, true, 0x000000FFL)
+  assert_eq(s1, [@ui.line([(10.0, 20.0), (10.0, 30.0)], width=1.25, color=0x000000FFL)])
   // Single-line terminal header: no rail
-  assert_eq(curved_rail_shapes(20.0, 0.0, false).length(), 0)
+  assert_eq(curved_rail_lines(20.0, 0.0, false, 0x000000FFL).length(), 0)
   // Wrapped multi-line in-row header without subordinate body: vertical connector to head_h - 1.5
-  let s_wrap = curved_rail_shapes(44.0, 0.0, false)
-  assert_eq(s_wrap, [@ui.shape_of([([10.0, 20.0, 10.0, 42.5], false)], stroke=0x000000FFL, width=1.25)])
+  let s_wrap = curved_rail_lines(44.0, 0.0, false, 0x000000FFL)
+  assert_eq(s_wrap, [@ui.line([(10.0, 20.0), (10.0, 42.5)], width=1.25, color=0x000000FFL)])
   // Event with body followed by next event vs terminal event with body
-  let s_next = curved_rail_shapes(20.0, 80.0, true)
-  let s_end = curved_rail_shapes(20.0, 80.0, false)
+  let s_next = curved_rail_lines(20.0, 80.0, true, 0x000000FFL)
+  let s_end = curved_rail_lines(20.0, 80.0, false, 0x000000FFL)
   assert_eq(s_next.length(), 1)
   assert_eq(s_end.length(), 1)
   assert_true(s_next != s_end, msg="rail_next=true extends into next icon while rail_next=false hooks at bottom")
   let pts_next = curved_rail_pts(20.0, 80.0, true)
   // Top curve starts at (10.0, 20.0) and reaches x = 3.0 at y = 27.0 (span = 3.5);
-  // bottom curve starts at (3.0, 93.0) and returns to x = 10.0 at y = 100.0 (y_end).
+  // bottom curve starts at (3.0, 96.5), returns to x = 10.0 at y = 103.5, and continues to (10.0, 110.0).
   assert_eq(pts_next[0], 10.0)
   assert_eq(pts_next[1], 20.0)
   assert_eq(pts_next[pts_next.length() - 4], 10.0)
-  assert_eq(pts_next[pts_next.length() - 3], 100.0)
+  assert_eq(pts_next[pts_next.length() - 3], 103.5)
+  assert_eq(pts_next[pts_next.length() - 2], 10.0)
+  assert_eq(pts_next[pts_next.length() - 1], 110.0)
 }

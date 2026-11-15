@@ -485,7 +485,7 @@ fn curved_rail_pts(head_h : Double, body_h : Double, rail_next : Bool) -> Array[
     pts.push(3.0 + r1 * (1.0 - c))
     pts.push(head_h + 2.0 * span - (s / s_top) * span)
   }
-  let bot_start = dmax(head_h + 2.0 * span, y_end - 2.0 * span)
+  let bot_start = dmax(head_h + 2.0 * span, y_end - span)
   if rail_next {
     for i in 0..<=top_idx {
       let (c, s) = quarter_arc[i]
@@ -516,13 +516,16 @@ fn curved_rail_pts(head_h : Double, body_h : Double, rail_next : Bool) -> Array[
 }
 
 ///|
-fn curved_rail_shapes(head_h : Double, body_h : Double, rail_next : Bool) -> Array[@ui.Shape] {
+fn curved_rail_lines(head_h : Double, body_h : Double, rail_next : Bool, color : Int64) -> Array[@ui.Line] {
   let pts = curved_rail_pts(head_h, body_h, rail_next)
   if pts.is_empty() {
-    []
-  } else {
-    [@ui.shape_of([(pts, false)], stroke=0x000000FFL, width=1.25)]
+    return []
   }
+  let pairs : Array[(Double, Double)] = []
+  for i in 0..<(pts.length() / 2) {
+    pairs.push((pts[2 * i], pts[2 * i + 1]))
+  }
+  [@ui.line(pairs, width=1.25, color~)]
 }
 
 ///|
@@ -567,13 +570,15 @@ fn event_stack_node(
     v.box(fn(r) {
       r
       .over(Is(true))
-      .width(Is(Some(50.0)))
+      .width(Is(Some(12.0)))
       .height(By(fn() {
         let total = head_h() + body_h() + (if rail_next() { 10.0 } else { 0.0 })
         Some(dmax(0.0, total))
       }))
-      .shapes(By(fn() { curved_rail_shapes(head_h(), body_h(), rail_next()) }))
-      .tint(By(fn() { @ui.tree_theme().color(if failed() { Danger } else { Line }) }))
+      .lines(By(fn() {
+        let color = @ui.tree_theme().color(if failed() { Danger } else { Line })
+        curved_rail_lines(head_h(), body_h(), rail_next(), color)
+      }))
       |> ignore
     })
     |> ignore
@@ -634,10 +639,12 @@ fn ev_node(
       p.box(fn(r) {
         r
         .over(Is(true))
-        .width(Is(Some(50.0)))
+        .width(Is(Some(12.0)))
         .height(By(fn() { Some(tall() + (if rail || rail_last { 10.0 } else { 0.0 })) }))
-        .shapes(By(fn() { curved_rail_shapes(tall(), 0.0, rail || rail_last) }))
-        .tint(By(fn() { @ui.tree_theme().color(if tone == "red" { Danger } else { Line }) }))
+        .lines(By(fn() {
+          let color = @ui.tree_theme().color(if tone == "red" { Danger } else { Line })
+          curved_rail_lines(tall(), 0.0, rail || rail_last, color)
+        }))
         |> ignore
       })
       |> ignore
@@ -1706,10 +1713,12 @@ fn ev_live_node(
         p.box(fn(r) {
           r
           .over(Is(true))
-          .width(Is(Some(50.0)))
+          .width(Is(Some(12.0)))
           .height(By(fn() { Some(tall() + (if has_rail() { 10.0 } else { 0.0 })) }))
-          .shapes(By(fn() { curved_rail_shapes(tall(), 0.0, has_rail()) }))
-          .tint(By(fn() { @ui.tree_theme().color(if tone() == "red" { Danger } else { Line }) }))
+          .lines(By(fn() {
+            let color = @ui.tree_theme().color(if tone() == "red" { Danger } else { Line })
+            curved_rail_lines(tall(), 0.0, has_rail(), color)
+          }))
           |> ignore
         })
         |> ignore
@@ -2238,7 +2247,6 @@ fn tool_body_node(v : @view.View, src : Source, station : String, key : String, 
     let raw_calls = items(parts, "call")
     let step_hint = text(step, "hint")
     let step_meta = text(step, "meta")
-    let is_cmd = raw_calls.length() > 0 && text(Some(raw_calls[0]), "kind") == "code"
     let call_parts : Array[Json] = []
     for part in raw_calls {
       let k = text(Some(part), "kind")
@@ -2247,16 +2255,6 @@ fn tool_body_node(v : @view.View, src : Source, station : String, key : String, 
         if step_hint != "" && (p == step_hint || p.has_suffix("/" + step_hint)) {
           continue
         }
-      }
-      if is_cmd && k == "facts" {
-        let kept = items(Some(part), "items").filter(fn(it) {
-          let fk = text(Some(it), "key")
-          fk != "timeout" && fk != "timeout_ms" && fk != "timeout_seconds"
-        })
-        if kept.length() > 0 {
-          call_parts.push({ "kind": "facts", "items": Json::array(kept) })
-        }
-        continue
       }
       call_parts.push(part)
     }
@@ -3241,17 +3239,17 @@ let h_ev : @ui.Style = @ui.css("row w=Full gap=S2 align=AStart")
 ///|
 /// A received message's body beside the event's curved side rail (`12px` left offset).
 // kept across runs: a value (no field of it changes)
-let h_received_body : @ui.Style = @ui.css("w=Full pl=S3 pt=S1_5 pb=S1_5")
+let h_received_body : @ui.Style = @ui.css("w=Full pl=S3 pt=S1 pb=S1")
 
 ///|
 /// A collapsed background task preview's body beside the event's curved side rail (`12px` left offset).
 // kept across runs: a value (no field of it changes)
-let h_task_preview_body : @ui.Style = @ui.css("w=Full pl=S3 pt=S1 pb=S1_5")
+let h_task_preview_body : @ui.Style = @ui.css("w=Full pl=S3 pt=S1 pb=S1")
 
 ///|
 /// A sent card or expanded note/task body beside the event's curved side rail (`12px` left offset).
 // kept across runs: a value (no field of it changes)
-let h_post_body : @ui.Style = @ui.css("w=Full pl=S3 pt=S1_5 pb=S1_5")
+let h_post_body : @ui.Style = @ui.css("w=Full pl=S3 pt=S1 pb=S0_5")
 
 ///|
 /// An event's mark (hIcon): 20 square, on whatever it stands on: the turn's rail runs from under it, so nothing of it
