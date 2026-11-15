@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [3f21d94c5](https://github.com/AFK-surf/monoid/commit/3f21d94c5b485a1d39dac75fd1410cdec817df19) app: every page, settings' page, the stations' pla | 2.14 | 2.99 | 12.92 | 34.02 | 51.19 | 29.85 | 59.76 | 99.63 | 120.92 |
 | [ae3fc19cf](https://github.com/AFK-surf/monoid/commit/ae3fc19cf0ff7e511ddcdafebed881b59cd1a53f) ci: mbui-moonbit's entries said by step and runs-o | 2.14 | 2.98 | 12.9 | 34 | 51.1 | 29.82 | 59.67 | 99.44 | 116.13 |
 | [8e422a290](https://github.com/AFK-surf/monoid/commit/8e422a290679e5abd9384a6a391d2619ddedb8e9) ci(mbui): move native test builds and corners swee | 2.14 | 2.98 | 12.9 | 34 | 51.1 | 29.82 | 59.67 | 99.44 | 116.13 |
 | [7e846be5b](https://github.com/AFK-surf/monoid/commit/7e846be5b6da2f43a6c4a7d1c10ef0e627d83908) docs: notes for stable 0.1.9229 (#6535) | 2.14 | 2.98 | 12.9 | 34 | 51.1 | 29.82 | 59.67 | 99.6 | 116.04 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [5b3a42708](https://github.com/AFK-surf/monoid/commit/5b3a4270808e000a7d8c45ca3db8cc61b61b82c9) mbui app: design .mbui/.wasm shell as mini-program | 2.1 | 2.93 | 12.62 | 33.57 | 48.93 | 29.05 | 57.32 | 99.09 | 110.88 |
 | [c730077c8](https://github.com/AFK-surf/monoid/commit/c730077c816fc977889416efa77f51f0f73e3064) station: launcher runtime supervision, front probe | 2.1 | 2.92 | 12.59 | 33.52 | 48.81 | 28.82 | 56.61 | 98.85 | 112.11 |
 | [5101e1b84](https://github.com/AFK-surf/monoid/commit/5101e1b84c2e0037d08058932d2641d9da100788) fix(mbui): align wide page own_head mark with firs | 2.1 | 2.92 | 12.58 | 33.52 | 48.8 | 28.82 | 56.61 | 98.85 | 116.7 |
-| [a08946bd9](https://github.com/AFK-surf/monoid/commit/a08946bd900e1a4972bb4e0f1281d910551ea032) mbui: rule 7 reads a card's pieces as one card; 全部 | 2.09 | 2.88 | 12.38 | 33.31 | 48.01 | 28.82 | 56.61 | 98.85 | 145.71 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [3f21d94c5](https://github.com/AFK-surf/monoid/commit/3f21d94c5b485a1d39dac75fd1410cdec817df19) app: every page, settings' page, the stations' pla | 0.42 | 0.54 | 2.07 | 3.17 | 4.95 | 1.53 | 4.08 | 57.3 |
 | [ae3fc19cf](https://github.com/AFK-surf/monoid/commit/ae3fc19cf0ff7e511ddcdafebed881b59cd1a53f) ci: mbui-moonbit's entries said by step and runs-o | 0.42 | 0.54 | 2.07 | 3.17 | 4.95 | 1.53 | 4.08 | 57.3 |
 | [8e422a290](https://github.com/AFK-surf/monoid/commit/8e422a290679e5abd9384a6a391d2619ddedb8e9) ci(mbui): move native test builds and corners swee | 0.42 | 0.54 | 2.07 | 3.17 | 4.95 | 1.53 | 4.08 | 57.3 |
 | [7e846be5b](https://github.com/AFK-surf/monoid/commit/7e846be5b6da2f43a6c4a7d1c10ef0e627d83908) docs: notes for stable 0.1.9229 (#6535) | 0.42 | 0.54 | 2.07 | 3.17 | 4.95 | 1.53 | 4.08 | 57.3 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [5b3a42708](https://github.com/AFK-surf/monoid/commit/5b3a4270808e000a7d8c45ca3db8cc61b61b82c9) mbui app: design .mbui/.wasm shell as mini-program | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.43 |
 | [c730077c8](https://github.com/AFK-surf/monoid/commit/c730077c816fc977889416efa77f51f0f73e3064) station: launcher runtime supervision, front probe | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.43 |
 | [5101e1b84](https://github.com/AFK-surf/monoid/commit/5101e1b84c2e0037d08058932d2641d9da100788) fix(mbui): align wide page own_head mark with firs | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.43 |
-| [a08946bd9](https://github.com/AFK-surf/monoid/commit/a08946bd900e1a4972bb4e0f1281d910551ea032) mbui: rule 7 reads a card's pieces as one card; 全部 | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.43 |
