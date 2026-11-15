@@ -1067,3 +1067,14 @@ fn jsons_same(a : Array[Json], b : Array[Json]) -> Bool {
   }
   true
 }
+
+///|
+/// The same JSON where there is one: the same reference (the core's deltas keep what they do not touch), else said the
+/// same.
+fn json_opt_same(a : Json?, b : Json?) -> Bool {
+  match (a, b) {
+    (Some(x), Some(y)) => physical_equal(x, y) || x == y
+    (None, None) => true
+    _ => false
+  }
+}

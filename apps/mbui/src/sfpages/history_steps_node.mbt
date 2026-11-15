@@ -1514,48 +1514,110 @@ fn group_rows_node(
 ) -> Unit {
   steps_box_node(s, h_steps, fn(list) {
     for i, row in rows {
-      let rv = Some(row)
-      let content = field(rv, "content")
-      let rk = gk + "/" + i.to_string()
-      if text(rv, "kind") == "thought" {
-        if calls {
-          let thought_words = text(content, "text")
-          let first = text(content, "first")
-          let has_more = flag(content, "brief") ||
-            thought_words != first ||
-            thought_words.contains("\n") ||
-            single_line_px(thought_words, prefix_px=48.0) > 280.0
-          if !has_more {
-            steps_box_node(list, h_step, fn(s) {
-              steps_box_node(s, h_step_summary, fn(sum) {
-                steps_words(sum, fn() { @sf.t("web-main.history.thinking") }, h_step_name)
-                steps_box_node(sum, h_grow_clip, fn(c) {
-                  steps_words(c, fn() { first }, h_step_hint_line)
-                }, in_row=true)
-              })
-            })
-          } else {
-            opened_node(list, src, station, key, rk, content, fn(sum) {
-              steps_words(sum, fn() { @sf.t("web-main.history.thinking") }, h_step_name)
-              steps_box_node(sum, h_grow_clip, fn(c) {
-                steps_words(c, fn() { if steps_own.opened.contains(rk) { "" } else { first } }, h_step_hint_line)
-              }, in_row=true)
-            }, fn(body) {
-              steps_box_node(body, h_step_card, fn(t) {
-                md_node(t, thought_words, field(content, "md"), small=true)
-              })
-            })
-          }
-        } else {
-          whole_node(list, src, station, key, rk, content, fn(body) {
-            steps_box_node(body, h_thinking, fn(t) { md_node(t, text(content, "text"), field(content, "md"), small=true) })
-          })
-        }
-      } else {
-        step_node(list, src, station, key, rk, content)
-      }
+      group_row_node(list, src, station, key, gk + "/" + i.to_string(), row, calls)
     }
   })
+}
+
+///|
+/// What a reused group's row shows of its group's rows (`gk`, `rows` as they are now), a row each by its place in the
+/// group: a step added makes its own row, a step changed makes its own again (the core's deltas keep the rest as they
+/// were), none of the others.
+fn group_rows_each_node(
+  s : @view.View,
+  src : Source,
+  station : String,
+  key : String,
+  gk : () -> String,
+  rows : () -> Array[Json],
+) -> Unit {
+  let calls_sig = @signals.computed(
+    fn(_) { rows().iter().any(fn(r) { text(Some(r), "kind") == "step" }) },
+    same=fn(a, b) { a == b },
+  )
+  let count_sig = @signals.computed(fn(_) { rows().length() }, same=fn(a, b) { a == b })
+  steps_box_node(s, h_steps, fn(list) {
+    list.each(fn() { Array::makei(count_sig.get(), fn(i) { i }) }, fn(i) { i }, at_once=true, fn(x, at) {
+      let i = at.untracked()
+      x.pick(at_once=true, fn() { GroupRowPicked::{ gk: gk(), row: rows().get(i), calls: calls_sig.get() } }, fn(p, cur) {
+        guard cur.row is Some(row) else { return }
+        group_row_node(p, src, station, key, cur.gk + "/" + i.to_string(), row, cur.calls)
+      })
+    })
+  })
+}
+
+///|
+/// A row of a group as group_rows_each_node shows it: its group's key, its JSON (the same as the core's delta left it),
+/// whether the group has calls.
+priv struct GroupRowPicked {
+  gk : String
+  row : Json?
+  calls : Bool
+}
+
+///|
+impl Eq for GroupRowPicked with equal(a, b) {
+  a.gk == b.gk &&
+  a.calls == b.calls &&
+  (match (a.row, b.row) {
+    (Some(x), Some(y)) => physical_equal(x, y)
+    (None, None) => true
+    _ => false
+  })
+}
+
+///|
+/// A row `row` of a group (`rk` its key) in `list`: a thought (opened under its line where there is more of it, beside
+/// calls), else a step.
+fn group_row_node(
+  list : @view.View,
+  src : Source,
+  station : String,
+  key : String,
+  rk : String,
+  row : Json,
+  calls : Bool,
+) -> Unit {
+  let rv = Some(row)
+  let content = field(rv, "content")
+  if text(rv, "kind") == "thought" {
+    if calls {
+      let thought_words = text(content, "text")
+      let first = text(content, "first")
+      let has_more = flag(content, "brief") ||
+        thought_words != first ||
+        thought_words.contains("\n") ||
+        single_line_px(thought_words, prefix_px=48.0) > 280.0
+      if !has_more {
+        steps_box_node(list, h_step, fn(s) {
+          steps_box_node(s, h_step_summary, fn(sum) {
+            steps_words(sum, fn() { @sf.t("web-main.history.thinking") }, h_step_name)
+            steps_box_node(sum, h_grow_clip, fn(c) {
+              steps_words(c, fn() { first }, h_step_hint_line)
+            }, in_row=true)
+          })
+        })
+      } else {
+        opened_node(list, src, station, key, rk, content, fn(sum) {
+          steps_words(sum, fn() { @sf.t("web-main.history.thinking") }, h_step_name)
+          steps_box_node(sum, h_grow_clip, fn(c) {
+            steps_words(c, fn() { if steps_own.opened.contains(rk) { "" } else { first } }, h_step_hint_line)
+          }, in_row=true)
+        }, fn(body) {
+          steps_box_node(body, h_step_card, fn(t) {
+            md_node(t, thought_words, field(content, "md"), small=true)
+          })
+        })
+      }
+    } else {
+      whole_node(list, src, station, key, rk, content, fn(body) {
+        steps_box_node(body, h_thinking, fn(t) { md_node(t, text(content, "text"), field(content, "md"), small=true) })
+      })
+    }
+  } else {
+    step_node(list, src, station, key, rk, content)
+  }
 }
 
 ///|
@@ -1587,16 +1649,8 @@ fn steps_row_shape(row : StepsRow?, ignore_opened? : Bool = false) -> Int? {
       let body = field(Some(item), "body")
       let content = field(body, "content")
       let base = match text(body, "kind") {
-        "group" => {
-          let f = number(content, "failures").to_int() > 0
-          let p = number(content, "pending").to_int() > 0
-          match (f, p) {
-            (false, false) => 0
-            (false, true) => 1
-            (true, false) => 2
-            (true, true) => 3
-          }
-        }
+        // (one shape whatever its failures and pending: its badges show and go in it as they change)
+        "group" => 0
         "text" => {
           let words = text(content, "text")
           let line = text(content, "line")
@@ -1746,7 +1800,7 @@ fn steps_reused_row_node(
   tips : @sf.TipLayer,
   make_row : (@view.View, StepsRow) -> Unit,
 ) -> Unit {
-  let picked = @signals.computed(fn(_) { StepsPicked::{ row: row_of(row_key()) } })
+  let picked = @signals.computed(fn(_) { StepsPicked::{ row: row_of(row_key()) } }, same=fn(a, b) { a == b })
   let init_shape = @signals.untracked(fn() { steps_row_shape(picked.get().row) })
   let same_shape_sig = @signals.computed(
     fn(_) { steps_row_shape(picked.get().row, ignore_opened=true) == init_shape },
@@ -1851,9 +1905,7 @@ fn steps_reused_row_node(
             steps_main_node(b, fn(m) {
               let content = fn() { field(field(item_fn(), "body"), "content") }
               match base {
-                0 | 1 | 2 | 3 => {
-                  let has_failures = base == 2 || base == 3
-                  let has_pending = base == 1 || base == 3
+                0 => {
                   let gk = fn() { item_key() + "/group" }
                   let open_sig = @signals.computed(fn(_) { steps_opened_contains_fn(gk) }, same=fn(a, b) { a == b })
                   let open = fn() { open_sig.get() }
@@ -1896,26 +1948,27 @@ fn steps_reused_row_node(
                           })
                           |> ignore
                         }, in_row=true)
-                        if has_failures {
-                          let failures_sig = @signals.computed(
-                            fn(_) { number(content(), "failures").to_int() },
-                            same=fn(a, b) { a == b },
-                          )
-                          @sf.badge_node(h, fn() {
+                        // (its badges shown and gone as its failures and pending come and go, the row kept)
+                        let failures_sig = @signals.computed(
+                          fn(_) { number(content(), "failures").to_int() },
+                          same=fn(a, b) { a == b },
+                        )
+                        h.show(at_once=true, fn() { failures_sig.get() > 0 }, fn(x) {
+                          @sf.badge_node(x, fn() {
                             @sf.t("web-main.history.failures", args=[("n", failures_sig.get().to_string())])
                           }, tone=Red)
                           |> ignore
-                        }
-                        if has_pending {
-                          let pending_sig = @signals.computed(
-                            fn(_) { number(content(), "pending").to_int() },
-                            same=fn(a, b) { a == b },
-                          )
-                          @sf.badge_node(h, fn() {
+                        })
+                        let pending_sig = @signals.computed(
+                          fn(_) { number(content(), "pending").to_int() },
+                          same=fn(a, b) { a == b },
+                        )
+                        h.show(at_once=true, fn() { pending_sig.get() > 0 }, fn(x) {
+                          @sf.badge_node(x, fn() {
                             @sf.t("web-main.history.pending", args=[("n", pending_sig.get().to_string())])
                           }, tone=Accented)
                           |> ignore
-                        }
+                        })
                         steps_fold_mark_node(h, open)
                         ignore(tips)
                       })
@@ -1923,19 +1976,7 @@ fn steps_reused_row_node(
                     },
                     fn(gv) {
                       steps_reveal_node(gv, open, fn(s) {
-                        s.pick(
-                          at_once=true,
-                          fn() { (gk(), picked.get()) },
-                          fn(p, cur) {
-                            let g = match cur.1.row {
-                              Some(Item(item, _)) => field(field(Some(item), "body"), "content")
-                              _ => None
-                            }
-                            let rs = items(g, "rows")
-                            let calls = rs.iter().any(fn(r) { text(Some(r), "kind") == "step" })
-                            group_rows_node(p, src, station, key, cur.0, rs, calls)
-                          },
-                        )
+                        group_rows_each_node(s, src, station, key, gk, fn() { items(content(), "rows") })
                       })
                     },
                   )
@@ -2011,7 +2052,7 @@ fn steps_reused_row_node(
                           fold_node(body, "", words_lines, words_line, key_fn=fk, fn(f) { steps_words(f, words, h_words) })
                         } else {
                           let fk = fn() { item_key() + "/message/0" }
-                          let md_sig = @signals.computed(fn(_) { field(msg(), "md") })
+                          let md_sig = @signals.computed(fn(_) { field(msg(), "md") }, same=json_opt_same)
                           fold_node(body, "", words_lines, md_line, key_fn=fk, fn(f) {
                             md_live_node(f, words, fn() { md_sig.get() })
                           })
@@ -2023,7 +2064,7 @@ fn steps_reused_row_node(
                 19 | 20 => {
                   let link = base == 19
                   let post_words_sig = @signals.computed(fn(_) { text(content(), "text") }, same=fn(a, b) { a == b })
-                  let post_md_sig = @signals.computed(fn(_) { field(content(), "md") })
+                  let post_md_sig = @signals.computed(fn(_) { field(content(), "md") }, same=json_opt_same)
                   event_stack_node(
                     m,
                     rail_next=has_rail,
@@ -3981,3 +4022,4 @@ pub fn history_attention_node(
     })
   })
 }
+

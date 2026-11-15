@@ -149,13 +149,18 @@ fn profile_found_node(
   stint : () -> Int,
 ) -> Unit {
   let o = fn() { field(s(), "overview") }
-  let p = fn() -> Json? {
-    let all = items(o(), "profiles")
-    match all.search_by(fn(x) { text(Some(x), "id") == id }) {
-      Some(i) => Some(all[i])
-      None => None
-    }
-  }
+  // (looked up once as the station's overview changes, what reads it woken only where this account comes out otherwise)
+  let p_now = @signals.computed(
+    fn(_) {
+      let all = items(o(), "profiles")
+      match all.search_by(fn(x) { text(Some(x), "id") == id }) {
+        Some(i) => Some(all[i])
+        None => None
+      }
+    },
+    same=json_opt_same,
+  )
+  let p = fn() -> Json? { p_now.get() }
   // the account it is, on whichever stations have it: its own topic (`profile`), never the workspace's list
   let entry = fn() -> Json? { @settings.profile_of(core, here(), address, id) }
   let open = profile_open()
@@ -1025,9 +1030,13 @@ fn profile_quota_node(
 ) -> Unit {
   let on = [("station", address), ("id", id)]
   let params = fn() { obj([("station", str(address)), ("id", str(id))]) }
-  let quota = fn() { field(p(), "quota") }
-  let windows = fn() { items(quota(), "windows") }
-  let credits = fn() { text(quota(), "creditsText") }
+  // (each worked out once for each change of the account, what reads it woken only where it comes out otherwise)
+  let quota_now = @signals.computed(fn(_) { field(p(), "quota") }, same=json_opt_same)
+  let quota = fn() { quota_now.get() }
+  let windows_now = @signals.computed(fn(_) { items(quota(), "windows") }, same=jsons_same)
+  let windows = fn() { windows_now.get() }
+  let credits_now = @signals.computed(fn(_) { text(quota(), "creditsText") }, same=fn(a, b) { a == b })
+  let credits = fn() { credits_now.get() }
   let refreshing = fn() {
     is_doing(core, ["profile.quota"], on) ||
     (is_doing(core, ["profile.check"], on) && text(quota(), "state") != "unsupported")
@@ -1141,7 +1150,9 @@ fn profile_quota_node(
         // Each kind of reset it holds, a row each: how many are left at its end, where they are seen at once (the user,
         // 2026-11-10), what one gives back and till when under its name; the row pressed asks first, then uses one.
         g.each(fn() { items(quota(), "resets") }, fn(r) { text(Some(r), "kind") }, fn(x, rs) {
-          let rv = fn() { Some(rs.get()) }
+          // (this reset alone: another's change wakes nothing of it)
+          let rv_now = @signals.computed(fn(_) { Some(rs.get()) }, same=json_opt_same)
+          let rv = fn() { rv_now.get() }
           let busy = fn() { is_doing(core, ["profile.resetQuota"], on) }
           let usable = fn() { count(rv(), "left") > 0 && flag(rv(), "usable") }
           // (lit only when one can be used now: one usable only at a limit says why under it, unpressed)

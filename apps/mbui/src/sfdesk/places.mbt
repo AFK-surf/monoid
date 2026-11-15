@@ -62,14 +62,30 @@ fn place_route_first(src : Source, w : Workspace, place : String) -> @settings.R
         Some(s) => Some(Route::Station(text(Some(s), "station")))
         None => None
       }
-    // (the first that needs a look, else the first: what its settings' row counts is what shows)
-    "profiles" => {
-      let list = items(src.topic("profiles", { "scope": Json::string(w.id) }).get().value, "items")
-      list.get(list.search_by(fn(e) { flag(Some(e), "look") }).unwrap_or(0)).map(fn(e) { profile_route(Some(e)) })
-    }
+    // (the first that needs a look, else the first: what its settings' row counts is what shows; once shown, it stays
+    // while the list still has it, the list sorted anew under it (another coming to need a look, one no longer) taking
+    // nothing the person reads away from them)
+    "profiles" =>
+      profiles_first_kept.read(
+        src,
+        w.id,
+        fn(was) {
+          let list = items(src.topic("profiles", { "scope": Json::string(w.id) }).get().value, "items")
+          match was {
+            Some(Some(r)) if list.iter().any(fn(e) { profile_route(Some(e)) == r }) => Some(r)
+            _ => list.get(list.search_by(fn(e) { flag(Some(e), "look") }).unwrap_or(0)).map(fn(e) { profile_route(Some(e)) })
+          }
+        },
+        same=fn(a, b) { a == b },
+      )
     _ => None
   }
 }
+
+///|
+/// The profile the profiles' place shows with none picked (place_route_first's), by workspace and by the source read.
+// kept across runs: what it keeps is let go of by a run anew and by reset (sfbase's derived.mbt)
+let profiles_first_kept : @sfbase.Kept[@settings.Route?] = @sfbase.Kept::new()
 
 ///|
 /// The workspace's stations, their rows as the core lists them.
