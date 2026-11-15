@@ -226,6 +226,8 @@ async fn Actors::called(self : Actors, a : Actor, method : String, args : Array[
         if self.busy(a) || a.turn is Some(_) || self.holding(a) {
           return
         }
+        // (another taken up meanwhile is not the idle one)
+        guard still(a, Some(g)) else { return }
         self.set_agent(a, None)
         self.log(a, "info", "evicting idle session process")
         ignore(self.agent_do(a, g, "dispose", []))
@@ -397,9 +399,9 @@ async fn Actors::stop(self : Actors, a : Actor) -> Json raise {
       self.live_turn_ended(a)
       return
     }
-    if self.busy(a) {
+    if self.busy_agent(a) is Some(agent) {
       a.stop_requested = true
-      ignore(self.agent_do(a, a.agent.unwrap(), "abort", [])) catch {
+      ignore(self.agent_do(a, agent, "abort", [])) catch {
         e => {
           a.stop_requested = false
           raise e
@@ -504,17 +506,15 @@ async fn Actors::stop_from_slack(self : Actors, a : Actor, args : Array[Json]) -
       turn
     }
     guard turn is Some(id) && a.turn.map(t => t.id) == Some(id) else { return }
-    let busy = self.busy(a) catch {
+    let busy = self.busy_agent(a) catch {
       e => {
         failure = Some(e)
         return
       }
     }
-    if !busy || a.stop_requested {
-      return
-    }
+    guard busy is Some(agent) && !a.stop_requested else { return }
     a.stop_requested = true
-    ignore(self.agent_do(a, a.agent.unwrap(), "abort", [])) catch {
+    ignore(self.agent_do(a, agent, "abort", [])) catch {
       e => {
         a.stop_requested = false
         failure = Some(e)
@@ -967,10 +967,14 @@ async fn Actors::give_notices(self : Actors, a : Actor) -> Unit raise {
   if a.refill is Some(_) && !self.busy(a) {
     return
   }
-  if self.busy(a) {
+  let was = a.agent
+  let busy = self.busy_of(a, was)
+  // (let go of meanwhile: its turn's end gives them)
+  guard still(a, was) else { return }
+  if busy && was is Some(agent) {
     guard self.take_notices(a) is Some(text) else { return }
     let (handed, told) = self.with_choices(a, text)
-    if truthy(self.agent_do(a, a.agent.unwrap(), "steer", [jstr(self.timed(a, handed))])) {
+    if truthy(self.agent_do(a, agent, "steer", [jstr(self.timed(a, handed))])) {
       self.told(a, told)
     } else {
       a.notices = [text] + a.notices
@@ -1017,8 +1021,11 @@ async fn Actors::pump(self : Actors, a : Actor) -> Unit raise {
   if self.interrupted(a) || self.held(a) || self.archived(a) || a.compacting {
     return
   }
-  if self.busy(a) {
-    let agent = a.agent.unwrap()
+  let was = a.agent
+  let busy = self.busy_of(a, was)
+  // (let go of meanwhile: its turn's end pumps again)
+  guard still(a, was) else { return }
+  if busy && was is Some(agent) {
     if truthy(self.deps(a, "backgroundOnMessage", [jstr(a.key)])) {
       ignore(self.agent_do(a, agent, "backgroundTools", []))
     }
@@ -1441,12 +1448,12 @@ async fn Actors::on_compacted(self : Actors, a : Actor, generation : Int) -> Uni
   if !self.is_current(a, generation) {
     return
   }
-  if !a.compacting && self.busy(a) {
+  if !a.compacting && self.busy_agent(a) is Some(agent) {
     match self.deps(a, "longChat", [jstr(a.key)]) {
       String(long) => {
         let at = str_of(Some(self.deps(a, "nextTs", []))).unwrap_or("")
         let told = self.timed(a, "<message via=\"station\" from=\"station\" ts=\"\{at}\">\n\{long}\n</message>")
-        if truthy(self.agent_do(a, a.agent.unwrap(), "steer", [jstr(told)])) {
+        if truthy(self.agent_do(a, agent, "steer", [jstr(told)])) {
           return
         }
       }
