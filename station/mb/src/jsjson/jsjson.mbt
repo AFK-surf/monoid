@@ -590,3 +590,27 @@ pub fn raw_text(s : Array[Int]) -> String {
   }
   out.to_string()
 }
+
+///|
+/// The value as `String(v)` says it: a number as JSON.stringify writes it, an array's items joined with commas (null
+/// as nothing), an object as "[object Object]".
+pub fn js_string(v : JValue) -> Array[Int] {
+  match v {
+    Str(s) => s
+    Null => units("null")
+    Arr(items) => {
+      let out = []
+      for i, item in items {
+        if i > 0 {
+          out.push(0x2c)
+        }
+        if !(item is Null) {
+          out.append(js_string(item))
+        }
+      }
+      out
+    }
+    Obj(_) => units("[object Object]")
+    v => units(stringify(v))
+  }
+}

@@ -207,6 +207,7 @@ export function devinEnv(options: OpenOptions): Record<string, string> {
 }
 
 export class DevinDriver extends AcpDriver<DevinSession> {
+  protected readonly keepsTranscript = true;
   private readonly command: string;
 
   constructor(options: DevinDriverOptions) {
@@ -250,7 +251,6 @@ export class DevinDriver extends AcpDriver<DevinSession> {
 type TurnUsage = { run: string; calls: number; lastCall: string; context: number; window: number };
 
 export class DevinSession extends AcpSession {
-  protected readonly steersByPrompt = true;
   /// The `model` config option's values (a family's variant each): what another model between turns is set to.
   private families: string[] = [];
   /// The running turn's call count and last call seen (each call's counts are said twice, the second time as its
@@ -261,10 +261,6 @@ export class DevinSession extends AcpSession {
     super(driver, events, new KeptTranscript("devin", join(devinHome(options.profile.home), SESSIONS)));
     const rawModel = options.model ?? profileModel(options.profile);
     this.model = rawModel !== undefined ? devinFusionBase(rawModel).model : null;
-  }
-
-  protected classify(text: string) {
-    return classifyFailure(text);
   }
 
   /// The model its config options say is current, and the values the `model` option takes.
@@ -296,11 +292,11 @@ export class DevinSession extends AcpSession {
 
   /// Each call's counts are said twice (the second time as its agent's): counted once, and written as it comes so a
   /// long turn's spend and context are live and survive a handover or crash.
-  protected updated(update: Json) {
+  protected updated(update: Json, owner: string | null) {
     if (update?.sessionUpdate !== "usage_update") return;
     const counts = callOf(update);
     const said = JSON.stringify(counts);
-    const run = this.owner !== null ? this.owner.slice(this.owner.indexOf(":") + 1) : uuid();
+    const run = owner !== null ? owner.slice(owner.indexOf(":") + 1) : uuid();
     const u = (this.usage ??= { run, calls: 0, lastCall: "", context: 0, window: 0 });
     if (said === u.lastCall) return;
     u.lastCall = said;

@@ -180,9 +180,18 @@ pub fn error_outcome(text : Array[Int]) -> J {
 }
 
 ///|
-/// runtime.ts `failureOf` (no words of a runtime's own): what failed a turn by what a runtime said of it, its error's
-/// code first where the text gives one (its words parted as /[^\p{L}\p{N}_]+/u parts them), then its phrases.
-pub fn failure_of(text : Array[Int]) -> String {
+/// runtime.ts `failureOf`: what failed a turn by what a runtime said of it, its error's code first where the text gives
+/// one (its words parted as /[^\p{L}\p{N}_]+/u parts them), then its phrases; with a runtime's own words of its account
+/// and its limits (`FailureWords`: `auth_codes`, `auth`, `limit_codes`, `limit`).
+pub fn failure_of(
+  text : Array[Int],
+  auth_codes~ : Array[String] = [],
+  auth~ : Array[String] = [],
+  limit_codes~ : Array[String] = [],
+  limit~ : Array[String] = [],
+) -> String {
+  let extra_auth = auth
+  let extra_limit = limit
   let lower = lowered(text)
   let plain = @jsjson.raw_text(lower)
   let word = (w : String) => @jscase.has_word_by(plain, w, c => c == 0x5f || @jscase.is_word_point(c))
@@ -194,7 +203,9 @@ pub fn failure_of(text : Array[Int]) -> String {
   ]
   let block_page = ["<html", "<!doctype html", "attention required", "just a moment", "cloudflare"]
   let limit = ["rate limit", "rate_limit", "quota", "usage limit", "limit reached", "resource_exhausted", "too many requests"]
-  if word("401") {
+  let auth = auth + extra_auth
+  let limit = limit + extra_limit
+  if word("401") || auth_codes.iter().any(word) {
     return "auth"
   }
   if word("403") {
@@ -208,7 +219,7 @@ pub fn failure_of(text : Array[Int]) -> String {
       "denied"
     }
   }
-  if word("429") {
+  if word("429") || limit_codes.iter().any(word) {
     return "rate_limit"
   }
   if word("529") {

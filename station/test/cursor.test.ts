@@ -14,7 +14,7 @@ import { after, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { modelOf } from "../src/agents/cursor-bridge.mjs";
 import { CursorDriver, classifyFailure, cursorHome, outcomeOf, rulesFolder } from "../src/agents/cursor.ts";
-import { cursorCall, cursorOutput } from "../src/agents/live.ts";
+import { cursorCall, cursorOutput } from "./reference/live.ts";
 import type { AgentSession, OpenOptions, RuntimeEvent } from "../src/agents/runtime.ts";
 import { allLeft } from "../src/agents/runner.ts";
 import { readTimeline, transcriptPath } from "./reference/transcript.ts";
@@ -84,6 +84,17 @@ const ends = (events: RuntimeEvent[]) => events.filter((e) => e.type === "turnEn
 const ended = (k: number) => (events: RuntimeEvent[]) => ends(events).length >= k;
 const live = (events: RuntimeEvent[]) => events.flatMap((e) => (e.type === "live" ? [e.event] : []));
 const deltas = (events: RuntimeEvent[]) => live(events).flatMap((e) => (e.kind === "delta" ? [e.text] : []));
+
+/// What each step wrote, its deltas one after another joined: the program holds what a step writes a while and tells it
+/// as one (mb agents.mbt DELTAS_MS), as many as the time it took them to come makes.
+const written = (events: RuntimeEvent[]) =>
+  live(events).reduce<{ id: string; field: string; text: string }[]>((out, e) => {
+    if (e.kind !== "delta") return out;
+    const last = out.at(-1);
+    if (last !== undefined && last.id === e.id && last.field === e.field) last.text += e.text;
+    else out.push({ id: e.id, field: e.field, text: e.text });
+    return out;
+  }, []).map((d) => d.text);
 const outcome = (events: RuntimeEvent[], k = 0) => (ends(events)[k] as Extract<RuntimeEvent, { type: "turnEnded" }>).outcome;
 const dumped = (dump: string) => readFileSync(dump, "utf8").trim().split("\n").map((l) => JSON.parse(l));
 
@@ -101,7 +112,7 @@ describe("the Cursor driver", { concurrency: true }, () => {
     assert.equal(session.busy(), false);
     assert.ok(!events.some((e) => e.type === "turnStarted"), "our own prompt's turn is not one started without us");
     assert.deepEqual(live(events).filter((e) => e.kind === "start").map((e) => (e as { step: string }).step), ["thinking", "text"]);
-    assert.deepEqual(deltas(events), ["thinking ", "it over", "hel", "lo"]);
+    assert.deepEqual(written(events), ["thinking it over", "hello"]);
 
     const [created] = dumped(o.dump);
     // The key the sign-in minted, not the station's own; the station's tools with the session's token.
@@ -272,6 +283,8 @@ describe("the Cursor driver", { concurrency: true }, () => {
       await session.prompt("gate:g");
       await a.until((e) => deltas(e).join("") === "first");
       let snapshot: unknown = null;
+      // (its lines held as the hub holds them before a snapshot: hub.ts `handOver`)
+      if (!crashed) await first.freeze();
       if (!crashed) snapshot = JSON.parse(JSON.stringify(session.snapshot()));
       first.detach();
       // (the station let go before the next takes up, as the hub waits: every line handled acknowledged)

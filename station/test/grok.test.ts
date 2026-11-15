@@ -75,6 +75,17 @@ const ends = (events: RuntimeEvent[]) => events.filter((e) => e.type === "turnEn
 const ended = (k: number) => (events: RuntimeEvent[]) => ends(events).length >= k;
 const live = (events: RuntimeEvent[]) => events.flatMap((e) => (e.type === "live" ? [e.event] : []));
 const deltas = (events: RuntimeEvent[]) => live(events).flatMap((e) => (e.kind === "delta" ? [e.text] : []));
+
+/// What each step wrote, its deltas one after another joined: the program holds what a step writes a while and tells it
+/// as one (mb agents.mbt DELTAS_MS), as many as the time it took them to come makes.
+const written = (events: RuntimeEvent[]) =>
+  live(events).reduce<{ id: string; field: string; text: string }[]>((out, e) => {
+    if (e.kind !== "delta") return out;
+    const last = out.at(-1);
+    if (last !== undefined && last.id === e.id && last.field === e.field) last.text += e.text;
+    else out.push({ id: e.id, field: e.field, text: e.text });
+    return out;
+  }, []).map((d) => d.text);
 const outcome = (events: RuntimeEvent[], k = 0) => (ends(events)[k] as Extract<RuntimeEvent, { type: "turnEnded" }>).outcome;
 const stdin = (dump: string) => readFileSync(`${dump}.stdin`, "utf8").trim().split("\n").map((l) => JSON.parse(l));
 const started = (dump: string) => JSON.parse(readFileSync(dump, "utf8").trim().split("\n")[0]!);
@@ -93,8 +104,8 @@ describe("the Grok Build driver", { concurrency: true }, () => {
     assert.equal(session.busy(), false);
     assert.ok(!events.some((e) => e.type === "turnStarted"), "our own prompt's turn is not one started without us");
     // A thought, then the reply in two chunks: one step each.
-    assert.deepEqual(live(events).filter((e) => e.kind !== "phase").map((e) => e.kind), ["start", "delta", "end", "start", "delta", "delta", "end"]);
-    assert.deepEqual(deltas(events), ["thinking it over", "hel", "lo"]);
+    assert.deepEqual(live(events).filter((e) => e.kind === "start" || e.kind === "end").map((e) => e.kind), ["start", "end", "start", "end"]);
+    assert.deepEqual(written(events), ["thinking it over", "hello"]);
 
     const run = started(o.dump);
     assert.deepEqual(run.argv, ["agent", "--always-approve", "--no-leader", "--model", "grok-4.7", "--reasoning-effort", "xhigh", "stdio"]);
@@ -319,6 +330,8 @@ describe("the Grok Build driver", { concurrency: true }, () => {
       await session.prompt("hold");
       await a.until((e) => deltas(e).join("").includes("holding"));
       let snapshot: unknown = null;
+      // (its lines held as the hub holds them before a snapshot: hub.ts `handOver`)
+      if (!crashed) await first.freeze();
       if (!crashed) snapshot = JSON.parse(JSON.stringify(session.snapshot()));
       // Stops: the process goes on under its runner with nobody reading.
       first.detach();

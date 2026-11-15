@@ -1,28 +1,32 @@
 // The Agent Client Protocol (JSON-RPC over stdio, agentclientprotocol.com) as the station speaks it to the runtimes that
-// serve it (Grok Build, Devin, Hermes Agent: grok.ts, devin.ts, hermes.ts), one ACP session in a process of its own
-// (own-process.ts):
+// serve it (Antigravity CLI, Grok Build, Devin, Hermes Agent: agy.ts, grok.ts, devin.ts, hermes.ts), one ACP session in
+// a process of its own (own-process.ts):
 // - `initialize`, then `session/new` (the agent names the session) or `session/load` (one it keeps), given the station's
 //   tools as an HTTP MCP server; what session/load says again of the session's past is no turn;
 // - a turn is a `session/prompt`, ended by its answer: `stopReason` (`cancelled` after `session/cancel`), or an error
 //   whose message says why it failed;
-// - what the model says and does streams in `session/update`s (live.ts LiveFromAcp): text and thinking in chunks, a call
-//   as `tool_call`, then `tool_call_update`s until it completed or failed. A step with no turn running is not the
-//   session's turn's, unless a prompt of ours put in the turn as it ended became a turn of its own;
+// - what the model says and does streams in `session/update`s: text and thinking in chunks, a call as `tool_call`, then
+//   `tool_call_update`s until it completed or failed. A step with no turn running is not the session's turn's, unless a
+//   prompt of ours put in the turn as it ended became a turn of its own;
 // - a permission it asks is granted for the call (the station runs its agents without approvals); any other request of
 //   its own is refused (what it would ask is asked in the chat);
 // - a call to the station's tools failing as unreachable says the tools are lost.
-// What each runtime does its own way (how it is started and signed in, how it is given the station's instructions, a
-// message for the running turn, what it says of its usage, its subagents) is its driver's, by the hooks below; and so is
-// a transcript kept by the station (KeptTranscript), for a runtime whose own the station cannot read.
-import { appendFileSync } from "node:fs";
+// The updates and a prompt's answer are read by the station's MoonBit program (mb/src/acp, mb/src/reader
+// agents_own.mbt), off the station's thread: what the model says is put together there, its steps given the session's
+// actor there, and this is told what it keeps of them (the transcript's lines, a prompt's answer, the usage) and given
+// the lines it answers (its requests' answers, the runtime's requests). What each runtime does its own way (how it is
+// started and signed in, how it is given the station's instructions, a message for the running turn, what it says of
+// its usage) is its driver's, by the hooks below; and so is a transcript kept by the station (KeptTranscript), for a
+// runtime whose own the station cannot read.
+import { appendFile } from "node:fs/promises";
 import { join } from "node:path";
 import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
-import { LiveFromAcp, acpNamed, chars, type AcpLiveState } from "./live.ts";
-import { type Events, OwnProcessDriver, OwnProcessSession, type ProcessSnapshot, parseLine } from "./own-process.ts";
+import { chars } from "./live.ts";
+import { type Events, type Hosting, type ProcessSnapshot, type Replayed, OwnProcessDriver, OwnProcessSession, parseLine } from "./own-process.ts";
 import { profileModel } from "./profiles.ts";
 import type { RunnerInfo } from "./runner.ts";
-import { runtimeLabel, stationTool, unreachable, uuid, type FailureReason, type OpenOptions, type PlanItem, type RuntimeKind, type TurnOutcome } from "./runtime.ts";
+import { runtimeLabel, uuid, type FailureReason, type OpenOptions, type RuntimeKind, type TurnOutcome } from "./runtime.ts";
 
 type Json = any;
 
@@ -40,17 +44,6 @@ export const rpc = (id: string, method: string, params: Json) => JSON.stringify(
 /// The station's tools as ACP gives an MCP server.
 export const mcpServers = (url: string, token: string) => [{ type: "http", name: "stillfail", url, headers: [{ name: "Authorization", value: `Bearer ${token}` }] }];
 
-/// Whether an update is a step of a turn (what the model says or does), not something said of the session.
-/// An ACP `plan` update's entries as checklist items (null: it says none it can be read by).
-export function planOfAcp(update: Json): PlanItem[] | null {
-  if (!Array.isArray(update?.entries)) return null;
-  return update.entries
-    .filter((e: Json) => typeof e?.content === "string")
-    .map((e: Json): PlanItem => ({ text: e.content, status: typeof e.status === "string" ? e.status : "pending" }));
-}
-
-export const turnStep = (update: Json) => ["agent_message_chunk", "agent_thought_chunk", "tool_call", "tool_call_update"].includes(update?.sessionUpdate);
-
 /// What an error answer says: its message, and its data's.
 function errorText(error: Json): string {
   const text = typeof error?.message === "string" ? error.message.replace(/^Internal error: /, "") : JSON.stringify(error);
@@ -58,7 +51,8 @@ function errorText(error: Json): string {
   return `${text}${data}`;
 }
 
-/// How a prompt's answer ends the turn, told apart by `classify` when it failed.
+/// How a prompt's answer ends the turn, told apart by `classify` when it failed. What the program reads a process by
+/// does this (mb/src/acp `acp_outcome`); this is what it is held to.
 export function acpOutcome(answer: Json, classify: (text: string) => FailureReason): TurnOutcome {
   if (answer?.error !== undefined) {
     const said = errorText(answer.error);
@@ -70,13 +64,15 @@ export function acpOutcome(answer: Json, classify: (text: string) => FailureReas
   return { kind: "completed" };
 }
 
-/// A call under way, as it started: its name (as the station names it: live.ts acpNamed), its input and when it began.
+/// A call under way, as it started: its name (as the station names it: mb/src/acp `acp_named`), its input and when it
+/// began.
 export type Call = { name: string; input: Json; startedAt?: number };
-/// A call done, and what it said.
-type Done = Call & { id: string; failed: boolean; text: string };
 
 /// What is being said, as a transcript keeps it: the step's kind and its text so far.
 export type Said = { type: "assistant" | "thinking"; text: string };
+
+/// Its live steps as the program keeps them (mb/src/acp `Live::state`).
+export type AcpLiveState = { open: string[]; said: string | null; n: number; phase: string | null };
 
 /// A session as a next station takes it up. What a station before this one's handed over may lack.
 export type AcpSnapshot = ProcessSnapshot & {
@@ -88,19 +84,24 @@ export type AcpSnapshot = ProcessSnapshot & {
   steering?: string[];
   said?: Said | null;
   calls?: [string, Call][];
+  /// What the model said last in the running turn, and Grok Build's subagents' steps (mb/src/acp `Session::state`).
+  saidLast?: string;
+  children?: [string, Json][];
 };
 
 /// The transcript the station keeps of a session whose runtime keeps none it can read (Devin keeps its sessions in a
-/// database of its own; Hermes'): <dir>/<session id>.jsonl, a line for each thing said and done, as Cursor's bridge
-/// keeps its own (read/transcript.ts reads them alike): the person's messages, what was said once whole (something else
-/// came), a call once done with what it said, the turn's usage, its end.
+/// database of its own; Hermes'; Antigravity CLI's): <dir>/<session id>.jsonl, a line for each thing said and done, as
+/// Cursor's bridge keeps its own (read/transcript.ts reads them alike): the person's messages, what was said once whole
+/// (something else came), a call once done with what it said, the turn's usage, its end. The program says each line
+/// (mb/src/acp `kept`) but the session's opening, a turn's usage and an end by its process exiting; each is written in
+/// turn off the station's thread, a turn's end said once what came before it is (`settled`).
 export class KeptTranscript {
   private readonly kind: RuntimeKind;
   private readonly dir: string;
-  /// What is being said now (in a snapshot: the next station writes it whole).
-  said: Said | null = null;
   /// Read again after a crash: what was written then is not written twice.
   private quiet = false;
+  /// What is being written, in order.
+  #writing: Promise<void> | null = null;
 
   constructor(kind: RuntimeKind, dir: string) {
     this.kind = kind;
@@ -109,43 +110,28 @@ export class KeptTranscript {
 
   keep(id: string, line: Json) {
     if (id === "" || this.quiet) return;
-    try {
-      appendFileSync(join(this.dir, `${id}.jsonl`), `${JSON.stringify({ time: wall.now(), ...line })}\n`);
-    } catch (e) {
-      log.warn(`agents::${this.kind}`, "a transcript line was not kept", { session: id, error: (e as Error).message });
-    }
+    const text = `${JSON.stringify({ time: wall.now(), ...line })}\n`;
+    const path = join(this.dir, `${id}.jsonl`);
+    const write = async () => {
+      try {
+        await appendFile(path, text);
+      } catch (e) {
+        log.warn(`agents::${this.kind}`, "a transcript line was not kept", { session: id, error: (e as Error).message });
+      }
+    };
+    const next: Promise<void> = (this.#writing ?? Promise.resolve()).then(write);
+    this.#writing = next;
+    void next.then(() => {
+      if (this.#writing === next) this.#writing = null;
+    });
   }
 
-  user(id: string, text: string, steered = false) {
-    this.flush(id);
-    this.keep(id, steered ? { type: "user", text, steered: true } : { type: "user", text });
-  }
-
-  /// What an update adds: what is being said grows, whole once something else comes; a call once it is done.
-  take(id: string, update: Json, done: Done | null) {
-    const kind = update?.sessionUpdate;
-    if (kind === "agent_message_chunk" || kind === "agent_thought_chunk") {
-      const type = kind === "agent_message_chunk" ? "assistant" : "thinking";
-      const text = typeof update.content?.text === "string" ? update.content.text : "";
-      if (this.said !== null && this.said.type !== type) this.flush(id);
-      this.said ??= { type, text: "" };
-      this.said.text += text;
-      return;
-    }
-    if ((kind !== "tool_call" && kind !== "tool_call_update") || typeof update.toolCallId !== "string") return;
-    this.flush(id);
-    if (done !== null) this.keep(id, { type: "tool", id: done.id, name: done.name, status: done.failed ? "error" : "completed", ...(done.startedAt !== undefined ? { startedAt: done.startedAt } : {}), args: done.input, result: chars(done.text, 20_000) });
-  }
-
-  /// What was being said, written.
-  flush(id: string) {
-    if (this.said === null) return;
-    if (this.said.text.trim() !== "") this.keep(id, { type: this.said.type, text: this.said.text });
-    this.said = null;
+  /// What is being written, done (null: nothing is).
+  settled(): Promise<void> | null {
+    return this.#writing;
   }
 
   ended(id: string, outcome: TurnOutcome) {
-    this.flush(id);
     this.keep(id, { type: "end", status: outcome.kind === "completed" ? "finished" : outcome.kind === "aborted" ? "cancelled" : "error", ...(outcome.kind === "failed" ? { error: { message: outcome.message } } : {}) });
   }
 
@@ -160,50 +146,23 @@ export class KeptTranscript {
   }
 }
 
-export abstract class AcpSession extends OwnProcessSession {
-  protected live = new LiveFromAcp();
+/// Where an ACP session's turn stands: the prompt whose answer ends it (ours, or one put in the turn that became a turn
+/// of its own), and the prompts put in the running turn not answered yet.
+type AcpTurn = { busy: boolean; aborting: boolean; closed: boolean; owner: string | null; steering: string[] };
+
+export abstract class AcpSession extends OwnProcessSession<AcpTurn> {
   /// The model its turns run on (null when not known).
   model: string | null = null;
-  /// The prompt whose answer ends the turn (ours, or one put in the turn that became a turn of its own), and the prompts
-  /// put in the running turn not answered yet.
-  protected owner: string | null = null;
-  protected steering = new Set<string>();
-  /// Until the session is open: what session/load says again of its past is no turn.
-  private loading = true;
-  /// Its calls under way.
-  private calls = new Map<string, Call>();
-  /// What the model said last in the running turn: its words since it last thought or called something, what
-  /// `failedSaying` reads at its end (Antigravity CLI says a spent quota after the turn's calls, 2026-11-15).
-  private saidLast = "";
   /// The transcript the station keeps of it (null: the runtime's own is read).
   protected readonly transcript: KeptTranscript | null;
-  /// Whether a message for the running turn goes into it as a prompt of its own, answered with the turn (Devin's),
-  /// rather than as a request of the runtime's own or not at all.
-  protected readonly steersByPrompt: boolean = false;
 
   constructor(driver: AcpDriver<any>, events: Events, transcript: KeptTranscript | null = null) {
-    super(driver, "", { busy: false, aborting: false, closed: false }, events);
+    super(driver, "", { busy: false, aborting: false, closed: false, owner: null, steering: [] }, events);
     this.transcript = transcript;
   }
 
-  /// How a failure it said is told apart.
-  protected abstract classify(text: string): FailureReason;
-  /// A turn answered as ended well whose last words were a failure's notice (a runtime that says it in words, not as
-  /// an error: Antigravity CLI's spent quota, alone or after the turn's calls), and why; null: it ended as its answer
-  /// says.
-  protected failedSaying(_said: string): FailureReason | null {
-    return null;
-  }
-  /// An update as the station reads it.
-  protected normalized(update: Json): Json {
-    return update;
-  }
-  /// An update of another session in its process (a subagent's).
-  protected other(_from: string, _update: Json): void {}
-  /// A notification of the runtime's own.
-  protected notified(_message: Json): void {}
-  /// An update of the session's, once its steps are told: what the runtime says beside them (its usage).
-  protected updated(_update: Json): void {}
+  /// An update of the session's usage (`owner`: the prompt whose turn it is in).
+  protected updated(_update: Json, _owner: string | null): void {}
   /// The turn ends as `answer` says, before what is open of it ends.
   protected ending(_id: string, _answer: Json): void {}
   /// A steering or superseded prompt's answer was ignored while the turn continues.
@@ -218,9 +177,27 @@ export abstract class AcpSession extends OwnProcessSession {
   }
   protected taken(_snapshot: Json): void {}
 
-  /// Open: session/new's or session/load's answer (`result`) says what it runs on besides.
+  /// Whether it is open (`opened`): what it says of its past before is no turn's.
+  #open = false;
+
+  /// Open: session/new's or session/load's answer (`result`) says what it runs on besides. What it says of its past
+  /// before is no turn's (the program is told).
   opened(_result: Json) {
-    this.loading = false;
+    this.#open = true;
+    (this.proc as typeof this.proc | undefined)?.say("acpOpened");
+  }
+
+  /// The program started again reads it from what it was told last: the session it is, open.
+  protected attached() {
+    const proc = this.proc as typeof this.proc | undefined;
+    if (proc === undefined) return;
+    if (this.sessionId !== "") proc.say("acpSession", { id: this.sessionId });
+    if (this.#open) proc.say("acpOpened");
+  }
+
+  named(id: string) {
+    super.named(id);
+    (this.proc as typeof this.proc | undefined)?.say("acpSession", { id });
   }
 
   /// A session made new: the transcript says so first.
@@ -240,104 +217,41 @@ export abstract class AcpSession extends OwnProcessSession {
     this.proc.write(rpc(`${method}:${uuid()}`, method, params));
   }
 
+  /// A line the program gives this: a request of the runtime's, or the answer to one of ours.
   protected heard(line: string) {
     const message = parseLine(this.kind, line);
-    if (message !== undefined) this.onMessage(message);
-  }
-
-  private onMessage(message: Json) {
+    if (message === undefined) return;
     const id = message.id;
-    if (message.method === "session/update") return this.update(message.params);
     if (message.method === "session/request_permission" && id !== undefined) return this.permit(id, message.params?.options);
+    // A request of its own the station has no answer for (asking the person a question, a plan to approve): what it
+    // asks is answered in the chat, not here.
     if (message.method !== undefined) {
-      // A request of its own the station has no answer for (asking the person a question, a plan to approve): what it
-      // asks is answered in the chat, not here.
       if (id !== undefined) this.proc.write(JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32601, message: `${message.method} is not supported` } }));
-      else this.notified(message);
-      return;
-    }
-    if (this.endsTurn(id)) {
-      // One put in the turn is answered with the turn (before or after its prompt's answer), or replaced by a newer
-      // steering prompt (Antigravity CLI); one whose turn this station did not see the end of (taken up after a crash)
-      // ends the turn running now.
-      if (this.steering.delete(id)) {
-        this.ignored(id, message);
-        return;
-      }
-      if (this.owner !== null && id !== this.owner) return;
-      this.end(id, message);
       return;
     }
     this.waiting.answer(id, message);
   }
 
-  /// Whether `id` is a prompt's, whose answer ends a turn.
-  private endsTurn(id: unknown): id is string {
-    return typeof id === "string" && (id.startsWith(PROMPT) || (this.steersByPrompt && id.startsWith(STEER)));
-  }
-
-  private update(params: Json) {
-    const update = this.normalized(params?.update);
-    const from = params?.sessionId;
-    // Its checklist, whole each time: told as it is, session/load's saying it again of its past included (so the
-    // latest is known again after the station started anew).
-    if (update?.sessionUpdate === "plan" && (this.sessionId === "" || typeof from !== "string" || from === this.sessionId)) {
-      const plan = planOfAcp(update);
-      if (plan !== null) this.events({ type: "live", event: { kind: "plan", plan } });
-      return;
+  /// What the program says of the session for this alone: the transcript's lines, its usage, a prompt's answer.
+  protected took(e: Json): boolean {
+    if (e?.type === "kept") {
+      this.transcript?.keep(this.sessionId, e.line);
+      return true;
     }
-    if (this.loading) return;
-    if (this.sessionId !== "" && typeof from === "string" && from !== this.sessionId) return this.other(from, update);
-    if (!this.turn.busy && turnStep(update) && !this.unprompted()) return;
-    const done = this.track(update);
-    this.heardSaid(update);
-    this.transcript?.take(this.sessionId, update, done);
-    for (const event of this.live.feed(update)) this.events({ type: "live", event });
-    this.updated(update);
-    const lost = done === null ? null : this.lost(done);
-    if (lost !== null) this.events({ type: "toolsLost", why: lost });
-  }
-
-  /// What the turn said last: its words, started again by any other step of it (a thought, a call).
-  private heardSaid(update: Json) {
-    if (update?.sessionUpdate === "agent_message_chunk") {
-      if (typeof update.content?.text === "string") this.saidLast += update.content.text;
-    } else if (turnStep(update)) this.saidLast = "";
-  }
-
-  /// A step came with no turn running: a prompt of ours put in the turn as it ended became a turn of its own, which its
-  /// answer ends; any other is not a turn's.
-  private unprompted(): boolean {
-    const first = this.steering.values().next();
-    if (first.done) return false;
-    this.steering.delete(first.value);
-    this.owner = first.value;
-    this.turn.busy = true;
-    this.saidLast = "";
-    this.events({ type: "turnStarted" });
-    return true;
-  }
-
-  /// What an update says of its calls: one starting is under way; one done (completed or failed) is returned, with what
-  /// it said.
-  private track(update: Json): Done | null {
-    const kind = update?.sessionUpdate;
-    const id = typeof update?.toolCallId === "string" ? update.toolCallId : null;
-    if ((kind !== "tool_call" && kind !== "tool_call_update") || id === null) return null;
-    if (kind === "tool_call" && !this.calls.has(id)) {
-      const [name, input] = acpNamed(update);
-      this.calls.set(id, { name, input, startedAt: wall.now() });
+    if (e?.type === "usage") {
+      this.updated(e.update, typeof e.owner === "string" ? e.owner : null);
+      return true;
     }
-    const call = this.calls.get(id);
-    if (call === undefined || (update.status !== "completed" && update.status !== "failed")) return null;
-    this.calls.delete(id);
-    const text = (Array.isArray(update.content) ? update.content : []).map((c: Json) => c?.content?.text ?? c?.text ?? "").filter((t: string) => t !== "").join("\n");
-    return { id, ...call, failed: update.status === "failed", text };
+    if (e?.type === "answered") {
+      if (e.outcome !== undefined) this.ending(String(e.id), e.answer);
+      else this.ignored(String(e.id), e.answer);
+      return true;
+    }
+    return false;
   }
 
-  /// What a call done says of the station's tools being out of reach (null: nothing): one of them failed as unreachable.
-  private lost(done: Done): string | null {
-    return done.failed && stationTool(done.name) && unreachable(done.text) ? chars(done.text, 300) : null;
+  protected settled(): Promise<void> | null {
+    return this.transcript?.settled() ?? null;
   }
 
   /// A permission it asks: granted for this call, as the other runtimes run without approvals here, and only for it
@@ -349,40 +263,19 @@ export abstract class AcpSession extends OwnProcessSession {
     this.proc.write(JSON.stringify({ jsonrpc: "2.0", id, result }));
   }
 
-  /// The turn ended as the answer to its prompt says.
-  private end(id: string, answer: Json) {
-    let outcome = this.turn.aborting && answer.error !== undefined ? ({ kind: "aborted" } as TurnOutcome) : acpOutcome(answer, (text) => this.classify(text));
-    const said = this.saidLast.trim();
-    this.saidLast = "";
-    const failed = outcome.kind === "completed" && said !== "" ? this.failedSaying(said) : null;
-    if (failed !== null) outcome = { kind: "failed", reason: failed, message: chars(said, 1000) };
-    // An answer to a prompt this station did not see start (taken up after a crash just as it was given).
-    if (!this.turn.busy) this.events({ type: "turnStarted" });
-    this.turn.busy = false;
-    this.turn.aborting = false;
-    this.owner = null;
-    this.transcript?.flush(this.sessionId);
-    this.ending(id, answer);
-    this.transcript?.ended(this.sessionId, outcome);
-    this.calls.clear();
-    for (const event of this.live.ended()) this.events({ type: "live", event });
-    this.events({ type: "turnEnded", outcome });
-  }
-
+  /// Its process went away during a turn: what was being said is written by the program (its steps end there), its end
+  /// here.
   protected cutShort(said: string) {
     this.transcript?.ended(this.sessionId, { kind: "failed", reason: "exited", message: `${this.kind} exited (${said})` });
-    this.calls.clear();
-    for (const event of this.live.ended()) this.events({ type: "live", event });
   }
 
   async prompt(text: string) {
     this.startable();
+    const owner = `${PROMPT}${uuid()}`;
     this.turn.busy = true;
-    this.saidLast = "";
-    this.owner = `${PROMPT}${uuid()}`;
-    this.transcript?.user(this.sessionId, text);
-    for (const event of this.live.prompted()) this.events({ type: "live", event });
-    this.proc.write(rpc(this.owner, "session/prompt", { sessionId: this.sessionId, prompt: [{ type: "text", text: this.promptText(text) }] }));
+    this.turn.owner = owner;
+    this.proc.say("acpPrompt", { owner, ...(this.transcript !== null ? { text } : {}) });
+    this.proc.write(rpc(owner, "session/prompt", { sessionId: this.sessionId, prompt: [{ type: "text", text: this.promptText(text) }] }));
   }
 
   /// Not into the running turn: the station gives it as the next turn's.
@@ -393,13 +286,15 @@ export abstract class AcpSession extends OwnProcessSession {
   private injectPrompt(text: string, takeOver: boolean): boolean {
     if (this.turn.closed || !this.turn.busy || this.turn.aborting) return false;
     const id = `${STEER}${uuid()}`;
+    const steering = new Set(this.turn.steering);
     if (takeOver) {
-      if (this.owner !== null) this.steering.add(this.owner);
-      this.owner = id;
+      if (this.turn.owner !== null) steering.add(this.turn.owner);
+      this.turn.owner = id;
     } else {
-      this.steering.add(id);
+      steering.add(id);
     }
-    this.transcript?.user(this.sessionId, text, true);
+    this.turn.steering = [...steering];
+    this.proc.say("acpInject", { id, takeOver, ...(this.transcript !== null ? { text } : {}) });
     this.proc.write(rpc(id, "session/prompt", { sessionId: this.sessionId, prompt: [{ type: "text", text: this.promptText(text) }] }));
     return true;
   }
@@ -419,81 +314,58 @@ export abstract class AcpSession extends OwnProcessSession {
   async abort() {
     if (this.turn.closed || !this.turn.busy || this.turn.aborting) return;
     this.turn.aborting = true;
+    this.proc.tell("aborting");
     this.proc.write(JSON.stringify({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId: this.sessionId } }));
   }
 
   /// What the station that handed it over knew of it.
   handed(snapshot: AcpSnapshot) {
     this.sessionId = snapshot.id;
-    this.turn = { busy: snapshot.turn.busy, aborting: snapshot.turn.aborting, closed: false };
-    this.live = new LiveFromAcp(snapshot.live);
+    this.turn = { busy: snapshot.turn.busy, aborting: snapshot.turn.aborting, closed: false, owner: snapshot.owner ?? null, steering: snapshot.steering ?? [] };
+    this.liveState = { live: snapshot.live, said: snapshot.said ?? null, calls: snapshot.calls ?? [], saidLast: snapshot.saidLast ?? "", children: snapshot.children ?? [], loading: false, session: snapshot.id };
     this.toolsUrl = snapshot.tools;
     this.model = snapshot.model ?? this.model;
-    this.owner = snapshot.owner ?? null;
-    this.steering = new Set(snapshot.steering ?? []);
-    this.calls = new Map(snapshot.calls ?? []);
-    if (this.transcript !== null) this.transcript.said = snapshot.said ?? null;
-    this.loading = false;
+    this.#open = true;
     this.taken(snapshot);
   }
 
-  /// What the station before had handled of its output when it crashed, read again silently: the session, whether a turn
-  /// runs, what the turn had said and called so far.
-  async replay(lines: AsyncIterable<string>, resume: string | undefined) {
-    this.sessionId = resume ?? "";
-    let open = false;
-    let partial: Json[] = [];
-    for await (const line of lines) {
-      const message = parseLine(this.kind, line);
-      if (message === undefined) continue;
-      if (message.id === OPEN) {
-        open = true;
-        if (typeof message.result?.sessionId === "string") this.sessionId = message.result.sessionId;
-        const configured = this.model;
-        if (message.result !== undefined) this.opened(message.result);
-        if (configured !== null) this.model = configured;
-      } else if (open && message.method === "session/update" && (this.sessionId === "" || message.params?.sessionId === this.sessionId)) {
-        const update = this.normalized(message.params?.update);
-        if (turnStep(update)) {
-          this.turn.busy = true;
-          this.live.feed(update);
-          partial.push(update);
-        } else if (this.turn.busy || update?.sessionUpdate === "usage_update") {
-          partial.push(update);
-        }
-      } else if (this.endsTurn(message.id)) {
-        this.turn.busy = false;
-        this.live.ended();
-        partial = [];
-      }
-    }
-    this.loading = false;
-    // What the running turn had said, called and used, as if heard now, nothing of it written again.
+  /// What the program read again of what the station before had handled of its output when it crashed: the session,
+  /// whether a turn runs, what the turn had said and called so far; what it was opened with and the running turn's
+  /// usage, read here as if heard now, nothing of it written again.
+  replayed(replayed: Replayed, resume: string | undefined) {
+    this.sessionId = replayed.session || (resume ?? "");
+    const t = replayed.turn ?? {};
+    this.turn = { busy: t.busy === true, aborting: false, closed: false, owner: null, steering: [] };
+    this.liveState = replayed.live ?? null;
+    this.#open = true;
+    const configured = this.model;
+    if (replayed.opened !== undefined && replayed.opened !== null) this.opened(replayed.opened);
+    if (configured !== null) this.model = configured;
     const again = () => {
-      for (const update of partial) {
-        const done = this.track(update);
-        this.transcript?.take(this.sessionId, update, done);
-        this.updated(update);
-      }
+      for (const update of replayed.usages ?? []) this.updated(update, null);
     };
     if (this.transcript !== null) this.transcript.quietly(again);
     else again();
   }
 
   snapshot(): AcpSnapshot {
-    this.handOver();
+    const frozen = this.handOver();
+    const turn = frozen?.turn ?? this.turnNow();
+    const state = frozen?.live ?? this.liveState ?? {};
     return {
       runtime: this.kind,
       id: this.sessionId,
       runner: this.proc.info.id,
-      turn: { busy: this.turn.busy, aborting: this.turn.aborting },
+      turn: { busy: turn.busy === true, aborting: turn.aborting === true },
       tools: this.toolsUrl,
-      live: this.live.state(),
+      live: state.live ?? { open: [], said: null, n: 0, phase: null },
       model: this.model,
-      owner: this.owner,
-      steering: [...this.steering],
-      said: this.transcript?.said ?? null,
-      calls: [...this.calls],
+      owner: turn.owner ?? null,
+      steering: turn.steering ?? [],
+      said: state.said ?? null,
+      calls: state.calls ?? [],
+      saidLast: state.saidLast ?? "",
+      children: state.children ?? [],
       ...this.kept(),
     };
   }
@@ -513,6 +385,13 @@ export type AcpStart = {
 };
 
 export abstract class AcpDriver<S extends AcpSession> extends OwnProcessDriver<S> {
+  /// Whether the station keeps its transcript (KeptTranscript).
+  protected readonly keepsTranscript: boolean = false;
+
+  hosting(): Hosting {
+    return { kind: "acp", flavor: this.runtime(), kept: this.keepsTranscript };
+  }
+
   /// A session of it, not open yet.
   protected abstract session(options: OpenOptions, events: Events): S;
   /// How its process is started for a session (`probe`: one opened only to learn what it offers, with no tools of the
@@ -551,6 +430,8 @@ export abstract class AcpDriver<S extends AcpSession> extends OwnProcessDriver<S
       }
       session.opened(opened?.result);
       await this.ready(session, options, probe);
+      // (what it keeps of its opening written before it is anyone's)
+      await session.adopted();
     } catch (error) {
       await session.dispose();
       throw error;
@@ -564,10 +445,10 @@ export abstract class AcpDriver<S extends AcpSession> extends OwnProcessDriver<S
     return session;
   }
 
-  protected async crashed(options: OpenOptions, lines: AsyncIterable<string>, _info: RunnerInfo, events: Events): Promise<S> {
+  protected crashed(options: OpenOptions, replayed: Replayed, _info: RunnerInfo, events: Events): S {
     const session = this.session(options, events);
     session.model = options.model ?? profileModel(options.profile) ?? session.model;
-    await session.replay(lines, options.resume);
+    session.replayed(replayed, options.resume);
     session.toolsUrl = options.mcpUrl;
     return session;
   }

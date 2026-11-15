@@ -8,7 +8,8 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { AgentProcess, findRunner } from "../src/agents/process.ts";
+import { findRunner } from "../src/agents/process.ts";
+import { AgentProcess } from "./reference/process.ts";
 import { AgentsHost, HostedProcess, type HostedOptions } from "../src/agents/mb-agents.ts";
 import { RunnerConnection, allLeft, existingRunners, runnerBinary, startRunner } from "../src/agents/runner.ts";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";

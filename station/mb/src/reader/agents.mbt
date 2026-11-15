@@ -44,6 +44,8 @@ priv struct Hosted {
   kind : String
   /// a Codex app-server's threads (agents_codex.mbt)
   codex : Codex
+  /// a DeepSeek Harness', Cursor's or an ACP runtime's session (agents_own.mbt)
+  mut own : Own?
   /// up to where of stdout the runner may give the disk back, told with each ack (runner.ts `keep`)
   mut keep : Int64?
   /// lines that came while frozen, each with where it ends
@@ -131,11 +133,16 @@ fn Agents::told(self : Agents, line : String) -> Unit {
     let turn = turn_of(m.get("turn"))
     let live = match m.get("live") {
       Some(Null) | None => @claude.Live::new()
-      Some(state) => @claude.Live::of_state(@jsjson.parse(state.stringify()) catch { _ => Null })
+      Some(state) if text("kind") is (None | Some("claude")) => @claude.Live::of_state(@jsjson.parse(state.stringify()) catch { _ => Null })
+      Some(_) => @claude.Live::new()
     }
     // (taken in now: what Node says of it next is had in order, whenever its socket opens)
-    let kind = if text("kind") == Some("codex") { "codex" } else { "claude" }
-    let h = hosted(n.to_int(), turn, live, kind~)
+    let kind = match text("kind") {
+      Some("codex" as k) | Some("dsh" as k) | Some("cursor" as k) | Some("acp" as k) => k
+      _ => "claude"
+    }
+    let h = hosted(n.to_int(), if kind == "claude" { turn } else { @claude.Turn::new() }, if kind == "claude" { live } else { @claude.Live::new() }, kind~)
+    h.own = own_of(kind, m)
     if m.get("orphans") is Some(True) {
       h.codex.orphans = Some(Map([]))
     }
@@ -157,6 +164,8 @@ fn Agents::told(self : Agents, line : String) -> Unit {
       h.frozen = true
       states[k.to_string()] = if h.kind == "codex" {
         Json::object({ "threads": h.codex.states() })
+      } else if h.own is Some(own) {
+        Json::object({ "turn": to_json(own.turn()), "live": to_json(own.state()) })
       } else {
         Json::object({
           "turn": turn_json(h.turn),
@@ -167,9 +176,16 @@ fn Agents::told(self : Agents, line : String) -> Unit {
     self.host.say(({ "frozen": Json::number(id), "states": Json::object(states) } : Json).stringify())
     return
   }
+  if num("ownReplay") is Some(id) {
+    let at = num("at").unwrap_or(0.0).to_int64()
+    let path = text("path").unwrap_or("")
+    let kind = text("kind").unwrap_or("claude")
+    ignore(self.host.rt.fork(name="agent replay", () => self.own_replay(id.to_int(), kind, path, at, m)))
+    return
+  }
   let ops = [
     "ack", "write", "signal", "begin", "aborting", "renewed", "done", "detach", "thaw", "keep", "route", "codexThread",
-    "codexDrop", "orphans",
+    "codexDrop", "orphans", "acpSession", "acpOpened", "acpPrompt", "acpInject",
   ]
   guard ops.iter().find_first(k => num(k) is Some(_)) is Some(op) else { return }
   guard self.sessions.get(num(op).unwrap().to_int()) is Some(h) else { return }
@@ -198,6 +214,9 @@ fn Agents::told(self : Agents, line : String) -> Unit {
       if text("name") is Some(signal) {
         self.send(h, { "op": "signal", "signal": Json::string(signal), "group": true })
       }
+    "begin" if h.own is Some(own) => self.own_begin(h, own)
+    "acpSession" | "acpOpened" | "acpPrompt" | "acpInject" => self.acp_told(h, op, m)
+    "aborting" if h.own is Some(own) => own.aborting()
     "begin" => {
       h.turn.renewed = Some(false)
       h.turn.busy = true
@@ -343,6 +362,7 @@ fn hosted(n : Int, turn : @claude.Turn, live : @claude.Live, kind~ : String) -> 
     n,
     kind,
     codex: Codex::new(),
+    own: None,
     keep: None,
     conn: Json::null(),
     outq: @effect.Queue::unbounded(),
@@ -469,6 +489,13 @@ fn Agents::message(self : Agents, h : Hosted, message : Json) -> Unit {
     }
     { "op": "exit", .. } => {
       self.flush(h)
+      // (what a turn running had open ends with its process: its steps, what was being said)
+      if h.own is Some(own) && !h.left {
+        let events = own.cut_short()
+        if events.length() > 0 {
+          self.tell(h, h.told, own.turn(), events)
+        }
+      }
       h.exited = true
       self.host.say(
         ({
@@ -498,6 +525,10 @@ fn strip_cr(s : String) -> String {
 fn Agents::heard(self : Agents, h : Hosted, lines : Array[(Bytes, Int64)]) -> Unit {
   if h.kind == "codex" {
     self.codex_heard(h, lines)
+    return
+  }
+  if h.own is Some(own) {
+    self.own_heard(h, own, lines)
     return
   }
   let before = @jsjson.stringify(turn_json_js(h.turn))
@@ -593,7 +624,14 @@ fn units_of(events : Array[@jsjson.JValue]) -> Int {
 const DELTAS_MS : Int = 200
 
 ///|
-fn Agents::tell(self : Agents, h : Hosted, to : Int64, turn : @jsjson.JValue, events : Array[@jsjson.JValue]) -> Unit {
+fn Agents::tell(
+  self : Agents,
+  h : Hosted,
+  to : Int64,
+  turn : @jsjson.JValue,
+  events : Array[@jsjson.JValue],
+  node~ : Array[(Bytes, Int64, Int64)] = [],
+) -> Unit {
   let batch = if h.routed && events.length() > 0 {
     ",\"batch\":\{self.keep_batch(h, events, to)}"
   } else {
@@ -606,8 +644,21 @@ fn Agents::tell(self : Agents, h : Hosted, to : Int64, turn : @jsjson.JValue, ev
   @jsjson.write_utf8(line, turn)
   line.write_string_utf8(",\"events\":")
   @jsjson.write_utf8(line, Arr(events))
+  // (the lines Node reads itself, their bytes after this line: each with where it begins and ends, and its length)
+  let body = @buffer.new()
+  if node.length() > 0 {
+    let at = []
+    for l in node {
+      at.push("[\{l.1},\{l.2},\{l.0.length()}]")
+      body.write_bytes(l.0)
+    }
+    line.write_string_utf8(",\"at\":[\{at.join(",")}],\"bytes\":\{body.length()}")
+  }
   line.write_string_utf8("\{batch}}")
   self.host.say_bytes(line.to_bytes())
+  if node.length() > 0 {
+    self.host.out(body.to_bytes())
+  }
 }
 
 ///|
@@ -623,7 +674,11 @@ fn Agents::flush(self : Agents, h : Hosted) -> Unit {
   let all = h.pending
   h.pending = []
   h.pending_units = 0
-  self.tell(h, h.pending_to, turn_json_js(h.turn), all)
+  let turn = match h.own {
+    Some(own) => own.turn()
+    None => turn_json_js(h.turn)
+  }
+  self.tell(h, h.pending_to, turn, all)
 }
 
 ///|

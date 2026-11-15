@@ -24,15 +24,14 @@ import { RenewRefused } from "../accounts/console.ts";
 import { claudeToken as claudeFileToken } from "../accounts/oauth.ts";
 import { log } from "../ops/log.ts";
 import { claudeProject } from "../read/transcript.ts";
-import { LiveFromClaude, chars, type ClaudeLiveState } from "./live.ts";
+import { chars } from "./live.ts";
 import { CLAUDE_TOKEN_MARGIN_MS, machineClaudeToken, type Env, type MachineToken } from "./machine-logins.ts";
 import { fileCredentials, takeBack, takeBackMissing } from "./no-keychain.ts";
-import { type Events, OwnProcessDriver, OwnProcessSession, parseLine } from "./own-process.ts";
+import { type Events, type Replayed, OwnProcessDriver, OwnProcessSession } from "./own-process.ts";
 import { accessKind, expandRoute, isMachine, keyFile, profileEnv, profileFast, profileModel, takesFast } from "./profiles.ts";
 import type { RunnerInfo } from "./runner.ts";
-import { AgentsHost, HostedProcess, type Heard, type Router } from "./mb-agents.ts";
-import { ackedOffset, findRunner, linesBefore, outFile, runnerId } from "./process.ts";
-import { TOOL_SERVERS, cleanEnv, unreachable, uuid, type BackgroundTask, type OpenOptions, type Profile, type RuntimeEvent } from "./runtime.ts";
+import type { AgentsHost } from "./mb-agents.ts";
+import { TOOL_SERVERS, cleanEnv, unreachable, uuid, type BackgroundTask, type OpenOptions, type Profile } from "./runtime.ts";
 import { wall } from "../ops/fibers.ts";
 import { peerHttpBase } from "../tools/http.ts";
 import { Said, stationLang, tr } from "../ops/i18n.ts";
@@ -149,9 +148,6 @@ export async function bringTranscript(home: string, sessionId: string, cwd: stri
 export type Turn = { busy: boolean; aborting: boolean; authFailure: string | null; closed: boolean; renews?: boolean; renewed?: boolean; tasks?: Record<string, Task>; compacting?: boolean; compactError?: string | null };
 export type Task = BackgroundTask & { background: boolean };
 
-/// A task's statuses once it has ended.
-const ENDED = new Set(["completed", "failed", "killed", "stopped"]);
-
 /// What its tasks as the turn leaves them run in the background.
 export const backgroundOf = (turn: Turn): BackgroundTask[] =>
   Object.values(turn.tasks ?? {})
@@ -164,8 +160,8 @@ export const backgroundOf = (turn: Turn): BackgroundTask[] =>
 /// honours them only for a few entrypoints; claude-desktop changes neither its prompt nor its tools (only the entrypoint
 /// named in its requests), as checked on 2.1.299.
 const RENEWED = { CLAUDE_CODE_SDK_HAS_OAUTH_REFRESH: "1", CLAUDE_CODE_ENTRYPOINT: "claude-desktop" };
-/// A CLI that does not ask (one too old) retries a 401 on its own: past this attempt it is stopped as before.
-const RENEW_ATTEMPTS = 2;
+/// A CLI that does not ask (one too old) retries a 401 on its own: past the program's RENEW_ATTEMPTS (mb/src/claude
+/// frames.mbt, 2) it is stopped as before.
 
 /// What Claude Code reads on a tool of an MCP server's list as "never deferred" (tools/mcp.ts `Listing.loaded`). By
 /// itself it keeps every MCP tool behind its ToolSearch: the first request of a session carries none of the station's
@@ -244,6 +240,9 @@ const SETTINGS = {
   },
 };
 
+/// Its live steps as the program keeps them (mb/src/claude `Live::state`): the message, its blocks, the calls running.
+export type ClaudeLiveState = { message: string; blocks: [number, Json][]; tools: string[] };
+
 /// A session as a next station takes it up.
 export type ClaudeSnapshot = {
   runtime: "claude";
@@ -276,59 +275,15 @@ export type ClaudeDriverOptions = {
 
 const interruptRequest = () => JSON.stringify({ type: "control_request", request_id: `interrupt-${uuid()}`, request: { subtype: "interrupt" } });
 
-/// Where the turn stands after a frame, as a station reads again what the one before it had handled when it crashed
-/// (`crashed`): what the frames say as they come (the turn's events, its outcome) is the MoonBit program's to tell
-/// (mb/src/claude `on_frame`), none of it here. `now`: when a task it tells of starts.
-export function turnAfter(frame: Json, turn: Turn, now: () => number = wall.now) {
-  const kind = typeof frame?.type === "string" ? frame.type : "";
-  const subtype = typeof frame?.subtype === "string" ? frame.subtype : "";
-  if (kind === "system" && subtype === "init") {
-    turn.busy = true;
-  } else if (kind === "system" && subtype === "api_retry") {
-    const status = Number.isInteger(frame.error_status) ? (frame.error_status as number) : 0;
-    const attempt = Number.isInteger(frame.attempt) ? (frame.attempt as number) : 1;
-    // A token renewed while it runs asks for a new one (RENEWED); stopped only when that one fails too.
-    const renewing = status === 401 && turn.renews === true && turn.renewed !== true && attempt <= RENEW_ATTEMPTS;
-    if ((status === 401 || status === 403) && turn.authFailure === null && !renewing) {
-      const error = frame.error === undefined ? "authentication failed" : typeof frame.error === "string" ? frame.error : JSON.stringify(frame.error);
-      turn.authFailure = `${status} ${error}`;
-      turn.aborting = true;
-    }
-  } else if (kind === "system" && subtype === "task_started" && typeof frame.task_id === "string" && frame.owned_by_subagent !== true) {
-    const description = typeof frame.description === "string" ? frame.description : "";
-    turn.tasks = { ...turn.tasks, [frame.task_id]: { id: frame.task_id, kind: frame.task_type === "local_agent" ? "agent" : "command", description, background: frame.is_backgrounded === true, startedAt: now() } };
-  } else if (kind === "system" && (subtype === "task_notification" || subtype === "task_updated") && typeof frame.task_id === "string" && turn.tasks?.[frame.task_id]) {
-    const status = subtype === "task_notification" ? frame.status : frame.patch?.status;
-    const { [frame.task_id]: task, ...rest } = turn.tasks;
-    if (subtype === "task_notification" || ENDED.has(status)) turn.tasks = rest;
-    else if (frame.patch?.is_backgrounded === true) turn.tasks = { ...rest, [frame.task_id]: { ...task!, background: true } };
-  } else if (kind === "system" && subtype === "status" && turn.compacting === true && frame.compact_result === "failed") {
-    // `/compact` that compacted nothing still ends in a result of success: only this says so (2.1.289).
-    turn.compactError = typeof frame.compact_error === "string" && frame.compact_error !== "" ? frame.compact_error : "compaction failed";
-  } else if (kind === "result") {
-    turn.busy = false;
-    turn.aborting = false;
-    turn.authFailure = null;
-    turn.renewed = false;
-    turn.compacting = false;
-    turn.compactError = null;
-    // What it waited on in the turn has ended with it; what goes on is in the background.
-    if (turn.tasks) turn.tasks = Object.fromEntries(Object.entries(turn.tasks).filter(([, t]) => t.background));
-  }
-}
-
 export class ClaudeDriver extends OwnProcessDriver<ClaudeSession> {
   private readonly command: string;
   private readonly env: Env;
   private readonly machineToken: (env: Env, rejected?: string) => Promise<MachineToken>;
   private readonly subscriptionToken: ClaudeDriverOptions["subscriptionToken"];
   private readonly lent: ClaudeDriverOptions["lent"];
-  private readonly agents: AgentsHost;
 
   constructor(options: ClaudeDriverOptions) {
-    super(options.data);
-    this.agents = options.agents ?? AgentsHost.where(options.data);
-    this.agents.use(this);
+    super(options.data, options.agents);
     this.command = options.command ?? "claude";
     this.env = options.env ?? process.env;
     this.machineToken = options.machineToken ?? machineClaudeToken;
@@ -345,56 +300,8 @@ export class ClaudeDriver extends OwnProcessDriver<ClaudeSession> {
     return `claude ${session.id()}`;
   }
 
-  /// Read by the program (mb-agents.ts).
-  protected async start(session: ClaudeSession, options: OpenOptions, command: string, args: string[], env: Record<string, string>) {
-    const id = runnerId("claude", options.key);
-    await this.claiming(id, async () => {
-      session.attach(await HostedProcess.start(this.agents, this.data, id, command, args, env, options.cwd, session.hostedOptions(this.label(options, session)), session.turnNow()));
-      this.live.add(session);
-    });
-  }
-
-  async adopt(options: OpenOptions, snapshot: unknown | null, events: Events): Promise<ClaudeSession> {
-    const handed = snapshot as ClaudeSnapshot | null;
-    const id = handed?.runner ?? runnerId("claude", options.key);
-    return this.claiming(id, () => this.adoptRunner(id, options, handed, events));
-  }
-
-  private async adoptRunner(id: string, options: OpenOptions, handed: ClaudeSnapshot | null, events: Events): Promise<ClaudeSession> {
-    const info = await findRunner(this.data, id);
-    if (!info) throw new Error(`no runner keeps claude for ${options.key}`);
-    let session: ClaudeSession;
-    if (handed) {
-      log.info("agents::claude", "taking up a claude process handed over", { session: handed.id, pgid: info.pgid, busy: handed.turn.busy });
-      session = this.handedOver(options, handed, info, events);
-    } else {
-      const { at } = await ackedOffset(info, outFile(this.data, id));
-      session = await this.crashed(options, linesBefore(outFile(this.data, id), at), info, events);
-      log.info("agents::claude", "taking up a claude process after a crash", { session: session.id(), pgid: info.pgid, busy: session.busy(), from: at });
-      if (session.busy()) events({ type: "turnStarted" });
-    }
-    session.attach(HostedProcess.adopt(this.agents, info, session.hostedOptions(this.label(options, session)), session.turnNow(), session.liveNow()));
-    this.live.add(session);
-    return session;
-  }
-
-  /// Its processes' lines held while the station hands over (hub.ts `handOver`), and read on where it does not.
-  async freeze() {
-    await this.agents.freeze(this.hostedProcs());
-  }
-
-  thaw() {
-    this.agents.thaw(this.hostedProcs());
-  }
-
-  /// Its sessions' processes the program reads.
-  private hostedProcs(): HostedProcess[] {
-    return [...this.live].map((s) => s.hostedProc());
-  }
-
-  async shutdown() {
-    await super.shutdown();
-    await this.agents.close(this);
+  hosting() {
+    return { kind: "claude" as const };
   }
 
   async open(options: OpenOptions, events: Events): Promise<ClaudeSession> {
@@ -490,7 +397,7 @@ export class ClaudeDriver extends OwnProcessDriver<ClaudeSession> {
 
     // Renewed while it runs, it is never started again for its token; one read from a file again after a 401 is not
     // stopped at the first.
-    const session = new ClaudeSession(this, sessionId, { busy: false, aborting: false, authFailure: null, closed: false, renews: (machine !== undefined && renews) || file !== undefined }, null, new LiveFromClaude(), events, options.effort, renews ? renew : null, machine?.token ?? null);
+    const session = new ClaudeSession(this, sessionId, { busy: false, aborting: false, authFailure: null, closed: false, renews: (machine !== undefined && renews) || file !== undefined }, null, null, events, options.effort, renews ? renew : null, machine?.token ?? null);
     session.toolsUrl = options.mcpUrl;
     session.fast = fast;
     await this.start(session, options, this.command, args, env);
@@ -511,29 +418,23 @@ export class ClaudeDriver extends OwnProcessDriver<ClaudeSession> {
   }
 
   protected handedOver(options: OpenOptions, handed: ClaudeSnapshot, info: RunnerInfo, events: Events) {
-    const session = new ClaudeSession(this, handed.id, { ...handed.turn, closed: false }, handed.machineExpires, new LiveFromClaude(handed.live), events, flagOf(info.args, "--effort"), this.renewer(options.profile), null);
+    const session = new ClaudeSession(this, handed.id, { ...handed.turn, closed: false }, handed.machineExpires, handed.live, events, flagOf(info.args, "--effort"), this.renewer(options.profile), null);
     // The address it was told is in its arguments: the station's may have moved since (hub.ts `toolsAt`).
     session.toolsUrl = mcpUrlOf(info.args);
     session.fast = fastOf(info.args);
     return session;
   }
 
-  /// What the station before had handled (stdout up to where it acknowledged) says where the turn stands.
-  protected async crashed(options: OpenOptions, lines: AsyncIterable<string>, info: RunnerInfo, events: Events) {
-    const turn: Turn = { busy: false, aborting: false, authFailure: null, closed: false };
-    const live = new LiveFromClaude();
-    for await (const line of lines) {
-      const frame = parseLine("claude", line);
-      if (frame === undefined) continue;
-      live.feed(frame);
-      turnAfter(frame, turn);
-    }
+  /// What the station before had handled (stdout up to where it acknowledged), read again by the program, says where
+  /// the turn stands and its live steps (mb agents_own.mbt `own_replay`: its frames as on_frame and Live::feed read them).
+  protected crashed(options: OpenOptions, replayed: Replayed, info: RunnerInfo, events: Events) {
+    const turn: Turn = { busy: false, aborting: false, authFailure: null, ...(replayed.turn ?? {}), closed: false };
     const flag = info.args.findIndex((a) => a === "--session-id" || a === "--resume");
     const sessionId = flag >= 0 ? info.args[flag + 1]! : (options.resume ?? "");
     // Its token is not known, nor whether it asks for a new one: as if about to run out, so its next turn starts it
     // again with a current one (a machine login's or a lent one).
     const renew = this.renewer(options.profile);
-    const session = new ClaudeSession(this, sessionId, turn, renew ? wall.now() : null, live, events, flagOf(info.args, "--effort"), renew, null);
+    const session = new ClaudeSession(this, sessionId, turn, renew ? wall.now() : null, replayed.live ?? null, events, flagOf(info.args, "--effort"), renew, null);
     session.toolsUrl = mcpUrlOf(info.args);
     session.fast = fastOf(info.args);
     return session;
@@ -544,11 +445,8 @@ export class ClaudeDriver extends OwnProcessDriver<ClaudeSession> {
 type Renew = (rejected?: string) => Promise<MachineToken>;
 
 export class ClaudeSession extends OwnProcessSession<Turn> {
-  /// Its process, always as the program reads it (mb-agents.ts).
-  protected declare proc: HostedProcess;
   /// The machine login's token this process runs on (machine profiles): when it runs out.
   private machineExpires: number | null;
-  private live: LiveFromClaude;
   /// The effort it was started with: fixed for the process (`--effort` has no switch while it runs).
   private effort: string | undefined;
   /// The Fast it was started with (fastFor; none: an account that does not take it), fixed for the process too.
@@ -557,52 +455,22 @@ export class ClaudeSession extends OwnProcessSession<Turn> {
   private renew: Renew | null;
   private token: string | null;
 
-  constructor(driver: ClaudeDriver, sessionId: string, turn: Turn, machineExpires: number | null, live: LiveFromClaude, events: Events, effort: string | undefined, renew: Renew | null, token: string | null) {
-    super(driver, sessionId, turn, events);
+  constructor(driver: ClaudeDriver, sessionId: string, turn: Turn, machineExpires: number | null, live: ClaudeLiveState | null, events: Events, effort: string | undefined, renew: Renew | null, token: string | null) {
+    super(driver, sessionId, turn, events, live);
     this.renew = renew;
     this.token = token;
     this.effort = effort;
     this.machineExpires = machineExpires;
-    this.live = live;
   }
 
-  /// What its process's lines are read with by the program (mb-agents.ts).
-  hostedOptions(label: string) {
-    return { label, heard: (heard: Heard) => this.heardHosted(heard), exit: (said: string, stderr: string) => this.exited(said, stderr) };
+  /// A new token asked for (RENEWED): the program says it to the session's owner alone.
+  protected took(e: Json) {
+    if (e?.type !== "renew") return false;
+    void this.renewToken(String(e.requestId ?? ""));
+    return true;
   }
 
-  /// The turn as the program is told it (it keeps it from then on).
-  turnNow() {
-    const { closed: _, ...turn } = this.turn;
-    return turn;
-  }
-
-  liveNow() {
-    return this.live.state();
-  }
-
-  /// What the program read of its lines: the turn as each event left it, the events as `heard` emits them.
-  private heardHosted(heard: Heard) {
-    const take = (t: Json) => {
-      if (t === null || typeof t !== "object") return;
-      const closed = this.turn.closed;
-      this.turn = { ...t, closed } as Turn;
-    };
-    for (const e of heard.events) {
-      if (e?.type === "renew") {
-        void this.renewToken(String(e.requestId ?? ""));
-        continue;
-      }
-      const { turn, ...event } = e;
-      if (turn !== undefined) take(turn);
-      // (given its actor by the program: here only what the station's own parts take of it)
-      if (heard.routed === true) event.routed = true;
-      this.events(event as RuntimeEvent);
-    }
-    take(heard.turn);
-  }
-
-  /// Never called: its lines are the program's to read (`heardHosted`), none given here as a line.
+  /// Never called: its lines are the program's to read, none given here as a line.
   protected heard(_line: string) {}
 
   /// It was refused with its token and asks for a new one (RENEWED): given one other than the token refused, or told
@@ -654,15 +522,6 @@ export class ClaudeSession extends OwnProcessSession<Turn> {
     this.proc.tell("begin");
   }
 
-  hostedProc(): HostedProcess {
-    return this.proc;
-  }
-
-  /// What its process reads is given its actor in the program too (mb-actor.ts), where that reads it.
-  route(router: Router | null) {
-    this.proc.route(router);
-  }
-
   async steer(text: string) {
     if (this.turn.closed || !this.turn.busy) return false;
     this.proc.write(userMessage(text));
@@ -693,9 +552,8 @@ export class ClaudeSession extends OwnProcessSession<Turn> {
   }
 
   snapshot(): ClaudeSnapshot {
-    this.handOver();
     // (read by the program: where it stood as its lines were held)
-    const frozen = this.proc.frozenState();
+    const frozen = this.handOver();
     if (frozen) {
       const t = frozen.turn ?? {};
       return { runtime: "claude", id: this.sessionId, runner: this.proc.info.id, turn: { busy: t.busy === true, aborting: t.aborting === true, authFailure: t.authFailure ?? null, renews: t.renews, tasks: t.tasks, compacting: t.compacting, compactError: t.compactError }, machineExpires: this.machineExpires, live: frozen.live };
@@ -706,7 +564,7 @@ export class ClaudeSession extends OwnProcessSession<Turn> {
       runner: this.proc.info.id,
       turn: { busy: this.turn.busy, aborting: this.turn.aborting, authFailure: this.turn.authFailure, renews: this.turn.renews, tasks: this.turn.tasks, compacting: this.turn.compacting, compactError: this.turn.compactError },
       machineExpires: this.machineExpires,
-      live: this.live.state(),
+      live: this.liveState,
     };
   }
 }

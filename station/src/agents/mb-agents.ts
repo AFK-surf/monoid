@@ -1,10 +1,12 @@
-// Claude Code processes and Codex app-servers read by the MoonBit program (station/mb's reader `--sessions`, mb/src/reader/agents.mbt; agents/mb-program.ts), not
-// on the station's thread: the program attaches to each process's runner, reads its stream-json and says what it comes
-// to (the runtime's events, where the turn stands, up to where it read), which this hands the session and acknowledges
-// once handed, the line then acknowledged to the runner. A process is started and ended here as process.ts does it;
-// only reading it, and writing to it, go through the program (a runner's pipe on Windows opened by the shell as a Unix
-// socket is elsewhere). The program is built for every system a station runs on, so there is no reading of a process's
-// lines in TypeScript to fall back to (as with the actors, mb-actor.ts).
+// Every runtime's processes read by the MoonBit program (station/mb's reader `--sessions`, mb/src/reader/agents.mbt;
+// agents/mb-program.ts), not on the station's thread: Claude Code's, Codex app-servers (agents_codex.mbt), DeepSeek
+// Harness', Cursor's and the ACP runtimes' (agents_own.mbt). The program attaches to each process's runner, reads its
+// output and says what it comes to (the runtime's events, where the turn stands, the lines Node answers, up to where it
+// read), which this hands the session and acknowledges once handed, the line then acknowledged to the runner; what a
+// crash reads again of an output is read there too (`replayOwn`, Codex's `replay`). A process is started and ended here
+// (runner.ts); only reading it, and writing to it, go through the program (a runner's pipe on Windows opened by the
+// shell as a Unix socket is elsewhere). The program is built for every system a station runs on, so there is no
+// reading of a process's lines in TypeScript to fall back to (as with the actors, mb-actor.ts).
 import { log } from "../ops/log.ts";
 import { wall } from "../ops/fibers.ts";
 import { mbReaderBinary } from "../read/mb-reader.ts";
@@ -19,6 +21,8 @@ type Json = any;
 /// `lines`, `marks`, `threads`: a Codex app-server's (`kind` "codex", mb agents_codex.mbt): the lines Node reads, each
 /// with where it begins and ends; the turns' starts and ends of threads no session has; each session's thread's events
 /// and live steps as they stand after them, with its batch where the program keeps them for its actor.
+/// `lines` for the others (`kind` "dsh", "cursor", "acp", mb agents_own.mbt): the lines that answer Node's requests or
+/// ask something of it.
 /// `batch`: the events are kept by the program to give the session's actor there once its owner took them (`route`);
 /// `routed`: they are, so the session's owner says it took them (its router) and the program, not Node, acknowledges.
 export type Heard = {
@@ -39,12 +43,20 @@ export type CodexHeard = { thread: string; events: Json[]; live: Json; batch?: n
 /// events are had here; false: it was not, so it is acknowledged as before (its events not given there).
 export type Router = { program: SessionsProgram; took: (batch: number) => boolean };
 
+/// How a process's lines are read: Claude Code's frames, a Codex app-server's JSON-RPC, DeepSeek Harness' or Cursor's
+/// driver's lines (dsh-bridge.mjs, cursor-bridge.mjs), an ACP runtime's JSON-RPC.
+export type HostedKind = "claude" | "codex" | "dsh" | "cursor" | "acp";
+
 export type HostedOptions = {
   label: string;
-  /// true: a batch of it was taken by its actor in the program, which acknowledges it then.
-  heard: (heard: Heard) => boolean | void;
-  /// How its lines are read: Claude Code's frames (the default), or a Codex app-server's JSON-RPC.
-  kind?: "claude" | "codex";
+  /// true: a batch of it was taken by its actor in the program, which acknowledges it then; a promise: it is, once
+  /// that is done (what the session writes of it on the disk), what comes after it held till then.
+  heard: (heard: Heard) => boolean | void | Promise<void>;
+  /// How its lines are read (Claude Code's by default).
+  kind?: HostedKind;
+  /// An ACP runtime's: which ("agy", "grok", "devin", "hermes"), and whether the station keeps its transcript.
+  flavor?: string;
+  kept?: boolean;
   /// A Codex app-server's taken up while its sessions are: what comes for a thread not taken up yet is held for it.
   orphans?: boolean;
   /// Said to the program after each attach (again after it started again): what it has of the process (its threads).
@@ -77,6 +89,7 @@ export class AgentsHost {
   readonly #sessions = new Map<number, HostedProcess>();
   readonly #freezes = new Map<number, (states: Record<string, { turn: Json; live: Json }>) => void>();
   readonly #replays = new Map<number, (live: Record<string, Json>) => void>();
+  readonly #ownReplays = new Map<number, { done: (said: Json) => void; failed: (error: Error) => void }>();
   #closed = false;
 
   private constructor(data: string) {
@@ -86,7 +99,7 @@ export class AgentsHost {
   /// The program for `data`'s processes: one for every driver of the station (each taking it, `close` letting it go;
   /// it ends with the last). A checkout that did not build the program runs no Claude Code or Codex session.
   static where(data: string): AgentsHost {
-    if (mbReaderBinary() === null) throw new Error("the station's MoonBit program (stillfail-reader) is not built here: Claude Code and Codex are read by its --sessions");
+    if (mbReaderBinary() === null) throw new Error("the station's MoonBit program (stillfail-reader) is not built here: every runtime's processes are read by its --sessions");
     let host = AgentsHost.#shared.get(data);
     if (host === undefined || host.#closed) AgentsHost.#shared.set(data, (host = new AgentsHost(data)));
     return host;
@@ -118,6 +131,8 @@ export class AgentsHost {
     // (what it read again of an output is lost with it: those threads' live steps as none were open)
     for (const done of this.#replays.values()) done({});
     this.#replays.clear();
+    for (const r of this.#ownReplays.values()) r.failed(new Error("the program reading agents ended while it read an output again"));
+    this.#ownReplays.clear();
     // (each process read again from where it was acknowledged, the turn as its session knows it)
     const again = [...this.#sessions.values()];
     // timer: a retry after a failure, with a backoff (one that keeps ending is started again each second at most)
@@ -128,6 +143,13 @@ export class AgentsHost {
   }
 
   #said(said: Json) {
+    if (typeof said?.ownReplayed === "number") {
+      const r = this.#ownReplays.get(said.ownReplayed);
+      this.#ownReplays.delete(said.ownReplayed);
+      r?.done(said);
+      if (this.#sessions.size === 0 && this.#replays.size === 0 && this.#ownReplays.size === 0) this.#idle();
+      return;
+    }
     if (typeof said?.replayed === "number") {
       const done = this.#replays.get(said.replayed);
       this.#replays.delete(said.replayed);
@@ -158,12 +180,12 @@ export class AgentsHost {
       const heard: Heard = { events: Array.isArray(said.events) ? said.events : [], turn: said.turn, to: said.to, lines, batch: typeof said.batch === "number" ? said.batch : undefined };
       if (Array.isArray(said.marks)) heard.marks = said.marks;
       if (Array.isArray(said.threads)) heard.threads = said.threads;
-      if (p.heard(heard)) this.post({ ack: n, to: said.to });
-    } else if (said.exit !== undefined) p.exited_(said.code ?? null, said.signal ?? null, typeof said.stderr === "string" ? said.stderr : "");
-    else if (said.closed !== undefined) p.closed_();
+      p.heard(heard);
+    } else if (said.exit !== undefined) p.inTurn(() => p.exited_(said.code ?? null, said.signal ?? null, typeof said.stderr === "string" ? said.stderr : ""));
+    else if (said.closed !== undefined) p.inTurn(() => p.closed_());
     // (its socket closed once it was read to its end: nothing more of it to read)
-    else if (said.ended !== undefined) this.forget(p);
-    else p.left_();
+    else if (said.ended !== undefined) p.inTurn(() => this.forget(p));
+    else p.inTurn(() => p.left_());
   }
 
   post(message: Json) {
@@ -174,7 +196,7 @@ export class AgentsHost {
   attach(p: HostedProcess) {
     this.#ensure().hold(this.#user, true);
     this.#sessions.set(p.n, p);
-    this.post({ attach: p.n, socket: p.info.socket, turn: p.turnNow(), live: p.liveNow(), kind: p.kind, ...(p.orphans ? { orphans: true } : {}) });
+    this.post({ attach: p.n, socket: p.info.socket, turn: p.turnNow(), live: p.liveNow(), kind: p.kind, ...p.flavor, ...(p.orphans ? { orphans: true } : {}) });
     if (p.routed) this.post({ route: p.n, on: true });
     p.attached();
   }
@@ -194,6 +216,18 @@ export class AgentsHost {
         this.post({ codexReplayed: id });
       }),
     };
+  }
+
+  /// What a station that crashed had read of a process's output (its runner's `file`, up to `at`), read again by the
+  /// program as `kind` reads it (`flavor`, `kept`, `resume`: an ACP runtime's): the session, its turn and live steps it
+  /// comes to (mb agents_own.mbt `own_replay`).
+  replayOwn(kind: HostedKind, file: string, at: number, extra: Json = {}): Promise<Json> {
+    this.#ensure().hold(this.#user, true);
+    const id = this.number();
+    return new Promise((done, failed) => {
+      this.#ownReplays.set(id, { done, failed });
+      this.post({ ownReplay: id, kind, path: file, at, ...extra });
+    });
   }
 
   /// Nothing of it read: the program let go (started again for the next).
@@ -216,7 +250,7 @@ export class AgentsHost {
   forget(p: HostedProcess) {
     this.#sessions.delete(p.n);
     // (it runs while it has a process to read: started again for the next)
-    if (this.#sessions.size === 0 && this.#replays.size === 0) this.#idle();
+    if (this.#sessions.size === 0 && this.#replays.size === 0 && this.#ownReplays.size === 0) this.#idle();
   }
 
   /// Every process's lines held (the station hands over): each one's turn and live steps as they stand then.
@@ -229,6 +263,8 @@ export class AgentsHost {
       this.#freezes.set(id, resolve);
       this.post({ freeze: id, only: held.map((p) => p.n) });
     });
+    // (what was told before it taken first: a session that writes some of it on the disk first holds what comes after)
+    await Promise.all(held.map((p) => p.drained()));
     // (a Codex app-server's says its threads' live steps, which what was told before it already gave its sessions)
     for (const [n, state] of Object.entries(states)) if ("turn" in state) this.#sessions.get(Number(n))?.froze(state.turn, state.live);
   }
@@ -253,8 +289,7 @@ export class AgentsHost {
   }
 }
 
-/// A process under a runner, read by the program: what process.ts `AgentProcess` is to a driver, its lines told as
-/// `heard`.
+/// A process under a runner, read by the program, its lines told as `heard`.
 export class HostedProcess {
   readonly info: RunnerInfo;
   readonly n: number;
@@ -274,6 +309,8 @@ export class HostedProcess {
   #router: Router | null = null;
   /// What comes for a Codex thread not taken up yet is held for it (HostedOptions `orphans`), until `orphansOff`.
   #orphans: boolean;
+  /// What its session is writing of what was told before (`heard`'s promise): what is told next waits for it.
+  #waiting: Promise<void> | null = null;
 
   private constructor(host: AgentsHost, info: RunnerInfo, options: HostedOptions, turn: Json, live: Json) {
     this.#host = host;
@@ -306,7 +343,7 @@ export class HostedProcess {
   /// What it reads is given its session's actor in the program, where that is the program reading it (`router`):
   /// told here, as before, then taken there; null: told here only.
   route(router: Router | null) {
-    if (router !== null && (this.kind !== "claude" || this.#host.program() !== router.program)) router = null;
+    if (router !== null && (this.kind === "codex" || this.#host.program() !== router.program)) router = null;
     if (router === null && this.#router === null) return;
     this.#router = router;
     this.#host.post({ route: this.n, on: router !== null });
@@ -349,8 +386,13 @@ export class HostedProcess {
     return this.#router !== null;
   }
 
-  get kind(): "claude" | "codex" {
+  get kind(): HostedKind {
     return this.#options.kind ?? "claude";
+  }
+
+  /// What the program is told of an ACP runtime's as it attaches.
+  get flavor(): Json {
+    return this.#options.flavor === undefined ? {} : { flavor: this.#options.flavor, kept: this.#options.kept === true };
   }
 
   get pgid() {
@@ -370,15 +412,49 @@ export class HostedProcess {
     return this.#frozenState;
   }
 
-  /// What the program read, unless it is let go or held (then not acknowledged: the next station's).
-  heard(heard: Heard): boolean {
-    if (this.gone || this.#frozen) return false;
+  /// What the program read, unless it is let go or held (then not acknowledged: the next station's); acknowledged once
+  /// its session took it, or said taken by its actor, which the program acknowledges then.
+  heard(heard: Heard) {
+    this.inTurn(() => this.#take(heard));
+  }
+
+  /// `f` once what was told before it is taken (at once where nothing is being written).
+  inTurn(f: () => void | Promise<void>) {
+    if (this.#waiting !== null) {
+      const next = this.#waiting.then(f);
+      this.#waiting = next;
+      void next.then(() => {
+        if (this.#waiting === next) this.#waiting = null;
+      });
+      return;
+    }
+    const wait = f();
+    if (wait instanceof Promise) {
+      this.#waiting = wait;
+      void wait.then(() => {
+        if (this.#waiting === wait) this.#waiting = null;
+      });
+    }
+  }
+
+  /// Once what was told it is taken.
+  async drained() {
+    while (this.#waiting !== null) await this.#waiting;
+  }
+
+  #take(heard: Heard): void | Promise<void> {
+    if (this.gone || this.#frozen) return;
     if (heard.turn !== undefined) this.#turn = heard.turn;
     const router = heard.batch !== undefined ? this.#router : null;
     if (router !== null) heard.routed = true;
-    const taken = this.#options.heard(heard) === true;
-    // (acknowledged by the program as its actor takes them)
-    return !taken && (router === null || !router.took(heard.batch!));
+    const taken = this.#options.heard(heard);
+    const done = () => {
+      if (taken === true || this.gone || this.#frozen) return;
+      // (acknowledged by the program as its actor takes them)
+      if (router === null || !router.took(heard.batch!)) this.#host.post({ ack: this.n, to: heard.to });
+    };
+    if (taken instanceof Promise) return taken.then(done);
+    done();
   }
 
   froze(turn: Json, live: Json) {
@@ -434,11 +510,18 @@ export class HostedProcess {
   }
 
   /// What a prompt, an abort or a new token does to the turn before what goes with it is written (claude.ts `begin`,
-  /// `compact`, `abort`, `renewToken`): the program keeps the turn.
+  /// `compact`, `abort`, `renewToken`; a prompt of DeepSeek Harness' or Cursor's): the program keeps the turn.
   tell(what: "begin" | "compact" | "aborting" | "renewed") {
     if (this.#frozen) return;
     if (what === "compact") this.#host.post({ begin: this.n, compact: true });
     else this.#host.post({ [what]: this.n });
+  }
+
+  /// What an ACP session's owner says of it (`acpSession`, `acpOpened`, `acpPrompt`, `acpInject`: mb agents_own.mbt),
+  /// before what goes with it is written.
+  say(what: "acpSession" | "acpOpened" | "acpPrompt" | "acpInject", fields: Json = {}) {
+    if (this.#frozen) return;
+    this.#host.post({ [what]: this.n, ...fields });
   }
 
   /// Up to where its runner may give the disk back, told with the next ack (process.ts `keepFrom`).

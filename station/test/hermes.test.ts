@@ -64,7 +64,7 @@ test('handover preserves partial transcript and completes the running turn once'
   const { options, events, driver } = setup(); const s = await driver.open(options, e => events.push(e));
   await s.prompt('handover');
   await until(() => events.some(e => e.type === 'live' && e.event.kind === 'delta' && e.event.text === 'first '));
-  const snapshot = s.snapshot(); s.detach(); await allLeft();
+  await driver.freeze(); const snapshot = s.snapshot(); s.detach(); await allLeft();
   const next = new HermesDriver({ data }); drivers.push(next); const after: RuntimeEvent[] = [];
   const adopted = await next.adopt(options, snapshot, e => after.push(e));
   await adopted.request('continue', '_test/continue', {});
@@ -128,6 +128,7 @@ for (const editorNames of [false, true]) for (const recovery of ['none', 'handov
   await session.prompt('lost');
   await until(() => events.some(e => e.type === 'live' && e.event.kind === 'start' && e.event.id === 'call:lost'));
   if (recovery !== 'none') {
+    if (recovery === 'handover') await driver.freeze();
     const snapshot = recovery === 'handover' ? session.snapshot() : null;
     const id = session.id(); session.detach(); await allLeft();
     const next = new HermesDriver({ data }); drivers.push(next);

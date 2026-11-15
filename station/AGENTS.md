@@ -5,7 +5,7 @@
 - Processes: the launcher (`native/launcher`, Rust) keeps the pid, the data directory's lock and the ports, and on an
   update starts the next Node before letting the old one go; each agent process runs under a runner
   (`native/runner`), so a turn goes on while the station restarts or crashes and the next one takes it up
-  (`src/agents/runner.ts`; `adopt` in `src/agents/process.ts`); a runner no driver holds once it has (`ownedRunners`),
+  (`src/agents/runner.ts`; `HostedProcess.adopt` in `src/agents/mb-agents.ts`); a runner no driver holds once it has (`ownedRunners`),
   or later, is ended (`src/sessions/hub.ts` `takeUp`, `endOrphan`). The station's iroh endpoint is kept by the MoonBit
   front (`mb/src/front/mesh.mbt`), which the launcher starts and keeps across Node's handovers
   (`native/launcher/src/front.rs`), for each Node in turn (`src/mesh/front.ts`, its streams carried by the shell and
@@ -146,7 +146,7 @@
   There is no sending in TypeScript to fall back to: the one it replaced is the tests' (`test/dirsync-reference.ts`),
   which the program's listing and requests are compared with (`test/mb-dirsync.test.ts`).
 - The live view (what a running turn does, its rate, its background tasks and checklist, its transcript's entries as
-  written) runs there too, as the pseudo-actor `#live` (`mb/src/reader/live.mbt`), a Claude or Codex session's events given it
+  written) runs there too, as the pseudo-actor `#live` (`mb/src/reader/live.mbt`), every runtime's session's events given it
   in the program. Node (`src/sessions/live.ts`) keeps what the program asks of it: where a transcript is, what one
   gained and a page of its past (the readers', other processes: a long read there would hold up every actor), the
   file's watch, the usage counter, and the listeners it gives what is told (a stream opening is told the sessions at
@@ -176,8 +176,19 @@
   with (`test/codex-cases.ts` writes `mb/src/codex/as_typescript_said_test.mbt`). A line of the agents' output is put
   together from its pieces once (`mb/src/pieces`): joined again with each, one of 34 MB took the program to GBs. One
   program for every driver and the actors, running while one of them uses it, on every system a station runs on (a
-  Windows runner's named pipe opened by the shell as its socket): there is no reading of Claude Code's or Codex's
-  output in TypeScript to fall back to, as there is no actor.
+  Windows runner's named pipe opened by the shell as its socket): there is no reading of a runtime's output in
+  TypeScript to fall back to, as there is no actor.
+  DeepSeek Harness', Cursor's and the ACP runtimes' output (Antigravity CLI, Grok Build, Devin, Hermes Agent) is read
+  there too (`mb/src/reader/agents_own.mbt`; each one's lines `mb/src/dsh`, `mb/src/cursor`, `mb/src/acp`), its
+  events given its actor in the program as Claude Code's are: Node is given only the lines it answers (its requests'
+  answers, a runtime's own requests) and what it keeps itself (an ACP runtime's transcript kept by the station, a
+  prompt's answer, its usage: acp.ts `took`), what the model says put together there, never a chunk at a time. A
+  session's driver writes what it keeps off the station's thread, a turn said ended once that is written (own-process.ts
+  `settled`, acp.ts `KeptTranscript`). What a crash reads again of every such process's output, Claude Code's too, is
+  the program's (`replayOwn`, agents_own.mbt `own_replay`). What the TypeScript station made of those lines before is
+  the tests' only (`test/reference/live.ts`; a process as a driver read it, `test/reference/process.ts`), which the
+  program is held to on the same lines (`test/runtime-cases.ts` writes each package's `as_typescript_said_test.mbt`;
+  `test/mb-dsh.test.ts`, `test/mb-cursor.test.ts`, `test/mb-acp.test.ts` through the program itself).
 - Their tools are the station's MCP endpoint (`src/tools/`, HTTP on 127.0.0.1, a bearer token per session). What they
   read of how to work is `src/agents/instructions.ts` and the skills in `src/skills/`. A change to the instructions, a
   tool's parameters or its rules adds a note at the end of `src/agents/migrations.ts` (the next number, a sentence),

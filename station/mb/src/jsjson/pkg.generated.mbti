@@ -6,6 +6,8 @@ import {
 }
 
 // Values
+pub fn js_string(JValue) -> Array[Int32]
+
 pub fn parse(String) -> JValue raise SyntaxError
 
 pub fn raw_text(Array[Int32]) -> String

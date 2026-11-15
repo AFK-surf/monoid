@@ -1,0 +1,20 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/footprint"
+
+import {
+  "moonbitlang/core/json",
+}
+
+// Values
+pub fn answer(String, String) -> @json.Json
+
+// Errors
+pub suberror Failed {
+  Failed(String, String)
+}
+
+// Types and methods
+
+// Type aliases
+
+// Traits

@@ -302,7 +302,7 @@ function grokTimeline(r: Json, out: TimelineEntry[]) {
       try {
         input = JSON.parse(raw);
         // An MCP server's tool, reached through its use_tool: named as the tool itself, as Claude Code names one
-        // (mcp__server__tool; agents/live.ts acpCall).
+        // (mcp__server__tool; reference/live.ts acpCall).
         if (name === "use_tool" && isStr(get(input, "tool_name"))) [name, input] = [`mcp__${get(input, "tool_name")}`, get(input, "tool_input") ?? {}];
         args = pretty(input);
       } catch {}
@@ -331,7 +331,7 @@ function cursorTimeline(r: Json, out: TimelineEntry[]) {
   } else if (kind === "tool") {
     let name = stringOf(get(r, "name")) ?? "";
     let input: Json = get(r, "args") ?? {};
-    // An MCP server's tool named as Claude Code names one (mcp__server__tool; agents/live.ts cursorCall).
+    // An MCP server's tool named as Claude Code names one (mcp__server__tool; reference/live.ts cursorCall).
     if (name === "mcp" && isStr(get(input, "providerIdentifier")) && isStr(get(input, "toolName"))) [name, input] = [`mcp__${get(input, "providerIdentifier")}__${get(input, "toolName")}`, get(input, "args") ?? {}];
     const args = pretty(input);
     const id = stringOf(get(r, "id"));

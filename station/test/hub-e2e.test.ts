@@ -12,9 +12,14 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { ClaudeDriver } from "../src/agents/claude.ts";
 import { CodexDriver } from "../src/agents/codex.ts";
+import { CursorDriver } from "../src/agents/cursor.ts";
+import { DshDriver } from "../src/agents/dsh.ts";
+import { GrokDriver } from "../src/agents/grok.ts";
+import { HermesDriver } from "../src/agents/hermes.ts";
+import type { AgentDriver } from "../src/agents/runtime.ts";
 import { outFile, runnerId } from "../src/agents/process.ts";
 import { hubConfig } from "../src/sessions/config.ts";
-import { Hub } from "../src/sessions/hub.ts";
+import { Hub, handoverFile } from "../src/sessions/hub.ts";
 import { InternalChat } from "../src/sessions/internal.ts";
 import { newSession, say } from "../src/sessions/lifecycle.ts";
 import { chatTools } from "../src/tools/chat.ts";
@@ -196,3 +201,93 @@ test("a Codex turn handed over while it writes is taken up by the next station a
     rmSync(data, { recursive: true, force: true });
   }
 });
+
+// DeepSeek Harness', Cursor's and the ACP runtimes' processes read in the program (mb agents_own.mbt) give their
+// sessions' actors there their events as Claude Code's do: Node only says each batch taken.
+const OWN: { runtime: string; profile: Record<string, unknown>; driver: (data: string) => AgentDriver }[] = [
+  { runtime: "dsh", profile: { access: { kind: "opencode-go", key: "k1" }, model: "m1" }, driver: (data) => new DshDriver({ data }) },
+  { runtime: "cursor", profile: { access: { kind: "subscription" }, env: { CURSOR_API_KEY: "crsr_k1" } }, driver: (data) => new CursorDriver({ data, sdk: join(fake, "cursor-sdk") }) },
+  { runtime: "grok", profile: { access: { kind: "subscription" } }, driver: (data) => new GrokDriver({ data }) },
+  { runtime: "hermes", profile: { access: { kind: "env" }, model: "openrouter:test" }, driver: (data) => new HermesDriver({ data }) },
+];
+
+/// A station of sessions of `runtime`'s, in `data`: its hub, its store, its MCP door.
+async function ownStation(data: string, own: (typeof OWN)[number]) {
+  const config = hubConfig({ profiles: [{ id: "p", runtime: own.runtime, home: `homes/${own.runtime}`, ...own.profile }], maxNudges: 1 }, data);
+  const store = Store.open(join(data, "stillfail.db"));
+  let url = "";
+  const hub = new Hub({ config: () => config, store, chats: () => undefined, drivers: [own.driver(data)], mcpUrl: () => url, internal: new InternalChat() });
+  const mcp = new McpEndpoint((token) => store.sessionByToken(token)?.key, chatTools(hub));
+  const served = await openAgentsDoor({ port: 0 }, mcp, () => ({ status: 400, body: { error: "no jobs" } }));
+  url = served.url;
+  return { hub, store, served };
+}
+
+for (const own of OWN) {
+  test(`a message to a ${own.runtime} session: its turns' events go to its actor in the program, none through Node`, async () => {
+    const data = mkdtempSync(process.platform === "win32" ? join(tmpdir(), "ho-") : "/tmp/ho-");
+    const { hub, store, served } = await ownStation(data, own);
+    try {
+      const [key, thread] = newSession(hub, { runtime: own.runtime as never, createdBy: "ada@x.com" });
+      say(hub, thread.id, "ada@x.com", "say:hello");
+      // Its turn and the one that nudges it (no state said), both ended.
+      await until(() => store.listTurns(key).length >= 2 && store.lastTurn(key)?.endedAt != null, "its turns ended");
+      assert.deepEqual(store.listTurns(key).map((t) => t.summary.outcome), ["completed", "completed"]);
+      assert.ok(!store.getSession(key)!.running);
+      const posted = hub.program()!.posted;
+      assert.equal(posted.get("event") ?? 0, 0, `events said through Node: ${JSON.stringify([...posted])}`);
+      assert.ok((posted.get("routed") ?? 0) > 0, JSON.stringify([...posted]));
+    } finally {
+      await hub.shutdown();
+      await served.close(1000);
+      store.close();
+      rmSync(data, { recursive: true, force: true });
+    }
+  });
+}
+
+// Its turn running as the station hands over, or as it crashes (no snapshot left: what the program reads again of the
+// output says where it stands), taken up by the next station: a message steered into it there ends it, once, its events
+// given its actor in the program on both stations.
+for (const own of OWN.filter((o) => o.runtime === "dsh" || o.runtime === "grok")) {
+  for (const crashed of [false, true]) {
+    test(`a ${own.runtime} turn running as the station ${crashed ? "crashes" : "hands over"} is taken up by the next and ends there once`, async () => {
+      const data = mkdtempSync(process.platform === "win32" ? join(tmpdir(), "hp-") : "/tmp/hp-");
+      const first = await ownStation(data, own);
+      let next: Awaited<ReturnType<typeof ownStation>> | null = null;
+      try {
+        const [key, thread] = newSession(first.hub, { runtime: own.runtime as never, createdBy: "ada@x.com" });
+        say(first.hub, thread.id, "ada@x.com", "test-hold");
+        await until(() => first.store.getSession(key)?.running === true && first.store.lastTurn(key) !== undefined, "its turn begun");
+        const out = outFile(data, runnerId(own.runtime as never, key));
+        // (dsh's reply whole, Grok Build's in two chunks: "hold", "ing")
+        await until(() => existsSync(out) && readFileSync(out, "utf8").includes('"text":"hold'), "its reply written");
+        await first.hub.handOver();
+        await first.served.close(1000);
+        assert.equal(first.hub.program()?.posted.get("event") ?? 0, 0);
+        // (a crash leaves no snapshot: the runners alone)
+        if (crashed) rmSync(handoverFile(data), { force: true });
+        next = await ownStation(data, own);
+        await next.hub.takeUp();
+        assert.equal(next.store.getSession(key)?.running, true, "its turn still running");
+        say(next.hub, thread.id, "ada@x.com", "go on");
+        const store = next.store;
+        // (its turn and the one that nudges it, no state said: both ended before the station is let go)
+        await until(() => store.listTurns(key).length >= 2 && store.lastTurn(key)?.endedAt != null && !store.getSession(key)!.running, "its turns ended on the next station");
+        assert.deepEqual(store.listTurns(key).map((t) => t.summary.outcome), ["completed", "completed"], "its turn, ended on the next station once, and the nudge's");
+        // (taken up after a crash, the turn the station did not start is said started by its driver as it takes it up:
+        // own-process.ts `adoptOn`; every event of the output's is given its actor in the program)
+        const posted = next.hub.program()!.posted;
+        assert.equal(posted.get("event") ?? 0, crashed ? 1 : 0, `events said through Node: ${JSON.stringify([...posted])}`);
+        assert.ok((posted.get("routed") ?? 0) > 0, JSON.stringify([...posted]));
+      } finally {
+        await first.hub.shutdown();
+        await next?.hub.shutdown();
+        await next?.served.close(1000);
+        next?.store.close();
+        first.store.close();
+        rmSync(data, { recursive: true, force: true });
+      }
+    });
+  }
+}

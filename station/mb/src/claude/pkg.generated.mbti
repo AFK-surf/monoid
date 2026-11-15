@@ -16,7 +16,7 @@ pub fn classify_result(Array[Int32]) -> String
 
 pub fn error_outcome(Array[Int32]) -> @jsjson.JValue
 
-pub fn failure_of(Array[Int32]) -> String
+pub fn failure_of(Array[Int32], auth_codes? : Array[String], auth? : Array[String], limit_codes? : Array[String], limit? : Array[String]) -> String
 
 pub fn on_frame(@jsjson.JValue, Turn, (@jsjson.JValue) -> Unit, () -> Unit, () -> Double, (String) -> Unit) -> Unit
 

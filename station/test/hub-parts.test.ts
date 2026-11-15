@@ -16,7 +16,7 @@ import { hubConfig } from "../src/sessions/config.ts";
 import { completionQuestion, parse, request } from "../src/sessions/decision.ts";
 import { sizeOf } from "../src/sessions/image-size.ts";
 import { nextTsAt } from "../src/sessions/internal.ts";
-import { LiveFromClaude } from "../src/agents/live.ts";
+import { LiveFromClaude } from "./reference/live.ts";
 import { HELD_AFTER_MS, type History, type LiveMessage, LiveHub } from "../src/sessions/live.ts";
 import type { SessionUsage } from "./reference/usage.ts";
 import { chainOf, entriesOf, lengthOf, stateOf } from "./reference/transcripts.ts";

@@ -1,0 +1,63 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/cursor"
+
+import {
+  "station/jsjson",
+}
+
+// Values
+pub fn cursor_call(Array[Int32], @jsjson.JValue?) -> (Array[Int32], @jsjson.JValue)
+
+pub fn cursor_output(@jsjson.JValue?) -> Array[Int32]
+
+pub fn outcome_of(@jsjson.JValue?) -> @jsjson.JValue
+
+// Errors
+
+// Types and methods
+pub(all) struct Live {
+  open : Array[(Array[Int32], String)]
+  mut said : Array[Int32]?
+  mut n : Int32
+  mut phase : String?
+}
+pub fn Live::ended(Self) -> Array[@jsjson.JValue]
+pub fn Live::feed(Self, @jsjson.JValue?) -> Array[@jsjson.JValue]
+pub fn Live::new() -> Self
+pub fn Live::of_state(@jsjson.JValue) -> Self
+pub fn Live::prompted(Self) -> Array[@jsjson.JValue]
+pub fn Live::state(Self) -> @jsjson.JValue
+
+pub(all) struct Replay {
+  mut session : Array[Int32]?
+  turn : Turn
+  live : Live
+}
+pub fn Replay::line(Self, @jsjson.JValue) -> Unit
+pub fn Replay::new() -> Self
+
+pub(all) struct Said {
+  events : Array[@jsjson.JValue]
+  node : Bool
+}
+
+pub(all) struct Session {
+  turn : Turn
+  live : Live
+  calls : Array[Array[Int32]]
+}
+pub fn Session::cut_short(Self) -> Array[@jsjson.JValue]
+pub fn Session::line(Self, @jsjson.JValue) -> Said
+pub fn Session::new(Turn, Live) -> Self
+pub fn Session::prompted(Self) -> Array[@jsjson.JValue]
+
+pub(all) struct Turn {
+  mut busy : Bool
+  mut aborting : Bool
+}
+pub fn Turn::json(Self) -> @jsjson.JValue
+pub fn Turn::of_json(@jsjson.JValue) -> Self
+
+// Type aliases
+
+// Traits

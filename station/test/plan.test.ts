@@ -5,7 +5,7 @@ import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { planOfAcp } from "../src/agents/acp.ts";
+import { planOfAcp } from "./reference/live.ts";
 import type { PlanItem, RuntimeKind } from "../src/agents/runtime.ts";
 import { LiveHub, type LiveMessage } from "../src/sessions/live.ts";
 

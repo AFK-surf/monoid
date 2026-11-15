@@ -414,7 +414,9 @@ fn Actors::routed(self : Actors, a : Actor, n : Int, k : Int, generation : Int, 
           Some(ev) => Json::object({ "type": jstr("live"), "event": ev })
           None => continue
         }
-      Object(_) if str_of(event.value("type")) == Some("renew") => continue
+      // (what the session's owner alone takes: a token asked for, an ACP runtime's transcript lines, a prompt's answer,
+      // its usage: own-process.ts `took`)
+      Object(_) if str_of(event.value("type")) is Some("renew" | "kept" | "answered" | "usage") => continue
       _ => event
     }
     self.spawn(() => self.on_event(a, generation, event, read) catch {

@@ -19,7 +19,7 @@ import { peerHttpBase } from "../tools/http.ts";
 import { AcpDriver, AcpSession, KeptTranscript, type AcpStart } from "./acp.ts";
 import type { Events } from "./own-process.ts";
 import { accessKind, expandRoute, profileEnv, profileModel } from "./profiles.ts";
-import { TOOL_SERVERS, cleanEnv, failureOf, uuid, type FailureReason, type OpenOptions, type Profile } from "./runtime.ts";
+import { cleanEnv, failureOf, uuid, type FailureReason, type OpenOptions, type Profile } from "./runtime.ts";
 
 type Json = any;
 
@@ -266,7 +266,8 @@ export const classifyFailure = (text: string): FailureReason =>
 /// session went on asking the spent account instead of moving to another. It comes after the turn's calls too, its
 /// last words (2026-11-15: a turn of tool calls and thinking ending on it was taken as finished). What the model says
 /// is never one: a notice is all of the turn's last words, one line of its own, and only what tells the account, a
-/// limit or the provider counts (not `model`, the rest).
+/// limit or the provider counts (not `model`, the rest). What the program reads a process by does this (mb/src/acp
+/// `notice_failure`); this is what it is held to.
 export function noticeFailure(said: string): FailureReason | null {
   const text = said.trim();
   if (!text.startsWith("⚠") || text.includes("\n")) return null;
@@ -292,18 +293,6 @@ export function agyEnv(options: OpenOptions): Record<string, string> {
 /// What session/new and session/load are given besides the working directory and the station's tools: its instructions,
 /// after its own system prompt.
 export const agyOpening = (instructions: string): Json => (instructions === "" ? {} : { _meta: { antigravity: { systemPrompt: { append: instructions } } } });
-
-/// A call's update as the station reads it: an MCP tool's title is `Run mcp_<server>_<tool>` (1.4.12), the station's
-/// named as the other runtimes name them (mcp__stillfail__chat_post), so that its live steps, history and lost tools
-/// know it.
-export function agyUpdate(update: Json): Json {
-  if (update?.sessionUpdate !== "tool_call" || typeof update.title !== "string") return update;
-  for (const server of TOOL_SERVERS) {
-    const prefix = `Run mcp_${server}_`;
-    if (update.title.startsWith(prefix)) return { ...update, title: `mcp__${server}__${update.title.slice(prefix.length)}` };
-  }
-  return update;
-}
 
 /// The thinking levels Antigravity's ACP models append to a family's name (`gemini-4-carbon-high`, `claude-opus-5-5-medium`).
 export const AGY_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -418,6 +407,7 @@ export const AGY_LENT_RENEW_MS = 40 * 60_000;
 const AGY_LENT_LEAST_MS = 10 * 60_000;
 
 export class AgyDriver extends AcpDriver<AgySession> {
+  protected readonly keepsTranscript = true;
   private readonly command: string;
   private readonly lent: AgyDriverOptions["lent"];
 
@@ -491,7 +481,6 @@ export class AgyDriver extends AcpDriver<AgySession> {
 }
 
 export class AgySession extends AcpSession {
-  protected readonly steersByPrompt = true;
   /// What session/new or session/load said it offers.
   availableModels: string[] = [];
   /// The raw ACP `modelId` currently active in the process.
@@ -507,21 +496,9 @@ export class AgySession extends AcpSession {
     super(driver, events, new KeptTranscript("agy", join(agyHome(options.profile.home), SESSIONS)));
   }
 
-  protected classify(text: string) {
-    return classifyFailure(text);
-  }
-
-  protected failedSaying(said: string) {
-    return noticeFailure(said);
-  }
-
   named(id: string) {
     if (!SESSION_ID.test(id)) throw new Error("invalid Antigravity conversation id");
     super.named(id);
-  }
-
-  protected normalized(update: Json) {
-    return agyUpdate(update);
   }
 
   opened(result: Json) {
@@ -548,7 +525,7 @@ export class AgySession extends AcpSession {
     if (c && typeof c === "object") this.context = { used: typeof c.used === "number" ? c.used : 0, size: typeof c.size === "number" ? c.size : 0 };
   }
 
-  protected updated(update: Json) {
+  protected updated(update: Json, _owner: string | null) {
     if (update?.sessionUpdate !== "usage_update") return;
     const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : 0);
     if (n(update.used) > 0) this.context.used = n(update.used);

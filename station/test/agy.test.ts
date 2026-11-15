@@ -285,6 +285,7 @@ for (const crashed of [false, true]) {
     const s = await driver.open(configured, (e) => events.push(e));
     await s.prompt("hold");
     await until(() => events.some((e) => e.type === "live" && e.event.kind === "delta" && e.event.text === "first "));
+    if (!crashed) await driver.freeze();
     const snapshot = crashed ? null : s.snapshot();
     s.detach();
     await allLeft();

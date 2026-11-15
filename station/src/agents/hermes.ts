@@ -55,16 +55,6 @@ function sessionHome(options: OpenOptions, configured: string): string {
   } finally { closeSync(fd); }
 }
 
-/// Hermes' ACP title is `<tool_name>: <argument preview>`. The live and transcript readers
-/// need the tool's name, notably to recognise chat_post; its arguments remain in rawInput, not in the name.
-function hermesUpdate(update: Json): Json {
-  if (update?.sessionUpdate !== "tool_call" || typeof update.title !== "string") return update;
-  const name = update.title.split(": ", 1)[0]!;
-  // Hermes 0.22 scopes editor MCP servers by session: keep our tools recognisable across those hashes.
-  const title = name.replace(/^mcp__editor_stillfail_[0-9a-f]{8}__/, "mcp__stillfail__");
-  return { ...update, title };
-}
-
 /// What failed a turn, from what Hermes said of it.
 export const classifyFailure = (text: string): FailureReason => failureOf(text);
 
@@ -111,6 +101,7 @@ export function hermesCatalog(catalog: Json, profile: Profile): string[] {
 }
 
 export class HermesDriver extends AcpDriver<HermesSession> {
+  protected readonly keepsTranscript = true;
   private readonly command: string;
   private stopping = false;
 
@@ -197,17 +188,9 @@ export class HermesSession extends AcpSession {
     this.transcript?.keep(this.id(), { type: "session", id: this.id(), cwd, hermesHome: this.nativeHome });
   }
 
-  protected classify(text: string) {
-    return classifyFailure(text);
-  }
-
   named(id: string) {
     if (!SESSION_ID.test(id)) throw new Error("invalid Hermes session id");
     super.named(id);
-  }
-
-  protected normalized(update: Json) {
-    return hermesUpdate(update);
   }
 
   opened(result: Json) {

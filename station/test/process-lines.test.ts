@@ -1,10 +1,10 @@
-// linesBefore (src/agents/process.ts): the lines a station that crashed had handled, read a part at a time.
+// linesBefore (test/reference/process.ts, what a driver read again after a crash before the program did): the lines a station that crashed had handled, read a part at a time.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { linesBefore, linesWithin } from "../src/agents/process.ts";
+import { linesBefore, linesWithin } from "./reference/process.ts";
 
 /// What an async generator gives, all of it.
 async function all<T>(lines: AsyncIterable<T>): Promise<T[]> {

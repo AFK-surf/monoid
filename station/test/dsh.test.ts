@@ -344,6 +344,8 @@ describe("the DeepSeek Harness driver", { concurrency: true }, () => {
       await session.prompt("gate:g");
       await a.until((e) => deltas(e).includes("first "));
       let snapshot: unknown = null;
+      // (its lines held as the hub holds them before a snapshot: hub.ts `handOver`)
+      if (!crashed) await first.freeze();
       if (!crashed) snapshot = JSON.parse(JSON.stringify(session.snapshot()));
       // Stops: the process goes on under its runner, saying the rest with nobody reading.
       first.detach();

@@ -2,8 +2,8 @@
 // program): what a running turn is doing, told at its turning points (the phase, each step starting and ending), how
 // fast the model writes, what a session has going in the background and its checklist, and its transcripts' entries
 // as each is written whole, to whoever follows the session (a device's stream, or the station itself while the session
-// is at work: `running`). Nothing here is stored. A Claude session's events come from its process read in this program
-// (actors.mbt `routed`), any other runtime's from Node; a turn's end waits for what its transcript said last
+// is at work: `running`). Nothing here is stored. A session's events come from its process read in this program
+// (actors.mbt `routed`), what its driver says itself from Node; a turn's end waits for what its transcript said last
 // (`live_turn_end`). What is read of a transcript (where it is, what it gained, its past a page at a time) is the
 // readers' (other processes, so no read of a long transcript holds up the actors here), asked through Node (`lnode`),
 // which also watches the files written to (`arm`) and says when one changed (`soon`), and gives what is told to its
