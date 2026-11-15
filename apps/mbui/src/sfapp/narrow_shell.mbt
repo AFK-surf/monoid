@@ -357,14 +357,6 @@ fn narrow_bar_shown(src : Source, w : Workspace) -> Bool {
 /// Over the frame with workspace `w` in view, in every tier: the sheets, a new device waiting on this one's code, what
 /// the settings put up, ⌘K and ⌘/, the presenters, the toasts, the loupe.
 fn signed_in_over(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
-  sheet_contents(fn(kind) {
-    match kind {
-      ShareSheet => share_in_sheet(c, src, w)
-      InviteLink => invite_sheet(c, src)
-      LoginLink => login_sheet(c, src, w)
-      NoSheet => ()
-    }
-  })
   // a new device waiting on this one's code, in any workspace of the person's, over whichever page is open
   // : put up when no other sheet is
   @settings.lock_prompts(settings_core(src, w), !sheet_open())
@@ -372,8 +364,6 @@ fn signed_in_over(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
   @settings.vault_prompts(settings_core(src, w), !sheet_open())
   // (the core what the settings put up over a page draws with, put up by what has none at hand)
   @settings.panels_frame(settings_core(src, w), w.id)
-  // what another app shares, in the wide window's panel (share.mbt; a sheet on Small, as ShareSheet)
-  share_panel(c, src, w)
   // ⌘K's panel and ⌘/'s shortcuts, in every tier over the pages, under the presenters (sfdesk's switcher.mbt,
   // shortcuts.mbt)
   @sfdesk.switcher(c, src, w)

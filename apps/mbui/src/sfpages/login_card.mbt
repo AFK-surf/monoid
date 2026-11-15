@@ -749,21 +749,40 @@ pub fn login_card_node(
         |> ignore
       _ =>
         x.box(fn(room) {
-          @sf.style_node(room, fn() { lc_room })
+          // (in a panel's body (its login sheet): all of its width, concentric with its sides and its foot)
+          let in_sheet = place == "sheet"
+          @sf.style_node(room, fn() {
+            if in_sheet {
+              lc_room_sheet.then(@sf.panel_card_out_node(room)).then(@sf.panel_card_last_node(room))
+            } else {
+              lc_room
+            }
+          })
           room.box(fn(card) {
-            @sf.style_node(card, fn() { if marked { lc_card_body_marked } else { lc_card_body } })
+            @sf.style_node(card, fn() {
+              match (in_sheet, marked) {
+                (true, true) => lc_card_body_marked.then(lc_card_across)
+                (true, false) => lc_card_body.then(lc_card_across)
+                (false, true) => lc_card_body_marked
+                (false, false) => lc_card_body
+              }
+            })
             // (what is on it as wide as it, a step's button the card's width: its own lines up at the start)
             card.lines_up(Is(None)) |> ignore
             // (as wide as what it holds, 360 at least where there is the room: within the width its place gives it)
             card.min_width(Is(Some(lc_card_least)), within=true).max_width(Is(Some(lc_card_most)), within=true) |> ignore
             let title = fn(t : @view.View) {
               t.box(fn(r) {
-                @sf.style_node(r, fn() { lc_title_room }, in_row=k == 2)
+                @sf.style_node(r, fn() { lc_title_room }, in_row=k == 2 && !in_sheet)
                 @sf.words_node(r, fn() { text(l(), "title") }, fn() { lc_title }) |> ignore
               })
               |> ignore
             }
-            if k == 2 {
+            if k == 2 && in_sheet {
+              // (in its login sheet its title alone: the sheet's own close is how it is put away)
+              title(card)
+              login_active_node(card, core, station, l, fn() { flag(all(), "canRelay") }, place)
+            } else if k == 2 {
               card.box(fn(h) {
                 @sf.style_node(h, fn() { lc_head })
                 title(h)
@@ -1027,9 +1046,13 @@ let lc_card_most : Double = 560.0
 let lc_room : @ui.Style = @ui.css("w=Full pt=S2 align=AStart")
 
 ///|
-/// In a panel's body (place="sheet"): full width, concentric with the panel's sides and foot.
+/// In a panel's body (place="sheet"): full width, concentric with the panel's sides and foot; its card across it.
 // kept across runs: a value (no field of it changes)
 let lc_room_sheet : @ui.Style = @ui.css("w=Full align=AStart")
+
+///|
+// kept across runs: a value (no field of it changes)
+let lc_card_across : @ui.Style = @ui.css("w=Full")
 
 ///|
 // kept across runs: a value (no field of it changes)

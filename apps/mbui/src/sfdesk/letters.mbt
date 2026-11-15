@@ -21,6 +21,12 @@ pub fn letters_to_list(r : ChatRef) -> Unit {
 }
 
 ///|
+/// Chat `r`'s letters at the chat written with by `key` (its row pressed).
+pub fn letters_open_at(r : ChatRef, key : String) -> Unit {
+  letters_opened.set(chat_key(r), key)
+}
+
+///|
 /// Chats that wrote each other, made up, for what the tab shows while they are read (its list in its bones).
 fn letters_sample() -> Array[Json] {
   [(8, 18), (6, 22), (10, 14), (7, 20)].mapi(fn(i, n) {
@@ -69,8 +75,18 @@ priv enum LettersRow {
 ///|
 /// Chat `r`'s letters (its thread `thread`) in `v` (as large as the panel leaves it under its bar), the chat as its view
 /// says it now (`view`): its list, or the chat opened in it, its letters each drawn as the chat draws a message, their
-/// files kept by the chat's sessions; a chat's title pressed opened as a link in it is. Its tips in `tips`.
-fn letters_tab_node(v : @view.View, src : Source, r : ChatRef, thread : Double, view : () -> ChatView, tips : @sf.TipLayer) -> Unit {
+/// files kept by the chat's sessions; a chat's title pressed opened as a link in it is. Its tips in `tips`. The same in
+/// the letters' sheet over the chat (sfapp's letters_node), `panel`: in a panel's body, its rows reaching across it and
+/// their words on its words' line, its list the panel's (@sf.panel_list_node).
+pub fn letters_tab_node(
+  v : @view.View,
+  src : Source,
+  r : ChatRef,
+  thread : Double,
+  view : () -> ChatView,
+  tips : @sf.TipLayer,
+  panel? : Bool = false,
+) -> Unit {
   let key = chat_key(r)
   let value = fn() { src.topic("chatLetters", { "station": Json::string(r.station), "thread": Json::number(thread) }).get().value }
   v.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
@@ -82,9 +98,9 @@ fn letters_tab_node(v : @view.View, src : Source, r : ChatRef, thread : Double, 
           p,
           fn(w) {
             w.box(fn(l) {
-              @sf.style_node(l, fn() { letters_list })
+              @sf.style_node(l, fn() { if panel { letters_list_panel } else { letters_list } })
               for ch in letters_sample() {
-                letters_chat_node(l, fn() { Some(ch) }, fn() {  })
+                letters_chat_node(l, fn() { Some(ch) }, fn() {  }, panel~)
               }
             })
             |> ignore
@@ -109,7 +125,7 @@ fn letters_tab_node(v : @view.View, src : Source, r : ChatRef, thread : Double, 
         // (another opened, or back to the list: a list of its own, from its top)
         p.pick(fn() { opened.get() }, fn(q, at) {
           q.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
-          letters_list_node(q, src, r, view, tips, value, chats, chat_of, at)
+          letters_list_node(q, src, r, view, tips, value, chats, chat_of, at, panel)
         })
       }
     }
@@ -130,12 +146,76 @@ fn letters_list_node(
   chats : () -> Array[Json],
   chat_of : (String) -> Json?,
   at : String,
+  panel : Bool,
 ) -> Unit {
   let key = chat_key(r)
   let letters = fn() { items(chat_of(at), "letters") }
   // (what its notices keep while it shows: which are open, when each said 已复制)
   let opened : @sf.LiveMap[String, Bool] = @sf.LiveMap::new()
   let copied : @sf.LiveMap[String, Double] = @sf.LiveMap::new()
+  let keys = fn() {
+    let out : Array[LettersRow] = []
+    if at == "" {
+      for ch in chats() {
+        out.push(LettersChat(text(Some(ch), "key")))
+      }
+    } else {
+      out.push(LettersHead)
+      for i in 0..<letters().length() {
+        out.push(LettersOne(i))
+      }
+    }
+    // not all of the chat is here yet: more may come, older ones
+    if !flag(value(), "whole") {
+      out.push(LettersMore)
+    }
+    out
+  }
+  if panel {
+    // (in a panel's body: its list the panel's, its rows' words on the panel's words' line)
+    q.by_room(fn(b, given) {
+      let side = @sf.panel_words_at_node(b)
+      let here : @sfpages.MessageNodeHere = {
+        station: r.station,
+        session: r.session,
+        view,
+        width: fn() { dmax(0.0, given.width() - 2.0 * side) },
+        tips,
+        stint: fn() { 0 },
+        jump: None,
+      }
+      @sf.panel_list_node(
+        b,
+        keys,
+        fn(row, k) {
+          match k {
+            LettersChat(ck) => letters_chat_node(row, fn() { chat_of(ck) }, fn() { letters_opened.set(key, ck) }, panel=true)
+            LettersHead => letters_head_node(row, fn() { chat_of(at) }, tips, fn() { letters_opened.remove(key) }, panel=true)
+            LettersOne(i) =>
+              match @signals.untracked(letters).get(i) {
+                Some(m) =>
+                  row.box(fn(s) {
+                    @sf.style_node(s, fn() { letters_message.then(@sf.panel_words_in_node(s)) })
+                    @sfpages.message_static_node(s, src, here, "letters/" + at + "/" + i.to_string(), message_of(m), opened, copied)
+                  })
+                  |> ignore
+                None => ()
+              }
+            LettersMore => {
+              @sf.style_node(row, fn() { letters_more })
+              @sf.spinner_node(row, size=letters_more_spin) |> ignore
+            }
+          }
+        },
+        est=letters_row_est,
+      )
+      |> ignore
+      // (room under its last, as under the tab's last letter: its ground out of the corners of a dialog's foot)
+      b.box(fn(f) { f.height(Is(Some(letters_foot_h))) |> ignore }) |> ignore
+    })
+    |> ignore
+    return
+  }
   q.by_room(fn(b, given) {
     b.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
     let here : @sfpages.MessageNodeHere = {
@@ -149,24 +229,7 @@ fn letters_list_node(
     }
     b.scrolls_window(
       @view.Scroll::list(),
-      fn() {
-        let out : Array[LettersRow] = []
-        if at == "" {
-          for ch in chats() {
-            out.push(LettersChat(text(Some(ch), "key")))
-          }
-        } else {
-          out.push(LettersHead)
-          for i in 0..<letters().length() {
-            out.push(LettersOne(i))
-          }
-        }
-        // not all of the chat is here yet: more may come, older ones
-        if !flag(value(), "whole") {
-          out.push(LettersMore)
-        }
-        out
-      },
+      keys,
       fn(row, k) {
         match k {
           LettersChat(ck) => {
@@ -207,10 +270,12 @@ fn letters_list_node(
 
 ///|
 /// A chat it wrote with (lettersRow) in `row`, `chat` as it is now: its title, how many letters and when on a line, the
-/// last letter in brief under them; the pointer's ground on it; pressed, `press` (opened in the tab).
-fn letters_chat_node(row : @view.View, chat : () -> Json?, press : () -> Unit) -> Unit {
+/// last letter in brief under them; the pointer's ground on it; pressed, `press` (opened in the tab). `panel`: in a
+/// panel's body, its words on its words' line, its ground a panel's row's (panel_row_in_node: round where it stands in
+/// from the panel's sides, square across a sheet).
+fn letters_chat_node(row : @view.View, chat : () -> Json?, press : () -> Unit, panel? : Bool = false) -> Unit {
   row.box(fn(b) {
-    @sf.style_node(b, fn() { letters_row })
+    @sf.style_node(b, fn() { if panel { letters_row_panel.then(@sf.panel_row_in_node(b)) } else { letters_row } })
     b
     .ground(By(fn() { if @sf.lit_node(b) { @ui.tree_theme().color(Hover) } else { 0L } }))
     .says(By(fn() { Some(@view.said(Button, label=text(chat(), "title"))) }))
@@ -244,9 +309,19 @@ fn letters_chat_node(row : @view.View, chat : () -> Json?, press : () -> Unit) -
 
 ///|
 /// The chat opened's head (lettersHead) in `row`, `chat` as it is now: back to the list (`back`), and its title, which
-/// opens that chat as a link where it is one (underlined under the hand).
-fn letters_head_node(row : @view.View, chat : () -> Json?, tips : @sf.TipLayer, back : () -> Unit) -> Unit {
-  @sf.style_node(row, fn() { letters_head })
+/// opens that chat as a link where it is one (underlined under the hand); `panel`: in a panel's body, on its words'
+/// line.
+fn letters_head_node(row : @view.View, chat : () -> Json?, tips : @sf.TipLayer, back : () -> Unit, panel? : Bool = false) -> Unit {
+  @sf.style_node(row, fn() {
+    if panel {
+      // (in a panel's body: its back's mark on the panel's words' line, its title's end on it too)
+      let w = @sf.panel_words_at_node(row)
+      let start = dmax(0.0, w - letters_back_in)
+      letters_head.then(@ui.style(pl=@sf.room_of(start), pr=@sf.room_of(w)))
+    } else {
+      letters_head
+    }
+  })
   @sf.icon_button_node(row, "arrow-left", fn() { @sf.t("web-main.letters.back") }, back, tips~) |> ignore
   row.pick(fn() { text(chat(), "link") != "" }, fn(p, links) {
     p.row(Is(true)).grow(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
@@ -293,6 +368,20 @@ let letters_list_under : Double = 14.0
 /// 500 on 20) and how many and when (12, muted) on a line, the last letter in brief under them (12, muted).
 // kept across runs: a value (no field of it changes)
 let letters_row : @ui.Style = @ui.css("w=Full py=S2 px=S3 gap=S0_5 radius=Xl")
+
+///|
+/// The same in a panel's body: across it, square, 8 over and under, its words on its words' line.
+// kept across runs: a value (no field of it changes)
+let letters_row_panel : @ui.Style = @ui.css("w=Full py=S2 gap=S0_5")
+
+///|
+/// Its bones in a panel's body: 6 over, 16 under, its rows across it.
+// kept across runs: a value (no field of it changes)
+let letters_list_panel : @ui.Style = @ui.css("w=Full pt=S1_5 pb=S4")
+
+///|
+/// How far its back's mark is in from its round ground's start: on the panel's words' line in a panel's body.
+let letters_back_in : Double = 10.0
 
 ///|
 // kept across runs: a value (no field of it changes)

@@ -50,7 +50,6 @@ let words_large_known : Map[String, Int] = {
     ("phone-en switcher-found", 4),
     ("phone-en search-jobs", 3),
     ("phone-en search-results", 7),
-    ("phone-en chat-agent", 2),
     ("phone-en chat-info", 2),
     ("phone-en chat-letters-info", 4),
     ("phone-en chat-info-pulls", 2),

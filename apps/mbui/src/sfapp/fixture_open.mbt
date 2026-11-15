@@ -114,7 +114,7 @@ pub fn open_fixture(mode : String) -> Unit {
     "home-attention" => @sfdesk.open_attention()
     // (what is beside it: the made-up core keeps it so, fixture.mbt fixture_chat_tabs)
     "chat-letters-side" => {
-      dui.letters_open = ""
+      @sfdesk.letters_to_list(r)
       dui.letters_held[r.station + "\u{1}" + r.session] = 7.0
     }
     "chat-model-pop" => @sfpages.open_triple(r.station, "session:s-c1")
@@ -167,7 +167,7 @@ fn open_decide_panels(mode : String, src : Source) -> Unit {
     "chat-things" => open_things(src, r, 7.0)
     "chat-letters-open" => {
       open_letters(src, r, 7.0)
-      dui.letters_open = @sffixture.fix_letters_link
+      @sfdesk.letters_open_at(r, @sffixture.fix_letters_link)
     }
     "chat-agent" | "chat-agent-unsaid" | "chat-agent-screens" => open_agent(src, r, "s-c1")
     "chat-jobs" => open_chat_jobs(src, r)

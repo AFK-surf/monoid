@@ -13,6 +13,15 @@ pub fn has_quota(q : Json?) -> Bool {
 }
 
 ///|
+/// An allowance's chips (quota_chips', marked) in words, as a screen reader is told them where they are part of what is
+/// pressed (a chat's agent's row of its account): each window's mark and what is left in it, `5H 62% W 18%`; "" where
+/// it shows none (has_quota).
+pub fn quota_chips_said(q : Json?) -> String {
+  guard has_quota(q) && chip_field(q, "windows") is Some(Array(windows)) else { return "" }
+  windows.map(fn(w) { chip_str(Some(w), "mark") + " " + chip_left(Some(w)).to_string() + "%" }).join(" ")
+}
+
+///|
 /// An allowance's windows (QuotaChip each): a chip per
 /// window, what is left in it, filled as far as that, its mark before it where `marked` (the web's default; a chat's
 /// agents only with more than one), or `worded`, its name and what is left in words, as a machine's chips say theirs

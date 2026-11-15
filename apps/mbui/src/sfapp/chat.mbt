@@ -406,7 +406,7 @@ fn chat_bar(c : @ui.Ctx, src : Source, w : Workspace, r : ChatRef, v : ChatView)
           |> ignore
         }
       },
-      // (a chat of a Slack or Feishu thread alone too: where it is, its agents, the way there: chat_info_body)
+      // (a chat of a Slack or Feishu thread alone too: where it is, its agents, the way there: chat_info_node)
       true,
       on_info=fn() { open_info(src, r) },
       on_more=fn(id) {

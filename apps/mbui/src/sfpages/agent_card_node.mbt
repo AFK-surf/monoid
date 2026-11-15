@@ -378,7 +378,7 @@ let agent_card_words_room : @ui.Style = @ui.css("w=Full")
 ///|
 /// Since when it stands where it does and for how long at most (agent_waited's): waiting, from when (of at most so
 /// long); else at work since its turn began; none else.
-fn agent_wait_of(a : Json?) -> (Double, Double?)? {
+pub fn agent_wait_of(a : Json?) -> (Double, Double?)? {
   let wait = field(a, "wait")
   match wait {
     Some(Object(_)) =>
@@ -402,7 +402,7 @@ fn agent_wait_of(a : Json?) -> (Double, Double?)? {
 ///|
 /// For how long it has stood where it does at `now` (agent_waited's words): waiting as long as it has (of at most),
 /// else at work since its turn began; nothing else.
-fn agent_waited_words(now : Double, a : Json?) -> String {
+pub fn agent_waited_words(now : Double, a : Json?) -> String {
   match agent_wait_of(a) {
     Some((from, Some(most))) => {
       let ran = if now < from + most { now - from } else { most }
@@ -416,7 +416,7 @@ fn agent_waited_words(now : Double, a : Json?) -> String {
 ///|
 /// A clock in `v` for how long it has stood where it does (`since`: from when, at most how long), read again each whole
 /// second from then (steps_seconds', on the page's time), till its most; begun again as `since` says another.
-fn agent_card_seconds(v : @view.View, src : Source, since : () -> (Double, Double?)?) -> () -> Int {
+pub fn agent_card_seconds(v : @view.View, src : Source, since : () -> (Double, Double?)?) -> () -> Int {
   let tick : @signals.Signal[Int] = @signals.signal(0)
   let stop : Ref[() -> Unit] = Ref(fn() {  })
   fn plan(from : Double, most : Double?) -> Unit {

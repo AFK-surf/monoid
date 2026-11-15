@@ -19,7 +19,7 @@ fn letters_room_said(win : (String, Double, Double, Int, String)) -> String {
     }
     None => ()
   }
-  let by_name = (t.opened().length() - opened, shown(), dui.letters_open != "", @sf.presenting())
+  let by_name = (t.opened().length() - opened, shown(), t.words().any(fn(x) { x.0.contains("用户让精简备份") }), @sf.presenting())
   // (the back button: 36 round, 4 before the title, on its middle's line: letters_head)
   let t = screen_in("chat-letters-open", win, "zh")
   let title = t.words().filter(fn(x) { x.0 == "BFT 备份尺寸分析" }).last()
@@ -31,7 +31,7 @@ fn letters_room_said(win : (String, Double, Double, Int, String)) -> String {
     }
     None => ()
   }
-  let by_back = (t.opened().length() - opened, t.words().any(fn(x) { x.0 == name }), dui.letters_open != "", @sf.presenting())
+  let by_back = (t.opened().length() - opened, t.words().any(fn(x) { x.0 == name }), t.words().any(fn(x) { x.0.contains("用户让精简备份") }), @sf.presenting())
   "\{win.0}: faults \{@ui.list_text(faults)} name pressed: opened \{by_name.0} still shown \{by_name.1} letter open \{by_name.2} presenting \{by_name.3}; back pressed: opened \{by_back.0} still shown \{by_back.1} letter open \{by_back.2} presenting \{by_back.3}"
 }
 
@@ -44,9 +44,9 @@ test "a letter opened, touch and a tablet: its agent's name pressed in all of it
       None => out.push("\{name}: none")
     }
   }
-  // (its name opening the chat it is from, the panel gone; back to the list, the panel still there)
+  // (its name opening the chat it is from, the panel gone, its letter with it; back to the list, the panel still there)
   assert_eq(out, [
-    "touch: faults [] name pressed: opened 0 still shown false letter open true presenting false; back pressed: opened 0 still shown false letter open false presenting true",
-    "tablet: faults [] name pressed: opened 0 still shown false letter open true presenting false; back pressed: opened 0 still shown false letter open false presenting true",
+    "touch: faults [] name pressed: opened 0 still shown false letter open false presenting false; back pressed: opened 0 still shown false letter open false presenting true",
+    "tablet: faults [] name pressed: opened 0 still shown false letter open false presenting false; back pressed: opened 0 still shown false letter open false presenting true",
   ])
 }

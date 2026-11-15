@@ -95,7 +95,6 @@ fn reset() -> Unit {
   share_in.find.set("")
   share_closing.val = false
   share_sinking.val = false
-  share_wide.set(false)
   splash_waited.set(false)
   splash_from.val = -1.0
   splash_owner.val = None
@@ -533,6 +532,8 @@ fn shown_now(src : Source, width : Double) -> @sfbase.Shown {
 /// theme, the window's sides, the layers over it).
 pub fn app_tree(src : Source) -> (@view.View) -> Unit {
   fn(root) {
+    // (the source the sheets show what they show of, said before one is put up: sheet.mbt)
+    sheet_src.val = Some(src)
     // (the library's words, the app's catalog's, and their language as the core's prefs say it, said before any page of
     // nodes is made: what one says on its first frame is its words in that language, not their keys or the device's
     // laid out and then said again; the old frame tells them each build, the same)
@@ -600,7 +601,7 @@ pub fn app_tree(src : Source) -> (@view.View) -> Unit {
     root.pick(fn() { share_over.get() }, fn(o, over) {
       o.grow(Is(1.0)) |> ignore
       if over {
-        @ui.old(o, fn(c) { over_view(c, src) }).grow(Is(1.0)) |> ignore
+        over_tree(o, src)
       } else {
         app_state_tree(o, src)
       }
@@ -621,6 +622,18 @@ pub fn app_tree(src : Source) -> (@view.View) -> Unit {
     // what a write said, over all of it, in every state and shell (sfbase's toasts_node)
     @sfbase.toasts_node(root, fn() { toast_bottom_now(root) }) |> ignore
   }
+}
+
+///|
+/// Over another app in node `o` (app_tree's, as share_over says): in a browser's window of its own, what is shared
+/// filling it (share_window), made once as nodes; the old view's frame that takes what is shared and puts up its sheet
+/// (over_view) over it.
+fn over_tree(o : @view.View, src : Source) -> Unit {
+  o.show(at_once=true, share_inline, fn(w) {
+    @sf.style_node(w, fn() { share_window })
+    share_sheet_node(w, src)
+  })
+  @ui.old(o, fn(c) { over_view(c, src) }).over(Is(true)) |> ignore
 }
 
 ///|
