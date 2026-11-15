@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [a8713cb6c](https://github.com/AFK-surf/monoid/commit/a8713cb6cc348bd591bc8fbe3e5bf92a87430194) station: gather and place retired sessions' files  | 2.14 | 2.99 | 12.92 | 34.02 | 51.19 | 29.85 | 59.76 | 99.63 | 112.62 |
 | [3f21d94c5](https://github.com/AFK-surf/monoid/commit/3f21d94c5b485a1d39dac75fd1410cdec817df19) app: every page, settings' page, the stations' pla | 2.14 | 2.99 | 12.92 | 34.02 | 51.19 | 29.85 | 59.76 | 99.63 | 120.92 |
 | [ae3fc19cf](https://github.com/AFK-surf/monoid/commit/ae3fc19cf0ff7e511ddcdafebed881b59cd1a53f) ci: mbui-moonbit's entries said by step and runs-o | 2.14 | 2.98 | 12.9 | 34 | 51.1 | 29.82 | 59.67 | 99.44 | 116.13 |
 | [8e422a290](https://github.com/AFK-surf/monoid/commit/8e422a290679e5abd9384a6a391d2619ddedb8e9) ci(mbui): move native test builds and corners swee | 2.14 | 2.98 | 12.9 | 34 | 51.1 | 29.82 | 59.67 | 99.44 | 116.13 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [b8975535c](https://github.com/AFK-surf/monoid/commit/b8975535ca1add02ffa9d151c69bf47fd8fb0a8c) station: chat_create says whose a chat is, led by  | 2.1 | 2.93 | 12.62 | 33.57 | 48.93 | 29.05 | 57.32 | 99.09 | 110.88 |
 | [5b3a42708](https://github.com/AFK-surf/monoid/commit/5b3a4270808e000a7d8c45ca3db8cc61b61b82c9) mbui app: design .mbui/.wasm shell as mini-program | 2.1 | 2.93 | 12.62 | 33.57 | 48.93 | 29.05 | 57.32 | 99.09 | 110.88 |
 | [c730077c8](https://github.com/AFK-surf/monoid/commit/c730077c816fc977889416efa77f51f0f73e3064) station: launcher runtime supervision, front probe | 2.1 | 2.92 | 12.59 | 33.52 | 48.81 | 28.82 | 56.61 | 98.85 | 112.11 |
-| [5101e1b84](https://github.com/AFK-surf/monoid/commit/5101e1b84c2e0037d08058932d2641d9da100788) fix(mbui): align wide page own_head mark with firs | 2.1 | 2.92 | 12.58 | 33.52 | 48.8 | 28.82 | 56.61 | 98.85 | 116.7 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [a8713cb6c](https://github.com/AFK-surf/monoid/commit/a8713cb6cc348bd591bc8fbe3e5bf92a87430194) station: gather and place retired sessions' files  | 0.42 | 0.54 | 2.07 | 3.17 | 4.95 | 1.53 | 4.08 | 57.3 |
 | [3f21d94c5](https://github.com/AFK-surf/monoid/commit/3f21d94c5b485a1d39dac75fd1410cdec817df19) app: every page, settings' page, the stations' pla | 0.42 | 0.54 | 2.07 | 3.17 | 4.95 | 1.53 | 4.08 | 57.3 |
 | [ae3fc19cf](https://github.com/AFK-surf/monoid/commit/ae3fc19cf0ff7e511ddcdafebed881b59cd1a53f) ci: mbui-moonbit's entries said by step and runs-o | 0.42 | 0.54 | 2.07 | 3.17 | 4.95 | 1.53 | 4.08 | 57.3 |
 | [8e422a290](https://github.com/AFK-surf/monoid/commit/8e422a290679e5abd9384a6a391d2619ddedb8e9) ci(mbui): move native test builds and corners swee | 0.42 | 0.54 | 2.07 | 3.17 | 4.95 | 1.53 | 4.08 | 57.3 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [b8975535c](https://github.com/AFK-surf/monoid/commit/b8975535ca1add02ffa9d151c69bf47fd8fb0a8c) station: chat_create says whose a chat is, led by  | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.23 |
 | [5b3a42708](https://github.com/AFK-surf/monoid/commit/5b3a4270808e000a7d8c45ca3db8cc61b61b82c9) mbui app: design .mbui/.wasm shell as mini-program | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.43 |
 | [c730077c8](https://github.com/AFK-surf/monoid/commit/c730077c816fc977889416efa77f51f0f73e3064) station: launcher runtime supervision, front probe | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.43 |
-| [5101e1b84](https://github.com/AFK-surf/monoid/commit/5101e1b84c2e0037d08058932d2641d9da100788) fix(mbui): align wide page own_head mark with firs | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.43 |
