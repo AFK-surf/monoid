@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [3d78e1b6c](https://github.com/AFK-surf/monoid/commit/3d78e1b6c0eb45a1ffbd24b7840121797035f04f) mbui: gate derived lists by sameness so unchanged  | 2.12 | 2.95 | 12.72 | 33.78 | 50.28 | 29.15 | 57.72 | 99.71 | 117.57 |
 | [530753284](https://github.com/AFK-surf/monoid/commit/5307532845a692c34ca3bd1b717cd9b78252d1e5) mbui: ＋ 附件面板、已决定卡片详情、文件重名询问改为节点面板（old-panel 12 → 9 | 2.11 | 2.95 | 12.72 | 33.78 | 50.24 | 29.15 | 57.72 | 99.71 | 117.57 |
 | [adfaecd2e](https://github.com/AFK-surf/monoid/commit/adfaecd2ec58d18dfdb62728f2e0904493050d13) mbui: 待处理、可用模型、本机会话三个面板改为节点（old-panel 15 → 12） (#6 | 2.11 | 2.95 | 12.72 | 33.78 | 50.24 | 29.15 | 57.72 | 99.71 | 117.57 |
 | [8f9f38b0a](https://github.com/AFK-surf/monoid/commit/8f9f38b0a536e4e6e5252e694ae904daf09d0480) mbui view: what is laid out where an old view is h | 2.11 | 2.94 | 12.67 | 33.74 | 49.98 | 29.15 | 57.72 | 99.71 | 118.52 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [676204c3e](https://github.com/AFK-surf/monoid/commit/676204c3e2065ce99ac2db3b00adfe9c4e12f4f0) perf(mbui): avoid per-frame full-tree back walk, s | 2.08 | 2.86 | 12.3 | 33.23 | 47.9 | 28.74 | 56.48 | 98.83 | 110.66 |
 | [f178dd119](https://github.com/AFK-surf/monoid/commit/f178dd1195b314f278ab90347cb0e8d430955310) station: an Antigravity CLI turn that only says it | 2.08 | 2.86 | 12.3 | 33.23 | 47.9 | 28.78 | 56.67 | 98.63 | 110.66 |
 | [4986225f9](https://github.com/AFK-surf/monoid/commit/4986225f96d59292aa03e36dd2037ea323adda6f) app: incrementalize chat data pipeline and per-row | 2.08 | 2.86 | 12.3 | 33.23 | 47.9 | 28.78 | 56.67 | 98.63 | 110.66 |
-| [6dad75eff](https://github.com/AFK-surf/monoid/commit/6dad75eff024868d56a0f7724edc37543654a8ea) station: a mirror's directory sync runs in the Moo | 2.08 | 2.86 | 12.29 | 33.23 | 47.88 | 28.77 | 56.67 | 98.96 | 112.96 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [3d78e1b6c](https://github.com/AFK-surf/monoid/commit/3d78e1b6c0eb45a1ffbd24b7840121797035f04f) mbui: gate derived lists by sameness so unchanged  | 0.41 | 0.53 | 1.99 | 3.1 | 4.58 | 1.47 | 3.83 | 57.41 |
 | [530753284](https://github.com/AFK-surf/monoid/commit/5307532845a692c34ca3bd1b717cd9b78252d1e5) mbui: ＋ 附件面板、已决定卡片详情、文件重名询问改为节点面板（old-panel 12 → 9 | 0.41 | 0.53 | 1.99 | 3.1 | 4.58 | 1.47 | 3.83 | 57.41 |
 | [adfaecd2e](https://github.com/AFK-surf/monoid/commit/adfaecd2ec58d18dfdb62728f2e0904493050d13) mbui: 待处理、可用模型、本机会话三个面板改为节点（old-panel 15 → 12） (#6 | 0.41 | 0.53 | 1.99 | 3.1 | 4.58 | 1.47 | 3.83 | 57.31 |
 | [8f9f38b0a](https://github.com/AFK-surf/monoid/commit/8f9f38b0a536e4e6e5252e694ae904daf09d0480) mbui view: what is laid out where an old view is h | 0.41 | 0.53 | 1.99 | 3.1 | 4.58 | 1.47 | 3.83 | 57.31 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [676204c3e](https://github.com/AFK-surf/monoid/commit/676204c3e2065ce99ac2db3b00adfe9c4e12f4f0) perf(mbui): avoid per-frame full-tree back walk, s | 0.41 | 0.53 | 1.98 | 3.09 | 4.54 | 1.46 | 3.81 | 57.31 |
 | [f178dd119](https://github.com/AFK-surf/monoid/commit/f178dd1195b314f278ab90347cb0e8d430955310) station: an Antigravity CLI turn that only says it | 0.41 | 0.53 | 1.98 | 3.09 | 4.54 | 1.46 | 3.81 | 57.31 |
 | [4986225f9](https://github.com/AFK-surf/monoid/commit/4986225f96d59292aa03e36dd2037ea323adda6f) app: incrementalize chat data pipeline and per-row | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.25 |
-| [6dad75eff](https://github.com/AFK-surf/monoid/commit/6dad75eff024868d56a0f7724edc37543654a8ea) station: a mirror's directory sync runs in the Moo | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.25 |
