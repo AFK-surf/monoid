@@ -46,6 +46,8 @@ let ftab_places_said : Map[String, @signals.Signal[DriveAt??]] = Map([])
 ///|
 /// The tab of `ws` put at `at` (None: the places).
 fn ftab_put(ws : String, at : DriveAt?) -> Unit {
+  // (a folder pressed and read meanwhile, browse_switch's: waited for no more, the tab put elsewhere)
+  browse_switch_off("tab/" + ftab.chat)
   ftab.places[ws] = at
   match ftab_places_said.get(ws) {
     Some(s) => s.set(Some(at))
@@ -414,10 +416,12 @@ fn ftab_folder(c : @ui.Ctx, src : Source, ws : String, st : DvStation, at : Driv
     let path = dv_join(in_.path, e.name)
     { station: in_.station, station_name: st.name, root, path, abs: dv_absolute(root, path), name: e.name, size: e.size, dir: e.dir }
   }
-  // a press: a folder gone into, a file picked (or no longer)
+  // a press: a folder gone into (once what it shows is read, the one shown as it is meanwhile: browse_switch), a file
+  // picked (or no longer)
   let pressed = fn(in_ : DriveAt, e : DvEntry) {
     if e.dir {
-      ftab_go(at.station, root, dv_join(in_.path, e.name))
+      let path = dv_join(in_.path, e.name)
+      browse_switch(c, src, [(b, { ..b, at: { ..at, path, } })], b.key, fn(_, _) { [path] }, fn() { ftab_go(at.station, root, path) })
     } else {
       ftab_pick(dragged(in_, e))
     }

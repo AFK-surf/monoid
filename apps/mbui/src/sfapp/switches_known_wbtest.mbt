@@ -6,11 +6,8 @@
 
 ///|
 let switches_known : Map[String, Int] = Map([
-    // (中屏's and 大屏's sidebar's 筛选会话 to 我参与的: its list's window asked as it is shown, its rows told again as the
-    // answer comes; webdemo's, what else the press sets going (the rail's place for the list coming in, the focus given
-    // back to the composer as the menu has closed), no longer under the lists' slide since a list slid off is no more read
-    // out (sfpages' chats_lists_node) and counted apart: three where two were, nothing seen otherwise)
-    ("中屏 webdemo: opener 「筛选会话：全部」 › 「我参与的」", 2),
+    // (大屏's sidebar's 筛选会话 to 我参与的: the menu gone, the pointer left still over the list's first row comes to rest
+    // there as the lists' slide ends, and the row says its time once its whole row (chatRow) is answered)
     ("大屏 home-bars: opener 「筛选会话：全部」 › 「我参与的」", 2),
     ("大屏 home-jobs: opener 「筛选会话：全部」 › 「我参与的」", 2),
     ("大屏 home-news: opener 「筛选会话：全部」 › 「我参与的」", 2),
@@ -27,7 +24,6 @@ let switches_known : Map[String, Int] = Map([
     ("大屏 search-results: opener 「筛选会话：全部」 › 「我参与的」", 2),
     ("大屏 search: opener 「筛选会话：全部」 › 「我参与的」", 2),
     ("大屏 settings-profile-login-failed: opener 「筛选会话：全部」 › 「我参与的」", 2),
-    ("大屏 webdemo: opener 「筛选会话：全部」 › 「我参与的」", 3),
     // (the card to share: its logos' row gone as the answer of the profiles comes, 800 ms after the press)
     ("大屏 share-card-senren-affection: choice row 「Ciallo」", 2),
     ("大屏 share-card-senren-affection: choice row 「大福帐」", 2),
@@ -75,21 +71,11 @@ let switches_known : Map[String, Int] = Map([
     ("中屏 player-opening: toggle 「关闭」", 2),
     ("中屏 player-video: toggle 「关闭」", 2),
     // (the rest, each its own)
-    ("中屏 chat-history-side: toggle 「详情」", 2),
-    ("中屏 chat-history-side-working: toggle 「详情」", 2),
-    ("中屏 chat-model-accounts: toggle 「详情」", 2),
-    ("中屏 chat-model-pop: toggle 「详情」", 2),
     ("中屏 chat-preview-image: toggle 「复制」", 2),
     ("中屏 chat-preview-step: toggle 「复制」", 2),
     ("中屏 chat-preview-swipe: toggle 「复制」", 2),
     ("中屏 chat-tabs-side: tab 「Claude · Opus 5.5」", 3),
-    ("中屏 chat-tabs-side: toggle 「详情」", 2),
     ("中屏 chat-view-side-image: toggle 「全屏」", 2),
-    ("中屏 history-details: toggle 「详情」", 2),
-    ("中屏 history: toggle 「详情」", 2),
-    ("中屏 newchat-files: choice row 「下载」", 2),
-    ("中屏 newchat-files: choice row 「文档」", 2),
-    ("中屏 newchat-files: choice row 「项目」", 2),
     ("中屏 newchat-preset-new-browse-repos: opener 「选择文件夹所在的 station: Willow」 › 「Maple」", 2),
     ("中屏 player-ended: toggle 「上一个」", 2),
     ("中屏 player-ended: toggle 「下一个」", 3),
@@ -103,10 +89,6 @@ let switches_known : Map[String, Int] = Map([
     ("中屏 player-opening: toggle 「下一个」", 2),
     ("中屏 player-video: toggle 「上一个」", 3),
     ("中屏 player-video: toggle 「下一个」", 3),
-    ("大屏 chat-history-side: toggle 「详情」", 2),
-    ("大屏 chat-history-side-working: toggle 「详情」", 2),
-    ("大屏 chat-model-accounts: toggle 「详情」", 2),
-    ("大屏 chat-model-pop: toggle 「详情」", 2),
     ("大屏 chat-phone-lacks: opener 「1 小时内」 › 「闲置 1 小时后失效」", 2),
     ("大屏 chat-phone-lacks: opener 「闲置 1 小时后失效」 › 「1 小时内」", 2),
     ("大屏 chat-preview-apk: toggle 「全屏」", 2),
@@ -119,16 +101,9 @@ let switches_known : Map[String, Int] = Map([
     ("大屏 chat-rig: opener 「固定 1 小时」 › 「闲置 1 小时后失效」", 2),
     ("大屏 chat-rig: opener 「闲置 1 小时」 › 「1 小时后失效」", 2),
     ("大屏 chat-tabs-side: tab 「Claude · Opus 5.5」", 3),
-    ("大屏 chat-tabs-side: toggle 「详情」", 2),
     ("大屏 chat-view-side-image: toggle 「全屏」", 2),
     ("大屏 chat-view-side: toggle 「排版」", 2),
     ("大屏 chat-view-side: toggle 「搜索」", 2),
-    ("大屏 files-split: radio 「列表」", 2),
-    ("大屏 files-split: radio 「文件树」", 2),
-    ("大屏 history-details: toggle 「详情」", 2),
-    ("大屏 newchat-files: choice row 「下载」", 2),
-    ("大屏 newchat-files: choice row 「文档」", 2),
-    ("大屏 newchat-files: choice row 「项目」", 2),
     ("大屏 newchat-preset-new-browse-repos: opener 「选择文件夹所在的 station: Willow」 › 「Maple」", 2),
     ("大屏 player-ended: toggle 「上一个」", 2),
     ("大屏 player-ended: toggle 「下一个」", 3),
@@ -158,7 +133,7 @@ let switches_known : Map[String, Int] = Map([
     ("小屏 chat-preview-step: toggle 「复制」", 2),
     ("小屏 chat-preview-swipe: toggle 「关闭（Esc）」", 2),
     ("小屏 chat-preview-swipe: toggle 「复制」", 2),
-    ("小屏 home-bars: tab 「对话」", 4),
+    ("小屏 home-bars: tab 「对话」", 3),
     ("小屏 player-ended: toggle 「选集」", 2),
     ("小屏 player-failed: toggle 「上一个」", 3),
     ("小屏 player-opening: toggle 「上一个」", 3),

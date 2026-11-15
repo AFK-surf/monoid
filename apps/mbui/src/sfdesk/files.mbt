@@ -167,7 +167,19 @@ pub fn files_shell(
       }
       // what can be done to the folder in front, then the tabs' own, a little apart
       match folder_of(tab.front, here) {
-        Some(f) => folder_actions(c, src, f)
+        Some(f) => {
+          // (the other side, where the tab is split: what the bar does to the way it is shown is its too)
+          let others = []
+          for i in 0..<tab.panes.length() {
+            if i != tab.front {
+              match folder_of(i, pane_at(tab, i)) {
+                Some(o) => others.push(o)
+                None => ()
+              }
+            }
+          }
+          folder_actions(c, src, f, others~)
+        }
         None => ()
       }
       c.box(style=bar_apart, fn() {  }) |> ignore
