@@ -456,7 +456,12 @@ for t in $targets; do
           # 278 s: app 3/4 271 s on main 7b151c31 (43658036848) and 294 s on farview-pace (43658053979), the others
           # 160-251. The third reckoned 1650: by the table the first's pages 598 s, the second's 705, the third's 199,
           # the fourth's 619)
-          *) specs="4,4,1030,1 2,4,730,1 1,4,1650,1 4,4,980,1" ;;
+          # (dealt so, the second's job was the longest of the four on main after #6364, 191-256 s (2d13a70b 43659538711:
+          # 152, 231, 156, 200; 13a2cad8 43660732580: 201, 256, 163, 160), its pages 179-236 s beside screens',
+          # squeeze_said's, chat_page_nodes' and words_large's runs; the others 137-201. The second reckoned 950, the
+          # first 1000 and the fourth 960: by the table the first's pages 632 s, the second's 644, the third's 199, the
+          # fourth's 646, where they were 582, 713, 195 and 631 with the files merged since)
+          *) specs="4,4,1000,1 2,4,950,1 1,4,1650,1 4,4,960,1" ;;
         esac
         g1=() g2=() g3=() g4=()
         while read -r g f; do
