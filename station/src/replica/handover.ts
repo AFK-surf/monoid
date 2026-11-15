@@ -123,7 +123,11 @@ export type Out = {
 export type In = { id: string; origin: string; keys: string[]; ws: string; at: number; step: "coming" | "shown" | "dropped"; ctx: ImportCtx; carry: string | null; error: string | null; stoppedFor?: Need | null; bindings?: Record<string, string>;
   /// What answering it took here (the clock's ms), by request (`begin`, `lacking`, `put`, `place`, `rows`, `prune`,
   /// `counts`, `show`), each request of a kind added: what its line says it took.
-  spent?: Record<string, number> };
+  spent?: Record<string, number>;
+  /// The last page of rows taken (`handover.rows`'s `page`): the same page asked again (its answer lost on the way,
+  /// its sender's process or this one's stopping as it went: mesh/peer.ts PeerStopped) is answered as taken, not
+  /// counted twice.
+  page?: string };
 
 /// What a hand-over's steps took (ms), from when each began to when the next did, the last to `end`; and the whole.
 function tookOf(began: Record<string, number> | undefined, end: number): { ms: Record<string, number>; total: number } {
@@ -763,7 +767,8 @@ export class Handover {
     const sent: Counts = { sessions: 0, entries: {}, letters: {}, rows: {} };
     const page = async (table: ChatTable, rows: Json[]) => {
       if (rows.length === 0) return;
-      await ask({ method: "handover.rows", table, rows });
+      // (a page of its own: asked again, as its answer was lost, it is not taken twice there)
+      await ask({ method: "handover.rows", table, rows, page: randomBytes(8).toString("hex") });
       if (table === "sessions") sent.sessions += rows.length;
       else if (table === "entries" || table === "letters") for (const r of rows) sent[table][String(r.thread)] = (sent[table][String(r.thread)] ?? 0) + 1;
       else if (table !== "threads") sent.rows[table] = (sent.rows[table] ?? 0) + rows.length;
@@ -1019,9 +1024,12 @@ export class Handover {
               // (shown: only what was said there after its rows went, its log's and what it has yet to be handed)
               if (i.step !== "coming" && (i.step !== "shown" || !AFTER_SHOWN.includes(table))) throw new Refused(why("shownAlready"));
               if (!CHAT_TABLES.includes(table) || !Array.isArray(request.rows) || request.rows.length > 500) throw new Refused(why("badRequest", { detail: "not a page of a chat's rows" }));
+              const page = typeof request.page === "string" ? request.page : null;
+              if (page !== null && i.page === page) return { ok: true };
               this.#d.fail?.("import");
               this.#d.store.importRows(i.ctx, table, request.rows, i.step === "coming" ? i.id : undefined);
               this.#d.fail?.("imported");
+              if (page !== null) i.page = page;
               await this.#saveIn(i);
               return { ok: true };
             }

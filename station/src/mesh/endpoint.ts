@@ -46,6 +46,9 @@ export type Connection = {
   close(code: number, reason: string): void;
   isClosed(): boolean;
   closed(): Promise<string>;
+  /// Why it is gone, told apart (lib.rs `CloseInfo`: `application` with the reason the other end closed it with,
+  /// `local`, `timeout`, `other`); null while it is not. An addon from before has none.
+  closeReason?(): { kind: string; reason: string } | null;
   /// Where the endpoint is kept by a program of its own (front.ts): its id of this connection, which the streams it
   /// hands what answers a route (`Endpoint.route`) name it by.
   handed?: number;

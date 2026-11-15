@@ -12,7 +12,7 @@ import { Moves } from "../src/move/station.ts";
 import { MoveAsks } from "../src/tools/move.ts";
 import { plainStore } from "../src/vault/plain.ts";
 import { given, message } from "./hub-fakes.ts";
-import { PeerGone } from "../src/mesh/peer.ts";
+import { PeerGone, PeerStopped } from "../src/mesh/peer.ts";
 import { Refused } from "../src/mesh/bus.ts";
 import { stationLang, tr } from "../src/ops/i18n.ts";
 import { hearLines } from "../src/ops/log.ts";
@@ -97,6 +97,66 @@ test("a move asked as the connection to the other station is found gone asks onc
   const back = await a.moves.scheduler.back(WS, B, { module: "chats", item: key }).then(() => null, (e: Error) => e.message);
   assert.match(back ?? "", /cannot be reached now|连不上/, "gone twice: out of reach");
   assert.equal(a.rig.store.handedTo(key)?.station, B, "nothing moved");
+});
+
+test("the other station's process handing over to its next as every request of a move's turn is asked (half never taken, half taken with their answers lost): each is asked again once, dialed anew, and the move goes as it would, each entry there once", async () => {
+  const w = world();
+  const a = w.get(A);
+  const b = w.get(B);
+  const { key, thread } = await stillfailChat(a);
+  const said = entries(a, thread);
+  // (each request of the turn to B met once by its process stopping: by its words, the same asked again passing)
+  const met = new Map<string, "never taken" | "answer lost">();
+  let turn = false;
+  const first = (to: string, r: Json, how: "never taken" | "answer lost") => {
+    if (!turn || to !== B) return false;
+    const id = JSON.stringify(r);
+    if (met.has(id)) return false;
+    met.set(id, how);
+    return true;
+  };
+  let n = 0;
+  w.tamper((to, r) => {
+    if (n % 2 === 0 && first(to, r, "never taken")) {
+      n++;
+      throw new PeerStopped();
+    }
+    return r;
+  });
+  w.lose((to, r) => (n % 2 === 1 && first(to, r, "answer lost") ? (n++, new PeerStopped()) : null));
+  turn = true;
+  const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: key }).then((o) => ({ turn: null as string | null, failed: o.failed, failures: o.failures ?? [] }), (e: Error) => ({ turn: e.message, failed: null, failures: [] }));
+  turn = false;
+  await w.quiet();
+  assert.deepEqual(out, { turn: null, failed: null, failures: [] }, "every request answered by the next process: it went");
+  const kinds = new Set(met.values());
+  assert.ok(met.size >= 6 && kinds.has("never taken") && kinds.has("answer lost"), `requests of each kind met the process stopping: ${JSON.stringify([...met].map(([r, how]) => [JSON.parse(r).method, how]))}`);
+  assert.equal(a.rig.store.handedTo(key)?.station, B, "handed there");
+  assert.equal(b.rig.session(key).ws, null, "it went");
+  assert.deepEqual(entries(b, homeThread(b, key)), said, "each entry there once, asked twice or not");
+});
+
+test("a station whose process stops as move.open is asked is asked again once, dialed anew, and can be moved to; one that is really gone is said out of reach at once, in the same words as before", async () => {
+  const w = world();
+  const a = w.get(A);
+  const b = w.get(B);
+  let stopping = 1;
+  const asked: string[] = [];
+  w.tamper((to, r) => {
+    if (to === B) asked.push(r.method);
+    if (to === B && r.method === "move.open" && stopping > 0) {
+      stopping--;
+      throw new PeerStopped();
+    }
+    return r;
+  });
+  assert.equal(await a.moves.refusal(WS, B), null, "answered by the next process");
+  assert.deepEqual(asked, ["move.open", "move.open"]);
+  asked.length = 0;
+  b.up = false;
+  assert.equal(await a.moves.refusal(WS, B), tr(stationLang(), "station.move.unreachable", { station: "B" }), "gone: out of reach, in its words");
+  assert.deepEqual(asked, [], "not reached: nothing went, asked no more");
+  b.up = true;
 });
 
 test("the other station killed in the middle of a turn: found gone once and dialed anew in vain, it is asked nothing more in that turn: what is left of the turn fails at once in people's words, the turn ends; started again, it keeps nothing of it", async () => {

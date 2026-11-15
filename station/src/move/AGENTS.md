@@ -88,7 +88,12 @@ chats paused 18 minutes, a half-moved state, no way back), whose start stays swi
   (ask again), logged with what it failed with; with no station named it asks nothing. What needs an item that cannot go
   is refused in that item's own words, nothing of it tried. In a turn, a station found gone (its connection gone and
   dialed anew in vain, or no answer in time) is asked nothing more till the turn ends: every later step fails at once,
-  in the station's words. What a move says to people is the catalog's (`station.move.*`), naming things as people
+  in the station's words. A request whose connection the other station's own process closed as it stopped or handed
+  over to its next (mesh/peer.ts `PeerStopped`, by the close's reason `STOPPING`) is no sign of that: each such request
+  is asked again once on a connection dialed anew, whatever the turn asked before (drill 7h: an ask in a hand-over's
+  window was told the station could not be reached). Whether the process that stopped took it is not known, so every
+  move request's handler takes a repeat as the same (by its ids, versions, what is there already; a page of rows by its
+  `page`); chat-handover-moves.test.ts meets every request of a turn so, half taken with their answers lost. What a move says to people is the catalog's (`station.move.*`), naming things as people
   call them, never by id.
 - People move with `POST /move` and `POST /move/back` (owners and admins; 202, the scheduler's
   turn going on; one turn at a time, an agent's and a person's alike: a second while one runs is 409). No card there:

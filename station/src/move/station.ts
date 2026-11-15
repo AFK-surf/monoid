@@ -4,7 +4,7 @@
 // the composition root (move/live.ts) and by the tests, given what it needs.
 import { createHash } from "node:crypto";
 import { Refused, bytesOf } from "../mesh/bus.ts";
-import { PeerGone } from "../mesh/peer.ts";
+import { PeerGone, PeerStopped } from "../mesh/peer.ts";
 import type { Fibers } from "../ops/fibers.ts";
 import { type CarriedJob, SIZED_TRANSCRIPTS, type Sized, type SizedPlaces, type Sizing, sizesSoon } from "../replica/carry.ts";
 import { type AccountOf, Handover, type HandoverDeps, floorOf, roomHere } from "../replica/handover.ts";
@@ -147,7 +147,9 @@ export class Moves {
 
   /// What this station's moves ask of another: in a turn, a station found gone is asked nothing more until it ends,
   /// every step toward it failing at once with the same words (drill 23's 185 s of asks of a station killed).
-  readonly #ask: Ask = async (station, request) => {
+  readonly #ask: Ask = (station, request) => this.#asked(station, request, false);
+
+  async #asked(station: string, request: Json, again: boolean): Promise<Json> {
     if (!this.#inTurn) return await this.#d.ask(station, request);
     const gone = this.#gone.get(station);
     // (what undoes a hand-over there is asked all the same, once a turn a station: a station only slow to answer, not
@@ -163,6 +165,16 @@ export class Moves {
         this.#suspect.delete(station);
         throw e;
       }
+      // (the other station's process stopped or handed over to its next as it was asked, closing its connection with no
+      // answer: the station is there. Each request is asked again once, on a connection dialed anew, whatever the turn
+      // asked before (not the once a turn a station of a connection found gone, below): every move request's handler
+      // takes a repeat as the same (by its ids, its versions, what is there already), as whether the process that
+      // stopped took it is not known; one with bytes by its caller from its start (`AskAgain`))
+      if (e instanceof PeerStopped && !again) {
+        log.info("move", "a request met the other station's process stopping or handing over: asked again once, dialed anew", { station: station.slice(0, 12), method: String(request?.method ?? "") });
+        if (bytesOf(request) !== null) throw new AskAgain(tr(stationLang(), "station.move.noAnswer", { station: this.#d.roster(this.#d.home() ?? "")?.find((r) => r.id === station)?.name || station.slice(0, 12) }));
+        return await this.#asked(station, request, true);
+      }
       // (its connection found gone: a stream ended with no answer is that too, mesh/peer.ts having let the connection go,
       // so the next request dials anew. Once a turn a station the request is sent again on it: one with no bytes here,
       // one with bytes by its caller from its start (`AskAgain`); that failing too, or no answer in time, it is gone)
@@ -174,7 +186,7 @@ export class Moves {
         this.#suspect.add(station);
         log.info("move", "a request met the other station's connection gone: sent again once, dialed anew", { station: station.slice(0, 12), error: (e as Error).message });
         if (bytesOf(request) !== null) throw new AskAgain(tr(stationLang(), "station.move.noAnswer", { station: name }));
-        return await this.#ask(station, request);
+        return await this.#asked(station, request, again);
       }
       if (unanswered || timedOut || this.#suspect.has(station)) {
         const gone = new Gone(tr(stationLang(), "station.move.gone", { station: name }));
@@ -184,7 +196,7 @@ export class Moves {
       }
       throw e;
     }
-  };
+  }
 
   constructor(d: MovesDeps) {
     this.#d = d;
@@ -575,7 +587,8 @@ export class Moves {
     const name = () => this.#d.roster(ws)?.find((r) => r.id === station)?.name || station.slice(0, 12);
     let open: Json;
     // (a connection found gone fails its request, the next is dialed anew: asked once more before it is said to be out
-    // of reach, as the stations' other asks are; a station just started again answers then)
+    // of reach, as the stations' other asks are; a station just started again answers then, and so does the next process
+    // of one whose process stopped or handed over as it was asked, `PeerStopped`)
     const ask = () => this.#d.ask(station, { method: "move.open", workspace: ws });
     try {
       open = await ask().catch((e) => (e instanceof PeerGone ? ask() : Promise.reject(e)));

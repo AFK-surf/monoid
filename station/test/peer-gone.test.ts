@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { Cloud } from "../src/cloud/state.ts";
-import { PEER_ALPN, PEER_BYTES_ALPN, PeerGone, peerCall, servePeer } from "../src/mesh/peer.ts";
+import { PEER_ALPN, PEER_BYTES_ALPN, PeerGone, PeerStopped, STOPPING, peerCall, servePeer } from "../src/mesh/peer.ts";
 import type { Connection, Endpoint } from "../src/mesh/native.ts";
 import { given, settle } from "./hub-fakes.ts";
 import { memoryMesh, vanish } from "./memory-mesh.ts";
@@ -71,6 +71,7 @@ test("a request on a connection whose other end is gone fails as that, by the ch
     serving(back, [source.id()], async (r) => ({ ok: r.method }));
     const failed = await given(settled(call(target.id(), "ws", { method: "lost" })), "the request failed by the check");
     assert.ok("e" in failed && failed.e instanceof PeerGone, `failed as gone: ${"e" in failed ? failed.e.message : "answered"}`);
+    assert.ok(!(failed.e instanceof PeerStopped), "killed, it said nothing: not a process stopping");
     assert.match(failed.e.message, /connection was gone/);
     assert.deepEqual(await given(call(target.id(), "ws", { method: "again" }), "answered on a new connection"), { ok: "again" });
   } finally { await Promise.all([source.close(), target.close()]); }
@@ -142,4 +143,26 @@ test("a live station's connection over a slow relay is kept: one ask while reque
     heardGo.resolve();
     assert.deepEqual(await given(heard, "answered"), { ok: "heard" });
   } finally { slow.resolve(); heardGo.resolve(); await Promise.all([source.close(), target.close()]); }
+});
+
+test("a request in flight as the other station's process hands over to its next (its connections closed STOPPING, no answer) fails at once as that, the connection let go; the next request is answered by the next process", async () => {
+  const { source, target, again } = await pair();
+  const reached = held();
+  // (the process that hands over: what it was asked it never answers, it stops first)
+  const conns = serving(target, [source.id()], async (r) => (r.method === "first" ? { ok: r.method } : (reached.resolve(), new Promise(() => {}))));
+  // (no check by time: what fails here fails by the close alone)
+  const call = peerCall(source, cloudOf(source.id(), [target.id()]), (id) => ({ id }), undefined, 60_000, { checkMs: 60_000 });
+  try {
+    assert.deepEqual(await call(target.id(), "ws", { method: "first" }), { ok: "first" });
+    const waiting = settled(call(target.id(), "ws", { method: "in-flight" }));
+    await given(reached.promise, "the request reached the process that hands over");
+    // The next process binds the same key; the one before closes its connections as it stops (the front's `part`).
+    const next = await again();
+    serving(next, [source.id()], async (r) => ({ ok: r.method }));
+    for (const c of conns) c.close(0, STOPPING);
+    const failed = await given(waiting, "the request in flight failed as its connection closed");
+    assert.ok("e" in failed && failed.e instanceof PeerStopped, `failed as the other's process stopping: ${"e" in failed ? failed.e.message : "answered"}`);
+    assert.ok(failed.e instanceof PeerGone, "a PeerGone: no answer came, the next request dials anew");
+    assert.deepEqual(await given(call(target.id(), "ws", { method: "again" }), "answered by the next process"), { ok: "again" });
+  } finally { await Promise.all([source.close(), target.close()]); }
 });

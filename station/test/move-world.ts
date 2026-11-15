@@ -78,6 +78,8 @@ export function world(ids: string[] = [A, B]) {
   const roster = ids.map((id) => ({ id, name: id.slice(0, 1).toUpperCase() }));
   /// A request on its way, changed (a test's: a hash refused).
   let tamper: ((to: string, request: Json) => Json) | null = null;
+  /// After a request was taken there, whether its answer is lost on the way back (a test's: what it fails with then).
+  let lose: ((to: string, request: Json) => Error | null) | null = null;
   const make = (id: string): Station => {
     const rig = new Rig({ place: { workspace: WS, station: id }, workspaces: [WS], fileStore: true, clock: t.clock });
     const st = { id, rig, up: true, on: true, holds: 0, jobs: [], started: [], free: 1e15, sized: [], fails: new Set<string>(), onFail: null, jobsRead: 0 } as unknown as Station;
@@ -86,7 +88,10 @@ export function world(ids: string[] = [A, B]) {
       const there = stations.get(to);
       if (there === undefined || !there.up || !st.up) throw new Error("station unreachable");
       const sent = tamper === null ? request : tamper(to, request);
-      return across(await there.bus.handle(ws ?? WS, id, across(sent)));
+      const answer = across(await there.bus.handle(ws ?? WS, id, across(sent)));
+      const lost = lose === null ? null : lose(to, sent);
+      if (lost !== null) throw lost;
+      return answer;
     });
     const tag = id.slice(0, 1);
     rig.raw.profiles = id === A
@@ -228,7 +233,7 @@ export function world(ids: string[] = [A, B]) {
       await s.rig.quiet();
     }
   };
-  return { t, stations, get: (id: string) => stations.get(id)!, quiet, tamper: (f: typeof tamper) => void (tamper = f) };
+  return { t, stations, get: (id: string) => stations.get(id)!, quiet, tamper: (f: typeof tamper) => void (tamper = f), lose: (f: typeof lose) => void (lose = f) };
 }
 
 /// The running turn of a station's session ended with a state, as its agent would.

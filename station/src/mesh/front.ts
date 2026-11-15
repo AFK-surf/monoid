@@ -506,6 +506,7 @@ class FrontConnection implements Connection {
   }
   isClosed() { return this.#closed !== null; }
   closed() { return this.#ended; }
+  closeReason() { return this.#closed === null ? null : { kind: this.#closed.kind, reason: this.#closed.reason }; }
 }
 
 /// The station's endpoint at the front, its link to it made again where it went (the front ended, and the launcher
