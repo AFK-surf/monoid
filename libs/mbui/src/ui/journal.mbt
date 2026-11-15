@@ -50,6 +50,10 @@ pub(all) struct FrameDone {
   let_go : Int
   laid : Int
   measured : Int
+  /// layout passes the window's tree ran since the frame before, and of them those run again inside one, by what told
+  /// it (`@view.again_names`: "withins=12 told=3"; "" none): a pass done over and over said by its cause
+  passes : Int
+  again : String
   why : String
 }
 
@@ -410,6 +414,8 @@ fn journal_reset() -> Unit {
   hang_summary_tell.val = None
   journal_notes.clear()
   journal_tree_work.val = (0, 0, 0, 0)
+  journal_passes.val = 0
+  journal_again.val = FixedArray::make(8, 0)
   shown_names.clear()
   shown_slot.val = 0
   shown_said.val = ""
@@ -545,15 +551,25 @@ fn journal_frame(c : Ctx, tw : Double, t0 : Double, t3 : Double, t4 : Double) ->
   }
   let msgs = probe_msgs_ms.val
   // (what the window's tree did since the frame before: its counts now less those kept then)
-  let now = match view_app.val {
+  let (now, passes, again) = match view_app.val {
     Some(tree) => {
       let w = tree.work()
-      (w.made, w.let_go, w.laid, w.measured)
+      ((w.made, w.let_go, w.laid, w.measured), w.passes, w.again)
     }
-    None => (0, 0, 0, 0)
+    None => ((0, 0, 0, 0), 0, FixedArray::make(8, 0))
   }
   let was = journal_tree_work.val
   journal_tree_work.val = now
+  let passes_was = journal_passes.val
+  journal_passes.val = passes
+  let again_said : Array[String] = []
+  for i, n in again {
+    let d = journal_since(n, journal_again.val[i])
+    if d > 0 && i < @view.again_names.length() {
+      again_said.push("\{@view.again_names[i]}=\{d}")
+    }
+    journal_again.val[i] = n
+  }
   journal_laid.val = journal_since(now.2, was.2) > 0
   journal_work(
     Frame({
@@ -568,6 +584,8 @@ fn journal_frame(c : Ctx, tw : Double, t0 : Double, t3 : Double, t4 : Double) ->
       let_go: journal_since(now.1, was.1),
       laid: journal_since(now.2, was.2),
       measured: journal_since(now.3, was.3),
+      passes: journal_since(passes, passes_was),
+      again: again_said.join(" "),
       why,
     }),
     tw,
@@ -585,6 +603,15 @@ fn journal_frame(c : Ctx, tw : Double, t0 : Double, t3 : Double, t4 : Double) ->
 /// The window's tree's counts as the last frame was kept (journal_frame): nodes made, let go, laid out, words measured.
 // kept across runs: put back as a run begins (journal_reset), written as each frame is kept
 let journal_tree_work : Ref[(Int, Int, Int, Int)] = Ref((0, 0, 0, 0))
+
+///|
+/// The window's tree's layout passes, and those run again inside one by cause, as the last frame was kept.
+// kept across runs: put back as a run begins (journal_reset), written as each frame is kept
+let journal_passes : Ref[Int] = Ref(0)
+
+///|
+// kept across runs: put back as a run begins (journal_reset), written as each frame is kept
+let journal_again : Ref[FixedArray[Int]] = Ref(FixedArray::make(8, 0))
 
 ///|
 /// A count's rise since it was `was`: all of it where it is below (another tree in the first's place counts from 0).
@@ -837,6 +864,8 @@ fn Worked::said(self : Worked) -> String {
     Frame(f) =>
       head +
       " (tree=\{journal_ms(f.tree)} msgs=\{journal_ms(f.messages)} build=\{journal_ms(f.build)} layout=\{journal_ms(f.layout)} paint=\{journal_ms(f.paint)} nodes=\{f.nodes} insts=\{f.insts}" +
+      (if f.passes > 1 { " passes=\{f.passes}" } else { "" }) +
+      (if f.again != "" { " again: " + f.again } else { "" }) +
       (if f.why != "" { " " + f.why } else { "" }) +
       ")" +
       self.notes_said()
@@ -899,6 +928,10 @@ pub fn Hang::json(self : Hang) -> Json {
       o["let_go"] = Json::number(f.let_go.to_double())
       o["laid"] = Json::number(f.laid.to_double())
       o["measured"] = Json::number(f.measured.to_double())
+      o["passes"] = Json::number(f.passes.to_double())
+      if f.again != "" {
+        o["again"] = Json::string(f.again)
+      }
       o["why"] = Json::string(f.why)
     }
     Json::object(o)

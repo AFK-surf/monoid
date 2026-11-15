@@ -364,7 +364,18 @@ pub(all) struct Work {
   mut inputs_walked : Int
   /// entries of the drawing order put in it again as a run of it is made again, kept or worked out (Tree::order_from)
   mut order_copied : Int
+  /// layout passes run (Tree::laid_out, each that had something due), and of them those run again inside one for what
+  /// it told as it ended, by what told it (`again_names`' order): for a hang's report to say whether a pass is done
+  /// over and over and for what
+  mut passes : Int
+  again : FixedArray[Int]
 }
+
+///|
+/// What a layout pass is run again inside one for (Work's `again`, in its order): bindings told as it was laid out,
+/// what rows left out, sizes followed, what waited on it laid out, what is brought into sight, what the focus holds in
+/// sight, what is under the pointer, the column's bar the pointer is along.
+pub let again_names : FixedArray[String] = ["told", "outs", "sizes", "waits", "shows", "holds", "withins", "bars"]
 
 ///|
 /// A node of the pool.
@@ -1589,6 +1600,8 @@ pub fn Tree::new(
       near_kept: 0,
       inputs_walked: 0,
       order_copied: 0,
+      passes: 0,
+      again: FixedArray::make(8, 0),
     },
   }
   // (the clock held while it is read, as a core's topic is: what reads it at rest (put by, View::park; rested in place,
@@ -2394,7 +2407,7 @@ fn Tree::structure_done(self : Tree, f : () -> Unit) -> Unit {
 ///|
 /// What it did so far.
 pub fn Tree::work(self : Tree) -> Work {
-  { ..self.work }
+  { ..self.work, again: self.work.again.copy() }
 }
 
 ///|
@@ -10467,6 +10480,7 @@ fn Tree::laid_out(self : Tree, upto : Double) -> Unit {
   if !self.due {
     return
   }
+  self.work.passes = self.work.passes + 1
   // the bindings whose reads changed since, each once, in the order they were told (what they make runs its own now,
   // what they set again marks what it marks)
   let t_bound = self.part_began()
@@ -10585,6 +10599,7 @@ fn Tree::laid_out(self : Tree, upto : Double) -> Unit {
   if !self.bindings_due.is_empty() && self.told_passes < told_passes_most {
     self.told_passes = self.told_passes + 1
     self.due = true
+    self.work.again[0] += 1
     self.laid_out(upto)
     self.told_passes = self.told_passes - 1
   }
@@ -10593,11 +10608,13 @@ fn Tree::laid_out(self : Tree, upto : Double) -> Unit {
   if self.outs_changed {
     self.outs_told()
     if self.due {
+      self.work.again[1] += 1
       self.laid_out(upto)
     }
   }
   // (the sizes followed told once all of it is laid out, and what that tells laid out in this same pass)
   if self.sizes_due && self.sized.length() > 0 && self.sizes_told() && self.due {
+    self.work.again[2] += 1
     self.laid_out(upto)
   }
   // (what waited on all of it laid out, told once now, whether any size it follows came out otherwise or not; what that
@@ -10609,6 +10626,7 @@ fn Tree::laid_out(self : Tree, upto : Double) -> Unit {
       @signals.untracked(f)
     }
     if self.due {
+      self.work.again[3] += 1
       self.laid_out(upto)
     }
   }
@@ -10617,12 +10635,14 @@ fn Tree::laid_out(self : Tree, upto : Double) -> Unit {
   if self.shows_due.length() > 0 {
     self.shown_now()
     if self.due {
+      self.work.again[4] += 1
       self.laid_out(upto)
     }
   }
   // (what the focus has kept in sight by the column it was brought into sight by, where that column's room came out
   // another: placed so it is, in this same pass)
   if self.focus_holds.length() > 0 && self.holds_now() && self.due {
+    self.work.again[5] += 1
     self.laid_out(upto)
   }
   if ordered || self.changed.length() > 0 || self.composed.length() > 0 {
@@ -10634,6 +10654,7 @@ fn Tree::laid_out(self : Tree, upto : Double) -> Unit {
   if placing && !self.withins_passing {
     self.withins_passing = true
     while self.withins_told() && self.due {
+      self.work.again[6] += 1
       self.laid_out(upto)
     }
     self.withins_passing = false
@@ -10642,6 +10663,7 @@ fn Tree::laid_out(self : Tree, upto : Double) -> Unit {
     // placed: an order, what bounds input, what takes it; in this same pass)
     self.withins_passing = true
     while self.bars_near_told() && self.due {
+      self.work.again[7] += 1
       self.laid_out(upto)
     }
     self.withins_passing = false
