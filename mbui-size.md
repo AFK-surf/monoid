@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [3e5fefe9b](https://github.com/AFK-surf/monoid/commit/3e5fefe9baccfaa67c2e7908715fdc60cf408dd6) fix(mbui): open viewer when tapping restored draft | 2.13 | 2.96 | 12.81 | 33.9 | 50.74 | 29.19 | 57.93 | 99.35 | 113.26 |
 | [e18b38e43](https://github.com/AFK-surf/monoid/commit/e18b38e438decbdfba656c3c1f219e2325f88d61) mbui: the line-start rule holds a card's 28 mark a | 2.13 | 2.96 | 12.81 | 33.9 | 50.74 | 29.19 | 57.93 | 99.35 | 113.26 |
 | [ab2d43d71](https://github.com/AFK-surf/monoid/commit/ab2d43d7171aef455fa393b8c4d2fbaf9f848bc7) mbui: the Mac's windows of one run; a screen's vie | 2.13 | 2.96 | 12.81 | 33.9 | 50.74 | 29.19 | 57.93 | 99.35 | 113.26 |
 | [4e8f3be07](https://github.com/AFK-surf/monoid/commit/4e8f3be0765d37e5c73938f1ffa138746294f43c) app: farview.pin to f082e8d (a window dragged wide | 2.12 | 2.95 | 12.73 | 33.8 | 50.33 | 29.19 | 57.93 | 99.35 | 119.61 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [fef9e6eca](https://github.com/AFK-surf/monoid/commit/fef9e6eca29f41c497bdfff34df5a07785978510) perf(mbui): a page's list holding pictures drawn a | 2.09 | 2.87 | 12.36 | 33.3 | 47.97 | 28.82 | 56.61 | 98.85 | 149.5 |
 | [4e59a50b2](https://github.com/AFK-surf/monoid/commit/4e59a50b2bad50dcd401a145f7b8bbf52e2a1ebd) perf(sfpages): a chat's rows made again from what  | 2.09 | 2.87 | 12.36 | 33.29 | 47.95 | 28.82 | 56.61 | 98.85 | 110.95 |
 | [bab438e82](https://github.com/AFK-surf/monoid/commit/bab438e82b87a7d591eb6154af1c0f10a7954da9) app: farview.pin to 2c88b06 (the page's nodes kept | 2.09 | 2.87 | 12.36 | 33.29 | 47.95 | 28.82 | 56.61 | 98.85 | 110.95 |
-| [b7829ee84](https://github.com/AFK-surf/monoid/commit/b7829ee8439d56abcaf026538fd3c894146edf9b) station tests: the move's and the retirement's tes | 2.08 | 2.87 | 12.34 | 33.28 | 47.88 | 28.82 | 56.61 | 98.85 | 113.42 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [3e5fefe9b](https://github.com/AFK-surf/monoid/commit/3e5fefe9baccfaa67c2e7908715fdc60cf408dd6) fix(mbui): open viewer when tapping restored draft | 0.42 | 0.54 | 2.07 | 3.17 | 4.94 | 1.52 | 4.06 | 57.41 |
 | [e18b38e43](https://github.com/AFK-surf/monoid/commit/e18b38e438decbdfba656c3c1f219e2325f88d61) mbui: the line-start rule holds a card's 28 mark a | 0.42 | 0.54 | 2.07 | 3.17 | 4.94 | 1.52 | 4.06 | 57.48 |
 | [ab2d43d71](https://github.com/AFK-surf/monoid/commit/ab2d43d7171aef455fa393b8c4d2fbaf9f848bc7) mbui: the Mac's windows of one run; a screen's vie | 0.42 | 0.54 | 2.07 | 3.17 | 4.94 | 1.52 | 4.06 | 57.48 |
 | [4e8f3be07](https://github.com/AFK-surf/monoid/commit/4e8f3be0765d37e5c73938f1ffa138746294f43c) app: farview.pin to f082e8d (a window dragged wide | 0.42 | 0.54 | 2.07 | 3.17 | 4.94 | 1.52 | 4.06 | 57.48 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [fef9e6eca](https://github.com/AFK-surf/monoid/commit/fef9e6eca29f41c497bdfff34df5a07785978510) perf(mbui): a page's list holding pictures drawn a | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.38 |
 | [4e59a50b2](https://github.com/AFK-surf/monoid/commit/4e59a50b2bad50dcd401a145f7b8bbf52e2a1ebd) perf(sfpages): a chat's rows made again from what  | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.38 |
 | [bab438e82](https://github.com/AFK-surf/monoid/commit/bab438e82b87a7d591eb6154af1c0f10a7954da9) app: farview.pin to 2c88b06 (the page's nodes kept | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.23 |
-| [b7829ee84](https://github.com/AFK-surf/monoid/commit/b7829ee8439d56abcaf026538fd3c894146edf9b) station tests: the move's and the retirement's tes | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.23 |
