@@ -75,6 +75,7 @@ export class WorkspaceReader {
 
   size(path: string, limit = DEFAULT_LIMIT): WorkspaceSize | null {
     if (this.#abort.signal.aborted) return null;
+    this.#sweep();
     let entry = this.#entries.get(path);
     if (entry?.size && this.#now() - entry.at < CHECK_MS && (entry.size.complete || entry.size.truncated || entry.size.bytes > limit)) return entry.size;
     if (!entry) {
@@ -107,8 +108,23 @@ export class WorkspaceReader {
           entry.pending = false;
         }
       }
+      this.#sweep();
     } finally {
       this.#running = false;
+    }
+  }
+
+  /// How many workspaces it keeps a measure of (or is measuring).
+  get kept(): number {
+    return this.#entries.size;
+  }
+
+  /// Lets go of what no round asked for again: a measure not under way and older than two rounds (a chat archived or
+  /// deleted, a workspace moved, a remote one no longer followed), which would be measured again anyway.
+  #sweep(): void {
+    const now = this.#now();
+    for (const [path, entry] of this.#entries) {
+      if (!entry.pending && now - entry.at >= 2 * CHECK_MS) this.#entries.delete(path);
     }
   }
 

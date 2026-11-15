@@ -247,6 +247,10 @@ const zstd = promisify(zstdCompress);
 
 /// `source` put away into `path` as a transcript is (read/packed.ts): a frame for each SEGMENT of it (up to the end of
 /// its last line), each compressed as `compressor` does, then the frames' table; on disk before this returns.
+/// What of `all` goes on to the next segment, after `cut`: a copy, as a view of `all` would keep the whole of it (SEGMENT
+/// and more) in memory while the next segment comes.
+export const heldAfter = (all: Buffer, cut: number): Buffer[] => (cut < all.length ? [Buffer.from(all.subarray(cut))] : []);
+
 async function segmentInto(path: string, source: AsyncIterable<Buffer>): Promise<void> {
   const file = await open(path, "w", 0o600);
   try {
@@ -260,7 +264,7 @@ async function segmentInto(path: string, source: AsyncIterable<Buffer>): Promise
       const all = Buffer.concat(held, n);
       const cut = last ? all.length : all.lastIndexOf(0x0a, SEGMENT - 1) + 1 || SEGMENT;
       const raw = all.subarray(0, cut);
-      held = cut < all.length ? [all.subarray(cut)] : [];
+      held = heldAfter(all, cut);
       n = all.length - cut;
       const bytes = await zstd(raw, { params: { [constants.ZSTD_c_compressionLevel]: 3, [constants.ZSTD_c_checksumFlag]: 1 } });
       await writeAll(file, bytes);
@@ -450,6 +454,25 @@ export function jsonlFiles(dir: string, out: string[]) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const path = join(dir, entry.name);
     if (entry.isDirectory()) jsonlFiles(path, out);
+    else if (entry.isFile()) {
+      const logical = extension(path) === "zst" ? withExtension(path, "") : path;
+      if (extension(logical) === "jsonl" && !out.includes(logical)) out.push(logical);
+    }
+  }
+}
+
+/// `jsonlFiles`, off the station's thread.
+export async function jsonlFilesSoon(dir: string, out: string[]): Promise<void> {
+  let entries: Dirent[];
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  for (const entry of entries) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) await jsonlFilesSoon(path, out);
     else if (entry.isFile()) {
       const logical = extension(path) === "zst" ? withExtension(path, "") : path;
       if (extension(logical) === "jsonl" && !out.includes(logical)) out.push(logical);

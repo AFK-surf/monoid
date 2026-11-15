@@ -53,7 +53,7 @@
   `test/main-thread-waits.test.ts` counts what a day's scenarios make it wait on; a change may lower the counts, never
   raise them.
 - The station's own background work yields the machine to the foreground: the MoonBit builders nobody waits on (its
-  backfills, `MbBackfill`, and the copies' export: `src/read/mb-reader.ts` `BACKGROUND_BUILDERS`) are started under
+  backfills, `MbBackfill`, the copies' export, a workspace's size: `src/read/mb-reader.ts` `BACKGROUND_BUILDERS`) are started under
   `platform.backgrounded` (`mbSpawned`; macOS's `taskpolicy -b`, which lowers its disk IO too where nice does not;
   Linux's `ionice` and `nice`). A builder that answers a request, holds the backfill permit while a read waits
   (`src/read/requested-builder.ts`) or is waited on by a person stays as it is, as do the readers that answer devices
@@ -62,7 +62,11 @@
   no link followed (`followLinks` where a tree's folders are linked in by design, as ~/.agents/skills, codex.ts
   `hostSkillsOff`: each real directory gone into once, so a link back up ends), bounded in entries, depth and time,
   yielding as it goes; a new walk does too, never a recursion of its own (`src/read/machine.ts` `rolloutsIn`,
-  synchronous on a reader thread, keeps the same bounds by itself).
+  synchronous on a reader thread, keeps the same bounds by itself). A workspace's size on disk
+  (`src/sessions/footprint.ts`: its soft limit, a room's cleanup) is the MoonBit program's (`--builder footprint`,
+  `mb/src/footprint`), a process a measure, killed as it is called off, walking as `walkBounded` does with every
+  entry stat'ed: no walk in TypeScript to fall back to, the one it replaced is `test/footprint-reference.ts`, which
+  `test/mb-footprint.test.ts` holds it to.
 - Time is the Clock's (a `TestClock` in tests): `Date.now`, `new Date()`, `setTimeout`, `setInterval` only in
   `src/ops/fibers.ts` (`wall`, for what is shared with other programs: mtimes, expiries, deadlines to processes).
   `scripts/check.sh` refuses them elsewhere.

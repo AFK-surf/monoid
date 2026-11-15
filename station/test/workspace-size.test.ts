@@ -202,6 +202,34 @@ test("disk walks are shared, asynchronous, refreshed, and limited to one at a ti
   finish.shift()!({ bytes: 2, complete: true });
 });
 
+test("what no round asks for again is let go: a running station keeps no measure of every workspace it ever had", async () => {
+  let now = 10 * CHECK_MS;
+  const finish: (() => void)[] = [];
+  const reader = new WorkspaceReader(() => now, async () => new Promise<{ bytes: number; complete: boolean }>((resolve) => finish.push(() => resolve({ bytes: 1, complete: true }))));
+  const settled = async () => {
+    while (finish.length > 0) {
+      finish.shift()!();
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+  };
+  // A day of rounds, each of chats that come and go (archived, deleted): a workspace a round, and one kept throughout.
+  for (let round = 0; round < 288; round++) {
+    reader.size("kept");
+    reader.size(`gone-${round}`);
+    await settled();
+    assert.deepEqual(reader.size("kept"), { bytes: 1, complete: true });
+    assert.ok(reader.kept <= 4, `round ${round}: ${reader.kept} kept`);
+    now += CHECK_MS;
+  }
+  // One being measured stays however long it takes.
+  reader.size("slow");
+  now += 10 * CHECK_MS;
+  reader.size("other");
+  assert.equal(reader.kept, 2);
+  await settled();
+  reader.close();
+});
+
 test("a size walk stops once over the limit, and counts hard links once without following symlinks", async () => {
   const root = mkdtempSync(join(tmpdir(), "workspace-walk-"));
   dirs.push(root);

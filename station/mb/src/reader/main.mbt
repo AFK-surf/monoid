@@ -724,6 +724,14 @@ async fn replica_carry(host : @host.Host, sep : String) -> Unit {
 }
 
 ///|
+/// A directory's size on disk (sessions/footprint.ts): one ask on stdin, answered on one line (@footprint.answer),
+/// then the program ends. A cancel ends the process.
+async fn footprint(host : @host.Host, sep : String) -> Unit {
+  guard host.line() is Some(line) else { return }
+  host.say(@footprint.answer(line, sep).stringify())
+}
+
+///|
 /// The live view's transcript locator (sessions/live-locator.ts): each line a `locate` or a reply to one being looked
 /// for (@locate.Locator).
 async fn live_locator(host : @host.Host, db_path : String, data : String, sep : String) -> Unit {
@@ -951,6 +959,9 @@ fn main {
     (Some("replica-carry"), _, _) =>
       // (the shell's own files, which this asks for none of, in `--shell-dir`)
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => replica_carry(host, flag("--sep").unwrap_or("/")))
+    (Some("footprint"), _, _) =>
+      // (no shell: it asks the shell for nothing)
+      @host.run(host => footprint(host, flag("--sep").unwrap_or("/")))
     (Some("vault-uses"), Some(db), _) =>
       @host.run(shell_dir=beside(db, "shell"), host => vault_uses(host, db))
     (Some("outflow-chats"), Some(db), _) =>
@@ -1055,7 +1066,7 @@ fn main {
         }
       })
     _ => {
-      @host.note("usage: stillfail-reader --data <dir> | --builder archive-marks|session-bindings|session-up-jobs|workspace-up-jobs|widget-sources|card-posts|session-list|outflow-chats|turn-counts|said|archive-last|page-letters|cc-index|usage-check|recent-chat|closed-cards|people-since|legacy-edits|legacy-said|session-counts|session-backfill|post-blocks|usage-retire|usage-scope|usage-counter|signin-save|vault-uses|replica-export --db <file> | --builder replica-restore --db <file> --data <dir> | --builder replica-carry")
+      @host.note("usage: stillfail-reader --data <dir> | --builder archive-marks|session-bindings|session-up-jobs|workspace-up-jobs|widget-sources|card-posts|session-list|outflow-chats|turn-counts|said|archive-last|page-letters|cc-index|usage-check|recent-chat|closed-cards|people-since|legacy-edits|legacy-said|session-counts|session-backfill|post-blocks|usage-retire|usage-scope|usage-counter|signin-save|vault-uses|replica-export --db <file> | --builder replica-restore --db <file> --data <dir> | --builder replica-carry | --builder footprint")
       2
     }
   }

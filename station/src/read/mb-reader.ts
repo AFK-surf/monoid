@@ -115,12 +115,12 @@ export class Said {
   }
 }
 
-/// The builders nobody waits on: what the station drives itself, a batch at a time (MbBackfill's kinds), and the export
-/// of the chats' copies. Every other builder answers a request as it is asked (a search, the vault's uses, the usage
+/// The builders nobody waits on: what the station drives itself, a batch at a time (MbBackfill's kinds), the export
+/// of the chats' copies, and a directory's size measured on disk (sessions/footprint.ts). Every other builder answers a request as it is asked (a search, the vault's uses, the usage
 /// page, a live session found, the outflow's chats), or holds the backfill permit for its batch as a read waits on it
 /// (read/requested-builder.ts), or is waited on by a person (a restore, the mesh's): under PRIO_DARWIN_BG's throttled IO
 /// on a busy Mac each would take many times as long, holding up the person or the permit.
-const BACKGROUND_BUILDERS = new Set(["replica-export", "session-backfill", "post-blocks", "session-counts", "usage-retire", "usage-scope", "signin-save"]);
+const BACKGROUND_BUILDERS = new Set(["replica-export", "footprint", "session-backfill", "post-blocks", "session-counts", "usage-retire", "usage-scope", "signin-save"]);
 
 /// Whether the program with `args` is the station's background work by default: a builder of BACKGROUND_BUILDERS
 /// (`--builder <kind>`). The readers that answer devices as they ask (`--data`, `--serve`, `--sessions`) are not.

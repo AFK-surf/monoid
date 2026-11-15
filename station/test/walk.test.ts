@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 import { type WalkEntry, walkBounded } from "../src/ops/walk.ts";
 import { measuredUpTo } from "../src/sessions/footprint.ts";
+import { measuredUpToReference } from "./footprint-reference.ts";
 import { rolloutsIn } from "../src/read/machine.ts";
 import { WINDOWS, platform } from "../src/platform/index.ts";
 import { backgroundedOn } from "../src/platform/unix.ts";
@@ -143,9 +144,11 @@ test("a workspace's size is a lower bound, quickly, past the walk's budget, and 
   assert.equal(short.complete, false);
   assert.equal(short.truncated, true);
   assert.ok(short.bytes <= whole.bytes);
+  // Out of time: on the tests' clock, in the walk the program is held to (test/mb-footprint.test.ts), whose own clock is
+  // the machine's.
   let now = 0;
-  const slow = await measuredUpTo(root, Number.MAX_SAFE_INTEGER, undefined, { maxDurationMs: 50, now: () => (now += 10) });
-  assert.deepEqual([slow.complete, slow.truncated], [false, true]);
+  const slow = await measuredUpToReference(root, Number.MAX_SAFE_INTEGER, undefined, { maxDurationMs: 50, now: () => (now += 10) });
+  assert.deepEqual([slow.complete, slow.truncated, slow.reason], [false, true, "duration"]);
   // Over its limit it stops as before, not a truncation of the walk's.
   writeFileSync(join(root, "big"), Buffer.alloc(64 * 1024, 1));
   const over = await measuredUpTo(root, 1);
@@ -182,7 +185,7 @@ test("background work is wrapped so its CPU and disk yield: taskpolicy, ionice a
 });
 
 test("only the builders nobody waits on run as background work, not those answering requests or the readers", () => {
-  for (const kind of ["replica-export", "session-backfill", "post-blocks", "session-counts", "usage-retire", "usage-scope", "signin-save"]) {
+  for (const kind of ["replica-export", "footprint", "session-backfill", "post-blocks", "session-counts", "usage-retire", "usage-scope", "signin-save"]) {
     assert.equal(backgroundByDefault(["--builder", kind, "--db", "x"]), true, kind);
   }
   for (const kind of ["search", "vault-uses", "usage-check", "live-locator", "outflow-chats", "session-list", "card-posts", "cc-index", "replica-restore", "mesh"]) {

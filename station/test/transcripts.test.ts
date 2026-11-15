@@ -11,7 +11,7 @@ import { SEGMENT, framesOf, seekTable, segmented, segmentedSoon, unpackedWhole }
 import { ChainTail, MARK_EVERY, PIECE, TranscriptTail } from "../src/read/tail.ts";
 import { READING, brief, readTimeline, scriptCalls } from "../src/read/transcript.ts";
 import { chainOf, entriesOf, forgetKept, lengthOf } from "../src/read/transcripts.ts";
-import { packFile, segmentFile } from "../src/sessions/archive.ts";
+import { heldAfter, packFile, segmentFile } from "../src/sessions/archive.ts";
 
 const temp = () => mkdtempSync(join(tmpdir(), "transcripts-"));
 const said = (text: string, id: string) => `${JSON.stringify({ type: "assistant", timestamp: "2026-10-24T00:00:00Z", message: { id, content: [{ type: "text", text }], usage: { input_tokens: 1, output_tokens: 1 } } })}\n`;
@@ -239,6 +239,34 @@ test("however long a transcript put away is, every segment of it is compressed a
     assert.equal(frames.length, Math.max(1, Math.ceil(size / SEGMENT)));
     assert.deepEqual(unpackedWhole(`${path}.zst`), Buffer.from(line.repeat(size / 1024)));
   }
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("what goes on to the next segment is its own copy, and lines of every length come back whole across segments", async () => {
+  const all = Buffer.alloc(SEGMENT + 4096, 0x61);
+  const [rest] = heldAfter(all, SEGMENT);
+  assert.deepEqual(rest, all.subarray(SEGMENT));
+  assert.notEqual(rest!.buffer, all.buffer, "not a view keeping the segment before in memory");
+  assert.ok(rest!.buffer.byteLength < SEGMENT, `${rest!.buffer.byteLength} bytes kept`);
+  assert.deepEqual(heldAfter(all, all.length), []);
+  // Lines of lengths that never line up with a segment's end, one longer than a segment among them.
+  const dir = temp();
+  const path = join(dir, "t.jsonl");
+  const lines: string[] = [];
+  let bytes = 0;
+  for (let i = 0; bytes < SEGMENT * 3 + 777; i++) {
+    const line = `${i}:${(i === 40 ? "L" : String.fromCharCode(97 + (i % 26))).repeat(i === 40 ? SEGMENT + 333 : 1 + ((i * 7919) % 200_000))}\n`;
+    lines.push(line);
+    bytes += line.length;
+  }
+  writeFileSync(path, lines.join(""));
+  await packFile(path);
+  const file = openSync(`${path}.zst`, "r");
+  const frames = framesOf(file)!;
+  closeSync(file);
+  assert.ok(frames.length >= 4, `${frames.length} segments`);
+  assert.equal(frames.reduce((n, f) => n + f.size, 0), bytes);
+  assert.deepEqual(unpackedWhole(`${path}.zst`), Buffer.from(lines.join("")));
   rmSync(dir, { recursive: true, force: true });
 });
 
