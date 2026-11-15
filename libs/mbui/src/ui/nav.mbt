@@ -961,7 +961,7 @@ fn[P] Nav::replace_above_now(self : Nav[P], keep : Int, pages : Array[P]) -> Uni
 /// (stacks_said: a part kept as its nodes that holds one, built again).
 fn wake() -> Unit {
   if !building.val {
-    stacks_said.set(stacks_said.untracked() + 1)
+    stacks_said.val.set(stacks_said.val.untracked() + 1)
   }
   g().read_changed("a stack changed")
 }
@@ -969,7 +969,7 @@ fn wake() -> Unit {
 ///|
 /// How many times a stack changed between frames (wake): what builds one reads it (Ctx::nav, Ctx::nav_flat).
 // kept across runs: a count, read as it changes
-let stacks_said : @signals.Signal[Int] = @signals.signal(0)
+let stacks_said : Ref[@signals.Signal[Int]] = Ref(@signals.signal(0))
 
 ///|
 /// Back as a back gesture asks: kind 0 started at x (in a view `w` wide), 1
@@ -1100,7 +1100,7 @@ pub fn[P] Ctx::nav(
 ) -> Int {
   // (its pages read: built again as they change)
   nav.said.get() |> ignore
-  stacks_said.get() |> ignore
+  stacks_said.val.get() |> ignore
   // (held by the window's tree: its slides told at their causes, which this build learns of as what shows changes)
   if nav.hosted is Some(_) {
     nav.shown.get() |> ignore
@@ -1547,7 +1547,7 @@ pub fn[P] Ctx::nav_flat(
 ) -> Int {
   // (its pages read: built again as they change)
   nav.said.get() |> ignore
-  stacks_said.get() |> ignore
+  stacks_said.val.get() |> ignore
   // (the room it is drawn in, as Ctx::nav has it: how far what is pushed over it slides, told at its cause)
   nav.room_w = self.width
   nav.room_h = self.height

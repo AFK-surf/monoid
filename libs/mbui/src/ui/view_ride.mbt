@@ -263,7 +263,8 @@ let ride_groups : Map[Int, RideKept] = Map([])
 
 ///|
 /// The groups made so far: a group's number is never another's, so the same header is never another's instances
-/// (frame_watch.mbt's insts_said, @damage's frames compared).
+/// (frame_watch.mbt's insts_said, @damage's frames compared), whichever window of the run made it (the host keeps one
+/// table of them for all its windows: window_slots.mbt).
 // kept across runs: a group's number is never one a run before had
 let ride_groups_made : Ref[Int] = Ref(0)
 

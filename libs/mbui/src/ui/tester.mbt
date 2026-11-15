@@ -119,6 +119,8 @@ pub fn Tester::end_run(self : Tester, restore : &@hostapi.Host) -> Unit {
 /// the packages over it: on_reset) emptied; then checked (leaked_state), so that what is added later and not
 /// forgotten here fails the next Tester at once rather than a test somewhere else.
 fn reset_globals() -> Unit {
+  // (the run before's windows beside its first let go of, its first window's state in place: window_slots.mbt)
+  windows_reset()
   window_zoom_reset()
   journal_reset()
   tree_frames_reset()
@@ -469,6 +471,12 @@ pub fn Tester::new(
     windows_opened: [],
     windows_closed: [],
     windows_fronted: [],
+    windows_in_process: false,
+    window_ids: 0,
+    window_at: 0,
+    window_sizes: {},
+    window_ids_fronted: [],
+    window_ids_closed: [],
     opened: [],
     dark,
     inset: window_inset,
@@ -1190,6 +1198,14 @@ fn Tester::frame_at_said(self : Tester, at : Double) -> String? {
 /// there, nothing later: no step or end taken past it), what is drawn sampled at `shown` (a moment later, as a host's
 /// frame is drawn for its vsync). The next events may come at any moment from `now`.
 pub fn Tester::frame_shown_at(self : Tester, now : Double, shown : Double) -> Unit {
+  // (the first window's frame, its state in place, then each window of the run beside it: tester_windows.mbt)
+  as_window(0, fn() { self.frame_shown_first(now, shown) })
+  self.frames_beside(now, shown)
+}
+
+///|
+/// The first window's frame of frame_shown_at's, with every check the Tester holds it to.
+fn Tester::frame_shown_first(self : Tester, now : Double, shown : Double) -> Unit {
   let at = now
   // (what was posted told at its moment, and what the fake host does at its own moments up to this frame's, before the
   // clock comes there: posted_tell, FakeHost::due)

@@ -85,7 +85,7 @@ let old_placed : Array[(@view.NodeId, Double, Double, Double, Double, Double, Do
 /// where it is drawn and draws it as big reads it (old_frame), so its paint is told as that changes, not as anything of
 /// the tree's does.
 // kept across runs: only a count
-let old_placed_said : @signals.Signal[Int] = @signals.signal(0)
+let old_placed_said : Ref[@signals.Signal[Int]] = Ref(@signals.signal(0))
 
 ///|
 /// How far each old view placed (old_placed) would be drawn off where its layout alone puts it were nothing in its way
@@ -196,7 +196,7 @@ let view_fingers : FixedArray[Int] = FixedArray::make(3, -1)
 /// frame paints again. What it had to do that changed nothing of it (a bar's coming in ended, out as it was) paints
 /// nothing.
 // kept across runs: only a count
-let view_due : @signals.Signal[Int] = @signals.signal(0)
+let view_due : Ref[@signals.Signal[Int]] = Ref(@signals.signal(0))
 
 ///|
 /// How many times what a point would hit may have changed, as the tree said it when it was last brought (Tree::hits_said):
@@ -305,6 +305,8 @@ pub fn set_view_app(make : (@view.View) -> Unit, around? : (Ctx) -> Unit) -> Uni
 ///|
 /// The window's tree made by `make`, now.
 fn view_made_now(make : (@view.View) -> Unit) -> Unit {
+  // (the window of the run it is made in: what it marks due asks that window's frame, whichever is in place then)
+  let tree_wid = window_now.now
   // (a change told as it is made, at the host's now: what it sets going starts then, whatever frame takes it)
   let made : Ref[@view.Tree?] = Ref(None)
   let t = @view.Tree::new(
@@ -401,6 +403,12 @@ fn view_made_now(make : (@view.View) -> Unit) -> Unit {
   // (a node's pointer's shape said anew: shown at once where the pointer shows it, no frame for it)
   t.on_cursor(view_cursor_tell)
   t.on_due(fn() {
+    // (a window of the run's tree marked while another window is in place, in that one's frame or between: a frame
+    // asked of the host, which draws every window's, and nothing of the one in place's said for it: window_slots.mbt)
+    if window_now.now != tree_wid {
+      h_frame_owed()
+      return
+    }
     // (what set it going, the first time since it was last painted: said with why the frame is painted)
     if view_due_at.val == "" {
       view_due_at.val = @signals.last_set_at()
@@ -416,7 +424,7 @@ fn view_made_now(make : (@view.View) -> Unit) -> Unit {
   // (its work by part, for the hangs found in it: journal.mbt, @hostapi.work_part's clock and note)
   t.timed_by(Some((fn() { @hostapi.work_began() }, fn(what, ms) { @hostapi.work_took(what, ms) })))
   view_app.val = Some(t)
-  view_due.set(view_due.untracked() + 1)
+  view_due.val.set(view_due.val.untracked() + 1)
   // (the tree in place of the one before, whole: whether the app takes back, as it has it, told the host now, as a change
   // to it is: what it takes it by said as it was made, before what tells of its changes was set)
   g().back_told_host()
@@ -489,8 +497,8 @@ fn view_forget() -> Unit {
   // (the tree's theme and its window's inset forgotten once it is let go: what of it still read them told of none of
   // it, no tree laid out again as it goes)
   @signals.untracked(fn() {
-    tree_theme_of.set(None)
-    tree_inset_said.set(None)
+    tree_theme_of.val.set(None)
+    tree_inset_said.val.set(None)
   })
   view_held.val = None
   view_nothing_down.val = None
@@ -833,9 +841,9 @@ fn view_frame(w : Double, h : Double, scale : Double, t : Double) -> Unit {
   // (the theme for this width, as this frame will pick it, not the one the last frame was built in: what its nodes are
   // drawn in where the app tells its tree none; the window's corner as of now: what linked corners are worked out
   // from, with the ranges of the theme its nodes are drawn in, corner_of)
-  tree_theme_said.set(Some(g().theme_for(w)))
-  tree_window_corner.set(window_corner())
-  tree_inset_said.set(Some(window_inset()))
+  tree_theme_said.val.set(Some(g().theme_for(w)))
+  tree_window_corner.val.set(window_corner())
+  tree_inset_said.val.set(Some(window_inset()))
   // (a page's list's rows on the pixels as this frame draws them, as an old view's list's are, before anything of it is
   // laid out: Tree::set_rows_grid)
   tree.set_rows_grid(g().rows_grid_of(scale))
@@ -910,7 +918,7 @@ fn view_brought(tree : @view.Tree, told? : Bool = true) -> Unit {
     return
   }
   if changed {
-    view_due.set(view_due.untracked() + 1)
+    view_due.val.set(view_due.val.untracked() + 1)
   } else if !tree.told_since() {
     view_due_at.val = ""
   }
@@ -999,7 +1007,7 @@ fn old_place(tree : @view.Tree) -> Unit {
     }
   }
   if !same {
-    old_placed_said.set(old_placed_said.untracked() + 1)
+    old_placed_said.val.set(old_placed_said.val.untracked() + 1)
   }
   if !old_placed.iter().any(fn(p) { tree.placed_by_clock(p.0) }) {
     old_place_seen.val = Some((tree, seen))
@@ -1066,12 +1074,12 @@ fn view_old_building() -> Unit {
 /// it, by its offset, a page slid by its width) builds nothing: it is moved where it is drawn and drawn as opaque as it
 /// is as the frame is painted (old_frame's moved_by, view_paint).
 // kept across runs: set as each frame begins
-let old_laid : @signals.Signal[String] = @signals.signal("", same=fn(a, b) { a == b })
+let old_laid : Ref[@signals.Signal[String]] = Ref(@signals.signal("", same=fn(a, b) { a == b }))
 
 ///|
 /// Where the old views are laid out, said as the frame begins (host_said.mbt frame_settings_arrive).
 fn old_laid_arrive() -> Unit {
-  old_laid.set(view_island_said())
+  old_laid.val.set(view_island_said())
 }
 
 ///|
@@ -1123,7 +1131,7 @@ fn old_frame(c : Ctx) -> Unit {
     _ => ()
   }
   // (built for where they are laid out as the frame began: built again as that changes)
-  old_laid.get() |> ignore
+  old_laid.val.get() |> ignore
   // (none laid out yet in this pass: each placed says its own, none where the old frame is the one old view)
   for o in old_islands {
     o.held_box = -1
@@ -1231,7 +1239,7 @@ fn old_frame(c : Ctx) -> Unit {
         // does not put it on (what moves by a look of the tree's, on whole pixels already: Tree::each_drawn_in_order's
         // pixel_grid), its words set on the pixels where it is laid out and carried with it, glyphs_carried)
         c.moved_carries(i, fn(_, _) {
-          old_placed_said.get() |> ignore
+          old_placed_said.val.get() |> ignore
           match old_placed.iter().find_first(fn(q) { q.0 == id }) {
             Some(q) => (q.1 - left, q.2 - top)
             None => (0.0, 0.0)
@@ -1241,7 +1249,7 @@ fn old_frame(c : Ctx) -> Unit {
         // its node, where it is told it takes a finger, its words are and it is read out projected so as each is read:
         // Ctx::island_now)
         c.look_by(i, fn() {
-          old_placed_said.get() |> ignore
+          old_placed_said.val.get() |> ignore
           let s = island_scale(id)
           if s == 1.0 {
             still_look
@@ -1272,7 +1280,7 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
   }
   // (read: told as the tree has something to do, this paint is done again; told as the frame was built, brought first:
   // what the frame took is what it paints)
-  view_due.get() |> ignore
+  view_due.val.get() |> ignore
   view_due_at.val = ""
   // (what waited for the old views to be built done by now, whatever this frame built: Tree::old_views_settled)
   tree.old_views_settled()

@@ -116,10 +116,12 @@ static PView *new_box(void) {
 static CGColorRef black_color(void) { return UIColor.blackColor.CGColor; }
 #endif
 
+// The view the views are put in, of the window drawn or handing input now (mb_views_use: each window of the run its
+// own, mac_app.m), and each window's.
 static PView *views_root;
+static PView *views_roots[MB_WINS];
 
-id mb_views_root(CGRect frame) {
-  if (views_root) return views_root;
+static PView *views_root_made(CGRect frame) {
 #if TARGET_OS_OSX
   MBFlipView *v = [[MBFlipView alloc] initWithFrame:NSRectFromCGRect(frame)];
   v.wantsLayer = YES;
@@ -128,8 +130,31 @@ id mb_views_root(CGRect frame) {
   v.backgroundColor = nil;
   v.opaque = NO;
 #endif
-  views_root = v;
   return v;
+}
+
+id mb_views_root(CGRect frame) {
+  if (views_root) return views_root;
+  views_root = views_root_made(frame);
+  views_roots[0] = views_root;
+  return views_root;
+}
+
+id mb_views_root_of(int wid, CGRect frame) {
+  if (wid <= 0) return mb_views_root(frame);
+  if (wid >= MB_WINS) return nil;
+  if (!views_roots[wid]) views_roots[wid] = views_root_made(frame);
+  return views_roots[wid];
+}
+
+void mb_views_use(int wid) {
+  if (wid >= 0 && wid < MB_WINS && views_roots[wid]) views_root = views_roots[wid];
+}
+
+void mb_views_forget(int wid) {
+  if (wid <= 0 || wid >= MB_WINS) return;
+  [views_roots[wid] removeFromSuperview];
+  views_roots[wid] = nil;
 }
 
 // ---------------------------------------------------------------------------
@@ -1546,7 +1571,8 @@ void mb_host_view_place(int32_t vid, double x, double y, double w, double h, dou
   v.cx0 = cx0; v.cy0 = cy0; v.cx1 = cx1; v.cy1 = cy1;
   [CATransaction begin];
   [CATransaction setDisableActions:YES];
-  if (!v.box.superview || v.webVideo.primed) {
+  // (put in the window drawing it now: a stream's picture handed to a window of its own goes there with its frame)
+  if (!v.box.superview || v.webVideo.primed || v.box.superview != views_root) {
     stack(v);
     v.webVideo.primed = NO;
   }
@@ -1952,7 +1978,7 @@ static MBNative *page_at(double x, double y) {
   MBNative *top = nil;
   for (MBNative *v in views.allValues) {
     if (top && top.z > v.z) continue;
-    if (!is_page(v) || !v.shown || !v.placed || covered_at(v, x, y)) continue;
+    if (!is_page(v) || !v.shown || !v.placed || v.box.superview != views_root || covered_at(v, x, y)) continue;
     double x0 = fmax(v.cx0, v.x), y0 = fmax(v.cy0, v.y);
     double x1 = fmin(v.cx1, v.x + v.w), y1 = fmin(v.cy1, v.y + v.h);
     if (x >= x0 && x < x1 && y >= y0 && y < y1) top = v;
@@ -1971,7 +1997,7 @@ const char *mb_views_touch_at(double x, double y, double *slop) {
 
 int mb_views_pass_through(double x, double y) {
   for (MBNative *v in views.allValues) {
-    if (!is_page(v) || !v.shown || !v.placed) continue;
+    if (!is_page(v) || !v.shown || !v.placed || v.box.superview != views_root) continue;
     // (a page that takes no finger: the canvas's)
     if ([v.touchMode isEqualToString:@"through"] || covered_at(v, x, y)) continue;
     double x0 = fmax(v.cx0, v.x), y0 = fmax(v.cy0, v.y);

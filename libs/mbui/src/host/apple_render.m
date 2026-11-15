@@ -20,21 +20,64 @@ static id<MTLRenderPipelineState> hpipe;
 static id<MTLRenderPipelineState> fpipe;
 // the words' glyphs (R8) and colour glyphs (RGBA), square (apple.h)
 static id<MTLTexture> atlas, catlas;
-static CAMetalLayer *mlayer;
 static id<MTLBuffer> bufs[3];
 static size_t buf_cap[3];
 static int buf_i;
 static dispatch_semaphore_t inflight;
-static double vw = 800, vh = 600, vscale = 2;
-// the last frame, kept for snapshots
-static float *last_inst;
-static int32_t last_count;
-static size_t last_cap;
-static double last_bg[3];
-// The frame on the screen: its size as it was drawn (mb_render_set_size's), and whether it shows a stream (whose
-// pictures change under the same instances); its instances and ground are upload's copy (last_inst, last_bg).
-static double shown_w, shown_h, shown_scale;
-static int shown_ok, shown_streams;
+// What is a window's own (mac_app.m: the windows of one run, each its view and its layer; the device, the queue, the
+// pipelines, the atlases and the ring of instance buffers are all the windows'): its layer and its size (mb_render_set_size's);
+// the last frame, kept for snapshots (its instances and ground: upload's copy); the frame on the screen: its size as it
+// was drawn, and whether it shows a stream (whose pictures change under the same instances); the canvas its frames are
+// drawn into and what of it is said to differ (partial redraw, below). Put in place for a window by mb_render_use.
+#define MB_PARTS 8
+typedef struct {
+  CAMetalLayer *layer;
+  double w, h, scale;
+  float *inst;
+  int32_t count;
+  size_t cap;
+  double bg[3];
+  double shown_w, shown_h, shown_scale;
+  int shown_ok, shown_streams;
+  id<MTLTexture> canvas;
+  int canvas_ok;
+  double dirty[MB_PARTS][4];
+  int dirty_n, dirty_whole, dirty_told;
+} MBRenderWin;
+static MBRenderWin render_wins[MB_WINS] = {[0 ... MB_WINS - 1] = {.w = 800, .h = 600, .scale = 2}};
+static MBRenderWin *rw = &render_wins[0];
+#define mlayer (rw->layer)
+#define vw (rw->w)
+#define vh (rw->h)
+#define vscale (rw->scale)
+#define last_inst (rw->inst)
+#define last_count (rw->count)
+#define last_cap (rw->cap)
+#define last_bg (rw->bg)
+#define shown_w (rw->shown_w)
+#define shown_h (rw->shown_h)
+#define shown_scale (rw->shown_scale)
+#define shown_ok (rw->shown_ok)
+#define shown_streams (rw->shown_streams)
+#define canvas (rw->canvas)
+#define canvas_ok (rw->canvas_ok)
+#define dirty (rw->dirty)
+#define dirty_n (rw->dirty_n)
+#define dirty_whole (rw->dirty_whole)
+#define dirty_told (rw->dirty_told)
+
+// The window of the run drawn now (mac_app.m's win_use): its layer, its size, its last frame and its canvas in place.
+void mb_render_use(int wid) {
+  if (wid >= 0 && wid < MB_WINS) rw = &render_wins[wid];
+}
+
+// What window `wid` kept let go of, as it closes: the next window given its number starts as none was drawn.
+void mb_render_forget(int wid) {
+  if (wid <= 0 || wid >= MB_WINS) return;
+  MBRenderWin *w = &render_wins[wid];
+  free(w->inst);
+  *w = (MBRenderWin){.w = 800, .h = 600, .scale = 2};
+}
 // glass (src/ui/glass.mbt): the passes that blur what is under it (into the copy, 8 bits a channel, and into the rest,
 // half floats), the copies they work in (level j is 1/2^j of the largest capture yet, the glass and the blur's margin
 // round it, not of the target: a composer's strip, not the window; tmp for a Gaussian's first half), the GPU's time of
@@ -781,13 +824,6 @@ static int32_t seg_base;
 // (@hostapi.render_dirty), only those parts of the canvas are drawn again, a pass each: it loads what the canvas holds,
 // cut to the part (the pass's scissor, `sc`, while `sc_on`), the frame's ground drawn over the part first (the
 // instance after the frame's, upload's), then every instance (what falls outside is cut away).
-static id<MTLTexture> canvas;
-// what the canvas holds is the last frame given (none lost: a frame not drawn into it, its size another)
-static int canvas_ok;
-// the parts of the next frame that differ (points: x, y, w, h), all of it (`dirty_whole`), and whether any was said
-#define MB_PARTS 8
-static double dirty[MB_PARTS][4];
-static int dirty_n, dirty_whole, dirty_told;
 // a picture the frame drawn last had none of yet (its texture not made: drawn without it): the next drawn whole, as
 // what it shows changes under the same numbers
 static int pictures_missing, encode_missing;

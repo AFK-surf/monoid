@@ -113,6 +113,13 @@ yet and you can add one, add it.
   the app keeps the view past it (`kept`). So is a stream the host decodes (ui's `stream`, `src/ui/tree_stream.mbt`):
   its picture drawn where the tree draws the node, each frame the one shown then, closed as the node is let go unless
   what holds it closes it (`closes`).
+- A run has one window or several (the Mac's windows of one run: `@hostapi.windows_in_process`, `src/ui/window_slots.mbt`):
+  one program, one core, each window its own tree, frames and input. What the window's runtime keeps of a window lives
+  in globals put in place for the window the host hands a frame or input from, the first (0) put back after, so a new
+  global that is a window's own (of its context, its tree, its drawing, its hand) is said in `src/ui/window_kept.mbt`,
+  and one of a package over it (an app's layers, its toasts) by `@ui.window_kept`; what is the run's (the host's
+  pictures, streams and native views by id, text caches, messages, fibers) is not. A signal set as frames are drawn
+  is kept as its object (`Ref[Signal]`), never its value, or each window's frame wakes the other's.
 - What a still pointer is over (the hand: `View::pointed`, a tip, a hover card) is worked out at an input, in a change
   at its moment, and at the end of a way that may move something under it (`Tree::hand_at_end`: a Move, a way in or
   out, a glide; one that changes only how a thing looks, a fade, a bar's hiding, is none: `Prop::moves_hits`), never on

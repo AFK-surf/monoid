@@ -74,21 +74,21 @@ pub fn run(title : String, view : (Ctx) -> Unit, tree? : (@view.View) -> Unit) -
   // (the app's own bench, bench_app: the framework's does not run beside it)
   bench.mode = if bench.host == bench_app { 0 } else { bench.host }
   drive_init()
-  @hostapi.set_back(fn(k, x, p, e) { on_back(k, x, p, e) })
+  @hostapi.set_back(fn(k, x, p, e) { in_host_window(fn() { on_back(k, x, p, e) }) })
   @hostapi.set_window_key(fn(code, mods) {
     let taken = Ref(false)
-    view_event(fn() { taken.val = window_key_taken(code, mods) }, what="key")
+    in_host_window(fn() { view_event(fn() { taken.val = window_key_taken(code, mods) }, what="key") })
     if taken.val { 1 } else { 0 }
   })
   @hostapi.set_app_state(fn(s) { on_app_state(s) })
   outside_told.val = @hostapi.set_outside(fn(k, id, st) { on_outside(k, id, st) })
   @hostapi.run(
     title,
-    fn(w, h, s, t) { on_frame(w, h, s, t) },
-    fn(k, x, y, b) { host_pointer(k, x, y, b) },
-    fn(x, y, dx, dy, ph) { host_wheel(x, y, dx, dy, ph) },
-    fn(k, m) { on_key(k, m) },
-    fn(k, s, a, b) { on_text(k, s, a, b) },
+    fn(w, h, s, t) { in_host_window(fn() { on_frame(w, h, s, t) }) },
+    fn(k, x, y, b) { in_host_window(fn() { host_pointer(k, x, y, b) }) },
+    fn(x, y, dx, dy, ph) { in_host_window(fn() { host_wheel(x, y, dx, dy, ph) }) },
+    fn(k, m) { in_host_window(fn() { on_key(k, m) }) },
+    fn(k, s, a, b) { in_host_window(fn() { on_text(k, s, a, b) }) },
   )
 }
 
@@ -123,7 +123,7 @@ fn on_frame(w : Double, h : Double, scale : Double, t : Double) -> Unit {
   settings_at_frame(w, h, scale)
   // (and the frame's moment as the host gave it, kept on a core trace: envrec.mbt)
   frame_begun_told(t)
-  let z = window_zoom_wanted.get()
+  let z = window_zoom_wanted.val.get()
   if z != window_zoom_drawn.val {
     let ratio = window_zoom_drawn.val / z
     view_point.val = view_point.val.map(fn(p) { (p.0 * ratio, p.1 * ratio) })
@@ -131,7 +131,7 @@ fn on_frame(w : Double, h : Double, scale : Double, t : Double) -> Unit {
     view_words_rescaled()
   }
   window_zoom_drawn.val = z
-  tree_window_zoom.set(z)
+  tree_window_zoom.val.set(z)
   let (w, h, scale) = (w / z, h / z, scale * z)
   let c = g()
   let fed = inputs_since.val

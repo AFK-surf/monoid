@@ -585,6 +585,9 @@ pub fn app_tree(src : Source) -> (@view.View) -> Unit {
       // (none before the first frame gives the window)
       fn(a) { if a.1 > 0.0 { @ui.journal_arranged(a.0, a.1, a.2) } },
     )
+    // (each window of this run beside its first, a page alone over the same core, accounts and workspaces: its tree,
+    // lone_window_tree, its old views in lone_view's frame)
+    @ui.set_window_tree(fn(wid, _) { lone_window_tree(src, wid) }, around=fn(c) { lone_view(c, src) })
     // (what the splash waits by, kept by what lives through the app's states: splash_begin)
     splash_owner.val = Some(root)
     // (its nodes drawn in still.fail's theme, the one its old views are built in, as light or dark is set: view's
@@ -743,16 +746,63 @@ fn lone_tree(v : @view.View, src : Source) -> Unit {
 }
 
 ///|
-/// Page `p` of a window of its own, alone over all of it (lone_tree's): a station's screen, closing it
-/// ending the run (its window closed as its own close button closes it).
+/// Page `p` of a window of its own, alone over all of it (lone_tree's): a station's screen, closing it closing the
+/// window: a window of this run beside its first (@ui.window_close_here: the run goes on), else the run of its own
+/// it is (its window closed as its own close button closes it).
 fn lone_page_view(c : @ui.Ctx, src : Source, p : Page) -> Unit {
   match p {
     Screen(at) =>
       @sfpages.screen_page(c, src, at, system_frame(), on_close=fn() {
-        c.after_build("lone-closed", fn() { @hostapi.exit(0) })
+        let wid = @ui.current_window_id()
+        c.after_build("lone-closed", fn() { if wid > 0 { @ui.window_close_here(wid) } else { @hostapi.exit(0) } })
       })
     _ => ()
   }
+}
+
+///|
+/// Window `wid` of this run beside its first (sfbase's open_window: a station's screen to a window of its own) as a
+/// tree made once: its page alone (lone_tree), over the core, the accounts and the workspaces this run holds already,
+/// so its first frame shows the page as it is (no splash, nothing read anew: a screen's view the window it left handed
+/// it); its keys the app's, what is presented in it and its toasts its own (sfbase's window.mbt, the library's
+/// presenters: each window's apart), none of the first window's history, splash or first page.
+pub fn lone_window_tree(src : Source, wid : Int) -> (@view.View) -> Unit {
+  fn(root) {
+    @sfbase.lone_page.val = @sfbase.window_here_page(wid)
+    // (the library's words and their language as the first window's tree says them: app_tree's)
+    @sf.set_words(fill)
+    root.reacts(fn() { src.topic("prefs", {}).get().value }, @sfbase.language_from_prefs)
+    // (its own size from the menu bar and its keys, apart from the first window's)
+    @sfdesk.zoom_actions(root, src, kept=false)
+    root.keymap(By(fn() {
+      let m = @settings.keymap_of(src.topic("prefs", {}).get().value)
+      { ..m, bindings: [..@stage.page_keys(), ..m.bindings] }
+    }))
+    |> ignore
+    @ui.set_tree_theme(@sf.ui_theme_now)
+    root.sides(By(fn() { sides_room() })) |> ignore
+    root.box(fn(v) {
+      v.grow(Is(1.0)) |> ignore
+      lone_tree(v, src)
+    })
+    |> ignore
+    @sf.presented_nodes(root)
+    @sfbase.toasts_node(root, fn() { toast_bottom_now(root) }) |> ignore
+  }
+}
+
+///|
+/// The old frame round window `wid`'s old views (lone_window_tree's): still.fail's theme as the first window's frame has
+/// it (view's), what the host clears to its ground; nothing of the first window's own (its shells, its first page, its
+/// menu bar, what the core says each frame).
+pub fn lone_view(c : @ui.Ctx, src : Source) -> Unit {
+  ignore(src)
+  let t = @sf.begin(c)
+  c.set_clear((t.p.bg >> 8) & 0xFFFFFFL)
+  c.with_theme(@sf.ui_theme(), fn() {
+    entry_said()
+    @ui.old_views_here(c)
+  })
 }
 
 ///|

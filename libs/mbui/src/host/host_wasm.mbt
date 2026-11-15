@@ -472,6 +472,14 @@ fn ffi_window_front(what : String) -> Int {
 }
 
 ///|
+fn mbw_mb_host_windows(op : Int, wid : Int, what : Int) -> Int = "mbhost" "mb_host_windows"
+
+///|
+fn ffi_windows(op : Int, wid : Int, what : String) -> Int {
+  mbw_mb_host_windows(op, wid, @wasmrt.string_addr(what))
+}
+
+///|
 fn ffi_set_cursor(kind : Int) = "mbhost" "mb_host_set_cursor"
 
 ///|
@@ -594,6 +602,15 @@ fn window_open(what : String) -> Bool {
 /// The window opened for `what` to the front, while it is open (@hostapi.window_front).
 fn window_front(what : String) -> Bool {
   ffi_window_front(what) != 0
+}
+
+///|
+/// The windows of this run (@hostapi.windows_in_process, window_open_id, window_front_id, window_close_id,
+/// window_current): op 0 whether they open in it, 1 one opened for `what` (its id; 0 none), 2 window `wid` to the front
+/// (whether it is open), 3 it closed, 4 the window drawn or handing input now. A host whose windows are runs of their
+/// own answers 0 to each.
+fn windows(op : Int, wid : Int, what : String) -> Int {
+  ffi_windows(op, wid, what)
 }
 
 ///|

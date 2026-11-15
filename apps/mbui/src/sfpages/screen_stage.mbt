@@ -223,6 +223,9 @@ fn screen_stage(c : @ui.Ctx, s : ScreenSess, u : ScreenUi, key : String, pair? :
         let shown = u.shown(c)
         // on its way back, as it was, faded; over (ended, gone…), blurred under the dark it has gone to
         let still = phase != "live" && s.shown_any
+        // (handed to a window of its own of this run, this page only going: its picture drawn here, never the system's
+        // video layer, which that window shows)
+        let handed = @sfbase.lone_page.val is None && @sfbase.window_has_screen(s.station, s.screen)
         c.layer(fn() {
           c.box(
             style=@ui.style(w=Fixed(shown.w), h=Fixed(shown.h)).then(
@@ -237,7 +240,7 @@ fn screen_stage(c : @ui.Ctx, s : ScreenSess, u : ScreenUi, key : String, pair? :
             fn() {
               match s.stream {
                 // (live: on the system's video layer where it has one; faded or under the dark, drawn here)
-                Some(st) => c.stream(st, w=Fill(1.0), h=Fill(1.0), layer=!still && !over) |> ignore
+                Some(st) => c.stream(st, w=Fill(1.0), h=Fill(1.0), layer=!still && !over && !handed) |> ignore
                 None => ()
               }
               // zoomed in, the part of the screen the station sends alone, sharper, over the whole where it is
@@ -247,7 +250,7 @@ fn screen_stage(c : @ui.Ctx, s : ScreenSess, u : ScreenUi, key : String, pair? :
                     c.stream(
                       pst,
                       at=Some((p.x * shown.w, p.y * shown.h, p.w * shown.w, p.h * shown.h)),
-                      layer=!still && !over,
+                      layer=!still && !over && !handed,
                     )
                     |> ignore
                   })

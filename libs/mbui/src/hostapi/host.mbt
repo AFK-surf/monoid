@@ -31,6 +31,11 @@ pub(open) trait Host {
   window_opens(Self) -> Bool = _
   window_open(Self, String) -> Bool = _
   window_front(Self, String) -> Bool = _
+  windows_in_process(Self) -> Bool = _
+  window_open_id(Self, String) -> Int = _
+  window_front_id(Self, Int) -> Bool = _
+  window_close_id(Self, Int) -> Unit = _
+  window_current(Self) -> Int = _
   set_cursor(Self, Int) -> Unit = _
   set_badge(Self, Int) -> Unit = _
   menu_setup(Self, String) -> Unit = _
@@ -368,6 +373,31 @@ impl Host with window_open(_, _) {
 ///|
 impl Host with window_front(_, _) {
   false
+}
+
+///|
+impl Host with windows_in_process(_) {
+  false
+}
+
+///|
+impl Host with window_open_id(_, _) {
+  0
+}
+
+///|
+impl Host with window_front_id(_, _) {
+  false
+}
+
+///|
+impl Host with window_close_id(_, _) {
+  ()
+}
+
+///|
+impl Host with window_current(_) {
+  0
 }
 
 ///|
@@ -1646,6 +1676,41 @@ pub fn window_open(what : String) -> Bool {
 /// where it was minimized: whether there is one still open (false once it has closed, and where window_opens is not).
 pub fn window_front(what : String) -> Bool {
   current.val.window_front(what)
+}
+
+///|
+/// Whether a window of the app's own opens in this run, beside its first (window_open_id), rather than as another run
+/// of the program (window_open): one app, one process, every window drawn by the same program and the same core. A
+/// host that has not that (Windows', Linux's, a phone's, the web's) says false, and window_open is still its way.
+pub fn windows_in_process() -> Bool {
+  current.val.windows_in_process()
+}
+
+///|
+/// Another window of this run, for `what`: its id (1 and up, the first window being 0), 0 where none opened. The app
+/// is asked to draw it as it draws its first (@ui's window_slots.mbt: each window its own tree, the same program).
+pub fn window_open_id(what : String) -> Int {
+  current.val.window_open_id(what)
+}
+
+///|
+/// Window `wid` of this run (window_open_id) out of the Dock where it was minimized and to the front: whether it is
+/// still open.
+pub fn window_front_id(wid : Int) -> Bool {
+  current.val.window_front_id(wid)
+}
+
+///|
+/// Window `wid` of this run closed (never the first, 0, nor the run): what it showed let go of as the host tells it
+/// closed (an outside event, @ui's window_slots.mbt).
+pub fn window_close_id(wid : Int) -> Unit {
+  current.val.window_close_id(wid)
+}
+
+///|
+/// The window of this run the host is drawing a frame of or handing input from now (0, the first, between them).
+pub fn window_current() -> Int {
+  current.val.window_current()
 }
 
 ///|

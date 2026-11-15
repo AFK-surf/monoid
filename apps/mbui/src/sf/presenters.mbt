@@ -304,7 +304,12 @@ let presented_count : Ref[Int] = Ref(0)
 /// owner, what of them the tree draws) built again as that changes, wherever it was asked from, not as what one of
 /// them shows does (presented_items_of).
 // kept across runs: put back by presenters_reset
-let presented_said : @signals.Signal[Array[(Int, Bool, Bool)]] = @signals.signal([], same=fn(a, b) { a == b })
+let presented_said : Ref[@signals.Signal[Array[(Int, Bool, Bool)]]] = Ref(presented_said_new())
+
+///|
+fn presented_said_new() -> @signals.Signal[Array[(Int, Bool, Bool)]] {
+  @signals.signal([], same=fn(a, b) { a == b })
+}
 
 ///|
 /// What each menu presented offers, as it was last told (presented_changed), by its serial: its items as they show
@@ -344,12 +349,12 @@ let took_place : Map[Int, Int] = Map([])
 ///|
 /// Which are drawn (open, or going), by their serials: told each as it comes or is gone (presented_drawn_of).
 // kept across runs: put back by presenters_reset
-let presented_drawn_said : @signals.Keyed[Int] = @signals.keyed()
+let presented_drawn_said : Ref[@signals.Keyed[Int]] = Ref(@signals.keyed())
 
 ///|
 fn presented_told() -> Unit {
   // (one closed, whether the tree draws it still going out: what the host lets go of as it is gone)
-  presented_said.set(presented_now.map(fn(p) { (p.serial, p.open, !p.open && tree_presented.contains(p.serial)) }))
+  presented_said.val.set(presented_now.map(fn(p) { (p.serial, p.open, !p.open && tree_presented.contains(p.serial)) }))
 }
 
 ///|
@@ -382,7 +387,7 @@ pub fn presenters_reset() -> Unit {
   tree_presented.clear()
   tree_as_sheet.clear()
   presented_popovers.clear()
-  presented_drawn_said.set([])
+  presented_drawn_said.val.set([])
   presented_items_said.clear()
   presented_told()
   lists_of.clear()
@@ -493,7 +498,7 @@ fn present(shows : Shows, from : Anchor, line? : String = "", gone? : () -> Unit
   })
   @signals.start_batch()
   presented_told()
-  presented_drawn_said.set(presented_now.map(fn(p) { p.serial }))
+  presented_drawn_said.val.set(presented_now.map(fn(p) { p.serial }))
   @signals.end_batch()
 }
 
@@ -1407,7 +1412,7 @@ pub fn presented_drawn_of(serial : Int) -> Bool {
   let mut s = serial
   while true {
     // (read so: what reads it built again as it is presented or gone, not as others are)
-    presented_drawn_said.has(s) |> ignore
+    presented_drawn_said.val.has(s) |> ignore
     if presented_now.iter().any(fn(p) { p.serial == s }) {
       return true
     }
@@ -1484,14 +1489,14 @@ pub fn ask_here(
 /// Whether anything is presented now (the shell's own back waits while it is).
 pub fn presenting() -> Bool {
   // (read: what asks is built again as one is presented or let go)
-  presented_said.get() |> ignore
+  presented_said.val.get() |> ignore
   presented_now.iter().any(fn(p) { p.open })
 }
 
 ///|
 /// Whether a presenter still occupies the screen, including its declared exit transition.
 pub fn presenter_visible() -> Bool {
-  presented_said.get() |> ignore
+  presented_said.val.get() |> ignore
   !presented_now.is_empty()
 }
 
@@ -1644,7 +1649,7 @@ fn back_under(p : Presented) -> Bool {
 /// one over it dims at once as it goes; none open, the lowest still drawn as it goes, its scrim fading with it. Read
 /// as one is presented, closed or let go (`sheet`: whether they are drawn as sheets, the window Small).
 fn scrim_owner(sheet : Bool) -> Int {
-  presented_said.get() |> ignore
+  presented_said.val.get() |> ignore
   let dims = fn(p : Presented) {
     match p.shows {
       Panel(x) if x.stage => false
@@ -1658,7 +1663,7 @@ fn scrim_owner(sheet : Bool) -> Int {
   }
   for p in presented_now {
     // (still drawn: told as it is let go)
-    if dims(p) && presented_drawn_said.has(p.serial) {
+    if dims(p) && presented_drawn_said.val.has(p.serial) {
       return p.serial
     }
   }
@@ -1669,7 +1674,7 @@ fn scrim_owner(sheet : Bool) -> Int {
 /// Whether the one presented as `serial` is a dialog with another open over it (it takes nothing then: dimmed over
 /// itself, dialog_veil), read as one is presented or closed.
 fn dialog_covered(serial : Int) -> Bool {
-  presented_said.get() |> ignore
+  presented_said.val.get() |> ignore
   match presented_now.search_by(fn(q) { q.serial == serial }) {
     Some(i) =>
       presented_now[i].open &&
@@ -1682,7 +1687,7 @@ fn dialog_covered(serial : Int) -> Bool {
 /// How tall the topmost sheet open over the one presented as `serial` is, while it is open and one is (present_sheet's
 /// covered, its `over`'s height): None otherwise.
 fn sheet_over(serial : Int) -> Double? {
-  presented_said.get() |> ignore
+  presented_said.val.get() |> ignore
   match presented_now.search_by(fn(q) { q.serial == serial }) {
     Some(i) if presented_now[i].open =>
       presented_now[i + 1:].iter().filter(fn(q) { q.open && how_of(q.shows, q.from, true) == AsSheet }).last().map(fn(q) {
@@ -1736,7 +1741,7 @@ fn push_of(over : Double) -> Double {
 /// opened it), and anchored to what opened it wherever that is.
 /// `alone`: nothing of the app's is under it (a share over another app): a sheet on the page's paper, not frosted.
 pub fn presented(c : @ui.Ctx, alone? : Bool = false) -> Unit {
-  presented_said.get() |> ignore
+  presented_said.val.get() |> ignore
   presented_alone.val = alone
   presented_how.clear()
   let (ww, _) = c.window_size()
@@ -1864,7 +1869,7 @@ pub fn presented(c : @ui.Ctx, alone? : Bool = false) -> Unit {
     presented_now.clear()
     presented_now.append(left)
     // (what read whether one of them is drawn told: a row marked while its menu is, built again unmarked)
-    presented_drawn_said.set(presented_now.map(fn(p) { p.serial }))
+    presented_drawn_said.val.set(presented_now.map(fn(p) { p.serial }))
   }
 }
 

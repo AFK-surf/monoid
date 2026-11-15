@@ -851,8 +851,9 @@ pub(all) struct App {
   mut held : Int
   mut held_long : Bool
   /// what was said last of a write (a toast): its words, which saying it is (one said again is a new one), what it
-  /// offers to do (its button's words, "" none: an archive's 撤销) and what that does, said together (toast_later)
-  toast : @signals.Signal[ToastSaid]
+  /// offers to do (its button's words, "" none: an archive's 撤销) and what that does, said together (toast_later);
+  /// each window's of the run its own (window.mbt: said in the window it was said in)
+  mut toast : @signals.Signal[ToastSaid]
 }
 
 ///|
@@ -878,7 +879,12 @@ pub let app : App = {
   switch_way: 0,
   held: 0,
   held_long: false,
-  toast: @signals.signal(toast_none, same=fn(a, b) { physical_equal(a, b) }),
+  toast: toast_said_new(),
+}
+
+///|
+fn toast_said_new() -> @signals.Signal[ToastSaid] {
+  @signals.signal(toast_none, same=fn(a, b) { physical_equal(a, b) })
 }
 
 ///|
@@ -1197,6 +1203,7 @@ pub fn reset() -> Unit {
   // the page shown alone in a window of its own (window.mbt)
   lone_page.val = None
   windows_open.clear()
+  windows_here_show.clear()
 }
 
 ///|

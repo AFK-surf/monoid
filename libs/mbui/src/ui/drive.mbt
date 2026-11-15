@@ -5,6 +5,7 @@
 // InputConnection and KEYCODE_PASTE); else straight to the app's handlers.
 //
 //   # a comment                 wait MS                   timeout MS (for until/gone/field after it; 20000 to start)
+//   window N                    the steps after it act in window N of the run (window_slots.mbt; 0 the first)
 //   until TEXT                  words containing TEXT on screen (a text, rich text, a field's placeholder, or
 //                               icon:NAME, an @sf icon; img:NAME an image whose source has NAME in it; switch:LABEL
 //                               the switch that turns LABEL), within the
@@ -126,6 +127,8 @@
 priv struct Driver {
   steps : Array[String]
   mut at : Int
+  // the window of the run its steps act in and wait on (`window N`: window_slots.mbt; 0 the first)
+  mut wid : Int
   mut since : Double
   mut timeout : Double
   mut release_at : Double
@@ -282,6 +285,7 @@ fn drive_start(script : String, dir : String, done_dir? : String = "") -> Unit {
     since: -1.0,
     timeout: 20000.0,
     release_at: -1.0,
+    wid: 0,
     rx: 0.0,
     ry: 0.0,
     gx: 0.0,
@@ -803,6 +807,11 @@ fn press(x : Double, y : Double, up : Bool) -> Unit {
 /// own: what it waits for on screen comes with a frame (an input's, a message's, a motion's, the host's event); what
 /// it waits for in time (a step's timeout, a hold let go, a pause, a shot taken by another) is a wake at that time.
 fn drive_frame(c : Ctx) -> Unit {
+  // (its steps that window's of the run they act in: taken by its frames alone)
+  match driver.val {
+    Some(d) if d.wid != window_now.now => return
+    _ => ()
+  }
   drive_steps(c)
   guard driver.val is Some(d) else { return }
   // (on the frames that come after it, none asked for of its own: what the wheel set moving draws them)
@@ -1053,6 +1062,11 @@ fn drive_steps(c : Ctx) -> Unit {
         }
       "timeout" => {
         d.timeout = number(arg)
+        next()
+      }
+      // the steps after it act in window N of the run (0 the first), taken by that window's frames
+      "window" => {
+        d.wid = number(arg).to_int()
         next()
       }
       "empty" if arg == "now" =>

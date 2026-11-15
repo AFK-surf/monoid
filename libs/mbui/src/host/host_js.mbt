@@ -1336,6 +1336,15 @@ fn window_front(what : String) -> Bool {
 }
 
 ///|
+/// The windows of this run (see host_native.mbt): a browser's page has its one.
+fn windows(op : Int, wid : Int, what : String) -> Int {
+  ignore(op)
+  ignore(wid)
+  ignore(what)
+  0
+}
+
+///|
 /// The pointer's shape (see host_native.mbt): the canvas's CSS cursor.
 fn set_cursor(kind : Int) -> Unit {
   js_set_cursor(kind)

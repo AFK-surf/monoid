@@ -146,12 +146,12 @@ pub let mod_cmd : Int = 8
 priv struct Desk {
   /// what was clicked with the secondary button since the last frame: the target under it and what holds it
   /// (innermost first: Ctx::secondary_press), where
-  mutable_menus : Array[(Array[Int], Double, Double)]
+  mut mutable_menus : Array[(Array[Int], Double, Double)]
   /// what this frame reads of them (moved over from `mutable_menus` as a frame starts)
-  menus : Array[(Array[Int], Double, Double)]
+  mut menus : Array[(Array[Int], Double, Double)]
   /// keys since the last frame: code, modifiers, whether a field took it
-  mutable_keys : Array[(Int, Int, Bool)]
-  keys : Array[(Int, Int, Bool)]
+  mut mutable_keys : Array[(Int, Int, Bool)]
+  mut keys : Array[(Int, Int, Bool)]
   /// the shape the host shows
   mut shown : Int
   /// the shape the old frame has for what is under the pointer (Ctx::show_cursor), shown where it is the old views'
@@ -161,10 +161,10 @@ priv struct Desk {
   /// for; the files read (the picture as one) for a field that takes files (Ctx::editor `files`), by its id, until the
   /// app takes them
   mut pasting : (Int, ClipboardRead)?
-  pasted : Map[Int, Array[(String, Bytes)]]
+  mut pasted : Map[Int, Array[(String, Bytes)]]
   /// lists dragged by the mouse as a finger drags them (true unless the app says not), as this frame's build says (in
   /// the order said: the last said holds) and as the last one's said
-  next_mouse_drags : Array[Bool]
+  mut next_mouse_drags : Array[Bool]
   mut mouse_drags : Bool
   /// rich text built now is picked with the pointer (Ctx::selectable), and in what colour picked words are grounded
   mut selecting : Bool
@@ -172,7 +172,7 @@ priv struct Desk {
   /// the paragraphs that can be picked, as this frame paints them and as the last one did (in the order they are
   /// painted): their id, the layer they are in (Ctx::layer_of), where they stand in the page (Ctx::page_order), layout, words, where their text starts, the
   /// part of them shown (x0, y0, x1, y1)
-  next_sels : Array[SelTarget]
+  mut next_sels : Array[SelTarget]
   mut sels : Array[SelTarget]
 }
 

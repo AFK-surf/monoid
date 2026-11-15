@@ -52,6 +52,11 @@ pub struct NativeView {
   /// what the host was last told: the same 12 and shown
   priv told : FixedArray[Double]
   priv mut told_shown : Bool
+  /// the window of the run it was last drawn in (window_slots.mbt: one beside the first, or the first, 0), and the one
+  /// it was last told it stands in: it is placed (and hidden) by that window's frames alone, and moves to another as
+  /// that one draws it
+  priv mut wid : Int
+  priv mut told_wid : Int
   priv mut closed : Bool
   /// a video's frames' times asked of the host, and read once it said them (asked for in every frame it plays)
   priv mut frames_asked : Bool
@@ -246,6 +251,8 @@ fn NativeView::make(
     hole: FixedArray::make(4, 0.0),
     told: FixedArray::make(12, -1.0),
     told_shown: false,
+    wid: window_now.now,
+    told_wid: window_now.now,
     closed: false,
     frames_asked: false,
     frame_times: None,
@@ -803,6 +810,11 @@ fn NativeView::paint_in(
   if v.closed || v.id == 0 {
     return false
   }
+  // (a view a window beside the first draws is that window's while it is open: another window's frame, the first's
+  // as what showed it there goes, takes it not back, nor hides it there: drawn by none of its paint)
+  if v.wid != window_now.now && v.wid > 0 && windows_beside.contains(v.wid) {
+    return false
+  }
   let (x, y, w, h) = match content {
     Some((cx, cy, cw, ch)) => (nx + cx, ny + cy, cw, ch)
     None => (nx, ny, nw, nh)
@@ -859,6 +871,7 @@ fn NativeView::paint_in(
     v.hole[1] = sy
     v.hole[2] = sw
     v.hole[3] = sh
+    v.wid = window_now.now
   } else {
     v.hole[2] = 0.0
     return false
@@ -992,7 +1005,8 @@ fn Ctx::sync_views(self : Ctx) -> Unit {
   self.follow_holes(holes)
   self.stack_views(holes)
   for v in open_views.copy() {
-    if v.closed {
+    // (a view another window of the run draws is that window's to place)
+    if v.closed || v.wid != window_now.now {
       continue
     }
     // (shown where this frame draws its hole, wherever that was painted: a row kept and drawn again copies it, its
@@ -1000,7 +1014,7 @@ fn Ctx::sync_views(self : Ctx) -> Unit {
     // its clip, its node put by) has none: not where an earlier paint of the same build had it)
     let shown = holes.contains(v.id)
     let z = window_zoom_drawn.val
-    let mut moved = shown != v.told_shown || z != v.told_zoom
+    let mut moved = shown != v.told_shown || z != v.told_zoom || v.wid != v.told_wid
     if z != v.told_zoom && v.touch != All {
       h_view_tell(v.id, 2, "\{touch_name(v.touch)} \{touch_slop() * z}")
     }
@@ -1024,6 +1038,7 @@ fn Ctx::sync_views(self : Ctx) -> Unit {
       }
       v.told_shown = shown
       v.told_zoom = z
+      v.told_wid = v.wid
       // on a run's log (MBUI_DRAW_LOG): where it was told to go, in device pixels, for the host's own saying where it
       // put it (VIEWAT) to be compared with (scripts/host_contract.sh HOST views): its rect, its clip, its roundest
       // corner, then each corner (top left, then round it)
@@ -1120,7 +1135,7 @@ fn NativeView::take_reads(self : NativeView) -> Unit {
 /// (`view_tell` 5) when the order of those shown is not the one told last; one alone is over nothing.
 fn Ctx::stack_views(self : Ctx, holes : Map[Int, Int]) -> Unit {
   ignore(self)
-  let shown = open_views.filter(fn(v) { !v.closed && v.id != 0 && holes.contains(v.id) })
+  let shown = open_views.filter(fn(v) { !v.closed && v.id != 0 && v.wid == window_now.now && holes.contains(v.id) })
   shown.sort_by_key(fn(v) { holes.get(v.id).unwrap_or(0) })
   let ids = shown.map(fn(v) { v.id })
   if ids == stacked_views {

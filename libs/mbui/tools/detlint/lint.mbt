@@ -230,8 +230,8 @@ fn lint_mbt(
       }
     }
   }
-  // the frames' clock read followed by its own signal (`frame_clock.get()`), outside the tests and what paints
-  // (build-clock)
+  // the frames' clock read followed by its own signal (`frame_clock.get()`; the window's of the run in place,
+  // `frame_clock.val.get()`), outside the tests and what paints (build-clock)
   let paint_at = paint_flows(f, paint_args(f))
   let painting = fn(k : Int) { in_paint(f, k, paint_at, painted) }
   for k, tk in toks {
@@ -239,7 +239,15 @@ fn lint_mbt(
       tk.text == "frame_clock" &&
       k + 2 < toks.length() &&
       toks[k + 1].text == "." &&
-      toks[k + 2].text == "get" &&
+      (
+        toks[k + 2].text == "get" ||
+        (
+          k + 4 < toks.length() &&
+          toks[k + 2].text == "val" &&
+          toks[k + 3].text == "." &&
+          toks[k + 4].text == "get"
+        )
+      ) &&
       !f.in_test(k) &&
       !painting(k) {
       add("build-clock", k, f.line_text(k))

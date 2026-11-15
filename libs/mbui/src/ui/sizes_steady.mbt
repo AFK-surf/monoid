@@ -22,10 +22,10 @@ priv struct SizesSteady {
   mut held : Bool
   mut file : String
   /// each measure's last frames (rows_steady_fault's samples), by node and measure
-  seen : Map[(Int, Int, Int64, Bool), Array[(Double, Double, Double)]]
+  mut seen : Map[(Int, Int, Int64, Bool), Array[(Double, Double, Double)]]
   /// when each last turned back (rows_turn_ms)
-  turned : Map[(Int, Int, Int64, Bool), Double]
-  found : Set[String]
+  mut turned : Map[(Int, Int, Int64, Bool), Double]
+  mut found : Set[String]
   mut window : (Double, Double)
   /// how much bigger the system's setting made words as the last frame was drawn (font_scale): all laid out anew for it
   /// at once, as for the window made another size
@@ -34,10 +34,10 @@ priv struct SizesSteady {
   mut hand : Double
   /// when each column of the tree's was last put at once (Tree::scroll_put_at) and its list's keys last changed by data
   /// (Tree::scroll_keys_at) as the last frame was judged, by its node: either since is this frame's
-  puts : Map[Int, (Double, Double)]
+  mut puts : Map[Int, (Double, Double)]
   /// the width each node of the tree's that says it lays what it holds out at (View::lays_anew) as the last frame was
   /// judged, by its node: another now is this frame's step of what it holds, laid out anew at it at once
-  laids : Map[Int, Double]
+  mut laids : Map[Int, Double]
   /// the moment of the last frame judged: what an answer changed at once since is this frame's (Tree::answered_between)
   mut judged : Double
 }

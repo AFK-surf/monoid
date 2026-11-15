@@ -28,6 +28,9 @@
 //   [MBUI_LOCALE=en-US: the app's language, as a device's] [MBUI_FONT_SCALE=1.3: the system's size of words, as a
 //   device's set bigger] [MBUI_FILM_LAST=<last.png>: the run's last frame as the renderer drew it]
 //   [MBUI_FILM_COPIED=<copied.png.b64>: the picture the app last put on the clipboard, a PNG in base64]
+//   [MBUI_FILM_WINDOWS=1: the windows the app opens beside its first open in the run, each the scene's size, as on a
+//   Mac (=run: as runs of their own, none filmed), MBUI_FILM_WINDOW_SIZE=WxH their size (from the picture's top
+//   left); MBUI_FILM_WINDOW=N films window N of them, the screen's grey before it opens]
 //   [MBUI_FILM_NAV_ABLE=1: the system lays out the app's tabs in bars of its own, an iPhone Duo's (@hostapi.nav_bar_able;
 //   what the system draws of them not filmed: the app beside them)]
 // The film is H.264, lossy: each frame's pixels are the encoder's guess of them, and a guess that leans on the frames
@@ -215,6 +218,21 @@ fn draw_frame(t : @ui.Tester, buf : Ref[FixedArray[Double]]) -> Bool {
 /// The frame the Tester presented last, copied into `buf` as this host's renderer draws it: its pictures the host's own
 /// (Tester::live_image), one the host has not (a stream's frame) left out. How many instances, what is under them.
 fn host_frame(t : @ui.Tester, buf : Ref[FixedArray[Double]]) -> (Int, (Double, Double, Double)) {
+  // (MBUI_FILM_WINDOW=N: window N of the run, scene.mbt's MBUI_FILM_WINDOWS; before it opens, and after it closed, the
+  // screen's grey under it)
+  let wid = number(arg("MBUI_FILM_WINDOW")).unwrap_or(0.0).to_int()
+  if wid > 0 {
+    guard t.windows_beside().iter().any(fn(o) { o.0 == wid }) else { return (0, (0.86, 0.86, 0.88)) }
+    let out = Ref((0, (0.0, 0.0, 0.0)))
+    t.in_window(wid, fn() { out.val = window_frame(t, buf) })
+    return out.val
+  }
+  window_frame(t, buf)
+}
+
+///|
+/// The frame the window in place presented last, as host_frame copies it.
+fn window_frame(t : @ui.Tester, buf : Ref[FixedArray[Double]]) -> (Int, (Double, Double, Double)) {
   let (inst, n, (r, g, b)) = t.presented()
   let len = n * inst_size
   if buf.val.length() < len {
@@ -363,3 +381,4 @@ fn number(s : String) -> Double? {
 pub fn live() -> @ui.Live {
   { host: @hostapi.host(), turn: fn() { spin(1.0) } }
 }
+

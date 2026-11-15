@@ -134,21 +134,21 @@ fn reads_out() -> Bool {
 /// The window's size the frame is built and laid out in (frame_body), as frame_drawn begins it: what is built for it
 /// (the frame's root) built again as it changes.
 // kept across runs: set as each frame begins
-let window_size : @signals.Signal[(Double, Double)] = @signals.signal((0.0, 0.0), same=fn(a, b) { a == b })
+let window_size : Ref[@signals.Signal[(Double, Double)]] = Ref(@signals.signal((0.0, 0.0), same=fn(a, b) { a == b }))
 
 ///|
 /// The grid of the device's pixels the frame is laid out on (its scale; whether the host sets things on whole pixels:
 /// whole_px_layout), as frame_drawn begins it: what is built for it (the frame's root: Ctx::scale, Ctx::whole_px) built
 /// again as it changes; what was laid out on another (a node, a row kept as laid out) laid out again.
 // kept across runs: set as each frame begins
-let pixel_grid : @signals.Signal[(Double, Bool)] = @signals.signal((0.0, false), same=fn(a, b) { a == b })
+let pixel_grid : Ref[@signals.Signal[(Double, Bool)]] = Ref(@signals.signal((0.0, false), same=fn(a, b) { a == b }))
 
 ///|
 /// What the frame is drawn on, as it begins (frame_drawn): the window `w` × `h` at `scale`; what the host measures words
 /// in (its glyphs' generation: text_arrive); where the old views are laid out (old_laid_arrive).
 fn frame_settings_arrive(w : Double, h : Double, scale : Double) -> Unit {
-  window_size.set((w, h))
-  pixel_grid.set((scale, whole_px_layout()))
+  window_size.val.set((w, h))
+  pixel_grid.val.set((scale, whole_px_layout()))
   atlas_said.val = Some(h_atlas_generation())
   text_arrive()
   old_laid_arrive()
@@ -158,7 +158,7 @@ fn frame_settings_arrive(w : Double, h : Double, scale : Double) -> Unit {
 /// The window's frame built and laid out (frame_body) in the window and on the pixels it is drawn on as it began, read
 /// so: built again as the window's size or its pixels change.
 fn frame_body_drawn(c : Ctx, t : Double, tell? : Bool = true) -> Double {
-  let (w, h) = window_size.get()
-  let (scale, _) = pixel_grid.get()
+  let (w, h) = window_size.val.get()
+  let (scale, _) = pixel_grid.val.get()
   frame_body(c, w, h, scale, t, tell~)
 }

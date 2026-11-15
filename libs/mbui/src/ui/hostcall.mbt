@@ -152,6 +152,15 @@ struct FakeHost {
   windows_opened : Array[String]
   windows_closed : Array[String]
   windows_fronted : Array[String]
+  /// whether its windows open in this run (Tester::set_windows_in_process: the Mac's), the ids given so far, the window
+  /// drawn or handed input now, each open one's size in points (Tester::set_window_beside_size), and the ids the app
+  /// brought to the front and closed, oldest first
+  mut windows_in_process : Bool
+  mut window_ids : Int
+  mut window_at : Int
+  window_sizes : Map[Int, (Double, Double)]
+  window_ids_fronted : Array[Int]
+  window_ids_closed : Array[Int]
   /// the number on the app's icon as last told (@ui.set_badge)
   mut badge : Int
   /// what the app's own native calls say, by name, as its host would hand them on (Tester::set_app_said), and what
@@ -987,6 +996,10 @@ let outside_op = 15
 let outside_autofill = 16
 
 ///|
+/// A window of this run beside its first closed by the person (id: its id; window_slots.mbt).
+let outside_window = 17
+
+///|
 /// Every kind above, by its name: each its own number (outside_kinds_wbtest.mbt), the hosts' named the same
 /// (Native.java's OUTSIDE_*, apple.h's, win.h's and android_host.c's MB_OUTSIDE_*, web/host.js's OUTSIDE_*), every
 /// `outside_*` here in it: scripts/chk outside-kinds, host_contract.sh HOST kinds
@@ -1009,6 +1022,7 @@ fn outside_kinds() -> Array[(String, Int)] {
     ("perf", outside_perf),
     ("op", outside_op),
     ("autofill", outside_autofill),
+    ("window", outside_window),
   ]
 }
 
@@ -1188,6 +1202,11 @@ fn views_told_changed() -> Unit {
 /// The host's event: what it did for the app is done (`state`: 1 done, -1 failed), or (a view, 0) it waits on the
 /// app now: the bytes a player reads, a site's answer. Until the app answers, the host does nothing for it.
 fn on_outside(kind : Int, id : Int, state : Int) -> Unit {
+  // (a window beside the first closed: let go of between frames, the first window's state in place)
+  if kind == outside_window {
+    window_closed_heard(id)
+    return
+  }
   // (one event, at its own moment: view_host.mbt)
   view_event(fn() { on_outside_now(kind, id, state) }, what=if kind == outside_posted { "messages" } else { "host" })
 }
