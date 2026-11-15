@@ -58,7 +58,7 @@ export type MovesDeps = {
     arrived?(keys: string[]): Promise<void>;
   }) | null;
   /// The jobs (jobs.ts): those up (of sessions `keys`, or of `ws`'s chats), one stopped, one started.
-  jobs: { up(keys: string[] | null, ws?: string): (CarriedJob & { id: string })[]; stop(id: string, why: string): Promise<void>; start(job: CarriedJob): void; stopNamed(session: string, name: string): Promise<void> };
+  jobs: { up(keys: string[] | null, ws?: string): (CarriedJob & { id: string })[]; stop(id: string, why: string): Promise<void>; start(job: CarriedJob): Promise<void> | void; stopNamed(session: string, name: string): Promise<void> };
   /// config.json's profiles as written; one's login moved to another station (share/index.ts `moveProfile`).
   profiles: () => Json[];
   moveProfile: (id: string, to: string) => Promise<unknown>;
@@ -532,7 +532,7 @@ export class Moves {
           // (in its chat's directory as it is here: what was under the other's data directory is under this one's)
           const cwd = typeof j.cwd === "string" ? moved(j.cwd, String(request.fromData ?? ""), this.#d.data) : row.workspace;
           if (this.#d.store.jobsUp().some((x) => x.sessionKey === j.session && x.name === j.name && x.command === j.command)) return { ok: true };
-          this.#d.jobs.start({ ...j, cwd });
+          await this.#d.jobs.start({ ...j, cwd });
           return { ok: true };
         }
         case "move.arrived": {

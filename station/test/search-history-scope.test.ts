@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { makeStore } from "../src/read/store.ts";
-import { historyHits } from "../src/search/sources.ts";
+import { historyHits } from "./reference/search-sources.ts";
 import { Store } from "../src/store/store.ts";
 
 test("a history search brings out only sessions visible to its workspace", async () => {

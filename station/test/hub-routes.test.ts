@@ -590,9 +590,9 @@ test("a chat's ended jobs cleared, a job stopped from the pages", async () => {
   try {
     const [, made] = await r.ask("POST", "/sessions", { runtime: "claude" });
     const work = r.store.getSession(made.key)!.workspace;
-    const done = r.jobs.start(made.key, "done", "true", work, null, false);
+    const done = await r.jobs.start(made.key, "done", "true", work, null, false);
     // Never ends by itself: still running when it is stopped, however slow the machine.
-    const live = r.jobs.start(made.key, "watch", "tail -f /dev/null", work, null, false);
+    const live = await r.jobs.start(made.key, "watch", "tail -f /dev/null", work, null, false);
     await until("it ends", () => r.store.getJob(done.id)!.state === "exited");
     assert.deepEqual(await r.ask("DELETE", "/sessions/nope/jobs"), [404, { error: "unknown session nope" }]);
     assert.deepEqual(await r.ask("DELETE", `/sessions/${made.key}/jobs`), [200, { removed: [done.id] }]);
@@ -615,8 +615,8 @@ test("open jobs name their chats: the session's own, listed or archived", async 
     // (what archiving set going is done: its jobs from before ended, not those started after)
     await settle();
     // Never end by themselves: still running as they are listed, however slow the machine.
-    const a = r.jobs.start(listed.key, "watch", "tail -f /dev/null", r.store.getSession(listed.key)!.workspace, null, false);
-    const b = r.jobs.start(gone.key, "watch", "tail -f /dev/null", r.store.getSession(gone.key)!.workspace, null, false);
+    const a = await r.jobs.start(listed.key, "watch", "tail -f /dev/null", r.store.getSession(listed.key)!.workspace, null, false);
+    const b = await r.jobs.start(gone.key, "watch", "tail -f /dev/null", r.store.getSession(gone.key)!.workspace, null, false);
     const [status, open] = await r.ask("GET", "/jobs");
     assert.equal(status, 200);
     const chatOf = (id: string) => open.find((j: any) => j.id === id)?.chat;

@@ -59,7 +59,7 @@ export function jobTools(jobs: Jobs, workspace: (session: string) => string | nu
         // A directory given is looked at first, as ops/places.ts does; the job itself runs there as the station's
         // launcher does (macOS may keep it out of a protected folder, as any of the agent's commands).
         if (places && given !== "") await places.directory(cwd, { lang: "en", agent: true });
-        const job = jobs.start(key, text(args, "name"), text(args, "command"), cwd, port, watch, places !== undefined && given !== "");
+        const job = await jobs.start(key, text(args, "name"), text(args, "command"), cwd, port, watch, places !== undefined && given !== "");
         return pretty(jobs.view(job));
       },
     },

@@ -75,7 +75,8 @@ export const MovesLive = Layer.effectDiscard(
           .filter((j) => !j.sessionKey.startsWith("remote:") && (keys !== null ? keys.includes(j.sessionKey) : ws === undefined || hub.ofWorkspace(j.sessionKey, ws)))
           .map((j) => ({ id: j.id, session: j.sessionKey, name: j.name, command: j.command, cwd: j.cwd, port: j.port, watch: j.watch })),
         stop: async (id) => void (await agents.jobs.stop(id)),
-        start: (j) => void agents.jobs.start(j.session, j.name, j.command, j.cwd ?? store.getSession(j.session)?.workspace ?? data, j.port ?? null, j.watch === true),
+        // (the jobs run in the MoonBit program, #6387: a start answers once it went, or with why not)
+        start: async (j) => void (await agents.jobs.start(j.session, j.name, j.command, j.cwd ?? store.getSession(j.session)?.workspace ?? data, j.port ?? null, j.watch === true)),
         stopNamed: async (session, name) => {
           for (const j of store.jobsUp().filter((x) => x.sessionKey === session && x.name === name)) await agents.jobs.stop(j.id);
         },

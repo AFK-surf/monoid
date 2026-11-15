@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { openStore } from "../src/read/store.ts";
 import { type Asker, pickAsync, terms } from "../src/search/match.ts";
 import { Search } from "../src/search/search.ts";
-import { SEARCH_NEXT_MESSAGE_TIMES, stationDocSteps } from "../src/search/sources.ts";
+import { SEARCH_NEXT_MESSAGE_TIMES, stationDocSteps } from "./reference/search-sources.ts";
 import { Store, newMessage } from "../src/store/store.ts";
 
 test("a chat-only search does not read the messages of a chat whose title and session do not match", async () => {

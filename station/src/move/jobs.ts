@@ -21,7 +21,7 @@ export type JobsDeps = {
   /// its session (throws why not).
   up: (keys: string[] | null, ws?: string) => (CarriedJob & { id: string })[];
   stop: (id: string, why: string) => Promise<void>;
-  start: (job: CarriedJob) => void;
+  start: (job: CarriedJob) => Promise<void> | void;
   /// The chat item a session is of (chats.ts: the first of those sharing its home chat).
   chatOf: (session: string) => string;
   ask: (station: string, request: Json) => Promise<Json>;
@@ -69,10 +69,12 @@ export class JobsModule implements Module {
   }
 
   #startHere(j: CarriedJob): void {
+    // (a start answers as it went, the jobs' program's: its refusal logged, as one thrown here was)
+    const failed = (e: unknown) => log.warn("move", "a job not started again here", { job: j.name, error: (e as Error).message });
     try {
-      this.#d.start(j);
+      void Promise.resolve(this.#d.start(j)).catch(failed);
     } catch (e) {
-      log.warn("move", "a job not started again here", { job: j.name, error: (e as Error).message });
+      failed(e);
     }
   }
 

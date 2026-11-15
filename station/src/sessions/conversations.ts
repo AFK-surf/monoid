@@ -325,6 +325,21 @@ export async function attach(hub: Hub, key: string, paths: string[], into: strin
   return out;
 }
 
+/// Why a card may not wait for `assignee` in chat `thread`, or null: it is an account an agent runs on here (a profile's
+/// name or email) and nobody of that email wrote in the chat. Claude Code tells its model its account's email as "the
+/// user's", which agents took for the person deciding, and the card waited in a 待处理 nobody reads (2026-11-15). One who
+/// runs their agents on their own account and writes in the chat is still theirs to be asked.
+function runnerAssignee(hub: Hub, thread: number, assignee: string): string | null {
+  const own = (v: unknown) => (typeof v === "string" ? v.trim().toLowerCase() : "");
+  if (!hub.config().profiles.some((p) => own(p.name) === assignee || own(p.email) === assignee)) return null;
+  const db = hub.store.db;
+  if (db.prepare("SELECT 1 FROM thread_people WHERE thread = ? AND lower(author) = ? LIMIT 1").get(thread, assignee) !== undefined) return null;
+  const wrote = db.prepare("SELECT author FROM thread_people WHERE thread = ? AND author LIKE '%@%' AND author NOT LIKE '%:%' LIMIT 10").all(thread) as { author: string }[];
+  const people = wrote.map((r) => r.author);
+  const who = people.length > 0 ? `: who wrote here is ${people.join(", ")}` : "";
+  return `card.assignee ${assignee} is an account agents run on here, not a person in this chat (an email your runtime calls its user's is that account). Set it to the deciding person's email from their message's from${who}.`;
+}
+
 /// chat_post: a message to one of the session's conversations, maybe with files and a card, maybe ending its turn.
 export async function chatPost(hub: Hub, key: string, args: Args, held: Held = { id: null, args }): Promise<string> {
   const identity = actorOf(hub, key)?.messageIdentity() ?? undefined;
@@ -369,6 +384,8 @@ export async function chatPost(hub: Hub, key: string, args: Args, held: Held = {
   const thread = target(hub, key, args.to);
   if (store.manuallyArchived(thread.thread.id)) throw new Error(`${threadAddress(thread.thread.channel, thread.thread.threadTs)} was archived by hand: it takes no messages until someone restores it`);
   const chat = hub.chat(thread.connect);
+  const refused = typeof card?.assignee === "string" ? runnerAssignee(hub, thread.thread.id, card.assignee) : null;
+  if (refused !== null) throw new Error(refused);
   // A login card on a platform: its page to open, with a field for the code that page gives or the device code to enter
   // there; so only for a login of this station at such a step. Elsewhere the card is still kept in the still.fail chat
   // (and its 待处理), while the platform message carries the link in its text.

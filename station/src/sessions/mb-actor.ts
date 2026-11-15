@@ -45,6 +45,14 @@ type Mirror = {
   closed: boolean;
 };
 
+/// What the program asks of the station that is no session's, and tells it, under a key of its own (`shell`).
+export type ProgramShell = {
+  readonly key: string;
+  readonly runtime: RuntimeKind;
+  asked(f: string, args: Json[]): Promise<Json>;
+  told(f: string, args: Json[]): void;
+};
+
 /// The program, one a hub (`ActorsProgram.open`).
 export class ActorsProgram {
   readonly #proc: SessionsProgram;
@@ -55,7 +63,7 @@ export class ActorsProgram {
     exited: (code) => this.#lost(code),
   };
   readonly #clock: Clock.Clock;
-  readonly #actors = new Map<string, MbActor>();
+  readonly #actors = new Map<string, MbActor | ProgramShell>();
   readonly #timers = new Map<number, Fiber.Fiber<void>>();
   /// Lines said to it, those it said it took in, and whether something of it runs (`active`): `busy`.
   #sent = 0;
@@ -115,6 +123,12 @@ export class ActorsProgram {
 
   /// What it asked that is being answered here: its actor waits on it.
   #answering = 0;
+
+  /// What answers for `shell.key` that is no session's (the jobs, jobs/jobs.ts: `#jobs`): what the program asks of it
+  /// and tells it.
+  shell(shell: ProgramShell) {
+    this.#actors.set(shell.key, shell);
+  }
 
   actor(key: string, runtime: RuntimeKind, deps: SessionDeps): MbActor {
     const actor = new MbActor(this, key, runtime, deps);
@@ -209,7 +223,7 @@ export class ActorsProgram {
       return;
     }
     if (actor === undefined) return;
-    if (said.mirror !== undefined) actor.mirrored(said.state);
+    if (said.mirror !== undefined) (actor as MbActor).mirrored?.(said.state);
     else if (typeof said.rpc === "number") {
       const id = said.rpc;
       this.#answering++;
@@ -226,7 +240,7 @@ export class ActorsProgram {
     }
   }
 
-  forget(key: string, actor: MbActor) {
+  forget(key: string, actor: MbActor | ProgramShell) {
     if (this.#actors.get(key) === actor) this.#actors.delete(key);
   }
 

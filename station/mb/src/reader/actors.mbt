@@ -120,11 +120,13 @@ priv struct Actors {
   mut seen : Int
   /// the station's database, where Node said it is (a store in memory is Node's alone)
   mut db : @sql.Db?
+  /// the station's background jobs (jobs.mbt), Node's shell of them the pseudo-actor `#jobs`
+  mut jobs : JobsState
 }
 
 ///|
 fn Actors::new(host : @host.Host) -> Actors {
-  { host, actors: Map([]), asked: Map([]), timers: Map([]), next: 0, now: 0.0, active: 0, seen: 0, db: None }
+  { host, actors: Map([]), asked: Map([]), timers: Map([]), next: 0, now: 0.0, active: 0, seen: 0, db: None, jobs: JobsState::new() }
 }
 
 ///|
@@ -381,6 +383,7 @@ fn Actors::heard(self : Actors, line : String) -> Unit {
       self.timers.clear()
       self.seen = 1
       self.active = 0
+      self.jobs = JobsState::new()
       if self.db is Some(db) {
         db.close()
       }
@@ -417,6 +420,30 @@ fn Actors::heard(self : Actors, line : String) -> Unit {
     _ => ()
   }
   guard said.value("actor") is Some(String(key)) else { return }
+  if key == jobs_key {
+    // (the jobs' calls: each a fiber of its own, as an actor's call is before it is queued)
+    if said is { "call": Number(id, ..), "method": String(method), .. } {
+      let args = match said.value("args") {
+        Some(Array(args)) => args
+        _ => []
+      }
+      self.spawn(() => {
+        let answer : Map[String, Json] = { "returned": Json::number(id) }
+        let value = self.jobs_called(method, args) catch {
+          e => {
+            answer["error"] = Json::string(Asked::message(e))
+            if e is Asked(j) {
+              answer["cause"] = j
+            }
+            Json::null()
+          }
+        }
+        answer["value"] = value
+        self.say_node(answer)
+      })
+    }
+    return
+  }
   let a = match said.value("runtime") {
     Some(String(runtime)) => self.actor(key, runtime)
     _ =>

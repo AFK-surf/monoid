@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { makeStore } from "../src/read/store.ts";
 import { pick, pickAsync, type Asker, type Doc } from "../src/search/match.ts";
-import { jobDocs, stationDocs, stationDocSteps } from "../src/search/sources.ts";
+import { jobDocs, stationDocs, stationDocSteps } from "./reference/search-sources.ts";
 import { Store } from "../src/store/store.ts";
 
 const asker: Asker = { workspace: "mine", home: false, scopes: ["write"] };

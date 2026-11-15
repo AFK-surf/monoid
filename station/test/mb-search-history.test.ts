@@ -91,7 +91,7 @@ const pages = [{}, { limit: 3 }, { limit: 2, offset: 3 }, { limit: 200 }];
 
 test("the MoonBit program searches the execution histories as the worker does", { skip: binary === null ? "the MoonBit program is not built here" : false, timeout: 300_000 }, async () => {
   const f = await station();
-  const worker = new Search({ data: f.data, mb: null }), program = new Search({ data: f.data });
+  const worker = new Search({ data: f.data, worker: new URL("./reference/search-worker.ts", import.meta.url) }), program = new Search({ data: f.data });
   worker.start(); program.start();
   try {
     let hits = 0;

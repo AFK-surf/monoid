@@ -93,3 +93,43 @@ test("a connect bound to multiple accounts starts its sessions on that subset", 
     await r.close();
   }
 });
+
+test("a session left to the station whose runtime has no other account for its model goes on on another runtime's that runs it", async () => {
+  const r = new Rig();
+  try {
+    r.edit((raw) => {
+      raw.profiles[0].models = ["gemini-4-argon"];
+      raw.profiles[1].models = ["gemini-4-argon"];
+    });
+    const [key] = newSession(r.hub, { ...chat(), model: "gemini-4-argon" });
+    assert.equal(r.session(key).profile, "cc");
+
+    // Its account spent and no other of Claude Code's runs the model: it moves to the Codex account that does.
+    const moved = r.hub.accounts.spend(key, "cc");
+    assert.ok(moved !== null);
+    const row = r.session(key);
+    assert.deepEqual([row.runtime, row.profile, row.model, row.profilePinned], ["codex", "cx", "gemini-4-argon", false]);
+
+    // Kept to its accounts it does not cross: spent there, it waits.
+    const [kept] = newSession(r.hub, { ...chat(), model: "gemini-4-argon", profiles: ["cc"] });
+    assert.equal(r.hub.accounts.spend(kept, "cc"), null);
+    assert.equal(r.session(kept).runtime, "claude");
+  } finally {
+    await r.close();
+  }
+});
+
+test("a session whose model no other runtime's account runs stays on its runtime when spent", async () => {
+  const r = new Rig();
+  try {
+    r.edit((raw) => {
+      raw.profiles[0].models = ["opus"];
+      raw.profiles[1].models = ["gpt-6-sol"];
+    });
+    const [key] = newSession(r.hub, { ...chat(), model: "opus" });
+    assert.equal(r.hub.accounts.spend(key, "cc"), null);
+    assert.equal(r.session(key).runtime, "claude");
+  } finally {
+    await r.close();
+  }
+});

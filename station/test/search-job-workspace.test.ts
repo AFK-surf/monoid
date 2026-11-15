@@ -9,7 +9,7 @@ import { makeStore, openStore } from "../src/read/store.ts";
 import { JOB_SCOPE_NUL_WORKSPACES, JOB_SCOPE_SESSIONS, smallJobScope } from "../src/search/job-scope.ts";
 import { pick, sees, type Asker } from "../src/search/match.ts";
 import { Search } from "../src/search/search.ts";
-import { stationDocs, stationDocSteps } from "../src/search/sources.ts";
+import { stationDocs, stationDocSteps } from "./reference/search-sources.ts";
 import { auditSessionListStep, sessionListStep } from "../src/store/session-list-index.ts";
 import { Store } from "../src/store/store.ts";
 

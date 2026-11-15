@@ -5,7 +5,7 @@
 import type { Clock } from "effect";
 import { log } from "../ops/log.ts";
 import { tr, type Lang, stationLang } from "../ops/i18n.ts";
-import { checkContext } from "./context-cap.ts";
+import { CONTEXT_RUNTIMES, checkContext } from "./context-cap.ts";
 import type { Store } from "../store/store.ts";
 import type { SessionRow } from "../store/rows.ts";
 import { type HubConfig, type Profile, runs, runtimeNamed, runtimeTitle, sameModel, spelling } from "./config.ts";
@@ -360,11 +360,39 @@ export class Accounts {
     const [all, keptProfiles] = this.poolFor(row, workspaceAll);
     const strict = all.some((p) => serves(p, row.model));
     const candidates = all.filter((p) => p.id !== left && (!strict || serves(p, row.model)) && this.can(p.id, row.model));
-    if (candidates.length === 0) return null;
+    if (candidates.length === 0) return keptProfiles === null ? this.spendAcross(key, row, left) : null;
     const next = this.pick(candidates, row.model, false);
     store.setSessionProfile(key, next.id, false, keptProfiles);
     log.info("hub", "allowance ran out; session taken on by another profile", { session: key, from: left, to: next.id });
     this.deps.moved?.(key, row);
+    return [name(left), next.name];
+  }
+
+  /// Session `row`, left to the station, ran into the allowance of `left` and no other profile of its runtime can run its
+  /// model now: it goes on on a profile of another runtime that runs the same model and can now (the user, 2026-11-15:
+  /// 「跨 runtime 自动切」), as a change of runtime by hand does (lifecycle.ts `configure`): its runtime session kept as one
+  /// it ran in, the new one started afresh (afresh.ts). Its effort, speed and most context go along only where the new
+  /// runtime takes them. The names of the one left and the one taken; null when none can.
+  private spendAcross(key: string, row: SessionRow, left: string): [string, string] | null {
+    const runtime = runtimeNamed(row.runtime);
+    const model = row.model;
+    if (!runtime || model === null) return null;
+    const config = this.deps.config();
+    const candidates = config.profiles.filter((p) => !p.runtimes.includes(runtime) && this.allows(key, p) && runs(p, model) && this.can(p.id, model));
+    if (candidates.length === 0) return null;
+    const next = this.pick(candidates, model, true, key);
+    const target = next.runtimes.find((r) => r !== runtime && runs(next, model));
+    if (!target) return null;
+    const effort = row.effort !== null && this.modelEfforts(target, model, null, (p) => this.allows(key, p)).includes(row.effort) ? row.effort : null;
+    const fast = FAST_RUNTIMES.includes(target) ? (row.fast ?? null) : null;
+    const context = CONTEXT_RUNTIMES.includes(target) ? (row.context ?? null) : null;
+    const { store } = this.deps;
+    if (row.runtimeSessionId) store.ranIn(key, row.runtimeSessionId, row.profile);
+    store.setSessionRuntime(key, target, next.id, false, model, effort, fast, context, null);
+    store.setSessionContextBefore(key, null);
+    log.info("hub", "allowance ran out; session taken on by another runtime's profile", { session: key, from: left, to: next.id, runtime: target });
+    this.deps.moved?.(key, row);
+    const name = (id: string) => config.profiles.find((p) => p.id === id)?.name ?? id;
     return [name(left), next.name];
   }
 

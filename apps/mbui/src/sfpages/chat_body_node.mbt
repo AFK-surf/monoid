@@ -341,6 +341,8 @@ fn chat_body_node(
   }
   let chat_key = here.station + "\u{1}" + here.session
   @sfbase.rows_sent_as[chat_key] = sent_as
+  // (what was sent from here that a core's row took over leaves what is on its way: sfbase's sent_local_taken)
+  v.reacts(fn() { taken_over.get() }, fn(_) { @sfbase.sent_local_taken(chat_key, kept.sent_as) })
   v.owns(fn() {
     if @sfbase.rows_sent_as.get(chat_key) is Some(f) && physical_equal(f, sent_as) {
       @sfbase.rows_sent_as.remove(chat_key)

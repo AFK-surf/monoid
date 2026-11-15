@@ -340,6 +340,7 @@ export const AgentsLive = (control: Control) =>
       const jobs = new Jobs({
         store,
         data,
+        program: hub.program(),
         notify: (session, text) => {
           try {
             hub.notify(session, text);
