@@ -240,7 +240,7 @@ fn said_ref_at_faint(t : @ui.Tester) -> Array[String] {
 /// `refs` times (one a reference drawn): one more or one fewer is a fault, so that its colour mended, this is taken out.
 fn said_audit(t : @ui.Tester, refs : Int) -> Array[String] {
   let known = said_ref_at_faint(t)
-  let faults = t.audit().filter(fn(f) { !known.contains(f) })
+  let faults = audit_but_card_marks(t).filter(fn(f) { !known.contains(f) })
   if known.length() != refs {
     faults.push("a chat's reference's @ too faint \{known.length()} times, \{refs} known: " + known.join(" | "))
   }
