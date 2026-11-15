@@ -2856,24 +2856,57 @@ try {
     // against A's handover windows from its launcher's log: from "handing over from Node" to "has taken over"
     // (the lead, 2026-11-16: how many asks land in that window, how many of them are not reached)
     const handovers = Number(process.env.E2E_MOVE_HANDOVERS ?? 0);
-    if (handovers > 0) await check(`7h: A handed over ${handovers} times while B asks it each second: every ask in a handover window answered`, async () => {
+    // E2E_MOVE_HANDOVER_ASK=at: B asks A only as A's launcher says it is handing over (its log's line, watched as a
+    // file), two asks a handover, each the one before's end: an ask in the window every time, not by its phase
+    const askAt = process.env.E2E_MOVE_HANDOVER_ASK === "at";
+    if (handovers > 0) await check(`7h: A handed over ${handovers} times while B asks it ${askAt ? "as each handover begins" : "each second"}: every ask in a handover window answered`, async () => {
       const t0 = Date.now();
-      const b = asking("B", "A");
-      await b.answered(3);
-      try {
-        // (each handover sent at its own phase of the asks' second, swept across it: sent as an ask ended, every
-        // window fell between two asks, 0 of 250 in one, main's first run of it)
-        const phased = (ms: number) => new Promise((r) => setTimeout(r, ms)); // det-ok(script-wait): the handovers' phase against the asks' second, swept across it, not a wait for an event
+      const asks: Ask[] = [];
+      if (askAt) {
+        const file = `${RUN}/${SHELL_NAME.A}.log`;
         for (let i = 1; i <= handovers; i++) {
-          await b.begunFrom(Date.now() + 1);
-          await phased(Math.round(((i - 1) * 1000) / handovers));
-          const end = await handoverEnd(await handOver("A"));
-          log(`  ${i}/${handovers}: ${end}`);
-          if (!/has taken over/.test(end)) throw new Error(`not handed over at ${i}: ${end}`);
-          await b.answered(3);
+          const from = statSync(file).size;
+          let w: ReturnType<typeof watch> | null = null;
+          const handing = new Promise<void>((resolve) => {
+            w = watch(file, () => { if (/handing over from Node [0-9]+ to Node/.test(since(file, from))) resolve(); });
+          });
+          try {
+            const h = await handOver("A");
+            const ended = handoverEnd(h);
+            const first = await Promise.race([handing.then(() => true), ended.then(() => false)]);
+            (w as ReturnType<typeof watch> | null)?.close();
+            if (first) {
+              const b = asking("B", "A");
+              await b.answered(2);
+              await b.stop();
+              asks.push(...b.asks);
+            }
+            const end = await ended;
+            log(`  ${i}/${handovers}: ${end}${first ? "" : " (its handing over not seen first: not asked)"}`);
+            if (!/has taken over/.test(end)) throw new Error(`not handed over at ${i}: ${end}`);
+          } finally {
+            (w as ReturnType<typeof watch> | null)?.close();
+          }
         }
-      } finally {
-        await b.stop();
+      } else {
+        const b = asking("B", "A");
+        await b.answered(3);
+        try {
+          // (each handover sent at its own phase of the asks' second, swept across it: sent as an ask ended, every
+          // window fell between two asks, 0 of 250 in one, main's first run of it)
+          const phased = (ms: number) => new Promise((r) => setTimeout(r, ms)); // det-ok(script-wait): the handovers' phase against the asks' second, swept across it, not a wait for an event
+          for (let i = 1; i <= handovers; i++) {
+            await b.begunFrom(Date.now() + 1);
+            await phased(Math.round(((i - 1) * 1000) / handovers));
+            const end = await handoverEnd(await handOver("A"));
+            log(`  ${i}/${handovers}: ${end}`);
+            if (!/has taken over/.test(end)) throw new Error(`not handed over at ${i}: ${end}`);
+            await b.answered(3);
+          }
+        } finally {
+          await b.stop();
+        }
+        asks.push(...b.asks);
       }
       // (A's launcher's lines with their own times: each window's start and end, in order)
       const lines = ["station.before.log", "station.log"].map((f) => `${RUN}/${f}`).filter(existsSync).flatMap((p) => readFileSync(p, "utf8").split("\n"));
@@ -2887,11 +2920,11 @@ try {
         else if (/Node [0-9]+ has taken over/.test(l) && open !== null) { windows.push({ from: open, to: t }); open = null; }
       }
       const inWindow = (x: Ask) => windows.find((w) => x.at <= w.to && x.at + x.ms >= w.from);
-      const landed = b.asks.filter((x) => inWindow(x) !== undefined);
+      const landed = asks.filter((x) => inWindow(x) !== undefined);
       const refused = landed.filter((x) => !x.reached);
-      const outside = b.asks.filter((x) => inWindow(x) === undefined && !x.reached);
+      const outside = asks.filter((x) => inWindow(x) === undefined && !x.reached);
       const spans = windows.map((w) => w.to - w.from).sort((p, q) => p - q);
-      measured(`7h: ${windows.length} handover windows (ms: min ${spans[0] ?? "-"}, median ${spans[Math.floor(spans.length / 2)] ?? "-"}, max ${spans[spans.length - 1] ?? "-"}); ${b.asks.length} asks, ${landed.length} in a window, ${refused.length} of those not reached; ${outside.length} not reached outside any window`);
+      measured(`7h: ${windows.length} handover windows (ms: min ${spans[0] ?? "-"}, median ${spans[Math.floor(spans.length / 2)] ?? "-"}, max ${spans[spans.length - 1] ?? "-"}); ${asks.length} asks, ${landed.length} in a window, ${refused.length} of those not reached; ${outside.length} not reached outside any window`);
       for (const x of landed) {
         const w = inWindow(x)!;
         log(`  in a window: ask ${iso(x.at)} ${x.ms} ms (window ${iso(w.from)} to ${iso(w.to)}, the ask ${x.at - w.from} ms after its start): ${x.reached ? "" : "UNREACHED "}${x.said.slice(0, 140)}`);
