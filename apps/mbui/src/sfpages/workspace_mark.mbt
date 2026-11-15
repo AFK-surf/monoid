@@ -10,24 +10,6 @@ pub fn workspace_marked(w : Workspace) -> Bool {
 }
 
 ///|
-/// Its mark `size` across in `ink`, else its first letter in `letter`. `still`: a GIF holds its first frame (a workspace
-/// listed beside the one in use: only that one's moves).
-pub fn workspace_mark(
-  c : @ui.Ctx,
-  w : Workspace,
-  size : Double,
-  ink : Int64,
-  letter : @ui.TextStyle,
-  still? : Bool = false,
-) -> Unit {
-  if workspace_marked(w) {
-    @sf.station_mark(c, w.emoji, w.icon, size, ink, still~)
-  } else {
-    c.text(@sf.initial(w.name), style=letter) |> ignore
-  }
-}
-
-///|
 /// An invitation waiting (inviteDot): the viewer's turn, so the chats' blue dot (chat_mark.mbt), 8 across; said as
 /// `label`.
 pub fn invite_dot(c : @ui.Ctx, label : String) -> Unit {

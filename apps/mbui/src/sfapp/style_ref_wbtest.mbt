@@ -54,38 +54,39 @@ test "styles: the lock's waiting page, every state, drawn as before" {
   }
   inspect(out.to_string(), content=(
     #|waiting narrow 28264:ba6ceb2d
-    #|waiting wide 60272:ce67fa3f
+    #|waiting wide 61340:58dfaf67
     #|waiting-dark narrow 28182:619bad93
-    #|waiting-dark wide 60098:c1996b47
+    #|waiting-dark wide 61166:a59a1537
     #|finding narrow 46041:a28d2bdf
-    #|finding wide 78588:89078174
+    #|finding wide 80128:53fd1206
     #|finding-dark narrow 46094:30c3d6b1
-    #|finding-dark wide 78549:99f9a89e
+    #|finding-dark wide 80089:e3938060
     #|code narrow 32242:a3becb0b
-    #|code wide 64322:68e29ec6
+    #|code wide 65458:5d4d4f7c
     #|code-dark narrow 32117:5652fcc3
-    #|code-dark wide 64105:3e9529dc
+    #|code-dark wide 65241:78d4f47e
     #|wrong narrow 28229:7e53333f
-    #|wrong wide 60386:60b9fdfb
+    #|wrong wide 61478:8ab97cc2
     #|wrong-dark narrow 28331:af440018
-    #|wrong-dark wide 60396:6e003ec
+    #|wrong-dark wide 61488:f0e5abf1
     #|checking narrow 35310:5805713d
-    #|checking wide 68149:6455c673
+    #|checking wide 69353:2e61bb1a
     #|checking-dark narrow 35402:3f56047e
-    #|checking-dark wide 68149:6f1925ca
+    #|checking-dark wide 69353:6dbbc2c9
     #|none narrow 39100:b264c5b2
-    #|none wide 70994:c82eecae
+    #|none wide 72449:a597d550
     #|none-dark narrow 38978:d220c7f5
-    #|none-dark wide 70780:a19a88dd
+    #|none-dark wide 72235:c67f0dcd
     #|failed narrow 23491:4185eecb
-    #|failed wide 55500:f7881e99
+    #|failed wide 56136:a04459d5
     #|failed-dark narrow 23493:2aa685b9
-    #|failed-dark wide 55410:7e5a192f
+    #|failed-dark wide 56046:d401868b
     #|nocode narrow 28264:ba6ceb2d
-    #|nocode wide 60272:ce67fa3f
+    #|nocode wide 61340:58dfaf67
     #|nocode-dark narrow 28182:619bad93
-    #|nocode-dark wide 60098:c1996b47
+    #|nocode-dark wide 61166:a59a1537
     #|
+
 
 
 
@@ -157,17 +158,20 @@ test "styles: screens with kit's components (switches, a sheet), drawn as before
   inspect(out.to_string(), content=(
     #|settings narrow 79224:1e1c4ba
     #|station narrow 77764:dfaaba87
-    #|me-reading narrow 24226:63d5a63c
-    #|settings wide 175998:54d528f1
-    #|station wide 239259:21741c54
-    #|me-reading wide 170717:be810a0b
+    #|me-reading narrow 24226:e04f7391
+    #|settings wide 183891:88273550
+    #|station wide 247752:38dd31b2
+    #|me-reading wide 178610:9a65fafb
     #|settings-dark narrow 79492:72dbe261
     #|station-dark narrow 77674:804e74b
-    #|me-reading-dark narrow 24354:9f80384
-    #|settings-dark wide 175916:e42fab9e
-    #|station-dark wide 238960:270e517b
-    #|me-reading-dark wide 170701:e2edd083
+    #|me-reading-dark narrow 24354:78389ffb
+    #|settings-dark wide 183799:3b8279ab
+    #|station-dark wide 247443:9b28d061
+    #|me-reading-dark wide 178584:3dfeb7f7
     #|
+
+
+
 
   ))
 }

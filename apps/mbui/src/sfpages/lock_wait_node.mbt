@@ -1,10 +1,15 @@
-// The page of a device not yet confirmed in the workspace's safe mode (lock_wait.mbt's head) as nodes of the window's
-// tree, made once: the library's waiting page, then the steps as the lock's `me.pair` says them, each part bound to
-// what it shows; the code typed into the code field's boxes (@ui.code_field_node), sent as it is complete, emptied
-// for the next try where it is refused.
+// A device not yet confirmed in the workspace's safe mode (its lock): what it shows in the workspace's place, on every
+// screen. Every station of a locked workspace refuses such a device, so its chats would only say they are offline.
+// Nothing is asked by itself (the person who will compare the codes asks: 发送批准请求, the core's `lock.pair`); the
+// core finds the person's trusted devices, one of them shows a code, it is typed here into six boxes (`lock.pairCode`),
+// and how that goes is the lock's `me.pair` (finding, code, checking, wrong, none, failed, done). The shell puts it in
+// the page's place while the lock's `me.waiting` says so, or its `me.needsAppText` (a web page nobody can approve there,
+// which says only that: @settings.lock_waiting). Made once as nodes of the window's tree: the library's waiting page,
+// then the steps as `me.pair` says them, each part bound to what it shows; the code typed into the code field's boxes
+// (@ui.code_field_node), sent as it is complete, emptied for the next try where it is refused.
 
 ///|
-/// The page in `parent` (lock_wait_page's): the shield, 等待批准, what it waits for, then the steps
+/// The page in `parent`: the shield, 等待批准, what it waits for, then the steps
 /// (pair_steps_node); `clear()` of its top is under a bar (@sf.waiting_page_node). A web page nobody can approve here
 /// (@settings.lock_needs_app): 请先安装客户端 and the core's words alone, nothing waited for and no trusted device to
 /// name. The node.
@@ -38,7 +43,7 @@ pub fn lock_wait_node(
 }
 
 ///|
-/// Which of the steps shows (pair_steps' branches): the code typed, one being found, or what is so and the request;
+/// Which of the steps shows: the code typed, one being found, or what is so and the request;
 /// or, the code approved but no station of the lock having taken it yet, what it waits for (`Waits`); or, a web page
 /// nobody can approve here (the core's `me.needsAppText`, said as the page's lead), nothing to ask (`NeedsApp`).
 #derive(Eq)
@@ -51,7 +56,7 @@ priv enum PairShows {
 }
 
 ///|
-/// The steps in `col` (pair_steps' as nodes, on the waiting page): typing, 输入… over the six boxes, then 正在核对
+/// The steps in `col` (on the waiting page): typing, 输入… over the six boxes, then 正在核对
 /// (turning), or how many tries are left in red, until when the code holds and 重新获取安全码; finding one, turning,
 /// 没收到，重新申请 under it while nothing is asked; else what is so, 发送批准请求 under it. Last in each, under its
 /// action, the trusted devices it is about (lock_devices_node).
@@ -75,7 +80,7 @@ fn pair_steps_node(col : @view.View, core : Core, ws : String) -> Unit {
       _ => Asked
     }
   }
-  // (the devices it dials, the core's rows; typing, those showing the code alone: pair_steps' `devices`)
+  // (the devices it dials, the core's rows; typing, those showing the code alone)
   let dialled = fn() { items(pair(), "approvers") }
   let showing = fn() { dialled().filter(fn(d) { flag(Some(d), "showing") }) }
   // (what is typed, kept while the page shows: emptied as a code is refused or a new one asked for)
@@ -242,3 +247,49 @@ fn lock_actions_node(parent : @view.View, make : (@view.View) -> Unit) -> Unit {
   })
   |> ignore
 }
+
+///|
+/// What is so (waitingNote: a turning ring 8 before it, muted, the meta's size); why it failed (waitingFailed: red).
+// kept across runs: a value (no field of it changes)
+let lock_note : @ui.Style = @ui.css("row gap=S2 align=ACenter")
+///|
+// kept across runs: a value (no field of it changes)
+let lock_note_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, center=true)
+///|
+// kept across runs: a value (no field of it changes)
+let lock_failed : @ui.TextStyle = @ui.text_style(size=Meta, leading=L6, color=Danger, center=true)
+///|
+let lock_spin : Double = 12.0
+///|
+/// The trusted devices it dials: their card's place, in the middle under the step's action.
+// kept across runs: a value (no field of it changes)
+let lock_devices : @ui.Style = @ui.css("w=Full align=ACenter")
+///|
+/// Their card: a quiet ground over whatever it is on (the page, 设置 › 安全's card), 16 and 12 in, its rows 12 apart;
+/// as wide as its rows, no wider than the steps (lock_devices_most, and the room there is).
+// kept across runs: a value (no field of it changes)
+let lock_devices_card : @ui.Style = @ui.css("px=S4 py=S3 gap=S3 radius=Xl bg=Tint").then(@ui.style(max_w=Fixed(lock_devices_most)))
+///|
+let lock_devices_most : Double = 412.0
+///|
+/// A device's row: its mark, 12, which machine it is, from the card's start.
+// kept across runs: a value (no field of it changes)
+let lock_device : @ui.Style = @ui.css("row gap=S3 align=ACenter")
+///|
+// kept across runs: a value (no field of it changes)
+let lock_device_name : @ui.TextStyle = @ui.text_style(size=Ui, leading=L6, color=Fg, w=Full)
+///|
+let lock_device_glyph : Double = 18.0
+///|
+/// A device's mark by what the core says it is (LockApprover `kind`): a phone, else a computer.
+fn lock_device_icon(d : Json?) -> String {
+  if text(d, "kind") == "phone" {
+    "phone"
+  } else {
+    "monitor"
+  }
+}
+///|
+/// 发送批准请求's row (actions: 10 apart).
+// kept across runs: a value (no field of it changes)
+let lock_actions : @ui.Style = @ui.css("row gap=S2_5 align=ACenter")

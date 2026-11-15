@@ -37,10 +37,10 @@ fn setting_page(c : @ui.Ctx, src : Source, w : Workspace, route : Route) -> Unit
 ///|
 /// The settings' pages, one for every frame, by route: drawn in the frame it is shown in (the Small stack's, the wide
 /// frame's pane: back, the room over and under it). False for a route whose page every frame makes once in its place
-/// (关于, 更新日志, 记忆, 一台 station 的记忆, 用量, 价目表: pane_made, tape_made, narrow_made), and for one whose pages are not one yet (its frame draws its
-/// own copy).
+/// (关于, 更新日志, 记忆, 一台 station 的记忆, 用量, 价目表, 账号, 字体, 下方栏: pane_made, tape_made, narrow_made), and for one whose
+/// pages are not one yet (its frame draws its own copy).
 pub fn setting_route(c : @ui.Ctx, src : Source, w : Workspace, route : Route, frame : PageFrame) -> Bool {
-  if !(route is (Fonts | BarSettings | Me | Vault | VaultItem(_, _))) {
+  if !(route is (Vault | VaultItem(_, _))) {
     return false
   }
   let core = settings_core(src, w)
@@ -48,9 +48,6 @@ pub fn setting_route(c : @ui.Ctx, src : Source, w : Workspace, route : Route, fr
   @settings.frame(core, here)
   settings_fixture(src, core)
   match route {
-    Fonts => @sfpages.fonts_page(c, core, frame)
-    BarSettings => @sfpages.bars_page(c, core, frame)
-    Me => @sfpages.me_page(c, core, here, frame)
     Vault => @sfpages.vault_page(c, core, here, frame)
     VaultItem(v, item) => @sfpages.vault_item_page(c, core, here, frame, v, item)
     _ => ()
@@ -73,7 +70,7 @@ pub fn settings_fixture(src : Source, core : Core) -> Unit {
     "policy-option" => @sfpages.fx_policy_up.val = "option"
     "lock-join" => join_dialog(core, "ws1", "st2", "Maple")
     "lock-off" => turn_off_dialog(core, "ws1", "星火工作室")
-    "local-fonts" => @sfpages.local_open.val = true
+    "local-fonts" => @sfpages.fx_local_up.val = true
     "connect-mode" =>
       // (the first connect listed, as its page has it: the ways it could change are its page's)
       match items((core.topic)("connects", { "scope": str("ws1"), "mine": Json::boolean(false) }).get().value, "items") {
@@ -118,75 +115,174 @@ fn settings_reset() -> Unit {
 }
 
 ///|
-/// The settings' sidebar: back to the chats, then the settings' list (sfpages' settings_list.mbt: the same rows in the
-/// same groups as a small screen's settings page), the row of the page beside it lit; a row pressed, its page beside
-/// it, in place of the one there.
-fn settings_side(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
-  let lit = match app.nav.top() {
-    Setting(r) => Some(r)
-    // (the settings come to: their first row's page, settings_landing)
-    Settings => Some(settings_landing)
-    _ => None
+/// The settings' sidebar made once as nodes in `s` (as wide as the sidebar), where `at` says the block has it: its top
+/// row, back to the chats in the band over the list (none beside the system's tabs: 对话 is one of them, rail_native.mbt)
+/// and the update beside it where one is offered, the search, then the settings' list (sfpages' settings_list.mbt: the
+/// same rows in the same groups as a small screen's settings page) scrolling under them, the row of the page beside
+/// it lit; a row pressed, its page beside it, in place of the one there. For the workspace in view, made again for
+/// another.
+fn settings_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : () -> SideAt) -> Unit {
+  let workspace = fn() { @sfbase.workspace_in_view(src).0 }
+  let list_at = side_list_at(@signals.untracked(at))
+  let band_at = fn() {
+    let a = at()
+    ({ brand: a.brand, band: a.band, tape: a.tape, in_bar: a.bar, roots: @ui.tree_corner_roots_now() } : BandAt)
   }
-  let core = settings_core(src, w)
-  let here = @settings.here_of(core, w.id, w.name)
-  c.box(style=settings_side_fill, fn() {
-    side_top(c)
+  let lit = fn() {
+    match app.nav.top() {
+      Setting(r) => Some(r)
+      // (the settings come to: their first row's page, settings_landing)
+      Settings => Some(settings_landing)
+      _ => None
+    }
+  }
+  // (while the app's first page waits for what it shows: drawn at none, the splash in its place, as the old views are)
+  s.grow(Is(1.0)).min_height(Is(Some(0.0))).alpha(By(fn() { if @sfbase.first_page_waits.get() { 0.0 } else { 1.0 } }))
+  |> ignore
+  s.pick(fn() { workspace().map(fn(w) { w.id }) }, fn(q, _id) {
+    q.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+    guard @signals.untracked(workspace) is Some(w) else { return }
+    let core = settings_core(src, w)
+    let here = fn() { @settings.here_of(core, w.id, w.name) }
+    side_top_node(q, fn() { at().brand })
     // The way back belongs to the sidebar's band, not to the list that scrolls beneath it.
-    // (none beside the system's tabs: 对话 is one of them, rail_native.mbt)
-    let updating = update_shown()
-    if updating {
-      // The update and the back action share the same band as the other sidebars' actions: the band's spacing gives
-      // each key its press room, and keeps the update concentric with the sidebar's corner.
-      let band = if @sf.native_on() { update_band() } else { update_back_band() }
-      c.box(style=band, fn() {
-        c.box(style=side_full, fn() {
-          if !@sf.native_on() {
-            settings_back(c, true)
+    q.pick(fn() { (update_shown(), @sf.native_on()) }, fn(b, shown) {
+      let (updating, native) = shown
+      if updating {
+        // The update and the back action share the same band as the other sidebars' actions: the band's spacing gives
+        // each key its press room, and keeps the update concentric with the sidebar's corner.
+        b.box(fn(band) {
+          @sf.style_node(band, fn() { if native { update_band(at=band_at()) } else { update_back_band(at=band_at()) } })
+          band.box(fn(full) {
+            @sf.style_node(full, fn() { side_full }, in_row=true)
+            if !native {
+              settings_back_node(full, true, list_at)
+            }
+          })
+          |> ignore
+          @sf.update_key_node(
+            band,
+            tips,
+            update_key_side,
+            update_key_mark,
+            fn() { update_said().0 },
+            fn() { update_said().1 },
+            fn() { update_said().2 },
+            fn() {
+              match update_now() {
+                Coming(_, part) => Some(part)
+                _ => None
+              }
+            },
+            fn() { update_pressed(src) },
+            offered=fn() { update_now() is Offered(_, ..) },
+          )
+        })
+        |> ignore
+      } else if !native {
+        // (on the tape, the band's action as with the update beside it: in the panel's top corner, concentric with it,
+        // as the chats' 新建对话 is there; beside the page the list's own row)
+        let tape = list_at is Tape
+        b.box(fn(band) {
+          @sf.style_node(band, fn() {
+            if tape {
+              band_new_tape(at=band_at()).then(settings_back_band)
+            } else {
+              @sf.side_list().then(settings_back_band)
+            }
+          })
+          if tape {
+            // (the update's room at its end, where it stands as one is offered: the row kept off the panel's top
+            // corner, which the update's round key is concentric with)
+            band.box(fn(full) {
+              @sf.style_node(full, fn() { side_full }, in_row=true)
+              full.box(fn(kept) {
+                kept.margin(Is((0.0, 0.0, update_key_side, 0.0))) |> ignore
+                settings_back_node(kept, true, list_at)
+              })
+              |> ignore
+            })
+            |> ignore
+          } else {
+            settings_back_node(band, false, list_at)
           }
         })
         |> ignore
-        update_in_row(c, src)
+      }
+    })
+    // Without the back row, keep the field below the sidebar's upper corners.
+    q.box(fn(k) {
+      @sf.style_node(k, fn() { @sf.side_list().then(if @sf.native_on() { settings_search_native_band } else { settings_search_band }) })
+      @sfpages.settings_search_node(k, at=list_at, page=false)
+    })
+    |> ignore
+    // the list under the band (side_scroll's): the rows keep their inset; the scroll track belongs to the whole sidebar.
+    // What scrolls, and takes the hand, starts at the rail's edge: the sidebar's first 8 reach over the rail's empty
+    // side, which its places' keys take; its rows where they were, in from the sidebar's edge
+    q.box(fn(from) {
+      from.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))).margin(Is((side_into_rail, 0.0, 0.0, 0.0))) |> ignore
+      from.box(fn(l) {
+        @sf.style_node(l, fn() { @sf.side_list().then(@ui.style(px=S0)) })
+        l.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        l.scrolls(@view.Scroll::list(), slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(col) {
+          col.box(fn(back) {
+            back.margin(Is((-side_into_rail, 0.0, 0.0, 0.0))) |> ignore
+            back.box(fn(rows) {
+              @sf.style_node(rows, fn() { @sf.theme().chat_list.side_list.then(@ui.style(h=Hug)) })
+              // (a row's page in place of the one open; on the tape brought over to show it)
+              @sfpages.settings_side_rows_node(rows, core, here, lit, fn(r) {
+                @sfbase.history_push()
+                app.nav.replace_above(1, [Setting(r)])
+                @sfbase.show_chosen()
+              }, list_at)
+              // (the room under its last)
+              rows.box(fn(foot) { foot.height(Is(Some(@sf.list_foot_in(Side)))) |> ignore }) |> ignore
+            })
+            |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
       })
       |> ignore
-    } else if !@sf.native_on() {
-      c.box(style=@sf.side_list().then(settings_back_band), fn() { settings_back(c, false) }) |> ignore
-    }
-    // Without the back row, keep the field below the sidebar's upper corners.
-    let search_band = if @sf.native_on() { settings_search_native_band } else { settings_search_band }
-    c.box(style=@sf.side_list().then(search_band), fn() { @sfpages.settings_search(c, side_at()) }) |> ignore
-    side_scroll(c, "settings-nav", fn() {
-      // (a row's page in place of the one open; on the tape brought over to show it)
-      @sfpages.settings_side_rows(c, core, here, lit, fn(r) {
-        @sfbase.history_push()
-        app.nav.replace_above(1, [Setting(r)])
-        @sfbase.show_chosen()
-      }, side_at())
     })
+    |> ignore
   })
-  |> ignore
 }
 
 ///|
-/// The way back, a band's action when the update is beside it; otherwise the settings list's own row.
-fn settings_back(c : @ui.Ctx, band : Bool) -> Unit {
-  let t = @sf.theme()
-  let body = fn() {
-    @sf.icon(c, "arrow-left", size=settings_nav_icon, color=t.p.muted) |> ignore
-    nav_words(c, @sf.t("web-pages.settings.nav.backToChats"))
-  }
+/// The way back to the chats in `parent` (where the list stands: `at`), a band's action when the update is beside it
+/// (`band`); otherwise the settings list's own row.
+fn settings_back_node(parent : @view.View, band : Bool, at : @sf.ListAt) -> Unit {
+  let label = fn() { @sf.t("web-pages.settings.nav.backToChats") }
   let back = fn() {
     @sfpages.settings_search_reset()
     @sfbase.history_push()
     @sfbase.nav_over_home([])
     wide.landed.set("")
   }
+  let body = fn(r : @view.View) {
+    @sf.icon_node(r, "arrow-left", settings_nav_icon, By(fn() { @sf.theme().p.muted })) |> ignore
+    @sf.nav_words_node(r, label)
+  }
   if band {
-    band_row(c, "settings-nav/back", false, body, at=side_at(), on_press=back)
+    @sf.band_row_node(parent, fn() { false }, label, back, at, body)
   } else {
-    nav_row(c, "settings-nav/back", false, body, at=side_at(), on_press=back)
+    parent.box(fn(r) {
+      @sf.style_node(r, fn() { @sf.side_row_at(at).then(settings_back_row).then(@sf.row_least_h()) })
+      @sf.presses_node(r, back)
+      r.says(By(fn() { Some(@view.said(Button, label=label())) })) |> ignore
+      @sf.nav_ground_node(r, fn() { false })
+      body(r)
+    })
+    |> ignore
   }
 }
+
+///|
+/// The back row as a sidebar's row of one line (nav_row's): across its middle, as tall as a press takes at least.
+// kept across runs: a value (no field of it changes)
+let settings_back_row : @ui.Style = @ui.css("align=ACenter")
 
 ///|
 /// The page the settings come to beside their list on a medium or large screen (the stack's root, the gear pressed):
@@ -197,9 +293,6 @@ pub let settings_landing : Route = Route::Me
 ///|
 let settings_nav_icon : Double = 16.0
 
-///|
-// kept across runs: a value (no field of it changes)
-let settings_side_fill : @ui.Style = @ui.css("w=Full h=Full")
 
 ///|
 /// The list supplies four points of its own top room; with the band's ten the groups remain fourteen apart.

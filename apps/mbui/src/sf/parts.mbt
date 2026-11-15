@@ -4413,6 +4413,8 @@ pub fn waiting_page_node(
     }
     room.box(fn(col) {
       style_node(col, fn() { if touch { wait_column_touch } else { wait_column } })
+      // (all of the room across up to its most, in its middle: the room lines it up there, not stretched to its start)
+      col.fills_across(Is(false)).width_share(Is(1.0)) |> ignore
       icon_node(col, mark, if touch { wait_icon_touch } else { wait_icon }, By(fn() { theme().p.text })) |> ignore
       // (each line in the middle, as the old view's centred words: Ctx::text's `center`)
       words_node(col, title, fn() { if touch { wait_title_touch } else { wait_title } }).words_centered(Is(true))

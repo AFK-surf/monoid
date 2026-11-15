@@ -130,15 +130,6 @@ fn settings_core_of(
     },
     bars: fn() { bars_in(src, w.id) },
     set_bars: fn(sets, cur) { set_bars(src, w.id, sets, cur) },
-    place_icon: fn(c, place, color) {
-      if place == "stations" {
-        // one station on, as no station is meant
-        let still : @sf.GlyphCounts = { online: 1, dim: 0, failing: 0, working: 0, asleep: false, connecting: 0 }
-        @sf.station_glyph(c, still, 28.0, color, @sf.theme().p.red) |> ignore
-      } else {
-        @sf.icon(c, place_icon(place), size=28.0, color~) |> ignore
-      }
-    },
     reporting: fn() { reporting_on(src) },
     set_reporting: fn(on) {
       match reporting_host.get() {

@@ -205,7 +205,6 @@ using @settings {
   role_label,
   stamp,
   workspace_view,
-  you,
   failing_of,
   memory_of,
   sections_of,

@@ -654,6 +654,11 @@ fn narrow_made_as(
       made("local-station", fn(p, core, _here, frame, _stint, _acts) { @sfpages.local_station_node(p, core, on_back=core.pop, frame~) })
     Setting(Permissions) =>
       made("permissions", fn(p, core, _here, frame, _stint, _acts) { @sfpages.permissions_node(p, core, on_back=core.pop, frame~) })
+    Setting(Me) =>
+      made("me", fn(p, core, here, frame, stint, _acts) { @sfpages.me_node(p, core, here, on_back=core.pop, frame~, stint~) })
+    Setting(Fonts) => made("fonts", fn(p, core, _here, frame, _stint, _acts) { @sfpages.fonts_node(p, core, on_back=core.pop, frame~) })
+    Setting(BarSettings) =>
+      made("bars", fn(p, core, _here, frame, _stint, _acts) { @sfpages.bars_node(p, core, on_back=core.pop, frame~) })
     Setting(Security) =>
       made("security", fn(p, core, here, frame, stint, _acts) { @sfpages.security_node(p, core, here, on_back=core.pop, frame~, stint~) })
     Setting(SecurityOpen) =>

@@ -67,7 +67,6 @@ let pace_splits_known : Map[String, Array[Int]] = {
   "viewer": [7],
   // 3: sub {"topic":"chat","compact":true,"session":…,"station":…} | strict call cache.usage {}
   "settings-connect": [7],
-  "settings-device-pages": [7],
   "settings-vault-item": [7],
   // 3: sub {"query":…,"scope":…,"topic":"shareIn","source":…} | strict sub {"topic":"notify"}
   // (120, seen once its rows were held: shareIn let go of before driveTransfers in the strict pass, after it at 120.

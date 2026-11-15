@@ -18,13 +18,10 @@ let words_large_known : Map[String, Int] = {
     ("phone-zh chat-screens", 4),
     ("phone-zh share-card", 3),
     ("phone-zh share-card-dark", 3),
-    ("phone-zh settings-workspace", 1),  // was 0, +1 (g) page_node.mbt:935 / workspace_page.mbt:397 真问题，待修
     ("phone-zh settings-new-connect-platform", 1),
     ("phone-zh settings-kept", 1),
     ("phone-zh settings-kept-many", 1),
     ("phone-zh settings-vault-words", 14),
-    ("phone-zh settings-add-people", 1),  // was 0, +1 (g) page_node.mbt:935 / workspace_page.mbt:397 真问题，待修
-    ("phone-zh settings-workspace-mark", 1),  // was 0, +1 (g) page_node.mbt:935 / workspace_page.mbt:397 真问题，待修
     ("phone-zh settings-run", 1),
     ("phone-zh share-card-poster", 3),
     ("phone-zh share-card-receipt", 3),

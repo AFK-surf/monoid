@@ -22,7 +22,7 @@ fn fonts_dismissed(how : (@ui.Tester) -> Unit) -> Array[Bool] raise {
   let t = fonts_tester()
   guard t.query(Button, label="本机字体") is Some(s) else { fail("no 本机字体") }
   let (x, y) = (s.rect.0 + s.rect.2 / 2.0, s.rect.1 + s.rect.3 / 2.0)
-  let open = fn() { @sfpages.local_open.val }
+  let open = fn() { @sfpages.local_open.untracked() }
   t.tap(x, y)
   t.frame()
   let seen = [open()]
@@ -48,7 +48,7 @@ test "大屏: 本机字体 dismissed by a press on the page: closed as it goes d
   let down : Array[Bool] = []
   let seen = fonts_dismissed(fn(t) {
     t.touch_at(0, 1200.0, 100.0, t.time())
-    down.push(@sfpages.local_open.val)
+    down.push(@sfpages.local_open.untracked())
     t.touch_at(2, 1200.0, 100.0, t.time())
   })
   assert_eq((down, seen), ([false], [true, false, false, true, true]))
@@ -57,7 +57,7 @@ test "大屏: 本机字体 dismissed by a press on the page: closed as it goes d
 ///|
 test "大屏: 本机字体's row pressed again with it open, then Escape at once: closed as it is let go, and stays closed, a frame between or none" {
   let run = fn(frames : Bool) raise {
-    button_then_escape(fonts_tester(), "本机字体", fn() { @sfpages.local_open.val }, frames)
+    button_then_escape(fonts_tester(), "本机字体", fn() { @sfpages.local_open.untracked() }, frames)
   }
   assert_eq((run(false), run(true)), ([false, false, false], [false, false, false]))
 }

@@ -1,6 +1,6 @@
 // 安全 and 开启安全模式 (security.mbt) alone, at each width, with a finger and with a mouse: its people and their
 // devices, its stations; turning it off asked first; what turning it on would sign, and back. A new device is approved
-// only by the code typed on it (lock_wait.mbt): nothing here approves one with a press.
+// only by the code typed on it (lock_wait_node.mbt): nothing here approves one with a press.
 
 ///|
 test "安全码: a wrong code keeps the keyboard for another try; approval puts it away" {

@@ -82,13 +82,13 @@ fn pane_pages(v : @view.View, src : Source, tips : @sf.TipLayer) -> Unit {
   }
   // (the page on top switched, as the stack is told it, before any page of it is built; none while what waits in the
   // safe mode is in the pages' place. What the page's bars and the sidebar's parts work out from, where the block's
-  // move has got, each of them works out as it is built: pane_page_one, pane_gate_built, pane_block_built)
+  // move has got, each of them works out as it is built: pane_page_one, pane_block_built)
   page_switch_said(v, fn() { @sfbase.workspace_in_view(src).0 is Some(_) && !gated() })
   // (what waits in its place giving back the focus as it goes, to what had it as it came: the page under it kept, laid
   // out nowhere meanwhile (none of it built, pressed or read out), the focus in it let go of then, after it is kept)
   v.show(gated, fn(g) {
     g.grow(Is(1.0)).focus_returns() |> ignore
-    @ui.old(g, fn(c) { pane_gate_built(c, src) }, key=tape_island_key).grow(Is(1.0)) |> ignore
+    pane_gate_node(g, src)
   })
   v.box(fn(s) {
     s.grow(Is(1.0)).laid_nowhere(By(gated)) |> ignore
@@ -98,40 +98,70 @@ fn pane_pages(v : @view.View, src : Source, tips : @sf.TipLayer) -> Unit {
 }
 
 ///|
-/// What waits to be confirmed in the workspace's safe mode, in the pane off the tape (its island).
-fn pane_gate_built(c : @ui.Ctx, src : Source) -> Unit {
-  let (now, _, _, _) = @sfbase.workspace_in_view(src)
-  guard now is Some(w) else { return }
-  let (_, target) = fold_target(src, w, c.window_size().0)
-  fold_bars(c, fold_built(c, target))
-  if @ui.window_inset() {
-    title_row(c, "page-title-row", @sf.wide_bar_h)
-  }
-  c.box(style=frame_gate.then(@ui.style(w=Fixed(c.width), h=Fixed(c.height))), fn() {
+/// What waits to be confirmed in the workspace's safe mode in the pane off the tape, in node `g` (all of the pane), made
+/// once for the workspace in view: on the page's ground, sfpages' page (lock_wait_node); over its top the window's
+/// title bar where its buttons are in the app's top row (pane_made_host's), and the workspace's button where the
+/// system's tabs are the rail (gate_heading_node).
+fn pane_gate_node(g : @view.View, src : Source) -> Unit {
+  g.ground(By(fn() { @sf.theme().p.bg })) |> ignore
+  g.pick(fn() { @sfbase.workspace_in_view(src).0.map(fn(w) { w.id }) }, fn(p, _id) {
+    // (all of the pane, as the page it is in the place of)
+    p.over(Is(true)) |> ignore
+    guard @signals.untracked(fn() { @sfbase.workspace_in_view(src).0 }) is Some(w) else { return }
     let core = settings_core(src, w)
-    @sfpages.lock_wait_page(c, core, @settings.here_of(core, w.id, w.name))
-    // (the workspace's button over the page where the system's tabs are the rail: gate_heading)
-    if @sf.native_on() {
-      c.layer(fn() { gate_heading(c, src, w) }) |> ignore
-    }
+    @sfpages.lock_wait_node(p, core, @settings.here_of(core, w.id, w.name)).grow(Is(1.0)) |> ignore
+    p.show(fn() { @ui.window_inset() }, fn(t) {
+      t
+      .over(Is(true))
+      .height(Is(Some(@sf.wide_bar_h)))
+      .presses(Is(true))
+      .moves_window(Is(true))
+      |> ignore
+    })
+    p.show(@sf.native_on, fn(h) {
+      h.over(Is(true)) |> ignore
+      gate_heading_node(h, src, w)
+    })
   })
-  |> ignore
 }
 
 ///|
 /// The workspace's button (its icon and name in the system's glass: chats.mbt workspace_heading, the bars'
-/// workspace-switch) over the top of the page that waits, where the sidebar's head would have it: the sidebar is not
-/// shown while the device waits, and where the rail's places are the system's tabs those hold no workspaces, so with
-/// nothing to switch with a person was held in the workspace until a trusted device approved this one (the user,
-/// 2026-11-03; the web's SecurityWaiting keeps its WorkspaceSwitcher over the page, cloud/workspace.tsx Bare). The
-/// rail has the workspaces where it is the app's own, the narrow frame's Home bar its switch (sfapp lock_gate).
-fn gate_heading(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
-  let list = @sf.theme().chat_list
-  let inset = list.band_in + list.heading_in
-  let top = @ui.system_bars().top + side_top_web + band_new_top
-  let width = dmin(dmax(side_min, wide.side_w.get()), c.width - @sf.native_clear() - 2.0 * inset)
-  c.box(style=@ui.style(w=Fixed(width), h=Fixed(@sf.band_row_h())), left=inset, top=top, fn() {
-    workspace_heading(c, src, w)
+/// workspace-switch) over the top of the page that waits, in node `h` (over all of the pane), where the sidebar's head
+/// would have it: the sidebar is not shown while the device waits, and where the rail's places are the system's tabs
+/// those hold no workspaces, so with nothing to switch with a person was held in the workspace until a trusted device
+/// approved this one (the user, 2026-11-03; the web's SecurityWaiting keeps its WorkspaceSwitcher over the page,
+/// cloud/workspace.tsx Bare). The rail has the workspaces where it is the app's own, the narrow frame's Home bar its
+/// switch (sfapp lock_gate). Its place handed to the system's glass as it is read out (native_sidebar_items, by its
+/// node's id), let go with it.
+fn gate_heading_node(h : @view.View, src : Source, w : Workspace) -> Unit {
+  let inset = fn() {
+    let list = @sf.theme().chat_list
+    list.band_in + list.heading_in
+  }
+  h.box(fn(b) {
+    b
+    .width(By(fn() {
+      Some(dmin(dmax(side_min, wide.side_w.get()), pane_w_at(src, b) - @sf.native_clear() - 2.0 * inset()))
+    }))
+    .height(By(fn() { Some(@sf.band_row_h()) }))
+    .offset(By(fn() { (inset(), @ui.system_bars().top + side_top_web + band_new_top) }))
+    .says(Is(Some(@view.said(Button, label=w.name))))
+    |> ignore
+    let id = @ui.tree_read_out_id(b)
+    native_workspace_hooked()
+    b.reacts(fn() { native_workspace_item(src, w) }, fn(item) {
+      native_sidebar_items[id] = item
+      native_workspace_anchor.val = Node(b)
+    })
+    b.owns(fn() {
+      native_sidebar_items.remove(id)
+      match native_workspace_anchor.val {
+        Node(n) if n.id() == b.id() => native_workspace_anchor.val = Unanchored
+        _ => ()
+      }
+    })
+    |> ignore
   })
   |> ignore
 }
@@ -232,6 +262,8 @@ fn pane_made(
   match page {
     // (Home: the board while it is chosen, else its ground: board.mbt)
     Home => Some(board_home_made(src, tips))
+    // (the settings come to beside their list: its first row's page, made once as that page is)
+    Settings => pane_made(src, Setting(settings_landing), tips).map(fn(m) { ("settings/" + m.0, m.1) })
     Setting(About) =>
       made("about", fn(a, core, _here, _stint, frame, width) {
         @sfpages.about_node(a, core, on_back=core.pop, frame~, width~)
@@ -329,6 +361,14 @@ fn pane_made(
       made("permissions", fn(a, core, _here, _stint, frame, width) {
         @sfpages.permissions_node(a, core, on_back=core.pop, frame~, width~)
       })
+    Setting(Me) =>
+      made("me", fn(a, core, here, stint, frame, width) {
+        @sfpages.me_node(a, core, here, on_back=core.pop, frame~, stint~, width~)
+      })
+    Setting(Fonts) =>
+      made("fonts", fn(a, core, _here, _stint, frame, width) { @sfpages.fonts_node(a, core, on_back=core.pop, frame~, width~) })
+    Setting(BarSettings) =>
+      made("bars", fn(a, core, _here, _stint, frame, width) { @sfpages.bars_node(a, core, on_back=core.pop, frame~, width~) })
     Setting(Security) =>
       made("security", fn(a, core, here, stint, frame, width) {
         @sfpages.security_node(a, core, here, on_back=core.pop, frame~, stint~, width~)

@@ -134,6 +134,9 @@ fn setting_made(p : @view.View, src : Source, route : @settings.Route, width : (
     Profile(a, id) => profile_node(p, core, here, a, id, on_back=core.pop, frame~, width~)
     NewProfile(a) => new_profile_node(p, core, src, here, a, on_back=core.pop, frame~, width~)
     Station(a) => station_node(p, core, src, here, a, on_back=core.pop, frame~, width~)
+    Fonts => fonts_node(p, core, on_back=core.pop, frame~, width~)
+    BarSettings => bars_node(p, core, on_back=core.pop, frame~, width~)
+    Me => me_node(p, core, here, on_back=core.pop, frame~, stint=fn() { 0 }, width~)
     // (the pages opened from them not made once yet: their old view, hosted)
     _ =>
       @ui.old(p, fn(c) {
@@ -153,9 +156,6 @@ fn setting_alone(c : @ui.Ctx, src : Source, route : @settings.Route) -> Unit {
   @settings.frame(core, here)
   let frame : PageFrame = { back: app.nav.under().map(@sfbase.back_label), top: 0.0, foot: 0.0, named: false }
   match route {
-    Fonts => fonts_page(c, core, frame)
-    BarSettings => bars_page(c, core, frame)
-    Me => me_page(c, core, here, frame)
     Vault => vault_page(c, core, here, frame)
     VaultItem(v, item) => vault_item_page(c, core, here, frame, v, item)
     _ => ()

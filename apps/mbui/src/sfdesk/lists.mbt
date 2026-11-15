@@ -8,11 +8,10 @@
 ///|
 /// The sidebar `width` wide (its 8 at the left over the rail's empty side), the one the block holds (side_place): the
 /// chats' lists (已归档 among them) for the chats' places; the files' (files_nav.mbt); a place's own (the app's:
-/// the settings', the stations', the profiles').
+/// the stations', the profiles'; the settings' made once: side_node).
 fn sidebar(c : @ui.Ctx, src : Source, w : Workspace, width : Double) -> Unit {
   match side_place() {
     "files" => files_nav(c, src, w.id)
-    "settings" => settings_side(c, src, w)
     "stations" => stations_side(c, src, w)
     "profiles" => profiles_side(c, src, w)
     // (the chats' lists: made once over the block, side_node.mbt)

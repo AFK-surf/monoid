@@ -219,12 +219,28 @@ fn fonts_said(prefs : Json?) -> String {
 }
 
 ///|
-/// 字体's page, one for every frame (opened from 外观's row narrow): what it is for under
-/// its title, the setting (font_setting.mbt).
-pub fn fonts_page(c : @ui.Ctx, core : Core, frame : PageFrame) -> Unit {
-  @sf.page(c, on_back=core.pop, frame~, "fonts", @sf.t("web-pages.appearance.fonts.title"), fonts_blocks(c, core), lead=@sf.t(
-    "web-pages.appearance.fonts.description",
-  ))
+/// 字体's page made once as nodes in node `v`, one for every frame (opened from 外观's row narrow), laid out by the
+/// `width` its frame gives it: what it is for under its title, the setting (font_setting.mbt's fonts_blocks_node).
+pub fn fonts_node(
+  v : @view.View,
+  core : Core,
+  on_back~ : () -> Unit,
+  frame~ : () -> PageFrame,
+  said? : (@sf.PageSaid) -> Unit,
+  width? : () -> Double,
+) -> Unit {
+  let (blocks, block) = fonts_blocks_node(core)
+  @sf.page_node(
+    v,
+    fn() { @sf.t("web-pages.appearance.fonts.title") },
+    on_back~,
+    frame~,
+    said?,
+    width?,
+    lead=fn() { @sf.t("web-pages.appearance.fonts.description") },
+    blocks,
+    block,
+  )
 }
 
 ///|

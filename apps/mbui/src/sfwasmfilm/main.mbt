@@ -216,6 +216,8 @@ pub fn draw() -> Int {
   if option_number(10) == 1.0 { t.set_window_inset(true) }
   if option_number(9) > 0.0 { t.set_font_scale(option_number(9)) }
   if option(8) != "" { t.set_app_said("local_station", option(8)) }
+  // (the font families installed here, as a host lists them: MBUI_FILM_LOCAL_FONTS)
+  if option(22) != "" { t.set_local_fonts(option(22)) }
   let prepare = option(3)
   let script = option(4)
   let max = option_number(7).to_int()

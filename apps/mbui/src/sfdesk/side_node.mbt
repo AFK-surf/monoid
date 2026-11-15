@@ -1,6 +1,7 @@
 // The sidebar made once over the block (pane_view's and tape_view's `sides`): where the block lays its sidebar out
 // (SideAt), the sidebar the block holds now (side_place), each made as nodes of the window's tree: the chats' lists for
-// the chats' places. Those not made once yet are the block's old view's (lists.mbt sidebar).
+// the chats' places, the settings' list for the settings'. Those not made once yet are the block's old view's
+// (lists.mbt sidebar).
 
 ///|
 /// The sidebar the block holds now in node `n` (as large as what holds the block, over it), where `at` says the block
@@ -27,6 +28,8 @@ fn side_node(n : @view.View, src : Source, tips : @sf.TipLayer, at : () -> SideA
       |> ignore
       side.pick(at_once=true, fn() { if side_place() == "archive" { "chats" } else { side_place() } }, fn(s, place) {
         match place {
+          // (the settings' list beside their pages: settings_frame.mbt)
+          "settings" => settings_side_node(s, src, tips, at)
           // (the chats' lists: a place of the rail's of theirs, or what the frame shows by default)
           _ => lists_side_node(s, src, tips, at)
         }
@@ -54,7 +57,7 @@ fn side_opens(src : Source, ws : String, ask : (String, Map[String, Json]) -> @s
 ///|
 /// Whether the sidebar of `place` (side_place's) is made once over the block, not drawn by its old view (sidebar's).
 fn side_made(place : String) -> Bool {
-  !(place is ("files" | "settings" | "stations" | "profiles"))
+  !(place is ("files" | "stations" | "profiles"))
 }
 
 ///|

@@ -5302,6 +5302,14 @@ let tree_said_of : ByNode[Int] = ByNode::new()
 let tree_said_next : Ref[Int] = Ref(-2_000_000_000)
 
 ///|
+/// The id node `v` of the window's tree is read out by, as an old view's widget is by its id (Ctx::semantics_tree's
+/// `id`): what a host's own control laid where that node is says it of (an app's native bar items, by the node's
+/// place as it is read out).
+pub fn tree_read_out_id(v : @view.View) -> Int {
+  tree_said_id(v.id())
+}
+
+///|
 /// The id node `id` of the window's tree is read out by.
 fn tree_said_id(id : @view.NodeId) -> Int {
   match tree_said_of.get(id) {

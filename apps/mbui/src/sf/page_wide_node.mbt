@@ -565,7 +565,7 @@ fn wide_link_row_node(
   acts : Bool,
   below : ((@view.View) -> Unit)?,
   below_open : () -> Double,
-  note_cut : Bool,
+  note_cut : () -> Bool,
   title_after : ((@view.View) -> Unit)?,
   title_after_shown : () -> Bool,
   folds : (() -> Bool)?,
@@ -733,7 +733,7 @@ fn wide_link_row_node(
       })
       |> ignore
       words.show(fn() { note() != "" }, fn(n) {
-        styled_words(n, note, fn() { note_look(if note_cut { wide_list_note.then(cut_words) } else { wide_list_note }) }) |> ignore
+        styled_words(n, note, fn() { note_look(if note_cut() { wide_list_note.then(cut_words) } else { wide_list_note }) }) |> ignore
       })
       words.show(fn() { trouble() != "" }, fn(n) { styled_words(n, trouble, fn() { desk_note_bad }) |> ignore })
       match below {

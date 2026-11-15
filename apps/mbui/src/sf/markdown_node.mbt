@@ -51,6 +51,8 @@ pub fn markdown_node(
   glyphs? : ((@view.View) -> Double, (Double, @view.GlyphAt) -> @view.GlyphLook)? = None,
   piece? : MdPiece? = None,
   across_of? : (Int) -> @view.Scroll = fn(_) { @view.Scroll::across() },
+  text_face? : () -> Int? = fn() { None },
+  code_face? : () -> Int? = fn() { None },
   loc~ : SourceLoc,
 ) -> @view.View {
   parent.box(made_for=loc, fn(col) {
@@ -101,6 +103,8 @@ pub fn markdown_node(
       block_at: -1,
       table_rows: piece.bind(fn(p) { p.rows }),
       across_of,
+      text_face,
+      code_face,
     }
     let blocks = @signals.computed(fn(_) { md_node_blocks(text(), tree()) })
     if one_line {
@@ -211,6 +215,10 @@ priv struct MdNode {
   table_rows : (Int, Int)?
   /// what the table at a block scrolls across with (markdown_node's `across_of`: the pieces of one table as one)
   across_of : (Int) -> @view.Scroll
+  /// faces tried for prose and code, as they are now (markdown_node's `text_face`, `code_face`; Md's: None the chosen
+  /// face, Some(0) the app's face for that kind)
+  text_face : () -> Int?
+  code_face : () -> Int?
 }
 
 ///|
@@ -537,7 +545,7 @@ fn md_block_node(
           Some(CodeBlock(_, _, colours)) => colours
           _ => None
         }
-      })
+      }, face=md.code_face)
     }
     // (drawn another way, as its language says: a chart, its code as it changes; another language's made again)
     8 => {
@@ -732,7 +740,21 @@ fn md_words_node(
     }
     let out = []
     runs_of(now, out, weight >= 600, false, false, "", theme().p.accent_text, titles, md.paths)
-    found_weight(out, (md.found)())
+    let runs = found_weight(out, (md.found)())
+    // (in the faces tried, where it is told them: Md::words')
+    let text_face = (md.text_face)()
+    let code_face = (md.code_face)()
+    if text_face is None && code_face is None {
+      runs
+    } else {
+      runs.map(fn(run) {
+        let face = if run.code || run.mono { code_face } else { text_face }
+        match face {
+          Some(_) => { ..run, face }
+          None => run
+        }
+      })
+    }
   }
   let look = fn() -> @view.WordsLook {
     let size = size()
@@ -1011,13 +1033,15 @@ fn md_task_node(t : @view.View, done : () -> Bool, line : () -> Double, loc~ : S
 /// (a capsule, concentric with the block's corner) on a row of their own over the code with either input (code_block's);
 /// the code in the code face, in the colours the core said (`colours`), 12 on 18 (on a
 /// desktop's width 12 on 1.6), scrolled across, or wrapped at its width once its wrap key (before the copy key) is
-/// pressed, till it is pressed again. Pressed, the copy key copies the code and says so copied_ms.
+/// pressed, till it is pressed again. Pressed, the copy key copies the code and says so copied_ms. `face`: a face
+/// tried for the code, as it is now (code_block's: None or Some(0) the code's own).
 #callsite(autofill(loc))
 pub fn code_block_node(
   p : @view.View,
   code : () -> String,
   lang : () -> String,
   colours : () -> String?,
+  face? : () -> Int? = fn() { None },
   loc~ : SourceLoc,
 ) -> Unit {
   let over = native_input() is Mouse
@@ -1102,9 +1126,14 @@ pub fn code_block_node(
   // is over it staying)
   let words = fn(w : @view.View, wrap : Bool) {
     let runs = fn() {
-      match colours() {
+      let runs = match colours() {
         Some(ink) => core_ink(code(), ink, theme().dark)
         None => [@ui.span(code(), mono=true)]
+      }
+      // (in the face tried, where it is told one: code_block's paragraph's `face`)
+      match face() {
+        Some(f) if f != 0 => runs.map(fn(run) { { ..run, face: Some(f) } })
+        _ => runs
       }
     }
     let look : @view.WordsLook = {

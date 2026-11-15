@@ -402,6 +402,8 @@ fn tape_made(
           tape_made(src, Setting(r), tips).map(fn(m) { ("place/" + m.0, m.1) })
         _ => None
       }
+    // (the settings come to beside their list: its first row's page, made once as that page is)
+    Settings => tape_made(src, Setting(settings_landing), tips).map(fn(m) { ("settings/" + m.0, m.1) })
     // (by its station: another station's another page, not this one become it)
     Setting(Memory(address)) if pane_makes.val =>
       made("memory/" + address, fn(p, core, here, _stint, told, _acts) {
@@ -461,6 +463,21 @@ fn tape_made(
       made("permissions", fn(p, core, _here, _stint, told, _acts) {
         context_node(p)
         @sfpages.permissions_node(p, core, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~)
+      })
+    Setting(Me) if pane_makes.val =>
+      made("me", fn(p, core, here, stint, told, _acts) {
+        context_node(p)
+        @sfpages.me_node(p, core, here, on_back=core.pop, frame=fn() { tape_made_frame }, stint~, said=told, width~)
+      })
+    Setting(Fonts) if pane_makes.val =>
+      made("fonts", fn(p, core, _here, _stint, told, _acts) {
+        context_node(p)
+        @sfpages.fonts_node(p, core, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~)
+      })
+    Setting(BarSettings) if pane_makes.val =>
+      made("bars", fn(p, core, _here, _stint, told, _acts) {
+        context_node(p)
+        @sfpages.bars_node(p, core, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~)
       })
     Setting(Security) if pane_makes.val =>
       made("security", fn(p, core, here, stint, told, _acts) {

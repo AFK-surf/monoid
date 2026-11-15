@@ -105,9 +105,10 @@ pub fn update_key_node(
       k
       .width(Is(Some(side)))
       .height(Is(Some(side)))
-      // (round as its ground is while there is one, as an old view's key's hovered{} look: at rest none, nothing
-      // standing in a corner)
-      .radius(By(fn() { if lit_node(k) && !b.disabled() { side / 2.0 } else { 0.0 } }))
+      // (round as its ground is while there is one, as an old view's key's hovered{} look; round at rest too, its
+      // ground none: in a sidebar's corner (the settings', where it is last on its band) concentric with it, as the
+      // corner rule takes it whatever it shows)
+      .radius(Is(side / 2.0))
       // (its mark in its middle both ways, as update_key_box's: a box lays what it holds down from its top)
       .lines_up(Is(Some(Middle)))
       .lies_along(Is(Middle))

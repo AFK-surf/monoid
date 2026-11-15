@@ -82,8 +82,6 @@ pub(all) struct Core {
   bars : () -> (Array[Array[String]], Int)
   /// the bars changed (kept as the workspace's), the one shown
   set_bars : (Array[Array[String]], Int) -> Unit
-  /// a place's icon, 28 high in a colour (Station's the stations' glyph, one on)
-  place_icon : (@ui.Ctx, String, Int64) -> Unit
   /// whether usage statistics and error reports go out from this device (Crashes.reporting); None where nothing is
   /// sent anyway (no host takes them, a build without PostHog's key): no row then
   reporting : () -> Bool?
@@ -628,7 +626,6 @@ pub fn reset() -> Unit {
   run_list.clear()
   new_profiles.clear()
   bar_adding.set(false)
-  bar_moves.clear()
   opened.plain.clear()
   opened.opening.clear()
   opened.shown.clear()
@@ -640,7 +637,7 @@ pub fn reset() -> Unit {
 /// Whether every frame makes `r`'s page once as nodes of the window's tree (narrow_made, pane_made, tape_made), as a page
 /// of the stack and as a place: its old view gone.
 pub fn made_once(r : Route) -> Bool {
-  r is (About | Changelog | Memories | Memory(_) | MemoryDoc(_, _, _) | Archiving | StationArchiving(_) | StationMove(_) | AutoDecisions | Usage | UsagePrices(_) | Shortcuts | Notifications | AutoCompletion | Permissions | AutoPolicy(_) | Appearance | LocalStation | Security | SecurityOpen | Workspace | VaultItems | Connects(_) | Connect(_, _) | Profile(_, _) | NewProfile(_) | Station(_))
+  r is (About | Changelog | Memories | Memory(_) | MemoryDoc(_, _, _) | Archiving | StationArchiving(_) | StationMove(_) | AutoDecisions | Usage | UsagePrices(_) | Shortcuts | Notifications | AutoCompletion | Permissions | AutoPolicy(_) | Appearance | LocalStation | Security | SecurityOpen | Workspace | VaultItems | Connects(_) | Connect(_, _) | Profile(_, _) | NewProfile(_) | Station(_) | Me | Fonts | BarSettings)
 }
 
 ///|

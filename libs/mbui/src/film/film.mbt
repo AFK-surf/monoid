@@ -33,6 +33,8 @@
 //   left); MBUI_FILM_WINDOW=N films window N of them, the screen's grey before it opens]
 //   [MBUI_FILM_NAV_ABLE=1: the system lays out the app's tabs in bars of its own, an iPhone Duo's (@hostapi.nav_bar_able;
 //   what the system draws of them not filmed: the app beside them)]
+//   [MBUI_FILM_LOCAL_FONTS=["Menlo","Avenir Next"]: the font families installed here, as a host lists them
+//   (@hostapi.local_font_families)]
 // The film is H.264, lossy: each frame's pixels are the encoder's guess of them, and a guess that leans on the frames
 // before it and on how the encoder spends its bits. A picture compared to the byte (before and after a change) is the
 // last frame as drawn (MBUI_FILM_LAST), never one taken out of the film.

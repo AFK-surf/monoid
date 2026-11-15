@@ -1,10 +1,10 @@
 // A device not yet confirmed in the workspace's safe mode (its lock): whether it waits, and the lock's calls. The page
-// it shows while it waits is sfpages' lock_wait.mbt.
+// it shows while it waits is sfpages' lock_wait_node.mbt.
 
 ///|
 /// Whether this device waits to be let in to the workspace's lock: to be confirmed (the lock's `me.waiting`), or, a web
 /// page nobody can approve there, for its person's first app to approve it (`me.needsAppText`): either way the
-/// workspace's place is the waiting page (sfpages' lock_wait.mbt), which says which.
+/// workspace's place is the waiting page (sfpages' lock_wait_node.mbt), which says which.
 pub fn lock_waiting(core : Core, ws : String) -> Bool {
   let me = field((core.topic)("lock", { "workspace": str(ws) }).get().value, "me")
   flag(me, "waiting") || text(me, "needsAppText") != ""

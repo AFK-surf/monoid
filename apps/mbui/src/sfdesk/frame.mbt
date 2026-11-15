@@ -973,9 +973,6 @@ let frame_main : @ui.Style = @ui.css("h=Full clip")
 // kept across runs: a value (no field of it changes)
 let page_aside : @ui.Style = @ui.css("w=Full h=Full")
 
-///|
-// kept across runs: a value (no field of it changes)
-let frame_gate : @ui.Style = @ui.css("bg=Bg")
 
 ///|
 /// A page's bar's padding at its left and its right (styles/sidebar.css.ts pageBar: 12, at its right where the window's
