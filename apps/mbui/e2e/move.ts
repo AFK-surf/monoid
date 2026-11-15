@@ -3231,16 +3231,17 @@ try {
       }
       const askMs = Date.now() - t0;
       if (failed === null) {
-        // (the end of this chat's own turn: a turn of the one before, cut by a handover and said ended by the next
-        // process after this ask began, is not it; taken for it, the next asks met this one's turn as under way)
-        const mine = (l: J) => [...(l?.done ?? []), ...(l?.refused ?? []).map((r: J) => r.item), ...failuresOf(l).map((f) => f.item)].some((x) => named(x) === `chats ${key}` || x === `chats ${key}`);
-        const l = await whenChanged([`${DATA.A}/move`], () => {
-          const x = lastOn("A", ws);
-          return x !== null && x.at >= t0 && !existsSync(`${DATA.A}/move/turn.json`) && (mine(x) || (x.done ?? []).length + (x.refused ?? []).length + failuresOf(x).length === 0) && x;
-        }, 300_000, () => `no end of ${key.slice(-8)}'s turn: last ${brief(lastOn("A", ws))}`, 200);
-        const why = failedWhy(l, `chats ${key}`);
+        // (the turn's end as A says it; one that names no item of its own (a turn cut by a handover, said ended by the
+        // next process) is this ask's failing, in its words)
+        const l = await turnEnds("A", t0, 300_000);
         said = outcome(l);
-        if (why !== "" || (l.done ?? []).length === 0) failed = why || said;
+        const named1 = [...(l?.done ?? []), ...(l?.refused ?? []).map((r: J) => r.item)].map((x) => named(x)).concat(failuresOf(l).map((f) => f.item));
+        const why = failedWhy(l, `chats ${key}`);
+        if (!(l.done ?? []).map(named).includes(`chats ${key}`)) failed = named1.includes(`chats ${key}`) ? why || said : `its turn ended naming nothing of it: ${failedWhy(l) || said}`;
+      } else if (/http_409/.test(failed)) {
+        // (a turn under way, as one at a time is: the next ask waits for its end, as a person would, rather than meet it
+        // again at once)
+        await turnEnds("A", Date.now(), 300_000).catch(() => undefined);
       }
       out.push({ key, at: t0, askMs, said, failed });
     }
