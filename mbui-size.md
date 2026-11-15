@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [7b151c314](https://github.com/AFK-surf/monoid/commit/7b151c3145aa99a7727896c8d94c2d58fb546a22) feat(mbui): native .mbui declarative widgets & san | 2.06 | 2.84 | 12.22 | 32.1 | 45.21 | 28.69 | 56.39 | 98.55 | 114.83 |
 | [fded3ea86](https://github.com/AFK-surf/monoid/commit/fded3ea86094cd0b00655b5cb229537c9ea47349) app: a station's terminals, among its screens, and | 2.04 | 2.8 | 12.05 | 31.95 | 44.76 | 28.55 | 56 | 98.63 | 116.15 |
 | [b978947a2](https://github.com/AFK-surf/monoid/commit/b978947a2fc63b01648e630c0a435eed5df5d1db) station: a job's log told to a stream read by the  | 2.03 | 2.79 | 12.03 | 31.92 | 44.66 | 28.53 | 55.91 | 98.68 | 118.42 |
 | [1f33147ef](https://github.com/AFK-surf/monoid/commit/1f33147efeddf2449c6e82496cf30bb60037eb9b) station: a Codex item's deltas told Node a while a | 2.03 | 2.79 | 12.03 | 31.92 | 44.66 | 28.53 | 55.91 | 98.58 | 109.52 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [2ed703dec](https://github.com/AFK-surf/monoid/commit/2ed703decf832c39d59034998e89eaa46fc95027) mbui: a Tester's run at a rate draws no frame for  | 2.01 | 2.76 | 11.86 | 31.71 | 43.84 | 28.32 | 55.5 | 97.04 | 107.48 |
 | [5ea9f29a9](https://github.com/AFK-surf/monoid/commit/5ea9f29a9aa670a4e2e36daae34fb7af71c78466) mbui app: a go-to on the chat's page made as nodes | 2.01 | 2.76 | 11.86 | 31.71 | 43.84 | 28.32 | 55.5 | 97.04 | 107.48 |
 | [35915222d](https://github.com/AFK-surf/monoid/commit/35915222d2fcb3a11508fd4ae5f86253d9f1c970) mbui app tests: an options card's answer comes as  | 2.01 | 2.76 | 11.84 | 31.68 | 43.76 | 28.3 | 55.43 | 96.8 | 110.94 |
-| [2469b9c44](https://github.com/AFK-surf/monoid/commit/2469b9c445a2873522332356370cb25cc2152129) native: libghostty-vt prebuilt for every target (t | 2.01 | 2.76 | 11.84 | 31.68 | 43.76 | 28.3 | 55.43 | 96.8 | 110.94 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [7b151c314](https://github.com/AFK-surf/monoid/commit/7b151c3145aa99a7727896c8d94c2d58fb546a22) feat(mbui): native .mbui declarative widgets & san | 0.41 | 0.53 | 1.98 | 3.09 | 4.54 | 1.46 | 3.81 | 57.25 |
 | [fded3ea86](https://github.com/AFK-surf/monoid/commit/fded3ea86094cd0b00655b5cb229537c9ea47349) app: a station's terminals, among its screens, and | 0.41 | 0.53 | 1.98 | 3.09 | 4.54 | 1.46 | 3.81 | 57.25 |
 | [b978947a2](https://github.com/AFK-surf/monoid/commit/b978947a2fc63b01648e630c0a435eed5df5d1db) station: a job's log told to a stream read by the  | 0.41 | 0.53 | 1.98 | 3.09 | 4.54 | 1.46 | 3.81 | 57.2 |
 | [1f33147ef](https://github.com/AFK-surf/monoid/commit/1f33147efeddf2449c6e82496cf30bb60037eb9b) station: a Codex item's deltas told Node a while a | 0.41 | 0.53 | 1.98 | 3.09 | 4.54 | 1.46 | 3.81 | 57.2 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [2ed703dec](https://github.com/AFK-surf/monoid/commit/2ed703decf832c39d59034998e89eaa46fc95027) mbui: a Tester's run at a rate draws no frame for  | 0.4 | 0.52 | 1.96 | 3.08 | 4.46 | 1.45 | 3.8 | 57.51 |
 | [5ea9f29a9](https://github.com/AFK-surf/monoid/commit/5ea9f29a9aa670a4e2e36daae34fb7af71c78466) mbui app: a go-to on the chat's page made as nodes | 0.4 | 0.52 | 1.96 | 3.08 | 4.46 | 1.45 | 3.8 | 57.35 |
 | [35915222d](https://github.com/AFK-surf/monoid/commit/35915222d2fcb3a11508fd4ae5f86253d9f1c970) mbui app tests: an options card's answer comes as  | 0.4 | 0.52 | 1.96 | 3.08 | 4.46 | 1.45 | 3.8 | 57.35 |
-| [2469b9c44](https://github.com/AFK-surf/monoid/commit/2469b9c445a2873522332356370cb25cc2152129) native: libghostty-vt prebuilt for every target (t | 0.4 | 0.52 | 1.96 | 3.08 | 4.46 | 1.45 | 3.8 | 57.21 |
