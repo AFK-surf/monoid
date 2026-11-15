@@ -186,12 +186,13 @@ test("across a connect's move every event is handled once, by the station that h
   const before = h.rig.store.listSessions().length;
   const during = message({ text: "<@UBOT> as it moves", threadTs: "1800.1", ts: "1800.1" });
   const after = message({ text: "<@UBOT> just after", threadTs: "1800.2", ts: "1800.2" });
-  let late: Promise<void> | null = null;
+  /// (what handling it came to: null, or why it was not)
+  let late: Promise<string | null> | null = null;
   // (an event H's socket gives at the last moment: as S is taking it, before H heard it was taken)
   const ask = s.bus.handle.bind(s.bus);
   s.bus.handle = async (ws: string, from: string, request: Json) => {
     if (request?.method === "connect.take" && late === null) {
-      late = h.connects.receive("cl", { type: "message", message: during });
+      late = h.connects.receive("cl", { type: "message", message: during }).then(() => null, (e: Error) => e.message);
       // (what it set going done before S takes it: an event sent on at once would reach S before its entry)
       await new Promise<void>((r) => setImmediate(r));
     }
@@ -199,7 +200,7 @@ test("across a connect's move every event is handled once, by the station that h
   };
   await h.connects.move("cl", S, "ws");
   assert.ok(late !== null, "the event came as S took it");
-  assert.equal(await (late as Promise<void>).then(() => null, (e: Error) => e.message), null, "taken where it went");
+  assert.equal(await late, null, "taken where it went");
   // (and one its socket gives after the hand-off, before it closed)
   await h.connects.receive("cl", { type: "message", message: after });
   await settle();
