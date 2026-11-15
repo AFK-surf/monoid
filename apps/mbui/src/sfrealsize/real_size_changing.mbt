@@ -51,6 +51,8 @@ priv struct Held {
   mut value : Json
   mut version : Int
   changes : @signals.Signal[Int]
+  /// the ops of the message it took last (none: a value whole, or none taken): what a core sends a subscription for it
+  mut last_ops : Array[Json]?
 }
 
 ///|
@@ -84,7 +86,7 @@ fn RealSizeChanging::held_of(
         None => None
         Some(v) => {
           let v = changing_named(v)
-          let h = { name, asked, first: v, value: v, version: 0, changes: @signals.signal(0) }
+          let h = { name, asked, first: v, value: v, version: 0, changes: @signals.signal(0), last_ops: None }
           self.held[key] = h
           self.order.push(h)
           Some(h)
@@ -135,10 +137,16 @@ pub fn RealSizeChanging::changed(self : RealSizeChanging, at : Int) -> Array[(St
 pub fn RealSizeChanging::put(self : RealSizeChanging, at : Int, message : Json) -> Unit {
   let h = self.order[at]
   match message {
-    Array(ops) => h.value = @core.apply_delta(h.value, ops)
+    Array(ops) => {
+      h.value = @core.apply_delta(h.value, ops)
+      h.last_ops = Some(ops)
+    }
     Object(o) =>
       match o.get("value") {
-        Some(whole) => h.value = whole
+        Some(whole) => {
+          h.value = whole
+          h.last_ops = None
+        }
         None => return
       }
     _ => return
@@ -152,6 +160,7 @@ pub fn RealSizeChanging::put(self : RealSizeChanging, at : Int, message : Json) 
 pub fn RealSizeChanging::put_back(self : RealSizeChanging, at : Int) -> Unit {
   let h = self.order[at]
   h.value = h.first
+  h.last_ops = None
   h.version += 1
   h.changes.set(h.version)
 }
@@ -176,4 +185,15 @@ pub fn real_size_way(name : String, params : Map[String, Json]) -> String {
     }
   }
   parts.join(" ")
+}
+
+///|
+/// The ops of the last message `name` asked with `params` (the app's) took, as a core sends them to its subscription
+/// (none: what it holds came whole, or nothing came): for a made-up core that answers changes as the core does
+/// (sffixture's round_trip_again `delta_of`).
+pub fn RealSizeChanging::last_ops(self : RealSizeChanging, name : String, params : Map[String, Json]) -> Array[Json]? {
+  match self.held.get(name + "\u{1}" + Json::object(params).stringify()) {
+    Some(h) => h.last_ops
+    None => None
+  }
 }

@@ -1596,12 +1596,15 @@ fn made_core_post(text : String, heard : (String) -> Unit, live : () -> Bool) ->
 /// asked again and when is the client's to say, as on a device, never this made-up core's own count of who reads what.
 /// Calls are `base`'s, as they were (the client carries them too: answered so). What the client sends and what is
 /// answered are the same messages a run's trace keeps (src/core's trace.mbt), told to `heard` as they go. `late`, where
-/// said, how late each topic is answered by its name and params (as a page reads them), in `ms`'s place.
+/// said, how late each topic is answered by its name and params (as a page reads them), in `ms`'s place. `delta_of`,
+/// where said, what changed of a topic's value as the core's keyed ops (by its name and params): a change after its
+/// first value sent as those (`{id, delta}`), as the core sends it, not its value whole again.
 pub fn round_trip_again(
   base : Source,
   ms : Double,
   heard? : (String) -> Unit = fn(_) {  },
   late? : (String, Map[String, Json]) -> Double,
+  delta_of? : (String, Map[String, Json]) -> Array[Json]?,
 ) -> Source {
   // (the topic and params a page read, by what the client puts on the wire for them: what to answer it with)
   let named : Map[String, (String, Map[String, Json])] = Map([])
@@ -1669,8 +1672,28 @@ pub fn round_trip_again(
           // frame is read would be that frame's, and is a fault: @signals.effect_in_watch)
           // (what it gave last: a value worked out again the same is no change, and a core sends none for it)
           let last : Ref[String] = Ref("")
+          // (the version it gave last, where what changed is sent as ops: -1 none yet)
+          let gave_at = Ref(-1)
           stop.val = @signals.effect(fn() {
             let now = base.topic(name, params).get().snapshot()
+            // (a change after its first value, as the core sends it: its ops alone)
+            if gave_at.val >= 0 && now.version != gave_at.val && now.error is None {
+              match delta_of {
+                Some(f) =>
+                  match f(name, params) {
+                    Some(ops) => {
+                      gave_at.val = now.version
+                      // (what it gave whole is no longer what it holds: nothing kept of it to answer `same` by)
+                      gave.remove(id)
+                      let out = ({ "id": Json::number(id.to_double()), "delta": Json::array(ops) } : Json).stringify()
+                      @signals.after_flush(fn() { if on.val { give(out) } })
+                      return
+                    }
+                    None => ()
+                  }
+                None => ()
+              }
+            }
             let m : Json? = match (now.value, now.error) {
               (Some(v), _) => Some({ "id": Json::number(id.to_double()), "value": v })
               (_, Some(e)) => Some({ "id": Json::number(id.to_double()), "error": e })
@@ -1682,6 +1705,7 @@ pub fn round_trip_again(
                 if text != last.val {
                   let first = last.val == ""
                   last.val = text
+                  gave_at.val = now.version
                   let said = match now.value {
                     Some(v) => v.stringify()
                     None => ""

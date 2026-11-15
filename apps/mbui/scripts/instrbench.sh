@@ -29,6 +29,7 @@ paged scroll-deep long-paged 390x844
 type type chat-long 390x844
 table scroll-table chat-md 390x844
 send send chat-done-live 390x844
+chatreal chat-real chat-real 390x844
 list30 list list:30 390x844
 list1500 list list:1500 390x844
 sight30 list list-sight:30 390x844
