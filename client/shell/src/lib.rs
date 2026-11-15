@@ -512,10 +512,12 @@ enum Handle {
     Tcp { read: Arc<tokio::sync::Mutex<Box<dyn tokio::io::AsyncRead + Send + Unpin>>>, write: Arc<tokio::sync::Mutex<Box<dyn tokio::io::AsyncWrite + Send + Unpin>>> },
     Endpoint(Endpoint, Arc<Kept>),
     Conn(Connection),
-    /// A connection that closed, let go (its state, its streams), with what the core may still ask of it.
+    /// A connection that closed, let go (its state, its streams), with what the core may still ask of it; `conn.close`
+    /// with `forget: true` lets it go entirely, before or after it closed.
     Gone { remote: String, reason: Value, stats: Value },
     /// An endpoint closed (`iroh.close`), let go, with what the core may still ask of it: one bound anew in its place
     /// leaves a dial still under way on it asking its relays as it fails (mesh.ts `link`), as the station's addon answers.
+    /// `iroh.close` with `forget: true` lets it go entirely, before or after it closed.
     Unbound { id: String },
     IStream(Arc<Halves>),
     /// A socket listening on this machine (`tcp.listen`, `unix.listen`): what a station's program serves (station/mb).
@@ -1035,6 +1037,11 @@ impl Inner {
             _ => return,
         };
         handles.insert(id, gone);
+        Self::release_streams(&mut handles, id);
+    }
+
+    /// Lets go of the streams of connection `id`, each reset for whoever still reads or writes it.
+    fn release_streams(handles: &mut HashMap<u64, Handle>, id: u64) {
         let streams: Vec<u64> = handles.iter().filter_map(|(k, h)| matches!(h, Handle::IStream(halves) if halves.conn == id).then_some(*k)).collect();
         for k in streams {
             if let Some(Handle::IStream(halves)) = handles.remove(&k) {
@@ -1612,9 +1619,22 @@ impl Inner {
             }
             "iroh.close" => {
                 let id = id_of(&a)?;
+                let forget = a.get("forget").and_then(Value::as_bool).unwrap_or(false);
                 let endpoint = {
                     let mut handles = self.handles.lock().unwrap();
                     match handles.get(&id) {
+                        // Let go entirely: nothing of it is asked after (the core's own endpoints, not a dial's).
+                        Some(Handle::Endpoint(..)) if forget => {
+                            let Some(Handle::Endpoint(endpoint, kept)) = handles.remove(&id) else { unreachable!() };
+                            for (_, task) in kept.keepers.lock().unwrap().drain() {
+                                task.abort();
+                            }
+                            Some(endpoint)
+                        }
+                        Some(Handle::Unbound { .. }) if forget => {
+                            handles.remove(&id);
+                            None
+                        }
                         Some(Handle::Endpoint(endpoint, kept)) => {
                             for (_, task) in kept.keepers.lock().unwrap().drain() {
                                 task.abort();
@@ -1667,10 +1687,31 @@ impl Inner {
                 _ => Err("not a connection".into()),
             },
             "conn.close" => {
-                let conn = match self.handle(id_of(&a)?)? {
-                    Handle::Conn(conn) => conn,
-                    Handle::Gone { .. } => return Ok(Answer::json(json!({}))),
-                    _ => return Err("not a connection".into()),
+                let id = id_of(&a)?;
+                let forget = a.get("forget").and_then(Value::as_bool).unwrap_or(false);
+                let conn = if forget {
+                    // Let go entirely, its streams with it: `keep_conn`'s wait on its close then finds nothing to keep.
+                    let mut handles = self.handles.lock().unwrap();
+                    match handles.get(&id) {
+                        None => return Err(format!("no handle {id}")),
+                        Some(Handle::Conn(_)) => {
+                            let Some(Handle::Conn(conn)) = handles.remove(&id) else { unreachable!() };
+                            Self::release_streams(&mut handles, id);
+                            conn
+                        }
+                        Some(Handle::Gone { .. }) => {
+                            handles.remove(&id);
+                            Self::release_streams(&mut handles, id);
+                            return Ok(Answer::json(json!({})));
+                        }
+                        Some(_) => return Err("not a connection".into()),
+                    }
+                } else {
+                    match self.handle(id)? {
+                        Handle::Conn(conn) => conn,
+                        Handle::Gone { .. } => return Ok(Answer::json(json!({}))),
+                        _ => return Err("not a connection".into()),
+                    }
                 };
                 let code = a.get("code").and_then(Value::as_u64).unwrap_or(0) as u32;
                 conn.close(code.into(), a.get("reason").and_then(Value::as_str).unwrap_or("").as_bytes());
@@ -3775,6 +3816,67 @@ mod tests {
             assert_eq!(inner.run("conn.closed", json!({ "id": id }), None).await.unwrap().json, json!({ "kind": "application", "reason": "bye", "text": "closed by peer: bye (code 7)" }));
             assert!(inner.run("conn.openBi", json!({ "id": id }), None).await.is_err());
             assert_eq!(inner.run("conn.acceptBi", json!({ "id": id }), None).await.unwrap().json, json!({ "end": true }));
+        });
+    }
+
+    #[test]
+    fn forgets_closed_connections_and_endpoints_when_asked() {
+        let dir = TempDir::new();
+        let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+        let inner = shell.inner.clone();
+        shell.runtime.block_on(async move {
+            let alpn = b"stillfail/test".to_vec();
+            let bind = |alpns: Vec<Vec<u8>>| Endpoint::builder(Minimal).relay_mode(RelayMode::Disabled).alpns(alpns).bind();
+            let (a, b) = (bind(vec![]).await.unwrap(), bind(vec![alpn.clone()]).await.unwrap());
+            let port = b.bound_sockets().iter().find(|s| s.is_ipv4()).unwrap().port();
+            let addr = endpoint_addr(&json!({ "id": hex::encode(b.id().as_bytes()), "ips": [format!("127.0.0.1:{port}")] })).unwrap();
+            let dial = || {
+                let (inner, a, b, addr, alpn) = (inner.clone(), a.clone(), b.clone(), addr.clone(), alpn.clone());
+                async move {
+                    let taken = tokio::spawn(async move { b.accept().await.unwrap().await.unwrap() });
+                    let id = inner.keep_conn(a.connect(addr, &alpn).await.unwrap());
+                    (id, taken.await.unwrap())
+                }
+            };
+
+            // Closed by us, live with a stream open: let go at once, and its close later keeps nothing of it.
+            let (id, theirs) = dial().await;
+            let stream = inner.run("conn.openBi", json!({ "id": id }), None).await.unwrap().json["id"].as_u64().unwrap();
+            assert!(matches!(inner.handle(stream), Ok(Handle::IStream(_))));
+            inner.run("conn.close", json!({ "id": id, "code": 3, "reason": "done", "forget": true }), None).await.unwrap();
+            theirs.closed().await;
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            assert!(inner.handle(id).is_err());
+            assert!(inner.handle(stream).is_err());
+            assert!(inner.run("conn.close", json!({ "id": id, "forget": true }), None).await.is_err());
+
+            // Closed by the peer first: what was kept of it goes when the core is done with it.
+            let (id, theirs) = dial().await;
+            theirs.close(7u32.into(), b"bye");
+            for _ in 0..200 {
+                if matches!(inner.handle(id), Ok(Handle::Gone { .. })) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            assert!(matches!(inner.handle(id), Ok(Handle::Gone { .. })));
+            inner.run("conn.close", json!({ "id": id, "forget": true }), None).await.unwrap();
+            assert!(inner.handle(id).is_err());
+
+            // Not a connection: refused, and kept.
+            let other = inner.keep(Handle::Unbound { id: "x".into() });
+            assert!(inner.run("conn.close", json!({ "id": other, "forget": true }), None).await.is_err());
+            assert!(matches!(inner.handle(other), Ok(Handle::Unbound { .. })));
+
+            // An endpoint let go as it closes, and one closed before let go after.
+            let endpoint = inner.keep(Handle::Endpoint(bind(vec![]).await.unwrap(), Arc::default()));
+            inner.run("iroh.close", json!({ "id": endpoint, "forget": true }), None).await.unwrap();
+            assert!(inner.handle(endpoint).is_err());
+            let endpoint = inner.keep(Handle::Endpoint(bind(vec![]).await.unwrap(), Arc::default()));
+            inner.run("iroh.close", json!({ "id": endpoint }), None).await.unwrap();
+            assert!(matches!(inner.handle(endpoint), Ok(Handle::Unbound { .. })));
+            inner.run("iroh.close", json!({ "id": endpoint, "forget": true }), None).await.unwrap();
+            assert!(inner.handle(endpoint).is_err());
         });
     }
 
