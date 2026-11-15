@@ -43,6 +43,13 @@ if ! moon build --target wasm --release --no-strip src/$APP > "$log" 2>&1; then
 fi
 echo "wasm-app: the app in $((SECONDS - t0)) s"
 program=$A/$(pkg_build $APP wasm release)/$APP.wasm
+# (its start, every package's initializers in one function, past the 50,000 locals wasmtime and V8 take: same-typed locals
+# whose lives never overlap folded into one, where it is, nothing else of the program changed: tools/wasm-film/compact.mjs)
+node --input-type=module -e "
+import { readFileSync, writeFileSync } from 'node:fs';
+import { compactStart } from '$A/tools/wasm-film/compact.mjs';
+writeFileSync(process.argv[1], compactStart(readFileSync(process.argv[1])));
+" "$program" || { echo 'wasm-app: its start could not be compacted' >&2; exit 1; }
 # wasmtime's command line (its release for this machine, fetched once by its checksum), which compiles a program ahead
 # for a device's shell: WT_CLI; WT_SAME, what makes its compilation the C API's default engine's (the command line's own
 # collector is another: a program compiled without it the shell refuses)
