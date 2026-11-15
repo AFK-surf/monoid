@@ -2321,6 +2321,9 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
   // (asked only of what has words)
   let words_scale = if c.words != "" || c.words_drawn is Some(_) { tree.words_scale_of(c.id) } else { 1.0 }
   let start = self.ninst
+  // (its shapes' pieces, counted from 0 as it is composed (Ctx::view_blit): its words' torn grounds' too, put as its
+  // words are drawn (Ctx::paint_run_grounds), before its own shapes)
+  let seg_start = self.segs.length()
   // (who drew what kept: the node's, each glyph's cell as it is made)
   let (was, was_tree) = (inst_owners.painting, inst_owners.tree_painting)
   inst_owners.painting = -1
@@ -2593,7 +2596,6 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
   // (its shapes, as bands worked out once for the outlines said (kept by them, whatever colour they are drawn in), in
   // its tint where it has one; their pieces its own, counted from 0)
   let shape_marks : Array[(Int, Int, Int)] = []
-  let seg_start = self.segs.length()
   // (its picture's after them, cut for the pixels it is drawn at: View::picture; the same array while both are)
   let shapes = match c.picture {
     None => {
@@ -2618,7 +2620,6 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
         b
       }
     }
-    let from = self.ninst
     // (in its tint: its shapes all of it; its picture's each with the opacity of its own, as a tinted picture is drawn,
     // @pixels.tinted)
     let own = c.shapes.length()
@@ -2643,12 +2644,6 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
       let (sw, sh) = shape_extent(s)
       shape_marks.push((piece_from - start, self.ninst - start, if sw <= icon_most && sh <= icon_most { 1 } else { 2 }))
     }
-    let base = (seg_start / 4).to_double()
-    for i in from..<self.ninst {
-      if self.inst[i * inst_size + 5] == 11.0 {
-        self.inst[i * inst_size + 12] = self.inst[i * inst_size + 12] - base
-      }
-    }
   } else {
     // (none drawn now: the bands of those it drew before let go)
     view_shape_bands.remove(c.id)
@@ -2656,6 +2651,13 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
   // (its lines over them, as an old view's box draws its own: Ctx::lines)
   if bones == 0L {
     self.emit_lines(0.0, 0.0, c.lines, 1.0)
+  }
+  // (every band it drew, its words' grounds' and its shapes', by its own pieces)
+  let base = (seg_start / 4).to_double()
+  for i in start..<self.ninst {
+    if self.inst[i * inst_size + 5] == 11.0 {
+      self.inst[i * inst_size + 12] = self.inst[i * inst_size + 12] - base
+    }
   }
   let segs = self.segs[seg_start:].to_owned()
   self.segs_cut(seg_start)
