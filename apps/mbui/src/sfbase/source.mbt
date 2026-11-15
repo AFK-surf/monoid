@@ -164,6 +164,10 @@ pub(all) struct Source {
   /// whether a station's terminals are asked for (`terminals`, among its screens: sfpages station_terminals_node.mbt):
   /// not of a run seen again that was recorded before the app did
   asks_terminals : () -> Bool
+  /// whether a page's, a panel's or a card's own view reads what makes it whole at once (a chat's services' pop its
+  /// bar's summary till its own comes, an agent's card what its model's menu lists, asked ahead): not of a run seen
+  /// again that was recorded before the app did (MBUI_SWR_VIEWS)
+  swr_views : () -> Bool
 }
 
 ///|
@@ -322,21 +326,87 @@ pub fn home_lasting_of(name : String) -> Bool {
 /// on (`lasting`, as many as last_said keeps), and a chat however it is asked (its session, a thread, `compact`):
 /// `chats_kept` of those, a decoded chat being the largest tree the app holds. Unlike the lists (last_said), a chat's
 /// value kept is never shown before the core's answer: a chat's page and a row's read ahead have it only as that comes.
+///
+/// A page's, a panel's or a card's own read-only topic too (`views_kept`, as many as it says), shown again at once as it
+/// is asked again (topic_shown_kept), till the core answers: a pop, a card or a page opened again draws what it drew,
+/// not its bones nor an empty list while the core answers.
 pub fn topic_kept(name : String, params : Json) -> Int {
+  topic_kept_by(name, params, true)
+}
+
+///|
+/// topic_kept, with the views' own (`views_kept`, a chat's last 8) where `views` (MBUI_SWR_VIEWS): a replay of a run
+/// from before it keeps what that run's app did.
+pub fn topic_kept_by(name : String, params : Json, views : Bool) -> Int {
+  let typed = params is Object(p) && p.contains("q")
   if name == "chat" {
-    chats_kept
-  } else if lasting.contains(name) && !(params is Object(p) && p.contains("q")) {
+    if views { chats_kept } else { chats_kept_before }
+  } else if lasting.contains(name) && !typed {
     last_most
+  } else if views && !typed {
+    views_kept_of(name)
   } else {
     0
   }
 }
 
 ///|
+/// Whether topic `name`'s value kept is shown at once as it is asked again, before the core answers
+/// (@core.Client::show_kept): a view's own (`views_kept`). Not a chat's (its page places its rows by its first value),
+/// nor the lists the places open on (`lasting`: shown again by the source that read them, last_said, never to what names
+/// a station by them, station_marks).
+pub fn topic_shown_kept(name : String) -> Bool {
+  views_kept_of(name) > 0
+}
+
+///|
+/// How many values the core's client keeps of every name together (@core.Client::keep's `most`): as many as the core
+/// remembers for it (client/core-ts store.ts KEPT_PER_CLIENT) where `views` (MBUI_SWR_VIEWS), its 64 of before else.
+pub fn kept_most_by(views : Bool) -> Int {
+  if views { 96 } else { 64 }
+}
+
+///|
 /// How many chats' values are kept at a time (topic_kept), the oldest forgotten: a chat opened again, or read ahead
 /// again from its row, among the last few is answered with what changed in it, not the whole of it (a phone's ~180 KB,
 /// 17-21 ms to decode).
-let chats_kept : Int = 4
+let chats_kept : Int = 8
+
+///|
+/// chats_kept before MBUI_SWR_VIEWS (topic_kept_by)
+let chats_kept_before : Int = 4
+
+///|
+/// The read-only topics of a page, a panel, a pop or a card (none typed for, nothing written in) kept as they are let go
+/// of and shown again at once (topic_kept, topic_shown_kept), with how many of each name: a chat's row (its menu, its
+/// swipe), its services and jobs (its bar's summary and its pop), an agent's card, the rail's cards, a station whole
+/// and a part of its overview, an account, a connect and what its choice of a session lists, what a model's menu lists
+/// (`pick`), a drive's place, a chat's outline.
+// kept across runs: a value (nothing of it changes)
+let views_kept : Array[(String, Int)] = [
+  ("chatRow", 32),
+  ("chatJobs", 16),
+  ("agentCard", 16),
+  ("railCard", 16),
+  ("station", 16),
+  ("stationPart", 24),
+  ("profile", 16),
+  ("connect", 16),
+  ("connectCandidates", 8),
+  ("pick", 12),
+  ("drivePlace", 24),
+  ("chatOutline", 8),
+]
+
+///|
+fn views_kept_of(name : String) -> Int {
+  for kv in views_kept {
+    if kv.0 == name {
+      return kv.1
+    }
+  }
+  0
+}
 
 ///|
 /// What a source last said of a lasting topic. `version` is below every core's (those count up from 0), another for
@@ -753,6 +823,7 @@ pub fn made_source(
     asks_station_updates: fn() { true },
     asks_station_move: fn() { true },
     asks_terminals: fn() { true },
+    swr_views: fn() { true },
   }
 }
 

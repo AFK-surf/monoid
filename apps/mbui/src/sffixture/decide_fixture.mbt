@@ -7,7 +7,8 @@
 // "chat-job"; "chat-letters-many" (their sheet, more chats written with than it holds at its share: its list
 // scrolling in it); "chat-letters-info" (the chat's sheet with its row for what its agents and other chats' wrote each
 // other), "chat-letters" (their sheet: the chats written with), "chat-letters-open" (one of them opened); the wide
-// frame's "chat-letters-pop" (the chat's "…" open), "chat-jobs-pop" (its services' popover), "chat-letters-side",
+// frame's "chat-letters-pop" (the chat's "…" open), "chat-jobs-pop" (its services' popover), "chat-jobs-bar" (the
+// chat with its services, their popover not open: its bar's button to open it), "chat-letters-side",
 // "chat-jobs-side", "chat-history-side", "chat-history-side-working" (that with its agent at work: what its history's head
 // shows only then), "chat-service-side" (what is opened beside it: its web service's page, its bar
 // at the panel's width), "chat-tabs-side" (two of them: the history behind
@@ -27,7 +28,7 @@ pub fn decide_mode(mode : String) -> Bool {
     "history", "history-reading", "history-failed", "history-older", "history-older-failed", "history-details",
     "chat-info", "chat-detail", "chat-actions", "chat-publish", "chat-agent", "chat-agent-unsaid", "chat-peek", "chat-jobs", "chat-job", "home-jobs", "home-jobs-screens", "history-link",
     "chat-letters-info", "chat-letters", "chat-letters-many", "chat-letters-open", "chat-letters-pop", "chat-letters-side", "chat-jobs-pop",
-    "chat-things", "chat-things-side", "chat-info-pulls",
+    "chat-jobs-bar", "chat-things", "chat-things-side", "chat-info-pulls",
     "chat-jobs-side", "chat-history-side", "chat-history-side-working", "chat-service-side", "chat-tabs-side", "chat-model-pop", "chat-model-accounts", "chat-find", "chat-agent-card",
     "chat-station-tag", "home-attention", "home-syncing",
   ].contains(mode)

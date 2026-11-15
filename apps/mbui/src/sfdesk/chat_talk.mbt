@@ -169,7 +169,7 @@ fn chat_body_nodes(
   })
   .on_action("chat.jobs", fn(_) {
     guard chat_view() is Some(_) else { return false }
-    toggle_jobs_pop()
+    jobs_pressed(src, r)
     true
   })
   .on_action("chat.screen", fn(_) {

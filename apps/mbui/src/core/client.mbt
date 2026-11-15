@@ -43,6 +43,10 @@ pub struct Sub {
   /// Let go of with `keep` (Client::keep), till the core's `{id, v}`: what comes for it before that is applied still,
   /// that answer being its last message, so what is kept is the value `v` is the version of.
   priv mut keeping : Bool
+  /// Shown at once as asked again, before the core's first answer (Client::show_kept): the value kept that it was asked
+  /// with (`have`), what the core's `same` or `{delta, kept}` reads, the one kept being forgotten since or not. None
+  /// where it was asked with none (shown from one still being let go of, its version not said yet).
+  priv mut held : Json?
 }
 
 ///|
@@ -139,6 +143,11 @@ pub struct Client {
   priv kept : Map[String, (Json, String, String)]
   /// What the core is told before a topic is asked (its name, its JSON as asked), each time it is (Client::tells_before)
   priv mut tells : (String, Json) -> Array[(String, Json)]
+  /// How many values are kept at most, of every name together (Client::keep's `most`)
+  priv mut kept_most : () -> Int
+  /// Of the topics kept (by name), those whose value kept is shown at once as they are asked again, till the core
+  /// answers (Client::show_kept)
+  priv mut shows_kept : (String) -> Bool
 }
 
 ///|
@@ -182,6 +191,8 @@ pub fn Client::new(
     keeps: fn(_, _) { 0 },
     kept: {},
     tells: fn(_, _) { [] },
+    kept_most: fn() { kept_most },
+    shows_kept: fn(_) { false },
   }
 }
 
@@ -202,19 +213,35 @@ pub fn Client::tells_before(self : Client, f : (String, Json) -> Array[(String, 
 /// applied to the value kept); the value kept is its value then, as it was (nothing parsed, nothing made of it anew).
 /// The number is how many values of the topic's name are kept at a time, the oldest of that name forgotten past it
 /// (a chat's, the largest the app holds, a few: its count bounded by itself), all of them together `kept_most`. Said
-/// once, as the app starts.
+/// once, as the app starts. `most`: how many are kept of every name together (`kept_most` unless said), asked as one is
+/// kept.
 ///
 /// The core it speaks to is always of the same build, so it knows `keep` (an unsubscribe answered `{id, v}`, the
 /// subscription held till then): a native app's core is packed in it (`core.hbc`), and the web's runs in a worker of
 /// the page's own build, which talks only to a core of that build (web/src/core/worker.ts: its channel by the build,
 /// an older build's worker retiring and its pages loaded again onto the new one).
-pub fn Client::keep(self : Client, f : (String, Json) -> Int) -> Unit {
+pub fn Client::keep(self : Client, f : (String, Json) -> Int, most? : () -> Int = fn() { kept_most }) -> Unit {
   self.keeps = f
+  self.kept_most = most
 }
 
 ///|
-/// How many values are kept (Client::keep), of every name together, the oldest forgotten.
+/// How many values are kept (Client::keep), of every name together, the oldest forgotten, unless the app says more.
 let kept_most : Int = 64
+
+///|
+/// The topics `f` says yes to (by name), of those kept (Client::keep), are shown at once as they are asked again: the
+/// value kept is the subscription's from the moment it is made (its version -2, below every core's: TopicState's
+/// `kept`), the core asked with its version (`have`) and its answer taken as ever (`same`, the value shown going on as
+/// the core's, the same object, so nothing worked out of it by identity is made again; what changed from it; the whole
+/// value), its first as an answer (`@signals.first_told`). One let go of so lately that the core has not said the
+/// version of what it kept (`{id, v}` still on its way) shows that value too, asked whole. None but these: a chat's
+/// value kept waits for the core's answer (its page places its rows by its first value), and so do the lists the
+/// places open on, shown again at once by the source that read them (sfbase's `last_said`), never to what names a
+/// station by them (sfbase's `station_marks`). Said once, as the app starts.
+pub fn Client::show_kept(self : Client, f : (String) -> Bool) -> Unit {
+  self.shows_kept = f
+}
 
 ///|
 /// What the app times of its topics (still.fail's Android app's bar_switch): `f(id, topic,
@@ -366,9 +393,10 @@ fn Client::subscribe_as(self : Client, topic : String, params : Map[String, Json
       let id = self.next_id
       self.next_id += 1
       let from = self.from_of(t)
-      let s = { id, topic: t, value: None, error: None, version: 0, waiting: false, key, look, changes: @signals.signal(0), manual: false, direct, retiring: false, value_generation: self.generation, from, ending: false, keeping: false }
+      let s = { id, topic: t, value: None, error: None, version: 0, waiting: false, key, look, changes: @signals.signal(0), manual: false, direct, retiring: false, value_generation: self.generation, from, ending: false, keeping: false, held: None }
       self.subs[id] = s
       self.by_key[look] = s
+      self.show_kept_of(s)
       self.ask(s)
       match self.timing {
         Some(f) => f(id, topic, None, false)
@@ -376,6 +404,35 @@ fn Client::subscribe_as(self : Client, topic : String, params : Map[String, Json
       }
       s
     }
+  }
+}
+
+///|
+/// A subscription just made shown at once as what is kept of it (Client::show_kept): the value kept, else one of its
+/// let go of whose version the core has not said yet; nothing where neither is, or its topic is not shown so.
+fn Client::show_kept_of(self : Client, s : Sub) -> Unit {
+  guard s.from is None && (self.shows_kept)(topic_name(s.topic)) else { return }
+  let shown = match self.kept.get(s.look) {
+    Some((value, _, _)) => {
+      s.held = Some(value)
+      Some(value)
+    }
+    None => {
+      let mut last : Sub? = None
+      for _, o in self.subs {
+        if o.keeping && o.look == s.look && o.value is Some(_) && last.map_or(true, fn(l) { l.id < o.id }) {
+          last = Some(o)
+        }
+      }
+      last.bind(fn(o) { o.value })
+    }
+  }
+  match shown {
+    Some(v) => {
+      s.value = Some(v)
+      s.version = -2
+    }
+    None => ()
   }
 }
 
@@ -999,19 +1056,23 @@ fn Client::take(self : Client, msg : Json) -> Unit {
       if s.keeping && m.get("v") is Some(said) {
         self.subs.remove(id)
         self.let_go(id, "topic " + topic_name(s.topic))
+        // (one shown as kept and let go of before the core's first answer holds no value of the core's: none kept)
         match (said, s.value) {
-          (String(v), Some(value)) => self.keep_value(s, value, v)
+          (String(v), Some(value)) if s.version > 0 => self.keep_value(s, value, v)
           _ => ()
         }
         return
       }
       // (let go of, kept as what one asked from it reads, or as what is kept: its value as the core has it)
+      // (one shown as kept: the core's `same` says what it holds is the core's, what changed applies to it)
       match (m.get("value"), m.get("delta"), m.get("error"), s.value) {
         (_, _, Some(_), _) => s.value = None
         (Some(v), _, _, _) => s.value = Some(v)
         (_, Some(Array(ops)), _, Some(v)) => s.value = Some(apply_delta(v, ops))
-        _ => ()
+        _ => if !(m.get("same") is Some(True)) { return }
       }
+      s.held = None
+      s.version = if s.version <= 0 { 1 } else { s.version + 1 }
     }
     Some(s) => {
       if m.get("waiting") is Some(True) && s.value is None && s.error is None {
@@ -1022,14 +1083,18 @@ fn Client::take(self : Client, msg : Json) -> Unit {
         return
       }
       // (its first message: asked with the version of the value kept, that one, the core may say, is its value still.
-      // Only the first looks: what is kept matters to nothing after it)
-      let kept = if s.value is None && s.error is None {
+      // Only the first looks: what is kept matters to nothing after it. One shown as kept was asked with what it holds)
+      let kept = if s.version <= 0 && s.error is None {
         let k = self.kept.get(s.look)
         self.kept.remove(s.look)
-        k
+        match s.held {
+          Some(h) => Some((h, "", ""))
+          None => k
+        }
       } else {
         None
       }
+      s.held = None
       if m.get("same") is Some(True) {
         match kept {
           Some((v, _, _)) => {
@@ -1055,7 +1120,17 @@ fn Client::take(self : Client, msg : Json) -> Unit {
         }
         (_, Some(Array(ops)), _) =>
           match (s.value, m.get("from")) {
-            (Some(v), _) => s.value = Some(apply_delta(v, ops))
+            (Some(v), _) if s.version >= 0 => s.value = Some(apply_delta(v, ops))
+            // (shown as kept: its first answer changes what it was asked with, or the whole of it comes)
+            (Some(_), _) if m.get("kept") is Some(True) =>
+              match kept {
+                Some((v, _, _)) => s.value = Some(apply_delta(v, ops))
+                None => {
+                  self.ask(s)
+                  return
+                }
+              }
+            (Some(_), _) => return
             // its first value, as what changed from the value kept as it was let go of (asked with its version)
             (None, _) if m.get("kept") is Some(True) =>
               match kept {
@@ -1086,11 +1161,12 @@ fn Client::take(self : Client, msg : Json) -> Unit {
       s.waiting = false
       s.value_generation = self.generation
       match self.timing {
-        Some(f) if s.version == 0 => f(id, topic_name(s.topic), s.value, true)
+        Some(f) if s.version <= 0 => f(id, topic_name(s.topic), s.value, true)
         _ => ()
       }
-      let first = s.version == 0
-      s.version += 1
+      // (shown as kept till now, version -2: its first answer is the core's first)
+      let first = s.version <= 0
+      s.version = if first { 1 } else { s.version + 1 }
       self.version += 1
       // (its first value an answer: @signals.first_told)
       if first {
@@ -1232,6 +1308,19 @@ pub fn Client::restarted(self : Client) -> Unit {
 }
 
 ///|
+/// Nothing kept of what was let go of (Client::keep): asked again, each is asked whole, nothing shown before the core
+/// answers. As the one signed in changes (sfcore's accounts_told): what one person was shown is never shown to another.
+pub fn Client::forget_kept(self : Client) -> Unit {
+  self.kept.clear()
+  // (those let go of whose version the core has not said yet keep nothing either)
+  for _, s in self.subs {
+    if s.keeping {
+      s.value = None
+    }
+  }
+}
+
+///|
 /// Everything forgotten, as a new client: no subscription, no call waiting, ids from 1 (a Replay attached to the
 /// app's client starts it so).
 pub fn Client::reset(self : Client) -> Unit {
@@ -1323,7 +1412,7 @@ fn Client::keep_value(self : Client, s : Sub, value : Json, v : String) -> Unit 
   for i in 0..<(of_name.length() - most) {
     self.kept.remove(of_name[i])
   }
-  if self.kept.length() > kept_most {
+  if self.kept.length() > (self.kept_most)() {
     match self.kept.keys().head() {
       Some(first) => self.kept.remove(first)
       None => ()

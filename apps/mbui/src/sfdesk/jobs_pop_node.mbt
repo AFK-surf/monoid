@@ -5,16 +5,37 @@
 // all of them in the 任务 tab. Laid out as the old view's was, by the same styles.
 
 ///|
-/// The popover's body in `v` (jobs_popover's) for jobs of `station`, the core's `chatJobs` as `view` says it now: a
-/// service pressed opens its tab (`service`), one that failed and the rest the 任务 tab at it (`tab`, "" none).
-fn jobs_pop_node(v : @view.View, src : Source, station : String, view : () -> Json?, service : (String) -> Unit, tab : (String) -> Unit) -> Unit {
+/// The popover's body in `v` (jobs_popover's) for jobs of `station`, the core's `chatJobs` as `view` says it now, the
+/// bar's summary of it (`summary`: whether it has any) as `summary` says: a service pressed opens its tab (`service`),
+/// one that failed and the rest the 任务 tab at it (`tab`, "" none). Said to have none only where the core says so (the
+/// list come empty, or the summary saying none while it comes), never while nothing is said yet: nothing shows then.
+fn jobs_pop_node(
+  v : @view.View,
+  src : Source,
+  station : String,
+  view : () -> Json?,
+  summary : () -> Json?,
+  service : (String) -> Unit,
+  tab : (String) -> Unit,
+) -> Unit {
   let tips = match @sf.panel_tips_of(v) {
     Some(t) => t
     None => @sf.TipLayer::new(fn() { None })
   }
   let jobs = fn() { items(view(), "jobs") }
-  v.pick(fn() { jobs().length() == 0 }, fn(p, none) {
-    if none {
+  // (0 nothing said yet, 1 none, 2 its jobs)
+  let shows = fn() {
+    match (view(), summary()) {
+      (Some(_), _) => if jobs().length() == 0 { 1 } else { 2 }
+      (None, Some(Object(s))) if s.get("hasJobs") is Some(False) => 1
+      (None, _) => 0
+    }
+  }
+  v.pick(shows, fn(p, said) {
+    if said == 0 {
+      return
+    }
+    if said == 1 {
       p.box(fn(e) {
         @sf.style_node(e, fn() { jobs_empty })
         @sf.words_node(e, fn() { @sf.t("web-main.jobs.none") }, fn() { jobs_empty_title }) |> ignore

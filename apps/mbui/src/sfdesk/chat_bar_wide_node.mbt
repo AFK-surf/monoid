@@ -681,7 +681,7 @@ fn wide_bar_keys(
     let jobs = fn() { src.topic("chatJobs", chat_jobs_summary_params(r)).get().value }
     let has_jobs = fn() { flag(jobs(), "hasJobs") || items(jobs(), "jobs").length() > 0 }
     k.show(fn() { own() && has_jobs() }, fn(b) {
-      let button = @sf.icon_button_node(b, "web", fn() { @sf.t("web-pages.chat.services") }, fn() { jobs_toggle() }, tips~, linked=ends.linked, shortcut="chat.jobs")
+      let button = @sf.icon_button_node(b, "web", fn() { @sf.t("web-pages.chat.services") }, fn() { jobs_pressed(src, r) }, tips~, linked=ends.linked, shortcut="chat.jobs")
       // (its popover beside it, where it is as that is drawn: the nodes' (chat_pops_node), or the old page's
       // (chat_page's chat_bar_by))
       chat_bar_from.jobs_node = Some(button)

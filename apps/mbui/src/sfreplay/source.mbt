@@ -652,6 +652,7 @@ pub fn source() -> @sfapp.Source {
     asks_station_updates: fn() { @sfcore.trace_switch("MBUI_STATION_UPDATES") },
     asks_station_move: fn() { @sfcore.trace_switch("MBUI_STATION_MOVE") },
     asks_terminals: fn() { @sfcore.trace_switch("MBUI_TERMINALS") },
+    swr_views: fn() { @sfcore.trace_switch("MBUI_SWR_VIEWS") },
   }
 }
 
@@ -665,7 +666,8 @@ let started : Ref[Bool] = Ref(false)
 ///|
 fn init {
   @ui.on_reset(fn() { started.val = false })
-  @core.client.keep(replay_kept)
+  @core.client.keep(replay_kept, most=replay_kept_most)
+  @core.client.show_kept(replay_shown_kept)
   @core.client.tells_before(replay_tells)
 }
 
@@ -685,20 +687,36 @@ fn replay_tells(name : String, topic : Json) -> Array[(String, Json)] {
 ///|
 /// What the core's client keeps as it lets go of it (sfbase's topic_kept, as src/stillfail's main has it), where the
 /// run's app did, its trace's head saying so: the lists the places open on with MBUI_HAVE_SAME, Home's own with
-/// MBUI_HOME_SAME, a chat with MBUI_KEEP_CHAT, each asked again as that run asked it.
+/// MBUI_HOME_SAME, a chat with MBUI_KEEP_CHAT (its last 8 with MBUI_SWR_VIEWS, 4 before), a view's own with
+/// MBUI_SWR_VIEWS, each asked again as that run asked it.
 fn replay_kept(name : String, params : Json) -> Int {
   let on = if name == "chat" {
     @sfcore.trace_switch("MBUI_KEEP_CHAT")
   } else if @sfbase.home_lasting_of(name) {
     @sfcore.trace_switch("MBUI_HOME_SAME")
+  } else if @sfbase.topic_shown_kept(name) {
+    @sfcore.trace_switch("MBUI_SWR_VIEWS")
   } else {
     @sfcore.trace_switch("MBUI_HAVE_SAME")
   }
   if on {
-    @sfbase.topic_kept(name, params)
+    @sfbase.topic_kept_by(name, params, @sfcore.trace_switch("MBUI_SWR_VIEWS"))
   } else {
     0
   }
+}
+
+///|
+/// How many values the core's client keeps of every name together, as the run's app did (sfbase's kept_most_by).
+fn replay_kept_most() -> Int {
+  @sfbase.kept_most_by(@sfcore.trace_switch("MBUI_SWR_VIEWS"))
+}
+
+///|
+/// Which topics' values kept are shown at once as they are asked again, as the run's app did: none before
+/// MBUI_SWR_VIEWS (sfbase's topic_shown_kept).
+fn replay_shown_kept(name : String) -> Bool {
+  @sfcore.trace_switch("MBUI_SWR_VIEWS") && @sfbase.topic_shown_kept(name)
 }
 
 ///|

@@ -70,7 +70,15 @@ fn chat_jobs_pop_node(host : @view.View, src : Source, r : ChatRef, own : @view.
   }
   chat_pop_node(host, chat_own.jobs_open, own, jobs_pop_w, fn() { chat_pops.jobs }, fn(s) { chat_pops.jobs = s }, fn(v) {
     // (a service's own tab is not here yet: it opens in 任务 too)
-    jobs_pop_node(v, src, r.station, fn() { src.topic("chatJobs", chat_params(r)).get().value }, open, open)
+    jobs_pop_node(
+      v,
+      src,
+      r.station,
+      fn() { src.topic("chatJobs", chat_params(r)).get().value },
+      fn() { jobs_summary(src, r) },
+      open,
+      open,
+    )
   })
 }
 

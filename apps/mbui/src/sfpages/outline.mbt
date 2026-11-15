@@ -183,7 +183,10 @@ pub fn open_outline(
     asked: 0,
     lit: @signals.signal("", same=fn(a, b) { a == b }),
     current,
-    held: @signals.signal({}),
+    // (opened again: the rows had last time at once, only what they lack asked for: outline_rows_said)
+    held: @signals.signal(
+      if (src.swr_views)() { outline_rows_of(outline_rows_key(r, thread)) } else { Map([]) },
+    ),
     asking: {},
     absent: {},
   }
@@ -204,6 +207,53 @@ pub fn open_outline(
     tall=outline_tall,
     hugs=true,
   )
+}
+
+///|
+/// The rows' words and who of the outlines opened last (`chat.outline.rows`' answers as OutlineAt's `held` had them),
+/// by their chat's station and thread (outline_rows_key), the newest last, `outline_rows_kept` of them: an outline
+/// opened again shows the rows it had at once, its bones only for those not had yet, asked for as they show
+/// (MBUI_SWR_VIEWS; till then each opening began with none and drew every row's bones again till they came).
+// kept across runs: let go as the app begins anew (its init)
+let outline_rows_said : Array[(String, Map[Double, OutlineItem])] = []
+
+///|
+/// How many outlines' rows are kept (outline_rows_said), the oldest forgotten.
+let outline_rows_kept : Int = 16
+
+///|
+fn init {
+  @ui.on_reset(fn() { outline_rows_said.clear() })
+}
+
+///|
+fn outline_rows_key(r : ChatRef, thread : Double) -> String {
+  r.station + "\u{1}" + thread.to_string()
+}
+
+///|
+/// The rows kept of outline `key` (outline_rows_said), a copy of its own: none kept, none.
+fn outline_rows_of(key : String) -> Map[Double, OutlineItem] {
+  for kv in outline_rows_said {
+    if kv.0 == key {
+      return kv.1.copy()
+    }
+  }
+  Map([])
+}
+
+///|
+/// Outline `key`'s rows as they are now kept (outline_rows_said), the newest, the oldest forgotten past
+/// `outline_rows_kept`.
+fn outline_rows_put(key : String, rows : Map[Double, OutlineItem]) -> Unit {
+  match outline_rows_said.search_by(fn(kv) { kv.0 == key }) {
+    Some(i) => outline_rows_said.remove(i) |> ignore
+    None => ()
+  }
+  outline_rows_said.push((key, rows))
+  if outline_rows_said.length() > outline_rows_kept {
+    outline_rows_said.remove(0) |> ignore
+  }
 }
 
 ///|
@@ -304,6 +354,9 @@ fn outline_body(
             }
           }
           at.held.set(now)
+          if (src.swr_views)() {
+            outline_rows_put(outline_rows_key(r, thread), now)
+          }
         }
         // (its station away: asked again as a row of it is next made)
         Err(_) => ()

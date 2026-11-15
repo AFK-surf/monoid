@@ -258,6 +258,8 @@ pub fn jobs_popover(
   service : (String) -> Unit,
   tab : (String) -> Unit,
 ) -> Unit {
+  // (nothing said yet: nothing shown, never said to have none before the core says so)
+  guard view is Some(_) else { return }
   let jobs = items(view, "jobs")
   if jobs.length() == 0 {
     c.box(style=jobs_empty, fn() {

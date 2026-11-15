@@ -106,6 +106,10 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
     One exception (the user, 2026-11-10): how each station up is reached (`stationNet`, Station's network line) is
     sampled of the stations, so it is asked only from a finger on Station's tab, never while Home sits; the first time
     Station opens in a run, and before the core has said it, that line alone shows its bones.
+  - A page's, a panel's or a card's own read-only topic (sfbase's `views_kept`) is kept by the core's client as it is
+    let go of and shown again at once as it is asked again, till the core answers (`@core.Client::show_kept`,
+    MBUI_SWR_VIEWS); a chat's value kept waits for the core, and the lists above are shown again by `last_said`, never
+    through the client (what names a station by them takes no kept value: `station_marks`).
   - On 小屏 a place of the bottom bar switched away from is kept, not let go (2026-11-12: making Home, 连接 or 用量
     anew at each switch was the largest cause of hangs on Home): its page's nodes put on the stack's shelf at rest and
     taken back as it is switched to (sfbase's `nav_root_kept`: the bar, back to the chats, the history; the rail and the

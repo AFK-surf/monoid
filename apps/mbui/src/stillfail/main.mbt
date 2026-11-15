@@ -317,6 +317,7 @@ let core_source : @sfapp.Source = {
   asks_station_updates: fn() { true },
   asks_station_move: fn() { true },
   asks_terminals: fn() { true },
+  swr_views: fn() { true },
 }
 
 ///|
@@ -388,7 +389,9 @@ fn main {
   @hostapi.set_site_name("stillfail")
   // what the places open on, and the last few chats, are kept by the core's client as they are let go of, asked again
   // with their version
-  @core.client.keep(@sfbase.topic_kept)
+  @core.client.keep(@sfbase.topic_kept, most=fn() { @sfbase.kept_most_by(true) })
+  // (a page's, a panel's or a card's own topic opened again shown at once as it was, till the core answers)
+  @core.client.show_kept(@sfbase.topic_shown_kept)
   // (a chat list's first window told the core before the list is asked, each time it is; a chat's before the chat)
   @core.client.tells_before(@sfbase.chats_told_before)
   // SVG pictures (a chat's .svg files) drawn by mbui's own SVG renderer, whatever the system decodes

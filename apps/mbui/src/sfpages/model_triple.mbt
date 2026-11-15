@@ -165,8 +165,9 @@ fn triple_let_go(me : String, hand? : Bool = false) -> Unit {
 /// The panel of the pick `of` on `station` opened beside `from` once its own pick is answered (asked now where it is
 /// not held already): at once where it is, else the moment it is, whole, never on what the control's face has nor in
 /// its bones; a press that waits for it as sfbase's press_wait says (not at all once what it was pressed in is gone,
-/// what it asked let go of then). Opened already, it closes (as open_triple_panel).
-fn open_triple_whole(src : Source, station : String, of : String, from : @sf.Anchor, saved : String) -> Unit {
+/// what it asked let go of then). Opened already, it closes (as open_triple_panel). On `side` of `from` (an agent's
+/// card's: Right).
+fn open_triple_whole(src : Source, station : String, of : String, from : @sf.Anchor, saved : String, side? : @ui.Side = Bottom) -> Unit {
   let me = station + "\u{1}" + of
   if triple.open == me {
     @sf.close_presented_of(triple.shown)
@@ -185,7 +186,7 @@ fn open_triple_whole(src : Source, station : String, of : String, from : @sf.Anc
     fn() {
       guard triple.open != me else { return }
       // (gone: what it held let go of where nothing else holds it)
-      open_triple_panel(src, station, of, from, saved~, gone=fn() { triple_let_go(me) })
+      open_triple_panel(src, station, of, from, saved~, side~, gone=fn() { triple_let_go(me) })
     },
     let_go=fn() { triple_let_go(me) },
   )

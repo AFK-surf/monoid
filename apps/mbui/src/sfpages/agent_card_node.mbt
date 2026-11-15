@@ -37,16 +37,32 @@ pub fn agent_card_node(
     }
   }
   let history = fn(entry : Int?) { open_page(History(r, key, entry)) }
-  // (how it runs, its picker beside the card, their tops level)
+  // (how it runs, its picker beside the card, their tops level: opened whole once what it lists is answered, asked as
+  // the hand comes to it, as the control drawn of its face opens its (open_triple_whole); opened again, what was kept
+  // of it shows at once, @core.Client::show_kept)
+  let of = "session:" + key
+  let whole = (src.swr_views)() && !src.read_only
   let runs = fn() {
     guard @signals.untracked(from) is Some(c) else { return }
     let at : @sf.Anchor = Node(c)
-    open_triple_panel(src, station, "session:" + key, at, saved=@sf.t("web-pages.chat.pickSaved"), side=Right)
+    if whole {
+      open_triple_whole(src, station, of, at, @sf.t("web-pages.chat.pickSaved"), side=Right)
+    } else {
+      open_triple_panel(src, station, of, at, saved=@sf.t("web-pages.chat.pickSaved"), side=Right)
+    }
     opened.set(Some(at))
+  }
+  let hand = fn(on : Bool) {
+    guard whole else { return }
+    if on {
+      triple_ask(src, station, of)
+    } else {
+      triple_let_go(station + "\u{1}" + of)
+    }
   }
   v.box(fn(b) {
     @sf.style_node(b, fn() { if across { agent_card_across } else { agent_card_box } })
-    agent_card_head_node(b, a, s, tips, runs)
+    agent_card_head_node(b, a, s, tips, runs, hand)
     agent_card_stands_node(b, src, station, key, a, s, tips)
     // its latest lines, what it does now in the words' colour
     b.show(fn() { items(card(), "latest").length() > 0 }, fn(x) {
@@ -158,6 +174,7 @@ fn agent_card_head_node(
   s : () -> Json?,
   tips : @sf.TipLayer,
   runs : () -> Unit,
+  hand : (Bool) -> Unit,
 ) -> Unit {
   let account = fn() {
     match field(a(), "account") {
@@ -171,6 +188,9 @@ fn agent_card_head_node(
     // (its corners concentric with the card's, its ground the small panel's row's: agent_card_head's Inner)
     @sf.style_node(h, fn() { agent_card_head.then(agent_card_head_round) })
     @sf.presses_node(h, runs)
+    // (the hand come to it, a pointer over it or a finger down on it: what its press opens asked ahead)
+    h.reacts(fn() { @sf.lit_node(h) }, hand, at_start=false)
+    h.owns(fn() { hand(false) }) |> ignore
     h.says(By(fn() { Some(@view.said(Button, label=text(s(), "agentText"))) })) |> ignore
     agent_card_mark_node(h, a, s)
     h.box(fn(w) {

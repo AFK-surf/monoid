@@ -204,6 +204,7 @@ fn tell_device() -> Unit {
 pub fn frame(accounts : @core.Sub) -> Unit {
   // (by the accounts the core says and the environment's: the same in each build of the frame)
   if accounts.value is Some(list) {
+    accounts_told(list)
     if state.account != "" {
       let account = state.account
       state.account = ""
@@ -230,6 +231,48 @@ pub fn frame(accounts : @core.Sub) -> Unit {
     }
   }
   login_back()
+}
+
+///|
+/// Who was signed in as the accounts were last said (accounts_told): None before they are.
+let signed_in : Ref[String?] = Ref(None)
+
+///|
+fn init {
+  @ui.on_reset(fn() { signed_in.val = None })
+}
+
+///|
+/// The accounts said: one signed in or out since they were last, nothing kept of what the one before was shown is
+/// shown to the next (@core.Client::forget_kept), as the source keeps none of what it last said (sfbase's
+/// read_topic_state). A replay of a run from before MBUI_SWR_VIEWS forgets nothing, as its run's app did not.
+fn accounts_told(list : Json) -> Unit {
+  let who = match list {
+    Array(items) =>
+      items
+      .map(fn(a) {
+        match a {
+          Object(m) =>
+            match (m.get("sub"), m.get("account")) {
+              (Some(String(sub)), _) => sub
+              (_, Some(Object(acc))) =>
+                match acc.get("sub") {
+                  Some(String(sub)) => sub
+                  _ => a.stringify()
+                }
+              _ => a.stringify()
+            }
+          _ => a.stringify()
+        }
+      })
+      .join("\u{1}")
+    _ => list.stringify()
+  }
+  match signed_in.val {
+    Some(was) if was != who && trace_switch("MBUI_SWR_VIEWS") => @core.client.forget_kept()
+    _ => ()
+  }
+  signed_in.val = Some(who)
 }
 
 /// The first account answer decides the web's entry. Later sign-outs can use the normal retry page.
@@ -555,6 +598,12 @@ pub let trace_switches : Array[String] = [
   // (a station's terminals among its screens on its page, `terminals`: sfpages station_terminals_node.mbt. A trace
   // without it has none asked, as its run's app did)
   "MBUI_TERMINALS",
+  // (a page's, a panel's or a card's read-only topic let go of is kept as it is and shown again at once as it is asked
+  // again, till the core answers (sfbase's `topic_kept`, `topic_shown_kept`; @core.Client::show_kept); a chat's last 8
+  // kept, not 4; what a pop over a chat's services shows read from its bar's summary till its own comes, an agent's
+  // card asking ahead what its model's menu lists (`pick`), and what the accounts said anew forgets of what is kept.
+  // A trace without it has none of these, as its run's app did)
+  "MBUI_SWR_VIEWS",
 ]
 
 ///|

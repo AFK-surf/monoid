@@ -31,6 +31,54 @@ fn chat_page_reset() -> Unit {
   chat_bar_from.jobs_node = None
   chat_pops.info = 0
   chat_pops.jobs = 0
+  chat_jobs_wait.val = None
+}
+
+///|
+/// A press waiting to open the chat's services' popover (jobs_pressed), while it waits.
+// kept across runs: put back by chat_page_reset
+let chat_jobs_wait : Ref[@sfbase.PressWait?] = Ref(None)
+
+///|
+/// The bar's summary of chat `r`'s services and jobs (whether it has any, none of them listed), which the bar holds,
+/// where the page reads it so (MBUI_SWR_VIEWS); None else.
+fn jobs_summary(src : Source, r : ChatRef) -> Json? {
+  if (src.swr_views)() {
+    src.topic("chatJobs", chat_jobs_summary_params(r)).get().value
+  } else {
+    None
+  }
+}
+
+///|
+/// The chat's services' popover opened or closed by a press (its button, its keys). Opened, where the page asks so
+/// (MBUI_SWR_VIEWS), once what it lists is answered (sfbase's open_answered), the screen as it was meanwhile: never an
+/// empty list said to be none nor one growing as it comes; at once where the bar's summary says it has none, saying
+/// so; opened again, what was kept of it shows at once (@core.Client::show_kept). Pressed again while it waits, nothing
+/// opens.
+pub fn jobs_pressed(src : Source, r : ChatRef) -> Unit {
+  match chat_jobs_wait.val {
+    Some(w) if w.waiting() => {
+      chat_jobs_wait.val = None
+      w.give_up()
+      return
+    }
+    _ => chat_jobs_wait.val = None
+  }
+  if !(src.swr_views)() || src.read_only || chat_own.jobs_open.untracked() {
+    toggle_jobs_pop()
+    return
+  }
+  // (none said in so many words: a summary saying nothing of it is no word that it has none)
+  let none = match @signals.untracked(fn() { jobs_summary(src, r) }) {
+    Some(Object(m)) => m.get("hasJobs") is Some(False)
+    _ => false
+  }
+  let asks = if none { [] } else { [("chatJobs", chat_params(r))] }
+  let w = @sfbase.open_answered(src, asks, fn() { chat_own.jobs_open.set(true) })
+  if w.waiting() {
+    chat_jobs_wait.val = Some(w)
+  }
 }
 
 ///|
@@ -132,7 +180,7 @@ let chat_ground : @ui.Style = @ui.css("w=Full h=Full bg=Bg")
 /// (composer.focus), the page brought over first where the tape has it behind (tape_page_for_key). What it cannot do now passes the key on.
 fn chat_keys(c : @ui.Ctx, src : Source, w : Workspace, r : ChatRef, v : ChatView, chat : Json?) -> Unit {
   c.on_action("chat.jobs", fn() {
-    toggle_jobs_pop()
+    jobs_pressed(src, r)
     true
   })
   c.on_action("chat.screen", fn() {
