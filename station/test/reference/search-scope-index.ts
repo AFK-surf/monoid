@@ -1,3 +1,6 @@
+// The search's candidate scopes as the station prepared and read them in TypeScript before they were the MoonBit
+// program's (src/search/scope-builder.ts, station/mb src/searchscope): the tests' only, what mb-search-scope.test.ts and
+// the search-*.test.ts hold the program to.
 // Search candidate scopes. Each member contributes its workspace, which is a superset of chatOf's selected home.
 // Unknown text is always reconsidered in JavaScript; this keeps SQLite's text conversion out of the access decision.
 import type { DatabaseSync } from "node:sqlite";

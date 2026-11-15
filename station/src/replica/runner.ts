@@ -1,11 +1,13 @@
 // Where the export's work runs: a process of its own as the station runs (the MoonBit program, station/mb's
 // src/replica), so none of its reads, hashing, compressing or writing is on the main thread; the TypeScript it is held
-// to line by line (work.ts) in the test's thread in tests (`InlineRunner`).
+// to line by line in the test's thread in tests (test/reference/replica-work.ts `InlineRunner`).
 import { sep } from "node:path";
 import { wall } from "../ops/fibers.ts";
 import { MbProcess, readerBinary } from "../read/mb-reader.ts";
-import type { Places, Told } from "./export.ts";
-import { ExportWork, type WorkPassed } from "./work.ts";
+import type { Passed, Places, Told } from "./export.ts";
+
+/// A pass, and whether the station has no chat of its own (a copy is taken back only into such a one).
+export type WorkPassed = Passed & { empty: boolean };
 
 export type Asked =
   | { type: "places"; places: Places }
@@ -106,37 +108,5 @@ export class ProgramRunner implements Runner {
     }
     await this.#ask<void>({ type: "close" }).catch(() => {});
     this.#closed = true;
-  }
-}
-
-/// The work in this thread, one thing at a time as in the program (a test's: its clock).
-export class InlineRunner implements Runner {
-  readonly work: ExportWork;
-  #queue: Promise<unknown> = Promise.resolve();
-
-  constructor(o: RunnerOptions & { now: () => number }) {
-    this.work = new ExportWork(o);
-  }
-
-  #one<T>(f: () => T | Promise<T>): Promise<T> {
-    const p = this.#queue.then(f);
-    this.#queue = p.catch(() => {});
-    return p;
-  }
-
-  places(places: Places) {
-    return this.#one(() => this.work.setPlaces(places));
-  }
-  pass(told: Told) {
-    return this.#one(() => this.work.pass(told));
-  }
-  newGenerations(after: number) {
-    return this.#one(() => this.work.newGenerations(after));
-  }
-  sources(hashes: string[]) {
-    return this.#one(() => this.work.sources(hashes));
-  }
-  close() {
-    return this.#one(() => this.work.close());
   }
 }

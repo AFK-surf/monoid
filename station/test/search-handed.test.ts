@@ -10,7 +10,7 @@ import { test } from "node:test";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
 import { historySessionSnapshot, makeStore } from "./reference/store.ts";
 import { type Asker, type Hit, pick } from "../src/search/match.ts";
-import { SearchScopePreparation } from "../src/search/scope-prepare.ts";
+import { SearchScopePreparation } from "./reference/search-scope-prepare.ts";
 import { Search } from "../src/search/search.ts";
 import { auditSessionListStep } from "../src/store/session-list-index.ts";
 import { Store } from "../src/store/store.ts";

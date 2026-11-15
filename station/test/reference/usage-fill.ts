@@ -1,3 +1,6 @@
+// The fill of old usage as the station did it in TypeScript before it was the MoonBit program's (station/mb
+// src/usagefill, src/usage/module.ts): the tests' only, what mb-usage-retire.test.ts and usage-fill.test.ts hold it to.
+//
 // The calls recorded before the compact statistics began: the detail (the usage page's days, GET /v1/usage of data
 // outflow) holds none of them, and the year (usage_history) none on a station whose old statistics never held every
 // call. The calls themselves are all kept, so a worker takes them in, newest first, a few at a time.
@@ -5,8 +8,8 @@
 // The two `since` are the only cursor: each batch counts a run of whole quarters and moves them to its start in one
 // transaction, so a read always knows which days are complete and a stopped fill goes on from there.
 import type { DatabaseSync } from "node:sqlite";
-import { compactCoverageSince, hasCompactUsage, keepContextOnFill, setCompactCoverageSince } from "./usage-compact.ts";
-import { hasUsageHistory, setUsageHistorySince, setUsageHistoryQuarters, usageHistorySince } from "./usage-history.ts";
+import { compactCoverageSince, hasCompactUsage, keepContextOnFill, setCompactCoverageSince } from "../../src/store/usage-compact.ts";
+import { hasUsageHistory, setUsageHistorySince, setUsageHistoryQuarters, usageHistorySince } from "../../src/store/usage-history.ts";
 
 const QUARTER_MS = 900_000;
 const FILL_BATCH = 256;

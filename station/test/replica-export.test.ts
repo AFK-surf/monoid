@@ -1,14 +1,15 @@
-// What a station's copy holds (replica/export.ts, format.ts) and what a restore makes of it (restore.ts): the rows of
-// the tables that must survive, equal, the attached files by their hash, a deleted chat deleted.
+// What a station's copy holds (reference/replica-export.ts, replica-format.ts) and what a restore makes of it
+// (reference/replica-restore.ts): the rows of the tables that must survive, equal, the attached files by their hash, a
+// deleted chat deleted.
 import assert from "node:assert/strict";
 import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { Exporter, genDir, nothingTold, ownDir } from "../src/replica/export.ts";
+import { Exporter, genDir, nothingTold, ownDir } from "./reference/replica-export.ts";
 import { tell } from "../src/replica/copies.ts";
-import { decodeBatch } from "../src/replica/format.ts";
-import { build, readCopy, takeBack } from "../src/replica/restore.ts";
+import { decodeBatch } from "./reference/replica-format.ts";
+import { build, readCopy, takeBack } from "./reference/replica-restore.ts";
 import { Store } from "../src/store/store.ts";
 import { HOME, ORIGIN, OTHER, dataDir, rowsOf, station } from "./replica-fakes.ts";
 import { testClock } from "./hub-fakes.ts";

@@ -15,8 +15,7 @@ import { FolderPlace, type Held, type Known, type Place, handOver, holdsAll, lev
 import { type Ask, COPIES, PeerPlace, keepers, ranked, serve } from "./peers.ts";
 import { Refused } from "../mesh/bus.ts";
 import { NotEmpty, type Outcome, type Ready, copyDir, outcomeFile, readyFile } from "./restore.ts";
-import type { Runner } from "./runner.ts";
-import type { WorkPassed } from "./work.ts";
+import type { Runner, WorkPassed } from "./runner.ts";
 
 /// What the store says is gathered this long before the export's thread is told (a burst of changes, one pass).
 export const GATHER_MS = 1_000;

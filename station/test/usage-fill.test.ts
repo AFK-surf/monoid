@@ -9,7 +9,7 @@ import { makeStore } from "./reference/store.ts";
 import { usageHistory } from "./reference/usage.ts";
 import { Store } from "../src/store/store.ts";
 import { installCompactUsage } from "../src/store/usage-compact.ts";
-import { fillUsageStep } from "../src/store/usage-fill.ts";
+import { fillUsageStep } from "./reference/usage-fill.ts";
 import { installUsageHistory } from "../src/store/usage-history.ts";
 import type { UsageCall, UsageFor } from "../src/store/usage.ts";
 import { retireAfterPrevious } from "../src/usage/module.ts";

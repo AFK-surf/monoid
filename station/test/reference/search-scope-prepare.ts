@@ -1,6 +1,9 @@
+// The search's candidate scopes as the station prepared and read them in TypeScript before they were the MoonBit
+// program's (src/search/scope-builder.ts, station/mb src/searchscope): the tests' only, what mb-search-scope.test.ts and
+// the search-*.test.ts hold the program to.
 // Bounded old-state preparation and repairs for the search candidate index.
 import type { DatabaseSync } from "node:sqlite";
-import { INSERT_SEARCH_SCOPE_MEMBER, installSearchScopeIndex } from "./scope-index.ts";
+import { INSERT_SEARCH_SCOPE_MEMBER, installSearchScopeIndex } from "./search-scope-index.ts";
 
 type Meta = { thread_after: bigint | null; thread_through: bigint | null; threads_done: bigint;
   member_after: bigint | null; member_through: bigint | null; members_done: bigint };

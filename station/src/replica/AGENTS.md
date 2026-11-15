@@ -9,13 +9,15 @@ below, sends them along).
 
 - One export, off the main thread: the MoonBit program's (`station/mb/src/replica`, started by `runner.ts`
   `exportThread`); a restore the same (`restore.ts` `takeBackSoon`). There is no export or restore in TypeScript to
-  fall back to: the program writes and reads what `export.ts` and `restore.ts` `takeBack` do, line for line, so either
-  takes up the other's state and copies (`station/test/mb-replica.test.ts` holds them to each other; the tests' own
-  stations run the TypeScript, `InlineRunner`). It reads stillfail.db only: immutable batches
-  (`format.ts`), a generation of them per workspace, `head.json` written last. What changed is found by what the tables
-  already give (the rowid of what is only added to, an index, the store's own changes told to it, a digest of what was
-  written in its own `export.db`), never by a trigger or a statement on the main thread's write path
-  (`replica-export-bounded.test.ts` counts them).
+  fall back to: the program writes and reads what the TypeScript of before does, line for line, so either takes up the
+  other's state and copies. That TypeScript is the tests' only (`station/test/reference/replica-export.ts`,
+  `replica-restore.ts` `takeBack`, `replica-format.ts`; `station/test/mb-replica.test.ts` holds them to each other; the
+  tests' own stations run it, `replica-work.ts` `InlineRunner`): `src/replica/` keeps only what the station itself
+  says and reads of a copy (`export.ts` what the export is told, `format.ts` a head and the names). It reads
+  stillfail.db only: immutable batches (`format.ts`), a generation of them per workspace, `head.json` written last.
+  What changed is found by what the tables already give (the rowid of what is only added to, an index, the store's
+  own changes told to it, a digest of what was written in its own `export.db`), never by a trigger or a statement on
+  the main thread's write path (`replica-export-bounded.test.ts` counts them).
 - The stations that keep them keep the batches and files as opaque files (`places.ts`): two other stations of the same
   workspace (the two whose rendezvous hash with it is highest, `peers.ts keepers`, worked out in each station from its
   roster). Nothing about it is set by anyone, and the app shows it as one row (the user, 2026-11-10: 「按最简单的交互方式
@@ -56,11 +58,11 @@ below, sends them along).
   file is checked by its hash as it is written there, and put in place linked to what was sent, no byte copied
   (`carry.mbt` `put_file`; one linked already, the same bytes at another path, is copied: two paths never share a
   file; 2026-11-14, Node's clone copied the bytes on APFS and filled a station's disk). The
-  copy is put in beside the other's chats by the same restore (`build`'s `merge`: each thread an id there, a
-  platform's thread both followed the one there with its own log, a still.fail chat of the same ts given the next free
-  one, the connects' ids and the sessions' `ws` as there), after which that station is this one too (`formerly`), each
-  moved chat's agent told once (`moved_notes`); what it tells the retired station goes to that one itself
-  (mesh/bus.ts `askItself`, as a request naming it would come back to itself). The chats stop (sessions/hub.ts
+  copy is put in beside the other's chats by the same restore (its `merge`, the reference's `build`: each thread an
+  id there, a platform's thread both followed the one there with its own log, a still.fail chat of the same ts given
+  the next free one, the connects' ids and the sessions' `ws` as there), after which that station is this one too
+  (`formerly`), each moved chat's agent told once (`moved_notes`); what it tells the retired station goes to that one
+  itself (mesh/bus.ts `askItself`, as a request naming it would come back to itself). The chats stop (sessions/hub.ts
   `quiet`, every chat of the workspace, the home one's too, and their jobs; for good once done, across restarts) only
   for what changed since the first sending; what their platforms say meanwhile is kept and goes there as each
   connect moved there (connects/workspace.ts `moveAll`; a Comma connect's, which no station routes to another, is refused unkept, as

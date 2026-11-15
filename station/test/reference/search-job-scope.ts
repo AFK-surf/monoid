@@ -1,5 +1,8 @@
+// The search's candidate scopes as the station prepared and read them in TypeScript before they were the MoonBit
+// program's (src/search/scope-builder.ts, station/mb src/searchscope): the tests' only, what mb-search-scope.test.ts and
+// the search-*.test.ts hold the program to.
 import type { DatabaseSync } from "node:sqlite";
-import type { Asker } from "./match.ts";
+import type { Asker } from "../../src/search/match.ts";
 
 // Small workspaces can use the already-maintained session list without scanning other workspaces' jobs. Limit the
 // session side before checking for jobs: a workspace with many sessions but few jobs should keep the original path.

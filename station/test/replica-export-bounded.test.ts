@@ -1,4 +1,4 @@
-// The copies' reads are bounded (replica/export.ts; station/AGENTS.md, Its data): every statement the export makes of
+// The copies' reads are bounded (reference/replica-export.ts; station/AGENTS.md, Its data): every statement the export makes of
 // stillfail.db searches by an index, the rowid or a key; a pass after something changed reads a few rows, however
 // many the station has; and the main thread's writes run no statement more for the copies than they did before them.
 import assert from "node:assert/strict";
@@ -8,9 +8,9 @@ import { Effect, Exit, Scope } from "effect";
 import { TestClock } from "effect/testing";
 import { Fibers } from "../src/ops/fibers.ts";
 import { Copies } from "../src/replica/copies.ts";
-import { Exporter, READS, SMALL, byKey, marksOf, nothingTold, pageOf } from "../src/replica/export.ts";
-import { TABLES } from "../src/replica/format.ts";
-import { InlineRunner } from "../src/replica/runner.ts";
+import { Exporter, READS, SMALL, byKey, marksOf, nothingTold, pageOf } from "./reference/replica-export.ts";
+import { TABLES } from "./reference/replica-format.ts";
+import { InlineRunner } from "./reference/replica-work.ts";
 import { Store } from "../src/store/store.ts";
 import { takeQueries } from "../src/store/timed.ts";
 import { HOME, ORIGIN, chat, dataDir } from "./replica-fakes.ts";

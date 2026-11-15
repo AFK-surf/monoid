@@ -19,8 +19,8 @@ import { runtimeKind } from "../../src/agents/runtime.ts";
 import { STILLFAIL_SURFACE } from "./store.ts";
 import { given, titleOf } from "./views.ts";
 import { type Asker, type Doc, type Group, type Hit, excerpt, has, sees } from "../../src/search/match.ts";
-import { readSearchScopePage } from "../../src/search/scope-read.ts";
-import { smallJobScope } from "../../src/search/job-scope.ts";
+import { readSearchScopePage } from "./search-scope-read.ts";
+import { smallJobScope } from "./search-job-scope.ts";
 
 /// The workspace documents of nothing in particular are in (`ws` null: the station's home one).
 type Ws = string | null;
