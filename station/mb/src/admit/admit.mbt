@@ -48,14 +48,14 @@ pub(all) struct Waiting {
   screen : Bool
   queued_at : Double
   small : Bool
-} derive(Eq, Show)
+} derive(Eq, Show, Debug)
 
 ///|
 pub(all) struct Started {
   id : String
   screen : Bool
   small : Bool
-} derive(Eq, Show)
+} derive(Eq, Show, Debug)
 
 ///|
 /// A command's claim on the screen (`stillfail-job screen`): its job, the process that asked (the command's shell),
@@ -67,21 +67,21 @@ pub(all) struct Claim {
   at : Double
   held : Bool
   since : Double?
-} derive(Eq, Show)
+} derive(Eq, Show, Debug)
 
 ///|
 /// What the claims say to the queue: whether one holds the screen, and when the first still waiting asked.
 pub(all) struct Claims {
   held : Bool
   asked : Double?
-} derive(Eq, Show)
+} derive(Eq, Show, Debug)
 
 ///|
 /// The task to start now, or why the first waiting waits (memory, small, screen, person).
 pub(all) enum Picked {
   Start(Waiting)
   Wait(String)
-} derive(Eq, Show)
+} derive(Eq, Show, Debug)
 
 ///|
 pub fn claims_held(claims : Array[Claim]) -> Claims {
