@@ -55,6 +55,7 @@ import { MovesLive } from "./move/live.ts";
 import { takeBackSoon } from "./replica/restore.ts";
 import { PROVIDERS, type Provider } from "./cloud/provider.ts";
 import { wall } from "./ops/fibers.ts";
+import { writeHealth } from "./ops/health.ts";
 import { answerHeapRequests, heapCommand } from "./ops/heap.ts";
 import { timeFiles, timeProcesses } from "./ops/file-waits.ts";
 import { longestWaits } from "./ops/waits.ts";
@@ -249,6 +250,9 @@ function run() {
   );
   // What the parts hold only in memory (the vault's grants), carried over to the next process at a handover.
   let carry = () => {};
+  // Said of this process in <data>/run/health.json (ops/health.ts) until it stops or hands over: what the next one says
+  // from then on.
+  let healthSaid = true;
   const running = Effect.gen(function* () {
     yield* SubscriptionRef.set(yield* Up, true);
     const stationParts = yield* Parts;
@@ -257,6 +261,23 @@ function run() {
     plane.state.listen((s) => void (stationKey = s?.station ?? null));
     control.carried((what) => stationParts.takeUp(what));
     carry = () => control.carry(stationParts.carried());
+    // How this process is (ops/health.ts), said now (before it is ready: a handover's new process says it before the
+    // one before stops saying it), with each sample of its thread, and as the cloud is heard or not.
+    const mesh = yield* MeshNative;
+    let heldMs = 0;
+    let online = plane.state.reached;
+    let healthWritten: Promise<void> = Promise.resolve();
+    const sayHealth = () => {
+      if (!healthSaid) return;
+      const health = { pid: process.pid, updatedAt: wall.now(), heldMaxMs: Math.round(heldMs), front: mesh.frontLink?.() ?? "direct" as const, presenceOnline: plane.state.reached };
+      healthWritten = healthWritten.then(() => writeHealth(data, health)).catch((e: Error) => log.warn("station", "health.json not written", { error: e.message }));
+    };
+    sayHealth();
+    plane.state.listen(() => {
+      if (plane.state.reached === online) return;
+      online = plane.state.reached;
+      sayHealth();
+    });
     control.ready(version());
     log.info("station", asRig ? "rig up" : "station up", { version: version(), data });
     // Where the memory goes, in MB: the main thread's (and resident), and each reader's heap. Every ten minutes, or
@@ -292,7 +313,11 @@ function run() {
     let usage = process.resourceUsage();
     let sampled = wall.now();
     wall.every(HELD_EVERY_MS, () => { // timer: a sample of this thread
+      // Its loop runs: said to the launcher, which ends a process that says nothing for long (lifecycle.rs heartbeat).
+      control.heartbeat();
       const ms = held.max / 1e6;
+      heldMs = ms;
+      sayHealth();
       const now = wall.now();
       const used = process.cpuUsage(cpu);
       const own = process.threadCpuUsage(ownCpu);
@@ -337,6 +362,7 @@ function run() {
   const stop = (why: string) => {
     if (stopping) return;
     stopping = true;
+    healthSaid = false;
     log.info("station", "stopping", { why });
     Effect.runFork(Fiber.interrupt(fiber)).addObserver(() => void Promise.all([reports.shutdown(), stationLog.shutdown()]).finally(() => process.exit(0)));
   };

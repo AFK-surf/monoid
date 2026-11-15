@@ -121,7 +121,7 @@ impl Os for System {
         // Node listens where it may (127.0.0.1, any port) and says where once it serves; the launcher's ports, which
         // agents and the CLI are told, it is given to say as its own.
         let ports = format!("{},{}", self.ports.0, self.ports.1);
-        command.arg(crate::main_js(app)).arg("run").arg("--app").arg(app).arg("--data").arg(&self.options.data).arg("--launcher-pipe").arg(&name).arg("--launcher-ports").arg(ports);
+        command.arg(crate::main_js(app)).arg("run").arg("--app").arg(app).arg("--data").arg(&self.options.data).arg("--launcher-pipe").arg(&name).arg("--launcher-ports").arg(ports).arg("--launcher-heartbeat");
         command.stdin(Stdio::null()).creation_flags(CREATE_NEW_PROCESS_GROUP);
         let mut child = command.spawn()?;
         let pid = child.id();

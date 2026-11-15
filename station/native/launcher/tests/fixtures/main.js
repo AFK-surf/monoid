@@ -2,7 +2,10 @@
 // TCP connection on each port it is given with "<pid> mcp|admin". What it does is set by <data>/fake.conf (key=value
 // lines, read as it starts): version=…, ready=no (never says ready), ready_after=ms, crash_after=ms (exits 1 that long
 // after ready), crash=once (the data directory's first Node exits 1 once ready), start=crash (exits 1 at once),
-// take=no|failed (never takes over: says nothing of the agents' door, or that it failed). What
+// take=no|failed (never takes over: says nothing of the agents' door, or that it failed), heartbeat=no (says nothing
+// of being alive though the launcher asks it to: a release from before), heartbeat_every=ms (50), hang=once (the data
+// directory's first Node holds its thread for good once it has taken over: says nothing more, hears nothing),
+// control=close (closes its end of the control socket once it serves, and runs on). What
 // happens is appended to <data>/fake.log: "<ms> <pid> <what>", among it "ports <mcp> <admin>" once both serve (the
 // launcher binds them where it finds them free), "malloc <MallocSpaceEfficient>" and "front <STILLFAIL_MESH_FRONT>"
 // as it starts.
@@ -34,6 +37,7 @@ const log = (what) => fs.appendFileSync(path.join(data, "fake.log"), `${Date.now
 log(`start ${args.join(" ")}`);
 log(`malloc ${process.env.MallocSpaceEfficient ?? "as it is"}`);
 log(`front ${process.env.STILLFAIL_MESH_FRONT ?? "none"}`);
+log(`heartbeat ${args.includes("--launcher-heartbeat") ? "asked" : "not asked"}`);
 if (conf.start === "crash") {
   log("crash");
   process.exit(1);
@@ -67,10 +71,13 @@ pipe.on("data", (chunk) => {
     else if (message.op === "drain") say({ drained: "idle" });
   }
 });
-pipe.on("close", () => {
+const closed = () => {
   log("control closed");
   process.exit(0);
-});
+};
+pipe.on("close", closed);
+// Its main thread's loop runs: said as main.ts says it.
+if (args.includes("--launcher-heartbeat") && conf.heartbeat !== "no") setInterval(() => say({ heartbeat: true }), Number(conf.heartbeat_every || 50));
 
 // Stops accepting, lets the connections under way end, then exits.
 let quitting = false;
@@ -103,6 +110,18 @@ if (conf.ready !== "no") {
         log("take failed");
         say({ failed: "the agents' side did not start: a test's" });
       } else if (conf.take !== "no") say({ serving: "mcp", port: servers[0].address().port });
+      const hung = path.join(data, "hung");
+      if (conf.hang === "once" && !fs.existsSync(hung)) {
+        fs.writeFileSync(hung, "");
+        log("hang");
+        // (a while for the launcher to hear it has taken over, then held for good)
+        setTimeout(() => { for (;;) {} }, 200);
+      }
+      if (conf.control === "close") {
+        pipe.off("close", closed);
+        pipe.destroy();
+        log("control closed by itself");
+      }
     };
     serve();
     const crashed = path.join(data, "crashed");

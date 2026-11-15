@@ -25,6 +25,9 @@ export type Mesh = Endpoints & {
   /// an addon from before.
   verify?(alg: "Ed25519" | "ES256" | "ES256-der", key: Buffer, signature: Buffer, message: Buffer): boolean;
   processUsage?(pids: number[]): ({ cpuNs: number; footprint: number; wakeups: number; energyNj: number; diskRead?: number; diskWritten?: number } | null)[];
+  /// Where the endpoint is the front's (mesh/front.ts `withFront`): whether this process is linked to it now, or is
+  /// linking to it again. Absent where this process binds the endpoint itself.
+  frontLink?(): "ok" | "reconnecting";
 };
 
 /// Loaded once: the mesh (services.ts) and the thumbnails (drive/thumbs.ts) share it.

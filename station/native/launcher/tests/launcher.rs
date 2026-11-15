@@ -301,7 +301,7 @@ fn node_serves_the_launchers_ports_and_station_json_names_the_launcher() {
     let start = &station.log()[0].2;
     let app = station.app.display();
     let data = station.data.display();
-    assert_eq!(start, &format!("start run --app {app} --data {data} --launcher-fds 3,4,5 --launcher-carries"));
+    assert_eq!(start, &format!("start run --app {app} --data {data} --launcher-fds 3,4,5 --launcher-carries --launcher-heartbeat"));
     station.signal(libc::SIGTERM);
     assert!(station.wait().success());
     assert!(station.said(node, "got stop") && station.said(node, "exit"));
@@ -782,4 +782,205 @@ fn a_front_that_ends_is_started_again_unless_it_ended_as_it_started() {
     assert!(station.said(new, "front none"));
     station.signal(libc::SIGTERM);
     assert!(station.wait().success());
+}
+
+impl Station {
+    fn launcher_log(&self) -> String {
+        std::fs::read_to_string(self.dir.join("launcher.log")).unwrap_or_default()
+    }
+}
+
+#[test]
+fn a_node_whose_main_thread_hangs_after_taking_over_is_killed_and_another_serves() {
+    let mut station = Station::new("hang");
+    station.conf("hang=once\n");
+    station.start("heartbeat=500,backoff=100");
+    station.up();
+    let first = station.started()[0];
+    assert!(station.said(first, "heartbeat asked"), "{:?}", station.log());
+    until("the first Node to hang", || station.said(first, "hang").then_some(()));
+    // Not asked to hand over (it would not hear it): killed, and one started again that serves.
+    let again = until("a Node that serves after it", || Some(*station.started().last()?).filter(|n| *n != first && station.said(*n, "ready")));
+    until("the hung one gone", || (!alive(first)).then_some(()));
+    let mcp = station.mcp();
+    until("the new one answering", || (ask(mcp).ok()? == format!("{again} mcp")).then_some(()));
+    assert!(station.launcher_log().contains(&format!("Node {first} said nothing for 0.5 s")), "{}", station.launcher_log());
+    assert!(!station.said(first, "got handover"));
+    assert!(station.file("handoff-failed").is_none());
+    station.signal(libc::SIGTERM);
+    assert!(station.wait().success());
+}
+
+#[test]
+#[ignore = "side: waits real time for what does not happen"]
+fn a_node_that_does_not_say_it_is_alive_is_left_serving() {
+    // A release from before (heartbeat=no): it never says it, so it is never held to it. What it would take for it to be
+    // killed (500 ms of silence after taking over) is long past once another Node, which does say it, has been
+    // handed over to and has said it a while.
+    let mut station = Station::new("noheartbeat");
+    station.conf("heartbeat=no\n");
+    station.start("heartbeat=500");
+    station.up();
+    let old = station.started()[0];
+    let mcp = station.mcp();
+    // Its silence is long by the time the next one, started at a SIGUSR2, is up.
+    until("10 heartbeat-times of the old one's silence", || (now_ms() >= station.log()[0].0 + 5000).then_some(()));
+    assert!(alive(old));
+    assert_eq!(answered_by(mcp), old);
+    assert!(!station.launcher_log().contains("said nothing"));
+    station.signal(libc::SIGTERM);
+    assert!(station.wait().success());
+}
+
+#[test]
+fn a_front_given_up_is_started_again_and_the_node_serving_hands_over_to_one_linked_to_it() {
+    let mut station = Station::new("frontretry");
+    release_front(&station);
+    station.start("front=3600000,front_retry=300");
+    station.up();
+    let socket = station.data.join("run/front.sock");
+    let first_front = station.fronts()[0];
+    // SAFETY: a signal to the stand-in this test's launcher started.
+    unsafe { libc::kill(first_front, libc::SIGKILL) };
+    // It ended as it started: Nodes bind the endpoint themselves meanwhile (the one serving handed over to one) ...
+    let direct = until("the Node handed over to", || station.started().get(1).copied());
+    until("the new Node to say its front", || station.log().into_iter().any(|(_, p, w)| p == direct && w.starts_with("front ")).then_some(()));
+    assert!(station.said(direct, "front none"));
+    // ... until a front is started again: the one serving then hands over to one linked to it.
+    let second_front = until("another front", || station.fronts().get(1).copied());
+    assert!(alive(second_front));
+    let linked = until("the Node linked to it", || station.started().get(2).copied());
+    until("the linked Node to say its front", || station.log().into_iter().any(|(_, p, w)| p == linked && w.starts_with("front ")).then_some(()));
+    assert!(station.said(linked, &format!("front {}", socket.display())), "{:?}", station.log());
+    until("the direct one gone", || (!alive(direct)).then_some(()));
+    let mcp = station.mcp();
+    until("the linked one serving", || (ask(mcp).ok()? == format!("{linked} mcp")).then_some(()));
+    assert!(station.launcher_log().contains("the front listens again"));
+    station.signal(libc::SIGTERM);
+    assert!(station.wait().success());
+    until("the front to end with the launcher", || (!alive(second_front)).then_some(()));
+}
+
+/// A front in the release that answers on its socket (fixtures/front.cjs, on the tests' Node).
+fn release_answering_front(station: &Station) {
+    let path = station.app.join("station/stillfail-reader");
+    let js = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/front.cjs");
+    std::fs::write(&path, format!("#!/bin/sh\nexec '{}' '{}' \"$@\"\n", node(), js.display())).unwrap();
+    std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+}
+
+impl Station {
+    fn front_asks(&self) -> usize {
+        std::fs::read_to_string(self.data.join("front-asks")).unwrap_or_default().lines().count()
+    }
+}
+
+#[test]
+fn a_front_that_answers_is_left_and_one_that_stops_answering_is_killed_and_started_again() {
+    let mut station = Station::new("frontprobe");
+    release_answering_front(&station);
+    station.start("front=0,front_probe=100");
+    station.up();
+    let first = until("the front", || station.fronts().first().copied());
+    // Asked again and again, answering each: left alone.
+    until("five asks answered", || (station.front_asks() >= 5).then_some(()));
+    assert!(!station.launcher_log().contains("did not answer"), "{}", station.launcher_log());
+    assert_eq!(station.fronts(), [first]);
+    // Stopped (it holds its socket and the system takes connections into its backlog, but nothing answers): killed after
+    // three asks, and another started in its place.
+    // SAFETY: a signal to the stand-in this test's launcher started.
+    unsafe { libc::kill(first, libc::SIGSTOP) };
+    let second = until("another front", || station.fronts().get(1).copied());
+    until("the stopped one gone", || (!alive(first)).then_some(()));
+    assert!(alive(second));
+    assert!(station.launcher_log().contains("killed as hung"), "{}", station.launcher_log());
+    station.signal(libc::SIGTERM);
+    assert!(station.wait().success());
+    until("the front to end with the launcher", || (!alive(second)).then_some(()));
+}
+
+/// The signals `pid` ignores, where the system says (Linux: /proc; macOS lists none for a process).
+fn ignored_signals(pid: i32) -> Option<u64> {
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    let line = status.lines().find(|l| l.starts_with("SigIgn:"))?;
+    u64::from_str_radix(line.trim_start_matches("SigIgn:").trim(), 16).ok()
+}
+
+const SIGPIPE_BIT: u64 = 1 << (libc::SIGPIPE - 1);
+
+#[test]
+fn the_launcher_lives_through_telling_a_node_whose_end_of_the_control_socket_closed() {
+    let mut station = Station::new("sigpipe");
+    station.conf("control=close\n");
+    station.start("stop=200");
+    station.up();
+    let node = station.started()[0];
+    until("the Node to close its end", || station.said(node, "control closed by itself").then_some(()));
+    if let Some(ignored) = ignored_signals(station.pid()) {
+        assert_ne!(ignored & SIGPIPE_BIT, 0, "SigIgn {ignored:x}");
+    }
+    // Told something on a socket whose other end is gone: EPIPE, said, not a SIGPIPE that would end it.
+    station.signal(libc::SIGHUP);
+    until("the launcher to say it could not tell it", || station.launcher_log().contains(&format!("could not tell Node {node}")).then_some(()));
+    assert!(station.launcher.as_mut().unwrap().try_wait().unwrap().is_none(), "the launcher is still there");
+    station.signal(libc::SIGTERM);
+    // (the Node hears no stop: killed when it does not stop in time)
+    let _ = station.wait();
+    until("the Node gone", || (!alive(node)).then_some(()));
+}
+
+/// The front program the release has (station/mb's reader), where the test is given one (STILLFAIL_TEST_READER: `node
+/// scripts/native.ts file reader`); else the test says it skips.
+fn reader() -> Option<PathBuf> {
+    let given = std::env::var_os("STILLFAIL_TEST_READER").map(PathBuf::from).filter(|p| p.is_file());
+    if given.is_none() {
+        eprintln!("skipped: no STILLFAIL_TEST_READER (the reader program to run as the front)");
+    }
+    given
+}
+
+/// One ask of the front at `socket`, its answer's line.
+fn ask_front(socket: &Path, line: &str) -> String {
+    use std::io::Write;
+    let mut stream = std::os::unix::net::UnixStream::connect(socket).unwrap();
+    stream.write_all(line.as_bytes()).unwrap();
+    let mut answer = String::new();
+    BufReader::new(&stream).read_line(&mut answer).unwrap();
+    answer
+}
+
+#[test]
+fn the_release_s_front_answers_an_ask_it_has_no_operation_for_and_lives_through_writing_to_a_closed_socket() {
+    let Some(program) = reader() else { return };
+    let mut station = Station::new("realfront");
+    std::os::unix::fs::symlink(&program, station.app.join("station/stillfail-reader")).unwrap();
+    station.start("");
+    station.up();
+    let socket = station.data.join("run/front.sock");
+    let front = until("the front listening", || {
+        let log = station.launcher_log();
+        let at = log.find("the front listens (pid ")?;
+        log[at + 23..].split(')').next()?.parse::<i32>().ok()
+    });
+    // What the launcher asks it (front.rs `answers`): an answer of the same id, an error.
+    let said: Value = serde_json::from_str(&ask_front(&socket, "{\"id\":1,\"op\":\"answers\"}\n")).unwrap();
+    assert_eq!(said["id"], 1);
+    assert!(said["error"].is_string(), "{said}");
+    if let Some(ignored) = ignored_signals(front) {
+        assert_ne!(ignored & SIGPIPE_BIT, 0, "SigIgn {ignored:x}");
+    }
+    // Asks whose asker is gone before the answer is written: written to a closed socket (EPIPE), many times over.
+    for _ in 0..50 {
+        use std::io::Write;
+        let mut stream = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+        stream.write_all(b"{\"id\":2,\"op\":\"answers\"}\n").unwrap();
+        drop(stream);
+    }
+    let said: Value = serde_json::from_str(&ask_front(&socket, "{\"id\":3,\"op\":\"answers\"}\n")).unwrap();
+    assert_eq!(said["id"], 3);
+    assert!(alive(front));
+    assert!(!station.launcher_log().contains("did not answer"));
+    station.signal(libc::SIGTERM);
+    assert!(station.wait().success());
+    until("the front to end with the launcher", || (!alive(front)).then_some(()));
 }

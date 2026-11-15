@@ -51,6 +51,11 @@ impl Front {
         program.is_file().then_some(program)
     }
 
+    /// Whether the release at `app` has the program (where it does, one that does not start is tried again later).
+    pub fn in_release(app: &Path) -> bool {
+        Front::program(app).is_some()
+    }
+
     /// The front for the station of `data`, listening; none where the release has none or it did not start (said).
     pub fn start(app: &Path, data: &Path) -> Option<Front> {
         let program = Front::program(app)?;
@@ -96,10 +101,11 @@ impl Front {
         }
     }
 
-    /// It ended: another in its place, unless it ended sooner than `lives` after it started (said).
+    /// It ended: another in its place, unless it ended sooner than `lives` after it started (said; the lifecycle tries
+    /// again later: `front_gone`).
     pub fn ended(self, app: &Path, data: &Path, how: &str, lives: Duration) -> Option<Front> {
         if let Some(started) = self.started.filter(|s| s.elapsed() < lives) {
-            log::error(&format!("the front (pid {}) {how} {} ms after it started; not started again, Nodes from now on bind the station's endpoint themselves (the one serving hands over to one)", self.pid, started.elapsed().as_millis()));
+            log::error(&format!("the front (pid {}) {how} {} ms after it started; not started again for now, Nodes bind the station's endpoint themselves meanwhile (the one serving hands over to one)", self.pid, started.elapsed().as_millis()));
             return None;
         }
         log::warn(&format!("the front (pid {}) {how}; starting another", self.pid));
@@ -172,4 +178,62 @@ fn listening(out: &mut std::process::ChildStdout) -> Option<(String, u64)> {
     }
     let said: Value = serde_json::from_slice(&line).ok()?;
     said["listening"].as_str().map(|path| (path.to_string(), said["streams"].as_u64().unwrap_or(1)))
+}
+
+/// Whether the front listening at `socket` answers an ask within `within`: a connection as a Node's, one line asked
+/// (an operation it has none of, which it answers with an error and nothing else) and its answer read, then closed (it
+/// parts with the connection as with a Node's that went: front/mesh.mbt `serve`, quietly). A connection alone would
+/// not do: the system takes it into the socket's backlog whether or not the program runs.
+pub fn answers(socket: &Path, within: Duration) -> bool {
+    use std::io::{BufRead, BufReader, Write};
+    let Some(stream) = connect_now(socket) else { return false };
+    if stream.set_read_timeout(Some(within)).is_err() || stream.set_write_timeout(Some(within)).is_err() {
+        return false;
+    }
+    if (&stream).write_all(b"{\"id\":1,\"op\":\"answers\"}\n").is_err() {
+        return false;
+    }
+    let mut line = String::new();
+    let read = BufReader::new(&stream).read_line(&mut line);
+    let _ = stream.shutdown(std::net::Shutdown::Both);
+    read.is_ok_and(|n| n > 0) && serde_json::from_str::<Value>(&line).is_ok_and(|said| said["id"] == 1)
+}
+
+/// A connection to `socket` made at once, or none: one whose backlog is full (a program that does not take them) is
+/// not waited on.
+fn connect_now(socket: &Path) -> Option<std::os::unix::net::UnixStream> {
+    use std::os::unix::ffi::OsStrExt;
+    // SAFETY: a socket made here, owned by the OwnedFd from the start.
+    let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
+    if fd < 0 {
+        return None;
+    }
+    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+    // SAFETY: fcntl on the descriptor just made.
+    unsafe {
+        libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC);
+        let flags = libc::fcntl(fd.as_raw_fd(), libc::F_GETFL);
+        libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK);
+    }
+    // SAFETY: a zeroed sockaddr_un, its path copied in within its length (one byte left for the NUL).
+    let mut addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    let path = socket.as_os_str().as_bytes();
+    if path.len() >= addr.sun_path.len() {
+        return None;
+    }
+    for (to, from) in addr.sun_path.iter_mut().zip(path) {
+        *to = *from as libc::c_char;
+    }
+    let len = std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t;
+    // SAFETY: connect with the address filled above.
+    if unsafe { libc::connect(fd.as_raw_fd(), (&addr as *const libc::sockaddr_un).cast(), len) } != 0 {
+        return None;
+    }
+    // SAFETY: as above; blocking again, the reads and writes then bounded by their timeouts.
+    unsafe {
+        let flags = libc::fcntl(fd.as_raw_fd(), libc::F_GETFL);
+        libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, flags & !libc::O_NONBLOCK);
+    }
+    Some(std::os::unix::net::UnixStream::from(fd))
 }

@@ -5,7 +5,8 @@
 //! Node is started as `node <app>/station/main.js run --app <app> --data <data> --launcher-fds 3,4,5`: fd 3 is the MCP
 //! endpoint's listening socket, fd 4 the loopback port's, fd 5 the control socket (both ways, one JSON object a line).
 //! Node says `{"ready":true,"version":…}` once it serves, `{"drained":"idle"|"timeout"}` after a drain and, handing over,
-//! `{"carry":…}` (what it holds only in memory, `--launcher-carries`); the launcher says
+//! `{"carry":…}` (what it holds only in memory, `--launcher-carries`), and `{"heartbeat":true}` every 10 s from its
+//! main thread's loop (`--launcher-heartbeat`: lifecycle.rs `Times::heartbeat`); the launcher says
 //! `{"op":"handover"|"stop"|"drain"|"hup"}`, and `{"op":"carried","carried":…}` to the Node taking over. Node runs in a
 //! process group of its own (a ^C at a terminal reaches the launcher only, which stops it); it ends when the control
 //! socket closes (the launcher gone). The listening sockets passing from Node to Node is what makes a handover
@@ -29,7 +30,8 @@ use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicI32, Ordering};
-use std::time::Instant;
+use std::sync::mpsc::{Receiver, Sender, channel};
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
@@ -142,6 +144,20 @@ struct System {
     own: Option<u64>,
     /// The station's endpoint kept for the Nodes (front.rs), where one runs.
     front: Option<crate::front::Front>,
+    /// What the front answered each ask (`probe_front`'s threads), read as they wake serve().
+    probed: (Sender<(u64, bool)>, Receiver<(u64, bool)>),
+}
+
+/// How long an ask of the front may take to be answered.
+const PROBE_WITHIN: Duration = Duration::from_secs(5);
+/// What a thread of the launcher's writes to the signal pipe to wake serve() (no signal is 0).
+const WOKEN: c_int = 0;
+
+/// serve() woken (as a signal does) to read what a thread of the launcher's has for it.
+fn wake() {
+    let byte = WOKEN as u8;
+    // SAFETY: a write of one byte from a live buffer to the signal pipe's write end, which lives as long as the process.
+    unsafe { libc::write(SIGNALS.load(Ordering::Relaxed), (&byte as *const u8).cast(), 1) };
 }
 
 /// Where the release has its launcher (scripts/station-bundle.sh: the Rust station's path).
@@ -195,7 +211,7 @@ impl Os for System {
             .arg(app)
             .arg("--data")
             .arg(&self.options.data)
-            .args(["--launcher-fds", "3,4,5", "--launcher-carries"])
+            .args(["--launcher-fds", "3,4,5", "--launcher-carries", "--launcher-heartbeat"])
             .stdin(Stdio::null())
             .process_group(0);
         // macOS's malloc keeps what is freed for the next allocation of its size, the pages still the process's: on a
@@ -245,7 +261,37 @@ impl Os for System {
         crate::node(&self.options.app).display().to_string()
     }
 
-    fn renew(&mut self, serving: &Node, version: &str, served: &[(String, u16)]) {
+    fn has_front(&self) -> bool {
+        self.front.is_some()
+    }
+
+    fn front_again(&mut self) -> bool {
+        if self.front.is_none() {
+            self.front = crate::front::Front::start(&self.options.app, &self.options.data);
+        }
+        self.front.is_some()
+    }
+
+    fn probe_front(&mut self, n: u64) {
+        let Some(front) = &self.front else { return };
+        let (socket, said) = (front.socket.clone(), self.probed.0.clone());
+        // On a thread of its own: an answer that does not come holds no one up (the lifecycle counts it missed by then).
+        std::thread::spawn(move || {
+            let answered = crate::front::answers(&socket, PROBE_WITHIN);
+            let _ = said.send((n, answered));
+            wake();
+        });
+    }
+
+    fn kill_front(&mut self) {
+        if let Some(front) = &self.front {
+            log::warn(&format!("the front (pid {}) killed", front.pid));
+            // SAFETY: a signal to this process's child, reaped by serve() (reap: started again as after any end).
+            unsafe { libc::kill(front.pid, libc::SIGKILL) };
+        }
+    }
+
+    fn renew(&mut self, serving: &Node, version: &str, served: &[(String, u16)], heartbeats: bool) {
         let release = self.options.app.join(LAUNCHER_IN_APP);
         let Some(theirs) = hash_of(&release) else { return };
         if self.own == Some(theirs) {
@@ -264,7 +310,7 @@ impl Os for System {
             "admin": self.admin.as_raw_fd(),
             "parent": self.parent,
             "front": self.front.as_ref().map(|f| f.state()),
-            "node": {"pid": serving.pid, "control": serving.control.as_raw_fd(), "pending": serving.pending, "outgoing": *serving.outgoing.borrow(), "version": version, "served": served},
+            "node": {"pid": serving.pid, "control": serving.control.as_raw_fd(), "pending": serving.pending, "outgoing": *serving.outgoing.borrow(), "version": version, "served": served, "heartbeats": heartbeats},
         });
         let mut args = vec![release.as_os_str().to_owned()];
         args.extend(resumed_args(std::env::args_os().skip(1)));
@@ -309,6 +355,8 @@ struct Resumed {
     node: Node,
     version: String,
     served: Vec<(String, u16)>,
+    /// It says it is alive (none said: a launcher from before heard none, or did not say).
+    heartbeats: bool,
 }
 
 impl Resumed {
@@ -327,13 +375,14 @@ impl Resumed {
         };
         let served: Vec<(String, u16)> = serde_json::from_value(node["served"].clone()).ok()?;
         let version = node["version"].as_str()?.to_string();
+        let heartbeats = node["heartbeats"].as_bool().unwrap_or(false);
         let parent = state["parent"].as_i64().and_then(|n| i32::try_from(n).ok())?;
         // (none from a launcher from before it, or where none ran)
         let front = crate::front::Front::resumed(&state["front"]);
         inheritable(&[lock, mcp, admin, control], false);
         // SAFETY: the descriptors the launcher before handed on, owned by this one from here.
         let (lock, mcp, admin, control) = unsafe { (File::from_raw_fd(lock), OwnedFd::from_raw_fd(mcp), OwnedFd::from_raw_fd(admin), OwnedFd::from_raw_fd(control)) };
-        Some(Resumed { lock, mcp, admin, parent, front, node: Node { pid, control, pending, outgoing: RefCell::new(outgoing), open: true }, version, served })
+        Some(Resumed { lock, mcp, admin, parent, front, node: Node { pid, control, pending, outgoing: RefCell::new(outgoing), open: true }, version, served, heartbeats })
     }
 }
 
@@ -543,7 +592,12 @@ pub fn run(mut options: Options) -> i32 {
     let parent = unsafe { libc::getppid() };
     let own = std::env::current_exe().ok().and_then(|exe| hash_of(&exe));
     let front = crate::front::Front::start(&options.app, &options.data);
-    let mut station = Lifecycle::new(System { options, lock, mcp, admin, parent, own, front }, Times::of_env(), run, with_parent);
+    let wanted = front.is_none() && crate::front::Front::in_release(&options.app);
+    let mut station = Lifecycle::new(System { options, lock, mcp, admin, parent, own, front, probed: channel() }, Times::of_env(), run, with_parent);
+    // One the release has that did not start: tried again later, as one that ended as it started.
+    if wanted {
+        station.front_gone();
+    }
     station.start();
     serve(&mut station, signals)
 }
@@ -570,13 +624,17 @@ fn resume(options: Options, run: PathBuf, state: &str) -> i32 {
     let with_parent = options.with_parent;
     // This launcher is the release's (it was run from there).
     let own = hash_of(&options.app.join(LAUNCHER_IN_APP));
-    let Resumed { lock, mcp, admin, parent, front, node, version, served } = resumed;
+    let Resumed { lock, mcp, admin, parent, front, node, version, served, heartbeats } = resumed;
     // None handed on (a launcher from before the front, or one whose front would not run), or one handing streams as
     // a release before this one: one started here, before the Node the handover starts, so a station that only ever
     // updates comes to have one without being started again.
     let front = front.and_then(crate::front::Front::current).or_else(|| crate::front::Front::start(&options.app, &options.data));
-    let mut station = Lifecycle::new(System { options, lock, mcp, admin, parent, own, front }, Times::of_env(), run, with_parent);
-    station.adopt(node, version, served);
+    let wanted = front.is_none() && crate::front::Front::in_release(&options.app);
+    let mut station = Lifecycle::new(System { options, lock, mcp, admin, parent, own, front, probed: channel() }, Times::of_env(), run, with_parent);
+    station.adopt(node, version, served, heartbeats);
+    if wanted {
+        station.front_gone();
+    }
     // A Node that ended meanwhile (its SIGCHLD held, then come) is reaped as signals come.
     station.start_next();
     serve(&mut station, signals)
@@ -635,6 +693,11 @@ fn serve(station: &mut Lifecycle<System>, signals: OwnedFd) -> i32 {
                         libc::SIGUSR1 => station.ask("drain"),
                         libc::SIGHUP => station.ask("hup"),
                         libc::SIGUSR2 => station.start_next(),
+                        WOKEN => {
+                            while let Ok((n, answered)) = station.os.probed.1.try_recv() {
+                                station.front_probed(n, answered);
+                            }
+                        }
                         _ => {}
                     }
                 }

@@ -23,9 +23,19 @@ const FRAME_MOST = 1 << 20;
 type Path = NonNullable<ReturnType<NonNullable<Connection["paths"]>>>[number];
 type Seen = { conn: number; remote: string; alpn: string; via: string | null; paths: Path[]; stats: Traffic };
 
-/// `mesh`, its endpoint the front's at `socket`.
+/// `mesh`, its endpoint the front's at `socket`; `frontLink` says whether the endpoints bound through it are linked to
+/// the front now (ops/health.ts), or one of them is linking to it again (the front ended, or does not answer).
 export function withFront(mesh: Mesh, socket: string): Mesh {
-  return { ...mesh, bind: (options) => FrontEndpoint.bind(socket, options) };
+  const bound = new Set<FrontEndpoint>();
+  return {
+    ...mesh,
+    bind: async (options) => {
+      const endpoint = await FrontEndpoint.bind(socket, options, () => bound.delete(endpoint));
+      bound.add(endpoint);
+      return endpoint;
+    },
+    frontLink: () => ([...bound].every((e) => e.linked()) ? "ok" : "reconnecting"),
+  };
 }
 
 let opened = 0;
@@ -47,6 +57,10 @@ export class Front {
   readonly #connSockets = new Map<number, Set<Socket>>();
   readonly #forgotten = new Set<number>();
   #gone: Error | null = null;
+  /// Whether the link is gone.
+  get isGone(): boolean {
+    return this.#gone !== null;
+  }
   /// Once the link is gone (the front ended, or it was closed here).
   readonly gone: Promise<void>;
   #wentAway!: () => void;
@@ -509,15 +523,17 @@ class FrontEndpoint implements Endpoint {
   #again: Promise<void> | null = null;
   /// What `route` gave the front, given again on a link made again.
   #routed: { alpn: string; front: string[]; routes: string[] } | null = null;
+  readonly #closing: () => void;
 
-  private constructor(socket: string, bind: Record<string, unknown>, front: Front, said: { id: string; sockets: string[] }) {
+  private constructor(socket: string, bind: Record<string, unknown>, front: Front, said: { id: string; sockets: string[] }, closing: () => void) {
+    this.#closing = closing;
     this.#socket = socket;
     this.#bind = bind;
     this.#front = front;
     this.#said = said;
   }
 
-  static async bind(socket: string, options: Parameters<Mesh["bind"]>[0]): Promise<FrontEndpoint> {
+  static async bind(socket: string, options: Parameters<Mesh["bind"]>[0], closing: () => void = () => {}): Promise<FrontEndpoint> {
     const bind = {
       key: hex(options.secretKey),
       options: {
@@ -531,7 +547,7 @@ class FrontEndpoint implements Endpoint {
       },
     };
     const { front, said } = await FrontEndpoint.#link(socket, bind);
-    const endpoint = new FrontEndpoint(socket, bind, front, said);
+    const endpoint = new FrontEndpoint(socket, bind, front, said, closing);
     endpoint.#relays = await front.ask("relayStatus").catch(() => []);
     endpoint.#watch(front);
     return endpoint;
@@ -575,6 +591,11 @@ class FrontEndpoint implements Endpoint {
 
   #ask(op: string, args: Record<string, unknown> = {}) {
     return this.#front.ask(op, args);
+  }
+
+  /// Linked to the front now: not linking to it again after its link went.
+  linked(): boolean {
+    return this.#closed || (this.#again === null && !this.#front.isGone);
   }
 
   id() { return this.#said.id; }
@@ -632,6 +653,7 @@ class FrontEndpoint implements Endpoint {
 
   async close() {
     this.#closed = true;
+    this.#closing();
     await this.#front.ask("close").catch(() => {});
     this.#front.close();
   }

@@ -10,6 +10,8 @@ import { rmSync } from "node:fs";
 import { type Provider, specOf } from "./cloud/provider.ts";
 import { stationLang, tr } from "./ops/i18n.ts";
 import { version } from "./ops/version.ts";
+import { wall } from "./ops/fibers.ts";
+import { healthOf, healthPath, workingOf } from "./ops/health.ts";
 
 const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((s): s is string => typeof s === "string") : []);
 
@@ -200,8 +202,9 @@ export function id(data: string) {
   console.log(loadKey(data).id);
 }
 
-/// Where the station is: running or not, its workspace, online or why not.
-export function status(data: string): string {
+/// Where the station is: running or not, its workspace, online or why not, and how it works: "normal" only where its
+/// process is there and said so lately (ops/health.ts), its link to the front holds, and it hears the cloud.
+export function status(data: string, now = wall.now()): string {
   const say = (key: string, args?: Record<string, unknown>) => tr(stationLang(), key, args);
   const when = (secs: number) => new Date(secs * 1000).toISOString();
   const read = (path: string): any => {
@@ -238,7 +241,17 @@ export function status(data: string): string {
   else if (presence) out.push(say("station.cli.status.offlineWhy", { why: typeof presence.error === "string" ? presence.error : say("station.cli.status.notConnectedYet") }));
   else if (!running) out.push(say("station.cli.status.offlineNotRunning"));
   else out.push(say("station.cli.status.offline"));
-  if (state.removed_at === undefined) out.push(say(state.rig !== undefined ? "station.cli.rig.working" : "station.cli.status.working"));
+  if (state.removed_at === undefined) {
+    const health = running ? healthOf(read(healthPath(data))) : null;
+    const working = workingOf({ running: running !== null, health, healthAlive: health !== null && alive(health.pid), online: presence?.online === true, now });
+    out.push(
+      working.is === "stopped" ? say("station.cli.status.stopped")
+        : working.is === "unresponsive" ? say("station.cli.status.unresponsive", { secs: Math.round(working.silentMs / 1000) })
+        : working.is === "front" ? say("station.cli.status.frontDown")
+        : working.is === "offline" ? say("station.cli.status.limited")
+        : say(state.rig !== undefined ? "station.cli.rig.working" : "station.cli.status.working"),
+    );
+  }
   return out.join("\n");
 }
 

@@ -52,8 +52,19 @@ pub struct Times {
     /// After a handover whose new Node did not take over, the wait before a Node is started again: the installer's to
     /// put the release from before back (the old Node is gone by then; this way the next one runs on it).
     pub rollback: Duration,
-    /// A front (front.rs) that ends sooner than this after it started is not started again: it would only end again.
+    /// A front (front.rs) that ends sooner than this after it started is not started again at once (it would only end
+    /// again), but after `front_retry`.
     pub front: Duration,
+    /// A Node that has taken over and says it is alive (`{"heartbeat":true}`, from its main thread's loop: main.ts) and
+    /// then says nothing for this long is hung (its main thread held, a deadlock, a heap that will not end it): killed
+    /// and started again. One that never said it (a release from before `--launcher-heartbeat`) is never held to it.
+    pub heartbeat: Duration,
+    /// After the front was given up (`front_gone`), the wait before one is started again: doubled each time it does not
+    /// start, up to FRONT_RETRY_MOST. Started, the Node serving hands over to one linked to it.
+    pub front_retry: Duration,
+    /// How often the front is asked whether it answers (a line on its socket answered): FRONT_MISSES in a row that are
+    /// not, and it is killed (then started again as after any end of it).
+    pub front_probe: Duration,
 }
 
 /// What a Node serves once it has taken over the station: the agents' door (after the sessions are taken up) and the
@@ -63,10 +74,16 @@ const TAKEN_OVER: [&str; 2] = ["admin", "mcp"];
 /// Starts in a row that end before Node says ready, after which the launcher gives up (the service starts it again).
 pub const START_FAILURES: u32 = 5;
 
+/// Asks of the front in a row that it did not answer, after which it is taken for hung.
+pub const FRONT_MISSES: u32 = 3;
+
+/// The longest wait between two tries at starting the front again.
+const FRONT_RETRY_MOST: Duration = Duration::from_secs(3600);
+
 impl Times {
     pub fn of_env() -> Times {
         let s = Duration::from_secs;
-        let mut times = Times { ready: s(60), exit: s(30), stop: s(30), backoff: s(1), backoff_max: s(60), stable: s(60), parent: s(2), drained: s(300), take: s(90), rollback: s(10), front: s(10) };
+        let mut times = Times { ready: s(60), exit: s(30), stop: s(30), backoff: s(1), backoff_max: s(60), stable: s(60), parent: s(2), drained: s(300), take: s(90), rollback: s(10), front: s(10), heartbeat: s(90), front_retry: s(300), front_probe: s(30) };
         for pair in std::env::var("STILLFAIL_LAUNCHER_TIMES").unwrap_or_default().split(',') {
             let Some((key, ms)) = pair.split_once('=') else { continue };
             let Ok(ms) = ms.trim().parse::<u64>() else { continue };
@@ -82,9 +99,18 @@ impl Times {
                 "take" => &mut times.take,
                 "rollback" => &mut times.rollback,
                 "front" => &mut times.front,
+                "heartbeat" => &mut times.heartbeat,
+                "front_retry" => &mut times.front_retry,
+                "front_probe" => &mut times.front_probe,
                 _ => continue,
             };
             *slot = Duration::from_millis(ms);
+        }
+        // (each also of its own, for a test or a machine to set alone)
+        for (var, slot) in [("STILLFAIL_LAUNCHER_HEARTBEAT_MS", &mut times.heartbeat), ("STILLFAIL_LAUNCHER_FRONT_RETRY_MS", &mut times.front_retry), ("STILLFAIL_LAUNCHER_FRONT_PROBE_MS", &mut times.front_probe)] {
+            if let Some(ms) = std::env::var(var).ok().and_then(|v| v.trim().parse::<u64>().ok()) {
+                *slot = Duration::from_millis(ms);
+            }
         }
         times
     }
@@ -117,11 +143,24 @@ pub trait Os {
     /// 127.0.0.1); none: none serves, they wait. Where the launcher keeps entrances (Windows: proxy.rs); where Node
     /// listens on sockets handed down to it (Unix), they are its already, and nothing is to be done.
     fn route(&mut self, _name: &str, _port: Option<u16>) {}
-    /// Before a handover, with the Node serving (`version`, serving on `served`) and nothing else running: where the
-    /// release at --app has a launcher unlike this one, this process becomes it (Unix: exec), keeping its pid, lock,
-    /// ports and that Node, and does not return; the new launcher goes on with the handover (`adopt`). Else (none, the
-    /// same, one that cannot take over from this; Windows) it returns and this one hands over.
-    fn renew(&mut self, _serving: &Self::Node, _version: &str, _served: &[(String, u16)]) {}
+    /// Before a handover, with the Node serving (`version`, serving on `served`, saying it is alive: `heartbeats`) and
+    /// nothing else running: where the release at --app has a launcher unlike this one, this process becomes it (Unix:
+    /// exec), keeping its pid, lock, ports and that Node, and does not return; the new launcher goes on with the
+    /// handover (`adopt`). Else (none, the same, one that cannot take over from this; Windows) it returns and this one
+    /// hands over.
+    fn renew(&mut self, _serving: &Self::Node, _version: &str, _served: &[(String, u16)], _heartbeats: bool) {}
+    /// Whether a front (front.rs) runs for the Nodes.
+    fn has_front(&self) -> bool {
+        false
+    }
+    /// Where none runs, one started: whether it listens now.
+    fn front_again(&mut self) -> bool {
+        false
+    }
+    /// The front asked whether it answers; the answer told later, `Lifecycle::front_probed(n, …)`.
+    fn probe_front(&mut self, _n: u64) {}
+    /// The front ended, as hung (its end is seen as any other's).
+    fn kill_front(&mut self) {}
 }
 
 /// A Node and what the launcher knows of it.
@@ -139,6 +178,12 @@ pub struct Node<P> {
     handed: bool,
     /// Being ended for not taking over.
     given_up: bool,
+    /// It says it is alive (`{"heartbeat":true}`): held to it once it has taken over.
+    heartbeats: bool,
+    /// When it last said so (or took over, or was taken up).
+    heartbeat_at: Option<Instant>,
+    /// Killed for saying nothing.
+    hung: bool,
 }
 
 impl<P> Node<P> {
@@ -179,11 +224,21 @@ pub struct Lifecycle<O: Os> {
     /// The front gone and none in its place (`front_gone`): the Nodes running are linked to it, so the one serving is
     /// replaced, by a handover once none is under way, with one that binds the station's endpoint itself.
     front_gone: bool,
+    /// Gone so: when one is started again (Times::front_retry), and how many tries did not start one.
+    front_retry_at: Option<Instant>,
+    front_retries: u32,
+    /// The front running: when it is asked next whether it answers, the ask out (its number, by when it is a miss),
+    /// and the asks in a row it did not answer.
+    front_probe_at: Option<Instant>,
+    probing: Option<(u64, Instant)>,
+    probes: u64,
+    front_misses: u32,
 }
 
 impl<O: Os> Lifecycle<O> {
     pub fn new(os: O, times: Times, run: PathBuf, with_parent: bool) -> Lifecycle<O> {
         let parent_at = with_parent.then(|| os.now() + times.parent);
+        let front_probe_at = os.has_front().then(|| os.now() + times.front_probe);
         Lifecycle {
             os,
             times,
@@ -200,11 +255,17 @@ impl<O: Os> Lifecycle<O> {
             parent_at,
             exit: 0,
             front_gone: false,
+            front_retry_at: None,
+            front_retries: 0,
+            front_probe_at,
+            probing: None,
+            probes: 0,
+            front_misses: 0,
         }
     }
 
     fn node(process: O::Node) -> Node<O::Node> {
-        Node { process, ready: None, version: String::new(), served: vec![], take_by: None, taken: false, handed: false, given_up: false }
+        Node { process, ready: None, version: String::new(), served: vec![], take_by: None, taken: false, handed: false, given_up: false, heartbeats: false, heartbeat_at: None, hung: false }
     }
 
     /// The Node serving has taken over once it serves every entrance and the one before it is gone: station.json says
@@ -219,6 +280,10 @@ impl<O: Os> Lifecycle<O> {
         }
         node.taken = true;
         node.take_by = None;
+        // Held to its word from now on (how long taking over took is `take`'s).
+        if node.heartbeats {
+            node.heartbeat_at = Some(self.os.now());
+        }
         log::info(&format!("Node {} has taken over", node.process.pid()));
         self.failures = 0;
         self.say_started();
@@ -256,13 +321,15 @@ impl<O: Os> Lifecycle<O> {
     }
 
     /// The Node a launcher before this one in this process (`Os::renew`) left serving, taken over: it is up and serves
-    /// on `served`, as it was there; station.json stays as it said.
-    pub fn adopt(&mut self, process: O::Node, version: String, served: Vec<(String, u16)>) {
+    /// on `served`, as it was there; station.json stays as it said. `heartbeats`: the launcher before heard it say it
+    /// is alive (one from before that did not say: false, and it is held to it once it says it here).
+    pub fn adopt(&mut self, process: O::Node, version: String, served: Vec<(String, u16)>, heartbeats: bool) {
         log::info(&format!("Node {} serving (version {version}) taken up from the launcher before", process.pid()));
         for (name, port) in &served {
             self.os.route(name, Some(*port));
         }
-        self.current = Some(Node { process, ready: Some(self.os.now()), version, served, take_by: None, taken: true, handed: false, given_up: false });
+        let now = self.os.now();
+        self.current = Some(Node { process, ready: Some(now), version, served, take_by: None, taken: true, handed: false, given_up: false, heartbeats, heartbeat_at: heartbeats.then_some(now), hung: false });
     }
 
     /// Starts the Node that serves (at first, after a crash).
@@ -402,6 +469,13 @@ impl<O: Os> Lifecycle<O> {
                 self.os.route(name, Some(port));
                 self.check_taken();
             }
+        } else if message["heartbeat"] == true {
+            // Its main thread's loop runs (main.ts): said every 10 s.
+            let now = self.os.now();
+            if let Some(node) = self.node_mut(slot) {
+                node.heartbeats = true;
+                node.heartbeat_at = Some(now);
+            }
         } else if message["taking"] == true {
             let by = self.os.now() + self.times.take;
             if let Some(node) = self.node_mut(slot)
@@ -480,7 +554,7 @@ impl<O: Os> Lifecycle<O> {
         // one started at the machine's start would run until its next start, and nothing it is changed in would come
         // (a handover's carrying the vault's grants did not: 2026-10-30).
         if let Some(node) = self.current.as_ref().filter(|n| n.taken) {
-            self.os.renew(&node.process, &node.version, &node.served);
+            self.os.renew(&node.process, &node.version, &node.served, node.heartbeats);
         }
         match self.os.spawn() {
             Ok(process) => {
@@ -494,9 +568,68 @@ impl<O: Os> Lifecycle<O> {
     /// The front (front.rs) ended and none runs in its place: a Node linked to it would try its socket for as long as it
     /// runs, and a station with one serving was out of reach until it was asked to hand over by hand (15 h on a Linux
     /// station, 2026-11-15). The Node started next binds the endpoint itself (spawn), so a handover to one mends it.
+    /// One is started again after `front_retry` (it had ended as it started: a moment's failure, not for good), and the
+    /// Node serving then hands over to one linked to it: given up once, a station stayed without one for good (each
+    /// handover a new endpoint, its devices' connections lost) until it was started again by hand.
     pub fn front_gone(&mut self) {
         self.front_gone = true;
+        self.probing = None;
+        self.front_misses = 0;
+        self.front_probe_at = None;
+        if self.front_retry_at.is_none() {
+            let delay = self.front_retry_delay();
+            log::info(&format!("the front is started again in {} s", delay.as_secs()));
+            self.front_retry_at = Some(self.os.now() + delay);
+        }
         self.tick();
+    }
+
+    fn front_retry_delay(&self) -> Duration {
+        self.times.front_retry.saturating_mul(1 << self.front_retries.min(16)).min(FRONT_RETRY_MOST.max(self.times.front_retry))
+    }
+
+    /// What the front answered ask `n` (`Os::probe_front`): whether it did, in time.
+    #[cfg_attr(windows, allow(dead_code))]
+    pub fn front_probed(&mut self, n: u64, answered: bool) {
+        if self.probing.is_none_or(|(asked, _)| asked != n) {
+            return;
+        }
+        self.probing = None;
+        if answered {
+            self.front_misses = 0;
+            self.front_retries = 0;
+        } else {
+            self.front_missed();
+        }
+    }
+
+    fn front_missed(&mut self) {
+        self.front_misses += 1;
+        if self.front_misses < FRONT_MISSES {
+            log::warn(&format!("the front did not answer ({} in a row)", self.front_misses));
+            return;
+        }
+        log::error(&format!("the front did not answer {FRONT_MISSES} times in a row ({} s apart): killed as hung", self.times.front_probe.as_secs()));
+        self.front_misses = 0;
+        self.front_probe_at = None;
+        self.os.kill_front();
+    }
+
+    /// Whether the Node serving is held to saying it is alive now, and by when it must have said it again.
+    fn heartbeat_by(&self) -> Option<Instant> {
+        if self.stopping.is_some() || self.next.is_some() {
+            return None;
+        }
+        let node = self.current.as_ref().filter(|n| n.taken && !n.hung && !n.given_up)?;
+        node.heartbeat_at.map(|at| at + self.times.heartbeat)
+    }
+
+    /// Whether a front may be started again now: none being started or stopped, no handover under way (it ends with a
+    /// handover of its own), and the Node serving, if any, has taken over.
+    fn front_retry_due(&self) -> Option<Instant> {
+        let at = self.front_retry_at?;
+        let calm = self.stopping.is_none() && self.next.is_none() && self.retiring.is_none() && !self.front_gone && self.current.as_ref().is_none_or(|n| n.taken);
+        calm.then_some(at)
     }
 
     /// Asks every Node to stop; the launcher exits once none runs.
@@ -615,6 +748,60 @@ impl<O: Os> Lifecycle<O> {
                 self.start_next();
             }
         }
+        if let Some(by) = self.heartbeat_by()
+            && now >= by
+            && let Some(node) = self.current.as_mut()
+        {
+            node.hung = true;
+            let pid = node.process.pid();
+            log::error(&format!("Node {pid} said nothing for {} s (its main thread held or hung); killed, and one started again", self.times.heartbeat.as_secs_f32()));
+            // Not asked to hand over: a thread that does not run would not hear it. Its end is a crash's (`crashed`).
+            let Lifecycle { os, current, .. } = self;
+            if let Some(node) = current.as_mut() {
+                os.kill(&mut node.process);
+            }
+        }
+        if self.front_retry_due().is_some_and(|at| now >= at) {
+            self.front_retry_at = None;
+            // (each try further apart, until one that started answers its asks: `front_probed`)
+            self.front_retries += 1;
+            if self.os.has_front() {
+                // one there already (started with a Node's restart meanwhile)
+            } else if self.os.front_again() {
+                log::info("the front listens again");
+                // The Node serving binds the endpoint itself: it hands over to one linked to the front (spawn).
+                if self.current.is_some() {
+                    log::info("the Node serving hands over to one linked to the front");
+                    self.start_next();
+                }
+            } else {
+                let delay = self.front_retry_delay();
+                log::warn(&format!("the front did not start again; another try in {} s", delay.as_secs()));
+                self.front_retry_at = Some(now + delay);
+            }
+        }
+        if self.stopping.is_none() && self.os.has_front() {
+            if let Some((_, by)) = self.probing
+                && now >= by
+            {
+                self.probing = None;
+                self.front_missed();
+            }
+            match self.front_probe_at {
+                None => self.front_probe_at = Some(now + self.times.front_probe),
+                Some(at) if now >= at && self.probing.is_none() => {
+                    self.probes += 1;
+                    self.probing = Some((self.probes, now + self.times.front_probe));
+                    self.front_probe_at = Some(now + self.times.front_probe);
+                    self.os.probe_front(self.probes);
+                }
+                _ => {}
+            }
+        } else if !self.os.has_front() {
+            self.front_probe_at = None;
+            self.probing = None;
+            self.front_misses = 0;
+        }
         if let Some(at) = self.drained_at
             && now >= at + self.times.drained
         {
@@ -644,6 +831,10 @@ impl<O: Os> Lifecycle<O> {
             self.restart_at,
             self.drained_at.map(|at| at + self.times.drained),
             self.parent_at,
+            self.heartbeat_by(),
+            self.front_retry_due(),
+            self.front_probe_at.filter(|_| self.stopping.is_none() && self.probing.is_none()),
+            self.probing.map(|(_, by)| by).filter(|_| self.stopping.is_none()),
         ]
         .into_iter()
         .flatten()
@@ -697,6 +888,12 @@ mod tests {
         routes: Vec<(String, Option<u16>)>,
         /// The Nodes serving when the launcher was asked to become the release's (with their versions and ports).
         renewed: Vec<(u32, String, Vec<(String, u16)>)>,
+        /// Whether a front runs; whether the next ones started listen (none said: they do); the asks of it; its kills.
+        front: bool,
+        front_starts: Vec<bool>,
+        started_fronts: u32,
+        probed: Vec<u64>,
+        front_killed: u32,
     }
 
     impl Os for Fake {
@@ -722,8 +919,22 @@ mod tests {
         fn program(&self) -> String {
             "node".into()
         }
-        fn renew(&mut self, serving: &FakeNode, version: &str, served: &[(String, u16)]) {
+        fn renew(&mut self, serving: &FakeNode, version: &str, served: &[(String, u16)], _heartbeats: bool) {
             self.renewed.push((serving.pid, version.to_string(), served.to_vec()));
+        }
+        fn has_front(&self) -> bool {
+            self.front
+        }
+        fn front_again(&mut self) -> bool {
+            self.started_fronts += 1;
+            self.front = if self.front_starts.is_empty() { true } else { self.front_starts.remove(0) };
+            self.front
+        }
+        fn probe_front(&mut self, n: u64) {
+            self.probed.push(n);
+        }
+        fn kill_front(&mut self) {
+            self.front_killed += 1;
         }
     }
 
@@ -748,8 +959,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&data);
         let run = data.join("run");
         std::fs::create_dir_all(&run).unwrap();
-        let fake = Fake { dir: data, now: Instant::now(), pid: 100, told: vec![], killed: vec![], parent_gone: false, routes: vec![], renewed: vec![] };
-        let times = Times { ready: s(60), exit: s(30), stop: s(30), backoff: s(1), backoff_max: s(4), stable: s(60), parent: s(2), drained: s(300), take: s(90), rollback: s(10), front: s(10) };
+        let fake = Fake { dir: data, now: Instant::now(), pid: 100, told: vec![], killed: vec![], parent_gone: false, routes: vec![], renewed: vec![], front: false, front_starts: vec![], started_fronts: 0, probed: vec![], front_killed: 0 };
+        let times = Times { ready: s(60), exit: s(30), stop: s(30), backoff: s(1), backoff_max: s(4), stable: s(60), parent: s(2), drained: s(300), take: s(90), rollback: s(10), front: s(10), heartbeat: s(90), front_retry: s(300), front_probe: s(30) };
         let mut station = Lifecycle::new(fake, times, run, with_parent);
         station.start();
         station
@@ -917,7 +1128,7 @@ mod tests {
         let told = Rc::new(RefCell::new(vec![]));
         station.os.told.push((50, told.clone()));
         std::fs::write(station.run.join("station.json"), "before").unwrap();
-        station.adopt(FakeNode { pid: 50, told }, "0.1.0".into(), vec![("admin".into(), 5002), ("mcp".into(), 5001)]);
+        station.adopt(FakeNode { pid: 50, told }, "0.1.0".into(), vec![("admin".into(), 5002), ("mcp".into(), 5001)], false);
         assert_eq!(routes(&mut station), [to("admin", Some(5002)), to("mcp", Some(5001))]);
         assert_eq!(station.file("station.json").as_deref(), Some("before"), "said by the launcher before");
         assert_eq!(station.serving(), 50);
@@ -1241,5 +1452,212 @@ mod tests {
         station.pass(MS);
         assert!(station.file("drained").is_none());
         assert!(station.stopping.is_none() && station.told(node).is_empty());
+    }
+    fn heartbeat() -> Value {
+        json!({"heartbeat": true})
+    }
+
+    #[test]
+    fn a_node_that_says_it_is_alive_and_then_says_nothing_is_killed_and_started_again() {
+        let mut station = station("hung", false);
+        let node = station.last();
+        // It says it is alive before it has taken over (its loop runs from its start): that time is `take`'s.
+        station.said(Slot::Current, heartbeat());
+        station.said(Slot::Current, ready("0.1.0"));
+        station.pass(s(80));
+        station.serves(Slot::Current, 5000);
+        // Held to it from taking over: each word gives it its time again.
+        for _ in 0..5 {
+            station.pass(s(90) - MS);
+            station.said(Slot::Current, heartbeat());
+        }
+        assert!(station.os.killed.is_empty());
+        // Silent for the whole of it: hung (its thread held: it would not hear a handover), killed.
+        station.pass(s(90) - MS);
+        assert!(station.os.killed.is_empty());
+        assert_eq!(station.next_due(), Some(station.os.now + MS), "woken for it");
+        station.pass(MS);
+        assert_eq!(station.os.killed, [node]);
+        assert!(station.told(node).is_empty(), "not asked anything");
+        // Killed once, however long its end takes to be seen.
+        station.pass(s(3600));
+        assert_eq!(station.os.killed, [node]);
+        station.ended(node, KILLED);
+        // Started again as after a crash of one that served: no handover's failure, the first backoff.
+        assert!(station.file("handoff-failed").is_none());
+        station.pass(s(1));
+        let again = station.last();
+        assert_ne!(again, node);
+        station.said(Slot::Current, heartbeat());
+        station.up(Slot::Current, "0.1.0", 6000);
+        assert_eq!(station.serving(), again);
+        assert!(station.stopping.is_none());
+    }
+
+    #[test]
+    fn a_node_that_never_says_it_is_alive_is_never_held_to_it() {
+        // A release from before `--launcher-heartbeat` (an older one rolled back to, one taken up from the launcher
+        // before): nothing to go by.
+        let mut station = station("noheartbeat", false);
+        let node = station.last();
+        station.up(Slot::Current, "0.1.0", 5000);
+        station.pass(s(3600 * 24));
+        assert!(station.os.killed.is_empty());
+        assert_eq!(station.serving(), node);
+        assert_eq!(station.next_due(), None, "nothing to wake for");
+    }
+
+    #[test]
+    fn a_node_taken_up_is_held_to_its_word_as_the_launcher_before_heard_it() {
+        for heartbeats in [false, true] {
+            let mut station = station(&format!("adoptbeat-{heartbeats}"), false);
+            station.current = None;
+            let told = Rc::new(RefCell::new(vec![]));
+            station.os.told.push((50, told.clone()));
+            station.adopt(FakeNode { pid: 50, told }, "0.1.0".into(), vec![("admin".into(), 5002), ("mcp".into(), 5001)], heartbeats);
+            station.pass(s(90));
+            assert_eq!(station.os.killed, if heartbeats { vec![50] } else { vec![] }, "heartbeats: {heartbeats}");
+            if !heartbeats {
+                // It says it here: held to it from now on.
+                station.said(Slot::Current, heartbeat());
+                station.pass(s(90));
+                assert_eq!(station.os.killed, [50]);
+            }
+        }
+    }
+
+    #[test]
+    fn a_handover_under_way_holds_neither_node_to_its_heartbeat() {
+        let mut station = station("beathandover", false);
+        let old = station.last();
+        station.said(Slot::Current, heartbeat());
+        station.up(Slot::Current, "0.1.0", 5000);
+        station.start_next();
+        let new = station.last();
+        // The new one slow to be ready: the old one serves on, and its word is not asked for meanwhile.
+        station.pass(s(59));
+        assert!(station.os.killed.is_empty());
+        station.said(Slot::Next, heartbeat());
+        station.said(Slot::Next, ready("0.2.0"));
+        assert_eq!(station.told(old), ["handover"]);
+        station.ended(old, EXITED_0);
+        // The new one takes over: held to it from then on.
+        station.pass(s(80));
+        station.serves(Slot::Current, 6000);
+        station.pass(s(90) - MS);
+        assert!(station.os.killed.is_empty());
+        station.pass(MS);
+        assert_eq!(station.os.killed, [new]);
+    }
+
+    #[test]
+    fn a_front_given_up_is_started_again_later_and_the_node_serving_hands_over_to_one_linked_to_it() {
+        let mut station = station("frontagain", false);
+        station.os.front = true;
+        let first = station.last();
+        station.up(Slot::Current, "0.1.0", 5000);
+        // It ended as it started: not again at once; the Node serving hands over to one that binds the endpoint itself.
+        station.os.front = false;
+        station.front_gone();
+        let direct = station.last();
+        assert_ne!(direct, first);
+        station.said(Slot::Next, ready("0.1.0"));
+        station.ended(first, EXITED_0);
+        station.serves(Slot::Current, 6000);
+        assert_eq!(station.serving(), direct);
+        assert_eq!(station.os.started_fronts, 0);
+        // Not before front_retry; then one that does not start: again after twice the wait, the Node serving on.
+        station.os.front_starts = vec![false, true];
+        station.pass(s(300) - MS);
+        assert_eq!(station.os.started_fronts, 0);
+        station.pass(MS);
+        assert_eq!(station.os.started_fronts, 1);
+        assert_eq!(station.last(), direct, "none listens: nothing handed over");
+        station.pass(s(600) - MS);
+        assert_eq!(station.os.started_fronts, 1);
+        station.pass(MS);
+        assert_eq!(station.os.started_fronts, 2);
+        // It listens: the Node serving hands over to one linked to it.
+        let linked = station.last();
+        assert_ne!(linked, direct);
+        station.said(Slot::Next, ready("0.1.0"));
+        assert_eq!(station.told(direct), ["handover"]);
+        station.ended(direct, EXITED_0);
+        station.serves(Slot::Current, 7000);
+        assert_eq!(station.serving(), linked);
+        // Once, as long as it runs.
+        station.pass(s(3600));
+        assert_eq!(station.os.started_fronts, 2);
+        assert_eq!(station.last(), linked);
+    }
+
+    #[test]
+    fn a_front_is_not_started_again_during_a_handover_or_a_stop() {
+        let mut station = station("frontcalm", false);
+        station.os.front = true;
+        let first = station.last();
+        station.up(Slot::Current, "0.1.0", 5000);
+        station.os.front = false;
+        station.front_gone();
+        // its handover never ready meanwhile: not while it is under way
+        station.pass(s(59));
+        station.pass(s(300));
+        assert_eq!(station.os.started_fronts, 0);
+        assert!(station.file("handoff-failed").is_some());
+        let given_up = station.last();
+        station.ended(given_up, KILLED);
+        // Once it is over, at once (its time came meanwhile): the one serving, still linked to the front that went, hands
+        // over to one linked to the one started.
+        station.tick();
+        assert_eq!(station.os.started_fronts, 1);
+        assert_ne!(station.last(), given_up);
+        station.said(Slot::Next, ready("0.1.0"));
+        assert_eq!(station.told(first), ["handover"]);
+        // stopping: none
+        let mut station = station_stopping();
+        station.pass(s(3600));
+        assert_eq!(station.os.started_fronts, 0);
+    }
+
+    fn station_stopping() -> Lifecycle<Fake> {
+        let mut station = station("frontstop", false);
+        station.up(Slot::Current, "0.1.0", 5000);
+        station.os.front = false;
+        station.front_retry_at = Some(station.os.now + s(1));
+        station.stop();
+        station
+    }
+
+    #[test]
+    fn a_front_that_does_not_answer_three_asks_in_a_row_is_killed() {
+        let mut station = station("frontprobe", false);
+        station.os.front = true;
+        station.up(Slot::Current, "0.1.0", 5000);
+        // (the launcher's first look: the asks from then on)
+        station.tick();
+        station.pass(s(30));
+        assert_eq!(station.os.probed, [1]);
+        station.front_probed(1, false);
+        station.pass(s(30));
+        station.front_probed(2, false);
+        // One answered: counted from none again.
+        station.pass(s(30));
+        station.front_probed(3, true);
+        station.pass(s(30));
+        station.front_probed(4, false);
+        station.pass(s(30));
+        station.front_probed(5, false);
+        assert_eq!(station.os.front_killed, 0);
+        // An answer that never comes is a miss by the next ask's time; a late one is not counted.
+        station.pass(s(30));
+        assert_eq!(station.os.probed, [1, 2, 3, 4, 5, 6]);
+        station.pass(s(30));
+        assert_eq!(station.os.front_killed, 1);
+        station.front_probed(6, true);
+        assert_eq!(station.front_misses, 0);
+        // killed: its end is seen as any other's (run.rs reap), and asks go on with the one in its place
+        assert_eq!(station.os.probed.len(), 6);
+        station.pass(s(30));
+        assert_eq!(station.os.probed.len(), 7);
     }
 }

@@ -9,7 +9,12 @@
   front (`mb/src/front/mesh.mbt`), which the launcher starts and keeps across Node's handovers
   (`native/launcher/src/front.rs`), for each Node in turn (`src/mesh/front.ts`, its streams carried by the shell and
   none of their bytes by the program); where none runs (Windows, a checkout without the program) Node binds it itself
-  with its addon (`native/mesh`), which keeps the image codecs and the rest as before. A device's requests of the
+  with its addon (`native/mesh`), which keeps the image codecs and the rest as before. The launcher watches both
+  while they run (`native/launcher/src/lifecycle.rs`): a Node that has taken over and goes silent on its heartbeat
+  (said from its main thread's loop, `--launcher-heartbeat`) is killed and started again, a front that stops answering
+  its asks is killed and started again, and one given up is tried again later, the Node then handed over to one linked
+  to it. What a Node says of itself for `stillfail status` is `<data>/run/health.json` (`src/ops/health.ts`), fresh
+  only while its loop runs. A device's requests of the
   routes in `src/mesh/served.ts` (the reads a device makes, `/batch`, `/changed`, its marks, names and a message in
   words and quotes) the front hands the MoonBit program that answers them itself (station/mb's reader `--serve`), not
   Node, which only tells it who each connection's member is and the floor a core is too old under there, takes what it wrote (`changes`, `said`: Node's store

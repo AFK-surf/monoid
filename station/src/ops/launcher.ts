@@ -31,6 +31,10 @@ export type Control = {
   carry(what: Record<string, unknown>): void;
   /// What the process before carried over, as it comes.
   carried(f: (what: Record<string, unknown>) => void): void;
+  /// This process's main thread runs: said every HELD_EVERY_MS from its loop (main.ts), where the launcher asks for it
+  /// (`--launcher-heartbeat`; one from before would write each to its log as a line it does not know). Silent for its
+  /// limit once it has taken over (lifecycle.rs `heartbeat`), it is killed and started again.
+  heartbeat(): void;
 };
 
 export function launcher(args: string[]): Control {
@@ -52,7 +56,7 @@ export function launcher(args: string[]): Control {
   if (!handed && pipe === undefined) {
     // On its own: SIGTERM and ^C stop it, as they would through a launcher.
     for (const signal of ["SIGTERM", "SIGINT"] as const) process.on(signal, () => handlers.get("stop")?.forEach((f) => f()));
-    return { ready() {}, serving() {}, taking() {}, failed() {}, drained() {}, on, carries: false, carry() {}, carried };
+    return { ready() {}, serving() {}, taking() {}, failed() {}, drained() {}, on, carries: false, carry() {}, carried, heartbeat() {} };
   }
   const given = flag(args, "--launcher-ports")?.split(",").map(Number);
   const ports = given && given.length === 2 && given.every((n) => Number.isInteger(n) && n > 0) ? { mcp: given[0]!, admin: given[1]! } : undefined;
@@ -82,6 +86,7 @@ export function launcher(args: string[]): Control {
   channel.on("close", () => handlers.get("stop")?.forEach((f) => f()));
   const say = (value: unknown) => channel.write(JSON.stringify(value) + "\n");
   const carries = args.includes("--launcher-carries");
+  const heartbeats = args.includes("--launcher-heartbeat");
   // Signals reach the launcher; this process hears of them on the channel.
   for (const signal of ["SIGTERM", "SIGINT", "SIGHUP", "SIGUSR1", "SIGUSR2"] as const) process.on(signal, () => {});
   return {
@@ -97,5 +102,6 @@ export function launcher(args: string[]): Control {
     carries,
     carry: (what) => void (carries && say({ carry: what })),
     carried,
+    heartbeat: () => void (heartbeats && say({ heartbeat: true })),
   };
 }
