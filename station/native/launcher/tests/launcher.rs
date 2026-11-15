@@ -775,10 +775,9 @@ fn a_front_that_ends_is_started_again_unless_it_ended_as_it_started() {
     unsafe { libc::kill(first, libc::SIGKILL) };
     until("the front's end said", || std::fs::read_to_string(station.dir.join("launcher.log")).ok().filter(|l| l.contains("not started again")));
     assert_eq!(station.fronts().len(), 1);
-    station.conf("version=0.2.0\n");
-    station.signal(libc::SIGUSR2);
-    until("station.json of the new version", || station.station_json().filter(|s| s["version"] == "0.2.0"));
-    let new = *station.started().last().unwrap();
+    // and the Node serving, linked to the front that is gone, hands over by itself to one that binds it (it waited for
+    // a SIGUSR2 by hand before, 2026-11-15)
+    let new = until("the Node handed over to", || station.started().get(1).copied());
     until("the new Node to say its front", || station.log().into_iter().any(|(_, p, w)| p == new && w.starts_with("front ")).then_some(()));
     assert!(station.said(new, "front none"));
     station.signal(libc::SIGTERM);

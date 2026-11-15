@@ -99,7 +99,7 @@ impl Front {
     /// It ended: another in its place, unless it ended sooner than `lives` after it started (said).
     pub fn ended(self, app: &Path, data: &Path, how: &str, lives: Duration) -> Option<Front> {
         if let Some(started) = self.started.filter(|s| s.elapsed() < lives) {
-            log::error(&format!("the front (pid {}) {how} {} ms after it started; not started again, Nodes from now on bind the station's endpoint themselves", self.pid, started.elapsed().as_millis()));
+            log::error(&format!("the front (pid {}) {how} {} ms after it started; not started again, Nodes from now on bind the station's endpoint themselves (the one serving hands over to one)", self.pid, started.elapsed().as_millis()));
             return None;
         }
         log::warn(&format!("the front (pid {}) {how}; starting another", self.pid));
