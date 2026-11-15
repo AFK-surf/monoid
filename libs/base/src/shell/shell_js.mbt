@@ -219,6 +219,13 @@ extern "js" fn page_start(prefix : String, iroh : String, answered : (Int, Int, 
   #|      case "iroh.relayStatus":
   #|        if (h?.endpoint !== undefined) return h.endpoint.relayStatus();
   #|        break;
+  #|      case "iroh.addAddr":
+  #|        // (where a peer is, without looking it up: iroh-wasm's `addAddr`, answered at once)
+  #|        if (h?.endpoint !== undefined) {
+  #|          h.endpoint.addAddr(a.addr);
+  #|          return null;
+  #|        }
+  #|        break;
   #|      case "conn.closeReason":
   #|        if (h?.conn !== undefined) return h.conn.closeReason() ?? null;
   #|        if (h?.gone !== undefined) return h.gone;

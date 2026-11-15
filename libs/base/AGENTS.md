@@ -12,8 +12,9 @@ of its workspace (`moon.work`); `effect` stays in mbui.
   and browser APIs), and `Shell::stood_in` for deterministic tests.
 - `src/wire`: pure stream framing and event-stream parsing (`lines`, request/reply heads, SSE text) with no transport.
 - `src/mesh`: the device side of the mesh on top of `shell` and `wire` (endpoints, scoped peer links, hello/pings/renewal,
-  requests/streams/duplex, health racing in `health.mbt`, wake/rebind in `wake.mbt`, and what the endpoint is bound
-  with, relays told again and connections peers dial to it in `bind.mbt`).
+  requests/streams/duplex, health racing in `health.mbt`, wake/rebind in `wake.mbt`, what the endpoint is bound
+  with, relays told again and connections peers dial to it in `bind.mbt`, and where peers are dialled straight in
+  `addrs.mbt`).
 
 ## It knows no program
 
@@ -55,6 +56,10 @@ of its workspace (`moon.work`); `effect` stays in mbui.
   link: no credential, ping or `links` entry knows it. The mesh keeps one the shell brought that no asker took yet;
   its first line is held to `first_ms` (30 s) and 64 KiB (`Incoming::first`). How long a taken one stays and how
   many at once are its program's to bound; while one is open the endpoint is not bound anew.
+- What a peer's hello answer says of its `lan` / `tailnet` addresses (IPv4 `a.b.c.d:port`, 8 of each, as the
+  TypeScript mesh's check) is kept by place in the program's `Store` (`Mesh::make`'s `addresses`), unreadable kept
+  values taken for none. A dial given them does not wait to be on a relay (`onto_max_ms`), as in that mesh.
+  `iroh.addAddr` is an op answered at once (`Shell::ask`): the Rust shell has it only there, never as a call.
 - The device's key file is its user's alone whatever the umask, by the Rust shell's doing alone
   (`client/shell/src/lib.rs` `create_private`): a program linked to a shell from before keeps its key as its umask has
   it. `shell.c` has been compiled and run on macOS on arm64 alone.

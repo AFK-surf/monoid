@@ -28,10 +28,13 @@
 // its relays' entries), the relays are told again (`Mesh::retune`), and a connection a peer dials to it is its
 // program's to take (`Mesh::incoming`), never a link (bind.mbt).
 //
+// Where a peer said a device dials it straight is kept, told the endpoint and given to its dials, and where its
+// program says a peer is told each endpoint bound (`Mesh::add_addr`, addrs.mbt).
+//
 // One connection to a peer in a scope, on the one endpoint, through the relays given (and direct, where the endpoint
 // may): what that mesh does beside that is not here yet (the choice among several ways and relays, each relay's own
-// endpoint, a peer dialled at the addresses it said, peers looked up on the LAN and in the DHT, traces, the day's
-// tally). `Options` and `Link` are where those go: a way more is a link
+// endpoint, an endpoint of its own for a peer's addresses, peers looked up on the LAN and in the DHT, traces, the
+// day's tally). `Options` and `Link` are where those go: a way more is a link
 // more to the same place, chosen among under `Mesh::link` (`Mesh::ways`, health.mbt, is where they are counted, and
 // what asks whether any way, or no other way, is up goes by it).
 
@@ -211,6 +214,15 @@ pub struct Mesh {
   /// it is no more what they said it was.
   priv health : Map[Place, Bool]
   priv health_waits : Array[(Place, Bool, @effect.Deferred[Bool])]
+  /// Where peers said they are dialled straight, by place (addrs.mbt), kept in `store` under `addresses`, one
+  /// writing at a time; where its program said peers are (`Mesh::add_addr`); and the places whose last dial on the
+  /// endpoint went unanswered given addresses, with those addresses.
+  priv store : Store
+  priv addresses : String
+  priv said : Map[String, Said]
+  priv keeping : @effect.Semaphore
+  priv known : Array[Known]
+  priv unanswered_at : Map[Place, String]
   priv mut closed : Bool
 }
 
@@ -218,12 +230,14 @@ pub struct Mesh {
 /// Binds the endpoint with the device key kept in `store` (made and kept the first time).
 ///
 /// `binding`: what else the endpoint is bound with (bind.mbt); none said: nothing looked up, no connection taken,
-/// no entries, as before there was any.
+/// no entries, as before there was any. `addresses`: the key what peers say of where they are dialled straight is
+/// kept under in `store` (addrs.mbt), read here: what is not there or cannot be read is taken for nothing.
 pub async fn Mesh::make(
   shell : @shell.Shell,
   store : Store,
   options : Options,
   binding? : Binding = Binding::none(),
+  addresses? : String = addresses_key,
 ) -> Mesh {
   if options.says is Some(says) {
     for field in own_fields {
@@ -244,6 +258,7 @@ pub async fn Mesh::make(
       secret
     }
   }
+  let said = said_of((store.get)(addresses) catch { _ => None })
   let relays = options.relays.copy()
   let entries = binding.entries.copy()
   let endpoint = bind(shell, relays, options.relay_only, binding, entries, secret)
@@ -276,6 +291,12 @@ pub async fn Mesh::make(
     racing: Map([]),
     health: Map([]),
     health_waits: [],
+    store,
+    addresses,
+    said,
+    keeping: @effect.Semaphore::new(1),
+    known: [],
+    unanswered_at: Map([]),
     closed: false,
   }
 }
@@ -430,6 +451,7 @@ fn Mesh::dialled(self : Mesh, place : Place, opening : Opening, beside : Bool, m
       }
       opening.result = Some(Open(link))
       self.stuck = false
+      self.note_dial(place, false)
       if (if beside { opening.first } else { opening.hedge }) is Some(other) {
         other.interrupt()
       }
@@ -449,6 +471,7 @@ fn Mesh::dialled(self : Mesh, place : Place, opening : Opening, beside : Bool, m
           if !connected {
             self.stuck = true
           }
+          self.note_dial(place, true)
           let e = failed("no_answer")
           opening.result = Some(Failed(e, true))
           ignore(opening.done.fail(e))
@@ -557,7 +580,8 @@ fn Mesh::let_go(self : Mesh, place : Place, reason : String) -> Unit {
 }
 
 ///|
-/// Whether the endpoint is on one of its relays (at once with none).
+/// Whether the endpoint is on one of its relays (at once with none). A dial given addresses does not ask
+/// (`Mesh::open`): it goes on them at once, as the TypeScript mesh's.
 fn Mesh::on_a_relay(self : Mesh) -> Bool {
   let said = self.shell.ask("iroh.relayStatus", { "id": self.endpoint }) catch { _ => return true }
   guard said is Array(relays) else { return true }
@@ -589,7 +613,13 @@ async fn Mesh::open(self : Mesh, place : Place, credentials : async (String, Boo
   let call : Ref[Int64?] = Ref(None)
   let connection : Ref[Json?] = Ref(None)
   let dialled : @effect.Deferred[Json] = @effect.Deferred::new()
-  let addr : Json = { "id": Json::string(peer), "relays": Json::array(self.relays.map(relay => Json::string(relay))) }
+  // (and where the peer said it is dialled straight, where the endpoint may: then its time counts from now)
+  let ips = self.ips(place)
+  let addr : Map[String, Json] = { "id": Json::string(peer), "relays": strings(self.relays) }
+  if ips.length() > 0 {
+    addr["ips"] = strings(ips)
+  }
+  let addr = Json::object(addr)
   ignore(
     self.scope.fork(name="mesh dial", () => {
       // (given up before this took its first step: nothing is dialled for it. The opening's own fiber forks this and
@@ -666,6 +696,8 @@ async fn Mesh::open(self : Mesh, place : Place, credentials : async (String, Boo
         dev: 0.0,
         answered_ms: None,
         warm: false,
+        lan: [],
+        tailnet: [],
         fibers: self.scope,
         accepts: @effect.Semaphore::new(1),
         coming: None,
@@ -675,7 +707,7 @@ async fn Mesh::open(self : Mesh, place : Place, credentials : async (String, Boo
     // The opening's time: counted from when the endpoint is on a relay (getting onto one takes several round trips to
     // it), and it covers the whole opening, a handshake made whose credential or first stream never goes too.
     () => {
-      for waited = 0; waited < onto_max_ms && !self.on_a_relay(); waited = waited + onto_recheck_ms {
+      for waited = 0; ips.length() == 0 && waited < onto_max_ms && !self.on_a_relay(); waited = waited + onto_recheck_ms {
         @effect.sleep(onto_recheck_ms)
       }
       @effect.sleep(connect_timeout_ms)
@@ -707,7 +739,12 @@ async fn Mesh::open(self : Mesh, place : Place, credentials : async (String, Boo
     self.scope.fork(name="mesh answer", () => {
       let answer = attempt(() => link.lock.with_permit(() => link.control.answer()))
       match answer {
-        Did(answer) => link.answer = Some(answer)
+        Did(answer) => {
+          link.answer = Some(answer)
+          link.lan = addrs_of(answer, "lan")
+          link.tailnet = addrs_of(answer, "tailnet")
+          self.heard(place, link)
+        }
         Fell(e) => {
           link.renewal_failed = true
           link.refused = Some(e)

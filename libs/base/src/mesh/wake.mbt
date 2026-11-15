@@ -131,6 +131,8 @@ fn Mesh::rebind(self : Mesh, after? : Array[async () -> Unit] = []) -> Unit {
           gone.push(self.endpoint)
           self.endpoint = endpoint
           self.stuck = false
+          // (told where its program said peers are, as each endpoint bound)
+          self.replay(endpoint)
           // (the wait for a connection a peer dials was the one of before's, and goes with it, a connection it
           // brought that nobody took too)
           self.forget_coming()

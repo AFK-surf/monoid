@@ -7,6 +7,8 @@ import {
 }
 
 // Values
+pub let addresses_key : String
+
 pub let body_step : Int32
 
 pub fn code_of(Error) -> String
@@ -97,16 +99,19 @@ pub async fn Link::closed(Self) -> Closed
 pub async fn Link::duplex(Self, String, String, headers? : Array[(String, String)], more? : Map[String, @json.Json]) -> (Reply, Out)
 pub fn Link::ended(Self) -> Closed?
 pub async fn Link::exchange(Self, String) -> @json.Json
+pub fn Link::lan(Self) -> Array[String]
 pub fn Link::path(Self) -> String?
 pub fn Link::paths(Self) -> Array[@json.Json]
 pub fn Link::pings(Self) -> Pings
 pub async fn Link::request(Self, String, String, headers? : Array[(String, String)], body? : Bytes, more? : Map[String, @json.Json], wrote? : (Int32) -> Unit) -> Reply
+pub fn Link::tailnet(Self) -> Array[String]
 pub fn Link::usable(Self) -> Bool
 pub fn Link::via(Self) -> String?
 
 pub struct Mesh {
   // private fields
 }
+pub fn Mesh::add_addr(Self, String, relays? : Array[String], ips? : Array[String]) -> Unit
 pub async fn Mesh::close(Self) -> Unit
 pub fn Mesh::current(Self, String, scope? : String) -> Link?
 pub fn Mesh::device_id(Self) -> String
@@ -114,11 +119,13 @@ pub fn Mesh::drop_link(Self, String, scope? : String, reason? : String) -> Unit
 pub async fn Mesh::health_change(Self, String, Bool, scope? : String) -> Bool
 pub fn Mesh::healthy(Self, String, scope? : String) -> Bool
 pub async fn Mesh::incoming(Self) -> Incoming?
+pub fn Mesh::lan(Self, String, scope? : String) -> Array[String]
 pub async fn Mesh::link(Self, String, async (String, Bool) -> Presented, scope? : String) -> Link
-pub async fn Mesh::make(@shell.Shell, Store, Options, binding? : Binding) -> Self
+pub async fn Mesh::make(@shell.Shell, Store, Options, binding? : Binding, addresses? : String) -> Self
 pub async fn Mesh::replaced(Self, Link) -> Unit
 pub fn Mesh::retune(Self, Array[String], entries? : Array[RelayEntry], reason? : String) -> Unit
 pub fn Mesh::standing(Self, String, scope? : String) -> Bool
+pub fn Mesh::tailnet(Self, String, scope? : String) -> Array[String]
 pub fn Mesh::wake(Self) -> Unit
 
 pub(all) struct Options {

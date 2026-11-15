@@ -207,6 +207,9 @@ pub struct Link {
   priv mut dev : Double
   priv mut answered_ms : Int?
   priv mut warm : Bool
+  /// Where the peer said it is dialled straight, in its answer to the first line (addrs.mbt).
+  priv mut lan : Array[String]
+  priv mut tailnet : Array[String]
   /// The mesh's fibers: where the wait for a stream the peer opens runs (`Link::accept`).
   priv fibers : @effect.Scope
   /// One asks for the next stream the peer opens at a time; and the shell's answer to the wait under way, kept

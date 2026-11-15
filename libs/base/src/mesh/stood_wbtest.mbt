@@ -46,6 +46,8 @@
 //   stood.binds, stood.addrs, stood.entries           what each bind was asked with, where each dial was told its
 //                                          peer is, the entries the endpoint was told (`iroh.setRelayEntries`), as
 //                                          written; `stood.no_entries = true`: the shell cannot be told them.
+//   stood.added                           where the endpoint was told a peer is (`iroh.addAddr`, asked at once):
+//                                          `<endpoint> <addr as written>`.
 //   let conn = far.comes("pair/1")        a peer dials this endpoint on that protocol: the connection the wait for
 //                                          one (`iroh.accept`, the test's to answer) is given; its streams are the
 //                                          peer's to open (`far.open(conn)`), its end the peer's (`far.end`).
@@ -97,6 +99,8 @@ priv struct Stood {
   binds : Array[String]
   addrs : Array[String]
   entries : Array[String]
+  /// Where the endpoint was told each peer is (`iroh.addAddr`): `<endpoint> <addr as written>`.
+  added : Array[String]
   /// The shell cannot be told its relays' entries (`iroh.setRelayEntries` fails).
   mut no_entries : Bool
   /// Whether the endpoint is on a relay (`iroh.relayStatus`: no relay at all while true, as a mesh made with none;
@@ -132,6 +136,7 @@ fn Stood::new() -> Stood {
     binds: [],
     addrs: [],
     entries: [],
+    added: [],
     no_entries: false,
     on_relay: true,
   }
@@ -224,6 +229,14 @@ fn Stood::new() -> Stood {
             [{ "url": "https://relay.test/", "connected": false }]
           }
         "conn.paths" => Json::array([])
+        "iroh.addAddr" => {
+          let addr = match args {
+            { "addr": addr, .. } => addr.stringify()
+            _ => "none"
+          }
+          stood.added.push("\{handle} \{addr}")
+          Json::null()
+        }
         "conn.remoteId" => Json::string("ef".repeat(32))
         "conn.stats" => { "rxBytes": Json::number(stood.rx.get(handle).unwrap_or(0.0)), "txBytes": 0 }
         "conn.closeReason" => {
