@@ -6,15 +6,17 @@
 // endpoint closes only those. And a front that ended, another started in its place: the Node links to it again, bound
 // as before, and takes what comes. Real processes and sockets: the side run's.
 import assert from "node:assert/strict";
+import { spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { createSocket } from "node:dgram";
-import { mkdtempSync } from "node:fs";
+import { closeSync, constants, existsSync, mkdtempSync, openSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
-import { withFront } from "../src/mesh/front.ts";
+import { Incoming, withFront } from "../src/mesh/front.ts";
 import { hearLines } from "../src/ops/log.ts";
+import type { Socket } from "node:net";
 import { type Connection, type Endpoint, type Mesh, type Stream, loadMesh } from "../src/mesh/native.ts";
 
 const binary = mbReaderBinary();
@@ -271,5 +273,102 @@ test("a front that ended, another in its place: the Node links to it again and t
     await device.close();
     await station.close();
     await f.stop();
+  }
+});
+
+test("a front whose stdout nobody reads lives on: a write to a pipe gone fails, SIGPIPE ends nothing", { skip }, async () => {
+  // Its stdout a FIFO whose one reader closed before it started: the line it says as it listens is written where
+  // nobody reads, on every system (a stream's Unix socket, below, is SO_NOSIGPIPE on macOS by tokio's mio).
+  const dir = mkdtempSync(join(tmpdir(), "mbm-"));
+  const fifo = join(dir, "out");
+  spawnSync("mkfifo", [fifo]);
+  const reader = openSync(fifo, constants.O_RDONLY | constants.O_NONBLOCK);
+  const out = openSync(fifo, constants.O_WRONLY);
+  closeSync(reader);
+  const socket = join(dir, "front.sock");
+  const child = spawn(binary!, ["--builder", "mesh", "--socket", socket, "--shell-dir", join(dir, "shell")], { stdio: ["pipe", out, "inherit"] });
+  closeSync(out);
+  let ended: string | null = null;
+  const end = new Promise<string>((resolve) => child.on("exit", (code, signal) => resolve((ended = signal ?? `exit ${code}`))));
+  // It listens and then says so: a while of real time for both.
+  for (let i = 0; i < 100 && !existsSync(socket) && ended === null; i++) await new Promise((resolve) => setTimeout(resolve, 50));
+  await Promise.race([end, new Promise((resolve) => setTimeout(resolve, 1000))]);
+  try {
+    assert.equal(ended, null, "the front lives on");
+    const station = await bindOn(withFront(loadMesh(), socket), randomBytes(32));
+    assert.equal(typeof station.id(), "string", "and serves");
+    await station.close();
+  } finally {
+    child.kill("SIGTERM");
+    await end;
+  }
+});
+
+test("a stream whose Node end closed first is written to: only that stream goes, the front lives on (no SIGPIPE)", { skip }, async () => {
+  // The front as the launcher starts it, its end (a signal's name, or its exit code) seen here.
+  const dir = mkdtempSync(join(tmpdir(), "mbm-"));
+  const socket = join(dir, "front.sock");
+  const child = spawn(binary!, ["--builder", "mesh", "--socket", socket, "--shell-dir", join(dir, "shell")], { stdio: ["pipe", "pipe", "inherit"] });
+  let ended: string | null = null;
+  const end = new Promise<string>((resolve) => child.on("exit", (code, signal) => resolve((ended = signal ?? `exit ${code}`))));
+  await new Promise<void>((resolve, reject) => {
+    let line = "";
+    child.stdout!.on("data", (b: Buffer) => {
+      line += b.toString();
+      if (line.includes("\n")) (JSON.parse(line.split("\n")[0]!).listening === socket ? resolve() : reject(new Error(line)));
+    });
+    void end.then((how) => reject(new Error(`the front ended before it listened (${how})`)));
+  });
+  // Each socket the front hands this process a stream on, as it comes (what FrontStream keeps to itself).
+  const handed: Socket[] = [];
+  const give = Incoming.prototype.give;
+  Incoming.prototype.give = function (this: Incoming, came: Parameters<typeof give>[0]) {
+    handed.push(came.socket);
+    return give.call(this, came);
+  };
+  const addon = loadMesh();
+  const station = await bindOn(withFront(addon, socket), randomBytes(32));
+  const device = await bindOn(addon, randomBytes(32));
+  try {
+    const accepting = station.accept();
+    const theirs = await device.connect(addrOf(station), ALPN);
+    const conn = (await accepting)!;
+    const other = await theirs.openBi();
+    await other.write(Buffer.from("other"));
+    const otherHere = (await conn.acceptBi())!;
+    assert.equal((await otherHere.read())?.toString(), "other");
+
+    const doomed = await theirs.openBi();
+    await doomed.write(Buffer.from("first"));
+    const doomedHere = (await conn.acceptBi())!;
+    assert.equal((await doomedHere.read())?.toString(), "first");
+    // Node's end of it closed, the front not told (as a Node that ended does): the next bytes the device sends on it
+    // the front writes to a socket nobody reads.
+    const nodeEnd = handed.at(-1)!;
+    await new Promise<void>((resolve) => { nodeEnd.once("close", () => resolve()); nodeEnd.destroy(); });
+    // (Linux's case: on macOS the shell's Unix sockets are SO_NOSIGPIPE, so this passes there with or without the fix.)
+  // Nothing tells the device when the front took them (its write fails, and the stream's way to Node is let go
+    // only on the device's side), so a while of real time: SIGPIPE, where it is not ignored, ends it within it.
+    for (let i = 0; i < 8; i++) await doomed.write(randomBytes(1 << 16)).catch(() => {});
+    await Promise.race([end, new Promise((resolve) => setTimeout(resolve, 2000))]);
+    assert.equal(ended, null, "the front lives on");
+    assert.equal(await conn.answers(5000), true, "and answers");
+
+    // the stream beside it, and one opened after, carry on
+    await other.write(Buffer.from(" still"));
+    await other.finish();
+    assert.equal((await readAll(otherHere)).toString(), " still");
+    const after = await theirs.openBi();
+    await after.write(Buffer.from("after"));
+    await after.finish();
+    assert.equal((await readAll((await conn.acceptBi())!)).toString(), "after");
+    assert.equal(ended, null, "the front lives on");
+    theirs.close(0, "");
+  } finally {
+    Incoming.prototype.give = give;
+    await device.close();
+    await station.close();
+    child.kill("SIGTERM");
+    await end;
   }
 });
