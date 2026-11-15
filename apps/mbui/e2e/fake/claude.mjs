@@ -118,6 +118,18 @@ async function turn(text) {
   const to = /thread="([^"]+)"/.exec(text)?.[1] ?? "";
   const line = (key) => text.slice(text.indexOf(key) + key.length).split("\n")[0];
   let said;
+  // The station's ask for a title once a turn ended and its chat has none (station/src/agents/instructions.ts
+  // nameUntitled): as the real one does, its title alone, then the state it ended with again. Left to still.fail's fake,
+  // it ended with no state, was nudged seven times, and its "stopped with no result" notice went into a Slack thread the
+  // move drill reads (part 4s, c4s-dda7).
+  const untitled = /The chat (\S+) still has no title, and nobody is at work in it now/.exec(text);
+  if (untitled) {
+    said = await post(untitled[1], { title: `drill ${sessionId.slice(0, 8)}` });
+    await tool("chat_state", { kind: "all_done", done: "did what the drill asked" });
+    message(said);
+    say({ type: "result", subtype: "success", is_error: false, duration_ms: 1, num_turns: 1, session_id: sessionId, result: said });
+    return;
+  }
   if (/(^|\s)drill-[a-z]+:/.test(text)) {
     said = await drill(text, to, line);
     message(said);
@@ -291,7 +303,7 @@ async function drill(text, to, line) {
   return done(`drill: no such word in ${text.slice(0, 200)}`);
 }
 
-const ours = (text) => /(^|\s)(card:|text-card:|steps:|serve:|md:|secret:|rig:|rigtask:|devtalk:|drill-[a-z]+:)/.test(text) ||/Granted: 「[^」]*」, grant r_|\(r_[\w-]+\) was (refused|let go)/.test(text);
+const ours = (text) => /still has no title, and nobody is at work in it now/.test(text) || /(^|\s)(card:|text-card:|steps:|serve:|md:|secret:|rig:|rigtask:|devtalk:|drill-[a-z]+:)/.test(text) ||/Granted: 「[^」]*」, grant r_|\(r_[\w-]+\) was (refused|let go)/.test(text);
 readline.createInterface({ input: process.stdin }).on("line", (line) => {
   let msg = null;
   try {

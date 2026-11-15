@@ -1936,11 +1936,35 @@ try {
           const y = of[j]!;
           const start = Math.max(x.opened, y.opened, from);
           const end = Math.min(x.closed || Date.now(), y.closed || Date.now(), to);
-          if (end > start) out.push(`${x.station}#${x.n} and ${y.station}#${y.n} for ${end - start} ms at ${new Date(start).toISOString().slice(11, 23)}`);
+          if (end > start) out.push({ ms: end - start, said: `${x.station}#${x.n} and ${y.station}#${y.n} for ${end - start} ms at ${new Date(start).toISOString().slice(11, 23)}` });
         }
       }
       return out;
     };
+    /// Each time between `from` and `to` that no socket of `app` was open (a station that was down aside: what is
+    /// asked of this is a move's own).
+    const gaps = (app: string, from: number, to = Date.now()) =>
+      (sl.none.get(app) ?? []).filter((g) => g.from > 0 && g.from < to && (g.to === 0 || g.to > from)).map((g) => ({ ms: (g.to || to) - g.from, said: `none open for ${(g.to || to) - g.from} ms at ${new Date(g.from).toISOString().slice(11, 23)}` }));
+    /// A move's window as measured (both open at once, none open), and what of it is over a second: the platform takes
+    /// several sockets of an app, giving an event to one, so what is held is each event handled once; a window as long
+    /// as a second is no switch.
+    const windowOf = (label: string, app: string, from: number, to = Date.now()) => {
+      const two = overlaps(app, from, to);
+      const none = gaps(app, from, to);
+      measured(`4s ${label}: ${two.length === 0 ? "never two open" : `two open: ${two.map((x) => x.said).join("; ")}`}; ${none.length === 0 ? "never none open" : none.map((x) => x.said).join("; ")}`);
+      return [...two, ...none].filter((x) => x.ms > 1000).map((x) => x.said);
+    };
+    /// The live chat of thread `ts` in `channel`, wherever it is (its key there: B names a connect it took by its
+    /// origin, `dk@<A's id>`).
+    const chatOf = (ts: string, channel = CH): { on: Name; key: string } | null => {
+      for (const n of stations()) {
+        const k = sql(n, `select key from sessions where key like ${lit(`%:${channel}:${ts}`)} and (ws is null or (ws not like 'handed:%' and ws not like 'coming:%'))`)[0]?.key;
+        if (typeof k === "string") return { on: n, key: k };
+      }
+      return null;
+    };
+    /// How many of the app's sockets an envelope was acknowledged on.
+    const ackedOn = (id: string) => sl.sockets.filter((s) => s.acked.has(id)).map((s) => `${s.station}#${s.n}`);
     const moveConnect = async (id: string, to: Name, withNeeds = true) => {
       const t0 = Date.now();
       await a.call("move.start", { station: A, to: idOf(to), module: "connects", item: itemOf(id), withNeeds });
@@ -2032,6 +2056,9 @@ try {
           if (holds(dk).join() !== "A" || sockets() !== `A#${sl.live(APP)[0]?.n}`) throw new Error(`holds ${holds(dk).join(",")}, sockets ${sockets()}`);
         });
         let switched = false;
+        let L: { ts: string; event: J } = { ts: "", event: null };
+        let F: { ts: string; event: J } = { ts: "", event: null };
+        let ends: { ids: { last: string; first: string }; lastOn: string } = { ids: { last: "", first: "" }, lastOn: "" };
         await check("4s: its other chat moved, then the connect: events at B's socket, A's closed, one socket at a time, an event a second across it none lost or doubled", async () => {
           const l2 = await moveChat(k2, "B");
           if (standing("B", k2) !== "live") throw new Error(`the other chat not on B: ${standings(k2)}; ${outcome(l2)}`);
@@ -2046,6 +2073,12 @@ try {
             }
           })();
           await new Promise((r) => setTimeout(r, 3000));
+          // (the window's two ends: one event down A's socket the moment B asks for its own, one the first down B's)
+          L = sl.message(APP, CH, `drill-note:l${tag}`);
+          F = sl.message(APP, CH, `drill-note:f${tag}`);
+          asked.push({ thread: L.ts, word: `drill-noted l${tag} `, channel: CH, must: true }, { thread: F.ts, word: `drill-noted f${tag} `, channel: CH, must: true });
+          ends = sl.arm(APP, "B", L.event, F.event);
+          const from = Date.now();
           let l: J;
           try {
             l = await moveConnect(dk, "B");
@@ -2077,10 +2110,27 @@ try {
           }
           const lost = answered.filter((x) => x.c === null).map((x) => x.d.word.trim());
           const twice = answered.filter((x) => answersTo(x.d.ts, x.d.word).length > 1).map((x) => x.d.word.trim());
-          log(`  most sockets at once ${sl.most.get(APP)}; with none open: ${brief((sl.none.get(APP) ?? []).filter((g) => g.from > 0).map((g) => `${g.to === 0 ? "still" : `${g.to - g.from} ms`}`))}`);
           if (lost.length > 0 || twice.length > 0) throw new Error(`unanswered ${brief(lost)}; answered more than once ${brief(twice)}`);
-          if ((sl.most.get(APP) ?? 0) > 1) throw new Error(`${sl.most.get(APP)} sockets open at once`);
+          const acks = during.filter((d) => ackedOn(d.id).length !== 1).map((d) => `${d.word.trim()} acknowledged on ${brief(ackedOn(d.id))}`);
+          if (acks.length > 0) throw new Error(`not acknowledged once: ${acks.join("; ")}`);
+          const long = windowOf("the connect's move to B", APP, from);
+          if (long.length > 0) throw new Error(`over a second: ${long.join("; ")}`);
           if (raced !== "") throw new Error(`a conversation begun while it moved held the connect back (moved only when asked again with nothing said): ${raced}`);
+        });
+        await check("4s: at the move's two ends, one event down the leaving station's socket as the other asked for its own, one the first down the new one: each handled once, answered once, from where its chat is", async () => {
+          log(`  the last went ${ends.lastOn || "nowhere: B never asked for a socket"} (${ends.ids.last}), the first ${ends.ids.first || "never"}`);
+          if (ends.ids.last === "" || ends.ids.first === "") throw new Error(`the window's ends not given: ${brief(ends)}`);
+          for (const [name, m, id] of [["last", L, ends.ids.last], ["first", F, ends.ids.first]] as const) {
+            const word = `drill-noted ${name === "last" ? "l" : "f"}${tag} `;
+            const c = await answerTo(m.ts, word, 180_000).catch(() => null);
+            const e = sl.sent.get(id)!;
+            const chat = chatOf(m.ts);
+            log(`  the ${name}: delivered ${e.deliveries.map((x) => `${x.station}#${x.n}${x.attempt > 0 ? `(retry ${x.attempt})` : ""}`).join(" ")}, acknowledged on ${brief(ackedOn(id))}; its chat ${chat === null ? "none" : `${chat.key} on ${chat.on}`}; answered ${answersTo(m.ts, word).length}×${c === null ? "" : ` from ${cwdOf(c)} via ${c.station}`}`);
+            if (c === null) throw new Error(`the ${name} not answered`);
+            if (answersTo(m.ts, word).length !== 1) throw new Error(`the ${name} answered ${answersTo(m.ts, word).length}×`);
+            if (ackedOn(id).length !== 1) throw new Error(`the ${name} acknowledged on ${brief(ackedOn(id))}`);
+            if (chat === null || cwdOf(c) !== chat.on) throw new Error(`the ${name} answered from ${cwdOf(c)}, its chat ${chat === null ? "nowhere" : `on ${chat.on}`}`);
+          }
         });
         if (switched) {
           await check("4s: with the connect on B, its moved chat's thread answered once, through B's own socket", async () => {
@@ -2117,7 +2167,6 @@ try {
               log(`  a conversation begun on B, after: answered from ${cwdOf(c2)} via ${c2.station}`);
               if (cwdOf(c2) !== "B" || c2.station !== "A") throw new Error(`answered from ${cwdOf(c2)} via ${c2.station}`);
             } else log("  (no conversation begun while the connect was on B is on B)");
-            if ((sl.most.get(APP) ?? 0) > 1) throw new Error(`${sl.most.get(APP)} sockets open at once`);
           });
         }
       }
@@ -2153,7 +2202,9 @@ try {
         log(`  the message said while B was down: answered ${answersTo(t3, `drill-noted x${tag} `).length}×`);
         if (silent) throw new Error("nothing said in the thread of a message to a chat whose station was down (the rest held)");
       });
-      await check("4s fault: A killed during the connect's move: afterwards one station holds it, one socket, an event answered once", async () => {
+      // (not a cut of the move between B's taking it and A's letting it go: nothing outside the station stops it there,
+      // and it ended within milliseconds every run; what is held is the state after A's end at its first moment)
+      await check("4s fault: A killed the moment the connect's move is asked: afterwards one station holds it, one socket, an event answered once", async () => {
         for (const k of chatsOn("A")) {
           const l = await moveChat(k, "B");
           if (standing("B", k) !== "live") throw new Error(`${k} not on B: ${outcome(l)}`);
@@ -2187,9 +2238,9 @@ try {
           writeFileSync(gate, "");
           const c = await answerTo(t1, `drill-gated s${tag} `);
           const during = sl.sockets.slice(opens).map((s) => `${s.station}#${s.n} ${s.opened}-${s.closed || "open"}`);
-          const two = overlaps(APP, from);
-          log(`  answered via ${c.station}; sockets opened since: ${brief(during)}; now ${sockets()}; two open at once: ${brief(two)}`);
-          if (two.length > 0) throw new Error(`two sockets open at once across the handover: ${brief(two)}`);
+          log(`  answered via ${c.station}; sockets opened since: ${brief(during)}; now ${sockets()}`);
+          const long = windowOf("A's handover", APP, from);
+          if (long.length > 0) throw new Error(`over a second: ${long.join("; ")}`);
           if (answersTo(t1, `drill-gated s${tag} `).length !== 1) throw new Error(`answered ${answersTo(t1, `drill-gated s${tag} `).length}×`);
         });
       } else fail("4s fault: A handed over while a routed thread is answered on B", new Error(`not run: it needs the connect on A and its chat on B, and the connect is on ${holds(dk).join(",") || "none"}, the chat ${standings(k1)}`));
@@ -2269,10 +2320,11 @@ try {
       log(`  sockets: ${sl.sockets.map((s) => `${s.app === APP ? "dk" : "dks"} ${s.station}#${s.n} ${((s.closed || Date.now()) - s.opened) / 1000}s`).join(", ")}`);
       if (none.length > 0 || more.length > 0) throw new Error(`unanswered ${brief(none)}; more than once ${brief(more)}`);
     });
-    await check("4s: never two sockets of one app open at once, across every move of the part", async () => {
-      const two = [...overlaps(APP).map((x) => `dk: ${x}`), ...overlaps(APP1).map((x) => `dks: ${x}`)];
-      log(`  ${two.length === 0 ? "none" : two.join("; ")}`);
-      if (two.length > 0) throw new Error(`two open at once: ${two.join("; ")}`);
+    await check("4s: never two sockets of one app open at once for a second or more, across the part (shorter, measured)", async () => {
+      const two = [...overlaps(APP).map((x) => ({ ...x, said: `dk: ${x.said}` })), ...overlaps(APP1).map((x) => ({ ...x, said: `dks: ${x.said}` }))];
+      measured(`4s: two sockets of one app open at once: ${two.length === 0 ? "never" : two.map((x) => x.said).join("; ")}`);
+      const long = two.filter((x) => x.ms > 1000).map((x) => x.said);
+      if (long.length > 0) throw new Error(`for a second or more: ${long.join("; ")}`);
     });
 
     // (the stations as part 4 left them: no connect, nothing pointed at the stand-in; the chats Slack made stay)

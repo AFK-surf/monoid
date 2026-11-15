@@ -119,11 +119,39 @@ export class SlackStandIn {
 
   /// A person's message in a thread (`thread` its first message's ts; none: a new conversation that mentions the bot).
   say(app: string, channel: string, text: string, thread?: string, user = "U42"): { ts: string; id: string } {
+    const m = this.message(app, channel, text, thread, user);
+    return { ts: m.ts, id: this.event(app, m.event) };
+  }
+  /// Such a message as Slack's event, not sent.
+  message(app: string, channel: string, text: string, thread?: string, user = "U42"): { ts: string; event: J } {
     const ts = `${Math.floor(Date.now() / 1000)}.${String(100000 + (++this.ts % 900000)).padStart(6, "0")}`;
     const event = thread === undefined
       ? { type: "app_mention", channel, user, ts, text: `<@${this.botOf(app)}> ${text}`, team: TEAM }
       : { type: "message", channel, user, thread_ts: thread, ts, text: `<@${this.botOf(app)}> ${text}`, team: TEAM };
-    return { ts, id: this.event(app, event) };
+    return { ts, event };
+  }
+
+  /// The window a connect's move opens, given an event at each end of it: as station `to` asks for a socket of `app`
+  /// (apps.connections.open: it took the connect), `last` goes at once down the socket of it open on another station
+  /// (the one leaving, the last thing it is given; none open there, it waits as any event does), and `first` is the
+  /// first thing down `to`'s new socket. What came of each: `ids` (their envelopes) once each is sent, `lastOn` where
+  /// `last` went ("A#3", or "waited": none was open).
+  arm(app: string, to: string, last: J, first: J): { ids: { last: string; first: string }; lastOn: string } {
+    const armed = { app, to, last, first, ids: { last: "", first: "" }, lastOn: "" };
+    this.armed = armed;
+    return armed;
+  }
+  private armed: { app: string; to: string; last: J; first: J; ids: { last: string; first: string }; lastOn: string } | null = null;
+  private sendOn(s: Socket, e: Sent) {
+    const attempt = e.deliveries.length;
+    e.deliveries.push({ station: s.station, n: s.n, at: Date.now(), attempt });
+    s.ws.send(JSON.stringify({
+      type: "events_api",
+      envelope_id: e.id,
+      payload: { token: "drill", team_id: TEAM, api_app_id: "A1", event: e.event, type: "event_callback", event_id: `Ev${e.id}`, event_time: Math.floor(Date.now() / 1000) },
+      accepts_response_payload: false,
+      ...(attempt > 0 ? { retry_attempt: attempt, retry_reason: "timeout" } : {}),
+    }));
   }
 
   private botOf(app: string): string {
@@ -158,6 +186,16 @@ export class SlackStandIn {
     this.told(`Slack: ${app} socket ${station}#${n} opened at ${new Date(s.opened).toISOString().slice(11, 23)}, ${open} open: ${this.live(app).map((x) => `${x.station}#${x.n}`).join(",")}`);
     // (Socket Mode's first word on a socket: https://api.slack.com/apis/socket-mode, "hello")
     ws.send(JSON.stringify({ type: "hello", num_connections: open, debug_info: { host: "drill", approximate_connection_time: 18060 }, connection_info: { app_id: "A1" } }));
+    // (the window's arriving end: its first event, before anything waiting)
+    const armed = this.armed;
+    if (armed !== null && armed.ids.last !== "" && armed.ids.first === "" && armed.app === app && armed.to === station) {
+      const id = `env-${++this.n}`;
+      const e: Sent = { id, app, event: armed.first, deliveries: [], acked: null };
+      this.sent.set(id, e);
+      armed.ids.first = id;
+      this.armed = null;
+      this.sendOn(s, e);
+    }
     ws.on("message", (data: J) => {
       let m: J;
       try {
@@ -199,15 +237,7 @@ export class SlackStandIn {
         this.queue.push(id);
         continue;
       }
-      const attempt = e.deliveries.length;
-      e.deliveries.push({ station: s.station, n: s.n, at: Date.now(), attempt });
-      s.ws.send(JSON.stringify({
-        type: "events_api",
-        envelope_id: e.id,
-        payload: { token: "drill", team_id: TEAM, api_app_id: "A1", event: e.event, type: "event_callback", event_id: `Ev${e.id}`, event_time: Math.floor(Date.now() / 1000) },
-        accepts_response_payload: false,
-        ...(attempt > 0 ? { retry_attempt: attempt, retry_reason: "timeout" } : {}),
-      }));
+      this.sendOn(s, e);
     }
   }
 
@@ -238,6 +268,22 @@ export class SlackStandIn {
         : { ok: true, user: { id: params.user, name: "ada", real_name: "Ada L", profile: { display_name: "Ada", email: "Ada@Example.test" } } };
     }
     if (method === "apps.connections.open") {
+      // (the window's leaving end: the last thing down the other station's socket, as this one asks for its own)
+      const armed = this.armed;
+      if (armed !== null && armed.ids.last === "" && armed.app === token && armed.to === station) {
+        const id = `env-${++this.n}`;
+        const e: Sent = { id, app: token, event: armed.last, deliveries: [], acked: null };
+        this.sent.set(id, e);
+        armed.ids.last = id;
+        const leaving = this.live(token).filter((x) => x.station !== station).at(-1);
+        if (leaving !== undefined) {
+          armed.lastOn = `${leaving.station}#${leaving.n}`;
+          this.sendOn(leaving, e);
+        } else {
+          armed.lastOn = "waited";
+          this.queue.push(id);
+        }
+      }
       const n = ++this.n;
       this.appOf.set(n, token);
       return { ok: true, url: `${this.servers.get(station)!.base.replace(/^http/, "ws").replace(/\/api$/, "")}/socket/${station}/${n}` };
