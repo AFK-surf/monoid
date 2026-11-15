@@ -300,10 +300,10 @@ fn invite_node(v : @view.View, src : Source) -> Unit {
           @sf.words_node(w, fn() { tr("android-misc.invite.whichAccount") }, fn() { invite_label }) |> ignore
           w.box(fn(rows) {
             @sf.style_node(rows, fn() { @sf.full_width })
-            for a in list {
+            rows.each_of(fn() { list }, at_once=true, fn(row, a) {
               let (sub, email) = a
-              @sf.choice_row_node(rows, fn() { email }, fn() { invite_sub(src) == sub }, press=fn() { invite.chosen.set(sub) })
-            }
+              @sf.choice_row_node(row, fn() { email }, fn() { invite_sub(src) == sub }, press=fn() { invite.chosen.set(sub) })
+            })
           })
           |> ignore
         })

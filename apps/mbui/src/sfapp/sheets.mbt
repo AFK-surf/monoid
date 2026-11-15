@@ -258,13 +258,13 @@ fn chat_info_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit)
     col.pick(fn() { items(chat(), "agents").map(fn(a) { text(field(Some(a), "session"), "key") }) }, fn(p, keys) {
       guard keys.length() > 0 else { return }
       info_list_node(p, fn(k) {
-        for key in keys {
+        k.each_of(fn() { keys }, fn(row, key) {
           let a = fn() { agent_json(chat(), key) }
-          info_agent_row_node(k, src, a, fn() {
+          info_agent_row_node(row, src, a, fn() {
             close()
             open_agent(src, r, key)
           })
-        }
+        })
       })
       p.box(fn(g) { @sf.style_node(g, fn() { info_lists_gap }) }) |> ignore
     })
@@ -319,12 +319,8 @@ fn chat_info_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit)
       info_list_node(p, fn(k) {
         // the pull requests linked in it, the latest 3 (the user, 2026-10-29: most chats have one or two, seen at a
         // look), 全部 N 个 to the rest; tapped, one opens in the browser
-        for i, pull in pulls {
-          if i == info_pulls_most {
-            break
-          }
-          info_pull_row_node(k, src, r, Some(pull), close)
-        }
+        let latest = pulls[:if pulls.length() < info_pulls_most { pulls.length() } else { info_pulls_most }].to_owned()
+        k.each_of(fn() { latest }, fn(row, pull) { info_pull_row_node(row, src, r, Some(pull), close) })
         if pulls.length() > info_pulls_most {
           let words = fill("web-main.things.pullsAll", [("n", pulls.length().to_string())])
           info_more_row_node(k, "list", words, "", fn() {
@@ -1223,9 +1219,9 @@ fn agent_lines_node(v : @view.View, card : () -> Json?) -> Unit {
   // lines a frame after)
   v.pick(fn() { items(card(), "latest").map(fn(l) { (text(Some(l), "text"), flag(Some(l), "now")) }) }, fn(col, lines) {
     col.gap(Is(agent_lines_gap)) |> ignore
-    for l in lines {
+    col.each_of(fn() { lines }, at_once=true, fn(row, l) {
       let (words, now) = l
-      job_runs_node(col, fn() { [@ui.span(words)] }, fn() { job_words(@sf.theme().t.meta, wrap=false, line=agent_line_h) }, fn() {
+      job_runs_node(row, fn() { [@ui.span(words)] }, fn() { job_words(@sf.theme().t.meta, wrap=false, line=agent_line_h) }, fn() {
         let t = @sf.theme()
         if now {
           t.p.text
@@ -1233,7 +1229,7 @@ fn agent_lines_node(v : @view.View, card : () -> Json?) -> Unit {
           t.p.muted
         }
       })
-    }
+    })
   })
 }
 
@@ -1520,13 +1516,14 @@ fn jobs_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit) -> U
           w,
           fn(s) {
             let sample = jobs_sample()
-            for row in jobs_rows(sample) {
-              s.box(fn(b) {
+            let rows = jobs_rows(sample)
+            s.each_of(fn() { rows }, at_once=true, fn(row_at, row) {
+              row_at.box(fn(b) {
                 @sf.style_node(b, fn() { info_fill })
                 jobs_row_node(b, src, r, row, fn() { Some(Json::object({ "jobs": Json::array(sample) })) }, fn() {  })
               })
               |> ignore
-            }
+            })
           },
           error=fn() {
             match topic().error {
