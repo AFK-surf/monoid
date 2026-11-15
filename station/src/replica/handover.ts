@@ -107,8 +107,8 @@ export type Out = {
   /// went (what was in place there already did not).
   done: number; total: number; sentBytes?: number;
   /// When each of its steps began (the clock's), in order: `begin`, `first` (the first pass's gathering and sending),
-  /// `turn`, `hold`, `held` (the held pass), `rows`, `counts`, `gone`, `show` (asked there to show it, to its answer),
-  /// `done`: what its line says it took, a step each.
+  /// `turn`, `hold`, `held` (the held pass), `rows`, `counts`, `gone`: what its line at gone says each took; then `show`
+  /// (asked there to show it, to its answer) and `done`, kept for whoever reads the record.
   began?: Record<string, number>;
   /// Whether the chat is held: not while its files go a first time, the chat working (`handOver`); none said: held
   /// (one from before there were two passes).
@@ -721,6 +721,9 @@ export class Handover {
     d.store.goneTo(o.keys, o.to, o.there);
     await d.went?.(o.keys);
     await rm(scratch(d.data, o.id), { recursive: true, force: true });
+    // (what each step took, `gone` its own work here to now: the show's is the other's, said in its line)
+    const { ms, total } = tookOf(o.began, this.#d.fibers.now());
+    log.info("handover", "a chat went to another station", { id: o.id, to: o.to, keys: o.keys.length, ms, total });
   }
 
   /// The chat's rows sent a page at a time (`from`: each thread's entries and letters after what was sent, alone):
@@ -814,10 +817,6 @@ export class Handover {
     this.#mark(o, "done");
     o.step = "done";
     await this.#save(o);
-    // (once shown there and its threads re-pointed: what each step took, from its first pass to now)
-    const { ms, total } = tookOf(o.began, o.began?.done ?? this.#d.fibers.now());
-    delete ms.done;
-    log.info("handover", "a chat went to another station", { id: o.id, to: o.to, keys: o.keys.length, ms, total });
   }
 
   /// It did not go: B told to take out what it put in (told until it answers), the chat back to work here, its jobs
