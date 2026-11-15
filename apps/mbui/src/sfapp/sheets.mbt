@@ -580,7 +580,7 @@ fn info_title_node(h : @view.View, src : Source, r : ChatRef, title : () -> Stri
 fn open_info(src : Source, r : ChatRef) -> Unit {
   // (its name its head, with its ✎ after it: the user, 2026-11-04, 为啥不做成标题; no title of words, where what it
   // holds draws its name itself)
-  @sf.panel_nodes("", from=Unanchored, live=fn() { ("", "", "") }, fn(v, close) { chat_info_node(v, src, r, close) })
+  @sf.panel_nodes("", from=Unanchored, heads_itself=true, live=fn() { ("", "", "") }, fn(v, close) { chat_info_node(v, src, r, close) })
 }
 
 ///|
@@ -645,15 +645,21 @@ fn agent_node(v : @view.View, src : Source, r : ChatRef, key : String, close : (
     // (its words on the card's 24, its figures blocks at its foot 8 in, a row's corner; each part of it opening its room
     // as what it says comes (the card read after it rose): the sheet's top not stepping up as its height does, 2026-11-09
     // the user: 「好像还存在高度突变的元素」)
-    col.box(fn(k) {
-      @sf.style_node(k, fn() { info_list_style.then(@sf.panel_card_out_node(k)) })
-      k.radius(Is(info_list_radius)) |> ignore
-      k.show(fn() { items(card(), "latest").length() > 0 }, fn(l) { agent_lines_node(l, card) })
-      k.show(fn() { items(card(), "attention").length() > 0 }, fn(n) { agent_notes_node(n, card, agent_notes_over) })
-      k.show(fn() { agent_tiles_known(card()) }, fn(t) { card_tiles_node(t, card, agent_tiles_over, entry) })
+    // (each part of it opening its room as what it says comes, the card read after it rose: a part there as it is made
+    // at once, one that comes later from none to all of its height, the card and the sheet going with it, never a step;
+    // the card itself and the room under it only once a part of it shows: group_rows', 2026-11-09 the user:
+    // 「好像还存在高度突变的元素」)
+    reveal_part_node(col, fn() { agent_card_says(card()) }, look=fn(b) { @sf.panel_card_out_node(b) }, fn(c) {
+      c.box(fn(k) {
+        @sf.style_node(k, fn() { info_list_style })
+        k.radius(Is(info_list_radius)) |> ignore
+        reveal_part_node(k, fn() { items(card(), "latest").length() > 0 }, fn(l) { agent_lines_node(l, card) })
+        reveal_part_node(k, fn() { items(card(), "attention").length() > 0 }, fn(n) { agent_notes_node(n, card, agent_notes_over) })
+        reveal_part_node(k, fn() { agent_tiles_known(card()) }, fn(t) { card_tiles_node(t, card, agent_tiles_over, entry) })
+      })
+      |> ignore
+      c.box(fn(g) { @sf.style_node(g, fn() { info_card_under }) }) |> ignore
     })
-    |> ignore
-    col.box(fn(g) { @sf.style_node(g, fn() { info_card_under }) }) |> ignore
     let station = fn() { station_marks(src, @sfbase.workspace_of(r.station)).iter().find_first(fn(st) { st.address == r.station }) }
     let screens = fn() {
       match view_of_chat(src, r).0 {
@@ -693,7 +699,8 @@ fn agent_node(v : @view.View, src : Source, r : ChatRef, key : String, close : (
       col,
       fn(list) {
         list.pick(fn() { station().map(fn(st) { (st.address, st.name, st.emoji, st.icon) }) }, fn(p, said) {
-          guard said is Some(_) && @signals.untracked(station) is Some(st) else { return }
+          guard said is Some((address, name, emoji, icon)) else { return }
+          let st : Station = { address, name, emoji, icon, via: "" }
           info_row_node(
             p,
             fn() { tr("android-chat.agent.station") + " " + st.name },
@@ -890,7 +897,10 @@ fn agent_row_node(
       more => label + " " + value() + " " + more
     }
   }
-  info_row_node(p, label_said, look=agent_row_look, press~, fn(row) {
+  // (one of a line on its middle, as every row of the card; one with a line under its value (an account's allowance)
+  // on its top, its label and chevron on its value's first line)
+  let look = if under is Some(_) { agent_row_look } else { info_row_middle }
+  info_row_node(p, label_said, look~, press~, fn(row) {
     agent_label_node(row, label, label_w)
     row.box(fn(w) {
       @sf.style_node(w, fn() { agent_row_body_style }, in_row=true)
@@ -991,6 +1001,131 @@ fn agent_title_node(h : @view.View, src : Source, r : ChatRef, key : String, a :
 }
 
 ///|
+/// A part of a card in `parent` (group_rows', as nodes) while `shown()` says so, what `make` makes in it: there whole
+/// as it is made where it shows then; one that comes to show later opens its room from none to all of its height (a
+/// Move as long as it is tall, cut to the room it has so far), what is under it going down with it, and closes again
+/// as it goes; its words faded in from half as it opens (reveal's). `look`: where it stands (out of its column).
+fn reveal_part_node(
+  parent : @view.View,
+  shown : () -> Bool,
+  make : (@view.View) -> Unit,
+  look? : (@view.View) -> @ui.Style,
+) -> Unit {
+  // (where it starts said as it is made, by what a reader reads: a topic read outside any reader would be held by the
+  // core's client for good)
+  let share = @sf.EdgeWay::new(0.0)
+  let made = Ref(false)
+  // (while it closes, what it holds still there, let go once it has)
+  let closing = @signals.signal(false, same=fn(a, b) { a == b })
+  let stop : Ref[() -> Unit] = Ref(fn() {  })
+  parent.by_room(fn(b, room) {
+    let inner : Ref[@view.View?] = Ref(None)
+    let tall = fn() {
+      match inner.val {
+        Some(i) => room.tall(i)
+        None => 0.0
+      }
+    }
+    // (where what it holds stands out of its column (a card a panel's sides set), it stands so itself: cut to itself)
+    match look {
+      Some(l) => @sf.style_node(b, fn() { l(b) })
+      None => ()
+    }
+    b.clips(Is(true)).height(By(fn() { Some(tall() * share.shown(b)) })) |> ignore
+    inner.val = Some(
+      b.box(fn(i) {
+        i.alpha(By(fn() { 0.5 + 0.5 * share.shown(b) })) |> ignore
+        i.show(at_once=true, fn() { shown() || closing.get() }, make)
+      }),
+    )
+    b.reacts(shown, fn(on) {
+      if !made.val {
+        made.val = true
+        share.put(if on { 1.0 } else { 0.0 })
+        return
+      }
+      // (as far as it is tall once made: what has not been laid out yet goes as a row of words does)
+      let far = dmax(@signals.untracked(tall), reveal_least)
+      share.go_by(b, if on { 1.0 } else { 0.0 }, @motion.moved(points=far))
+      (stop.val)()
+      stop.val = fn() {  }
+      if !on {
+        closing.set(true)
+        stop.val = b.at_moment(share.end(), fn() { closing.set(false) })
+      }
+    })
+  })
+  |> ignore
+}
+
+///|
+/// One part of a card or a sheet in `parent` that shows `first` (what is read meanwhile) till `second()` says so, then
+/// `second` (what was read) in its place: there as it is made where `second()` says so then; else, as it comes to,
+/// from none to as tall as `second` is, one way (a Move as far as that), what it holds there whole from the first frame;
+/// what is under it going with it.
+fn swap_part_node(
+  parent : @view.View,
+  second : () -> Bool,
+  first : (@view.View) -> Unit,
+  later : (@view.View) -> Unit,
+) -> Unit {
+  let share = @sf.EdgeWay::new(0.0)
+  let made = Ref(false)
+  parent.by_room(fn(b, room) {
+    let one : Ref[@view.View?] = Ref(None)
+    let two : Ref[@view.View?] = Ref(None)
+    let tall = fn(r : Ref[@view.View?]) {
+      match r.val {
+        Some(i) => room.tall(i)
+        None => 0.0
+      }
+    }
+    // (not cut: what comes is all of it there from the first frame, its room opening under it, as what is under it goes
+    // down with it)
+    b
+    .height(By(fn() {
+      let s = share.shown(b)
+      Some(tall(one) * (1.0 - s) + tall(two) * s)
+    }))
+    |> ignore
+    // (where it stands said first, before what it holds is made: what is made of `first` only while it shows)
+    b.reacts(second, fn(on) {
+      if !made.val {
+        made.val = true
+        share.put(if on { 1.0 } else { 0.0 })
+        return
+      }
+      let far = dmax((@signals.untracked(fn() { tall(two) - tall(one) })).abs(), reveal_least)
+      share.go_by(b, if on { 1.0 } else { 0.0 }, @motion.moved(points=far))
+    })
+    one.val = Some(
+      b.box(fn(i) {
+        i.over(Is(true)).alpha(By(fn() { 1.0 - share.shown(b) })) |> ignore
+        i.show(at_once=true, fn() { share.target() < 1.0 || !second() }, first)
+      }),
+    )
+    two.val = Some(
+      b.box(fn(i) {
+        // (whole as its room opens: cut to it, not faded)
+        i.over(Is(true)) |> ignore
+        i.show(at_once=true, second, later)
+      }),
+    )
+  })
+  |> ignore
+}
+
+///|
+/// How far a part's way goes at least, where it has not been laid out yet as it comes: a row's.
+let reveal_least : Double = 44.0
+
+///|
+/// Whether the core's card of an agent says anything its card shows: its latest lines, what is wrong, its figures.
+fn agent_card_says(card : Json?) -> Bool {
+  items(card, "latest").length() > 0 || items(card, "attention").length() > 0 || agent_tiles_known(card)
+}
+
+///|
 /// Its mark in its head (40), its name and where it stands 1 apart.
 let agent_title_mark : Double = 40.0
 
@@ -1064,22 +1199,31 @@ let agent_stop_words : @ui.TextStyle = @ui.text_style(size=Meta, weight=Medium, 
 /// what it does now, in the ink; each on one line of 18, cut short where it runs past it (an agent's own words).
 fn agent_lines_node(v : @view.View, card : () -> Json?) -> Unit {
   @sf.style_node(v, fn() { agent_lines })
-  v.each(fn() { items(card(), "latest").mapi(fn(i, l) { (i, l) }) }, fn(x) { x.0 }, fn(row, l) {
-    job_runs_node(row, fn() { [@ui.span(text(Some(l.get().1), "text"))] }, fn() { job_words(@sf.theme().t.meta, wrap=false, line=agent_line_h) }, fn() {
-      let t = @sf.theme()
-      if flag(Some(l.get().1), "now") {
-        t.p.text
-      } else {
-        t.p.muted
-      }
-    })
+  // (its lines made with it, all at once: the block comes in whole as the card is read, never its room first and its
+  // lines a frame after)
+  v.pick(fn() { items(card(), "latest").map(fn(l) { (text(Some(l), "text"), flag(Some(l), "now")) }) }, fn(col, lines) {
+    col.gap(Is(agent_lines_gap)) |> ignore
+    for l in lines {
+      let (words, now) = l
+      job_runs_node(col, fn() { [@ui.span(words)] }, fn() { job_words(@sf.theme().t.meta, wrap=false, line=agent_line_h) }, fn() {
+        let t = @sf.theme()
+        if now {
+          t.p.text
+        } else {
+          t.p.muted
+        }
+      })
+    }
   })
 }
 
 ///|
 /// Its lines: 8 over and under, on the card's words' line, 4 apart (on the spacing's scale: 3 was not), on lines of 18.
 // kept across runs: a value (no field of it changes)
-let agent_lines : @ui.Style = @ui.css("w=Full py=S2 gap=S1").then(@ui.style(px=@sf.room_of(@sf.text_in)))
+let agent_lines : @ui.Style = @ui.css("w=Full py=S2").then(@ui.style(px=@sf.room_of(@sf.text_in)))
+
+///|
+let agent_lines_gap : Double = 4.0
 
 ///|
 let agent_line_h : Double = 18.0
@@ -1218,7 +1362,7 @@ let agent_tile_line : Double = 26.0
 /// tree made once as it opens, its head its own (its mark, name and where it stands).
 fn open_agent(src : Source, r : ChatRef, key : String) -> Unit {
   // (its mark, name and where it stands its head: the user, 2026-11-04, 这个是不是也可以想办法做成标题)
-  @sf.panel_nodes("", from=Unanchored, live=fn() { ("", "", "") }, fn(v, close) { agent_node(v, src, r, key, close) })
+  @sf.panel_nodes("", from=Unanchored, heads_itself=true, live=fn() { ("", "", "") }, fn(v, close) { agent_node(v, src, r, key, close) })
 }
 
 // ── jobs ─────────────────────────────────────────

@@ -177,6 +177,8 @@ priv struct PanelNodes {
   /// where it heads itself (PanelOf's `heads_itself`), on a sheet too (the reader's layout): else headed there as ever,
   /// heading itself beside what opened it alone (panel_nodes' `heads_itself`)
   sheet_heads : Bool
+  /// untitled, what it holds heads itself in the title's place in the middle of the window (panel_nodes' `heads_itself`)
+  heads : Bool
 }
 
 ///|
@@ -664,7 +666,9 @@ pub fn panel(
 /// back) slides it off again, the one before as it was left (steps_centred_node; on 小屏 the sheet's pages, sheet_node).
 /// `back`: what back does on its first step where its steps follow a flow kept elsewhere (panel's `back`).
 /// `fits`, `heads_itself`, `fade_out_together`: beside what opened it, as panel's are: as wide as what it holds, `w` at
-/// most; no head of the panel's, what it holds drawing its own; the panel and what it holds faded together as it goes.
+/// most; no head of the panel's, what it holds drawing its own (in the middle of the window too: its own head row in the
+/// title's place, clear of the close button over its corner, untitled_clear_node); the panel and what it holds faded
+/// together as it goes.
 pub fn panel_nodes(
   title : String,
   body : (@view.View, () -> Unit) -> Unit,
@@ -719,7 +723,7 @@ pub fn panel_nodes(
       match_panel,
       steps: false,
       on_back: back,
-      nodes: Some({ body, foot, hugs, steps, sheet_heads: false }),
+      nodes: Some({ body, foot, hugs, steps, sheet_heads: false, heads: heads_itself }),
     }),
     from,
     gone~,
@@ -786,7 +790,7 @@ pub fn panel_go_nodes(
         Panel(x) =>
           match x.nodes {
             Some(n) => {
-              let step : PanelOf = { ..x, title, description, live: None, nodes: Some({ body, foot, hugs: n.hugs, steps: false, sheet_heads: false }) }
+              let step : PanelOf = { ..x, title, description, live: None, nodes: Some({ body, foot, hugs: n.hugs, steps: false, sheet_heads: false, heads: false }) }
               // (opened by what opened the panel: on a sheet as far in as its first step, sheet_node's `pressed`)
               panel_page(p, step, p.from, left)
             }

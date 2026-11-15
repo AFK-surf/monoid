@@ -300,20 +300,6 @@ let strict_known : Map[String, (String, String)] = Map([
     ),
   ),
   (
-    "share-files",
-    (
-      "its motion at rest at 1466.6666666666665 ms, 60.553629557291515 ms after the run's next step (1406.113037109375 ms; its timeline 0 ms later from its first step); said since the last step that acted: image \"mem:share-in/1\" fading in, told at src/ui/image.mbt:744:5-744:63@mbui (at rest at 1300 ms)",
-      "untraced: an image fading in as the run's next step came (mbui/src/ui/image.mbt:744)",
-    ),
-  ),
-  (
-    "share-new-chat",
-    (
-      "its motion at rest at 1466.6666666666665 ms, 6.895670572916515 ms after the run's next step (1459.77099609375 ms; its timeline 0 ms later from its first step); said since the last step that acted: the bar's springs, told at src/sfapp/bar.mbt:170:12-170:102@stillfail (at rest at 1096.608154296875 ms) | image \"mem:share-in/1\" fading in, told at src/ui/image.mbt:744:5-744:63@mbui (at rest at 1300 ms)",
-      "untraced: the bar's springs and an image fading in as the run's next step came",
-    ),
-  ),
-  (
     "wide-answer-reply",
     (
       "src/sfreplay/flows/wide_answer_reply_test.mbt:14:5-14:17@stillfail: not so at 1230.647216796875 ms, the run's moment for it (its timeline 0 ms later from its first step): so at 1246.647216796875 ms, 16 ms later",

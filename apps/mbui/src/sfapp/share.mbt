@@ -190,7 +190,7 @@ fn share_in_frame(c : @ui.Ctx) -> Unit {
   // the presenters have it, the window going from one to the other); filling the window the browser extension opened
   if share_in.shared.get() is Some(_) && !share_in.raised.get() && !share_sinking.val {
     if !share_inline() {
-      raise_sheet(ShareSheet)
+      raise_sheet(ShareSheet, from=share_from(c.window_size()))
     }
     share_in.raised.set(true)
   }
@@ -227,9 +227,8 @@ priv struct ShareLook {
   /// 发到 (and 新 chat 开在): room over and under it
   label_pt : Double
   label_pb : Double
-  /// under the list, and a row's height as a list first guesses it
+  /// under the list
   list_pb : Double
-  row_est : Double
   /// a row: its least height, how far in its words stand, its corner, its title's line, between its title and line
   row_h : Double
   row_padx : Double
@@ -263,6 +262,9 @@ let share_cut : @ui.Style = @ui.css("w=Full clip")
 let share_find_room : @ui.Style = @ui.css("pt=S1_5 pb=S1")
 
 ///|
+let share_wait_spin : Double = 14.0
+
+///|
 // kept across runs: a value (no field of it changes)
 let share_wait_room : @ui.Style = @ui.css("pt=S2")
 
@@ -288,7 +290,6 @@ let share_narrow : ShareLook = {
   label_pt: 6.0,
   label_pb: 2.0,
   list_pb: 16.0,
-  row_est: 62.0,
   row_h: 46.0,
   row_padx: 0.0,
   row_pady: 12.0,
@@ -305,11 +306,11 @@ let share_narrow : ShareLook = {
 }
 
 ///|
-/// (the panel's own 12 in, then a row's 12 more: a dialog's 24)
+/// (the small panel's own 6 in, then a row's 18 more: a dialog's 24; its rows a row's corner, concentric in it)
 // kept across runs: a value (no field of it changes)
 let share_wide_look : ShareLook = {
   wide: true,
-  side: 12.0,
+  side: 18.0,
   col: 20.0,
   icon: 16.0,
   gap: 10.0,
@@ -322,19 +323,18 @@ let share_wide_look : ShareLook = {
   label_pt: 10.0,
   label_pb: 4.0,
   list_pb: 0.0,
-  row_est: 56.0,
   row_h: 38.0,
-  row_padx: 12.0,
+  row_padx: 18.0,
   row_pady: 8.0,
-  row_corner: share_row_corner,
+  row_corner: @sf.row_corner,
   row_line: 20.0,
   row_gap: 2.0,
   model: 18.0,
-  inset: @ui.css("w=Full px=S3"),
+  inset: @ui.css("w=Full px=S4_5"),
   // (in the panel's top left corner on its words' line, as far from its top, concentric with it there: the ladder's
   // row corner)
-  files_in: @sf.panel_words - 12.0,
-  files_top: @sf.panel_words - 12.0,
+  files_in: @sf.panel_words - @sf.panel_pad,
+  files_top: @sf.panel_words - @sf.panel_pad,
   tile_corner: @sf.row_corner,
 }
 
@@ -462,15 +462,10 @@ fn share_opened(
 let share_files_made : Ref[Int] = { val: 0 }
 
 ///|
-/// A wide row's corner, and what lies in the panel's corners: concentric 12 in, the panel's own then a pane's (34, one of
-/// the ladder's).
-let share_row_corner : Double = @ui.concentric(@sf.pane_corner, 12.0)
-
-///|
 /// The sheet of what is shared (ShareSheet's body, as nodes of the window's tree made once in `v`), as `src` says it now:
 /// over another app (share_over), the chats once the core says them, of the workspace the app was last in (else the
 /// first), reading meanwhile, signed out to sign in first (SignInFirst); in the app, the workspace in view's. A sheet's
-/// look on 小屏, the wide panel's in a dialog (share_look_of).
+/// look on 小屏, the wide panel's on 中屏 and 大屏 (share_look_of).
 fn share_sheet_node(v : @view.View, src : Source) -> Unit {
   let look = share_look_of(v)
   // (which workspace's chats it offers: None while that is read; "" signed out)
@@ -493,7 +488,8 @@ fn share_sheet_node(v : @view.View, src : Source) -> Unit {
     }
   }
   v.box(fn(col) {
-    @sf.style_node(col, fn() { share_whole })
+    // (a sheet's on its words' line, as the old sheet's body stood: its words and its rows' marks 20 in)
+    @sf.style_node(col, fn() { if look.wide { share_whole } else { share_whole.then(@sf.panel_words_in_node(col)) } })
     col.pick(fn() { (share_in.shared.get() is Some(_), scope()) }, fn(p, said) {
       guard said.0 else { return }
       match said.1 {
@@ -525,10 +521,9 @@ fn share_sheet_node(v : @view.View, src : Source) -> Unit {
 
 ///|
 /// One of the rows of what is shared's list (share_parts_node's): words in the rows' place (what to do first, none
-/// found), a chat it can go to (its station and id), 新建对话 on a station, read meanwhile.
+/// found), a chat it can go to (its station and id), 新建对话 on a station.
 #derive(Eq, Hash)
 priv enum ShareRow {
-  ShareWait
   ShareNote(String)
   ShareChat(String, String)
   ShareNew(String)
@@ -547,7 +542,22 @@ fn share_parts_node(v : @view.View, src : Source, scope : String, look : ShareLo
       "query": Json::string(if share_in.searching.get() { query.trim().to_owned() } else { "" }),
     }).get()
   }
-  let value = fn() { topic().value }
+  // (once a chat is picked, what it shows kept as it was while it sinks away: what the core says of it after, the chat
+  // it went to now its last, not followed; once said, never back to reading)
+  let last : Ref[Json?] = Ref(None)
+  let value = fn() {
+    if share_in.opening.get() is Some(_) || !share_in.raised.get() {
+      return last.val
+    }
+    // (and once said, kept while it is asked anew: a search's words, what is shared another time)
+    match topic().value {
+      Some(_) as v => {
+        last.val = v
+        v
+      }
+      None => last.val
+    }
+  }
   let rows = fn() { items(value(), "items") }
   shared_head_node(v, Some(fn() { text(value(), "site") }), look)
   // 发到, and at its end 搜索 (取消 while searching)
@@ -589,10 +599,7 @@ fn share_parts_node(v : @view.View, src : Source, scope : String, look : ShareLo
     fn(_) {
       let v = value()
       let out : Array[ShareRow] = []
-      guard v is Some(_) else {
-        out.push(ShareWait)
-        return out
-      }
+      guard v is Some(_) else { return out }
       match text(v, "note") {
         "" => ()
         n => out.push(ShareNote(n))
@@ -618,25 +625,32 @@ fn share_parts_node(v : @view.View, src : Source, scope : String, look : ShareLo
     },
     same=fn(a, b) { a == b },
   )
-  // (as tall as its rows where there is the room, scrolling in what the panel leaves them past that)
-  // (its rows where what is over them stands, not out across the room the panel's list reaches: as far in as it does)
-  let words_here = @sf.panel_words_at_node(v)
-  @sf.panel_list_node(
-    v,
-    fn() { keys.get() },
-    fn(slot, row) {
-      let b = slot.box(fn(b) { @sf.style_node(b, fn() { share_whole.then(@ui.style(px=@sf.room_of(@sf.panel_words_at_node(b) - words_here))) }) })
+  // (its rows one under another, each made by what it is: a few, the panel scrolling them where it is short of room,
+  // as the old sheet's column did)
+  // (read meanwhile, its line in the rows' place till the core says them; the rows then coming to their height from
+  // its, one way, the sheet going with them: never a step while it still rises)
+  swap_part_node(v, fn() { value() is Some(_) }, fn(w) {
+    @sf.style_node(w, fn() { look.inset.then(share_wait_room) })
+    // (what failed said; read meanwhile, a spinner alone, its words said only to a screen reader: what is shared comes
+    // in a moment, nothing of it a line of words that goes again at once)
+    w.pick(fn() { topic().error is Some(_) }, fn(p, failed) {
+      if failed {
+        @sf.wait_line_node(p, fn() { sh("android-misc.shareIn.update") }) |> ignore
+      } else {
+        @sf.spinner_node(p, size=share_wait_spin).says(Is(Some(@view.said(Status, label=sh("common.reading"))))) |> ignore
+      }
+    })
+  }, fn(list) {
+    @sf.style_node(list, fn() { share_whole })
+    list.each(fn() { keys.get() }, fn(k) { k }, fn(b, k) {
+      let row = @signals.untracked(fn() { k.get() })
       match row {
-        ShareWait =>
-          b.box(fn(w) {
-            @sf.style_node(w, fn() { look.inset.then(share_wait_room) })
-            @sf.wait_line_node(w, fn() { if topic().error is Some(_) { sh("android-misc.shareIn.update") } else { sh("common.reading") } })
-            |> ignore
-          })
-          |> ignore
         ShareNote(words) => share_note_node(b, fn() { words }, look)
         ShareChat(station, id) => {
           let it = fn() { rows().iter().find_first(fn(i) { text(Some(i), "station") == station && text(Some(i), "id") == id }) }
+          // (its session as it is now, kept for its press by what reads it: never read outside a reader)
+          let session = Ref("")
+          b.reacts(fn() { text(it(), "session") }, fn(x) { session.val = x })
           let sub = fn() {
             let kept = field(value(), "kept")
             let (source, _) = share_in.shared.get().unwrap_or(("", None))
@@ -670,7 +684,7 @@ fn share_parts_node(v : @view.View, src : Source, scope : String, look : ShareLo
                 }
               })
             },
-            fn() { share_open(src, scope, station, Some(id), session=text(@signals.untracked(it), "session")) },
+            fn() { share_open(src, scope, station, Some(id), session=session.val) },
           )
         }
         ShareNew(station) =>
@@ -685,10 +699,8 @@ fn share_parts_node(v : @view.View, src : Source, scope : String, look : ShareLo
             fn() { share_open(src, scope, station, None) },
           )
       }
-    },
-    est=look.row_est,
-  )
-  |> ignore
+    })
+  })
   v.box(fn(f) { f.height(Is(Some(look.list_pb))) |> ignore }) |> ignore
   v.show(at_once=true, fn() { share_in.error.get() != "" }, fn(e) {
     @sf.style_node(e, fn() { look.inset.then(share_error_room) })

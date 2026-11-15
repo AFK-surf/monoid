@@ -117,10 +117,12 @@ fn panel_centred_node(
       |> ignore
       // (where what it holds starts: under an untitled one's close button; right under a title row of its own, which
       // keeps what space it wants under it, as what it holds kept it when it drew that row itself; a title's gap else)
+      // (one that heads itself (`heads_itself`, its body nodes: its own head row in the title's place, clear of the
+      // close button over its corner) as one with a title row of its own)
       let body_top = fn() {
-        if untitled() {
+        if untitled() && !(x.nodes is Some({ heads: true, .. })) {
           dialog_untitled_top()
-        } else if x.title_row is Some(_) {
+        } else if x.title_row is Some(_) || (x.nodes is Some({ heads: true, .. })) {
           title_row_under
         } else {
           no_style

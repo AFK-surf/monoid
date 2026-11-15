@@ -71,6 +71,8 @@ fn raise_sheet(
     grows=draggable,
     live~,
     w=if kind == ShareSheet { share_panel_w } else { @sf.panel_w },
+    // (what is shared, opened from a point at the window's top (share_from): its middle under it, as ⌘K's panel)
+    along=if kind == ShareSheet { Middle } else { Start },
     gone=fn() {
       if s.kind == kind {
         s.kind = NoSheet
@@ -118,6 +120,22 @@ fn sheet_open() -> Bool {
 ///|
 /// What another app shares, its panel's width with a wide window.
 let share_panel_w : Double = 520.0
+
+///|
+/// Where what is shared opens from in a window of `size` (share_in_frame's): in the app, a point at the middle of its
+/// top, 14% down (as ⌘K's panel stands: sfdesk switcher.mbt), its panel under it, no close button of its own; over
+/// another app, nothing (a dialog in the middle, a sheet on 小屏).
+fn share_from(size : (Double, Double)) -> @sf.Anchor {
+  if share_over.get() {
+    Unanchored
+  } else {
+    At(size.0 / 2.0, size.1 * share_panel_top_share - @sf.panel_offset, 0.0, 0.0)
+  }
+}
+
+///|
+/// How far down the window what is shared stands in the app (⌘K's panel's).
+let share_panel_top_share : Double = 0.14
 
 ///|
 /// How what is shared is laid out where node `v` is made: as a sheet on 小屏 (a narrow look), as the wide panel in a

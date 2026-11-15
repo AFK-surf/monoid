@@ -195,7 +195,7 @@ fn letters_list_node(
               match @signals.untracked(letters).get(i) {
                 Some(m) =>
                   row.box(fn(s) {
-                    @sf.style_node(s, fn() { letters_message.then(@sf.panel_words_in_node(s)) })
+                    @sf.style_node(s, fn() { letters_message_panel.then(@sf.panel_words_in_node(s)) })
                     @sfpages.message_static_node(s, src, here, "letters/" + at + "/" + i.to_string(), message_of(m), opened, copied)
                   })
                   |> ignore
@@ -210,8 +210,10 @@ fn letters_list_node(
         est=letters_row_est,
       )
       |> ignore
-      // (room under its last, as under the tab's last letter: its ground out of the corners of a dialog's foot)
-      b.box(fn(f) { f.height(Is(Some(letters_foot_h))) |> ignore }) |> ignore
+      // (room under the last of the chats, as under the tab's: their grounds out of the corners of a dialog's foot)
+      if at == "" {
+        b.box(fn(f) { f.height(Is(Some(letters_foot_h))) |> ignore }) |> ignore
+      }
     })
     |> ignore
     return
@@ -314,15 +316,18 @@ fn letters_chat_node(row : @view.View, chat : () -> Json?, press : () -> Unit, p
 fn letters_head_node(row : @view.View, chat : () -> Json?, tips : @sf.TipLayer, back : () -> Unit, panel? : Bool = false) -> Unit {
   @sf.style_node(row, fn() {
     if panel {
-      // (in a panel's body: its back's mark on the panel's words' line, its title's end on it too)
+      // (in a panel's body: under its title as the sheet's had it, its back's mark on the panel's words' line, its
+      // title's end on it too)
       let w = @sf.panel_words_at_node(row)
       let start = dmax(0.0, w - letters_back_in)
-      letters_head.then(@ui.style(pl=@sf.room_of(start), pr=@sf.room_of(w)))
+      letters_head_panel.then(@ui.style(pl=@sf.room_of(start), pr=@sf.room_of(w)))
     } else {
       letters_head
     }
   })
-  @sf.icon_button_node(row, "arrow-left", fn() { @sf.t("web-main.letters.back") }, back, tips~) |> ignore
+  // (in a panel's body the sheet's back, a chevron: a step back in it; beside the chat, an arrow)
+  @sf.icon_button_node(row, if panel { "chevron-left" } else { "arrow-left" }, fn() { @sf.t("web-main.letters.back") }, back, tips~)
+  |> ignore
   row.pick(fn() { text(chat(), "link") != "" }, fn(p, links) {
     p.row(Is(true)).grow(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
     if links {
@@ -370,14 +375,24 @@ let letters_list_under : Double = 14.0
 let letters_row : @ui.Style = @ui.css("w=Full py=S2 px=S3 gap=S0_5 radius=Xl")
 
 ///|
-/// The same in a panel's body: across it, square, 8 over and under, its words on its words' line.
+/// The same in a panel's body: across it, 10 over and under (the letters' sheet's), its words on its words' line.
 // kept across runs: a value (no field of it changes)
-let letters_row_panel : @ui.Style = @ui.css("w=Full py=S2 gap=S0_5")
+let letters_row_panel : @ui.Style = @ui.css("w=Full py=S2_5 gap=S0_5")
 
 ///|
 /// Its bones in a panel's body: 6 over, 16 under, its rows across it.
 // kept across runs: a value (no field of it changes)
 let letters_list_panel : @ui.Style = @ui.css("w=Full pt=S1_5 pb=S4")
+
+///|
+/// In a panel's body, one opened's head: 10 under it, back and its title 4 apart, on their middle; a letter 4 over, 16
+/// under (the letters' sheet's).
+// kept across runs: a value (no field of it changes)
+let letters_head_panel : @ui.Style = @ui.css("row w=Full pb=S2_5 gap=S1 align=ACenter")
+
+///|
+// kept across runs: a value (no field of it changes)
+let letters_message_panel : @ui.Style = @ui.css("w=Full pt=S1 pb=S4")
 
 ///|
 /// How far its back's mark is in from its round ground's start: on the panel's words' line in a panel's body.
