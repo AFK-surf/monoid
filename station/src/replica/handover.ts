@@ -106,6 +106,10 @@ export type Out = {
   /// What was sent and placed of its files (bytes), for the status; of them, the bytes of the room's own files that
   /// went (what was in place there already did not).
   done: number; total: number; sentBytes?: number;
+  /// When each of its steps began (the clock's), in order: `begin`, `first` (the first pass's gathering and sending),
+  /// `turn`, `hold`, `held` (the held pass), `rows`, `counts`, `gone`, `show` (asked there to show it, to its answer),
+  /// `done`: what its line says it took, a step each.
+  began?: Record<string, number>;
   /// Whether the chat is held: not while its files go a first time, the chat working (`handOver`); none said: held
   /// (one from before there were two passes).
   held?: boolean;
@@ -115,7 +119,18 @@ export type Out = {
 /// A step of one on the station it goes to: being put in (`coming`), shown (`shown`), taken out (`dropped`).
 /// `stoppedFor`: it arrives stopped, waiting for that; `bindings`: the single-session connects (as known here) bound to
 /// its sessions.
-export type In = { id: string; origin: string; keys: string[]; ws: string; at: number; step: "coming" | "shown" | "dropped"; ctx: ImportCtx; carry: string | null; error: string | null; stoppedFor?: Need | null; bindings?: Record<string, string> };
+export type In = { id: string; origin: string; keys: string[]; ws: string; at: number; step: "coming" | "shown" | "dropped"; ctx: ImportCtx; carry: string | null; error: string | null; stoppedFor?: Need | null; bindings?: Record<string, string>;
+  /// What answering it took here (the clock's ms), by request (`begin`, `lacking`, `put`, `place`, `rows`, `prune`,
+  /// `counts`, `show`), each request of a kind added: what its line says it took.
+  spent?: Record<string, number> };
+
+/// What a hand-over's steps took (ms), from when each began to when the next did, the last to `end`; and the whole.
+function tookOf(began: Record<string, number> | undefined, end: number): { ms: Record<string, number>; total: number } {
+  const steps = Object.entries(began ?? {});
+  const ms: Record<string, number> = {};
+  steps.forEach(([step, at], n) => void (ms[step] = Math.round((n + 1 < steps.length ? steps[n + 1]![1] : end) - at)));
+  return { ms, total: steps.length === 0 ? 0 : Math.round(end - steps[0]![1]) };
+}
 
 export type HandoverDeps = {
   data: string;
@@ -423,6 +438,16 @@ export class Handover {
     for (const k of keys) for (const i of this.#insOf.get(k) ?? []) (this.#looked++, out.add(i));
     return [...out];
   }
+  /// What answering a request of kind `kind` of hand-over `i` took here, since `t0`, added to what it took before.
+  #spent(i: In | undefined, kind: string, t0: number): void {
+    if (i === undefined) return;
+    const spent = (i.spent ??= {});
+    spent[kind] = (spent[kind] ?? 0) + Math.round(this.#d.fibers.now() - t0);
+  }
+  /// Step `step` of hand-over `o` begins now (its line says what each took).
+  #mark(o: Out, step: string): void {
+    (o.began ??= {})[step] = this.#d.fibers.now();
+  }
   /// How many records what was done so far looked at (a test's: what one chat's hand-over costs).
   looked(): number {
     return this.#looked;
@@ -540,8 +565,11 @@ export class Handover {
       // A first pass, the chat working all along: begun there, its files sent and placed, so that the second, held,
       // sends only what changed since (its pause does not grow with its room).
       this.#given(o);
+      this.#mark(o, "begin");
       begun = await this.#beginThere(o, opts.stoppedFor ?? null);
+      this.#mark(o, "first");
       await this.#files(o, begun, opts.progress, false);
+      this.#mark(o, "turn");
       for (const k of keys) {
         if (!this.#d.hub.busy(k)) continue;
         if (opts.wait !== true) throw new Said(why("inTurn", { chat: this.#chatName(k) }));
@@ -565,6 +593,7 @@ export class Handover {
       await this.#fail(o, error);
       throw new Refused(tr(stationLang(), "station.move.chatStayed", { station: name || to.slice(0, 12), why: error }));
     }
+    this.#mark(o, "hold");
     for (const k of keys) await this.#d.hub.holdChat(k, `moving to ${name || to.slice(0, 8)}`);
     o.held = true;
     o.step = "held";
@@ -653,15 +682,18 @@ export class Handover {
     const here = this.#d.here()!;
     const d = this.#d;
     const ask = (request: Json) => d.ask(o.to, { ...request, workspace: o.ws, origin: here, id: o.id });
+    this.#mark(o, "held");
     await this.#files(o, begun, progress, true);
     // Its rows, a page at a time, then what B has compared with what was sent.
     this.#given(o);
+    this.#mark(o, "rows");
     o.step = "rows";
     await this.#save(o);
     d.fail?.("rows");
     const sent = await this.#sendRows(o, ask, null);
     // (what the room there has that this one's lists no longer name goes there: a mirror of it)
     await ask({ method: "handover.prune" });
+    this.#mark(o, "counts");
     const counts = (await ask({ method: "handover.counts" }))?.counts as Counts | undefined;
     d.fail?.("counts");
     this.#given(o);
@@ -680,6 +712,7 @@ export class Handover {
         o.routes.push({ connect: t.connect, channel: t.thread.channel, threadTs: t.thread.threadTs });
       }
     }
+    this.#mark(o, "gone");
     o.step = "gone";
     await this.#save(o);
     d.fail?.("gone");
@@ -688,7 +721,6 @@ export class Handover {
     d.store.goneTo(o.keys, o.to, o.there);
     await d.went?.(o.keys);
     await rm(scratch(d.data, o.id), { recursive: true, force: true });
-    log.info("handover", "a chat went to another station", { id: o.id, to: o.to, keys: o.keys.length });
   }
 
   /// The chat's rows sent a page at a time (`from`: each thread's entries and letters after what was sent, alone):
@@ -742,6 +774,7 @@ export class Handover {
     const here = d.here()!;
     const ask = (request: Json) => d.ask(o.to, { ...request, workspace: o.ws, origin: here, id: o.id });
     if (!o.shown) {
+      this.#mark(o, "show");
       // (its threads of this station's own connects point there at once: what comes from now on goes there; what came
       // before is waited for, and goes with the rest of its logs)
       for (const r of o.routes) {
@@ -778,8 +811,13 @@ export class Handover {
       await d.connects?.route(r.connect, r.channel, r.threadTs, o.to);
       await this.#save(o);
     }
+    this.#mark(o, "done");
     o.step = "done";
     await this.#save(o);
+    // (once shown there and its threads re-pointed: what each step took, from its first pass to now)
+    const { ms, total } = tookOf(o.began, o.began?.done ?? this.#d.fibers.now());
+    delete ms.done;
+    log.info("handover", "a chat went to another station", { id: o.id, to: o.to, keys: o.keys.length, ms, total });
   }
 
   /// It did not go: B told to take out what it put in (told until it answers), the chat back to work here, its jobs
@@ -867,63 +905,78 @@ export class Handover {
         const id = typeof request?.id === "string" ? request.id : "";
         if (!WORKSPACE.test(ws) || (workspace !== undefined && workspace !== ws) || !inWorkspace(peer, ws) || request?.origin !== peer) throw new Refused(why("notStationOfWs"));
         if (!/^[0-9a-z-]{1,80}$/.test(id)) throw new Refused(why("badRequest", { detail: "not a hand-over" }));
-        if (request.method === "handover.begin") return await this.#begin(peer, ws, id, request);
+        if (request.method === "handover.begin") {
+          const t0 = this.#d.fibers.now();
+          const answer = await this.#begin(peer, ws, id, request);
+          this.#spent(this.#ins.get(id), "begin", t0);
+          return answer;
+        }
         const i = this.#ins.get(id);
         if (request.method === "handover.drop") return i === undefined ? { ok: true } : await this.#drop1(i);
         if (i === undefined || i.origin !== peer) throw new Refused(why("badRequest", { detail: "not begun: handover.begin first" }));
         // (dropped here, by its own drop or a newer hand-over of the chat: nothing more of it is taken)
         if (i.step === "dropped" || this.#dropping.has(i.id)) throw new Refused(why("droppedThere"));
-        switch (request.method) {
-          case "handover.lacking": {
-            const hashes = Array.isArray(request.hashes) ? request.hashes : [];
-            if (hashes.length > (this.#d.lackMost ?? LACK_MOST) || !hashes.every((h: unknown) => typeof h === "string" && HASH.test(h))) throw new Refused(why("badRequest", { detail: "too many hashes" }));
-            const lacking = new Set(await lackingIn(inFiles(this.#d.data, id), hashes));
-            // (one in place here already, the same bytes where it goes, is not lacking: a room kept here, or placed
-            // by a hand-over before)
-            const files = (Array.isArray(request.files) ? request.files : []).slice(0, this.#d.lackMost ?? LACK_MOST);
-            const rooms = new Map<string, string>();
-            for (const f of files) {
-              if (!lacking.has(f?.hash) || typeof f?.path !== "string") continue;
-              // (where it lies here by the same answer its placing gives: restore.ts `carriedTo`)
-              let room: string | null = null;
-              if (typeof f.room === "string") {
-                room = rooms.get(f.room) ?? (await realOfSoon(moved(f.room, i.ctx.fromData, this.#d.data)));
-                rooms.set(f.room, room);
+        const t0 = this.#d.fibers.now();
+        const kind = String(request.method).slice("handover.".length);
+        // (what answering it took, by request: the show's own said in its line, as it ends)
+        const answer = async (): Promise<Json> => {
+          switch (request.method) {
+            case "handover.lacking": {
+              const hashes = Array.isArray(request.hashes) ? request.hashes : [];
+              if (hashes.length > (this.#d.lackMost ?? LACK_MOST) || !hashes.every((h: unknown) => typeof h === "string" && HASH.test(h))) throw new Refused(why("badRequest", { detail: "too many hashes" }));
+              const lacking = new Set(await lackingIn(inFiles(this.#d.data, id), hashes));
+              // (one in place here already, the same bytes where it goes, is not lacking: a room kept here, or placed
+              // by a hand-over before)
+              const files = (Array.isArray(request.files) ? request.files : []).slice(0, this.#d.lackMost ?? LACK_MOST);
+              const rooms = new Map<string, string>();
+              for (const f of files) {
+                if (!lacking.has(f?.hash) || typeof f?.path !== "string") continue;
+                // (where it lies here by the same answer its placing gives: restore.ts `carriedTo`)
+                let room: string | null = null;
+                if (typeof f.room === "string") {
+                  room = rooms.get(f.room) ?? (await realOfSoon(moved(f.room, i.ctx.fromData, this.#d.data)));
+                  rooms.set(f.room, room);
+                }
+                if (await inPlace(carriedTo(f.path, i.ctx.fromData, this.#d.data, room), this.#d.data, f)) lacking.delete(f.hash);
               }
-              if (await inPlace(carriedTo(f.path, i.ctx.fromData, this.#d.data, room), this.#d.data, f)) lacking.delete(f.hash);
+              return { lacking: hashes.filter((h: string) => lacking.has(h)) };
             }
-            return { lacking: hashes.filter((h: string) => lacking.has(h)) };
+            case "handover.prune":
+              return await this.#serialIn(i, () => this.#prune(i));
+            case "handover.put": {
+              const name = String(request.name ?? "");
+              if (bytes === null || !HASH.test(name)) throw new Refused(why("badRequest", { detail: "not a file's hash" }));
+              await receiveFile(inFiles(this.#d.data, id), name, bytes as Bytes);
+              return { ok: true };
+            }
+            case "handover.place":
+              return await this.#serialIn(i, () => this.#place(i, String(request.carry ?? ""))).catch((e) => Promise.reject(carryWords(e)));
+            case "handover.rows": {
+              const table = String(request.table ?? "") as ChatTable;
+              // (shown: only what was said there after its rows went, its log's and what it has yet to be handed)
+              if (i.step !== "coming" && (i.step !== "shown" || !AFTER_SHOWN.includes(table))) throw new Refused(why("shownAlready"));
+              if (!CHAT_TABLES.includes(table) || !Array.isArray(request.rows) || request.rows.length > 500) throw new Refused(why("badRequest", { detail: "not a page of a chat's rows" }));
+              this.#d.fail?.("import");
+              this.#d.store.importRows(i.ctx, table, request.rows, i.step === "coming" ? i.id : undefined);
+              this.#d.fail?.("imported");
+              await this.#saveIn(i);
+              return { ok: true };
+            }
+            case "handover.counts": {
+              const homes: Record<string, number | null> = {};
+              for (const k of i.keys) homes[k] = this.#d.store.homeChat(k)?.id ?? null;
+              return { counts: { ...i.ctx.counts, homes } };
+            }
+            case "handover.show":
+              return await this.#show(i, Array.isArray(request.sends) ? request.sends : []);
           }
-          case "handover.prune":
-            return await this.#serialIn(i, () => this.#prune(i));
-          case "handover.put": {
-            const name = String(request.name ?? "");
-            if (bytes === null || !HASH.test(name)) throw new Refused(why("badRequest", { detail: "not a file's hash" }));
-            await receiveFile(inFiles(this.#d.data, id), name, bytes as Bytes);
-            return { ok: true };
-          }
-          case "handover.place":
-            return await this.#serialIn(i, () => this.#place(i, String(request.carry ?? ""))).catch((e) => Promise.reject(carryWords(e)));
-          case "handover.rows": {
-            const table = String(request.table ?? "") as ChatTable;
-            // (shown: only what was said there after its rows went, its log's and what it has yet to be handed)
-            if (i.step !== "coming" && (i.step !== "shown" || !AFTER_SHOWN.includes(table))) throw new Refused(why("shownAlready"));
-            if (!CHAT_TABLES.includes(table) || !Array.isArray(request.rows) || request.rows.length > 500) throw new Refused(why("badRequest", { detail: "not a page of a chat's rows" }));
-            this.#d.fail?.("import");
-            this.#d.store.importRows(i.ctx, table, request.rows, i.step === "coming" ? i.id : undefined);
-            this.#d.fail?.("imported");
-            await this.#saveIn(i);
-            return { ok: true };
-          }
-          case "handover.counts": {
-            const homes: Record<string, number | null> = {};
-            for (const k of i.keys) homes[k] = this.#d.store.homeChat(k)?.id ?? null;
-            return { counts: { ...i.ctx.counts, homes } };
-          }
-          case "handover.show":
-            return await this.#show(i, Array.isArray(request.sends) ? request.sends : []);
+          throw new Refused(why("badRequest", { detail: "no such hand-over request" }));
+        };
+        try {
+          return await answer();
+        } finally {
+          if (kind !== "show") this.#spent(i, kind, t0);
         }
-        throw new Refused(why("badRequest", { detail: "no such hand-over request" }));
       } finally {
         if (bytes !== null) await stopBytes(bytes).catch(() => {});
       }
@@ -1044,6 +1097,7 @@ export class Handover {
 
   /// Shown: of its workspace here, its agents told once where it runs now; its jobs are the jobs module's to start.
   async #show(i: In, sends: KeptSend[]): Promise<Json> {
+    const t0 = this.#d.fibers.now();
     // (asked again after it was shown, too: what is kept of its messages there may have grown)
     // (only of its own threads here: another's are not this hand-over's to keep)
     const homes = new Set(i.keys.map((k) => this.#d.store.homeChat(k)?.id));
@@ -1078,7 +1132,9 @@ export class Handover {
     void rm(gone, { recursive: true, force: true }).catch(() => {});
     for (const k of i.keys) this.#d.hub.wakeChat(k);
     await this.#d.shown?.(i.keys);
-    log.info("handover", "a chat handed here goes on here", { id: i.id, origin: i.origin, keys: i.keys.length });
+    this.#spent(i, "show", t0);
+    const ms = { ...(i.spent ?? {}) };
+    log.info("handover", "a chat handed here goes on here", { id: i.id, origin: i.origin, keys: i.keys.length, ms, total: Math.round(this.#d.fibers.now() - i.at) });
     return { ok: true };
   }
 
