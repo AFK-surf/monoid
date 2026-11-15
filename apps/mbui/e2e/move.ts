@@ -2339,7 +2339,7 @@ try {
         if (standing("A", k) !== "live") throw new Error(`${k} not back: ${standings(k)}; ${outcome(l)}`);
       }
       for (const k of [...before.dk.begun, ...before.dks.begun]) {
-        const thread = sql("B", `select id from threads where home = ${lit(k)}`)[0]?.id;
+        const thread = sql("B", `select thread from thread_sessions where session = ${lit(k)} order by joined_at limit 1`)[0]?.thread;
         if (typeof thread !== "number") throw new Error(`no thread of ${k} on B`);
         await a.call("chat.archive", { station: B, session: k, thread, archived: true });
       }
