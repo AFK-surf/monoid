@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [87e6c619b](https://github.com/AFK-surf/monoid/commit/87e6c619b601b6509f60c58416e45b225f28b372) app, mbui: close the side panel before the window  | 2.09 | 2.87 | 12.37 | 33.31 | 48 | 28.82 | 56.61 | 98.85 | 114.68 |
 | [7ea6c3f2b](https://github.com/AFK-surf/monoid/commit/7ea6c3f2bfb4eb3b7f8785aba562e5e84c3a14fe) fix(mbui): a page's list's foot asked outside any  | 2.09 | 2.87 | 12.37 | 33.31 | 48 | 28.82 | 56.61 | 98.85 | 113.64 |
 | [929becb21](https://github.com/AFK-surf/monoid/commit/929becb21da31c890fce015ee86aedde0e1cceee) app: fix the dragged-file preference (#6430) | 2.09 | 2.87 | 12.37 | 33.31 | 48 | 28.82 | 56.61 | 98.85 | 113.64 |
 | [0a91b2091](https://github.com/AFK-surf/monoid/commit/0a91b20914edcf20ff61dff689a094d988af2411) app: orient quote marks by their place (#6438) | 2.09 | 2.87 | 12.37 | 33.31 | 48 | 28.82 | 56.61 | 98.85 | 112.45 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [976a444e2](https://github.com/AFK-surf/monoid/commit/976a444e268bbe318fbcb6d044c14d3bb716352f) station: a spent session goes on on another runtim | 2.06 | 2.84 | 12.23 | 32.11 | 45.29 | 28.7 | 56.46 | 98.6 | 108.19 |
 | [8123bf453](https://github.com/AFK-surf/monoid/commit/8123bf4531ff4f2324c44b7cb57ef434a782ad44) AGENTS.md: drop migration pixel-fitting rules, req | 2.07 | 2.84 | 12.23 | 32.11 | 45.29 | 28.7 | 56.46 | 98.63 | 114.98 |
 | [fa7b51fd4](https://github.com/AFK-surf/monoid/commit/fa7b51fd4b4b45ffff4a5aa073c69808e0a2faa3) mbui app: the chat's page made as nodes lets go of | 2.07 | 2.84 | 12.23 | 32.11 | 45.29 | 28.7 | 56.46 | 98.63 | 114.98 |
-| [41edf8633](https://github.com/AFK-surf/monoid/commit/41edf86331a001ebf7571a41c4e7e3b705920631) mbui: what is laid out nowhere is not laid out aga | 2.06 | 2.84 | 12.23 | 32.11 | 45.29 | 28.7 | 56.46 | 98.57 | 108.48 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [87e6c619b](https://github.com/AFK-surf/monoid/commit/87e6c619b601b6509f60c58416e45b225f28b372) app, mbui: close the side panel before the window  | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.28 |
 | [7ea6c3f2b](https://github.com/AFK-surf/monoid/commit/7ea6c3f2bfb4eb3b7f8785aba562e5e84c3a14fe) fix(mbui): a page's list's foot asked outside any  | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.28 |
 | [929becb21](https://github.com/AFK-surf/monoid/commit/929becb21da31c890fce015ee86aedde0e1cceee) app: fix the dragged-file preference (#6430) | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.49 |
 | [0a91b2091](https://github.com/AFK-surf/monoid/commit/0a91b20914edcf20ff61dff689a094d988af2411) app: orient quote marks by their place (#6438) | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.49 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [976a444e2](https://github.com/AFK-surf/monoid/commit/976a444e268bbe318fbcb6d044c14d3bb716352f) station: a spent session goes on on another runtim | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.13 |
 | [8123bf453](https://github.com/AFK-surf/monoid/commit/8123bf4531ff4f2324c44b7cb57ef434a782ad44) AGENTS.md: drop migration pixel-fitting rules, req | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.13 |
 | [fa7b51fd4](https://github.com/AFK-surf/monoid/commit/fa7b51fd4b4b45ffff4a5aa073c69808e0a2faa3) mbui app: the chat's page made as nodes lets go of | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.49 |
-| [41edf8633](https://github.com/AFK-surf/monoid/commit/41edf86331a001ebf7571a41c4e7e3b705920631) mbui: what is laid out nowhere is not laid out aga | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.49 |
