@@ -150,19 +150,21 @@ test "styles: screens with kit's components (switches, a sheet), drawn as before
   }
   // (the wide ones, 2026-11-10: 共享调试 a row of the settings' sidebar on a computer too, 关于 under the window's
   // foot for it; the narrow ones, a phone's, had the row)
+  // (a station's, 2026-11-15: 屏幕、浏览器与终端 a block a row, its card drawn as pieces of one ground meeting edge to
+  // edge where it was one; every glyph at the same place, and what lies under the window's foot made only as it comes)
   // (the wide ones again, 2026-11-10: a sidebar's marks, words and headings 2 in, where its rows' foot capsules start)
   inspect(out.to_string(), content=(
     #|settings narrow 77022:6f7a84d1
-    #|station narrow 69352:ba304a02
+    #|station narrow 76592:7983c67e
     #|me-reading narrow 23870:176756e5
     #|settings wide 169493:802f151e
-    #|station wide 212744:3aaf8d9d
+    #|station wide 231594:83c45e59
     #|me-reading wide 164149:d62b64d1
     #|settings-dark narrow 77290:d382e912
-    #|station-dark narrow 69208:6995528a
+    #|station-dark narrow 76502:fc111db8
     #|me-reading-dark narrow 23998:5a45bcb3
     #|settings-dark wide 169413:9d946751
-    #|station-dark wide 212393:b5667c22
+    #|station-dark wide 231297:2f22fafe
     #|me-reading-dark wide 164135:8c5f9435
     #|
   ))
