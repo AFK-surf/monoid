@@ -626,8 +626,16 @@ fn chat_body_node(
   )
   let chat_ref : ChatRef = { station: here.station, session: here.session, title: "", station_name: "" }
   let by_key = msgs.map(fn(m) {
-    // (the last card that words sent from here answer, answered: sfbase's chat_sent_here)
-    let card = @signals.computed(fn(_) { @sfbase.chat_sent_here(chat_ref, (here.view)(), m).1 })
+    // (the last card that words sent from here answer, answered: sfbase's chat_sent_here; found of the messages and
+    // what is on its way alone, none of the head, and answered again only as that card is another)
+    let card_of = @signals.computed(fn(_) { @sfbase.chat_sent_card(chat_ref, m) }, same=fn(a, b) {
+      match (a, b) {
+        (None, None) => true
+        (Some((ka, ma)), Some((kb, mb))) => ka == kb && physical_equal(ma, mb)
+        _ => false
+      }
+    })
+    let card = @signals.computed(fn(_) { card_of.get().map(fn(c) { (c.0, @sfbase.chat_card_answered(c.1)) }) })
     chat_body_keyed(kept, era, here.view, m, sending~, card=fn() { card.get() })
   })
   let whole = ChatBodyList::of_made(fn() { rows.get() })

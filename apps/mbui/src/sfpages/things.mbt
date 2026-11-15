@@ -432,6 +432,40 @@ priv enum ThingsRow {
 }
 
 ///|
+/// Whether row `b` says what `a` did (a value of the core's the same one, else what it says).
+fn things_row_same(a : ThingsRow, b : ThingsRow) -> Bool {
+  let json_same = fn(x : Json, y : Json) { physical_equal(x, y) || x == y }
+  match (a, b) {
+    (RowHead, RowHead) | (RowNoneFound, RowNoneFound) | (RowMore, RowMore) | (RowFoot, RowFoot) => true
+    (RowDay(x), RowDay(y)) => x == y
+    (RowSaid(x), RowSaid(y)) => json_same(x, y)
+    (RowTiles(x, hx), RowTiles(y, hy)) =>
+      hx == hy && x.length() == y.length() && x.iter().zip(y.iter()).all(fn(p) { json_same(p.0, p.1) })
+    (RowThing(kx, x), RowThing(ky, y)) => kx == ky && json_same(x, y)
+    _ => false
+  }
+}
+
+///|
+/// Whether a list's rows by key `b` are those of `a` (`same` of each row): its keys in order, each row by its key.
+fn[R] rows_table_same(
+  a : (Array[String], Map[String, R]),
+  b : (Array[String], Map[String, R]),
+  same : (R, R) -> Bool,
+) -> Bool {
+  physical_equal(a, b) ||
+  (
+    a.0 == b.0 &&
+    a.0.iter().all(fn(k) {
+      match (a.1.get(k), b.1.get(k)) {
+        (Some(x), Some(y)) => same(x, y)
+        _ => false
+      }
+    })
+  )
+}
+
+///|
 /// Chat `r`'s things (its thread `thread`) as nodes of the window's tree in `v`, made once: in a panel's body (小屏's
 /// sheet) its sides its words'; `beside` the chat (中屏's and 大屏's tab), 16 in from the tab's (things_side). `away`
 /// goes to the chat at a message (the sheet closed first). The kind chosen (told as things_choose chooses another) and
@@ -544,7 +578,7 @@ fn things_list_node(
       }
       put("foot", RowFoot)
       (keys, rows)
-    })
+    }, same=fn(a, b) { rows_table_same(a, b, things_row_same) })
     p.scrolls_window(
       scroll,
       fn() { table.get().0 },

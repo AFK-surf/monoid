@@ -20,6 +20,7 @@
 /// What a chat's outline lists (the core's OutlineItem; a found row's too): the message, whether the viewer's, who said
 /// it (their address, their name and picture; an agent's maker and runtime, whether it is one, still.fail's notice),
 /// its first line (a found row's: the line with the words), and its time of day.
+#derive(Eq)
 priv struct OutlineItem {
   seq : Double
   mine : Bool
@@ -131,6 +132,7 @@ fn said_in_view(v : ChatView) -> Array[Double] {
 
 ///|
 /// What a row of the outline's list is: a day's heading, a message said, one found.
+#derive(Eq)
 priv enum OutlineRow {
   RowDay(String)
   RowSaid(Double)
@@ -312,7 +314,7 @@ fn outline_body(
       }
     }
     (keys, rows)
-  })
+  }, same=fn(a, b) { rows_table_same(a, b, fn(x, y) { x == y }) })
   // (the rows the keys go along: those of messages whose words have come, in order)
   let goes = fn() {
     let held = at.held.get()

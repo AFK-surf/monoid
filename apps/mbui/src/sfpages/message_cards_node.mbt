@@ -159,7 +159,7 @@ fn rig_ask_node(v : @view.View, here : MessageNodeHere, core : @settings.Core?, 
               None
             },
           }
-        })
+        }, same=fn(a, b) { a == b })
         @settings.rig_card_node(r, core, here.station, fn() { card.get() }, lock=fn() {
           open_page(Setting(@settings.Route::AdbShare("")))
         })
@@ -226,7 +226,7 @@ fn phone_ask_node(v : @view.View, here : MessageNodeHere, core : @settings.Core?
             who: who(),
             ended: if a.status != "" { Some((a.status, a.scope, a.why)) } else { None },
           }
-        })
+        }, same=fn(a, b) { a == b })
         @settings.phone_card_node(r, core, here.station, fn() { card.get() }, how=fn() {
           open_page(Setting(@settings.Route::AdbShare("")))
         })

@@ -252,8 +252,21 @@ pub fn chat_sent_here(
   head : ChatView,
   ms : ChatMessages,
 ) -> (ChatView, (String, Message)?) {
+  guard chat_sent_card(r, ms) is Some((k, m)) else { return (head, None) }
+  let asks = head.asks.filter(fn(seq) { seq != m.seq })
+  (
+    { ..head, asks, ask_clear: head.ask_clear && !asks.is_empty(), state: None, state_ask: None },
+    Some((k, chat_card_answered(m))),
+  )
+}
+
+///|
+/// The card of chat `r` that words sent from here before the core has them answer (chat_sent_here's), by its key, as the
+/// core has it still (none where they answer none): read of its messages by key `ms` and what is on its way, none of
+/// its head.
+pub fn chat_sent_card(r : ChatRef, ms : ChatMessages) -> (String, Message)? {
   let sending = sending_now(r.station + "\u{1}" + r.session)
-  guard !sending.is_empty() else { return (head, None) }
+  guard !sending.is_empty() else { return None }
   let keys = ms.keys()
   let mut i = keys.length() - 1
   let mut card : (String, Message)? = None
@@ -264,19 +277,20 @@ pub fn chat_sent_here(
         break
       }
       // (a person's words after the last card: the core's word stands)
-      Some(m) if m.author_kind == "person" => return (head, None)
+      Some(m) if m.author_kind == "person" => return None
       _ => ()
     }
     i = i - 1
   }
-  guard card is Some((k, m)) else { return (head, None) }
-  guard m.decision is Some(d) && !d.resolved else { return (head, None) }
-  guard sending.iter().any(fn(l) { m.seq <= l.newest }) else { return (head, None) }
+  guard card is Some((_, m)) else { return None }
+  guard m.decision is Some(d) && !d.resolved else { return None }
+  guard sending.iter().any(fn(l) { m.seq <= l.newest }) else { return None }
+  card
+}
+
+///|
+/// Card `m` as answered by words sent from here (chat_sent_here's): no more asked, its decision theirs.
+pub fn chat_card_answered(m : Message) -> Message {
   let said = @sf.t("core-logic.decisions.replied", args=[("name", @sf.t("core-logic.decisions.you"))])
-  let answered = { ..m, asked: false, decision: Some({ resolved: true, dismissed: false, text: Some(said), chosen: None }) }
-  let asks = head.asks.filter(fn(seq) { seq != m.seq })
-  (
-    { ..head, asks, ask_clear: head.ask_clear && !asks.is_empty(), state: None, state_ask: None },
-    Some((k, answered)),
-  )
+  { ..m, asked: false, decision: Some({ resolved: true, dismissed: false, text: Some(said), chosen: None }) }
 }

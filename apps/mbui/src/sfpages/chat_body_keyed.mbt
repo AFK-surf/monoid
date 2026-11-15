@@ -290,6 +290,17 @@ fn chat_body_keyed(
     },
     same=fn(a, b) { a == b },
   )
+  // (where the head's marks stand, one computed every message's rows read: the unread line's seq, the list's first, the
+  // one followed close under, the one the card words answer; how many were taken over and what chat_body_rows told of
+  // `kept`, as they change what key a message goes by. So a change of the head reaches each message by one link, not
+  // five, and wakes none where no mark moved)
+  let marks = @signals.computed(
+    fn(_) {
+      let (_, n) = taken.get()
+      (unread.get(), first.get(), followed_at.get(), card_at.get(), n, kept_told.get())
+    },
+    same=fn(a, b) { a == b },
+  )
   let parts : Map[String, @signals.Computed[ChatBodyParts]] = Map([])
   let part_keys : Map[String, @signals.Computed[Array[String]]] = Map([])
   let parts_of = fn(mk : String) -> @signals.Computed[ChatBodyParts] {
@@ -297,41 +308,47 @@ fn chat_body_keyed(
       Some(p) => p
       None => {
         let none : ChatBodyParts = { keys: [], rows: Map([]) }
-        // (where it stands as the head says: the unread line over it, the list's first; as that changes for it, not
-        // as it changes for another: a bool of its own, the rows made again only for the one it changed for)
-        let at = @signals.computed(
-          fn(_) {
-            let m = msgs.get(mk)
-            let line = match (unread.get(), m) {
-              (Some(l), Some(m)) => l == m.seq
-              _ => false
+        // (what its rows were last made of: the message, where it stands as the marks say (the unread line over it,
+        // the list's first, followed close under), the key it goes by; its rows made again only as one of these is
+        // another, else the same rows given again, so the marks moving for another message wake nothing of it)
+        let made_of : Ref[(Message, Bool, Bool, Bool, String)?] = Ref(None)
+        let p = @signals.computed(
+          fn(was) {
+            let (unread_at, lead_mk, followed_mk, card_mk, _, _) = marks.get()
+            let own = msgs.get(mk)
+            let m = if card_mk == Some(mk) {
+              match @signals.untracked(card) {
+                Some((_, c)) => Some(c)
+                None => own
+              }
+            } else {
+              own
             }
-            // (the key it goes by: what was sent from here as, where it took that over)
-            taken.get() |> ignore
-            let by = match m {
-              Some(m) => kept.sent_as.get(chat_body_key_core(kept, m))
-              None => None
+            guard m is Some(m) else {
+              made_of.val = None
+              return none
             }
-            (line, first.get() == Some(mk), by, followed_at.get() == Some(mk), card_at.get() == Some(mk))
+            let line = unread_at == Some(m.seq)
+            let lead = lead_mk == Some(mk)
+            let followed = followed_mk == Some(mk)
+            if m.outgoing != "" {
+              kept.sent[m.seq] = m.outgoing
+            }
+            let key = chat_body_key(kept, Entry::Said(m))
+            match (was, made_of.val) {
+              (Some(w), Some((pm, pl, pf, pfo, pk))) if physical_equal(pm, m) &&
+                pl == line &&
+                pf == lead &&
+                pfo == followed &&
+                pk == key => w
+              _ => {
+                made_of.val = Some((m, line, lead, followed, key))
+                chat_body_parts_by(kept, m, if line { Some(m.seq) } else { None }, lead, followed)
+              }
+            }
           },
-          same=fn(a, b) { a == b },
+          same=fn(a, b) { physical_equal(a, b) },
         )
-        let p = @signals.computed(fn(_) {
-          kept_told.get() |> ignore
-          let (line, lead, _, followed, carded) = at.get()
-          let m = if carded {
-            match @signals.untracked(card) {
-              Some((_, c)) => Some(c)
-              None => msgs.get(mk)
-            }
-          } else {
-            msgs.get(mk)
-          }
-          match m {
-            Some(m) => chat_body_parts_by(kept, m, if line { Some(m.seq) } else { None }, lead, followed)
-            None => none
-          }
-        })
         parts[mk] = p
         p
       }
