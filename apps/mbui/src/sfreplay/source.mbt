@@ -597,7 +597,15 @@ pub fn source() -> @sfapp.Source {
     draft_picture: fn(key, id) {
       let params : Map[String, Json] = { "key": Json::string(key), "id": Json::string(id) }
       let at = "draft\u{1}" + key + "\u{1}" + id
-      image("", at, "composer.picture", Json::object(params), "mem:draft-picture/\{@ui.stable_hash(at)}/\{at.length()}")
+      images.get("", at, "mem:draft-picture/\{@ui.stable_hash(at)}/\{at.length()}", fn(_, done) {
+        @core.call_bytes("composer.picture", params=Json::object(params), on_done=fn(r) {
+          match r {
+            Ok((_, Some(b))) if b.length() > 0 => @sfbase.writing_kept(id, b)
+            _ => ()
+          }
+          done(r)
+        })
+      })
     },
     images,
     now: fn() { @ui.wall_ms() },

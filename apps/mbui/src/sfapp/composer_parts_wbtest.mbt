@@ -817,3 +817,42 @@ test "a chat linked to one Slack thread: 抄送 while writing opens it to tick, 
   // one: closed once ticked
   assert_true(t.find("#still-fail") is None, msg=t.words().map(fn(x) { x.0 }).join("|"))
 }
+
+///|
+test "a picture restored in the composer opens in the viewer when tapped" {
+  new_run()
+  let base = fixture("chat")
+  let src : Source = {
+    ..base,
+    draft_picture: fn(_, id) {
+      let bytes = png_head()
+      @sfbase.writing_kept(id, bytes)
+      @ui.add_image("mem:test/restored", bytes)
+      "mem:test/restored"
+    },
+    topic_read: fn(name, params) {
+      let now = base.topic(name, params).get().snapshot()
+      if name != "composer" { return now }
+      let m = match now.value { Some(Object(v)) => v.copy(); _ => {} }
+      m["files"] = [{ "id": "kept-1", "name": "截图.png", "size": 120, "waits": true }]
+      m["ready"] = Json::boolean(true)
+      { value: Some(Json::object(m)), error: now.error, version: now.version + 1 }
+    },
+  }
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+  t.run_for(@ui.move_most_ms + @ui.image_fade_ms)
+  let tile = match thumb_of(t.ctx(), "ws1/st1//draft:kept-1") {
+    Some(tile) => tile
+    None => fail("the restored picture tile is not kept for the viewer to fly from")
+  }
+  t.tap(tile.x + tile.w / 2.0, tile.y + tile.h / 2.0)
+  match viewer.get() {
+    Some(v) => {
+      assert_eq(v.file.path, "draft:kept-1")
+      assert_eq(v.id(), "ws1/st1//draft:kept-1")
+      assert_true(v.bytes.get() is Some(_))
+      assert_false(v.coming())
+    }
+    None => fail("tapping a restored picture in the composer did not open the viewer")
+  }
+}

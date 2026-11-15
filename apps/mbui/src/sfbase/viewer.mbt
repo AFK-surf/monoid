@@ -1290,6 +1290,7 @@ pub fn leaving_done() -> Unit {
     None => ()
   }
   pv_leaving.set(None)
+  pv_hidden.set("")
 }
 
 ///|
@@ -1742,7 +1743,7 @@ pub fn Viewer::fetch(self : Viewer, src : Source) -> Unit {
     return
   }
   let want = !v.told_of() || v.asked
-  if want && v.bytes.get() is None && !v.fetching.get() && v.error.get() is None &&
+  if want && !v.file.path.has_prefix("draft:") && v.bytes.get() is None && !v.fetching.get() && v.error.get() is None &&
     (v.kind is Some(_) || v.sniffed.get() is Some(_)) {
     v.fetching.set(true)
     v.read_whole(src, fn(r) {
@@ -2141,7 +2142,7 @@ pub fn Viewer::marks_frame(self : Viewer, c : @ui.Ctx) -> Unit {
 ///|
 /// An image still coming (its thumbnail in its place meanwhile).
 pub fn Viewer::coming(self : Viewer) -> Bool {
-  self.shown_kind() == Some(KImage) && self.bytes.get() is None && self.error.get() is None
+  self.shown_kind() == Some(KImage) && !self.file.path.has_prefix("draft:") && self.bytes.get() is None && self.error.get() is None
 }
 
 ///|

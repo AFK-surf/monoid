@@ -831,6 +831,15 @@ pub fn writing_went_to(id : String) -> (String, String, Bytes)? {
 }
 
 ///|
+/// A kept draft's picture read back from the core (`composer.picture`): its bytes kept so tapping its tile opens the
+/// viewer and sending to another station puts it up there.
+pub fn writing_kept(id : String, bytes : Bytes) -> Unit {
+  if !writing_went.contains(id) {
+    writing_went[id] = ("", "", bytes)
+  }
+}
+
+///|
 /// What a file is by its name's ending, for the core (a picture's size is read from its head as it goes up): "" when
 /// not known.
 pub fn file_type(name : String) -> String {
