@@ -74,7 +74,12 @@ fn appearance_setting(v : @view.View, core : Core, key : String) -> Unit {
           let (x, y) = @signals.untracked(fn() { v.window_down_point() })
           @ui.reveal_from(x, y, dark=fn() { @sf.theme().dark })
         }
-        @settings.set_pref(core, if key == "theme" { "appearance" } else { key }, options[i].0)
+        let pref = match key {
+          "theme" => "appearance"
+          "drop" => "dropAs"
+          _ => key
+        }
+        @settings.set_pref(core, pref, options[i].0)
       },
       note=fn() { if note == "" { "" } else { @sf.t(note) } },
     )
