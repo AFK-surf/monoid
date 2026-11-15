@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [21cd703cd](https://github.com/AFK-surf/monoid/commit/21cd703cdd40f5a81abd4768db561bf872f2d4d5) mbui: 预览器的音视频播放器改为节点（@sf.player_node，old-island 39 | 2.14 | 2.98 | 12.89 | 34 | 51.08 | 29.82 | 59.67 | 99.53 | 114.51 |
 | [1ac1fad7b](https://github.com/AFK-surf/monoid/commit/1ac1fad7b65317ffc19d5427ca03c15b13333889) perf(station): move UsageCounter transcript reads  | 2.13 | 2.96 | 12.83 | 33.9 | 50.79 | 29.75 | 59.42 | 99.53 | 116.18 |
 | [2a37660b4](https://github.com/AFK-surf/monoid/commit/2a37660b44741e87085af215f3a6b89fb37a8649) station: refresh a Mac mesh front when its launche | 2.13 | 2.96 | 12.83 | 33.9 | 50.79 | 29.75 | 59.42 | 99.57 | 116.81 |
 | [9d5937c45](https://github.com/AFK-surf/monoid/commit/9d5937c45c7f9e0cdd65073c1a0f78286dc79cac) mbui, app: optical stroke width for small icons an | 2.13 | 2.96 | 12.82 | 33.9 | 50.75 | 29.74 | 59.39 | 99.75 | 113.57 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [4390a1a5c](https://github.com/AFK-surf/monoid/commit/4390a1a5c636af58a8adf01feabf4532e083320b) station, app: an Antigravity CLI (Gemini) sign-in  | 2.09 | 2.88 | 12.37 | 33.31 | 48 | 28.82 | 56.61 | 98.85 | 112.57 |
 | [87e6c619b](https://github.com/AFK-surf/monoid/commit/87e6c619b601b6509f60c58416e45b225f28b372) app, mbui: close the side panel before the window  | 2.09 | 2.87 | 12.37 | 33.31 | 48 | 28.82 | 56.61 | 98.85 | 114.68 |
 | [7ea6c3f2b](https://github.com/AFK-surf/monoid/commit/7ea6c3f2bfb4eb3b7f8785aba562e5e84c3a14fe) fix(mbui): a page's list's foot asked outside any  | 2.09 | 2.87 | 12.37 | 33.31 | 48 | 28.82 | 56.61 | 98.85 | 113.64 |
-| [929becb21](https://github.com/AFK-surf/monoid/commit/929becb21da31c890fce015ee86aedde0e1cceee) app: fix the dragged-file preference (#6430) | 2.09 | 2.87 | 12.37 | 33.31 | 48 | 28.82 | 56.61 | 98.85 | 113.64 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [21cd703cd](https://github.com/AFK-surf/monoid/commit/21cd703cdd40f5a81abd4768db561bf872f2d4d5) mbui: 预览器的音视频播放器改为节点（@sf.player_node，old-island 39 | 0.42 | 0.54 | 2.07 | 3.17 | 4.95 | 1.53 | 4.08 | 57.43 |
 | [1ac1fad7b](https://github.com/AFK-surf/monoid/commit/1ac1fad7b65317ffc19d5427ca03c15b13333889) perf(station): move UsageCounter transcript reads  | 0.42 | 0.54 | 2.07 | 3.17 | 4.94 | 1.53 | 4.06 | 57.26 |
 | [2a37660b4](https://github.com/AFK-surf/monoid/commit/2a37660b44741e87085af215f3a6b89fb37a8649) station: refresh a Mac mesh front when its launche | 0.42 | 0.54 | 2.07 | 3.17 | 4.94 | 1.53 | 4.06 | 57.26 |
 | [9d5937c45](https://github.com/AFK-surf/monoid/commit/9d5937c45c7f9e0cdd65073c1a0f78286dc79cac) mbui, app: optical stroke width for small icons an | 0.42 | 0.54 | 2.07 | 3.17 | 4.94 | 1.53 | 4.06 | 57.26 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [4390a1a5c](https://github.com/AFK-surf/monoid/commit/4390a1a5c636af58a8adf01feabf4532e083320b) station, app: an Antigravity CLI (Gemini) sign-in  | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.28 |
 | [87e6c619b](https://github.com/AFK-surf/monoid/commit/87e6c619b601b6509f60c58416e45b225f28b372) app, mbui: close the side panel before the window  | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.28 |
 | [7ea6c3f2b](https://github.com/AFK-surf/monoid/commit/7ea6c3f2bfb4eb3b7f8785aba562e5e84c3a14fe) fix(mbui): a page's list's foot asked outside any  | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.28 |
-| [929becb21](https://github.com/AFK-surf/monoid/commit/929becb21da31c890fce015ee86aedde0e1cceee) app: fix the dragged-file preference (#6430) | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.49 |
