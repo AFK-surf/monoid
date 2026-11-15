@@ -79,7 +79,10 @@ jobs:
           { [ ! -d in/web ] || bash $S web in/web
             [ ! -d in/apk ] || bash $S apk "$(ls in/apk/*.apk | head -1)"
             [ ! -d in/mac ] || bash $S mac in/mac/bundle.zip; } | tee sizes.jsonl
+      # (the measures' lines, which record alone reads, carrying the one before's for what it lacks: a runner's reset to
+      # GitHub's artifact service fails no measure, mbui-size 43713399373's idle, 2026-11-15)
       - uses: actions/upload-artifact@v4
+        continue-on-error: true
         with: { name: sizes, path: sizes.jsonl, retention-days: 1 }
 
   # mbui's own minimal app (libs/mbui APP=demo: no business pages, no Hermes/Rust shell), built and weighed when
@@ -115,6 +118,7 @@ jobs:
             MBUI_SIZE_PREFIX=demo_ bash $S apk libs/mbui/android/app/build/outputs/apk/release/app-release.apk
             MBUI_SIZE_PREFIX=demo_ bash $S mac libs/mbui/out/mac/demo-mac.zip; } | tee demo-sizes.jsonl
       - uses: actions/upload-artifact@v4
+        continue-on-error: true
         with: { name: demo-sizes, path: demo-sizes.jsonl, retention-days: 1 }
       - uses: actions/upload-artifact@v4
         with:
@@ -163,6 +167,7 @@ jobs:
             COUNT=5 bash apps/mbui/scripts/idlemem.sh android "$(ls in/apk/*.apk | head -1)" | tee -a idle.jsonl
           fi
       - uses: actions/upload-artifact@v4
+        continue-on-error: true
         with: { name: idle, path: idle.jsonl, retention-days: 1 }
 
   # A line for the commit, appended on the branch mbui-size (made when it is not there)
