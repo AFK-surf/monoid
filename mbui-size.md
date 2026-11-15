@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [6222bae5a](https://github.com/AFK-surf/monoid/commit/6222bae5a8c8c3611bbe12cfad6b5c2a25d30049) station, repo rules: put back the rules and decisi | 2.07 | 2.85 | 12.28 | 33.19 | 47.84 | 28.76 | 56.62 | 98.7 | 112.95 |
 | [0d20e0816](https://github.com/AFK-surf/monoid/commit/0d20e081676812eb5e084c1f48df80b35d274f0c) station: what every agent should do, said to every | 2.07 | 2.85 | 12.28 | 33.19 | 47.84 | 28.76 | 56.62 | 98.7 | 112.95 |
 | [7f153d7b1](https://github.com/AFK-surf/monoid/commit/7f153d7b1cc3d7033af2cbf342440dd6478819a3) app: a station's terminal on the Mac, Android and  | 2.07 | 2.85 | 12.28 | 33.19 | 47.84 | 28.76 | 56.62 | 98.7 | 112.95 |
 | [ee5c2431a](https://github.com/AFK-surf/monoid/commit/ee5c2431ab810aae2c4f8f318b45f12e828e94b1) station: a post that goes on after all_done or nee | 2.07 | 2.84 | 12.25 | 32.14 | 45.35 | 28.72 | 56.51 | 98.7 | 112.95 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [754cfc5d0](https://github.com/AFK-surf/monoid/commit/754cfc5d0997511b1703a2ac0d9a055667b972ed) mbui: words on a halo (View::words_halo), blurred  | 2.03 | 2.79 | 12.03 | 31.92 | 44.65 | 28.52 | 55.91 | 98.55 | 114.74 |
 | [37844aadc](https://github.com/AFK-surf/monoid/commit/37844aadcfab0680ab733f3b370088a1fbb0128b) station: names given by hand and a card let go wri | 2.03 | 2.79 | 11.99 | 31.89 | 44.56 | 28.5 | 55.85 | 98.44 | 114.08 |
 | [976d6ce9e](https://github.com/AFK-surf/monoid/commit/976d6ce9edb988762fcdbf80ac23576cc4d07c11) mbui: the iOS build says which step failed (#6338) | 2.03 | 2.79 | 11.99 | 31.89 | 44.56 | 28.5 | 55.85 | 98.44 | 114.08 |
-| [0b107ce1f](https://github.com/AFK-surf/monoid/commit/0b107ce1fbefd762befd5ca2a9a71d2a492af9f5) mbui: View::flies_in; the chat's page made as node | 2.03 | 2.79 | 11.99 | 31.89 | 44.56 | 28.5 | 55.85 | 98.44 | 114.08 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [6222bae5a](https://github.com/AFK-surf/monoid/commit/6222bae5a8c8c3611bbe12cfad6b5c2a25d30049) station, repo rules: put back the rules and decisi | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.31 |
 | [0d20e0816](https://github.com/AFK-surf/monoid/commit/0d20e081676812eb5e084c1f48df80b35d274f0c) station: what every agent should do, said to every | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.31 |
 | [7f153d7b1](https://github.com/AFK-surf/monoid/commit/7f153d7b1cc3d7033af2cbf342440dd6478819a3) app: a station's terminal on the Mac, Android and  | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.21 |
 | [ee5c2431a](https://github.com/AFK-surf/monoid/commit/ee5c2431ab810aae2c4f8f318b45f12e828e94b1) station: a post that goes on after all_done or nee | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.21 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [754cfc5d0](https://github.com/AFK-surf/monoid/commit/754cfc5d0997511b1703a2ac0d9a055667b972ed) mbui: words on a halo (View::words_halo), blurred  | 0.41 | 0.53 | 1.98 | 3.09 | 4.54 | 1.46 | 3.81 | 57.2 |
 | [37844aadc](https://github.com/AFK-surf/monoid/commit/37844aadcfab0680ab733f3b370088a1fbb0128b) station: names given by hand and a card let go wri | 0.41 | 0.53 | 1.98 | 3.09 | 4.54 | 1.46 | 3.81 | 57.2 |
 | [976d6ce9e](https://github.com/AFK-surf/monoid/commit/976d6ce9edb988762fcdbf80ac23576cc4d07c11) mbui: the iOS build says which step failed (#6338) | 0.4 | 0.52 | 1.96 | 3.08 | 4.52 | 1.45 | 3.8 | 57.33 |
-| [0b107ce1f](https://github.com/AFK-surf/monoid/commit/0b107ce1fbefd762befd5ca2a9a71d2a492af9f5) mbui: View::flies_in; the chat's page made as node | 0.4 | 0.52 | 1.96 | 3.08 | 4.52 | 1.45 | 3.8 | 57.48 |
