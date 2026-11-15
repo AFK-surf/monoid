@@ -150,3 +150,82 @@ test "a page's list's rows past its top cut by its clip where they are round and
   }
   assert_true(round > 0, msg="words clipped round of their own in the rows drawn")
 }
+
+///|
+/// A page's list 300 tall scrolling 20 rows, each 50 tall: its words, a picture and a box seen through (as opaque as
+/// none) in each; and under it, outside it, a box whose ground `tint` says.
+fn picture_list_tester(at : @view.Scroll, tint : @signals.Signal[Int64]) -> Tester {
+  let t = Tester::new(fn(_c) {  }, w=240.0, h=400.0, scale=2.0, images=[("p.png", 64, 64)])
+  t.check_looks(false)
+  set_view_app(fn(root) {
+    root.box(fn(o) {
+      o.width(Is(Some(240.0))).height(Is(Some(300.0))).clips(Is(true)) |> ignore
+      o.scrolls(at, fn(s) {
+        for i in 0..<20 {
+          s.box(fn(r) {
+            r.width(Is(Some(240.0))).height(Is(Some(50.0))).ground(Is(0xEEF0F4FFL)) |> ignore
+            r.box(fn(w) { w.offset(Is((60.0, 15.0))).words(Is("row \{i}"), ink=0x222222FFL) |> ignore }) |> ignore
+            r.box(fn(p) {
+              p
+              .over(Is(true))
+              .offset(Is((10.0, 5.0)))
+              .width(Is(Some(40.0)))
+              .height(Is(Some(40.0)))
+              .image(Is(Some(("p.png", "", 4096))))
+              |> ignore
+            })
+            |> ignore
+            r.box(fn(g) {
+              g
+              .over(Is(true))
+              .offset(Is((200.0, 10.0)))
+              .width(Is(Some(20.0)))
+              .height(Is(Some(20.0)))
+              .ground(Is(0x3366CCFFL))
+              .alpha(Is(0.0))
+              |> ignore
+            })
+            |> ignore
+          })
+          |> ignore
+        }
+      })
+      |> ignore
+    })
+    |> ignore
+    root.box(fn(b) { b.width(Is(Some(240.0))).height(Is(Some(40.0))).ground(By(fn() { tint.get() })) |> ignore })
+    |> ignore
+  })
+  t.draw()
+  t
+}
+
+///|
+/// A page's list holding pictures (and what is seen through, drawing nothing), painted again for what is outside it once
+/// its pictures are in: drawn again as kept, by its group's header, none of its rows gone through, each picture drawing
+/// what it drew; what it draws the same as drawn anew. Its pictures were drawn anew each frame, and what was seen
+/// through asked for as a picture, the whole list gone through each frame for them, till 2026-11-15.
+test "a page's list holding pictures drawn again as kept where they draw what they drew: as drawn anew" {
+  let at = @view.Scroll::list()
+  let tint = @signals.signal(0x112233FFL, same=fn(a, b) { a == b })
+  let t = picture_list_tester(at, tint)
+  at.put(20.0)
+  t.frame()
+  // (its pictures decoded and in by now, faded in)
+  t.frame_at(t.time() + 500.0)
+  t.frame_at(t.time() + frame_period_default)
+  assert_true(!list_heads.is_empty(), msg="the list said by its group's header")
+  assert_true(t.drawn_images().length() > 0, msg="its pictures drawn")
+  let rides = ride_drawn.val
+  let made = ride_groups_made.val
+  tint.set(0x445566FFL)
+  t.frame_at(t.time() + frame_period_default)
+  assert_eq(ride_drawn.val, rides, msg="its rows gone through again: \{t.painted_why()}")
+  assert_eq(ride_groups_made.val, made, msg="a group made for it again")
+  let kept = t.drawn_text()
+  let at2 = @view.Scroll::list()
+  at2.put(20.0)
+  let fresh = picture_list_tester(at2, @signals.signal(0x445566FFL))
+  fresh.frame_at(fresh.time() + 500.0)
+  assert_eq(kept, fresh.drawn_text(), msg="as drawn anew")
+}
