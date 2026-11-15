@@ -116,20 +116,20 @@ fn picked_in_order() -> (Array[(SelKey, SelSpan)], SelKey)? {
 ///|
 /// What is picked now, as picked_now says it.
 // kept across runs: said again as what is picked changes
-let picked_now_said : @signals.Signal[WordsPicked?] = @signals.signal(None, same=fn(a, b) { a == b })
+let picked_now_said : Ref[@signals.Signal[WordsPicked?]] = Ref(@signals.signal(None, same=fn(a, b) { a == b }))
 
 ///|
 /// What of the window's tree's words is picked with the pointer, followed as it changes: once the pointer has let it go
 /// (a mouse's button let up, a finger lifted off it or its handle); None while it is dragged, where none is, or where
 /// what is picked is an old view's.
 pub fn picked_now() -> WordsPicked? {
-  picked_now_said.get()
+  picked_now_said.val.get()
 }
 
 ///|
 /// What is picked with the pointer told to what follows it (picked_now), as it changes and as the pointer lets it go.
 fn picked_now_tell() -> Unit {
-  picked_now_said.set(picked_now_worked())
+  picked_now_said.val.set(picked_now_worked())
 }
 
 ///|

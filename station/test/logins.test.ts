@@ -48,6 +48,21 @@ test("pages, loopback callbacks and device codes are read as the CLIs say them",
   assert.equal(deviceCodeIn("Visit https://vercel.com/oauth/device?user_code=ABCD-EFGH"), "ABCD-EFGH");
   assert.equal(deviceCodeIn("To finish, open https://login.example.org/activate and enter code: WDJB-MJHT"), "WDJB-MJHT");
   assert.equal(deviceCodeIn("Then enter the code:\n\nKXQB-RMTD\n"), "KXQB-RMTD");
+  // Wrangler's (4.x, --device): eight letters and digits of both cases, on a line of its own under "enter the code:",
+  // and in the page it opens (?user_code=); the case kept.
+  const wrangler = "Attempting to login via OAuth Device Authorization Grant...\nTo authorize Wrangler, please visit:\n\n  https://dash.cloudflare.com/oauth2/device\n\nand enter the code:\n\n  vFA9uVPF\n\nYou have 3 minutes to approve this request.\n";
+  assert.equal(deviceCodeIn(`${wrangler}\nOpening a link in your default browser: https://dash.cloudflare.com/oauth2/device?user_code=vFA9uVPF\n`), "vFA9uVPF");
+  assert.equal(deviceCodeIn(wrangler), "vFA9uVPF", "--no-browser: only the line under it");
+  assert.equal(deviceCodeIn(wrangler.replace("vFA9uVPF", "kRtPmWzQ")), "kRtPmWzQ", "letters alone, of both cases");
+  assert.equal(deviceCodeIn("To authorize Wrangler, please visit the page.", ["https://dash.cloudflare.com/oauth2/device?user_code=vFA9uVPF"]), "vFA9uVPF", "from the page it opened alone");
+  assert.equal(deviceCodeIn("Visit https://x.example/device?user_code=ab12CD34&state=Zz9"), "ab12CD34");
+  assert.equal(deviceCodeIn("then enter the code vFA9uVPF there"), "vFA9uVPF");
+  assert.equal(deviceCodeIn("Your code: kRtPmWzQ"), "kRtPmWzQ");
+  // Not a code: Devin's masked field, words after "code", a prompt with nothing after it.
+  assert.equal(deviceCodeIn("Open this page to sign in to Devin:\n https://app.devin.ai/auth/cli?x=1\n Code:\n ❭ ••••"), null);
+  assert.equal(deviceCodeIn("copy the code from GitHub and OpenAI"), null);
+  assert.equal(deviceCodeIn("and enter the code:\n\n  Continue\n"), null);
+  assert.equal(deviceCodeIn("Once finished, enter the verification code provided in your browser: "), null);
   assert.equal(deviceCodeIn("Press ENTER to open in the browser..."), null);
   assert.equal(deviceCodeIn("Authenticate Git with your GitHub credentials? (Y/n)"), null);
   assert.deepEqual(deviceUrls(["https://vercel.com/oauth/device?user_code=ABCD-EFGH"], "ABCD-EFGH"), { url: "https://vercel.com/oauth/device?user_code=ABCD-EFGH", codeUrl: "https://vercel.com/oauth/device?user_code=ABCD-EFGH" });
@@ -392,6 +407,73 @@ test("a tool nobody described: its device code and page read from what it says",
     const login = await m.logins.start("acme login --device", m.by);
     const device = await m.until(login.id, (l) => l.step === "device", "device");
     assert.deepEqual([device.code, device.url, device.domain, device.state], ["WDJB-MJHT", "https://login.acme.example/activate", "login.acme.example", "code"]);
+  } finally {
+    await m.logins.close();
+  }
+});
+
+test("Wrangler's device login (a code of both cases on a line of its own, the page opened with it): the code and page told on the card, hidden from its agent", { skip: skipped }, async (t) => {
+  const m = machine();
+  t.after(() => m.logins.close());
+  const page = "https://dash.cloudflare.com/oauth2/device?user_code=vFA9uVPF";
+  script(join(m.bin, "wrangler"), `#!/bin/sh
+echo "Attempting to login via OAuth Device Authorization Grant..."
+echo "To authorize Wrangler, please visit:"
+echo
+echo "  https://dash.cloudflare.com/oauth2/device"
+echo
+echo "and enter the code:"
+echo
+echo "  vFA9uVPF"
+echo
+echo "You have 3 minutes to approve this request."
+echo
+echo "Opening a link in your default browser: ${page}"
+"$BROWSER" "${page}"
+read forever
+`);
+  const [tool] = loginTools({ logins: () => m.logins, starter: () => ({ ...m.by, chat: "chat:c-1" }), link: (_s, id) => `https://still.fail/w/w1/s/st/login/${id}` });
+  try {
+    const starting = tool!.run("chat:c-1", { command: "wrangler login --device" });
+    const id = await upon((w) => m.logins.changes(w), () => m.logins.logins()[0]?.id, "started");
+    const device = await m.until(id, (l) => l.step === "device" && l.url === page && l.codeUrl === page, "device");
+    assert.deepEqual([device.state, device.code, device.domain, device.url, device.codeUrl], ["code", "vFA9uVPF", "dash.cloudflare.com", page, page]);
+    await m.quietShowing(id, "Opening a link");
+    const told = await starting;
+    assert.ok(told.includes("<code>") && told.includes("<link>"), told);
+    assert.ok(!told.includes("vFA9uVPF") && !told.includes("dash.cloudflare.com"), told);
+  } finally {
+    await m.logins.close();
+  }
+});
+
+test("a login whose code the person pastes (paste on): what looks like a device code said after it leaves the card's field as it is", { skip: skipped }, async (t) => {
+  const m = machine();
+  t.after(() => m.logins.close());
+  const approved = approval(m.home);
+  const page = "https://accounts.google.com/o/oauth2/auth?response_type=code&client_id=1.apps.googleusercontent.com&redirect_uri=https%3A%2F%2Fsdk.cloud.google.com%2Fauthcode.html&state=s1";
+  script(join(m.bin, "fakegcloud"), `#!/bin/sh
+echo "Go to the following link in your browser, and complete the sign-in prompts:"
+echo
+echo "    ${page}"
+echo
+printf "Once finished, enter the verification code provided in your browser: "
+read ok < '${approved.path}'
+echo
+echo "That code was refused. Enter the code: 4ZQ7PX2KM"
+read code
+`);
+  const [tool] = loginTools({ logins: () => m.logins, starter: () => ({ ...m.by, chat: "chat:c-1" }), link: (_s, id) => `https://still.fail/w/w1/s/st/login/${id}` });
+  try {
+    const starting = tool!.run("chat:c-1", { command: "fakegcloud auth login --no-launch-browser" });
+    const id = await upon((w) => m.logins.changes(w), () => m.logins.logins()[0]?.id, "started");
+    await m.quietAt(id, "enter the verification code");
+    await starting;
+    await tool!.run("chat:c-1", { id, paste: true });
+    await approved.approve();
+    await m.quietShowing(id, "4ZQ7PX2KM");
+    const after = m.logins.get(id)!;
+    assert.deepEqual([after.step, after.paste, after.code, after.url], ["open", true, undefined, page]);
   } finally {
     await m.logins.close();
   }

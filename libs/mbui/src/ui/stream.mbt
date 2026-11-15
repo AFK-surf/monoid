@@ -998,6 +998,24 @@ pub fn Tester::stream_shows(self : Tester, id : Int, ts : Double, w : Int, h : I
 }
 
 ///|
+/// Shown in window `wid` of the run from now on (window_slots.mbt), handed to it by what showed it in another: its
+/// picture's layer that window's to place, the one it leaves taking it not back nor hiding it as what showed it there
+/// goes (NativeView::paint_in, Ctx::sync_views).
+pub fn Stream::given_to_window(self : Stream, wid : Int) -> Unit {
+  match self.view {
+    Some(v) => v.wid = wid
+    None => ()
+  }
+}
+
+///|
+/// The streams open now, by their host's ids, oldest first (what a test says each shows: stream_shows).
+pub fn Tester::stream_ids(self : Tester) -> Array[Int] {
+  ignore(self)
+  open_streams.filter(fn(s) { !s.closed && s.id != 0 }).map(fn(s) { s.id })
+}
+
+///|
 /// Stream `id`'s host let its frames up to `ts` go undecoded: taken at the next frame.
 pub fn Tester::stream_drops(self : Tester, id : Int, ts : Double) -> Unit {
   fake_said(self.fake, id, "d \{ts}")

@@ -178,7 +178,8 @@ fn pane_made(
   page : Page,
   tips : @sf.TipLayer,
 ) -> (String, (@view.View, () -> Page, Page?, () -> Int, Int) -> Unit)? {
-  guard pane_makes.val else { return None }
+  // (the stations' and the profiles' places have no old view: made so whatever pane_makes says)
+  guard pane_makes.val || page is Place("stations" | "profiles") else { return None }
   // (made in the workspace in view, its settings' core, under what it was opened from, as wide as the frame gives it)
   let made = fn(
     kind : String,
@@ -246,9 +247,11 @@ fn pane_made(
       made("place/profiles", fn(a, core, here, stint, frame, width) {
         profiles_place_node(a, src, core, here, stint, frame, width, tips~)
       })
-    // (the stations' place with one that only runs tasks picked: its page made once, in the place of the old view's)
-    Place("stations") if place_rig(src) != "" =>
-      pane_made(src, Setting(Station(place_rig(src))), tips).map(fn(m) { ("place/" + m.0, m.1) })
+    // (the stations' place: the station picked in its list made once as its page is, none the first to add)
+    Place("stations") =>
+      made("place/stations", fn(a, core, here, stint, frame, width) {
+        stations_place_node(a, src, core, here, stint, frame, width, tips~)
+      })
     // (a place of the rail's whose page is one of those: that page, at the stack's root (no back over it, place_page's),
     // made under its own kind)
     Place(name) =>

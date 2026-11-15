@@ -5,7 +5,8 @@
 // bulk reads leave room for chat reads. None of these reads holds up writes.
 // A reader is a V8 of its own (tens of MB), so they are started when reads come and let go once none has come for a
 // while: an idle station keeps none. One that dies (its heap is bounded) fails what it held and is replaced by the next
-// read.
+// read. Where the MoonBit program is there it answers every read (MOVED, HISTORY, the checkpoint), so no reader thread
+// is started at all: the threads are for a station without it and for the tests' reference (test/reference-worker.ts).
 import { availableParallelism, homedir } from "node:os";
 import { join } from "node:path";
 import { Worker } from "node:worker_threads";
@@ -131,7 +132,7 @@ const PAGES = new Set(["timeline", "machineSessions"]);
 const HISTORY = new Set(["timeline", "transcriptState"]);
 /// The reads the MoonBit reader answers itself (station/mb src/readops), on readers of their own (`moved`) where its
 /// program is there; every other read is a worker's.
-const MOVED = new Set(["job", "jobLog", "historyPendingCard", "statePendingCard", "deliveryCardState", "reviewPendingCard", "stateQuestion", "pendingDeliveries", "latestMessages", "chatHistoryMessages", "openedChatSaid", "widgetState", "transcriptFile", "memory", "machineSessions", "machineSession", "sessionsAtWork", "policyChecks", "recentConnectPeople", "usageTurns", "usageCalls", "outflowMessages", "archiveLook", "recentChatList", "searchChatList", "threadList", "sharedOf", "sharedChats", "chatMarks", "entries", "letters", "summary", "sessions", "session", "threads", "thread", "turnNotices", "saidNotices", "chats", "chatRows", "outflowChats", "openJobs", "resourceChats", "usage", "outflowUsage", "sessionPlace", "changed", "tailRead"]);
+const MOVED = new Set(["job", "jobLog", "historyPendingCard", "statePendingCard", "deliveryCardState", "reviewPendingCard", "stateQuestion", "pendingDeliveries", "latestMessages", "chatHistoryMessages", "openedChatSaid", "widgetState", "transcriptFile", "memory", "machineSessions", "machineSession", "sessionsAtWork", "policyChecks", "recentConnectPeople", "usageTurns", "usageCalls", "outflowMessages", "archiveLook", "recentChatList", "searchChatList", "threadList", "sharedOf", "sharedChats", "chatMarks", "entries", "letters", "summary", "sessions", "session", "threads", "thread", "turnNotices", "saidNotices", "chats", "chatRows", "outflowChats", "openJobs", "resourceChats", "usage", "outflowUsage", "sessionPlace", "changed", "tailRead", "internalCardEditPage", "internalCardMessagePage"]);
 /// The reads of this machine's own Claude Code and Codex sessions: the MoonBit reader is told where they are kept, from
 /// this process's environment (read/machine.ts `roots`), as the worker reads it.
 const MACHINE = new Set(["machineSessions", "machineSession"]);
@@ -191,6 +192,8 @@ export class Readers {
   private next = 0;
   private closed = false;
   private minutes: MinuteReader | null = null;
+  /// What else lets go of what answers nothing when the station is short of memory (`onTrim`, `trimIdle`).
+  private trims: (() => number)[] = [];
   private outflowChats: OutflowChatIndex | null = null;
   private said: SaidBuilder | null = null;
   private archiveLast: RequestedBuilder<number> | null = null;
@@ -310,28 +313,44 @@ export class Readers {
     return slot;
   }
 
-  /// A reader with nothing to do goes after IDLE_MS, but not those of a line someone waits on (what devices ask, what
-  /// streams tell): one started for a read took 3 s on a station short of memory (2026-11-03, its code read in again), the
-  /// read itself 40 ms; the second of what devices ask, started as the first was busy, 16 s.
+  /// A reader with nothing to do goes after IDLE_MS, but not the one someone waits on first (`kept`): one started for a
+  /// read took 3 s on a station short of memory (2026-11-03, its code read in again), the read itself 40 ms; the second
+  /// of what devices ask, started as the first was busy, 16 s.
   private letGoLater(slot: Slot, line: Line) {
     if (slot.idle) return;
     // A thread's resources: the machine's time.
     slot.idle = wall.after(IDLE_MS, () => {
       slot.idle = undefined;
       if (slot.held !== null) return;
-      if (this.kept(line)) return;
+      if (this.kept(slot, line)) return;
       void slot.worker.terminate();
     });
   }
 
-  private kept(line: Line): boolean {
+  /// Whether an idle reader stays: where the MoonBit program answers, only the first of its readers (`moved`), a
+  /// process of a few MB started again in milliseconds; else those of what devices ask and what streams tell, threads
+  /// each a V8 of its own. `trimIdle` lets either go when the station is short of memory.
+  private kept(slot: Slot, line: Line): boolean {
+    if (this.mbReader !== null) return line === this.moved && line.slots[0] === slot;
     return line === this.asked || line === this.told;
   }
 
-  /// The readers of what devices ask and of what streams tell, started before either is asked anything: the first
-  /// reads after the station starts (an update), and one beside a slow one, need not wait on them.
+  /// The readers kept (`kept`), started before anything is asked: the first reads after the station starts (an
+  /// update), and one beside a slow one, need not wait on them. Where the MoonBit program answers, one of its readers
+  /// and no thread: three threads were kept for it before (2026-11-15, ~150–200 MB of the station's 412–570 MB), one of
+  /// which was never asked anything.
   warm() {
+    if (this.closed) return;
+    if (this.mbReader !== null) {
+      if (this.moved.slots.length === 0) this.start(this.moved);
+      return;
+    }
     for (const line of [this.asked, this.told]) while (!this.closed && line.slots.length < line.size) this.start(line);
+  }
+
+  /// `trim` called by `trimIdle` too: what it let go of that answers nothing, a count.
+  onTrim(trim: () => number) {
+    this.trims.push(trim);
   }
 
   /// The answer, as JSON text. `told`: what an event stream or a notice tells, read by the station's own reader.
@@ -814,12 +833,14 @@ export class Readers {
   }
 
   /// What answers nothing now let go at once, not after IDLE_MS (the station short of memory: ops/self-memory.ts): each
-  /// reader of a line nobody keeps (`kept`) with no read held or waiting, and each builder of old state nobody waits on
-  /// (RequestedBuilder `trimIdle`). A read under way is never stopped. How many were let go.
+  /// reader with no read held or waiting (but for the threads `kept` where there is no MoonBit program: those a read
+  /// waits seconds for to start, where the program's start takes milliseconds), each builder of old state nobody waits
+  /// on (RequestedBuilder `trimIdle`), the usage checker, and what `onTrim` gave. A read under way is never stopped. How
+  /// many were let go.
   trimIdle(): number {
     if (this.closed) return 0;
     let trimmed = 0;
-    for (const line of [this.pages, this.log, this.moved]) {
+    for (const line of this.mbReader !== null ? [this.asked, this.told, this.pages, this.log, this.moved] : [this.pages, this.log, this.moved]) {
       if (line.waiting.length > 0) continue;
       for (const slot of line.slots.filter((s) => s.held === null && !s.retiring)) {
         slot.idle?.();
@@ -835,6 +856,11 @@ export class Readers {
       this.sessionBindings, this.archiveMarks, this.sessionUpJobs, this.workspaceUpJobs, this.jobNameFirst, this.widgetSources, this.cardPosts,
       this.closedCards, this.peopleSince, this.ccIndex];
     for (const b of builders) if (b?.trimIdle()) trimmed++;
+    trimmed += this.minutes?.trimIdle() ?? 0;
+    for (const trim of this.trims) {
+      try { trimmed += trim(); }
+      catch (error) { log.warn("readers", "letting go of what answers nothing failed", { error: (error as Error).message }); }
+    }
     return trimmed;
   }
 

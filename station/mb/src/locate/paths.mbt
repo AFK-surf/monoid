@@ -118,7 +118,7 @@ pub fn runtime_kind(runtime : String) -> Bool {
 
 ///|
 /// transcript.ts `claudeProject`: each character but an ASCII letter or digit a dash, none past 200 (UTF-16 units).
-fn claude_project(cwd : String) -> String? {
+pub fn claude_project(cwd : String) -> String? {
   if cwd.length() > 200 {
     return None
   }
@@ -287,7 +287,7 @@ fn homes_first(profiles : Array[(String, String)], first : String?) -> Array[Str
 
 ///|
 /// transcript.ts `transcriptPaths` for one id: its path, if found (`anywhere` false: a Claude one in its places alone).
-fn Finder::transcript_path(
+pub fn Finder::transcript_path(
   self : Finder,
   runtime : String,
   data : String,

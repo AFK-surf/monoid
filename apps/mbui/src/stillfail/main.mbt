@@ -127,7 +127,13 @@ fn draft_picture(key : String, id : String) -> String {
   let at = "draft\u{1}" + key + "\u{1}" + id
   let params : Map[String, Json] = { "key": Json::string(key), "id": Json::string(id) }
   chat_images.get("", at, "mem:draft-picture/\{@ui.stable_hash(at)}/\{at.length()}", fn(_, done) {
-    @core.call_bytes("composer.picture", params=Json::object(params), on_done=done)
+    @core.call_bytes("composer.picture", params=Json::object(params), on_done=fn(r) {
+      match r {
+        Ok((_, Some(b))) if b.length() > 0 => @sfbase.writing_kept(id, b)
+        _ => ()
+      }
+      done(r)
+    })
   })
 }
 

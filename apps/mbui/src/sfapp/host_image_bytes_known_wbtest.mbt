@@ -42,6 +42,8 @@ fn init {
     // (中屏's chat opened, its workspace switched: the chat's pictures handed over as it showed, 2026-11-14)
     ("src/sfapp/medium_switch_corners_wbtest.mbt", 38548),
     ("src/sfapp/newchat_send_wbtest.mbt", 231032),
+    // (a new chat sent on a workspace of real size, its people's pictures on the chats' list: Studio's run, 2026-11-15)
+    ("src/sfapp/real_size_new_chat_send_wbtest.mbt", 38548),
     ("src/sfapp/notices_wbtest.mbt", 999086),
     ("src/sfapp/place_first_wbtest.mbt", 10862),
     ("src/sfapp/preview_tree_wbtest.mbt", 1934327),

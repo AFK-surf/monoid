@@ -141,7 +141,8 @@ for t in $targets; do
     [ -f $b/sfapp.whitebox_test.exe ] || { moon test $mode $pkgs --build-only 2>&1 | grep -v "$F" | tail -40; exit 1; }
     mkdir -p "$APP_BUILD_OUT" && cp $b/sfapp.whitebox_test.exe $b/__whitebox_test_info.json "$APP_BUILD_OUT/" &&
       cp "$(bash "$D/testexe" path)" "$APP_BUILD_OUT/testexe" || exit 1
-    echo "test.sh: sfapp's test program put in $APP_BUILD_OUT ($(du -h $b/sfapp.whitebox_test.exe | cut -f1))"
+    ! command -v strip >/dev/null 2>&1 || [ "$(uname -s)" != Linux ] || strip --strip-unneeded "$APP_BUILD_OUT/sfapp.whitebox_test.exe" "$APP_BUILD_OUT/testexe" || true
+    echo "test.sh: sfapp's test program put in $APP_BUILD_OUT ($(du -h "$APP_BUILD_OUT/sfapp.whitebox_test.exe" | cut -f1))"
     exit 0
   fi
   # (the flows' test program and its tests' list put where REPLAY_BUILD_OUT says, the same way)
@@ -150,7 +151,8 @@ for t in $targets; do
     [ -f $b/flows.blackbox_test.exe ] || { moon test $mode $pkgs --build-only 2>&1 | grep -v "$F" | tail -40; exit 1; }
     mkdir -p "$REPLAY_BUILD_OUT" && cp $b/flows.blackbox_test.exe $b/__blackbox_test_info.json "$REPLAY_BUILD_OUT/" &&
       cp "$(bash "$D/testexe" path)" "$REPLAY_BUILD_OUT/testexe" || exit 1
-    echo "test.sh: the flows' test program put in $REPLAY_BUILD_OUT ($(du -h $b/flows.blackbox_test.exe | cut -f1))"
+    ! command -v strip >/dev/null 2>&1 || [ "$(uname -s)" != Linux ] || strip --strip-unneeded "$REPLAY_BUILD_OUT/flows.blackbox_test.exe" "$REPLAY_BUILD_OUT/testexe" || true
+    echo "test.sh: the flows' test program put in $REPLAY_BUILD_OUT ($(du -h "$REPLAY_BUILD_OUT/flows.blackbox_test.exe" | cut -f1))"
     # (then the core's tests here, the flows' left to replay-fps's runs of it)
     pkgs="${pkgs/ -p stillfail\/sfreplay\/flows/}"
   fi
@@ -165,9 +167,11 @@ for t in $targets; do
         [[ " $MBC_EMPTY_TESTS " = *" $q/$n.${k}_test "* ]] && continue
         [ -f $b/$n.${k}_test.exe ] || { echo "test.sh: no $b/$n.${k}_test.exe to put in $PKGS_BUILD_OUT" >&2; exit 1; }
         mkdir -p "$PKGS_BUILD_OUT/$q" && cp $b/$n.${k}_test.exe $b/__${k}_test_info.json "$PKGS_BUILD_OUT/$q/" || exit 1
+        ! command -v strip >/dev/null 2>&1 || [ "$(uname -s)" != Linux ] || strip --strip-unneeded "$PKGS_BUILD_OUT/$q/$n.${k}_test.exe" || true
       done
     done
     cp "$(bash "$D/testexe" path)" "$PKGS_BUILD_OUT/testexe" || exit 1
+    ! command -v strip >/dev/null 2>&1 || [ "$(uname -s)" != Linux ] || strip --strip-unneeded "$PKGS_BUILD_OUT/testexe" || true
     echo "test.sh: the packages' test programs put in $PKGS_BUILD_OUT ($(du -sh "$PKGS_BUILD_OUT" | cut -f1))"
   fi
   s=$(date +%s)
@@ -240,11 +244,14 @@ for t in $targets; do
     # pages and packages at 120, its 小屏 pair was 118 s and the others 218 and 224, main af1435b8 43476543010)
     # (switches_still's 68-90, cut at 79: as screens came that run grew from 106-113 s to 163-279 s on main's runs of
     # 2026-11-15, app switches part 4/4 292 s of its 5 minutes on 927e8653 43692601857)
-    sweeps=(src/sfapp/screens_wbtest.mbt:1 src/sfapp/corners_wbtest.mbt:3 src/sfapp/squeeze_said_wbtest.mbt:1
+    # (and 68-79 cut at 73: as #6459's previews were swept that run was 231-260 s, part 4/4 269 and 275 s of its 5
+    # minutes on main ab2d43d7 43718049538 and 4e8f3be0 43718632655, its other three runs 25-151)
+    # (and 60-68 cut at 64: that run 249 s, part 3/4 268 s of its 5 minutes on main e18b38e4 43719996435)
+    sweeps=(src/sfapp/screens_wbtest.mbt:1 src/sfapp/corners_wbtest.mbt:5 src/sfapp/squeeze_said_wbtest.mbt:1
       src/sfapp/contrast_wbtest.mbt:1 src/sfapp/kept_rows_kinds_wbtest.mbt:@2@3@4@5@8 src/sfapp/preview_tree_wbtest.mbt:@54
       src/sfapp/words_large_wbtest.mbt:2 src/sfapp/real_size_wbtest.mbt:2 src/sfapp/send_steady_wbtest.mbt:@1@2
       src/sfapp/chat_page_nodes_wbtest.mbt:2 src/sfapp/answers_still_wbtest.mbt:@2@3@4@5
-      src/sfapp/switches_still_wbtest.mbt:@20@25@29@34@38@43@47@52@56@60@68@79@90@123@146@176@205@248)
+      src/sfapp/switches_still_wbtest.mbt:@20@25@29@34@38@43@47@52@56@60@64@68@73@79@90@123@146@176@205@248)
     pages=()
     for f in "${files[@]}"; do [[ " ${sweeps[*]} " = *" $f:"* ]] || pages+=("$f"); done
     for w in "${sweeps[@]}"; do

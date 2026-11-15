@@ -93,7 +93,7 @@ test("a chat's files' pass, not held, leaves a file truncated and rewritten as i
       last: write("e-last.md", Buffer.from("after the others\n")),
     };
     const list = (names: string[]) => names.map((n) => JSON.stringify({ hash: sha(readFileSync(join(room, n))), path: join(room, n), size: statSync(join(room, n)).size })).join("\n") + "\n";
-    // (the gathering's lists and index, as carry-worker.ts writes them)
+    // (the gathering's lists and index, as carry.ts's program writes them)
     const gathered = (names: string[]) => {
       const at = join(here, `list-${randomBytes(4).toString("hex")}.jsonl`);
       const text = list(names);

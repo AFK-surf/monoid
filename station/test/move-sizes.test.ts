@@ -7,7 +7,7 @@ import { cpSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { gather, sizes, type Sized } from "../src/replica/carry-worker.ts";
+import { type Sized, gatherSoon, sizesSoon } from "../src/replica/carry.ts";
 import { FLOOR_MIN } from "../src/replica/handover.ts";
 import { moved } from "../src/replica/restore.ts";
 import { SIZES_BATCH, Sizes } from "../src/move/sizes.ts";
@@ -65,7 +65,7 @@ test("a chat's size is what its move would gather, measured again as its turn en
     await a.moves.sizes.settled();
   };
   await plan();
-  const g = gather(a.rig.dir, join(a.rig.dir, "stillfail.db"), WS, true, join(a.rig.dir, "scratch-test"), null, [key]);
+  const g = await gatherSoon(a.rig.dir, join(a.rig.dir, "stillfail.db"), WS, true, join(a.rig.dir, "scratch-test"), undefined, null, [key]);
   assert.equal(a.moves.sizes.line(key)?.bytes, g.bytes, "the gathering's own bytes");
   assert.ok(g.bytes >= 64 * 1024);
   const times = () => a.sized.filter((k) => k === key).length;
@@ -102,8 +102,8 @@ test("a room past its bound is said at least: what was found so far, not all of 
   const ws = a.rig.session(key).workspace;
   for (let i = 0; i < 20; i++) writeFileSync(join(ws, `f${i}.txt`), "x".repeat(100));
   const db = join(a.rig.dir, "stillfail.db");
-  const [all] = sizes(a.rig.dir, db, [key], { most: 10_000 });
-  const [cut] = sizes(a.rig.dir, db, [key], { most: 8 });
+  const [all] = await sizesSoon(a.rig.dir, db, [key], { most: 10_000 });
+  const [cut] = await sizesSoon(a.rig.dir, db, [key], { most: 8 });
   assert.equal(all!.complete, true);
   assert.ok(all!.bytes >= 2_000, String(all!.bytes));
   assert.equal(cut!.complete, false);

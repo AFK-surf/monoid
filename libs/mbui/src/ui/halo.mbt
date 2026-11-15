@@ -373,6 +373,7 @@ fn halo_cell(key : Int, p : HaloPicture, sc : Double) -> Glyph? {
     atlas.place(key, p.w, p.h, fn(k) {
       text_cache.glyphs.remove(k)
       glyphs_lost.val = true
+      glyph_moves.val += 1
     }) {
     Some((plot, x, y)) => {
       let rgba = FixedArray::make(p.w * p.h * 4, b'\x00')
@@ -408,6 +409,7 @@ fn halo_cell(key : Int, p : HaloPicture, sc : Double) -> Glyph? {
     None => {
       text_cache.short = true
       glyphs_lost.val = true
+      glyph_moves.val += 1
       glyph_kept(key, { ..no_glyph, u: -1.0, v: -1.0 })
       None
     }

@@ -204,6 +204,7 @@ fn glyphs_short_owed() -> Bool {
 /// Every glyph forgotten, and where it was in the atlas: drawn again as it is next asked for.
 fn glyphs_forget() -> Unit {
   glyphs_lost.val = true
+  glyph_moves.val += 1
   text_cache.glyphs.clear()
   text_cache.fresh.clear()
   text_cache.atlas = None
@@ -222,6 +223,13 @@ let glyphs_kept : Ref[Array[(Int, Double, Double)]?] = Ref(None)
 /// after frame is looked through again then (view_glyphs_held), not each frame.
 // kept across runs: set as one goes, put back as what draws them is looked through
 let glyphs_lost : Ref[Bool] = Ref(true)
+
+///|
+/// How many times a glyph may have gone from where it was in the atlas (glyphs_lost's, or one placed again at another
+/// scale), over every window of the run: a window that comes in place after another's frame moved one is built whole
+/// (window_slots.mbt's glyphs_moved_since).
+// kept across runs: only counts on
+let glyph_moves : Ref[Int] = Ref(0)
 
 ///|
 /// Glyph `key` drawn from where `g` is, told to what is made to be kept (glyphs_kept).
@@ -1105,6 +1113,7 @@ fn glyph(key : Int, sc : Double) -> Glyph {
         h_log("GLYPHSCALE placed at \{g.sc}, drawn at \{sc}, generation \{h_atlas_generation()}")
       }
       text_cache.glyphs.remove(key)
+      glyph_moves.val += 1
       glyph(key, sc)
     }
     Some(g) => {
@@ -1128,6 +1137,7 @@ fn glyph(key : Int, sc : Double) -> Glyph {
       match a.place(key, w, h, fn(k) {
         text_cache.glyphs.remove(k)
         glyphs_lost.val = true
+        glyph_moves.val += 1
       }) {
         Some((plot, x, y)) => {
           h_glyph_put(key, x + across, y)
@@ -1151,6 +1161,7 @@ fn glyph(key : Int, sc : Double) -> Glyph {
         None => {
           text_cache.short = true
           glyphs_lost.val = true
+          glyph_moves.val += 1
           glyph_kept(key, { ..no_glyph, u: -1.0, v: -1.0 })
           no_glyph
         }

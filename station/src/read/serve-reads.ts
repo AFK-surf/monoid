@@ -1,8 +1,8 @@
 // A reader thread: answers reads off the main thread, on a read-only connection of its own (WAL lets readers and the
 // one writer go on together), each by the table it is given. What it answers is text, ready to send: no copying the
 // value across threads. The station's (worker.ts) answers only what is not the MoonBit program's (read/pool.ts MOVED,
-// HISTORY: everything a device asks); the reads as they were answered here before the program took them are the
-// tests' to compare it with (test/reference-worker.ts).
+// HISTORY: everything a device asks, and a card's queued pages): a checkpoint. The reads as they were answered here
+// before the program took them are the tests' to compare it with (test/reference-worker.ts).
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { parentPort, workerData } from "node:worker_threads";
@@ -11,7 +11,6 @@ import type { ReadOp } from "./ops.ts";
 import { openStore, usageGroupsBatched, UsageSummaryCache } from "./store.ts";
 import { HttpError, setSpoken } from "./views.ts";
 import { learn } from "../accounts/catalog.ts";
-import { cardEditPage, cardMessagePage } from "../store/card-outbox.ts";
 
 export type Ask = { id: number; op: string; args: any; lang: Lang; names: [string, string][]; processes: [string, string][]; clientKeys: [string, string][]; catalog?: Record<string, unknown> };
 /// `body`: the text as its bytes, as the MoonBit reader gives it (mb-reader.ts `Said`).
@@ -22,8 +21,13 @@ export type Ready = { ready: { loadedMs: number; openedMs: number } };
 /// How long a checkpoint of a log past its bound waits for the readers and the writer.
 const HARD_WAIT_MS = 1000;
 
-/// Serves the reads of `ops` (and the station's own: a checkpoint, a card's queued pages) on this thread.
-export function serveReads(ops: Record<string, ReadOp>) {
+/// A read of the station's own, never a device's: answered by its name, outside `ops`.
+export type InternalRead = (db: DatabaseSync, args: any) => unknown;
+
+/// Serves the reads of `ops` on this thread, and the station's own: a checkpoint, and those of `internal` (none in the
+/// station's: a card's queued pages are the program's, `internalCardEditPage` and `internalCardMessagePage` in
+/// read/pool.ts MOVED; the tests' reference worker gives them, to compare the program with).
+export function serveReads(ops: Record<string, ReadOp>, internal: Record<string, InternalRead> = {}) {
   const loaded = performance.now();
   const store = openStore(workerData.data as string);
   const usageCache = new UsageSummaryCache();
@@ -67,14 +71,11 @@ parentPort!.on("message", async (ask: Ask) => {
     store.prepareUpJobs = null;
     store.prepareWorkspaceUpJobs = false;
     // Internal queue work is deliberately not in `ops`: the changed-list API must not expose an unscoped card read.
-    if (ask.op === "internalCardEditPage" || ask.op === "internalCardMessagePage") {
+    const own = Object.hasOwn(internal, ask.op) ? internal[ask.op]! : null;
+    if (own !== null) {
       store.db.exec("BEGIN");
       let page;
-      try {
-        const a = ask.args;
-        page = ask.op === "internalCardEditPage" ? cardEditPage(store.db, a.thread, a.target, a.before)
-          : cardMessagePage(store.db, a.thread, a.target, a.before);
-      } finally { store.db.exec("COMMIT"); }
+      try { page = own(store.db, ask.args); } finally { store.db.exec("COMMIT"); }
       parentPort!.postMessage({ id: ask.id, text: JSON.stringify(page) } satisfies Answer);
       return;
     }

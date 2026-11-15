@@ -363,14 +363,14 @@ test "stage, 大屏 keyboard and mouse in a tall and a short window, touch in a 
     out.push("(\{at.0}, \{at.1}, \{at.2}): \{stage_said(t)}")
     drawn.push(stage_drawn())
   }
-  // (as main has it, 435d3ba8; the looks each their picture drawn small, 2026-11-02; 34 of them since 千恋＊万花's: their
+  // (as main has it, 435d3ba8, its buttons 0.2 wider since a small icon's strokes are (sf/icons.mbt stroke_k); the looks each their picture drawn small, 2026-11-02; 34 of them since 千恋＊万花's: their
   // strip as wide as the picture is laid out, from its start, scrolled, the stage as wide; in sets since, their names
   // over the strip: the stage a line taller where the window has the room, 840 by 1100)
   assert_eq(out, [
-    "(1440, 1000, 0): dialog Some((分享卡片, (540, 24, 360, 952))) line [(564, 761.6, 312, 21)] look Some((540, 795.2, 78, 124.8)) close Some((635.8, 940, 58, 36)) copy Some((701.8, 940, 102.5, 36)) save None squeeze 0",
-    "(1280, 640, 0): dialog Some((分享卡片, (460, 24, 360, 592))) line [(484, 761.6, 312, 21)] look Some((460, 435.2, 78, 124.8)) close Some((555.8, 580, 58, 36)) copy Some((621.8, 580, 102.5, 36)) save None squeeze 0",
-    "(840, 1100, 1): dialog Some((分享卡片, (240, 41.2, 360, 1017.6))) line [(264, 778.8, 312, 21)] look Some((240, 878, 78, 124.8)) close Some((321.9, 1022.8, 62, 36)) copy None save Some((391.9, 1022.8, 126.2, 36)) squeeze 0",
-    "(390, 844, 2): dialog Some((分享卡片, (24, 24, 342, 796))) line [(39, 761.6, 312, 21)] look Some((15, 639.2, 78, 124.8)) close Some((96.9, 784, 62, 36)) copy None save Some((166.9, 784, 126.2, 36)) squeeze 0",
+    "(1440, 1000, 0): dialog Some((分享卡片, (540, 24, 360, 952))) line [(564, 761.6, 312, 21)] look Some((540, 795.2, 78, 124.8)) close Some((635.6, 940, 58, 36)) copy Some((701.6, 940, 102.7, 36)) save None squeeze 0",
+    "(1280, 640, 0): dialog Some((分享卡片, (460, 24, 360, 592))) line [(484, 761.6, 312, 21)] look Some((460, 435.2, 78, 124.8)) close Some((555.6, 580, 58, 36)) copy Some((621.6, 580, 102.7, 36)) save None squeeze 0",
+    "(840, 1100, 1): dialog Some((分享卡片, (240, 41.2, 360, 1017.6))) line [(264, 778.8, 312, 21)] look Some((240, 878, 78, 124.8)) close Some((321.8, 1022.8, 62, 36)) copy None save Some((391.8, 1022.8, 126.4, 36)) squeeze 0",
+    "(390, 844, 2): dialog Some((分享卡片, (24, 24, 342, 796))) line [(39, 761.6, 312, 21)] look Some((15, 639.2, 78, 124.8)) close Some((96.8, 784, 62, 36)) copy None save Some((166.8, 784, 126.4, 36)) squeeze 0",
   ])
   assert_eq(drawn, [true, true, true, true])
 }
@@ -390,15 +390,15 @@ test "stage, 大屏 keyboard and mouse: the window made shorter and taller again
     out.push("\{h}: \{stage_said(t)}")
     ink.push("\{h}: \{stage_ink(t, 1280.0, h)}")
   }
-  // (as main has it, 435d3ba8; the looks each their picture drawn small, 2026-11-02; 34 of them since 千恋＊万花's: their
+  // (as main has it, 435d3ba8, its buttons 0.2 wider since a small icon's strokes are (sf/icons.mbt stroke_k); the looks each their picture drawn small, 2026-11-02; 34 of them since 千恋＊万花's: their
   // strip as wide as the picture is laid out, from its start, scrolled, the stage as wide)
   assert_eq(out, [
-    "800: dialog Some((分享卡片, (460, 24, 360, 752))) line [(484, 761.6, 312, 21)] look Some((460, 595.2, 78, 124.8)) close Some((555.8, 740, 58, 36)) copy Some((621.8, 740, 102.5, 36)) save None squeeze 0",
-    "560: dialog Some((分享卡片, (460, 24, 360, 512))) line [(484, 761.6, 312, 21)] look Some((460, 355.2, 78, 124.8)) close Some((555.8, 500, 58, 36)) copy Some((621.8, 500, 102.5, 36)) save None squeeze 0",
-    "800: dialog Some((分享卡片, (460, 24, 360, 752))) line [(484, 761.6, 312, 21)] look Some((460, 595.2, 78, 124.8)) close Some((555.8, 740, 58, 36)) copy Some((621.8, 740, 102.5, 36)) save None squeeze 0",
+    "800: dialog Some((分享卡片, (460, 24, 360, 752))) line [(484, 761.6, 312, 21)] look Some((460, 595.2, 78, 124.8)) close Some((555.6, 740, 58, 36)) copy Some((621.6, 740, 102.7, 36)) save None squeeze 0",
+    "560: dialog Some((分享卡片, (460, 24, 360, 512))) line [(484, 761.6, 312, 21)] look Some((460, 355.2, 78, 124.8)) close Some((555.6, 500, 58, 36)) copy Some((621.6, 500, 102.7, 36)) save None squeeze 0",
+    "800: dialog Some((分享卡片, (460, 24, 360, 752))) line [(484, 761.6, 312, 21)] look Some((460, 595.2, 78, 124.8)) close Some((555.6, 740, 58, 36)) copy Some((621.6, 740, 102.7, 36)) save None squeeze 0",
   ])
   // (what it paints: its night over the window, the picture as large as it is drawn)
-  // (as main has it, 435d3ba8; the looks each their picture drawn small, 2026-11-02; the stage's own words alone since
+  // (as main has it, 435d3ba8, its buttons 0.2 wider since a small icon's strokes are (sf/icons.mbt stroke_k); the looks each their picture drawn small, 2026-11-02; the stage's own words alone since
   // the looks are in sets (main counted the page's under the picture too: 360 and 336, the stage's 327 both): the
   // picture a line smaller for the sets' names, all of its words in it)
   assert_eq(ink, [

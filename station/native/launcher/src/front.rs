@@ -40,6 +40,12 @@ pub struct Front {
     started: Option<Instant>,
     /// How it hands Node streams (`STREAMS`).
     streams: u64,
+    /// The launcher's executable identity when this front was started. macOS records it on the front's sockets.
+    #[cfg(target_os = "macos")]
+    launcher_uuid: Option<String>,
+    /// A front from before this identity was recorded must be replaced once.
+    #[cfg(target_os = "macos")]
+    uuid_recorded: bool,
 }
 
 impl Front {
@@ -90,7 +96,13 @@ impl Front {
         match listening(&mut out) {
             Some((said, streams)) if said == socket.to_string_lossy() => {
                 log::info(&format!("the front listens (pid {pid}): {}", socket.display()));
-                Some(Front { pid, input, socket, started: Some(Instant::now()), streams })
+                Some(Front {
+                    pid, input, socket, started: Some(Instant::now()), streams,
+                    #[cfg(target_os = "macos")]
+                    launcher_uuid: executable_uuid(),
+                    #[cfg(target_os = "macos")]
+                    uuid_recorded: true,
+                })
             }
             other => {
                 log::warn(&format!("the front (pid {pid}) did not listen ({other:?}); each Node binds the station's endpoint itself"));
@@ -115,7 +127,14 @@ impl Front {
 
     /// What the launcher it becomes (`renew`) takes it up by.
     pub fn state(&self) -> Value {
-        json!({ "pid": self.pid, "input": self.input.as_raw_fd(), "socket": self.socket, "streams": self.streams })
+        let state = json!({ "pid": self.pid, "input": self.input.as_raw_fd(), "socket": self.socket, "streams": self.streams });
+        #[cfg(target_os = "macos")]
+        let state = {
+            let mut state = state;
+            state["launcherUuid"] = json!(self.launcher_uuid);
+            state
+        };
+        state
     }
 
     pub fn fds(&self) -> Vec<RawFd> {
@@ -129,16 +148,31 @@ impl Front {
         let socket = PathBuf::from(state["socket"].as_str()?);
         crate::run::cloexec_on(input);
         // SAFETY: the descriptor the launcher before handed on, owned by this one from here.
-        Some(Front { pid, input: unsafe { OwnedFd::from_raw_fd(input) }, socket, started: None, streams: state["streams"].as_u64().unwrap_or(1) })
+        Some(Front {
+            pid, input: unsafe { OwnedFd::from_raw_fd(input) }, socket, started: None,
+            streams: state["streams"].as_u64().unwrap_or(1),
+            #[cfg(target_os = "macos")]
+            launcher_uuid: state["launcherUuid"].as_str().map(str::to_string),
+            #[cfg(target_os = "macos")]
+            uuid_recorded: state.get("launcherUuid").is_some(),
+        })
     }
 
     /// Itself where it hands streams as this launcher's release does; else ended (its connections go with it, the
     /// devices dial again), so that one of the release starts in its place.
     pub fn current(self) -> Option<Front> {
-        if self.streams >= STREAMS {
+        #[cfg(target_os = "macos")]
+        let identity_changed = identity_needs_refresh(self.uuid_recorded, self.launcher_uuid.as_deref(), executable_uuid().as_deref());
+        #[cfg(not(target_os = "macos"))]
+        let identity_changed = false;
+        if self.streams >= STREAMS && !identity_changed {
             return Some(self);
         }
-        log::warn(&format!("the front (pid {}) hands streams as {} and this release as {STREAMS}: ending it for the release's", self.pid, self.streams));
+        if identity_changed {
+            log::warn(&format!("the front (pid {}) was started by another launcher identity: ending it so macOS can match its local network permission", self.pid));
+        } else {
+            log::warn(&format!("the front (pid {}) hands streams as {} and this release as {STREAMS}: ending it for the release's", self.pid, self.streams));
+        }
         // SAFETY: a signal to this process's child (a launcher before this one started it in this same process), then
         // its exit waited for, so the next binds its socket and the station's endpoint with it gone.
         unsafe {
@@ -146,6 +180,84 @@ impl Front {
             libc::waitpid(self.pid, std::ptr::null_mut(), 0);
         }
         None
+    }
+}
+
+/// A missing field means a front from before identities were carried. If dyld could not read a recorded UUID, keep
+/// the front: repeatedly replacing it would interrupt every handover without making its identity any more certain.
+#[cfg(any(target_os = "macos", test))]
+fn identity_needs_refresh(recorded: bool, before: Option<&str>, now: Option<&str>) -> bool {
+    !recorded || matches!((before, now), (Some(a), Some(b)) if a != b)
+}
+
+/// UUID of the executable actually running, not the path the updater may already have replaced.
+#[cfg(target_os = "macos")]
+fn executable_uuid() -> Option<String> {
+    unsafe extern "C" {
+        fn _dyld_get_image_header(index: u32) -> *const u8;
+    }
+    // SAFETY: dyld's first image is this live executable; its 64-bit header and declared load commands are mapped.
+    let image = unsafe { _dyld_get_image_header(0) };
+    if image.is_null() { return None; }
+    // All supported macOS station builds are 64-bit. Check the bounded load command size before reading it.
+    let header = unsafe { std::slice::from_raw_parts(image, 32) };
+    if u32::from_ne_bytes(header[0..4].try_into().ok()?) != 0xfeedfacf { return None; }
+    let size = u32::from_ne_bytes(header[20..24].try_into().ok()?) as usize;
+    if size > 1024 * 1024 { return None; }
+    let commands = unsafe { std::slice::from_raw_parts(image.add(32), size) };
+    uuid_in_commands(commands)
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn uuid_in_commands(mut commands: &[u8]) -> Option<String> {
+    while commands.len() >= 8 {
+        let kind = u32::from_ne_bytes(commands[0..4].try_into().ok()?);
+        let size = u32::from_ne_bytes(commands[4..8].try_into().ok()?) as usize;
+        if size < 8 || size > commands.len() { return None; }
+        if kind == 0x1b && size >= 24 {
+            return Some(commands[8..24].iter().map(|b| format!("{b:02x}")).collect());
+        }
+        commands = &commands[size..];
+    }
+    None
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::{identity_needs_refresh, uuid_in_commands};
+
+    #[test]
+    fn old_front_is_replaced_once_and_same_launcher_keeps_connections() {
+        assert!(identity_needs_refresh(false, None, Some("new")));
+        assert!(!identity_needs_refresh(true, Some("new"), Some("new")));
+        assert!(identity_needs_refresh(true, Some("old"), Some("new")));
+        assert!(!identity_needs_refresh(true, None, Some("new")));
+        assert!(!identity_needs_refresh(true, Some("old"), None));
+    }
+
+    #[test]
+    fn reads_uuid_after_another_load_command_and_rejects_bad_lengths() {
+        let mut commands = Vec::new();
+        commands.extend_from_slice(&1u32.to_ne_bytes());
+        commands.extend_from_slice(&8u32.to_ne_bytes());
+        commands.extend_from_slice(&0x1bu32.to_ne_bytes());
+        commands.extend_from_slice(&24u32.to_ne_bytes());
+        commands.extend(0..16);
+        assert_eq!(uuid_in_commands(&commands).as_deref(), Some("000102030405060708090a0b0c0d0e0f"));
+        assert_eq!(uuid_in_commands(&commands[..commands.len() - 1]), None);
+        commands[4..8].copy_from_slice(&0u32.to_ne_bytes());
+        assert_eq!(uuid_in_commands(&commands), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn loaded_executable_uuid_matches_the_file() {
+        let file = std::env::current_exe().unwrap();
+        let output = std::process::Command::new("dwarfdump").arg("--uuid").arg(file).output().unwrap();
+        assert!(output.status.success());
+        let printed = String::from_utf8(output.stdout).unwrap();
+        let uuid = printed.split_whitespace().nth(1).unwrap().replace('-', "").to_lowercase();
+        assert_eq!(super::executable_uuid().as_deref(), Some(uuid.as_str()));
     }
 }
 

@@ -5,7 +5,8 @@
 - Processes: the launcher (`native/launcher`, Rust) keeps the pid, the data directory's lock and the ports, and on an
   update starts the next Node before letting the old one go; each agent process runs under a runner
   (`native/runner`), so a turn goes on while the station restarts or crashes and the next one takes it up
-  (`src/agents/runner.ts`; `adopt` in `src/agents/process.ts`). The station's iroh endpoint is kept by the MoonBit
+  (`src/agents/runner.ts`; `adopt` in `src/agents/process.ts`); a runner no driver holds once it has (`ownedRunners`),
+  or later, is ended (`src/sessions/hub.ts` `takeUp`, `endOrphan`). The station's iroh endpoint is kept by the MoonBit
   front (`mb/src/front/mesh.mbt`), which the launcher starts and keeps across Node's handovers
   (`native/launcher/src/front.rs`), for each Node in turn (`src/mesh/front.ts`, its streams carried by the shell and
   none of their bytes by the program); where none runs (Windows, a checkout without the program) Node binds it itself
@@ -58,8 +59,10 @@
   (`src/read/requested-builder.ts`) or is waited on by a person stays as it is, as do the readers that answer devices
   (`--data`, `--serve`, `--sessions`): throttled on a busy Mac, each would hold up a person or the permit. A walk of a tree the station does not own (a
   workspace, the home, a mirrored directory) goes through `src/ops/walk.ts` `walkBounded`: on its root's file system,
-  no link followed, bounded in entries, depth and time, yielding as it goes; a new walk does too, never a recursion of
-  its own (`src/read/machine.ts` `rolloutsIn`, synchronous on a reader thread, keeps the same bounds by itself).
+  no link followed (`followLinks` where a tree's folders are linked in by design, as ~/.agents/skills, codex.ts
+  `hostSkillsOff`: each real directory gone into once, so a link back up ends), bounded in entries, depth and time,
+  yielding as it goes; a new walk does too, never a recursion of its own (`src/read/machine.ts` `rolloutsIn`,
+  synchronous on a reader thread, keeps the same bounds by itself).
 - Time is the Clock's (a `TestClock` in tests): `Date.now`, `new Date()`, `setTimeout`, `setInterval` only in
   `src/ops/fibers.ts` (`wall`, for what is shared with other programs: mtimes, expiries, deadlines to processes).
   `scripts/check.sh` refuses them elsewhere.
@@ -68,9 +71,9 @@
 
 - Everything lasting is one SQLite file, `stillfail.db` (`src/store/store.ts`, schema in `src/store/schema.ts`): one
   write connection on the main thread; reads in reader threads (`src/read/pool.ts`: what is told as it changes and
-  what devices ask each on a line of its own) or the MoonBit program (`mb/`) for the reads moved to it: every read a
-  device asks (`src/read/pool.ts` MOVED, HISTORY), the station's reader thread answering only its checkpoint and a
-  card's queued pages (`src/read/worker.ts`). A move to the program is compared with the reads as a reader thread
+  what devices ask each on a line of its own) or the MoonBit program (`mb/`) for the reads moved to it: every read
+  (`src/read/pool.ts` MOVED, HISTORY), a card's queued pages and the checkpoint too, so where it is there no reader
+  thread is started (`src/read/worker.ts` is for a station without it). A move to the program is compared with the reads as a reader thread
   answered them before (`test/reference-worker.ts`, given a test's Readers by `test/reference.ts`) on the same data. At a handover
   the next process opens it while the one serving writes: every connection waits its turn (a busy timeout), and a
   transaction that writes begins `BEGIN IMMEDIATE` (`scripts/check.sh` refuses what a change adds otherwise).
@@ -125,28 +128,39 @@
   group of its own and followed to its end, a signal, a log, the memory's pressure, the store.
 - The remote tasks (station_task across stations) run there too, as the pseudo-actor `#remote`
   (`mb/src/reader/remote*.mbt`): what other stations ask of this one, the mirrors and their sweep, following tasks
-  started from here. Node (`src/jobs/remote.ts`) keeps the mesh bus, the file bytes (written and read at the path the
-  program names), the directory sync's sending side and the pieces it unpacks (`src/jobs/dirsync.ts`; a mirror's
-  manifest, plan and its application are the program's, `mb/src/reader/dirsync.mbt`), protected folders and the load.
+  started from here, and a directory's sync both ways (`mb/src/reader/dirsync_source.mbt`: what the directory has, Git's
+  or walked, each file's id, the plan and the contents packed by the shell, `fs.scan` and `zstd.pack`;
+  `mb/src/reader/dirsync.mbt`: the mirror's manifest, the pieces unpacked, the plan applied). Node
+  (`src/jobs/remote.ts`) keeps the mesh bus, the file bytes (written and read at the path the program names: a sync's
+  packed pieces landed in a file the program unpacks, a request's packed by the shell in a file Node sends), the bulk
+  requests' queue and the patch a task's changes come back as (`src/jobs/dirsync.ts`), protected folders and the load.
+  There is no sending in TypeScript to fall back to: the one it replaced is the tests' (`test/dirsync-reference.ts`),
+  which the program's listing and requests are compared with (`test/mb-dirsync.test.ts`).
 - The live view (what a running turn does, its rate, its background tasks and checklist, its transcript's entries as
   written) runs there too, as the pseudo-actor `#live` (`mb/src/reader/live.mbt`), a Claude session's events given it
   in the program. Node (`src/sessions/live.ts`) keeps what the program asks of it: where a transcript is, what one
   gained and a page of its past (the readers', other processes: a long read there would hold up every actor), the
   file's watch, the usage counter, and the listeners it gives what is told (a stream opening is told the sessions at
-  work as they are now once the program answers, what they did meanwhile after it: api/events.ts `heldWaits`).
+  work as they are now once the program answers, what they did meanwhile after it: api/events.ts `heldWaits`). The
+  usage counter's reads are a program's too (`src/usage/counter-mb.ts`, reader `--builder usage-counter`,
+  `mb/src/usagecount`: the transcripts read and their calls written there, Node only told what changed; started at a
+  read, let go idle), with no reading in TypeScript to fall back to: the one it replaced is the tests' only, which
+  the program's reads are compared with (`test/mb-usage-counter.test.ts`).
 - Runtimes are drivers behind one seam (`src/agents/runtime.ts`): Claude Code a `claude -p` process per session;
   Codex one app-server per account, a thread per session, whose per-session settings go in `thread/start`'s config,
-  never the process's environment; the others in `src/agents/`. A driver owns its child's stdin. Claude Code's output
-  is read by the MoonBit program (`src/agents/mb-agents.ts`, `mb/src/reader/agents.mbt`, its frames `mb/src/claude`)
-  where it is built, off the station's thread: Node starts and ends the processes and is told the events, each line
-  acknowledged to its runner once Node took them; a handover holds its reading first (`freeze`, hub.ts `handOver`).
+  never the process's environment, ended once idle (`WARM_MS`, its threads opened again with their next turn); the
+  others in `src/agents/`. A driver owns its child's stdin. Claude Code's output is read by the MoonBit program
+  (`src/agents/mb-agents.ts`, `mb/src/reader/agents.mbt`, its frames `mb/src/claude`), off the station's thread: Node
+  starts and ends the processes and is told the events, each line acknowledged to its runner once Node took them; a
+  handover holds its reading first (`freeze`, hub.ts `handOver`).
   A Claude session's events go to its actor in the program itself: Node is told each batch, takes what its own parts
-  need (a token's renewal, a turn's outcome) and says it taken (`routed`, mb-actor.ts `#took`), and the
-  program gives the actor and the live view the batch it kept; `test/hub-e2e.test.ts` holds that none goes through Node.
+  need (a token's renewal, a turn's outcome, told whole with its failure's reason: `mb/src/claude/outcome.mbt`) and
+  says it taken (`routed`, mb-actor.ts `#took`), and the program gives the actor and the live view the batch it kept;
+  `test/hub-e2e.test.ts` holds that none goes through Node.
   A Codex app-server's output is read there too, its lines given Node whole but for its diffs (`turn/diff/updated`,
-  of which the station keeps nothing). One program for every driver and the actors, running while one of them uses it.
-  `test/claude-here.test.ts` and `test/codex-here.test.ts` run the drivers' tests with it read here, as where the
-  program is not.
+  of which the station keeps nothing). One program for every driver and the actors, running while one of them uses it,
+  on every system a station runs on (a Windows runner's named pipe opened by the shell as its socket): there is no
+  reading of Claude Code's or Codex's output in TypeScript to fall back to, as there is no actor.
 - Their tools are the station's MCP endpoint (`src/tools/`, HTTP on 127.0.0.1, a bearer token per session). What they
   read of how to work is `src/agents/instructions.ts` and the skills in `src/skills/`. A change to the instructions, a
   tool's parameters or its rules adds a note at the end of `src/agents/migrations.ts` (the next number, a sentence),
@@ -371,9 +385,13 @@
 - The watch over the agents' processes leaves the station out (`src/jobs/memory.ts`); its own memory, Node's and its
   MoonBit programs' (`src/read/mb-reader.ts` `MbProcess.live`), is `src/ops/self-memory.ts`'s, run by
   `src/resources/module.ts`. Under the machine's pressure or past its soft limit it lets go only what answers nothing
-  (`Readers.trimIdle`, `src/read/pool.ts`): never a read under way, never a reader of what devices ask or streams tell,
-  and never the browser, whose chats' contexts are kept in memory only (`src/browser/browsers.ts`): closing it would sign
-  them out. Node held past its hard limit asks the launcher to hand over (`src/ops/restart.ts` `restarter`), never
+  (`Readers.trimIdle`, `src/read/pool.ts`, and what parts give it with `onTrim`): never a read under way, never a reader
+  thread of what devices ask or streams tell (one started again took seconds; the program's reader, milliseconds, may
+  go), and never the browser, whose chats' contexts are kept in memory only (`src/browser/browsers.ts`): closing it would sign
+  them out. The machine under pressure (high, critical), not the station past only its own limit, also ends every idle
+  session's process and every app-server no turn runs on (`Hub.evictAllIdle`, a driver's `evictIdle`): those are
+  gigabytes, and their conversations resume on the next message.
+  Node held past its hard limit asks the launcher to hand over (`src/ops/restart.ts` `restarter`), never
   `becomeOther` or an exit, which would end the sessions where there is no launcher.
 - What is written to a program's stdin is bounded both sides: Node ends a program that left `STDIN_MOST` unread
   (`src/read/mb-reader.ts`), and the program's own queue stops reading stdin past its bound (`mb/src/host/host.c`

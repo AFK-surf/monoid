@@ -306,14 +306,14 @@ fn info_things_node(
       info_row_node(t, "list", @sf.t("web-main.things.pullsAll", args=[("n", pulls.length().to_string())]), "", fn() {
         done()
         @sfpages.things_choose(r, "pulls")
-        side_change(src, r, "open", Some("things"))
+        side_tab_open(src, r, "things")
       })
     }
     // (sfpages things.mbt)
     if things > 0 {
       info_row_node(t, "photo", @sf.t("web-main.things.title"), things.to_string(), fn() {
         done()
-        side_change(src, r, "open", Some("things"))
+        side_tab_open(src, r, "things")
       })
     }
     if files {

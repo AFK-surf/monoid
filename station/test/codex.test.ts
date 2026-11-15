@@ -4,7 +4,7 @@
 // up by a next driver (with a snapshot, and after a crash) with the turn's end told once and no live event twice.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import fs from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { after, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { CodexDriver, classifyCodexError, type CodexDriverOptions } from "../src/agents/codex.ts";
+import { CodexDriver, classifyCodexError, hostSkillsOff, type CodexDriverOptions } from "../src/agents/codex.ts";
 import { REPO_RULES_COMMAND } from "../src/agents/repo-rules.ts";
 import { ackedOffset, outFile, runnerId } from "../src/agents/process.ts";
 import { allLeft, existingRunners, type RunnerInfo } from "../src/agents/runner.ts";
@@ -20,6 +20,7 @@ import type { OpenOptions, Profile, RuntimeEvent } from "../src/agents/runtime.t
 import { readAgentEnvFrom } from "../src/ops/agent-env.ts";
 import { transcriptPaths } from "../src/read/transcript.ts";
 import { tempDir } from "./temp-dir.ts";
+import { settle, testClock } from "./hub-fakes.ts";
 
 const fake = join(dirname(fileURLToPath(import.meta.url)), "fake");
 process.env.PATH = `${fake}${delimiter}${process.env.PATH}`;
@@ -227,6 +228,60 @@ describe("the Codex driver", { concurrency: true }, () => {
     const session = await d.open(options(profile(), { textOnly: true }), listen().push);
     assert.equal(probed, false);
     await session.dispose();
+  });
+
+  // An app-server once up never ended: three left idle went on 35 to 49 hours, some 107 MB (2026-11-15).
+  test("an app-server idle warmMs ends, its idle threads closed with no turn ended; the next opens it again, resuming", async () => {
+    const time = testClock();
+    const d = driver({ clock: time.clock, warmMs: 60_000 });
+    const p = profile();
+    const a = listen();
+    const session = await d.open(options(p), a.push);
+    await session.prompt("say:hi");
+    await a.until(ended(1));
+    const runner = existingRunners(data).find((r) => r.id === runnerId("codex", p.id))!;
+    assert.ok(runner, "its app-server runs");
+    await time.begun(1);
+    await time.adjust(59_000);
+    await settle();
+    assert.ok(!a.events.some((e) => e.type === "closed"), "idle less than warmMs");
+    await time.adjust(1_000);
+    await a.until((e) => e.some((x) => x.type === "closed"));
+    assert.equal(ends(a.events).length, 1, "no turn ended by it");
+    await eventually(() => !existingRunners(data).some((r) => r.id === runner.id && r.runner === runner.runner));
+    const b = listen();
+    const again = await d.open(options(p, { resume: session.id() }), b.push);
+    await again.prompt("say:back");
+    await b.until(ended(1));
+    assert.equal(outcome(b.events).kind, "completed");
+    assert.equal(again.id(), session.id(), "the same thread");
+    assert.equal(starts(p.dump).length, 2, "on a new app-server");
+    await again.dispose();
+  });
+
+  test("the machine short of memory ends the app-servers no turn runs on at once; one with a turn running goes on", async () => {
+    const d = driver();
+    const idle = profile();
+    const busy = profile();
+    const a = listen();
+    const b = listen();
+    const one = await d.open(options(idle), a.push);
+    const other = await d.open(options(busy), b.push);
+    await other.prompt("hold:1");
+    await b.until((e) => deltas(e).length > 0);
+    assert.equal(await d.evictIdle(), 1);
+    assert.ok(a.events.some((e) => e.type === "closed"), "the idle one's thread closed");
+    assert.equal(ends(a.events).length, 0);
+    assert.ok(!b.events.some((e) => e.type === "closed"));
+    assert.equal(await other.steer("finish"), true, "its turn goes on");
+    await b.until(ended(1));
+    assert.equal(outcome(b.events).kind, "completed");
+    const c = listen();
+    const again = await d.open(options(idle, { resume: one.id() }), c.push);
+    await again.prompt("say:back");
+    await c.until(ended(1));
+    assert.equal(outcome(c.events).kind, "completed");
+    await Promise.all([again.dispose(), other.dispose()]);
   });
 
   // A profile's app-server is shared by its chats: waiting for its turn held every new chat of the profile back as long
@@ -1138,6 +1193,62 @@ describe("the Codex driver", { concurrency: true }, () => {
 });
 
 // Alone: the station's variables are the whole process's, and every app-server above would be out of date under them.
+// The user's own skills turned off by file, found off the station's thread: linked folders followed, each real folder
+// once (a link back to its parent ends there), six levels down at most, in the order comparePaths gives.
+test("the host's skills are found off the station's thread", async () => {
+  const root = tempDir(join(tmpdir(), "cx-skills-"));
+  const deep = join(root, "a", "b", "c", "d", "e", "f");
+  mkdirSync(join(deep, "g"), { recursive: true });
+  writeFileSync(join(deep, "SKILL.md"), "");
+  writeFileSync(join(deep, "g", "SKILL.md"), "");
+  mkdirSync(join(root, "Mine"));
+  writeFileSync(join(root, "Mine", "SKILL.md"), "");
+  writeFileSync(join(root, "Mine", "notes.md"), "");
+  const linked = tempDir(join(tmpdir(), "cx-linked-"));
+  writeFileSync(join(linked, "SKILL.md"), "");
+  symlinkSync(linked, join(root, "linked"), "junction");
+  symlinkSync(root, join(root, "Mine", "back"), "junction");
+  symlinkSync(join(root, "nowhere"), join(root, "broken"), "junction");
+  const off = await hostSkillsOff(root);
+  assert.ok(off.every((s) => s.enabled === false));
+  assert.deepEqual(off.map((s) => s.path), [join(root, "Mine", "SKILL.md"), join(deep, "SKILL.md"), join(root, "linked", "SKILL.md")]);
+  assert.deepEqual(await hostSkillsOff(join(root, "nowhere")), []);
+});
+
+// A walk of a tree the station does not own (station/AGENTS.md, walkBounded): links into one another end at the first
+// real folder, a clone's or an environment's insides are not gone into, and a tree too big is cut at its bound.
+test("the host's skills are walked bounded: links round in a ring end, node_modules is left out, too many entries cut it", async () => {
+  const root = tempDir(join(tmpdir(), "cx-skills-bounded-"));
+  mkdirSync(join(root, "a"));
+  mkdirSync(join(root, "b"));
+  writeFileSync(join(root, "a", "SKILL.md"), "");
+  writeFileSync(join(root, "b", "SKILL.md"), "");
+  // a → b → a: followed without a ring's end it would go round to its depth, each folder again under a longer path.
+  symlinkSync(join(root, "b"), join(root, "a", "to-b"), "junction");
+  symlinkSync(join(root, "a"), join(root, "b", "to-a"), "junction");
+  for (const left of ["node_modules", ".git", ".venv"]) {
+    mkdirSync(join(root, "a", left, "pkg"), { recursive: true });
+    writeFileSync(join(root, "a", left, "pkg", "SKILL.md"), "");
+  }
+  // A link to a file named SKILL.md is a skill as the file it names.
+  const elsewhere = tempDir(join(tmpdir(), "cx-skill-file-"));
+  writeFileSync(join(elsewhere, "SKILL.md"), "");
+  mkdirSync(join(root, "c"));
+  symlinkSync(join(elsewhere, "SKILL.md"), join(root, "c", "SKILL.md"), "file");
+  const off = (await hostSkillsOff(root)).map((s) => s.path);
+  assert.deepEqual(off, [join(root, "a", "SKILL.md"), join(root, "b", "SKILL.md"), join(root, "c", "SKILL.md")]);
+
+  const many = tempDir(join(tmpdir(), "cx-skills-many-"));
+  for (let i = 0; i < 40; i++) {
+    mkdirSync(join(many, `s${String(i).padStart(2, "0")}`));
+    writeFileSync(join(many, `s${String(i).padStart(2, "0")}`, "SKILL.md"), "");
+  }
+  // The root, its 40 folders, then 9 of their SKILL.md: what was found before the bound is what is turned off.
+  const cut = await hostSkillsOff(many, { maxEntries: 50 });
+  assert.equal(cut.length, 9);
+  assert.equal((await hostSkillsOff(many)).length, 40);
+});
+
 describe("the Codex driver under the station's variables", () => {
   test("the station's variables for its agents: an app-server starts with them, again once idle when they change; a profile's own win", async (t) => {
     t.after(() => readAgentEnvFrom(() => null));

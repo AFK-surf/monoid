@@ -349,3 +349,166 @@ test "a station's page whose screens the core never answers opens open_hold_ms a
     ignore(t)
   }
 }
+
+///|
+/// A window (`wide`: 1280 × 800, else 390 × 844) at rest over the settings' fixture answered through the app's client,
+/// what `late` names `open_late_ms` late, each else at once, `gates` as open_whole_tester's, `before` put on the stack
+/// first; then `act` at a moment, and from it each display's frame till rest: the most bones any draws.
+fn late_act(
+  wide : Bool,
+  gates : Bool,
+  late : (String, Map[String, Json]) -> Bool,
+  before : () -> Unit,
+  act : (@ui.Tester, Source) -> Unit,
+  mode? : String = "settings",
+) -> (Int, @ui.Tester) {
+  new_run()
+  before()
+  let src : Source = {
+    ..round_trip_again(fixture(mode), 0.0, late=fn(name, params) { if late(name, params) { open_late_ms } else { 0.0 } }),
+    reads_ahead: fn() { true },
+    gates_opens: fn() { gates },
+  }
+  let (w, h) = if wide { (1280.0, 800.0) } else { (390.0, 844.0) }
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~)
+  t.draw()
+  t.run_for(@ui.move_most_ms * 2.0)
+  act(t, src)
+  let mut most = t.bones_drawn()
+  let till = t.time() + open_late_ms + @ui.move_most_ms * 2.0
+  while t.time() < till {
+    t.run_for(@ui.frame_period_default)
+    most = @cmp.maximum(most, t.bones_drawn())
+  }
+  (most, t)
+}
+
+///|
+let layer_chat : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
+
+///|
+/// Each of `cases` (what it is, `wide`, what is late, what is on the stack first, what is done) run with and without
+/// MBUI_OPEN_WHOLE: with it no frame from the press to rest draws bones, without it one does.
+fn late_cases(
+  cases : Array[(String, Bool, (String, Map[String, Json]) -> Bool, () -> Unit, (@ui.Tester, Source) -> Unit)],
+) -> Unit raise {
+  let faults : Array[String] = []
+  for case in cases {
+    let (what, wide, late, before, act) = case
+    for gates in [false, true] {
+      let (most, _) = late_act(wide, gates, late, before, act)
+      if gates && most > 0 {
+        faults.push("\{what}: \{most} bones drawn on the way, MBUI_OPEN_WHOLE on")
+      }
+      if !gates && most == 0 {
+        faults.push("\{what}: none drawn MBUI_OPEN_WHOLE off: the case shows nothing")
+      }
+    }
+  }
+  assert_eq(faults, [])
+}
+
+///|
+test "a settings' page switched to from the settings' sidebar, the stations' place switched to another station, on 大屏, and a chat's 任务 sheet on 小屏, over a core 40 ms late: the screen as it was till what it shows is answered, then whole; before MBUI_OPEN_WHOLE, on its bones" {
+  let jobs_whole = fn(name : String, params : Map[String, Json]) { name == "chatJobs" && !params.contains("summary") }
+  late_cases([
+    (
+      "大屏 设置 › 用量",
+      true,
+      fn(name, _) { name == "usage" },
+      fn() { app.nav.replace_above(0, [Home, Setting(@settings.Route::Me)]) },
+      fn(t, _) {
+        @ui.view_tree().unwrap().event(t.time(), fn() { app.nav.replace_above(1, [Setting(@settings.Route::Usage)]) })
+      },
+    ),
+    (
+      "大屏 Station › Maple",
+      true,
+      fn(name, params) { station_late(name) > 0.0 && params.get("station") == Some(Json::string("ws1/st2")) },
+      fn() {
+        app.nav.replace(Place("stations"))
+        @sfdesk.place_pick_station("ws1", "ws1/st1")
+      },
+      fn(t, _) { t.tap_text("Maple") },
+    ),
+    (
+      "小屏 对话 › 任务",
+      false,
+      jobs_whole,
+      fn() { app.nav.replace_above(0, [Home, Chat(layer_chat)]) },
+      fn(t, src) { @ui.view_tree().unwrap().event(t.time(), fn() { open_chat_jobs(src, layer_chat) }) },
+    ),
+  ])
+}
+
+///|
+test "a chat opened over a core that answers its draft and its jobs' summary 40 ms late: on 小屏 and 大屏 the page comes on top once they are answered, never a frame before; before MBUI_OPEN_WHOLE, at once" {
+  let faults : Array[String] = []
+  for wide in [false, true] {
+    for gates in [false, true] {
+      let shown_at : Ref[Double?] = Ref(None)
+      let start = Ref(0.0)
+      let (_, t) = late_act(
+        wide,
+        gates,
+        fn(name, params) { name == "composer" || (name == "chatJobs" && params.contains("summary")) },
+        fn() {  },
+        fn(t, _) {
+          start.val = t.time()
+          @ui.view_tree().unwrap().event(t.time(), fn() { @sfbase.open_page(Chat(layer_chat)) })
+          let till = t.time() + open_late_ms + @ui.move_most_ms
+          while t.time() < till && shown_at.val is None {
+            t.run_for(@ui.frame_period_default)
+            if t.words().iter().any(fn(w) { w.0 == layer_chat_words && w.5 > 0.01 && w.1 >= 0.0 && w.1 < (if wide { 1280.0 } else { 390.0 }) }) {
+              shown_at.val = Some(t.time() - start.val)
+            }
+          }
+        },
+        mode="chat-compose",
+      )
+      ignore(t)
+      let at = "\{if wide { "大屏" } else { "小屏" }}, gates \{gates}"
+      match shown_at.val {
+        Some(ms) if gates && ms < open_late_ms => faults.push("\{at}: its page seen \{ms} ms after the press")
+        Some(ms) if !gates && ms >= open_late_ms => faults.push("\{at}: its page first seen \{ms} ms after the press")
+        None => faults.push("\{at}: its page never seen")
+        _ => ()
+      }
+    }
+  }
+  assert_eq(faults, [])
+}
+
+///|
+/// What the chat's page shows of its last message (the chat's fixture's), on no other page.
+let layer_chat_words : String = "做完了：列表、跳到最新的按钮、加载更早的消息都好了，截图也换了。"
+
+///|
+test "a chat's 任务 opened beside it on 大屏 over a core that answers its jobs 40 ms late: the panel as it was till they are answered, then the tab with them; before MBUI_OPEN_WHOLE, at the press" {
+  let faults : Array[String] = []
+  for gates in [false, true] {
+    let early = Ref(false)
+    let (_, t) = late_act(
+      true,
+      gates,
+      fn(name, params) { name == "chatJobs" && !params.contains("summary") },
+      fn() { app.nav.replace_above(0, [Home, Chat(layer_chat)]) },
+      fn(t, src) {
+        @ui.view_tree().unwrap().event(t.time(), fn() { @sfdesk.side_toggle(src, layer_chat, "jobs") })
+        let till = t.time() + open_late_ms - @ui.frame_period_default
+        while t.time() < till {
+          t.run_for(@ui.frame_period_default)
+          early.val = early.val || @sfdesk.side_now(src, layer_chat).0.contains("jobs")
+        }
+      },
+      mode="chat-jobs",
+    )
+    if early.val != !gates {
+      faults.push("gates \{gates}: open before its jobs were answered: \{early.val}")
+    }
+    if t.find("在线 · 3 小时") is None {
+      faults.push("gates \{gates}: its job not shown at rest")
+    }
+  }
+  assert_eq(faults, [])
+}

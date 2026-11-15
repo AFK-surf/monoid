@@ -1,6 +1,6 @@
 // An agent's execution history's steps, in any pane (still.fail web/src/History.tsx, History.css.ts; ToolStep.tsx,
 // ToolStep.css.ts): what the core put together (its `history` view) drawn turn by turn, each prompt that woke the agent
-// beginning one under a rule saying when and what it did; each event a mark in the gutter on the turn's rail and what it
+// beginning one (its time shown once 5 min or a day has passed); each event a mark in the gutter on the turn's rail and what it
 // is beside it. What people were sent leads, on a card; the agent's own words are a grey line; the calls and thoughts
 // between fold into a group, a call opening to what it asked for and what came back (the core's reading of them:
 // `history.tool`). Long words fold to a few lines. A call or thought in brief is read whole as it is opened
@@ -203,7 +203,13 @@ fn steps_list_node(
     b.box(fn(l) {
       steps_fills(l)
       let make_row = fn(p : @view.View, row : StepsRow) {
-        steps_box_node(p, if row is Edge { steps_row_first } else { steps_row }, fn(r) {
+        let row_style = match row {
+          Edge => steps_row_first
+          Item(item, _) if field(Some(item), "turn") is Some(Object(_)) && turn_time_of(Some(item)) == "" =>
+            steps_row_turn
+          _ => steps_row
+        }
+        steps_box_node(p, row_style, fn(r) {
           match row {
             Edge =>
               r.pick(at_once=true, fn() { steps_head_of(src, params, lkey).more }, fn(e, more) {
@@ -379,7 +385,7 @@ pub fn steps_sample_node(v : @view.View, station : String, key : String, tips : 
       "body": { "kind": Json::string(kind), "content": content },
     }
     if i == 0 {
-      item["turn"] = { "time": Json::string(@sf.sample_words(4)), "text": Json::string(@sf.sample_words(8)) }
+      item["turn"] = { "time": Json::string(@sf.sample_words(4)) }
     }
     let item = Json::object(item)
     steps_box_node(v, if i == 0 { steps_row_first } else { steps_row }, fn(r) {
@@ -389,7 +395,15 @@ pub fn steps_sample_node(v : @view.View, station : String, key : String, tips : 
 }
 
 ///|
-/// An item in `v`: the rule of the turn it begins, then its events; on the accent's faint ground while
+fn turn_time_of(item : Json?) -> String {
+  match field(item, "turn") {
+    Some(Object(_)) as turn => text(turn, "time")
+    _ => ""
+  }
+}
+
+///|
+/// An item in `v`: the time of the turn it begins (when shown), then its events; on the accent's faint ground while
 /// `marked` says (an entry gone to).
 fn history_row_node(
   v : @view.View,
@@ -406,26 +420,21 @@ fn history_row_node(
     @sf.style_node(b, fn() { h_item })
     // (gone to: on the accent's faint ground a moment, hItem[data-focus])
     b.ground(By(fn() { if marked() { @ui.tree_theme().color(A(Accent, O10)) } else { 0L } })) |> ignore
-    match field(item, "turn") {
-      Some(Object(_)) as turn =>
-        steps_box_node(b, h_turn, fn(t) {
-          let said = match text(turn, "time") {
-            "" => text(turn, "text")
-            time => time + " · " + text(turn, "text")
-          }
-          t.box(fn(w) {
-            w
-            .words(Is(said))
-            .words_look(By(fn() { @ui.style_words(h_turn_words) }))
-            .ink(By(fn() { @ui.style_ink(h_turn_words) }))
-            .cuts(Is(true))
-            .min_width(Is(Some(0.0)))
-            .allow_ellipsis(Is(true))
-            |> ignore
-          })
+    let time = turn_time_of(item)
+    if time != "" {
+      steps_box_node(b, h_turn, fn(t) {
+        t.box(fn(w) {
+          w
+          .words(Is(time))
+          .words_look(By(fn() { @ui.style_words(h_turn_words) }))
+          .ink(By(fn() { @ui.style_ink(h_turn_words) }))
+          .cuts(Is(true))
+          .min_width(Is(Some(0.0)))
+          .allow_ellipsis(Is(true))
           |> ignore
         })
-      _ => ()
+        |> ignore
+      })
     }
     steps_main_node(b, fn(m) { item_node(m, src, station, key, ik, item, rail, tips) })
   })
@@ -646,7 +655,10 @@ fn item_node(
             let open = fn() { steps_own.opened.contains(key) }
             b.by_room(fn(b, room) {
               b.fills_across(Is(true)) |> ignore
-              let fits = fn() { single && need_px <= dmax(180.0, room.width() - 24.0) }
+              let fits = fn() {
+                single &&
+                  @sf.node_words_w(words, @sf.node_sp(b, @ui.style_words(h_one_words).size)) <= dmax(180.0, room.width() - 2.0)
+              }
               b.pick(at_once=true, fits, fn(p, is_short) {
                 if is_short {
                   steps_box_node(p, h_one, fn(o) { steps_words(o, fn() { line }, h_one_words) })
@@ -997,11 +1009,7 @@ fn fold_node(
 
 ///|
 fn single_line_px(words : String, prefix_px? : Double = 0.0) -> Double {
-  let mut w = prefix_px
-  for c in words {
-    w = w + (if c <= '\u{7f}' { 6.6 } else { 12.2 })
-  }
-  w
+  prefix_px + (if words == "" { 0.0 } else { @sf.node_words_w(words, 12.0) })
 }
 
 ///|
@@ -1639,13 +1647,16 @@ fn steps_opened_under(ik : String) -> Bool {
 /// `reused`) instead of tearing down and rebuilding every row that enters or leaves the viewport.
 fn steps_row_shape(row : StepsRow?, ignore_opened? : Bool = false) -> Int? {
   match row {
-    Some(Live(_, _)) => return Some(44)
+    Some(Live(_, _)) => return Some(66)
     Some(Item(item, _)) => {
       let ik = text(Some(item), "key")
       if ik == "" || (!ignore_opened && steps_opened_under(ik)) {
         return None
       }
-      let has_turn = field(Some(item), "turn") is Some(Object(_))
+      let turn_kind = match field(Some(item), "turn") {
+        Some(Object(_)) as t => if text(t, "time") != "" { 2 } else { 1 }
+        _ => 0
+      }
       let body = field(Some(item), "body")
       let content = field(body, "content")
       let base = match text(body, "kind") {
@@ -1722,7 +1733,7 @@ fn steps_row_shape(row : StepsRow?, ignore_opened? : Bool = false) -> Int? {
         }
         _ => return None
       }
-      Some(base * 2 + (if has_turn { 1 } else { 0 }))
+      Some(base * 3 + turn_kind)
     }
     _ => None
   }
@@ -1814,7 +1825,7 @@ fn steps_reused_row_node(
       }
       None => {
         guard init_shape is Some(shape) else { return }
-        let base = shape / 2
+        let base = shape / 3
         if base == 22 {
           let live_words_sig = @signals.computed(
             fn(_) {
@@ -1844,7 +1855,7 @@ fn steps_reused_row_node(
           })
           return
         }
-        let has_turn = (shape & 1) != 0
+        let turn_kind = shape % 3
         let item_fn = fn() {
           match picked.get().row {
             Some(Item(item, _)) => Some(item)
@@ -1873,20 +1884,14 @@ fn steps_reused_row_node(
           let l = lit.get()
           l != "" && l == item_key()
         }
-        steps_box_node(p, steps_row, fn(r) {
+        steps_box_node(p, if turn_kind == 1 { steps_row_turn } else { steps_row }, fn(r) {
           r.box(fn(b) {
             @sf.style_node(b, fn() { h_item })
             b.ground(By(fn() { if marked() { @ui.tree_theme().color(A(Accent, O10)) } else { 0L } })) |> ignore
-            if has_turn {
+            if turn_kind == 2 {
               steps_box_node(b, h_turn, fn(t) {
                 let said_sig = @signals.computed(
-                  fn(_) {
-                    let turn = field(item_fn(), "turn")
-                    match text(turn, "time") {
-                      "" => text(turn, "text")
-                      time => time + " · " + text(turn, "text")
-                    }
-                  },
+                  fn(_) { turn_time_of(item_fn()) },
                   same=fn(a, b) { a == b },
                 )
                 t.box(fn(w) {
@@ -3322,6 +3327,10 @@ let steps_row_first : @ui.Style = @ui.css("w=Full px=S4 pt=S3")
 
 ///|
 // kept across runs: a value (no field of it changes)
+let steps_row_turn : @ui.Style = @ui.css("w=Full px=S4 pt=S4")
+
+///|
+// kept across runs: a value (no field of it changes)
 let steps_row : @ui.Style = @ui.css("w=Full px=S4 pt=S2_5")
 
 ///|
@@ -3357,9 +3366,9 @@ pub fn history_marked() -> (String, String) {
 pub let steps_marked_ms : Double = 1600.0
 
 ///|
-/// A turn's rule (hTurn): 4 over it, 11 muted, a line on to the edge 8 after the words.
+/// A turn's time (hTurn): 4 over it, centered 11 muted when shown.
 // kept across runs: a value (no field of it changes)
-let h_turn : @ui.Style = @ui.css("row w=Full pt=S1 gap=S2 align=ACenter")
+let h_turn : @ui.Style = @ui.css("row w=Full pt=S1 justify=JCenter align=ACenter")
 
 ///|
 // kept across runs: a value (no field of it changes)

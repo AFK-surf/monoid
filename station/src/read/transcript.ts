@@ -514,6 +514,31 @@ export function transcriptLocationHints(dataDir: string, profiles: readonly { ho
   };
 }
 
+/// Every in-process hint, for the usage counter's program (usage/counter-mb.ts), which finds transcripts as
+/// `transcriptPaths` here and gives back what it found (`takeTranscriptHints`).
+export function allTranscriptHints(): TranscriptLocationHints {
+  return {
+    elsewhere: [...elsewhere], rollouts: [...rollouts],
+    said: [...saidRollouts].map(([id, dirs]) => [id, [...dirs].map(([dir, entry]) => [dir, { ...entry }] as [string, SaidRollout])]),
+  };
+}
+
+/// What another process found looking for transcripts with `allTranscriptHints`: the places found kept as if found
+/// here, a reported rollout seen once there.
+export function takeTranscriptHints(found: TranscriptLocationHints): void {
+  for (const [key, path] of found.elsewhere) {
+    const id = key.slice(key.indexOf("\0") + 1);
+    if (!elsewhere.has(key) || elsewhere.get(key) !== path) { elsewhere.set(key, path); hintChanged(id); }
+  }
+  for (const [key, path] of found.rollouts) {
+    if (rollouts.get(key) !== path) { rollouts.set(key, path); hintChanged(key.slice(key.indexOf("\0") + 1)); }
+  }
+  for (const [id, dirs] of found.said) for (const [dir, entry] of dirs) {
+    const old = saidRollouts.get(id)?.get(dir);
+    if (old !== undefined && old.suffix === entry.suffix && entry.seen && !old.seen) { old.seen = true; hintChanged(id); }
+  }
+}
+
 /// Used in the dedicated locator worker, whose transcript caches belong to one batch at a time.
 export function useTranscriptLocationHints(hints: TranscriptLocationHints): void {
   elsewhere.clear();

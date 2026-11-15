@@ -912,32 +912,29 @@ export function presentHistory(live: J, cx: Context): J {
     return out;
   });
 
-  // Turns: each prompt that woke the agent (not one of a sub-agent's) begins one, on its item, saying when and what the
-  // turn did up to the next: how many calls, how many messages it sent (or that it sent none). Items before the first
-  // loaded one belong to a turn that began on an earlier page.
-  type Turn = { at: number | null; steps: number; posts: number; item: J };
-  let turn: Turn | null = null;
-  const turns: Turn[] = [];
+  // Turns: each prompt that woke the agent (not one of a sub-agent's) begins one, on its item; its time is shown when
+  // at least TURN_TIME_GAP_MS (or a local day boundary) has passed since the last shown turn time. Items before the
+  // first loaded one belong to a turn that began on an earlier page.
+  const TURN_TIME_GAP_MS = 5 * 60_000;
+  let lastTurnTimeAt: number | null = null;
   items.forEach(([item, first], n) => {
     if (item.kind === "received" && !flag(timeline[item.i], "subagent")) {
-      const at = typeof timeline[first]?.at === "string" ? epochMs(timeline[first].at) : null;
-      turn = { at: at === null ? null : Math.trunc(at), steps: 0, posts: 0, item: shown[n] };
-      turns.push(turn);
-    } else if (turn !== null) {
-      if (item.kind === "group") turn.steps += item.rows.filter((r) => "step" in r).length;
-      else if (item.kind === "post") turn.posts++;
+      const rawAt = typeof timeline[first]?.at === "string" ? epochMs(timeline[first].at) : null;
+      const at = rawAt === null ? null : Math.trunc(rawAt);
+      const showTime =
+        at !== null &&
+        (lastTurnTimeAt === null ||
+          Math.abs(at - lastTurnTimeAt) >= TURN_TIME_GAP_MS ||
+          format.localDay(at, cx.offsetMin) !== format.localDay(lastTurnTimeAt, cx.offsetMin));
+      if (showTime) lastTurnTimeAt = at;
+      shown[n].turn = {
+        ...(at !== null ? { at } : {}),
+        ...(showTime
+          ? { time: cx.now !== undefined ? format.dayClock(at, cx.now, cx.offsetMin) : format.clock(at, cx.offsetMin) }
+          : {}),
+      };
     }
   });
-  for (const { at, steps: n, posts, item } of turns) {
-    const did = [
-      ...(n > 0 ? [t("core-logic.history.turn.steps", { n })] : []),
-      posts > 0 ? t("core-logic.history.turn.posts", { n: posts }) : t("core-logic.history.turn.silent"),
-    ].join(" · ");
-    item.turn = {
-      ...(at !== null ? { at, time: cx.now !== undefined ? format.dayClock(at, cx.now, cx.offsetMin) : format.clock(at, cx.offsetMin) } : {}),
-      text: did,
-    };
-  }
 
   const pushedNow = pushed(live, cx.runtime);
   const liveSteps = pushedNow.liveSteps.map(({ id, text }) => ({ id, text }));

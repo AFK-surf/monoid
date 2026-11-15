@@ -1921,6 +1921,9 @@ fn fx_station(address : String) -> Json {
       ("face", str(if up { "idle" } else { "offline" })),
       ("online", Json::boolean(up)),
       ("link", obj([("state", str(if up { "online" } else { "offline" }))])),
+      // (away, as Willow away says it)
+      ("stateText", str(if up { "" } else { "2 天前在线" })),
+      ("problems", if up { [] } else { [obj([("key", str("away")), ("level", str("red")), ("text", str("离线：在该机器上打开 still.fail 即可重新连接"))])] }),
       ("runtimes", []),
       ("models", []),
     ])
@@ -2531,6 +2534,9 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
           ),
         ]),
       )
+    // (Willow's: Maple is away, none of its own known)
+    "screens" if text(Some(Json::object(params)), "station") == "ws1/st2" =>
+      Some(obj([("screens", Json::array([])), ("outdated", Json::boolean(false)), ("control", Json::boolean(false)), ("known", Json::boolean(true))]))
     "screens" => {
       let m = if mode.has_suffix("-dark") { mode.unsafe_substring(start=0, end=mode.length() - 5) } else { mode }
       if m == "settings-station-pages" || m == "screen-pages" || m == "screen-user-pages" || m == "screen-user-tabs" {

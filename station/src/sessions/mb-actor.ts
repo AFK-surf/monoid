@@ -456,7 +456,8 @@ export class MbActor {
   release() { return this.#call("release").then(() => undefined); }
   warm() { return this.#call("warm").then(() => undefined); }
   changed(restart = false) { return this.#call("changed", [restart]).then(() => undefined); }
-  evict() { return this.#call("evict").then(() => undefined); }
+  /// Ends its process if idle; `force` (its session archived) even with work left in its background (`holding`).
+  evict(force = false) { return this.#call("evict", [force]).then(() => undefined); }
   compact(say = false): Promise<string | null> { return this.#call("compact", [say]); }
   compactToCap() { return this.#call("compactToCap").then(() => undefined); }
   clear(say = false, readBack = false): Promise<string | null> { return this.#call("clear", [say, readBack]); }
@@ -479,15 +480,21 @@ export class MbActor {
     return { ...snap, agent } as Snapshot;
   }
 
-  adopt(snap: Snapshot, agent: AgentSession | null, profile: string) {
+  /// Takes up `snap` with its runtime session `agent`; done once the program has. What the hub reads at once (its
+  /// idle time, `idleMs`) is so from here: the hub looks at it as it takes up (hub.ts `idleNow`, `evictIdle`), and read
+  /// as a session's with no process, every handover started its idle time again (2026-11-15).
+  adopt(snap: Snapshot, agent: AgentSession | null, profile: string): Promise<void> {
     let taken: Json = null;
     if (agent) {
       const handle = ++this.#next;
       this.#agents.set(handle, { generation: this.#generation, session: agent });
       taken = { handle, generation: this.#generation };
+      this.#mirror = { ...this.#mirror, agent: handle, turn: snap.turn?.id ?? null, idleSince: this.#program.now() - (snap.idleMs ?? 0), runtime: snap.runtime };
+      this.runtime = snap.runtime;
     }
-    void this.#call("adopt", [{ ...snap, agent: null }, taken, profile, this.#deps.store.getSession(this.key)]);
+    const adopted = this.#call("adopt", [{ ...snap, agent: null }, taken, profile, this.#deps.store.getSession(this.key)]);
     if (agent) this.#route(agent, this.#generation);
+    return adopted.then(() => undefined);
   }
 
   close() {

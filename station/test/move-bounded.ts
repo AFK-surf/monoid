@@ -45,17 +45,6 @@ let dir = "";
   syncBuiltinESMExports();
 }
 
-/// `f` done uncounted: the chats' sizing a plan read starts (move/sizes.ts), done at once in a test, is no trip's.
-export function uncounted<T>(f: () => T): T {
-  const was = { ...on };
-  on.files = on.rows = false;
-  try {
-    return f();
-  } finally {
-    Object.assign(on, was);
-  }
-}
-
 /// What a trip costs, counted from `start` to `stop`: bytes written under `under` by file, rows read by table.
 export type Cost = { bytes: Record<string, number>; rows: Record<string, number> };
 

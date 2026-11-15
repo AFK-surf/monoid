@@ -9,16 +9,16 @@
 /// What each fact is now, and since when.
 priv struct Turns {
   /// what the pointer is over (the one under it and what holds it), each since it came under it
-  over : Map[Int, Double]
+  mut over : Map[Int, Double]
   /// what it left, each since it did (what it was never over: not under it since the run began)
-  left : Map[Int, Double]
+  mut left : Map[Int, Double]
   /// a button or a finger down, since
   mut down : Bool
   mut down_at : Double
   /// each layer drawn: the pointer in it (or in one it holds: Ctx::pointer_in_overlay), the keyboard's focus in it
   /// (Ctx::keyboard_in_overlay), each since (a layer's first said as it was first drawn)
-  pointer_in : Map[Int, (Bool, Double)]
-  keys_in : Map[Int, (Bool, Double)]
+  mut pointer_in : Map[Int, (Bool, Double)]
+  mut keys_in : Map[Int, (Bool, Double)]
   /// when the run began: what was never so has not been since
   mut start : Double
 }

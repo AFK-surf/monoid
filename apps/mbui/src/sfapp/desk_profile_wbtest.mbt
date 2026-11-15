@@ -53,12 +53,12 @@ test "station browser button sits beside 打开授权页面 and wraps cleanly at
     for lang in ["zh", "en"] {
       let label = if lang == "zh" { "在 Willow 的浏览器中打开" } else { "Open in Willow's browser" }
       for win in corner_windows {
-        let t = screen_in(mode, win, lang, motion_judged=false)
+        let t = screen_in(mode, win, lang)
         assert_true(t.query(Button, label~) is Some(_), msg="\{win.0}-\{lang} \{mode}")
         assert_eq(t.squeeze_faults() + t.words_over_now() + t.fixed_outgrown(), [], msg="\{win.0}-\{lang} \{mode}")
       }
       guard corner_windows.search_by(w => w.0 == "phone") is Some(i) else { fail("no phone window") }
-      let t_large = screen_in(mode, corner_windows[i], lang, font_scale=words_large_scale, motion_judged=false)
+      let t_large = screen_in(mode, corner_windows[i], lang, font_scale=words_large_scale)
       assert_true(t_large.query(Button, label~) is Some(_), msg="phone-\{lang}-1.3 \{mode}")
       assert_eq(t_large.squeeze_faults() + t_large.words_over_now() + t_large.fixed_outgrown(), [], msg="phone-\{lang}-1.3 \{mode}")
     }

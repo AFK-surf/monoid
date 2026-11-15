@@ -439,3 +439,108 @@ test "rail_shapes draws one straight line at x=4 from the icon down" {
   assert_eq(rail_pts(20.0, 80.0, false), [4.0, 20.0, 4.0, 98.0])
   assert_eq(rail_pts(18.0, 3.0, false), [4.0, 20.0, 4.0, 21.0])
 }
+
+///|
+test "history turn divider shows deduplicated time only, breaks rail on silent turn, and measures proportional width" {
+  let limit_line = "You've hit your Fable limit · resets Nov 20, 08:00"
+  let items : Array[Json] = [
+    {
+      "key": "t1",
+      "entries": [0, 0],
+      "turn": { "time": "11/14 17:10" },
+      "body": {
+        "kind": "received",
+        "content": {
+          "note": "",
+          "tasks": [{ "text": "子 agent 失败：group: accounts on the page", "agent": true, "failed": true }],
+          "messages": [],
+        },
+      },
+    },
+    {
+      "key": "t1-txt",
+      "entries": [1, 1],
+      "work": true,
+      "body": {
+        "kind": "text",
+        "content": { "line": Json::string(limit_line), "text": Json::string(limit_line), "subagent": false },
+      },
+    },
+    {
+      "key": "t2",
+      "entries": [2, 2],
+      "turn": {},
+      "body": {
+        "kind": "received",
+        "content": {
+          "note": "",
+          "tasks": [{ "text": "子 agent 失败：Review base-bind change", "agent": true, "failed": true }],
+          "messages": [],
+        },
+      },
+    },
+    {
+      "key": "t3",
+      "entries": [3, 3],
+      "turn": { "time": "17:23" },
+      "body": {
+        "kind": "received",
+        "content": { "note": "Your turn ended without a state.", "tasks": [], "messages": [] },
+      },
+    },
+  ]
+  let hist : Json = { "items": Json::array(items), "live": [], "edge": "已到会话开头", "empty": false, "loaded": true, "more": false }
+  let (_, rows) = steps_rows_of(Some(hist), items, false)
+  assert_eq(rows.length(), 5)
+  guard rows[2] is Item(_, cont1) else { fail("expected Item at index 2") }
+  assert_eq(cont1, false, msg="empty turn {} still breaks the previous turn's vertical rail")
+  guard rows[3] is Item(_, cont2) else { fail("expected Item at index 3") }
+  assert_eq(cont2, false, msg="timed turn breaks the previous turn's vertical rail")
+  assert_true(steps_row_shape(Some(rows[1])) != steps_row_shape(Some(rows[3])), msg="timed turn and deduplicated turn have distinct reuse shapes")
+
+  steps_reset()
+  @sf.set_words(@sfbase.fill)
+  let base_src = @sffixture.fixture("history")
+  let src : @sfbase.Source = {
+    ..base_src,
+    topic_read: fn(name, params) {
+      if name == "history" {
+        { value: Some(hist), error: None, version: 1 }
+      } else {
+        (base_src.topic_read)(name, params)
+      }
+    },
+    topic_keyed: fn(name, params, fld, keys) {
+      if name == "history" {
+        None
+      } else {
+        (base_src.topic_keyed)(name, params, fld, keys)
+      }
+    },
+  }
+  let t = @ui.Tester::new(
+    fn(c) {
+      @sf.begin(c) |> ignore
+      c.with_theme(@sf.ui_theme(), fn() { @ui.old_views_here(c) })
+    },
+    w=390.0,
+    h=700.0,
+    platform=2,
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      let tips = @sf.TipLayer::new(fn() { Some(root) })
+      history_steps_node(root, src, "ws1/st1", "s-c1", tips)
+    },
+  )
+  t.draw()
+  t.draw()
+  assert_true(t.rect_of("11/14 17:10") is Some(_), msg="first turn time is shown")
+  assert_true(t.rect_of("17:23") is Some(_), msg="later turn time (>= 5 min) is shown")
+  assert_true(t.rect_of("未发消息") is None, msg="redundant silent summary is gone")
+  t.tap_text(limit_line)
+  t.run_for(@ui.move_most_ms)
+  assert_true(!steps_own.opened.contains("t1-txt/text"), msg="50-char proportional English line fits in 390px phone room without chevron")
+  assert_eq(t.corner_faults(), [])
+  assert_eq(t.lit_all_faults(), [])
+  steps_reset()
+}

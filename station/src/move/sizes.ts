@@ -1,11 +1,11 @@
 // What a move would send of each chat, in bytes, known before it starts (move/AGENTS.md): each session's room and
-// transcripts sized by the move's own gathering walk (carry-worker.ts `sizes`, in a thread of its own: the same rules,
+// transcripts sized by the move's own gathering walk (carry.ts `sizesSoon`, the MoonBit program's: the same rules,
 // so the same files), kept a line a session (`move/sizes.log`, kept.ts `KeptLog`) against the session as it was then
 // (`stamp`: its last activity, archived or not, its last job and where that stands). A plan read tells what it read of
 // the chats (`seen`): a session whose stamp differs from its line's, or with none, is measured again by one pass in the
 // background, a batch at a time; one whose stamp is its line's is looked at no further (no room walked).
 import { join } from "node:path";
-import type { Sized, SizedPlaces } from "../replica/carry-worker.ts";
+import type { Sized, SizedPlaces } from "../replica/carry.ts";
 import { log } from "../ops/log.ts";
 import { KeptLog } from "./kept.ts";
 
@@ -19,7 +19,7 @@ export const SIZE_MOST = 500_000;
 
 export type SizesDeps = {
   data: string;
-  /// Sessions `keys` sized (carry-worker.ts `sizes` in its thread, retire.ts `sizesSoon`).
+  /// Sessions `keys` sized (carry.ts `sizesSoon`, the program's own walk of the gathering).
   measure: (keys: string[]) => Promise<Sized[]>;
   /// Whether session `key` is gone from here (handed over): its line, not read since, let go after a pass at rest.
   gone?: (key: string) => boolean;

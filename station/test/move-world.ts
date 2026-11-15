@@ -1,7 +1,6 @@
 // The stations of a workspace as the migration's tests make them (chat-handover*.test.ts, move-plan-bounded.test.ts):
 // each a Rig (hub-fakes.ts) with its connects (connects/workspace.ts) and its moves (move/station.ts), over a transport
 // of the test's; and a station shaped like the one moving was measured for (`officeShape`).
-import { uncounted } from "./move-bounded.ts";
 import { execFileSync } from "node:child_process";
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, readdirSync, statSync, utimesSync, writeFileSync } from "node:fs";
@@ -10,8 +9,7 @@ import { afterEach } from "node:test";
 import { PeerBus, bytesOf, withBytes } from "../src/mesh/bus.ts";
 import { WorkspaceConnects } from "../src/connects/workspace.ts";
 import { Fibers } from "../src/ops/fibers.ts";
-import { gather, place, sizes } from "../src/replica/carry-worker.ts";
-import type { CarriedJob } from "../src/replica/carry-worker.ts";
+import { type CarriedJob, gatherSoon, placeSoon, sizesSoon } from "../src/replica/carry.ts";
 import { hubConfig } from "../src/sessions/config.ts";
 import { newSession, say } from "../src/sessions/lifecycle.ts";
 import { Moves } from "../src/move/station.ts";
@@ -151,16 +149,16 @@ export function world(ids: string[] = [A, B]) {
         // (sized as a move would gather them, at once; each session sized here named, the other side's by its places)
         sizes: async (keys, sizing) => {
           st.sized.push(...keys, ...(sizing.places ?? []).map((p) => `there:${p.key}`));
-          return uncounted(() => sizes(rig.dir, join(rig.dir, "stillfail.db"), keys, sizing));
+          return sizesSoon(rig.dir, join(rig.dir, "stillfail.db"), keys, sizing);
         },
         hasGit: async () => true,
         lackMost: 50,
         work: {
-          gather: async (dataDir, db, ws, home, scratch, _signal, agent, keys) => gather(dataDir, db, ws, home, scratch, agent ?? null, keys ?? null),
+          gather: gatherSoon,
           place: async (dataDir, index, from, made, aside, placed, projects) => {
             await st.placing?.(index);
             try {
-              return place(dataDir, index, from, made ?? null, aside ?? null, placed ?? null, projects ?? false);
+              return await placeSoon(dataDir, index, from, made ?? null, aside ?? null, placed ?? null, projects ?? false);
             } finally {
               st.placed?.();
             }

@@ -105,7 +105,7 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
   reader_layout_nodes(root)
   root.each(
     fn() {
-      presented_said.get() |> ignore
+      presented_said.val.get() |> ignore
       let (w, _) = root.window()
       let sheet = layout(w) is Small
       // (a panel drawn by what screen it is on, none before the window has its size: what it is drawn as, a sheet or
@@ -136,7 +136,7 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
       // (which of its submenu rows has its menu open, one at a time, its own: panel_submenus_lent)
       panel_submenus_lend(row)
       let open = fn() {
-        presented_said.get() |> ignore
+        presented_said.val.get() |> ignore
         presented_open_of(serial)
       }
       // (drawn from its layer made till its way out is over: one closed before it ever showed, never)
@@ -249,7 +249,7 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
             // (how tall it stands as it closes, for what comes in its place: close_from)
             stands_by=fn(f) { p.stands_now = Some(f) },
             taken=fn() {
-              presented_said.get() |> ignore
+              presented_said.val.get() |> ignore
               p.taken_by != 0
             },
             // (dimming what is under it only where no sheet under it does, the host's sheets among them: scrim_owner)

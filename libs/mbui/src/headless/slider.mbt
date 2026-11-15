@@ -82,8 +82,10 @@ fn slider_snap(x : Double, min : Double, max : Double, step : Double) -> Double 
 /// nearest step from `min`); `change` told the new value when a drag along it (`thumb_room` reserved for the knob's
 /// ends), an arrow / Home / End key with the focus on it, or a screen reader's step moves it to another value;
 /// `disabled` while it cannot be moved; `value_text` how its value is read out (by default its integer where `step` is
-/// a whole number, else its number). `look` is run once as it is made, given its node and what it reads of it. The
-/// node.
+/// a whole number, else its number). `drag`: what a finger or the pointer does on it, given each of its events in
+/// place of moving it to where it is (a control whose press and whose drag differ: a player's timeline, a tap there
+/// at once, a drag through what it plays); its keys and a screen reader's steps as ever. `look` is run once as it is
+/// made, given its node and what it reads of it. The node.
 #callsite(autofill(loc))
 pub fn slider(
   parent : @view.View,
@@ -97,6 +99,7 @@ pub fn slider(
   thumb_room? : Double = 0.0,
   disabled? : () -> Bool = fn() { false },
   value_text? : (Double) -> String,
+  drag? : (@view.Drag) -> Unit,
   made_for? : SourceLoc,
   loc~ : SourceLoc,
 ) -> @view.View {
@@ -137,7 +140,9 @@ pub fn slider(
       }
     })
     .on_drag(fn(d) {
-      if !disabled() {
+      if !disabled() && drag is Some(f) {
+        f(d)
+      } else if !disabled() {
         match d.kind {
           Down | Moved if d.w > thumb_room => {
             let frac = slider_clamp((d.x - thumb_room / 2.0) / (d.w - thumb_room), 0.0, 1.0)

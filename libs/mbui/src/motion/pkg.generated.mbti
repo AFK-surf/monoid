@@ -149,6 +149,20 @@ pub fn pipe(Array[(Double) -> Double]) -> (Double) -> Double
 
 pub fn placed(@ui.Ctx, Int32, () -> @ui.Look) -> Unit
 
+pub let pointer_enter_ms : Double
+
+pub let pointer_exit_ms : Double
+
+pub fn pointer_sink(Double, Double) -> Double
+
+pub let pointer_sink_most : Double
+
+pub let pointer_tap_ms : Double
+
+pub fn pointer_veil(Int64) -> Int64
+
+pub let pointer_veil_part : Double
+
 pub fn pregenerate_keyframes(Generator) -> (Array[Double], Double)
 
 pub fn presence(@ui.Ctx, String, Bool, enter? : Trans, exit? : Trans, initial? : Bool, start_at? : Double) -> @ui.Look?

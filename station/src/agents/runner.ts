@@ -158,8 +158,9 @@ export const RUNNER_LEFT_MS = 5 * 60_000;
 /// removed: an info file whose runner is not alive, with its output, errors and socket; and output, errors, sockets and
 /// half-written info files with no info file, unchanged for RUNNER_LEFT_MS. Chats' runners have ids of their own each
 /// time (`claude-chat_…-<random>`), so nothing ever started again under one of them to clear it: 1.1 GB of them on a
-/// station (2026-11-15). The ids removed.
-export async function sweepRunners(data: string, now: number): Promise<string[]> {
+/// station (2026-11-15). The ids removed. `orphan` ends a runner alive that nobody holds, saying whether it did (the
+/// hub's `endOrphan`: a runner left so went on for good), which then goes with its files.
+export async function sweepRunners(data: string, now: number, orphan?: (info: RunnerInfo) => Promise<boolean>): Promise<string[]> {
   const dir = runnersDir(data);
   let names: string[];
   try {
@@ -186,6 +187,7 @@ export async function sweepRunners(data: string, now: number): Promise<string[]>
       continue;
     }
     if (!(await liveRunner(info))) await remove(id);
+    else if (orphan !== undefined && !isTerminalRunner(id) && (await orphan(info).catch(() => false))) await remove(id);
   }
   for (const name of names) {
     const ext = RUNNER_FILES.find((e) => e !== ".json" && name.endsWith(e)) ?? (name.endsWith(".tmp") ? ".tmp" : null);

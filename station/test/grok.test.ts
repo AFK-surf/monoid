@@ -17,7 +17,7 @@ import { allLeft } from "../src/agents/runner.ts";
 import { checkProfile, grokModels, loginCommand } from "../src/accounts/profiles.ts";
 import { LoginManager, type LoginState } from "../src/accounts/login.ts";
 import { grokQuotaOf } from "../src/accounts/quota.ts";
-import { callsOf } from "../src/usage/counter.ts";
+import { callsOf } from "./usage-counter-reference.ts";
 import { readTimeline, transcriptPath } from "../src/read/transcript.ts";
 
 const fake = join(dirname(fileURLToPath(import.meta.url)), "fake");

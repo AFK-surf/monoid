@@ -94,7 +94,7 @@ fn watch_told_at() -> Unit {
 ///|
 /// The frames' clock, as each frame begins (on_frame): what reads it followed (Ctx::now) is built again each frame.
 // kept across runs: set as each frame begins
-let frame_clock : @signals.Signal[Double] = @signals.signal(0.0)
+let frame_clock : Ref[@signals.Signal[Double]] = Ref(@signals.signal(0.0))
 
 ///|
 /// What came from outside that is no signal yet, counted (outside_came): what reads it (each frame's build) is built
@@ -302,7 +302,7 @@ fn paint_watch_of() -> @signals.Watch {
 fn clock_read(loc : SourceLoc) -> Unit {
   if @signals.active_sub() is Some(_) {
     clock_read_by(loc.to_string(), None)
-    frame_clock.get() |> ignore
+    frame_clock.val.get() |> ignore
   }
 }
 
@@ -312,7 +312,7 @@ fn clock_read(loc : SourceLoc) -> Unit {
 fn clock_read_here(who? : Mover) -> Unit {
   if @signals.active_sub() is Some(_) {
     clock_read_by("a motion, the host's clock or its state (Ctx::shows_motion, @hostapi.polled)", who)
-    frame_clock.get() |> ignore
+    frame_clock.val.get() |> ignore
   }
 }
 
@@ -435,7 +435,7 @@ fn Ctx::now_before(self : Ctx, end : Double, loc~ : SourceLoc) -> Double {
 pub fn Ctx::now_of(self : Ctx, who : Mover, loc~ : SourceLoc) -> Double {
   if @signals.active_sub() is Some(_) {
     clock_read_by(loc.to_string(), Some(who))
-    frame_clock.get() |> ignore
+    frame_clock.val.get() |> ignore
   }
   self.clock
 }
@@ -1002,7 +1002,7 @@ fn frame_drawn(c : Ctx, w : Double, h : Double, scale : Double, t : Double) -> D
   hand_arrive(c)
   // (what reads the clock and the host's settings read so: what read them is stale where they changed; what a part or
   // a list's row kept read of the frame and of a moment, told: kept_part.mbt's KeptClock)
-  frame_clock.set(t)
+  frame_clock.val.set(t)
   frame_settings_arrive(w, h, scale)
   clock_frame_start(t)
   // (the hand's discrete events since the frame before: what reads them takes them as it is built, and a frame that

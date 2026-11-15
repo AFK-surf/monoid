@@ -526,6 +526,9 @@ enum Handle {
     Unzstd(Arc<Mutex<Unzstd>>),
     /// A zstd stream being made (`zstd.stream`): each piece given flushed out whole (station/mesh/compress.ts's way).
     Zstd(Arc<Mutex<zstd::stream::raw::Encoder<'static>>>),
+    /// A directory sync's sending (`pack.open`): each file's Git blob id as its pieces are packed (`zstd.pack`), by path,
+    /// with where its next piece starts.
+    Pack(Arc<Mutex<HashMap<String, (sha1::Sha1, u64)>>>),
 }
 
 /// A listening socket: TCP on this machine's loopback (one bound here, or one a launcher bound and handed down by its
@@ -811,6 +814,132 @@ async fn tell_unix(path: &str, bytes: &[u8]) -> Result<(), String> {
     }
 }
 
+/// `fs.scan` of one path.
+fn scan_one(path: &str, follow: bool, hash: bool, most: u64) -> Result<Value, String> {
+    let Ok(m) = (if follow { std::fs::metadata(path) } else { std::fs::symlink_metadata(path) }) else { return Ok(Value::Null) };
+    let kind = if m.file_type().is_symlink() { "link" } else if m.is_file() { "file" } else if m.is_dir() { "dir" } else { "other" };
+    #[cfg(unix)]
+    let (mode, dev) = {
+        use std::os::unix::fs::MetadataExt;
+        (m.mode(), m.dev())
+    };
+    #[cfg(not(unix))]
+    let (mode, dev) = (if m.permissions().readonly() { 0o444 } else { 0o666 }, 0u64);
+    let mut v = json!({ "kind": kind, "size": m.len(), "mode": mode, "dev": dev });
+    if hash && kind == "link" {
+        let target = std::fs::read_link(path).map_err(err)?;
+        v["link"] = json!(target.to_string_lossy());
+    } else if hash && kind == "file" && m.len() <= most {
+        use sha1::Digest;
+        use std::io::Read;
+        let mut file = std::fs::File::open(path).map_err(err)?;
+        let size = m.len();
+        let mut h = sha1::Sha1::new();
+        h.update(format!("blob {size}\0").as_bytes());
+        let (mut buf, mut read) = (vec![0u8; 1 << 20], 0u64);
+        loop {
+            let n = file.read(&mut buf).map_err(err)?;
+            if n == 0 {
+                break;
+            }
+            read += n as u64;
+            h.update(&buf[..n]);
+        }
+        if read != size {
+            return Err(format!("{path} changed while it was read"));
+        }
+        v["hash"] = json!(hex::encode(h.finalize()));
+    }
+    Ok(v)
+}
+
+/// `zstd.pack`'s work: the pieces read, their ids checked, packed into `out`.
+fn pack_pieces(ids: &Mutex<HashMap<String, (sha1::Sha1, u64)>>, out: &std::path::Path, level: i32, pieces: &[Value]) -> Result<Value, String> {
+    use sha1::Digest;
+    use std::io::{Read, Seek, SeekFrom, Write};
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut z = zstd::stream::write::Encoder::new(options.open(out).map_err(err)?, level).map_err(err)?;
+    let mut raw = 0u64;
+    let changed = |i: usize| Ok(json!({ "changed": i }));
+    for (i, p) in pieces.iter().enumerate() {
+        let (Some(path), Some(offset), Some(length), Some(size), Some(id)) = (p[0].as_str(), p[1].as_u64(), p[2].as_u64(), p[3].as_u64(), p[4].as_str()) else {
+            return Err("bad piece".into());
+        };
+        let data = if p[5].as_bool().unwrap_or(false) {
+            // (a link's target as Node's readlink gives it, its id that of its text)
+            let Ok(target) = std::fs::read_link(path) else { return changed(i) };
+            let bytes = target.to_string_lossy().into_owned().into_bytes();
+            let mut h = sha1::Sha1::new();
+            h.update(format!("blob {}\0", bytes.len()).as_bytes());
+            h.update(&bytes);
+            if offset != 0 || bytes.len() as u64 != length || hex::encode(h.finalize()) != id {
+                return changed(i);
+            }
+            bytes
+        } else {
+            let mut data = vec![0u8; length as usize];
+            // Still the regular file it was listed as, of the size it was: never through a link put in its place (the
+            // file itself opened without following one where the system can), nor grown, whose first bytes alone
+            // would hash as they did.
+            let still = std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file() && m.len() == size);
+            let read = still && {
+                let mut o = std::fs::OpenOptions::new();
+                o.read(true);
+                #[cfg(unix)]
+                std::os::unix::fs::OpenOptionsExt::custom_flags(&mut o, libc::O_NOFOLLOW | libc::O_NONBLOCK);
+                o.open(path)
+                    .and_then(|mut f| {
+                        let m = f.metadata()?;
+                        if !m.is_file() || m.len() != size {
+                            return Ok(false);
+                        }
+                        f.seek(SeekFrom::Start(offset))?;
+                        f.read_exact(&mut data)?;
+                        Ok(true)
+                    })
+                    .unwrap_or(false)
+            };
+            if !read {
+                return changed(i);
+            }
+            let mut ids = ids.lock().unwrap();
+            // In order: from its start a new id, on from where it was; a piece read again (a request packed anew) or
+            // after its id was checked already is not counted twice.
+            match ids.get_mut(path) {
+                Some((h, next)) if *next == offset => {
+                    h.update(&data);
+                    *next += length;
+                }
+                Some((_, next)) if offset > *next => return changed(i),
+                Some(_) => {}
+                None if offset == 0 => {
+                    let mut h = sha1::Sha1::new();
+                    h.update(format!("blob {size}\0").as_bytes());
+                    h.update(&data);
+                    ids.insert(path.to_string(), (h, length));
+                }
+                None => {}
+            }
+            if ids.get(path).is_some_and(|(_, next)| *next == size) {
+                let (h, _) = ids.remove(path).expect("there");
+                if hex::encode(h.finalize()) != id {
+                    return changed(i);
+                }
+            }
+            data
+        };
+        raw += data.len() as u64;
+        z.write_all(&data).map_err(err)?;
+    }
+    let mut file = z.finish().map_err(err)?;
+    file.flush().map_err(err)?;
+    let packed = file.metadata().map_err(err)?.len();
+    Ok(json!({ "raw": raw, "packed": packed }))
+}
+
 fn str_of<'a>(v: &'a Value, k: &str) -> Result<&'a str, String> {
     v.get(k).and_then(Value::as_str).ok_or_else(|| format!("missing {k}"))
 }
@@ -926,6 +1055,7 @@ impl Handle {
             Handle::Listener(_) => "listener",
             Handle::Unzstd(_) => "unzstd",
             Handle::Zstd(_) => "zstd",
+            Handle::Pack(_) => "pack",
         }
     }
 }
@@ -1272,6 +1402,30 @@ impl Inner {
                 .map_err(err)??;
                 Ok(Answer::bytes(json!({}), out))
             }
+            // What the zstd frames in `bytes` (or in the file at `path`) hold, `most` bytes of it at most: more is refused,
+            // unpacked no further. A sync's pieces as another station sent them (station/mb src/reader/dirsync.mbt
+            // `put_blobs`), off the caller's thread.
+            "zstd.unpack" => {
+                let most = a.get("most").and_then(Value::as_u64).ok_or("most is required")?;
+                let path = a.get("path").and_then(Value::as_str).map(PathBuf::from);
+                let input = bytes.unwrap_or_default();
+                let out = tokio::task::spawn_blocking(move || -> Result<Vec<u8>, String> {
+                    use std::io::Read;
+                    let packed = match path {
+                        Some(path) => std::fs::read(path).map_err(err)?,
+                        None => input,
+                    };
+                    let mut out = Vec::new();
+                    zstd::stream::read::Decoder::new(packed.as_slice()).map_err(err)?.take(most + 1).read_to_end(&mut out).map_err(err)?;
+                    if out.len() as u64 > most {
+                        return Err(format!("more than {most} bytes unpacked"));
+                    }
+                    Ok(out)
+                })
+                .await
+                .map_err(err)??;
+                Ok(Answer::bytes(json!({}), out))
+            }
             // A zstd stream made of what is given it piece by piece (`zstd.push`), each piece flushed: what an event stream
             // a station's program answers goes out as (station/mesh/compress.ts `compressedStream`), `level` and a window of
             // 2^`window` its.
@@ -1353,7 +1507,23 @@ impl Inner {
                 let out = z.take(&input)?;
                 Ok(Answer::bytes(json!({ "whole": z.whole }), out))
             }
-            "stream.close" | "ws.close" | "tcp.close" | "zstd.close" | "listen.close" => {
+            "pack.open" => Ok(Answer::json(json!({ "id": self.keep(Handle::Pack(Arc::new(Mutex::new(HashMap::new())))) }))),
+            // Pieces of files packed into one zstd frame written to the file at `out` (its own, made anew), off the caller's
+            // thread: what a directory sync sends in one request (station/mb src/reader/dirsync.mbt `send_blobs`), its
+            // bytes never through the program. Each piece [path, offset, length, size, id, link]: `length` bytes of the
+            // file from `offset` (`link`: the link's target, whole), each file's Git blob id worked out across the calls
+            // of one `pack.open` as its pieces come in order and checked at its last. A piece that does not read as it
+            // was listed (shorter, its id another, a link not there) stops it: {changed: its index}. Else {raw, packed}:
+            // the bytes taken and the frame's.
+            "zstd.pack" => {
+                let Handle::Pack(ids) = self.handle(id_of(&a)?)? else { return Err("not a pack".into()) };
+                let out = PathBuf::from(str_of(&a, "out")?);
+                let level = a.get("level").and_then(Value::as_i64).unwrap_or(3) as i32;
+                let pieces = a.get("pieces").and_then(Value::as_array).cloned().ok_or("pieces are required")?;
+                let value = tokio::task::spawn_blocking(move || pack_pieces(&ids, &out, level, &pieces)).await.map_err(err)??;
+                Ok(Answer::json(value))
+            }
+            "stream.close" | "ws.close" | "tcp.close" | "zstd.close" | "listen.close" | "pack.close" => {
                 // Dropping the response, the socket's sender (its task ends) or the halves closes it.
                 self.drop_handle(id_of(&a)?);
                 Ok(Answer::json(json!({})))
@@ -1512,7 +1682,12 @@ impl Inner {
             "tcp.read" => {
                 let Handle::Tcp { read, .. } = self.handle(id_of(&a)?)? else { return Err("not a tcp connection".into()) };
                 let mut buf = vec![0u8; 64 * 1024];
-                let n = read.lock().await.read(&mut buf).await.map_err(err)?;
+                // (a pipe whose other side closed says so as broken, or as not connected where it was disconnected
+                // (ERROR_PIPE_NOT_CONNECTED), not as an end: the same to a reader)
+                let n = match read.lock().await.read(&mut buf).await {
+                    Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe || (cfg!(windows) && e.raw_os_error() == Some(233)) => 0,
+                    n => n.map_err(err)?,
+                };
                 if n == 0 {
                     return Ok(Answer::json(json!({ "end": true })));
                 }
@@ -1950,8 +2125,30 @@ impl Inner {
                     let id = self.keep(Handle::Tcp { read: Arc::new(tokio::sync::Mutex::new(Box::new(read))), write: Arc::new(tokio::sync::Mutex::new(Box::new(write))) });
                     Ok(Answer::json(json!({ "id": id })))
                 }
-                #[cfg(not(unix))]
-                Err("Unix sockets are Unix's".into())
+                // Windows: a named pipe (`\\.\pipe\…`, a runner's: station/native/runner), its instances one connection
+                // each. All taken a moment (the runner makes its next as it takes one): waited for, up to a bound.
+                #[cfg(windows)]
+                {
+                    use tokio::net::windows::named_pipe::ClientOptions;
+                    const ERROR_PIPE_BUSY: i32 = 231;
+                    let path = str_of(&a, "path")?;
+                    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+                    let pipe = loop {
+                        match ClientOptions::new().open(path) {
+                            Ok(pipe) => break pipe,
+                            // timer: a retry after a failure (every instance busy), up to a deadline
+                            Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) && tokio::time::Instant::now() < deadline => {
+                                tokio::time::sleep(std::time::Duration::from_millis(20)).await
+                            }
+                            Err(e) => return Err(err(e)),
+                        }
+                    };
+                    let (read, write) = tokio::io::split(pipe);
+                    let id = self.keep(Handle::Tcp { read: Arc::new(tokio::sync::Mutex::new(Box::new(read))), write: Arc::new(tokio::sync::Mutex::new(Box::new(write))) });
+                    Ok(Answer::json(json!({ "id": id })))
+                }
+                #[cfg(not(any(unix, windows)))]
+                Err("no local sockets here".into())
             }
             // A stream carried whole into a socket (`to`, taken), both ways, here: what comes on it written to the socket
             // in frames (PIPE_END its end, PIPE_FAILED what failed it), and the frames the socket sends written on it, its
@@ -2573,7 +2770,7 @@ impl Inner {
             }
             return Ok(json!(hex::encode(hash.finalize())));
         }
-        // What lstat says of `path` (links not followed), as Node's lstat gives it to station/src/jobs/dirsync.ts: its
+        // What lstat says of `path` (links not followed), as Node's lstat gives it (station/mb src/reader/dirsync.mbt): its
         // kind, size, mode, inode, and mtime and ctime in ms (seconds and nanoseconds as Node joins them); null when
         // nothing is there.
         if op == "fs.lstat" {
@@ -2641,6 +2838,38 @@ impl Inner {
                 return Err(format!("{} changed while it was read", str_of(a, "path")?));
             }
             return Ok(json!(hex::encode(hash.finalize())));
+        }
+        // What lstat says of each of `paths` (`follow`: stat, a link followed), 8 at a time, in their order: null where
+        // nothing is there, else {kind, size, mode, dev} (dev 0 where the system has none: Windows, where a folder
+        // mounted in another is a link, not followed). With `hash`, a file's Git blob id too (`hash`, of one of `most`
+        // bytes at most), a link's target (`link`): what a directory sync lists of the files it sends
+        // (station/mb src/reader/dirsync.mbt `scan`). A file that reads otherwise than its size, or a link that does
+        // not read, fails it.
+        if op == "fs.scan" {
+            let paths: Vec<String> = a.get("paths").and_then(Value::as_array).map(|v| v.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
+            let follow = a.get("follow").and_then(Value::as_bool).unwrap_or(false);
+            let hash = a.get("hash").and_then(Value::as_bool).unwrap_or(false);
+            let most = a.get("most").and_then(Value::as_u64).unwrap_or(u64::MAX);
+            let next = std::sync::atomic::AtomicUsize::new(0);
+            let mut out: Vec<Option<Result<Value, String>>> = (0..paths.len()).map(|_| None).collect();
+            let slots: Vec<Mutex<&mut Option<Result<Value, String>>>> = out.iter_mut().map(Mutex::new).collect();
+            std::thread::scope(|s| {
+                for _ in 0..paths.len().min(8) {
+                    s.spawn(|| loop {
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        if i >= paths.len() {
+                            break;
+                        }
+                        **slots[i].lock().unwrap() = Some(scan_one(&paths[i], follow, hash, most));
+                    });
+                }
+            });
+            drop(slots);
+            let mut values = Vec::with_capacity(out.len());
+            for v in out {
+                values.push(v.unwrap_or(Ok(Value::Null))?);
+            }
+            return Ok(Value::Array(values));
         }
         // A folder and those it is in, made where they are not (mkdirSync's `recursive`).
         if op == "fs.mkdir" {
@@ -3247,6 +3476,52 @@ mod tests {
         }
     }
 
+    /// A named pipe (a runner's on Windows, station/native/runner) opened as `unix.open`, read and written as a socket:
+    /// what one side wrote is read by the other, and the server's closing is the client's end.
+    #[cfg(windows)]
+    #[test]
+    fn opens_a_named_pipe_as_a_socket() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::windows::named_pipe::ServerOptions;
+        let dir = TempDir::new();
+        let shell = Shell::start(dir.path().join("shell"), complete, ctx()).unwrap();
+        let call = |id: u64, op: &str, a: Value, bytes: Option<Vec<u8>>| {
+            shell.call(id, op.into(), a.to_string().as_bytes(), bytes);
+            let (json, error, bytes) = answer(id);
+            assert_eq!(error, "", "{op}");
+            (serde_json::from_str::<Value>(&json).unwrap(), bytes)
+        };
+        let path = format!(r"\\.\pipe\stillfail-shell-test-{}", std::process::id());
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let server = rt.block_on(async { ServerOptions::new().first_pipe_instance(true).create(&path).unwrap() });
+        let served = std::thread::spawn(move || {
+            rt.block_on(async move {
+                let mut server = server;
+                server.connect().await.unwrap();
+                let mut got = [0u8; 4];
+                server.read_exact(&mut got).await.unwrap();
+                assert_eq!(&got, b"ping");
+                server.write_all(b"pong").await.unwrap();
+                server.flush().await.unwrap();
+                // (read up to what the client sends last, then closed: the client reads its end)
+                let mut last = [0u8; 5];
+                server.read_exact(&mut last).await.unwrap();
+                assert_eq!(&last, b"leave");
+                server.disconnect().unwrap();
+            })
+        });
+        let (opened, _) = call(97_001, "unix.open", json!({ "path": path }), None);
+        let conn = opened["id"].as_u64().unwrap();
+        call(97_002, "tcp.write", json!({ "id": conn }), Some(b"ping".to_vec()));
+        let (_, got) = call(97_003, "tcp.read", json!({ "id": conn }), None);
+        assert_eq!(got.unwrap(), b"pong");
+        call(97_004, "tcp.write", json!({ "id": conn }), Some(b"leave".to_vec()));
+        let (end, _) = call(97_005, "tcp.read", json!({ "id": conn }), None);
+        assert_eq!(end, json!({ "end": true }));
+        call(97_006, "tcp.close", json!({ "id": conn }), None);
+        served.join().unwrap();
+    }
+
     #[test]
     fn serves_a_listening_socket_bound_here_handed_down_or_unix() {
         use std::io::{Read, Write};
@@ -3497,6 +3772,110 @@ mod tests {
         let id = serde_json::from_str::<Value>(&answer(call + 4).0).unwrap()["id"].as_u64().unwrap();
         shell.call(call + 5, "zstd.push".into(), format!(r#"{{"id":{id}}}"#).as_bytes(), Some(b"not zstd at all".to_vec()));
         assert_ne!(answer(call + 5).1, "");
+    }
+
+    #[test]
+    fn packs_a_syncs_pieces_checking_each_files_id_and_scans_files() {
+        use sha1::Digest;
+        let dir = TempDir::new();
+        let shell = Shell::start(dir.path().join("shell"), complete, ctx()).unwrap();
+        let at = |p: &str| dir.path().join(p).display().to_string();
+        let blob = |b: &[u8]| {
+            let mut h = sha1::Sha1::new();
+            h.update(format!("blob {}\0", b.len()).as_bytes());
+            h.update(b);
+            hex::encode(h.finalize())
+        };
+        let content: Vec<u8> = (0..300_000u32).map(|i| (i * 7 % 251) as u8).collect();
+        std::fs::write(at("f"), &content).unwrap();
+        std::fs::write(at("empty"), b"").unwrap();
+        let id_f = blob(&content);
+        let call = |n: u64, op: &str, a: Value| {
+            shell.call(n, op.into(), a.to_string().as_bytes(), None);
+            let (json, error, _) = answer(n);
+            (serde_json::from_str::<Value>(&json).unwrap_or(Value::Null), error)
+        };
+        let pack = call(9201, "pack.open", json!({})).0["id"].as_u64().unwrap();
+        // in two calls, the file's id checked at its last piece; the empty one in the first
+        let (one, e) = call(9202, "zstd.pack", json!({ "id": pack, "out": at("1.zst"), "pieces": [[at("f"), 0, 200_000, 300_000, id_f, false], [at("empty"), 0, 0, 0, blob(b""), false]] }));
+        assert_eq!((one["raw"].clone(), e.as_str()), (json!(200_000), ""));
+        // packed anew (a station from before, its request split): not counted twice
+        let (again, _) = call(9203, "zstd.pack", json!({ "id": pack, "out": at("1.zst"), "pieces": [[at("f"), 0, 200_000, 300_000, id_f, false]] }));
+        assert_eq!(again["raw"], json!(200_000));
+        let (two, e) = call(9204, "zstd.pack", json!({ "id": pack, "out": at("2.zst"), "pieces": [[at("f"), 200_000, 100_000, 300_000, id_f, false]] }));
+        assert_eq!((two["raw"].clone(), e.as_str()), (json!(100_000), ""));
+        let mut whole = zstd::decode_all(std::fs::File::open(at("1.zst")).unwrap()).unwrap();
+        whole.extend(zstd::decode_all(std::fs::File::open(at("2.zst")).unwrap()).unwrap());
+        assert_eq!(whole, content);
+        assert_eq!(two["packed"].as_u64().unwrap(), std::fs::metadata(at("2.zst")).unwrap().len());
+        // its last piece packed again after its id was checked: as it was
+        assert_eq!(call(9205, "zstd.pack", json!({ "id": pack, "out": at("2.zst"), "pieces": [[at("f"), 200_000, 100_000, 300_000, id_f, false]] })).0["raw"], json!(100_000));
+        // grown since it was listed, its first bytes as they were (and an empty one written in): changed
+        std::fs::write(at("g"), b"").unwrap();
+        let (one, _) = call(9215, "zstd.pack", json!({ "id": pack, "out": at("g.zst"), "pieces": [[at("g"), 0, 0, 0, blob(b""), false]] }));
+        assert_eq!(one["raw"], json!(0));
+        std::fs::write(at("g"), b"now").unwrap();
+        assert_eq!(call(9216, "zstd.pack", json!({ "id": pack, "out": at("g.zst"), "pieces": [[at("g"), 0, 0, 0, blob(b""), false]] })).0, json!({ "changed": 0 }));
+        let mut longer = content.clone();
+        longer.extend_from_slice(b"more");
+        std::fs::write(at("f"), &longer).unwrap();
+        assert_eq!(call(9217, "zstd.pack", json!({ "id": pack, "out": at("3.zst"), "pieces": [[at("f"), 0, 300_000, 300_000, id_f, false]] })).0, json!({ "changed": 0 }));
+        // changed since it was listed: its piece named
+        std::fs::write(at("f"), &content[..299_999]).unwrap();
+        let changed = json!([[at("empty"), 0, 0, 0, blob(b""), false], [at("f"), 0, 300_000, 300_000, id_f, false]]);
+        assert_eq!(call(9206, "zstd.pack", json!({ "id": pack, "out": at("3.zst"), "pieces": changed })).0, json!({ "changed": 1 }));
+        let mut other = content.clone();
+        other[5] ^= 1;
+        std::fs::write(at("f"), &other).unwrap();
+        assert_eq!(call(9207, "zstd.pack", json!({ "id": pack, "out": at("3.zst"), "pieces": [[at("f"), 0, 300_000, 300_000, id_f, false]] })).0, json!({ "changed": 0 }));
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink("f", at("l")).unwrap();
+            assert_eq!(call(9208, "zstd.pack", json!({ "id": pack, "out": at("4.zst"), "pieces": [[at("l"), 0, 1, 1, blob(b"f"), true]] })).0["raw"], json!(1));
+            assert_eq!(zstd::decode_all(std::fs::File::open(at("4.zst")).unwrap()).unwrap(), b"f");
+            assert_eq!(call(9209, "zstd.pack", json!({ "id": pack, "out": at("4.zst"), "pieces": [[at("l"), 0, 1, 1, blob(b"g"), true]] })).0, json!({ "changed": 0 }));
+            // a file made a link (to one outside, say): not followed, changed
+            std::fs::write(at("h"), b"h").unwrap();
+            std::fs::remove_file(at("h")).unwrap();
+            std::os::unix::fs::symlink("/etc/hosts", at("h")).unwrap();
+            assert_eq!(call(9218, "zstd.pack", json!({ "id": pack, "out": at("4.zst"), "pieces": [[at("h"), 0, 1, 1, blob(b"h"), false]] })).0, json!({ "changed": 0 }));
+            // scanned: kinds, a file's id (of one within `most`), a link's target, nothing there
+            std::fs::write(at("f"), &content).unwrap();
+            let (scan, e) = call(9210, "fs.scan", json!({ "paths": [at("f"), at("l"), at("none"), at("empty")], "hash": true, "most": 1_000_000 }));
+            assert_eq!(e, "");
+            assert_eq!((scan[0]["kind"].clone(), scan[0]["hash"].clone(), scan[0]["size"].clone()), (json!("file"), json!(id_f), json!(300_000)));
+            assert_eq!((scan[1]["kind"].clone(), scan[1]["link"].clone()), (json!("link"), json!("f")));
+            assert_eq!(scan[2], Value::Null);
+            assert_eq!(scan[3]["hash"], json!(blob(b"")));
+            assert!(scan[0]["dev"].as_u64().unwrap() > 0);
+            let (small, _) = call(9211, "fs.scan", json!({ "paths": [at("f"), at("l")], "hash": true, "most": 10 }));
+            assert_eq!(small[0]["hash"], Value::Null);
+            let (followed, _) = call(9212, "fs.scan", json!({ "paths": [at("l")], "follow": true }));
+            assert_eq!((followed[0]["kind"].clone(), followed[0]["link"].clone()), (json!("file"), Value::Null));
+        }
+        assert_eq!(call(9213, "pack.close", json!({ "id": pack })).1, "");
+        assert_eq!(call(9214, "zstd.pack", json!({ "id": pack, "out": at("5.zst"), "pieces": [] })).1, format!("no handle {pack}"));
+    }
+
+    #[test]
+    fn unpacks_zstd_whole_up_to_its_bound() {
+        let dir = TempDir::new();
+        let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+        let plain: Vec<u8> = (0..100_000u32).flat_map(|i| i.to_le_bytes()).collect();
+        let packed = zstd::stream::encode_all(&plain[..], 3).unwrap();
+        // given, or in a file
+        shell.call(9101, "zstd.unpack".into(), br#"{"most":400000}"#, Some(packed.clone()));
+        assert_eq!(answer(9101).2, Some(plain.clone()));
+        let at = dir.path().join("packed.zst");
+        std::fs::write(&at, &packed).unwrap();
+        let args = json!({ "path": at.to_string_lossy(), "most": 400_000 }).to_string();
+        shell.call(9102, "zstd.unpack".into(), args.as_bytes(), None);
+        assert_eq!(answer(9102).2, Some(plain.clone()));
+        // a byte more than its bound is refused, as is what is not zstd
+        shell.call(9103, "zstd.unpack".into(), br#"{"most":399999}"#, Some(packed));
+        assert_eq!(answer(9103).1, "more than 399999 bytes unpacked");
+        shell.call(9104, "zstd.unpack".into(), br#"{"most":10}"#, Some(b"not zstd at all".to_vec()));
+        assert_ne!(answer(9104).1, "");
     }
 
     #[test]

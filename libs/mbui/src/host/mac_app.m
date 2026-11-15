@@ -31,8 +31,15 @@ mb_callbacks mb_cb;
 typedef void (*mb_back_fn)(int32_t, double, double, int32_t);
 static mb_back_fn back_cb;
 static int back_on;
+static int event_wid(void);
+static void win_use(int wid);
+static int win_active;
 static void go_back(void) {
-  if (back_cb && back_on) back_cb(2, 0, 1, 0);
+  if (!back_cb || !back_on) return;
+  int back = win_active;
+  win_use(event_wid());
+  back_cb(2, 0, 1, 0);
+  win_use(back);
 }
 
 @interface MBView : NSView <NSTextInputClient>
@@ -44,8 +51,10 @@ static void go_back(void) {
 @property(nonatomic, strong) CADisplayLink *link;
 @property(nonatomic) BOOL wantFrame;
 @property(nonatomic) CFTimeInterval drawnWithWindowAt;  // drawWithWindow's last frame (CACurrentMediaTime)
+@property(nonatomic) int wid;  // its window of the run's (0 the first: win_open)
 @end
 
+// The view of the window drawn or handing input now (win_use: the first's between them), and its box below.
 static MBView *the_view;
 // the app's widgets for VoiceOver (below: mb_host_a11y_tree): the view's children, the one under a point, the one
 // focused
@@ -67,6 +76,83 @@ static int ground_dark;
 // the same value); else the hosts' own (F5F5F7, 1B1C1F)
 static uint32_t ground_light = 0xF5F5F7, ground_of_dark = 0x1B1C1F;
 static NSView *the_box;
+
+// ---- the windows of one run (@hostapi.windows_in_process) ----
+// Each window the app opens beside its first (mb_host_windows) is a window of this run: its own NSWindow, its box, the
+// native views' view and its canvas's view (MBView, its display link, its input method's state, its tracking area),
+// its layer and what drawing keeps of it (apple_render.m's MBRenderWin), drawn by the same program, the same device,
+// queue, pipelines, glyph atlases, pictures and stream decoders, one icon in the Dock. The window drawn or handing
+// input now is put in place for it (win_use) and the first put back after: what the app asks of the window then
+// (its size, its scale, a frame, its title, a drag, its cursor) is that window's, and the app is told which it is
+// (mb_host_windows' 4). Closed by the person, the app is told (an outside event, MB_OUTSIDE_WINDOW) and the run goes
+// on; the first window closed, they all close with it.
+@interface MBWinSlot : NSObject
+@property(nonatomic) int wid;
+@property(nonatomic, strong) NSWindow *win;
+@property(nonatomic, strong) NSView *box;
+@property(nonatomic, strong) MBView *view;
+// what VoiceOver reads of it while another is in place (mb_host_a11y_tree's)
+@property(nonatomic, strong) NSMutableDictionary *a11yNodes;
+@property(nonatomic, strong) NSMutableDictionary *a11yElements;
+@property(nonatomic) int a11yFocus;
+// what it is told of the system's (its close, seen again): let go of as it closes
+@property(nonatomic, strong) NSMutableArray *observers;
+// its content's zoom (@hostapi.set_window_zoom: each window's own) while another is in place
+@property(nonatomic) double zoom;
+@end
+@implementation MBWinSlot
+@end
+static NSMutableDictionary<NSNumber *, MBWinSlot *> *win_slots;
+static int win_active;  // the window in place (0, the first, between frames and input)
+static int win_making;  // the window whose views are being made (their layer its: makeBackingLayer)
+static void a11y_swap(MBWinSlot *from, MBWinSlot *to);
+
+static double window_content_zoom;  // (below: the zoom of the window in place)
+
+// Window `wid` put in place: its view and box, its native views' view, its drawing.
+static void win_use(int wid) {
+  if (wid == win_active) return;
+  MBWinSlot *to = win_slots[@(wid)];
+  if (!to) return;
+  MBWinSlot *from = win_slots[@(win_active)];
+  a11y_swap(from, to);
+  from.zoom = window_content_zoom;
+  window_content_zoom = to.zoom > 0 ? to.zoom : 1.0;
+  win_active = wid;
+  the_view = to.view;
+  the_box = to.box;
+  mb_views_use(wid);
+  mb_render_use(wid);
+}
+
+// Which window of the run an event is of: the window it came to, else the key window (a menu's item chosen).
+static int win_of(NSWindow *w) {
+  for (NSNumber *k in win_slots)
+    if (win_slots[k].win == w) return k.intValue;
+  return -1;
+}
+static int event_wid(void) {
+  if (win_slots.count < 2) return win_active;
+  int w = win_of(NSApp.currentEvent.window);
+  if (w < 0) w = win_of(NSApp.keyWindow);
+  return w < 0 ? 0 : w;
+}
+
+// The app's own callbacks (mb_host_run's): input handed to it as the window it came to, put in place for it.
+static mb_callbacks app_cb;
+#define IN_EVENT_WINDOW(call)          \
+  do {                                 \
+    int back_ = win_active;            \
+    win_use(event_wid());              \
+    call;                              \
+    win_use(back_);                    \
+  } while (0)
+static void win_pointer(int32_t k, double x, double y, int32_t b) { IN_EVENT_WINDOW(app_cb.pointer(k, x, y, b)); }
+static void win_wheel(double x, double y, double dx, double dy, int32_t ph) {
+  IN_EVENT_WINDOW(app_cb.wheel(x, y, dx, dy, ph));
+}
+static void win_key(int32_t k, int32_t m) { IN_EVENT_WINDOW(app_cb.key(k, m)); }
+static void win_text(int32_t k, moonbit_string_t s, int32_t a, int32_t b) { IN_EVENT_WINDOW(app_cb.text(k, s, a, b)); }
 // the pointer's shape (@hostapi.set_cursor), and the press under way (what @hostapi.window_drag drags the window with)
 static int cursor_kind;
 static NSEvent *down_event;
@@ -189,6 +275,7 @@ static double paced_hz, link_hz = -1;
 
 - (instancetype)initWithFrame:(NSRect)f {
   self = [super initWithFrame:f];
+  self.wid = win_making;
   self.wantsLayer = YES;
   self.mirror = @"";
   [self registerForDraggedTypes:@[ NSPasteboardTypeFileURL, NSPasteboardTypeString ]];
@@ -244,7 +331,10 @@ static double paced_hz, link_hz = -1;
 
 - (CALayer *)makeBackingLayer {
   CAMetalLayer *l = [CAMetalLayer layer];
+  // (its window's drawing given it, whichever window is in place as it is made: win_open)
+  mb_render_use(self.wid);
   mb_render_init(l);
+  mb_render_use(win_active);
   return l;
 }
 
@@ -272,7 +362,11 @@ static double paced_hz, link_hz = -1;
 // the pointer over a web view shown under the canvas goes to it
 - (NSView *)hitTest:(NSPoint)p {
   NSPoint q = [self convertPoint:p fromView:self.superview];
-  if (mb_views_pass_through(q.x, q.y)) return nil;
+  // (its own window's views, whichever window is in place now)
+  mb_views_use(self.wid);
+  int through = mb_views_pass_through(q.x, q.y);
+  mb_views_use(win_active);
+  if (through) return nil;
   return [super hitTest:p];
 }
 - (BOOL)wantsUpdateLayer { return YES; }
@@ -322,7 +416,15 @@ static const char *record_dir;
 static int record_n, record_from = 0, record_frames = 600;
 static double record_t0 = -1;
 
+// A frame of its window, put in place for it (win_use), the window in place before put back after.
 - (void)drawFrame {
+  int back = win_active;
+  win_use(self.wid);
+  [self drawFrameHere];
+  win_use(back);
+}
+
+- (void)drawFrameHere {
   NSSize s = self.bounds.size;
   double scale = self.window.backingScaleFactor ?: 2.0;
   ((CAMetalLayer *)self.layer).contentsScale = scale;
@@ -434,6 +536,9 @@ static void pump(void) {
   }
   script_wants = NO;
   [v drawFrame];
+  // (each window of the run beside the first drawn at the same moment, on the same clock)
+  for (NSNumber *k in win_slots)
+    if (k.intValue > 0) [win_slots[k].view drawFrame];
   frames_drawn++;
   run_script_step(frames_drawn);
   if (app_wants || script_wants || settle_wake >= 0) pump_soon();
@@ -460,6 +565,11 @@ static void pump(void) {
     if (mb_now_ms() < wake_for - 0.5) return;
     wake_for = -1;
     self.wantFrame = YES;
+    // (a wake is the run's, not one window's: each window draws its frame for it)
+    for (NSNumber *k in win_slots) {
+      MBView *o = win_slots[k].view;
+      if (o != self) [o requestFrame];
+    }
   }
   if (!self.wantFrame) {
     l.paused = YES;
@@ -1257,6 +1367,124 @@ int32_t mb_host_window_open(moonbit_string_t what_s) {
 // its window out of the Dock (window_front_heard); this run can only make that app the active one.
 static NSString *const window_front_notice = @"fail.still.mbui.window.front";
 
+// ---- the windows of one run (win_use, above) ----
+
+// Window `wid` gone (closed by the person, or by the app: mb_host_windows' 3): what it held let go of, the app told
+// between frames (MB_OUTSIDE_WINDOW; one the app closed itself it knows of already).
+static void win_closed(int wid) {
+  MBWinSlot *slot = win_slots[@(wid)];
+  if (!slot || wid == 0) return;
+  if (win_active == wid) win_use(0);
+  [slot.view.link invalidate];
+  slot.view.link = nil;
+  for (id obs in slot.observers) [[NSNotificationCenter defaultCenter] removeObserver:obs];
+  [slot.observers removeAllObjects];
+  [win_slots removeObjectForKey:@(wid)];
+  mb_views_forget(wid);
+  mb_render_forget(wid);
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if (outside_cb) outside_cb(MB_OUTSIDE_WINDOW, wid, -1);
+  });
+}
+
+static void wins_close_beside(void) {
+  for (NSNumber *k in win_slots.allKeys)
+    if (k.intValue > 0) [win_slots[k].win close];
+}
+
+// A window of this run for `what` (the app's words for what it shows, @hostapi.window_open_id): its id, 0 where none.
+// As large as the first is now, down and to the right of it; its title the app's, its top row the app's as the first's.
+static int win_open(NSString *what) {
+  (void)what;
+  if (!win_slots || win_slots.count >= MB_WINS) return 0;
+  int wid = 0;
+  for (int k = 1; k < MB_WINS; k++)
+    if (!win_slots[@(k)]) {
+      wid = k;
+      break;
+    }
+  if (!wid) return 0;
+  NSWindow *first = win_slots[@0].win;
+  NSRect fr = first ? [first contentRectForFrameRect:first.frame] : NSMakeRect(120, 120, 900, 720);
+  NSRect r = NSMakeRect(0, 0, fr.size.width, fr.size.height);
+  NSWindowStyleMask style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable |
+                            NSWindowStyleMaskMiniaturizable;
+  if (setup_inset) style |= NSWindowStyleMaskFullSizeContentView;
+  NSWindow *w = [[MBWindow alloc] initWithContentRect:r styleMask:style backing:NSBackingStoreBuffered defer:NO];
+  w.releasedWhenClosed = NO;
+  w.title = first.title ?: @"";
+  if (setup_min_w > 0 || setup_min_h > 0) w.contentMinSize = NSMakeSize(setup_min_w, setup_min_h);
+  if (setup_inset) {
+    w.titlebarAppearsTransparent = YES;
+    w.titleVisibility = NSWindowTitleHidden;
+  }
+  NSView *box = [[NSView alloc] initWithFrame:r];
+  box.wantsLayer = YES;
+  box.layer.backgroundColor = the_box.layer.backgroundColor;
+  NSView *under = mb_views_root_of(wid, NSRectToCGRect(r));
+  under.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+  [box addSubview:under];
+  win_making = wid;
+  MBView *v = [[MBView alloc] initWithFrame:r];
+  win_making = 0;
+  v.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+  [box addSubview:v];
+  w.contentView = box;
+  MBWinSlot *slot = [MBWinSlot new];
+  slot.wid = wid;
+  slot.win = w;
+  slot.box = box;
+  slot.view = v;
+  slot.a11yNodes = [NSMutableDictionary new];
+  slot.a11yElements = [NSMutableDictionary new];
+  win_slots[@(wid)] = slot;
+  // (the app's delegate: windowShouldClose lets it close, the run going on)
+  w.delegate = (id<NSWindowDelegate>)NSApp.delegate;
+  if (first) [w setFrameTopLeftPoint:NSMakePoint(NSMinX(first.frame) + 32 * wid, NSMaxY(first.frame) - 32 * wid)];
+  else [w center];
+  slot.observers = [NSMutableArray new];
+  [slot.observers addObject:[[NSNotificationCenter defaultCenter] addObserverForName:NSWindowWillCloseNotification
+                                                                              object:w queue:nil
+                                                                          usingBlock:^(NSNotification *n) { win_closed(wid); }]];
+  // (seen again, uncovered or out of the Dock: drawn as it is now; the view not held by what is told)
+  __weak MBView *seen = v;
+  for (NSNotificationName name in @[ NSWindowDidChangeOcclusionStateNotification, NSWindowDidDeminiaturizeNotification ])
+    [slot.observers addObject:[[NSNotificationCenter defaultCenter] addObserverForName:name object:w queue:nil
+                                                                            usingBlock:^(NSNotification *n) {
+                                                                              [seen requestFrame];
+                                                                            }]];
+  [w makeKeyAndOrderFront:nil];
+  [w makeFirstResponder:v];
+  [v requestFrame];
+  return wid;
+}
+
+// The windows of this run (host_native.mbt's `windows`): 0 whether they open in it (yes, but in a window that is a
+// run of its own, MBUI_WINDOW, a run that measures input to the screen or one recorded frame by frame), 1 one opened, 2 one to the front, 3 one
+// closed by the app, 4 the window in place now.
+int32_t mb_host_windows(int32_t op, int32_t wid, moonbit_string_t what) {
+  switch (op) {
+    case 0: return !window_run() && !latency_run() && !record_dir;
+    case 1: return win_open(mb_ns_from_string(what));
+    case 2: {
+      MBWinSlot *slot = wid > 0 ? win_slots[@(wid)] : nil;
+      if (!slot) return 0;
+      if (slot.win.miniaturized) [slot.win deminiaturize:nil];
+      [slot.win makeKeyAndOrderFront:nil];
+      [NSApp activateIgnoringOtherApps:YES];
+      return 1;
+    }
+    case 3: {
+      MBWinSlot *slot = wid > 0 ? win_slots[@(wid)] : nil;
+      // (closed after the frame the app asked it in: never in the middle of drawing it)
+      if (slot) dispatch_async(dispatch_get_main_queue(), ^{ [slot.win close]; });
+      return 0;
+    }
+    case 4: return win_active;
+    default: return 0;
+  }
+}
+
 // The window opened for `what` to the front, while it runs (@hostapi.window_front).
 int32_t mb_host_window_front(moonbit_string_t what_s) {
   NSString *what = mb_ns_from_string(what_s);
@@ -1318,6 +1546,10 @@ static void bring_back(void) {
   bring_back();
 }
 - (BOOL)windowShouldClose:(NSWindow *)w {
+  // (a window of the run beside the first: closed, the run going on: win_closed)
+  if (win_of(w) > 0) return YES;
+  // (the first: the windows beside it with it)
+  wins_close_beside();
   if (!in_bundle() || window_run()) return YES;
   [w orderOut:nil];
   if (!put_away_at) put_away_at = clock_gettime_nsec_np(CLOCK_MONOTONIC);
@@ -1489,6 +1721,20 @@ static NSMenuItem *menu_item(NSDictionary *it) {
   return item;
 }
 
+// (the key window's view, and the app asked as that window: mac_menu_keys.h)
+static MBView *key_view(void) {
+  int wid = win_of(NSApp.keyWindow);
+  return wid >= 0 ? win_slots[@(wid)].view : the_view;
+}
+#define MB_KEY_VIEW() key_view()
+#define MB_IN_KEY_WINDOW(call)                   \
+  do {                                           \
+    int back_ = win_active;                      \
+    int wid_ = win_of(NSApp.keyWindow);          \
+    win_use(wid_ < 0 ? 0 : wid_);                \
+    call;                                        \
+    win_use(back_);                              \
+  } while (0)
 #include "mac_menu_keys.h"
 
 void mb_host_menu_setup(moonbit_string_t json_s) {
@@ -1519,7 +1765,9 @@ void mb_host_menu_setup(moonbit_string_t json_s) {
 
 void mb_host_run(moonbit_string_t title, mb_frame_fn frame, mb_pointer_fn pointer,
                  mb_wheel_fn wheel, mb_key_fn key, mb_text_fn text) {
-  mb_cb = (mb_callbacks){frame, pointer, wheel, key, text};
+  // (input handed to the app as the window it came to: win_pointer and the rest)
+  app_cb = (mb_callbacks){frame, pointer, wheel, key, text};
+  mb_cb = (mb_callbacks){frame, win_pointer, win_wheel, win_key, win_text};
   shot_path = getenv("MBUI_SHOT_DIR");
   script = getenv("MBUI_SCRIPT");
   settle = settled_run();
@@ -1591,6 +1839,14 @@ void mb_host_run(moonbit_string_t title, mb_frame_fn frame, mb_pointer_fn pointe
     the_view.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     [box addSubview:the_view];
     w.contentView = box;
+    // (the first window of the run's: win_use)
+    if (!win_slots) win_slots = [NSMutableDictionary new];
+    MBWinSlot *first = [MBWinSlot new];
+    first.wid = 0;
+    first.win = w;
+    first.box = box;
+    first.view = the_view;
+    win_slots[@0] = first;
     // the wheel's upright scroll over a page that gives it to the canvas (ui's Touch: VerticalOut; a list of messages
     // with a page in it scrolls as a list), the canvas's; any other the page's
     static id wheel_monitor;
@@ -1698,7 +1954,15 @@ double mb_host_frame_late(void) { return frame_late; }
 
 int32_t mb_host_platform(void) { return 0; }
 
-void mb_host_request_frame(void) { [the_view requestFrame]; }
+// A frame asked for: of every window of the run where there are several (what changed may be any's: each draws only
+// what changed of its own), else the one.
+void mb_host_request_frame(void) {
+  if (win_slots.count < 2) {
+    [the_view requestFrame];
+    return;
+  }
+  for (NSNumber *k in win_slots) [win_slots[k].view requestFrame];
+}
 
 // A message posted from outside the frames (post.h), on whatever thread: its frame asked for on the main thread.
 static void mb_post_wake(void) {
@@ -1725,7 +1989,11 @@ void mb_host_wake_after(double ms) {
   double lead = at - mb_now_ms() - 2.0 * link_period;
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(MAX(lead, 0) * 1e6)), dispatch_get_main_queue(), ^{
     // (a wake asked later since, or met already: not this one's)
-    if (wake_for == at) the_view.link.paused = NO;
+    if (wake_for == at) {
+      if (win_slots.count < 2) the_view.link.paused = NO;
+      else
+        for (NSNumber *k in win_slots) win_slots[k].view.link.paused = NO;
+    }
   });
 }
 
@@ -1762,7 +2030,9 @@ void mb_host_present(double *buf, int32_t count, double r, double g, double b) {
   // (a window nobody can see draws nothing: what drawing holds was given back as it went (mb_render_trim), and a
   // frame drawn now would take it again, the GPU drawing it for nobody, a frame for each answer the core gives; shown
   // again, tell_state asks a frame, which draws what it shows then, whole)
-  if (!window_seen && !looked_at_run()) return;
+  // (a window of the run beside the first draws each frame it is asked: what it presented is what the app compares the
+  // next with, @damage)
+  if (win_active == 0 && !window_seen && !looked_at_run()) return;
   mb_render_present(mb_groups_draw_out(buf, count), count, r, g, b);
 }
 
@@ -1953,6 +2223,17 @@ int32_t mb_host_keyboard(void) { return 1; }
 static NSMutableDictionary<NSNumber *, MBA11yNode *> *a11y_nodes;
 static NSMutableDictionary<NSNumber *, MBA11yElement *> *a11y_elements;
 static int a11y_focus;
+
+// What VoiceOver reads of the window put in place kept by the one it was, that one's put back (win_use).
+static void a11y_swap(MBWinSlot *from, MBWinSlot *to) {
+  if (!from || !to) return;
+  from.a11yNodes = a11y_nodes;
+  from.a11yElements = a11y_elements;
+  from.a11yFocus = a11y_focus;
+  a11y_nodes = to.a11yNodes;
+  a11y_elements = to.a11yElements;
+  a11y_focus = to.a11yFocus;
+}
 static BOOL a11y_asked, a11y_selfcheck_done;
 
 static BOOL a11y_has(NSString *letters, unichar c) {

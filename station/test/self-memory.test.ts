@@ -148,7 +148,7 @@ function rig(o: { launcher: boolean }) {
   scopes.push(scope);
   const clock = Effect.runSync(Scope.provide(TestClock.make(), scope));
   const state = { node: { rss: 500 * MiB, heapUsed: 200 * MiB, external: 0, arrayBuffers: 0 } as NodeMemory, children: 300 * MiB, pressure: "normal" as Pressure | null };
-  const calls = { trims: 0, handovers: 0, asked: 0 };
+  const calls = { trims: 0, evicts: 0, handovers: 0, asked: 0 };
   const governor = new SelfMemoryGovernor({
     clock,
     totalBytes: 32 * GiB,
@@ -157,6 +157,7 @@ function rig(o: { launcher: boolean }) {
     children: async () => ({ bytes: state.children, count: 4 }),
     pressure: async () => state.pressure,
     trimIdle: () => (calls.trims++, 2),
+    evictWarm: () => (calls.evicts++, 3),
     handover: async () => {
       calls.asked++;
       return o.launcher ? async () => void calls.handovers++ : null;
@@ -171,8 +172,8 @@ function rig(o: { launcher: boolean }) {
 
 test("a station within its limits does nothing", async () => {
   const r = rig({ launcher: true });
-  for (let i = 0; i < 5; i++) assert.deepEqual(await r.governor.sample(), { trimmed: null, handover: null });
-  assert.deepEqual(r.calls, { trims: 0, handovers: 0, asked: 0 });
+  for (let i = 0; i < 5; i++) assert.deepEqual(await r.governor.sample(), { trimmed: null, evictedWarm: null, handover: null });
+  assert.deepEqual(r.calls, { trims: 0, evicts: 0, handovers: 0, asked: 0 });
 });
 
 test("over the soft limit or under the machine's pressure, what is idle is let go, at most once a minute", async () => {
@@ -180,18 +181,39 @@ test("over the soft limit or under the machine's pressure, what is idle is let g
   // The whole (Node's and its programs') past the soft limit, Node's own well within its hard one.
   r.state.node = { ...r.state.node, rss: 3 * GiB };
   r.state.children = 1.5 * GiB;
-  assert.deepEqual(await r.governor.sample(), { trimmed: 2, handover: null });
+  assert.deepEqual(await r.governor.sample(), { trimmed: 2, evictedWarm: null, handover: null });
   await r.at(30_000);
-  assert.deepEqual(await r.governor.sample(), { trimmed: null, handover: null }, "not again within the minute");
+  assert.deepEqual(await r.governor.sample(), { trimmed: null, evictedWarm: null, handover: null }, "not again within the minute");
   await r.at(30_000);
-  assert.deepEqual(await r.governor.sample(), { trimmed: 2, handover: null });
-  // Within its limits, but the machine under pressure.
+  assert.deepEqual(await r.governor.sample(), { trimmed: 2, evictedWarm: null, handover: null });
+  assert.equal(r.calls.evicts, 0, "the station past its own limit leaves the sessions' processes warm");
+  // Within its limits, but the machine under pressure: the idle sessions' processes go too.
   r.state.node = { ...r.state.node, rss: 500 * MiB };
   r.state.children = 0;
   r.state.pressure = "high";
   await r.at(60_000);
-  assert.deepEqual(await r.governor.sample(), { trimmed: 2, handover: null });
+  assert.deepEqual(await r.governor.sample(), { trimmed: 2, evictedWarm: 3, handover: null });
   assert.equal(r.calls.asked, 0, "never a handover for the soft limit");
+});
+
+test("under the machine's high or critical pressure every idle session's process is let go, at most once a minute; normal, none", async () => {
+  const r = rig({ launcher: true });
+  r.state.pressure = "normal";
+  assert.deepEqual(await r.governor.sample(), { trimmed: null, evictedWarm: null, handover: null });
+  r.state.pressure = "critical";
+  assert.deepEqual(await r.governor.sample(), { trimmed: 2, evictedWarm: 3, handover: null });
+  await r.at(30_000);
+  assert.deepEqual(await r.governor.sample(), { trimmed: null, evictedWarm: null, handover: null }, "not again within the minute");
+  await r.at(30_000);
+  r.state.pressure = "high";
+  assert.deepEqual(await r.governor.sample(), { trimmed: 2, evictedWarm: 3, handover: null });
+  // Pressure gone, the station past its soft limit: only what is idle of its own.
+  r.state.pressure = "normal";
+  r.state.node = { ...r.state.node, rss: 3 * GiB };
+  r.state.children = 1.5 * GiB;
+  await r.at(60_000);
+  assert.deepEqual(await r.governor.sample(), { trimmed: 2, evictedWarm: null, handover: null });
+  assert.deepEqual(r.calls, { trims: 3, evicts: 2, handovers: 0, asked: 0 });
 });
 
 test("one moment over the hard limit is no leak: nothing is handed over", async () => {

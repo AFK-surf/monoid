@@ -24,10 +24,16 @@ export class MbUseReader extends EventEmitter {
   #reboxTurn = true;
   #scheduled = false;
   #foregroundWaiting = false;
+  #stepping = false;
   #exited = false;
 
-  constructor(binary: string, path: string, priority: SharedArrayBuffer | undefined) {
+  /// `known`: what of the background an earlier one of these found done (`settled`), not asked again: one let go
+  /// while idle (use-index.ts `trimIdle`) is followed by another, which goes on where the database says (its progress
+  /// is kept there), or not at all where it was done or given up.
+  constructor(binary: string, path: string, priority: SharedArrayBuffer | undefined, known: { uses?: boolean; rebox?: boolean } = {}) {
     super();
+    this.#backgroundComplete = known.uses === true;
+    this.#reboxComplete = known.rebox === true;
     this.#priority = priority instanceof SharedArrayBuffer ? new Int32Array(priority) : null;
     this.#process = new MbProcess(binary, ["--builder", "vault-uses", "--db", path]);
     this.#process.on("message", (reply: Reply) => this.#replies.shift()?.(reply));
@@ -56,12 +62,25 @@ export class MbUseReader extends EventEmitter {
   }
 
   #more(): boolean { return this.#waiting.length > 0 || !this.#backgroundComplete || !this.#reboxComplete; }
+
+  /// What of the background is done (or given up), for the one that follows this (`known`).
+  get settled(): { uses: boolean; rebox: boolean } { return { uses: this.#backgroundComplete, rebox: this.#reboxComplete }; }
+
+  /// Nothing asked of it, nothing of the background left, and no step under way (so no permit held): it may be let go.
+  /// Told as `idle` once a step leaves it so.
+  idle(): boolean {
+    return !this.#exited && !this.#scheduled && !this.#stepping && this.#replies.length === 0 && !this.#more();
+  }
   #pause(): number { return this.#waiting.length > 1 ? REQUEST_BACKFILL_PAUSE_MS : BACKFILL_PAUSE_MS; }
 
   #schedule(delay = 0) {
     if (this.#scheduled || this.#exited) return;
     this.#scheduled = true;
-    const run = () => void this.#step().catch((error) => log.error("vault", "the use reader stopped", { error: (error as Error).message }));
+    const run = () => {
+      this.#stepping = true;
+      void this.#step().catch((error) => log.error("vault", "the use reader stopped", { error: (error as Error).message }))
+        .finally(() => { this.#stepping = false; if (this.idle()) this.emit("idle"); });
+    };
     if (delay > 0) wall.after(delay, run);
     else setImmediate(run);
   }

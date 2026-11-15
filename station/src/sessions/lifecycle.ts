@@ -306,7 +306,9 @@ export function archiveBy(hub: Hub, key: string, archived: boolean, by: string, 
   const actor = hub.actor(row);
   void actor
     .putAway()
-    .then(() => actor.evict())
+    // (what it left in the background ends with it: an archived session keeps nothing running; a turn under way runs
+    // to its end, which ends it then: hub.ts `idleNow`)
+    .then(() => actor.evict(true))
     .then(() => actor.cleanArchive());
 }
 

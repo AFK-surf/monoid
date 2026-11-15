@@ -1,0 +1,30 @@
+# What every job on ci-1's Linux self-hosted runners starts with (after its checkout): the toolchains on PATH, and Rust
+# built in a Cargo target of the job's own (under RUNNER_TEMP, emptied before each job), through sccache, whose cache of
+# compiled crates (~/stillfail-ci/sccache) is what is kept between jobs.
+name: setup-linux
+description: Toolchains and caches on ci-1's Linux runners
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+        echo "JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64" >> "$GITHUB_ENV"
+        echo "ANDROID_HOME=$HOME/Android/Sdk" >> "$GITHUB_ENV"
+        echo "PNPM_STORE_DIR=$HOME/stillfail-ci/pnpm-store" >> "$GITHUB_ENV"
+        echo "CARGO_TARGET_DIR=$RUNNER_TEMP/target" >> "$GITHUB_ENV"
+        echo "RUSTC_WRAPPER=$HOME/.cargo/bin/sccache" >> "$GITHUB_ENV"
+        echo "SCCACHE_DIR=$HOME/stillfail-ci/sccache" >> "$GITHUB_ENV"
+        echo "SCCACHE_CACHE_SIZE=20G" >> "$GITHUB_ENV"
+        echo "STILLFAIL_NATIVE_CACHE=$HOME/stillfail-ci/stillfail-native" >> "$GITHUB_ENV"
+        echo "STILLFAIL_NATIVE_CACHE_MAX_BYTES=10737418240" >> "$GITHUB_ENV"
+        echo "CARGO_INCREMENTAL=0" >> "$GITHUB_ENV"
+        echo "STILLFAIL_DIRECT_DNS=223.5.5.5" >> "$GITHUB_ENV"
+        echo "RUST_TEST_THREADS=4" >> "$GITHUB_ENV"
+        echo "$(sh scripts/node-here.sh)" >> "$GITHUB_PATH"
+        archives="$HOME/stillfail-ci/action-archives"
+        if [ -z "$(find "$archives/.filled" -mmin -60 2>/dev/null)" ]; then
+          mkdir -p "$archives" && touch "$archives/.filled"
+          sh .github/action-archives.sh . "$archives" || echo "::warning::the action archive cache was not filled"
+        fi

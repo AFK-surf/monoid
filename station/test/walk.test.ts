@@ -77,6 +77,30 @@ test("a walk stops at its most entries, below its most depth, past its time and 
   assert.deepEqual(aborted, { truncated: true, reason: "aborted", visited: 1, crossed: 0 });
 });
 
+test("a walk asked to follow links goes into each real directory once: a link back up, or two to one, ends there", async () => {
+  const root = fresh();
+  mkdirSync(join(root, "a", "b"), { recursive: true });
+  writeFileSync(join(root, "a", "b", "deep.txt"), "x");
+  const outside = fresh();
+  writeFileSync(join(outside, "there.txt"), "x");
+  symlinkSync(root, join(root, "a", "loop"));
+  symlinkSync(outside, join(root, "out"));
+  symlinkSync(outside, join(root, "a", "out-again"));
+  symlinkSync(join(root, "nowhere"), join(root, "broken"));
+  const seen: WalkEntry[] = [];
+  const errors: string[] = [];
+  const walked = await walkBounded(root, (e) => void seen.push(e), { followLinks: true, sameDevice: false, onError: (_p, _e, op) => void errors.push(op) });
+  assert.equal(walked.truncated, false);
+  assert.deepEqual(seen.map((e) => e.rel).sort(), ["", "a", "a/b", "a/b/deep.txt", "a/loop", "a/out-again", "broken", "out", "out/there.txt"]);
+  const by = (rel: string) => seen.find((e) => e.rel === rel)!;
+  // A link says it is one, and what it names by its target; one naming nothing is neither.
+  assert.deepEqual([by("out").symlink, by("out").directory], [true, true]);
+  assert.deepEqual([by("a/loop").directory, by("broken").directory, by("broken").file], [true, false, false]);
+  assert.deepEqual(errors, ["stat"]);
+  // Bounded as ever: its entries.
+  assert.equal((await walkBounded(root, () => {}, { followLinks: true, maxEntries: 3 })).reason, "entries");
+});
+
 test("a visit skips a directory or stops the walk", async () => {
   const root = fresh();
   filled(root, 3, 2);

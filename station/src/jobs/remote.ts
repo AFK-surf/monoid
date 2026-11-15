@@ -33,7 +33,7 @@ import { type Bytes, type Inbox, MESH_WAIT_MS, NoBytes, NoLink, type PeerCall, P
 import type { ActorsProgram } from "../sessions/mb-actor.ts";
 import { version as runningVersion } from "../ops/version.ts";
 import { fileBytes, readBytes, stopBytes, writeBytes } from "../mesh/files.ts";
-import { Bulk, LINK, PACKED, patchOf, putBlobs, syncDir } from "./dirsync.ts";
+import { Bulk, LINK, PACKED, patchOf } from "./dirsync.ts";
 import { DEFAULT_LIMIT, WorkspaceReader } from "./workspace-size.ts";
 import { SANDBOX, type Sandbox, ensureIdentity, sandboxDescribed } from "../agents/sandbox.ts";
 
@@ -336,6 +336,24 @@ export async function filePath(root: string, relative: string, create: boolean):
   return out;
 }
 
+/// What processes gone left landed (Remote `answer`): each process's own directory, named by its pid.
+async function tidyLanding(landing: string): Promise<void> {
+  for (const name of await readdir(landing).catch(() => [] as string[])) {
+    const pid = Number(name);
+    if (Number.isSafeInteger(pid) && pid > 0 && (pid === process.pid || alive(pid))) continue;
+    await rm(join(landing, name), { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
 /// STANDARD base64 as the Rust decodes it: padded, nothing else in it.
 function fromBase64(data: string): Buffer {
   if (data.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(data)) throw new Error("Invalid input length or symbol");
@@ -353,7 +371,7 @@ const REMOTE_KEY = "#remote";
 /// and do runs in the sessions' MoonBit program (station/mb src/reader/remote.mbt, remote_target.mbt,
 /// remote_source.mbt), the pseudo-actor `#remote` of the program the jobs run in. This is what of them is the
 /// transport's and the machine's, which the program asks for (`asked`): the requests to and from the other stations and
-/// the bytes that go with them, a directory's sync and what it is compared and written by (dirsync.ts), the folders
+/// the bytes that go with them (a directory sync's packed requests, the program's), the folders
 /// macOS protects, the load, the cloud's state; and what the station's own parts read at once: a session's shared
 /// directory (`work`), the chats' use records (`workspaceTargets`, `recordUse`, `closeSession`).
 export class Remote {
@@ -377,7 +395,7 @@ export class Remote {
   private watching = new Set<string>();
   /// The station is stopping: nothing more is followed.
   private stopped = false;
-  /// The station's bulk requests to the others (syncs' contents, files' chunks), one at a time (dirsync.ts).
+  /// The station's bulk requests to the others (syncs' contents, files' chunks), one at a time (dirsync.ts `Bulk`).
   private bulk = new Bulk();
   private scope: Scope.Closeable;
   private run: (effect: Effect.Effect<void>) => Promise<void>;
@@ -401,6 +419,9 @@ export class Remote {
   private inBytes = new Map<number, Bytes>();
   private outBytes = new Map<number, Bytes>();
   private bytesNext = 0;
+  /// Where this process lands a sync's packed pieces for the program (`answer`): its own, as the next Node of a
+  /// handover answers beside it.
+  private landing: string;
 
   constructor(options: RemoteOptions) {
     this.data = options.data;
@@ -415,6 +436,8 @@ export class Remote {
     this.removeTask = options.removeTask ?? ((path) => rm(path, { recursive: true, force: true }));
     this.root = join(options.data, "remote");
     for (const name of ["incoming", "outgoing", "sessions", "used", "prepared"]) mkdirSync(join(this.root, name), { recursive: true }); // sync: once, as it is made
+    this.landing = join(this.root, "landing", String(process.pid));
+    void tidyLanding(join(this.root, "landing"));
     void readAllUsed(join(this.root, "used"));
     this.scope = Effect.runSync(Scope.make());
     const runtime = Scope.provide(FiberSet.makeRuntimePromise<never, void, never>(), this.scope);
@@ -449,17 +472,33 @@ export class Remote {
   }
 
   /// A request of another station's taken in here (`otherwise`): its bytes, if any, kept for the program to have
-  /// written where it says (`bytes`); an answer's (a file asked for whole) sent after it.
+  /// written where it says (`bytes`); an answer's (a file asked for whole) sent after it. A sync's packed pieces
+  /// (`sync.put`, PACKED at most) are landed in a file first, named to the program (`landed`), which unpacks and writes
+  /// them itself (station/mb src/reader/dirsync.mbt `put_blobs`): its thousands of small files' writes, stats and renames
+  /// held this thread for seconds when they were Node's (2026-11-15: 6.0 s and 4.2 s on a station short of memory).
   private async answer(workspace: string, peer: string, request: Json): Promise<Json> {
     const bytes = bytesOf(request);
-    let asked = request;
+    // (`landed` is only ever this station's own: never a path another station names)
+    const { landed: _, ...asked0 } = request ?? {};
+    let asked: Json = asked0;
     let id = 0;
-    if (bytes !== null) {
-      id = ++this.bytesNext;
-      this.inBytes.set(id, bytes);
-      asked = { ...request, bytes: id };
-    }
+    let landed: string | null = null;
     try {
+      if (bytes !== null && request?.method === "sync.put") {
+        landed = join(this.landing, `${++this.bytesNext}.zst`);
+        await mkdir(this.landing, { recursive: true });
+        const file = await open(landed, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, 0o600);
+        try {
+          await writeBytes(file, bytes, 0, PACKED);
+        } finally {
+          await file.close();
+        }
+        asked = { ...asked, landed };
+      } else if (bytes !== null) {
+        id = ++this.bytesNext;
+        this.inBytes.set(id, bytes);
+        asked = { ...asked, bytes: id };
+      }
       const answer = await this.call("handle", [workspace, peer, asked]);
       const out = typeof answer?.outBytes === "number" ? this.outBytes.get(answer.outBytes) : undefined;
       if (out !== undefined) {
@@ -472,6 +511,7 @@ export class Remote {
       const left = id === 0 ? undefined : this.inBytes.get(id);
       this.inBytes.delete(id);
       if (left !== undefined) await stopBytes(left).catch(() => undefined);
+      if (landed !== null) await rm(landed, { force: true }).catch(() => undefined);
     }
   }
 
@@ -523,11 +563,6 @@ export class Remote {
       case "node.ensureIdentity":
         await ensureIdentity(this.data);
         return null;
-      case "node.putBlobs": {
-        const packed = typeof c === "number" ? this.inBytes.get(c) : undefined;
-        if (packed !== undefined) this.inBytes.delete(c);
-        return await putBlobs(a, b, packed !== undefined ? await readBytes(packed, PACKED) : fromBase64(typeof d === "string" ? d : ""));
-      }
       case "node.filePut":
         return await this.filePut(a, b);
       case "node.fileGet":
@@ -565,8 +600,23 @@ export class Remote {
         return null;
       case "node.resolve":
         return resolve(a);
-      case "node.syncDir":
-        return await syncDir((method, more) => this.ask(a, { workspace: b, session: c, key: d, method, ...more }), e, () => this.store.now(), this.bulk);
+      case "node.syncPacking": {
+        // Where the program has the shell pack a sync's next request (dirsync_source.mbt `flush_pieces`), which it
+        // removes once sent: this process's own, as what lands here is (`answer`).
+        await mkdir(this.landing, { recursive: true });
+        return join(this.landing, `${++this.bytesNext}.out.zst`);
+      }
+      case "node.syncPut": {
+        // A sync's packed pieces, in the file at `c`, sent to station `a` in the request `b` after it (`d`), or, to a
+        // station from before (its transport threw NoBytes, the program then asks so), base64 in it; in their turn
+        // with the station's other bulk requests.
+        if (d === true) {
+          const size = (await stat(c)).size;
+          return await this.bulk.run(() => this.ask(a, withBytes(b, fileBytes(c, 0, size))));
+        }
+        const data = (await readFile(c)).toString("base64");
+        return await this.bulk.run(() => this.ask(a, { ...b, data }));
+      }
       case "node.bringBack":
         return await this.bringBack(a);
     }
@@ -1227,7 +1277,7 @@ export class Remote {
     return detailed(got.ok);
   }
 
-  // ── what a directory's sync is compared and written by (dirsync.ts), for the program ──
+  // ── a task's files sent and fetched, for the program ──
 
   /// file.put: an input of a task, whole after the request (its bytes kept for it: `bytes`), or a chunk of base64 in it
   /// from a station from before; {bytes, whole: whether the file is all there now}.
@@ -1460,6 +1510,12 @@ export class Remote {
       }
     }
     return out;
+  }
+
+  /// What a directory sync of `dir` sends from here (the program's listing: dirsync_source.mbt `list_local`), for the
+  /// tests that compare it with what the TypeScript listed (test/dirsync-reference.ts).
+  async listLocal(dir: string): Promise<Json> {
+    return await this.call("listLocal", [dir]);
   }
 
   /// What the station_* tools do, as `session`: among the stations of its workspace (the program's).

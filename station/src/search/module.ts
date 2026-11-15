@@ -5,7 +5,7 @@ import { Effect, Layer } from "effect";
 import { routes } from "../api/routes/search.ts";
 import { rootsOf } from "../drive/drive.ts";
 import { Agents } from "../sessions/agents.ts";
-import { ControlPlane, Events, HelperFolders, Own, Parts, Paths, Peers, Previous, StationConfig, Store } from "../services.ts";
+import { ControlPlane, Events, HelperFolders, Own, Parts, Paths, Peers, Previous, Readers, StationConfig, Store } from "../services.ts";
 import { SKILL_READ, readSkill, skillForPeer } from "./skills.ts";
 import { SEARCH, searchForPeer, searchTools } from "./tool.ts";
 import { FileSearch } from "./files.ts";
@@ -47,6 +47,8 @@ export const SearchLive = Layer.effectDiscard(
       }),
     });
     yield* Effect.acquireRelease(Effect.sync(() => search.start()), () => Effect.promise(() => search.stop()));
+    // (its program let go with the readers' idle ones when the station is short of memory: ops/self-memory.ts)
+    (yield* Readers).onTrim(() => search.trimIdle());
     const link = (session: string) => hub.link(session);
     // Another station of the workspace searching this one (the agents' `search` tool there).
     bus.on(SEARCH, (_peer, request, workspace) => searchForPeer({ search, link }, request, workspace ?? null, cloud.home()));

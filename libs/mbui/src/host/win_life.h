@@ -501,6 +501,12 @@ static void window_opened_drop(WindowOpened **at) {
   free(w);
 }
 
+// The windows of this run (@hostapi.windows_in_process and the rest: host_native.mbt's `windows`): none but its own
+// here, a window of the app's own being another run of it (mb_host_window_open).
+int32_t mb_host_windows(int32_t op, int32_t wid, moonbit_string_t what) {
+  (void)op, (void)wid, (void)what;
+  return 0;
+}
 int32_t mb_host_window_opens(void) { return 1; }
 int32_t mb_host_window_open(moonbit_string_t what) {
   int wn = Moonbit_array_length(what);

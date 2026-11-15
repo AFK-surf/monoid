@@ -118,7 +118,7 @@ fn say_answer(host : @host.Host, answer : Json) -> Unit {
 ///|
 /// The reads moved here from read/worker.ts (read/pool.ts `MOVED`).
 fn moved(op : String) -> Bool {
-  ["job", "jobLog", "historyPendingCard", "statePendingCard", "deliveryCardState", "reviewPendingCard", "stateQuestion", "pendingDeliveries", "latestMessages", "chatHistoryMessages", "openedChatSaid", "widgetState", "transcriptFile", "memory", "machineSessions", "machineSession", "sessionsAtWork", "policyChecks", "recentConnectPeople", "usageTurns", "usageCalls", "outflowMessages", "archiveLook", "recentChatList", "searchChatList", "threadList", "sharedOf", "sharedChats", "chatMarks", "entries", "letters", "summary", "sessions", "session", "threads", "thread", "turnNotices", "saidNotices", "chats", "chatRows", "outflowChats", "openJobs", "resourceChats", "usage", "outflowUsage", "timeline", "transcriptState", "sessionPlace", "changed", "tailRead"].contains(
+  ["job", "jobLog", "historyPendingCard", "statePendingCard", "deliveryCardState", "reviewPendingCard", "stateQuestion", "pendingDeliveries", "latestMessages", "chatHistoryMessages", "openedChatSaid", "widgetState", "transcriptFile", "memory", "machineSessions", "machineSession", "sessionsAtWork", "policyChecks", "recentConnectPeople", "usageTurns", "usageCalls", "outflowMessages", "archiveLook", "recentChatList", "searchChatList", "threadList", "sharedOf", "sharedChats", "chatMarks", "entries", "letters", "summary", "sessions", "session", "threads", "thread", "turnNotices", "saidNotices", "chats", "chatRows", "outflowChats", "openJobs", "resourceChats", "usage", "outflowUsage", "timeline", "transcriptState", "sessionPlace", "changed", "tailRead", "internalCardEditPage", "internalCardMessagePage"].contains(
     op,
   )
 }
@@ -200,6 +200,9 @@ fn Reader::answer_in(self : Reader, db : @sql.Db, op : String, ask : Json) -> Js
     "tailRead" =>
       @history.tail_read(self.host, match args.value("runtime") { Some(String(r)) => r; _ => "claude" }, args.value("state").unwrap_or(Json::null()))
     "sessionPlace" => @readops.session_place(db, self.host, self.data, self.sep, ask)
+    // (a queued card outcome's pages, the station's own: read/pool.ts `cardEditPage`, `cardMessagePage`)
+    "internalCardEditPage" => @readops.card_edit_page(db, args)
+    "internalCardMessagePage" => @readops.card_message_page(db, args)
     // (what of a list a client does not hold as it is: the list read as its own op reads it, its args those given)
     "changed" =>
       match args.value("op") {
@@ -535,6 +538,37 @@ async fn usage_scope(host : @host.Host, db_path : String) -> Unit {
 }
 
 ///|
+/// The usage counter's reads (usage/counter-mb.ts `MbUsageCounter`, in usage/counter.ts's place where this program is):
+/// each line an ask `{id, op: "read", …}` (@usagecount.Counter::read), answered `{id, …}` or `{id, error}`, one at a
+/// time. What it writes it writes in transactions of its own; nothing is kept between asks but where each transcript
+/// was read to.
+async fn usage_counter(host : @host.Host, db_path : String) -> Unit {
+  let db = @sql.Db::attach(host, db_path, wait=5000)
+  db.exec("PRAGMA synchronous = NORMAL")
+  let counter = @usagecount.Counter::new(host, db, flag("--sep").unwrap_or("/"))
+  while host.line() is Some(line) {
+    if line == "" {
+      continue
+    }
+    let ask : Json = @json.parse(line) catch { _ => Json::null() }
+    let id = match ask {
+      { "id": id, .. } => id
+      _ => Json::null()
+    }
+    let answer : Json = try counter.read(ask) catch {
+      e => { "id": id, "error": Json::string(message(e)) }
+    } noraise {
+      Object(m) => {
+        m["id"] = id
+        Json::object(m)
+      }
+      other => other
+    }
+    host.say(answer.stringify())
+  }
+}
+
+///|
 /// The vault's use reader (vault/use-index.ts `UseIndex`): each line an operation (@vaultuses.operate), answered
 /// `{"busy": true}` while another's write holds the database, `{"error"}` when it failed.
 async fn vault_uses(host : @host.Host, db_path : String) -> Unit {
@@ -623,6 +657,110 @@ async fn replica_export(host : @host.Host, db : String, replica : String, data_d
     }
   }
   exporter.close()
+}
+
+///|
+/// The files of a retired station's chats, or a chat handed over (replica/carry.ts): one ask on stdin, `{op, …}`
+/// (`gather`, `place`, `preview`), answered `{answer}` or `{error}` on one line, then the program ends. A cancel ends
+/// the process.
+async fn replica_carry(host : @host.Host, sep : String) -> Unit {
+  guard host.line() is Some(line) else { return }
+  let answer : Result[@jsjson.JValue, String] = try {
+    let ask = @jsjson.parse(line)
+    let text = (name : String) => match ask.get(name) {
+      Some(Str(u)) => Some(@jsjson.text(u))
+      _ => None
+    }
+    let texts = (name : String) => match ask.get(name) {
+      Some(Arr(items)) => Some(items.filter_map(v => if v is Str(u) { Some(@jsjson.text(u)) } else { None }))
+      _ => None
+    }
+    let yes = (name : String) => ask.get(name) is Some(Bool(true))
+    let need = (name : String) => match text(name) {
+      Some(t) => t
+      None => raise Failure("\{name} is required")
+    }
+    if yes("count") {
+      @replica.count_looks()
+    }
+    match text("op") {
+      Some("gather") =>
+        Ok(
+          @replica.carry_gather(
+            host,
+            sep,
+            need("dataDir"),
+            need("db"),
+            text("ws").unwrap_or(""),
+            yes("home"),
+            need("scratch"),
+            text("agent"),
+            texts("keys"),
+            texts("own").unwrap_or([]),
+          ),
+        )
+      Some("place") =>
+        Ok(
+          @replica.carry_place(
+            host,
+            sep,
+            need("dataDir"),
+            need("index"),
+            need("from"),
+            text("made"),
+            text("aside"),
+            text("placed"),
+            yes("projects"),
+          ),
+        )
+      Some("preview") => Ok(@replica.carry_preview(host, sep, need("dataDir"), need("db"), text("ws").unwrap_or(""), yes("home")))
+      Some("sizes") => {
+        // (move/sizes.ts: the gathering's own walk, each file's size counted; with `places`, the other side's)
+        let sizing = ask.get("sizing")
+        let most = match sizing {
+          Some(o) =>
+            match o.get("most") {
+              Some(Num(n)) => n.to_int()
+              _ => 500000
+            }
+          None => 500000
+        }
+        let of_text = (v : @jsjson.JValue?) => match v {
+          Some(Str(u)) => Some(@jsjson.text(u))
+          _ => None
+        }
+        let places = match sizing {
+          Some(o) =>
+            match o.get("places") {
+              Some(Arr(ps)) =>
+                Some(
+                  ps.map(p => (
+                    of_text(p.get("key")).unwrap_or(""),
+                    of_text(p.get("room")),
+                    match p.get("transcripts") {
+                      Some(Arr(ts)) => ts.filter_map(v => if v is Str(u) { Some(@jsjson.text(u)) } else { None })
+                      _ => []
+                    },
+                  )),
+                )
+              _ => None
+            }
+          None => None
+        }
+        Ok(@replica.carry_sizes(host, sep, need("dataDir"), text("db").unwrap_or(""), texts("keys").unwrap_or([]), most, places))
+      }
+      _ => Err("no such ask")
+    }
+  } catch {
+    e => Err(message(e))
+  }
+  match answer {
+    Ok(v) => host.say("{\"answer\":\{@jsjson.stringify(v)}}")
+    Err(m) => {
+      let failed : Json = { "error": Json::string(m) }
+      host.say(failed.stringify())
+    }
+  }
 }
 
 ///|
@@ -778,6 +916,8 @@ fn main {
         { "drop": True, .. } => Some(@usagefill.drop_step(db))
         _ => Some(@usagefill.fill_step(db))
       }))
+    (Some("usage-counter"), Some(db), _) =>
+      @host.run(shell_dir=beside(db, "shell"), host => usage_counter(host, db))
     (Some("usage-scope"), Some(db), _) =>
       @host.run(shell_dir=beside(db, "shell"), host => usage_scope(host, db))
     (Some("signin-save"), Some(db), _) =>
@@ -843,6 +983,9 @@ fn main {
         }
         host.say(line)
       })
+    (Some("replica-carry"), _, _) =>
+      // (the shell's own files, which this asks for none of, in `--shell-dir`)
+      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => replica_carry(host, flag("--sep").unwrap_or("/")))
     (Some("vault-uses"), Some(db), _) =>
       @host.run(shell_dir=beside(db, "shell"), host => vault_uses(host, db))
     (Some("outflow-chats"), Some(db), _) =>
@@ -947,7 +1090,7 @@ fn main {
         }
       })
     _ => {
-      @host.note("usage: stillfail-reader --data <dir> | --builder archive-marks|session-bindings|session-up-jobs|widget-sources|card-posts|session-list|outflow-chats|turn-counts|said|archive-last|page-letters|cc-index|usage-check|recent-chat|closed-cards|people-since|legacy-edits|legacy-said|session-counts|session-backfill|post-blocks|usage-retire|usage-scope|signin-save|vault-uses|replica-export --db <file> | --builder replica-restore --db <file> --data <dir>")
+      @host.note("usage: stillfail-reader --data <dir> | --builder archive-marks|session-bindings|session-up-jobs|widget-sources|card-posts|session-list|outflow-chats|turn-counts|said|archive-last|page-letters|cc-index|usage-check|recent-chat|closed-cards|people-since|legacy-edits|legacy-said|session-counts|session-backfill|post-blocks|usage-retire|usage-scope|usage-counter|signin-save|vault-uses|replica-export --db <file> | --builder replica-restore --db <file> --data <dir> | --builder replica-carry")
       2
     }
   }

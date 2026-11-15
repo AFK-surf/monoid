@@ -111,6 +111,31 @@ impl @hostapi.Host for Native with window_front(_, what) {
 }
 
 ///|
+impl @hostapi.Host for Native with windows_in_process(_) {
+  windows(0, 0, "") != 0
+}
+
+///|
+impl @hostapi.Host for Native with window_open_id(_, what) {
+  windows(1, 0, what)
+}
+
+///|
+impl @hostapi.Host for Native with window_front_id(_, wid) {
+  windows(2, wid, "") != 0
+}
+
+///|
+impl @hostapi.Host for Native with window_close_id(_, wid) {
+  windows(3, wid, "") |> ignore
+}
+
+///|
+impl @hostapi.Host for Native with window_current(_) {
+  windows(4, 0, "")
+}
+
+///|
 impl @hostapi.Host for Native with set_cursor(_, kind) {
   set_cursor(kind)
 }

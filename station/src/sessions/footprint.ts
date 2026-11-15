@@ -53,7 +53,7 @@ function roomIn(sessions: string, path: string | null): string | null {
 type Probe = { there: string } | { dir: string } | { head: string };
 type Answer = boolean | string | null;
 /// How a directory is known to be made again: by its name (and a file beside it), as since the start, or by what is in
-/// it or near it (`found`), which inside a checkout counts only where git ignores it (`safeToRemove`, carry-worker.ts).
+/// it or near it (`found`), which inside a checkout counts only where git ignores it (`safeToRemove`; the gathering, carry.mbt, as git lists a checkout).
 export type Rebuilt = "named" | "found";
 /// How far up a MoonBit manifest is looked for above a `_build` (to the checkout's top, never past it).
 const MANIFEST_UP = 8;
@@ -129,16 +129,16 @@ const HEAD_BYTES = 512;
 
 const answerNow = (p: Probe): Answer => {
   try {
-    if ("there" in p) return existsSync(p.there); // sync: rebuildableKind's, for the gathering's own thread (carry-worker.ts)
+    if ("there" in p) return existsSync(p.there); // sync: rebuildableKind's, for what calls it at once (the gathering's reference, test/carry-reference.ts)
     // (most directories have neither: no exception thrown for each)
-    if ("dir" in p) return statSync(p.dir, { throwIfNoEntry: false })?.isDirectory() === true; // sync: rebuildableKind's, for the gathering's own thread (carry-worker.ts)
-    if (!existsSync(p.head)) return null; // sync: rebuildableKind's, for the gathering's own thread (carry-worker.ts)
-    const fd = openSync(p.head, "r"); // sync: rebuildableKind's, for the gathering's own thread (carry-worker.ts)
+    if ("dir" in p) return statSync(p.dir, { throwIfNoEntry: false })?.isDirectory() === true; // sync: rebuildableKind's, for what calls it at once (the gathering's reference, test/carry-reference.ts)
+    if (!existsSync(p.head)) return null; // sync: rebuildableKind's, for what calls it at once (the gathering's reference, test/carry-reference.ts)
+    const fd = openSync(p.head, "r"); // sync: rebuildableKind's, for what calls it at once (the gathering's reference, test/carry-reference.ts)
     try {
       const buf = Buffer.alloc(HEAD_BYTES);
-      return buf.subarray(0, readSync(fd, buf, 0, HEAD_BYTES, 0)).toString("utf8"); // sync: rebuildableKind's, for the gathering's own thread (carry-worker.ts)
+      return buf.subarray(0, readSync(fd, buf, 0, HEAD_BYTES, 0)).toString("utf8"); // sync: rebuildableKind's, for what calls it at once (the gathering's reference, test/carry-reference.ts)
     } finally {
-      closeSync(fd); // sync: rebuildableKind's, for the gathering's own thread (carry-worker.ts)
+      closeSync(fd); // sync: rebuildableKind's, for what calls it at once (the gathering's reference, test/carry-reference.ts)
     }
   } catch {
     return "head" in p ? null : false;
@@ -161,7 +161,7 @@ const answerSoon = async (p: Probe): Promise<Answer> => {
   }
 };
 
-/// The gathering's own decision (carry-worker.ts), from the listings it reads anyway, so that a directory that is none
+/// The gathering's own decision (carry.mbt `rebuilt_by_name`, this its reference's), from the listings it reads anyway, so that a directory that is none
 /// costs it no look at the disk more than main's walk took: `name` a directory's, `beside` the names of the directory it
 /// is in. By its name and a file beside it (outside a checkout, MoonBit's manifest beside only).
 export function rebuiltByName(name: string, beside: ReadonlySet<string>): Rebuilt | null {

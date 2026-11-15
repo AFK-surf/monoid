@@ -59,6 +59,25 @@ fn scene_tester(
   if inset {
     t.set_window_inset(true)
   }
+  // (MBUI_FILM_WINDOWS=1: the windows the app opens beside its first open in the run, each the scene's size, as on a
+  // Mac; MBUI_FILM_WINDOW=N films window N of them: film.mbt's host_frame)
+  // (MBUI_FILM_WINDOWS=run: they open as runs of their own, as on Windows and Linux: none filmed here)
+  match arg("MBUI_FILM_WINDOWS") {
+    "1" => {
+      t.set_window_opens(true)
+      t.set_windows_in_process(true)
+      // (MBUI_FILM_WINDOW_SIZE=WxH: their size, drawn from the picture's top left corner; else the scene's)
+      let (bw, bh) = match arg("MBUI_FILM_WINDOW_SIZE").split("x").map(fn(x) { number(x.to_owned()) }).collect() {
+        [Some(bw), Some(bh)] => (bw, bh)
+        _ => (w, h)
+      }
+      for k in 1..<16 {
+        t.set_window_beside_size(k, bw, bh)
+      }
+    }
+    "run" => t.set_window_opens(true)
+    _ => ()
+  }
   match number(arg("MBUI_FONT_SCALE")) {
     Some(f) if f > 0.0 => t.set_font_scale(f)
     _ => ()

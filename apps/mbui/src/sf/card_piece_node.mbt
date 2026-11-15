@@ -63,6 +63,39 @@ pub fn card_piece_node(
     Some(w) if at.look is Wide => w
     _ => piece
   }
+  // (its rooms over and under what it holds, and the room under the card, each said by a node laid out in its turn down
+  // what holds it: a piece that comes to be another as rows come or go round it (a row put under the card's only one:
+  // its foot's rooms off it) changes height for that change's cause, on its way, its column's, as what comes does
+  // (View::resizes), where the card and its room, grown to their block, make none of their own; what an answer tells at
+  // first, a reused block, settles at once there (View::comes))
+  let resizes = fn(v : @view.View) { v.reacts(piece, fn(_) { v.resizes() |> ignore }, at_start=false) }
+  // (the room under the card, in `room` under it)
+  let under = fn(room : @view.View, tall : () -> Double) {
+    room.box(fn(e) {
+      e.height(By(fn() { Some(tall()) })) |> ignore
+      resizes(e)
+    })
+    |> ignore
+  }
+  // (what it holds, its rooms `over` and `under` it, in `card`: where its room over it changes, what it holds keeps to
+  // its foot on that way (View::resizes `foot`), so its rows go down or up with that room as it goes, not at once)
+  let held = fn(card : @view.View, over : () -> Double, under : () -> Double) {
+    card.box(fn(k) {
+      k.padding(By(fn() { (0.0, over(), 0.0, under()) })) |> ignore
+      let was = Ref(@signals.untracked(piece))
+      k.reacts(
+        piece,
+        fn(p) {
+          let topped = (p is (CardWhole | CardTop)) != (was.val is (CardWhole | CardTop))
+          was.val = p
+          k.resizes(foot=topped) |> ignore
+        },
+        at_start=false,
+      )
+      rows(k)
+    })
+    |> ignore
+  }
   let top = fn() { piece() is (CardWhole | CardTop) }
   let foot = fn() { piece() is (CardWhole | CardFoot) }
   // (top left, then round it)
@@ -83,12 +116,11 @@ pub fn card_piece_node(
   if parent.lent(panel_in_lent) is Some(p) && !p.small {
     parent.box(made_for=loc, fn(k) {
       style_node(k, fn() {
-        let (t, f) = (if top() { corner_inset } else { 0.0 }, if foot() { corner_inset } else { 0.0 })
-        panel_card_ground.then(@ui.style(px=room(corner_inset), pt=room(t), pb=room(f))).then(panel_card_out_node(k))
+        panel_card_ground.then(@ui.style(px=room(corner_inset))).then(panel_card_out_node(k))
       })
       k.grow(Is(1.0)).min_height(By(fn() { least(card_corner) })).corners(By(fn() { corners(card_corner) })).lends(on_card_lent, true).lends(part_at, { ..at, list: at.look is Wide })
       |> ignore
-      rows(k)
+      held(k, fn() { if top() { corner_inset } else { 0.0 } }, fn() { if foot() { corner_inset } else { 0.0 } })
     })
     |> ignore
     return
@@ -96,7 +128,7 @@ pub fn card_piece_node(
   if at.look is Wide && wide_list {
     let (pad, corner) = list_card_in(parent)
     parent.box(made_for=loc, fn(room) {
-      room.grow(Is(1.0)).padding(By(fn() { (0.0, 0.0, 0.0, if foot() { section_foot } else { 0.0 }) })) |> ignore
+      room.grow(Is(1.0)) |> ignore
       room.box(fn(card) {
         card
         .grow(Is(1.0))
@@ -112,24 +144,26 @@ pub fn card_piece_node(
         rows(card)
       })
       |> ignore
+      under(room, fn() { if foot() { section_foot } else { 0.0 } })
     })
     |> ignore
     return
   }
   if at.look is Wide && wide_card {
     parent.box(made_for=loc, fn(room) {
-      room.grow(Is(1.0)).padding(By(fn() { (0.0, 0.0, 0.0, if foot() { section_foot } else { 0.0 }) })) |> ignore
+      room.grow(Is(1.0)) |> ignore
       room.box(fn(card) {
         card
         .grow(Is(1.0))
-        .padding(By(fn() { (card_pad, if top() { card_pad } else { wide_gap }, card_pad, if foot() { card_pad } else { 0.0 }) }))
+        .padding(Is((card_pad, 0.0, card_pad, 0.0)))
         .corners(By(fn() { corners(@ui.tree_theme().corner(Xl3)) }))
         .ground(By(fn() { @ui.tree_theme().color(Card) }))
         .clips(Is(true))
         |> ignore
-        rows(card)
+        held(card, fn() { if top() { card_pad } else { wide_gap } }, fn() { if foot() { card_pad } else { 0.0 } })
       })
       |> ignore
+      under(room, fn() { if foot() { section_foot } else { 0.0 } })
     })
     |> ignore
     return
@@ -137,21 +171,25 @@ pub fn card_piece_node(
   if at.look is Wide && wide_group {
     let (pad, corner) = list_card_in(parent)
     parent.box(made_for=loc, fn(room) {
-      room.grow(Is(1.0)).padding(By(fn() { (0.0, 0.0, 0.0, if foot() && !at.section && wide_group_foot { section_foot } else { 0.0 }) })) |> ignore
+      room.grow(Is(1.0)) |> ignore
       room.box(fn(card) {
         // (as wide_group_node's card: its rows `pad` in from its sides, its ends' rooms over its first and under its
         // last, the list's gap under each but the last, so that laid out one under another they are that card)
         let ends = if in_pane_node(card) { card_pad - wide_row_over } else { pad }
         card
         .grow(Is(1.0))
-        .padding(By(fn() { (pad, if top() { ends } else { 0.0 }, pad, if foot() { ends } else { desk_list_gap }) }))
+        .padding(Is((pad, 0.0, pad, 0.0)))
         .corners(By(fn() { corners(corner) }))
         .ground(By(fn() { @ui.tree_theme().color(Card) }))
         .lends(part_at, { ..at, list: true })
         |> ignore
-        rows(card)
+        held(card, fn() { if top() { ends } else { 0.0 } }, fn() { if foot() { ends } else { desk_list_gap } })
       })
       |> ignore
+      // (none where the section's foot is under it, or none is said)
+      if !at.section && wide_group_foot {
+        under(room, fn() { if foot() { section_foot } else { 0.0 } })
+      }
     })
     |> ignore
     return
@@ -162,20 +200,21 @@ pub fn card_piece_node(
   }
   let (pad, corner) = if in_pane_node(parent) { (corner_inset, card_corner) } else { (list_pad, list_card_corner) }
   parent.box(made_for=loc, fn(room) {
-    room.grow(Is(1.0)).padding(By(fn() { (0.0, 0.0, 0.0, if foot() { card_piece_under } else { 0.0 }) })) |> ignore
+    room.grow(Is(1.0)) |> ignore
     room.box(fn(card) {
       card
       .grow(Is(1.0))
-      .padding(By(fn() { (pad, if top() { pad } else { 0.0 }, pad, if foot() { pad } else { 0.0 }) }))
+      .padding(Is((pad, 0.0, pad, 0.0)))
       .min_height(By(fn() { least(corner) }))
       .corners(By(fn() { corners(corner) }))
       .ground(By(fn() { @ui.tree_theme().color(Card) }))
       .clips(Is(true))
       .lends(on_card_lent, true)
       |> ignore
-      rows(card)
+      held(card, fn() { if top() { pad } else { 0.0 } }, fn() { if foot() { pad } else { 0.0 } })
     })
     |> ignore
+    under(room, fn() { if foot() { card_piece_under } else { 0.0 } })
   })
   |> ignore
 }

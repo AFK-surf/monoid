@@ -31,11 +31,10 @@ import { LiveHub } from "../src/sessions/live.ts";
 import { sessionSeen } from "../src/api/seen.ts";
 import { autoArchive } from "../src/sessions/lifecycle.ts";
 import { iso } from "../src/read/transcript.ts";
-import { UsageCounter, claudeProject } from "../src/usage/counter.ts";
-import { usageTurns } from "../src/store/usage.ts";
+import { UsageCounter } from "../src/usage/counter.ts";
+import { claudeProject } from "./usage-counter-reference.ts";
 import { installCompactUsage } from "../src/store/usage-compact.ts";
 import { archiveLookOf } from "../src/store/store.ts";
-import { DatabaseSync } from "node:sqlite";
 
 type Counted = { files: number; processes: number; statements: number };
 
@@ -94,10 +93,10 @@ const STATEMENTS = {
   seenTold: 0,
   // 20 before: each tool call asked the session of its token.
   tokenResolved: 0,
-  // The counter's cursor, the sessions in one statement, their runtime sources (one each), and one transaction: BEGIN,
-  // for each call as a usage record is (5), COMMIT; the turns are a reader's. (Before: a transaction for each transcript,
-  // each session's row read again for its sources, the turns of each part (5 statements) here, and a usage record's 11.)
-  usageRead: 16,
+  // None: the MoonBit program reads the transcripts and writes what it found (usage/counter-mb.ts), only told here.
+  // (Before it, 16 here: the counter's cursor, the sessions, their runtime sources and one transaction of the calls; and
+  // before that a transaction for each transcript, the turns of each part here and a usage record's 11.)
+  usageRead: 0,
   // 53 before (3 sessions archived, one at work): every session shown and chat of its own, and of each idle one its
   // bindings, pin, chats, row, jobs, keeps and work, read here. Now the look is a reader's; here only the archiving of each
   // session it archives: BEGIN, its row and its chat out of the lists, COMMIT, its chats and row for what is told, its
@@ -385,10 +384,7 @@ test("the usage counter writes what it read of two sessions' transcripts in one 
   const time = testClock();
   await time.adjust(Date.parse("2026-11-10T08:00:00Z"));
   const store = Store.open(join(dir, "stillfail.db"), null, time.clock);
-  // The turns its calls were made in, a reader's (its own connection, as the station's readers have).
-  const reader = new DatabaseSync(join(dir, "stillfail.db"), { readOnly: true });
-  const counter = new UsageCounter({ store, config: () => ({ dataDir: dir, profiles: [{ home: join(dir, "homes/cc") }] }), clock: time.clock,
-    turns: async (session, from, until) => usageTurns(reader, session, from, until) });
+  const counter = new UsageCounter({ store, config: () => ({ dataDir: dir, profiles: [{ home: join(dir, "homes/cc") }] }), clock: time.clock });
   try {
     installCompactUsage(store.db, () => store.now());
     const now = store.now();
@@ -410,7 +406,6 @@ test("the usage counter writes what it read of two sessions' transcripts in one 
     assert.deepEqual(read, { files: 0, processes: 0, statements: STATEMENTS.usageRead });
   } finally {
     await counter.stop();
-    reader.close();
     store.close();
     rmSync(dir, { recursive: true, force: true });
   }

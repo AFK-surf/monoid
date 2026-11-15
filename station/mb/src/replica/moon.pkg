@@ -4,6 +4,13 @@ import {
   "station/sql",
   "station/jsjson",
   "station/nodepath",
+  "station/locate",
+  "station/activity",
   "moonbitlang/core/math",
   "moonbitlang/core/string",
+  "moonbitlang/core/encoding/utf8",
 }
+
+options(
+  "native-stub": ["carry.c"],
+)

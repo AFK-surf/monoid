@@ -275,8 +275,9 @@ pub fn screen_page(
       let child_at : ScreenAt = { station: s.station, screen: next, title: "", until_gone: true }
       match @sfbase.lone_page.val {
         Some(Screen(prev)) => {
+          // (the window shows the child first, so the screen it leaves is no window's when it is let go of)
+          @sfbase.lone_page_replace(Screen({ ..child_at, until_gone: false }))
           screen_left(src, prev.station, prev.screen)
-          @sfbase.lone_page.val = Some(Screen({ ..child_at, until_gone: false }))
         }
         _ =>
           if u.in_tab {
@@ -567,6 +568,21 @@ pub fn screen_covered(src : Source, station : String, screen : String, covered :
 /// again.
 pub fn screen_left(src : Source, station : String, screen : String) -> Unit {
   let key = screen_key(station, screen)
+  // (taken over by a window of this run beside the first, as it opened there: its view, its decoder and the frame it
+  // shows kept open for that window, the way it was driven with them; only what this page put up here let go of. That
+  // window lets it go as it closes: screen_window_left)
+  if @sfbase.window_has_screen(station, screen) {
+    match screen_uis.get(key) {
+      Some(u) => {
+        screen_panels_close(u)
+        if u.fulled && @ui.full_screen() {
+          @hostapi.set_full_screen(false)
+        }
+      }
+      None => ()
+    }
+    return
+  }
   match screens_open.get(key) {
     Some(s) => s.close(src)
     None => ()
@@ -590,6 +606,40 @@ pub fn screen_left(src : Source, station : String, screen : String) -> Unit {
   }
   screens_open.remove(key)
   screen_uis.remove(key)
+}
+
+///|
+/// A window of this run beside the first closed on page `p` (sfbase's window_page_left): a screen it showed that no
+/// other window shows now let go of, as its page leaving would (screen_left).
+fn screen_window_left(p : @sfbase.Page) -> Unit {
+  guard p is Screen(at) && !@sfbase.window_has_screen(at.station, at.screen) else { return }
+  match screens_open.get(screen_key(at.station, at.screen)) {
+    Some(s) => screen_left(s.src, at.station, at.screen)
+    None => ()
+  }
+}
+
+///|
+/// Page `p` given to window `wid` of this run as it opens (sfbase's window_page_given): a screen's pictures' layers that
+/// window's from then on, so the page it leaves here, going, neither takes them back nor hides them there.
+fn screen_window_given(p : @sfbase.Page, wid : Int) -> Unit {
+  guard p is Screen(at) else { return }
+  match screens_open.get(screen_key(at.station, at.screen)) {
+    Some(s) =>
+      for st in [s.stream, s.part] {
+        match st {
+          Some(st) => st.given_to_window(wid)
+          None => ()
+        }
+      }
+    None => ()
+  }
+}
+
+///|
+fn init {
+  @sfbase.window_page_left.val = screen_window_left
+  @sfbase.window_page_given.val = screen_window_given
 }
 
 // ── what goes between the device and the screen ─────────────────────────
@@ -919,7 +969,9 @@ fn screen_viewer_bar(c : @ui.Ctx, s : ScreenSess, u : ScreenUi, title : String, 
   let combos = s.driving() && !s.simulator()
   let (tabs, add) = view_tabs(s)
   let middle = if tabs.is_empty() || narrow { None } else { Some(fn() { tabs_row(c, s, u, tabs, add, close) }) }
-  @sf.viewer_bar(c, "screen-bar", @sf.t("common.back"), said, line, false, ink, fn() {
+  // (alone in a window of its own, nowhere to go back to: its window's close and 控制中心's 断开 close it)
+  let back = if @sfbase.lone_page.val is Some(_) { "" } else { @sf.t("common.back") }
+  @sf.viewer_bar(c, "screen-bar", back, said, line, false, ink, fn() {
     if s.phase() == "live" && net_poor(s) {
       net_chip(c, s, u)
     }

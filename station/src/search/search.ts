@@ -1,7 +1,9 @@
 // What the station finds for a search: looked for by the MoonBit program (station/mb, src/search; `--builder search`),
 // built for every system the station runs on, in the station's data as it is then. A prepared candidate scope avoids
-// unrelated chats; their contents are read as asked. The program is started with the station and stays; one that dies
-// is started again when next asked. The machine's files are asked beside it (search/files.ts). A test may give it a
+// unrelated chats; their contents are read as asked. The program is started by the first search and let go once none
+// has been asked for IDLE_MS (or at once when the station is short of memory: `trimIdle`): kept from the station's
+// start, it held 234 MB for hours nobody searched (2026-11-15). It keeps nothing a search needs between searches (each
+// reads the database as it is then), so the next is answered by one started again; one that dies is started again too. The machine's files are asked beside it (search/files.ts). A test may give it a
 // thread to look instead (`worker`: the search as the station's thread looked before, test/reference/search-worker.ts).
 import { Worker } from "node:worker_threads";
 import { rmSync } from "node:fs";
@@ -19,6 +21,8 @@ import { MbProcess, mbReaderBinary } from "../read/mb-reader.ts";
 
 /// How long a search may take before it is answered with nothing.
 const QUERY_MS = 30_000;
+/// How long the program is kept with no search asked of it.
+const IDLE_MS = 60_000;
 
 /// `building`: always false (said to the clients that showed an index still being built).
 export type Found = { groups: Group[]; building: boolean };
@@ -40,11 +44,16 @@ export class Search {
   #preparingSessions: Promise<void> | null = null;
   /// The machine's files (none: not searched here).
   #files: FileSearch | null;
+  /// The idle looker's going armed (IDLE_MS), called off by a search.
+  #idle: (() => void) | null = null;
+  readonly #after: (ms: number, f: () => void) => () => void;
 
   readonly #workerFile: URL | null;
 
-  constructor(options: { data: string; files?: FileSearch | null; backfill?: { previousGone?: Promise<void>; priority?: SharedArrayBuffer }; worker?: URL }) {
+  /// `after`: the timer of IDLE_MS (a test's own; else the wall's).
+  constructor(options: { data: string; files?: FileSearch | null; backfill?: { previousGone?: Promise<void>; priority?: SharedArrayBuffer }; worker?: URL; after?: (ms: number, f: () => void) => () => void }) {
     this.#data = options.data;
+    this.#after = options.after ?? wall.after;
     this.#workerFile = options.worker ?? null;
     this.#mb = this.#workerFile !== null ? null : mbReaderBinary();
     this.#files = options.files ?? null;
@@ -52,11 +61,40 @@ export class Search {
     this.#sessionList = new SessionListBuilder(join(options.data, "stillfail.db"), options.backfill);
   }
 
+  /// The index an earlier station kept removed: there is none now. Nothing is started until a search is asked.
   start(): void {
-    // The index an earlier station kept: there is none now.
     for (const f of ["search.db", "search.db-wal", "search.db-shm"]) rmSync(join(this.#data, f), { force: true });
-    if (this.#mb !== null) this.#spawnProgram();
-    else this.#spawn();
+  }
+
+  /// Whether a looker runs now (the program, or the test's thread).
+  get running(): boolean { return this.#program !== null || this.#worker !== null; }
+
+  /// The looker let go at once if no search is under way: 1, else 0 (the station short of memory: read/pool.ts
+  /// `trimIdle`). The next search starts it again.
+  trimIdle(): number {
+    if (this.#closed || this.#waiting.size > 0 || !this.running) return 0;
+    this.#letGo();
+    return 1;
+  }
+
+  #letGo(): void {
+    this.#idle?.();
+    this.#idle = null;
+    const program = this.#program, worker = this.#worker;
+    this.#program = null;
+    this.#worker = null;
+    void program?.terminate();
+    void worker?.terminate();
+  }
+
+  /// No search under way: the looker goes after IDLE_MS unless one is asked meanwhile.
+  #idleLater(): void {
+    if (this.#closed || this.#waiting.size > 0 || this.#idle !== null || !this.running) return;
+    // timer: a deadline (an idle program's process let go)
+    this.#idle = this.#after(IDLE_MS, () => {
+      this.#idle = null;
+      if (this.#waiting.size === 0) this.#letGo();
+    });
   }
 
   #spawnProgram(): MbProcess | null {
@@ -89,6 +127,7 @@ export class Search {
       waiter.timer();
       if (answer.error !== undefined) waiter.reject(new Error(answer.error));
       else waiter.resolve({ groups: answer.groups ?? [], building: false });
+      this.#idleLater();
     });
     (looker as Worker).on("error", (error: Error) => log.error("search", "the search's thread stopped", { error: error.message }));
     (looker as Worker).on("exit", () => {
@@ -99,6 +138,7 @@ export class Search {
         waiter.reject(new Error("the search stopped"));
         this.#waiting.delete(id);
       }
+      this.#idleLater();
     });
     this.#asked.set(looker, mine);
   }
@@ -143,6 +183,8 @@ export class Search {
 
   #ask(looker: Looker | null, query: string, asker: Asker, options: { kinds?: string[]; limit?: number; offset?: number; archived?: boolean }): Promise<Found> {
     if (!looker) return Promise.reject(new Error("the search is stopped"));
+    this.#idle?.();
+    this.#idle = null;
     const id = this.#next++;
     const program = looker instanceof MbProcess;
     const cancel = program ? undefined : new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT);
@@ -152,6 +194,7 @@ export class Search {
         else looker.postMessage({ type: "cancel", id });
         this.#waiting.delete(id);
         reject(new Error("the search took too long"));
+        this.#idleLater();
       });
       this.#waiting.set(id, { resolve, reject, timer });
       this.#asked.get(looker)?.add(id);
@@ -161,6 +204,8 @@ export class Search {
 
   async stop(): Promise<void> {
     this.#closed = true;
+    this.#idle?.();
+    this.#idle = null;
     await Promise.all([this.#worker?.terminate(), this.#program?.terminate(), this.#scope.close(), this.#sessionList.close()]);
     this.#worker = null;
     this.#program = null;

@@ -4456,8 +4456,7 @@ export const SHAPES: Record<string, Shape> = {
   HistoryRow: tagged("kind", "content", [["thought", "Thought", "HistoryThought"], ["step", "Step", "HistoryStep"]], { doc: "A line of a group: a thought or a call." }),
   HistoryBody: tagged("kind", "content", [["received", "Received", "HistoryReceived"], ["text", "Text", "HistoryText"], ["post", "Post", "HistoryPost"], ["mark", "Mark", "HistoryMark"], ["group", "Group", "HistoryGroup"]], { doc: "What an item of the history is." }),
   HistoryTurn: struct([
-    ["time", opt("String"), { doc: "When the prompt came as people read it: 14:05 today, 9/27 14:05 before; absent when its transcript did not\nsay (the moment itself, `at`, the core's)." }],
-    ["text", "String", { doc: "What the turn did, in a line: 3 步 · 发出 1 条, or 没发消息." }],
+    ["time", opt("String"), { doc: "When the prompt came as people read it: 14:05 today, 9/27 14:05 before; absent when its transcript did not\nsay or within 5 minutes of the last shown turn time on the same day (the moment itself, `at`, the core's)." }],
   ], { doc: "A turn of an agent's history: from a prompt that woke it until the next." }),
   HistoryItem: struct([
     ["key", "String"],

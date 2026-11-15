@@ -42,7 +42,7 @@ fn tree_viewer() -> Viewer? {
 }
 
 ///|
-/// Whether it is a film or a song, played in the player (@sf.player_view): as its name says it from the start.
+/// Whether it is a film or a song, played in the player (@sf.player_node): as its name says it from the start.
 pub fn Viewer::played(self : Viewer) -> Bool {
   self.kind == Some(KVideo) || self.kind == Some(KAudio)
 }
@@ -107,7 +107,7 @@ fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
       if marking.on {
         marks_back()
       } else {
-        vw.shut(@ui.current())
+        vw.shut_tree()
       }
     }
   })
@@ -154,7 +154,7 @@ fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
     download_told(src, vw)
     if vw.save_after && vw.bytes.untracked() is Some(_) {
       vw.save_after = false
-      vw.ask_save(@ui.current())
+      vw.save_tree()
     }
   })
   // what it reads asked of the core as what it needs comes (its kind sniffed, its bytes, a read failed)
@@ -559,7 +559,7 @@ fn image_ends(n : @view.View, vw : Viewer, src : Source) -> Unit {
   if vw.flies && !vw.fly_back {
     n.at_moment(vw.fly.end(), fn() {
       if vw.flies && !vw.fly_back {
-        vw.flies = false
+        vw.flies_set(false)
         pv_hidden.set("")
       }
     })
@@ -1176,9 +1176,7 @@ fn image_head(h : @view.View, src : Source, vw : Viewer, stage : () -> (Double, 
       "\{whole()} \{downloading(dl())} \{vw.coming()} \{vw.got.get() is Some(_)} \{m}"
     },
     fn() {
-      if !vw.closing {
-        vw.shut(@ui.current())
-      }
+      vw.shut_tree()
     },
     tips=tips,
   )
@@ -1229,9 +1227,7 @@ fn image_bar(h : @view.View, src : Source, vw : Viewer, stage : () -> (Double, D
       row.show(marked, fn(r) { marks_actions_node_of(r, vw, ink, tips) })
     },
     fn() {
-      if !vw.closing {
-        vw.shut(@ui.current())
-      }
+      vw.shut_tree()
     },
     tips,
   )
@@ -1388,7 +1384,7 @@ fn image_tools(
       },
       ink,
       corner,
-      fn() { vw.ask_save(@ui.current()) },
+      fn() { vw.save_tree() },
       tip=tips,
     )
     |> ignore
@@ -1801,14 +1797,13 @@ fn film_flight(
 }
 
 ///|
-/// What viewer `vw` shows of a film or a song, in node `n`: the player (@sf.player_view: its picture, its bars and
-/// controls, its keys, the full screen and turning sideways), an old view hosted on the stage (Viewer::player_stage), as
-/// far in as its fade has come and, while the picture flies, as far as its bars come with it (bars_share: none till
-/// its ground is whole); in flight its still the tree's (Viewer::player_flight): from the thumbnail to where the player
-/// draws its picture and back, the black and the still one frame cut once (View::image_in), what the thumbnail draws
-/// over it (its capsule) going as it leaves and back as it lands; going, the page's presses theirs. Back is the
-/// player's first (its 全屏 left, beside the system's bars), then the viewer's: the viewer's said before the player's,
-/// the last said taking it.
+/// What viewer `vw` shows of a film or a song, in node `n`: the player as nodes (@sf.player_node: its picture, its bars
+/// and controls, its keys, the full screen and turning sideways), as far in as its fade has come and, while the
+/// picture flies, as far as its bars come with it (bars_share: none till its ground is whole); in flight its still the
+/// tree's (Viewer::player_flight): from the thumbnail to where the player draws its picture and back, the black and the
+/// still one frame cut once (View::image_in), what the thumbnail draws over it (its capsule) going as it leaves and back
+/// as it lands; going, the page's presses theirs. Back is the player's first where it takes it (its 全屏 left, beside
+/// the system's bars; turned upright), then the viewer's (its layer's: image_layer).
 fn viewer_player(n : @view.View, src : Source, vw : Viewer) -> Unit {
   let at = fn(node) { film_at(vw, node) }
   // its flight, in its own layer once it is out from under the bar of the page it flies from (that page's slot draws
@@ -1832,20 +1827,111 @@ fn viewer_player(n : @view.View, src : Source, vw : Viewer) -> Unit {
       }
     }))
     |> ignore
-    @ui.old(s, fn(c) {
-      // (back the viewer's, said first: what the player says takes it after (its 全屏 left beside the system's bars),
-      // the last said its; one going takes back no more: it is the page's)
-      if !vw.closing {
-        c.take_back(fn() { vw.shut(c) })
+    match vw.media {
+      Some(m) => {
+        // (a fixture's: how it stands pinned, the same on every run)
+        match vw.pinned {
+          Some(p) => m.pin(p)
+          None => ()
+        }
+        let stage = fn() {
+          let (w, h) = s.window()
+          (player_width(w), h)
+        }
+        // (where a film's picture is fitted in the viewer, what its flight goes to and back from: its vzoom told the
+        // room the player leaves it and the picture's size (Viewer::video_natural) at the moment either changes)
+        s.reacts(
+          fn() {
+            let (w, h) = stage()
+            let (top, foot) = @sf.player_room(w)
+            ((w, h - top - foot), vw.video_natural(src))
+          },
+          fn(told) {
+            let ((bw, bh), (nw, nh)) = told
+            let at = s.cause_at()
+            vw.vzoom.boxed(bw, bh, at~)
+            if nw > 0.0 && nh > 0.0 {
+              vw.vzoom.natural(nw, nh, at~)
+            }
+          },
+        )
+        @sf.player_node(
+          s,
+          m,
+          vw.player_file(),
+          stage,
+          back_label=fn() { vw.desk_back(src) },
+          on_back=fn() { vw.shut_tree() },
+          // (the chat's still where its picture will be, until its first frame shows)
+          still=fn() { if vw.shown_kind() == Some(KVideo) { vw.still(src) } else { "" } },
+          // (flying in, or back into its thumbnail once the frame it shows is grabbed: its picture the flight's)
+          flying=fn() {
+            vw.said_flying()
+            vw.flies && (!vw.closing || !vw.leaving_grab)
+          },
+          // (closed by its fade: its controls away at once, the page showing through as it goes)
+          going=fn() {
+            vw.said_flying()
+            vw.closing && !vw.flies
+          },
+          move_beside=fn() { if beside_offered(vw.file.path, vw.file.name) { Some(fn() { vw.move_beside() }) } else { None } },
+        )
+        |> ignore
       }
-      let stage = c.id("preview/stage")
-      c.cursor(stage, Arrow)
-      c.box(style=stage_whole, id=stage, fn() { vw.player_stage(c, src, stage) }) |> ignore
-    })
-    .over(Is(true))
-    |> ignore
+      None => ()
+    }
   })
   |> ignore
+}
+
+///|
+/// What whether viewer `vw`'s picture flies or it goes is worked out of, followed: its flight said, the frame it closes
+/// with grabbed, its flying told, its going.
+fn Viewer::said_flying(self : Viewer) -> Unit {
+  self.fly.said()
+  self.grab_told.get() |> ignore
+  self.flies_told.get() |> ignore
+  pv_leaving.get() |> ignore
+}
+
+///|
+/// The file viewer `v` plays as its player has it (Viewer::player_stage's): its name, size, type and facts; a film or
+/// a song; where it is (a draft's none); its 下载 the viewer's.
+fn Viewer::player_file(self : Viewer) -> @sf.ViewerFile {
+  let v = self
+  {
+    name: v.file.name,
+    size: v.file.size,
+    mtime: 0.0,
+    mime: v.mime,
+    kind: if v.shown_kind() == Some(KAudio) { "audio" } else { "video" },
+    title: if v.file.path.has_prefix("draft:") { "" } else { v.file.path },
+    key: "",
+    bytes: None,
+    read: fn(_, _, done) { done(Err("")) },
+    stream: None,
+    direct: "",
+    beside: None,
+    place: fn() { NeverLeft },
+    keep_place: fn(_, _) {  },
+    save: fn() { v.save_tree() },
+    facts: { width: v.file.width, height: v.file.height, duration: v.file.duration, frames: v.file.frames },
+  }
+}
+
+///|
+/// Viewer `vw` closed from a node of the window's tree (its back, its × or its way back pressed, a finger taking it
+/// down), at that moment; closing, nothing.
+fn Viewer::shut_tree(self : Viewer) -> Unit {
+  if !self.closing {
+    self.shut(@ui.current())
+  }
+}
+
+///|
+/// What viewer `vw` shows asked to be saved from a node of the window's tree (its 下载), at that moment.
+fn Viewer::save_tree(self : Viewer) -> Unit {
+  self.ask_save(@ui.current())
 }
 
 ///|
@@ -2033,7 +2119,7 @@ fn viewer_facts_node(f : @view.View, src : Source, vw : Viewer) -> Unit {
       }, disabled=fn() { reading() && !reading_for(1) }, across=true)
       |> ignore
     }
-    @sf.button_node(r, fn() { label(0, @sf.t("web-main.preview.download")) }, fn() { vw.ask_save(@ui.current()) }, tone=if apk {
+    @sf.button_node(r, fn() { label(0, @sf.t("web-main.preview.download")) }, fn() { vw.save_tree() }, tone=if apk {
       Ghost
     } else {
       Primary

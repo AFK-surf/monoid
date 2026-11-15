@@ -114,15 +114,51 @@ pub fn view_beside(src : Source, r : ChatRef, tab : String) -> String {
 
 ///|
 /// An agent's history pressed (its mark in the bar), or the chat's files (its info's 文件): in front, closed; else
-/// opened in front; an agent's history opened whole, once what it first shows is answered (history_side_open).
+/// opened in front, whole (side_tab_open).
 pub fn side_toggle(src : Source, r : ChatRef, tab : String) -> Unit {
   let (tabs, front) = side_now(src, r)
   if tabs.contains(tab) && front == tab {
     side_change(src, r, "close", Some(tab))
-  } else if side_history_tab(tab) {
-    history_side_open(src, r, tab, fn() { side_change(src, r, "open", Some(tab)) })
   } else {
-    side_change(src, r, "open", Some(tab))
+    side_tab_open(src, r, tab)
+  }
+}
+
+///|
+/// Tab `tab` beside chat `r` opened in front by a press (its mark in the bar, the chat's info, its jobs' mark): once
+/// what it first shows is answered, the panel as it was meanwhile, so it slides in whole: an agent's history its
+/// transcript's place (history_side_open); where what opens waits for what it shows (gates_opens, MBUI_OPEN_WHOLE) the
+/// others what they read as they are first drawn (side_tab_asks), through press_wait (sfbase's open_answered:
+/// open_hold_ms at most, given up as the chat is left); one there already, brought to the front at once.
+pub fn side_tab_open(src : Source, r : ChatRef, tab : String) -> Unit {
+  let open = fn() { side_change(src, r, "open", Some(tab)) }
+  if side_history_tab(tab) {
+    history_side_open(src, r, tab, open)
+    return
+  }
+  let asks = if (src.gates_opens)() && !side_now(src, r).0.contains(tab) { side_tab_asks(src, r, tab) } else { [] }
+  @sfbase.open_answered(src, asks, open, most=@sf.open_hold_ms) |> ignore
+}
+
+///|
+/// What tab `tab` beside chat `r` reads of the core as it is first drawn, every one of it read whatever is answered:
+/// 任务 its jobs whole (jobs_tab_node); Agent 往来 the chat's letters by its thread, as its view says it
+/// (letters_tab_node); a web service its job (its tab's name, side_tab_names, and service_pane). 图片、文件和链接 read the
+/// chat's page holds already; 文件's folder is its station's listing (drive_folder: held by the drive's own scope, asked
+/// of the station, so a wait never holds for it).
+fn side_tab_asks(src : Source, r : ChatRef, tab : String) -> Array[(String, Map[String, Json])] {
+  match tab {
+    "jobs" => [("chatJobs", @sfbase.chat_params(r))]
+    "letters" =>
+      match @signals.untracked(fn() { view_of_chat(src, r).0.bind(fn(v) { v.thread }) }) {
+        Some(thread) => [("chatLetters", { "station": Json::string(r.station), "thread": Json::number(thread) })]
+        None => []
+      }
+    _ =>
+      match tab_service(tab) {
+        Some(job) => [("job", { "station": Json::string(r.station), "id": Json::string(job) })]
+        None => []
+      }
   }
 }
 

@@ -9,7 +9,6 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { stationLang, tr } from "../src/ops/i18n.ts";
-import { place } from "../src/replica/carry-worker.ts";
 import { newSession, say } from "../src/sessions/lifecycle.ts";
 import { moveView } from "../src/move/routes.ts";
 import { tell } from "../src/replica/copies.ts";

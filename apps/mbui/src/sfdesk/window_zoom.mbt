@@ -7,9 +7,14 @@ fn zoom_at(src : Source) -> Int {
 }
 
 ///|
-fn zoom_do(src : Source, action : String) -> Unit {
+fn zoom_do(src : Source, action : String, kept? : Bool = true) -> Unit {
   let window_zoom_levels = @sfbase.window_zoom_levels
-  let at = zoom_at(src)
+  // (a window of its own's: from its own size, none of the device's kept size: zoom_actions's `kept`)
+  let at = if kept {
+    zoom_at(src)
+  } else {
+    window_zoom_levels.search_by(fn(z) { z.1 == @ui.window_zoom() }).unwrap_or(5)
+  }
   let next = if action == "zoom.reset" {
     5
   } else if action == "zoom.in" {
@@ -21,7 +26,7 @@ fn zoom_do(src : Source, action : String) -> Unit {
   }
   let (value, zoom) = window_zoom_levels[next]
   @ui.set_window_zoom(zoom)
-  if next != at {
+  if kept && next != at {
     @settings.set_pref_with(src.call, fn(words) { toast_later(words) }, "windowZoom", value)
   }
 }
@@ -57,12 +62,13 @@ pub fn window_zoom_keys(c : @ui.Ctx, src : Source) -> Unit {
 
 ///|
 /// The window's size as actions of node `v` (the window's root): chosen from the menu bar (its keys are the window's
-/// own, taken before anything else: window_zoom_keys), done at that moment.
-pub fn zoom_actions(v : @view.View, src : Source) -> Unit {
+/// own, taken before anything else: window_zoom_keys), done at that moment. `kept` false: a window of its own's, sized
+/// alone, the device's kept size (the prefs' windowZoom, the first window's) neither read nor written.
+pub fn zoom_actions(v : @view.View, src : Source, kept? : Bool = true) -> Unit {
   for action in ["zoom.in", "zoom.out", "zoom.reset"] {
     v.on_action(action, fn(_) {
       guard @ui.window_zoom_supported() else { return false }
-      zoom_do(src, action)
+      zoom_do(src, action, kept~)
       true
     })
     |> ignore

@@ -526,7 +526,7 @@ test "wide history details keeps non-warm runtime status on one line and renders
       {
         "key": "r-quote",
         "entries": [1, 1],
-        "turn": { "time": "17:08", "text": "收到 1 条消息 · 共 2 步" },
+        "turn": { "time": "17:08" },
         "body": {
           "kind": "received",
           "content": {

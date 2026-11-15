@@ -58,6 +58,9 @@ jobs:
     timeout-minutes: 5
     steps:
       # (the scripts as main has them now, not the measured commit's: one from before them had none, run 42573827310)
+      # (what it measures taken continue-on-error, each measure run only where its input came: a runner's reset to
+      # GitHub's artifact service loses that measure, record carrying the one before's, and fails nothing, mbui-size
+      # 43720133805's idle, 2026-11-15)
       - uses: actions/checkout@v5
         with:
           sparse-checkout: |
@@ -66,12 +69,15 @@ jobs:
       - run: command -v brotli || (sudo apt-get update -q && sudo apt-get install -yq brotli)
       - if: needs.find.outputs.web == 'true'
         uses: actions/download-artifact@v4
+        continue-on-error: true
         with: { name: "mbui-web-${{ needs.find.outputs.sha }}", path: in/web, run-id: "${{ env.RUN }}", github-token: "${{ github.token }}" }
       - if: needs.find.outputs.apk == 'true'
         uses: actions/download-artifact@v4
+        continue-on-error: true
         with: { name: "mbui-apk-${{ needs.find.outputs.sha }}", path: in/apk, run-id: "${{ env.RUN }}", github-token: "${{ github.token }}" }
       - if: needs.find.outputs.mac == 'true'
         uses: actions/download-artifact@v4
+        continue-on-error: true
         with: { name: "mac-unsigned-${{ needs.find.outputs.sha }}", path: in/mac, run-id: "${{ env.RUN }}", github-token: "${{ github.token }}" }
       - run: |
           set -eo pipefail
@@ -141,12 +147,15 @@ jobs:
             libs/mbui/scripts
       - if: needs.find.outputs.apk == 'true'
         uses: actions/download-artifact@v4
+        continue-on-error: true
         with: { name: "mbui-apk-${{ needs.find.outputs.sha }}", path: in/apk, run-id: "${{ env.RUN }}", github-token: "${{ github.token }}" }
       - if: needs.find.outputs.mac == 'true'
         uses: actions/download-artifact@v4
+        continue-on-error: true
         with: { name: "mac-unsigned-${{ needs.find.outputs.sha }}", path: in/mac, run-id: "${{ env.RUN }}", github-token: "${{ github.token }}" }
       - if: needs.demo.result == 'success'
         uses: actions/download-artifact@v4
+        continue-on-error: true
         with: { name: demo-mac, path: in/demo-mac }
       - run: |
           set -eo pipefail

@@ -593,8 +593,13 @@ fn station_uses_node(p : @view.View, uv : () -> Json?, processes : () -> Unit) -
     @sf.presses_node(b, processes)
     b.says(By(fn() { Some(@view.said(Link, label=name())) })) |> ignore
     let lit = fn() { @sf.lit_node(b) }
+    // (its figures worked out once a sample, both ways of the line reading them: as they were where the sample
+    // changed none of them)
+    let shown = @signals.computed(fn(_) {
+      let u = field(uv(), "use")
+      (text(u, "cpuText"), text(u, "memoryText"), text(u, "netText"), flag(uv(), "net"))
+    }, same=fn(a, b) { a == b })
     let figures = fn(f : @view.View) {
-      let u = fn() { field(uv(), "use") }
       let figure = fn(label : () -> String, value : () -> String) {
         f.box(fn(w) {
           w
@@ -605,12 +610,12 @@ fn station_uses_node(p : @view.View, uv : () -> Json?, processes : () -> Unit) -
         })
         |> ignore
       }
-      figure(fn() { "CPU" }, fn() { text(u(), "cpuText") })
-      figure(fn() { @sf.t("web-main.resources.column.memory") }, fn() { text(u(), "memoryText") })
-      f.show(fn() { flag(uv(), "net") }, fn(x) {
+      figure(fn() { "CPU" }, fn() { shown.get().0 })
+      figure(fn() { @sf.t("web-main.resources.column.memory") }, fn() { shown.get().1 })
+      f.show(fn() { shown.get().3 }, fn(x) {
         x.box(fn(w) {
           w
-          .words_runs(By(fn() { [@ui.span(@sf.t("web-main.resources.column.net") + " "), @ui.span(text(u(), "netText"), weight=500, color=@sf.theme().p.text)] }))
+          .words_runs(By(fn() { [@ui.span(@sf.t("web-main.resources.column.net") + " "), @ui.span(shown.get().2, weight=500, color=@sf.theme().p.text)] }))
           .words_look(Is(@ui.style_words(rs_uses_words)))
           .ink(By(fn() { @ui.style_ink(rs_uses_words) }))
           |> ignore

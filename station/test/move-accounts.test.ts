@@ -5,7 +5,7 @@
 // third station meanwhile), across a start too; one shared before stays shared; one that cannot be shared moves as it
 // is and stops what needs it; a failure after the share was made undoes it, the login here as it was. Stations are
 // Rigs (hub-fakes.ts) with their moves and their sharing, over a transport of the test's.
-import { counting, type Cost, uncounted } from "./move-bounded.ts";
+import { counting, type Cost } from "./move-bounded.ts";
 import assert from "node:assert/strict";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -15,7 +15,7 @@ import { Cloud } from "../src/cloud/state.ts";
 import { PeerBus, bytesOf, withBytes } from "../src/mesh/bus.ts";
 import type { ConfigFile } from "../src/ops/config.ts";
 import { Fibers } from "../src/ops/fibers.ts";
-import { gather, place, sizes } from "../src/replica/carry-worker.ts";
+import { sizesSoon } from "../src/replica/carry.ts";
 import { hubConfig } from "../src/sessions/config.ts";
 import { newSession, say } from "../src/sessions/lifecycle.ts";
 import { Moves } from "../src/move/station.ts";
@@ -159,16 +159,12 @@ function world(profiles: Json[], o: { third?: boolean; slack?: boolean; cUp?: bo
           lend: (pid, to) => st.sharing.lendTo(pid, to), unlend: (share, to, made, widened) => st.sharing.unlend(share, to, made, widened),
         },
         // (sized at once, as a move would gather them: no thread of its own in a test)
-        sizes: async (keys, sizing) => uncounted(() => sizes(rig.dir, join(rig.dir, "stillfail.db"), keys, sizing)),
+        sizes: async (keys, sizing) => sizesSoon(rig.dir, join(rig.dir, "stillfail.db"), keys, sizing),
         sessionsIn: (ws, after, limit) => rig.store.sessionPageOfWs(ws === WS ? null : ws, WS, after, limit),
         reposDir: join(rig.dir, "repos"),
         room: async () => ({ free: 1e15 }),
         hasGit: async () => true,
         lackMost: 50,
-        work: {
-          gather: async (dataDir, db, ws, home, scratch, _signal, agent, keys) => gather(dataDir, db, ws, home, scratch, agent ?? null, keys ?? null),
-          place: async (dataDir, index, from, made, aside, placed, projects) => place(dataDir, index, from, made ?? null, aside ?? null, placed ?? null, projects ?? false),
-        },
         hold: () => () => {},
         changed: () => st.onMove?.(),
       });

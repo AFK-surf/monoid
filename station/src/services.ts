@@ -118,8 +118,9 @@ export class Readers extends Context.Service<Readers, ReaderPool>()("stillfail/R
         }),
       );
       return yield* Effect.acquireRelease(Effect.sync(() => {
+        // The usage checker (`startUsageIndex`, reader `--builder usage-check`) only says whether the statistics are
+        // complete, filling nothing: it is started by the read that finds them not yet (pool.ts `usageRead`), not here.
         const pool = new ReaderPool(data, undefined, undefined, undefined, { previousGone: previous.exited, priority: store.backfillPriority });
-        pool.startUsageIndex();
         pool.warm();
         return pool;
       }), (pool) => Effect.sync(() => pool.close()));

@@ -222,6 +222,12 @@ export interface AgentDriver {
   /// lets it be read on where the handover did not happen.
   freeze?(): Promise<void>;
   thaw?(): void;
+  /// The runners (./runner.ts ids) of the processes it holds now, those it is starting or taking up too: a runner of an
+  /// agent's that no driver holds is nobody's, and ended (sessions/hub.ts `takeUp`, `orphanRunner`).
+  ownedRunners?(): ReadonlySet<string>;
+  /// The machine short of memory: what it keeps running with no turn on it and no session opening on it (Codex's
+  /// app-servers) ended now, its sessions closed to open again with their next turn; how many processes were.
+  evictIdle?(): Promise<number>;
 }
 
 /// A random UUID (v4), as runtimes take for session ids.

@@ -42,7 +42,7 @@ let picked_spans_said : Map[SelKey, @signals.Signal[(Int, Int)]] = Map([])
 ///|
 /// Whether what is picked with the pointer was picked by a finger, as a signal (Ctx::selection_by_finger).
 // kept across runs: said again from what is picked as that changes
-let picked_finger_said : @signals.Signal[Bool] = @signals.signal(false)
+let picked_finger_said : Ref[@signals.Signal[Bool]] = Ref(@signals.signal(false))
 
 ///|
 /// What of paragraph `k`'s words is picked now ((0, 0): none).
@@ -65,7 +65,7 @@ fn picked_told() -> Unit {
       unread.push(k)
     }
   })
-  picked_finger_said.set(picked.finger)
+  picked_finger_said.val.set(picked.finger)
   picked_now_tell()
   @signals.end_batch()
   // (what no node reads any more let go)

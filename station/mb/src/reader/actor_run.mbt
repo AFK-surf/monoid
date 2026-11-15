@@ -220,10 +220,13 @@ async fn Actors::called(self : Actors, a : Actor, method : String, args : Array[
       }
       self.enqueue(a, async fn() { self.catch_up(a, a.turn is None && a.waiting is None) })
     }
-    "evict" =>
+    "evict" => {
+      // (`force`: its session archived, its process ends once its turn is over, what it left in the background too:
+      // an archived session keeps nothing running, and is packed cold only once its process is gone)
+      let force = truthy(arg(0))
       self.enqueue(a, async fn() {
         guard a.agent is Some(g) else { return }
-        if self.busy(a) || a.turn is Some(_) || self.holding(a) {
+        if self.busy(a) || a.turn is Some(_) || (!force && self.holding(a)) {
           return
         }
         // (another taken up meanwhile is not the idle one)
@@ -233,6 +236,7 @@ async fn Actors::called(self : Actors, a : Actor, method : String, args : Array[
         ignore(self.agent_do(a, g, "dispose", []))
         self.notify_store(a)
       })
+    }
     "compact" => {
       let say = truthy(arg(0))
       let mut refused : String? = None
@@ -906,6 +910,8 @@ fn Actors::adopt(self : Actors, a : Actor, snap : Json, agent : Json, profile : 
   if num_of(snap.value("refillMs")) is Some(ms) {
     self.await_refill(a, self.now + ms)
   }
+  // (told now, its idle time with it: what `set_agent` told above was before it was taken up whole)
+  self.mirror(a)
 }
 
 ///|

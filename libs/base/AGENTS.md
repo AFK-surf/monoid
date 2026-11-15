@@ -11,7 +11,10 @@ of its workspace (`moon.work`); `effect` stays in mbui.
   `shell.mbt` is the surface, shared across `shell_native.mbt` (with `shell.c`), `shell_js.mbt` (with `client/iroh-wasm`
   and browser APIs), and `Shell::stood_in` for deterministic tests. Natively a process whose host started the Rust
   shell already shares it (`bsh_attach`, `Shell::attached`): this side's call ids start past 2^40, and the host hands
-  each answer of such an id to `bsh_deliver`. On js iroh is loaded from an address (`Shell::start`) or given, the
+  each answer of such an id to `bsh_deliver`. A program whose own loop runs its thread (a window's) never calls `run`,
+  which waits: it gives `bsh_on_wake` what brings that loop round as an answer is queued (called on the shell's
+  thread, and at once where answers wait already), and at each round calls `Shell::turn`, which takes what is in and
+  runs the runtime until nothing is ready, never waiting, and says when its next timer is due. On js iroh is loaded from an address (`Shell::start`) or given, the
   module or what loads it (`Shell::start_with`, `IrohJs`); a worker has no localStorage, so `storage.*` fails there.
 - `src/wire`: pure stream framing and event-stream parsing (`lines`, request/reply heads, SSE text) with no transport.
 - `src/mesh`: the device side of the mesh on top of `shell` and `wire` (endpoints, scoped peer links, hello/pings/renewal,

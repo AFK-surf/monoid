@@ -139,8 +139,14 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
     another workspace comes in view. So a shell's function says only what its first screen reads, all of it read once
     it is at rest (`src/sfapp/declared_read_wbtest.mbt`). So is what a page reads as it is first built, declared as it
     comes on top (sfbase's `page_opens`, by `page_opens_node`), let go of where no reader took it as another comes on top.
-    A bridge while pages are built by the old view: a page made as nodes says what it reads where it is made, and writes
-    nothing here.
+  - Where what opens waits for what it shows (MBUI_OPEN_WHOLE), a page come on top by any way (a press, a link, the
+    settings' sidebar, back) shows once what it reads as it is first drawn is answered, `page_local_ms` at most, the
+    screen as it was meanwhile: one table of every page and every settings' route, matched whole, no `_` arm
+    (`src/sfbase/page_reads.mbt`: `page_reads`, `route_reads`), read by the stack's wait on 小屏 (sfapp's
+    `page_opens_by`), the pane's on 中屏 and 大屏 (sfdesk's `pane_opens`, with what a place's list picks: `place_reads`),
+    a press through `open_answered` (`route_open_asks`) and declared as it comes on top (`page_opens_node`). It says
+    only what the page reads at rest whatever is answered, each the way the page asks it, what follows from an answer
+    by `then`; `declared_read_wbtest.mbt` opens every page on each screen and holds all of it read.
   - A press that waits for the core before it opens something (a menu, a panel, a question) goes through sfbase's
     `press_wait` (`src/sfbase/press_wait.mbt`), never a wait of its own: it waits only while what it was pressed in
     stays as it was (the page, the workspace, nothing else put up) and lets go of what it asked when it stops

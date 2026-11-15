@@ -2861,6 +2861,12 @@ int32_t mb_host_window_snap_state(void) { return 0; }
 int32_t mb_host_window_opens(void) { return 0; }
 int32_t mb_host_window_open(moonbit_string_t what) { (void)what; return 0; }
 int32_t mb_host_window_front(moonbit_string_t what) { (void)what; return 0; }
+// The windows of this run (@hostapi.windows_in_process and the rest: host_native.mbt's `windows`): none but its own
+// here.
+int32_t mb_host_windows(int32_t op, int32_t wid, moonbit_string_t what) {
+  (void)op, (void)wid, (void)what;
+  return 0;
+}
 void mb_host_set_cursor(int32_t kind) { (void)kind; }
 // The number on the app's icon on the home screen (@hostapi.set_badge): what waits for the person; 0 none. (Shown once
 // the person let the app's notifications show badges: asked with them.)

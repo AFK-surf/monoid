@@ -66,7 +66,7 @@ fn chat_jobs_pop_node(host : @view.View, src : Source, r : ChatRef, own : @view.
     if id != "" {
       pick_job(id)
     }
-    side_change(src, r, "open", Some("jobs"))
+    side_tab_open(src, r, "jobs")
   }
   chat_pop_node(host, chat_own.jobs_open, own, jobs_pop_w, fn() { chat_pops.jobs }, fn(s) { chat_pops.jobs = s }, fn(v) {
     // (a service's own tab is not here yet: it opens in 任务 too)

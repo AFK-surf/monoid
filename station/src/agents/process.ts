@@ -221,10 +221,11 @@ export class AgentProcess {
   }
 }
 
-/// Ends a runner of this id left by an earlier station, and waits for it to go.
-export async function endRunner(data: string, id: string, label: string) {
+/// Ends a runner of this id left by an earlier station, and waits for it to go: `only` that runner (by its pid and its
+/// start), none started under its id since. Whether there was one to end.
+export async function endRunner(data: string, id: string, label: string, only?: RunnerInfo): Promise<boolean> {
   const info = await findRunner(data, id);
-  if (!info) return;
+  if (!info || (only !== undefined && (info.runner !== only.runner || info.startedAt !== only.startedAt))) return false;
   log.warn("agents::process", "ending a runtime process left by a previous run", { label, runner: info.runner, pgid: info.pgid });
   if (listening(info)) {
     const conn = new RunnerConnection(info, () => {});
@@ -236,6 +237,7 @@ export async function endRunner(data: string, id: string, label: string) {
     conn.done();
   }
   for (let i = 0; i < 300 && pidAlive(info.runner); i++) await sleep(10);
+  return true;
 }
 
 /// Where the runner will start sending stdout from: the end of what the previous station acknowledged; and where of

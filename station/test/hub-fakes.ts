@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Roots } from "../src/read/machine.ts";
-import { CommandMissing } from "../src/agents/runner.ts";
+import { CommandMissing, type RunnerInfo } from "../src/agents/runner.ts";
 import type { AgentDriver, AgentSession, BackgroundTask, OpenOptions, RuntimeEvent, TurnOutcome } from "../src/agents/runtime.ts";
 import { type ChatMessage, type ChatSurface, type InboundFile, type InboundMessage, NOTICE_MARK, type ThreadRef } from "../src/sessions/chat.ts";
 import { type HubConfig, hubConfig } from "../src/sessions/config.ts";
@@ -232,6 +232,11 @@ export class FakeDriver implements AgentDriver {
   shutdowns = 0;
   /// What the runner of a station that crashed keeps, taken up with no snapshot (as the driver finds it on its own).
   left: { id: string; busy: boolean; mcpUrl?: string } | null = null;
+  /// The runners it holds, where a test has it say (agents/runtime.ts `ownedRunners`); unset, it holds every one of
+  /// its runtime's (hub.ts `ownsRunner`).
+  ownedRunners?: () => ReadonlySet<string>;
+  /// What it ends of what it keeps idle, the machine short of memory, where a test has it (agents/runtime.ts `evictIdle`).
+  evictIdle?: () => Promise<number>;
 
   constructor(kind: "claude" | "codex") {
     this.kind = kind;
@@ -390,7 +395,7 @@ export class Rig {
   workspaces: string[] | undefined;
 
   /// A hub over this rig's store and config (another station's, after a restart: given its own drivers).
-  newHub(o: { chats: (id: string) => ChatSurface | undefined; link?: boolean; cold?: ColdStorage; drivers?: AgentDriver[]; internal?: boolean; mcpUrl?: string; runners?: string[] }) {
+  newHub(o: { chats: (id: string) => ChatSurface | undefined; link?: boolean; cold?: ColdStorage; drivers?: AgentDriver[]; internal?: boolean; mcpUrl?: string; runners?: string[]; endRunner?: (info: RunnerInfo) => Promise<unknown> }) {
     const hub = new Hub({
       config: () => this.config,
       store: this.store,
@@ -402,6 +407,7 @@ export class Rig {
       workspaces: this.workspaces ? () => this.workspaces! : undefined,
       station: () => this.place.station,
       runners: () => o.runners ?? [],
+      endRunner: o.endRunner,
       cold: o.cold,
       clock: this.clock,
       machineRoots: () => this.roots ?? { claude: join(this.dir, "no-machine/claude"), codex: join(this.dir, "no-machine/codex") },

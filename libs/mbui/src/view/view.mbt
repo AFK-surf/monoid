@@ -3357,7 +3357,7 @@ fn[T : Eq] Tree::structured(
   w.on_marked(fn() {
     if answering_depth.val > 0 && !queued.val {
       queued.val = true
-      answer_marked.push(settle)
+      answer_marked.push((self, settle))
     }
   })
   let v = w.read(read)

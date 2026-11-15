@@ -643,6 +643,10 @@ pub fn page_declared_let_go() -> Unit {
   let was = page_declared.val
   page_declared.val = []
   let_go_unread(was)
+  // (told: what declared them in the change that let them go declares again what is still to be read, page_opens_node)
+  if was.length() > 0 {
+    page_declared_told.set(page_declared_told.get() + 1)
+  }
 }
 
 ///|

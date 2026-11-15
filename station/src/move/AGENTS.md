@@ -108,7 +108,7 @@ chats paused 18 minutes, a half-moved state, no way back), whose start stays swi
   size, as a room left there before (a retirement's, the same paths) takes what arrives in its place (the real run,
   2026-11-15: 110 chats moved to Office-Host-2 and its free bytes did not fall). Refused in numbers before it is held.
 - What a move would send of each chat is known before it starts (`sizes.ts`): sized by the gathering's own walk in its
-  thread (carry-worker.ts `sizes`, so the same files, bounded a session, said at least past it), kept a line a session
+  the MoonBit program (carry.ts `sizesSoon`, carry.mbt `carry_sizes`: the same walk, so the same files, bounded a session, said at least past it), kept a line a session
   (`sizes.log`) against the session as it was (chats.ts `stampOf`: its last activity, archived or not, its last job and
   where that stands); a plan read at rest starts one pass over those whose stamp changed and looks at no other room
   (none while a turn runs here: what it reads then waits for a plan at rest; a chat that left needs no size). A whole

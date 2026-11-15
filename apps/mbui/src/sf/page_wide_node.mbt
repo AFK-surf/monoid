@@ -419,17 +419,46 @@ pub fn narrow_heading_node(parent : @view.View, title : () -> String, loc~ : Sou
 ///|
 /// A section's heading alone, a block of a page's list over the pieces of its card (card_piece_node): as section_node
 /// heads a section, narrow heading_node's, wide its title on its line, as far over the card as it stands there.
-/// `title_after`: what its title holds after its words, wide (section_node's: a count).
+/// `title_after`: what its title holds after its words, wide (section_node's: a count). `note`: what it holds said,
+/// under its title as section_node has it (narrow a page's note under the heading, wide under the title's words).
 #callsite(autofill(loc))
 pub fn section_heading_node(
   parent : @view.View,
   title : () -> String,
   title_after? : (@view.View) -> Unit,
+  note? : () -> String,
   loc~ : SourceLoc,
 ) -> Unit {
-  match look_node(parent) {
-    Narrow => heading_node(loc~, parent, title)
-    Wide =>
+  match (look_node(parent), note) {
+    (Narrow, None) => heading_node(loc~, parent, title)
+    (Narrow, Some(note)) =>
+      parent.box(made_for=loc, fn(h) {
+        heading_node(h, title)
+        h.show(fn() { note() != "" }, fn(n) { page_note_node(n, note) })
+      })
+      |> ignore
+    (Wide, Some(note)) =>
+      parent.box(made_for=loc, fn(line) {
+        let side = if in_pane_node(line) { panel_words - panel_card_in } else { 0.0 }
+        line.padding(Is((side, 0.0, side, title_card_wide))) |> ignore
+        match title_after {
+          Some(after) =>
+            line.box(fn(l) {
+              l.row(Is(true)).gap(Is(section_title_after_gap)).lines_up(Is(Some(Middle))) |> ignore
+              words_node(l, title, fn() { section_title }) |> ignore
+              after(l)
+            })
+            |> ignore
+          None => words_node(line, title, fn() { section_title }) |> ignore
+        }
+        // (what it holds said: under its title, as section_node's)
+        line.show(fn() { note() != "" }, fn(n) {
+          n.padding(Is((0.0, section_note_gap, 0.0, 0.0))).max_width(Is(Some(section_note_w))) |> ignore
+          words_node(n, note, fn() { section_note }) |> ignore
+        })
+      })
+      |> ignore
+    (Wide, None) =>
       parent.box(made_for=loc, fn(line) {
         let side = if in_pane_node(line) { panel_words - panel_card_in } else { 0.0 }
         line.padding(Is((side, 0.0, side, title_card_wide))) |> ignore

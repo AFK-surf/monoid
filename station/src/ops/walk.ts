@@ -5,7 +5,9 @@
 //
 // - stays on its root's file system (`sameDevice`, on by default): a directory whose `dev` is not its root's is listed
 //   but not gone into (a FUSE or NFS mount, a DMG, an external disk), told in `crossed`;
-// - never follows a symbolic link (one is listed as itself);
+// - never follows a symbolic link (one is listed as itself), unless asked to (`followLinks`, for a tree whose folders
+//   are linked in by design, as ~/.agents/skills): then each link is stat'ed once to what it names, and a directory
+//   whose (dev, ino) the walk went into already is listed but not gone into again, so a link back up ends there;
 // - stops at `maxEntries` entries, below `maxDepth` and after `maxDurationMs` (the wall's clock, or the caller's
 //   `now`), and as `signal` aborts, saying so in `truncated` and `reason`: what was found so far is the caller's to
 //   use as a lower bound, never a walk that does not end;
@@ -59,8 +61,12 @@ export type WalkOptions = {
   stat?: boolean;
   /// A root that is a symbolic link followed to what it names (default false: a link, listed as itself).
   followRoot?: boolean;
+  /// Every symbolic link followed to what it names (default false), each real directory gone into once: an entry that
+  /// is a link says `symlink`, and `directory` or `file` by its target (neither where its target is not there). Only a
+  /// link is stat'ed for it, and a directory lstat'ed for its (dev, ino); a file is known by its listing.
+  followLinks?: boolean;
   /// An error of the file system (`op`: what failed), ignored unless this throws, which ends the walk with it.
-  onError?: (path: string, error: NodeJS.ErrnoException, op: "lstat" | "readdir") => void;
+  onError?: (path: string, error: NodeJS.ErrnoException, op: "lstat" | "readdir" | "stat") => void;
   /// A directory not gone into for being on another file system.
   onCrossed?: (entry: WalkEntry) => void;
 };
@@ -89,7 +95,18 @@ export async function walkBounded(roots: string | readonly string[], visit: (ent
   const yieldEvery = Math.max(1, options.yieldEvery ?? WALK_YIELD_EVERY);
   const until = now() + (options.maxDurationMs ?? WALK_MAX_DURATION_MS);
   const signal = options.signal;
-  const failed = (path: string, error: unknown, op: "lstat" | "readdir") => options.onError?.(path, error as NodeJS.ErrnoException, op);
+  const followLinks = options.followLinks ?? false;
+  /// The directories gone into, by `dev:ino`, where links are followed.
+  const into = new Set<string>();
+  /// Whether a directory (its stats) is gone into for the first time, where links are followed (always otherwise).
+  const first = (s: BigIntStats | null) => {
+    if (!followLinks || s === null) return true;
+    const key = `${s.dev}:${s.ino}`;
+    if (into.has(key)) return false;
+    into.add(key);
+    return true;
+  };
+  const failed = (path: string, error: unknown, op: "lstat" | "readdir" | "stat") => options.onError?.(path, error as NodeJS.ErrnoException, op);
   let visited = 0;
   let crossed = 0;
   let deeper = false;
@@ -127,7 +144,7 @@ export async function walkBounded(roots: string | readonly string[], visit: (ent
     };
     const said = await tell(entry);
     if (said === "stop") return ended("stopped");
-    if (said !== "skip" && entry.directory) queue.push({ path: root, rel: "", depth: 0, root, dev: meta.dev });
+    if (said !== "skip" && entry.directory && first(meta)) queue.push({ path: root, rel: "", depth: 0, root, dev: meta.dev });
   }
 
   while (head < queue.length) {
@@ -148,7 +165,7 @@ export async function walkBounded(roots: string | readonly string[], visit: (ent
       const path = join(dir.path, d.name);
       const depth = dir.depth + 1;
       let stats: BigIntStats | null = null;
-      if (options.stat || (sameDevice && d.isDirectory())) {
+      if (options.stat || ((sameDevice || followLinks) && d.isDirectory())) {
         try {
           stats = await lstat(path, { bigint: true });
         } catch (error) {
@@ -156,16 +173,28 @@ export async function walkBounded(roots: string | readonly string[], visit: (ent
           continue;
         }
       }
-      const directory = stats !== null ? stats.isDirectory() : d.isDirectory();
+      const symlink = stats !== null ? stats.isSymbolicLink() : d.isSymbolicLink();
+      // What a link names, where links are followed (null: it names nothing there).
+      let target: BigIntStats | null = stats;
+      if (followLinks && symlink) {
+        try {
+          target = await stat(path, { bigint: true });
+        } catch (error) {
+          failed(path, error, "stat");
+          target = null;
+        }
+      }
+      const followed = followLinks && symlink;
+      const directory = followed ? target?.isDirectory() === true : stats !== null ? stats.isDirectory() : d.isDirectory();
       const entry: WalkEntry = {
         path, rel: dir.rel === "" ? d.name : `${dir.rel}/${d.name}`, name: d.name, depth, directory,
-        symlink: stats !== null ? stats.isSymbolicLink() : d.isSymbolicLink(), file: stats !== null ? stats.isFile() : d.isFile(),
+        symlink, file: followed ? target?.isFile() === true : stats !== null ? stats.isFile() : d.isFile(),
         stats: options.stat ? stats : null, root: dir.root,
       };
       const said = await tell(entry);
       if (said === "stop") return ended("stopped");
       if (said === "skip" || !directory) continue;
-      if (sameDevice && stats !== null && stats.dev !== dir.dev) {
+      if (sameDevice && target !== null && target.dev !== dir.dev) {
         crossed++;
         options.onCrossed?.(entry);
         continue;
@@ -174,6 +203,7 @@ export async function walkBounded(roots: string | readonly string[], visit: (ent
         deeper = true;
         continue;
       }
+      if (!first(target)) continue;
       queue.push({ path, rel: entry.rel, depth, root: dir.root, dev: dir.dev });
     }
   }

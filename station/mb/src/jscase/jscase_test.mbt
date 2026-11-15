@@ -23,3 +23,27 @@ test "lowered as JavaScript lowers" {
     assert_eq(@jscase.lower(c.0), c.1)
   }
 }
+
+///|
+/// What node's `s.split(/[^\p{L}\p{N}]+/u).includes(w)` says (a letter or a number of any script joins a word; a mark,
+/// a lone surrogate, punctuation and `_` part words).
+test "words as a regular expression's letters and numbers split them" {
+  let cases = [
+    ("api error: 401 invalid", "401", true),
+    ("api error:401", "401", true),
+    ("x4010", "401", false),
+    ("4401", "401", false),
+    ("状态401", "401", false),
+    ("状态 401", "401", true),
+    ("a_401", "401", true),
+    ("é401", "401", false),
+    ("401\u{301}", "401", true),
+    ("𐐨401", "401", false),
+    ("٤401", "401", false),
+    ("401", "401", true),
+    ("", "401", false),
+  ]
+  for c in cases {
+    assert_eq(@jscase.has_word(c.0, c.1), c.2, msg="\{c.0}")
+  }
+}

@@ -273,7 +273,7 @@ export class LoginRun {
     const page = this.#opened.at(-1) ?? null;
     const back = page !== null ? loopbackOf(page) : null;
     const printedBack = page === null ? printed.find((u) => loopbackOf(u) !== null) ?? null : null;
-    const code = deviceCodeIn(said);
+    const code = deviceCodeIn(said, this.#opened);
     if (this.state === "verifying") {
       // The browser came back: nothing more to do but wait for it to finish.
     } else if (back !== null || printedBack !== null) {
@@ -282,7 +282,8 @@ export class LoginRun {
       this.step = "loopback";
       this.state = "browser";
       this.code = null;
-    } else if (code !== null) {
+    } else if (!this.paste && code !== null) {
+      // A code the person pastes from its page (paste) stays theirs to enter: what it says after is not a device code.
       const urls = deviceUrls([...this.#opened, ...printed], code);
       this.code = code;
       this.url = urls.url;

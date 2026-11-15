@@ -15,6 +15,13 @@
 /// (iOS, Android) 保存到相册: a phone keeps pictures in its photo album, where a post or a chat picks them from
 /// (2026-10-26 用户：「手机上能复制图片吗？」「是不是应该是下载」「保存」).
 pub fn share_card_open(src : Source, w : Workspace) -> Unit {
+  // (once its poster's figures are answered (share_fleet): sfbase's open_old_whole)
+  @sfbase.open_old_whole(src, [("fleet", { "scope": Json::string(w.id) })], fn() { share_card_panel(src, w) })
+}
+
+///|
+/// share_card_open's panel, put up.
+fn share_card_panel(src : Source, w : Workspace) -> Unit {
   @sf.panel(
     @sf.t("web-main.stations.shareCard"),
     fn(c, _) {

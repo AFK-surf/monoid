@@ -175,7 +175,7 @@ test "held by a finger round the picture, over the chat's words under the viewer
 }
 
 ///|
-test "a video plays in the one player (@sf.player_view), its bytes read through the core; its controls over it" {
+test "a video plays in the one player (@sf.player_node), its bytes read through the core; its controls over it" {
   let t = preview_tester("video")
   assert_true(t.views().iter().any(fn(l) { l.has_prefix("open 1 1 ") }))
   assert_true(t.views().contains("control 1 1 0"))
@@ -355,7 +355,8 @@ fn ten_frames() -> (@ui.Tester, Double, Double, Double) raise {
     t.view_said("{\"view\":{\"view\":1,\"what\":1,\"text\":\"0,100,200,300,400,500,600,700,800,900\"}}"),
   )
   t.draw()
-  let (x, y, w, h) = t.ctx().rect_of(t.ctx().id("preview-media/timeline")).unwrap()
+  guard t.all(@ui.Role::Slider, label="播放进度") is [line] else { fail("its timeline") }
+  let (x, y, w, h) = line.rect
   (t, x + @sf.player_track_inset, w - 2.0 * @sf.player_track_inset, y + h / 2.0)
 }
 
@@ -365,6 +366,7 @@ test "a video's timeline dragged: paused, the player told a finger is on it, a s
   let seeks = fn() { t.views().filter(fn(l) { l.has_prefix("control 1 3 ") }) }
   // down at a quarter: paused, the player's seeks one after another from now, to the frame showing there (200 ms)
   t.press_at(x0 + span * 0.25, mid)
+  t.run_for(@ui.frame_period_default)
   assert_true(t.views().contains("control 1 2 0"))
   assert_true(t.views().contains("control 1 9 1"))
   assert_eq(seeks(), ["control 1 3 200"])
@@ -409,23 +411,20 @@ test "a video's ‹ and › go to a frame's very start, a frame on from the one 
   let t = preview_tester("video")
   assert_true(t.view_said("{\"view\":{\"view\":1,\"what\":1,\"text\":\"0,33.333,66.667\"}}"))
   t.draw()
-  let tap_button = fn(key : String) {
-    let (x, y, w, h) = t.ctx().rect_of(t.ctx().id(key)).unwrap()
-    t.tap(x + w / 2.0, y + h / 2.0)
-  }
+  let tap_button = fn(label : String) raise { t.click(@ui.Role::Button, label~) }
   // (paused, the player's ±15 s are its frames' keys)
   // › from the first: to the second's start, as the file has it (no ms rounded up: past it is the third's)
-  tap_button("preview-media/frame-on")
+  tap_button("下一帧")
   assert_true(t.views().contains("control 1 3 33.333"))
   // the player there says 33 (whole ms): that is the second still, so › goes to the third
   t.set_player(1, position=33.0)
   t.draw()
-  tap_button("preview-media/frame-on")
+  tap_button("下一帧")
   assert_true(t.views().contains("control 1 3 66.667"))
   // and ‹ from the third (66) back to the second
   t.set_player(1, position=66.0)
   t.draw()
-  tap_button("preview-media/frame-back")
+  tap_button("上一帧")
   assert_eq(t.views().filter(fn(l) { l == "control 1 3 33.333" }).length(), 2)
 }
 

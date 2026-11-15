@@ -384,7 +384,7 @@ fn Actors::outgoing_path(self : Actors, workspace : String, session : String, st
 }
 
 ///|
-/// The sync of a directory to a station for task `key` (Node's dirsync, `syncDir`): the one under way, or ended and not
+/// The sync of a directory to a station for task `key` (dirsync_source.mbt `sync_dir`): the one under way, or ended and not
 /// yet taken, when it is that task's; otherwise a new one, begun once the one before it (another task's) has ended.
 async fn Actors::sync_of(self : Actors, id : String, key : String, args : Array[Json]) -> SyncRun raise {
   let now = self.remote_now()
@@ -399,11 +399,12 @@ async fn Actors::sync_of(self : Actors, id : String, key : String, args : Array[
       ignore(w.result.wait()) catch { _ => () }
     }
     let got = try {
-      ({ "ok": self.rnode("syncDir", args) } : Json)
+      let arg = (i : Int) => str_of(Some(args[i])).unwrap_or("")
+      ({ "ok": self.sync_dir(arg(0), arg(1), arg(2), arg(3), arg(4)) } : Json)
     } catch {
       e => match e {
         Asked(j) => { "error": j }
-        _ => { "error": { "message": jstr(Asked::message(e)) } }
+        _ => { "error": { "message": jstr(FsError::of(e)) } }
       }
     }
     let at = self.remote_now() catch { _ => 0.0 }

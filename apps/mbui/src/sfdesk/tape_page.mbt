@@ -384,9 +384,12 @@ fn tape_made(
         context_node(p)
         profiles_place_node(p, src, core, here, stint, fn() { tape_made_frame }, width, said=told, tips~)
       })
-    // (the stations' place with one that only runs tasks picked: its page made once, in the place of the old view's)
-    Place("stations") if place_rig(src) != "" =>
-      tape_made(src, Setting(Station(place_rig(src))), tips).map(fn(m) { ("place/" + m.0, m.1) })
+    // (the stations' place: the station picked in its list made once as its page is, none the first to add)
+    Place("stations") =>
+      made("place/stations", fn(p, core, here, stint, told, _acts) {
+        context_node(p)
+        stations_place_node(p, src, core, here, stint, fn() { tape_made_frame }, width, said=told, tips~)
+      })
     // (a place of the rail's whose page is one of those: that page as the settings open it, at the stack's root, made
     // under its own kind)
     Place(name) =>

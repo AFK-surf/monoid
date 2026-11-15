@@ -25,7 +25,8 @@ const pagesOf = (p: unknown): PageBase | null => {
 const SPAN_MAX_MS = 31 * 24 * 60 * 60_000;
 
 export const usageOps: Record<string, ReadOp> = {
-  /// The turns a part of a transcript's calls were made in, for the usage counter (usage/counter.ts).
+  /// The turns a part of a transcript's calls were made in, as the usage counter read them in TypeScript
+  /// (test/usage-counter-reference.ts; the program's counter, mb/src/usagecount, reads them itself).
   usageTurns: (store, a) => usageTurns(store.db, String(a.session), Number(a.from), Number(a.until)),
   // `reading`: the counter's readingAll (absent: true).
   // `history`: the page's year by day as well (usage.ts usageHistory; `historyRange`, its days).

@@ -430,6 +430,7 @@ fn reset() -> Unit {
   anims.clear()
   anims_moving.clear()
   ripples.clear()
+  pointer_presses.clear()
   foot_moved.clear()
   motion_log.val = -1
 }

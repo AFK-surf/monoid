@@ -113,6 +113,13 @@ yet and you can add one, add it.
   the app keeps the view past it (`kept`). So is a stream the host decodes (ui's `stream`, `src/ui/tree_stream.mbt`):
   its picture drawn where the tree draws the node, each frame the one shown then, closed as the node is let go unless
   what holds it closes it (`closes`).
+- A run has one window or several (the Mac's windows of one run: `@hostapi.windows_in_process`, `src/ui/window_slots.mbt`):
+  one program, one core, each window its own tree, frames and input. What the window's runtime keeps of a window lives
+  in globals put in place for the window the host hands a frame or input from, the first (0) put back after, so a new
+  global that is a window's own (of its context, its tree, its drawing, its hand) is said in `src/ui/window_kept.mbt`,
+  and one of a package over it (an app's layers, its toasts) by `@ui.window_kept`; what is the run's (the host's
+  pictures, streams and native views by id, text caches, messages, fibers) is not. A signal set as frames are drawn
+  is kept as its object (`Ref[Signal]`), never its value, or each window's frame wakes the other's.
 - What a still pointer is over (the hand: `View::pointed`, a tip, a hover card) is worked out at an input, in a change
   at its moment, and at the end of a way that may move something under it (`Tree::hand_at_end`: a Move, a way in or
   out, a glide; one that changes only how a thing looks, a fade, a bar's hiding, is none: `Prop::moves_hits`), never on
@@ -177,9 +184,7 @@ yet and you can add one, add it.
   as answer changes, while nodes mid-transition (`Tree::on_way_at`) are still checked for mid-motion jumps.
 - Why the runs are split so (the user): the rates run on main after a merge, red there mended forward (2026-11-11:
   「直接合，帧率在 main 上合并后跑」), and on a branch only for the app's test files it changed (2026-11-14); the sweeps
-  at the default rate alone because a rate found nothing in them the default run did not (2026-11-11), and for now
-  not judged for motion (`Tester::motion_unjudged`, 2026-11-12: 「先省吧，明天加机器，再改回来」, judged again once CI
-  has more runners); smoothness on the default run's frames (2026-11-09: 平滑度另开一条线), and a step half way
+  at the default rate alone because a rate found nothing in them the default run did not (2026-11-11); smoothness on the default run's frames (2026-11-09: 平滑度另开一条线), and a step half way
   through a motion is a jump (「动画执行到一半突变也算突变」). Only `run_for`'s way gets the extra frames: a test that
   walks its own frames to judge motion returns at once at a rate (`@ui.test_at_a_rate()`). A bar's key is the file
   its Testers are made in; `scripts/motion_bars.sh` fails main where a bar should fall or a counted file shows none,
@@ -264,7 +269,10 @@ yet and you can add one, add it.
   not only whether it is due). A made-up core that answers at once (an app's fixture, a replay's kept answers)
   answers through ui's `answered_from_outside`: what a computed's getter asked it is given once that getter is over
   (`@signals.after_computing`), never in it, where what it told ran what reads that computed and read it again half
-  made (`src/ui/answered_in_read_wbtest.mbt`).
+  made (`src/ui/answered_in_read_wbtest.mbt`). A core in the same process on a runtime of its own (its fibers turned
+  by its own loop, so it goes on while no frame is drawn) hands what it came to over to the frames through
+  `@ui.on_frame_take`, said by `@ui.wake_frame`: one frame asked for however often it is said, taken once as that
+  frame begins (`src/ui/frame_take_wbtest.mbt`), never through the host's post or a timer of its own.
 - What runs in the app never asks whether a Tester runs it: no `fake.val`, no switch only a Tester sets. What differs
   under a Tester is its fake host's answer (`impl Host for FakeHost`, a capability such as `rows_on_pixels`,
   `answers_by_frame`, answered as a device would unless the test says otherwise) or what the Tester does itself after a

@@ -4,7 +4,7 @@
 // chat's directory as it is there (`move.job.start`), once its chat is there; moving it back stops it there and starts
 // it here. A chat whose move failed, or that goes on here, has its kept jobs started again here (`startKept`).
 import { join } from "node:path";
-import type { CarriedJob } from "../replica/carry-worker.ts";
+import type { CarriedJob } from "../replica/carry.ts";
 import { log } from "../ops/log.ts";
 import { KeptLog } from "./kept.ts";
 import type { Arrive, Item, ItemState, Module } from "./module.ts";

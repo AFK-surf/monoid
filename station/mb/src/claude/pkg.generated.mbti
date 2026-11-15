@@ -6,11 +6,19 @@ import {
 }
 
 // Values
+pub fn auth_outcome(Array[Int32]) -> @jsjson.JValue
+
 pub fn background_of(Turn) -> @jsjson.JValue
 
 pub fn chars(Array[Int32], Int32) -> Array[Int32]
 
+pub fn classify_result(Array[Int32]) -> String
+
+pub fn error_outcome(Array[Int32]) -> @jsjson.JValue
+
 pub fn on_frame(@jsjson.JValue, Turn, (@jsjson.JValue) -> Unit, () -> Unit, () -> Double, (String) -> Unit) -> Unit
+
+pub fn refused(Array[Int32]) -> Bool
 
 pub fn tools_lost_in(@jsjson.JValue, Array[Array[Int32]]) -> Array[Int32]?
 

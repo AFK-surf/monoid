@@ -22,7 +22,8 @@
 - An artifact uploaded for people to look at (pictures, logs, what moved) says `continue-on-error: true`: a runner's
   connection to GitHub's artifact service reset fails a check that had passed (main acb00686, 2026-11-01; #5157's
   `offscreen`, 2026-11-10). One a later job downloads does not: there the upload's failure is the job's, unless that
-  job does without it (mbui-size's measures, which `record` carries the one before's for).
+  job does without it (mbui-size's measures and what they measure: `record` carries the one before's for a measure
+  missing).
 - A release's deltas (`scripts/release-deltas.ts`: the `deltas` job, `put_feed` in `scripts/release.sh`) never fail
   or hold back a release: what goes wrong is a warning and that delta is left out, the feed whole without it. Their
   time is bounded by `--deadline` inside the job's own 5 minutes; a part that needs more gets fewer bases, not longer.

@@ -15,7 +15,8 @@ fn place_page(c : @ui.Ctx, src : Source, w : Workspace, place : String) -> Unit 
   settings_deep.val = false
   @settings.frame(core, here, root=true)
   match place {
-    "stations" | "profiles" => place_split(c, src, w, place)
+    // (made once as nodes in every frame: stations_place_node, profiles_place_node)
+    "stations" | "profiles" => ()
     _ =>
       c.box(style=place_across, fn() {
         match @settings.route_of(place) {
@@ -83,6 +84,46 @@ fn place_route_first(src : Source, w : Workspace, place : String) -> @settings.R
 }
 
 ///|
+/// What place `place` of workspace `ws` reads in the wide frame's pane as it is first drawn at rest (pane_opens): the
+/// stations' and the profiles' their list beside it and the page picked in it (place_route's: the one picked, else the
+/// first), that page's reads following the list's answer; the others their page's (sfbase's page_reads). A station
+/// picked that the list does not have (one that only runs tasks) its list's alone.
+fn place_reads(src : Source, ws : String, place : String) -> @sfbase.OpenReads {
+  let of = Json::string(ws)
+  match place {
+    "stations" => {
+      let rows = @sfbase.station_rows_ask(ws)
+      // (the workspace's devices under the stations in the list, as they come: not waited for)
+      let side = [rows, ("workspace", { "workspace": of })]
+      @sfbase.reads_then({ asks: side, then: None }, fn(read) {
+        let listed = match read(rows) {
+          Some(Array(a)) => a.map(fn(s) { text(Some(s), "station") })
+          _ => return None
+        }
+        let address = match place_pick.get(place_key(ws, place)) {
+          Some(Station(a)) => if listed.contains(a) { Some(a) } else { None }
+          _ => listed.get(0)
+        }
+        address.map(fn(a) { @sfbase.route_reads(src, ws, Station(a)) })
+      })
+    }
+    "profiles" => {
+      let list : (String, Map[String, Json]) = ("profiles", { "scope": of })
+      @sfbase.reads_then({ asks: [list], then: None }, fn(read) {
+        let all = items(read(list), "items")
+        let routes = all.map(fn(e) { profile_route(Some(e)) })
+        let route = match place_pick.get(place_key(ws, place)) {
+          Some(r) if routes.contains(r) => Some(r)
+          _ => routes.get(all.search_by(fn(e) { flag(Some(e), "look") }).unwrap_or(0))
+        }
+        route.map(fn(r) { @sfbase.route_reads(src, ws, r) })
+      })
+    }
+    _ => @sfbase.page_reads(src, ws, Place(place), true)
+  }
+}
+
+///|
 /// The profile the profiles' place shows with none picked (place_route_first's), by workspace and by the source read.
 // kept across runs: what it keeps is let go of by a run anew and by reset (sfbase's derived.mbt)
 let profiles_first_kept : @sfbase.Kept[@settings.Route?] = @sfbase.Kept::new()
@@ -111,20 +152,6 @@ fn place_rig_at(src : Source, w : Workspace, address : String) -> Json? {
 }
 
 ///|
-/// The address of the station picked in the stations' place of the workspace in view where it is one that only runs
-/// tasks, else "": its page is made once as nodes (pane_made's, tape_made's), in the place of the old view's.
-fn place_rig(src : Source) -> String {
-  match @sfbase.workspace_in_view(src).0 {
-    Some(w) =>
-      match place_route(src, w, "stations") {
-        Some(Station(a)) if place_rig_at(src, w, a) is Some(_) => a
-        _ => ""
-      }
-    None => ""
-  }
-}
-
-///|
 /// A profile's page (the web's profilePath): the station's copy the row shows; its page lists the account's other
 /// stations.
 fn profile_route(e : Json?) -> @settings.Route {
@@ -132,20 +159,48 @@ fn profile_route(e : Json?) -> @settings.Route {
 }
 
 ///|
-/// The page in the pane for a place with a list of its own: the one picked, as the settings draw it.
-fn place_split(c : @ui.Ctx, src : Source, w : Workspace, place : String) -> Unit {
-  let core = settings_core(src, w)
-  c.box(style=place_pane, fn() {
-    match place_route(src, w, place) {
-      // a station's: one page in every frame (src/sfpages station_page.mbt)
-      Some(Station(a)) => @sfpages.station_page(c, core, @settings.here_of(core, w.id, w.name), { back: None, top: 0.0, foot: 0.0, named: false }, a)
-      Some(r) => @settings.page(c, core, @settings.here_of(core, w.id, w.name), r, root=true)
-      // none to pick yet: the first to add (the web's StationsFirst, RuntimeSettings' first)
-      // (the profiles' place made once as nodes: profiles_place_node)
-      None => stations_first(c, core, @settings.here_of(core, w.id, w.name), src, w)
+/// What the stations' place shows in the pane (stations_place_node): the station picked in its list (place_route's: one
+/// that only runs tasks too), none while its list is read, the first to add where it has none.
+#derive(Eq)
+priv enum StationsShown {
+  Picked(String)
+  Reading
+  First
+}
+
+///|
+/// The stations' place in node `v` (pane_made's, tape_made's): the station picked in its list made once as its page is
+/// (sfpages' station_node, every frame's: another station, another page), at the stack's root; while the list is read
+/// a station's page in its bones; none in the workspace, the first to add (stations_first_node).
+fn stations_place_node(
+  v : @view.View,
+  src : Source,
+  core : @settings.Core,
+  here : () -> @settings.Here,
+  stint : () -> Int,
+  frame : () -> @sf.PageFrame,
+  width : () -> Double,
+  said? : (@sf.PageSaid) -> Unit,
+  tips? : @sf.TipLayer,
+) -> Unit {
+  let shown = fn() {
+    match @sfbase.workspace_in_view(src).0 {
+      Some(w) =>
+        match place_route(src, w, "stations") {
+          Some(Station(a)) => Picked(a)
+          _ => if @sfbase.station_rows(src, w.id).value is Some(_) { First } else { Reading }
+        }
+      None => Reading
+    }
+  }
+  v.pick(shown, fn(p, at) {
+    p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+    match at {
+      Picked(a) => @sfpages.station_node(p, core, src, here, a, on_back=core.pop, frame~, said?, width~, tips?, stint~)
+      Reading => @sfpages.stations_reading_node(p, core, src, here, on_back=core.pop, frame~, said?, width~, tips?)
+      First => stations_first_node(p, core, here, frame, width, said?, tips?)
     }
   })
-  |> ignore
 }
 
 ///|
@@ -187,6 +242,26 @@ fn stations_side(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
   let core = settings_core(src, w)
   let here = @settings.here_of(core, w.id, w.name)
   let picked = place_route(src, w, "stations")
+  // (a station's page in the pane once what it shows is answered, where what opens waits for what it shows: its station,
+  // then what its part shown reads, the pane as it was meanwhile; sfbase's route_open_asks, route_open_then)
+  let pick = fn(address : String) {
+    let route = Route::Station(address)
+    let show = fn() {
+      place_pick[place_key(w.id, "stations")] = route
+      @sfbase.show_chosen()
+    }
+    if !(src.gates_opens)() || @signals.untracked(fn() { place_route(src, w, "stations") }) == Some(route) {
+      show()
+      return
+    }
+    @sfbase.show_answered(
+      src,
+      @sfbase.route_open_asks(src, w, route),
+      @sfpages.station_shown_at(address),
+      show,
+      then?=@sfbase.route_open_then(src, w, route),
+    )
+  }
   c.box(style=place_side, fn() {
     side_top(c)
     nav_action(c, "stations/add", @sf.t("web-pages.settings.stations.add"), @settings.place_action(core, here, "stations"), trailing?=update_trailing(c, src), band=update_band(), at=side_at())
@@ -196,10 +271,7 @@ fn stations_side(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
         let s = Some(s)
         let address = text(s, "station")
         let on = picked == Some(Route::Station(address))
-        station_side_row(c, src, s, on, i + 1 < listed.length(), fn() {
-          place_pick[place_key(w.id, "stations")] = Route::Station(address)
-          @sfbase.show_chosen()
-        })
+        station_side_row(c, src, s, on, i + 1 < listed.length(), fn() { pick(address) })
       }
       // those that only run tasks after the whole ones: whose each is and how it is, in the figures' place
       for r in @settings.rigs_listed(core, here) {
@@ -216,10 +288,7 @@ fn stations_side(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
           lines=fn() { @sfpages.rig_figures(c, r) },
           keep_lines=2,
           more=false,
-          on_press=fn() {
-            place_pick[place_key(w.id, "stations")] = Route::Station(address)
-            @sfbase.show_chosen()
-          },
+          on_press=fn() { pick(address) },
         )
       }
       // the workspace's devices under their heading (设备: attached to a station, or a person's phone), each opening
@@ -440,10 +509,14 @@ fn profiles_side(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
                 None
               },
               foot_capsule?=if windows { Some(@sf.fill_chip_small_h) } else { None },
+              // (once what it shows is answered, the screen as it was meanwhile, as the page's own choice of a station
+              // opens it: sfpages' open_new_profile)
               on_press=fn() {
-                @sfbase.history_push()
-                app.nav.push(Setting(Route::NewProfile(station)))
-                @sfbase.show_chosen()
+                @sfpages.open_new_profile(src, core, here, station, fn() {
+                  @sfbase.history_push()
+                  app.nav.push(Setting(Route::NewProfile(station)))
+                  @sfbase.show_chosen()
+                })
               },
             )
         }
@@ -453,10 +526,6 @@ fn profiles_side(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
   })
   |> ignore
 }
-
-///|
-// kept across runs: a value (no field of it changes)
-let place_pane : @ui.Style = @ui.css("w=Full h=Full bg=Bg")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -499,38 +568,50 @@ let place_fill : @ui.TextStyle = @ui.text_style(w=Cut)
 let place_use : @ui.TextStyle = @ui.text_style(color=AccentText)
 
 ///|
-/// No station picked: while they are read, said so; none in the workspace, the first to add (its scene, 添加 station).
-fn stations_first(c : @ui.Ctx, core : Core, here : Here, src : Source, w : Workspace) -> Unit {
-  let t = @sf.theme()
-  let read = @sfbase.station_rows(src, w.id).value is Some(_)
-  // (while they are read: a station's page, the one picked once they are, in its bones)
-  if !read {
-    @sfpages.station_waiting(c, core, here, @sf.no_frame, "Station", @sf.t("common.readingStations"))
-    return
-  }
-  desk_page(c, core, "stations-first", "Station", [
-    fn() {
-      @sf.first_one(
-        c,
-        @sf.t("web-pages.settings.stations.add"),
-        art=fn() { @sf.drawable(c, if t.dark { "illus_no_station_dark" } else { "illus_no_station" }, pl_art_w) |> ignore },
-        fn() {
-          // (its managers': the others wait for one)
-          match @settings.place_action(core, here, "stations") {
-            Some(add) =>
-              {
-                let id = c.id("stations-first/add")
-                @sf.button(c, @sf.t("web-pages.settings.stations.add"), key="stations-first/add", tone=Primary, icon="plus", on_press=fn() {
-                  add(Of(id))
-                })
-                |> ignore
-              }
-            None => c.text(@sf.t("web-pages.settings.stations.noneYet"), style=desk_muted_line) |> ignore
+/// None in the workspace (the web's StationsFirst): its scene, 添加 station where the viewer may add one (a member one
+/// that only runs tasks: settings' place_action), else that the others wait for one who may.
+fn stations_first_node(
+  v : @view.View,
+  core : @settings.Core,
+  here : () -> @settings.Here,
+  frame : () -> @sf.PageFrame,
+  width : () -> Double,
+  said? : (@sf.PageSaid) -> Unit,
+  tips? : @sf.TipLayer,
+) -> Unit {
+  let adds = fn() { @settings.place_action(core, here(), "stations") is Some(_) }
+  @sf.page_node(v, fn() { "Station" }, on_back=core.pop, frame~, said?, width~, tips?, fn() { ["first"] }, fn(b, _) {
+    @sf.first_one_node(
+      b,
+      fn() { @sf.t("web-pages.settings.stations.add") },
+      art=fn(a) {
+        a.pick(fn() { @sf.theme().dark }, fn(x, dark) {
+          @sf.drawable_node(x, if dark { "illus_no_station_dark" } else { "illus_no_station" }, pl_art_w) |> ignore
+        })
+      },
+      fn(a) {
+        a.pick(adds, fn(e, can) {
+          if can {
+            @sf.button_opens_node(
+              e,
+              fn() { @sf.t("web-pages.settings.stations.add") },
+              fn(button) {
+                match @settings.place_action(core, here(), "stations") {
+                  Some(add) => add(Node(button))
+                  None => ()
+                }
+              },
+              tone=Primary,
+              icon="plus",
+            )
+            |> ignore
+          } else {
+            @sf.words_node(e, fn() { @sf.t("web-pages.settings.stations.noneYet") }, fn() { desk_muted_line }) |> ignore
           }
-        },
-      )
-    },
-  ])
+        })
+      },
+    )
+  })
 }
 
 ///|

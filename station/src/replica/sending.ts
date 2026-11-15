@@ -1,4 +1,4 @@
-// What a gathering (carry-worker.ts) names, sent to another station a bounded batch at a time, and taken there by its
+// What a gathering (carry.ts) names, sent to another station a bounded batch at a time, and taken there by its
 // hash: what a station retired (retire.ts) and a chat handed over (handover.ts) both send their files by. Each session's
 // list is read as it streams, what the other lacks asked of in batches (`lacking`, at most `most` hashes), each file it
 // lacks sent (`put`), then the list itself; nothing of it is one object on the main thread.
@@ -10,7 +10,7 @@ import { createInterface } from "node:readline";
 import { type Bytes, Refused, withBytes } from "../mesh/bus.ts";
 import { AskAgain } from "../move/module.ts";
 import { fileBytes, oneBytes } from "../mesh/files.ts";
-import type { CarryIndex, Gathered } from "./carry-worker.ts";
+import type { CarryIndex, Gathered } from "./carry.ts";
 
 type Json = any;
 

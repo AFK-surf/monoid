@@ -311,6 +311,12 @@ static int window_run(void) {
 // byte on it brings its window to the front (mb_host_window_front, window_front_heard), the pipe's end says this run
 // has ended, and writing to it finds whether it still runs.
 static GHashTable *window_pipes;  // what each was started for, the last for each: the pipe's end to write to (+1)
+// The windows of this run (@hostapi.windows_in_process and the rest: host_native.mbt's `windows`): none but its own
+// here, a window of the app's own being another run of it (mb_host_window_open).
+int32_t mb_host_windows(int32_t op, int32_t wid, moonbit_string_t what) {
+  (void)op, (void)wid, (void)what;
+  return 0;
+}
 int32_t mb_host_window_opens(void) { return 1; }
 int32_t mb_host_window_open(moonbit_string_t what_s) {
   char *what = utf8(what_s);

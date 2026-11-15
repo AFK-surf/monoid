@@ -534,7 +534,7 @@ fn chat_jobs_pop(c : @ui.Ctx, src : Source, r : ChatRef) -> Unit {
         if id != "" {
           pick_job(id)
         }
-        side_change(src, r, "open", Some("jobs"))
+        side_tab_open(src, r, "jobs")
       }
       // (a service's own tab is not here yet: it opens in 任务 too)
       jobs_popover(c, src, r.station, src.topic("chatJobs", chat_params(r)).get().value, open, open)
@@ -768,14 +768,14 @@ fn chat_info(c : @ui.Ctx, src : Source, w : Workspace, r : ChatRef, v : ChatView
         info_row(c, "info-pop/pulls", "list", @sf.t("web-main.things.pullsAll", args=[("n", pulls.length().to_string())]), "", on_press=fn() {
           chat_own.info_open.set(false)
           @sfpages.things_choose(r, "pulls")
-          side_change(src, r, "open", Some("things"))
+          side_tab_open(src, r, "things")
         })
       }
       // (sfpages things.mbt)
       if said > 0 {
         info_row(c, "info-pop/things", "photo", @sf.t("web-main.things.title"), said.to_string(), on_press=fn() {
           chat_own.info_open.set(false)
-          side_change(src, r, "open", Some("things"))
+          side_tab_open(src, r, "things")
         })
       }
       if files {

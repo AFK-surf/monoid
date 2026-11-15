@@ -94,7 +94,8 @@ fn rippled_look(
   press : () -> Unit,
   loc~ : SourceLoc,
 ) -> Unit {
-  let rippled = press_look(loc~, v, corner, fn() { false })
+  // (a pointer's press lights its ground: press_ripple's)
+  let rippled = press_look(loc~, v, corner, fn() { false }, pointer=false)
   let on_it = fn(d : @view.Drag) { v.finger_target(d.wx, d.wy) }
   v.gesture(
     @ui.touch_slop(),

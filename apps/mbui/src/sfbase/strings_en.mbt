@@ -2126,6 +2126,7 @@ let en : Map[String, String] = {
   "web-pages.drive.player.mute": "Mute",
   "web-pages.drive.player.next": "Next",
   "web-pages.drive.player.nextIn": "Plays in {n} s",
+  "web-pages.drive.player.position": "Playback position",
   "web-pages.drive.player.prev": "Previous",
   "web-pages.drive.player.rate": "Speed",
   "web-pages.drive.player.unfull": "Exit full screen",

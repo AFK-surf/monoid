@@ -6,10 +6,9 @@ import { createHash } from "node:crypto";
 import { Refused, bytesOf } from "../mesh/bus.ts";
 import { PeerGone } from "../mesh/peer.ts";
 import type { Fibers } from "../ops/fibers.ts";
-import { type CarriedJob, SIZED_TRANSCRIPTS, type Sized, type SizedPlaces, type Sizing } from "../replica/carry-worker.ts";
+import { type CarriedJob, SIZED_TRANSCRIPTS, type Sized, type SizedPlaces, type Sizing, sizesSoon } from "../replica/carry.ts";
 import { type AccountOf, Handover, type HandoverDeps, floorOf, roomHere } from "../replica/handover.ts";
 import { carriedTo, moved } from "../replica/restore.ts";
-import { sizesSoon } from "../replica/retire.ts";
 import { SIZE_MOST, SIZES_BATCH, Sizes } from "./sizes.ts";
 import type { Ask } from "../replica/peers.ts";
 import type { Store } from "../store/store.ts";
@@ -92,8 +91,7 @@ export type MovesDeps = {
   /// Whether moving is switched on here (config.json `move`, a machine's own setting, off unless set; move/AGENTS.md).
   /// None given: on (a test's).
   moveOn?: () => boolean;
-  /// Sessions sized as a move would gather them (carry-worker.ts `sizes`; none given: in its thread, retire.ts
-  /// `sizesSoon`; a test's at once).
+  /// Sessions sized as a move would gather them (carry.ts `sizesSoon`, the program's; a test's may count them).
   sizes?: (keys: string[], sizing: Sizing) => Promise<Sized[]>;
   /// The chats a plan reads at a time (chats.ts `PLAN_PAGE`; a test's smaller).
   planPage?: number;

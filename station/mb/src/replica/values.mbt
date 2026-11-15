@@ -253,7 +253,21 @@ pub struct Files {
 
 ///|
 fn Files::call(self : Files, op : String, args : Json) -> Json raise {
+  if looking.val is Some(seen) && args is { "path": String(p), .. } {
+    seen.push((op, p))
+  }
   self.host.shell_sync(op, args)
+}
+
+///|
+/// What the program asked of the filesystem, each ask's op and path, where a test asked to be told
+/// (station/test/carry-walk-bounded.test.ts: a gathering looks at the disk as main's walk did, and at the sign alone).
+let looking : Ref[Array[(String, String)]?] = { val: None }
+
+///|
+/// From now on what is asked of the filesystem is kept, to be said with the answer (`looked`).
+pub fn count_looks() -> Unit {
+  looking.val = Some([])
 }
 
 ///|

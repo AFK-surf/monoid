@@ -39,6 +39,7 @@ pub fn Shell::refuse(Self, Int64, String) -> Unit
 pub fn Shell::start(@effect.Runtime, String) -> Self raise ShellError
 pub fn Shell::stood_in(@effect.Runtime, calls~ : (Int64, String, @json.Json, Bytes?) -> Unit, asks~ : (String, @json.Json) -> @json.Json raise ShellError, draws~ : (Int32) -> Bytes) -> Self
 pub fn Shell::tell(Self, String, @json.Json, bytes? : Bytes) -> Unit
+pub fn Shell::turn(Self) -> Int64?
 
 // Type aliases
 

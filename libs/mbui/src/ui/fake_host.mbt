@@ -943,7 +943,9 @@ impl @hostapi.Host for FakeHost with view_place(self, id, px, py, pw, ph, pcx0, 
     } else {
       " round \{pr0} \{pr1} \{pr2} \{pr3}"
     }) +
-    (if shown { "" } else { " hidden" }),
+    (if shown { "" } else { " hidden" }) +
+    // (in a window of the run beside the first, which: window_slots.mbt)
+    (if self.window_at != 0 { " window \{self.window_at}" } else { "" }),
   )
   let z = window_zoom_drawn.val
   let (x, y, w, h) = (px / z, py / z, pw / z, ph / z)
@@ -1328,6 +1330,50 @@ impl @hostapi.Host for FakeHost with window_front(self, what) {
     self.windows_fronted.push(what)
   }
   open
+}
+
+///|
+/// Its windows in this run where the test says so (Tester::set_windows_in_process).
+impl @hostapi.Host for FakeHost with windows_in_process(self) {
+  self.windows_in_process
+}
+
+///|
+/// Another window of the run, its size the one said for it or 480 × 720 (Tester::set_window_beside_size).
+impl @hostapi.Host for FakeHost with window_open_id(self, what) {
+  ignore(what)
+  guard self.windows_in_process else { return 0 }
+  self.window_ids = self.window_ids + 1
+  let wid = self.window_ids
+  if !self.window_sizes.contains(wid) {
+    self.window_sizes[wid] = (480.0, 720.0)
+  }
+  self.wants = true
+  wid
+}
+
+///|
+/// A window of the run to the front, while it is open (Tester::close_window_beside), kept.
+impl @hostapi.Host for FakeHost with window_front_id(self, wid) {
+  let open = wid > 0 && wid <= self.window_ids && !self.window_ids_closed.contains(wid)
+  if open {
+    self.window_ids_fronted.push(wid)
+  }
+  open
+}
+
+///|
+/// A window of the run closed by the app, kept.
+impl @hostapi.Host for FakeHost with window_close_id(self, wid) {
+  if !self.window_ids_closed.contains(wid) {
+    self.window_ids_closed.push(wid)
+  }
+}
+
+///|
+/// The window of the run drawn or handed input now (Tester::in_window).
+impl @hostapi.Host for FakeHost with window_current(self) {
+  self.window_at
 }
 
 ///|
@@ -2475,6 +2521,41 @@ fn posted_tell() -> Unit {
     f()
     if fake_posted.length() > 0 {
       on_outside(outside_posted, 0, 0)
+    }
+  }
+}
+
+///|
+/// `f` done `ms` from now between frames, as what comes from outside comes then (a made-up core's answer across no
+/// thread: an app's fixture): under a Tester its fake host's moment (FakeHost::due), told at it however the clock is run
+/// on; on a device's host the window's runtime's timer. `what` names it.
+pub fn later_between_frames(ms : Double, what : String, f : () -> Unit) -> Unit {
+  match fake.val {
+    Some(h) => h.due(h.time + ms, what, f)
+    None => runtime().after(ms.ceil().to_int(), f)
+  }
+}
+
+///|
+/// A message on `channel` from what stands for the outside in this process (a made-up core answering across no thread:
+/// an app's fixture), posted as a host's is: under a Tester to its fake host, told between frames at its moment with
+/// all posted then (posted_tell); on a device's host taken as messages_between takes a post, what changes only signals
+/// now and the rest left for the next frame, which it asks for (in a frame, left for the next). So what a test's made-up
+/// core says reaches the app by the path a device's core's does.
+pub fn outside_post(channel : String, json : String) -> Unit {
+  match fake.val {
+    // (told by what is telling the fake host's moments now, posted_tell, or as its clock moves on)
+    Some(h) => fake_post(h, channel, json, None)
+    None => {
+      if frame_running.val {
+        messages_in.push((channel, json, None))
+        outside_left()
+        return
+      }
+      messages_take([(channel, json, None)])
+      if messages_in.length() > 0 {
+        outside_left()
+      }
     }
   }
 }
