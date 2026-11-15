@@ -58,7 +58,7 @@ export type Station = {
   placed?: () => void;
   /// Its routes of move/routes.ts, as a device asks them.
   ask(method: string, path: string, body: Json, role?: string, query?: [string, string][]): Promise<{ status: number; body: Json }>;
-  jobs: (CarriedJob & { id: string })[]; started: string[]; free: number; fails: Set<string>; onFail: ((step: string) => void) | null;
+  jobs: (CarriedJob & { id: string })[]; started: string[]; free: number; total?: number; fails: Set<string>; onFail: ((step: string) => void) | null;
   /// The jobs' rows read so far, as the store reads them (live.ts `up`): a session's by its index, a workspace's whole.
   jobsRead: number;
   /// Its own connects' surfaces, by their id here; git run as the station runs it.
@@ -146,7 +146,7 @@ export function world(ids: string[] = [A, B]) {
         sessionsIn: (ws, after, limit) => rig.store.sessionPageOfWs(ws === WS ? null : ws, WS, after, limit),
         reposDir: join(rig.dir, "repos"),
         clonesElsewhere: async () => st.elsewhere ?? [],
-        room: async () => ({ free: st.free }),
+        room: async () => ({ free: st.free, total: st.total ?? null }),
         hasGit: async () => true,
         lackMost: 50,
         work: {

@@ -769,7 +769,7 @@
   "station.move.why.inTurn": "对话「{chat}」正在进行一轮：等这轮结束再迁，或选等待（会等它结束）",
   "station.move.why.turnLate": "对话「{chat}」过了 {minutes} 分钟还在这一轮里：稍后再迁",
   "station.move.why.noGit": "「{station}」没有 git，而这个对话有 {n} 个 git worktree 要在那边重建：先在那边安装 git",
-  "station.move.why.noRoom": "「{station}」只剩 {free}，这个对话需要 {need}：先在那边腾出空间，或换一台 station",
+  "station.move.why.noRoom": "「{station}」只剩 {free}，这个对话要 {need}，迁过去后那边剩下的会少于要留出的 {floor}：先在那边腾出空间，或换一台 station",
   "station.move.why.stopping": "这台 station 正在停止",
   "station.move.why.filesMissing": "发过去的文件有 {n} 个在那边不见了",
   "station.move.why.notWhatSent": "那边收到的和发过去的不一致（{what}）",

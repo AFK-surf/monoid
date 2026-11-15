@@ -334,6 +334,30 @@ test("a failure at each step before it went: the chat works here afterwards and 
   }
 });
 
+test("a chat goes only where it leaves the floor free there: the larger of 20 GiB and a tenth of that disk, said in numbers", async () => {
+  const GiB = 1024 ** 3;
+  // (its disk's size, its free bytes: refused or not; one that does not say its size keeps FLOOR_MIN)
+  for (const [total, free, goes] of [[undefined, 19 * GiB, false], [undefined, 21 * GiB, true], [400 * GiB, 39 * GiB, false], [400 * GiB, 41 * GiB, true], [100 * GiB, 21 * GiB, true]] as const) {
+    const w = world();
+    const a = w.get(A);
+    const b = w.get(B);
+    const { key } = await stillfailChat(a);
+    b.free = free;
+    if (total !== undefined) b.total = total;
+    const error = await a.moves.handover.handOver(key, B).then(() => null, (e: Error) => e.message);
+    await w.quiet();
+    const at = `${total ?? "-"} / ${free}`;
+    if (goes) {
+      assert.equal(error, null, at);
+      assert.equal(a.rig.store.handedTo(key), B, at);
+      continue;
+    }
+    assert.match(error ?? "", new RegExp(`has ${(free / GiB).toFixed(1)} GB free and this chat needs 0\\.0 GB, which would leave less than the ${(Math.max(20, (total ?? 0) / 10)).toFixed(1)} GB kept free there: free some room there|只剩 ${(free / GiB).toFixed(1)} GB.*要留出的 ${(Math.max(20, (total ?? 0) / 10)).toFixed(1)} GB`), at);
+    assert.equal(a.rig.store.handedTo(key), null, at);
+    assert.equal(b.rig.store.getSession(key), null, at);
+  }
+});
+
 test("the station it goes to started again in the middle goes on from where it stood", async () => {
   const w = world();
   const a = w.get(A);

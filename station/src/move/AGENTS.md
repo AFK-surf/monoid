@@ -93,6 +93,8 @@ chats paused 18 minutes, a half-moved state, no way back), whose start stays swi
   here, not posted again (`keptSends`, `keepSends`).
 - A chat's files go twice (`station/src/replica/handover.ts`): first while it works, then held only for what changed
   since, the station it goes to keeping what the first placed (`placed.txt`), so its pause does not grow with its room.
+  It goes only where it leaves the floor free (handover.ts `floorOf`: the larger of 20 GiB and a tenth of that disk),
+  refused in numbers before it is held.
 - A turn holds the station's self-update from its first item to its end, and the station taking a request or a chat
   holds it while it does (`station/src/updates/holds.ts`). A turn cut by a stop is kept as `last` saying so (`turn.json`); as
   the station starts, and as a station is heard from again, what waits for an item that is here goes on

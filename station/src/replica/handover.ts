@@ -40,7 +40,7 @@ import { HASH, STATION, WORKSPACE } from "./format.ts";
 import type { Ask } from "./peers.ts";
 import { Gone, type Need, Said, UNANSWERED, sayOf } from "../move/module.ts";
 import type { KeptSend } from "../api/admin.ts";
-import { HEADROOM, LACK_MOST, type MadeGit, RETRY_MOST_MS, RETRY_MS, connectsThere, gatherSoon, placeSoon, rebuildGits } from "./retire.ts";
+import { LACK_MOST, type MadeGit, RETRY_MOST_MS, RETRY_MS, connectsThere, gatherSoon, placeSoon, rebuildGits } from "./retire.ts";
 import { lackingIn, receiveFile, sendGathered } from "./sending.ts";
 import { carriedTo, moved } from "./restore.ts";
 import { stationLang, tr } from "../ops/i18n.ts";
@@ -173,7 +173,7 @@ export type HandoverDeps = {
   /// station's to its chats unless the station they go to has it (the plan's rule, move/accounts.ts), no need of them.
   accounts: { of(id: string): AccountOf | null; here(a: AccountOf): string | null; present?(id: string): boolean };
   reposDir: string;
-  room?: () => Promise<{ free: number | null }>;
+  room?: () => Promise<{ free: number | null; total?: number | null }>;
   hasGit?: () => Promise<boolean>;
   git?: (dir: string, args: string[]) => Promise<string>;
   lackMost?: number;
@@ -234,9 +234,18 @@ function readAll<T>(at: string): T[] {
 
 const roomHere = (data: string) => async () => {
   const s = await statfs(data).catch(() => null);
-  return { free: s === null ? null : Number(s.bavail) * Number(s.bsize) };
+  return { free: s === null ? null : Number(s.bavail) * Number(s.bsize), total: s === null ? null : Number(s.blocks) * Number(s.bsize) };
 };
 const gb = (n: number) => `${(n / 1024 ** 3).toFixed(1)} GB`;
+
+/// What a move leaves free on the station it goes to, at the least: the larger of FLOOR_MIN and FLOOR_SHARE of its
+/// volume (`total`; one that does not say it, FLOOR_MIN). A station whose disk fills stops every chat on it, not only
+/// those that came (its database, transcripts and jobs' output are written there), and what its chats build and log
+/// is gigabytes a day: 1 GiB (retire.ts HEADROOM) was minutes of it. A tenth keeps a large disk's margin in proportion
+/// (macOS itself purges and slows below about that).
+export const FLOOR_MIN = 20 * 1024 ** 3;
+export const FLOOR_SHARE = 0.1;
+export const floorOf = (total: number | null | undefined) => Math.max(FLOOR_MIN, Math.floor((total ?? 0) * FLOOR_SHARE));
 
 /// The hand-over's id: of when, its sessions and the station it goes to, and a part of its own (two of the same chat
 /// to the same station in the same millisecond are two: the second was refused there as "shown already").
@@ -658,9 +667,11 @@ export class Handover {
     const g: Gathered = await this.#work.gather(d.data, db, o.ws, false, scratch(d.data, o.id), undefined, null, o.keys).catch((e) => Promise.reject(carryWords(e)));
     // (a file of its room this station cannot read: the chat does not go, rather than go without it)
     if ((g.unreadableCount ?? 0) > 0) throw new Said(why("cannotRead", { path: (g.unreadable ?? []).join("、"), count: g.unreadableCount }));
-    const need = HEADROOM + g.bytes + Math.ceil(g.bytes / 20);
+    // (what it takes there: its bytes and a twentieth more for what placing them makes, leaving the floor free)
+    const need = g.bytes + Math.ceil(g.bytes / 20);
+    const floor = floorOf(typeof begun?.total === "number" ? begun.total : null);
     if (g.gits > 0 && begun?.git === false) throw new Said(why("noGit", { station: o.toName || o.to.slice(0, 12), n: g.gits }));
-    if (typeof begun?.free === "number" && need > begun.free) throw new Said(why("noRoom", { station: o.toName || o.to.slice(0, 12), free: gb(begun.free), need: gb(need) }));
+    if (typeof begun?.free === "number" && begun.free - need < floor) throw new Said(why("noRoom", { station: o.toName || o.to.slice(0, 12), free: gb(begun.free), need: gb(need), floor: gb(floor) }));
     d.fail?.("files");
     const carry = await sendGathered(g, {
       // (where each goes and how big, so that what is in place there already is not sent again)
@@ -1027,8 +1038,8 @@ export class Handover {
     this.#keepIn(i);
     this.#holdIn(i);
     await this.#saveIn(i);
-    const [room, git] = await Promise.all([(this.#d.room ?? roomHere(this.#d.data))().catch(() => ({ free: null })), (this.#d.hasGit ?? (async () => true))().catch(() => false)]);
-    return { ok: true, free: room.free, git };
+    const [room, git] = await Promise.all([(this.#d.room ?? roomHere(this.#d.data))().catch(() => ({ free: null, total: null })), (this.#d.hasGit ?? (async () => true))().catch(() => false)]);
+    return { ok: true, free: room.free, total: room.total ?? null, git };
   }
 
   async #place(i: In, carry: string): Promise<Json> {
