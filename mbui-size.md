@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [e689959d3](https://github.com/AFK-surf/monoid/commit/e689959d36cf952b3cac74096eb15ba7a239a5a8) mbui: Windows' stream sound plays again after a ga | 2.07 | 2.84 | 12.25 | 32.14 | 45.35 | 28.72 | 56.51 | 98.7 | 112.95 |
 | [3da86d090](https://github.com/AFK-surf/monoid/commit/3da86d09023f00b2687f86f947b091f289362826) ci: cache-prune lets a branch's caches go once not | 2.07 | 2.84 | 12.25 | 32.14 | 45.35 | 28.72 | 56.51 | 98.73 | 112.9 |
 | [b80ec9fc2](https://github.com/AFK-surf/monoid/commit/b80ec9fc20d5b06bbe79de7c22edd892e8e5c412) app: the benches' MBUI_CHAT_PAGE=nodes makes the c | 2.07 | 2.84 | 12.25 | 32.14 | 45.35 | 28.72 | 56.51 | 98.73 | 112.9 |
 | [3c6187b01](https://github.com/AFK-surf/monoid/commit/3c6187b0194bb18e909a3cc9b3a1933c3172313a) mbui: a list held by a limit its foot is followed  | 2.07 | 2.84 | 12.25 | 32.14 | 45.35 | 28.72 | 56.51 | 98.81 | 110.98 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [7746223b6](https://github.com/AFK-surf/monoid/commit/7746223b6be1f4b43c9a2ebb824cedb8c26134b5) ci: a native part coming slower than 200 KB/s is a | 2.03 | 2.78 | 11.99 | 31.89 | 44.54 | 28.5 | 55.83 | 98.55 | 111.76 |
 | [3118f7685](https://github.com/AFK-surf/monoid/commit/3118f7685e1a0dcac39464b236dfe4eac893516c) app: a chat's Farview tab drawn by the app itself, | 2.03 | 2.78 | 11.99 | 31.89 | 44.54 | 28.5 | 55.83 | 98.39 | 112.14 |
 | [91fe2703b](https://github.com/AFK-surf/monoid/commit/91fe2703b5f707a03492082674ca7d386887003c) station: what an event stream tells several device | 2.01 | 2.77 | 11.91 | 31.83 | 44.34 | 28.45 | 55.68 | 98.45 | 118.41 |
-| [ba23979ed](https://github.com/AFK-surf/monoid/commit/ba23979ed094039a10f69bc6723c42777220dd3f) mbui app: the fourth group's pages fewer at the de | 2.01 | 2.77 | 11.91 | 31.83 | 44.34 | 28.45 | 55.68 | 98.45 | 118.41 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [e689959d3](https://github.com/AFK-surf/monoid/commit/e689959d36cf952b3cac74096eb15ba7a239a5a8) mbui: Windows' stream sound plays again after a ga | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.53 |
 | [3da86d090](https://github.com/AFK-surf/monoid/commit/3da86d09023f00b2687f86f947b091f289362826) ci: cache-prune lets a branch's caches go once not | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.05 |
 | [b80ec9fc2](https://github.com/AFK-surf/monoid/commit/b80ec9fc20d5b06bbe79de7c22edd892e8e5c412) app: the benches' MBUI_CHAT_PAGE=nodes makes the c | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.25 |
 | [3c6187b01](https://github.com/AFK-surf/monoid/commit/3c6187b0194bb18e909a3cc9b3a1933c3172313a) mbui: a list held by a limit its foot is followed  | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.25 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [7746223b6](https://github.com/AFK-surf/monoid/commit/7746223b6be1f4b43c9a2ebb824cedb8c26134b5) ci: a native part coming slower than 200 KB/s is a | 0.4 | 0.52 | 1.96 | 3.08 | 4.51 | 1.45 | 3.8 | 57.39 |
 | [3118f7685](https://github.com/AFK-surf/monoid/commit/3118f7685e1a0dcac39464b236dfe4eac893516c) app: a chat's Farview tab drawn by the app itself, | 0.4 | 0.52 | 1.96 | 3.08 | 4.51 | 1.45 | 3.8 | 57.39 |
 | [91fe2703b](https://github.com/AFK-surf/monoid/commit/91fe2703b5f707a03492082674ca7d386887003c) station: what an event stream tells several device | 0.4 | 0.52 | 1.96 | 3.08 | 4.51 | 1.45 | 3.8 | 57.39 |
-| [ba23979ed](https://github.com/AFK-surf/monoid/commit/ba23979ed094039a10f69bc6723c42777220dd3f) mbui app: the fourth group's pages fewer at the de | 0.4 | 0.52 | 1.96 | 3.08 | 4.51 | 1.45 | 3.8 | 57.26 |
