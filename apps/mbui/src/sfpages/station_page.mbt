@@ -178,7 +178,7 @@ fn station_head(c : @ui.Ctx, core : Core, here : Here, s : Json?, manager : Bool
           let emoji = text(s, "emoji")
           let icon = text(s, "icon")
           if @sf.has_station_mark(emoji, icon) {
-            @sf.station_mark(c, emoji, icon, st_mark_glyph, t.p.text)
+            @sf.station_mark(c, emoji, icon, if side <= 32.0 { st_mark_wide_glyph } else { st_mark_glyph }, t.p.text)
           } else {
             let letter = match name.iter().next() {
               Some(ch) => ch.to_string().to_upper()
@@ -1447,6 +1447,9 @@ fn station_machine(c : @ui.Ctx, core : Core, s : Json?, manager : Bool) -> Array
 
 ///|
 let st_mark_glyph : Double = 28.0
+
+///|
+let st_mark_wide_glyph : Double = 18.0
 
 ///|
 let st_profile_glyph : Double = 18.0

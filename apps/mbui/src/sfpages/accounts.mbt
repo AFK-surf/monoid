@@ -358,9 +358,10 @@ fn profile_head_node(
   }
   @sf.own_head_node(
     h,
-    fn(m, _) {
+    fn(m, side) {
+      let glyph = if side <= 32.0 { pf_mark_wide_glyph } else { pf_mark_glyph }
       m.pick(at_once=true, fn() { (text(p(), "runtime"), text(field(p(), "access"), "kind"), text(p(), "providerMark")) }, fn(l, k) {
-        @sf.provider_logo_node(l, k.0, k.1, pf_mark_glyph, k.2) |> ignore
+        @sf.provider_logo_node(l, k.0, k.1, glyph, k.2) |> ignore
       })
     },
     fn() { text(p(), "name") },
@@ -2273,6 +2274,9 @@ let pf_muted : @ui.TextStyle = @ui.text_style(size=Meta, leading=L6, color=Muted
 
 ///|
 let pf_mark_glyph : Double = 26.0
+
+///|
+let pf_mark_wide_glyph : Double = 18.0
 
 ///|
 let pf_chip_glyph : Double = 14.0

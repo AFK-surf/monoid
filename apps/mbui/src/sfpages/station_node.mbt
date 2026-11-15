@@ -451,10 +451,11 @@ fn station_head_node(
   let name = fn() { text(s(), "name") }
   @sf.own_head_node(
     h,
-    fn(m, _side) {
+    fn(m, side) {
+      let glyph = if side <= 32.0 { st_mark_wide_glyph } else { st_mark_glyph }
       m.pick(fn() { @sf.has_station_mark(text(s(), "emoji"), text(s(), "icon")) }, fn(k, has) {
         if has {
-          @sf.station_mark_node(k, fn() { text(s(), "emoji") }, fn() { text(s(), "icon") }, st_mark_glyph, fn() {
+          @sf.station_mark_node(k, fn() { text(s(), "emoji") }, fn() { text(s(), "icon") }, glyph, fn() {
             @sf.theme().p.text
           }, stint)
         } else {

@@ -800,3 +800,40 @@ test "profile page shows non-quota explanations and intermediate checking states
   assert_true(t_key.find("按量计费，无额度上限 · 5 分钟前检查") is Some(_))
   assert_true(t_key.boxes_held().filter(fn(b) { b.text == "额度" }).is_empty())
 }
+
+///|
+test "a wide profile head aligns its 32 mark with the name's first line and starts the lines below at the mark's left edge" {
+  let t = setting_tester(Profile("ws1/st1", "cc"), 1280.0)
+  assert_eq(t.first_line_faults(), [])
+  assert_eq(t.line_start_faults(), [])
+  let name_word = t.words().filter(fn(w) { w.0 == "Claude 主账号" })[0]
+  let facts_word = t.words().filter(fn(w) { w.0 == "订阅账号 · Ultra" })[0]
+  let uses_word = t.words().filter(fn(w) { w.0 == "可用于：" })[0]
+  let state_word = t.words().filter(fn(w) { w.0.contains("订阅有效") })[0]
+  let mark_boxes = t.boxes_held().filter(fn(b) {
+    (b.w - 32.0).abs() <= 0.5 &&
+    (b.h - 32.0).abs() <= 0.5 &&
+    b.x < name_word.1 &&
+    (b.y - name_word.2).abs() < 20.0
+  })
+  assert_true(mark_boxes.length() > 0)
+  let mark = mark_boxes[0]
+  let mark_mid = mark.y + mark.h / 2.0
+  let name_mid = name_word.2 + name_word.4 / 2.0
+  assert_true(
+    (mark_mid - name_mid).abs() <= 2.0,
+    msg="mark_mid=\{mark_mid} name_mid=\{name_mid}",
+  )
+  assert_true(
+    (facts_word.1 - mark.x).abs() <= 1.0,
+    msg="facts_x=\{facts_word.1} mark_x=\{mark.x}",
+  )
+  assert_true(
+    (uses_word.1 - mark.x).abs() <= 1.0,
+    msg="uses_x=\{uses_word.1} mark_x=\{mark.x}",
+  )
+  assert_true(
+    state_word.1 < name_word.1,
+    msg="state_x=\{state_word.1} name_x=\{name_word.1}",
+  )
+}
