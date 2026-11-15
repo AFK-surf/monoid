@@ -750,6 +750,56 @@ fn a_front_handing_streams_as_a_release_before_is_replaced_by_the_launcher_that_
     until("the front to end with the launcher", || (!alive(fronts[1])).then_some(()));
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn a_changed_launcher_identity_replaces_the_front_but_the_same_identity_keeps_it() {
+    let mut station = Station::new("front-uuid");
+    release_front(&station);
+    station.start("");
+    station.up();
+    let original = station.fronts();
+    assert_eq!(original.len(), 1);
+
+    // The same Mach-O identity, even reached through a different launcher file, retains the front.
+    release_launcher(&station, "exec \"$BUILT\" \"$@\"\n");
+    station.conf("version=0.2.0\n");
+    station.signal(libc::SIGUSR2);
+    until("same-identity handover", || station.station_json().filter(|s| s["version"] == "0.2.0"));
+    assert_eq!(station.fronts(), original);
+
+    // Give a copy a different Mach-O UUID and sign it afresh so macOS will run it.
+    let changed = station.dir.join("different-launcher");
+    let mut image = std::fs::read(BUILT).unwrap();
+    assert_eq!(u32::from_ne_bytes(image[0..4].try_into().unwrap()), 0xfeedfacf);
+    let end = 32 + u32::from_ne_bytes(image[20..24].try_into().unwrap()) as usize;
+    let mut offset = 32;
+    while offset < end {
+        let kind = u32::from_ne_bytes(image[offset..offset + 4].try_into().unwrap());
+        let size = u32::from_ne_bytes(image[offset + 4..offset + 8].try_into().unwrap()) as usize;
+        assert!(size >= 8 && offset + size <= end);
+        if kind == 0x1b {
+            image[offset + 8] ^= 1;
+            break;
+        }
+        offset += size;
+    }
+    assert!(offset < end, "the launcher has an LC_UUID");
+    std::fs::write(&changed, image).unwrap();
+    std::fs::set_permissions(&changed, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    assert!(output(Command::new("codesign").args(["--force", "--sign", "-"]).arg(&changed)).status.success());
+    release_launcher(&station, &format!("exec '{}' \"$@\"\n", changed.display()));
+    station.conf("version=0.3.0\n");
+    station.signal(libc::SIGUSR2);
+    until("different-identity handover", || station.station_json().filter(|s| s["version"] == "0.3.0"));
+    let fronts = station.fronts();
+    assert_eq!(fronts.len(), 2, "{fronts:?}");
+    assert!(!alive(original[0]));
+    assert!(alive(fronts[1]));
+    station.signal(libc::SIGTERM);
+    assert!(station.wait().success());
+    until("the replacement front to end", || (!alive(fronts[1])).then_some(()));
+}
+
 #[test]
 fn a_front_that_ends_is_started_again_unless_it_ended_as_it_started() {
     let mut station = Station::new("frontends");
