@@ -33,7 +33,7 @@
 // Each check says PASS or FAIL with what was seen; a failed one does not stop the next where that can go on alone.
 // E2E_SF_SRC, E2E_ORIGIN, E2E_PEER_DATA as peer.ts; E2E_WORK, E2E_STATION as e2e-local.sh's. E2E_MOVE_ONLY: the
 // parts to run (e.g. "1 2 3a 5"; all of them where unset).
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, statfsSync, unlinkSync, watch, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -1791,7 +1791,7 @@ try {
     /// `bytes` of C's volume taken at once by allocation, none of it written (macOS F_PREALLOCATE, then the file's size
     /// set: the inner volume's free space falls, the sparse image under it does not grow); where that does not take the
     /// room, written (zeros, a block at a time).
-    const take = (bytes: number): string => {
+    const take = async (bytes: number): Promise<string> => {
       const want = freeOn(DATA.C) - bytes;
       const pa = spawnSync("python3", ["-I", "-c", [
         "import fcntl, os, struct, sys",
@@ -1806,8 +1806,9 @@ try {
       const said = `${(pa.stdout ?? "").trim()} ${(pa.stderr ?? "").trim().split("\n").pop() ?? ""}`.trim();
       if (freeOn(DATA.C) <= want + 256 * 1048576) return `allocated (${said})`;
       log(`  allocation took too little: ${said}; ${((freeOn(DATA.C) - want) / 1048576).toFixed(0)} MB over what was wanted`);
-      const r = spawnSync("dd", ["if=/dev/zero", `of=${filler()}`, "bs=8m", `count=${Math.floor(bytes / (8 * 1048576))}`], { encoding: "utf8" });
-      return `written (allocation took ${((freeOn(DATA.C) - want) / 1048576).toFixed(0)} MB too little; dd ${r.status})`;
+      // (written by a child of its own, the drill's loop going on meanwhile: rr34-1126's dd held it 15 s)
+      const status = await new Promise<number | null>((resolve) => spawn("dd", ["if=/dev/zero", `of=${filler()}`, "bs=8m", `count=${Math.floor(bytes / (8 * 1048576))}`], { stdio: "ignore" }).on("exit", resolve));
+      return `written (dd ${status}: a full disk ends it with 1)`;
     };
     try {
       await check("3h: setup: this machine has the room; C enrolled on a 24 GiB sparse APFS volume of its own, over the floor", async () => {
@@ -1840,7 +1841,7 @@ try {
           await a.call("move.start", { station: A, to: cId, module: "chats", item: key, withNeeds: true });
           await firstPass(key, t0, "C");
           const free0 = freeOn(DATA.C);
-          const how = take(free0 - 64 * 1048576);
+          const how = await take(free0 - 64 * 1048576);
           const free1 = freeOn(DATA.C);
           log(`  C's volume: ${(free0 / 1048576).toFixed(0)} MB free as the first pass began, ${(free1 / 1048576).toFixed(0)} MB once filled (${how}); this machine's disk ${(freeOn(WORK) / GiB).toFixed(1)} GiB free`);
           if (free1 > 256 * 1048576) throw new Error(`C's volume not filled: ${(free1 / 1048576).toFixed(0)} MB free`);
@@ -1849,6 +1850,11 @@ try {
           const o = outOf(key);
           log(`  ${outcome(l)}; its hand-over ${o?.step} ${o?.error ?? ""}`);
           if ((l.done ?? []).some((d: J) => named(d) === `chats ${key}`)) throw new Error(`moved though C's disk was full: ${outcome(l)}`);
+          // (C's own write failing is C's refusal, in numbers: station.move.why.fullThere, its error's code and what is free
+          // there now; never the words of a station that did not answer)
+          const why = failedWhy(l, `chats ${key}`) || (l.refused ?? []).map((r: J) => r.why).join(" | ");
+          if (/没有应答|did not answer|not answer/i.test(why)) throw new Error(`told as a station that did not answer: ${why}`);
+          if (!/ENOSPC|EDQUOT|EROFS/.test(why) || !/\d+(?:\.\d+)?\s*(?:GB|GiB|MB)/.test(why)) throw new Error(`not C's full disk in numbers (its error's code, what is free there): ${why}`);
           if (standing("A", key) !== "live") throw new Error(standings(key));
           await whenChanged([`${DATA.C}/replica`], () => !handovers("C", "in").some((i) => (i.keys ?? []).includes(key) && i.step === "coming") && true, 120_000, () => `C's hand-over in: ${brief(handovers("C", "in"))}`);
           if (standing("C", key) !== "none") throw new Error(`C has ${standing("C", key)} of it`);
