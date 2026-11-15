@@ -9,6 +9,7 @@ import { installWidgetSources, widgetSourcesReady, widgetSourcesStep } from "../
 import { Store } from "../src/store/store.ts";
 import { Rig } from "./hub-fakes.ts";
 import { formatDelivery } from "../src/sessions/actor.ts";
+import { endsOnce } from "./programs.ts";
 
 
 function oldThreads(store: Store): [number, number] {
@@ -73,9 +74,8 @@ test("a stopped widget source worker resumes the requested thread", async () => 
   const dir = mkdtempSync(join(tmpdir(), "widget-worker-"));
   const path = join(dir, "stillfail.db"), store = Store.open(path);
   const file = join(dir, "worker.mjs"), marker = join(dir, "exited");
-  const real = new URL("../src/read/widget-sources-worker.ts", import.meta.url).href;
-  writeFileSync(file, `import { existsSync, writeFileSync } from 'node:fs';\nif (!existsSync(${JSON.stringify(marker)})) { writeFileSync(${JSON.stringify(marker)}, '1'); process.exit(1); }\nawait import(${JSON.stringify(real)});\n`);
-  const builder = new WidgetSourcesBuilder(path, {}, pathToFileURL(file));
+  endsOnce(file, marker);
+  const builder = new WidgetSourcesBuilder(path, {}, file);
   try {
     const [, thread] = oldThreads(store);
     await builder.ready([thread]);

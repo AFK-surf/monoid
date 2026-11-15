@@ -7,10 +7,11 @@ station takes it back in place of a lost one. Transcripts, usage, accounts and w
 own and are not copied: a chat taken back goes on afresh, as one moved to another account does (a station retired,
 below, sends them along).
 
-- One export, off the main thread (`export.ts`): the MoonBit program's (`station/mb/src/replica`, started by `runner.ts`
-  `exportThread`) where it is built, else a worker thread's (`worker.ts`); a restore the same (`restore.ts`
-  `takeBackSoon`). The program writes and reads what the TypeScript does, line for line, so either takes up the
-  other's state and copies (`station/test/mb-replica.test.ts` holds them to each other). It reads stillfail.db only: immutable batches
+- One export, off the main thread: the MoonBit program's (`station/mb/src/replica`, started by `runner.ts`
+  `exportThread`); a restore the same (`restore.ts` `takeBackSoon`). There is no export or restore in TypeScript to
+  fall back to: the program writes and reads what `export.ts` and `restore.ts` `takeBack` do, line for line, so either
+  takes up the other's state and copies (`station/test/mb-replica.test.ts` holds them to each other; the tests' own
+  stations run the TypeScript, `InlineRunner`). It reads stillfail.db only: immutable batches
   (`format.ts`), a generation of them per workspace, `head.json` written last. What changed is found by what the tables
   already give (the rowid of what is only added to, an index, the store's own changes told to it, a digest of what was
   written in its own `export.db`), never by a trigger or a statement on the main thread's write path

@@ -6,6 +6,7 @@ import { test } from "node:test";
 import { transcriptSources } from "../src/read/transcript.ts";
 import { LiveLocator } from "../src/sessions/live-locator.ts";
 import { Store } from "../src/store/store.ts";
+import { Worker } from "node:worker_threads";
 
 test("the live locator reads a session's ordered sources in a worker and can be cancelled", async () => {
   const data = mkdtempSync(join(tmpdir(), "live-locator-")), store = Store.open(join(data, "stillfail.db"));
@@ -148,7 +149,7 @@ test("a short live location can finish while a longer one is being resolved", as
 
 test("cancelling a blocked locator lets another session proceed", async () => {
   const data = mkdtempSync(join(tmpdir(), "live-locator-"));
-  const locator = new LiveLocator(data, () => null, () => [], new URL("./live-locator-stall-worker.ts", import.meta.url));
+  const locator = new LiveLocator(data, () => null, () => [], (at) => new Worker(new URL("./live-locator-stall-worker.ts", import.meta.url), { workerData: { data: at } }));
   try {
     const stop = new AbortController();
     const slow = locator.locate("slow", stop.signal);

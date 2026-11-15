@@ -1,7 +1,7 @@
 // The MoonBit builders of an older store's edit and said lookups (station/mb, src/legacy) keep them up as said-worker.ts
 // does (`legacyEdits`, `legacySaid`): for the same store, step by step, the same answers and the same tables, with an
 // older writer changing messages and edits meanwhile; a store whose merged view must be switched first is left to the
-// worker.
+// station's writer (read/pool.ts `repairEdits`).
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -16,7 +16,7 @@ import { Store } from "../src/store/store.ts";
 
 const binary = mbReaderBinary();
 
-/// What said-worker.ts does for each kind's ask.
+/// What the said worker did for each kind's ask (read/said-worker.ts before the program took it).
 const worker = {
   "legacy-edits": (db: DatabaseSync) => {
     if (!legacyMergedReadReady(db)) {
@@ -137,7 +137,7 @@ for (const [kind, prefix, step] of [["legacy-said", "legacy_said", legacySaidMai
   });
 }
 
-test("a store whose merged view must be switched first is left to the worker", async () => {
+test("a store whose merged view must be switched first is left to the station's writer", async () => {
   assert.notEqual(binary, null);
   const dir = mkdtempSync(join(tmpdir(), "mb-legacy-repair-"));
   const path = join(dir, "stillfail.db");

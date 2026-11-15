@@ -1,5 +1,5 @@
 // Whether the statistics the station keeps are complete for a reader, without filling old history
-// (station/src/usage/minute-worker.ts): the minutes, the remote tasks, the details (`usageDetailReady`) and the chats
+// (station/src/usage/minute-reader.ts): the minutes, the remote tasks, the details (`usageDetailReady`) and the chats
 // and cards (`usageChatStatsReady`), each for a viewer (`{workspace, home}`, or none: every workspace), here for the
 // MoonBit checker.
 

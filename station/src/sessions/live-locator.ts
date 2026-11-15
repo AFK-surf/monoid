@@ -1,11 +1,11 @@
 // The live view's source and path lookup, off the main thread: by the MoonBit program (station/mb, src/locate;
-// `--builder live-locator`) where it is built, else live-locator-worker.ts. Only a bounded batch of source ids and path
-// hints crosses back at a time; the source snapshot is taken before the filesystem is touched.
+// `--builder live-locator`), or what a test gives in its place (`reference`: the locator as a thread looked before,
+// test/workers/live-locator-worker.ts). Only a bounded batch of source ids and path hints crosses back at a time; the
+// source snapshot is taken before the filesystem is touched.
 import { join, sep } from "node:path";
-import { Worker } from "node:worker_threads";
 import type { Clock } from "effect";
 import { Fibers } from "../ops/fibers.ts";
-import { MbProcess, mbReaderBinary } from "../read/mb-reader.ts";
+import { MbProcess, readerBinary } from "../read/mb-reader.ts";
 import { onTranscriptHintsChanged, transcriptLocationHints } from "../read/transcript.ts";
 import { locationIdentity, type LiveLocation, type LiveLocationIdentity, type LiveLocationProfile, type LiveSession, type LiveSource, type LocateMessage, type LocateReply, type LocateRequest } from "./live-location-protocol.ts";
 
@@ -19,7 +19,7 @@ const IDLE_MS = 60_000;
 const RESTARTS = 3;
 const CANCEL_GRACE_MS = 100;
 // A long history yields between batches so a small one can finish without waiting behind it. Limit simultaneous
-// snapshots and messages; the worker itself still runs on just one thread.
+// snapshots and messages; the locator itself still runs on just one thread.
 const IN_FLIGHT = 4;
 const cancelled = () => new Error("live transcript location cancelled");
 const sameIdentity = (a: LiveLocationIdentity | null, b: LiveSession | null) =>
@@ -27,11 +27,20 @@ const sameIdentity = (a: LiveLocationIdentity | null, b: LiveSession | null) =>
 const sameProfiles = (a: LiveLocationProfile[], b: readonly LiveLocationProfile[]) => a.length === b.length
   && a.every((p, i) => p.id === b[i]?.id && p.home === b[i]?.home);
 
+/// What locates: the program's process, or a test's reference.
+export interface Locating {
+  on(event: "message", f: (message: LocateMessage) => void): this;
+  on(event: "error", f: (error: Error) => void): this;
+  on(event: "exit", f: (code: number) => void): this;
+  postMessage(message: LocateRequest | LocateReply): void;
+  terminate(): Promise<number>;
+}
+
 export class LiveLocator {
-  private worker: Worker | MbProcess | null = null;
+  private worker: Locating | null = null;
   private active = new Map<number, Pending>();
   private waiting: Pending[] = [];
-  private cancelling = new Map<number, { worker: Worker | MbProcess; stop: () => void }>();
+  private cancelling = new Map<number, { worker: Locating; stop: () => void }>();
   private idle: (() => void) | null = null;
   private retiring: Promise<void> | null = null;
   private closed = false;
@@ -41,14 +50,12 @@ export class LiveLocator {
   private readonly data: string;
   private readonly session: (key: string) => LiveSession | null;
   private readonly profiles: () => readonly LiveLocationProfile[];
-  private readonly workerFile: URL | undefined;
-  private readonly mb: string | null;
+  private readonly reference: ((data: string) => Locating) | undefined;
   private readonly time: Fibers;
 
   constructor(data: string, session: (key: string) => LiveSession | null,
-    profiles: () => readonly LiveLocationProfile[], workerFile?: URL, clock?: Clock.Clock) {
-    this.data = data; this.session = session; this.profiles = profiles; this.workerFile = workerFile;
-    this.mb = workerFile === undefined ? mbReaderBinary() : null;
+    profiles: () => readonly LiveLocationProfile[], reference?: (data: string) => Locating, clock?: Clock.Clock) {
+    this.data = data; this.session = session; this.profiles = profiles; this.reference = reference;
     this.time = new Fibers("live locator", clock);
     this.unlisten = onTranscriptHintsChanged((id) => {
       for (const request of this.active.values()) {
@@ -90,16 +97,12 @@ export class LiveLocator {
     else request.resolve(value);
   }
 
-  private start(): Worker | MbProcess {
-    if (this.mb !== null) {
-      const program = new MbProcess(this.mb, ["--builder", "live-locator", "--db", join(this.data, "stillfail.db"), "--data", this.data, "--sep", sep]);
-      return this.listen(program);
-    }
-    const file = this.workerFile ?? new URL(import.meta.url.endsWith(".ts") ? "./live-locator-worker.ts" : "./sessions/live-locator-worker.js", import.meta.url);
-    return this.listen(new Worker(file, { workerData: { data: this.data }, resourceLimits: { maxOldGenerationSizeMb: 128, maxYoungGenerationSizeMb: 8 } }));
+  private start(): Locating {
+    if (this.reference !== undefined) return this.listen(this.reference(this.data));
+    return this.listen(new MbProcess(readerBinary(), ["--builder", "live-locator", "--db", join(this.data, "stillfail.db"), "--data", this.data, "--sep", sep]));
   }
 
-  private listen<T extends Worker | MbProcess>(worker: T): T {
+  private listen(worker: Locating): Locating {
     this.worker = worker;
     worker.on("message", (message: LocateMessage) => { if (this.worker === worker) this.heard(message); });
     worker.on("error", (error) => { if (this.worker === worker) this.retire(error); });
@@ -193,7 +196,7 @@ export class LiveLocator {
 
   // A synchronous filesystem call may not reach its next cancellation point. Retire the worker then and restart the
   // other requests from their snapshots, so cancelling one subscription does not strand unrelated sessions.
-  private restart(worker: Worker | MbProcess) {
+  private restart(worker: Locating) {
     if (this.worker !== worker) return;
     const requests = [...this.active.values()];
     this.worker = null; this.active.clear();

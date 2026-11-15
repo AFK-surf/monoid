@@ -1,25 +1,23 @@
-import { Worker } from "node:worker_threads";
-import { MbBackfill, mbReaderBinary } from "../read/mb-reader.ts";
+import { MbBackfill, readerBinary } from "../read/mb-reader.ts";
 import { log } from "../ops/log.ts";
 import { releaseStoppedBackfill } from "../store/backfill.ts";
 import { hasProcessJobs, installProcessJobs, processJobs, processJobsReady, processJobsStep, refreshProcessJobs, type ProcessJob } from "../store/process-jobs.ts";
 import type { Store } from "../store/store.ts";
 
-/// Memory protection answers immediately while one worker prepares an older station's running groups: by the MoonBit
-/// builder (station/mb, src/jobs) where its program is there (`MbBackfill`), else by the worker; a worker of its own
-/// given, by that one.
+/// Memory protection answers immediately while one builder prepares an older station's running groups: the MoonBit
+/// one (station/mb, src/jobs; `MbBackfill`; `binary`: the program, a test's own where it gives one).
 export class ProcessJobsBuilder {
   private pending: Promise<boolean> | null = null;
-  private worker: Worker | MbBackfill | null = null;
+  private worker: MbBackfill | null = null;
   private stopped = false;
   private readonly cancelled = Promise.withResolvers<boolean>();
   private readonly previous: Promise<boolean>;
   private readonly store: Store;
-  private readonly workerFile: URL | undefined;
+  private readonly binary: string | undefined;
 
-  constructor(store: Store, previous: Promise<void>, workerFile?: URL) {
+  constructor(store: Store, previous: Promise<void>, binary?: string) {
     this.store = store;
-    this.workerFile = workerFile;
+    this.binary = binary;
     this.previous = previous.then(() => true, (error) => {
       log.warn("memory", "could not wait for the previous station before preparing jobs", { error: (error as Error).message });
       return false;
@@ -63,13 +61,9 @@ export class ProcessJobsBuilder {
   private runWorker(): Promise<boolean> {
     const path = this.store.db.location();
     if (path === null) return Promise.resolve(false);
-    const file = this.workerFile ?? new URL(import.meta.url.endsWith(".ts")
-      ? "../sessions/workspace-activity-worker.ts" : "./sessions/workspace-activity-worker.js", import.meta.url);
     return new Promise<boolean>((resolve) => {
-      let worker: Worker | MbBackfill;
-      const mb = this.workerFile === undefined ? mbReaderBinary() : null;
-      const thread = () => new Worker(file, { workerData: { path, priority: this.store.backfillPriority } });
-      try { worker = mb !== null ? new MbBackfill(mb, ["--builder", "session-backfill", "--db", path], this.store.backfillPriority, 20, thread) : thread(); }
+      let worker: MbBackfill;
+      try { worker = new MbBackfill(this.binary ?? readerBinary(), ["--builder", "session-backfill", "--db", path], this.store.backfillPriority, 20); }
       catch (error) { log.warn("memory", "the process job worker could not start", { error: (error as Error).message }); resolve(false); return; }
       const owner = worker.threadId;
       let done = false;

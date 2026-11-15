@@ -7,11 +7,12 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { Readers } from "../src/read/pool.ts";
 import { Store } from "../src/store/store.ts";
+import { Worker } from "node:worker_threads";
 
 /// Readers answering by reader-line-worker.mjs, and its state: how many reads started, which kinds, and the gate.
 function gated(size: number) {
   const data = mkdtempSync(join(tmpdir(), "reader-line-"));
-  const readers = new Readers(data, size, new URL("./reader-line-worker.mjs", import.meta.url));
+  const readers = new Readers(data, size, (at) => new Worker(new URL("./reader-line-worker.mjs", import.meta.url), { workerData: { data: at } }));
   const state = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 3));
   const args = (hold: boolean) => ({ state: state.buffer, hold });
   const started = async (wanted: number) => {

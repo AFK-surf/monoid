@@ -1,5 +1,5 @@
-// The vault's use reader by the MoonBit program (station/mb, src/vaultuses) in use-index-worker.ts's place: the same
-// queue and pacing, here on the station's thread, each read, preparation step and background batch asked of the
+// The vault's use reader by the MoonBit program (station/mb, src/vaultuses), in the place of the thread of before
+// (test/workers/use-index-worker.ts): the same queue and pacing, here on the station's thread, each read, preparation step and background batch asked of the
 // program (`--builder vault-uses`), which knows nothing of the backfill permit: it is taken here around each write.
 import { EventEmitter } from "node:events";
 import { wall } from "../ops/fibers.ts";

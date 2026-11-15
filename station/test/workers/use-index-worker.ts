@@ -1,12 +1,13 @@
-// The vault's use pages and their resumable backfill run away from the station's request thread.
+// How a thread kept the vault's use pages and their resumable backfill before the MoonBit program (`--builder
+// vault-uses`, vault/use-reader-mb.ts) took them: the reference its tests hold (test/vault-uses-index.test.ts).
 import { DatabaseSync } from "node:sqlite";
 import { parentPort, threadId, workerData } from "node:worker_threads";
-import { wall } from "../ops/fibers.ts";
-import { log } from "../ops/log.ts";
-import { BACKFILL_PAUSE_MS, REQUEST_BACKFILL_PAUSE_MS, giveBackfill, takeBackfill } from "../store/backfill.ts";
-import { backfillPendingPreparation, pendingPreparationComplete } from "./pending-index.ts";
-import { backfillReboxIndex } from "./rebox-index.ts";
-import { backfillNextWorkspace, backfillUsePreparation, tryReadUses, type PendingPrepare, type UseAnswer, type UseRead } from "./use-index.ts";
+import { wall } from "../../src/ops/fibers.ts";
+import { log } from "../../src/ops/log.ts";
+import { BACKFILL_PAUSE_MS, REQUEST_BACKFILL_PAUSE_MS, giveBackfill, takeBackfill } from "../../src/store/backfill.ts";
+import { backfillPendingPreparation, pendingPreparationComplete } from "../../src/vault/pending-index.ts";
+import { backfillReboxIndex } from "../../src/vault/rebox-index.ts";
+import { backfillNextWorkspace, backfillUsePreparation, tryReadUses, type PendingPrepare, type UseAnswer, type UseRead } from "../../src/vault/use-index.ts";
 
 const db = new DatabaseSync(workerData.path as string, { timeout: 100 });
 db.exec("PRAGMA synchronous = NORMAL");

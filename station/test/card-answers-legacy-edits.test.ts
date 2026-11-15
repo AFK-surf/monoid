@@ -8,7 +8,7 @@ import { Readers } from "../src/read/pool.ts";
 import { answersSince, LAST_MESSAGE_RECENT_EDIT, makeStore } from "../src/read/store.ts";
 import { chatMarks } from "../src/read/views.ts";
 import { installLegacyEdits, legacyEditDrain, legacyEditStep } from "../src/store/legacy-edits-build.ts";
-import { addClientColumn } from "../src/store/schema.ts";
+import { addClientColumn, repairMergedEditLookup } from "../src/store/schema.ts";
 import { Store } from "../src/store/store.ts";
 import { referenceAnswersSince } from "./card-answer-reference.ts";
 
@@ -118,6 +118,7 @@ test("sidebar marks share old answer preparation after handover when one reader 
   const viewer = { sub: "p", email: "p", name: "P", role: "owner", workspace: "w", device: "d" } as const;
   const args = { viewer, scope: { sessions: [], threads: [thread] } };
   const previous = Promise.withResolvers<void>(), readers = new Readers(dir, 1, undefined, 1, { previousGone: previous.promise });
+  readers.repairEdits = () => repairMergedEditLookup(store.db);
   try {
     assert.throws(() => chatMarks(makeStore(db, dir), viewer, args.scope), { status: 503, message: "legacy edit lookup pending" });
     const controller = new AbortController();

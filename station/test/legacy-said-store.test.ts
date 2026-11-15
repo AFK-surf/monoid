@@ -14,6 +14,7 @@ import { installSaidState } from "../src/store/said-state.ts";
 import { toMessage } from "../src/store/rows.ts";
 import { Store } from "../src/store/store.ts";
 import { withoutSaidState } from "./legacy-message-fixture.ts";
+import { endsOnce } from "./programs.ts";
 
 for (const recursive of [false, true]) test(`old and native message writers keep the same sidebar boundary (recursive triggers ${recursive})`, () => {
   const stores = [Store.open(":memory:"), Store.open(":memory:")];
@@ -243,11 +244,8 @@ test("a failed old message worker is retried from its saved scan", async () => {
     installLegacySaid(station.db);
     assert.deepEqual(legacySaidStep(station.db, 1), { ready: false, visited: 1 });
     const flag = join(dir, "worker-failed"), script = join(dir, "flaky-worker.mjs");
-    const worker = new URL("../src/sessions/workspace-activity-worker.ts", import.meta.url).href;
-    writeFileSync(script, `import { existsSync, writeFileSync } from 'node:fs';\n` +
-      `if (!existsSync(${JSON.stringify(flag)})) { writeFileSync(${JSON.stringify(flag)}, 'failed'); process.exit(1); }\n` +
-      `await import(${JSON.stringify(worker)});\n`);
-    builder = buildLegacySaid(station, Promise.resolve(), pathToFileURL(script));
+    endsOnce(script, flag);
+    builder = buildLegacySaid(station, Promise.resolve(), script);
     assert.equal(await builder.ready, true);
     assert.equal(existsSync(flag), true);
     assert.equal(station.db.prepare("SELECT scanned FROM legacy_said_meta WHERE id=1").get()?.scanned, 1);

@@ -1,6 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
-import { Worker } from "node:worker_threads";
-import { MbBackfill, mbReaderBinary } from "../read/mb-reader.ts";
+import { MbBackfill, readerBinary } from "../read/mb-reader.ts";
 import { Fibers } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { releaseStoppedBackfill } from "../store/backfill.ts";
@@ -12,9 +11,9 @@ export class SigninSaveBuilder {
   readonly #path: string | null;
   readonly #options: { previousGone?: Promise<void>; priority?: SharedArrayBuffer };
   readonly #answer: (pending: PendingSigninSave, body: string | null) => void;
-  readonly #workerFile: URL | undefined;
+  readonly #binary: string | undefined;
   readonly #timers = new Fibers("signin save index");
-  #worker: Worker | MbBackfill | null = null;
+  #worker: MbBackfill | null = null;
   #current: string | null = null;
   #last: string | null = null;
   #closed = false;
@@ -24,8 +23,8 @@ export class SigninSaveBuilder {
   #retryMs = 250;
 
   constructor(db: DatabaseSync, answer: (pending: PendingSigninSave, body: string | null) => void,
-    options: { previousGone?: Promise<void>; priority?: SharedArrayBuffer } = {}, workerFile?: URL) {
-    this.#db = db; this.#path = db.location(); this.#answer = answer; this.#options = options; this.#workerFile = workerFile;
+    options: { previousGone?: Promise<void>; priority?: SharedArrayBuffer } = {}, binary?: string) {
+    this.#db = db; this.#path = db.location(); this.#answer = answer; this.#options = options; this.#binary = binary;
     installSigninSaveIndex(db);
     this.#pump();
   }
@@ -90,13 +89,10 @@ export class SigninSaveBuilder {
       return;
     }
     if (this.#worker === null) {
-      const file = this.#workerFile ?? new URL(import.meta.url.endsWith(".ts") ? "./signin-save-worker.ts" : "./vault/signin-save-worker.js", import.meta.url);
-      // (by the MoonBit builder, station/mb's src/signin, where its program is there: `MbBackfill`)
-      const mb = this.#workerFile === undefined ? mbReaderBinary() : null;
-      let worker: Worker | MbBackfill;
+      // (by the MoonBit builder, station/mb's src/signin: `MbBackfill`)
+      let worker: MbBackfill;
       try {
-        worker = mb !== null ? new MbBackfill(mb, ["--builder", "signin-save", "--db", this.#path], this.#options.priority, 20)
-          : new Worker(file, { workerData: { path: this.#path, priority: this.#options.priority } });
+        worker = new MbBackfill(this.#binary ?? readerBinary(), ["--builder", "signin-save", "--db", this.#path], this.#options.priority, 20);
       }
       catch (error) {
         log.warn("signin", "the sign-in index worker could not start", { error: (error as Error).message });

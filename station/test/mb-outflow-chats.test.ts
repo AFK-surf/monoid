@@ -86,7 +86,7 @@ test("the MoonBit builder makes and settles the chat order as the TypeScript doe
 test("the station's chat order index is made and settled by the MoonBit builder", async () => {
   assert.notEqual(binary, null);
   const f = old();
-  const index = new OutflowChatIndex(f.path, {}, undefined, binary);
+  const index = new OutflowChatIndex(f.path, {}, binary!);
   try {
     await index.ready({ workspace: "B", home: true });
     assert.equal(outflowChatIndexReady(f.store.db, { workspace: "B", home: true }), true);

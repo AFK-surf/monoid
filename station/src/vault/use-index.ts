@@ -1,14 +1,13 @@
 // The decided uses of secrets: maintained as requests change and filled from old requests in bounded transactions.
 // Building an index directly over vault_requests would make the first station start read and sort its whole history.
 import type { DatabaseSync } from "node:sqlite";
-import { Worker } from "node:worker_threads";
 import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { releaseStoppedBackfill } from "../store/backfill.ts";
 import { backfillPendingPreparation, pendingPreparationComplete } from "./pending-index.ts";
 import { initializeReboxIndex } from "./rebox-index.ts";
 import { installSchema } from "./schema-install.ts";
-import { mbReaderBinary } from "../read/mb-reader.ts";
+import { readerBinary } from "../read/mb-reader.ts";
 import { MbUseReader } from "./use-reader-mb.ts";
 
 // JSON paths use the first duplicate key and truncate keys at NUL; JavaScript does neither. A lone UTF-16
@@ -299,7 +298,7 @@ export class UseIndex {
   readonly #path: string | null;
   readonly #previousGone: Promise<void> | null;
   readonly #priority: SharedArrayBuffer | undefined;
-  #worker: Worker | MbUseReader | null = null;
+  #worker: MbUseReader | null = null;
   #closed = false;
   #stopped!: () => void;
   readonly #whenStopped = new Promise<void>((resolve) => { this.#stopped = resolve; });
@@ -323,13 +322,10 @@ export class UseIndex {
     }
   }
 
-  #start(): Worker | MbUseReader {
+  #start(): MbUseReader {
     if (this.#worker !== null) return this.#worker;
-    const file = new URL(import.meta.url.endsWith(".ts") ? "./use-index-worker.ts" : "./vault/use-index-worker.js", import.meta.url);
-    // (by the MoonBit program, station/mb's src/vaultuses, where it is there; else by the worker)
-    const mb = mbReaderBinary();
-    const worker = mb !== null ? new MbUseReader(mb, this.#path!, this.#priority, this.#known)
-      : new Worker(file, { workerData: { path: this.#path, priority: this.#priority } });
+    // (by the MoonBit program, station/mb's src/vaultuses)
+    const worker = new MbUseReader(readerBinary(), this.#path!, this.#priority, this.#known);
     const owner = worker.threadId;
     worker.once("exit", () => releaseStoppedBackfill(this.#priority, owner));
     this.#worker = worker;
@@ -344,7 +340,7 @@ export class UseIndex {
       else waiting.reject(new Error("the vault use reader sent no result"));
       this.#idleLater();
     });
-    if (worker instanceof MbUseReader) worker.on("idle", () => this.#idleLater());
+    worker.on("idle", () => this.#idleLater());
     let failure: Error | null = null;
     worker.on("error", (error) => {
       failure = error;
@@ -354,7 +350,7 @@ export class UseIndex {
       // (one let go while idle is no longer this one's: what waits now is the next's)
       if (this.#worker !== worker) return;
       this.#worker = null;
-      if (worker instanceof MbUseReader) this.#known = worker.settled;
+      this.#known = worker.settled;
       for (const waiting of this.#waiting.values()) waiting.reject(failure ?? new Error(`the vault use reader stopped (exit ${code})`));
       this.#waiting.clear();
     });
@@ -374,14 +370,14 @@ export class UseIndex {
 
   #letGoable(): boolean {
     const worker = this.#worker;
-    return worker instanceof MbUseReader && this.#waiting.size === 0 && worker.idle();
+    return worker !== null && this.#waiting.size === 0 && worker.idle();
   }
 
   #letGo(): void {
     this.#idle?.();
     this.#idle = null;
     const worker = this.#worker;
-    if (!(worker instanceof MbUseReader)) return;
+    if (worker === null) return;
     this.#known = worker.settled;
     this.#worker = null;
     void worker.terminate();

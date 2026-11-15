@@ -542,7 +542,7 @@ test("the background worker resumes and accounts requested workspaces independen
       for (let minute = 0; minute < 40; minute++) insert.run(session, minute, scope);
     installUsageSummaryBlocks(store.db);
     usageSummaryBlocksStep(store.db, 3);
-    worker = new Worker(new URL("../src/usage/scope-worker.ts", import.meta.url), { workerData: { path, priority: store.backfillPriority } });
+    worker = new Worker(new URL("./workers/usage-scope-worker.ts", import.meta.url), { workerData: { path, priority: store.backfillPriority } });
     const wake = (scope?: string) => new Promise<{ done: boolean; error?: string }>((resolve, reject) => {
       const fail = (error: Error) => { worker!.off("message", success); reject(error); };
       const success = (answer: { done: boolean; error?: string }) => { worker!.off("error", fail); resolve(answer); };

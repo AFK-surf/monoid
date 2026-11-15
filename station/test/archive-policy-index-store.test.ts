@@ -8,6 +8,7 @@ import { pathToFileURL } from "node:url";
 import { archivePolicyIndexStep, LEGACY_ARCHIVE_POLICY } from "../src/store/archive-policy-index.ts";
 import { buildLegacyEntryLookups } from "../src/store/legacy-said-builder.ts";
 import { Store } from "../src/store/store.ts";
+import { endsOnce } from "./programs.ts";
 
 function oldStore(path: string) {
   const store=Store.open(path);
@@ -127,11 +128,8 @@ test("a stopped policy worker can resume its saved progress", async () => {
     assert.deepEqual(store.db.prepare("SELECT cursor,complete FROM archive_policy_lookup_meta").get(),before);
     previous.resolve();
     const flag=join(dir,"failed"),script=join(dir,"flaky-worker.mjs");
-    const worker=new URL("../src/sessions/workspace-activity-worker.ts",import.meta.url).href;
-    writeFileSync(script,`import { existsSync, writeFileSync } from 'node:fs';\n` +
-      `if (!existsSync(${JSON.stringify(flag)})) { writeFileSync(${JSON.stringify(flag)}, 'failed'); process.exit(1); }\n` +
-      `await import(${JSON.stringify(worker)});\n`);
-    builder=buildLegacyEntryLookups(store,Promise.resolve(),pathToFileURL(script));
+    endsOnce(script, flag);
+    builder=buildLegacyEntryLookups(store,Promise.resolve(),script);
     assert.equal(await builder.ready,true);
     assert.equal(existsSync(flag),true);
     assert.equal(store.db.prepare("SELECT complete FROM archive_policy_lookup_meta").get()?.complete,1);

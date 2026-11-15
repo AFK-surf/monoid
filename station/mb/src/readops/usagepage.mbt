@@ -882,7 +882,7 @@ fn remote_runs_since(
 
 ///|
 /// usage.ts `usage`: what the agents spent from `from` until `to`, by day in the asker's time zone, with what the rows
-/// name. `batched`: the groups the summary blocks gave (read/worker.ts, `usageGroupsBatched`), where they did.
+/// name. `batched`: the groups the summary blocks gave (read/store.ts `usageGroupsBatched`), where they did.
 fn usage_answer(
   db : @sql.Db,
   known : Known,
@@ -1072,8 +1072,8 @@ fn big_given(v : Json?) -> Int64 raise {
 }
 
 ///|
-/// ops-usage.ts `usage` (GET /usage), with what read/worker.ts reads before it: the summary blocks' groups where the page
-/// does not wait for its details (`usageGroupsBatched`).
+/// ops-usage.ts `usage` (GET /usage), with what the reader of before read first (test/reference-worker.ts): the summary
+/// blocks' groups where the page does not wait for its details (`usageGroupsBatched`).
 pub fn usage_page(
   db : @sql.Db,
   host : @host.Host,

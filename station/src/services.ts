@@ -19,6 +19,7 @@ import { type Mesh, loadMesh } from "./mesh/native.ts";
 import { withFront } from "./mesh/front.ts";
 import { verifyWith } from "./cloud/lock.ts";
 import { Readers as ReaderPool } from "./read/pool.ts";
+import { repairMergedEditLookup } from "./store/schema.ts";
 import { makeStore } from "./read/store.ts";
 import { apiOf, entryViews, spokenIn } from "./read/views.ts";
 import type { AgentsParts } from "./sessions/agents.ts";
@@ -97,7 +98,7 @@ export class Up extends Context.Service<Up, SubscriptionRef.SubscriptionRef<bool
   static readonly layer = Layer.effect(Up, SubscriptionRef.make(false));
 }
 
-/// The readers (worker threads) answering the admin API's reads.
+/// The readers (the MoonBit program's processes) answering the admin API's reads.
 export class Readers extends Context.Service<Readers, ReaderPool>()("stillfail/Readers") {
   static readonly layer = Layer.effect(
     Readers,
@@ -121,6 +122,13 @@ export class Readers extends Context.Service<Readers, ReaderPool>()("stillfail/R
         // The usage checker (`startUsageIndex`, reader `--builder usage-check`) only says whether the statistics are
         // complete, filling nothing: it is started by the read that finds them not yet (pool.ts `usageRead`), not here.
         const pool = new ReaderPool(data, undefined, undefined, undefined, { previousGone: previous.exited, priority: store.backfillPriority });
+        // (the merged view a builder leaves to the writer, repaired on the station's one write connection, which waits
+        // for no lock meanwhile: one held elsewhere is SQLITE_BUSY, and the builder asks again after a pause)
+        pool.repairEdits = () => {
+          const timeout = Number((store.db.prepare("PRAGMA busy_timeout").get() as { timeout: number }).timeout);
+          store.db.exec("PRAGMA busy_timeout = 0");
+          try { repairMergedEditLookup(store.db); } finally { store.db.exec(`PRAGMA busy_timeout = ${timeout}`); }
+        };
         pool.warm();
         return pool;
       }), (pool) => Effect.sync(() => pool.close()));
@@ -158,7 +166,7 @@ export class Store extends Context.Service<Store, StationStore>()("stillfail/Sto
   );
 }
 
-/// Start the store before the usage-index worker, and keep the same store available to the station's other parts.
+/// Start the store before the readers, and keep the same store available to the station's other parts.
 export const ReadersAndStore = Readers.layer.pipe(Layer.provideMerge(Store.layer));
 
 /// still.fail Helper (macOS §4), installed and talked to under <data>/helper: this Mac's

@@ -11,6 +11,7 @@ import { answersSince, makeStore } from "../src/read/store.ts";
 import { PEOPLE_TIME_PENDING, peopleSinceReady, peopleSinceStep } from "../src/store/legacy-people-since.ts";
 import { Store } from "../src/store/store.ts";
 import { referenceAnswersSince } from "./card-answer-reference.ts";
+import { endsOnce } from "./programs.ts";
 
 function oldStore(dir: string, short = false) {
   const path = join(dir,"stillfail.db"), initial = Store.open(path);
@@ -153,9 +154,8 @@ test("handover and cancellation keep another request through a stopped worker", 
   const dir = mkdtempSync(join(tmpdir(),"old-people-time-worker-")), { path,threads } = oldStore(dir);
   const store = Store.open(path), previous = Promise.withResolvers<void>(), abort = new AbortController();
   const worker = join(dir,"worker.mjs"), marker = join(dir,"stopped");
-  const real = new URL("../src/read/card-posts-worker.ts",import.meta.url).href;
-  writeFileSync(worker,`import { existsSync, writeFileSync } from 'node:fs';\nif (!existsSync(${JSON.stringify(marker)})) { writeFileSync(${JSON.stringify(marker)}, '1'); process.exit(1); }\nawait import(${JSON.stringify(real)});\n`);
-  const builder = new PeopleSinceBuilder(path,{ previousGone:previous.promise },pathToFileURL(worker));
+  endsOnce(worker, marker);
+  const builder = new PeopleSinceBuilder(path,{ previousGone:previous.promise },worker);
   try {
     const dropped = builder.ready([threads[0]!],abort.signal), kept = builder.ready([threads[0]!]);
     abort.abort();

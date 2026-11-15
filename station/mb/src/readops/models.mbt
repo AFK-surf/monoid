@@ -4,7 +4,7 @@
 
 ///|
 /// What the model catalog said last, by model key (catalog.ts `catalog().models`): given by the pool with a read as it
-/// changes (read/worker.ts `learn`), kept until it changes again.
+/// changes (read/pool.ts `give`), kept until it changes again.
 pub let model_catalog : Ref[Map[String, Json]] = { val: Map([]) }
 
 ///|

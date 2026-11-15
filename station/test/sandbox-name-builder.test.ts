@@ -8,6 +8,7 @@ import { pathToFileURL } from "node:url";
 import { keyPart, sandboxName } from "../src/agents/sandbox-name.ts";
 import { SandboxNameBuilder } from "../src/sessions/sandbox-name-builder.ts";
 import { Store } from "../src/store/store.ts";
+import { endsAlways, theProgram } from "./programs.ts";
 
 const add = `INSERT INTO sessions(key,connect,scope,runtime,profile,workspace,token,created_at,last_active_at)
   VALUES (?,'connected','thread','claude','default','.',?,0,0)`;
@@ -128,13 +129,12 @@ test("a stopped sandbox lookup worker can be started again", async () => {
   const dir = mkdtempSync(join(tmpdir(), "sandbox-name-retry-"));
   const store = Store.open(join(dir, "store.db"));
   const worker = join(dir, "worker.mjs");
-  writeFileSync(worker, "process.exit(1);\n");
-  const builder = new SandboxNameBuilder(store, Promise.resolve(), () => true, pathToFileURL(worker));
+  endsAlways(worker);
+  const builder = new SandboxNameBuilder(store, Promise.resolve(), () => true, worker);
   try {
     store.db.prepare(add).run("session", "token");
     assert.equal(await builder.sessions([name("session")]), "fallback");
-    const actual = new URL("../src/sessions/workspace-activity-worker.ts", import.meta.url).href;
-    writeFileSync(worker, `import ${JSON.stringify(actual)};\n`);
+    theProgram(worker);
     assert.deepEqual(await builder.sessions([name("session")]), new Map([[name("session"), "session"]]));
   } finally {
     await builder.close();

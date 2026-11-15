@@ -1,10 +1,11 @@
-// Find live transcript paths off the station's main thread. The temporary source snapshot keeps its order without
-// holding a main-database read transaction while the filesystem is searched.
+// How a thread found live transcript paths before the MoonBit program (`--builder live-locator`) took it: what the
+// program is compared with (test/mb-live-locator.test.ts, given a LiveLocator as its `reference`). The temporary source
+// snapshot keeps its order without holding a main-database read transaction while the filesystem is searched.
 import { parentPort, workerData } from "node:worker_threads";
-import { runtimeKind } from "../agents/runtime.ts";
-import { getSession, historyRuntimeSources, openStore } from "../read/store.ts";
-import { sessionPlaces, transcriptLocationHints, transcriptSources, useTranscriptLocationHints } from "../read/transcript.ts";
-import { locationIdentity, type LocateMessage, type LocateReply, type LocateRequest, type LiveSource } from "./live-location-protocol.ts";
+import { runtimeKind } from "../../src/agents/runtime.ts";
+import { getSession, historyRuntimeSources, openStore } from "../../src/read/store.ts";
+import { sessionPlaces, transcriptLocationHints, transcriptSources, useTranscriptLocationHints } from "../../src/read/transcript.ts";
+import { locationIdentity, type LocateMessage, type LocateReply, type LocateRequest, type LiveSource } from "../../src/sessions/live-location-protocol.ts";
 
 const data = workerData.data as string;
 const store = openStore(data);

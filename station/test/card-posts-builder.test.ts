@@ -11,6 +11,7 @@ import { answersSince, makeStore, pendingCard } from "../src/read/store.ts";
 import { chats } from "../src/read/views.ts";
 import { cardPostsReady, installCardPosts } from "../src/store/card-post-index.ts";
 import { Store } from "../src/store/store.ts";
+import { endsOnce } from "./programs.ts";
 
 function oldThreads(store: Store): [number, number] {
   const db = store.db;
@@ -71,9 +72,8 @@ test("a stopped card post worker resumes the requested thread", async () => {
   const dir = mkdtempSync(join(tmpdir(), "card-post-worker-"));
   const path = join(dir, "stillfail.db"), store = Store.open(path);
   const file = join(dir, "worker.mjs"), marker = join(dir, "exited");
-  const real = new URL("../src/read/card-posts-worker.ts", import.meta.url).href;
-  writeFileSync(file, `import { existsSync, writeFileSync } from 'node:fs';\nif (!existsSync(${JSON.stringify(marker)})) { writeFileSync(${JSON.stringify(marker)}, '1'); process.exit(1); }\nawait import(${JSON.stringify(real)});\n`);
-  const builder = new CardPostsBuilder(path, {}, pathToFileURL(file));
+  endsOnce(file, marker);
+  const builder = new CardPostsBuilder(path, {}, file);
   try {
     const [, thread] = oldThreads(store);
     await builder.ready([thread]);

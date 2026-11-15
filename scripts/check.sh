@@ -533,7 +533,7 @@ if [ $full = 1 ]; then
   if part station && touches '^station/(src/|integration/|test/setup-env\.mjs$)|^client/core-ts/(src/|test/(helpers|station-fixture)\.ts$)|^scripts/check\.sh$'; then
     prep station deps station
     prep core deps client/core-ts
-    step "tests: station and core usage stream" after station after core sh -c 'cd station && pnpm exec tsgo -p integration/tsconfig.json && node --disable-warning=ExperimentalWarning --import ./test/setup-env.mjs --test --test-timeout=30000 integration/usage-client-stream.test.ts'
+    step "tests: station and core usage stream" after station after core sh -c 'cd station && pnpm exec tsgo -p integration/tsconfig.json && node ../scripts/native.ts run reader -- node --disable-warning=ExperimentalWarning --import ./test/setup-env.mjs --test --test-timeout=30000 integration/usage-client-stream.test.ts'
   fi
   # The native parts' own tests, where their Rust changed (the mesh addon's: the vendored crates it patches in, too).
   for crate in launcher runner mesh screen; do

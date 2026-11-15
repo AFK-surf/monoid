@@ -11,7 +11,7 @@ import { test } from "node:test";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
 import { Readers } from "../src/read/pool.ts";
 import { Store } from "../src/store/store.ts";
-import { REFERENCE_WORKER, readersOf } from "./reference.ts";
+import { REFERENCE, readersOf } from "./reference.ts";
 
 const binary = mbReaderBinary();
 
@@ -52,7 +52,7 @@ test("the MoonBit reader reads what the station asks in the background as the wo
       message.run(id, 2, "U0", n + 2);
     }
   }
-  const worker = new Readers(data, 1, REFERENCE_WORKER);
+  const worker = new Readers(data, 1, REFERENCE);
   const program = readersOf(data, binary);
   const read = (readers: Readers, op: string, args: unknown) => readers.read(op, args, "en").then((t) => JSON.parse(t), (e: Error & { status?: number }) => ({ error: e.message, status: e.status }));
   const since = now - 7 * 86_400_000;

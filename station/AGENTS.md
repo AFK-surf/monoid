@@ -70,13 +70,17 @@
 ## Its data
 
 - Everything lasting is one SQLite file, `stillfail.db` (`src/store/store.ts`, schema in `src/store/schema.ts`): one
-  write connection on the main thread; reads in reader threads (`src/read/pool.ts`: what is told as it changes and
-  what devices ask each on a line of its own) or the MoonBit program (`mb/`) for the reads moved to it: every read
-  (`src/read/pool.ts` MOVED, HISTORY), a card's queued pages and the checkpoint too, so where it is there no reader
-  thread is started (`src/read/worker.ts` is for a station without it). A move to the program is compared with the reads as a reader thread
-  answered them before (`test/reference-worker.ts`, given a test's Readers by `test/reference.ts`) on the same data. At a handover
-  the next process opens it while the one serving writes: every connection waits its turn (a busy timeout), and a
-  transaction that writes begins `BEGIN IMMEDIATE` (`scripts/check.sh` refuses what a change adds otherwise).
+  write connection on the main thread; every read, a card's queued pages and the checkpoint in the MoonBit program's
+  readers (`mb/`, `src/read/pool.ts` MOVED, HISTORY), and the old state they need built by its builders
+  (`src/read/mb-reader.ts`), the copies' export, restore and carry too (`src/replica/`), on every system a station runs
+  on: the station starts no worker thread, and has no reader or builder in TypeScript to fall back to. A schema repair
+  a builder cannot make (the merged view, an index under it dropped by an older station) is the writer's
+  (`Readers.repairEdits`), waiting for no lock: one found busy is tried again after a pause. A move to the program is
+  compared with the reads as a reader thread answered them before (`test/reference-worker.ts`, given a test's Readers
+  by `test/reference.ts`), and a builder with what the TypeScript it replaced does (`test/mb-*.test.ts`, the threads
+  of before in `test/workers/`), on the same data. At a handover the next process opens it while the one serving
+  writes: every connection waits its turn (a busy timeout), and a transaction that writes begins `BEGIN IMMEDIATE`
+  (`scripts/check.sh` refuses what a change adds otherwise).
 - A read answers by an index and a limit, never by going through all a station has (a station keeps months of chats):
   the `*-bounded.test.ts` tests count the rows a read fetches; a new read gets one. Old data a new index needs is
   built in the background (`src/read/*-builder.ts`), its batches taking one shared permit and yielding to writes

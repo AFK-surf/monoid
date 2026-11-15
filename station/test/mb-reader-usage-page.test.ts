@@ -18,7 +18,7 @@ import { Readers } from "../src/read/pool.ts";
 import { Store, newMessage } from "../src/store/store.ts";
 import { installCompactUsage, installUsageSummaryChanges } from "../src/store/usage-compact.ts";
 import { installUsageSummaryBlocks, usageSummaryBlocksStep } from "../src/store/usage-summary-blocks.ts";
-import { REFERENCE_WORKER, readersOf } from "./reference.ts";
+import { REFERENCE, readersOf } from "./reference.ts";
 
 const binary = mbReaderBinary();
 const I64_MAX = "9223372036854775807";
@@ -127,7 +127,7 @@ async function compare(compact: boolean) {
     db.prepare("INSERT INTO remote_runs (job, at, session) VALUES (?, ?, ?)").run(job, at, key);
   const card = db.prepare("INSERT INTO card_outcomes (thread, n, author, labels, answered, said) VALUES (?, ?, 'agent', '[]', 1, ?)");
   card.run(named, 1, 1); card.run(named, 2, 0); card.run(slack, 3, 1); card.run(far, 4, 0);
-  const worker = new Readers(data, 1, REFERENCE_WORKER);
+  const worker = new Readers(data, 1, REFERENCE);
   const program = readersOf(data, binary);
   for (const r of [worker, program]) r.names.set("p@x", "Pat");
   const read = (r: Readers, op: string, args: unknown, lang: "zh" | "en") => r.read(op, args, lang).then((t) => JSON.parse(t), (e: Error & { status?: number }) => ({ error: e.message, status: e.status }));

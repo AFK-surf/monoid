@@ -1,8 +1,9 @@
-// The live view's transcript locator (sessions/live-locator.ts) in live-locator-worker.ts's place: asked to `locate` a
-// session, it reads the session and its runtime sessions in one read transaction, then looks for their transcripts a
-// batch of 64 at a time, asking the station for its hints of each batch (`hints`) and telling it what it found
-// (`batch`), which the station accepts or has looked for again; then `done`. Several are looked for at once, a batch
-// each in turn, so a short history is not kept waiting behind a long one; a `cancel` is answered `cancelled`.
+// The live view's transcript locator (sessions/live-locator.ts), in the place of the thread of before
+// (station/test/workers/live-locator-worker.ts): asked to `locate` a session, it reads the session and its runtime
+// sessions in one read transaction, then looks for their transcripts a batch of 64 at a time, asking the station for
+// its hints of each batch (`hints`) and telling it what it found (`batch`), which the station accepts or has looked for
+// again; then `done`. Several are looked for at once, a batch each in turn, so a short history is not kept waiting
+// behind a long one; a `cancel` is answered `cancelled`.
 
 ///|
 let batch_size : Int = 64
@@ -136,8 +137,8 @@ fn describe(e : Error) -> String {
 }
 
 ///|
-/// The session and its runtime sessions, read in one transaction (live-locator-worker.ts `locate`, store.ts
-/// `historyRuntimeSources`); then its first batch.
+/// The session and its runtime sessions, read in one transaction (test/workers/live-locator-worker.ts `locate`,
+/// store.ts `historyRuntimeSources`); then its first batch.
 fn Locator::start(self : Locator, id : Json, message : Json) -> Unit raise {
   guard message is { "key": String(key), .. } else { fail("no key") }
   let profiles = match message {

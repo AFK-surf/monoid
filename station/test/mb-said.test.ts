@@ -1,7 +1,7 @@
 // The MoonBit builder of the sidebar's said state (station/mb, src/said) finds the latest message not by the latest
 // person as `saidScanStep` does, asking for the backfill permit only when it writes: the same chats, slice by slice,
-// give the same answers and states, also when the chat changes in the middle of a search; a store read through the
-// legacy lookup is left to the worker.
+// give the same answers and states, also when the chat changes in the middle of a search, and on a store read through
+// the legacy lookup (store/legacy-said-build.ts), its scan under way or done with more changed keys than a slice.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
 import { SaidBuilder } from "../src/read/said-builder.ts";
+import { installLegacySaid, legacySaidStep } from "../src/store/legacy-said-build.ts";
 import { saidScanStep, type SaidScan } from "../src/store/said-state.ts";
 import { Store } from "../src/store/store.ts";
 
@@ -85,18 +86,54 @@ test("the MoonBit builder finds the said state slice by slice as saidScanStep do
   }
 });
 
-test("a store read through the legacy lookup is left to the worker", async () => {
-  assert.notEqual(binary, null);
-  const f = old([5]);
-  f.store.db.exec("CREATE VIEW legacy_said AS SELECT 1 AS n");
-  const builder = new MbProcess(binary!, ["--builder", "said", "--db", f.path]);
-  try {
-    assert.deepEqual(await asker(builder, () => true)({ thread: f.threads[0] }), { fallback: true });
-  } finally {
-    await builder.terminate();
-    f.close();
-  }
-});
+for (const scanned of [false, true]) {
+  test(`on a store read through the legacy lookup (its scan ${scanned ? "done, then changed keys" : "under way"}) the MoonBit builder finds the said state as saidScanStep does`, async () => {
+    assert.notEqual(binary, null);
+    const lengths = [200, 3, 90];
+    const ts = old(lengths), mb = old(lengths);
+    for (const f of [ts, mb]) {
+      installLegacySaid(f.store.db);
+      f.store.db.exec("DROP INDEX entries_said");
+      if (scanned) {
+        while (!legacySaidStep(f.store.db).ready);
+        // (an older writer's changes: more keys of the long chat than a slice folds back, its said state lost again)
+        f.store.db.prepare("UPDATE entries SET author = 'you' WHERE thread = ? AND n > 1").run(f.threads[0]);
+        f.store.db.prepare("UPDATE thread_state SET said_other_known = 0 WHERE thread = ?").run(f.threads[0]);
+      }
+    }
+    if (scanned) assert.ok((mb.store.db.prepare("SELECT COUNT(*) AS n FROM legacy_said_dirty").get() as { n: number }).n > 64);
+    const builder = new MbProcess(binary!, ["--builder", "said", "--db", mb.path]);
+    const ask = asker(builder, () => true);
+    const lookup = (store: Store) => JSON.stringify([
+      store.db.prepare("SELECT thread, n FROM legacy_said_dirty ORDER BY thread, n").all(),
+      store.db.prepare("SELECT thread, n, author_kind, author FROM legacy_said_build ORDER BY thread, n").all(),
+    ]);
+    try {
+      const steps: { thread: number; ts: boolean; mb: boolean }[] = [];
+      for (const thread of mb.threads) {
+        let scan: SaidScan | null = null;
+        for (let k = 0; k < 30; k++) {
+          const ours = await ask({ thread });
+          assert.equal(ours.error, undefined);
+          assert.equal(ours.fallback, undefined);
+          const theirs = saidScanStep(ts.store.db, thread, scan);
+          scan = theirs.scan;
+          steps.push({ thread, ts: theirs.done, mb: ours.done });
+          assert.equal(states(mb.store), states(ts.store), `${thread} step ${k}`);
+          assert.equal(lookup(mb.store), lookup(ts.store), `${thread} step ${k}`);
+          if (ours.done) break;
+        }
+      }
+      assert.ok(steps.length >= 6, JSON.stringify(steps));
+      assert.deepEqual(steps.map((s) => s.mb), steps.map((s) => s.ts));
+      for (const thread of mb.threads)
+        assert.equal((mb.store.db.prepare("SELECT said_other_known FROM thread_state WHERE thread=?").get(thread) as { said_other_known: number }).said_other_known, 1);
+    } finally {
+      await builder.terminate();
+      ts.close(); mb.close();
+    }
+  });
+}
 
 test("the station's said builder finds what it is asked, the pool giving the permit", async () => {
   assert.notEqual(binary, null);

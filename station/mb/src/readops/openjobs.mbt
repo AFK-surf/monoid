@@ -4,7 +4,7 @@
 // and its chats make (views.ts `scopeOfJobNames`, `chats(…, titlesOnly)`).
 
 ///|
-/// The pool is to prepare the workspace up jobs' lookup once this read is answered (read/worker.ts `Answer`
+/// The pool is to prepare the workspace up jobs' lookup once this read is answered (read/mb-reader.ts `Answer`
 /// `prepareWorkspaceUpJobs`), set by `upJobs`, taken by the reader.
 pub let prepare_workspace_up_jobs : Ref[Bool] = Ref(false)
 

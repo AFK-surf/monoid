@@ -6,7 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { Readers } from "../src/read/pool.ts";
 import { installLegacyEdits, legacyEditDrain, legacyEditStep } from "../src/store/legacy-edits-build.ts";
-import { addClientColumn } from "../src/store/schema.ts";
+import { addClientColumn, repairMergedEditLookup } from "../src/store/schema.ts";
 import { Store } from "../src/store/store.ts";
 import { message, Rig, settle } from "./hub-fakes.ts";
 
@@ -231,6 +231,7 @@ test("a platform edit repairs a removed index through the real background worker
   r.store = Store.open(join(r.dir, "stillfail.db"));
   r.hub = r.newHub({ chats: (id) => id === "cl" ? r.chat : undefined });
   const readers = new Readers(r.dir, 1, undefined, 1);
+  readers.repairEdits = () => repairMergedEditLookup(r.store.db);
   try {
     const thread = oldThread(r, false);
     r.hub.prepareLegacyEdits = () => readers.prepareLegacyEdits();

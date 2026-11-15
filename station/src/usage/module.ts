@@ -3,8 +3,7 @@
 // way it is shown is added up from that record: a chat's execution details and agent card (told as more is recorded,
 // on its live stream and in its session's summary, `usage`) and the usage page (GET /usage).
 import { Clock, Effect, Layer } from "effect";
-import { Worker } from "node:worker_threads";
-import { MbBackfill, mbReaderBinary } from "../read/mb-reader.ts";
+import { MbBackfill, readerBinary } from "../read/mb-reader.ts";
 import { wall } from "../ops/fibers.ts";
 import { usageRoutes } from "../api/routes/usage.ts";
 import { usageNow } from "../read/usage.ts";
@@ -81,7 +80,8 @@ function tryStopUsageIndexes(store: StationStore): boolean {
 }
 
 /// An older station may still use these indexes during handover. Stop their writers only after it actually exits.
-export function retireAfterPrevious(store: StationStore, exited: Promise<void>, workerFile?: URL, installed: () => void = () => {}) {
+/// `binary`: the MoonBit program, a test's own where it gives one.
+export function retireAfterPrevious(store: StationStore, exited: Promise<void>, binary?: string, installed: () => void = () => {}) {
   let stopped = false;
   return Effect.gen(function* () {
     yield* Effect.tryPromise({ try: () => exited, catch: (error) => error });
@@ -96,31 +96,8 @@ export function retireAfterPrevious(store: StationStore, exited: Promise<void>, 
     }
     const path = store.db.location();
     if (path === null) { retireUsageIndexes(store.db); return hasCompactUsage(store.db) && hasUsageSummaryBlocks(store.db); }
-    const file = workerFile ?? new URL(import.meta.url.endsWith(".ts") ? "./retire-worker.ts" : "./usage/retire-worker.js", import.meta.url);
-    // (by the MoonBit builder, station/mb's src/usagefill, where its program is there: a step at a time, the permit
-    // taken for each, as retire-worker.ts takes it)
-    const mb = workerFile === undefined ? mbReaderBinary() : null;
-    if (mb !== null) yield* Effect.tryPromise({ try: () => retireByProgram(store, mb, path), catch: (error) => error });
-    else yield* Effect.tryPromise({ try: async () => {
-      const worker = new Worker(file, { workerData: { path, priority: store.backfillPriority } });
-      const owner = worker.threadId;
-      worker.unref();
-      await new Promise<void>((resolve, reject) => {
-        let failure: Error | null = null;
-        let complete = false;
-        worker.on("message", (answer: { complete?: boolean; filled?: boolean }) => {
-          complete ||= answer.complete === true;
-          // The days before the statistics began have just come in: pages open now read them again.
-          if (answer.filled) store.usageChanged([], undefined, true);
-        });
-        worker.once("error", (error) => { failure = error; });
-        worker.once("exit", (code) => {
-          releaseStoppedBackfill(store.backfillPriority, owner);
-          if (failure !== null || code !== 0 || !complete) reject(failure ?? new Error(`usage retirement stopped (exit ${code})`));
-          else resolve();
-        });
-      });
-    }, catch: (error) => error });
+    // (by the MoonBit builder, station/mb's src/usagefill: a step at a time, the permit taken for each)
+    yield* Effect.tryPromise({ try: () => retireByProgram(store, binary ?? readerBinary(), path), catch: (error) => error });
     return hasCompactUsage(store.db) && hasUsageSummaryBlocks(store.db);
   }).pipe(Effect.catch((error) => Effect.sync(() => {
     log.warn("usage", stopped ? "usage indexes could not be removed" : "usage index writers could not be stopped", { error: (error as Error).message });
@@ -128,10 +105,13 @@ export function retireAfterPrevious(store: StationStore, exited: Promise<void>, 
   })));
 }
 
-/// What retire-worker.ts does, by the MoonBit program: the retired indexes freed, then the old calls taken in, newest
-/// first, with at most about a tenth of the time going to them; pages open read again once old days came in.
+/// The usage retirement by the MoonBit program (`--builder usage-retire`): the retired indexes freed, then the old calls
+/// taken in, newest first, with at most about a tenth of the time going to them; pages open read again once old days
+/// came in.
 async function retireByProgram(store: StationStore, mb: string, path: string): Promise<void> {
   const program = new MbBackfill(mb, ["--builder", "usage-retire", "--db", path], store.backfillPriority, 20);
+  // (one that cannot start says so, then ends: its end fails what was asked)
+  program.on("error", (error: Error) => log.warn("usage", "the usage retirement program failed", { error: error.message }));
   const ask = (message: object) => new Promise<{ done: boolean; error?: string }>((resolve, reject) => {
     const exit = (code: number) => reject(new Error(`usage retirement stopped (exit ${code})`));
     program.once("exit", exit);
@@ -156,10 +136,10 @@ async function retireByProgram(store: StationStore, mb: string, path: string): P
 }
 
 /// Retry temporary installation or cleanup failures after stopping the old writers.
-export function retireUntilComplete(store: StationStore, exited: Promise<void>, workerFile?: URL, installed: () => void = () => {}) {
+export function retireUntilComplete(store: StationStore, exited: Promise<void>, binary?: string, installed: () => void = () => {}) {
   return Effect.gen(function* () {
     let retryMs = 250;
-    while (!(yield* retireAfterPrevious(store, exited, workerFile, installed))) {
+    while (!(yield* retireAfterPrevious(store, exited, binary, installed))) {
       yield* Effect.sleep(retryMs);
       retryMs = Math.min(retryMs * 2, 30_000);
     }
@@ -224,11 +204,14 @@ export function watchCompactMoves(store: StationStore, exited: Promise<void>): {
   };
   const start = () => {
     if (closed || !ready || path === null || worker !== null) return;
-    const file = new URL(import.meta.url.endsWith(".ts") ? "./scope-worker.ts" : "./usage/scope-worker.js", import.meta.url);
-    // (by the MoonBit builder, station/mb's src/usagefill scope.mbt, where its program is there: `MbBackfill`)
-    const mb = mbReaderBinary();
-    const current = mb !== null ? new MbBackfill(mb, ["--builder", "usage-scope", "--db", path], store.backfillPriority, 20)
-      : new Worker(file, { workerData: { path, priority: store.backfillPriority } });
+    // (by the MoonBit builder, station/mb's src/usagefill scope.mbt: `MbBackfill`)
+    let current: MbBackfill;
+    try { current = new MbBackfill(readerBinary(), ["--builder", "usage-scope", "--db", path], store.backfillPriority, 20); }
+    catch (error) {
+      log.warn("usage", "the usage workspace builder could not start", { error: (error as Error).message });
+      retry();
+      return;
+    }
     const owner = current.threadId;
     worker = current;
     current.unref();

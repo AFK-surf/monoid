@@ -1,7 +1,7 @@
-// A reader of the station's database (station/src/read/pool.ts), in MoonBit: its asks come as lines of JSON on stdin,
-// as the TypeScript reader's come by postMessage (read/worker.ts `Ask`), and its answers go out as lines on stdout
-// (`Answer`), first a line saying it is ready. It answers what it has been moved here for, so far `checkpoint`; the
-// pool sends it nothing else. With `--builder`, it is one of the builders of old state instead (`builder` below).
+// A reader of the station's database (station/src/read/pool.ts), in MoonBit: its asks come as lines of JSON on stdin
+// (read/mb-reader.ts `Ask`), and its answers go out as lines on stdout (`Answer`), first a line saying it is ready. It
+// answers every read and the checkpoint. With `--builder`, it is one of the builders of old state instead (`builder`
+// below).
 
 ///|
 /// The connection a checkpoint is made on: one that may write, made at the first, used for nothing else.
@@ -19,9 +19,9 @@ struct Reader {
 
 ///|
 /// What of the log (the WAL) is not in the database yet, written into it as far as no reader still reads it: a passive
-/// checkpoint, waiting for no one (read/worker.ts `checkpoint`). Its row, by its columns' names. `hard`: the log grew
+/// checkpoint, waiting for no one. Its row, by its columns' names. `hard`: the log grew
 /// past its bound (ops/storage.ts `walCheckpoint`), so this one waits up to a second for the readers and the writer and
-/// cuts the log's file to nothing (TRUNCATE), as read/serve-reads.ts does; the connection waits for no one again after.
+/// cuts the log's file to nothing (TRUNCATE); the connection waits for no one again after.
 fn Reader::checkpoint(self : Reader, hard? : Bool = false) -> Json raise {
   let id = match self.writer {
     Some(id) => id
@@ -81,7 +81,7 @@ fn Reader::answer(self : Reader, line : String) -> Json {
         @readops.prepare_up_jobs.val = None
         @readops.prepare_workspace_up_jobs.val = false
         let answer : Map[String, Json] = { "id": id, "text": Json::string(self.read(op, ask).stringify()) }
-        // (an old session whose up jobs' lookup the pool is to prepare now: read/worker.ts `prepareUpJobs`)
+        // (an old session whose up jobs' lookup the pool is to prepare now: read/mb-reader.ts `Answer` `prepareUpJobs`)
         if @readops.prepare_up_jobs.val is Some(session) {
           answer["prepareUpJobs"] = Json::string(session)
         }
@@ -116,7 +116,7 @@ fn say_answer(host : @host.Host, answer : Json) -> Unit {
 }
 
 ///|
-/// The reads moved here from read/worker.ts (read/pool.ts `MOVED`).
+/// The reads moved here from the TypeScript reader of before (read/pool.ts `MOVED`, test/reference-worker.ts).
 fn moved(op : String) -> Bool {
   ["job", "jobLog", "historyPendingCard", "statePendingCard", "deliveryCardState", "reviewPendingCard", "stateQuestion", "pendingDeliveries", "latestMessages", "chatHistoryMessages", "openedChatSaid", "widgetState", "transcriptFile", "memory", "machineSessions", "machineSession", "sessionsAtWork", "policyChecks", "recentConnectPeople", "usageTurns", "usageCalls", "outflowMessages", "archiveLook", "recentChatList", "searchChatList", "threadList", "sharedOf", "sharedChats", "chatMarks", "entries", "letters", "summary", "sessions", "session", "threads", "thread", "turnNotices", "saidNotices", "chats", "chatRows", "outflowChats", "openJobs", "resourceChats", "usage", "outflowUsage", "timeline", "transcriptState", "sessionPlace", "changed", "tailRead", "internalCardEditPage", "internalCardMessagePage"].contains(
     op,
@@ -124,7 +124,7 @@ fn moved(op : String) -> Bool {
 }
 
 ///|
-/// A read, in one snapshot as read/worker.ts makes it (a transaction around it).
+/// A read, in one snapshot (a transaction around it).
 fn Reader::read(self : Reader, op : String, ask : Json) -> Json raise {
   let args = ask.value("args").unwrap_or(Json::null())
   let db = match self.reading {
@@ -135,7 +135,7 @@ fn Reader::read(self : Reader, op : String, ask : Json) -> Json raise {
       db
     }
   }
-  // read/worker.ts `learn`: the model catalog as the pool gives it when it changed
+  // the model catalog as the pool gives it when it changed (read/pool.ts `give`)
   if ask.value("catalog") is Some(models) {
     @readops.learn_catalog(models)
   }
@@ -259,7 +259,7 @@ fn Permit::give(self : Permit) -> Unit {
 }
 
 ///|
-/// The builder of the sessions' turn counts (said-worker.ts's `session` asks): a count kept going between asks; one
+/// The builder of the sessions' turn counts (read/turn-builder.ts): a count kept going between asks; one
 /// let go (`cancel`) has its guard removed, under the permit.
 async fn turn_builder(host : @host.Host, db_path : String) -> Unit {
   let db = @sql.Db::attach(host, db_path, wait=250)
@@ -315,9 +315,8 @@ async fn turn_builder(host : @host.Host, db_path : String) -> Unit {
 }
 
 ///|
-/// The builder of the sidebar's said state (said-worker.ts's `thread` asks without a flag): a search kept going between
-/// asks; one let go (`cancel`) has its guard removed, under the permit, if it is not ready. A store read through the
-/// legacy lookup is the worker's: answered `{"fallback": true}`, the pool asks the worker instead.
+/// The builder of the sidebar's said state (read/said-builder.ts, a store with the legacy lookup too): a search kept
+/// going between asks; one let go (`cancel`) has its guard removed, under the permit, if it is not ready.
 async fn said_builder(host : @host.Host, db_path : String) -> Unit {
   let db = @sql.Db::attach(host, db_path, wait=250)
   db.exec("PRAGMA synchronous = NORMAL")
@@ -358,16 +357,12 @@ async fn said_builder(host : @host.Host, db_path : String) -> Unit {
       continue
     }
     let answer : Json = try {
-      if @said.legacy(db) {
-        { "fallback": true }
-      } else {
-        let (done, scan) = @said.step(db, thread, scans.get(thread), token~, may_write=() => permit.take())
-        match scan {
-          Some(scan) => scans[thread] = scan
-          None => scans.remove(thread)
-        }
-        { "done": Json::boolean(done) }
+      let (done, scan) = @said.step(db, thread, scans.get(thread), token~, may_write=() => permit.take())
+      match scan {
+        Some(scan) => scans[thread] = scan
+        None => scans.remove(thread)
       }
+      { "done": Json::boolean(done) }
     } catch {
       e => if @sql.busy(e) { { "done": false } } else { { "done": false, "error": Json::string(message(e)) } }
     }
@@ -377,8 +372,9 @@ async fn said_builder(host : @host.Host, db_path : String) -> Unit {
 }
 
 ///|
-/// The builder of the sessions' copy destinations, chat names' order and latest conversation (cc-index-worker.ts):
-/// `{"session"}` with `name` or `latest` for the last two; one let go (`cancel`) forgets where its lanes' turn was.
+/// The builder of the sessions' copy destinations, chat names' order and latest conversation
+/// (read/cc-index-builder.ts): `{"session"}` with `name` or `latest` for the last two; one let go (`cancel`) forgets
+/// where its lanes' turn was.
 async fn cc_builder(host : @host.Host, db_path : String) -> Unit {
   let db = @sql.Db::attach(host, db_path, wait=250)
   db.exec("PRAGMA synchronous = NORMAL")
@@ -420,7 +416,7 @@ async fn cc_builder(host : @host.Host, db_path : String) -> Unit {
 }
 
 ///|
-/// The checker of the kept statistics' coverage (usage/minute-worker.ts): `{id, viewer}`, `{id, detail}`, `{id,
+/// The checker of the kept statistics' coverage (usage/minute-reader.ts): `{id, viewer}`, `{id, detail}`, `{id,
 /// remote}` or `{id, chats}` answered `{id}` when complete, `{id, error}` when not; `{"complete": true}` said first
 /// when every statistic is.
 async fn usage_checker(host : @host.Host, db_path : String) -> Unit {
@@ -493,7 +489,8 @@ fn flag(name : String) -> String? {
 /// (`{"scope": "all"}`; one with `cancel` is let go), each answer says whether all is done, or why not. A database busy
 /// with another's write is no error: the batch is asked again. The pool takes the backfill permit around each ask.
 /// `step`: one batch of what it builds for what it was asked (None: what it does not build; `name`, said then). A
-/// store it leaves to the worker (`@legacy.Fallback`) is answered `{"fallback": true}`.
+/// store whose schema the station's writer must repair first (`@legacy.Fallback`: the merged view) is answered
+/// `{"fallback": true}`, and asked again once it is (read/requested-builder.ts `repair`).
 async fn builder(host : @host.Host, db_path : String, name : String, step : (@sql.Db, Json) -> Bool? raise) -> Unit {
   let db = @sql.Db::attach(host, db_path, wait=250)
   db.exec("PRAGMA synchronous = NORMAL")
@@ -519,8 +516,9 @@ async fn builder(host : @host.Host, db_path : String, name : String, step : (@sq
 }
 
 ///|
-/// The usage statistics' workspace upkeep (usage/scope-worker.ts): each `{"wake": true, scope?, range?}` a batch,
-/// answered as the worker answers (`done`, and `session`, `sessions`, `from`, `after`, `converted` where they apply).
+/// The usage statistics' workspace upkeep (usage/module.ts `watchCompactMoves`): each `{"wake": true, scope?, range?}`
+/// a batch, answered as the thread of before answered (test/workers/usage-scope-worker.ts): `done`, and `session`,
+/// `sessions`, `from`, `after`, `converted` where they apply.
 async fn usage_scope(host : @host.Host, db_path : String) -> Unit {
   let db = @sql.Db::attach(host, db_path, wait=250)
   db.exec("PRAGMA synchronous = NORMAL")
@@ -776,10 +774,15 @@ fn main {
     (Some("session-bindings"), Some(db), _) =>
       @host.run(shell_dir=beside(db, "shell"), host => builder(host, db, "session binding", all(db => @bindings.step(db))))
     (Some("session-up-jobs"), Some(db), _) =>
+      // (`first`: the first member of that own chat of the session's, for its job's name: Readers.prepareJobNameFirst)
       @host.run(shell_dir=beside(db, "shell"), host => builder(host, db, "session up jobs", (db, ask) => match ask {
+        { "session": String(session), "first": Number(thread, ..), .. } =>
+          Some(@upjobs.job_name_first_step(db, session, thread.to_int64()))
         { "session": String(session), .. } => Some(@upjobs.step(db, session))
         _ => None
       }))
+    (Some("workspace-up-jobs"), Some(db), _) =>
+      @host.run(shell_dir=beside(db, "shell"), host => builder(host, db, "workspace up jobs", all(db => @upjobs.workspace_step(db))))
     (Some("widget-sources"), Some(db), _) =>
       @host.run(shell_dir=beside(db, "shell"), host => builder(host, db, "widget source", (db, ask) => match ask {
         { "thread": Number(thread, ..), .. } => Some(@widgets.step(db, thread.to_int64()))
@@ -814,8 +817,8 @@ fn main {
       // (a backfill the station drives itself: each line, whatever it says, asks for the next batch)
       @host.run(shell_dir=beside(db, "shell"), host => builder(host, db, "session count", (db, _) => Some(@counts.step(db))))
     (Some("session-backfill"), Some(db), _) =>
-      // (the backfills sessions/workspace-activity-worker.ts makes by `kind`, none: the activity; those not here yet
-      // are left to it)
+      // (the backfills the station drives itself by `kind` (sessions/workspace-activity-builder.ts and the others with
+      // `MbBackfill`), none: the activity; a kind not known here an error)
       @host.run(shell_dir=beside(db, "shell"), host => {
         let letters : Ref[@letters.Letters?] = Ref(None)
         builder(host, db, "session backfill", (db, ask) => match ask {
@@ -862,7 +865,7 @@ fn main {
         { "kind": "legacy-decision-time", .. } => Some(@legacy.decision_time_step(db))
         { "kind": "legacy-decision-session", .. } => Some(@legacy.decision_session_step(db))
         { "kind": "legacy-decision-session-repair", .. } => Some(@legacy.decision_session_repair_step(db))
-        { "kind": String(_), .. } => raise @legacy.Fallback
+        { "kind": String(_), .. } => None
         _ => Some(@activity.activity_step(db))
       })
       })
@@ -1052,7 +1055,7 @@ fn main {
         }
       })
     _ => {
-      @host.note("usage: stillfail-reader --data <dir> | --builder archive-marks|session-bindings|session-up-jobs|widget-sources|card-posts|session-list|outflow-chats|turn-counts|said|archive-last|page-letters|cc-index|usage-check|recent-chat|closed-cards|people-since|legacy-edits|legacy-said|session-counts|session-backfill|post-blocks|usage-retire|usage-scope|usage-counter|signin-save|vault-uses|replica-export --db <file> | --builder replica-restore --db <file> --data <dir> | --builder replica-carry")
+      @host.note("usage: stillfail-reader --data <dir> | --builder archive-marks|session-bindings|session-up-jobs|workspace-up-jobs|widget-sources|card-posts|session-list|outflow-chats|turn-counts|said|archive-last|page-letters|cc-index|usage-check|recent-chat|closed-cards|people-since|legacy-edits|legacy-said|session-counts|session-backfill|post-blocks|usage-retire|usage-scope|usage-counter|signin-save|vault-uses|replica-export --db <file> | --builder replica-restore --db <file> --data <dir> | --builder replica-carry")
       2
     }
   }

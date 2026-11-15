@@ -9,6 +9,7 @@ import { SaidBuilder } from "../src/read/said-builder.ts";
 import { makeStore } from "../src/read/store.ts";
 import { chats } from "../src/read/views.ts";
 import { Store } from "../src/store/store.ts";
+import { endsOnce } from "./programs.ts";
 
 const viewer = { sub: "me", email: "me", name: "Me", role: "owner", workspace: "w", device: "d" } as const;
 function fixture(lengths: number[]) {
@@ -129,9 +130,8 @@ test("closing the sidebar builder releases readers waiting for handover", async 
 test("a stopped sidebar worker retries the old chat", async () => {
   const f = fixture([150]);
   const file = join(f.dir, "worker.mjs"), marker = join(f.dir, "exited");
-  const real = new URL("../src/read/said-worker.ts", import.meta.url).href;
-  writeFileSync(file, `import { existsSync, writeFileSync } from 'node:fs';\nif (!existsSync(${JSON.stringify(marker)})) { writeFileSync(${JSON.stringify(marker)}, '1'); process.exit(1); }\nawait import(${JSON.stringify(real)});\n`);
-  const builder = new SaidBuilder(f.path, {}, pathToFileURL(file));
+  endsOnce(file, marker);
+  const builder = new SaidBuilder(f.path, {}, file);
   try {
     await builder.ready(f.threads);
     assert.equal(existsSync(marker), true);

@@ -9,6 +9,7 @@ import { ccSessionReady, installCcIndex } from "../src/store/cc-thread-index.ts"
 import { installLatestThreadIndex, latestThreadReady } from "../src/store/latest-thread-index.ts";
 import { indexedSessionChat, installSessionChatIndex, sessionChatReady } from "../src/store/session-chat-index.ts";
 import { Store } from "../src/store/store.ts";
+import { endsOnce } from "./programs.ts";
 
 function oldSessions(store: Store): void {
   const db = store.db;
@@ -65,9 +66,8 @@ test("a stopped copy destination worker resumes its request", async () => {
   const dir = mkdtempSync(join(tmpdir(), "cc-index-worker-"));
   const path = join(dir, "stillfail.db"), store = Store.open(path);
   const file = join(dir, "worker.mjs"), marker = join(dir, "exited");
-  const real = new URL("../src/read/cc-index-worker.ts", import.meta.url).href;
-  writeFileSync(file, `import { existsSync, writeFileSync } from 'node:fs';\nif (!existsSync(${JSON.stringify(marker)})) { writeFileSync(${JSON.stringify(marker)}, '1'); process.exit(1); }\nawait import(${JSON.stringify(real)});\n`);
-  const builder = new CcIndexBuilder(path, {}, pathToFileURL(file));
+  endsOnce(file, marker);
+  const builder = new CcIndexBuilder(path, {}, file);
   try {
     oldSessions(store);
     await builder.ready(["short"]);
@@ -116,9 +116,8 @@ test("a stopped shared worker resumes latest conversation preparation", async ()
   const dir = mkdtempSync(join(tmpdir(), "latest-thread-worker-"));
   const path = join(dir, "stillfail.db"), store = Store.open(path);
   const file = join(dir, "worker.mjs"), marker = join(dir, "exited");
-  const real = new URL("../src/read/cc-index-worker.ts", import.meta.url).href;
-  writeFileSync(file, `import { existsSync, writeFileSync } from 'node:fs';\nif (!existsSync(${JSON.stringify(marker)})) { writeFileSync(${JSON.stringify(marker)}, '1'); process.exit(1); }\nawait import(${JSON.stringify(real)});\n`);
-  const builder = new CcIndexBuilder(path, {}, pathToFileURL(file));
+  endsOnce(file, marker);
+  const builder = new CcIndexBuilder(path, {}, file);
   try {
     oldSessions(store); installLatestThreadIndex(store.db);
     await builder.readyLatest(["short"]);
