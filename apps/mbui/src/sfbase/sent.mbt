@@ -258,6 +258,28 @@ fn sent_among(all : Array[Entry], keys : Array[String], at : Int, still : Array[
 }
 
 ///|
+/// What was sent from chat `rk` that its list made as nodes took a core's row for (`sent_as`: each core's row's key to
+/// the key, sent_local's, of what it took over) leaves what is on its way, as the old list's row_keys lets it go: the row
+/// goes on by that key in the list that took it. Kept, every word sent from a chat stayed on its way for the rest of the
+/// run, and a list made again (the chat opened again) matched them anew against rows it no longer read, the last ones
+/// sent left under the rest as sending (the user, 2026-11-15: 「这他妈又是什么 bug」).
+pub fn sent_local_taken(rk : String, sent_as : Map[String, String]) -> Unit {
+  let sending = sending_of(rk)
+  guard !sending.is_empty() && !sent_as.is_empty() else { return }
+  let taken : Map[String, Bool] = Map([])
+  for k in sent_as.values() {
+    taken[k] = true
+  }
+  let still = sending.filter(fn(l) { !taken.contains("o:" + l.row.id) })
+  guard still.length() != sending.length() else { return }
+  sending.clear()
+  for l in still {
+    sending.push(l)
+  }
+  sending_changed()
+}
+
+///|
 /// What was sent from chat `rk` (key: sent_local's) did not go: it leaves the list.
 pub fn sent_local_gone(rk : String, key : String) -> Unit {
   let sending = sending_of(rk)
