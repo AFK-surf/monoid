@@ -332,15 +332,15 @@ test "记忆 made once, its stations not read: what failed said over its list in
 }
 
 ///|
-test "记忆 made once: its rows are the tree's own; an online station's opens its memory" {
+test "记忆 made once: its rows are the tree's own; a skill row opens its memory page" {
   let t = memories_tester(2)
   let own = tree_words_drawn()
-  for w in [@sf.t("web-pages.settings.memory.title"), @sf.t("android-misc.memory.note"), @sf.t("android-misc.memory.row")] {
+  for w in [@sf.t("web-pages.settings.memory.title"), @sf.t("android-misc.memory.note"), "发布流程"] {
     assert_true(own.iter().any(fn(o) { o.contains(w) }), msg="not the tree's own: \{w} in \{Repr(own)}")
   }
-  t.tap_text(@sf.t("android-misc.memory.row"))
+  t.tap_text("发布流程")
   t.run_for(@ui.move_most_ms)
-  assert_true(app.nav.top() is Setting(@settings.Route::Memory(_)), msg="on top \{@sfbase.page_kind(app.nav.top())}")
+  assert_true(app.nav.top() is Setting(@settings.Route::MemoryDoc(_, "发布流程", 0)), msg="on top \{@sfbase.page_kind(app.nav.top())}")
 }
 
 ///|
@@ -1078,8 +1078,10 @@ test "一台 station 的记忆 made once, its own skills' row pressed: folded op
     let said = t.semantics().filter(fn(n) { n.label == @sf.t("web-main.memory.builtin") }).map(fn(n) { n.expanded })
     // (back to 记忆, and in again)
     app.nav.pop() |> ignore
+    t.draw()
     t.run_for(@ui.move_most_ms)
-    app.nav.push(Setting(@settings.Route::Memory("ws1/st1")))
+    open_page(Setting(@settings.Route::Memory("ws1/st1")))
+    t.draw()
     t.run_for(@ui.move_most_ms)
     let again = instances_sorted(t)
     t.tap_text(@sf.t("web-main.memory.builtin"))
@@ -1121,6 +1123,7 @@ test "一台 station 的记忆 made once: a part of its global memory pressed op
   t.run_for(@ui.move_most_ms)
   let part = app.nav.top()
   app.nav.pop() |> ignore
+  t.draw()
   t.run_for(@ui.move_most_ms)
   t.tap_text("发布流程")
   t.run_for(@ui.move_most_ms)
@@ -1131,9 +1134,8 @@ test "一台 station 的记忆 made once: a part of its global memory pressed op
     msg="\{@sfbase.page_kind(part)} \{@sfbase.page_kind(skill)}",
   )
   let list = memories_tester(2)
-  list.tap_text("Willow")
-  list.run_for(@ui.move_most_ms)
-  assert_true(app.nav.top() == Setting(@settings.Route::Memory("ws1/st1")), msg="on top \{@sfbase.page_kind(app.nav.top())}")
+  ignore(list)
+  assert_true(app.nav.top() == Setting(@settings.Route::Memories), msg="on top \{@sfbase.page_kind(app.nav.top())}")
   let own = tree_words_drawn()
   assert_true(own.iter().any(fn(o) { o.contains("习惯") }), msg="not the tree's own: \{Repr(own)}")
 }
@@ -1141,7 +1143,7 @@ test "一台 station 的记忆 made once: a part of its global memory pressed op
 ///|
 test "一台 station 的记忆 made once, a skill shared and no longer and again: its tag said, gone with no room left for it, said again, the same row all along" {
   let t = memories_tester(2, mode="settings-memory")
-  let shared = @sf.t("web-main.memory.share.shared")
+  let shared = "25 分钟前 · Willow"
   let row = fn() { @ui.view_tree().unwrap().drawn().filter(fn(d) { d.words == "发布流程" }).map(fn(d) { (d.id.at, d.id.gen) }) }
   let tagged = fn() { tree_words_drawn().iter().any(fn(o) { o == shared }) }
   let at = fn() { t.words().filter(fn(w) { w.0 == "发布流程" }).map(fn(w) { (w.1, w.3) }) }
@@ -1183,6 +1185,7 @@ test "a station's memory made once become another's in its place: its title that
   let t = memories_tester(2, mode="settings-memory", wrap=fn(b) { topic_asked(b, "memory", "station", asked) })
   let first = (asked.last(), tree_words_drawn().contains("Willow"))
   app.nav.become(Setting(@settings.Route::Memory("ws1/st2")))
+  t.draw()
   t.run_for(@ui.move_most_ms)
   let own = tree_words_drawn()
   assert_eq(

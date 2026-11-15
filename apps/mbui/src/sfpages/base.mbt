@@ -208,7 +208,6 @@ using @settings {
   failing_of,
   memory_of,
   sections_of,
-  skill_tag,
   build_version,
   error_text,
   has,

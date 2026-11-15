@@ -9,7 +9,7 @@ test "记忆 as a place of the bottom bar: the top bar names it, no title of its
   app.nav.replace(Place("memories"))
   t.draw()
   t.run_for(@ui.move_most_ms)
-  assert_true(t.find("全局记忆 · 项目记忆") is Some(_))
+  assert_true(t.find("发布流程") is Some(_))
   // no large title of its own under the top bar's
   assert_false(t.words().any(fn(w) { w.0 == "记忆" && w.4 > 30.0 && w.5 > 0.5 }), msg=t.drawn_text())
 }
@@ -18,7 +18,7 @@ test "记忆 as a place of the bottom bar: the top bar names it, no title of its
 test "记忆, 关于, 更新日志, 一台 station 的记忆, 归档, 一台 station 的归档 and 自动决策 as places of the bottom bar, made once: the top bar names each and has settings, what it holds under it; the window wider, the same place still shows" {
   // (each place's words read in its own run, once it has begun: read before, they are the run before's)
   let cases : Array[(String, () -> String)] = [
-    ("memories", fn() { "全局记忆 · 项目记忆" }),
+    ("memories", fn() { "发布流程" }),
     ("about", fn() { "服务条款" }),
     ("changelog", fn() { "10 月 19 日" }),
     ("memory:ws1/st1", fn() { "发布流程" }),

@@ -1266,6 +1266,18 @@ fn row_below_node(words : @view.View, make : (@view.View) -> Unit, open : () -> 
 }
 
 ///|
+/// How far out a box inside `link_row_node`'s `below` reaches (`margin`) to stand `corner_inset` (8) in from the row's
+/// sides and foot on any screen, so a `small_corner` (10) box inside it is concentric with the row's `row_corner` (18).
+pub fn row_below_inset(v : @view.View) -> (Double, Double, Double, Double) {
+  let side = corner_inset - text_in
+  let foot = match look_node(v) {
+    Wide => corner_inset - wide_row_over - (if in_pane_node(v) { link_pane_out } else { 0.0 })
+    Narrow => corner_inset - text_in
+  }
+  (side, 0.0, side, foot)
+}
+
+///|
 /// A red dot (status_dot's "error", as a node): something there is not right though nothing is wrong to say.
 fn status_dot_node(d : @view.View) -> Unit {
   d

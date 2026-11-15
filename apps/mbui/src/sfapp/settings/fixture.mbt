@@ -2255,14 +2255,27 @@ fn fx_memory() -> Json {
     (
       "global",
       obj([
-        ("path", str("~/.claude/CLAUDE.md")),
+        ("path", str("~/.stillfail/agent/MEMORY.md")),
         ("text", str("")),
         ("size", str("4 KB")),
+        ("whenChanged", str("15 分钟前 · Willow")),
         (
           "sections",
           [
             obj([("title", str("开头")), ("text", str("这台机器上的 agent 共用的记忆。")), ("note", str("1 KB"))]),
-            obj([("title", str("习惯")), ("text", str("- 提交前先跑测试\n- 说明写成完整的句子")), ("note", str("2 条"))]),
+            obj([
+              ("title", str("习惯")),
+              ("text", str("- 提交前先跑测试\n- 说明写成完整的句子")),
+              ("note", str("2 条")),
+              ("whenChanged", str("15 分钟前 · Willow")),
+              (
+                "diff",
+                [
+                  [str("-"), str("- UI 改动先本地出图发用户确认再提 PR")],
+                  [str("+"), str("- 复杂的活和 UI 设计先让用户确认方案和预览效果再动手；干活中有新变化先确认方案")],
+                ],
+              ),
+            ]),
           ],
         ),
       ]),
@@ -2279,6 +2292,14 @@ fn fx_memory() -> Json {
           ("body", str("## 步骤\n\n1. 改版本号\n2. 写更新说明\n3. 打包并上传")),
           ("about", str("发布新版本时")),
           ("size", str("3 KB")),
+          ("whenChanged", str(if fx.skills_shared.get("发布流程").unwrap_or(true) { "25 分钟前 · Willow" } else { "" })),
+          (
+            "diff",
+            [
+              [str("-"), str("2. 手工整理更新说明")],
+              [str("+"), str("2. 写更新说明")],
+            ],
+          ),
           ("files", [obj([("name", str("checklist.md")), ("text", str("- 签名\n- 截图")), ("label", str("checklist")), ("size", str("1 KB"))])]),
           // (the core's words of it: looks.ts)
           ("group", str("project")), ("kindText", str("项目记忆")), ("whenText", str("发布新版本时")), ("line", str("发布新版本时")), ("pages", [obj([("key", str("")), ("label", str("总览")), ("text", str("## 步骤\n\n1. 改版本号\n2. 写更新说明\n3. 打包并上传"))]), obj([("key", str("checklist.md")), ("label", str("checklist")), ("size", str("1 KB")), ("text", str("- 签名\n- 截图"))])]),
@@ -2288,7 +2309,7 @@ fn fx_memory() -> Json {
               obj([("id", str("sh1")), ("role", str("host")), ("host", str("st1")), ("conflicts", ["SKILL.md"]), ("users", ["st2"]), ("missing", [])])
             } else {
               obj([])
-            },
+            }
           ),
         ]),
         obj([
@@ -2298,6 +2319,7 @@ fn fx_memory() -> Json {
           ("builtin", Json::boolean(false)),
           ("text", str("每周五下午写。")),
           ("size", str("1 KB")),
+          ("whenChanged", str("40 分钟前 · Maple")),
           ("group", str("skill")), ("kindText", str("Skill")), ("whenText", str("写周报时用的格式")), ("line", str("写周报时用的格式")), ("pages", [obj([("key", str("")), ("label", str("总览")), ("text", str("每周五下午写。"))])]),
         ]),
         obj([("name", str("pdf")), ("size", str("2 KB")), ("description", str("读写 PDF")), ("project", Json::boolean(false)), ("builtin", Json::boolean(true)), ("text", str("")), ("group", str("builtin")), ("kindText", str("station 内置")), ("whenText", str("读写 PDF")), ("line", str("读写 PDF")), ("pages", [obj([("key", str("")), ("label", str("总览")), ("text", str("（空）"))])])]),

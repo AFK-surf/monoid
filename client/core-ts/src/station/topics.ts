@@ -337,7 +337,8 @@ export class StationTopics implements Owner {
         const v = link?.memory.get(MEMORY);
         if (v !== undefined) {
           const shown = structuredClone(v);
-          looks.answer("GET", "/memory", shown);
+          const now = this.#core.host.nowMs();
+          looks.answer("GET", "/memory", shown, now, this.#core.host.utcOffsetMin(now));
           return { ok: shown };
         }
         if (link && down(link.state)) return { err: new CoreError("offline", downWords(link.state, this.#core.views.stationName(station))) };

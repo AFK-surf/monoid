@@ -206,7 +206,8 @@ export function install(): void {
           if (a.session !== undefined) a.session = machineMeta(a.session, now, offset);
         }
         // What the clients show of it, put in here.
-        looks.answer(op.method, op.path, answer);
+        const now = inner.host.nowMs();
+        looks.answer(op.method, op.path, answer, now, inner.host.utcOffsetMin(now));
         if (op.method === "GET" && /^\/profiles\/[^/?]+\/fusion$/.test(op.path) && answer !== null && typeof answer === "object") {
           return { fusion: buildFusion((answer as { fusion?: unknown }).fusion) };
         }

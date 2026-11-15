@@ -1,15 +1,27 @@
-// 记忆, one page in every frame (web/src/Memory.tsx MemoryView, cloud/settings.tsx MemorySettings; the narrow app's
-// mobile/Memory.tsx MemoriesScreen, MemoryScreen), the same on every width (the user, 2026-10-26: 「设置感觉很乱」; wide
-// had every station's memory on the one page, a third level of headings): a row for each station opening its memory,
-// one offline saying so. A station's memory: the global memory by its parts, the projects', the other skills (the
-// station's own folded in a row), each row opening its page; which part a skill is under is the core's (`group`).
+// 记忆, one page in every frame: the workspace's shared memory (MEMORY.md and skills, kept level across every station of
+// the workspace), read from an online station of the workspace: its global memory (with its latest diff inline), its
+// projects', the other skills (the station's built-in ones folded in a row), each row showing its recent diff and
+// opening its page.
 
 ///|
-/// 记忆 (MemorySettings, MemoriesScreen) made once as nodes (page_node, laid out by the `width` its frame gives it,
-/// narrow where none is given) in node `v`: what it is for over its list, a row to each
-/// station's memory (its name, opening it), one offline saying so, followed as the core says them; while the stations
-/// are read the first time, the list in its bones (waiting_node: three made up, the core asked nothing for them), what
-/// could not be read said over them. `here`: who and where, as that changes.
+/// Which station of the workspace to read the shared memory from: the first online station, else the first station.
+fn memory_station(stations : Array[Json]) -> String {
+  for s in stations {
+    if flag(Some(s), "online") {
+      return text(Some(s), "station")
+    }
+  }
+  if stations.length() > 0 {
+    text(Some(stations[0]), "station")
+  } else {
+    ""
+  }
+}
+
+///|
+/// 记忆 made once as nodes (page_node, laid out by the `width` its frame gives it, narrow where none is given) in node
+/// `v`: the workspace's shared memory (its global memory by its parts, its projects', the other skills with the
+/// built-in ones folded in a row), each row opening its page.
 pub fn memories_node(
   v : @view.View,
   core : Core,
@@ -20,6 +32,21 @@ pub fn memories_node(
   width? : () -> Double,
 ) -> Unit {
   let topic = fn() { @settings.stations_of(core, here()) }
+  let stations = fn() {
+    match topic().value {
+      Some(Array(a)) => a
+      _ => []
+    }
+  }
+  let address = fn() { memory_station(stations()) }
+  let read = fn() {
+    let a = address()
+    if a == "" {
+      ({ value: None, error: "" } : @settings.MemoryRead)
+    } else {
+      memory_of(core, a)
+    }
+  }
   @sf.page_node(
     v,
     fn() { @sf.t("web-pages.settings.memory.title") },
@@ -28,27 +55,27 @@ pub fn memories_node(
     said?,
     width?,
     lead=fn() { @sf.t("android-misc.memory.note") },
-    fn() { ["list"] },
+    fn() { ["memory"] },
     fn(b, _) {
-      b.pick(fn() { topic().value is None }, fn(p, reading) {
+      b.pick(fn() { read().value is None }, fn(p, reading) {
         if reading {
           @sf.waiting_node(
             p,
-            fn(s) { memories_list_node(s, core.quiet(), fn() { sample_stations() }) },
+            fn(s) { memory_body_node(s, core.quiet(), fn() { "sample" }, fn() { Some(memory_sample()) }) },
             error=fn() {
-              match topic().error {
-                Some(e) => error_text(e)
-                None => ""
+              let e = read().error
+              if e != "" {
+                @sf.t("web-main.memory.failed", args=[("error", e)])
+              } else {
+                match topic().error {
+                  Some(te) => error_text(te)
+                  None => ""
+                }
               }
             },
           )
         } else {
-          memories_list_node(p, core, fn() {
-            match topic().value {
-              Some(Array(a)) => a
-              _ => []
-            }
-          })
+          memory_body_node(p, core, address, fn() { read().value })
         }
       })
     },
@@ -56,43 +83,7 @@ pub fn memories_node(
 }
 
 ///|
-/// A row to each of `stations`' memory as they are now, by its address: online, its name
-/// and 查看 opening it; offline, its name and that it is.
-fn memories_list_node(v : @view.View, core : Core, stations : () -> Array[Json]) -> Unit {
-  @sf.group_node(v, fn(g) {
-    g.each(stations, fn(s) { text(Some(s), "station") }, fn(row, s) {
-      let sv = fn() { Some(s.get()) }
-      row.pick(fn() { flag(sv(), "online") }, fn(r, online) {
-        if online {
-          @sf.link_row_node(r, fn() { text(sv(), "name") }, fn() { (core.push)(Memory(text(sv(), "station"))) }, value=fn() {
-            @sf.t("android-misc.memory.row")
-          })
-        } else {
-          @sf.link_row_node(r, fn() { text(sv(), "name") }, fn() {  }, goes=false, note=fn() {
-            @sf.t("web-pages.settings.memory.offline")
-          })
-        }
-      })
-    })
-  })
-}
-
-///|
-/// The stations' names by their ids (whose a shared skill is).
-fn station_names(stations : Array[Json]) -> Map[String, String] {
-  let names : Map[String, String] = Map([])
-  for s in stations {
-    names[text(Some(s), "id")] = text(Some(s), "name")
-  }
-  names
-}
-
-///|
-/// One station's memory (MemoryScreen; wide, a link to it) made once as nodes (page_node, laid out by the `width` its frame gives it,
-/// narrow where none is given) in node `v`, titled by the station's name as `here`'s stations say it: its global
-/// memory by its parts, its projects', the other skills (its built-in ones folded in a row, open as it was left), each
-/// row opening its page, followed as the core says them; while it is read the first time, all of it in its bones
-/// (waiting_node: made up, the core asked nothing for it), what could not be read said over it.
+/// One station's memory (kept for compatibility with direct station memory routes).
 pub fn memory_node(
   v : @view.View,
   core : Core,
@@ -104,23 +95,22 @@ pub fn memory_node(
   width? : () -> Double,
   tips? : @sf.TipLayer,
 ) -> Unit {
+  let topic = fn() { @settings.stations_of(core, here()) }
   let stations = fn() {
-    match @settings.stations_of(core, here()).value {
+    match topic().value {
       Some(Array(a)) => a
       _ => []
     }
   }
+  let read = fn() { memory_of(core, address) }
   let title = fn() {
-    let mut name = @settings.station_name(address)
     for s in stations() {
       if text(Some(s), "station") == address {
-        name = text(Some(s), "name")
+        return text(Some(s), "name")
       }
     }
-    name
+    @sf.t("web-pages.settings.memory.title")
   }
-  let names = fn() { station_names(stations()) }
-  let read = fn() { memory_of(core, address) }
   @sf.page_node(
     v,
     title,
@@ -136,7 +126,7 @@ pub fn memory_node(
         if reading {
           @sf.waiting_node(
             p,
-            fn(s) { memory_body_node(s, core.quiet(), "sample", names, fn() { Some(memory_sample()) }) },
+            fn(s) { memory_body_node(s, core.quiet(), fn() { "sample" }, fn() { Some(memory_sample()) }) },
             error=fn() {
               let e = read().error
               if e == "" {
@@ -147,7 +137,7 @@ pub fn memory_node(
             },
           )
         } else {
-          memory_body_node(p, core, address, names, fn() { read().value })
+          memory_body_node(p, core, fn() { address }, fn() { read().value })
         }
       })
     },
@@ -155,33 +145,37 @@ pub fn memory_node(
 }
 
 ///|
-/// A station's memory (`m`, as the core reads it, as it changes) as nodes (memory_body's): its global memory by its
-/// parts, its projects', the other skills with its built-in ones folded in a row, each row opening its page.
+/// The workspace's memory (`m`, as the core reads it, as it changes) as nodes: its global memory (with its recent diff
+/// inline), its projects', the other skills with its built-in ones folded in a row, each row opening its page.
 fn memory_body_node(
   v : @view.View,
   core : Core,
-  address : String,
-  names : () -> Map[String, String],
+  address : () -> String,
   m : () -> Json?,
 ) -> Unit {
   let skills = fn(group : String) { items(m(), "skills").filter(fn(k) { text(Some(k), "group") == group }) }
   let skill_rows = fn(g : @view.View, group : () -> Array[Json]) {
     g.each(group, fn(k) { text(Some(k), "name") }, fn(row, k) {
       let kv = fn() { Some(k.get()) }
+      let diff = fn() { items(kv(), "diff") }
+      let changed = fn() { text(kv(), "whenChanged") }
       memory_row_node(
         row,
         fn() { text(kv(), "name") },
-        fn() { text(kv(), "line") },
+        fn() { if diff().length() > 0 { "" } else { text(kv(), "line") } },
         fn() { text(kv(), "size") },
-        tag=fn() { skill_tag(kv(), names()) },
-        fn() { (core.push)(MemoryDoc(address, text(kv(), "name"), 0)) },
+        changed~,
+        diff~,
+        fn() { (core.push)(MemoryDoc(@signals.untracked(address), text(kv(), "name"), 0)) },
       )
     })
   }
+  let global = fn() { field(m(), "global") }
+  let global_sections = fn() { items(global(), "sections") }
   @sf.section_node(
     v,
     fn() { @sf.t("web-main.memory.global") },
-    note=fn() { join([@sf.t("web-main.memory.global.when"), text(field(m(), "global"), "size")], " · ") },
+    note=fn() { join([@sf.t("web-main.memory.global.when"), text(global(), "size")], " · ") },
     fn(s) {
       s.pick(fn() { sections_of(m()).length() == 0 }, fn(p, empty) {
         if empty {
@@ -190,9 +184,39 @@ fn memory_body_node(
           @sf.group_node(p, fn(g) {
             g.each(fn() { sections_of(m()).mapi(fn(i, x) { (i, x) }) }, fn(x) { x.0.to_string() }, fn(row, x) {
               let i = @signals.untracked(fn() { x.get().0 })
-              memory_row_node(row, fn() { x.get().1.0 }, fn() { "" }, fn() { x.get().1.2 }, fn() {
-                (core.push)(MemoryDoc(address, "", i))
-              })
+              let sec_json = fn() -> Json? {
+                let all = global_sections()
+                if i >= 0 && i < all.length() { Some(all[i]) } else { None }
+              }
+              let diff = fn() {
+                let d = items(sec_json(), "diff")
+                if d.length() > 0 {
+                  d
+                } else if i == 0 {
+                  items(global(), "diff")
+                } else {
+                  []
+                }
+              }
+              let changed = fn() {
+                let c = text(sec_json(), "whenChanged")
+                if c != "" {
+                  c
+                } else if i == 0 {
+                  text(global(), "whenChanged")
+                } else {
+                  ""
+                }
+              }
+              memory_row_node(
+                row,
+                fn() { x.get().1.0 },
+                fn() { if diff().length() > 0 { "" } else { section_line(x.get().1.1) } },
+                fn() { x.get().1.2 },
+                changed~,
+                diff~,
+                fn() { (core.push)(MemoryDoc(@signals.untracked(address), "", i)) },
+              )
             })
           })
         }
@@ -211,12 +235,14 @@ fn memory_body_node(
     })
   })
   v.show(fn() { skills("skill").length() + skills("builtin").length() > 0 }, fn(o) {
-    @sf.section_node(o, fn() { @sf.t("web-main.memory.others") }, fn(s) {
+    @sf.section_node(o, fn() { @sf.t("web-main.memory.others") }, note=fn() { @sf.t("web-main.memory.others.when") }, fn(
+      s,
+    ) {
       @sf.group_node(s, fn(g) {
         skill_rows(g, fn() { skills("skill") })
         // (the station's own, folded in a row: open as it was left, @settings.builtin_open_of)
         g.show(fn() { skills("builtin").length() > 0 }, fn(f) {
-          let open = fn() { @settings.builtin_open_of(address) }
+          let open = fn() { @settings.builtin_open_of(address()) }
           memory_row_node(
             f,
             fn() { @sf.t("web-main.memory.builtin") },
@@ -229,44 +255,161 @@ fn memory_body_node(
             },
             fn() { @sf.t("web-main.memory.count", args=[("n", skills("builtin").length().to_string())]) },
             folds=open,
-            fn() { @settings.builtin_turn(address) },
+            fn() { @settings.builtin_turn(@signals.untracked(address)) },
           )
         })
         // (each a row of the list's own while open, the list's gap between them: no box round them)
-        skill_rows(g, fn() { if @settings.builtin_open_of(address) { skills("builtin") } else { [] } })
+        skill_rows(g, fn() { if @settings.builtin_open_of(address()) { skills("builtin") } else { [] } })
       })
     })
   })
 }
 
 ///|
-/// A row of a station's memory made once (memory_row's): its name and whose (`tag`, as it changes) after it on
-/// its line, a line under it cut short, how much is in it at its end; `folds` what follows it where it says so.
+/// The first summary line of a global memory section (`words`), without a leading Markdown list marker.
+fn section_line(words : String) -> String {
+  for l in words.split("\n") {
+    let s = l.trim(chars=" \t").to_owned()
+    if s != "" && !s.has_prefix("#") {
+      if s.has_prefix("- ") || s.has_prefix("* ") || s.has_prefix("+ ") {
+        return s.unsafe_substring(start=2, end=s.length()).trim(chars=" \t").to_owned()
+      }
+      return s
+    }
+  }
+  ""
+}
+
+///|
+/// Renders a recent diff block inside a memory row's `below` slot, standing `corner_inset` (8) in from the row's
+/// sides and foot so its `small_corner` (10) is concentric with the row's `row_corner` (18) and the card's `22`, while
+/// its 8px inner padding aligns its gutter mark with the row's title at `text_in` (16).
+fn memory_diff_below_node(parent : @view.View, diff : () -> Array[Json]) -> Unit {
+  parent.box(fn(col) {
+    col
+    .grow(Is(1.0))
+    .shrink(Is(1.0))
+    .min_width(Is(Some(0.0)))
+    .margin(Is(@sf.row_below_inset(parent)))
+    |> ignore
+    col.pick(diff, fn(d, rows) {
+      if rows.length() > 0 {
+        memory_diff_node(d, rows)
+      }
+    })
+  })
+  |> ignore
+}
+
+///|
+// kept across runs: a value (no field of it changes)
+let memory_diff_box : @ui.Style = tool_diff.then(@ui.css("px=S2"))
+
+///|
+// kept across runs: a value (no field of it changes)
+let memory_diff_line : @ui.Style = @ui.css("row w=Full px=S2")
+
+///|
+// kept across runs: a value (no field of it changes)
+let memory_diff_out : @ui.Style = memory_diff_line.then(@ui.css("bg=DangerBg"))
+
+///|
+// kept across runs: a value (no field of it changes)
+let memory_diff_head : @ui.Style = memory_diff_line.then(@ui.css("pt=S1"))
+
+///|
+/// Renders the diff lines of a memory row's recent change in `v`.
+fn memory_diff_node(v : @view.View, diff_rows : Array[Json]) -> Unit {
+  let n = diff_rows.length()
+  steps_box_node(v, memory_diff_box, fn(d) {
+    for i, r in diff_rows {
+      match r {
+        Array([String(mark), String(line)]) =>
+          d.box(fn(l) {
+            l.margin(Is((-8.0, 0.0, -8.0, 0.0))) |> ignore
+            let is_first = i == 0
+            let is_last = i + 1 == n
+            @sf.style_node(l, fn() {
+              let base = match mark {
+                "-" => memory_diff_out
+                "+" => memory_diff_line.then(@ui.style(bg=Data(@sf.theme().p.green_bg)))
+                "@" => memory_diff_head
+                _ => memory_diff_line
+              }
+              let with_top = if is_first { base.then(tool_diff_row_top) } else { base }
+              if is_last { with_top.then(tool_diff_row_bot) } else { with_top }
+            })
+            let ink = fn() {
+              match mark {
+                "-" => @sf.theme().p.red
+                "+" => @sf.theme().p.green_ink
+                _ => @sf.theme().p.subtle
+              }
+            }
+            steps_box_node(l, tool_diff_mark, fn(m) {
+              if mark == "-" || mark == "+" {
+                steps_run(m, fn() { mark }, tool_mono, mono=true, ink~)
+              }
+            })
+            steps_box_node(l, tool_diff_words, fn(w) {
+              steps_run(w, fn() { if line == "" { " " } else { line } }, match mark {
+                "@" => tool_mono_head
+                " " => tool_mono_muted
+                _ => tool_mono
+              }, mono=true)
+            }, in_row=true)
+          })
+          |> ignore
+        _ => ()
+      }
+    }
+  })
+}
+
+///|
+/// A row of the workspace's memory made once: its name, an optional recent-change tag after its title, a line under it
+/// cut short (or its recent diff block below it), how much is in it at its end; `folds` what follows it where it says so.
 fn memory_row_node(
   parent : @view.View,
   title : () -> String,
   sub : () -> String,
   value : () -> String,
-  tag? : () -> String = fn() { "" },
+  changed? : () -> String,
+  diff? : () -> Array[Json],
   folds? : () -> Bool,
   press : () -> Unit,
 ) -> Unit {
-  @sf.link_row_node(
-    parent,
-    title,
-    press,
-    value~,
-    note=sub,
-    note_cut=true,
-    title_after=fn(a) { @sf.row_tag_node(a, tag) },
-    title_after_shown=fn() { tag() != "" },
-    folds?,
-  )
+  match (changed, diff) {
+    (Some(ch), Some(df)) =>
+      @sf.link_row_node(
+        parent,
+        title,
+        press,
+        value~,
+        note=sub,
+        note_cut=true,
+        title_after=fn(a) { @sf.row_tag_node(a, ch) },
+        title_after_shown=fn() { ch() != "" },
+        below=fn(b) { memory_diff_below_node(b, df) },
+        below_open=fn() { if df().length() > 0 { 1.0 } else { 0.0 } },
+        folds?,
+      )
+    _ =>
+      @sf.link_row_node(
+        parent,
+        title,
+        press,
+        value~,
+        note=sub,
+        note_cut=true,
+        folds?,
+      )
+  }
 }
 
 ///|
-/// A station's memory made up, for what is shown while it is read (memory_body_node in its bones): a few parts of the
-/// global memory, a project's skill and two others.
+/// A memory made up, for what is shown while it is read (memory_body_node in its bones): a few parts of the global
+/// memory, a project's skill and two others.
 fn memory_sample() -> Json {
   let row = fn(name : Int, line : Int, group : String) -> Json {
     {

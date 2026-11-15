@@ -70,7 +70,6 @@ let words_large_known : Map[String, Int] = {
     ("phone-en screen-files-done", 2),
     ("phone-en settings-profile-signin", 1),  // was 0, +1 (e) accounts.mbt:601 真问题，待修
     ("phone-en settings-new-connect-app", 1),
-    ("phone-en settings-memory-doc", 1),  // was 0, +1 (g) page_node.mbt:1267 真问题，待修
     ("phone-en settings-kept", 1),
     ("phone-en settings-kept-many", 1),
     ("phone-en settings-vault-words", 14),

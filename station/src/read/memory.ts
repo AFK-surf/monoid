@@ -59,6 +59,41 @@ function front(text: string, key: string): string | null {
 /// Rust's String order (bytes of UTF-8).
 const byBytes = (a: string, b: string) => Buffer.compare(Buffer.from(a), Buffer.from(b));
 
+const HEX64 = /^[0-9a-f]{64}$/;
+type Rec = { hash: string; at: number; by: string; prev: string[] };
+
+function recOf(raw: Json): Rec | null {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const { hash, at, by, prev } = raw;
+  if (typeof hash !== "string" || typeof at !== "number" || !Number.isSafeInteger(at) || at <= 0) return null;
+  if (typeof by !== "string" || by === "" || !Array.isArray(prev)) return null;
+  return { hash, at, by, prev: prev.filter((p): p is string => typeof p === "string" && HEX64.test(p)) };
+}
+
+function newerRec(a: Rec, b: Rec): boolean {
+  return a.at !== b.at ? a.at > b.at : a.by !== b.by ? a.by > b.by : byBytes(a.hash, b.hash) > 0;
+}
+
+function stationName(cloud: Json, ws: string | undefined, station: string): string {
+  if (ws !== undefined && Array.isArray(cloud?.joined)) {
+    const j = cloud.joined.find((x: Json) => x?.workspace === ws);
+    if (j) {
+      const p = Array.isArray(j.peers) ? j.peers.find((x: Json) => x?.id === station) : undefined;
+      if (typeof p?.name === "string" && p.name.trim() !== "") return p.name.trim();
+      if (station === cloud?.station && typeof j.name === "string" && j.name.trim() !== "") return j.name.trim();
+    }
+  }
+  const p = Array.isArray(cloud?.peers) ? cloud.peers.find((x: Json) => x?.id === station) : undefined;
+  if (typeof p?.name === "string" && p.name.trim() !== "") return p.name.trim();
+  if (station === cloud?.station && typeof cloud?.name === "string" && cloud.name.trim() !== "") return cloud.name.trim();
+  return station.slice(0, 8);
+}
+
+function prevBlob(dataDir: string, rec: Rec | null): string | null {
+  const h = rec?.prev[0];
+  return h ? readText(joined(dataDir, `share/memory/blobs/${h}`)) : null;
+}
+
 /// station's (its link into <data>/share/<id>/skill, from the station state.json says), or neither (null).
 function sharing(dataDir: string, raw: Json, dir: string, name: string): Json {
   const hosted = raw?.sharedSkills?.[name];
@@ -109,7 +144,7 @@ function skillFiles(dir: string): Json[] {
 }
 
 /// `shares`: whether its skills may be shared with other stations (the home workspace's only).
-function listSkills(home: string, dataDir: string, raw: Json, shares = true): Json[] {
+function listSkills(home: string, dataDir: string, raw: Json, cloud: Json, ws: string | undefined, keptFiles: Json, shares = true): Json[] {
   const dir = joined(home, "skills");
   let names: string[];
   try {
@@ -122,7 +157,26 @@ function listSkills(home: string, dataDir: string, raw: Json, shares = true): Js
     if (text === null) return [];
     const description = front(text, "description") ?? "";
     const builtin = BUILTIN.includes(name);
-    return [{ name, description, project: description.startsWith(PROJECT_PREFIX), builtin, text, files: skillFiles(joined(dir, name)), share: builtin || !shares ? null : sharing(dataDir, raw, dir, name) }];
+    const files = skillFiles(joined(dir, name));
+    const skillRec = builtin ? null : recOf(keptFiles?.[`skills/${name}/SKILL.md`]);
+    let latest = skillRec;
+    if (!builtin) {
+      for (const f of files) {
+        const fRec = recOf(keptFiles?.[`skills/${name}/${f.name}`]);
+        if (fRec && (!latest || newerRec(fRec, latest))) latest = fRec;
+      }
+    }
+    const prev = prevBlob(dataDir, skillRec);
+    return [{
+      name,
+      description,
+      project: description.startsWith(PROJECT_PREFIX),
+      builtin,
+      text,
+      files,
+      share: builtin || !shares ? null : sharing(dataDir, raw, dir, name),
+      ...(latest ? { at: latest.at, by: stationName(cloud, ws, latest.by), ...(prev !== null ? { prev } : {}) } : {}),
+    }];
   });
   return skills.sort((a, b) => Number(a.builtin) - Number(b.builtin) || Number(!a.project) - Number(!b.project) || byBytes(a.name, b.name));
 }
@@ -131,7 +185,19 @@ function listSkills(home: string, dataDir: string, raw: Json, shares = true): Js
 export function memory(dataDir: string, ws?: string): Json {
   const raw = readJson(joined(dataDir, "config.json"));
   if (ws !== undefined && !/^[0-9A-Za-z_-]{1,128}$/.test(ws)) throw new Error("not a workspace id");
+  const cloud = readJson(joined(dataDir, "mesh/cloud.json"));
+  const wsId = ws ?? (typeof cloud?.workspace === "string" ? cloud.workspace : "");
+  const keptFiles = wsId !== "" && /^[0-9A-Za-z_-]{1,128}$/.test(wsId) ? readJson(joined(dataDir, `share/memory/${wsId}.json`))?.files ?? {} : {};
   const home = ws === undefined ? agentHome(raw, dataDir) : joined(joined(agentHome(raw, dataDir), "workspaces"), ws);
   const path = joined(home, "MEMORY.md");
-  return { global: { path, text: readText(path) ?? "" }, skills: listSkills(home, dataDir, raw, ws === undefined) };
+  const globalRec = recOf(keptFiles?.["MEMORY.md"]);
+  const globalPrev = prevBlob(dataDir, globalRec);
+  return {
+    global: {
+      path,
+      text: readText(path) ?? "",
+      ...(globalRec ? { at: globalRec.at, by: stationName(cloud, ws, globalRec.by), ...(globalPrev !== null ? { prev: globalPrev } : {}) } : {}),
+    },
+    skills: listSkills(home, dataDir, raw, cloud, ws, keptFiles, ws === undefined),
+  };
 }
