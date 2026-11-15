@@ -18,7 +18,7 @@ priv struct FarviewRig {
 let farview_drawn_ms : Double = 2000.0
 
 ///|
-fn farview_rig() -> FarviewRig {
+fn farview_rig(screen? : String = "browser:fv_t1") -> FarviewRig {
   @sfbase.reset()
   @sf.presenters_reset()
   @sf.set_words(@sfbase.fill)
@@ -54,7 +54,7 @@ fn farview_rig() -> FarviewRig {
       @ui.set_tree_theme(@sf.ui_theme_now)
       root.show(fn() { shown.get() }, fn(p) {
         p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
-        farview_tab_node(p, src, "ws-1/st-1", "browser:fv_t1")
+        farview_tab_node(p, src, "ws-1/st-1", screen)
       })
     },
     w=390.0,
@@ -176,4 +176,20 @@ test "a Farview tab: the host's bytes cut anywhere, frames one after another, ea
   // (50 down the page, as the last frame put it)
   guard r.t.drawn_rects().filter(fn(d) { d.4 == 0xFF0000FFL && d.2 == 390.0 }) is [red, ..] else { fail("no page") }
   assert_eq(w.1 - red.1, 50.0)
+}
+
+///|
+test "a Farview tab widened with its window says its new width to the host" {
+  // (a tab of its own: a tab's stage is kept while the app runs, by its id)
+  let r = farview_rig(screen="browser:fv_wide")
+  let (_, tell) = r.views[0]
+  tell(Json::object({ "state": Json::object({ "phase": "live", "opens": Json::number(1.0) }) }), None)
+  r.t.draw()
+  let widths = fn() {
+    r.sent.map(fn(b) { farview_said(b) }).flatten().filter_map(fn(m) { if m is Hello(w, _, _) { Some(w) } else { None } })
+  }
+  assert_eq(widths(), [390.0])
+  r.t.resize(900.0, 844.0)
+  r.t.run_for(farview_drawn_ms)
+  assert_eq(widths().last(), Some(900.0))
 }

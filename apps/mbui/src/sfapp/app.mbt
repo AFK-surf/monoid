@@ -715,14 +715,25 @@ fn lone_tree(v : @view.View, src : Source) -> Unit {
     o.over(Is(true)) |> ignore
     o.box(fn(b) { b.height(By(fn() { Some(window_band_now()) })).moves_window(Is(true)) |> ignore }) |> ignore
   })
-  @ui.old(v, fn(c) {
-    match @sfbase.lone_page.val {
-      Some(p) => lone_page_view(c, src, p)
-      None => ()
-    }
-  })
-  .over(Is(true))
-  |> ignore
+  match @sfbase.lone_page.val {
+    // a Farview tab: drawn here (sfpages' farview_tab_node), under the window's top band, as the panel and the
+    // phone's page draw it: its page laid out at this window's width as it changes, not a picture of the tab
+    Some(Screen(at)) if @sfpages.farview_screen(at.screen) =>
+      v.box(fn(p) {
+        p.over(Is(true)).padding(By(fn() { (window_band_now(), 0.0, 0.0, 0.0) })) |> ignore
+        @sfpages.farview_tab_node(p, src, at.station, at.screen)
+      })
+      |> ignore
+    _ =>
+      @ui.old(v, fn(c) {
+        match @sfbase.lone_page.val {
+          Some(p) => lone_page_view(c, src, p)
+          None => ()
+        }
+      })
+      .over(Is(true))
+      |> ignore
+  }
   @ui.old(v, fn(c) {
     @sf.presented(c)
   })
