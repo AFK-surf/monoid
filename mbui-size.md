@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [6ca8d986c](https://github.com/AFK-surf/monoid/commit/6ca8d986cde4fb0a1c303f0fa46b80eabb571573) station: move the TypeScript the MoonBit program r | 2.14 | 2.99 | 12.92 | 34.05 | 51.2 | 29.87 | 59.81 | 99.71 | 118.47 |
 | [40cb44854](https://github.com/AFK-surf/monoid/commit/40cb4485494674768d243bd8e1c7e6317bae0158) station: read Codex app-servers' threads in MoonBi | 2.14 | 2.99 | 12.92 | 34.05 | 51.2 | 29.87 | 59.81 | 99.71 | 118.47 |
 | [124be6dbd](https://github.com/AFK-surf/monoid/commit/124be6dbd1eb3b95c126640ceea7e9b4e0dbe77e) app: an old sheet opened whole holds what it asked | 2.14 | 2.99 | 12.92 | 34.05 | 51.2 | 29.87 | 59.81 | 99.71 | 118.47 |
 | [3f9e81d4e](https://github.com/AFK-surf/monoid/commit/3f9e81d4e486c5b5d4fa7b96dadde45c1c23de0b) mbui: a signal or computed tells only as its value | 2.14 | 2.99 | 12.92 | 34.05 | 51.19 | 29.87 | 59.79 | 99.76 | 119.59 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [79bfb1257](https://github.com/AFK-surf/monoid/commit/79bfb12579f5781ebac6174618ee1e379a4d46ef) app: the Wasm app's start compacted as it is built | 2.11 | 2.94 | 12.66 | 33.72 | 49.91 | 29.13 | 57.65 | 99.65 | 112.41 |
 | [891879d7a](https://github.com/AFK-surf/monoid/commit/891879d7a50ddc510fb9a0d022dfd51c6174dee7) app: a keyed op finds its item in a long list by w | 2.11 | 2.93 | 12.65 | 33.71 | 49.87 | 29.12 | 57.69 | 99.47 | 121.74 |
 | [9ac3baeb4](https://github.com/AFK-surf/monoid/commit/9ac3baeb4ee6fe958a997c1e2ab5379b3ce03b86) mbui view: a way's step tells how it is cut only a | 2.11 | 2.93 | 12.65 | 33.71 | 49.87 | 29.12 | 57.69 | 99.47 | 121.74 |
-| [dd46489e1](https://github.com/AFK-surf/monoid/commit/dd46489e1673879ef6adb0653a022a3ad0991ecc) base: what a program asks beside its links: a slow | 2.11 | 2.93 | 12.65 | 33.71 | 49.87 | 29.12 | 57.69 | 99.47 | 121.74 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [6ca8d986c](https://github.com/AFK-surf/monoid/commit/6ca8d986cde4fb0a1c303f0fa46b80eabb571573) station: move the TypeScript the MoonBit program r | 0.42 | 0.54 | 2.07 | 3.17 | 4.97 | 1.53 | 4.08 | 57.33 |
 | [40cb44854](https://github.com/AFK-surf/monoid/commit/40cb4485494674768d243bd8e1c7e6317bae0158) station: read Codex app-servers' threads in MoonBi | 0.42 | 0.54 | 2.07 | 3.17 | 4.97 | 1.53 | 4.08 | 57.51 |
 | [124be6dbd](https://github.com/AFK-surf/monoid/commit/124be6dbd1eb3b95c126640ceea7e9b4e0dbe77e) app: an old sheet opened whole holds what it asked | 0.42 | 0.54 | 2.07 | 3.17 | 4.97 | 1.53 | 4.08 | 57.59 |
 | [3f9e81d4e](https://github.com/AFK-surf/monoid/commit/3f9e81d4e486c5b5d4fa7b96dadde45c1c23de0b) mbui: a signal or computed tells only as its value | 0.42 | 0.54 | 2.07 | 3.17 | 4.97 | 1.53 | 4.08 | 57.59 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [79bfb1257](https://github.com/AFK-surf/monoid/commit/79bfb12579f5781ebac6174618ee1e379a4d46ef) app: the Wasm app's start compacted as it is built | 0.41 | 0.53 | 1.98 | 3.09 | 4.56 | 1.47 | 3.81 | 57.44 |
 | [891879d7a](https://github.com/AFK-surf/monoid/commit/891879d7a50ddc510fb9a0d022dfd51c6174dee7) app: a keyed op finds its item in a long list by w | 0.41 | 0.53 | 1.98 | 3.09 | 4.56 | 1.47 | 3.81 | 57.44 |
 | [9ac3baeb4](https://github.com/AFK-surf/monoid/commit/9ac3baeb4ee6fe958a997c1e2ab5379b3ce03b86) mbui view: a way's step tells how it is cut only a | 0.41 | 0.53 | 1.98 | 3.09 | 4.56 | 1.46 | 3.81 | 57.36 |
-| [dd46489e1](https://github.com/AFK-surf/monoid/commit/dd46489e1673879ef6adb0653a022a3ad0991ecc) base: what a program asks beside its links: a slow | 0.41 | 0.53 | 1.98 | 3.09 | 4.56 | 1.46 | 3.81 | 57.48 |
