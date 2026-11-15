@@ -37,6 +37,9 @@ export const CALL = "connect.call";
 export const TAKE = "connect.take";
 /// A connect moved: the station it runs on now, told to the workspace's others.
 export const MOVED = "connect.moved";
+/// Whether the station asked holds a connect (its entry in its config.json): asked by one that moved it there and did not
+/// hear it was taken (workspace.ts `settleMoving`).
+export const HOLDS = "connect.holds";
 /// One thread of a connect's: its chat runs on another station from now on, or on the connect's own again (a chat
 /// handed over, replica/handover.ts), told to the station the connect runs on.
 export const ROUTE = "connect.route";

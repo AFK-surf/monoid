@@ -54,7 +54,11 @@ chats paused 18 minutes, a half-moved state, no way back), whose start stays swi
   there; a Comma or single-session connect's chats need it instead, so it goes first, stopping them here, and each goes
   on there as it moves: the connect arrives knowing which of its chats are still to come (`connect.take`'s
   `awaiting`) and keeps what its platform says, in order, until they are all there, never a new session for one on its
-  way, connects/workspace.ts `arrived`), `repos` (a canonical clone a chat's linked worktree hangs on, by its remote: cloned there, what
+  way, connects/workspace.ts `arrived`; from the moment the other is asked to take it, what this station's socket still
+  gives waits for the answer and goes to the holder, handled only there (`handing`: the two sockets overlap a few ms,
+  and Slack gives an event to any one of an app's sockets); its move is kept on disk until either side's answer is
+  heard (`connects-moving` in the data directory's `replica`), so a station stopped between, or one that heard no answer, asks the other whether
+  it holds it as it starts and as it is heard from (`settleMoving`, `connect.holds`): one of them holds it, never both), `repos` (a canonical clone a chat's linked worktree hangs on, by its remote: cloned there, what
   no remote has fetched from a bundle; back, removed there only where this move made it; the chat's move only adds
   its worktree, `rebuildGits` `clone: false`), `vault` (an owner's plain items and the vaults they own, rows sent as
   they are; back, the other lets go of what this move put there) and `settings` (config.json's settings that are a person's choice,
