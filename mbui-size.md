@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [adfaecd2e](https://github.com/AFK-surf/monoid/commit/adfaecd2ec58d18dfdb62728f2e0904493050d13) mbui: 待处理、可用模型、本机会话三个面板改为节点（old-panel 15 → 12） (#6 | 2.11 | 2.95 | 12.72 | 33.78 | 50.24 | 29.15 | 57.72 | 99.71 | 117.57 |
 | [8f9f38b0a](https://github.com/AFK-surf/monoid/commit/8f9f38b0a536e4e6e5252e694ae904daf09d0480) mbui view: what is laid out where an old view is h | 2.11 | 2.94 | 12.67 | 33.74 | 49.98 | 29.15 | 57.72 | 99.71 | 118.52 |
 | [e55a064bb](https://github.com/AFK-surf/monoid/commit/e55a064bb8b0b33b02eb68b653827bf2a11d4c86) mbui: 对话右侧栏顶栏节点化（side_bar_node） (#6473) | 2.11 | 2.94 | 12.67 | 33.74 | 49.98 | 29.15 | 57.72 | 99.67 | 118.52 |
 | [4ab7a065a](https://github.com/AFK-surf/monoid/commit/4ab7a065a5683dcb24b4ffa234e139eefa601fb3) app: a Farview tab in a window of its own is drawn | 2.11 | 2.94 | 12.67 | 33.74 | 49.98 | 29.15 | 57.72 | 99.67 | 118.52 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [4986225f9](https://github.com/AFK-surf/monoid/commit/4986225f96d59292aa03e36dd2037ea323adda6f) app: incrementalize chat data pipeline and per-row | 2.08 | 2.86 | 12.3 | 33.23 | 47.9 | 28.78 | 56.67 | 98.63 | 110.66 |
 | [6dad75eff](https://github.com/AFK-surf/monoid/commit/6dad75eff024868d56a0f7724edc37543654a8ea) station: a mirror's directory sync runs in the Moo | 2.08 | 2.86 | 12.29 | 33.23 | 47.88 | 28.77 | 56.67 | 98.96 | 112.96 |
 | [fbb9060de](https://github.com/AFK-surf/monoid/commit/fbb9060de88a6773835eec44d8a848728138a4f6) app: a Farview tab's page drawn as nodes, what scr | 2.08 | 2.86 | 12.29 | 33.23 | 47.88 | 28.76 | 56.64 | 98.7 | 111.71 |
-| [cc1745615](https://github.com/AFK-surf/monoid/commit/cc17456152f5f68a798c00068e4b4545b2c53066) mbui: audit() holds the one height, the first line | 2.07 | 2.85 | 12.28 | 33.21 | 47.84 | 28.76 | 56.64 | 98.7 | 117.47 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [adfaecd2e](https://github.com/AFK-surf/monoid/commit/adfaecd2ec58d18dfdb62728f2e0904493050d13) mbui: 待处理、可用模型、本机会话三个面板改为节点（old-panel 15 → 12） (#6 | 0.41 | 0.53 | 1.99 | 3.1 | 4.58 | 1.47 | 3.83 | 57.31 |
 | [8f9f38b0a](https://github.com/AFK-surf/monoid/commit/8f9f38b0a536e4e6e5252e694ae904daf09d0480) mbui view: what is laid out where an old view is h | 0.41 | 0.53 | 1.99 | 3.1 | 4.58 | 1.47 | 3.83 | 57.31 |
 | [e55a064bb](https://github.com/AFK-surf/monoid/commit/e55a064bb8b0b33b02eb68b653827bf2a11d4c86) mbui: 对话右侧栏顶栏节点化（side_bar_node） (#6473) | 0.41 | 0.53 | 1.99 | 3.1 | 4.58 | 1.47 | 3.83 | 57.31 |
 | [4ab7a065a](https://github.com/AFK-surf/monoid/commit/4ab7a065a5683dcb24b4ffa234e139eefa601fb3) app: a Farview tab in a window of its own is drawn | 0.41 | 0.53 | 1.99 | 3.1 | 4.58 | 1.47 | 3.83 | 57.36 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [4986225f9](https://github.com/AFK-surf/monoid/commit/4986225f96d59292aa03e36dd2037ea323adda6f) app: incrementalize chat data pipeline and per-row | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.25 |
 | [6dad75eff](https://github.com/AFK-surf/monoid/commit/6dad75eff024868d56a0f7724edc37543654a8ea) station: a mirror's directory sync runs in the Moo | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.25 |
 | [fbb9060de](https://github.com/AFK-surf/monoid/commit/fbb9060de88a6773835eec44d8a848728138a4f6) app: a Farview tab's page drawn as nodes, what scr | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.25 |
-| [cc1745615](https://github.com/AFK-surf/monoid/commit/cc17456152f5f68a798c00068e4b4545b2c53066) mbui: audit() holds the one height, the first line | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.25 |
