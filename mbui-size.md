@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [7ea6c3f2b](https://github.com/AFK-surf/monoid/commit/7ea6c3f2bfb4eb3b7f8785aba562e5e84c3a14fe) fix(mbui): a page's list's foot asked outside any  | 2.09 | 2.87 | 12.37 | 33.31 | 48 | 28.82 | 56.61 | 98.85 | 113.64 |
 | [929becb21](https://github.com/AFK-surf/monoid/commit/929becb21da31c890fce015ee86aedde0e1cceee) app: fix the dragged-file preference (#6430) | 2.09 | 2.87 | 12.37 | 33.31 | 48 | 28.82 | 56.61 | 98.85 | 113.64 |
 | [0a91b2091](https://github.com/AFK-surf/monoid/commit/0a91b20914edcf20ff61dff689a094d988af2411) app: orient quote marks by their place (#6438) | 2.09 | 2.87 | 12.37 | 33.31 | 48 | 28.82 | 56.61 | 98.85 | 112.45 |
 | [90cfea097](https://github.com/AFK-surf/monoid/commit/90cfea097030058f2369f106a18f2d8c50f8f57e) move: a move back lets go itself what waited for t | 2.09 | 2.87 | 12.36 | 33.3 | 47.97 | 28.82 | 56.61 | 98.85 | 149.5 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [8123bf453](https://github.com/AFK-surf/monoid/commit/8123bf4531ff4f2324c44b7cb57ef434a782ad44) AGENTS.md: drop migration pixel-fitting rules, req | 2.07 | 2.84 | 12.23 | 32.11 | 45.29 | 28.7 | 56.46 | 98.63 | 114.98 |
 | [fa7b51fd4](https://github.com/AFK-surf/monoid/commit/fa7b51fd4b4b45ffff4a5aa073c69808e0a2faa3) mbui app: the chat's page made as nodes lets go of | 2.07 | 2.84 | 12.23 | 32.11 | 45.29 | 28.7 | 56.46 | 98.63 | 114.98 |
 | [41edf8633](https://github.com/AFK-surf/monoid/commit/41edf86331a001ebf7571a41c4e7e3b705920631) mbui: what is laid out nowhere is not laid out aga | 2.06 | 2.84 | 12.23 | 32.11 | 45.29 | 28.7 | 56.46 | 98.57 | 108.48 |
-| [1a99bf08c](https://github.com/AFK-surf/monoid/commit/1a99bf08c1c9fcdea7e1a5a1182e6ed504c7bfae) mbui: the spacing rules see the window's tree's wo | 2.06 | 2.84 | 12.23 | 32.11 | 45.29 | 28.7 | 56.46 | 98.57 | 108.48 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [7ea6c3f2b](https://github.com/AFK-surf/monoid/commit/7ea6c3f2bfb4eb3b7f8785aba562e5e84c3a14fe) fix(mbui): a page's list's foot asked outside any  | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.28 |
 | [929becb21](https://github.com/AFK-surf/monoid/commit/929becb21da31c890fce015ee86aedde0e1cceee) app: fix the dragged-file preference (#6430) | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.49 |
 | [0a91b2091](https://github.com/AFK-surf/monoid/commit/0a91b20914edcf20ff61dff689a094d988af2411) app: orient quote marks by their place (#6438) | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.49 |
 | [90cfea097](https://github.com/AFK-surf/monoid/commit/90cfea097030058f2369f106a18f2d8c50f8f57e) move: a move back lets go itself what waited for t | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.49 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [8123bf453](https://github.com/AFK-surf/monoid/commit/8123bf4531ff4f2324c44b7cb57ef434a782ad44) AGENTS.md: drop migration pixel-fitting rules, req | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.13 |
 | [fa7b51fd4](https://github.com/AFK-surf/monoid/commit/fa7b51fd4b4b45ffff4a5aa073c69808e0a2faa3) mbui app: the chat's page made as nodes lets go of | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.49 |
 | [41edf8633](https://github.com/AFK-surf/monoid/commit/41edf86331a001ebf7571a41c4e7e3b705920631) mbui: what is laid out nowhere is not laid out aga | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.49 |
-| [1a99bf08c](https://github.com/AFK-surf/monoid/commit/1a99bf08c1c9fcdea7e1a5a1182e6ed504c7bfae) mbui: the spacing rules see the window's tree's wo | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.31 |
