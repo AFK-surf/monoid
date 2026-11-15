@@ -452,7 +452,11 @@ for t in $targets; do
           # 43639248574: 197, 219, 168, 257), the third's 163-212: the fourth reckoned 980, the third 1550. By the
           # table the first's pages 567 s, the second's 683, the third's 259, the fourth's 612, where they were 533,
           # 688, 211 and 689 with the files merged since)
-          *) specs="4,4,1030,1 2,4,730,1 1,4,1550,1 4,4,980,1" ;;
+          # (dealt so, with the files merged since, the third's pages were 265 s by the table on its one program and ran
+          # 278 s: app 3/4 271 s on main 7b151c31 (43658036848) and 294 s on farview-pace (43658053979), the others
+          # 160-251. The third reckoned 1650: by the table the first's pages 598 s, the second's 705, the third's 199,
+          # the fourth's 619)
+          *) specs="4,4,1030,1 2,4,730,1 1,4,1650,1 4,4,980,1" ;;
         esac
         g1=() g2=() g3=() g4=()
         while read -r g f; do
