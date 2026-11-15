@@ -746,7 +746,8 @@ fn openers_opened(db : @sql.Db, ids : Array[String]?) -> (Map[String, Json], Map
   }
   if rows is Some(rows) {
     for r in rows {
-      let led = field(r, "led") is Number(1.0, ..)
+      // (NULL: opened before chat_create's `for`, led as its opener is told: read/store.ts `openers`)
+      let led = !(field(r, "led") is Number(0.0, ..))
       openers[js_text(field(r, "child"))] = opened_named(station(field(r, "parent_station")), field(r, "parent"), or_else(field(r, "opener_title"), field(r, "parent_title")), led~)
     }
   }

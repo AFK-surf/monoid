@@ -1362,6 +1362,11 @@ test("chat_create says whose the chat is: one led reports and asks its leader, o
   await settle();
   assert.equal([...runtimeOf(r, keyA).steers, ...runtimeOf(r, keyA).prompts].length, before);
   assert.ok((await r.call(theirs, "chat_create", { for: "me", key: "sub", text: "a part" })).includes("Opened"));
+  // One opened before `for` (led NULL) is led, as its opener is told of its turns: what it asks is in no person's
+  // 待处理 (a chat opened that morning kept asking its person to mark it read, 2026-11-15).
+  r.store.db.prepare("UPDATE opened_chats SET led = NULL WHERE child = ?").run(theirs);
+  assert.equal(r.store.openerOf(theirs)!.led, null);
+  assert.equal(listed().get(theirs).opener.led, true);
   await r.close();
 });
 
