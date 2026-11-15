@@ -166,37 +166,15 @@ yet and you can add one, add it.
 - A test walks to what it tests step by step (taps, types, data), then says the moment it looks at (`run_for` a
   declared duration, by name) and asserts. The frames in between must not matter: a picture or a state at a moment is
   a function of the inputs and that moment, at 60 Hz, at 120 Hz, or in one jump.
-- So every test the Tester runs, mbui's and the app's, runs again with frames drawn on `run_for`'s way (while the app
-  asks for them, as a host draws them) at 60, 120, 24 and 7 a second (`MBUI_TEST_FPS`, `scripts/fps_check.sh`; in CI
-  mbui-ci's `native at …` and mbui-check's `… at … fps`, a runner a rate; on main after a merge, not on a branch's
-  pushes (the user, 2026-11-11 15:51 UTC: 「直接合，帧率在 main 上合并后跑」: red there mended forward), but for the app's
-  test files a branch changed, at 120, 60 and 24 (mbui-check's `rates-changed`; the user, 2026-11-14), and in the
-  day's run), and must come out the same; the app's sweeps of
-  each screen at rest (screens, squeeze_said, words_large, corners, contrast) only at the default rate, a rate having
-  found nothing in them the default run did not (the user, 2026-11-11: each part of the tests is run for what it is
-  for); and for now how what moves goes is not judged on those sweeps' frames (`Tester::motion_unjudged`: their screens
-  open with motion reduced; the user, 2026-11-12: 「先省吧，明天加机器，再改回来」, judged again once CI has more runners). Only
-  `run_for`'s way gets them: what a test walks itself (inputs, `frame()`) is on the display's frames as ever. Those runs
-  hold results only; how a motion goes frame to frame (`sizes_steady`, `rows_steady`, `words_over`, `gaps_steady`) is
-  judged on the default run's frames (the user, 2026-11-09: 平滑度另开一条线), and a test that walks its frames itself to judge that
-  (`frame()`, the same frames at any rate) returns at once at a rate (`@ui.test_at_a_rate()`, send_steady_wbtest.mbt).
-  That line: `MBUI_TEST_MOTION` (`count`, `judge`; `src/ui/tester_fps.mbt`) judges them at 60 and 120 on every frame on
-  the way as well, where a step half way through a motion shows (「动画执行到一半突变也算突变」); CI's 60 and 120 runs
-  count them (the job's summary, the `motion-*` artifacts: `scripts/motion_said.sh`) only in the files each test
-  package still lists as it starts (`@ui.motion_counted`, `src/ui/tester.mbt`) and judge every other file, so one
-  mended to none stays so and a new one starts judged. No exemption mends one: the `*_known` bars only fall, and a
-  file leaves `motion_counted` once it shows none; one is never added to it. A bar's key is the file its Testers are made in (one
-  made in another file's helper is that file's), and it holds how many one Tester may show: those runs, and the
-  default rate's in CI (`MBUI_TEST_BARS`), say each bar and each fault a Tester found with how many it has come to,
-  judged or counted (`MOTION bar`, `known`, `made`, `unjudged`, `counted`, `counting`, `held`), and `scripts/motion_bars.sh` sets
-  each bar beside the most one Tester of its file found at any of the three, in the summary of a job after them: a bar
-  more than that to fall, a counted file showing none where it was counted to leave the list, a file with a Tester not judged
-  on how what moves goes (`Tester::motion_unjudged`) left out. Either fails that job on main, each line saying the one
-  line of a table to change: the change that mended a fault brings its bar down, or takes its file off the list, itself.
-  What an answer changed at once (`@view.answering`) is no step: sizes_steady takes the frame that shows it, in the
-  column of what it changed (what scrolls round it, else the page), as that answer's change; a structure's part and a
-  binding's property alike. Only what is on a way not at its end then (its own, what holds it, a way in or out beside
-  it in its column: `Tree::on_way_at`) is judged as ever: a step in the middle of a way (`src/view/answer_marked.mbt`).
+- Every Tester test runs again with intermediate frames drawn along `run_for` at 60, 120, 24, and 7 fps (`MBUI_TEST_FPS`,
+  `scripts/fps_check.sh`; on `main` after merge, and on PR branches for changed app test files at 120/60/24 via
+  `rates-changed`), and must produce identical results. Screen sweeps at rest (`screens`, `squeeze_said`, `words_large`,
+  `corners`, `contrast`) run at the default rate only.
+- Frame-to-frame motion smoothness (`sizes_steady`, `rows_steady`, `words_over`, `gaps_steady`) is checked on the
+  default run and via `MBUI_TEST_MOTION` at 60/120 fps (`src/ui/tester_fps.mbt`, `scripts/motion_bars.sh`). The
+  `*_known` bars and `@ui.motion_counted` list may only shrink as faults are fixed; never add a file to
+  `motion_counted` or raise a bar. Immediate data answers (`@view.answering`, `src/view/answer_marked.mbt`) are treated
+  as answer changes, while nodes mid-transition (`Tree::on_way_at`) are still checked for mid-motion jumps.
 - Time nothing happens in is skipped, never walked (the user, 2026-11-14: 「无意义的时间直接跳过是这个项目第一天就开始强调的」).
   A test that looks at every frame after a cause (`Tester::each_frame`) runs the clock on with the frames a host
   draws (`Tester::run_shown`: the display's while the app asks for frames, none while it is at rest, one at what is

@@ -74,7 +74,7 @@ export function overgrown(files: [string, string][]): string {
     if (why.length > 0) said.push(`- ${rel}: ${why.join("; ")}`);
   }
   if (said.length === 0) return "";
-  return `[still.fail: this memory has grown past what an agent can use: condense it before you add to it]\n${said.join("\n")}\nKeep the lasting rules and facts, one line each; drop progress, status and handover notes (they belong in a chat's own workspace); keep one of what is said twice and the newest of what contradicts.`;
+  return `[still.fail: this memory has grown past what an agent can use: condense a file you touch before you add to it]\n${said.join("\n")}\nKeep the lasting rules and facts, one line each; drop progress, status and handover notes (they belong in a chat's own workspace); keep one of what is said twice and the newest of what contradicts.`;
 }
 
 const instructions = (project: string, workspace: string, repos_dir: string, memory_path: string, station: string) => `You work on this machine for people who write to you from still.fail chats, Slack threads, Feishu chats and Comma Tasks.
@@ -92,7 +92,7 @@ Answering:
 - Only chat_post reaches people; your ordinary output reaches nobody. chat_post to=<the message's thread>.
 - A subagent you start says nothing itself: it hands its result back to you, and you post what people need. Never have one post to the chat, end the turn, write to another chat's agent or write to Slack.
 - Give the chat a title (a few words) with your first post once its topic is clear.
-- Post the answer, results and questions; post progress only when people need it before the end (a changed plan, a blocker, long work).
+- Post the answer, results and questions; when a request or change will take more than a couple of minutes, reply briefly first with the cause and plan rather than staying silent until the end.
 - Ask only when a real choice blocks the work. When people would answer by picking or confirming, attach an options card (card.assignee: the deciding person's email, from their message's from; an email your runtime calls its user's is the account you run on, not a person here); when they must type a value, a text card. Do not ask about what is already decided or authorized.
 - Never ask people to run a command or paste a secret: use the login tool for logins (skill stillfail-login), the vault for credentials (skill stillfail-vault).
 - For visible results show them (skills stillfail-show, stillfail-viz). For other chats, agents, Slack or Feishu APIs and archive policy, read skill stillfail-chats. To retire a station (move its chats to another), skill stillfail-retire. When you do not have a skill that your instructions or a tool's description names, read it with skill_read by its name.

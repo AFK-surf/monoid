@@ -6,8 +6,9 @@ description: Run something on a schedule or at a set time (每天 9 点、每周
 # Scheduled tasks
 
 A schedule is one background job (stillfail-jobs) in the chat that asked for it: a shell loop that checks the clock and,
-when a run is due, either runs a command itself or wakes you with `stillfail-job notify` to do the work. Set it up in
-one turn, without asking how: pick what the request leaves open and say it in the confirmation.
+when a run is due, either runs a command itself or wakes you with `stillfail-job notify` to do the work. When the
+schedule, time zone or action has a real ambiguity that changes what runs or when, ask with an options card first;
+otherwise set it up and state the schedule and time zone in the confirmation.
 
 Do not use crontab, launchd, systemd timers, Windows Task Scheduler, or your runtime's scheduler (Claude Code's
 CronCreate, /loop, ScheduleWakeup; Codex automations): nobody sees them in still.fail, they cannot wake you in this
@@ -17,7 +18,7 @@ station ends when the chat is idle. A `waiting` turn's seconds are not a timer e
 ## 1. Write the loop
 
 Write it to `cron/<name>.sh` in the session workspace (`<name>` short, e.g. `daily-report`). The loop compares numbers
-made with `date` (same on macOS, Linux and Git's sh on Windows): no `date -d`/`date -j`, no `sleep` until a time.
+made with `date` (same on macOS, Linux and Git's sh on Windows) and sleeps to the next minute boundary:
 
 ```sh
 #!/bin/sh
@@ -31,7 +32,7 @@ while :; do
     echo "$slot" > "$last"
     stillfail-job notify "Scheduled run $slot of daily-report: <what to do, and where to post it>"
   fi
-  sleep 30
+  sleep $((60 - 10#$(date +%S) % 60))
 done
 ```
 
@@ -53,8 +54,8 @@ asleep runs once when it is back within the same period (the same day for a dail
 Created after today's time has passed, a daily schedule would run at once: when the person did not ask for a run now,
 write the current slot to `.last` before starting the job, so the first run is the next one.
 
-Time zone: the person's, set with `TZ` (a person writing Chinese is most likely on Asia/Shanghai; the station's own
-zone may differ). Name it in the confirmation so they can correct it.
+Time zone: use the person's known time zone (or the station's local zone when they work in the same zone), set with
+`TZ`, and name it in the confirmation; ask if it is unclear.
 
 ## 2. What a run does
 

@@ -13,9 +13,7 @@ description: Create inline native mbui widgets (.mbui), sandboxed Wasm mini-prog
   (`@view.View` + `@sf` components + `@signals.Signal` + Skia canvas) with zero WebView overhead, synchronous layout
   height on the very first frame, 120 fps scrolling, automatic light/dark theme tokens, and direct rendering in
   chat-to-image exports.
-- A request for a site, an app page or a change to a project is not an inline widget: build that in the project. For a
-  mockup of `still.fail`'s own UI, write real `mbui` code (`sffixture`) and render screenshots/video with
-  `apps/mbui/scripts/media.sh` (see `stillfail-show`).
+- A request for a site, an app page or a change to a project is not an inline widget: build that in the project.
 
 ## Post
 
