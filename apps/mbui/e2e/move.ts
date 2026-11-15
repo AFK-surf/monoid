@@ -3463,8 +3463,10 @@ try {
     let key = "";
     await check(`9m: the limbo made on ${limboDist === own ? "A's own build" : limboDist}: a chat's hand-over held after its counts, A handed to its next process (which fails it and has B drop it), then let go (it writes gone)`, async () => {
       if (!/^counts:/.test(holdAt)) throw new Error("no hold given (E2E_DRILL_HOLD=counts:<path>): the limbo cannot be made honestly");
-      if (limboDist !== own) await runA(limboDist);
       key = (await seedA(1))[0]!;
+      // (A handed to a process of the limbo's build in any case: on main's tree a process the harness started itself
+      // never took the hold, nine-5 and nine-7, one the launcher started for a handover did)
+      await runA(limboDist);
       roomsOf([key], 1);
       rmSync(`${hold}.held`, { force: true });
       rmSync(`${hold}.go`, { force: true });
@@ -3474,10 +3476,12 @@ try {
       await whenChanged([dirname(hold)], () => existsSync(`${hold}.held`), 120_000, () => `the hand-over never came to its hold: ${brief(outOn("A", key))}`, 100);
       log(`  held after its counts in ${readFileSync(`${hold}.held`, "utf8")}: ${brief(outOn("A", key))}`);
       const h = await handOver("A");
-      // (the next process's start fails it and has B drop it, as at 12:20:13.294)
-      await whenChanged([DATA.A, DATA.B], () => outOn("A", key)?.step === "failed" && handovers("B", "in").some((i) => (i.keys ?? []).includes(key) && i.step === "dropped"), 120_000, () => `the next process did not fail it and have B drop it: A ${brief(outOn("A", key))}; B ${brief(handovers("B", "in").filter((i) => (i.keys ?? []).includes(key)))}`, 100);
-      log(`  the next process failed it and B dropped it: ${brief(outOn("A", key))}`);
+      // (the next process's start fails it, as at 12:20:13.294; the process before let go at once, so that it writes gone
+      // while the drop it asked of B is on its way, as 6 ms later there)
+      await whenChanged([DATA.A], () => outOn("A", key)?.step === "failed", 120_000, () => `the next process did not fail it: A ${brief(outOn("A", key))}`, 5);
       writeFileSync(`${hold}.go`, "");
+      log(`  the next process failed it; the process before let go: ${brief(outOn("A", key))}`);
+      await whenChanged([DATA.B], () => handovers("B", "in").some((i) => (i.keys ?? []).includes(key) && i.step === "dropped"), 120_000, () => `B did not drop it: ${brief(handovers("B", "in").filter((i) => (i.keys ?? []).includes(key)))}`, 100);
       const end = await handoverEnd(h);
       log(`  ${end}`);
       await turnEnds("A", t0, 120_000).catch(() => undefined);
@@ -3492,8 +3496,7 @@ try {
     });
     if (key !== "" && standing("B", key) === "none" && sql("A", `select station from handed_over where session = ${lit(key)}`).length > 0) {
       await check("9m: A's own build started on it: the chat in sight on A again, once, nothing of it on B; it then moves to B as any", async () => {
-        if (limboDist !== own) await runA(own);
-        else await handoverEnd(await handOver("A"));
+        await runA(own);
         await whenChanged([DATA.A], () => standing("A", key) === "live" && sql("A", `select station from handed_over where session = ${lit(key)}`).length === 0, 120_000, () => `still not in sight on A: ${standings(key)}\n    ${heldOf2(key)}`, 1000);
         if (standing("B", key) !== "none") throw new Error(`B holds it: ${standings(key)}`);
         await listedOnceOn(key, "A");
@@ -3501,7 +3504,7 @@ try {
         if (standing("B", key) !== "live") throw new Error(`it did not move: ${outcome(l)}; ${standings(key)}`);
         await listedOnceOn(key, "B");
       });
-    } else if (limboDist !== own) await runA(own).catch((e) => log(`  A not back on its own build: ${e.message}`));
+    } else await runA(own).catch((e) => log(`  A not back on its own build: ${e.message}`));
   }
 } catch (e) {
   fail("the run", e);
