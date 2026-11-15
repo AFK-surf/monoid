@@ -175,6 +175,12 @@ function world(profiles: Json[], o: { third?: boolean; slack?: boolean; cUp?: bo
       return moves;
     };
     st.moves = st.make();
+    // (a station heard from again: what is owed to it told now, what waits for what is at it looked at: as move/live.ts
+    // has it)
+    st.bus.heard((peer) => {
+      st.moves.handover.reached(peer);
+      st.moves.heard(peer);
+    });
     // (as move/live.ts gives it: a login home again, by any route, has the share its trip made undone)
     st.sharing.onHosted = (share, from) => void homing.add(st.moves.shareCameHome(share, from).catch(() => {}));
     stations.set(id, st);
