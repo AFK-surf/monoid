@@ -446,23 +446,26 @@ export class Moves {
 
   /// A station heard from: what is stopped here for what may have come from it meanwhile (a tell of its coming lost) is
   /// looked at (scheduler `settleStopped`), a burst of requests heard as one: while one look goes on, one more after it.
-  heard(_peer: string): void {
-    if (this.scheduler.stopped().length === 0) return;
-    if (this.#looking) return void (this.#again = true);
+  heard(peer: string): void {
+    // (only what waits for what is at that station: each need it waits for looked at once)
+    if (!this.scheduler.hasStopped(peer)) return;
+    this.#heardFrom.add(peer);
+    if (this.#looking) return;
     this.#looking = true;
     void (async () => {
       try {
-        do {
-          this.#again = false;
-          await this.scheduler.settleStopped().catch(() => {});
-        } while (this.#again && this.scheduler.stopped().length > 0);
+        for (let next = this.#heardFrom.values().next(); !next.done; next = this.#heardFrom.values().next()) {
+          this.#heardFrom.delete(next.value);
+          await this.scheduler.settleStopped(next.value).catch(() => {});
+        }
       } finally {
         this.#looking = false;
       }
     })();
   }
   #looking = false;
-  #again = false;
+  /// The stations heard from while a look went on: each looked at once more after it.
+  readonly #heardFrom = new Set<string>();
 
   /// The hold of updates (`hold`).
   get #hold(): () => () => void {

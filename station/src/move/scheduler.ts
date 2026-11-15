@@ -2,13 +2,14 @@
 // module's work. An item moves once what it needs is there (it is refused naming what it waits for, or, asked
 // `withNeeds`, those move first); it is moved back once nothing on the other station that needs it is still there
 // (refused naming it). As an item moves away, each item still here that needs it and cannot have it here any more is
-// stopped (a state of its own, kept here across starts: `stopped.json`), and goes on as what it waits for is back, or as
+// stopped (a state of its own, kept here across starts: `stopped.log`), and goes on as what it waits for is back, or as
 // it moves itself. What changes is told (`changed`), nothing is polled.
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { log } from "../ops/log.ts";
+import { KeptLog } from "./kept.ts";
 import { stationLang, tr } from "../ops/i18n.ts";
 import { type Item, type ItemState, type Module, type Need, type PlanReads, type Progress, type Waits, named, sameItem, Said, sayOf } from "./module.ts";
 
@@ -58,7 +59,9 @@ export type SchedulerDeps = {
   turn?: (on: boolean, station: string) => void;
 };
 
-const stoppedFile = (data: string) => join(data, "move", "stopped.json");
+/// What is stopped here, a line a change (kept.ts `KeptLog`); `stopped.json` the file of before, taken in once.
+const stoppedFile = (data: string) => join(data, "move", "stopped.log");
+const stoppedBefore = (data: string) => join(data, "move", "stopped.json");
 const lastFile = (data: string) => join(data, "move", "last.json");
 /// The turn under way (written as it begins, taken out as it ends): one found as the station starts was cut by a stop.
 const turnFile = (data: string) => join(data, "move", "turn.json");
@@ -81,11 +84,10 @@ export class Scheduler {
       this.#modules.set(m.id, m);
     }
     for (const m of d.modules) for (const n of m.needs) if (!this.#modules.has(n)) throw new Error(`module ${m.id} needs ${n}, which is not one`);
-    let stopped: Stopped[] = [];
-    try {
-      stopped = JSON.parse(readFileSync(stoppedFile(d.data), "utf8")) as Stopped[]; // sync: read once, before the station serves
-    } catch {}
-    this.#stopped = new StoppedSet(stopped);
+    this.#stopped = new StoppedSet(new KeptLog<Stopped>(stoppedFile(d.data), {
+      path: stoppedBefore(d.data),
+      records: (raw) => (Array.isArray(raw) ? (raw as Stopped[]).map((s): [string, Stopped] => [named(s.item), s]) : []),
+    }));
     try {
       this.#last = JSON.parse(readFileSync(lastFile(d.data), "utf8")) as Record<string, Last>; // sync: read once, before the station serves
     } catch {
@@ -152,25 +154,28 @@ export class Scheduler {
 
   /// The items stopped here whose need is here (its module lists it here, not moved, or it is usable here) let go:
   /// as the station starts, and as a station an item came from is heard again (a tell of its coming that was lost).
-  async settleStopped(): Promise<Need[]> {
+  /// `from`: only what waits for what is at that station (it was heard from): each need looked at once, however many
+  /// wait for it.
+  async settleStopped(from?: string): Promise<Need[]> {
     if (this.#settling !== null) return await this.#settling;
     const run = (async () => {
       const going: Need[] = [];
       const plans = new Map<string, Items<Planned> | null>();
-      for (const s of this.#stopped.values()) {
-        const m = this.#modules.get(s.waitsFor.module);
-        const bare: Item = { module: s.waitsFor.module, id: s.waitsFor.id, label: s.waitsFor.id, needs: [] };
+      for (const { waitsFor, ws } of this.#stopped.needs(from)) {
+        const m = this.#modules.get(waitsFor.module);
+        const bare: Item = { module: waitsFor.module, id: waitsFor.id, label: waitsFor.id, needs: [] };
+        const waiting = () => this.#stopped.waitingFor(waitsFor).filter((s) => s.ws === ws).map((s) => s.item);
         // (a module that knows by itself whether it has the item says so; else its plan here does)
         if (m?.isHere !== undefined) {
-          if (m.isHere(bare) || m.usableHere?.(bare) === true) going.push(s.item);
+          if (m.isHere(bare) || m.usableHere?.(bare) === true) going.push(...waiting());
           continue;
         }
-        if (!plans.has(s.ws)) {
-          const plan = await this.plan(s.ws, "").catch(() => null);
-          plans.set(s.ws, plan === null ? null : new Items(plan.items));
+        if (!plans.has(ws)) {
+          const plan = await this.plan(ws, "").catch(() => null);
+          plans.set(ws, plan === null ? null : new Items(plan.items));
         }
-        const x = plans.get(s.ws)?.find(s.waitsFor);
-        if (x !== undefined && (x.state === "here" || x.state === "failed" || m?.usableHere?.(x) === true)) going.push(s.item);
+        const x = plans.get(ws)?.find(waitsFor);
+        if (x !== undefined && (x.state === "here" || x.state === "failed" || m?.usableHere?.(x) === true)) going.push(...waiting());
       }
       // (what waits for an item a move back under way brings here is that turn's to let go, as the item arrives:
       // its outcome says it went on, `resumed`)
@@ -193,6 +198,16 @@ export class Scheduler {
   #settling: Promise<Need[]> | null = null;
   /// What the move back under way brings here (each item's name): what waits for one of them it lets go itself.
   #bringing = new Set<string>();
+
+  /// How many stopped items and needs were looked at so far (a test's: a move's own work, by what is stopped).
+  stoppedLooked(): number {
+    return this.#stopped.looked;
+  }
+
+  /// Whether anything is stopped here (waiting for what is at `at`, where given).
+  hasStopped(at?: string): boolean {
+    return this.#stopped.needs(at).length > 0;
+  }
 
   /// What waits for what here.
   stopped(): { item: Need; waitsFor: Need }[] {
@@ -722,30 +737,52 @@ export class Scheduler {
     }
   }
 
+  /// What was changed of the stopped items written (each change its own line, written as it was made).
   async #saveStopped(): Promise<void> {
-    const path = stoppedFile(this.#d.data);
-    await mkdir(dirname(path), { recursive: true });
-    const tmp = `${path}.${randomBytes(4).toString("hex")}.tmp`;
-    await writeFile(tmp, JSON.stringify(this.#stopped.values()));
-    await rename(tmp, path);
+    await this.#stopped.written();
   }
 }
 
-/// What is stopped here (`stopped.json`), by each item's name and by what it waits for: each lookup a map's.
+const needKey = (s: Stopped) => `${named(s.waitsFor)}\t${s.waitsFor.at ?? ""}\t${s.ws}`;
+
+/// What is stopped here (`stopped.log`, a line an item stopped or let go), by each item's name and by what it waits
+/// for: each lookup a map's, each change written alone.
 class StoppedSet {
   readonly #by = new Map<string, Stopped>();
   readonly #waiting = new Map<string, Set<string>>();
-  constructor(list: readonly Stopped[]) {
-    for (const s of list) this.add(s);
+  /// Each need waited for, by its name, where it is and the workspace of those that wait: how many wait so.
+  readonly #needs = new Map<string, { waitsFor: Waits; ws: string; n: number }>();
+  readonly #log: KeptLog<Stopped>;
+  #writing: Promise<void> = Promise.resolve();
+  constructor(log: KeptLog<Stopped>) {
+    this.#log = log;
+    for (const s of log.values()) this.#keep(s);
+  }
+  /// Once what was changed so far is written.
+  written(): Promise<void> {
+    return this.#writing;
   }
   add(s: Stopped): void {
+    if (!this.#keep(s)) return;
+    this.#write(this.#log.set(named(s.item), s));
+  }
+  #write(done: Promise<void>): void {
+    const was = this.#writing;
+    this.#writing = Promise.all([was, done.catch((e) => log.warn("move", "a stopped item's change not written", { error: (e as Error).message }))]).then(() => undefined);
+  }
+  #keep(s: Stopped): boolean {
     const k = named(s.item);
-    if (this.#by.has(k)) return;
+    if (this.#by.has(k)) return false;
     this.#by.set(k, s);
     const w = named(s.waitsFor);
     const set = this.#waiting.get(w);
     if (set === undefined) this.#waiting.set(w, new Set([k]));
     else set.add(k);
+    const nk = needKey(s);
+    const need = this.#needs.get(nk);
+    if (need === undefined) this.#needs.set(nk, { waitsFor: s.waitsFor, ws: s.ws, n: 1 });
+    else need.n++;
+    return true;
   }
   has(item: Need): boolean {
     return this.#by.has(named(item));
@@ -759,13 +796,27 @@ class StoppedSet {
     if (s === undefined) return undefined;
     this.#by.delete(k);
     this.#waiting.get(named(s.waitsFor))?.delete(k);
+    const need = this.#needs.get(needKey(s));
+    if (need !== undefined && --need.n === 0) this.#needs.delete(needKey(s));
+    this.#write(this.#log.delete(k));
     return s;
+  }
+  /// What the stopped wait for, each need once with the workspace of those that wait for it (`at`: those at that
+  /// station alone, and those that say not where): as many as there are needs, however many wait.
+  /// How many stopped items and needs were looked at (a test's: what a move's own work costs of what is stopped).
+  looked = 0;
+  needs(at?: string): { waitsFor: Waits; ws: string }[] {
+    this.looked += this.#needs.size;
+    return [...this.#needs.values()].filter((x) => at === undefined || x.waitsFor.at === undefined || x.waitsFor.at === at).map(({ waitsFor, ws }) => ({ waitsFor, ws }));
   }
   /// Those that wait for `n`, in the order they stopped.
   waitingFor(n: Need): Stopped[] {
-    return [...(this.#waiting.get(named(n)) ?? [])].flatMap((k) => this.#by.get(k) ?? []);
+    const keys = this.#waiting.get(named(n)) ?? new Set<string>();
+    this.looked += keys.size;
+    return [...keys].flatMap((k) => this.#by.get(k) ?? []);
   }
   values(): Stopped[] {
+    this.looked += this.#by.size;
     return [...this.#by.values()];
   }
 }

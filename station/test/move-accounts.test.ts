@@ -5,8 +5,9 @@
 // third station meanwhile), across a start too; one shared before stays shared; one that cannot be shared moves as it
 // is and stops what needs it; a failure after the share was made undoes it, the login here as it was. Stations are
 // Rigs (hub-fakes.ts) with their moves and their sharing, over a transport of the test's.
+import { counting, type Cost } from "./move-bounded.ts";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, afterEach, test } from "node:test";
 import { stationLang, tr } from "../src/ops/i18n.ts";
@@ -266,13 +267,26 @@ const keptShares = (st: Station): string[] => {
     return [];
   }
 };
-/// The logins A's moves lent, by share (move/accounts.ts, kept on the disk).
+/// The logins A's moves lent, by share (move/accounts.ts, kept on the disk: kept.ts `LentLog`'s lines played, each
+/// share's record and the items it is lent for).
 const lentShares = (st: Station): Record<string, Json> => {
+  let text = "";
   try {
-    return JSON.parse(readFileSync(join(st.rig.dir, "move", "accounts-lent.json"), "utf8"));
+    text = readFileSync(join(st.rig.dir, "move", "accounts-lent.log"), "utf8");
   } catch {
     return {};
   }
+  const kept = new Map<string, Json>();
+  for (const line of text.split("\n")) {
+    if (line === "") continue;
+    const r = JSON.parse(line);
+    if ("v" in r) kept.set(r.k, r.v);
+    else kept.delete(r.k);
+  }
+  const out: Record<string, Json> = {};
+  for (const [k, v] of kept) if (k.startsWith("s:")) out[k.slice(2)] = { ...v, for: [] };
+  for (const k of kept.keys()) if (k.startsWith("f:")) out[k.slice(2, k.indexOf("\n"))]?.for.push(k.slice(k.indexOf("\n") + 1));
+  return out;
 };
 /// (a list in order; what is no list as it is, for the assertion to say)
 const sorted = (xs: unknown) => (Array.isArray(xs) ? [...xs].sort() : xs);
@@ -1071,3 +1085,61 @@ test("two chats on one login that cannot be shared, moved with what they need, o
   await quiet();
   assert.equal((a.rig.store.db.prepare("SELECT COUNT(*) AS n FROM entries WHERE thread = ? AND author_kind = 'ember'").get(two.thread) as { n: number }).n, said + 1, "says so when spoken to");
 });
+
+/// What one chat's trip costs on A (move/bounded.ts: bytes written under move/ by file, rows read by table, what is
+/// stopped looked at), A keeping besides `n` other items of the same kind (`others`, written as A keeps them before A's
+/// moves start again over them).
+async function tripWith(n: number, kind: "lent" | "stopped"): Promise<Cost & { stopped: number }> {
+  const { a, b, quiet } = world([kind === "lent" ? MAX : KIMI]);
+  const pid = kind === "lent" ? "max" : "kimi";
+  signIn(a, pid, kind === "lent" ? CLAUDE_LOGIN : {});
+  const one = await chatOn(a, pid);
+  const two = await chatOn(a, pid);
+  const account = `own:${pid}@${A}`;
+  const log = join(a.rig.dir, "move", kind === "lent" ? "accounts-lent.log" : "stopped.log");
+  mkdirSync(join(a.rig.dir, "move"), { recursive: true });
+  if (kind === "lent") {
+    // (its login lent for a chat moved with what it needs, then for `n` other chats there: the lines kept so)
+    assert.equal((await a.moves.scheduler.move(WS, B, { module: "chats", item: one.key, withNeeds: true })).failed, null);
+    await quiet();
+    const share = shareOf(a, pid).id as string;
+    appendFileSync(log, Array.from({ length: n }, (_, i) => `${JSON.stringify({ k: `f:${share}\nchats other-${i}`, v: share })}\n`).join(""));
+  } else {
+    // (n other chats stopped here, waiting for another login at B, as the chats of one login moved away wait)
+    appendFileSync(log, Array.from({ length: n }, (_, i) => `${JSON.stringify({ k: `chats other-${i}`, v: { item: { module: "chats", id: `other-${i}` }, waitsFor: { module: "accounts", id: `own:other@${A}`, at: B }, ws: WS } })}\n`).join(""));
+  }
+  await a.moves.close();
+  a.moves = a.make();
+  await a.moves.start();
+  await quiet();
+  const looked0 = a.moves.scheduler.stoppedLooked();
+  const trip = counting(join(a.rig.dir, "move"), [a.moves.scheduler, b.moves.scheduler]);
+  if (kind === "lent") {
+    // A second chat of the login there (lent for it too) and back (taken off what it is lent for, the login still lent).
+    assert.equal((await a.moves.scheduler.move(WS, B, { module: "chats", item: two.key, withNeeds: true })).failed, null);
+    await quiet();
+    assert.equal((await a.moves.scheduler.back(WS, B, { module: "chats", item: two.key })).failed, null);
+    await quiet();
+  } else {
+    // A chat there with its login, back alone: it arrives stopped, waiting for its login there; the login back: it goes on.
+    assert.equal((await a.moves.scheduler.move(WS, B, { module: "chats", item: two.key, withNeeds: true })).failed, null);
+    await quiet();
+    const back = await a.moves.scheduler.back(WS, B, { module: "chats", item: two.key });
+    await quiet();
+    assert.deepEqual(back.stopped.map((x) => x.item.id), [two.key], "arrived stopped");
+    assert.equal((await a.moves.scheduler.back(WS, B, { module: "accounts", item: account })).failed, null);
+    await quiet();
+    assert.equal(a.rig.hub.chatHeld(two.key), null, "it goes on");
+  }
+  const cost = trip.stop();
+  return { ...cost, stopped: a.moves.scheduler.stoppedLooked() - looked0 };
+}
+
+for (const kind of ["lent", "stopped"] as const) {
+  test(`a chat's trip ${kind === "lent" ? "on a login lent for it" : "that arrives stopped and goes on"} writes and reads the same with 30 and 300 others ${kind === "lent" ? "it is lent for" : "stopped"}: what is kept of them is a line each, found by the item`, async () => {
+    const few = await tripWith(30, kind);
+    const many = await tripWith(300, kind);
+    assert.ok((few.bytes[kind === "lent" ? "accounts-lent.log" : "stopped.log"] ?? 0) > 0, `its own written: ${JSON.stringify(few)}`);
+    assert.deepEqual(many, few, `with 30: ${JSON.stringify(few)}, with 300: ${JSON.stringify(many)}`);
+  });
+}

@@ -25,7 +25,7 @@ import { log } from "../ops/log.ts";
 import { stationLang, tr } from "../ops/i18n.ts";
 import type { AccountOf } from "../replica/handover.ts";
 import { shareRefusal } from "../share/index.ts";
-import { KeptMap, KeptSet } from "./kept.ts";
+import { KeptSet, LentLog } from "./kept.ts";
 import { type Item, type ItemState, type Module, named, unanswered, notAnswered } from "./module.ts";
 
 type Json = any;
@@ -47,7 +47,7 @@ export type ShareMoves = {
   unlend?: (share: string, to: string, made: boolean, widened: boolean) => Promise<void>;
 };
 
-/// A login lent for what moved (`move/accounts-lent.json`, by its share): to which station, as which item and profile,
+/// A login lent for what moved (`move/accounts-lent.log`, by its share, a line for each item it is lent for): to which station, as which item and profile,
 /// what lending it changed, and the items there it was lent for (by name): taken back when the last of them is here.
 /// `hostMoved`: its host moved there since (asked for by name): no longer lent; the other's addition taken off as it
 /// comes home (`cameHome`).
@@ -82,9 +82,9 @@ export function accountsModule(d: AccountsDeps): Module & { cameHome(share: stri
   /// The shares a move made from here, by their id, kept across a start (undone as their login comes back).
   const made = d.data !== undefined && d.shareMoves !== undefined ? new KeptSet(join(d.data, "move", "accounts-shared.json")) : null;
   /// The logins lent for what moved, by share, kept across a start; and the items lent in this station's turns now.
-  const lent = d.data !== undefined && d.shareMoves?.lend !== undefined ? new KeptMap<Lent>(join(d.data, "move", "accounts-lent.json")) : null;
+  const lent = d.data !== undefined && d.shareMoves?.lend !== undefined ? new LentLog<Lent>(join(d.data, "move", "accounts-lent.log"), join(d.data, "move", "accounts-lent.json")) : null;
   const lentNow = new Map<string, string>();
-  const lentTo = (item: Item): string | undefined => lentNow.get(item.id) ?? (item.id.startsWith("share:") ? lent?.get(item.id.slice("share:".length))?.to : undefined);
+  const lentTo = (item: Item): string | undefined => lentNow.get(item.id) ?? (item.id.startsWith("share:") ? lent?.base(item.id.slice("share:".length))?.to : undefined);
   /// Whether profile `pid`'s login, not shared, is shared as it moves (so it is borrowed here after it).
   const sharedAsItMoves = (pid: string) => {
     if (made === null || d.shared(pid)) return false;
@@ -98,7 +98,7 @@ export function accountsModule(d: AccountsDeps): Module & { cameHome(share: stri
   /// person opened it to another station meanwhile; no longer this station's to undo either way.
   const cameHome = (share: string, from: string): Promise<void> => {
     // (lent there by widening, its host moved there since: the other taken off again, as a person had it)
-    const l = lent?.get(share);
+    const l = lent?.base(share);
     if (l?.hostMoved === true) {
       return d.shareMoves!.unlend!(share, l.to, false, l.widened)
         .catch((e) => log.warn("move", "a login lent for a move not taken back as it came home", { share, error: (e as Error).message }))
@@ -211,20 +211,19 @@ export function accountsModule(d: AccountsDeps): Module & { cameHome(share: stri
       const pid = local.get(item.id);
       if (pid === undefined || lent === null) throw new Error(`account ${item.label} is not on this station`);
       const r = await d.shareMoves!.lend!(pid, to);
-      await lent.set(r.share, { to, item: item.id, pid, made: r.made, widened: r.widened, for: [...new Set([...(lent.get(r.share)?.for ?? []), ...forWhom.map(named)])] });
+      // (its record, then a line for each item it is lent for: those it was lent for before stay as they are)
+      await lent.setBase(r.share, { to, item: item.id, pid, made: r.made, widened: r.widened });
+      for (const n of new Set(forWhom.map(named))) await lent.lentFor(r.share, n);
       lentNow.set(item.id, to);
     },
     async left(items) {
       if (lent === null) return;
-      const names = new Set(items.map(named));
-      for (const [share, l] of lent.entries()) {
-        if (l.hostMoved === true) continue;
-        const still = l.for.filter((n) => !names.has(n));
-        if (still.length === l.for.length) continue;
-        if (still.length > 0) {
-          await lent.set(share, { ...l, for: still });
-          continue;
-        }
+      // (the shares lent for these items, by their names: each item's line taken off; no other item's looked at)
+      for (const share of new Set(items.flatMap((x) => lent.sharesFor(named(x))))) {
+        const l = lent.base(share);
+        if (l === undefined || l.hostMoved === true) continue;
+        for (const x of items) await lent.unlent(share, named(x));
+        if (lent.forCount(share) > 0) continue;
         // (the last item it was lent for is here: taken back, the other told now or once it is heard from)
         await d.shareMoves!.unlend!(share, l.to, l.made, l.widened).catch((e) => log.warn("move", "a login lent for a move not taken back", { share, error: (e as Error).message }));
         await lent.delete(share);

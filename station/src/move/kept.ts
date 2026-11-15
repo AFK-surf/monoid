@@ -137,6 +137,9 @@ export class KeptLog<T> {
   values(): T[] {
     return [...this.#map.values()];
   }
+  keys(): string[] {
+    return [...this.#map.keys()];
+  }
   get size(): number {
     return this.#map.size;
   }
@@ -167,5 +170,94 @@ export class KeptLog<T> {
     const tmp = `${this.#path}.${randomBytes(4).toString("hex")}.tmp`;
     await writeFile(tmp, [...this.#map].map(([k, v]) => `${JSON.stringify({ k, v })}\n`).join(""));
     await rename(tmp, this.#path);
+  }
+}
+
+/// The logins lent for what moved (move/accounts.ts `Lent`), each by its share, and the items each was lent for: a
+/// line for a share's record and a line for each item it is lent for (`KeptLog`), so that an item that comes back
+/// finds the shares lent for it by its name and writes its own line alone, however many it was lent for with.
+export class LentLog<T extends { for: string[] }> {
+  readonly #log: KeptLog<Omit<T, "for"> | string>;
+  readonly #for = new Map<string, Set<string>>();
+  readonly #sharesOf = new Map<string, Set<string>>();
+  /// The shares lent (their records' keys).
+  readonly #shares = new Set<string>();
+
+  /// `from`: the file of before (each share's record whole, its items in `for`).
+  constructor(path: string, from: string) {
+    this.#log = new KeptLog(path, {
+      path: from,
+      records: (raw) => Object.entries((raw ?? {}) as Record<string, T>).flatMap(([share, l]) => {
+        const { for: items, ...base } = l;
+        return [[`s:${share}`, base] as [string, Omit<T, "for">], ...(items ?? []).map((n): [string, string] => [`f:${share}\n${n}`, share])];
+      }),
+    });
+    for (const k of this.#log.keys()) if (k.startsWith("s:")) this.#shares.add(k.slice(2));
+    for (const k of this.#log.keys()) if (k.startsWith("f:")) this.#index(k.slice(2, k.indexOf("\n")), k.slice(k.indexOf("\n") + 1), true);
+  }
+
+  #index(share: string, item: string, on: boolean): void {
+    const items = this.#for.get(share) ?? new Set<string>();
+    const shares = this.#sharesOf.get(item) ?? new Set<string>();
+    if (on) (items.add(item), shares.add(share));
+    else (items.delete(item), shares.delete(share));
+    if (items.size > 0) this.#for.set(share, items);
+    else this.#for.delete(share);
+    if (shares.size > 0) this.#sharesOf.set(item, shares);
+    else this.#sharesOf.delete(item);
+  }
+
+  get(share: string): T | undefined {
+    const base = this.#log.get(`s:${share}`);
+    return base === undefined || typeof base === "string" ? undefined : ({ ...base, for: [...(this.#for.get(share) ?? [])] } as T);
+  }
+  /// Every share lent (few: a station's logins).
+  entries(): [string, T][] {
+    const out: [string, T][] = [];
+    for (const share of this.#shares) out.push([share, this.get(share)!]);
+    return out;
+  }
+  /// The shares lent for item `name` (by the item's name).
+  sharesFor(name: string): string[] {
+    return [...(this.#sharesOf.get(name) ?? [])];
+  }
+  /// How many items share `share` is lent for.
+  forCount(share: string): number {
+    return this.#for.get(share)?.size ?? 0;
+  }
+
+  /// Share `share`'s record but for what it is lent for.
+  base(share: string): Omit<T, "for"> | undefined {
+    const base = this.#log.get(`s:${share}`);
+    return base === undefined || typeof base === "string" ? undefined : base;
+  }
+  /// Share `share`'s record but for what it is lent for, written (its items as they were).
+  async setBase(share: string, base: Omit<T, "for">): Promise<void> {
+    this.#shares.add(share);
+    await this.#log.set(`s:${share}`, base);
+  }
+  /// Share `share`'s record (`for`: the items it is lent for, as they are to be: each one added or taken off its line).
+  async set(share: string, l: T): Promise<void> {
+    const { for: items, ...base } = l;
+    this.#shares.add(share);
+    await this.#log.set(`s:${share}`, base);
+    const want = new Set(items);
+    for (const n of [...(this.#for.get(share) ?? [])]) if (!want.has(n)) await this.unlent(share, n);
+    for (const n of want) await this.lentFor(share, n);
+  }
+  async lentFor(share: string, name: string): Promise<void> {
+    if (this.#for.get(share)?.has(name) === true) return;
+    this.#index(share, name, true);
+    await this.#log.set(`f:${share}\n${name}`, share);
+  }
+  async unlent(share: string, name: string): Promise<void> {
+    if (this.#for.get(share)?.has(name) !== true) return;
+    this.#index(share, name, false);
+    await this.#log.delete(`f:${share}\n${name}`);
+  }
+  async delete(share: string): Promise<void> {
+    for (const n of [...(this.#for.get(share) ?? [])]) await this.unlent(share, n);
+    this.#shares.delete(share);
+    await this.#log.delete(`s:${share}`);
   }
 }

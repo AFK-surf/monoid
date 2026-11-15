@@ -15,7 +15,7 @@ chats paused 18 minutes, a half-moved state, no way back), whose start stays swi
   (refused while something there needs it, naming that), and tells what
   changed. No polling.
 - When an item moves away, every item here that needs it and cannot have it here any more is stopped first (a state of
-  its own, `stopped.json`, held again as the station starts), never left to fail (左子健, 2026-11-14: 「依赖项被迁走就停掉啊」):
+  its own, `stopped.log`, held again as the station starts), never left to fail (左子健, 2026-11-14: 「依赖项被迁走就停掉啊」):
   "needs" is "usable on this station" (an account moved away that this station borrows stops nothing, `usableHere`). A
   stopped chat is held as one being handed over is: no turn, its jobs stopped and kept, what is said to it kept in its
   logs and delivered once where it ends up; nothing posted, its agent not woken. It goes on as what it waits for comes
@@ -31,7 +31,7 @@ chats paused 18 minutes, a half-moved state, no way back), whose start stays swi
   lent, not moved (the owner, 2026-11-15: its host never leaves, so nothing of it is stranded on a station that dies or
   leaves the workspace): shared with the station it goes to (with the two alone where it was not shared; that one added
   where it is shared with others), told to it directly and answered once its copy is there (share/index.ts `lendTo`,
-  `share.borrow`), before what needs it goes; kept as lent for those items (`accounts-lent.json`) and taken back by this
+  `share.borrow`), before what needs it goes; kept as lent for those items (`accounts-lent.log`) and taken back by this
   station alone when the last of them is here again (a move back, a failure, an arrival by any route), the other told
   then or once it is heard from; the plan and the page say it is here and usable there (`lentTo`), a turn what it lent
   (`lent`). Asked for by name, or in a whole move, its host moves (share/index.ts `moveProfile`), after what needs it:
