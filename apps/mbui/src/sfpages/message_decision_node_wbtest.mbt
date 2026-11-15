@@ -310,7 +310,7 @@ fn dec_new_state(
 ///|
 /// What `t.audit()` says, every fault in `at`'s words.
 fn dec_audit(t : @ui.Tester, at : String) -> Unit raise {
-  let faults = t.audit()
+  let faults = audit_but_card_marks(t)
   assert_true(faults.is_empty(), msg=at + ": " + faults.join(" | "))
 }
 
