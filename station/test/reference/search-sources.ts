@@ -10,17 +10,17 @@ import { open } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { createZstdDecompress } from "node:zlib";
 import { segmentsFrom } from "../../src/read/packed.ts";
-import * as store from "../../src/read/store.ts";
-import type { JobRow, MessageRow, SessionRow, Store } from "../../src/read/store.ts";
+import * as store from "./store.ts";
+import type { JobRow, MessageRow, SessionRow, Store } from "./store.ts";
 import { type ReadState, sessionPlaces, timelineOf, transcriptSources, type TimelineEntry } from "../../src/read/transcript.ts";
 import { readFrom } from "../usage-counter-reference.ts";
-import { agentHomeOf, memory } from "../../src/read/memory.ts";
+import { agentHomeOf, memory } from "./memory.ts";
 import { runtimeKind } from "../../src/agents/runtime.ts";
-import { STILLFAIL_SURFACE } from "../../src/read/store.ts";
-import { given, titleOf } from "../../src/read/views.ts";
+import { STILLFAIL_SURFACE } from "./store.ts";
+import { given, titleOf } from "./views.ts";
 import { type Asker, type Doc, type Group, type Hit, excerpt, has, sees } from "../../src/search/match.ts";
-import { readSearchScopePage } from "../../src/search/scope-read.ts";
-import { smallJobScope } from "../../src/search/job-scope.ts";
+import { readSearchScopePage } from "./search-scope-read.ts";
+import { smallJobScope } from "./search-job-scope.ts";
 
 /// The workspace documents of nothing in particular are in (`ws` null: the station's home one).
 type Ws = string | null;

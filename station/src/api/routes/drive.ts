@@ -20,7 +20,7 @@ import { platform } from "../../platform/index.ts";
 export type DriveRouteDeps = {
   drive: Drive; config: ConfigFile; home?: string; changed?: () => void;
   /// Where a file sent in a chat waits for its message (the uploads), with a name of its own: none, no /drive/stage.
-  stage?: (name: string) => { safe: string; path: string };
+  stage?: (name: string) => { safe: string; path: string } | Promise<{ safe: string; path: string }>;
 };
 
 const manages = (r: { viewer: { role: string } }) => r.viewer.role === "owner" || r.viewer.role === "admin";

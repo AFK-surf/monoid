@@ -99,6 +99,10 @@ decide() {
   # Exercise the GitHub-hosted web and Mac release paths, without secrets or publishing, when their CI changes.
   release_smoke=false
   if [ "${GITHUB_REF:-}" != refs/heads/main ] && { [ "${GITHUB_EVENT_NAME:-}" = workflow_dispatch ] || has '^(\.github/workflows/pipeline\.yml$|\.github/deploy\.sh$|\.github/actions/(setup|natives|mbui-moonbit)/|scripts/release\.sh$)'; }; then release_smoke=true; fi
+  # The checks only a Mac can run (check-mac: Swift's still.fail Helper, the iOS crash reports' Objective-C test, and
+  # the Mac release prebuild's Mach-O symbol check): only when one of them or CI's own files changed.
+  check_mac=false
+  if has '^(station/native/helper/|vendor/(PermissionFlow|serve-sim)/|apps/mbui/(src/host/apple_reports\.m|scripts/ios[_-]reports)|\.github/(mac-release-prebuild|test_mac_release_prebuild)\.sh$|(apps|libs)/mbui/scripts/mac\.sh$)' || has_but '^\.github/' '^\.github/workflows/(mbui-|preview\.yml$)'; then check_mac=true; fi
 }
 
 print() {
@@ -119,6 +123,7 @@ print() {
     echo "station_tests=$station_tests"
     echo "core_tests=$core_tests"
     echo "release_smoke=$release_smoke"
+    echo "check_mac=$check_mac"
   }
 }
 

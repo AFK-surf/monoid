@@ -447,7 +447,7 @@ fn narrow_made_as(
           }
           // (what the page does, given its place's top bar as it is made: each making of it its own, let go with it
           // where none since gave another)
-          let page_actions : @signals.Signal[((@view.View) -> Unit, Int)?] = @signals.signal(None, same=fn(a, b) {
+          let page_actions : @signals.Signal[((@view.View) -> Unit, Int)?] = @signals.signal_by(None, same=fn(a, b) {
             match (a, b) {
               (None, None) => true
               (Some(x), Some(y)) => x.1 == y.1

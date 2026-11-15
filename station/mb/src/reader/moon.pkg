@@ -37,6 +37,8 @@ import {
   "station/jsjson",
   "station/jscase",
   "station/claude",
+  "station/codex",
+  "station/pieces",
   "station/admit",
   "moonbitlang/core/encoding/base64",
   "moonbitlang/core/string",
@@ -47,12 +49,3 @@ import {
 }
 
 pkgtype(kind: "executable")
-
-options(
-  link: {
-    "native": {
-      // client/shell, as build.sh puts it in out/ (the Mac's: its static library and what it links)
-      "cc-link-flags": "out/libstillfail_shell.a -framework SystemConfiguration -framework Security -framework CoreFoundation -framework Foundation -liconv -lobjc -Wl,-dead_strip",
-    },
-  },
-)

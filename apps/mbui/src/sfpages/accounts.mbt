@@ -1922,7 +1922,7 @@ fn env_editor_node(k : @view.View, core : Core, address : String, id : String, p
     { key: @ui.Field::new(text=key), value: @ui.Field::new(text=value), original: key, masked }
   }
   // (the rows themselves the list: each its own fields, a row on the page for each, View::each_of)
-  let rows : @signals.Signal[Array[EnvRow]] = @signals.signal(
+  let rows : @signals.Signal[Array[EnvRow]] = @signals.signal_by(
     env.map(fn(e) {
       let ev = Some(e)
       let secret = flag(ev, "secret")

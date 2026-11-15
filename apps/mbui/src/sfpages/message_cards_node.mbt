@@ -343,17 +343,16 @@ fn vault_asked_of(ask : VaultAsk) -> @settings.Asked {
 fn vault_ask_node(v : @view.View, here : MessageNodeHere, core : @settings.Core?, m : () -> Message) -> Unit {
   // (what it asks, and that as its card says it, worked out once as the message changes: what the card makes of it
   // reads them over and over, each reading a field)
-  let asking = @signals.computed_scoped(
+  let asking = @signals.computed(
     fn(_) {
       match m().card {
         Some({ ask: Some(a), .. }) => a
         _ => vault_ask_none
       }
     },
-    same=physical_equal,
   )
   let ask = fn() { asking.get() }
-  let asked_now = @signals.computed_scoped(fn(_) { vault_asked_of(ask()) })
+  let asked_now = @signals.computed(fn(_) { vault_asked_of(ask()) })
   let asked = fn() { asked_now.get() }
   let card = fn() { m().card }
   v.pick(fn() { ask().status != "" }, fn(p, decided) {

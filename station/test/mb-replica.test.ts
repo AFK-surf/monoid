@@ -1,8 +1,9 @@
 // The MoonBit program in the copies' export and restore threads' place (station/mb, src/replica; replica/runner.ts
-// `exportThread`, restore.ts `takeBackSoon`) does as export.ts and restore.ts do: read the same station step by step,
-// told the same, its answers, its state (export.db), its batches line for line and its heads are the TypeScript
-// exporter's (what is random, the time a batch is compressed by and the zstd frame's bytes aside); a copy taken back by
-// it makes the same database, files and outcome as one taken back by restore.ts, from either's copy.
+// `exportThread`, restore.ts `takeBackSoon`) does as the TypeScript of before (reference/replica-export.ts,
+// reference/replica-restore.ts) does: read the same station step by step, told the same, its answers, its state
+// (export.db), its batches line for line and its heads are the TypeScript exporter's (what is random, the time a batch
+// is compressed by and the zstd frame's bytes aside); a copy taken back by it makes the same database, files and
+// outcome as one taken back by reference/replica-restore.ts, from either's copy.
 import assert from "node:assert/strict";
 import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join, sep } from "node:path";
@@ -10,9 +11,9 @@ import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
 import { tell } from "../src/replica/copies.ts";
-import { Exporter, type Told, genDir, nothingTold, ownDir } from "../src/replica/export.ts";
-import { type Head, decodeBatch } from "../src/replica/format.ts";
-import { takeBack, takeBackSoon } from "../src/replica/restore.ts";
+import { Exporter, type Told, genDir, nothingTold, ownDir } from "./reference/replica-export.ts";
+import { type Head, decodeBatch } from "./reference/replica-format.ts";
+import { takeBack, takeBackSoon } from "./reference/replica-restore.ts";
 import { ProgramRunner, exportThread } from "../src/replica/runner.ts";
 import { Store } from "../src/store/store.ts";
 import { HOME, ORIGIN, OTHER, attach, chat, dataDir, station } from "./replica-fakes.ts";

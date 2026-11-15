@@ -114,6 +114,8 @@ fn station_view_node(
   stint : () -> Int,
 ) -> Unit {
   let address = text(@signals.untracked(s), "station")
+  // (its 进程 as its blocks read it, a row of its table a block: read only as one is made)
+  let rs = rs_table_of(core, here, address)
   // (what the host says of the station here, as it said it last: a signal of that input, read again every few seconds
   // from when it is made, while this page is this machine's station's: it starts, stops and updates on its own time)
   let host : @signals.Signal[String] = @signals.signal(
@@ -197,7 +199,8 @@ fn station_view_node(
     }
     out.append(
       match part() {
-        "processes" => ["processes"]
+        // (its head, each row of its table, how it is read: a block each; in its bones its head alone)
+        "processes" => if bones is None { ["processes"] + rs_block_keys(rs, flag(s(), "online")) } else { ["processes"] }
         "settings" => station_settings_keys(s(), manager)
         "machine" => ["software", "device"]
         _ => station_overview_keys(core, s())
@@ -225,7 +228,8 @@ fn station_view_node(
         })
       }
       "more" => station_more_node(b, core, address)
-      "processes" => station_processes_node(b, core, here, s)
+      "processes" => station_processes_node(b, core, here, s, if bones is None { Some(rs) } else { None })
+      k if k.has_prefix("processes/") => rs_block_node(b, core, address, rs, k)
       "offline" => @sf.group_node(b, fn(g) { said_row_node(g, fn() { @sf.t("web-pages.stations.settingsOffline") }) })
       "system" => station_system_node(b, core, address, s, manager)
       "logins" => station_logins_node(b, core, address, fn() { flag(s(), "online") })
@@ -1177,10 +1181,11 @@ fn station_more_node(b : @view.View, core : Core, address : String) -> Unit {
 
 ///|
 /// Its 进程 (station_processes'): what still.fail uses of the machine; offline, a line saying it cannot be seen.
-fn station_processes_node(b : @view.View, core : Core, here : () -> Here, s : () -> Json?) -> Unit {
+/// `table`: its page's, its table's rows and how it is read blocks of their own (rs_block_node).
+fn station_processes_node(b : @view.View, core : Core, here : () -> Here, s : () -> Json?, table : RsTable?) -> Unit {
   b.pick(fn() { flag(s(), "online") }, fn(p, online) {
     if online {
-      resources_node(p, core, here, text(@signals.untracked(s), "station"))
+      resources_node(p, core, here, text(@signals.untracked(s), "station"), table?)
     } else {
       @sf.words_node(p, fn() { @sf.t("web-pages.stations.processesOffline") }, fn() { st_memory }) |> ignore
     }

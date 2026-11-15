@@ -70,6 +70,16 @@
       "src/media/frame.mbt"
     ]
   },
+  "signals": {
+    "scoped_ok": [
+      "src/signals",
+      "src/view"
+    ],
+    "effect_ok": [
+      "src/signals",
+      "src/ui"
+    ]
+  },
   "counts": {
     "frame-request": {},
     "settle": {},
@@ -282,7 +292,18 @@
       "src/ui/scroll_list_wbtest.mbt": 7,
       "src/ui/scroll_wbtest.mbt": 3,
       "src/ui/stretch_damage_wbtest.mbt": 2
-    }
+    },
+    "scoped-computed": {},
+    "raw-effect": {
+      "src/kitdemo/gallery/dropcheck.mbt": 1,
+      "src/kitdemo/gallery/imagecheck.mbt": 1,
+      "src/kitdemo/gallery/opcheck.mbt": 1,
+      "src/kitdemo/gallery/pickcheck.mbt": 1
+    },
+    "pick-loop": {
+      "src/view/grid.mbt": 1
+    },
+    "each-min-height": {}
   },
   "excused": {
     "frame-request": {},
@@ -361,7 +382,11 @@
     "read-before-run": {},
     "reset-by-hand": {},
     "app-word": {},
-    "frame-walk": {}
+    "frame-walk": {},
+    "scoped-computed": {},
+    "raw-effect": {},
+    "pick-loop": {},
+    "each-min-height": {}
   },
   "tester": {
     "names": [

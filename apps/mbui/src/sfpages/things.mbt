@@ -536,7 +536,7 @@ fn things_list_node(
     // out, its rows made by it there)
     let room = fn() { given.width() - 2.0 * sides }
     // (its rows by their keys, as the core has its things now, the kind shown, the room the tiles have)
-    let table : @signals.Computed[(Array[String], Map[String, ThingsRow])] = @signals.computed(fn(_) {
+    let table : @signals.Computed[(Array[String], Map[String, ThingsRow])] = @signals.computed_by(fn(_) {
       let v = value()
       let k = kind()
       let keys : Array[String] = []

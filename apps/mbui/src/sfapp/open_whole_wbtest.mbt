@@ -190,6 +190,12 @@ fn open_agent_card(gates : Bool) -> @ui.Tester {
   }
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+  // (without the gate, the app before MBUI_OPEN_WHOLE, which no device runs since (stillfail's main has it on; only a
+  // trace recorded before it replays it): its card's head over nothing grows to its whole in the frame its view comes,
+  // what the gate is for; how it moves is not judged)
+  if !gates {
+    t.motion_unjudged(true)
+  }
   t.draw()
   t.run_for(@ui.move_most_ms * 2.0)
   let last = t

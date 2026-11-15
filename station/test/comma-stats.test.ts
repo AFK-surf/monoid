@@ -18,8 +18,8 @@ import { CommaTasks } from "../src/comma/tasks.ts";
 import { Rig } from "./hub-fakes.ts";
 import { newMessage } from "../src/store/store.ts";
 import { installOutflowChatIndex, outflowChatIndexStep, outflowChatScopes } from "../src/store/outflow-index.ts";
-import * as read from "../src/read/store.ts";
-import { HOME, outflowChats } from "../src/read/outflow.ts";
+import * as read from "./reference/store.ts";
+import { HOME, outflowChats } from "./reference/outflow.ts";
 
 type Json = any;
 

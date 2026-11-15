@@ -4723,6 +4723,7 @@ fn sync_turning() -> Double {
 ///|
 /// The mark brought to rest once all is here: from `from`, going `speed` (per ms), to `to` in `ms`, as a cubic going on
 /// from that speed and slowing to none there.
+#derive(Eq)
 priv struct SyncRest {
   ms : Double
   from : Double

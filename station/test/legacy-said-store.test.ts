@@ -6,7 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { setTimeout as pause } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
-import { lastMessage, makeStore, messagesBefore, saidOf } from "../src/read/store.ts";
+import { lastMessage, makeStore, messagesBefore, saidOf } from "./reference/store.ts";
 import { stationDocSteps, threadDocs } from "./reference/search-sources.ts";
 import { installLegacySaid, legacySaidDrain, legacySaidStep, publishLegacySaid } from "../src/store/legacy-said-build.ts";
 import { buildLegacySaid } from "../src/store/legacy-said-builder.ts";

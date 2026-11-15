@@ -1,6 +1,6 @@
-// A lost station's conversations taken back (station/src/replica/restore.ts `takeBack`): the copy brought into
-// <data>/restore/ folded on disk and put into this station's database before its store opens, its files put where its
-// rows say, that this station took the lost one's place (`formerly.json`) and what came of it (`restored.json`).
+// A lost station's conversations taken back (station/test/reference/replica-restore.ts `takeBack`): the copy brought
+// into <data>/restore/ folded on disk and put into this station's database before its store opens, its files put where
+// its rows say, that this station took the lost one's place (`formerly.json`) and what came of it (`restored.json`).
 
 ///|
 priv suberror NotEmpty

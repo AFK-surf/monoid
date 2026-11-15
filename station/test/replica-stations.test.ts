@@ -15,8 +15,8 @@ import { Fibers } from "../src/ops/fibers.ts";
 import { Copies, keptDir } from "../src/replica/copies.ts";
 import { keepers } from "../src/replica/peers.ts";
 import { FolderPlace } from "../src/replica/places.ts";
-import { readCopy, takeBack } from "../src/replica/restore.ts";
-import { InlineRunner } from "../src/replica/runner.ts";
+import { readCopy, takeBack } from "./reference/replica-restore.ts";
+import { InlineRunner } from "./reference/replica-work.ts";
 import { Store } from "../src/store/store.ts";
 import { HOME, OTHER, chat, dataDir, rowsOf, station } from "./replica-fakes.ts";
 

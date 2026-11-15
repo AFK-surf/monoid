@@ -8,6 +8,7 @@
 
 ///|
 /// A picture to start from: a buddy (`mark` empty) or a model maker's mark (its drawable), on a colour of its own.
+#derive(Eq)
 pub(all) struct AppAvatar {
   id : String
   /// what it is called (a screen reader's), a catalog's key where it is said in words of the app's

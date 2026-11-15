@@ -48,7 +48,7 @@ pub fn web_peek_node(
   let holder : Ref[@view.View?] = Ref(None)
   // (what is read as the pointer comes onto the row, while it is: the pictures it names asked as it comes, so that they
   // are mostly here as the card opens)
-  let warm : @signals.Signal[@signals.Computed[@sfbase.TopicState]?] = @signals.signal(None, same=fn(a, b) {
+  let warm : @signals.Signal[@signals.Computed[@sfbase.TopicState]?] = @signals.signal_by(None, same=fn(a, b) {
     match (a, b) {
       (None, None) => true
       (Some(x), Some(y)) => physical_equal(x, y)

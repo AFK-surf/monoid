@@ -10,7 +10,7 @@ import { GO_ON_AFTER_AUTH, GO_ON_AFTER_FAILED, GO_ON_AFTER_OVERLOADED, GO_ON_AFT
 import { retryable } from "../src/sessions/actor.ts";
 import { latest } from "../src/agents/migrations.ts";
 import { claudeProject, homesFirst, transcriptPaths } from "../src/read/transcript.ts";
-import { marksDir, stateOf } from "../src/read/transcripts.ts";
+import { marksDir, stateOf } from "./reference/transcripts.ts";
 import { hubConfig } from "../src/sessions/config.ts";
 import { sessionKey } from "../src/sessions/hub.ts";
 import { addToThread, autoArchive, archive, archiveBy, archiveChat, bindSingle, configure, deleteSession, newSession, openChat, say as sayIn } from "../src/sessions/lifecycle.ts";
@@ -3497,7 +3497,7 @@ function machine(root: string, project: string) {
 }
 
 test("a session the machine kept goes on in a chat, run in its own directory, with what was said in it", async () => {
-  const { find } = await import("../src/read/machine.ts");
+  const { find } = await import("./reference/machine.ts");
   const { continueMachineSession } = await import("../src/sessions/lifecycle.ts");
   const { readTimeline } = await import("../src/read/transcript.ts");
   const r = new Rig();
@@ -3556,7 +3556,7 @@ test("a session the machine kept goes on in a chat, run in its own directory, wi
 });
 
 test("a continued session that cannot be resumed is told to read the terminal's own transcript", async () => {
-  const { find } = await import("../src/read/machine.ts");
+  const { find } = await import("./reference/machine.ts");
   const { continueMachineSession } = await import("../src/sessions/lifecycle.ts");
   const r = new Rig();
   const root = join(r.dir, "machine");
@@ -3581,7 +3581,7 @@ test("a continued session that cannot be resumed is told to read the terminal's 
 // root reads a directory whatever its mode says.
 // Windows has no chmod that keeps the owner out.
 test("a directory the station may not read is told as that, not left to the agent to fail in", { skip: process.getuid?.() === 0 || process.platform === "win32" }, async () => {
-  const { find } = await import("../src/read/machine.ts");
+  const { find } = await import("./reference/machine.ts");
   const { continueMachineSession } = await import("../src/sessions/lifecycle.ts");
   const r = new Rig();
   const root = join(r.dir, "machine");
@@ -3611,7 +3611,7 @@ test("a directory the station may not read is told as that, not left to the agen
 });
 
 test("a session whose directory is gone is not continued", async () => {
-  const { find } = await import("../src/read/machine.ts");
+  const { find } = await import("./reference/machine.ts");
   const { continueMachineSession } = await import("../src/sessions/lifecycle.ts");
   const r = new Rig();
   const root = join(r.dir, "machine");

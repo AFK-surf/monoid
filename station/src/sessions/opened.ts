@@ -268,7 +268,7 @@ export async function chatCreate(hub: Hub, key: string, args: Args): Promise<str
   const title = given(args, "title");
   if (title !== null && chars(title) > 120) throw new Error("title is too long (at most 120 characters)");
   const paths: string[] = Array.isArray(args.files) ? args.files.map(jsString) : [];
-  const files = sendable(hub, key, paths);
+  const files = await sendable(hub, key, paths);
   const there = await stationNamed(hub, key, given(args, "station") ?? (bindsTo.length === 1 ? bindsTo[0]! : null));
   const target = there ?? hub.station();
   if (preset !== null && bindsTo.length > 0 && target !== null && !bindsTo.includes(target)) {

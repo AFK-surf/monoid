@@ -35,14 +35,13 @@ fn message_image_node(
   // its image's key: one sent from here the picture it was picked as; else its station's ("" while it comes, "!" none)
   // (worked out once as what it reads changes: what stands in for the picture, its frame and the picture itself each
   // read it, again and again)
-  let keyed = @signals.computed_scoped(
+  let keyed = @signals.computed(
     fn(_) {
       match sent() {
         Some(k) => k
         None => if going_up() { "" } else { src.file_told(station(), owner(), name()) }
       }
     },
-    same=fn(x, y) { x == y },
   )
   let key = fn() { keyed.get() }
   let unreached = fn() { key() == "!" && sent() is None && src.images.unreached_told(id()) }

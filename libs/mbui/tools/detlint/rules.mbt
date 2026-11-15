@@ -11,11 +11,15 @@ let rule_names : Array[String] = [
   "motion-spring", "built-by-hand", "layout-read-back", "motion-length", "tester-branch", "frame-number", "ui-current",
   "build-clock", "build-motion", "old-list", "list-comes-off", "old-island", "old-panel",
   "click-read", "key-read", "part-place", "button-by-hand", "layout-told", "abort-unsaid", "empty-on-done", "panic-test", "read-before-run", "reset-by-hand",
-  "app-word", "frame-walk",
+  "app-word", "frame-walk", "scoped-computed", "raw-effect", "pick-loop", "each-min-height",
 ]
 
 ///|
 let rule_words : Map[String, String] = {
+  "scoped-computed": "a scoped computed made outside the parts said to keep one (@signals.computed_scoped; detlint.json `signals.scoped_ok`): it holds what it reads up whoever reads it (holds_up), so a part put by at rest (View::park) lets go of all it read and works it out whole again as it wakes; what a node works out is a plain @signals.computed(…, same=…), let go of with its last reader and resting with it. Only what is read with no reader at all (active_sub() is None: Scroll's at_foot_now) is scoped",
+  "raw-effect": "a bare effect made outside the parts said to keep one (@signals.effect, effect_cleanup; detlint.json `signals.effect_ok`): it does not rest as what made it is put by (View::park), runs as soon as it is made, in the middle of making a view, and is let go of only by whoever keeps its stop: what a node answers is its own binding (By, View::reacts, show, pick, each, owns), what reaches outside a source's managed by the app's base",
+  "pick-loop": "a loop that makes nodes as it goes round in what a pick or a show makes (View::pick's make, View::show's then): every node it made is let go and made again whenever what it picks by changes, all at once, none of them a list's row (none left out of sight, none kept); what is made one for each of a collection is a View::each (in what scrolls, View::scrolls_window; a page, page_node), each row by its key. What only comes once (a fixed few, made by the same change as the rest) says why on its line (det-ok)",
+  "each-min-height": "a row of View::each that says how tall it is at the least (min_height, a style given it with min_h=, by its name too) and no height: the list lays it out by what it holds, its words measured whenever it is laid out: a list's row is as tall as it is said (height, h=), worked out once of the theme and the size of words where it follows them; a row that truly grows with what it holds says why on its line (det-ok)",
   "frame-walk": "a test walks a span of the clock frame by frame with Tester::frame, which draws each frame whether or not anything asks for it: walk it by Tester::frame_as_host (what nothing asks for not drawn, as an idle host draws none) or run_for the span; time nothing happens in is skipped, never walked",
   "app-word": "the code names an app built on it (detlint.json `app_words`: a word, a path of its): a framework knows no app; what an app needs of it is asked of the app, its own native calls (@hostapi.app_said, app_tell), a name it says (@hostapi.set_site_name), its config",
   "frame-request": "the app asks for a frame itself: the framework knows when one is due (an input, an event, an animation's deadline, a layout read)",

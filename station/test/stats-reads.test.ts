@@ -8,9 +8,9 @@ import { after, test } from "node:test";
 import { Store, newMessage } from "../src/store/store.ts";
 import { installOutflowChatIndex, outflowChatIndexStep, outflowChatScopes } from "../src/store/outflow-index.ts";
 import type { InWorkspace } from "../src/store/rows.ts";
-import * as read from "../src/read/store.ts";
-import { ROUTER_WROTE, outflowChats, outflowMessages, outflowUsage } from "../src/read/outflow.ts";
-import { usageOps } from "../src/read/ops-usage.ts";
+import * as read from "./reference/store.ts";
+import { ROUTER_WROTE, outflowChats, outflowMessages, outflowUsage } from "./reference/outflow.ts";
+import { usageOps } from "./reference/ops-usage.ts";
 import { peerRead, textOf } from "../src/comma/peer.ts";
 import { bytesOf } from "../src/mesh/bus.ts";
 

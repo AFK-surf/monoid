@@ -10,10 +10,10 @@ test "source-specific kept values reuse a reader and sweep only unused owners" {
   let first_get = fn(_ : String?) { first_work.val += 1; "first" }
   let second_get = fn(_ : String?) { second_work.val += 1; "second" }
   let watch = @signals.watch(fn() {  })
-  assert_eq(watch.read(fn() { kept.read(first, "same", first_get) }), "first")
-  assert_eq(watch.read(fn() { kept.read(first, "same", first_get) }), "first")
+  assert_eq(watch.read(fn() { kept.read(first, "same", first_get, same=@signals.same_value) }), "first")
+  assert_eq(watch.read(fn() { kept.read(first, "same", first_get, same=@signals.same_value) }), "first")
   assert_eq(first_work.val, 1, msg="the same source reuses its computed value")
-  assert_eq(kept.read(second, "same", second_get), "second")
+  assert_eq(kept.read(second, "same", second_get, same=@signals.same_value), "second")
   assert_eq(second_work.val, 1)
   assert_eq(kept.peek_from(first, "same"), Some("first"))
   assert_eq(kept.peek_from(second, "same"), Some("second"))
@@ -42,20 +42,20 @@ test "forgetting one source leaves another cached and reset allows both to read 
   let second_get = fn(_ : String?) { second_work.val += 1; "second" }
   let first_watch = @signals.watch(fn() {  })
   let second_watch = @signals.watch(fn() { second_marked.val += 1 })
-  first_watch.read(fn() { kept.read(first, "same", first_get) }) |> ignore
-  second_watch.read(fn() { kept.read(second, "same", second_get) }) |> ignore
+  first_watch.read(fn() { kept.read(first, "same", first_get, same=@signals.same_value) }) |> ignore
+  second_watch.read(fn() { kept.read(second, "same", second_get, same=@signals.same_value) }) |> ignore
   kept.forget_from(first, "same")
   assert_eq(kept.peek_from(first, "same"), None)
   assert_eq(kept.peek_from(second, "same"), Some("second"))
   assert_eq(second_marked.val, 0, msg="forgetting the first source does not mark the second")
-  first_watch.read(fn() { kept.read(first, "same", first_get) }) |> ignore
-  second_watch.read(fn() { kept.read(second, "same", second_get) }) |> ignore
+  first_watch.read(fn() { kept.read(first, "same", first_get, same=@signals.same_value) }) |> ignore
+  second_watch.read(fn() { kept.read(second, "same", second_get, same=@signals.same_value) }) |> ignore
   assert_eq(first_work.val, 2)
   assert_eq(second_work.val, 1, msg="the second source reuses its value")
   kept_reset()
   assert_true(kept.kept.get("same") is None)
-  first_watch.read(fn() { kept.read(first, "same", first_get) }) |> ignore
-  second_watch.read(fn() { kept.read(second, "same", second_get) }) |> ignore
+  first_watch.read(fn() { kept.read(first, "same", first_get, same=@signals.same_value) }) |> ignore
+  second_watch.read(fn() { kept.read(second, "same", second_get, same=@signals.same_value) }) |> ignore
   assert_eq(first_work.val, 3)
   assert_eq(second_work.val, 2)
   first_watch.stop()

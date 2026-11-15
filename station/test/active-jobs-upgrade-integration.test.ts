@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { buildWorkspaceActivity } from "../src/sessions/workspace-activity-builder.ts";
-import { makeStore, watching } from "../src/read/store.ts";
+import { makeStore, watching } from "./reference/store.ts";
 import { activeJobUpgradeReady, activeJobUpgradeStep, activeRemoteJobsAvailable, REMOTE_QUEUE_PREPARED } from "../src/store/active-jobs-upgrade.ts";
 import { Store } from "../src/store/store.ts";
 

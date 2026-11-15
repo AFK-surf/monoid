@@ -72,7 +72,12 @@ fn hex(c : Int) -> Int {
 ///|
 fn Parser::string(self : Parser) -> Array[Int] raise SyntaxError {
   self.expect("\"")
-  let out = []
+  // (as long as what is up to its closing quote at most: a string of MBs is not copied again as its array grows)
+  let mut end = self.at
+  while end < self.text.length() && self.text.unsafe_charcode_at(end) != 0x22 {
+    end += if self.text.unsafe_charcode_at(end) == 0x5c { 2 } else { 1 }
+  }
+  let out = Array::new(capacity=end - self.at)
   while true {
     let c = self.peek()
     if c < 0 || c < 0x20 {
@@ -403,6 +408,117 @@ pub fn stringify(v : JValue) -> String {
   let out = StringBuilder::new()
   write(out, v)
   out.to_string()
+}
+
+///|
+/// A code point as UTF-8.
+fn utf8_point(out : @buffer.Buffer, c : Int) -> Unit {
+  if c < 0x80 {
+    out.write_byte(c.to_byte())
+  } else if c < 0x800 {
+    out.write_byte((0xc0 | (c >> 6)).to_byte())
+    out.write_byte((0x80 | (c & 0x3f)).to_byte())
+  } else if c < 0x10000 {
+    out.write_byte((0xe0 | (c >> 12)).to_byte())
+    out.write_byte((0x80 | ((c >> 6) & 0x3f)).to_byte())
+    out.write_byte((0x80 | (c & 0x3f)).to_byte())
+  } else {
+    out.write_byte((0xf0 | (c >> 18)).to_byte())
+    out.write_byte((0x80 | ((c >> 12) & 0x3f)).to_byte())
+    out.write_byte((0x80 | ((c >> 6) & 0x3f)).to_byte())
+    out.write_byte((0x80 | (c & 0x3f)).to_byte())
+  }
+}
+
+///|
+fn ascii(out : @buffer.Buffer, s : String) -> Unit {
+  for i in 0..<s.length() {
+    out.write_byte(s.unsafe_charcode_at(i).to_byte())
+  }
+}
+
+///|
+fn quote_utf8(out : @buffer.Buffer, s : Array[Int]) -> Unit {
+  let hexd = "0123456789abcdef"
+  let escape4 = (c : Int) => {
+    ascii(out, "\\u")
+    for shift = 12; shift >= 0; shift = shift - 4 {
+      out.write_byte(hexd.unsafe_charcode_at((c >> shift) & 0xf).to_byte())
+    }
+  }
+  out.write_byte(b'"')
+  let n = s.length()
+  let mut i = 0
+  while i < n {
+    let c = s[i]
+    i += 1
+    match c {
+      0x22 => ascii(out, "\\\"")
+      0x5c => ascii(out, "\\\\")
+      0x08 => ascii(out, "\\b")
+      0x0c => ascii(out, "\\f")
+      0x0a => ascii(out, "\\n")
+      0x0d => ascii(out, "\\r")
+      0x09 => ascii(out, "\\t")
+      // (a line's ends in JavaScript's eyes, written as what JSON.parse reads them as: the line stays one)
+      0x2028 | 0x2029 => escape4(c)
+      _ =>
+        if c < 0x20 {
+          escape4(c)
+        } else if c >= 0xd800 && c <= 0xdbff && i < n && s[i] >= 0xdc00 && s[i] <= 0xdfff {
+          utf8_point(out, 0x10000 + ((c - 0xd800) << 10) + (s[i] - 0xdc00))
+          i += 1
+        } else if c >= 0xd800 && c <= 0xdfff {
+          escape4(c)
+        } else {
+          utf8_point(out, c)
+        }
+    }
+  }
+  out.write_byte(b'"')
+}
+
+///|
+/// The value written to `out` as the UTF-8 of what JSON.stringify writes, U+2028 and U+2029 escaped (what JSON.parse
+/// reads the same): a line of MBs put together once, as the bytes it is sent as.
+pub fn write_utf8(out : @buffer.Buffer, v : JValue) -> Unit {
+  match v {
+    Null => ascii(out, "null")
+    Bool(b) => ascii(out, if b { "true" } else { "false" })
+    Num(d) => ascii(out, if d.is_nan() || d.is_inf() { "null" } else { d.to_string() })
+    Str(s) => quote_utf8(out, s)
+    Arr(items) => {
+      out.write_byte(b'[')
+      for i, item in items {
+        if i > 0 {
+          out.write_byte(b',')
+        }
+        write_utf8(out, item)
+      }
+      out.write_byte(b']')
+    }
+    Obj(entries) => {
+      out.write_byte(b'{')
+      for i, e in ordered(entries) {
+        if i > 0 {
+          out.write_byte(b',')
+        }
+        quote_utf8(out, e.0)
+        out.write_byte(b':')
+        write_utf8(out, e.1)
+      }
+      out.write_byte(b'}')
+    }
+  }
+}
+
+///|
+/// An object's keys as `Object.keys` gives them (integer-like ones first, ascending); none for what is not an object.
+pub fn JValue::keys(self : JValue) -> Array[Array[Int]] {
+  match self {
+    Obj(entries) => ordered(entries).map(e => e.0)
+    _ => []
+  }
 }
 
 ///|

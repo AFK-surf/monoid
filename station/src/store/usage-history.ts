@@ -80,7 +80,8 @@ export function installEmptyUsageHistory(db: DatabaseSync): void {
 /// - the calls since then, read by the index on their time: the hours or days since those quarters stopped, not the
 ///   station's whole history.
 /// A station whose old quarters never held every call (their fill not done) counts from when the compact statistics
-/// began, or from now; the page says the days before are not known until usage-fill.ts has counted them.
+/// began, or from now; the page says the days before are not known until the fill (station/mb src/usagefill) has
+/// counted them.
 export function installUsageHistory(db: DatabaseSync, now: number): void {
   if (hasUsageHistory(db)) return;
   db.exec("BEGIN IMMEDIATE");

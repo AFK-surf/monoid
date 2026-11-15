@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { Readers } from "../src/read/pool.ts";
-import * as readStore from "../src/read/store.ts";
+import * as readStore from "./reference/store.ts";
 import { newSession, say } from "../src/sessions/lifecycle.ts";
 import { installLegacyEdits } from "../src/store/legacy-edits-build.ts";
 import { CARD_POSTS_PENDING } from "../src/store/card-post-index.ts";

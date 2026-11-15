@@ -10,12 +10,25 @@ pub(all) struct Topic {
 }
 
 ///|
+/// The same topic as it stood: what derive(Eq) says, its version looked at first and its value last, the one JSON or
+/// equal (a value set again is mostly the one it was).
+pub impl Eq for Topic with equal(a, b) {
+  a.version == b.version && a.error == b.error && @signals.same_value(a.value, b.value)
+}
+
+///|
 /// A topic as a value a signal can carry, including whether its first value waits on a station.
 pub(all) struct TopicState {
   value : Json?
   error : Json?
   version : Int
   waiting : Bool
+}
+
+///|
+/// As Topic's, and whether it waits.
+pub impl Eq for TopicState with equal(a, b) {
+  a.version == b.version && a.waiting == b.waiting && a.error == b.error && @signals.same_value(a.value, b.value)
 }
 
 ///|
@@ -185,7 +198,17 @@ pub(all) struct Source {
 /// A read-only signal of one core subscription. Readers of the same source, name and params share its subscription;
 /// the graph releases it when the last reader leaves. An immediate-mode page holds its untracked frame read until it leaves.
 pub fn Source::topic(src : Source, name : String, params : Map[String, Json]) -> @signals.Computed[TopicState] {
-  let said = topic_key(name, params)
+  src.topic_said(name, params, topic_key(name, params))
+}
+
+///|
+/// Source::topic, its key (topic_key) worked out already: what reads a topic by its key too (Derived) writes it once.
+fn Source::topic_said(
+  src : Source,
+  name : String,
+  params : Map[String, Json],
+  said : String,
+) -> @signals.Computed[TopicState] {
   // (read as a card, a panel or a sheet is made: waited for by it before it comes in, @sf.OpenGate)
   if @sf.open_gate_collecting() && (src.gates_opens)() {
     let sig = topic_read_by(src, name, params, said)

@@ -1,6 +1,10 @@
 // Generated using `moon info`, DON'T EDIT IT
 package "mbui/flex"
 
+import {
+  "moonbitlang/core/debug",
+}
+
 // Values
 pub const LEN_AUTO : Int32 = 0
 
@@ -12,17 +16,27 @@ pub const LEN_WITHIN : Int32 = 3
 
 pub fn absolute_relaid(Node, Node) -> Int32
 
+pub fn come_back_path(Double, Double, Double, Double, Double) -> (Double, Double)
+
+pub fn come_group_set(ComeGroup) -> Unit
+
 pub fn come_state(Style, Double) -> (Double, Double)?
+
+pub fn come_tall_at(Style, Double, Double) -> Double
 
 pub fn come_way(Double, Double, Double, Double, along? : ComeWith) -> (Double, Double)
 
-pub fn come_way_ms(Double, Double, Double, along? : ComeWith) -> Double
+pub fn come_way_by(Double, Double, Double, Double, Double, along? : ComeWith, kept? : ComeKept, turn? : ComeTurn) -> (Double, Double)
+
+pub fn come_way_ms(Double, Double, Double, along? : ComeWith, kept? : ComeKept) -> Double
 
 pub fn compute(Node, width? : Double, height? : Double, round? : Bool, reuse? : Bool, grid? : Double) -> Unit
 
 pub fn computes() -> Int32
 
 pub let counters : FixedArray[Int32]
+
+pub let cut_kept_ems : Double
 
 pub fn measured_height(Node, Double) -> Double
 
@@ -52,9 +66,16 @@ pub fn relayout(Node) -> Unit
 
 pub fn reuse_refused(Node) -> String?
 
+pub fn rows_on_way(Double, Double, Double, Double) -> Double
+
+pub fn time_gone(Double, Double) -> Double
+
+pub let turn_judged_from : Double
+
 // Errors
 
 // Types and methods
+#derive(Eq)
 pub(all) enum Align {
   Auto
   FlexStart
@@ -65,51 +86,89 @@ pub(all) enum Align {
   SpaceBetween
   SpaceAround
   SpaceEvenly
-} derive(Eq)
+}
 
 type Box
 
+#derive(Eq)
 pub(all) enum BoxSizing {
   BorderBox
   ContentBox
-} derive(Eq)
+}
 
+pub(all) struct ComeGroup {
+  at : Double
+  members : Array[Style]
+  mut set : Bool
+  mut v : Double
+  mut d : Double
+  mut s : Double
+  mut t1 : Double
+  mut a : Double
+  mut w : Double
+  mut dur : Double
+  mut spec : (Double, (Double) -> Double)?
+}
+pub fn ComeGroup::new(Double) -> Self
+
+pub struct ComeKept {
+  // private fields
+}
+pub fn ComeKept::new() -> Self
+
+pub struct ComeTurn {
+  v : Double
+  far : Double
+  ends : Double
+  t1 : Double
+  s : Double
+  a : Double
+  dur : Double
+  w : Double
+}
+
+#derive(Eq, @debug.Debug)
 pub(all) struct ComeWith {
   start : Double
   ends : Double
-} derive(Eq, Show)
+}
 
+#derive(Eq)
 pub(all) enum Dim {
   Auto
   Pt(Double)
   Pct(Double)
   Within(Double)
-} derive(Eq)
+}
 
+#derive(Eq)
 pub(all) enum Display {
   Flex
   DisplayNone
   Contents
-} derive(Eq)
+}
 
+#derive(Eq)
 pub(all) enum FlexDirection {
   Column
   Row
   ColumnReverse
   RowReverse
-} derive(Eq)
+}
 
+#derive(Eq)
 pub(all) enum FlexWrap {
   NoWrap
   Wrap
   WrapReverse
-} derive(Eq)
+}
 
+#derive(Eq)
 pub(all) enum MeasureMode {
   Undefined
   Exactly
   AtMost
-} derive(Eq)
+}
 
 pub(all) struct Node {
   style : Style
@@ -140,6 +199,8 @@ pub(all) struct Node {
   mut pre : Array[Double]
   mut laid_gen : Int32
   mut skip_gen : Int32
+  mut hidden_gen : Int32
+  mut holds_gone : Bool
 }
 pub fn Node::add(Self, Self) -> Unit
 pub fn Node::laid_given(Self) -> Bool
@@ -148,17 +209,19 @@ pub fn Node::laid_out_at(Self) -> Int32
 pub fn Node::left_out(Self) -> Bool
 pub fn Node::new() -> Self
 
+#derive(Eq)
 pub(all) enum Overflow {
   Visible
   Hidden
   Scroll
-} derive(Eq)
+}
 
+#derive(Eq)
 pub(all) enum PositionType {
   Relative
   Absolute
   Static
-} derive(Eq)
+}
 
 pub(all) struct Style {
   mut display : Display
@@ -178,6 +241,7 @@ pub(all) struct Style {
   mut one_of : Bool
   mut fit_need : Double
   mut fit_whole : Bool
+  mut cut_least : Double
   mut soft_min : Double
   mut stretch_past_max : Bool
   mut min_held : Bool
@@ -191,6 +255,17 @@ pub(all) struct Style {
   mut come_k : Double
   mut come_v : Double
   mut come_goal : Double
+  mut come_whole : Double
+  mut come_plan : Double
+  mut come_turn : ComeTurn?
+  mut come_group : ComeGroup?
+  mut come_fill : Bool
+  mut come_across : Bool
+  mut come_spec : (Double, (Double) -> Double)?
+  mut come_foot : Bool
+  mut come_grid : Double
+  mut gone_empty : Bool
+  mut structural : Bool
   mut rows_grid : Double
   // private fields
 }
@@ -278,6 +353,7 @@ pub fn Style::set_border_top(Self, Dim) -> Unit
 pub fn Style::set_box_sizing(Self, BoxSizing) -> Unit
 pub fn Style::set_gap_col(Self, Dim) -> Unit
 pub fn Style::set_gap_row(Self, Dim) -> Unit
+pub fn Style::set_gone_empty(Self, Bool) -> Unit
 pub fn Style::set_height(Self, Dim) -> Unit
 pub fn Style::set_inset_bottom(Self, Dim) -> Unit
 pub fn Style::set_inset_left(Self, Dim) -> Unit

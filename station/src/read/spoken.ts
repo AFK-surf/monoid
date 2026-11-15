@@ -1,9 +1,4 @@
-// The language the read being answered speaks in (lang.rs `spoken()`), for the reads outside views.ts: their routes
-// pass the request's (`lang` in a read's args) and the op sets it before it answers (one read at a time in a reader).
-import { type Lang, tr as translate } from "../ops/i18n.ts";
-
-let lang: Lang = "zh";
-export const setLang = (l: Lang | undefined) => (lang = l ?? "zh");
-export const spoken = () => lang;
-/// `t!(spoken(); key, args…)`.
-export const tr = (key: string, args: Record<string, string> = {}) => translate(lang, key, args);
+// The words of the reads outside views.ts that the station still makes itself (transcript.ts), in the language the
+// request being answered asks in: views.ts's (`spokenIn`), Chinese outside one. The reads that set it themselves
+// (a read's `lang`) are the tests' now (test/reference/spoken.ts).
+export { tr } from "./views.ts";

@@ -494,7 +494,7 @@ fn present(shows : Shows, from : Anchor, line? : String = "", gone? : () -> Unit
     levels: None,
     chosen: false,
     under,
-    more: @signals.signal([]),
+    more: @signals.signal_ref([]),
   })
   @signals.start_batch()
   presented_told()

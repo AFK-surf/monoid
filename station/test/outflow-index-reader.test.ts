@@ -8,8 +8,8 @@ import { Store } from "../src/store/store.ts";
 import { Readers } from "../src/read/pool.ts";
 import { OutflowChatIndex } from "../src/read/chat-index-builder.ts";
 import { installOutflowChatIndex, outflowChatIndexStep } from "../src/store/outflow-index.ts";
-import { openStore } from "../src/read/store.ts";
-import { outflowChats } from "../src/read/outflow.ts";
+import { openStore } from "./reference/store.ts";
+import { outflowChats } from "./reference/outflow.ts";
 import { endsOnce, counted } from "./programs.ts";
 
 function fixture() {

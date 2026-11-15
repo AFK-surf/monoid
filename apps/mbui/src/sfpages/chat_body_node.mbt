@@ -415,7 +415,7 @@ fn chat_pieces_of(
   match pieces.get(k) {
     Some(s) => s
     None => {
-      let s = @signals.signal([], same=fn(_, _) { false })
+      let s = @signals.signal_by([], same=fn(_, _) { false })
       pieces[k] = s
       s
     }
@@ -605,7 +605,7 @@ fn chat_body_node(
   // (how many times the rows were made whole: what was sent from here as, kept, read again by the rows by key as they
   // go on from them)
   let made_whole = Ref(0)
-  let rows = @signals.computed(fn(_) {
+  let rows = @signals.computed_by(fn(_) {
     let view = (here.view)()
     let all = entries()
     let on_way = sending()
@@ -1008,7 +1008,7 @@ fn chat_body_row(
   guard first is Some(first) else { return }
   // (as the list says it now, only as that row changed (chat_body_row_same): what changed in another row reads none of
   // this one again; one let go as its key goes reads what it last was)
-  let now = @signals.computed(fn(_) { (rows.row)(k).unwrap_or(first) }, same=chat_body_row_same)
+  let now = @signals.computed_by(fn(_) { (rows.row)(k).unwrap_or(first) }, same=chat_body_row_same)
   let row = fn() { now.get() }
   let entry = fn() { row().entry }
   let top = fn() { chat_body_gap_room(row().gap, (here.width)()) }

@@ -3,12 +3,16 @@
 // MCP endpoint over HTTP (src/tools/http.ts) with its session's token; the post is recorded in the chat; the turn
 // ends all_done, not nudged.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { ClaudeDriver } from "../src/agents/claude.ts";
+import { CodexDriver } from "../src/agents/codex.ts";
+import { outFile, runnerId } from "../src/agents/process.ts";
 import { hubConfig } from "../src/sessions/config.ts";
 import { Hub } from "../src/sessions/hub.ts";
 import { InternalChat } from "../src/sessions/internal.ts";
@@ -61,6 +65,134 @@ test("a message in the station's chat: a turn starts, the agent posts through th
     await hub.shutdown();
     await served.close(1000);
     store.close();
+    rmSync(data, { recursive: true, force: true });
+  }
+});
+
+// A Codex app-server's thread's notifications read in the program (mb agents_codex.mbt) are given its session's actor
+// there too: Node only says each batch taken, and keeps where each turn began.
+test("a message to a Codex session: its turns' events go to its actor in the program, none through Node", async () => {
+  const data = mkdtempSync(process.platform === "win32" ? join(tmpdir(), "hx-") : "/tmp/hx-");
+  const skills = join(data, "skills");
+  mkdirSync(skills, { recursive: true });
+  const bundle = join(data, "cert.pem");
+  writeFileSync(bundle, "");
+  const config = hubConfig({ profiles: [{ id: "cx", runtime: "codex", home: "homes/cx", access: { kind: "opencode-go", key: "k" } }], maxNudges: 1 }, data);
+  const store = Store.open(join(data, "stillfail.db"));
+  const driver = new CodexDriver({ data, hostSkills: skills, caBundle: bundle });
+  let url = "";
+  const hub = new Hub({ config: () => config, store, chats: () => undefined, drivers: [driver], mcpUrl: () => url, internal: new InternalChat() });
+  const mcp = new McpEndpoint((token) => store.sessionByToken(token)?.key, chatTools(hub));
+  const served = await openAgentsDoor({ port: 0 }, mcp, () => ({ status: 400, body: { error: "no jobs" } }));
+  url = served.url;
+  try {
+    const [key, thread] = newSession(hub, { runtime: "codex", createdBy: "ada@x.com" });
+    say(hub, thread.id, "ada@x.com", "slow:3");
+    // Real processes: looked at every 25 ms (no deadline). Its turn and the one that nudges it, both ended.
+    while (store.listTurns(key).length < 2 || store.lastTurn(key)?.endedAt == null) await new Promise((r) => setTimeout(r, 25));
+    const turns = store.listTurns(key);
+    assert.deepEqual(turns.map((t) => t.summary.outcome), ["completed", "completed"]);
+    assert.ok(!store.getSession(key)!.running);
+    const posted = hub.program()!.posted;
+    assert.equal(posted.get("event") ?? 0, 0, `events said through Node: ${JSON.stringify([...posted])}`);
+    assert.ok((posted.get("routed") ?? 0) > 0, JSON.stringify([...posted]));
+  } finally {
+    await hub.shutdown();
+    await served.close(1000);
+    store.close();
+    rmSync(data, { recursive: true, force: true });
+  }
+});
+
+/// A station of Codex sessions on one profile (one app-server), in `data`: its hub, its store, its MCP door.
+async function codexStation(data: string, env: Record<string, string> = {}) {
+  const skills = join(data, "skills");
+  mkdirSync(skills, { recursive: true });
+  const bundle = join(data, "cert.pem");
+  writeFileSync(bundle, "");
+  const config = hubConfig({ profiles: [{ id: "cx", runtime: "codex", home: "homes/cx", access: { kind: "opencode-go", key: "k" }, env }], maxNudges: 1 }, data);
+  const store = Store.open(join(data, "stillfail.db"));
+  const driver = new CodexDriver({ data, hostSkills: skills, caBundle: bundle });
+  let url = "";
+  const hub = new Hub({ config: () => config, store, chats: () => undefined, drivers: [driver], mcpUrl: () => url, internal: new InternalChat() });
+  const mcp = new McpEndpoint((token) => store.sessionByToken(token)?.key, chatTools(hub));
+  const served = await openAgentsDoor({ port: 0 }, mcp, () => ({ status: 400, body: { error: "no jobs" } }));
+  url = served.url;
+  return { hub, store, served };
+}
+
+/// Real processes: looked at every 25 ms, failing past `limitMs` saying what never came (what was lost would hang the
+/// test file otherwise).
+async function until(done: () => boolean, what: string, limitMs = 30_000) {
+  const start = performance.now();
+  while (!done()) {
+    if (performance.now() - start > limitMs) assert.fail(`not within ${limitMs} ms: ${what}`);
+    await new Promise((r) => setTimeout(r, 25));
+  }
+}
+
+// Two sessions on one app-server: a line of the program's says both threads' events, each a batch of its own, which
+// their actors take one after the other; the first taken lets go of none of the other's (2026-11-15: it let go of all
+// told up to the same place, the other session's events lost).
+test("two Codex sessions on one app-server at once: each one's events go to its own actor, none lost", async () => {
+  const data = mkdtempSync(process.platform === "win32" ? join(tmpdir(), "hy-") : "/tmp/hy-");
+  const { hub, store, served } = await codexStation(data);
+  try {
+    const sessions = [0, 1, 2, 3].map(() => newSession(hub, { runtime: "codex", createdBy: "ada@x.com" }));
+    for (const [, thread] of sessions) say(hub, thread.id, "ada@x.com", "slow:8");
+    // Each its turn and the one that nudges it, both ended.
+    await until(() => sessions.every(([key]) => store.listTurns(key).length >= 2 && store.lastTurn(key)?.endedAt != null), "every session's turns ended");
+    // (a batch let go of before its actor took it never ends that actor's turn: the wait above fails then)
+    for (const [key] of sessions) {
+      assert.deepEqual(store.listTurns(key).map((t) => t.summary.outcome), ["completed", "completed"], key);
+      assert.ok(!store.getSession(key)!.running, key);
+    }
+    const posted = hub.program()!.posted;
+    assert.equal(posted.get("event") ?? 0, 0, `events said through Node: ${JSON.stringify([...posted])}`);
+    assert.ok((posted.get("routed") ?? 0) > sessions.length, JSON.stringify([...posted]));
+  } finally {
+    await hub.shutdown();
+    await served.close(1000);
+    store.close();
+    rmSync(data, { recursive: true, force: true });
+  }
+});
+
+// Handed over while its turn writes: what the program held of it is told before the sessions are, nothing read after
+// it, and the next station takes the turn up where it was, to its end.
+test("a Codex turn handed over while it writes is taken up by the next station and ends there", { skip: process.platform === "win32" ? "fifos" : false }, async () => {
+  const data = mkdtempSync("/tmp/hz-");
+  const dump = join(data, "dump");
+  const first = await codexStation(data, { FAKE_DUMP: dump });
+  let next: Awaited<ReturnType<typeof codexStation>> | null = null;
+  try {
+    const gate = `${dump}.held`;
+    for (const part of ["a", "b"]) execFileSync("/usr/bin/mkfifo", [`${gate}.${part}`]);
+    const [key, thread] = newSession(first.hub, { runtime: "codex", createdBy: "ada@x.com" });
+    say(first.hub, thread.id, "ada@x.com", "gate:6:3:held");
+    await until(() => first.store.getSession(key)?.running === true && first.store.lastTurn(key) !== undefined, "its turn begun");
+    // (three of its deltas written, the turn waiting for the rest)
+    const out = outFile(data, runnerId("codex", "cx"));
+    await until(() => existsSync(out) && readFileSync(out, "utf8").includes('"delta":"d2 "'), "three of its deltas written");
+    await first.hub.handOver();
+    await first.served.close(1000);
+    next = await codexStation(data, { FAKE_DUMP: dump });
+    await next.hub.takeUp();
+    await writeFile(`${gate}.a`, "go");
+    await until(() => existsSync(`${gate}.said`), "the rest of its deltas written");
+    await writeFile(`${gate}.b`, "go");
+    const store = next.store;
+    await until(() => store.lastTurn(key)?.endedAt != null && !store.getSession(key)!.running, "its turn ended on the next station");
+    assert.equal(store.listTurns(key)[0]!.summary.outcome, "completed", "its turn, ended on the next station");
+    const posted = next.hub.program()!.posted;
+    assert.equal(posted.get("event") ?? 0, 0, `events said through Node: ${JSON.stringify([...posted])}`);
+  } finally {
+    // (the one handed over let go of what it ran: its own parts end)
+    await first.hub.shutdown();
+    await next?.hub.shutdown();
+    await next?.served.close(1000);
+    next?.store.close();
+    first.store.close();
     rmSync(data, { recursive: true, force: true });
   }
 });

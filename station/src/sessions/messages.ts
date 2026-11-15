@@ -107,7 +107,7 @@ export async function sessionSend(hub: Hub, key: string, args: Args): Promise<st
     if (target === undefined) throw new Error(`${to} names no chat`);
     const call = peersOf(hub, key);
     if (!call) throw new Error("other stations cannot be reached from this one yet");
-    const files = sendable(hub, key, paths);
+    const files = await sendable(hub, key, paths);
     const request: Json = { method: METHOD, session: key, to: target, text, from: { title, link } };
     let answer: Json;
     try {
@@ -170,7 +170,7 @@ export async function fromPeer(hub: Hub, peer: string, request: Json, ws: string
   if (hub.store.manuallyArchived(thread.thread.id)) throw new Error(`that chat was archived by hand: it takes no messages until someone restores it`);
   const targets = hub.store.threadSessions(thread.thread.id).map((m) => m.session);
   // Files sent ahead of it (session.put), into the uploads of the session the chat's files are read from.
-  const files = claim(hub, peer, from, targets[0] ?? target, request?.files);
+  const files = await claim(hub, peer, from, targets[0] ?? target, request?.files);
   const title = typeof request?.from?.title === "string" && request.from.title.trim() !== "" ? request.from.title : from;
   const link = typeof request?.from?.link === "string" && request.from.link !== "" ? request.from.link : null;
   // The first message of a chat that session opened here (chat_create there): headed as its opening.

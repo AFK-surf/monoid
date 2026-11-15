@@ -33,6 +33,7 @@ pub fn chosen_none() -> Chosen {
 
 ///|
 /// The `driveBrowse` topic's value (BrowseView).
+#derive(Eq)
 pub(all) struct BrowseView {
   arrangement : Arrangement
   folders : Map[String, Array[String]]
@@ -148,7 +149,7 @@ pub fn browse_where(
 ///|
 /// The place's topic as it stands.
 pub fn browse_topic(src : Source, where_ : Map[String, Json]) -> BrowseView? {
-  match browse_read.read(src, where_).0 {
+  match browse_read.value(src, where_) {
     Some(v) => v
     None => None
   }

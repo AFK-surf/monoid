@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { constants, DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { makeStore, usageSince as readSince } from "../src/read/store.ts";
+import { makeStore, usageSince as readSince } from "./reference/store.ts";
 import { Store } from "../src/store/store.ts";
 
 test("the first usage time is read from a maintained statistic", () => {

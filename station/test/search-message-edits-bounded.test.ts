@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { makeStore } from "../src/read/store.ts";
+import { makeStore } from "./reference/store.ts";
 import { SEARCH_FIRST_MESSAGES, SEARCH_NEXT_MESSAGES, threadDocs } from "./reference/search-sources.ts";
 import { MERGED } from "../src/store/schema.ts";
 import { Store } from "../src/store/store.ts";

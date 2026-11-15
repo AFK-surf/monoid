@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { pathToFileURL } from "node:url";
 import { PeopleSinceBuilder } from "../src/read/card-posts-builder.ts";
 import { Readers } from "../src/read/pool.ts";
-import { answersSince, makeStore } from "../src/read/store.ts";
+import { answersSince, makeStore } from "./reference/store.ts";
 import { PEOPLE_TIME_PENDING, peopleSinceReady, peopleSinceStep } from "../src/store/legacy-people-since.ts";
 import { Store } from "../src/store/store.ts";
 import { referenceAnswersSince } from "./card-answer-reference.ts";

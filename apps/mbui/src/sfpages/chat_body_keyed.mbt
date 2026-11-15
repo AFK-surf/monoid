@@ -187,7 +187,7 @@ fn chat_body_keyed(
   // what was sent from here a row of the core's took over (chat_body_rows' `sent_as`): the first of this device's own
   // not there as it was sent (an outbox entry, or a message after the newest there then), looked for among the
   // messages from the newest back no further than that newest, then the outbox; what is still on its way, as it is
-  let taken = @signals.computed(
+  let taken = @signals.computed_by(
     fn(_) {
       let v = head()
       for o in v.outbox {
@@ -312,7 +312,7 @@ fn chat_body_keyed(
         // the list's first, followed close under), the key it goes by; its rows made again only as one of these is
         // another, else the same rows given again, so the marks moving for another message wake nothing of it)
         let made_of : Ref[(Message, Bool, Bool, Bool, String)?] = Ref(None)
-        let p = @signals.computed(
+        let p = @signals.computed_by(
           fn(was) {
             let (unread_at, lead_mk, followed_mk, card_mk, _, _) = marks.get()
             let own = msgs.get(mk)
@@ -380,7 +380,7 @@ fn chat_body_keyed(
       }
     }
   }
-  let ends = @signals.computed(
+  let ends = @signals.computed_by(
     fn(_) {
       let v = head()
       let (still, _) = taken.get()

@@ -1,4 +1,4 @@
-// Claude Code processes read by the MoonBit program (station/mb's reader `--sessions`, mb/src/reader/agents.mbt; agents/mb-program.ts), not
+// Claude Code processes and Codex app-servers read by the MoonBit program (station/mb's reader `--sessions`, mb/src/reader/agents.mbt; agents/mb-program.ts), not
 // on the station's thread: the program attaches to each process's runner, reads its stream-json and says what it comes
 // to (the runtime's events, where the turn stands, up to where it read), which this hands the session and acknowledges
 // once handed, the line then acknowledged to the runner. A process is started and ended here as process.ts does it;
@@ -16,11 +16,24 @@ import { leave, listening, startRunner, type RunnerInfo } from "./runner.ts";
 type Json = any;
 
 /// What the program says of a process's lines: the events, the turn as it left it, up to where.
-/// `lines`: a process read as lines (a Codex app-server's, `kind` "lines"), its lines given whole, each with where it
-/// begins and ends, but for those nothing is kept of (mb `given`).
+/// `lines`, `marks`, `threads`: a Codex app-server's (`kind` "codex", mb agents_codex.mbt): the lines Node reads, each
+/// with where it begins and ends; the turns' starts and ends of threads no session has; each session's thread's events
+/// and live steps as they stand after them, with its batch where the program keeps them for its actor.
 /// `batch`: the events are kept by the program to give the session's actor there once its owner took them (`route`);
 /// `routed`: they are, so the session's owner says it took them (its router) and the program, not Node, acknowledges.
-export type Heard = { events: Json[]; turn: Json; to: number; lines?: { text: string; from: number; to: number }[]; batch?: number; routed?: boolean };
+export type Heard = {
+  events: Json[];
+  turn: Json;
+  to: number;
+  lines?: { text: string; from: number; to: number }[];
+  marks?: [string, number, number, number][];
+  threads?: CodexHeard[];
+  batch?: number;
+  routed?: boolean;
+};
+
+/// A Codex thread's events as the program read them (mb `codex_tell`).
+export type CodexHeard = { thread: string; events: Json[]; live: Json; batch?: number };
 
 /// What takes a batch the program keeps for the actor in the same program (mb-actor.ts): told the batch, once its
 /// events are had here; false: it was not, so it is acknowledged as before (its events not given there).
@@ -28,9 +41,14 @@ export type Router = { program: SessionsProgram; took: (batch: number) => boolea
 
 export type HostedOptions = {
   label: string;
-  heard: (heard: Heard) => void;
-  /// How its lines are read: Claude Code's frames by the program (the default), or given as they are.
-  kind?: "claude" | "lines";
+  /// true: a batch of it was taken by its actor in the program, which acknowledges it then.
+  heard: (heard: Heard) => boolean | void;
+  /// How its lines are read: Claude Code's frames (the default), or a Codex app-server's JSON-RPC.
+  kind?: "claude" | "codex";
+  /// A Codex app-server's taken up while its sessions are: what comes for a thread not taken up yet is held for it.
+  orphans?: boolean;
+  /// Said to the program after each attach (again after it started again): what it has of the process (its threads).
+  attached?: () => void;
   exit: (said: string, stderr: string) => void;
 };
 
@@ -58,6 +76,7 @@ export class AgentsHost {
   #next = 0;
   readonly #sessions = new Map<number, HostedProcess>();
   readonly #freezes = new Map<number, (states: Record<string, { turn: Json; live: Json }>) => void>();
+  readonly #replays = new Map<number, (live: Record<string, Json>) => void>();
   #closed = false;
 
   private constructor(data: string) {
@@ -96,6 +115,9 @@ export class AgentsHost {
     if (this.#closed) return;
     log.warn("agents", "the program reading agents ended; starting it again", { code });
     this.#proc = null;
+    // (what it read again of an output is lost with it: those threads' live steps as none were open)
+    for (const done of this.#replays.values()) done({});
+    this.#replays.clear();
     // (each process read again from where it was acknowledged, the turn as its session knows it)
     const again = [...this.#sessions.values()];
     // timer: a retry after a failure, with a backoff (one that keeps ending is started again each second at most)
@@ -106,6 +128,13 @@ export class AgentsHost {
   }
 
   #said(said: Json) {
+    if (typeof said?.replayed === "number") {
+      const done = this.#replays.get(said.replayed);
+      this.#replays.delete(said.replayed);
+      done?.(said.live ?? {});
+      if (this.#sessions.size === 0) this.#idle();
+      return;
+    }
     if (typeof said?.frozen === "number") {
       const done = this.#freezes.get(said.frozen);
       this.#freezes.delete(said.frozen);
@@ -126,7 +155,10 @@ export class AgentsHost {
           return { text, from, to };
         });
       }
-      if (p.heard({ events: Array.isArray(said.events) ? said.events : [], turn: said.turn, to: said.to, lines, batch: typeof said.batch === "number" ? said.batch : undefined })) this.post({ ack: n, to: said.to });
+      const heard: Heard = { events: Array.isArray(said.events) ? said.events : [], turn: said.turn, to: said.to, lines, batch: typeof said.batch === "number" ? said.batch : undefined };
+      if (Array.isArray(said.marks)) heard.marks = said.marks;
+      if (Array.isArray(said.threads)) heard.threads = said.threads;
+      if (p.heard(heard)) this.post({ ack: n, to: said.to });
     } else if (said.exit !== undefined) p.exited_(said.code ?? null, said.signal ?? null, typeof said.stderr === "string" ? said.stderr : "");
     else if (said.closed !== undefined) p.closed_();
     // (its socket closed once it was read to its end: nothing more of it to read)
@@ -142,8 +174,34 @@ export class AgentsHost {
   attach(p: HostedProcess) {
     this.#ensure().hold(this.#user, true);
     this.#sessions.set(p.n, p);
-    this.post({ attach: p.n, socket: p.info.socket, turn: p.turnNow(), live: p.liveNow(), kind: p.kind });
+    this.post({ attach: p.n, socket: p.info.socket, turn: p.turnNow(), live: p.liveNow(), kind: p.kind, ...(p.orphans ? { orphans: true } : {}) });
     if (p.routed) this.post({ route: p.n, on: true });
+    p.attached();
+  }
+
+  /// What a crash reads again of a Codex app-server's output, given the program a piece at a time (`feed`: each thread's
+  /// notification as what its live steps are made of, mb agents_codex.mbt `replay`): each thread's live steps as it
+  /// comes to (`done`).
+  replay(): { feed: (notices: Json[][]) => void; done: () => Promise<Record<string, Json>> } {
+    this.#ensure().hold(this.#user, true);
+    const id = this.number();
+    return {
+      feed: (notices) => {
+        if (notices.length > 0) this.post({ codexReplay: id, notices });
+      },
+      done: () => new Promise((resolve) => {
+        this.#replays.set(id, resolve);
+        this.post({ codexReplayed: id });
+      }),
+    };
+  }
+
+  /// Nothing of it read: the program let go (started again for the next).
+  #idle() {
+    if (this.#proc === null) return;
+    const proc = this.#proc;
+    this.#proc = null;
+    void proc.release(this.#user);
   }
 
   /// The program its processes are read by now (null: none running).
@@ -158,11 +216,7 @@ export class AgentsHost {
   forget(p: HostedProcess) {
     this.#sessions.delete(p.n);
     // (it runs while it has a process to read: started again for the next)
-    if (this.#sessions.size === 0 && this.#proc !== null) {
-      const proc = this.#proc;
-      this.#proc = null;
-      void proc.release(this.#user);
-    }
+    if (this.#sessions.size === 0 && this.#replays.size === 0) this.#idle();
   }
 
   /// Every process's lines held (the station hands over): each one's turn and live steps as they stand then.
@@ -175,7 +229,8 @@ export class AgentsHost {
       this.#freezes.set(id, resolve);
       this.post({ freeze: id, only: held.map((p) => p.n) });
     });
-    for (const [n, state] of Object.entries(states)) this.#sessions.get(Number(n))?.froze(state.turn, state.live);
+    // (a Codex app-server's says its threads' live steps, which what was told before it already gave its sessions)
+    for (const [n, state] of Object.entries(states)) if ("turn" in state) this.#sessions.get(Number(n))?.froze(state.turn, state.live);
   }
 
   /// Read on again (a handover that did not happen).
@@ -217,12 +272,15 @@ export class HostedProcess {
   #resolveExit!: (said: string) => void;
   #left: (() => void) | null = null;
   #router: Router | null = null;
+  /// What comes for a Codex thread not taken up yet is held for it (HostedOptions `orphans`), until `orphansOff`.
+  #orphans: boolean;
 
   private constructor(host: AgentsHost, info: RunnerInfo, options: HostedOptions, turn: Json, live: Json) {
     this.#host = host;
     this.info = info;
     this.n = host.number();
     this.#options = options;
+    this.#orphans = options.orphans === true;
     this.#turn = turn;
     this.#live = live;
     this.exited = new Promise((resolve) => (this.#resolveExit = resolve));
@@ -254,11 +312,44 @@ export class HostedProcess {
     this.#host.post({ route: this.n, on: router !== null });
   }
 
+  /// A Codex app-server's thread's events given its session's actor in the program (`route`, by thread): the router
+  /// that takes them, or null where none does.
+  routeThread(thread: string, router: Router | null, was: boolean): Router | null {
+    if (router !== null && (this.kind !== "codex" || this.#host.program() !== router.program)) router = null;
+    if (router !== null || was) this.#host.post({ route: this.n, on: router !== null, thread });
+    return router;
+  }
+
+  /// A session's thread on a Codex app-server, its live steps as they stand: its notifications read for it from now on
+  /// (with what was held for it while it was not taken up).
+  thread(thread: string, live: Json) {
+    this.#host.post({ codexThread: this.n, id: thread, live });
+  }
+
+  /// A thread no longer a session's.
+  dropThread(thread: string) {
+    this.#host.post({ codexDrop: this.n, id: thread });
+  }
+
+  /// No more is held for threads not taken up (`orphans`), nor once the program is started again.
+  orphansOff() {
+    this.#orphans = false;
+    this.#host.post({ orphans: this.n, on: false });
+  }
+
+  get orphans() {
+    return this.#orphans;
+  }
+
+  attached() {
+    this.#options.attached?.();
+  }
+
   get routed() {
     return this.#router !== null;
   }
 
-  get kind(): "claude" | "lines" {
+  get kind(): "claude" | "codex" {
     return this.#options.kind ?? "claude";
   }
 
@@ -285,9 +376,9 @@ export class HostedProcess {
     if (heard.turn !== undefined) this.#turn = heard.turn;
     const router = heard.batch !== undefined ? this.#router : null;
     if (router !== null) heard.routed = true;
-    this.#options.heard(heard);
+    const taken = this.#options.heard(heard) === true;
     // (acknowledged by the program as its actor takes them)
-    return router === null || !router.took(heard.batch!);
+    return !taken && (router === null || !router.took(heard.batch!));
   }
 
   froze(turn: Json, live: Json) {

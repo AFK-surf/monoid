@@ -88,7 +88,7 @@ fn pick_told_gone() -> Unit {
 /// closes, or another right click elsewhere opens it. What shows the menu (built apart from the message: another old
 /// view's) follows it: told as another is offered, not as the same one is offered again (its turn's action aside).
 // kept across runs: none as a run begins (pick_reset)
-pub let share_offered : @signals.Signal[(Double, Double, () -> Unit, String, String, String)?] = @signals.signal(
+pub let share_offered : @signals.Signal[(Double, Double, () -> Unit, String, String, String)?] = @signals.signal_by(
   None,
   same=fn(a, b) {
     match (a, b) {

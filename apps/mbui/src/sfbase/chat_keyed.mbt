@@ -168,16 +168,21 @@ fn chat_head_same(a : ChatView, b : ChatView) -> Bool {
 /// again only where its JSON is another (chat_view_of's `was`), and the view of before where it says the same, so what
 /// reads it is told only as its head changes, not as a word comes into a message.
 // kept across runs: what it keeps is let go of by a run anew and by reset (derived.mbt)
-let chat_head_read : Derived[ChatHead] = Derived::new("chat", fn(v, was) {
-  let view = chat_view_of(v, [], match was {
-    Some(w) => Some((w.raw, w.view))
-    None => None
-  })
-  match was {
-    Some(w) if chat_head_same(w.view, view) => { raw: v, view: w.view }
-    _ => { raw: v, view }
-  }
-})
+let chat_head_read : Derived[ChatHead] = Derived::new_by(
+  "chat",
+  fn(v, was) {
+    let view = chat_view_of(v, [], match was {
+      Some(w) => Some((w.raw, w.view))
+      None => None
+    })
+    match was {
+      Some(w) if chat_head_same(w.view, view) => { raw: v, view: w.view }
+      _ => { raw: v, view }
+    }
+  },
+  // (what reads it told only as the view is another: a topic changed where the head is not, the view kept, tells none)
+  same=fn(a, b) { physical_equal(a.view, b.view) },
+)
 
 ///|
 // kept across runs: the Kept is registered on first use and its stored values are cleared by kept_reset (derived.mbt)

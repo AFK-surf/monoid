@@ -3,7 +3,8 @@
 // has are read from the same header (shownFacts), so a message carries them and a page shows them before it reads the
 // film's head and its end.
 import { closeSync, openSync, readSync as readFile } from "node:fs";
-import { type Facts, facts, readSync } from "../../../client/core-ts/src/mediaFacts.ts";
+import { open } from "node:fs/promises";
+import { type Facts, facts, readAsync, readSync } from "../../../client/core-ts/src/mediaFacts.ts";
 
 export type { Facts };
 
@@ -24,6 +25,30 @@ export function shownFacts(path: string): Facts | null {
       });
     } finally {
       closeSync(file);
+    }
+  } catch {
+    return null;
+  }
+}
+
+/// What the picture or film at `path` says of itself, read off the main thread (fs/promises): a film's head and its
+/// moov box may be read from anywhere in a file of 50 MB or more.
+export async function shownFactsSoon(path: string): Promise<Facts | null> {
+  try {
+    const file = await open(path, "r");
+    try {
+      const { size } = await file.stat();
+      return await readAsync(
+        facts(),
+        async (start, end) => {
+          const b = Buffer.alloc(end - start);
+          const { bytesRead } = await file.read(b, 0, b.length, start);
+          return b.subarray(0, bytesRead);
+        },
+        size,
+      );
+    } finally {
+      await file.close();
     }
   } catch {
     return null;

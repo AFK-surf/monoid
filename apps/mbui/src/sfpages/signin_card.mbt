@@ -65,7 +65,7 @@ fn signin_run(id : String) -> SignInRun {
   match signin_runs.get(id) {
     Some(r) => r
     None => {
-      let r = { run: @signals.signal(None), choices: @signals.signal([]), picked: "", username: "", password: "" }
+      let r = { run: @signals.signal_ref(None), choices: @signals.signal([]), picked: "", username: "", password: "" }
       signin_runs[id] = r
       r
     }

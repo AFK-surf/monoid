@@ -28,6 +28,7 @@ fn sh(key : String, args? : Array[(String, String)] = []) -> String {
 
 ///|
 /// A file shared in: its name and bytes; a picture's key once added (`mem:share-in/…`), else "".
+#derive(Eq)
 priv struct SharedFile {
   name : String
   bytes : Bytes

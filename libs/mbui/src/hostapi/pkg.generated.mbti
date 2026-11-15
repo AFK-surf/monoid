@@ -25,11 +25,11 @@ pub fn atlas_generation() -> Int32
 
 pub let atlas_plot : Int32
 
+pub fn atlas_put(Int32, Int32, Int32, Int32, FixedArray[Byte]) -> Bool
+
 pub fn atlas_size(Bool) -> Int32
 
 pub fn autofill() -> Bool
-
-pub fn av1_here() -> Bool
 
 pub fn autofill_ask(String) -> Bool
 
@@ -38,6 +38,8 @@ pub fn autofill_end() -> Unit
 pub fn autofill_forget() -> Unit
 
 pub fn autofill_take() -> (String, String, String)?
+
+pub fn av1_here() -> Bool
 
 pub fn b64url_of_hex(String) -> String
 
@@ -157,6 +159,8 @@ pub fn gallery_read() -> GalleryRead?
 
 pub fn glyph(Int32, FixedArray[Double]) -> Unit
 
+pub fn glyph_picture(Int32, FixedArray[Byte]) -> Bool
+
 pub fn glyph_put(Int32, Int32, Int32) -> Unit
 
 pub fn glyphs_ahead(FixedArray[Int32], Int32) -> Unit
@@ -225,7 +229,11 @@ pub fn keep_awake(Bool) -> Unit
 
 pub fn keep_begin(String, String, way? : KeepWay) -> Keep?
 
+pub fn keeps_sources() -> Bool
+
 pub fn key_catch(Bool) -> Unit
+
+pub let key_menu_own : Int32
 
 pub fn keyboard() -> Int32
 
@@ -285,6 +293,10 @@ pub fn open_tab(String) -> Bool
 
 pub fn open_url(String) -> Bool
 
+pub let outside_lets_go : @ref.Ref[(Int32, Int32) -> Unit]
+
+pub let outside_waits : @ref.Ref[(Int32, Int32, () -> Bool) -> Unit]
+
 pub fn over_done(open_app~ : Bool) -> Unit
 
 pub fn own_clock() -> Bool
@@ -328,10 +340,6 @@ pub fn pick_photo(String) -> Pick?
 pub fn platform() -> Int32
 
 pub fn pointing() -> Int32
-
-pub let outside_lets_go : @ref.Ref[(Int32, Int32) -> Unit]
-
-pub let outside_waits : @ref.Ref[(Int32, Int32, () -> Bool) -> Unit]
 
 pub let polled : @ref.Ref[() -> Unit]
 
@@ -415,6 +423,14 @@ pub fn stream_audio(Int32, Bytes) -> Unit
 
 pub fn stream_audio_here() -> Bool
 
+pub fn stream_audio_played(Int32) -> Double
+
+pub fn stream_audio_queued(Int32) -> Double
+
+pub fn stream_audio_volume(Int32, Double) -> Unit
+
+pub fn stream_audio_wanted(Int32) -> Double
+
 pub fn stream_av1(Int32, Bytes, Int32, Int32) -> Unit
 
 pub fn stream_close(Int32) -> Unit
@@ -425,7 +441,11 @@ pub fn stream_direct(Int32, Double, Double, video~ : Bool, audio~ : Bool) -> Uni
 
 pub fn stream_feeds() -> Bool
 
+pub fn stream_flush(Int32, Bool) -> Unit
+
 pub fn stream_frame(Int32, Bytes, Bool, Double) -> Unit
+
+pub fn stream_frame_shown(Int32, Bytes, Bool, Double, Bool) -> Bool
 
 pub fn stream_h264(Int32, Bytes, Int32, Int32) -> Unit
 
@@ -478,6 +498,12 @@ pub fn text_menu(Bool, Double, Double, Double, Double, Int32) -> Unit
 pub let text_menu_copy : Int32
 
 pub let text_menu_cut : Int32
+
+pub fn text_menu_own(String) -> Unit
+
+pub let text_menu_own_item : Int32
+
+pub let text_menu_own_most : Int32
 
 pub let text_menu_paste : Int32
 
@@ -543,19 +569,27 @@ pub fn window_act(Int32) -> Unit
 
 pub fn window_buttons_down(Double, Double) -> Unit
 
+pub fn window_close_id(Int32) -> Unit
+
 pub fn window_corner() -> Double
 
 pub fn window_corner_at(Int32) -> Double
 
+pub fn window_current() -> Int32
+
 pub fn window_drag() -> Unit
 
 pub fn window_front(String) -> Bool
+
+pub fn window_front_id(Int32) -> Bool
 
 pub fn window_hold() -> Unit
 
 pub fn window_inset() -> Bool
 
 pub fn window_open(String) -> Bool
+
+pub fn window_open_id(String) -> Int32
 
 pub fn window_opens() -> Bool
 
@@ -569,7 +603,17 @@ pub fn window_snap_state() -> Int32
 
 pub fn window_zoomed() -> Bool
 
+pub fn windows_in_process() -> Bool
+
 pub fn word_at(String, Int32) -> (Int32, Int32)
+
+pub fn work_began() -> Double
+
+pub fn work_noted_by((() -> Double, (String, Double) -> Unit)?) -> Unit
+
+pub fn[T] work_part(() -> String, () -> T) -> T
+
+pub fn work_took(String, Double) -> Unit
 
 // Errors
 
@@ -629,12 +673,14 @@ pub struct GalleryRead {
 pub fn GalleryRead::id(Self) -> Int32
 pub fn GalleryRead::photos(Self) -> Array[GalleryPhoto]?
 
+#derive(Eq, @debug.Debug)
 pub(all) enum Hinge {
   NoHinge
   Closed
   Half
   Open
-} derive(Eq, Show)
+}
+pub impl Show for Hinge
 
 pub struct Keep {
   // private fields
@@ -644,11 +690,13 @@ pub fn Keep::end(Self) -> Unit
 pub fn Keep::finish(Self) -> Unit
 pub fn Keep::kept(Self) -> Kept
 
+#derive(Eq, @debug.Debug)
 pub(all) enum KeepWay {
   Downloads
   Choose
   Photos
-} derive(Eq, Show)
+}
+pub impl Show for KeepWay
 
 pub(all) enum Kept {
   Keeping
@@ -670,6 +718,7 @@ pub struct NativeCall {
 pub fn NativeCall::got(Self) -> (Bool, String)?
 pub fn NativeCall::id(Self) -> Int32
 
+#derive(Eq)
 pub(all) struct NavBar {
   floating : Array[NavFloating]
   groups : Array[NavGroup]
@@ -679,9 +728,10 @@ pub(all) struct NavBar {
   more_icon : String
   bare : Bool
   title : String
-} derive(Eq)
+}
 pub fn NavBar::to_json(Self) -> String
 
+#derive(Eq)
 pub(all) struct NavFloating {
   item : NavItem
   x : Double
@@ -689,14 +739,16 @@ pub(all) struct NavFloating {
   w : Double
   h : Double
   blocked : Bool
-} derive(Eq)
+}
 
+#derive(Eq)
 pub(all) struct NavGroup {
   items : Array[NavItem]
   foot : Bool
   foldable : Bool
-} derive(Eq)
+}
 
+#derive(Eq)
 pub(all) struct NavItem {
   id : String
   title : String
@@ -704,7 +756,7 @@ pub(all) struct NavItem {
   dot : Bool
   prominent : Bool
   menu : Array[(String, String, Bool, String)]
-} derive(Eq)
+}
 
 pub(all) struct OpDone {
   code : Int32
@@ -719,12 +771,14 @@ pub struct OpRun {
 pub fn OpRun::done(Self) -> OpDone?
 pub fn OpRun::end(Self) -> Unit
 
+#derive(Eq, @debug.Debug)
 pub(all) enum OpTrouble {
   NoTool
   Unreached
   Other(String)
-} derive(Eq, Show, @debug.Debug)
+}
 
+#derive(Eq, @debug.Debug)
 pub(all) struct PasskeyDone {
   code : Int32
   credential : String
@@ -733,7 +787,7 @@ pub(all) struct PasskeyDone {
   user_handle : String
   err : String
   client_data : String
-} derive(Eq, Show, @debug.Debug)
+}
 
 pub struct PasskeyRun {
   // private fields
@@ -741,11 +795,12 @@ pub struct PasskeyRun {
 pub fn PasskeyRun::done(Self) -> PasskeyDone?
 pub fn PasskeyRun::end(Self) -> Unit
 
+#derive(Eq, @debug.Debug)
 pub(all) struct PasswordLogin {
   id : String
   title : String
   username : String
-} derive(Eq, Show, @debug.Debug)
+}
 
 pub struct Pick {
   // private fields
@@ -753,11 +808,12 @@ pub struct Pick {
 pub fn Pick::files(Self) -> Array[Picked]?
 pub fn Pick::id(Self) -> Int32
 
+#derive(Eq)
 pub(all) enum PickKind {
   Photos
   Files
   Camera
-} derive(Eq)
+}
 
 pub(all) struct Picked {
   name : String
@@ -767,12 +823,14 @@ pub(all) struct Picked {
   src : String
 }
 
+#derive(Eq, @debug.Debug)
 pub(all) enum SizeClass {
   Compact
   Medium
   Expanded
-} derive(Eq, Show)
+}
 
+#derive(Eq, @debug.Debug)
 pub(all) enum SystemSaid {
   Shown(away~ : Double)
   Link(String)
@@ -786,7 +844,16 @@ pub(all) enum SystemSaid {
   Menu(String)
   NavTapped(String)
   NavAction(x~ : Double, y~ : Double, w~ : Double, h~ : Double)
-} derive(Eq, Show)
+}
+
+pub struct Terminal {
+  id : Int32
+}
+pub fn Terminal::close(Self) -> Unit
+pub fn Terminal::lines(Self) -> String
+pub fn Terminal::open(Int32, Int32) -> Self?
+pub fn Terminal::resize(Self, Int32, Int32) -> Unit
+pub fn Terminal::write(Self, Bytes) -> Unit
 
 // Type aliases
 
@@ -812,6 +879,11 @@ pub(open) trait Host {
   fn window_opens(Self) -> Bool = _
   fn window_open(Self, String) -> Bool = _
   fn window_front(Self, String) -> Bool = _
+  fn windows_in_process(Self) -> Bool = _
+  fn window_open_id(Self, String) -> Int32 = _
+  fn window_front_id(Self, Int32) -> Bool = _
+  fn window_close_id(Self, Int32) -> Unit = _
+  fn window_current(Self) -> Int32 = _
   fn set_cursor(Self, Int32) -> Unit = _
   fn set_badge(Self, Int32) -> Unit = _
   fn menu_setup(Self, String) -> Unit = _
@@ -839,6 +911,8 @@ pub(open) trait Host {
   fn glyph_put(Self, Int32, Int32, Int32) -> Unit = _
   fn atlas_size(Self, Bool) -> Int32 = _
   fn glyphs_ahead(Self, FixedArray[Int32], Int32) -> Unit = _
+  fn glyph_picture(Self, Int32, FixedArray[Byte]) -> Bool = _
+  fn atlas_put(Self, Int32, Int32, Int32, Int32, FixedArray[Byte]) -> Bool = _
   fn face_add(Self, Int32, String, Int32) -> Bool = _
   fn face_add_bytes(Self, Int32, Bytes, Int32) -> Bool = _
   fn face_clear(Self, Int32) -> Unit = _
@@ -851,6 +925,7 @@ pub(open) trait Host {
   fn group_drop(Self, Int32) -> Unit = _
   fn set_ime(Self, Bool, Double, Double, Double, Double, String, Int32, Int32) -> Unit = _
   fn text_menu(Self, Bool, Double, Double, Double, Double, Int32) -> Unit = _
+  fn text_menu_own(Self, String) -> Unit = _
   fn edit_can(Self, Int32) -> Unit = _
   fn clipboard_set(Self, String) -> Unit = _
   fn clipboard_set_secret(Self, String, Double) -> Unit = _
@@ -862,6 +937,7 @@ pub(open) trait Host {
   fn answers_by_frame(Self, Int32) -> Bool = _
   fn script_step(Self, String, String) -> String = _
   fn rows_on_pixels(Self) -> Bool = _
+  fn keeps_sources(Self) -> Bool = _
   fn lines_on_pixels(Self) -> Bool = _
   fn frame_awaiting(Self, Int32, String) -> Unit = _
   fn own_clock(Self) -> Bool = _
@@ -995,6 +1071,12 @@ pub(open) trait Host {
   fn nt_text(Self, Int32) -> String = _
   fn st_audio_here(Self) -> Int32 = _
   fn st_audio(Self, Int32, Bytes) -> Unit = _
+  fn st_audio_played(Self, Int32) -> Double = _
+  fn st_audio_queued(Self, Int32) -> Double = _
+  fn st_audio_wanted(Self, Int32) -> Double = _
+  fn st_audio_volume(Self, Int32, Double) -> Unit = _
+  fn st_frame_shown(Self, Int32, Bytes, Int32, Double, Int32) -> Int32 = _
+  fn st_flush(Self, Int32, Int32) -> Unit = _
   fn st_layers(Self) -> Int32 = _
   fn st_pointer(Self, Int32, Bytes, Double, Double, Double, Double) -> Unit = _
   fn st_pointer_named(Self, Int32, String, () -> Bytes, Double, Double, Double, Double) -> Unit = _
@@ -1017,6 +1099,11 @@ pub(open) trait Host {
   fn cl_read(Self) -> Int32 = _
   fn cl_state(Self, Int32) -> Int32 = _
   fn cl_picture(Self, Int32) -> Int32 = _
+  fn tm_open(Self, Int32, Int32) -> Int32 = _
+  fn tm_write(Self, Int32, Bytes) -> Unit = _
+  fn tm_resize(Self, Int32, Int32, Int32) -> Unit = _
+  fn tm_lines(Self, Int32) -> String = _
+  fn tm_close(Self, Int32) -> Unit = _
   fn cl_text(Self, Int32) -> String = _
   fn cl_png(Self, Int32) -> Bytes = _
   fn cl_files(Self, Int32) -> Int32 = _

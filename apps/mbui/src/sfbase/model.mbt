@@ -132,6 +132,7 @@ pub(all) struct Opener {
 ///|
 /// A chat a chat's agent opened (the core's OpenedChat): where it is, as its list names it, where it stands (its row's
 /// mark, what leads its line and the line), and whether it is in its station's archive (with what says so).
+#derive(Eq)
 pub(all) struct OpenedChat {
   chat : ChatRef
   mark : String
@@ -175,6 +176,7 @@ pub fn opener_of(v : Json?) -> Opener? {
 
 ///|
 /// A day of the list with its heading (今天, 昨天, 已固定…).
+#derive(Eq)
 pub(all) struct ChatDay {
   label : String
   items : Array[ChatItem]
@@ -387,6 +389,7 @@ fn chats_view_by(v : Json, item : (Json) -> ChatItem) -> ChatsView {
 
 ///|
 /// A workspace the viewer is in, and the account they are in it by.
+#derive(Eq)
 pub(all) struct Workspace {
   id : String
   name : String

@@ -17,6 +17,8 @@ test "安全码: a wrong code keeps the keyboard for another try; approval puts 
         }
       },
       topic_read: fn(name, params) {
+        // (`approved` is the test's own: told by fixture_changed, which this read follows)
+        @settings.fixture_followed()
         let topic = base.topic(name, params).get().snapshot()
         if name == "lock" && approved.val {
           {
@@ -139,6 +141,8 @@ test "a station's protect button follows its request through failure, retry and 
           }
         },
         topic_read: fn(name, params) {
+          // (`running` and `joined` are the test's own: told by fixture_changed, which this read follows)
+          @settings.fixture_followed()
           let read = base.topic(name, params).get().snapshot()
           if name == "doing" && running.val {
             { ..read, value: Some({ "doing": [{ "call": "lock.joinStation", "stage": "running", "params": { "workspace": "ws1", "station": "st2" } }] }) }

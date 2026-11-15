@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { constants } from "node:sqlite";
 import { test } from "node:test";
-import { installSearchScopeIndex } from "../src/search/scope-index.ts";
-import { SearchScopePreparation } from "../src/search/scope-prepare.ts";
+import { installSearchScopeIndex } from "./reference/search-scope-index.ts";
+import { SearchScopePreparation } from "./reference/search-scope-prepare.ts";
 import { Store } from "../src/store/store.ts";
 
 test("a failed search-scope installation leaves no partial state and can be retried", () => {

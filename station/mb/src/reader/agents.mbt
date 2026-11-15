@@ -1,4 +1,4 @@
-// The Claude Code processes' output read here, not by the station's Node (`--sessions`): Node starts each process under
+// The Claude Code processes' output read here (and a Codex app-server's: agents_codex.mbt), not by the station's Node (`--sessions`): Node starts each process under
 // its runner (station/src/agents/runner.ts) and tells this program to attach to the runner's socket, which it reads as
 // station/src/agents/runner.ts `RunnerConnection` does (its messages a line of JSON each, stdout and stderr in base64,
 // from where the last station acknowledged). Each line of stdout is a frame of Claude Code's stream-json, which it
@@ -9,7 +9,7 @@
 //
 // Node says on stdin, a line of JSON each: `wall` (its clock), `attach` (a session's runner: its socket, the turn and
 // the live steps as Node knows them), `ack` (what of a session's Node took), `write` (a line to its stdin), `signal`,
-// `begin` (a prompt's turn begun: `compact` for a /compact), `aborting`, `renewed`, `done` (read to the end: its runner
+// `begin` (a prompt's turn begun: `compact` for a /compact), `keep`, `route`, `aborting`, `renewed`, `done` (read to the end: its runner
 // may go), `detach` (let go for the next station; `leave`: the runner asked to close, a pipe's), `freeze` and `thaw` (its lines held while the station hands over).
 // It says on stdout `lines` (a session's events, its turn, up to where), `exit` (how its process ended, its last lines
 // of stderr), `closed` (the runner's socket closed with no exit said), `left` (let go), `frozen` (each session's turn
@@ -25,17 +25,25 @@ priv struct Hosted {
   live : @claude.Live
   calls : Array[Array[Int]]
   /// what is held of each stream's line not ended yet
-  mut out_part : Bytes
-  mut err_part : Bytes
+  out_part : @pieces.Pieces
+  err_part : @pieces.Pieces
   /// where each stream's next line starts, as the runner counts bytes (-1: not said yet)
   mut out_at : Int64
   mut err_at : Int64
   mut acked_out : Int64
+  /// up to where Node took what it was told (said, or a batch taken): what the runner is told once no batch kept
+  /// before it waits (`advance_ack`)
+  mut acked_to : Int64
+  /// the end of what was last told Node in a message (where a batch told next begins)
+  mut told_out : Int64
   mut acked_err : Int64
   /// the end of the last line told Node
   mut told : Int64
-  /// its lines given Node as they are (a Codex app-server's: Node reads them, `lines`), not read here as Claude Code's
-  lines_only : Bool
+  /// how its lines are read: Claude Code's frames ("claude"), or a Codex app-server's JSON-RPC ("codex",
+  /// agents_codex.mbt)
+  kind : String
+  /// a Codex app-server's threads (agents_codex.mbt)
+  codex : Codex
   /// up to where of stdout the runner may give the disk back, told with each ack (runner.ts `keep`)
   mut keep : Int64?
   /// lines that came while frozen, each with where it ends
@@ -45,10 +53,9 @@ priv struct Hosted {
   /// one (`DELTAS_MS`): up to where of stdout it was read, and whether its telling is under way
   mut pending : Array[@jsjson.JValue]
   mut pending_to : Int64
+  /// the code units of the words held (`DELTAS_MOST`)
+  mut pending_units : Int
   mut later : Bool
-  /// a Codex app-server's deltas held (`given`), and up to where what was given Node goes
-  held_lines : Array[Held]
-  mut given_to : Int64
   mut left : Bool
   mut exited : Bool
   stderr : Array[String]
@@ -56,6 +63,10 @@ priv struct Hosted {
   /// until Node says it took it (`routed`, actors.mbt), then given that actor here, not by Node
   mut routed : Bool
   batches : Map[Int, (Array[@jsjson.JValue], Int64)]
+  /// a Codex app-server's batches' threads (each batch one thread's)
+  batch_threads : Map[Int, String]
+  /// where what each batch was told with begins (`told_out` as it was told)
+  batch_before : Map[Int, Int64]
 }
 
 ///|
@@ -66,6 +77,8 @@ priv struct Agents {
   mut wall : Double
   mut at : Int64
   mut next_batch : Int
+  /// a Codex app-server's output read again after a crash (`codexReplay`): each thread's live steps as they come to
+  replays : Map[Int, Map[String, @codex.Live]]
 }
 
 ///|
@@ -76,7 +89,7 @@ fn Agents::now(self : Agents) -> Double {
 ///|
 ///|
 fn Agents::new(host : @host.Host) -> Agents {
-  { host, sessions: Map([]), wall: 0.0, at: @host.now(), next_batch: 0 }
+  { host, sessions: Map([]), wall: 0.0, at: @host.now(), next_batch: 0, replays: Map([]) }
 }
 
 ///|
@@ -89,99 +102,128 @@ fn number(v : Json?) -> Int? {
 
 ///|
 fn Agents::told(self : Agents, line : String) -> Unit {
+  // (each key looked up in turn: one match of several keys' map patterns made a tree of every way they can be, 125 MB
+  // of C for this function alone, which the C compiler did not get through)
   let said = @json.parse(line) catch { _ => return }
-  match said {
-    { "wall": Number(w, ..), .. } => {
-      self.wall = w
-      self.at = @host.now()
-    }
-    { "attach": Number(n, ..), "socket": String(socket), .. } => {
-      let turn = turn_of(said.value("turn"))
-      let live = match said.value("live") {
-        Some(Null) | None => @claude.Live::new()
-        Some(state) => @claude.Live::of_state(@jsjson.parse(state.stringify()) catch { _ => Null })
-      }
-      // (taken in now: what Node says of it next is had in order, whenever its socket opens)
-      let h = hosted(n.to_int(), turn, live, lines_only=said.value("kind") == Some(Json::string("lines")))
-      self.sessions[h.n] = h
-      ignore(self.host.rt.fork(name="agent", () => self.attach(h, socket)))
-    }
-    _ => ()
+  guard said is Object(m) else { return }
+  let num = (k : String) => match m.get(k) {
+    Some(Number(v, ..)) => Some(v)
+    _ => None
   }
-  let n = match said {
-    { "ack": Number(n, ..), .. }
-    | { "write": Number(n, ..), .. }
-    | { "signal": Number(n, ..), .. }
-    | { "begin": Number(n, ..), .. }
-    | { "aborting": Number(n, ..), .. }
-    | { "renewed": Number(n, ..), .. }
-    | { "done": Number(n, ..), .. }
-    | { "detach": Number(n, ..), .. }
-    | { "thaw": Number(n, ..), .. }
-    | { "keep": Number(n, ..), .. }
-    | { "route": Number(n, ..), .. } => n.to_int()
-    { "freeze": Number(id, ..), .. } => {
-      let states : Map[String, Json] = {}
-      let only = match said.value("only") {
-        Some(Array(ns)) => ns.filter_map(x => match x { Number(k, ..) => Some(k.to_int()); _ => None })
-        _ => []
+  let text = (k : String) => match m.get(k) {
+    Some(String(v)) => Some(v)
+    _ => None
+  }
+  if num("wall") is Some(w) {
+    self.wall = w
+    self.at = @host.now()
+  }
+  if num("codexReplay") is Some(id) {
+    if m.get("notices") is Some(Array(notices)) {
+      self.replay(id.to_int(), notices)
+    }
+    return
+  }
+  if num("codexReplayed") is Some(id) {
+    return self.replayed(id.to_int())
+  }
+  if num("attach") is Some(n) && text("socket") is Some(socket) {
+    let turn = turn_of(m.get("turn"))
+    let live = match m.get("live") {
+      Some(Null) | None => @claude.Live::new()
+      Some(state) => @claude.Live::of_state(@jsjson.parse(state.stringify()) catch { _ => Null })
+    }
+    // (taken in now: what Node says of it next is had in order, whenever its socket opens)
+    let kind = if text("kind") == Some("codex") { "codex" } else { "claude" }
+    let h = hosted(n.to_int(), turn, live, kind~)
+    if m.get("orphans") is Some(True) {
+      h.codex.orphans = Some(Map([]))
+    }
+    self.sessions[h.n] = h
+    ignore(self.host.rt.fork(name="agent", () => self.attach(h, socket)))
+  }
+  if num("freeze") is Some(id) {
+    let states : Map[String, Json] = {}
+    let only = match m.get("only") {
+      Some(Array(ns)) => ns.filter_map(x => match x { Number(k, ..) => Some(k.to_int()); _ => None })
+      _ => []
+    }
+    for k, h in self.sessions {
+      if !only.contains(k) {
+        continue
       }
-      for k, h in self.sessions {
-        if !only.contains(k) {
-          continue
-        }
-        // (what it holds told first: the state said next is of all it read)
-        self.flush(h)
-        self.flush_lines(h)
-        h.frozen = true
-        states[k.to_string()] = Json::object({
+      // (what it holds told first: the state said next is of all it read)
+      self.flush(h)
+      h.frozen = true
+      states[k.to_string()] = if h.kind == "codex" {
+        Json::object({ "threads": h.codex.states() })
+      } else {
+        Json::object({
           "turn": turn_json(h.turn),
           "live": @json.parse(@jsjson.stringify(h.live.state())) catch { _ => Json::null() },
         })
       }
-      self.host.say(({ "frozen": Json::number(id), "states": Json::object(states) } : Json).stringify())
-      return
     }
-    _ => return
+    self.host.say(({ "frozen": Json::number(id), "states": Json::object(states) } : Json).stringify())
+    return
   }
-  guard self.sessions.get(n) is Some(h) else { return }
-  match said {
-    { "ack": _, "to": Number(to, ..), .. } => self.acked(h, to.to_int64())
-    { "route": _, "on": on, .. } => {
-      h.routed = on is True
-      if !h.routed {
-        h.batches.clear()
+  let ops = [
+    "ack", "write", "signal", "begin", "aborting", "renewed", "done", "detach", "thaw", "keep", "route", "codexThread",
+    "codexDrop", "orphans",
+  ]
+  guard ops.iter().find_first(k => num(k) is Some(_)) is Some(op) else { return }
+  guard self.sessions.get(num(op).unwrap().to_int()) is Some(h) else { return }
+  match op {
+    "ack" => if num("to") is Some(to) { self.acked(h, to.to_int64()) }
+    "route" => {
+      let on = m.get("on") is Some(True)
+      match text("thread") {
+        Some(thread) => self.route_thread(h, thread, on)
+        None => {
+          h.routed = on
+          if !h.routed {
+            h.batches.clear()
+            h.batch_threads.clear()
+            h.batch_before.clear()
+            self.advance_ack(h)
+          }
+        }
       }
     }
-    { "write": _, "line": String(text), .. } => self.write(h, text)
-    { "signal": _, "name": String(signal), .. } =>
-      self.send(h, { "op": "signal", "signal": Json::string(signal), "group": true })
-    { "begin": _, .. } => {
+    "codexThread" => if text("id") is Some(thread) { self.add_thread(h, thread, m.get("live")) }
+    "codexDrop" => if text("id") is Some(thread) { self.drop_thread(h, thread) }
+    "orphans" => if m.get("on") is Some(False) { self.orphans_off(h) }
+    "write" => if text("line") is Some(t) { self.write(h, t) }
+    "signal" =>
+      if text("name") is Some(signal) {
+        self.send(h, { "op": "signal", "signal": Json::string(signal), "group": true })
+      }
+    "begin" => {
       h.turn.renewed = Some(false)
       h.turn.busy = true
-      if said.value("compact") is Some(True) {
+      if m.get("compact") is Some(True) {
         h.turn.compacting = Some(true)
         h.turn.compact_error = None
       }
     }
-    { "aborting": _, .. } => h.turn.aborting = true
-    { "renewed": _, .. } => h.turn.renewed = Some(true)
-    { "keep": _, "at": Number(at, ..), .. } => h.keep = Some(at.to_int64())
-    { "done": _, .. } => {
+    "aborting" => h.turn.aborting = true
+    "renewed" => h.turn.renewed = Some(true)
+    "keep" => if num("at") is Some(at) { h.keep = Some(at.to_int64()) }
+    "done" => {
       self.send(h, { "op": "done" })
       self.end(h)
     }
-    { "detach": _, .. } => {
+    "detach" => {
       h.frozen = true
       h.left = true
       h.held.clear()
       // (a pipe has no closing of one side: the runner is asked to close once it read to here, runner.ts `detach`)
-      if said.value("leave") is Some(True) {
+      if m.get("leave") is Some(True) {
         self.send(h, { "op": "leave" })
       }
       self.end(h)
     }
-    { "thaw": _, .. } => {
+    "thaw" => {
       h.frozen = false
       let held = h.held.copy()
       h.held.clear()
@@ -195,15 +237,45 @@ fn Agents::told(self : Agents, line : String) -> Unit {
 
 ///|
 /// Node took what was read of it up to `to`: what was told it before is let go, and the runner told so.
+/// Node said so only after every batch of what it took up to there that it took was said taken (`routed`, on stdin
+/// before it), so a batch up to there still kept is one it did not take.
 fn Agents::acked(self : Agents, h : Hosted, to : Int64) -> Unit {
   let done = h.batches.iter().filter_map(kv => if kv.1.1 <= to { Some(kv.0) } else { None }).collect()
   for k in done {
     h.batches.remove(k)
+    h.batch_threads.remove(k)
+    h.batch_before.remove(k)
   }
-  if to > h.acked_out {
-    h.acked_out = to
+  if to > h.acked_to {
+    h.acked_to = to
+  }
+  self.advance_ack(h)
+}
+
+///|
+/// The runner told what was taken: up to where Node took, but never past where a batch still kept begins (another
+/// thread's of the same output, its `routed` on its way: a batch taken lets go of itself only).
+fn Agents::advance_ack(self : Agents, h : Hosted) -> Unit {
+  let mut limit = h.acked_to
+  for _, before in h.batch_before {
+    if before < limit {
+      limit = before
+    }
+  }
+  if limit > h.acked_out {
+    h.acked_out = limit
     self.ack(h)
   }
+}
+
+///|
+/// What is told Node of process `h` from where it was last told up to `to`, kept as batch `k` for its actor.
+fn Agents::keep_batch(self : Agents, h : Hosted, events : Array[@jsjson.JValue], to : Int64) -> Int {
+  let k = self.next_batch
+  self.next_batch += 1
+  h.batches[k] = (events, to)
+  h.batch_before[k] = h.told_out
+  k
 }
 
 ///|
@@ -213,7 +285,12 @@ fn Agents::take(self : Agents, n : Int, k : Int) -> (Array[@jsjson.JValue], Int6
   guard self.sessions.get(n) is Some(h) else { return None }
   guard h.batches.get(k) is Some(batch) else { return None }
   h.batches.remove(k)
-  self.acked(h, batch.1)
+  h.batch_threads.remove(k)
+  h.batch_before.remove(k)
+  if batch.1 > h.acked_to {
+    h.acked_to = batch.1
+  }
+  self.advance_ack(h)
   Some(batch)
 }
 
@@ -232,8 +309,15 @@ fn Agents::end(self : Agents, h : Hosted) -> Unit {
 
 ///|
 fn Agents::write(self : Agents, h : Hosted, text : String) -> Unit {
-  let line = if text.has_suffix("\n") { text } else { text + "\n" }
-  self.send(h, { "op": "write", "data": Json::string(@base64.encode(@utf8.encode(line)[:])) })
+  ignore(self)
+  // (the runner's message put together once as its bytes: a prompt of MBs is not copied again as a string, its base64
+  // and its JSON)
+  let line = @utf8.encode(text)
+  let message = @buffer.new(size_hint=line.length() / 3 * 4 + 64)
+  message.write_string_utf8("{\"op\":\"write\",\"data\":\"")
+  @pieces.base64_into(message, line, if text.has_suffix("\n") { b"" } else { b"\n" })
+  message.write_string_utf8("\"}\n")
+  ignore(h.outq.try_offer(Some(message.to_bytes())))
 }
 
 ///|
@@ -254,35 +338,39 @@ fn Agents::ack(self : Agents, h : Hosted) -> Unit {
 }
 
 ///|
-fn hosted(n : Int, turn : @claude.Turn, live : @claude.Live, lines_only~ : Bool) -> Hosted {
+fn hosted(n : Int, turn : @claude.Turn, live : @claude.Live, kind~ : String) -> Hosted {
   {
     n,
-    lines_only,
+    kind,
+    codex: Codex::new(),
     keep: None,
     conn: Json::null(),
     outq: @effect.Queue::unbounded(),
     turn,
     live,
     calls: [],
-    out_part: b"",
-    err_part: b"",
+    out_part: @pieces.Pieces::new(),
+    err_part: @pieces.Pieces::new(),
     out_at: -1L,
     err_at: -1L,
     acked_out: 0L,
+    acked_to: 0L,
+    told_out: 0L,
     acked_err: 0L,
     told: 0L,
     held: [],
     frozen: false,
     pending: [],
     pending_to: 0L,
+    pending_units: 0,
     later: false,
-    held_lines: [],
-    given_to: 0L,
     left: false,
     exited: false,
     stderr: [],
     routed: false,
     batches: Map([]),
+    batch_threads: Map([]),
+    batch_before: Map([]),
   }
 }
 
@@ -309,22 +397,17 @@ async fn Agents::attach(self : Agents, h : Hosted, socket : String) -> Unit {
       ignore(self.host.shell("tcp.end", { "id": conn })) catch { _ => () }
     }),
   )
-  let mut carry = b""
+  // (the runner's messages, each a line: only what a read brought is looked through for their ends)
+  let carry = @pieces.Pieces::new()
   while true {
     let read = try { Ok(self.host.shell("tcp.read", { "id": conn })) } catch { e => Err(e) }
     guard read is Ok((said, Some(bytes))) && !(said is { "end": true, .. }) && bytes.length() > 0 else { break }
-    carry = carry + bytes
-    let mut from = 0
-    for i = 0; i < carry.length(); i = i + 1 {
-      if carry[i] == b'\n' {
-        let message = @json.parse(@utf8.decode_lossy(carry[from:i])) catch { _ => Json::null() }
-        from = i + 1
-        if !h.left {
-          self.message(h, message)
-        }
+    for line in carry.lines(bytes) {
+      let message = @json.parse(@utf8.decode_lossy(line)) catch { _ => Json::null() }
+      if !h.left {
+        self.message(h, message)
       }
     }
-    carry = carry[from:].to_bytes()
   }
   self.sessions.remove(n)
   ignore(self.host.shell("tcp.close", { "id": conn })) catch { _ => () }
@@ -349,24 +432,17 @@ fn Agents::message(self : Agents, h : Hosted, message : Json) -> Unit {
       } else if !err && h.out_at < 0L {
         h.out_at = at.to_int64()
       }
-      let all = (if err { h.err_part } else { h.out_part }) + bytes
+      // (a line of hundreds of MB comes in thousands of pieces: each looked through once, the line put together once)
       let lines = []
-      let mut from = 0
-      for i = 0; i < all.length(); i = i + 1 {
-        if all[i] == b'\n' {
-          let line = all[from:i].to_bytes()
-          if err {
-            h.err_at = h.err_at + (line.length() + 1).to_int64()
-          } else {
-            h.out_at = h.out_at + (line.length() + 1).to_int64()
-          }
-          lines.push((line, if err { h.err_at } else { h.out_at }))
-          from = i + 1
+      for line in (if err { h.err_part } else { h.out_part }).lines(bytes) {
+        if err {
+          h.err_at = h.err_at + (line.length() + 1).to_int64()
+        } else {
+          h.out_at = h.out_at + (line.length() + 1).to_int64()
         }
+        lines.push((line, if err { h.err_at } else { h.out_at }))
       }
-      let rest = all[from:].to_bytes()
       if err {
-        h.err_part = rest
         for l in lines {
           let text = @jscase.trim(strip_cr(@utf8.decode_lossy(l.0)))
           if text != "" {
@@ -381,7 +457,6 @@ fn Agents::message(self : Agents, h : Hosted, message : Json) -> Unit {
           self.ack(h)
         }
       } else {
-        h.out_part = rest
         if lines.length() == 0 {
           return
         }
@@ -394,7 +469,6 @@ fn Agents::message(self : Agents, h : Hosted, message : Json) -> Unit {
     }
     { "op": "exit", .. } => {
       self.flush(h)
-      self.flush_lines(h)
       h.exited = true
       self.host.say(
         ({
@@ -422,8 +496,8 @@ fn strip_cr(s : String) -> String {
 /// Lines of its stdout, each with where it ends: what they say told Node, or acknowledged at once where they say
 /// nothing and nothing told is waiting.
 fn Agents::heard(self : Agents, h : Hosted, lines : Array[(Bytes, Int64)]) -> Unit {
-  if h.lines_only {
-    self.given(h, lines)
+  if h.kind == "codex" {
+    self.codex_heard(h, lines)
     return
   }
   let before = @jsjson.stringify(turn_json_js(h.turn))
@@ -462,9 +536,15 @@ fn Agents::heard(self : Agents, h : Hosted, lines : Array[(Bytes, Int64)]) -> Un
   // (only what steps wrote: held, told with what comes next or once DELTAS_MS is over)
   if same && events.length() > 0 && events.iter().all(is_delta) {
     merge_into(h.pending, events)
+    h.pending_units += units_of(events)
     h.pending_to = end
     h.told = end
-    self.soon(h)
+    // (words past DELTAS_MOST told at once: a step's write of MBs is not held, nor joined again with each next)
+    if h.pending_units >= DELTAS_MOST {
+      self.flush(h)
+    } else {
+      self.soon(h)
+    }
     return
   }
   if same && events.length() == 0 {
@@ -475,16 +555,36 @@ fn Agents::heard(self : Agents, h : Hosted, lines : Array[(Bytes, Int64)]) -> Un
     }
     if h.told <= h.acked_out {
       h.acked_out = end
+      h.acked_to = end
       h.told = end
+      h.told_out = end
       self.ack(h)
       return
     }
   }
   let all = h.pending
   h.pending = []
+  h.pending_units = 0
   merge_into(all, events)
   h.told = end
   self.tell(h, end, turn, all)
+}
+
+///|
+/// The most code units of words held before they are told (`DELTAS_MS`): past it they are told at once, and two steps'
+/// writes past it together are told as two.
+const DELTAS_MOST : Int = 64 * 1024
+
+///|
+/// The code units of the words of deltas.
+fn units_of(events : Array[@jsjson.JValue]) -> Int {
+  let mut n = 0
+  for e in events {
+    if e.get("event") is Some(Obj(_) as ev) && ev.get("text") is Some(Str(t)) {
+      n += t.length()
+    }
+  }
+  n
 }
 
 ///|
@@ -495,26 +595,34 @@ const DELTAS_MS : Int = 200
 ///|
 fn Agents::tell(self : Agents, h : Hosted, to : Int64, turn : @jsjson.JValue, events : Array[@jsjson.JValue]) -> Unit {
   let batch = if h.routed && events.length() > 0 {
-    let k = self.next_batch
-    self.next_batch += 1
-    h.batches[k] = (events, to)
-    ",\"batch\":\{k}"
+    ",\"batch\":\{self.keep_batch(h, events, to)}"
   } else {
     ""
   }
-  self.host.say(
-    "{\"lines\":\{h.n},\"to\":\{to},\"turn\":\{@jsjson.stringify(turn)},\"events\":\{@jsjson.stringify(Arr(events))}\{batch}}",
-  )
+  h.told_out = to
+  // (one line put together once as its bytes: a step's write or a tool's output of MBs not copied again into it)
+  let line = @buffer.new(size_hint=4096 + units_of(events))
+  line.write_string_utf8("{\"lines\":\{h.n},\"to\":\{to},\"turn\":")
+  @jsjson.write_utf8(line, turn)
+  line.write_string_utf8(",\"events\":")
+  @jsjson.write_utf8(line, Arr(events))
+  line.write_string_utf8("\{batch}}")
+  self.host.say_bytes(line.to_bytes())
 }
 
 ///|
 /// What is held told Node now.
 fn Agents::flush(self : Agents, h : Hosted) -> Unit {
+  if h.kind == "codex" {
+    self.codex_flush(h)
+    return
+  }
   if h.pending.length() == 0 || h.left {
     return
   }
   let all = h.pending
   h.pending = []
+  h.pending_units = 0
   self.tell(h, h.pending_to, turn_json_js(h.turn), all)
 }
 
@@ -558,7 +666,9 @@ fn merge_into(out : Array[@jsjson.JValue], events : Array[@jsjson.JValue]) -> Un
         _ => []
       }
       let same_step = a.get("id") is Some(Str(x)) && b.get("id") is Some(Str(y)) && x == y &&
-        a.get("field") is Some(Str(f)) && b.get("field") is Some(Str(g)) && f == g
+        a.get("field") is Some(Str(f)) && b.get("field") is Some(Str(g)) && f == g &&
+        // (none joined into words past DELTAS_MOST: each such write told as it came, not copied again)
+        text(a).length() + text(b).length() <= DELTAS_MOST
       if same_step {
         match (tokens(a), tokens(b)) {
           (None, None) => {
@@ -691,161 +801,4 @@ fn turn_of(v : Json?) -> @claude.Turn {
     t.tasks = Some(kept)
   }
   t
-}
-
-///|
-/// A Codex app-server's turn's diff, whole each time it changes: the most of what it writes, of which the station keeps
-/// nothing (codex.ts `UNTOLD`, LiveFromCodex), not given Node.
-const DIFF : Bytes = b"{\"method\":\"turn/diff/updated\""
-
-///|
-/// Lines given Node as they are (`lines`, their bytes after it, each with where it begins and ends), but for those it
-/// keeps nothing of: acknowledged at once where none is given and nothing given is waiting.
-fn Agents::given(self : Agents, h : Hosted, lines : Array[(Bytes, Int64)]) -> Unit {
-  let end = lines[lines.length() - 1].1
-  // (what goes to Node: each line with where it begins and ends; a run of one item's deltas held, told as one)
-  let out : Array[(Bytes, Int64, Int64)] = []
-  let mut safe = -1L
-  for l in lines {
-    let line = if l.0.length() > 0 && l.0[l.0.length() - 1] == b'\r' { l.0[0:l.0.length() - 1].to_bytes() } else { l.0 }
-    let from = l.1 - (l.0.length() + 1).to_int64()
-    if line.length() >= DIFF.length() && line[0:DIFF.length()] == DIFF[:] {
-      if h.held_lines.length() == 0 {
-        safe = l.1
-      } else {
-        h.pending_to = l.1
-      }
-      continue
-    }
-    match codex_delta(line) {
-      Some(d) => {
-        match h.held_lines.last() {
-          Some(last) if last.key == d.key => {
-            last.delta.append(d.delta)
-            last.to = l.1
-          }
-          _ => h.held_lines.push({ ..d, from, to: l.1 })
-        }
-        h.pending_to = l.1
-      }
-      None => {
-        self.held_into(h, out)
-        out.push((line, from, l.1))
-        safe = l.1
-      }
-    }
-  }
-  h.told = end
-  if h.held_lines.length() > 0 {
-    self.soon_lines(h)
-  }
-  if out.length() == 0 {
-    // (nothing for Node: acknowledged at once where nothing given it waits for its acknowledgement)
-    if safe >= 0L && h.acked_out >= h.given_to {
-      h.acked_out = safe
-      h.given_to = safe
-      self.ack(h)
-    } else if safe >= 0L {
-      self.give(h, [], safe)
-    }
-    return
-  }
-  self.give(h, out, safe)
-}
-
-///|
-/// A Codex item's delta of words, thinking, a plan or a command's output (live.ts `LiveFromCodex` reads only its
-/// thread, turn, item and words), and the lines it was made of.
-priv struct Held {
-  key : String
-  method : Array[Int]
-  thread : Array[Int]
-  turn : @jsjson.JValue?
-  item : Array[Int]
-  delta : Array[Int]
-  from : Int64
-  mut to : Int64
-}
-
-///|
-const ITEM : Bytes = b"{\"method\":\"item/"
-
-///|
-fn codex_delta(line : Bytes) -> Held? {
-  guard line.length() >= ITEM.length() && line[0:ITEM.length()] == ITEM[:] else { return None }
-  let v = @jsjson.parse(@utf8.decode_lossy(line)) catch { _ => return None }
-  guard v.get("method") is Some(Str(m)) else { return None }
-  let methods = ["item/agentMessage/delta", "item/reasoning/textDelta", "item/reasoning/summaryTextDelta", "item/plan/delta", "item/commandExecution/outputDelta"]
-  guard methods.iter().any(x => @jsjson.units(x) == m) else { return None }
-  guard v.get("params") is Some(Obj(_) as p) else { return None }
-  guard p.get("threadId") is Some(Str(thread)) && p.get("itemId") is Some(Str(item)) && p.get("delta") is Some(Str(delta)) else {
-    return None
-  }
-  // (only these: what else a delta says nothing reads)
-  for e in (match p { Obj(es) => es; _ => [] }) {
-    let k = @jsjson.raw_text(e.0)
-    if !["threadId", "turnId", "itemId", "delta"].contains(k) && !(k == "summaryIndex" || k == "contentIndex") {
-      return None
-    }
-  }
-  let turn = p.get("turnId")
-  let key = "\{@jsjson.raw_text(m)}\x00\{@jsjson.raw_text(thread)}\x00\{@jsjson.raw_text(item)}\x00\{@jsjson.stringify(turn.unwrap_or(Null))}"
-  Some({ key, method: m, thread, turn, item, delta: delta.copy(), from: 0L, to: 0L })
-}
-
-///|
-/// What is held put out, as lines of their own.
-fn Agents::held_into(self : Agents, h : Hosted, out : Array[(Bytes, Int64, Int64)]) -> Unit {
-  ignore(self)
-  let u = @jsjson.units
-  for d in h.held_lines {
-    let params : Array[(Array[Int], @jsjson.JValue)] = [(u("threadId"), Str(d.thread))]
-    if d.turn is Some(t) {
-      params.push((u("turnId"), t))
-    }
-    params.push((u("itemId"), Str(d.item)))
-    params.push((u("delta"), Str(d.delta)))
-    let line = @jsjson.stringify(Obj([(u("method"), Str(d.method)), (u("params"), Obj(params))]))
-    out.push((@utf8.encode(line), d.from, d.to))
-  }
-  h.held_lines.clear()
-}
-
-///|
-fn Agents::give(self : Agents, h : Hosted, out : Array[(Bytes, Int64, Int64)], to : Int64) -> Unit {
-  let body = @buffer.new()
-  let at = []
-  for l in out {
-    at.push("[\{l.1},\{l.2},\{l.0.length()}]")
-    body.write_bytes(l.0)
-  }
-  let bytes = body.to_bytes()
-  h.given_to = to
-  self.host.say("{\"lines\":\{h.n},\"to\":\{to},\"at\":[\{at.join(",")}],\"bytes\":\{bytes.length()}}")
-  self.host.out(bytes)
-}
-
-///|
-fn Agents::soon_lines(self : Agents, h : Hosted) -> Unit {
-  if h.later {
-    return
-  }
-  h.later = true
-  ignore(
-    self.host.rt.fork(name="agent deltas", () => {
-      @effect.sleep(DELTAS_MS)
-      h.later = false
-      self.flush_lines(h)
-    }),
-  )
-}
-
-///|
-fn Agents::flush_lines(self : Agents, h : Hosted) -> Unit {
-  if h.held_lines.length() == 0 || h.left || h.frozen {
-    return
-  }
-  let out = []
-  self.held_into(h, out)
-  self.give(h, out, h.pending_to)
 }

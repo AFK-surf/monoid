@@ -33,8 +33,8 @@ const atWork = (jobs: string) => `SELECT s.key, s.workspace FROM (SELECT rowid A
     OR (SELECT declared FROM turns INDEXED BY turns_by_session WHERE session_key = s.key ORDER BY started_at DESC, rowid DESC LIMIT 1) = 'waiting'
   ORDER BY s.last_active_at DESC, s.rid DESC`;
 /// The sessions shown that are at work (a turn running, its process running, a job of its running, or waiting on what
-/// it started), each by its own index entries: a reader's (read/ops-sessions.ts), off the main thread, where it read
-/// every session shown and each one's latest turn, held up to 18 s on a station short of memory (2026-11-06).
+/// it started), each by its own index entries: a reader's (test/reference/ops-sessions.ts), off the main thread, where
+/// it read every session shown and each one's latest turn, held up to 18 s on a station short of memory (2026-11-06).
 export const SESSIONS_AT_WORK = atWork(`EXISTS (SELECT 1 FROM active_watch_jobs INDEXED BY active_watch_jobs_session WHERE session = s.key)
     OR EXISTS (SELECT 1 FROM active_other_jobs WHERE session = s.key)`);
 /// The same on a store whose running jobs' lookup is still being prepared (store/active-jobs-upgrade.ts).

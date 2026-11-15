@@ -6,8 +6,8 @@ import { test } from "node:test";
 import { pathToFileURL } from "node:url";
 import { Readers } from "../src/read/pool.ts";
 import { SaidBuilder } from "../src/read/said-builder.ts";
-import { makeStore } from "../src/read/store.ts";
-import { chats } from "../src/read/views.ts";
+import { makeStore } from "./reference/store.ts";
+import { chats } from "./reference/views.ts";
 import { Store } from "../src/store/store.ts";
 import { endsOnce } from "./programs.ts";
 

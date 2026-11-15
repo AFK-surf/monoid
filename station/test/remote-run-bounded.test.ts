@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { makeStore } from "../src/read/store.ts";
-import { usage, usageHistory } from "../src/read/usage.ts";
+import { makeStore } from "./reference/store.ts";
+import { usage, usageHistory } from "./reference/usage.ts";
 import { REMOTE_RUNS_OF } from "../src/store/remote-runs.ts";
 import { Store } from "../src/store/store.ts";
 

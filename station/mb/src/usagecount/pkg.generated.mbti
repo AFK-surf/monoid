@@ -1,0 +1,50 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/usagecount"
+
+import {
+  "moonbitlang/core/json",
+  "station/host",
+  "station/sql",
+}
+
+// Values
+pub fn calls_of(String, BytesView, Bool, CallState) -> Array[Call]
+
+pub fn js_number(Double) -> String
+
+pub fn parse_iso(String) -> Double?
+
+// Errors
+
+// Types and methods
+pub(all) struct Call {
+  id : String
+  at : Double
+  model : String?
+  subagent : Bool
+  fast : Bool
+  input : Double
+  cache_read : Double
+  cache_write : Double
+  cache_write_long : Double
+  mut output : Double
+  calls : Double
+  context : Double?
+  window : Double?
+}
+
+pub(all) struct CallState {
+  mut model : String?
+  mut codex_id : String?
+  mut window : Double?
+}
+
+pub struct Counter {
+  // private fields
+}
+pub fn Counter::new(@host.Host, @sql.Db, String) -> Self
+pub async fn Counter::read(Self, @json.Json) -> @json.Json
+
+// Type aliases
+
+// Traits

@@ -22,6 +22,7 @@ pub(all) struct DriveFile {
 
 ///|
 /// An entry of a folder (DriveEntry).
+#derive(Eq)
 pub(all) struct DvEntry {
   name : String
   dir : Bool
@@ -72,7 +73,7 @@ pub(all) struct DvStation {
 /// Folder `path` of `root` on `station`: its entries as the station said them (the core's `drive` topic), worked out
 /// once for each version of it; None while it has not said them.
 pub fn dv_entries(src : Source, station : String, root : String, path : String) -> Array[DvEntry]? {
-  dv_entries_read.read(src, drive_params(station, root, path)).0
+  dv_entries_read.value(src, drive_params(station, root, path))
 }
 
 ///|
@@ -412,6 +413,7 @@ pub fn dv_keep_both(src : Source, u : DvUpload) -> Unit {
 /// A station's file or folder dragged out of a list of its drive (a chat's 文件 tab):
 /// its station and that station's name, its root and its path under it, its absolute path, its name, its size,
 /// whether it is a folder. What a composer takes of it is named by its path on its station.
+#derive(Eq)
 pub(all) struct Dragged {
   station : String
   station_name : String

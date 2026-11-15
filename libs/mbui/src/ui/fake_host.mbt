@@ -442,7 +442,7 @@ impl @hostapi.Host for FakeHost with glyph(self, key, out) {
   out[3] = self.glyph_box.1
   out[4] = 0.0
   out[5] = -10.0
-  out[6] = if key >= 0x1F000 { 1.0 } else { 0.0 }
+  out[6] = if (key & 0x03FFFFFF) >= 0x1F000 { 1.0 } else { 0.0 }
 }
 
 ///|

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { makeStore, remoteRunCount, remoteRunsSince } from "../src/read/store.ts";
+import { makeStore, remoteRunCount, remoteRunsSince } from "./reference/store.ts";
 import { backfillRemoteRuns, DELETE_EXPIRED_REMOTE_RUNS, installRemoteRuns, REMOTE_RUNS_OF } from "../src/store/remote-runs.ts";
 import { Store } from "../src/store/store.ts";
 import { MinuteReader } from "../src/usage/minute-reader.ts";

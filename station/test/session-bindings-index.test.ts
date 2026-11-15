@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { listBindings, makeStore } from "../src/read/store.ts";
+import { listBindings, makeStore } from "./reference/store.ts";
 import { installSessionBindingsIndex, sessionBindingsReady, sessionBindingsStep } from "../src/store/session-bindings-index.ts";
 import { Store } from "../src/store/store.ts";
 

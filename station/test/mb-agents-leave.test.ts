@@ -64,7 +64,7 @@ test("let go where its runner cannot see a one-way close, it is asked to leave a
   });
   const info: RunnerInfo = { id: "f1", runner: process.pid, pid: process.pid, pgid: process.pid, startedAt: 0, program: "fake", args: [], socket };
   const heard: string[] = [];
-  const options: HostedOptions = { label: "test", kind: "lines", heard: (h) => void heard.push(...(h.lines ?? []).map((l) => l.text)), exit: () => {} };
+  const options: HostedOptions = { label: "test", kind: "codex", heard: (h) => void heard.push(...(h.lines ?? []).map((l) => l.text)), exit: () => {} };
 
   const a = HostedProcess.adopt(host, info, options, null, null);
   await until(() => heard.length === 1 && ops[0]!.includes("ack"));

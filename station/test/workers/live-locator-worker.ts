@@ -3,7 +3,7 @@
 // snapshot keeps its order without holding a main-database read transaction while the filesystem is searched.
 import { parentPort, workerData } from "node:worker_threads";
 import { runtimeKind } from "../../src/agents/runtime.ts";
-import { getSession, historyRuntimeSources, openStore } from "../../src/read/store.ts";
+import { getSession, historyRuntimeSources, openStore } from "../reference/store.ts";
 import { sessionPlaces, transcriptLocationHints, transcriptSources, useTranscriptLocationHints } from "../../src/read/transcript.ts";
 import { locationIdentity, type LocateMessage, type LocateReply, type LocateRequest, type LiveSource } from "../../src/sessions/live-location-protocol.ts";
 

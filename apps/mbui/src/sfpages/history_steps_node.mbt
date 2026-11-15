@@ -92,7 +92,7 @@ fn steps_list_node(
   let fk = station + "\u{1}" + key
   // its rows by their keys, in order: its top, each item's by the item's, what is in flight, the phase
   let rows_epoch = Ref(0)
-  let rows = @signals.computed(fn(_) {
+  let rows : @signals.Computed[(Array[String], Map[String, StepsRow], Int)] = @signals.computed(fn(was) {
     let (_, all) = steps_rows_of_topic(src, params, lkey)
     let keys : Array[String] = []
     let by : Map[String, StepsRow] = Map([])
@@ -110,8 +110,14 @@ fn steps_list_node(
       keys.push(k)
       by[k] = r
     }
-    rows_epoch.val = rows_epoch.val + 1
-    (keys, by, rows_epoch.val)
+    match was {
+      // (the same rows: the same, its epoch as it was, so nothing that reads it is told)
+      Some(w) if w.0 == keys && w.1 == by => w
+      _ => {
+        rows_epoch.val = rows_epoch.val + 1
+        (keys, by, rows_epoch.val)
+      }
+    }
   })
   let rows_rev : @signals.Signal[Int] = @signals.signal(0)
   v.reacts(fn() { rows.get().2 }, at_start=false, fn(rev) {
@@ -3191,6 +3197,17 @@ priv enum StepsRow {
 }
 
 ///|
+/// The same row: its kind and what it was made of, the one JSON or equal (a row the core's delta kept is the one it was).
+impl Eq for StepsRow with equal(a, b) {
+  match (a, b) {
+    (Edge, Edge) => true
+    (Item(j, x), Item(k, y)) | (Live(j, x), Live(k, y)) => x == y && @signals.same_value(j, k)
+    (Phase(j), Phase(k)) => @signals.same_value(j, k)
+    _ => false
+  }
+}
+
+///|
 /// How an agent's history's steps stand (what builds them reads of it): read yet, why its read failed (read again),
 /// none, what its top says, whether there are pages before and how the page before stands (reading, failed, or ""),
 /// how many rows and its first item's key.
@@ -3242,10 +3259,16 @@ fn steps_head_of(src : Source, params : Map[String, Json], lkey : String) -> Ste
 ///|
 /// Agent `key`'s history's rows (steps_rows).
 fn steps_rows_of_topic(src : Source, params : Map[String, Json], lkey : String) -> (Array[Json], Array[StepsRow]) {
-  steps_rows.read(src, lkey, fn(_) {
-    let h = src.topic("history", params).get().value
-    steps_rows_of(h, items(h, "items"), steps_own.only_io.get())
-  })
+  steps_rows.read(
+    src,
+    lkey,
+    fn(_) {
+      let h = src.topic("history", params).get().value
+      steps_rows_of(h, items(h, "items"), steps_own.only_io.get())
+    },
+    // (by its rows: each item of the items shown is one of them)
+    same=fn(a, b) { a.1 == b.1 },
+  )
 }
 
 ///|

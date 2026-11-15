@@ -178,3 +178,56 @@ pub fn auth_outcome(failure : Array[Int]) -> J {
 pub fn error_outcome(text : Array[Int]) -> J {
   failed(classify_result(text), chars(text, 1000))
 }
+
+///|
+/// runtime.ts `failureOf` (no words of a runtime's own): what failed a turn by what a runtime said of it, its error's
+/// code first where the text gives one (its words parted as /[^\p{L}\p{N}_]+/u parts them), then its phrases.
+pub fn failure_of(text : Array[Int]) -> String {
+  let lower = lowered(text)
+  let plain = @jsjson.raw_text(lower)
+  let word = (w : String) => @jscase.has_word_by(plain, w, c => c == 0x5f || @jscase.is_word_point(c))
+  let says = (w : String) => contains(lower, u(w))
+  let auth = ["unauthorized", "authenticat", "not logged in", "sign in", "log in", "api key", "permission_denied", "invalid credential"]
+  let refused = [
+    "request not allowed", "unsupported_country", "unsupported country", "not available in your region", "region is not supported",
+    "not authorized in this region",
+  ]
+  let block_page = ["<html", "<!doctype html", "attention required", "just a moment", "cloudflare"]
+  let limit = ["rate limit", "rate_limit", "quota", "usage limit", "limit reached", "resource_exhausted", "too many requests"]
+  if word("401") {
+    return "auth"
+  }
+  if word("403") {
+    return if auth.iter().any(says) || says("token") || says("scope") {
+      "auth"
+    } else if refused.iter().any(says) {
+      "refused"
+    } else if block_page.iter().any(says) {
+      "blocked"
+    } else {
+      "denied"
+    }
+  }
+  if word("429") {
+    return "rate_limit"
+  }
+  if word("529") {
+    return "overloaded"
+  }
+  if refused.iter().any(says) {
+    return "refused"
+  }
+  if says("forbidden") {
+    return "denied"
+  }
+  if auth.iter().any(says) {
+    return "auth"
+  }
+  if limit.iter().any(says) {
+    return "rate_limit"
+  }
+  if says("overloaded") || says("at capacity") {
+    return "overloaded"
+  }
+  failure_rest(text, lower)
+}

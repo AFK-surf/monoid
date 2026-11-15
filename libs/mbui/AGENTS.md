@@ -94,12 +94,25 @@ yet and you can add one, add it.
   as at 15,000. A change of its keys costs the slots of the keys that came or went among them alone, brought up to the
   keys in the pass that takes the change; they are found anew only as what shows nears their ends or goes far past
   them (`src/view/list_slots_wbtest.mbt`).
+- What makes a view do more than it must is refused where it is written, counted where it is left, those counts only
+  falling (detlint; the user, 2026-11-15: 「尽量想办法使得性能差的代码难以被写出来」): a scoped computed or a bare
+  effect outside the parts said to keep one (`scoped-computed`, `raw-effect`: detlint.json's `signals`): the one
+  lets go of all it read as what made it is parked and works it out whole as it wakes, the other never rests; a loop making nodes in what a pick or a show makes (`pick-loop`), all made again as it
+  picks anew and none of them a list's row; a list's row with its least height and no height (`each-min-height`),
+  its words measured whenever it is laid out. What truly is so says why on its line (`det-ok`).
 - State that what is made reads is a signal: a mutable value read by a binding that is not one is never seen to
   change. No check finds such a read: detlint's `built-by-hand` only refuses the two ways of covering one by hand
   (`Ctx::forget_parts`, `built_from_changed`). What shows one is the Tester keeping rows and parts as a device does
   (`Tester::frame`; a pass that kept rows compared with one built whole, `src/ui/tester_rows.mbt`): a test that changes
   the value and looks sees what a device would, the old (sfdesk's `wide.tape`, a plain field read by the rail's
   corners till 2026-11-11).
+- A signal or a computed tells what follows it only as its value changes (the user, 2026-11-15: 性能差的代码难以被写出来):
+  `signal` and `computed` (and what an app keeps over them) ask `T : Eq` and take a value made anew but equal as no change
+  (`@signals.same_value`). What has no value to compare (a handle, functions, a record mutated in place, a read made
+  again from what it made last) says so where it is made, `signal_ref`/`computed_ref` (the object) or `*_by` (its own
+  `same`), with why on the line above; a value type derives `Eq` instead. A computed's getter only works out its
+  value: an effect made in it is a fault (`@signals.effect_in_computed`) but for what a computed holds while it is
+  read, said so (`@signals.held_while_read`).
 - Layout goes one way (the user, 2026-11-05): what is laid out is never told back as a change to make things by. What
   is made by the width a node is given, or by how tall something in it comes to, is made in `View::by_room`
   (`src/view/room.mbt`) as that layout comes to it; what it would change outside its room is a fault. Nothing outside

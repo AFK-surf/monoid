@@ -283,11 +283,70 @@ pub fn switch_answered(
 /// A panel or a sheet drawn by the old view (`@sf.panel`, whose body reads as frames build it, not as it is made: no
 /// OpenGate of its own) opened by a press: where what opens waits for what it shows (gates_opens, MBUI_OPEN_WHOLE),
 /// once `asks` (what its body reads as it is first drawn, said by the code it reads them by) are answered, the screen as
-/// it was meanwhile (open_answered, open_hold_ms at most); else, or asking nothing, at once.
+/// it was meanwhile (press_wait, open_hold_ms at most); else, or asking nothing, at once. What was asked is held by
+/// what it opened, as long as that is drawn (presented_held): it puts nothing on the stack (app.nav), so open_answered's
+/// hand_over would let it go at once, between the press and the frame its body first reads it in, read then anew from
+/// nothing (the chat's 任务 sheet drawn in its bones).
 pub fn open_old_whole(src : Source, asks : Array[(String, Map[String, Json])], open : () -> Unit) -> Unit {
-  if !(src.gates_opens)() || asks.is_empty() {
+  if !(src.gates_opens)() || src.read_only || asks.is_empty() {
     open()
     return
   }
-  open_answered(src, asks, open, most=@sf.open_hold_ms) |> ignore
+  let (answered, leases) = asked_now(src, asks)
+  press_wait(answered, fn() { presented_held(leases, open) }, let_go=fn() { leases.each(fn(l) { l.cancel() }) }, most=@sf.open_hold_ms)
+  |> ignore
+}
+
+///|
+/// `open` run (what puts up something presented: a panel, a sheet), `leases` handed to what it put up (or the sheet it
+/// came to be a page of): held by the window's tree past what asked them, let go as that is drawn no more (closed and
+/// gone, @sf.presented_drawn_of); at once where nothing is drawn.
+fn presented_held(leases : Array[TopicLease], open : () -> Unit) -> Unit {
+  let readers : Array[TopicLease] = []
+  for lease in leases {
+    match prepare_chat_handoff(lease) {
+      Some(reader) => readers.push(reader)
+      None => ()
+    }
+  }
+  open()
+  let serial = @sf.last_presented()
+  let let_go_all = fn() {
+    for r in readers {
+      r.release()
+    }
+    readers.clear()
+  }
+  if readers.is_empty() || !@signals.untracked(fn() { @sf.presented_drawn_of(serial) }) {
+    let_go_all()
+    return
+  }
+  // (followed outside any build, as press_wait follows: stopped as it lets them go)
+  let stop : Ref[(() -> Unit)?] = Ref(None)
+  let gone = Ref(false)
+  let owner = @signals.set_owner(None)
+  stop.val = Some(
+    @signals.untracked(fn() {
+      @signals.effect(fn() {
+        if !gone.val && !@sf.presented_drawn_of(serial) {
+          gone.val = true
+          @signals.untracked(fn() {
+            let_go_all()
+            match stop.val {
+              Some(s) => s()
+              None => ()
+            }
+          })
+        }
+      })
+    }),
+  )
+  @signals.set_owner(owner) |> ignore
+  // (gone already as it was first followed: stopped now that it can be)
+  if gone.val {
+    match stop.val {
+      Some(s) => s()
+      None => ()
+    }
+  }
 }

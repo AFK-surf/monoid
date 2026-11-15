@@ -128,14 +128,14 @@ fn window_kept_ui_0() -> Array[WindowKept] {
     kept_ref(code_clears_said, fn() { @signals.signal(0) }),
     kept_ref(tree_window_corner, fn() { @signals.signal(0.0, same=fn(a, b) { a == b }) }),
     kept_ref(tree_window_zoom, fn() { @signals.signal(1.0, same=fn(a, b) { a == b }) }),
-    kept_ref(tree_theme_said, fn() { @signals.signal(None, same=fn(a, b) {
+    kept_ref(tree_theme_said, fn() { @signals.signal_by(None, same=fn(a, b) {
   match (a, b) {
     (Some(x), Some(y)) => physical_equal(x, y)
     (None, None) => true
     _ => false
   }
 }) }),
-    kept_ref(tree_theme_of, fn() { @signals.signal(None, same=fn(a, b) {
+    kept_ref(tree_theme_of, fn() { @signals.signal_by(None, same=fn(a, b) {
   match (a, b) {
     (Some(x), Some(y)) => physical_equal(x, y)
     (None, None) => true

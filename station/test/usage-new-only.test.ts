@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { constants } from "node:sqlite";
 import { test } from "node:test";
-import { makeStore, usageGroups, usageSince } from "../src/read/store.ts";
-import { usage } from "../src/read/usage.ts";
+import { makeStore, usageGroups, usageSince } from "./reference/store.ts";
+import { usage } from "./reference/usage.ts";
 import { Store } from "../src/store/store.ts";
 import { backfillUsageDetail } from "../src/store/usage-detail.ts";
 

@@ -1,0 +1,31 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/jscase"
+
+// Values
+pub fn has_cases(String) -> Bool
+
+pub fn has_word(String, String) -> Bool
+
+pub fn has_word_by(String, String, (Int32) -> Bool) -> Bool
+
+pub fn is_space(Int32) -> Bool
+
+pub fn is_white_space(Int32) -> Bool
+
+pub fn is_word_point(Int32) -> Bool
+
+pub fn lower(String) -> String
+
+pub fn split_by(String, (Int32) -> Bool) -> Array[String]
+
+pub fn trim(String) -> String
+
+pub fn trim_white(String) -> String
+
+// Errors
+
+// Types and methods
+
+// Type aliases
+
+// Traits

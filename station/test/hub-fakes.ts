@@ -5,7 +5,7 @@ import { TestClock } from "effect/testing";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Roots } from "../src/read/machine.ts";
+import type { Roots } from "./reference/machine.ts";
 import { CommandMissing, type RunnerInfo } from "../src/agents/runner.ts";
 import type { AgentDriver, AgentSession, BackgroundTask, OpenOptions, RuntimeEvent, TurnOutcome } from "../src/agents/runtime.ts";
 import { type ChatMessage, type ChatSurface, type InboundFile, type InboundMessage, NOTICE_MARK, type ThreadRef } from "../src/sessions/chat.ts";

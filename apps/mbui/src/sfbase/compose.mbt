@@ -158,7 +158,7 @@ pub fn writings_reset() -> Unit {
 ///|
 /// Read one field and follow the shared core resource for as long as the computed has graph readers.
 fn[T] writing_value(value : @signals.Signal[T], following : @signals.Computed[Unit], same : (T, T) -> Bool) -> @signals.Computed[T] {
-  @signals.computed_following(fn(_) { value.get() }, following, same~)
+  @signals.computed_following_by(fn(_) { value.get() }, following, same~)
 }
 
 ///|
@@ -185,7 +185,9 @@ fn writing_cached(src : Source, key : String) -> Writing {
         composing_base: None,
       }
       let topic = src.topic("composer", { "key": Json::string(key) })
-      let following = @signals.computed(fn(_) {
+      // (the draft's own reactions, held while a field of it is read, stopped as the last reader leaves: the
+      // field's words followed for what the core reads of them, and the core's composer topic adopted)
+      let following = @signals.held_while_read(fn() {
         // (what the core reads of its field's words: its marks, its `@` words, refs.mbt)
         refs_follow(src, key, state.field)
         @signals.effect(fn() {
@@ -196,7 +198,8 @@ fn writing_cached(src : Source, key : String) -> Writing {
             let (generation, fresh) = (src.generation)("composer", { "key": Json::string(key) })
             writing_adopt(state, t.value, t.version, generation, fresh, composing)
           })
-        }) |> ignore
+        })
+        |> ignore
       })
       let w : Writing = {
         key,

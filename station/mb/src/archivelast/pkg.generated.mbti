@@ -1,0 +1,21 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/archivelast"
+
+import {
+  "station/sql",
+}
+
+// Values
+
+// Errors
+
+// Types and methods
+pub struct Archive {
+  // private fields
+}
+pub fn Archive::new(@sql.Db) -> Self
+pub fn Archive::step(Self, Int64, limit? : Int32) -> Bool raise
+
+// Type aliases
+
+// Traits

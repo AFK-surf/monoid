@@ -99,7 +99,8 @@ let finder : Finder = {
   asked: @signals.signal("", same=fn(a, b) { a == b }),
   listed: @sf.LiveArray::new(),
   listed_for: @signals.signal("", same=fn(a, b) { a == b }),
-  lines: @signals.signal([]),
+  // (by the one array: a command's line holds the function it runs)
+  lines: @signals.signal_ref([]),
   picks: @signals.signal([]),
   to_top: false,
   keyed: @signals.signal(0, same=fn(a, b) { a == b }),

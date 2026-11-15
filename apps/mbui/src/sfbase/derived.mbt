@@ -26,10 +26,16 @@ pub fn[T] Kept::new() -> Kept[T] {
 
 ///|
 /// What `getter` makes for `key` from `src` (given what it made last): worked out the first time, and again only once
-/// what it read changed since; what reads it told only where that comes out otherwise than before, by `same` where
-/// given (else as signals compare).
-pub fn[T] Kept::read(self : Kept[T], src : Source, key : String, getter : (T?) -> T, same? : (T, T) -> Bool) -> T {
-  self.kept.read(src, key, getter, same?)
+/// what it read changed since; what reads it told only where that comes out another value than before (`==`, or
+/// `same` where given: @signals.computed).
+pub fn[T : Eq] Kept::read(self : Kept[T], src : Source, key : String, getter : (T?) -> T, same? : (T, T) -> Bool) -> T {
+  self.kept.read(src, key, getter, same=same.unwrap_or(@signals.same_value))
+}
+
+///|
+/// Kept::read whose value is the same as the last only as `same` says (@signals.computed_by).
+pub fn[T] Kept::read_by(self : Kept[T], src : Source, key : String, getter : (T?) -> T, same~ : (T, T) -> Bool) -> T {
+  self.kept.read(src, key, getter, same~)
 }
 
 ///|
@@ -102,7 +108,7 @@ priv struct SourceKeptOne[T] {
 }
 
 ///|
-fn[T] SourceKept::read(self : SourceKept[T], source : Source, key : String, getter : (T?) -> T, same? : (T, T) -> Bool) -> T {
+fn[T] SourceKept::read(self : SourceKept[T], source : Source, key : String, getter : (T?) -> T, same~ : (T, T) -> Bool) -> T {
   let entries = match self.kept.get(key) {
     Some(entries) => entries
     None => {
@@ -130,7 +136,7 @@ fn[T] SourceKept::read(self : SourceKept[T], source : Source, key : String, gett
         }
         kept_count.left = kept_count.made
       }
-      let made = { source, value: @signals.computed(getter, same?) }
+      let made = { source, value: @signals.computed_by(getter, same~) }
       entries.push(made)
       kept_count.made += 1
       if !self.listed {
@@ -247,19 +253,70 @@ pub struct Derived[T] {
   priv name : String
   priv work : (Json, T?) -> T
   priv kept : SourceKept[T?]
+  /// whether what `work` made is what it made last: what reads it is told only where it is not (the topic changes in
+  /// what `work` does not read, and it makes the same value again)
+  priv same : (T?, T?) -> Bool
 }
 
 ///|
-pub fn[T] Derived::new(name : String, work : (Json, T?) -> T) -> Derived[T] {
-  { name, work, kept: { kept: {}, listed: false } }
+/// What `work` makes of topic `name`, what reads it told only as that comes out another value (`==`).
+pub fn[T : Eq] Derived::new(name : String, work : (Json, T?) -> T) -> Derived[T] {
+  Derived::new_by(name, work, same=@signals.same_value)
 }
 
 ///|
-/// Topic `name` with `params` (Source.topic), and what `work` makes of its value: None while it has none.
+/// Derived::new told by the one object `work` made (@signals.same_ref): for a read made again from what it made last
+/// (made_again), whose object stands for the version of the topic it was read from, where comparing it whole would
+/// cost what reading it again saves.
+pub fn[T] Derived::new_ref(name : String, work : (Json, T?) -> T) -> Derived[T] {
+  Derived::new_by(name, work, same=@signals.same_ref)
+}
+
+///|
+/// Derived::new whose value is the same as the last only as `same` says.
+pub fn[T] Derived::new_by(name : String, work : (Json, T?) -> T, same~ : (T, T) -> Bool) -> Derived[T] {
+  {
+    name,
+    work,
+    kept: { kept: {}, listed: false },
+    same: fn(a, b) {
+      match (a, b) {
+        (Some(x), Some(y)) => same(x, y)
+        (None, None) => true
+        _ => false
+      }
+    },
+  }
+}
+
+///|
+/// Topic `name` with `params` (Source.topic), and what `work` makes of its value: None while it has none. Its key
+/// written once (topic_key), for the topic and for what is kept of it. What reads it follows the topic too (its
+/// version, its error): what reads only what `work` made reads Derived::value.
 pub fn[T] Derived::read(self : Derived[T], src : Source, params : Map[String, Json]) -> (T?, Topic) {
-  let topic = src.topic(self.name, params).get().snapshot()
-  let value = self.kept.read(src, Json::object(params).stringify(), fn(was) {
-    match src.topic(self.name, params).get().value {
+  let said = topic_key(self.name, params)
+  let topic = src.topic_said(self.name, params, said).get().snapshot()
+  (self.made(src, params, said), topic)
+}
+
+///|
+/// What `work` makes of topic `name` with `params`, None while it has none: what reads it follows what was made alone,
+/// told only as that comes out another value (`same`), never as the topic changes where `work` does not read. The
+/// topic is followed by what is kept (its computed reads it), held as long as that is read. A card or a panel opened
+/// as this is read waits for the topic as Source::topic says (@sf.OpenGate), as Derived::read does.
+pub fn[T] Derived::value(self : Derived[T], src : Source, params : Map[String, Json]) -> T? {
+  let said = topic_key(self.name, params)
+  if @sf.open_gate_collecting() {
+    src.topic_said(self.name, params, said).get() |> ignore
+  }
+  self.made(src, params, said)
+}
+
+///|
+/// What is kept of topic `said` from `src`: worked out as it changes, from what was made last.
+fn[T] Derived::made(self : Derived[T], src : Source, params : Map[String, Json], said : String) -> T? {
+  self.kept.read(src, said, fn(was) {
+    match src.topic_said(self.name, params, said).get().value {
       Some(v) =>
         Some(
           (self.work)(v, match was {
@@ -269,15 +326,14 @@ pub fn[T] Derived::read(self : Derived[T], src : Source, params : Map[String, Js
         )
       None => None
     }
-  })
-  (value, topic)
+  }, same=self.same)
 }
 
 ///|
 /// What was last made of topic `name` with `params`, if it is kept (Kept::peek): the topic not
 /// asked for.
 pub fn[T] Derived::kept(self : Derived[T], params : Map[String, Json]) -> T? {
-  match self.kept.peek(Json::object(params).stringify()) {
+  match self.kept.peek(topic_key(self.name, params)) {
     Some(v) => v
     None => None
   }
@@ -286,7 +342,7 @@ pub fn[T] Derived::kept(self : Derived[T], params : Map[String, Json]) -> T? {
 ///|
 /// What was last made for these parameters from `src`, without asking the source for the topic again.
 pub fn[T] Derived::kept_from(self : Derived[T], src : Source, params : Map[String, Json]) -> T? {
-  match self.kept.peek_from(src, Json::object(params).stringify()) {
+  match self.kept.peek_from(src, topic_key(self.name, params)) {
     Some(v) => v
     None => None
   }

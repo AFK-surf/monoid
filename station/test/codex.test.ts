@@ -12,7 +12,8 @@ import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { after, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { CodexDriver, classifyCodexError, hostSkillsOff, type CodexDriverOptions } from "../src/agents/codex.ts";
+import { CodexDriver, hostSkillsOff, type CodexDriverOptions } from "../src/agents/codex.ts";
+import { LiveFromCodex, codexEvents } from "./codex-reference.ts";
 import { REPO_RULES_COMMAND } from "../src/agents/repo-rules.ts";
 import { ackedOffset, outFile, runnerId } from "../src/agents/process.ts";
 import { allLeft, existingRunners, type RunnerInfo } from "../src/agents/runner.ts";
@@ -22,6 +23,7 @@ import { transcriptPaths } from "../src/read/transcript.ts";
 import { tempDir } from "./temp-dir.ts";
 import { settle, testClock } from "./hub-fakes.ts";
 
+type Json = any;
 const fake = join(dirname(fileURLToPath(import.meta.url)), "fake");
 process.env.PATH = `${fake}${delimiter}${process.env.PATH}`;
 // Inherited, and not to reach the agent.
@@ -446,20 +448,45 @@ describe("the Codex driver", { concurrency: true }, () => {
     assert.deepEqual(outcome(events, 0), { kind: "failed", reason: "auth", message: "unauthorized: token expired" });
     assert.deepEqual(outcome(events, 1), { kind: "failed", reason: "rate_limit", message: "usage limit reached" });
     assert.deepEqual(outcome(events, 2), { kind: "failed", reason: "model", message: "model not supported" });
-    assert.equal(classifyCodexError(null), "model");
-    assert.equal(classifyCodexError({ serverOverloaded: null }), "overloaded");
-    assert.equal(classifyCodexError({ usageLimitExceeded: null }), "rate_limit");
-    assert.equal(classifyCodexError(null, "auth error: 401, auth error code: token_revoked"), "auth");
-    assert.equal(classifyCodexError(null, "model not supported"), "model");
-    // Turned away with nothing said (2026-11-02, "unexpected status 403 Forbidden: "): refused, why not known; not the
-    // model's error. Its region said, or Cloudflare's page for a blocked address: where it comes from.
-    assert.equal(classifyCodexError({ responseStreamConnectionFailed: { httpStatusCode: 403 } }, "unexpected status 403 Forbidden: Unknown error"), "denied");
-    assert.equal(classifyCodexError("other", "unexpected status 403 Forbidden: "), "denied");
-    assert.equal(classifyCodexError({ responseStreamConnectionFailed: { httpStatusCode: 403 } }, "unexpected status 403 Forbidden: <!DOCTYPE html><title>Just a moment...</title>"), "blocked");
-    assert.equal(classifyCodexError({ responseStreamConnectionFailed: { httpStatusCode: 401 } }, "unexpected status 401 Unauthorized: "), "auth");
-    assert.equal(classifyCodexError({ responseStreamDisconnected: { httpStatusCode: null } }, "stream disconnected before completion"), "network");
-    assert.equal(classifyCodexError(null, "stream disconnected before completion: error sending request for url (https://chatgpt.com/backend-api/codex/responses)"), "network");
-    assert.equal(classifyCodexError("contextWindowExceeded", "Codex ran out of room in the model's context window"), "context");
+    // (each `codexErrorInfo`'s reason as the TypeScript station told it: mb/src/codex, its tests, from codex-cases.ts)
+  });
+
+  // The program reads each thread's notifications (mb/src/codex): what a session is told is what the TypeScript station
+  // made of the same lines of the app-server's output (codex-reference.ts), but for its words told together.
+  test("a session is told what the TypeScript station made of its thread's notifications", async () => {
+    const d = driver();
+    const p = profile();
+    const { events, push, until } = listen();
+    const session = await d.open(options(p), push);
+    const other = await d.open(options(p), () => {});
+    const prompts = ["cmd", "say:hello", "fail:auth", "fail:rate", "fail:model", "slow:4", "mcp", "again"];
+    for (const [i, prompt] of prompts.entries()) {
+      await session.prompt(prompt);
+      await other.prompt("say:not this one");
+      await until(ended(i + 1));
+    }
+    await until(ended(prompts.length + 1));
+    const live = new LiveFromCodex();
+    const want: Json[] = [];
+    for (const line of readFileSync(outFile(data, runnerId("codex", p.id)), "utf8").split("\n")) {
+      if (!line.startsWith("{")) continue;
+      const msg = JSON.parse(line);
+      if (typeof msg.method === "string" && msg.id === undefined && msg.params?.threadId === session.id()) want.push(...codexEvents(live, msg.method, msg.params));
+    }
+    // (a turn's start told once, where none was asked for: the one after "again")
+    const told = (all: Json[]) => {
+      const out: Json[] = [];
+      for (const e of all.filter((e) => e.type !== "turnStarted")) {
+        const last = out.at(-1);
+        if (e.type === "live" && e.event.kind === "delta" && last?.type === "live" && last.event.kind === "delta" && last.event.id === e.event.id && last.event.field === e.event.field) {
+          out[out.length - 1] = { type: "live", event: { ...last.event, text: last.event.text + e.event.text } };
+        } else out.push(e);
+      }
+      return out;
+    };
+    assert.deepEqual(told(events), told(want));
+    assert.equal(events.filter((e) => e.type === "turnStarted").length, 1, "the turn it began itself");
+    assert.ok(ends(events).length === prompts.length + 1 && said(events).includes("hello"));
   });
 
   test("abort interrupts the running turn by its id; steer adds to it, and is refused with nothing running", async () => {

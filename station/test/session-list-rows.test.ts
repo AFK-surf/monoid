@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { sessions, summary } from "../src/read/sessions.ts";
-import { listSessions, makeStore } from "../src/read/store.ts";
+import { sessions, summary } from "./reference/sessions.ts";
+import { listSessions, makeStore } from "./reference/store.ts";
 import { sees, type InWorkspace } from "../src/store/rows.ts";
 import { Store } from "../src/store/store.ts";
 

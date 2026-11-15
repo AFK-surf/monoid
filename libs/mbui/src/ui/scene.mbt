@@ -730,10 +730,21 @@ let tie_slack : Double = 1.0e-6
 let glyphs_carried : FixedArray[Double] = [0.0, 0.0]
 
 ///|
-/// Where a glyph's picture goes across, `x` as painted: on the pixels where it is laid out (glyphs_carried).
-fn glyph_x(x : Double, sc : Double) -> Double {
+/// Where a glyph's picture goes across, its cluster at `x` and its own offset `ox` (`sc` pixels a point): `x` set on
+/// the pixels first (as `glyph_sub` rounds the cluster origin), then `ox` in whole pixels.
+fn on_glyph_col(x : Double, ox : Double, sc : Double) -> Double {
+  if sc <= 0.0 {
+    return x + ox
+  }
+  on_pixels(x, sc) + (ox * sc).round() / sc
+}
+
+///|
+/// Where a glyph's picture goes across, `x` as painted and its own offset `ox`: on the pixels where it is laid out
+/// (glyphs_carried).
+fn glyph_x(x : Double, ox : Double, sc : Double) -> Double {
   let m = glyphs_carried[0]
-  on_pixels(x - m, sc) + m
+  on_glyph_col(x - m, ox, sc) + m
 }
 
 ///|
@@ -1119,7 +1130,7 @@ fn Ctx::emit_text(
   center_in? : Double = -1.0,
   spans? : Array[(Int, Int, Int64)] = [],
   font? : (Double, Int, Int, Double),
-  unplaced? : Array[(Int, Double, Double, Double, Double, Double)],
+  unplaced? : Array[(Int, Double, Double, Double, Double, Double, Double)],
 ) -> Unit {
   let s = tl.shaped
   let n = s.starts.length()
@@ -1189,7 +1200,7 @@ fn Ctx::emit_text(
       continue
     }
     let (gw, gh) = (g.gw / z, g.gh / z)
-    let gx = glyph_x(ox + dx + tl.xs[c] + s.pad + g.ox / z, sc)
+    let gx = glyph_x(ox + dx + tl.xs[c] + s.pad, g.ox / z, sc)
     let gy = glyph_row(oy, line.to_double() * tl.line_h + tl.ascent, g.oy / z, sc)
     let adaptive = glass_paint.ink_r > 0.0 && !g.color
     // (the uniform scale is about its ink's middle; an extra horizontal scale is about its advance's middle, so a
@@ -1207,7 +1218,7 @@ fn Ctx::emit_text(
     // (where it is before it is set on the pixels, for what places it again elsewhere: a node's words, set on the
     // pixels where the scene composes them, view_blit; what its own look moves it by after that, as here)
     match unplaced {
-      Some(u) => u.push((self.ninst, ox + dx + tl.xs[c] + s.pad + g.ox / z, top + tl.ascent, g.oy / z, gx - set_x, gy - set_y))
+      Some(u) => u.push((self.ninst, ox + dx + tl.xs[c] + s.pad, g.ox / z, top + tl.ascent, g.oy / z, gx - set_x, gy - set_y))
       None => ()
     }
     // (its halo's, where its words have one: halo.mbt)

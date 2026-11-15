@@ -1,17 +1,22 @@
 // What still.fail uses of a station's machine (resources.mbt's, as nodes of a page made once, from its styles): a
 // station's page's 进程 and the line its overview says it in. What is chosen in it (whose, how, the column sorted by,
-// the groups open) is rs_shown's, by station, followed as it changes.
+// the groups open) is rs_shown's, by station, followed as it changes. On its page each row of its table is a block of
+// its own (a page's list makes a block only while it shows: a table of every process made one block was made whole as
+// it came to show, 22 rows where 8 show): its head (what is counted, the choice of whose and how, the columns' heads)
+// a block, each row a block (rs_block_node), how it is read a block under them; what they read worked out once for
+// all of them, by its page (RsTable).
 
 ///|
 /// Its 进程 (station_processes', online): what is counted over the page, then the body; nothing read yet, its bones.
-fn resources_node(p : @view.View, core : Core, here : () -> Here, address : String) -> Unit {
+/// `table`: its page's, whose blocks its rows and its foot are (rs_block_node); none, all of it here.
+fn resources_node(p : @view.View, core : Core, here : () -> Here, address : String, table? : RsTable) -> Unit {
   let v = fn() { station_part_read(core, address, resources_ask(here(), address)).value }
   p.box(fn(k) {
     @sf.style_node(k, fn() { rs_processes })
     @sf.words_node(k, fn() { @sf.t("web-pages.stations.processesLead") }, fn() { st_memory }) |> ignore
     k.pick(fn() { v() is Some(Object(_)) }, fn(b, read) {
       if read {
-        resources_body_node(b, core, address, v)
+        resources_body_node(b, core, address, v, table?)
       } else {
         @sf.waiting_node(b, fn(w) {
           @sf.style_node(w, fn() { rs_page })
@@ -24,34 +29,38 @@ fn resources_node(p : @view.View, core : Core, here : () -> Here, address : Stri
 }
 
 ///|
-/// The body (resources_body's): empty, a wait (or that there is nothing to see); else its totals, the choice of whose
-/// and of how, the table; how it is read under either.
-fn resources_body_node(b : @view.View, core : Core, address : String, v : () -> Json?) -> Unit {
-  // (0: seen; 1: nothing yet, read; 2: nothing to see)
-  let state = fn() {
-    let now = v()
-    if !flag(now, "empty") {
-      0
-    } else {
-      let wait = field(now, "wait")
-      if flag(wait, "reading") || items(wait, "failing").length() > 0 { 1 } else { 2 }
-    }
+/// What a body (resources_body's) shows by what is read `v`: 0, seen; 1, nothing yet, read; 2, nothing to see.
+fn rs_state(v : Json?) -> Int {
+  if !flag(v, "empty") {
+    0
+  } else {
+    let wait = field(v, "wait")
+    if flag(wait, "reading") || items(wait, "failing").length() > 0 { 1 } else { 2 }
   }
-  b.pick(state, fn(r, k) {
+}
+
+///|
+/// The body (resources_body's): empty, a wait (or that there is nothing to see); else its totals, the choice of whose
+/// and of how, the table; how it is read under either (where its page has its rows and foot its blocks, `table`, that
+/// is one of them).
+fn resources_body_node(b : @view.View, core : Core, address : String, v : () -> Json?, table? : RsTable) -> Unit {
+  b.pick(fn() { rs_state(v()) }, fn(r, k) {
     @sf.style_node(r, fn() { rs_page })
     match k {
-      0 => rs_figures_node(r, core, address, v)
+      0 => rs_figures_node(r, core, address, v, table?)
       1 => @sf.waiting_node(r, fn(w) { rs_figures_node(w, core.quiet(), "sample", fn() { Some(rs_sample_view()) }) })
       _ => @sf.words_node(r, fn() { @sf.t("web-main.resources.none") }, fn() { rs_empty }) |> ignore
     }
-    rs_foot_node(r, v, k == 0)
+    if table is None {
+      rs_foot_node(r, v, k == 0)
+    }
   })
 }
 
 ///|
 /// What is seen of the machine (rs_figures_of's): its totals in pairs, the choice of whose and of how on a line apart
-/// at its ends, the table.
-fn rs_figures_node(r : @view.View, core : Core, address : String, v : () -> Json?) -> Unit {
+/// at its ends, the table (where its page has its rows blocks of their own, `table`, its heads alone).
+fn rs_figures_node(r : @view.View, core : Core, address : String, v : () -> Json?, table? : RsTable) -> Unit {
   // (what is counted, and each tile, worked out once as the value changes: a sample that leaves a tile as it was tells
   // none of what that tile draws)
   let tiles_now = @signals.computed(fn(_) { items(v(), "tiles") }, same=fn(a, b) { a == b })
@@ -111,17 +120,37 @@ fn rs_figures_node(r : @view.View, core : Core, address : String, v : () -> Json
     |> ignore
   })
   |> ignore
+  match table {
+    // (its rows blocks of their own: its heads alone here, laid out as its rows are, rs_block_node)
+    Some(t) =>
+      r.pick(fn() { shown().flat }, fn(tt, flat) {
+        tt.by_room(fn(heads, room) {
+          @sf.style_node(heads, fn() { rs_table })
+          let lay = rs_lay_in(heads, room, t.lay_at)
+          rs_heads_node(heads, address, flat, t.columns, lay)
+        })
+        |> ignore
+      })
+    None => {
+      let groups = rs_groups_of(address, v)
+      let columns_now = @signals.computed(fn(_) { rs_columns_of(v()) }, same=fn(a, b) { a == b })
+      let columns = fn() { columns_now.get() }
+      r.pick(fn() { shown().flat }, fn(t, flat) { rs_table_node(t, core, address, groups, columns, flat) })
+    }
+  }
+}
+
+///|
+/// The groups of what is read `v` of station `address` of the kind of whose shown, worked out once as either changes.
+fn rs_groups_of(address : String, v : () -> Json?) -> () -> Array[Json] {
   let groups_now = @signals.computed(
     fn(_) {
-      let kind = shown().kind
+      let kind = rs_shown_of(address).kind
       items(v(), "groups").filter(fn(g) { kind == "all" || text(Some(g), "kind") == kind })
     },
     same=fn(a, b) { a == b },
   )
-  let groups = fn() { groups_now.get() }
-  let columns_now = @signals.computed(fn(_) { rs_columns_of(v()) }, same=fn(a, b) { a == b })
-  let columns = fn() { columns_now.get() }
-  r.pick(fn() { shown().flat }, fn(t, flat) { rs_table_node(t, core, address, groups, columns, flat) })
+  fn() { groups_now.get() }
 }
 
 ///|
@@ -170,16 +199,21 @@ priv enum RsRow {
 }
 
 ///|
-/// The table (rs_grouped's, `flat` rs_flat's): its heads, then its rows, the most of the column sorted by first; laid
-/// out by how wide it is given to be (rs_layout_of, by its room: View::by_room).
-fn rs_table_node(
-  t : @view.View,
-  core : Core,
-  address : String,
-  groups : () -> Array[Json],
-  columns : () -> Array[(String, String)],
-  flat : Bool,
-) -> Unit {
+/// What a table of station `address`'s 进程 reads of its `groups`, laid out `flat` or not, worked out once (rs_table_node's,
+/// and its page's for its rows' blocks, RsTable): the column sorted by, a group and a process by key, the most of the
+/// sorted column, its rows in order.
+priv struct RsRead {
+  by : () -> String
+  group_of : (String) -> Json?
+  process_of : (String, String) -> Json?
+  most : () -> Double
+  rows : () -> Array[RsRow]
+}
+
+///|
+/// RsRead's of `groups` of station `address`, laid out as `flat` says (rs_table_node's: as it was made; its page's: as
+/// it is shown now).
+fn rs_read(address : String, groups : () -> Array[Json], flat : () -> Bool) -> RsRead {
   let by = fn() { rs_shown_of(address).by }
   let group_of = fn(key : String) { groups().iter().find_first(fn(g) { text(Some(g), "key") == key }) }
   let process_of = fn(gkey : String, key : String) {
@@ -187,18 +221,17 @@ fn rs_table_node(
   }
   let use_of = fn(j : Json?) { rs_use(field(j, "use"), by()) }
   let most_now = @signals.computed(fn(_) {
-    if flat {
+    if flat() {
       groups().fold(init=0.0, fn(m, g) { items(Some(g), "processes").fold(init=m, fn(m, p) { @cmp.maximum(m, use_of(Some(p))) }) })
     } else {
       groups().fold(init=0.0, fn(m, g) { @cmp.maximum(m, use_of(Some(g))) })
     }
   }, same=fn(a, b) { a == b })
-  let most = fn() { most_now.get() }
   // (which rows there are and in what order, worked out once as the groups or what is chosen change: a sample that
   // sorts them as they were tells the list nothing)
   let rows_now = @signals.computed(fn(_) {
     let out : Array[RsRow] = []
-    if flat {
+    if flat() {
       let all : Array[(Json, String)] = []
       for g in groups() {
         for p in items(Some(g), "processes") {
@@ -228,130 +261,294 @@ fn rs_table_node(
     }
     out
   }, same=fn(a, b) { a == b })
-  let rows = fn() { rows_now.get() }
+  { by, group_of, process_of, most: fn() { most_now.get() }, rows: fn() { rows_now.get() } }
+}
+
+///|
+/// How a table of `groups` with `columns` is laid out (rs_layout_of's) by the room it is given and the sizes of its heads'
+/// and figures' words, as `by` and `flat` say: worked out once for all that ask it of the same (each row of its page's
+/// blocks laid out by its own room, of one width), again as any of it changes.
+fn rs_lay_memo(
+  groups : () -> Array[Json],
+  columns : () -> Array[(String, String)],
+  by : () -> String,
+  flat : () -> Bool,
+) -> (Double, Double, Double) -> RsLayout {
+  let kept : Ref[(Double, Double, Double, Array[Json], Array[(String, String)], String, Bool, RsLayout)?] = Ref(None)
+  fn(w, head, figure) {
+    let gs = groups()
+    let cols = columns()
+    let b = by()
+    let f = flat()
+    match kept.val {
+      Some(k) if k.0 == w && k.1 == head && k.2 == figure && physical_equal(k.3, gs) && physical_equal(k.4, cols) && k.5 == b && k.6 == f =>
+        k.7
+      _ => {
+        // (every figure it says, a group's processes' too, open or not: none moves as a group opens)
+        let figures : Array[(Json?, Bool)] = []
+        for g in gs {
+          if !f {
+            figures.push((field(Some(g), "use"), true))
+          }
+          for p in items(Some(g), "processes") {
+            figures.push((field(Some(p), "use"), f))
+          }
+        }
+        let lay = rs_layout_of(w, head, figure, figures, cols, b, if f { 2 } else { 1 })
+        kept.val = Some((w, head, figure, gs, cols, b, f, lay))
+        lay
+      }
+    }
+  }
+}
+
+///|
+/// The layout a table's part laid out in node `t` by `room` reads (rs_lay_memo's `lay_at`), its words as `t` draws them.
+fn rs_lay_in(t : @view.View, room : @view.Room, lay_at : (Double, Double, Double) -> RsLayout) -> () -> RsLayout {
+  let lay = @signals.computed(fn(_) {
+    let th = @ui.tree_theme()
+    lay_at(room.width(), @sf.node_sp(t, th.text_size(Xs).0), @sf.node_sp(t, th.text_size(Sm).0))
+  }, same=fn(a, b) { a == b })
+  fn() { lay.get() }
+}
+
+///|
+/// The table (rs_grouped's, `flat` rs_flat's): its heads, then its rows, the most of the column sorted by first; laid
+/// out by how wide it is given to be (rs_layout_of, by its room: View::by_room).
+fn rs_table_node(
+  t : @view.View,
+  core : Core,
+  address : String,
+  groups : () -> Array[Json],
+  columns : () -> Array[(String, String)],
+  flat : Bool,
+) -> Unit {
+  let read = rs_read(address, groups, fn() { flat })
+  let lay_at = rs_lay_memo(groups, columns, read.by, fn() { flat })
   // (its heads and rows by how wide it is given to be, laid out in that same layout)
   t.by_room(fn(table, room) {
     @sf.style_node(table, fn() { rs_table })
-    // (every figure it says, a group's processes' too, open or not: none moves as a group opens)
-    let lay = @signals.computed(fn(_) {
-      let th = @ui.tree_theme()
-      let figures : Array[(Json?, Bool)] = []
-      for g in groups() {
-        if !flat {
-          figures.push((field(Some(g), "use"), true))
-        }
-        for p in items(Some(g), "processes") {
-          figures.push((field(Some(p), "use"), flat))
-        }
-      }
-      rs_layout_of(
-        room.width(),
-        @sf.node_sp(table, th.text_size(Xs).0),
-        @sf.node_sp(table, th.text_size(Sm).0),
-        figures,
-        columns(),
-        by(),
-        if flat { 2 } else { 1 },
-      )
-    }, same=fn(a, b) { a == b })
-    let lay = fn() { lay.get() }
+    let lay = rs_lay_in(table, room, lay_at)
     rs_heads_node(table, address, flat, columns, lay)
-    table.each(rows, fn(r) { r }, fn(row, r) {
-      let r = r.untracked()
-      match r {
-        RsGroup(key) => {
-          // (its group as the groups say it now, told only as it changes: a sample that leaves it as it was tells this
-          // row nothing)
-          let g_now = @signals.computed(fn(_) { group_of(key) }, same=fn(a, b) { a == b })
-          let g = fn() { g_now.get() }
-          let on = fn() { rs_open(rs_shown_of(address), groups(), key) }
-          rs_row_node(
-            row,
-            lay,
-            group=true,
-            press=fn() { rs_open_or_shut(address, groups(), key) },
-            said=fn() { Some(@view.said(Button, label=text(g(), "title"), expanded=on())) },
-            fn(n) {
-              n.box(fn(cell) {
-                @sf.style_node(cell, fn() { rs_name_cell }, in_row=true)
-                cell.box(fn(name) {
-                  @sf.style_node(name, fn() { rs_name })
-                  @sf.icon_node(
-                    name,
-                    if @signals.untracked(on) { "chevron-down" } else { "chevron-right" },
-                    rs_toggle,
-                    By(fn() { @sf.theme().p.subtle }),
-                    name_now=fn() { if on() { "chevron-down" } else { "chevron-right" } },
-                  )
-                  |> ignore
-                  rs_title_node(name, core, g, rs_name_text)
-                  @sf.words_node(
-                    name,
-                    fn() { join([text(g(), "kindText"), items(g(), "processes").length().to_string()], " · ") },
-                    fn() { rs_meta },
-                  )
-                  |> ignore
-                })
-                |> ignore
-              })
-              |> ignore
-            },
-            fn(f) { rs_figures_node_of(f, fn() { field(g(), "use") }, columns, by, most, lay, false) },
-            fn(_) {  },
-          )
-        }
-        RsUnder(gkey, key) => {
-          let p_now = @signals.computed(fn(_) { process_of(gkey, key) }, same=fn(a, b) { a == b })
-          let p = fn() { p_now.get() }
-          rs_row_node(
-            row,
-            lay,
-            fn(n) {
-              n.box(fn(cell) {
-                @sf.style_node(cell, fn() { rs_process_cell }, in_row=true)
-                @sf.words_node(cell, fn() { text(p(), "name") }, fn() { rs_process_name }) |> ignore
-                @sf.words_node(cell, fn() { number(p(), "pid").to_int().to_string() }, fn() { rs_meta }) |> ignore
-              })
-              |> ignore
-            },
-            fn(f) { rs_figures_node_of(f, fn() { field(p(), "use") }, columns, by, most, lay, true) },
-            fn(e) { rs_end_node(e, core, p, fn() { group_of(gkey) }, row) },
-          )
-        }
-        RsFlat(gkey, key) => {
-          let p_now = @signals.computed(fn(_) { process_of(gkey, key) }, same=fn(a, b) { a == b })
-          let p = fn() { p_now.get() }
-          let g_now = @signals.computed(fn(_) { group_of(gkey) }, same=fn(a, b) { a == b })
-          let g = fn() { g_now.get() }
-          rs_row_node(
-            row,
-            lay,
-            fn(n) {
-              n.box(fn(cell) {
-                @sf.style_node(cell, fn() { rs_name_cell }, in_row=true)
-                cell.box(fn(name) {
-                  @sf.style_node(name, fn() { rs_name })
-                  @sf.words_node(name, fn() { text(p(), "name") }, fn() { rs_cell_words }) |> ignore
-                  @sf.words_node(name, fn() { number(p(), "pid").to_int().to_string() }, fn() { rs_meta }) |> ignore
-                })
-                |> ignore
-              })
-              |> ignore
-              n.box(fn(cell) {
-                @sf.style_node(cell, fn() { rs_whose_cell }, in_row=true)
-                rs_title_node(cell, core, g, rs_whose)
-              })
-              |> ignore
-            },
-            fn(f) { rs_figures_node_of(f, fn() { field(p(), "use") }, columns, by, most, lay, false) },
-            fn(e) { rs_end_node(e, core, p, g, row) },
-          )
-        }
-      }
-    })
+    table.each(read.rows, fn(r) { r }, fn(row, r) { rs_row_of(row, core, address, read, groups, columns, lay, r.untracked()) })
   })
   |> ignore
 }
+
+///|
+/// Row `r` of a table of station `address`'s 进程 (rs_table_node's, or a block of its page's: rs_block_node) in `row`,
+/// as `read` reads its `groups` and `columns`, laid out as `lay` says.
+fn rs_row_of(
+  row : @view.View,
+  core : Core,
+  address : String,
+  read : RsRead,
+  groups : () -> Array[Json],
+  columns : () -> Array[(String, String)],
+  lay : () -> RsLayout,
+  r : RsRow,
+) -> Unit {
+  let by = read.by
+  let most = read.most
+  let group_of = read.group_of
+  let process_of = read.process_of
+  match r {
+    RsGroup(key) => {
+      // (its group as the groups say it now, told only as it changes: a sample that leaves it as it was tells this
+      // row nothing)
+      let g_now = @signals.computed(fn(_) { group_of(key) }, same=fn(a, b) { a == b })
+      let g = fn() { g_now.get() }
+      let on = fn() { rs_open(rs_shown_of(address), groups(), key) }
+      rs_row_node(
+        row,
+        lay,
+        group=true,
+        press=fn() { rs_open_or_shut(address, groups(), key) },
+        said=fn() { Some(@view.said(Button, label=text(g(), "title"), expanded=on())) },
+        fn(n) {
+          n.box(fn(cell) {
+            @sf.style_node(cell, fn() { rs_name_cell }, in_row=true)
+            cell.box(fn(name) {
+              @sf.style_node(name, fn() { rs_name })
+              @sf.icon_node(
+                name,
+                if @signals.untracked(on) { "chevron-down" } else { "chevron-right" },
+                rs_toggle,
+                By(fn() { @sf.theme().p.subtle }),
+                name_now=fn() { if on() { "chevron-down" } else { "chevron-right" } },
+              )
+              |> ignore
+              rs_title_node(name, core, g, rs_name_text)
+              @sf.words_node(
+                name,
+                fn() { join([text(g(), "kindText"), items(g(), "processes").length().to_string()], " · ") },
+                fn() { rs_meta },
+              )
+              |> ignore
+            })
+            |> ignore
+          })
+          |> ignore
+        },
+        fn(f) { rs_figures_node_of(f, fn() { field(g(), "use") }, columns, by, most, lay, false) },
+        fn(_) {  },
+      )
+    }
+    RsUnder(gkey, key) => {
+      let p_now = @signals.computed(fn(_) { process_of(gkey, key) }, same=fn(a, b) { a == b })
+      let p = fn() { p_now.get() }
+      rs_row_node(
+        row,
+        lay,
+        fn(n) {
+          n.box(fn(cell) {
+            @sf.style_node(cell, fn() { rs_process_cell }, in_row=true)
+            @sf.words_node(cell, fn() { text(p(), "name") }, fn() { rs_process_name }) |> ignore
+            @sf.words_node(cell, fn() { number(p(), "pid").to_int().to_string() }, fn() { rs_meta }) |> ignore
+          })
+          |> ignore
+        },
+        fn(f) { rs_figures_node_of(f, fn() { field(p(), "use") }, columns, by, most, lay, true) },
+        fn(e) { rs_end_node(e, core, p, fn() { group_of(gkey) }, row) },
+      )
+    }
+    RsFlat(gkey, key) => {
+      let p_now = @signals.computed(fn(_) { process_of(gkey, key) }, same=fn(a, b) { a == b })
+      let p = fn() { p_now.get() }
+      let g_now = @signals.computed(fn(_) { group_of(gkey) }, same=fn(a, b) { a == b })
+      let g = fn() { g_now.get() }
+      rs_row_node(
+        row,
+        lay,
+        fn(n) {
+          n.box(fn(cell) {
+            @sf.style_node(cell, fn() { rs_name_cell }, in_row=true)
+            cell.box(fn(name) {
+              @sf.style_node(name, fn() { rs_name })
+              @sf.words_node(name, fn() { text(p(), "name") }, fn() { rs_cell_words }) |> ignore
+              @sf.words_node(name, fn() { number(p(), "pid").to_int().to_string() }, fn() { rs_meta }) |> ignore
+            })
+            |> ignore
+          })
+          |> ignore
+          n.box(fn(cell) {
+            @sf.style_node(cell, fn() { rs_whose_cell }, in_row=true)
+            rs_title_node(cell, core, g, rs_whose)
+          })
+          |> ignore
+        },
+        fn(f) { rs_figures_node_of(f, fn() { field(p(), "use") }, columns, by, most, lay, false) },
+        fn(e) { rs_end_node(e, core, p, g, row) },
+      )
+    }
+  }
+}
+
+///|
+/// A station's 进程 as its page reads it, worked out once for its blocks (its head's heads, each row a block, its foot:
+/// rs_block_keys, rs_block_node), held by its page as long as it is: what is read, what the body shows (rs_state's; -1
+/// none read yet), the groups of the kind shown, the columns, whether flat, its rows, how it is laid out by width.
+priv struct RsTable {
+  v : () -> Json?
+  state : () -> Int
+  groups : () -> Array[Json]
+  columns : () -> Array[(String, String)]
+  read : RsRead
+  lay_at : (Double, Double, Double) -> RsLayout
+}
+
+///|
+/// Station `address`'s 进程 as its page reads it (RsTable), made as the page is: nothing read till a block reads it.
+fn rs_table_of(core : Core, here : () -> Here, address : String) -> RsTable {
+  let v = fn() { station_part_read(core, address, resources_ask(here(), address)).value }
+  let groups = rs_groups_of(address, v)
+  let columns_now = @signals.computed(fn(_) { rs_columns_of(v()) }, same=fn(a, b) { a == b })
+  let columns = fn() { columns_now.get() }
+  let flat = fn() { rs_shown_of(address).flat }
+  let read = rs_read(address, groups, flat)
+  {
+    v,
+    state: fn() { if v() is Some(Object(_)) { rs_state(v()) } else { -1 } },
+    groups,
+    columns,
+    read,
+    lay_at: rs_lay_memo(groups, columns, read.by, flat),
+  }
+}
+
+///|
+/// Its 进程's blocks under its head (`table`, the station `online`): each row of its table while it is seen, how it is
+/// read once something is ("processes/foot").
+fn rs_block_keys(table : RsTable, online : Bool) -> Array[String] {
+  guard online else { return [] }
+  let state = (table.state)()
+  let out : Array[String] = []
+  if state == 0 {
+    for r in (table.read.rows)() {
+      out.push(rs_row_key(r))
+    }
+  }
+  if state >= 0 {
+    out.push(rs_foot_key)
+  }
+  out
+}
+
+///|
+/// Its 进程's foot's block's key (rs_block_keys').
+let rs_foot_key : String = "processes/foot"
+
+///|
+/// The block's key of row `r` of its 进程's table: what it is and its keys, apart by a character no key holds.
+fn rs_row_key(r : RsRow) -> String {
+  match r {
+    RsGroup(k) => "processes/g\u{0}" + k
+    RsUnder(g, k) => "processes/u\u{0}" + g + "\u{0}" + k
+    RsFlat(g, k) => "processes/f\u{0}" + g + "\u{0}" + k
+  }
+}
+
+///|
+/// The row a block's key (rs_row_key's) is of, none where it is no row's.
+fn rs_row_of_key(key : String) -> RsRow? {
+  let parts : Array[String] = key.split("\u{0}").map(fn(p) { p.to_owned() }).collect()
+  match parts {
+    ["processes/g", k] => Some(RsGroup(k))
+    ["processes/u", g, k] => Some(RsUnder(g, k))
+    ["processes/f", g, k] => Some(RsFlat(g, k))
+    _ => None
+  }
+}
+
+///|
+/// Block `key` of its 进程 (rs_block_keys') in `b`, as `table` reads it now: a row of its table, laid out as its heads
+/// are, by its own room (of their width); how it is read, as far under what is over it as its body's parts are apart.
+fn rs_block_node(b : @view.View, core : Core, address : String, table : RsTable, key : String) -> Unit {
+  if key == rs_foot_key {
+    b.pick(table.state, fn(f, k) {
+      if k >= 0 {
+        f.box(fn(x) {
+          x.padding(Is((0.0, rs_page_gap, 0.0, 0.0))) |> ignore
+          rs_foot_node(x, table.v, k == 0)
+        })
+        |> ignore
+      }
+    })
+    return
+  }
+  guard rs_row_of_key(key) is Some(r) else { return }
+  b.by_room(fn(t, room) {
+    @sf.style_node(t, fn() { rs_table })
+    let lay = rs_lay_in(t, room, table.lay_at)
+    t.box(fn(row) { rs_row_of(row, core, address, table.read, table.groups, table.columns, lay, r) }) |> ignore
+  })
+  |> ignore
+}
+
+///|
+/// The body's parts apart (rs_page's gap=S3_5): its foot under its table's last row so.
+let rs_page_gap : Double = @ui.Space::S3_5.px()
+
 
 ///|
 /// A row of the table (rs_table_row's, rs_line's) in `row`: its names, its figures and its end on one line; stacked,

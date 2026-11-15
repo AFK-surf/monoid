@@ -10,7 +10,7 @@ import { zstdCompressSync } from "node:zlib";
 import { SEGMENT, framesOf, seekTable, segmented, segmentedSoon, unpackedWhole } from "../src/read/packed.ts";
 import { ChainTail, MARK_EVERY, PIECE, TranscriptTail } from "../src/read/tail.ts";
 import { READING, brief, readTimeline, scriptCalls } from "../src/read/transcript.ts";
-import { chainOf, entriesOf, forgetKept, lengthOf } from "../src/read/transcripts.ts";
+import { chainOf, entriesOf, forgetKept, lengthOf } from "./reference/transcripts.ts";
 import { heldAfter, packFile, segmentFile } from "../src/sessions/archive.ts";
 
 const temp = () => mkdtempSync(join(tmpdir(), "transcripts-"));

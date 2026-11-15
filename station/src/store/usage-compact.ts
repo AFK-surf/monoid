@@ -134,8 +134,9 @@ export function setCompactCoverageSince(db: DatabaseSync, since: number): void {
   db.prepare("UPDATE usage_compact_since SET since = ? WHERE id = 1").run(since);
 }
 
-/// An old call taken in (usage-fill.ts) says nothing new of a session's context. A station whose trigger came before
-/// this would lose the context of every session it has old calls of. In the caller's write.
+/// An old call taken in (the fill, station/mb src/usagefill; test/reference/usage-fill.ts) says nothing new of a
+/// session's context. A station whose trigger came before this would lose the context of every session it has old
+/// calls of. In the caller's write.
 export function keepContextOnFill(db: DatabaseSync): void {
   const trigger = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'usage_compact_context_change'").get() as { sql: string } | undefined;
   if (trigger === undefined || !trigger.sql.includes("compact_counted")) return;

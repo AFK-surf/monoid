@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { answersSince, makeStore } from "../src/read/store.ts";
+import { answersSince, makeStore } from "./reference/store.ts";
 import { CARD_POST_BEFORE, CARD_POST_NEXT } from "../src/store/card-post-index.ts";
 import { Store } from "../src/store/store.ts";
 import { referenceAnswersSince } from "./card-answer-reference.ts";

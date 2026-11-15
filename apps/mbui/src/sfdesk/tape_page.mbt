@@ -189,7 +189,7 @@ fn tape_bar_of(k : Int) -> TapeBar {
         said: @signals.signal(None, same=fn(a, b) { a == b }),
         back: fn() {  },
         page_said: @signals.signal(None, same=fn(a, b) { a == b }),
-        page_actions: @signals.signal(None, same=fn(a, b) {
+        page_actions: @signals.signal_by(None, same=fn(a, b) {
           match (a, b) {
             (None, None) => true
             (Some(x), Some(y)) => x.2 == y.2

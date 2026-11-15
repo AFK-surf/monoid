@@ -234,7 +234,9 @@ priv struct ViewBlock {
   shares : Bool
   solid : Bool
   /// the pixels a point it was made for (its picture's curves cut for them: made again as they change, View::picture)
+  /// and the horizontal layout origin `ux` its subpixel glyph keys were chosen at
   scale : Double
+  ux : Double
   /// the middle of what it draws, from its top left: the box round its instances (what it turns about where it says so,
   /// View::turn)
   drawn_mid : (Double, Double)
@@ -251,9 +253,10 @@ priv struct ViewBlock {
   cut : (Int, Int)
   w : Double
   h : Double
-  /// its glyphs where they are before they are set on the pixels (instance, x, the line's baseline, the glyph's own
-  /// offset from it), each set on them where the scene composes it, as an old view's are where they are painted
-  glyphs : Array[(Int, Double, Double, Double, Double, Double)]
+  /// its glyphs where they are before they are set on the pixels (instance, x, the glyph's own offset across, the
+  /// line's baseline, the glyph's own offset from it), each set on them where the scene composes it, as an old view's
+  /// are where they are painted
+  glyphs : Array[(Int, Double, Double, Double, Double, Double, Double)]
   /// the glyphs it draws from, each where it was in the atlas as it was made (key, u, v): kept there as it is composed
   /// frame after frame, made again once one is not (view_glyphs_held)
   kept : Array[(Int, Double, Double)]
@@ -1286,6 +1289,7 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
   tree.old_views_settled()
   if view_owes(tree) {
     view_brought(tree, told=false)
+    self.moved_place()
   }
   // (the frame's input targets, the old views' and what the old frame put over all of it, found before anything is
   // drawn (Ctx::view_targets); what a still pointer is over told as they say, the tree brought so: drawn as it is now)
@@ -1319,6 +1323,7 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
   }
   if view_owes(tree) {
     view_brought(tree, told=false)
+    self.moved_place()
   }
   // (what the tree changed taken, whoever brought it to its moment, before anything of it is painted: by this frame's
   // bringing, or by an input's finding things meanwhile, Tree::bring_to, with nothing told after: what is painted is
@@ -1927,9 +1932,11 @@ fn Ctx::view_drawn(
       (!tree_streams.is_empty() && tree_streams.contains(c.id))
     )
   let block = match view_blocks.get(c.id) {
-    // (made as glass was drawn then: solid or not; a picture for the pixels it is drawn at now; its edge where it was)
+    // (made as glass was drawn then: solid or not; a picture for the pixels it is drawn at now; its edge where it was;
+    // on Windows, its glyphs' subpixel keys made at this horizontal origin and scale)
     Some(b) if (c.glass is None || b.solid == glass_paint.solid) &&
       (c.picture is None || b.scale == self.scale) &&
+      (h_platform() != 3 || b.glyphs.is_empty() || (b.scale == self.scale && b.ux == ux)) &&
       b.edge_after == edge_after => b
     _ => {
       // (made where it is its own, cut by nothing it is drawn in: what cuts it is the clip it is composed in, as each
@@ -2345,7 +2352,7 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
   let solid = glass_paint.solid
   let mut glass_at = -1
   let mut cut = (0, 0)
-  let glyphs : Array[(Int, Double, Double, Double, Double, Double)] = []
+  let glyphs : Array[(Int, Double, Double, Double, Double, Double, Double)] = []
   // (the glyphs it draws from, told as they are drawn: kept in the atlas as long as it is composed, view_glyphs_held)
   let was_kept = glyphs_kept.val
   let kept : Array[(Int, Double, Double)] = []
@@ -2710,6 +2717,7 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
     shares: c.glass.map_or(false, fn(g) { g.shares_capture }),
     solid,
     scale: self.scale,
+    ux: glyph_origin_x.val,
     drawn_mid: inst_middle(inst),
     ground_n,
     edge_after,
@@ -2717,7 +2725,7 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
     cut,
     w: c.w,
     h: c.h,
-    glyphs: glyphs.map(fn(g) { (g.0 - start, g.1, g.2, g.3, g.4, g.5) }),
+    glyphs: glyphs.map(fn(g) { (g.0 - start, g.1, g.2, g.3, g.4, g.5, g.6) }),
     kept,
   }
 }
@@ -2797,9 +2805,9 @@ fn Ctx::view_blit(
   let sc = self.scale
   for gl in made.glyphs {
     // (and moved by its own look after that, View::glyphs_by: as an old view's glyph is, after it is set on the pixels)
-    let (i, gx, base, goy, own_x, own_y) = gl
+    let (i, gx, gox, base, goy, own_x, own_y) = gl
     let b = at + i * inst_size
-    s.unsafe_set(b, (if lx == x { on_pixels(x + gx, sc) } else { x + on_pixels(lx + gx, sc) - lx }) + own_x)
+    s.unsafe_set(b, (if lx == x { on_glyph_col(x + gx, gox, sc) } else { x + on_glyph_col(lx + gx, gox, sc) - lx }) + own_x)
     s.unsafe_set(b + 1, (if ly == y { on_glyph_row(y, base, goy, sc) } else { y + on_glyph_row(ly, base, goy, sc) - ly }) + own_y)
   }
   // (its own ground drawn off where it is laid out, bigger and as round as it says (View::ground_drawn): before its

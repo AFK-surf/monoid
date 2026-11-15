@@ -7,13 +7,10 @@
 // recent files comes first, and which project a Claude session is found in first, stay the Rust's.
 import { type Dirent, closeSync, lstatSync, opendirSync, openSync, readSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { type Lang, tr } from "../ops/i18n.ts";
-import { type Json, type Store, sessionOfRuntime } from "./store.ts";
-import { HttpError } from "./views.ts";
-import { parseIso } from "./transcript.ts";
+import { type Json } from "./store.ts";
 import { splitWhitespace, trim, trimStart } from "../../../client/core-ts/src/whitespace.ts";
 
-type Runtime = "claude" | "codex";
+export type Runtime = "claude" | "codex";
 
 /// Where the machine's runtimes keep their sessions (MachineRoots): Claude Code's projects/, Codex's sessions/.
 export type Roots = { claude: string; codex: string };
@@ -43,11 +40,11 @@ const LINE_LIMIT = 256 * 1024;
 
 // ---- Rust's text handling ----
 
-const str = (v: Json): string | null => (typeof v === "string" ? v : null);
-const get = (v: Json, k: string): Json => (v !== null && typeof v === "object" && !Array.isArray(v) ? v[k] : undefined);
+export const str = (v: Json): string | null => (typeof v === "string" ? v : null);
+export const get = (v: Json, k: string): Json => (v !== null && typeof v === "object" && !Array.isArray(v) ? v[k] : undefined);
 
 /// serde_json::from_str::<Value>(line).ok().
-function parse(line: string): Json | undefined {
+export function parse(line: string): Json | undefined {
   try {
     return JSON.parse(line);
   } catch {
@@ -56,13 +53,13 @@ function parse(line: string): Json | undefined {
 }
 
 /// Path::extension: after the last dot of the name, unless that dot starts it.
-function extension(name: string): string | null {
+export function extension(name: string): string | null {
   const dot = name.lastIndexOf(".");
   return dot > 0 ? name.slice(dot + 1) : null;
 }
 
 /// std::fs::read_dir, flattened: a directory's entries in the file system's order; none when it cannot be read.
-function readDir(dir: string): Dirent[] {
+export function readDir(dir: string): Dirent[] {
   let d;
   try {
     d = opendirSync(dir);
@@ -86,7 +83,7 @@ const STRICT = new TextDecoder("utf-8", { fatal: true });
 
 /// BufRead::lines over a file, `map_while(Result::ok)`: its lines (without "\n" or "\r\n"), stopping at the first that is
 /// not UTF-8; at most `limit`.
-function lines(path: string, limit = Infinity): string[] {
+export function lines(path: string, limit = Infinity): string[] {
   let fd: number;
   try {
     fd = openSync(path, "r");
@@ -149,9 +146,6 @@ function lines(path: string, limit = Infinity): string[] {
     closeSync(fd);
   }
 }
-
-/// transcript.rs parse_iso: milliseconds of an ISO time (YYYY-MM-DDTHH:MM:SS[.fff]), read by position.
-export { parseIso };
 
 // ---- what was said ----
 
@@ -273,36 +267,18 @@ function codexEventSaid(r: Json): Said[] {
   return t !== "" && !(person && (wrapped(t) || notSaid(t))) ? [[person, t]] : [];
 }
 
-const hasCodexEvents = (records: Json[]) => records.some((r) => codexEventSaid(r).some(([person]) => person));
+export const hasCodexEvents = (records: Json[]) => records.some((r) => codexEventSaid(r).some(([person]) => person));
 
 /// said: Claude's messages; Codex's events of what was said when it writes them, else its model messages.
-function said(runtime: Runtime, events: boolean, r: Json): Said[] {
+export function said(runtime: Runtime, events: boolean, r: Json): Said[] {
   if (runtime === "claude") return claudeSaid(r);
   return events ? codexEventSaid(r) : codexSaid(r);
-}
-
-/// conversation: what was said in a session's transcript, oldest first: people's messages, and each turn's words of
-/// the agent in one message.
-function conversation(runtime: Runtime, path: string): Json[] {
-  const records = lines(path).map(parse).filter((r) => r !== undefined);
-  const events = runtime === "codex" && hasCodexEvents(records);
-  const out: { person: boolean; text: string; at: number | null }[] = [];
-  for (const r of records) {
-    const ts = str(get(r, "timestamp"));
-    const at = ts === null ? null : parseIso(ts);
-    for (const [person, text] of said(runtime, events, r)) {
-      const last = out.at(-1);
-      if (last && !person && !last.person) last.text += `\n\n${text}`;
-      else out.push({ person, text, at });
-    }
-  }
-  return out;
 }
 
 // ---- the sessions ----
 
 /// stamp: when a file was last written (ms) and its size.
-function stamp(path: string): [number, number] | null {
+export function stamp(path: string): [number, number] | null {
   const meta = statSync(path, { throwIfNoEntry: false, bigint: true });
   if (!meta) return null;
   return [Number(meta.mtimeNs / 1_000_000n), Number(meta.size)];
@@ -403,7 +379,7 @@ function clip(text: string, max: number): string {
 }
 
 /// read: a transcript as the pages list it; none when it ran nowhere or asked nothing.
-function read(runtime: Runtime, path: string, updatedAt: number, size: number): MachineSession | null {
+export function read(runtime: Runtime, path: string, updatedAt: number, size: number): MachineSession | null {
   const head = lines(path, HEAD_RECORDS).map(parse).filter((r) => r !== undefined);
   const events = runtime === "codex" && hasCodexEvents(head);
   let firstSaid: string | null = null;
@@ -443,7 +419,7 @@ function read(runtime: Runtime, path: string, updatedAt: number, size: number): 
 }
 
 /// codex_names: the names Codex gave its threads (session_index.jsonl beside sessions/: the latest line for an id counts).
-function codexNames(r: Roots): Map<string, string> {
+export function codexNames(r: Roots): Map<string, string> {
   const names = new Map<string, string>();
   for (const line of lines(join(dirname(r.codex), "session_index.jsonl"))) {
     const v = parse(line);
@@ -453,43 +429,9 @@ function codexNames(r: Roots): Map<string, string> {
   return names;
 }
 
-function named(s: MachineSession, names: Map<string, string>): MachineSession {
+export function named(s: MachineSession, names: Map<string, string>): MachineSession {
   if (s.title === null) s.title = names.get(s.id) ?? null;
   return s;
-}
-
-/// list: the machine's sessions, most recently written first, at most `limit`: those that ran somewhere and asked
-/// something.
-function list(r: Roots, limit: number): MachineSession[] {
-  const files: [Runtime, string, number, number][] = [];
-  for (const dir of readDir(r.claude)) {
-    const d = join(r.claude, dir.name);
-    for (const file of readDir(d)) {
-      const path = join(d, file.name);
-      if (extension(file.name) !== "jsonl") continue;
-      const st = stamp(path);
-      if (st) files.push(["claude", path, st[0], st[1]]);
-    }
-  }
-  const rollouts: string[] = [];
-  rolloutsIn(r.codex, rollouts);
-  for (const path of rollouts) {
-    const st = stamp(path);
-    if (st) files.push(["codex", path, st[0], st[1]]);
-  }
-  files.sort((a, b) => b[2] - a[2]);
-  const names = codexNames(r);
-  // Codex may keep a thread in more than one file: the latest written stands for it.
-  const seen = new Set<string>();
-  const out: MachineSession[] = [];
-  for (const [runtime, path, at, size] of files) {
-    if (out.length >= limit) break;
-    const s = read(runtime, path, at, size);
-    if (s === null || seen.has(`${s.runtime}\0${s.id}`)) continue;
-    seen.add(`${s.runtime}\0${s.id}`);
-    out.push(named(s, names));
-  }
-  return out;
 }
 
 /// find: one of the machine's sessions, by its runtime and id.
@@ -516,36 +458,4 @@ export function find(r: Roots, runtime: Runtime, id: string): MachineSession | n
   if (st === null) return null;
   const s = read(runtime, path, st[0], st[1]);
   return s !== null && s.id === id ? named(s, codexNames(r)) : null;
-}
-
-/// A MachineSession as serde writes it: `path` skipped.
-function shown(s: MachineSession): Json {
-  const { path: _, ...rest } = s;
-  return rest;
-}
-
-// ---- the routes' answers (admin/mod.rs) ----
-
-/// GET /machine-sessions: the machine's latest 100, each with the station's session already going on with it.
-export function machineSessions(s: Store, source: Roots = roots()): Json {
-  const found = list(source, 100);
-  // The session going on with each, by the index of runtime sessions (the latest active of two): every session the
-  // station ever had was read with its runtime sessions for it, 1,500 on a station, 14 s (2026-11-03).
-  for (const m of found) m.session = sessionOfRuntime(s, m.runtime, m.id);
-  return { sessions: found.map(shown) };
-}
-
-/// GET /machine-sessions/:runtime/:id: one of them to look at before going on with it: what was said, the latest
-/// `limit` (a usize, default 200, 1–1000).
-export function machineSession(s: Store, lang: Lang, runtime: string, id: string, limitParam: string | undefined): Json {
-  if (runtime !== "claude" && runtime !== "codex") throw new HttpError(404, `no runtime ${runtime}`);
-  // str::parse::<usize>: digits, a `+` before them at most, no more than a u64 holds; else the default.
-  const asked = limitParam !== undefined && /^\+?[0-9]+$/.test(limitParam) && BigInt(limitParam) <= 18446744073709551615n ? BigInt(limitParam) : 200n;
-  const limit = Number(asked < 1n ? 1n : asked > 1000n ? 1000n : asked);
-  const found = find(roots(), runtime, id);
-  if (found === null) throw new HttpError(404, tr(lang, "station.admin.noLocalSession", { id }));
-  const said = conversation(runtime, found.path);
-  found.session = sessionOfRuntime(s, runtime, found.id);
-  const total = said.length;
-  return { session: shown(found), total, said: said.slice(Math.max(0, total - limit)) };
 }

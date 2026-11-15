@@ -64,6 +64,10 @@ priv struct Config {
   reset_by_hand : Array[String]
   // what names an app built on this module (`app_words`: regular expressions), found outside comments (app-word)
   app_words : Array[String]
+  // where a scoped computed (`signals.scoped_ok`) and a bare effect (`signals.effect_ok`) may be made: the signals' own,
+  // the framework's parts that read with no reader, an app's sources (scoped-computed, raw-effect)
+  scoped_ok : Array[String]
+  effect_ok : Array[String]
 }
 
 ///|
@@ -124,6 +128,8 @@ fn Config::new(d : @rjson.Value) -> Config {
     run_reads: strs(sect(d, "run_first").get("reads"), []),
     reset_by_hand: strs(sect(d, "reset_by_hand").get("names"), []),
     app_words: strs(d.get("app_words"), []),
+    scoped_ok: strs(sect(d, "signals").get("scoped_ok"), []),
+    effect_ok: strs(sect(d, "signals").get("effect_ok"), []),
   }
 }
 

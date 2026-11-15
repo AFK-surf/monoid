@@ -3,9 +3,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { openJobs } from "../src/read/jobs.ts";
+import { openJobs } from "./reference/jobs.ts";
 import { Readers } from "../src/read/pool.ts";
-import { makeStore } from "../src/read/store.ts";
+import { makeStore } from "./reference/store.ts";
 import { JOB_NAME_FIRST_LARGE, JOB_NAME_FIRST_PENDING, JOB_NAME_FIRST_ROW, jobNameFirstStep } from "../src/store/job-name-first.ts";
 import { Store } from "../src/store/store.ts";
 

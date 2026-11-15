@@ -2593,3 +2593,222 @@ test "reset-by-hand" {
   )
   assert_eq(fs.map(fn(f) { "\{f.file}:\{f.line}" }), ["src/app/a_wbtest.mbt:2", "src/app/a_wbtest.mbt:22"])
 }
+
+///|
+fn perf_cfg() -> Config {
+  Config::new(
+    conf_value().set(
+      "signals",
+      @rjson.Value::Obj([
+        ("scoped_ok", Arr([Str("src/signals"), Str("src/sfbase")])),
+        ("effect_ok", Arr([Str("src/signals"), Str("src/sfbase")])),
+      ]),
+    ),
+  )
+}
+
+///|
+test "scoped-computed" {
+  // a scoped computed outside the parts said to keep one: counted; in them, in a test, a plain computed, the signals'
+  // own definition and an exception with its reason, not
+  let cfg = perf_cfg()
+  let page =
+    #|fn files_node(v : @view.View, list : () -> Array[String]) -> Unit {
+    #|  let listed = @signals.computed_scoped(fn(_) { list() }, same=physical_equal)
+    #|  let plain = @signals.computed(fn(_) { list() }, same=physical_equal)
+    #|  // det-ok(scoped-computed): read by a press with no reader
+    #|  let read = @signals.computed_scoped(fn(_) { list() })
+    #|  v.words(By(fn() { listed().join(",") + plain().join(",") + read().join(",") })) |> ignore
+    #|}
+  let fs = found(
+    [
+      ("src/sfpages/files_node.mbt", page),
+      ("src/sfbase/source.mbt", page),
+      ("src/sfpages/files_node_wbtest.mbt", "test \"t\" {\n  let c = @signals.computed_scoped(fn(_) { 1 })\n  ignore(c)\n}\n"),
+      ("src/signals/signals.mbt", "pub fn[T] computed_scoped(getter : (T?) -> T) -> () -> T {\n  computed_scoped(getter)\n}\n"),
+    ],
+    "scoped-computed",
+    1,
+    cfg~,
+  )
+  assert_eq(fs.map(fn(f) { "\{f.file}:\{f.line}" }), ["src/sfpages/files_node.mbt:2"])
+  assert_eq(
+    lint_sources([("src/sfpages/files_node.mbt", page)], cfg).filter(fn(f) {
+      f.rule == "scoped-computed" && f.excused is Some(_)
+    }).length(),
+    1,
+  )
+}
+
+///|
+test "raw-effect" {
+  // a bare effect (effect, effect_cleanup) outside the parts said to keep one: counted; in them, in a test, a Ctx's
+  // effect (a method), an effect scope and one excused, not
+  let cfg = perf_cfg()
+  let drag =
+    #|fn drag_node(v : @view.View, c : @ui.Ctx, at : @signals.Signal[Int]) -> Unit {
+    #|  let stop = @signals.effect(fn() { ignore(at.get()) })
+    #|  let stop2 = @signals.effect_cleanup(fn() { ignore(at.get()); fn() {  } })
+    #|  c.effect("k", fn(_) {  })
+    #|  let s = @signals.effect_scope(fn() {  })
+    #|  let k = @signals.effect(fn() { ignore(at.get()) }) // det-ok(raw-effect): the drag's own, stopped by its end
+    #|  v.owns(fn() { stop(); stop2(); s(); k() }) |> ignore
+    #|}
+  let fs = found(
+    [
+      ("src/sfdesk/drag.mbt", drag),
+      ("src/sfbase/refs.mbt", drag),
+      ("src/sfdesk/drag_wbtest.mbt", "test \"t\" {\n  let s = @signals.effect(fn() {  })\n  s()\n}\n"),
+    ],
+    "raw-effect",
+    2,
+    cfg~,
+  )
+  assert_eq(lines(fs), [2, 3])
+}
+
+///|
+test "pick-loop" {
+  // a loop making nodes as it goes round, in what a pick or a show makes (or in a part made in it, given what to make
+  // in): counted, at its `for`
+  let hits =
+    #|fn tiles_node(v : @view.View, kind : () -> Int, xs : () -> Array[String]) -> Unit {
+    #|  v.pick(fn() { kind() }, fn(p, k) {
+    #|    ignore(k)
+    #|    for x in @signals.untracked(xs) {
+    #|      p.box(fn(r) { r.words(Is(x)) |> ignore }) |> ignore
+    #|    }
+    #|    @sf.waiting_node(p, fn(w) {
+    #|      for i, n in [5, 9, 7] {
+    #|        @sf.choice_row_node(w, fn() { n.to_string() }, fn() { i == 0 })
+    #|      }
+    #|    })
+    #|  })
+    #|  v.show(fn() { kind() > 0 }, fn(s) {
+    #|    s.box(fn(right) {
+    #|      for idx in [2, 3, 1] {
+    #|        tile_node(right, idx)
+    #|      }
+    #|    }) |> ignore
+    #|  })
+    #|}
+  let fs = found([("src/sfpages/tiles_node.mbt", hits)], "pick-loop", 3)
+  assert_eq(lines(fs), [4, 8, 15])
+  // what runs later than the view is made (a press's handler, a part's own press, a binding, a callback said by its
+  // label), a loop over data only, one in an each's row inside the pick, one outside any pick or show, one in a test,
+  // an Array's each and one excused: not
+  let misses =
+    #|fn stations_node(v : @view.View, kind : () -> Int, sts : () -> Array[String]) -> Unit {
+    #|  v.pick(fn() { kind() }, fn(p, _) {
+    #|    p.box(fn(b) {
+    #|      b.on_press(fn() {
+    #|        for st in @signals.untracked(sts) {
+    #|          act(st)
+    #|        }
+    #|      }) |> ignore
+    #|    }) |> ignore
+    #|    @sf.button_node(p, fn() { "all" }, fn() {
+    #|      for st in @signals.untracked(sts) {
+    #|        p.box(fn(r) { r.words(Is(st)) |> ignore }) |> ignore
+    #|      }
+    #|    })
+    #|    @sf.ask_node(p, on_got=fn(got) {
+    #|      for st in got {
+    #|        p.box(fn(r) { r.words(Is(st)) |> ignore }) |> ignore
+    #|      }
+    #|    })
+    #|    p.words(By(fn() {
+    #|      let out = []
+    #|      for st in sts() {
+    #|        out.push(st)
+    #|      }
+    #|      out.join(",")
+    #|    })) |> ignore
+    #|    let names = []
+    #|    for st in @signals.untracked(sts) {
+    #|      names.push(st)
+    #|    }
+    #|    p.each(sts, fn(s) { s }, fn(row, s) {
+    #|      for part in s.get().split(",") {
+    #|        row.box(fn(r) { r.words(Is(part.to_string())) |> ignore }) |> ignore
+    #|      }
+    #|    })
+    #|    names.each(fn(n) { p.box(fn(r) { r.words(Is(n)) |> ignore }) |> ignore })
+    #|    // det-ok(pick-loop): the three dots of a wait, made once with the rest
+    #|    for i in 0..<3 {
+    #|      p.box(fn(d) { d.words(Is(i.to_string())) |> ignore }) |> ignore
+    #|    }
+    #|  })
+    #|  for st in @signals.untracked(sts) {
+    #|    v.box(fn(r) { r.words(Is(st)) |> ignore }) |> ignore
+    #|  }
+    #|}
+  found(
+    [
+      ("src/sfpages/stations_node.mbt", misses),
+      ("src/sfpages/tiles_node_wbtest.mbt", hits),
+    ],
+    "pick-loop",
+    0,
+  )
+  |> ignore
+}
+
+///|
+test "each-min-height" {
+  // a list's row whose own node says its least height and no height: by the call, by a style said there, by a style
+  // named (in another file too, through what it goes on from), counted
+  let styles =
+    #|let tall_row : @ui.Style = @ui.css("row px=S3 min_h=S11")
+    #|let tall_too : @ui.Style = tall_row.then(@ui.css("gap=S2"))
+    #|let fixed_row : @ui.Style = @ui.css("row h=S11 min_h=S8")
+    #|let free_row : @ui.Style = @ui.css("row min_h=0")
+  let rows =
+    #|fn rows_node(v : @view.View, items : () -> Array[String]) -> Unit {
+    #|  v.each(items, fn(s) { s }, fn(row, s) {
+    #|    row.grow(Is(1.0)).min_height(Is(Some(44.0))) |> ignore
+    #|    row.words(By(fn() { s.get() })) |> ignore
+    #|  })
+    #|  v.each(items, fn(s) { s }, fn(row, _) { style_node(row, fn() { tall_too }) })
+    #|  v.each(items, fn(s) { s }, fn(row, _) {
+    #|    @sf.style_node(row, fn() { @sf.base.then(@ui.style(min_h=Fixed(theme().least))) })
+    #|  })
+    #|  v.each_of(items, fn(row, _) { row.min_height(By(fn() { Some(least()) })) |> ignore })
+    #|}
+  let fs = found([("src/sf/styles.mbt", styles), ("src/sfpages/rows_node.mbt", rows)], "each-min-height", 4)
+  assert_eq(lines(fs), [3, 6, 8, 10])
+  // a least of 0 or none (what lets it shrink), a row with its height said (by the call or its style), a style whose
+  // least is 0, a least said of a node in the row (not the row's own), an Array's each, a test, and one excused: not
+  let fine =
+    #|fn rows_node(v : @view.View, items : () -> Array[String]) -> Unit {
+    #|  v.each(items, fn(s) { s }, fn(row, _) { row.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore })
+    #|  v.each(items, fn(s) { s }, fn(row, _) { row.min_height(Is(None)) |> ignore })
+    #|  v.each(items, fn(s) { s }, fn(row, _) {
+    #|    row.min_height(Is(Some(44.0))).height(By(fn() { Some(row_h()) })) |> ignore
+    #|  })
+    #|  v.each(items, fn(s) { s }, fn(row, _) { style_node(row, fn() { fixed_row }) })
+    #|  v.each(items, fn(s) { s }, fn(row, _) { style_node(row, fn() { free_row }) })
+    #|  v.each(items, fn(s) { s }, fn(row, _) {
+    #|    row.height(Is(Some(44.0))) |> ignore
+    #|    style_node(row, fn() { tall_row })
+    #|  })
+    #|  v.each(items, fn(s) { s }, fn(row, _) {
+    #|    row.box(fn(inner) { inner.min_height(Is(Some(20.0))) |> ignore }) |> ignore
+    #|  })
+    #|  items().each(fn(s) { v.box(fn(b) { b.min_height(Is(Some(20.0))) |> ignore }) |> ignore })
+    #|  v.each(items, fn(s) { s }, fn(row, _) {
+    #|    // det-ok(each-min-height): a card of several lines, as tall as its words come to
+    #|    row.min_height(Is(Some(44.0))) |> ignore
+    #|  })
+    #|}
+  found(
+    [
+      ("src/sf/styles.mbt", styles),
+      ("src/sfpages/fine_node.mbt", fine),
+      ("src/sfpages/rows_node_wbtest.mbt", rows),
+    ],
+    "each-min-height",
+    0,
+  )
+  |> ignore
+}

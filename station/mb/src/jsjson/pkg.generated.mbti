@@ -1,0 +1,46 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/jsjson"
+
+import {
+  "moonbitlang/core/buffer",
+}
+
+// Values
+pub fn parse(String) -> JValue raise SyntaxError
+
+pub fn raw_text(Array[Int32]) -> String
+
+pub fn stringify(JValue) -> String
+
+pub fn stringify_indent(JValue, Int32) -> String
+
+pub fn stringify_pretty(JValue) -> String
+
+pub fn text(Array[Int32]) -> String
+
+pub fn units(String) -> Array[Int32]
+
+pub fn utf16le(Array[Int32]) -> Array[Int32]
+
+pub fn write_utf8(@buffer.Buffer, JValue) -> Unit
+
+// Errors
+pub(all) suberror SyntaxError {
+  SyntaxError(String)
+}
+
+// Types and methods
+pub(all) enum JValue {
+  Null
+  Bool(Bool)
+  Num(Double)
+  Str(Array[Int32])
+  Arr(Array[JValue])
+  Obj(Array[(Array[Int32], JValue)])
+}
+pub fn JValue::get(Self, String) -> Self?
+pub fn JValue::keys(Self) -> Array[Array[Int32]]
+
+// Type aliases
+
+// Traits

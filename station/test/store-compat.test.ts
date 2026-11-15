@@ -9,7 +9,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
-import * as read from "../src/read/store.ts";
+import * as read from "./reference/store.ts";
 import { CARD_POSTS_PENDING, cardPostsStep } from "../src/store/card-post-index.ts";
 import { cardOf } from "../src/store/rows.ts";
 import { SCHEMA_VERSION } from "../src/store/schema.ts";

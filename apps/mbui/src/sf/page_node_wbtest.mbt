@@ -318,6 +318,7 @@ test "what a page does at its title's line's end as nodes, where the line has no
 
 ///|
 /// One step of words with shorter ones in their place: the box's width, the words, the shorter ones, whether they wrap.
+#derive(Eq)
 priv struct ShorterStep {
   w : Double
   said : String

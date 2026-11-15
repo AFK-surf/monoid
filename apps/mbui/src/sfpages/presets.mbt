@@ -327,6 +327,7 @@ fn dir_label(path : String) -> String {
 ///|
 /// A repository being cloned for a preset (`preset.clone`'s answer, kept by the dialog that asked): the station it is
 /// cloned onto, its id there, its repository and its name.
+#derive(Eq)
 priv struct PresetClone {
   station : String
   id : String

@@ -182,7 +182,7 @@ fn Scroll::made(as_list : Bool, across? : Bool = false) -> Scroll {
   {
     across,
     x: @signals.signal(0.0, same=fn(a, b) { a == b }),
-    fling: @signals.signal(None, same=fn(a, b) { same_ref(a, b) }),
+    fling: @signals.signal_by(None, same=fn(a, b) { same_ref(a, b) }),
     room: fn() { None },
     seen: @signals.signal(None, same=fn(a, b) { a == b }),
     fill: fn(_, _, _) {  },
@@ -201,11 +201,11 @@ fn Scroll::made(as_list : Bool, across? : Bool = false) -> Scroll {
       scrolls_made.val
     },
     as_list,
-    past: @signals.signal(None, same=fn(a, b) { same_ref(a, b) }),
-    notch: @signals.signal(None, same=fn(a, b) { same_ref(a, b) }),
+    past: @signals.signal_by(None, same=fn(a, b) { same_ref(a, b) }),
+    notch: @signals.signal_by(None, same=fn(a, b) { same_ref(a, b) }),
     tall: fn() { 0.0 },
     host: None,
-    edge: @signals.signal(None, same=fn(a, b) { same_ref(a, b) }),
+    edge: @signals.signal_by(None, same=fn(a, b) { same_ref(a, b) }),
     tuck_at: @signals.signal(None, same=fn(a, b) { a == b }),
     tuck_owed: false,
     tuck_room: @signals.signal(0.0, same=fn(a, b) { a == b }),

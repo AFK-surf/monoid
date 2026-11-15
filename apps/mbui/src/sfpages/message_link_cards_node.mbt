@@ -46,7 +46,7 @@ fn link_card_reads(
   came? : () -> Unit = fn() {  },
   warm? : (Json?) -> Unit = fn(_) {  },
 ) -> Unit {
-  let held : @signals.Signal[@signals.Computed[@sfbase.TopicState]?] = @signals.signal(None, same=fn(a, b) {
+  let held : @signals.Signal[@signals.Computed[@sfbase.TopicState]?] = @signals.signal_by(None, same=fn(a, b) {
     match (a, b) {
       (None, None) => true
       (Some(x), Some(y)) => physical_equal(x, y)

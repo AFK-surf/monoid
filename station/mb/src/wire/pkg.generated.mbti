@@ -1,0 +1,33 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/wire"
+
+import {
+  "moonbitlang/core/json",
+}
+
+// Values
+pub fn answered(String) -> @json.Json raise ShellError
+
+// Errors
+pub(all) suberror ShellError {
+  ShellError(String)
+}
+
+// Types and methods
+pub(all) enum Event {
+  Input(BytesView)
+  End
+  Answer(Int64, Result[@json.Json, ShellError], Bytes?)
+  Other
+}
+pub fn Event::read(BytesView) -> Self
+
+pub struct Lines {
+  // private fields
+}
+pub fn Lines::new() -> Self
+pub fn Lines::push(Self, BytesView) -> Array[String]
+
+// Type aliases
+
+// Traits

@@ -72,7 +72,7 @@ export type Handler = (r: Request, args: string[]) => Promise<Answer>;
 export type Route = { method: string; pattern: RegExp; handle: Handler };
 /// What a route has to answer with.
 export type Tools = {
-  /// A read in a reader thread (src/read/ops.ts), answered as JSON; its error as `{error}` with its status.
+  /// A read in a reader thread (test/reference/ops.ts), answered as JSON; its error as `{error}` with its status.
   read(r: Request, op: string, args: unknown): Promise<Answer>;
   /// The machine's state, shared by GET /host and the events.
   host: Host;

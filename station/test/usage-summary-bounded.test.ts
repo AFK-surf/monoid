@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { constants, DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { Worker } from "node:worker_threads";
-import * as reads from "../src/read/store.ts";
+import * as reads from "./reference/store.ts";
 import { Store } from "../src/store/store.ts";
 import { installCompactUsage, installUsageSummaryChanges } from "../src/store/usage-compact.ts";
 import { installUsageSummaryBlocks, usageSummaryBlocksPending, usageSummaryBlocksStep } from "../src/store/usage-summary-blocks.ts";

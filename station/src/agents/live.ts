@@ -132,81 +132,8 @@ export class LiveFromClaude {
   }
 }
 
-const TOOL_ITEMS = ["commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "webSearch"];
-
-export type CodexLiveState = { open: string[]; phase: Phase | null };
-
 /// Rust's serde_json::to_string_pretty: two-space indent, "key": value.
 const pretty = (v: unknown) => JSON.stringify(v ?? {}, null, 2) ?? "{}";
-
-/// The app-server's item notifications as live steps: an item starts, grows by deltas (the reply, reasoning, a
-/// command's output as it runs) and completes.
-export class LiveFromCodex {
-  private open = new Set<string>();
-  private phase: Phase | null = null;
-
-  constructor(state?: CodexLiveState) {
-    if (state) {
-      this.open = new Set(state.open);
-      this.phase = state.phase;
-    }
-  }
-
-  state(): CodexLiveState {
-    return { open: [...this.open], phase: this.phase };
-  }
-
-  feed(method: string, params: Json): LiveEvent[] {
-    const out: LiveEvent[] = [];
-    const to = (next: Phase) => {
-      if (this.phase !== next) {
-        this.phase = next;
-        out.push({ kind: "phase", phase: next });
-      }
-    };
-    const itemType = str(params?.item?.type) ?? "";
-    if (method === "turn/started") to("requesting");
-    else if (method === "turn/completed") this.phase = null;
-    else if (method === "item/agentMessage/delta" || method.startsWith("item/reasoning/")) to("responding");
-    else if (method === "item/started" && TOOL_ITEMS.includes(itemType)) to("working");
-    else if (method === "item/completed" && TOOL_ITEMS.includes(itemType)) to("requesting");
-
-    const text = (v: unknown) => str(v) ?? "";
-    if (method === "item/started") {
-      const item = params?.item ?? null;
-      const id = typeof item?.id === "string" ? item.id : typeof item?.id === "number" ? String(item.id) : "";
-      let begun: [Step, string | undefined, string | undefined] | undefined;
-      if (itemType === "agentMessage") begun = ["text", undefined, undefined];
-      else if (itemType === "reasoning") begun = ["thinking", undefined, undefined];
-      else if (itemType === "commandExecution") begun = ["tool", "shell", text(item.command)];
-      else if (itemType === "fileChange")
-        begun = ["tool", "apply_patch", (Array.isArray(item.changes) ? item.changes : []).map((c: Json) => text(c?.path)).join("\n")];
-      else if (itemType === "mcpToolCall") begun = ["tool", `${text(item.server)}.${text(item.tool)}`, pretty(item.arguments)];
-      else if (itemType === "dynamicToolCall") begun = ["tool", text(item.tool), pretty(item.arguments)];
-      else if (itemType === "webSearch") begun = ["tool", "web_search", text(item.query)];
-      if (id !== "" && begun) {
-        this.open.add(id);
-        out.push(start(id, begun[0], begun[1], begun[2]));
-      }
-    } else if (
-      method === "item/agentMessage/delta" ||
-      method === "item/reasoning/textDelta" ||
-      method === "item/reasoning/summaryTextDelta" ||
-      method === "item/plan/delta" ||
-      method === "item/commandExecution/outputDelta"
-    ) {
-      const id = text(params?.itemId);
-      const delta = text(params?.delta);
-      if (this.open.has(id) && delta !== "") {
-        out.push({ kind: "delta", id, field: method === "item/commandExecution/outputDelta" ? "output" : "text", text: delta });
-      }
-    } else if (method === "item/completed") {
-      const id = text(params?.item?.id);
-      if (this.open.delete(id)) out.push({ kind: "end", id });
-    }
-    return out;
-  }
-}
 
 export type DshLiveState = { open: [string, Step][]; calls: [string, string][]; phase: Phase | null };
 

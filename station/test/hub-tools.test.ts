@@ -19,8 +19,8 @@ import { CREATE, CREATE_PRESET, NOTICE, createForPeer, noticeForPeer } from "../
 import { presetCopyOf } from "../src/sessions/presets.ts";
 import { stationLang, tr } from "../src/ops/i18n.ts";
 import { forPeer } from "../src/sessions/others.ts";
-import { makeStore } from "../src/read/store.ts";
-import { chats, untitled } from "../src/read/views.ts";
+import { makeStore } from "./reference/store.ts";
+import { chats, untitled } from "./reference/views.ts";
 import { FETCHED, fileForPeer, putForPeer } from "../src/sessions/peer-files.ts";
 import { packWorkspaceIf } from "../src/sessions/archive.ts";
 import { roomOf } from "../src/sessions/footprint.ts";
