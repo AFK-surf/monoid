@@ -4718,8 +4718,7 @@ pub fn View::image_covers(self : View, on : Live[Bool], loc~ : SourceLoc) -> Vie
 /// Its picture (View::image) covering it as it changes, cut where it is not as wide for as tall, as much of it as shows
 /// taken from `at`, across and down (0: its start, as a long screenshot is shown from its top and a wide strip from its
 /// left; 1: its end; 0.5: its middle, as covering it is; only the side that is cut moves; an old view's FitCoverFrom):
-/// what the box shows of it, its
-/// box the picture drawn; None, as View::image_covers says. Said, it covers it whatever else is said. Paint's.
+/// what the box shows of it, its box the picture drawn; None, as View::image_covers says. Said, it covers it whatever else is said. Paint's.
 #callsite(autofill(loc))
 pub fn View::image_covers_at(self : View, at : Live[(Double, Double)?], loc~ : SourceLoc) -> View {
   self.bind(loc~, ImageCoverAt, at, Paint, fn(at) { self.tree.nodes[self.at].look.image_cover_at = at })
