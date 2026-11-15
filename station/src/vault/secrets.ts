@@ -523,6 +523,9 @@ export class Secrets {
     }
   }
 
+  /// The use index's reader let go if nothing is asked of it (read/pool.ts `trimIdle`): how many went.
+  trimIdle(): number { return this.#uses.trimIdle(); }
+
   async close(): Promise<void> {
     this.#restoreClosed = true;
     this.#restorePending.clear();

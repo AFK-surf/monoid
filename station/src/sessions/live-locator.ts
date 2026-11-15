@@ -205,6 +205,20 @@ export class LiveLocator {
     void stopped.then(() => { if (this.retiring === stopped) this.retiring = null; this.pump(); });
   }
 
+  /// Whether its program (or thread) runs now.
+  get running(): boolean { return this.worker !== null; }
+
+  /// The program let go at once where nothing is being located (the station short of memory: read/pool.ts
+  /// `trimIdle`), not after IDLE_MS: 1, else 0. The next lookup starts it again; it keeps nothing between them.
+  trimIdle(): number {
+    if (this.closed || this.worker === null || this.retiring !== null || this.active.size > 0 || this.waiting.length > 0 || this.cancelling.size > 0) return 0;
+    if (this.idle !== null) { this.idle(); this.idle = null; }
+    const worker = this.worker;
+    this.worker = null;
+    void worker.terminate();
+    return 1;
+  }
+
   private clearCancellationTimers() {
     for (const { stop } of this.cancelling.values()) stop();
     this.cancelling.clear();

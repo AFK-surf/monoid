@@ -4,14 +4,16 @@
 // files not waited on; disk is the file system holding the station's data directory. Read on the main thread (the
 // station's own memory is this process's) and kept here: given again within ten seconds, the CPU ticks last seen kept
 // across reads. GET /host, the events' `host` samples and what other stations are told of this one's load
-// (station_list, jobs/load.ts) share it.
+// (station_list, jobs/load.ts) share it. Once it has read the machine, nothing waits on it more than a moment
+// (INFO_WAIT_MS, GPU_SAMPLE_MS): what was read last stands in for what is slow to come, which is kept when it comes. A
+// busy machine's sysctl and ioreg took over a second, and station_list said the station's load unknown (2026-11-15).
 import { statfs } from "node:fs/promises";
 import { availableParallelism, hostname as osHostname, loadavg } from "node:os";
 import type { Lang } from "../ops/i18n.ts";
 import { wall } from "../ops/fibers.ts";
 import { platform } from "../platform/index.ts";
 import { cpuShare, type Ticks } from "../platform/cpu-share.ts";
-import { Gpus } from "../jobs/gpu.ts";
+import { type Gpu, Gpus } from "../jobs/gpu.ts";
 
 export type { Ticks };
 /// The ticks last seen, and when.
@@ -112,9 +114,28 @@ export class CpuWindow {
   }
 }
 
+/// How long a read waits for a fresh look at the machine where it has one under STALE_MS old (a busy machine's commands
+/// take seconds): then that one, the fresh one kept as it comes.
+export const INFO_WAIT_MS = 400;
+/// How old a look at the machine may be given while a fresh one is slow.
+export const STALE_MS = 60_000;
+/// How long a sample waits for the GPUs (their commands GPU_WAIT_MS each, jobs/gpu.ts) before it gives what they said
+/// last, the new answer kept as it comes.
+export const GPU_SAMPLE_MS = 400;
+
+/// `what`, or `otherwise()` if it is not settled within `ms` (it goes on, nothing waiting on it: what it throws then
+/// is taken here).
+function soon<T>(what: Promise<T>, ms: number, otherwise: () => T): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    // timer: a deadline (a slow look at the machine stood in for by the last)
+    const stop = wall.after(ms, () => resolve(otherwise()));
+    what.then((v) => { stop(); resolve(v); }, (e) => { stop(); reject(e); });
+  });
+}
+
 export class Host {
   private dataDir: string;
-  readonly gpus: Pick<Gpus, "read">;
+  readonly gpus: Pick<Gpus, "read"> & { cached?(): Gpu[] | null };
   private cached: { at: number; info: any } | null = null;
   private seen: Seen = null;
   private reading: Promise<any> | null = null;
@@ -124,7 +145,7 @@ export class Host {
   private read: typeof hostInfo;
 
   /// `dataDir`: where the station keeps its data (the disk it is on is said); `read`, how the machine is read.
-  constructor(dataDir: string, gpus: Pick<Gpus, "read"> = new Gpus(), read: typeof hostInfo = hostInfo) {
+  constructor(dataDir: string, gpus: Pick<Gpus, "read"> & { cached?(): Gpu[] | null } = new Gpus(), read: typeof hostInfo = hostInfo) {
     this.dataDir = dataDir;
     this.gpus = gpus;
     this.read = read;
@@ -143,22 +164,30 @@ export class Host {
   }
 
   /// The machine sample and its GPUs, one at a time however many ask. GPU failures do not prevent the other
-  /// measurements from being shown.
+  /// measurements from being shown, nor do slow GPU commands hold them up: past GPU_SAMPLE_MS the GPUs said last.
   sample(lang: Lang = "zh"): Promise<any> {
     this.sampling ??= Promise.all([
       this.info(lang),
       process.env.STILLFAIL_TEST_HOST === "1"
         ? Promise.resolve([{ name: "Test GPU", cores: 4, busy: 0.25 }])
-        : this.gpus.read().catch(() => null),
+        : soon(this.gpus.read().catch(() => null), GPU_SAMPLE_MS, () => this.gpus.cached?.() ?? null),
     ])
       .then(([info, gpus]) => ({ ...info, gpus }))
       .finally(() => (this.sampling = null));
     return this.sampling;
   }
 
-  /// At most ten seconds old; one read at a time however many ask.
+  /// At most ten seconds old; one read at a time however many ask. Where it read one under STALE_MS old, a read that
+  /// takes over INFO_WAIT_MS gives that one meanwhile.
   private info(lang: Lang): Promise<any> {
     if (this.cached !== null && wall.now() - this.cached.at < 10_000) return Promise.resolve(this.cached.info);
+    const stale = this.cached !== null && wall.now() - this.cached.at < STALE_MS ? this.cached.info : null;
+    const reading = this.fresh();
+    return stale === null ? reading : soon(reading, INFO_WAIT_MS, () => stale);
+  }
+
+  /// A fresh look at the machine, kept (`cached`) as it comes; one at a time however many ask.
+  private fresh(): Promise<any> {
     // Ticks the last read saw over a minute ago would make it wait a moment for them to move: those followed are newer.
     const last = this.seen !== null && wall.now() - this.seen.at < 60_000 ? this.seen : (this.cpu.latest() ?? this.seen);
     this.reading ??= this.read(this.dataDir, last)

@@ -118,7 +118,7 @@ fn say_answer(host : @host.Host, answer : Json) -> Unit {
 ///|
 /// The reads moved here from read/worker.ts (read/pool.ts `MOVED`).
 fn moved(op : String) -> Bool {
-  ["job", "jobLog", "historyPendingCard", "statePendingCard", "deliveryCardState", "reviewPendingCard", "stateQuestion", "pendingDeliveries", "latestMessages", "chatHistoryMessages", "openedChatSaid", "widgetState", "transcriptFile", "memory", "machineSessions", "machineSession", "sessionsAtWork", "policyChecks", "recentConnectPeople", "usageTurns", "usageCalls", "outflowMessages", "archiveLook", "recentChatList", "searchChatList", "threadList", "sharedOf", "sharedChats", "chatMarks", "entries", "letters", "summary", "sessions", "session", "threads", "thread", "turnNotices", "saidNotices", "chats", "chatRows", "outflowChats", "openJobs", "resourceChats", "usage", "outflowUsage", "timeline", "transcriptState", "sessionPlace", "changed", "tailRead"].contains(
+  ["job", "jobLog", "historyPendingCard", "statePendingCard", "deliveryCardState", "reviewPendingCard", "stateQuestion", "pendingDeliveries", "latestMessages", "chatHistoryMessages", "openedChatSaid", "widgetState", "transcriptFile", "memory", "machineSessions", "machineSession", "sessionsAtWork", "policyChecks", "recentConnectPeople", "usageTurns", "usageCalls", "outflowMessages", "archiveLook", "recentChatList", "searchChatList", "threadList", "sharedOf", "sharedChats", "chatMarks", "entries", "letters", "summary", "sessions", "session", "threads", "thread", "turnNotices", "saidNotices", "chats", "chatRows", "outflowChats", "openJobs", "resourceChats", "usage", "outflowUsage", "timeline", "transcriptState", "sessionPlace", "changed", "tailRead", "internalCardEditPage", "internalCardMessagePage"].contains(
     op,
   )
 }
@@ -200,6 +200,9 @@ fn Reader::answer_in(self : Reader, db : @sql.Db, op : String, ask : Json) -> Js
     "tailRead" =>
       @history.tail_read(self.host, match args.value("runtime") { Some(String(r)) => r; _ => "claude" }, args.value("state").unwrap_or(Json::null()))
     "sessionPlace" => @readops.session_place(db, self.host, self.data, self.sep, ask)
+    // (a queued card outcome's pages, the station's own: read/pool.ts `cardEditPage`, `cardMessagePage`)
+    "internalCardEditPage" => @readops.card_edit_page(db, args)
+    "internalCardMessagePage" => @readops.card_message_page(db, args)
     // (what of a list a client does not hold as it is: the list read as its own op reads it, its args those given)
     "changed" =>
       match args.value("op") {

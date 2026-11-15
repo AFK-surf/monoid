@@ -68,9 +68,9 @@
 
 - Everything lasting is one SQLite file, `stillfail.db` (`src/store/store.ts`, schema in `src/store/schema.ts`): one
   write connection on the main thread; reads in reader threads (`src/read/pool.ts`: what is told as it changes and
-  what devices ask each on a line of its own) or the MoonBit program (`mb/`) for the reads moved to it: every read a
-  device asks (`src/read/pool.ts` MOVED, HISTORY), the station's reader thread answering only its checkpoint and a
-  card's queued pages (`src/read/worker.ts`). A move to the program is compared with the reads as a reader thread
+  what devices ask each on a line of its own) or the MoonBit program (`mb/`) for the reads moved to it: every read
+  (`src/read/pool.ts` MOVED, HISTORY), a card's queued pages and the checkpoint too, so where it is there no reader
+  thread is started (`src/read/worker.ts` is for a station without it). A move to the program is compared with the reads as a reader thread
   answered them before (`test/reference-worker.ts`, given a test's Readers by `test/reference.ts`) on the same data. At a handover
   the next process opens it while the one serving writes: every connection waits its turn (a busy timeout), and a
   transaction that writes begins `BEGIN IMMEDIATE` (`scripts/check.sh` refuses what a change adds otherwise).
@@ -371,8 +371,9 @@
 - The watch over the agents' processes leaves the station out (`src/jobs/memory.ts`); its own memory, Node's and its
   MoonBit programs' (`src/read/mb-reader.ts` `MbProcess.live`), is `src/ops/self-memory.ts`'s, run by
   `src/resources/module.ts`. Under the machine's pressure or past its soft limit it lets go only what answers nothing
-  (`Readers.trimIdle`, `src/read/pool.ts`): never a read under way, never a reader of what devices ask or streams tell,
-  and never the browser, whose chats' contexts are kept in memory only (`src/browser/browsers.ts`): closing it would sign
+  (`Readers.trimIdle`, `src/read/pool.ts`, and what parts give it with `onTrim`): never a read under way, never a reader
+  thread of what devices ask or streams tell (one started again took seconds; the program's reader, milliseconds, may
+  go), and never the browser, whose chats' contexts are kept in memory only (`src/browser/browsers.ts`): closing it would sign
   them out. The machine under pressure (high, critical), not the station past only its own limit, also ends every idle
   session's process (`Hub.evictAllIdle`): those are gigabytes, and their conversations resume on the next message.
   Node held past its hard limit asks the launcher to hand over (`src/ops/restart.ts` `restarter`), never
