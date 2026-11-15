@@ -77,27 +77,16 @@ pub fn route_asks(ws : String, r : @settings.Route) -> Array[(String, Map[String
 }
 
 ///|
-/// What a press opening the settings' route `r` asks before the page opens (open_answered), on `src`: route_asks, and
-/// where a card, a panel or a sheet waits for what it reads too (gates_opens, MBUI_OPEN_WHOLE) a station's page its
-/// station whole and a connect's page that connect (settings' station_read, connect_read), so neither opens on its bones
-/// while the core reads what the device holds; one that waits on a station opens at once, showing that it waits.
-pub fn route_open_asks(src : Source, ws : String, r : @settings.Route) -> Array[(String, Map[String, Json])] {
-  let asks = route_asks(ws, r)
+/// What a press opening the settings' route `r` in workspace `w` asks before the page opens (open_answered), on `src`:
+/// route_asks, and where a card, a panel or a sheet waits for what it reads too (gates_opens, MBUI_OPEN_WHOLE) all its
+/// page reads as it is first drawn (page_reads.mbt route_reads, the same table the pane's and the stack's waits read),
+/// so none opens on its bones while the core reads what the device holds; one that waits on a station opens at once,
+/// showing that it waits.
+pub fn route_open_asks(src : Source, w : Workspace, r : @settings.Route) -> Array[(String, Map[String, Json])] {
   if !(src.gates_opens)() {
-    return asks
+    return route_asks(w.id, r)
   }
-  match r {
-    Station(address) =>
-      [("station", { "scope": Json::string(account_scope(ws, address)), "station": Json::string(address) })]
-    Connect(address, id) =>
-      [
-        (
-          "connect",
-          { "scope": Json::string(account_scope(ws, address)), "station": Json::string(address), "id": Json::string(id) },
-        ),
-      ]
-    _ => asks
-  }
+  route_reads(src, w.id, r).asks
 }
 
 ///|
@@ -116,29 +105,23 @@ pub let station_open_more : Ref[(Source, Workspace, String, Json) -> Array[(Stri
 
 ///|
 /// What a press opening the settings' route `r` in workspace `w` asks once what route_open_asks asked is answered
-/// (asked_now's `then`): a station's page, where what opens waits for what it shows (gates_opens), what its part shown
-/// reads as it is first drawn (station_open_more), so it never draws its overview's blocks one by one as the core answers
-/// them; None for any other.
+/// (asked_now's `then`), where what opens waits for what it shows (gates_opens): what follows from those answers in its
+/// page (route_reads': a station's page what its part shown reads, station_open_more), so it never draws its blocks one
+/// by one as the core answers them; None where nothing follows.
 pub fn route_open_then(
   src : Source,
   w : Workspace,
   r : @settings.Route,
 ) -> ((((String, Map[String, Json])) -> Json?) -> Array[(String, Map[String, Json])])? {
-  guard (src.gates_opens)() && r is Station(address) else { return None }
-  let ask = ("station", { "scope": Json::string(account_scope(w.id, address)), "station": Json::string(address) })
-  Some(fn(read) {
-    match read(ask) {
-      Some(Object(_)) as s => (station_open_more.val)(src, w, address, s.unwrap())
-      _ => []
-    }
-  })
+  guard (src.gates_opens)() else { return None }
+  route_reads(src, w.id, r).then
 }
 
 ///|
 /// How long at most a press opening route `r` waits for what it shows where it waits for it as a card or a panel does
 /// (route_open_asks' own, not an account's: @sf.open_hold_ms), else as long as it takes.
-pub fn route_open_most(src : Source, ws : String, r : @settings.Route) -> Double? {
-  if (src.gates_opens)() && route_asks(ws, r).is_empty() && !route_open_asks(src, ws, r).is_empty() {
+pub fn route_open_most(src : Source, w : Workspace, r : @settings.Route) -> Double? {
+  if (src.gates_opens)() && route_asks(w.id, r).is_empty() && !route_open_asks(src, w, r).is_empty() {
     Some(@sf.open_hold_ms)
   } else {
     None
@@ -291,4 +274,17 @@ pub fn switch_answered(
     leases.each(fn(l) { l.cancel() })
     let_go()
   })
+}
+
+///|
+/// A panel or a sheet drawn by the old view (`@sf.panel`, whose body reads as frames build it, not as it is made: no
+/// OpenGate of its own) opened by a press: where what opens waits for what it shows (gates_opens, MBUI_OPEN_WHOLE),
+/// once `asks` (what its body reads as it is first drawn, said by the code it reads them by) are answered, the screen as
+/// it was meanwhile (open_answered, open_hold_ms at most); else, or asking nothing, at once.
+pub fn open_old_whole(src : Source, asks : Array[(String, Map[String, Json])], open : () -> Unit) -> Unit {
+  if !(src.gates_opens)() || asks.is_empty() {
+    open()
+    return
+  }
+  open_answered(src, asks, open, most=@sf.open_hold_ms) |> ignore
 }

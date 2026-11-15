@@ -73,7 +73,7 @@ fn open_job(c : @ui.Ctx, src : Source, job : Json?) -> Unit {
       open_chat_ref(r)
       if flag(job, "service") {
         pick_job(id)
-        side_change(src, r, "open", Some("jobs"))
+        side_tab_open(src, r, "jobs")
       }
     }
   })

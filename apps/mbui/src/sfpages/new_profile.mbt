@@ -233,6 +233,23 @@ fn new_profile_asks(here : Here, station : String, form : String) -> Array[(Stri
 }
 
 ///|
+/// A new profile on station `address` opened by a press from outside its page (the profiles' sidebar's offer of a
+/// station's login), by `open` (what puts it up): where what opens waits for what it shows (gates_opens), its draft
+/// opened and what it shows asked first, as this page's own choice of another station does, the screen as it was
+/// meanwhile; else at once.
+pub fn open_new_profile(src : Source, core : Core, here : Here, address : String, open : () -> Unit) -> Unit {
+  if !(src.gates_opens)() {
+    open()
+    return
+  }
+  let n = @settings.new_profile_opened(core, address, add_profile_start.get(address))
+  @sfbase.open_answered(src, new_profile_asks(here, address, n.form), open, let_go=fn() {
+    @settings.left(NewProfile(address))
+  })
+  |> ignore
+}
+
+///|
 /// Which station it is added on (its online ones, a choice each) in node `b`: another is another draft, its page in
 /// this one's place. Pressed, that station's draft is opened and its flow asked (`src`), this page as it is meanwhile;
 /// its page comes in this one's place once the flow is answered, whole in the frame it comes, what was asked handed to

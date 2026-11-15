@@ -72,7 +72,7 @@ fn settings_core_of(
           // (an account's page timed for the host from the press: open_timing)
           let open = if route_asks(w.id, r).is_empty() { open } else { timed_open("account", open) }
           // (a station's and a connect's too where what opens waits for what it shows: route_open_asks)
-          open_answered(src, route_open_asks(src, w.id, r), open, then?=route_open_then(src, w, r), most?=route_open_most(src, w.id, r))
+          open_answered(src, route_open_asks(src, w, r), open, then?=route_open_then(src, w, r), most?=route_open_most(src, w, r))
           |> ignore
         }
       }

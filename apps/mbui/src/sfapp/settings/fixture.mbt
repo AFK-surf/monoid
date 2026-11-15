@@ -2445,6 +2445,8 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
     "rigs" if rigs_fixture_mode(mode) => Some(rigs_fixture_topic(mode))
     // the workspace's devices (devices_fixture.mbt)
     "devices" if devices_fixture_mode(mode) => Some(devices_fixture_topic())
+    // (none: as the core says before the workspace has any)
+    "devices" => Some(Json::null())
     // every way its devices reach its stations (the core's views/ways.ts), the punched path turned off
     "workspaceWays" => {
       let own = fx.relays.map(fn(u) {

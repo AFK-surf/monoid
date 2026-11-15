@@ -13,6 +13,8 @@
 // view built of it before (and measured as it drew) now made and measured in the tree's count.
 // Again that day, a phone's film and song in the viewer: its player made as nodes (sf player_node.mbt), what its old
 // view built as it opened now made, laid out and measured by the window's tree, nothing more shown.
+// Raised once, 2026-11-15: the wide stations' place made as nodes (sfdesk places.mbt stations_place_node), the station
+// picked in it the same page as wide settings-station's, what its old view built now made in the tree's count.
 
 ///|
 let real_size_known : Map[String, (Int, Int, Int)] = {
@@ -503,7 +505,7 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "wide files-split": (205, 180, 8),
   "wide files-transfers": (244, 205, 12),
   "wide files-tree": (205, 180, 8),
-  "wide place-stations": (196, 175, 8),
+  "wide place-stations": (555, 1088, 272),
   "wide place-profiles": (239, 364, 28),
   "wide reader": (209, 182, 8),
   "wide reader-bars": (209, 182, 8),
@@ -701,12 +703,12 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "wide settings-security-upgrade-other": (446, 841, 140),
   "wide settings-security-upgrade-updating": (446, 841, 140),
   "wide settings-stations-tasks": (205, 180, 8),
-  "wide place-stations-tasks": (196, 175, 8),
+  "wide place-stations-tasks": (555, 1088, 272),
   "wide settings-station-tasks": (597, 1193, 296),
   "wide settings-station-tasks-other": (597, 1193, 296),
   "wide settings-station-tasks-locked": (597, 1193, 296),
   "wide settings-stations-devices": (205, 180, 8),
-  "wide place-stations-devices": (196, 175, 8),
+  "wide place-stations-devices": (555, 1088, 272),
   "wide settings-station-devices": (597, 1193, 296),
   "wide settings-run": (205, 180, 8),
   "wide settings-run-models": (205, 180, 8),

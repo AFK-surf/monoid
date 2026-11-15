@@ -1075,14 +1075,27 @@ fn land_page(ws : String, ask : (String, Map[String, Json]) -> @sfbase.TopicStat
 
 ///|
 /// What page `p` of workspace `ws` in the wide frame's pane opens on, asked of `ask` (sfbase's opens_answered): a chat
-/// its view (sfbase's chat_opens), a new chat its stations as read (sfpages' new_chat_opens); any other page nothing
-/// waited for. The pane shows a page come on top once it is answered (sfapp's pane_ready), a workspace switched waits
-/// for the page its pane lands on (frame_opens).
-pub fn pane_opens(ws : String, p : Page, ask : (String, Map[String, Json]) -> @sfbase.TopicState) -> Bool {
+/// its view (sfbase's chat_opens: where what opens waits for what it shows, its draft, stations and jobs' summary too),
+/// a new chat its stations as read (sfpages' new_chat_opens); where what opens waits for what it shows (gates_opens,
+/// MBUI_OPEN_WHOLE), every other page what it reads as it is first drawn (sfbase's page_reads, with the settings' list
+/// beside a settings' page; a place with a list of its own, what is picked in it: place_reads), else nothing waited
+/// for. The pane shows a page come on top once it is answered (sfapp's pane_ready), a workspace switched waits for the
+/// page its pane lands on (frame_opens).
+pub fn pane_opens(
+  src : Source,
+  ws : String,
+  p : Page,
+  ask : (String, Map[String, Json]) -> @sfbase.TopicState,
+) -> Bool {
+  let whole = (src.gates_opens)()
   match p {
-    Chat(r) => @sfbase.chat_opens(r, ask)
+    Chat(r) => @sfbase.chat_opens(r, ask, whole~)
     NewChat => @sfpages.new_chat_opens(ws, ask)
-    _ => true
+    // (every other page, where what opens waits for what it shows: all it reads as it is first drawn, sfbase's
+    // page_reads, the table a press opening it asks by too; a place with a list of its own what is picked in it,
+    // place_reads)
+    Place(name) if whole => @sfbase.reads_told(place_reads(src, ws, name), ask)
+    _ => !whole || @sfbase.reads_told(@sfbase.page_reads(src, ws, p, true), ask)
   }
 }
 
@@ -1118,7 +1131,7 @@ pub fn frame_opens_on(
   let rail = rail_opens(ask)
   let side = side_opens(src, ws, ask)
   let pane = match landed {
-    Some(p) => pane_opens(ws, p, ask)
+    Some(p) => pane_opens(src, ws, p, ask)
     // (the marks could not be read: nothing it lands on to wait for)
     None => ask("workspaceMarks", @sfbase.marks_asked()).error is Some(_)
   }

@@ -1068,12 +1068,24 @@ pub fn job_chat(job : Json?) -> ChatRef? {
 /// words (a screen's, a station's 共享调试's, a web service's: link_card_ask), asked as the view says them, all at once. A card laid out as
 /// it came, a lateness after the rows, put every row over it up by its height in one frame (the owner's, 2026-11-14:
 /// data arriving late is no cause of motion; src/sfapp/chat_opens_whole_wbtest.mbt, chat_rows_open_whole_wbtest.mbt).
-pub fn chat_opens(r : ChatRef, ask : (String, Map[String, Json]) -> TopicState) -> Bool {
+///
+/// `whole` (where what opens waits for what it shows: gates_opens, MBUI_OPEN_WHOLE): its draft, its workspace's stations
+/// and its jobs' summary too, all its page reads at once as it is first drawn (page_opens), so the composer opens as
+/// tall as its draft and its bar with its jobs' mark, never a frame after.
+pub fn chat_opens(r : ChatRef, ask : (String, Map[String, Json]) -> TopicState, whole? : Bool = false) -> Bool {
+  // (asked with its view, not after it: all of it asked at once)
+  let mut all = true
+  if whole {
+    page_opens(Chat(r), fn(name, params) {
+      if name != "chat" {
+        all = open_told(ask(name, params)) && all
+      }
+    })
+  }
   let t = ask("chat", chat_params(r))
   if !opens_answered(t) {
-    return t.waiting
+    return t.waiting && all
   }
-  let mut all = true
   for m in items(t.value, "messages") {
     // (each link's card in a post's words, as the message tells them, its tree or its runs: a screen's a capsule or,
     // previewed, the screen across its top. None of still.fail's notices, whose words are read as no post's; none

@@ -656,7 +656,13 @@ fn app_state_tree(root : @view.View, src : Source) -> Unit {
         // the first page's wait, at the moments its causes come (first_page_node)
         first_page_node(v, src)
         // what the page on top reads as it is first built, asked as it comes on top (sfbase's page_opens_node)
-        @sfbase.page_opens_node(v, src)
+        @sfbase.page_opens_node(v, src, fn(w, p, ask) {
+          if @sf.layout(v.window().0) is Small && !@sf.native_able() {
+            page_opens_by(src, w, p, ask)
+          } else {
+            @sfdesk.pane_opens(src, w.id, p, ask)
+          }
+        })
         // what the start says of notifications, at the moment the core's notify is answered or the app shown again
         @sfbase.notices_said_node(v, src)
         // what the workspace in view opens on, asked as it comes to be in view, the splash or the shell before it
@@ -1205,7 +1211,8 @@ let first_page_ms : Double = splash_label_ms
 ///|
 /// Whether the core has answered (a value or why not) for what page `p` of workspace `w` shows as it opens (App.kt
 /// opening): a chat (or said its messages wait on a station: its page shows them to come), an agent's history, Home
-/// (all it opens on: home_opens, what a workspace switched waits for too); any other page is not waited for.
+/// (all it opens on: home_opens, what a workspace switched waits for too); where what opens waits for what it shows
+/// (gates_opens, MBUI_OPEN_WHOLE) every other page what it reads as it is first drawn (sfbase's page_reads), else none.
 fn page_ready(src : Source, w : Workspace, p : Page) -> Bool {
   page_opens_by(src, w, p, @sfbase.read_now(src))
 }
@@ -1218,14 +1225,17 @@ fn page_opens_by(
   p : Page,
   ask : (String, Map[String, Json]) -> @sfbase.TopicState,
 ) -> Bool {
+  let whole = (src.gates_opens)()
   match p {
-    Chat(r) => @sfbase.chat_opens(r, ask)
+    Chat(r) => @sfbase.chat_opens(r, ask, whole~)
     History(r, key, _) => {
       let t = ask("history", history_params(r, key))
       @sfbase.chat_opens(r, ask) && (t.value is Some(_) || t.error is Some(_))
     }
     Home => home_opens(src, w.id, ask)
-    _ => true
+    // (every other page, where what opens waits for what it shows: all it reads as it is first drawn, sfbase's
+    // page_reads, the table a press opening it asks by too)
+    _ => !whole || @sfbase.reads_told(@sfbase.page_reads(src, w.id, p, false), ask)
   }
 }
 
@@ -1472,7 +1482,7 @@ let window_shown : Ref[Bool] = Ref(false)
 /// what is beside it waited for in its tab; any other page is not waited for.
 fn pane_ready(src : Source, p : Page) -> Bool {
   match workspace_in_view(src).0 {
-    Some(w) => @sfdesk.pane_opens(w.id, p, @sfbase.read_now(src))
+    Some(w) => @sfdesk.pane_opens(src, w.id, p, @sfbase.read_now(src))
     None => true
   }
 }

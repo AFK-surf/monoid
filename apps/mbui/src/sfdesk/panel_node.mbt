@@ -366,7 +366,7 @@ fn side_own_node(
   q.box(fn(s) {
     s.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))).clips(Is(true)) |> ignore
     if tab == "jobs" {
-      jobs_tab_node(s, src, r, tips, foot_card, fn(job) { side_change(src, r, "open", Some("service:" + job)) })
+      jobs_tab_node(s, src, r, tips, foot_card, fn(job) { side_tab_open(src, r, "service:" + job) })
       return
     }
     // (once its view, and so its thread, is read: what both show is the thread's)

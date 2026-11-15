@@ -822,8 +822,12 @@ fn agent_title_row(c : @ui.Ctx, src : Source, r : ChatRef, key : String) -> Unit
 fn open_agent(src : Source, r : ChatRef, key : String) -> Unit {
   // (its mark, name and where it stands its title row in the middle of the window: the user, 2026-11-04, 这个是不是也可以
   // 想办法做成标题)
-  @sf.panel("", from=Unanchored, title_row=fn(c) { agent_title_row(c, src, r, key) }, fn(c, close) {
-    agent_body(c, src, r, key, close)
+  // (once its card is answered, as tall as it will be: sfbase's open_old_whole; its chat and the stations' marks are the
+  // chat's page's, held)
+  @sfbase.open_old_whole(src, [("agentCard", { "station": Json::string(r.station), "key": Json::string(key) })], fn() {
+    @sf.panel("", from=Unanchored, title_row=fn(c) { agent_title_row(c, src, r, key) }, fn(c, close) {
+      agent_body(c, src, r, key, close)
+    })
   })
 }
 
@@ -1291,7 +1295,10 @@ fn jobs_body(c : @ui.Ctx, src : Source, r : ChatRef, close : () -> Unit) -> Unit
 /// The chat's services and jobs (jobs_body): the library's panel, 62% of the window, dragged between half and nearly
 /// all of it.
 fn open_chat_jobs(src : Source, r : ChatRef) -> Unit {
-  @sf.panel(tr("android-misc.jobs.title"), from=Unanchored, tall=0.62, grows=true, fn(c, close) { jobs_body(c, src, r, close) })
+  // (once its jobs are answered: never their rows' bones, then the sheet taller; sfbase's open_old_whole)
+  @sfbase.open_old_whole(src, [("chatJobs", chat_params(r))], fn() {
+    @sf.panel(tr("android-misc.jobs.title"), from=Unanchored, tall=0.62, grows=true, fn(c, close) { jobs_body(c, src, r, close) })
+  })
 }
 
 ///|
@@ -1980,8 +1987,11 @@ let info_words : @ui.TextStyle = @ui.text_style(size=Ui, color=Fg, wrap=false)
 fn open_letters(src : Source, r : ChatRef, thread : Double) -> Unit {
   dui.letters_open = ""
   dui.letters_held[r.station + "\u{1}" + r.session] = thread
-  @sf.panel(tr("web-main.letters.title"), from=Unanchored, tall=0.8, grows=true, fn(c, _) {
-    letters_body(c, src, r, thread)
+  // (once its letters are answered: sfbase's open_old_whole)
+  @sfbase.open_old_whole(src, [("chatLetters", letters_params(r, thread))], fn() {
+    @sf.panel(tr("web-main.letters.title"), from=Unanchored, tall=0.8, grows=true, fn(c, _) {
+      letters_body(c, src, r, thread)
+    })
   })
 }
 

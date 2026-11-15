@@ -71,6 +71,31 @@ pub fn station_node(
 }
 
 ///|
+/// A station's page while the workspace's stations are read, none picked yet (the stations' place in the wide frame):
+/// a made-up one's in its bones, waiting on them, as station_node's.
+pub fn stations_reading_node(
+  v : @view.View,
+  core : Core,
+  src : Source,
+  here : () -> Here,
+  on_back~ : () -> Unit,
+  frame~ : () -> PageFrame,
+  said? : (@sf.PageSaid) -> Unit,
+  width? : () -> Double,
+  tips? : @sf.TipLayer,
+) -> Unit {
+  let tips = match tips {
+    Some(t) => t
+    None => @sf.TipLayer::new(fn() { Some(v) })
+  }
+  v.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+  let sample = station_sample()
+  station_view_node(v, core.quiet(), src, here, fn() { Some(sample) }, false, Some(@sf.t("common.readingStations")), on_back, frame, said, width, tips, fn() {
+    0
+  })
+}
+
+///|
 /// Station `s`'s page (station_view's): its head, then its parts one at a time. `bones`: all of it in its bones,
 /// waiting on what it says (station_waiting's: its title the frame's).
 fn station_view_node(
@@ -328,7 +353,7 @@ fn station_part_read(core : Core, address : String, ask : (String, Map[String, J
 ///|
 /// What station `address`'s page's readers say they have read anew by, what a part pressed asked handed to them
 /// (sfbase's switch_answered, shown_read).
-fn station_shown_at(address : String) -> String {
+pub fn station_shown_at(address : String) -> String {
   "station\u{1}" + address
 }
 
