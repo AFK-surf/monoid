@@ -61,7 +61,8 @@ export type HostedOptions = {
   orphans?: boolean;
   /// Said to the program after each attach (again after it started again): what it has of the process (its threads).
   attached?: () => void;
-  exit: (said: string, stderr: string) => void;
+  /// A promise: what it writes of its end is being written, what comes after held till then.
+  exit: (said: string, stderr: string) => void | Promise<void>;
 };
 
 const pidAlive = (pid: number) => {
@@ -467,16 +468,17 @@ export class HostedProcess {
     this.#frozenState = null;
   }
 
-  exited_(code: number | null, signal: string | null, stderr: string) {
+  exited_(code: number | null, signal: string | null, stderr: string): void | Promise<void> {
     if (this.#said !== null) return;
     this.#said = describeExit({ code, signal });
     this.#resolveExit(this.#said);
     if (this.#frozen) return;
-    this.#options.exit(this.#said, stderr);
+    const told = this.#options.exit(this.#said, stderr);
     if (!this.#killing) this.done();
+    return told;
   }
 
-  closed_() {
+  closed_(): void | Promise<void> {
     if (this.gone || this.#said !== null) return;
     if (pidAlive(this.info.runner)) {
       log.warn("agents::process", "another station took the runner over; letting go", { label: this.#options.label });
@@ -486,8 +488,9 @@ export class HostedProcess {
     } else {
       this.#said = "runner gone";
       this.#resolveExit(this.#said);
-      if (!this.#frozen) this.#options.exit(this.#said, "");
+      const told = this.#frozen ? undefined : this.#options.exit(this.#said, "");
       this.#host.forget(this);
+      return told;
     }
   }
 

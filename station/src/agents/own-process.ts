@@ -358,19 +358,24 @@ export abstract class OwnProcessSession<T extends TurnState = TurnState> impleme
     this.proc.route(router);
   }
 
-  protected exited(said: string, stderr: string) {
+  /// Its process went away: a turn running fails as exited, then the session closes, each said once what is written of
+  /// it (its transcript's end) is.
+  protected exited(said: string, stderr: string): void | Promise<void> {
     // What it wrote to stderr last is the only word of why one that fails as it starts gives.
     const why = stderr === "" ? "" : `: ${stderr}`;
     this.turn.closed = true;
     this.waiting.failAll(new Error(`${this.kind} exited (${said})${why}`));
     const busy = this.busy();
     this.idle();
-    if (busy) {
-      this.cutShort(said);
-      this.events({ type: "turnEnded", outcome: { kind: "failed", reason: "exited", message: `${this.kind} exited (${said}) during the turn${why}` } });
-    }
-    this.events({ type: "closed", why: `${this.kind} exited (${said})${why}` });
-    this.driver.forget(this);
+    if (busy) this.cutShort(said);
+    const told = () => {
+      if (busy) this.events({ type: "turnEnded", outcome: { kind: "failed", reason: "exited", message: `${this.kind} exited (${said}) during the turn${why}` } });
+      this.events({ type: "closed", why: `${this.kind} exited (${said})${why}` });
+      this.driver.forget(this);
+    };
+    const writing = this.settled();
+    if (writing !== null) return writing.then(told);
+    told();
   }
 
   /// A turn can be started now: else why not.
