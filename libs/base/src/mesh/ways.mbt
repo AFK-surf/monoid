@@ -138,6 +138,14 @@ fn relay_key(relay : String) -> String {
 priv struct Way {
   link : Link
   mut better : Int
+  /// Its link's paths as the last tick saw them, and which they were (trace.mbt, `Mesh::watch_paths`).
+  mut saw : String?
+  mut shape : String?
+}
+
+///|
+fn Way::new(link : Link) -> Way {
+  { link, better: 0, saw: None, shape: None }
 }
 
 
@@ -453,10 +461,10 @@ fn Mesh::live_ways(self : Mesh, place : Place) -> Array[Way] {
 fn Mesh::now_on(self : Mesh, place : Place, link : Link) -> Unit {
   let ways = self.ways_at(place)
   if !ways.all.iter().any(way => physical_equal(way.link, link)) {
-    ways.all.push({ link, better: 0 })
+    ways.all.push(Way::new(link))
   }
   ways.moved_at = Some(self.now_ms())
-  ways.moved_direct = ({ link, better: 0 } : Way).is_direct()
+  ways.moved_direct = Way::new(link).is_direct()
   // (its answer came before it was a way: heard now)
   if link.answer is Some(_) {
     self.heard(place, link)
@@ -478,7 +486,7 @@ fn Mesh::adopt_way(self : Mesh, place : Place, link : Link) -> Unit {
   if ways.all.iter().any(way => physical_equal(way.link, link)) {
     return
   }
-  ways.all.push({ link, better: 0 })
+  ways.all.push(Way::new(link))
   if link.answer is Some(_) {
     self.heard(place, link)
   }
@@ -529,6 +537,8 @@ async fn Mesh::steer_ways(self : Mesh, place : Place) -> Unit {
     // (the pings were waited for: the place looked at anew)
     guard !self.closed && self.links.contains(place) else { return }
     self.tell_health(place)
+    // (seen once a tick: here while the ways are steered, by the link's own fiber otherwise)
+    self.observe(place)
     self.choose(place, None)
     self.prune(place)
     let now = self.now_ms()
@@ -671,9 +681,25 @@ fn Mesh::promote(self : Mesh, place : Place, way : Way, why : String) -> Unit {
     return
   }
   let ways = self.ways_at(place)
-  if why == "lost" && ways.moved_direct {
-    self.lost_direct(place, self.since(ways.moved_at))
+  let held = if why == "lost" && ways.moved_direct { self.lost_direct(place, self.since(ways.moved_at)) } else { None }
+  // (told as `mesh.route`: from where, to where, why, how each scored; trace.mbt)
+  let span = self.span("mesh.route", place.peer)
+  (span.own)("why", Str(why))
+  if self.current(place.peer, scope=place.scope) is Some(before) &&
+    ways.all.search_by(one => physical_equal(one.link, before)) is Some(i) {
+    let was = ways.all[i]
+    (span.own)("from", Str(was.key()))
+    (span.own)("from.score", Int(self.score_of(place, was).cost.round().to_int64()))
+    (span.own)("from.missed", Int(was.link.missed.to_int64()))
+    (span.own)("from.paths", Str(was.link.paths_line()))
   }
+  (span.own)("to", Str(way.key()))
+  (span.own)("to.score", Int(self.score_of(place, way).cost.round().to_int64()))
+  (span.own)("to.paths", Str(way.link.paths_line()))
+  if held is Some(ms) {
+    (span.own)("direct_held_ms", Int(ms))
+  }
+  (span.end)()
   // (a race of the link before has nothing left to decide; what it carried is counted)
   self.end_race(place)
   if self.current(place.peer, scope=place.scope) is Some(before) {
@@ -704,14 +730,14 @@ fn Mesh::promote(self : Mesh, place : Place, way : Way, why : String) -> Unit {
 ///|
 /// The way direct requests went on was lost, `stayed` ms after they moved to it: lost soon after, `flaky_losses`
 /// times in a row, ways direct are held off a while; one that stayed `min_stay_ms` starts the count anew.
-fn Mesh::lost_direct(self : Mesh, place : Place, stayed : Int64) -> Unit {
+fn Mesh::lost_direct(self : Mesh, place : Place, stayed : Int64) -> Int64? {
   let ways = self.ways_at(place)
   if stayed >= min_stay_ms.to_int64() {
     ways.losses = 0
-    return
+    return None
   }
   ways.losses += 1
-  guard ways.losses >= flaky_losses else { return }
+  guard ways.losses >= flaky_losses else { return None }
   let mut hold = direct_hold_ms.to_int64()
   for _ in 0..<(ways.losses - flaky_losses) {
     hold = hold * 2L
@@ -723,6 +749,7 @@ fn Mesh::lost_direct(self : Mesh, place : Place, stayed : Int64) -> Unit {
     hold = direct_hold_max_ms.to_int64()
   }
   ways.held_until = Some(self.now_ms() + hold)
+  Some(hold)
 }
 
 ///|
@@ -875,13 +902,19 @@ async fn Mesh::dial_main_way(self : Mesh, place : Place, credentials : async (St
 /// The endpoint's dial raced beside other ways (`Mesh::dial_all`): counted as on the endpoint while it is, since it
 /// may go on after another way won; and what it says of the endpoint said here, whichever won (taken for stuck where
 /// it ran out of time unconnected, its addresses kept as unanswered; neither where it answered).
-async fn Mesh::dial_main_raced(self : Mesh, place : Place, credentials : async (String, Bool) -> Presented, fresh : Bool) -> Link {
+async fn Mesh::dial_main_raced(
+  self : Mesh,
+  place : Place,
+  credentials : async (String, Bool) -> Presented,
+  fresh : Bool,
+  traceparent? : String,
+) -> Link {
   self.dialling_main += 1
   defer {
     self.dialling_main -= 1
     self.eased()
   }
-  match attempt(() => self.open(place, credentials, fresh)) {
+  match attempt(() => self.open(place, credentials, fresh, traceparent?)) {
     Did(link) => {
       self.stuck = false
       self.note_dial(place, false)
@@ -918,12 +951,13 @@ async fn Mesh::dial_pinned(
   way : String,
   credentials : async (String, Bool) -> Presented,
   fresh : Bool,
+  traceparent? : String,
 ) -> Link {
   let made = self.counted(() => {
     guard self.pinned_endpoint(way) is Some(endpoint) else { raise failed("unreached") }
     // (the bind was waited for: the place let go of or the mesh closed meanwhile, nothing is dialled)
     guard !self.closed && self.links.contains(place) else { raise failed("closed") }
-    self.open(place, credentials, fresh, on=(way, endpoint))
+    self.open(place, credentials, fresh, on=(way, endpoint), traceparent?)
   })
   match made {
     Did(link) => link
@@ -1012,6 +1046,7 @@ fn Mesh::dial_at(
   kind : String,
   credentials : async (String, Bool) -> Presented,
   fresh : Bool,
+  traceparent? : String,
 ) -> (async () -> Link)? {
   let at = self.said_at(place, kind)
   let ways = self.ways_at(place)
@@ -1028,7 +1063,7 @@ fn Mesh::dial_at(
     defer {
       ways.at_dialling.remove(kind)
     }
-    self.dial_pinned(place, kind, credentials, fresh)
+    self.dial_pinned(place, kind, credentials, fresh, traceparent?)
   })
 }
 
@@ -1059,7 +1094,15 @@ fn Mesh::dial_at_if(self : Mesh, place : Place, kind : String, credentials : asy
 /// its own. The first let in is the link; the others, as they come through, ways beside it. Fails once all have,
 /// with what the endpoint's dial failed with where there was one (an opening's time run out on it takes the endpoint
 /// for stuck, as before: `Mesh::dialled`).
-async fn Mesh::dial_all(self : Mesh, place : Place, credentials : async (String, Bool) -> Presented, fresh : Bool) -> Link {
+///
+/// `traceparent`: what each dial's first line says it is under (a `mesh.connect`, `mesh.hedge` or `mesh.race`).
+async fn Mesh::dial_all(
+  self : Mesh,
+  place : Place,
+  credentials : async (String, Bool) -> Presented,
+  fresh : Bool,
+  traceparent? : String,
+) -> Link {
   let ways = self.ways_at(place)
   let now = self.now_ms()
   ways.explored_at = Some(now)
@@ -1070,18 +1113,18 @@ async fn Mesh::dial_all(self : Mesh, place : Place, credentials : async (String,
     let lost = ways.lost_main
     ways.lost_main = false
     if !unanswered && !lost {
-      return self.open(place, credentials, fresh)
+      return self.open(place, credentials, fresh, traceparent?)
     }
-    attempts.push((true, () => self.dial_main_raced(place, credentials, fresh)))
+    attempts.push((true, () => self.dial_main_raced(place, credentials, fresh, traceparent?)))
     for relay in (if unanswered { self.ways_for(place) } else { self.pinnable(place) }) {
-      attempts.push((false, () => self.dial_pinned(place, relay, credentials, fresh)))
+      attempts.push((false, () => self.dial_pinned(place, relay, credentials, fresh, traceparent?)))
     }
   } else {
     for relay in self.pinnable(place) {
-      attempts.push((false, () => self.dial_pinned(place, relay, credentials, fresh)))
+      attempts.push((false, () => self.dial_pinned(place, relay, credentials, fresh, traceparent?)))
     }
     for kind in [lan, tailnet] {
-      if self.dial_at(place, kind, credentials, fresh) is Some(dial) {
+      if self.dial_at(place, kind, credentials, fresh, traceparent?) is Some(dial) {
         attempts.push((false, dial))
       }
     }
@@ -1153,7 +1196,7 @@ fn Mesh::turn_off(self : Mesh, place : Place, off : Array[String]) -> Unit {
     c.close(reason="way turned off")
     self.choose(place, None)
     if self.current(place.peer, scope=place.scope) is Some(now) && physical_equal(now, c) {
-      ignore(self.dial(place, c.credentials, false))
+      ignore(self.dial(place, c.credentials, false, asker="again"))
     }
   }
   self.release_pinned()

@@ -107,8 +107,8 @@ priv struct Control {
 }
 
 ///|
-async fn Control::send(self : Control, credential : String, also? : Map[String, Json]) -> Unit {
-  self.stream.write(@utf8.encode(@wire.hello_line(credential, says?=self.says, also?))) catch {
+async fn Control::send(self : Control, credential : String, also? : Map[String, Json], traceparent? : String) -> Unit {
+  self.stream.write(@utf8.encode(@wire.hello_line(credential, says?=self.says, also?, traceparent?))) catch {
     e => raise cut(e)
   }
 }
@@ -210,6 +210,10 @@ pub struct Link {
   priv mut warm : Bool
   /// What its connection carried both ways as it was last counted (speed.mbt).
   priv mut counted : (Int64, Int64)
+  /// How long its dial took to get onto a relay, to be dialled, to have its credential (ms from its start); and what
+  /// its record's last `conn ways` line counted of it (trace.mbt).
+  priv opened : (Int, Int, Int)
+  priv mut recorded : (Int64, Int64, Map[String, (Int64, Int64)])
   /// Where the peer said it is dialled straight, in its answer to the first line (addrs.mbt).
   priv mut lan : Array[String]
   priv mut tailnet : Array[String]

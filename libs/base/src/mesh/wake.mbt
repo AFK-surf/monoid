@@ -21,8 +21,9 @@ pub let rebind_ms : Int = 5_000
 /// forgotten (there only where the network changed: a word this call is given then), the addresses a peer said
 /// tried again, and the endpoints of other ways told as this one is.
 ///
-/// `network`: on another network now; the speeds seen on the one before are forgotten (speed.mbt).
-pub fn Mesh::wake(self : Mesh, network? : Bool = false) -> Unit {
+/// `network`: on another network now; the speeds seen on the one before are forgotten (speed.mbt). `retry`: its
+/// person asked to try again; else back after `away_ms` (what the record's line says: trace.mbt).
+pub fn Mesh::wake(self : Mesh, network? : Bool = false, retry? : Bool = false, away_ms? : Int64 = 0L) -> Unit {
   guard !self.closed else { return }
   if network {
     self.forget_speeds()
@@ -30,6 +31,18 @@ pub fn Mesh::wake(self : Mesh, network? : Bool = false) -> Unit {
   // (being bound anew: the endpoint that comes is new to its network, and nothing is on either)
   guard !self.rebinding else { return }
   self.shell.tell("iroh.networkChange", { "id": self.endpoint })
+  self.record_dht(0)
+  self.record("conn network-change", () => {
+    let why = if network {
+      "the network changed"
+    } else if retry {
+      "retry"
+    } else {
+      "the UI back after \{(away_ms.to_double() / 1000.0).round().to_int64()}s"
+    }
+    let open = self.live.filter(link => link.ended() is None).length()
+    "told the main endpoint (\{why}), \{open} link(s) open, \{self.pinned.length()} relay endpoint(s) not told"
+  })
   // (on another network, perhaps the peer's: its addresses worth a try again, its tailnet once it answers there)
   for _, ways in self.ways_of {
     ways.tried.clear()
@@ -57,7 +70,13 @@ fn Mesh::hedge(self : Mesh, place : Place, opening : Opening) -> Unit {
   // (cut as its opening ends otherwise, or the mesh closes, it says nothing: whoever ended the opening said it)
   opening.hedge = Some(
     self.scope.fork(name="mesh hedge", () => {
-      let made = attempt(() => self.dial_all(place, opening.credentials, opening.fresh))
+      let span = self.span("mesh.hedge", place.peer)
+      (span.own)("relay", Str(self.relay_status(self.endpoint)))
+      let made = attempt(() => self.dial_all(place, opening.credentials, opening.fresh, traceparent?=span.traceparent))
+      if made is Fell(_) {
+        (span.fail)()
+      }
+      (span.end)()
       self.dialled(place, opening, true, made)
     }),
   )
@@ -135,7 +154,12 @@ fn Mesh::rebind(self : Mesh, after? : Array[async () -> Unit] = []) -> Unit {
         while !self.closed {
           let relays = self.relays
           let entries = self.entries
+          let why = if self.retuned { "relays retold" } else { "a dial unanswered, nothing open" }
           let bound = attempt(() => bind(self.shell, relays, self.options.relay_only, self.binding, entries, self.secret))
+          self.record("conn rebind", () => match bound {
+            Did(_) => "\{why} -> bound"
+            Fell(e) => "\{why} -> failed: \{said_short(said(e))}"
+          })
           guard bound is Did(endpoint) else { break }
           // (this waited: closed meanwhile, the endpoint that came is nobody's)
           if self.closed {

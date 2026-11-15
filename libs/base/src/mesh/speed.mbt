@@ -191,6 +191,7 @@ pub fn Mesh::note_speed(self : Mesh, peer : String, relay : String, bytes : Int,
   guard bytes >= speed_min_bytes && ms > 0 else { return }
   let bps = bytes.to_double() / ms.to_double() * 1000.0
   let now = (self.clock.now_ms)()
+  self.say_speed(peer, relay, bytes, ms, now)
   let key = relay_key(relay)
   let of = match self.speeds.get(peer) {
     Some(of) => of

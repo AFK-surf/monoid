@@ -145,11 +145,23 @@ priv struct Opening {
   /// with where both do.
   mut dials : Int
   mut failure : Error?
+  /// Its `mesh.connect` span (trace.mbt), ended as it ends.
+  mut span : Span?
 }
 
 ///|
 fn Opening::new(credentials : async (String, Bool) -> Presented, fresh : Bool) -> Opening {
-  { done: @effect.Deferred::new(), result: None, credentials, fresh, first: None, hedge: None, dials: 0, failure: None }
+  {
+    done: @effect.Deferred::new(),
+    result: None,
+    credentials,
+    fresh,
+    first: None,
+    hedge: None,
+    dials: 0,
+    failure: None,
+    span: None,
+  }
 }
 
 ///|
@@ -242,6 +254,16 @@ pub struct Mesh {
   priv days_key : String
   priv mut days_changed : Bool
   priv mut tallying : Bool
+  /// Its program's tracer and record (trace.mbt); when each (peer, relay)'s speed was last told; the dials made so
+  /// far (each record line's number); whether the DHT's lines are kept, and when last taken.
+  priv trace : Trace
+  priv recorder : Recorder
+  priv speed_said : Map[String, Int64]
+  priv mut dials_n : Int
+  priv mut dht_kept : Bool
+  priv mut dht_at : Int64
+  /// The places whose next dial comes after the endpoint was bound anew for them (its span says so).
+  priv rebound_for : Map[Place, Unit]
   priv mut closed : Bool
 }
 
@@ -263,6 +285,8 @@ pub async fn Mesh::make(
   clock? : WallClock,
   speeds_key? : String = speed_key,
   days_key? : String = net_day_key,
+  trace? : Trace = Trace::none(),
+  recorder? : Recorder = Recorder::none(),
 ) -> Mesh {
   if options.says is Some(says) {
     for field in own_fields {
@@ -338,6 +362,13 @@ pub async fn Mesh::make(
     days_key,
     days_changed: false,
     tallying: false,
+    trace,
+    recorder,
+    speed_said: Map([]),
+    dials_n: 0,
+    dht_kept: false,
+    dht_at: 0L,
+    rebound_for: Map([]),
     closed: false,
   }
 }
@@ -372,6 +403,8 @@ fn is_id(id : String) -> Bool {
 ///
 /// `theirs`, `off`: what its program says of the ways there, as `Mesh::set_ways` (ways.mbt); not said, as they were.
 /// A link no more usable with another way open there that answered: requests go on that one at once.
+///
+/// `asker`: what waits on it, said on its dial's span; `traceparent`: what that span is under (trace.mbt).
 pub async fn Mesh::link(
   self : Mesh,
   peer : String,
@@ -379,6 +412,8 @@ pub async fn Mesh::link(
   scope? : String = "",
   theirs? : Array[String],
   off? : Array[String],
+  asker? : String,
+  traceparent? : String,
 ) -> Link {
   let place : Place = { scope, peer }
   if theirs is Some(_) || off is Some(_) {
@@ -400,7 +435,7 @@ pub async fn Mesh::link(
               raise e
             }
             // (and what is at its place now is looked at anew: this waited)
-            return self.link(peer, credentials, scope~)
+            return self.link(peer, credentials, scope~, asker?, traceparent?)
           }
         }
       }
@@ -425,8 +460,15 @@ pub async fn Mesh::link(
   guard !self.closed else { raise failed("closed") }
   // The endpoint taken for stuck, or not yet on the relays it was told (`Mesh::retune`), nothing on it: it is
   // bound anew, begun in this step.
-  if !self.rebinding && (self.stuck || self.retuned) && self.idle() && self.may_rebind() {
+  let rebound = !self.rebinding && (self.stuck || self.retuned) && self.idle() && self.may_rebind()
+  if rebound {
     self.rebind()
+    self.rebound_for[place] = ()
+  } else if self.stuck {
+    self.record("conn stuck", () => {
+      let open = self.live.filter(link => link.pin is None && link.ended() is None).length()
+      "\{peer_tag(place)} not rebound: \{open} link(s) open"
+    })
   }
   // Nothing is dialled on an endpoint that is being bound anew, nor on one taken for stuck, or not yet on the
   // relays told, that is to be once what is still on it ended by itself (`Mesh::settling`): a dial begun there
@@ -434,9 +476,9 @@ pub async fn Mesh::link(
   // place first: it waited.
   if self.rebinding || ((self.stuck || self.retuned) && self.may_rebind() && self.settling()) {
     self.hold(Some(place))
-    return self.link(peer, credentials, scope~)
+    return self.link(peer, credentials, scope~, asker?, traceparent?)
   }
-  self.dial(place, credentials, fresh).done.wait()
+  self.dial(place, credentials, fresh, asker?, traceparent?).done.wait()
 }
 
 ///|
@@ -470,7 +512,19 @@ fn Mesh::eased(self : Mesh) -> Unit {
 /// between what was there being taken for gone and this being the one there, nothing else runs. What lets go of the
 /// place after finds it (`drop_link`, `close`), dialled for by `link` or by the mesh itself (`Mesh::steer`). A race
 /// under way there (health.mbt) is ended with what it was put over.
-fn Mesh::dial(self : Mesh, place : Place, credentials : async (String, Bool) -> Presented, fresh : Bool) -> Opening {
+///
+/// Told as `mesh.connect` (trace.mbt): `asker`, what waits on it; `traceparent`, what it is under; whether the
+/// endpoint was bound anew for it first (`rebound_for`).
+fn Mesh::dial(
+  self : Mesh,
+  place : Place,
+  credentials : async (String, Bool) -> Presented,
+  fresh : Bool,
+  asker? : String,
+  traceparent? : String,
+) -> Opening {
+  let rebound = self.rebound_for.contains(place)
+  self.rebound_for.remove(place)
   // (a race there was deciding of the link this is put over, ended meanwhile: it has nothing left to decide, and
   // one dial is made for a place, not two)
   self.end_race(place)
@@ -479,6 +533,15 @@ fn Mesh::dial(self : Mesh, place : Place, credentials : async (String, Bool) -> 
     self.count(place.peer, before)
   }
   let opening = Opening::new(credentials, fresh)
+  let span = self.span("mesh.connect", place.peer, parent?=traceparent)
+  if asker is Some(asker) {
+    (span.own)("asker", Str(asker))
+  }
+  if rebound {
+    (span.own)("rebound", Flag(true))
+  }
+  (span.own)("relay", Str(self.relay_status(self.endpoint)))
+  opening.span = Some(span)
   self.links[place] = opening
   self.changed()
   // (cut as the mesh closes, it says nothing: `Mesh::close` tells those who wait for this opening; as `drop_link`
@@ -486,7 +549,7 @@ fn Mesh::dial(self : Mesh, place : Place, credentials : async (String, Bool) -> 
   opening.dials = 1
   opening.first = Some(
     self.scope.fork(name="mesh open", () => {
-      let made = attempt(() => self.dial_all(place, credentials, fresh))
+      let made = attempt(() => self.dial_all(place, credentials, fresh, traceparent?=span.traceparent))
       self.dialled(place, opening, false, made)
     }),
   )
@@ -511,6 +574,7 @@ fn Mesh::dialled(self : Mesh, place : Place, opening : Opening, beside : Bool, m
         return
       }
       opening.result = Some(Open(link))
+      self.connect_said(place, opening, made, beside)
       // (what the endpoint's own dial says of it: a link on a way's own endpoint says nothing of it, ways.mbt)
       if link.pin is None {
         self.stuck = false
@@ -530,6 +594,7 @@ fn Mesh::dialled(self : Mesh, place : Place, opening : Opening, beside : Bool, m
         opening.failure = Some(e)
       }
       guard opening.dials == 0 else { return }
+      self.connect_said(place, opening, Fell(opening.failure.unwrap_or(e)), beside)
       match opening.failure.unwrap_or(e) {
         OpeningTimeout(connected) => {
           if !connected {
@@ -623,6 +688,10 @@ fn Mesh::let_go(self : Mesh, place : Place, reason : String) -> Unit {
   match opening.result {
     None => {
       // Ended here, before it is taken out: its fiber is cut, and one cut says nothing (as at `close`).
+      if opening.span is Some(span) {
+        opening.span = None
+        (span.end)()
+      }
       let e = failed("closed")
       opening.result = Some(Failed(e, false))
       ignore(opening.done.fail(e))
@@ -686,8 +755,17 @@ async fn Mesh::open(
   credentials : async (String, Bool) -> Presented,
   fresh : Bool,
   on? : (String, Json),
+  traceparent? : String,
 ) -> Link {
   let peer = place.peer
+  // (the record's: each dial a line as it ends, while lines are kept; and its stages for its span: trace.mbt)
+  self.dials_n += 1
+  let n = self.dials_n
+  let began = self.shell.rt.now()
+  let since = () => (self.shell.rt.now() - began).to_int()
+  let stages = Stages::new()
+  let outcome = Ref("interrupted")
+  self.record_dht(0)
   guard is_id(peer) else {
     raise MeshError(code="invalid_params", message=say("bad_station_id", args={ "id": peer }), cause="")
   }
@@ -710,6 +788,15 @@ async fn Mesh::open(
     addr["ips"] = strings(ips)
   }
   let addr = Json::object(addr)
+  let via = match pin {
+    None => if ips.length() > 0 { "main+addresses" } else { "main" }
+    Some(kind) if kind == lan || kind == tailnet => kind
+    Some(relay) => "relay:\{relay_host(relay)}"
+  }
+  defer {
+    self.record_dht(0)
+    self.record("conn dial", () => "#\{n} \{peer_tag(place)} via=\{via} onto=\{ms_of(stages.onto)} credential=\{ms_of(stages.credential)} dialled=\{ms_of(stages.dialled)} openBi=\{ms_of(stages.open_bi)} sent=\{ms_of(stages.sent)} total=\{since()}ms -> \{outcome.val}")
+  }
   ignore(
     self.scope.fork(name="mesh dial", () => {
       // (given up before this took its first step: nothing is dialled for it. The opening's own fiber forks this and
@@ -722,6 +809,7 @@ async fn Mesh::open(
         called=id => call.val = Some(id),
       ))
       call.val = None
+      stages.dialled = since()
       match made {
         Did({ json: { "id": conn, .. }, .. }) =>
           if abandoned.val {
@@ -748,11 +836,13 @@ async fn Mesh::open(
       }
     }
   }
-  let link = @effect.race_first(
+  let raced = attempt(() => @effect.race_first(
     () => {
       let presented = credentials(self.id, fresh)
+      stages.credential = since()
       let conn = dialled.wait()
       let first = shell.call("conn.openBi", { "id": conn }) catch { e => raise unreached(e) }
+      stages.open_bi = since()
       guard first.json is { "id": stream, .. } else { raise failed("unreached") }
       let stream : Stream = { shell, id: stream }
       let control : Control = {
@@ -762,7 +852,8 @@ async fn Mesh::open(
         refusal: self.options.refusal,
         named: false,
       }
-      control.send(presented.credential, also?=presented.also)
+      control.send(presented.credential, also?=presented.also, traceparent?)
+      stages.sent = since()
       let link : Link = {
         peer,
         scope: place.scope,
@@ -788,6 +879,12 @@ async fn Mesh::open(
         answered_ms: None,
         warm: false,
         counted: (0L, 0L),
+        opened: (
+          if stages.onto < 0 { 0 } else { stages.onto },
+          if stages.dialled < 0 { 0 } else { stages.dialled },
+          stages.credential,
+        ),
+        recorded: (0L, 0L, Map([])),
         lan: [],
         tailnet: [],
         pin,
@@ -803,11 +900,20 @@ async fn Mesh::open(
       for waited = 0; ips.length() == 0 && waited < onto_max_ms && !self.on_a_relay(endpoint); waited = waited + onto_recheck_ms {
         @effect.sleep(onto_recheck_ms)
       }
+      stages.onto = since()
       @effect.sleep(connect_timeout_ms)
       raise OpeningTimeout(connection.val is Some(_))
     },
-  )
+  ))
+  let link = match raced {
+    Did(link) => link
+    Fell(e) => {
+      outcome.val = outcome_of(e)
+      raise e
+    }
+  }
   opened.val = true
+  outcome.val = "ok"
   // Its answer and its end are said by the two fibers below, or, the mesh closed before they did, by `Mesh::close`:
   // the link is kept for that from here, before either is forked, until both are said.
   self.live.push(link)
@@ -928,6 +1034,10 @@ async fn Mesh::steer(self : Mesh, place : Place, opening : Opening, link : Link)
     // (the ping was waited for: what is at its place is looked at anew, by each of these; a mesh closed meanwhile
     // has none there)
     self.tell_health(place)
+    // (seen once a tick: here unless the place's ways are steered, which see it then, ways.mbt)
+    if !self.closed && !self.ways_at(place).steering && self.links.get(place) is Some(now) && physical_equal(now, opening) {
+      self.observe(place)
+    }
     guard self.links.get(place) is Some(current) && physical_equal(current, opening) else {
       if link.missed >= dead_pings {
         link.close()
@@ -952,7 +1062,7 @@ async fn Mesh::steer(self : Mesh, place : Place, opening : Opening, link : Link)
       if link.pin is None && self.main_on(place) {
         self.ways_at(place).lost_main = true
       }
-      ignore(self.dial(place, link.credentials, false))
+      ignore(self.dial(place, link.credentials, false, asker="again"))
       return
     }
   }
@@ -1049,6 +1159,10 @@ pub async fn Mesh::close(self : Mesh) -> Unit {
   let openings = self.links.values().to_array()
   self.links.clear()
   for opening in openings {
+    if opening.span is Some(span) {
+      opening.span = None
+      (span.end)()
+    }
     if opening.result is None {
       let e = failed("closed")
       opening.result = Some(Failed(e, false))

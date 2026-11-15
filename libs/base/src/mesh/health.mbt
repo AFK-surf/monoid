@@ -91,6 +91,8 @@ priv struct Race {
   /// Begun for a ping missed (`Mesh::suspect`), not at its program's word (`Mesh::wake`): only then does something
   /// having come on the old link meanwhile keep it.
   missed : Bool
+  /// Its `mesh.race` span (trace.mbt), ended as it ends.
+  span : Span
 }
 
 ///|
@@ -126,7 +128,15 @@ fn Mesh::suspect(self : Mesh, place : Place, opening : Opening, link : Link) -> 
 ///|
 /// A race begun at `place`, whose link `link` is, of the opening `opening`; `missed`: for a ping it missed.
 fn Mesh::begin_race(self : Mesh, place : Place, opening : Opening, link : Link, missed : Bool) -> Unit {
-  let race : Race = { old: link, fiber: None, dial: None, next: None, probing: true, missed }
+  let race : Race = {
+    old: link,
+    fiber: None,
+    dial: None,
+    next: None,
+    probing: true,
+    missed,
+    span: self.span("mesh.race", place.peer),
+  }
   // (in `racing` from this step: what lets go of the place before the race's fiber took its first finds it)
   self.racing[place] = race
   race.fiber = Some(self.scope.fork(name="mesh race", () => self.race(place, opening, race)))
@@ -155,7 +165,7 @@ async fn Mesh::race(self : Mesh, place : Place, opening : Opening, race : Race) 
   let dialled : @effect.Deferred[Link?] = @effect.Deferred::new()
   race.dial = Some(
     self.scope.fork(name="mesh race dial", () => {
-      let made = attempt(() => self.dial_all(place, old.credentials, false))
+      let made = attempt(() => self.dial_all(place, old.credentials, false, traceparent?=race.span.traceparent))
       // (cut as the race ends otherwise, it comes to nothing here: an interruption is this fiber's as it next
       // resumes, which is inside the opening, whose own leaving closes what it made)
       match made {
@@ -204,6 +214,17 @@ async fn Mesh::race(self : Mesh, place : Place, opening : Opening, race : Race) 
   // (ended from outside while this waited, this fiber was cut there and is not here: `Mesh::end_race`)
   race.probing = false
   self.racing.remove(place)
+  (race.span.own)(
+    "race",
+    Str(
+      match won {
+        Old => "old"
+        Neither => "neither"
+        New(_) => "new"
+      },
+    ),
+  )
+  (race.span.end)()
   match won {
     Old => race.let_go()
     Neither =>
@@ -244,6 +265,7 @@ fn Mesh::end_race(self : Mesh, place : Place) -> Unit {
   guard self.racing.get(place) is Some(race) else { return }
   self.racing.remove(place)
   race.probing = false
+  (race.span.end)()
   if race.fiber is Some(fiber) {
     fiber.interrupt()
   }

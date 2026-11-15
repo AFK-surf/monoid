@@ -15,7 +15,8 @@ of its workspace (`moon.work`); `effect` stays in mbui.
   requests/streams/duplex, health racing in `health.mbt`, wake/rebind in `wake.mbt`, what the endpoint is bound
   with, relays told again and connections peers dial to it in `bind.mbt`, where peers are dialled straight in
   `addrs.mbt`, the ways to a place and the choice among them in `ways.mbt`, with `sha256.mbt` for the keys of
-  relays' own endpoints, and ways' speeds and the day's tally in `speed.mbt`).
+  relays' own endpoints, ways' speeds and the day's tally in `speed.mbt`, and what it tells of itself in
+  `trace.mbt`).
 
 ## It knows no program
 
@@ -72,6 +73,10 @@ of its workspace (`moon.work`); `effect` stays in mbui.
 - Speeds and days (`speed.mbt`) go by the program's wall clock (`Mesh::make`'s `clock`, the runtime's at UTC unless
   given) and are kept under their keys in its `Store`; a speed is noted only from replies its program times
   (`Mesh::timed`) and weighs in a way's `Score.cost`. The day's tally runs only while a link is open.
+- Spans and record lines (`trace.mbt`) are the TypeScript mesh's by name and attribute, but the peer's attribute is
+  named by `Trace.peer_key` (`"peer"` unless given): this library never says another program's word for it. A record
+  line is worked out only while `Recorder.on`; a place is observed (paths, `conn ways`, `dht`) once a tick, by the
+  ways' fiber while they are steered, by its link's otherwise.
 - The device's key file is its user's alone whatever the umask, by the Rust shell's doing alone
   (`client/shell/src/lib.rs` `create_private`): a program linked to a shell from before keeps its key as its umask has
   it. `shell.c` has been compiled and run on macOS on arm64 alone.

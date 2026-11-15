@@ -33,6 +33,8 @@ pub let explore_ms : Int32
 
 pub let first_ms : Int32
 
+pub fn format_traceparent(Bytes, Bytes, Bool) -> String
+
 pub let keep_ways : Int32
 
 pub let lan_recall_ms : Int32
@@ -148,7 +150,9 @@ pub async fn Link::exchange(Self, String) -> @json.Json
 pub fn Link::lan(Self) -> Array[String]
 pub fn Link::net(Self) -> LinkNet
 pub fn Link::path(Self) -> String?
+pub fn Link::path_shape(Self) -> String
 pub fn Link::paths(Self) -> Array[@json.Json]
+pub fn Link::paths_line(Self) -> String
 pub fn Link::pings(Self) -> Pings
 pub async fn Link::request(Self, String, String, headers? : Array[(String, String)], body? : Bytes, more? : Map[String, @json.Json], wrote? : (Int32) -> Unit) -> Reply
 pub fn Link::tailnet(Self) -> Array[String]
@@ -189,8 +193,8 @@ pub async fn Mesh::health_change(Self, String, Bool, scope? : String) -> Bool
 pub fn Mesh::healthy(Self, String, scope? : String) -> Bool
 pub async fn Mesh::incoming(Self) -> Incoming?
 pub fn Mesh::lan(Self, String, scope? : String) -> Array[String]
-pub async fn Mesh::link(Self, String, async (String, Bool) -> Presented, scope? : String, theirs? : Array[String], off? : Array[String]) -> Link
-pub async fn Mesh::make(@shell.Shell, Store, Options, binding? : Binding, addresses? : String, pinned_prefix? : Bytes, clock? : WallClock, speeds_key? : String, days_key? : String) -> Self
+pub async fn Mesh::link(Self, String, async (String, Bool) -> Presented, scope? : String, theirs? : Array[String], off? : Array[String], asker? : String, traceparent? : String) -> Link
+pub async fn Mesh::make(@shell.Shell, Store, Options, binding? : Binding, addresses? : String, pinned_prefix? : Bytes, clock? : WallClock, speeds_key? : String, days_key? : String, trace? : Trace, recorder? : Recorder) -> Self
 pub fn Mesh::measured(Self, String, scope? : String) -> Array[MeasuredWay]
 pub fn Mesh::measuring(Self, String, scope? : String) -> Bool
 pub fn Mesh::moved(Self, String, scope? : String) -> String?
@@ -206,7 +210,7 @@ pub fn Mesh::standing(Self, String, scope? : String) -> Bool
 pub fn Mesh::tailnet(Self, String, scope? : String) -> Array[String]
 pub fn Mesh::timed(Self, String, String, Reply) -> Reply
 pub fn Mesh::today(Self, String) -> (Int64, Int64)
-pub fn Mesh::wake(Self, network? : Bool) -> Unit
+pub fn Mesh::wake(Self, network? : Bool, retry? : Bool, away_ms? : Int64) -> Unit
 
 pub(all) struct Options {
   alpn : String
@@ -243,6 +247,12 @@ pub(all) struct Presented {
   also : Map[String, @json.Json]?
 }
 
+pub(all) struct Recorder {
+  on : () -> Bool
+  line : (String) -> Unit
+}
+pub fn Recorder::none() -> Self
+
 #derive(Eq)
 pub(all) struct RelayEntry {
   entry : String
@@ -265,10 +275,33 @@ pub(all) struct Score {
   dev : Double
 }
 
+pub(all) struct Span {
+  traceparent : String?
+  set : (String, SpanValue) -> Unit
+  own : (String, SpanValue) -> Unit
+  fail : () -> Unit
+  end : () -> Unit
+}
+pub fn Span::none() -> Self
+
+#derive(Eq, @debug.Debug)
+pub(all) enum SpanValue {
+  Str(String)
+  Int(Int64)
+  Num(Double)
+  Flag(Bool)
+}
+
 pub(all) struct Store {
   get : async (String) -> Bytes?
   set : async (String, Bytes) -> Unit
 }
+
+pub(all) struct Trace {
+  peer_key : String
+  start : (String, String?) -> Span
+}
+pub fn Trace::none() -> Self
 
 pub(all) struct WallClock {
   now_ms : () -> Int64
