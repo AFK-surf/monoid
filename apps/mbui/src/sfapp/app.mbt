@@ -729,7 +729,8 @@ fn lone_tree(v : @view.View, src : Source) -> Unit {
     // phone's page draw it: its page laid out at this window's width as it changes, not a picture of the tab
     Some(Screen(at)) if @sfpages.farview_screen(at.screen) =>
       v.box(fn(p) {
-        p.over(Is(true)).padding(By(fn() { (window_band_now(), 0.0, 0.0, 0.0) })) |> ignore
+        // (padding's order: left, top, right, bottom)
+        p.over(Is(true)).padding(By(fn() { (0.0, window_band_now(), 0.0, 0.0) })) |> ignore
         @sfpages.farview_tab_node(p, src, at.station, at.screen)
       })
       |> ignore

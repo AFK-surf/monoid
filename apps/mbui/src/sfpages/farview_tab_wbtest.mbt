@@ -21,7 +21,15 @@ priv struct FarviewRig {
 let farview_drawn_ms : Double = 3000.0
 
 ///|
-fn farview_rig(screen? : String = "browser:fv_t1", places? : Int = 1) -> FarviewRig {
+/// `w` wide; `over` and `under`: a shell's bars over and under the tab (what holds it gives it the rest).
+fn farview_rig(
+  screen? : String = "browser:fv_t1",
+  places? : Int = 1,
+  w? : Double = 390.0,
+  over? : Double = 0.0,
+  under? : Double = 0.0,
+  font_scale? : Double = 1.0,
+) -> FarviewRig {
   @sfbase.reset()
   @sf.presenters_reset()
   @sf.set_words(@sfbase.fill)
@@ -59,20 +67,27 @@ fn farview_rig(screen? : String = "browser:fv_t1", places? : Int = 1) -> Farview
     },
     tree=fn(root) {
       @ui.set_tree_theme(@sf.ui_theme_now)
-      root.box(fn(row) {
-        row.row(Is(true)).grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
-        for i in 0..<2 {
-          row.show(fn() { shown.get() > i }, fn(p) {
-            p.grow(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
-            farview_tab_node(p, src, "ws-1/st-1", screen)
-          })
-        }
+      root.box(fn(col) {
+        col.grow(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
+        col.box(fn(b) { b.height(Is(Some(over))) |> ignore }) |> ignore
+        col.box(fn(row) {
+          row.row(Is(true)).grow(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
+          for i in 0..<2 {
+            row.show(fn() { shown.get() > i }, fn(p) {
+              p.grow(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
+              farview_tab_node(p, src, "ws-1/st-1", screen)
+            })
+          }
+        })
+        |> ignore
+        col.box(fn(b) { b.height(Is(Some(under))) |> ignore }) |> ignore
       })
       |> ignore
     },
-    w=390.0,
+    w~,
     h=844.0,
   )
+  t.set_font_scale(font_scale)
   t.draw()
   { t, sent, views, cancelled, places: shown }
 }
@@ -334,4 +349,62 @@ test "a Farview tab shown in two places at once: each a stage and a view of its 
   assert_eq(r.views.length(), 3)
   let again = farview_view_of(r.views[2].0)
   assert_true(again == v0 || again == v1)
+}
+
+///|
+// The tab under a shell's bar and over its foot (a phone's page under its bar, the window's top band, a panel under its
+// own): the page's viewport as tall as the tab is given less its own bar, not the window's (100vh and what is fixed at
+// its foot where the tab's foot is).
+test "a Farview tab: its viewport as tall as what holds it gives it, less its bar, under a shell's bars" {
+  let r = farview_rig(screen="browser:fv_shell", over=60.0, under=34.0)
+  let (_, tell) = r.views[0]
+  farview_live(tell)
+  r.t.run_for(farview_drawn_ms)
+  let host = FarviewHost::new()
+  farview_feed(tell, host.reset())
+  r.t.run_for(farview_drawn_ms)
+  let ports = farview_said(r.sent).filter_map(fn(m) { if m is Viewport(_, h, _) { Some(h) } else { None } })
+  guard ports.last() is Some(h) else {
+    fail("no Viewport: \{r.sent.length()} sent, \{farview_said(r.sent).length()} said, \{r.views.length()} views, rects " + r.t.drawn_rects().map(fn(d) { "\{d.0},\{d.1},\{d.2},\{d.3}" }).join(" "))
+  }
+  let red = r.t.drawn_rects().filter(fn(d) { d.4 == 0xFF0000FFL && d.2 == 390.0 })
+  guard red is [page, ..] else { fail("no page drawn") }
+  // (from the page's top to the shell's foot bar)
+  assert_true((h - (844.0 - 34.0 - page.1)).abs() < 0.01, msg="viewport \{h}, page from \{page.1}, all " + ports.map(fn(p) { p.to_string() }).join(" ") + " rects " + r.t.drawn_rects().map(fn(d) { "\{d.0},\{d.1},\{d.2},\{d.3}" }).join(" "))
+  assert_true(page.1 > 60.0)
+}
+
+///|
+/// The agent's line's words and 接管's (each as drawn: its top, its height), with an agent driving the tab, `w` wide at
+/// the system's size of words `scale`.
+fn farview_agent_line(w : Double, scale : Double) -> ((Double, Double), (Double, Double), Array[String]) raise {
+  let r = farview_rig(screen="browser:fv_agent_\{w}_\{scale}", w~, font_scale=scale)
+  let (_, tell) = r.views[0]
+  farview_live(tell)
+  r.t.run_for(farview_drawn_ms)
+  farview_feed(tell, FarviewHost::new().reset())
+  farview_feed(tell, @proto.encode_host(AgentOn(true)))
+  r.t.run_for(farview_drawn_ms)
+  let words = r.t.words()
+  let said = @sf.t("web-pages.chat.screenAgent")
+  let take = @sf.t("android-misc.screen.takeOver")
+  guard words.iter().find_first(fn(x) { x.0 == said }) is Some(a) else { fail("no agent line") }
+  guard words.iter().find_first(fn(x) { x.0 == take }) is Some(b) else { fail("no 接管") }
+  ((a.2, a.4), (b.2, b.4), r.t.audit())
+}
+
+///|
+// 接管 beside the agent's line, its middle on that line's, the words on one line (cut short where a narrow pane at the
+// system's largest words leaves them less, never wrapped beside it) at a phone's width, wide, and at the system's
+// words set larger; every rule the audit holds kept.
+test "a Farview tab: 接管 on the agent's line's middle, its words on one line, at the system's size of words" {
+  for c in [(320.0, 1.0), (390.0, 1.0), (390.0, 1.3), (1200.0, 1.0), (200.0, 2.0)] {
+    let (w, scale) = c
+    let ((at, ah), (bt, bh), faults) = farview_agent_line(w, scale)
+    let line = @ui.sp_at(scale, @sf.ui_theme().text_size(Body).1)
+    assert_eq(faults, [], msg="\{w} at \{scale}: " + faults.join(" / "))
+    // (its words' middle on the first line's middle)
+    assert_true((bt + bh / 2.0 - (at + line / 2.0)).abs() < 1.0, msg="\{w} at \{scale}: words from \{at}, 接管 \{bt}+\{bh}")
+    assert_true(ah < line * 1.5, msg="one line at \{w}: \{ah}")
+  }
 }

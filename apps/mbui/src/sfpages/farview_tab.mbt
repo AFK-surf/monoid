@@ -110,12 +110,14 @@ fn FarviewTab::close(self : FarviewTab, src : Source) -> Unit {
 
 ///|
 /// Farview tab `screen` of `station` in `v`, filling it: its bar (back, forward, the page again, its address; while an
-/// agent drives it, a line saying so with 接管) over the page drawn here, as tall as the window less that bar. The tab
-/// is viewed while this is shown.
+/// agent drives it, a line saying so with 接管) over the page drawn here, the page's viewport as tall as what holds the
+/// tab gives it less that bar (Room::height: under a shell's own bars, a panel's, the window's top band, whatever it is
+/// laid out in). The tab is viewed while this is shown.
 #callsite(autofill(loc))
 pub fn farview_tab_node(v : @view.View, src : Source, station : String, screen : String, loc~ : SourceLoc) -> Unit {
   v.box(made_for=loc, fn(p) {
-    p.grow(Is(1.0)).min_height(Is(Some(0.0))).ground(By(fn() { @sf.theme().p.bg })) |> ignore
+    // (as tall as what holds it gives it, never what the page in it comes to: its viewport is that height)
+    p.grow(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))).ground(By(fn() { @sf.theme().p.bg })) |> ignore
     let tab = farview_tab(src, station, screen)
     tab.shown = 1
     tab.open(src, station, screen)
@@ -130,20 +132,54 @@ pub fn farview_tab_node(v : @view.View, src : Source, station : String, screen :
       col.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
       let chrome = col.box(fn(c) {
         farview_bar_node(c, tab.stage)
-        c.show(fn() { tab.stage.agent() }, fn(line) {
-          line.row(Is(true)).gap(Is(8.0)).padding(Is((6.0, 12.0, 6.0, 12.0))).lines_up(Is(Some(Middle))).ground(By(fn() { @sf.theme().p.muted })) |> ignore
-          line.box(fn(w) {
-            w.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-            @sf.words_node(w, fn() { @sf.t("web-pages.chat.screenAgent") }, fn() { @sf.body }) |> ignore
+        c.show(fn() { tab.stage.agent() }, fn(at) {
+          // (a notice in the bar, a capsule inset from its sides and from the page under it: never edge to edge with
+          // the page, whose ground is the page's own; round as 接管 is, the two concentric)
+          at.padding(Is((8.0, 0.0, 8.0, 8.0))) |> ignore
+          at.box(fn(line) {
+            // (the words on one line, cut short where the row has not the room for them and 接管, never wrapped beside
+            // it; 接管's middle on that line's: each stands down from the top by half of what the other is taller)
+            line
+            .row(Is(true))
+            .gap(Is(8.0))
+            .padding(Is((6.0, 6.0, 6.0, 6.0)))
+            .lines_up(Is(Some(Start)))
+            .ground(By(fn() { @sf.theme().p.neutral_bg }))
+            .radius(Is(@sf.button_height() / 2.0 + 6.0))
+            |> ignore
+            let first_line = fn() { @sf.node_sp(line, @sf.ui_theme().text_size(Body).1) }
+            let past = fn() { (@sf.button_height() - first_line()) / 2.0 }
+            line.box(fn(w) {
+              // (its start off the capsule's round end, S3 in as the address's words in theirs: the line's 6 and the rest)
+              w
+              .grow(Is(1.0))
+              .shrink(Is(1.0))
+              .min_width(Is(Some(0.0)))
+              .padding(By(fn() { (farview_words_in - 6.0, past().max(0.0), 0.0, 0.0) }))
+              |> ignore
+              @sf.words_node(w, fn() { @sf.t("web-pages.chat.screenAgent") }, fn() { farview_agent_words })
+              .cuts(Is(true))
+              .min_width(Is(Some(0.0)))
+              .allow_ellipsis(Is(true))
+              |> ignore
+            })
+            |> ignore
+            line.box(fn(b) {
+              b.padding(By(fn() { (0.0, (-past()).max(0.0), 0.0, 0.0) })) |> ignore
+              @sf.button_node(b, fn() { @sf.t("android-misc.screen.takeOver") }, fn() { tab.stage.take_over() }, tone=Primary) |> ignore
+            })
+            |> ignore
           })
           |> ignore
-          @sf.button_node(line, fn() { @sf.t("android-misc.screen.takeOver") }, fn() { tab.stage.take_over() }) |> ignore
         })
       })
-      // (the page's viewport: the window's height less what is over it, as tall as it is drawn)
-      @stage.stage_node(col, tab.stage, height=Some(fn() { (col.window().1 - room.tall(chrome)).max(0.0) })) |> ignore
+      // (the page's viewport: as tall as the tab is given less what is over it, as tall as it is drawn; the window's
+      // till the tab is first laid out)
+      @stage.stage_node(col, tab.stage, height=Some(fn() { (room.height().unwrap_or(col.window().1) - room.tall(chrome)).max(0.0) }))
+      |> ignore
     })
     .grow(Is(1.0))
+    .basis(Is(Some(0.0)))
     .min_height(Is(Some(0.0)))
     |> ignore
   })
@@ -178,3 +214,13 @@ fn farview_bar_node(p : @view.View, stage : @stage.Stage) -> Unit {
 ///|
 // kept across runs: a style, read as it is
 let farview_address : @ui.Style = @ui.css("px=S3 py=S2 radius=Full bg=Neutral")
+
+///|
+/// The agent's line's words: the body's, on one line.
+// kept across runs: a value (no field of it changes)
+let farview_agent_words : @ui.TextStyle = @ui.text_style(size=Body, color=Fg, wrap=false)
+
+///|
+/// How far in from the agent's line's start its words stand: as far as the address's words stand in their capsule
+/// over it (`farview_address`'s `px=S3`), clear of the capsule's round end.
+let farview_words_in : Double = @ui.Space::S3.px()
