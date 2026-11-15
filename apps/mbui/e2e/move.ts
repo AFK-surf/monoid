@@ -2643,7 +2643,7 @@ try {
         const what = m[4]!.includes("main.js") ? "node" : (/\/([^/\s]+)(?:\s|$)/.exec(m[4]!.split(" --")[0]!)?.[1] ?? m[4]!.slice(0, 30));
         const flag = /--(sessions|serve|data|builder|replica|front)\b/.exec(m[4]!)?.[1];
         return `${what}${flag ? `:${flag}` : ""} ${m[2]}% ${(Number(m[3]) / 1024).toFixed(0)}MB`;
-      }).filter((x) => x !== "").join(", ")}`).join(" | ");
+      }).filter((x) => x !== "").join(", ")}`).join(" | ") + ` | machine: ${spawnSync("ps", ["-axr", "-o", "%cpu=,comm="], { encoding: "utf8" }).stdout.split("\n").slice(0, 5).map((l) => l.trim().replace(/\s+\S*\//, " ")).filter((l) => l !== "").join(", ")}`;
     };
     const duringMove = () => {
       const from = new Date();
