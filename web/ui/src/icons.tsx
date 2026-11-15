@@ -434,7 +434,7 @@ export function Read(props: IconProps) {
 }
 
 export function Received(props: IconProps) {
-  return <Svg {...props}><path d="M12 3.5V14 M7.5 10L12 14.5L16.5 10 M4 15V17Q4 20.5 7.5 20.5H16.5Q20 20.5 20 17V15" /></Svg>;
+  return <Svg {...props}><path d="M11 4.5H8Q3.5 4.5 3.5 9V14Q3.5 18 7 18H8V21L12.5 18H15.5Q20 18 20 13.5V12 M20.5 3.5L13 11 M13 5.5V11H18.5" /></Svg>;
 }
 
 export function Redo(props: IconProps) {
@@ -450,7 +450,7 @@ export function Retry(props: IconProps) {
 }
 
 export function Said(props: IconProps) {
-  return <Svg {...props}><path d="M8 4H16Q20.5 4 20.5 8.5V14Q20.5 18 16.5 18H10L5 20.5V17.5Q3.5 16.5 3.5 14V8.5Q3.5 4 8 4Z M8 9H16 M8 13H13" /></Svg>;
+  return <Svg {...props}><path d="M8 4.5H16Q20.5 4.5 20.5 9V13.5Q20.5 18 16.5 18H10L5 20.5V17.5Q3.5 16.5 3.5 13.5V9Q3.5 4.5 8 4.5Z" /></Svg>;
 }
 
 export function ScreenRotate(props: IconProps) {

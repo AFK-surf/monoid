@@ -1324,7 +1324,7 @@ fn ended_node(v : @view.View, ends : String, words : String, rail : Bool) -> Uni
     ends
   } else if words.has_prefix("标记为做完了") || words.has_prefix("标记为已完成") || words.has_prefix("Marked as done") {
     "done"
-  } else if words.has_prefix("已暂停") || words.has_prefix("等待人工") || words.has_prefix("Paused") {
+  } else if words.has_prefix("已暂停") || words.has_prefix("暂停") || words.has_prefix("等待人工") || words.has_prefix("标记为等") || words.has_prefix("Paused") || words.has_prefix("Stopped for human") {
     "human"
   } else {
     ""
@@ -1370,6 +1370,36 @@ fn ended_node(v : @view.View, ends : String, words : String, rail : Bool) -> Uni
 }
 
 ///|
+/// The icon a group of calls and thoughts in the history leads with: what its calls do, by its title or its first
+/// call's kind (`step_label`); `think` for a group of thoughts alone.
+fn group_icon(g : Json?) -> String {
+  let rows = items(g, "rows")
+  guard rows.iter().find_first(fn(r) { text(Some(r), "kind") == "step" }) is Some(first) else { return "think" }
+  let title = text(g, "title")
+  let label = step_label(text(field(Some(first), "content"), "name"))
+  let says = fn(prefixes : Array[String], labels : Array[String]) {
+    prefixes.iter().any(fn(p) { title.has_prefix(p) }) || labels.contains(label)
+  }
+  if says(["修改", "编辑", "新建"], ["编辑", "新建"]) {
+    "edit"
+  } else if says(["读取"], ["读取"]) {
+    "file-text"
+  } else if says(["搜索"], ["搜索"]) {
+    "search"
+  } else if says(["运行", "命令"], ["命令"]) {
+    "command"
+  } else if says(["网页"], ["网页"]) {
+    "web"
+  } else if says(["子代理", "代理"], ["代理"]) {
+    "agent"
+  } else if says(["对话"], ["对话"]) {
+    "thread"
+  } else {
+    "other"
+  }
+}
+
+///|
 /// A group of calls and thoughts in `v`: its line, all of it opening the group (its title its tip, in
 /// `tips`); opened, a line each beside the group's side line.
 fn group_node(
@@ -1398,15 +1428,11 @@ fn group_node(
         h.ground(By(fn() { if @sf.lit_in_node(h) { @ui.tree_theme().color(Hover) } else { 0L } }))
         |> ignore
         steps_pressed(h, fn() { steps_flip(gk) }, label=fn() { text(g, "summary") }, folds=true, open~)
+        let g_icon = group_icon(g)
         h.box(fn(i) {
           @sf.style_node(i, fn() { h_icon })
-          steps_chevron_node(
-            i,
-            "chevron-right",
-            14.0,
-            By(fn() { if hot() { @sf.theme().p.text } else { @sf.theme().p.muted } }),
-            open,
-          )
+          @sf.icon_node(i, g_icon, 14.0, By(fn() { if hot() { @sf.theme().p.text } else { @sf.theme().p.muted } }))
+          |> ignore
         })
         |> ignore
         steps_box_node(h, h_grow_clip, fn(w) {
@@ -1430,6 +1456,7 @@ fn group_node(
           @sf.badge_node(h, fn() { @sf.t("web-main.history.pending", args=[("n", pending.to_string())]) }, tone=Accented)
           |> ignore
         }
+        steps_fold_mark_node(h, open)
         ignore(tips)
       })
       |> ignore
@@ -1793,15 +1820,18 @@ fn steps_reused_row_node(
                         h.ground(By(fn() { if @sf.lit_in_node(h) { @ui.tree_theme().color(Hover) } else { 0L } }))
                         |> ignore
                         steps_pressed(h, fn() { steps_flip(@signals.untracked(gk)) }, label=summary, folds=true, open~)
+                        let icon_sig = @signals.computed(fn(_) { group_icon(content()) }, same=fn(a, b) { a == b })
+                        let icon_fn = fn() { icon_sig.get() }
                         h.box(fn(i) {
                           @sf.style_node(i, fn() { h_icon })
-                          steps_chevron_node(
+                          @sf.icon_node(
                             i,
-                            "chevron-right",
+                            @signals.untracked(icon_fn),
                             14.0,
                             By(fn() { if hot() { @sf.theme().p.text } else { @sf.theme().p.muted } }),
-                            open,
+                            name_now=icon_fn,
                           )
+                          |> ignore
                         })
                         |> ignore
                         steps_box_node(h, h_grow_clip, fn(w) {
@@ -1837,6 +1867,7 @@ fn steps_reused_row_node(
                           }, tone=Accented)
                           |> ignore
                         }
+                        steps_fold_mark_node(h, open)
                         ignore(tips)
                       })
                       |> ignore
@@ -2144,7 +2175,7 @@ fn opened_node(
       summary(line)
       steps_chevron_node(
         line,
-        "chevron-right",
+        "chevron-down",
         12.0,
         By(fn() { if @sf.lit_in_node(line) { @sf.theme().p.blue } else { @sf.theme().p.muted } }),
         open,
