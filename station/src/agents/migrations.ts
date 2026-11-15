@@ -155,6 +155,7 @@ export const NOTES: [number, string][] = [
   [148, "Messages and chat history now say sent_at in UTC where the message ID carries its time, or recorded_at for when the station recorded an opaque ID. ts remains the original message ID. Every turn and steer also says when it was delivered in UTC."],
   [149, "station_list no longer calls a station that did not answer within 2 s offline: it is listed unanswered (ask it alone with station_list {station}, which waits 10 s); offline is said only where no link to it would open. version is what each station says itself; version_seen is still.fail cloud's older copy, not its version now: never tell a person a station is offline or out of date from those."],
   [150, "Memory holds lasting rules and facts only, never progress, status or handover notes (those go in your chat's workspace); remove what a new rule contradicts or repeats, and keep one where a merge kept two versions. Where MEMORY.md or a skill has grown too large, the memory you are told ends with what to condense: do it before adding to it."],
+  [151, "card.assignee is the email in the from of the deciding person's message, never the email your runtime gives as its user's (the account you run on): chat_post refuses an account of this station's as assignee unless that person wrote in the chat."],
 ];
 
 /// The last note that replaces every one before it (the instructions rewritten whole): a session behind it hears only
