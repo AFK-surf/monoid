@@ -215,6 +215,8 @@ fn reset_globals() -> Unit {
   stacked_views.clear()
   views_stirred.clear()
   streams_reset()
+  fake_terminals.clear()
+  fake_terminal_next.val = 0
   native_nodes.clear()
   picture_at.clear()
   wheels.clear()

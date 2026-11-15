@@ -642,6 +642,8 @@ fn window_kept_ui_11() -> Array[WindowKept] {
       words_over.file = file
     }),
     kept_array(words_over_closing_pairs, fn() { [] }),
+    kept_map(tree_terminals),
+    kept_ref(tree_terminals_rev, fn() { 0 }),
   ]
 }
 

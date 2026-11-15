@@ -27,8 +27,10 @@ export type RunnerInfo = {
   socket: string;
   /// It gives back stdout's disk only up to an ack's `keep` (one from before gives back up to the ack).
   keeps?: boolean;
-  /// A terminal's (`pty`): its program on a pseudo-terminal (terminals/).
+  /// A terminal's (`pty`): its program on a pseudo-terminal (terminals/), and the size it started with.
   pty?: boolean;
+  cols?: number;
+  rows?: number;
 };
 
 export type Exit = { code: number | null; signal: string | null };

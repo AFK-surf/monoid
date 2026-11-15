@@ -126,6 +126,7 @@ if [ "${PLATFORM:-mac}" = windows ]; then
   fi
   engine=$(cd "$SF_SRC" && node scripts/native.ts path engine win32-x64) || exit 1
   shell=$(cd "$SF_SRC" && node scripts/native.ts path shell win32-x64) || exit 1
+  ghostty_vt=$(cd "$SF_SRC" && node scripts/native.ts path ghostty-vt win32-x64) || exit 1
   # WebView2's SDK (win_views.cpp), as mbui's win.sh fetches it
   WV2=$MBUI_DIR/out/webview2/1.0.4258.31
   if [ ! -f "$WV2/build/native/include/WebView2.h" ]; then
@@ -139,11 +140,11 @@ if [ "${PLATFORM:-mac}" = windows ]; then
   t0=$SECONDS
   win() { cygpath -w "$1"; }
   flags="-nologo -O2 -utf-8 -W0 -I$(win "$moon_root/include") -I$(win "$WT_W/include") -I$(win "$A/$H") -I$(win "$A/engine")
-    -I$(win "$WV2/build/native/include") -I$(win "$A/src/host")"
+    -I$(win "$WV2/build/native/include") -I$(win "$A/src/host") -I$(win "$ghostty_vt/include")"
   # (cl's own: -Fo the object, -c; C++ the host's .cpp, with exceptions as it is compiled natively)
   objs=()
   pids=()
-  for f in $H/win_*.c $H/win_*.cpp $H/wasm_shell.c "$O/thunks.c" src/stillfail/win_engine.c src/core/core_native.c \
+  for f in $H/win_*.c $H/win_*.cpp $H/wasm_shell.c "$O/thunks.c" src/stillfail/win_engine.c src/stillfail/terminal_ghostty.c src/core/core_native.c \
       src/sfreplay/trace_files.c "$moon_root/lib/runtime/runtime.c"; do
     o=$W/obj/$(echo "${f#"$A"/}" | tr '/\\:' '___').obj
     mkdir -p "$W/obj"
@@ -157,13 +158,13 @@ if [ "${PLATFORM:-mac}" = windows ]; then
     pids+=($!)
   done
   for p in ${pids[@]+"${pids[@]}"}; do wait "$p" || exit 1; done
-  # (the engine's and the shell's import libraries named by the host's #pragma comment, found where LIB says, as
+  # (the engine's, the shell's and libghostty-vt's libraries named by #pragma comment, found where LIB says, as
   # scripts/win.sh has it)
-  export LIB="$(win "$engine");$(win "$shell");$LIB"
+  export LIB="$(win "$engine");$(win "$shell");$(win "$ghostty_vt/lib");$LIB"
   # (MSVC's link, beside its cl: Git Bash's own /usr/bin/link is another program)
   "$(dirname "$(command -v cl.exe)")/link.exe" -nologo -out:"$(win "$W/stillfail.exe")" $(for o in "${objs[@]}"; do win "$o"; done) \
     "$(win "$WT_W/lib/wasmtime.dll.lib")" "$(win "$WV2/build/native/x64/WebView2LoaderStatic.lib")" > "$W/link.log" 2>&1 || { cat "$W/link.log"; exit 1; }
-  cp "$WT_W/lib/wasmtime.dll" "$engine/stillfail_engine.dll" "$shell/stillfail_shell.dll" "$A/out/core/core.hbc" "$W/"
+  cp "$WT_W/lib/wasmtime.dll" "$engine/stillfail_engine.dll" "$shell/stillfail_shell.dll" "$ghostty_vt/bin/ghostty-vt.dll" "$A/out/core/core.hbc" "$W/"
   echo "wasm-app: the Windows shell in $((SECONDS - t0)) s"
   if [ "${1:-build}" = run ]; then
     shift

@@ -23,7 +23,7 @@ import { get, isObject, utf8 } from "./util.ts";
 type J = any;
 
 /// The frames' kinds (station/src/terminals/terminals.ts `KIND`).
-export const KIND = { screen: 1, out: 2, state: 3, input: 16, resize: 17 } as const;
+export const KIND = { screen: 1, out: 2, state: 3, input: 16, resize: 17, control: 18 } as const;
 /// A terminal's size, in cells, as the station takes it.
 export const SIZE = { cols: [2, 1000], rows: [1, 500] } as const;
 /// What one `input` frame carries at most (the station's MAX_IN); more is sent in several.
@@ -123,6 +123,40 @@ export class FrameReader {
   }
 }
 
+/// Drains all ready frames from `reader`, merging consecutive `KIND.out` frames into one payload per run while keeping
+/// exact ordering relative to `screen` and `state` frames.
+export function drainFrames(reader: FrameReader): { kind: number; payload: Uint8Array }[] {
+  const frames: { kind: number; payload: Uint8Array }[] = [];
+  let outs: Uint8Array[] = [];
+  let outBytes = 0;
+  const flush = () => {
+    if (outs.length === 0) return;
+    if (outs.length === 1) frames.push({ kind: KIND.out, payload: outs[0]! });
+    else {
+      const merged = new Uint8Array(outBytes);
+      let at = 0;
+      for (const part of outs) {
+        merged.set(part, at);
+        at += part.length;
+      }
+      frames.push({ kind: KIND.out, payload: merged });
+    }
+    outs = [];
+    outBytes = 0;
+  };
+  for (let f = reader.next(); f !== null; f = reader.next()) {
+    if (f.kind === KIND.out) {
+      outs.push(f.payload);
+      outBytes += f.payload.length;
+      continue;
+    }
+    flush();
+    frames.push(f);
+  }
+  flush();
+  return frames;
+}
+
 type Open = {
   station: string;
   input(data: Uint8Array): void;
@@ -185,6 +219,7 @@ function view(inner: Inner, c: Extract<TerminalCall, { kind: "view" }>, progress
     let ask: TerminalAsk = c.ask;
     let out: Queue.Queue<Uint8Array> | null = null;
     let again: Deferred.Deferred<void> | null = null;
+    let inband = false;
     const write = (bytes: Uint8Array) => {
       if (out !== null) Queue.offerUnsafe(out, bytes);
     };
@@ -198,9 +233,14 @@ function view(inner: Inner, c: Extract<TerminalCall, { kind: "view" }>, progress
         ask = { ...ask, cols, rows };
         if (state.types) write(frame(KIND.resize, utf8(JSON.stringify({ cols, rows }))));
       },
-      // Opened again asking to take it (or to look only when `control` is false); asked once (its reopens after it ask as any).
+      // Switches typing/looking in-band when the station supports KIND.control; falls back to reopening against older stations.
       take: (control = true) => {
-        ask = control ? { ...ask, control: true, taken: true } : { ...ask, control: false, taken: undefined };
+        ask = control ? { ...ask, control: true, taken: undefined } : { ...ask, control: false, taken: undefined };
+        if (inband && out !== null && state.phase === "live") {
+          write(frame(KIND.control, utf8(JSON.stringify({ control, taken: control, cols: ask.cols, rows: ask.rows }))));
+          return;
+        }
+        if (control) ask = { ...ask, taken: true };
         if (again !== null) Deferred.doneUnsafe(again, Effect.void);
       },
     });
@@ -224,6 +264,7 @@ function view(inner: Inner, c: Extract<TerminalCall, { kind: "view" }>, progress
         yield* Effect.forkScoped(Effect.ignore(drain));
         const reopen = Deferred.makeUnsafe<void>();
         again = reopen;
+        inband = false;
         state.phase = "live";
         delete state.message;
         tell();
@@ -236,7 +277,7 @@ function view(inner: Inner, c: Extract<TerminalCall, { kind: "view" }>, progress
           if ("reopen" in next) return { reopen: true } as const;
           if (next.r._tag === "Failure" || next.r.success === null) return { dropped: true } as const;
           reader.push(next.r.success);
-          for (let f = reader.next(); f !== null; f = reader.next()) {
+          for (const f of drainFrames(reader)) {
             if (f.kind === KIND.screen) progress({ screen: true }, f.payload);
             else if (f.kind === KIND.out) progress({ out: true }, f.payload);
             else if (f.kind === KIND.state) {
@@ -247,6 +288,7 @@ function view(inner: Inner, c: Extract<TerminalCall, { kind: "view" }>, progress
                 return { failed: new CoreError("garbled", t("core-misc.terminal.garbled")) } as const;
               }
               if (!isObject(s)) continue;
+              if (s.inband === true) inband = true;
               if (typeof s.id === "string" && s.id !== "") id = state.id = s.id;
               state.types = s.types === true;
               state.typing = typeof s.typing === "string" ? s.typing : null;

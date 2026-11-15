@@ -253,8 +253,13 @@ pub(open) trait Host {
   cl_picture(Self, Int) -> Int = _
   tm_open(Self, Int, Int) -> Int = _
   tm_write(Self, Int, Bytes) -> Unit = _
-  tm_resize(Self, Int, Int, Int) -> Unit = _
-  tm_lines(Self, Int) -> String = _
+  tm_resize(Self, Int, Int, Int, Int, Int) -> Unit = _
+  tm_frame(Self, Int, Int) -> Bytes = _
+  tm_modes(Self, Int) -> Int = _
+  tm_scroll(Self, Int, Int, Int) -> Unit = _
+  tm_select(Self, Int, Int, Int, Int, Int, Int) -> Int = _
+  tm_text(Self, Int, Int) -> String = _
+  tm_mouse(Self, Int, Int, Int, Int, Int, Int, Int, Int, Int, Int) -> Bytes = _
   tm_close(Self, Int) -> Unit = _
   cl_text(Self, Int) -> String = _
   cl_png(Self, Int) -> Bytes = _
@@ -1403,13 +1408,38 @@ impl Host with tm_write(_, _, _) {
 }
 
 ///|
-impl Host with tm_resize(_, _, _, _) {
+impl Host with tm_resize(_, _, _, _, _, _) {
   ()
 }
 
 ///|
-impl Host with tm_lines(_, _) {
+impl Host with tm_frame(_, _, _) {
+  b""
+}
+
+///|
+impl Host with tm_modes(_, _) {
+  0
+}
+
+///|
+impl Host with tm_scroll(_, _, _, _) {
+  ()
+}
+
+///|
+impl Host with tm_select(_, _, _, _, _, _, _) {
+  0
+}
+
+///|
+impl Host with tm_text(_, _, _) {
   ""
+}
+
+///|
+impl Host with tm_mouse(_, _, _, _, _, _, _, _, _, _, _) {
+  b""
 }
 
 ///|
@@ -3244,13 +3274,49 @@ fn tm_write(id : Int, data : Bytes) -> Unit {
 }
 
 ///|
-fn tm_resize(id : Int, cols : Int, rows : Int) -> Unit {
-  current.val.tm_resize(id, cols, rows)
+fn tm_resize(id : Int, cols : Int, rows : Int, cw : Int, ch : Int) -> Unit {
+  current.val.tm_resize(id, cols, rows, cw, ch)
 }
 
 ///|
-fn tm_lines(id : Int) -> String {
-  current.val.tm_lines(id)
+fn tm_frame(id : Int, flags : Int) -> Bytes {
+  current.val.tm_frame(id, flags)
+}
+
+///|
+fn tm_modes(id : Int) -> Int {
+  current.val.tm_modes(id)
+}
+
+///|
+fn tm_scroll(id : Int, kind : Int, value : Int) -> Unit {
+  current.val.tm_scroll(id, kind, value)
+}
+
+///|
+fn tm_select(id : Int, kind : Int, x0 : Int, y0 : Int, x1 : Int, y1 : Int) -> Int {
+  current.val.tm_select(id, kind, x0, y0, x1, y1)
+}
+
+///|
+fn tm_text(id : Int, sel : Int) -> String {
+  current.val.tm_text(id, sel)
+}
+
+///|
+fn tm_mouse(
+  id : Int,
+  action : Int,
+  button : Int,
+  mods : Int,
+  x : Int,
+  y : Int,
+  w : Int,
+  h : Int,
+  cw : Int,
+  ch : Int,
+) -> Bytes {
+  current.val.tm_mouse(id, action, button, mods, x, y, w, h, cw, ch)
 }
 
 ///|

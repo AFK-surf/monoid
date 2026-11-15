@@ -3,7 +3,7 @@
 // tests' (station/test/terminals.test.ts) and the app's.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { FrameReader, KIND, frame, parseTerminal } from "../src/terminals.ts";
+import { FrameReader, KIND, drainFrames, frame, parseTerminal } from "../src/terminals.ts";
 
 const station = "w1/s1";
 
@@ -37,4 +37,24 @@ test("the station's frames are read whole however their bytes come", () => {
     for (let f = reader.next(); f !== null; f = reader.next()) got.push(`${f.kind}:${Buffer.from(f.payload).toString()}`);
   }
   assert.deepEqual(got, [`${KIND.screen}:\x1b[Hscreen`, `${KIND.out}:more`, `${KIND.state}:{"types":true}`]);
+});
+
+test("drainFrames coalesces consecutive out frames while preserving screen and state boundaries", () => {
+  const reader = new FrameReader();
+  reader.push(
+    Buffer.concat([
+      frame(KIND.out, Buffer.from("one ")),
+      frame(KIND.out, Buffer.from("two ")),
+      frame(KIND.out, Buffer.from("three")),
+      frame(KIND.state, Buffer.from('{"types":true,"inband":true}')),
+      frame(KIND.out, Buffer.from("after-1 ")),
+      frame(KIND.out, Buffer.from("after-2")),
+    ]),
+  );
+  const drained = drainFrames(reader).map((f) => `${f.kind}:${Buffer.from(f.payload).toString()}`);
+  assert.deepEqual(drained, [
+    `${KIND.out}:one two three`,
+    `${KIND.state}:{"types":true,"inband":true}`,
+    `${KIND.out}:after-1 after-2`,
+  ]);
 });

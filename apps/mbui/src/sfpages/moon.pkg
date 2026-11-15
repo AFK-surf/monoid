@@ -1,6 +1,7 @@
 import {
   "moonbitlang/core/cmp",
   "moonbitlang/core/double",
+  "moonbitlang/core/encoding/utf8",
   "moonbitlang/core/json",
   "moonbitlang/core/math",
   "moonbitlang/core/string",

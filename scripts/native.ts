@@ -319,10 +319,10 @@ function ghosttyVt(): Part {
   };
 }
 
-/// A crate that links libghostty-vt where it is made for macOS or Linux: that build of it is in its key, and its build
-/// is told where it is (GHOSTTY_VT_DIR, which the crate's build.rs reads).
+/// A crate that links libghostty-vt where it is made for macOS, Linux or Windows: that build of it is in its key, and
+/// its build is told where it is (GHOSTTY_VT_DIR, which the crate's build.rs reads).
 function withGhosttyVt(part: Part): Part {
-  const linked = (t: Target) => t === "darwin-arm64" || LINUX(t);
+  const linked = (t: Target) => t === "darwin-arm64" || LINUX(t) || t === "win32-x64";
   return {
     ...part,
     recipe: (t) => ({ ...(part.recipe(t) as object), ...(linked(t) ? { ghosttyVt: key("ghostty-vt", t) } : {}) }),
@@ -402,7 +402,7 @@ const PARTS: Record<string, Part> = {
   // The TypeScript station's launcher (§2) and an agent's runner (§1).
   // On Windows with stillfail-station-w.exe beside it: the launcher as the logon task runs it, with no window.
   launcher: withHidden(stationCrate("station/native/launcher", exe("stillfail-station"), exe("stillfail-station"))),
-  // On macOS and Linux with libghostty-vt linked, the screen of a terminal it keeps (its build.rs, src/ghostty.rs).
+  // With libghostty-vt linked (macOS, Linux, Windows), the screen of a terminal it keeps (its build.rs, src/ghostty.rs).
   runner: withGhosttyVt({ ...stationCrate("station/native/runner", exe("stillfail-runner"), exe("stillfail-runner")), targets: STATION_BINS, env: "STILLFAIL_RUNNER" }),
   // Windows' display as the station's desktop screen, what still.fail Helper is on macOS.
   screen: { ...stationCrate("station/native/screen", () => "stillfail-screen.exe", "stillfail-screen.exe"), targets: ["win32-x64"], env: "STILLFAIL_SCREEN" },

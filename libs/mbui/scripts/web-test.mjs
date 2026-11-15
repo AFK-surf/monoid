@@ -9,9 +9,14 @@ const require = createRequire(import.meta.url);
 const { chromium } = require(path.resolve('out/node/node_modules/playwright'));
 
 const root = path.resolve('out/web');
-const types = { '.html': 'text/html', '.js': 'text/javascript' };
+const types = { '.html': 'text/html', '.js': 'text/javascript', '.wasm': 'application/wasm' };
 const server = http.createServer((req, res) => {
   const p = path.join(root, decodeURIComponent(new URL(req.url, 'http://x').pathname));
+  if (p.endsWith('.wasm') && (!fs.existsSync(p) || !fs.statSync(p).isFile())) {
+    res.writeHead(404);
+    res.end();
+    return;
+  }
   const f = fs.existsSync(p) && fs.statSync(p).isFile() ? p : path.join(root, 'index.html');
   res.writeHead(200, { 'content-type': types[path.extname(f)] || 'application/octet-stream' });
   fs.createReadStream(f).pipe(res);

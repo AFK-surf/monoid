@@ -62,7 +62,7 @@ export const TerminalsLive = Layer.effectDiscard(
         if (!isTerminalRunner(info.id) || info.pty !== true || !(await listeningSoon(info))) continue;
         const meta = metaOf(await readFile(metaFile(info.id), "utf8").then(JSON.parse).catch(() => null));
         if (meta === null) continue;
-        kept.keep(info.id, new TerminalLink(runnerWire(info)), meta);
+        kept.keep(info.id, new TerminalLink(runnerWire(info)), meta, { cols: info.cols, rows: info.rows });
         log.info("terminal", "taken up", { id: info.id });
       }
     });

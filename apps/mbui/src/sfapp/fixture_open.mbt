@@ -685,6 +685,7 @@ pub fn open_mode(mode : String) -> Unit {
       "terminal-kb" => @sfpages.terminal_fixture_ask("kb")
       "terminal-keys" => @sfpages.terminal_fixture_ask("keys")
       "terminal-center" => @sfpages.terminal_fixture_ask("center")
+      "terminal-scrolled" => @sfpages.terminal_fixture_ask("scrolled")
       _ => ()
     }
     let tid = match mode {

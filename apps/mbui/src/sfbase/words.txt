@@ -2766,6 +2766,10 @@ web-pages.terminal.copyCwd
 web-pages.terminal.copyScreen
 web-pages.terminal.fit80
 web-pages.terminal.hideKeyboard
+web-pages.terminal.backspace
+web-pages.terminal.scrollBottom
+web-pages.terminal.copySelection
+web-pages.terminal.clearSelection
 web-pages.terminal.sendCmd
 web-pages.terminal.combo.interrupt
 web-pages.terminal.combo.eof

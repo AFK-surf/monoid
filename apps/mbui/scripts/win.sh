@@ -33,10 +33,12 @@ export APP=${APP:-stillfail}
 if [ -z "${MBUI_IN_WIN_SH:-}" ] && [ "$APP" = stillfail ]; then
   engine=$(cd "$SF_SRC" && node scripts/native.ts path engine win32-x64) || exit 1
   shell=$(cd "$SF_SRC" && node scripts/native.ts path shell win32-x64) || exit 1
-  # (the shell's import library too: the app asks the shell itself for a remote screen's frames, src/host/win_core.c)
-  export LIB="$(cygpath -w "$engine");$(cygpath -w "$shell");$LIB"
-  export CL="/I$(cygpath -w "$A/engine") /I$(cygpath -w "$MBUI_DIR/src/host") ${CL:-}"
-  export engine shell
+  ghostty_vt=$(cd "$SF_SRC" && node scripts/native.ts path ghostty-vt win32-x64) || exit 1
+  # (the shell's import library too: the app asks the shell itself for a remote screen's frames, src/host/win_core.c;
+  # libghostty-vt's static library for src/stillfail/terminal_ghostty.c)
+  export LIB="$(cygpath -w "$engine");$(cygpath -w "$shell");$(cygpath -w "$ghostty_vt/lib");$LIB"
+  export CL="/I$(cygpath -w "$A/engine") /I$(cygpath -w "$MBUI_DIR/src/host") /I$(cygpath -w "$ghostty_vt/include") ${CL:-}"
+  export engine shell ghostty_vt
 fi
 core() { HERMESC=$(cygpath -m "$engine/hermesc.exe") bash "$AD/core.sh" hermes; }
 # variant: what MBUI_VARIANT builds the app as: its id, its name, its program's name where it is put (the desktop app's
@@ -122,7 +124,7 @@ put() {
   . "$MBUI_DIR/scripts/env.sh"
   # (mbui's win.sh builds this module in its copy, out/win/app beside mbui's own)
   dir=$MBUI_DIR/out/win/app/$(cd "$MBUI_DIR/out/win/app" && pkg_build $APP native ${MODE:-release})
-  cp "$engine/stillfail_engine.dll" "$shell/stillfail_shell.dll" "$dir/" || return 1
+  cp "$engine/stillfail_engine.dll" "$shell/stillfail_shell.dll" "$ghostty_vt/bin/ghostty-vt.dll" "$dir/" || return 1
   [ "${1:-}" != core ] || cp "$A/out/core/core.hbc" "$dir/" || return 1
   ls -la "$dir"
 }
@@ -191,10 +193,10 @@ setup() {
   [ -f "$built/stillfail.exe" ] || { echo "win.sh: no app built (win.sh build, put)" >&2; return 1; }
   rm -rf "$out" && mkdir -p "$out/files"
   setup_bare || return 1
-  check_crt "$A/out/setup-bare/setup-bare.exe" "$built/stillfail.exe" "$built/stillfail_engine.dll" "$built/stillfail_shell.dll" || return 1
+  check_crt "$A/out/setup-bare/setup-bare.exe" "$built/stillfail.exe" "$built/stillfail_engine.dll" "$built/stillfail_shell.dll" "$built/ghostty-vt.dll" || return 1
   cp "$A/out/setup-bare/setup-bare.exe" "$out/setup-bare.exe"
   cp "$built/stillfail.exe" "$out/files/$exe.exe"
-  cp "$built/stillfail_engine.dll" "$built/stillfail_shell.dll" "$built/core.hbc" "$out/files/"
+  cp "$built/stillfail_engine.dll" "$built/stillfail_shell.dll" "$built/ghostty-vt.dll" "$built/core.hbc" "$out/files/"
   printf 'APP_NAME=%s\nAPP_ID=%s\nEXE=%s\nDIR=%s\nSCHEMES=%s\nVERSION=0.1.%s\n' "$name" "$id" "$exe" "$dir" "$schemes" "$n" > "$out/setup.env"
   local to=$out/${MBUI_SETUP_NAME:-stillfail-setup-0.1.$n.exe}
   local w=(); for f in "$out/files/"*; do w+=("$(cygpath -w "$f")"); done

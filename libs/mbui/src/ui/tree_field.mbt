@@ -70,7 +70,11 @@ let tree_fields_rev : Ref[Int] = Ref(0)
 fn view_words_found(d : @view.Drawn) -> String {
   match tree_fields.get(d.id) {
     Some(tf) => (tf.hint)()
-    None => view_words_set(d.words, d.words_look, d.words_breaks)
+    None =>
+      match tree_terminals.get(d.id) {
+        Some(tt) => tt.visible_text()
+        None => view_words_set(d.words, d.words_look, d.words_breaks)
+      }
   }
 }
 

@@ -8,6 +8,7 @@
   const SERIF = '"Songti SC", "Noto Serif CJK SC", "Source Han Serif SC", SimSun, serif';
   const MONO = 'ui-monospace, "SF Mono", Menlo, Consolas, "JetBrains Mono", "PingFang SC", "Noto Sans CJK SC", monospace';
   const ATLAS = 2048;
+  const hostScriptSrc = (typeof document !== 'undefined' && document.currentScript && document.currentScript.src) || location.href;
   const params = new URLSearchParams(location.search);
   const H = {};
   let cb = null;
@@ -2741,6 +2742,585 @@
     return true;
   };
 
+  // ---- terminals (src/hostapi/terminal.mbt, ghostty-vt.wasm) ----
+  let vt = null, vtScratch = 0, vtWideLsb = 42;
+  const terms = new Map();
+  let nextTermId = 1;
+  const utf8Dec = typeof TextDecoder !== 'undefined' ? new TextDecoder() : null;
+  const utf8Decode = (bytes) => {
+    if (utf8Dec) return utf8Dec.decode(bytes);
+    let s = '';
+    for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+    return decodeURIComponent(escape(s));
+  };
+  const termAsked = (globalThis.__mbrender || typeof WebAssembly === 'undefined' || typeof fetch === 'undefined' || typeof URL === 'undefined')
+    ? null
+    : (() => {
+        try {
+          const u = new URL('ghostty-vt.wasm', hostScriptSrc);
+          const q = new URL(hostScriptSrc, location.href).search;
+          if (q) u.search = q;
+          return fetch(u)
+            .then((r) => (r.ok && !(r.headers.get('content-type') || '').includes('text/html') ? r.arrayBuffer() : null))
+            .then((b) => {
+              if (!b || b.byteLength < 8) return null;
+              const hdr = new Uint8Array(b, 0, 4);
+              if (hdr[0] !== 0 || hdr[1] !== 0x61 || hdr[2] !== 0x73 || hdr[3] !== 0x6d) return null;
+              return WebAssembly.instantiate(b, {});
+            })
+            .then((res) => {
+              if (!res) return;
+              const x = res.instance.exports;
+              const s = x.ghostty_alloc(0, 4096);
+              if (!s) return;
+              vt = x;
+              vtScratch = s;
+              try {
+                const p = x.ghostty_type_json();
+                const m = new Uint8Array(x.memory.buffer);
+                let e = p;
+                while (m[e] !== 0) e++;
+                const tj = JSON.parse(utf8Decode(m.subarray(p, e)));
+                const lsb = tj?.types?.GhosttyCell?.bits?.wide?.lsb;
+                if (typeof lsb === 'number') vtWideLsb = lsb;
+              } catch (_) {}
+            })
+            .catch(() => {});
+        } catch (_) {
+          return null;
+        }
+      })();
+
+  function vtModes(t) {
+    const dv = new DataView(vt.memory.buffer);
+    const m8 = new Uint8Array(vt.memory.buffer);
+    const mc = vtScratch + 440;
+    const askMode = (code) => {
+      dv.setUint16(mc, code, true);
+      m8[mc + 2] = 0;
+      return vt.ghostty_terminal_get(t.term, 30, mc) === 0 && m8[mc + 2] !== 0;
+    };
+    let m = 0;
+    if (askMode(1)) m |= 1;
+    if (askMode(2004)) m |= 2;
+    m8[vtScratch] = 0;
+    if (vt.ghostty_terminal_get(t.term, 11, vtScratch) === 0 && m8[vtScratch] !== 0) m |= 4;
+    dv.setInt32(vtScratch, 0, true);
+    if (vt.ghostty_terminal_get(t.term, 6, vtScratch) === 0 && dv.getInt32(vtScratch, true) === 1) m |= 8;
+    if (askMode(1007)) m |= 16;
+    if (askMode(1004)) m |= 32;
+    if (vt.ghostty_terminal_get(t.term, 31, vtScratch + 112) === 0) m |= 64;
+    m8[vtScratch] = 1;
+    if (vt.ghostty_terminal_get(t.term, 32, vtScratch) !== 0 || m8[vtScratch] !== 0) m |= 128;
+    return m;
+  }
+
+  H.termOpen = (cols, rows) => {
+    if (!vt) return 0;
+    const c = cols > 0 ? cols : 1;
+    const r = rows > 0 ? rows : 1;
+    if (vt.ghostty_terminal_new(0, vtScratch, c, r) !== 0) return 0;
+    const term = new DataView(vt.memory.buffer).getUint32(vtScratch, true);
+    if (vt.ghostty_render_state_new(0, vtScratch) !== 0) {
+      vt.ghostty_terminal_free(term);
+      return 0;
+    }
+    const render = new DataView(vt.memory.buffer).getUint32(vtScratch, true);
+    if (vt.ghostty_render_state_row_iterator_new(0, vtScratch) !== 0) {
+      vt.ghostty_render_state_free(render);
+      vt.ghostty_terminal_free(term);
+      return 0;
+    }
+    const rowIt = new DataView(vt.memory.buffer).getUint32(vtScratch, true);
+    if (vt.ghostty_render_state_row_cells_new(0, vtScratch) !== 0) {
+      vt.ghostty_render_state_row_iterator_free(rowIt);
+      vt.ghostty_render_state_free(render);
+      vt.ghostty_terminal_free(term);
+      return 0;
+    }
+    const cells = new DataView(vt.memory.buffer).getUint32(vtScratch, true);
+    new DataView(vt.memory.buffer).setUint32(vtScratch, 16 * 1024 * 1024, true);
+    vt.ghostty_terminal_set(term, 28, vtScratch);
+    let mouse = 0, mouseEv = 0;
+    if (vt.ghostty_mouse_encoder_new(0, vtScratch) === 0) {
+      mouse = new DataView(vt.memory.buffer).getUint32(vtScratch, true);
+      new Uint8Array(vt.memory.buffer)[vtScratch] = 1;
+      vt.ghostty_mouse_encoder_set(mouse, 5, vtScratch);
+    }
+    if (vt.ghostty_mouse_event_new(0, vtScratch) === 0) {
+      mouseEv = new DataView(vt.memory.buffer).getUint32(vtScratch, true);
+    }
+    const id = nextTermId++;
+    terms.set(id, {
+      term, render, rowIt, cells, mouse, mouseEv,
+      dragActive: false, dragX0: 0, dragY0: 0, dragScreenX0: 0, dragScreenY0: 0,
+      mouseSynced: false, mouseButtons: 0,
+      buf: new Uint8Array(8192),
+    });
+    return id;
+  };
+
+  H.termWrite = (id, data) => {
+    const t = terms.get(id);
+    if (!t || !vt || !data || !data.length) return;
+    const n = data.length;
+    if (n <= 2816) {
+      new Uint8Array(vt.memory.buffer).set(data, vtScratch + 1280);
+      vt.ghostty_terminal_vt_write(t.term, vtScratch + 1280, n);
+    } else {
+      const p = vt.ghostty_alloc(0, n);
+      if (!p) return;
+      new Uint8Array(vt.memory.buffer).set(data, p);
+      vt.ghostty_terminal_vt_write(t.term, p, n);
+      vt.ghostty_free(0, p, n);
+    }
+    t.mouseSynced = false;
+  };
+
+  H.termResize = (id, cols, rows, cw, ch) => {
+    const t = terms.get(id);
+    if (!t || !vt) return;
+    vt.ghostty_terminal_resize(t.term, cols > 0 ? cols : 1, rows > 0 ? rows : 1, cw > 0 ? cw : 8, ch > 0 ? ch : 16);
+    t.mouseSynced = false;
+  };
+
+  H.termModes = (id) => {
+    const t = terms.get(id);
+    return t && vt ? vtModes(t) : 0;
+  };
+
+  H.termFrame = (id, flags) => {
+    const t = terms.get(id);
+    if (!t || !vt || vt.ghostty_render_state_update(t.render, t.term) !== 0) return new Uint8Array(0);
+    let dv = new DataView(vt.memory.buffer);
+    let m8 = new Uint8Array(vt.memory.buffer);
+    if (flags & 1) {
+      dv.setInt32(vtScratch, 2, true);
+      vt.ghostty_render_state_set(t.render, 1, vtScratch);
+    }
+    vt.ghostty_render_state_get(t.render, 1, vtScratch);
+    const cols = dv.getUint16(vtScratch, true);
+    vt.ghostty_render_state_get(t.render, 2, vtScratch);
+    const rows = dv.getUint16(vtScratch, true);
+    vt.ghostty_render_state_get(t.render, 3, vtScratch);
+    const dirty = dv.getInt32(vtScratch, true);
+
+    m8[vtScratch] = 0;
+    vt.ghostty_render_state_get(t.render, 11, vtScratch);
+    const curVis = m8[vtScratch] !== 0;
+    m8[vtScratch] = 0;
+    vt.ghostty_render_state_get(t.render, 14, vtScratch);
+    const curAt = m8[vtScratch] !== 0;
+    m8[vtScratch] = 0;
+    vt.ghostty_render_state_get(t.render, 12, vtScratch);
+    const curBlink = m8[vtScratch] !== 0;
+    dv.setInt32(vtScratch, 1, true);
+    vt.ghostty_render_state_get(t.render, 10, vtScratch);
+    const curStyle = dv.getInt32(vtScratch, true);
+    let cx = 0, cy = 0, curWide = false;
+    if (curAt) {
+      vt.ghostty_render_state_get(t.render, 15, vtScratch);
+      cx = dv.getUint16(vtScratch, true);
+      vt.ghostty_render_state_get(t.render, 16, vtScratch);
+      cy = dv.getUint16(vtScratch, true);
+      m8[vtScratch] = 0;
+      vt.ghostty_render_state_get(t.render, 17, vtScratch);
+      curWide = m8[vtScratch] !== 0;
+    }
+
+    const hasFg = vt.ghostty_terminal_get(t.term, 18, vtScratch) === 0;
+    const fgR = hasFg ? m8[vtScratch] : 0, fgG = hasFg ? m8[vtScratch + 1] : 0, fgB = hasFg ? m8[vtScratch + 2] : 0;
+    const hasBg = vt.ghostty_terminal_get(t.term, 19, vtScratch) === 0;
+    const bgR = hasBg ? m8[vtScratch] : 0, bgG = hasBg ? m8[vtScratch + 1] : 0, bgB = hasBg ? m8[vtScratch + 2] : 0;
+    const hasCur = vt.ghostty_terminal_get(t.term, 20, vtScratch) === 0;
+    const crR = hasCur ? m8[vtScratch] : 0, crG = hasCur ? m8[vtScratch + 1] : 0, crB = hasCur ? m8[vtScratch + 2] : 0;
+
+    let curFlags = 0;
+    if (curVis && curAt) curFlags |= 1;
+    if (curBlink) curFlags |= 2;
+    if (curWide) curFlags |= 4;
+    if (hasCur) curFlags |= 8;
+    if (hasFg) curFlags |= 16;
+    if (hasBg) curFlags |= 32;
+
+    const modes = vtModes(t);
+    dv = new DataView(vt.memory.buffer);
+    m8 = new Uint8Array(vt.memory.buffer);
+    const sbAt = vtScratch + 16;
+    dv.setBigUint64(sbAt, 0n, true);
+    dv.setBigUint64(sbAt + 8, 0n, true);
+    dv.setBigUint64(sbAt + 16, 0n, true);
+    vt.ghostty_terminal_get(t.term, 9, sbAt);
+    const sbTotal = Number(dv.getBigUint64(sbAt, true) & 0xffffffffn) >>> 0;
+    const sbOffset = Number(dv.getBigUint64(sbAt + 8, true) & 0xffffffffn) >>> 0;
+    const sbLen = Number(dv.getBigUint64(sbAt + 16, true) & 0xffffffffn) >>> 0;
+
+    let out = t.buf;
+    let at = 0;
+    const need = (n) => {
+      if (at + n <= out.length) return;
+      let cap = out.length * 2;
+      while (cap < at + n) cap *= 2;
+      const nb = new Uint8Array(cap);
+      nb.set(out.subarray(0, at));
+      out = t.buf = nb;
+    };
+    const u8 = (v) => { need(1); out[at++] = v & 0xff; };
+    const u16 = (v) => { need(2); out[at++] = v & 0xff; out[at++] = (v >>> 8) & 0xff; };
+    const u32 = (v) => {
+      need(4);
+      out[at++] = v & 0xff;
+      out[at++] = (v >>> 8) & 0xff;
+      out[at++] = (v >>> 16) & 0xff;
+      out[at++] = (v >>> 24) & 0xff;
+    };
+
+    u8(1);
+    u8(dirty === 2 ? 2 : dirty === 1 ? 1 : 0);
+    u16(cols);
+    u16(rows);
+    u16(cx);
+    u16(cy);
+    u8(curStyle >= 0 && curStyle <= 3 ? curStyle : 1);
+    u8(curFlags);
+    u16(modes);
+    u8(fgR); u8(fgG); u8(fgB);
+    u8(bgR); u8(bgG); u8(bgB);
+    u8(crR); u8(crG); u8(crB);
+    u8(0);
+    u32(sbTotal);
+    u32(sbOffset);
+    u32(sbLen);
+    const rowCountAt = at;
+    u16(0);
+    u32(0);
+
+    let rowCount = 0;
+    let havePalette = false;
+    const palAt = vtScratch + 512;
+    const rselAt = vtScratch + 256;
+    const styleAt = vtScratch + 160;
+    const gbufAt = vtScratch + 176;
+    const utf8At = vtScratch + 192;
+    const wideShift = BigInt(vtWideLsb);
+
+    if (dirty !== 0) {
+      dv.setUint32(vtScratch, t.rowIt, true);
+      if (vt.ghostty_render_state_get(t.render, 4, vtScratch) === 0) {
+        while (vt.ghostty_render_state_row_iterator_next_dirty(t.rowIt, vtScratch)) {
+          dv = new DataView(vt.memory.buffer);
+          m8 = new Uint8Array(vt.memory.buffer);
+          const y = dv.getUint16(vtScratch, true);
+          dv.setUint32(rselAt, 8, true);
+          let selStart = 0xffff, selEnd = 0xffff;
+          if (vt.ghostty_render_state_row_get(t.rowIt, 4, rselAt) === 0) {
+            selStart = dv.getUint16(rselAt + 4, true);
+            selEnd = dv.getUint16(rselAt + 6, true);
+          }
+          u16(y);
+          u16(selStart);
+          u16(selEnd);
+          const cellCountAt = at;
+          u16(0);
+          let cellCount = 0;
+
+          dv.setUint32(vtScratch, t.cells, true);
+          if (vt.ghostty_render_state_row_get(t.rowIt, 3, vtScratch) === 0) {
+            let col = 0;
+            while (vt.ghostty_render_state_row_cells_next(t.cells)) {
+              const cellX = col++;
+              let wide = 0;
+              if (vt.ghostty_render_state_row_cells_get(t.cells, 1, vtScratch) === 0) {
+                const raw = dv.getBigUint64(vtScratch, true);
+                wide = Number((raw >> wideShift) & 3n);
+              }
+              if (wide === 2 || wide === 3) continue;
+
+              dv.setUint32(gbufAt, utf8At, true);
+              dv.setUint32(gbufAt + 4, 64, true);
+              dv.setUint32(gbufAt + 8, 0, true);
+              let glen = vt.ghostty_render_state_row_cells_get(t.cells, 9, gbufAt) === 0 ? dv.getUint32(gbufAt + 8, true) : 0;
+              if (glen === 1 && m8[utf8At] === 0x20) glen = 0;
+              if (glen > 64) glen = 64;
+
+              m8.fill(0, styleAt, styleAt + 16);
+              vt.ghostty_render_state_row_cells_get(t.cells, 2, styleAt);
+              const sflagsBase = dv.getUint16(styleAt + 12, true) & 0x07ff;
+
+              const cellFg = vt.ghostty_render_state_row_cells_get(t.cells, 6, vtScratch) === 0;
+              const cfR = cellFg ? m8[vtScratch] : 0, cfG = cellFg ? m8[vtScratch + 1] : 0, cfB = cellFg ? m8[vtScratch + 2] : 0;
+              const cellBg = vt.ghostty_render_state_row_cells_get(t.cells, 5, vtScratch) === 0;
+              const cbR = cellBg ? m8[vtScratch] : 0, cbG = cellBg ? m8[vtScratch + 1] : 0, cbB = cellBg ? m8[vtScratch + 2] : 0;
+
+              let cellUl = false, cuR = 0, cuG = 0, cuB = 0;
+              const ulTag = m8[styleAt + 8];
+              if (ulTag === 2) {
+                cuR = m8[styleAt + 9]; cuG = m8[styleAt + 10]; cuB = m8[styleAt + 11];
+                cellUl = true;
+              } else if (ulTag === 1) {
+                if (!havePalette) havePalette = vt.ghostty_render_state_get(t.render, 9, palAt) === 0;
+                if (havePalette) {
+                  const idx = m8[styleAt + 9] * 3;
+                  cuR = m8[palAt + idx]; cuG = m8[palAt + idx + 1]; cuB = m8[palAt + idx + 2];
+                  cellUl = true;
+                }
+              }
+
+              if (glen === 0 && !cellBg && (sflagsBase & (16 | 64 | 128 | 0x0700)) === 0) continue;
+              let sflags = sflagsBase;
+              if (cellFg) sflags |= 2048;
+              if (cellBg) sflags |= 4096;
+              if (cellUl) sflags |= 8192;
+
+              u16(cellX);
+              u8(wide === 1 ? 2 : 1);
+              u8(glen);
+              u16(sflags);
+              if (cellFg) { u8(cfR); u8(cfG); u8(cfB); }
+              if (cellBg) { u8(cbR); u8(cbG); u8(cbB); }
+              if (cellUl) { u8(cuR); u8(cuG); u8(cuB); }
+              if (glen > 0) {
+                need(glen);
+                out.set(m8.subarray(utf8At, utf8At + glen), at);
+                at += glen;
+              }
+              cellCount++;
+            }
+          }
+          out[cellCountAt] = cellCount & 0xff;
+          out[cellCountAt + 1] = (cellCount >>> 8) & 0xff;
+          rowCount++;
+        }
+      }
+    }
+
+    vt.ghostty_render_state_clean(t.render);
+    out[rowCountAt] = rowCount & 0xff;
+    out[rowCountAt + 1] = (rowCount >>> 8) & 0xff;
+    return out.slice(0, at);
+  };
+
+  H.termScroll = (id, kind, value) => {
+    const t = terms.get(id);
+    if (!t || !vt) return;
+    const svAt = vtScratch + 88;
+    const dv = new DataView(vt.memory.buffer);
+    new Uint8Array(vt.memory.buffer).fill(0, svAt, svAt + 24);
+    if (kind === 0) {
+      dv.setInt32(svAt, 2, true);
+      dv.setInt32(svAt + 8, value | 0, true);
+    } else if (kind === 1) {
+      dv.setInt32(svAt, 0, true);
+    } else if (kind === 2) {
+      dv.setInt32(svAt, 1, true);
+    } else if (kind === 3) {
+      dv.setInt32(svAt, 3, true);
+      dv.setUint32(svAt + 8, value > 0 ? value >>> 0 : 0, true);
+    } else {
+      return;
+    }
+    vt.ghostty_terminal_scroll_viewport(t.term, svAt);
+  };
+
+  H.termSelect = (id, kind, x0, y0, x1, y1) => {
+    const t = terms.get(id);
+    if (!t || !vt) return 0;
+    const selAt = vtScratch + 112;
+    if (kind === 0) {
+      t.dragActive = false;
+      vt.ghostty_terminal_set(t.term, 22, 0);
+      return 0;
+    }
+    if (kind === 4) {
+      t.dragActive = false;
+      new Uint8Array(vt.memory.buffer).fill(0, selAt, selAt + 20);
+      return vt.ghostty_terminal_select_all(t.term, selAt) === 0 && vt.ghostty_terminal_set(t.term, 22, selAt) === 0 ? 1 : 0;
+    }
+    const dv = new DataView(vt.memory.buffer);
+    const m8 = new Uint8Array(vt.memory.buffer);
+    vt.ghostty_terminal_get(t.term, 1, vtScratch);
+    const cols = Math.max(1, dv.getUint16(vtScratch, true));
+    vt.ghostty_terminal_get(t.term, 2, vtScratch);
+    const rows = Math.max(1, dv.getUint16(vtScratch, true));
+    const clamp = (v, lim) => (v <= 0 ? 0 : v >= lim ? lim - 1 : v | 0);
+    const cx0 = clamp(x0, cols), cy0 = clamp(y0, rows);
+    const cx1 = clamp(x1, cols), cy1 = clamp(y1, rows);
+
+    const p0At = vtScratch + 40;
+    const p1At = vtScratch + 64;
+    const optAt = vtScratch + 136;
+    m8.fill(0, p0At, p0At + 48);
+    dv.setInt32(p0At, 1, true);
+    dv.setUint16(p0At + 8, cx0, true);
+    dv.setUint32(p0At + 12, cy0, true);
+
+    if (kind === 2 || kind === 3) {
+      t.dragActive = false;
+      m8.fill(0, optAt, optAt + 24);
+      if (vt.ghostty_terminal_grid_ref(t.term, p0At, optAt + 4) !== 0) return 0;
+      dv.setUint32(optAt, kind === 2 ? 20 : 24, true);
+      m8.fill(0, selAt, selAt + 20);
+      const rc = kind === 2
+        ? vt.ghostty_terminal_select_word(t.term, optAt, selAt)
+        : vt.ghostty_terminal_select_line(t.term, optAt, selAt);
+      return rc === 0 && vt.ghostty_terminal_set(t.term, 22, selAt) === 0 ? 1 : 0;
+    }
+
+    if (kind === 1) {
+      if (!t.dragActive || t.dragX0 !== x0 || t.dragY0 !== y0) {
+        const sbAt = vtScratch + 16;
+        dv.setBigUint64(sbAt + 8, 0n, true);
+        vt.ghostty_terminal_get(t.term, 9, sbAt);
+        const sbOff = Number(dv.getBigUint64(sbAt + 8, true) & 0xffffffffn) >>> 0;
+        t.dragX0 = x0;
+        t.dragY0 = y0;
+        t.dragScreenX0 = cx0;
+        t.dragScreenY0 = sbOff + cy0;
+        t.dragActive = true;
+      }
+      m8.fill(0, p0At, p0At + 48);
+      dv.setInt32(p0At, 2, true);
+      dv.setUint16(p0At + 8, t.dragScreenX0, true);
+      dv.setUint32(p0At + 12, t.dragScreenY0 >>> 0, true);
+      dv.setInt32(p1At, 1, true);
+      dv.setUint16(p1At + 8, cx1, true);
+      dv.setUint32(p1At + 12, cy1, true);
+      m8.fill(0, selAt, selAt + 20);
+      if (vt.ghostty_terminal_grid_ref(t.term, p0At, selAt) !== 0) return 0;
+      if (vt.ghostty_terminal_grid_ref(t.term, p1At, selAt + 8) !== 0) return 0;
+      return vt.ghostty_terminal_set(t.term, 22, selAt) === 0 ? 1 : 0;
+    }
+    return 0;
+  };
+
+  function vtReadRenderText(t, selOnly) {
+    if (vt.ghostty_render_state_update(t.render, t.term) !== 0) return '';
+    let dv = new DataView(vt.memory.buffer);
+    let m8 = new Uint8Array(vt.memory.buffer);
+    dv.setUint32(vtScratch, t.rowIt, true);
+    if (vt.ghostty_render_state_get(t.render, 4, vtScratch) !== 0) return '';
+    const rselAt = vtScratch + 256;
+    const gbufAt = vtScratch + 176;
+    const utf8At = vtScratch + 192;
+    const wideShift = BigInt(vtWideLsb);
+    const lines = [];
+    while (vt.ghostty_render_state_row_iterator_next(t.rowIt)) {
+      dv = new DataView(vt.memory.buffer);
+      m8 = new Uint8Array(vt.memory.buffer);
+      let s0 = 0, s1 = 0xfffe;
+      if (selOnly) {
+        dv.setUint32(rselAt, 8, true);
+        if (vt.ghostty_render_state_row_get(t.rowIt, 4, rselAt) !== 0) continue;
+        s0 = dv.getUint16(rselAt + 4, true);
+        s1 = dv.getUint16(rselAt + 6, true);
+      }
+      dv.setUint32(vtScratch, t.cells, true);
+      if (vt.ghostty_render_state_row_get(t.rowIt, 3, vtScratch) !== 0) continue;
+      let col = 0;
+      let line = '';
+      while (vt.ghostty_render_state_row_cells_next(t.cells)) {
+        const cx = col++;
+        if (cx < s0 || cx > s1) continue;
+        if (vt.ghostty_render_state_row_cells_get(t.cells, 1, vtScratch) === 0) {
+          const wide = Number((dv.getBigUint64(vtScratch, true) >> wideShift) & 3n);
+          if (wide === 2 || wide === 3) continue;
+        }
+        dv.setUint32(gbufAt, utf8At, true);
+        dv.setUint32(gbufAt + 4, 64, true);
+        dv.setUint32(gbufAt + 8, 0, true);
+        const glen = vt.ghostty_render_state_row_cells_get(t.cells, 9, gbufAt) === 0 ? dv.getUint32(gbufAt + 8, true) : 0;
+        line += glen > 0 ? utf8Decode(m8.subarray(utf8At, utf8At + Math.min(glen, 64))) : ' ';
+      }
+      lines.push(line.replace(/ +$/, ''));
+    }
+    while (!selOnly && lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+    return lines.join('\n');
+  }
+
+  H.termText = (id, sel) => {
+    const t = terms.get(id);
+    if (!t || !vt) return '';
+    const selAt = vtScratch + 112;
+    if (sel !== 0 && vt.ghostty_terminal_get(t.term, 31, selAt) !== 0) return '';
+    // Use formatter for selections if compiled into Wasm; for sel===0 (current viewport) or prebuilt wasm32 without
+    // formatter, read viewport rows cleanly from render state so scrollback history is not dumped into "Copy Screen".
+    if (sel !== 0 && vt.ghostty_formatter_terminal_new && vt.ghostty_formatter_terminal_new(0, vtScratch, t.term) === 0) {
+      let dv = new DataView(vt.memory.buffer);
+      let m8 = new Uint8Array(vt.memory.buffer);
+      const fmt = dv.getUint32(vtScratch, true);
+      m8[vtScratch] = 1;
+      vt.ghostty_formatter_set(fmt, 3, vtScratch);
+      vt.ghostty_formatter_set(fmt, 2, vtScratch);
+      vt.ghostty_formatter_set(fmt, 4, selAt);
+      let s = '';
+      if (vt.ghostty_formatter_format_alloc(fmt, 0, vtScratch, vtScratch + 4) === 0) {
+        dv = new DataView(vt.memory.buffer);
+        m8 = new Uint8Array(vt.memory.buffer);
+        const ptr = dv.getUint32(vtScratch, true);
+        const len = dv.getUint32(vtScratch + 4, true);
+        if (ptr && len) s = utf8Decode(m8.subarray(ptr, ptr + len));
+        vt.ghostty_free(0, ptr, len);
+      }
+      vt.ghostty_formatter_free(fmt);
+      return s;
+    }
+    return vtReadRenderText(t, sel !== 0);
+  };
+
+  H.termMouse = (id, action, button, mods, x, y, w, h, cw, ch) => {
+    const t = terms.get(id);
+    if (!t || !vt || !t.mouse || !t.mouseEv) return new Uint8Array(0);
+    if (action !== 2 || !t.mouseSynced) {
+      vt.ghostty_mouse_encoder_set_from_terminal(t.mouse, t.term);
+      t.mouseSynced = true;
+    }
+    if (button >= 1 && button <= 3) {
+      if (action === 0) t.mouseButtons |= 1 << button;
+      else if (action === 1) t.mouseButtons &= ~(1 << button);
+    }
+    const dv = new DataView(vt.memory.buffer);
+    const m8 = new Uint8Array(vt.memory.buffer);
+    m8[vtScratch] = t.mouseButtons !== 0 ? 1 : 0;
+    vt.ghostty_mouse_encoder_set(t.mouse, 4, vtScratch);
+
+    const szAt = vtScratch + 264;
+    m8.fill(0, szAt, szAt + 36);
+    dv.setUint32(szAt, 36, true);
+    dv.setUint32(szAt + 4, w > 0 ? w : 1, true);
+    dv.setUint32(szAt + 8, h > 0 ? h : 1, true);
+    dv.setUint32(szAt + 12, cw > 0 ? cw : 1, true);
+    dv.setUint32(szAt + 16, ch > 0 ? ch : 1, true);
+    vt.ghostty_mouse_encoder_set(t.mouse, 3, szAt);
+
+    vt.ghostty_mouse_event_set_action(t.mouseEv, action === 1 ? 1 : action === 2 ? 2 : 0);
+    if (button >= 1 && button <= 11) vt.ghostty_mouse_event_set_button(t.mouseEv, button);
+    else vt.ghostty_mouse_event_clear_button(t.mouseEv);
+    vt.ghostty_mouse_event_set_mods(t.mouseEv, mods & 0x0f);
+    const posAt = vtScratch + 432;
+    dv.setFloat32(posAt, x < 0 ? 0 : x, true);
+    dv.setFloat32(posAt + 4, y < 0 ? 0 : y, true);
+    vt.ghostty_mouse_event_set_position(t.mouseEv, posAt);
+
+    const outAt = vtScratch + 304;
+    dv.setUint32(vtScratch, 0, true);
+    if (vt.ghostty_mouse_encoder_encode(t.mouse, t.mouseEv, outAt, 128, vtScratch) !== 0) return new Uint8Array(0);
+    const written = new DataView(vt.memory.buffer).getUint32(vtScratch, true);
+    if (!written) return new Uint8Array(0);
+    return new Uint8Array(vt.memory.buffer).slice(outAt, outAt + written);
+  };
+
+  H.termClose = (id) => {
+    const t = terms.get(id);
+    if (!t || !vt) return;
+    if (t.mouseEv) vt.ghostty_mouse_event_free(t.mouseEv);
+    if (t.mouse) vt.ghostty_mouse_encoder_free(t.mouse);
+    vt.ghostty_render_state_row_cells_free(t.cells);
+    vt.ghostty_render_state_row_iterator_free(t.rowIt);
+    vt.ghostty_render_state_free(t.render);
+    vt.ghostty_terminal_free(t.term);
+    terms.delete(id);
+  };
+
   H.run = (title, frame, pointer, wheel, key, text) => {
     document.title = title;
     canvas = document.getElementById('c');
@@ -2752,8 +3332,8 @@
     cb = { frame, pointer, wheel, key, text };
     window.__mb = cb;
     resize();
-    // (the app's first frame once the host knows what it decodes: h264Asked)
-    h264Asked.then(() => {
+    // (the app's first frame once the host knows what it decodes and whether its terminal Wasm is beside it)
+    (termAsked ? Promise.all([h264Asked, termAsked]) : h264Asked).then(() => {
       known = true;
       H.requestFrame();
     });

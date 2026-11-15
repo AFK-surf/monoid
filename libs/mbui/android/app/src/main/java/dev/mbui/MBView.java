@@ -943,10 +943,13 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
 
         @Override
         public boolean performContextMenuAction(int id) {
-            // a key catcher has no text to select, copy or paste into
+            if (id == android.R.id.paste || id == android.R.id.pasteAsPlainText) {
+                view.paste();
+                return true;
+            }
+            // a key catcher has no text of its own to select, copy or cut
             if (Device.catching) return false;
-            if (id == android.R.id.paste || id == android.R.id.pasteAsPlainText) view.paste();
-            else if (id == android.R.id.selectAll) view.toGL(() -> Native.key(12, 0));
+            if (id == android.R.id.selectAll) view.toGL(() -> Native.key(12, 0));
             else if (id == android.R.id.copy) view.toGL(() -> Native.key(13, 0));
             else if (id == android.R.id.cut) view.toGL(() -> Native.key(14, 0));
             return true;

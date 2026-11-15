@@ -816,6 +816,6 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone terminal": (411, 498, 146),
   "phone terminal-taken": (386, 448, 118),
   "wide settings-station-terminals": (597, 1193, 296),
-  "wide terminal": (237, 218, 20),
+  "wide terminal": (237, 218, 18),
   "wide terminal-taken": (243, 228, 26),
 }

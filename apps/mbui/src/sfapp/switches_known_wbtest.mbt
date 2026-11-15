@@ -399,8 +399,4 @@ let switches_known : Map[String, Int] = Map([
     ("小屏 player-opening: toggle 「上一个」", 3),
     ("小屏 player-video: toggle 「上一个」", 3),
     ("小屏 player-video: toggle 「下一个」", 3),
-    // (a terminal's 按键 on a wide page, #6361: its tray of keys comes at once a padding's height, its keys under it,
-    // then grows as they make their way in, the terminal over it giving way twice; its own mending the terminal's)
-    ("中屏 terminal: toggle 「按键」", 2),
-    ("大屏 terminal: toggle 「按键」", 2),
 ])

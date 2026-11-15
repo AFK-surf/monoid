@@ -293,7 +293,7 @@ UP_DELTA=$UP_NAME.from-$FROM.delta
 up_key=
 if (cd "$ROOT" && MBUI_BUILD=$NEXT MBUI_SETUP_OUT="$UPD/setup" MBUI_SETUP_NAME=$UP_NAME bash scripts/win.sh setup) > "$OUT/update-seed.log" 2>&1 &&
   MSYS_NO_PATHCONV=1 "$UPD/setup/$UP_NAME" --raw "$(w "$UPD/$UP_RAW")" >> "$OUT/update-seed.log" 2>&1 &&
-  mkdir -p "$UPD/old" && for f in stillfail.exe stillfail_engine.dll stillfail_shell.dll core.hbc; do cp "$(dirname "$EXE")/$f" "$UPD/old/"; done &&
+  mkdir -p "$UPD/old" && for f in stillfail.exe stillfail_engine.dll stillfail_shell.dll ghostty-vt.dll core.hbc; do cp "$(dirname "$EXE")/$f" "$UPD/old/"; done &&
   mkdir -p "$SF/dist/releases/win/mbui" && cp "$UPD/setup/$UP_NAME" "$SF/dist/releases/win/" &&
   (cd "$SF" && node scripts/delta.ts make --old "$(w "$UPD/old")" --new "$(w "$UPD/$UP_RAW")" --out "$(w "$SF/dist/releases/win/$UP_DELTA")") >> "$OUT/update-seed.log" 2>&1 &&
   up_key=$(cd "$SF" && node scripts/release-sign.ts keygen "$(w "$UPD/key.pem")" | cut -d' ' -f1) &&

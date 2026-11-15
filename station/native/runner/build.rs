@@ -1,6 +1,6 @@
-//! Links libghostty-vt (src/ghostty.rs) where the runner keeps terminals, on macOS and Linux: the static library
-//! scripts/native.ts prebuilds (`ghostty-vt`), from GHOSTTY_VT_DIR (its part's directory, which native.ts gives the
-//! runner's build), else asked of native.ts here (a `cargo test` in the checkout).
+//! Links libghostty-vt (src/ghostty.rs) where the runner keeps terminals, on macOS, Linux and Windows: the static
+//! library scripts/native.ts prebuilds (`ghostty-vt`), from GHOSTTY_VT_DIR (its part's directory, which native.ts gives
+//! the runner's build), else asked of native.ts here (a `cargo test` in the checkout).
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -12,7 +12,7 @@ fn main() {
         "aarch64-apple-darwin" => "darwin-arm64",
         "x86_64-unknown-linux-gnu" => "linux-x64",
         "aarch64-unknown-linux-gnu" => "linux-arm64",
-        // Windows' terminals are not kept yet (ConPTY): nothing to link.
+        "x86_64-pc-windows-gnu" | "x86_64-pc-windows-msvc" => "win32-x64",
         _ => return,
     };
     let dir = match std::env::var_os("GHOSTTY_VT_DIR") {
@@ -26,7 +26,17 @@ fn main() {
     };
     // Copied under the name the linker looks for whatever the target (`-l static=ghostty_vt`).
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
-    std::fs::copy(dir.join("lib/libghostty-vt.a"), out.join("libghostty_vt.a")).expect("libghostty-vt.a");
-    println!("cargo:rustc-link-search=native={}", out.display());
-    println!("cargo:rustc-link-lib=static=ghostty_vt");
+    if part == "win32-x64" {
+        let dst = if target.ends_with("-msvc") { "ghostty_vt.lib" } else { "libghostty_vt.a" };
+        std::fs::copy(dir.join("lib/ghostty-vt-static.lib"), out.join(dst)).expect("ghostty-vt-static.lib");
+        println!("cargo:rustc-link-search=native={}", out.display());
+        println!("cargo:rustc-link-lib=static=ghostty_vt");
+        println!("cargo:rustc-link-lib=ntdll");
+        println!("cargo:rustc-link-lib=kernel32");
+        println!("cargo:rustc-link-lib=synchronization");
+    } else {
+        std::fs::copy(dir.join("lib/libghostty-vt.a"), out.join("libghostty_vt.a")).expect("libghostty-vt.a");
+        println!("cargo:rustc-link-search=native={}", out.display());
+        println!("cargo:rustc-link-lib=static=ghostty_vt");
+    }
 }

@@ -14,14 +14,39 @@ fn tm_write(id : Int, data : Bytes) -> Unit {
 }
 
 ///|
-fn tm_resize(id : Int, cols : Int, rows : Int) = "mbhost" "mb_host_term_resize"
+fn tm_resize(id : Int, cols : Int, rows : Int, cw : Int, ch : Int) = "mbhost" "mb_host_term_resize"
 
 ///|
-fn mbw_mb_host_term_lines(id : Int) -> Int = "mbhost" "mb_host_term_lines"
+fn mbw_mb_host_term_frame(id : Int, flags : Int) -> Int = "mbhost" "mb_host_term_frame"
 
 ///|
-fn tm_lines(id : Int) -> String {
-  @wasmrt.take_string(mbw_mb_host_term_lines(id))
+fn tm_frame(id : Int, flags : Int) -> Bytes {
+  @wasmrt.take_bytes(mbw_mb_host_term_frame(id, flags))
+}
+
+///|
+fn tm_modes(id : Int) -> Int = "mbhost" "mb_host_term_modes"
+
+///|
+fn tm_scroll(id : Int, kind : Int, value : Int) = "mbhost" "mb_host_term_scroll"
+
+///|
+fn tm_select(id : Int, kind : Int, x0 : Int, y0 : Int, x1 : Int, y1 : Int) -> Int = "mbhost" "mb_host_term_select"
+
+///|
+fn mbw_mb_host_term_text(id : Int, sel : Int) -> Int = "mbhost" "mb_host_term_text"
+
+///|
+fn tm_text(id : Int, sel : Int) -> String {
+  @wasmrt.take_string(mbw_mb_host_term_text(id, sel))
+}
+
+///|
+fn mbw_mb_host_term_mouse(id : Int, action : Int, button : Int, mods : Int, x : Int, y : Int, w : Int, h : Int, cw : Int, ch : Int) -> Int = "mbhost" "mb_host_term_mouse"
+
+///|
+fn tm_mouse(id : Int, action : Int, button : Int, mods : Int, x : Int, y : Int, w : Int, h : Int, cw : Int, ch : Int) -> Bytes {
+  @wasmrt.take_bytes(mbw_mb_host_term_mouse(id, action, button, mods, x, y, w, h, cw, ch))
 }
 
 ///|

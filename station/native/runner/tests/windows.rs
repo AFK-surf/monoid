@@ -583,3 +583,44 @@ fn ending_a_job_ends_what_its_command_left_behind_whose_parent_is_gone() {
     runner.wait().unwrap();
     ends(ping);
 }
+
+#[test]
+fn a_pty_runs_a_program_in_conpty_and_answers_its_screen_and_resize() {
+    let runner = Runner::start_with(
+        "conpty",
+        &["--pty", "60x18"],
+        &cmd("echo CONPTY_READY& set /p line=& echo GOT:%line%"),
+    );
+    assert_eq!(runner.info["pty"], json!(true));
+    assert_eq!(runner.info["cols"], json!(60));
+    assert_eq!(runner.info["rows"], json!(18));
+    let mut client = runner.connect();
+    client.send(json!({"op": "attach"}));
+    let mut out = Vec::new();
+    while !String::from_utf8_lossy(&out).contains("CONPTY_READY") {
+        let m = client.recv().unwrap();
+        if m["op"] == "out" {
+            out.extend(B64.decode(m["data"].as_str().unwrap()).unwrap());
+        }
+    }
+    client.send(json!({"op": "resize", "cols": 72, "rows": 22}));
+    client.send(json!({"op": "screen"}));
+    let screen = loop {
+        let m = client.recv().unwrap();
+        if m["op"] == "screen" {
+            break m;
+        }
+        if m["op"] == "out" {
+            out.extend(B64.decode(m["data"].as_str().unwrap()).unwrap());
+        }
+    };
+    assert_eq!(screen["cols"], json!(72));
+    assert_eq!(screen["rows"], json!(22));
+    let snap = String::from_utf8_lossy(&B64.decode(screen["data"].as_str().unwrap()).unwrap()).into_owned();
+    assert!(snap.contains("CONPTY_READY"), "{snap:?}");
+    client.send(json!({"op": "write", "data": B64.encode(b"hello\r\n")}));
+    let ([rest, _], exit) = client.until_exit([out.len() as u64, 0]);
+    out.extend(rest);
+    assert!(String::from_utf8_lossy(&out).contains("GOT:hello"), "{:?}", String::from_utf8_lossy(&out));
+    assert_eq!(exit["code"], 0);
+}

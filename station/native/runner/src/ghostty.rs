@@ -10,6 +10,9 @@ use std::ptr;
 
 type Result_ = i32;
 const SUCCESS: Result_ = 0;
+/// GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES, a usize: 8 MiB kept so lines scrolled off reflow cleanly across resizes.
+const TERM_OPT_SCROLLBACK_MAX_BYTES: i32 = 28;
+const SCROLLBACK_MAX_BYTES: usize = 8 * 1024 * 1024;
 /// GHOSTTY_FORMATTER_OPT_EMIT, a GhosttyFormatterFormat; its VT is 1.
 const OPT_EMIT: i32 = 1;
 const FORMAT_VT: i32 = 1;
@@ -26,6 +29,7 @@ const CELL_H: u32 = 16;
 unsafe extern "C" {
     fn ghostty_terminal_new(allocator: *const c_void, terminal: *mut *mut c_void, cols: u16, rows: u16) -> Result_;
     fn ghostty_terminal_free(terminal: *mut c_void);
+    fn ghostty_terminal_set(terminal: *mut c_void, option: i32, value: *const c_void) -> Result_;
     fn ghostty_terminal_vt_write(terminal: *mut c_void, data: *const u8, len: usize);
     fn ghostty_terminal_resize(terminal: *mut c_void, cols: u16, rows: u16, cell_w: u32, cell_h: u32) -> Result_;
     fn ghostty_formatter_terminal_new(allocator: *const c_void, formatter: *mut *mut c_void, terminal: *mut c_void) -> Result_;
@@ -35,7 +39,11 @@ unsafe extern "C" {
     fn ghostty_free(allocator: *const c_void, ptr: *mut u8, len: usize);
 }
 
-pub struct Screen(*mut c_void);
+pub struct Screen {
+    raw: *mut c_void,
+    cols: u16,
+    rows: u16,
+}
 
 // SAFETY: the terminal is used from one thread at a time (the runner holds it behind a mutex); libghostty-vt keeps no
 // state of a thread's.
@@ -43,24 +51,36 @@ unsafe impl Send for Screen {}
 
 impl Screen {
     pub fn new(cols: u16, rows: u16) -> Result<Screen, String> {
+        let (cols, rows) = (cols.max(1), rows.max(1));
         let mut terminal = ptr::null_mut();
         // SAFETY: a null allocator is the library's own; `terminal` is written on success.
-        let r = unsafe { ghostty_terminal_new(ptr::null(), &mut terminal, cols.max(1), rows.max(1)) };
+        let r = unsafe { ghostty_terminal_new(ptr::null(), &mut terminal, cols, rows) };
         if r != SUCCESS || terminal.is_null() {
             return Err(format!("libghostty-vt: terminal_new: {r}"));
         }
-        Ok(Screen(terminal))
+        let max_bytes = SCROLLBACK_MAX_BYTES;
+        unsafe {
+            let _ = ghostty_terminal_set(terminal, TERM_OPT_SCROLLBACK_MAX_BYTES, (&raw const max_bytes).cast());
+        }
+        Ok(Screen { raw: terminal, cols, rows })
+    }
+
+    pub fn size(&self) -> (u16, u16) {
+        (self.cols, self.rows)
     }
 
     /// What the terminal's program wrote.
     pub fn write(&mut self, bytes: &[u8]) {
         // SAFETY: a live terminal; the bytes are read during the call only.
-        unsafe { ghostty_terminal_vt_write(self.0, bytes.as_ptr(), bytes.len()) }
+        unsafe { ghostty_terminal_vt_write(self.raw, bytes.as_ptr(), bytes.len()) }
     }
 
     pub fn resize(&mut self, cols: u16, rows: u16) {
+        let (cols, rows) = (cols.max(1), rows.max(1));
+        self.cols = cols;
+        self.rows = rows;
         // SAFETY: a live terminal.
-        unsafe { ghostty_terminal_resize(self.0, cols.max(1), rows.max(1), CELL_W, CELL_H) };
+        unsafe { ghostty_terminal_resize(self.raw, cols, rows, CELL_W, CELL_H) };
     }
 
     /// The screen as VT sequences that, written to a terminal of its size that is new, make it this one.
@@ -68,7 +88,7 @@ impl Screen {
         let mut formatter = ptr::null_mut();
         // SAFETY: a live terminal, which outlives the formatter (freed below); each option is given a value of its type.
         unsafe {
-            let r = ghostty_formatter_terminal_new(ptr::null(), &mut formatter, self.0);
+            let r = ghostty_formatter_terminal_new(ptr::null(), &mut formatter, self.raw);
             if r != SUCCESS || formatter.is_null() {
                 return Err(format!("libghostty-vt: formatter_terminal_new: {r}"));
             }
@@ -96,7 +116,7 @@ impl Screen {
 impl Drop for Screen {
     fn drop(&mut self) {
         // SAFETY: ours, freed once.
-        unsafe { ghostty_terminal_free(self.0) }
+        unsafe { ghostty_terminal_free(self.raw) }
     }
 }
 
@@ -107,6 +127,7 @@ mod tests {
     #[test]
     fn a_screen_is_given_back_as_what_makes_it_again() {
         let mut screen = Screen::new(20, 4).unwrap();
+        assert_eq!(screen.size(), (20, 4));
         screen.write(b"one\r\n\x1b[31mtwo\x1b[0m");
         let snapshot = screen.snapshot().unwrap();
         // Written into a new terminal of its size, it makes the same screen: the same snapshot again.
@@ -126,6 +147,7 @@ mod tests {
         let text = String::from_utf8_lossy(&again.snapshot().unwrap()).into_owned();
         assert!(text.contains("FULL") && !text.contains("shell"), "{text:?}");
         screen.resize(30, 6);
+        assert_eq!(screen.size(), (30, 6));
         assert!(String::from_utf8_lossy(&screen.snapshot().unwrap()).contains("FULL"));
     }
 }
