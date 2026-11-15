@@ -1677,20 +1677,28 @@ fn triple_sidekick_groups(v : Json?) -> Array[SidekickGroup] {
 
 ///|
 /// How fast it runs, at the foot beside who runs it (2026-11-02 用户「速度放在面板下面，跟账号差不多的位置」): its name
-/// and how fast it runs; pressed, the two ways in a pick. None picked, how fast its account runs it, said as that
+/// and how fast it runs; pressed, the speeds the station offers in a pick. None picked, how fast its account runs it, said as that
 /// (`fastPlan`; 2026-11-02 用户「谁知道订阅是什么，应该直接显示具体值」).
 fn triple_speed(c : @ui.Ctx, src : Source, station : String, of : String, v : Json?) -> Unit {
   let head = @sf.t("web-main.model.speed")
-  let now = match field(field(v, "draft"), "fast") {
-    Some(True) => "fast"
-    Some(False) => "standard"
-    _ => if flag(v, "fastPlan") { "fast" } else { "standard" }
+  let speed = text(field(v, "draft"), "speed")
+  let now = if speed != "" {
+    speed
+  } else {
+    match field(field(v, "draft"), "fast") {
+      Some(True) => "fast"
+      Some(False) => "standard"
+      _ => if flag(v, "fastPlan") { "fast" } else { "standard" }
+    }
   }
   let choices = [
     @sf.choice("standard", @sf.t("web-main.model.standard")),
     // (Fast its bolt)
     @sf.choice("fast", "Fast", note=@sf.t("web-main.model.fastNote"), icon="zap"),
   ]
+  if flag(v, "ultrafastAvailable") {
+    choices.push(@sf.choice("ultrafast", "Ultrafast", note=@sf.t("web-main.model.ultrafastNote"), icon="zap"))
+  }
   let id = c.id("triple/fast")
   c.on_press(id, fn() {
     @sf.pick(
@@ -1698,7 +1706,11 @@ fn triple_speed(c : @ui.Ctx, src : Source, station : String, of : String, v : Js
       choices,
       now,
       fn(f) {
-        pick_save(src, station, of, { "fast": Json::boolean(f == "fast") })
+        if f == "ultrafast" {
+          pick_save(src, station, of, { "speed": Json::string(f) })
+        } else {
+          pick_save(src, station, of, { "fast": Json::boolean(f == "fast") })
+        }
       },
       from=Of(id),
       search=false,
@@ -1880,7 +1892,7 @@ fn triple_model_row(
         let p : Map[String, Json] = { "model": Json::string(model) }
         match field(o, "usual") {
           Some(Object(u)) =>
-            for k in ["runtime", "effort", "fast", "context"] {
+            for k in ["runtime", "effort", "fast", "speed", "context"] {
               p[k] = u.get(k).unwrap_or(Json::null())
             }
           _ => ()
@@ -1931,10 +1943,15 @@ fn triple_model_row(
 /// A configuration's row's key: its model, runtime, how hard it thinks, how fast and how much context, so two of one
 /// model are two.
 fn triple_combo_key(x : Json?) -> String {
-  let fast = match field(x, "fast") {
-    Some(True) => "fast"
-    Some(False) => "standard"
-    _ => ""
+  let speed = text(x, "speed")
+  let fast = if speed != "" {
+    speed
+  } else {
+    match field(x, "fast") {
+      Some(True) => "fast"
+      Some(False) => "standard"
+      _ => ""
+    }
   }
   let context = match field(x, "context") {
     Some(Number(n, ..)) => n.to_int64().to_string()
@@ -2052,7 +2069,7 @@ fn triple_combo_row(
     close()
     if !on || flag(v, "changed") {
       let p : Map[String, Json] = { "model": Json::string(text(x, "model")) }
-      for k in ["runtime", "effort", "fast", "context"] {
+      for k in ["runtime", "effort", "fast", "speed", "context"] {
         p[k] = field(x, k).unwrap_or(Json::null())
       }
       pick_save(src, station, of, p, done=saved)
@@ -2091,7 +2108,7 @@ fn triple_combo_row(
     let t = @sf.theme()
     let p = pick_params(station, of)
     p["model"] = Json::string(text(x, "model"))
-    for k in ["runtime", "effort", "fast", "context"] {
+    for k in ["runtime", "effort", "fast", "speed", "context"] {
       p[k] = field(x, k).unwrap_or(Json::null())
     }
     @sf.icon_button(

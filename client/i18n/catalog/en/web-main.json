@@ -1164,5 +1164,6 @@
   "web-main.feedback.handOn": "Hand to agent",
   "web-main.feedback.placeholder": "Reply to the still.fail team…",
   "web-main.feedback.send": "Reply",
-  "web-main.feedback.sending": "Reply to the still.fail team"
+  "web-main.feedback.sending": "Reply to the still.fail team",
+  "web-main.model.ultrafastNote": "Requires Pro $500 or eligible Enterprise/Edu. Uses 8× included quota or 6× credits."
 }

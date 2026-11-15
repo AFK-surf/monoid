@@ -1,3 +1,4 @@
+import type { ModelSpeed } from "../../../client/core-ts/src/model-speed.ts";
 // Presets: what a chat starts knowing, chosen as it is opened. A preset names the directories its
 // chats work with and what people want of them there; it does not bind the agent to them (it runs in its own session
 // workspace as every chat does). A workspace's presets are its agent home's presets.json; a chat opened with one keeps a
@@ -54,6 +55,7 @@ export type PresetModel = {
   runtime?: string;
   effort?: string;
   fast?: boolean;
+  speed?: ModelSpeed;
   context?: number;
   profile?: string;
   profiles?: string[];

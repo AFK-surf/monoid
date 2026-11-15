@@ -1,3 +1,5 @@
+import { modelSpeed, ultrafastModel, type ModelSpeed } from "../../../client/core-ts/src/model-speed.ts";
+import { accessKind } from "../agents/profiles.ts";
 // Sessions and chats as people make, change, archive and delete them (the Rust station's hub.rs: new_session, open_chat,
 // add_to_thread, say, bind_single, configure, archive, archive_chat, auto_archive, delete_session,
 // continue_machine_session). Archiving here is the record (archived, hidden) and what goes with it (the process ends,
@@ -23,7 +25,7 @@ import type { SessionChange } from "./accounts.ts";
 import { runChanged, runShown } from "./run-change.ts";
 import { unlockWorktrees, withLock } from "./archive.ts";
 import { roomOf } from "./footprint.ts";
-import { type Runtime, runs, runtimeNamed, runtimeTitle } from "./config.ts";
+import { type Profile, type Runtime, runs, runtimeNamed, runtimeTitle } from "./config.ts";
 import { FAST_RUNTIMES } from "../agents/profiles.ts";
 import { CLIENT_KEY_KEPT_MS, type Hub, connectOf, newChatKey, newSingleSessionKey, newToken } from "./hub.ts";
 import { INTERNAL_CHANNEL, INTERNAL_CONNECT, chatKey, chatWorkspace } from "./internal.ts";
@@ -37,6 +39,7 @@ export type NewChat = {
   model?: string | null;
   effort?: string | null;
   fast?: boolean | null;
+  speed?: ModelSpeed | null;
   /// The most context it runs with, in tokens (sessions/context-cap.ts); none: the model's whole window.
   context?: number | null;
   title?: string | null;
@@ -50,6 +53,14 @@ export type NewChat = {
   preset?: string | null;
   presetCopy?: PresetCopy | null;
 };
+
+function checkSpeed(runtime: string, model: string | null, speed: ModelSpeed | null | undefined, profile: Profile | null | undefined, lang: Lang): void {
+  if (speed == null) return;
+  if (modelSpeed(speed) === null || !FAST_RUNTIMES.includes(runtime as Runtime)) throw new Error(tr(lang, "station.speed.invalid"));
+  if (speed === "ultrafast" && (runtime !== "codex" || !ultrafastModel(model) || !profile || accessKind(profile) !== "subscription")) {
+    throw new Error(tr(lang, "station.speed.ultrafast_unavailable"));
+  }
+}
 
 const trimmed = (v: string | null | undefined) => {
   const t = v?.trim();
@@ -180,6 +191,7 @@ export function newSession(hub: Hub, options: NewChat, lang: Lang = stationLang(
     profile = subset.length === 1 ? subset[0]! : hub.accounts.pick(subset, model, true);
   } else profile = hub.accounts.pick(profiles, model, true);
   const effort = options.effort ? options.effort : null;
+  checkSpeed(runtime, model ?? profile.model ?? null, options.speed, profile, lang);
   checkContext(runtime, options.context, lang);
   if (effort !== null) {
     const allowed = hub.accounts.modelEfforts(runtime, model, wantedProfiles, (p) => here.has(p.id));
@@ -210,7 +222,8 @@ export function newSession(hub: Hub, options: NewChat, lang: Lang = stationLang(
     profiles: wantedProfiles,
     model: model ?? profile.model ?? null,
     effort,
-    fast: FAST_RUNTIMES.includes(runtime) ? (options.fast ?? null) : null,
+    fast: FAST_RUNTIMES.includes(runtime) ? (options.speed ? options.speed !== "standard" : options.fast ?? null) : null,
+    speed: options.speed ?? null,
     context: options.context ?? null,
     workspace,
     cwd: null,
@@ -241,6 +254,10 @@ export async function configure(hub: Hub, key: string, change: SessionChange, la
     if (Object.keys(rest).length === 0) return;
   }
   const { row, runtime, model, effort, profile, profiles, pinned, repick } = hub.accounts.change(key, change, lang);
+  const account = hub.accounts.profile(profile ?? row.profile);
+  const speedModel = model ?? account?.model ?? null;
+  const speed = change.speed !== undefined ? change.speed : change.fast !== undefined || runtime !== row.runtime || (row.speed === "ultrafast" && !ultrafastModel(speedModel)) ? null : row.speed;
+  checkSpeed(runtime, speedModel, speed, account, lang);
   const movedRuntime = runtime !== row.runtime && typeof profile === "string";
   const recapped = change.context !== undefined && change.context !== row.context;
   // Its runtime compacts on its own only some calls into a new process: what it holds over a lower most is compacted
@@ -262,6 +279,8 @@ export async function configure(hub: Hub, key: string, change: SessionChange, la
     if (repick || leftPool) hub.accounts.repick(key);
     else if (profile === null) hub.accounts.runOn(key, false, true);
   }
+  if (change.speed !== undefined) hub.store.setSessionSpeed(key, change.speed);
+  else if (row.speed === "ultrafast" && (runtime !== "codex" || !ultrafastModel(speedModel))) hub.store.setSessionSpeed(key, null);
   // Another most context is what its process starts with (Claude Code's settings, a Codex thread's config): only a new
   // one takes it.
   await hub.changed(key, movedRuntime || recapped);

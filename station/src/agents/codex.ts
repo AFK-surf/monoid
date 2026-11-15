@@ -1,3 +1,4 @@
+import type { ModelSpeed } from "../../../client/core-ts/src/model-speed.ts";
 // Codex driver: one shared `codex app-server` per profile, under a runner whose id comes
 // from the profile, one thread per session.
 //
@@ -483,6 +484,7 @@ export type CodexDriverOptions = {
   caBundle?: string;
   /// A session's own Fast choice (store.rs codex_session_fast): undefined when it has none.
   fast?: (threadId: string) => boolean | undefined;
+  speed?: (threadId: string) => ModelSpeed | null;
   /// A profile as the config says now (settings), for what a turn reads of it; the opened one otherwise.
   currentProfile?: (id: string) => Profile | undefined;
   /// Another station's subscription, borrowed (share/index.ts): its home's auth.json written with tokens lent by the
@@ -1327,7 +1329,9 @@ export class CodexSession implements AgentSession {
 
   async prompt(text: string) {
     const fast = this.driver.options.fast?.(this.threadId);
+    const speed = this.driver.options.speed?.(this.threadId);
     const p = this.driver.options.currentProfile ? this.driver.options.currentProfile(this.host.profile) : this.profile;
+    if (speed === "ultrafast" && (!p || accessKind(p) !== "subscription")) throw new Said(tr(stationLang(), "station.speed.ultrafast_unavailable"));
     // Codex was updated under its app-server, whose tools would all fail, or it runs with what its profile said before:
     // opened again on a new one, unless another turn runs on it yet.
     const outdated = this.host.loginStale || this.host.runtimeStale || (this.host.turns.size === 0 && (await this.driver.outdated(this.host, p)));
@@ -1349,7 +1353,7 @@ export class CodexSession implements AgentSession {
     if (this.tuned) Object.assign(params, this.tuned);
     if (p && accessKind(p) === "subscription") {
       // An explicit null clears a previously selected tier; omitting it would keep Fast on.
-      params.serviceTier = (fast ?? profileFast(p)) ? "fast" : null;
+      params.serviceTier = speed === "ultrafast" ? "ultrafast" : speed === "fast" ? "fast" : speed === "standard" ? null : (fast ?? profileFast(p)) ? "fast" : null;
     }
     try {
       const started = await this.host.request("turn/start", params);

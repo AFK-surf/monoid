@@ -336,7 +336,7 @@ export const SESSION_SEND = {
 export const CHAT_CREATE = {
   name: "chat_create",
   description:
-    "Open a new still.fail chat with an agent of its own, on this station or another station of the workspace, for work that should go on visibly beside yours (a part to do in parallel, something another machine is better placed for). It begins with your message. You are told how each of its turns ends: to wait for it, end your turn waiting. Write to its agent with session_send to its link. When an answer was uncertain, call again with the same key, which gives the chat made then rather than opening another. Skill stillfail-chats (Other agents) says more.",
+    "Open a still.fail chat with its own agent for work alongside yours, on this station or another in the workspace. Your text is its first message. You hear each turn's end; end waiting to await it. Write to it with session_send. Retry uncertain calls with the same key to reuse the chat. See skill stillfail-chats (Other agents).",
   inputSchema: {
     "type": "object",
     "properties": {
@@ -368,6 +368,11 @@ export const CHAT_CREATE = {
       "effort": {
         "type": "string",
         "description": "Its agent's reasoning effort. Default: the one that person has opened most chats with on that runtime and model there lately, else its model's."
+      },
+      "speed": {
+        "type": "string",
+        "enum": ["standard", "fast", "ultrafast"],
+        "description": "Overrides fast. Ultrafast needs a supported Codex model and eligible ChatGPT plan."
       },
       "fast": {
         "type": "boolean",

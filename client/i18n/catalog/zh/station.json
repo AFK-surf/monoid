@@ -794,5 +794,7 @@
   "station.move.self": "这就是这台 station：请选另一台。",
   "station.move.pick": "请说明要迁移什么：一个模块和其中的一项，或者全部。",
   "station.move.notRunning": "这台 station 上没有正在进行的迁移，无需停止。",
-  "station.move.restarted": "迁移进行中这台 station 重启了：已迁走的保持迁走，其余仍在原处。再发起一次即可继续。"
+  "station.move.restarted": "迁移进行中这台 station 重启了：已迁走的保持迁走，其余仍在原处。再发起一次即可继续。",
+  "station.speed.invalid": "请在支持速度设置的运行时选择标准、Fast 或 Ultrafast。",
+  "station.speed.ultrafast_unavailable": "Ultrafast 需要 Codex 下的 GPT-6 Astra 或 GPT-6.1 Sol 和 ChatGPT 订阅账号；请选择支持的模型及账号，或改选标准、Fast。"
 }

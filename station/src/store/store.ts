@@ -1,3 +1,4 @@
+import { modelSpeed, type ModelSpeed } from "../../../client/core-ts/src/model-speed.ts";
 import { latest as latestNote } from "../agents/migrations.ts";
 // All durable station state, in one SQLite file (the Rust station's store.rs ported: the same file, schema, SQL and rules, so
 // the Rust station and this one open each other's data). One read-write connection, used synchronously; every method is
@@ -1129,12 +1130,12 @@ export class Store {
     const pinned = list !== null ? list.length === 1 : (s.profilePinned ?? false);
     this.#with((changes) => {
       this.#run(
-        `INSERT INTO sessions (key, connect, scope, title, created_by, runtime, profile, profile_pinned, profiles, model, effort, workspace, cwd, runtime_session_id, token, created_at, last_active_at, told_notes, fast, ws, context)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO sessions (key, connect, scope, title, created_by, runtime, profile, profile_pinned, profiles, model, effort, workspace, cwd, runtime_session_id, token, created_at, last_active_at, told_notes, fast, ws, context, speed)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         s.key, s.connect, s.scope ?? "thread", s.title ?? null, s.createdBy ?? null, s.runtime, s.profile, flag(pinned), list !== null ? JSON.stringify(list) : null,
         s.model ?? null, s.effort ?? null, s.workspace, s.cwd ?? null, s.runtimeSessionId ?? null, s.token, s.createdAt, s.lastActiveAt,
         // A new session begins with today's instructions: no note is news to it.
-        latestNote(), optFlag(s.fast), s.ws ?? null, s.context ?? null,
+        latestNote(), optFlag(s.fast), s.ws ?? null, s.context ?? null, s.speed ?? null,
       );
       changes.push({ type: "session", key: s.key });
       this.#sessionWorkspaceChanged();
@@ -1155,7 +1156,7 @@ export class Store {
     // transcript recovers the original. Without the index no older station could have made such a change.
     const first = hasRuntimeOrderIndex(this.db)
       ? "(SELECT runtime FROM runtime_sessions INDEXED BY runtime_sessions_ordered WHERE session_key = ?9 ORDER BY at, rowid LIMIT 1), " : "";
-    this.#updateSession(key, `UPDATE sessions SET original_runtime = COALESCE(original_runtime, ${first}runtime), runtime = ?1, profile = ?2, profile_pinned = ?3, profiles = ?4, model = ?5, effort = ?6, fast = ?7, context = ?8 WHERE key = ?9`, runtime, profile, flag(pinned), list !== null ? JSON.stringify(list) : null, model, effort, optFlag(fast), context, key);
+    this.#updateSession(key, `UPDATE sessions SET original_runtime = COALESCE(original_runtime, ${first}runtime), runtime = ?1, profile = ?2, profile_pinned = ?3, profiles = ?4, model = ?5, effort = ?6, fast = ?7, speed = NULL, context = ?8 WHERE key = ?9`, runtime, profile, flag(pinned), list !== null ? JSON.stringify(list) : null, model, effort, optFlag(fast), context, key);
   }
 
   /// A session's model and effort from its next start on (null: the runtime's default).
@@ -1164,7 +1165,7 @@ export class Store {
   }
 
   setSessionFast(key: string, fast: boolean | null): void {
-    this.#updateSession(key, "UPDATE sessions SET fast = ?1 WHERE key = ?2", optFlag(fast), key);
+    this.#updateSession(key, "UPDATE sessions SET fast = ?1, speed = NULL WHERE key = ?2", optFlag(fast), key);
   }
 
   /// The most context it runs with from its next start on (null: the model's whole window).
@@ -1181,6 +1182,15 @@ export class Store {
   /// Whether it goes on afresh once its prompt cache is over (null: as the station is set).
   setSessionAfresh(key: string, afresh: boolean | null): void {
     this.#updateSession(key, "UPDATE sessions SET afresh = ?1 WHERE key = ?2", optFlag(afresh), key);
+  }
+
+  setSessionSpeed(key: string, speed: ModelSpeed | null): void {
+    this.#updateSession(key, "UPDATE sessions SET speed = ?1, fast = CASE WHEN ?1 IS NULL THEN NULL WHEN ?1 = 'standard' THEN 0 ELSE 1 END WHERE key = ?2", speed, key);
+  }
+
+  codexSessionSpeed(thread: string): ModelSpeed | null {
+    const r = this.#one("SELECT speed FROM sessions WHERE runtime = 'codex' AND runtime_session_id = ?", thread);
+    return modelSpeed(r?.speed);
   }
 
   codexSessionFast(thread: string): boolean | null {

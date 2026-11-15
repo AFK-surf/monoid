@@ -2,6 +2,7 @@
 // what it runs on now where that line has not the room, and how it ran and runs, whole, once the notice is opened.
 import * as format from "./format.ts";
 import { t } from "./i18n.ts";
+import { chosenSpeed } from "./model-speed.ts";
 import * as model from "./shapes/model.ts";
 import { get, isObject } from "./util.ts";
 
@@ -28,8 +29,8 @@ function partText(run: J, part: Part): string | null {
       return effort === null ? t("core-logic.choose.default_effort") : format.effortLabel(effort);
     }
     case "fast": {
-      const fast = get(run, "fast");
-      return fast === true ? "Fast" : fast === false ? t("core-logic.choose.speed.standard") : null;
+      const speed = chosenSpeed(run);
+      return speed === "ultrafast" ? "Ultrafast" : speed === "fast" ? "Fast" : speed === "standard" ? t("core-logic.choose.speed.standard") : null;
     }
     case "account":
       return str(get(run, "account")) ?? str(get(run, "profile"));

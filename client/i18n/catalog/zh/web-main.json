@@ -1125,5 +1125,6 @@
   "web-main.feedback.handOn": "交给 agent",
   "web-main.feedback.placeholder": "回复 still.fail 团队…",
   "web-main.feedback.send": "回复",
-  "web-main.feedback.sending": "回复 still.fail 团队"
+  "web-main.feedback.sending": "回复 still.fail 团队",
+  "web-main.model.ultrafastNote": "需 500 美元 Pro 或符合条件的 Enterprise/Edu；套餐额度 ×8，积分 ×6。"
 }
