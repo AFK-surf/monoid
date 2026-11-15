@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [4e59a50b2](https://github.com/AFK-surf/monoid/commit/4e59a50b2bad50dcd401a145f7b8bbf52e2a1ebd) perf(sfpages): a chat's rows made again from what  | 2.09 | 2.87 | 12.36 | 33.29 | 47.95 | 28.82 | 56.61 | 98.85 | 110.95 |
 | [bab438e82](https://github.com/AFK-surf/monoid/commit/bab438e82b87a7d591eb6154af1c0f10a7954da9) app: farview.pin to 2c88b06 (the page's nodes kept | 2.09 | 2.87 | 12.36 | 33.29 | 47.95 | 28.82 | 56.61 | 98.85 | 110.95 |
 | [b7829ee84](https://github.com/AFK-surf/monoid/commit/b7829ee8439d56abcaf026538fd3c894146edf9b) station tests: the move's and the retirement's tes | 2.08 | 2.87 | 12.34 | 33.28 | 47.88 | 28.82 | 56.61 | 98.85 | 113.42 |
 | [dfdd617eb](https://github.com/AFK-surf/monoid/commit/dfdd617eb11399e57712396f5d7544e1de8d065b) app: the history's rail one straight line, its row | 2.08 | 2.87 | 12.34 | 33.28 | 47.88 | 28.82 | 56.61 | 99.22 | 116.49 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [345b3c519](https://github.com/AFK-surf/monoid/commit/345b3c5197075c750a6fe5f546573de2511a4883) mbui: a node's words' torn grounds drawn by their  | 2.06 | 2.84 | 12.23 | 32.11 | 45.28 | 28.7 | 56.46 | 98.67 | 112.33 |
 | [f8641530f](https://github.com/AFK-surf/monoid/commit/f8641530f3b5230ebe537d4f47441de3bb1c968e) app: benches measure the chat's page made as nodes | 2.06 | 2.84 | 12.22 | 32.1 | 45.22 | 28.69 | 56.39 | 98.63 | 115.28 |
 | [a21e6b92d](https://github.com/AFK-surf/monoid/commit/a21e6b92d69ff0ac813fd649719c3dc230de72d8) app: a tap on a Farview tab's page where the page  | 2.06 | 2.84 | 12.22 | 32.1 | 45.22 | 28.69 | 56.39 | 98.63 | 115.28 |
-| [3a009ac95](https://github.com/AFK-surf/monoid/commit/3a009ac957a34314f7ad4d9ba4c199b958a4f415) mbui app: words a finger picked on the chat's page | 2.06 | 2.84 | 12.22 | 32.1 | 45.22 | 28.69 | 56.39 | 98.62 | 112.61 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [4e59a50b2](https://github.com/AFK-surf/monoid/commit/4e59a50b2bad50dcd401a145f7b8bbf52e2a1ebd) perf(sfpages): a chat's rows made again from what  | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.38 |
 | [bab438e82](https://github.com/AFK-surf/monoid/commit/bab438e82b87a7d591eb6154af1c0f10a7954da9) app: farview.pin to 2c88b06 (the page's nodes kept | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.23 |
 | [b7829ee84](https://github.com/AFK-surf/monoid/commit/b7829ee8439d56abcaf026538fd3c894146edf9b) station tests: the move's and the retirement's tes | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.23 |
 | [dfdd617eb](https://github.com/AFK-surf/monoid/commit/dfdd617eb11399e57712396f5d7544e1de8d065b) app: the history's rail one straight line, its row | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.23 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [345b3c519](https://github.com/AFK-surf/monoid/commit/345b3c5197075c750a6fe5f546573de2511a4883) mbui: a node's words' torn grounds drawn by their  | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.31 |
 | [f8641530f](https://github.com/AFK-surf/monoid/commit/f8641530f3b5230ebe537d4f47441de3bb1c968e) app: benches measure the chat's page made as nodes | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.31 |
 | [a21e6b92d](https://github.com/AFK-surf/monoid/commit/a21e6b92d69ff0ac813fd649719c3dc230de72d8) app: a tap on a Farview tab's page where the page  | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.46 |
-| [3a009ac95](https://github.com/AFK-surf/monoid/commit/3a009ac957a34314f7ad4d9ba4c199b958a4f415) mbui app: words a finger picked on the chat's page | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.46 |
