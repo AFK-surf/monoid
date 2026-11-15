@@ -2852,7 +2852,49 @@ try {
       if (why.length > 0) throw new Error(why.join("; "));
     };
 
-    await check("7a: A handed over to a new process as an update does (SIGUSR2 to its launcher) while B asks it each second: no ask over 2 s, every one answered", async () => {
+    // E2E_MOVE_HANDOVERS=n: 7a's handover n times in a row while B asks A each second (7a to 7c not run), each ask placed
+    // against A's handover windows from its launcher's log: from "handing over from Node" to "has taken over"
+    // (the lead, 2026-11-16: how many asks land in that window, how many of them are not reached)
+    const handovers = Number(process.env.E2E_MOVE_HANDOVERS ?? 0);
+    if (handovers > 0) await check(`7h: A handed over ${handovers} times while B asks it each second: every ask in a handover window answered`, async () => {
+      const t0 = Date.now();
+      const b = asking("B", "A");
+      await b.answered(3);
+      try {
+        for (let i = 1; i <= handovers; i++) {
+          const end = await handoverEnd(await handOver("A"));
+          log(`  ${i}/${handovers}: ${end}`);
+          if (!/has taken over/.test(end)) throw new Error(`not handed over at ${i}: ${end}`);
+          await b.answered(3);
+        }
+      } finally {
+        await b.stop();
+      }
+      // (A's launcher's lines with their own times: each window's start and end, in order)
+      const lines = ["station.before.log", "station.log"].map((f) => `${RUN}/${f}`).filter(existsSync).flatMap((p) => readFileSync(p, "utf8").split("\n"));
+      const at = (l: string) => Date.parse(l.slice(0, 24));
+      const windows: { from: number; to: number }[] = [];
+      let open: number | null = null;
+      for (const l of lines) {
+        const t = at(l);
+        if (!Number.isFinite(t) || t < t0) continue;
+        if (/handing over from Node [0-9]+ to Node [0-9]+/.test(l)) open = t;
+        else if (/Node [0-9]+ has taken over/.test(l) && open !== null) { windows.push({ from: open, to: t }); open = null; }
+      }
+      const inWindow = (x: Ask) => windows.find((w) => x.at <= w.to && x.at + x.ms >= w.from);
+      const landed = b.asks.filter((x) => inWindow(x) !== undefined);
+      const refused = landed.filter((x) => !x.reached);
+      const outside = b.asks.filter((x) => inWindow(x) === undefined && !x.reached);
+      const spans = windows.map((w) => w.to - w.from).sort((p, q) => p - q);
+      measured(`7h: ${windows.length} handover windows (ms: min ${spans[0] ?? "-"}, median ${spans[Math.floor(spans.length / 2)] ?? "-"}, max ${spans[spans.length - 1] ?? "-"}); ${b.asks.length} asks, ${landed.length} in a window, ${refused.length} of those not reached; ${outside.length} not reached outside any window`);
+      for (const x of landed) {
+        const w = inWindow(x)!;
+        log(`  in a window: ask ${iso(x.at)} ${x.ms} ms (window ${iso(w.from)} to ${iso(w.to)}, the ask ${x.at - w.from} ms after its start): ${x.reached ? "" : "UNREACHED "}${x.said.slice(0, 140)}`);
+      }
+      for (const x of [...refused, ...outside].slice(0, 3)) log(`  the ask at ${iso(x.at)} (${x.ms} ms: ${x.said.slice(0, 120)}), both logs:\n${logsBetween(x.at - 1000, x.at + x.ms + 1000) || "  (nothing)"}`);
+      if (refused.length + outside.length > 0) throw new Error(`${refused.length} of ${landed.length} asks in a handover window not reached; ${outside.length} outside`);
+    });
+    if (handovers === 0) await check("7a: A handed over to a new process as an update does (SIGUSR2 to its launcher) while B asks it each second: no ask over 2 s, every one answered", async () => {
       const t0 = Date.now();
       const b = asking("B", "A");
       await b.answered(3);
@@ -2896,7 +2938,7 @@ try {
     };
     // (the lead, 2026-11-14: an ask held while A is down and answered once it is back is answered, not failed; what is
     // held is that each is answered or refused in words, none by a timeout, by 5 s after A is ready)
-    await check("7b: A's whole station stopped while B asks it, started again once alice's device sees it down and an ask of B's is held in the stop: every ask answered or refused in words, none timed out, each by 5 s after A is ready", async () => {
+    if (handovers === 0) await check("7b: A's whole station stopped while B asks it, started again once alice's device sees it down and an ask of B's is held in the stop: every ask answered or refused in words, none timed out, each by 5 s after A is ready", async () => {
       const { asks, upAt } = await acrossStop("begun");
       // (a station that did not answer, in its words in either language: station.move.noAnswer and .gone, 「…没有应答…」)
       const timedOut = asks.filter((x) => /timed out|no answer in|not ended|answered nothing|没有应答|did not answer|does not answer/.test(x.said));
@@ -2907,11 +2949,11 @@ try {
       if (late.length > 0) why.push(`${late.length} not answered by 5 s after A was ready: ${late.map((x) => `${iso(x.at)} ended ${((x.at + x.ms - upAt) / 1000).toFixed(1)} s after`).join(", ")}`);
       if (why.length > 0) throw new Error(why.join("; "));
     });
-    await check("7b: A stopped while B asks it till an ask begun in the stop has its answer: what that ask gets, and when (measured, no bound yet)", async () => {
+    if (handovers === 0) await check("7b: A stopped while B asks it till an ask begun in the stop has its answer: what that ask gets, and when (measured, no bound yet)", async () => {
       const { asks, downAt, upAt } = await acrossStop("answered");
       for (const x of asks.filter((x) => x.at >= downAt && x.at < upAt)) measured(`7b long stop: an ask begun ${((x.at - downAt) / 1000).toFixed(1)} s into it got after ${(x.ms / 1000).toFixed(1)} s (${((x.at + x.ms - upAt) / 1000).toFixed(1)} s from A ready): ${x.said.slice(0, 160)}`);
     });
-    await check("7c: A's new process dies at start beside the serving one (not handed over; going on as before), then B asks A and A asks B: no ask over 2 s, every one answered", async () => {
+    if (handovers === 0) await check("7c: A's new process dies at start beside the serving one (not handed over; going on as before), then B asks A and A asks B: no ask over 2 s, every one answered", async () => {
       log("  waiting for A online on alice's device's link (7b stopped it)");
       await a.stationState(ws, (s) => s.state === "online", 120_000, aId);
       // (the next Node made to die by the harness alone: A's app/station, a link to the station's build, pointed for that
