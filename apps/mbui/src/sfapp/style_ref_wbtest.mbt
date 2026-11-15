@@ -152,19 +152,20 @@ test "styles: screens with kit's components (switches, a sheet), drawn as before
   // foot for it; the narrow ones, a phone's, had the row)
   // (the wide ones again, 2026-11-10: a sidebar's marks, words and headings 2 in, where its rows' foot capsules start)
   inspect(out.to_string(), content=(
-    #|settings narrow 77022:ba68b727
-    #|station narrow 69352:83ca5d56
-    #|me-reading narrow 23870:8074bf2b
+    #|settings narrow 77022:6f7a84d1
+    #|station narrow 69352:ba304a02
+    #|me-reading narrow 23870:176756e5
     #|settings wide 169493:802f151e
     #|station wide 214680:fcc86eb
     #|me-reading wide 164149:d62b64d1
-    #|settings-dark narrow 77290:42efbe58
-    #|station-dark narrow 69208:dc3f6006
-    #|me-reading-dark narrow 23998:5789351d
+    #|settings-dark narrow 77290:d382e912
+    #|station-dark narrow 69208:6995528a
+    #|me-reading-dark narrow 23998:5a45bcb3
     #|settings-dark wide 169413:9d946751
     #|station-dark wide 214329:62b0a708
     #|me-reading-dark wide 164135:8c5f9435
     #|
+
 
 
 
