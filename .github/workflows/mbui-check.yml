@@ -63,7 +63,10 @@ jobs:
   # parts: the apps are not built with it (scripts/mbc's lto_for, 2026-10-24).
   native:
     name: native (${{ matrix.part }}${{ matrix.group && format(' {0}', matrix.group) || '' }}${{ matrix.fps && format(' at {0} fps', matrix.fps) || '' }})
-    runs-on: ${{ fromJSON(github.event.pull_request.head.repo.fork != true && vars.CI_1 != 'off' && '["self-hosted", "linux-ci"]' || '"ubuntu-24.04"') }}
+    # (kept on GitHub's elastic Linux pool unless CI_1_MBUI == 'on': four ~100 s jobs per push queued 800-1000 s behind
+    # two runners on ci-1 when several mbui branches pushed at once, 43736377567 and 43736529570, while ci-1 alone takes
+    # natives, check and side off Mini1)
+    runs-on: ${{ fromJSON(github.event.pull_request.head.repo.fork != true && vars.CI_1 != 'off' && vars.CI_1_MBUI == 'on' && '["self-hosted", "linux-ci"]' || '"ubuntu-24.04"') }}
     # (a push's 5 minutes, the pipeline's call of a branch's push too; the day's, its pages in one process, 10)
     timeout-minutes: ${{ github.event_name != 'schedule' && 5 || 10 }}
     strategy:
@@ -398,7 +401,7 @@ jobs:
   # sfapp's test program built once (scripts/test.sh APP_BUILD_OUT), its units kept as the native job keeps its own
   app-build:
     name: native (app build)
-    runs-on: ${{ fromJSON(github.event.pull_request.head.repo.fork != true && vars.CI_1 != 'off' && '["self-hosted", "linux-ci"]' || '"ubuntu-24.04"') }}
+    runs-on: ${{ fromJSON(github.event.pull_request.head.repo.fork != true && vars.CI_1 != 'off' && vars.CI_1_MBUI == 'on' && '["self-hosted", "linux-ci"]' || '"ubuntu-24.04"') }}
     timeout-minutes: 5
     env:
       PART: app
@@ -416,7 +419,7 @@ jobs:
   # 2dbd62da, 42734298401, 2026-11-10), every unit a change made compiled twice.
   replay-build:
     name: native (replay build)
-    runs-on: ${{ fromJSON(github.event.pull_request.head.repo.fork != true && vars.CI_1 != 'off' && '["self-hosted", "linux-ci"]' || '"ubuntu-24.04"') }}
+    runs-on: ${{ fromJSON(github.event.pull_request.head.repo.fork != true && vars.CI_1 != 'off' && vars.CI_1_MBUI == 'on' && '["self-hosted", "linux-ci"]' || '"ubuntu-24.04"') }}
     timeout-minutes: 5
     env:
       PART: replay
@@ -490,7 +493,7 @@ jobs:
     if: github.event_name != 'workflow_run' && inputs.rates != 'only'
     # (corners' five processes with motion judged again were 293 s of 300 on GitHub's 4-core Ubuntu (#5567); on ci-1's 16
     # Zen 4 threads right after app-build, ~103 s)
-    runs-on: ${{ fromJSON(matrix.group == 'corners' && github.event.pull_request.head.repo.fork != true && vars.CI_1 != 'off' && '["self-hosted", "linux-ci"]' || '"ubuntu-24.04"') }}
+    runs-on: ${{ fromJSON(matrix.group == 'corners' && github.event.pull_request.head.repo.fork != true && vars.CI_1 != 'off' && vars.CI_1_MBUI == 'on' && '["self-hosted", "linux-ci"]' || '"ubuntu-24.04"') }}
     # (a push's 5 minutes; the day's, its pages in one process, 10)
     timeout-minutes: ${{ github.event_name != 'schedule' && 5 || 10 }}
     strategy:

@@ -41,6 +41,7 @@ LONGER = {
     ("prebuild.yml", "again"): 10,
     ("mbui-testflight.yml", "release"): 10,
     ("side.yml", "side"): 10,
+    ("side.yml", "side-mac"): 10,
     ("stable.yml", "desktop-win"): 10,
     ("stable.yml", "android"): 10,
     ("stable.yml", "station"): 10,
