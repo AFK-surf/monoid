@@ -117,9 +117,6 @@ priv enum First {
 /// each. Asked of a link that is usable (`Mesh::steer`): one that ended is not a way, and is not raced.
 fn Mesh::suspect(self : Mesh, place : Place, opening : Opening, link : Link) -> Unit {
   guard !self.racing.contains(place) else { return }
-  // (raced on the endpoint: only its own link, and only where the place is dialled there; another way's is the
-  // ways' to replace, ways.mbt)
-  guard link.pin is None && self.main_on(place) else { return }
   guard link.missed == 1 && link.answered_ms is Some(took) && took < ping_timeout_ms / 2 else { return }
   // (no other way up: with one link a place there is never another, `Mesh::ways`)
   guard !self.ways(place).iter().any(way => !physical_equal(way, link) && way.missed == 0) else { return }
@@ -158,7 +155,7 @@ async fn Mesh::race(self : Mesh, place : Place, opening : Opening, race : Race) 
   let dialled : @effect.Deferred[Link?] = @effect.Deferred::new()
   race.dial = Some(
     self.scope.fork(name="mesh race dial", () => {
-      let made = attempt(() => self.open(place, old.credentials, false))
+      let made = attempt(() => self.dial_all(place, old.credentials, false))
       // (cut as the race ends otherwise, it comes to nothing here: an interruption is this fiber's as it next
       // resumes, which is inside the opening, whose own leaving closes what it made)
       match made {

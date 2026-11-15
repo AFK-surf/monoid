@@ -160,7 +160,11 @@ pub fn Mesh::lan(Self, String, scope? : String) -> Array[String]
 pub async fn Mesh::link(Self, String, async (String, Bool) -> Presented, scope? : String, theirs? : Array[String], off? : Array[String]) -> Link
 pub async fn Mesh::make(@shell.Shell, Store, Options, binding? : Binding, addresses? : String, pinned_prefix? : Bytes) -> Self
 pub fn Mesh::measured(Self, String, scope? : String) -> Array[MeasuredWay]
+pub fn Mesh::measuring(Self, String, scope? : String) -> Bool
+pub fn Mesh::moved(Self, String, scope? : String) -> String?
+pub fn Mesh::moves(Self, String, scope? : String) -> Int32
 pub fn Mesh::remeasure(Self) -> Unit
+pub async fn Mesh::remeasure_peer(Self, String, scope? : String) -> Unit
 pub async fn Mesh::replaced(Self, Link) -> Unit
 pub fn Mesh::retune(Self, Array[String], entries? : Array[RelayEntry], reason? : String) -> Unit
 pub fn Mesh::set_ways(Self, String, scope? : String, theirs? : Array[String], off? : Array[String]) -> Unit

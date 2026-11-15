@@ -483,8 +483,11 @@ fn Mesh::dialled(self : Mesh, place : Place, opening : Opening, beside : Bool, m
         return
       }
       opening.result = Some(Open(link))
-      self.stuck = false
-      self.note_dial(place, false)
+      // (what the endpoint's own dial says of it: a link on a way's own endpoint says nothing of it, ways.mbt)
+      if link.pin is None {
+        self.stuck = false
+        self.note_dial(place, false)
+      }
       if (if beside { opening.first } else { opening.hedge }) is Some(other) {
         other.interrupt()
       }

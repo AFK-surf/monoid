@@ -67,7 +67,8 @@ of its workspace (`moon.work`); `effect` stays in mbui.
   A relay endpoint's key is SHA-256 of `pinned_prefix`, the device key and the relay, so the TypeScript prefix gives
   its keys. On purpose unlike it: the endpoint's way, missing where it is on again, is redialled every
   `redial_main_ms` (dead code at `mesh.ts` `#steer`); `relay_only` does not turn the endpoint's ways off; LAN and
-  tailnet endpoints get a drawn key; a relay's entries are no ways.
+  tailnet endpoints get a drawn key. Only the endpoint's own dial says whether it is stuck or its addresses
+  unanswered, raced or not (`Mesh::dial_main_raced`); a race and a wake's second dial go by `Mesh::dial_all`.
 - The device's key file is its user's alone whatever the umask, by the Rust shell's doing alone
   (`client/shell/src/lib.rs` `create_private`): a program linked to a shell from before keeps its key as its umask has
   it. `shell.c` has been compiled and run on macOS on arm64 alone.

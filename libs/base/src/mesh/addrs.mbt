@@ -163,9 +163,17 @@ pub fn Mesh::tailnet(self : Mesh, peer : String, scope? : String = "") -> Array[
 ///|
 /// The peer's answer to a link's first line said where it is dialled straight (none said: nowhere): kept where it
 /// changed, written to the store (one writing at a time, each of what is kept as it gets its turn), and told to
-/// the endpoint. Only of a link at its place: one that lost its opening says nothing for it.
+/// the endpoint. Only of a way to its place (the link there or one beside it), and not of one at an address said
+/// (it says where it was dialled): asked as the answer comes, and as a link whose answer came first becomes a way
+/// (`Mesh::now_on`, `Mesh::adopt_way`).
 fn Mesh::heard(self : Mesh, place : Place, link : Link) -> Unit {
-  guard !self.closed && self.is_current(link) else { return }
+  guard !self.closed &&
+    self.links.contains(place) &&
+    link.pin != Some("lan") &&
+    link.pin != Some("tailnet") &&
+    self.ways_at(place).all.iter().any(way => physical_equal(way.link, link)) else {
+    return
+  }
   let key = place.key()
   let was = self.said.get(key)
   let same = match was {

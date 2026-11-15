@@ -25,10 +25,15 @@ pub fn Mesh::wake(self : Mesh) -> Unit {
   // (being bound anew: the endpoint that comes is new to its network, and nothing is on either)
   guard !self.rebinding else { return }
   self.shell.tell("iroh.networkChange", { "id": self.endpoint })
+  // (on another network, perhaps the peer's: its addresses worth a try again, its tailnet once it answers there)
+  for _, ways in self.ways_of {
+    ways.tried.clear()
+    ways.tailnet_answered = false
+  }
   for place, opening in self.links {
     match opening.result {
       Some(Open(link)) =>
-        if link.usable() && link.pin is None && !self.racing.contains(place) {
+        if link.usable() && !self.racing.contains(place) {
           self.begin_race(place, opening, link, false)
         }
       None => self.hedge(place, opening)
@@ -47,7 +52,7 @@ fn Mesh::hedge(self : Mesh, place : Place, opening : Opening) -> Unit {
   // (cut as its opening ends otherwise, or the mesh closes, it says nothing: whoever ended the opening said it)
   opening.hedge = Some(
     self.scope.fork(name="mesh hedge", () => {
-      let made = attempt(() => self.open(place, opening.credentials, opening.fresh))
+      let made = attempt(() => self.dial_all(place, opening.credentials, opening.fresh))
       self.dialled(place, opening, true, made)
     }),
   )

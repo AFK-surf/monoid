@@ -217,8 +217,8 @@ test "at the addresses a peer said: dialled each on an endpoint of its own besid
   stood.run()
   assert_eq(mesh.open_ways(), ["lan", r1])
   // With the endpoint's ways on: its dial given the addresses goes unanswered, and the next races the relays'
-  // endpoints beside it. (The links there answered nothing of where the peer is, and that was kept: kept anew.)
-  assert_eq(@utf8.decode(kept.get(addresses_key).unwrap()), "{}")
+  // endpoints beside it. (What a way at an address answered says nothing of where the peer is: kept as it was.)
+  assert_eq(@utf8.decode(kept.get(addresses_key).unwrap()).contains("100.64.0.9:7000"), true)
   kept[addresses_key] = @utf8.encode("{\"\{peer}\":{\"lan\":[\"192.168.1.5:7000\"],\"tailnet\":[\"100.64.0.9:7000\"]}}")
   let (stood, far) = Stood::with_peer()
   let mesh = stood.keeping(kept)
@@ -324,4 +324,127 @@ test "measured anew as asked: what was counted forgotten, every way pinged again
   let said = stood.said.length()
   stood.rt.advance(explore_ms)
   assert_eq(stood.said.length(), said)
+}
+
+///|
+test "the endpoint's dial raced beside a relay's that won: counted as on the endpoint till it ends, and it alone says whether the endpoint is stuck or its addresses unanswered" {
+  let kept : Map[String, Bytes] = Map([])
+  kept[addresses_key] = @utf8.encode("{\"\{peer}\":{\"lan\":[\"192.168.1.5:7000\"],\"tailnet\":[]}}")
+  let (stood, far) = Stood::with_peer()
+  let mesh = stood.keeping(kept)
+  far.deaf["main"] = ()
+  far.lag[r1] = 10
+  // (each link says the same addresses again: kept as they are)
+  far.saying(",\"lan\":[\"192.168.1.5:7000\"]")
+  assert_eq(ended_as(stood.asked(mesh, ms=connect_timeout_ms)), "mesh: " + say("no_answer"))
+  assert_true(mesh.stuck && mesh.unanswered_straight(here))
+  // Bound anew (stuck, nothing on it), then the endpoint and r1's own raced: r1 wins, the endpoint's goes on.
+  let second = stood.asked(mesh, ms=10)
+  assert_eq((ended_as(second), mesh.on_way()), ("ok", r1))
+  assert_eq(far.dialled, ["main", "main", r1])
+  assert_true(!mesh.stuck && mesh.unanswered_straight(here))
+  assert_eq((mesh.dialling_main, mesh.idle()), (1, false))
+  // Unanswered in its time, unconnected: the endpoint taken for stuck, its addresses kept as unanswered.
+  stood.rt.advance(connect_timeout_ms)
+  assert_eq(mesh.dialling_main, 0)
+  assert_true(mesh.stuck && mesh.unanswered_straight(here))
+  assert_eq(mesh.on_way(), r1)
+}
+
+///|
+test "a peer's answer that came before its link was a way is heard as it becomes one: what it said kept, and its LAN dialled at once off the endpoint" {
+  let values : Map[String, Bytes] = Map([])
+  let (stood, far) = Stood::with_peer()
+  let mesh = stood.keeping(values)
+  far.saying(",\"lan\":[\"10.0.0.2:9\"]")
+  assert_eq(ended_as(stood.asked(mesh, theirs=[r2], off=["direct"])), "ok")
+  assert_eq(mesh.lan(peer), ["10.0.0.2:9"])
+  assert_eq(text_of_kept(values), "{\"\{peer}\":{\"lan\":[\"10.0.0.2:9\"],\"tailnet\":[]}}")
+  assert_true(far.dialled.contains("10.0.0.2:9"))
+  assert_true(mesh.open_ways().contains("lan"))
+}
+
+///|
+test "a wake races a way on a relay's own endpoint too, and tries an opening a second time, each on the ways allowed (never the endpoint's, turned off); and forgets what addresses were tried" {
+  let (stood, far) = Stood::with_peer()
+  let mesh = stood.keeping(Map([]))
+  ignore(stood.asked(mesh, off=["direct"]))
+  assert_eq((mesh.on_way(), far.dialled), (r1, [r1]))
+  mesh.ways_at(here).tried["lan"] = "10.0.0.2:9"
+  mesh.wake()
+  stood.run()
+  assert_eq(far.dialled, [r1, r1])
+  assert_eq(mesh.ways_at(here).tried.length(), 0)
+  // (the old one answered its probe: kept, the new one let go)
+  stood.rt.advance(probe_ms)
+  assert_eq(mesh.racing.length(), 0)
+  // An opening under way, tried a second time beside its first: on r1's own endpoint again.
+  let (stood, far) = Stood::with_peer()
+  let mesh = stood.keeping(Map([]))
+  far.deaf[r1] = ()
+  let asking = stood.asked(mesh, off=["direct"])
+  mesh.wake()
+  stood.run()
+  assert_eq((far.dialled, ended_as(asking)), ([r1, r1], "waiting"))
+}
+
+///|
+test "a tailnet that never answered is not dialled again every explore_ms; one that answered since the last wake is" {
+  let kept : Map[String, Bytes] = Map([])
+  kept[addresses_key] = @utf8.encode("{\"\{peer}\":{\"lan\":[],\"tailnet\":[\"100.64.0.9:7000\"]}}")
+  let (stood, far) = Stood::with_peer()
+  let mesh = stood.keeping(kept)
+  far.deaf["100.64.0.9:7000"] = ()
+  far.saying(",\"tailnet\":[\"100.64.0.9:7000\"]")
+  ignore(stood.asked(mesh, off=["direct"], ms=10))
+  let tailnet = () => far.dialled.filter(way => way == "100.64.0.9:7000").length()
+  assert_eq((mesh.on_way(), tailnet()), (r1, 1))
+  stood.rt.advance(2 * explore_ms)
+  assert_eq(tailnet(), 1)
+  // It answers, is a way, and is lost: dialled again explore_ms after its last dial.
+  far.deaf.clear()
+  mesh.ways_at(here).tried.clear()
+  ignore(stood.until(2 * tick_ms, () => mesh.open_ways().contains("tailnet")))
+  ignore(stood.until(3 * tick_ms, () => mesh.ways_at(here).tailnet_answered))
+  let dials = tailnet()
+  far.end(far.conn_of("100.64.0.9:7000"), "gone")
+  stood.rt.advance(explore_ms - 3 * tick_ms)
+  assert_eq(tailnet(), dials)
+  ignore(stood.until(explore_ms, () => tailnet() == dials + 1))
+}
+
+///|
+test "the endpoint's relays' entries are ways of their own; where requests moved and how often, whether the ways are being measured, and a peer measured anew as asked" {
+  let (stood, far) = Stood::with_peer()
+  let entries : Array[RelayEntry] = [{ entry: "https://e1.test/", relay: r1 }]
+  let mesh = stood.made([r1], binding={ lookup: false, takes: [], entries })
+  assert_eq(ended_as(stood.go(() => mesh.remeasure_peer(peer))), "mesh: " + say("not_connected"))
+  far.lag[r1] = 10
+  far.lag["https://e1.test/"] = 20
+  ignore(stood.asked(mesh, off=["direct"], ms=20))
+  assert_eq((mesh.on_way(), mesh.open_ways()), (r1, [r1, "https://e1.test/"]))
+  assert_eq(mesh.measured(peer).map(m => m.way), [r1, "https://e1.test/"])
+  // An entry is no way while any of the endpoint's relays is off.
+  assert_eq(mesh.ways_for({ scope: "", peer: "ee".repeat(32) }).length(), 2)
+  assert_eq((mesh.moves(peer), mesh.moved(peer)), (0, None))
+  mesh.set_ways(peer, off=["direct", r1])
+  stood.run()
+  assert_eq(mesh.ways_for(here), [])
+  assert_eq(mesh.open_ways(), [])
+  // Back on: r1 lost there, requests moved to the entry's way (no relay host to name: no path chosen here).
+  let (stood, far) = Stood::with_peer()
+  let mesh = stood.made([r1], binding={ lookup: false, takes: [], entries })
+  far.lag[r1] = 10
+  far.lag["https://e1.test/"] = 20
+  ignore(stood.asked(mesh, off=["direct"], ms=20))
+  far.end(far.conn_of(r1), "gone")
+  ignore(stood.until(tick_ms + 200, () => mesh.on_way() == "https://e1.test/"))
+  assert_eq((mesh.moves(peer), mesh.moved(peer)), (1, Some("direct")))
+  assert_eq(relay_host("https://r2.test:8443/x"), "r2.test:8443")
+  // Measured anew as asked: the ways not open dialled meanwhile.
+  let measuring = stood.go(() => mesh.remeasure_peer(peer))
+  assert_true(mesh.measuring(peer))
+  stood.rt.advance(1_000)
+  assert_eq((ended_as(measuring), mesh.measuring(peer)), ("ok", false))
+  assert_true(mesh.open_ways().contains(r1))
 }

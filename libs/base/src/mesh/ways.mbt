@@ -194,6 +194,11 @@ priv struct Ways {
   mut direct_at : Int64?
   /// Its link on the endpoint let go of for its pings: the next dial races every way.
   mut lost_main : Bool
+  /// Requests moved to another way this many times, and where to last (a relay's host, or "direct"); a tailnet way
+  /// answered a ping since the last wake.
+  mut moves : Int
+  mut moved : String?
+  mut tailnet_answered : Bool
   /// By kind (lan, tailnet): the addresses last dialled, when, and whether a dial is under way.
   tried : Map[String, String]
   at_dialled_at : Map[String, Int64]
@@ -251,6 +256,9 @@ fn Mesh::ways_at(self : Mesh, place : Place) -> Ways {
         lan_at: None,
         direct_at: None,
         lost_main: false,
+        moves: 0,
+        moved: None,
+        tailnet_answered: false,
         tried: Map([]),
         at_dialled_at: Map([]),
         at_dialling: Map([]),
@@ -259,6 +267,29 @@ fn Mesh::ways_at(self : Mesh, place : Place) -> Ways {
       ways
     }
   }
+}
+
+///|
+/// A relay as people see it named: its host, with its port where one is said.
+fn relay_host(relay : String) -> String {
+  let text = relay.trim().to_owned()
+  let out = StringBuilder()
+  // (past "://" where there is one, up to the next "/")
+  let start = if text.contains("://") { 0 } else { -1 }
+  let mut slashes = if start == 0 { 0 } else { 2 }
+  for c in text {
+    if slashes < 2 {
+      if c == '/' {
+        slashes += 1
+      }
+      continue
+    }
+    if c == '/' {
+      break
+    }
+    out.write_char(c)
+  }
+  out.to_string()
 }
 
 ///|
@@ -288,6 +319,23 @@ fn Mesh::relays_for(self : Mesh, place : Place) -> Array[String] {
 }
 
 ///|
+/// Every way `place` is dialled through: its relays (`relays_for`), then the endpoint's relays' entries, each as a
+/// relay of its own; not those while any of the endpoint's relays is off (an entry goes through which is not known
+/// here).
+fn Mesh::ways_for(self : Mesh, place : Place) -> Array[String] {
+  let out = self.relays_for(place)
+  if self.relays.iter().any(relay => self.is_off(place, relay)) {
+    return out
+  }
+  for e in self.entries {
+    if !out.iter().any(one => relay_key(one) == relay_key(e.entry)) && !self.is_off(place, e.entry) {
+      out.push(e.entry)
+    }
+  }
+  out
+}
+
+///|
 /// Whether the endpoint's ways to `place` are on by what its program turned off: not "direct", and none of the
 /// endpoint's relays (it is home on them, and which it goes through is iroh's to choose).
 fn Mesh::main_allowed(self : Mesh, place : Place) -> Bool {
@@ -312,7 +360,7 @@ fn Mesh::direct_held(self : Mesh, place : Place) -> Bool {
 /// The relays dialled each on an endpoint of its own: with the endpoint's ways on, those but its first relay (the
 /// endpoint reaches it), and none while there is one way or none; with them off, every relay left.
 fn Mesh::pinnable(self : Mesh, place : Place) -> Array[String] {
-  let ways = self.relays_for(place)
+  let ways = self.ways_for(place)
   if !self.main_on(place) {
     return ways
   }
@@ -338,7 +386,7 @@ fn Mesh::way_off(self : Mesh, place : Place, link : Link) -> Bool {
   match link.pin {
     None => !self.main_allowed(place)
     Some(kind) if kind == lan || kind == tailnet => self.is_off(place, kind)
-    Some(relay) => !self.relays_for(place).iter().any(one => relay_key(one) == relay_key(relay))
+    Some(relay) => !self.ways_for(place).iter().any(one => relay_key(one) == relay_key(relay))
   }
 }
 
@@ -401,6 +449,10 @@ fn Mesh::now_on(self : Mesh, place : Place, link : Link) -> Unit {
   }
   ways.moved_at = Some(self.now_ms())
   ways.moved_direct = ({ link, better: 0 } : Way).is_direct()
+  // (its answer came before it was a way: heard now)
+  if link.answer is Some(_) {
+    self.heard(place, link)
+  }
   self.steer_if(place)
 }
 
@@ -419,6 +471,9 @@ fn Mesh::adopt_way(self : Mesh, place : Place, link : Link) -> Unit {
     return
   }
   ways.all.push({ link, better: 0 })
+  if link.answer is Some(_) {
+    self.heard(place, link)
+  }
   self.tell_health(place)
   self.steer_if(place)
 }
@@ -478,6 +533,9 @@ async fn Mesh::steer_ways(self : Mesh, place : Place) -> Unit {
     }
     if live.iter().any(way => way.link.pin == Some(lan) && way.link.missed == 0 && way.link.samples > 0) {
       ways.lan_at = Some(now)
+    }
+    if live.iter().any(way => way.link.pin == Some(tailnet) && way.link.missed == 0 && way.link.samples > 0) {
+      ways.tailnet_answered = true
     }
     let credentials = match self.current(place.peer, scope=place.scope) {
       Some(link) => Some(link.credentials)
@@ -617,6 +675,13 @@ fn Mesh::promote(self : Mesh, place : Place, way : Way, why : String) -> Unit {
   self.changed()
   ways.moved_at = Some(self.now_ms())
   ways.moved_direct = way.is_direct()
+  ways.moves += 1
+  ways.moved = Some(
+    match way.link.via() {
+      Some(via) => relay_host(via)
+      None => direct
+    },
+  )
   for one in ways.all {
     one.better = 0
   }
@@ -795,6 +860,33 @@ async fn Mesh::dial_main_way(self : Mesh, place : Place, credentials : async (St
 }
 
 ///|
+/// The endpoint's dial raced beside other ways (`Mesh::dial_all`): counted as on the endpoint while it is, since it
+/// may go on after another way won; and what it says of the endpoint said here, whichever won (taken for stuck where
+/// it ran out of time unconnected, its addresses kept as unanswered; neither where it answered).
+async fn Mesh::dial_main_raced(self : Mesh, place : Place, credentials : async (String, Bool) -> Presented, fresh : Bool) -> Link {
+  self.dialling_main += 1
+  defer {
+    self.dialling_main -= 1
+    self.eased()
+  }
+  match attempt(() => self.open(place, credentials, fresh)) {
+    Did(link) => {
+      self.stuck = false
+      self.note_dial(place, false)
+      link
+    }
+    Fell(OpeningTimeout(connected)) => {
+      if !connected {
+        self.stuck = true
+      }
+      self.note_dial(place, true)
+      raise OpeningTimeout(connected)
+    }
+    Fell(e) => raise e
+  }
+}
+
+///|
 /// `f`, counted as a dial under way on an endpoint of a way's own: none is let go of meanwhile
 /// (`Mesh::release_pinned`).
 async fn[X] Mesh::counted(self : Mesh, f : async () -> X) -> Tried[X] {
@@ -941,7 +1033,7 @@ fn Mesh::dial_at_if(self : Mesh, place : Place, kind : String, credentials : asy
     let again = if kind == lan {
       self.since(ways.direct_at) < direct_recall_ms.to_int64() && self.since(last) >= redial_main_ms.to_int64()
     } else {
-      self.since(last) >= explore_ms.to_int64()
+      ways.tailnet_answered && self.since(last) >= explore_ms.to_int64()
     }
     guard again else { return }
   }
@@ -968,8 +1060,8 @@ async fn Mesh::dial_all(self : Mesh, place : Place, credentials : async (String,
     if !unanswered && !lost {
       return self.open(place, credentials, fresh)
     }
-    attempts.push((true, () => self.open(place, credentials, fresh)))
-    for relay in (if unanswered { self.relays_for(place) } else { self.pinnable(place) }) {
+    attempts.push((true, () => self.dial_main_raced(place, credentials, fresh)))
+    for relay in (if unanswered { self.ways_for(place) } else { self.pinnable(place) }) {
       attempts.push((false, () => self.dial_pinned(place, relay, credentials, fresh)))
     }
   } else {
@@ -1109,7 +1201,7 @@ pub fn Mesh::measured(self : Mesh, peer : String, scope? : String = "") -> Array
       missed: link.missed,
     })
   }
-  for relay in self.relays_for(place) {
+  for relay in self.ways_for(place) {
     if !seen.contains(relay_key(relay)) {
       out.push({
         way: relay_key(relay),
@@ -1124,6 +1216,47 @@ pub fn Mesh::measured(self : Mesh, peer : String, scope? : String = "") -> Array
     }
   }
   out
+}
+
+///|
+/// How many times requests to `peer` in `scope` moved from one way to another.
+pub fn Mesh::moves(self : Mesh, peer : String, scope? : String = "") -> Int {
+  match self.ways_of.get({ scope, peer }) {
+    Some(ways) => ways.moves
+    None => 0
+  }
+}
+
+///|
+/// Where requests to `peer` in `scope` last moved to: a relay's host, or "direct"; none where they never moved.
+pub fn Mesh::moved(self : Mesh, peer : String, scope? : String = "") -> String? {
+  self.ways_of.get({ scope, peer }).bind(ways => ways.moved)
+}
+
+///|
+/// Whether the ways not open to `peer` in `scope` are being dialled now (`Mesh::explore`).
+pub fn Mesh::measuring(self : Mesh, peer : String, scope? : String = "") -> Bool {
+  self.ways_of.get({ scope, peer }) is Some({ exploring: true, .. })
+}
+
+///|
+/// The ways to `peer` in `scope` dialled and pinged now, as a person asks, and its requests moved to the best if it
+/// is clearly better: the ways not open dialled, every way pinged `min_samples` times and once more. Fails where no
+/// link is open there.
+pub async fn Mesh::remeasure_peer(self : Mesh, peer : String, scope? : String = "") -> Unit {
+  let place : Place = { scope, peer }
+  guard !self.closed && self.current(peer, scope~) is Some(link) && link.usable() else {
+    raise failed("not_connected")
+  }
+  self.explore(place, link.credentials, false)
+  for _ in 0..=min_samples {
+    // (each round was waited for: a place let go of is measured no more)
+    guard !self.closed && self.links.contains(place) else { return }
+    self.sample(place, true)
+  }
+  guard !self.closed && self.links.contains(place) else { return }
+  self.choose(place, Some("asked"))
+  self.prune(place)
 }
 
 ///|
