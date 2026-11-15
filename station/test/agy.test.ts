@@ -127,9 +127,13 @@ test("cancel, a signed-out account, an expired sign-in and a spent quota", async
   await s.prompt("quota-said");
   await until(() => ended(events).length === 4);
   assert.deepEqual(ended(events)[3], { type: "turnEnded", outcome: { kind: "failed", reason: "rate_limit", message: "⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 56m33s." } });
-  await s.prompt("the quota");
+  // It says so after the turn's calls too, its last words (2026-11-15): still a limit.
+  await s.prompt("quota-after-calls");
   await until(() => ended(events).length === 5);
-  assert.deepEqual(ended(events)[4], { type: "turnEnded", outcome: { kind: "completed" } });
+  assert.deepEqual(ended(events)[4], { type: "turnEnded", outcome: { kind: "failed", reason: "rate_limit", message: "⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 22m58s." } });
+  await s.prompt("the quota");
+  await until(() => ended(events).length === 6);
+  assert.deepEqual(ended(events)[5], { type: "turnEnded", outcome: { kind: "completed" } });
   await s.dispose();
   const signedOut = setup({ FAKE_AGY_SIGNED_OUT: "1" });
   await assert.rejects(signedOut.driver.open(signedOut.options, () => {}), /Authentication required/);

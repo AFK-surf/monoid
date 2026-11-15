@@ -199,8 +199,10 @@ export const classifyFailure = (text: string): FailureReason =>
 /// A failure Antigravity CLI tells only in words: a turn whose answer is end_turn, all it said one line of its own
 /// notice (⚠). Its spent quota came so on 1.5.9 (2026-11-15: "⚠ Individual quota reached. Please upgrade your
 /// subscription to increase your limits. Resets in 56m33s.", where its log says RESOURCE_EXHAUSTED (code 429)), and a
-/// session went on asking the spent account instead of moving to another. What the model says is never one: a notice
-/// is the whole turn, and only what tells the account, a limit or the provider counts (not `model`, the rest).
+/// session went on asking the spent account instead of moving to another. It comes after the turn's calls too, its
+/// last words (2026-11-15: a turn of tool calls and thinking ending on it was taken as finished). What the model says
+/// is never one: a notice is all of the turn's last words, one line of its own, and only what tells the account, a
+/// limit or the provider counts (not `model`, the rest).
 export function noticeFailure(said: string): FailureReason | null {
   const text = said.trim();
   if (!text.startsWith("⚠") || text.includes("\n")) return null;

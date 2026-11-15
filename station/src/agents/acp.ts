@@ -172,9 +172,9 @@ export abstract class AcpSession extends OwnProcessSession {
   private loading = true;
   /// Its calls under way.
   private calls = new Map<string, Call>();
-  /// What the model said in the running turn, while it did nothing else (null once it called something): what
-  /// `failedSaying` reads at its end.
-  private saidOnly: string | null = "";
+  /// What the model said last in the running turn: its words since it last thought or called something, what
+  /// `failedSaying` reads at its end (Antigravity CLI says a spent quota after the turn's calls, 2026-11-15).
+  private saidLast = "";
   /// The transcript the station keeps of it (null: the runtime's own is read).
   protected readonly transcript: KeptTranscript | null;
   /// Whether a message for the running turn goes into it as a prompt of its own, answered with the turn (Devin's),
@@ -188,8 +188,9 @@ export abstract class AcpSession extends OwnProcessSession {
 
   /// How a failure it said is told apart.
   protected abstract classify(text: string): FailureReason;
-  /// A turn answered as ended well whose words were all a failure's notice (a runtime that says it in words, not as an
-  /// error: Antigravity CLI's spent quota), and why; null: it ended as its answer says.
+  /// A turn answered as ended well whose last words were a failure's notice (a runtime that says it in words, not as
+  /// an error: Antigravity CLI's spent quota, alone or after the turn's calls), and why; null: it ended as its answer
+  /// says.
   protected failedSaying(_said: string): FailureReason | null {
     return null;
   }
@@ -297,12 +298,11 @@ export abstract class AcpSession extends OwnProcessSession {
     if (lost !== null) this.events({ type: "toolsLost", why: lost });
   }
 
-  /// What the turn said, kept while it says nothing but words.
+  /// What the turn said last: its words, started again by any other step of it (a thought, a call).
   private heardSaid(update: Json) {
-    const kind = update?.sessionUpdate;
-    if (kind === "agent_message_chunk") {
-      if (this.saidOnly !== null && typeof update.content?.text === "string") this.saidOnly += update.content.text;
-    } else if (kind === "tool_call" || kind === "tool_call_update") this.saidOnly = null;
+    if (update?.sessionUpdate === "agent_message_chunk") {
+      if (typeof update.content?.text === "string") this.saidLast += update.content.text;
+    } else if (turnStep(update)) this.saidLast = "";
   }
 
   /// A step came with no turn running: a prompt of ours put in the turn as it ended became a turn of its own, which its
@@ -313,7 +313,7 @@ export abstract class AcpSession extends OwnProcessSession {
     this.steering.delete(first.value);
     this.owner = first.value;
     this.turn.busy = true;
-    this.saidOnly = "";
+    this.saidLast = "";
     this.events({ type: "turnStarted" });
     return true;
   }
@@ -352,8 +352,8 @@ export abstract class AcpSession extends OwnProcessSession {
   /// The turn ended as the answer to its prompt says.
   private end(id: string, answer: Json) {
     let outcome = this.turn.aborting && answer.error !== undefined ? ({ kind: "aborted" } as TurnOutcome) : acpOutcome(answer, (text) => this.classify(text));
-    const said = this.saidOnly?.trim() ?? "";
-    this.saidOnly = "";
+    const said = this.saidLast.trim();
+    this.saidLast = "";
     const failed = outcome.kind === "completed" && said !== "" ? this.failedSaying(said) : null;
     if (failed !== null) outcome = { kind: "failed", reason: failed, message: chars(said, 1000) };
     // An answer to a prompt this station did not see start (taken up after a crash just as it was given).
@@ -378,7 +378,7 @@ export abstract class AcpSession extends OwnProcessSession {
   async prompt(text: string) {
     this.startable();
     this.turn.busy = true;
-    this.saidOnly = "";
+    this.saidLast = "";
     this.owner = `${PROMPT}${uuid()}`;
     this.transcript?.user(this.sessionId, text);
     for (const event of this.live.prompted()) this.events({ type: "live", event });
