@@ -309,15 +309,6 @@
   "core-logic.history.step.running": "Running",
   "core-logic.history.steps": "{doing} · {n} steps",
   "core-logic.history.thinking": "Thinking: {text}",
-  "core-logic.history.turn.posts": {
-    "one": "sent 1 message",
-    "other": "sent {n} messages"
-  },
-  "core-logic.history.turn.silent": "sent nothing",
-  "core-logic.history.turn.steps": {
-    "one": "1 step",
-    "other": "{n} steps"
-  },
   "core-logic.history.usage.cached": "Cached",
   "core-logic.history.usage.calls": "Model calls",
   "core-logic.history.usage.calls.value": "{n}",
