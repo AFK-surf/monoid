@@ -1,6 +1,6 @@
-// A source session's directory mirrored on this station for its remote tasks (station/src/jobs/dirsync.ts, whose head
-// says how a sync goes): the target's side here, what the mirror has, the contents sent unpacked into it and how a plan
-// is carried out in it. Every file operation is the shell's (off this program's thread): Node only lands a request's
+// A source session's directory mirrored on this station for its remote tasks (dirsync_source.mbt, whose head says how
+// a sync goes, is the source's side): the target's side here, what the mirror has, the contents sent unpacked into it
+// and how a plan is carried out in it. Every file operation is the shell's (off this program's thread): Node only lands a request's
 // packed pieces in a file as they come off the transport (remote.ts `answer`), never a piece's write, stat or rename.
 
 ///|
@@ -17,7 +17,7 @@ let link_mode : String = "120000"
 let page_bytes : Int = 512 * 1024
 
 ///|
-/// A request's pieces at most, and their bytes unpacked at most (dirsync.ts PIECES, RAW).
+/// A request's pieces at most, and their bytes unpacked at most (as the source packs them: dirsync_source.mbt).
 let max_pieces : Int = 2000
 
 ///|
@@ -44,8 +44,8 @@ fn is_blob_id(s : String) -> Bool {
 }
 
 ///|
-/// Whether a link at `path` (relative, / between parts) naming `target` stays inside the directory (dirsync.ts
-/// `linkInside`).
+/// Whether a link at `path` (relative, / between parts) naming `target` stays inside the directory (the source's
+/// listing and the target's writing both ask).
 fn link_inside(path : String, target : String) -> Bool {
   if target == "" || target.has_prefix("/") || target.has_prefix("\\") {
     return false
@@ -139,7 +139,7 @@ fn same_content(a : Json?, b : Json?) -> Bool {
 }
 
 ///|
-/// What the mirror has of the files it was given, now (dirsync.ts `actual`): one a command changed is hashed again,
+/// What the mirror has of the files it was given, now (as the station's TypeScript had it, `actual`): one a command changed is hashed again,
 /// one it removed (or made something else) is no longer there; those in `verify` checked by content even where their
 /// stat matches.
 async fn Actors::actual(self : Actors, mirror : String, files : Map[String, Json], verify? : Map[String, Bool] = {}) -> Map[String, Json] raise {
@@ -262,7 +262,7 @@ async fn Actors::prune_empty(self : Actors, mirror : String, path : String) -> U
 }
 
 ///|
-/// Carries out a plan in the mirror (`name` in `work`, dirsync.ts `apply`): every new content made beside it first (in
+/// Carries out a plan in the mirror (`name` in `work`, as the TypeScript's `apply` did): every new content made beside it first (in
 /// `scratch`, from `blobs` or from a file of the mirror with the same id), then the files that left removed, then the
 /// new ones renamed into place. `files` (what the mirror has) is updated as it goes, also when it stops part way.
 async fn Actors::apply_plan(

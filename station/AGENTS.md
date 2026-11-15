@@ -128,10 +128,14 @@
   group of its own and followed to its end, a signal, a log, the memory's pressure, the store.
 - The remote tasks (station_task across stations) run there too, as the pseudo-actor `#remote`
   (`mb/src/reader/remote*.mbt`): what other stations ask of this one, the mirrors and their sweep, following tasks
-  started from here. Node (`src/jobs/remote.ts`) keeps the mesh bus, the file bytes (written and read at the path the
-  program names; a sync's packed pieces landed in a file the program unpacks), the directory sync's sending side
-  (`src/jobs/dirsync.ts`; a mirror's manifest, its pieces' unpacking, plan and application are the program's,
-  `mb/src/reader/dirsync.mbt`), protected folders and the load.
+  started from here, and a directory's sync both ways (`mb/src/reader/dirsync_source.mbt`: what the directory has, Git's
+  or walked, each file's id, the plan and the contents packed by the shell, `fs.scan` and `zstd.pack`;
+  `mb/src/reader/dirsync.mbt`: the mirror's manifest, the pieces unpacked, the plan applied). Node
+  (`src/jobs/remote.ts`) keeps the mesh bus, the file bytes (written and read at the path the program names: a sync's
+  packed pieces landed in a file the program unpacks, a request's packed by the shell in a file Node sends), the bulk
+  requests' queue and the patch a task's changes come back as (`src/jobs/dirsync.ts`), protected folders and the load.
+  There is no sending in TypeScript to fall back to: the one it replaced is the tests' (`test/dirsync-reference.ts`),
+  which the program's listing and requests are compared with (`test/mb-dirsync.test.ts`).
 - The live view (what a running turn does, its rate, its background tasks and checklist, its transcript's entries as
   written) runs there too, as the pseudo-actor `#live` (`mb/src/reader/live.mbt`), a Claude session's events given it
   in the program. Node (`src/sessions/live.ts`) keeps what the program asks of it: where a transcript is, what one

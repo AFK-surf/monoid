@@ -33,7 +33,7 @@ import { type Bytes, type Inbox, MESH_WAIT_MS, NoBytes, NoLink, type PeerCall, P
 import type { ActorsProgram } from "../sessions/mb-actor.ts";
 import { version as runningVersion } from "../ops/version.ts";
 import { fileBytes, readBytes, stopBytes, writeBytes } from "../mesh/files.ts";
-import { Bulk, LINK, PACKED, patchOf, syncDir } from "./dirsync.ts";
+import { Bulk, LINK, PACKED, patchOf } from "./dirsync.ts";
 import { DEFAULT_LIMIT, WorkspaceReader } from "./workspace-size.ts";
 import { SANDBOX, type Sandbox, ensureIdentity, sandboxDescribed } from "../agents/sandbox.ts";
 
@@ -371,7 +371,7 @@ const REMOTE_KEY = "#remote";
 /// and do runs in the sessions' MoonBit program (station/mb src/reader/remote.mbt, remote_target.mbt,
 /// remote_source.mbt), the pseudo-actor `#remote` of the program the jobs run in. This is what of them is the
 /// transport's and the machine's, which the program asks for (`asked`): the requests to and from the other stations and
-/// the bytes that go with them, a directory's sync and what it is compared and written by (dirsync.ts), the folders
+/// the bytes that go with them (a directory sync's packed requests, the program's), the folders
 /// macOS protects, the load, the cloud's state; and what the station's own parts read at once: a session's shared
 /// directory (`work`), the chats' use records (`workspaceTargets`, `recordUse`, `closeSession`).
 export class Remote {
@@ -395,7 +395,7 @@ export class Remote {
   private watching = new Set<string>();
   /// The station is stopping: nothing more is followed.
   private stopped = false;
-  /// The station's bulk requests to the others (syncs' contents, files' chunks), one at a time (dirsync.ts).
+  /// The station's bulk requests to the others (syncs' contents, files' chunks), one at a time (dirsync.ts `Bulk`).
   private bulk = new Bulk();
   private scope: Scope.Closeable;
   private run: (effect: Effect.Effect<void>) => Promise<void>;
@@ -600,8 +600,23 @@ export class Remote {
         return null;
       case "node.resolve":
         return resolve(a);
-      case "node.syncDir":
-        return await syncDir((method, more) => this.ask(a, { workspace: b, session: c, key: d, method, ...more }), e, () => this.store.now(), this.bulk);
+      case "node.syncPacking": {
+        // Where the program has the shell pack a sync's next request (dirsync_source.mbt `flush_pieces`), which it
+        // removes once sent: this process's own, as what lands here is (`answer`).
+        await mkdir(this.landing, { recursive: true });
+        return join(this.landing, `${++this.bytesNext}.out.zst`);
+      }
+      case "node.syncPut": {
+        // A sync's packed pieces, in the file at `c`, sent to station `a` in the request `b` after it (`d`), or, to a
+        // station from before (its transport threw NoBytes, the program then asks so), base64 in it; in their turn
+        // with the station's other bulk requests.
+        if (d === true) {
+          const size = (await stat(c)).size;
+          return await this.bulk.run(() => this.ask(a, withBytes(b, fileBytes(c, 0, size))));
+        }
+        const data = (await readFile(c)).toString("base64");
+        return await this.bulk.run(() => this.ask(a, { ...b, data }));
+      }
       case "node.bringBack":
         return await this.bringBack(a);
     }
@@ -1262,7 +1277,7 @@ export class Remote {
     return detailed(got.ok);
   }
 
-  // ── what a directory's sync is compared and written by (dirsync.ts), for the program ──
+  // ── a task's files sent and fetched, for the program ──
 
   /// file.put: an input of a task, whole after the request (its bytes kept for it: `bytes`), or a chunk of base64 in it
   /// from a station from before; {bytes, whole: whether the file is all there now}.
@@ -1495,6 +1510,12 @@ export class Remote {
       }
     }
     return out;
+  }
+
+  /// What a directory sync of `dir` sends from here (the program's listing: dirsync_source.mbt `list_local`), for the
+  /// tests that compare it with what the TypeScript listed (test/dirsync-reference.ts).
+  async listLocal(dir: string): Promise<Json> {
+    return await this.call("listLocal", [dir]);
   }
 
   /// What the station_* tools do, as `session`: among the stations of its workspace (the program's).

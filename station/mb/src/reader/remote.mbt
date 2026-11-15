@@ -5,8 +5,9 @@
 // `relieve`); the station_* tools. The records are the Rust's files (remote/incoming/<id>/task.json,
 // sessions/<id>/session.json, outgoing/<id>.json, prepared/...), written as it wrote them (remote_files.mbt).
 // Node keeps what is the transport's and the machine's, which this asks of it (`rnode`): the requests to and from the
-// other stations (the bus, a sandbox's), the bytes that go with them, a directory's sync and what it is compared and
-// written by (dirsync.ts), the folders macOS protects, the load, the cloud's state, the chats' use records.
+// other stations (the bus, a sandbox's), the bytes that go with them (a directory sync's packed requests, which this
+// has the shell pack: dirsync_source.mbt), the folders macOS protects, the load, the cloud's state, the chats' use
+// records.
 
 ///|
 priv struct SyncRun {
@@ -263,6 +264,8 @@ async fn Actors::remote_called(self : Actors, method : String, args : Array[Json
       self.unfollow_session(str_of(Some(arg(0))).unwrap_or(""))
       Json::null()
     }
+    // (what a directory sync would send of `dir`: the tests compare it with what the TypeScript listed)
+    "listLocal" => self.list_local(str_of(Some(arg(0))).unwrap_or("")).to_json()
     "tool" => self.tool(str_of(Some(arg(0))).unwrap_or(""), str_of(Some(arg(1))).unwrap_or(""), arg(2))
     "close" => {
       self.remote.stopped = true
