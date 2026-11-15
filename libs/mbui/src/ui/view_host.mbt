@@ -3442,8 +3442,9 @@ fn view_pointer(kind : Int, x : Double, y : Double, button : Int) -> Bool {
   }
   if tapped.val {
     tree.tapped(at)
-    // (words a finger picked let go by a tap anywhere else, as an old view's tap lets them go: finger_select.mbt)
-    if picked.finger {
+    // (words a finger picked let go by a tap anywhere else, as an old view's tap lets them go: finger_select.mbt; not
+    // by one on what keeps them, a bar over them: keeps_picked)
+    if picked.finger && !tree_keeps_picked_at(tree, x, y) {
       select_none()
     }
   }

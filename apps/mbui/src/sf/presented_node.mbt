@@ -362,6 +362,25 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
     },
   )
   tips_at.val = Some(root.box(made_for=loc, fn(l) { l.over(Is(true)).over_all(Is(true)) |> ignore }))
+  window_tips_at.val = tips_at.val
+}
+
+///|
+/// The layer over all of the window the presented's tips are in (presented_nodes'), once there is one.
+// kept across runs: said again as presented_nodes makes its layer
+let window_tips_at : Ref[@view.View?] = Ref(None)
+
+///|
+/// The layer over all of the window (presented_nodes' tips'): for what floats over a page's rows, beside them, on
+/// every screen (a bar over words a finger picked), not the page's own (on 小屏 its node).
+pub fn window_tips() -> TipLayer {
+  TipLayer::new(fn() {
+    // (the window's now: one a run before made, of another tree, none)
+    match (window_tips_at.val, @ui.view_tree()) {
+      (Some(l), Some(t)) if t.root_holds(l.id()) => Some(l)
+      _ => None
+    }
+  })
 }
 
 ///|
