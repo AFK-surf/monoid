@@ -1926,6 +1926,21 @@ try {
     const answerTo = (thread: string, word: string, ms = 180_000, channel = CH) => sl.until(`answer "${word}" in ${thread}`, () => answersTo(thread, word, channel)[0], ms);
     const cwdOf = (c: Call): Name | "?" => at(/cwd=(\S+)/.exec(c.params.text ?? "")?.[1] ?? "");
     const sockets = (app = APP) => sl.live(app).map((s) => `${s.station}#${s.n}`).join(",") || "none";
+    /// Each two sockets of `app` open at once between `from` and `to`: which, and for how long (ms).
+    const overlaps = (app: string, from = 0, to = Infinity) => {
+      const of = sl.sockets.filter((s) => s.app === app);
+      const out: string[] = [];
+      for (let i = 0; i < of.length; i++) {
+        for (let j = i + 1; j < of.length; j++) {
+          const x = of[i]!;
+          const y = of[j]!;
+          const start = Math.max(x.opened, y.opened, from);
+          const end = Math.min(x.closed || Date.now(), y.closed || Date.now(), to);
+          if (end > start) out.push(`${x.station}#${x.n} and ${y.station}#${y.n} for ${end - start} ms at ${new Date(start).toISOString().slice(11, 23)}`);
+        }
+      }
+      return out;
+    };
     const moveConnect = async (id: string, to: Name, withNeeds = true) => {
       const t0 = Date.now();
       await a.call("move.start", { station: A, to: idOf(to), module: "connects", item: itemOf(id), withNeeds });
@@ -2165,15 +2180,17 @@ try {
           const gate = `${FAKE}.gate-s${tag}`;
           sayIn(t1, `drill-gate:s${tag}`, `drill-gated s${tag} `);
           await whenChanged([dirname(FAKE)], () => existsSync(`${FAKE}.turns`) && readFileSync(`${FAKE}.turns`, "utf8").includes(`drill-gate:s${tag}`), 120_000, () => "the gated turn not begun");
-          const before = sl.most.get(APP) ?? 0;
           const opens = sl.sockets.length;
+          const from = Date.now();
           const h = await handOver("A");
           log(`  ${await handoverEnd(h)}`);
           writeFileSync(gate, "");
           const c = await answerTo(t1, `drill-gated s${tag} `);
           const during = sl.sockets.slice(opens).map((s) => `${s.station}#${s.n} ${s.opened}-${s.closed || "open"}`);
-          log(`  answered via ${c.station}; sockets opened since: ${brief(during)}; now ${sockets()}; most at once ${sl.most.get(APP)} (before ${before})`);
-          if ((sl.most.get(APP) ?? 0) > 1) throw new Error(`${sl.most.get(APP)} sockets open at once across the handover: ${brief(during)}`);
+          const two = overlaps(APP, from);
+          log(`  answered via ${c.station}; sockets opened since: ${brief(during)}; now ${sockets()}; two open at once: ${brief(two)}`);
+          if (two.length > 0) throw new Error(`two sockets open at once across the handover: ${brief(two)}`);
+          if (answersTo(t1, `drill-gated s${tag} `).length !== 1) throw new Error(`answered ${answersTo(t1, `drill-gated s${tag} `).length}×`);
         });
       } else fail("4s fault: A handed over while a routed thread is answered on B", new Error(`not run: it needs the connect on A and its chat on B, and the connect is on ${holds(dk).join(",") || "none"}, the chat ${standings(k1)}`));
     } else fail("4s faults", new Error(`not run: they begin with the connect on A, and it is on ${holds(dk).join(",") || "none"}${k1 === "" ? ", no chat of it made" : ""}`));
@@ -2251,6 +2268,11 @@ try {
       log(`  answered by the stand-in with { ok: true } and nothing else: ${[...sl.generic].map(([m, n]) => `${m} ×${n}`).join(", ") || "none"}`);
       log(`  sockets: ${sl.sockets.map((s) => `${s.app === APP ? "dk" : "dks"} ${s.station}#${s.n} ${((s.closed || Date.now()) - s.opened) / 1000}s`).join(", ")}`);
       if (none.length > 0 || more.length > 0) throw new Error(`unanswered ${brief(none)}; more than once ${brief(more)}`);
+    });
+    await check("4s: never two sockets of one app open at once, across every move of the part", async () => {
+      const two = [...overlaps(APP).map((x) => `dk: ${x}`), ...overlaps(APP1).map((x) => `dks: ${x}`)];
+      log(`  ${two.length === 0 ? "none" : two.join("; ")}`);
+      if (two.length > 0) throw new Error(`two open at once: ${two.join("; ")}`);
     });
 
     // (the stations as part 4 left them: no connect, nothing pointed at the stand-in; the chats Slack made stay)
