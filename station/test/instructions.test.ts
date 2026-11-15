@@ -1,6 +1,6 @@
 // The agent's instructions and the migration notes (src/agents/instructions.ts, migrations.ts: their source).
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -23,6 +23,32 @@ test("the session instructions tell the memory they name, as it is now", async (
   writeFileSync(path, "# lessons\n- one\n");
   assert.ok(ts.sessionInstructions("/w/s/workspace", null, "/w/repos", path, await ts.readMemory(path)).endsWith(`\n\n<memory path="${path}">\n# lessons\n- one\n</memory>`));
   rmSync(dir, { recursive: true, force: true });
+});
+
+test("memory grown past what an agent can use is said after it, file by file, and nothing where none is", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "instructions-"));
+  const path = join(dir, "MEMORY.md");
+  writeFileSync(path, "# lessons\n- one\n");
+  mkdirSync(join(dir, "skills", "small"), { recursive: true });
+  writeFileSync(join(dir, "skills", "small", "SKILL.md"), "---\nname: small\n---\n- a fact\n");
+  assert.equal(await ts.readMemory(path), "# lessons\n- one", "nothing said of memory that fits");
+  mkdirSync(join(dir, "skills", "proj"), { recursive: true });
+  writeFileSync(join(dir, "skills", "proj", "SKILL.md"), `---\nname: proj\n---\n${"- 现状：".padEnd(ts.LINE_MOST, "做")}\n${"- fact\n".repeat(ts.SKILL_MOST / 7)}`);
+  writeFileSync(path, `# lessons\n${"- rule\n".repeat(ts.MEMORY_MOST / 7 + 1)}`);
+  const told = await ts.readMemory(path);
+  assert.ok(told.startsWith("# lessons\n- rule\n"), "the memory itself first");
+  const note = told.slice(told.indexOf("[still.fail: this memory has grown"));
+  assert.match(note, /^- MEMORY\.md: 9 KB, past 8 KB$/m);
+  assert.match(note, /^- skills\/proj\/SKILL\.md: \d+ KB, past 24 KB; 1 line past 1500 bytes$/m);
+  assert.ok(!note.includes("skills/small"), "a skill that fits is not named");
+  assert.ok(note.includes("drop progress, status and handover notes"));
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("overgrown says nothing of files within their bounds", () => {
+  const full = "- x\n".repeat(ts.SKILL_MOST / 4);
+  assert.equal(ts.overgrown([["MEMORY.md", "- one"], ["skills/x/SKILL.md", full], ["skills/y/SKILL.md", `- ${"x".repeat(ts.LINE_MOST - 2)}`]]), "");
+  assert.equal(ts.overgrown([["skills/x/SKILL.md", `${full}y`]]).split("\n")[1], "- skills/x/SKILL.md: 25 KB, past 24 KB");
 });
 
 test("what the deployment adds is told after still.fail's own instructions, before the memory, and nothing without it", async () => {
@@ -74,6 +100,20 @@ test("the migration notes are numbered 1, 2, 3…, and told once", () => {
 test("thread addresses as the agent writes them", () => {
   assert.deepEqual(ts.parseThreadAddress(" C123/1790000000.000100 "), ["C123", "1790000000.000100"]);
   for (const bad of ["c123/1.2", "C123/1", "C123/.2", "/1.2", "C123-1.2"]) assert.equal(ts.parseThreadAddress(bad), null, bad);
+});
+
+test("delivered messages and history say their time without changing their identifiers", () => {
+  const m = { thread: 1, n: 1, ts: "1794667432.279000", author: "a", authorKind: "person", text: "最近的 chat", client: null, attachments: [], quotes: [], createdAt: 1794667434000 };
+  const p = { message: m, surface: "ember", channel: "CHAT", threadTs: m.ts, connect: "ember" };
+  const delivered = ts.formatInbound([p] as never, new Set(), new Map(), new Map(), new Map(), new Map(), "");
+  assert.ok(delivered.includes('sent_at="2026-11-14T14:43:52.279Z" from="a" ts="1794667432.279000"'), delivered);
+  const history = ts.formatHistory([m] as never, "web", `CHAT/${m.ts}`, "", new Map());
+  assert.ok(history.includes('sent_at="2026-11-14T14:43:52.279Z" from="a" ts="1794667432.279000"'), history);
+  const feishu = { ...m, ts: "om_123", createdAt: 1794667434000 };
+  const opaque = ts.formatHistory([feishu] as never, "feishu:test", "oc_1/om_123", "", new Map());
+  assert.ok(opaque.includes('recorded_at="2026-11-14T14:43:54.000Z" from="a" ts="om_123"'), opaque);
+  const comma = ts.formatHistory([m] as never, "comma:test", `TASK/${m.ts}`, "", new Map());
+  assert.ok(comma.includes('recorded_at="2026-11-14T14:43:54.000Z" from="a" ts="1794667432.279000"'), comma);
 });
 
 test("earlier choices on cards say when they were made and that what follows is not about them", () => {

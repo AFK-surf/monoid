@@ -113,6 +113,7 @@ const NOT_MEASURED: Record<string, string> = {
   screenCard: "eight fields of one screen (screens.ts screenCard)", imageNear: "the two pictures beside one, at most (placed.ts near)",
   shareIn: "30 chats (share-in.ts LISTED) and the workspace's stations, 64 at most (client/limits.ts STATIONS_PER_WORKSPACE)",
   chatFeedback: UNBOUNDED,
+  preset: "one preset whole, as the `presets` topic weighed sends each: its name, instructions and folders held to preset-records.ts NAME_MAX, INSTRUCTIONS_MAX, DIRS_MAX",
 };
 
 /// What a topic's value as the fixture makes it holds nothing of, though its shape declares it (a list, a map), by the
@@ -204,6 +205,8 @@ const EMPTY: Record<string, Record<string, string>> = {
   "changelog news": { tabs: ASKED_SO },
   // (a rig's devices', a station that only runs tasks: the workspace has none)
   "devices": { "devices[].requests": NONE },
+  // (a station's terminals: none open on the workspace of real size)
+  "terminals": { terminals: NONE },
   // (names chosen, a tree's folders open, columns widened by hand)
   "driveBrowse phone": { "chosen.names": STATE, open: STATE, widths: STATE },
   "driveBrowse columns": { "chosen.names": STATE, open: STATE, widths: STATE },
@@ -496,6 +499,7 @@ const STILL: Record<string, string> = {
   // (a model control's: what the station's accounts read, their allowances, a station down move none of it, choose.ts)
   "pick": BY_PAGE("pick.set, pick.save, pick.like, pick.forget"),
   "joinable": BY_PAGE("station.join: the stations of the account's workspaces, one joining another"),
+  "terminals": BY_PAGE("terminal.view, terminal.end: a member opening one or ending it; the workspace has none open"),
   "memberships": READ_ONCE("views/memberships.ts readSoon, and again by station.join"),
   "workspaceWays": BY_PAGE("workspace.setWay: the rest is still.fail's relays, as /v1/me lists them"),
   "changelog news": UNTOLD("what this build got since the changelog was last shown: the device's build, said as a run starts (client.device), and the changelog shown (changelog.seen), on its own page"),

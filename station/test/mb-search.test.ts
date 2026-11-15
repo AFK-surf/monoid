@@ -100,7 +100,7 @@ async function all(search: Search) {
 
 test("the MoonBit search finds what the worker finds", { skip: binary === null ? "the MoonBit program is not built here" : false, timeout: 300_000 }, async () => {
   const f = station();
-  const worker = new Search({ data: f.data, mb: null }), program = new Search({ data: f.data });
+  const worker = new Search({ data: f.data, worker: new URL("./reference/search-worker.ts", import.meta.url) }), program = new Search({ data: f.data });
   worker.start(); program.start();
   try {
     // The candidate scopes and session list not prepared yet: the original walks.

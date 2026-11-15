@@ -361,6 +361,7 @@ fn signed_in_over(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
     match kind {
       ShareSheet => share_in_sheet(c, src, w)
       InviteLink => invite_sheet(c, src)
+      LoginLink => login_sheet(c, src, w)
       NoSheet => ()
     }
   })
@@ -558,7 +559,8 @@ fn narrow_made_as(
                   tips=@sf.TipLayer::new(fn() { Some(v) }),
                   stint~,
                   shows~,
-                  top=fn() { list_top_live(col, r) },
+                  cover=fn() { bar_foot_live(col, r) },
+                  room=list_room,
                   foot=list_foot,
                   composer~,
                   lead=unread_lead(),
@@ -668,6 +670,13 @@ fn narrow_made_as(
       made("connect/" + station + "/" + id, fn(p, core, here, frame, stint, _acts) {
         @sfpages.connect_node(p, src, core, here, station, id, on_back=core.pop, frame~, stint~)
       })
+    // a station's terminal: the whole window, its bar under the status bar (terminal_node)
+    Terminal(at) =>
+      made("terminal/" + at.station + "/" + at.terminal, fn(p, core, _here, frame, _stint, _acts) {
+        @sfpages.terminal_node(p, src, at, back=fn() { frame().back.unwrap_or(@sf.t("common.back")) }, on_back=core.pop, top=fn() {
+          frame().top
+        })
+      })
     // (by its station: another station's another page, not this one become it)
     Setting(Station(address)) =>
       made("station/" + address, fn(p, core, here, frame, stint, _acts) {
@@ -688,6 +697,19 @@ fn narrow_made_as(
     History(r, key, entry) =>
       made_at("history/" + r.station + "/" + key, place, fn(p, _core, _here, frame, _stint, _acts, serial) {
         history_node(p, src, r, key, entry, frame, serial)
+      })
+    // a chat's Farview tab, drawn here (sfpages' farview_tab_node): the bar back, the tab's name, the tab
+    Screen(at) if @sfpages.farview_screen(at.screen) =>
+      made("farview/" + at.station + "/" + at.screen, fn(p, _core, _here, frame, _stint, _acts) {
+        p.grow(Is(1.0)).min_height(Is(Some(0.0))).padding(By(fn() { (0.0, 0.0, 0.0, frame().foot) })) |> ignore
+        @sf.nav_bar_node(
+          p,
+          fn() { frame().back.unwrap_or(tr("common.back")) },
+          fn() { if at.title != "" { at.title } else { @sf.t("core-views.screen.kind.browser") } },
+          fn() { @sfbase.go_back() |> ignore },
+          top=fn() { frame().top },
+        )
+        @sfpages.farview_tab_node(p, src, at.station, at.screen)
       })
     Setting(Profile(address, id)) =>
       made("profile/" + address + "/" + id, fn(p, core, here, frame, stint, _acts) {
@@ -733,7 +755,7 @@ fn narrow_made_top(v : @view.View, has_top~ : Bool) -> Unit {
     v.box(fn(o) {
       o.over(Is(true)) |> ignore
       o.show(fn() { status_top_now(v.window().0) > 0.0 }, fn(paper) {
-        paper.height(By(fn() { Some(status_top_now(v.window().0)) })).ground(By(fn() { @sf.theme().p.bg })) |> ignore
+        paper.height(By(fn() { Some(status_top_now(v.window().0)) })).ground(By(fn() { @sf.theme().p.bg })) |> @sf.ground_node |> ignore
       })
     })
     |> ignore
@@ -781,12 +803,13 @@ fn place_top_bar_glass(
       |> ignore
       // (its words whole: what the page does at its end gives way where the bar has not the room)
       row.box(fn(t) {
-        t.grow(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))).height(Is(Some(34.0))).row(Is(true)).lines_up(Is(Some(Middle)))
+        t.grow(Is(1.0)).basis(Is(Some(0.0))).keeps_held(Is(true)).fits(Is(true)).height(Is(Some(34.0))).row(Is(true)).lines_up(Is(Some(Middle)))
         |> ignore
         @sf.top_bar_title_node(t, fn() { place_label(place()) }) |> ignore
       })
       |> ignore
       row.show(fn() { actions() is Some(_) }, fn(a) {
+        a.row(Is(true)).shrink(Is(1.0)) |> ignore
         a.pick(
           fn() {
             match actions() {
@@ -796,7 +819,7 @@ fn place_top_bar_glass(
           },
           fn(k, _) {
             @sf.top_bar_actions_lent(k)
-            k.row(Is(true)).gap(Is(10.0)).lines_up(Is(Some(Middle))) |> ignore
+            k.row(Is(true)).gap(Is(10.0)).lines_up(Is(Some(Middle))).shrink(Is(1.0)) |> ignore
             match @signals.untracked(actions) {
               Some((make, _)) => make(k)
               None => ()

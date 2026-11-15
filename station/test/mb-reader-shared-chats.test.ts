@@ -15,6 +15,7 @@ import { wall } from "../src/ops/fibers.ts";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
 import { Readers } from "../src/read/pool.ts";
 import { Store, newMessage } from "../src/store/store.ts";
+import { readersOf } from "./reference.ts";
 
 const binary = mbReaderBinary();
 
@@ -121,8 +122,7 @@ test("the MoonBit reader reads the shared chat list as the worker does", { skip:
   say(lonely, "person", "p@x", "alone");
   db.prepare("UPDATE threads SET hidden_at = 6600 WHERE id = ?").run(lonely);
   const readers = (mb: string | null) => {
-    const r = new Readers(data, 1);
-    r.mbReader = mb;
+    const r = readersOf(data, mb);
     r.names.set("p@x", "Pat");
     r.processes = () => new Map([["a1", "running"]]);
     r.clientKeys = () => new Map([["a1", "ck-1"]]);

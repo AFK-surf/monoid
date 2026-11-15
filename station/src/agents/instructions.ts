@@ -1,6 +1,7 @@
 // What the agent is told about its situation, appended to the runtime's own system prompt, and how messages are put to
 // it. A change to how agents work gets a note in migrations.ts too, for the sessions begun before it.
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import type { MessageRow, PendingMessage, WidgetModel } from "../store/store.ts";
 import type { BackgroundTask } from "./runtime.ts";
 import { type CardChoice, STILLFAIL_SURFACE } from "../store/rows.ts";
@@ -9,9 +10,10 @@ import { STATION_AUTHOR } from "../store/rows.ts";
 
 /// `project`: the directory the runtime runs in, for a session begun outside still.fail (in a terminal) and continued here.
 /// `memory`: the workspace's memory as it is now (`readMemory`). `site`: what the deployment adds (`readSiteInstructions`).
-export function sessionInstructions(workspace: string, project: string | null, repos_dir: string, memory_path: string, memory: string, site = ""): string {
+/// `station`: this station's name ("" where it has none).
+export function sessionInstructions(workspace: string, project: string | null, repos_dir: string, memory_path: string, memory: string, site = "", station = ""): string {
   const projectLine = project === null ? "" : `- Project directory: ${project}. This session began outside still.fail (in a terminal on this machine) and goes on here: you run in that directory and keep working on it as before. The session workspace below is for scratch files only.\n`;
-  return instructions(projectLine, workspace, repos_dir, memory_path) + (site === "" ? "" : `\n\n${site}`) + (memory === "" ? "" : `\n\n<memory path="${memory_path}">\n${memory}\n</memory>`);
+  return instructions(projectLine, workspace, repos_dir, memory_path, station) + (site === "" ? "" : `\n\n${site}`) + (memory === "" ? "" : `\n\n<memory path="${memory_path}">\n${memory}\n</memory>`);
 }
 
 /// The most of the deployment's text an agent is told: a few lines that point at its skills, not a manual.
@@ -29,15 +31,56 @@ export async function readSiteInstructions(env: NodeJS.ProcessEnv = process.env)
 }
 
 /// The workspace's memory as it is now, told after the instructions: given with them, not by the runtime's home (a
-/// profile serves every workspace, sessions/agent-home.ts). Read off the station's thread, at each process's opening.
+/// profile serves every workspace, sessions/agent-home.ts). Read off the station's thread, at each process's opening,
+/// with what of it has grown past what an agent can use (`overgrown`) said after it.
 export async function readMemory(path: string): Promise<string> {
-  return (await readFile(path, "utf8").catch(() => "")).trim();
+  const memory = (await readFile(path, "utf8").catch(() => "")).trim();
+  const grown = overgrown([["MEMORY.md", memory], ...(await skillsBeside(path))]);
+  return grown === "" ? memory : `${memory}\n\n${grown}`;
 }
 
-const instructions = (project: string, workspace: string, repos_dir: string, memory_path: string) => `You work on this machine for people who write to you from still.fail chats, Slack threads, Feishu chats and Comma Tasks.
+/// The most a memory file holds before an agent is told to condense it, in bytes (MEMORY.md, a team skill's SKILL.md),
+/// and the longest line of one. Every session of the workspace reads MEMORY.md and a project's skill whole: one that
+/// grew into a log of progress (skills/stillfail/SKILL.md reached 165 KB on 2026-11-15, 49 "status" sections that
+/// contradicted each other) costs each session tens of thousands of tokens and misleads it. A merge keeps both
+/// versions where two stations changed one place (share/memory-merge.ts), so what came twice is the agents' to tidy too.
+export const MEMORY_MOST = 8 * 1024;
+export const SKILL_MOST = 24 * 1024;
+export const LINE_MOST = 1500;
+
+/// The team skills' SKILL.md beside the memory at `path` (`skills/<name>/SKILL.md`), as [relative path, text].
+async function skillsBeside(path: string): Promise<[string, string][]> {
+  const dir = join(dirname(path), "skills");
+  const names = await readdir(dir, { withFileTypes: true }).catch(() => []);
+  const out: [string, string][] = [];
+  for (const e of names) {
+    if (!e.isDirectory()) continue;
+    const text = await readFile(join(dir, e.name, "SKILL.md"), "utf8").catch(() => null);
+    if (text !== null) out.push([`skills/${e.name}/SKILL.md`, text]);
+  }
+  return out.sort(([a], [b]) => (a < b ? -1 : 1));
+}
+
+/// What of `files` ([relative path, text]) is past MEMORY_MOST, SKILL_MOST or LINE_MOST, as a note to the agent; "" when
+/// nothing is.
+export function overgrown(files: [string, string][]): string {
+  const kb = (n: number) => `${Math.ceil(n / 1024)} KB`;
+  const said: string[] = [];
+  for (const [rel, text] of files) {
+    const bytes = Buffer.byteLength(text, "utf8");
+    const most = rel === "MEMORY.md" ? MEMORY_MOST : SKILL_MOST;
+    const long = text.split("\n").filter((l) => Buffer.byteLength(l, "utf8") > LINE_MOST).length;
+    const why = [bytes > most ? `${kb(bytes)}, past ${kb(most)}` : "", long > 0 ? `${long} line${long === 1 ? "" : "s"} past ${LINE_MOST} bytes` : ""].filter((x) => x !== "");
+    if (why.length > 0) said.push(`- ${rel}: ${why.join("; ")}`);
+  }
+  if (said.length === 0) return "";
+  return `[still.fail: this memory has grown past what an agent can use: condense it before you add to it]\n${said.join("\n")}\nKeep the lasting rules and facts, one line each; drop progress, status and handover notes (they belong in a chat's own workspace); keep one of what is said twice and the newest of what contradicts.`;
+}
+
+const instructions = (project: string, workspace: string, repos_dir: string, memory_path: string, station: string) => `You work on this machine for people who write to you from still.fail chats, Slack threads, Feishu chats and Comma Tasks.
 
 Messages:
-- Each message comes as <message via="web|slack|feishu|comma" thread="…" from="…" ts="…">: thread is the conversation to answer in. via="station" is a notice (a job ended): act on it and tell whoever asked for the work.
+- Each message comes as <message via="web|slack|feishu|comma" thread="…" from="…" ts="…">: thread is the conversation to answer in. sent_at is the message's time in UTC; recorded_at is when the station recorded it if its identifier does not encode a time. ts is the original message identifier. A delivery says when it was handed to you in UTC. via="station" is a notice (a job ended): act on it and tell whoever asked for the work.
 - One session can hear several threads: answer each in its own. Not every message is for you; other agents are bots: build on their work and mention them when you need something.
 - before="TS" means it was written before your post TS, without seeing it.
 - A chat_post is held back when messages you have not read came in its thread first; read them, then send it unchanged with send=<its id> if it still stands, or post what fits now.
@@ -74,9 +117,11 @@ ${project}- Session workspace: ${workspace}: scratch files, clones and worktrees
 - A repository's AGENTS.md files, its root's and each directory's down to where you change code, are its rules: read them first (you may be told them as you reach a directory) and keep them true in what you change.
 
 Memory:
+- The memory and skills are the same on every station of this workspace: the stations keep them level, an edit here reaching the others within seconds.${station === "" ? "" : ` You are on station ${station}.`} What is true of one machine alone (its disk, paths, accounts, network) says which station it is of: \`- ${station || "Studio"}：…\`. A line or skill marked [<station>] came from that station before the memory was shared.
 - Global memory ${memory_path} (told below): only what would break things if forgotten, one line each.
 - Project memory goes in skills/<project>/SKILL.md beside it, description starting "项目记忆：". Before working out a project's build or workflow from source, search kinds=["skill"].
-- Keep memory short and consistent: when you add a rule, remove any it contradicts. No credentials.`;
+- A file named *.conflict-<station>.* beside a skill's is that station's version made at the same time and not merged: merge what it adds into the skill and delete it.
+- Keep memory short and consistent: lasting rules and facts only, never progress, status or handover notes (those go in your chat's workspace); when you add a rule, remove any it contradicts or repeats. Where two stations changed one place at once the merge keeps both versions: keep one. No credentials.`;
 
 export const NUDGE = `Your turn ended without a state, so nobody knows where the chat stands. Only a real unresolved need requires need_human. A factual answer alone does not need a follow-up question; do not invent one. If you still need something after answering a clarification, visibly ask for it; need alone is only a status summary. If you ask a person to choose or confirm, post the question with a card. Do not reopen a decision the user already made. Decide whether anything in it is still unfinished, then end the turn with exactly one:
 - all_done: nothing in the chat is left unfinished at all. Post the result with chat_post kind "all_done" (or chat_state "all_done" if you already posted it), with done: why nothing is left, naming the evidence (a commit, a release, a person's confirmation, the answer given).
@@ -97,6 +142,8 @@ export const GO_ON_AFTER_SPENT = `Your last turn was cut off: the account it ran
 export const GO_ON_AFTER_OVERLOADED = `Your last turn was cut off: the model was at capacity (the provider's side, not your account), and the station waited a while before trying again. Check where you were, then continue the work. Post only if people need to know.`;
 
 export const GO_ON_AFTER_FAILED = `Your last turn failed (the model service or the connection to it went wrong), and a person asked to try again. Check where you were, then continue the work. Post only if people need to know.`;
+
+export const GO_ON_AFTER_UNANSWERED = `Your last turns ended without a state (or without reaching anyone), and the station stopped asking; a person asked to try again. Check where you were, then post what people still need to see (your answer, results, questions) and end the turn with a state as usual.`;
 
 export const GO_ON_AFTER_REFILL = `Your last turn was cut off: the account it ran on hit its usage limit, and no other account could take over. Its allowance should have refilled by now. Check where you were, then continue the work. Post only if people need to know.`;
 
@@ -211,6 +258,16 @@ const via = (surface: string) => (surface === STILLFAIL_SURFACE ? "web" : surfac
 /// The still.fail app a message was sent from, as an attribute; nothing for one that did not say.
 const clientAttr = (m: MessageRow) => (m.client !== null && m.client !== undefined ? ` client="${escapeAttr(m.client)}"` : "");
 
+/// Slack and app message IDs are seconds since the epoch; Comma's are sequence numbers, and Feishu's are opaque.
+/// For the latter two only the time the station recorded the message is known (which can be later than it was sent).
+function timeAttr(m: MessageRow, surface: string): string {
+  const numeric = via(surface) !== "comma" && via(surface) !== "feishu" && /^\d{10}(?:\.\d+)?$/.test(m.ts) ? Number(m.ts) * 1000 : NaN;
+  const sent = Number.isFinite(numeric) && numeric <= 8.64e15 ? numeric : null;
+  const recorded = Number.isFinite(m.createdAt) && m.createdAt > 0 && m.createdAt <= 8.64e15 ? m.createdAt : null;
+  const at = sent ?? recorded;
+  return at === null ? "" : ` ${sent === null ? "recorded_at" : "sent_at"}="${new Date(at).toISOString()}"`;
+}
+
 /// Messages handed to a session, each with its source and sender, and a hint where a thread is new to it.
 /// `posts`: the agent's first post in a message's thread made after it (by ts), said as its `before`.
 export function formatInbound(messages: PendingMessage[], newThreads: Set<number>, names: Map<string, string>, selves: Map<string, string>, posts: Map<PendingMessage, string> = new Map(), cards: Map<PendingMessage, { ended: Pick<MessageRow, "author" | "ts">; current: Pick<MessageRow, "ts"> | null; special: string | null }> = new Map(), selfKey = ""): string {
@@ -232,7 +289,7 @@ export function formatInbound(messages: PendingMessage[], newThreads: Set<number
     const from = agent ? (name ?? "another agent") : name !== undefined ? `${name} (${m.author})` : m.author;
     const post = posts.get(p);
     const sentBefore = post !== undefined ? ` before="${escapeAttr(post)}"` : "";
-    lines.push(`<message via="${via(p.surface)}" connect="${escapeAttr(p.connect)}"${you} thread="${address}" from="${escapeAttr(from)}"${agent ? " bot" : ""}${clientAttr(m)} ts="${m.ts}"${sentBefore}>\n${messageForAgent(m)}\n</message>`);
+    lines.push(`<message via="${via(p.surface)}" connect="${escapeAttr(p.connect)}"${you} thread="${address}"${timeAttr(m, p.surface)} from="${escapeAttr(from)}"${agent ? " bot" : ""}${clientAttr(m)} ts="${m.ts}"${sentBefore}>\n${messageForAgent(m)}\n</message>`);
     const change = cards.get(p);
     if (change !== undefined) {
       const whose = change.ended.author === selfKey ? "Your card" : "A card";
@@ -306,7 +363,7 @@ export function formatHistory(messages: MessageRow[], surface: string, address: 
         const chose = found.chose === undefined ? "" : `; ${found.chose.by} chose ${JSON.stringify(found.chose.option)}, which closed it without a message`;
         card = `\n[Answer card: ${found.pending ? "pending" : "no longer pending"}${chose}; ${JSON.stringify(facts)}]`;
       }
-      return `<message via="${via(surface)}" thread="${address}" from="${escapeAttr(from)}"${bot}${clientAttr(m)} ts="${m.ts}">\n${messageForAgent(m)}${card}\n</message>`;
+      return `<message via="${via(surface)}" thread="${address}"${timeAttr(m, surface)} from="${escapeAttr(from)}"${bot}${clientAttr(m)} ts="${m.ts}">\n${messageForAgent(m)}${card}\n</message>`;
     })
     .join("\n");
 }

@@ -908,6 +908,7 @@ pub struct Ctx {
   mut wake_at : Double
   mut wake_waited : Double
   mut frame_rest : Bool
+  mut frame_unasked : Bool
   mut frame_by : SourceLoc?
   mut wake_by : SourceLoc?
   mut page_in_hand : Bool
@@ -1376,6 +1377,7 @@ pub fn Ctx::selection_by_finger(Self) -> Bool
 pub fn Ctx::selection_clear(Self) -> Unit
 #callsite(autofill(loc))
 pub fn Ctx::selection_end(Self, loc~ : SourceLoc) -> (Double, Double, Double)?
+pub fn Ctx::selection_in(Self, Int32) -> Bool
 pub fn Ctx::selection_made(Self) -> Int32
 pub fn Ctx::semantics(Self, Int32, @view.Role, id? : Int32, label? : String, description? : String, value? : String, check? : @view.Check, expanded? : Bool, selected? : Bool, pressed? : Bool, disabled? : Bool, modal? : Bool, range? : (Double, Double, Double), actions? : Array[@view.Action]) -> Unit
 pub fn Ctx::semantics_dump(Self) -> String
@@ -2558,6 +2560,7 @@ pub fn Tester::drawn_image_clips(Self) -> Array[((Double, Double, Double, Double
 pub fn Tester::drawn_images(Self) -> Array[Array[Double]]
 pub fn Tester::drawn_instances(Self) -> Array[Array[Double]]
 pub fn Tester::drawn_instances_keyed(Self) -> Array[Array[Double]]
+pub fn Tester::drawn_instances_text(Self) -> String
 pub fn Tester::drawn_lines(Self) -> Array[(Double, Double, Double, Double, Double, Int64)]
 pub fn Tester::drawn_notches(Self) -> Array[(Int32, Double, Double, Double, Double)]
 pub fn Tester::drawn_of(Self, String) -> (Double, Double)?

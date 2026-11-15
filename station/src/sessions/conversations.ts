@@ -13,7 +13,7 @@ import { LegacyEditsUnavailable, makeStore as makeReadStore, statePendingCard as
 import { iso } from "../read/transcript.ts";
 import { CARD_POSTS_PENDING } from "../store/card-post-index.ts";
 import { type Attachment, type MessageRow, STILLFAIL_SURFACE, type SessionThread, type ThreadRow } from "../store/store.ts";
-import type { DeclaredState, SessionActor } from "./actor.ts";
+import type { Actor, DeclaredState } from "./actor.ts";
 import {
   type Args,
   MAX_WAIT_SECONDS,
@@ -138,7 +138,7 @@ function stateWrite(hub: Hub, write: () => void): void {
 
 /// An answer can arrive after the reader returns, while the actor waits its turn. Confirm it inside the same bounded
 /// transaction as the state write. An old lookup or a busy writer is waited for outside the actor's queue.
-async function recordQuestionForTurn(hub: Hub, key: string, actor: SessionActor, turn: string, kind: DeclaredState,
+async function recordQuestionForTurn(hub: Hub, key: string, actor: Actor, turn: string, kind: DeclaredState,
   words: string | null, about: [number, number, string], watch: boolean, threadsOf: () => number[], ts: string,
   missing: string): Promise<boolean> {
   let delay = 10;
@@ -179,7 +179,7 @@ async function pendingForState(hub: Hub, key: string, threadsOf: () => number[])
 const NEED_VISIBLE_QUESTION = "need_human requires a visible question: post what you need with chat_post kind=need_human, or give about pointing to your question (a pending answer card is used by default). need alone is not a message to the person";
 
 /// As for a named question, the latest default card must be checked in the state-writing transaction.
-async function recordPendingForTurn(hub: Hub, key: string, actor: SessionActor, turn: string, kind: DeclaredState,
+async function recordPendingForTurn(hub: Hub, key: string, actor: Actor, turn: string, kind: DeclaredState,
   words: string | null, about: [number, number, string] | null, watch: boolean, threadsOf: () => number[],
   requireQuestion: boolean): Promise<boolean> {
   let delay = 10;
@@ -370,19 +370,15 @@ export async function chatPost(hub: Hub, key: string, args: Args, held: Held = {
   if (store.manuallyArchived(thread.thread.id)) throw new Error(`${threadAddress(thread.thread.channel, thread.thread.threadTs)} was archived by hand: it takes no messages until someone restores it`);
   const chat = hub.chat(thread.connect);
   // A login card on a platform: its page to open, with a field for the code that page gives or the device code to enter
-  // there; so only for a login of this station at such a step.
+  // there; so only for a login of this station at such a step. Elsewhere the card is still kept in the still.fail chat
+  // (and its 待处理), while the platform message carries the link in its text.
   const page = card?.type === "login" && chat.loginCards === true && card.station === undefined ? (hub.logins?.page(String(card.login)) ?? null) : null;
   const loginHere = page !== null;
-  // (the page goes only into what the platform shows, never into the card the chat keeps)
-  const shown = page !== null ? { ...card, page } : card;
-  if (card !== null && thread.thread.surface !== STILLFAIL_SURFACE && !(chat.cards === true && (card.type === "options" || card.type === "text")) && !loginHere) {
-    throw new Error(
-      card.type === "login" && chat.loginCards === true
-        ? 'a login card is shown here only for a login of this station that gives a device code, or waits for a code from its page (paste: true); otherwise post its link in the text and end with kind "need_human"'
-        : chat.cards === true
-          ? 'a login card is shown only in still.fail chats (CHAT/… or EMBER/…); here post its link in the text and end with kind "need_human"'
-          : 'cards (options, a text field) are not shown here; write the choices or the question in the text and end with kind "need_human"',
-    );
+  // (the page goes only into what the platform shows, never into the card the chat keeps; a login card the platform
+  // cannot show inline is omitted from the platform post while kept in the chat)
+  const shown = loginHere ? { ...card, page } : card?.type === "login" && thread.thread.surface !== STILLFAIL_SURFACE ? null : card;
+  if (card !== null && thread.thread.surface !== STILLFAIL_SURFACE && !(chat.cards === true && (card.type === "options" || card.type === "text")) && card.type !== "login") {
+    throw new Error('cards (options, a text field) are not shown here; write the choices or the question in the text and end with kind "need_human"');
   }
   if (card !== null && text === "") throw new Error("text is required with a card: what it asks and the facts it turns on, so it can be answered from this message alone");
   let about: [number, number, string] | null = null;

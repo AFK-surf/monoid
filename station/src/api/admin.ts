@@ -11,6 +11,7 @@ import { USER_TAB_ID } from "../screens/source.ts";
 import type { SimDebug } from "../screens/sim-debug.ts";
 import type { Readers } from "../read/pool.ts";
 import { HttpError } from "../read/views.ts";
+import { toEntry } from "../store/rows.ts";
 import { type Answer, type Request, error, json, queryPairs } from "./request.ts";
 import { routes as chats } from "./routes/chats.ts";
 import { routes as usage } from "./routes/usage.ts";
@@ -27,6 +28,7 @@ import { routes as networkSettings } from "./routes/network.ts";
 import { restarter } from "../ops/restart.ts";
 import { routes as contextSettings } from "./routes/context.ts";
 import { routes as presetRoutes } from "./routes/presets.ts";
+import { routes as starRoutes } from "./routes/stars.ts";
 import { routes as diagnosticsSettings } from "./routes/diagnostics.ts";
 import { routes as drive } from "./routes/drive.ts";
 import { routes as workspaces } from "./routes/workspaces.ts";
@@ -123,7 +125,7 @@ export class Admin {
   private routes: Route[];
   /// What the routes are given; the station's parts' too (parts.ts).
   private tools: Tools;
-  private readers: Readers;
+  readonly readers: Readers;
 
   readonly host: Host;
 
@@ -142,7 +144,9 @@ export class Admin {
       read: async (r, op, args) => {
         try {
           const signal = r.method === "GET" || (r.method === "POST" && READS.test(r.path)) ? r.signal : undefined;
-          return json(200, await this.readers.read(op, args, r.lang, { background: r.background === true, signal }));
+          const options = { background: r.background === true, signal };
+          // (as bytes, passed on as the reader gave them; a test's stand-in for the readers may give text alone)
+          return json(200, "readBytes" in this.readers ? await this.readers.readBytes(op, args, r.lang, options) : await (this.readers as Readers).read(op, args, r.lang, options));
         } catch (e) {
           return error(e instanceof HttpError ? e.status : 500, (e as Error).message);
         }
@@ -258,6 +262,54 @@ export class Admin {
     answer.headers["stillfail-idempotent"] = "1";
     answer.headers[BUILD_HEADER] = stationBuild();
     return runtimeCompatible(r, answer);
+  }
+
+  /// A person's message the MoonBit program writes (mesh/served.ts `say`): as `once` keeps a keyed write's answer,
+  /// asked before it is written (`kept`: the first one's answer, given again), with the timestamp it is written at
+  /// (the hub's, one clock for every message) and what to settle the key with once answered; refused as POST
+  /// /threads/:id/messages refuses (routes/hub.ts: the station starting, or moving away from the asker's workspace).
+  async claimSay(viewer: Request["viewer"], path: string, key: string | null, lang: Request["lang"]): Promise<{ kept: Kept } | { refused: Kept } | { ts: string; settle: (answer: Kept | null) => void }> {
+    const refused = (status: number, message: string) => ({ refused: error(status, message) as Kept });
+    const agents = typeof this.deps.agents === "function" ? this.deps.agents() : this.deps.agents;
+    const store = this.deps.store ?? agents?.hub.store;
+    if (store === undefined || agents === undefined) return refused(503, "station starting");
+    if (viewer.workspace !== null && agents.hub.quietIn(viewer.workspace)) return refused(503, tr(lang, "station.retire.moving"));
+    if (key === null || key === "" || key.length > 200) return { ts: agents.hub.nextTs(), settle: () => {} };
+    const slotKey = `${viewer.email}\0${path}\0${key}`;
+    const now = (this.deps.clock ?? liveClock).currentTimeMillisUnsafe();
+    for (const [k, slot] of this.slots) if (slot.at !== null && now - slot.at >= ONCE_KEEP_MS) this.slots.delete(k);
+    for (;;) {
+      const slot = this.slots.get(slotKey);
+      if (slot === undefined) break;
+      const kept = await slot.answer;
+      if (kept !== null) return { kept: { status: kept.status, headers: { ...kept.headers }, body: kept.body } };
+      if (this.slots.get(slotKey) === slot) this.slots.delete(slotKey);
+    }
+    let settle: (kept: Kept | null) => void = () => {};
+    const slot: Slot = { at: null, answer: new Promise<Kept | null>((resolve) => (settle = resolve)) };
+    this.slots.set(slotKey, slot);
+    return {
+      ts: agents.hub.nextTs(),
+      settle: (answer) => {
+        if (answer !== null && answer.status < 500) {
+          slot.at = (this.deps.clock ?? liveClock).currentTimeMillisUnsafe();
+          settle({ status: answer.status, headers: answer.headers, body: answer.body });
+        } else {
+          settle(null);
+          if (this.slots.get(slotKey) === slot) this.slots.delete(slotKey);
+        }
+      },
+    };
+  }
+
+  /// A person's message the MoonBit program wrote (`row`, as the entries table has it): told the store's followers
+  /// as the store's own write is told, and delivered to the chat's sessions as `say` delivers it (sessions/lifecycle.ts).
+  saidElsewhere(thread: number, n: number, text: string, row: Record<string, unknown>) {
+    const agents = typeof this.deps.agents === "function" ? this.deps.agents() : this.deps.agents;
+    const store = this.deps.store ?? agents?.hub.store;
+    if (store === undefined || agents === undefined) return;
+    store.told([{ type: "thread", id: thread, entries: [toEntry(row)] }]);
+    agents.hub.deliver(thread, n, store.threadSessions(thread).map((m: { session: string }) => m.session), text);
   }
 
   /// `write`'s answer, or the answer the first write under `key` had: while the first is under way the
@@ -379,6 +431,7 @@ export function agentsRoutes(agents: AgentsParts, deps: { store?: Store; events?
     ...(agents.updates ? updates({ updates: agents.updates }) : []),
     ...(agents.config ? agentEnv({ config: agents.config, changed: () => deps.events?.overviewChanged(), restart: () => agents.hub.everyChanged() }) : []),
     ...(agents.hub ? presetRoutes({ presets: agents.hub.presets, reposDir: () => agents.hub.reposDir(), index: agents.hub.repoIndex, clones: agents.hub.clones, changed: () => deps.events?.presetsChanged() }) : []),
+    ...(agents.hub ? starRoutes({ kept: agents.hub.store, told: (ws, sub) => deps.events?.tell("stars", { workspace: ws }, `stars\0${ws}\0${sub}`, { workspace: ws, subs: [sub] }) }) : []),
     ...(agents.config ? contextSettings({ config: agents.config, changed: () => deps.events?.overviewChanged() }) : []),
     ...(agents.config ? diagnosticsSettings({ config: agents.config, changed: () => deps.events?.overviewChanged() }) : []),
     ...(agents.xshare ? xshare({ xshare: agents.xshare, store: deps.store }) : []),

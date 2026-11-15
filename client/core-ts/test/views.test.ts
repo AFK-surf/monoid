@@ -1854,7 +1854,7 @@ test("a_database_from_before_the_rows_part_and_verdicts_is_brought_to_them_and_l
   assert.deepEqual(parts(), ["ws/a object", "ws/b object", "ws/c object"]);
   // (what the chat list reads, and an older core reads, as it was)
   assert.deepEqual(sql.all("SELECT address, part FROM station_part ORDER BY address"), partsBefore);
-  assert.ok(String(sql.all("SELECT sql FROM sqlite_master WHERE name = 'station_part_set'")[0]?.[0]).includes("(address, part, row, chat, formerly, profiles, profiled)"));
+  assert.ok(String(sql.all("SELECT sql FROM sqlite_master WHERE name = 'station_part_set'")[0]?.[0]).includes("(address, part, row, chat, formerly, profiles, profiled, software)"));
   assert.equal(again.made.overviewsRead, 3, "read only to be judged");
   assert.deepEqual(rowsOf(again.list), rowsOf(first.list));
   await again.t.host.time.pass(100);
@@ -2798,7 +2798,8 @@ test("only the notice of a failed turn still where its agent stands offers 重�
   for (const [session, lastTurn] of [
     [{ process: "running" }, failed],
     [{ pending: 1 }, failed],
-    [{}, { ...failed, outcome: "completed", detail: null }],
+    [{}, { ...failed, outcome: "completed", detail: null, declared: "final" }],
+    [{}, { ...failed, outcome: "aborted", detail: null }],
     [{}, { ...failed, detail: "auth: signed out" }],
     [{}, { ...failed, about: { ...failed.about, thread: 8 } }],
   ] as const) {
@@ -2806,6 +2807,39 @@ test("only the notice of a failed turn still where its agent stands offers 重�
     await t.read(u, 1);
     assert.equal(u.value.messages[1].notice.againSession, undefined, JSON.stringify([session, lastTurn]));
   }
+  // A turn the station stopped asking for a state (回复即可继续) offers it too, while it stands there.
+  const givenUp = { kind: "nudge", outcome: "completed", declared: null, detail: null, about: failed.about, startedAt: 10, endedAt: 11 };
+  t.set(sessionOf("ws/a", "k"), { session: fullSession("k", { lastTurn: givenUp }), threads: [chat], turns: [] });
+  await t.read(u, 1);
+  assert.equal(u.value.messages[1].notice.againSession, "k");
+  assert.equal(u.value.messages[0].notice.againSession, undefined);
+  t.set(sessionOf("ws/a", "k"), { session: fullSession("k", { pending: 1, lastTurn: givenUp }), threads: [chat], turns: [] });
+  await t.read(u, 1);
+  assert.equal(u.value.messages[1].notice.againSession, undefined);
+});
+
+test("the notice of a failure where the allowance showed a limit offers 重新分配账号, not 重试, while its agent stands there", async () => {
+  const t = setup();
+  const u = ui();
+  t.subscribe(1, chatTopic("ws/a", 7));
+  const chat = thread(7, ["k"], t.host.nowMs());
+  t.set(threads("ws/a"), [chat]);
+  const entries = [1, 2].map((n) => ({
+    ...entry(n, "⚠️ 这个账号的 Fable 额度已用完"), authorKind: "ember", author: "ember",
+  }));
+  t.set(pageOf("ws/a", 7), { first: 1, last: 2, entries, end: false, thread: chat });
+  const failed = {
+    kind: "input", outcome: "failed", declared: null, detail: "limit:Fable: You've hit your Fable limit",
+    about: { thread: 7, seq: 2, ts: "2.0" }, startedAt: 10, endedAt: 11,
+  };
+  t.set(sessionOf("ws/a", "k"), { session: fullSession("k", { lastTurn: failed }), threads: [chat], turns: [] });
+  await t.read(u, 1);
+  assert.equal(u.value.messages[1].notice.reassignSession, "k");
+  assert.equal(u.value.messages[1].notice.againSession, undefined);
+  assert.equal(u.value.messages[0].notice.reassignSession, undefined);
+  t.set(sessionOf("ws/a", "k"), { session: fullSession("k", { pending: 1, lastTurn: failed }), threads: [chat], turns: [] });
+  await t.read(u, 1);
+  assert.equal(u.value.messages[1].notice.reassignSession, undefined);
 });
 
 test("chat_is_a_thread_its_messages_and_its_agents", async () => {

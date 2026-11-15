@@ -10,8 +10,9 @@
   never holds them nor passes a request on to a station (the root AGENTS.md, No way into a station from outside).
 - Workers, each deployed on its own (`deploy.py` lists them, `wrangler*.jsonc` route them): the API
   (`src/index.ts`), the relay (`src/relay-worker.ts`: deploying it drops every relay connection, so it is deployed
-  only when it changed), the static web, admin, preview, status and site. Their names, Durable Objects, bucket and
-  secrets keep their names from before the rename: a renamed one would be new and empty.
+  only when it changed), the static web, admin, preview, status, site and the component library's page (kit). Their
+  names, Durable Objects, bucket and secrets keep their names from before the rename: a renamed one would be new and
+  empty.
 - `src/directory.ts` (one SQLite Durable Object, `primary`) is who belongs where, every change one transaction: the
   rows stay together, as splitting them would make most changes span objects. What grows with devices, stations or
   requests is kept off it: a device's `/v1/events` socket is on its account's object (`src/account.ts`, also its

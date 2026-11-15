@@ -454,6 +454,28 @@ impl @hostapi.Host for FakeHost with glyph_put(self, key, x, y) {
 }
 
 ///|
+/// A glyph's picture given back (what words' halo is blurred from, halo.mbt): a live host's; the fake's glyph box all
+/// covered, so a halo is made and drawn as a host's is.
+impl @hostapi.Host for FakeHost with glyph_picture(self, key, out) {
+  match self.live {
+    Some(l) => l.host.glyph_picture(key, out)
+    None => {
+      out.fill(b'\xFF')
+      true
+    }
+  }
+}
+
+///|
+/// Pixels made here put in the atlas (a halo, halo.mbt): a live host's; the fake takes them, as it has no pictures.
+impl @hostapi.Host for FakeHost with atlas_put(self, x, y, w, h, px) {
+  match self.live {
+    Some(l) => l.host.atlas_put(x, y, w, h, px)
+    None => true
+  }
+}
+
+///|
 /// The side of a fake host's atlas: the web's (its glyphs placed in it as a host's are), colour glyphs in it with the
 /// others.
 let fake_atlas_size : Int = 2048
@@ -1891,10 +1913,11 @@ impl @hostapi.Host for FakeHost with nt_cancel(self, tag) {
 }
 
 ///|
-/// 0: what it lets the app show (1 granted, 2 denied, 3 ask, 0 unknown); 1: asked to let it (where it is not granted or
-/// unknown: the person's answer due, as the test said); 2: the answer, as a frame begins (never between frames: the
-/// person answers as the frame after the ask begins); 3: its settings opened, counted; 4: whether it shows the number on
-/// the app's icon, as the system it plays does.
+/// 0: what it lets the app show (1 granted, 2 denied, 3 ask, 4 default, 0 unknown); 1: asked to let it (where it is not
+/// granted or unknown: the person's answer due, as the test said); 2: the answer, as a frame begins (never between
+/// frames: the person answers as the frame after the ask begins), refused leaving it denied, but a browser's "default"
+/// as it was (its prompt put away); 3: its settings opened, counted, as the system it plays has them (none a browser's
+/// page opens: 0, nothing counted); 4: whether it shows the number on the app's icon, as the system it plays does.
 impl @hostapi.Host for FakeHost with nt_state(self, what) {
   match what {
     0 =>
@@ -1902,6 +1925,7 @@ impl @hostapi.Host for FakeHost with nt_state(self, what) {
         "granted" => 1
         "denied" => 2
         "ask" => 3
+        "default" => 4
         _ => 0
       }
     1 => {
@@ -1920,7 +1944,13 @@ impl @hostapi.Host for FakeHost with nt_state(self, what) {
       match self.notice_due {
         Some((yes, _)) if frame_running.val => {
           self.notice_due = None
-          self.notice_perm = if yes { "granted" } else { "denied" }
+          self.notice_perm = if yes {
+            "granted"
+          } else if self.notice_perm == "default" {
+            "default"
+          } else {
+            "denied"
+          }
           if yes {
             1
           } else {
@@ -1930,6 +1960,9 @@ impl @hostapi.Host for FakeHost with nt_state(self, what) {
         _ => -1
       }
     3 => {
+      if self.platform == 4 {
+        return 0
+      }
       self.notice_settings += 1
       1
     }

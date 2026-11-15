@@ -14,7 +14,9 @@
 // not said yet of someone it named (`roster.mbt` `Carried` for the list): where the root's log says neither `open` nor
 // `off`, its settings, on; and of a member it names, bound as it bound them (the log of their binding in the list is
 // the one the chain bound them to, none where it bound them to none), their devices the log has not said (`carry_of`).
-// So the handover signs `moved` alone, and nobody is waited for or asked.
+// So the handover signs `moved` alone, and nobody is waited for or asked. A member the chain bound to no log is bound
+// to one by their own `bind` (`roster.mbt` `binds_of`), proved by the signer the chain names for an own app device of
+// theirs; what a log of a binding of theirs took off of the chain's devices of theirs the chain carries no more.
 
 ///|
 /// How far ahead of a keeper's clock a web device's `at` may be and still count.
@@ -26,6 +28,9 @@ pub(all) struct State4 {
   /// says the settings yet), "no root" (the root's log is not among those given; `lock` then names no one).
   on : String
   lock : LockState
+  /// Whether the root's person is bound by `~root` (`roster.mbt` `root_admit`): false where a removal that named the
+  /// root's log took it out, which a reader from before reads as nothing (and where there is no root).
+  root_in : Bool
 }
 
 ///|
@@ -39,8 +44,13 @@ pub fn state4(ws : String, root : String, chains : Array[Array[Json]], bodies : 
 /// `state4` of a workspace whose chain moved (`chain`, its active chain, the `moved` last), rooted in the log its
 /// `moved` names, with what the chain as it moved still says. A chain that does not fold or did not move: "no root".
 pub fn state4_moved(ws : String, chain : Array[Json], chains : Array[Array[Json]], bodies : Array[Json], now : Double, c : &Crypto) -> State4 {
-  let (root, carried) = carried_of(chain, c)
-  state4_of(ws, root, chains, bodies, now, carried, c)
+  state4_carried(ws, moved_of(chain, c), chains, bodies, now, c)
+}
+
+///|
+/// `state4_moved` of a chain read once (`moved_of`).
+pub fn state4_carried(ws : String, m : Moved, chains : Array[Array[Json]], bodies : Array[Json], now : Double, c : &Crypto) -> State4 {
+  state4_of(ws, m.root, chains, bodies, now, m.carried, c)
 }
 
 ///|
@@ -54,8 +64,9 @@ pub fn state4_moved(ws : String, chain : Array[Json], chains : Array[Array[Json]
 /// the chain had it) whose id the log never said (`web`, `web.remove`), not run out by `now` (`webs`); and of those own
 /// app devices the log did put on, the chain's signer and the signers it had, by id (`sayless`), which a device the log
 /// says no signer for signs with. Never a device the log took off (it put it on), nor one the chain took off or does
-/// not call their own.
-fn carry_of(cr : Carried, sub : String, lock : String, logs : Map[String, (Person, Array[Json])], now : Double) -> Carry {
+/// not call their own, nor one in `off`: the chain's devices of theirs that a log of a binding of theirs took off
+/// (`roster.mbt` `binds_of`), so a device they took off never comes back by another log's binding.
+fn carry_of(cr : Carried, sub : String, lock : String, logs : Map[String, (Person, Array[Json])], now : Double, off : Map[String, Unit]) -> Carry {
   let none : Carry = { apps: [], webs: [], sayless: Map([]) }
   let bound = cr.chain.persons.get(sub).unwrap_or("")
   guard cr.chain.members.contains(sub) && (bound == lock || bound == "") else { return none }
@@ -74,12 +85,11 @@ fn carry_of(cr : Carried, sub : String, lock : String, logs : Map[String, (Perso
     }
   }
   let out : Carry = { apps: [], webs: [], sayless: Map([]) }
-  for _, d in cr.chain.devices {
-    guard d.sub == sub else { continue }
+  for d in cr.devices_of.get(sub).unwrap_or([]) {
     if d.kind == "app" && d.own && d.sign_key is Some(k) {
       if put.contains(d.id) {
         out.sayless[d.id] = (k, cr.chain.sign_keys.get(d.id).unwrap_or([k]))
-      } else {
+      } else if !off.contains(d.id) {
         out.apps.push(d)
       }
     } else if d.kind == "web" && !said.contains(d.id) && d.exp is Some(exp) && now < exp {
@@ -98,7 +108,7 @@ priv struct Carry {
 
 ///|
 fn state4_of(ws : String, root : String, chains : Array[Array[Json]], bodies : Array[Json], now : Double, carried : Carried?, c : &Crypto) -> State4 {
-  let (r, logs) = roster_of(ws, root, chains, bodies, [], carried, c)
+  let (r, logs, offs) = roster_of(ws, root, chains, bodies, [], carried, c)
   let s : LockState = {
     ws,
     seq: 0.0,
@@ -118,7 +128,7 @@ fn state4_of(ws : String, root : String, chains : Array[Array[Json]], bodies : A
     disabled: false,
     moved: None,
   }
-  guard r.rooted && logs.get(root) is Some((rp, _)) else { return { on: "no root", lock: s } }
+  guard r.rooted && logs.get(root) is Some((rp, _)) else { return { on: "no root", lock: s, root_in: false } }
   let set = r.settings
   // (D6: where the root's log says no `open`, the chain as it moved says the settings, off or on: on where it says no
   // `off` either. So an `open` said after an `off` says the chain's settings again; 2026-11-14, the moved workspace's
@@ -170,9 +180,11 @@ fn state4_of(ws : String, root : String, chains : Array[Array[Json]], bodies : A
     if m.lock != "" {
       s.persons[m.sub] = m.lock
     }
+    // (the root's person bound by a real admit, `~root` out: what the chain says of their devices is of the root's
+    // log, which binds them no more)
     let carry = match carried {
-      Some(cr) => carry_of(cr, m.sub, m.lock, logs, now)
-      None => { apps: [], webs: [], sayless: Map([]) }
+      Some(cr) if !(m.sub == rp.sub && m.admit is Some(_)) => carry_of(cr, m.sub, m.lock, logs, now, offs.get(m.sub).unwrap_or(Map([])))
+      _ => { apps: [], webs: [], sayless: Map([]) }
     }
     if logs.get(m.lock) is Some((p, _)) && p.sub == m.sub && p.devices.length() > 0 {
       // (named by the key each signs the workspace's things with, as its log says it: one that says none is listed and
@@ -222,7 +234,8 @@ fn state4_of(ws : String, root : String, chains : Array[Array[Json]], bodies : A
     (Some("open"), _) | (None, Some(_)) => "on"
     _ => "not on"
   }
-  { on, lock: s }
+  let root_in = r.members.iter().any(fn(m) { m.sub == rp.sub && m.admit is None })
+  { on, lock: s, root_in }
 }
 
 ///|

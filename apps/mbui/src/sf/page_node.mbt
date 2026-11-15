@@ -87,25 +87,13 @@ pub fn presses_held_node(
   |> ignore
 }
 
-///|
-/// `v` pressed as an old view's box with an id is (Ctx::on_press: a tap, a mouse's click, Enter or Space with the focus,
-/// a screen reader's press): `press` done then; its ripple and sink as `corner` rounds it (press_look); read out as
-/// `role` named `label`.
 #callsite(autofill(loc))
-fn pressed_node(
+fn rippled_look(
   v : @view.View,
-  press : () -> Unit,
   corner : @view.Live[Double],
-  role : @view.Role,
-  label : () -> String,
+  press : () -> Unit,
   loc~ : SourceLoc,
 ) -> Unit {
-  v
-  .presses(Is(true))
-  .focusable(Is(true))
-  .says(By(fn() { Some(@view.said(role, label=label())) }))
-  .on_press(press)
-  |> ignore
   let rippled = press_look(loc~, v, corner, fn() { false })
   let on_it = fn(d : @view.Drag) { v.finger_target(d.wx, d.wy) }
   v.gesture(
@@ -125,6 +113,28 @@ fn pressed_node(
     },
   )
   |> ignore
+}
+
+///|
+/// `v` pressed as an old view's box with an id is (Ctx::on_press: a tap, a mouse's click, Enter or Space with the focus,
+/// a screen reader's press): `press` done then; its ripple and sink as `corner` rounds it (press_look); read out as
+/// `role` named `label`.
+#callsite(autofill(loc))
+fn pressed_node(
+  v : @view.View,
+  press : () -> Unit,
+  corner : @view.Live[Double],
+  role : @view.Role,
+  label : () -> String,
+  loc~ : SourceLoc,
+) -> Unit {
+  v
+  .presses(Is(true))
+  .focusable(Is(true))
+  .says(By(fn() { Some(@view.said(role, label=label())) }))
+  .on_press(press)
+  |> ignore
+  rippled_look(loc~, v, corner, press)
 }
 
 ///|
@@ -1256,7 +1266,15 @@ pub fn switch_node(
       }
       turn(to)
     }
-    @headless.toggle(at, Switch, label, on, felt, disabled~, fn(room, sw) {
+    @headless.toggle(
+      at,
+      Switch,
+      label,
+      on,
+      felt,
+      disabled~,
+      hold_press=(@ui.touch_slop(), @ui.long_press_ms),
+      fn(room, sw) {
     let out = fn() { dmax(0.0, (theme().items.least - switch_size(small).0) / 2.0) }
     room.padding(By(fn() { (out(), 0.0, out(), 0.0) })).margin(By(fn() { (-out(), 0.0, -out(), 0.0) })) |> ignore
     room.box(fn(v) {
@@ -1265,21 +1283,10 @@ pub fn switch_node(
       let knob = EdgeWay::new(if @signals.untracked(on) { 1.0 } else { 0.0 })
       let held = EdgeWay::new(0.0)
       v.reacts(on, fn(now) { knob.go(v, if now { 1.0 } else { 0.0 }, @kit.switch_ms) })
-      v.reacts(fn() { room.pressed() && @ui.pointing() is Finger }, fn(down) {
+      v.reacts(fn() { sw.pressed() && @ui.pointing() is Finger }, fn(down) {
         held.go_by(v, if down { 1.0 } else { 0.0 }, @motion.lift_spring)
       })
       v.alpha(By(fn() { if disabled() { switch_disabled_alpha } else { 1.0 } })) |> ignore
-      // (a press held however long and let go on it turns it too: the look takes the pointer for that and ends in the
-      // toggle's press, which the tree takes as a press delivered to it. When a press counts is the component's: a
-      // debt, as the icon button's, icon_button_node.mbt; the ring the keys' focus shows drawn round its track, below)
-      let on_it = fn(d : @view.Drag) { room.finger_target(d.wx, d.wy) }
-      room.gesture(
-        @ui.touch_slop(),
-        tap=fn(d) { if on_it(d) { sw.press() } },
-        hold=(@ui.long_press_ms, fn(_) {  }),
-        drag=fn(d) { if d.kind == Up && on_it(d) { sw.press() } },
-      )
-      |> ignore
       let size = fn() { switch_size(small) }
       v.box(fn(track) {
         track
@@ -1338,7 +1345,7 @@ pub fn switch_node(
           |> ignore
         })
         // (the keyboard's focus on it: a ring round it, its gap and width the theme's)
-        track.show(fn() { room.focus_shown() }, fn(ring) {
+        track.show(fn() { sw.focus_shown() }, fn(ring) {
           let out = fn() {
             let t = @ui.tree_theme()
             t.focus_gap + t.focus_w
@@ -1419,7 +1426,7 @@ pub fn switch_row_node(
       // (as wide as the row leaves it, narrower where what it holds is wider: its words wrapped there, as a row's are)
       words.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
       led_title_node(words, title, fn() { pg_switch_title }, lead)
-      words.show(fn() { note() != "" }, fn(n) { styled_words(n, note, fn() { meta.then(full_words) }) |> ignore })
+      words.show(fn() { note() != "" }, fn(n) { styled_words(n, note, fn() { switch_row_note }) |> ignore })
     })
     |> ignore
     control(r)
@@ -1780,7 +1787,7 @@ pub fn round_key_node(
   opener? : Opener,
   loc~ : SourceLoc,
 ) -> Unit {
-  parent.box(made_for=loc, fn(k) {
+  let look = fn(k : @view.View, go : () -> Unit) {
     k
     .width(Is(Some(side)))
     .height(Is(Some(side)))
@@ -1788,14 +1795,21 @@ pub fn round_key_node(
     .lines_up(Is(Some(Middle)))
     .lies_along(Is(Middle))
     |> ignore
-    pressed_node(k, press, Is(side / 2.0), Button, label)
-    // (what opens a menu says it is open while that is drawn)
-    if opener is Some(o) {
-      k.says(By(fn() { Some(@view.said(Button, label=label(), expanded=o.open())) })) |> ignore
-    }
+    rippled_look(loc~, k, Is(side / 2.0), go)
     icon_node(k, icon, icon_size, By(ink)) |> ignore
-  })
-  |> ignore
+  }
+  match opener {
+    Some(o) =>
+      @headless.disclosure(made_for=loc, parent, label, fn() { o.open() }, fn(_) { press() }, fn(k, d) {
+        look(k, fn() { d.press() })
+      })
+      |> ignore
+    None =>
+      @headless.button(made_for=loc, parent, label, fn(_) { press() }, fn(k, b) {
+        look(k, fn() { b.press() })
+      })
+      |> ignore
+  }
 }
 
 ///|

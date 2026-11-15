@@ -27,7 +27,7 @@ import { Clock, Effect, Fiber } from "effect";
 import { liveClock, within } from "../ops/fibers.ts";
 import { RUNTIME_KINDS, type AgentDriver, type AgentSession, type RuntimeKind } from "../agents/runtime.ts";
 import { runnerId } from "../agents/process.ts";
-import { allLeft, liveRunners } from "../agents/runner.ts";
+import { allLeft, isTerminalRunner, liveRunners } from "../agents/runner.ts";
 import { log } from "../ops/log.ts";
 import { tr, stationLang } from "../ops/i18n.ts";
 import { iso, sessionPlaces, transcriptSources } from "../read/transcript.ts";
@@ -37,7 +37,8 @@ import { runShown } from "./run-change.ts";
 import type { PolicyChecks } from "./archive-policy.ts";
 import type { RecentChatList } from "../store/chat-list.ts";
 import { Accounts } from "./accounts.ts";
-import { SessionActor, type SessionDeps, type Snapshot, linkSkills, openOptions } from "./actor.ts";
+import { type Actor, type SessionDeps, type Snapshot, linkSkills, openOptions } from "./actor.ts";
+import { ActorsProgram } from "./mb-actor.ts";
 import { Places } from "../ops/places.ts";
 import { threadCommand, type Args } from "./args.ts";
 import type { CardPage } from "../logins/index.ts";
@@ -129,6 +130,8 @@ export type HubOptions = {
   workspaces?: () => string[];
   /// This station's id in its workspaces (null: none yet, outside any).
   station?: () => string | null;
+  /// The name this station knows another station of its workspaces by (its mark's, else its roster's); null: none.
+  stationName?: (id: string) => string | null;
   /// The runners alive on this machine now, by id (default: <data>/run/runners).
   runners?: () => string[];
   /// Another session being taken up: the launcher hears the station gets on with it (ops/launcher.ts `taking`).
@@ -219,7 +222,9 @@ export class Hub {
   logins: { page(id: string): CardPage | null; answer(id: string, code: string, by?: Person): void } | null = null;
   /// Stops following the store's sessions starting and stopping (live.ts `running`).
   private unlistenRunning: () => void = () => {};
-  readonly actors = new Map<string, SessionActor>();
+  readonly actors = new Map<string, Actor>();
+  /// The MoonBit program its actors run in (mb-actor.ts), where it is built: opened with the first.
+  private actorsProgram: ActorsProgram | null | undefined;
   /// Installed by the agents' side: older stores finish indexing active keys without holding the station thread.
   waitForWorkspaceActivity: (() => Promise<boolean>) | null = null;
   /// An older store's session totals are built in bounded batches after handover.
@@ -265,7 +270,11 @@ export class Hub {
   /// The station's background jobs (made after the hub, which tells their agents).
   jobs: Jobs | null = null;
   /// Each workspace's presets, in its agent home (presets.ts).
-  readonly presets = new Presets((ws) => workspaceAgentHome(this.config().agentHome, ws, this.workspaces()[0] ?? null), () => this.now());
+  readonly presets = new Presets((ws) => workspaceAgentHome(this.config().agentHome, ws, this.workspaces()[0] ?? null), () => this.now(), {
+    station: () => this.station(),
+    workspace: (ws) => ws ?? this.workspaces()[0] ?? null,
+    stationName: (id) => this.options.stationName?.(id) ?? null,
+  });
   /// The repositories on the machine, offered as a preset's folders (presets.ts).
   readonly repoIndex = new RepoIndex({ roots: () => [homedir()], file: () => join(this.config().dataDir, "repo-index.json"), now: () => this.now(), besides: () => [this.config().dataDir] });
   /// Repositories cloned from git into the repository cache, for presets to name (clones.ts).
@@ -378,7 +387,7 @@ export class Hub {
 
   /// The station left its workspace (turns are held first): every runtime process ends, running or idle, then what the
   /// drivers run themselves (codex's app-servers), so no agent goes on outside the workspace. Turns cut off stay marked
-  /// running and messages given to them pending again (SessionActor.suspend): `recover` resumes them once the station
+  /// running and messages given to them pending again (mb-actor.ts `suspend`): `recover` resumes them once the station
   /// is back in its workspace.
   async suspendAll() {
     for (const fiber of this.deadlines.values()) this.interrupt(fiber);
@@ -503,14 +512,29 @@ export class Hub {
       this.release("drain");
       throw error;
     }
+    // What the MoonBit program reads of the processes (agents/mb-agents.ts) held from here: what it said before is
+    // taken in too, and the snapshots say where each stands then.
+    const frozen = [...this.drivers.values()].filter((d) => d.freeze !== undefined);
+    if (frozen.length > 0) {
+      try {
+        await Promise.all(frozen.map((d) => d.freeze!()));
+        await this.settled(limitMs);
+      } catch (error) {
+        for (const d of frozen) d.thaw?.();
+        this.release("drain");
+        throw error;
+      }
+    }
     // Settled: leave incoming events waiting for old preparation unacknowledged for the next station.
     this.incoming.abort();
     // Snapshotted at once, before anything else is taken in.
-    const sessions: Snapshot[] = [];
+    const taking: (Snapshot | Promise<Snapshot>)[] = [];
     for (const actor of this.actors.values()) {
-      if (actor.processState() !== "cold" || actor.holdsState()) sessions.push(actor.snapshot());
+      if (actor.processState() !== "cold" || actor.holdsState()) taking.push(actor.snapshot());
       else actor.close();
     }
+    const sessions: Snapshot[] = await Promise.all(taking);
+    await this.actorsProgram?.close();
     for (const driver of this.drivers.values()) driver.detach();
     // The next station attaches to their runners once this file is there: every ack is in by then.
     await allLeft();
@@ -550,7 +574,7 @@ export class Hub {
     }
     await this.adopt(handed);
     // A crash left runners without a snapshot: what they keep is taken up as it stands.
-    const runners = new Set(this.options.runners ? this.options.runners() : (await liveRunners(this.config().dataDir, { strict: true })).map((r) => r.id));
+    const runners = new Set(this.options.runners ? this.options.runners() : (await liveRunners(this.config().dataDir, { strict: true })).map((r) => r.id).filter((id) => !isTerminalRunner(id)));
     const taken = new Set(handed.sessions.map((s) => s.key));
     // A shared Codex host can only have a session to recover when that session was marked running. Without a
     // session-owned runner there is no reason to load the station's idle and archived sessions.
@@ -599,7 +623,7 @@ export class Hub {
 
   private async adoptOne(row: SessionRow, snap: Snapshot, withProcess: boolean) {
     this.options.taking?.();
-    let actor: SessionActor;
+    let actor: Actor;
     try {
       actor = this.actor(row);
     } catch (error) {
@@ -895,7 +919,7 @@ export class Hub {
   }
 
   /// The station's tools are open at `url`: a process taken up that was told another address (the station before had
-  /// them elsewhere) starts again, as it can (SessionActor `toolsAt`).
+  /// them elsewhere) starts again, as it can (actor_run.mbt `tools_at`).
   toolsAt(url: string) {
     for (const actor of this.actors.values()) void actor.toolsAt(url);
   }
@@ -1037,7 +1061,7 @@ export class Hub {
     await this.actors.get(key)?.evict();
   }
 
-  /// How a session runs changed: its process ends now if idle, else before its next turn (SessionActor.changed); `restart`:
+  /// How a session runs changed: its process ends now if idle, else before its next turn (the actor's `changed`); `restart`:
   /// what changed is what its process started with, which only a new one takes.
   async changed(key: string, restart = false) {
     await this.actors.get(key)?.changed(restart);
@@ -1089,7 +1113,7 @@ export class Hub {
     }
   }
 
-  /// Starts a session's runtime ahead of a message (SessionActor.warm).
+  /// Starts a session's runtime ahead of a message (the actor's `warm`).
   async warm(key: string) {
     const row = this.store.getSession(key);
     if (row) await this.actor(row).warm();
@@ -1116,7 +1140,15 @@ export class Hub {
     await this.actor(row).retryFailed(thread, seq);
   }
 
-  /// Compacts the session's context between turns, as `-compact` in a thread would (SessionActor.compact): why not,
+  /// Moves the session whose failed turn this particular notice is about to another account (its 重新分配账号), if it
+  /// is still the last.
+  async reassign(key: string, thread: number, seq: number) {
+    const row = this.store.getSession(key);
+    if (!row) throw new Error(`unknown session ${key}`);
+    await this.actor(row).reassign(thread, seq);
+  }
+
+  /// Compacts the session's context between turns, as `-compact` in a thread would (the actor's `compact`): why not,
   /// when it cannot now.
   async compact(key: string): Promise<string | null> {
     const row = this.store.getSession(key);
@@ -1124,7 +1156,7 @@ export class Hub {
     return this.actor(row).compact();
   }
 
-  /// Clears the session's context between turns, as `-clear` in a thread would (SessionActor.clear; `readBack`: to go on
+  /// Clears the session's context between turns, as `-clear` in a thread would (the actor's `clear`; `readBack`: to go on
   /// afresh): why not, when it cannot now.
   async clear(key: string, readBack = false): Promise<string | null> {
     const row = this.store.getSession(key);
@@ -1132,7 +1164,7 @@ export class Hub {
     return this.actor(row).clear(false, readBack);
   }
 
-  /// A word from the station for a session's agent, outside any conversation (SessionActor.notify).
+  /// A word from the station for a session's agent, outside any conversation (the actor's `notify`).
   notify(key: string, text: string) {
     const row = this.store.getSession(key);
     if (!row) throw new Error(`unknown session ${key}`);
@@ -1203,6 +1235,7 @@ export class Hub {
     await this.sessionDirectories?.close();
     await this.processJobs?.close();
     await Promise.all([...this.actors.values()].map((a) => a.dispose()));
+    await this.actorsProgram?.close();
     await Promise.all([...this.drivers.values()].map((d) => d.shutdown()));
   }
 
@@ -1408,18 +1441,21 @@ export class Hub {
   }
 
   /// The session's actor, made on first use.
-  actor(row: SessionRow): SessionActor {
+  actor(row: SessionRow): Actor {
     const existing = this.actors.get(row.key);
     if (existing) return existing;
     const runtime = runtimeNamed(row.runtime);
     if (!runtime) throw new Error(`session ${row.key} runs an unknown runtime ${row.runtime}`);
-    const actor = new SessionActor(row.key, runtime, this.deps);
+    if (this.actorsProgram === undefined) this.actorsProgram = ActorsProgram.open(this.config().dataDir, this.clock, this.store);
+    // (the program is built for every system the station runs on: a checkout that did not build it cannot run a session)
+    if (this.actorsProgram === null) throw new Error("the station's MoonBit program is not built here (station/mb: build.sh): no session can run");
+    const actor = this.actorsProgram.actor(row.key, runtime, this.deps);
     this.actors.set(row.key, actor);
     return actor;
   }
 
   /// Takes a session's actor out (deleted).
-  dropActor(key: string): SessionActor | undefined {
+  dropActor(key: string): Actor | undefined {
     const actor = this.actors.get(key);
     this.actors.delete(key);
     const deadline = this.deadlines.get(key);
@@ -1463,9 +1499,14 @@ export class Hub {
       spend: (key, ranOn, model) => this.accounts.spend(key, ranOn, model),
       refillsAt: (key) => this.accounts.refillsAt(key),
       recheck: (profile) => this.accounts.recheck(profile),
+      limitAfter: (profile, model) => this.accounts.limitAfter(profile, model),
       mcpUrl: () => (typeof this.options.mcpUrl === "string" ? this.options.mcpUrl : this.options.mcpUrl()),
       reposDir: () => this.reposDir(),
       siteInstructions: () => this.options.siteInstructions ?? "",
+      ownName: () => {
+        const me = this.options.station?.() ?? null;
+        return me === null ? "" : (this.options.stationName?.(me) ?? "");
+      },
       memoryPath: (key) => agentHomePaths(workspaceAgentHome(this.config().agentHome, this.wsOf(key), this.workspaces()[0] ?? null))[0],
       maxNudges: () => this.config().maxNudges,
       untitled: (key) => (this.config().askToName ? untitledChat(this, key) : null),

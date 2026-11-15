@@ -242,12 +242,12 @@ test("resuming an idle session checks for pending work without loading its messa
   try {
     rig.store.insertSession({ key: "s", connect: "cl", runtime: "claude", profile: "cc", workspace: "/w/s", token: "s", createdAt: 1, lastActiveAt: 1 });
     const actor = rig.hub.actor(rig.store.getSession("s")!);
-    let resumed = 0;
-    (actor as any).startTurn = async () => { resumed++; };
     const load = rig.store.pendingMessages;
     rig.store.pendingMessages = () => { throw new Error("loaded pending message bodies"); };
     try { await actor.goOn(); }
     finally { rig.store.pendingMessages = load; }
-    assert.equal(resumed, 1);
+    // (resumed: its runtime started, told to go on)
+    assert.equal(rig.claude.count(), 1);
+    assert.ok(rig.claude.last().prompts[0]!.includes("Check where you were"));
   } finally { await rig.close(); }
 });

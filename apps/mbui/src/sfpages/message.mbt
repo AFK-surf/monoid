@@ -166,7 +166,7 @@ pub fn message_row(c : @ui.Ctx, src : Source, here : MessageHere, m : Message) -
             person_words(c, m.text, "m:" + m.ts, found=marked_of(here, m.ts), peek=link_peeks(c, src, here, chats=m.chats, link_to=link_to_in(m)), chat_title=chat_title_of(m), runs=m.words)
           })
         }
-        message_files(c, src, here, files, false, by=Some((m.by.name, "person", m.ts)), at=message_place(m) + "/f", said=m.said)
+        message_files(c, src, here, files, false, by=Some((m.by.name, "person", m.ts)), at=message_place(m) + "/f", said=m.said, over=if m.text != "" { files_under_words - msg_gap } else { 0.0 })
       } else {
         picking(here, c, src, m.ts, m.seq, m.by.name, if m.author_kind == "agent" { "agent" } else { "person" }, m.text, fn() {
           prose_with_files(c, src, here, m, files)
@@ -520,20 +520,8 @@ fn link_peeks(
 /// What a link of message `m` is to, as the core says (each link's `to`): of a person's words' runs, or of an agent's
 /// Markdown (read as the row is, as its words are).
 fn link_to_in(m : Message) -> (String) -> @sf.LinkTo {
-  match m.words {
-    Some(Array(runs)) =>
-      fn(href) {
-        match runs.iter().find_first(fn(r) { text(Some(r), "link") == href }) {
-          Some(r) => @sf.link_to_of(field(Some(r), "to").unwrap_or(Json::null()))
-          None => @sf.no_link_to
-        }
-      }
-    _ if m.author_kind == "person" || m.mine => fn(_) { @sf.no_link_to }
-    _ => {
-      let links = @sf.md_links_to(m.text, m.md)
-      fn(href) { links.get(href).unwrap_or(@sf.no_link_to) }
-    }
-  }
+  let links = @sfbase.message_links_to(m)
+  fn(href) { links.get(href).unwrap_or(@sf.no_link_to) }
 }
 
 ///|
@@ -737,33 +725,33 @@ fn prose_with_files(c : @ui.Ctx, src : Source, here : MessageHere, m : Message, 
     )
     |> ignore
   }
-  message_files(c, src, here, rest, false, by=Some(by), at~, said=m.said)
+  message_files(c, src, here, rest, false, by=Some(by), at~, said=m.said, over=if m.text != "" { files_under_words } else { 0.0 })
 }
 
 ///|
 /// Whether a file is drawn as a visualization where its message places it: an HTML one (PlacedFile, kindOf).
 fn is_viz(name : String) -> Bool {
   let n = name.to_lower()
-  n.has_suffix(".html") || n.has_suffix(".htm")
+  n.has_suffix(".mbui") || n.has_suffix(".wasm") || n.has_suffix(".html") || n.has_suffix(".htm")
 }
 
 ///|
 /// What a notice's action after its pill does: 取消 the capacity retry it announced while that waits (`session.cancelRetry`),
-/// or 重试 the failed turn it is about while that is where its agent stands (`session.retry`, as a reply would); as
-/// (the agent's session, the action's words, the call), None for neither.
+/// or 重试 the failed turn it is about while that is where its agent stands (`session.retry`, as a reply would), or
+/// 重新分配账号 where that turn's allowance showed a limit (`session.reassign`: on to another account); as (the agent's
+/// session, the action's words, the call), None for none.
 fn notice_after(m : Message) -> (String, String, String)? {
   if m.notice_retry_session != "" {
     Some((m.notice_retry_session, @sf.t("common.cancel"), "session.cancelRetry"))
   } else if m.notice_again_session != "" {
     Some((m.notice_again_session, @sf.t("common.retry"), "session.retry"))
+  } else if m.notice_reassign_session != "" {
+    Some((m.notice_reassign_session, @sf.t("common.reassignAccount"), "session.reassign"))
   } else {
     None
   }
 }
 
-///|
-/// A notice's action as it was last offered, by its key, for it to go as it was (its way along the row back to nothing).
-let notice_after_last : Map[String, (String, String, String)] = Map([])
 
 ///|
 /// What still.fail itself says (SystemNotice): a pill across the chat in one line, a failure in red (the core's
@@ -777,8 +765,42 @@ fn system_notice(c : @ui.Ctx, src : Source, here : MessageHere, m : Message) -> 
   let id = c.id("notice/" + m.ts)
   c.on_press(id, fn() {
     notices_open[m.ts] = !notices_open.get(m.ts).unwrap_or(false)
+    // (held where it was pressed in its list: what it opens to grows down from there, chat_list's notice_holds)
+    if here.list is Some(_) {
+      notice_holds[m.ts] = true
+    }
   })
   let open = notices_open.get(m.ts).unwrap_or(false)
+  // opened or shut, it goes there in one way, never at once (moved, sf/motion.mbt; the user, 2026-11-14: 「我让你发视频要
+  // 看动效」): its pill widening from as wide as it was closed and growing what it opens to, its action going along the
+  // row from beside it as it comes under it, all by how far it has (`opened_by`, 0 shut to 1 open), laid out open as it
+  // goes (`shown_open`). Nothing is put in its place or taken from it at once: the chat round it moves as it grows.
+  let open_key = "notice-open/" + station + "/" + m.ts
+  if !open && !notice_opening.contains(open_key) {
+    match @motion.measured_size(c, open_key + "/closed") {
+      Some((w, h)) => {
+        notice_closed_w[open_key] = w
+        notice_closed_h[open_key] = h
+      }
+      None => ()
+    }
+  }
+  let widened = match (notice_closed_w.get(open_key), @motion.measured_size(c, open_key + "/across")) {
+    (Some(closed_w), Some((across_w, _))) => Some((closed_w, across_w))
+    _ => None
+  }
+  // (as long as the way it is seen to go: its widening, else a notice's width)
+  let way = match widened {
+    Some((closed_w, across_w)) => @sf.dmax(across_w - closed_w, 120.0)
+    None => 240.0
+  }
+  let opened_by = @motion.animate(c, open_key, if open { 1.0 } else { 0.0 }, spec=@motion.moved(points=way))
+  let shown_open = open || opened_by > 0.0
+  if shown_open {
+    notice_opening[open_key] = true
+  } else {
+    notice_opening.remove(open_key)
+  }
   let failed = m.notice_failed
   let said = m.notice_words
   let ink : @ui.Color = if failed { Danger } else { Fg }
@@ -788,9 +810,6 @@ fn system_notice(c : @ui.Ctx, src : Source, here : MessageHere, m : Message) -> 
   }
   let linked = m.profile != "" && m.notice_link >= 0 && m.notice_link <= said.length()
   let after = if here.list is Some(_) { notice_after(m) } else { None }
-  let retry = after is Some(_)
-  let retry_key = "notice-retry/" + station + "/" + m.ts
-  let retry_share = @motion.animate(c, retry_key, if retry { 1.0 } else { 0.0 }, spec=@motion.tween(@ui.row_size_ms, ease=Out))
   // gone to (a notification's, the outline's), its pill alone lit in the accent's ground: a row's band across the
   // list (chat_list's row_box) would stand square behind the round pill
   let lit = match here.list {
@@ -798,16 +817,29 @@ fn system_notice(c : @ui.Ctx, src : Source, here : MessageHere, m : Message) -> 
     None => 0.0
   }
   let pill = fn() {
-    c.box(style=notice_pill_of(failed, open), id~, fn() {
+    // (as wide as it was closed as it sets out, as the chat lets it once open, what it holds cut to it on the way)
+    let pill_style = match widened {
+      Some((closed_w, across_w)) if shown_open && opened_by < 1.0 =>
+        notice_pill_of(failed, true).then(notice_pill_cut).then(@ui.style(max_w=Fixed(closed_w + (across_w - closed_w) * opened_by)))
+      _ => notice_pill_of(failed, shown_open)
+    }
+    let p = c.box(style=pill_style, id~, fn() {
       if lit > 0.0 {
-        let g = c.layer(fn() { c.box(style=if open { notice_lit_open } else { notice_lit }, fn() {  }) |> ignore })
+        let g = c.layer(fn() { c.box(style=if shown_open { notice_lit_open } else { notice_lit }, fn() {  }) |> ignore })
         c.look(g, @ui.look(alpha=lit))
       }
       c.box(style=notice_line, fn() {
-        c.box(style=notice_words_room, fn() {
+        // (its runs' lines laid as wide as they are once open all the way, cut by the pill as it widens: never laid
+        // anew at each width, where a line let go of its wrap mid-way and what is under it jumped up a line)
+        let words_room = match widened {
+          Some((_, across_w)) if shown_open && opened_by < 1.0 && m.notice_lines.length() > 0 =>
+            notice_words_room.then(@ui.style(w=Fixed(across_w - notice_pill_inset)))
+          _ => notice_words_room
+        }
+        c.box(style=words_room, keep=shown_open && opened_by < 1.0, fn() {
           if m.notice_short != "" || m.notice_lines.length() > 0 {
             // a chat's run changed: closed, what changed on its line, else what it runs on now; opened, both runs whole
-            if open && m.notice_lines.length() > 0 {
+            if shown_open && m.notice_lines.length() > 0 {
               for line in m.notice_lines {
                 c.text(line, style=notice_words_open.then(@ui.text_style(color=ink))) |> ignore
               }
@@ -841,8 +873,8 @@ fn system_notice(c : @ui.Ctx, src : Source, here : MessageHere, m : Message) -> 
                 @ui.span(said.clamped_view(start=m.notice_link).to_owned(), underline=true, link="profile"),
               ],
               key="notice-profile/" + m.ts,
-              style=(if open { notice_words_open } else { notice_words }).then(@ui.text_style(color=ink)),
-              allow_ellipsis=!open,
+              style=(if shown_open { notice_words_open } else { notice_words }).then(@ui.text_style(color=ink)),
+              allow_ellipsis=!shown_open,
               link_color=if failed { p.red } else { p.text },
               on_link=fn(_) { open_page(Setting(@settings.Route::Profile(station, m.profile))) },
             )
@@ -854,11 +886,11 @@ fn system_notice(c : @ui.Ctx, src : Source, here : MessageHere, m : Message) -> 
             @sf.markdown(
               c,
               said,
-              key=(if open { "notice/" } else { "notice-line/" }) + m.ts,
+              key=(if shown_open { "notice/" } else { "notice-line/" }) + m.ts,
               tree=m.notice_md,
               size=meta,
               line=c.theme().leading(notice_leading).unwrap_or(0.0) / meta,
-              one_line=!open,
+              one_line=!shown_open,
               ink=if failed { @sf.theme().p.red } else { 0L },
               on_link=fn(h) { open_link(h) },
               chat_title=chat_title_of(m),
@@ -867,12 +899,25 @@ fn system_notice(c : @ui.Ctx, src : Source, here : MessageHere, m : Message) -> 
           }
         })
         |> ignore
-        match install {
-          Some(i) =>
+        // what it ends in, on its first line as · 安装 and · 上报 are: its 取消, 重试 or 重新分配账号 too, which never
+        // changes its place as it opens or shuts (the user, 2026-11-14: 「两行丑」, and nothing carried across it)
+        match (install, after) {
+          (Some(i), _) =>
             notice_action(c, "notice-install/" + m.ts, i.action, ink, install_busy(src, station, i), fn() {
               install_runtime(src, station, i)
             })
-          None =>
+          (None, Some((session, label, call))) =>
+            notice_action(c, "notice-cancel/" + m.ts, label, ink, src.read_only || here.view.offline || core_doing(src, [call], [("station", station), ("key", session)]), fn() {
+              if !src.read_only && !here.view.offline {
+                act(src, label, "", call, {
+                  "station": Json::string(station),
+                  "key": Json::string(session),
+                  "thread": Json::number(m.thread),
+                  "seq": Json::number(m.seq),
+                })
+              }
+            })
+          (None, None) =>
             if m.reportable {
               report_action(c, src, station, m, ink)
             }
@@ -880,60 +925,51 @@ fn system_notice(c : @ui.Ctx, src : Source, here : MessageHere, m : Message) -> 
       })
       |> ignore
       // what failed said of it, as it said it: opened only
-      if open && m.notice_detail != "" {
-        c.box(style=notice_detail_room, fn() {
-          c.rich([@ui.span(m.notice_detail, mono=true)], key="notice-detail/" + m.ts, style=notice_detail.then(@ui.text_style(color=ink))) |> ignore
-          notice_copy(c, m, ink)
+      if shown_open && m.notice_detail != "" {
+        let natural_h = match @motion.measured_size(c, open_key + "/detail") {
+          Some((_, h)) => h
+          None => 0.0
+        }
+        let cut = opened_by < 1.0
+        c.box(style=if cut { notice_detail_cut.then(@ui.style(max_h=Fixed(natural_h * opened_by))) } else { notice_detail_whole }, fn() {
+          // (laid out as wide as it is once open all the way, cut by the pill as it widens: never laid anew at each width)
+          let laid = match widened {
+            Some((_, across_w)) if cut => notice_detail_room.then(@ui.style(w=Fixed(across_w - notice_pill_inset)))
+            _ => notice_detail_room
+          }
+          let d = c.box(style=laid, keep=cut, fn() {
+            c.rich([@ui.span(m.notice_detail, mono=true)], key="notice-detail/" + m.ts, style=notice_detail.then(@ui.text_style(color=ink))) |> ignore
+            notice_copy(c, m, ink)
+          })
+          @motion.measure(c, d, open_key + "/detail")
         })
         |> ignore
       }
     })
-    |> ignore
-  }
-  c.box(style=notice_across, fn() {
-    if retry || retry_share > 0.0 {
-      c.box(style=notice_with_action, fn() {
-        pill()
-        // its 取消 or 重试 (as it was last, while it goes)
-        let (session, label, call) = match after {
-          Some(a) => a
-          None => notice_after_last.get(retry_key).unwrap_or(("", @sf.t("common.cancel"), "session.cancelRetry"))
-        }
-        if after is Some(a) {
-          notice_after_last[retry_key] = a
-        }
-        let busy = core_doing(src, [call], [("station", station), ("key", session)])
-        let natural = match @motion.measured_size(c, retry_key) {
-          Some((w, _)) => w
-          None => 0.0
-        }
-        let cut = retry_share < 1.0
-        let action = c.box(style=if cut { notice_action_cut.then(@ui.style(max_w=Fixed(natural * retry_share))) } else { notice_action_room }, fn() {
-          let inner = c.box(style=notice_action_in, keep=cut, fn() {
-            @sf.button(c, label, key="notice-cancel/" + m.ts, busy~, disabled=!retry || src.read_only || here.view.offline, on_press=fn() {
-              act(src, label, "", call, {
-                "station": Json::string(station),
-                "key": Json::string(session),
-                "thread": Json::number(m.thread),
-                "seq": Json::number(m.seq),
-              })
-            })
-            |> ignore
-          })
-          @motion.measure(c, inner, retry_key)
-        })
-        if cut {
-          c.look(action, @ui.look(alpha=retry_share))
-        }
-      }) |> ignore
-    } else {
-      pill()
+    @motion.measure(c, p, open_key + "/pill")
+    if !shown_open {
+      @motion.measure(c, p, open_key + "/closed")
     }
-    if open {
-      message_time(c, "m:" + m.ts, m.time)
+  }
+  let across = c.box(style=notice_across_grown, fn() {
+    pill()
+    // opened, its time under it, grown as it opens
+    if shown_open {
+      let natural_h = match @motion.measured_size(c, open_key + "/time") {
+        Some((_, h)) => h
+        None => 0.0
+      }
+      let cut = opened_by < 1.0
+      let time = c.box(style=if cut { notice_cut.then(@ui.style(max_h=Fixed(natural_h * opened_by))) } else { notice_whole }, fn() {
+        let t = c.box(style=notice_under, keep=cut, fn() { message_time(c, "m:" + m.ts, m.time) })
+        @motion.measure(c, t, open_key + "/time")
+      })
+      if cut {
+        c.look(time, @ui.look(alpha=opened_by))
+      }
     }
   })
-  |> ignore
+  @motion.measure(c, across, open_key + "/across")
 }
 
 ///|
@@ -962,6 +998,29 @@ fn notice_copy(c : @ui.Ctx, m : Message, ink : @ui.Color) -> Unit {
 /// (notice_said_node's `opened`).
 // kept across runs: let go as the app begins anew (message_reset)
 let notices_open : @sf.LiveMap[String, Bool] = @sf.LiveMap::new()
+
+///|
+/// How wide each notice's pill was closed, by its key (system_notice's `open_key`): what it opens from and shuts to.
+// kept across runs: a cache, read only as it opens or shuts
+let notice_closed_w : Map[String, Double] = Map([])
+
+///|
+/// Notices pressed to open or shut, by their ts, for their list to hold their row where it stands (chat_list's).
+// kept across runs: what is asked of the list, taken as it is built next
+let notice_holds : Map[String, Bool] = Map([])
+
+///|
+/// How much narrower than its pill what a notice opens to is laid (notice_pill's px both sides).
+let notice_pill_inset : Double = @ui.Space::S3_5.px() * 2.0
+
+///|
+// kept across runs: a cache, read only as it opens or shuts
+let notice_closed_h : Map[String, Double] = Map([])
+
+///|
+/// The notices on their way open or shut, or open (system_notice's `open_key`): their width closed is not measured then.
+// kept across runs: a cache of which are open
+let notice_opening : Map[String, Bool] = Map([])
 
 ///|
 /// A word at a notice's end that acts on it (InstallAction, ReportAction): " · " at 60%, then the word, underlined;
@@ -1254,6 +1313,9 @@ let place_corner_side : Double = 9.0
 /// The viewer's bubble's sides.
 let bubble_side : Double = 14.0
 
+///|
+/// How far a bubble's words are in from its top (`bubble`'s py, S2).
+let bubble_top : Double = 8.0
 
 ///|
 /// A message's spinner, small (Spinner inline).
@@ -1278,12 +1340,16 @@ let msg_row : @ui.Style = @ui.css("w=Full")
 let msg_row_share : @ui.Style = @ui.css("w=Full mt=S1_5")
 
 ///|
+/// msg_main's gap (S1): its head, its words, its files and what it asks 4 apart.
+let msg_gap : Double = 4.0
+
+///|
 // kept across runs: a value (no field of it changes)
 let msg_main : @ui.Style = @ui.css("w=Full gap=S1")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let msg_main_share : @ui.Style = @ui.css("w=Full")
+let msg_main_share : @ui.Style = @ui.css("w=Full gap=S1")
 
 ///|
 /// Its head (msgHead): 24 high at least, its name, route and time 6 apart.
@@ -1386,21 +1452,45 @@ let place_corner_mark : @ui.Style = @ui.css((
 let notice_across : @ui.Style = @ui.css("w=Full gap=S1 align=ACenter")
 
 ///|
+/// The old view's (system_notice): what is under the pill says its own room over it (notice_under), grown with it.
+// kept across runs: a value (no field of it changes)
+let notice_across_grown : @ui.Style = @ui.css("w=Full align=ACenter")
+
+///|
 /// A retry's own action follows the notice; its text gives way before the button.
 // kept across runs: a value (no field of it changes)
 let notice_with_action : @ui.Style = @ui.css("row max_w=Full align=ACenter")
 
 ///|
+/// Opened, what is under its pill (its action, its time), 4 under it and 4 apart; cut to how far it has opened as it goes.
 // kept across runs: a value (no field of it changes)
-let notice_action_room : @ui.Style = @ui.css("row")
+let notice_under : @ui.Style = @ui.css("w=Full pt=S1 gap=S1 align=ACenter")
+
+
+///|
+/// What opens of a notice as it opens or shuts: cut to how far it has.
+// kept across runs: a value (no field of it changes)
+let notice_cut : @ui.Style = @ui.css("w=Full clip align=ACenter")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let notice_action_cut : @ui.Style = @ui.css("row clip")
+let notice_whole : @ui.Style = @ui.css("w=Full align=ACenter")
+
+///|
+/// A notice's pill as it opens or shuts: what it holds cut to it.
+// kept across runs: a value (no field of it changes)
+let notice_pill_cut : @ui.Style = @ui.css("clip")
+
+///|
+/// What a notice opens to as it opens or shuts: from the pill's start, cut to how far it has.
+// kept across runs: a value (no field of it changes)
+let notice_detail_cut : @ui.Style = @ui.css("w=Full clip")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let notice_action_in : @ui.Style = @ui.css("row pl=S1_5")
+let notice_detail_whole : @ui.Style = @ui.css("w=Full")
+
+
 
 ///|
 /// Its pill (msgSystemBox): as wide as its words, 6 by 14 in, round at its ends (16 once opened); the hover ground, a

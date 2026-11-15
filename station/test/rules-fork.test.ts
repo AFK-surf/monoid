@@ -12,7 +12,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
-import { type Entry, endpointProof, entryHash, sigValid, validKeyId } from "../src/cloud/lock.ts";
+import { type Entry, endpointProof, entryHash, sigValid, taggedSigValid, validKeyId } from "../src/cloud/lock.ts";
 import { key, signed } from "./lock-world-sim.ts";
 import { VARIANTS } from "./lock-fork-choice-model.ts";
 import { pool, print } from "./lock-fork-pool.ts";
@@ -95,7 +95,7 @@ test("the rules' person logs, bodies, lists and states are the fourth round's mo
 test("the rules are the fourth round's model's on its scripted worlds: bodies no one's, web devices by a keeper's clock, a revoked key, off and on again, the handover, the handover that waits for nobody", async () => {
   assert.ok(ask !== null, "no rules to compare");
   const o = sum(await scriptedOut);
-  print(`person logs and a workspace, scripted: ${o.worlds} seeds of M2, M5, a revoked key's web device and off, M6, M7's four rows, M8's two, ${o.checks} chains compared, ${o.branched} children beaten, ${o.refusedSeen} entries refused, ${o.statements} statements' reasons; ${o.differ.length} differ`);
+  print(`person logs and a workspace, scripted: ${o.worlds} seeds of M2, M5, a revoked key's web device and off, M6, M7's four rows, M8's seven, M9's cases, ${o.checks} chains compared, ${o.branched} children beaten, ${o.refusedSeen} entries refused, ${o.statements} statements' reasons; ${o.differ.length} differ`);
   told(o);
   for (const d of o.differ.slice(0, 3)) print(`  ${d.slice(0, 300)}`);
   assert.equal(o.differ.length, 0, "the rules and the model differ (the first are printed above)");
@@ -110,7 +110,7 @@ test("the rules are the fourth round's model's on its scripted worlds: bodies no
 // device by it, never by the log's key (the lead, 2026-11-13: nothing the workspace signer signed checked out against
 // the moved state).
 test("a person's log says each device's signer: the fold keeps it and those said before, and a moved workspace's state names the device by it, never by its key on the log", () => {
-  const crypto = { sha256Hex: (s: string) => createHash("sha256").update(s).digest("hex"), sigValid, validKeyId, endpointProof };
+  const crypto = { sha256Hex: (s: string) => createHash("sha256").update(s).digest("hex"), sigValid, validKeyId, endpointProof, taggedSigValid };
   const [log1, log2, log3] = [key(7101), key(7102), key(7103)];
   const [s1, s2a, s2b] = [key(7201), key(7202), key(7203)];
   const [id1, id2, id3] = [key(7301).hex, key(7302).hex, key(7303).hex];

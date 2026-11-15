@@ -612,6 +612,8 @@ test("open jobs name their chats: the session's own, listed or archived", async 
     const [, listed] = await r.ask("POST", "/sessions", { runtime: "claude" });
     const [, gone] = await r.ask("POST", "/sessions", { runtime: "claude" });
     await r.ask("POST", `/sessions/${gone.key}/archive`);
+    // (what archiving set going is done: its jobs from before ended, not those started after)
+    await settle();
     // Never end by themselves: still running as they are listed, however slow the machine.
     const a = r.jobs.start(listed.key, "watch", "tail -f /dev/null", r.store.getSession(listed.key)!.workspace, null, false);
     const b = r.jobs.start(gone.key, "watch", "tail -f /dev/null", r.store.getSession(gone.key)!.workspace, null, false);

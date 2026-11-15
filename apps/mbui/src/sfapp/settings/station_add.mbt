@@ -593,14 +593,15 @@ let joined_words : @ui.TextStyle = @ui.text_style(size=Ui, w=Full, leading=L6)
 ///|
 /// A command to run elsewhere (command_box's, as nodes) in `parent`, `words` as they are now: on surface2 alone, its
 /// words in the code face (12, 18 a line) wrapped, its copy button at its end, two of its lines high; pressed, the
-/// words copied and 已复制 said.
+/// words copied and 已复制 said. Its words as far in from its start as its button from its end and its top
+/// (corner_inset: the button concentric with its corner; the words were 12 in, the button 8, rule 4, 2026-11-15).
 fn command_box_node(parent : @view.View, core : Core, words : () -> String) -> Unit {
   parent.box(fn(b) {
     @sf.style_node(b, fn() { command_room })
     b
     .ground(By(fn() { @sf.theme().p.card2 }))
     .radius(Is(@sf.command_box_corner))
-    .padding(Is((12.0, @sf.corner_inset, @sf.corner_inset, @sf.corner_inset)))
+    .padding(Is((@sf.corner_inset, @sf.corner_inset, @sf.corner_inset, @sf.corner_inset)))
     |> ignore
     b.box(fn(w) {
       w.grow(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
@@ -782,7 +783,7 @@ fn add_station_buttons(c : @ui.Ctx, core : Core, here : Here, done : () -> Unit)
 
 ///|
 /// A command to run elsewhere, with a button that copies it: on surface2 alone, no line round it (its ground sets it
-/// apart; the user, 2026-11-09), a block of the ladder's (round by its row corner), its copy button the ladder's inset in from its top and end, as tall as two of
+/// apart; the user, 2026-11-09), a block of the ladder's (round by its row corner), its words and its copy button the ladder's inset in from its start, top and end, as tall as two of
 /// its lines and its inset under them (so with one or two lines as far from its foot too), round by the ladder's next
 /// step there (mbui works it out). `reach`: in a card's foot corners, how it reaches past the card's words
 /// (block_across).
@@ -797,7 +798,7 @@ fn command_box(c : @ui.Ctx, core : Core, words : String, reach? : @ui.Style) -> 
     style=reach.unwrap_or(@ui.style()),
     dir=Row,
     w=Fill(1.0),
-    pl=12.0,
+    pl=@sf.corner_inset,
     pr=@sf.corner_inset,
     pt=@sf.corner_inset,
     pb=@sf.corner_inset,

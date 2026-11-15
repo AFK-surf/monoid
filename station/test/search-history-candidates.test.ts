@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { historySessions, historySessionSnapshot, makeStore, openStore } from "../src/read/store.ts";
-import { historyHits } from "../src/search/sources.ts";
+import { historyHits } from "./reference/search-sources.ts";
 import { Store } from "../src/store/store.ts";
 
 test("history search brings only a bounded page of session objects out before an early hit or cancellation", async () => {

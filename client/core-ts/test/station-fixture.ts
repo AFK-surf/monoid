@@ -89,10 +89,10 @@ export function stationHost(answers: Answers) {
   const batches = { on: true };
   // Whether still.fail cloud lists the station as online; the viewer's role in the workspace (none: a member); more of
   // what its view says (`also`); the account's other workspaces, as their views (`more`, no station in them).
-  const cloud: { online: boolean; role?: string; also?: Record<string, unknown>; more?: ({ id: string; name: string } & Record<string, unknown>)[] } = { online: true };
+  const cloud: { online: boolean; role?: string; also?: Record<string, unknown>; more?: ({ id: string; name: string } & Record<string, unknown>)[]; me?: Record<string, unknown> } = { online: true };
   const answer = (req: HttpRequest): HttpResponse => {
     const path = req.url.replace("https://stillfail.test", "");
-    if (path === "/v1/me") return jsonResponse(200, { workspaces: [{ id: "ws", name: "W" }, ...(cloud.more ?? []).map((w) => ({ id: w.id, name: w.name }))], invitations: [], relay_url: null });
+    if (path === "/v1/me") return jsonResponse(200, { workspaces: [{ id: "ws", name: "W" }, ...(cloud.more ?? []).map((w) => ({ id: w.id, name: w.name }))], invitations: [], relay_url: null, ...cloud.me });
     if (path === "/v1/workspaces/ws") return jsonResponse(200, { id: "ws", ...(cloud.role ? { role: cloud.role } : {}), stations: [{ id: "st", name: "studio", online: cloud.online, last_seen: null }], ...cloud.also });
     const other = cloud.more?.find((w) => path === `/v1/workspaces/${w.id}`);
     if (other) return jsonResponse(200, { stations: [], ...other });
@@ -126,6 +126,8 @@ export function stationHost(answers: Answers) {
     if (!(key in answers) && key === "GET /jobs?chats=0") key = "GET /jobs";
     if (key in answers) return answers[key] instanceof Status ? jsonResponse((answers[key] as Status).code, (answers[key] as Status).body) : jsonResponse(200, answers[key]);
     if (path.startsWith("/admin/api/threads/") && path.includes("/entries")) return jsonResponse(200, { last: 0, entries: [] });
+    // (a person's presets and stars as carried, unless the test answers them: a station from before, no such route)
+    if (/^\/admin\/api\/(presets\/kept|presets\/others|stars)$/.test(path)) return jsonResponse(404, { error: `no route ${req.method} ${path.replace("/admin/api", "")}` });
     return jsonResponse(404, { error: "no" });
   };
   // How its events stream answers: opens, fails (the station is not reached), hangs (a try that takes long), a status

@@ -850,6 +850,12 @@ export class Store {
     return this.#archiveDir;
   }
 
+  /// What another writer of the database wrote, told those who follow the store as its own writes are (mesh/served.ts:
+  /// the marks the MoonBit program writes for a device).
+  told(changes: Changes): void {
+    this.#send(changes);
+  }
+
   #send(changes: Changes): void {
     const listeners = this.#listeners;
     for (const change of changes) {
@@ -1241,6 +1247,17 @@ export class Store {
     this.#run("INSERT INTO device_builds (id, build, at) VALUES (?1, ?2, ?3) ON CONFLICT (id) DO UPDATE SET build = excluded.build, at = excluded.at", id, build, at);
   }
 
+  /// The models `sub` starred in workspace `ws` as kept (api/routes/stars.ts), as JSON; null before any.
+  modelStars(ws: string, sub: string): string | null {
+    const row = this.#one("SELECT stars FROM model_stars WHERE ws = ?1 AND sub = ?2", ws, sub);
+    return row === undefined || row === null ? null : String(row.stars);
+  }
+
+  /// The models `sub` starred in workspace `ws`, kept as `stars` (JSON).
+  putModelStars(ws: string, sub: string, stars: string): void {
+    this.#run("INSERT INTO model_stars (ws, sub, stars) VALUES (?1, ?2, ?3) ON CONFLICT (ws, sub) DO UPDATE SET stars = excluded.stars", ws, sub, stars);
+  }
+
   /// Since when this station keeps the devices' builds: `now` the first time it is asked, the same ever after.
   deviceBuildsSince(now: number): number {
     this.#run("INSERT OR IGNORE INTO device_builds_since (one, at) VALUES (1, ?1)", now);
@@ -1501,6 +1518,11 @@ export class Store {
       this.#titleRevisions.set(thread, this.titleRevision(thread) + 1);
       changes.push({ type: "thread", id: thread, entries: [] });
     });
+  }
+
+  /// A chat named by hand by another program (the MoonBit program serving devices, mesh/served.ts): as `setThreadTitle`.
+  retitled(thread: number): void {
+    this.#titleRevisions.set(thread, this.titleRevision(thread) + 1);
   }
 
   /// Changes even when a person writes the same title again; a pending generation must respect that choice.

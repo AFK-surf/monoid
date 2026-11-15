@@ -86,12 +86,12 @@ fn Ctx::paint_tree_stream(
   }
   let (x, y, w, h, u0, v0, du, dv) = match ts.fit {
     FitFill => (x, y, w, h, 0.0, 0.0, 1.0, 1.0)
-    FitCover | FitCoverAt(_) => {
+    FitCover | FitCoverAt(_) | FitCoverFrom(_, _) => {
       let k = dmax(w / pw, h / ph)
       let du = w / k / pw
       let dv = h / k / ph
-      let vertical = match ts.fit { FitCoverAt(y) => dclamp(y, 0.0, 1.0); _ => 0.5 }
-      (x, y, w, h, (1.0 - du) / 2.0, (1.0 - dv) * vertical, du, dv)
+      let (across, down) = ts.fit.cover_from()
+      (x, y, w, h, (1.0 - du) * across, (1.0 - dv) * down, du, dv)
     }
     FitContain => {
       let k = dmin(w / pw, h / ph)

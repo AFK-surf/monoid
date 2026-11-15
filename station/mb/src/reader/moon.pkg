@@ -33,8 +33,14 @@ import {
   "station/replica",
   "station/front",
   "station/jsjson",
+  "station/jscase",
+  "station/claude",
+  "moonbitlang/core/encoding/base64",
   "moonbitlang/core/string",
   "moonbitlang/core/json",
+  "moonbitlang/core/encoding/utf8",
+  "moonbitlang/core/buffer",
+  "mbui/effect",
 }
 
 pkgtype(kind: "executable")

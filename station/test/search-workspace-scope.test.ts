@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { makeStore } from "../src/read/store.ts";
 import { type Asker, pick } from "../src/search/match.ts";
-import { stationDocs } from "../src/search/sources.ts";
+import { stationDocs } from "./reference/search-sources.ts";
 import { SearchScopePreparation } from "../src/search/scope-prepare.ts";
 import { Store } from "../src/store/store.ts";
 

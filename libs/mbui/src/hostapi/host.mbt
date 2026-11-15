@@ -58,6 +58,8 @@ pub(open) trait Host {
   glyph_put(Self, Int, Int, Int) -> Unit = _
   atlas_size(Self, Bool) -> Int = _
   glyphs_ahead(Self, FixedArray[Int], Int) -> Unit = _
+  glyph_picture(Self, Int, FixedArray[Byte]) -> Bool = _
+  atlas_put(Self, Int, Int, Int, Int, FixedArray[Byte]) -> Bool = _
   face_add(Self, Int, String, Int) -> Bool = _
   face_add_bytes(Self, Int, Bytes, Int) -> Bool = _
   face_clear(Self, Int) -> Unit = _
@@ -243,6 +245,11 @@ pub(open) trait Host {
   cl_read(Self) -> Int = _
   cl_state(Self, Int) -> Int = _
   cl_picture(Self, Int) -> Int = _
+  tm_open(Self, Int, Int) -> Int = _
+  tm_write(Self, Int, Bytes) -> Unit = _
+  tm_resize(Self, Int, Int, Int) -> Unit = _
+  tm_lines(Self, Int) -> String = _
+  tm_close(Self, Int) -> Unit = _
   cl_text(Self, Int) -> String = _
   cl_png(Self, Int) -> Bytes = _
   cl_files(Self, Int) -> Int = _
@@ -495,6 +502,16 @@ impl Host with atlas_size(_, _) {
 ///|
 impl Host with glyphs_ahead(_, _, _) {
   ()
+}
+
+///|
+impl Host with glyph_picture(_, _, _) {
+  false
+}
+
+///|
+impl Host with atlas_put(_, _, _, _, _, _) {
+  false
 }
 
 ///|
@@ -1345,6 +1362,31 @@ impl Host with cl_picture(_, _) {
 }
 
 ///|
+impl Host with tm_open(_, _, _) {
+  0
+}
+
+///|
+impl Host with tm_write(_, _, _) {
+  ()
+}
+
+///|
+impl Host with tm_resize(_, _, _, _) {
+  ()
+}
+
+///|
+impl Host with tm_lines(_, _) {
+  ""
+}
+
+///|
+impl Host with tm_close(_, _) {
+  ()
+}
+
+///|
 impl Host with cl_text(_, _) {
   ""
 }
@@ -1834,6 +1876,23 @@ pub let colour_atlas_u : Int = 16384
 /// view. What `glyph` answers is the same either way: only when the work is done changes. A host may do nothing.
 pub fn glyphs_ahead(keys : FixedArray[Int], n : Int) -> Unit {
   current.val.glyphs_ahead(keys, n)
+}
+
+///|
+/// The picture of glyph `key` drawn by the `glyph` asked last, as `glyph_put` would put it in the atlas, its pixels into
+/// `out` (its width by its height at the host's scale, as `glyph` says them; RGBA premultiplied, rows from the top: a
+/// mask's colour as its cover): what words' halo is blurred from (mbui/ui's halo.mbt). False where the host holds none
+/// or gives none back (no halo drawn then).
+pub fn glyph_picture(key : Int, out : FixedArray[Byte]) -> Bool {
+  current.val.glyph_picture(key, out)
+}
+
+///|
+/// Pixels made by the caller (`w` by `h`, RGBA premultiplied, rows from the top) put in the words' atlas with their top
+/// left at pixel `x`, `y`, as `glyph_put` puts a glyph's (there before the next frame is drawn): a halo blurred from
+/// glyphs (mbui/ui's halo.mbt). False where the host takes none (nothing put).
+pub fn atlas_put(x : Int, y : Int, w : Int, h : Int, px : FixedArray[Byte]) -> Bool {
+  current.val.atlas_put(x, y, w, h, px)
 }
 
 ///|
@@ -3105,6 +3164,31 @@ fn cl_state(id : Int) -> Int {
 ///|
 fn cl_picture(id : Int) -> Int {
   current.val.cl_picture(id)
+}
+
+///|
+fn tm_open(cols : Int, rows : Int) -> Int {
+  current.val.tm_open(cols, rows)
+}
+
+///|
+fn tm_write(id : Int, data : Bytes) -> Unit {
+  current.val.tm_write(id, data)
+}
+
+///|
+fn tm_resize(id : Int, cols : Int, rows : Int) -> Unit {
+  current.val.tm_resize(id, cols, rows)
+}
+
+///|
+fn tm_lines(id : Int) -> String {
+  current.val.tm_lines(id)
+}
+
+///|
+fn tm_close(id : Int) -> Unit {
+  current.val.tm_close(id)
 }
 
 ///|

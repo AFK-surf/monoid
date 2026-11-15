@@ -1,3 +1,5 @@
+// The search as a thread of the station's looked for it before the MoonBit program did (station/mb, src/search): what
+// the program's answers are compared with (test/mb-search.test.ts), given a test's Search (`worker`).
 // The search's thread: answers what is looked for by looking through the station's data as it is then,
 // on a read-only connection to the store of its own, as a reader does (read/store.ts). Candidate scope may have been
 // prepared in the background; document text is read as it is asked for.
@@ -6,14 +8,12 @@
 import { parentPort, workerData } from "node:worker_threads";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { openStore } from "../read/store.ts";
-import { wall } from "../ops/fibers.ts";
-import { type Asker, type Group, pickAsync, terms } from "./match.ts";
-import { historyGroup, historyHits, profilesOf, stationDocSteps } from "./sources.ts";
+import { openStore } from "../../src/read/store.ts";
+import { wall } from "../../src/ops/fibers.ts";
+import { type Asker, type Group, pickAsync, terms } from "../../src/search/match.ts";
+import { historyGroup, historyHits, profilesOf, stationDocSteps } from "./search-sources.ts";
 
-export type Told = { type: "query"; id: number; query: string; asker: Asker; kinds?: string[]; limit?: number; offset?: number; archived?: boolean; cancel?: SharedArrayBuffer };
-
-export type Answered = { id: number; groups?: Group[]; error?: string } | { scopePending: true } | { sessionListPending: true };
+import type { Answered, Told } from "../../src/search/search.ts";
 
 /// How long the execution histories are looked through at most.
 const HISTORY_MS = 15_000;

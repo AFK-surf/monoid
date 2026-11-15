@@ -14,7 +14,7 @@ Four things decide how the app looks and answers:
 - **原生操控** (the native input, `@sf.native_input()`): touch or keyboard and mouse, as the app was started, the same
   the whole run. It decides the size words, icons and rows are drawn at (not the room a press gets, which is 44×44 at
   least on every input, overlapping none), what shows only under a pointer and touch's way to the same, Enter, scroll
-  bars, the search field or ⌘K.
+  bars, ⌘K (the search field at a list's top is every input's: asked 2026-11-14).
 - **当前操控** (the current input, `@ui.pointing()`): touch or keyboard and mouse at the moment; it may change. How a
   thing answers the hand alone, never what is shown, where or how big.
 - **页面宽窄** (a page's width, `@sf.look()`): 窄排法 / 宽排法, by the width of the box a page is drawn in.
@@ -23,46 +23,38 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
 
 ## The app
 
-- The released apps are this one: Android's since 2026-10-24, the Mac's and Windows' since 2026-10-26, each built in
-  the place of the one before it. Nothing else of still.fail's apps is developed; the web runs this app too (2026-10-31: mbui's
-  web host draws it on the web's own core, `web/mbui.html`, `scripts/web-app.sh`), so a page is made here once for
-  every screen. The React web app's pages are gone (read for why a page is as it is: `git show 4577000fd7:web/src/…`);
-  what is left in `web/` is the web's host of this app and a few pages of its own (sign-in's way back, the share page,
-  the admin's console), in Preact.
+- This is still.fail's only app, on every platform and on the web (mbui's web host draws it on the web's own core:
+  `web/mbui.html`, `scripts/web-app.sh`), so a page is made here once for every screen. `web/` keeps only that host and
+  a few pages of its own (sign-in's way back, the share page, the admin's console).
 - What the app looks like and how it moves is what it does now; a change means to differ and says why. Nothing in this
   repository compares mbui with itself (#881 took that out); do not bring it back.
 - A change people can see (timing, rhythm, what is shown) says so in its PR with old and new side by side.
-- Comments here and in `libs/mbui/` that name a `.kt` file, `apps/android/…` or `still.fail … apps/android` mean the Kotlin
-  Android app's (gone in #2547: `git show 5065f823b^:apps/android/…`); `apps/desktop/…` the Electron app's (gone in
-  #2182: `git show eba1e7f47^:apps/desktop/…`); a `web/src/…` file that is not there any more, the React web app's
-  (`git show 4577000fd7:web/src/…`). They say where a way of doing a thing came from; where they name a
-  format this app still reads (a sealed value's, a store's files, an updater's), the old file is its spec.
 
 ## The component library
 
-- The parts pages are made of are the library's, `src/sf` (sf/styles.mbt): the counterpart of the web's `web/ui`,
-  one of its files for each of the web's. A part used by both the phone's pages and the desktop's lives there once and
+- The parts pages are made of are the library's, `src/sf` (sf/styles.mbt). A part used by both the phone's pages and the desktop's lives there once and
   both use it; a page keeps no copy of its own. The library imports nothing of the app (detlint's `library-import`):
   what it needs of the app is given to it as the app starts.
 - The library is looks (the user, 2026-11-14; `libs/mbui/AGENTS.md`, Components): what a control is to the hand, the
   keyboard and a screen reader is mbui's headless component's (`libs/mbui/src/headless`), where there is one, and its
   part here is that component with still.fail's look (every unconditional plain button in `src/sf` over
-  `@headless.button`; `check_node`, `check_row_node`'s box and `switch_node` over `@headless.toggle`): it
-  says no role, press or focus of its own. A part whose control has no headless component yet stays as it is until
-  one is made there, the part moved over it in the same change with nothing seen or read out changed: the parts that
-  still say they are a button themselves are counted (detlint's `button-by-hand`) and only fall, one that says
-  pressed, expanded or selected over the component that carries that once it is
-  made (three conditional or fading-while-asleep parts — `own_head_node`, `quote_card_node`, `viewer_steps_node` —
-  stay as they are). What only still.fail wants of a control stays here, in its look, and no more than that: the icon
-  button's tip held up by a finger's long press and a ripple's press-look are, but their looks take the pointer for
-  them and say again when a press counts, which is the component's (a debt: `src/sf/icon_button_node.mbt`; so is a
-  switch's press held and let go on it, `switch_node`).
+  `@headless.button`; checkboxes, switches and toggle buttons over `@headless.toggle`; disclosures and menu triggers
+  over `@headless.disclosure`; choice rows and offers over `@headless.choice`; segmented controls, one-of lists and
+  accent radio dots over `@headless.radio_group`; hue slider over `@headless.slider`; split handles over
+  `@headless.split`): it says no role, press or focus of its own. The four conditional or fading-while-asleep parts
+  that may or may not be a button (`own_head_node`, `quote_card_node`, `station_choice_node`, `viewer_steps_node`) are
+  counted (detlint's `button-by-hand`) so no new hand-rolled button is added. What only still.fail wants of a control
+  stays here, in its look, and no more than that: the icon button's and bar tool's tip held up by a finger's long press
+  and a ripple's press-look are given to `@headless.button` and `@headless.toggle` via `@headless.Hold`, and a switch's
+  press held and let go on it via `hold_press`.
 - Its parts are shown on their own, each beside its states, by `src/sfstories` (a story a part, `stories.mbt`), built
   for the browser by `scripts/kit-web.sh` and deployed from main to kit.monoid.zone (`cloud/wrangler.kit.jsonc`).
 
 - Beside a block of several lines, an icon, a mark, a chevron or a one-line part (a plan, a value) sits on its first
   line, aligned with it, never centred on the block's height (the user, 2026-11-14: 「不应该一个图标或者一行内容跟多行做
-  垂直居中对齐」, said before).
+  垂直居中对齐」, said before). mbui's `Tester::first_line_faults` holds an icon, a mark and a chevron to it on every
+  screen (corners_wbtest.mbt), what broke it then counted in `corners_first_line_known`, only falling; a one-line part
+  is not checked yet.
 
 - A named style (a top-level `let`, and a `.then(…)` of one) whose properties are all tokens and numbers is written
   as its text, `@ui.css("w=Full px=S2 hovered{bg=Hover}")`; `@ui.style(…)` is for one that names a variable or is
@@ -89,7 +81,7 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
   - `src/sf` is the component library (above).
   - `src/sfbase` is the model: the core's topics and calls (`Source`), the views, the pages (`Page`, `app.nav`), the
     app-level things, and the shared machinery. It imports the library and the settings' routes, nothing of the pages.
-  - `src/sfdesk` holds the pages ported from the web, and the Medium and Large frame.
+  - `src/sfdesk` holds the Medium and Large pages not merged yet, and the Medium and Large frame.
   - `src/sfapp` holds the phone's first pages and the Small frame. It takes `sfbase`'s names in by
     `pub using` (`src/sfapp/base.mbt`) and calls `sfdesk`'s as `@sfdesk.…`.
   - `src/sfpages` holds the pages already merged, one for every screen; `sfdesk` and `sfapp` import it.
@@ -104,8 +96,8 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
     parts', the presenters' and the shell's (the same on every screen and what differs); a page
     that needs it asks the library for a part. Nor on `@ui.pointing()`: the hand reaches a page only through the
     library's primitives (`c.lit`, `c.menu_asked`, tips).
-  - A page is designed once from what it is for; the web's two are read for their reasons, not copied or picked
-    between. The merged page is no worse on either screen than its copy was there, shown before and after.
+  - A page is designed once from what it is for; the merged page is no worse on any screen than its copy in `sfdesk`
+    or `sfapp` was, shown before and after.
   - A place of the bar never opens on its bones when the device holds what it shows (the user, 2026-11-10): the list
     it opens on is one of sfbase's `lasting` (shown again at once) and of `place_reads` (asked ahead of it). A new
     place, or another list a place opens on, goes in both; `src/sfapp/place_first_wbtest.mbt` holds every place.
@@ -167,6 +159,9 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
 - What is left of the old is counted by detlint and only falls: `old-island` (`@ui.old` hosting a Ctx in a node),
   `old-list` (`Ctx::list`), `old-panel`, `click-read`, `key-read`, `build-motion`, `layout-read-back`, `ui-current`.
   A change never adds one; one it touches it moves over. A node-made part is never wrapped back into a Ctx.
+- The chat's page made as nodes is behind a setting a person turns on, 外观's 试用新对话页 (the prefs' `chatPage`,
+  sfbase's `chat_page_from_prefs`), off by default till it lacks nothing (the owner, 2026-11-14: 「做开关」「别把用户搞得
+  没法用」); `chat_page_nodes_at_start` stays false meanwhile.
 - What changes with the width a row or a part is given is a binding (`By`: a gap's height, a margin, a size), never a
   structure switched by a value worked out of that width (`pick`, `show` on `width() <= …`): a structure switched makes
   its way in and out, and what the window or the system's bars do to the width is no motion of the thing's (found by
@@ -184,6 +179,14 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
   - No time window is a cause, and no logic reads whether a motion runs.
   - What comes or goes by its size keeps its whole scale, from where it starts, and is not seen at half its size or
     less, so it does not jump (the user, 2026-10-31, again 2026-11-08): its opacity is `@sf.seen_at(scale)`.
+
+## Farview's client
+
+- A chat's Farview tab is drawn by the app itself (`src/sfpages/farview_tab.mbt`) with Farview's client, the module
+  `fvclient` of the private AFK-surf/farview, never copied here (左子健, 2026-11-07 and 2026-11-14: 固定 commit 拉进
+  moon.work): `scripts/farview.sh` puts it in `deps/farview` at the commit `farview.pin` names, `moon.work` names it,
+  `scripts/env.sh` fetches it with git's own credentials and CI with the read-only deploy key `FARVIEW_DEPLOY_KEY`
+  (each workflow's env, the mbui-moonbit action's last step). A newer client is a change of `farview.pin`.
 
 ## Running the app in development
 
@@ -272,7 +275,14 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
   {scope, mine:false}`, without `MBUI_PROFILE_ROWS` the accounts' rows and one account out of the run's `profiles
   {scope}` (`src/sfreplay/source.mbt`).
 - For development stills, prepare a `scripts/media-job.sh picture` job for each source state and reuse its Wasm
-  renderer across scenes; use a `film` job for video (`scripts/media-job.sh` says how).
+  renderer across scenes; use a `film` job for video (`scripts/media-job.sh` says how). A renderer not published is
+  built on the build station by `scripts/media-dev-build.sh KEY INBOX "" mbui-film-wasm` (the job's `runtime.key`),
+  in a station task's mirror as it is: no `.git`, no `MBUI_TOOLS` needed. Never the native `sffix` (`scripts/mac.sh`)
+  for a still: it compiles the whole framework's C, 45-90 s a build against the Wasm renderer's 10-20 s (2026-11-14).
+- A picture says what every rule finds in the frame it drew (`rules:` lines, `Tester::audit`), after it is written. One
+  made for people is drawn at 3 (`MBUI_FILM_SCALE=3`; the user, 2026-11-14), at rest (not a way's middle frame), in
+  the state asked about (a menu or panel open where that is the change), and is sent with none of those lines that its
+  change brought (a before keeps its own, said as such).
 - No check runs the whole app on a device, an emulator, a simulator or a desktop window and compares its picture
   with a kept one: that is slow, and what it waits for is never the app's own. A device runs only the host's
   contracts (`mbui-host-*`), the render contracts, and a few end-to-end smoke flows that wait for named events; their

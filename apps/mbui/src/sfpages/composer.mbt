@@ -853,7 +853,7 @@ fn composer_text(
       let menu = ref_menu(c, src, spec, w, cap, res.focused)
       match res.submitted {
         // (they stay in the field until they go)
-        Some(words) => {
+        Some(words) => if !w.starting.get() && !(spec.draft.has_prefix("new:") && @sfbase.fresh.starting.get()) {
           if words != w.text.get() {
             writing_text(src, w, words)
           }
@@ -2165,11 +2165,10 @@ pub fn send_in_chat(c : @ui.Ctx, src : Source, r : ChatRef, v : ChatView, w : Wr
   // its words take off from the field as they are (before it is emptied), the composer held as it is laid out for them
   // till they let go of it (theirs: composer_held_lines); on its way to another shape (a line more just typed), it
   // slows to rest from as fast as it went as they are sent (composer_view's @motion.stop_for), its room with it.
-  // On a chat's page made as nodes no flight is started, till the flights' step: nothing there lets one go (its list is
-  // no old list: flight_placed, flight_frame), so the composer was held as tall as the words took in it for good; with
-  // none, it is back at its one line in the press's frame, which its list takes as its foot giving back room in the
-  // change its sent key comes. The flights' step starts the flight on nodes again, and must then either let go in the
-  // sent key's change or have the list keep the room till it lets go.
+  // On a chat's page made as nodes no old flight is started (nothing there lets one go: its list is no old list,
+  // flight_placed, flight_frame): the composer is back at its one line in the press's frame, which its list takes as its
+  // foot giving back room in the change its sent key comes, and the row's bubble flies from where the words stood
+  // (sent_from_said, message_words_node's mine_bubble_node: mbui's View::flies_in).
   if !@signals.untracked(fn() { @sfbase.chat_page_nodes.get() }) {
     let room = composer_room(c, w.key)
     // its quotes fly too, each from its card, and its files that are up, each from its tile
@@ -2190,6 +2189,13 @@ pub fn send_in_chat(c : @ui.Ctx, src : Source, r : ChatRef, v : ChatView, w : Wr
       marks~,
       runs~,
     )
+  } else if !@ui.reduced_motion() {
+    // (on a chat's page made as nodes its bubble flies from where its words stand in the field now: View::flies_in, as
+    // its row is made in the list; the field an old view's, so where they stand is told it: sent_from_said)
+    match w.field.words_at() {
+      Some(((x, y), _)) => @sfbase.sent_from_said(row, x, y)
+      None => ()
+    }
   }
   // At the end, the new row and its neighbours move together with the flight. When reading above it, glide there
   // instead of putting the list at the end in a single frame.
@@ -3164,9 +3170,7 @@ let chat_foot_top : @ui.Style = @ui.css("w=Full pt=S3 align=ACenter")
 /// `carried` (words sent from it hold it or let go of it; gone to another page), nor as it is emptied (words sent
 /// from it, at the press: the list takes that as its foot giving back room in the change its sent key comes,
 /// composer_sent_nodes_wbtest), whose foot is at once as before; kept through another build at this same moment, said
-/// anew at the next. Nor yet for its first card (its extras opening): its ground's way is declared longer than the
-/// ground is drawn on it, so the foot would come up before the ground does (chat_nodes_read_stays_composer_file_wbtest);
-/// the foot at once there, as before.
+/// anew at the next.
 fn composer_foot_told(
   c : @ui.Ctx,
   draft : String,
@@ -3176,13 +3180,15 @@ fn composer_foot_told(
   carried : Bool,
 ) -> Unit {
   composing.shaped = Some((holds, shape))
-  let cards = w.files.get().length() + w.quotes.get().length()
-  let opens_extras = composer_cards_n.val == 0 && cards > 0
-  composer_cards_n.val = cards
-  let emptied = cards == 0 && w.field.text() == ""
-  if holds != "" && holds != composer_shaped_by.val && !carried && !emptied && !opens_extras {
-    @sfbase.composer_set_out.val = Some((draft, shape, c.moment(), fn() { @motion.reshape_way(c, "composer/box") }))
-  } else if @sfbase.composer_set_out.val is Some((_, _, at, _)) && at != c.moment() {
+  let emptied = w.files.get().is_empty() && w.quotes.get().is_empty() && w.field.text() == ""
+  if holds != "" && holds != composer_shaped_by.val && !carried && !emptied {
+    @sfbase.composer_set_out.val = Some((draft, c.moment(), fn() {
+      match (@motion.reshape_way(c, "composer/box"), @motion.reshape_share(c, "composer/box")) {
+        (Some((start, dur)), Some(share)) => Some((start, dur, share))
+        _ => None
+      }
+    }))
+  } else if @sfbase.composer_set_out.val is Some((_, at, _)) && at != c.moment() {
     @sfbase.composer_set_out.val = None
   }
   composer_shaped_by.val = holds
@@ -3193,9 +3199,3 @@ fn composer_foot_told(
 /// setting out (composer_foot_told).
 // kept across runs: said again by each build of the composer
 let composer_shaped_by : Ref[String] = Ref("")
-
-///|
-/// How many cards (files, quotes) the composer held as it was last built: its first come is its extras opening
-/// (composer_foot_told).
-// kept across runs: said again by each build of the composer
-let composer_cards_n : Ref[Int] = Ref(0)

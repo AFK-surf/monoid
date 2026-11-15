@@ -6,7 +6,7 @@
 // A reader is a V8 of its own (tens of MB), so they are started when reads come and let go once none has come for a
 // while: an idle station keeps none. One that dies (its heap is bounded) fails what it held and is replaced by the next
 // read.
-import { availableParallelism } from "node:os";
+import { availableParallelism, homedir } from "node:os";
 import { join } from "node:path";
 import { Worker } from "node:worker_threads";
 import { catalog } from "../accounts/catalog.ts";
@@ -36,16 +36,24 @@ import { CLOSED_CARDS_PENDING } from "../store/legacy-closed-cards.ts";
 import { PEOPLE_TIME_PENDING } from "../store/legacy-people-since.ts";
 import { SESSION_BINDINGS_PENDING } from "../store/session-bindings-index.ts";
 import { OUTFLOW_CHATS_PENDING } from "./outflow.ts";
-import type { Answer, Ask, Ready } from "./worker.ts";
+import type { Answer, Ask, Ready } from "./serve-reads.ts";
 import { LAST_MESSAGE_PENDING, LEGACY_EDITS_PENDING, LEGACY_SAID_PENDING, PAGE_LETTER_PENDING, REMOTE_RUNS_PENDING, SAID_PENDING, TURN_COUNT_PENDING, USAGE_CHATS_PENDING, USAGE_DETAIL_PENDING } from "./store.ts";
 import { HttpError } from "./views.ts";
 import { MbReader, type ReaderLike, mbReaderBinary } from "./mb-reader.ts";
 import { wall } from "../ops/fibers.ts";
 import { roots as machineRoots } from "./machine.ts";
+import { platform } from "../platform/index.ts";
 import type { CardEditPage, CardMessagePage } from "../store/card-outbox.ts";
 
 /// How long a reader with nothing to do is kept.
 const IDLE_MS = 60_000;
+/// What a read is refused with while what it needs is prepared first (`answer` prepares it and asks again): each the
+/// start of such a refusal's words. What answers a read elsewhere (mesh/served.ts) gives such a one back to be read here.
+export const READS_PENDING = [LEGACY_EDITS_PENDING, LEGACY_SAID_PENDING, PAGE_LETTER_PENDING, LAST_MESSAGE_PENDING, SESSION_BINDINGS_PENDING,
+  CC_SESSIONS_PENDING, JOB_NAME_FIRST_PENDING, CARD_POSTS_PENDING, CLOSED_CARDS_PENDING, PEOPLE_TIME_PENDING, TURN_COUNT_PENDING,
+  SAID_PENDING, USAGE_DETAIL_PENDING, USAGE_CHATS_PENDING, REMOTE_RUNS_PENDING, OUTFLOW_CHATS_PENDING, RECENT_CHAT_PENDING,
+  SESSION_LIST_PENDING];
+
 /// A read that waited or took longer than this is logged, with what it was.
 const SLOW_MS = 2_000;
 
@@ -62,9 +70,13 @@ type Asked = {
   background: boolean;
   at: number;
   took: number;
-  resolve: (text: string) => void;
+  resolve: (text: Text) => void;
   reject: (error: Error) => void;
 };
+
+/// A read's answer: its text, or its bytes as the MoonBit reader gave them (never decoded where they are only passed on:
+/// `readBytes`).
+type Text = string | Buffer;
 
 /// A line of reads and the readers that answer it, at most `size` of them, the first read first. `room`: bulk reads leave
 /// one of them for a chat read (what devices ask).
@@ -112,17 +124,38 @@ function filling(op: string, args: unknown): boolean {
 /// of every Claude and Codex project there, 14 s on a station, 2026-11-03), each of the files on the disk rather than the
 /// database.
 const PAGES = new Set(["timeline", "machineSessions"]);
+/// A session's history, read by the MoonBit reader (station/mb src/history's transcripts.mbt) where its program is
+/// there, on the pages' readers still: both its pages and where its reading stands (`transcriptState`, its live view's
+/// start), so that each reads on from what the reader it was read in last keeps (`homes`). Given the words a Codex
+/// script's calls are said in, in the language its args name (sessions.ts `timeline` says them so).
+const HISTORY = new Set(["timeline", "transcriptState"]);
 /// The reads the MoonBit reader answers itself (station/mb src/readops), on readers of their own (`moved`) where its
 /// program is there; every other read is a worker's.
-const MOVED = new Set(["job", "jobLog", "historyPendingCard", "statePendingCard", "deliveryCardState", "reviewPendingCard", "stateQuestion", "pendingDeliveries", "latestMessages", "chatHistoryMessages", "openedChatSaid", "widgetState", "transcriptFile", "memory", "machineSessions", "machineSession", "sessionsAtWork", "policyChecks", "recentConnectPeople", "usageTurns", "usageCalls", "outflowMessages", "archiveLook", "recentChatList", "searchChatList", "threadList", "sharedOf", "sharedChats", "chatMarks", "entries", "letters", "summary", "sessions", "session", "threads", "thread", "turnNotices", "saidNotices", "chats", "chatRows", "outflowChats", "openJobs", "resourceChats"]);
+const MOVED = new Set(["job", "jobLog", "historyPendingCard", "statePendingCard", "deliveryCardState", "reviewPendingCard", "stateQuestion", "pendingDeliveries", "latestMessages", "chatHistoryMessages", "openedChatSaid", "widgetState", "transcriptFile", "memory", "machineSessions", "machineSession", "sessionsAtWork", "policyChecks", "recentConnectPeople", "usageTurns", "usageCalls", "outflowMessages", "archiveLook", "recentChatList", "searchChatList", "threadList", "sharedOf", "sharedChats", "chatMarks", "entries", "letters", "summary", "sessions", "session", "threads", "thread", "turnNotices", "saidNotices", "chats", "chatRows", "outflowChats", "openJobs", "resourceChats", "usage", "outflowUsage", "sessionPlace", "changed", "tailRead"]);
 /// The reads of this machine's own Claude Code and Codex sessions: the MoonBit reader is told where they are kept, from
 /// this process's environment (read/machine.ts `roots`), as the worker reads it.
 const MACHINE = new Set(["machineSessions", "machineSession"]);
+/// A file a session's message names (read/sessions.ts `sessionPlace`): the program is given what only this process
+/// knows (its HOME, its home directory, whether macOS's folder permissions apply), the words of its refusals in the
+/// language its args name, and the time (the git listings it keeps a minute, macOS's mounts two seconds).
+const placeOf = (args: unknown) => {
+  const lang = argsLang(args) ?? "zh";
+  return {
+    ...(args as object),
+    env: { home: process.env.HOME ?? "", homedir: homedir(), mac: platform.hasFolderPermissions },
+    words: { notFound: tr(lang, "station.files.notFound"), protected: tr(lang, "station.files.protected"), outside: tr(lang, "station.files.outside") },
+    now: wall.now(),
+  };
+};
 /// The reads that say who someone is in the station's words (read/views.ts `creator`, `authorNames`: the local page, its
 /// admin), and go by the time of day (a share used lately, a card answered lately): the MoonBit reader keeps no words
 /// and its clock is no wall's, so it is given these in the language asked, and the time as the read is asked.
 /// A thread's pages (`entries`, `letters`) are given the words of their refusals too; notices, a file's and an unnamed chat's.
-const WORDED = new Set(["sharedOf", "sharedChats", "chatMarks", "entries", "letters", "summary", "sessions", "session", "threads", "thread", "turnNotices", "saidNotices", "chats", "chatRows", "outflowChats", "openJobs", "resourceChats"]);
+const WORDED = new Set(["sharedOf", "sharedChats", "chatMarks", "entries", "letters", "summary", "sessions", "session", "threads", "thread", "turnNotices", "saidNotices", "chats", "chatRows", "outflowChats", "openJobs", "resourceChats", "usage"]);
+const argsLang = (args: unknown): Ask["lang"] | undefined => {
+  const lang = (args as { lang?: unknown } | null)?.lang;
+  return lang === "zh" || lang === "en" ? lang : undefined;
+};
 const wordsIn = (op: string, lang: Ask["lang"]) => ({
   localPage: tr(lang, "station.creator.localPage"), admin: tr(lang, "station.author.admin"),
   ...(op === "entries" || op === "letters" ? {
@@ -130,9 +163,16 @@ const wordsIn = (op: string, lang: Ask["lang"]) => ({
     fromAndTo: tr(lang, "station.admin.fromAndTo"),
   } : {}),
   ...(op === "turnNotices" || op === "saidNotices" ? { file: tr(lang, "station.notice.file"), untitled: tr(lang, "station.chat.untitled") } : {}),
-  ...(op === "outflowChats" || op === "openJobs" || op === "resourceChats" ? { untitled: tr(lang, "station.chat.untitled"), directMessage: tr(lang, "station.chat.directMessage") } : {}),
+  ...(op === "usage" ? { priceNote: tr(lang, "station.usage.priceNote") } : {}),
+  ...(op === "outflowChats" || op === "openJobs" || op === "resourceChats" || op === "usage" ? { untitled: tr(lang, "station.chat.untitled"), directMessage: tr(lang, "station.chat.directMessage") } : {}),
   ...(op === "chats" || op === "chatRows" ? { untitled: tr(lang, "station.chat.untitled"), directMessage: tr(lang, "station.chat.directMessage"), quotedOnly: tr(lang, "station.chat.quotedOnly") } : {}),
 });
+
+/// `changed`'s list's own args, given the words and the time its read is given (`WORDED`).
+const changedOf = (args: unknown, lang: Ask["lang"]) => {
+  const a = args as { op: string; args?: unknown };
+  return { ...a, args: { ...(a.args as object), words: wordsIn(a.op, lang), now: wall.now() } };
+};
 
 export class Readers {
   /// What devices ask, and what the station tells (`told`), each answered by readers of its own.
@@ -214,7 +254,7 @@ export class Readers {
     // From source: worker.ts beside this; bundled (this inside dist/main.js): dist/read/worker.js.
     const file = this.workerFile ?? new URL(import.meta.url.endsWith(".ts") ? "./worker.ts" : "./read/worker.js", import.meta.url);
     // A reader's heap stays small: what it builds is answered and dropped.
-    const worker: ReaderLike = (line === this.log || line === this.moved) && this.mbReader !== null ? new MbReader(this.mbReader, this.data)
+    const worker: ReaderLike = (line === this.log || line === this.moved || line === this.pages) && this.mbReader !== null ? new MbReader(this.mbReader, this.data)
       : new Worker(file, { workerData: { data: this.data }, resourceLimits: { maxOldGenerationSizeMb: 128, maxYoungGenerationSizeMb: 8 } });
     const slot: Slot = { worker, held: null, catalogVersion: 0 };
     const begun = wall.now();
@@ -237,7 +277,8 @@ export class Readers {
         // read 40 MB of a transcript in 10 s on a station short of memory (2026-11-03), every write and read waiting on the
         // disk meanwhile.
         if (asked.background) line.rested = now + (now - asked.took);
-        if (answer.text !== undefined) {
+        const text = answer.body ?? answer.text;
+        if (text !== undefined) {
           const session = answer.prepareUpJobs;
           if (session !== undefined && !this.preparingUpJobs.has(session)) {
             this.preparingUpJobs.add(session);
@@ -251,7 +292,7 @@ export class Readers {
               if (!this.closed) log.warn("readers", "preparing workspace up jobs failed", { error: (error as Error).message });
             }).finally(() => { this.preparingWorkspaceUpJobs = false; });
           }
-          asked.resolve(answer.text);
+          asked.resolve(text);
         }
         else asked.reject(new HttpError(answer.status ?? 500, answer.error ?? "read failed"));
       }
@@ -298,7 +339,16 @@ export class Readers {
   /// page): after every other read waiting, and one at a time. In line with the rest, a sweep's pages (1 to 4 s each on
   /// a station, 2 to 7 MB of a Codex transcript read: 2026-11-03) held the sidebar, a session opened and the rest 10 s and
   /// more behind them, four at once from each device.
-  read(op: string, args: unknown, lang: Ask["lang"], { told = false, background = false, signal }: { told?: boolean; background?: boolean; signal?: AbortSignal } = {}): Promise<string> {
+  read(op: string, args: unknown, lang: Ask["lang"], options: { told?: boolean; background?: boolean; signal?: AbortSignal } = {}): Promise<string> {
+    return this.answer(op, args, lang, options).then((text) => typeof text === "string" ? text : text.toString());
+  }
+
+  /// A read's answer as bytes, for what only passes it on (a device's request): the MoonBit reader's as it gave them.
+  readBytes(op: string, args: unknown, lang: Ask["lang"], options: { told?: boolean; background?: boolean; signal?: AbortSignal } = {}): Promise<Buffer> {
+    return this.answer(op, args, lang, options).then((text) => typeof text === "string" ? Buffer.from(text) : text);
+  }
+
+  private answer(op: string, args: unknown, lang: Ask["lang"], { told = false, background = false, signal }: { told?: boolean; background?: boolean; signal?: AbortSignal } = {}): Promise<Text> {
     if (op === "usage") return this.usageRead(args, lang, told, signal);
     if (op === "outflowUsage") return this.outflowUsageRead(args, lang, told, signal);
     if (op === "outflowChats") return this.outflowChatsRead(args, lang, told, signal);
@@ -454,7 +504,7 @@ export class Readers {
     return this.covered(this.ccIndex.readyLatest(sessions, signal), signal);
   }
 
-  private async saidRead(op: string, args: unknown, lang: Ask["lang"], told: boolean, background: boolean, signal?: AbortSignal): Promise<string> {
+  private async saidRead(op: string, args: unknown, lang: Ask["lang"], told: boolean, background: boolean, signal?: AbortSignal): Promise<Text> {
     while (!this.closed) {
       try { return await this.enqueue(op, args, lang, told, op === CHECKPOINT, background, signal); }
       catch (error) {
@@ -555,7 +605,7 @@ export class Readers {
     }
   }
 
-  private async usageRead(args: unknown, lang: Ask["lang"], told: boolean, signal?: AbortSignal): Promise<string> {
+  private async usageRead(args: unknown, lang: Ask["lang"], told: boolean, signal?: AbortSignal): Promise<Text> {
     const viewer = (args as { viewer?: InWorkspace | null } | null)?.viewer ?? null;
     const history = (args as { history?: unknown } | null)?.history === true;
     while (!this.closed) {
@@ -580,7 +630,7 @@ export class Readers {
     throw new HttpError(502, "station stopping");
   }
 
-  private async outflowUsageRead(args: unknown, lang: Ask["lang"], told: boolean, signal?: AbortSignal): Promise<string> {
+  private async outflowUsageRead(args: unknown, lang: Ask["lang"], told: boolean, signal?: AbortSignal): Promise<Text> {
     const ws = (args as { ws?: InWorkspace } | null)?.ws;
     const viewer: InWorkspace = ws !== null && typeof ws === "object" && typeof ws.workspace === "string"
       ? { workspace: ws.workspace, home: ws.home === true } : { workspace: "\u0000home", home: true };
@@ -595,7 +645,7 @@ export class Readers {
     throw new HttpError(502, "station stopping");
   }
 
-  private async outflowChatsRead(args: unknown, lang: Ask["lang"], told: boolean, signal?: AbortSignal): Promise<string> {
+  private async outflowChatsRead(args: unknown, lang: Ask["lang"], told: boolean, signal?: AbortSignal): Promise<Text> {
     const ws = (args as { ws?: InWorkspace } | null)?.ws;
     const viewer: InWorkspace = ws !== null && typeof ws === "object" && typeof ws.workspace === "string"
       ? { workspace: ws.workspace, home: ws.home === true } : { workspace: "\u0000home", home: true };
@@ -610,7 +660,7 @@ export class Readers {
     throw new HttpError(502, "station stopping");
   }
 
-  private async recentChatRead(args: unknown, lang: Ask["lang"], told: boolean, signal?: AbortSignal): Promise<string> {
+  private async recentChatRead(args: unknown, lang: Ask["lang"], told: boolean, signal?: AbortSignal): Promise<Text> {
     const a = args as { ws?: unknown; home?: unknown } | null;
     const ws = a?.ws, home = a?.home;
     if ((ws !== null && typeof ws !== "string") || (home !== null && typeof home !== "string"))
@@ -626,7 +676,7 @@ export class Readers {
     throw new HttpError(502, "station stopping");
   }
 
-  private async sessionListRead(args: unknown, lang: Ask["lang"], told: boolean, background: boolean, signal?: AbortSignal): Promise<string> {
+  private async sessionListRead(args: unknown, lang: Ask["lang"], told: boolean, background: boolean, signal?: AbortSignal): Promise<Text> {
     while (!this.closed) {
       try { return await this.saidRead("sessions", args, lang, told, background, signal); }
       catch (error) {
@@ -639,17 +689,23 @@ export class Readers {
   }
 
   /// `first`: before the reads waiting (CHECKPOINT).
-  private enqueue(op: string, args: unknown, lang: Ask["lang"], told: boolean, first = false, background = false, signal?: AbortSignal): Promise<string> {
+  private enqueue(op: string, args: unknown, lang: Ask["lang"], told: boolean, first = false, background = false, signal?: AbortSignal): Promise<Text> {
     if (this.closed) return Promise.reject(new HttpError(502, "station stopping"));
     if (signal?.aborted) return Promise.reject(cancelled());
-    const line = op === CHECKPOINT ? this.log : this.mbReader !== null && MOVED.has(op) ? this.moved : told ? this.told : PAGES.has(op) ? this.pages : this.asked;
+    const history = this.mbReader !== null && HISTORY.has(op);
+    const line = op === CHECKPOINT ? this.log : history ? this.pages : this.mbReader !== null && MOVED.has(op) ? this.moved : told ? this.told : PAGES.has(op) ? this.pages : this.asked;
     // A session's history read where it was read before: that reader keeps where its reading stands in memory, another
     // reads it from disk (read/transcripts.ts).
     const session = (op === "timeline" || op === "transcriptState") && typeof (args as { key?: unknown })?.key === "string" ? (args as { key: string }).key : null;
     const home = session !== null ? this.homes.get(session) : undefined;
-    const given = line !== this.moved ? args
+    const given = history ? { ...(args as object), words: { inScriptOutput: tr(argsLang(args) ?? "zh", "station.transcript.inScriptOutput") } }
+      : line !== this.moved ? args
       : MACHINE.has(op) ? { ...(args as object), roots: machineRoots() }
-      : WORDED.has(op) ? { ...(args as object), words: wordsIn(op, lang), now: wall.now() }
+      : op === "sessionPlace" ? placeOf(args)
+      // (what of a list changed: the list read as its own read is, given its words; read/digest.ts `changedOf`)
+      : op === "changed" && WORDED.has((args as { op?: string }).op ?? "") ? changedOf(args, lang)
+      // (the usage page says its words in the language its args name, as read/ops-usage.ts reads it)
+      : WORDED.has(op) ? { ...(args as object), words: wordsIn(op, op === "usage" ? argsLang(args) ?? lang : lang), now: wall.now() }
       : args;
     const ask: Ask = { id: this.next++, op, args: given, lang, names: [], processes: [], clientKeys: [] };
     return new Promise((resolve, reject) => {
@@ -729,12 +785,11 @@ export class Readers {
     asked.ask.names = [...this.names];
     asked.ask.processes = [...this.processes()];
     asked.ask.clientKeys = [...this.clientKeys()];
-    if (!(slot.worker instanceof MbReader)) {
-      const current = catalog();
-      if (slot.catalogVersion !== current.version) {
-        asked.ask.catalog = current.models;
-        slot.catalogVersion = current.version;
-      }
+    // (the MoonBit reader's prices are the catalog's as well: read/usage.ts `price`)
+    const current = catalog();
+    if (slot.catalogVersion !== current.version) {
+      asked.ask.catalog = current.models;
+      slot.catalogVersion = current.version;
     }
     slot.worker.postMessage(asked.ask);
   }

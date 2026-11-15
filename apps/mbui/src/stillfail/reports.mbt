@@ -3,9 +3,9 @@
 // the app knows: the account signed in (the crashes kept since the last report go as it), the core failing and started
 // again (CoreFailed), what the UI could not do as asked (UiFault), the bottom bar's switches (src/sfapp/bar_timing.mbt)
 // and the topics their pages subscribe, the window thread's hangs (mbui's src/ui/journal.mbt). iOS's host takes them
-// too (src/host/apple_reports.m: MetricKit's crash and hang reports; the bar's timing not). Where
-// no host takes them (macOS, Windows, the web, an iOS build without PostHog's key: host_tell answers 0) only UiFault
-// is set, as the core's span.
+// too (src/host/apple_reports.m: MetricKit's crash and hang reports; the bar's timing not), and macOS's (the same file:
+// the window thread's hangs and the errors got past, no MetricKit). Where no host takes them (Windows, the web, an
+// Apple build without PostHog's key: host_tell answers 0) only UiFault is set, as the core's span.
 
 ///|
 /// Whether the account signed in was told (once a process, as Android's MainActivity does).
@@ -83,6 +83,11 @@ fn reports_start() -> Unit {
   @sfapp.bar_timing.val = Some({
     placed: fn(from, to) { host_tell("placed", from, to, 0, 0) |> ignore },
     built: fn(place) { host_tell("built", place, "", 0, 0) |> ignore },
+  })
+  // (an account's page opened by a press, timed as a switch is: its asks the topics followed)
+  @sfbase.open_timing.val = Some({
+    asked: fn(to) { host_tell("placed", "", to, 0, 0) |> ignore },
+    opened: fn(to) { host_tell("built", to, "", 0, 0) |> ignore },
   })
   @core.time_topics(
     Some(fn(id, topic, value, first) {

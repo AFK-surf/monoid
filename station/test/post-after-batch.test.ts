@@ -6,6 +6,8 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { Store } from "../src/store/store.ts";
 import { Rig } from "./hub-fakes.ts";
+import { formatDelivery } from "../src/sessions/actor.ts";
+
 
 function setup() {
   const rig = new Rig();
@@ -18,8 +20,7 @@ function setup() {
   const put = rig.store.db.prepare("INSERT INTO entries (thread, n, kind, author_kind, author, ts, text, at) VALUES (?, ?, 'message', ?, ?, ?, 'hello', ?)");
   const deliver = rig.store.db.prepare("INSERT INTO deliveries (thread, n, session) VALUES (?, ?, 's')");
   const format = async () => {
-    const actor = rig.hub.actor(rig.session("s"));
-    return (await (actor as any).format(rig.store.pendingMessages("s")))[0] as string;
+    return (await formatDelivery(rig.hub.deps, "s", rig.store.pendingMessages("s"), new AbortController().signal))[0] as string;
   };
   return { rig, thread, put, deliver, format };
 }

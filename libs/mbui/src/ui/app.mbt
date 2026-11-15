@@ -215,6 +215,7 @@ fn on_frame(w : Double, h : Double, scale : Double, t : Double) -> Unit {
   // whether the frame left nothing that ends to come (Ctx::at_rest): said of a run, asserted (Tester::at_rest), never
   // waited on
   c.frame_rest = c.at_rest()
+  c.frame_unasked = c.asks_no_frame()
   let held = bench.held
   bench.held = false
   looks_left(c, held)
@@ -430,6 +431,7 @@ fn frame_body(c : Ctx, w : Double, h : Double, scale : Double, t : Double, tell?
     c.build_no = next_build()
     // (a hold handed an old view: the frame it comes to, as its build begins; gone once that frame is)
     view_handed_comes(c)
+    view_old_building()
     root = frame_build(c, w, h)
     // (the nodes this whole build came to: what the last frame's layers are held against from here, Ctx::modal_layer)
     c.built_count = c.count
@@ -1305,8 +1307,13 @@ fn old_pointer_now(kind : Int, x : Double, y : Double, button : Int, mods : Int,
         }
       }
       // On a finger's tap, a field keeps the keyboard while its surroundings are read or used. A mouse on nothing
-      // still lets the focus go; another field takes it on its own tap.
-      None => if target == 0 && c.focus_allowed() != 0 && !(pointing() is Finger && c.field_focused()) {
+      // still lets the focus go; another field takes it on its own tap. Words of the window's tree picked with the
+      // pointer are no nothing: a press that began picking them (select_press, above) keeps a field's focus, as one on
+      // an old view's page's words does (focus_on_press), so what is written goes on and ⌘C copies what was picked.
+      None => if target == 0 &&
+        c.focus_allowed() != 0 &&
+        !(pointing() is Finger && c.field_focused()) &&
+        !(tree_picking() && picked.from.base != NoSel && c.field_focused()) {
         c.focus_moved(0)
       }
     }

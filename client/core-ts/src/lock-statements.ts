@@ -6,7 +6,7 @@
 // @ts-ignore: the MoonBit build's JS, untyped
 import * as rules from "../../../rules/js/rules.js";
 import { type Entry, entryHash } from "./lock.ts";
-import { bodyHash, wsTag } from "./lock-moved.ts";
+import { bodyHash, fold, wsTag } from "./lock-moved.ts";
 import { crypto, personOf } from "./personal-lock.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -20,7 +20,10 @@ export type Said =
   | { kind: "station"; key: string }
   | { kind: "station.remove"; key: string }
   | { kind: "open"; origins: string[]; rp_id: string; cloud_keys: unknown; email: string }
-  | { kind: "off" };
+  | { kind: "off" }
+  /// (one the chain as it moved bound to no log binding themselves to this one, proved by the signer it names for an own
+  /// app device of theirs: rules/src/lock/roster.mbt `binds_of`)
+  | { kind: "bind"; key: string; sig: string };
 export type Body = { ws: string; kind: string; prev: string | null; salt: string; [k: string]: unknown };
 
 /// The bodies kept here by their hash (one with none is no statement's: left out).
@@ -56,32 +59,37 @@ export function prevOf(ws: string, log: readonly Entry[], kept: ReadonlyMap<stri
 }
 
 /// What a removal takes back (`cancels=h`): every body kept here that admits whom it removes in `ws` (each `member` of
-/// that sub, each `station` of that key), whoever signed it; sorted, each once.
-export function cancelsOf(ws: string, said: { kind: "member.remove"; sub: string } | { kind: "station.remove"; key: string }, kept: ReadonlyMap<string, J>): string[] {
+/// that sub, each `station` of that key), whoever signed it; sorted, each once. Of the root's person (`root`: their sub
+/// and the root's genesis hash, given where every station the list names reads it so), the root's genesis hash too:
+/// their being in the list by the root's log is an admit like any other (`~root`, rules/AGENTS.md).
+export function cancelsOf(ws: string, said: { kind: "member.remove"; sub: string } | { kind: "station.remove"; key: string }, kept: ReadonlyMap<string, J>, root?: Root): string[] {
   const out: string[] = [];
   for (const [h, b] of kept) {
     if (b?.ws !== ws) continue;
     if (said.kind === "member.remove" ? b.kind === "member" && b.sub === said.sub : b.kind === "station" && b.key === said.key) out.push(h);
   }
+  if (root !== undefined && said.kind === "member.remove" && said.sub === root.sub && !out.includes(root.genesis)) out.push(root.genesis);
   return out.sort();
 }
+/// The root's person and the root's genesis hash, where a removal of them names it (`cancelsOf`).
+export type Root = { sub: string; genesis: string };
 
 /// The body of `said` in `ws`, signed after `log` by this device, of what it keeps (`kept`, its own bodies among them),
 /// salted with `salt` (16 random bytes, hex).
-export function bodyOf(ws: string, said: Said, log: readonly Entry[], kept: ReadonlyMap<string, J>, salt: string | (() => string)): Body {
+export function bodyOf(ws: string, said: Said, log: readonly Entry[], kept: ReadonlyMap<string, J>, salt: string | (() => string), root?: Root): Body {
   const prev = prevOf(ws, log, kept);
   const more: Record<string, unknown> = { ...said };
-  if (said.kind === "member.remove" || said.kind === "station.remove") more.cancels = cancelsOf(ws, said, kept);
+  if (said.kind === "member.remove" || said.kind === "station.remove") more.cancels = cancelsOf(ws, said, kept, root);
   return { ...more, ws, kind: said.kind, prev, salt: typeof salt === "string" ? salt : salt() } as Body;
 }
 
 /// The bodies of `says`, signed one after another after `log` (each next one's `prev` the one before it, whose chain is
 /// whole here as the first's is), each salted by `salt()`.
-export function bodiesOf(ws: string, says: readonly Said[], log: readonly Entry[], kept: ReadonlyMap<string, J>, salt: () => string): Body[] {
+export function bodiesOf(ws: string, says: readonly Said[], log: readonly Entry[], kept: ReadonlyMap<string, J>, salt: () => string, root?: Root): Body[] {
   const have = new Map(kept);
   const out: Body[] = [];
   for (const s of says) {
-    const b = bodyOf(ws, s, log, have, salt);
+    const b = bodyOf(ws, s, log, have, salt, root);
     if (out.length > 0) b.prev = bodyHash(out[out.length - 1])!;
     have.set(bodyHash(b)!, b);
     out.push(b);
@@ -94,15 +102,21 @@ export const commitOf = (ws: string, genesis: string, body: unknown): { t: strin
 
 /// What `roster_js` lists, as compared here: each member's role and log, the stations, the newest of open and off.
 type Listed = { members: Map<string, { role: string; lock: string; email: string | null }>; stations: Set<string>; newest: string | null; statements: Map<string, J> };
-function listed(ws: string, root: string, chains: readonly (readonly Entry[])[], bodies: readonly unknown[], c: typeof crypto): Listed | null {
-  const r = rules.roster_js(ws, root, chains, bodies, [], c) as J;
+/// `moved`: the workspace's chain, moved, read as it moved (`roster_moved_js`: what the logs have not said yet of those it
+/// named, it still says, and a member it bound to no log is bound by their own `bind`), as the state in force is read
+/// (src/lock-moved.ts): so a member the chain named acts as the state says they stand, and one it names is said again
+/// with the email it gives them.
+function listed(ws: string, root: string, chains: readonly (readonly Entry[])[], bodies: readonly unknown[], c: typeof crypto, moved?: readonly Entry[]): Listed | null {
+  const r = (moved !== undefined ? rules.roster_moved_js(ws, moved, chains, bodies, [], c) : rules.roster_js(ws, root, chains, bodies, [], c)) as J;
   if (r === null || typeof r !== "object" || "error" in r || r.rooted !== true) return null;
   const inForce = new Map<string, string>(arr(r.in_force).map((x) => [String(x.entry), String(x.body)]));
   const kept = byHash(bodies);
+  const was = moved === undefined ? null : fold(moved);
   const members = new Map<string, { role: string; lock: string; email: string | null }>();
   for (const m of arr(r.members)) {
     const admit = typeof m.admit === "string" ? kept.get(inForce.get(m.admit) ?? "") : undefined;
-    members.set(String(m.sub), { role: String(m.role), lock: String(m.lock), email: typeof admit?.email === "string" ? admit.email : null });
+    const byChain = typeof m.admit === "string" && m.admit.startsWith("~") ? (was?.members.get(String(m.sub))?.email ?? null) : null;
+    members.set(String(m.sub), { role: String(m.role), lock: String(m.lock), email: typeof admit?.email === "string" ? admit.email : byChain });
   }
   return { members, stations: new Set(arr(r.stations).map(String)), newest: typeof r.newest === "string" ? r.newest : null, statements: new Map(arr(r.statements).map((s) => [String(s.hash), s])) };
 }
@@ -119,8 +133,11 @@ export const TAKE_OVER_ROUNDS = 4;
 /// by what was meant. `why` where that cannot be reached in TAKE_OVER_ROUNDS, or the act would change nothing of what
 /// it means (its signer no owner or admin, a role it may not give, a circle of removals), or the root's log is not
 /// held: then nothing is to be signed.
-export function plan(ws: string, root: string, chains: ReadonlyMap<string, readonly Entry[]>, bodies: readonly unknown[], own: { genesis: string; sub: string; key: string }, meant: readonly Said[], nowSecs: number): { says: Said[] } | { why: string } {
-  const before = listed(ws, root, [...chains.values()], bodies, crypto);
+/// `rootOut`: a removal of the root's person names the root's log (`cancelsOf`), where every station the list names
+/// reads it so (views/lock.ts `rootOutServed`); else it names what it named before, and does nothing to them.
+export function plan(ws: string, root: string, chains: ReadonlyMap<string, readonly Entry[]>, bodies: readonly unknown[], own: { genesis: string; sub: string; key: string }, meant: readonly Said[], nowSecs: number, moved?: readonly Entry[], rootOut = false): { says: Said[] } | { why: string } {
+  const named = rootOut ? rootOf(root, chains) : undefined;
+  const before = listed(ws, root, [...chains.values()], bodies, crypto, moved);
   if (before === null) return { why: "the workspace's root log is not held here" };
   const log = chains.get(own.genesis);
   if (log === undefined || log.length === 0) return { why: "this device's person log is not held here" };
@@ -133,7 +150,7 @@ export function plan(ws: string, root: string, chains: ReadonlyMap<string, reado
     const chain = [...log];
     const newBodies: Body[] = [];
     for (const s of says) {
-      const b = bodyOf(ws, s, chain, kept, "0".repeat(32 - String(newBodies.length).length) + newBodies.length);
+      const b = bodyOf(ws, s, chain, kept, "0".repeat(32 - String(newBodies.length).length) + newBodies.length, named);
       const h = bodyHash(b)!;
       kept.set(h, b);
       newBodies.push(b);
@@ -143,11 +160,17 @@ export function plan(ws: string, root: string, chains: ReadonlyMap<string, reado
       made.add(eh);
       chain.push({ ...e, sig: { key: own.key, alg: "Ed25519", sig: "" } });
     }
-    const c = { ...crypto, sigValid: (sig: J, hash: string) => (made.has(hash) && sig?.key === own.key) || crypto.sigValid(sig, hash) };
+    // (and a binding of its own as proved by the signer it names: it is made here, worked out before it is signed)
+    const binding = new Set(says.flatMap((s) => (s.kind === "bind" ? [s.key] : [])));
+    const c = {
+      ...crypto,
+      sigValid: (sig: J, hash: string) => (made.has(hash) && sig?.key === own.key) || crypto.sigValid(sig, hash),
+      taggedSigValid: (key: string, sig: string, tag: string, digest: string) => binding.has(key) || crypto.taggedSigValid(key, sig, tag, digest),
+    };
     const others = [...chains].filter(([g]) => g !== own.genesis).map(([, es]) => es);
-    const after = listed(ws, root, [...others, chain], [...bodies, ...newBodies], c);
+    const after = listed(ws, root, [...others, chain], [...bodies, ...newBodies], c, moved);
     if (after === null) return { why: "the workspace's root log is not held here" };
-    const off = otherwise(before, after, meant);
+    const off = otherwise(before, after, meant, own);
     if (off.why !== null) return { why: off.why };
     if (off.again.length === 0) return { says };
     let more = false;
@@ -161,13 +184,21 @@ export function plan(ws: string, root: string, chains: ReadonlyMap<string, reado
   return { why: "what it would take out besides cannot be said again by this device" };
 }
 
+/// The root's person (the root log's genesis's `sub`) and the root, of the logs held; none where it is not held.
+export function rootOf(root: string, chains: ReadonlyMap<string, readonly Entry[]>): Root | undefined {
+  const sub = (chains.get(root)?.[0]?.body as J)?.sub;
+  return typeof sub === "string" ? { sub, genesis: root } : undefined;
+}
+
 const sameSubject = (a: Said, b: Said): boolean =>
   ("sub" in a && "sub" in b && a.sub === b.sub) || ("key" in a && "key" in b && a.key === b.key);
 
 /// How the list `after` this device's statements differs from `before` but for what was `meant`: whom to say again
 /// (as before had them: a member's log, role and email; a station's key), or why it cannot (the act would not do what
 /// it means; someone not meant would come in or change in a way saying them again does not undo).
-function otherwise(before: Listed, after: Listed, meant: readonly Said[]): { again: Said[]; why: string | null } {
+/// (a `bind` meant: its signer bound to their own log, in the role they had, is what it means)
+function otherwise(before: Listed, after: Listed, meant: readonly Said[], own: { genesis: string; sub: string }): { again: Said[]; why: string | null } {
+  const binding = meant.some((m) => m.kind === "bind");
   const subs = new Set(meant.flatMap((m) => ("sub" in m ? [m.sub] : [])));
   const keys = new Set(meant.flatMap((m) => ("key" in m ? [m.key] : [])));
   // what was meant, done: of each member and station named, the last that said it; on or off
@@ -188,6 +219,7 @@ function otherwise(before: Listed, after: Listed, meant: readonly Said[]): { aga
     if (subs.has(sub)) continue;
     const now = after.members.get(sub);
     if (now !== undefined && now.role === m.role && now.lock === m.lock) continue;
+    if (binding && sub === own.sub && now !== undefined && now.role === m.role && now.lock === own.genesis) continue;
     // (the root has no admit: nothing says it again, nor need it)
     if (m.email === null) return { again: [], why: "it would change someone it does not mean" };
     again.push({ kind: "member", sub, email: m.email, lock: m.lock, role: m.role });
@@ -196,4 +228,16 @@ function otherwise(before: Listed, after: Listed, meant: readonly Said[]): { aga
   for (const key of before.stations) if (!keys.has(key) && !after.stations.has(key)) again.push({ kind: "station", key });
   for (const key of after.stations) if (!keys.has(key) && !before.stations.has(key)) return { again: [], why: "it would change someone it does not mean" };
   return { again, why: null };
+}
+
+/// What the signer the chain as it moved names for an own app device of `sub`'s signs to bind `sub` to their log of
+/// genesis `log` in `ws` after the move `moved` (rules/src/lock/roster.mbt `bind_form`): `bind_tag`, a NUL, then the
+/// SHA-256 of the form's canonical text.
+export function bindBytes(ws: string, sub: string, log: string, moved: string): Uint8Array {
+  const d = rules.bind_digest_js(ws, sub, log, moved, crypto) as { tag: string; digest: string };
+  const tag = new TextEncoder().encode(`${d.tag}\0`);
+  const out = new Uint8Array(tag.length + 32);
+  out.set(tag, 0);
+  for (let i = 0; i < 32; i++) out[tag.length + i] = parseInt(d.digest.slice(2 * i, 2 * i + 2), 16);
+  return out;
 }

@@ -68,6 +68,7 @@ export const PARAMS: Record<string, string> = {
   "session.stop": "key:string",
   "session.cancelRetry": "key:string thread:number seq:number",
   "session.retry": "key:string thread:number seq:number",
+  "session.reassign": "key:string thread:number seq:number",
   "tools.access": "",
   "tools.setAccess": "access:string",
   "agentEnv.set": "env?:json text?:string",
@@ -169,6 +170,7 @@ export const PARAMS: Record<string, string> = {
   "job.stop": "id:string",
   "screen.openBrowser": "url:string id?:string",
   "screen.close": "screen:string",
+  "terminal.end": "terminal:string",
   "screen.sleep": "screen:string",
   "screen.reload": "screen:string",
   "screen.back": "screen:string",
@@ -383,6 +385,8 @@ function stationOp(name: string, params: unknown): Request | null {
       return op("POST", () => `/sessions/${p.at("key")}/cancel-retry`, p.pick(["thread", "seq"]), process("key"));
     case "session.retry":
       return op("POST", () => `/sessions/${p.at("key")}/retry`, p.pick(["thread", "seq"]), process("key"));
+    case "session.reassign":
+      return op("POST", () => `/sessions/${p.at("key")}/reassign`, p.pick(["thread", "seq"]), process("key"));
     case "session.warm":
       // As a person types in its chat (once a minute), nobody waiting on it: its station tells its session's new state.
       // It read the detail each time, a third of a phone's reads of details.
@@ -468,7 +472,9 @@ function stationOp(name: string, params: unknown): Request | null {
     }
     case "session.new":
       return op("POST", () => "/sessions", p.pick(["runtime", "profile", "profiles", "model", "effort", "fast", "context", "preset"]), { kind: "session", key: null });
-    // The workspace's presets on the station: what a chat starts knowing, chosen as it is opened.
+    // The workspace's presets on the station: what a chat starts knowing, chosen as it is opened. A person's own are
+    // made, changed and deleted on the device and carried to the stations (views/presets.ts, core/calls.ts `presets`):
+    // these requests are what is still sent to a station from before (one that serves no /presets/kept), as before.
     case "preset.add":
       return op("POST", () => "/presets", { name: p.str("name"), dirs: p.value("dirs"), instructions: p.word("instructions") ?? "", ...p.pick(["autoStation", "stations", "model"]) }, { kind: "presets" });
     case "preset.put":
@@ -638,6 +644,9 @@ function stationOp(name: string, params: unknown): Request | null {
     // the station tells it (`screens` on its stream).
     case "screen.close":
       return op("POST", () => `/screens/${p.at("screen")}/close`, null, NONE);
+    // A terminal ended, its program and what it started (station/src/terminals/): it leaves the list as it goes.
+    case "terminal.end":
+      return op("POST", () => `/terminals/${p.at("terminal")}/end`, null, NONE);
     case "screen.sleep":
       return op("POST", () => `/screens/${p.at("screen")}/sleep`, null, NONE);
     case "screen.reload":

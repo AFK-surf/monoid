@@ -7,8 +7,11 @@
 pub(all) enum Fit {
   /// fills the box, cropping what sticks out
   FitCover
-  /// fills the box, placing the vertical crop at 0 (top) to 1 (bottom)
+  /// fills the box, placing the vertical crop at 0 (top) to 1 (bottom), centred across
   FitCoverAt(Double)
+  /// fills the box, placing the crop across at 0 (left) to 1 (right) and down at 0 (top) to 1 (bottom): only the side
+  /// that is cut is moved by its own, so (0, 0) shows a picture from its start whichever way it is cut
+  FitCoverFrom(Double, Double)
   /// shows all of it inside the box
   FitContain
   /// stretched to the box
@@ -437,7 +440,7 @@ fn image_size(src : String) -> (Double, Double)? {
 /// tile's side it would be stretched several times over, blurred.)
 fn Ctx::image_px(self : Ctx, src : String, bw : Double, bh : Double, fit : Fit) -> Double {
   match (fit, image_size(src)) {
-    (FitCover | FitCoverAt(_), Some((ow, oh))) if ow > 0.0 && oh > 0.0 && bw > 0.0 && bh > 0.0 =>
+    (FitCover | FitCoverAt(_) | FitCoverFrom(_, _), Some((ow, oh))) if ow > 0.0 && oh > 0.0 && bw > 0.0 && bh > 0.0 =>
       dmax(ow, oh) * dmax(bw / ow, bh / oh) * self.scale
     _ => dmax(bw, bh) * self.scale
   }
@@ -742,13 +745,13 @@ fn Ctx::draw_image(
   }
   let (x, y, w, h, u0, v0, du, dv) = match fit {
     FitFill => (bx, by, bw, bh, 0.0, 0.0, 1.0, 1.0)
-    FitCover | FitCoverAt(_) => {
-      // The part of the image the box shows, centred across and placed vertically by fit.
+    FitCover | FitCoverAt(_) | FitCoverFrom(_, _) => {
+      // The part of the image the box shows, placed across and down by fit (Fit::cover_from).
       let k = dmax(bw / e.w, bh / e.h)
       let du = bw / k / e.w
       let dv = bh / k / e.h
-      let vertical = match fit { FitCoverAt(y) => dclamp(y, 0.0, 1.0); _ => 0.5 }
-      (bx, by, bw, bh, (1.0 - du) / 2.0, (1.0 - dv) * vertical, du, dv)
+      let (across, down) = fit.cover_from()
+      (bx, by, bw, bh, (1.0 - du) * across, (1.0 - dv) * down, du, dv)
     }
     FitContain => {
       let k = dmin(bw / e.w, bh / e.h)
@@ -968,5 +971,35 @@ fn image_ready_asking_none(src : String) -> Bool {
   match image_cache.get(src) {
     Some(list) => list.iter().any(fn(e) { e.state == 1 })
     None => false
+  }
+}
+
+///|
+/// The image handed over as `key` (add_image, Ctx::image_bytes) let go of: its bytes and every decode of it the host
+/// holds, so what draws it shows nothing more (a picture drawn again under another key, the one before no longer
+/// shown: a tile of a page each time it changes). What is told of it goes once nothing follows it.
+pub fn forget_image(key : String) -> Unit {
+  image_data.remove(key)
+  image_vector_drawers.remove(key)
+  match image_cache.get(key) {
+    Some(list) => {
+      for e in list {
+        h_image_free(e.id)
+        image_dropped(e)
+      }
+      image_cache.remove(key)
+    }
+    None => ()
+  }
+  image_forget(key)
+}
+
+///|
+/// Where a covering fit places its crop, across and down (0 the start, 1 the end; 0.5 its middle).
+fn Fit::cover_from(self : Fit) -> (Double, Double) {
+  match self {
+    FitCoverAt(y) => (0.5, dclamp(y, 0.0, 1.0))
+    FitCoverFrom(x, y) => (dclamp(x, 0.0, 1.0), dclamp(y, 0.0, 1.0))
+    _ => (0.5, 0.5)
   }
 }

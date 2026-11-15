@@ -40,7 +40,7 @@
 // pages show here (`said`), with nothing read first. What else a change touches (the shared chat list, a session's
 // summary, a job) is read by the station's own reader (`told`: read/pool.ts), which nothing a device asks
 // takes: on a station (2026-11-02) both shared two readers, and a message just said was told 50 s late.
-import { type FSWatcher, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, watch, writeFileSync } from "node:fs";
+import { type FSWatcher, existsSync, mkdirSync, readFileSync, renameSync, rmSync, watch, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { type Viewer, readOnly } from "../mesh/credential.ts";
 import type { Lang } from "../ops/i18n.ts";
@@ -85,10 +85,10 @@ export type EventsDeps = {
   subscribe(listener: (change: StoreChange) => void): () => void;
   /// A host sample (GET /host's answer).
   host(): Promise<unknown>;
-  /// A job's log path and how its lines are read (`output_at`).
+  /// A job's log path (watched for changes), and its last `lines` as GET /jobs/:id/log answers them, read by the
+  /// readers (null: the job is not there).
   jobLog(id: string): string | null;
-  tail(path: string, lines: number): string;
-  outputAt(path: string): number | null;
+  logNow(id: string, lines: number): Promise<{ text: string; outputAt: number | null } | null>;
   /// A session's live steps, from `from`, to `send`, until the returned function is called; its transcript
   /// entries in brief (`brief`, read/transcript.ts) for a client that asks so.
   live?(key: string, from: number, last: number | null, send: (message: unknown) => void, brief: boolean): () => void;
@@ -473,8 +473,11 @@ export class Events {
     const queue: string[] = [];
     let wakeReader: (() => void) | null = null;
     let closed = false;
+    // Given what carries it (`relay`): each piece handed it at once, no queue between.
+    let carried: { send: (text: string) => void; ended: () => void } | null = null;
     const push = (text: string) => {
       if (closed) return;
+      if (carried !== null) return carried.send(text);
       queue.push(text);
       wakeReader?.();
     };
@@ -558,6 +561,7 @@ export class Events {
       if (closed) return;
       closed = true;
       wakeReader?.();
+      carried?.ended();
       this.clients = this.clients.filter((c) => c !== client);
       if (client.shared && !this.clients.some((c) => c.shared)) this.sharedUntil = this.time.now() + KEPT_MS;
       client.stops.forEach((stop) => stop());
@@ -580,6 +584,14 @@ export class Events {
         return { done: true, value: undefined };
       },
     };
+    // What carries the stream elsewhere (mesh/served.ts: the MoonBit program writes it) takes each piece as it is told,
+    // what is waiting first; told when it ends from this side. The same text told several streams at once is one
+    // string, which it gives the program once.
+    (body as AsyncIterableIterator<Buffer> & { relay?: unknown }).relay = (send: (text: string) => void, ended: () => void) => {
+      for (const text of queue.splice(0)) send(text);
+      carried = { send, ended };
+      if (closed) ended();
+    };
     return {
       status: 200,
       headers: { "content-type": "text/event-stream", "cache-control": "no-store", connection: "keep-alive", "x-accel-buffering": "no", ...(head !== null ? { [RESUMED]: "1", [HEAD]: head } : {}), ...(follows ? { [FOLLOWS]: "running" } : {}) },
@@ -592,15 +604,27 @@ export class Events {
     const path = this.deps.jobLog(id);
     if (path === null) return () => {};
     let seen = "";
+    let stopped = false;
+    // One read at a time (off the station's thread: the readers'); asked meanwhile, read again after it.
+    let reading = false;
+    let again = false;
     const tell = () => {
-      let now = "none";
-      try {
-        const st = statSync(path);
-        now = `${st.size}:${st.mtimeMs}`;
-      } catch {}
-      if (now === seen) return;
-      seen = now;
-      client.send("job-log", { id, lines, text: existsSync(path) ? this.deps.tail(path, lines) : "", outputAt: this.deps.outputAt(path) });
+      if (reading) {
+        again = true;
+        return;
+      }
+      reading = true;
+      void (async () => {
+        do {
+          again = false;
+          const got = await this.deps.logNow(id, lines).catch(() => null);
+          if (stopped) return;
+          const now = got === null ? "none" : JSON.stringify(got);
+          if (now === seen) continue;
+          seen = now;
+          client.send("job-log", { id, lines, text: got?.text ?? "", outputAt: got?.outputAt ?? null });
+        } while (again);
+      })().finally(() => (reading = false));
     };
     tell();
     let watcher: FSWatcher | null = null;
@@ -632,6 +656,7 @@ export class Events {
       tell();
     });
     return () => {
+      stopped = true;
       watcher?.close();
       check();
       pending?.();

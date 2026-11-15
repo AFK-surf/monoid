@@ -53,7 +53,13 @@ fn settings_core_of(
       match r {
         @settings.Route::Home => open_page(Settings)
         // (an account's page once what it shows is answered, the screen as it was meanwhile: account_open.mbt)
-        _ => open_answered(src, route_asks(w.id, r), fn() { open_page(Setting(r)) }) |> ignore
+        _ => {
+          let open = fn() { open_page(Setting(r)) }
+          let asks = route_asks(w.id, r)
+          // (an account's page timed for the host from the press: open_timing)
+          let open = if asks.is_empty() { open } else { timed_open("account", open) }
+          open_answered(src, asks, open) |> ignore
+        }
       }
     },
     pop: fn() { go_back() |> ignore },
@@ -117,17 +123,25 @@ fn settings_core_of(
         @sf.icon(c, place_icon(place), size=28.0, color~) |> ignore
       }
     },
-    reporting: fn() {
-      reporting_said.get() |> ignore
-      reporting_host.get().map(fn(h) { (h.get)() })
-    },
+    reporting: fn() { reporting_on(src) },
     set_reporting: fn(on) {
       match reporting_host.get() {
         Some(h) => {
           (h.set)(on)
           reporting_said.set(Some(on))
         }
-        None => ()
+        // (where the core sends what people use and the host keeps no switch: the prefs' `reports`)
+        None =>
+          @settings.set_pref_with(
+            fn(name, params, done) { (src.call)(name, params, done) },
+            fn(said) { toast_later(said) },
+            "reports",
+            if on {
+              ""
+            } else {
+              "off"
+            },
+          )
       }
     },
     login_card,
@@ -138,6 +152,7 @@ fn settings_core_of(
     own_code_face: own_code_preview,
     read_only: if src.read_only { read_only_words } else { "" },
     devices_on: src.asks_devices,
+    terminals_on: src.asks_terminals,
   }
 }
 
@@ -152,6 +167,45 @@ pub(all) struct ReportingHost {
 ///|
 /// The host's, set once as the app starts (src/stillfail main); None under a Tester (reset), unless its test sets one.
 pub let reporting_host : @signals.Signal[ReportingHost?] = @signals.signal(None)
+
+///|
+/// Whether this device's core sends what people use (the prefs' `counted`, client/core-ts/src/use-counts.ts: a build
+/// given still.fail's PostHog project, on still.fail's own cloud); not so under a Tester or a replay, whose core says
+/// nothing of it, so the app tells it nothing of it there either.
+pub fn core_counts(src : Source) -> Bool {
+  match src.topic("prefs", {}).get().value {
+    Some(Object(m)) => m.get("counted") is Some(True)
+    _ => false
+  }
+}
+
+///|
+/// Whether usage statistics and error reports go out from this device: as the host's switch is, where it keeps one;
+/// else, where the core sends what people use, as the prefs' `reports` say (on unless `off`); None where nothing is
+/// sent (no settings row then).
+pub fn reporting_on(src : Source) -> Bool? {
+  reporting_said.get() |> ignore
+  match reporting_host.get() {
+    Some(h) => Some((h.get)())
+    None =>
+      if core_counts(src) {
+        Some(@settings.pref_from(src.topic("prefs", {}).get().value, "reports") != "off")
+      } else {
+        None
+      }
+  }
+}
+
+///|
+/// What the app tells a core that counts what people use (core_counts; use-counts.ts): whether to, as the settings say
+/// (reporting_on), and, while it does, what it shows by its kind alone; None while nothing is to be told.
+pub fn counts_told(src : Source, shown : String) -> (Bool, String)? {
+  if !core_counts(src) {
+    return None
+  }
+  let on = reporting_on(src).unwrap_or(true)
+  Some((on, if on { shown } else { "" }))
+}
 
 ///|
 /// What this device was last set here to send them or not (None: not set here; what reads it reads the host again as

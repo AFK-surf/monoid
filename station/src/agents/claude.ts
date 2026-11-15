@@ -30,6 +30,8 @@ import { fileCredentials, takeBack, takeBackMissing } from "./no-keychain.ts";
 import { type Events, OwnProcessDriver, OwnProcessSession, parseLine } from "./own-process.ts";
 import { accessKind, expandRoute, isMachine, keyFile, profileEnv, profileFast, profileModel, takesFast } from "./profiles.ts";
 import type { RunnerInfo } from "./runner.ts";
+import { AgentsHost, HostedProcess, type Heard } from "./mb-agents.ts";
+import { ackedOffset, findRunner, linesBefore, outFile, runnerId } from "./process.ts";
 import { OVERLOADED, TOOL_SERVERS, cleanEnv, failureRest, unreachable, uuid, type BackgroundTask, type FailureReason, type OpenOptions, type Profile, type RuntimeEvent, type TurnOutcome } from "./runtime.ts";
 import { wall } from "../ops/fibers.ts";
 import { peerHttpBase } from "../tools/http.ts";
@@ -156,8 +158,9 @@ export function classifyResult(text: string): FailureReason {
     ["rate limit", "rate-limit", "rate_limit", "ratelimit", "usage limit"].some((s) => lower.includes(s)) ||
     ["session", "weekly", "daily"].some((window) => lower.includes(`hit your ${window} limit`)) ||
     /\bhit your \d+[- ]hour limit\b/.test(lower) ||
-    // A model's own allowance: "You've reached your Fable limit. Switch to another model, or manage usage credits…"
-    /\breached your [\w.\- ]+ limit\b/.test(lower) ||
+    // A model's own allowance: "You've reached your Fable limit. Switch to another model, or manage usage credits…",
+    // since 2026-11-14 also "You've hit your Fable limit · resets Nov 20 at 9am (Asia/Tokyo). Switch to another model…"
+    /\b(?:reached|hit) your [\w.\- ]+ limit\b/.test(lower) ||
     lower.includes("you've hit your limit")
   ) {
     return "rate_limit";
@@ -291,6 +294,9 @@ export type ClaudeDriverOptions = {
   /// A local subscription profile's current token, renewed under one lock by the station so concurrent `claude -p`
   /// processes neither race on a single-use refresh token nor delete `.credentials.json` on failure.
   subscriptionToken?: (profile: Profile, rejected?: string) => Promise<MachineToken>;
+  /// What reads its processes' output off the station's thread (mb-agents.ts): by default the MoonBit program where it
+  /// is there; null reads it here.
+  agents?: AgentsHost | null;
   /// Another station's subscription, borrowed (share/index.ts): a token lent by the station signed in on it, handed
   /// to the process as the machine's is.
   lent?: { borrowed(profile: Profile): boolean; token(profile: Profile, rejected?: string): Promise<MachineToken> };
@@ -369,9 +375,12 @@ export class ClaudeDriver extends OwnProcessDriver<ClaudeSession> {
   private readonly machineToken: (env: Env, rejected?: string) => Promise<MachineToken>;
   private readonly subscriptionToken: ClaudeDriverOptions["subscriptionToken"];
   private readonly lent: ClaudeDriverOptions["lent"];
+  private readonly agents: AgentsHost | null;
 
   constructor(options: ClaudeDriverOptions) {
     super(options.data);
+    this.agents = options.agents === undefined ? AgentsHost.where(options.data) : options.agents;
+    this.agents?.use(this);
     this.command = options.command ?? "claude";
     this.env = options.env ?? process.env;
     this.machineToken = options.machineToken ?? machineClaudeToken;
@@ -386,6 +395,54 @@ export class ClaudeDriver extends OwnProcessDriver<ClaudeSession> {
   /// Its process is named by its session id in the log.
   protected label(_options: OpenOptions, session: ClaudeSession) {
     return `claude ${session.id()}`;
+  }
+
+  /// Read by the program where it is there (mb-agents.ts), else as every such driver reads.
+  protected async start(session: ClaudeSession, options: OpenOptions, command: string, args: string[], env: Record<string, string>) {
+    if (this.agents === null) return super.start(session, options, command, args, env);
+    const id = runnerId("claude", options.key);
+    session.attach(await HostedProcess.start(this.agents, this.data, id, command, args, env, options.cwd, session.hostedOptions(this.label(options, session)), session.turnNow()));
+    this.live.add(session);
+  }
+
+  async adopt(options: OpenOptions, snapshot: unknown | null, events: Events): Promise<ClaudeSession> {
+    if (this.agents === null) return super.adopt(options, snapshot, events);
+    const handed = snapshot as ClaudeSnapshot | null;
+    const id = handed?.runner ?? runnerId("claude", options.key);
+    const info = await findRunner(this.data, id);
+    if (!info) throw new Error(`no runner keeps claude for ${options.key}`);
+    let session: ClaudeSession;
+    if (handed) {
+      log.info("agents::claude", "taking up a claude process handed over", { session: handed.id, pgid: info.pgid, busy: handed.turn.busy });
+      session = this.handedOver(options, handed, info, events);
+    } else {
+      const { at } = await ackedOffset(info, outFile(this.data, id));
+      session = await this.crashed(options, linesBefore(outFile(this.data, id), at), info, events);
+      log.info("agents::claude", "taking up a claude process after a crash", { session: session.id(), pgid: info.pgid, busy: session.busy(), from: at });
+      if (session.busy()) events({ type: "turnStarted" });
+    }
+    session.attach(HostedProcess.adopt(this.agents, info, session.hostedOptions(this.label(options, session)), session.turnNow(), session.liveNow()));
+    this.live.add(session);
+    return session;
+  }
+
+  /// Its processes' lines held while the station hands over (hub.ts `handOver`), and read on where it does not.
+  async freeze() {
+    await this.agents?.freeze(this.hostedProcs());
+  }
+
+  thaw() {
+    this.agents?.thaw(this.hostedProcs());
+  }
+
+  /// Its sessions' processes the program reads.
+  private hostedProcs(): HostedProcess[] {
+    return [...this.live].flatMap((s) => s.hostedProc() ?? []);
+  }
+
+  async shutdown() {
+    await super.shutdown();
+    await this.agents?.close(this);
   }
 
   async open(options: OpenOptions, events: Events): Promise<ClaudeSession> {
@@ -557,6 +614,41 @@ export class ClaudeSession extends OwnProcessSession<Turn> {
     this.live = live;
   }
 
+  /// What its process's lines are read with by the program (mb-agents.ts).
+  hostedOptions(label: string) {
+    return { label, heard: (heard: Heard) => this.heardHosted(heard), exit: (said: string, stderr: string) => this.exited(said, stderr) };
+  }
+
+  /// The turn as the program is told it (it keeps it from then on).
+  turnNow() {
+    const { closed: _, ...turn } = this.turn;
+    return turn;
+  }
+
+  liveNow() {
+    return this.live.state();
+  }
+
+  /// What the program read of its lines: the turn as each event left it, the events as `heard` emits them.
+  private heardHosted(heard: Heard) {
+    const take = (t: Json) => {
+      if (t === null || typeof t !== "object") return;
+      const closed = this.turn.closed;
+      this.turn = { ...t, closed } as Turn;
+    };
+    for (const e of heard.events) {
+      if (e?.type === "renew") {
+        void this.renewToken(String(e.requestId ?? ""));
+        continue;
+      }
+      const { turn, ...event } = e;
+      if (turn !== undefined) take(turn);
+      if (event.type === "turnEnded") event.outcome = outcomeOf(event.outcome);
+      this.events(event as RuntimeEvent);
+    }
+    take(heard.turn);
+  }
+
   protected heard(line: string) {
     const frame = parseLine("claude", line);
     if (frame === undefined) return;
@@ -577,6 +669,7 @@ export class ClaudeSession extends OwnProcessSession<Turn> {
       if (got.token === this.token) throw new Error("no newer token");
       this.token = got.token;
       this.turn.renewed = true;
+      this.hosted()?.tell("renewed");
       response = { accessToken: got.token };
       log.info("agents::claude", "gave claude a new token", { session: this.sessionId });
     } catch (error) {
@@ -601,6 +694,7 @@ export class ClaudeSession extends OwnProcessSession<Turn> {
     this.begin();
     this.turn.compacting = true;
     this.turn.compactError = null;
+    this.hosted()?.tell("compact");
     this.proc.write(userMessage("/compact"));
   }
 
@@ -611,6 +705,16 @@ export class ClaudeSession extends OwnProcessSession<Turn> {
     if (this.machineExpires !== null && this.machineExpires - wall.now() < CLAUDE_TOKEN_MARGIN_MS) throw new Said(tr(stationLang(), "station.claudeAuth.machineRunsOut"));
     this.turn.renewed = false;
     this.turn.busy = true;
+    this.hosted()?.tell("begin");
+  }
+
+  hostedProc(): HostedProcess | null {
+    return this.hosted();
+  }
+
+  /// Its process as the program reads it, if it is.
+  private hosted(): HostedProcess | null {
+    return this.proc instanceof HostedProcess ? this.proc : null;
   }
 
   async steer(text: string) {
@@ -629,6 +733,7 @@ export class ClaudeSession extends OwnProcessSession<Turn> {
   async abort() {
     if (this.turn.closed || !this.turn.busy || this.turn.aborting) return;
     this.turn.aborting = true;
+    this.hosted()?.tell("aborting");
     this.proc.write(interruptRequest());
   }
 
@@ -643,6 +748,12 @@ export class ClaudeSession extends OwnProcessSession<Turn> {
 
   snapshot(): ClaudeSnapshot {
     this.handOver();
+    // (read by the program: where it stood as its lines were held)
+    const frozen = this.hosted()?.frozenState();
+    if (frozen) {
+      const t = frozen.turn ?? {};
+      return { runtime: "claude", id: this.sessionId, runner: this.proc.info.id, turn: { busy: t.busy === true, aborting: t.aborting === true, authFailure: t.authFailure ?? null, renews: t.renews, tasks: t.tasks, compacting: t.compacting, compactError: t.compactError }, machineExpires: this.machineExpires, live: frozen.live };
+    }
     return {
       runtime: "claude",
       id: this.sessionId,
@@ -652,4 +763,12 @@ export class ClaudeSession extends OwnProcessSession<Turn> {
       live: this.live.state(),
     };
   }
+}
+
+/// A turn's outcome as the program says it, with what it leaves to the TypeScript (mb/src/claude: `auth`, a failure on
+/// authentication whose words say whether it was refused; `classify`, a failed result whose words say why).
+function outcomeOf(said: Json): TurnOutcome {
+  if (said?.kind === "failed" && typeof said.auth === "string") return { kind: "failed", reason: refused(said.auth) ? "refused" : "auth", message: said.auth };
+  if (said?.kind === "failed" && typeof said.classify === "string") return { kind: "failed", reason: classifyResult(said.classify), message: chars(said.classify, 1000) };
+  return said as TurnOutcome;
 }

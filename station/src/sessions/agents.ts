@@ -48,6 +48,7 @@ import { jobTools } from "../tools/jobs.ts";
 import { forwardTools } from "../tools/forward.ts";
 import { Forwards } from "../mesh/peer-forward.ts";
 import { nameOf, peerNamed } from "../mesh/peer-http.ts";
+import { stationMarksOf } from "../mesh/station-marks.ts";
 import { type Listing, McpEndpoint, UNBOUND_REFUSAL } from "../tools/mcp.ts";
 import { remoteTools } from "../tools/remote.ts";
 import { workspaceSizeTools } from "../tools/workspace-size.ts";
@@ -55,6 +56,7 @@ import { relayTools } from "../tools/relays.ts";
 import { waysOf } from "../mesh/ways.ts";
 import { type Accounts, checkConfig, makeAccounts } from "../accounts/index.ts";
 import { Sharing } from "../share/index.ts";
+import { MemorySync } from "../share/memory.ts";
 import { ChatShares } from "../xshare/index.ts";
 import { ChatShareIndexBuilder } from "../xshare/index-builder.ts";
 import { overview } from "../api/overview.ts";
@@ -66,6 +68,7 @@ import { rootViewThrough } from "../drive/drive.ts";
 import type { Viewer } from "../mesh/credential.ts";
 import { stationLang, tr, type Lang } from "../ops/i18n.ts";
 import { type Updates, makeUpdates } from "../updates/updates.ts";
+import { channelOf } from "../updates/versions.ts";
 import { type Connect, hubConfig } from "./config.ts";
 import type { TailState } from "../read/tail.ts";
 import { followLatestThreadRequests } from "../read/latest-thread-requests.ts";
@@ -86,7 +89,7 @@ import { FILE, fileForPeer, PUT, putForPeer } from "./peer-files.ts";
 import { reviewUndecided, startReview } from "./review.ts";
 import { readAgentEnvFrom } from "../ops/agent-env.ts";
 import { CardOutcomeWorker } from "../store/card-outbox-worker.ts";
-import { type PageBase, sessionPage } from "./page.ts";
+import { type PageBase, pageOrigin, sessionPage } from "./page.ts";
 
 /// server.rs `encode` (encodeURIComponent).
 const encode = encodeURIComponent;
@@ -214,7 +217,9 @@ export const AgentsLive = (control: Control) =>
       // In the workspace its chat is in.
       const pages = (): PageBase | null => {
         const s = place();
-        return s && plane.spec().pages ? { origin: s.origin, workspace: s.workspace, station: s.station } : null;
+        return s && plane.spec().pages
+          ? { origin: pageOrigin(s.origin, channelOf(config.raw(), app)), workspace: s.workspace, station: s.station }
+          : null;
       };
       const pageOf = (key: string) => {
         const s = pages();
@@ -305,6 +310,8 @@ export const AgentsLive = (control: Control) =>
         link: pageOf,
         workspaces: () => cloud.memberships().map((m) => m.workspace),
         station: () => cloud.state?.station ?? null,
+        // (a preset's folder on another station told by that station's name: its own mark's, else the roster's)
+        stationName: (id) => stationMarksOf(cloud).record(id)?.name ?? (nameOf(cloud, id) !== id ? nameOf(cloud, id) : null),
         cold,
         places,
       });
@@ -499,8 +506,8 @@ export const AgentsLive = (control: Control) =>
       const computer = new Computer({
         hub: screens,
         base: () => {
-          const s = place();
-          return s && plane.spec().pages ? `${s.origin}/w/${s.workspace}/s/${s.station}` : null;
+          const s = pages();
+          return s ? `${s.origin}/w/${s.workspace}/s/${s.station}` : null;
         },
         name: agentName,
       });
@@ -514,13 +521,13 @@ export const AgentsLive = (control: Control) =>
         ...workspaceSizeTools(workspaceWatch, remote),
         ...jobTools(jobs, (key) => store.getSession(key)?.workspace ?? null, hub.places),
         ...screenTools(screens, () => {
-          const s = place();
-          return s && plane.spec().pages ? `${s.origin}/w/${s.workspace}/s/${s.station}` : null;
+          const s = pages();
+          return s ? `${s.origin}/w/${s.workspace}/s/${s.station}` : null;
         }, agentName),
         // What macOS lets still.fail Helper do here, and a grant asked of a person.
         ...permissionTools(grants, () => {
-          const s = place();
-          return s && plane.spec().pages ? `${s.origin}/w/${s.workspace}/s/${s.station}` : null;
+          const s = pages();
+          return s ? `${s.origin}/w/${s.workspace}/s/${s.station}` : null;
         }),
         ...computerTools(computer),
         ...forwardTools(forwards),
@@ -595,7 +602,8 @@ export const AgentsLive = (control: Control) =>
         agentHome: () => settings().agentHome,
         env: process.env as Record<string, string | undefined>,
         machineEmail: (runtime) => accounts.machineLogins().find((login) => login.runtime === runtime && login.loggedIn)?.email ?? null,
-        claudeToken: (p, rejected) => accounts.claudeToken(p, rejected),
+        // (lent: its renewal waited for LEND_BOUND_MS at most, then what it has lent, the renewal going on behind)
+        claudeToken: (p, rejected) => accounts.claudeToken(p, rejected, true),
         // In sandboxes no Codex here holds the refresh token: it is renewed here whenever it runs out.
         codexRenewRunning: async (id) => await codex.renewLogin(id),
         status: async (id) => { const h = await accounts.lentHealth(id); return { check: h.check ?? null, quota: h.quota ?? null }; },
@@ -607,6 +615,15 @@ export const AgentsLive = (control: Control) =>
       });
       remote.setShares((peer, request, workspace) => sharing!.handle(peer, request, workspace));
       sharing.start();
+      // The agents' memory, the same on every station of a workspace (share/memory.ts).
+      const memorySync = new MemorySync({
+        data, cloud,
+        ask: (station, workspace, request) => remote.ask(station, { workspace, ...request }),
+        agentHome: () => settings().agentHome,
+      });
+      remote.setMemory((peer, request, workspace) => memorySync.handle(peer, request, workspace));
+      memorySync.start();
+      yield* Effect.addFinalizer(() => Effect.promise(() => memorySync.stop()));
       xshare.start();
       const platformView = (viewer: Viewer, lang: Lang) => overview({ store, hub, cloud, config: () => config.raw(), accounts, updates, connectKinds, rootView: (p) => rootViewThrough(p, helperFiles), ...(grants ? { permissions: (v: Viewer) => permissionsView(grants, v) } : {}) }, viewer, lang);
       // And the fields the station's parts add (parts.ts).
@@ -619,6 +636,8 @@ export const AgentsLive = (control: Control) =>
         state: async (key) => (JSON.parse(await readers.read("transcriptState", { key }, "zh")) as { states: TailState[] | null }).states,
         page: async (key, before, limit, brief) => JSON.parse(await readers.read("timeline", { key, before: String(before), limit: String(limit), lang: "zh", ...(brief ? { brief: "1" } : {}) }, "zh")),
       };
+      // And what a watched transcript gains as it is written (read/read-tail.ts): parsed by them, not here.
+      hub.live.tailRead = async (runtime, state) => JSON.parse(await readers.read("tailRead", { runtime, state }, "zh", { told: true }));
       // Resolving a live session's older transcript files may take a while; keep it off the station's thread.
       const liveLocator = new LiveLocator(data, (key) => store.getSession(key), () => hub.config().profiles);
       hub.live.locateAsync = (key, signal) => liveLocator.locate(key, signal);

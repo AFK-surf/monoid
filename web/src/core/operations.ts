@@ -3,6 +3,7 @@ export interface OperationParams {
   "session.stop": { key: string };
   "session.cancelRetry": { key: string; thread: number; seq: number };
   "session.retry": { key: string; thread: number; seq: number };
+  "session.reassign": { key: string; thread: number; seq: number };
   "tools.access": {  };
   "tools.setAccess": { access: string };
   "agentEnv.set": { env?: unknown; text?: string | null | undefined };
@@ -104,6 +105,7 @@ export interface OperationParams {
   "job.stop": { id: string };
   "screen.openBrowser": { url: string; id?: string | null | undefined };
   "screen.close": { screen: string };
+  "terminal.end": { terminal: string };
   "screen.sleep": { screen: string };
   "screen.reload": { screen: string };
   "screen.back": { screen: string };
@@ -193,6 +195,7 @@ export function bindStationOperations(call: Call) {
     sessionStop: <T = unknown>(params: OperationParams["session.stop"]) => call("session.stop", params) as Promise<T>,
     sessionCancelRetry: <T = unknown>(params: OperationParams["session.cancelRetry"]) => call("session.cancelRetry", params) as Promise<T>,
     sessionRetry: <T = unknown>(params: OperationParams["session.retry"]) => call("session.retry", params) as Promise<T>,
+    sessionReassign: <T = unknown>(params: OperationParams["session.reassign"]) => call("session.reassign", params) as Promise<T>,
     toolsAccess: <T = unknown>(params: OperationParams["tools.access"] = {}) => call("tools.access", params) as Promise<T>,
     toolsSetAccess: <T = unknown>(params: OperationParams["tools.setAccess"]) => call("tools.setAccess", params) as Promise<T>,
     agentEnvSet: <T = unknown>(params: OperationParams["agentEnv.set"] = {}) => call("agentEnv.set", params) as Promise<T>,
@@ -294,6 +297,7 @@ export function bindStationOperations(call: Call) {
     jobStop: <T = unknown>(params: OperationParams["job.stop"]) => call("job.stop", params) as Promise<T>,
     screenOpenBrowser: <T = unknown>(params: OperationParams["screen.openBrowser"]) => call("screen.openBrowser", params) as Promise<T>,
     screenClose: <T = unknown>(params: OperationParams["screen.close"]) => call("screen.close", params) as Promise<T>,
+    terminalEnd: <T = unknown>(params: OperationParams["terminal.end"]) => call("terminal.end", params) as Promise<T>,
     screenSleep: <T = unknown>(params: OperationParams["screen.sleep"]) => call("screen.sleep", params) as Promise<T>,
     screenReload: <T = unknown>(params: OperationParams["screen.reload"]) => call("screen.reload", params) as Promise<T>,
     screenBack: <T = unknown>(params: OperationParams["screen.back"]) => call("screen.back", params) as Promise<T>,

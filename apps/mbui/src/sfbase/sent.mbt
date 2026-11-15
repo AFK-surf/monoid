@@ -258,6 +258,28 @@ fn sent_among(all : Array[Entry], keys : Array[String], at : Int, still : Array[
 }
 
 ///|
+/// What was sent from chat `rk` that its list made as nodes took a core's row for (`sent_as`: each core's row's key to
+/// the key, sent_local's, of what it took over) leaves what is on its way, as the old list's row_keys lets it go: the row
+/// goes on by that key in the list that took it. Kept, every word sent from a chat stayed on its way for the rest of the
+/// run, and a list made again (the chat opened again) matched them anew against rows it no longer read, the last ones
+/// sent left under the rest as sending (the user, 2026-11-15: 「这他妈又是什么 bug」).
+pub fn sent_local_taken(rk : String, sent_as : Map[String, String]) -> Unit {
+  let sending = sending_of(rk)
+  guard !sending.is_empty() && !sent_as.is_empty() else { return }
+  let taken : Map[String, Bool] = Map([])
+  for k in sent_as.values() {
+    taken[k] = true
+  }
+  let still = sending.filter(fn(l) { !taken.contains("o:" + l.row.id) })
+  guard still.length() != sending.length() else { return }
+  sending.clear()
+  for l in still {
+    sending.push(l)
+  }
+  sending_changed()
+}
+
+///|
 /// What was sent from chat `rk` (key: sent_local's) did not go: it leaves the list.
 pub fn sent_local_gone(rk : String, key : String) -> Unit {
   let sending = sending_of(rk)
@@ -341,4 +363,25 @@ pub fn sent_picture_told(station : String, a : Attachment) -> String? {
     sent_picture_track("upload\u{1}" + a.upload)
   }
   sent_picture(station, a)
+}
+
+///|
+/// Where the words of what was sent from here stood in the composer's field as they were sent (the top left of their
+/// first line, in the window), by the key its row has in its chat's list (sent_local's), till that row's bubble takes
+/// it to fly from there (sent_from_take): on a chat's page made as nodes, where the composer is an old view hosted in
+/// the list's foot, so its words are none of the window's tree to pair with (mbui's View::flies_in).
+let sent_from_at : Map[String, (Double, Double)] = Map([])
+
+///|
+/// The words of what was sent from here as `key` (sent_local's) stood at (`x`, `y`) in the composer's field.
+pub fn sent_from_said(key : String, x : Double, y : Double) -> Unit {
+  sent_from_at[key] = (x, y)
+}
+
+///|
+/// Where the words of what was sent from here as `key` stood as they were sent (sent_from_said), taken: told once.
+pub fn sent_from_take(key : String) -> (Double, Double)? {
+  let at = sent_from_at.get(key)
+  sent_from_at.remove(key)
+  at
 }

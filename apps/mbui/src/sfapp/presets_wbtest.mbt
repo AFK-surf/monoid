@@ -176,14 +176,18 @@ test "不用预设 from a held control lets go of the preset" {
 }
 
 ///|
-test "with no presets at all, the capsule opens a new one's dialog, not a menu of 不用预设 alone" {
+test "with none of one's own, the capsule opens 新预设 and 其他成员的预设, not a menu of 不用预设 alone" {
   new_run()
   @sffixture.new_fix.presets.clear()
   let t = preset_mode("newchat")
   press(t, "预设")
   t.run_for(@ui.move_most_ms)
   assert_false(shows(t, "不用预设"), msg=runs(t))
-  assert_true(shows(t, "新预设") && shows(t, "名字") && shows(t, "添加目录"), msg=runs(t))
+  assert_true(shows(t, "新预设") && shows(t, "其他成员的预设"), msg=runs(t))
+  // (新预设: the new one's dialog)
+  t.tap_text("新预设")
+  t.run_for(@ui.move_most_ms)
+  assert_true(shows(t, "名字") && shows(t, "添加目录"), msg=runs(t))
 }
 
 ///|
@@ -594,12 +598,19 @@ test "the preset's screens keep every rule, on a phone and on a desk" {
 /// holds, which scrolls (panel_centred_node's body). Named by its files and how far, not by their lines: a line moved
 /// in either file by another change is no fault of these screens.
 fn preset_dialog_known(f : String) -> Bool {
-  f.has_prefix("apart: a box (a node of the window's tree's at ") &&
-  f.contains("made at stillfail/src/sf/icon_button_node.mbt:") &&
-  f.contains(", in what was asked for at stillfail/src/sf/panel_centred_node.mbt:") &&
-  f.contains(" (a node of the window's tree's at ") &&
-  f.contains("made at stillfail/src/sf/panel_centred_node.mbt:") &&
-  f.has_suffix(") are drawn over each other by 58×1")
+  // (and its field over the folders' rows, under a mouse on a row: the row's ground lit reaches lit_reach past its
+  // icon, the field's edge on the icons' as every list's head is (rule 7), so 8 short of the lit ground's at both
+  // sides: rule 5, said once the spacing rules measured the window's tree's nodes, 2026-11-14; looked at 2026-11-15,
+  // as meant)
+  (f.has_prefix("rule 5: a box in 「") && f.contains(" falls short 8 at its ") && f.contains("(at 404,") && f.contains(" 472×36,")) ||
+  (
+    f.has_prefix("apart: a box (a node of the window's tree's at ") &&
+    f.contains("made at stillfail/src/sf/icon_button_node.mbt:") &&
+    f.contains(", in what was asked for at stillfail/src/sf/panel_centred_node.mbt:") &&
+    f.contains(" (a node of the window's tree's at ") &&
+    f.contains("made at stillfail/src/sf/panel_centred_node.mbt:") &&
+    f.has_suffix(") are drawn over each other by 58×1")
+  )
 }
 
 ///|
@@ -698,8 +709,9 @@ fn picker_pressed(
   let ways : Array[String] = []
   let n = ((ms * 2.0 + @ui.move_most_ms * 2.0) / @ui.frame_period_default).ceil().to_int()
   for i in 0..=n {
+    // (each of the display's frames, as an idle host has them: what nothing asks for not drawn, Tester::frame_as_host)
     if i > 0 {
-      t.run_for(@ui.frame_period_default)
+      t.frame_as_host() |> ignore
     }
     let now = t.time() - start
     for w in t.ways_set_out() {

@@ -312,7 +312,8 @@ pub fn open_fixture_mode(mode : String) -> Unit {
     @sffixture.fixture_update_goes("0.1.5640", "ready", away=false)
   }
   // the same build's first two stages there: offered (有新版本), coming (40%)
-  if mode == "home-update-offered" {
+  // (and the stations' newer releases beside it: one key, the dialog of both, sfpages station_updates.mbt)
+  if mode == "home-update-offered" || mode == "home-station-updates-app" || mode == "station-updates-app" {
     @sffixture.fixture_update("0.1.5640")
   }
   if mode == "home-update-coming" {
@@ -370,13 +371,18 @@ pub fn open_fixture_mode(mode : String) -> Unit {
   @sfpages.open_search_mode(mode)
   // a device not yet confirmed in the workspace's safe mode: lock-waiting, lock-finding, lock-code, lock-wrong (its
   // waiting page in the chats' place), lock-security (its security page), lock-upgrade (in the lock without its key:
-  // the code typed on its security page)
-  if mode == "lock-security" || mode == "lock-upgrade" {
+  // the code typed on its security page); lock-needs-app (a web page nobody can approve: its waiting page saying so),
+  // lock-needs-app-security (its security page)
+  if mode == "lock-security" || mode == "lock-upgrade" || mode == "lock-needs-app-security" {
     open_setting(@settings.fixture_page("settings-security"))
   }
   // ⌘/'s shortcuts at a glance
   if mode == "keys-dialog" {
     @sfdesk.wide.keys_open.set(true)
+  }
+  // a station login link (/w/<ws>/s/<station>/login/<id>) opened in its standalone sheet
+  if mode == "login-link" {
+    open_login("ws1/st1", "login-1")
   }
 }
 
@@ -428,6 +434,11 @@ pub fn open_fixture_src(mode : String, src : Source) -> Unit {
   }
   // a new workspace over Home: nothing typed yet; and named, an invite code typed that still.fail cloud found wrong
   // (what is wrong with it under its field)
+  // the stations' newer releases waiting for this person: their key over Home (home-station-updates); their dialog open
+  // over it (station-updates)
+  if mode == "station-updates" || mode == "station-updates-app" {
+    @sfpages.station_updates_dialog(src, settings_core(src, { id: "ws1", name: "星火工作室", emoji: "", icon: "", email: "lin@example.com" }), "ws1")
+  }
   if mode == "new-workspace" {
     @sfpages.new_workspace_put(src, name="", code="", error_code="")
   }
@@ -537,6 +548,14 @@ pub fn open_mode(mode : String) -> Unit {
   if mode == "settings-connect-borrow" {
     @sffixture.new_fix.borrow = true
   }
+  // (someone else's preset picked: so before its page asks its new chat)
+  if mode == "newchat-preset-theirs" || mode == "newchat-preset-theirs-long" {
+    @sffixture.new_fix.preset = "p-ops"
+  }
+  // (as long a name as a person gives one: its 复制「X」为我的预设 cut as 编辑「X」 is)
+  if mode == "newchat-preset-theirs-long" {
+    @sffixture.fix_other_rename("p-ops", "线上排障：告警、回滚与值班交接的完整手册")
+  }
   if mode.has_prefix("newchat") {
     app.nav.rise(NewChat)
     if mode.has_prefix("newchat-crowded") || mode.has_prefix("newchat-providers") || mode == "newchat-tall-model" {
@@ -607,6 +626,14 @@ pub fn open_mode(mode : String) -> Unit {
         @sfpages.new_chat_ask("preset-new-clones")
       }
       "newchat-preset-picked" => @sffixture.new_fix.preset = "p-sf"
+      // (the other members' presets, a level further in from the menu; none of them yet; the menu with someone
+      // else's picked, whose it is after its name and 复制「X」为我的预设 in place of 编辑)
+      "newchat-preset-others" => @sfpages.new_chat_ask("preset-others")
+      "newchat-preset-others-none" => {
+        @sffixture.new_fix.others.clear()
+        @sfpages.new_chat_ask("preset-others")
+      }
+      "newchat-preset-theirs" | "newchat-preset-theirs-long" => @sfpages.new_chat_ask("preset")
       // (its preset names a model Maple does not run: the stations offered; on Maple, said so)
       "newchat-preset-model-station" => {
         @sffixture.new_fix.preset = "p-sf"
@@ -646,6 +673,11 @@ pub fn open_mode(mode : String) -> Unit {
     // the profiles' place with Willow's own Codex login offered with its allowance (settings-profiles-offer's)
     @settings.fixture_page("settings-profiles-offer") |> ignore
     app.nav.replace(Place("profiles"))
+  } else if mode == "terminal" || mode == "terminal-taken" {
+    // one of its terminals: typed into here (terminal), or by someone else, its 接管 over it (terminal-taken)
+    // (over Willow's page, as it is opened from there)
+    open_setting("station:ws1/st1")
+    app.nav.push(Terminal({ station: "ws1/st1", terminal: if mode == "terminal" { "term-2" } else { "term-1" }, watch: false, cwd: "" }))
   } else if mode.has_prefix("place-") {
     // a place of the rail's in the wide frame: place-stations, place-profiles, place-connects,
     // place-usage

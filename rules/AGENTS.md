@@ -34,3 +34,37 @@
   by an admit where the chain bound them to none) has what the chain carried of theirs again (the lead, 2026-11-14:
   re-admitting is an owner's or admin's own act). Every reader must make the same state, so the build that reads them
   is a move's floor (`MOVED_FROM_BUILD`, station/src/api/moved-from.ts) and a station says `carried` in its `serves`.
+- A member the chain bound to no log binds a log of their own to themselves (the lead, 2026-11-14): `bind {key, sig}`
+  in that log, `sig` the signer's (`key`, one the chain names for an own, signing app device of theirs) over
+  `bind_form` (the workspace, the member, the log, the `moved` entry's hash) under `bind_tag`, a tag no other form a
+  device's signer signs has (`Crypto.tagged_sig_valid`: the tag, a NUL, the form's SHA-256; a lock entry's is
+  `stillfail-lock/1 sig`, a vault's `stillfail-vault*/1`, a rig's `stillfail-rig-*/1`). It sets the chain's own admit
+  of them to that log (`roster.mbt` `binds_of`), so nothing new is labelled: a removal of them takes it back, a real
+  admit of their role binds before it. A station says `bind` in its `serves`.
+- Two bindings of one member (the lead's review, 2026-11-14) settle by what their signer cannot choose, never by an
+  entry hash (ground at will by whoever makes the log): a binding whose log took off a device that proves another
+  attacks it, the grounded extension decides as the list does for removals, and of those in, the smaller signer key
+  wins (then the smaller entry hash). Every device a binding not out took off, the chain carries no more: so a device
+  the member took off never binds them again (a thief's log bound by a lost phone would else seal their vaults to the
+  thief), as a removal the stations took was final before the move. Where each took the other's device off, nobody
+  is in: the member stands bound to no log, without any of those devices, until an owner or admin admits them (a real
+  admit binds before any `bind`), the manual case the owner took for two devices removing each other. Known and
+  taken: a removed signer whose log reaches a reader (by a station or the cloud, the lock's adversary) can so put the
+  member back to unbound with those devices out until then; proofs by several of the member's signers outweighing one
+  is not built.
+- After a move the root's person is a member like any other (the lead, 2026-11-14; the owner's: a moved workspace does
+  for every person what an unmoved one does): the root's log is what the workspace is rooted in and what its pair
+  says always counts, as an owner's, but that its person is in the list, bound by it, is an implicit admit (`~root`,
+  `roster.mbt` `root_admit`; the model's D7, `rootOut`), which an owner's `member.remove` of them cancels only where
+  its `cancels` names the root's genesis hash (a removal of them from before this rule named nothing that counts, and
+  still does nothing for every reader), and only where that cancellation counts: one left undecided by a circle of
+  removals its signer stands in takes nobody out (the lead, 2026-11-14: theirs is the one word that settles that
+  circle). While it is not out it binds them before any other admit of theirs; once it is out
+  their real admits bind them as anyone's (none in: not in the list), and nothing of the chain as it moved is carried
+  of theirs. Known and taken: a device of the root's log, its person taken out, still says statements that count if
+  they reach a reader (as before, when its person could not be taken out at all), and the root's word against an
+  owner's is the root's, so the root's person with a device in hand is never locked out by an owner for good. A reader
+  from before reads such a removal as nothing: a core says one only where every station the list names says
+  `rootout` in its `serves`. `open` and `off` follow the person: bound by a real admit, the newest of them in force on
+  that log counts where it says any (its settings likewise), else the root's; so they turn safe mode off and on again
+  from their devices now, and nobody else does. `rules/protocol/lock.spthy` is unchanged: nothing new is signed.

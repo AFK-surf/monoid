@@ -16,6 +16,8 @@ import { Said } from "../src/ops/i18n.ts";
 import { REPO_RULES_COMMAND, REPO_RULES_HOOK, hookCommand, hookNode } from "../src/agents/repo-rules.ts";
 import { SLACK_SPOKEN, SPEAKS } from "../src/tools/mcp.ts";
 import { claudeProject } from "../src/read/transcript.ts";
+import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { platform } from "../src/platform/index.ts";
 import { allLeft, existingRunners } from "../src/agents/runner.ts";
 import { modelLimitOf } from "../src/agents/runtime.ts";
 import type { AgentSession, OpenOptions, RuntimeEvent } from "../src/agents/runtime.ts";
@@ -86,6 +88,8 @@ function listen() {
 const ends = (events: RuntimeEvent[]) => events.filter((e) => e.type === "turnEnded");
 const ended = (k: number) => (events: RuntimeEvent[]) => ends(events).length >= k;
 const deltas = (events: RuntimeEvent[]) => events.flatMap((e) => (e.type === "live" && e.event.kind === "delta" ? [e.event.text] : []));
+/// What the deltas said, joined: read by the MoonBit program, those of a step that come together are told as one.
+const said = (events: RuntimeEvent[]) => deltas(events).join("");
 const outcome = (events: RuntimeEvent[], k = 0) => (ends(events)[k] as Extract<RuntimeEvent, { type: "turnEnded" }>).outcome;
 const stdin = (dump: string) => readFileSync(`${dump}.stdin`, "utf8").trim().split("\n").map((l) => JSON.parse(l));
 
@@ -168,6 +172,11 @@ test("a command a turn waited on and was never told ended does not outlive the t
   assert.deepEqual(turn.tasks, {});
 });
 
+test("its processes are read by the MoonBit program where it is built, else here (claude-here.test.ts)", () => {
+  const hosted = process.env.STILLFAIL_AGENTS_HOST !== "0" && mbReaderBinary() !== null && platform.runnerSocketVisible;
+  assert.equal((driver() as unknown as { agents: unknown }).agents !== null, hosted);
+});
+
 describe("the Claude Code driver", { concurrency: true }, () => {
   test("a text-only request disables built-in and configured MCP tools", async () => {
     const d = driver();
@@ -204,7 +213,7 @@ describe("the Claude Code driver", { concurrency: true }, () => {
     const live = events.flatMap((e) => (e.type === "live" ? [e.event] : []));
     assert.deepEqual(live.filter((e) => e.kind !== "phase").map((e) => e.kind), ["start", "delta", "end"]);
     assert.deepEqual(live.filter((e) => e.kind === "phase").map((e) => (e as { phase: string }).phase), ["requesting", "responding", "working"]);
-    assert.deepEqual(deltas(events), ["hello"]);
+    assert.equal(said(events), "hello");
 
     const started = JSON.parse(readFileSync(o.dump, "utf8").trim());
     const mcp = JSON.stringify({ mcpServers: { stillfail: { type: "http", url: o.mcpUrl, headers: { Authorization: "Bearer ${STILLFAIL_MCP_TOKEN}" } } } });
@@ -406,6 +415,13 @@ describe("the Claude Code driver", { concurrency: true }, () => {
     assert.equal(modelLimitOf("You've reached your Fable limit. Switch to another model, or manage usage credits at https://claude.ai/settings/usage, to continue."), "Fable");
     assert.equal(modelLimitOf("Claude usage limit reached: you have reached your weekly usage limit"), null);
     assert.equal(modelLimitOf("You've hit your session limit · resets 3:40am"), null);
+    // Claude Code's words for it since 2026-11-14: told as the model's limit too, not the model failing.
+    const hit = "You've hit your Fable limit · resets Nov 20 at 9am (Asia/Tokyo). Switch to another model to continue.";
+    assert.equal(classifyResult(hit), "rate_limit");
+    assert.equal(modelLimitOf(hit), "Fable");
+    for (const text of ["You've hit your weekly limit · resets Oct 8", "You've hit your 5-hour limit · resets 7:50am (UTC)", "You've hit your daily limit"]) {
+      assert.equal(modelLimitOf(text), null, text);
+    }
     assert.equal(classifyResult("session limit configuration is invalid"), "model");
     assert.equal(classifyResult('API Error: 403 {"error":{"type":"forbidden","message":"Request not allowed"}}'), "refused");
     assert.equal(classifyResult("API Error: 403 OAuth token does not meet scope requirement"), "auth");
@@ -486,13 +502,13 @@ describe("the Claude Code driver", { concurrency: true }, () => {
     const session = await d.open(o, push);
     await session.abort(); // nothing running: nothing sent
     await session.prompt("hold:2");
-    await until((e) => deltas(e).length >= 2);
+    await until((e) => said(e).includes("d1 "));
     await session.abort();
     await session.abort(); // once
     await until(ended(1));
     assert.deepEqual(outcome(events), { kind: "aborted" });
     assert.equal(stdin(o.dump).filter((m) => m.type === "control_request").length, 1);
-    assert.deepEqual(deltas(events), ["d0 ", "d1 "]);
+    assert.equal(said(events), "d0 d1 ");
     await session.dispose();
   });
 
@@ -506,7 +522,7 @@ describe("the Claude Code driver", { concurrency: true }, () => {
     assert.equal(await session.steer("more"), true);
     await until(ended(1));
     assert.deepEqual(outcome(events), { kind: "completed" });
-    assert.ok(deltas(events).includes("steer:more"));
+    assert.ok(said(events).includes("steer:more"));
     assert.equal(events.filter((e) => e.type === "turnStarted").length, 0);
     await session.dispose();
   });
@@ -640,7 +656,7 @@ describe("the Claude Code driver", { concurrency: true }, () => {
     assert.equal(env1.CLAUDE_CODE_ENTRYPOINT, "claude-desktop");
     if (process.platform === "darwin") assert.match(env1.PATH.split(":")[0], /stillfail-no-keychain-\d+$/);
     assert.deepEqual(outcome(l1.events), { kind: "completed" });
-    assert.deepEqual(deltas(l1.events), ["token:sub-2"]);
+    assert.equal(said(l1.events), "token:sub-2");
     assert.deepEqual(asked, [["sub", undefined], ["sub", "sub-1"]]);
     assert.equal(readFileSync(join(o1.profile.home, ".credentials.json"), "utf8"), o1.creds);
     await s1.dispose();
@@ -664,7 +680,7 @@ describe("the Claude Code driver", { concurrency: true }, () => {
     assert.equal(env2.CLAUDE_CODE_OAUTH_TOKEN, "kept-tok");
     assert.equal(env2.CLAUDE_CODE_SDK_HAS_OAUTH_REFRESH, "1");
     assert.deepEqual(outcome(l2.events), { kind: "completed" });
-    assert.deepEqual(deltas(l2.events), ["token:sub-3"]);
+    assert.equal(said(l2.events), "token:sub-3");
     await s2.dispose();
 
     // 3. Permanent refusal (RenewRefused) in open() hands over the kept token without RENEWED so a 401 fails on auth
@@ -693,9 +709,13 @@ describe("the Claude Code driver", { concurrency: true }, () => {
       const session = await first.open(o, a.push);
       const gate = gates(o.dump, "g");
       await session.prompt("gate:12:4:g");
-      await a.until((e) => deltas(e).length >= 4);
+      await a.until((e) => said(e).includes("d3 "));
       let snapshot: unknown = null;
-      if (!crashed) snapshot = JSON.parse(JSON.stringify(session.snapshot()));
+      // (as the hub hands over: what is read of the processes held first, hub.ts `handOver`)
+      if (!crashed) {
+        await first.freeze();
+        snapshot = JSON.parse(JSON.stringify(session.snapshot()));
+      }
       // Stops: the process goes on under its runner, saying the rest of its reply with nobody reading.
       first.detach();
       // (the station let go before the next takes up, as the hub waits: every line handled acknowledged)
@@ -712,7 +732,7 @@ describe("the Claude Code driver", { concurrency: true }, () => {
       const all = [...a.events, ...b.events];
       assert.equal(ends(all).length, 1, "the turn's end, once");
       assert.deepEqual(outcome(b.events), { kind: "completed" });
-      assert.deepEqual(deltas(all), Array.from({ length: 12 }, (_, i) => `d${i} `), "every delta once, in order");
+      assert.equal(said(all), Array.from({ length: 12 }, (_, i) => `d${i} `).join(""), "every delta once, in order");
       assert.equal(all.filter((e) => e.type === "live" && e.event.kind === "start").length, 1);
       assert.equal(all.filter((e) => e.type === "live" && e.event.kind === "end").length, 1, "the step started before ends after");
       // After a crash the new station is told a turn is running that it did not start.

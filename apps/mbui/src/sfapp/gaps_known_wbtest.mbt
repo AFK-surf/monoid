@@ -22,28 +22,39 @@
 /// the navigation bar's ends equally inset, including the newly swept 共享调试 grants pages; six fewer with the files'
 /// page starting in its list, the columns' rows no longer at the page's edge on those screens; rule 5's one more in each
 /// with a request for the phone waiting swept, chat-phone-lacks on the tablet: its card and a login's above it short of
-/// the others' edge, as a request card stood on main, unswept).
+/// the others' edge, as a request card stood on main, unswept; 2026-11-14, the rules measuring the window's tree's nodes
+/// and the old views it holds: rule 4's 89 more, mostly a wide chat's head (its title 12 in, its faces 6 from its end),
+/// a command's box (12, 8) and the player's bar; rule 8's two, an outline's 8 found 6 in where its rows' words are 15;
+/// rule 9's four, a message's words right on its file's card, none since #6285; 2026-11-15, the rules seeing the
+/// tree's words and drawings, not their boxes alone (the words laid out as drawn, Ctx::with_tree_nodes `facts`), and
+/// rule 4 leaving what is seen as far in from both sides: rule 4 13 and 15 fewer (the player's bar, a command's box
+/// now 8 all round), rule 8 eight more, newly seen: a small panel's title 16 in over rows whose marks are 22 in
+/// (选择运行的 station, 标签页; its group labels' line, so moved with them or not at all)).
 let gaps_known : Map[String, Int] = {
   "zh rule 1": 0,
   "zh rule 2": 0,
   "zh rule 3": 0,
-  "zh rule 4": 10,
+  "zh rule 4": 84,
   "en rule 1": 0,
   "en rule 2": 0,
   "en rule 3": 0,
-  "en rule 4": 10,
+  "en rule 4": 86,
   "zh rule 5": 1,
   "en rule 5": 1,
   "zh rule 6": 0,
   "en rule 6": 0,
   "zh rule 7": 0,
   "en rule 7": 0,
+  "zh rule 8": 10,
+  "en rule 8": 10,
+  "zh rule 9": 0,
+  "en rule 9": 0,
 }
 
 ///|
 test "the spacing sweep counts row and heading alignment faults" {
   let faults : Array[String] = []
-  for rule in ["rule 1", "rule 2", "rule 3", "rule 4", "rule 5", "rule 6", "rule 7"] {
+  for rule in ["rule 1", "rule 2", "rule 3", "rule 4", "rule 5", "rule 6", "rule 7", "rule 8", "rule 9"] {
     for _ in 0..<gaps_known.get("zh \{rule}").unwrap_or(0) {
       faults.push("example: \{rule}: known")
     }
@@ -52,7 +63,7 @@ test "the spacing sweep counts row and heading alignment faults" {
   faults.push("example: rule 8: a heading is not aligned with its rows")
   assert_true(gaps_wrong("zh", faults) is Some(_))
   faults.pop() |> ignore
-  faults.push("example: rule 9: a new kind of spacing fault")
+  faults.push("example: rule 10: a new kind of spacing fault")
   assert_true(gaps_wrong("zh", faults) is Some(_))
 }
 

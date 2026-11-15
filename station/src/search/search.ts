@@ -1,7 +1,8 @@
-// What the station finds for a search: looked for by the MoonBit program (station/mb, src/search; `--builder search`)
-// where it is built, else by a thread of its own (search/worker.ts), in the station's data as it is then. A prepared candidate scope avoids unrelated chats; their contents are read as asked.
-// The thread is started with the station and stays; one that dies is started again when next asked. The machine's
-// files are asked beside it (search/files.ts).
+// What the station finds for a search: looked for by the MoonBit program (station/mb, src/search; `--builder search`),
+// built for every system the station runs on, in the station's data as it is then. A prepared candidate scope avoids
+// unrelated chats; their contents are read as asked. The program is started with the station and stays; one that dies
+// is started again when next asked. The machine's files are asked beside it (search/files.ts). A test may give it a
+// thread to look instead (`worker`: the search as the station's thread looked before, test/reference/search-worker.ts).
 import { Worker } from "node:worker_threads";
 import { rmSync } from "node:fs";
 import { join, sep } from "node:path";
@@ -9,7 +10,9 @@ import { log } from "../ops/log.ts";
 import { wall } from "../ops/fibers.ts";
 import { type Asker, type Group, terms } from "./match.ts";
 import type { FileSearch } from "./files.ts";
-import type { Answered, Told } from "./worker.ts";
+/// What a looker is told, and what it answers.
+export type Told = { type: "query"; id: number; query: string; asker: Asker; kinds?: string[]; limit?: number; offset?: number; archived?: boolean; cancel?: SharedArrayBuffer };
+export type Answered = { id: number; groups?: Group[]; error?: string } | { scopePending: true } | { sessionListPending: true };
 import { SearchScopeBuilder } from "./scope-builder.ts";
 import { SessionListBuilder } from "../read/session-list-builder.ts";
 import { MbProcess, mbReaderBinary } from "../read/mb-reader.ts";
@@ -38,9 +41,12 @@ export class Search {
   /// The machine's files (none: not searched here).
   #files: FileSearch | null;
 
-  constructor(options: { data: string; files?: FileSearch | null; backfill?: { previousGone?: Promise<void>; priority?: SharedArrayBuffer }; mb?: string | null }) {
+  readonly #workerFile: URL | null;
+
+  constructor(options: { data: string; files?: FileSearch | null; backfill?: { previousGone?: Promise<void>; priority?: SharedArrayBuffer }; worker?: URL }) {
     this.#data = options.data;
-    this.#mb = options.mb === undefined ? mbReaderBinary() : options.mb;
+    this.#workerFile = options.worker ?? null;
+    this.#mb = this.#workerFile !== null ? null : mbReaderBinary();
     this.#files = options.files ?? null;
     this.#scope = new SearchScopeBuilder(join(options.data, "stillfail.db"), options.backfill);
     this.#sessionList = new SessionListBuilder(join(options.data, "stillfail.db"), options.backfill);
@@ -62,9 +68,8 @@ export class Search {
   }
 
   #spawn(): Worker | null {
-    if (this.#closed) return null;
-    // From source: worker.ts beside this; bundled (this inside dist/main.js): dist/search/worker.js.
-    const file = new URL(import.meta.url.endsWith(".ts") ? "./worker.ts" : "./search/worker.js", import.meta.url);
+    if (this.#closed || this.#workerFile === null) return null;
+    const file = this.#workerFile;
     const worker = new Worker(file, { workerData: { data: this.#data }, resourceLimits: { maxOldGenerationSizeMb: 384 } });
     this.#worker = worker;
     this.#listen(worker, () => { if (this.#worker === worker) this.#worker = null; });

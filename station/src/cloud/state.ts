@@ -172,6 +172,9 @@ type InForce = {
   out: { state: LockState; waiting?: true };
   needs: Set<string>;
   word: string;
+  /// Whether the root's person is bound by `~root` (rules/src/lock/state4.mbt `root_in`): not where a removal that named
+  /// the root's log took it out, which a core from before `ROOT_OUT_FROM_BUILD` reads as nothing.
+  rootIn: boolean;
 };
 
 /// A pinned lock as kept: its active chain (`entries`, from its genesis), the entries the rules take that are off it
@@ -426,6 +429,16 @@ export class Cloud {
   /// Which of a locked workspace's rigs its person signed for (rigs/adds.ts sets it): until then none of them is
   /// taken, the control plane's word counting for nothing there.
   rigVouched: (workspace: string, rig: Rig) => boolean = () => false;
+  /// The plane's chain of a workspace this station joined and pins no lock of (`leftOut` "unpinned"), where that chain
+  /// moved: what this station may come to keep once the state the logs and bodies make names it (mesh/moved-pin.ts),
+  /// never by the plane's word alone (cloud/presence.ts `takeFromPlane`). By workspace; let go once pinned. (None until
+  /// one is offered, as `planeParted` is: a state made without the constructor has none.)
+  movedOffered?: Map<string, Entry[]>;
+  /// The plane brought `ws`'s chain, moved: kept as offered (`movedOffered`) and those who follow the state told.
+  offerMoved(ws: string, entries: Entry[]): void {
+    (this.movedOffered ??= new Map()).set(ws, entries);
+    this.tell();
+  }
   /// What the control plane last said of the roster and gateways, before the lock filtered them (this run only).
   private planePeers: any[] | null = null;
   private planeGateways: string[] | undefined;
@@ -611,6 +624,17 @@ export class Cloud {
     return t;
   }
 
+  /// Whether `ws`'s chain moved and its state in force has the root's person out of `~root` (taken out by a removal
+  /// that named the root's log; rules/AGENTS.md): what a core from before `ROOT_OUT_FROM_BUILD` reads otherwise
+  /// (mesh/serve.ts `movedTooOld`). False while waiting (the state names nobody) and where the chain did not move.
+  rootOut(ws: string | null): boolean {
+    const l = this.lockOf(ws);
+    const root = l?.state?.disabled ? undefined : l?.state?.moved;
+    if (l === null || root === undefined) return false;
+    const f = this.forceOf(ws, l, root);
+    return (f.on === "on" || f.on === "off") && !f.rootIn;
+  }
+
   /// The person logs `ws`'s state is made of where its chain moved (the root's, each a statement binds a member by,
   /// each holding an entry of its tag): none where it did not.
   needs(ws: string | null): ReadonlySet<string> {
@@ -638,6 +662,12 @@ export class Cloud {
     if (li === null || li.state === null || li.waiting === true) return new Set();
     const st = li.state;
     if (st.stations.has(key) || st.devices.has(key) || [...st.devices.values()].some((d) => d.sign_key === key)) return "all";
+    // A rig of the workspace its person signed for: before a move it pinned the whole chain, which says all the
+    // bodies say; after, it is given them as a station the list names is (person-sync.ts brings them). Signed for,
+    // on or off (`rigVouched` itself, never `rigs`, which while off is the control plane's word alone: a key the plane
+    // names a rig would be given every body of a workspace turned off).
+    const wsId = this.idOf(ws);
+    if (this.state?.rig === undefined && this.rigsNamed(wsId).some((r) => r.id === key && this.rigVouched?.(wsId, r) === true)) return "all";
     const l = this.chain(ws) as KeptLock;
     const root = l.state?.moved;
     if (root === undefined) return new Set();
@@ -811,7 +841,7 @@ export class Cloud {
       if (d.exp <= now) from = Math.max(from, d.exp);
       else until = Math.min(until, d.exp);
     }
-    const f: InForce = { lock: l, ver, from, until, on: s.on, out, needs, word };
+    const f: InForce = { lock: l, ver, from, until, on: s.on, out, needs, word, rootIn: s.rootIn };
     forces.set(id, f);
     return f;
   }
@@ -1214,6 +1244,12 @@ export class Cloud {
     this.reached = false;
     this.peersCurrent = current;
     this.tell();
+  }
+
+  /// A rig of a workspace signed for here (rigs/adds.ts `take`): what follows the rigs `rigs` gives told, as a roster's
+  /// change is (lock-sync.ts and person-sync.ts bring it the chain and, where it moved, the logs and bodies).
+  rigsChanged(): void {
+    if (this.listeners !== undefined) this.tell();
   }
 
   listen(f: (s: CloudState | null) => void): () => void {

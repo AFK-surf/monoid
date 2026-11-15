@@ -6,7 +6,7 @@
 // the list's width lays it out (row_side), narrow or wide by that width alone.
 // Not here, each where it comes in: what moves (a row coming in or going on the list's way, words sent flying in, a
 // message coming out of its agent's picture, the room an agent's line leaves; the list's line's), the composer and
-// what floats over the list (the bell, 对话目录's button, the way to the newest) and what a message gone to shows of
+// what floats over the list (the bell, 对话目录's button and rail, the way to the newest) and what a message gone to shows of
 // it (its flash through each row's `over`, a search's words marked in it) are chat_jump_node's, the page's; what else
 // is laid over a row (words picked, the band of one whose menu is open: the overlays' line's), where the list opens (chat_open_place, asked here once as it is made) and what the core is told of
 // what is read: those the page's, whether the list is at its foot read of its scroll (Scroll::at_foot_now), which rows
@@ -44,6 +44,8 @@ priv enum ChatBodyGap {
 priv struct ChatBodyKept {
   sent : Map[Double, String]
   sent_as : Map[String, String]
+  /// the keys what was sent from here goes by (as it was sent: kept as the core's row takes it over)
+  here : Map[String, Bool]
 }
 
 ///|
@@ -85,6 +87,7 @@ fn chat_body_rows(kept : ChatBodyKept, v : ChatView, all : Array[Entry], sending
   let still : Array[@sfbase.LocalSent] = []
   for l in sending {
     let key = "o:" + l.row.id
+    kept.here[key] = true
     if taken_by.contains(key) {
       continue
     }
@@ -270,20 +273,25 @@ priv struct ChatBodyKeeps {
   opened : @sf.LiveMap[String, Bool]
   copied : @sf.LiveMap[String, Double]
   steadies : ActivitySteadies
+  /// each agent at work's picture on its line, by its key, while that line is made (working_said_node's): what a
+  /// message of its coming by data comes out of (agent_said_node's `out_of`)
+  faces : Map[String, (@view.View, @motion.Way)]
 }
 
 ///|
 /// A chat's messages (chat_list's rows, at rest) in `v`, taking the room it is given: the chat `here` is (its view as
 /// it changes, the list's width as it changes: narrow or wide by it), its rows the entries `entries` says as they
 /// change (view_of_chat's) with what was sent from here and not in the chat yet (`sending`: sfbase's sending_now),
-/// answered with `core` where something is (a login's card, a request's answer); `top` over its first row (list_top:
-/// the chat's bar's room), `foot` under its last, then the composer `composer` builds in the list's foot (its room
-/// under the rows as tall as the two are laid out, as the composer changes: at once as yet). In `scroll`,
+/// answered with `core` where something is (a login's card, a request's answer); under the chat's bar, `cover` tall
+/// (where the bar is drawn to: what hides the list's top, what the list holds what is read under), `room` more over its
+/// first row (the list's head, the two together: its top), `foot` under its last, then the composer `composer` builds
+/// in the list's foot (its room under the rows as tall as the two are laid out, as the composer changes: at once as
+/// yet). In `scroll`,
 /// put where `place` asks: where it opens as chat_open_place says (its unread line `lead` under its top, where it was
 /// left, else at its end, followed there), and at an unread line come after while it is still at its end; a chat too short to fill what shows at its foot, over the composer (the old
 /// list's from_end); the page before asked as it nears its top. `made`, told each row's key and what holds it as its row
-/// is made (a block made, or made again as its key comes to be another kind of row). `read`, given `place` and its rows,
-/// for what is told the core of what is read (chat_read_node). `to`: the chat it is (none in a list's own tests), its
+/// is made (a block made, or made again as its key comes to be another kind of row). `read`, given `place`, `scroll` and
+/// its rows, for what is told the core of what is read (chat_read_node). `to`: the chat it is (none in a list's own tests), its
 /// way to the newest in the list's foot over the composer and the message it is told to go to brought in
 /// (chat_jump_node's), while `shows` (it is drawn) where the reader is kept for a go-to inside it.
 fn chat_body_node(
@@ -293,26 +301,54 @@ fn chat_body_node(
   entries : () -> Array[Entry],
   sending? : () -> Array[@sfbase.LocalSent] = fn() { [] },
   core? : @settings.Core? = None,
-  top? : () -> Double = fn() { list_top },
+  cover? : () -> Double = fn() { bar_foot },
+  room? : Double = list_room,
   foot? : () -> Double = fn() { list_foot },
   composer? : (@view.View) -> Unit,
   lead? : Double = unread_lead,
   scroll? : @view.Scroll = @view.Scroll::list(),
   place? : @view.ListPlace[String] = @view.ListPlace::new(),
-  keeps? : ChatBodyKeeps = { opened: notices_open, copied: @sf.LiveMap::new(), steadies: ActivitySteadies::new() },
+  keeps? : ChatBodyKeeps = { opened: notices_open, copied: @sf.LiveMap::new(), steadies: ActivitySteadies::new(), faces: Map([]) },
   made? : (String, @view.View) -> Unit = fn(_, _) {  },
-  read? : (@view.ListPlace[String], () -> ChatBodyRows) -> Unit = fn(_, _) {  },
+  read? : (@view.ListPlace[String], @view.Scroll, () -> ChatBodyRows) -> Unit = fn(_, _, _) {  },
   to? : ChatRef,
   shows? : () -> Bool = fn() { true },
 ) -> @view.View {
   let jump = ChatJump::new()
-  let kept : ChatBodyKept = { sent: {}, sent_as: {} }
+  // (the list's top: the bar and the room under it, its head; where it opens, where a go-to puts a message and the
+  // unread line are counted from it, as before the bar's own edge was told the list)
+  let top = fn() { cover() + room }
+  let kept : ChatBodyKept = { sent: {}, sent_as: {}, here: {} }
+  // (when each key came into the list by data, by the list's `comes`, asked at its cause: what its row reads as it is
+  // made; none for one there as the chat opened, simply there, or come by an answer at once)
+  let came_at : Map[String, Double] = Map([])
   // (worked out once as the view, its entries or what is on its way change; the keys only change as rows come, go or
   // are taken over: each row reads its own by its key)
   let rows = @signals.computed(fn(_) { chat_body_rows(kept, (here.view)(), entries(), sending()) }, same=fn(_, _) {
     false
   })
   let keys = @signals.computed(fn(_) { rows.get().keys }, same=fn(a, b) { a == b })
+  // (the keys the core's rows that took over what was sent from here go on by, given the chat's viewer, which names an
+  // occurrence of a picture by its row's key here and asks the core by the core's: told again as a row is taken over,
+  // which only adds one)
+  let taken_over = @signals.computed(fn(_) {
+    rows.get() |> ignore
+    kept.sent_as.length()
+  }, same=fn(a, b) { a == b })
+  let sent_as = fn() {
+    taken_over.get() |> ignore
+    kept.sent_as
+  }
+  let chat_key = here.station + "\u{1}" + here.session
+  @sfbase.rows_sent_as[chat_key] = sent_as
+  // (what was sent from here that a core's row took over leaves what is on its way: sfbase's sent_local_taken)
+  v.reacts(fn() { taken_over.get() }, fn(_) { @sfbase.sent_local_taken(chat_key, kept.sent_as) })
+  v.owns(fn() {
+    if @sfbase.rows_sent_as.get(chat_key) is Some(f) && physical_equal(f, sent_as) {
+      @sfbase.rows_sent_as.remove(chat_key)
+    }
+  })
+  |> ignore
   let width = here.width
   let side = fn() { row_side(width()) }
   // the page before asked of the core as the list nears its top (list_after's: once for each first entry it has, not
@@ -401,9 +437,12 @@ fn chat_body_node(
       fn() { keys.get() },
       est=chat_row_est,
       bar=@ui.tree_scroll_bar(),
-      top_covered=top,
-      // (its Top, the chat's bar's room, the list's head; its Foot, the list's foot: the room under its rows, then the
-      // composer (`composer`), the room under the last row as tall as both are laid out)
+      // (what hides its top is the bar alone, as it is drawn: a message whose words start in the room under it is seen,
+      // and held where it is (View::read_from). Its bar kept clear of the room too, where it was)
+      top_covered=cover,
+      bar_clear=fn() { (top(), 0.0) },
+      // (its Top, the chat's bar and the room under it, the list's head; its Foot, the list's foot: the room under its
+      // rows, then the composer (`composer`), the room under the last row as tall as both are laid out)
       head=fn(h) {
         h.height(By(fn() { Some(top()) })) |> ignore
         made("top", h)
@@ -414,6 +453,8 @@ fn chat_body_node(
             chat_to_newest_node(f, src, r, jump, place, here.view, width, here.tips)
             chat_outline_node(f, src, r, jump, here.view, width, here.tips, here.stint)
             chat_ask_node(f, r, src, jump, here.view, fn() { rows.get() }, width, here.tips)
+            // (对话目录's rail at the list's right, in its middle, where the page leaves it room)
+            chat_rail_node(f, src, r, jump, here.view, width, top, o, here.tips, here.stint)
           }
           None => ()
         }
@@ -428,15 +469,39 @@ fn chat_body_node(
       // entry, an agent at work; the rest, caught up on, read in or there as the chat opened, simply there: what was
       // said before it was shown moves not, sf/motion.mbt's head)
       comes=fn(k) {
-        match rows.get().rows.get(k) {
+        let comes = match rows.get().rows.get(k) {
           Some(r) => chat_body_comes(r.entry)
           None => false
         }
+        // (the moment it came by data, as its cause is taken: an agent's line's first words come in glyph by glyph from
+        // then (working_said_node's `came`); none where it is simply there, or came by an answer at once)
+        if comes && !@view.answering_now() {
+          came_at[k] = v.cause_at()
+        } else {
+          came_at.remove(k)
+        }
+        comes
       },
       // (an agent's line gone at its foot leaves its room under the last row, fading where it is: a turn that ends with
       // no reply carries nothing up to let it fall back; what comes next takes that room first. The owner, 2026-11-12;
       // the coordinator of the migration, 2026-11-13: mbui's View::scrolls_window `leaves_room`)
       leaves_room=fn(k) { k.has_prefix("act:") },
+      // (the viewer's own words sent from here: in the list whole from the press, at their size and full ink, over the
+      // composer they leave, their room opening on the list's one way, their bubble flying from the field
+      // (mine_bubble_node's flies_from); mbui's View::scrolls_window `comes_whole`, the coordinator of the migration,
+      // 2026-11-14; the flight, the owner, 2026-11-15: 「没有飞行动效」)
+      comes_whole=fn(k) { kept.here.contains(k) },
+      // (and the list's one way of that moment on its bubble's rise, not a Move: the bubble and all the list rising as one
+      // (sfbase's flight_up: the flight's length, its rise 12% late on the flight's ease); mbui's View::scrolls_window
+      // `comes_way`, the coordinator of the migration, 2026-11-14)
+      comes_way=fn(k) {
+        if kept.here.contains(k) {
+          // det-ok(motion-length): words sent's own, their flight's (message_words_node's flies_in), sf/motion.mbt kind 4
+          Some((@sfbase.flight_desk_ms, fn(x) { @ui.Flight.at(@sf.dmax((x - sent_up_late) / (1.0 - sent_up_late), 0.0)) }))
+        } else {
+          None
+        }
+      },
       // (what shows held by what is read: not by the row saying the page before comes, which what comes in is put in
       // under, going on down with what shows)
       holds=fn(k) { k != "older" },
@@ -444,7 +509,7 @@ fn chat_body_node(
       place~,
       near_top=(1.0, wants_older, fn() { ask_older(true) }),
       near_foot=(1.0, wants_newer, ask_newer),
-      fn(slot, k) { chat_body_row(slot, src, here, k, rows, side, top, core, keeps, made, jump) },
+      fn(slot, k) { chat_body_row(slot, src, here, k, rows, side, top, core, keeps, made, jump, fn() { came_at.get(k) }) },
     )
     |> ignore
   })
@@ -453,14 +518,14 @@ fn chat_body_node(
   // to go to first, chat_goes_to's)
   let chat = here.station + "\u{1}" + here.session
   let opens = @signals.untracked(fn() {
-    chat_open_place(rows.get(), (here.view)(), @sfbase.kept_places.get(chat), v.pixel_scale(), top(), lead)
+    chat_open_place(rows.get(), (here.view)(), @sfbase.kept_places.get(chat), v.pixel_scale(), cover(), top(), lead)
   })
   if opens is Some((k, offset)) && !@sfbase.go_tos.contains(chat) {
     place.bring(k, offset~)
   }
   match to {
     Some(r) => {
-      chat_goes_to(v, src, r, jump, place, fn() { rows.get() }, here.view, top, fn() { ask_older(false) }, shows)
+      chat_goes_to(v, src, r, jump, place, fn() { rows.get() }, here.view, cover, top, fn() { ask_older(false) }, shows)
       // (over the list: a passage a mouse picked in a message quoted by its pill)
       chat_quote_node(v, src, r, here, fn() { rows.get() })
       // (a picture's 复制图片 chosen in its menu: read whole and put on the clipboard)
@@ -474,7 +539,9 @@ fn chat_body_node(
           if @signals.untracked(here.view).newer {
             jump.latest = true
           } else if !scroll.at_foot_now() {
-            place.to_end()
+            // (a go-to: the reader taken to their words, at its foot in the send's frame, their bubble flying in as at
+            // its foot; no glide beside a flight: the coordinator of the migration, 2026-11-15)
+            place.to_end(glide=false)
           }
         },
         at_start=false,
@@ -486,13 +553,24 @@ fn chat_body_node(
       })
       // ⌘G 对话目录, ⌥⇧↑ and ⌥⇧↓ the message a person said before and after the reader's (outline_entries_of's keys;
       // none in a replay of a run from before the outline, Source's `asks_outline`); ⌘G's beside the round button
-      // while it shows
+      // while it shows, else beside the rail while that does; the steps along the outline while the rail holds it
       .on_action("chat.outline", fn(_) {
         (src.asks_outline)() &&
-        outline_open_keys(src, r, @signals.untracked(here.view), stint=@signals.untracked(here.stint), button?=jump.outline_at)
+        outline_open_keys(
+          src,
+          r,
+          @signals.untracked(here.view),
+          stint=@signals.untracked(here.stint),
+          button?=jump.outline_at,
+          rail?=jump.rail_at,
+        )
       })
-      .on_action("chat.said.prev", fn(_) { (src.asks_outline)() && said_go(src, r, @signals.untracked(here.view), -1) })
-      .on_action("chat.said.next", fn(_) { (src.asks_outline)() && said_go(src, r, @signals.untracked(here.view), 1) })
+      .on_action("chat.said.prev", fn(_) {
+        (src.asks_outline)() && said_go(src, r, @signals.untracked(here.view), -1, railed=jump.rail_at is Some(_))
+      })
+      .on_action("chat.said.next", fn(_) {
+        (src.asks_outline)() && said_go(src, r, @signals.untracked(here.view), 1, railed=jump.rail_at is Some(_))
+      })
       |> ignore
     }
     None => ()
@@ -506,19 +584,69 @@ fn chat_body_node(
       guard has && !lined.val else { return }
       lined.val = true
       if scroll.at_foot_now() && !@sfbase.go_tos.contains(chat) {
-        place.bring("line", offset=-lead)
+        place.bring("line", offset=@sfbase.kept_place_under(@signals.untracked(top) + lead, @signals.untracked(cover)))
       }
     },
     at_start=false,
   )
-  read(place, fn() { rows.get() })
+  // the newest row come while the list follows its foot (sfbase's follow_newest: not where it stands, an agent's line,
+  // the way to the newer): read from its top, its foot followed no further than its top as far under the bar as the
+  // list's head keeps its first row, and follow_margin more (ListPlace::follow_from); the viewer's own followed all the
+  // way to the foot, as they wrote it. Taken as the keys change, at that change's moment, while it is at its foot then;
+  // only for a key that came by that change: the newest another because the last went (a refused send deleted, a
+  // message taken back) is no answer come, and says nothing
+  // (the keys as they were before the change that gave these: read again for the same change, the same)
+  let keys_now : Ref[Array[String]] = Ref([])
+  let keys_before : Ref[Array[String]] = Ref([])
+  let newest = fn() -> (String, Bool, Bool)? {
+    let rs = rows.get()
+    if !physical_equal(rs.keys, keys_now.val) {
+      keys_before.val = keys_now.val
+      keys_now.val = rs.keys
+    }
+    let before = keys_before.val
+    let mut i = rs.keys.length() - 1
+    while i >= 0 {
+      let k = rs.keys[i]
+      let came = !before.contains(k)
+      match rs.rows.get(k).map(fn(r) { r.entry }) {
+        Some(State(_, _, _) | Working(_) | Newer) | None => ()
+        Some(Out(_)) => return Some((k, true, came))
+        Some(Said(m)) => return Some((k, m.mine, came))
+        Some(_) => return Some((k, false, came))
+      }
+      i = i - 1
+    }
+    None
+  }
+  let newest_was : Ref[String?] = Ref(@signals.untracked(newest).map(fn(n) { n.0 }))
+  // (whether the list is at its foot read with the newest, by this watch, as the same change gives both: read untracked
+  // as it was told, the list's at-foot was worked out with nothing following it, and so held what it read, the
+  // chat's subscription with it, past the page)
+  v.reacts(
+    fn() { (newest(), scroll.at_foot_now()) },
+    fn(now_at) {
+      let (now, at_foot) = now_at
+      let was = newest_was.val
+      newest_was.val = now.map(fn(n) { n.0 })
+      guard now is Some((k, own, true)) && was is Some(w) && w != k && at_foot else { return }
+      if own {
+        place.follow_from(None)
+      } else {
+        place.follow_from(Some(k), margin=room + @sfbase.follow_margin)
+      }
+    },
+    at_start=false,
+  )
+  read(place, scroll, fn() { rows.get() })
   v
 }
 
 ///|
 /// Row `k` of a chat's list in `slot` (entry_row's, its row's room round it: message_row_frame_node), as its kind's
 /// row draws it, reading what it is by its key in `rows` as that changes; made again only as it comes to be another
-/// kind. What it shows of being gone to (its flash, a search's words marked in it) as `jump` says.
+/// kind. What it shows of being gone to (its flash, a search's words marked in it) as `jump` says; `came`, when its key
+/// came into the list by data (an agent's line's first words in glyph by glyph from then; none: simply there).
 fn chat_body_row(
   slot : @view.View,
   src : Source,
@@ -531,6 +659,7 @@ fn chat_body_row(
   keeps : ChatBodyKeeps,
   made : (String, @view.View) -> Unit,
   jump : ChatJump,
+  came : () -> Double?,
 ) -> Unit {
   let first = @signals.untracked(fn() { rows.get().rows.get(k) })
   guard first is Some(first) else { return }
@@ -562,13 +691,14 @@ fn chat_body_row(
       _ => Some(-1)
     }
   }
-  // (a message gone to: its row lit across the list, a notice's pill alone)
-  let over = fn(row : @view.View, key : String) { chat_flash_node(row, key, jump) }
-  let pill_over = fn(pill : @view.View, key : String) { chat_flash_node(pill, key, jump, round=true) }
   slot.pick(fn() { chat_body_kind(entry()) }, fn(p, kind) {
     made(k, p)
-    // (its words, picked with the pointer, are of its key: a message's quoted by it, chat_quote_node)
-    @ui.picked_of(p, k) |> ignore
+    // (gone to: how lit it is as its flash goes, one way for the row; its row lit across the list, a notice's pill
+    // alone, or the passage a quote that led here quoted lit in its words alone: chat_passage_lit)
+    let flash = chat_flash_way(p, k, jump)
+    let over = fn(row : @view.View, key : String) { chat_flash_node(row, key, jump, flash) }
+    let pill_over = fn(pill : @view.View, key : String) { chat_flash_node(pill, key, jump, flash, round=true) }
+    let lit = chat_passage_lit(p, k, jump, flash)
     let m0 = match @signals.untracked(entry) {
       Said(m) => m
       _ => chat_body_none
@@ -626,13 +756,18 @@ fn chat_body_row(
             None => ()
           }
         })
-        more.val = mine_said_node(p, src, here, k, side, top, mine, found~, found_at~, share=message_share_of(src, here, mine), over~, out~, since=fn() { since.get() }).menu_on
+        more.val = mine_said_node(p, src, here, k, side, top, mine, found~, found_at~, lit~, share=message_share_of(src, here, mine), over~, out~, since=fn() { since.get() }).menu_on
       }
-      KNotice => notice_said_node(p, src, here, k, side, top, m, keeps.opened, keeps.copied, pill_over~) |> ignore
+      KNotice => {
+        // (its words, picked with the pointer, are of its key, as a message's are from where they are read: quoted by
+        // it, all of them taken by 全选, chat_quote_node)
+        @ui.picked_of(p, k, whole=true) |> ignore
+        notice_said_node(p, src, here, k, side, top, m, keeps.opened, keeps.copied, pill_over~) |> ignore
+      }
       KPerson =>
-        more.val = person_said_node(p, src, here, k, side, top, m, found~, found_at~, share=message_share_of(src, here, m), over~).menu_on
+        more.val = person_said_node(p, src, here, k, side, top, m, found~, found_at~, lit~, share=message_share_of(src, here, m), over~).menu_on
       KAgent =>
-        more.val = agent_said_node(p, src, here, k, side, top, m, found~, found_at~, share=message_share_of(src, here, m), core~, over~, code=fn(lang) {
+        more.val = agent_said_node(p, src, here, k, side, top, m, found~, found_at~, lit~, share=message_share_of(src, here, m), core~, over~, out_of=agent_out_of(keeps.faces, here, m, came), code=fn(lang) {
           if lang == "mermaid" {
             Some(fn(b, code) { @sfbase.viz_mermaid_node(b, src, here.station, code, fn() { @sf.theme().p.subtle }, here.tips) })
           } else {
@@ -679,8 +814,9 @@ fn chat_body_row(
               _ => a0
             }
           },
-          fn() { None },
+          came,
           keeps.steadies,
+          faces=keeps.faces,
         )
         |> ignore
       }
@@ -728,4 +864,20 @@ fn ask_again_ms(fails : Int) -> Double {
     }
   }
   ms
+}
+
+///|
+/// The picture an agent's message `m` comes out of: its agent's at work, on its line (`faces`, working_said_node's),
+/// where the message comes by data while the chat is watched (`came`: chat_body_comes, not answered at once) and that
+/// line is made; none else, the message simply there (sf/motion.mbt: what was said before it was shown moves not).
+fn agent_out_of(
+  faces : Map[String, (@view.View, @motion.Way)],
+  here : MessageNodeHere,
+  m : () -> Message,
+  came : () -> Double?,
+) -> (@view.View, @motion.Way)? {
+  guard @signals.untracked(came) is Some(_) else { return None }
+  let agent = @signals.untracked(fn() { message_agent_of(here, m().by.agent) })
+  guard agent != "" else { return None }
+  faces.get(agent)
 }

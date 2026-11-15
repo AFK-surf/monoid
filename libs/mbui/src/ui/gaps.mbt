@@ -45,6 +45,10 @@
 //    same kind of node, the same ground and corner, as wide in a column or as tall in a row: rows, cards, sections)
 //    stand equally apart: each pair of them next to each other as far apart as the most of those pairs are. What
 //    lays them out spread (JBetween) is not asked.
+// 9. A block that shows its edges (a ground or an edge of its own, not the colour of what it stands on) never meets or
+//    runs over another such block, or words or a drawing outside it, whatever boxes lay them out (rule 3 across boxes:
+//    2026-11-14, a terminal's 只看/控制 laid in a row of its own right on the terminal's card in the next; a message's
+//    words right on a file's card held in a box with no ground, #6285; neither one box's children, as rule 3 asks).
 // 6. What a box shows next to each other (in one column or one row, the box laying them out from its start, its end
 //    or its middle, not spread) stands a step of the spacing scale apart, or touches (the scale is
 //    style_tokens.mbt's space_scale(), said once): a gap worked out off it (a margin of 7, 13 left between two blocks)
@@ -78,7 +82,14 @@ let gap_slack : Double = 0.5
 pub fn Tester::gap_faults(self : Tester) -> Array[String] {
   self.reads_own()
   ignore(self)
-  g().gap_faults()
+  let c = g()
+  // (the window's tree's nodes put among the frame's as the corner rule has them (Ctx::with_tree_nodes): a page made
+  // as nodes is held to every rule as an old view's is; till 2026-11-14 rules 2 to 8 saw the old view's alone, and till
+  // 2026-11-15 its words and drawings neither, its words laid out as none and its icons drawing nothing: `facts`, its
+  // words as drawn and what spreads its own (tree_marks_at, LaidFacts' spread))
+  let out = c.with_tree_nodes(facts=true, fn() { c.gap_rules() })
+  c.tree_lit_apart_faults(out)
+  out
 }
 
 ///|
@@ -258,6 +269,14 @@ fn Node::gap_content(self : Node) -> Bool {
 }
 
 ///|
+/// Whether node `i` is one of the window's tree's that draws a mark of its own (an icon, a picture, as
+/// Ctx::with_tree_nodes `facts` tells it: tree_marks_at), what an old view's node says by its shapes.
+fn Ctx::tree_draws(self : Ctx, i : Int) -> Bool {
+  let n = self.nodes[i]
+  tree_marks_at.contains(i) && n.fw > 0.0 && n.fh > 0.0 && n.opacity > 0.01
+}
+
+///|
 /// How far apart two boxes stand where they share a column or a row (below 0: over each other), and which way:
 /// None where they share neither (one off the other's corner) or one holds the other.
 fn gap_between(
@@ -295,7 +314,23 @@ fn Ctx::shown_whole(self : Ctx) -> (Array[Bool], Array[Int]) {
   let n = self.count
   let whole = Array::make(n, false)
   let layer = Array::make(n, -1)
-  for i in 0..<n {
+  // (each after its parent: the window's tree's nodes come after the old view's (Ctx::with_tree_nodes), an old view's
+  // box held by one of them after it in the pool)
+  let order : Array[Int] = []
+  let placed = Array::make(n, false)
+  for s in 0..<n {
+    let path : Array[Int] = []
+    let mut k = s
+    while k >= 0 && k < n && !placed[k] {
+      path.push(k)
+      placed[k] = true
+      k = self.nodes[k].parent
+    }
+    while path.pop() is Some(k) {
+      order.push(k)
+    }
+  }
+  for i in order {
     let b = self.nodes[i]
     let p = b.parent
     let inside = b.x >= -gap_slack &&
@@ -324,7 +359,7 @@ fn Ctx::shown_whole(self : Ctx) -> (Array[Bool], Array[Int]) {
 }
 
 ///|
-fn Ctx::gap_faults(self : Ctx) -> Array[String] {
+fn Ctx::gap_rules(self : Ctx) -> Array[String] {
   let out : Array[String] = []
   let n = self.count
   let pictures = self.pictures()
@@ -494,12 +529,15 @@ fn Ctx::gap_faults(self : Ctx) -> Array[String] {
       }
     }
   }
+  // 9. blocks that show their edges never meet, whatever boxes hold them (rule 3's, across boxes: a control's ground
+  // laid in a row of its own on a page, right on the card under it in the next)
+  self.gap_meet_faults(whole, layer, pictures, out)
   // 4. what a box with a ground holds, in from its edges and as far from both sides: each content's box, the nearest
   // grounded one round it
   let held : Map[Int, Array[Int]] = Map([])
   for i in 0..<n {
     let c = self.nodes[i]
-    if !whole[i] || !c.gap_content() || self.in_picture(i, pictures) {
+    if !whole[i] || !(c.gap_content() || self.tree_draws(i)) || self.in_picture(i, pictures) {
       continue
     }
     let mut q = c.parent
@@ -531,6 +569,8 @@ fn Ctx::gap_faults(self : Ctx) -> Array[String] {
     }
     let mut y0 = 1.0e9
     let mut y1 = -1.0e9
+    let mut sx0 = 1.0e9
+    let mut sx1 = -1.0e9
     let mut tallest = 0.0
     let touched : Array[String] = []
     for k in kids {
@@ -545,6 +585,8 @@ fn Ctx::gap_faults(self : Ctx) -> Array[String] {
       }
       y0 = dmin(y0, cy0)
       y1 = dmax(y1, cy1)
+      sx0 = dmin(sx0, cx0)
+      sx1 = dmax(sx1, cx1)
       tallest = dmax(tallest, cy1 - cy0)
       let words = self.nodes[k].kind != kind_box
       let l = cx0 - gb.x
@@ -664,9 +706,22 @@ fn Ctx::gap_faults(self : Ctx) -> Array[String] {
       }
       (x0 - gb.x, gb.x + gb.fw - x1)
     }
+    // (and where those boxes are not as far in, what is seen in it may be: its words, drawings and blocks with a ground,
+    // wherever in it (its held, as above), not a row's padding nor a button's room whose ground only the hand shows. A
+    // wide chat's bar: its title's row 12 in, its last button's room 6 from its end, concentric with the window's corner
+    // as the corner rule has it, its title and that button's icon each 20 in where the window's corner is round; 2026-11-15)
+    let seen = if sx0 < sx1 { Some((sx0 - gb.x, gb.x + gb.fw - sx1)) } else { None }
+    let seen_even = match seen {
+      Some((sl, sr)) => (sl - sr).abs() <= 2.0 * gap_slack
+      None => false
+    }
     let one_line = y1 - y0 <= tallest + gap_slack
-    if bx0 < bx1 && one_line && l < gb.fw / 4.0 && r < gb.fw / 4.0 && (l - r).abs() > 2.0 * gap_slack {
-      out.push("rule 4: what \{self.named(gi)} holds stands \{l} in from its left, \{r} from its right")
+    if bx0 < bx1 && one_line && l < gb.fw / 4.0 && r < gb.fw / 4.0 && (l - r).abs() > 2.0 * gap_slack && !seen_even {
+      let shown = match seen {
+        Some((sl, sr)) => " (what is seen of it \{sl} and \{sr})"
+        None => ""
+      }
+      out.push("rule 4: what \{self.named(gi)} holds stands \{l} in from its left, \{r} from its right" + shown)
     }
   }
   // 5. one column's blocks aligned: the blocks that show their edges (a ground, an edge, what lights up) half as wide
@@ -913,7 +968,6 @@ fn Ctx::gap_faults(self : Ctx) -> Array[String] {
       }
     }
   }
-  self.tree_lit_apart_faults(out)
   out
 }
 
@@ -1223,5 +1277,132 @@ fn Ctx::lit_reach_in(self : Ctx, ground : Int, i : Int) -> Double {
     self.lit_reach
   } else {
     d
+  }
+}
+
+///|
+/// Whether node `i` shows its edges as a block: a ground or an edge of its own, not a line, that differs from the ground
+/// it stands on (the nearest one round it in its layer: a head the page's colour shows none).
+fn Ctx::gap_block_edges(self : Ctx, i : Int, layer : Array[Int]) -> Bool {
+  let b = self.nodes[i]
+  if !b.grounded() || dmin(b.fw, b.fh) < gap_line {
+    return false
+  }
+  if b.border_w > 0.0 && (b.border_c & 0xFFL) != 0L {
+    return true
+  }
+  let mut q = b.parent
+  while q >= 0 && layer[q] == layer[i] {
+    let a = self.nodes[q]
+    if a.grounded() {
+      return a.bg != b.bg
+    }
+    q = a.parent
+  }
+  true
+}
+
+///|
+/// Rule 9 (see the file's head): two blocks that show their edges (Ctx::gap_block_edges), in one layer, neither in the
+/// other, never meet (0 between them) nor run over each other, wherever they are laid out (two of one box are rule
+/// 3's); nor does such a block and words or a drawing outside it.
+/// Not held to it: what a picture draws, and a block pulled over the one before it on purpose (a margin below 0).
+fn Ctx::gap_meet_faults(
+  self : Ctx,
+  whole : Array[Bool],
+  layer : Array[Int],
+  pictures : Set[Int],
+  out : Array[String],
+) -> Unit {
+  let blocks : Array[Int] = []
+  for i in 0..<self.count {
+    let b = self.nodes[i]
+    if whole[i] &&
+      b.kind == kind_box &&
+      b.mar_l >= 0.0 &&
+      b.mar_t >= 0.0 &&
+      self.gap_block_edges(i, layer) &&
+      !self.in_picture(i, pictures) {
+      blocks.push(i)
+    }
+  }
+  let within = fn(i : Int, o : Int) {
+    let mut q = self.nodes[i].parent
+    while q >= 0 && q != o {
+      q = self.nodes[q].parent
+    }
+    q == o
+  }
+  // (laid over the one before on purpose: it, or what holds it under where the two part, pulled back by a margin below
+  // 0, a face in a stack and the face in its ring)
+  let pulled = fn(i : Int, other : Int) {
+    let mut q = i
+    while q >= 0 && !within(other, q) {
+      let n = self.nodes[q]
+      if n.mar_l < 0.0 || n.mar_t < 0.0 {
+        return true
+      }
+      q = n.parent
+    }
+    false
+  }
+  // (read as one: two of one ground and no edge, edge to edge, as wide or as tall (a card's pieces, a row a block each);
+  // or panes, each as tall as the window, side by side)
+  let one = fn(a : Int, b : Int) {
+    let (na, nb) = (self.nodes[a], self.nodes[b])
+    let pane = na.fh >= self.height * 0.9 && nb.fh >= self.height * 0.9
+    let alike = na.bg == nb.bg &&
+      na.border_w <= 0.0 &&
+      nb.border_w <= 0.0 &&
+      (((na.x - nb.x).abs() <= gap_slack && (na.fw - nb.fw).abs() <= gap_slack) ||
+      ((na.y - nb.y).abs() <= gap_slack && (na.fh - nb.fh).abs() <= gap_slack))
+    pane || alike
+  }
+  for x in 0..<blocks.length() {
+    for y in (x + 1)..<blocks.length() {
+      let (a, b) = (blocks[x], blocks[y])
+      let (na, nb) = (self.nodes[a], self.nodes[b])
+      if layer[a] != layer[b] ||
+        na.parent == nb.parent ||
+        within(a, b) ||
+        within(b, a) ||
+        pulled(a, b) ||
+        pulled(b, a) {
+        continue
+      }
+      match gap_between((na.x, na.y, na.x + na.fw, na.y + na.fh), (nb.x, nb.y, nb.x + nb.fw, nb.y + nb.fh)) {
+        Some((d, _)) if d < gap_slack && !(d >= -gap_slack && one(a, b)) => {
+          let how = if d < -gap_slack { "run \{-d} over each other" } else { "meet" }
+          out.push("rule 9: \{self.named(a)} and \{self.named(b)} \{how}")
+        }
+        _ => ()
+      }
+    }
+  }
+  // (and what else shows, words or a drawing, outside each such block: a message's words right on a file's card under
+  // them, the card in a box of its own with no ground)
+  for a in blocks {
+    let na = self.nodes[a]
+    let ra = (na.x, na.y, na.x + na.fw, na.y + na.fh)
+    for k in 0..<self.count {
+      let nk = self.nodes[k]
+      if !whole[k] ||
+        layer[k] != layer[a] ||
+        (nk.kind == kind_box && nk.grounded()) ||
+        !nk.gap_content() ||
+        within(k, a) ||
+        pulled(k, a) ||
+        pulled(a, k) ||
+        self.in_picture(k, pictures) {
+        continue
+      }
+      match gap_between(ra, self.gap_drawn(k)) {
+        Some((d, _)) if d < gap_slack => {
+          let how = if d < -gap_slack { "run \{-d} over each other" } else { "meet" }
+          out.push("rule 9: \{self.named(a)} and \{self.named(k)} \{how}")
+        }
+        _ => ()
+      }
+    }
   }
 }

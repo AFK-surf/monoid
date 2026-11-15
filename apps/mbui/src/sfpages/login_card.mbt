@@ -15,19 +15,21 @@
 /// drawn in as well (login_field), a login's card being in its chat and on its station's page at once.
 priv struct LoginsHere {
   pressed : @sf.LiveMap[String, Bool]
-  typed : Map[String, Bool]
   fields : Map[String, @ui.Field]
+  /// each login's card as it last showed under way, by station and id: what it shows as it closes once ended (an old
+  /// view's, decision.mbt's message_decision)
+  last : Map[String, Json]
 }
 
 ///|
-let logins_here : LoginsHere = { pressed: @sf.LiveMap::new(), typed: {}, fields: {} }
+let logins_here : LoginsHere = { pressed: @sf.LiveMap::new(), fields: {}, last: {} }
 
 ///|
 /// As at the start (tests).
 pub fn login_cards_reset() -> Unit {
   logins_here.pressed.clear()
-  logins_here.typed.clear()
   logins_here.fields.clear()
+  logins_here.last.clear()
   st_logins_open.clear()
 }
 
@@ -332,7 +334,8 @@ fn login_cancel_now(core : Core, station : String, id : String) -> Unit {
 ///|
 /// Login `id` of `station` as its card; one the core does not know (ended long ago) draws nothing, the message's words
 /// say it. `marked`: the one a link pointed to (its ground the accent, faint). `place`: where it is drawn (its chat, its
-/// station's page), each place's code field its own.
+/// station's page), each place's code field its own. `as_was`: the card as it last showed under way, drawn in place of
+/// what the core says now (closing once ended, login_card_last's).
 pub fn login_card(
   c : @ui.Ctx,
   core : Core,
@@ -340,14 +343,20 @@ pub fn login_card(
   id : String,
   marked? : Bool = false,
   place? : String = "chat",
+  as_was? : Json? = None,
 ) -> Unit {
-  let l = match login_of(core, station, id) {
-    Some(_) as v => v
-    None => return
-  }
+  let now = login_of(core, station, id)
   // signed in while its card is in view, felt as something done; failed, as something refused (feel.mbt)
-  @sfbase.felt_change(c, "login-done/" + station + "/" + id, text(l, "state") == "done", Confirm)
-  @sfbase.felt_change(c, "login-failed/" + station + "/" + id, text(l, "state") == "failed", Reject)
+  @sfbase.felt_change(c, "login-done/" + station + "/" + id, text(now, "state") == "done", Confirm)
+  @sfbase.felt_change(c, "login-failed/" + station + "/" + id, text(now, "state") == "failed", Reject)
+  let l = match as_was {
+    Some(_) => as_was
+    None =>
+      match now {
+        Some(_) => now
+        None => return
+      }
+  }
   // ended: one quiet line, failed in red; no card
   if !flag(l, "active") {
     let (words, failed) = login_ended(l)
@@ -355,14 +364,29 @@ pub fn login_card(
     return
   }
   let all = logins_of(core, station)
-  c.box(style=lc_room, fn() {
-    c.box(style=if marked { lc_card_marked } else { lc_card }, fn() {
+  let in_sheet = place == "sheet"
+  let room = if in_sheet {
+    lc_room_sheet.then(@sf.panel_card_out()).then(@sf.panel_card_last())
+  } else {
+    lc_room
+  }
+  let card = if in_sheet {
+    if marked { lc_card_sheet_marked } else { lc_card_sheet }
+  } else {
+    if marked { lc_card_marked } else { lc_card }
+  }
+  c.box(style=room, fn() {
+    c.box(style=card, fn() {
       if flag(all, "canLogin") {
-        c.box(style=lc_head, fn() {
+        if in_sheet {
           c.box(style=lc_title_room, fn() { c.text(text(l, "title"), style=lc_title) |> ignore }) |> ignore
-          login_cancel(c, core, station, id)
-        })
-        |> ignore
+        } else {
+          c.box(style=lc_head, fn() {
+            c.box(style=lc_title_room, fn() { c.text(text(l, "title"), style=lc_title) |> ignore }) |> ignore
+            login_cancel(c, core, station, id)
+          })
+          |> ignore
+        }
         login_active(c, core, station, l, flag(all, "canRelay"), place)
       } else {
         c.box(style=lc_title_room, fn() { c.text(text(l, "title"), style=lc_title) |> ignore }) |> ignore
@@ -458,15 +482,15 @@ fn login_step(c : @ui.Ctx, s : LoginStep) -> Unit {
   }
   let foot = fn(style : @ui.Style) { if s.last { style.then(lc_foot_reach) } else { style } }
   if s.more.is_empty() {
-    step(foot(if s.solid { lc_step_solid } else { lc_step }))
+    step(foot(if s.solid { lc_step_solid } else { lc_step }).then(lc_inner_round))
   } else {
     // the other ways of doing the step, seldom used, in a ⋯ at the row's end (sf/align.mbt: what is used least
     // goes into the row's ⋯)
     c.box(style=foot(lc_step_row), fn() {
-      step(if s.solid { lc_step_solid_in_row } else { lc_step_in_row })
+      step((if s.solid { lc_step_solid_in_row } else { lc_step_in_row }).then(lc_inner_round))
       let mid = c.id(s.key + "/more")
       let what = @sf.t("common.login.otherWays")
-      let b = c.box(style=lc_more, id=mid, fn() { @sf.icon(c, "more", size=lc_icon, color=p.text) |> ignore })
+      let b = c.box(style=lc_more.then(lc_inner_round), id=mid, fn() { @sf.icon(c, "more", size=lc_icon, color=p.text) |> ignore })
       c.semantics(b, Button, id=mid, label=what)
       c.on_press(mid, fn() {
         @sf.menu(s.more.map(fn(i) { Some(i) }), from=Of(mid), along=End)
@@ -620,7 +644,8 @@ fn login_paste(c : @ui.Ctx, core : Core, station : String, l : Json?, place : St
   let p = @sf.theme().p
   let id = text(l, "id")
   let here = place + "\u{1}" + station + "\u{1}" + id
-  let shows = login_paste_shows(core, station, l, logins_here.typed.get(here).unwrap_or(false))
+  let field = login_field(here)
+  let shows = login_paste_shows(core, station, l, field.text().trim(chars=" \n").to_owned() != "")
   let busy = shows.busy
   login_said(c, shows.lead)
   login_step(c, shows.step)
@@ -629,7 +654,7 @@ fn login_paste(c : @ui.Ctx, core : Core, station : String, l : Json?, place : St
     c.blur()
     c.tell("login-answer/" + id, fn() { login_answer(core, station, id, code) })
   }
-  c.box(style=lc_paste, fn() {
+  c.box(style=lc_paste.then(lc_inner_round), fn() {
     let mut words = ""
     c.box(style=lc_paste_words, fn() {
       let r = c.editor(
@@ -643,10 +668,9 @@ fn login_paste(c : @ui.Ctx, core : Core, station : String, l : Json?, place : St
         placeholder_color=p.muted,
         caret_color=p.accent,
         enter_sends=true,
-        field=login_field(here),
+        field~,
       )
       words = r.text.trim(chars=" \n").to_owned()
-      logins_here.typed[here] = words != ""
       match r.submitted {
         Some(sent) if sent.trim(chars=" \n").to_owned() != "" && !busy => send(sent.trim(chars=" \n").to_owned())
         _ => ()
@@ -660,7 +684,7 @@ fn login_paste(c : @ui.Ctx, core : Core, station : String, l : Json?, place : St
           send(words)
         }
       })
-      c.box(style=lc_done, id=go, fn() {
+      c.box(style=lc_done.then(lc_done_round), id=go, fn() {
         // busy: a spinner over its word, as wide as before
         let w = c.text(@sf.t("web-main.logins.finish"), style=lc_done_words)
         if busy {
@@ -673,6 +697,20 @@ fn login_paste(c : @ui.Ctx, core : Core, station : String, l : Json?, place : St
     }
   })
   |> ignore
+}
+
+///|
+/// Login `id` of `station` as its card last showed under way (kept as it is drawn under way, for it to close as it
+/// was once ended: decision.mbt's), None where it never showed so here.
+fn login_card_last(station : String, id : String, l : Json?) -> Json? {
+  let key = station + "/" + id
+  match l {
+    Some(v) if flag(l, "active") => {
+      logins_here.last[key] = v
+      l
+    }
+    _ => logins_here.last.get(key)
+  }
 }
 
 // ── the card, made once ─────────────────────────────────────────────────
@@ -985,6 +1023,19 @@ let lc_card_most : Double = 560.0
 /// Where it is: all of the column's width, 8 under what is above it (the card in it as wide as it says).
 // kept across runs: a value (no field of it changes)
 let lc_room : @ui.Style = @ui.css("w=Full pt=S2 align=AStart")
+
+///|
+/// In a panel's body (place="sheet"): full width, concentric with the panel's sides and foot.
+// kept across runs: a value (no field of it changes)
+let lc_room_sheet : @ui.Style = @ui.css("w=Full align=AStart")
+
+///|
+// kept across runs: a value (no field of it changes)
+let lc_card_sheet : @ui.Style = lc_card_body.then(@ui.css("w=Full"))
+
+///|
+// kept across runs: a value (no field of it changes)
+let lc_card_sheet_marked : @ui.Style = lc_card_body_marked.then(@ui.css("w=Full"))
 
 ///|
 /// A step's card (step_card): pressed as a whole, lit under a pointer.

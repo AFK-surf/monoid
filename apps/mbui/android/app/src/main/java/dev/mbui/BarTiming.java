@@ -39,6 +39,8 @@ import java.util.UUID;
  * its first value (taken and decoded on the UI's thread) and how big it was. Logged on the device ({@code adb logcat -s
  * StillfailTiming}), and to PostHog as the account signed in, in a build with its key, unless turned off (Crashes).
  * Only names of places and topics, counts and times: nothing a person wrote, no ids.
+ * An account's page opened by a press is timed the same way, its {@code to} "account" and no {@code from}
+ * (src/sfbase account_open.mbt open_timing): from the finger lifted to the page drawn, through what it waited for.
  *
  * Told from the UI's (GL) thread; the frames counted are the main thread's (Choreographer), as the Android app's.
  */

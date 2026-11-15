@@ -85,9 +85,26 @@ fn Reader::answer(self : Reader, line : String) -> Json {
 }
 
 ///|
+/// An answer said to the pool: its text, where it has one, as its bytes after its head line (`bytes` their count, read
+/// as they are by read/mb-reader.ts), not as a JSON string in it: the station's Node neither unescapes nor decodes it, and
+/// gives it on as it is (on a station of 2342 chats, the shared chat list's 583 KB took its main thread 2.6 ms a read
+/// to unescape and decode, of the 4.1 ms of CPU each took there).
+fn say_answer(host : @host.Host, answer : Json) -> Unit {
+  guard answer is Object(fields) && fields.get("text") is Some(String(text)) else {
+    host.say(answer.stringify())
+    return
+  }
+  let body = @utf8.encode(text)
+  let head = Map::from_iter(fields.iter().filter(kv => kv.0 != "text"))
+  head["bytes"] = Json::number(body.length().to_double())
+  host.say(Json::object(head).stringify())
+  host.out(body)
+}
+
+///|
 /// The reads moved here from read/worker.ts (read/pool.ts `MOVED`).
 fn moved(op : String) -> Bool {
-  ["job", "jobLog", "historyPendingCard", "statePendingCard", "deliveryCardState", "reviewPendingCard", "stateQuestion", "pendingDeliveries", "latestMessages", "chatHistoryMessages", "openedChatSaid", "widgetState", "transcriptFile", "memory", "machineSessions", "machineSession", "sessionsAtWork", "policyChecks", "recentConnectPeople", "usageTurns", "usageCalls", "outflowMessages", "archiveLook", "recentChatList", "searchChatList", "threadList", "sharedOf", "sharedChats", "chatMarks", "entries", "letters", "summary", "sessions", "session", "threads", "thread", "turnNotices", "saidNotices", "chats", "chatRows", "outflowChats", "openJobs", "resourceChats"].contains(
+  ["job", "jobLog", "historyPendingCard", "statePendingCard", "deliveryCardState", "reviewPendingCard", "stateQuestion", "pendingDeliveries", "latestMessages", "chatHistoryMessages", "openedChatSaid", "widgetState", "transcriptFile", "memory", "machineSessions", "machineSession", "sessionsAtWork", "policyChecks", "recentConnectPeople", "usageTurns", "usageCalls", "outflowMessages", "archiveLook", "recentChatList", "searchChatList", "threadList", "sharedOf", "sharedChats", "chatMarks", "entries", "letters", "summary", "sessions", "session", "threads", "thread", "turnNotices", "saidNotices", "chats", "chatRows", "outflowChats", "openJobs", "resourceChats", "usage", "outflowUsage", "timeline", "transcriptState", "sessionPlace", "changed", "tailRead"].contains(
     op,
   )
 }
@@ -104,8 +121,19 @@ fn Reader::read(self : Reader, op : String, ask : Json) -> Json raise {
       db
     }
   }
+  // read/worker.ts `learn`: the model catalog as the pool gives it when it changed
+  if ask.value("catalog") is Some(models) {
+    @readops.learn_catalog(models)
+  }
   db.exec("BEGIN")
   defer (db.exec("COMMIT") catch { _ => () })
+  self.answer_in(db, op, ask)
+}
+
+///|
+/// A read's answer, in the snapshot `read` began.
+fn Reader::answer_in(self : Reader, db : @sql.Db, op : String, ask : Json) -> Json raise {
+  let args = ask.value("args").unwrap_or(Json::null())
   match op {
     "job" => @readops.job(db, self.host, args)
     "jobLog" => @readops.job_log(db, self.host, args)
@@ -150,6 +178,25 @@ fn Reader::read(self : Reader, op : String, ask : Json) -> Json raise {
     "outflowChats" => @readops.outflow_chats(db, self.host, self.data, self.sep, ask)
     "openJobs" => @readops.open_jobs(db, self.host, self.data, self.sep, ask)
     "resourceChats" => @readops.resource_chats(db, self.host, self.data, self.sep, ask)
+    "usage" => @readops.usage_page(db, self.host, self.data, self.sep, ask)
+    "outflowUsage" => @readops.outflow_usage(db, self.host, self.data, self.sep, ask)
+    "timeline" => @readops.timeline(db, self.host, self.data, self.sep, self.finder, ask)
+    "transcriptState" => @readops.transcript_state(db, self.host, self.data, self.sep, self.finder, args)
+    // (a transcript read on from where it stood, for the live view: sessions/live.ts)
+    "tailRead" =>
+      @history.tail_read(self.host, match args.value("runtime") { Some(String(r)) => r; _ => "claude" }, args.value("state").unwrap_or(Json::null()))
+    "sessionPlace" => @readops.session_place(db, self.host, self.data, self.sep, ask)
+    // (what of a list a client does not hold as it is: the list read as its own op reads it, its args those given)
+    "changed" =>
+      match args.value("op") {
+        Some(String("chats" | "sessions" | "threads" as list)) => {
+          let inner = Map::from_iter(ask.as_object().unwrap().iter())
+          inner["args"] = args.value("args").unwrap_or(Json::null())
+          @readops.changed_of(list, self.answer_in(db, list, Json::object(inner)), args)
+        }
+        Some(String(list)) => fail("no read \{list}")
+        _ => fail("ops[a.op] is not a function")
+      }
     _ => fail("no read \{op}")
   }
 }
@@ -865,6 +912,14 @@ fn main {
         { "scope": "search", .. } => Some(@sessions.step(db) && @sessions.audit(db))
         _ => None
       }))
+    (None, _, Some(data)) if flag("--sessions") is Some(_) =>
+      @host.run(shell_dir=data + "/shell", host => serve_sessions(host))
+    (None, _, Some(data)) if flag("--serve") is Some(socket) =>
+      @host.run(shell_dir=data + "/shell", host => {
+        let sep = flag("--sep").unwrap_or("/")
+        let reader = { host, db: data + "/stillfail.db", writer: None, reading: None, data, sep, finder: @locate.Finder::new(host, sep) }
+        serve_reads(host, reader, socket)
+      })
     (None, _, Some(data)) =>
       @host.run(shell_dir=data + "/shell", host => {
         let sep = flag("--sep").unwrap_or("/")
@@ -873,7 +928,7 @@ fn main {
         host.say(ready.stringify())
         while host.line() is Some(line) {
           if line != "" {
-            host.say(reader.answer(line).stringify())
+            say_answer(host, reader.answer(line))
           }
         }
       })

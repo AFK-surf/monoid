@@ -1,9 +1,17 @@
 // Generated using `moon info`, DON'T EDIT IT
 package "station/reader"
 
+import {
+  "station/host",
+}
+
 // Values
+pub async fn serve_reads(@host.Host, Reader, String) -> Unit
+
+pub async fn serve_sessions(@host.Host) -> Unit
 
 // Errors
+type Asked
 
 // Types and methods
 type Permit

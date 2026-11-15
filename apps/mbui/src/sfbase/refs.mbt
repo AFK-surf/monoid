@@ -130,6 +130,7 @@ fn ref_key(text : String, caret : Int) -> String {
 /// its caret moved (the marks and runs of its words: refs_follow asks, whatever changed them).
 pub fn refs_edited(src : Source, key : String, input : @ui.Field, here : String, locked : Bool, e : @ui.FieldEdit) -> Unit {
   let f = ref_field(key)
+  f.input = Some(input)
   let (was, now) = (e.was, e.now)
   let (wa, wc) = e.was_selection
   let (anchor, caret) = e.selection
@@ -365,7 +366,10 @@ pub fn refs_sent_marks(key : String, words : String) -> Array[(Int, Int)] {
 /// changed since it was asked).
 pub fn refs_marked(key : String) -> Bool? {
   let f = ref_field(key)
-  if f.marks_of.get() == ref_words(f) {
+  let words = ref_words(f)
+  if !words.contains("@[") {
+    Some(false)
+  } else if f.marks_of.get() == words {
     Some(!f.marks.is_empty())
   } else {
     None
@@ -469,7 +473,7 @@ pub fn refs_pick(
         "station": Json::string(station),
         "id": Json::string(id),
         "title": Json::string(title),
-        "base": Json::string(cloud_origin()),
+        "base": Json::string(link_origin()),
         "into": Json::string(into),
       },
       fn(res) {
@@ -520,7 +524,7 @@ pub fn refs_still_at(input : @ui.Field, at : (Int, String)?, before : String, af
 fn refs_pasted(src : Source, key : String, input : @ui.Field, here : String, pasted : String, at : Int, put : String) -> Unit {
   (src.call)("ref.pasted", { "text": Json::string(put), "here": Json::string(here) }, fn(r) {
     guard r is Ok(v) else { return }
-    let base = cloud_origin()
+    let base = link_origin()
     for x in items(Some(v), "refs") {
       let o = Some(x)
       let a = number(o, "start").to_int()

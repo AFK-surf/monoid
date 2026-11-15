@@ -24,7 +24,8 @@
 //   11 round 7's second station taken out of the first workspace: out of its lock too;
 //   12 bob made a member again: his first device approved by the owner once more, his own lock bound again, his other
 //     device on it let in; then every device of his lost: a new one finds none to approve it, says so (his own lock
-//     begun anew), the owner takes him out and makes him a member again and approves it as his first;
+//     begun anew), the owner takes him out and makes him a member again and approves it as his first; his old vault
+//     not readable there, his recovery words tried, nobody else asked (round 24 of locks-moved.ts beside it);
 //   13 carol, a member whose three devices are apps from before (they seal nothing): the first approved by the owner,
 //     each next by the one before, no lock of her own; two apps updated say their keys in the workspace's lock and
 //     nobody begins; the first updated begins her own lock with the three on it, the others take it, it is bound,
@@ -53,12 +54,17 @@ const appIds = (l: J): string[] => lockDevices(l).filter((d) => d.kind === "app"
 const short = (s: J) => JSON.stringify({ state: s.state, cause: s.cause, message: s.message });
 
 // Every app of these rounds says a release before MOVED_FROM_BUILD (station/src/api/moved-from.ts), as a person's app not
-// updated does: the stations keep it (station/src/mesh/device-builds.ts), so the workspace's chain is not handed over
-// (client/core-ts src/lock-handover.ts `devicesWaited`) and these rounds run the chain of before a move, which workspaces
+// updated does: an owner's device on such a release moves nothing itself (client/core-ts src/views/lock.ts `heldBack`,
+// its own build), so the workspace's chain is not handed over and these rounds run the chain of before a move, which workspaces
 // held back so still use. What a moved workspace does is e2e/locks-moved.ts's. (Saying build 0.1.0, a build from the
 // sources taken as able, the workspace moved at A's first ask from #6102 on, and every round here ran moved: the side
 // run of 2026-11-14 on a3ca1b52.) A web page is not waited for and says none.
-const HELD = { build: "0.1.9000" };
+// E2E_LOCKS_MOVED=1 (scripts/side.sh locks-as-moved): the same rounds with every app saying no release (0.1.0, taken as
+// able), so the workspace moves at A's first ask and every round runs moved, as a person's on an updated app does; what
+// cannot exist after a move is left out where it is, saying why, and what a moved workspace does on purpose otherwise
+// is what is held there (the lead, 2026-11-14: the hold comes out once a moved workspace went through all of these).
+const moved = process.env.E2E_LOCKS_MOVED === "1";
+const HELD = moved ? {} : { build: "0.1.9000" };
 const a = new Device("A", "alice", HELD);
 const b = new Device("B", "alice", HELD);
 const c = new Device("C", "alice", HELD);
@@ -610,6 +616,8 @@ try {
   const forkE = await baseOf(e);
   const askedBefore = [b.asked(), e.asked()];
   const round7b = new Date().toISOString();
+  // (a fork on the workspace's chain: none after a move, nothing being signed on it)
+  if (!moved) {
   stationDo("cloud-freeze");
   try {
     await must("the cloud frozen, the second station stopped and A installed anew closed: B renews itself at the first", async () => {
@@ -672,6 +680,7 @@ try {
   } finally {
     stationDo("cloud-thaw");
   }
+  }
   // (round 9's devices' ids, as the workspace's lock has them: a device's id is its own, the same in each workspace)
   const bId = await baseOf(b);
   const eId = await baseOf(e);
@@ -681,6 +690,7 @@ try {
   // system's), his devices refused ──
   let bobVault = "";
   let bobItem = "";
+  let bobWords = "";
   const bobSecret = `ghp_bob_${Date.now()}`;
   const bobOpens = async (x: Device) => {
     const o = await x.call("vault.open", { workspace, item: bobItem });
@@ -709,7 +719,9 @@ try {
     if (h.asked() !== 0) throw new Error(`H's sealer asked the person ${h.asked()} times: ${h.askedWhat().join("; ")}`);
   });
   await must("H sets up the vault, keeps an item in a vault of bob's own, opens it", async () => {
-    await h.call("vault.setup", { workspace });
+    const set = await h.call("vault.setup", { workspace });
+    // (bob's recovery words, shown as his first device is set up: round 12 tries them on his device of a lock begun anew)
+    bobWords = typeof set?.words === "string" ? set.words : "";
     await h.until({ topic: "vaults", workspace }, (v) => v?.setUp, 60_000);
     bobVault = (await h.call("vault.create", { workspace, name: "bob", station: station.split("/")[1] })).id;
     bobItem = (await h.call("vault.putItem", {
@@ -931,9 +943,18 @@ try {
     log(`  I let in after ${Date.now() - t1} ms`);
     await i.lock(workspace, (l) => l.signs && l.me?.confirmed, 90_000);
   });
+  // (his vault of round 8, keyed for H and I, as alice's in round 24 of locks-moved.ts is for A and N: H opens its item
+  // before his devices go)
+  await check("before bob's devices go: H opens the item of his vault", async () => {
+    await bobOpens(h);
+    const held = (await h.until({ topic: "vaults", workspace }, (v) => (v?.vaults ?? []).find((x: J) => x.id === bobVault && x.keyed), 60_000)).devices as number;
+    log(`  bob's vault before: ${held} devices hold its key`);
+  });
   await h.close();
   await i.close();
   await k.signIn();
+  // (what everyone else has asked so far: in what follows only B, approving K, and K are asked anything)
+  const othersAt12 = [a, c, d, e, f, g, h, i, j].map((x) => [x, x.asked()] as const);
   await must("K, a new device of bob's, every other gone: refused, and none of his found to approve it", async () => {
     log(`  K sees the first: ${short(await k.stationState(workspace, (s) => s.cause === "lock", 90_000))}`);
     await k.lock(workspace, (l) => l.me?.waiting && l.me?.ownLock, 60_000);
@@ -961,6 +982,38 @@ try {
   await check("the lock bob began anew bound in the workspace's lock (the station's: two persons)", async () => {
     await persons(2);
   });
+  // (his vaults on the device of a lock begun anew, as round 24 of locks-moved.ts does for alice, the same lines printed:
+  // no device of his in the lock holds his old vault's key, so it is not readable on K and nobody else is asked)
+  await check("K's vaults once let in: bob's old vault not shown and its item refused; vault.setup, vault.recover with his words; nobody else asked", async () => {
+    const kSet = k.asked();
+    await k.until({ topic: "vaults", workspace }, (x) => x?.canSign, 90_000);
+    const set = await k.call("vault.setup", { workspace });
+    log(`  K's vault.setup: ${JSON.stringify({ made: set?.made ?? null, words: typeof set?.words === "string" })}`);
+    const shown = (await k.until({ topic: "vaults", workspace }, (x) => x, 10_000)).vaults as J[];
+    log(`  K's vaults: ${JSON.stringify(shown.map((y) => ({ old: y.id === bobVault, mine: y.mine, keyed: y.keyed, devices: y.devices, items: y.items, waits: y.waits ?? null })))}`);
+    if (shown.some((y) => y.id === bobVault)) throw new Error("bob's old vault shown on K");
+    const old = await k.call("vault.open", { workspace, item: bobItem }).then((o) => o, (x) => x as Error);
+    log(`  K's vault.open of his old item: ${old instanceof Error ? old.message.slice(0, 200) : "opened"}`);
+    if (!(old instanceof Error)) throw new Error(`K opened his old item: ${JSON.stringify(old)?.slice(0, 200)}`);
+    const rec = bobWords === "" ? null : await k.call("vault.recover", { workspace, words: bobWords }).then((r) => r as J, (x) => x as Error);
+    log(`  K's vault.recover with bob's words of round 8: ${rec === null ? "no words kept" : rec instanceof Error ? rec.message.slice(0, 200) : JSON.stringify(rec)}`);
+    log(`  K asked for its vaults: ${k.askedWhat(kSet).join("; ") || "nothing"}`);
+    if (moved) {
+      // (moved: as round 24 of locks-moved.ts, a vault of his own made, keyed for K alone; his words key nothing)
+      if (typeof set?.made !== "string") throw new Error(`moved: no vault of his own made: ${JSON.stringify(set)?.slice(0, 300)}`);
+      const mine = await k.until({ topic: "vaults", workspace }, (x) => (x?.vaults ?? []).find((y: J) => y.id === set.made && y.keyed), 60_000);
+      if (mine.devices !== 1) throw new Error(`moved: his new vault keyed for ${mine.devices} devices`);
+    } else {
+      // How an unmoved chain is today (2026-11-15): the chain before his removal took his old vault, so it still counts
+      // as waiting to be keyed anew (views/vault.ts `waitingAs` by the chain's prefix): setup makes him no vault of his
+      // own, and his words unseal its key but answer `vault_waiting`, keying nothing (`rekeyGone` needs a device of his
+      // holding a key of it). Moved (round 24 of locks-moved.ts), nothing of the state that took it is kept on a device
+      // begun anew: setup makes a new vault keyed for it alone, and his words answer {recovered: 0}.
+      if (set?.made !== null && set?.made !== undefined) throw new Error(`unmoved: a vault of his own made: ${JSON.stringify(set)?.slice(0, 300)}`);
+      if (!(rec instanceof Error) || !/vault_waiting/.test(rec.message)) throw new Error(`unmoved: his words not answered vault_waiting: ${rec instanceof Error ? rec.message.slice(0, 200) : JSON.stringify(rec)}`);
+    }
+    for (const [x, n] of othersAt12) if (x.asked() !== n) throw new Error(`${x.name} asked the person: ${x.askedWhat(n).join("; ")}`);
+  });
   await check("H, a device from before the loss, started again: refused", async () => {
     await h.restart();
     // (refused by the station for the lock, not only not reached yet: it is bob's device no more)
@@ -987,6 +1040,9 @@ try {
   await within(Promise.all([e, h, j, k].map((x) => x.close())), 5000);
   const personsIn = (said: string) => Number(said.match(/^PERSONS (\d+)$/m)?.[1] ?? NaN);
   const saidIn = (said: string) => (said.match(/^SAID(.*)$/m)?.[1] ?? "").trim().split(/\s+/).filter((x) => x !== "");
+  // (apps from before, sealing nothing: none after a move, where an app under MOVED_FROM_BUILD is told to update and one
+  // that seals nothing keeps no key of a log of its own, `personal_no_key`)
+  if (!moved) {
   const before = personsIn(stationSays("lock-state"));
   log(`  persons in the workspace's lock before carol: ${before}`);
   let carolVault = "";
@@ -1181,6 +1237,7 @@ try {
     }
   });
 
+  }
   // ── round 15: a station of a person's asleep holds the beginning of their own lock back (a lock kept only by a station
   // that did not answer would get a second one begun beside it: views/lock.ts `personalStations` `answered`); switched
   // on again, it is begun. erin, a member of the first workspace and of alice's second (Two, safe mode off there since
@@ -1207,6 +1264,23 @@ try {
     // (it has found the station off: what it asks of it from here waits, and none of it is answered)
     log(`  E1 sees Two's station: ${short(await e1.stationState(two, (s) => s.state !== "online" && s.state !== "connecting", 120_000))}`);
   });
+  if (moved) {
+    // (after a move a newcomer's app brings a log of its own as it asks, begun then with nobody asked, a station of hers
+    // that did not answer holding nothing back: views/pair.ts `ownLogFor`; the lead, 2026-11-14)
+    await must("erin's device E1 refused; B approves it face to face from its waiting page with Two's station off: let in, signing, her own log begun and bound (one person more), nobody asked on E1", async () => {
+      log(`  E1 sees the first: ${short(await e1.stationState(workspace, (s) => s.cause === "lock", 90_000))}`);
+      await approvedBy(b, e1);
+      await e1.personal((p) => p.standing === "member", 90_000);
+      let said = "";
+      await whenChanged([stationData], () => personsIn((said = stationSays("lock-state"))) === before15 + 1, 90_000, () => `the station's lock: ${said.trim().split("\n").slice(-4).join("; ")}`);
+      if (e1.asked() !== 0) throw new Error(`E1's sealer asked the person ${e1.asked()} times: ${e1.askedWhat().join("; ")}`);
+    });
+    stationDo("second-again", "third");
+    await check("Two's station on again: E1 let in there too, nobody asked", async () => {
+      await e1.stationState(two, (s) => s.state === "online", 120_000);
+      if (e1.asked() !== 0) throw new Error(`E1's sealer asked the person ${e1.asked()} times: ${e1.askedWhat().join("; ")}`);
+    });
+  } else {
   await must("erin's device E1 refused; B approves it face to face from its waiting page: let in, signing", async () => {
     log(`  E1 sees the first: ${short(await e1.stationState(workspace, (s) => s.cause === "lock", 90_000))}`);
     await approvedBy(b, e1);
@@ -1228,6 +1302,7 @@ try {
     await whenChanged([stationData], () => personsIn((said = stationSays("lock-state"))) === before15 + 1, 90_000, () => `the station's lock: ${said.trim().split("\n").slice(-4).join("; ")}`);
     if (e1.asked() !== 0) throw new Error(`E1's sealer asked the person ${e1.asked()} times: ${e1.askedWhat().join("; ")}`);
   });
+  }
 
   // ── round 16: a web page of alice's, W, in the first workspace, where her own lock is bound. A page keeps no keys (its
   // code is still.fail cloud's: lock.ts `Signer`), so it is never on her own lock: it is in the workspace's lock as a
@@ -1433,6 +1508,10 @@ try {
     await bHolds(await b.call("lock.state", { workspace }));
   });
   // ── 设置 › 安全's 「保护」 beside the fourth station, on B (an owner's device signing in the lock) ──
+  // (moved: the station is said in alice's log, which the chain never names; the fourth pins the chain once the state its
+  // logs and bodies make names it, fetched of the first: station/src/mesh/moved-pin.ts)
+  const stationsAt = (said: string) => Number(said.match(/^STATIONS (\d+)$/m)?.[1] ?? NaN);
+  const stationsBefore = stationsAt(stationSays("lock-state"));
   await must("B protects the fourth station (「保护」, lock.joinStation)", async () => {
     const r = await b.call("lock.joinStation", { workspace, station: fourthId });
     log(`  joinStation: ${JSON.stringify(r)?.slice(0, 300)}`);
@@ -1440,6 +1519,7 @@ try {
   await check("the first station's lock names the fourth; the fourth keeps Dev's lock, as far as the first", async () => {
     await whenChanged([stationData, fourthData], () => {
       const ours = keptAt(stationData);
+      if (moved) return stationsAt(stationSays("lock-state")) === stationsBefore + 1 && headOf(keptAt(fourthData)) === headOf(ours) && /^MOVED \S+ on /m.test(stationSays("lock-state", "fourth"));
       return namesStation(ours, fourthId) && headOf(keptAt(fourthData)) === headOf(ours);
     }, 60_000, () => `the first's head ${headOf(keptAt(stationData))} (names the fourth: ${namesStation(keptAt(stationData), fourthId)}), the fourth's ${headOf(keptAt(fourthData))}`);
     log(`  both at ${headOf(keptAt(stationData))?.slice(0, 20)}; the fourth's lock-state: ${stationSays("lock-state", "fourth").trim().split("\n").filter((x) => !x.startsWith("DEVICE")).join("; ")}`);
@@ -1452,7 +1532,7 @@ try {
   // (as round 11 takes the second out, and the rigs' run its rig: out of the workspace, then down)
   await must("B takes the fourth station out of Dev: the first station's lock names it no more; it goes down", async () => {
     await b.call("workspace.removeStation", { account: sub, workspace, station: fourthId });
-    await whenChanged([stationData], () => !namesStation(keptAt(stationData), fourthId), 60_000, () => "the first station's lock still names the fourth");
+    await whenChanged([stationData], () => (moved ? stationsAt(stationSays("lock-state")) === stationsBefore : !namesStation(keptAt(stationData), fourthId)), 60_000, () => "the first station's lock still names the fourth");
     stationDo("second-down", "fourth");
   });
   await check("B goes on in Dev, safe mode on, alice's item opened", async () => {
@@ -1460,12 +1540,16 @@ try {
     await b.lock(workspace, (l) => l.locked && l.signs, 30_000);
     await opens(b);
   });
+
   // ── round 18: no station up (3b-2). The workspace's one station left frozen (asked, it never answers), the cloud up:
   // B removes A installed anew (its own lock bound here, so off that first and out of the workspace's after it,
   // views/lock.ts `run`'s removeDevice). No station takes it: pending, said so at once, nothing on the chains held
   // (A installed anew still listed), the cloud's taking it counting for nothing; the station back, B brings it as it
   // reads it again, and A installed anew is refused ──
   const firstName = (stationRow(await b.lock(workspace, (l) => stationRow(l, firstId) !== undefined, 30_000), firstId)?.name ?? "") as string;
+  // (moved: alice's own log, where the removal is said, is kept by Two's station too, so it is stopped as well: no
+  // station of hers up; the removal is then pending on her own log, and in force at the first once it is back)
+  if (moved) stationDo("second-stop", "third");
   stationDo("freeze");
   try {
     await check("no station up: B removes A installed anew, answered within seconds as pending; B's page shows it waiting for the station by name, A installed anew still listed", async () => {
@@ -1481,10 +1565,13 @@ try {
     });
   } finally {
     stationDo("thaw");
+    if (moved) stationDo("second-again", "third");
   }
   await check("the station started: within seconds the removal is on its chain, nothing pending on B's page, A installed anew refused", async () => {
     const t1 = Date.now();
-    await whenChanged([stationData], () => (keptAt(stationData) ?? []).some((x) => x.kind === "device.remove" && x.body?.id === eId), 20_000, () => "the station's chain has no removal of A installed anew");
+    // (moved: on alice's own log, so the first's state in force lists A installed anew no more)
+    if (moved) await whenChanged([stationData], () => !stationSays("lock-state").includes(`DEVICE ${eId.slice(0, 12)} `), 20_000, () => "the first station still lists A installed anew");
+    else await whenChanged([stationData], () => (keptAt(stationData) ?? []).some((x) => x.kind === "device.remove" && x.body?.id === eId), 20_000, () => "the station's chain has no removal of A installed anew");
     log(`  on the station's chain ${Date.now() - t1} ms after it was up`);
     await b.lock(workspace, (l) => (l.pending ?? []).length === 0 && !lockDevices(l).some((x) => x.id === eId), 20_000);
     await e.restart();

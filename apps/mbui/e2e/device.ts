@@ -220,15 +220,18 @@ export class Device {
   /// Whose device: the dev cloud's mock account (alice, or bob) and, once signed in, its subject.
   user: string;
   sub = "";
+  /// The last six characters of the access token it was signed in with: how the dev cloud's log (LOG_REQUESTS,
+  /// cloud/test/dev.ts) names its requests, so a run can count an account's requests a minute.
+  tokenTail = "";
   /// Whether its host seals what it keeps (an app of today); false: an app from before, with no sealer.
   sealed: boolean;
   /// A web page's, not an app's (no keys of an app, nothing sealed).
   page: boolean;
   /// The release it says it is (`client.device`'s `build`, `0.1.<n>`, said with each request to a station, which keeps
   /// the highest a device of a lock said: station/src/mesh/device-builds.ts); none: `0.1.0`, a build from the sources,
-  /// taken as one that takes a moved workspace (client/core-ts src/lock-handover.ts `ableBuild`). An app of a release
-  /// before MOVED_FROM_BUILD on a lock holds its workspace's handover back for as long as it is used, as a person's
-  /// app not updated does.
+  /// taken as one that takes a moved workspace (client/core-ts src/lock-handover.ts `ableBuild`). An owner's app of a
+  /// release before MOVED_FROM_BUILD moves nothing itself (views/lock.ts `heldBack`, its own build), so a workspace
+  /// whose owners' apps all say one stays as before a move; no other device's build holds a move back.
   build: string | undefined;
   /// Each request of its core's to a station whose answer it read to its end (`watchRequests`), across its restarts,
   /// as this driver heard of it (`at`: its clock then); and the waits for one (`answered`).
@@ -379,6 +382,7 @@ export class Device {
     const text = await r.text();
     if (!r.ok) throw new SignInFailed(`${this.name} dev sign-in: ${r.status} ${text.slice(0, 200)}`);
     const account = JSON.parse(text);
+    this.tokenTail = String(account.access ?? "").slice(-6);
     await this.call("migrate", { accounts: [account] });
     const accounts = await this.until({ topic: "accounts" }, (v) => (Array.isArray(v) && v.length > 0 ? v : undefined));
     this.sub = accounts[0].sub;
@@ -402,7 +406,7 @@ export class Device {
     }, ms);
     return this.until({ topic: "station", scope: workspace, station }, (v) => {
       if (!v?.link) return undefined;
-      const s: J = { station, state: v.link.state, message: v.link.message, ...(v.blocked ? { cause: "lock", blocked: v.blocked } : {}) };
+      const s: J = { station, state: v.link.state, message: v.link.message, ...(v.link.old ? { old: v.link.old } : {}), ...(v.blocked ? { cause: "lock", blocked: v.blocked } : {}) };
       return ok(s) ? s : undefined;
     }, ms);
   }

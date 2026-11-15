@@ -2686,7 +2686,8 @@ let field_hint : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Mut
 /// A line to type in (controls.css.ts input, a one-line one: a pill as the buttons beside it are, 36 high at least,
 /// 16 in, a line of the strong grey, the field's hover grey pointed at or written in, on the canvas, its words 14, the
 /// placeholder subtle): mbui's field (@kit.text_field), its editor `key`'s; `field`: what it holds, the view's own;
-/// `small`: 34 high (a small panel's, as its rows: input_box_small); `solid`: on a card's ground in a chat (field_solid);
+/// `small`: 34 high (a small panel's, as its rows: input_box_small); `high`: as high as what is pressed beside it in
+/// its row, where that is not a field's height (a browser's round ← → ⟳ beside its address); `solid`: on a card's ground in a chat (field_solid);
 /// `shorter`: other ways to say the placeholder where the field has less room (Ctx::editor's); `leaves`: the keys it
 /// leaves to a menu it offers as it is typed in (text_field's); `on_submit`: what Enter giving its words up does, given
 /// them, as the key is taken (text_field's); `on_change`: what typing in it does, given its words, as they are typed.
@@ -2699,6 +2700,7 @@ pub fn input(
   secret? : Bool = false,
   disabled? : Bool = false,
   small? : Bool = false,
+  high? : Double,
   solid? : Bool = false,
   leaves? : Array[Int] = [],
   field? : @ui.Field,
@@ -2714,6 +2716,10 @@ pub fn input(
       (false, true) => input_box_hot.then(control_height()).then(field_corner())
       (true, false) => input_box_small
       (true, true) => input_box_small_hot
+    }
+    let look = match high {
+      Some(h) => look.then(@ui.style(h=Fixed(h)))
+      None => look
     }
     let look = if card_foot_words_now.val { look.then(@ui.style(px=room(card_foot_words_in(button_height())))) } else { look }
     c.box(
@@ -4578,7 +4584,7 @@ pub fn update_key(
 ///|
 /// The list catching up on what changed while away (the chats' `syncing`; sf/waiting.mbt): beside the keys of
 /// the bar it stands in, `side` across, the refresh mark (`mark`, in the grey of what it says nothing of) turning, a
-/// turn each sync_turn_ms, slow at its ends (by the clock as each frame is drawn: nothing built anew for it); `text` its tip and what it is said to be. Only once it has gone on later_ms
+/// turn each sync_turn_ms, evenly (by the clock as each frame is drawn: nothing built anew for it); `text` its tip and what it is said to be. Only once it has gone on later_ms
 /// (a moment's catching up shows nothing). Once all is here, the mark becomes a tick: it goes on from where it is and as
 /// fast as it turns, slowing to rest where it looks as upright (sync_rest), its arrows drawn back along their strokes,
 /// then the tick drawn as a hand ticks (no two marks fading over each other); there sync_done_ms, then it fades.
@@ -4662,7 +4668,7 @@ pub fn sync_key(c : @ui.Ctx, key : String, side : Double, mark : Double, shown :
         |> ignore
       })
       match rest {
-        // turned by the clock as each frame is drawn (Ctx::cycle_look), slow at a turn's ends
+        // turned evenly by the clock as each frame is drawn (Ctx::cycle_look)
         None => c.cycle_look(a, sync_turn_ms, fn(k) { @ui.look(rot=sync_turned(k)) })
         // going on to rest (upright again once there: it looks the same each half turn)
         Some(r) =>
@@ -4702,16 +4708,16 @@ pub fn sync_key(c : @ui.Ctx, key : String, side : Double, mark : Double, shown :
 }
 
 ///|
-/// How far round the mark has turned where a turn is at `k` (0 to 1): slow at its ends (smoothstep, as CSS's
-/// cubic-bezier(.45, .05, .55, .95) the web turns it by).
+/// How far round the mark has turned where a turn is at `k` (0 to 1): the same speed through each turn's join, so it
+/// never appears to stop while catching up.
 fn sync_turned(k : Double) -> Double {
-  k * k * (3.0 - 2.0 * k) * 2.0 * 3.141592653589793
+  k * 2.0 * 3.141592653589793
 }
 
 ///|
-/// How fast it turns there (a turn's part per ms).
-fn sync_turning(k : Double) -> Double {
-  6.0 * k * (1.0 - k) * 2.0 * 3.141592653589793 / sync_turn_ms
+/// How fast it turns (radians per ms), including at a turn's join.
+fn sync_turning() -> Double {
+  2.0 * 3.141592653589793 / sync_turn_ms
 }
 
 ///|
@@ -4727,18 +4733,15 @@ priv struct SyncRest {
 ///|
 /// Where it rests from a turn's state at moment `now`: the next half turn on (the mark is two arrows, the same turned
 /// half round), slowing evenly from its speed (what it has to go over half its speed: in sync_settle_least to
-/// sync_settle_most), not going back; at once where it is (nearly) at rest there already.
+/// sync_settle_most), not going back.
 fn sync_rest(now : Double) -> SyncRest {
   let pi = 3.141592653589793
   let p = now / sync_turn_ms
   let k = p - p.floor()
   let from = sync_turned(k)
-  let speed = sync_turning(k)
-  if from - (from / pi).floor() * pi <= sync_rest_near && speed * sync_settle_least <= sync_rest_near {
-    return { ms: 0.0, from, speed, to: from }
-  }
+  let speed = sync_turning()
   // a cubic from `speed` to none goes back unless what it has to go is at least a third of `speed` over its time
-  let mut to = ((from - sync_rest_near) / pi).ceil() * pi
+  let mut to = (from / pi).ceil() * pi
   while to <= from || speed * sync_settle_least > 3.0 * (to - from) {
     to = to + pi
   }
@@ -4798,12 +4801,12 @@ fn init {
 }
 
 ///|
-/// A turn of the mark (the web's SyncMark: 1.4s, eased in and out).
+/// A turn of the mark: evenly, but slower than the other waiting rings (spinner_turn_ms), as it only says the list is
+/// catching up in the background, nothing to wait for (the user, 2026-11-14: 1.4 s, not 0.8).
 let sync_turn_ms : Double = 1400.0
 
 ///|
-/// How long the mark takes to come to rest, at least and at most; how far on in that the arrows start to go; how near
-/// rest it may be to stop where it is (of a turn's 2π).
+/// How long the mark takes to come to rest, at least and at most; how far on in that the arrows start to go.
 let sync_settle_least : Double = 150.0
 
 ///|
@@ -4811,9 +4814,6 @@ let sync_settle_most : Double = 700.0
 
 ///|
 let sync_rest_gone : Double = 0.8
-
-///|
-let sync_rest_near : Double = 0.03
 
 ///|
 /// How long the tick stays once drawn, how long the arrows take to be drawn back and the tick to be drawn (begun as

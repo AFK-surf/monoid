@@ -149,6 +149,10 @@ pub(all) struct Reading {
   sent_as : Map[String, String]
   /// Told when a local row is taken over, so a viewer opened before that can follow its new core identity.
   sent_as_told : @signals.Signal[Int]
+  /// the keys (sent_as's) of rows taken over that were sent close under the row before them (LocalSent's `joined`): that
+  /// row `followed`, its time line gone, and the core's row joined, through the takeover as from the press, the core's
+  /// word changing nothing seen (the coordinator of the migration, 2026-11-15: one block, sent here and the core's)
+  sent_joined : Map[String, Bool]
   /// agents whose turn ended, still shown while their messages come out of their avatars: Lingering
   linger : Map[String, Lingering]
   /// the agents' lines in the order they first came to the list, by their keys: they stand so, one whose turn ended
@@ -286,6 +290,7 @@ pub fn reading_of(key : String) -> Reading {
         sent: {},
         sent_as: {},
         sent_as_told: @signals.signal(0),
+        sent_joined: {},
         linger: {},
         act_order: {},
         acts_seen: 0,
@@ -815,14 +820,17 @@ pub fn linger_tick(c : @ui.Ctx, src : Source, in_front~ : Bool) -> Unit {
     rd.ticked = false
     rd.floor_counted = false
     // every chat kept whose data the page read: its activities whose turn is over let go, its page shown or not
-    // (not one a message of it drawn elsewhere keeps: its topic never asked for)
+    // (not one a message of it drawn elsewhere keeps: its topic never asked for), read through the source of the page
+    // that holds it, never the window's: a chat whose page has not read it yet (one made as nodes, its composer's old
+    // view not built yet) or is left (told so as this frame's builds are over: pages_left) read through the window's
+    // would be a reader of its own, its topic held past its page
     let (station, session) = match rk.find("\u{1}") {
       Some(i) => (rk.exact_view(end=i).to_owned(), rk.exact_view(start=i + 1).to_owned())
       None => continue
     }
     let r : ChatRef = { station, session, title: "", station_name: "" }
     let page_src = page_source_for_chat(src, r)
-    if chat_kept_from(page_src, r) is None {
+    if physical_equal(page_src, src) || chat_kept_from(page_src, r) is None {
       continue
     }
     match view_of_chat(page_src, r).0 {
@@ -1489,6 +1497,9 @@ pub fn row_keys(
         // (the row goes on by the key it was sent as)
         came = "o:" + l.row.id
         rd.sent_as[k] = came
+        if l.row.joined {
+          rd.sent_joined[came] = true
+        }
         rd.sent_as_told.set(rd.sent_as_told.untracked() + 1)
         all_keys[i] = came
         taken[k] = true
@@ -1520,6 +1531,22 @@ pub fn row_keys(
   // (after the outbox, before the agents' lines and the room under them)
   let all = all.copy()
   let all_keys = all_keys.copy()
+  // (a row taken over that was sent close under the row before it: as it was from the press, whatever the core says yet)
+  if rd.sent_joined.length() > 0 {
+    for i, k in all_keys {
+      guard i > 0 && rd.sent_joined.contains(k) else { continue }
+      match all[i] {
+        Said(m) if !m.joined => all[i] = Said({ ..m, joined: true })
+        Out(o) if !o.joined => all[i] = Out({ ..o, joined: true })
+        _ => ()
+      }
+      match all[i - 1] {
+        Said(m) if !m.followed => all[i - 1] = Said({ ..m, followed: true })
+        Out(o) if !o.followed => all[i - 1] = Out({ ..o, followed: true })
+        _ => ()
+      }
+    }
+  }
   if still.length() > 0 {
     let mut at = all.length()
     for i, e in all {
@@ -2563,7 +2590,7 @@ fn shown_sign(e : Entry) -> String {
         Some(d) => "\{d.resolved}\{d.dismissed}\{@ui.some_text(d.chosen)}"
         None => ""
       }
-      "m\{m.text.length()}|\{m.attachments.length()}|\{m.quotes.length()}|\{m.time is Some(_)}|\{m.waiting}|\{m.joined}|\{m.followed}|\{d}|\{m.notice_failed}|\{m.notice_words.length()}|\{m.notice_retry_session}|\{m.notice_again_session}|\{m.notice_detail.length()}"
+      "m\{m.text.length()}|\{m.attachments.length()}|\{m.quotes.length()}|\{m.time is Some(_)}|\{m.waiting}|\{m.joined}|\{m.followed}|\{d}|\{m.notice_failed}|\{m.notice_words.length()}|\{m.notice_retry_session}|\{m.notice_again_session}|\{m.notice_reassign_session}|\{m.notice_detail.length()}"
     }
     Out(o) => "o\{o.text.length()}|\{o.attachments.length()}|\{o.state}|\{o.joined}|\{o.followed}"
     State(a, b, c) => "s" + a + b + c

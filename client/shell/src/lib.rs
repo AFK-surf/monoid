@@ -522,6 +522,8 @@ enum Handle {
     Listener(Arc<Listener>),
     /// A zstd stream being taken apart (`zstd.open`).
     Unzstd(Arc<Mutex<Unzstd>>),
+    /// A zstd stream being made (`zstd.stream`): each piece given flushed out whole (station/mesh/compress.ts's way).
+    Zstd(Arc<Mutex<zstd::stream::raw::Encoder<'static>>>),
 }
 
 /// A listening socket: TCP on this machine's loopback (one bound here, or one a launcher bound and handed down by its
@@ -752,6 +754,61 @@ fn headers_of(response: &reqwest::Response) -> Value {
     Value::Array(response.headers().iter().map(|(k, v)| json!([k.as_str(), String::from_utf8_lossy(v.as_bytes())])).collect())
 }
 
+/// What a stream's other end sent first, up to its first line's end (16 KiB at most; less where it ended or failed):
+/// all of what was read, to be carried on before the rest (a frame of `pipe`'s).
+async fn read_head_line(halves: &Halves) -> Vec<u8> {
+    let mut read = Vec::new();
+    let mut buf = vec![0u8; 16 * 1024];
+    let mut recv = halves.recv.lock().await;
+    let Some(recv) = recv.as_mut() else { return read };
+    while !read.contains(&b'\n') && read.len() < 16 * 1024 {
+        match recv.read(&mut buf).await {
+            Ok(Some(n)) => read.extend_from_slice(&buf[..n]),
+            _ => break,
+        }
+    }
+    read
+}
+
+/// A request's route as `conn.hand`'s `routes` say them: its head line's method (GET where none) and its path without
+/// its query. None where the line is not one (wire.ts: a JSON head line).
+fn route_of(read: &[u8]) -> Option<String> {
+    let end = read.iter().position(|&b| b == b'\n')?;
+    let head: Value = serde_json::from_slice(&read[..end]).ok()?;
+    let method = head.get("method").and_then(Value::as_str).unwrap_or("GET").to_uppercase();
+    let path = head.get("path")?.as_str()?;
+    Some(format!("{method} {}", path.split('?').next().unwrap_or(path)))
+}
+
+/// Whether route `r` (`"GET /a/b"`) is one `pattern` names: the same method and as many segments, each the same or `*`
+/// (any one, not empty).
+fn route_matches(pattern: &str, r: &str) -> bool {
+    let (mut p, mut r) = (pattern.split('/'), r.split('/'));
+    loop {
+        match (p.next(), r.next()) {
+            (None, None) => return true,
+            (Some("*"), Some(s)) if !s.is_empty() => {}
+            (Some(a), Some(b)) if a == b => {}
+            _ => return false,
+        }
+    }
+}
+
+/// `bytes` said to the Unix socket at `path` on a connection of their own, then that connection ended.
+async fn tell_unix(path: &str, bytes: &[u8]) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        let mut socket = tokio::net::UnixStream::connect(path).await.map_err(err)?;
+        socket.write_all(bytes).await.map_err(err)?;
+        socket.shutdown().await.map_err(err)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (path, bytes);
+        Err("Unix sockets are Unix's".into())
+    }
+}
+
 fn str_of<'a>(v: &'a Value, k: &str) -> Result<&'a str, String> {
     v.get(k).and_then(Value::as_str).ok_or_else(|| format!("missing {k}"))
 }
@@ -866,6 +923,7 @@ impl Handle {
             Handle::IStream(_) => "stream",
             Handle::Listener(_) => "listener",
             Handle::Unzstd(_) => "unzstd",
+            Handle::Zstd(_) => "zstd",
         }
     }
 }
@@ -1192,8 +1250,57 @@ impl Inner {
                     None => Answer::json(json!({ "end": true })),
                 })
             }
+            // `bytes` compressed whole at `level` with a window of 2^`window` (station/mesh/compress.ts's: what a station's
+            // program answers a device that asks for zstd), off the caller's thread.
+            "zstd.compress" => {
+                let level = a.get("level").and_then(Value::as_i64).unwrap_or(3) as i32;
+                let window = a.get("window").and_then(Value::as_u64).unwrap_or(20) as u32;
+                let input = bytes.unwrap_or_default();
+                let out = tokio::task::spawn_blocking(move || -> Result<Vec<u8>, String> {
+                    let mut z = zstd::bulk::Compressor::new(level).map_err(err)?;
+                    z.set_parameter(zstd::zstd_safe::CParameter::WindowLog(window)).map_err(err)?;
+                    z.compress(&input).map_err(err)
+                })
+                .await
+                .map_err(err)??;
+                Ok(Answer::bytes(json!({}), out))
+            }
+            // A zstd stream made of what is given it piece by piece (`zstd.push`), each piece flushed: what an event stream
+            // a station's program answers goes out as (station/mesh/compress.ts `compressedStream`), `level` and a window of
+            // 2^`window` its.
+            "zstd.stream" => {
+                let level = a.get("level").and_then(Value::as_i64).unwrap_or(3) as i32;
+                let window = a.get("window").and_then(Value::as_u64).unwrap_or(20) as u32;
+                let mut e = zstd::stream::raw::Encoder::new(level).map_err(err)?;
+                e.set_parameter(zstd::zstd_safe::CParameter::WindowLog(window)).map_err(err)?;
+                Ok(Answer::json(json!({ "id": self.keep(Handle::Zstd(Arc::new(Mutex::new(e)))) })))
+            }
             "zstd.open" => Ok(Answer::json(json!({ "id": self.keep(Handle::Unzstd(Arc::new(Mutex::new(Unzstd::new()?)))) }))),
             "zstd.push" => {
+                if let Handle::Zstd(z) = self.handle(id_of(&a)?)? {
+                    use zstd::stream::raw::{InBuffer, Operation, OutBuffer};
+                    let input = bytes.unwrap_or_default();
+                    let mut z = z.lock().unwrap();
+                    let mut out = Vec::with_capacity(input.len() / 2 + 64);
+                    let mut chunk = vec![0u8; 64 * 1024];
+                    let mut inb = InBuffer::around(&input);
+                    while inb.pos() < input.len() {
+                        let mut o = OutBuffer::around(&mut chunk[..]);
+                        z.run(&mut inb, &mut o).map_err(err)?;
+                        let n = o.pos();
+                        out.extend_from_slice(&chunk[..n]);
+                    }
+                    loop {
+                        let mut o = OutBuffer::around(&mut chunk[..]);
+                        let left = z.flush(&mut o).map_err(err)?;
+                        let n = o.pos();
+                        out.extend_from_slice(&chunk[..n]);
+                        if left == 0 {
+                            break;
+                        }
+                    }
+                    return Ok(Answer::bytes(json!({}), out));
+                }
                 let Handle::Unzstd(z) = self.handle(id_of(&a)?)? else { return Err("not a zstd stream".into()) };
                 let input = bytes.unwrap_or_default();
                 let mut z = z.lock().unwrap();
@@ -1795,9 +1902,19 @@ impl Inner {
             // one). A 0 there and no index: a front from before. Kept as a stream here meanwhile
             // (`istream.stopped`, `istream.reset`). Answered once the connection is gone.
             // What station/mb's front gives its Node, with no step of the program's for each stream.
+            //
+            // With `front` (Unix sockets' paths, each taking the next in turn) and `routes` ("GET /admin/api/chats", …): a stream past the first
+            // whose head line (its first, read here) asks one of those, by its method and its path without the query,
+            // goes there instead, with what was read of it, and `path` is told its index went elsewhere (its head the
+            // ids, a 3 and the index): what the front answers itself. A route's segment `*` is any one segment.
             "conn.hand" => {
                 let on = id_of(&a)?;
                 let path = str_of(&a, "path")?.to_string();
+                let fronts: Vec<String> = a.get("front").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
+                let mut turn = 0usize;
+                let routes: Arc<Vec<String>> = Arc::new(
+                    a.get("routes").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect(),
+                );
                 let Handle::Conn(conn) = self.handle(on)? else { return Ok(Answer::json(json!({}))) };
                 while let Ok((mut send, mut recv)) = conn.accept_bi().await {
                     if !matches!(self.handle(on), Ok(Handle::Conn(_))) {
@@ -1820,9 +1937,30 @@ impl Inner {
                     head.extend(id.to_be_bytes());
                     head.push(2);
                     head.extend(index.to_be_bytes());
-                    let (inner, path) = (self.clone(), path.clone());
+                    let front = (!fronts.is_empty()).then(|| fronts[turn % fronts.len()].clone());
+                    turn += 1;
+                    let (inner, path, routes) = (self.clone(), path.clone(), routes.clone());
                     tokio::spawn(async move {
-                        if let Err(e) = inner.hand(id, halves, &path, &head).await {
+                        let mut head = head;
+                        let mut to = &path;
+                        if let (Some(front), true) = (&front, index > 0 && !routes.is_empty()) {
+                            let read = read_head_line(&halves).await;
+                            if route_of(&read).is_some_and(|r| routes.iter().any(|p| route_matches(p, &r))) {
+                                let mut skip = head[..16].to_vec();
+                                skip.push(3);
+                                skip.extend(index.to_be_bytes());
+                                if let Err(e) = tell_unix(&path, &skip).await {
+                                    eprintln!("mesh: a stream's index not told: {e}");
+                                }
+                                to = front;
+                            }
+                            // (as the frame `pipe` would have carried it: its length first)
+                            if !read.is_empty() {
+                                head.extend((read.len() as u32).to_be_bytes());
+                                head.extend(read);
+                            }
+                        }
+                        if let Err(e) = inner.hand(id, halves, to, &head).await {
                             eprintln!("mesh: a stream not given: {e}");
                         }
                     });
@@ -2032,8 +2170,12 @@ impl Inner {
         }
         // A path's kind as stat (links followed) says it: "file", "dir" or "other"; null when it cannot be (none there,
         // no right): what the station's programs ask of the filesystem (station/mb src/locate), as Node's statSync does.
+        // With `lstat`, the path itself as lstat says it (a link "link", not followed).
         if op == "fs.stat" {
-            return Ok(match std::fs::metadata(str_of(a, "path")?) {
+            let path = str_of(a, "path")?;
+            let lstat = a.get("lstat").and_then(Value::as_bool).unwrap_or(false);
+            return Ok(match if lstat { std::fs::symlink_metadata(path) } else { std::fs::metadata(path) } {
+                Ok(m) if m.file_type().is_symlink() => json!("link"),
                 Ok(m) if m.is_file() => json!("file"),
                 Ok(m) if m.is_dir() => json!("dir"),
                 Ok(_) => json!("other"),
@@ -2118,8 +2260,11 @@ impl Inner {
         // `bigint` says them; null when it cannot be.
         if op == "fs.meta" {
             let Ok(meta) = std::fs::metadata(str_of(a, "path")?) else { return Ok(Value::Null) };
-            let modified = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_millis() as u64);
-            return Ok(json!({ "size": meta.len(), "mtimeMs": modified }));
+            let since = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok());
+            let modified = since.map(|d| d.as_millis() as u64);
+            // `mtime`: as Node's statSync (no `bigint`) says `mtimeMs`, its fraction of a millisecond kept.
+            let mtime = since.map(|d| d.as_secs() as f64 * 1e3 + d.subsec_nanos() as f64 / 1e6);
+            return Ok(json!({ "size": meta.len(), "mtimeMs": modified, "mtime": mtime, "dir": meta.is_dir() }));
         }
         // The end of a file, at most `bytes` of it (up to its size when opened), decoded as TextDecoder("utf-8") does
         // (what is not UTF-8 replaced, a leading byte order mark dropped); null when it does not open.
@@ -2135,6 +2280,66 @@ impl Inner {
             }
             let body = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&bytes);
             return Ok(json!(String::from_utf8_lossy(body)));
+        }
+        // Bytes of a file as hex, from byte `from` (0), `length` of them where it says (to its end where not), or with
+        // `zstd` what the zstd frames there hold (station/mb src/history's transcripts read a piece at a time, a put-away
+        // one a frame at a time); with `exact`, a file that ends before `length` is a failure. Null when it does not open.
+        if op == "fs.bytes" {
+            use std::io::{Read, Seek, SeekFrom};
+            let Ok(mut file) = std::fs::File::open(str_of(a, "path")?) else { return Ok(Value::Null) };
+            let from = a.get("from").and_then(Value::as_u64).unwrap_or(0);
+            let length = a.get("length").and_then(Value::as_u64);
+            let mut bytes = Vec::new();
+            file.seek(SeekFrom::Start(from)).map_err(err)?;
+            match length {
+                Some(n) => file.take(n).read_to_end(&mut bytes),
+                None => file.read_to_end(&mut bytes),
+            }
+            .map_err(err)?;
+            if a.get("exact").and_then(Value::as_bool).unwrap_or(false) && length.is_some_and(|n| (bytes.len() as u64) < n) {
+                return Err("a put-away transcript ended early".into());
+            }
+            if a.get("zstd").and_then(Value::as_bool).unwrap_or(false) {
+                bytes = zstd::decode_all(bytes.as_slice()).map_err(err)?;
+            }
+            return Ok(json!(hex::encode(bytes)));
+        }
+        // A program run to its end, as Node's execFileSync runs one (station/src/read/sessions.ts `inRepositories`: `git
+        // ls-files`): `command` with `args`, nothing on its stdin and its stderr let go, its stdout decoded as
+        // Buffer.toString("utf8") does; null where it did not end well: not started, ended by a signal or with a code
+        // not 0, still running after `timeoutMs` (killed then), or writing more than `maxBytes`.
+        if op == "proc.run" {
+            use std::io::Read;
+            use std::process::{Command, Stdio};
+            let args: Vec<String> = a.get("args").and_then(Value::as_array).map(|v| v.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
+            let timeout = std::time::Duration::from_millis(a.get("timeoutMs").and_then(Value::as_u64).unwrap_or(5000));
+            let most = a.get("maxBytes").and_then(Value::as_u64).unwrap_or(1 << 20) as usize;
+            let Ok(mut child) = Command::new(str_of(a, "command")?).args(&args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() else {
+                return Ok(Value::Null);
+            };
+            let mut stdout = child.stdout.take().expect("piped");
+            let reading = std::thread::spawn(move || {
+                let mut out = Vec::new();
+                let over = (&mut stdout).take(most as u64 + 1).read_to_end(&mut out).is_err() || out.len() > most;
+                (out, over)
+            });
+            let started = std::time::Instant::now();
+            let status = loop {
+                match child.try_wait() {
+                    Ok(Some(status)) => break Some(status),
+                    Ok(None) if started.elapsed() < timeout => std::thread::sleep(std::time::Duration::from_millis(2)),
+                    _ => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        break None;
+                    }
+                }
+            };
+            let (out, over) = reading.join().unwrap_or((Vec::new(), true));
+            return Ok(match status {
+                Some(s) if s.success() && !over => json!(String::from_utf8_lossy(&out)),
+                _ => Value::Null,
+            });
         }
         // What a link points to, as Node's readlinkSync gives it; null when the path is no link or cannot be read.
         if op == "fs.readlink" {
@@ -3164,7 +3369,26 @@ mod tests {
         assert_eq!(sync("fs.read", json!({ "path": at("a/packed.zst"), "zstd": true }))["value"], json!("x".repeat(1000)));
         assert_eq!(std::fs::read_dir(dir.path().join("a")).unwrap().count(), 2);
         assert_eq!(sync("fs.hash", json!({ "path": at("a/b/plain.txt") }))["value"], plain["value"]["sha256"]);
+        // a piece of a file as hex, a frame of it decompressed, and one that ends early
+        assert_eq!(sync("fs.bytes", json!({ "path": at("a/packed.zst"), "zstd": true }))["value"], json!(hex::encode("x".repeat(1000))));
+        let whole = sync("fs.bytes", json!({ "path": at("a/b/plain.txt") }))["value"].as_str().unwrap().to_string();
+        assert_eq!(sync("fs.bytes", json!({ "path": at("a/b/plain.txt"), "from": 1, "length": 2 }))["value"], json!(whole[2..6]));
+        assert!(sync("fs.bytes", json!({ "path": at("a/b/plain.txt"), "from": 1, "length": 1_000_000, "exact": true }))["error"].is_string());
+        assert_eq!(sync("fs.bytes", json!({ "path": at("none") }))["value"], Value::Null);
         assert_eq!(sync("fs.hash", json!({ "path": at("none") }))["value"], Value::Null);
+        // a program's output, and one that fails, runs too long or writes too much; a link as lstat says it
+        #[cfg(unix)]
+        {
+            assert_eq!(sync("proc.run", json!({ "command": "printf", "args": ["a\\nb"] }))["value"], json!("a\nb"));
+            assert_eq!(sync("proc.run", json!({ "command": "false" }))["value"], Value::Null);
+            assert_eq!(sync("proc.run", json!({ "command": "sleep", "args": ["5"], "timeoutMs": 50 }))["value"], Value::Null);
+            assert_eq!(sync("proc.run", json!({ "command": "printf", "args": ["abcdef"], "maxBytes": 3 }))["value"], Value::Null);
+            assert_eq!(sync("proc.run", json!({ "command": "/no/such/program" }))["value"], Value::Null);
+            std::os::unix::fs::symlink(at("a/b/plain.txt"), at("a/link")).unwrap();
+            assert_eq!(sync("fs.stat", json!({ "path": at("a/link"), "lstat": true }))["value"], json!("link"));
+            assert_eq!(sync("fs.stat", json!({ "path": at("a/link") }))["value"], json!("file"));
+            std::fs::remove_file(at("a/link")).unwrap();
+        }
         // copied, renamed, a folder made, then let go with what it holds; nothing there is no failure
         assert_eq!(sync("fs.copy", json!({ "from": at("a/b/plain.txt"), "to": at("a/copy.txt") }))["value"], Value::Null);
         assert_eq!(sync("fs.rename", json!({ "from": at("a/copy.txt"), "to": at("a/moved.txt") }))["value"], Value::Null);

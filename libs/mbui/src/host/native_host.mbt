@@ -268,6 +268,16 @@ impl @hostapi.Host for Native with glyph_put(_, key, x, y) {
 }
 
 ///|
+impl @hostapi.Host for Native with glyph_picture(_, key, out) {
+  glyph_picture(key, out)
+}
+
+///|
+impl @hostapi.Host for Native with atlas_put(_, x, y, w, h, px) {
+  atlas_put(x, y, w, h, px)
+}
+
+///|
 impl @hostapi.Host for Native with atlas_size(_, colour) {
   atlas_size(colour)
 }
@@ -1090,6 +1100,31 @@ impl @hostapi.Host for Native with cl_state(_, id) {
 ///|
 impl @hostapi.Host for Native with cl_picture(_, id) {
   cl_picture(id)
+}
+
+///|
+impl @hostapi.Host for Native with tm_open(_, cols, rows) {
+  tm_open(cols, rows)
+}
+
+///|
+impl @hostapi.Host for Native with tm_write(_, id, data) {
+  tm_write(id, data)
+}
+
+///|
+impl @hostapi.Host for Native with tm_resize(_, id, cols, rows) {
+  tm_resize(id, cols, rows)
+}
+
+///|
+impl @hostapi.Host for Native with tm_lines(_, id) {
+  tm_lines(id)
+}
+
+///|
+impl @hostapi.Host for Native with tm_close(_, id) {
+  tm_close(id)
 }
 
 ///|

@@ -33,7 +33,9 @@ let corner_modes : Array[String] = {
     "webdemo", "home", "home-bars", "home-jobs", "home-sheet", "home-news", "new-workspace", "new-workspace-code", "rail-menu", "landing", "landing-invited", "blocked", "place",
     "switcher", "switcher-found", "keys-dialog", "search", "search-jobs", "search-results", "chat", "chat-agent",
     "chat-agent-unsaid", "chat-answering", "chat-attach", "chat-attach-row", "chat-cards", "chat-compose", "chat-download", "chat-failed", "chat-feedback", "chat-image-coming",
-    "chat-file-links", "chat-find", "chat-flash", "chat-flash-mine", "chat-flash-notice", "chat-history-side", "chat-info", "chat-job",
+    "chat-file-links", "chat-find", "chat-flash", "chat-flash-mine", "chat-flash-notice", "chat-history-side",
+    // (its agent at work: what the history's head shows only then, #6246's stop among its keys)
+    "chat-history-side-working", "chat-info", "chat-job",
     "chat-jobs", "chat-jobs-pop", "chat-jobs-side", "chat-letters", "chat-letters-info", "chat-letters-open",
     "chat-letters-pop", "chat-letters-side", "chat-things", "chat-things-side", "chat-info-pulls", "chat-link-menu", "chat-loading", "chat-login", "chat-long", "chat-md",
     "chat-model-pop", "chat-model-accounts", "chat-need", "chat-peek", "chat-pick", "chat-preview-apk", "chat-preview-audio",
@@ -50,16 +52,21 @@ let corner_modes : Array[String] = {
     // (a preset's dialog and its steps further in: 添加目录, the folder picker at a station's home and in a folder of
     // repositories, 从 Git 克隆, a clone under way and one failed among its folders)
     "newchat-preset-new", "newchat-preset-new-add", "newchat-preset-new-browse", "newchat-preset-new-browse-repos",
-    "newchat-preset-new-clone", "newchat-preset-new-clones", "player-audio", "player-ended",
+    "newchat-preset-new-clone", "newchat-preset-new-clones",
+    // (the presets' menu: one's own; the other members', a level further in, and none of them; someone else's picked)
+    "newchat-preset", "newchat-preset-others", "newchat-preset-others-none", "newchat-preset-theirs",
+    "newchat-preset-theirs-long", "player-audio", "player-ended",
     "player-failed", "player-opening", "player-video", "service", "service-restart", "service-sized", "service-stopped", "share-in",
     "share-in-files", "share-in-stations", "lock-checking", "lock-code", "lock-failed", "lock-finding", "lock-nocode",
-    "lock-none", "lock-security", "lock-upgrade", "lock-waiting", "lock-wrong", "screen-agent-driving",
+    "lock-none", "lock-security", "lock-upgrade", "lock-waiting", "lock-wrong",
+    // (a web page left out of an upgraded workspace that nobody can approve there: its waiting page, its 安全)
+    "lock-needs-app", "lock-needs-app-security", "screen-agent-driving",
     "screen-agent-paused", "screen-clipboard-driving", "screen-clipboard-old-station", "screen-connecting",
     "screen-denied", "screen-ended", "screen-failed", "screen-files-done", "screen-files-going", "screen-full",
     "screen-full-tools", "screen-gone", "screen-keys", "screen-live", "screen-login-fill", "screen-login-pick", "screen-not-drivable", "screen-outdated", "screen-pages", "screen-read-only",
     "screen-reconnecting", "screen-trackpad", "screen-trackpad-command", "screen-user-pages", "screen-user-tabs", "screen-windows", "screen-window", "settings-home", "settings-appearance",
     "settings-me", "settings-me-reading", "settings-workspace", "settings-security", "settings-vault",
-    "settings-vault-items", "settings-vault-item", "settings-stations", "settings-station", "settings-station-offline", "settings-station-env", "settings-station-processes",
+    "settings-vault-items", "settings-vault-item", "settings-stations", "settings-station", "settings-station-terminals", "settings-station-offline", "settings-station-env", "settings-station-processes",
     "settings-station-mark", "settings-station-lower", "settings-station-versions", "settings-station-updated", "settings-station-network", "settings-station-copies", "settings-station-copies-alone",
     "settings-station-restore", "settings-station-restore-offer", "settings-station-restore-confirm", "settings-station-restore-confirm-long",
     "settings-station-restored",
@@ -94,6 +101,10 @@ let corner_modes : Array[String] = {
     "settings-run", "settings-run-models", "settings-run-accounts", "settings-fonts", "settings-fonts-code",
     "settings-decisions", "settings-completion", "settings-bars", "settings-about", "settings-changelog", "settings-prices",
     "settings-notify-off", "settings-notify-denied",
+    // (the stations' newer releases waiting: their key over Home, their dialog open: sfpages station_updates.mbt)
+    "home-station-updates", "station-updates", "home-station-updates-app", "station-updates-app",
+    // (a terminal's page, typed into here and by someone else: terminal_wbtest.mbt; its station's list is settings-station-terminals, beside settings-station)
+    "terminal", "terminal-taken",
   ]
   // (and the card to share in each of its other looks: share_looks.mbt)
   for k in @sfpages.share_look_keys()[1:] {
@@ -112,6 +123,8 @@ fn corners_check(lang : String, press_room~ : Bool = false) -> Unit raise {
   let gaps : Array[String] = []
   let moves : Array[String] = []
   let rooms : Array[String] = []
+  let heights : Array[String] = []
+  let first_lines : Array[String] = []
   for win in corner_windows {
     let squeezed = squeeze_windows.contains(win.0)
     for mode in corner_modes {
@@ -165,6 +178,37 @@ fn corners_check(lang : String, press_room~ : Bool = false) -> Unit raise {
       if squeeze is Some(w) {
         wrong.push(w)
       }
+      // (what is pressed side by side another height than the rest of its row, mbui's Tester::height_faults, against
+      // its bar)
+      let tall = t.height_faults()
+      let bar = corners_heights_known.get(at).unwrap_or(0)
+      if tall.length() != bar {
+        heights.push(
+          "\{at}: \{tall.length()} pressed things another height than their row, \{bar} known (" +
+          (if tall.length() < bar {
+            "fewer: its bar comes down in corners_known_wbtest.mbt"
+          } else {
+            "more than its bar: what is pressed side by side is one height, a button's (@sf.button_height)"
+          }) +
+          ")\n  " +
+          tall.join("\n  "),
+        )
+      }
+      // (a mark beside a block of several lines off its first line, mbui's Tester::first_line_faults, against its bar)
+      let off_line = t.first_line_faults()
+      let line_bar = corners_first_line_known.get(at).unwrap_or(0)
+      if off_line.length() != line_bar {
+        first_lines.push(
+          "\{at}: \{off_line.length()} marks off the first line beside them, \{line_bar} known (" +
+          (if off_line.length() < line_bar {
+            "fewer: its bar comes down in corners_known_wbtest.mbt"
+          } else {
+            "more than its bar: beside several lines an icon, a mark or a chevron sits on the first, never centred on them"
+          }) +
+          ")\n  " +
+          off_line.join("\n  "),
+        )
+      }
       // (words a box with its height said does not hold, mbui's Tester::fixed_outgrown, against its bar)
       match outgrown_wrong(at, t.fixed_outgrown(), corners_outgrown_known, "corners_known_wbtest.mbt") {
         Some(w) => wrong.push(w)
@@ -178,6 +222,8 @@ fn corners_check(lang : String, press_room~ : Bool = false) -> Unit raise {
       None => ()
     }
   }
+  wrong.append(heights)
+  wrong.append(first_lines)
   match gaps_wrong(lang, gaps) {
     Some(w) => wrong.push(w)
     None => ()

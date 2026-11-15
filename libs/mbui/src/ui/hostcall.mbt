@@ -204,8 +204,9 @@ struct FakeHost {
   mut hold_words : (String, String, String)?
   /// how the app over another app was ended (@ui.over_done), each time: whether on into the app
   overs_done : Array[Bool]
-  /// what the system lets the app show ("granted", "denied", "ask", "unknown": Tester::set_notice_permission), what
-  /// the person answers when asked (None: never), how often the app asked, and the answer due: from the frame after it
+  /// what the system lets the app show ("granted", "denied", "ask", "default", "unknown": Tester::set_notice_permission),
+  /// what the person answers when asked (None: never), how often the app asked, and the answer due: from the frame after
+  /// it
   mut notice_perm : String
   mut notice_reply : Bool?
   mut notice_asks : Int
@@ -598,6 +599,19 @@ fn h_glyph(key : Int, out : FixedArray[Double]) -> Unit {
 /// The picture of glyph `key`, drawn by the h_glyph asked last, put in the atlas at `x`, `y`.
 fn h_glyph_put(key : Int, x : Int, y : Int) -> Unit {
   @hostapi.glyph_put(key, x, y)
+}
+
+///|
+/// The picture of glyph `key`, drawn by the h_glyph asked last, given back into `out` (halo.mbt): false where the host
+/// gives none.
+fn h_glyph_picture(key : Int, out : FixedArray[Byte]) -> Bool {
+  @hostapi.glyph_picture(key, out)
+}
+
+///|
+/// Pixels made here (a halo, halo.mbt) put in the atlas at `x`, `y`: false where the host takes none.
+fn h_atlas_put(x : Int, y : Int, w : Int, h : Int, px : FixedArray[Byte]) -> Bool {
+  @hostapi.atlas_put(x, y, w, h, px)
 }
 
 ///|

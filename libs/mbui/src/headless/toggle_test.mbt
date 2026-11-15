@@ -113,6 +113,15 @@ test "a switch is read out a switch, on or off as its caller says, and no checkb
 }
 
 ///|
+test "a toggle button is read out a button, pressed or not as its caller says, and turned by a press" {
+  let k = toggle_case(kind=Button)
+  let off = k.t.get(Button, label="提醒").pressed
+  k.t.click(Button, label="提醒")
+  let on = k.t.get(Button, label="提醒").pressed
+  assert_eq((off, on, k.told), (Some(false), Some(true), [true]))
+}
+
+///|
 test "Tab goes to a toggle; Enter turns it, Space turns it back, a screen reader's ask turns it again: each told the other of what it is then" {
   let k = toggle_case()
   k.t.act(Button, Focus, label="别处")
@@ -191,4 +200,32 @@ test "what a toggle's look reads: on as its caller says it; hovered under a mous
     (was, over, down, now, focus, k.ground(), s.disabled()),
     (false, c_hovered, c_pressed, true, (c_focus, true), c_disabled, true),
   )
+}
+
+///|
+test "a toggle with hold_press: a press held past the hold time and let go on it turns it; let go off it, does not" {
+  let on = @signals.signal(false)
+  let t = window(pointing=Finger, fn(root) {
+    @headless.toggle(
+      root,
+      Switch,
+      fn() { "开关" },
+      fn() { on.get() },
+      fn(to) { on.set(to) },
+      hold_press=(@ui.touch_slop(), @ui.long_press_ms),
+      fn(v, _) {
+        v.width(Is(Some(80.0))).height(Is(Some(40.0))).ground(Is(c_rest)) |> ignore
+      },
+    )
+    |> ignore
+  })
+  t.press_at(40.0, 20.0)
+  t.run_for(held_ms)
+  t.release(40.0, 20.0)
+  let held_on = on.get()
+  t.press_at(40.0, 20.0)
+  t.run_for(held_ms)
+  t.move_to(200.0, 200.0)
+  t.release(200.0, 200.0)
+  assert_eq((held_on, on.get()), (true, true))
 }

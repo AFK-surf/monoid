@@ -463,6 +463,10 @@ pub fn fixture_chat_topic(f : Fixture, name : String, params : Map[String, Json]
             with_overload_notice(rich_chat(f.older), f.mode == "chat-overload-after", f.step > 0)
           } else if f.mode == "chat-turn-failed" {
             with_failed_turn(rich_chat(f.older), f.step > 0)
+          } else if f.mode == "chat-turn-limit" {
+            with_limit_turn(rich_chat(f.older), f.step > 0)
+          } else if f.mode == "chat-turn-unanswered" {
+            with_unanswered_turn(rich_chat(f.older), f.step > 0)
           } else if f.mode == "chat-model-limit-before" || f.mode == "chat-model-limit-after" {
             with_model_limit(rich_chat(f.older), f.mode == "chat-model-limit-after")
           } else if f.mode == "chat-run-change" {
@@ -471,12 +475,15 @@ pub fn fixture_chat_topic(f : Fixture, name : String, params : Map[String, Json]
             with_md_message(rich_chat(f.older))
           } else if f.mode == "chat-viz" {
             with_viz_message(rich_chat(f.older))
+          } else if f.mode == "chat-mbui" || f.mode == "chat-mbui-dark" {
+            with_mbui_viz_message(rich_chat(f.older))
           } else if f.mode == "chat-file-links" {
             with_file_links(rich_chat(f.older))
           } else if f.mode == "chat-table-images" {
             with_table_images(rich_chat(f.older))
           } else if f.mode == "chat-screens" || f.mode == "chat-screens-pc" {
-            with_message(rich_chat(f.older), screens_answer)
+            // (its tree with it, as a station sends it: what the chat opens on reads its links' cards of it)
+            with_message(rich_chat(f.older), screens_answer, md=@sf.kept_md(screens_answer))
           } else if f.mode == "chat-screens-cold" {
             with_cache_cold(with_message(rich_chat(f.older), screens_answer))
           } else if f.mode == "chat-archived" {
@@ -700,7 +707,22 @@ pub fn fixture_chat_topic(f : Fixture, name : String, params : Map[String, Json]
     // chat-login: the login's page to open in the browser, for one who may (its pill opens it in a tab over the app;
     // what apps/android's MbuiCompareTest pictures beside it)
     // chat-login-station: the same, where the station's own browser can open it too
-    "machineLogins" if f.mode == "chat-login" || f.mode == "chat-login-station" => Some({ "canLogin": true, "canRelay": true })
+    // login-link: a loopback login opened from its Slack link (/w/<ws>/s/<station>/login/<id>) in a standalone sheet
+    "machineLogins" if f.mode == "chat-login" || f.mode == "chat-login-station" || f.mode == "login-link" =>
+      Some({ "canLogin": true, "canRelay": true })
+    "machineLogin" if f.mode == "login-link" =>
+      Some({
+        "id": "login-1",
+        "title": "在 Willow 上登录 gcloud",
+        "state": "browser",
+        "step": "loopback",
+        "url": "https://accounts.google.com/o/oauth2/auth",
+        "domain": "accounts.google.com",
+        "active": true,
+        "browser": true,
+        "browserText": "在 Willow 的浏览器中打开",
+        "statusText": "在浏览器里完成登录",
+      })
     "machineLogin" if f.mode == "chat-login" || f.mode == "chat-login-station" => {
       let l : Map[String, Json] = {
         "id": "login-1",
@@ -2048,6 +2070,39 @@ pub let viz_answer : String =
   #|```
 
 ///|
+pub fn with_mbui_viz_message(v : Json) -> Json {
+  match v {
+    Object(m) => {
+      let o = m.copy()
+      let all = match m.get("messages") {
+        Some(Array(a)) => a.copy()
+        _ => []
+      }
+      all.push(
+        msg(12, "agent", by_agent("anthropic", "claude", "s-c1"), mbui_viz_answer, "1 分钟前", {
+          "attachments": [file("release.mbui", 0, 0, 1600)],
+          "placed": ["release.mbui"],
+          "md": [
+            ["p", [[0, 47]]],
+            ["p", [["a", [[50, 57]], { "href": "release.mbui", "path": "release.mbui" }]]],
+          ],
+          "ending": "all_done",
+        }),
+      )
+      o["messages"] = Json::array(all)
+      Json::object(o)
+    }
+    _ => v
+  }
+}
+
+///|
+pub let mbui_viz_answer : String =
+  #|把内联 HTML 预览换成了原生 mbui 组件，零 WebView 开销，首帧直接算好高度：
+  #|
+  #|[发布与性能看板](release.mbui)
+
+///|
 /// MBUI_FIXTURE=chat-image-coming: a last message's two pictures still coming from their station (fixture.mbt's
 /// `file`): a photograph (its ThumbHash's field a sky over a meadow), 8400 of its thumbnail's 24000 bytes heard, and a
 /// light screenshot (a report's, 780 × 2600, its ThumbHash's field the page's colour), 0 of its 13249.
@@ -2200,13 +2255,169 @@ pub let fixture_viz_html : String =
   #|<button onclick="openai.setWidgetState({seen:true})">看过了</button></div>
 
 ///|
+/// MBUI_FIXTURE=chat-mbui's native mbui widget (.mbui declarative JSON + embedded Wasm 1.0 sandbox controller).
+pub let fixture_viz_mbui : String =
+  #|{
+  #|  "title": "0.25.0 发布与性能看板",
+  #|  "wasm": "AGFzbQEAAAABFQRgA39/fwF/YAN/f38AYAAAYAABfwIrAgRtYnVpDXN0YXRlX2dldF9pMzIAAARtYnVpDXN0YXRlX3NldF9pMzIAAQMDAgIDBQMBAAEHHAILbWJ1aV91cGRhdGUAAgpiZW5jaF9zdGVwAAMKSAIZAEEQQQtBAEELQQAQAAR/QQoFQeQACxABCywBAX9BIEEEQQEQAEEBaiEAQSBBBCAAEAFBMEEJQdwAIABBAmxqIgAQASAACws4BABBAAsLY2FuYXJ5X29ubHkAQRALC3JvbGxvdXRfcGN0AEEgCwRydW5zAEEwCwlnYXRlX3Bhc3M=",
+  #|  "state": {
+  #|    "tab": "overview",
+  #|    "canary_only": false,
+  #|    "rollout_pct": 100,
+  #|    "runs": 1,
+  #|    "gate_pass": 94
+  #|  },
+  #|  "root": {
+  #|    "type": "card",
+  #|    "title": "0.25.0 发布与性能看板",
+  #|    "subtitle": "原生 mbui + Wasm 沙箱渲染",
+  #|    "badge": "灰度 ${rollout_pct}%",
+  #|    "badge_tone": "ok",
+  #|    "children": [
+  #|      {
+  #|        "type": "grid",
+  #|        "cols": 3,
+  #|        "children": [
+  #|          {
+  #|            "type": "stat",
+  #|            "label": "首帧布局耗时",
+  #|            "value": "0.4",
+  #|            "unit": "ms",
+  #|            "delta": "-94%",
+  #|            "tone": "ok",
+  #|            "spark": [6.8, 5.2, 3.1, 1.4, 0.6, 0.4]
+  #|          },
+  #|          {
+  #|            "type": "stat",
+  #|            "label": "单组件内存",
+  #|            "value": "48",
+  #|            "unit": "KB",
+  #|            "delta": "-99%",
+  #|            "tone": "ok",
+  #|            "spark": [42000, 38000, 12000, 800, 64, 48]
+  #|          },
+  #|          {
+  #|            "type": "stat",
+  #|            "label": "长图导出等待",
+  #|            "value": "0",
+  #|            "unit": "ms",
+  #|            "delta": "同步直出",
+  #|            "tone": "accent"
+  #|          }
+  #|        ]
+  #|      },
+  #|      {
+  #|        "type": "tabs",
+  #|        "bind": "tab",
+  #|        "options": [
+  #|          {
+  #|            "id": "overview",
+  #|            "label": "概览图表",
+  #|            "body": {
+  #|              "type": "col",
+  #|              "gap": 8,
+  #|              "children": [
+  #|                {
+  #|                  "type": "chart",
+  #|                  "chart": "bar",
+  #|                  "title": "各端每日构建通过次数",
+  #|                  "labels": ["周一", "周二", "周三", "周四", "周五"],
+  #|                  "series": [
+  #|                    { "name": "中大屏", "values": [14, 18, 16, 22, 24] },
+  #|                    { "name": "小屏", "values": [10, 12, 15, 19, 21] }
+  #|                  ],
+  #|                  "height": 88
+  #|                },
+  #|                {
+  #|                  "type": "flow",
+  #|                  "nodes": [
+  #|                    { "label": "Wasm 沙箱", "badge": "0.02 ms", "tone": "info" },
+  #|                    { "label": "Signals", "badge": "第 ${runs} 轮", "tone": "accent" },
+  #|                    { "label": "mbui 节点树", "badge": "GPU 直绘", "tone": "ok" }
+  #|                  ]
+  #|                }
+  #|              ]
+  #|            }
+  #|          },
+  #|          {
+  #|            "id": "checklist",
+  #|            "label": "发版检查单",
+  #|            "body": {
+  #|              "type": "col",
+  #|              "gap": 8,
+  #|              "children": [
+  #|                {
+  #|                  "type": "progress",
+  #|                  "label": "发版前门禁检查",
+  #|                  "value": "${gate_pass}",
+  #|                  "max": 100
+  #|                },
+  #|                {
+  #|                  "type": "table",
+  #|                  "headers": ["检查项", "范围", "状态"],
+  #|                  "rows": [
+  #|                    ["列表首帧高度同步", "宽排法 / 窄排法", { "type": "badge", "label": "通过", "tone": "ok" }],
+  #|                    ["Wasm Gas 门限沙箱", "100 万指令上限", { "type": "badge", "label": "通过", "tone": "ok" }],
+  #|                    ["长图分享直出", "Export", { "type": "badge", "label": "通过", "tone": "ok" }]
+  #|                  ]
+  #|                }
+  #|              ]
+  #|            }
+  #|          }
+  #|        ]
+  #|      },
+  #|      {
+  #|        "type": "switch",
+  #|        "bind": "canary_only",
+  #|        "label": "仅向 Canary 渠道灰度推送",
+  #|        "note": "开启后由 Wasm 切换 10% 灰度验证"
+  #|      },
+  #|      {
+  #|        "type": "row",
+  #|        "justify": "between",
+  #|        "wrap": false,
+  #|        "children": [
+  #|          {
+  #|            "type": "dot",
+  #|            "tone": "ok",
+  #|            "label": "门禁 ${gate_pass}%"
+  #|          },
+  #|          {
+  #|            "type": "row",
+  #|            "gap": 8,
+  #|            "wrap": false,
+  #|            "children": [
+  #|              {
+  #|                "type": "button",
+  #|                "label": "Wasm 复核",
+  #|                "tone": "secondary",
+  #|                "wasm_call": "bench_step"
+  #|              },
+  #|              {
+  #|                "type": "button",
+  #|                "label": "填入跟进结论",
+  #|                "tone": "primary",
+  #|                "action": {
+  #|                  "kind": "follow_up",
+  #|                  "text": "0.25.0 看板已确认（视图：${tab}），开始发版"
+  #|                }
+  #|              }
+  #|            ]
+  #|          }
+  #|        ]
+  #|      }
+  #|    ]
+  #|  }
+  #|}
+
+///|
 pub fn with_md_message(v : Json) -> Json {
   with_message(v, md_answer)
 }
 
 ///|
 /// The chat with an agent's answer of `words` at its end.
-pub fn with_message(v : Json, words : String) -> Json {
+pub fn with_message(v : Json, words : String, md? : Json? = None) -> Json {
   match v {
     Object(m) => {
       let o = m.copy()
@@ -2215,8 +2426,9 @@ pub fn with_message(v : Json, words : String) -> Json {
         _ => []
       }
       all.push(
-        msg(12, "agent", by_agent("anthropic", "claude", "s-c1"), words, "1 分钟前", {
-          "ending": "all_done",
+        msg(12, "agent", by_agent("anthropic", "claude", "s-c1"), words, "1 分钟前", match md {
+          Some(t) => { "ending": "all_done", "md": t }
+          None => { "ending": "all_done" }
         }),
       )
       o["messages"] = Json::array(all)
@@ -2357,9 +2569,17 @@ fn with_overload_notice(v : Json, after : Bool, canceled : Bool) -> Json {
       if after && !canceled {
         notice["retrySession"] = "s-c1"
       }
+      let claude = by_agent("anthropic", "claude", "s-c1")
+      // (a chat as long as its view and more, for what opens at its end to be seen held where it is)
       o["messages"] = [
-        msg(1, "person", by_person("林"), "请继续处理这个任务", "刚刚", { "mine": true }),
-        msg(2, "ember", { "name": "still.fail" }, "⚠️ " + words, "刚刚", { "notice": Json::object(notice) }),
+        msg(1, "person", by_person("林"), "把发布清单整理一下：签名、渠道包、更新日志、回滚预案，各自谁负责、到哪一步了。", "1 小时前", { "mine": true }),
+        msg(2, "agent", claude, "好。我先把四项列出来，逐项去查现在的状态：签名看证书和构建日志，渠道包看各平台的上传记录，更新日志看这周合进 main 的改动，回滚预案看上次发布留下的步骤。查完一项就在这里更新一次。", "1 小时前", {}),
+        msg(3, "person", by_person("林"), "渠道包那边昨天说华为的审核卡住了，顺便看一下。", "50 分钟前", { "mine": true }),
+        msg(4, "agent", claude, "华为的审核是因为隐私政策的链接打不开，已经换成新的链接重新提交了，现在在排队。签名这项查完了：证书有效期到明年三月，这次的构建都用的新证书。", "40 分钟前", {}),
+        msg(5, "person", by_person("林"), "更新日志按渠道分开写吗？还是一份通用的？", "30 分钟前", { "mine": true }),
+        msg(6, "agent", claude, "一份通用的就够了：这周合进 main 的改动里，只有两条是某个平台独有的，我在那两条后面标上平台名。回滚预案还差最后一步没确认：上次发布留下的回滚脚本引用了已经删掉的配置项，我先改好再跑一遍演练。", "20 分钟前", {}),
+        msg(7, "person", by_person("林"), "请继续处理这个任务", "刚刚", { "mine": true }),
+        msg(8, "ember", { "name": "still.fail" }, "⚠️ " + words, "刚刚", { "notice": Json::object(notice) }),
       ]
       o["asks"] = []
       o["askClear"] = false
@@ -2382,9 +2602,95 @@ fn with_failed_turn(v : Json, retried : Bool) -> Json {
       if !retried {
         notice["againSession"] = "s-c1"
       }
+      let claude = by_agent("anthropic", "claude", "s-c1")
+      // (a chat as long as its view and more, for what opens at its end to be seen held where it is)
       o["messages"] = [
-        msg(1, "person", by_person("林"), "请继续处理这个任务", "刚刚", { "mine": true }),
-        msg(2, "ember", { "name": "still.fail" }, "⚠️ " + words, "刚刚", { "notice": Json::object(notice) }),
+        msg(1, "person", by_person("林"), "把发布清单整理一下：签名、渠道包、更新日志、回滚预案，各自谁负责、到哪一步了。", "1 小时前", { "mine": true }),
+        msg(2, "agent", claude, "好。我先把四项列出来，逐项去查现在的状态：签名看证书和构建日志，渠道包看各平台的上传记录，更新日志看这周合进 main 的改动，回滚预案看上次发布留下的步骤。查完一项就在这里更新一次。", "1 小时前", {}),
+        msg(3, "person", by_person("林"), "渠道包那边昨天说华为的审核卡住了，顺便看一下。", "50 分钟前", { "mine": true }),
+        msg(4, "agent", claude, "华为的审核是因为隐私政策的链接打不开，已经换成新的链接重新提交了，现在在排队。签名这项查完了：证书有效期到明年三月，这次的构建都用的新证书。", "40 分钟前", {}),
+        msg(5, "person", by_person("林"), "更新日志按渠道分开写吗？还是一份通用的？", "30 分钟前", { "mine": true }),
+        msg(6, "agent", claude, "一份通用的就够了：这周合进 main 的改动里，只有两条是某个平台独有的，我在那两条后面标上平台名。回滚预案还差最后一步没确认：上次发布留下的回滚脚本引用了已经删掉的配置项，我先改好再跑一遍演练。", "20 分钟前", {}),
+        msg(7, "person", by_person("林"), "请继续处理这个任务", "刚刚", { "mine": true }),
+        msg(8, "ember", { "name": "still.fail" }, "⚠️ " + words, "刚刚", { "notice": Json::object(notice) }),
+      ]
+      o["asks"] = []
+      o["askClear"] = false
+      o["more"] = false
+      Json::object(o)
+    }
+    _ => v
+  }
+}
+
+///|
+/// The chat `v` ending on a turn whose failure named no limit while its allowance, asked again, showed Fable's own week
+/// used up ("chat-turn-limit"): its notice offers 重新分配账号 till it is pressed (`moved`).
+fn with_limit_turn(v : Json, moved : Bool) -> Json {
+  match v {
+    Object(m) => {
+      let o = m.copy()
+      let words = if @sf.language() == "en" {
+        "Fable limit reached"
+      } else {
+        "这个账号的 Fable 额度已用完"
+      }
+      let notice : Map[String, Json] = {
+        "failed": true,
+        "words": Json::string(words),
+        "detail": "You've hit your Fable limit · resets Nov 20 at 9am (Asia/Tokyo). Switch to another model to continue.",
+      }
+      if !moved {
+        notice["reassignSession"] = "s-c1"
+      }
+      let claude = by_agent("anthropic", "claude", "s-c1")
+      // (a chat as long as its view and more, for what opens at its end to be seen held where it is)
+      o["messages"] = [
+        msg(1, "person", by_person("林"), "把发布清单整理一下：签名、渠道包、更新日志、回滚预案，各自谁负责、到哪一步了。", "1 小时前", { "mine": true }),
+        msg(2, "agent", claude, "好。我先把四项列出来，逐项去查现在的状态：签名看证书和构建日志，渠道包看各平台的上传记录，更新日志看这周合进 main 的改动，回滚预案看上次发布留下的步骤。查完一项就在这里更新一次。", "1 小时前", {}),
+        msg(3, "person", by_person("林"), "渠道包那边昨天说华为的审核卡住了，顺便看一下。", "50 分钟前", { "mine": true }),
+        msg(4, "agent", claude, "华为的审核是因为隐私政策的链接打不开，已经换成新的链接重新提交了，现在在排队。签名这项查完了：证书有效期到明年三月，这次的构建都用的新证书。", "40 分钟前", {}),
+        msg(5, "person", by_person("林"), "更新日志按渠道分开写吗？还是一份通用的？", "30 分钟前", { "mine": true }),
+        msg(6, "agent", claude, "一份通用的就够了：这周合进 main 的改动里，只有两条是某个平台独有的，我在那两条后面标上平台名。回滚预案还差最后一步没确认：上次发布留下的回滚脚本引用了已经删掉的配置项，我先改好再跑一遍演练。", "20 分钟前", {}),
+        msg(7, "person", by_person("林"), "请继续处理这个任务", "刚刚", { "mine": true }),
+        msg(8, "ember", { "name": "still.fail" }, "⚠️ " + words, "刚刚", { "notice": Json::object(notice) }),
+      ]
+      o["asks"] = []
+      o["askClear"] = false
+      o["more"] = false
+      Json::object(o)
+    }
+    _ => v
+  }
+}
+
+///|
+/// The chat `v` ending on a turn the station stopped asking for a state ("chat-turn-unanswered"): its notice
+/// (回复即可继续) offers 重试 too till it is pressed (`retried`).
+fn with_unanswered_turn(v : Json, retried : Bool) -> Json {
+  match v {
+    Object(m) => {
+      let o = m.copy()
+      let words = if @sf.language() == "en" {
+        "This turn stopped without a result; reply to continue"
+      } else {
+        "本轮未产出结果即停止，回复即可继续"
+      }
+      let notice : Map[String, Json] = { "failed": true, "words": Json::string(words) }
+      if !retried {
+        notice["againSession"] = "s-c1"
+      }
+      let claude = by_agent("anthropic", "claude", "s-c1")
+      // (a chat as long as its view and more, for what opens at its end to be seen held where it is)
+      o["messages"] = [
+        msg(1, "person", by_person("林"), "把发布清单整理一下：签名、渠道包、更新日志、回滚预案，各自谁负责、到哪一步了。", "1 小时前", { "mine": true }),
+        msg(2, "agent", claude, "好。我先把四项列出来，逐项去查现在的状态：签名看证书和构建日志，渠道包看各平台的上传记录，更新日志看这周合进 main 的改动，回滚预案看上次发布留下的步骤。查完一项就在这里更新一次。", "1 小时前", {}),
+        msg(3, "person", by_person("林"), "渠道包那边昨天说华为的审核卡住了，顺便看一下。", "50 分钟前", { "mine": true }),
+        msg(4, "agent", claude, "华为的审核是因为隐私政策的链接打不开，已经换成新的链接重新提交了，现在在排队。签名这项查完了：证书有效期到明年三月，这次的构建都用的新证书。", "40 分钟前", {}),
+        msg(5, "person", by_person("林"), "更新日志按渠道分开写吗？还是一份通用的？", "30 分钟前", { "mine": true }),
+        msg(6, "agent", claude, "一份通用的就够了：这周合进 main 的改动里，只有两条是某个平台独有的，我在那两条后面标上平台名。回滚预案还差最后一步没确认：上次发布留下的回滚脚本引用了已经删掉的配置项，我先改好再跑一遍演练。", "20 分钟前", {}),
+        msg(7, "person", by_person("林"), "请继续处理这个任务", "刚刚", { "mine": true }),
+        msg(8, "ember", { "name": "still.fail" }, "⚠️ " + words, "刚刚", { "notice": Json::object(notice) }),
       ]
       o["asks"] = []
       o["askClear"] = false

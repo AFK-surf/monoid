@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { setTimeout as pause } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { lastMessage, makeStore, messagesBefore, saidOf } from "../src/read/store.ts";
-import { stationDocSteps, threadDocs } from "../src/search/sources.ts";
+import { stationDocSteps, threadDocs } from "./reference/search-sources.ts";
 import { installLegacySaid, legacySaidDrain, legacySaidStep, publishLegacySaid } from "../src/store/legacy-said-build.ts";
 import { buildLegacySaid } from "../src/store/legacy-said-builder.ts";
 import { installSaidState } from "../src/store/said-state.ts";

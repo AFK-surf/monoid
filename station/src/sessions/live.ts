@@ -13,6 +13,7 @@ import { Fibers } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { type PlanState, noPlan, planItems, readPlan, saysWhole } from "../read/plan.ts";
 import { ChainTail, type TailState, type TranscriptRef } from "../read/tail.ts";
+import { ReadTail, type TailRead } from "../read/read-tail.ts";
 import { type TimelineEntry, brief } from "../read/transcript.ts";
 import { type SessionUsage, noUsage } from "../read/usage.ts";
 import type { RuntimeKind } from "../agents/runtime.ts";
@@ -118,8 +119,10 @@ export function briefInput(input: string): string {
 }
 
 /// What the model wrote in each quarter second of the window, by the step it wrote it in: a step that ends takes its
-/// own out, and steps written at once (subagents side by side) add up.
-type Rate = { buckets: { at: number; id: string; tokens: number }[]; toldAt: number; told: number };
+/// own out, and steps written at once (subagents side by side) add up. A count the runtime gave (`since`: thinking left
+/// out of the stream, a delta a second or more saying how many tokens since its step's last) was written over the time
+/// since then, not in its quarter; `last` is when each step was last told so.
+type Rate = { buckets: { at: number; id: string; tokens: number; since?: number }[]; toldAt: number; told: number; last: Map<string, number> };
 
 /**
  * About how many tokens a piece of output is, without the model's tokenizer: about four characters of ASCII to a
@@ -140,7 +143,9 @@ export function tokensOf(text: string): number {
 /// transcripts stand is read off the main thread (`ready`).
 /// `takeUp`: while the readers are asked where its reading stands, where the process before's stood (carried over as it
 /// was asked): gone on from there at once, whether it was.
-type Watched = { tail: ChainTail | null; ready: Promise<void> | null; watcher: FSWatcher | null; reading: boolean; behind: boolean; arm(): void; takeUp?: (states: TailState[]) => boolean; locating?: AbortController; following?: AbortController; followAgain?: boolean; carried?: TailState[]; announce?: boolean; reads?: Promise<void> };
+/// A session's transcripts as they are followed: read here (off the thread that asks), or by the readers (`tailRead`).
+type Tailing = ChainTail | ReadTail;
+type Watched = { tail: Tailing | null; ready: Promise<void> | null; watcher: FSWatcher | null; reading: boolean; behind: boolean; arm(): void; takeUp?: (states: TailState[]) => boolean; locating?: AbortController; following?: AbortController; followAgain?: boolean; carried?: TailState[]; announce?: boolean; reads?: Promise<void> };
 /// A listener of a session: whether it is told the entries in brief, and what is said while it joins (what it lacks of
 /// the transcript read off the main thread first), held until it has joined.
 type Sub = { id: number; listener: Listener; brief: boolean; queue: LiveMessage[] | null };
@@ -206,6 +211,19 @@ export class LiveHub {
   private lengthTold = new Map<string, number>();
   /// Where a transcript's past is read (agents.ts: the readers); none (tests): here, and kept in memory.
   history: History | null = null;
+  /// Where what a watched transcript gains is read (agents.ts: the readers, the MoonBit program where it is there);
+  /// none: here, off the thread that asks, parsed on it.
+  tailRead: TailRead | null = null;
+
+  /// A session's transcripts followed from their start, as `tailRead` says where they are read.
+  private chain(runtime: RuntimeKind, paths: TranscriptRef[], keeps = true): Tailing {
+    return this.tailRead !== null ? new ReadTail(runtime, paths, this.tailRead, keeps) : new ChainTail(runtime, paths, null, keeps);
+  }
+
+  /// One followed on from where their reading stood.
+  private chainFrom(runtime: RuntimeKind, states: TailState[]): Tailing {
+    return this.tailRead !== null ? ReadTail.from(runtime, states, this.tailRead) : ChainTail.from(runtime, states);
+  }
   /// Until the station process before has handed over (gone, agents.ts): where a reading stands is what it carries over
   /// (`takeTails`), not asked of the readers before then; asked, a reader read a busy transcript on from where it last
   /// marked it for seconds at each update, every device's reads waiting behind it (ccvm 2026-11-04).
@@ -378,7 +396,7 @@ export class LiveHub {
       // What a step writes as it goes is not told: its words come with its transcript entry. How fast it writes is.
       // Only what the model writes, its words and a call's input: a call's output (a command's, as it runs) is not.
       case "delta":
-        if (event.field !== "output") this.counted(key, event.id, tokensOf(event.text));
+        if (event.field !== "output") this.counted(key, event.id, event.tokens ?? tokensOf(event.text), event.tokens !== undefined);
         break;
       case "start": {
         const input = briefInput(event.input ?? "");
@@ -415,6 +433,7 @@ export class LiveHub {
         if (rate) {
           const now = this.time.now();
           rate.buckets = rate.buckets.filter((b) => b.id !== event.id && b.at > now - RATE_WINDOW_MS);
+          rate.last.delete(event.id);
           if (rate.buckets.length === 0) {
             this.rates.delete(key);
             if (rate.told > 0) this.emit(key, { type: "rate", tokensPerSecond: 0 });
@@ -535,7 +554,7 @@ export class LiveHub {
   }
 
   /// A watched transcript's length, kept where its summary reads it, as it changes.
-  private noteLength(key: string, tail: ChainTail) {
+  private noteLength(key: string, tail: Tailing) {
     const n = tail.length;
     if (this.lengthTold.get(key) === n) return;
     this.lengthTold.set(key, n);
@@ -628,7 +647,7 @@ export class LiveHub {
     }
     const at = this.locateAsync !== null ? await this.locateAsync(key, new AbortController().signal) : this.locate(key);
     if (!at) return null;
-    const tail = new ChainTail(at.runtime, at.paths);
+    const tail = this.chain(at.runtime, at.paths);
     await tail.readSoon();
     return tail.entries;
   }
@@ -828,21 +847,34 @@ export class LiveHub {
   }
 
   /// Output written: its rate is told once half a second of it has come (a first few bytes say nothing of the pace),
-  /// then when a second has passed since it last was.
-  private counted(key: string, id: string, tokens: number) {
+  /// then when a second has passed since it last was. `counted`: tokens the runtime counted over the time since the
+  /// step's last such delta (or its start), not written now.
+  private counted(key: string, id: string, tokens: number, counted = false) {
     const now = this.time.now();
     let rate = this.rates.get(key);
-    if (!rate) this.rates.set(key, (rate = { buckets: [], toldAt: 0, told: 0 }));
+    if (!rate) this.rates.set(key, (rate = { buckets: [], toldAt: 0, told: 0, last: new Map() }));
     const at = Math.floor(now / 250) * 250;
-    const same = rate.buckets.find((b) => b.at === at && b.id === id);
-    if (same) same.tokens += tokens;
-    else rate.buckets.push({ at, id, tokens });
+    if (counted) {
+      const since = rate.last.get(id) ?? this.steps.get(key)?.find((s) => s.id === id)?.startedAt ?? now;
+      rate.last.set(id, now);
+      rate.buckets.push({ at, id, tokens, since: Math.min(since, now) });
+    } else {
+      const same = rate.buckets.find((b) => b.at === at && b.id === id && b.since === undefined);
+      if (same) same.tokens += tokens;
+      else rate.buckets.push({ at, id, tokens });
+    }
     rate.buckets = rate.buckets.filter((b) => b.at > now - RATE_WINDOW_MS);
     if (now - rate.toldAt < RATE_EVERY_MS) return;
-    const first = Math.min(...rate.buckets.map((b) => b.at));
+    const first = Math.min(...rate.buckets.map((b) => b.since ?? b.at));
     if (rate.toldAt === 0 && now - first < RATE_FIRST_MS) return;
-    // Over the quarters it holds, this one's whole (the window was a quarter more than its length, a rate an eighth high).
-    const span = Math.min(RATE_WINDOW_MS, now - first + 250);
+    // Over the quarters it holds, this one's whole (the window was a quarter more than its length, a rate an eighth high);
+    // over all the time a count covers, where one does (a count after a pause of seconds is not that many in a quarter).
+    const written = rate.buckets.flatMap((b) => (b.since === undefined ? [b.at] : []));
+    const counts = rate.buckets.flatMap((b) => (b.since !== undefined ? [b.since] : []));
+    const span = Math.max(
+      written.length > 0 ? Math.min(RATE_WINDOW_MS, now - Math.min(...written) + 250) : 0,
+      counts.length > 0 ? now - Math.min(...counts) : 0,
+    );
     const total = rate.buckets.reduce((sum, b) => sum + b.tokens, 0);
     const tokensPerSecond = Math.max(1, Math.round((total * 1000) / span));
     rate.toldAt = now;
@@ -883,7 +915,7 @@ export class LiveHub {
     this.watched.set(key, watched);
     const start = (at: NonNullable<ReturnType<Locate>>) => {
       watched.behind = watched.behind || at.current === false;
-      const begin = (tail: ChainTail) => {
+      const begin = (tail: Tailing) => {
         watched.tail = tail;
         watched.ready = null;
         this.noteLength(key, tail);
@@ -897,7 +929,7 @@ export class LiveHub {
       };
       if (this.history === null) {
         // What is already there counts as known; subscribers ask for what they lack. Read off the main thread.
-        const tail = new ChainTail(at.runtime, at.paths);
+        const tail = this.chain(at.runtime, at.paths);
         let readyNow = () => {};
         watched.ready = new Promise<void>((resolve) => (readyNow = resolve));
         void tail.readSoon().then(() => {
@@ -916,7 +948,7 @@ export class LiveHub {
       watched.carried = undefined;
       const kept = same(stood) ? stood : same(carried) ? carried : null;
       if (kept !== null) {
-        begin(ChainTail.from(at.runtime, kept));
+        begin(this.chainFrom(at.runtime, kept));
         this.soon(key);
         return true;
       }
@@ -929,7 +961,7 @@ export class LiveHub {
       watched.takeUp = (states) => {
         if (begun || this.watched.get(key) !== watched || !same(states)) return false;
         begun = true;
-        begin(ChainTail.from(at.runtime, states));
+        begin(this.chainFrom(at.runtime, states));
         this.soon(key);
         readyNow();
         return true;
@@ -944,11 +976,11 @@ export class LiveHub {
         .then((states) => {
           if (this.watched.get(key) !== watched || begun) return readyNow();
           begun = true;
-          if (same(states)) begin(ChainTail.from(at.runtime, states));
+          if (same(states)) begin(this.chainFrom(at.runtime, states));
           else {
             // Its transcripts are not where the readers found them (or they could not say): read here (off the main
             // thread), kept nowhere.
-            const tail = new ChainTail(at.runtime, at.paths, null, false);
+            const tail = this.chain(at.runtime, at.paths, false);
             return tail.readSoon().then(() => {
               if (this.watched.get(key) === watched) {
                 begin(tail);

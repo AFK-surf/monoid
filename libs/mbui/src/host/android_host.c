@@ -17,6 +17,7 @@
 #include <zlib.h>
 #include "moonbit.h"
 #include "post.h"
+#include "term.h"
 #include "app_calls.h"  // the app's own calls
 #include "done_watch.h"
 #include "corner_sl.h"
@@ -825,6 +826,23 @@ void mb_host_glyph(int32_t key, double *out) {
 void mb_host_glyph_put(int32_t key, int32_t x, int32_t y) {
   JNIEnv *env = env_();
   (*env)->CallStaticVoidMethod(env, text_cls, m_glyph_put, key, x, y);
+}
+
+// A glyph's picture given back, pixels made by MoonBit put in the atlas (words' halo, src/ui/halo.mbt): none here
+// yet (MBText keeps its pictures), so no halo is drawn (win_text.cpp's are).
+int32_t mb_host_glyph_picture(int32_t key, moonbit_bytes_t out) {
+  (void)key;
+  (void)out;
+  return 0;
+}
+
+int32_t mb_host_atlas_put(int32_t x, int32_t y, int32_t w, int32_t h, moonbit_bytes_t px) {
+  (void)x;
+  (void)y;
+  (void)w;
+  (void)h;
+  (void)px;
+  return 0;
 }
 
 // The side of the words' atlas, or of colour glyphs' (MB_ATLAS above).

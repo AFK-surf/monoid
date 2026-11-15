@@ -163,7 +163,13 @@ report() {
     read -r rc took < "$tmp/step.$i.done"
     if [ "$rc" = 0 ]; then echo "· $name … ok (${took} s)"; else
       echo "· $name … FAILED (${took} s)"
+      # (what a test file said of itself as it ended, before its summary: a process it left running, its station
+      # ending; a file that failed whole says nothing more in the summary's last lines)
+      grep -E "left running after its tests|^  [0-9]+ |the program running the sessions ended" "$tmp/step.$i.log" | head -20 | sed 's/^/    /'
       tail -40 "$tmp/step.$i.log" | sed 's/^/    /'
+      # (what a test file left running as it ended fails that file with nothing of its own in the tail: said here
+      # wherever it is in the log; main 345b3c51's station 4/6, hub-routes failed whole and nothing said why)
+      grep -A6 ': left running after its tests' "$tmp/step.$i.log" | head -60 | sed 's/^/    /'
       failed="$failed $name"
     fi
   done
@@ -371,6 +377,14 @@ if part ts; then
     } | grep -nE '\b(access|appendFile|chmod|chown|close|copyFile|cp|exists|fchmod|fchown|fdatasync|fstat|fsync|ftruncate|futimes|lchown|link|lstat|lutimes|mkdir|mkdtemp|open|opendir|read|readdir|readFile|readlink|readv|realpath|rename|rm|rmdir|stat|statfs|symlink|truncate|unlink|utimes|write|writeFile|writev|exec|execFile|spawn|gzip|gunzip|deflate|deflateRaw|inflate|inflateRaw|unzip|brotliCompress|brotliDecompress|zstdCompress|zstdDecompress)Sync(\.native)?\(' \
       | grep -v 'sync:' > "$tmp/syncs" || true
     step "the station's main thread waits on nothing (in what this adds)" sh -c "! grep . '$tmp/syncs'"
+    # A database the process serving writes as the next one starts beside it (a handover): what a change adds opens no
+    # SQLite connection without a busy timeout, and begins no transaction but BEGIN IMMEDIATE outside one already open:
+    # a deferred BEGIN or a SAVEPOINT begun outside a transaction that reads and then writes is refused the write at once,
+    # with no busy timeout waited ("database is locked": a station's next process stopped by itself, 2026-11-14). One that
+    # only reads, or one of its own (":memory:", a file no other connection opens), says so on its line with "deferred:".
+    added 'station/src/*.ts' | grep -nE 'new DatabaseSync\(' | grep -vE 'timeout|":memory:"|deferred:' > "$tmp/sqlite" || true
+    added 'station/src/*.ts' | grep -nE 'exec\(["`](BEGIN( DEFERRED)?["`;]|SAVEPOINT )' | grep -v 'deferred:' >> "$tmp/sqlite" || true
+    step "a starting process waits its turn for the database (in what this adds)" sh -c "! grep . '$tmp/sqlite'"
   fi
   # No way into a station from outside (AGENTS.md): every socket a station listens on is this machine's own, and says
   # so on its line (127.0.0.1; the fd the launcher holds, a Unix socket's path); the mesh's endpoint is bound by
@@ -503,7 +517,7 @@ if [ $full = 1 ]; then
     fi
   fi
   # The station's tests (station/test): every file, or one slice of them (STILLFAIL_STATION_SHARD="<i>/<n>": the
-  # longest files one to a slice first, then the rest in order, every n-th: scripts/station-slice.sh). CI runs them in slices on Linux runners of their own (pipeline.yml,
+  # files dealt by what each costs, the longest first, each onto the slice with the least: scripts/station-slice.sh). CI runs them in slices on Linux runners of their own (pipeline.yml,
   # check-station), not on macos-ci: four runners share that Mac, the tests took 2.3 to 4.1 minutes there by what else
   # ran, and three checks at once went past the job's five (6 of some 18 in half a day, 2026-11-09; the files doubled
   # in the five days before). A machine to itself, a slice takes the same every run.
