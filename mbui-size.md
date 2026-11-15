@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [d29ec3cea](https://github.com/AFK-surf/monoid/commit/d29ec3cea9a48a10318ab71a25b9ef7fa990db15) app: the chat's page made as nodes reads its chat  | 2.11 | 2.93 | 12.64 | 33.62 | 49.05 | 29.08 | 57.44 | 98.68 | 112.4 |
 | [b8975535c](https://github.com/AFK-surf/monoid/commit/b8975535ca1add02ffa9d151c69bf47fd8fb0a8c) station: chat_create says whose a chat is, led by  | 2.1 | 2.93 | 12.62 | 33.57 | 48.93 | 29.05 | 57.32 | 99.09 | 110.88 |
 | [5b3a42708](https://github.com/AFK-surf/monoid/commit/5b3a4270808e000a7d8c45ca3db8cc61b61b82c9) mbui app: design .mbui/.wasm shell as mini-program | 2.1 | 2.93 | 12.62 | 33.57 | 48.93 | 29.05 | 57.32 | 99.09 | 110.88 |
 | [c730077c8](https://github.com/AFK-surf/monoid/commit/c730077c816fc977889416efa77f51f0f73e3064) station: launcher runtime supervision, front probe | 2.1 | 2.92 | 12.59 | 33.52 | 48.81 | 28.82 | 56.61 | 98.85 | 112.11 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [b80ec9fc2](https://github.com/AFK-surf/monoid/commit/b80ec9fc20d5b06bbe79de7c22edd892e8e5c412) app: the benches' MBUI_CHAT_PAGE=nodes makes the c | 2.07 | 2.84 | 12.25 | 32.14 | 45.35 | 28.72 | 56.51 | 98.73 | 112.9 |
 | [3c6187b01](https://github.com/AFK-surf/monoid/commit/3c6187b0194bb18e909a3cc9b3a1933c3172313a) mbui: a list held by a limit its foot is followed  | 2.07 | 2.84 | 12.25 | 32.14 | 45.35 | 28.72 | 56.51 | 98.81 | 110.98 |
 | [aafb7fa27](https://github.com/AFK-surf/monoid/commit/aafb7fa27d46f91faa1f322610482625923709a2) app tests: the made-up core keeps a chat to the wi | 2.07 | 2.84 | 12.25 | 32.14 | 45.34 | 28.72 | 56.51 | 98.67 | 112.48 |
-| [ee6fc242b](https://github.com/AFK-surf/monoid/commit/ee6fc242b698faeeebbe43a350f34c497309f035) ci: put runs whatever the Mac's build came to, as  | 2.07 | 2.84 | 12.25 | 32.14 | 45.34 | 28.73 | 56.51 | 98.63 | 117.76 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [d29ec3cea](https://github.com/AFK-surf/monoid/commit/d29ec3cea9a48a10318ab71a25b9ef7fa990db15) app: the chat's page made as nodes reads its chat  | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.23 |
 | [b8975535c](https://github.com/AFK-surf/monoid/commit/b8975535ca1add02ffa9d151c69bf47fd8fb0a8c) station: chat_create says whose a chat is, led by  | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.23 |
 | [5b3a42708](https://github.com/AFK-surf/monoid/commit/5b3a4270808e000a7d8c45ca3db8cc61b61b82c9) mbui app: design .mbui/.wasm shell as mini-program | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.43 |
 | [c730077c8](https://github.com/AFK-surf/monoid/commit/c730077c816fc977889416efa77f51f0f73e3064) station: launcher runtime supervision, front probe | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.43 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [b80ec9fc2](https://github.com/AFK-surf/monoid/commit/b80ec9fc20d5b06bbe79de7c22edd892e8e5c412) app: the benches' MBUI_CHAT_PAGE=nodes makes the c | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.25 |
 | [3c6187b01](https://github.com/AFK-surf/monoid/commit/3c6187b0194bb18e909a3cc9b3a1933c3172313a) mbui: a list held by a limit its foot is followed  | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.25 |
 | [aafb7fa27](https://github.com/AFK-surf/monoid/commit/aafb7fa27d46f91faa1f322610482625923709a2) app tests: the made-up core keeps a chat to the wi | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.16 |
-| [ee6fc242b](https://github.com/AFK-surf/monoid/commit/ee6fc242b698faeeebbe43a350f34c497309f035) ci: put runs whatever the Mac's build came to, as  | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.16 |
