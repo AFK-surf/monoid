@@ -112,12 +112,13 @@ static double mb_now_ms(void) {
 // what came next, or a scripted run's, none. When the last such frame began (-1: the loop waited since).
 static double frame_late, last_begin = -1;
 
-// the display's frame (ms), as the compositor goes
+// the display's frame (ms), as the compositor goes (as many of its beats as mb_render_present waits)
 static double display_period(void) {
   DWM_TIMING_INFO ti;
   memset(&ti, 0, sizeof ti);
   ti.cbSize = sizeof ti;
-  if (SUCCEEDED(DwmGetCompositionTimingInfo(NULL, &ti)) && ti.qpcRefreshPeriod) return qpc_ms((LONGLONG)ti.qpcRefreshPeriod);
+  if (SUCCEEDED(DwmGetCompositionTimingInfo(NULL, &ti)) && ti.qpcRefreshPeriod)
+    return qpc_ms((LONGLONG)ti.qpcRefreshPeriod) * mb_frame_beats();
   return 1000.0 / 60.0;
 }
 

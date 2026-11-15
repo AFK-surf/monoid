@@ -1294,7 +1294,8 @@ static int submit(const double *inst, int32_t count, double r, double g, double 
 // user, 2026-11-13: 「给still fail/screenreplay默认最高120就行」): what a frame costs is paid for each, and past 120 it
 // is not seen (ScreenReplay's viewer playing: 24% of a core at 240). MBUI_FRAMES_MOST says another most (0: the
 // display's every frame). Asked of the compositor again each second, a display's rate being the user's to change.
-static int frame_beats(void) {
+int mb_frame_beats(void) {
+  if (!dcomp) return 1;
   static int beats = 1;
   static ULONGLONG asked;
   ULONGLONG now = GetTickCount64();
@@ -1347,14 +1348,30 @@ void mb_render_present(const double *inst, int32_t count, double r, double g, do
   // ScreenReplay's viewer, an RTX 5080's machine, 2026-11-13; partly covered 461 to 484 and 212 to 217). A waitable
   // swap chain's handle held nothing there (1648 to 1691). The compositor's beat is the primary display's: a window
   // on another display of another rate draws at the primary's. Where the compositor will not say (FAILED), a
-  // millisecond's rest, so nothing spins. A frame waits as many beats as frame_beats says.
+  // millisecond's rest, so nothing spins. A frame is as many beats as mb_frame_beats says, counted from the beat the
+  // frame before was let go on, not waited after its work: where its work had taken one beat of them already, it waits
+  // for the next alone. Waiting them all after the work, a frame whose work took 4.2 to 8.3 ms at 240 Hz (a fast drag
+  // of ScreenReplay's playhead over a 4K picture) came every 12.5 ms instead of 8.3, half its frames so, 92 to 97 a
+  // second in an uneven step; counted from the last, 118 to 120 a second, 8.3 ms apart (2026-11-15).
   if (hr == DXGI_STATUS_OCCLUDED) Sleep(16);
   else if (dcomp) {
-    for (int i = frame_beats(); i > 0; i--)
-      if (FAILED(DwmFlush())) {
-        Sleep(1);
-        break;
-      }
+    static LARGE_INTEGER last_beat;
+    int beats = mb_frame_beats();
+    if (FAILED(DwmFlush())) {
+      Sleep(1);
+    } else if (beats > 1) {
+      LARGE_INTEGER now;
+      QueryPerformanceCounter(&now);
+      DWM_TIMING_INFO ti = {};
+      ti.cbSize = sizeof ti;
+      // (the beats since the last frame's, to the nearest: a DwmFlush comes back a little after its beat)
+      int passed = 1;
+      if (last_beat.QuadPart && SUCCEEDED(DwmGetCompositionTimingInfo(NULL, &ti)) && ti.qpcRefreshPeriod)
+        passed = (int)((double)(now.QuadPart - last_beat.QuadPart) / (double)ti.qpcRefreshPeriod + 0.5);
+      for (int i = passed < 1 ? 1 : passed; i < beats; i++)
+        if (FAILED(DwmFlush())) break;
+    }
+    QueryPerformanceCounter(&last_beat);
   }
 }
 
