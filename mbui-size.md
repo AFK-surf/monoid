@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [13a2cad8f](https://github.com/AFK-surf/monoid/commit/13a2cad8f97d5f2179c908f8901c592ef525ac19) mbui: what is cut short in a column is no wider th | 2.06 | 2.84 | 12.22 | 32.1 | 45.21 | 28.69 | 56.39 | 98.7 | 123.89 |
 | [66b6a8406](https://github.com/AFK-surf/monoid/commit/66b6a8406dd9d559d22a5c2cd8aaea9a2a1d7316) app: a Farview tab's tiles drawn one a moment, at  | 2.06 | 2.84 | 12.22 | 32.1 | 45.21 | 28.69 | 56.39 | 98.7 | 123.89 |
 | [7b151c314](https://github.com/AFK-surf/monoid/commit/7b151c3145aa99a7727896c8d94c2d58fb546a22) feat(mbui): native .mbui declarative widgets & san | 2.06 | 2.84 | 12.22 | 32.1 | 45.21 | 28.69 | 56.39 | 98.55 | 114.83 |
 | [fded3ea86](https://github.com/AFK-surf/monoid/commit/fded3ea86094cd0b00655b5cb229537c9ea47349) app: a station's terminals, among its screens, and | 2.04 | 2.8 | 12.05 | 31.95 | 44.76 | 28.55 | 56 | 98.63 | 116.15 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [192ae506c](https://github.com/AFK-surf/monoid/commit/192ae506c9422cdb9d1ff33cab286f6dbf83c95b) mbui: one height for what is pressed side by side  | 2.01 | 2.76 | 11.86 | 31.71 | 43.84 | 28.32 | 55.5 | 97.04 | 107.48 |
 | [0b847198b](https://github.com/AFK-surf/monoid/commit/0b847198b1655bd4c22ca1b1ad3986f623fd274d) Simplify station pages, open login links as a shee | 2.01 | 2.76 | 11.86 | 31.71 | 43.84 | 28.32 | 55.5 | 97.04 | 107.48 |
 | [2ed703dec](https://github.com/AFK-surf/monoid/commit/2ed703decf832c39d59034998e89eaa46fc95027) mbui: a Tester's run at a rate draws no frame for  | 2.01 | 2.76 | 11.86 | 31.71 | 43.84 | 28.32 | 55.5 | 97.04 | 107.48 |
-| [5ea9f29a9](https://github.com/AFK-surf/monoid/commit/5ea9f29a9aa670a4e2e36daae34fb7af71c78466) mbui app: a go-to on the chat's page made as nodes | 2.01 | 2.76 | 11.86 | 31.71 | 43.84 | 28.32 | 55.5 | 97.04 | 107.48 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [13a2cad8f](https://github.com/AFK-surf/monoid/commit/13a2cad8f97d5f2179c908f8901c592ef525ac19) mbui: what is cut short in a column is no wider th | 0.41 | 0.53 | 1.98 | 3.09 | 4.55 | 1.46 | 3.81 | 57.46 |
 | [66b6a8406](https://github.com/AFK-surf/monoid/commit/66b6a8406dd9d559d22a5c2cd8aaea9a2a1d7316) app: a Farview tab's tiles drawn one a moment, at  | 0.41 | 0.53 | 1.98 | 3.09 | 4.54 | 1.46 | 3.81 | 57.25 |
 | [7b151c314](https://github.com/AFK-surf/monoid/commit/7b151c3145aa99a7727896c8d94c2d58fb546a22) feat(mbui): native .mbui declarative widgets & san | 0.41 | 0.53 | 1.98 | 3.09 | 4.54 | 1.46 | 3.81 | 57.25 |
 | [fded3ea86](https://github.com/AFK-surf/monoid/commit/fded3ea86094cd0b00655b5cb229537c9ea47349) app: a station's terminals, among its screens, and | 0.41 | 0.53 | 1.98 | 3.09 | 4.54 | 1.46 | 3.81 | 57.25 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [192ae506c](https://github.com/AFK-surf/monoid/commit/192ae506c9422cdb9d1ff33cab286f6dbf83c95b) mbui: one height for what is pressed side by side  | 0.4 | 0.52 | 1.96 | 3.08 | 4.46 | 1.45 | 3.8 | 57.46 |
 | [0b847198b](https://github.com/AFK-surf/monoid/commit/0b847198b1655bd4c22ca1b1ad3986f623fd274d) Simplify station pages, open login links as a shee | 0.4 | 0.52 | 1.96 | 3.08 | 4.46 | 1.45 | 3.8 | 57.39 |
 | [2ed703dec](https://github.com/AFK-surf/monoid/commit/2ed703decf832c39d59034998e89eaa46fc95027) mbui: a Tester's run at a rate draws no frame for  | 0.4 | 0.52 | 1.96 | 3.08 | 4.46 | 1.45 | 3.8 | 57.51 |
-| [5ea9f29a9](https://github.com/AFK-surf/monoid/commit/5ea9f29a9aa670a4e2e36daae34fb7af71c78466) mbui app: a go-to on the chat's page made as nodes | 0.4 | 0.52 | 1.96 | 3.08 | 4.46 | 1.45 | 3.8 | 57.35 |
