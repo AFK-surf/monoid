@@ -205,7 +205,8 @@ fn steps_list_node(
       let make_row = fn(p : @view.View, row : StepsRow) {
         let row_style = match row {
           Edge => steps_row_first
-          Item(item, _) if field(Some(item), "turn") is Some(Object(_)) => steps_row_turn
+          Item(item, _) if field(Some(item), "turn") is Some(Object(_)) && turn_time_of(Some(item)) == "" =>
+            steps_row_turn
           _ => steps_row
         }
         steps_box_node(p, row_style, fn(r) {
@@ -1829,7 +1830,7 @@ fn steps_reused_row_node(
           let l = lit.get()
           l != "" && l == item_key()
         }
-        steps_box_node(p, if turn_kind > 0 { steps_row_turn } else { steps_row }, fn(r) {
+        steps_box_node(p, if turn_kind == 1 { steps_row_turn } else { steps_row }, fn(r) {
           r.box(fn(b) {
             @sf.style_node(b, fn() { h_item })
             b.ground(By(fn() { if marked() { @ui.tree_theme().color(A(Accent, O10)) } else { 0L } })) |> ignore
@@ -3324,9 +3325,9 @@ pub fn history_marked() -> (String, String) {
 pub let steps_marked_ms : Double = 1600.0
 
 ///|
-/// A turn's time (hTurn): centered 11 muted when shown.
+/// A turn's time (hTurn): 4 over it, centered 11 muted when shown.
 // kept across runs: a value (no field of it changes)
-let h_turn : @ui.Style = @ui.css("row w=Full pb=S0_5 justify=JCenter align=ACenter")
+let h_turn : @ui.Style = @ui.css("row w=Full pt=S1 justify=JCenter align=ACenter")
 
 ///|
 // kept across runs: a value (no field of it changes)
