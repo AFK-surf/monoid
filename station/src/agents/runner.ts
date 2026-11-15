@@ -7,13 +7,14 @@
 // to see it is there, is a connection, and the runner keeps one at a time. So it is never looked at but to attach.
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { access, readFile, readdir } from "node:fs/promises";
+import { access, lstat, readFile, readdir, rm } from "node:fs/promises";
 import { createConnection, type Socket } from "node:net";
 import { join } from "node:path";
 import { niced } from "../ops/nice.ts";
 import { withShellCommand } from "../ops/shell-path.ts";
 import { platform } from "../platform/index.ts";
 import { runnerBinary } from "../platform/processes.ts";
+import { log } from "../ops/log.ts";
 
 export type RunnerInfo = {
   id: string;
@@ -129,6 +130,75 @@ function alive(text: () => string): RunnerInfo[] {
   } catch {
     return [];
   }
+}
+
+/// How far a process's start as the system tells it may be past the `startedAt` its runner wrote (native/runner
+/// `STARTED_SLACK_MS`): clocks read two ways, and ps says whole seconds.
+const STARTED_SLACK_MS = 60_000;
+
+/// Whether the runner an info file names is alive and is that runner (native/runner `live_runner`): its pid there, and
+/// not started after the runner said it had (a pid gone long ago reused by another process).
+export async function liveRunner(info: RunnerInfo): Promise<boolean> {
+  try {
+    process.kill(info.runner, 0);
+  } catch {
+    // Gone (or another user's process of that pid: not our runner).
+    return false;
+  }
+  const started = await platform.startTimeOf(info.runner).catch(() => null);
+  return started === null || typeof info.startedAt !== "number" || started <= info.startedAt + STARTED_SLACK_MS;
+}
+
+/// The files a runner keeps beside its info file (native/runner `Paths`).
+const RUNNER_FILES = [".json", ".out", ".err", ".sock"];
+/// A runner's files with no info file beside them this long are left over (one starting writes its info file last).
+export const RUNNER_LEFT_MS = 5 * 60_000;
+
+/// The files of runners gone (killed, crashed, the machine restarted: a runner removes its own only when it ends well)
+/// removed: an info file whose runner is not alive, with its output, errors and socket; and output, errors, sockets and
+/// half-written info files with no info file, unchanged for RUNNER_LEFT_MS. Chats' runners have ids of their own each
+/// time (`claude-chat_…-<random>`), so nothing ever started again under one of them to clear it: 1.1 GB of them on a
+/// station (2026-11-15). The ids removed.
+export async function sweepRunners(data: string, now: number): Promise<string[]> {
+  const dir = runnersDir(data);
+  let names: string[];
+  try {
+    names = await readdir(dir);
+  } catch {
+    return [];
+  }
+  const infos = new Set(names.filter((n) => n.endsWith(".json")).map((n) => n.slice(0, -5)));
+  const gone = new Set<string>();
+  const remove = async (id: string) => {
+    for (const ext of RUNNER_FILES) await rm(join(dir, `${id}${ext}`), { force: true }).catch(() => undefined);
+    gone.add(id);
+  };
+  for (const id of infos) {
+    const text = await readFile(join(dir, `${id}.json`), "utf8").catch(() => null);
+    let info: RunnerInfo | null = null;
+    try {
+      info = text === null ? null : (JSON.parse(text) as RunnerInfo);
+    } catch {}
+    if (info === null || typeof info.runner !== "number") {
+      // One that does not read: left over only once it has stood unchanged a while.
+      const st = await lstat(join(dir, `${id}.json`)).catch(() => null);
+      if (st !== null && now - st.mtimeMs >= RUNNER_LEFT_MS) await remove(id);
+      continue;
+    }
+    if (!(await liveRunner(info))) await remove(id);
+  }
+  for (const name of names) {
+    const ext = RUNNER_FILES.find((e) => e !== ".json" && name.endsWith(e)) ?? (name.endsWith(".tmp") ? ".tmp" : null);
+    if (ext === null) continue;
+    const id = name.slice(0, -ext.length);
+    if (infos.has(id) || gone.has(id)) continue;
+    const st = await lstat(join(dir, name)).catch(() => null);
+    if (st === null || now - st.mtimeMs < RUNNER_LEFT_MS) continue;
+    await rm(join(dir, name), { force: true }).catch(() => undefined);
+    gone.add(id);
+  }
+  if (gone.size > 0) log.info("agents::runner", "runners gone, their files removed", { count: gone.size });
+  return [...gone];
 }
 
 /// Connections being let go: each one closed on this side and read to its end, so its runner has taken every ack sent on

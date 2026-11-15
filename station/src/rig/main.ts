@@ -20,8 +20,10 @@ import { PEER_ALPN, PEER_BYTES_ALPN, peerCall, servePeer } from "../mesh/peer.ts
 import { DeviceRefused, PEER_HTTP_ALPN, serveHttp } from "../mesh/peer-http.ts";
 import { keepRelays } from "../mesh/relays.ts";
 import { congestionOf } from "../mesh/settings.ts";
-import { DISK_EVERY_MS, DISK_LOW_BYTES, diskFree } from "../ops/disk.ts";
 import { Fibers } from "../ops/fibers.ts";
+import { DISK_EVERY_MS, diskEvery, diskSoft, diskTier } from "../ops/disk.ts";
+import { Upkeep, diskOf } from "../ops/storage.ts";
+import { sweepRunners } from "../agents/runner.ts";
 import { mcpPortFile, ownData, portsToTry, rememberedMcpPort } from "../ops/files.ts";
 import type { Control } from "../ops/launcher.ts";
 import { log } from "../ops/log.ts";
@@ -108,6 +110,28 @@ export const RigLive = (control: Control) =>
       const memory = liveMemory({ data, store, jobs, notify: () => {}, clock: time.clock });
       memory.start();
 
+      // Its own files held to their bounds, and room made as its disk fills (ops/storage.ts, ops/disk.ts): a machine
+      // that only runs tasks keeps the mirrors and rooms of every chat that sends it one.
+      const upkeep = new Upkeep({ data, clock: time.clock, runners: (now) => sweepRunners(data, now), jobs: (now) => jobs.upkeep(now), remote: (now, disk) => remote.upkeep(now, disk) });
+      upkeep.start();
+      // Room made as its disk fills: what is made again when asked for, then other stations' mirrors unused the longest
+      // (jobs/remote.ts).
+      const relieving = async () => {
+        let tier: "ok" | "soft" | "low" = "ok";
+        try {
+          const disk = await diskOf(data);
+          tier = diskTier(disk.free, disk.total);
+          if (tier !== "ok") {
+            await upkeep.renewables(time.now());
+            await remote.relieve(time.now(), diskSoft(disk.total));
+          }
+        } catch (error) {
+          log.warn("rig", "making room on the disk failed", { error: (error as Error).message });
+        }
+        time.after(diskEvery(tier), relieving); // timer: a sample of this machine (its disk)
+      };
+      time.after(DISK_EVERY_MS, relieving); // timer: a sample of this machine (its disk)
+
       // Its own release, read at start and as the cloud says one is out; updated by itself while nothing runs.
       const updates = makeUpdates({ app, data, config, origin: () => plane.releaseBase(), running: () => 0, stationOnly: true });
       updates.start();
@@ -170,17 +194,6 @@ export const RigLive = (control: Control) =>
         control.failed(`the rig did not start: ${(e as Error).message}`);
       })));
 
-      // Room made on a disk running low: other stations' mirrors unused the longest go first (jobs/remote.ts).
-      const relieving = async () => {
-        try {
-          if (diskFree(data) < DISK_LOW_BYTES) await remote.relieve(time.now());
-        } catch (error) {
-          log.warn("rig", "making room on the disk failed", { error: (error as Error).message });
-        }
-        // A sample of this machine (its disk), looked at again later.
-        time.after(DISK_EVERY_MS, relieving);
-      };
-      time.after(DISK_EVERY_MS, relieving);
 
       // Nothing here to hand over turn by turn: drained at once.
       control.on("drain", () => {
@@ -194,6 +207,7 @@ export const RigLive = (control: Control) =>
           roster?.();
           await door?.close(5_000);
           await memory.close();
+          await upkeep.close();
           await rig.close();
           await remote.close();
           await jobs.shutdown();

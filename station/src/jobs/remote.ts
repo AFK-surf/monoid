@@ -17,6 +17,8 @@ import { constants, mkdirSync, readFileSync, renameSync } from "node:fs";
 import { access, link, lstat, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { DISK_LOW_BYTES, diskFree } from "../ops/disk.ts";
+import { treeBytes } from "../ops/storage.ts";
+import { walkBounded } from "../ops/walk.ts";
 import { portableComponent, relativeParts } from "../ops/paths.ts";
 import { PlaceRefused, Places } from "../ops/places.ts";
 import { platform } from "../platform/index.ts";
@@ -182,24 +184,33 @@ function readUsed(path: string): Json | null {
 const BACK_KEPT_MS = 6 * 3600_000;
 const BACK_TIDY_MS = 3600_000;
 
+/// How many entries `latestIn` looks at, at most: past it, what it looks at is kept (Infinity).
+export const LATEST_MOST = 100_000;
+
 /// When anything under `path` last changed (its own time for a file), off the thread; Infinity where it cannot be said
-/// (kept).
-async function latestIn(path: string): Promise<number> {
-  let st;
-  try {
-    st = await stat(path);
-  } catch {
-    return Infinity;
-  }
-  if (!st.isDirectory()) return st.mtimeMs;
-  let latest = st.mtimeMs;
-  for (const name of await readdir(path).catch(() => null) ?? [""]) {
-    if (name === "") return Infinity;
-    latest = Math.max(latest, await latestIn(join(path, name)));
-    if (latest === Infinity) return latest;
-  }
+/// (kept): past LATEST_MOST entries too, or a walk cut short (ops/walk.ts `walkBounded`: on its root's disk, no link
+/// followed).
+export async function latestIn(path: string, most = LATEST_MOST): Promise<number> {
+  let latest = -Infinity;
+  let failed = false;
+  const walked = await walkBounded(path, (e) => {
+    if (e.stats !== null) latest = Math.max(latest, Number(e.stats.mtimeMs));
+  }, { stat: true, maxEntries: most + 1, onError: () => void (failed = true) });
+  if (failed || walked.truncated || latest === -Infinity) return Infinity;
   return latest;
 }
+
+/// remote/sessions' budget on a disk of `total` bytes (none known: its most): the source sessions' rooms here, their
+/// work and mirrors, beyond which the longest unused go (`budget`) before the disk runs low. They took 63 GiB of a
+/// station in five days (2026-11-15).
+export const REMOTE_BUDGET_MOST = 32 * 1024 ** 3;
+export const remoteBudget = (total: number | null): number => (total === null || !(total > 0) ? REMOTE_BUDGET_MOST : Math.min(REMOTE_BUDGET_MOST, Math.floor(total * 0.15)));
+/// A room used within this stays, over its budget or not.
+export const ROOM_RECENT_MS = 3600_000;
+/// A task done here (remote/incoming/<task>), and one started from here whose end was told (remote/outgoing/<id>.json),
+/// kept this long after: 3,255 of the first on a station of five days (2026-11-15), as a session's tasks were never
+/// swept (the program's sweep leaves them to their room).
+export const TASKS_KEPT_MS = 7 * 24 * 3600_000;
 
 /// readJson off the station's thread (fs/promises): what is read again on a schedule, or all the records at once. Read
 /// after what was asked to be written of it before (`writeJson`).
@@ -379,6 +390,10 @@ export class Remote {
   /// station_task, named `sandbox:<name>`, whose tasks this station takes itself and runs there.
   private sandboxes: (() => Sandbox[]) | null = null;
   private removeTask: (path: string) => Promise<void>;
+  /// While a pass holds remote/sessions to its budget (`budget`): the bytes it is over by yet.
+  private over = 0;
+  /// Under how many bytes free the disk is low to the program's `relieve` (`relieve`'s `below`).
+  private lowBelow = DISK_LOW_BYTES;
   /// The program the jobs run in (theirs: jobs/jobs.ts), these as `#remote` of it.
   private program: ActorsProgram;
   /// The bytes of the requests being answered, by the number the program is told (`bytes`), and those of the answers
@@ -492,6 +507,7 @@ export class Remote {
         await this.removeTask(a);
         return null;
       case "node.removeMirror":
+        if (this.over > 0) this.over -= (await treeBytes(a)).bytes;
         await this.removeMirror(a);
         return null;
       case "node.load":
@@ -517,8 +533,10 @@ export class Remote {
       case "node.fileGet":
         return await this.fileGet(a, b);
       case "node.diskLow": {
+        // Over its budget too (`budget`): as much is to be freed as it is over by.
+        if (this.over > 0) return true;
         try {
-          return this.diskFree(a) < DISK_LOW_BYTES;
+          return this.diskFree(a) < this.lowBelow;
         } catch {
           return false;
         }
@@ -712,8 +730,118 @@ export class Remote {
 
   /// The disk of the station's data has less than DISK_LOW_BYTES free: mirrors go, the longest unused first (the
   /// program's).
-  async relieve(now: number): Promise<void> {
-    await this.call("relieve", [now]);
+  /// `below`: what counts as low (under the soft mark the mirrors go sooner: ops/disk.ts).
+  async relieve(now: number, below = DISK_LOW_BYTES): Promise<void> {
+    this.lowBelow = below;
+    try {
+      await this.call("relieve", [now]);
+    } finally {
+      this.lowBelow = DISK_LOW_BYTES;
+    }
+  }
+
+  /// The upkeep's (ops/storage.ts Upkeep): tasks long over let go of, and the rooms held to their budget on a disk
+  /// of `disk`'s size.
+  async upkeep(now: number, disk: { free: number; total: number } | null): Promise<{ expired: number; freed: number }> {
+    const expired = await this.expire(now);
+    const freed = await this.budget(now, remoteBudget(disk?.total ?? null));
+    return { expired, freed };
+  }
+
+  /// The source sessions' rooms here (remote/sessions/<id>), each with how much it takes and when it was last used.
+  private async rooms(): Promise<{ dir: string; bytes: number; seen: number; owner: [string, string, string] | null }[]> {
+    const sessions = join(this.root, "sessions");
+    const out = [];
+    for (const name of await readdir(sessions).catch(() => [] as string[])) {
+      if (this.stopped) break;
+      const dir = join(sessions, name);
+      const meta = await readJsonSoon(join(dir, "session.json")).catch(() => null);
+      const recorded = typeof meta?.seen === "number" ? meta.seen : 0;
+      const seen = Math.max(recorded, this.seenAt.get(dir) ?? 0);
+      const owner: [string, string, string] | null = typeof meta?.workspace === "string" && typeof meta?.station === "string" && typeof meta?.session === "string" ? [meta.workspace, meta.station, meta.session] : null;
+      out.push({ dir, bytes: (await treeBytes(dir)).bytes, seen, owner });
+    }
+    return out;
+  }
+
+  /// remote/sessions held to `budget`: the mirrors not in use go first, the longest unused first (the program's
+  /// `relieve`, told the disk is low until as much as it is over by went); then the rooms with no task running there, the
+  /// longest unused first. One used within ROOM_RECENT_MS, and anything a task runs in, stays. The bytes freed.
+  async budget(now: number, budget: number): Promise<number> {
+    let rooms = await this.rooms();
+    const before = rooms.reduce((n, r) => n + r.bytes, 0);
+    if (before <= budget || this.stopped) return 0;
+    log.warn("remote", "other stations' rooms here over their budget: the longest unused go", { bytes: before, budget });
+    this.over = before - budget;
+    try {
+      await this.call("relieve", [now]);
+    } finally {
+      this.over = 0;
+    }
+    rooms = await this.rooms();
+    let total = rooms.reduce((n, r) => n + r.bytes, 0);
+    const running = this.runningOwners();
+    for (const room of rooms.sort((a, b) => a.seen - b.seen)) {
+      if (total <= budget || this.stopped) break;
+      if (room.owner === null || now - room.seen < ROOM_RECENT_MS || running.has(JSON.stringify(room.owner))) continue;
+      // Taken out in one step with its use asked again (`closeRoom`): one used since it was looked at stays.
+      const moved = this.closeRoom(room.dir, [], now - ROOM_RECENT_MS) as { room: string | null } | null;
+      if (moved?.room) {
+        await this.removeTask(moved.room).catch(() => undefined);
+        total -= room.bytes;
+        log.info("remote", "remote session directory removed", { why: "over budget", bytes: room.bytes, workspace: room.owner[0], station: room.owner[1], session: room.owner[2] });
+      }
+    }
+    return Math.max(0, before - total);
+  }
+
+  /// The source sessions with a task running here (remote/incoming's records, their jobs `remote_<task>` running), as
+  /// JSON of [workspace, station, session].
+  private runningOwners(): Set<string> {
+    const owners = new Set<string>();
+    for (const job of this.store.jobsUp()) {
+      if (!job.id.startsWith("remote_")) continue;
+      try {
+        const meta = JSON.parse(readFileSync(join(this.root, "incoming", job.id.slice("remote_".length), "task.json"), "utf8")); // sync: a few records of the tasks running, as the rooms are let go of in one step
+        owners.add(JSON.stringify([meta.workspace, meta.station, meta.session]));
+      } catch {}
+    }
+    return owners;
+  }
+
+  /// Tasks long over let go of: remote/incoming/<task> whose job ended TASKS_KEPT_MS ago (or the store no longer has,
+  /// and unchanged as long), and remote/outgoing/<id>.json told its end (`delivered`) and unchanged as long. How many.
+  async expire(now: number): Promise<number> {
+    let gone = 0;
+    const up = new Set(this.store.jobsUp().map((j) => j.id));
+    const incoming = join(this.root, "incoming");
+    for (const name of await readdir(incoming).catch(() => [] as string[])) {
+      if (this.stopped) return gone;
+      const id = `remote_${name}`;
+      if (up.has(id)) continue;
+      const job = this.store.getJob(id);
+      const dir = join(incoming, name);
+      let at: number;
+      if (job === null) at = (await lstat(join(dir, "task.json")).catch(() => null))?.mtimeMs ?? (await lstat(dir).catch(() => null))?.mtimeMs ?? now;
+      else if (job.state === "running" || job.endedAt === null) continue;
+      else at = job.endedAt;
+      if (now - at < TASKS_KEPT_MS) continue;
+      await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+      gone++;
+    }
+    const outgoing = join(this.root, "outgoing");
+    for (const name of await readdir(outgoing).catch(() => [] as string[])) {
+      if (this.stopped || !name.endsWith(".json")) continue;
+      const file = join(outgoing, name);
+      const st = await lstat(file).catch(() => null);
+      if (st === null || now - st.mtimeMs < TASKS_KEPT_MS) continue;
+      const record = await readJsonSoon(file).catch(() => null);
+      if (record?.delivered !== true) continue;
+      await rm(file, { force: true }).catch(() => undefined);
+      gone++;
+    }
+    if (gone > 0) log.info("remote", "tasks long over let go of", { count: gone });
+    return gone;
   }
 
   /// A session's prepared tasks' directories and what they bring back, as this station has them: one directory per

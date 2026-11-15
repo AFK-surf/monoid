@@ -19,6 +19,9 @@ export type Answer = { id: number; text?: string; body?: Buffer; status?: number
 /// Said once, as a reader is ready: how long it took from its first line (its code read in) to its store opened.
 export type Ready = { ready: { loadedMs: number; openedMs: number } };
 
+/// How long a checkpoint of a log past its bound waits for the readers and the writer.
+const HARD_WAIT_MS = 1000;
+
 /// Serves the reads of `ops` (and the station's own: a checkpoint, a card's queued pages) on this thread.
 export function serveReads(ops: Record<string, ReadOp>) {
   const loaded = performance.now();
@@ -32,19 +35,28 @@ export function serveReads(ops: Record<string, ReadOp>) {
 
   /// What of the log (the WAL) is not in the database yet, written into it, as far as no reader still reads it (a passive
   /// checkpoint: it waits for no one, and holds up no read or write): the main thread leaves it to the readers (store.ts).
-  function checkpoint(): unknown {
+  /// `hard`: the log grew past its bound (a long read held the passive ones back: ops/storage.ts `walCheckpoint`), so
+  /// this one waits up to HARD_WAIT_MS for the readers and the writer, and cuts the log's file to nothing once it is all
+  /// in (TRUNCATE). The main thread's writes wait on it that long at most, once.
+  function checkpoint(hard = false): unknown {
     if (writer === null) {
       writer = new DatabaseSync(join(workerData.data as string, "stillfail.db"), { timeout: 0 });
       writer.exec("PRAGMA synchronous = NORMAL");
     }
-    return writer.prepare("PRAGMA wal_checkpoint(PASSIVE)").get();
+    if (!hard) return writer.prepare("PRAGMA wal_checkpoint(PASSIVE)").get();
+    writer.exec(`PRAGMA busy_timeout = ${HARD_WAIT_MS}`);
+    try {
+      return writer.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get();
+    } finally {
+      writer.exec("PRAGMA busy_timeout = 0");
+    }
 }
 
 parentPort!.on("message", async (ask: Ask) => {
   let answer: Answer;
   try {
     if (ask.op === "checkpoint") {
-      parentPort!.postMessage({ id: ask.id, text: JSON.stringify(checkpoint()) } satisfies Answer);
+      parentPort!.postMessage({ id: ask.id, text: JSON.stringify(checkpoint(ask.args?.hard === true)) } satisfies Answer);
       return;
     }
     setSpoken(ask.lang);

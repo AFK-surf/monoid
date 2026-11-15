@@ -25,7 +25,9 @@ import { liveMemory } from "../jobs/memory.ts";
 import { WorkspaceWatch, workspaceWorking, type WorkspaceReading } from "../jobs/workspace-size.ts";
 import { Remote, followRoster } from "../jobs/remote.ts";
 import { ConfigFile } from "../ops/config.ts";
-import { DISK_EVERY_MS, DISK_LOW_BYTES, diskFree } from "../ops/disk.ts";
+import { DISK_EVERY_MS, DISK_LOW_BYTES, diskEvery, diskFree, diskSoft, diskTier } from "../ops/disk.ts";
+import { Upkeep, diskOf } from "../ops/storage.ts";
+import { sweepRunners } from "../agents/runner.ts";
 import type { Control } from "../ops/launcher.ts";
 import { log } from "../ops/log.ts";
 import { mcpPortFile, ownData, portsToTry, rememberedMcpPort } from "../ops/files.ts";
@@ -904,8 +906,20 @@ export const AgentsLive = (control: Control) =>
       };
       time.after(300_000, emptying);
 
-      // The disk of the station's data low: the mirrors of other stations' tasks not in use go, then archived
-      // workspaces before their time (ops/disk.ts).
+      // The station's own files held to their bounds (ops/storage.ts): its logs, runners gone, jobs' logs, other
+      // stations' rooms, the database's log, caches.
+      const upkeep = new Upkeep({
+        data,
+        clock: hub.clock,
+        runners: (now) => sweepRunners(data, now),
+        jobs: (now) => jobs.upkeep(now),
+        remote: (now, disk) => remote.upkeep(now, disk),
+        checkpoint: () => readers.checkpointHard(),
+      });
+      upkeep.start();
+
+      // The disk of the station's data getting full: what is made again when asked for goes, then the mirrors of other
+      // stations' tasks not in use; low, then archived workspaces before their time (ops/disk.ts).
       const relieving = async () => {
         const free = () => {
           try {
@@ -914,17 +928,21 @@ export const AgentsLive = (control: Control) =>
             return Infinity;
           }
         };
+        let tier: "ok" | "soft" | "low" = "ok";
         try {
-          if (free() < DISK_LOW_BYTES) {
-            await remote.relieve(hub.now());
-            await relieveArchived(hub, free);
+          const disk = await diskOf(data).catch(() => null);
+          tier = disk === null ? "ok" : diskTier(disk.free, disk.total);
+          if (tier !== "ok") {
+            await upkeep.renewables(hub.now());
+            await remote.relieve(hub.now(), disk === null ? DISK_LOW_BYTES : diskSoft(disk.total));
           }
+          if (free() < DISK_LOW_BYTES) await relieveArchived(hub, free);
         } catch (error) {
           log.warn("hub", "making room on the disk failed", { error: (error as Error).message });
         }
-        time.after(DISK_EVERY_MS, relieving);
+        time.after(diskEvery(tier), relieving); // timer: a sample of this machine (its disk)
       };
-      time.after(DISK_EVERY_MS, relieving);
+      time.after(DISK_EVERY_MS, relieving); // timer: a sample of this machine (its disk)
 
       // What the Rust station's archiving left (the transcripts kept twice): once, when the devices have come back.
       time.after(180_000, () => cold.finishLegacyCopies().then(() => cold.segmentHistories()));
@@ -961,6 +979,7 @@ export const AgentsLive = (control: Control) =>
           await workspaceActivity.close();
           await sessionCounts.close();
           await time.close();
+          await upkeep.close();
           await sharing?.close();
           await xshare.close();
           unlistenRule();

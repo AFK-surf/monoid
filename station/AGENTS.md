@@ -91,6 +91,14 @@
   person or one chat would not stay hidden without encryption. Do not propose or build visibility by person or by
   chat; a report of seeing another's private chat is answered that it is meant, and changing it is the owner's to
   decide. Only workspaces are kept apart from each other.
+- Every top-level name the station keeps in its data directory is in `src/ops/storage.ts` `STORAGE_MANIFEST` with its
+  class (authoritative, session-bound, bounded-ephemeral) and what bounds it; `test/storage-classes.test.ts` reads the
+  code and fails on a name joined onto `<data>` that is not there. What grows by itself (logs, runners' files, jobs'
+  logs, other stations' rooms, the database's log, caches) is held to its bound by `Upkeep` there (2026-11-15: 63 GiB
+  of remote rooms, 1.1 GB of runners' output, 1.0 GB of jobs' logs). A log another process holds open
+  (`stillfail.log`: launchd and systemd give it to the launcher, the front and Node with O_APPEND, and the launcher
+  keeps it across every update) is never renamed or removed, only cut where it is (`rotateInPlace`): renamed, they
+  would write on into a file nothing names until the disk is full.
 - What must survive of the chats is copied off the machine by an export off the main thread, as opaque batches, to two
   other stations of the workspace; a new station takes a lost one's back before its store
   opens (`src/replica/`, its AGENTS.md). It adds nothing to the main thread's writes: no trigger, no statement.

@@ -19,8 +19,10 @@ struct Reader {
 
 ///|
 /// What of the log (the WAL) is not in the database yet, written into it as far as no reader still reads it: a passive
-/// checkpoint, waiting for no one (read/worker.ts `checkpoint`). Its row, by its columns' names.
-fn Reader::checkpoint(self : Reader) -> Json raise {
+/// checkpoint, waiting for no one (read/worker.ts `checkpoint`). Its row, by its columns' names. `hard`: the log grew
+/// past its bound (ops/storage.ts `walCheckpoint`), so this one waits up to a second for the readers and the writer and
+/// cuts the log's file to nothing (TRUNCATE), as read/serve-reads.ts does; the connection waits for no one again after.
+fn Reader::checkpoint(self : Reader, hard? : Bool = false) -> Json raise {
   let id = match self.writer {
     Some(id) => id
     None => {
@@ -31,11 +33,22 @@ fn Reader::checkpoint(self : Reader) -> Json raise {
       id
     }
   }
-  let all = self.host.shell_sync("sql.all", {
-    "id": Json::number(id.to_double()),
-    "sql": "PRAGMA wal_checkpoint(PASSIVE)",
-    "named": true,
-  })
+  let db = Json::number(id.to_double())
+  let all = if hard {
+    ignore(self.host.shell_sync("sql.exec", { "id": db, "sql": "PRAGMA busy_timeout = 1000" }))
+    let done = try {
+      Ok(self.host.shell_sync("sql.all", { "id": db, "sql": "PRAGMA wal_checkpoint(TRUNCATE)", "named": true }))
+    } catch {
+      e => Err(e)
+    }
+    ignore(self.host.shell_sync("sql.exec", { "id": db, "sql": "PRAGMA busy_timeout = 0" }))
+    match done {
+      Ok(v) => v
+      Err(e) => raise e
+    }
+  } else {
+    self.host.shell_sync("sql.all", { "id": db, "sql": "PRAGMA wal_checkpoint(PASSIVE)", "named": true })
+  }
   guard all is { "columns": Array(columns), "rows": Array(rows), .. } else { fail("no rows") }
   guard rows is [Array(row), ..] else { return Json::null() }
   let out : Map[String, Json] = Map([])
@@ -58,7 +71,8 @@ fn Reader::answer(self : Reader, line : String) -> Json {
   match ask {
     { "op": "checkpoint", .. } =>
       try {
-        { "id": id, "text": Json::string(self.checkpoint().stringify()) }
+        let hard = ask is { "args": { "hard": True, .. }, .. }
+        { "id": id, "text": Json::string(self.checkpoint(hard~).stringify()) }
       } catch {
         e => { "id": id, "status": 500, "error": Json::string(message(e)) }
       }

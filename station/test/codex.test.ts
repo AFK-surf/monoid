@@ -1016,6 +1016,36 @@ describe("the Codex driver", { concurrency: true }, () => {
     await driver().adopt(options(p, { resume: two.id() }), null, () => {});
   });
 
+  // On a VM (2026-11-15) one app-server's output reached 747 MB: a thread closed while its turn ran was never told that
+  // turn's end, and where it began held what the runner keeps from then on.
+  test("a thread closed while its turn runs no longer holds what its app-server's runner keeps", async () => {
+    const first = driver();
+    const p = profile();
+    const a = listen();
+    const a2 = listen();
+    const one = await first.open(options(p), a.push);
+    const two = await first.open(options(p), a2.push);
+    const info = existingRunners(data).find((r) => r.id === runnerId("codex", p.id))!;
+    const out = join(data, "run", "runners", `${info.id}.out`);
+    const gate = gates(p.dump, "closed");
+    await two.prompt("gate:4:2:closed");
+    await a2.until((e) => said(e).includes("d1 "));
+    const twoBegan = readFileSync(out).indexOf("turn/started");
+    // Closed with its turn running: its end will not be read here.
+    await two.dispose();
+    await one.prompt("say:after");
+    await a.until(ended(1));
+    first.detach();
+    await allLeft();
+    const now = await ackedOffset(info, out);
+    assert.ok(now.keep !== null && now.keep > twoBegan, `kept from ${now.keep}, past where the closed thread's turn began (${twoBegan})`);
+    await gate.open("a");
+    await eventually(gate.said);
+    await gate.open("b");
+    // Taken up once more, so the driver's shutdown ends it.
+    await driver().adopt(options(p, { resume: one.id() }), null, () => {});
+  });
+
   // On a station (2026-11-02) a next station asked a profile's quota as it started: it took the app-server up as after a
   // crash, from the station still handing over, which let go of the turn running on it.
   test("a next driver takes no app-server up before the station before it is taken up: that one hears its turn to the end", { timeout: 60_000 }, async () => {

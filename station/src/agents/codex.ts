@@ -148,6 +148,10 @@ const BEFORE = "\0before";
 /// While sessions are being taken up, what the app-server says of a thread not taken up yet waits this long for it.
 const ORPHANS_MS = 60_000;
 const ORPHANS_MAX = 10_000;
+/// The most of an app-server's output kept for reading turns again after a crash (Host `reckon`), and how much of it is
+/// kept once that is passed.
+export const KEPT_MOST = 256 * 1024 ** 2;
+export const KEPT_AFTER = 64 * 1024 ** 2;
 
 function hostSignature(profile: Profile): string {
   const sorted = (entries: [string, string][]) => Object.fromEntries([...entries].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
@@ -229,6 +233,8 @@ class Host {
   /// (`keepFrom`), which keeps it with that ack: never ahead of what was acknowledged, whatever of the acks is lost.
   private turnFrom = new Map<string, number>();
   private keptFrom = -1;
+  /// Where its output's last line read ends: where `keepFrom` goes once no turn runs.
+  private readTo = 0;
   /// Where the station before kept, handed over (Host.adopt `from`).
   handedFrom = 0;
   readonly profile: string;
@@ -334,14 +340,39 @@ class Host {
     this.reckon(to);
   }
 
+  /// A thread whose turn will not be read to its end here (it ended without a word of it: its session closed, let go of,
+  /// its turn failed to start, the app-server gone): where it began no longer holds what is kept. Left there, the
+  /// earliest turn's start stood still for good, and its runner kept every byte after it: 747 MB of one app-server's
+  /// output on a station (2026-11-15).
+  forget(thread: string) {
+    if (this.turnFrom.delete(thread) && this.alive()) this.reckon(this.readTo);
+  }
+
+  /// What is kept of the turns running (Host `turnFrom`), as the threads it has say it.
+  turnsKept(): ReadonlyMap<string, number> {
+    return this.turnFrom;
+  }
+
   reckon(to: number) {
-    const at = this.turnFrom.size > 0 ? Math.min(...this.turnFrom.values()) : to;
+    let at = this.turnFrom.size > 0 ? Math.min(...this.turnFrom.values()) : to;
+    // However long a turn runs, no more than KEPT_MOST of its output is held for reading again after a crash: such a
+    // turn is read again from KEPT_AFTER before its end (what came before is not read, as for a turn of before the
+    // station's crash whose start was given back).
+    const end = Math.max(to, this.readTo);
+    if (end - at > KEPT_MOST) {
+      const was = at;
+      at = end - KEPT_AFTER;
+      for (const [thread, from] of this.turnFrom) if (from < at) this.turnFrom.set(thread, at);
+      log.warn("agents::codex", "a turn's output held past its bound: let go of up to near its end", { profile: this.profile, from: was, at, end });
+    }
     if (at === this.keptFrom) return;
     this.keptFrom = at;
     this.proc.keepFrom(at);
   }
 
   private onLine(line: string, from = 0, to = 0) {
+    if (to > this.readTo) this.readTo = to;
+    if (this.keptFrom >= 0 && to - this.keptFrom > KEPT_MOST) this.reckon(to);
     let msg: Json;
     try {
       msg = JSON.parse(line);
@@ -386,6 +417,7 @@ class Host {
     const threads = [...this.threads.values()];
     this.threads.clear();
     this.turns.clear();
+    this.turnFrom.clear();
     for (const thread of threads) thread({ kind: "hostExited", reason });
   }
 
@@ -711,6 +743,7 @@ export class CodexDriver implements AgentDriver {
     for (const [thread, sink] of [...host.threads]) {
       if (host.turns.has(thread)) continue;
       host.threads.delete(thread);
+      host.forget(thread);
       sink({ kind: "hostExited", reason: "its app-server is being replaced" });
       releases.push(host.request("thread/unsubscribe", { threadId: thread }).catch(() => {}));
     }
@@ -751,6 +784,7 @@ export class CodexDriver implements AgentDriver {
     this.draining.add(host);
     wall.after(ORPHANS_MS, () => {
       for (const thread of [...host.turns]) if (!host.threads.has(thread)) host.turns.delete(thread);
+      for (const thread of [...host.turnsKept().keys()]) if (!host.threads.has(thread)) host.forget(thread);
       void this.drain(host).catch((error) => log.warn("agents::codex", "a codex app-server being replaced not let go of", { profile: host.profile, error: String(error) }));
     });
   }
@@ -1241,6 +1275,7 @@ export class CodexSession implements AgentSession {
     this.state.busy = false;
     this.state.turnId = null;
     this.host.turns.delete(this.threadId);
+    this.host.forget(this.threadId);
     this.events({ type: "turnEnded", outcome });
     this.driver.hostIdle(this.host);
   }
@@ -1352,6 +1387,7 @@ export class CodexSession implements AgentSession {
     } catch (error) {
       this.state.busy = false;
       this.host.turns.delete(this.threadId);
+      this.host.forget(this.threadId);
       throw error;
     }
   }
@@ -1370,6 +1406,7 @@ export class CodexSession implements AgentSession {
     } catch (error) {
       this.state.busy = false;
       this.host.turns.delete(this.threadId);
+      this.host.forget(this.threadId);
       throw error;
     }
   }
@@ -1419,6 +1456,7 @@ export class CodexSession implements AgentSession {
     this.host.turns.delete(this.threadId);
     // Handed over, the thread is the next station's.
     if (this.host.proc.handed()) return;
+    this.host.forget(this.threadId);
     // Best effort: the thread just stays loaded.
     await this.host.request("thread/unsubscribe", { threadId: this.threadId }).catch(() => {});
   }

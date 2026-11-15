@@ -42,13 +42,24 @@ export function outputAt(path: string): number | null {
   }
 }
 
-/// tail: the last `lines` lines of a log, from at most its last LOG_BYTES; "" when it does not read.
+/// tail: the last `lines` lines of a log, from at most its last LOG_BYTES; "" when it does not read. A log cut where it
+/// is (ops/storage.ts `rotateInPlace`: a job's at JOB_LOG_CAP) with fewer lines than asked since is read on into what it
+/// kept of before (`<log>.1`), so a log just cut still shows what led up to it.
 export function tail(path: string, lines: number): string {
+  const now = tailLines(path);
+  if (now.length >= lines) return now.slice(now.length - lines).join("\n");
+  const before = tailLines(`${path}.1`);
+  const all = [...before, ...now];
+  return all.slice(Math.max(0, all.length - lines)).join("\n");
+}
+
+/// The lines of at most the last LOG_BYTES of a file; none when it does not read.
+function tailLines(path: string): string[] {
   let file: number;
   try {
     file = openSync(path, "r");
   } catch {
-    return "";
+    return [];
   }
   let bytes: Buffer;
   try {
@@ -76,8 +87,7 @@ export function tail(path: string, lines: number): string {
   } finally {
     closeSync(file);
   }
-  const all = rustLines(new TextDecoder("utf-8").decode(bytes));
-  return all.slice(Math.max(0, all.length - lines)).join("\n");
+  return rustLines(new TextDecoder("utf-8").decode(bytes));
 }
 
 /// str::lines: split at \n (a \r before it goes too); no last empty line.

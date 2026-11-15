@@ -838,6 +838,12 @@ export class Readers {
     return trimmed;
   }
 
+  /// The log written into the database waiting a while for the readers, and its file cut (serve-reads.ts
+  /// `checkpoint`'s `hard`): it grew past its bound (ops/storage.ts `walCheckpoint`). What SQLite answered.
+  async checkpointHard(): Promise<unknown> {
+    return JSON.parse(await this.read(CHECKPOINT, { hard: true }, "en"));
+  }
+
   /// Each running reader's JS heap in use, in bytes (for the memory log).
   heaps(): Promise<number[]> {
     return Promise.all([...this.asked.slots, ...this.told.slots, ...this.log.slots, ...this.pages.slots, ...this.moved.slots].map((s) => s.worker.getHeapStatistics().then((h) => h.used_heap_size, () => 0)));
