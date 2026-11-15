@@ -46,9 +46,13 @@ static int catch_vk(WPARAM vk) {
   return code;
 }
 
-static int catch_canvas(void) {
-  return key_catching && ime_active && !marked_len && GetForegroundWindow() == hwnd && GetFocus() == hwnd;
+// (the window of the run in front, its canvas focused, a key catcher in it)
+static HWND catch_window(void) {
+  int k = win_of(GetForegroundWindow());
+  if (k < 0 || GetFocus() != win_slots[k].h) return NULL;
+  return key_catching && win_slots[k].ime_active && !win_slots[k].marked_len ? win_slots[k].h : NULL;
 }
+static int catch_canvas(void) { return catch_window() != NULL; }
 
 static LRESULT CALLBACK catch_keyboard(int n, WPARAM kind, LPARAM data) {
   if (n != HC_ACTION) return CallNextHookEx(catch_hook, n, kind, data);
@@ -77,7 +81,7 @@ static LRESULT CALLBACK catch_keyboard(int n, WPARAM kind, LPARAM data) {
     int mods = 8 | (GetAsyncKeyState(VK_SHIFT) < 0 ? 1 : 0) | (GetAsyncKeyState(VK_CONTROL) < 0 ? 2 : 0) |
                (GetAsyncKeyState(VK_MENU) < 0 ? 4 : 0);
     int code = catch_code(vk, mods);
-    if (code && PostMessageW(hwnd, WM_MB_CAUGHT_KEY, (WPARAM)code, (LPARAM)mods)) {
+    if (code && PostMessageW(catch_window(), WM_MB_CAUGHT_KEY, (WPARAM)code, (LPARAM)mods)) {
       if (vk < 256) catch_pressed[vk] = 1;
       return 1;
     }
@@ -99,5 +103,5 @@ static void catch_keys_focus(int focused) {
 
 void mb_host_key_catch(int32_t on) {
   key_catching = on != 0;
-  catch_keys_focus(GetForegroundWindow() == hwnd && GetFocus() == hwnd);
+  catch_keys_focus(GetForegroundWindow() == ws->h && GetFocus() == ws->h);
 }

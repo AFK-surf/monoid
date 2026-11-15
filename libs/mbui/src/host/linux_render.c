@@ -79,7 +79,77 @@ static void atlas_upload(void) {
   glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
 }
 
+// ---- the windows of one run (linux_app.c): what gles_render.h keeps of the frame, each window's ----
+
+// What a window keeps of its frames (gles_render.h's, of the window in place: the window's while it is): the size it
+// is drawn at, the frame kept (its instances, ground), the canvas it is drawn into and what of it is said to differ.
+// GL's objects of the one context all the windows are drawn in (programs, atlases, textures) are theirs together.
+typedef struct {
+  int fb_w, fb_h;
+  double cur_w, cur_h, cur_scale;
+  GLuint target_fb, canvas_fb, canvas_tex;
+  int canvas_w, canvas_h, canvas_ok;
+  double dirty[MB_PARTS][4];
+  int dirty_n, dirty_whole, dirty_told, pictures_missing;
+  float *fbuf;
+  size_t fcap;
+  int32_t kept_count;
+  double kept_r, kept_g, kept_b;
+} RenderWin;
+static RenderWin render_wins[MB_WINS];
+static int render_at;  // the window whose frame gles_render.h holds now
+
+static void render_take(RenderWin *w) {
+  w->fb_w = fb_w, w->fb_h = fb_h, w->cur_w = cur_w, w->cur_h = cur_h, w->cur_scale = cur_scale;
+  w->target_fb = target_fb, w->canvas_fb = canvas_fb, w->canvas_tex = canvas_tex;
+  w->canvas_w = canvas_w, w->canvas_h = canvas_h, w->canvas_ok = canvas_ok;
+  memcpy(w->dirty, dirty, sizeof dirty);
+  w->dirty_n = dirty_n, w->dirty_whole = dirty_whole, w->dirty_told = dirty_told;
+  w->pictures_missing = pictures_missing;
+  w->fbuf = fbuf, w->fcap = fcap;
+  w->kept_count = kept_count, w->kept_r = kept_r, w->kept_g = kept_g, w->kept_b = kept_b;
+}
+
+static void render_put(const RenderWin *w) {
+  fb_w = w->fb_w, fb_h = w->fb_h, cur_w = w->cur_w, cur_h = w->cur_h, cur_scale = w->cur_scale;
+  target_fb = w->target_fb, canvas_fb = w->canvas_fb, canvas_tex = w->canvas_tex;
+  canvas_w = w->canvas_w, canvas_h = w->canvas_h, canvas_ok = w->canvas_ok;
+  memcpy(dirty, w->dirty, sizeof dirty);
+  dirty_n = w->dirty_n, dirty_whole = w->dirty_whole, dirty_told = w->dirty_told;
+  pictures_missing = w->pictures_missing;
+  fbuf = w->fbuf, fcap = w->fcap;
+  kept_count = w->kept_count, kept_r = w->kept_r, kept_g = w->kept_g, kept_b = w->kept_b;
+}
+
+void mb_render_use(int wid) {
+  if (wid < 0 || wid >= MB_WINS || wid == render_at) return;
+  render_take(&render_wins[render_at]);
+  render_put(&render_wins[wid]);
+  render_at = wid;
+}
+
+// What window `wid` kept let go of, as it closes (the context current): the next window given its number starts as
+// none was drawn.
+void mb_render_forget(int wid) {
+  if (wid <= 0 || wid >= MB_WINS) return;
+  int back = render_at == wid ? 0 : render_at;
+  mb_render_use(wid);
+  if (ready && canvas_fb) {
+    glDeleteFramebuffers(1, &canvas_fb);
+    glDeleteTextures(1, &canvas_tex);
+  }
+  free(fbuf);
+  RenderWin none = {0};
+  render_put(&none);
+  render_wins[wid] = none;
+  mb_render_use(back);
+  render_wins[wid] = none;
+}
+
 void mb_render_setup(void) {
+  // (each window's canvas gone with the old context, as the one in place's: canvas_lost)
+  for (int k = 0; k < MB_WINS; k++) render_wins[k].canvas_fb = render_wins[k].canvas_tex = 0, render_wins[k].canvas_ok = 0,
+                                     render_wins[k].canvas_w = render_wins[k].canvas_h = 0;
   gl_setup();
   ready = 1;
   // what the atlases held is gone with the old context (MoonBit draws its glyphs again: linux_text.c's generation)

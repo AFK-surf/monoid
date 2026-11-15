@@ -122,17 +122,17 @@ static double asleep_at = -1;    // as the computer went to sleep (-1: awake)
 static int tray_on;              // the desktop shows the app's icon (its watcher took it)
 
 static void bring_back(void) {
-  if (!win) return;
+  if (!win_slots[0].win) return;
   if (put_away_at >= 0) {
     fprintf(stdout, "linux: brought back\n");
     fflush(stdout);
   }
   // (the desktop's leave its icon was clicked with, for the window to come to the front: Wayland's)
   if (activation_token) {
-    gtk_window_set_startup_id(GTK_WINDOW(win), activation_token);
+    gtk_window_set_startup_id(GTK_WINDOW(win_slots[0].win), activation_token);
     g_clear_pointer(&activation_token, g_free);
   }
-  gtk_window_present(GTK_WINDOW(win));
+  gtk_window_present(GTK_WINDOW(win_slots[0].win));
   if (put_away_at >= 0) {
     say_shown(put_away_at);
     put_away_at = -1;
@@ -141,11 +141,14 @@ static void bring_back(void) {
 }
 
 // the window closed: put away where the program is an app and the desktop shows its icon; else the program ends
+static void wins_close_beside(void);
 static int put_away(void) {
   if (!life_app || !tray_on) return 0;
+  // (the windows beside it close with it, as the Mac's: drawn in its canvas's context, which goes as it is hidden)
+  wins_close_beside();
   fprintf(stdout, "linux: put away, to its icon\n");
   fflush(stdout);
-  gtk_widget_set_visible(win, FALSE);
+  gtk_widget_set_visible(win_slots[0].win, FALSE);
   if (put_away_at < 0) put_away_at = boot_ms();
   return 1;
 }
@@ -311,12 +314,8 @@ static int window_run(void) {
 // byte on it brings its window to the front (mb_host_window_front, window_front_heard), the pipe's end says this run
 // has ended, and writing to it finds whether it still runs.
 static GHashTable *window_pipes;  // what each was started for, the last for each: the pipe's end to write to (+1)
-// The windows of this run (@hostapi.windows_in_process and the rest: host_native.mbt's `windows`): none but its own
-// here, a window of the app's own being another run of it (mb_host_window_open).
-int32_t mb_host_windows(int32_t op, int32_t wid, moonbit_string_t what) {
-  (void)op, (void)wid, (void)what;
-  return 0;
-}
+// (the windows of this run, beside its first: linux_app.c mb_host_windows; a window of the app's own is another run of
+// it where the app says so, or where it is one itself: MBUI_WINDOW)
 int32_t mb_host_window_opens(void) { return 1; }
 int32_t mb_host_window_open(moonbit_string_t what_s) {
   char *what = utf8(what_s);
@@ -911,9 +910,9 @@ void mb_host_set_badge(int32_t n) {
 // its icon among the desktop's, the network and sleep watched, the link it was started with to the app
 static void life_start(const char *title) {
   window_title = g_strdup(title);
-  g_signal_connect(win, "close-request", G_CALLBACK(on_close), NULL);
+  g_signal_connect(win_slots[0].win, "close-request", G_CALLBACK(on_close), NULL);
   if (life_app) {
-    gtk_window_set_application(GTK_WINDOW(win), life_app);
+    gtk_window_set_application(GTK_WINDOW(win_slots[0].win), life_app);
     tray_start();
   }
   network_look();

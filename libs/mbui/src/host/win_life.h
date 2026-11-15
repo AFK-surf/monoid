@@ -254,7 +254,8 @@ void mb_host_set_app_state(void (*f)(int32_t)) { state_cb = f; }
 static void tell_state(void) {
   if (!state_cb || !hwnd) return;
   int shown = IsWindowVisible(hwnd) && !IsIconic(hwnd);
-  int front = shown && GetForegroundWindow() == hwnd;
+  // (in front: any window of the run's, a window beside the first among them)
+  int front = shown && win_of(GetForegroundWindow()) >= 0;
   // (| 4: the app goes on with its window not shown, as what comes from outside asks: win_app.c draw_frame)
   int s = (shown ? 1 : 0) | (front ? 2 : 0) | 4;
   if (s == state_told) return;
@@ -278,11 +279,15 @@ int32_t mb_host_system_dark(void) {
   return sys_dark;
 }
 
-// the title bar as the app is drawn (DWMWA_USE_IMMERSIVE_DARK_MODE: 20, 19 before Windows 10 20H1)
-static void title_dark(void) {
-  if (!hwnd || drawn_dark < 0) return;
+// the title bar as the app is drawn (DWMWA_USE_IMMERSIVE_DARK_MODE: 20, 19 before Windows 10 20H1), each window's of the
+// run
+static void title_dark_of(HWND h) {
+  if (!h || drawn_dark < 0) return;
   BOOL d = drawn_dark;
-  if (FAILED(DwmSetWindowAttribute(hwnd, 20, &d, sizeof d))) DwmSetWindowAttribute(hwnd, 19, &d, sizeof d);
+  if (FAILED(DwmSetWindowAttribute(h, 20, &d, sizeof d))) DwmSetWindowAttribute(h, 19, &d, sizeof d);
+}
+static void title_dark(void) {
+  for (int k = 0; k < MB_WINS; k++) title_dark_of(win_slots[k].h);
 }
 
 // The app drawn dark or light (@hostapi.set_dark): the window's title bar the same.
@@ -309,7 +314,7 @@ static void bring_back(void) {
     say_shown(put_away_at);
     put_away_at = 0;
   }
-  want_frame = 1;
+  ws->want_frame = 1;
   tell_state();
 }
 
@@ -317,8 +322,11 @@ static int tray_on;
 
 // the window closed: put away where the program is an app (to its icon in the notification area; minimized where it
 // has none there, as Explorer is not running), else the program ends
+static void wins_close_beside(void);
 static int put_away(void) {
   if (!*app_id() || window_run()) return 0;
+  // (the windows beside it close with it, as the Mac's)
+  wins_close_beside();
   if (!tray_on) {
     fprintf(stdout, "win: put away, minimized (no notification area)\n");
     fflush(stdout);
@@ -501,12 +509,8 @@ static void window_opened_drop(WindowOpened **at) {
   free(w);
 }
 
-// The windows of this run (@hostapi.windows_in_process and the rest: host_native.mbt's `windows`): none but its own
-// here, a window of the app's own being another run of it (mb_host_window_open).
-int32_t mb_host_windows(int32_t op, int32_t wid, moonbit_string_t what) {
-  (void)op, (void)wid, (void)what;
-  return 0;
-}
+// (the windows of this run, beside its first: win_app.c mb_host_windows; a window of the app's own is another run of it
+// where the app says so, or where it is one itself: MBUI_WINDOW)
 int32_t mb_host_window_opens(void) { return 1; }
 int32_t mb_host_window_open(moonbit_string_t what) {
   int wn = Moonbit_array_length(what);
@@ -881,7 +885,7 @@ static int life_message(UINT msg, WPARAM wp, LPARAM lp, LRESULT *r) {
     case WM_SETTINGCHANGE:
       if (lp && !wcscmp((const WCHAR *)lp, L"ImmersiveColorSet")) {
         read_dark();
-        want_frame = 1;
+        ws->want_frame = 1;
       }
       return 0;
     case WM_POWERBROADCAST:
