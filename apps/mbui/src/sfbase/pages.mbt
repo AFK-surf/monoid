@@ -912,6 +912,18 @@ fn page_entry_left(serial : Int, p : Page) -> Unit {
     }
     page_sources.remove(serial)
     release_pending_chat(serial)
+    // (what was handed to it and never taken, its view made in the open that handed it, before the handing (a page
+    // made once as nodes, put up in a frame: an account's page's station, account and memberships its press asked):
+    // held while it showed, let go as it leaves, not by the tree's root for good)
+    match handed_readers.get(serial) {
+      Some(readers) => {
+        handed_readers.remove(serial)
+        for reader in readers {
+          reader.release()
+        }
+      }
+      None => ()
+    }
     match p {
       Chat(_) => left_page_sources[left_pages.length()] = chat
       _ => ()

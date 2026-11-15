@@ -48,13 +48,16 @@ fn account_scope(ws : String, station : String) -> String {
 }
 
 ///|
-/// What a profile's page on station `station` (of workspace `ws`), profile `id`, reads as it opens: its station whole
-/// and the account it is of (settings' station_read, profile_read).
+/// What a profile's page on station `station` (of workspace `ws`), profile `id`, reads as it opens: its station whole,
+/// the account it is of (settings' station_read, profile_read) and the workspaces the station is in, which its settings
+/// list the account's workspaces by (sfpages' accounts.mbt `joined`): opened before those were answered, its card grew
+/// a row a round trip after it came in.
 pub fn profile_page_asks(ws : String, station : String, id : String) -> Array[(String, Map[String, Json])] {
   let scope = Json::string(account_scope(ws, station))
   [
     ("station", { "scope": scope, "station": Json::string(station) }),
     ("profile", { "scope": scope, "station": Json::string(station), "id": Json::string(id) }),
+    ("memberships", { "station": Json::string(station) }),
   ]
 }
 

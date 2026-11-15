@@ -139,6 +139,9 @@ fn on_frame(w : Double, h : Double, scale : Double, t : Double) -> Unit {
   let taken = inputs_taken.val
   inputs_taken.val = false
   in_frame.val = true
+  // (the frame's logic's moment from its start, before view_frame says it again: what is told before it reads this
+  // frame's, not the last's, h_event_time)
+  view_logic_at.val = h_now()
   frame_running.val = true
   frame_moment.val = t
   frame_serial.val += 1

@@ -489,11 +489,15 @@ fn h_event_finger() -> Int {
 }
 
 ///|
-/// When the input event being handled happened (the host's, else now).
+/// When the input event being handled happened (the host's, else now; in a frame the frame's logic's moment,
+/// view_logic_at: the frame goes no further than that however long its work takes, on a device's host as under a
+/// Tester's, whose clock does not move in a frame).
 fn h_event_time() -> Double {
   let t = @hostapi.event_time()
   if t >= 0.0 {
     t
+  } else if in_frame.val {
+    view_logic_at.val
   } else {
     @hostapi.now()
   }

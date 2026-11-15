@@ -765,6 +765,23 @@ fn fixture_chat_row(f : Fixture, params : Map[String, Json]) -> Json? {
   let p = Some(Json::object(params))
   let station = text(p, "station")
   let session = text(p, "session")
+  // (a chat made here, newChat.create's key: its row as the core gives a new chat's, 新对话, made on its station in
+  // whichever workspace that is, the made-up lists' first row's look)
+  if session.has_prefix("new:") && f.mode != "loading" && f.mode != "empty" {
+    let rows = fixture_days_head(f).map(fn(d) { items(Some(d), "items") }).flatten()
+    match rows.get(0) {
+      Some(Object(m)) => {
+        let r = m.copy()
+        r["id"] = Json::string(session)
+        r["session"] = Json::string(session)
+        r["station"] = Json::string(station)
+        r["title"] = Json::string("新对话")
+        r["unread"] = Json::number(0.0)
+        return Some(Json::object(r))
+      }
+      _ => ()
+    }
+  }
   // (as fixture_chats has them: the first workspace's alone, none while they are read or in a workspace with none)
   if f.mode == "loading" || f.mode == "empty" || @settings.workspace_of(station) != "ws1" {
     return Some(Json::null())
@@ -1572,7 +1589,9 @@ pub fn round_trip_by(base : Source, ms : () -> Double) -> Source {
 /// made-up station's (fix_now's fixture_changed): what it does is answer the client, which the client is told itself.
 fn made_core_later(ms : Double, f : () -> Unit) -> Unit {
   match (fix_clock.val, fix_ctx.val) {
-    (None, Some(_)) => @ui.runtime().after(ms.ceil().to_int(), f)
+    // (between frames at its moment, as a device's core's answer comes: under a Tester its fake host's, in no frame's
+    // own work)
+    (None, Some(_)) => @ui.later_between_frames(ms, "made core", f)
     _ => fix_later(ms, f)
   }
 }
@@ -1586,7 +1605,9 @@ fn made_core_post(text : String, heard : (String) -> Unit, live : () -> Bool) ->
   made_core_later(0.0, fn() {
     if live() {
       heard("in " + text)
-      @core.receive(text, None)
+      // (on the core's channel, as a device's core posts it: what changes only a topic's signal, or answers a call
+      // whose answer does no more, taken as it comes, the rest as the next frame begins: sfcore's listen)
+      @ui.outside_post("core", text)
     }
   })
 }
@@ -1596,7 +1617,8 @@ fn made_core_post(text : String, heard : (String) -> Unit, live : () -> Bool) ->
 /// topic's first value `ms` late each time the client subscribes to it, what changes of it after told as it changes,
 /// and none of it after the client lets it go (its unsubscribe, sent once no reader of it is left anywhere); so what is
 /// asked again and when is the client's to say, as on a device, never this made-up core's own count of who reads what.
-/// Calls are `base`'s, as they were (the client carries them too: answered so). What the client sends and what is
+/// Calls are carried by the client to this core, answered by `base`'s and posted back on the core's channel, as a
+/// device's are. What the client sends and what is
 /// answered are the same messages a run's trace keeps (src/core's trace.mbt), told to `heard` as they go. `late`, where
 /// said, how late each topic is answered by its name and params (as a page reads them), in `ms`'s place. `delta_of`,
 /// where said, what changed of a topic's value as the core's keyed ops (by its name and params): a change after its
@@ -1752,7 +1774,8 @@ pub fn round_trip_again(
             Ok(v) => { "id": Json::number(id.to_double()), "ok": v }
             Err(e) => { "id": Json::number(id.to_double()), "error": e }
           }
-          give(answer.stringify())
+          // (`ms` late, as a topic's first value is: a round trip across the core's thread)
+          made_core_later(ms, fn() { give(answer.stringify()) })
         })
       _ => ()
     }
@@ -1761,6 +1784,13 @@ pub fn round_trip_again(
   // (a Tester begun anew, a kept conversation), never taken back)
   let serving = fn() {
     if mine.val == 0 {
+      // (the core's channel taken as a device's app takes it: sfcore's listen, as far as this package knows its lists,
+      // the calls whose answers change only signals; what more a run said there kept)
+      @ui.on_message("core", @core.receive)
+      @ui.on_message_said("core", @core.receive_said)
+      for name in @sfbase.calls_said() {
+        @core.said(name)
+      }
       mine.val = @core.serve(send)
       // (as the app's client tells it: a chat list's first window before the list, a chat's before the chat:
       // src/stillfail's main)
@@ -1771,6 +1801,16 @@ pub fn round_trip_again(
   let wire = fn(name : String, params : Map[String, Json]) { @sfbase.core_topic_params(name, params) }
   {
     ..base,
+    // (a call carried by the client to this core and answered on its channel, as a device's app calls its core:
+    // stillfail's core_source; one whose answer nobody reads given none to read it)
+    call: fn(name, params, done) {
+      serving()
+      if @sfbase.unread_answer(done) {
+        @core.call(name, params~)
+        return
+      }
+      @core.call(name, params~, on_done=done)
+    },
     topic_read: fn(name, params) {
       serving()
       let w = wire(name, params)

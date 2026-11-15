@@ -324,6 +324,8 @@ let kept_answers : String =
   #|["chat.tabs","{\"kept\":null,\"agents\":[{\"session\":{\"key\":\"new:1\"},\"jobs\":[]}],\"noChat\":false,\"session\":\"new:1\",\"change\":{\"action\":\"clear\",\"tab\":null,\"auto\":true}}",{"next":{"tabs":[]},"tabs":{"open":[]}}]
   #|["chat.tabs","{\"kept\":null,\"agents\":[{\"session\":{\"key\":\"new:1\"},\"jobs\":[]}],\"noChat\":false,\"session\":\"new:1\"}",{"open":[]}]
   #|["chat.tabs","{\"kept\":null,\"agents\":[{\"session\":{\"key\":\"new:chat-1\"},\"jobs\":[]}],\"noChat\":false,\"session\":\"new:chat-1\"}",{"open":[]}]
+  #|["chat.tabs","{\"kept\":null,\"agents\":[{\"session\":{\"key\":\"new:chat-made-1\"},\"jobs\":[]}],\"noChat\":false,\"session\":\"new:chat-made-1\",\"change\":{\"action\":\"clear\",\"tab\":null,\"auto\":true}}",{"next":{"tabs":[]},"tabs":{"open":[]}}]
+  #|["chat.tabs","{\"kept\":null,\"agents\":[{\"session\":{\"key\":\"new:chat-made-1\"},\"jobs\":[]}],\"noChat\":false,\"session\":\"new:chat-made-1\"}",{"open":[]}]
   #|["chat.tabs","{\"kept\":null,\"agents\":[{\"session\":{\"key\":\"not-in-the-list\"},\"jobs\":[]}],\"noChat\":false,\"session\":\"not-in-the-list\"}",{"open":[]}]
   #|["chat.tabs","{\"kept\":null,\"agents\":[{\"session\":{\"key\":\"s-a1\"},\"jobs\":[]}],\"noChat\":false,\"session\":\"s-a1\"}",{"open":[]}]
   #|["chat.tabs","{\"kept\":null,\"agents\":[{\"session\":{\"key\":\"s-a2\"},\"jobs\":[]}],\"noChat\":false,\"session\":\"s-a2\"}",{"open":[]}]

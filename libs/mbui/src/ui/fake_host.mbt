@@ -2526,6 +2526,41 @@ fn posted_tell() -> Unit {
 }
 
 ///|
+/// `f` done `ms` from now between frames, as what comes from outside comes then (a made-up core's answer across no
+/// thread: an app's fixture): under a Tester its fake host's moment (FakeHost::due), told at it however the clock is run
+/// on; on a device's host the window's runtime's timer. `what` names it.
+pub fn later_between_frames(ms : Double, what : String, f : () -> Unit) -> Unit {
+  match fake.val {
+    Some(h) => h.due(h.time + ms, what, f)
+    None => runtime().after(ms.ceil().to_int(), f)
+  }
+}
+
+///|
+/// A message on `channel` from what stands for the outside in this process (a made-up core answering across no thread:
+/// an app's fixture), posted as a host's is: under a Tester to its fake host, told between frames at its moment with
+/// all posted then (posted_tell); on a device's host taken as messages_between takes a post, what changes only signals
+/// now and the rest left for the next frame, which it asks for (in a frame, left for the next). So what a test's made-up
+/// core says reaches the app by the path a device's core's does.
+pub fn outside_post(channel : String, json : String) -> Unit {
+  match fake.val {
+    // (told by what is telling the fake host's moments now, posted_tell, or as its clock moves on)
+    Some(h) => fake_post(h, channel, json, None)
+    None => {
+      if frame_running.val {
+        messages_in.push((channel, json, None))
+        outside_left()
+        return
+      }
+      messages_take([(channel, json, None)])
+      if messages_in.length() > 0 {
+        outside_left()
+      }
+    }
+  }
+}
+
+///|
 /// A frame of the fake host's ended: what it is to do by now (FakeHost::due: asked of it as the frame was made, at the
 /// frame's moment) done now, between frames, before anything else comes, and what was posted with it (posted_tell),
 /// as a device's host answers after the frame that asked. Nothing of the frame's posted else is told here: that waits,
