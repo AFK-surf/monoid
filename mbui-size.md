@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [5b2e2fb2c](https://github.com/AFK-surf/monoid/commit/5b2e2fb2c01c0c881f5d839199e74a9566160cd9) station: one process of a station at a time acts o | 2.4 | 3.31 | 13.97 | 34.98 | 54.07 | 30 | 60.29 | 99.44 | 115.64 |
 | [b03be6583](https://github.com/AFK-surf/monoid/commit/b03be658343b786964aeae069ded9c9bb614a700) mbui: 模型与预设选择面板改为节点（old-panel 1 → 0，model_triple）  | 2.4 | 3.31 | 13.97 | 34.98 | 54.07 | 30 | 60.29 | 99.44 | 121.12 |
 | [4c3a71b2c](https://github.com/AFK-surf/monoid/commit/4c3a71b2c304250c8162f233b2c0f56243d61968) fix(mbui,station): compact side-panel screen toolb | 2.4 | 3.31 | 13.97 | 34.98 | 54.07 | 30 | 60.29 | 99.44 | 121.12 |
 | [c3e7df997](https://github.com/AFK-surf/monoid/commit/c3e7df99777cefd41e36500d6ee01f91283a5242) app: what comes for a topic let go of is taken unr | 2.17 | 3.02 | 13.08 | 34.22 | 51.84 | 30 | 60.29 | 99.44 | 122.36 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [3e5fefe9b](https://github.com/AFK-surf/monoid/commit/3e5fefe9baccfaa67c2e7908715fdc60cf408dd6) fix(mbui): open viewer when tapping restored draft | 2.13 | 2.96 | 12.81 | 33.9 | 50.74 | 29.19 | 57.93 | 99.35 | 113.26 |
 | [e18b38e43](https://github.com/AFK-surf/monoid/commit/e18b38e438decbdfba656c3c1f219e2325f88d61) mbui: the line-start rule holds a card's 28 mark a | 2.13 | 2.96 | 12.81 | 33.9 | 50.74 | 29.19 | 57.93 | 99.35 | 113.26 |
 | [ab2d43d71](https://github.com/AFK-surf/monoid/commit/ab2d43d7171aef455fa393b8c4d2fbaf9f848bc7) mbui: the Mac's windows of one run; a screen's vie | 2.13 | 2.96 | 12.81 | 33.9 | 50.74 | 29.19 | 57.93 | 99.35 | 113.26 |
-| [4e8f3be07](https://github.com/AFK-surf/monoid/commit/4e8f3be0765d37e5c73938f1ffa138746294f43c) app: farview.pin to f082e8d (a window dragged wide | 2.12 | 2.95 | 12.73 | 33.8 | 50.33 | 29.19 | 57.93 | 99.35 | 119.61 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [5b2e2fb2c](https://github.com/AFK-surf/monoid/commit/5b2e2fb2c01c0c881f5d839199e74a9566160cd9) station: one process of a station at a time acts o | 0.42 | 0.54 | 2.08 | 3.17 | 4.97 | 1.53 | 4.1 | 57.48 |
 | [b03be6583](https://github.com/AFK-surf/monoid/commit/b03be658343b786964aeae069ded9c9bb614a700) mbui: 模型与预设选择面板改为节点（old-panel 1 → 0，model_triple）  | 0.42 | 0.54 | 2.08 | 3.17 | 4.97 | 1.53 | 4.1 | 57.48 |
 | [4c3a71b2c](https://github.com/AFK-surf/monoid/commit/4c3a71b2c304250c8162f233b2c0f56243d61968) fix(mbui,station): compact side-panel screen toolb | 0.42 | 0.54 | 2.08 | 3.17 | 4.97 | 1.53 | 4.1 | 57.26 |
 | [c3e7df997](https://github.com/AFK-surf/monoid/commit/c3e7df99777cefd41e36500d6ee01f91283a5242) app: what comes for a topic let go of is taken unr | 0.42 | 0.54 | 2.08 | 3.17 | 4.97 | 1.53 | 4.1 | 57.26 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [3e5fefe9b](https://github.com/AFK-surf/monoid/commit/3e5fefe9baccfaa67c2e7908715fdc60cf408dd6) fix(mbui): open viewer when tapping restored draft | 0.42 | 0.54 | 2.07 | 3.17 | 4.94 | 1.52 | 4.06 | 57.41 |
 | [e18b38e43](https://github.com/AFK-surf/monoid/commit/e18b38e438decbdfba656c3c1f219e2325f88d61) mbui: the line-start rule holds a card's 28 mark a | 0.42 | 0.54 | 2.07 | 3.17 | 4.94 | 1.52 | 4.06 | 57.48 |
 | [ab2d43d71](https://github.com/AFK-surf/monoid/commit/ab2d43d7171aef455fa393b8c4d2fbaf9f848bc7) mbui: the Mac's windows of one run; a screen's vie | 0.42 | 0.54 | 2.07 | 3.17 | 4.94 | 1.52 | 4.06 | 57.48 |
-| [4e8f3be07](https://github.com/AFK-surf/monoid/commit/4e8f3be0765d37e5c73938f1ffa138746294f43c) app: farview.pin to f082e8d (a window dragged wide | 0.42 | 0.54 | 2.07 | 3.17 | 4.94 | 1.52 | 4.06 | 57.48 |
