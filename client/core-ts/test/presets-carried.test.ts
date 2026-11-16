@@ -80,7 +80,7 @@ function before(id: string): Rig {
     return rest;
   };
   const routes: Route[] = [
-    { method: "GET", pattern: /^\/presets$/, handle: async () => ({ status: 200, headers: {}, body: Buffer.from(JSON.stringify({ presets: presets.list(null).map((p) => old(p as never)), candidates: [], clones: [] })) }) },
+    { method: "GET", pattern: /^\/presets$/, handle: async () => ({ status: 200, headers: {}, body: Buffer.from(JSON.stringify({ presets: (await presets.list(null)).map((p) => old(p as never)), candidates: [], clones: [] })) }) },
     ...presetRoutes({ presets, reposDir: () => home }).filter((r) => r.method !== "GET" && !String(r.pattern).includes("kept") && !String(r.pattern).includes("clone")),
   ];
   return {
@@ -215,25 +215,25 @@ test("two stations that never talk come to the same records by one device; a del
   assert.equal(made.home, "a", "made on the page's station");
   assert.equal(made.rev, 1);
   assert.deepEqual(d.live().map((r) => r.id), [made.id], "kept on the device at once");
-  assert.equal(canon(stationRecords(a)), canon(d.live()), "carried to a");
-  assert.equal(canon(stationRecords(b)), canon(d.live()), "and to b, which never heard of a");
+  assert.equal(canon(await stationRecords(a)), canon(d.live()), "carried to a");
+  assert.equal(canon(await stationRecords(b)), canon(d.live()), "and to b, which never heard of a");
 
   // Changed with b away: kept here and on a; b brought it as its link opens again.
   d.away(b);
   ok(await d.call("put", a.address, { id: made.id, name: "App 2", dirs: ["/src/app"] }));
-  assert.equal(stationRecords(a)[0]!.rev, 2);
-  assert.equal(stationRecords(b)[0]!.rev, 1, "b away: not reached");
+  assert.equal((await stationRecords(a))[0]!.rev, 2);
+  assert.equal((await stationRecords(b))[0]!.rev, 1, "b away: not reached");
   await d.open(b);
-  assert.equal(canon(stationRecords(b)), canon(stationRecords(a)), "b brought it as its link opened");
+  assert.equal(canon(await stationRecords(b)), canon(await stationRecords(a)), "b brought it as its link opened");
 
   // Deleted: a deletion is a record, and a station that held it live does not bring it back.
   d.away(b);
   ok(await d.call("delete", a.address, { id: made.id }));
   assert.equal(d.live().length, 0);
-  const stale = stationRecords(b)[0]!;
+  const stale = (await stationRecords(b))[0]!;
   assert.ok(!isGone(stale), "b still holds it live");
   await d.open(b);
-  assert.ok(isGone(stationRecords(b)[0]!), "b took the deletion");
+  assert.ok(isGone((await stationRecords(b))[0]!), "b took the deletion");
   assert.equal(d.live().length, 0, "not brought back");
 
   // No loop: told again with nothing changed, nothing is brought.
@@ -256,14 +256,14 @@ test("two devices of one person meet through a station; one of theirs from befor
 
   // A preset made by an app from before on a station of today (no owner): theirs by their email, said again with
   // their owner and one change more, so that every station comes to hold it as theirs.
-  const old = a.presets.add(null, { name: "Old", dirs: [] }, ME.email);
+  const old = await a.presets.add(null, { name: "Old", dirs: [] }, ME.email);
   assert.equal(old.owner, "");
   await phone.tell(a, "presets");
   const taken = phone.held().records[old.id]!;
   assert.deepEqual([taken.owner, taken.rev], [ME.sub, 2]);
-  assert.equal(stationRecords(a).find((r) => r.id === old.id)!.owner, ME.sub, "the station holds it as theirs now");
+  assert.equal((await stationRecords(a)).find((r) => r.id === old.id)!.owner, ME.sub, "the station holds it as theirs now");
   // Someone else's is not taken.
-  a.presets.add(null, { name: "Bo's", dirs: [] }, YOU.email, YOU.sub);
+  await a.presets.add(null, { name: "Bo's", dirs: [] }, YOU.email, YOU.sub);
   await phone.tell(a, "presets");
   assert.equal(phone.live().some((r) => r.name === "Bo's"), false);
 });
@@ -271,8 +271,8 @@ test("two devices of one person meet through a station; one of theirs from befor
 test("a station from before is read and written the old way, never PUT to, and shows nothing twice", async () => {
   const a = station("a");
   const o = before("o");
-  const old = o.presets.add(null, { name: "Legacy", dirs: [] }, ME.email);
-  o.presets.add(null, { name: "Theirs", dirs: [] }, YOU.email);
+  const old = await o.presets.add(null, { name: "Legacy", dirs: [] }, ME.email);
+  await o.presets.add(null, { name: "Theirs", dirs: [] }, YOU.email);
   const d = device(ME, [a, o]);
   await d.open(a);
   await d.open(o);
@@ -294,9 +294,9 @@ test("a station from before is read and written the old way, never PUT to, and s
   // Changed here: taken into the device's records (theirs, one change more), carried to a, and written to o the old way.
   ok(await d.call("put", o.address, { id: old.id, name: "Legacy 2", dirs: [] }));
   assert.deepEqual([d.held().records[old.id]!.rev, d.held().records[old.id]!.owner], [2, ME.sub]);
-  assert.equal(stationRecords(a).find((r) => r.id === old.id)?.rev, 2, "carried to the station of today");
+  assert.equal((await stationRecords(a)).find((r) => r.id === old.id)?.rev, 2, "carried to the station of today");
   assert.ok(o.told.includes(`PUT /presets/${old.id}`), "written to the one from before as before");
-  assert.equal(o.presets.get(null, old.id)?.name, "Legacy 2");
+  assert.equal((await o.presets.get(null, old.id))?.name, "Legacy 2");
   await d.open(o);
   await shown();
   assert.deepEqual(listed().map((p) => p.name), ["Legacy 2"], "shown once: the device's");
@@ -341,7 +341,7 @@ test("others' presets are read at a press; someone else's picked survives its st
   const copy = ok(await d.call("copy", b.address, { id: theirs.id })) as { id: string; owner: string; rev: number; createdBy: string; home: string };
   assert.notEqual(copy.id, theirs.id);
   assert.deepEqual([copy.owner, copy.rev, copy.createdBy, copy.home], [ME.sub, 1, ME.email, "b"]);
-  assert.equal(stationRecords(b).find((r) => r.id === copy.id)?.rev, 1, "carried");
+  assert.equal((await stationRecords(b)).find((r) => r.id === copy.id)?.rev, 1, "carried");
 });
 
 test("a chat is opened with the preset as the device holds it, whether or not its station was brought it", async () => {
@@ -356,7 +356,7 @@ test("a chat is opened with the preset as the device holds it, whether or not it
   const choose = new Choose({ store: store as never, data: d.inner.data, now: () => clock.now, agent: () => null, who: (s) => whoIn(d.inner, s) });
   choose.pickNew(WS, { preset: made.id, presetStation: a.address });
   const ask = choose.create(b.address);
-  assert.equal(stationRecords(b).length, 0, "b was never brought it");
+  assert.equal((await stationRecords(b)).length, 0, "b was never brought it");
   assert.equal(ask.preset, undefined, "never by its id: a station of today takes its copy");
   assert.deepEqual(ask.presetCopy, { id: made.id, name: "Both", dirs: [{ path: "/src/app", repo: null, elsewhere: "A" }, { path: "/src/web", repo: "github.com/acme/web" }], instructions: "hi" });
   // A picked one from before (`{id, station}` of before this core) keeps picking the same.
@@ -444,13 +444,13 @@ test("more deletions than a keeper keeps: device and stations keep the same of e
   const held = goneOf(Object.values(d.held().records));
   assert.equal(held.length, GONE_KEPT);
   assert.deepEqual(held, Array.from({ length: GONE_KEPT }, (_, i) => `p-g${MANY - GONE_KEPT + i}`).sort(), "the latest");
-  assert.deepEqual(goneOf(stationRecords(a)), held);
-  assert.deepEqual(goneOf(stationRecords(b)), held);
+  assert.deepEqual(goneOf(await stationRecords(a)), held);
+  assert.deepEqual(goneOf(await stationRecords(b)), held);
   // (another owner's, and those of nobody said, are bounded apart: one person's many push out nobody else's)
-  a.presets.add(null, { name: "Bo's", dirs: [] }, YOU.email, YOU.sub);
-  const bos = a.presets.list(null).find((p) => p.name === "Bo's")!;
-  a.presets.delete(null, bos.id, { sub: YOU.sub, email: YOU.email });
-  const file = readPresetsFile(a.home, "a");
+  await a.presets.add(null, { name: "Bo's", dirs: [] }, YOU.email, YOU.sub);
+  const bos = (await a.presets.list(null)).find((p) => p.name === "Bo's")!;
+  await a.presets.delete(null, bos.id, { sub: YOU.sub, email: YOU.email });
+  const file = await readPresetsFile(a.home, "a");
   assert.equal(file.gone.filter((g) => g.owner === ME.sub).length, GONE_KEPT);
   assert.equal(file.gone.filter((g) => g.owner === YOU.sub).length, 1);
 });
@@ -459,16 +459,16 @@ test("a preset of nobody said yet, deleted on one station by someone else's app 
   const s1 = station("s1");
   const s2 = station("s2");
   // A's from before on S1; A's new device reads it there and carries it to S2, its PUT to S1 not reaching it.
-  const old = s1.presets.add(null, { name: "Old", dirs: [] }, ME.email);
+  const old = await s1.presets.add(null, { name: "Old", dirs: [] }, ME.email);
   const d = device(ME, [s1, s2]);
   d.refuse.add(`PUT ${s1.address}`);
   await d.open(s1);
   await d.open(s2);
   d.refuse.clear();
-  assert.equal(stationRecords(s2).find((r) => r.id === old.id)?.owner, ME.sub, "S2 holds it as A's");
-  assert.equal(s1.presets.get(null, old.id)?.owner, "", "S1 still of nobody said");
+  assert.equal((await stationRecords(s2)).find((r) => r.id === old.id)?.owner, ME.sub, "S2 holds it as A's");
+  assert.equal((await s1.presets.get(null, old.id))?.owner, "", "S1 still of nobody said");
   // B's app from before deletes it on S1: a deletion of nobody said.
-  s1.presets.delete(null, old.id, { sub: YOU.sub, email: YOU.email });
+  await s1.presets.delete(null, old.id, { sub: YOU.sub, email: YOU.email });
   // A third person's device, holding nothing of it, changes nothing and brings nothing.
   const c = device({ sub: "s3", email: "c@x.com", name: "C" }, [s1, s2]);
   await c.open(s1);
@@ -481,16 +481,18 @@ test("a preset of nobody said yet, deleted on one station by someone else's app 
   const gone = d.held().records[old.id]!;
   assert.ok(isGone(gone), "deleted on A's device");
   assert.equal(gone.owner, ME.sub);
-  const at = (s: Rig) => s.presets.kept(null, { sub: ME.sub, email: ME.email }).find((r) => r.id === old.id);
-  assert.deepEqual([at(s2)?.owner, at(s2) !== undefined && isGone(at(s2)!)], [ME.sub, true], "and on S2");
-  assert.deepEqual([at(s1)?.owner, at(s1) !== undefined && isGone(at(s1)!)], [ME.sub, true], "S1's of nobody replaced by A's");
+  const at = async (s: Rig) => (await s.presets.kept(null, { sub: ME.sub, email: ME.email })).find((r) => r.id === old.id);
+  const onS2 = await at(s2);
+  assert.deepEqual([onS2?.owner, onS2 !== undefined && isGone(onS2)], [ME.sub, true], "and on S2");
+  const onS1 = await at(s1);
+  assert.deepEqual([onS1?.owner, onS1 !== undefined && isGone(onS1)], [ME.sub, true], "S1's of nobody replaced by A's");
 });
 
 test("others' presets wait for a slow station only so long: the press is let go, what it says later still joins the list", async () => {
   const a = station("a");
   const slow = station("b");
-  a.presets.add(null, { name: "Bo's on a", dirs: [] }, YOU.email, YOU.sub);
-  slow.presets.add(null, { name: "Bo's on b", dirs: [] }, YOU.email, YOU.sub);
+  await a.presets.add(null, { name: "Bo's on a", dirs: [] }, YOU.email, YOU.sub);
+  await slow.presets.add(null, { name: "Bo's on b", dirs: [] }, YOU.email, YOU.sub);
   // (b linked and reached, its answer held until the test lets it go)
   let letGo = () => {};
   const gate = new Promise<void>((resolve) => (letGo = resolve));
@@ -527,7 +529,7 @@ test("a stream come back resumed is asked only what the device owes its station:
   at = d.asked.length;
   await d.resumed(b);
   assert.deepEqual(asks(b, at), [`GET ${b.address} /presets/kept`, `PUT ${b.address} /presets/kept`]);
-  assert.equal(stationRecords(b).find((r) => r.id === made.id)?.rev, 1, "b brought it");
+  assert.equal((await stationRecords(b)).find((r) => r.id === made.id)?.rev, 1, "b brought it");
   assert.deepEqual(d.held().owed, [], "owed no more");
   at = d.asked.length;
   await d.resumed(b);

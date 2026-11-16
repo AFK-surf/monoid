@@ -250,6 +250,16 @@ TS
   : > "$pkg/.stand-in"
 }
 
+# What the core's code and tests import of the station's own files (client/core-ts reaches into station/ by relative
+# paths): a change to one alone typechecks the core and runs its tests. #6720 made station/src/sessions/presets.ts'
+# Presets answer promises; test/presets-carried.test.ts, which calls them, ran neither, and main was red at the next
+# change to the core (43894522015). scripts/core-station.ts (part ts) holds every such import to these three lists.
+core_station='^station/src/(api/(admin|moved-from|oldest|routes/(presets|stars))|cloud/(lock|state)|mesh/(credential|device-builds|serve)|ops/fibers|rig/grants|sessions/presets|updates/keys)\.ts$|^station/test/lock-(chains|fork-choice-model|fork-pool|moved-world|oracle|roster-model|roster4-model|world-sim)\.ts$'
+# The core's tests read these (core_test_paths: scripts/plan.sh reads it from this line for CI's check-core; one line,
+# in single quotes) and are remembered by these (core_test_inputs).
+core_test_paths='^client/core-ts/|^client/i18n/|^web/src/core/|^web/public/avatars/|^station/native/mesh/|^vendor/|^rules/js/|^station/src/(api/(admin|moved-from|oldest|routes/(presets|stars))|cloud/(lock|state)|mesh/(credential|device-builds|serve)|ops/fibers|rig/grants|sessions/presets|updates/keys)\.ts$|^station/test/lock-(chains|fork-choice-model|fork-pool|moved-world|oracle|roster-model|roster4-model|world-sim)\.ts$|^scripts/native\.ts$'
+core_test_inputs="client/core-ts client/i18n web/src/core web/public/avatars station/native/mesh vendor rules/js station/src/api/admin.ts station/src/api/moved-from.ts station/src/api/oldest.ts station/src/api/routes/presets.ts station/src/api/routes/stars.ts station/src/cloud/lock.ts station/src/cloud/state.ts station/src/mesh/credential.ts station/src/mesh/device-builds.ts station/src/mesh/serve.ts station/src/ops/fibers.ts station/src/rig/grants.ts station/src/sessions/presets.ts station/src/updates/keys.ts station/test/lock-chains.ts station/test/lock-fork-choice-model.ts station/test/lock-fork-pool.ts station/test/lock-moved-world.ts station/test/lock-oracle.ts station/test/lock-roster-model.ts station/test/lock-roster4-model.ts station/test/lock-world-sim.ts scripts/native.ts"
+
 if part ts; then
   ts_root='^(scripts|test|spike)/.*\.ts$|^(tsconfig\.json|package\.json|pnpm-lock\.yaml)$'
   ts_web='^web/'
@@ -278,6 +288,10 @@ if part ts; then
 
   # The agents' rules name only what is there (AGENTS.md: These files are kept true): any change may move what one names.
   step "AGENTS.md paths" node scripts/agents-paths.ts
+  # What the core imports of the station's is in core_station, core_test_paths and core_test_inputs (above).
+  if touches '^client/core-ts/|^scripts/(check\.sh|core-station\.ts)$'; then
+    step "core's imports of the station's checked with it" node scripts/core-station.ts "$core_station" "$core_test_paths" "$core_test_inputs"
+  fi
   # The features not yet everyone's are one registry, the core's and the app's alike, each read where it decides and
   # none read once gone (client/core-ts/src/features.ts): any change may add or leave a branch on one.
   step "features: one registry, no dead switch or branch left" node scripts/features-check.ts
@@ -441,7 +455,8 @@ if part ts; then
     step "typecheck: cloud" after cloud after cloud-types sh -c 'cd cloud && pnpm run check'
   fi
   # The TypeScript core: its own tsconfig.
-  if touches "$ts_core"; then prep core deps client/core-ts; step "typecheck: core-ts" after core sh -c 'cd client/core-ts && pnpm exec tsgo --noEmit'; fi
+  # (with the station's deps: what the core imports of the station's imports its packages, effect among them)
+  if touches "$ts_core" || touches "$core_station"; then prep core deps client/core-ts; prep station deps station; step "typecheck: core-ts" after core after station sh -c 'cd client/core-ts && pnpm exec tsgo --noEmit'; fi
   if touches "$ts_core|^client/math/|^apps/mbui/src/sf/math_glyphs\\.mbt$"; then prep core deps client/core-ts; step "shared math alphabet" after core node client/core-ts/scripts/math-font.ts --check; fi
   if touches "$ts_core|^client/fixtures/math\\.json$|^apps/mbui/src/sf/math\\.json$"; then prep core deps client/core-ts; step "shared math fixture" after core node client/core-ts/scripts/math-fixture.ts --check; fi
   # The core's pure answers the mbui app's runs without a core keep (apps/mbui/src/sfkept), as the core answers them now.
@@ -487,13 +502,12 @@ if [ $full = 1 ]; then
   # them in slices on Linux runners of their own (pipeline.yml, check-core), as the station's: in check-linux beside the
   # rest of ts they went from 3.5 to past its five minutes as files were added (179 files; main 6045382883 cancelled at
   # 5:05, 43272321433, 2026-11-12), each file small and none worth cutting (212 s of CPU in all on a Mac, the most 17).
-  # (core_test_paths: scripts/plan.sh reads it from this line for CI's check-core)
-  core_test_paths='^client/core-ts/|^client/i18n/|^web/src/core/|^web/public/avatars/|^station/native/mesh/|^vendor/|^rules/js/|^station/src/cloud/lock\.ts$|^station/test/lock-(chains|oracle)\.ts$|^scripts/native\.ts$'
+  # (core_test_paths and core_test_inputs: above, beside what the core imports of the station's)
   if part core-tests && touches "$core_test_paths"; then
     prep core deps client/core-ts; prep station deps station
     slice=${STILLFAIL_CORE_SHARD:-}
     # shellcheck disable=SC2016 # the command's own variables, expanded by its shell
-    remembered "tests: core-ts${slice:+ $slice}" "client/core-ts client/i18n web/src/core web/public/avatars station/native/mesh vendor rules/js station/src/cloud/lock.ts station/test/lock-chains.ts station/test/lock-oracle.ts scripts/native.ts" after core after station env CORE_SLICE="$slice" sh -c 'cd client/core-ts && files=$(ls test/*.test.ts | awk -v s="${CORE_SLICE:-0/1}" '"'"'BEGIN { split(s, a, "/") } NR % a[2] == a[1]'"'"') && [ -n "$files" ] && node ../../scripts/native.ts run mesh -- node --test --test-force-exit $files'
+    remembered "tests: core-ts${slice:+ $slice}" "$core_test_inputs" after core after station env CORE_SLICE="$slice" sh -c 'cd client/core-ts && files=$(ls test/*.test.ts | awk -v s="${CORE_SLICE:-0/1}" '"'"'BEGIN { split(s, a, "/") } NR % a[2] == a[1]'"'"') && [ -n "$files" ] && node ../../scripts/native.ts run mesh -- node --test --test-force-exit $files'
   fi
   if part ts && touches "$ts_cloud"; then remembered "tests: cloud" "cloud client/i18n station/src/cloud/lock.ts client/core-ts/src/lock-form.ts rules/js" after cloud sh -c 'cd cloud && pnpm test'; fi
   # The station: it and its tests run whenever it, one of its native parts or the words it says changed (station_paths:
