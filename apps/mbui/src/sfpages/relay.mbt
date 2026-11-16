@@ -457,11 +457,15 @@ fn relay_bot_choice(parent : @view.View, src : Source, shown : () -> RelayShown)
       @sf.words_node(h, fn() { @sf.t("web-main.relay.bots") }, fn() { relay_group_head }) |> ignore
     })
     |> ignore
-    b.each(fn() { items(via(), "bots").map(fn(x) { text(Some(x), "id") }) }, fn(id) { id }, fn(cell, id) {
+    // (the bots by id once, and the one replying by member: each row reads its own, told only as it changes or comes to
+    // reply or stops)
+    let by_id = b.keyed_by(fn() { items(via(), "bots") }, fn(x) { text(Some(x), "id") })
+    let on_is = b.selected(fn() { Some(text(via(), "bot")) })
+    b.each(fn() { by_id.keys() }, fn(id) { id }, fn(cell, id) {
       let id = id.untracked()
-      let bot = fn() { items(via(), "bots").iter().find_first(fn(x) { text(Some(x), "id") == id }) }
+      let bot = fn() { by_id.get(id) }
       let state = fn() { text(bot(), "state") }
-      let on = fn() { text(via(), "bot") == id }
+      let on = fn() { on_is(id) }
       let can = fn() { state() == "in" || state() == "join" }
       cell.box(fn(r) {
         @sf.style_node(r, fn() { relay_place_box })

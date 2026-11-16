@@ -596,22 +596,7 @@
     "each-min-height": {
       "src/sfpages/usage_node.mbt": 1
     },
-    "each-lookup": {
-      "src/sf/one_of_node.mbt": 1,
-      "src/sf/panel_steps_node.mbt": 1,
-      "src/sf/pick_node.mbt": 1,
-      "src/sf/presented_node.mbt": 1,
-      "src/sf/sheet_node.mbt": 2,
-      "src/sfapp/share.mbt": 1,
-      "src/sfbase/viewer_marks_node.mbt": 1,
-      "src/sfdesk/jobs_pop_node.mbt": 1,
-      "src/sfdesk/rail_node.mbt": 1,
-      "src/sfpages/chat_mark_node.mbt": 3,
-      "src/sfpages/model_triple.mbt": 1,
-      "src/sfpages/presets.mbt": 4,
-      "src/sfpages/relay.mbt": 1,
-      "src/sfpages/slack_app.mbt": 1
-    },
+    "each-lookup": {},
     "layout-drawn-while": {
       "src/sfpages/board_node.mbt": 2
     },

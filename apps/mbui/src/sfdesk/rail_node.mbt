@@ -820,13 +820,17 @@ fn rail_workspaces_node(r : @view.View, src : Source, tips : @sf.TipLayer, at : 
           }
         })
         |> ignore
+        // (the workspaces by id once, and the one in view by member: each key reads its own, told only as it changes or
+        // comes to be in view or stops)
+        let by_id = col.keyed_by(fn() { @sfbase.workspace_in_view(src).1 }, fn(x) { x.id })
+        let here_is = col.selected(fn() { ws().map(fn(w) { w.id }) })
         col.each(
-          fn() { @sfbase.workspace_in_view(src).1.map(fn(x) { x.id }) },
+          fn() { by_id.keys() },
           fn(id) { id },
           fn(row, item) {
             let id = item.untracked()
-            let it = fn() { @sfbase.workspace_in_view(src).1.iter().find_first(fn(x) { x.id == id }) }
-            let here = fn() { ws().map(fn(w) { w.id == id }).unwrap_or(false) }
+            let it = fn() { by_id.get(id) }
+            let here = fn() { here_is(id) }
             let marked = fn() { it().map(@sfpages.workspace_marked).unwrap_or(false) }
             let tone = fn() { if here() { "" } else { text(field(marks(), id), "tone") } }
             let label = fn() {

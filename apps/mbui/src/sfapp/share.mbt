@@ -645,12 +645,14 @@ fn share_parts_node(v : @view.View, src : Source, scope : String, look : ShareLo
     })
   }, fn(list) {
     @sf.style_node(list, fn() { share_whole })
+    // (its chats by station and id once: each row reads its own, told only as that one changes)
+    let by_chat = list.keyed_by(rows, fn(i) { (text(Some(i), "station"), text(Some(i), "id")) })
     list.each(fn() { keys.get() }, fn(k) { k }, fn(b, k) {
       let row = @signals.untracked(fn() { k.get() })
       match row {
         ShareNote(words) => share_note_node(b, fn() { words }, look)
         ShareChat(station, id) => {
-          let it = fn() { rows().iter().find_first(fn(i) { text(Some(i), "station") == station && text(Some(i), "id") == id }) }
+          let it = fn() { by_chat.get((station, id)) }
           // (its session as it is now, kept for its press by what reads it: never read outside a reader)
           let session = Ref("")
           b.reacts(fn() { text(it(), "session") }, fn(x) { session.val = x })

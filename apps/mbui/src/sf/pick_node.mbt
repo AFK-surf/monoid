@@ -132,12 +132,21 @@ pub fn pick_node(
         // grounds, icons and words, the same, Look's `words` as a surface's are)
         l.max_height(Is(Some(pick_list_most))).alpha(By(words_in)) |> ignore
         l.scrolls(list, slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(b) {
+          // (its choices by key, once: they are what it was given, the same while it is open; the first of a key the one)
+          let by_key : Map[String, Choice] = Map([])
+          for x in choices {
+            if !by_key.contains(x.key) {
+              by_key[x.key] = x
+            }
+          }
+          // (the last found, by member: a change of it tells the two rows it concerns)
+          let last_is = b.selected(fn() { found().last().map(fn(l) { l.key }) })
           b.each(fn() { found().map(fn(x) { x.key }) }, fn(k) { k }, fn(cell, k) {
             let k = k.untracked()
-            match choices.iter().find_first(fn(x) { x.key == k }) {
+            match by_key.get(k) {
               Some(x) => {
                 // (the last found reaching into the panel's padding at its foot, as menu_item's at_foot)
-                let last = fn() { found().last().map(fn(l) { l.key }) == Some(x.key) }
+                let last = fn() { last_is(x.key) }
                 pick_row_node(cell, x, x.key == chosen, fn() { go(x.key) }, last, reach)
               }
               None => ()

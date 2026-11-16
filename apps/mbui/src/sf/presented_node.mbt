@@ -112,13 +112,13 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
       // not, is picked as it is made)
       presented_now
       .filter(fn(p) { tree_draws(p, sheet) && (w > 0.0 || !(p.shows is Panel(x) && !x.stage)) })
-      .map(fn(p) { p.serial })
+      .map(fn(p) { PresentedItem::{ p: p } })
     },
-    fn(serial) { serial },
+    fn(it) { it.p.serial },
     fn(row, item) {
-      let serial = item.untracked()
-      guard presented_now.search_by(fn(q) { q.serial == serial }) is Some(i) else { return }
-      let p = presented_now[i]
+      // (its own presented, given it by the list as it is made: no walk of what is presented for it)
+      let p = item.untracked().p
+      let serial = p.serial
       // (a sheet from the window's foot, on 小屏 as it is made: sheet_node)
       let as_sheet = tree_sheet_of(p, @signals.untracked(fn() { layout(root.window().0) is Small }))
       tree_as_sheet[serial] = as_sheet
@@ -536,4 +536,17 @@ pub fn over_room(v : @view.View) -> (Double, Double) {
   let (w, h) = v.window()
   let (top, right, foot, left) = v.clear()
   (dmax(0.0, w - left - right), dmax(0.0, h - top - foot))
+}
+
+///|
+/// What is presented as the window's tree's list of it (presented_nodes' View::each) has it. One is drawn as it was
+/// when it was made and its serial is its key, never another's, so it is told as the same item by its serial alone:
+/// what is presented is no value to compare.
+priv struct PresentedItem {
+  p : Presented
+}
+
+///|
+impl Eq for PresentedItem with equal(a, b) {
+  a.p.serial == b.p.serial
 }

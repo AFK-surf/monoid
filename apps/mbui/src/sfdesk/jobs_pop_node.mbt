@@ -49,6 +49,8 @@ fn jobs_pop_node(
       let of_kind = fn(services : Bool) {
         jobs().filter(fn(j) { flag(Some(j), "service") == services }).map(fn(j) { text(Some(j), "id") })
       }
+      // (its jobs by id once: each row reads its own, told only as that one changes)
+      let by_id = list.keyed_by(jobs, fn(j) { text(Some(j), "id") })
       // (its services, then its jobs: each group while it has any, each row by its job's id)
       for services in [true, false] {
         list.show(fn() { of_kind(services).length() > 0 }, fn(g) {
@@ -60,7 +62,7 @@ fn jobs_pop_node(
           )
           g.each(fn() { of_kind(services) }, fn(id) { id }, fn(row, said) {
             let id = said.untracked()
-            let job = fn() { jobs().iter().find_first(fn(j) { text(Some(j), "id") == id }) }
+            let job = fn() { by_id.get(id) }
             if services {
               let failed = fn() { text(job(), "tone") == "fail" }
               jobs_pop_row(row, job, fn() { if failed() { "chevron-right" } else { "arrow-right" } }, fn() { false }, fn() {

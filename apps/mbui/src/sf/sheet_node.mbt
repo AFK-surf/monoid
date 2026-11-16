@@ -918,11 +918,12 @@ fn sheet_node(
               stack.each(
                 // (one taken off kept till it has slid away: its own move's end, View::moved_by's `holds_leaving`)
                 leave=1.0,
-                fn() { pages().map(fn(pg) { pg.n }) },
-                fn(k) { k },
+                fn() { pages().map(fn(pg) { SheetItem::{ pg: pg } }) },
+                fn(it) { it.pg.n },
                 fn(page, item) {
-                  let k = item.untracked()
-                  guard @signals.untracked(fn() { pages().iter().find_first(fn(pg) { pg.n == k }) }) is Some(pg) else { return }
+                  // (its own page, given it by the list as it is made: no walk of the pages for it)
+                  let pg = item.untracked().pg
+                  let k = pg.n
                   let (x, close, from) = (pg.x, pg.close, pg.from)
                   let pressed = from != Unanchored
                   let footed = x.foot is Some(_) || pg.nodes.bind(fn(n) { n.foot }) is Some(_)
@@ -944,9 +945,9 @@ fn sheet_node(
                   let slide = (layer.cause_at(), @ui.move_ms(layer.window().0))
                   let way = @signals.signal(
                     if made_with.val {
+                      // (the one that shows: the last of them)
                       let all = @signals.untracked(pages)
-                      let last = all.length() - 1
-                      if all.search_by(fn(pg) { pg.n == k }).unwrap_or(last) == last {
+                      if all.length() == 0 || all[all.length() - 1].n == k {
                         (0.0, 0.0, 0.0, 0.0)
                       } else {
                         (-1.0, -1.0, 0.0, 0.0)
@@ -1463,4 +1464,17 @@ fn SheetRise::ends(self : SheetRise, h? : Double = 0.0) -> Double {
       w.at + @ui.come_way_ms(w.u0, w.v0, if w.up { plan } else { 0.0 }, kept=w.kept)
     }
   }
+}
+
+///|
+/// A sheet's page as its list of pages (sheet_node's View::each) has it. A page is made with what it is given as it is
+/// made and keeps it (its number is its key), so it is told as the same item by its number alone: a panel and what it
+/// holds are no values to compare.
+priv struct SheetItem {
+  pg : SheetPage
+}
+
+///|
+impl Eq for SheetItem with equal(a, b) {
+  a.pg.n == b.pg.n
 }

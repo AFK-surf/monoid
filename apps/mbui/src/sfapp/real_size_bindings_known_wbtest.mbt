@@ -27,7 +27,7 @@
 // policy pages 8 to 0). Held by page_fanout_wbtest.mbt.
 ///|
 let real_size_bindings_known : Map[String, Int] = {
-  "phone home chats/down": 36,
+  "phone home chats/down": 27,
   "phone home chats/card": 18,
   "phone home chats/archived": 17,
   "phone home longJobs/job": 6,
@@ -644,7 +644,7 @@ let real_size_bindings_known : Map[String, Int] = {
   "wide home workspaceMarks/message": 2,
   "wide home workspaceMarks/card": 2,
   "wide home chats/renamed": 25,
-  "wide home chats/down": 91,
+  "wide home chats/down": 70,
   "wide home chats/card": 63,
   "wide home chats/archived": 62,
   "wide chat chat compact/thing": 34,

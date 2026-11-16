@@ -641,9 +641,16 @@ fn board_wide(
                 col
                 .width(By(fn() {
                   opened.said()
+                  let resting_w = fn() { Some(board_col_w(width() - (if split() { board_beside_w } else { 0.0 }), count())) }
+                  // (as wide all the way as the chat beside them sets out and comes to rest: at a column's least or most
+                  // with it open and closed, nothing of it goes, so the clock is not followed for it)
+                  let (from, to) = ends.val
+                  if from == to {
+                    return resting_w()
+                  }
                   let t = col.drawn_while(fn(at) { opened.goes_at(at) })
                   if t == @double.infinity || !opened.goes_at(t) {
-                    Some(board_col_w(width() - (if split() { board_beside_w } else { 0.0 }), count()))
+                    resting_w()
                   } else {
                     Some(col_w_at(t, split()))
                   }
