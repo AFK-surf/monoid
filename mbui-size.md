@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [9f7fe0d1d](https://github.com/AFK-surf/monoid/commit/9f7fe0d1d6ff90e1bd9f7be2218555c805641a80) mbui: forbid ES 3.00 fragment shaders without high | 2.45 | 3.43 | 14.61 | 35.76 | 57.03 | 31.37 | 64.64 | 99.78 | 109.37 |
 | [da5199d49](https://github.com/AFK-surf/monoid/commit/da5199d49dd4aea1f35ae5cc951e2b3011bcf579) mbui: declare highp int in ES 3.00 fragment shader | 2.45 | 3.43 | 14.61 | 35.76 | 57.03 | 31.37 | 64.64 | 99.78 | 109.37 |
 | [562c119d1](https://github.com/AFK-surf/monoid/commit/562c119d1dd246a3c13ae4b3a9789ce94a846dac) station: read simulator cases and jobs' logs witho | 2.45 | 3.43 | 14.61 | 35.76 | 57.03 | 31.37 | 64.64 | 99.85 | 119.89 |
 | [0e89f1fc8](https://github.com/AFK-surf/monoid/commit/0e89f1fc8f7edcaafcc379725ed6febd09267a4b) station: pack, restore and read archived workspace | 2.45 | 3.43 | 14.61 | 35.76 | 57.03 | 31.37 | 64.64 | 99.85 | 119.89 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [9bbec280e](https://github.com/AFK-surf/monoid/commit/9bbec280e596425dfd9831a6a0e05736dd1a0c03) fix(mbui): use linear gamma with 6x1 ClearType and | 2.42 | 3.36 | 14.22 | 35.34 | 55.45 | 31.01 | 63.37 | 99.8 | 120 |
 | [591401d5d](https://github.com/AFK-surf/monoid/commit/591401d5dd686b1a87401f9fffabb51f6b15eddb) mbui: words of no right-to-left character work out | 2.42 | 3.36 | 14.22 | 35.34 | 55.45 | 31.01 | 63.37 | 99.8 | 120 |
 | [0cf6b5867](https://github.com/AFK-surf/monoid/commit/0cf6b58671d02743964bc776ef48af7cb59c9c1c) mbui: 对话信息、Agent 卡、服务与后台任务、往来信件和分享/邀请/登录面板改为节点（old | 2.42 | 3.35 | 14.22 | 35.34 | 55.45 | 30 | 60.29 | 99.44 | 118.85 |
-| [d1795c584](https://github.com/AFK-surf/monoid/commit/d1795c58456d7df65ce7d587980100af0df8c5c1) station tests: the helper's watch waits for what t | 2.41 | 3.33 | 14.05 | 35.15 | 54.49 | 30 | 60.29 | 99.44 | 121.58 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [9f7fe0d1d](https://github.com/AFK-surf/monoid/commit/9f7fe0d1d6ff90e1bd9f7be2218555c805641a80) mbui: forbid ES 3.00 fragment shaders without high | 0.42 | 0.55 | 2.1 | 3.2 | 5.03 | 1.55 | 4.13 | 57.33 |
 | [da5199d49](https://github.com/AFK-surf/monoid/commit/da5199d49dd4aea1f35ae5cc951e2b3011bcf579) mbui: declare highp int in ES 3.00 fragment shader | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.35 |
 | [562c119d1](https://github.com/AFK-surf/monoid/commit/562c119d1dd246a3c13ae4b3a9789ce94a846dac) station: read simulator cases and jobs' logs witho | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.35 |
 | [0e89f1fc8](https://github.com/AFK-surf/monoid/commit/0e89f1fc8f7edcaafcc379725ed6febd09267a4b) station: pack, restore and read archived workspace | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.25 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [9bbec280e](https://github.com/AFK-surf/monoid/commit/9bbec280e596425dfd9831a6a0e05736dd1a0c03) fix(mbui): use linear gamma with 6x1 ClearType and | 0.42 | 0.55 | 2.1 | 3.19 | 5.02 | 1.55 | 4.11 | 57.28 |
 | [591401d5d](https://github.com/AFK-surf/monoid/commit/591401d5dd686b1a87401f9fffabb51f6b15eddb) mbui: words of no right-to-left character work out | 0.42 | 0.55 | 2.1 | 3.19 | 5.02 | 1.55 | 4.11 | 57.61 |
 | [0cf6b5867](https://github.com/AFK-surf/monoid/commit/0cf6b58671d02743964bc776ef48af7cb59c9c1c) mbui: 对话信息、Agent 卡、服务与后台任务、往来信件和分享/邀请/登录面板改为节点（old | 0.42 | 0.55 | 2.1 | 3.19 | 5.02 | 1.54 | 4.11 | 57.39 |
-| [d1795c584](https://github.com/AFK-surf/monoid/commit/d1795c58456d7df65ce7d587980100af0df8c5c1) station tests: the helper's watch waits for what t | 0.42 | 0.55 | 2.1 | 3.19 | 5.02 | 1.54 | 4.11 | 57.39 |
