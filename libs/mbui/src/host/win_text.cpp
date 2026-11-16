@@ -140,7 +140,7 @@ static DWRITE_PIXEL_GEOMETRY detect_pixel_geometry(void) {
   return DWRITE_PIXEL_GEOMETRY_RGB;
 }
 
-static bool use_cleartype(double sc) { return params_ct != NULL && sc < 1.5; }
+static bool use_cleartype(double sc) { return params_ct != NULL && sc < 1.25; }
 
 static void init(void) {
   if (dw) return;
@@ -167,12 +167,12 @@ static void init(void) {
                                   DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC,
                                   DWRITE_GRID_FIT_MODE_DISABLED, &p2);
   params = p2;
-  // Monochrome text in grayscale (used at 150%+ high-DPI scaling, on OLED panels, or when ClearType is off in Windows):
+  // Monochrome text in grayscale (used at 125%+ high-DPI scaling, on OLED panels, or when ClearType is off in Windows):
   // unhinted geometric outlines as in macOS CoreText (DWRITE_GRID_FIT_MODE_DISABLED, so legacy CJK TrueType hinting
   // bytecode does not pinch or distort stroke weights across rows) with symmetric 6x5 antialiasing
-  // (DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC) and optical stem darkening (contrast 0.35 at linear gamma 1.0).
+  // (DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC) and optical stem darkening (contrast 0.45 at linear gamma 1.0).
   IDWriteRenderingParams2 *g2 = NULL;
-  dw->CreateCustomRenderingParams(1.0f, 0.35f, 0.35f, 0.0f, DWRITE_PIXEL_GEOMETRY_FLAT,
+  dw->CreateCustomRenderingParams(1.0f, 0.45f, 0.45f, 0.0f, DWRITE_PIXEL_GEOMETRY_FLAT,
                                   DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC, DWRITE_GRID_FIT_MODE_DISABLED, &g2);
   params_gray = g2;
   // A glyph in one colour drawn with ClearType at < 150% on an RGB/BGR LCD: each of a pixel's three stripes covered on
@@ -823,6 +823,103 @@ struct Drawn {
   int color;
 };
 
+static inline float px_at(const float *buf, int pw, int ph, int x, int y) {
+  if (x < 0 || x >= pw || y < 0 || y >= ph) return 0.0f;
+  return buf[y * pw + x];
+}
+
+// Optical stem darkening and cross-row/cross-column stem convergence for grayscale unhinted glyphs (as in macOS
+// CoreGraphics font smoothing + CFF hstem/vstem alignment): when an unhinted horizontal or vertical stem at 1.25x/1.5x
+// straddles two adjacent pixel rows or columns (flanked by open counter space), concentrates coverage into the dominant
+// row/column so stems keep a solid black core without blurring or distorting diagonals.
+static void enhance_gray_stems(uint8_t *px, int pw, int ph) {
+  if (pw <= 1 || ph <= 1) return;
+  size_t n = (size_t)pw * ph;
+  float *f = (float *)malloc(sizeof(float) * n);
+  float *tmp = (float *)malloc(sizeof(float) * n);
+  if (!f || !tmp) {
+    free(f);
+    free(tmp);
+    return;
+  }
+  for (size_t i = 0; i < n; i++) f[i] = px[i * 4 + 3] / 255.0f;
+
+  // Step 1: subtle isotropic edge dilation (~0.06px radius, matching CoreGraphics font smoothing)
+  for (int y = 0; y < ph; y++) {
+    for (int x = 0; x < pw; x++) {
+      float c = f[y * pw + x];
+      if (c > 0.01f && c < 0.99f) {
+        float m = c;
+        float l = px_at(f, pw, ph, x - 1, y), r = px_at(f, pw, ph, x + 1, y);
+        float u = px_at(f, pw, ph, x, y - 1), d = px_at(f, pw, ph, x, y + 1);
+        if (l > m) m = l;
+        if (r > m) m = r;
+        if (u > m) m = u;
+        if (d > m) m = d;
+        c = fminf(1.0f, c * 1.06f + 0.06f * m);
+      }
+      tmp[y * pw + x] = c;
+    }
+  }
+  memcpy(f, tmp, sizeof(float) * n);
+
+  // Step 2: vertical pass (horizontal stems straddling rows y and y+1)
+  for (int y = 0; y < ph - 1; y++) {
+    for (int x = 0; x < pw; x++) {
+      float u = px_at(f, pw, ph, x, y - 1);
+      float p0 = f[y * pw + x];
+      float p1 = f[(y + 1) * pw + x];
+      float d = px_at(f, pw, ph, x, y + 2);
+      if (p0 > 0.25f && p1 > 0.25f && u < 0.22f && d < 0.22f) {
+        float l_in = px_at(f, pw, ph, x - 1, y) + px_at(f, pw, ph, x - 1, y + 1);
+        float r_in = px_at(f, pw, ph, x + 1, y) + px_at(f, pw, ph, x + 1, y + 1);
+        if (l_in > 0.50f || r_in > 0.50f) {
+          float shift = 0.42f * fminf(p0, p1);
+          if (p0 >= p1) {
+            tmp[y * pw + x] = fminf(1.0f, p0 + shift);
+            tmp[(y + 1) * pw + x] = p1 - shift * 0.60f;
+          } else {
+            tmp[(y + 1) * pw + x] = fminf(1.0f, p1 + shift);
+            tmp[y * pw + x] = p0 - shift * 0.60f;
+          }
+        }
+      }
+    }
+  }
+
+  // Step 3: horizontal pass (vertical stems straddling columns x and x+1)
+  memcpy(f, tmp, sizeof(float) * n);
+  for (int y = 0; y < ph; y++) {
+    for (int x = 0; x < pw - 1; x++) {
+      float l = px_at(tmp, pw, ph, x - 1, y);
+      float p0 = tmp[y * pw + x];
+      float p1 = tmp[y * pw + x + 1];
+      float r = px_at(tmp, pw, ph, x + 2, y);
+      if (p0 > 0.25f && p1 > 0.25f && l < 0.22f && r < 0.22f) {
+        float u_in = px_at(tmp, pw, ph, x, y - 1) + px_at(tmp, pw, ph, x + 1, y - 1);
+        float d_in = px_at(tmp, pw, ph, x, y + 1) + px_at(tmp, pw, ph, x + 1, y + 1);
+        if (u_in > 0.50f || d_in > 0.50f) {
+          float shift = 0.42f * fminf(p0, p1);
+          if (p0 >= p1) {
+            f[y * pw + x] = fminf(1.0f, p0 + shift);
+            f[y * pw + x + 1] = p1 - shift * 0.60f;
+          } else {
+            f[y * pw + x + 1] = fminf(1.0f, p1 + shift);
+            f[y * pw + x] = p0 - shift * 0.60f;
+          }
+        }
+      }
+    }
+  }
+
+  for (size_t i = 0; i < n; i++) {
+    uint8_t v = (uint8_t)(fminf(1.0f, fmaxf(0.0f, f[i])) * 255.0f + 0.5f);
+    px[i * 4 + 0] = px[i * 4 + 1] = px[i * 4 + 2] = px[i * 4 + 3] = v;
+  }
+  free(tmp);
+  free(f);
+}
+
 static void measure_bounds(IDWriteTextLayout *l, ClusterBounds *cb) {
   if (cb->valid) return;
   ColorProbe probe;
@@ -918,6 +1015,7 @@ static void draw_cluster(IDWriteTextLayout *l, const ClusterBounds *cb, double s
       }
     }
     lock->Release();
+    if (mono && !ct && color != 2) enhance_gray_stems(px, pw, ph);
     d->pw = pw;
     d->ph = ph;
     d->px = px;
