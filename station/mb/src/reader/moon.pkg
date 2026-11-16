@@ -34,6 +34,7 @@ import {
   "station/replica",
   "station/footprint",
   "station/memory",
+  "station/packed",
   "station/front",
   "station/jsjson",
   "station/jscase",

@@ -967,6 +967,180 @@ fn pack_pieces(ids: &Mutex<HashMap<String, (sha1::Sha1, u64)>>, out: &std::path:
     Ok(json!({ "raw": raw, "packed": packed }))
 }
 
+/// A file of the program's own made anew where it writes what no one else is to read: 0600.
+fn own_file(path: &std::path::Path) -> Result<std::fs::File, String> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let file = options.open(path).map_err(err)?;
+    // (made before, with other bits: as archive.ts's chmod)
+    #[cfg(unix)]
+    file.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o600)).map_err(err)?;
+    Ok(file)
+}
+
+/// Every zstd frame of the file at `path` as one stream, read whole: none at all, or one cut, fails.
+fn unzstd_whole(path: &std::path::Path) -> Result<zstd::stream::read::Decoder<'static, std::io::BufReader<std::fs::File>>, String> {
+    let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    if file.metadata().map_err(err)?.len() == 0 {
+        return Err(format!("{}: no zstd frame", path.display()));
+    }
+    zstd::stream::read::Decoder::new(file).map_err(err)
+}
+
+/// As much as `source` gives up to `buf`'s length (less only at its end).
+fn read_up_to(source: &mut dyn std::io::Read, buf: &mut [u8]) -> std::io::Result<usize> {
+    let mut got = 0;
+    while got < buf.len() {
+        match source.read(&mut buf[got..]) {
+            Ok(0) => break,
+            Ok(n) => got += n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(got)
+}
+
+/// `zstd.segments`' work.
+fn segment_into(path: &std::path::Path, unzstd: bool, out: &std::path::Path, segment: usize) -> Result<Value, String> {
+    use std::io::Write;
+    let mut source: Box<dyn std::io::Read> = if unzstd {
+        Box::new(unzstd_whole(path)?)
+    } else {
+        Box::new(std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?)
+    };
+    let mut file = std::io::BufWriter::new(own_file(out)?);
+    let mut z = zstd::bulk::Compressor::new(3).map_err(err)?;
+    z.set_parameter(zstd::zstd_safe::CParameter::ChecksumFlag(true)).map_err(err)?;
+    let mut frames: Vec<Value> = Vec::new();
+    let mut frame = |raw: &[u8], file: &mut std::io::BufWriter<std::fs::File>| -> Result<(), String> {
+        let bytes = z.compress(raw).map_err(err)?;
+        file.write_all(&bytes).map_err(err)?;
+        frames.push(json!([bytes.len(), raw.len()]));
+        Ok(())
+    };
+    let mut held: Vec<u8> = Vec::with_capacity(segment + (1 << 20));
+    let mut buf = vec![0u8; 1 << 20];
+    loop {
+        let n = read_up_to(&mut *source, &mut buf).map_err(|e| format!("{}: {e}", path.display()))?;
+        if n == 0 {
+            break;
+        }
+        held.extend_from_slice(&buf[..n]);
+        // (as zork's segment at a snapshot: what comes after its last line goes on in the next)
+        while held.len() > segment {
+            let cut = held[..segment].iter().rposition(|&b| b == b'\n').map_or(segment, |i| i + 1);
+            frame(&held[..cut], &mut file)?;
+            held.drain(..cut);
+        }
+    }
+    frame(&held, &mut file)?;
+    file.flush().map_err(err)?;
+    Ok(json!({ "frames": frames }))
+}
+
+/// What `zstd.check` does with what the frames hold, a piece at a time.
+struct Checked<'a> {
+    hash: sha2::Sha256,
+    size: u64,
+    into: Option<std::io::BufWriter<std::fs::File>>,
+    same: Option<(std::io::BufReader<std::fs::File>, Vec<u8>)>,
+    path: &'a std::path::Path,
+}
+
+impl Checked<'_> {
+    /// A piece taken: where the file it is compared with is not it, how ("shortened", "changed").
+    fn take(&mut self, piece: &[u8]) -> Result<Option<&'static str>, String> {
+        use sha2::Digest;
+        use std::io::Write;
+        self.hash.update(piece);
+        self.size += piece.len() as u64;
+        if let Some(into) = self.into.as_mut() {
+            into.write_all(piece).map_err(err)?;
+        }
+        if let Some((file, mine)) = self.same.as_mut() {
+            mine.resize(piece.len(), 0);
+            let got = read_up_to(file, mine).map_err(err)?;
+            if got < piece.len() {
+                return Ok(Some("shortened"));
+            }
+            if mine.as_slice() != piece {
+                return Ok(Some("changed"));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Everything of a zstd stream taken; how it differs, as `take`.
+    fn drain(&mut self, mut from: impl std::io::Read) -> Result<Option<&'static str>, String> {
+        let mut buf = vec![0u8; 256 * 1024];
+        loop {
+            let n = read_up_to(&mut from, &mut buf).map_err(|e| format!("{}: {e}", self.path.display()))?;
+            if n == 0 {
+                return Ok(None);
+            }
+            if let Some(differs) = self.take(&buf[..n])? {
+                return Ok(Some(differs));
+            }
+        }
+    }
+}
+
+/// `zstd.check`'s work.
+fn check_frames(path: &std::path::Path, frames: Option<&[(u64, u64, u64)]>, into: Option<&std::path::Path>, same: Option<&std::path::Path>) -> Result<Value, String> {
+    use sha2::Digest;
+    use std::io::{Read, Seek, SeekFrom};
+    let mut checked = Checked {
+        hash: sha2::Sha256::new(),
+        size: 0,
+        into: into.map(own_file).transpose()?.map(std::io::BufWriter::new),
+        same: same.map(|p| std::fs::File::open(p).map(|f| (std::io::BufReader::new(f), Vec::new()))).transpose().map_err(err)?,
+        path,
+    };
+    let differs = match frames {
+        None => checked.drain(unzstd_whole(path)?)?,
+        Some(frames) => {
+            let mut file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+            let mut differs = None;
+            for &(at, packed, size) in frames {
+                file.seek(SeekFrom::Start(at)).map_err(err)?;
+                let before = checked.size;
+                // (each frame alone, as a reader of a page decompresses it: one that ends early is cut, one with bytes
+                // after its end is not one frame)
+                let mut decoder = zstd::stream::read::Decoder::new((&mut file).take(packed)).map_err(err)?.single_frame();
+                differs = checked.drain(&mut decoder)?;
+                if differs.is_some() {
+                    break;
+                }
+                let rest = decoder.finish();
+                if !rest.buffer().is_empty() || rest.get_ref().limit() != 0 {
+                    return Err("a put-away transcript frame has trailing bytes".into());
+                }
+                if checked.size - before != size {
+                    return Err("a put-away transcript frame has the wrong size".into());
+                }
+            }
+            differs
+        }
+    };
+    if let Some(differs) = differs {
+        return Ok(json!({ "differs": differs }));
+    }
+    if let Some((file, mine)) = checked.same.as_mut() {
+        mine.resize(1, 0);
+        if read_up_to(file, mine).map_err(err)? != 0 {
+            return Ok(json!({ "differs": "changed" }));
+        }
+    }
+    if let Some(into) = checked.into.take() {
+        let file = into.into_inner().map_err(err)?;
+        file.sync_all().map_err(err)?;
+    }
+    Ok(json!({ "size": checked.size, "sha256": hex::encode(checked.hash.finalize()) }))
+}
+
 fn str_of<'a>(v: &'a Value, k: &str) -> Result<&'a str, String> {
     v.get(k).and_then(Value::as_str).ok_or_else(|| format!("missing {k}"))
 }
@@ -1527,6 +1701,45 @@ impl Inner {
                 let level = a.get("level").and_then(Value::as_i64).unwrap_or(3) as i32;
                 let pieces = a.get("pieces").and_then(Value::as_array).cloned().ok_or("pieces are required")?;
                 let value = tokio::task::spawn_blocking(move || pack_pieces(&ids, &out, level, &pieces)).await.map_err(err)??;
+                Ok(Answer::json(value))
+            }
+            // A transcript put away (station/mb src/packed, as station/test/reference/packed.ts reads it): the file at
+            // `path` (with `unzstd`, what its zstd frames hold, each whole and checksummed) cut into frames of at most
+            // `segment` bytes, each ending at the end of its last line within them (none there: at `segment`), and a frame
+            // made only once more than `segment` came, so the last is never empty but where the file is; each compressed
+            // at level 3 with its checksum (as the Rust station's archive.rs, Node's ZSTD_c_checksumFlag) and written to
+            // `out` (made anew, 0600), off the caller's thread, none of its bytes through the program. {frames: [[packed,
+            // size]…]}: the table after them is the program's to write.
+            "zstd.segments" => {
+                let path = PathBuf::from(str_of(&a, "path")?);
+                let out = PathBuf::from(str_of(&a, "out")?);
+                let unzstd = a.get("unzstd").and_then(Value::as_bool).unwrap_or(false);
+                let segment = a.get("segment").and_then(Value::as_u64).filter(|n| *n > 0).ok_or("segment is required")? as usize;
+                let value = tokio::task::spawn_blocking(move || segment_into(&path, unzstd, &out, segment)).await.map_err(err)??;
+                Ok(Answer::json(value))
+            }
+            // The zstd frames of the file at `path` read through, off the caller's thread: each whole (a cut one fails, as
+            // the Rust station's decoder's "incomplete frame") and its checksum verified; with `frames` ([[at, packed,
+            // size]…], a put-away transcript's table), each on its own, holding `size` bytes. What they hold written to
+            // `into` (made anew, 0600, on disk before this answers) where it says, compared byte for byte with the file
+            // at `same` where it says ({differs: "shortened" | "changed"} where that file is not it, to its end). {size,
+            // sha256} of what they hold.
+            "zstd.check" => {
+                let path = PathBuf::from(str_of(&a, "path")?);
+                let frames = match a.get("frames") {
+                    Some(Value::Array(fs)) => Some(
+                        fs.iter()
+                            .map(|f| match (f[0].as_u64(), f[1].as_u64(), f[2].as_u64()) {
+                                (Some(at), Some(packed), Some(size)) => Ok((at, packed, size)),
+                                _ => Err("bad frame".to_string()),
+                            })
+                            .collect::<Result<Vec<_>, _>>()?,
+                    ),
+                    _ => None,
+                };
+                let into = a.get("into").and_then(Value::as_str).map(PathBuf::from);
+                let same = a.get("same").and_then(Value::as_str).map(PathBuf::from);
+                let value = tokio::task::spawn_blocking(move || check_frames(&path, frames.as_deref(), into.as_deref(), same.as_deref())).await.map_err(err)??;
                 Ok(Answer::json(value))
             }
             "stream.close" | "ws.close" | "tcp.close" | "zstd.close" | "listen.close" | "pack.close" => {
@@ -4406,5 +4619,101 @@ mod tests {
             piping.await.unwrap().unwrap();
             assert!(inner.handle(stream).is_err());
         });
+    }
+
+    #[test]
+    fn puts_a_transcript_away_in_segments_and_reads_it_back_whole() {
+        let dir = TempDir::new();
+        let shell = Shell::start(dir.path().join("shell"), complete, ctx()).unwrap();
+        let inner = shell.inner.clone();
+        let at = |p: &str| dir.path().join(p).display().to_string();
+        let run = |op: &str, a: Value| shell.runtime.block_on(inner.run(op, a, None)).map(|answer| answer.json);
+        let sizes = |v: &Value| v["frames"].as_array().unwrap().iter().map(|f| f[1].as_u64().unwrap()).collect::<Vec<_>>();
+        // The frames as a table lists them: [at, packed, size].
+        let listed = |v: &Value| {
+            let mut from = 0;
+            Value::Array(v["frames"].as_array().unwrap().iter().map(|f| {
+                let (packed, size) = (f[0].as_u64().unwrap(), f[1].as_u64().unwrap());
+                from += packed;
+                json!([from - packed, packed, size])
+            }).collect())
+        };
+        // Where each segment ends, 8 bytes at most: at its last line's end, at 8 where a line is longer, one made only
+        // once more than 8 came (exactly 8: one; nothing: one, empty).
+        for (content, want) in [
+            (&b"abcdefg\n"[..], vec![8]),
+            (b"abc\ndefgh", vec![4, 5]),
+            (b"abcdefghijklmnopqrst", vec![8, 8, 4]),
+            (b"", vec![0]),
+            (b"1234567\n12345678", vec![8, 8]),
+            (b"a\nb\nc\nd\ne\nf\ng\nh\n", vec![8, 8]),
+            ("中文\n😀😀\n".as_bytes(), vec![7, 8, 1]),
+        ] {
+            std::fs::write(at("t.jsonl"), content).unwrap();
+            let made = run("zstd.segments", json!({ "path": at("t.jsonl"), "out": at("t.zst"), "segment": 8 })).unwrap();
+            assert_eq!(sizes(&made), want, "{content:?}");
+            #[cfg(unix)]
+            assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(at("t.zst")).unwrap().permissions()) & 0o777, 0o600);
+            // Each frame level 3 with its checksum, one stream to any zstd reader.
+            let packed = std::fs::read(at("t.zst")).unwrap();
+            assert_eq!(zstd::decode_all(packed.as_slice()).unwrap(), content);
+            assert_ne!(packed[4] & 4, 0, "checksummed");
+            let checked = run("zstd.check", json!({ "path": at("t.zst"), "frames": listed(&made), "same": at("t.jsonl") })).unwrap();
+            use sha2::Digest;
+            assert_eq!(checked, json!({ "size": content.len(), "sha256": hex::encode(sha2::Sha256::digest(content)) }));
+        }
+        // Compared with a file that changed meanwhile: how.
+        let content: Vec<u8> = (0..5000u32).map(|i| if i % 97 == 96 { b'\n' } else { b'a' + (i % 26) as u8 }).collect();
+        std::fs::write(at("t.jsonl"), &content).unwrap();
+        let made = run("zstd.segments", json!({ "path": at("t.jsonl"), "out": at("t.zst"), "segment": 1000 })).unwrap();
+        assert!(sizes(&made).len() >= 5);
+        let check = |same: &str| run("zstd.check", json!({ "path": at("t.zst"), "frames": listed(&made), "same": at(same) })).unwrap();
+        std::fs::write(at("short"), &content[..4000]).unwrap();
+        assert_eq!(check("short"), json!({ "differs": "shortened" }));
+        let mut longer = content.clone();
+        longer.push(b'x');
+        std::fs::write(at("longer"), &longer).unwrap();
+        assert_eq!(check("longer"), json!({ "differs": "changed" }));
+        let mut other = content.clone();
+        other[4321] ^= 1;
+        std::fs::write(at("other"), &other).unwrap();
+        assert_eq!(check("other"), json!({ "differs": "changed" }));
+        // Restored: written whole, 0600, as the frames hold it; without a table too.
+        let whole = run("zstd.check", json!({ "path": at("t.zst"), "frames": listed(&made), "into": at("back") })).unwrap();
+        assert_eq!((whole["size"].as_u64(), std::fs::read(at("back")).unwrap()), (Some(5000), content.clone()));
+        assert_eq!(run("zstd.check", json!({ "path": at("t.zst"), "into": at("back2") })).unwrap(), whole);
+        assert_eq!(std::fs::read(at("back2")).unwrap(), content);
+        // Put away again from what zstd frames hold: one frame, several, with a skippable frame among them.
+        let mut old = zstd::encode_all(&content[..3000], 19).unwrap();
+        old.extend([0x5e, 0x2a, 0x4d, 0x18, 3, 0, 0, 0, 1, 2, 3]);
+        old.extend(zstd::encode_all(&content[3000..], 1).unwrap());
+        std::fs::write(at("old.zst"), &old).unwrap();
+        let again = run("zstd.segments", json!({ "path": at("old.zst"), "unzstd": true, "out": at("new.zst"), "segment": 1000 })).unwrap();
+        assert_eq!(sizes(&again), sizes(&made));
+        assert_eq!(run("zstd.check", json!({ "path": at("new.zst"), "frames": listed(&again) })).unwrap(), whole);
+        assert_eq!(run("zstd.check", json!({ "path": at("old.zst") })).unwrap(), whole);
+        // A frame cut (its checksum's last byte), no frame at all, bytes after a frame within its place, a size the
+        // table does not say: none read as whole.
+        let one = {
+            let mut z = zstd::bulk::Compressor::new(3).unwrap();
+            z.set_parameter(zstd::zstd_safe::CParameter::ChecksumFlag(true)).unwrap();
+            z.compress(b"the only copy of this history\n").unwrap()
+        };
+        std::fs::write(at("cut.zst"), &one[..one.len() - 1]).unwrap();
+        assert!(run("zstd.check", json!({ "path": at("cut.zst") })).is_err());
+        assert!(run("zstd.check", json!({ "path": at("cut.zst"), "frames": [[0, one.len() - 1, 30]] })).is_err());
+        assert!(run("zstd.segments", json!({ "path": at("cut.zst"), "unzstd": true, "out": at("x.zst"), "segment": 8 })).is_err());
+        assert!(run("zstd.check", json!({ "path": at("cut.zst"), "frames": [[0, 0, 0]] })).is_err());
+        std::fs::write(at("empty.zst"), b"").unwrap();
+        assert!(run("zstd.check", json!({ "path": at("empty.zst") })).is_err());
+        assert!(run("zstd.segments", json!({ "path": at("empty.zst"), "unzstd": true, "out": at("x.zst"), "segment": 8 })).is_err());
+        let mut trailing = one.clone();
+        trailing.extend(b"xy");
+        std::fs::write(at("trailing.zst"), &trailing).unwrap();
+        assert!(run("zstd.check", json!({ "path": at("trailing.zst"), "frames": [[0, trailing.len(), 30]] })).is_err());
+        std::fs::write(at("one.zst"), &one).unwrap();
+        assert!(run("zstd.check", json!({ "path": at("one.zst"), "frames": [[0, one.len(), 31]] })).is_err());
+        assert_eq!(run("zstd.check", json!({ "path": at("one.zst"), "frames": [[0, one.len(), 30]] })).unwrap()["size"], json!(30));
+        assert!(run("zstd.segments", json!({ "path": at("none"), "out": at("x.zst"), "segment": 8 })).is_err());
     }
 }

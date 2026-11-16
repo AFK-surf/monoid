@@ -1,4 +1,9 @@
-// A transcript put away (sessions/archive.ts `packFile`) is in segments as zork keeps a session's sealed events (HOOLC/zork
+// What the station's own TypeScript read and wrote of a transcript put away, before that moved to the MoonBit program
+// (station/mb src/packed, `--builder packed`, which sessions/archive.ts asks through sessions/packed-mb.ts; and the
+// readers' station/mb src/history, src/usagecount): kept as the reference the tests hold it to (test/mb-packed.test.ts),
+// and as the reader the tests read what the station puts away with.
+//
+// A transcript put away is in segments as zork keeps a session's sealed events (HOOLC/zork
 // docs/design/agent-runtime.md, SEGMENT-01): each about SEGMENT bytes of it, ending at the end of a line, compressed
 // once. Put away, a transcript is no longer written in, so every segment is sealed and compressed (the raw segment
 // zork keeps is the one still being written: here that is the runtime's own .jsonl, before it is put away). They are
@@ -12,7 +17,7 @@
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import { type FileHandle, open } from "node:fs/promises";
 import { Readable } from "node:stream";
-import { createZstdDecompress, zstdDecompressSync } from "node:zlib";
+import { constants, createZstdDecompress, zstdCompressSync, zstdDecompressSync } from "node:zlib";
 
 /// How much of a transcript a frame holds.
 export const SEGMENT = 16 << 20;
@@ -334,4 +339,26 @@ export function readSegments(path: string, from: number, end: number, take: (pie
   } finally {
     closeSync(file);
   }
+}
+
+/// What sessions/archive.ts put a transcript away as before the MoonBit program did (its `segmentInto`, with `bytes`
+/// whole rather than streamed): a frame for each SEGMENT of it (up to the end of its last line), each zstd level 3 with
+/// its checksum, then the frames' table.
+export function segmentedBytes(bytes: Buffer): Buffer {
+  const frames: { packed: number; size: number }[] = [];
+  const out: Buffer[] = [];
+  let held = bytes;
+  // A segment ends at the end of its last line within SEGMENT (as zork's at a snapshot): what comes after goes on in
+  // the next. One is made only once more than SEGMENT came, so the last, however long the transcript, is never empty.
+  const frame = (last: boolean) => {
+    const cut = last ? held.length : held.subarray(0, SEGMENT + 1).lastIndexOf(0x0a, SEGMENT - 1) + 1 || SEGMENT;
+    const raw = held.subarray(0, cut);
+    held = held.subarray(cut);
+    const packed = zstdCompressSync(raw, { params: { [constants.ZSTD_c_compressionLevel]: 3, [constants.ZSTD_c_checksumFlag]: 1 } });
+    out.push(packed);
+    frames.push({ packed: packed.length, size: raw.length });
+  };
+  while (held.length > SEGMENT) frame(false);
+  frame(true);
+  return Buffer.concat([...out, seekTable(frames)]);
 }

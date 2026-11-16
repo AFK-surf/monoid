@@ -16,7 +16,7 @@ import { threadId } from "node:worker_threads";
 import { zstdDecompressSync } from "node:zlib";
 import type { RuntimeKind } from "../../src/agents/runtime.ts";
 import { log } from "../../src/ops/log.ts";
-import { readSegments } from "../../src/read/packed.ts";
+import { readSegments } from "./packed.ts";
 import { type Mark, type TailState, type TranscriptRef, TranscriptTail, recordOf } from "./tail.ts";
 import { READING, type ReadState, type TimelineEntry, brief, storage, timelineOf, utf8 } from "./transcript.ts";
 import { fileOf } from "../../src/read/transcripts.ts";

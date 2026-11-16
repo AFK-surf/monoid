@@ -19,7 +19,7 @@ import { closeSync, openSync, readSync, statSync } from "node:fs";
 import { isPlanTool } from "./plan.ts";
 import type { Json } from "../../src/read/store.ts";
 import type { RuntimeKind } from "../../src/agents/runtime.ts";
-import { unpackedWhole } from "../../src/read/packed.ts";
+import { unpackedWhole } from "./packed.ts";
 import { type TimelineEntry, storage } from "../../src/read/transcript.ts";
 
 export * from "../../src/read/transcript.ts";

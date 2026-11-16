@@ -1,0 +1,31 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/packed"
+
+import {
+  "moonbitlang/core/json",
+  "station/host",
+}
+
+// Values
+pub async fn answer(@host.Host, @json.Json) -> @json.Json
+
+pub let footer : Int32
+
+pub fn seek_table(Array[(Int64, Int64)]) -> Bytes
+
+pub let segment : Int32
+
+pub fn stored(BytesView) -> Bool
+
+pub fn table_length(Int64, BytesView) -> (Int64, Int64)?
+
+// Errors
+pub suberror Failed {
+  Failed(String)
+}
+
+// Types and methods
+
+// Type aliases
+
+// Traits

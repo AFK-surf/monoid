@@ -9,7 +9,7 @@ import { createReadStream, existsSync, readdirSync } from "node:fs";
 import { open } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { createZstdDecompress } from "node:zlib";
-import { segmentsFrom } from "../../src/read/packed.ts";
+import { segmentsFrom } from "./packed.ts";
 import * as store from "./store.ts";
 import type { JobRow, MessageRow, SessionRow, Store } from "./store.ts";
 import { type ReadState, sessionPlaces, timelineOf, transcriptSources, type TimelineEntry } from "./transcript.ts";

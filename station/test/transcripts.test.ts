@@ -7,11 +7,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { zstdCompressSync } from "node:zlib";
-import { SEGMENT, framesOf, seekTable, segmented, segmentedSoon, unpackedWhole } from "../src/read/packed.ts";
+import { SEGMENT, framesOf, seekTable, segmented, segmentedSoon, unpackedWhole } from "./reference/packed.ts";
 import { ChainTail, MARK_EVERY, PIECE, TranscriptTail } from "./reference/tail.ts";
 import { READING, brief, readTimeline, scriptCalls } from "./reference/transcript.ts";
 import { chainOf, entriesOf, forgetKept, lengthOf } from "./reference/transcripts.ts";
-import { heldAfter, packFile, segmentFile } from "../src/sessions/archive.ts";
+import { packFile, segmentFile } from "../src/sessions/archive.ts";
 
 const temp = () => mkdtempSync(join(tmpdir(), "transcripts-"));
 const said = (text: string, id: string) => `${JSON.stringify({ type: "assistant", timestamp: "2026-10-24T00:00:00Z", message: { id, content: [{ type: "text", text }], usage: { input_tokens: 1, output_tokens: 1 } } })}\n`;
@@ -242,13 +242,7 @@ test("however long a transcript put away is, every segment of it is compressed a
   rmSync(dir, { recursive: true, force: true });
 });
 
-test("what goes on to the next segment is its own copy, and lines of every length come back whole across segments", async () => {
-  const all = Buffer.alloc(SEGMENT + 4096, 0x61);
-  const [rest] = heldAfter(all, SEGMENT);
-  assert.deepEqual(rest, all.subarray(SEGMENT));
-  assert.notEqual(rest!.buffer, all.buffer, "not a view keeping the segment before in memory");
-  assert.ok(rest!.buffer.byteLength < SEGMENT, `${rest!.buffer.byteLength} bytes kept`);
-  assert.deepEqual(heldAfter(all, all.length), []);
+test("lines of every length come back whole across segments", async () => {
   // Lines of lengths that never line up with a segment's end, one longer than a segment among them.
   const dir = temp();
   const path = join(dir, "t.jsonl");

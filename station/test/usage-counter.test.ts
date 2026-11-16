@@ -13,7 +13,7 @@ import { monitorEventLoopDelay } from "node:perf_hooks";
 import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 import { zstdCompressSync, zstdDecompressSync } from "node:zlib";
-import { SEGMENT } from "../src/read/packed.ts";
+import { SEGMENT } from "./reference/packed.ts";
 import { cost, price, priceTable, sessionUsage, usageNow } from "./reference/usage.ts";
 import { tr } from "../src/ops/i18n.ts";
 import { packFile } from "../src/sessions/archive.ts";

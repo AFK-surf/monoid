@@ -794,6 +794,30 @@ async fn memory(host : @host.Host, sep : String) -> Unit {
 }
 
 ///|
+/// Transcripts put away, put away again and written back (sessions/packed-mb.ts for sessions/archive.ts): each line an
+/// ask `{id, op, …}` (@packed.answer), answered `{id, …}` or `{id, error}`, one at a time; nothing kept between asks.
+async fn packed(host : @host.Host) -> Unit {
+  while host.line() is Some(line) {
+    if line == "" {
+      continue
+    }
+    let ask : Json = @json.parse(line) catch { _ => Json::null() }
+    let id = if ask is Object(o) { o.get("id").unwrap_or(Json::null()) } else { Json::null() }
+    let answer : Json = try @packed.answer(host, ask) catch {
+      @packed.Failed(m) => { "id": id, "error": Json::string(m) }
+      e => { "id": id, "error": Json::string(message(e)) }
+    } noraise {
+      Object(m) => {
+        m["id"] = id
+        Json::object(m)
+      }
+      other => other
+    }
+    host.say(answer.stringify())
+  }
+}
+
+///|
 /// The live view's transcript locator (sessions/live-locator.ts): each line a `locate` or a reply to one being looked
 /// for (@locate.Locator).
 async fn live_locator(host : @host.Host, db_path : String, data : String, sep : String) -> Unit {
@@ -1026,6 +1050,9 @@ fn main {
       @host.run(host => footprint(host, flag("--sep").unwrap_or("/")))
     (Some("memory"), _, _) =>
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => memory(host, flag("--sep").unwrap_or("/")))
+    (Some("packed"), _, _) =>
+      // (the shell's own files, which this asks for none of, in `--shell-dir`)
+      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => packed(host))
     (Some("vault-uses"), Some(db), _) =>
       @host.run(shell_dir=beside(db, "shell"), host => vault_uses(host, db))
     (Some("outflow-chats"), Some(db), _) =>
@@ -1130,7 +1157,7 @@ fn main {
         }
       })
     _ => {
-      @host.note("usage: stillfail-reader --data <dir> | --builder archive-marks|session-bindings|session-up-jobs|workspace-up-jobs|widget-sources|card-posts|session-list|outflow-chats|turn-counts|said|archive-last|page-letters|cc-index|usage-check|recent-chat|closed-cards|people-since|legacy-edits|legacy-said|session-counts|session-backfill|post-blocks|usage-retire|usage-scope|usage-counter|signin-save|vault-uses|replica-export --db <file> | --builder replica-restore --db <file> --data <dir> | --builder replica-carry | --builder footprint | --builder memory")
+      @host.note("usage: stillfail-reader --data <dir> | --builder archive-marks|session-bindings|session-up-jobs|workspace-up-jobs|widget-sources|card-posts|session-list|outflow-chats|turn-counts|said|archive-last|page-letters|cc-index|usage-check|recent-chat|closed-cards|people-since|legacy-edits|legacy-said|session-counts|session-backfill|post-blocks|usage-retire|usage-scope|usage-counter|signin-save|vault-uses|replica-export --db <file> | --builder replica-restore --db <file> --data <dir> | --builder replica-carry | --builder footprint | --builder memory | --builder packed")
       2
     }
   }

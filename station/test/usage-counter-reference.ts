@@ -10,7 +10,7 @@ import { basename, dirname, join, sep } from "node:path";
 import { createZstdDecompress } from "node:zlib";
 import { liveClock } from "../src/ops/fibers.ts";
 import { log } from "../src/ops/log.ts";
-import { segmentsFrom, writtenLength } from "../src/read/packed.ts";
+import { segmentsFrom, writtenLength } from "./reference/packed.ts";
 import { parseIso, sharedTranscripts, transcriptDir, transcriptPaths } from "./reference/transcript.ts";
 import type { SessionRow, Store, UsageCall, UsageFile, UsageFor, UsageTurn, UsageWrite } from "../src/store/store.ts";
 import { runtimeKind, type RuntimeKind } from "../src/agents/runtime.ts";

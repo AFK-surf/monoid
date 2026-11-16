@@ -6,7 +6,7 @@ import { access, open, readFile, stat } from "node:fs/promises";
 import { promisify } from "node:util";
 import { zstdDecompress, zstdDecompressSync } from "node:zlib";
 import type { RuntimeKind } from "../../src/agents/runtime.ts";
-import { readSegments, segmentsFrom, writtenLength, writtenSize } from "../../src/read/packed.ts";
+import { readSegments, segmentsFrom, writtenLength, writtenSize } from "./packed.ts";
 import { type ReadState, type TailState, type TimelineEntry, type TranscriptRef, timelineOf, utf8 } from "./transcript.ts";
 
 type Json = any;

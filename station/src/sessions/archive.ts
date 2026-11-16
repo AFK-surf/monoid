@@ -4,7 +4,8 @@
 //
 // The files are the Rust's, byte for byte in format, so either station restores what the other packed: a workspace is
 // `workspace.tar.zst` in its room (a GNU tar as the tar crate writes it, zstd level 3 with a checksum), a transcript
-// `<file>.jsonl.zst` beside where it was (since 2026-11 in segments with a table, read/packed.ts); the same temporaries (`.writing`, `.restoring`, `workspace.retiring`,
+// `<file>.jsonl.zst` beside where it was (since 2026-11 in segments with a table, made and read back by the MoonBit program,
+// sessions/packed-mb.ts, as station/test/reference/packed.ts reads them); the same temporaries (`.writing`, `.restoring`, `workspace.retiring`,
 // `workspace.restored-old`), the same `archive.lock` and `<file>.jsonl.archive-lock`, the same `workspace-locks.json`
 // and the git worktree `locked` files with the same marker.
 //
@@ -41,11 +42,9 @@ import { link as symlinkOrStandIn } from "../ops/links.ts";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { promisify } from "node:util";
-import { constants, createZstdCompress, createZstdDecompress, zstdCompress } from "node:zlib";
-import { createHash } from "node:crypto";
+import { constants, createZstdCompress, createZstdDecompress } from "node:zlib";
 import { platform } from "../platform/index.ts";
-import { SEGMENT, seekTable, segmentedSoon, segmentsFrom } from "../read/packed.ts";
-import { readAt } from "../drive/fs.ts";
+import { packedProgram } from "./packed-mb.ts";
 
 // ── paths ──────────────────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -139,18 +138,13 @@ export async function withLock<T>(room: string, f: () => Promise<T>): Promise<T>
 const compressor = () =>
   createZstdCompress({ params: { [constants.ZSTD_c_compressionLevel]: 3, [constants.ZSTD_c_checksumFlag]: 1 } });
 
-/// A file's bytes decompressed, as they come: its frames whole (a cut stream fails, as the Rust's decoder's "incomplete
-/// frame"; Node's decompressor ends quietly at a cut), their checksums verified.
+/// A workspace's archive decompressed, as it comes: its frames whole (a cut stream fails, as the Rust's decoder's
+/// "incomplete frame"; Node's decompressor ends quietly at a cut), their checksums verified. One frame, as both stations
+/// write it (Node's zstd before 24.22 reads only the first of several): a transcript, in segments, is the MoonBit
+/// program's to read (`packedProgram`).
 function unzstd(path: string): Readable {
   return Readable.from(
     (async function* () {
-      // In segments (read/packed.ts): each decompressed on its own, as Node's zstd before 24.22 reads only the first of
-      // several frames.
-      const segments = await segmentsFrom(path, 0);
-      if (segments !== null) {
-        yield* segments;
-        return;
-      }
       await wholeFrames(path);
       const raw = Readable.from(chunksOf(path));
       const out = createZstdDecompress();
@@ -244,57 +238,8 @@ async function compressInto(path: string, source: AsyncIterable<Buffer>): Promis
   }
 }
 
-const zstd = promisify(zstdCompress);
-
-/// `source` put away into `path` as a transcript is (read/packed.ts): a frame for each SEGMENT of it (up to the end of
-/// its last line), each compressed as `compressor` does, then the frames' table; on disk before this returns.
-/// What of `all` goes on to the next segment, after `cut`: a copy, as a view of `all` would keep the whole of it (SEGMENT
-/// and more) in memory while the next segment comes.
-export const heldAfter = (all: Buffer, cut: number): Buffer[] => (cut < all.length ? [Buffer.from(all.subarray(cut))] : []);
-
-async function segmentInto(path: string, source: AsyncIterable<Buffer>): Promise<void> {
-  const file = await open(path, "w", 0o600);
-  try {
-    await file.chmod(0o600);
-    const frames: { packed: number; size: number }[] = [];
-    let held: Buffer[] = [];
-    let n = 0;
-    // A segment ends at the end of its last line within SEGMENT (as zork's at a snapshot): what comes after goes on in
-    // the next. One is made only once more than SEGMENT came, so the last, however long the transcript, is never empty.
-    const frame = async (last: boolean) => {
-      const all = Buffer.concat(held, n);
-      const cut = last ? all.length : all.lastIndexOf(0x0a, SEGMENT - 1) + 1 || SEGMENT;
-      const raw = all.subarray(0, cut);
-      held = heldAfter(all, cut);
-      n = all.length - cut;
-      const bytes = await zstd(raw, { params: { [constants.ZSTD_c_compressionLevel]: 3, [constants.ZSTD_c_checksumFlag]: 1 } });
-      await writeAll(file, bytes);
-      frames.push({ packed: bytes.length, size: raw.length });
-    };
-    for await (let chunk of source) {
-      while (chunk.length > 0) {
-        const take = Math.min(SEGMENT + 1 - n, chunk.length);
-        held.push(chunk.subarray(0, take));
-        n += take;
-        chunk = chunk.subarray(take);
-        if (n > SEGMENT) await frame(false);
-      }
-    }
-    await frame(true);
-    await writeAll(file, seekTable(frames));
-    await file.sync();
-  } finally {
-    await file.close();
-  }
-}
-
 async function writeAll(file: import("node:fs/promises").FileHandle, chunk: Buffer) {
   for (let at = 0; at < chunk.length; ) at += (await file.write(chunk, at, chunk.length - at)).bytesWritten;
-}
-
-/// Reads everything left, for its checksum.
-async function drain(stream: AsyncIterable<Buffer>) {
-  for await (const _ of stream);
 }
 
 /// A directory's entries made durable (File::open(dir).sync_all()), where a directory syncs (on Windows Node's is
@@ -356,14 +301,15 @@ export async function packFileIf(path: string, ready: () => boolean): Promise<vo
   const release = await fileLock(withExtension(path, "jsonl.archive-lock"));
   try {
     if (!(await lstatOrNull(path))?.isFile()) {
-      if (await exists(packed(path))) await drain(unzstd(packed(path)));
+      // Only the copy left: read through whole, its checksums verified.
+      if (await exists(packed(path))) await packedProgram().ask("check", { path: packed(path) });
       return;
     }
     const dest = packed(path);
     const temp = withExtension(dest, "zst.writing");
     try {
-      await segmentInto(temp, chunksOf(path));
-      await sameBytes(unzstd(temp), path);
+      // In segments into `temp`, read back and found to be the transcript still, byte for byte.
+      await packedProgram().ask("pack", { path, temp });
       if (!ready()) return;
       await rename(temp, dest);
       await syncDir(dirname(dest));
@@ -376,18 +322,18 @@ export async function packFileIf(path: string, ready: () => boolean): Promise<vo
   }
 }
 
-/// A transcript put away before it was in segments, or with its last segment stored as it is (read/packed.ts), put away
-/// again as `packFile` puts one away now: whether it was.
+/// A transcript put away before it was in segments, or with its last segment stored as it is, put away again as
+/// `packFile` puts one away now: whether it was (not where it is in segments already).
 export async function segmentFile(path: string): Promise<boolean> {
   const release = await fileLock(withExtension(path, "jsonl.archive-lock"));
   try {
     const source = packed(path);
-    if ((await exists(path)) || !(await exists(source)) || (await segmentedSoon(source))) return false;
+    if ((await exists(path)) || !(await exists(source))) return false;
     const temp = withExtension(source, "zst.writing");
     try {
-      await segmentInto(temp, unzstd(source));
-      const [mine, theirs] = await Promise.all([digest(unzstd(temp)), digest(unzstd(source))]);
-      if (mine !== theirs) throw new Error(`transcript not the same in segments ${path}`);
+      // (what it holds and what the copy holds the same, by their SHA-256)
+      const { segmented } = await packedProgram().ask<{ segmented: boolean }>("segment", { path, source, temp });
+      if (!segmented) return false;
       await rename(temp, source);
       await syncDir(dirname(source));
       return true;
@@ -399,30 +345,6 @@ export async function segmentFile(path: string): Promise<boolean> {
   }
 }
 
-async function digest(stream: AsyncIterable<Buffer>): Promise<string> {
-  const hash = createHash("sha256");
-  for await (const chunk of stream) hash.update(chunk);
-  return hash.digest("hex");
-}
-
-/// The decompressed copy is the file, byte for byte.
-async function sameBytes(copy: AsyncIterable<Buffer>, path: string) {
-  const file = await open(path, "r");
-  try {
-    let at = 0;
-    for await (const chunk of copy) {
-      const mine = await readAt(file, at, chunk.length);
-      if (mine.length < chunk.length) throw new Error("transcript shortened while archiving");
-      if (!mine.equals(chunk)) throw new Error(`transcript changed while archiving ${path}`);
-      at += chunk.length;
-    }
-    const { bytesRead } = await file.read(Buffer.alloc(1), 0, 1, at);
-    if (bytesRead !== 0) throw new Error(`transcript changed while archiving ${path}`);
-  } finally {
-    await file.close();
-  }
-}
-
 export async function restoreFile(path: string): Promise<void> {
   const release = await fileLock(withExtension(path, "jsonl.archive-lock"));
   try {
@@ -431,13 +353,8 @@ export async function restoreFile(path: string): Promise<void> {
     if (await exists(path)) return; // Never overwrite a runtime's newer transcript.
     const temp = withExtension(path, "jsonl.restoring");
     try {
-      const file = await open(temp, "w", 0o600);
-      try {
-        for await (const chunk of unzstd(source)) await writeAll(file, chunk);
-        await file.sync();
-      } finally {
-        await file.close();
-      }
+      // Written whole into `temp` (0600, on disk), every frame whole and checksummed.
+      await packedProgram().ask("restore", { source, temp });
       await rename(temp, path);
       await syncDir(dirname(path));
       await unlink(source);
