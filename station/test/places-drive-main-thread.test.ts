@@ -5,7 +5,7 @@
 // nothing). Each was a stat, an lstat or an opendir on it, which a disk gone or a network file system that does not
 // answer holds for as long as it does not.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -149,4 +149,29 @@ test("a disk's grant asked for, its mounts looked at, waits on no file", { skip:
   assert.deepEqual(calls, []);
   assert.deepEqual(asked.filter((a) => a.op === "files.access").map((a) => a.paths), [[join(volumes, "Backup")], [join(volumes, "Backup")]]);
   assert.deepEqual(asked.find((a) => a.op === "permissions.show").paths, { removable: join(volumes, "Backup") });
+});
+
+test("a place in /Volumes not looked at before goes as what is there: the system's own link and nothing there directly, never through the helper", { skip: WINDOWS }, async () => {
+  const h = home();
+  let helped = 0;
+  const files: Protected = {
+    fs: () => {
+      helped++;
+      throw new Error("not through the helper");
+    },
+    known: () => undefined,
+    check: () => {},
+    ask: async () => "none",
+  };
+  const drive = new Drive({ config: () => ({ drive: { roots: [] } }), protect: () => [], home: h, files });
+  // Nothing there, never looked at: no disk, so the station looks itself.
+  const nowhere = `/Volumes/stillfail-none-${randomUUID()}`;
+  assert.equal((await drive.place(nowhere, "", true)).fs.helper, false);
+  // The system's own disk (a link to / there), on a Mac that has it, never looked at in this process.
+  const system = "/Volumes/Macintosh HD";
+  if (lstatSync(system, { throwIfNoEntry: false })?.isSymbolicLink()) {
+    const place = await drive.place(join(system, "private", "tmp"), "", true);
+    assert.equal(place.fs.helper, false);
+  }
+  assert.equal(helped, 0);
 });

@@ -23,7 +23,7 @@ import { wall } from "../ops/fibers.ts";
 import { unreadableDirAsync } from "../ops/files.ts";
 import { TooBig, zipFolder } from "./zip.ts";
 import { type Lang, tr } from "../ops/i18n.ts";
-import { type Fs, type Grant, type Protected, direct, protectedTop, protectedTopSoon, realOf } from "./fs.ts";
+import { type Fs, type Grant, type Protected, direct, protectedTopSoon, realOf } from "./fs.ts";
 import type { ConfigFile } from "../ops/config.ts";
 
 /// Why a request was refused (zdrive's codes, and `protected` for the station's own data), each with its status.
@@ -292,28 +292,28 @@ export class Drive {
     return granted(this.deps.files!, top);
   }
 
-  /// The protected folder `path` is in (by its name) when still.fail Helper is there for it; null when the station
-  /// reaches `path` directly.
-  #locked(path: string): string | null {
-    return this.deps.files ? protectedTop(path, this.deps.home ?? homedir()) : null;
+  /// The protected folder `path` is in when still.fail Helper is there for it (by its name; a place in /Volumes looked at
+  /// first, off the thread: the system's own disk there is a link to /); null when the station reaches `path` directly.
+  #locked(path: string): Promise<string | null> {
+    return this.deps.files ? protectedTopSoon(path, this.deps.home ?? homedir()) : Promise.resolve(null);
   }
 
   /// `path` with its links followed as far as it exists: by still.fail Helper in a protected folder (never by the station
   /// there), else by the station.
-  #real(path: string, fs: Fs): Promise<string> {
-    return fs.helper && this.#locked(path) !== null ? fs.real(path) : real(path);
+  async #real(path: string, fs: Fs): Promise<string> {
+    return fs.helper && (await this.#locked(path)) !== null ? fs.real(path) : real(path);
   }
 
   /// Whether the station may not list `dir`, even through still.fail Helper: looked at off the main thread.
   async #unreadable(dir: string): Promise<boolean> {
-    const top = this.deps.files ? await protectedTopSoon(dir, this.deps.home ?? homedir()) : null;
+    const top = await this.#locked(dir);
     return top === null ? unreadableDirAsync(dir) : !this.#granted(top);
   }
 
   /// How paths in these scopes (the root each is told to stay in) are reached: through still.fail Helper when any is in
   /// a protected folder the station may not open, else directly.
   async #fs(places: { path: string; top: string }[]): Promise<{ fs: Fs; scopes: string[] }> {
-    const locked = places.map(({ path }) => this.#locked(path));
+    const locked = await Promise.all(places.map(({ path }) => this.#locked(path)));
     // The narrower of the root and the protected folder.
     const scopes = places.map(({ top }, i) => (locked[i] !== null && !within(top, locked[i]!) ? locked[i]! : top));
     if (locked.every((l) => l === null)) return { fs: direct, scopes };
@@ -363,9 +363,9 @@ export class Drive {
       throw new DriveError("path_escape", "a path stays in its root");
     }
     // The root as the station finds it, or, in a protected folder, as still.fail Helper does.
-    let top = this.#locked(named) === null ? await real(named) : named;
+    let top = (await this.#locked(named)) === null ? await real(named) : named;
     const { fs, scopes } = await this.#fs([{ path: parts.length === 0 ? top : join(top, ...parts), top }]);
-    if (fs.helper && this.#locked(top) !== null) top = await fs.real(top);
+    if (fs.helper && (await this.#locked(top)) !== null) top = await fs.real(top);
     const asked = parts.length === 0 ? top : join(top, ...parts);
     const found = await this.#real(asked, fs);
     if (!anywhere && !within(found, top)) throw new DriveError("path_escape", "that path leads out of its root");
@@ -655,8 +655,9 @@ export class Drive {
       // Which are repositories: a `.git` looked for in each the station may read, through what listed them, so many at a
       // time. Not in one reached otherwise than its folder (a protected folder in the home's listing): only still.fail
       // Helper reaches it, and a look of the station's own there would wait on macOS asking the person.
-      const reach = this.#locked(at);
-      const looked = entries.filter((e) => !e.unreadable && this.#locked(e.path) === reach);
+      const reach = await this.#locked(at);
+      const reaches = await Promise.all(entries.map((e) => this.#locked(e.path)));
+      const looked = entries.filter((e, i) => !e.unreadable && reaches[i] === reach);
       const marked = await inBatches(looked, GIT_LOOKS, (e) => fs.stat(join(e.path, ".git")).then(() => true, () => false));
       const git = new Set(looked.filter((_, i) => marked[i]));
       const shown = entries.map((e) => (git.has(e) ? { ...e, git: true as const } : e));
