@@ -7,6 +7,10 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { CommaStats, IndexSync, RevIndex, nextPage, probePage, type Held, type Page } from "../src/comma/stats.ts";
 
+/// How long the statistics' database waits for a write held here before refusing (stats.ts `BUSY_MS`): what is tried
+/// again while a test holds its lock, without 5 s of the test's time a try.
+const LOCKED_MS = 20;
+
 class Copy {
   held: Held = { epoch: null, through: 0 };
   rows = new Map<string, unknown>();
@@ -51,7 +55,7 @@ test("an upgrading station opens the existing index while the old writer holds i
   let next: CommaStats | undefined;
   try {
     old.exec("BEGIN IMMEDIATE");
-    const opened = CommaStats.at(dir, nothing, quiet, new Promise(() => {}));
+    const opened = CommaStats.at(dir, nothing, quiet, new Promise(() => {}), LOCKED_MS);
     next = opened;
     assert.throws(() => new IndexSync(opened.stats), /locked/);
     old.exec("ROLLBACK");

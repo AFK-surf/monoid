@@ -6,6 +6,10 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { CommaStats, statsRowsOf } from "../src/comma/stats.ts";
 
+/// How long the statistics' database waits for a write held here before refusing (stats.ts `BUSY_MS`): what is tried
+/// again while a test holds its lock, without 5 s of the test's time a try.
+const LOCKED_MS = 20;
+
 const empty = async () => ({ stations: [], unread: [] });
 const quiet = () => () => {};
 
@@ -156,7 +160,7 @@ test("a build retries a database held by an older writer and can stop while wait
   const writer = new DatabaseSync(path);
   let stats: CommaStats | null = null;
   try {
-    stats = new CommaStats(path, empty, quiet);
+    stats = new CommaStats(path, empty, quiet, undefined, LOCKED_MS);
     writer.exec("BEGIN IMMEDIATE");
     stats.build();
     const waiting = stats.settled();
@@ -166,7 +170,7 @@ test("a build retries a database held by an older writer and can stop while wait
     stats = null;
     writer.exec("COMMIT");
 
-    stats = new CommaStats(path, empty, quiet);
+    stats = new CommaStats(path, empty, quiet, undefined, LOCKED_MS);
     writer.exec("BEGIN IMMEDIATE");
     stats.build();
     const resumed = stats.settled();

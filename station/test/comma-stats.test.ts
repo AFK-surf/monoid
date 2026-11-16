@@ -23,6 +23,10 @@ import { HOME, outflowChats } from "./reference/outflow.ts";
 
 type Json = any;
 
+/// How long the statistics' database waits for a write held here before refusing (stats.ts `BUSY_MS`): what is tried
+/// again while a test holds its lock, without 5 s of the test's time a try.
+const LOCKED_MS = 20;
+
 const dirs: string[] = [];
 after(() => {
   for (const d of dirs) rmSync(d, { recursive: true, force: true });
@@ -184,7 +188,7 @@ test("connected, the station sends Comma what it lacks of the statistics, and ag
   let builds = 0;
   let previousExited!: () => void;
   const previous = new Promise<void>((resolve) => { previousExited = resolve; });
-  const stats = CommaStats.at(dir, async () => (builds++, { stations: [here([usageRow("2026-11-02", "a", "ann@x")], {}, [chat(7, "need_human")])], unread: [] }), quiet, previous);
+  const stats = CommaStats.at(dir, async () => (builds++, { stations: [here([usageRow("2026-11-02", "a", "ann@x")], {}, [chat(7, "need_human")])], unread: [] }), quiet, previous, LOCKED_MS);
   const old = new DatabaseSync(join(dir, "comma-stats.db"));
   let locked = false;
   let guardAttempts = 0;
@@ -274,7 +278,7 @@ test("closing a Comma connection stops retrying a locked index guard", async () 
   const rig = new Rig(), dir = tempdir();
   let previousExited!: () => void;
   const previous = new Promise<void>((resolve) => { previousExited = resolve; });
-  const stats = CommaStats.at(dir, nothing, quiet, previous);
+  const stats = CommaStats.at(dir, nothing, quiet, previous, LOCKED_MS);
   const old = new DatabaseSync(join(dir, "comma-stats.db"));
   let locked = false, attempts = 0;
   const following = stats.stats.following.bind(stats.stats);
