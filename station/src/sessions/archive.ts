@@ -369,8 +369,9 @@ export async function packWorkspaceIf(room: string, ready: () => boolean): Promi
 }
 
 /// Links the machine refused while the restored tree was being made (Windows without the privilege, the shell's
-/// `tar.unpack` says them): by their path in it, their target as written. Made once the tree is at its final path (restoreWorkspace), where what stands in for
-/// them (a junction's absolute target, a copy) stays right; a path written again later is no longer one.
+/// `tar.unpack` says them): by their path in it, their target as written. Made once the tree is at its final path
+/// (restoreWorkspace), where what stands in for them (a junction's absolute target, a copy) stays right; a path written
+/// again later is no longer one.
 type Refused = Map<string, string>;
 
 /// Copy files created since the snapshot into the restored tree. Originals stay intact until the final swap, so an
