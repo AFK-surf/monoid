@@ -13,6 +13,7 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
+import { stat } from "node:fs/promises";
 import net from "node:net";
 import { delimiter, join } from "node:path";
 import { Clock, Effect, Exit, FiberSet, Scope } from "effect";
@@ -56,7 +57,7 @@ export type SharesOptions = {
   /// Whether the station was removed from its workspace, and who hears when that changes (cloud/state.ts `Cloud`):
   /// offers end then, without GRACE.
   cloud?: { removed(): boolean; listen(f: () => void): () => void };
-  /// Where adb is (default: `adbPath`, looked for anew each time as the Rust station does).
+  /// Where adb is (default: `adbPath`, as last found).
   adb?: () => string | null;
   /// The clock GRACE and SETTLE are waited out on (a TestClock in tests).
   clock?: Clock.Clock;
@@ -829,16 +830,13 @@ async function grant(shares: Shares, share: Share, lang: Lang): Promise<string> 
   return tr(lang, "station.adb.granted");
 }
 
-/// The machine's adb: on `PATH`, else the Android SDK's (where Android Studio puts it, whose adb server is likely the
-/// one running: another version's client would restart it), else a package manager's (launchd gives the station a
-/// short `PATH`).
-export function adbPath(): string | null {
-  const env = process.env;
+/// Where adb may be, in the order looked at: on `PATH`, else the Android SDK's (where Android Studio puts it, whose adb
+/// server is likely the one running: another version's client would restart it), else a package manager's (launchd
+/// gives the station a short `PATH`). `onPath` first: where a shell finds it (on Windows, with PATHEXT's extensions).
+function adbCandidates(env: NodeJS.ProcessEnv, onPath: string | undefined): string[] {
   // adb.exe on Windows, and the SDK where Android Studio puts it there (%LOCALAPPDATA%\Android\Sdk).
   const adb = platform.exe("adb");
-  // On PATH as a shell finds it (on Windows, with PATHEXT's extensions).
-  const onPath = platform.findCommand("adb", env)?.onPath;
-  const candidates = [
+  return [
     ...(onPath ? [onPath] : []),
     ...(env.PATH ?? "").split(delimiter).filter(Boolean).map((d) => join(d, adb)),
     ...[env.ANDROID_HOME, env.ANDROID_SDK_ROOT].filter((d): d is string => !!d).map((d) => join(d, "platform-tools", adb)),
@@ -848,7 +846,36 @@ export function adbPath(): string | null {
     "/usr/local/bin/adb",
     "/usr/bin/adb",
   ];
-  return candidates.find((p) => existsSync(p) && statSync(p).isFile()) ?? null;
+}
+
+/// Where adb was found, by the environment it was looked for in (what `adbCandidates` reads of it), and the look again
+/// under way. Asked often (each phone's offer, each grant's server, each screen's refresh): looked for on the
+/// station's thread once, and after that each ask looks again off it, for the next ask (adb installed or gone since).
+const adbFound = new Map<string, { path: string | null; looking: Promise<void> | null }>();
+
+/// The machine's adb (`adbCandidates`), as last found.
+export function adbPath(): string | null {
+  const env = process.env;
+  const key = JSON.stringify([env.PATH, env.PATHEXT, env.ANDROID_HOME, env.ANDROID_SDK_ROOT, env.HOME, env.LOCALAPPDATA]);
+  const kept = adbFound.get(key);
+  if (kept === undefined) {
+    // Looked for here once an environment, before the station serves (GrantServers asks as it is made).
+    const path = adbCandidates(env, platform.findCommand("adb", env)?.onPath).find((p) => existsSync(p) && statSync(p).isFile()) ?? null; // sync: read once, before the station serves
+    adbFound.set(key, { path, looking: null });
+    return path;
+  }
+  kept.looking ??= adbPathSoon(env)
+    .then((path) => void (kept.path = path), () => undefined)
+    .finally(() => (kept.looking = null));
+  return kept.path;
+}
+
+/// `adbPath` looked for off the station's thread.
+async function adbPathSoon(env: NodeJS.ProcessEnv): Promise<string | null> {
+  for (const p of adbCandidates(env, (await platform.findCommandSoon("adb", env))?.onPath)) {
+    if ((await stat(p).catch(() => null))?.isFile()) return p;
+  }
+  return null;
 }
 
 /// What adb says to `args` (out, then err), within `timeout`. Said whatever its exit; fails only if it could not be

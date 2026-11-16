@@ -54,16 +54,16 @@ export class X11Desktop implements ScreenSource {
     return this.#reason ? { capture: false, control: false, reason: this.#reason } : { capture: true, control: true };
   }
 
-  #binaries(env: NodeJS.ProcessEnv): LinuxToolPair | null {
-    const ffmpeg = executable(this.#o.ffmpeg ?? "ffmpeg", env);
-    const xdotool = executable(this.#o.xdotool ?? "xdotool", env);
+  async #binaries(env: NodeJS.ProcessEnv): Promise<LinuxToolPair | null> {
+    const ffmpeg = await executable(this.#o.ffmpeg ?? "ffmpeg", env);
+    const xdotool = await executable(this.#o.xdotool ?? "xdotool", env);
     if (ffmpeg && xdotool) return { ffmpeg, xdotool, env };
-    return this.#o.ffmpeg || this.#o.xdotool ? null : this.#o.tools?.prepared(env) ?? null;
+    return this.#o.ffmpeg || this.#o.xdotool ? null : (await this.#o.tools?.prepared(env)) ?? null;
   }
 
-  #prepare(env: NodeJS.ProcessEnv): void {
+  async #prepare(env: NodeJS.ProcessEnv): Promise<void> {
     const tools = this.#o.tools;
-    if (this.#preparing || !tools?.canPrepare(env)) return;
+    if (this.#preparing || !tools || !(await tools.canPrepare(env)) || this.#preparing) return;
     this.#prepareFailed = false;
     this.#preparing = tools.prepare(env).catch(() => {
       this.#prepareFailed = true;
@@ -92,7 +92,7 @@ export class X11Desktop implements ScreenSource {
     const empty = { width: 0, height: 0 };
     if (env.XDG_SESSION_TYPE?.toLowerCase() === "wayland" || env.WAYLAND_DISPLAY) return { size: empty, reason: "linuxWayland" };
     if (!env.DISPLAY) return { size: empty, reason: "linuxNoDisplay" };
-    const pair = this.#binaries(env);
+    const pair = await this.#binaries(env);
     if (!pair) return { size: empty, reason: this.#preparing ? "linuxToolsPreparing" : this.#prepareFailed ? "linuxToolsFailed" : "linuxTools" };
     try {
       const { stdout } = await run(pair.xdotool, ["getdisplaygeometry"], { env: pair.env, timeout: 3_000 });
@@ -109,7 +109,7 @@ export class X11Desktop implements ScreenSource {
     if (!options.codecs.includes("jpeg") && !options.codecs.includes("h264")) throw new ScreenRefused(415, "station.screen.codec", { codec: "H.264 or JPEG" });
     await this.refresh(true);
     const env = this.#o.env ?? process.env;
-    if (this.#reason === "linuxTools" || this.#reason === "linuxToolsFailed") this.#prepare(env);
+    if (this.#reason === "linuxTools" || this.#reason === "linuxToolsFailed") await this.#prepare(env);
     if (this.#preparing) {
       // A first opening can take the pair as soon as it is ready. If a download takes longer, say so and let the
       // person reopen it; preparation continues even if the view was closed in the meantime.
@@ -122,7 +122,7 @@ export class X11Desktop implements ScreenSource {
     }
     if (this.#reason) throw new ScreenRefused(503, `station.screen.${this.#reason}`, {}, this.access());
     // Both were found by refresh, but may have been removed since.
-    const pair = this.#binaries(env);
+    const pair = await this.#binaries(env);
     if (!pair) throw new ScreenRefused(503, "station.screen.linuxTools", {}, { capture: false, control: false, reason: "linuxTools" });
     const { ffmpeg, xdotool } = pair;
     const childEnv = pair.env;

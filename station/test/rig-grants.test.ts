@@ -160,6 +160,7 @@ test("a grant is kept across a restart, taken back by its person's word alone, a
     rig.grant(STATION, signed, w.owner.chain);
     rig.grant(STATION, w.grant("r2", "s2", { kind: "idle", seconds: 3600 }), w.owner.chain);
     await rig.close();
+    await rig.written();
     rig = w.make();
     assert.equal(rig.refusal(WS, STATION, "s1"), null, "kept with the lock it was checked against");
 
@@ -327,6 +328,7 @@ test("a device on the rig: attached and taken off only by what its person signed
     assert.ok(w.ended.some((e) => e.request === "d2" && e.why === "removed" && e.device === cam.id));
     // Kept across a restart.
     rig.device(attach(false, w.now() + 1));
+    await rig.written();
     assert.deepEqual(w.make().devices().map((d) => d.id), [cam.id]);
   } finally {
     await w.close();

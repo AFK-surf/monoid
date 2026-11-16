@@ -261,6 +261,7 @@ export class Rig {
     this.#wired.clear();
     this.#untold.clear();
     await this.grants.close();
+    await this.grants.written();
     await this.commands.written();
     if (this.#d.fibers === undefined) await this.#fibers.close();
   }
