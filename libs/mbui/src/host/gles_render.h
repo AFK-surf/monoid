@@ -76,6 +76,7 @@ static const char *VS =
 static const char *FS =
     "#version 300 es\n"
     "precision highp float;\n"
+    "precision highp int;\n"
     "in vec2 v_pos; in vec2 v_cpos;\n"
     "flat in vec4 v_rect; flat in vec4 v_p; flat in vec4 v_color; flat in vec4 v_c2; flat in vec4 v_clip; flat in vec4 v_pad;\n"
     "flat in vec4 v_rc; flat in vec4 v_rs; flat in vec4 v_rr; flat in vec4 v_oclip; flat in vec4 v_orc; flat in vec4 v_ors;\n"
@@ -366,6 +367,7 @@ static const char *PVS =
 static const char *PFS =
     "#version 300 es\n"
     "precision highp float;\n"
+    "precision highp int;\n"
     "#define float2 vec2\n"
     "#define float4 vec4\n"
     MB_CORNER_SL

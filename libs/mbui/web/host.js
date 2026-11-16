@@ -707,6 +707,7 @@
   `;
   const FS = `#version 300 es
   precision highp float;
+  precision highp int;
   in vec2 v_pos; in vec2 v_cpos;
   flat in vec4 v_rect; flat in vec4 v_p; flat in vec4 v_color; flat in vec4 v_c2; flat in vec4 v_clip; flat in vec4 v_pad;
   flat in vec4 v_rc; flat in vec4 v_rs; flat in vec4 v_rr; flat in vec4 v_oclip; flat in vec4 v_orc; flat in vec4 v_ors;
@@ -976,6 +977,7 @@
   }`;
   const PFS = `#version 300 es
   precision highp float;
+  precision highp int;
   ${CORNERS}
   // The backdrop's passes: u_a.xy the source's texel, u_a.z 1 halving (dual Kawase's down), 2 a Gaussian along u_b.zw
   // of deviation u_a.w (texels); u_b.xy the last texel's centre of what the source holds
