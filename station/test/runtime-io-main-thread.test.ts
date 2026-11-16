@@ -690,7 +690,8 @@ test("a profile made of a key, one on the machine's login, and a sign-in for a n
     const calls = await syncCalls(async () => {
       made.push(await accounts.newKeyedProfile({ access: { kind: "opencode-go", key: "k1" } }, owner, "en"));
       // Two at once: each its own id.
-      made.push(...(await Promise.all([1, 2].map(() => accounts.newKeyedProfile({ access: { kind: "anthropic-api", key: "k2" } }, owner, "en")))));
+      // (which of the two takes which id is the disk's: put in order)
+      made.push(...(await Promise.all([1, 2].map(() => accounts.newKeyedProfile({ access: { kind: "anthropic-api", key: "k2" } }, owner, "en")))).sort());
       made.push(await accounts.newMachineProfile({ runtime: "codex" }, owner, "en"));
       ({ id: dropped } = await accounts.newLogin({ runtime: "cursor" }, owner, "en"));
       await accounts.dropLogin(dropped);
