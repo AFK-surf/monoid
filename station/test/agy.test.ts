@@ -4,7 +4,7 @@ import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { after, test } from "node:test";
-import { AGY_CATALOG_RETRY_MS, AGY_FILE_TOKENS, AgyDriver, AgyNoCatalog, SESSIONS, agyAccountFile, agyLentFile, agyPlan, agyRenew, agyTierIn, agyTokenReady, agyKeychain, goKeyringValue, agyBaseModel, agyCatalog, agyConversations, agyEnv, agyHome, agyToken, agyVariant, classifyFailure, geminiDir, noticeFailure } from "../src/agents/agy.ts";
+import { AGY_CATALOG_RETRY_MS, AGY_FILE_TOKENS, AGY_TOOL_BUDGET, AGY_TOOL_CEILING, AGY_TOOL_WRAP, AgyDriver, AgyNoCatalog, SESSIONS, agyAccountFile, agyLentFile, agyPlan, agyRenew, agyTierIn, agyTokenReady, agyKeychain, goKeyringValue, agyBaseModel, agyCatalog, agyConversations, agyEnv, agyHome, agyToken, agyVariant, classifyFailure, geminiDir, noticeFailure } from "../src/agents/agy.ts";
 import { REPO_RULES_HOOK } from "../src/agents/repo-rules.ts";
 import type { OpenOptions, RuntimeEvent } from "../src/agents/runtime.ts";
 import { allLeft } from "../src/agents/runner.ts";
@@ -28,6 +28,8 @@ import { CHAT_CREATE } from "../src/tools/chat.ts";
 import { failureOf } from "../src/agents/runtime.ts";
 import { cannotStartWords } from "../src/sessions/actor.ts";
 import { testClock } from "./hub-fakes.ts";
+import { CORE, INDIRECT, McpEndpoint } from "../src/tools/mcp.ts";
+import { stationTools } from "./station-tools.ts";
 
 const data = mkdtempSync(process.platform === "win32" ? join(tmpdir(), "agy-") : "/tmp/agy-");
 const drivers: AgyDriver[] = [];
@@ -1564,4 +1566,31 @@ test("Antigravity sessions materialize shared and symlinked preset skills into .
   const sTerm = await driver.open({ ...options, cwd: userRepo, instructions: "", skills: undefined }, () => {});
   await sTerm.dispose();
   assert.equal(existsSync(join(userRepo, ".agent")), false);
+});
+
+test("Antigravity CLI is declared the station's tools within what it keeps, chat_post among them, once it wraps each", async () => {
+  // As the station lists them to an `agy` session (sessions/agents.ts LISTINGS): fitted to AGY_TOOL_BUDGET.
+  const all = stationTools();
+  const listed = async (budget: number): Promise<any[]> => {
+    const e = new McpEndpoint(() => "s", all, undefined, () => ({ budget }));
+    const reply: any = await e.handle("POST", "Bearer t", JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }));
+    return reply.body.result.tools;
+  };
+  const weighed = (list: any[]) => list.reduce((n, t) => n + Buffer.byteLength(JSON.stringify(t)), 0);
+  const list = await listed(AGY_TOOL_BUDGET);
+  const names = list.map((t) => t.name);
+  const bytes = weighed(list);
+  assert.ok(bytes <= AGY_TOOL_BUDGET, `listed ${bytes} B`);
+  // What `agy` makes of them (agents/agy.ts AGY_TOOL_BUDGET): each given its description's prefix and `toolSummary`.
+  const wrapped = bytes + list.length * AGY_TOOL_WRAP;
+  assert.ok(wrapped <= AGY_TOOL_CEILING, `${list.length} tools, ${bytes} B listed, come to ${wrapped} B in agy, over ${AGY_TOOL_CEILING}`);
+  // The tools every turn needs are declared whatever the rest weigh, chat_post (the heaviest) first of all.
+  for (const name of ["chat_post", "chat_state", ...CORE]) assert.ok(names.includes(name), `${name} is not declared`);
+  // And the rest are still reached, through station_tool.
+  assert.equal(names.at(-1), INDIRECT);
+  const indirect: string[] = list.at(-1).inputSchema.properties.name.enum;
+  assert.deepEqual([...names.slice(0, -1), ...indirect].sort(), all.map((t) => t.name).sort());
+  // The 45,000 of before is what `agy` 1.5.8 dropped chat_post under (2026-11-16): over the ceiling, as this counts it.
+  const before = await listed(45_000);
+  assert.ok(weighed(before) + before.length * AGY_TOOL_WRAP > AGY_TOOL_CEILING);
 });

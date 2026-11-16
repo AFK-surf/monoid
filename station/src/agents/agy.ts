@@ -282,8 +282,19 @@ export function agyLentFile(lent: { token: Json; email?: string | null; auth_met
 /// declares an MCP server's tools only while all of them together stay within about 57-60 KB, dropping the largest
 /// beyond that, and offers no call_mcp_tool for those it dropped: measured 2026-11-12 with the station's 42 tools
 /// (73 KB; chat_post, station_task and secret_save were dropped, so its sessions could not post) and with subsets of
-/// them (57 KB declared whole). Kept well under it, for its own tools' growth.
-export const AGY_TOOL_BUDGET = 45_000;
+/// them (57 KB declared whole). That limit is on the tools as `agy` declares them, not as the station lists them: each
+/// becomes `mcp_stillfail_<name>`, its description given "This is a tool from the stillfail MCP server.\n" (46 B) and
+/// its parameters a required `toolSummary` (275 B), so about AGY_TOOL_WRAP more a tool; and 1.5.8/1.5.9 brought tools
+/// of their own (`swarm`, `run_workflow`) under the same limit. Measured 2026-11-16 on 1.5.8: the 45,000 this was
+/// (40 tools listed, 43,877 B) came to about 56.7 KB as `agy` declared them, and with its own it dropped chat_post
+/// (4,704 B, the largest) again, every session answered `unknown tool: "mcp_stillfail_chat_post"`. So the list is
+/// fitted to this, and what it comes to in `agy` (each tool's AGY_TOOL_WRAP added) is held under AGY_TOOL_CEILING
+/// (test/agy.test.ts), 15 KB and more under its limit for its own tools' growth.
+export const AGY_TOOL_BUDGET = 32_000;
+/// What `agy` adds to each tool it is declared, rounded up (46 B of description and 275 B of `toolSummary`, 2026-11-16).
+export const AGY_TOOL_WRAP = 350;
+/// The most the station's list may come to as `agy` declares it, its AGY_TOOL_WRAP a tool counted.
+export const AGY_TOOL_CEILING = 44_000;
 
 /// Where the station keeps its sessions' transcripts.
 export const SESSIONS = "sessions";
