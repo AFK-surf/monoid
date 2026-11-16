@@ -486,3 +486,91 @@ test "what the renderers draw in strips: a shadow under a ground, one only outsi
   let shadows = t.drawn_shadows()
   assert_eq(shadows.length(), 2)
 }
+
+///|
+/// Words the hosts' text is weighed by, side by side (scripts/render_words.sh): the same lines dark on a light ground
+/// and light on a dark one, each at the size and weight an app's sidebar, title, body, a message's head and a control
+/// sets them in (Han, Latin and the two mixed), in a window 720 by 380 at 1 (the script draws it at 1, 1.5 and 2).
+let words_lines : Array[(Double, Int, String)] = [
+  (17.0, 600, "整理发布清单"),
+  (13.0, 500, "整理发布清单 新建对话"),
+  (13.0, 400, "盯着 CI，绿了告诉我"),
+  (14.0, 400, "高度先按 90 估，滚动时再量"),
+  (14.0, 600, "Claude 30 分钟前"),
+  (13.0, 500, "Accept terms"),
+  (12.0, 400, "显示 Accept terms 日目显"),
+  (14.0, 400, "Ana slack a 0123456789"),
+  (20.0, 400, "同便高度 Rounded oval"),
+  (13.0, 400, "整理发布清单 新建对话"),
+]
+
+///|
+fn words_shown() -> @ui.Tester {
+  let column = fn(c : @ui.Ctx, bg : Int64, ink : Int64) {
+    c.box(w=Px(360.0), h=Fill(1.0), bg~, pl=16.0, pt=12.0, gap=8.0, align=AStart, fn() {
+      for l in words_lines {
+        let (size, weight, s) = l
+        c.text(s, size~, weight~, color=ink, wrap=false) |> ignore
+      }
+    })
+    |> ignore
+  }
+  let t = @ui.Tester::new(
+    fn(c) {
+      c.box(dir=Row, w=Fill(1.0), h=Fill(1.0), fn() {
+        column(c, 0xFFFFFFFFL, 0x1C1C1EFFL)
+        column(c, 0x1C1C1EFFL, 0xF2F2F7FFL)
+      })
+      |> ignore
+    },
+    w=720.0,
+    h=380.0,
+    scale=1.0,
+  )
+  t.draw()
+  t
+}
+
+///|
+test "words' draw list printed when asked (MBUI_DL_PRINT=words: scripts/render_words.sh)" {
+  if node_env("MBUI_DL_PRINT") == "words" {
+    println("DLBEGIN")
+    println(words_named(words_shown().drawlist()))
+    println("DLEND")
+  }
+}
+
+///|
+/// The words' draw list with each line drawn whole, named by its words (a Tester's fake text names none): the first
+/// glyph of each line (its glyphs one after the other on one row) made the whole line's (cluster -1, as a word of a
+/// joining script is drawn), the rest of it left out, the light column's lines then the dark one's. So each host draws
+/// a line as its own text sets it, wherever the Tester's fake words fell.
+fn words_named(dl : String) -> String {
+  let named : Array[(Double, Int, String)] = [..words_lines, ..words_lines]
+  let out = StringBuilder()
+  let mut k = 0
+  let mut row = ""
+  for v in dl.split("\n") {
+    let line = v.to_owned()
+    let t = line.split(" ").map(fn(x) { x.to_owned() }).to_array()
+    if t.length() > 13 && t[0] == "i" && t[6] == "1" {
+      if t[2] != row && k < named.length() {
+        row = t[2]
+        t[13] = "\{k + 1}"
+        out.write_string(t.join(" ") + "\n")
+        k = k + 1
+      }
+    } else if t.length() > 0 && t[0] == "glyph" {
+      ()
+    } else if line != "" {
+      out.write_string(line + "\n")
+    }
+    if t.length() > 0 && t[0] == "clear" {
+      for j, g in named {
+        let (size, weight, s) = g
+        out.write_string("glyph \{j + 1} \{size} \{weight} 0 -1 \"\{s}\"\n")
+      }
+    }
+  }
+  out.to_string()
+}

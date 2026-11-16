@@ -132,6 +132,35 @@ fn parse(text : String) -> Dl {
 }
 
 ///|
+/// The faces the words are set in, as an app gives them (MBUI_FACES: `face:path` or `face:local:family`, apart by `;`,
+/// as ui's faces.mbt reads it): none, the host's own.
+fn faces_given() -> Unit {
+  for item in arg("MBUI_FACES").split(";") {
+    let parts = item.split(":").map(fn(p) { p.to_owned() }).to_array()
+    if parts.length() < 2 {
+      continue
+    }
+    let face = num(parts[0]).to_int()
+    let ok = if parts[1] == "local" && parts.length() > 2 {
+      @hostapi.face_add_family(face, parts[2])
+    } else {
+      // (a Windows path's drive letter is a `:` too)
+      let path = StringBuilder()
+      for i in 1..<parts.length() {
+        if i > 1 {
+          path.write_string(":")
+        }
+        path.write_string(parts[i])
+      }
+      @hostapi.face_add(face, path.to_string(), 0)
+    }
+    if !ok {
+      say("mbui-render: face \{face} not given: \{item}")
+    }
+  }
+}
+
+///|
 fn main {
   if !supported {
     return
@@ -158,6 +187,7 @@ fn main {
     _ => ()
   }
   init_offscreen(dl.w, dl.h, dl.scale)
+  faces_given()
   let atlas = @hostapi.Atlas::new(@hostapi.atlas_size(false))
   let colour_atlas = @hostapi.Atlas::new(@hostapi.atlas_size(true))
   let (r, gg, b) = dl.clear
@@ -284,6 +314,9 @@ fn instances(dl : Dl, path : String, atlas : @hostapi.Atlas, colour_atlas : @hos
   let places : Map[Int, (Double, Double, Double, Double, Double)] = Map([])
   let glyph_info : Map[Int, (Int, Double, Double, Double)] = Map([])
   let mut unknown = 0
+  // (each glyph put where this host's own advances put it, as the hosts without a colour atlas of their own do; with
+  // MBUI_DL_PEN=1 on every host: a list a Tester drew with no host's text, its words laid out by this host's)
+  let pens = !colour_atlas.sized() || arg("MBUI_DL_PEN") == "1"
   dl.glyphs.each(fn(no, gl) {
     let (size, weight, style, cluster, text) = gl
     // (a glyph of nothing: a list a Tester drew without the host's text, none to make; not asked of the host, which
@@ -292,13 +325,13 @@ fn instances(dl : Dl, path : String, atlas : @hostapi.Atlas, colour_atlas : @hos
       unknown = unknown + 1
       return
     }
-    let sadv = if !colour_atlas.sized() && @hostapi.shape(" ", size, weight, style, shaped) > 0 {
+    let sadv = if pens && @hostapi.shape(" ", size, weight, style, shaped) > 0 {
       shaped[2]
     } else {
       0.0
     }
     let (key, gadv) = if cluster < 0 {
-      let adv = if !colour_atlas.sized() && @hostapi.shape(text, size, weight, style, shaped) > 0 {
+      let adv = if pens && @hostapi.shape(text, size, weight, style, shaped) > 0 {
         shaped[2]
       } else {
         0.0
@@ -391,7 +424,7 @@ fn instances(dl : Dl, path : String, atlas : @hostapi.Atlas, colour_atlas : @hos
           let mut gw = gw
           let mut gh = gh
           let mut goy = goy
-          if !colour_atlas.sized() {
+          if pens {
             let (base_key, gadv, sadv, gox) = match glyph_info.get(no) {
               Some(gi) => gi
               None => (-1, 0.0, 0.0, 0.0)
@@ -400,7 +433,9 @@ fn instances(dl : Dl, path : String, atlas : @hostapi.Atlas, colour_atlas : @hos
             let y = inst[k * inst_size + 1]
             let b = y - goy
             if x < prev_x || (b - line_base).abs() > 2.0 || x - prev_x > prev_gadv + 6.0 {
-              line_base = b
+              // (on a whole pixel, as an app's words are put: ui's on_pixels; else a row of each glyph is sampled
+              // twice where the half pixel falls)
+              line_base = (b * dl.scale).round() / dl.scale
               pen = if gox < 0.0 { x - gox } else { x }
             } else if x - prev_x > prev_gadv + 2.7 {
               pen = pen + prev_gadv + prev_sadv
@@ -453,7 +488,7 @@ fn instances(dl : Dl, path : String, atlas : @hostapi.Atlas, colour_atlas : @hos
           }
           if gw != inst[k * inst_size + 14] || gh != inst[k * inst_size + 15] {
             resized = resized + 1
-            if !colour_atlas.sized() {
+            if pens {
               inst[k * inst_size + 2] = gw / dl.scale
               inst[k * inst_size + 3] = gh / dl.scale
             }
