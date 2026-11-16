@@ -238,11 +238,21 @@ jobs:
           mkdir -p "$RUNNER_TEMP/store-main" "$RUNNER_TEMP/store-arch"
           # (and arch/next's: everyone's already, a cache on main's ref)
           { (cd "$RUNNER_TEMP/store-main" && find . -mindepth 2 -maxdepth 2 -type d); (cd "$RUNNER_TEMP/store-arch" && find . -mindepth 2 -maxdepth 2 -type d); } | sort -u > "$RUNNER_TEMP/units-before"
+      # (stopped by its own limit, before the job's, so what it compiled is kept below: cut at the job's 5 minutes, its
+      # moon, mbc and clang went on writing the store as the cache's tar read it, and the save failed, `tar` exit 1, none
+      # of the hundreds of units compiled kept, the next push as far behind: 43839505847, 2026-11-16. 3.8 minutes: it
+      # begins some 40 s in, and the stop, the units' tar and the save take some 30 s; preview.yml's linux 3.5,
+      # pipeline.yml's desktop-build 3.2. The day's native job has 10: 8.8)
       - name: The mbui app's tests and the flows seen again (native, ${{ env.PART }})
         id: tests
+        timeout-minutes: ${{ (github.event_name != 'schedule' || env.GROUP == 'build') && 3.8 || 8.8 }}
         run: |
           set -o pipefail
           touch "$RUNNER_TEMP/start"
+          # (every process of this step's carries this mark, for the step after to find what is left of it: a step
+          # stopped leaves its children running)
+          echo "$$-$(date +%s%N)" > "$RUNNER_TEMP/tests-tree"
+          export MBUI_TESTS_TREE=$(cat "$RUNNER_TEMP/tests-tree")
           # (mbc's account of each program's build, its units compiled and its link, said after: moon shows a
           # compiler's output only when it fails, and where a part's time went was not to be seen)
           export MBC_LOG="$RUNNER_TEMP/mbc.log"
@@ -288,6 +298,24 @@ jobs:
         # (after the tests: its type-check over the tests' build, not the build after it, 2026-10-23. On the replay
         # part's runner: the app part was 184-187 s with it, the replay part 77-100 s, 2026-10-24)
         run: moon version && bash apps/mbui/scripts/check.sh
+      # (the tests stopped or failed: what they left running (moon, mbc, clang) stopped before the units are tarred and
+      # saved, the store still as they are read; found by the tests step's mark, so on ci-1 another runner's are left
+      # alone. On GitHub's runner, the job's alone, by name too, and the locks a stopped compile left taken out)
+      - name: What the tests left running, stopped
+        if: always() && steps.tests.outcome != 'success' && steps.tests.outcome != 'skipped'
+        run: |
+          t=$(cat "$RUNNER_TEMP/tests-tree" 2>/dev/null || true)
+          left() { [ -z "$t" ] || grep -lsz "^MBUI_TESTS_TREE=$t\$" /proc/[0-9]*/environ 2>/dev/null | cut -d/ -f3 || true; }
+          hosted=${{ runner.environment != 'self-hosted' && '1' || '' }}
+          for i in 1 2 3 4 5; do
+            p=$(left)
+            [ -n "$p" ] || [ -z "$hosted" ] || p=$(pgrep -x 'moon|moonc|mbc|clang|clang\+\+|clang-[0-9]+' || true)
+            [ -n "$p" ] || break
+            echo "stopping $(echo $p | wc -w) left running: $(for x in $p; do cat /proc/$x/comm 2>/dev/null; done | sort | uniq -c | tr -s ' \n' ' ')"
+            kill -KILL $p 2>/dev/null || true
+            sleep 1
+          done
+          [ -z "$hosted" ] || [ ! -d "$MBC_STORE" ] || find "$MBC_STORE" -name '*.lock' -delete 2>/dev/null || true
       # (a branch's: the units it has that main's store lacks, for main's run once it is merged (above). Its own cache
       # is its branch's alone; main's run is helped by it, never waits on it: a failed upload fails nothing)
       - name: The units this run compiled, for main's
