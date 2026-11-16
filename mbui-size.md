@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [8d9f488fe](https://github.com/AFK-surf/monoid/commit/8d9f488fe69d068074884211267e8d13a4069873) mbui: 对话框全部改为节点（open_dialog 删除），密钥、密钥详情、共享调试、本机缓存、 | 2.45 | 3.44 | 14.63 | 35.79 | 57.11 | 31.41 | 64.73 | 100.29 | 116.13 |
 | [f42bc9cda](https://github.com/AFK-surf/monoid/commit/f42bc9cdacf8e21ded3214489582f68241f836b0) app, mbui: a press changes once on main's switches | 2.45 | 3.44 | 14.63 | 35.79 | 57.11 | 31.41 | 64.73 | 100.29 | 116.13 |
 | [917d06f6b](https://github.com/AFK-surf/monoid/commit/917d06f6b4479bdab783d2041db02ecc3ff9ff72) app tests: real_size's sweep stops working out unh | 2.45 | 3.44 | 14.63 | 35.79 | 57.11 | 31.41 | 64.73 | 100.29 | 116.13 |
 | [1bb38c6f7](https://github.com/AFK-surf/monoid/commit/1bb38c6f76603ff6c6fdf456d6ef743a311d84f3) mbui, app: Apple HIG fixes (menus go round, ⌘. can | 2.45 | 3.44 | 14.63 | 35.79 | 57.11 | 31.4 | 64.73 | 99.96 | 120.85 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [be3f5ca79](https://github.com/AFK-surf/monoid/commit/be3f5ca7942162225b60617cf9270e6dd1891a51) station tests: the Antigravity trajectory test wai | 2.42 | 3.37 | 14.26 | 35.38 | 55.61 | 31.06 | 63.48 | 99.88 | 120.9 |
 | [f52278b5a](https://github.com/AFK-surf/monoid/commit/f52278b5a725e24e705b47757e3943e7f8b8c8a7) app: a chat's row on the page made as nodes holds  | 2.42 | 3.37 | 14.26 | 35.38 | 55.61 | 31.06 | 63.48 | 99.73 | 120.44 |
 | [6a896dd61](https://github.com/AFK-surf/monoid/commit/6a896dd6166105804c4365dafb0387405993a5c9) relay: the channel first, every bot's places once; | 2.42 | 3.37 | 14.26 | 35.38 | 55.61 | 31.03 | 63.42 | 99.39 | 140.78 |
-| [c3558ead9](https://github.com/AFK-surf/monoid/commit/c3558ead94fa3ccce16b391a16f65de984fdcbc1) mbui: a paragraph's words kept as drawn as what ho | 2.42 | 3.36 | 14.24 | 35.35 | 55.51 | 31.03 | 63.42 | 99.39 | 125.68 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [8d9f488fe](https://github.com/AFK-surf/monoid/commit/8d9f488fe69d068074884211267e8d13a4069873) mbui: 对话框全部改为节点（open_dialog 删除），密钥、密钥详情、共享调试、本机缓存、 | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.55 | 4.13 | 57.46 |
 | [f42bc9cda](https://github.com/AFK-surf/monoid/commit/f42bc9cdacf8e21ded3214489582f68241f836b0) app, mbui: a press changes once on main's switches | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.55 | 4.13 | 57.33 |
 | [917d06f6b](https://github.com/AFK-surf/monoid/commit/917d06f6b4479bdab783d2041db02ecc3ff9ff72) app tests: real_size's sweep stops working out unh | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.55 | 4.13 | 57.51 |
 | [1bb38c6f7](https://github.com/AFK-surf/monoid/commit/1bb38c6f76603ff6c6fdf456d6ef743a311d84f3) mbui, app: Apple HIG fixes (menus go round, ⌘. can | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.55 | 4.13 | 57.51 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [be3f5ca79](https://github.com/AFK-surf/monoid/commit/be3f5ca7942162225b60617cf9270e6dd1891a51) station tests: the Antigravity trajectory test wai | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 56.97 |
 | [f52278b5a](https://github.com/AFK-surf/monoid/commit/f52278b5a725e24e705b47757e3943e7f8b8c8a7) app: a chat's row on the page made as nodes holds  | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 56.97 |
 | [6a896dd61](https://github.com/AFK-surf/monoid/commit/6a896dd6166105804c4365dafb0387405993a5c9) relay: the channel first, every bot's places once; | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 56.97 |
-| [c3558ead9](https://github.com/AFK-surf/monoid/commit/c3558ead94fa3ccce16b391a16f65de984fdcbc1) mbui: a paragraph's words kept as drawn as what ho | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 56.97 |
