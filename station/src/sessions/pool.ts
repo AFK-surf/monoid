@@ -134,8 +134,11 @@ export function pickProfile(candidates: Profile[], model: string | null | undefi
   const fit = serving.filter((i) => usable(rank[i]![1], now));
   // What is paid for already is spent first, however full: one billed per use only when none of those can run now.
   const paid = fit.filter((i) => !billedPerUse(rank[i]![0]));
-  // Nothing healthy serves it: still pick one that has it enabled, so the failure shows in the session.
-  const pool = paid.length > 0 ? paid : fit.length > 0 ? fit : serving;
+  // None can run now: prefer one that at least signs in, as Accounts.runOn does. Otherwise repick can choose an
+  // unreachable profile for its stale headroom, only for runOn to move straight back to the spent account.
+  const signedIn = serving.filter((i) => signsIn(rank[i]![1]));
+  // None signs in either: still one that runs its model, so the failure shows in the session.
+  const pool = paid.length > 0 ? paid : fit.length > 0 ? fit : signedIn.length > 0 ? signedIn : serving;
   const urgencies = new Map(pool.map((i) => [i, urgency(rank[i]![1].quota, now)]));
   // Each profile's sessions over its weight, with the new one: the least is where it adds the least crowding.
   const share = (i: number) => (signals.load(rank[i]![0].id) + 1) / urgencies.get(i)!.weight;
