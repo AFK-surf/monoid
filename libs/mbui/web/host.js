@@ -812,30 +812,50 @@
       return;
     }
     if (kind == 6) {
-      // liquid: one shape of the group's, merged; what is under it bent along the bezel, the colours split a little
+      // liquid: one shape of the group's, merged, a drop of glass on what is under it: its height a squircle's meniscus
+      // over the bezel (z = (1 - r^4)^(1/4), r 0 where the bezel starts in, 1 at the rim), what is under it seen through
+      // it bent by Snell's law (n = 1.52), the colours split a little; its rim a hairline glint lit from the top left and
+      // less across from it, with a Fresnel sheen, and no shade laid inside it
       float k = v_pad.w;
       float d = sd_group(p, k);
       float a = clamp(0.5 - d * u_scale, 0.0, 1.0);
       if (a <= 0.0) discard;
       float e = 0.5;
       vec2 grad = vec2(sd_group(p + vec2(e, 0.0), k) - sd_group(p - vec2(e, 0.0), k),
-                       sd_group(p + vec2(0.0, e), k) - sd_group(p - vec2(0.0, e), k));
-      vec2 n = grad / max(length(grad), 1e-4);
+                   sd_group(p + vec2(0.0, e), k) - sd_group(p - vec2(0.0, e), k));
+      vec2 n2 = grad / max(length(grad), 1e-4);
       float bezel = max(v_c2.y, 1.0);
-      float edge = 1.0 - clamp(-d / bezel, 0.0, 1.0);
-      float disp = v_pad.y * (1.0 - sqrt(max(1.0 - edge * edge, 0.0)));
-      vec2 off = -n * disp;
+      // (r: 0 on the flat inside, d <= -bezel; 1 at the rim, d = 0; the slope rises smoothly out of the flat)
+      float r = clamp(1.0 + d / bezel, 0.0, 1.0);
+      float r2 = r * r;
+      float r4 = r2 * r2;
+      float slope = 0.48 * (r2 * r) / pow(max(1.0 - r4, 0.035), 0.75);
+      float inv_n = 1.0 / sqrt(slope * slope + 1.0);
+      vec2 Nxy = n2 * (slope * inv_n);
+      float Nz = inv_n;
+      // (Snell's law: the light comes straight down, (0, 0, -1), from air into glass: eta = 1 / 1.52)
+      float eta = 0.6578947;
+      float k_ior = max(1.0 - eta * eta * (1.0 - Nz * Nz), 0.0);
+      float kt = eta * Nz - sqrt(k_ior);
+      vec2 Txy = Nxy * kt;
+      float Tz = -eta + kt * Nz;
+      // (at most pad.y away: |Txy / Tz| * 1.18 is 0.988 at the steepest, so what capture keeps round it is enough)
+      vec2 off = Txy * (1.18 * v_pad.y / max(-Tz, 1e-4));
       float ch = v_pad.z;
       vec3 c = vec3(backdrop(p + off * (1.0 + ch)).r, backdrop(p + off).g, backdrop(p + off * (1.0 - ch)).b);
       c = max(mix(vec3(luma(c)), c, v_p.z), 0.0);
       c = c * (1.0 - col.a) + col.rgb * col.a;
-      // the rim lit from the top left, and less across from it
-      float ndl = dot(n, vec2(-0.6, -0.8));
-      float band = clamp(1.0 + d / 2.5, 0.0, 1.0);
-      float spec = v_c2.x * (band * (0.9 * pow(max(ndl, 0.0), 1.5) + 0.45 * pow(max(-ndl, 0.0), 1.5)) +
-                             0.3 * edge * edge * max(ndl, 0.0));
-      // the edge shaded, more on the side away from the light, so the shape reads over a light ground too
-      c *= 1.0 - v_c2.x * band * (0.1 + 0.25 * max(-ndl, 0.0));
+      // (the rim: a glint about a point wide, most at the top left and some across from it, and a Fresnel sheen)
+      float ndl = dot(n2, vec2(-0.6, -0.8));
+      float rim_b = clamp(1.0 + d / 1.05, 0.0, 1.0);
+      rim_b *= rim_b;
+      float fresnel = pow(clamp(1.0 - Nz, 0.0, 1.0), 3.0);
+      float spec = v_c2.x * (rim_b * (0.95 * pow(max(ndl, 0.0), 2.0) + 0.52 * pow(max(-ndl, 0.0), 2.4) + 0.16) +
+                           0.24 * fresnel * max(ndl + 0.25, 0.0));
+      // (its boundary a hairline under a twentieth dark, 0.75 wide, so a clear lens with no shadow still reads on white)
+      float hair = clamp(1.0 + d / 0.75, 0.0, 1.0);
+      hair *= hair;
+      c *= 1.0 - v_c2.x * hair * 0.055 * (1.0 - 0.65 * max(ndl, 0.0));
       c = c + (1.0 - c) * clamp(spec, 0.0, 1.0);
       c += mb_dither(p * u_scale) / 255.0;
       o = vec4(c, 1.0) * (a * v_c2.w);
