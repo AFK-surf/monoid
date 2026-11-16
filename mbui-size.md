@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [3e514e094](https://github.com/AFK-surf/monoid/commit/3e514e094db8bd928ab08cafd75598672e02b133) fix(station): read the update feed again after a f | 2.45 | 3.43 | 14.61 | 35.76 | 57.03 | 31.37 | 64.66 | 99.83 | 125.19 |
 | [8a3bd8f21](https://github.com/AFK-surf/monoid/commit/8a3bd8f210f11a60a922f0f4d9c1fa464b271411) fix(mbui): remove grayscale stem post-pass, prefer | 2.45 | 3.43 | 14.61 | 35.76 | 57.03 | 31.37 | 64.66 | 99.83 | 125.19 |
 | [9f7fe0d1d](https://github.com/AFK-surf/monoid/commit/9f7fe0d1d6ff90e1bd9f7be2218555c805641a80) mbui: forbid ES 3.00 fragment shaders without high | 2.45 | 3.43 | 14.61 | 35.76 | 57.03 | 31.37 | 64.64 | 99.78 | 109.37 |
 | [da5199d49](https://github.com/AFK-surf/monoid/commit/da5199d49dd4aea1f35ae5cc951e2b3011bcf579) mbui: declare highp int in ES 3.00 fragment shader | 2.45 | 3.43 | 14.61 | 35.76 | 57.03 | 31.37 | 64.64 | 99.78 | 109.37 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [9b9b7455d](https://github.com/AFK-surf/monoid/commit/9b9b7455d1b4f72a5627b6fa4486283e26207fd5) app: farview.pin to bfd0cec (a Farview tab's page  | 2.42 | 3.36 | 14.22 | 35.34 | 55.45 | 31.01 | 63.37 | 99.78 | 117.94 |
 | [591401d5d](https://github.com/AFK-surf/monoid/commit/591401d5dd686b1a87401f9fffabb51f6b15eddb) mbui: words of no right-to-left character work out | 2.42 | 3.36 | 14.22 | 35.34 | 55.45 | 31.01 | 63.37 | 99.7 | 113.72 |
 | [9bbec280e](https://github.com/AFK-surf/monoid/commit/9bbec280e596425dfd9831a6a0e05736dd1a0c03) fix(mbui): use linear gamma with 6x1 ClearType and | 2.42 | 3.36 | 14.22 | 35.34 | 55.45 | 31.01 | 63.37 | 99.8 | 120 |
-| [591401d5d](https://github.com/AFK-surf/monoid/commit/591401d5dd686b1a87401f9fffabb51f6b15eddb) mbui: words of no right-to-left character work out | 2.42 | 3.36 | 14.22 | 35.34 | 55.45 | 31.01 | 63.37 | 99.8 | 120 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [3e514e094](https://github.com/AFK-surf/monoid/commit/3e514e094db8bd928ab08cafd75598672e02b133) fix(station): read the update feed again after a f | 0.42 | 0.55 | 2.1 | 3.2 | 5.03 | 1.55 | 4.13 | 57.35 |
 | [8a3bd8f21](https://github.com/AFK-surf/monoid/commit/8a3bd8f210f11a60a922f0f4d9c1fa464b271411) fix(mbui): remove grayscale stem post-pass, prefer | 0.42 | 0.55 | 2.1 | 3.2 | 5.03 | 1.55 | 4.13 | 57.33 |
 | [9f7fe0d1d](https://github.com/AFK-surf/monoid/commit/9f7fe0d1d6ff90e1bd9f7be2218555c805641a80) mbui: forbid ES 3.00 fragment shaders without high | 0.42 | 0.55 | 2.1 | 3.2 | 5.03 | 1.55 | 4.13 | 57.33 |
 | [da5199d49](https://github.com/AFK-surf/monoid/commit/da5199d49dd4aea1f35ae5cc951e2b3011bcf579) mbui: declare highp int in ES 3.00 fragment shader | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.35 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [9b9b7455d](https://github.com/AFK-surf/monoid/commit/9b9b7455d1b4f72a5627b6fa4486283e26207fd5) app: farview.pin to bfd0cec (a Farview tab's page  | 0.42 | 0.55 | 2.1 | 3.19 | 5.02 | 1.55 | 4.11 | 57.28 |
 | [591401d5d](https://github.com/AFK-surf/monoid/commit/591401d5dd686b1a87401f9fffabb51f6b15eddb) mbui: words of no right-to-left character work out | 0.42 | 0.55 | 2.1 | 3.19 | 5.02 | 1.55 | 4.11 | 57.28 |
 | [9bbec280e](https://github.com/AFK-surf/monoid/commit/9bbec280e596425dfd9831a6a0e05736dd1a0c03) fix(mbui): use linear gamma with 6x1 ClearType and | 0.42 | 0.55 | 2.1 | 3.19 | 5.02 | 1.55 | 4.11 | 57.28 |
-| [591401d5d](https://github.com/AFK-surf/monoid/commit/591401d5dd686b1a87401f9fffabb51f6b15eddb) mbui: words of no right-to-left character work out | 0.42 | 0.55 | 2.1 | 3.19 | 5.02 | 1.55 | 4.11 | 57.61 |
