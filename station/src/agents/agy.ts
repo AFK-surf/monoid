@@ -25,8 +25,8 @@ import { cleanEnv, failureOf, uuid, type FailureReason, type OpenOptions, type P
 
 type Json = any;
 
-/// Inherited variables that would let a session use another account or project than its profile's.
-const SCRUBBED = ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_USE_VERTEXAI", "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION", "AGY_ADC_AUTH", "AGY_ACCOUNT"];
+/// Inherited variables that would let a session use another account or project than its profile's, or silence its hooks.
+const SCRUBBED = ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_USE_VERTEXAI", "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION", "AGY_ADC_AUTH", "AGY_ACCOUNT", "STILLFAIL_REPO_RULES"];
 /// The CLI's home in a profile's: what `agy` signs in to with this as its HOME, its .gemini/ the ACP server's
 /// `--gemini-dir`.
 export const agyHome = (home: string) => join(home, "agy");
@@ -335,6 +335,7 @@ export function agyEnv(options: OpenOptions): Record<string, string> {
   if (platform.hasKeychain) Object.assign(env, AGY_FILE_TOKENS);
   env.AGY_CLI_DISABLE_AUTO_UPDATE = "1";
   env.STILLFAIL_PEER_HTTP = peerHttpBase(options.mcpUrl);
+  if (options.instructions === "") env.STILLFAIL_REPO_RULES = "0";
   return env;
 }
 
@@ -350,9 +351,10 @@ export const AGY_REPO_RULES_TOOLS = "run_command|read_file|write_file|edit_file|
 const AGY_HOOK_SECONDS = 10;
 
 /// Keeps the profile's global `hooks.json` telling repository rules (`AGENTS.md`, `CLAUDE.md`) as `agy`'s tools touch
-/// directories below the session's workspace (`PostToolUse` queues, `PostInvocation` injects; `enabled` false for a
-/// session continued without the station's instructions); any other named hooks in the file stay as they are.
-export async function agyHooks(home: string, enabled: boolean): Promise<void> {
+/// directories below the session's workspace (`PostToolUse` queues, `PostInvocation` injects). Always kept enabled in
+/// the shared `--gemini-dir/config/hooks.json` (`agy` re-reads it on each prompt across concurrent sessions on one
+/// profile); a session without the station's instructions silences the hook via `STILLFAIL_REPO_RULES=0` in `agyEnv`.
+export async function agyHooks(home: string): Promise<void> {
   const file = agyHooksFile(home);
   let current: Record<string, unknown> = {};
   let rawNow: string | null = null;
@@ -364,7 +366,6 @@ export async function agyHooks(home: string, enabled: boolean): Promise<void> {
   const next = {
     ...current,
     stillfail: {
-      enabled,
       PostToolUse: [{ matcher: AGY_REPO_RULES_TOOLS, hooks: [{ type: "command", command: AGY_REPO_RULES_COMMAND, timeout: AGY_HOOK_SECONDS }] }],
       PostInvocation: [{ type: "command", command: AGY_REPO_RULES_COMMAND, timeout: AGY_HOOK_SECONDS }],
     },
@@ -625,7 +626,7 @@ export class AgyDriver extends AcpDriver<AgySession> {
     // Failed here, before anything starts, so the session goes on in a new conversation and reads back.
     if (options.resume !== undefined) await this.ensureConversation(options.profile.home, options.resume);
     if (!probe) {
-      await agyHooks(options.profile.home, options.instructions !== "");
+      await agyHooks(options.profile.home);
       if (options.skills !== undefined) await agySkills(options.cwd, options.skills);
     }
     const session = await super.begin(options, events, probe);
@@ -652,7 +653,7 @@ export class AgyDriver extends AcpDriver<AgySession> {
         throw error;
       }
     }
-    await agyHooks(options.profile.home, options.instructions !== "");
+    await agyHooks(options.profile.home);
     if (options.skills !== undefined) await agySkills(options.cwd, options.skills);
     return session;
   }

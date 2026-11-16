@@ -140,13 +140,31 @@ test("Antigravity CLI's protojson PostToolUse queues AGENTS.md and CLAUDE.md rul
     lastUserInput: "fix web/src/page.tsx",
     cwd: workspace,
   };
-  const agyCall = (payload: object) => {
+  const agyCall = (payload: object, extraEnv: Record<string, string> = {}) => {
     const out = execFileSync(process.execPath, [REPO_RULES_HOOK], {
       input: JSON.stringify({ ...common, ...payload }),
-      env: { ...process.env, TMPDIR: root, TEMP: root, TMP: root },
+      env: { ...process.env, TMPDIR: root, TEMP: root, TMP: root, ...extraEnv },
     }).toString();
     return out === "" ? null : JSON.parse(out);
   };
+
+  // A session with STILLFAIL_REPO_RULES=0 (continued without the station's instructions) answers `{}` without queuing or injecting rules.
+  assert.deepEqual(
+    agyCall(
+      {
+        conversationId: "00000000-0000-4000-8000-000000000001",
+        hookEventName: "PostToolUse",
+        stepIdx: 1,
+        toolCall: { id: "t-off", name: "run_command", args: { CommandLine: "cat wt/apps/x/src/a.txt cc-only/web/src/page.tsx" } },
+      },
+      { STILLFAIL_REPO_RULES: "0" },
+    ),
+    {},
+  );
+  assert.deepEqual(
+    agyCall({ conversationId: "00000000-0000-4000-8000-000000000001", hookEventName: "PostInvocation", invocationNum: 0, initialNumSteps: 2 }, { STILLFAIL_REPO_RULES: "0" }),
+    {},
+  );
 
   // PostToolUse (as agy 1.5.9 sends it) returns `{}` and queues rules from both `wt` (AGENTS.md) and `cc-only` (.claude/CLAUDE.md + CLAUDE.md).
   assert.deepEqual(

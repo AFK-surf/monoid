@@ -32,6 +32,10 @@ try {
   process.exit(0);
 }
 const agy = typeof input?.hookEventName === "string";
+if (process.env.STILLFAIL_REPO_RULES === "0") {
+  if (agy) process.stdout.write("{}");
+  process.exit(0);
+}
 const event = agy ? input.hookEventName : input?.hook_event_name;
 const cwd = typeof input?.cwd === "string" ? input.cwd : process.cwd();
 const tool = (agy ? input?.toolCall?.args : input?.tool_input) ?? {};

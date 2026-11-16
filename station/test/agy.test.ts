@@ -1409,32 +1409,49 @@ test("a Claude session at max effort crossing runtimes to Antigravity CLI lands 
   await session.dispose();
 });
 
-test("opening an Antigravity session writes repository-rules hooks in --gemini-dir/config/hooks.json and disables them without instructions", async () => {
+test("opening Antigravity sessions keeps --gemini-dir/config/hooks.json enabled across concurrent sessions and silences instructions-less ones via STILLFAIL_REPO_RULES", async () => {
   const { options, driver } = setup();
   const ws = mkdtempSync(join(data, "agy-hooks-ws-"));
   const hooksFile = join(geminiDir(options.profile.home), "config", "hooks.json");
   mkdirSync(dirname(hooksFile), { recursive: true });
-  writeFileSync(hooksFile, JSON.stringify({ custom: { PostInvocation: [{ command: "echo {}" }] } }));
+  writeFileSync(hooksFile, JSON.stringify({ custom: { PostInvocation: [{ command: "echo {}" }] }, stillfail: { enabled: false } }));
 
   const s = await driver.open({ ...options, cwd: ws }, () => {});
-  await s.dispose();
-
   const hooks = JSON.parse(readFileSync(hooksFile, "utf8"));
   assert.deepEqual(hooks.custom, { PostInvocation: [{ command: "echo {}" }] });
-  assert.equal(hooks.stillfail?.enabled, true);
+  assert.equal(Array.isArray(hooks.stillfail?.PostToolUse), true);
+  assert.equal(hooks.stillfail?.enabled, undefined);
   const matcher = new RegExp(`^(?:${hooks.stillfail.PostToolUse[0].matcher})$`);
   for (const tool of ["run_command", "read_file", "write_file", "edit_file", "view_file", "grep_search", "find_by_name", "list_dir"]) {
     assert.equal(matcher.test(tool), true, tool);
   }
   const cmd: string = hooks.stillfail.PostToolUse[0].hooks[0].command;
   assert.equal(cmd.includes(REPO_RULES_HOOK), true);
-  assert.match(cmd, process.platform === "win32" ? /^call ".*" ".*" 2>nul \|\| echo \{\}$/ : /\|\| printf '\{\}'$/);
+  assert.match(cmd, platform.os === "windows" ? /^call ".*" ".*" 2>nul \|\| echo \{\}$/ : /\|\| printf '\{\}'$/);
   assert.equal(hooks.stillfail.PostInvocation[0].command, cmd);
 
+  // Opening a terminal-continued session (`instructions: ""`) on the same profile home while `s` is alive leaves
+  // shared `hooks.json` enabled and silences only that process's hook via `STILLFAIL_REPO_RULES=0` (scrubbed otherwise).
   const userRepo = mkdtempSync(join(data, "agy-user-repo-"));
-  const s2 = await driver.open({ ...options, cwd: userRepo, instructions: "", skills: undefined }, () => {});
-  await s2.dispose();
-  assert.equal(JSON.parse(readFileSync(hooksFile, "utf8")).stillfail?.enabled, false);
+  const s2 = await driver.open({ ...options, key: `${options.key}-term`, cwd: userRepo, instructions: "", skills: undefined }, () => {});
+  try {
+    const afterTerm = JSON.parse(readFileSync(hooksFile, "utf8"));
+    assert.equal(Array.isArray(afterTerm.stillfail?.PostToolUse), true);
+    assert.equal(afterTerm.stillfail?.enabled, undefined);
+  } finally {
+    await s2.dispose();
+    await s.dispose();
+  }
+
+  assert.equal(agyEnv({ ...options, instructions: "" }).STILLFAIL_REPO_RULES, "0");
+  const prev = process.env.STILLFAIL_REPO_RULES;
+  process.env.STILLFAIL_REPO_RULES = "0";
+  try {
+    assert.equal(agyEnv(options).STILLFAIL_REPO_RULES, undefined);
+  } finally {
+    if (prev === undefined) delete process.env.STILLFAIL_REPO_RULES;
+    else process.env.STILLFAIL_REPO_RULES = prev;
+  }
 });
 
 test("Antigravity sessions materialize shared and symlinked preset skills into .agent/skills with non-symlink SKILL.md", async () => {

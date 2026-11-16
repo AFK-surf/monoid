@@ -5,6 +5,7 @@
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { platform } from "../platform/index.ts";
 
 export const REPO_RULES_HOOK = fileURLToPath(new URL("./repo-rules-hook.mjs", import.meta.url));
 const quoted = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
@@ -32,8 +33,8 @@ export const REPO_RULES_COMMAND = hookCommand(REPO_RULES_HOOK);
 
 /// A hook's file as Antigravity CLI runs it (`sh -c` on Unix, `cmd /c` on Windows), with `{}` on stdout when the
 /// station's files are missing (`call` on Windows keeps `cmd /c` from stripping outer quotes).
-export const agyHookCommand = (file: string, platform: NodeJS.Platform = process.platform) =>
-  platform === "win32"
+export const agyHookCommand = (file: string, os: string = platform.os) =>
+  os === "windows"
     ? `call ${[hookNode(file), file].map(cmdQuoted).join(" ")} 2>nul || echo {}`
     : `${[hookNode(file), file].map(quoted).join(" ")} 2>/dev/null || printf '{}'`;
 export const AGY_REPO_RULES_COMMAND = agyHookCommand(REPO_RULES_HOOK);
