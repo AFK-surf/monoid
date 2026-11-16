@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [d84254d1d](https://github.com/AFK-surf/monoid/commit/d84254d1d16947b8bafef36178208ccd77837a09) mbui: a table's columns worked out once and its ce | 2.43 | 3.37 | 14.31 | 35.41 | 55.81 | 31.06 | 63.58 | 99.58 | 114.64 |
 | [10665f3ab](https://github.com/AFK-surf/monoid/commit/10665f3ab13fa3929b11e3e0e14f5f73570565b1) vault: a timed grant on a station not reached says | 2.43 | 3.37 | 14.3 | 35.4 | 55.78 | 31.06 | 63.58 | 99.58 | 115.01 |
 | [61ae9f865](https://github.com/AFK-surf/monoid/commit/61ae9f8658da44a2a3bc1fab1346c6aead85ccc2) feat(station): add regional cloud TCP entries (#66 | 2.43 | 3.37 | 14.3 | 35.4 | 55.78 | 31.06 | 63.58 | 99.89 | 115.04 |
 | [202a54dcf](https://github.com/AFK-surf/monoid/commit/202a54dcf8aab07e532f391b60344624c01a1553) mbui: a list's row reads its own item by key (View | 2.43 | 3.37 | 14.3 | 35.4 | 55.78 | 31.06 | 63.48 | 99.88 | 127.61 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [445a97f61](https://github.com/AFK-surf/monoid/commit/445a97f619a4c583def539865499ab61bf62899c) mbui: a window of the run comes up with its first  | 2.17 | 3.02 | 13.08 | 34.21 | 51.83 | 30 | 60.27 | 99.44 | 122.36 |
 | [f33536fe1](https://github.com/AFK-surf/monoid/commit/f33536fe1e4f7b37ea894d3938d8bb347558d2ad) station: a chat's hand-over takes an arriving entr | 2.17 | 3.02 | 13.08 | 34.21 | 51.83 | 30 | 60.27 | 99.44 | 122.36 |
 | [99080b0a8](https://github.com/AFK-surf/monoid/commit/99080b0a84f016e8be1554e8b8e4537c0b369e3e) app: unify execution history fold/expand and align | 2.17 | 3.02 | 13.08 | 34.21 | 51.83 | 30 | 60.27 | 99.65 | 118.23 |
-| [4e5083b16](https://github.com/AFK-surf/monoid/commit/4e5083b16289ad82b394fd489ecc8f7a0feda233) move: what the real run VM-1 → Office-Host-2 and t | 2.16 | 3.02 | 13.06 | 34.2 | 51.77 | 29.98 | 60.22 | 99.68 | 123.41 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [d84254d1d](https://github.com/AFK-surf/monoid/commit/d84254d1d16947b8bafef36178208ccd77837a09) mbui: a table's columns worked out once and its ce | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.3 |
 | [10665f3ab](https://github.com/AFK-surf/monoid/commit/10665f3ab13fa3929b11e3e0e14f5f73570565b1) vault: a timed grant on a station not reached says | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.3 |
 | [61ae9f865](https://github.com/AFK-surf/monoid/commit/61ae9f8658da44a2a3bc1fab1346c6aead85ccc2) feat(station): add regional cloud TCP entries (#66 | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.3 |
 | [202a54dcf](https://github.com/AFK-surf/monoid/commit/202a54dcf8aab07e532f391b60344624c01a1553) mbui: a list's row reads its own item by key (View | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.3 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [445a97f61](https://github.com/AFK-surf/monoid/commit/445a97f619a4c583def539865499ab61bf62899c) mbui: a window of the run comes up with its first  | 0.42 | 0.54 | 2.08 | 3.17 | 4.97 | 1.53 | 4.1 | 57.41 |
 | [f33536fe1](https://github.com/AFK-surf/monoid/commit/f33536fe1e4f7b37ea894d3938d8bb347558d2ad) station: a chat's hand-over takes an arriving entr | 0.42 | 0.54 | 2.08 | 3.17 | 4.97 | 1.53 | 4.1 | 57.28 |
 | [99080b0a8](https://github.com/AFK-surf/monoid/commit/99080b0a84f016e8be1554e8b8e4537c0b369e3e) app: unify execution history fold/expand and align | 0.42 | 0.54 | 2.08 | 3.17 | 4.97 | 1.53 | 4.1 | 57.28 |
-| [4e5083b16](https://github.com/AFK-surf/monoid/commit/4e5083b16289ad82b394fd489ecc8f7a0feda233) move: what the real run VM-1 → Office-Host-2 and t | 0.42 | 0.54 | 2.08 | 3.17 | 4.97 | 1.53 | 4.1 | 57.31 |
