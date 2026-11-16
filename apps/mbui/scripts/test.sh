@@ -180,8 +180,8 @@ for t in $targets; do
   # rates in turn): a line "k FILE" each, the longest first, onto the k that, with it, would end the soonest (its pages
   # over its programs, or with its other runs over its cores, whichever is longer; the lowest k among equals). A file's
   # time is its line's in scripts/page-seconds.txt at the rate (MBUI_TEST_FPS: the default, 60, 120, 24 or 7), 1 where
-  # it is 0, and a file not there yet counts as one of the longest (the column's ninetieth percentile), so it is dealt
-  # early to whichever runner has room: as the median, chat_find_wbtest (116 s at 120 a second, new in #5283) went with
+  # it is 0, and a file not there yet, or `-` there at the rate (none measured it), counts as one of the longest (the
+  # column's ninetieth percentile), so it is dealt early to whichever runner has room: as the median, chat_find_wbtest (116 s at 120 a second, new in #5283) went with
   # app 1/4 at 120 fps's own and made it 280 s of its 5 minutes (42936333352, 2026-11-11). Every runner at one rate
   # deals the same.
   page_deal() {
@@ -189,7 +189,7 @@ for t in $targets; do
     shift
     [ $# = 0 ] && return
     printf '%s\n' "$@" | awk -v col=$(case "${MBUI_TEST_FPS:-}" in "") echo 2 ;; 60) echo 3 ;; 120) echo 4 ;; *) echo 5 ;; esac) '
-      FNR == NR { if ($1 !~ /^#/) { w[$1] = $col > 0 ? $col : 1; if ($col > 0) v[++m] = $col }; next }
+      FNR == NR { if ($1 !~ /^#/ && $col != "-") { w[$1] = $col > 0 ? $col : 1; if ($col > 0) v[++m] = $col }; next }
       FNR == 1 { for (i = 2; i <= m; i++) for (j = i; j > 1 && v[j - 1] > v[j]; j--) { t = v[j]; v[j] = v[j - 1]; v[j - 1] = t }
         new = m ? v[int(m * 9 / 10) + 1] : 1 }
       { b = $0; sub(/.*\//, "", b); print ((b in w) ? w[b] : new), $0 }' "$D/page-seconds.txt" - |
@@ -465,16 +465,28 @@ for t in $targets; do
           # 278 s: app 3/4 271 s on main 7b151c31 (43658036848) and 294 s on farview-pace (43658053979), the others
           # 160-251. The third reckoned 1650: by the table the first's pages 598 s, the second's 705, the third's 199,
           # the fourth's 619)
-          *) specs="4,4,1030,1 2,4,730,1 1,4,1650,1 4,4,980,1" ;;
+          # (reckoned by what ran, not by what was reckoned before: on five pushes of 2026-11-16 (43844048935,
+          # 43845665634, 43844188947, 43847582791, 43847194601) each group's job was its pages' file-seconds over its
+          # programs, near enough (the first 470 s on four, 118 s; the second 383 on two, 192; the third 175-271 on its
+          # one, its job 175-284; the fourth 845 on four, 214), whatever ran beside them, and the reckonings had drifted
+          # from what did (the first reckoned 1030 where its other runs were some 160 s of runs, the third 1650 where
+          # its were 620-750): the first's job was half the third's. page-seconds.txt written again from those runs (26
+          # files it had not, each dealt as one of the longest) and each group's other runs reckoned at half their
+          # runs' seconds, as they share its cores with the pages (the first's real_size half and preview_tree's halves
+          # 160 s of runs, the second's sweeps 420, the third's kept_rows, real_size and answers_still 650, the
+          # fourth's send_steady three 230 since they skip the frames nothing asks for); the third's pages on two
+          # programs (p3, below), one leaving their 175-271 s to one core: by the table some 200 s a group)
+          *) specs="4,4,80,1 2,4,210,1 2,4,325,1 4,4,115,1" ;;
         esac
         g1=() g2=() g3=() g4=()
         while read -r g f; do
           case $g in 1) g1+=("$f") ;; 2) g2+=("$f") ;; 3) g3+=("$f") ;; *) g4+=("$f") ;; esac
         done < <(page_deal "$specs" "${pages[@]}")
-        # (the second's pages on two programs beside its sweeps at the default rate, on $n at a rate, where it has none)
-        p2=2
-        [ -z "${MBUI_TEST_FPS:-}" ] || p2=$n
-        runs+=("@pages 1 $n ${g1[*]}" "@pages 2 $p2 ${g2[*]}" "@pages 3 1 ${g3[*]}" "@pages 4 $n ${g4[*]}")
+        # (the second's pages on two programs beside its sweeps at the default rate, on $n at a rate, where it has none;
+        # the third's on two at the default rate, on one at a rate beside kept_rows' five runs, as it was)
+        p2=2 p3=2
+        [ -z "${MBUI_TEST_FPS:-}" ] || { p2=$n; p3=1; }
+        runs+=("@pages 1 $n ${g1[*]}" "@pages 2 $p2 ${g2[*]}" "@pages 3 $p3 ${g3[*]}" "@pages 4 $n ${g4[*]}")
       else
         runs+=("@pages 0 $n $(page_deal 1,1,0,1 "${pages[@]}" | cut -d' ' -f2 | tr '\n' ' ')")
       fi
