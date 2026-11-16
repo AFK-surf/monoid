@@ -662,6 +662,27 @@ export class Moves {
     })();
   }
   #looking = false;
+  /// This station's logins changed (config.json's profiles, as live.ts hears it): what is stopped here for a login is
+  /// looked at again, as one may have come by no move of the other's (a third station sharing it with this one too), a
+  /// burst as one: while one look goes on, one more after it.
+  loginsChanged(): void {
+    if (!this.scheduler.waitsOn("accounts")) return;
+    this.#loginsAgain = true;
+    if (this.#loginsLooking) return;
+    this.#loginsLooking = true;
+    void (async () => {
+      try {
+        while (this.#loginsAgain) {
+          this.#loginsAgain = false;
+          await this.scheduler.settleStopped(undefined, "accounts").catch(() => {});
+        }
+      } finally {
+        this.#loginsLooking = false;
+      }
+    })();
+  }
+  #loginsLooking = false;
+  #loginsAgain = false;
   /// The stations heard from while a look went on: each looked at once more after it.
   readonly #heardFrom = new Set<string>();
 

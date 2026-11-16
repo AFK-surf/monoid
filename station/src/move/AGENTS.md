@@ -51,7 +51,11 @@ chats paused 18 minutes, a half-moved state, no way back), whose start stays swi
   (SuperGrok, Cursor, Devin, a Kimi sign-in) moves as it is, gone from here, what needs it stopped first.
   What each was known by is kept as it moves away (`accounts-known.json`); one that is no profile here and the other
   does not have either is no item and no need of anything: its chats go as chats whose account is missing. There once
-  the other hosts it: one it only borrows is here, this station's still, and usable there, `usableThere`), `chats` (needs accounts, connects, repos, vault: one chat by
+  the other hosts it: one it only borrows is here, this station's still, and usable there, `usableThere`; one this
+  station only borrows from a third station is neither's (the real run, 2026-11-16: a whole move failed on two logins
+  a third station hosts): no item where the other borrows it too, what needs it going as it is; one the other lacks
+  cannot go, said so, what needs it refused or arriving stopped there, going on as the third shares it there too (the
+  logins changed, move/station.ts `loginsChanged`)), `chats` (needs accounts, connects, repos, vault: one chat by
   `station/src/replica/handover.ts`, its files a mirror by difference: the station it goes to says what it has in
   place, what differs is sent, what the lists no longer name is removed there, in its room alone), `jobs` (needs
   chats: started there once its chat is there; one chat moved by the tool or the app moves its jobs right after, and
@@ -102,7 +106,8 @@ chats paused 18 minutes, a half-moved state, no way back), whose start stays swi
 - No request of a move waits on work that grows with a chat or a repository (the real run, 2026-11-16: a chat of 70k
   files placed in 50 s, past an answer's 30 s, mesh/peer.ts ANSWER_MS, and could never move): such work is a told step
   (`told.ts`): a hand-over's placing and pruning, a chat's hand-over back (`move.back`), a bundle's fetch and a clone's
-  removal (`move.repo.bundle`, `move.repo.drop`); a clone already answers at once and tells its end (`move.repo.made`),
+  removal (`move.repo.bundle`, `move.repo.drop`), station_move's move or move back asked of another station
+  (`move.tool`, tools/move.ts `answer`); a clone already answers at once and tells its end (`move.repo.made`),
   a hand-over's drop is answered as it is marked and taken out by that station itself (replica/AGENTS.md). The station
   asked starts it and answers `under`, tells how it goes every `TOLD_EVERY_MS` (`move.told`) and its end until
   answered; the asker waits with no clock on its length, asks it again after `TOLD_SILENT_MS` of silence or as the

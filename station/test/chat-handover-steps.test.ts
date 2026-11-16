@@ -10,6 +10,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, utimesSync, writeFile
 import { join } from "node:path";
 import { test } from "node:test";
 import { given } from "./hub-fakes.ts";
+import { MoveAsks } from "../src/tools/move.ts";
 import { WS, A, B, ANSWER_MS, type Station, world, stillfailChat, gitEnv, filesOf, retiredCopy } from "./move-world.ts";
 
 type Json = any;
@@ -343,6 +344,7 @@ const BOUNDED: Record<string, string> = {
   "handover.still": "memory",
   "handover.held": "memory",
   "move.told": "memory",
+  "move.tool": "station_move asked of another: a move or a move back a told step; a plan or a status a summary or a page",
   "move.open": "a statfs",
   "move.accounts": "the profiles",
   "move.chats.live": "a page of keys",
@@ -438,4 +440,60 @@ test("every request a move asks is answered in its time with all the work of the
   assert.deepEqual(large.asked, small.asked, "the same requests");
   assert.deepEqual(large.most, small.most, "the most work begun inside one request, by method, the same");
   for (const [m, n] of Object.entries(large.most)) assert.ok(n <= 1, `${m}: ${n} pieces of work begun inside one request`);
+});
+
+// ── station_move asked of another station ──
+
+/// station_move on B asking A to do it (`station`, move.tool), as live.ts gives each its MoveAsks: A answers with `told`
+/// (a station of now) or as a station from before told steps did (`old`), its outcome the request's answer.
+function toolAcross(w: ReturnType<typeof world>, o: { old?: boolean } = {}) {
+  const a = w.get(A);
+  const b = w.get(B);
+  const roster = () => [{ id: A, name: "A" }, { id: B, name: "B" }];
+  const asksA = new MoveAsks({ data: a.rig.dir, scheduler: a.moves.scheduler, here: () => A, wsOf: () => WS, roster, cards: { post: async () => null }, notify: () => {}, refusal: (ws, s) => a.moves.refusal(ws, s), told: a.moves.told });
+  a.bus.on("move.tool", async (peer, request, ws) => (o.old === true ? asksA.toolIn(ws ?? WS, null, request?.args ?? {}) : asksA.answer(peer, ws ?? WS, request)));
+  const asksB = new MoveAsks({ data: b.rig.dir, scheduler: b.moves.scheduler, here: () => B, wsOf: () => WS, roster, cards: { post: async () => null }, notify: () => {}, ask: (s, r) => b.bus.ask(s, r), told: b.moves.told });
+  return (args: Json) => asksB.tool("chat:c-asker", { station: A, ...args });
+}
+
+test("station_move asked of another station to move a chat whose placing there works ten minutes, far past an answer's 30 s: its outcome comes all the same, no request waiting on it; back likewise", async () => {
+  const w = world([A, B], { answerMs: true });
+  const a = w.get(A);
+  const b = w.get(B);
+  const { key } = await stillfailChat(a);
+  const tool = toolAcross(w);
+  for (const action of ["move", "back"] as const) {
+    const h = hold();
+    if (action === "move") b.placing = () => h.wait();
+    else a.placing = () => h.wait();
+    const asked = tool({ action, to: "B", module: "chats", item: key });
+    await h.at;
+    await pass(w, HOLD_MS);
+    h.release();
+    const answer = await asked;
+    await w.quiet();
+    assert.equal(answer.outcome?.failed, null, JSON.stringify(answer));
+    assert.deepEqual(answer.outcome?.done.filter((d: Json) => d.module === "chats"), [{ module: "chats", id: key }], action);
+    assert.deepEqual(late(w), [], `${action}: no request waited past its answer's time`);
+    assert.deepEqual(inSightOn(w, key), [action === "move" ? "B" : "A"]);
+    assert.ok(w.heard.some((x) => x.method === "move.told" && x.from === A), `${action}: the step told it works`);
+    b.placing = undefined;
+    a.placing = undefined;
+  }
+});
+
+test("station_move asked of a station from before told steps: it answers the request with its outcome, which is taken as before", async () => {
+  const w = world([A, B], { answerMs: true });
+  const a = w.get(A);
+  const { key } = await stillfailChat(a);
+  const answer = await toolAcross(w, { old: true })({ action: "move", to: "B", module: "chats", item: key });
+  await w.quiet();
+  assert.equal(answer.outcome?.failed, null, JSON.stringify(answer));
+  assert.deepEqual(answer.outcome?.done.filter((d: Json) => d.module === "chats"), [{ module: "chats", id: key }]);
+  assert.deepEqual(inSightOn(w, key), ["B"]);
+});
+
+test("station_move asked of another station that refuses it: the refusal comes back in its words", async () => {
+  const w = world([A, B], { answerMs: true });
+  await assert.rejects(toolAcross(w)({ action: "move", to: "B", module: "chats", item: "chat:c-none" }), /c-none/);
 });

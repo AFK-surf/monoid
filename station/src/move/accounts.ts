@@ -11,7 +11,8 @@
 // (`move.accounts`, asked as a plan is made, says which; one from before says only that it has a profile of it, taken
 // as hosting it): one it only borrows is here still, this station's and lost with it, but usable there
 // (`usableThere`), and its move makes the other its host, this one borrowing it. A move back asked of a station that
-// only borrows it is refused there, saying where the login is.
+// only borrows it is refused there, saying where the login is. One both only borrow, from a third station, is neither's
+// to move: no item; one this station borrows from a third and the other lacks cannot go.
 //
 // An item's id is what its account is known by now, the same on every station (`accountItemId`; the chats' needs say
 // it so, handover.ts `accountsOf`). A login a move shares is renamed once, as its share is made: the plan made before
@@ -161,8 +162,24 @@ export function accountsModule(d: AccountsDeps): Module & { cameHome(share: stri
         const pid = answer?.here?.[id];
         there.set(id, typeof pid === "string" ? { id: pid, hosts: typeof answer?.hosts?.[id] === "boolean" ? answer.hosts[id] : null } : null);
       }
+      // (one this station only borrows, the other not hosting it either, is a third station's (the real run,
+      // 2026-11-16: a whole move failed on two logins a third station hosts): no item where the other borrows it too,
+      // as one that is nowhere; one the other lacks cannot go, what needs it refused or arriving stopped. Known only as
+      // the other answered, in a plan toward it)
+      const neither = new Set<string>();
+      if (to !== "" && failed === null) {
+        for (const x of items) {
+          const pid = local.get(x.id);
+          const share = pid === undefined ? undefined : d.profile?.(pid)?.share;
+          // (borrowed from the other itself: its host, whatever it answered)
+          if (!(x.id in asked) || x.cannot !== undefined || share?.borrowed !== true || share.host === to) continue;
+          const t = there.get(x.id);
+          if (t == null) x.cannot = tr(stationLang(), "station.share.moveBorrowed");
+          else if (t.hosts === false) neither.add(x.id);
+        }
+      }
       // (one that is not here, nor there, answered so: no item, nothing to move nor to wait for)
-      return items.filter((x) => !gone.has(x.id) || failed !== null || there.get(x.id) != null);
+      return items.filter((x) => !neither.has(x.id) && (!gone.has(x.id) || failed !== null || there.get(x.id) != null));
     },
     async move(item, to) {
       const pid = local.get(item.id);
