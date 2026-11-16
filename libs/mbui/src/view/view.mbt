@@ -8720,7 +8720,7 @@ pub fn[K : Eq] View::pick(
 
 ///|
 /// A node for each of `items` by its key, made as its key comes, kept while it stays, moved as the order changes, let
-/// go as it goes. Each is given its item as a signal of its own, set again only as the item comes out otherwise (by
+/// go as it goes. A key said more than once is one row, where it first is. Each is given its item as a signal of its own, set again only as the item comes out otherwise (by
 /// its data, not by which object it is): a row whose item is the same runs nothing. Down a column a row makes its way
 /// in as it comes and closes it as it goes (View::comes, View::goes), but those made with what holds them, or
 /// `at_once`, or where they are said to go over a time (`leave`: their coming and going their own); along a
@@ -8826,6 +8826,11 @@ fn[T : Eq, K : Hash + Eq] each_change(
   @signals.start_batch()
   for it in all {
     let k = key(it)
+    // (a key said again in the same items is the row it already is, where it first is: one node is never held twice by
+    // the slot, nor its box laid out twice (a made-up value's list of the same words as it is read: a page's bones))
+    if seen.contains(k) {
+      continue
+    }
     seen[k] = true
     match rows.get(k) {
       Some((v, item)) => {

@@ -143,9 +143,15 @@ fn wide_head_node(
   .ground(By(fn() { @ui.tree_theme().color(Bg) }))
   |> ignore
   col.show(fn() { frame().back is Some(_) }, fn(line) {
-    // (as wide as its words, its line the rest: what is pressed is back's own)
-    line.row(Is(true)).padding(Is((0.0, 0.0, 0.0, desk_back_foot))) |> ignore
-    desk_back_node(line, fn() { frame().back.unwrap_or("") }, on_back)
+    // (its room under it held inside it, not as its own padding: what comes and goes closes to nothing, and a box's
+    // padding is the least it is laid out, so 8 of it stayed till the way ended and went at once then: the run page's
+    // back from its models, switches_still's screen 32)
+    line.box(fn(r) {
+      // (as wide as its words, its line the rest: what is pressed is back's own)
+      r.row(Is(true)).padding(Is((0.0, 0.0, 0.0, desk_back_foot))) |> ignore
+      desk_back_node(r, fn() { frame().back.unwrap_or("") }, on_back)
+    })
+    |> ignore
   })
   col.box(made_for=loc, fn(l) {
     l.row(Is(true)).gap(Is(desk_title_gap)).lines_up(Is(Some(Middle))) |> ignore

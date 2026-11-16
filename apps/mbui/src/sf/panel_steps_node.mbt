@@ -270,24 +270,39 @@ fn step_page_node(
   |> ignore
   let nodes = px.nodes
   let footed = nodes.bind(fn(n) { n.foot }) is Some(_)
+  // (what it holds scrolling in itself where the dialog is short of room, between its head and its foot, as a dialog's
+  // that goes in no steps does (panel_centred_node's): never laid out past its own box, under its foot or out of the
+  // dialog's corners)
   page.box(made_for=loc, fn(b) {
-    style_node(b, fn() { centred_part_in(0.0, 0.0) })
-    b.shrink(Is(1.0)).min_height(Is(Some(0.0))).alpha(By(fn() { look().words })) |> ignore
-    b.box(fn(col) {
-      style_node(col, fn() { (if footed { dialog_body } else { dialog_body_end }).then(@ui.style(px=room(words_in))) })
-      col.shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
-      panel_in_lend(col, Wide, 0.0, sides=dialog_pad + words_in, rows_out=panel_words - panel_card_in, centred=true)
-      col.box(fn(held) {
-        if px.tall > 0.0 && !px.form {
-          let share = fn() { Some(dmax(0.0, px.tall * over_room(held).1 - dialog_frame_h)) }
-          match nodes {
-            Some(n) if n.hugs => held.max_height(By(share)) |> ignore
-            _ => held.height(By(share)) |> ignore
-          }
-        }
-        held.shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+    b.shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+    b.scrolls(@view.Scroll::new(), slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(s) {
+      // (one box out to the dialog's sides, what it holds on its words' line: no box more than it took before it
+      // scrolled, each a node of every step's every opening)
+      s.box(fn(col) {
+        style_node(col, fn() {
+          (if footed { dialog_body } else { dialog_body_end }).then(@ui.style(px=room(dialog_pad + words_in))).then(
+            step_body_one,
+          )
+        })
+        col.alpha(By(fn() { look().words })) |> ignore
+        panel_in_lend(col, Wide, 0.0, sides=dialog_pad + words_in, rows_out=panel_words - panel_card_in, centred=true)
         match nodes {
-          Some(n) => (n.body)(held, close)
+          Some(n) =>
+            // (a share of the window tall where it says one, in a box of its own that height)
+            if px.tall > 0.0 && !px.form {
+              col.box(fn(held) {
+                let share = fn() { Some(dmax(0.0, px.tall * over_room(held).1 - dialog_frame_h)) }
+                if n.hugs {
+                  held.max_height(By(share)) |> ignore
+                } else {
+                  held.height(By(share)) |> ignore
+                }
+                (n.body)(held, close)
+              })
+              |> ignore
+            } else {
+              (n.body)(col, close)
+            }
           None => ()
         }
       })
@@ -311,6 +326,12 @@ fn step_page_node(
     None => ()
   }
 }
+
+///|
+/// A step's body (step_page_node's) holding what it holds as a plain column: nothing between its parts but what they
+/// say themselves, as the box it was given before held it.
+// kept across runs: a value (no field of it changes)
+let step_body_one : @ui.Style = @ui.css("gap=S0")
 
 ///|
 /// What each centred panel in steps (by its presented's serial) says as a step of it is put on or taken off, before

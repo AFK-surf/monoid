@@ -233,13 +233,24 @@ pub fn show_answered(
   show : () -> Unit,
   then? : (((String, Map[String, Json])) -> Json?) -> Array[(String, Map[String, Json])],
 ) -> Unit {
+  show_answered_wait(src, asks, at, show, then?) |> ignore
+}
+
+///|
+/// show_answered, what waits returned (press_wait's, done at once where nothing is to wait for): given up by the press's
+/// control where a press after it asks for another (a tab of a chat's panel pressed while another waits).
+pub fn show_answered_wait(
+  src : Source,
+  asks : Array[(String, Map[String, Json])],
+  at : String,
+  show : () -> Unit,
+  then? : (((String, Map[String, Json])) -> Json?) -> Array[(String, Map[String, Json])],
+) -> PressWait {
   if asks.is_empty() || src.read_only {
-    show()
-    return
+    return press_wait(fn() { true }, show)
   }
   let (answered, leases) = asked_now(src, asks, then?)
   press_wait(answered, fn() { hand_over_shown(at, leases, show) }, let_go=fn() { leases.each(fn(l) { l.cancel() }) })
-  |> ignore
 }
 
 ///|

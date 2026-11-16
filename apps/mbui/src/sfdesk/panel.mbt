@@ -57,6 +57,47 @@ pub fn side_change(src : Source, r : ChatRef, action : String, tab : String?) ->
 }
 
 ///|
+/// What waits for a tab pressed to the front (side_front_pressed): one at a time, given up as another is pressed.
+// kept across runs: put back by chat_page_reset
+let side_front_wait : Ref[@sfbase.PressWait?] = Ref(None)
+
+///|
+/// A tab of chat `r`'s panel pressed to the front: in front once what it shows first is answered (sfbase's
+/// show_answered_wait), the panel as it was meanwhile, never emptied to be filled as the core answers; at once where it is
+/// answered already (kept, or held by the panel). Pressed again, or another, while it waits: that one instead.
+pub fn side_front_pressed(src : Source, r : ChatRef, tab : String) -> Unit {
+  match side_front_wait.val {
+    Some(w) => w.give_up()
+    None => ()
+  }
+  side_front_wait.val = None
+  // (what it asked handed to the tab as it is first built, its reads then the tab's own: side_tab_shown_at)
+  let w = @sfbase.show_answered_wait(src, side_tab_reads(r, tab), side_tab_shown_at(r, tab), fn() {
+    side_change(src, r, "front", Some(tab))
+  })
+  if w.waiting() {
+    side_front_wait.val = Some(w)
+  }
+}
+
+///|
+/// What tab `tab` of chat `r`'s panel is shown for, to what its press asked (hand_over_shown): taken as the tab is first
+/// built (sfbase's shown_read, jobs_tab_node's).
+pub fn side_tab_shown_at(r : ChatRef, tab : String) -> String {
+  "side\u{1}" + chat_key(r) + "\u{1}" + tab
+}
+
+///|
+/// What tab `tab` of chat `r`'s panel reads as it is first drawn, that its press waits for (side_front_pressed): 任务
+/// its chat's services and jobs (jobs_tab_node's `chatJobs`).
+fn side_tab_reads(r : ChatRef, tab : String) -> Array[(String, Map[String, Json])] {
+  match tab {
+    "jobs" => [("chatJobs", chat_params(r))]
+    _ => []
+  }
+}
+
+///|
 /// side_change, chat `r`'s tabs as they are now (side_now's) given, read by the caller where it holds them: what
 /// changes them as a page comes on top (beside_follow) reads them in its reaction's read, held as long as that reads
 /// them, not by the wide frame's node for as long as it lives (Source::owned_by's raw read: the chat held after it left).
