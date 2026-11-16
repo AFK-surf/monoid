@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { ChainTail } from "./reference/tail.ts";
 import { LiveHub, type LiveMessage, type Locate } from "../src/sessions/live.ts";
-import { settle, testClock } from "./hub-fakes.ts";
+import { given, settle, testClock } from "./hub-fakes.ts";
 
 const line = (text: string, id: string) => `${JSON.stringify({ type: "assistant", timestamp: "2026-09-26T00:00:00Z", message: { id, content: [{ type: "text", text }] } })}\n`;
 const deferred = () => {
@@ -13,14 +13,28 @@ const deferred = () => {
   const promise = new Promise<ReturnType<Locate>>((done) => { resolve = done; });
   return { promise, resolve };
 };
+/// A fake's calls as they come, each waited for by its number: the hub asks from the sessions' program, so how many
+/// turns of the loop a call takes to arrive is the machine's (station/AGENTS.md, `settle`).
+const calls = <T>() => {
+  const got: T[] = [];
+  const waiting = new Map<number, (t: T) => void>();
+  return {
+    got,
+    push(t: T) { got.push(t); waiting.get(got.length - 1)?.(t); },
+    nth: (n: number): Promise<T> => n < got.length ? Promise.resolve(got[n]!) : new Promise((done) => waiting.set(n, done)),
+  };
+};
+const aborted = (signal: AbortSignal) => new Promise<void>((done) => {
+  if (signal.aborted) done(); else signal.addEventListener("abort", () => done(), { once: true });
+});
 
 test("subscribers share a pending location and get the transcript before events and the turn ending", async () => {
   const dir = mkdtempSync(join(tmpdir(), "live-locate-lifecycle-")), path = join(dir, "t.jsonl");
   writeFileSync(path, line("one", "m1"));
   const hub = new LiveHub(() => { throw new Error("synchronous location"); });
   const pending = deferred();
-  let calls = 0;
-  hub.locateAsync = () => { calls++; return pending.promise; };
+  const asked = calls<null>();
+  hub.locateAsync = () => { asked.push(null); return pending.promise; };
   const first: LiveMessage[] = [], second: LiveMessage[] = [];
   try {
     hub.subscribe("s", 0, null, (m) => first.push(m));
@@ -28,8 +42,9 @@ test("subscribers share a pending location and get the transcript before events 
     hub.event("s", { kind: "start", id: "x", step: "text" });
     appendFileSync(path, line("two", "m2"));
     hub.turnEnded("s");
-    await settle(2);
-    assert.equal(calls, 1);
+    await given(asked.nth(0), "the shared location is asked for");
+    await settle();
+    assert.equal(asked.got.length, 1);
     assert.deepEqual(first, []);
     pending.resolve({ runtime: "claude", paths: [path], current: true });
     await settle();
@@ -50,7 +65,7 @@ test("unsubscribing during location preserves handover state, while deleting a s
   tail.read();
   const states = tail.snapshot();
   const hub = new LiveHub(() => { throw new Error("synchronous location"); });
-  const requests: { signal: AbortSignal; pending: ReturnType<typeof deferred> }[] = [];
+  const requests = calls<{ signal: AbortSignal; pending: ReturnType<typeof deferred> }>();
   hub.locateAsync = (_key, signal) => {
     const pending = deferred();
     requests.push({ signal, pending });
@@ -61,17 +76,16 @@ test("unsubscribing during location preserves handover state, while deleting a s
   try {
     const abandoned: LiveMessage[] = [];
     const first = hub.subscribe("s", 1, null, (m) => abandoned.push(m));
-    await settle(2);
+    const one = await given(requests.nth(0), "the first watch asks for the location");
     hub.takeTails([{ key: "s", states }]);
     hub.unsubscribe("s", first);
-    await settle(2);
-    assert.equal(requests[0]!.signal.aborted, true);
+    await given(aborted(one.signal), "unsubscribing calls off the location");
     assert.deepEqual((await hub.carried()).tails, [{ key: "s", states }]);
     const joined: LiveMessage[] = [];
     hub.subscribe("s", 1, null, (m) => joined.push(m));
-    await settle(2);
-    requests[0]!.pending.resolve({ runtime: "claude", paths: [path], current: true });
-    requests[1]!.pending.resolve({ runtime: "claude", paths: [path], current: true });
+    const two = await given(requests.nth(1), "the next watch asks for the location again");
+    one.pending.resolve({ runtime: "claude", paths: [path], current: true });
+    two.pending.resolve({ runtime: "claude", paths: [path], current: true });
     await settle();
     await hub.idle();
     assert.deepEqual(abandoned, []);
@@ -81,12 +95,11 @@ test("unsubscribing during location preserves handover state, while deleting a s
     assert.deepEqual((await hub.carried()).tails, []);
 
     hub.subscribe("gone", 0, null, () => {});
-    await settle(2);
+    const three = await given(requests.nth(2), "a watch of the session to be deleted asks for its location");
     hub.takeTails([{ key: "gone", states }]);
     hub.forget("gone");
-    await settle(2);
-    assert.equal(requests[2]!.signal.aborted, true);
-    requests[2]!.pending.resolve({ runtime: "claude", paths: [path], current: true });
+    await given(aborted(three.signal), "deleting the session calls off its location");
+    three.pending.resolve({ runtime: "claude", paths: [path], current: true });
     await settle();
     await hub.idle();
     assert.deepEqual((await hub.carried()).tails, [], "a late answer cannot restore a deleted session's state");
@@ -98,24 +111,22 @@ test("a newly written transcript is announced even when its location takes longe
     const dir = mkdtempSync(join(tmpdir(), "live-locate-lifecycle-")), path = join(dir, "t.jsonl");
     const time = testClock();
     const hub = new LiveHub(() => { throw new Error("synchronous location"); }, time.clock);
-    const requests: ReturnType<typeof deferred>[] = [];
+    const requests = calls<ReturnType<typeof deferred>>();
     hub.locateAsync = () => { const pending = deferred(); requests.push(pending); return pending.promise; };
     if (withReader) hub.history = { state: async () => null, page: async () => ({ start: 0, end: 0, entries: [] }) };
     const got: LiveMessage[] = [];
     try {
       hub.subscribe("s", 0, null, (m) => got.push(m));
-      await settle(2);
-      requests[0]!.resolve(null);
+      (await given(requests.nth(0), "the watch asks for the location")).resolve(null);
       await settle();
       assert.equal(got.some((m) => m.type === "timeline"), false);
       writeFileSync(path, line("one", "m1"));
       hub.event("s", { kind: "start", id: "x", step: "text" });
       hub.event("s", { kind: "end", id: "x" });
-      await settle(2);
-      assert.equal(requests.length, 2);
+      const again = await given(requests.nth(1), `the turn's end asks for the location again with reader=${withReader}`);
       await time.adjust(40);
       await settle();
-      requests[1]!.resolve({ runtime: "claude", paths: [path], current: true });
+      again.resolve({ runtime: "claude", paths: [path], current: true });
       await settle();
       await hub.idle();
       await time.adjust(40);

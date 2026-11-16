@@ -174,6 +174,8 @@ export class Transfers {
   #closed = false;
   /// Each transfer's file, written off the station's thread (the latest of it), by id.
   readonly #files = new Map<string, PrivateFile>();
+  /// The expired records' removals the constructor set going, waited for with what is written (`idle`, `close`).
+  #cleaning: Promise<unknown>[] = [];
 
   constructor(deps: TransfersDeps) {
     this.#deps = deps;
@@ -184,7 +186,7 @@ export class Transfers {
         const t = JSON.parse(readFileSync(join(deps.dir, name), "utf8")) as Transfer;
         if (typeof t?.id !== "string") continue;
         if (t.endedAt !== undefined && deps.now() - t.endedAt > KEPT_MS) {
-          void rm(join(deps.dir, name), { force: true }).catch(() => {});
+          this.#cleaning.push(rm(join(deps.dir, name), { force: true }).catch(() => {}));
           continue;
         }
         this.#all.set(t.id, t);
@@ -249,7 +251,9 @@ export class Transfers {
   }
 
   async #written(): Promise<void> {
-    await Promise.all([...this.#files.values()].map((f) => f.written()));
+    const cleaning = this.#cleaning;
+    this.#cleaning = [];
+    await Promise.all([...cleaning, ...[...this.#files.values()].map((f) => f.written())]);
   }
 
   #mine(by: string, id: string): Transfer {
