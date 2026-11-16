@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [a734e8520](https://github.com/AFK-surf/monoid/commit/a734e85204cd5f7b7de08699a130aba44b11618d) station: zip folders as a stream off the main thre | 2.44 | 3.42 | 14.53 | 35.65 | 56.73 | 31.07 | 63.6 | 99.78 | 121.84 |
 | [db433ae96](https://github.com/AFK-surf/monoid/commit/db433ae969b4bfc1d5d341d45b89350e39821bc2) app: 看板 its own key on 小屏 Home's bar, Linear-style | 2.44 | 3.42 | 14.53 | 35.65 | 56.73 | 31.07 | 63.6 | 99.78 | 119.43 |
 | [0ff80373e](https://github.com/AFK-surf/monoid/commit/0ff80373e8c928d97aeb53205fe6e23b1ddf6fa7) core: the settings' first open reads no overview w | 2.43 | 3.39 | 14.44 | 35.54 | 56.39 | 31.07 | 63.6 | 99.78 | 115.05 |
 | [024e321b6](https://github.com/AFK-surf/monoid/commit/024e321b62aa54c9bf0559136e2e8ed6ae6c1e28) Ways: still.fail's relays told apart by the cloud; | 2.43 | 3.37 | 14.31 | 35.41 | 55.81 | 31.07 | 63.6 | 99.78 | 118.68 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [5b2e2fb2c](https://github.com/AFK-surf/monoid/commit/5b2e2fb2c01c0c881f5d839199e74a9566160cd9) station: one process of a station at a time acts o | 2.4 | 3.31 | 13.97 | 34.98 | 54.07 | 30 | 60.29 | 99.44 | 115.64 |
 | [b03be6583](https://github.com/AFK-surf/monoid/commit/b03be658343b786964aeae069ded9c9bb614a700) mbui: 模型与预设选择面板改为节点（old-panel 1 → 0，model_triple）  | 2.4 | 3.31 | 13.97 | 34.98 | 54.07 | 30 | 60.29 | 99.44 | 121.12 |
 | [4c3a71b2c](https://github.com/AFK-surf/monoid/commit/4c3a71b2c304250c8162f233b2c0f56243d61968) fix(mbui,station): compact side-panel screen toolb | 2.4 | 3.31 | 13.97 | 34.98 | 54.07 | 30 | 60.29 | 99.44 | 121.12 |
-| [c3e7df997](https://github.com/AFK-surf/monoid/commit/c3e7df99777cefd41e36500d6ee01f91283a5242) app: what comes for a topic let go of is taken unr | 2.17 | 3.02 | 13.08 | 34.22 | 51.84 | 30 | 60.29 | 99.44 | 122.36 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [a734e8520](https://github.com/AFK-surf/monoid/commit/a734e85204cd5f7b7de08699a130aba44b11618d) station: zip folders as a stream off the main thre | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.25 |
 | [db433ae96](https://github.com/AFK-surf/monoid/commit/db433ae969b4bfc1d5d341d45b89350e39821bc2) app: 看板 its own key on 小屏 Home's bar, Linear-style | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.25 |
 | [0ff80373e](https://github.com/AFK-surf/monoid/commit/0ff80373e8c928d97aeb53205fe6e23b1ddf6fa7) core: the settings' first open reads no overview w | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.25 |
 | [024e321b6](https://github.com/AFK-surf/monoid/commit/024e321b62aa54c9bf0559136e2e8ed6ae6c1e28) Ways: still.fail's relays told apart by the cloud; | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.25 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [5b2e2fb2c](https://github.com/AFK-surf/monoid/commit/5b2e2fb2c01c0c881f5d839199e74a9566160cd9) station: one process of a station at a time acts o | 0.42 | 0.54 | 2.08 | 3.17 | 4.97 | 1.53 | 4.1 | 57.48 |
 | [b03be6583](https://github.com/AFK-surf/monoid/commit/b03be658343b786964aeae069ded9c9bb614a700) mbui: 模型与预设选择面板改为节点（old-panel 1 → 0，model_triple）  | 0.42 | 0.54 | 2.08 | 3.17 | 4.97 | 1.53 | 4.1 | 57.48 |
 | [4c3a71b2c](https://github.com/AFK-surf/monoid/commit/4c3a71b2c304250c8162f233b2c0f56243d61968) fix(mbui,station): compact side-panel screen toolb | 0.42 | 0.54 | 2.08 | 3.17 | 4.97 | 1.53 | 4.1 | 57.26 |
-| [c3e7df997](https://github.com/AFK-surf/monoid/commit/c3e7df99777cefd41e36500d6ee01f91283a5242) app: what comes for a topic let go of is taken unr | 0.42 | 0.54 | 2.08 | 3.17 | 4.97 | 1.53 | 4.1 | 57.26 |
