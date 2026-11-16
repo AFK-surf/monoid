@@ -195,7 +195,7 @@ export function chromeHost(o: ChromeOptions): ChromeHost {
   let looking: Promise<string | undefined> | null = null;
   const look = (): Promise<string | undefined> =>
     (looking ??= platform.browsersSoon(process.env)
-      .then((found) => (best = { at: wall.now(), binary: found[0] }).binary, () => best?.binary)
+      .then((found) => (best = { at: wall.now(), binary: found[0] }).binary, () => (best = best && { at: wall.now(), binary: best.binary })?.binary)
       .finally(() => (looking = null)));
   const readActive = async () => {
     try {

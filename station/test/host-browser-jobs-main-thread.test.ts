@@ -20,6 +20,7 @@ import { Jobs } from "../src/jobs/jobs.ts";
 import { wall } from "../src/ops/fibers.ts";
 import { platform, WINDOWS } from "../src/platform/index.ts";
 import { Store } from "../src/store/store.ts";
+import { channelOf, releaseChannel } from "../src/updates/versions.ts";
 import { syncCalls } from "./main-thread-sync.ts";
 
 const dirs: string[] = [];
@@ -194,4 +195,14 @@ test("a job an earlier station started is followed to its end, its exit file loo
     await next.shutdown();
     store.close();
   }
+});
+
+test("a release from before channels is read once: its sessions' pages and the move's switch ask it of memory", async () => {
+  const app = scratch();
+  // (as Updates is made, before the station serves)
+  assert.equal(releaseChannel(app), null, "its installer wrote no CHANNEL");
+  const calls = await syncCalls(async () => {
+    for (let i = 0; i < 5; i++) assert.equal(channelOf({}, app), "stable");
+  });
+  assert.deepEqual(calls, []);
 });

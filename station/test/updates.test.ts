@@ -211,11 +211,12 @@ describe("updates", { concurrency: true }, () => {
     assert.equal(releaseChannel(dir), null);
     assert.equal(channelOf({}, dir), "stable");
     assert.equal(channelOf({ updateChannel: "nonsense" }, dir), "stable");
-    // Installed from the beta: on it, until the config says otherwise.
-    writeFileSync(join(dir, "CHANNEL"), "beta\n");
-    assert.equal(channelOf({}, dir), "beta");
-    assert.equal(channelOf({ updateChannel: "stable" }, dir), "stable");
-    assert.equal(channelOf({ updateChannel: "beta" }, dir), "beta");
+    // Installed from the beta (its installer wrote CHANNEL before the station ran): on it, until the config says otherwise.
+    const beta = temp();
+    writeFileSync(join(beta, "CHANNEL"), "beta\n");
+    assert.equal(channelOf({}, beta), "beta");
+    assert.equal(channelOf({ updateChannel: "stable" }, beta), "stable");
+    assert.equal(channelOf({ updateChannel: "beta" }, beta), "beta");
   });
 
   test("an older version is offered only back from the beta", () => {
@@ -1094,7 +1095,7 @@ describe("the station's update by a delta", { skip: WINDOWS && "install.sh is ma
       "station/next.delta": () => (body ? body(release!) : { type: "application/octet-stream", body: release!.delta }),
     });
     t.after(() => server.close());
-    const updates = installed(data, "1300", null, { origin: () => origin, env: { PATH: "/usr/bin:/bin" } }, installer);
+    const updates = installed(data, "1300", "stable\n", { origin: () => origin, env: { PATH: "/usr/bin:/bin" } }, installer);
     t.after(() => updates.close());
     mkdirSync(join(data, "app", "station"));
     writeFileSync(join(data, "app", "station", "main.js"), programBytes(200_000));
