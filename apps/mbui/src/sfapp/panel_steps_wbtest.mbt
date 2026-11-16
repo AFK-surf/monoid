@@ -181,3 +181,57 @@ test "a folder chosen in the picker, two steps in, goes back to the dialog with 
     assert_false(preset_fields(t), msg="wide \{wide}: \{runs(t)}")
   }
 }
+
+///|
+test "a group connect's form, 添加并连接: the wizard's done closes the dialog onto the connect's page, no step pushed over the form as it closes, nothing faulted" {
+  for size in [(390.0, 844.0, 2), (1280.0, 800.0, 0)] {
+    let told : Array[String] = []
+    @view.faults_stop.val = false
+    @view.fault_told.val = Some(fn(said) { told.push(said) })
+    let t = settings_tester(
+      "connects",
+      mode="settings-new-connect-group",
+      shows="settings-new-connect-group",
+      w=size.0,
+      h=size.1,
+      platform=size.2,
+    )
+    t.run_for(@kit.sheet_scrim_ms)
+    assert_true(shows(t, "加入 Group 服务器") && shows(t, "添加并连接"), msg=runs(t))
+    t.tap_text("添加并连接")
+    t.run_for(@kit.sheet_scrim_ms)
+    t.run_for(@ui.move_most_ms)
+    @view.faults_stop.val = true
+    @view.fault_told.val = None
+    assert_eq(told, [])
+    assert_false(shows(t, "这部分显示出错了"), msg=runs(t))
+    assert_false(shows(t, "添加并连接"), msg=runs(t))
+  }
+}
+
+///|
+test "a Feishu bot made by scanning: the wizard done on its own closes the dialog onto the connect's page, no step pushed over the scan, nothing faulted" {
+  for size in [(390.0, 844.0, 2), (1280.0, 800.0, 0)] {
+    let told : Array[String] = []
+    @view.faults_stop.val = false
+    @view.fault_told.val = Some(fn(said) { told.push(said) })
+    let t = settings_tester(
+      "connects",
+      mode="settings-new-connect-scan",
+      shows="settings-new-connect-scan",
+      w=size.0,
+      h=size.1,
+      platform=size.2,
+    )
+    t.run_for(@kit.sheet_scrim_ms)
+    assert_true(shows(t, "扫码创建"), msg=runs(t))
+    @settings.fixture_scanned()
+    t.run_for(@kit.sheet_scrim_ms)
+    t.run_for(@ui.move_most_ms)
+    @view.faults_stop.val = true
+    @view.fault_told.val = None
+    assert_eq(told, [])
+    assert_false(shows(t, "这部分显示出错了"), msg=runs(t))
+    assert_false(shows(t, "扫码创建"), msg=runs(t))
+  }
+}

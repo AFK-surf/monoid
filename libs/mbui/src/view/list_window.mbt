@@ -1755,9 +1755,19 @@ pub fn[K : Hash + Eq] View::scrolls_window(
         let top = dmin(@signals.untracked(fn() { s.top_now() }), most)
         let to = match ask {
           // (its offset from under what covers its top, as the fill's)
-          Bring(k, off, _) =>
+          // (what it holds of a go-to's (`sought`) low in what shows with its top there: its middle at the middle of
+          // that instead, as the fill puts it, where it is laid out now)
+          Bring(k, off, sought) =>
             match laid_at.get(k) {
-              Some(i) if i < all.length() => Some(all.top(i) + off - @signals.untracked(fn() { s.top_covered() }))
+              Some(i) if i < all.length() => {
+                let (cover, under) = @signals.untracked(fn() { (s.top_covered(), s.foot_covered_now()) })
+                let to = all.top(i) + off - cover
+                match (sought, sought_of(all, i)) {
+                  (true, Some((y0, y1))) if (y0 + y1) / 2.0 - off + cover > cover + 0.8 * (vh - under - cover) =>
+                    Some(to + (y0 + y1) / 2.0 - off - (cover + vh - under) / 2.0 + cover)
+                  _ => Some(to)
+                }
+              }
               _ => None
             }
           ToEnd => Some(most)
@@ -3772,7 +3782,7 @@ pub fn[K] ListPlace::new() -> ListPlace[K] {
 /// (Ctx::list_scroll_to's): gliding there where `glide` and it is near. `sought`: and what the block holds of what a
 /// go-to brings (View::sought) before the eyes, in the same fill: where it would lie low (its middle past 80% of the
 /// room between what covers the list's top and its pinned foot's top), its middle at the middle of that room instead
-/// (list_sought.mbt), as far as the list goes; not gliding.
+/// (list_sought.mbt), as far as the list goes; gliding there too where `glide` and it is near, as it is laid out then.
 pub fn[K] ListPlace::bring(
   self : ListPlace[K],
   key : K,
@@ -3781,7 +3791,7 @@ pub fn[K] ListPlace::bring(
   sought? : Bool = false,
 ) -> Unit {
   self.from = None
-  if glide && !sought && (self.glide)(Bring(key, offset, false)) {
+  if glide && (self.glide)(Bring(key, offset, sought)) {
     self.asked = None
     return
   }

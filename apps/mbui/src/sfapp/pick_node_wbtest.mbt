@@ -31,7 +31,7 @@ fn pick_said(t : @ui.Tester) -> String {
 }
 
 ///|
-test "pick, short, 大屏 keyboard and mouse: its title, its choices, c2 checked, the note under 第1项 and 3 个 at 第3项's end; 第3项 clicked: c3 chosen, gone at once" {
+test "pick, short, 大屏 keyboard and mouse: its title, its choices, c2 checked, the note under 第1项 and 3 个 at 第3项's end; 第3项 clicked: c3 chosen, nothing of it read out at once, drawn back over pop_out_ms" {
   let chosen = Ref("")
   let t = pick_at_point(3, chosen)
   println("PICKSAID short \{pick_said(t)}")
@@ -41,9 +41,11 @@ test "pick, short, 大屏 keyboard and mouse: its title, its choices, c2 checked
   let seen = (t.find("选一个") is Some(_), t.find("最近用过") is Some(_), t.find("3 个") is Some(_))
   t.tap_text("第3项")
   t.frame()
+  let read = t.query(Menu) is None
+  t.run_for(@kit.pop_out_ms)
   assert_eq(
-    (rows, panel, seen, chosen.val, @sf.presenting(), t.find("第1项") is None),
-    ([("第1项", Some(Off)), ("第2项", Some(On)), ("第3项", Some(Off))], Some(true), (true, true, true), "c3", false, true),
+    (rows, panel, seen, chosen.val, @sf.presenting(), read, t.find("第1项") is None),
+    ([("第1项", Some(Off)), ("第2项", Some(On)), ("第3项", Some(Off))], Some(true), (true, true, true), "c3", false, true, true),
   )
 }
 

@@ -141,6 +141,7 @@ export const PARAMS: Record<string, string> = {
   "feishu.createConnect": "feishu:json bind?:json mode?:string requireMention?:boolean owner?:json",
   "feishu.putSecret": "id:string appSecret:string",
   "comma.createConnect": "line:string bind?:json",
+  "group.createConnect": "group:json bind?:json mode?:string requireMention?:boolean owner?:json",
   "slack.verify": "connect?:string install?:string appToken?:string botToken?:string",
   "slack.makeApp": "team?:string settings?:json icon?:string",
   "slack.dropApp": "appId:string",
@@ -576,6 +577,9 @@ function stationOp(name: string, params: unknown): Request | null {
     // A Comma connect: made of the line Comma's still.fail plugin shows.
     case "comma.createConnect":
       return op("POST", () => "/comma/connects", p.pick(["line", "bind"]), { kind: "connect", id: null });
+    // A group connect: an IM server of AFK-surf/group joined as a member, by its endpoint id, relays and a code.
+    case "group.createConnect":
+      return op("POST", () => "/group/connects", p.pick(["group", "bind", "mode", "requireMention", "owner"]), { kind: "connect", id: null });
     // A Feishu connect's App Secret replaced (verified there first).
     case "feishu.putSecret":
       return op("PUT", () => `/feishu/connects/${p.at("id")}/secret`, p.pick(["appSecret"]), connect("id"));

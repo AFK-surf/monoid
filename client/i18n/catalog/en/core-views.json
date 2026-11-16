@@ -845,5 +845,6 @@
   "core-views.move.summary.to": "Moving to {name}",
   "core-views.move.summary.moving": "Moving · {module} “{label}”",
   "core-views.move.summary.stopped": {"one": "1 stopped", "other": "{n} stopped"},
-  "core-views.move.summary.failed": {"one": "1 failed", "other": "{n} failed"}
+  "core-views.move.summary.failed": {"one": "1 failed", "other": "{n} failed"},
+  "core-views.group": "Group"
 }

@@ -153,8 +153,10 @@ fn cd_keys(cv : Json?) -> Array[String] {
   let feishu = text(cv, "kind") == "feishu"
   // (a Comma connect has no app of its own: its line is all it connects with)
   let comma = text(cv, "kind") == "comma"
+  // (a group connect's server and who it is there, in place of an app)
+  let group = text(cv, "kind") == "group"
   let out : Array[String] = []
-  if !feishu && !comma && text(field(cv, "connection"), "state") == "no_tokens" {
+  if !feishu && !comma && !group && text(field(cv, "connection"), "state") == "no_tokens" {
     out.push("tokens")
   } else if cd_trouble(cv) != "" {
     out.push("trouble")
@@ -163,6 +165,10 @@ fn cd_keys(cv : Json?) -> Array[String] {
   if feishu {
     if field(cv, "feishu") is Some(Object(_)) {
       out.push("feishu")
+    }
+  } else if group {
+    if field(cv, "group") is Some(Object(_)) {
+      out.push("group")
     }
   } else if !comma {
     out.push("app")
@@ -213,6 +219,7 @@ fn cd_block(
       |> ignore
     "run" => cd_run_node(b, src, core, here, station, item)
     "feishu" => cd_feishu_node(b, core, station, cv)
+    "group" => cd_group_node(b, core, station, cv)
     "app" => slack_app_node(b, core, station, id, page_w, tips)
     _ => cd_sessions_node(b, core, station, item, tips)
   }
@@ -314,6 +321,7 @@ fn cd_menu_items(core : Core, here : Here, station : String, cv : Json?) -> Arra
   let on = [("station", station), ("id", id)]
   let feishu = text(cv, "kind") == "feishu"
   let comma = text(cv, "kind") == "comma"
+  let group = text(cv, "kind") == "group"
   let reconnecting = is_doing(core, ["connect.reconnect"], on)
   let saving = is_doing(core, ["connect.put"], on)
   let conn = field(cv, "connection")
@@ -346,7 +354,9 @@ fn cd_menu_items(core : Core, here : Here, station : String, cv : Json?) -> Arra
     ),
   ]
   // (a Comma connect's line is made again in Comma: there is no token of its own to replace here)
-  if !comma {
+  if group {
+    items.push(Some(@sf.menu_item_of(@sf.t("web-pages.connect.group.rebind"), icon="key", fn() { cd_rebind_dialog(core, station, cv) })))
+  } else if !comma {
     items.push(Some(
       @sf.menu_item_of(@sf.t(if feishu { "web-pages.connect.feishu.replace" } else { "web-pages.connect.replaceToken" }), icon="key", fn() {
         if feishu {
@@ -357,7 +367,7 @@ fn cd_menu_items(core : Core, here : Here, station : String, cv : Json?) -> Arra
       }),
     ))
   }
-  if !feishu && !comma && slack_url != "" {
+  if !feishu && !comma && !group && slack_url != "" {
     items.push(Some(@sf.menu_item_of(@sf.t("web-pages.connect.openSlack"), icon="external", fn() { (core.open_link)(slack_url) })))
   }
   if feishu && console != "" {
@@ -432,7 +442,7 @@ fn cd_run_node(b : @view.View, src : Source, core : Core, here : () -> Here, sta
       })
       // the station its new conversations run on (a connect is its workspace's: its chats may run on any station of
       // it), picked in a dialog; a single-session connect's one session, and a station from before, say none
-      g.show(fn() { text(cv(), "mode") != "single-session" && flag(cv(), "moves") && text(cv(), "kind") != "comma" }, fn(s) {
+      g.show(fn() { text(cv(), "mode") != "single-session" && flag(cv(), "moves") && text(cv(), "kind") != "comma" && text(cv(), "kind") != "group" }, fn(s) {
         @sf.link_row_node(
           s,
           fn() { @sf.t("web-pages.connect.startsOn") },
@@ -513,6 +523,69 @@ fn cd_feishu_node(b : @view.View, core : Core, station : String, cv : () -> Json
       }, goes=false)
     })
   })
+}
+
+///|
+/// A group connect's server (as Feishu's app is shown, in a run card): its ID, shortened, and its relays; who it is
+/// there (or that it waits to join by its code), with binding it anew by another code beside it.
+fn cd_group_node(b : @view.View, core : Core, station : String, cv : () -> Json?) -> Unit {
+  let g = fn() { field(cv(), "group") }
+  @sf.section_node(b, fn() { @sf.t("web-pages.connect.group.section") }, fn(sec) {
+    @sf.group_node(sec, fn(r) {
+      @sf.link_row_node(r, fn() { @sf.t("web-pages.connect.group.server") }, fn() {  }, goes=false, note=fn() {
+        let id = text(g(), "server")
+        if id.length() > 16 { id.clamped_view(start=0, end=8).to_owned() + "…" + id.clamped_view(start=id.length() - 8, end=id.length()).to_owned() } else { id }
+      })
+      @sf.link_row_node(r, fn() { @sf.t("web-pages.connect.group.relays") }, fn() {  }, goes=false, note=fn() { strings(g(), "relays").join("\n") })
+      @sf.link_row_node(
+        r,
+        fn() { @sf.t("web-pages.connect.group.member") },
+        fn() { cd_rebind_dialog(core, station, @signals.untracked(cv)) },
+        note=fn() { if flag(g(), "joining") { @sf.t("web-pages.connect.group.joining") } else { text(cv(), "name") } },
+        value=fn() { @sf.t("web-pages.connect.group.rebind") },
+        value_lit=true,
+        chevron=false,
+      )
+    })
+  })
+}
+
+///|
+/// A group connect bound anew by another join code (its device removed on the server, or to be another member):
+/// kept, then it connects again; the dialog stays while it is saved, why it was refused under the field.
+fn cd_rebind_dialog(core : Core, station : String, cv : Json?) -> Unit {
+  let id = text(cv, "id")
+  let key = "connect-rebind/" + (desk_dialogs.val + 1).to_string()
+  let code = field_of(key + "/code")
+  let error : @signals.Signal[String] = @signals.signal("", same=fn(a, b) { a == b })
+  open_dialog(
+    @sf.t("web-pages.connect.group.rebind"),
+    description=@sf.t("web-pages.connect.group.rebindLead"),
+    fn(c, _) {
+      @sf.field(c, @sf.t("web-pages.connect.group.code"), error=error.get(), fn() {
+        @sf.input(c, key + "/code-input", placeholder="XXXX-XXXX-XXXX-XXXX", field=code) |> ignore
+      })
+    },
+    fn(c, shut) {
+      @sf.button(c, @sf.t("common.cancel"), key=key + "/cancel", tone=Ghost, on_press=fn() {
+        shut()
+      }) |> ignore
+      let typed = code.text().trim(chars=" \t\n").to_owned()
+      let saving = is_doing(core, ["connect.put"], [("station", station), ("id", id)])
+      @sf.button(c, @sf.t("web-pages.connect.saveReconnect"), key=key + "/save", tone=Primary, busy=saving, disabled=typed == "", on_press=fn() {
+        error.set("")
+        (core.call)("connect.put", obj([("station", str(station)), ("id", str(id)), ("input", obj([("group", obj([("code", str(typed))]))]))]), fn(r) {
+          match r {
+            Ok(_) => {
+              (core.say)(@sf.t("web-pages.connect.group.rebound"))
+              shut()
+            }
+            Err(e) => error.set(error_text(e))
+          }
+        })
+      }) |> ignore
+    },
+  )
 }
 
 ///|
@@ -774,6 +847,7 @@ fn cd_kind_key(key : String, cv : Json?) -> String {
   match text(cv, "kind") {
     "feishu" => key + ".feishu"
     "comma" => key + ".comma"
+    "group" => key + ".group"
     _ => key
   }
 }

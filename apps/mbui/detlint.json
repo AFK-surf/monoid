@@ -564,7 +564,7 @@
       "src/sfapp/quote_flight_wbtest.mbt": 2,
       "src/sfapp/quote_image_wbtest.mbt": 1,
       "src/sfapp/send_hold_wbtest.mbt": 5,
-      "src/sfapp/send_steady_wbtest.mbt": 7,
+      "src/sfapp/send_steady_wbtest.mbt": 5,
       "src/sfapp/sent_first_wbtest.mbt": 2,
       "src/sfapp/viewer_flight_wbtest.mbt": 1
     },

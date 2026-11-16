@@ -152,9 +152,19 @@ fn split_stable(
   // the declarations (and the externs) renamed, each with what it declares and what it uses
   let file_ids = prelude_ids.copy()
   let ditems : Array[DItem] = []
+  // (a declaration renamed as one before it is that one: function types the same are one type, names.mbt)
+  let decl_seen = BSet::new()
   for k, d in decls {
     let (kind, info) = decl_kinds[k]
     let (t, used) = rename(d, names_t)
+    if kind == 1 {
+      if decl_seen.has(t) {
+        // (kept in its place, declaring nothing: the items are found by their place in decls)
+        ditems.push({ t: b"", declares: BSet::new(), uses: BSet::new(), always: false })
+        continue
+      }
+      decl_seen.add(t)
+    }
     file_ids.add_all(used)
     if kind == 0 {
       ditems.push({ t, declares: BSet::new(), uses: used, always: true })

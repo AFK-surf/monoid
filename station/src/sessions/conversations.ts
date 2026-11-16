@@ -725,12 +725,12 @@ export async function chatState(hub: Hub, key: string, args: Args): Promise<stri
 }
 
 /// chat_history: earlier messages of one of the session's conversations.
-/// chat_leave: the session stops hearing a Slack or Feishu thread until someone mentions it there (hub `acceptInTurn`).
+/// chat_leave: the session stops hearing a Slack, Feishu or group thread until someone mentions it there (hub `acceptInTurn`).
 /// A still.fail chat is never left: people there talk to its agents, mentioned or not.
 export function chatLeave(hub: Hub, key: string, args: Args): string {
   const thread = target(hub, key, args.to);
   const to = jsString(args.to);
-  if (thread.thread.surface === STILLFAIL_SURFACE) throw new Error(`${to} is a still.fail chat: it cannot be left. Only Slack and Feishu threads can.`);
+  if (thread.thread.surface === STILLFAIL_SURFACE) throw new Error(`${to} is a still.fail chat: it cannot be left. Only Slack, Feishu and group threads can.`);
   hub.store.leaveThread(thread.thread.id, key);
   return `Left ${to}: its messages no longer reach you until someone mentions you there; chat_history still reads it and chat_post still posts there.`;
 }

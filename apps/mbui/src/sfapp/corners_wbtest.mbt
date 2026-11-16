@@ -93,6 +93,8 @@ let corner_modes : Array[String] = {
     "settings-new-connect", "settings-new-connect-platform", "settings-new-connect-scan", "settings-new-connect-app",
     // (a Comma connect's model step, and the pages of a Comma and a Feishu connect, none of their sessions yet)
     "settings-new-connect-comma", "settings-connect-comma", "settings-connect-feishu",
+    // (Group offered and picked, a new group connect's server filled in, and a group connect's page)
+    "settings-new-connect-platform-group", "settings-new-connect-group", "settings-connect-group",
     "settings-slack-app", "settings-memory", "settings-memory-doc", "settings-usage", "settings-archive", "settings-kept",
     "settings-kept-many", "settings-vault-off", "settings-vault-plain", "settings-vault-waits", "settings-vault-words", "settings-vault-add",
     "settings-vault-editor", "settings-vault-recover", "settings-lock-prompt", "settings-add-people",

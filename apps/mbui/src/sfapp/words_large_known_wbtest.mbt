@@ -14,6 +14,7 @@ let words_large_known : Map[String, Int] = {
     ("phone-zh share-card", 3),
     ("phone-zh share-card-dark", 3),
     ("phone-zh settings-new-connect-platform", 1),
+    ("phone-zh settings-new-connect-platform-group", 1),
     ("phone-zh settings-kept", 1),
     ("phone-zh settings-kept-many", 1),
     ("phone-zh settings-vault-words", 14),

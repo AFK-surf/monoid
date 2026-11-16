@@ -628,5 +628,6 @@
   "core-logic.notice.run.speed": "Speed: {change}",
   "core-logic.notice.run.to": "Now {now}",
   "core-logic.notice.run.toLead": "Now",
-  "core-logic.notice.run.was": "Before: {run}"
+  "core-logic.notice.run.was": "Before: {run}",
+  "core-logic.format.connection.no_group": "No Group"
 }

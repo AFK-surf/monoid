@@ -1495,3 +1495,36 @@ test "a chat's page made with its inside nodes, on 小屏 and 大屏: a message 
     assert_eq(flash_grounds(), (0, 0), msg="\{name}: at rest")
   }
 }
+
+///|
+test "a chat's page made with its inside nodes, on 小屏 and 大屏: a message gone to that shows already glides to just under its top, the eyes taken along to it, not there at once" {
+  for s in long_screens {
+    let (name, w, h, _) = s
+    let l = long_chat()
+    let t = place_long_open(l, s)
+    t.move_to(w / 2.0, h / 2.0)
+    for _ in 0..<2 {
+      t.wheel(w / 2.0, h / 2.0, -600.0)
+      long_run(t, l, long_rest_ms)
+    }
+    // (the lowest message whose head shows in the lower half: gone to as a quote of it is pressed)
+    let mut target = -1
+    let mut from = 0.0
+    for n in l.first.get()..=l.last.get() {
+      if t.rect_of("第\{n}条：") is Some((_, y, _, _)) && y > h / 2.0 && y < h * 0.8 {
+        target = n
+        from = y
+      }
+    }
+    assert_true(target >= 0, msg="\{name}: nothing shows in the lower half")
+    go_to(long_ref, target.to_double())
+    @ui.came_from_outside()
+    t.run_for(@view.wheel_ease_ms)
+    let mid = t.rect_of("第\{target}条：").map(fn(r) { r.1 })
+    long_run(t, l, long_rest_ms)
+    let end = t.rect_of("第\{target}条：").map(fn(r) { r.1 })
+    guard (mid, end) is (Some(m), Some(e)) else { fail("\{name}: \{target} not drawn: \{Repr((mid, end))}") }
+    assert_true(e > 0.0 && e < h / 3.0, msg="\{name}: \{target} gone to at \{e}")
+    assert_true(m < from - 2.0 && m > e + 2.0, msg="\{name}: from \{from} to \{e}, at \{m} on its way")
+  }
+}

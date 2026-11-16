@@ -66,9 +66,11 @@ export function givenTitle(t: Titled | null | undefined): string | null {
   return text(t, "title") || text(t, "autoTitle") || null;
 }
 
-/// Where a Slack or Feishu thread is, in words: #channel, 私信, the Feishu group; null for a still.fail chat.
+/// Where a Slack, Feishu or group thread is, in words: #channel, 私信, the Feishu group, the group conversation (a group's
+/// name, a private chat's other member); null for a still.fail chat.
 export function placeName(surface: string, channel: string, channelName: string, words: { directMessage: string; feishu: string }): string | null {
   if (surface.startsWith("feishu:") || isFeishuChat(channel)) return channelName || words.feishu;
+  if (surface.startsWith("group:")) return channelName || null;
   if (isOwnSurface(surface) || surface === "") return null;
   return channel.startsWith("D") ? words.directMessage : `#${channelName || channel}`;
 }
@@ -85,7 +87,7 @@ export function chatTitle(t: Titled | null | undefined, firstText: string | null
     .find((l) => l !== "");
   if (first !== undefined) return first;
   const name = trim(channelName ?? "");
-  if (name !== "") return typeof t?.surface === "string" && t.surface.startsWith("feishu:") ? name : `#${name}`;
+  if (name !== "") return typeof t?.surface === "string" && (t.surface.startsWith("feishu:") || t.surface.startsWith("group:")) ? name : `#${name}`;
   if (text(t, "channel").startsWith("D")) return words.directMessage;
   return words.untitled;
 }

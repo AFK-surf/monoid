@@ -169,6 +169,7 @@ fn teams(host : @host.Host, data : String, sep : String) -> Map[String, Team] ra
     match str_of(jget(Some(c), "kind")) {
       Some("feishu") => out[id] = { id, book: "feishu" }
       Some("comma") => out[id] = { id, book: "comma" }
+      Some("group") => out[id] = { id, book: "group" }
       _ =>
         match str_of(jget(jget(jget(Some(c), "slack"), "team"), "id")) {
           Some(t) if t != "" => out[id] = { id: t, book: "slack" }
@@ -192,6 +193,7 @@ fn outflow_person(host : @host.Host, data : String, sep : String, teams_of : () 
         let book_file = match team {
           Some(t) if t.book == "feishu" => "feishu-names.json"
           Some(t) if t.book == "comma" => "comma-names.json"
+          Some(t) if t.book == "group" => "group-names.json"
           _ => "slack-names.json"
         }
         let names = match read_json(host, join_path(sep, data, book_file)) {

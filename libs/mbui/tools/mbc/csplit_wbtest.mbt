@@ -773,3 +773,48 @@ test "a global's object names its layout by its content, set as moonbit_init beg
   let init = x["init.c"]
   assert_true(has(init, "void moonbit_init() {\ncsplit_fix_layouts();\n"))
 }
+
+///|
+/// A program with moonc's function types `names`, all of one definition, b's function calling through the last
+fn prog_same_fn_types(names : Array[String]) -> String {
+  let buf = StringBuilder()
+  buf.write_string(prelude_src + "\n")
+  for n in names {
+    buf.write_string("struct \{n};\n\n")
+  }
+  for n in names {
+    buf.write_string("struct \{n} {\n  int32_t(* code)(struct \{n}*, int32_t);\n};\n\n")
+  }
+  let last = names[names.length() - 1]
+  buf.write_string(
+    (
+      $|int32_t _M0FP11b4call(struct \{last}*);
+      $|
+      $|int32_t _M0FP11b4call(struct \{last}* _M0L1fS6) {
+      $|  return _M0L1fS6->code(_M0L1fS6, 1);
+      $|}
+      $|
+      $|void moonbit_init() {
+      $|}
+      $|
+      $|int main(int argc, char** argv) {
+      $|  moonbit_init();
+      $|  return 0;
+      $|}
+      $|
+    ),
+  )
+  buf.to_string()
+}
+
+///|
+test "function types the same are one type, a new one beside them renaming none" {
+  // (numbered apart in moonc's order, one more of them anywhere moved the names of those after it, and every unit
+  // that named one was new: main db433ae9 against 7aba69f6, 2026-11-16)
+  let (one, _) = sp(prog_same_fn_types(["_M0TWiE5", "_M0TWiE9"]), unit_bytes=2)
+  let (two, _) = sp(prog_same_fn_types(["_M0TWiE5", "_M0TWiE7", "_M0TWiE9"]), unit_bytes=2)
+  assert_eq(unit_named(one, "b"), unit_named(two, "b"))
+  assert_false(has(unit_named(one, "b"), "_x"))
+  assert_eq(occurs(one["decls.h"], "(* code)"), 1) // (defined once)
+  assert_eq(occurs(two["decls.h"], "(* code)"), 1)
+}

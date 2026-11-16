@@ -752,5 +752,6 @@
   "core-views.move.summary.to": "迁移到 {name}",
   "core-views.move.summary.moving": "迁移中 · {module}「{label}」",
   "core-views.move.summary.stopped": "{n} 项已停",
-  "core-views.move.summary.failed": "{n} 项失败"
+  "core-views.move.summary.failed": "{n} 项失败",
+  "core-views.group": "Group"
 }

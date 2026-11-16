@@ -667,10 +667,10 @@ fn cn_avatar_node(l : @view.View, core : Core, cv : () -> Json?, stint : () -> I
 }
 
 ///|
-/// What a connect connects to (ConnectKindIcon), as `kind` says it now: Slack's mark, Feishu's or Comma's (one colour:
-/// in the page's ink).
+/// What a connect connects to (ConnectKindIcon), as `kind` says it now: Slack's mark, Feishu's, Group's or Comma's (one
+/// colour: in the page's ink).
 fn cn_kind_node(parent : @view.View, kind : () -> String, size : Double) -> Unit {
-  parent.pick(fn() { if kind() == "feishu" || kind() == "comma" { kind() } else { "slack" } }, fn(p, k) {
+  parent.pick(fn() { if kind() == "feishu" || kind() == "comma" || kind() == "group" { kind() } else { "slack" } }, fn(p, k) {
     if k == "comma" {
       @sf.drawable_node(p, "comma", size, tint=fn() { Some(@sf.theme().p.text) }) |> ignore
     } else {

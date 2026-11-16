@@ -38,6 +38,10 @@ export const feishuSurface = (connect: string): string => `feishu:${connect}`;
 /// Where a Comma connect's threads (its Comma Tasks) live: the connect's own.
 export const commaSurface = (connect: string): string => `comma:${connect}`;
 
+/// Where a group connect's threads (its IM server's conversations) live: the connect's own (its people's ids are the
+/// server's).
+export const groupSurface = (connect: string): string => `group:${connect}`;
+
 export type SessionScope = "thread" | "all";
 
 /// Who looks, as far as the station's workspaces go: their workspace, and whether it is the

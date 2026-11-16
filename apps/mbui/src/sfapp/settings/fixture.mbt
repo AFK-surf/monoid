@@ -290,6 +290,16 @@ let fixture_open : FixtureOpen = { sheet: "", list: "", block: 0, frames: 0, des
 let fx_connect_step : Ref[String] = Ref("team")
 
 ///|
+/// What is typed on a new group connect's server step (its fields by name), as the page sends it; and whether one was
+/// added (k1 is it then).
+// kept across runs: the fixture's state, reset with the rest of it (fixture_reset)
+let fx_group_typed : Map[String, String] = Map([])
+
+///|
+// kept across runs: the fixture's state, reset with the rest of it (fixture_reset)
+let fx_group_made : Ref[Bool] = Ref(false)
+
+///|
 /// Where a new profile's draft for Google is (settings-new-profile-google…): "" none; "pick" (the providers, Google
 /// among them), "method" (its ways), or the way chosen ("plan", "enterprise", "key"); moved on as the page edits it.
 // kept across runs: the fixture's state, reset with the rest of it (fixture_reset)
@@ -414,6 +424,8 @@ fn fixture_reset() -> Unit {
   fixture_open.frames = 0
   fixture_open.desk = ""
   fx_connect_step.val = "team"
+  fx_group_typed.clear()
+  fx_group_made.val = false
   fx_google.val = ""
   fx_google_login.val = ""
   fx_google_profiles.val = false
@@ -538,6 +550,14 @@ pub fn fixture_prompts_now(pairing~ : Bool, more? : Bool = false, key_ask~ : Boo
   fx.pairing_more = more
   fx.key_ask = key_ask
   fx.key_giving = giving
+  fx_changed()
+}
+
+///|
+/// The bot being made by scanning (MBUI_FIXTURE=settings-new-connect-scan) made: the wizard done on its own, the
+/// connect added (`k1`), told to what follows its topics.
+pub fn fixture_scanned() -> Unit {
+  fx_connect_step.val = "feishuScanned"
   fx_changed()
 }
 
@@ -817,6 +837,9 @@ pub fn fixture_page(mode : String) -> String {
     "settings-new-connect-scan" => fx_connect_step.val = "feishuScan"
     // a new Comma connect's model, its first step after the platform
     "settings-new-connect-comma" => fx_connect_step.val = "commaBind"
+    // a station with the group connect: Group offered and picked; a new group connect's server, filled in
+    "settings-new-connect-platform-group" => fx_connect_step.val = "platformGroup"
+    "settings-new-connect-group" => fx_connect_step.val = "groupForm"
     // a new Slack app's step: its name, its look
     "settings-new-connect-app" => fx_connect_step.val = "app"
     "settings-connects" => fx_connects_waiting.val = true
@@ -848,9 +871,9 @@ pub fn fixture_page(mode : String) -> String {
     "settings-connect-menu" | "settings-connect-mode" => "connect:ws1/st1#k1"
     "settings-connect-run" | "settings-connect-switch" | "settings-slack-app" => "connect:ws1/st1#k1"
     // the page of a connect of another kind, none of its sessions yet
-    "settings-connect-comma" | "settings-connect-feishu" => "connect:ws1/st1#k1"
-    "settings-new-connect" | "settings-new-connect-platform" | "settings-new-connect-scan" | "settings-new-connect-app" | "settings-new-connect-comma" =>
-      "connects"
+    "settings-connect-comma" | "settings-connect-feishu" | "settings-connect-group" => "connect:ws1/st1#k1"
+    "settings-new-connect" | "settings-new-connect-platform" | "settings-new-connect-scan" | "settings-new-connect-app" | "settings-new-connect-comma"
+    | "settings-new-connect-platform-group" | "settings-new-connect-group" => "connects"
     "settings-vault-off" | "settings-vault-words" | "settings-vault-recover" | "settings-vault-plain" | "settings-vault-waits" =>
       "vault"
     "settings-vault-items" | "settings-vault-add" | "settings-vault-editor" => "vault-items"
@@ -1655,17 +1678,33 @@ fn fx_connect(id : String, name : String, presence : String, status : String, mo
 }
 
 ///|
-/// Connect k1 as one of another kind (MBUI_FIXTURE=settings-connect-comma, -feishu): Comma's, reached in Comma and
-/// running a session a Task; Feishu's, its app on 飞书. No Slack workspace either, so no team.
+/// Connect k1 as one of another kind (MBUI_FIXTURE=settings-connect-comma, -feishu, -group): Comma's, reached in Comma
+/// and running a session a Task; Feishu's, its app on 飞书; Group's, a member of an IM server. No Slack workspace
+/// either, so no team.
 fn fx_connect_as(kind : String) -> Json {
   let feishu = kind == "feishu"
-  match fx_connect("k1", if feishu { "飞书助手" } else { "Comma 助手" }, "online", "在线", "multi-session") {
+  let group = kind == "group"
+  match fx_connect("k1", if feishu { "飞书助手" } else if group { "Claude" } else { "Comma 助手" }, "online", "在线", "multi-session") {
     Object(o) => {
       o["kind"] = str(kind)
       o.remove("team")
       o.remove("slack")
       o["sessions"] = Json::number(0.0)
-      o["placeText"] = str(if feishu { "飞书" } else { "Comma" })
+      o["placeText"] = str(if feishu { "飞书" } else if group { "Group" } else { "Comma" })
+      if group {
+        o["group"] = obj([
+          ("server", str("3f9a1c0e7b2d4a6f8e1c3b5d7a9f0e2c4b6d8a0f1e3c5b7d9a2f4e6c8b0d1a3f")),
+          ("relays", [str("https://relay-tokyo.group.example")]),
+          ("botName", str("Claude")),
+          ("memberId", str("5c1e9a7b3d2f")),
+          ("device", str("b7e2c94f0a1d3e5c7b9a2f4e6d8c0b1a3f5e7d9c2b4a6f8e0d1c3b5a7f9e2d4c")),
+          ("joining", Json::boolean(false)),
+        ])
+        o["modeWords"] = fx_mode_words_group()
+        o["modeText"] = str("每个对话一个会话")
+        o["modeLabel"] = str("每个对话一个会话")
+        o["modeSentence"] = str("私聊它，或在群里 @ 它开始；之后这个私聊或群里的消息都交给这个会话")
+      }
       if feishu {
         o["feishu"] = obj([
           ("appId", str("cli_a7f3e9b2c41d500e")),
@@ -1704,6 +1743,63 @@ fn fx_comma_flow() -> Json {
     ("noProfile", Json::boolean(false)),
     ("canCreate", Json::boolean(true)),
     ("pick", fx_session_pick()),
+  ])
+}
+
+///|
+/// A new group connect (MBUI_FIXTURE=settings-new-connect-platform-group, settings-new-connect-group): Group picked
+/// among the platforms; its model and way; its server, step 3 of 3, as typed (settings-new-connect-group: filled in as
+/// someone pasted it); added.
+fn fx_group_flow(step : String, mode : String) -> Json {
+  let filled = mode == "settings-new-connect-group"
+  let typed = fn(name : String, sample : String) { if filled { sample } else { fx_group_typed.get(name).unwrap_or("") } }
+  let server = typed("server", "3f9a1c0e7b2d4a6f8e1c3b5d7a9f0e2c4b6d8a0f1e3c5b7d9a2f4e6c8b0d1a3f")
+  let relays = typed("relays", "https://relay-tokyo.group.example")
+  let code = typed("code", "7K2M-QX9P-H4TW-3NRB")
+  let ready = server.length() == 64 && relays.has_prefix("https://") && code.length() >= 16
+  let form = step == "groupForm" || step == "groupDone"
+  let step = if step == "groupDone" { "done" } else { step }
+  obj([
+    ("step", str(step)),
+    ("title", str(if form { "加入 Group 服务器" } else if step == "groupBind" { "绑定模型" } else { "选择平台" })),
+    ("back", str(if form { "groupBind" } else if step == "groupBind" { "platform" } else { "close" })),
+    ("number", Json::number(if form { 3.0 } else if step == "groupBind" { 2.0 } else { 1.0 })),
+    ("total", Json::number(3.0)),
+    ("mobile", Json::boolean(true)),
+    ("platforms", [str("slack"), str("feishu"), str("comma"), str("group")]),
+    ("platform", str("group")),
+    (
+      "group",
+      obj([
+        ("server", str(server)),
+        ("relays", str(relays)),
+        ("code", str(code)),
+        ("botName", str(typed("botName", "Claude"))),
+        ("serverError", Json::null()),
+        ("relaysError", Json::null()),
+        ("codeError", Json::null()),
+        ("ready", Json::boolean(ready)),
+        ("error", Json::null()),
+      ]),
+    ),
+    ("mode", str("multi-session")),
+    ("requireMention", Json::boolean(true)),
+    ("threads", Json::boolean(false)),
+    ("modeWords", fx_mode_words_group()),
+    ("noProfile", Json::boolean(false)),
+    ("canCreate", Json::boolean(true)),
+    ("pick", fx_session_pick()),
+  ])
+}
+
+///|
+/// How a group connect's ways are said (present.ts modeWords "group"): in its conversations' words.
+fn fx_mode_words_group() -> Json {
+  obj([
+    ("multi", obj([("label", str("每个对话一个会话")), ("description", str("私聊它，或在群里 @ 它开始；之后这个私聊或群里的消息都交给这个会话"))])),
+    ("single", obj([("label", str("所有对话共用一个会话")), ("description", str("它所在的群和私聊都进入同一个会话，适合长期值守的助手"))])),
+    ("mentionOn", str("被 @ 后，同一个群里的后续消息无需再 @；私聊的每条消息都会进入会话。")),
+    ("mentionOff", str("它所在的群和私聊里的每条消息都会进入会话。")),
   ])
 }
 
@@ -2830,6 +2926,9 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
       }
     }
     "connectFlow" if fx_connect_step.val == "commaBind" => Some(fx_comma_flow())
+    "connectFlow" if fx_connect_step.val == "platformGroup" => Some(fx_group_flow("platform", mode))
+    "connectFlow" if fx_connect_step.val == "groupBind" || fx_connect_step.val == "groupForm" || fx_connect_step.val == "groupDone" =>
+      Some(fx_group_flow(fx_connect_step.val, mode))
     "connectFlow" if fx_connect_step.val != "team" && fx_connect_step.val != "app" =>
       Some(fx_feishu_flow(fx_connect_step.val))
     "connectFlow" =>
@@ -2998,13 +3097,15 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
                   match mode {
                     "settings-connect-comma" => fx_connect_as("comma")
                     "settings-connect-feishu" => fx_connect_as("feishu")
+                    "settings-connect-group" => fx_connect_as("group")
+                    _ if fx_group_made.val => fx_connect_as("group")
                     _ => fx_connect("k1", "星火助手", "online", "在线", "multi-session")
                   },
                 ),
                 ("runtimeChanges", Json::boolean(mode == "settings-connect-switch")),
                 (
                   "sessions",
-                  if mode == "settings-connect-comma" || mode == "settings-connect-feishu" {
+                  if mode == "settings-connect-comma" || mode == "settings-connect-feishu" || mode == "settings-connect-group" || fx_group_made.val {
                     []
                   } else {
                     [
@@ -3603,6 +3704,8 @@ pub fn fixture_call(name : String, params : Json) -> Result[Json, Json]? {
       let target = match (to, fx_connect_step.val) {
         ("back", "app") => "team"
         ("back", "feishuScan") => "feishuWay"
+        ("back", "groupForm") => "groupBind"
+        ("back", "groupBind") => "platformGroup"
         ("back", _) => "close"
         (step, _) => step
       }
@@ -3660,6 +3763,23 @@ pub fn fixture_call(name : String, params : Json) -> Result[Json, Json]? {
         fx_changed()
       }
       Some(Ok(obj([])))
+    }
+    // a new group connect's server as typed, and added (k1 is it from then on)
+    "connect.flow.edit" if has(field(p, "input"), "group") => {
+      let g = field(field(p, "input"), "group")
+      for name in ["server", "relays", "code", "botName"] {
+        if has(g, name) {
+          fx_group_typed[name] = text(g, name)
+        }
+      }
+      fx_changed()
+      Some(Ok(obj([])))
+    }
+    "connect.flow.create" if fx_connect_step.val == "groupForm" => {
+      fx_group_made.val = true
+      fx_connect_step.val = "groupDone"
+      fx_changed()
+      Some(Ok(obj([("id", str("k1"))])))
     }
     "profile.flow.open" | "profile.flow.edit" | "profile.flow.drop" | "connect.flow.open" | "connect.flow.edit"
     | "connect.flow.drop" | "automaticDecisions.form.open" | "automaticDecisions.form.edit"
@@ -4190,7 +4310,9 @@ fn fx_session_pick() -> Json {
 /// A new connect on Feishu's path (MBUI_FIXTURE=settings-new-connect-platform, -scan): the platform picked (飞书), or
 /// the bot being made by scanning, its QR code waiting.
 fn fx_feishu_flow(step : String) -> Json {
-  let scan = step == "feishuScan"
+  let scanned = step == "feishuScanned"
+  let scan = step == "feishuScan" || scanned
+  let step = if scanned { "done" } else { step }
   let feishu : Array[(String, Json)] = [
     ("way", str("scan")),
     ("appId", str("")),
@@ -4202,10 +4324,10 @@ fn fx_feishu_flow(step : String) -> Json {
     ("failed", Json::boolean(false)),
     ("creating", Json::boolean(false)),
     ("error", Json::null()),
-    ("connect", Json::null()),
+    ("connect", if scanned { str("k1") } else { Json::null() }),
   ]
   if scan {
-    feishu.push(("registration", obj([("state", str("waiting")), ("url", str("https://open.feishu.cn/page/launcher?code=made-up"))])))
+    feishu.push(("registration", obj([("state", str(if scanned { "done" } else { "waiting" })), ("url", str("https://open.feishu.cn/page/launcher?code=made-up"))])))
     feishu.push(("stateText", str("使用飞书扫描二维码，按提示创建机器人")))
     feishu.push(("qr", fx_qr(25)))
   }

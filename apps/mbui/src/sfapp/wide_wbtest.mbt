@@ -157,6 +157,9 @@ test "wide: a row's menu from its right click pins it (chat.pin) and closes" {
     None => ()
   }
   t.key(@ui.key_escape)
+  // (closed: nothing of it read out at once, drawn back over pop_out_ms)
+  assert_true(t.query(Menu) is None)
+  t.run_for(@kit.pop_out_ms)
   assert_true(t.find("分享…") is None)
 }
 
@@ -2980,9 +2983,11 @@ test "wide: Esc goes to what the frame opened first (a row's menu), then to the 
   let (x, y) = t.find("夜里的构建又失败了").unwrap()
   t.right_click(x, y)
   assert_true(t.find("分享…") is Some(_))
-  // the menu closed, the bar still open
+  // the menu closed (drawn back over pop_out_ms), the bar still open
   t.key(@ui.key_escape)
   t.frame()
+  assert_true(t.query(Menu) is None)
+  t.run_for(@kit.pop_out_ms)
   assert_true(t.find("分享…") is None)
   assert_true(@sfpages.find_chat() != "")
   // then the bar
