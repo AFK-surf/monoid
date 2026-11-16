@@ -338,6 +338,7 @@ export const unix: Platform = {
     }
     return null;
   },
+  savedPath: async () => null,
   userShell(env) {
     if (env.SHELL) return env.SHELL;
     try {

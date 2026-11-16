@@ -271,6 +271,59 @@ const host: Host = {
   }),
 };
 
+/// The environment's string values as the registry keeps them, unexpanded (`DoNotExpandEnvironmentNames`): the machine's
+/// and the user's, as UTF-8 JSON in base64, so a path of other than ASCII comes through whatever the console's code page.
+const SAVED_ENVIRONMENT = `$ErrorActionPreference = 'Stop'
+function Saved($path) {
+  $o = @{}
+  $key = Get-Item -LiteralPath $path -ErrorAction SilentlyContinue
+  if ($key) { foreach ($n in $key.GetValueNames()) { $v = $key.GetValue($n, $null, 'DoNotExpandEnvironmentNames'); if ($v -is [string]) { $o[$n] = $v } } }
+  $o
+}
+$j = @{ machine = (Saved 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment'); user = (Saved 'HKCU:\\Environment') } | ConvertTo-Json -Compress -Depth 3
+[Console]::Out.Write([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($j)))`;
+
+type Saved = Record<string, string>;
+
+/// PATH as Windows composes it for a new process: the machine's then the user's, each `%NAME%` expanded by the
+/// variables before it (the process's, the machine's, then the user's, case aside); one it lacks stays as written, as
+/// ExpandEnvironmentStrings leaves it. Only absolute directories, each once. The other values only expand PATH's.
+export function savedPathOf(machine: Saved, user: Saved, env: Env): string[] {
+  const vars = new Map<string, string>();
+  for (const [k, v] of Object.entries(env)) if (v !== undefined) vars.set(k.toUpperCase(), v);
+  const expand = (s: string) => s.replace(/%([^%]+)%/g, (all, name: string) => vars.get(name.toUpperCase()) ?? all);
+  const path = (saved: Saved) => Object.entries(saved).find(([k]) => k.toUpperCase() === "PATH")?.[1] ?? "";
+  const parts: string[] = [];
+  for (const saved of [machine, user]) {
+    for (const [k, v] of Object.entries(saved)) if (k.toUpperCase() !== "PATH") vars.set(k.toUpperCase(), expand(v));
+    parts.push(...expand(path(saved)).split(";"));
+  }
+  const seen = new Set<string>();
+  return parts.map((d) => d.trim()).filter((d) => {
+    if (!win32.isAbsolute(d) || /^[\\/](?![\\/])/.test(d) || seen.has(d.toLowerCase())) return false;
+    seen.add(d.toLowerCase());
+    return true;
+  });
+}
+
+/// The PATH the registry gives a process started now (savedPathOf), or null where it cannot be read in time.
+async function savedPath(env: Env): Promise<string[] | null> {
+  try {
+    const { stdout } = await run("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(SAVED_ENVIRONMENT, "utf16le").toString("base64")], {
+      windowsHide: true,
+      timeout: 8_000,
+      maxBuffer: 1 << 20,
+    });
+    const said: unknown = JSON.parse(Buffer.from(stdout.trim(), "base64").toString("utf8"));
+    const strings = (o: unknown): Saved =>
+      o !== null && typeof o === "object" ? Object.fromEntries(Object.entries(o).filter((e): e is [string, string] => typeof e[1] === "string")) : {};
+    const { machine, user } = (said ?? {}) as { machine?: unknown; user?: unknown };
+    return savedPathOf(strings(machine), strings(user), env);
+  } catch {
+    return null;
+  }
+}
+
 /// A PowerShell string of `s`.
 const q = (s: string) => `'${s.replaceAll("'", "''")}'`;
 
@@ -377,6 +430,7 @@ export const windows: Platform = {
   },
   findCommand,
   userShell: () => null,
+  savedPath,
   /// A bare name is found with PATHEXT (libuv adds .exe and .com only), and a .cmd or .bat (npm's shims) runs through
   /// cmd, which Node refuses to do by itself: each argument quoted, and one cmd would read into (a quote, a %) refused.
   runnable(command, args, env) {

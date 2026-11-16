@@ -1,5 +1,7 @@
-// A service may start without the PATH a person's interactive shell sets (a version manager or a custom bin). Read
-// only that PATH, and use it only for a command absent from the given environment. The shell is time-bounded and its
+// A service may start without the PATH a person's interactive shell sets (a version manager or a custom bin), or, on
+// Windows, before an installer added its directory to the PATH the registry keeps (which a running process is never
+// given: the Antigravity CLI's, 2026-11-16). Read only that PATH, and use it only for a command absent from the given
+// environment. The shell is time-bounded and its
 // output other than the probe's own line is ignored; no shell credentials are brought into a runtime's environment.
 import { createHash, randomBytes } from "node:crypto";
 import { wall } from "./fibers.ts";
@@ -70,21 +72,31 @@ export function readShellPath(shell: string, login: boolean, source: Env, timeou
   });
 }
 
-function shellPath(shell: string, login: boolean, env: Env): Promise<string[] | null> {
+/// What `read` says for `parts` and `env`, asked again only after KEEP_MS (or forgetShellPaths).
+function kept(parts: unknown[], env: Env, read: (clean: Record<string, string>) => Promise<string[] | null>): Promise<string[] | null> {
   const clean = probeEnv(env);
-  const key = createHash("sha256").update(JSON.stringify([shell, login, Object.entries(clean).sort(([a], [b]) => a.localeCompare(b))])).digest("hex");
+  const key = createHash("sha256").update(JSON.stringify([...parts, Object.entries(clean).sort(([a], [b]) => a.localeCompare(b))])).digest("hex");
   const now = wall.now();
   const known = readings.get(key);
   if (known && now - known.at < KEEP_MS) return known.value;
-  const value = readShellPath(shell, login, clean);
+  const value = read(clean);
   if (readings.size >= 32) readings.delete(readings.keys().next().value!);
   readings.set(key, { at: now, value });
   return value;
 }
 
+const shellPath = (shell: string, login: boolean, env: Env) => kept([shell, login], env, (clean) => readShellPath(shell, login, clean));
+
 /// `lookup` can retain directory variables a login itself must not inherit. Existing PATH commands always win.
 export async function withShellCommand(name: string, env: Env, lookup: Env = env): Promise<Env> {
   if (/[\\/]/.test(name) || platform.findCommand(name, env) !== null) return env;
+  // The saved PATH's new directories go after the given ones, so what the given PATH finds keeps its place.
+  const saved = await kept(["saved"], lookup, (clean) => platform.savedPath(clean));
+  if (saved !== null) {
+    const candidate = { ...env };
+    for (const dir of saved) platform.appendPath(candidate, dir);
+    if (platform.findCommand(name, candidate) !== null) return candidate;
+  }
   const shell = platform.userShell(lookup);
   if (!shell) return env;
   // A non-login interactive shell may read a different startup file from a login shell. Prefer what an ordinary

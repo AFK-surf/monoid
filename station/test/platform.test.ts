@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { portableComponent, portableName } from "../src/ops/paths.ts";
 import { unix } from "../src/platform/unix.ts";
-import { cmdPath, drives, readShim, windows } from "../src/platform/windows.ts";
+import { cmdPath, drives, readShim, savedPathOf, windows } from "../src/platform/windows.ts";
 
 const src = fileURLToPath(new URL("../src", import.meta.url));
 
@@ -137,6 +137,21 @@ test("a .cmd names a path with other than ASCII in it through the variable it is
   assert.throws(() => cmdPath("C:\\Users\\张三x\\a", env), /cannot name/);
   assert.throws(() => cmdPath("C:\\Users\\张三\\数据\\a", env), /cannot name/);
   assert.throws(() => cmdPath("D:\\数据\\a", env), /cannot name/);
+});
+
+test("Windows' saved PATH is the machine's then the user's, each %VAR% expanded as a new process would have it", () => {
+  const env = { USERPROFILE: "C:\\Users\\张三", SystemRoot: "C:\\WINDOWS", Path: "C:\\WINDOWS\\system32" };
+  const machine = { Path: "%SystemRoot%\\system32;%SystemRoot%;C:\\Program Files\\Git\\cmd;;", ToolsRoot: "D:\\tools" };
+  // A user variable is of the machine's too; one named by neither stays as written, as Windows leaves it.
+  const user = { PATH: "%localappdata%\\agy\\bin;%ToolsRoot%\\bin;%NOPE%\\bin;relative\\bin;\\rooted;c:\\windows\\SYSTEM32", LOCALAPPDATA: "%USERPROFILE%\\AppData\\Local" };
+  assert.deepEqual(savedPathOf(machine, user, env), [
+    "C:\\WINDOWS\\system32",
+    "C:\\WINDOWS",
+    "C:\\Program Files\\Git\\cmd",
+    "C:\\Users\\张三\\AppData\\Local\\agy\\bin",
+    "D:\\tools\\bin",
+  ]);
+  assert.deepEqual(savedPathOf({}, {}, env), []);
 });
 
 test("what an npm or pnpm shim runs is run without cmd, which cannot pass a newline", () => {

@@ -79,6 +79,10 @@ export type Platform = {
   findCommand(name: string, env: Env): Found | null;
   /// The user's interactive shell, when this machine has one to read a PATH from.
   userShell(env: Env): string | null;
+  /// The PATH a process started now would be given, where the machine keeps it apart from a shell (Windows' registry:
+  /// the machine's, then the user's, each `%VAR%` expanded): what an installer put there after this process started,
+  /// which a running process is never given. None on Unix, where the shell's startup files say it (`userShell`).
+  savedPath(env: Env): Promise<string[] | null>;
   /// How Node runs a command (a name on PATH, or a path) with `args`: on Windows a .cmd is run around cmd when it can
   /// be (npm's, Vite+'s), else through it, quoted.
   runnable(command: string, args: string[], env: NodeJS.ProcessEnv): { file: string; args: string[]; windowsVerbatimArguments?: true };
