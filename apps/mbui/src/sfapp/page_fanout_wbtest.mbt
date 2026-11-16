@@ -43,3 +43,36 @@ test "账号's 概览: a quota leaving its pools as they were runs none of its b
   let down = ran.get("profiles/down").unwrap_or(0)
   assert_true(down <= 160, msg="profiles/down: ran \{down} bindings, over the rows it brings (160)")
 }
+
+///|
+test "全部密钥: a secret used runs the bindings of its own row alone, a vault's own row changed none, a secret added what it brings" {
+  for at in [("settings-vault-items", real_size_windows[0]), ("settings-vault-items", real_size_windows[1]), ("settings-vault-editor", real_size_windows[1])] {
+    let (mode, win) = at
+    let items = page_fanout_of(mode, win, "vaultItems vault=plain")
+    // (its last use changed: that row's line, none of the other secrets' rows)
+    let used = items.get("vaultItems vault=plain/used").unwrap_or(0)
+    assert_true(used <= 6, msg="\{win.0} \{mode} vaultItems/used: ran \{used} bindings, over its own row's (6)")
+    // (a secret more: its row made, the pieces of the card it moves, the list's keys)
+    let item = items.get("vaultItems vault=plain/item").unwrap_or(0)
+    assert_true(item <= 20, msg="\{win.0} \{mode} vaultItems/item: ran \{item} bindings, over what a row more brings (20)")
+    // (the vault's own row in the library (how many it holds): no secret's row shows it)
+    let vault = page_fanout_of(mode, win, "vaults").get("vaults/item").unwrap_or(0)
+    assert_eq(vault, 0, msg="\{win.0} \{mode} vaults/item: ran \{vault} bindings, nothing it shows changed")
+  }
+}
+
+///|
+test "连接: a session more on one connect runs none of its rows' bindings, none of what a row says of it changed" {
+  for win in real_size_windows {
+    let ran = page_fanout_of("settings-connects", win, "connects").get("connects/session").unwrap_or(0)
+    assert_eq(ran, 0, msg="\{win.0} settings-connects connects/session: ran \{ran} bindings, nothing a row says changed")
+  }
+}
+
+///|
+test "更新日志: a build more out runs what it brings (its change's row, the days' cards it moves), not the tabs or the head" {
+  for win in real_size_windows {
+    let ran = page_fanout_of("settings-changelog", win, "changelog").get("changelog/release").unwrap_or(0)
+    assert_true(ran <= 50, msg="\{win.0} settings-changelog changelog/release: ran \{ran} bindings, over what it brings (50)")
+  }
+}

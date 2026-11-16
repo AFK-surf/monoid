@@ -138,6 +138,9 @@ pub fn connects_node(
       }
     }
   }
+  // (where each connect stands on the list and each station's name, worked out once for each change of it, read by
+  // each row by its key: a session more on one connect runs the bindings of that row alone: connects_placed)
+  let placed = @signals.computed(fn(_) { connects_placed(shown()) })
   // where one is added: the stations online
   let targets_now = @signals.computed(fn(_) { stations().filter(fn(s) { flag(Some(s), "online") }) }, same=jsons_same)
   let targets = fn() { targets_now.get() }
@@ -152,35 +155,37 @@ pub fn connects_node(
     Some(f) => f(actions, fn(_) { @sf.button_height() })
     None => ()
   }
+  // (its blocks worked out once for each change of what they are of, told on only as one comes, goes or moves)
+  let blocks = @signals.computed(fn(_) {
+    let out : Array[String] = []
+    if first() {
+      out.push(if no_profile() { "first-profile" } else { "first" })
+    } else {
+      out.push("filter")
+    }
+    if waiting().length() > 0 {
+      out.push("waiting")
+    }
+    if !first() {
+      if shown().length() == 0 && topic().error is None && (loading() || failing()) {
+        out.push("reading")
+      } else if shown().length() == 0 {
+        out.push("none")
+      } else {
+        // (a block a row: a station's heading, then each of its connects, a piece of its card: connects_list_keys)
+        out.append(connects_list_keys(shown(), only))
+        // what the list still waits on: a row's shape for a station not read yet, each failure said
+        if flag(wait(), "reading") || failing() {
+          out.push("more")
+        }
+      }
+    }
+    out
+  })
   @sf.page_node(
     v,
     fn() { @sf.t("android-settings.connects.title") },
-    fn() {
-      let out : Array[String] = []
-      if first() {
-        out.push(if no_profile() { "first-profile" } else { "first" })
-      } else {
-        out.push("filter")
-      }
-      if waiting().length() > 0 {
-        out.push("waiting")
-      }
-      if !first() {
-        if shown().length() == 0 && topic().error is None && (loading() || failing()) {
-          out.push("reading")
-        } else if shown().length() == 0 {
-          out.push("none")
-        } else {
-          // (a block a row: a station's heading, then each of its connects, a piece of its card: connects_list_keys)
-          out.append(connects_list_keys(shown(), only))
-          // what the list still waits on: a row's shape for a station not read yet, each failure said
-          if flag(wait(), "reading") || failing() {
-            out.push("more")
-          }
-        }
-      }
-      out
-    },
+    fn() { blocks.get() },
     fn(b, key) {
       let look = @sf.look_node(b)
       let wide = look == Wide
@@ -250,7 +255,7 @@ pub fn connects_node(
             |> ignore
           })
           |> ignore
-        k if k.has_prefix("c/") || k.has_prefix("s/") => connects_row_block(b, core, look, shown, station_of, tips, stint, k)
+        k if k.has_prefix("c/") || k.has_prefix("s/") => connects_row_block(b, core, look, placed, station_of, tips, stint, k)
         _ =>
           cn_gutter_node(b, look, fn(g) {
             @sf.wait_more_node(g, fn() { { reading: flag(wait(), "reading"), text: "", failing: failing_of(wait()) } }, fn(s) {
@@ -399,13 +404,67 @@ fn connects_list_rows(shown : Array[Json]) -> Array[(String, Array[(String, Json
 }
 
 ///|
+/// Where a connect stands on 连接's list (connects_placed's): its station's address and name, the connect, which piece
+/// of its station's card it is (narrow) and of the one card (wide).
+priv struct ConnectPlace {
+  address : String
+  station_name : String
+  connect : Json?
+  piece : @sf.CardPiece
+  wide_piece : @sf.CardPiece
+}
+
+///|
+/// The same place: its connect the same reference (the core's deltas keep what they do not touch), else said the same.
+impl Eq for ConnectPlace with equal(a, b) {
+  a.address == b.address &&
+  a.station_name == b.station_name &&
+  a.piece == b.piece &&
+  a.wide_piece == b.wide_piece &&
+  json_opt_same(a.connect, b.connect)
+}
+
+///|
+/// Where each of the connects `shown` stands on 连接's list, by its block's key ("c/<station>/<connect>":
+/// connects_list_keys'), and each station's name by its address, worked out in one walk of them.
+fn connects_placed(shown : Array[Json]) -> (Map[String, ConnectPlace], Map[String, String]) {
+  let rows = connects_list_rows(shown)
+  let mut all = 0
+  for row in rows {
+    all += row.1.length()
+  }
+  let places : Map[String, ConnectPlace] = Map([])
+  let names : Map[String, String] = Map([])
+  let mut at_all = 0
+  for row in rows {
+    let (address, keys) = row
+    for i, k in keys {
+      let x = Some(k.1)
+      if i == 0 {
+        names[address] = text(x, "stationName")
+      }
+      places["c/" + address + "/" + k.0] = {
+        address,
+        station_name: text(x, "stationName"),
+        connect: field(x, "connect"),
+        piece: @sf.card_piece_of(i, keys.length()),
+        wide_piece: @sf.card_piece_of(at_all, all),
+      }
+      at_all += 1
+    }
+  }
+  (places, names)
+}
+
+///|
 /// Block `key` of 连接's list (connects_list_keys'): a station's heading, narrow; a connect's row, a piece of its
-/// station's card narrow and of the one card wide, as it is now (as it was last, while it goes).
+/// station's card narrow and of the one card wide, as `placed` has it now (as it was last, while it goes), each told on
+/// only as it changes.
 fn connects_row_block(
   b : @view.View,
   core : Core,
   look : Look,
-  shown : () -> Array[Json],
+  placed : @signals.Computed[(Map[String, ConnectPlace], Map[String, String])],
   station_of : (String) -> Json?,
   tips : @sf.TipLayer,
   stint : () -> Int,
@@ -413,11 +472,9 @@ fn connects_row_block(
 ) -> Unit {
   if key.has_prefix("s/") {
     let address = key.exact_view(start=2).to_owned()
+    let name = @signals.computed(fn(_) { placed.get().1.get(address).unwrap_or("") })
     @sf.narrow_heading_node(b, fn() {
-      let name = match shown().iter().find_first(fn(x) { text(Some(x), "station") == address }) {
-        Some(x) => text(Some(x), "stationName")
-        None => ""
-      }
+      let name = name.get()
       let sv = station_of(address)
       if sv is None || flag(sv, "online") {
         name
@@ -428,47 +485,32 @@ fn connects_row_block(
     return
   }
   // (where it stands: its row, which of its station's and of all of them it is; as last, once gone)
-  let last : Ref[(Json, @sf.CardPiece, @sf.CardPiece)?] = Ref(None)
-  let now = fn() {
-    let rows = connects_list_rows(shown())
-    let mut all = 0
-    let mut at_all = -1
-    let mut found : (Json, Int, Int)? = None
-    for row in rows {
-      let (address, keys) = row
-      for i, k in keys {
-        if found is None && "c/" + address + "/" + k.0 == key {
-          found = Some((k.1, i, keys.length()))
-          at_all = all
+  let held : @signals.Computed[ConnectPlace?] = @signals.computed(fn(last) {
+    match placed.get().0.get(key) {
+      Some(p) => Some(p)
+      None =>
+        match last {
+          Some(l) => l
+          None => None
         }
-        all += 1
-      }
     }
-    match found {
-      Some((x, i, n)) => last.val = Some((x, @sf.card_piece_of(i, n), @sf.card_piece_of(at_all, all)))
-      None => ()
-    }
-    last.val
-  }
-  guard @signals.untracked(now) is Some((x0, _, _)) else { return }
-  let address = text(Some(x0), "station")
+  })
+  guard @signals.untracked(fn() { held.get() }) is Some(p0) else { return }
+  let address = p0.address
+  let piece = @signals.computed(fn(_) { held.get().map(fn(p) { p.piece }).unwrap_or(@sf.CardPiece::CardWhole) })
+  let wide_piece = @signals.computed(fn(_) { held.get().map(fn(p) { p.wide_piece }).unwrap_or(@sf.CardPiece::CardWhole) })
+  let name = @signals.computed(fn(_) { held.get().map(fn(p) { p.station_name }).unwrap_or("") })
+  let cv = @signals.computed(fn(_) { held.get().bind(fn(p) { p.connect }) }, same=json_opt_same)
   // (as tall as its block, its piece of the card in it as tall: card_piece_node)
   b.grow(Is(1.0)) |> ignore
   @sf.card_piece_node(
     b,
-    fn() { now().map(fn(n) { n.1 }).unwrap_or(@sf.CardPiece::CardWhole) },
+    fn() { piece.get() },
     wide_group=true,
     wide_group_foot=false,
-    wide_piece=fn() { now().map(fn(n) { n.2 }).unwrap_or(@sf.CardPiece::CardWhole) },
+    wide_piece=fn() { wide_piece.get() },
     fn(card) {
-      cn_row_node(card, core, look, address, fn() { now().map(fn(n) { text(Some(n.0), "stationName") }).unwrap_or("") }, fn() {
-        station_of(address)
-      }, fn() {
-        match now() {
-          Some((x, _, _)) => field(Some(x), "connect")
-          None => None
-        }
-      }, tips, stint)
+      cn_row_node(card, core, look, address, fn() { name.get() }, fn() { station_of(address) }, fn() { cv.get() }, tips, stint)
     },
   )
 }
@@ -584,14 +626,28 @@ fn cn_row_node(
   tips : @sf.TipLayer,
   stint : () -> Int,
 ) -> Unit {
-  let id = fn() { text(cv(), "id") }
-  let how = fn() {
-    let model = match opt_text(field(cv(), "bind"), "model") {
-      Some(m) => " · " + opt_text(cv(), "modelName").unwrap_or(m)
+  // (each of what the row says of it worked out once for each change of it and told on only as that changes: a session
+  // more on it runs what says how it is alone)
+  let said = fn(of : (Json?) -> String) {
+    let now = @signals.computed(fn(_) { of(cv()) })
+    fn() { now.get() }
+  }
+  let id = said(fn(c) { text(c, "id") })
+  let name = said(fn(c) { text(c, "name") })
+  let how = said(fn(c) {
+    let model = match opt_text(field(c, "bind"), "model") {
+      Some(m) => " · " + opt_text(c, "modelName").unwrap_or(m)
       None => ""
     }
-    text(cv(), "modeText") + " · " + text(cv(), "runtimeText") + model
-  }
+    text(c, "modeText") + " · " + text(c, "runtimeText") + model
+  })
+  let kind = said(fn(c) { text(c, "kind") })
+  let team = said(fn(c) { text(c, "team") })
+  let teamed = @signals.computed(fn(_) { opt_text(cv(), "team") is Some(_) })
+  let image = @signals.computed(fn(_) { opt_text(cv(), "botImage") })
+  let presence = said(fn(c) { text(c, "presence") })
+  let status = said(fn(c) { text(c, "statusText") })
+  let by = @signals.computed(fn(_) { field(cv(), "createdBy") }, same=json_opt_same)
   let on = fn() { [("station", station), ("id", id())] }
   let wide = look == Wide
   let end = fn(e : @view.View) {
@@ -602,29 +658,29 @@ fn cn_row_node(
         @sf.style_node(f, fn() { cn_facts })
         f.drops(Is(cn_drop_facts)) |> ignore
         cn_station_tag_node(f, station_name, s, stint)
-        cn_owner_node(f, core, fn() { field(cv(), "createdBy") }, tips, stint)
+        cn_owner_node(f, core, fn() { by.get() }, tips, stint)
       })
       |> ignore
     }
     doing_mark_node(e, fn() { is_doing(core, ["connect.delete"], on()) }, fn() { failed_of(core, ["connect.delete"], on()) }, tips~, size=doing_mark_end)
     e.box(fn(st) {
       @sf.style_node(st, fn() { cn_narrow_state })
-      @sf.state_dot_node(st, fn() { text(cv(), "presence") })
-      @sf.words_node(st, fn() { text(cv(), "statusText") }, fn() { cn_meta }) |> ignore
+      @sf.state_dot_node(st, presence)
+      @sf.words_node(st, status, fn() { cn_meta }) |> ignore
     })
     |> ignore
   }
   // (its lead a 28x28 face across the row's middle; a platform's mark said once on a row, where the row leads with it,
   // else before its team)
-  r.pick(fn() { opt_text(cv(), "botImage") is Some(_) }, fn(p, pictured) {
+  r.pick(fn() { image.get() is Some(_) }, fn(p, pictured) {
     @sf.link_row_node(
       p,
-      fn() { text(cv(), "name") },
+      name,
       fn() { (core.push)(Connect(station, @signals.untracked(id))) },
       note=how,
       note_cut=true,
       chevron=false,
-      lead=LeadMade(fn(l) { cn_avatar_node(l, core, cv, stint) }),
+      lead=LeadMade(fn(l) { cn_avatar_node(l, core, id, name, fn() { image.get() }, kind, stint) }),
       face=true,
       // its Slack workspace after its name (short of room, its name kept: its team leaves its line first)
       title_after=fn(a) {
@@ -632,13 +688,13 @@ fn cn_row_node(
         a.box(fn(t) {
           @sf.style_node(t, fn() { cn_team })
           if pictured {
-            cn_kind_node(t, fn() { text(cv(), "kind") }, cn_team_icon)
+            cn_kind_node(t, kind, cn_team_icon)
           }
-          @sf.words_node(t, fn() { text(cv(), "team") }, fn() { cn_meta }) |> ignore
+          @sf.words_node(t, team, fn() { cn_meta }) |> ignore
         })
         |> ignore
       },
-      title_after_shown=fn() { opt_text(cv(), "team") is Some(_) },
+      title_after_shown=fn() { teamed.get() },
       tail?=if wide { None } else { Some(end) },
       control?=if wide { Some(end) } else { None },
     )
@@ -646,12 +702,21 @@ fn cn_row_node(
 }
 
 ///|
-/// A connect as its people see it (ui.tsx ConnectAvatar, 28): its bot's picture; its kind's mark till that is said.
-fn cn_avatar_node(l : @view.View, core : Core, cv : () -> Json?, stint : () -> Int) -> Unit {
-  l.pick(fn() { opt_text(cv(), "botImage") is Some(_) }, fn(p, pictured) {
+/// A connect as its people see it (ui.tsx ConnectAvatar, 28), by its `id`, `name`, bot's `image` and `kind` as they are
+/// now: its bot's picture; its kind's mark till that is said.
+fn cn_avatar_node(
+  l : @view.View,
+  core : Core,
+  id : () -> String,
+  name : () -> String,
+  image : () -> String?,
+  kind : () -> String,
+  stint : () -> Int,
+) -> Unit {
+  l.pick(fn() { image() is Some(_) }, fn(p, pictured) {
     if pictured {
-      @sf.avatar_node(p, fn() { text(cv(), "id") }, fn() { text(cv(), "name") }, fn() {
-        match opt_text(cv(), "botImage") {
+      @sf.avatar_node(p, id, name, fn() {
+        match image() {
           Some(image) => (core.picture)(image, stint())
           None => ""
         }
@@ -659,7 +724,7 @@ fn cn_avatar_node(l : @view.View, core : Core, cv : () -> Json?, stint : () -> I
     } else {
       p.box(fn(k) {
         @sf.style_node(k, fn() { cn_kind_box })
-        cn_kind_node(k, fn() { text(cv(), "kind") }, cn_kind_size)
+        cn_kind_node(k, kind, cn_kind_size)
       })
       |> ignore
     }

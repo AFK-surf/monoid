@@ -607,8 +607,19 @@ pub fn vault_items_node(
 ) -> Unit {
   let ws = fn() { here().workspace }
   let view = fn() { (core.topic)("vaults", { "workspace": str(ws()) }).get() }
-  let usable = fn() { vault_first_keys(ws(), view().value) is None }
+  // (what comes before the library, worked out once for each change of the vaults and told on only as it changes: a
+  // vault's own row changed (an item more in it) runs none of what reads it)
+  let first = @signals.computed(fn(_) { vault_first_keys(ws(), view().value) })
+  let usable = fn() { first.get() is None }
   let all = vault_all_of(core, ws, fn() { view().value })
+  // (its blocks worked out once for each change of what they are of, told on only as one comes, goes or moves: a
+  // secret used changes none)
+  let blocks = @signals.computed(fn(_) {
+    match first.get() {
+      Some(keys) => keys
+      None => vault_all_keys(all)
+    }
+  })
   @sf.page_node(
     v,
     fn() { @sf.t("web-pages.vault.all") },
@@ -641,12 +652,7 @@ pub fn vault_items_node(
         |> ignore
       })
     },
-    fn() {
-      match vault_first_keys(ws(), view().value) {
-        Some(keys) => keys
-        None => vault_all_keys(all)
-      }
-    },
+    fn() { blocks.get() },
     fn(b, key) {
       if vault_first_node(b, core, here, view, key, fn(s, quiet, sample) {
           vault_all_node(s, quiet, ws, fn() { sample }, tips)
@@ -845,20 +851,23 @@ fn vault_reset() -> Unit {
 }
 
 ///|
-/// A row of 全部密钥: a vault's secret ("it/<vault>/<item>"), or those of a vault it does not name ("hidden/<vault>").
+/// A row of 全部密钥: a vault's secret ("it/<vault>/<item>": its vault's id and name, the secret, whether there are
+/// more vaults than one, whether it is keyed), or those of a vault it does not name ("hidden/<vault>": the first of
+/// them, what is said of them, whether it is keyed). Of its vault only what the row shows: a change of the vault's
+/// own row (how many it holds, an item added) changes no secret's row.
 priv enum VaultRow {
-  Secret(Json, Json, Bool, Bool)
-  Hidden(Json, String, String, Bool)
+  Secret(String, String, Json, Bool, Bool)
+  Hidden(String, String, Bool)
 }
 
 ///|
-/// The same row: of the same JSON (the core's deltas keep what they do not touch: one comparison of two references for
-/// each, a row whose JSON changed read whole), as said the same.
+/// The same row: of the same JSON (the core's deltas keep what they do not touch: one comparison of two references, a
+/// row whose JSON changed read whole), as said the same.
 impl Eq for VaultRow with equal(a, b) {
-  let same = fn(x : Json, y : Json) { physical_equal(x, y) || x == y }
   match (a, b) {
-    (Secret(r, i, m, k), Secret(r2, i2, m2, k2)) => m == m2 && k == k2 && same(i, i2) && same(r, r2)
-    (Hidden(r, i, w, k), Hidden(r2, i2, w2, k2)) => i == i2 && w == w2 && k == k2 && same(r, r2)
+    (Secret(v, n, i, m, k), Secret(v2, n2, i2, m2, k2)) =>
+      v == v2 && n == n2 && m == m2 && k == k2 && (physical_equal(i, i2) || i == i2)
+    (Hidden(i, w, k), Hidden(i2, w2, k2)) => i == i2 && w == w2 && k == k2
     _ => false
   }
 }
@@ -936,7 +945,7 @@ fn vault_all_of(core : Core, ws : () -> String, view : () -> Json?) -> VaultAll 
       for it in list {
         let iv = Some(it)
         if has(iv, "name") && shows([text(iv, "name"), text(iv, "kindText"), text(iv, "lineText"), text(iv, "howText")]) {
-          out.push(("it/" + text(rv, "id") + "/" + text(iv, "id"), Secret(row, it, many, keyed)))
+          out.push(("it/" + text(rv, "id") + "/" + text(iv, "id"), Secret(text(rv, "id"), text(rv, "name"), it, many, keyed)))
         }
       }
       let hidden = list.filter(fn(x) { !has(Some(x), "name") })
@@ -944,7 +953,7 @@ fn vault_all_of(core : Core, ws : () -> String, view : () -> Json?) -> VaultAll 
         unnamed.push(
           (
             "hidden/" + text(rv, "id"),
-            Hidden(row, text(Some(hidden[0]), "id"), @sf.t("web-pages.vault.hidden", args=[("n", hidden.length().to_string())]), keyed),
+            Hidden(text(Some(hidden[0]), "id"), @sf.t("web-pages.vault.hidden", args=[("n", hidden.length().to_string())]), keyed),
           ),
         )
       }
@@ -952,7 +961,7 @@ fn vault_all_of(core : Core, ws : () -> String, view : () -> Json?) -> VaultAll 
     out + unnamed
   }, same=fn(a, b) { a == b })
   // (the secrets found by their names: not found, whatever a vault does not name)
-  let named = @signals.computed(fn(_) { rows.get().iter().filter(fn(r) { r.1 is Secret(_, _, _, _) }).count() })
+  let named = @signals.computed(fn(_) { rows.get().iter().filter(fn(r) { r.1 is Secret(_, _, _, _, _) }).count() })
   // (the profiles' accounts in their groups, as the profiles list them)
   let groups = @signals.computed(
     fn(_) { profile_groups(items((core.topic)("profiles", { "scope": str(ws()) }).get().value, "items")) },
@@ -1072,7 +1081,7 @@ fn vault_all_said_node(p : @view.View, core : Core, ws : () -> String, what : In
       @sf.waiting_node(p, fn(w) {
         @sf.group_node(w, fn(g) {
           for x in vault_sample_items() {
-            vault_row_node(g, core.quiet(), ws, fn() { Secret(Json::null(), Json::object(x), false, true) })
+            vault_row_node(g, core.quiet(), ws, fn() { Secret("", "", Json::object(x), false, true) })
           }
         })
       }, note=fn() { { reading: true, text: @sf.t("common.reading"), failing: [] } })
@@ -1108,28 +1117,34 @@ fn vault_all_block(b : @view.View, core : Core, ws : () -> String, all : VaultAl
     "accounts" => vault_accounts_node(b, core, all)
     "said" => b.pick(fn() { vault_all_said(all) }, fn(p, what) { vault_all_said_node(p, core, ws, what) })
     _ => {
-      let last : Ref[(Int, VaultRow)?] = Ref(None)
-      let now = fn() {
+      // (which piece of the card it is and its row, worked out once for each change of the list and told on only as
+      // they change: a secret used, or one added, runs the bindings of the rows it changes, never every row's; as last,
+      // once its key is gone)
+      let held : @signals.Computed[(@sf.CardPiece, VaultRow)?] = @signals.computed(fn(last) {
         match all.at.get().get(key) {
           Some(i) => {
-            let made = (i, all.rows.get()[i].1)
-            last.val = Some(made)
-            Some(made)
+            let rows = all.rows.get()
+            Some((@sf.card_piece_of(i, rows.length()), rows[i].1))
           }
-          None => last.val
+          None =>
+            match last {
+              Some(l) => l
+              None => None
+            }
         }
-      }
-      guard @signals.untracked(now) is Some(_) else { return }
-      // (as tall as its block, its piece of the card in it as tall: card_piece_node)
-      b.grow(Is(1.0)) |> ignore
-      let piece = fn() {
-        match now() {
-          Some((i, _)) => @sf.card_piece_of(i, all.rows.get().length())
+      })
+      guard @signals.untracked(fn() { held.get() }) is Some(_) else { return }
+      let piece = @signals.computed(fn(_) {
+        match held.get() {
+          Some((p, _)) => p
           None => @sf.CardPiece::CardWhole
         }
-      }
-      @sf.card_piece_node(b, piece, wide_group=true, fn(card) {
-        vault_row_node(card, core, ws, fn() { now().unwrap().1 })
+      })
+      let row = @signals.computed(fn(_) { held.get().unwrap().1 })
+      // (as tall as its block, its piece of the card in it as tall: card_piece_node)
+      b.grow(Is(1.0)) |> ignore
+      @sf.card_piece_node(b, fn() { piece.get() }, wide_group=true, fn(card) {
+        vault_row_node(card, core, ws, fn() { row.get() })
       })
     }
   }
@@ -1143,8 +1158,8 @@ fn vault_all_block(b : @view.View, core : Core, ws : () -> String, all : VaultAl
 fn vault_row_node(row : @view.View, core : Core, ws : () -> String, r : () -> VaultRow) -> Unit {
   let how_now = fn() {
     match r() {
-      Secret(_, _, _, keyed) => if keyed { 0 } else { 1 }
-      Hidden(_, _, _, keyed) => if keyed { 2 } else { 3 }
+      Secret(_, _, _, _, keyed) => if keyed { 0 } else { 1 }
+      Hidden(_, _, keyed) => if keyed { 2 } else { 3 }
     }
   }
   row.pick(how_now, fn(p, how) {
@@ -1152,26 +1167,26 @@ fn vault_row_node(row : @view.View, core : Core, ws : () -> String, r : () -> Va
       0 | 1 => {
         let parts = fn() {
           match r() {
-            Secret(v, i, many, _) => (Some(v), Some(i), many)
-            _ => (None, None, false)
+            Secret(vault, vault_name, i, many, _) => (vault, vault_name, Some(i), many)
+            _ => ("", "", None, false)
           }
         }
         let keyed = how == 0
         @sf.link_row_node(
           p,
-          fn() { text(parts().1, "name") },
+          fn() { text(parts().2, "name") },
           fn() {
-            let (rv, iv, _) = @signals.untracked(parts)
-            (core.push)(VaultItem(text(rv, "id"), text(iv, "id")))
+            let (vault, _, iv, _) = @signals.untracked(parts)
+            (core.push)(VaultItem(vault, text(iv, "id")))
           },
           note=fn() {
-            let (rv, iv, many) = parts()
-            [text(iv, "kindText"), if many { text(rv, "name") } else { "" }, if keyed { text(iv, "lineText") } else { text(iv, "agentText") }]
+            let (_, vault_name, iv, many) = parts()
+            [text(iv, "kindText"), if many { vault_name } else { "" }, if keyed { text(iv, "lineText") } else { text(iv, "agentText") }]
             .filter(fn(w) { w != "" })
             .join(" · ")
           },
           lead=LeadMade(fn(l) {
-            l.pick(fn() { @settings.kind_icon(text(parts().1, "kind")) }, fn(m, icon) {
+            l.pick(fn() { @settings.kind_icon(text(parts().2, "kind")) }, fn(m, icon) {
               @sf.icon_node(m, icon, vt_glyph, By(fn() { @sf.theme().p.text })) |> ignore
             })
           }),
@@ -1181,7 +1196,7 @@ fn vault_row_node(row : @view.View, core : Core, ws : () -> String, r : () -> Va
       _ => {
         let words = fn() {
           match r() {
-            Hidden(_, _, w, _) => w
+            Hidden(_, w, _) => w
             _ => ""
           }
         }
@@ -1194,7 +1209,7 @@ fn vault_row_node(row : @view.View, core : Core, ws : () -> String, r : () -> Va
             words,
             fn() {
               match @signals.untracked(r) {
-                Hidden(_, first, _, _) =>
+                Hidden(first, _, _) =>
                   @settings.act(core, @sf.t("web-pages.vault.unlockWhat"), "vault.open", obj([("workspace", str(@signals.untracked(ws))), ("item", str(first))]))
                 _ => ()
               }

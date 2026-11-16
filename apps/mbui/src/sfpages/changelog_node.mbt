@@ -89,18 +89,22 @@ pub fn changelog_node(
     },
   )
   let tabs = fn() { items(value(), "tabs") }
-  let index_of = fn(part : String) { tabs().search_by(fn(x) { text(Some(x), "part") == part }).unwrap_or(0) }
+  // (the tabs' parts and words, worked out once for each value and told on only as they change: a release come over
+  // them tells the choice and the page's head nothing)
+  let tab_parts = @signals.computed(fn(_) { tabs().map(fn(x) { text(Some(x), "part") }) })
+  let tab_labels = @signals.computed(fn(_) { tabs().map(fn(x) { text(Some(x), "label") }) })
+  let index_of = fn(part : String) { tab_parts.get().search(part).unwrap_or(0) }
   // (the tab chosen, at once; the one whose changes show, the one the value shown was asked for: the first where it
   // named none, or one there is not, as the core has it)
-  let at = fn() { index_of(changelog_part.get()) }
-  let shown_at = fn() {
+  let at = @signals.computed(fn(_) { index_of(changelog_part.get()) })
+  let shown_at = @signals.computed(fn(_) {
     match shown().get("part") {
       Some(String(p)) => index_of(p)
       _ => 0
     }
-  }
+  })
   let days = fn() {
-    match tabs().get(shown_at()) {
+    match tabs().get(shown_at.get()) {
       Some(x) => items(Some(x), "days")
       None => []
     }
@@ -114,7 +118,7 @@ pub fn changelog_node(
     for i, d in days() {
       let dk = day_key(d, i)
       keys.push("day/" + dk)
-      parts["day/" + dk] = DayHeading(d)
+      parts["day/" + dk] = DayHeading(text(Some(d), "label"))
       let entries = items(Some(d), "entries")
       for j, e in entries {
         let ck = "change/" + change_key(e, dk, j)
@@ -124,9 +128,10 @@ pub fn changelog_node(
     }
     (keys, parts)
   })
-  let blocks = fn() {
+  // (its blocks worked out once for each value, told on only as one comes, goes or moves)
+  let blocks = @signals.computed(fn(_) {
     let out = []
-    if tabs().length() > 1 {
+    if tab_parts.get().length() > 1 {
       out.push("tabs")
     }
     let v = value()
@@ -140,18 +145,20 @@ pub fn changelog_node(
       out.append(listed.get().0)
     }
     out
-  }
-  let lead = fn() {
+  })
+  let lead_now = @signals.computed(fn(_) {
     let v = value()
     if has(v, "build") && !(field(v, "build") is Some(Null)) {
       @sf.t("web-pages.changelog.build", args=[("build", count(v, "build").to_string())])
     } else {
       ""
     }
-  }
+  })
+  let lead = fn() { lead_now.get() }
   // (near the last change it holds while the core has more of the tab: a page more of it asked, once for what shows,
   // as sfbase's chats_grow tells a chats' list its window once for the rows it holds)
-  let more = fn() { count(value(), "more") > 0 }
+  let more_now = @signals.computed(fn(_) { count(value(), "more") > 0 })
+  let more = fn() { more_now.get() }
   let ask_more = fn() {
     let part = @signals.untracked(fn() { changelog_part.get() })
     let limit = @signals.untracked(fn() { limit_of(part) })
@@ -170,7 +177,7 @@ pub fn changelog_node(
   let scrolls : Map[String, @view.Scroll] = Map([])
   // (the part whose changes show as it is, the first where none is said: what its page and where it was scrolled to
   // are by; another chosen, its page once the core has answered it)
-  v.pick(fn() { text(tabs().get(shown_at()), "part") }, fn(pv, part) {
+  v.pick(fn() { tab_parts.get().get(shown_at.get()).unwrap_or("") }, fn(pv, part) {
     let scroll = match scrolls.get(part) {
       Some(s) => s
       None => {
@@ -189,17 +196,17 @@ pub fn changelog_node(
       lead~,
       scroll~,
       near_foot=(1.5, more, ask_more),
-      blocks,
+      fn() { blocks.get() },
       fn(b, key) {
         match key {
           "tabs" =>
             @sf.page_choice_node(
               b,
-              fn() { tabs().map(fn(x) { text(Some(x), "label") }) },
-              at,
+              fn() { tab_labels.get() },
+              fn() { at.get() },
               fn(k) {
-                match @signals.untracked(tabs).get(k) {
-                  Some(x) => changelog_part.set(text(Some(x), "part"))
+                match @signals.untracked(fn() { tab_parts.get() }).get(k) {
+                  Some(part) => changelog_part.set(part)
                   None => ()
                 }
               },
@@ -222,7 +229,7 @@ pub fn changelog_node(
             if key.has_prefix("day/") {
               @sf.day_heading_node(b, fn() {
                 match part() {
-                  Some(DayHeading(d)) => text(Some(d), "label")
+                  Some(DayHeading(label)) => label
                   _ => ""
                 }
               })
@@ -251,11 +258,11 @@ pub fn changelog_node(
 }
 
 ///|
-/// What a block of the changelog's list is: a day's heading, or one of its changes and which piece of the day's card
-/// it is.
+/// What a block of the changelog's list is: a day's heading (its words alone: a change come to that day changes no
+/// heading), or one of its changes and which piece of the day's card it is.
 #derive(Eq)
 priv enum ListedPart {
-  DayHeading(Json)
+  DayHeading(String)
   DayChange(Json, @sf.CardPiece)
 }
 
