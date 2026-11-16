@@ -452,6 +452,39 @@ test("a borrowed Antigravity CLI subscription's sign-in is written in its home w
   await assert.rejects(b.sharing.lendAgy({ ...copy, home }), /未能借出/);
 });
 
+test("an Antigravity CLI subscription signed in again on its host reaches its copies: each told, its new sign-in lent there", async () => {
+  const cloud = new FakeCloud();
+  const all = new Map<string, Station>();
+  const AGY = { id: "gem", name: "Google AI Pro", runtime: "agy", access: { kind: "subscription" }, home: "homes/gem", env: {} };
+  const signIn = (access: string) => JSON.stringify({ token: { access_token: access, token_type: "Bearer", refresh_token: "refresh-here", expiry: new Date(Date.now() + 57 * 60_000).toISOString() }, auth_method: "consumer", id_token_email: "someone@gmail.test" });
+  const a = station(cloud, A, () => all, [AGY]);
+  let b: Station;
+  const lent: string[] = [];
+  b = station(cloud, B, () => all, [], undefined, { profileChanged: async (id) => {
+    const profile = b.config.raw().profiles.find((p: any) => p.id === id);
+    const home = join(b.data, profile.home);
+    await b.sharing.lendAgy({ ...profile, home }, true);
+    lent.push(JSON.parse(readFileSync(agyToken(home), "utf8")).token.access_token);
+  } });
+  all.set(A, a).set(B, b);
+  const hostHome = join(a.data, "homes", "gem");
+  mkdirSync(join(hostHome, "agy", ".gemini", "antigravity-cli"), { recursive: true });
+  writeFileSync(agyToken(hostHome), signIn("first"));
+  await a.sharing.shareProfile("gem", true, null);
+  await settle(a, b);
+  lent.length = 0;
+  // Signed in again on its host (accounts/index.ts `afterSignIn`): nothing of the profile itself changed, so only that
+  // it is told makes its copies take the new sign-in.
+  writeFileSync(agyToken(hostHome), signIn("second"));
+  await settle(a, b);
+  assert.deepEqual(lent, [], "a sign-in's file alone is not followed");
+  a.sharing.loginUpdated("gem");
+  await settle(a, b);
+  assert.deepEqual(lent, ["second"]);
+  await a.sharing.close();
+  await b.sharing.close();
+});
+
 test("a borrowed company Google account keeps its project, region and tier: lent and renewed with them, never its refresh token", async () => {
   const cloud = new FakeCloud();
   const all = new Map<string, Station>();

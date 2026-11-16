@@ -1439,6 +1439,23 @@ export class Sharing {
     }
   }
 
+  /// A sign-in changed on this station. `profileId`: a profile signed in anew, whose copies are told a new version when
+  /// it is shared from here, so that each takes the new sign-in (accounts/index.ts `sharedChanged`): a Codex one's
+  /// version follows its sign-in's file by itself (`profileHash`), the others' (the Antigravity CLI's, Claude's) only so.
+  loginUpdated(profileId?: string): void {
+    const profile = profileId === undefined ? undefined : this.profiles().find((p) => p.id === profileId);
+    const id = profile?.share?.id;
+    if (profile && typeof id === "string" && profile.runtime !== "codex" && profile.share.borrowed !== true) {
+      const state = this.readState();
+      const hosted = state.hosted[id];
+      if (hosted) {
+        hosted.version++;
+        this.writeState(state);
+      }
+    }
+    void this.reconcile();
+  }
+
   /// A reset made here or by a borrower is sent to every copy, including those currently offline. The redemption key
   /// makes a retry after a lost reply harmless.
   async quotaReset(profileId: string, key: string): Promise<void> {

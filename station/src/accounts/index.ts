@@ -116,6 +116,9 @@ export type AccountsDeps = {
     profileGone?(id: string): Promise<void>;
     /// A manual reset lets sessions waiting on this account continue.
     allowanceReset?(id: string): void | Promise<void>;
+    /// A profile signed in anew (here, or on the station it is borrowed from): its sessions' processes, which keep the
+    /// sign-in they started with, are started again (an idle one now, a busy one once its turn is over).
+    profileLoginChanged?(id: string): void | Promise<void>;
   };
   /// The codex driver, once there.
   codex?: () => CodexAccess | undefined;
@@ -155,7 +158,8 @@ export type AccountsDeps = {
     quotaReset?(profile: Profile, key: string): Promise<void>;
     /// A borrowed Claude subscription's token, lent by its host (to use one of its resets with).
     lendClaude?(profile: Profile, rejected?: string): Promise<MachineToken>;
-    loginUpdated?(): void;
+    /// A sign-in changed here: its copies on other stations are told (`profileId`: a profile signed in anew).
+    loginUpdated?(profileId?: string): void;
     /// Whether the station the profile is another's of did not answer lately.
     hostName?(profile: Json): string | null;
   };
@@ -996,10 +1000,20 @@ export class Accounts {
     if (profile?.runtime === "codex" && accessKind(profile) === "subscription") {
       this.loginGeneration.set(id, (this.loginGeneration.get(id) ?? 0) + 1);
       this.codexLogin(id, false);
-      this.deps.shared?.loginUpdated?.();
     }
+    // Its copies on other stations take the new sign-in (share/index.ts `loginUpdated`).
+    if (profile && accessKind(profile) === "subscription" && !borrowed(profile)) this.deps.shared?.loginUpdated?.(id);
     this.background.spawn(async () => {
       const profile = this.profile(id);
+      // A running `agy` never reads its sign-in's file again (agents/agy.ts AGY_LENT_RENEW_MS): its sessions' processes
+      // start again on the new one.
+      if (profile?.runtime === "agy") {
+        try {
+          await this.deps.hub?.profileLoginChanged?.(id);
+        } catch (e) {
+          log.warn("accounts", "could not restart the Antigravity CLI's sessions after sign-in", { profile: id, error: (e as Error).message });
+        }
+      }
       if (profile?.runtime === "codex") {
         try {
           await this.deps.codex?.()?.loginChanged?.(id);
@@ -1445,8 +1459,12 @@ export class Accounts {
       await this.readQuota(id, true);
       if (reset) await this.deps.hub?.allowanceReset?.(id);
     }
-    // Its sessions read the file again as it changes: another account signed in on the host is used from their next call.
-    if (profile.runtime === "agy" && this.deps.shared.lendAgy) await this.deps.shared.lendAgy(profile, true).catch(() => {});
+    // What the host lends now written to its file; its sessions' processes, which never read it again (agents/agy.ts
+    // AGY_LENT_RENEW_MS), start again on it: another account signed in on the host is used from their next turn.
+    if (profile.runtime === "agy" && this.deps.shared.lendAgy) {
+      await this.deps.shared.lendAgy(profile, true).catch(() => {});
+      await this.deps.hub?.profileLoginChanged?.(id);
+    }
     await this.checkBorrowed(profile, stationLang());
   }
 

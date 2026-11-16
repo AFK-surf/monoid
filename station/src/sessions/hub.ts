@@ -1268,6 +1268,16 @@ export class Hub {
     for (const actor of [...this.actors.values()]) if (actor.runtime === runtime) void actor.changed(true).catch(() => {});
   }
 
+  /// A profile signed in anew (accounts/index.ts `afterSignIn`, `sharedChanged`): the processes of the sessions on it keep
+  /// the sign-in they started with, so each ends now if idle, else once its turn is over, and the next turn resumes in
+  /// a new one on the new sign-in. A chat handed to another station is left as it is.
+  profileLoginChanged(id: string) {
+    for (const row of this.store.listSessions()) {
+      if (row.profile !== id || this.handedOver(row.key)) continue;
+      void this.actors.get(row.key)?.changed(true).catch(() => {});
+    }
+  }
+
   /// A profile was deleted: the sessions on it are taken on by another of their runtime's (their process ends now if
   /// idle, else when its turn is over); those no other profile can run are stopped, and their process ends.
   /// A chat handed to another station as this one is retired is left as it is: it goes on there, and its account moving

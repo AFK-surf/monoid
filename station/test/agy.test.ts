@@ -341,9 +341,10 @@ test("a Google account: signed in in its terminal interface (the way chosen, Goo
     await wait("needs_code");
     assert.match(logins.get("g")!.url ?? "", /^https:\/\/accounts\.google\.com\/o\/oauth2\/auth\?.*redirect_uri=https%3A%2F%2Fantigravity\.google%2Foauth-callback/);
     const run = JSON.parse(readFileSync(dump, "utf8").trim().split("\n").at(-1)!);
-    // Its HOME the profile's agy/ (so the sign-in lands in the ACP server's --gemini-dir), not a remote session's, none of
-    // the machine's keys.
-    assert.deepEqual([run.args, run.home, run.remote, run.key], [[], agyHome(home), null, null]);
+    // Its HOME an empty directory of its own (its sign-in copied into the profile's agy/ once done), its sign-in kept in a
+    // file there (AGY_FILE_TOKENS), its question to the terminal answered; none of the machine's keys.
+    assert.deepEqual([run.args, run.home, run.remote, run.key, run.fileTokens], [[], join(data, "run", "agy-login", "g-1"), null, null, AGY_FILE_TOKENS.SSH_CLIENT]);
+    assert.match(readFileSync(dump + ".terminal", "utf8"), /\\u001b\[\?1;2c/);
     await logins.submitCode("g", " 4/0Ab-code ", "en");
     await wait("done");
     assert.equal(JSON.parse(readFileSync(agyToken(home), "utf8")).token.access_token, "ya29.4/0Ab-code");
@@ -468,6 +469,120 @@ test("a company's Google account through the accounts: made a profile that remem
     const keys = readFileSync(dump + ".keys", "utf8").trim().split("\n").map((l) => JSON.parse(l));
     assert.deepEqual(keys.slice(-2).map((k) => [k.step, k.down]), [["menu", true], ["cloud", false]]);
     accounts.logins.cancel(made.id);
+  } finally {
+    await accounts.close();
+    store.close();
+  }
+});
+
+/// A sign-in as `agy` keeps it, in a profile's agy/ (as a sign-in before left it).
+const signedInBefore = (home: string, fields: Record<string, unknown>) => {
+  mkdirSync(join(geminiDir(home), "antigravity-cli"), { recursive: true });
+  writeFileSync(agyToken(home), JSON.stringify(fields));
+};
+
+test("signed in again over a sign-in there is (a person's and a company's): `agy` runs in an empty HOME of its own, so it asks how to sign in; the new sign-in replaces the old once done, and the empty HOME goes", { skip: process.platform === "win32" && "no terminal to sign in in" }, async () => {
+  for (const enterprise of [false, true]) {
+    const home = join(data, `again-${enterprise}`);
+    const dump = join(data, `again-${enterprise}-dump`);
+    const env = { ...process.env, PATH: fake, FAKE_DUMP: dump, ...(enterprise ? { FAKE_AGY_LICENSES: "1" } : {}) } as Record<string, string>;
+    signedInBefore(home, { token: { access_token: "ya29.old", token_type: "Bearer" }, auth_method: enterprise ? "gcp" : "oauth", id_token_email: "before@x.test", ...(enterprise ? { project_id: "old-project" } : {}) });
+    const logins = new LoginManager(data, { claude: "claude", codex: "codex", agy: "agy" }, () => env);
+    const wait = async (state: LoginState) => until(() => logins.get("a")?.state === state);
+    try {
+      await logins.start({ id: "a", runtime: "agy", home, ...(enterprise ? { enterprise } : {}) }, "en");
+      await wait("needs_code");
+      const run = JSON.parse(readFileSync(dump, "utf8").trim().split("\n").at(-1)!);
+      assert.equal(run.fileTokens, AGY_FILE_TOKENS.SSH_CLIENT);
+      assert.ok(run.home.startsWith(join(data, "run", "agy-login")), run.home);
+      // The old one untouched while the new is under way.
+      assert.equal(JSON.parse(readFileSync(agyToken(home), "utf8")).token.access_token, "ya29.old");
+      await logins.submitCode("a", "4/0Ab-again", "en");
+      await wait("done");
+      const file = JSON.parse(readFileSync(agyToken(home), "utf8"));
+      assert.equal(file.token.access_token, "ya29.4/0Ab-again");
+      if (enterprise) assert.deepEqual([file.project_id, file.user_tier], ["company-project", "gcp-ge-ultra-tier"]);
+      assert.equal(JSON.parse(readFileSync(agyAccountFile(home), "utf8")).email, enterprise ? "someone@company.com" : "someone@gmail.com");
+      await until(() => !existsSync(run.home));
+    } finally {
+      await logins.close();
+    }
+  }
+});
+
+test("a sign-in again given up or failed leaves the sign-in there as it was", { skip: process.platform === "win32" && "no terminal to sign in in" }, async () => {
+  const home = join(data, "kept");
+  const env = { ...process.env, PATH: fake, FAKE_DUMP: join(data, "kept-dump") } as Record<string, string>;
+  const before = { token: { access_token: "ya29.kept", token_type: "Bearer", refresh_token: "r" }, auth_method: "gcp", id_token_email: "before@company.test", project_id: "kept-project", region: "global" };
+  signedInBefore(home, before);
+  const logins = new LoginManager(data, { claude: "claude", codex: "codex", agy: "agy" }, () => env);
+  const wait = async (state: LoginState) => until(() => logins.get("k")?.state === state);
+  try {
+    // Given up once its code went in (its file in its HOME written with only its token).
+    await logins.start({ id: "k", runtime: "agy", home, enterprise: true }, "en");
+    await wait("needs_code");
+    await logins.submitCode("k", "4/0Ab-dropped", "en");
+    await wait("needs_project");
+    logins.cancel("k");
+    assert.deepEqual(JSON.parse(readFileSync(agyToken(home), "utf8")), before);
+    // Failed: its project refused.
+    await logins.start({ id: "k", runtime: "agy", home, enterprise: true }, "en");
+    await wait("needs_code");
+    await logins.submitCode("k", "4/0Ab-refused", "en");
+    await wait("needs_project");
+    await logins.submitCode("k", "bad-project", "en");
+    await wait("failed");
+    assert.deepEqual(JSON.parse(readFileSync(agyToken(home), "utf8")), before);
+    await until(() => !existsSync(join(data, "run", "agy-login", "k-1")) && !existsSync(join(data, "run", "agy-login", "k-2")));
+  } finally {
+    await logins.close();
+  }
+});
+
+test("an Antigravity CLI account signed in again: its sessions' processes start again and its copies are told; a borrowed one's, once its host's new sign-in is lent", { skip: process.platform === "win32" && "no terminal to sign in in" }, async (t) => {
+  const dir = join(data, "again-accounts");
+  mkdirSync(dir, { recursive: true });
+  const saved = { PATH: process.env.PATH, FAKE_DUMP: process.env.FAKE_DUMP };
+  Object.assign(process.env, { PATH: fake, FAKE_DUMP: join(dir, "dump") });
+  t.after(() => {
+    for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k]; else process.env[k] = v;
+  });
+  const borrowedCopy = { id: "sh-0123456789abcdef0123", name: "Google AI Pro", runtime: "agy", access: { kind: "subscription" }, home: "homes/sh-0123456789abcdef0123", env: {}, share: { id: "sh-0123456789abcdef0123", borrowed: true, host: "host-station" } };
+  writeFileSync(join(dir, "config.json"), JSON.stringify({ profiles: [{ id: "gem", name: "Google AI Pro", runtime: "agy", access: { kind: "subscription" }, home: "homes/gem", env: {} }, borrowedCopy] }));
+  signedInBefore(join(dir, "homes", "gem"), { token: { access_token: "ya29.old", token_type: "Bearer" }, auth_method: "oauth", id_token_email: "someone@gmail.com" });
+  const store = Store.open(":memory:", null);
+  const config = new ConfigFile(dir);
+  const steps: string[] = [];
+  const accounts = new Accounts({
+    data: dir,
+    store,
+    config,
+    machine: null,
+    checkOnStart: false,
+    loginCommands: { claude: "claude", codex: "codex", agy: "agy" },
+    check: async () => ({ state: "ok", detail: "", models: ["gemini-3.5-flash"], checkedAt: 1 }),
+    quota: async () => ({ state: "ok", windows: [], detail: null, checkedAt: 0 }),
+    hub: { accounts: { setHealth() {}, healthOf: () => ({}) as never }, profileLoginChanged: (id) => void steps.push(`restart ${id}`) },
+    shared: {
+      status: async () => ({ check: { state: "ok", detail: "", models: null, checkedAt: 1 }, quota: null }),
+      view: () => null,
+      loginUpdated: (id) => void steps.push(`told ${id ?? ""}`),
+      lendAgy: async (p) => (steps.push(`lent ${p.id}`), Date.now() + 3600_000),
+    },
+  });
+  const viewer = { email: "owner@x.test" } as never;
+  accounts.start();
+  try {
+    await accounts.startLogin("gem", viewer, "en");
+    await until(() => accounts.logins.get("gem")?.state === "needs_code");
+    await accounts.logins.submitCode("gem", "4/0Ab-new", "en");
+    await until(() => steps.includes("restart gem"));
+    assert.deepEqual(steps, ["told gem", "restart gem"]);
+    assert.equal(JSON.parse(readFileSync(agyToken(join(dir, "homes", "gem")), "utf8")).token.access_token, "ya29.4/0Ab-new");
+    // A copy whose host signed in again: what it lends now written first, then its sessions' processes start again.
+    steps.length = 0;
+    await accounts.sharedChanged(borrowedCopy.id, false);
+    assert.deepEqual(steps, [`lent ${borrowedCopy.id}`, `restart ${borrowedCopy.id}`]);
   } finally {
     await accounts.close();
     store.close();

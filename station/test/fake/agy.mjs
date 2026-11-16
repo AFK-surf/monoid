@@ -3,7 +3,9 @@
 // Without `acp`, its terminal interface signing in as 1.4.12's does (in a terminal, not signed in, not in a remote session):
 // how to sign in asked, Google's page printed, the code read back (`bad`: nothing comes of it), its sign-in written to
 // $HOME/.gemini/antigravity-cli, and the interface going on until it is stopped; a company's account as 1.5.9 signs it
-// in (below). FAKE_AGY_TIER: the tier session/new says (`_meta.antigravity.tier`).
+// in (below). As 1.5.9: told it is a remote session's (SSH_CLIENT, its file kept in a file), it first asks the terminal
+// what it is and waits for the answer; with a sign-in in $HOME already it asks nothing and goes straight into its
+// interface. FAKE_AGY_TIER: the tier session/new says (`_meta.antigravity.tier`).
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -73,10 +75,28 @@ async function printUsage() {
   process.exit(0);
 }
 async function signIn() {
-  if (dump) appendFileSync(dump, JSON.stringify({ args, home: process.env.HOME, remote: process.env.SSH_CONNECTION ?? null, key: process.env.GEMINI_API_KEY ?? null }) + '\n');
+  if (dump) appendFileSync(dump, JSON.stringify({ args, home: process.env.HOME, remote: process.env.SSH_CONNECTION ?? null, key: process.env.GEMINI_API_KEY ?? null, fileTokens: process.env.SSH_CLIENT ?? null }) + '\n');
   if (!process.stdin.isTTY) { process.stderr.write('not a terminal\n'); process.exit(1); }
-  const url = 'https://accounts.google.com/o/oauth2/auth?access_type=offline&client_id=1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com&code_challenge=311aMcnjlIZigwJvlJ11zPjRZcH3mLzipvgAYB_hEgc&code_challenge_method=S256&prompt=consent&redirect_uri=https%3A%2F%2Fantigravity.google%2Foauth-callback&response_type=code&scope=openid&state=Jn-JRaj4nQfYyaCSr9NcnA';
   process.stdin.setRawMode(true);
+  if (process.env.SSH_CLIENT) {
+    process.stdout.write('\u001b[>q\u001b[c\u001b[>c');
+    let heard = '';
+    await new Promise((resolve) => {
+      const take = (chunk) => {
+        heard += chunk.toString('utf8');
+        if (!heard.includes('\u001b[?1;2c')) return;
+        process.stdin.off('data', take);
+        resolve();
+      };
+      process.stdin.on('data', take);
+    });
+    if (dump) appendFileSync(dump + '.terminal', JSON.stringify(heard) + '\n');
+  }
+  if (existsSync(join(process.env.HOME, '.gemini', 'antigravity-cli', 'antigravity-oauth-token'))) {
+    process.stdout.write('\u001b[2J Welcome to Antigravity CLI!\n');
+    await new Promise(() => {});
+  }
+  const url = 'https://accounts.google.com/o/oauth2/auth?access_type=offline&client_id=1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com&code_challenge=311aMcnjlIZigwJvlJ11zPjRZcH3mLzipvgAYB_hEgc&code_challenge_method=S256&prompt=consent&redirect_uri=https%3A%2F%2Fantigravity.google%2Foauth-callback&response_type=code&scope=openid&state=Jn-JRaj4nQfYyaCSr9NcnA';
   process.stdout.write('\u001b[?1049h Welcome to the Antigravity CLI. You are currently not signed in.\n\n Select login method:\n > 1. Google OAuth\n2. Use a Google Cloud project\n');
   let typed = '';
   let step = 'menu';

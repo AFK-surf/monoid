@@ -2435,6 +2435,38 @@ test("a runtime updated from the pages: its sessions' processes end now if idle,
   await r.close();
 });
 
+test("a profile signed in anew: its sessions' processes end now if idle, else before their next turn; another profile's are left", async () => {
+  const r = new Rig();
+  const m = say("<@UBOT> fix the build");
+  await r.accept(m);
+  await settle();
+  const key = sessionKey("cl", "C1", m.threadTs);
+  assert.equal(r.session(key).profile, "cc");
+  const running = r.claude.last();
+  // Another profile signed in: nothing of this session's ends.
+  r.hub.profileLoginChanged("cc2");
+  // Signed in while a turn runs: that turn goes on; its process ends before the next, which starts on the new sign-in.
+  r.hub.profileLoginChanged("cc");
+  await settle();
+  assert.ok(!running.disposed && running.aborts === 0, "the running turn is not cut off");
+  await r.call(key, "chat_post", { to: `C1/${m.threadTs}`, text: "done", kind: "final" });
+  running.complete();
+  await settle();
+  await r.accept({ ...say("<@UBOT> once more"), threadTs: m.threadTs });
+  await settle();
+  assert.ok(running.disposed, "its process ended before the next turn");
+  const next = r.claude.last();
+  assert.notEqual(next, running);
+  await r.call(key, "chat_post", { to: `C1/${m.threadTs}`, text: "done", kind: "final" });
+  next.complete();
+  await settle();
+  // Idle: it ends at once.
+  r.hub.profileLoginChanged("cc");
+  await settle();
+  assert.ok(next.disposed);
+  await r.close();
+});
+
 test("a deleted profile's sessions go on on another, and stop when no other can run them", async () => {
   const r = new Rig();
   const m = say("<@UBOT> fix the build");

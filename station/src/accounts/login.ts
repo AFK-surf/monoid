@@ -10,12 +10,16 @@
 // - Devin: `devin auth login --force-manual-token-flow` prints a link at app.devin.ai; after signing in, the page shows a
 //   code the person pastes back, as Claude's. It reads the code only from a terminal: it runs in one (platform.terminal).
 //   Its sign-in lands in the profile's devin/data/ (XDG_DATA_HOME, agents/devin.ts).
-// - Antigravity CLI: no login command; `agy` itself, in a terminal of its own as Devin's, with the profile's agy/ as its
-//   HOME (where it then keeps the sign-in in a file: the keychain is the user's home's), asks how to sign in (the station
-//   answers its first choice, Google OAuth; for a company's Google account, `enterprise`, its second, a Google Cloud
-//   project, then Continue with Google Cloud), prints a link at accounts.google.com and reads back the code the page
-//   shows, which the person pastes, as Claude's. It goes on into its interface once signed in: the sign-in is done when
-//   its file is written whole (agents/agy.ts agyTokenReady), and the command and those between stopped. A company's
+// - Antigravity CLI: no login command; `agy` itself, in a terminal of its own as Devin's, with an empty directory of its
+//   own as its HOME (<data>/run/agy-login/<profile>-<run>, removed as it ends) and told to keep its sign-in in a file
+//   there (`AGY_FILE_TOKENS`: none of the keychain's), asks how to sign in (the station answers its first choice, Google
+//   OAuth; for a company's Google account, `enterprise`, its second, a Google Cloud project, then Continue with Google
+//   Cloud), prints a link at accounts.google.com and reads back the code the page shows, which the person pastes, as
+//   Claude's. Not in the profile's agy/: finding a sign-in there (signing in again) it asks nothing and goes straight into
+//   its interface (1.5.9), and a sign-in given up or failed would have overwritten the one there. Told it is a remote
+//   session's, it first asks the terminal what it is (`ESC [ c`), which the station answers as a terminal would. It goes
+//   on into its interface once signed in: the sign-in is done when its file is written whole (agents/agy.ts
+//   agyTokenReady), then copied into the profile's agy/, and the command and those between stopped. A company's
 //   account writes the file first with only its token, then fetches its licences: the first is chosen; with none, it
 //   asks how to pay (Pay As You Go chosen) and for a Google Cloud project, which the person gives (`needs_project`,
 //   taken as a code is).
@@ -30,8 +34,8 @@
 // not asked again.
 import type { Clock } from "effect";
 import { type ChildProcess, spawn } from "node:child_process";
-import { mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { mkdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdir, readdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { fileCredentials } from "../agents/no-keychain.ts";
 import { CONSOLE, type ConsoleLogin, type Device, type DeviceAnswer, deviceToken, startDevice, type Token, whoIs, writeConsole } from "./console.ts";
@@ -39,7 +43,8 @@ import { KIMI_AUTH, kimiDeviceToken, newDeviceId, readKimi, startKimiDevice, wri
 import { CURSOR, type CursorUrls, cursorHandshake, mintCursorKey, pollCursor, writeCursor } from "./cursor.ts";
 import { cleanEnv } from "../agents/runtime.ts";
 import { devinData } from "../agents/devin.ts";
-import { agyHome, agyToken, agyTokenReady, noteAgyEmail } from "../agents/agy.ts";
+import { AGY_FILE_TOKENS, agyToken, agyTokenIn, agyTokenReady, noteAgyEmail } from "../agents/agy.ts";
+import { writePrivateSoon } from "../ops/files.ts";
 import type { Runtime } from "../agents/profiles.ts";
 import { type Lang, stationLang, tr } from "../ops/i18n.ts";
 import { log } from "../ops/log.ts";
@@ -75,7 +80,7 @@ const pageKey = (profile: string) => `profile:${profile}`;
 
 const TIMEOUT_MS = 15 * 60_000;
 /// Variables that would make the login command talk to something other than the subscription.
-const SCRUBBED = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CONFIG_DIR", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CODEX_HOME", "OPENAI_API_KEY", "GROK_HOME", "GROK_AUTH", "GROK_AUTH_PATH", "XAI_API_KEY", "WINDSURF_API_KEY", "XDG_DATA_HOME", "GEMINI_API_KEY", "GOOGLE_API_KEY", "AGY_ADC_AUTH", "AGY_ACCOUNT"];
+const SCRUBBED = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CONFIG_DIR", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CODEX_HOME", "OPENAI_API_KEY", "GROK_HOME", "GROK_AUTH", "GROK_AUTH_PATH", "XAI_API_KEY", "WINDSURF_API_KEY", "XDG_DATA_HOME", "GEMINI_API_KEY", "GOOGLE_API_KEY", "AGY_ADC_AUTH", "AGY_ACCOUNT", "ANTIGRAVITY_GEMINI_DIR"];
 /// The terminal Devin's login runs in: wide, so that its link is printed on one line.
 const DEVIN_COLS = 1000;
 const DEVIN_ROWS = 40;
@@ -92,6 +97,10 @@ const AGY_KEY_GAP_MS = 50;
 const AGY_FAILURES = ["[Auth Error]", "Couldn't sign in", "Failed to select license", "Failed to save GCP settings", "Permission denied"];
 /// What it says where a Google Cloud account may not list its licences: no failure, it goes on to ask how to pay.
 const AGY_NO_LICENCES = "Could not fetch licenses";
+/// What it asks the terminal as a remote session's (its primary attributes, `ESC [ c`), and the answer it is given: a
+/// VT100 with advanced video (and, for the secondary attributes it asks with it, a VT220's).
+const AGY_TERMINAL_ASKED = "\u001b[c";
+const AGY_TERMINAL_ANSWER = "\u001b[?1;2c\u001b[>0;276;0c";
 
 /// Where a profile keeps the cookies and passkeys of its sign-in tab in the station's browser, inside its own home.
 export const LOGIN_BROWSER_FILE = ".stillfail-login-state.json";
@@ -107,8 +116,9 @@ export type LoginProfile = { id: string; runtime: Runtime; home: string; email?:
 type Running = { run: number; job: LoginJob; child: ChildProcess | null; raw: string; output: string; cancelTimer: () => void; exited: boolean; lang: Lang; stop?: () => void; opened?: string; home?: string; chose?: boolean; agy?: AgySteps };
 
 /// Where an Antigravity CLI sign-in is in its menus: which it answered, and what it said since its code (or project)
-/// went in (`after`, null before), which is where its licences, how to pay and the project are asked.
-type AgySteps = { enterprise: boolean; cloud: boolean; license: boolean; billing: boolean; after: string | null };
+/// went in (`after`, null before), which is where its licences, how to pay and the project are asked. `stage`: its HOME,
+/// an empty directory of this sign-in's; `terminal`: whether its question to the terminal was answered.
+type AgySteps = { enterprise: boolean; cloud: boolean; license: boolean; billing: boolean; after: string | null; stage: string; terminal: boolean };
 
 export class LoginManager {
   private jobs = new Map<string, Running>();
@@ -116,6 +126,8 @@ export class LoginManager {
   private listeners = new Set<(profile: string) => void>();
   private runs = 0;
   private noBrowserDir: string;
+  /// Where the Antigravity CLI's sign-ins each have their HOME (`run`: what runs, bounded-ephemeral).
+  private agyLoginDir: string;
   private commands: LoginCommands;
   private background: Fibers;
   /// The environment the commands start from; variables that point a login elsewhere are removed at start.
@@ -140,6 +152,7 @@ export class LoginManager {
     this.keyName = keyName;
     this.background = new Fibers("login", clock);
     this.noBrowserDir = join(data, "run", "no-browser");
+    this.agyLoginDir = join(data, "run", "agy-login");
     this.commands = commands;
     this.env = env;
     this.stateFile = (profile) => {
@@ -252,6 +265,9 @@ export class LoginManager {
     let command: string;
     let args: string[];
     let pathCommand: string | undefined;
+    const run = ++this.runs;
+    // The Antigravity CLI's HOME: an empty directory of this sign-in's (the top of this file says why).
+    const stage = profile.runtime === "agy" ? join(this.agyLoginDir, `${profile.id}-${run}`) : null;
     if (profile.runtime === "claude") {
       env.CLAUDE_CONFIG_DIR = profile.home;
       fileCredentials(env);
@@ -269,12 +285,13 @@ export class LoginManager {
       const wrapped = platform.terminal(pathCommand, ["auth", "login", "--force-manual-token-flow"], DEVIN_COLS, DEVIN_ROWS);
       if (wrapped === null) return this.refused(profile.id, profile.runtime, tr(lang, "station.login.devinNoTerminal"));
       [command, args] = wrapped;
-    } else if (profile.runtime === "agy") {
-      env.HOME = agyHome(profile.home);
-      // Not a remote session's: there it first asks the terminal what it can do, and waits for an answer none gives.
+    } else if (stage !== null) {
+      env.HOME = stage;
+      // Its sign-in kept in a file in that HOME, none of the keychain's (as a remote session's: it then asks the terminal
+      // what it is, which `agyAnswer` answers).
+      Object.assign(env, AGY_FILE_TOKENS);
       delete env.SSH_CONNECTION;
       env.AGY_CLI_DISABLE_AUTO_UPDATE = "1";
-      mkdirSync(env.HOME, { recursive: true });
       pathCommand = this.commands.agy ?? "agy";
       const wrapped = platform.terminal(pathCommand, [], DEVIN_COLS, DEVIN_ROWS);
       if (wrapped === null) return this.refused(profile.id, profile.runtime, tr(lang, "station.login.agyNoTerminal"));
@@ -285,27 +302,61 @@ export class LoginManager {
     }
     const now = this.background.now();
     const job: LoginJob = { profile: profile.id, runtime: profile.runtime, state: "starting", url: null, userCode: null, error: null, startedAt: now, expiresAt: now + TIMEOUT_MS };
-    const run = ++this.runs;
     const id = profile.id;
     // The shell lookup can take time. Record the sign-in first so cancelling or replacing it stops this start too.
     const running: Running = {
       run, job, child: null, raw: "", output: "", exited: true, opened, lang, home: profile.home,
-      ...(profile.runtime === "agy" ? { agy: { enterprise: profile.enterprise === true, cloud: false, license: false, billing: false, after: null } } : {}),
+      ...(stage !== null ? { agy: { enterprise: profile.enterprise === true, cloud: false, license: false, billing: false, after: null, stage, terminal: false } } : {}),
       cancelTimer: this.background.after(TIMEOUT_MS, () => this.failRun(id, run, tr(lang, "station.login.timedOut"))),
     };
     this.jobs.set(id, running);
     this.emit(id);
+    const dropStage = () => (stage !== null ? rm(stage, { recursive: true, force: true }).catch(() => {}) : Promise.resolve());
+    if (stage !== null) {
+      // Those an earlier sign-in of this profile left (the station ended under it) go first; never a later one's, made
+      // while this listing was read.
+      const left = await readdir(this.agyLoginDir).catch(() => [] as string[]);
+      if (this.jobs.get(id) !== running) return { ...job, state: "cancelled" };
+      const mine = (name: string) => {
+        if (!name.startsWith(`${profile.id}-`)) return false;
+        const rest = name.slice(profile.id.length + 1);
+        const n = Number(rest);
+        return /^\d+$/.test(rest) && Number.isInteger(n) && n >= 0 && n < run;
+      };
+      await Promise.all(left.filter(mine).map((name) => rm(join(this.agyLoginDir, name), { recursive: true, force: true }).catch(() => {})));
+      try {
+        await mkdir(stage, { recursive: true });
+      } catch (e) {
+        if (this.jobs.get(id) !== running) return { ...job, state: "cancelled" };
+        const error = tr(lang, "station.login.cannotRun", { error: (e as Error).message });
+        this.finish(id, "failed", error);
+        return { ...job, state: "failed", error };
+      }
+      if (this.jobs.get(id) !== running) {
+        await dropStage();
+        return { ...job, state: "cancelled" };
+      }
+    }
     const foundEnv = await withShellCommand(pathCommand ?? command, env, sourceEnv);
-    if (this.jobs.get(id) !== running) return { ...job, state: "cancelled" };
+    if (this.jobs.get(id) !== running) {
+      await dropStage();
+      return { ...job, state: "cancelled" };
+    }
     // The browser stand-ins must stay ahead of any Node bin added for the login command.
     if (foundEnv !== env) env = platform.prependPath(foundEnv, noBrowser) as Record<string, string>;
     const r = platform.runnable(command, args, env);
-    const child = spawn(r.file, r.args, { cwd: profile.home, env, stdio: ["pipe", "pipe", "pipe"], windowsVerbatimArguments: r.windowsVerbatimArguments, windowsHide: true });
+    const child = spawn(r.file, r.args, { cwd: stage ?? profile.home, env, stdio: ["pipe", "pipe", "pipe"], windowsVerbatimArguments: r.windowsVerbatimArguments, windowsHide: true });
     running.child = child;
     running.exited = false;
+    // Its HOME goes with it, whatever its end (what it signed in is copied out before it is stopped).
+    if (stage !== null) child.once("close", () => void dropStage());
     const spawned = await started(child);
-    if (this.jobs.get(id) !== running) return { ...job, state: "cancelled" };
+    if (this.jobs.get(id) !== running) {
+      void dropStage();
+      return { ...job, state: "cancelled" };
+    }
     if (spawned) {
+      void dropStage();
       // Recorded like any other failure, so the page shows why.
       running.exited = true;
       const error = tr(lang, "station.login.cannotRun", { error: spawned.message });
@@ -515,24 +566,30 @@ export class LoginManager {
     return job;
   }
 
-  /// The Antigravity CLI goes on into its interface once signed in: done when it has written its sign-in whole since the
-  /// code went in (a company's account writes it first with only its token, its licence or project after:
-  /// `agyTokenReady`); failed when it has not in a while (a code it did not take: it says nothing a program can read of
+  /// The Antigravity CLI goes on into its interface once signed in: done when it has written its sign-in whole in its
+  /// HOME (a company's account writes it first with only its token, its licence or project after: `agyTokenReady`),
+  /// which is then written into the profile's agy/ (the one there kept until then: a sign-in given up or failed leaves
+  /// it as it was); failed when it has not in a while (a code it did not take: it says nothing a program can read of
   /// it). While it waits for a project from the person it is not timed (the sign-in's own expiry still holds).
   private awaitAgy(profile: string, running: Running) {
-    // (the file's time is the machine's: compared with the wall's; how long it is waited for, the station's clock)
-    const since = wall.now() - 1000;
     const until = this.background.now() + AGY_WAIT_MS;
-    const enterprise = running.agy?.enterprise === true;
+    const steps = running.agy!;
+    const signedIn = agyTokenIn(join(steps.stage, ".gemini"));
     const look = async () => {
       if (this.jobs.get(profile) !== running || running.job.state !== "verifying") return;
-      if (running.home !== undefined && writtenSince(agyToken(running.home), since)) {
-        const home = running.home;
-        const text = await readFile(agyToken(home), "utf8").catch(() => "");
+      const home = running.home;
+      if (home !== undefined) {
+        const text = await readFile(signedIn, "utf8").catch(() => "");
         if (this.jobs.get(profile) !== running || running.job.state !== "verifying") return;
-        if (agyTokenReady(text, enterprise)) {
+        if (agyTokenReady(text, steps.enterprise)) {
+          try {
+            await writePrivateSoon(agyToken(home), text);
+          } catch (e) {
+            if (this.jobs.get(profile) === running) this.finish(profile, "failed", tr(running.lang, "station.login.homeFailed", { error: (e as Error).message }));
+            return;
+          }
           await noteAgyEmail(home, text).catch(() => null);
-          if (this.jobs.get(profile) === running) this.finish(profile, "done", null);
+          if (this.jobs.get(profile) === running && running.job.state === "verifying") this.finish(profile, "done", null);
           return;
         }
       }
@@ -556,6 +613,11 @@ export class LoginManager {
         if (this.jobs.get(profile)?.run === run) write("\r");
       });
     };
+    // Its question to the terminal, as a remote session's, answered once, before it asks anything else.
+    if (running.job.state === "starting" && !running.chose && !steps.terminal && running.raw.includes(AGY_TERMINAL_ASKED)) {
+      steps.terminal = true;
+      write(AGY_TERMINAL_ANSWER);
+    }
     if (running.job.state === "starting" && !running.chose && running.output.includes("Select login method")) {
       running.chose = true;
       if (steps.enterprise) second();
@@ -783,15 +845,6 @@ export function stripAnsi(text: string): string {
     out += c;
   }
   return out;
-}
-
-/// Whether `path` was written at or after `since` (ms).
-function writtenSince(path: string, since: number): boolean {
-  try {
-    return statSync(path).mtimeMs >= since;
-  } catch {
-    return false;
-  }
 }
 
 function lastLines(output: string): string {
