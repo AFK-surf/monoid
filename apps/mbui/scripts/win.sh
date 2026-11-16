@@ -162,7 +162,7 @@ sealed() {
 # 2026-10-28). -utf-8: its Chinese words, read in the build machine's code page without it, were garbled in the program
 setup_bare() {
   local out=$A/out/setup-bare
-  [ "$out/setup-bare.exe" -nt "$A/windows/setup.c" ] && return 0
+  [ "$out/setup-bare.exe" -nt "$A/windows/setup.c" ] && [ "$out/setup-bare.exe" -nt "$A/src/host/station_uninstall.h" ] && return 0
   mkdir -p "$out"
   local t0=$SECONDS
   (cd "$A" && cl.exe -nologo -O2 -W3 -utf-8 windows/setup.c -Fe"$(cygpath -w "$out/setup-bare.exe.tmp.exe")" -Fo"$(cygpath -w "$out/")" > "$out/build.log") ||

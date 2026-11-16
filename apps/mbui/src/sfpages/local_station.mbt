@@ -1,7 +1,8 @@
 // 本机 Station (apps/desktop/src/main.ts localStation), one page in every frame: this
 // machine's station whoever runs it (the service the installer made, a process started by hand), as the system says
 // it (its native call `local_station`), shown as a workspace's stations are: its dot, its name and
-// how it is, 启动 where it is stopped, its menu (停止 or 启动, 重启, 更新到最新版, 打开日志, its data shown); under
+// how it is, 启动 where it is stopped, its menu (停止 or 启动, 重启, 更新到最新版, 打开日志, its data shown, 卸载本机
+// Station asked first); under
 // them who runs it, its version, its workspace, its data, in lines as the room has them; the installer's progress and
 // what went wrong in it. None here: 添加这台 Mac where the app adds one. (The phone's copy, its rows a list each, is
 // gone: a station is shown the one way everywhere.)
@@ -170,7 +171,7 @@ fn local_card_node(b : @view.View, core : Core, s : () -> Json?, pc : Bool, aske
 
 ///|
 /// Its ⋯ (an icon button, a block in the card's top right corner): pressed, its menu beside it (停止 or 启动, 重启,
-/// 更新到最新版, 打开日志, its data shown), lined up at its end; open till it is chosen from or dismissed (the hand,
+/// 更新到最新版, 打开日志, its data shown, 卸载本机 Station), lined up at its end; open till it is chosen from or dismissed (the hand,
 /// Escape, a press outside it), local_menu said so as it opens and as it goes.
 fn local_more_node(head : @view.View, s : () -> Json?, act : (String) -> Unit) -> Unit {
   let t = fn() { @sf.theme() }
@@ -182,8 +183,16 @@ fn local_more_node(head : @view.View, s : () -> Json?, act : (String) -> Unit) -
     let working = text(now, "doing") != ""
     let running = text(now, "runner") != "none"
     let items : Array[@sf.MenuItem?] = []
+    // (chosen from, it is closed too: `gone` is told only of a menu closed with nothing chosen)
+    let closed = fn() {
+      local_menu.val = false
+      open.set(false)
+    }
     let item = fn(key : String, label : String, icon : String, disabled : Bool) {
-      items.push(Some(@sf.menu_item_of(label, icon~, disabled~, fn() { act(key) })))
+      items.push(Some(@sf.menu_item_of(label, icon~, disabled~, fn() {
+        closed()
+        act(key)
+      })))
     }
     if running {
       item("stop", @sf.t("web-pages.localStation.stop"), "stop", working)
@@ -200,6 +209,26 @@ fn local_more_node(head : @view.View, s : () -> Json?, act : (String) -> Unit) -
     items.push(None)
     item("log", @sf.t("web-pages.localStation.openLog"), "file-text", false)
     item("folder", @settings.local_folder_label(), "folder", false)
+    // taken away for good (its service, its release; its data kept), asked first: one the app looks after, with a
+    // release or a service of its own to take away
+    if (flag(now, "installed") || field(now, "service") is Some(_)) && @settings.local_station_managed() {
+      items.push(None)
+      let data = text(now, "data")
+      items.push(
+        Some(
+          @sf.menu_item_of(@sf.t("web-pages.localStation.uninstall"), icon="trash", danger=true, disabled=working, fn() {
+            closed()
+            @sf.confirm(
+              @sf.t("web-pages.localStation.uninstall"),
+              @sf.t("web-pages.localStation.uninstallConfirmBody", args=[("data", data)]),
+              @sf.t("web-pages.localStation.uninstallAction"),
+              danger=true,
+              fn() { act("uninstall") },
+            )
+          }),
+        ),
+      )
+    }
     let (x, y, w, h) = m.placed_window_now()
     local_menu.val = true
     open.set(true)
@@ -246,13 +275,15 @@ fn local_station_name(s : Json?, pc : Bool) -> String {
 }
 
 ///|
-/// How it is: what is being done to it, else 运行中 or 已停止.
+/// How it is: what is being done to it, else 运行中, 已卸载 (taken away here, its data kept) or 已停止.
 fn local_state(s : Json?) -> String {
   let doing = text(s, "doing")
   if doing != "" {
     @sf.t("web-pages.localStation.doing." + doing)
   } else if text(s, "runner") != "none" {
     @sf.t("web-pages.localStation.running")
+  } else if flag(s, "uninstalled") {
+    @sf.t("web-pages.localStation.uninstalled")
   } else {
     @sf.t("web-pages.localStation.stopped")
   }
@@ -377,9 +408,11 @@ fn local_stopped_in(address : String, said : String) -> Json? {
 }
 
 ///|
-/// How the station here stands where it is not running (local_stopped): what is being done to it, else 已停止.
+/// How the station here stands where it is not running (local_stopped): what is being done to it, else 已卸载 or
+/// 已停止.
 pub fn local_stopped_words(s : Json?) -> String {
   match text(s, "doing") {
+    "" if flag(s, "uninstalled") => @sf.t("web-pages.localStation.uninstalled")
     "" => @sf.t("web-pages.localStation.stopped")
     doing => @sf.t("web-pages.localStation.doing." + doing)
   }

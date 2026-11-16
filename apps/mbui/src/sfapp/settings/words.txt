@@ -1284,6 +1284,7 @@ web-pages.localStation.doing.install
 web-pages.localStation.doing.restart
 web-pages.localStation.doing.start
 web-pages.localStation.doing.stop
+web-pages.localStation.doing.uninstall
 web-pages.localStation.doing.update
 web-pages.localStation.inWorkspace
 web-pages.localStation.lead
@@ -1306,6 +1307,10 @@ web-pages.localStation.stopped
 web-pages.localStation.thisMac
 web-pages.localStation.thisPc
 web-pages.localStation.title
+web-pages.localStation.uninstall
+web-pages.localStation.uninstallAction
+web-pages.localStation.uninstallConfirmBody
+web-pages.localStation.uninstalled
 web-pages.localStation.update
 web-pages.notifications.enable.allow
 web-pages.notifications.enable.browser

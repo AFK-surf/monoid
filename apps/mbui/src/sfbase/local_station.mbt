@@ -104,7 +104,8 @@ fn local_station_update() -> Unit {
 /// station only that app ran (its data in a workspace, not removed from it; no release of its own, `installed`, nor a
 /// service; nothing running it) is made a service as it is: the installer without a token, as 更新到最新版 runs it
 /// (the user, 2026-10-24: the app manages the station there is), how far on 本机 Station's page. Not one added anew:
-/// that is 添加这台 Mac's alone. Asked as the app starts; once it is a service, never again.
+/// that is 添加这台 Mac's alone, nor one taken away here (`uninstalled`: its data kept, no release, no service either).
+/// Asked as the app starts; once it is a service, never again.
 pub fn local_station_carry_on() -> Unit {
   if @ui.env("MBUI_OWN") != "1" {
     return
@@ -119,6 +120,8 @@ pub fn local_station_carry_on() -> Unit {
     text(s, "runner") == "none" &&
     field(s, "service") is None &&
     !flag(s, "installed") &&
+    // (taken away here, 卸载本机 Station or stillfail uninstall: left so, never installed again unasked)
+    !flag(s, "uninstalled") &&
     text(s, "doing") == ""
   if only_that_apps {
     @hostapi.log("local station: the one still.fail's desktop app ran, made a service")

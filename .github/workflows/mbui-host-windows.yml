@@ -23,6 +23,11 @@ on:
       - "libs/mbui/src/host/mini_json.h"
       - "apps/mbui/src/host/station_install.h"
       - "apps/mbui/scripts/station_install_test.c"
+      - "apps/mbui/src/host/station_uninstall.h"
+      - "apps/mbui/scripts/station_uninstall_test.c"
+      - "apps/mbui/scripts/station_uninstall_win.ps1"
+      - "bin/stillfail.ps1"
+      - "bin/stillfail.cmd"
       - "libs/mbui/src/host/done_watch.h"
       - "libs/mbui/src/ui/drive.mbt"
       - "libs/mbui/scripts/done_runner.py"
@@ -82,6 +87,13 @@ jobs:
           mkdir -p out/install
           cl.exe -nologo -W3 -WX -D_CRT_SECURE_NO_WARNINGS -Isrc/host -I../../libs/mbui/src/host scripts/station_install_test.c -Foout/install/ -Feout/install/station_install_test.exe
           out/install/station_install_test.exe
+      - name: "This machine's station taken away, for real: the app's 卸载本机 Station and stillfail uninstall [--purge] through its own stillfail.cmd (apps/mbui/src/host/station_uninstall.h, bin/stillfail.ps1)"
+        working-directory: apps/mbui
+        run: |
+          mkdir -p out/uninstall
+          cl.exe -nologo -W3 -WX -D_CRT_SECURE_NO_WARNINGS -utf-8 -Isrc/host scripts/station_uninstall_test.c -Foout/uninstall/ -Feout/uninstall/station_uninstall_test.exe
+          out/uninstall/station_uninstall_test.exe
+          powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/station_uninstall_win.ps1 out/uninstall/station_uninstall_test.exe
       - name: "The log files: stderr kept in rotating files, nothing of a secret, nobody waiting for a stalled disk (src/host/win_logs.h)"
         run: |
           mkdir -p out/logs

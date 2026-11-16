@@ -233,6 +233,8 @@ test "a station carried on only when still.fail's desktop app alone ran it" {
     ("removed from its workspace", { "workspace": { "id": "ws1", "removed": true } }),
     ("in none", { "workspace": Json::null() }),
     ("being installed", { "doing": "install" }),
+    // (taken away here: its data kept, no release, no service; never installed again unasked)
+    ("taken away here", { "uninstalled": true }),
   ]
   for one in left {
     let (why, more) = one
@@ -513,4 +515,50 @@ test "a workspace's first station: 添加这台 Mac for a station here in anothe
   assert_eq(joins.length(), 1)
   assert_eq(text(Some(joins[0].params), "station"), "ws2/st9")
   assert_eq(calls.iter().filter(fn(m) { m.name == "workspace.enroll" }).collect().length(), 0)
+}
+
+///|
+test "大屏: 本机 Station taken away from its card's menu, asked first; 正在卸载 while the host does it, 已卸载 after, and never installed again as the app starts" {
+  let calls : Array[Made] = []
+  let t = wide_tester(calls, env=[("MBUI_OWN", "1")])
+  t.host_says_finger(Some(false))
+  t.set_app_said("local_station", (
+    #|{"data":"~/.stillfail","runner":"service","version":"0.1.4600","installed":true,"service":{"kind":"launchd","name":"fail.still.station"},"workspace":{"id":"ws1","name":"星火工作室","stationName":"Willow","removed":false}}
+    ),
+  )
+  app.nav.replace(Setting(@settings.Route::LocalStation))
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="更多操作")
+  t.frame()
+  t.run_for(@ui.move_most_ms)
+  let (x, y) = t.find_last("卸载本机 Station").unwrap()
+  t.tap(x, y)
+  t.frame()
+  t.run_for(@ui.move_most_ms)
+  // (the question in the menu's place, the menu closed: nothing told yet)
+  assert_false(@sfpages.local_menu_open())
+  assert_eq(t.app_told("local_station_act"), [])
+  assert_true(t.find("将停止运行并移除开机自启服务与程序文件；本地对话、记忆和密钥数据仍保留在 ~/.stillfail。") is Some(_))
+  t.click(Button, label="卸载")
+  t.frame()
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.app_told("local_station_act"), ["uninstall"])
+  // (the menu and the question it opened both gone)
+  assert_false(@sfpages.local_menu_open())
+  // the host at it, then done (its data kept, said taken away)
+  t.set_app_said("local_station", (
+    #|{"data":"~/.stillfail","runner":"service","doing":"uninstall","installed":true,"service":{"kind":"launchd","name":"fail.still.station"},"workspace":{"id":"ws1","name":"星火工作室","stationName":"Willow","removed":false}}
+    ),
+  )
+  t.run_for(@settings.local_read_ms)
+  assert_true(t.find("正在卸载") is Some(_))
+  let gone =
+    #|{"data":"~/.stillfail","runner":"none","uninstalled":true,"workspace":{"id":"ws1","name":"星火工作室","stationName":"Willow","removed":false}}
+  t.set_app_said("local_station", gone)
+  t.run_for(@settings.local_read_ms)
+  assert_true(t.find("已卸载") is Some(_))
+  assert_true(t.find("正在卸载") is None)
+  // the app started again (built in still.fail's desktop app's place): left taken away
+  @sfbase.local_station_carry_on()
+  assert_eq(t.app_told("local_station_act"), ["uninstall"])
 }

@@ -49,6 +49,9 @@
 //                               host says it while it moves (Tester::set_ime_inset); a real host's is its own
 //   viewsaid JSON               under a Tester (a film's run), its host says JSON of a native view, as Tester::view_said
 //                               has it (a frame grabbed: {"still":{"view":N},"b":HEX}); a real host's views say their own
+//   appsaid NAME TEXT           under a Tester (a film's run), the app's own native call NAME says TEXT from here on,
+//                               posted on its channel as a host tells a change (@hostapi.app_said); a real host's says
+//                               its own
 //   system JSON                 under a Tester (a film's run), the system says JSON on its channel as a host says it
 //                               (@hostapi.system_channel: a size class, the hinge and its fold, the bars), taken at
 //                               the next frame; a real host's system says its own, and the run fails
@@ -1603,7 +1606,7 @@ fn drive_steps(c : Ctx) -> Unit {
             return
           }
         }
-      "system" | "viewsaid" | "ime" => {
+      "system" | "viewsaid" | "appsaid" | "ime" => {
         // (what only some hosts take of a script: a Tester's says what its system, its native views' host and its
         // keyboard do as it is told; a host that takes no such step says why)
         let failed = @hostapi.script_step(cmd, arg)

@@ -2467,6 +2467,19 @@ impl @hostapi.Host for FakeHost with script_step(self, step, arg) {
         "viewsaid: not a line of what a native view's host says: " + arg
       }
     }
+    "appsaid" => {
+      // (what the app's own native call `NAME` says from here on, `NAME TEXT`, as a device's host comes to say it:
+      // changed outside the app, posted on its channel as the host tells it, app_calls.h)
+      match arg.find(" ") {
+        Some(i) => {
+          let name = arg[:i].to_owned()
+          self.app_said[name] = arg[i + 1:].to_owned()
+          fake_post(self, name, "{}", None)
+          ""
+        }
+        None => "appsaid: NAME TEXT, not " + arg
+      }
+    }
     "ime" => {
       self.dev.ime_inset = number(arg)
       self.wants = true

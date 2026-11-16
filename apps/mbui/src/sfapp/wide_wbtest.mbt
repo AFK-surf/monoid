@@ -11,6 +11,7 @@ fn wide_tester(
   window_corner? : Double = 0.0,
   window_inset? : Bool = false,
   before? : (Source) -> Unit = fn(_) {  },
+  env? : Array[(String, String)] = [],
 ) -> @ui.Tester {
   new_run()
   let base = fixture(mode)
@@ -26,7 +27,7 @@ fn wide_tester(
   }
   // (what the run is made with, said after it is begun and before the window is: a window of its own's page)
   before(src)
-  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~, window_corner~, window_inset~)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~, window_corner~, window_inset~, env~)
   t
 }
 
