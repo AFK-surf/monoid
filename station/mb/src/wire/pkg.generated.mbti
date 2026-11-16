@@ -12,6 +12,7 @@ pub fn answered(String) -> @json.Json raise ShellError
 pub(all) suberror ShellError {
   ShellError(String)
 }
+pub impl Show for ShellError
 
 // Types and methods
 pub(all) enum Event {

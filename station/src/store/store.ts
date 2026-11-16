@@ -3697,6 +3697,32 @@ export class Store {
     });
   }
 
+  /// The session's turns a restart cut off (no runner kept their process): ended as aborted now, each with the state it
+  /// said it ends in where that is not waiting (as `endTurn` ends one, a card closed meanwhile making it final), so none
+  /// is left running for ever (`turns.ended_at` NULL: the session shown at work, never idle). How many it ended.
+  endCutOff(session: string): number {
+    return this.#with((changes) => {
+      const now = this.now();
+      const n = this.#run(
+        `UPDATE turns SET ended_at = ?2, outcome = 'aborted', detail = 'other: cut off by restart',
+           declared = CASE WHEN declared = 'waiting' THEN NULL ELSE declared END,
+           wait_seconds = CASE WHEN declared = 'waiting' THEN NULL ELSE wait_seconds END
+         WHERE session_key = ?1 AND ended_at IS NULL`,
+        session, now,
+      );
+      if (n === 0) return 0;
+      this.#run(
+        `UPDATE turns SET declared = 'final', wait_seconds = NULL
+         WHERE session_key = ?1 AND ended_at = ?2 AND detail = 'other: cut off by restart'
+           AND declared IN ('block', 'need_help', 'need_human', 'need_decision') AND about_n IS NOT NULL
+           AND EXISTS (SELECT 1 FROM closed_cards c WHERE c.thread = turns.about_thread AND c.n = turns.about_n)`,
+        session, now,
+      );
+      changes.push({ type: "session", key: session });
+      return n;
+    });
+  }
+
   /// The session was stopped while it waited: its latest turn, if it ended waiting, is recorded as stopped instead
   /// (aborted, no longer waiting). Whether it was.
   stopWait(session: string, refill = false): boolean {

@@ -30,6 +30,7 @@ pub fn write_utf8(@buffer.Buffer, JValue) -> Unit
 pub(all) suberror SyntaxError {
   SyntaxError(String)
 }
+pub impl Show for SyntaxError
 
 // Types and methods
 pub(all) enum JValue {

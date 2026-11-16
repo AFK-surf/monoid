@@ -144,15 +144,23 @@ suberror Asked {
 }
 
 ///|
-fn Asked::message(e : Error) -> String {
-  match e {
+/// Its words as they are, where an error is said (`to_string`): without it MoonBit says only the type's name
+/// ("station/reader.Asked.Asked" in a chat's notice in place of what Node said, Office-VM-1 2026-11-16).
+impl Show for Asked with output(self, logger) {
+  match self {
     Asked(j) =>
-      match j.value("message") {
-        Some(String(s)) => s
-        _ => j.stringify()
-      }
-    _ => e.to_string()
+      logger.write_string(
+        match j.value("message") {
+          Some(String(s)) => s
+          _ => j.stringify()
+        },
+      )
   }
+}
+
+///|
+fn Asked::message(e : Error) -> String {
+  e.to_string()
 }
 
 ///|
@@ -485,7 +493,7 @@ fn Actors::heard(self : Actors, line : String) -> Unit {
       }
       self.db = match place {
         String(path) =>
-          Some(@sql.Db::attach(self.host, path, wait=5000)) catch {
+          Some(@sql.Db::attach(self.host, path, wait=30000)) catch {
             e => {
               @host.note("actors: the station's database not opened: " + (match e { @wire.ShellError(m) => m }))
               None

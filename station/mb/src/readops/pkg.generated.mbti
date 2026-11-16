@@ -137,6 +137,7 @@ pub fn widget_state(@sql.Db, @json.Json) -> @json.Json raise
 pub(all) suberror Refused {
   Refused(Int32, String)
 }
+pub impl Show for Refused
 
 // Types and methods
 

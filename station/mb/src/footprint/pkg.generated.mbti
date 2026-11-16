@@ -12,6 +12,7 @@ pub fn answer(String, String) -> @json.Json
 pub suberror Failed {
   Failed(String, String)
 }
+pub impl Show for Failed
 
 // Types and methods
 

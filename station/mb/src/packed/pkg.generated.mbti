@@ -23,6 +23,7 @@ pub fn table_length(Int64, BytesView) -> (Int64, Int64)?
 pub suberror Failed {
   Failed(String)
 }
+pub impl Show for Failed
 
 // Types and methods
 

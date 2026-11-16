@@ -41,6 +41,7 @@ pub(all) suberror Fallback
 pub(all) suberror Unprepared {
   Unprepared(String)
 }
+pub impl Show for Unprepared
 
 // Types and methods
 

@@ -545,6 +545,11 @@ async fn Actors::recover(self : Actors, a : Actor) -> Json raise {
     if a.delivery_interruptions > 0 {
       return
     }
+    // The turn the restart cut off (its process gone with no runner to keep it) is ended here, before anything that may
+    // fail: left open, the session would be shown at work for ever (2026-11-16, a recovery that could not start).
+    if a.turn is None {
+      ignore(self.store(a, "endCutOff", [jstr(a.key)]))
+    }
     if self.archived(a) {
       a.recovery_deferred = false
       self.set_running(a, false)

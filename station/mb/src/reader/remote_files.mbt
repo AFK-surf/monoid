@@ -8,6 +8,14 @@ suberror FsError {
 }
 
 ///|
+/// Its words as they are where it is said (`to_string`), not its type's name.
+impl Show for FsError with output(self, logger) {
+  match self {
+    FsError(m) => logger.write_string(m)
+  }
+}
+
+///|
 fn FsError::of(e : Error) -> String {
   match e {
     FsError(m) => m

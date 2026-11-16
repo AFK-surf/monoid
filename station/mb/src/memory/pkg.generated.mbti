@@ -55,6 +55,7 @@ pub fn union_lines(String, String, String?, String?) -> String
 pub suberror Failed {
   Failed(String)
 }
+pub impl Show for Failed
 
 // Types and methods
 pub struct Blobs {

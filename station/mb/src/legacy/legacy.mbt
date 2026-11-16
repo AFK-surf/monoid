@@ -1050,3 +1050,11 @@ pub fn bounded_edit_key(db : @sql.Db, thread : Json, n : Json) -> String? raise 
 pub(all) suberror Unprepared {
   Unprepared(String)
 }
+
+///|
+/// Its words as they are where it is said (`to_string`), not its type's name.
+pub impl Show for Unprepared with output(self, logger) {
+  match self {
+    Unprepared(m) => logger.write_string(m)
+  }
+}

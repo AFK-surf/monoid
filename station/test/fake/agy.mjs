@@ -5,7 +5,9 @@
 // $HOME/.gemini/antigravity-cli, and the interface going on until it is stopped; a company's account as 1.5.9 signs it
 // in (below). As 1.5.9: told it is a remote session's (SSH_CLIENT, its file kept in a file), it first asks the terminal
 // what it is and waits for the answer; with a sign-in in $HOME already it asks nothing and goes straight into its
-// interface. FAKE_AGY_TIER: the tier session/new says (`_meta.antigravity.tier`).
+// interface. FAKE_AGY_TIER: the tier session/new says (`_meta.antigravity.tier`). FAKE_AGY_OFFLINE: how many openings
+// (session/new, session/load) of all its processes answer as 1.5.9 does with its backend not reached: no models, and
+// every model refused after (counted in FAKE_DUMP.offline).
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -189,6 +191,17 @@ const models = process.env.FAKE_AGY_SUBSCRIPTION
       ],
     }
   : { currentModelId: 'gemini-3.5-flash', availableModels: [{ modelId: 'gemini-3.5-flash', name: 'Gemini 3.5 Flash' }, { modelId: 'gemini-3.1-pro', name: 'Gemini 3.1 Pro' }] };
+// Whether this opening is one FAKE_AGY_OFFLINE answers with no models; once one is, the process offers none after.
+let offline = false;
+const opening = () => {
+  const most = Number(process.env.FAKE_AGY_OFFLINE ?? 0);
+  if (most === 0) return models;
+  const counter = dump + '.offline';
+  const seen = existsSync(counter) ? Number(readFileSync(counter, 'utf8')) : 0;
+  writeFileSync(counter, String(seen + 1));
+  offline = seen < most;
+  return offline ? null : models;
+};
 for await (const line of createInterface({ input: process.stdin })) {
   const m = JSON.parse(line);
   if (dump) appendFileSync(dump + '.rpc', line + '\n');
@@ -199,13 +212,13 @@ for await (const line of createInterface({ input: process.stdin })) {
     if (process.env.FAKE_AGY_SIGNED_OUT) { say({ id: m.id, error: { code: -32000, message: 'Authentication required' } }); continue; }
     sessionId = randomUUID();
     writeFileSync(join(conversations, `${sessionId}.db`), 'conversation');
-    reply(m.id, { sessionId, models, ...(process.env.FAKE_AGY_TIER ? { _meta: { antigravity: { tier: { id: process.env.FAKE_AGY_TIER, name: 'Google AI Ultra' } } } } : {}) });
+    reply(m.id, { sessionId, models: opening(), ...(process.env.FAKE_AGY_TIER ? { _meta: { antigravity: { tier: { id: process.env.FAKE_AGY_TIER, name: 'Google AI Ultra' } } } } : {}) });
   } else if (m.method === 'session/load') {
     sessionId = p.sessionId;
     if (existsSync(join(conversations, `${sessionId}.db`))) update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'past replay' } });
-    reply(m.id, { models });
+    reply(m.id, { models: opening() });
   } else if (m.method === 'session/set_model') {
-    if (!models.availableModels.some((x) => x.modelId === p.modelId)) say({ id: m.id, error: { code: -32602, message: 'unknown model' } });
+    if (offline || !models.availableModels.some((x) => x.modelId === p.modelId)) say({ id: m.id, error: { code: -32602, message: `Unknown model ID: ${p.modelId}` } });
     else reply(m.id, {});
   } else if (m.method === 'session/cancel') {
     if (held) reply(held, { stopReason: 'cancelled' }); held = null;

@@ -11,7 +11,8 @@ import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, type Stats } from "node:fs";
 import { copyFile, cp, link as hardLink, lstat, mkdir, readdir, realpath, rename, rm, stat, writeFile, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { wall } from "../ops/fibers.ts";
+import { Duration, Effect, type Clock } from "effect";
+import { liveClock, wall } from "../ops/fibers.ts";
 import { writePrivateSoon } from "../ops/files.ts";
 import { link as linkPath } from "../ops/links.ts";
 import { log } from "../ops/log.ts";
@@ -540,7 +541,23 @@ export type AgyDriverOptions = {
   /// Another station's subscription, borrowed (share/index.ts): its sign-in file written with the access token the
   /// station signed in on it lent (`write`, when it runs out).
   lent?: { borrowed(profile: Profile): boolean; write(profile: Profile): Promise<number> };
+  /// What it waits on between openings of a process that could not load its models (`AGY_CATALOG_RETRY_MS`).
+  clock?: Clock.Clock;
 };
+
+/// `agy acp` that cannot reach its backend as it starts (1.5.8, 1.5.9: a machine just restarted, its network not up yet)
+/// fails neither session/new nor session/load: it answers them with no models (`models: null`), and offers none for the
+/// rest of its life, so its session/set_model is refused ("Unknown model ID", tokyo-mac-studio-0 2026-11-16: five
+/// sessions failed as the machine came up, its network four seconds later). Such a process is ended and another opened
+/// after these waits; the last failure is the network's (`failureOf`), never the model's.
+export const AGY_CATALOG_RETRY_MS = [1000, 2000, 4000];
+/// What an opening that offered no models fails with: the network's words (`failureOf`), so its caller keeps the
+/// conversation it was resuming and says the network failed.
+export class AgyNoCatalog extends Error {
+  constructor() {
+    super("Antigravity CLI could not load its model catalog: connection failed");
+  }
+}
 
 /// A borrowed sign-in is asked of its host again as a process opens on it once it has less than this left. A running
 /// `agy` never reads its sign-in's file again (1.5.9, measured 2026-11-15: a file renewed under it, its next call still
@@ -557,11 +574,13 @@ export class AgyDriver extends AcpDriver<AgySession> {
   private readonly command: string;
   private readonly lent: AgyDriverOptions["lent"];
   private readonly lost = new Set<string>();
+  readonly #clock: Clock.Clock;
 
   constructor(options: AgyDriverOptions) {
     super(options.data);
     this.command = options.command ?? "agy";
     this.lent = options.lent;
+    this.#clock = options.clock ?? liveClock;
   }
 
   /// Marks conversation `id` as missing its trajectory in the CLI (`trajectory not found` on `session/prompt`), so the
@@ -617,7 +636,23 @@ export class AgyDriver extends AcpDriver<AgySession> {
     return new AgySession(this, events, options);
   }
 
+  /// One opening, opened again after `AGY_CATALOG_RETRY_MS` while its process offers no models (`AgyNoCatalog`); any
+  /// other failure is the caller's at once.
   protected async begin(options: OpenOptions, events: Events, probe: boolean): Promise<AgySession> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await this.beginOnce(options, events, probe);
+      } catch (error) {
+        const wait = AGY_CATALOG_RETRY_MS[attempt];
+        if (!(error instanceof AgyNoCatalog) || wait === undefined) throw error;
+        log.warn("agents::agy", "its process offered no models (its network not up?); opened again after a wait", { key: options.key, attempt: attempt + 1, waitMs: wait });
+        // timer: retry after a failure
+        await Effect.runPromise(this.#clock.sleep(Duration.millis(wait)));
+      }
+    }
+  }
+
+  private async beginOnce(options: OpenOptions, events: Events, probe: boolean): Promise<AgySession> {
     const borrowed = this.lent?.borrowed(options.profile) === true;
     if (borrowed) await this.renewLent(options.profile);
     else if (accessKind(options.profile) === "subscription") await agyTakeBack(options.profile.home);
@@ -679,6 +714,8 @@ export class AgyDriver extends AcpDriver<AgySession> {
   }
 
   protected async ready(session: AgySession, options: OpenOptions, probe: boolean) {
+    // Its backend not reached as it started: no model it would take (AGY_CATALOG_RETRY_MS). The opening's catch ends it.
+    if (session.availableModels.length === 0) throw new AgyNoCatalog();
     const model = probe ? undefined : (options.model ?? profileModel(options.profile));
     if (model === undefined) return;
     const target = agyVariant(model, options.effort, session.availableModels, session.defaultModelId) ?? model;

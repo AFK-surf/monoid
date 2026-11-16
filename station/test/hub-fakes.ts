@@ -223,6 +223,8 @@ export class FakeDriver implements AgentDriver {
   sessions: FakeSession[] = [];
   /// Runtime session ids that resume fails for.
   unresumable = new Set<string>();
+  /// What resuming a runtime session fails with the next time it is asked (once), as the network or a borrowing does.
+  resumeFailsOnce = new Map<string, Error>();
   /// Why every process it is asked to start does not (like a borrowed login its host did not lend).
   refuses: string | null = null;
   /// Its command is not on PATH: every start fails as the runner says it (not installed).
@@ -256,6 +258,11 @@ export class FakeDriver implements AgentDriver {
     if (this.missing) throw new CommandMissing(this.kind);
     if (this.refuses !== null) throw new Error(this.refuses);
     if (options.resume !== undefined && this.unresumable.has(options.resume)) throw new Error("no such session");
+    const once = options.resume === undefined ? undefined : this.resumeFailsOnce.get(options.resume);
+    if (once !== undefined) {
+      this.resumeFailsOnce.delete(options.resume!);
+      throw once;
+    }
     const session = new FakeSession(options.resume ?? `${this.kind}-${this.n++}`, options, events);
     this.sessions.push(session);
     return session;

@@ -4,7 +4,7 @@ import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { after, test } from "node:test";
-import { AGY_FILE_TOKENS, AgyDriver, SESSIONS, agyAccountFile, agyLentFile, agyPlan, agyRenew, agyTierIn, agyTokenReady, agyKeychain, goKeyringValue, agyBaseModel, agyCatalog, agyConversations, agyEnv, agyHome, agyToken, agyVariant, classifyFailure, geminiDir, noticeFailure } from "../src/agents/agy.ts";
+import { AGY_CATALOG_RETRY_MS, AGY_FILE_TOKENS, AgyDriver, AgyNoCatalog, SESSIONS, agyAccountFile, agyLentFile, agyPlan, agyRenew, agyTierIn, agyTokenReady, agyKeychain, goKeyringValue, agyBaseModel, agyCatalog, agyConversations, agyEnv, agyHome, agyToken, agyVariant, classifyFailure, geminiDir, noticeFailure } from "../src/agents/agy.ts";
 import { REPO_RULES_HOOK } from "../src/agents/repo-rules.ts";
 import type { OpenOptions, RuntimeEvent } from "../src/agents/runtime.ts";
 import { allLeft } from "../src/agents/runner.ts";
@@ -25,6 +25,9 @@ import { platform } from "../src/platform/index.ts";
 import { transcriptPath, readTimeline, isPosting } from "./reference/transcript.ts";
 import { callsOf } from "./usage-counter-reference.ts";
 import { CHAT_CREATE } from "../src/tools/chat.ts";
+import { failureOf } from "../src/agents/runtime.ts";
+import { cannotStartWords } from "../src/sessions/actor.ts";
+import { testClock } from "./hub-fakes.ts";
 
 const data = mkdtempSync(process.platform === "win32" ? join(tmpdir(), "agy-") : "/tmp/agy-");
 const drivers: AgyDriver[] = [];
@@ -134,6 +137,65 @@ test("a conversation the station kept but its CLI does not is not taken up: fail
   await resumed.prompt("again");
   await until(() => ended(events).length === 1);
   await resumed.dispose();
+});
+
+test("a process that could not reach its backend as the machine came up (no models) is opened again after a wait on the clock; the conversation resumed with its model, never refused as an unknown model", async () => {
+  const { options, events, driver: first, dump } = setup();
+  const session = await first.open(options, (e) => events.push(e));
+  const id = session.id();
+  await session.dispose();
+  const time = testClock();
+  const driver = new AgyDriver({ data, clock: time.clock });
+  drivers.push(driver);
+  // Its first two openings answer with no models (tokyo-mac-studio-0, 2026-11-16: `models: null`), the third with them.
+  const offline = { ...options, profile: { ...options.profile, env: { ...(options.profile.env as Record<string, string>), FAKE_AGY_OFFLINE: "2" } } };
+  let opened: Awaited<ReturnType<AgyDriver["open"]>> | null = null;
+  let failed: unknown = null;
+  const opening = driver.open({ ...offline, resume: id, model: "gemini-3.1-pro" }, (e) => events.push(e)).then((s) => (opened = s), (e) => (failed = e));
+  // A wait begun, or the opening over (as it was before: refused at once, "Unknown model ID").
+  const waits = async (n: number) => {
+    await Promise.race([time.begun(n), opening]);
+    assert.equal(failed, null, String(failed));
+    assert.equal(opened, null, "not opened before its wait");
+    assert.equal(time.asked(), n);
+  };
+  await waits(1);
+  await time.adjust(AGY_CATALOG_RETRY_MS[0]!);
+  await waits(2);
+  await time.adjust(AGY_CATALOG_RETRY_MS[1]!);
+  await opening;
+  assert.equal(failed, null, String(failed));
+  assert.equal(opened!.id(), id, "the conversation it was resuming");
+  assert.equal(readFileSync(dump + ".offline", "utf8"), "3");
+  const set = rpc(dump).filter((m) => m.method === "session/set_model");
+  assert.deepEqual(set.map((m) => m.params.modelId), ["gemini-3.1-pro"], "the model set only once there were models");
+  assert.equal(time.asked(), 2);
+  await opened!.dispose();
+});
+
+test("a process that never reaches its backend fails as the network after its waits, not as an unknown model", async () => {
+  const { options, events, dump } = setup({ FAKE_AGY_OFFLINE: "100" });
+  const time = testClock();
+  const driver = new AgyDriver({ data, clock: time.clock });
+  drivers.push(driver);
+  let failed: unknown = null;
+  const opening = driver.open({ ...options, model: "gemini-3.1-pro" }, (e) => events.push(e)).then(() => assert.fail("opened"), (e) => (failed = e));
+  for (const [i, wait] of AGY_CATALOG_RETRY_MS.entries()) {
+    // A wait begun, or the opening over (as it was before: refused at once, "Unknown model ID").
+    await Promise.race([time.begun(i + 1), opening]);
+    assert.equal(time.asked(), i + 1, `waited before opening again: ${String(failed)}`);
+    await time.adjust(wait);
+  }
+  await opening;
+  assert.ok(failed instanceof AgyNoCatalog, String(failed));
+  assert.equal(readFileSync(dump + ".offline", "utf8"), String(AGY_CATALOG_RETRY_MS.length + 1), "opened once and once again after each wait");
+  assert.equal(rpc(dump).filter((m) => m.method === "session/set_model").length, 0, "no model asked of a process that offers none");
+  assert.equal(failureOf((failed as Error).message), "network");
+  const words = cannotStartWords(failed);
+  assert.doesNotMatch(words, /Unknown model ID/);
+  // As any failure of the network is said ("connection failed"): the station's words for it, then what was said.
+  assert.equal(words.split("\n")[0], cannotStartWords(new Error("connection failed")).split("\n")[0]);
+  assert.notEqual(words.split("\n")[0], cannotStartWords(new Error("Unknown model ID: gemini-3.1-pro")).split("\n")[0]);
 });
 
 test("another model between turns is set in the running process; one it does not offer starts it again", async () => {

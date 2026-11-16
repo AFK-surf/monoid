@@ -18,6 +18,7 @@ import { Places } from "../ops/places.ts";
 import { log } from "../ops/log.ts";
 import { Said, tr, stationLang } from "../ops/i18n.ts";
 import { failureOf, modelLimitOf, runtimeKind, runtimeLabel, type RuntimeKind } from "../agents/runtime.ts";
+import { CommandMissing } from "../agents/runner.ts";
 import { type CardChoice, type DeliveryCardState, type Handed, type MessageRow, type PendingMessage, type RunChange } from "../store/rows.ts";
 import { PostBlocksUnavailable } from "../store/post-blocks.ts";
 import { WidgetSourcesUnavailable } from "../store/widget-sources.ts";
@@ -89,6 +90,8 @@ export type SessionStore = {
   startTurnFor(id: string, key: string, kind: string, by: TurnFor): void;
   endTurn(id: string, outcome: string, detail: string | null, declared: string | null, wait: number | null): void;
   declareTurn(id: string, declared: string | null, wait: number | null): void;
+  /// The turns a restart cut off, ended as aborted (store.ts `endCutOff`; optional: none ended without it).
+  endCutOff?(key: string): number;
   setRunning(key: string, running: boolean): void;
   setSessionContextBefore(key: string, before: number | null): void;
   setRuntimeSessionId(key: string, id: string | null): void;
@@ -379,6 +382,10 @@ export async function openAgent(deps: SessionDeps, key: string, how: OpenHow): P
       agent = await driver.open({ ...base, resume: row.runtimeSessionId }, how.listener(generation));
       resumable = subagents;
     } catch (error) {
+      // Nothing wrong with the conversation (the network, the account, a borrowing): it stays the session's, opened
+      // again with its next turn. Left for a new one, a long chat lost its whole conversation to a process that could
+      // not reach its provider once (tokyo-mac-studio-0, 2026-11-16, as the machine came up).
+      if (isNonSessionOpenError(error)) throw error;
       log.warn("session", "resume failed; starting a new runtime session", { session: key, id: row.runtimeSessionId, error: (error as Error).message });
       agent = await driver.open(base, how.listener(generation));
       told.resumeLost = true;
@@ -396,6 +403,17 @@ export async function openAgent(deps: SessionDeps, key: string, how: OpenHow): P
   }
   if (stopped.length > 0) told.stoppedNote = backgroundStopped(stopped, resumable);
   return { ...told, session: agent, generation, identity: { runtime, model: row.model ?? null, effort: row.effort ?? null }, profile: profile.id };
+}
+
+/// Whether opening a runtime session failed for something other than the conversation itself (`openAgent`): the
+/// station's own words (`Said`: a sign-in not lent, a folder it may not read), its runtime not installed, or what the
+/// failure says is the network, the account, the provider or a limit. Resuming again later may well work, so the
+/// conversation is kept rather than left for a new one.
+export function isNonSessionOpenError(error: unknown): boolean {
+  if (error instanceof Said || error instanceof CommandMissing) return true;
+  if ((error as { missing?: unknown } | null)?.missing === true) return true;
+  const reason = failureOf((error as Error | null)?.message ?? String(error));
+  return reason === "network" || reason === "auth" || reason === "refused" || reason === "blocked" || reason === "rate_limit" || reason === "overloaded";
 }
 
 /// What a turn is prompted with (actor.ts `startTurn`): what it is handed, after what it is told first (its resume

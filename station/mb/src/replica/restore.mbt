@@ -11,6 +11,14 @@ priv suberror FilesPending {
 }
 
 ///|
+/// Its words as they are where it is said (`to_string`), not its type's name.
+impl Show for FilesPending with output(self, logger) {
+  match self {
+    FilesPending(_, m) => logger.write_string(m)
+  }
+}
+
+///|
 let not_empty_words : String = "this station has chats of its own: a copy is taken back only into a new one"
 
 ///|
