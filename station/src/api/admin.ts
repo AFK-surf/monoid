@@ -25,7 +25,7 @@ import { routes as hub, movedAnswer, uploadPath } from "./routes/hub.ts";
 import { routes as deviceTools } from "./routes/tools.ts";
 import { routes as agentEnv } from "./routes/agent-env.ts";
 import { routes as networkSettings } from "./routes/network.ts";
-import { restarter } from "../ops/restart.ts";
+import { pageRestart } from "../ops/restart.ts";
 import { routes as contextSettings } from "./routes/context.ts";
 import { routes as presetRoutes } from "./routes/presets.ts";
 import { routes as starRoutes } from "./routes/stars.ts";
@@ -101,6 +101,8 @@ export type AdminDeps = {
   /// (the drive, the device tools, the workspaces); the agents' when not given (tests).
   config?: ConfigFile;
   data?: string;
+  /// Asks the launcher to start its front anew and hand over (ops/launcher.ts), where it can: the page's restart does.
+  restartFront?: () => void;
   cloud?: Cloud;
   /// still.fail Helper (macOS): the drive's protected folders go through it.
   helper?: HelperApp | null;
@@ -168,7 +170,7 @@ export class Admin {
     };
     this.tools = tools;
     this.routes = [...chats(tools), ...usage(tools), ...sessions(tools), ...events(tools), ...marks(tools), ...hub(tools),
-      ...(config ? networkSettings({ config, changed: () => deps.events?.overviewChanged(), ...(data !== undefined ? { restart: () => restarter(data) } : {}) }) : []),
+      ...(config ? networkSettings({ config, changed: () => deps.events?.overviewChanged(), ...(data !== undefined ? { restart: pageRestart(data, deps.restartFront) } : {}) }) : []),
       ...(config ? deviceTools({ config, changed: () => deps.events?.overviewChanged() }) : []),
       ...(cloud && data !== undefined ? workspaces({ cloud, data, changed: () => deps.events?.overviewChanged() }) : []),
       ...(config && data !== undefined

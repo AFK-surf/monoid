@@ -53,7 +53,9 @@ import { wall } from "./ops/fibers.ts";
 /// Where the station keeps its data, and the release it runs from.
 /// `beforeStore`: what is done before the store first opens (a lost station's chats taken back: replica/restore.ts,
 /// given by main.ts).
-export class Paths extends Context.Service<Paths, { readonly data: string; readonly app: string; readonly beforeStore?: () => Promise<void> }>()("stillfail/Paths") {}
+/// The station's directories, and what of its launcher the parts ask (ops/launcher.ts): `restartFront` where it keeps a
+/// front it can start anew.
+export class Paths extends Context.Service<Paths, { readonly data: string; readonly app: string; readonly beforeStore?: () => Promise<void>; readonly restartFront?: () => void }>()("stillfail/Paths") {}
 
 /// The control plane this station is enrolled in (cloud/plane.ts): cloud.json and its changes, the presence socket,
 /// notices, traces, releases and which credentials it takes. `layer` follows cloud.json's provider (still.fail cloud
@@ -441,9 +443,11 @@ export class AdminApi extends Context.Service<AdminApi, Admin>()("stillfail/Admi
     Effect.gen(function* () {
       const side = yield* AgentsSide;
       const config = yield* StationConfig;
+      const paths = yield* Paths;
       return new Admin(yield* Readers, {
         store: yield* Store, events: yield* Events, host: yield* AdminHost, agents: () => side.current ?? undefined, screens: yield* ScreenRegistry, helper: yield* Helper, grants: yield* Grants,
-        drive: yield* StationDrive, parts: yield* Parts, config, data: (yield* Paths).data, cloud: (yield* ControlPlane).state,
+        drive: yield* StationDrive, parts: yield* Parts, config, data: paths.data, cloud: (yield* ControlPlane).state,
+        ...(paths.restartFront ? { restartFront: paths.restartFront } : {}),
       });
     }),
   );

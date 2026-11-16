@@ -161,6 +161,11 @@ pub trait Os {
     fn probe_front(&mut self, _n: u64) {}
     /// The front ended, as hung (its end is seen as any other's).
     fn kill_front(&mut self) {}
+    /// The front there ended (its stdin closed, killed where it does not end by itself) and another started in its
+    /// place: whether that one listens. None where the platform keeps no front (Windows).
+    fn restart_front(&mut self) -> bool {
+        false
+    }
 }
 
 /// A Node and what the launcher knows of it.
@@ -502,6 +507,12 @@ impl<O: Os> Lifecycle<O> {
                 }
                 _ => log::warn(&format!("Node {from} gave what it held with no Node to carry it to")),
             }
+        } else if message["restartFront"] == true {
+            if slot == Slot::Current {
+                self.restart_front();
+            } else {
+                log::warn(&format!("a Node not serving (pid {}) asked for the front to start again; not now", self.node_mut(slot).map_or(0, |n| n.process.pid())));
+            }
         } else if let Some(said) = message["drained"].as_str().filter(|_| slot == Slot::Current) {
             log::info(&format!("drained ({said})"));
             let _ = write_whole(&self.run.join("drained"), &format!("{said}\n"));
@@ -578,6 +589,35 @@ impl<O: Os> Lifecycle<O> {
         self.front_probe_at = None;
         self.schedule_front_retry();
         self.tick();
+    }
+
+    /// The Node serving asks for the front to be started anew (`{"restartFront":true}`: its page's restart, or the front
+    /// held past its memory's limit, station/src/ops/self-memory.ts): one that answers its asks may still hold what went
+    /// wrong (its endpoint's state, its memory), which only a new one lets go. The one there ended, another started, and
+    /// the Node serving hands over to one linked to it (its own link went with the front). One that does not start is
+    /// as one gone (`front_gone`): Nodes bind the endpoint themselves until one is started again. With none before, a
+    /// handover alone.
+    fn restart_front(&mut self) {
+        if self.stopping.is_some() || self.next.is_some() || self.retiring.is_some() {
+            log::warn("asked to start the front again while stopping or handing over; not now");
+            return;
+        }
+        let had = self.os.has_front();
+        let started = self.os.restart_front();
+        self.probing = None;
+        self.front_misses = 0;
+        if started {
+            log::info("the front started again: the Node serving hands over to one linked to it");
+            self.front_gone = false;
+            self.front_retry_at = None;
+            self.front_retries = 0;
+            self.front_probe_at = Some(self.os.now() + self.times.front_probe);
+            self.start_next();
+        } else if had {
+            self.front_gone();
+        } else {
+            self.start_next();
+        }
     }
 
     /// No front runs where the release has one (it did not start as the launcher did): one is started again after
@@ -901,6 +941,8 @@ mod tests {
         started_fronts: u32,
         probed: Vec<u64>,
         front_killed: u32,
+        /// The fronts ended and started anew as a Node asked (`restart_front`).
+        restarted_fronts: u32,
     }
 
     impl Os for Fake {
@@ -943,6 +985,11 @@ mod tests {
         fn kill_front(&mut self) {
             self.front_killed += 1;
         }
+        fn restart_front(&mut self) -> bool {
+            self.restarted_fronts += 1;
+            self.front = if self.front_starts.is_empty() { true } else { self.front_starts.remove(0) };
+            self.front
+        }
     }
 
     impl Drop for Fake {
@@ -966,7 +1013,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&data);
         let run = data.join("run");
         std::fs::create_dir_all(&run).unwrap();
-        let fake = Fake { dir: data, now: Instant::now(), pid: 100, told: vec![], killed: vec![], parent_gone: false, routes: vec![], renewed: vec![], front: false, front_starts: vec![], started_fronts: 0, probed: vec![], front_killed: 0 };
+        let fake = Fake { dir: data, now: Instant::now(), pid: 100, told: vec![], killed: vec![], parent_gone: false, routes: vec![], renewed: vec![], front: false, front_starts: vec![], started_fronts: 0, probed: vec![], front_killed: 0, restarted_fronts: 0 };
         let times = Times { ready: s(60), exit: s(30), stop: s(30), backoff: s(1), backoff_max: s(4), stable: s(60), parent: s(2), drained: s(300), take: s(90), rollback: s(10), front: s(10), heartbeat: s(90), front_retry: s(300), front_probe: s(30) };
         let mut station = Lifecycle::new(fake, times, run, with_parent);
         station.start();
@@ -1089,6 +1136,87 @@ mod tests {
         station.ended(third, EXITED_0);
         station.pass(s(3600));
         assert_eq!(station.last(), fourth, "once");
+    }
+
+    #[test]
+    fn the_node_serving_asking_for_the_front_anew_has_it_ended_another_started_and_hands_over_to_one_linked_to_it() {
+        let mut station = station("restartfront", false);
+        station.os.front = true;
+        let first = station.last();
+        station.up(Slot::Current, "0.1.0", 5000);
+        // an ask of the old front missed, another out: counted afresh for the new one
+        station.tick();
+        station.pass(s(30));
+        assert_eq!(station.os.probed, [1]);
+        station.front_probed(1, false);
+        assert_eq!(station.front_misses, 1);
+        station.pass(s(30));
+        assert!(station.probing.is_some());
+        station.said(Slot::Current, json!({"restartFront": true}));
+        assert_eq!(station.os.restarted_fronts, 1);
+        assert!(station.probing.is_none() && station.front_misses == 0);
+        let second = station.last();
+        assert_ne!(second, first, "a handover at once, to a Node linked to the new front");
+        // asked again while it hands over: not now
+        station.said(Slot::Current, json!({"restartFront": true}));
+        assert_eq!(station.os.restarted_fronts, 1);
+        assert_eq!(station.last(), second);
+        station.said(Slot::Next, ready("0.1.0"));
+        assert_eq!(station.told(first), ["handover"]);
+        station.ended(first, EXITED_0);
+        station.serves(Slot::Current, 6000);
+        assert_eq!(station.serving(), second);
+        assert!(station.file("handoff-failed").is_none());
+        // the new front asked on as the old one was, from its start
+        station.pass(s(30));
+        assert_eq!(station.os.probed, [1, 2, 3]);
+        // not from a Node that is not the one serving
+        station.start_next();
+        let third = station.last();
+        station.said(Slot::Next, json!({"restartFront": true}));
+        assert_eq!(station.os.restarted_fronts, 1);
+        station.said(Slot::Next, ready("0.1.0"));
+        station.ended(second, EXITED_0);
+        station.serves(Slot::Current, 7000);
+        // one that does not start is as one gone: the one serving hands over to one that binds the endpoint itself, and
+        // one is started again later
+        station.os.front_starts = vec![false];
+        station.said(Slot::Current, json!({"restartFront": true}));
+        assert_eq!(station.os.restarted_fronts, 2);
+        assert!(!station.os.front);
+        let fourth = station.last();
+        assert_ne!(fourth, third);
+        assert!(station.front_retry_at.is_some());
+        station.said(Slot::Next, ready("0.1.0"));
+        assert_eq!(station.told(third), ["handover"]);
+        station.ended(third, EXITED_0);
+        station.serves(Slot::Current, 8000);
+        station.pass(s(300));
+        assert_eq!(station.os.started_fronts, 1, "started again after front_retry");
+        let fifth = station.last();
+        assert_ne!(fifth, fourth, "and the one serving hands over to one linked to it");
+    }
+
+    #[test]
+    fn asked_for_the_front_anew_where_none_runs_the_node_serving_hands_over() {
+        let mut station = station("restartnofront", false);
+        let first = station.last();
+        station.up(Slot::Current, "0.1.0", 5000);
+        // none starts either (a release without the program): a handover alone, no front tried again later
+        station.os.front_starts = vec![false];
+        station.said(Slot::Current, json!({"restartFront": true}));
+        assert_eq!(station.os.restarted_fronts, 1);
+        let second = station.last();
+        assert_ne!(second, first);
+        assert!(station.front_retry_at.is_none() && !station.front_gone);
+        station.said(Slot::Next, ready("0.1.0"));
+        assert_eq!(station.told(first), ["handover"]);
+        // stopping: not now
+        station.ended(first, EXITED_0);
+        station.serves(Slot::Current, 6000);
+        station.stop();
+        station.said(Slot::Current, json!({"restartFront": true}));
+        assert_eq!(station.os.restarted_fronts, 1);
     }
 
     #[test]

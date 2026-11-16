@@ -102,7 +102,7 @@ async function launcher(): Promise<boolean> {
 
 export const ResourcesLive = Layer.effectDiscard(
   Effect.gen(function* () {
-    const { data } = yield* Paths;
+    const { data, restartFront } = yield* Paths;
     const store = yield* Store;
     const { hub } = yield* Agents;
     const readers = yield* Readers;
@@ -128,6 +128,8 @@ export const ResourcesLive = Layer.effectDiscard(
           trimIdle: () => readers.trimIdle(),
           evictWarm: () => hub.evictAllIdle(),
           handover: () => restarter(data),
+          // (the front held past its limit started anew, the Node handed over to one linked to it: the launcher's)
+          ...(restartFront ? { restartFront: async () => restartFront() } : {}),
         });
         governor.start();
         return governor;

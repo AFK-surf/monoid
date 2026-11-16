@@ -35,6 +35,11 @@ export type Control = {
   /// (`--launcher-heartbeat`; one from before would write each to its log as a line it does not know). Silent for its
   /// limit once it has taken over (lifecycle.rs `heartbeat`), it is killed and started again.
   heartbeat(): void;
+  /// Asks the launcher to end its front (the MoonBit program that keeps the station's endpoint, native/launcher's
+  /// front.rs) and start it anew, then hand this process over to one linked to the new one (lifecycle.rs
+  /// `restart_front`). Given where the launcher hands down its sockets (Unix's, which keeps a front) and asks for
+  /// heartbeats: one from before would take the line for one it does not know, and nothing would be done.
+  restartFront?: () => void;
 };
 
 export function launcher(args: string[]): Control {
@@ -103,5 +108,6 @@ export function launcher(args: string[]): Control {
     carry: (what) => void (carries && say({ carry: what })),
     carried,
     heartbeat: () => void (heartbeats && say({ heartbeat: true })),
+    ...(handed && heartbeats ? { restartFront: () => void say({ restartFront: true }) } : {}),
   };
 }

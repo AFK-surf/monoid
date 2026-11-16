@@ -5,7 +5,8 @@
 // take=no|failed (never takes over: says nothing of the agents' door, or that it failed), heartbeat=no (says nothing
 // of being alive though the launcher asks it to: a release from before), heartbeat_every=ms (50), hang=once (the data
 // directory's first Node holds its thread for good once it has taken over: says nothing more, hears nothing),
-// control=close (closes its end of the control socket once it serves, and runs on). What
+// control=close (closes its end of the control socket once it serves, and runs on), restart_front=once (the data
+// directory's first Node asks for the front to be started anew once it has taken over, as a station's page does). What
 // happens is appended to <data>/fake.log: "<ms> <pid> <what>", among it "ports <mcp> <admin>" once both serve (the
 // launcher binds them where it finds them free), "malloc <MallocSpaceEfficient>" and "front <STILLFAIL_MESH_FRONT>"
 // as it starts.
@@ -110,6 +111,12 @@ if (conf.ready !== "no") {
         log("take failed");
         say({ failed: "the agents' side did not start: a test's" });
       } else if (conf.take !== "no") say({ serving: "mcp", port: servers[0].address().port });
+      const restarted = path.join(data, "front-restarted");
+      if (conf.restart_front === "once" && !fs.existsSync(restarted)) {
+        fs.writeFileSync(restarted, "");
+        log("restart front");
+        say({ restartFront: true });
+      }
       const hung = path.join(data, "hung");
       if (conf.hang === "once" && !fs.existsSync(hung)) {
         fs.writeFileSync(hung, "");

@@ -211,7 +211,7 @@ function run() {
     (restored) => { if (restored !== null) log.info("copies", "a lost station's chats taken back", { station: restored.origin, from: restored.from }); },
     (e: Error) => log.error("copies", "a lost station's chats not taken back", { error: e.message }),
   );
-  const paths = Layer.succeed(Paths)({ data, app, beforeStore });
+  const paths = Layer.succeed(Paths)({ data, app, beforeStore, ...(control.restartFront ? { restartFront: control.restartFront } : {}) });
   // still.fail Helper, one for the screens and the drive, and one look at its grants.
   const base = Layer.mergeAll(StationConfig.layer, Key.layer, ReadersAndStore, MeshNative.layer, Up.layer, ScreenRegistry.layer.pipe(Layer.provideMerge(Grants.layer), Layer.provideMerge(Helper.layer))).pipe(Layer.provideMerge(Previous.layer), Layer.provideMerge(paths));
   const parts = ControlPlane.layer.pipe(Layer.provideMerge(base));

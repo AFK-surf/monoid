@@ -564,16 +564,18 @@ fn listening(out: &mut std::process::ChildStdout) -> Option<(String, u64)> {
 }
 
 /// Whether the front listening at `socket` answers an ask within `within`: a connection as a Node's, one line asked
-/// (an operation it has none of, which it answers with an error and nothing else) and its answer read, then closed (it
-/// parts with the connection as with a Node's that went: front/mesh.mbt `serve`, quietly). A connection alone would
-/// not do: the system takes it into the socket's backlog whether or not the program runs.
+/// and its answer read, then closed (it parts with the connection as with a Node's that went: front/mesh.mbt `serve`,
+/// quietly). A connection alone would not do: the system takes it into the socket's backlog whether or not the program
+/// runs. The ask is the endpoint's relays (`relayStatus`), which goes through the shell to its iroh endpoint where one is
+/// bound, so a front whose socket's loop runs while its shell or endpoint is held is not taken for one that answers; none
+/// bound, it is answered an error of the same id.
 pub fn answers(socket: &Path, within: Duration) -> bool {
     use std::io::{BufRead, BufReader, Write};
     let Some(stream) = connect_now(socket) else { return false };
     if stream.set_read_timeout(Some(within)).is_err() || stream.set_write_timeout(Some(within)).is_err() {
         return false;
     }
-    if (&stream).write_all(b"{\"id\":1,\"op\":\"answers\"}\n").is_err() {
+    if (&stream).write_all(b"{\"id\":1,\"op\":\"relayStatus\"}\n").is_err() {
         return false;
     }
     let mut line = String::new();

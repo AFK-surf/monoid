@@ -843,6 +843,72 @@ fn a_front_that_ends_is_started_again_unless_it_ended_as_it_started() {
     assert!(station.wait().success());
 }
 
+#[test]
+fn the_node_serving_asking_for_the_front_anew_has_it_ended_and_hands_over_to_one_linked_to_a_new_one() {
+    let mut station = Station::new("frontrestart");
+    release_front(&station);
+    station.conf("restart_front=once\n");
+    station.start("");
+    station.up();
+    let socket = station.data.join("run/front.sock");
+    let first = station.started()[0];
+    until("the first Node to ask", || station.said(first, "restart front").then_some(()));
+    // the front there ended (its stdin closed), another started in its place
+    let fronts = until("another front", || Some(station.fronts()).filter(|f| f.len() >= 2));
+    assert_eq!(fronts.len(), 2, "{fronts:?}");
+    until("the first front gone", || (!alive(fronts[0])).then_some(()));
+    assert!(alive(fronts[1]));
+    // and the Node serving handed over to one linked to it
+    let new = until("the Node handed over to", || station.started().get(1).copied());
+    until("the new Node to say its front", || station.log().into_iter().any(|(_, p, w)| p == new && w.starts_with("front ")).then_some(()));
+    assert!(station.said(new, &format!("front {}", socket.display())), "{:?}", station.log());
+    until("the first Node handed over", || station.said(first, "got handover").then_some(()));
+    let mcp = station.mcp();
+    until("the new one serving", || (ask(mcp).ok()? == format!("{new} mcp")).then_some(()));
+    assert!(station.file("handoff-failed").is_none());
+    assert_eq!(station.file("front.pid").map(|p| p.trim().to_string()), Some(fronts[1].to_string()));
+    assert_eq!(station.started().len(), 2, "one handover: {:?}", station.log());
+    station.signal(libc::SIGTERM);
+    assert!(station.wait().success());
+    until("the front to end with the launcher", || (!alive(fronts[1])).then_some(()));
+}
+
+/// A station with a front rolled back to a release from before it (0.1.8755: no program, and the launcher `script`):
+/// its front is ended before the handover's Node starts, which binds the endpoint itself, and none is started again.
+fn rolled_back_to_a_release_without_the_front(name: &str, script: &str) {
+    let mut station = Station::new(name);
+    release_front(&station);
+    station.start("front_retry=100");
+    station.up();
+    let fronts = station.fronts();
+    assert_eq!(fronts.len(), 1);
+    std::fs::remove_file(station.app.join("station/stillfail-reader")).unwrap();
+    release_launcher(&station, script);
+    station.conf("version=0.2.0\n");
+    station.signal(libc::SIGUSR2);
+    until("station.json of the new version", || station.station_json().filter(|s| s["version"] == "0.2.0"));
+    let new = *station.started().last().unwrap();
+    until("the new Node to say its front", || station.log().into_iter().any(|(_, p, w)| p == new && w.starts_with("front ")).then_some(()));
+    assert!(station.said(new, "front none"), "{:?}", station.log());
+    // gone before it started (ended, and waited for), and no other in its place
+    assert!(!alive(fronts[0]), "the front left beside a Node that binds the station's endpoint itself: {}", station.launcher_log());
+    assert!(station.launcher_log().contains("has no front"), "{}", station.launcher_log());
+    assert_eq!(station.fronts(), fronts);
+    assert_eq!(station.file("front.pid"), None);
+    station.signal(libc::SIGTERM);
+    assert!(station.wait().success());
+}
+
+#[test]
+fn a_release_rolled_back_to_one_without_the_front_and_a_launcher_that_cannot_take_over_has_the_front_ended() {
+    rolled_back_to_a_release_without_the_front("frontback2", "[ \"$1\" = handoff-version ] && { echo 2; exit 0; }\nexit 1\n");
+}
+
+#[test]
+fn a_release_rolled_back_to_one_without_the_front_whose_launcher_takes_over_has_the_front_ended_before_it_runs() {
+    rolled_back_to_a_release_without_the_front("frontback3", "exec \"$BUILT\" \"$@\"\n");
+}
+
 /// A front of `station`'s data directory left from before (2026-11-16: a launcher killed, or one from before front.pid,
 /// left its front running beside the next one's, both on the station's key): a process of this user with a front's
 /// arguments for its socket, no launcher's child (its parent gone), with no front.pid naming it, that does not end

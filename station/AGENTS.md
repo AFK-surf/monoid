@@ -429,7 +429,9 @@
   gigabytes, and their conversations resume on the next message.
   Node and its programs held past their hard limit together (a handover ends the programs too) ask the launcher to
   hand over (`src/ops/restart.ts` `restarter`), never `becomeOther` or an exit, which would end the sessions where
-  there is no launcher. The launcher's front, which a handover leaves running, is counted apart and never asks one.
+  there is no launcher. The launcher's front, which a handover leaves running, is counted apart: held past its own
+  limit, it is started anew by the launcher, asked as the page's restart asks it (`restartFront`, `src/ops/launcher.ts`;
+  `native/launcher/src/lifecycle.rs` `restart_front`), the Node handed over to one linked to the new one.
 - What is written to a program's stdin is bounded both sides: Node ends a program that left `STDIN_MOST` unread
   (`src/read/mb-reader.ts`), and the program's own queue stops reading stdin past its bound (`mb/src/host/host.c`
   `STDIN_MOST`). Only that reading thread waits there: the shell's answers come on its tokio threads, which never wait.

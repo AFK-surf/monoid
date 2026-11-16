@@ -799,6 +799,33 @@ fn route_matches(pattern: &str, r: &str) -> bool {
     }
 }
 
+/// A connection to the Unix socket at `path` that a stream is carried into, `head` written to it first (what tells the
+/// other side which stream it is); an error where nothing listens there or it takes nothing.
+async fn open_unix(path: &str, head: &[u8]) -> Result<(SocketRead, SocketWrite), String> {
+    #[cfg(unix)]
+    {
+        let socket = tokio::net::UnixStream::connect(path).await.map_err(err)?;
+        {
+            use std::os::fd::AsRawFd;
+            // A stream's pieces written a megabyte ahead of the other side's reads (a Unix socket's own is 8 KiB on
+            // macOS): fewer turns of both for what a stream carries.
+            let size: libc::c_int = 1 << 20;
+            // SAFETY: setsockopt on a socket this function holds, with an int it reads.
+            unsafe { libc::setsockopt(socket.as_raw_fd(), libc::SOL_SOCKET, libc::SO_SNDBUF, (&size as *const libc::c_int).cast(), std::mem::size_of::<libc::c_int>() as libc::socklen_t) };
+        }
+        let (read, mut write) = socket.into_split();
+        write.write_all(head).await.map_err(err)?;
+        let read: SocketRead = Arc::new(tokio::sync::Mutex::new(Box::new(read)));
+        let write: SocketWrite = Arc::new(tokio::sync::Mutex::new(Box::new(write)));
+        Ok((read, write))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (path, head);
+        Err("Unix sockets are Unix's".into())
+    }
+}
+
 /// `bytes` said to the Unix socket at `path` on a connection of their own, then that connection ended.
 async fn tell_unix(path: &str, bytes: &[u8]) -> Result<(), String> {
     #[cfg(unix)]
@@ -1195,39 +1222,18 @@ impl Inner {
         }
     }
 
-    /// A stream given to the Unix socket at `path` (`istream.hand`): connected, `head` written, carried.
+    /// A stream given to the Unix socket at `path` (`istream.hand`): connected, `head` written, carried. Reset where
+    /// the socket does not take it.
     async fn hand(self: &Arc<Self>, id: u64, halves: Arc<Halves>, path: &str, head: &[u8]) -> Result<(), String> {
-        #[cfg(unix)]
-        {
-            let socket = match tokio::net::UnixStream::connect(path).await {
-                Ok(socket) => socket,
-                Err(e) => {
-                    self.reset_stream(id).await;
-                    return Err(err(e));
-                }
-            };
-            {
-                use std::os::fd::AsRawFd;
-                // A stream's pieces written a megabyte ahead of the other side's reads (a Unix socket's own is 8 KiB
-                // on macOS): fewer turns of both for what a stream carries.
-                let size: libc::c_int = 1 << 20;
-                // SAFETY: setsockopt on a socket this function holds, with an int it reads.
-                unsafe { libc::setsockopt(socket.as_raw_fd(), libc::SOL_SOCKET, libc::SO_SNDBUF, (&size as *const libc::c_int).cast(), std::mem::size_of::<libc::c_int>() as libc::socklen_t) };
+        match open_unix(path, head).await {
+            Ok((read, write)) => {
+                self.pipe(id, halves, read, write).await;
+                Ok(())
             }
-            let (read, mut write) = socket.into_split();
-            if let Err(e) = write.write_all(head).await {
+            Err(e) => {
                 self.reset_stream(id).await;
-                return Err(err(e));
+                Err(e)
             }
-            let read: SocketRead = Arc::new(tokio::sync::Mutex::new(Box::new(read)));
-            let write: SocketWrite = Arc::new(tokio::sync::Mutex::new(Box::new(write)));
-            self.pipe(id, halves, read, write).await;
-            Ok(())
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = (id, halves, path, head);
-            Err("Unix sockets are Unix's".into())
         }
     }
 
@@ -2183,11 +2189,14 @@ impl Inner {
             // With `front` (Unix sockets' paths, each taking the next in turn) and `routes` ("GET /admin/api/chats", …): a stream past the first
             // whose head line (its first, read here) asks one of those, by its method and its path without the query,
             // goes there instead, with what was read of it, and `path` is told its index went elsewhere (its head the
-            // ids, a 3 and the index): what the front answers itself. A route's segment `*` is any one segment.
+            // ids, a 3 and the index): what the front answers itself. A route's segment `*` is any one segment. One
+            // of them that takes no connection (its program ended, the next not listening yet) is passed over for the
+            // next in turn; none taking it, the stream goes to `path` as any other does, with what was read of it, and
+            // Node answers it (`path` told nothing went elsewhere): a request is not reset for a program between two runs.
             "conn.hand" => {
                 let on = id_of(&a)?;
                 let path = str_of(&a, "path")?.to_string();
-                let fronts: Vec<String> = a.get("front").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
+                let fronts: Arc<Vec<String>> = Arc::new(a.get("front").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect());
                 let mut turn = 0usize;
                 let routes: Arc<Vec<String>> = Arc::new(
                     a.get("routes").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect(),
@@ -2214,30 +2223,41 @@ impl Inner {
                     head.extend(id.to_be_bytes());
                     head.push(2);
                     head.extend(index.to_be_bytes());
-                    let front = (!fronts.is_empty()).then(|| fronts[turn % fronts.len()].clone());
-                    turn += 1;
-                    let (inner, path, routes) = (self.clone(), path.clone(), routes.clone());
+                    let start = turn;
+                    turn = turn.wrapping_add(1);
+                    let (inner, path, routes, fronts) = (self.clone(), path.clone(), routes.clone(), fronts.clone());
                     tokio::spawn(async move {
                         let mut head = head;
-                        let mut to = &path;
-                        if let (Some(front), true) = (&front, index > 0 && !routes.is_empty()) {
+                        if index > 0 && !fronts.is_empty() && !routes.is_empty() {
                             let read = read_head_line(&halves).await;
-                            if route_of(&read).is_some_and(|r| routes.iter().any(|p| route_matches(p, &r))) {
-                                let mut skip = head[..16].to_vec();
-                                skip.push(3);
-                                skip.extend(index.to_be_bytes());
-                                if let Err(e) = tell_unix(&path, &skip).await {
-                                    eprintln!("mesh: a stream's index not told: {e}");
-                                }
-                                to = front;
-                            }
-                            // (as the frame `pipe` would have carried it: its length first)
+                            let routed = route_of(&read).is_some_and(|r| routes.iter().any(|p| route_matches(p, &r)));
+                            // (as the frame `pipe` would have carried it: its length first; the same to a program or Node)
                             if !read.is_empty() {
                                 head.extend((read.len() as u32).to_be_bytes());
                                 head.extend(read);
                             }
+                            if routed {
+                                for k in 0..fronts.len() {
+                                    let front = &fronts[start.wrapping_add(k) % fronts.len()];
+                                    match open_unix(front, &head).await {
+                                        Ok((read, write)) => {
+                                            // Node told the index went elsewhere only once it has: else it waits for it.
+                                            let mut skip = head[..16].to_vec();
+                                            skip.push(3);
+                                            skip.extend(index.to_be_bytes());
+                                            if let Err(e) = tell_unix(&path, &skip).await {
+                                                eprintln!("mesh: a stream's index not told: {e}");
+                                            }
+                                            inner.pipe(id, halves, read, write).await;
+                                            return;
+                                        }
+                                        Err(e) => eprintln!("mesh: a routed stream not taken at {front} ({e}); the next"),
+                                    }
+                                }
+                                eprintln!("mesh: no program took a routed stream; Node answers it");
+                            }
                         }
-                        if let Err(e) = inner.hand(id, halves, to, &head).await {
+                        if let Err(e) = inner.hand(id, halves, &path, &head).await {
                             eprintln!("mesh: a stream not given: {e}");
                         }
                     });
@@ -4156,6 +4176,101 @@ mod tests {
             assert_eq!(&got[..4], &PIPE_FAILED.to_be_bytes());
             assert!(String::from_utf8_lossy(&got[8..]).contains('5'), "{}", String::from_utf8_lossy(&got[8..]));
             piping.await.unwrap().unwrap();
+        });
+    }
+
+    /// A stand-in for what `conn.hand` gives streams to (Node's socket, a `--serve` program's): each connection's head
+    /// read, a skip said as it is, else the stream's first frame said and answered with `who`; kept open till its end.
+    #[cfg(unix)]
+    fn taking_streams(listener: tokio::net::UnixListener, who: &'static str, said: tokio::sync::mpsc::UnboundedSender<(&'static str, u8, u64, Vec<u8>)>) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            while let Ok((socket, _)) = listener.accept().await {
+                let said = said.clone();
+                tokio::spawn(async move {
+                    let (mut read, mut write) = socket.into_split();
+                    let mut head = [0u8; 25];
+                    if read.read_exact(&mut head).await.is_err() {
+                        return;
+                    }
+                    let index = u64::from_be_bytes(head[17..25].try_into().unwrap());
+                    if head[16] == 3 {
+                        let _ = said.send((who, 3, index, vec![]));
+                        return;
+                    }
+                    let mut len = [0u8; 4];
+                    read.read_exact(&mut len).await.unwrap();
+                    let mut body = vec![0u8; u32::from_be_bytes(len) as usize];
+                    read.read_exact(&mut body).await.unwrap();
+                    let _ = said.send((who, head[16], index, body));
+                    let mut out = (who.len() as u32).to_be_bytes().to_vec();
+                    out.extend(who.as_bytes());
+                    out.extend(PIPE_END.to_be_bytes());
+                    write.write_all(&out).await.unwrap();
+                    let mut rest = vec![];
+                    let _ = read.read_to_end(&mut rest).await;
+                });
+            }
+        })
+    }
+
+    // A `--serve` program ended and the next not listening yet (station/mb's served.ts starts one again): a routed
+    // request on a connection already handed went to it, Node was told to skip its index, and the stream was reset.
+    #[cfg(unix)]
+    #[test]
+    fn a_routed_stream_goes_to_the_next_program_listening_or_else_to_node_never_reset() {
+        let dir = TempDir::new();
+        let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+        let inner = shell.inner.clone();
+        let (node, live, dead) = (dir.path().join("node.sock"), dir.path().join("serve-b.sock"), dir.path().join("serve-a.sock"));
+        shell.runtime.block_on(async move {
+            let alpn = b"stillfail/test".to_vec();
+            let bind = |alpns: Vec<Vec<u8>>| Endpoint::builder(Minimal).relay_mode(RelayMode::Disabled).alpns(alpns).bind();
+            let (a, b) = (bind(vec![]).await.unwrap(), bind(vec![alpn.clone()]).await.unwrap());
+            let port = b.bound_sockets().iter().find(|s| s.is_ipv4()).unwrap().port();
+            let addr = endpoint_addr(&json!({ "id": hex::encode(b.id().as_bytes()), "ips": [format!("127.0.0.1:{port}")] })).unwrap();
+            let taking = b.clone();
+            let taken = tokio::spawn(async move { taking.accept().await.unwrap().await.unwrap() });
+            let id = inner.keep_conn(a.connect(addr, &alpn).await.unwrap());
+            let theirs = taken.await.unwrap();
+            let (said_to, mut said) = tokio::sync::mpsc::unbounded_channel();
+            let _node = taking_streams(tokio::net::UnixListener::bind(&node).unwrap(), "node", said_to.clone());
+            let serving = taking_streams(tokio::net::UnixListener::bind(&live).unwrap(), "served", said_to);
+            let handing = {
+                let inner = inner.clone();
+                // the one that is not there first in turn for the routed stream (index 1)
+                let a = json!({ "id": id, "path": node.to_str().unwrap(), "front": [live.to_str().unwrap(), dead.to_str().unwrap()], "routes": ["GET /served"] });
+                tokio::spawn(async move { inner.run("conn.hand", a, None).await })
+            };
+            let ask = |line: &'static str| {
+                let theirs = theirs.clone();
+                async move {
+                    let (mut send, mut recv) = theirs.open_bi().await.unwrap();
+                    send.write_all(line.as_bytes()).await.unwrap();
+                    send.finish().unwrap();
+                    String::from_utf8(recv.read_to_end(1 << 16).await.expect("answered, not reset")).unwrap()
+                }
+            };
+            // the credential's (first) stream: Node's
+            assert_eq!(ask("{\"hello\":1}\n").await, "node");
+            assert_eq!(said.recv().await.unwrap(), ("node", 2, 0, b"{\"hello\":1}\n".to_vec()));
+            // routed: the program not listening passed over for the next, Node told the index went elsewhere
+            let routed = "{\"method\":\"GET\",\"path\":\"/served?x=1\"}\n";
+            assert_eq!(ask(routed).await, "served");
+            let mut got = vec![said.recv().await.unwrap(), said.recv().await.unwrap()];
+            got.sort();
+            assert_eq!(got, [("node", 3, 1, vec![]), ("served", 2, 1, routed.as_bytes().to_vec())]);
+            // none listening: Node answers it, with what was read of it, and is told no skip
+            serving.abort();
+            let _ = serving.await;
+            std::fs::remove_file(&live).unwrap();
+            assert_eq!(ask(routed).await, "node");
+            assert_eq!(said.recv().await.unwrap(), ("node", 2, 2, routed.as_bytes().to_vec()));
+            // and one not routed, as before
+            assert_eq!(ask("{\"method\":\"GET\",\"path\":\"/host\"}\n").await, "node");
+            assert_eq!(said.recv().await.unwrap(), ("node", 2, 3, b"{\"method\":\"GET\",\"path\":\"/host\"}\n".to_vec()));
+            assert!(said.try_recv().is_err(), "nothing else said");
+            theirs.close(0u32.into(), b"bye");
+            handing.await.unwrap().unwrap();
         });
     }
 

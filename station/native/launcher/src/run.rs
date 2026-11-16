@@ -148,6 +148,22 @@ struct System {
     probed: (Sender<(u64, bool)>, Receiver<(u64, bool)>),
 }
 
+impl System {
+    /// The front ended where the release at --app has none (one rolled back to, from before it): a Node of that release
+    /// knows nothing of it and binds the station's endpoint itself beside it, the two taking each other's place on every
+    /// relay; and a launcher of that release, become at a handover (`renew`), takes up no front it is handed, the pipe to
+    /// its stdin left open there for good. Ended before either: its stdin closed, then killed where it does not end.
+    fn end_front_not_in_release(&mut self) {
+        if self.front.is_none() || crate::front::Front::in_release(&self.options.app) {
+            return;
+        }
+        if let Some(front) = self.front.take() {
+            log::info(&format!("the release ({}) has no front: the front (pid {}) ended, Nodes bind the station's endpoint themselves", self.options.app.display(), front.pid));
+            front.end();
+        }
+    }
+}
+
 /// How long an ask of the front may take to be answered.
 const PROBE_WITHIN: Duration = Duration::from_secs(5);
 /// What a thread of the launcher's writes to the signal pipe to wake serve() (no signal is 0).
@@ -201,6 +217,7 @@ impl Os for System {
     }
 
     fn spawn(&mut self) -> Result<Node> {
+        self.end_front_not_in_release();
         let app = &self.options.app;
         let (ours, theirs) = socketpair()?;
         let mut command = Command::new(crate::node(app));
@@ -283,6 +300,15 @@ impl Os for System {
         });
     }
 
+    fn restart_front(&mut self) -> bool {
+        if let Some(front) = self.front.take() {
+            log::info(&format!("the front (pid {}) ended to be started again, as the Node serving asked", front.pid));
+            front.end();
+        }
+        self.front = crate::front::Front::start(&self.options.app, &self.options.data);
+        self.front.is_some()
+    }
+
     fn kill_front(&mut self) {
         if let Some(front) = &self.front {
             log::warn(&format!("the front (pid {}) killed", front.pid));
@@ -297,6 +323,8 @@ impl Os for System {
         if self.own == Some(theirs) {
             return;
         }
+        // Before this one goes on (a launcher from before it could take over), or becomes one of a release without it.
+        self.end_front_not_in_release();
         // One from before it could take over (a release rolled back to) would not find the lock its own.
         let takes = Command::new(&release).arg("handoff-version").stdin(Stdio::null()).stderr(Stdio::null()).output();
         let version_said = takes.ok().filter(|o| o.status.success()).and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u32>().ok());
