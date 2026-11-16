@@ -107,7 +107,9 @@
     "scoped-computed": {},
     "raw-effect": {},
     "pick-loop": {},
-    "each-min-height": {}
+    "each-min-height": {},
+    "each-lookup": {},
+    "layout-drawn-while": {}
   },
   "excused": {
     "frame-request": {},
@@ -180,6 +182,8 @@
     "scoped-computed": {},
     "raw-effect": {},
     "pick-loop": {},
-    "each-min-height": {}
+    "each-min-height": {},
+    "each-lookup": {},
+    "layout-drawn-while": {}
   }
 }

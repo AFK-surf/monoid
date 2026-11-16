@@ -1143,9 +1143,11 @@ fn ride_spoil() -> Unit {
 /// Whether node `c`, not a list's row, is begun to be kept with what it holds as it is drawn (Riding's `holder`), at
 /// (x, y) as opaque as `a`, as of the count of changes `rev` it is drawn at: gone through to paint it ride_holder_after
 /// times running with nothing of it changed, where it was and as opaque (it would be drawn as it was; what changes or
-/// moves each time it is drawn never kept, its recording never drawn again), holding others; not an old view, in its
-/// bones, glass, what a column scrolls by its offset alone, nor what was found holding such (ride_unkept). Each node
-/// gone through is marked so; one that changed lets go of what it kept.
+/// moves each time it is drawn never kept, its recording never drawn again), holding others or drawing words (a
+/// paragraph's node of words, alone or alone in what holds it: else its glyphs set and drawn again each time what holds
+/// it is gone through, as a message streamed into does at its every word; a box drawing a ground alone is not worth
+/// keeping); not an old view, in its bones, glass, what a column scrolls by its offset alone, nor what was found holding
+/// such (ride_unkept). Each node gone through is marked so; one that changed lets go of what it kept.
 fn ride_holder(
   tree : @view.Tree,
   c : @view.Content,
@@ -1167,7 +1169,7 @@ fn ride_holder(
   !c.hosted &&
   c.bones == 0L &&
   c.glass is None &&
-  tree.held_count(id) >= 2 &&
+  (tree.held_count(id) >= 2 || c.words != "" || !c.runs.is_empty()) &&
   tree.scroll_off_by(id) < 0
 }
 

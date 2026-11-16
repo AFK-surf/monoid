@@ -1,6 +1,7 @@
 // What makes a view do more than it must, found where it is written: a scoped computed or a bare effect where a node's
 // own watch would do (scoped-computed, raw-effect), rows made by a loop in what a pick or a show makes
-// (pick-loop), and a list's row its least height said and no height (each-min-height).
+// (pick-loop), a list's row its least height said and no height (each-min-height), a list's row looking its item up in
+// a whole list (each-lookup), and a size of the layout read off a way as it is drawn (layout-drawn-while).
 
 ///|
 /// A lambda written at `k` (its `fn`): its parameters' names (`_` as written) and its body's `{`
@@ -442,6 +443,7 @@ fn lint_perf(files : Array[MbtFile], cfg : Config, out : Array[Finding]) -> Unit
         out.push(finding("raw-effect", f.rel, f.toks[c.at].line, f.line_text(c.at)))
       }
     }
+    lint_layout_drawn_while(f, out)
     let made = made_by(f)
     if made.is_empty() {
       continue
@@ -457,5 +459,89 @@ fn lint_perf(files : Array[MbtFile], cfg : Config, out : Array[Finding]) -> Unit
     }
     lint_pick_loop(f, made, given, out)
     lint_each_min_height(f, made, named, memo, out)
+    lint_each_lookup(f, made, given, out)
+  }
+}
+
+///|
+/// Whether the call at token `at`, in what was made from `open` to `close`, is in a lambda given to what runs it later
+/// than the view is made or its bindings read (a handler, a press, a callback said by its label)
+fn later_between(f : MbtFile, given : Map[Int, (Call, String?)], open : Int, at : Int) -> Bool {
+  let toks = f.toks
+  for j in (open + 1)..<at {
+    if toks[j].kind != "ident" || toks[j].text != "fn" {
+      continue
+    }
+    match f.lambda_at(j) {
+      Some((_, b)) if b < at && at < toks[b].end =>
+        match given.get(j) {
+          Some((c, label)) if runs_later(c, label) || later_hands.contains(label.unwrap_or("")) => return true
+          _ => ()
+        }
+      _ => ()
+    }
+  }
+  false
+}
+
+///|
+/// What a gesture is given to run as the hand does it (View::gesture's): later than the view is made
+let later_hands : Array[String] = ["tap", "drag", "hold", "menu"]
+
+///|
+/// The methods that walk a list to find one of it
+let lookup_methods : Array[String] = ["find_first", "search_by"]
+
+///|
+/// each-lookup: what a row of View::each (each_of) makes or binds looks its item up in a list by walking it
+/// (`.find_first(…)`, `.search_by(…)`), what runs later than it (a press, a handler) aside: each row walks the list, and
+/// what woke one woke them all, n rows n times n
+fn lint_each_lookup(f : MbtFile, made : Array[Made], given : Map[Int, (Call, String?)], out : Array[Finding]) -> Unit {
+  let seen : Map[Int, Bool] = Map([])
+  for m in made {
+    if (m.kind != "each" && m.kind != "each_of") || f.in_test(m.open) {
+      continue
+    }
+    for c in f.calls {
+      if c.at <= m.open || c.at >= m.close || c.is_def || c.kind != "method" || !lookup_methods.contains(c.name) {
+        continue
+      }
+      // (one each in another: found once)
+      if seen.contains(c.at) || later_between(f, given, m.open, c.at) {
+        continue
+      }
+      seen[c.at] = true
+      out.push(finding("each-lookup", f.rel, f.toks[c.at].line, f.line_text(c.at)))
+    }
+  }
+}
+
+///|
+/// The setters of a node's size and room in the layout: what is laid out again as one changes
+let layout_setters : Array[String] = [
+  "width", "height", "min_width", "max_width", "min_height", "max_height", "padding", "margin", "basis", "gap",
+]
+
+///|
+/// The reads of a way as it is drawn, which follow the clock while it goes
+let drawn_reads : Array[String] = ["drawn_while", "shown_on"]
+
+///|
+/// layout-drawn-while: a size or room of the layout (`width`, `padding`…) given what reads a way as it is drawn
+/// (`.drawn_while(…)`, `.shown_on(…)`): laid out again every frame of the way, its words measured and broken again
+fn lint_layout_drawn_while(f : MbtFile, out : Array[Finding]) -> Unit {
+  let toks = f.toks
+  for c in f.calls {
+    if c.kind != "method" || c.is_def || !layout_setters.contains(c.name) || f.in_test(c.at) {
+      continue
+    }
+    guard c.at + 1 < toks.length() && toks[c.at + 1].text == "(" && toks[c.at + 1].end >= 0 else { continue }
+    let close = toks[c.at + 1].end
+    for d in f.calls {
+      if d.at > c.at + 1 && d.at < close && d.kind == "method" && !d.is_def && drawn_reads.contains(d.name) {
+        out.push(finding("layout-drawn-while", f.rel, toks[c.at].line, f.line_text(c.at)))
+        break
+      }
+    }
   }
 }

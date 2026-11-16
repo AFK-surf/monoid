@@ -379,6 +379,28 @@ pub fn sent_from_said(key : String, x : Double, y : Double) -> Unit {
 }
 
 ///|
+/// Where the quotes' cards of what was sent from here stood in the composer as it was sent (each one's place and size
+/// in the window, in the order the composer held them; None where one was not drawn), by the key its row has in its
+/// chat's list, till that row's cards take them to fly from there (sent_quotes_from_take): the composer an old view's,
+/// as sent_from_at says.
+let sent_quotes_from_at : Map[String, Array[(Double, Double, Double, Double)?]] = Map([])
+
+///|
+/// The quotes' cards of what was sent from here as `key` (sent_local's) stood at `at` in the composer.
+pub fn sent_quotes_from_said(key : String, at : Array[(Double, Double, Double, Double)?]) -> Unit {
+  sent_quotes_from_at[key] = at
+}
+
+///|
+/// Where the quotes' cards of what was sent from here as `key` stood as it was sent (sent_quotes_from_said), taken:
+/// told once.
+pub fn sent_quotes_from_take(key : String) -> Array[(Double, Double, Double, Double)?] {
+  let at = sent_quotes_from_at.get(key).unwrap_or([])
+  sent_quotes_from_at.remove(key)
+  at
+}
+
+///|
 /// Where the words of what was sent from here as `key` stood as they were sent (sent_from_said), taken: told once.
 pub fn sent_from_take(key : String) -> (Double, Double)? {
   let at = sent_from_at.get(key)

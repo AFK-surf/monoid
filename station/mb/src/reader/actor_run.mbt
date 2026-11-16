@@ -1222,6 +1222,7 @@ async fn Actors::start_turn_body(self : Actors, a : Actor, kind : String, text :
   let lost = a.resume_lost
   a.resume_lost = false
   let (handed, told_choices) = self.with_choices(a, text)
+  a.turn_text = handed
   let stopped = a.stopped_note
   a.stopped_note = None
   let afresh = a.afresh
@@ -1326,10 +1327,18 @@ async fn Actors::end_process(self : Actors, a : Actor, agent : Agent?) -> Unit r
 /// actor.ts `ensureAgent`: its runtime session, opened (Node's: the driver, its options, the words it is told of how it
 /// was opened) where it has none.
 async fn Actors::ensure_agent(self : Actors, a : Actor) -> Agent raise {
-  if a.agent is Some(_) && !a.stale && !self.busy(a) {
+  if a.agent is Some(g) && !a.stale && !self.busy(a) {
     let on = self.rpc(a.key, "node.profileId", [jbool(self.holding(a))]) catch { _ => Json::null() }
     if !(on is Null) && on != a.profile {
       a.stale = true
+    }
+    // (its process can no longer take a turn as it is: an Antigravity CLI one whose borrowed sign-in runs out, runtime.ts
+    // `outlived`; its retune refuses, so it is opened again)
+    if !a.stale {
+      let outlived = self.rpc(a.key, "node.outlived", [jnum(g.handle.to_double())]) catch { _ => Json::null() }
+      if outlived is True {
+        a.stale = true
+      }
     }
   }
   self.catch_up(a, true)
@@ -1605,6 +1614,24 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
   }
   if a.runtime == "codex" && kind == "failed" && reason == "auth" && !stop_requested && !(a.profile is Null) {
     ignore(self.deps(a, "recheck", [a.profile]))
+  }
+  // (agy: session/load answers without checking the CLI's conversation database, and a prompt on a conversation whose
+  // database is absent or corrupt fails with "trajectory not found"; end the broken process so no retry hits it again,
+  // and reopen once in a new conversation that reads back, 2026-11-16)
+  if a.runtime == "agy" && kind == "failed" && message.to_lower().contains("trajectory not found") {
+    let agent = a.agent
+    self.set_agent(a, None)
+    self.end_process(a, agent)
+    self.notify_store(a)
+    if !stop_requested && !self.held(a) && turn is Some(t) && !t.auth_retried && t.declared is None {
+      a.nudges = 0
+      self.log(a, "warn", "Antigravity trajectory missing; reopening in a new runtime session", fields={ "error": jstr(message) })
+      self.start_turn(a, "auth_retry", a.turn_text, by=t.by)
+      if a.turn is Some(nt) && t.codex_retried {
+        nt.codex_retried = true
+      }
+      return
+    }
   }
   // (agy: a sign-in lent by another station runs out under a process that never reads it again; a new one opens on
   // one lent anew, agents/agy.ts AGY_LENT_RENEW_MS)

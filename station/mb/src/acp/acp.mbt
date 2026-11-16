@@ -441,10 +441,13 @@ pub fn notice_failure(said : Array[Int]) -> String? {
     return None
   }
   let reason = classify("agy", text)
-  if reason == "model" {
-    None
-  } else {
+  if reason != "model" {
     Some(reason)
+  } else if @jsjson.raw_text(text).to_lower().contains("agent execution terminated due to error") {
+    // (agy.ts `AGY_TERMINATED`: its words for a failure it does not name)
+    Some("other")
+  } else {
+    None
   }
 }
 

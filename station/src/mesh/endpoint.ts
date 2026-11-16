@@ -58,6 +58,10 @@ export type Endpoint = {
   sockets(): string[];
   online(): Promise<void>;
   home(): string | null;
+  /// Its home relays as it has them now: connected or not, by which entrance, and whether the relay holds this endpoint
+  /// inactive for another of its id (`conflict`: a second station on its key). An addon or a front from before says no
+  /// `conflict`; one from before relays' status none of it.
+  relayStatus?(): { url: string; connected: boolean; access: string; conflict?: boolean }[];
   insertRelay(url: string): Promise<void>;
   removeRelay(url: string): Promise<void>;
   publicRelays(on: boolean): Promise<void>;

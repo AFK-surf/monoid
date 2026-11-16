@@ -13,13 +13,13 @@ const NOW = 1_800_000_000_000;
 /// A pid no process has (past every system's highest).
 const GONE = 99_999_999;
 
-function station(files: { running: boolean; presence?: { online: boolean; error?: string } | null; health?: Partial<Health> | null }): string {
+function station(files: { running: boolean; presence?: { online: boolean; error?: string; conflict?: boolean } | null; health?: Partial<Health> | null }): string {
   const data = mkdtempSync(join(tmpdir(), "cli-status-"));
   mkdirSync(join(data, "run"));
   mkdirSync(join(data, "mesh"));
   writeFileSync(join(data, "mesh", "cloud.json"), JSON.stringify({ origin: "https://still.fail", station: "s".repeat(64), workspace: "w1", workspace_name: "Team", name: "mac", key: "k" }));
   writeFileSync(join(data, "run", "station.json"), JSON.stringify({ pid: files.running ? process.pid : GONE, startedAt: 1, version: "0.1.2" }));
-  if (files.presence) writeFileSync(join(data, "run", "presence.json"), JSON.stringify({ online: files.presence.online, at: 1_700_000_000, error: files.presence.error ?? null }));
+  if (files.presence) writeFileSync(join(data, "run", "presence.json"), JSON.stringify({ online: files.presence.online, at: 1_700_000_000, error: files.presence.error ?? null, ...(files.presence.conflict === undefined ? {} : { conflict: files.presence.conflict }) }));
   if (files.health) writeFileSync(join(data, "run", "health.json"), JSON.stringify({ pid: process.pid, updatedAt: NOW - 5_000, heldMaxMs: 12, front: "ok", presenceOnline: true, ...files.health }));
   try {
     return status(data, NOW);
@@ -66,6 +66,19 @@ test("what a process that ended said is not its successor's: the cloud's word st
   assert.match(last(station({ running: true, presence: { online: true }, health: { pid: GONE, updatedAt: 0, front: "reconnecting" } })), /^工作：正常/);
   assert.match(last(station({ running: true, presence: { online: true }, health: null })), /^工作：正常/);
   assert.match(last(station({ running: true, presence: { online: false }, health: null })), /^工作：受限/);
+});
+
+test("one whose key another station uses is failing, said why and what to do, offline or online between replacements", () => {
+  for (const online of [false, true]) {
+    const text = station({ running: true, presence: { online, error: "another station is using this station's key", conflict: true }, health: {} });
+    assert.equal(last(text), "工作：异常（另一台机器或进程正在用这个 station 的同一份密钥，两边轮流把对方的连接顶掉，设备时连时断；请停掉另一处的 station，或在其中一台上重新注册成新的 station）", `online ${online}`);
+  }
+  assert.deepEqual(workingOf({ running: true, health: null, healthAlive: false, online: true, conflict: true, now: NOW }), { is: "conflict" });
+  // A relay holding its endpoint inactive for another of its key (health.json), the cloud hearing it all the while.
+  assert.match(last(station({ running: true, presence: { online: true }, health: { relayConflict: true } })), /^工作：异常（另一台机器或进程正在用这个 station 的同一份密钥/);
+  assert.deepEqual(healthOf({ pid: 1, updatedAt: 2, front: "ok", relayConflict: true })?.relayConflict, true);
+  // Its process silent is said first: the conflict is the cloud's word, which a hung process cannot change.
+  assert.match(last(station({ running: true, presence: { online: true, conflict: true }, health: { updatedAt: NOW - HEALTH_FRESH_MS - 60_000 } })), /^工作：异常（station 进程已/);
 });
 
 test("health.json reads only as a whole", () => {

@@ -45,9 +45,15 @@ let place_across : @ui.Style = @ui.css("w=Full h=Full bg=Bg")
 /// The page picked in a place (the stations' or the profiles' list) of the workspace `w`; none: the first.
 fn place_route(src : Source, w : Workspace, place : String) -> @settings.Route? {
   match place_pick.get(place_key(w.id, place)) {
-    // (a station gone from the list: the first, not its page waiting for it)
+    // (a station or profile gone from the list: the first, not its page waiting for it)
     Some(Station(a)) if !stations_listed(src, w).iter().any(fn(s) { text(Some(s), "station") == a }) && place_rig_at(src, w, a) is None =>
       place_route_first(src, w, place)
+    Some(Profile(_, _) as r) =>
+      match src.topic("profiles", { "scope": Json::string(w.id) }).get().value {
+        Some(_) as v if !items(v, "items").iter().any(fn(e) { profile_route(Some(e)) == r }) =>
+          place_route_first(src, w, place)
+        _ => Some(r)
+      }
     Some(r) => Some(r)
     None => place_route_first(src, w, place)
   }

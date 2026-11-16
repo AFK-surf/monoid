@@ -2969,7 +2969,7 @@ impl Inner {
             // How it runs now: "relay", "direct", or null while none is chosen.
             ("conn.via", Handle::Conn(c)) => Ok(c.paths().iter().find(|p| p.is_selected()).map(|p| json!(if p.is_relay() { "relay" } else { "direct" })).unwrap_or(Value::Null)),
             ("conn.via", Handle::Gone { .. }) => Ok(Value::Null),
-            ("iroh.relayStatus", Handle::Endpoint(e, _)) => Ok(Value::Array(e.home_relay_status().get().iter().map(|s| json!({ "url": s.url().to_string(), "connected": s.is_connected(), "access": s.access_url().to_string() })).collect())),
+            ("iroh.relayStatus", Handle::Endpoint(e, _)) => Ok(Value::Array(e.home_relay_status().get().iter().map(|s| json!({ "url": s.url().to_string(), "connected": s.is_connected(), "access": s.access_url().to_string(), "conflict": s.same_endpoint_id_connected() })).collect())),
             ("conn.alpn", Handle::Conn(c)) => Ok(json!(hex::encode(c.alpn()))),
             ("conn.remoteId", Handle::Conn(c)) => Ok(json!(hex::encode(c.remote_id().as_bytes()))),
             ("conn.closeReason", Handle::Conn(c)) => Ok(c.close_reason().map(|e| close_info(&e)).unwrap_or(Value::Null)),

@@ -35,7 +35,7 @@ export interface OperationParams {
   "chat.regenerateTitle": { thread: number };
   "chat.pin": { pinned?: boolean | null | undefined; session: string };
   "chat.relayPlaces": { thread: number };
-  "chat.relay": { thread: number; connect?: string | null | undefined; channel?: string | null | undefined; link?: string | null | undefined; note?: string | null | undefined };
+  "chat.relay": { thread: number; connect?: string | null | undefined; channel?: string | null | undefined; link?: string | null | undefined; note?: string | null | undefined; join?: boolean | null | undefined };
   "chat.relayPeople": { thread: number; connect?: string | null | undefined; channel?: string | null | undefined; link?: string | null | undefined };
   "decision.dismiss": { thread: number; seq: number };
   "decision.close": { thread: number; seq: number; option: string };

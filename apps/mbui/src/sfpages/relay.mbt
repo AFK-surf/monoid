@@ -1,9 +1,11 @@
 // A chat relayed to a channel (web/src/Relay.tsx useRelay, RelayDialog, and the phone's RelaySheet in
 // mobile/Chat.tsx; Relay.css.ts), one on every screen: from a chat's row's menu, its title bar's panel or its info, the
 // picking opens through the presenters (a dialog with 取消 and 接力 at its foot, a sheet from the foot with touch
-// short of Large). It offers the channels and groups one of the station's connects' bots is in (the chat's own bot as
-// it opens, another picked above), those relayed to before first, found by typing; one picked, with a note if wanted,
-// 接力 has the station start the conversation there and the chat's agent go on in it too, and the panel goes with a
+// short of Large). It offers the channels and groups of every one of the station's connects' bots, each once (public
+// channels none is in where one may join them), those relayed to before first, found by typing; one picked, who replies
+// there under it (the chat's own bot where it is in it), 换一个 showing the bots of its workspace and where each stands
+// (pengxiao, 2026-11-16: the place first, the bot a step after it); with a note if wanted, 接力 has the station start
+// the conversation there (its bot joining it first where it is to) and the chat's agent go on in it too, and the panel goes with a
 // toast saying where. A Slack message's link typed (pasted) into the search offers that message's thread instead. What
 // it offers, and in what order, is the core's (sfbase relay.mbt, relay-pick.ts), asked as what it is asked by changes
 // (relay_asks_node). The search has the keys as it opens where the keyboard is at hand (in a dialog, not on a sheet,
@@ -116,18 +118,12 @@ fn relay_body(v : @view.View, src : Source) -> Unit {
 }
 
 ///|
-/// What is shown while no place is picked, in column `col`: the bots to go on through (when there are several, and no
-/// link typed), the search (also taking a Slack message's link; the keys its as it opens where the keyboard is at hand,
-/// and again as what was picked is let go of), the places or what stands in their place, the note once a link is typed.
+/// What is shown while no place is picked, in column `col`: the search (also taking a Slack message's link; the keys
+/// its as it opens where the keyboard is at hand, and again as what was picked is let go of), the places of every bot
+/// or what stands in their place, the note once a link is typed. Which bot replies is a step after the place
+/// (relay_picked; pengxiao, 2026-11-16: 「应该频道选择更重要吧」).
 fn relay_picking(col : @view.View, src : Source, shown : () -> RelayShown) -> Unit {
   let link = fn() { opt_text(shown().view, "link") }
-  col.show(
-    fn() {
-      let s = shown()
-      items(s.view, "bots").length() > 0 && opt_text(s.view, "link") is None
-    },
-    fn(s) { relay_bots(s, src, shown) },
-  )
   let f = @sf.input_node(col, relaying.query, placeholder=@sf.t("web-main.relay.searchOrLink"))
   @sf.panel_search_at_hand_node(f)
   relay_focused(f, "search")
@@ -179,10 +175,26 @@ fn relay_picked(col : @view.View, src : Source, shown : () -> RelayShown) -> Uni
       true,
       on_press=fn() {
         relaying.picked.set(None)
+        relaying.choosing.set(false)
         relay_focus.val = "search"
       },
     )
-    relay_via(l, src, fn() { text(row(), "connect") })
+    let via = fn() { field(shown().view, "via") }
+    relay_via(
+      l,
+      src,
+      fn() {
+        match opt_text(via(), "bot") {
+          Some(b) if b != "" => b
+          _ => text(row(), "connect")
+        }
+      },
+      joins=fn() { flag(via(), "joins") },
+      change=fn() { items(via(), "bots").length() > 1 && !relaying.choosing.get() },
+    )
+    l.show(fn() { relaying.choosing.get() && items(via(), "bots").length() > 1 }, fn(c) {
+      relay_bot_choice(c, src, shown)
+    })
   })
   relay_note(col, src)
 }
@@ -197,52 +209,7 @@ fn relay_focused(f : @view.View, which : String) -> Unit {
 }
 
 ///|
-/// The bots to go on through in node `s` (scopes): each, the one gone on through filled; pressed, gone on through it.
-fn relay_bots(s : @view.View, src : Source, shown : () -> RelayShown) -> Unit {
-  s.box(fn(row) {
-    @sf.style_node(row, fn() { relay_scopes })
-    row.each(fn() { items(shown().view, "bots").map(fn(b) { text(Some(b), "id") }) }, fn(id) { id }, fn(cell, id) {
-      let id = id.untracked()
-      let label = fn() {
-        match items(shown().view, "bots").iter().find_first(fn(b) { text(Some(b), "id") == id }) {
-          Some(b) => text(Some(b), "label")
-          None => ""
-        }
-      }
-      relay_scope(cell, src, id, label, fn() { text(shown().view, "bot") == id }, fn() {
-        relaying.bot.set(id)
-        relaying.all.set(false)
-      })
-    })
-  })
-  |> ignore
-}
-
-///|
-/// A bot to go on through in `parent` (scope): its picture and name, 26 high, round at its ends; the one gone on through
-/// (`on()`) filled, the text's ground; its name the text's while the hand is on it; `press` as it is pressed.
-fn relay_scope(parent : @view.View, src : Source, bot : String, label : () -> String, on : () -> Bool, press : () -> Unit) -> Unit {
-  parent.box(fn(b) {
-    @sf.style_node(b, fn() { if on() { relay_scope_on } else { relay_scope_box } })
-    @sf.presses_node(b, press)
-    b.says(By(fn() { Some(@view.said(Button, label=label(), selected=on())) })) |> ignore
-    relay_avatar(b, src, fn() { relay_connect(bot) })
-    @sf.words_node(b, label, fn() {
-      if on() {
-        relay_scope_name_on
-      } else if @sf.lit_node(b) {
-        relay_scope_name_lit
-      } else {
-        relay_scope_name
-      }
-    })
-    |> ignore
-  })
-  |> ignore
-}
-
-///|
-/// The places of the bot gone on through as the core offers them, in `p` (list): 最近接力过 over those relayed to before,
+/// The places of every bot as the core offers them, in `p` (list): 最近接力过 over those relayed to before,
 /// why none are, 显示全部 under the recent ones, the connects whose places were not read.
 fn relay_places(p : @view.View, shown : () -> RelayShown) -> Unit {
   let view = fn() { shown().view }
@@ -435,8 +402,15 @@ fn relay_avatar(parent : @view.View, src : Source, conn : () -> Json?) -> Unit {
 
 ///|
 /// Which bot the agent speaks through there, under the place picked, in `parent` (Via): 「那里由 [picture] Claude 回复」,
-/// at its right, its end in line with the place's note's; nothing for a bot not read.
-fn relay_via(parent : @view.View, src : Source, bot : () -> String) -> Unit {
+/// at its right, its end in line with the place's note's; nothing for a bot not read. `joins`: 接力时加入 after it; `change`: 换一个 after
+/// that, which shows the bots to choose another from.
+fn relay_via(
+  parent : @view.View,
+  src : Source,
+  bot : () -> String,
+  joins? : () -> Bool = fn() { false },
+  change? : () -> Bool = fn() { false },
+) -> Unit {
   let conn = fn() { relay_connect(bot()) }
   let split = fn() -> Array[String] {
     @sf.t("web-main.relay.via", args=[("bot", "\u{E000}")]).split("\u{E000}").map(fn(w) { w.to_owned() }).collect()
@@ -457,9 +431,103 @@ fn relay_via(parent : @view.View, src : Source, bot : () -> String) -> Unit {
       b.show(fn() { split().length() > 1 && split()[1] != "" }, at_once=true, fn(w) {
         @sf.words_node(w, fn() { split()[1] }, fn() { relay_via_words }) |> ignore
       })
+      // (接力时加入, where the bot is to join it as it relays)
+      b.show(joins, at_once=true, fn(w) {
+        @sf.words_node(w, fn() { " · " + @sf.t("web-main.relay.bot.join") }, fn() { relay_via_words }) |> ignore
+      })
+      // (换一个, where the place has other bots of its workspace: the bots shown under it to choose from)
+      b.show(change, at_once=true, fn(w) {
+        w.row(Is(true)).lines_up(Is(Some(Middle))) |> ignore
+        @sf.words_node(w, fn() { " · " }, fn() { relay_via_words }) |> ignore
+        w.box(fn(k) {
+          @sf.style_node(k, fn() { relay_via_change })
+          @sf.presses_node(k, fn() { relaying.choosing.set(true) })
+          k.says(By(fn() { Some(@view.said(Button, label=@sf.t("web-main.relay.changeBot"))) })) |> ignore
+          @sf.words_node(k, fn() { @sf.t("web-main.relay.changeBot") }, fn() { relay_more_words }) |> ignore
+        })
+        |> ignore
+      })
     })
     |> ignore
   })
+}
+
+///|
+/// The bots of the place picked's workspace to choose the one replying there from, in `parent` (the core's `via`
+/// `bots`): under 由哪个机器人回复, each its picture, its name and where it stands at its end (在频道里, 接力时加入, 未加入,
+/// 需要频道里的人邀请 with 复制邀请 after it); the one replying on the accent's ground; one in it or to join it pressed,
+/// it replies there, the choice closed; one that cannot be pressed.
+fn relay_bot_choice(parent : @view.View, src : Source, shown : () -> RelayShown) -> Unit {
+  let via = fn() { field(shown().view, "via") }
+  parent.box(fn(b) {
+    @sf.style_node(b, fn() { relay_bots_box })
+    b.box(fn(h) {
+      @sf.style_node(h, fn() { relay_group_head_box })
+      @sf.words_node(h, fn() { @sf.t("web-main.relay.bots") }, fn() { relay_group_head }) |> ignore
+    })
+    |> ignore
+    b.each(fn() { items(via(), "bots").map(fn(x) { text(Some(x), "id") }) }, fn(id) { id }, fn(cell, id) {
+      let id = id.untracked()
+      let bot = fn() { items(via(), "bots").iter().find_first(fn(x) { text(Some(x), "id") == id }) }
+      let state = fn() { text(bot(), "state") }
+      let on = fn() { text(via(), "bot") == id }
+      let can = fn() { state() == "in" || state() == "join" }
+      cell.box(fn(r) {
+        @sf.style_node(r, fn() { relay_place_box })
+        r.ground(By(fn() {
+          let t = @ui.tree_theme()
+          if on() {
+            t.color(AccentBg)
+          } else if can() && @sf.hovered_node(r) {
+            t.color(Hover)
+          } else {
+            0L
+          }
+        }))
+        |> ignore
+        @sf.presses_node(r, fn() {
+          if can() {
+            relaying.bot.set(id)
+            relaying.choosing.set(false)
+          }
+        })
+        r.says(By(fn() { Some(@view.said(Button, label=text(bot(), "label"), selected=on())) })) |> ignore
+        relay_avatar(r, src, fn() { relay_connect(id) })
+        @sf.words_node(r, fn() { text(bot(), "label") }, fn() {
+          if on() {
+            relay_place_name_on
+          } else if can() {
+            relay_place_name
+          } else {
+            relay_bot_out_name
+          }
+        })
+        |> ignore
+        r.box(fn(g) { @sf.style_node(g, fn() { relay_grow }, in_row=true) }) |> ignore
+        @sf.words_node(r, fn() { @sf.t("web-main.relay.bot." + state()) }, fn() {
+          if on() { relay_place_note_on } else { relay_place_note }
+        })
+        |> ignore
+        r.show(fn() { opt_text(bot(), "invite") is Some(_) }, at_once=true, fn(w) {
+          w.box(fn(k) {
+            @sf.style_node(k, fn() { relay_via_change })
+            @sf.presses_node(k, fn() {
+              let place = match shown().picked {
+                Some(row) => text(Some(row), "name")
+                None => ""
+              }
+              @sfbase.copy_out(text(bot(), "invite"), said=@sf.t("web-main.relay.inviteCopied", args=[("place", place)]))
+            })
+            k.says(By(fn() { Some(@view.said(Button, label=@sf.t("web-main.relay.copyInvite"))) })) |> ignore
+            @sf.words_node(k, fn() { @sf.t("web-main.relay.copyInvite") }, fn() { relay_more_words }) |> ignore
+          })
+          |> ignore
+        })
+      })
+      |> ignore
+    })
+  })
+  |> ignore
 }
 
 ///|
@@ -616,10 +684,7 @@ let relay_kind_size : Double = 10.0
 let relay_person_size : Double = 16.0
 
 ///|
-/// A bot's chip's height (scope: 26), a place's least (place: 34).
-let relay_scope_h : Double = 26.0
-
-///|
+/// A place's least height (place: 34).
 let relay_place_h : Double = 34.0
 
 ///|
@@ -644,36 +709,6 @@ let relay_group_head_box : @ui.Style = @ui.css("px=S2 py=S0_5")
 ///|
 // kept across runs: a value (no field of it changes)
 let relay_group_head : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, w=Full)
-
-///|
-/// The bots, 6 apart, wrapping (scopes).
-// kept across runs: a value (no field of it changes)
-let relay_scopes : @ui.Style = @ui.css("row w=Full gap=S1_5")
-
-///|
-/// A bot's chip (scope): 26 high, 10 in, its picture 5 before its name, round at its ends, on the text's 6%; the one
-/// gone on through on the text.
-// kept across runs: a value (no field of it changes)
-let relay_scope_box : @ui.Style = @ui.css("row px=S2_5 gap=S1_25 radius=Full bg=Tint align=ACenter").then(
-  @ui.style(h=Fixed(relay_scope_h)),
-)
-
-///|
-// kept across runs: a value (no field of it changes)
-let relay_scope_on : @ui.Style = relay_scope_box.then(@ui.css("bg=Fg"))
-
-///|
-/// Its name (scopeName): muted, the text's pointed at, the canvas's on the text.
-// kept across runs: a value (no field of it changes)
-let relay_scope_name : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, wrap=false)
-
-///|
-// kept across runs: a value (no field of it changes)
-let relay_scope_name_lit : @ui.TextStyle = relay_scope_name.then(@ui.text_style(color=Fg))
-
-///|
-// kept across runs: a value (no field of it changes)
-let relay_scope_name_on : @ui.TextStyle = relay_scope_name.then(@ui.text_style(color=Bg))
 
 ///|
 /// A place (place): 34 high at least, 6 by 10 in, its parts 8 apart, an option's corner; the hover grey pointed at,
@@ -750,6 +785,21 @@ let relay_via_box : @ui.Style = @ui.css("row w=Full pt=S0_5 px=S2_5 align=ACente
 ///|
 // kept across runs: a value (no field of it changes)
 let relay_via_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, wrap=false)
+
+///|
+/// 换一个 and 复制邀请: pressed as a link is, in the accent's text; their end the line's, in line with the place's note's.
+// kept across runs: a value (no field of it changes)
+let relay_via_change : @ui.Style = @ui.css("pl=S1")
+
+///|
+/// The bots to choose from under the place picked: 6 under its via line, 2 apart.
+// kept across runs: a value (no field of it changes)
+let relay_bots_box : @ui.Style = @ui.css("w=Full pt=S1_5 gap=SPx")
+
+///|
+/// The name of a bot that cannot reply there: faint.
+// kept across runs: a value (no field of it changes)
+let relay_bot_out_name : @ui.TextStyle = relay_place_name.then(@ui.text_style(color=Muted))
 
 ///|
 // kept across runs: a value (no field of it changes)

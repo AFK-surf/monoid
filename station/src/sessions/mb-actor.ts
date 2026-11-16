@@ -690,6 +690,10 @@ export class MbActor {
         return retuneAgent(deps, this.key, session, this.runtime, profile, restart, holding);
       }
       case "profileId": return deps.runOn(this.key, args[0] === true).id;
+      case "outlived": {
+        const session = this.#agents.get(args[0])?.session;
+        return session?.outlived?.() === true;
+      }
       case "notice": {
         const [text, profile, runtime, change, about, quiet] = args;
         const recorded = typeof about === "string" ? (where: [number, number, string]) => { deps.store.setAbout(about, where); if (!quiet) deps.store.notify(this.key); } : undefined;

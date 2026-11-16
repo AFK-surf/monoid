@@ -375,7 +375,7 @@ jobs:
         with: { fetch-depth: 0, filter: "blob:none" }
       - uses: ./.github/actions/setup-mac
       - uses: ./.github/actions/natives
-      - name: Mac-only checks (helper, iOS crash reports, Mac release prebuild)
+      - name: Mac-only checks (helper, iOS crash reports, Mac release prebuild, the launcher on macOS)
         run: |
           range='${{ needs.plan.outputs.range }}'
           if [ "$range" = all ]; then changed=$(git ls-files); else changed=$(git diff --name-only "$range"); fi
@@ -385,6 +385,11 @@ jobs:
           if touches '^(station/native/helper/|vendor/(PermissionFlow|serve-sim)/)'; then
             if node scripts/native.ts path helper > "$RUNNER_TEMP/helper.log" 2>&1; then echo "· Swift: station/native/helper … ok"
             else echo "· Swift: station/native/helper … FAILED"; sed 's/^/    /' "$RUNNER_TEMP/helper.log"; status=1; fi
+          fi
+          # (its macOS code: a front left from before found by proc_listpids and KERN_PROCARGS2, front.rs)
+          if touches '^station/native/launcher/'; then
+            if cargo test --manifest-path station/native/launcher/Cargo.toml --locked -q > "$RUNNER_TEMP/launcher.log" 2>&1; then echo "· Rust: station/native/launcher on macOS … ok"
+            else echo "· Rust: station/native/launcher on macOS … FAILED"; sed 's/^/    /' "$RUNNER_TEMP/launcher.log"; status=1; fi
           fi
           if touches '^apps/mbui/(src/host/apple_reports\.m|scripts/ios[_-]reports)'; then
             if bash apps/mbui/scripts/ios-reports-test.sh > "$RUNNER_TEMP/ios-reports.log" 2>&1; then echo "· iOS crash reports … ok"

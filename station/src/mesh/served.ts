@@ -39,11 +39,32 @@ export const SERVED_ROUTES = [
 ];
 /// How many of the program answer at once (each one read at a time, as a reader of the pool's).
 const SERVERS = 2;
+/// A program that ran this long before it ended is started again at once (its connections' streams go to its socket,
+/// which the next one listens on); one that ends sooner, a second after, so one that keeps ending is not started again
+/// and again.
+export const SERVED_STEADY_MS = 5_000;
+const SERVED_AGAIN_MS = 1_000;
+/// How long the programs are given to listen as the station starts: its connections are taken only after (mesh.ts).
+const SERVED_LISTEN_MS = 15_000;
 
 /// What a request given back is answered with.
 export type Handled = { status: number; headers: Record<string, string>; body: Buffer };
 
-type Server = { process: MbProcess; path: string; listening: Promise<void> };
+/// A program answering (an MbProcess; a test's own).
+export type ServingProcess = {
+  on(event: "message", f: (said: any) => void): unknown;
+  on(event: "error", f: (error: Error) => void): unknown;
+  on(event: "exit", f: (code: number) => void): unknown;
+  postMessage(message: unknown): void;
+  terminate(): Promise<number>;
+};
+
+/// `ready`: listening, so on the routes the connections taken from now on go by (`onRoutes`).
+/// `ended`: its process exited.
+type Server = { process: ServingProcess; path: string; listening: Promise<void>; startedAt: number; ready: boolean; ended: boolean };
+
+/// What a test gives in place of the programs and the machine's time.
+export type ServedWith = { spawn?: (binary: string, args: string[]) => ServingProcess; now?: () => number; after?: (ms: number, f: () => void) => () => void };
 
 export class Served {
   readonly #binary: string;
@@ -51,21 +72,30 @@ export class Served {
   readonly #answer: (viewer: any, head: any, body: Buffer) => Promise<Handled>;
   readonly #stream: ((viewer: any, head: any, body: Buffer) => Promise<{ status: number; headers: Record<string, string>; body: Buffer | AsyncIterable<Buffer> }>) | undefined;
   /// The answers made as they come for each program, by its request's number: what lets each go when it stops.
-  readonly #streaming = new Map<MbProcess, Map<number, () => void>>();
+  readonly #streaming = new Map<ServingProcess, Map<number, () => void>>();
   readonly #built: (viewer: any, build: number | null) => void;
   #servers: Server[] = [];
   /// What each connection's program is told of it, as said last (said again only as it changes).
   readonly #told = new Map<number, string>();
   readonly #names = new Map<string, string>();
   #closed = false;
+  /// Past `start`: a program that ends or listens again changes the routes (`onRoutes`).
+  #started = false;
+  readonly #spawn: (binary: string, args: string[]) => ServingProcess;
+  readonly #now: () => number;
+  readonly #after: (ms: number, f: () => void) => () => void;
+  /// The sockets of the programs listening now, said each time that changes after `start`: the front hands the
+  /// connections it gives this process from then on to them alone (mesh.ts, front.ts `route`).
+  onRoutes: ((paths: string[]) => void) | undefined;
   /// A person's message the program writes: claimed before (the key's first answer, the timestamp), told once written
   /// (admin.ts `claimSay`, `saidElsewhere`).
   says: {
     claim(viewer: any, path: string, key: string | null, lang: "zh" | "en"): Promise<{ kept: Handled } | { refused: Handled } | { ts: string; settle: (answer: Handled | null) => void }>;
     said(thread: number, n: number, text: string, row: Record<string, unknown>): void;
   } | undefined;
-  /// What settles each claim's key once its answer is here, by the claim's number.
-  readonly #claims = new Map<number, (answer: Handled | null) => void>();
+  /// What settles each claim's key once its answer is here, by its program and the claim's number (each program numbers
+  /// its own from 0).
+  readonly #claims = new Map<ServingProcess, Map<number, (answer: Handled | null) => void>>();
   /// What the program wrote (a device's marks), told the store's followers (store.ts `told`); `titled`, the chats it
   /// named by hand (store.ts `retitled`).
   changed: ((changes: any[], titled: number[]) => void) | undefined;
@@ -74,7 +104,11 @@ export class Served {
   /// connection's device says.
   /// `stream`: one answered as it comes (GET /events), its body's pieces given the program as they are made.
   constructor(binary: string, data: string, answer: (viewer: any, head: any, body: Buffer) => Promise<Handled>, built: (viewer: any, build: number | null) => void,
-    stream?: (viewer: any, head: any, body: Buffer) => Promise<{ status: number; headers: Record<string, string>; body: Buffer | AsyncIterable<Buffer> }>) {
+    stream?: (viewer: any, head: any, body: Buffer) => Promise<{ status: number; headers: Record<string, string>; body: Buffer | AsyncIterable<Buffer> }>,
+    given: ServedWith = {}) {
+    this.#spawn = given.spawn ?? ((bin, args) => new MbProcess(bin, args));
+    this.#now = given.now ?? wall.now;
+    this.#after = given.after ?? wall.after;
     this.#binary = binary;
     this.#data = data;
     this.#answer = answer;
@@ -82,11 +116,29 @@ export class Served {
     this.#stream = stream;
   }
 
-  /// Where the programs listen, once each does.
+  /// Where the programs listen, once each listened or ended, or `SERVED_LISTEN_MS` passed: those that listen by then,
+  /// the rest put on the routes as they listen (`onRoutes`). One that neither listened nor ended in that time is ended
+  /// (and started again as one that ended). None listening fails it: this process answers every request till one does.
   async start(): Promise<string[]> {
     for (let i = 0; i < SERVERS; i++) this.#servers.push(this.#start(i));
-    await Promise.all(this.#servers.map((s) => s.listening));
-    return this.#servers.map((s) => s.path);
+    let stop = () => {};
+    const late = new Promise<void>((resolve) => (stop = this.#after(SERVED_LISTEN_MS, resolve))); // timer: a deadline on child processes starting
+    await Promise.race([Promise.allSettled(this.#servers.map((s) => s.listening)), late]).finally(stop);
+    this.#started = true;
+    for (const s of this.#servers) {
+      if (!s.ready && !s.ended) {
+        log.warn("served", "a serving program did not listen in time; ending it", { path: s.path });
+        void s.process.terminate().catch(() => {});
+      }
+    }
+    const live = this.#livePaths();
+    if (live.length === 0) throw new Error("no serving program listens");
+    return live;
+  }
+
+  /// The sockets of the programs listening now.
+  #livePaths(): string[] {
+    return this.#servers.filter((s) => s.ready).map((s) => s.path);
   }
 
   #start(i: number): Server {
@@ -94,14 +146,19 @@ export class Served {
     const path = join(this.#data, "run", `serve-${process.pid}-${i}.sock`);
     mkdirSync(join(this.#data, "run"), { recursive: true }); // sync: one step before the program listens there
     rmSync(path, { force: true }); // sync: one step before the program listens there
-    const child = new MbProcess(this.#binary, ["--data", this.#data, "--sep", sep, "--serve", path]);
+    const child = this.#spawn(this.#binary, ["--data", this.#data, "--sep", sep, "--serve", path]);
     let listened = () => {};
-    const listening = new Promise<void>((resolve) => (listened = resolve));
-    const server: Server = { process: child, path, listening };
+    let failed = (_: Error) => {};
+    const listening = new Promise<void>((resolve, reject) => ((listened = resolve), (failed = reject)));
+    // (`start` waits on it; one started again later, nothing)
+    listening.catch(() => {});
+    const server: Server = { process: child, path, listening, startedAt: this.#now(), ready: false, ended: false };
     child.on("message", (said: any) => {
       if (typeof said?.listening === "string") {
         this.#settle(server);
+        server.ready = true;
         listened();
+        if (this.#started && !this.#closed) this.onRoutes?.(this.#livePaths());
       } else if (said?.build !== undefined) {
         const viewer = this.#viewerOf(Number(said.build.conn));
         if (viewer !== null) this.#built(viewer, typeof said.build.build === "number" ? said.build.build : null);
@@ -109,19 +166,34 @@ export class Served {
       else if (typeof said?.fallback === "number") void (said.stream === true ? this.#relay(server, said) : this.#fallback(server, said));
       else if (Array.isArray(said?.changes)) this.changed?.(said.changes, Array.isArray(said.titled) ? said.titled : []);
       else if (typeof said?.claim === "number") void this.#claim(server, said);
-      else if (said?.said !== undefined) this.#said(said);
+      else if (said?.said !== undefined) this.#said(server, said);
       else if (typeof said?.stop === "number") this.#streaming.get(child)?.get(said.stop)?.();
     });
     child.on("error", (error: Error) => log.warn("served", "a serving program failed", { error: error.message }));
     child.on("exit", (code: number) => {
-      // (what it was given as it came goes with it)
+      // (what it was given as it came goes with it, and a message it claimed and did not say written is not)
       for (const stop of this.#streaming.get(child)?.values() ?? []) stop();
       this.#streaming.delete(child);
+      const claims = this.#claims.get(child);
+      this.#claims.delete(child);
+      for (const settle of claims?.values() ?? []) settle(null);
+      this.#queued.delete(server);
+      server.ready = false;
+      server.ended = true;
+      failed(new Error(`a serving program ended (${code})`));
       if (this.#closed) return;
-      log.warn("served", "a serving program ended; starting it again", { code });
       const at = this.#servers.indexOf(server);
-      // timer: a retry after a failure, with a backoff (one that keeps ending is started again each second at most)
-      if (at >= 0) wall.after(1_000, () => { if (!this.#closed) this.#servers[at] = this.#start(i); });
+      if (at < 0) return;
+      // Off the routes the connections taken from now on go by, till the next one listens.
+      if (this.#started) this.onRoutes?.(this.#livePaths());
+      const again = () => { if (!this.#closed && this.#servers[at] === server) this.#servers[at] = this.#start(i); };
+      if (this.#now() - server.startedAt >= SERVED_STEADY_MS) {
+        log.warn("served", "a serving program ended; starting it again", { code });
+        again();
+      } else {
+        log.warn("served", "a serving program ended soon after it started; starting it again in a second", { code });
+        this.#after(SERVED_AGAIN_MS, again); // timer: a retry after a failure, with a backoff (one that keeps ending is started again each second at most)
+      }
     });
     return server;
   }
@@ -270,17 +342,22 @@ export class Served {
       const got = await this.says.claim(viewer, said.path, said.key ?? null, said.lang === "en" ? "en" : "zh");
       if ("kept" in got) return give({ kept: text(got.kept) });
       if ("refused" in got) return give({ refused: text(got.refused) });
-      this.#claims.set(n, got.settle);
+      // (its program ended meanwhile: nobody is to say it written)
+      if (server.ended) return got.settle(null);
+      let claims = this.#claims.get(server.process);
+      if (claims === undefined) this.#claims.set(server.process, (claims = new Map()));
+      claims.set(n, got.settle);
       give({ ts: got.ts });
     } catch (e) {
       give({ refused: { status: 500, headers: { "content-type": "application/json" }, text: JSON.stringify({ error: (e as Error).message }) } });
     }
   }
 
-  #said(said: { said: { thread: number; n: number; text: string; row: Record<string, unknown> } | null; of: number; answer?: { status: number; headers: Record<string, string>; text: string } }) {
+  #said(server: Server, said: { said: { thread: number; n: number; text: string; row: Record<string, unknown> } | null; of: number; answer?: { status: number; headers: Record<string, string>; text: string } }) {
     if (said.said !== null) this.says?.said(said.said.thread, said.said.n, said.said.text, said.said.row);
-    const settle = this.#claims.get(said.of);
-    this.#claims.delete(said.of);
+    const claims = this.#claims.get(server.process);
+    const settle = claims?.get(said.of);
+    claims?.delete(said.of);
     settle?.(said.answer === undefined ? null : { status: said.answer.status, headers: said.answer.headers, body: Buffer.from(said.answer.text) });
   }
 

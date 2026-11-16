@@ -809,7 +809,8 @@ export const routes = (tools: Tools): Route[] => {
           const link = text(i.link).trim();
           if (link === "" && (connect === "" || channel === "")) throw new Refused(400, tr(r.lang, "station.relay.pick"));
           const by = { name: r.viewer.name.trim() || r.viewer.email, email: r.viewer.email };
-          return ok(await as(400, () => relay(a.hub, t, by, link !== "" ? { link, ...(connect !== "" ? { connect } : {}) } : { connect, channel }, chars(text(i.note), 2000))));
+          const join = i.join === true;
+          return ok(await as(400, () => relay(a.hub, t, by, link !== "" ? { link, ...(connect !== "" ? { connect } : {}) } : { connect, channel, ...(join ? { join } : {}) }, chars(text(i.note), 2000))));
         }),
     },
     // A chat archived or shown again: with its session when it is that session's own.

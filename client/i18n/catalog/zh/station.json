@@ -208,6 +208,7 @@
   "station.cli.status.stopped": "工作：已停止（station 未运行，不连接 Slack，也不运行 agent 和任务）。启动：stillfail start",
   "station.cli.status.unresponsive": "工作：异常（station 进程已 {secs} 秒没有响应，设备和 agent 都在等它；launcher 会自动结束并重启它，几分钟后仍是这样，请重启这台机器上的 station 服务）",
   "station.cli.status.frontDown": "工作：异常（本机 mesh front 断开，正在重新连接；连上之前设备连不上这个 station。launcher 会自动重启 front）",
+  "station.cli.status.keyConflict": "工作：异常（另一台机器或进程正在用这个 station 的同一份密钥，两边轮流把对方的连接顶掉，设备时连时断；请停掉另一处的 station，或在其中一台上重新注册成新的 station）",
   "station.cli.status.limited": "工作：受限（还没连上 still.fail cloud，正在重试；连上之前设备可能找不到这个 station，原因见上面的「在线」一行）",
   "station.cli.unknownChannel": "无法识别的渠道 {channel}",
   "station.connect.heldElsewhere": "这个机器人已经接在 station「{station}」上了。一个 connect 只跑在 workspace 的一台 station 上，要换的话请把它移过去，不要重复添加。",

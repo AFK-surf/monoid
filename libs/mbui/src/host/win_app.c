@@ -342,6 +342,12 @@ static void frames_paced(void) {
   held_shown_now();
 }
 
+static int any_want_frame(void) {
+  for (int k = 0; k < MB_WINS; k++)
+    if (win_slots[k].h && win_slots[k].want_frame) return 1;
+  return 0;
+}
+
 // The windows of the run that want a frame each drawn, put in place for it, then the compositor's beat waited for once
 // (mb_render_pace): 1 when any was drawn.
 static int frames_round(void) {
@@ -1100,11 +1106,35 @@ void mb_host_run(moonbit_string_t title, mb_frame_fn frame, mb_pointer_fn pointe
   ws->want_frame = 1;
 
   for (;;) {
-    MSG m;
+    MSG m, move_msg;
+    int has_move = 0;
+    double drain_began = mb_now_ms();
+    // Coalesce WM_MOUSEMOVE within each message batch before dispatching (flushing before any other message to keep
+    // exact ordering), and bound continuous draining once a frame is owed so high-polling-rate mice cannot re-trigger
+    // synthesized WM_MOUSEMOVE inside PeekMessageW and starve frames_round().
     while (PeekMessageW(&m, NULL, 0, 0, PM_REMOVE)) {
       if (m.message == WM_QUIT) exit(0);
-      TranslateMessage(&m);
-      DispatchMessageW(&m);
+      if (m.message == WM_MOUSEMOVE) {
+        if (has_move && move_msg.hwnd != m.hwnd) {
+          TranslateMessage(&move_msg);
+          DispatchMessageW(&move_msg);
+        }
+        move_msg = m;
+        has_move = 1;
+      } else {
+        if (has_move) {
+          has_move = 0;
+          TranslateMessage(&move_msg);
+          DispatchMessageW(&move_msg);
+        }
+        TranslateMessage(&m);
+        DispatchMessageW(&m);
+      }
+      if (any_want_frame() && mb_now_ms() - drain_began >= 4.0) break;
+    }
+    if (has_move) {
+      TranslateMessage(&move_msg);
+      DispatchMessageW(&move_msg);
     }
     double now = mb_now_ms();
     if (wake_at >= 0 && now >= wake_at) {

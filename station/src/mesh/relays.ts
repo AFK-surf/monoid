@@ -11,25 +11,36 @@ import type { Net } from "../jobs/load.ts";
 import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { ControlPlane } from "../services.ts";
+import type { Cloud } from "../cloud/state.ts";
 import type { Endpoint } from "./native.ts";
 import { sameUrl, waysOf } from "./ways.ts";
 
 /// Asking our relays whether they answer is asking an outside system: the one timer here.
 const RELAY_CHECK = "30 seconds";
 
+/// The relays the station is kept on: still.fail's, then the workspaces' own not among them. What its endpoint is bound
+/// with (mesh.ts), so a front's endpoint taken over in a handover is reconciled with all of them (mesh.mbt `bind`).
+export function wantedRelays(state: Cloud): string[] {
+  const theirs = state.relays();
+  return [...theirs, ...waysOf(state).relays().filter((u) => !theirs.some((t) => sameUrl(t) === sameUrl(u)))];
+}
+
 /// Runs for good (until interrupted).
 export const keepRelays = (endpoint: Endpoint, net?: Net) =>
   Effect.gen(function* () {
     const cloud = yield* ControlPlane;
     const ways = waysOf(cloud.state);
-    // still.fail's, then the workspaces' own not among them.
-    const wanted = () => {
-      const theirs = cloud.state.relays();
-      return [...theirs, ...ways.relays().filter((u) => !theirs.some((t) => sameUrl(t) === sameUrl(u)))];
-    };
+    const wanted = () => wantedRelays(cloud.state);
     let ours = wanted();
+    // The workspaces' own put in before it is kept on them, where the endpoint was bound with still.fail's alone.
+    const theirs = cloud.state.relays();
+    for (const url of ours.filter((u) => !theirs.some((t) => sameUrl(t) === sameUrl(u)))) {
+      yield* Effect.promise(() => endpoint.insertRelay(url).catch((e) => log.warn("mesh", "a workspace's relay was not added", { relay: url, error: (e as Error).message })));
+    }
     endpoint.keep(ours);
-    let added = false;
+    // Whether iroh's public relays are on: not known at first, since an endpoint kept across a handover (the front's)
+    // may have them on from the process before; the first check that finds ours answering takes them off.
+    let added: boolean | null = null;
 
     // As the cloud pushes still.fail's, and as a workspace's own are added or taken away. One change at a time.
     let changing: Promise<void> = Promise.resolve();
@@ -74,12 +85,12 @@ export const keepRelays = (endpoint: Endpoint, net?: Net) =>
           } catch {}
         }
       }
-      if (!up && !added) {
+      if (!up && added !== true) {
         log.warn("mesh", "none of still.fail's relays answers; adding iroh's public relays until one does", { relays: ours });
         await endpoint.publicRelays(true);
         added = true;
-      } else if (up && added) {
-        log.info("mesh", "still.fail's relays answer again; back home to them", { relays: ours });
+      } else if (up && added !== false) {
+        if (added === true) log.info("mesh", "still.fail's relays answer again; back home to them", { relays: ours });
         await endpoint.publicRelays(false);
         added = false;
       }

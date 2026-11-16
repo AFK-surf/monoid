@@ -3,7 +3,7 @@ import { EventEmitter, once } from "node:events";
 import { Duplex } from "node:stream";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, watch } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Clock, Effect, Exit, Fiber, Scope, Stream, SubscriptionRef } from "effect";
@@ -161,6 +161,24 @@ test("HTTP pool shutdown cancels an in-flight connector before Agent destruction
 
 test("public presence reports an invalid entry and connects after its config is corrected", async (t) => {
   const data = mkdtempSync(join(tmpdir(), "presence-config-"));
+  // Main writes status asynchronously and atomically. Observe the published file instead of elapsed wall time.
+  mkdirSync(join(data, "run"), { recursive: true });
+  const statusWatch = watch(join(data, "run"), { persistent: false });
+  const status = () => JSON.parse(readFileSync(join(data, "run", "presence.json"), "utf8"));
+  const statusWritten = (online: boolean) => new Promise<void>((resolve, reject) => {
+    const changed = () => {
+      try {
+        if (status().online !== online) return;
+        statusWatch.off("change", changed);
+        resolve();
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") reject(error);
+      }
+    };
+    statusWatch.on("change", changed);
+    changed();
+  });
+  const offlineWritten = statusWritten(false);
   const scope = Effect.runSync(Scope.make());
   const clock = Effect.runSync(Scope.provide(TestClock.make(), scope));
   let sleeping!: () => void;
@@ -194,7 +212,7 @@ test("public presence reports an invalid entry and connects after its config is 
       Effect.runPromise(Fiber.await(running)).then(() => "exited"),
     ]);
     assert.equal(next, "retry", "invalid configuration must stay in the public presence retry loop");
-    const status = () => JSON.parse(readFileSync(join(data, "run", "presence.json"), "utf8"));
+    await offlineWritten;
     assert.equal(status().online, false);
     assert.match(status().error, /cloudEntry.*TCP port.*correct config.json/);
     assert.equal(websocket.mock.callCount(), 0, "invalid configuration must not silently use a direct socket");
@@ -210,8 +228,10 @@ test("public presence reports an invalid entry and connects after its config is 
       const accept = createHash("sha1").update(nonce + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest("base64");
       tls.push(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
     };
+    const onlineWritten = statusWritten(true);
     tls.emit("secureConnect");
     await online;
+    await onlineWritten;
     assert.equal(websocket.mock.callCount(), 1);
     assert.equal(status().online, true);
     assert.equal(status().error, null);
@@ -221,6 +241,7 @@ test("public presence reports an invalid entry and connects after its config is 
     await wire.close();
     await state.close();
     await Effect.runPromise(Scope.close(scope, Exit.void));
+    statusWatch.close();
     rmSync(data, { recursive: true, force: true });
   }
 });

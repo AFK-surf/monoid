@@ -385,10 +385,10 @@ impl Endpoint {
         self.inner.network_change().await;
     }
 
-    /// Its home relays, and whether it is connected to each now.
+    /// Its home relays, and whether it is connected to each now (and held inactive there for another endpoint of its id).
     #[napi]
     pub fn relay_status(&self) -> Vec<RelayState> {
-        self.inner.home_relay_status().get().iter().map(|s| RelayState { url: s.url().to_string(), connected: s.is_connected(), access: s.access_url().to_string() }).collect()
+        self.inner.home_relay_status().get().iter().map(|s| RelayState { url: s.url().to_string(), connected: s.is_connected(), access: s.access_url().to_string(), conflict: s.same_endpoint_id_connected() }).collect()
     }
 
     #[napi]
@@ -430,6 +430,9 @@ pub struct RelayState {
     pub url: String,
     pub connected: bool,
     pub access: String,
+    /// The relay holds this endpoint's connection inactive: another endpoint with its secret key connected after it
+    /// (a second station on the same key: another machine with a copy of its data, a front left from before).
+    pub conflict: bool,
 }
 
 /// One way a connection can go: through a relay (its URL) or direct; the one chosen now, its round trip, and the

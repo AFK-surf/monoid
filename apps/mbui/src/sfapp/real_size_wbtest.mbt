@@ -56,6 +56,12 @@ let real_size_shell_ways : Array[String] = [
 ]
 
 ///|
+/// The shell's ways the board shows as its own page as well (its cards are the chats' rows, each a card of its own; wide,
+/// the sidebar put away beside it): their changes given on the board too, not on Home alone, whose rows are another
+/// page's (a board that woke every card for one chat's change was never given one, 2026-11-16).
+let real_size_board_ways : Array[String] = ["chats"]
+
+///|
 /// The chat page's own ways: the same chat page under each of its other modes (a sheet, a panel over it), so their
 /// changes are given on the chat's modes about them alone (`real_size_chat_modes`).
 let real_size_chat_ways : Array[String] = ["chat compact", "live", "chatJobs compact summary", "agentCard", "history", "job"]
@@ -81,6 +87,44 @@ fn real_size_most() -> (Int, Int, Int) {
     }
   }
   most
+}
+
+///|
+/// The most one frame of a screen's opening may make, lay out and measure where the screen is not in
+/// real_size_known_wbtest.mbt yet, by window: a little over the most of any screen there but those that open a chat's
+/// panes beside the list (`chat-*`, `history`, `service`, `newchat-*`) and the board as it was found (`wide board`,
+/// 2026-11-16); a phone's most was 857, 953, 256. A
+/// new screen over it is not written in as its bar (the board's first, 1805 3469 932, was, #6565): what it holds is made
+/// a row at a time where it shows (View::scrolls_window, a page's page_node), so it opens within it.
+fn real_size_new_screen_most(win : String) -> (Int, Int, Int) {
+  match win {
+    "phone" => (900, 1050, 280)
+    _ => (1500, 2600, 650)
+  }
+}
+
+///|
+/// What is wrong with a screen `name` not in real_size_known_wbtest.mbt, opened in window `win` with the most of a
+/// frame `made`, `laid`, `words`: over a new screen's bar (real_size_new_screen_most), why it is not to be written in;
+/// else none (its line is to be written).
+fn real_size_new_screen_fault(name : String, win : String, made : Int, laid : Int, words : Int) -> String? {
+  let (m, l, w) = real_size_new_screen_most(win)
+  if made > m || laid > l || words > w {
+    Some(
+      "\{name}: made \{made} laid \{laid} measured \{words}, over a new screen's bar (\{m}, \{l}, \{w}): not to be written in real_size_known_wbtest.mbt; make what it holds a row at a time where it shows (View::scrolls_window, page_node)",
+    )
+  } else {
+    None
+  }
+}
+
+///|
+test "a screen not in real_size_known_wbtest.mbt over a new screen's bar is refused, not given a line to write; one within it is given its line" {
+  assert_true(real_size_new_screen_fault("wide new", "wide", 1805, 3469, 932) is Some(_))
+  assert_true(real_size_new_screen_fault("wide new", "wide", 1400, 2700, 300) is Some(_))
+  assert_true(real_size_new_screen_fault("phone new", "phone", 901, 500, 100) is Some(_))
+  assert_true(real_size_new_screen_fault("phone new", "phone", 900, 1050, 280) is None)
+  assert_true(real_size_new_screen_fault("wide new", "wide", 1500, 2600, 650) is None)
 }
 
 ///|
@@ -157,7 +201,9 @@ fn real_size_frame_most(
 /// Whether way `way` of a screen `mode` is given its changes there (the head says which are given on one screen):
 /// `measured`, the shell's ways given already in this window; `home`, those Home reads.
 fn real_size_given_here(mode : String, way : String, measured : Map[String, Bool], home : Map[String, Bool]) -> Bool {
-  if real_size_shell_ways.contains(way) {
+  if real_size_board_ways.contains(way) && mode == "board" {
+    true
+  } else if real_size_shell_ways.contains(way) {
     mode == "home" || (!home.contains(way) && !measured.contains(way))
   } else if real_size_chat_ways.contains(way) {
     real_size_chat_modes.contains(mode)
@@ -241,10 +287,15 @@ fn real_size_sweep(win : (String, Double, Double, Int, String)) -> Unit raise {
     }
     let line = "  \"\{name}\": (\{made}, \{laid}, \{words}),"
     match real_size_known.get(name) {
-      None => {
-        faults.push("\{name}: not in real_size_known_wbtest.mbt")
-        lines.push(line)
-      }
+      None =>
+        match real_size_new_screen_fault(name, win.0, made, laid, words) {
+          // (over a new screen's bar: not a line to write)
+          Some(f) => faults.push(f)
+          None => {
+            faults.push("\{name}: not in real_size_known_wbtest.mbt")
+            lines.push(line)
+          }
+        }
       Some((m, l, w)) =>
         if real_size_over(made, m) || real_size_over(laid, l) || real_size_over(words, w) {
           faults.push(

@@ -8,7 +8,8 @@
 // a socket of its own whose first 17 bytes say the connection's id and the stream's (8 each, big-endian) and whether
 // the Node asked for it (1) or the other end opened it (0), its frames after (client/shell's `istream.pipe`). Those the
 // other end opens are taken here as they come and given at once, no ask of the Node's between them. Connections coming go to the Node that bound last (the one taking over, in a handover), or wait for
-// one; those a Node has are closed when it closes the endpoint or its socket ends (it stopped, or died).
+// one, and are its once it takes them (`accept`, its routes said by then); those a Node has are closed when it closes
+// the endpoint or its socket ends (it stopped, or died), and each is let go at the shell once it is no Node's.
 
 ///|
 /// A Node asking (one of its sockets to this program).
@@ -37,9 +38,14 @@ priv struct Client {
 /// The endpoint and the Nodes asking.
 priv struct Mesh {
   host : @host.Host
-  /// The endpoint at the shell, and what it was bound with (a `bind` alike is given it; another binds anew).
+  /// The endpoint at the shell, and what of its binding cannot change on it (`identity_of`): a `bind` of the same is
+  /// given it as it is, another binds anew.
   mut endpoint : Json?
-  mut options : String
+  mut identity : String
+  /// Its relays and its congestion controller as they are on it: as the last bind named them, then as a Node's own
+  /// `insertRelay`, `removeRelay` and `setCongestion` changed them. What a later bind changes in place.
+  mut bound_relays : Array[String]
+  mut bound_congestion : String
   mut said : Json
   /// What came while no Node had bound.
   waiting : Array[Json]
@@ -56,7 +62,17 @@ let waiting_most : Int = 256
 pub async fn mesh(host : @host.Host, path : String) -> Unit {
   let (said, _) = host.shell("unix.listen", { "path": Json::string(path) })
   guard said is { "id": listening, .. } else { fail("the shell gave no listening socket") }
-  let mesh : Mesh = { host, endpoint: None, options: "", said: Json::null(), waiting: [], clients: [], binds: 0 }
+  let mesh : Mesh = {
+    host,
+    endpoint: None,
+    identity: "",
+    bound_relays: [],
+    bound_congestion: default_congestion,
+    said: Json::null(),
+    waiting: [],
+    clients: [],
+    binds: 0,
+  }
   // `streams`: how it hands Node the streams the other end opens (front.rs `STREAMS`): 4, each with its index, a route
   // Node gave it (`route`, a segment `*` any one) to what answers it.
   host.say(({ "listening": Json::string(path), "streams": 4 } : Json).stringify())
@@ -126,9 +142,7 @@ async fn Mesh::part(self : Mesh, client : Client) -> Unit {
   }
   client.coming.shutdown()
   for _, conn in client.conns {
-    ignore(self.host.shell("conn.close", { "id": conn, "code": 0, "reason": "station stopping" })) catch {
-      _ => ()
-    }
+    self.forget(conn, "station stopping")
   }
   client.conns.clear()
   let at = self.clients.search_by(c => physical_equal(c, client))
@@ -141,7 +155,20 @@ async fn Mesh::part(self : Mesh, client : Client) -> Unit {
 }
 
 ///|
-/// What came, given to the Node that bound last, or kept till one does.
+/// Connection `conn` closed (where it was not) and let go at the shell entirely (`forget`): a connection is never left
+/// there once no Node has it, or the shell would keep what it knows of it as long as this program runs.
+async fn Mesh::forget(self : Mesh, conn : Json, reason : String) -> Unit {
+  ignore(
+    self.host.shell("conn.close", { "id": conn, "code": 0, "reason": Json::string(reason), "forget": true }),
+  ) catch {
+    _ => ()
+  }
+}
+
+///|
+/// What came, given to the Node that bound last, or kept till one does. It is that Node's only once it takes it
+/// (`accept`): by then it said its routes (`route`), which the streams the other end opens go by, and one that parts
+/// before it takes it leaves it to another.
 fn Mesh::give(self : Mesh, conn : Json) -> Unit {
   let mut to : Client? = None
   for c in self.clients {
@@ -150,21 +177,11 @@ fn Mesh::give(self : Mesh, conn : Json) -> Unit {
     }
   }
   match to {
-    Some(c) => {
-      if conn is { "conn": id, .. } {
-        c.conns[id.stringify()] = id
-        self.taking(c, id, conn.value("alpn").unwrap_or(Json::null()))
-      }
-      ignore(c.coming.try_offer(conn))
-    }
+    Some(c) => ignore(c.coming.try_offer(conn))
     None => {
       if self.waiting.length() >= waiting_most {
         if self.waiting.remove(0) is { "conn": id, .. } {
-          ignore(self.host.rt.fork(name="mesh drop", () => {
-            ignore(self.host.shell("conn.close", { "id": id, "code": 0, "reason": "station starting" })) catch {
-              _ => ()
-            }
-          }))
+          ignore(self.host.rt.fork(name="mesh drop", () => self.forget(id, "station starting")))
         }
       }
       self.waiting.push(conn)
@@ -189,39 +206,169 @@ fn Mesh::seen(self : Mesh, id : Json) -> Json raise {
 /// The connections coming to `endpoint`, each given a Node, till it closes.
 async fn Mesh::accepting(self : Mesh, endpoint : Json) -> Unit {
   while true {
-    let (got, _) = self.host.shell("iroh.accept", { "id": endpoint })
+    // (an endpoint let go after another was bound in its place is no handle any more: its end)
+    let (got, _) = self.host.shell("iroh.accept", { "id": endpoint }) catch {
+      _ => return
+    }
     guard got is { "id": id, .. } else { return }
     let seen = self.seen(id) catch {
-      _ => continue
+      _ => {
+        // (gone as it came: let go, or the shell keeps it)
+        ignore(self.host.rt.fork(name="mesh drop", () => self.forget(id, "")))
+        continue
+      }
     }
     self.give(seen)
   }
 }
 
 ///|
-/// The endpoint bound as `options` say (`key` its secret key's hex): the one bound already where they are the same.
+/// The congestion controller an endpoint is bound with where its options name none (the shell's `transport`).
+let default_congestion : String = "cubic"
+
+///|
+/// Field `k` of an object, null where there is none.
+fn field(o : Json, k : String) -> Json {
+  match o {
+    Object(m) => m.get(k).unwrap_or(Json::null())
+    _ => Json::null()
+  }
+}
+
+///|
+/// What of a binding cannot change on an endpoint bound already: its key, its protocols, whether it finds and is found,
+/// its address and whether it goes by relays alone. Its relays and its congestion controller can (`Mesh::bind`).
+fn identity_of(options : Json, key : Bytes) -> String {
+  let parts : Array[Json] = [
+    Json::string(hex(key)),
+    field(options, "alpns"),
+    field(options, "discovery"),
+    field(options, "bindAddr"),
+    field(options, "relayOnly"),
+  ]
+  Json::array(parts).stringify()
+}
+
+///|
+/// The relays a binding names (`relayUrls`).
+fn relays_of(options : Json) -> Array[String] {
+  let out = []
+  if field(options, "relayUrls") is Array(urls) {
+    for u in urls {
+      if u is String(url) {
+        out.push(url)
+      }
+    }
+  }
+  out
+}
+
+///|
+/// Whether `url` is among `urls`, a trailing slash or not.
+fn has_relay(urls : Array[String], url : String) -> Bool {
+  urls.iter().any(u => bare_url(u) == bare_url(url))
+}
+
+///|
+fn bare_url(url : String) -> String {
+  let mut end = url.length()
+  while end > 0 && url[end - 1] == '/' {
+    end = end - 1
+  }
+  url[:end].to_string()
+}
+
+///|
+/// The congestion controller a binding names, or the shell's own.
+fn congestion_of(options : Json) -> String {
+  match field(options, "congestion") {
+    String(c) if c != "" => c
+    _ => default_congestion
+  }
+}
+
+///|
+/// Whether a binding names a fixed port (`bindAddr`'s, not 0): one endpoint at a time can hold it.
+fn fixed_port(options : Json) -> Bool {
+  guard field(options, "bindAddr") is String(addr) else { return false }
+  guard addr.rev_find(":") is Some(at) else { return false }
+  let mut n = 0
+  for c in addr[at + 1:] {
+    guard c >= '0' && c <= '9' else { return false }
+    n = n * 10 + (c.to_int() - '0'.to_int())
+    if n > 0 {
+      return true
+    }
+  }
+  false
+}
+
+///|
+/// The endpoint bound as `options` say (`key` its secret key's hex). One bound already with the same identity
+/// (`identity_of`) is kept as it is, its connections with it: the next Node of a handover binds with the relays and
+/// the congestion controller the station has now, which a running station changes on its endpoint as they change
+/// (relays.ts, mesh.ts `applyNetwork`), so those are changed on it in place, never by binding anew. Another identity
+/// (another key) binds anew, the old endpoint let go at the shell entirely: after the new one is bound, so a bind that
+/// fails leaves the old as it was, unless a fixed port says only one of them can hold it.
 async fn Mesh::bind(self : Mesh, options : Json, key : Bytes) -> Json {
-  let text = options.stringify() + "|" + hex(key)
-  if self.endpoint is Some(_) && self.options == text {
+  let identity = identity_of(options, key)
+  if self.endpoint is Some(endpoint) && self.identity == identity {
+    let relays = relays_of(options)
+    for url in relays {
+      if !has_relay(self.bound_relays, url) {
+        match (try { Ok(self.host.shell("iroh.insertRelay", { "id": endpoint, "url": Json::string(url) })) } catch { e => Err(e) }) {
+          Ok(_) => @host.note("mesh: relay \{url} added as a Node bound")
+          Err(e) => @host.note("mesh: relay \{url} not added: \{message(e)}")
+        }
+      }
+    }
+    for url in self.bound_relays {
+      if !has_relay(relays, url) {
+        match (try { Ok(self.host.shell("iroh.removeRelay", { "id": endpoint, "url": Json::string(url) })) } catch { e => Err(e) }) {
+          Ok(_) => @host.note("mesh: relay \{url} removed as a Node bound")
+          Err(e) => @host.note("mesh: relay \{url} not removed: \{message(e)}")
+        }
+      }
+    }
+    self.bound_relays = relays
+    let congestion = congestion_of(options)
+    if congestion != self.bound_congestion {
+      ignore(self.host.shell("iroh.setCongestion", { "id": endpoint, "congestion": Json::string(congestion) })) catch {
+        e => @host.note("mesh: congestion controller not changed: \{message(e)}")
+      }
+      self.bound_congestion = congestion
+    }
     return self.said
   }
-  if self.endpoint is Some(old) {
-    // (another key or other relays: the Node that binds says what the station is now)
+  let mut old = self.endpoint
+  if old is Some(o) && fixed_port(options) {
     self.endpoint = None
-    ignore(self.host.shell("iroh.close", { "id": old })) catch {
-      _ => ()
-    }
+    old = None
+    self.let_go(o)
   }
   let (bound, _) = self.host.shell("iroh.bind", options, bytes=key)
   guard bound is { "id": endpoint, .. } else { fail("the shell bound no endpoint") }
+  if old is Some(o) {
+    self.let_go(o)
+  }
   self.endpoint = Some(endpoint)
-  self.options = text
+  self.identity = identity
+  self.bound_relays = relays_of(options)
+  self.bound_congestion = congestion_of(options)
   self.said = {
     "id": self.host.shell_sync("iroh.endpointId", { "id": endpoint }),
     "sockets": self.host.shell_sync("iroh.sockets", { "id": endpoint }),
   }
   ignore(self.host.rt.fork(name="mesh accept", () => self.accepting(endpoint)))
   self.said
+}
+
+///|
+/// An endpoint another was bound in place of, closed and let go at the shell entirely (`forget`).
+async fn Mesh::let_go(self : Mesh, endpoint : Json) -> Unit {
+  ignore(self.host.shell("iroh.close", { "id": endpoint, "forget": true })) catch {
+    _ => ()
+  }
 }
 
 ///|
@@ -335,7 +482,19 @@ async fn Mesh::act(self : Mesh, client : Client, ask : Json, op : String, arg : 
     "accept" => {
       let next = try { Ok(client.coming.take()) } catch { e => Err(e) }
       match next {
-        Ok(conn) => conn
+        Ok(conn) => {
+          if client.gone {
+            // (it parted as this was taken: another Node's)
+            self.give(conn)
+            return { "end": true }
+          }
+          // Its now, with the routes it said by now (`route`, said before it accepts).
+          if conn is { "conn": id, .. } {
+            client.conns[id.stringify()] = id
+            self.taking(client, id, conn.value("alpn").unwrap_or(Json::null()))
+          }
+          conn
+        }
         Err(_) => { "end": true }
       }
     }
@@ -354,11 +513,17 @@ async fn Mesh::act(self : Mesh, client : Client, ask : Json, op : String, arg : 
       )
       guard made is { "id": id, .. } else { fail("no connection") }
       if client.gone {
-        ignore(self.host.shell("conn.close", { "id": id, "code": 0, "reason": "station stopping" }))
+        self.forget(id, "station stopping")
         fail("the endpoint is closed")
       }
+      let seen = self.seen(id) catch {
+        e => {
+          // (gone as it was made: let go, or the shell keeps it)
+          self.forget(id, "")
+          raise e
+        }
+      }
       client.conns[id.stringify()] = id
-      let seen = self.seen(id)
       self.taking(client, id, seen.value("alpn").unwrap_or(Json::null()))
       seen
     }
@@ -385,9 +550,21 @@ async fn Mesh::act(self : Mesh, client : Client, ask : Json, op : String, arg : 
     "conn.close" => {
       let conn = arg("conn")
       client.conns.remove(conn.stringify())
-      self.host.shell("conn.close", { "id": conn, "code": arg("code"), "reason": arg("reason") }).0
+      // (one let go already, its end told: `conn.closed`)
+      self.host.shell("conn.close", { "id": conn, "code": arg("code"), "reason": arg("reason") }).0 catch {
+        @wire.ShellError(m) if m.has_prefix("no handle ") => {}
+        e => raise e
+      }
     }
-    "conn.closed" => self.host.shell("conn.closed", { "id": arg("conn") }).0
+    // The Node asks this of each connection it has and, told, asks nothing more of it (front.ts `FrontConnection`):
+    // let go at the shell then, or it keeps what it knows of the connection as long as this program runs.
+    "conn.closed" => {
+      let conn = arg("conn")
+      let said = self.host.shell("conn.closed", { "id": conn }).0
+      client.conns.remove(conn.stringify())
+      self.forget(conn, "")
+      said
+    }
     "conn.answers" => self.host.shell("conn.answers", { "id": arg("conn"), "within": arg("within") }).0
     "conn.seen" => self.seen(arg("conn"))
     "online" | "insertRelay" | "removeRelay" | "publicRelays" | "keep" | "setCongestion" | "holdIncoming" | "setRelayEntries" | "networkChange" => {
@@ -398,7 +575,19 @@ async fn Mesh::act(self : Mesh, client : Client, ask : Json, op : String, arg : 
         }
         _ => { "id": self.bound() }
       }
-      self.host.shell("iroh." + op, args).0
+      let said = self.host.shell("iroh." + op, args).0
+      // (what is on the endpoint now, which the next bind is reconciled with)
+      match (op, field(args, "congestion"), field(args, "url")) {
+        ("setCongestion", String(c), _) => self.bound_congestion = c
+        ("insertRelay", _, String(url)) =>
+          if !has_relay(self.bound_relays, url) {
+            self.bound_relays.push(url)
+          }
+        ("removeRelay", _, String(url)) =>
+          self.bound_relays = self.bound_relays.filter(u => bare_url(u) != bare_url(url))
+        _ => ()
+      }
+      said
     }
     "addAddr" => self.host.shell_sync("iroh.addAddr", { "id": self.bound(), "addr": arg("addr") })
     "relayStatus" => self.host.shell_sync("iroh.relayStatus", { "id": self.bound() })

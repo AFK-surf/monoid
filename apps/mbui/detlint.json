@@ -603,6 +603,30 @@
     },
     "each-min-height": {
       "src/sfpages/usage_node.mbt": 1
+    },
+    "each-lookup": {
+      "src/sf/markdown_node.mbt": 1,
+      "src/sf/one_of_node.mbt": 1,
+      "src/sf/panel_steps_node.mbt": 1,
+      "src/sf/pick_node.mbt": 1,
+      "src/sf/presented_node.mbt": 1,
+      "src/sf/sheet_node.mbt": 2,
+      "src/sfapp/share.mbt": 1,
+      "src/sfbase/viewer_marks_node.mbt": 1,
+      "src/sfdesk/files_go.mbt": 1,
+      "src/sfdesk/jobs_pop_node.mbt": 1,
+      "src/sfdesk/rail_node.mbt": 1,
+      "src/sfpages/account.mbt": 1,
+      "src/sfpages/chat_mark_node.mbt": 3,
+      "src/sfpages/font_setting.mbt": 1,
+      "src/sfpages/message_files_node.mbt": 1,
+      "src/sfpages/model_triple.mbt": 1,
+      "src/sfpages/presets.mbt": 4,
+      "src/sfpages/relay.mbt": 1,
+      "src/sfpages/slack_app.mbt": 1
+    },
+    "layout-drawn-while": {
+      "src/sfpages/board_node.mbt": 2
     }
   },
   "excused": {
@@ -695,6 +719,8 @@
     "scoped-computed": {},
     "raw-effect": {},
     "pick-loop": {},
-    "each-min-height": {}
+    "each-min-height": {},
+    "each-lookup": {},
+    "layout-drawn-while": {}
   }
 }

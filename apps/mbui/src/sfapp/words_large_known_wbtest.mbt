@@ -10,10 +10,6 @@
 let words_large_known : Map[String, Int] = {
   let known = Map([])
   for k in [
-    ("phone-zh switcher", 6),
-    ("phone-zh switcher-found", 4),
-    ("phone-zh search-jobs", 3),
-    ("phone-zh search-results", 7),
     ("phone-zh chat-preview-csv", 6),
     ("phone-zh chat-screens", 4),
     ("phone-zh share-card", 3),
@@ -46,10 +42,6 @@ let words_large_known : Map[String, Int] = {
     ("phone-zh share-card-senren-gahou-koharu", 2),
     ("phone-zh share-card-senren-gahou-roka2", 2),
     ("phone-zh share-card-senren-party", 1),
-    ("phone-en switcher", 6),
-    ("phone-en switcher-found", 4),
-    ("phone-en search-jobs", 3),
-    ("phone-en search-results", 7),
     ("phone-en chat-info", 2),
     ("phone-en chat-letters-info", 4),
     ("phone-en chat-info-pulls", 2),
@@ -64,14 +56,12 @@ let words_large_known : Map[String, Int] = {
     ("phone-en share-card", 3),
     ("phone-en share-card-dark", 3),
     ("phone-en screen-files-done", 2),
-    ("phone-en settings-profile-signin", 1),  // was 0, +1 (e) accounts.mbt:601 真问题，待修
     ("phone-en settings-new-connect-app", 1),
     ("phone-en settings-kept", 1),
     ("phone-en settings-kept-many", 1),
     ("phone-en settings-vault-words", 14),
     ("phone-en settings-run", 1),
     ("phone-en settings-about", 1),  // was 0, +1 (g) page_node.mbt:1267 真问题，待修
-    ("phone-en settings-notify-denied", 1),  // was 0, +1 (g) notify_node.mbt:671 真问题，待修
     ("phone-en share-card-poster", 3),
     ("phone-en share-card-receipt", 3),
     ("phone-en share-card-terminal", 6),
@@ -110,8 +100,8 @@ let words_large_known : Map[String, Int] = {
 /// words_large_scale (words_large_wbtest.mbt), by language and screen: the bar it may only fall from, counted as the
 /// rule first ran (2026-11-11). A screen not listed has none. What they are (the coordinator of the migration,
 /// 2026-11-11): the share cards' stage, whose words are to keep the size the card is made at; and the old views'
-/// (switcher's and search's rows, a screen's timer, a chat's old parts), mended as each is made as nodes. None is left
-/// of a mark's letter (drawn at 1 as its mark is, @sf.mark_words_node), of a tag, a video's length or 用量's months (as
+/// (a screen's timer, a chat's old parts), mended as each is made as nodes. None is left of search's lines (their
+/// lines as high as their words at least, @sf.touch_found), of a model's configuration's capsule (newchat-model), of a mark's letter (drawn at 1 as its mark is, @sf.mark_words_node), of a tag, a video's length or 用量's months (as
 /// high as their words' line, @sf.tag_node, box_at, a least), or of 智能体's card's spend (on its line of 26).
 let words_large_outgrown_known : Map[String, Int] = {
   let known = Map([])
@@ -119,23 +109,13 @@ let words_large_outgrown_known : Map[String, Int] = {
     ("phone-en chat-image-coming", 2),
     ("phone-en chat-publish", 4),
     ("phone-en chat-screens", 8),
-    ("phone-en newchat-model", 4),
-    ("phone-en search-jobs", 12),
-    ("phone-en search-results", 23),
     ("phone-en share-card-senren-menu", 2),
     ("phone-en share-card-senren-sword", 2),
-    ("phone-en switcher", 18),
-    ("phone-en switcher-found", 15),
     ("phone-zh chat-image-coming", 2),
     ("phone-zh chat-publish", 4),
     ("phone-zh chat-screens", 8),
-    ("phone-zh newchat-model", 4),
-    ("phone-zh search-jobs", 12),
-    ("phone-zh search-results", 23),
     ("phone-zh share-card-senren-menu", 2),
     ("phone-zh share-card-senren-sword", 2),
-    ("phone-zh switcher", 18),
-    ("phone-zh switcher-found", 15),
   ] {
     known[k.0] = k.1
   }

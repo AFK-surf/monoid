@@ -24,5 +24,14 @@ test "the profiles' place keeps the profile it shows as the list is sorted anew 
   // gone from the list: the first that needs a look
   list.set(profiles_listed(["p0", "p1"], "p0"))
   assert_true(shown.val == Some(@settings.Route::Profile("st", "p0")), msg="the first once it is gone")
+  // one picked in the sidebar and then deleted: falls back to the first left instead of staying on the missing route
+  @sfbase.place_pick[@sfbase.place_key("ws-kept", "profiles")] = @settings.Route::Profile("st", "p1")
+  list.set(profiles_listed(["p0", "p1"], "p0"))
+  assert_true(shown.val == Some(@settings.Route::Profile("st", "p1")), msg="picked while listed")
+  list.set(profiles_listed(["p0"], "p0"))
+  assert_true(shown.val == Some(@settings.Route::Profile("st", "p0")), msg="first left once picked is deleted")
+  list.set(profiles_listed([], ""))
+  assert_true(shown.val is None, msg="none once all are deleted")
+  @sfbase.place_pick.remove(@sfbase.place_key("ws-kept", "profiles"))
   stop()
 }

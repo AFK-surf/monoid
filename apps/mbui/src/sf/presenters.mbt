@@ -2804,7 +2804,7 @@ fn sheet_step(
     sheet_title(c, title)
   }
   if description != "" {
-    c.box(style=sheet_words_at, fn() { c.text(description, style=sheet_lead) |> ignore }) |> ignore
+    c.box(style=sheet_lead_at, fn() { c.text(description, style=sheet_lead) |> ignore }) |> ignore
   }
   // what it holds in from the sheet's sides as its words are, opened by nothing (a form, a question); one opened
   // by a press as far in as a pick's rows are, as small_panel's pad has it beside what opened it (what reaches
@@ -3289,6 +3289,13 @@ let sheet_panel_sides : Double = panel_words
 /// A confirm's and a question's words (ask): 20 in, 10 apart.
 // kept across runs: a value (no field of it changes)
 let sheet_words_at : @ui.Style = @ui.style(w=Full, px=room(sheet_panel_sides), gap=S2_5)
+
+///|
+/// What a panel says under its title on a sheet (its description), as far over what it holds as a dialog's
+/// (dialog_body's pt): none between them left it pressed against what came first (pengxiao, 2026-11-16: the relay's
+/// bots right under its words).
+// kept across runs: a value (no field of it changes)
+let sheet_lead_at : @ui.Style = sheet_words_at.then(@ui.css("pb=S4_5"))
 
 ///|
 // kept across runs: a value (no field of it changes)

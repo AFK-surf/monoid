@@ -1212,6 +1212,14 @@ web-main.relay.title
 web-main.relay.unread
 web-main.relay.verb
 web-main.relay.via
+web-main.relay.changeBot
+web-main.relay.bots
+web-main.relay.bot.in
+web-main.relay.bot.join
+web-main.relay.bot.out
+web-main.relay.bot.invite
+web-main.relay.copyInvite
+web-main.relay.inviteCopied
 web-main.resources.all
 web-main.resources.by
 web-main.resources.column.cpu

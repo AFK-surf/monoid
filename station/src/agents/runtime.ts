@@ -110,6 +110,9 @@ export interface AgentSession {
   /// Between turns, takes the model and effort of `options` (opened as they were otherwise) from its next turn on,
   /// without a new process. False when it cannot: it is then started again on them.
   retune?(options: OpenOptions): boolean;
+  /// Between turns, its process can no longer take one as it is (an Antigravity CLI process whose borrowed sign-in
+  /// runs out): ended and opened again before the next turn. Absent: never.
+  outlived?(): boolean;
   /// Releases the session; ends the runtime process when it is not shared.
   dispose(): Promise<void>;
   /// What a next station needs to take this session up (its turn's state): written by the session layer at handover.

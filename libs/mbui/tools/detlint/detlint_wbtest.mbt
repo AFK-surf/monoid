@@ -2812,3 +2812,89 @@ test "each-min-height" {
   )
   |> ignore
 }
+
+///|
+test "each-lookup" {
+  // a row of an each (each_of) that walks a list to find its item, as it is made or as a binding of it reads: counted,
+  // at the call
+  let hits =
+    #|fn cards_node(v : @view.View, all : () -> Array[Item], ids : () -> Array[String]) -> Unit {
+    #|  v.each(ids, fn(s) { s }, fn(row, id) {
+    #|    let k = id.untracked()
+    #|    let item = fn() { all().iter().find_first(fn(i) { i.id == k }) }
+    #|    row.words(By(fn() { item().map(fn(i) { i.title }).unwrap_or("") })) |> ignore
+    #|    row.box(fn(b) {
+    #|      b.width(By(fn() { Some(all().search_by(fn(i) { i.id == k }).unwrap_or(0).to_double()) })) |> ignore
+    #|    }) |> ignore
+    #|  })
+    #|  v.each_of(all, fn(row, i) {
+    #|    row.words(Is(all().iter().find_first(fn(j) { j.id == i.id }).map(fn(j) { j.title }).unwrap_or(""))) |> ignore
+    #|  })
+    #|}
+  let fs = found([("src/sfpages/cards_node.mbt", hits)], "each-lookup", 3)
+  assert_eq(lines(fs), [4, 7, 11])
+  // a lookup run later than the row is made (a press, a handler, a gesture's tap or drag, a callback said by its
+  // label), one outside any each, a string's find, one in a test and one excused: not
+  let misses =
+    #|fn cards_node(v : @view.View, all : () -> Array[Item], ids : () -> Array[String]) -> Unit {
+    #|  let first = all().iter().find_first(fn(i) { i.pinned })
+    #|  v.each(ids, fn(s) { s }, fn(row, id) {
+    #|    let k = id.untracked()
+    #|    row.on_press(fn() { open(all().iter().find_first(fn(i) { i.id == k })) }) |> ignore
+    #|    @sf.button_node(row, fn() { "go" }, press=fn() { go(all().search_by(fn(i) { i.id == k })) })
+    #|    row.gesture(4.0, tap=fn(_) { open(all().iter().find_first(fn(i) { i.id == k })) }, drag=fn(_) {
+    #|      drop(all().search_by(fn(i) { i.id == k }))
+    #|    }) |> ignore
+    #|    let cut = k.find("/")
+    #|    // det-ok(each-lookup): one of the three tones, a fixed few
+    #|    let tone = tones.iter().find_first(fn(t) { t == k })
+    #|    ignore((first, cut, tone))
+    #|  })
+    #|}
+  found(
+    [
+      ("src/sfpages/fine_node.mbt", misses),
+      ("src/sfpages/cards_node_wbtest.mbt", hits),
+    ],
+    "each-lookup",
+    0,
+  )
+  |> ignore
+}
+
+///|
+test "layout-drawn-while" {
+  // a size or room of the layout given what reads a way as it is drawn: counted, at the setter
+  let hits =
+    #|fn slide_node(v : @view.View, way : @motion.Way) -> Unit {
+    #|  v.width(By(fn() { Some(300.0 * way.shown_on(v)) })) |> ignore
+    #|  v.box(fn(b) {
+    #|    b
+    #|    .grow(Is(1.0))
+    #|    .padding(By(fn() {
+    #|      let t = b.drawn_while(fn(at) { way.goes_at(at) })
+    #|      (t, 0.0, 0.0, 0.0)
+    #|    }))
+    #|    |> ignore
+    #|  }) |> ignore
+    #|}
+  let fs = found([("src/sfpages/slide_node.mbt", hits)], "layout-drawn-while", 2)
+  assert_eq(lines(fs), [2, 6])
+  // what is drawn moved by it (offset, alpha), a size worked out of no way, one in a test and one excused: not
+  let misses =
+    #|fn slide_node(v : @view.View, way : @motion.Way) -> Unit {
+    #|  v.offset(By(fn() { (300.0 * way.shown_on(v), 0.0) })).alpha(By(fn() { way.shown_on(v) })) |> ignore
+    #|  v.width(By(fn() { Some(room()) })) |> ignore
+    #|  // det-ok(layout-drawn-while): a sheet's height that truly follows the finger's
+    #|  v.height(By(fn() { Some(way.shown_on(v)) })) |> ignore
+    #|}
+  found(
+    [
+      ("src/sfpages/fine_node.mbt", misses),
+      ("src/sfpages/slide_node_wbtest.mbt", hits),
+    ],
+    "layout-drawn-while",
+    0,
+  )
+  |> ignore
+}

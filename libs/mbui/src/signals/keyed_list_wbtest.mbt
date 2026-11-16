@@ -73,3 +73,35 @@ test "what read the order before keeps it as it was" {
   assert_eq(before, [1])
   assert_eq(l.peek_keys(), [1, 2])
 }
+
+///|
+test "reset lets go of the keys read once and read no more, gone from it, as Keyed::set does" {
+  let l : KeyedList[String, Int] = keyed_list(same=fn(a, b) { a == b })
+  // (a hundred keys each read once by what reads them no more, then all gone but one)
+  let keys = Array::makei(100, fn(i) { "k\{i}" })
+  let vals : Map[String, Int] = Map([])
+  for k in keys {
+    vals[k] = 0
+  }
+  l.reset(keys, vals)
+  for k in keys {
+    let w = watch(fn() {  })
+    w.read(fn() { l.get(k) }) |> ignore
+    w.stop()
+  }
+  // (and a hundred never in it, asked of it once: a row looking up what was not there)
+  for i in 0..<100 {
+    let w = watch(fn() {  })
+    w.read(fn() { l.get("z\{i}") }) |> ignore
+    w.stop()
+  }
+  // (one still read: kept, and told as it goes)
+  let kept = watch(fn() {  })
+  kept.read(fn() { l.get("k5") }) |> ignore
+  assert_eq(l.said.length(), 200)
+  l.reset(["k0"], { "k0": 1 })
+  // (k0 is in it, k5 is read: those two kept, the rest let go)
+  assert_true(l.said.length() <= 2)
+  assert_true(l.said.contains("k5"))
+  assert_true(kept.is_stale())
+}

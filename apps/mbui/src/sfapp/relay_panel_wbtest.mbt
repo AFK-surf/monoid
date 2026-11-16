@@ -8,50 +8,72 @@
 let relay_screens : Array[(Int, Bool)] = [(2, false), (0, false), (0, true)]
 
 ///|
-/// The station's two bots (a Slack one and a Feishu one), as `chat.relayPlaces` answers.
+/// The station's bots (three Slack ones of one workspace and a Feishu one), as `chat.relayPlaces` answers.
 fn relay_two_connects() -> Json {
   {
     "connects": [
       { "id": "slack-1", "kind": "slack", "name": "星火助手", "team": "星火", "places": [] },
+      { "id": "slack-2", "kind": "slack", "name": "星火二号", "team": "星火", "places": [] },
+      { "id": "slack-3", "kind": "slack", "name": "星火三号", "team": "星火", "places": [] },
       { "id": "feishu-1", "kind": "feishu", "name": "飞书助手", "team": "星火", "places": [] },
     ],
   }
 }
 
 ///|
-/// A row the picker offers (relay-pick.ts PlaceRow).
+/// A row the picker offers (relay-pick.ts RelayRow).
 fn relay_row(connect : String, kind : String, id : String, name : String, note : String) -> Json {
-  { "connect": connect, "kind": kind, "place": { "id": id, "name": name, "kind": "channel" }, "name": name, "note": note, "aside": Json::null() }
+  {
+    "key": kind + ":T/" + id,
+    "connect": connect,
+    "kind": kind,
+    "place": { "id": id, "name": name, "kind": "channel" },
+    "name": name,
+    "note": note,
+    "aside": Json::null(),
+  }
 }
 
 ///|
 /// What the core's picker shows for what is asked (relay-pick.ts relayView, made up here): a Slack message's link typed,
-/// its thread; "zzz", nothing that matches; the Feishu bot gone on through, its group; all asked for, three; else the one
-/// relayed to before under 最近接力过, 显示全部 3 个 under it, a connect not read.
+/// its thread; "zzz", nothing that matches; "产", the Feishu bot's group; all asked for, three; else the one relayed to
+/// before under 最近接力过, 显示全部 3 个 under it, a connect not read. A place picked: who replies there (`via`), the
+/// one picked or 星火助手, in it; 星火二号 joins it as it relays, 星火三号 only a person there can invite.
 fn relay_made_view(params : Json) -> Json {
   let query = text(Some(params), "query")
-  let bots : Json = [{ "id": "slack-1", "label": "星火助手" }, { "id": "feishu-1", "label": "飞书助手" }]
-  let bot = match opt_text(Some(params), "bot") {
-    Some(b) => b
-    None => "slack-1"
+  let chosen = match opt_text(Some(params), "bot") {
+    Some("slack-2") => "slack-2"
+    _ => "slack-1"
   }
   let base = fn(rows : Array[Json], recent : Bool, total : Int, empty : Json, unread : Array[Json], link : Json) -> Json {
-    {
+    let view : Map[String, Json] = {
       "link": link,
-      "bot": bot,
-      "bots": bots,
+      "bot": "slack-1",
+      "bots": [],
       "rows": Json::array(rows),
       "recent": recent,
       "total": Json::number(total.to_double()),
       "empty": empty,
       "unread": Json::array(unread),
     }
+    if text(Some(params), "place") != "" {
+      view["via"] = {
+        "bot": chosen,
+        "joins": chosen == "slack-2",
+        "bots": [
+          { "id": "slack-1", "label": "星火助手", "state": "in" },
+          { "id": "slack-2", "label": "星火二号", "state": "join" },
+          { "id": "slack-3", "label": "星火三号", "state": "invite", "invite": "/invite @星火三号" },
+        ],
+      }
+    }
+    Json::object(view)
   }
   if query.has_prefix("https://") {
     base([], false, 0, Json::null(), [], Json::string(query))
   } else if query == "zzz" {
     base([], false, 0, Json::string("noMatch"), [], Json::null())
-  } else if bot == "feishu-1" {
+  } else if query == "产" {
     base([relay_row("feishu-1", "feishu", "oc1", "产品群", "普通群 · 接管群会话")], false, 1, Json::null(), [], Json::null())
   } else if flag(Some(params), "all") {
     base(
@@ -189,23 +211,23 @@ test "接力到频道 on each screen: as it opens, the keyboard's focus on its s
 }
 
 ///|
-test "接力到频道 on each screen, its places read: the bots to go on through, 最近接力过 over the one relayed to before, 显示全部 under it, a connect not read; 接力 not ready till a place is picked" {
+test "接力到频道 on each screen, its places read: no bots to pick first, 最近接力过 over the one relayed to before, 显示全部 under it, a connect not read; 接力 not ready till a place is picked" {
   for screen in relay_screens {
     let (platform, wide) = screen
     let at = "platform \{platform} wide \{wide}"
     let calls : Array[Made] = []
     let t = relay_over(relay_src(calls), platform~, wide~)
     let words = t.words().map(fn(w) { w.0 }).join("|")
-    assert_true(t.find("星火助手") is Some(_), msg="\{at}: \{words}")
-    assert_true(t.find("飞书助手") is Some(_), msg=at)
+    // (the bot is a step after the place: none offered over the search)
+    assert_true(t.find("星火助手") is None, msg="\{at}: \{words}")
+    assert_true(t.find("飞书助手") is None, msg=at)
     assert_true(t.find("搜索频道或群，或粘贴 Slack 消息链接") is Some(_), msg=at)
     assert_true(t.find("最近接力过") is Some(_), msg=at)
     assert_true(t.find("#dev") is Some(_), msg=at)
     assert_true(t.find("显示全部 3 个") is Some(_), msg=at)
     assert_true(t.find("读取失败：飞书超时") is Some(_), msg=at)
-    // in order down the column: the bots, the search, 最近接力过, #dev, 显示全部, what was not read
+    // in order down the column: the search, 最近接力过, #dev, 显示全部, what was not read
     let y = fn(w : String) { t.rect_of(w).unwrap().1 }
-    assert_true(y("星火助手") < y("搜索频道或群，或粘贴 Slack 消息链接"), msg=at)
     assert_true(y("搜索频道或群，或粘贴 Slack 消息链接") < y("最近接力过"), msg=at)
     assert_true(y("最近接力过") < y("#dev"), msg=at)
     assert_true(y("#dev") < y("显示全部 3 个"), msg=at)
@@ -228,30 +250,57 @@ test "接力到频道 on each screen, its places read: the bots to go on through
 }
 
 ///|
-test "接力到频道 on each screen: another bot pressed goes on through it, its places offered; a search that finds none says so" {
+test "接力到频道 on each screen: a place picked, 换一个 shows the bots of its workspace and where each stands; one that joins it picked replies there, relayed through it joining it; a search that finds none says so" {
   for screen in relay_screens {
     let (platform, wide) = screen
     let at = "platform \{platform} wide \{wide}"
     let calls : Array[Made] = []
     let t = relay_over(relay_src(calls), platform~, wide~)
-    t.tap_text("飞书助手")
-    t.run_for(@ui.move_most_ms)
-    assert_true(named(calls, "chat.relayView").iter().any(fn(m) { text(Some(m.params), "bot") == "feishu-1" }), msg=at)
-    assert_eq(relaying.bot.get(), "feishu-1", msg=at)
-    assert_true(t.find("产品群") is Some(_), msg=at)
-    assert_true(t.find("#dev") is None, msg=at)
-    // the search typed into: none matches
+    // the search typed into: none matches; cleared, the places back
     t.tap_text("搜索频道或群，或粘贴 Slack 消息链接")
     t.type_text("zzz")
     t.run_for(@ui.move_most_ms)
     assert_true(t.find("没有匹配的频道或群") is Some(_), msg="\{at}: \{t.words().map(fn(w) { w.0 }).join("|")}")
-    assert_true(t.find("产品群") is None, msg=at)
-    relay_cancelled(t, at)
+    relaying.query.set("")
+    t.run_for(@ui.move_most_ms)
+    t.tap_text("#dev")
+    t.run_for(@ui.move_most_ms)
+    // asked who replies there: the place's key
+    assert_true(named(calls, "chat.relayView").iter().any(fn(m) { text(Some(m.params), "place") == "slack:T/C1" }), msg=at)
+    assert_true(t.find("星火助手") is Some(_), msg="\{at}: \{t.words().map(fn(w) { w.0 }).join("|")}")
+    assert_true(t.find("由哪个机器人回复") is None, msg=at)
+    t.tap_text("换一个")
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.find("由哪个机器人回复") is Some(_), msg=at)
+    assert_true(t.find("在频道里") is Some(_), msg=at)
+    assert_true(t.find("接力时加入") is Some(_), msg=at)
+    assert_true(t.find("需要频道里的人邀请") is Some(_), msg=at)
+    assert_true(t.find("复制邀请") is Some(_), msg=at)
+    // one only a person there can invite: not taken
+    t.tap_text("星火三号")
+    t.run_for(@ui.move_most_ms)
+    assert_eq(relaying.bot.get(), "", msg=at)
+    // one that joins it: replies there, the choice closed, said so under the place
+    t.tap_text("星火二号")
+    t.run_for(@ui.move_most_ms)
+    assert_eq(relaying.bot.get(), "slack-2", msg=at)
+    assert_true(t.find("由哪个机器人回复") is None, msg=at)
+    assert_true(t.find(" · 接力时加入") is Some(_), msg="\{at}: \{t.words().map(fn(w) { w.0 }).join("|")}")
+    assert_eq(t.audit(), [], msg=at)
+    relay_press(t, "接力到 #dev")
+    t.run_for(@ui.move_most_ms)
+    let relayed = named(calls, "chat.relay")
+    assert_eq(relayed.length(), 1, msg=at)
+    assert_eq(text(Some(relayed[0].params), "connect"), "slack-2", msg=at)
+    assert_eq(text(Some(relayed[0].params), "channel"), "C1", msg=at)
+    assert_true(flag(Some(relayed[0].params), "join"), msg=at)
+    presented_rested(t)
+    assert_true(relay_dialog(t) is None, msg="\{at}: still up once relayed")
   }
 }
 
 ///|
-test "接力到频道 on each screen: a place picked in place of the search and the bots, 更换 on it, who replies there under it, the note; pressed again, the search and the places back" {
+test "接力到频道 on each screen: a place picked in place of the search, 更换 on it, who replies there under it, the note; pressed again, the search and the places back" {
   for screen in relay_screens {
     let (platform, wide) = screen
     let at = "platform \{platform} wide \{wide}"
@@ -264,7 +313,6 @@ test "接力到频道 on each screen: a place picked in place of the search and 
     assert_true(t.find("开头附一句（可选）") is Some(_), msg=at)
     assert_true(t.find("例如：@某人 帮看下这个方案") is Some(_), msg=at)
     assert_true(t.find("搜索频道或群，或粘贴 Slack 消息链接") is None, msg=at)
-    assert_true(t.find("飞书助手") is None, msg=at)
     assert_true(t.find("最近接力过") is None, msg=at)
     relay_via_at_right(t)
     // under the place: who replies there, then the note
@@ -279,7 +327,6 @@ test "接力到频道 on each screen: a place picked in place of the search and 
     assert_true(t.find("接力到 #dev") is None, msg=at)
     assert_true(t.find("开头附一句（可选）") is None, msg=at)
     assert_true(t.find("搜索频道或群，或粘贴 Slack 消息链接") is Some(_), msg=at)
-    assert_true(t.find("飞书助手") is Some(_), msg=at)
     assert_true(t.find("最近接力过") is Some(_), msg=at)
     relay_cancelled(t, at)
   }
@@ -299,8 +346,6 @@ test "接力到频道 on each screen: a Slack message's link typed offers its th
     assert_true(t.find("接力到这个 Slack thread") is Some(_), msg="\{at}: \{t.words().map(fn(w) { w.0 }).join("|")}")
     assert_true(t.find("已有 thread · agent 先读之前的消息") is Some(_), msg=at)
     assert_true(t.find("开头附一句（可选）") is Some(_), msg=at)
-    // the bots not offered while a link is typed
-    assert_true(t.find("飞书助手") is None, msg=at)
     assert_true(relay_go_ready(t, "接力"), msg=at)
     t.tap_text("例如：@某人 帮看下这个方案")
     t.type_text("看下")
@@ -462,29 +507,30 @@ test "接力到频道 on each screen: an @ typed in the note offers the people t
 }
 
 ///|
-test "接力到频道: what it shows asked of the core once for each thing asked, again only as what is typed, the bot or all changes" {
+test "接力到频道: what it shows asked of the core once for each thing asked, again only as what is typed, the place picked, the bot or all changes" {
   let calls : Array[Made] = []
   let t = relay_over(relay_src(calls), platform=0, wide=true)
   assert_eq(named(calls, "chat.relayView").length(), 1)
-  // a place picked and let go of: asked by the same, not asked again
+  // a place picked: asked who replies there, once; let go of: asked as at first, once
   t.tap_text("#dev")
   t.run_for(@ui.move_most_ms)
+  assert_eq(named(calls, "chat.relayView").length(), 2)
+  // another bot: asked again, once
+  t.tap_text("换一个")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(named(calls, "chat.relayView").length(), 2)
+  t.tap_text("星火二号")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(named(calls, "chat.relayView").length(), 3)
   t.tap_text("#dev")
   t.run_for(@ui.move_most_ms)
-  assert_eq(named(calls, "chat.relayView").length(), 1)
+  assert_eq(named(calls, "chat.relayView").length(), 4)
   // typed into: asked again, once
   t.type_text("zzz")
   t.run_for(@ui.move_most_ms)
   let asked = named(calls, "chat.relayView")
-  assert_eq(asked.length(), 2)
-  assert_eq(text(Some(asked[1].params), "query"), "zzz")
-  // another bot: asked again, once
-  relaying.query.set("")
-  t.run_for(@ui.move_most_ms)
-  assert_eq(named(calls, "chat.relayView").length(), 3)
-  t.tap_text("飞书助手")
-  t.run_for(@ui.move_most_ms)
-  assert_eq(named(calls, "chat.relayView").length(), 4)
+  assert_eq(asked.length(), 5)
+  assert_eq(text(Some(asked[4].params), "query"), "zzz")
   relay_cancelled(t, "wide")
 }
 
@@ -580,13 +626,11 @@ test "接力到频道 on each screen, opened from a chat whose message field has
 }
 
 ///|
-test "接力到频道 on each screen: a place picked and let go of (更换): what was typed in the search, the bot gone on through and the places as they were, the keys back in the search" {
+test "接力到频道 on each screen: a place picked and let go of (更换): what was typed in the search and the places as they were, the keys back in the search" {
   for screen in relay_screens {
     let (platform, wide) = screen
     let at = "platform \{platform} wide \{wide}"
     let t = relay_over(relay_src([]), platform~, wide~)
-    t.tap_text("飞书助手")
-    t.run_for(@ui.move_most_ms)
     t.tap_text("搜索频道或群，或粘贴 Slack 消息链接")
     t.type_text("产")
     t.run_for(@ui.move_most_ms)
@@ -596,9 +640,7 @@ test "接力到频道 on each screen: a place picked and let go of (更换): wha
     t.tap_text("产品群")
     t.run_for(@ui.move_most_ms)
     assert_eq(relaying.query.text(), "产", msg=at)
-    assert_eq(relaying.bot.get(), "feishu-1", msg=at)
     assert_true(t.find("产品群") is Some(_), msg=at)
-    assert_true(t.find("飞书助手") is Some(_), msg=at)
     assert_true(t.focus_said().has_prefix("TextField \"搜索频道或群，或粘贴 Slack 消息链接\""), msg="\{at}: \{t.focus_said()}")
     assert_true(t.ime().0, msg=at)
     relay_cancelled(t, at)

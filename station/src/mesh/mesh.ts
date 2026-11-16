@@ -18,7 +18,7 @@ import { personChainsOf } from "./serve.ts";
 import { deviceBuildsOf } from "./device-builds.ts";
 import { Traces } from "./traces.ts";
 import { SubscriptionRef } from "effect";
-import { keepRelays } from "./relays.ts";
+import { keepRelays, wantedRelays } from "./relays.ts";
 import { ALPN, type Members, answerGiven, handledGiven, sawBuild, serve } from "./serve.ts";
 import { SERVED_ROUTES, Served } from "./served.ts";
 import { BUILD_HEADER } from "../api/oldest.ts";
@@ -60,7 +60,7 @@ export const MeshLive = Layer.effectDiscard(
       }
       // The order is the one the endpoint prefers: a station asking for web requests offers the station transport's
       // protocol after it (to tell a station from before it), and is to be answered in the first (peer-http.ts).
-      const bind = Effect.tryPromise(() => bindStation(native, { secretKey: key.seed, alpns: [ALPN, PEER_HTTP_ALPN, PEER_BYTES_ALPN, PEER_ALPN, TOOLS_ALPN], relayUrls: cloud.state.relays(), discovery: process.env.STILLFAIL_NO_DISCOVERY !== "1", congestion: congestionOf(config.raw()) }));
+      const bind = Effect.tryPromise(() => bindStation(native, { secretKey: key.seed, alpns: [ALPN, PEER_HTTP_ALPN, PEER_BYTES_ALPN, PEER_ALPN, TOOLS_ALPN], relayUrls: wantedRelays(cloud.state), discovery: process.env.STILLFAIL_NO_DISCOVERY !== "1", congestion: congestionOf(config.raw()) }));
       const acquire = Effect.acquireRelease(
         bind,
         // iroh closes gracefully, waiting on every connection (the keepers' too): up to ~12 s. A station stopping or
@@ -178,7 +178,13 @@ export const MeshLive = Layer.effectDiscard(
           store?.told(changes);
         };
         served.says = { claim: (viewer, path, key, lang) => admin.claimSay(viewer, path, key, lang), said: (thread, n, text, row) => admin.saidElsewhere(thread, n, text, row) };
-        yield* Effect.forkScoped(Effect.promise(async () => {
+        // (a program that ended taken off the routes the connections taken from then on go by, and put back once its
+        // next one listens)
+        served.onRoutes = (paths) => void route(ALPN, paths, SERVED_ROUTES).catch(() => {});
+        // Routed before the first connection is taken (the front gives a connection the routes said by the time this
+        // process takes it): one taken before would have every request of its handed to this process, a device's
+        // events stream too, for as long as it stays. Not started, this process answers them all.
+        yield* Effect.promise(async () => {
           try {
             const paths = await served.start();
             if (!(await route(ALPN, paths, SERVED_ROUTES))) log.info("mesh", "the front routes nothing (one from before); every request is this process's");
@@ -186,7 +192,7 @@ export const MeshLive = Layer.effectDiscard(
           } catch (e) {
             log.warn("mesh", "the MoonBit program that answers requests did not start", { error: (e as Error).message });
           }
-        }));
+        });
       }
       // The control plane's gateways: the device tools, as far as the station's own setting lets them.
       const device = yield* Effect.acquireRelease(

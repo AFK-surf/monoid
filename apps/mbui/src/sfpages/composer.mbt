@@ -2265,6 +2265,9 @@ pub fn send_in_chat(c : @ui.Ctx, src : Source, r : ChatRef, v : ChatView, w : Wr
       Some(((x, y), _)) => @sfbase.sent_from_said(row, x, y)
       None => ()
     }
+    // (and each quote's card from where it is laid out in the composer, message_quotes_node's: where it stands at rest,
+    // over the field's words, even while it still comes in, as it does a moment after it is quoted)
+    @sfbase.sent_quotes_from_said(row, w.quotes.get().map(fn(q) { @motion.measured_rect(c, quote_card_key(text(Some(q), "id"))) }))
   }
   // At the end, the new row and its neighbours move together with the flight. When reading above it, glide there
   // instead of putting the list at the end in a single frame.

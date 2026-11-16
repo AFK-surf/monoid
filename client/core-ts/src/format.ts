@@ -196,7 +196,9 @@ export function windowMark(label: string): [string, number] {
 }
 
 /// When two windows share the same group suffix (5 小时 · Gemini and 每周 · Gemini), add the length mark so their chips
-/// do not both read "Gemini", and keep each group's windows together in the order the groups appear.
+/// do not both read "Gemini", and keep each group's windows together in the order the groups appear. On a multi-pool
+/// allowance (every window carrying a ` · ` suffix, such as Gemini, Claude / GPT and Pro's Argon week), single-window
+/// model groups carry their length mark and group order the same way (`Argon W` after the pools).
 export function windowMarks(labels: string[]): [string, number][] {
   const raw = labels.map(windowMark);
   const counts = new Map<string, number>();
@@ -205,9 +207,15 @@ export function windowMarks(labels: string[]): [string, number][] {
   for (const [m] of raw) {
     if ((counts.get(m) ?? 0) > 1 && !groups.has(m)) groups.set(m, groups.size);
   }
+  if (groups.size > 0 && labels.every((l) => l.includes(" · "))) {
+    groups.clear();
+    for (const [m] of raw) {
+      if (!groups.has(m)) groups.set(m, groups.size);
+    }
+  }
   return labels.map((label, i) => {
     const [m, order] = raw[i]!;
-    if ((counts.get(m) ?? 0) <= 1) return [m, order];
+    if (!groups.has(m)) return [m, order];
     const of = label.indexOf(" · ");
     if (of < 0) return [m, order];
     const [len] = windowMark(label.slice(0, of));

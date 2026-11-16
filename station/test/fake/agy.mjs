@@ -202,8 +202,7 @@ for await (const line of createInterface({ input: process.stdin })) {
     reply(m.id, { sessionId, models, ...(process.env.FAKE_AGY_TIER ? { _meta: { antigravity: { tier: { id: process.env.FAKE_AGY_TIER, name: 'Google AI Ultra' } } } } : {}) });
   } else if (m.method === 'session/load') {
     sessionId = p.sessionId;
-    if (!existsSync(join(conversations, `${sessionId}.db`))) { say({ id: m.id, error: { code: -32602, message: 'conversation not found' } }); continue; }
-    update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'past replay' } });
+    if (existsSync(join(conversations, `${sessionId}.db`))) update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'past replay' } });
     reply(m.id, { models });
   } else if (m.method === 'session/set_model') {
     if (!models.availableModels.some((x) => x.modelId === p.modelId)) say({ id: m.id, error: { code: -32602, message: 'unknown model' } });
@@ -211,6 +210,8 @@ for await (const line of createInterface({ input: process.stdin })) {
   } else if (m.method === 'session/cancel') {
     if (held) reply(held, { stopReason: 'cancelled' }); held = null;
   } else if (m.method === 'session/prompt') {
+    const dbFile = join(conversations, `${sessionId}.db`);
+    if (!existsSync(dbFile) || readFileSync(dbFile, 'utf8') === 'corrupt') { say({ id: m.id, error: { code: -32603, message: `Internal error: Failed to send user message: not_found: trajectory not found: ${sessionId}: not found` } }); continue; }
     const text = p.prompt[0].text;
     const prev = held;
     held = m.id;

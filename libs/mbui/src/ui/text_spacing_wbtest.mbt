@@ -199,7 +199,7 @@ test "windows glyph subpixel phase: ViewBlock updates when ancestor ux shifts an
     let col = on_glyph_col(x, gox, sc)
     assert_eq((col * sc).round(), rx - 1.0)
   }
-  let build = fn(x0 : Double, shift_to : Double?) -> (Array[Double], Array[Int], Array[Int]) {
+  let build = fn(x0 : Double, shifts : Array[Double]) -> (Array[Double], Array[Int], Array[Int], Int) {
     let off = @signals.signal(x0, same=fn(a, b) { a == b })
     let plain_id : Ref[@view.NodeId?] = Ref(None)
     let rich_id : Ref[@view.NodeId?] = Ref(None)
@@ -225,23 +225,23 @@ test "windows glyph subpixel phase: ViewBlock updates when ancestor ux shifts an
       |> ignore
     })
     t.draw()
-    match shift_to {
-      Some(x1) => {
-        off.set(x1)
-        t.draw()
-      }
-      None => ()
+    let made0 = view_paint_work.made
+    for x1 in shifts {
+      off.set(x1)
+      t.draw()
     }
+    let remade = view_paint_work.made - made0
     let xs = t.drawn_glyphs().map(fn(g) { g.0 })
     let plain_subs = view_blocks.get(plain_id.val.unwrap()).unwrap().kept.map(fn(k) { (k.0 >> 26) & 7 })
     let rich_subs = view_blocks.get(rich_id.val.unwrap()).unwrap().kept.map(fn(k) { (k.0 >> 26) & 7 })
-    (xs, plain_subs, rich_subs)
+    (xs, plain_subs, rich_subs, remade)
   }
-  let initial = build(0.0, None)
-  let shifted = build(0.0, Some(10.25))
-  let fresh = build(10.25, None)
+  let initial = build(0.0, [])
+  let shifted = build(0.0, [1.0, 2.0, 3.0, 10.25])
+  let fresh = build(10.25, [])
   assert_true(shifted.0.length() > 10)
   assert_true(initial.1 != fresh.1)
+  assert_eq(shifted.3, 0)
   assert_eq(shifted, fresh)
 }
 

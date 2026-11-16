@@ -1,6 +1,6 @@
 // A chat relayed to a channel, for both frames: the places its station's bots are in, read as the
-// picker opens (`chat.relayPlaces`), what the picker shows of them for what is typed and the bot picked (the core's:
-// `chat.relayView`, relay-pick.ts), the people there its note can mention once an `@` is typed in it (`chat.relayPeople`,
+// picker opens (`chat.relayPlaces`), what the picker shows of them for what is typed, the place picked and the bot
+// picked to reply there (the core's: `chat.relayView`, relay-pick.ts), the people there its note can mention once an `@` is typed in it (`chat.relayPeople`,
 // then the core's `chat.relayMentions`), and the chat relayed where it was picked (`chat.relay`). The desktop's dialog
 // (sfdesk relay.mbt) and the phone's sheet (sfapp relay.mbt) draw it.
 
@@ -29,6 +29,8 @@ pub(all) struct Relaying {
   mention_active : @signals.Signal[Int]
   mention_for : @signals.Signal[String]
   mention_closed : @signals.Signal[Int]
+  /// the bots of the place picked shown to choose another from (換一个 pressed)
+  choosing : @signals.Signal[Bool]
   /// what is typed to find a place (or a Slack message's link), and the note said with the chat where it goes
   query : @ui.Field
   note : @ui.Field
@@ -54,6 +56,7 @@ pub let relaying : Relaying = {
   mention_active: @signals.signal(0, same=fn(a, b) { a == b }),
   mention_for: @signals.signal("", same=fn(a, b) { a == b }),
   mention_closed: @signals.signal(-1, same=fn(a, b) { a == b }),
+  choosing: @signals.signal(false, same=fn(a, b) { a == b }),
   query: @ui.Field::new(),
   note: @ui.Field::new(),
 }
@@ -79,6 +82,7 @@ pub fn relay_reset() -> Unit {
   relaying.mention_active.set(0)
   relaying.mention_for.set("")
   relaying.mention_closed.set(-1)
+  relaying.choosing.set(false)
   relaying.query.set("")
   relaying.note.set("")
 }
@@ -128,8 +132,19 @@ fn relay_target(view : Json?) -> Map[String, Json]? {
       }
     }
     (None, Some(row)) => {
-      p["connect"] = Json::string(text(Some(row), "connect"))
+      // (through the bot the core says replies there, the one picked or the place's own, joining it where it is not
+      // in it yet: the view's `via`)
+      let via = field(view, "via")
+      p["connect"] = Json::string(
+        match opt_text(via, "bot") {
+          Some(b) if b != "" => b
+          _ => text(Some(row), "connect")
+        },
+      )
       p["channel"] = Json::string(text(field(Some(row), "place"), "id"))
+      if flag(via, "joins") {
+        p["join"] = Json::boolean(true)
+      }
     }
     (None, None) => return None
   }
@@ -192,6 +207,10 @@ fn relay_view_params() -> Json {
   }
   if relaying.bot.get() != "" {
     params["bot"] = Json::string(relaying.bot.get())
+  }
+  match relaying.picked.get() {
+    Some(row) => params["place"] = Json::string(text(Some(row), "key"))
+    None => ()
   }
   Json::object(params)
 }

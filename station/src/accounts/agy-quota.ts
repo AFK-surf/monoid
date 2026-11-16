@@ -32,12 +32,32 @@ const SCRUBBED = [
 
 const isObject = (v: unknown): v is Record<string, any> => v !== null && typeof v === "object" && !Array.isArray(v);
 
-function groupMeta(groupName: string, bucketId: string): { suffix: string; scope?: string } {
-  const id = bucketId.toLowerCase();
-  const g = groupName.toLowerCase();
-  if (id.startsWith("gemini-") || g.includes("gemini")) return { suffix: "Gemini", scope: "gemini" };
-  if (id.startsWith("3p-") || g.includes("claude") || g.includes("gpt")) return { suffix: "Claude / GPT", scope: "3p" };
-  return { suffix: groupName.trim() };
+function modelScopeName(groupName: string, bucketId: string): string {
+  const g = groupName.trim();
+  const geminiTier = /^gemini\s+(?:\d+(?:\.\d+)?\s+)?(.+)$/i.exec(g);
+  if (geminiTier && geminiTier[1]!.trim().toLowerCase() !== "models") return geminiTier[1]!.trim();
+  const claudeTier = /^claude\s+([A-Za-z]+)(?:\s+\d+(?:\.\d+)?)?$/i.exec(g);
+  if (claudeTier) return claudeTier[1]!;
+  if (g !== "") return g;
+  const fromId = /^(?:gemini|3p)-([a-z0-9]+)-/i.exec(bucketId.trim());
+  if (fromId) {
+    const s = fromId[1]!;
+    return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
+  }
+  return "";
+}
+
+function groupMeta(groupName: string, bucketId: string): { suffix: string; scope?: string; modelScoped?: boolean } {
+  const id = bucketId.trim().toLowerCase();
+  const g = groupName.trim().toLowerCase();
+  if (/^gemini-(?:\d+h|weekly|daily|monthly)$/.test(id) || g === "gemini models" || g === "gemini") {
+    return { suffix: "Gemini", scope: "gemini" };
+  }
+  if (/^3p-(?:\d+h|weekly|daily|monthly)$/.test(id) || (g.includes("claude") && g.includes("gpt")) || g === "claude / gpt") {
+    return { suffix: "Claude / GPT", scope: "3p" };
+  }
+  const own = modelScopeName(groupName, bucketId);
+  return own !== "" ? { suffix: own, scope: own, modelScoped: true } : { suffix: groupName.trim() };
 }
 
 function windowDuration(rawWindow: string, bucketId: string): [number | null, string] {
@@ -54,7 +74,7 @@ function windowDuration(rawWindow: string, bucketId: string): [number | null, st
   return [null, rawWindow.trim() || "限额"];
 }
 
-export function agyWindows(body: Json): QuotaWindow[] {
+export function agyAllowance(body: Json): { windows: QuotaWindow[]; scoped: QuotaWindow[] } {
   const groups = Array.isArray(body?.command?.data?.groups)
     ? body.command.data.groups
     : Array.isArray(body?.quotaSummary?.groups)
@@ -63,7 +83,8 @@ export function agyWindows(body: Json): QuotaWindow[] {
         ? body.groups
         : [];
   const multiGroup = groups.length > 1;
-  const out: QuotaWindow[] = [];
+  const windows: QuotaWindow[] = [];
+  const scoped: QuotaWindow[] = [];
   for (const group of groups) {
     const groupName = typeof group?.displayName === "string" ? group.displayName : typeof group?.name === "string" ? group.name : "";
     const buckets = Array.isArray(group?.buckets) ? group.buckets : [];
@@ -75,13 +96,19 @@ export function agyWindows(body: Json): QuotaWindow[] {
       const bucketId = typeof b.bucketId === "string" ? b.bucketId : typeof b.id === "string" ? b.id : "";
       const rawWin = typeof b.refreshWindowLabel === "string" ? b.refreshWindowLabel : typeof b.window === "string" ? b.window : "";
       const [minutes, base] = windowDuration(rawWin, bucketId);
-      const { suffix, scope } = groupMeta(groupName, bucketId);
+      const { suffix, scope, modelScoped } = groupMeta(groupName, bucketId);
       const label = (multiGroup || scope !== undefined) && suffix !== "" ? `${base} · ${suffix}` : base;
       const resetsAt = at(b.resetTime ?? b.reset_time);
-      out.push({ label, usedPercent: used, resetsAt, minutes, ...(scope !== undefined ? { scope } : {}) });
+      const win: QuotaWindow = { label, usedPercent: used, resetsAt, minutes, ...(scope !== undefined ? { scope } : {}) };
+      if (modelScoped) scoped.push(win);
+      else windows.push(win);
     }
   }
-  return out;
+  return { windows, scoped };
+}
+
+export function agyWindows(body: Json): QuotaWindow[] {
+  return agyAllowance(body).windows;
 }
 
 export function agyScopeForModel(model: string | null | undefined): "gemini" | "3p" {
@@ -210,12 +237,14 @@ export async function agyQuota(home: string, sourceEnv: Env, urls: Urls, lang: L
   }
   const parsed = parseJsonLine(stdout);
   if (parsed !== null && parsed.status === "SUCCESS") {
-    const windows = agyWindows(parsed);
+    const { windows, scoped } = agyAllowance(parsed);
     // A company's account paying as it goes (a Google Cloud project with no subscription) has no windows to show.
-    if (windows.length === 0 && agyCompany(await readFile(agyToken(home), "utf8").catch(() => ""))) {
+    if (windows.length === 0 && scoped.length === 0 && agyCompany(await readFile(agyToken(home), "utf8").catch(() => ""))) {
       return { state: "unsupported", windows: [], detail: tr(lang, "station.quota.agyPayAsYouGo"), checkedAt: 0 };
     }
-    return okOrUnavailable(windows, tr(lang, "station.quota.agyNoWindows"));
+    const q = okOrUnavailable(windows.length > 0 ? windows : scoped, tr(lang, "station.quota.agyNoWindows"));
+    if (q.state === "ok" && windows.length > 0 && scoped.length > 0) q.scoped = scoped;
+    return q;
   }
   const detail = (typeof parsed?.error === "string" && parsed.error.trim() !== "" ? parsed.error.trim() : stderr.trim() || stdout.trim()).slice(0, 300);
   if (authFailure(detail)) {

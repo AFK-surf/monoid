@@ -18,14 +18,13 @@ priv enum BoardKey {
 }
 
 ///|
-/// A card being dragged: which, the words it shows, where the pointer is in the window, where in the card it was taken.
+/// A card being dragged: which, the words it shows, where in the card it was taken (where the pointer is now apart, in
+/// BoardOwn's `drag_xy`: what moves with the pointer reads that alone, the cards what is dragged alone).
 #derive(Eq)
 priv struct BoardDrag {
   key : BoardKey
   title : String
   said : String
-  x : Double
-  y : Double
   dx : Double
   dy : Double
   w : Double
@@ -42,7 +41,15 @@ priv struct BoardOwn {
   ws : () -> String
   group : () -> String
   drag : @signals.Signal[BoardDrag?]
+  /// where the pointer is in the window while a card is dragged: told at each move, read by the card in hand alone
+  drag_xy : @signals.Signal[(Double, Double)]
+  /// whether a card is the one dragged, the one picked (its chat beside the board), read by key: a card told only as it
+  /// comes to be so or stops being so (View::selected)
+  mut dragged : (BoardKey) -> Bool
+  mut picked : (String) -> Bool
   over : @signals.Signal[String]
+  /// whether the place under the card in hand is the one of key (a column's, "archive"), read by key as `dragged` is
+  mut over_is : (String) -> Bool
   lanes : Map[String, @view.View]
   mut archive : @view.View?
   root : @view.View?
@@ -60,7 +67,18 @@ priv struct BoardOwn {
   /// closed: let go at once, its draft come in its place, and made anew closed)
   room_made : @signals.Signal[Int]
   /// the stations a draft may go to (the workspace's), the one chosen for the next ("" none chosen: the first)
-  mut stations : () -> Array[@sf.StationChoice]
+  stations : () -> Array[@sf.StationChoice]
+  /// the chats, the drafts and the stations by their keys (View::keyed_by): a card reads its own, told only as that one
+  /// changes, never as another does
+  items_by : @signals.KeyedList[String, ChatItem]
+  drafts_by : @signals.KeyedList[String, @sfbase.BoardDraft]
+  stations_by : @signals.KeyedList[String, @sf.StationChoice]
+  /// the viewer as the board names them among the people (by person)
+  me : () -> String
+  /// the columns the board shows now (board_columns'), and the cards of each by its key (board_cards'), each worked out
+  /// once for all that reads it, told only as it comes out otherwise
+  mut columns : () -> Array[(String, String)]
+  mut cards_of : (String) -> Array[BoardKey]
   field : @ui.Field
   station : @signals.Signal[String]
 }
@@ -68,12 +86,11 @@ priv struct BoardOwn {
 ///|
 /// The station the next draft goes to: the one chosen where it is one of the workspace's, else its first ("" none).
 fn board_station_now(own : BoardOwn) -> String {
-  let all = (own.stations)()
   let s = own.station.get()
-  if all.iter().any(fn(c) { c.station == s }) {
+  if s != "" && own.stations_by.get(s) is Some(_) {
     s
   } else {
-    all.get(0).map(fn(c) { c.station }).unwrap_or("")
+    own.stations_by.keys().get(0).unwrap_or("")
   }
 }
 
@@ -199,9 +216,10 @@ fn board_columns(own : BoardOwn, items : Array[ChatItem], drafts : Array[@sfbase
         }
       }
       // (the viewer first)
-      add(board_me(items))
+      let me = (own.me)()
+      add(me)
       for i in items {
-        for n in @sfbase.board_people_of(i, board_me(items)) {
+        for n in @sfbase.board_people_of(i, me) {
           add(n)
         }
       }
@@ -212,16 +230,29 @@ fn board_columns(own : BoardOwn, items : Array[ChatItem], drafts : Array[@sfbase
 }
 
 ///|
-/// The viewer as the board names them among the people.
-fn board_me(items : Array[ChatItem]) -> String {
-  @sfbase.board_me_of(items)
+/// Whether column `col` (board_columns') lists chat `i`: 待派发 none; by station those on it; by person those of its
+/// one (`me` the viewer as the board names them, asked only there); by state those standing in it.
+fn board_holds(col : String, i : ChatItem, me : () -> String) -> Bool {
+  if col == "draft" {
+    false
+  } else if col.has_prefix("station:") {
+    i.station == col.exact_view(start=8).to_owned()
+  } else if col.has_prefix("person:") {
+    @sfbase.board_people_of(i, me()).contains(col.exact_view(start=7).to_owned())
+  } else {
+    @sfbase.board_lane_of(i) == col
+  }
 }
 
 ///|
 /// The cards of column `col` (board_columns'), in order: 待派发's drafts, then its chats (pinned first).
-fn board_cards(col : String, items : Array[ChatItem], drafts : Array[@sfbase.BoardDraft]) -> Array[BoardKey] {
+fn board_cards(
+  col : String,
+  items : Array[ChatItem],
+  drafts : Array[@sfbase.BoardDraft],
+  me : () -> String,
+) -> Array[BoardKey] {
   let out : Array[BoardKey] = []
-  let chats : Array[ChatItem] = []
   if col == "draft" {
     for d in drafts {
       out.push(DraftKey(d.id))
@@ -233,30 +264,14 @@ fn board_cards(col : String, items : Array[ChatItem], drafts : Array[@sfbase.Boa
         out.push(DraftKey(d.id))
       }
     }
-    for i in items {
-      if i.station == st {
-        chats.push(i)
-      }
-    }
   } else if col.has_prefix("person:") {
-    let who = col.exact_view(start=7).to_owned()
-    if who == board_me(items) {
+    if col.exact_view(start=7).to_owned() == me() {
       for d in drafts {
         out.push(DraftKey(d.id))
       }
     }
-    for i in items {
-      if @sfbase.board_people_of(i, board_me(items)).contains(who) {
-        chats.push(i)
-      }
-    }
-  } else {
-    for i in items {
-      if @sfbase.board_lane_of(i) == col {
-        chats.push(i)
-      }
-    }
   }
+  let chats = items.filter(fn(i) { board_holds(col, i, me) })
   for i in chats {
     if i.pinned == Some(true) {
       out.push(ChatKey(@sfbase.row_name(i)))
@@ -289,34 +304,18 @@ pub fn board_node(
   bar_frame? : (@view.View, (@view.View) -> Unit) -> Unit,
 ) -> Unit {
   let ws = fn() { workspace().map(fn(w) { w.id }).unwrap_or("") }
-  let own : BoardOwn = {
-    src,
-    ws,
-    group: fn() { @sfbase.board_group_of(src, ws()) },
-    drag: @signals.signal(None),
-    over: @signals.signal(""),
-    lanes: Map([]),
-    archive: None,
-    root: Some(v),
-    side: fn() { false },
-    reveal: fn(_) {  },
-    to_start: fn() {  },
-    start_from: None,
-    added_from: None,
-    room_made: @signals.signal(0),
-    stations: fn() { [] },
-    field: @ui.Field::new(),
-    station: @signals.signal(""),
-  }
-  let items = fn() {
+  // (the chats, the drafts and the workspace's stations a draft may go to, as their rows say them: each worked out once
+  // for all that reads it, told only as it comes out otherwise)
+  let items_now = @signals.computed(fn(_) {
     match workspace() {
       Some(w) => @sfbase.board_items(src, w.id)
       None => []
     }
-  }
-  let drafts = fn() { @sfbase.board_drafts_of(src, ws()) }
-  // (the workspace's stations a draft may go to, as their rows say them)
-  own.stations = fn() {
+  })
+  let items = fn() { items_now.get() }
+  let drafts_now = @signals.computed(fn(_) { @sfbase.board_drafts_of(src, ws()) })
+  let drafts = fn() { drafts_now.get() }
+  let stations_now = @signals.computed(fn(_) {
     let rows = match workspace() {
       Some(w) =>
         match @sfbase.station_rows(src, w.id).value {
@@ -331,7 +330,71 @@ pub fn board_node(
       { station: text(one, "station"), name: text(one, "name"), emoji: text(one, "emoji"), icon: text(one, "icon") }
     })
     .filter(fn(c) { c.station != "" && c.name != "" })
+  })
+  let me_now = @signals.computed(fn(_) { @sfbase.board_me_of(items()) })
+  let own : BoardOwn = {
+    src,
+    ws,
+    group: fn() { @sfbase.board_group_of(src, ws()) },
+    drag: @signals.signal(None),
+    drag_xy: @signals.signal((0.0, 0.0)),
+    dragged: fn(_) { false },
+    picked: fn(_) { false },
+    over: @signals.signal(""),
+    over_is: fn(_) { false },
+    lanes: Map([]),
+    archive: None,
+    root: Some(v),
+    side: fn() { false },
+    reveal: fn(_) {  },
+    to_start: fn() {  },
+    start_from: None,
+    added_from: None,
+    room_made: @signals.signal(0),
+    stations: fn() { stations_now.get() },
+    items_by: v.keyed_by(items, @sfbase.row_name),
+    drafts_by: v.keyed_by(drafts, fn(d) { d.id }),
+    stations_by: v.keyed_by(fn() { stations_now.get() }, fn(c) { c.station }),
+    me: fn() { me_now.get() },
+    columns: fn() { [] },
+    cards_of: fn(_) { [] },
+    field: @ui.Field::new(),
+    station: @signals.signal(""),
   }
+  let columns_now = @signals.computed(fn(_) { board_columns(own, items(), drafts()) })
+  own.columns = fn() { columns_now.get() }
+  // (every column's cards and every state's (a narrow board's chips count them whatever the grouping), worked out
+  // together as a chat or a draft changes; a map made anew each time: each column's own computed says whether its
+  // cards came out otherwise)
+  let cards_now = @signals.computed_ref(fn(_) {
+    let all = items()
+    let ds = drafts()
+    let out : Map[String, Array[BoardKey]] = Map([])
+    for c in columns_now.get() {
+      out[c.0] = board_cards(c.0, all, ds, own.me)
+    }
+    for l in @sfbase.board_lanes {
+      if !out.contains(l) {
+        out[l] = board_cards(l, all, ds, own.me)
+      }
+    }
+    out
+  })
+  own.cards_of = fn(key) { cards_now.get().get(key).unwrap_or([]) }
+  own.dragged = v.selected(fn() { own.drag.get().map(fn(g) { g.key }) })
+  own.over_is = v.selected(fn() {
+    match own.over.get() {
+      "" => None
+      o => Some(o)
+    }
+  })
+  // (the chat picked, as the card its row is: looked for only while one is picked)
+  own.picked = v.selected(fn() {
+    match @sfbase.board_pick.get() {
+      Some(p) => items().iter().find_first(fn(i) { @sfbase.row_is(i, p) }).map(@sfbase.row_name)
+      None => None
+    }
+  })
   v.grow(Is(1.0)).min_height(Is(Some(0.0))).ground(By(ground)) |> ignore
   // (the workspace's stations read as long as the board shows, as its opening asked them (sfbase's board_opens): the
   // line to write a draft in, and its choice of a station, whole as it comes, whichever column shows)
@@ -340,9 +403,9 @@ pub fn board_node(
   v.pick(fn() { columns }, fn(p, wide) {
     p.grow(Is(1.0)).min_height(Is(Some(0.0))).padding(By(fn() { (0.0, top(), 0.0, foot()) })) |> ignore
     if wide {
-      board_wide(p, src, tips, own, items, drafts, width, beside, bar_frame)
+      board_wide(p, src, tips, own, width, beside, bar_frame)
     } else {
-      board_narrow(p, src, tips, own, items, drafts, width)
+      board_narrow(p, src, tips, own, width)
     }
   })
   // the card dragged, over all of the board where the pointer has it
@@ -362,9 +425,11 @@ pub fn board_node(
       }
       c
       .width(By(fn() { d().map(fn(d) { Some(d.w) }).unwrap_or(None) }))
+      // (where the pointer has it: the one binding a move of it runs)
       .offset(By(fn() {
+        let (x, y) = own.drag_xy.get()
         match d() {
-          Some(d) => (d.x - d.dx - d.ox, d.y - d.dy - d.oy)
+          Some(d) => (x - d.dx - d.ox, y - d.dy - d.oy)
           None => (0.0, 0.0)
         }
       }))
@@ -402,8 +467,6 @@ fn board_wide(
   src : Source,
   tips : @sf.TipLayer,
   own : BoardOwn,
-  items : () -> Array[ChatItem],
-  drafts : () -> Array[@sfbase.BoardDraft],
   width : () -> Double,
   beside : ((@view.View, ChatRef) -> Unit)?,
   bar_frame : ((@view.View, (@view.View) -> Unit) -> Unit)?,
@@ -418,7 +481,7 @@ fn board_wide(
   let ends = Ref((0.0, 0.0))
   let glide = @motion.Way::new(1.0)
   let glides = Ref((0.0, 0.0))
-  let count = fn() { board_columns(own, items(), drafts()).length() }
+  let count = fn() { (own.columns)().length() }
   // (how far along a way is at `t`, from where it set out to where it goes: 1 where it is not going)
   let along = fn(way : @motion.Way, t : Double) -> Double {
     if !way.goes_at(t) {
@@ -476,7 +539,7 @@ fn board_wide(
       }
       // (where the columns are to be for column `key`'s to show whole, the chat beside them as it is to be)
       own.reveal = fn(key) {
-        let cols = @signals.untracked(fn() { board_columns(own, items(), drafts()) })
+        let cols = @signals.untracked(own.columns)
         let n = cols.length()
         let i = cols.search_by(fn(c) { c.0 == key }).unwrap_or(0)
         let r = width() - (if @signals.untracked(own.side) && key != "draft" { board_beside_w } else { 0.0 })
@@ -545,7 +608,7 @@ fn board_wide(
           cols.pick(own.group, fn(g, _group) {
             g.row(Is(true)).gap(Is(board_gap)).min_height(Is(Some(0.0))).grow(Is(1.0)) |> ignore
             g.each(
-              fn() { board_columns(own, items(), drafts()) },
+              fn() { (own.columns)() },
               fn(c) { c.0 },
               fn(col, c) {
                 let key = @signals.untracked(fn() { c.get().0 })
@@ -561,7 +624,7 @@ fn board_wide(
                 }))
                 .shrink(Is(0.0))
                 |> ignore
-                board_column(col, src, tips, own, key, fn() { c.get().1 }, items, drafts, wide=true)
+                board_column(col, src, tips, own, key, fn() { c.get().1 }, wide=true)
               },
               at_once=true,
             )
@@ -643,25 +706,25 @@ fn board_archive_place(z : @view.View, own : BoardOwn) -> Unit {
     .radius(Is(1.0e6))
     .ground(By(fn() {
       let p = @sf.theme().p
-      if own.over.get() == "archive" { p.accent_bg } else { p.neutral_bg }
+      if (own.over_is)("archive") { p.accent_bg } else { p.neutral_bg }
     }))
     .says(By(fn() { Some(@view.said(Image, label=board_words(if draft() { "delete" } else { "archive" }))) }))
     |> ignore
     a.pick(draft, fn(ic, d) {
     @sf.icon_node(ic, if d { "trash" } else { "archive" }, 16.0, By(fn() {
-      if own.over.get() == "archive" { @sf.theme().p.accent_text } else { @sf.theme().p.muted }
+      if (own.over_is)("archive") { @sf.theme().p.accent_text } else { @sf.theme().p.muted }
     }))
     |> ignore
     }, at_once=true)
     @sf.words_node(a, fn() {
-      match (own.over.get() == "archive", draft()) {
+      match ((own.over_is)("archive"), draft()) {
         (true, true) => board_words("drop-delete")
         (true, false) => board_words("drop-archive")
         (false, true) => board_words("drag-delete")
         (false, false) => board_words("drag-archive")
       }
     }, fn() {
-      if own.over.get() == "archive" { drop_lit_look } else { drop_look }
+      if (own.over_is)("archive") { drop_lit_look } else { drop_look }
     })
     |> ignore
   })
@@ -757,8 +820,6 @@ fn board_narrow(
   src : Source,
   tips : @sf.TipLayer,
   own : BoardOwn,
-  items : () -> Array[ChatItem],
-  drafts : () -> Array[@sfbase.BoardDraft],
   width : () -> Double,
 ) -> Unit {
   // (the five, each with its count, as wide as their words and 10 in at either end, sharing what is left of the
@@ -774,12 +835,13 @@ fn board_narrow(
       .min_width(By(fn() { Some(width()) }))
       |> ignore
       for lane in @sfbase.board_lanes {
+        let count = @signals.computed(fn(_) { (own.cards_of)(lane).length() })
         board_chip(
           row,
           fn() { @sfbase.board_lane_words(lane) },
           fn() { @sfbase.board_lane.get() == lane },
           fn() { @sfbase.board_lane.set(lane) },
-          count=fn() { board_cards(lane, items(), drafts()).length().to_string() },
+          count=fn() { count.get().to_string() },
           across=true,
         )
       }
@@ -792,7 +854,7 @@ fn board_narrow(
     list.scrolls(@view.Scroll::new(), slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(held) {
       held.padding(Is((board_pad, 4.0, board_pad, 24.0))) |> ignore
       held.pick(fn() { @sfbase.board_lane.get() }, fn(col, lane) {
-        board_column(col, src, tips, own, lane, fn() { @sfbase.board_lane_words(lane) }, items, drafts, wide=false)
+        board_column(col, src, tips, own, lane, fn() { @sfbase.board_lane_words(lane) }, wide=false)
       }, at_once=true)
     })
     |> ignore
@@ -817,8 +879,6 @@ fn board_column(
   own : BoardOwn,
   key : String,
   name : () -> String,
-  items : () -> Array[ChatItem],
-  drafts : () -> Array[@sfbase.BoardDraft],
   wide~ : Bool,
 ) -> Unit {
   own.lanes[key] = col
@@ -829,10 +889,11 @@ fn board_column(
     }
   })
   |> ignore
-  let cards = fn() { board_cards(key, items(), drafts()) }
+  let cards_now = @signals.computed(fn(_) { (own.cards_of)(key) })
+  let cards = fn() { cards_now.get() }
   // (lit faintly while a card in hand may be let go on it, coming and going as a control answering does)
   let lit = @sf.EdgeWay::new(0.0)
-  col.reacts(fn() { own.over.get() == key }, fn(on) { lit.go(col, if on { 1.0 } else { 0.0 }, @sf.dur_ms) })
+  col.reacts(fn() { (own.over_is)(key) }, fn(on) { lit.go(col, if on { 1.0 } else { 0.0 }, @sf.dur_ms) })
   // (its cards go for what comes or leaves among them, one Move: a draft written, one started, a chat come or gone;
   // said once what makes them is, so that it finds them laid out as the change that set it off leaves them)
   let col_moves : Ref[@motion.Moves?] = Ref(None)
@@ -882,8 +943,8 @@ fn board_column(
         None => rows_made.push(row)
       }
       match @signals.untracked(fn() { k.get() }) {
-        DraftKey(id) => draft_card(row, src, tips, own, id, drafts, key)
-        ChatKey(name) => board_chat_card(row, src, tips, own, name, items, key, wide)
+        DraftKey(id) => draft_card(row, src, tips, own, id, key)
+        ChatKey(name) => board_chat_card(row, src, tips, own, name, key, wide)
       }
     })
     b.show(fn() { cards().is_empty() && (key != "draft" || (wide && !@sfbase.board_adding.get())) }, fn(e) {
@@ -947,7 +1008,7 @@ fn board_add(a : @view.View, own : BoardOwn, wide : Bool, tips : @sf.TipLayer) -
   let add = fn() {
     let words = own.field.text()
     let st = @signals.untracked(fn() { board_station_now(own) })
-    let name = (own.stations)().iter().find_first(fn(s) { s.station == st }).map(fn(s) { s.name }).unwrap_or("")
+    let name = own.stations_by.peek(st).map(fn(s) { s.name }).unwrap_or("")
     let from = match card_at.val {
       Some(c) if c.alive() => Some(c.placed_window_now())
       _ => None
@@ -1225,22 +1286,24 @@ fn card_drags(
             }
             _ => (0.0, 0.0)
           }
-          own.drag.set(Some({ key, title: @signals.untracked(title), said: @signals.untracked(said), x: d.wx, y: d.wy, dx: d.wx - cx, dy: d.wy - cy, w: cw, ox, oy }))
+          own.drag_xy.set((d.wx, d.wy))
+          own.drag.set(Some({ key, title: @signals.untracked(title), said: @signals.untracked(said), dx: d.wx - cx, dy: d.wy - cy, w: cw, ox, oy }))
           own.over.set("")
           @sfbase.board_drag_active.set(true)
         }
+        // (the card in hand follows the pointer, and what is under it that takes it is lit: nothing else told)
         Moved =>
-          match own.drag.untracked() {
-            Some(g) => {
-              own.drag.set(Some({ ..g, x: d.wx, y: d.wy }))
-              own.over.set(under(d.wx, d.wy))
-            }
-            None => ()
+          if own.drag.untracked() is Some(_) {
+            own.drag_xy.set((d.wx, d.wy))
+            own.over.set(under(d.wx, d.wy))
           }
         Up => {
           let at = under(d.wx, d.wy)
           let rect = match own.drag.untracked() {
-            Some(g) => (g.x - g.dx, g.y - g.dy, g.w, held_h.val)
+            Some(g) => {
+              let (x, y) = own.drag_xy.untracked()
+              (x - g.dx, y - g.dy, g.w, held_h.val)
+            }
             None => card.placed_window_now()
           }
           own.drag.set(None)
@@ -1269,10 +1332,9 @@ fn draft_card(
   tips : @sf.TipLayer,
   own : BoardOwn,
   id : String,
-  drafts : () -> Array[@sfbase.BoardDraft],
   lane : String,
 ) -> Unit {
-  let d = fn() { drafts().iter().find_first(fn(d) { d.id == id }) }
+  let d = fn() { own.drafts_by.get(id) }
   let title = fn() { d().map(fn(d) { d.title }).unwrap_or("") }
   let card_at : Ref[@view.View?] = Ref(None)
   // (started from `from` in the window, `lifted` off the board there: its chat's card flies in from there,
@@ -1307,7 +1369,7 @@ fn draft_card(
   // (the station it goes to as the workspace's rows have it: its mark)
   let station = fn() {
     let st = d().map(fn(d) { d.station }).unwrap_or("")
-    (own.stations)().iter().find_first(fn(c) { c.station == st })
+    own.stations_by.get(st)
   }
   row.box(fn(w) {
   w.box(fn(card) {
@@ -1328,9 +1390,7 @@ fn draft_card(
       }
       _ => ()
     }
-    card_ground(card, fn() { false }, fn() {
-      own.drag.get().map(fn(g) { g.key == DraftKey(id) }).unwrap_or(false)
-    })
+    card_ground(card, fn() { false }, fn() { (own.dragged)(DraftKey(id)) })
     card_drags(card, own, DraftKey(id), title, fn() { d().map(fn(d) { d.station_name }).unwrap_or("") }, ["archive", "run"], fn() {  }, fn(at, rect) {
       if at == "archive" {
         delete()
@@ -1412,17 +1472,15 @@ fn board_chat_card(
   tips : @sf.TipLayer,
   own : BoardOwn,
   name : String,
-  items : () -> Array[ChatItem],
   lane : String,
   wide : Bool,
 ) -> Unit {
-  // (listed in its column: one gone on to another column is that column's card now, not this one's)
+  // (listed in its column: one gone on to another column is that column's card now, not this one's; its own row read by
+  // its key, told only as it changes)
   let found = fn() {
-    let all = items()
-    if board_cards(lane, all, []).contains(ChatKey(name)) {
-      all.iter().find_first(fn(i) { @sfbase.row_name(i) == name })
-    } else {
-      None
+    match own.items_by.get(name) {
+      Some(i) if board_holds(lane, i, own.me) => Some(i)
+      _ => None
     }
   }
   // (as it was last listed: a card leaving keeps its words)
@@ -1465,12 +1523,7 @@ fn board_chat_card(
     }
   }
   // (picked only where its chat shows beside the board: no ground of it left where there is not the room)
-  let picked = fn() {
-    match (@sfbase.board_pick.get(), item()) {
-      (Some(p), Some(i)) => (own.side)() && @sfbase.row_is(i, p)
-      _ => false
-    }
-  }
+  let picked = fn() { (own.picked)(name) && (own.side)() }
   // (a draft's chat come as it was started: from where its card was, lifted off the board (its hairline and shadow
   // going as it lands) where it was dragged)
   let lifted = match (own.start_from, @signals.untracked(item)) {
@@ -1504,7 +1557,7 @@ fn board_chat_card(
     |> ignore
     // (one thing by its row's key: the same from the draft's card on through the core's pending row to its station's)
     @motion.shared(card, board_shared(own, lane, name)) |> ignore
-    card_ground(card, picked, fn() { own.drag.get().map(fn(g) { g.key == ChatKey(name) }).unwrap_or(false) })
+    card_ground(card, picked, fn() { (own.dragged)(ChatKey(name)) })
     card.presses(Is(true)).focusable(Is(true)).on_press(open).says(By(fn() { Some(@view.said(Button, label=title())) })) |> ignore
     card_drags(card, own, ChatKey(name), title, fn() {
       match item() {
@@ -1597,35 +1650,24 @@ fn board_chat_card(
       m.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
       m.box(fn(a) {
         a.row(Is(true)).gap(Is(2.0)).lines_up(Is(Some(Middle))).shrink(Is(0.0)) |> ignore
-        a.each(fn() {
-          item().map(fn(i) { i.agents.map(fn(g) { g.maker + "\u{1}" + g.runtime }) }).unwrap_or([]).iter().take(3).collect()
-        }, fn(k) { k }, fn(b, k) {
-          let made = @signals.untracked(fn() { k.get() })
-          let (maker, runtime) = match made.find("\u{1}") {
-            Some(x) => (made.exact_view(end=x).to_owned(), made.exact_view(start=x + 1).to_owned())
-            None => (made, "")
-          }
-          b.says(Is(Some(@view.said(Image, label=runtime)))) |> ignore
-          @sf.maker_mark_node(b, maker, runtime, 14.0) |> ignore
+        a.each(fn() { item().map(fn(i) { i.agents.iter().take(3).collect() }).unwrap_or([]) }, fn(g) {
+          g.maker + "\u{1}" + g.runtime
+        }, fn(b, g) {
+          let g = @signals.untracked(fn() { g.get() })
+          b.says(Is(Some(@view.said(Image, label=g.runtime)))) |> ignore
+          @sf.maker_mark_node(b, g.maker, g.runtime, 14.0) |> ignore
         }, at_once=true)
       })
       |> ignore
       m.box(fn(f) {
         f.row(Is(true)).lines_up(Is(Some(Middle))).shrink(Is(0.0)) |> ignore
-        f.each(fn() { item().map(fn(i) { i.people.map(fn(p) { p.id }) }).unwrap_or([]).iter().take(3).collect() }, fn(k) { k }, fn(b, k) {
-          let id = @signals.untracked(fn() { k.get() })
-          let person = fn() {
-            match item() {
-              Some(i) => i.people.iter().find_first(fn(p) { p.id == id })
-              None => None
-            }
-          }
+        // (each its own person, by their id: told only as they change)
+        f.each(fn() { item().map(fn(i) { i.people.iter().take(3).collect() }).unwrap_or([]) }, fn(p) { p.id }, fn(b, p) {
+          let id = @signals.untracked(fn() { p.get() }).id
           b.margin(Is((-4.0, 0.0, 0.0, 0.0))).radius(Is(1.0e6)).padding(Is((1.0, 1.0, 1.0, 1.0))).ground(By(fn() { @sf.theme().p.card }))
-          .says(By(fn() { Some(@view.said(Image, label=person().map(fn(p) { p.name }).unwrap_or(""))) }))
+          .says(By(fn() { Some(@view.said(Image, label=p.get().name)) }))
           |> ignore
-          @sf.avatar_node(b, fn() { id }, fn() { person().map(fn(p) { p.name }).unwrap_or("") }, fn() {
-            person().map(fn(p) { p.picture }).unwrap_or("")
-          }, 18.0)
+          @sf.avatar_node(b, fn() { id }, fn() { p.get().name }, fn() { p.get().picture }, 18.0)
         }, at_once=true)
       })
       |> ignore
