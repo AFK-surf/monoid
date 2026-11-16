@@ -5,7 +5,7 @@
 // handed over written there before `share.take` answered.
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { lstat, readlink, rename, writeFile } from "node:fs/promises";
+import { lstat, readFile, readlink, rename, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, test } from "node:test";
@@ -82,6 +82,10 @@ const settle = async (...stations: Station[]) => {
 /// The calls but config.json's own.
 const others = (calls: string[]) => calls.filter((c) => !/ConfigFile\.(stamp|update)/.test(c));
 
+/// The watches a station keeps, and its own ways to them.
+const watching = (s: Station) => s.sharing as unknown as { watchers: Map<string, unknown>; stopWatch(key: string): void; watchBorrowed(id: string, dir: string): Promise<void>; watchHosted(name: string, dir: string): Promise<void> };
+const watched = (s: Station) => [...watching(s).watchers.keys()].sort();
+
 const skill = (text: string) => `---\nname: ember\ndescription: 项目记忆：ember\n---\n${text}\n`;
 
 test("a skill shared, copied and linked, renamed, shown under a name taken and taken away waits on no file", async () => {
@@ -94,6 +98,7 @@ test("a skill shared, copied and linked, renamed, shown under a name taken and t
   mkdirSync(join(skills, "ember"));
   writeFileSync(join(skills, "ember", "SKILL.md"), skill("first"));
   mkdirSync(join(skills, "own"));
+  mkdirSync(join(skills, "again"));
   writeFileSync(join(skills, "own", "SKILL.md"), skill("A's"));
   // One of B's own under a name A shares too: B's wins, A is told so.
   mkdirSync(join(theirs, "own"));
@@ -120,9 +125,19 @@ test("a skill shared, copied and linked, renamed, shown under a name taken and t
     await settle(a, b);
     renamedTo = (await at("flame")) ?? "";
     linked.emberAfter = await at("ember");
-    // No longer shared: the copy and its link gone.
-    await a.sharing.shareSkill("flame", false, null);
-    await a.sharing.shareSkill("own", false, null);
+    // A watch begun as each stops (its directory being looked at as the share stops, or the copy is taken away): not
+    // made once it is looked at.
+    const id = a.config.raw().sharedSkills.flame.id;
+    watching(b).stopWatch(`borrowed:${id}`);
+    watching(a).stopWatch("hosted:own");
+    const [, , , begun] = [
+      watching(b).watchBorrowed(id, join(b.data, "share", id, "skill")),
+      watching(a).watchHosted("own", join(skills, "own")),
+      // No longer shared: the copy and its link gone.
+      a.sharing.shareSkill("own", false, null),
+      a.sharing.shareSkill("flame", false, null),
+    ];
+    await begun;
     await settle(a, b);
   });
   assert.deepEqual(others(calls), []);
@@ -133,6 +148,17 @@ test("a skill shared, copied and linked, renamed, shown under a name taken and t
   assert.equal(await at("flame"), null, "taken away with the share");
   assert.equal(readFileSync(join(theirs, "own", "SKILL.md"), "utf8"), skill("B's"));
   assert.equal(existsSync(join(b.data, "share", renamedTo.split("/").at(-2)!)), false, "its copy gone");
+  assert.deepEqual(watched(a), [], "nothing shared is followed");
+  assert.deepEqual(watched(b), [], "no copy is followed");
+  // Closed while a watch is begun: none made after.
+  writeFileSync(join(skills, "again", "SKILL.md"), skill("again"), { flag: "w" });
+  await a.sharing.shareSkill("again", true, null);
+  assert.deepEqual(watched(a), ["hosted:again"]);
+  watching(a).stopWatch("hosted:again");
+  const late = watching(a).watchHosted("again", join(skills, "again"));
+  await a.sharing.close();
+  await late;
+  assert.deepEqual(watched(a), [], "nothing followed once closed");
 });
 
 const jwt = (claims: object) => ["{}", JSON.stringify(claims), "s"].map((p) => Buffer.from(p).toString("base64url")).join(".");
@@ -159,6 +185,8 @@ test("subscriptions shared, lent, hashed by their logins, named by their account
   write(cursorAuthFile(home(b, "bcur")), JSON.stringify({ apiKey: "k2", email: "other@x.test" }));
 
   let lentUntil = 0;
+  let lentRefresh = "";
+  let copyEmail = "";
   let token = "";
   const moved: Record<string, unknown> = {};
   const calls = await syncCalls(async () => {
@@ -170,24 +198,33 @@ test("subscriptions shared, lent, hashed by their logins, named by their account
     await settle(a, b);
     const copy = b.config.raw().profiles.find((p: any) => p.share?.id !== undefined && p.runtime === "codex");
     lentUntil = await b.sharing.lendCodex({ ...copy, home: join(b.data, copy.home) });
+    copyEmail = copy.share.email;
+    lentRefresh = JSON.parse(await readFile(join(b.data, copy.home, "auth.json"), "utf8")).tokens.refresh_token;
     const claude = b.config.raw().profiles.find((p: any) => p.share?.id !== undefined && p.runtime === "claude");
     token = (await b.sharing.lendClaude(claude)).token;
     // Handed over: a shared one (share.take), one not shared whose account B has (taken as it), one B has not.
     moved.max = await a.sharing.moveProfile("max", B);
+    moved.plus = await a.sharing.moveProfile("plus", B);
     moved.g = await a.sharing.moveProfile("g", B);
     moved.cur = await a.sharing.moveProfile("cur", B);
     await settle(a, b);
   });
   assert.deepEqual(others(calls), []);
   assert.ok(lentUntil > Date.now() + 2 * 86400_000, "the renewed login lent");
-  assert.equal(JSON.parse(readFileSync(join(b.data, "homes", b.config.raw().profiles.find((p: any) => p.runtime === "codex").id, "auth.json"), "utf8")).tokens.refresh_token, "lent-by-another-station");
+  assert.equal(lentRefresh, "lent-by-another-station");
+  const taken = b.config.raw().profiles.find((p: any) => p.runtime === "codex");
+  assert.equal(JSON.parse(readFileSync(join(b.data, taken.home, "auth.json"), "utf8")).tokens.refresh_token, "r", "handed over whole: B renews it now");
   assert.equal(token, "token-of-max");
   const copies = b.config.raw().profiles;
-  assert.equal(copies.find((p: any) => p.runtime === "codex")?.share?.email, "plus@x.test", "named by its id token");
+  assert.equal(copyEmail, "plus@x.test", "named by its id token");
   const max = copies.find((p: any) => p.runtime === "claude");
   assert.equal(max.share.borrowed, undefined, "hosted there now");
   assert.equal(JSON.parse(readFileSync(join(b.data, max.home, ".credentials.json"), "utf8")).claudeAiOauth.refreshToken, "r");
   assert.equal(a.config.raw().profiles.find((p: any) => p.id === "max")?.share?.email, "max@x.test", "named by its account record");
+  const plus = a.config.raw().profiles.find((p: any) => p.id === "plus");
+  assert.equal(plus?.share?.borrowed, true, "the Codex one borrowed from B now");
+  assert.equal(plus?.share?.email, "plus@x.test", "named by its login read before it went");
+  assert.equal(existsSync(join(home(a, "plus"), "auth.json")), false, "its login gone from A");
   assert.deepEqual(moved.g, { id: "bg" }, "the same account's taken");
   assert.equal((moved.cur as { id: string }).id, "cur");
   assert.equal(JSON.parse(readFileSync(cursorAuthFile(join(b.data, "homes", "cur")), "utf8")).email, "cur@x.test");

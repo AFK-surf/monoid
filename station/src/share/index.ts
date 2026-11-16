@@ -564,6 +564,9 @@ export class Sharing {
       this.stopWatch(`login:${id}`);
       this.loginDirs.delete(id);
     }
+    // (a skill no longer shared: its watch, made again by a pass that read it before it stopped, stops)
+    const skills = new Set([...own.values()].flatMap((now) => (now.kind === "skill" ? [`hosted:${now.skill}`] : [])));
+    for (const key of [...this.watchers.keys()]) if (key.startsWith("hosted:") && !skills.has(key)) this.stopWatch(key);
     for (const [id, now] of own) {
       if (this.unannounced.has(id)) continue;
       if (now.kind === "skill") await this.watchHosted(now.skill!, join(this.skillsDir(), now.skill!));
@@ -620,13 +623,25 @@ export class Sharing {
     this.reconcile();
   }
 
+  /// Closed: nothing is followed from then on (a watch begun before, its directory still being looked at, is not made).
+  private closed = false;
+
   async close() {
+    this.closed = true;
     for (const stop of this.stops.splice(0)) stop();
-    for (const w of this.watchers.values()) w.close();
-    this.watchers.clear();
+    this.stopWatches();
     await this.time.close();
     await this.program.close();
+    // (the links' turn, files alone, done; a pass still asking other stations is not waited for, its watches refused)
+    await this.linkTurn;
+    this.stopWatches();
     await this.stateWritten();
+  }
+
+  private stopWatches() {
+    for (const w of this.watchers.values()) w.close();
+    this.watchers.clear();
+    this.loginDirs.clear();
   }
 
   /// Brings what is here in line with what is configured and what the hosts say: one at a time, again if asked meanwhile.
@@ -787,8 +802,10 @@ export class Sharing {
         if (had.stale || !had.profileUpdate) {
           const got = await this.deps.ask(had.host, this.askIn(had), { method: "share.get", id });
           this.unreachable.delete(had.host);
-          // (taken away while it was asked for: its host said it is gone, and what it sent is not placed again)
-          if (state.borrowed[id] === undefined) continue;
+          // (heard of again while it was asked for: taken away, or changed, `heard` putting a copy marked stale in its
+          // place, which the pass `heard` asks for fetches; what came here is not placed, nor its allowance's reset
+          // counted, twice)
+          if (state.borrowed[id] !== had) continue;
           if (had.kind === "profile") {
             await this.placedHome(this.placeProfile(id, had, got));
             const revision = Number(got?.quotaRevision ?? 0);
@@ -906,6 +923,8 @@ export class Sharing {
     }
     this.stopWatch(`borrowed:${id}`);
     await this.linking(async () => {
+      // (again in its turn: a watch made before it came, by a pass that saw the copy still there, stops too)
+      this.stopWatch(`borrowed:${id}`);
       await this.unlinkSkillNow(id, had);
       await rm(join(this.root, id), { recursive: true, force: true });
     });
@@ -990,10 +1009,11 @@ export class Sharing {
     this.watchers.delete(key);
   }
 
-  private async watchDir(key: string, dir: string, then: () => void) {
-    if (this.watchers.has(key) || !(await stat(dir).then(() => true, () => false))) return;
-    // (one begun meanwhile, for the same key, follows it already)
-    if (this.watchers.has(key)) return;
+  /// `still`: whether it is still to be followed once its directory was looked at (it may have stopped meanwhile).
+  private async watchDir(key: string, dir: string, then: () => void, still: () => boolean) {
+    if (this.closed || this.watchers.has(key) || !(await stat(dir).then(() => true, () => false))) return;
+    // (closed, no longer to be followed, or one begun meanwhile for the same key follows it already)
+    if (this.closed || !still() || this.watchers.has(key)) return;
     // Its directories each watched, not what a program made beside its files (ops/follow.ts says why).
     const tree: FollowedTree = new FollowedTree({
       root: dir,
@@ -1018,13 +1038,13 @@ export class Sharing {
   }
 
   private watchHosted(name: string, dir: string): Promise<void> {
-    return this.watchDir(`hosted:${name}`, dir, () => void this.reconcile());
+    return this.watchDir(`hosted:${name}`, dir, () => void this.reconcile(), () => name in this.sharedSkills());
   }
 
   /// Follow the directory, not auth.json itself: Codex replaces the file when it signs in or renews.
   private watchLogin(id: string, file: string) {
     const key = `login:${id}`;
-    if (this.loginDirs.get(id) === file && this.watchers.has(key)) return;
+    if (this.closed || (this.loginDirs.get(id) === file && this.watchers.has(key))) return;
     this.stopWatch(key);
     this.loginDirs.delete(id);
     try {
@@ -1053,7 +1073,7 @@ export class Sharing {
         this.writeState(state);
         void this.reconcile();
       }, () => {});
-    });
+    }, () => this.readState().borrowed[id] !== undefined);
   }
 
   /// An edit made to a copied skill, sent to its host on the version it was made on.
@@ -1648,6 +1668,8 @@ export class Sharing {
         if (!(await lstat(path)).isSymbolicLink()) credentials[name] = (await readFile(path)).toString("base64");
       } catch {}
     }
+    // (its account read while its login is here: the copy kept here is named by it after the login goes)
+    const email = await this.emailOf(p);
     const me = this.me();
     const sharing = !isObject(p.share) && shareFirst !== undefined && shareRefusal(p) === null && me !== null;
     if (!isObject(p.share) && !sharing) return this.moveOwn(p, to, ws, credentials, t, lang);
@@ -1673,12 +1695,11 @@ export class Sharing {
         made = true;
         log.info("share", "a profile shared as it moves, with this station and the one it goes to only", { profile: profileId, to });
       }
-      const answer = await this.deps.ask(to, ws, { method: "share.take", id, profileId, profile: { ...portable(p), access: p.access }, served: this.sharedIn(p), lang, email: await this.emailOf(p), credentials, allow, version: (was?.version ?? 0) + 1, quotaRevision: was?.quotaRevision ?? 0, resetKeys: was?.resetKeys ?? [] });
+      const answer = await this.deps.ask(to, ws, { method: "share.take", id, profileId, profile: { ...portable(p), access: p.access }, served: this.sharedIn(p), lang, email, credentials, allow, version: (was?.version ?? 0) + 1, quotaRevision: was?.quotaRevision ?? 0, resetKeys: was?.resetKeys ?? [] });
       taken = true;
       if (typeof answer?.id === "string") there = answer.id;
       // Ours no more: the login forgotten (the new host renews it now), the profile kept as a copy under the same id.
       for (const name of Object.keys(credentials)) await rm(join(home, name), { force: true });
-      const email = await this.emailOf(p);
       // (a station its stations do not include keeps no copy: it may not borrow it, and its host's word that it is
       // no longer for it may come before it has one, so it would keep it)
       keeps = allow === null || (me !== null && allow.includes(me));
