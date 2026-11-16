@@ -23,15 +23,17 @@ import { type Channel, feed, platform, stationVersionSoon } from "./versions.ts"
 
 const UA = { "user-agent": "stillfail-station" };
 
-/// The pauses before each try again of a feed read that failed on the way (`readFeed`'s `wait`): three more at most.
+/// The pauses before each try again of a feed read, or a delta's download, that failed on the way (`readFeed`'s and
+/// `takeDelta`'s `wait`): three more at most.
 export const FEED_AGAIN_MS = [1_000, 2_000, 4_000];
 
-/// What failed on the way, not of the feed: the network (fetch's own TypeError, "fetch failed"; its deadline) or a
-/// gateway that could not reach the feed (502, 503, 504). A refusal (4xx), a feed that does not verify or an older
-/// release is the same when asked again.
-const onTheWay = (e: unknown) => e instanceof FeedOnTheWay || e instanceof TypeError || (e as Error)?.name === "TimeoutError";
+/// What failed on the way, not of what was asked: the network (fetch's own TypeError, "fetch failed", and "terminated"
+/// for a body broken off as it was read; its deadline), a gateway that could not reach it (502, 503, 504), a body that
+/// ended short of its size. A refusal (4xx, 500), a size or sha256 not the feed's, a feed that does not verify or an
+/// older release is the same when asked again.
+const onTheWay = (e: unknown) => e instanceof OnTheWay || e instanceof TypeError || (e as Error)?.name === "TimeoutError";
 
-class FeedOnTheWay extends Error {}
+class OnTheWay extends Error {}
 
 /// The feed of `channel` at `base` (where the releases are: the cloud's origin, Comma's /stations), as served. Given
 /// `wait` (how a pause is waited), a read that failed on the way is tried again after each of `FEED_AGAIN_MS`:
@@ -41,7 +43,7 @@ export async function readFeed(channel: Channel, base: string, ms = 15_000, requ
   const url = feed(channel, base);
   const once = async () => {
     const response = await request(url, { headers: UA, signal: AbortSignal.timeout(ms) });
-    if ([502, 503, 504].includes(response.status)) throw new FeedOnTheWay(`${url}: ${response.status}`);
+    if ([502, 503, 504].includes(response.status)) throw new OnTheWay(`${url}: ${response.status}`);
     if (!response.ok) throw new Error(`${url}: ${response.status}`);
     return response.json();
   };
@@ -181,9 +183,11 @@ function hashFile(file: string): Promise<{ sha256: string; size: number }> {
   });
 }
 
-/// Downloads the delta to `to`, refused unless it is the size and sha256 the feed says.
+/// Downloads the delta to `to`, refused unless it is the size and sha256 the feed says (failed on the way: OnTheWay, a
+/// TypeError or a TimeoutError).
 async function download(d: Delta, to: string, signal: AbortSignal, progress: (percent: number) => void, request: CloudFetch) {
   const response = await request(d.url, { headers: UA, signal });
+  if ([502, 503, 504].includes(response.status)) throw new OnTheWay(`${d.url}: ${response.status}`);
   if (!response.ok || !response.body) throw new Error(`${d.url}: ${response.status}`);
   const length = response.headers.get("content-length");
   if (length !== null && Number(length) !== d.size) throw new Error(`the delta is ${length} bytes, the feed says ${d.size}`);
@@ -203,7 +207,7 @@ async function download(d: Delta, to: string, signal: AbortSignal, progress: (pe
   } finally {
     await new Promise<void>((r, j) => out.end((e?: Error | null) => (e ? j(e) : r())));
   }
-  if (got !== d.size) throw new Error(`the delta is ${got} bytes, the feed says ${d.size}`);
+  if (got < d.size) throw new OnTheWay(`the delta broke off at ${got} of the ${d.size} bytes the feed says`);
   if (hash.digest("hex") !== d.sha256) throw new Error("the delta's sha256 is not the feed's");
 }
 
@@ -211,8 +215,10 @@ async function download(d: Delta, to: string, signal: AbortSignal, progress: (pe
 /// (STILLFAIL_ARCHIVE) and what it hashes to (STILLFAIL_RELEASE_SHA256, the signed raw form's). Never fails: a delta
 /// not used (none, a download or an applying that failed, what it made not the signed raw form) is a line in the log,
 /// what it left removed, and nothing told (the installer downloads the whole archive, checked against its own hash).
-/// `signal` ends it (the caller's deadline); `progress` hears how much of the delta is in (0–100).
-export async function takeDelta(plan: Plan, o: { app: string; apply: Applier; signal: AbortSignal; progress?: (percent: number) => void; request?: CloudFetch }): Promise<Record<string, string>> {
+/// `signal` ends it (the caller's deadline); `progress` hears how much of the delta is in (0–100). Given `wait` (how a
+/// pause is waited), a download that failed on the way is tried again after each of `FEED_AGAIN_MS`, what it left
+/// removed first: main 0a099ace's station-update (43880021498, 2026-11-16) failed on a TLS connection broken once.
+export async function takeDelta(plan: Plan, o: { app: string; apply: Applier; signal: AbortSignal; progress?: (percent: number) => void; request?: CloudFetch; wait?: (ms: number) => Promise<void> }): Promise<Record<string, string>> {
   const d = plan.delta;
   if (d === null) return {};
   const { dir, archive } = handedArchive();
@@ -220,7 +226,19 @@ export async function takeDelta(plan: Plan, o: { app: string; apply: Applier; si
   try {
     await mkdir(dir, { mode: 0o700 });
     const file = join(dir, "delta");
-    await download(d, file, o.signal, o.progress ?? (() => {}), o.request ?? fetch);
+    for (let i = 0; ; i++) {
+      try {
+        await download(d, file, o.signal, o.progress ?? (() => {}), o.request ?? fetch);
+        break;
+      } catch (e) {
+        await rm(file, { force: true });
+        // (the caller's deadline is not on the way: it ends the delta)
+        if (o.wait === undefined || i >= FEED_AGAIN_MS.length || o.signal.aborted || !onTheWay(e)) throw e;
+        log.warn("updates", "the delta not downloaded, tried again", { url: d.url, error: (e as Error).message, after: FEED_AGAIN_MS[i] });
+        // timer: a retry after a failure, with a backoff (the caller's clock).
+        await o.wait(FEED_AGAIN_MS[i]!);
+      }
+    }
     await o.apply(o.app, file, made, o.signal);
     await rm(file, { force: true });
     o.signal.throwIfAborted();

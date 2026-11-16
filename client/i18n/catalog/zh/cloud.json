@@ -5,6 +5,7 @@
   "cloud.install.agents.missing": "此机器尚未安装：{missing}。station 用它们运行 agent，安装任意一个即可开始使用：",
   "cloud.install.agents.signIn": "安装后，在 still.fail 的「设置 → Profile」中登录账号。",
   "cloud.install.download": "下载 still.fail station…",
+  "cloud.install.downloadAgain": "下载中断，{seconds} 秒后重试…",
   "cloud.install.downloadBeta": "下载 still.fail station（测试版）…",
   "cloud.install.drain": "等待 agent 当前轮次结束后重启（最多 10 分钟；新消息会排队，重启后处理）…",
   "cloud.install.handoff.failed": "无法交接（{why}），改为重启 station",

@@ -69,7 +69,8 @@ export async function updateCommand(args: string[], data: string, trusted?: Map<
     // (the feed read again after a failure on the way: this process runs once, on the machine's own time)
     const plan = await planUpdate({ base, channel, app, installed, lang, trusted, request, wait: wall.sleep });
     // timer: a deadline of an outside request (the delta's download), past which the installer downloads the release.
-    const handed = await takeDelta(plan, { app, apply: applyHere, signal: AbortSignal.timeout(DELTA_MS), request });
+    // (the delta downloaded again after a failure on the way, as the feed is read again)
+    const handed = await takeDelta(plan, { app, apply: applyHere, signal: AbortSignal.timeout(DELTA_MS), request, wait: wall.sleep });
     const lines = [`script=${plan.script}`, ...Object.entries({ ...plan.env, ...handed }).map(([k, v]) => `${k}=${v}`)];
     if (lines.some((l) => /[\r\n]/.test(l))) throw new Error(`a line break in ${JSON.stringify(lines)}`);
     console.log(lines.join("\n"));

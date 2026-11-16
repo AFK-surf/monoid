@@ -5,6 +5,7 @@
   "cloud.install.agents.missing": "Not installed on this machine:{missing}. The station runs agents with these; install one to get started:",
   "cloud.install.agents.signIn": "Once installed, sign in under Settings → Profile in still.fail.",
   "cloud.install.download": "Downloading still.fail station…",
+  "cloud.install.downloadAgain": "The download broke off; trying again in {seconds}s…",
   "cloud.install.downloadBeta": "Downloading still.fail station (beta)…",
   "cloud.install.drain": "Waiting for running agent turns to end before restarting (up to 10 min; new messages are queued and handled after the restart)…",
   "cloud.install.handoff.failed": "Couldn't hand over ({why}); restarting the station instead",

@@ -1190,6 +1190,8 @@ export class Updates {
         request: this.cloudRequest,
         signal: over.signal,
         progress: (percent) => this.set("station", (i) => (i.percent = percent)),
+        // (downloaded again after a failure on the way, on this part's clock, within the deadline above)
+        wait: (ms) => this.fibers.sleep(ms),
       });
     } finally {
       cancel();
