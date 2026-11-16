@@ -24,7 +24,8 @@ const PASSED = ["content-type", "content-length", "content-range", "accept-range
 /** `file` from another cloud's releases (`upstream`, its /releases), the range asked for passed on; its 404 when it has none. */
 export async function upstreamRelease(request: Request, upstream: string, file: string): Promise<Response> {
   const range = request.headers.get("range");
-  const answer = await fetch(`${upstream.replace(/\/+$/, "")}/${file}`, { headers: range ? { range } : {} });
+  const condition = request.headers.get("if-range");
+  const answer = await fetch(`${upstream.replace(/\/+$/, "")}/${file}`, { headers: range ? { range, ...(condition !== null ? { "if-range": condition } : {}) } : {} });
   if (answer.status !== 200 && answer.status !== 206 && answer.status !== 416) return notFound();
   const headers = new Headers();
   for (const name of PASSED) {
@@ -51,6 +52,10 @@ export async function serveRelease(request: Request, bucket: ReleaseBucket | und
   }
   const head = await bucket?.head(file);
   if (!head) return notFound();
+  // If-Range resumes only the same representation (RFC 9110 13.1.5). We advertise an ETag, not a
+  // Last-Modified date: only an exact strong tag matches; a date or a weak tag needs the whole file.
+  const condition = request.headers.get("if-range");
+  if (condition !== null && (!condition.startsWith('"') || condition !== head.httpEtag)) return serveRelease(new Request(request.url), bucket, file, type);
   const size = head.size;
   const ranges = parseRanges(asked, size);
   // Not a range this understands: the whole file, as for a request without one.
@@ -61,6 +66,10 @@ export async function serveRelease(request: Request, bucket: ReleaseBucket | und
     const [{ start, end }] = ranges as [Range];
     const object = await bucket!.get(file, { range: { offset: start, length: end - start } });
     if (!object) return notFound();
+    if (object.httpEtag !== head.httpEtag) {
+      await object.body.cancel();
+      return serveRelease(new Request(request.url), bucket, file, type);
+    }
     return new Response(object.body, { status: 206, headers: { ...headers, ...etag, "content-range": `bytes ${start}-${end - 1}/${size}`, "content-length": String(end - start) } });
   }
   const boundary = crypto.randomUUID().replaceAll("-", "");
@@ -81,6 +90,11 @@ export async function serveRelease(request: Request, bucket: ReleaseBucket | und
       for (const read of reads) {
         const object = await bucket!.get(file, { range: { offset: read.start, length: read.end - read.start } });
         if (!object) throw new Error(`${file} went away`);
+        // The headers (and perhaps earlier parts) have gone: a replacement cannot finish this response.
+        if (object.httpEtag !== head.httpEtag) {
+          await object.body.cancel();
+          throw new Error(`${file} changed while reading`);
+        }
         // The parts in this read (ascending, apart), cut out of its bytes as they come.
         let at = read.start;
         for await (const chunk of object.body as unknown as AsyncIterable<Uint8Array>) {
