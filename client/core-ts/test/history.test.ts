@@ -46,6 +46,10 @@ test("a_slack_place_is_named_with_its_workspace_and_links_to_its_thread", () => 
   // A thread whose team the station did not know yet ("slack:<connect id>") has no way into the app.
   const early = format.place([{ ...threads[0], surface: "slack:cl" }], "C1/1.000200", c.offsetMin, c.workspaces) as J;
   assert.equal(early.app, undefined);
+  // A team this station has no connect of (a thread of a connect another station of the workspace lent it) is reached
+  // by its id, in Slack's web client and its app.
+  const lent = format.place([{ ...threads[0], surface: "slack:T09LH8NN1QR" }], "C1/1.000200", c.offsetMin, c.workspaces) as J;
+  assert.deepEqual([lent.name, lent.url, lent.app], ["#ops", "https://app.slack.com/client/T09LH8NN1QR/C1/thread/C1-1.000200", "slack://channel?team=T09LH8NN1QR&id=C1&message=1.000200"]);
 });
 
 test("a_feishu_place_is_named_by_its_chat_and_opens_in_feishu_or_lark", () => {

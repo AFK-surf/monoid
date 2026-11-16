@@ -369,6 +369,9 @@ export function slackAppUrl(team: string, channel: string, ts: string, threadTs:
   return `slack://channel?team=${e(team)}&id=${e(channel)}&message=${e(ts)}${reply}`;
 }
 
+/// A Slack team's id (`T…`, an Enterprise Grid's `E…`), told apart from a connect's own id.
+const SLACK_TEAM = /^[TE][A-Z0-9]{6,}$/;
+
 /// A thread a history entry came from or went to: its name, where it is, and the way there (`app`: into Slack's app,
 /// at `message` when it is one of the thread's, else at its root).
 export function place(threads: unknown[], address: string, offsetMin: number, workspaces: Map<string, SlackWorkspace>, message: string | null = null): unknown {
@@ -389,9 +392,13 @@ export function place(threads: unknown[], address: string, offsetMin: number, wo
   const team = teamId !== null ? workspaces.get(teamId) : undefined;
   const teamName = team && team.name !== "" ? team.name : null;
   const named = teamName === null ? n : n.startsWith("#") ? `${teamName}${n}` : `${teamName} ${n}`;
-  const url = team?.url ? `${team.url.replace(/\/+$/, "")}/archives/${channel}/p${ts.replaceAll(".", "")}` : null;
-  // (a surface names its team once the station knows it: "slack:<connect id>" before, which no workspace is known by)
-  const app = team !== undefined ? slackAppUrl(teamId!, channel, message || ts, ts) : null;
+  // (a surface names its team once the station knows it: "slack:<connect id>" before, which no workspace is known by.
+  // A team this station has no connect of, as a thread of a connect lent by another station of the workspace, is still
+  // reached by its id: Slack's web client by the team's id, its app by the same)
+  const known = team !== undefined || (teamId !== null && SLACK_TEAM.test(teamId));
+  const url = team?.url ? `${team.url.replace(/\/+$/, "")}/archives/${channel}/p${ts.replaceAll(".", "")}`
+    : known ? `https://app.slack.com/client/${teamId}/${channel}/thread/${channel}-${ts}` : null;
+  const app = known ? slackAppUrl(teamId!, channel, message || ts, ts) : null;
   return { name: named, surface: "slack", session, url, ...(app !== null ? { app } : {}) };
 }
 
