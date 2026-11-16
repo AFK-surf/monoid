@@ -621,6 +621,11 @@ test "小屏: the board's columns swiped across, in the hand and let go on the n
   // (short of the share and slow: back where it was)
   board_swipe(t, 300.0, y, -50.0, 12)
   assert_eq(@sfbase.board_lane.get(), "wait")
+  // (short of the share as far as it went, let go still going: landing past it from its speed, the next; then back)
+  board_swipe(t, 300.0, y, -60.0, 12)
+  assert_eq(@sfbase.board_lane.get(), "run")
+  board_swipe(t, 100.0, y, 160.0, 6)
+  assert_eq(@sfbase.board_lane.get(), "wait")
   // (down the column: it scrolls, no card in the hand, no place to let one go)
   t.touch(0, 200.0, 700.0)
   for i in 1..=6 {

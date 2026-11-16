@@ -14,7 +14,7 @@
 // Built as Comma first connects, a minute after the agents' spending was recorded, as a chat moves or someone reads
 // one (a minute after too), and every hour (another station's changes reach it so); one build at a time.
 import { createHash, randomBytes } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { wall } from "../ops/fibers.ts";
@@ -331,15 +331,19 @@ export class CommaStats {
     this.#db.prepare("DELETE FROM said WHERE at < ?").run(now - BUILD_DAYS * DAY_MS);
   }
 
+  /// The directories the indexes are kept in (`at`'s and `inWorkspace`'s), made once off the main thread before either.
+  static async makeDirs(data: string): Promise<void> {
+    await mkdir(data, { recursive: true });
+    await mkdir(join(data, "comma-indexes"), { recursive: true, mode: 0o700 });
+  }
+
   static at(data: string, read: Read, changes: (changed: () => void) => () => void, ready?: Promise<void>, busyMs?: number): CommaStats {
-    mkdirSync(data, { recursive: true });
     return new CommaStats(join(data, "comma-stats.db"), read, changes, ready, busyMs);
   }
 
   /// A workspace's index is never taken from the old, unscoped index: its owner is not known after a home change.
   static inWorkspace(data: string, workspace: string, read: Read, changes: (changed: () => void) => () => void): CommaStats {
     const dir = join(data, "comma-indexes");
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
     // Preserve JavaScript's whole string, including lone surrogates, rather than folding them to U+FFFD in UTF-8.
     const name = createHash("sha256").update(workspace, "utf16le").digest("hex");
     return new CommaStats(join(dir, `${name}.db`), read, changes);

@@ -347,24 +347,15 @@ fn pane_made(
       made("appearance", fn(a, core, _here, _stint, frame, width) { @sfpages.appearance_node(a, core, on_back=core.pop, frame~, width~) })
     Setting(Experimental) =>
       made("experimental", fn(a, core, _here, _stint, frame, width) { @sfpages.experimental_node(a, core, on_back=core.pop, frame~, width~) })
-    Setting(Profiles("")) if @settings.profiles_narrow_overview.get() =>
-      made("profiles-overview", fn(a, core, here, _stint, frame, width) {
-        @sfpages.profiles_overview_node(
-          a,
-          core,
-          here,
-          on_back=core.pop,
-          frame~,
-          width~,
-          tips~,
-          on_show_accounts=fn() { @settings.profiles_narrow_overview.set(false) },
-        )
-      })
     // the stations' list, the profiles' (by station: another station's another page) and an account's on several
     // stations (sfpages' stations_list.mbt, profiles_list.mbt)
     Setting(Stations) =>
       made("stations", fn(a, core, here, _stint, frame, width) {
         @sfpages.stations_list_node(a, core, here, on_back=core.pop, frame~, width~, tips~)
+      })
+    Setting(Profiles("")) =>
+      made("profiles/", fn(a, core, here, _stint, frame, width) {
+        @sfpages.profiles_page_node(a, src, core, here, @settings.profiles_narrow_overview, on_back=core.pop, frame~, width~, tips~)
       })
     Setting(Profiles(only)) =>
       made("profiles/" + only, fn(a, core, here, _stint, frame, width) {

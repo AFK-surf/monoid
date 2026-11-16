@@ -2126,11 +2126,11 @@ test("the list says what each screen carries: its clipboard's types, where a fil
   assert.deepEqual(new Desktop({ supported: false, helper: null, changed: () => {} }).clipboard(), []);
 });
 
-test("where a dropped file goes: the home's Downloads, else the home (what is in it never listed)", () => {
+test("where a dropped file goes: the home's Downloads, else the home (what is in it never listed)", async () => {
   const home = mkdtempSync(join(tmpdir(), "drop-"));
-  assert.equal(dropFolder(home), home, "no Downloads: the home");
+  assert.equal(await dropFolder(home), home, "no Downloads: the home");
   mkdirSync(join(home, "Downloads"));
-  assert.equal(dropFolder(home), join(home, "Downloads"));
+  assert.equal(await dropFolder(home), join(home, "Downloads"));
   rmSync(home, { recursive: true, force: true });
 });
 

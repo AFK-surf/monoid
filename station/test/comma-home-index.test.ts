@@ -12,8 +12,9 @@ const row = (thread: number, title: string): StationRows => ({
   usage: { rows: [] }, chats: [{ thread, title, surface: "stillfail", createdAt: 1, lastActiveAt: 2, agents: [] }],
 });
 
-test("a home uses only its own persistent index, including on restart", () => {
+test("a home uses only its own persistent index, including on restart", async () => {
   const dir = mkdtempSync(join(tmpdir(), "comma-home-index-"));
+  await CommaStats.makeDirs(dir);
   const legacy = CommaStats.at(dir, empty, quiet);
   try { legacy.apply([row(1, "unknown owner")], [], 0); } finally { legacy.close(); }
   const old = CommaStats.inWorkspace(dir, "old-home", empty, quiet);
@@ -33,8 +34,9 @@ test("a home uses only its own persistent index, including on restart", () => {
   } finally { reopened.stats.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
-test("different workspace strings do not share an index when UTF-8 would replace a surrogate", () => {
+test("different workspace strings do not share an index when UTF-8 would replace a surrogate", async () => {
   const dir = mkdtempSync(join(tmpdir(), "comma-home-keys-"));
+  await CommaStats.makeDirs(dir);
   const first = CommaStats.inWorkspace(dir, "workspace-\ud800", empty, quiet);
   const second = CommaStats.inWorkspace(dir, "workspace-\ufffd", empty, quiet);
   try {
@@ -45,6 +47,7 @@ test("different workspace strings do not share an index when UTF-8 would replace
 
 test("a read spanning a home change is discarded, even if that home returns", async () => {
   const dir = mkdtempSync(join(tmpdir(), "comma-home-read-"));
+  await CommaStats.makeDirs(dir);
   let home = "one", version = 0, calls = 0;
   let release!: (value: { stations: StationRows[]; unread: string[] }) => void;
   const pending = new Promise<{ stations: StationRows[]; unread: string[] }>((resolve) => { release = resolve; });
@@ -66,6 +69,7 @@ test("a read spanning a home change is discarded, even if that home returns", as
 
 test("a home change during bounded index preparation discards the old build", async () => {
   const dir = mkdtempSync(join(tmpdir(), "comma-home-prepare-"));
+  await CommaStats.makeDirs(dir);
   let home = "one", version = 0, read = false;
   const index = workspaceIndex(dir, "one", () => home === "one", () => version,
     async () => { read = true; return { stations: [row(9, "obsolete")], unread: [] }; }, quiet);

@@ -448,21 +448,6 @@ fn tape_made(
       made("experimental", fn(p, core, _here, _stint, told, _acts) {
         @sfpages.experimental_node(p, core, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~)
       })
-    Setting(Profiles("")) if @settings.profiles_narrow_overview.get() =>
-      made("profiles-overview", fn(p, core, here, _stint, told, _acts) {
-        context_node(p)
-        @sfpages.profiles_overview_node(
-          p,
-          core,
-          here,
-          on_back=core.pop,
-          frame=fn() { tape_made_frame },
-          said=told,
-          width~,
-          tips~,
-          on_show_accounts=fn() { @settings.profiles_narrow_overview.set(false) },
-        )
-      })
     // the stations' list, the profiles' (by station: another station's another page) and an account's on several
     // stations (sfpages' stations_list.mbt, profiles_list.mbt), their ＋ in the bar; made in every case, as they have no
     // old view
@@ -470,6 +455,23 @@ fn tape_made(
       made("stations", fn(p, core, here, _stint, told, acts) {
         context_node(p)
         @sfpages.stations_list_node(p, core, here, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~, bar_actions=acts)
+      })
+    Setting(Profiles("")) =>
+      made("profiles/", fn(p, core, here, _stint, told, acts) {
+        context_node(p)
+        @sfpages.profiles_page_node(
+          p,
+          src,
+          core,
+          here,
+          @settings.profiles_narrow_overview,
+          on_back=core.pop,
+          frame=fn() { tape_made_frame },
+          said=told,
+          width~,
+          tips~,
+          bar_actions=acts,
+        )
       })
     Setting(Profiles(only)) =>
       made("profiles/" + only, fn(p, core, here, _stint, told, acts) {

@@ -8,7 +8,7 @@
 // chunks of base64 inside it, one request each.
 import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
-import { type Cloud, NOT_GIVEN, UNPROTECTED } from "../cloud/state.ts";
+import { type Cloud, NOT_GIVEN, UNPROTECTED, personChainsOf } from "../cloud/state.ts";
 import { BYTES, CHECK_BYTES, type Bytes, NoBytes, NoLink, type PeerBus, type PeerCall, Refused, bytesOf } from "./bus.ts";
 import type { Addr, Connection, Endpoint, Stream } from "./native.ts";
 import { answerLock } from "./lock-sync.ts";
@@ -649,6 +649,8 @@ export async function servePeer(conn: Connection, cloud: Cloud, remote: Pick<Pee
           // The stations' names and marks (mesh/station-marks.ts), a copy of each kept by the others.
           : typeof method === "string" && method.startsWith("stationMarks.") ? answerMarks(stationMarksOf(cloud), envelope.request, envelope.workspace ?? cloud.home() ?? "")
           : await remote.handle(envelope.workspace, peer, envelope.request ?? null);
+        // (a person's chain it took answered once it is on disk: person-chains.ts `written`)
+        if (method === "lock.person.put" || method === "lock.person.offer") await personChainsOf(cloud).written();
       } else {
         if (cloud.membership(envelope.workspace) === null) throw new Error("station is outside this workspace");
         result = await remote.handleOutside(peer, envelope.request ?? null, envelope.workspace);

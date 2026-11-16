@@ -25,10 +25,14 @@ static bool has_segoe_var_small, has_segoe_var_display;
 static const WCHAR *MONO = L"Consolas";  // the code face (style & 2)
 static const WCHAR *SERIF = L"SimSun";   // the serif face (style & 4): 宋体, its Latin too
 static const int RT_SIZE = 512;  // largest cluster bitmap, in pixels
+static const int FINE = 4;        // a gray glyph drawn at this many times its size, its cover averaged back
 
 struct ClusterBounds {
   double x0, y0, x1, y1, base;
   int color;
+  // the least weight of the fonts without variations its runs are drawn in (0: none such): a Medium asked of a face
+  // with none (Microsoft YaHei UI: 290, 400, 700), drawn in its Regular
+  int static_weight;
   bool valid;
 };
 
@@ -48,7 +52,7 @@ typedef struct {
 
 static IDWriteFactory2 *dw;
 static IDWriteFontFallback *fallback;
-static IDWriteRenderingParams *params, *params_gray, *params_ct;
+static IDWriteRenderingParams *params, *params_gray, *params_gray_small, *params_ct;
 static ID2D1Factory *d2d;
 static IWICImagingFactory *wic;
 // Where a glyph is drawn: a bitmap of RT_SIZE pixels, Direct2D's target over it at the scale it was made for, white
@@ -62,6 +66,13 @@ struct Target {
   ID2D1SolidColorBrush *white;
   ID2D1SolidColorBrush *black;
   double scale;
+  // a gray glyph's fine drawing: a bitmap as large as the largest drawn so far (fine_w × fine_h, RT_SIZE × FINE at
+  // most: what draw_cluster takes), its target at FINE times the scale, a black brush
+  IWICBitmap *fine_bitmap;
+  int fine_w, fine_h;
+  ID2D1RenderTarget *fine_rt;
+  ID2D1SolidColorBrush *fine_black;
+  double fine_scale;
 };
 static Target main_target;
 static double text_scale = 1;
@@ -191,22 +202,29 @@ static void init(void) {
                                   DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC,
                                   DWRITE_GRID_FIT_MODE_DISABLED, &p2);
   params = p2;
-  // Monochrome text in grayscale (used at 125%+ high-DPI scaling, on OLED panels, or when ClearType is off in Windows):
-  // unhinted geometric outlines as in macOS CoreText (DWRITE_GRID_FIT_MODE_DISABLED, so legacy CJK TrueType hinting
-  // bytecode does not pinch or distort stroke weights across rows) with symmetric 6x5 antialiasing
-  // (DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC) and optical stem darkening (contrast 0.35 at linear gamma 1.0).
+  // Monochrome text in grayscale (125%+, an OLED panel, ClearType off in Windows) is covered as the Apple hosts cover it
+  // (apple_text.m draws with font smoothing off: no dilation; apple_render.m blends that cover as it is): the outline's
+  // own area of each pixel, unhinted, at linear gamma with no contrast added, so what the shader blends is the cover
+  // itself, the same on a light ground as on a dark one. DirectWrite's antialiasing is 6x5 a pixel, a diagonal's or a
+  // curve's edge in five steps down: drawn at four times the size (params_gray, draw_cluster's fine target) and
+  // averaged back, 24x20 a pixel. Small words (under 15 pixels an em) are drawn at their size with the font's own
+  // vertical hinting (params_gray_small), a 12-pixel Han's counters kept open where unhinted they blur shut.
   IDWriteRenderingParams2 *g2 = NULL;
-  dw->CreateCustomRenderingParams(1.0f, 0.35f, 0.35f, 0.0f, DWRITE_PIXEL_GEOMETRY_FLAT,
+  dw->CreateCustomRenderingParams(1.0f, 0.0f, 0.0f, 0.0f, DWRITE_PIXEL_GEOMETRY_FLAT,
                                   DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC, DWRITE_GRID_FIT_MODE_DISABLED, &g2);
   params_gray = g2;
-  // A glyph in one colour drawn with ClearType at < 150% on an RGB/BGR LCD: each of a pixel's three stripes covered on
-  // its own, with unhinted geometric outlines, symmetric 6x5 antialiasing, and optical stem darkening (contrast 0.35)
-  // at linear gamma (1.0).
+  IDWriteRenderingParams2 *s2 = NULL;
+  dw->CreateCustomRenderingParams(1.0f, 0.0f, 0.0f, 0.0f, DWRITE_PIXEL_GEOMETRY_FLAT,
+                                  DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC, DWRITE_GRID_FIT_MODE_DEFAULT, &s2);
+  params_gray_small = s2;
+  // A glyph in one colour drawn with ClearType under 125% on an RGB/BGR LCD: each of a pixel's three stripes covered on
+  // its own, at linear gamma with no contrast added (as gray's), across as the outline is and grid-fitted down the
+  // font's own way (its horizontal strokes on whole rows, a 1x Han's counters open), symmetric antialiasing.
   DWRITE_PIXEL_GEOMETRY geom = detect_pixel_geometry();
   if (geom != DWRITE_PIXEL_GEOMETRY_FLAT) {
     IDWriteRenderingParams2 *c2 = NULL;
-    dw->CreateCustomRenderingParams(1.0f, 0.35f, 0.35f, 1.0f, geom,
-                                    DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC, DWRITE_GRID_FIT_MODE_DISABLED, &c2);
+    dw->CreateCustomRenderingParams(1.0f, 0.0f, 0.0f, 1.0f, geom,
+                                    DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC, DWRITE_GRID_FIT_MODE_DEFAULT, &c2);
     params_ct = c2;
   }
   D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, __uuidof(ID2D1Factory), NULL, (void **)&d2d);
@@ -458,6 +476,9 @@ static IDWriteTextFormat *format_for(double size, int weight, int style) {
                        (style & 1) ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL,
                        DWRITE_FONT_STRETCH_NORMAL, (FLOAT)size, L"zh-cn", &f);
   f->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+  // (No font axis is said on the format, the optical size made automatic either: DirectWrite then matches the fallback
+  // by its axes too, and Microsoft YaHei UI, which has none, is taken at its 400 whatever the weight, a Bold title's Han
+  // drawn Regular.)
   if (n_formats == 32) {
     formats[0].f->Release();
     formats[0] = formats[--n_formats];
@@ -471,12 +492,15 @@ static IDWriteTextFormat *format_for(double size, int weight, int style) {
 
 // style & 8: no ligatures (words with letter spacing, each cluster spaced on its own): liga and clig off; style & 32:
 // digits all one width (style.mbt style_tabular): tnum; style & 64: a CJK face's marks narrow among Latin letters
-// (style.mbt style_proportional): pwid. One typography for each of the ways they go together.
-static IDWriteTypography *typographies[8];
+// (style.mbt style_proportional): pwid; the app's words and what people wrote (faces 1 and 2) with the web's
+// alternates, as the Apple hosts set them (apple_text.m face_font: cv11 and ss01, Inter's single-storey a and its open
+// digits; a face without them is as it is). One typography for each of the ways they go together.
+static IDWriteTypography *typographies[16];
 
 // the typography of a style's features (NULL: none, the font's own)
 static IDWriteTypography *typography_for(int style) {
-  int k = ((style & 8) ? 1 : 0) | ((style & 32) ? 2 : 0) | ((style & 64) ? 4 : 0);
+  int face = face_id(style);
+  int k = ((style & 8) ? 1 : 0) | ((style & 32) ? 2 : 0) | ((style & 64) ? 4 : 0) | (face == 1 || face == 2 ? 8 : 0);
   if (!k) return NULL;
   if (!typographies[k]) {
     IDWriteTypography *t = NULL;
@@ -489,6 +513,11 @@ static IDWriteTypography *typography_for(int style) {
     // (kern said again: DirectWrite sets a range with pwid unkerned otherwise, quotes round "Wo" 3 pt wider at 20)
     if (k & 4) {
       t->AddFontFeature({DWRITE_FONT_FEATURE_TAG_PROPORTIONAL_WIDTHS, 1});
+      t->AddFontFeature({DWRITE_FONT_FEATURE_TAG_KERNING, 1});
+    }
+    if (k & 8) {
+      t->AddFontFeature({(DWRITE_FONT_FEATURE_TAG)DWRITE_MAKE_OPENTYPE_TAG('c', 'v', '1', '1'), 1});
+      t->AddFontFeature({(DWRITE_FONT_FEATURE_TAG)DWRITE_MAKE_OPENTYPE_TAG('s', 's', '0', '1'), 1});
       t->AddFontFeature({DWRITE_FONT_FEATURE_TAG_KERNING, 1});
     }
     typographies[k] = t;
@@ -543,7 +572,8 @@ static IDWriteTextLayout *main_layout_for(int key) {
 
 // A family's metrics at this weight and style (false: not on this system, `m` as it was); in a face's collection
 // where one is given.
-static bool family_metrics(const WCHAR *name, int weight, int style, DWRITE_FONT_METRICS *m, IDWriteFontCollection *in = NULL) {
+static bool family_metrics(const WCHAR *name, int weight, int style, DWRITE_FONT_METRICS *m, IDWriteFontCollection *in = NULL,
+                           bool *han = NULL) {
   IDWriteFontCollection *fc = NULL;
   IDWriteFontFamily *fam = NULL;
   IDWriteFont *font = NULL;
@@ -561,6 +591,8 @@ static bool family_metrics(const WCHAR *name, int weight, int style, DWRITE_FONT
                                           (style & 1) ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL, &font))) {
     font->GetMetrics(m);
     ok = true;
+    BOOL has = FALSE;
+    if (han && SUCCEEDED(font->HasCharacter(0x56FD, &has))) *han = has;
   }
   if (font) font->Release();
   if (fam) fam->Release();
@@ -575,14 +607,17 @@ extern "C" void mb_host_font_metrics(double size, int32_t weight, int32_t style,
   m.ascent = 2210;
   m.descent = 514;
   int face = face_id(style);
-  if (face) family_metrics(faces[face].family, weight, style, &m, faces[face].fc);
-  else family_metrics((style & 2) ? MONO : (style & 4) ? SERIF : FAMILY, weight, style, &m);
+  bool han = false;
+  if (face) family_metrics(faces[face].family, weight, style, &m, faces[face].fc, &han);
+  else family_metrics((style & 2) ? MONO : (style & 4) ? SERIF : FAMILY, weight, style, &m, NULL, &han);
   out[0] = size * m.ascent / m.designUnitsPerEm;
   out[1] = size * m.descent / m.designUnitsPerEm;
   out[2] = round(size * 1.42);
-  // the face Han falls back to (Chinese Windows' UI font): a line with Chinese in it is measured by the taller
+  // the face a Han ideograph is drawn in: a line with Chinese in it is measured by the taller of the two (as
+  // apple_text.m asks Core Text for 国's): the face's own where it has Han (Noto Sans SC, LXGW WenKai, SimSun), else
+  // the one Han falls back to (Chinese Windows' UI font)
   DWRITE_FONT_METRICS h = m;
-  family_metrics(L"Microsoft YaHei UI", weight, style, &h);
+  if (!han) family_metrics(L"Microsoft YaHei UI", weight, style, &h);
   out[3] = size * h.ascent / h.designUnitsPerEm;
   out[4] = size * h.descent / h.designUnitsPerEm;
   out[5] = 0;  // lines as asked, not on whole pixels
@@ -779,6 +814,7 @@ extern "C" void mb_text_set_scale(double scale) {
 // (emoji), the way the Core Text host checks kCTFontTraitColorGlyphs.
 struct ColorProbe : public IDWriteTextRenderer {
   int color = 0;
+  int static_weight = 0;
   STDMETHOD(QueryInterface)(REFIID iid, void **o) override {
     if (iid == __uuidof(IUnknown) || iid == __uuidof(IDWritePixelSnapping) ||
         iid == __uuidof(IDWriteTextRenderer)) {
@@ -808,6 +844,15 @@ struct ColorProbe : public IDWriteTextRenderer {
     if (SUCCEEDED(dw->TranslateColorGlyphRun(x, y, run, desc, mode, NULL, 0, &runs))) {
       color = 1;
       runs->Release();
+    }
+    // the weight of a font with no variations a run is drawn in (a variable one's is what was asked)
+    IDWriteFontFace5 *f5 = NULL;
+    if (run->fontFace && SUCCEEDED(run->fontFace->QueryInterface(__uuidof(IDWriteFontFace5), (void **)&f5))) {
+      if (!f5->HasVariations()) {
+        int w = (int)f5->GetWeight();
+        if (static_weight == 0 || w < static_weight) static_weight = w;
+      }
+      f5->Release();
     }
     return S_OK;
   }
@@ -883,12 +928,130 @@ static void measure_bounds(IDWriteTextLayout *l, ClusterBounds *cb) {
   cb->y1 = y1;
   cb->base = nl ? lm.baseline : 0;
   cb->color = probe.color;
+  cb->static_weight = probe.static_weight;
   cb->valid = true;
 }
 
+// How much a stroke drawn in a face's Regular for a weight it has not grows on each side for each 100 asked over 400,
+// a share of its size: as much heavier as PingFang SC's Medium is than its Regular on the Mac (render_words.sh's last
+// line beside its second: 1.25 times the ink, the same here), so a Medium the face has not (Microsoft YaHei UI: 290,
+// 400, 700, DirectWrite taking 500 to its 400, 600 to its 700) still reads as one; nothing else is grown: what the Apple hosts draw is the outline's own cover, no
+// dilation (its ink a point the same at 1, 1.5 and 2; render_words.sh, 2026-11-16).
+static const double MEDIUM_EM = 0.0075;
+
+// How far the edges of a cluster drawn in gray are moved out, in fine pixels (0: none).
+static double grown_fine(const ClusterBounds *cb, double size, int weight, double sc) {
+  if (weight > 400 && weight < 700 && cb->static_weight > 0 && cb->static_weight <= 400)
+    return MEDIUM_EM * (weight - 400) / 100.0 * size * sc * FINE;
+  return 0;
+}
+
+// The fine target of `t` at `scale` (FINE times its pixels), `fw` × `fh` of them at least, made when it is not (its
+// bitmap made larger, a 64-pixel step at a time, only where a cluster is larger than any before: most are a glyph's,
+// a word drawn whole the widest).
+static bool fine_ensure(Target *t, double scale, int fw, int fh) {
+  bool larger = fw > t->fine_w || fh > t->fine_h;
+  if (t->fine_rt && t->fine_scale == scale && !larger) return true;
+  if (t->fine_black) t->fine_black->Release();
+  if (t->fine_rt) t->fine_rt->Release();
+  t->fine_black = NULL;
+  t->fine_rt = NULL;
+  if (larger) {
+    if (t->fine_bitmap) t->fine_bitmap->Release();
+    t->fine_bitmap = NULL;
+    t->fine_w = ((fw > t->fine_w ? fw : t->fine_w) + 63) & ~63;
+    t->fine_h = ((fh > t->fine_h ? fh : t->fine_h) + 63) & ~63;
+  }
+  if (!t->fine_bitmap && FAILED(t->wic->CreateBitmap((UINT)t->fine_w, (UINT)t->fine_h, GUID_WICPixelFormat32bppPBGRA,
+                                                       WICBitmapCacheOnDemand, &t->fine_bitmap))) {
+    t->fine_w = t->fine_h = 0;
+    return false;
+  }
+  float dpi = (float)(96.0 * scale * FINE);
+  D2D1_RENDER_TARGET_PROPERTIES p = D2D1::RenderTargetProperties(
+      D2D1_RENDER_TARGET_TYPE_SOFTWARE,
+      D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), dpi, dpi);
+  if (FAILED(t->d2d->CreateWicBitmapRenderTarget(t->fine_bitmap, &p, &t->fine_rt))) return false;
+  t->fine_rt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+  t->fine_rt->SetTextRenderingParams(params_gray);
+  t->fine_rt->CreateSolidColorBrush(D2D1::ColorF(0, 0, 0, 1), &t->fine_black);
+  t->fine_scale = scale;
+  return true;
+}
+
+// A cluster's cover drawn at FINE times its pixels (pw × ph of them, its top left at x0, y0 in points, shifted across by
+// `dx` points: a quarter pixel's phase is a whole fine pixel), its edges moved out `grow` fine pixels, averaged back
+// into `px` (RGBA, each the cover). False when it could not be drawn so.
+//
+// The edges are moved along the cover's own gradient, the same way whichever way a stroke runs (a level set of the
+// cover advected outward, first order: A + δ·|∇A|, the gradient by central differences): a horizontal, a vertical, a
+// diagonal and a curve grow alike, the middle of a narrow counter (where the gradient is nothing, its two sides
+// pulling apart) does not fill, and a quarter pixel's shift is a whole fine pixel's, so each phase is the same picture
+// moved (hostapi's atlas keeps five).
+static bool draw_fine(IDWriteTextLayout *l, double sc, double x0, double y0, double dx, int pw, int ph, double grow,
+                      Target *t, uint8_t *px) {
+  int fw = pw * FINE, fh = ph * FINE;
+  if (!fine_ensure(t, sc, fw + 1, fh + 1)) return false;
+  ID2D1RenderTarget *rt = t->fine_rt;
+  rt->BeginDraw();
+  rt->PushAxisAlignedClip(D2D1::RectF(0.0f, 0.0f, (FLOAT)((fw + 1) / (sc * FINE)), (FLOAT)((fh + 1) / (sc * FINE))),
+                          D2D1_ANTIALIAS_MODE_ALIASED);
+  rt->Clear(D2D1::ColorF(1, 1, 1, 1));
+  rt->DrawTextLayout(D2D1::Point2F((FLOAT)(-x0 + dx), (FLOAT)-y0), l, t->fine_black,
+                     D2D1_DRAW_TEXT_OPTIONS_NO_SNAP);
+  rt->PopAxisAlignedClip();
+  if (FAILED(rt->EndDraw())) return false;
+  WICRect r = {0, 0, fw, fh};
+  IWICBitmapLock *lock = NULL;
+  if (FAILED(t->fine_bitmap->Lock(&r, WICBitmapLockRead, &lock))) return false;
+  UINT stride = 0, bytes = 0;
+  BYTE *src = NULL;
+  lock->GetStride(&stride);
+  lock->GetDataPointer(&bytes, &src);
+  // the cover, 0..1 (black on white at linear gamma: 255 less the green)
+  float *a = (float *)malloc(sizeof(float) * (size_t)fw * fh);
+  for (int y = 0; y < fh; y++) {
+    const BYTE *s = src + (size_t)y * stride;
+    for (int x = 0; x < fw; x++) a[(size_t)y * fw + x] = (255 - s[x * 4 + 1]) / 255.0f;
+  }
+  lock->Release();
+  float *g = a;
+  if (grow > 0) {
+    // (the step: an edge's cover goes from 0 to 1 within a fine pixel, where a central difference is a half; δ twice
+    // the distance moved)
+    float delta = (float)(2.0 * grow);
+    g = (float *)malloc(sizeof(float) * (size_t)fw * fh);
+    for (int y = 0; y < fh; y++) {
+      for (int x = 0; x < fw; x++) {
+        size_t i = (size_t)y * fw + x;
+        float gx = ((x + 1 < fw ? a[i + 1] : 0.0f) - (x > 0 ? a[i - 1] : 0.0f)) * 0.5f;
+        float gy = ((y + 1 < fh ? a[i + fw] : 0.0f) - (y > 0 ? a[i - fw] : 0.0f)) * 0.5f;
+        float v = a[i] + delta * sqrtf(gx * gx + gy * gy);
+        g[i] = v > 1.0f ? 1.0f : v;
+      }
+    }
+  }
+  for (int y = 0; y < ph; y++) {
+    for (int x = 0; x < pw; x++) {
+      float sum = 0;
+      for (int j = 0; j < FINE; j++) {
+        const float *row = g + (size_t)(y * FINE + j) * fw + x * FINE;
+        for (int k = 0; k < FINE; k++) sum += row[k];
+      }
+      int c = (int)(sum * (255.0f / (FINE * FINE)) + 0.5f);
+      uint8_t *o = px + ((size_t)y * pw + x) * 4;
+      o[0] = o[1] = o[2] = o[3] = (uint8_t)(c > 255 ? 255 : c);
+    }
+  }
+  if (g != a) free(g);
+  free(a);
+  return true;
+}
+
 // A cluster's layout drawn in white at `sc` pixels a point (shifted horizontally by `dx` points for its
-// quarter-pixel subpixel phase), a pixel round its cached bounds `cb`, on `t`.
-static void draw_cluster(IDWriteTextLayout *l, const ClusterBounds *cb, double sc, double dx, Target *t, Drawn *d) {
+// quarter-pixel subpixel phase), a pixel round its cached bounds `cb`, on `t`; `size` and `weight` as it was asked.
+static void draw_cluster(IDWriteTextLayout *l, const ClusterBounds *cb, double sc, double dx, double size, int weight,
+                         Target *t, Drawn *d) {
   *d = {};
   int color = cb->color;
   // The bitmap's edges on whole pixels from the baseline, a pixel of room
@@ -903,14 +1066,28 @@ static void draw_cluster(IDWriteTextLayout *l, const ClusterBounds *cb, double s
   if (pw <= 0 || ph <= 0 || pw > RT_SIZE || ph > RT_SIZE) return;
   target_ensure(t, sc);
   if (!t->rt) return;
-  // One colour: drawn black on opaque white so Direct2D's contrast (0.5) at linear gamma (1.0) shapes coverage (with
-  // ClearType at < 150% on RGB/BGR LCDs, or contrast-boosted grayscale at 150%+ / on OLED / when ClearType is off),
-  // each stripe's coverage (255 - s) in its channel (the shader blends a mask stripe by stripe: win_render.cpp fmain),
-  // its alpha their mean. Straight on the target: in a layer made for ClearType
-  // (D2D1_LAYER_OPTIONS_INITIALIZE_FOR_CLEARTYPE) Direct2D drew it gray after all.
-  // Clip to the glyph's own bounds so Clear() does not wipe the entire 512x512 (1 MiB) WIC bitmap per glyph.
   bool mono = !color && (params_ct || params_gray);
   bool ct = mono && use_cleartype(sc);
+  d->w = pw / sc;
+  d->h = ph / sc;
+  d->ox = x0;
+  d->oy = y0 - base;
+  // In gray, at 15 pixels an em and more: drawn fine and averaged back (init: params_gray).
+  if (mono && !ct && size * sc >= 15.0) {
+    uint8_t *px = (uint8_t *)malloc((size_t)pw * ph * 4);
+    if (draw_fine(l, sc, x0, y0, dx, pw, ph, grown_fine(cb, size, weight, sc), t, px)) {
+      d->pw = pw;
+      d->ph = ph;
+      d->px = px;
+      return;
+    }
+    free(px);
+  }
+  // One colour: drawn black on opaque white at linear gamma with no contrast, each stripe's cover (255 - s) in its
+  // channel (ClearType under 125% on RGB/BGR LCDs; else gray, the small hinted), the shader blending a mask stripe by
+  // stripe (win_render.cpp fmain), its alpha their mean. Straight on the target: in a layer made for ClearType
+  // (D2D1_LAYER_OPTIONS_INITIALIZE_FOR_CLEARTYPE) Direct2D drew it gray after all.
+  // Clip to the glyph's own bounds so Clear() does not wipe the entire 512x512 (1 MiB) WIC bitmap per glyph.
   FLOAT clip_w = (FLOAT)((pw < RT_SIZE ? pw + 1 : pw) / sc);
   FLOAT clip_h = (FLOAT)((ph < RT_SIZE ? ph + 1 : ph) / sc);
   t->rt->BeginDraw();
@@ -918,7 +1095,7 @@ static void draw_cluster(IDWriteTextLayout *l, const ClusterBounds *cb, double s
   t->rt->Clear(mono ? D2D1::ColorF(1, 1, 1, 1) : D2D1::ColorF(0, 0, 0, 0));
   if (mono) {
     t->rt->SetTextAntialiasMode(ct ? D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE : D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
-    t->rt->SetTextRenderingParams(ct ? params_ct : params_gray);
+    t->rt->SetTextRenderingParams(ct ? params_ct : size * sc < 15.0 ? params_gray_small : params_gray);
   }
   t->rt->DrawTextLayout(D2D1::Point2F((FLOAT)(-x0 + dx), (FLOAT)-y0), l, mono ? t->black : t->white,
                         D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT | D2D1_DRAW_TEXT_OPTIONS_NO_SNAP);
@@ -955,10 +1132,6 @@ static void draw_cluster(IDWriteTextLayout *l, const ClusterBounds *cb, double s
   }
   // a color font's glyph drawn in the text's colour (Segoe UI Emoji's flags are letters): a mask after all
   d->color = color == 2;
-  d->w = pw / sc;
-  d->h = ph / sc;
-  d->ox = x0;
-  d->oy = y0 - base;
 }
 
 // ---- drawing ahead: the glyphs a frame shaped (text.mbt glyphs_ahead) and the remaining subpixel phases of any
@@ -987,6 +1160,8 @@ struct Ahead {
   IDWriteTextFormat *format;
   IDWriteTypography *typography;
   double scale;
+  double size;
+  int weight;
   int state;
   uint8_t want_mask;
   uint8_t have_mask;
@@ -1060,7 +1235,7 @@ static DWORD WINAPI ahead_thread(void *) {
         bool drop_now = a->dropped;
         LeaveCriticalSection(&ahead_lock);
         if (drop_now) break;
-        draw_cluster(l, &cb, a->scale, sub_dx(s) / a->scale, &t, &local_d[s]);
+        draw_cluster(l, &cb, a->scale, sub_dx(s) / a->scale, a->size, a->weight, &t, &local_d[s]);
         built_mask |= (uint8_t)(1 << s);
       }
       l->Release();
@@ -1216,6 +1391,8 @@ static bool ahead_enqueue_one(int k, uint8_t mask) {
   a->typography = typography_for(e->style);
   if (a->typography) a->typography->AddRef();
   a->scale = text_scale;
+  a->size = e->size;
+  a->weight = e->weight;
   a->state = AHEAD_ASKED;
   a->want_mask = mask;
   ahead_of[k] = a;
@@ -1273,7 +1450,7 @@ static void rasterize(int full_key) {
     IDWriteTextLayout *l = main_layout_for(key);
     glyph_entry *e = &entries[key];
     measure_bounds(l, &e->bounds);
-    draw_cluster(l, &e->bounds, text_scale, sub_dx(sub) / text_scale, &main_target, &d);
+    draw_cluster(l, &e->bounds, text_scale, sub_dx(sub) / text_scale, e->size, e->weight, &main_target, &d);
     e->subs_queued |= (uint8_t)(1 << sub);
     uint8_t rem = (uint8_t)(SUB_ALL & ~e->subs_queued);
     if (rem && ahead_enqueue_one(key, rem)) WakeAllConditionVariable(&ahead_more);

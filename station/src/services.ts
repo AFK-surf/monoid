@@ -31,7 +31,7 @@ import { Simulators } from "./screens/simulator.ts";
 import { WindowsDesktop, screenBinary } from "./screens/win-desktop.ts";
 import { LinuxDesktop } from "./screens/linux-desktop.ts";
 import { uiBinary } from "./screens/ui.ts";
-import { type Drive, dropFolder, stationDrive } from "./drive/drive.ts";
+import { type Drive, droppedInto, stationDrive } from "./drive/drive.ts";
 import { stationVersion } from "./ops/version.ts";
 import { channelOf } from "./updates/versions.ts";
 import { HelperApp, helperApp } from "./helper/app.ts";
@@ -205,7 +205,9 @@ export class ScreenRegistry extends Context.Service<ScreenRegistry, ScreenHub>()
   static readonly layer = Layer.effect(
     ScreenRegistry,
     Effect.gen(function* () {
-      const hub = yield* Effect.acquireRelease(Effect.sync(() => new ScreenHub({ drop: () => dropFolder(homedir()) })), (hub) => Effect.sync(() => hub.close()));
+      // (the Downloads looked at off the thread, before the screens are listed)
+      const drop = yield* Effect.promise(() => droppedInto(homedir()));
+      const hub = yield* Effect.acquireRelease(Effect.sync(() => new ScreenHub({ drop })), (hub) => Effect.sync(() => hub.close()));
       const helper = yield* Helper;
       const { data } = yield* Paths;
       const title = process.env.STILLFAIL_TEST_HOST === "1" ? () => "test-station" : undefined;

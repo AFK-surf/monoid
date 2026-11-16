@@ -5,8 +5,7 @@
 // server's own port is a door that lets the grant's session through alone (door.ts; none on Windows, where the machine's
 // processes are not read: there the server serves on the port as it is).
 import { type ChildProcess, spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
-import { readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -47,6 +46,8 @@ export class GrantServers {
 
   constructor(adb: () => string | null, record: string | null = null, admit: Admit | null = null) {
     this.#adb = adb;
+    // Where adb is, found before the station serves (link.ts `adbPath` looks on its thread only the first time).
+    adb();
     this.#record = record;
     this.#admit = admit;
   }
@@ -109,7 +110,7 @@ export class GrantServers {
     for (let i = 0; i < 3; i++) {
       // Behind its door, on a socket of a directory of its own, named in its environment and not on its command line;
       // else on the port itself.
-      const dir = this.#admit === null ? null : mkdtempSync(join(tmpdir(), "sf-adb-"));
+      const dir = this.#admit === null ? null : await mkdtemp(join(tmpdir(), "sf-adb-"));
       const path = dir === null ? null : join(dir, "s");
       const door = path === null ? null : await openDoor(id, path, (p) => platform.tcpPortPids(p), this.#admit!);
       const port = door?.port ?? (await freePort());
@@ -118,7 +119,7 @@ export class GrantServers {
       const child = spawn(r.file, r.args, { env, stdio: "ignore", windowsHide: true, windowsVerbatimArguments: r.windowsVerbatimArguments });
       const closed = () => {
         door?.close();
-        if (dir !== null) rmSync(dir, { recursive: true, force: true });
+        if (dir !== null) void rm(dir, { recursive: true, force: true }).catch(() => {});
       };
       const up = await new Promise<boolean>((resolve) => {
         child.once("exit", () => resolve(false));

@@ -64,3 +64,92 @@ test "ed25519_sign gives RFC 8032's public keys and signatures" {
     assert_eq((hex_of(public_key), hex_of(signature)), (one.2, one.3))
   }
 }
+
+///|
+/// `bytes` with the bit `bit` of its byte `at` turned over.
+fn flipped(bytes : Bytes, at : Int, bit : Int) -> Bytes {
+  let out = bytes.to_array()
+  out[at] = (out[at].to_int() ^ (1 << bit)).to_byte()
+  Bytes::from_array(out)
+}
+
+///|
+test "ed25519_verify takes RFC 8032's signatures, and none of them with a bit of the key, the message or the signature turned over" {
+  for one in rfc8032 {
+    let (key, message, signature) = (unhex(one.2), unhex(one.1), unhex(one.3))
+    assert_true(ed25519_verify(key, message, signature))
+    for at in [0, 7, 31, 32, 45, 63] {
+      assert_false(ed25519_verify(key, message, flipped(signature, at, at % 8)))
+    }
+    for at in [0, 13, 31] {
+      assert_false(ed25519_verify(flipped(key, at, (at + 3) % 8), message, signature))
+    }
+    if message.length() > 0 {
+      assert_false(ed25519_verify(key, flipped(message, 0, 0), signature))
+    }
+    assert_false(ed25519_verify(key, b"\x00" + message, signature))
+    // Another's key, or the message another vector signed.
+    assert_false(ed25519_verify(unhex(rfc8032[(rfc8032.search(one).unwrap() + 1) % 3].2), message, signature))
+  }
+}
+
+///|
+test "ed25519_verify takes what ed25519_sign signs, for keys and messages drawn, and nothing else of them" {
+  // (a fixed draw: the same keys and messages every run)
+  let mut state = 0x2545F4914F6CDD1DUL
+  let draw = (n : Int) => {
+    let out : Array[Byte] = []
+    for _ in 0..<n {
+      state = state ^ (state << 13)
+      state = state ^ (state >> 7)
+      state = state ^ (state << 17)
+      out.push((state >> 24).to_byte())
+    }
+    Bytes::from_array(out)
+  }
+  for round in 0..<8 {
+    let seed = draw(32)
+    let message = draw(round * 37)
+    let (key, signature) = ed25519_sign(seed, message)
+    assert_true(ed25519_verify(key, message, signature))
+    let at = (draw(1)[0].to_int() * 64) / 256
+    assert_false(ed25519_verify(key, message, flipped(signature, at, round % 8)))
+    let (other, _) = ed25519_sign(draw(32), b"")
+    assert_false(ed25519_verify(other, message, signature))
+    if message.length() > 0 {
+      assert_false(ed25519_verify(key, flipped(message, message.length() - 1, round % 8), signature))
+    }
+  }
+}
+
+///|
+test "ed25519_verify refuses what is not of a key's and a signature's lengths, an S past the group's order, and a point not written once only" {
+  let one = rfc8032[0]
+  let (key, message, signature) = (unhex(one.2), unhex(one.1), unhex(one.3))
+  assert_false(ed25519_verify(key[0:31].to_owned(), message, signature))
+  assert_false(ed25519_verify(key + b"\x00", message, signature))
+  assert_false(ed25519_verify(key, message, signature[0:63].to_owned()))
+  assert_false(ed25519_verify(key, message, signature + b"\x00"))
+  assert_false(ed25519_verify(b"", b"", b""))
+  // S + L: the same point (TweetNaCl alone takes it), refused as RFC 8032 and the Rust shell's check have it.
+  let s = signature.to_array()
+  let mut carry = 0
+  for i in 0..<32 {
+    let sum = s[32 + i].to_int() + order_l[i].to_int() + carry
+    s[32 + i] = (sum & 255).to_byte()
+    carry = sum >> 8
+  }
+  assert_eq(carry, 0)
+  assert_false(ed25519_verify(key, message, Bytes::from_array(s)))
+  // The key that is the group's identity (y = 1): R = B, S = 1 is its signature of anything, written once only;
+  // written as y = p + 1, or with x = 0's sign set, it is none.
+  let base = unhex("58" + "66".repeat(31))
+  let s1 = unhex("01" + "00".repeat(31))
+  assert_true(ed25519_verify(unhex("01" + "00".repeat(31)), message, base + s1))
+  assert_false(ed25519_verify(unhex("ee" + "ff".repeat(30) + "7f"), message, base + s1))
+  assert_false(ed25519_verify(unhex("01" + "00".repeat(30) + "80"), message, base + s1))
+  // R the identity and S = 0, under that key: a signature written once only, none with R written as y = p + 1.
+  let s0 = Bytes::make(32, b'\x00')
+  assert_true(ed25519_verify(unhex("01" + "00".repeat(31)), message, unhex("01" + "00".repeat(31)) + s0))
+  assert_false(ed25519_verify(unhex("01" + "00".repeat(31)), message, unhex("ee" + "ff".repeat(30) + "7f") + s0))
+}

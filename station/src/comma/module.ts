@@ -64,6 +64,7 @@ export const CommaLive = Layer.effectDiscard(
     // first in a chat makes the row `router`) and its turns, and where
     // someone read a chat to (a done chat its creator has not read is one the Task index says waits for them).
     const usage = (changed: () => void) => store.subscribe((change) => void (["usage", "session", "thread", "read"].includes(change.type) && changed()));
+    yield* Effect.promise(() => CommaStats.makeDirs(data));
     // Keep the old database for Router deduplication across a downgrade. Its unscoped indexes are not sent.
     const legacy = yield* Effect.acquireRelease(
       Effect.sync(() => CommaStats.at(data, async () => ({ stations: [], unread: [] }), usage)),

@@ -7,8 +7,7 @@
 // not to the log, so it is not here.
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdirSync } from "node:fs";
-import { mkdtemp, open, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, open, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { wall } from "../ops/fibers.ts";
@@ -314,10 +313,11 @@ export class SimDebug {
   }
 
   /// Where a file to install on it goes up to (`install`): among the machine's temporary files, not Downloads, which macOS may
-  /// keep simctl from reading.
+  /// keep simctl from reading. Made there off the station's thread as it is named (a screen's listing names it before a
+  /// device puts a file in it).
   installFolder(): string {
     const folder = join(tmpdir(), "stillfail-sim-install");
-    mkdirSync(folder, { recursive: true });
+    void mkdir(folder, { recursive: true }).catch(() => undefined);
     return folder;
   }
 
@@ -367,7 +367,7 @@ export class SimDebug {
     if (this.#recording !== null) return;
     const folder = join(tmpdir(), "stillfail-sim-recordings");
     await rm(folder, { recursive: true, force: true });
-    mkdirSync(folder, { recursive: true });
+    await mkdir(folder, { recursive: true });
     const name = `${this.#udid.slice(0, 8)}-${randomBytes(4).toString("hex")}.mp4`;
     const file = join(folder, name);
     const turn = panel === "inner" ? turnOf(await this.#run(this.#simctl, ["io", this.#udid, "enumerate"]), "primary-1") : 0;

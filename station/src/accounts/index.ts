@@ -23,7 +23,6 @@ import { expandDevinFusion } from "../agents/devin.ts";
 import { runtimeKind, runtimeLabel } from "../agents/runtime.ts";
 import type { Clock } from "effect";
 import { createHash, randomBytes } from "node:crypto";
-import { readFileSync, statSync } from "node:fs";
 import { access as accessFile, mkdir, readdir, readFile, rename, rm, stat } from "node:fs/promises";
 import { hostname } from "node:os";
 import { join } from "node:path";
@@ -40,6 +39,7 @@ import { allowedIn, hubConfig, type Profile } from "../sessions/config.ts";
 import { type Capability, discover as discoverDecisions, fingerprint, resolvedModel } from "../sessions/decision.ts";
 import { type ProfileHealth, serves, usable } from "../sessions/pool.ts";
 import type { Store } from "../store/store.ts";
+import { paceView, type PaceView } from "./pace.ts";
 import { joinPath } from "../ops/paths.ts";
 import { modelName } from "../ops/model-name.ts";
 import { titleOf } from "../read/views.ts";
@@ -675,6 +675,12 @@ export class Accounts {
     }
   }
 
+  /// An allowance read kept, and as its hour's (store.ts setProfileQuota).
+  #keepQuota(id: string, quota: Json): void {
+    this.deps.store.setProfileQuota(id, quota);
+    this.#paceRev++;
+  }
+
   /// DELETE /profiles/:id. Its home stays. Taken even while sessions or connects use it (the pages say so first): its
   /// sessions go on on another profile of their runtime, or stop when there is none.
   deleteProfile(id: string, viewer: Viewer, lang: Lang = stationLang()) {
@@ -684,6 +690,8 @@ export class Accounts {
       if (!list.some((p) => p?.id === id)) throw new Error(`unknown profile ${id}`);
       raw.profiles = list.filter((p) => p?.id !== id);
     });
+    this.deps.store.forgetProfileHours(id);
+    this.#paceRev++;
     this.deps.hub?.profileGone?.(id).catch((error) => log.warn("accounts", "moving sessions off a deleted profile failed", { profile: id, error: (error as Error).message }));
   }
 
@@ -1375,7 +1383,7 @@ export class Accounts {
         mine.checkedAt <= now && now - mine.checkedAt < QUOTA_EVERY_MS;
       if (isObject(got.quota) && !local?.codexRevoked && !completeHere && !(mine !== undefined && Number(got.quota.checkedAt ?? 0) < mine.checkedAt)) {
         this.quotas.set(profile.id, got.quota as ProfileQuota);
-        this.deps.store.setProfileQuota(profile.id, got.quota);
+        this.#keepQuota(profile.id, got.quota);
       }
       this.refreshMissingBorrowedResetDetails(profile);
     } catch {
@@ -1487,7 +1495,7 @@ export class Accounts {
         const { signedOut: _, ...asked } = own;
         const read = { ...asked, checkedAt: now };
         this.quotas.set(id, read);
-        this.deps.store.setProfileQuota(id, read);
+        this.#keepQuota(id, read);
         if (profile.runtime === "codex") this.codexLogin(id, false);
         this.changed();
         return read;
@@ -1496,7 +1504,7 @@ export class Accounts {
         const { signedOut: _, ...asked } = own;
         const read = { ...asked, checkedAt: this.background.now() };
         this.quotas.set(id, read);
-        this.deps.store.setProfileQuota(id, read);
+        this.#keepQuota(id, read);
         this.codexLogin(id, true);
         this.changed();
         return read;
@@ -1532,7 +1540,7 @@ export class Accounts {
     }
     const read = { ...current, checkedAt: this.background.now() };
     this.quotas.set(id, read);
-    this.deps.store.setProfileQuota(id, read);
+    this.#keepQuota(id, read);
     this.changed();
     // Its login found over: its check says so, and the pool passes it over (as a Console or Kimi sign-in refused).
     if (profile.runtime === "codex" && accessKind(profile) === "subscription") {
@@ -1866,6 +1874,25 @@ export class Accounts {
     return views.map((v) => ({ ...v, usedBy: v.usedBy.filter((c: string) => connects.has(c)) }));
   }
 
+  /// GET /profiles/pace: the hours of the accounts the viewer's workspace may run on (as `serves` says in profilesView),
+  /// read again once a minute at most or as an allowance is read (`#paceAt`).
+  paceView(viewer?: Viewer): PaceView {
+    const now = this.deps.store.now();
+    const minute = Math.floor(now / 60_000);
+    if (this.#paceRead === null || this.#paceRead.minute !== minute || this.#paceRead.rev !== this.#paceRev) {
+      this.#paceRead = { minute, rev: this.#paceRev, now, read: this.deps.store.profileHours(Math.floor(now / 3_600_000)) };
+    }
+    const joined = viewer !== undefined && viewer.home === false ? viewer.workspace : null;
+    const home = this.deps.workspaces?.()[0] ?? null;
+    const config = hubConfig(this.deps.config.raw(), this.deps.data, this.found);
+    const serves = new Set(config.profiles.filter((p) => allowedIn(p, joined, home)).map((p) => p.id as string));
+    return paceView(this.#paceRead.now, this.#paceRead.read, (id) => serves.has(id));
+  }
+
+  /// What the last GET /profiles/pace read of the store, and in which minute; `#paceRev` counts the allowances kept since.
+  #paceRead: { minute: number; rev: number; now: number; read: ReturnType<Store["profileHours"]> } | null = null;
+  #paceRev = 0;
+
   /// GET /profiles/:id/fusion: the Devin Fusion catalog from the profile's last check (null on borrowed or non-Devin profiles).
   fusionView(id: string): Json {
     const profile = this.profile(id);
@@ -1997,31 +2024,11 @@ function lastOfRuntime(raw: Json, runtime: Runtime, id: string, lang: Lang) {
   if (users.length > 0) throw new Error(tr(lang, "station.profile.lastForRuntime", { runtime, users: users.join(tr(lang, "station.list.separator")) }));
 }
 
-/// The account a subscription home is signed in as, when its files say: Codex's id token, Claude's account record. Read
-/// on the thread: only share/index.ts's naming of a Grok or Cursor account still asks it so (its move is the sessions'
-/// and shares' wave); the rest asks `accountEmailSoon`.
-export const accountEmail = (runtime: Runtime, home: string): string | null => emailIn(accountFiles(runtime, home));
-
-/// What the first of `files` that names an account says, as `emailKept` keeps it.
-function emailIn(files: AccountFile[]): string | null {
-  for (const file of files) {
-    let stamp: string;
-    try {
-      const st = statSync(file.path);
-      stamp = `${st.size}:${st.mtimeMs}`;
-    } catch {
-      continue;
-    }
-    const email = emailKept(file, stamp, () => readFileSync(file.path, "utf8"));
-    if (email !== null) return email;
-  }
-  return null;
-}
-
-/// `accountEmail` without holding the station's thread (fs/promises), for what is read again as the overview is made.
+/// The account a subscription home is signed in as, when its files say (Codex's id token, Claude's account record),
+/// read without holding the station's thread (fs/promises), as `emailKept` keeps it.
 export const accountEmailSoon = (runtime: Runtime, home: string): Promise<string | null> => emailInSoon(accountFiles(runtime, home));
 
-/// `emailIn` without holding the station's thread.
+/// What the first of `files` that names an account says, as `emailKept` keeps it.
 async function emailInSoon(files: AccountFile[]): Promise<string | null> {
   for (const file of files) {
     let stamp: string;

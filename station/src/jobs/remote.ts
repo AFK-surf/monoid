@@ -75,7 +75,7 @@ export type RemoteOptions = {
   /// must reach it itself, looked at off its thread. Default: without still.fail Helper.
   places?: Places;
   /// The bytes free on the disk holding `path` (tests say how full it is). Default: statfs.
-  diskFree?: (path: string) => number;
+  diskFree?: (path: string) => number | Promise<number>;
   /// Remove a mirror's tree. Tests can hold or fail the removal to exercise interrupted requests.
   removeMirror?: (path: string) => Promise<void>;
   /// How a closed session's task directory is removed (tests hold it to come between).
@@ -304,7 +304,7 @@ export class Remote {
   private bulk = new Bulk();
   private scope: Scope.Closeable;
   private run: (effect: Effect.Effect<void>) => Promise<void>;
-  private diskFree: (path: string) => number;
+  private diskFree: (path: string) => number | Promise<number>;
   private removeMirror: (path: string) => Promise<void>;
   private described: ((peer: string, workspace: string) => Json) | null = null;
   private version: string;
@@ -475,7 +475,7 @@ export class Remote {
         return await this.fileGet(a, b);
       case "node.diskLow": {
         try {
-          return this.diskFree(a) < this.lowBelow;
+          return (await this.diskFree(a)) < this.lowBelow;
         } catch {
           return false;
         }

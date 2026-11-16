@@ -1,7 +1,9 @@
 // Ed25519 signing (RFC 8032), of no dependency: SHA-512 and the curve's arithmetic over GF(2^255 - 19), sixteen limbs
 // of 16 bits each, as TweetNaCl does them (its `crypto_sign`, line for line). What `Mesh::sign` falls back on where
 // its shell does not sign (a page's; the Rust shell does: `ed25519.sign`), as the TypeScript mesh falls back on its
-// own (`sign`). Signing only: nothing here checks a signature.
+// own (`sign`). And a signature checked (`ed25519_verify`, TweetNaCl's `crypto_sign_open`), held to what the Rust
+// shell's check (`crypto.verify`, libcrux's) takes: a key or an `R` whose y is not below the field's prime, or that is
+// x = 0 with its sign set, and an `S` not below the group's order, are refused, so both sides say the same of one.
 
 ///|
 let sha512_k : FixedArray[UInt64] = [
@@ -424,4 +426,148 @@ pub fn ed25519_sign(seed : Bytes, message : Bytes) -> (Bytes, Bytes) {
   let s = FixedArray::make(32, b'\x00')
   mod_l(s, x)
   (joined_bytes([pk]), joined_bytes([sig_r, s]))
+}
+
+///|
+let gf_d : Gf = gf([
+  0x78a3, 0x1359, 0x4dca, 0x75eb, 0xd8ab, 0x4141, 0x0a4d, 0x0070, 0xe898, 0x7779, 0x4079, 0x8cc7, 0xfe73, 0x2b6f, 0x6cee,
+  0x5203,
+])
+
+///|
+/// The square root of -1.
+let gf_i : Gf = gf([
+  0xa0b0, 0x4a0e, 0x1b27, 0xc4ee, 0xe478, 0xad2f, 0x1806, 0x2f43, 0xd7a7, 0x3dfb, 0x0099, 0x2b4d, 0xdf0b, 0x4fc1, 0x2480,
+  0x2b83,
+])
+
+///|
+fn unpack25519(o : Gf, n : FixedArray[Byte]) -> Unit {
+  for i in 0..<16 {
+    o[i] = n[2 * i].to_int64() + (n[2 * i + 1].to_int64() << 8)
+  }
+  o[15] = o[15] & 0x7fffL
+}
+
+///|
+fn neq25519(a : Gf, b : Gf) -> Bool {
+  let c = FixedArray::make(32, b'\x00')
+  let d = FixedArray::make(32, b'\x00')
+  pack25519(c, a)
+  pack25519(d, b)
+  c != d
+}
+
+///|
+fn pow2523(o : Gf, i : Gf) -> Unit {
+  let c = i.copy()
+  for a = 250; a >= 0; a = a - 1 {
+    fsq(c, c)
+    if a != 1 {
+      fmul(c, c, i)
+    }
+  }
+  set25519(o, c)
+}
+
+///|
+/// Whether the 32 bytes at `at` of `n`, little first and the top bit left out, are below 2^255 - 19: a y written
+/// once only.
+fn canonical_y(n : FixedArray[Byte], at : Int) -> Bool {
+  // (2^255 - 19 is ed ff .. ff 7f: at or above it only where every byte above the lowest is all ones)
+  guard (n[at + 31].to_int() & 0x7f) == 0x7f else { return true }
+  for i in 1..<31 {
+    guard n[at + i] == b'\xff' else { return true }
+  }
+  n[at].to_int() < 0xed
+}
+
+///|
+/// The point `p` (a public key) negated, into `r`: false where it is none of the curve's, or is not written once
+/// only (`canonical_y`, and x = 0 with its sign set).
+fn unpackneg(r : Point, p : FixedArray[Byte]) -> Bool {
+  guard canonical_y(p, 0) else { return false }
+  let t = gf([])
+  let chk = gf([])
+  let num = gf([])
+  let den = gf([])
+  let den2 = gf([])
+  let den4 = gf([])
+  let den6 = gf([])
+  set25519(r[2], gf1)
+  unpack25519(r[1], p)
+  fsq(num, r[1])
+  fmul(den, num, gf_d)
+  fsub(num, num, r[2])
+  fadd(den, r[2], den)
+  fsq(den2, den)
+  fsq(den4, den2)
+  fmul(den6, den4, den2)
+  fmul(t, den6, num)
+  fmul(t, t, den)
+  pow2523(t, t)
+  fmul(t, t, num)
+  fmul(t, t, den)
+  fmul(t, t, den)
+  fmul(r[0], t, den)
+  fsq(chk, r[0])
+  fmul(chk, chk, den)
+  if neq25519(chk, num) {
+    fmul(r[0], r[0], gf_i)
+  }
+  fsq(chk, r[0])
+  fmul(chk, chk, den)
+  if neq25519(chk, num) {
+    return false
+  }
+  let sign = p[31].to_int() >> 7
+  if sign == 1 && !neq25519(r[0], gf0) {
+    return false
+  }
+  if par25519(r[0]) == sign {
+    fsub(r[0], gf0, r[0])
+  }
+  fmul(r[3], r[0], r[1])
+  true
+}
+
+///|
+/// Whether the 32 bytes at `at` of `n`, little first, are below the group's order.
+fn below_order(n : FixedArray[Byte], at : Int) -> Bool {
+  for i = 31; i >= 0; i = i - 1 {
+    let b = n[at + i].to_int64()
+    if b != order_l[i] {
+      return b < order_l[i]
+    }
+  }
+  false
+}
+
+///|
+/// Whether `signature` (64 bytes) is `public_key`'s (32 bytes) over `message`, as RFC 8032 has it: what is not of
+/// those lengths, or not a point or a scalar written once only, is no signature. Never fails; the same on every
+/// target, and with what the Rust shell's `crypto.verify` says of it.
+pub fn ed25519_verify(public_key : Bytes, message : Bytes, signature : Bytes) -> Bool {
+  guard public_key.length() == 32 && signature.length() == 64 else { return false }
+  let pk = fixed(public_key)
+  let sm = fixed(signature)
+  guard canonical_y(sm, 0) && below_order(sm, 32) else { return false }
+  let q = point()
+  guard unpackneg(q, pk) else { return false }
+  let sig_r = FixedArray::make(32, b'\x00')
+  let s = FixedArray::make(32, b'\x00')
+  for i in 0..<32 {
+    sig_r[i] = sm[i]
+    s[i] = sm[32 + i]
+  }
+  let h = fixed(sha512(joined_bytes([sig_r, pk, fixed(message)])))
+  reduce(h)
+  let p = point()
+  scalarmult(p, q, h)
+  let sb = point()
+  scalarbase(sb, s)
+  padd(p, sb)
+  let t = FixedArray::make(32, b'\x00')
+  pack_point(t, p)
+  t == sig_r
 }

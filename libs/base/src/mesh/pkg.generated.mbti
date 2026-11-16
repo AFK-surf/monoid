@@ -31,6 +31,8 @@ pub let direct_recall_ms : Int32
 
 pub fn ed25519_sign(Bytes, Bytes) -> (Bytes, Bytes)
 
+pub fn ed25519_verify(Bytes, Bytes, Bytes) -> Bool
+
 pub let explore_ms : Int32
 
 pub let first_ms : Int32
@@ -135,9 +137,11 @@ pub struct Incoming {
   alpn : String
   // private fields
 }
+pub async fn Incoming::accept(Self) -> Inbound?
 pub fn Incoming::close(Self, reason? : String) -> Unit
 pub async fn Incoming::closed(Self) -> Closed
 pub async fn Incoming::first(Self, within? : Int32, most? : Int32) -> (String, Inbound)
+pub async fn Incoming::open(Self) -> Inbound
 
 pub struct Link {
   peer : String
@@ -220,6 +224,7 @@ pub fn Mesh::standing(Self, String, scope? : String) -> Bool
 pub fn Mesh::tailnet(Self, String, scope? : String) -> Array[String]
 pub fn Mesh::timed(Self, String, String, Reply) -> Reply
 pub fn Mesh::today(Self, String) -> (Int64, Int64)
+pub fn Mesh::verify(Self, Bytes, Bytes, Bytes) -> Bool
 pub fn Mesh::wake(Self, network? : Bool, retry? : Bool, away_ms? : Int64) -> Unit
 
 pub(all) struct Options {

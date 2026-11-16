@@ -553,9 +553,22 @@ pub fn left(route : Route) -> Unit {
 }
 
 ///|
+/// A place of the bottom bar's left the stack for good: what its page kept goes (Profile's 概览 its own).
+pub fn place_left(name : String) -> Unit {
+  if name == "profiles" {
+    profiles_place_overview.set(false)
+  }
+  match route_of(name) {
+    Some(r) => left(r)
+    None => ()
+  }
+}
+
+///|
 /// As at the start: nothing chosen, no sheet (tests).
 pub fn reset() -> Unit {
   local_said_kept.val = None
+  profiles_place_overview.set(false)
   profiles_narrow_overview.set(false)
   browser_tabs_seen.clear()
   tabs_made.val = 0

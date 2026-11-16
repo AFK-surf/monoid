@@ -8,7 +8,7 @@
 // none, and its 89G disk was down to 2.3G free with 10G of archived workspaces waiting out their week (2026-10-25). And
 // only under 20 GiB at all, every five minutes, while remote/sessions grew to 63 GiB in five days (2026-11-15).
 
-import { statfsSync } from "node:fs";
+import { statfs } from "node:fs/promises";
 
 export const DISK_LOW_BYTES = 20 * 1024 ** 3;
 /// The soft mark's least: under it (or a tenth of the disk, where that is more) the station starts making room.
@@ -19,8 +19,8 @@ export const DISK_EVERY_MS = 5 * 60_000;
 export const DISK_SOFT_EVERY_MS = 30_000;
 
 /// The bytes free for the station on the disk holding `path`.
-export function diskFree(path: string): number {
-  const st = statfsSync(path); // sync: one statfs, as it always was (agents.ts, remote.ts)
+export async function diskFree(path: string): Promise<number> {
+  const st = await statfs(path);
   return st.bavail * st.bsize;
 }
 

@@ -1148,6 +1148,18 @@ fn fx_profiles() -> Array[Json] {
 }
 
 ///|
+/// The Profile overview the made-up core says (`profilesOverview`): the core's own of the accounts it lists, as
+/// fixture_overview.mbt keeps them (fx_summary_profiles' or fx_profiles' two subscriptions); none with no station.
+pub fn fixture_overview() -> Json {
+  if fx.none {
+    return obj([("pools", [])])
+  }
+  @json.parse(if fx.summary { fx_overview_summary } else { fx_overview_plain }) catch {
+    _ => obj([("pools", [])])
+  }
+}
+
+///|
 /// Realistic multi-account pool across four provider groups for the profiles overview designs.
 fn fx_summary_profiles() -> Array[Json] {
   let win = fn(label : String, mark : String, left : Int, refills : String, scope : String) -> Json {

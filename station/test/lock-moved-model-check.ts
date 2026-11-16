@@ -14,7 +14,8 @@
 // Where the station is stricter on purpose: a state the model calls "not on" (no `open` or `off` in force) or "no
 // root" (the root's log not kept) is one the station waits in (`waiting`): it names nobody and gives nobody a body
 // (the model's keeper lists whom the statements in force name). Compared there: the station waits, gives none.
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isMainThread, parentPort, workerData } from "node:worker_threads";
@@ -169,15 +170,19 @@ export function stations4(o: Out, w: World4, at: string, r: Rng, extra: Body[] =
       try {
         compare(o, `${where}, in another order`, w, h, ws, again.c, kept, refusedBy, offered);
       } finally {
-        rmSync(again.c.data, { recursive: true, force: true });
+        letGo(again.c);
       }
     }
   }
 }
 
+/// A station's data removed once what it writes off the main thread is written (person-chains.ts `written`): removed
+/// under a write on its way, the write makes its directory again.
+const letGo = (c: Cloud) => void personChainsOf(c).written().catch(() => {}).then(() => rm(c.data!, { recursive: true, force: true }));
+
 /// The stations stood up for `w`, let go.
 function done(w: World4) {
-  for (const s of stood.get(w)?.values() ?? []) rmSync(s.c.data, { recursive: true, force: true });
+  for (const s of stood.get(w)?.values() ?? []) letGo(s.c);
   stood.delete(w);
 }
 

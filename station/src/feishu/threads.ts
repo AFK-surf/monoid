@@ -1,19 +1,22 @@
 // Where a Feishu chat's words go (「会话怎么分」), kept in <data>/feishu-threads.json: for each chat, the
 // message its conversation began with (the thread's ts: what is said in the chat outside topics is one conversation,
 // until someone starts a new one), and for each topic its first message (what the station replies to, to answer in it).
-import { readFileSync, renameSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
+import { PrivateFile } from "../ops/files.ts";
 import { log } from "../ops/log.ts";
 
 type Kept = Record<string, { chats?: Record<string, string>; topics?: Record<string, string>; seen?: Record<string, number> }>;
 
 export class FeishuThreads {
   readonly path: string;
+  private readonly file: PrivateFile;
   private kept: Kept = {};
 
   constructor(path: string) {
     this.path = path;
+    this.file = new PrivateFile(path);
     try {
-      const v = JSON.parse(readFileSync(path, "utf8"));
+      const v = JSON.parse(readFileSync(path, "utf8")); // sync: read once, before the station serves
       if (v !== null && typeof v === "object" && !Array.isArray(v)) this.kept = v;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") log.warn("feishu", "feishu threads file unreadable; starting empty", { error: (error as Error).message });
@@ -28,14 +31,16 @@ export class FeishuThreads {
     return at as { chats: Record<string, string>; topics: Record<string, string>; seen: Record<string, number> };
   }
 
+  /// Kept in memory at once, written off the main thread (those asked while a write is on its way: the latest after it).
   private save() {
-    const tmp = `${this.path}.tmp`;
-    try {
-      writeFileSync(tmp, JSON.stringify(this.kept));
-      renameSync(tmp, this.path);
-    } catch (error) {
+    this.file.write(JSON.stringify(this.kept)).catch((error) => {
       log.warn("feishu", "feishu threads not kept", { error: (error as Error).message });
-    }
+    });
+  }
+
+  /// Once what was changed is written.
+  written(): Promise<void> {
+    return this.file.written();
   }
 
   /// The conversation a chat is in now, if it has begun one.

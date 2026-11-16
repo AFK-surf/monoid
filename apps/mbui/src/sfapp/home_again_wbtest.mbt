@@ -186,8 +186,9 @@ test "home again: a place of the bar tapped from Home at rest, and Home tapped a
         let i = if place == "profiles" { 1 } else { 2 }
         home_again_measure(t, "\{tag} home→\{place}", fn() { t.tap(xs[i], y) })
         println("home-again \{tag}: on \{Repr(place_of(app.nav.top()))} (asked \{place})")
-        // (the place made, first visit; Home put by, not laid out again nor let go)
-        assert_eq(home_again_peak.val, if place == "profiles" { (617, 0, 504) } else { (368, 0, 254) }, msg="\{tag} home→\{place}")
+        // (the place made, first visit; Home put by, not laid out again nor let go; Profile's list or 概览 one page, the
+        // pick between them two nodes more)
+        assert_eq(home_again_peak.val, if place == "profiles" { (619, 0, 505) } else { (368, 0, 254) }, msg="\{tag} home→\{place}")
         t.run_for(kept_switch_over_ms)
         home_again_measure(t, "\{tag} \{place}→home", fn() { t.tap(xs[0], y) })
         println("home-again \{tag}: on \{Repr(place_of(app.nav.top()))} (asked chats)")
@@ -360,8 +361,9 @@ test "home again: Home come back to in a taller phone's window, and from a page 
       let i = if place == "profiles" { 1 } else if place == "connects" { 2 } else { 3 }
       home_again_measure(t, "\{tag} home→\{place}", fn() { t.tap(xs[i], y) })
       println("home-again \{tag}: on \{Repr(place_of(app.nav.top()))} (asked \{place})")
+      // (Profile's list or 概览 one page, the pick between them two nodes more)
       let first = if place == "profiles" {
-        (767, 0, 628)
+        (769, 0, 629)
       } else if place == "connects" {
         (444, 0, 306)
       } else {

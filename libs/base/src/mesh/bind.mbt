@@ -189,9 +189,11 @@ priv enum Taken {
 ///
 /// What is kept of it: its handle at the shell and its place among those taken, until its end is told, then let
 /// go of (closed to be forgotten, as a link's). While it is there it is on the endpoint (`Mesh::idle`): an
-/// endpoint taken for stuck is not bound anew under it, so its program ends it in a time of its own (`close`),
-/// and reads of it only through `first`, which bounds what an unknown peer may make it wait for and keep. One
-/// nobody asked for is kept by the shell, one at most by the mesh (`Mesh::incoming`), and goes with the endpoint.
+/// endpoint taken for stuck is not bound anew under it, so its program ends it in a time of its own (`close`).
+/// Its first stream is read through `first`, which bounds what an unknown peer may make it wait for and keep;
+/// the streams after, its peer's (`accept`) and its program's (`open`), are its program's to bound, as a link's
+/// are. One nobody asked for is kept by the shell, one at most by the mesh (`Mesh::incoming`), and goes with the
+/// endpoint.
 pub struct Incoming {
   /// Its peer's endpoint id, as the transport proved it; "" where the shell does not say.
   peer : String
@@ -201,6 +203,9 @@ pub struct Incoming {
   priv conn : Json
   priv gone : @effect.Deferred[Closed]
   priv mut asked : Bool
+  /// The mesh's fibers: where the waits for its streams run (`accept`, `open`); and those waits.
+  priv fibers : @effect.Scope
+  priv accepting : Accepting
 }
 
 ///|
@@ -287,7 +292,16 @@ fn Mesh::took(self : Mesh, conn : Json, alpn : String) -> Incoming {
     _ => ""
   }
   let alpn = self.binding.takes.iter().find_first(take => hex(take) == alpn).unwrap_or(alpn)
-  let incoming : Incoming = { peer, alpn, shell, conn, gone: @effect.Deferred::new(), asked: false }
+  let incoming : Incoming = {
+    peer,
+    alpn,
+    shell,
+    conn,
+    gone: @effect.Deferred::new(),
+    asked: false,
+    fibers: self.scope,
+    accepting: Accepting::new(),
+  }
   self.incomings.push(incoming)
   // Its end, waited for once (cut as the mesh closes, which says it of every one taken itself). Nobody waits to
   // dial for it to go, so its going is told nobody: with one taken the endpoint is dialled on as it is
@@ -300,6 +314,7 @@ fn Mesh::took(self : Mesh, conn : Json, alpn : String) -> Incoming {
         Fell(e) => { kind: "other", reason: text_of(e) }
       }
       ignore(incoming.gone.succeed(closed))
+      incoming.accepting.drop_kept(shell)
       shell.tell("conn.close", { "id": conn, "code": 0, "reason": "closed", "forget": true })
       self.incomings.retain(one => !physical_equal(one, incoming))
     }),
@@ -333,28 +348,52 @@ fn Mesh::forget_coming(self : Mesh) -> Unit {
 /// gives up while it waits, end the connection: it is closed, saying `closed`, and its stream goes with it, so
 /// nothing of the shell's reads that go on is ever read again. Fails then as no answer, as too long, or as cut.
 /// (The time is its program's to begin: one taken and never asked this is held to none, until it is closed.)
+///
+/// Asked after `accept` was, it fails as its program's mistake: the first stream was that one's. An `accept` asked
+/// while this waits waits for it, and is the stream after.
 pub async fn Incoming::first(self : Incoming, within? : Int = first_ms, most? : Int = max_head) -> (String, Inbound) {
   guard !self.asked else {
     raise MeshError(code="invalid_params", message="a connection's first stream is asked for once", cause="")
   }
   self.asked = true
-  let had = Ref(false)
-  defer {
-    if !had.val {
-      self.close()
+  self.accepting.lock.with_permit(() => {
+    let had = Ref(false)
+    defer {
+      if !had.val {
+        self.close()
+      }
     }
-  }
-  let found = @effect.timeout(within, () => {
-    let said = self.shell.call("conn.acceptBi", { "id": self.conn }) catch { e => raise cut(e) }
-    guard said.json is { "id": id, .. } else { raise failed("cut") }
-    let stream : Stream = { shell: self.shell, id }
-    let lines : Lines = { stream, carry: @wire.Carry::new(), most }
-    guard lines.next() is Some(line) else { raise failed("cut") }
-    (line, stream, lines.carry.take())
+    let found = @effect.timeout(within, () => {
+      let said = self.shell.call("conn.acceptBi", { "id": self.conn }) catch { e => raise cut(e) }
+      guard said.json is { "id": id, .. } else { raise failed("cut") }
+      let stream : Stream = { shell: self.shell, id }
+      let lines : Lines = { stream, carry: @wire.Carry::new(), most }
+      guard lines.next() is Some(line) else { raise failed("cut") }
+      (line, stream, lines.carry.take())
+    })
+    guard found is Some((line, stream, rest)) else { raise failed("no_answer") }
+    had.val = true
+    (line, inbound_of(stream, if rest.length() > 0 { Some(rest) } else { None }))
   })
-  guard found is Some((line, stream, rest)) else { raise failed("no_answer") }
-  had.val = true
-  (line, inbound_of(stream, if rest.length() > 0 { Some(rest) } else { None }))
+}
+
+///|
+/// The next stream its peer opens on it, after the first (`first`), or the first where its program reads that
+/// itself; None once it ended, or the mesh closed. One asker at a time: another waits its turn. As `Link::accept`:
+/// the shell's wait is the mesh's fiber, so an asker that gives up loses nothing, and the stream it brings is the
+/// next asker's; one nobody took as the connection ends is reset. What comes on it is not bounded here: a peer
+/// nobody knows is its program's to hold to a time and a length.
+pub async fn Incoming::accept(self : Incoming) -> Inbound? {
+  self.asked = true
+  accept_on(self.shell, self.conn, self.fibers, self.gone, self.accepting)
+}
+
+///|
+/// A stream opened on it from this side, to its peer: as `Link::stream`, the shell's wait is the mesh's fiber, and
+/// what it opens for an asker that gave up is reset. Fails as cut where the connection ended first.
+pub async fn Incoming::open(self : Incoming) -> Inbound {
+  guard !self.gone.is_done() else { raise failed("cut") }
+  inbound_of(open_on(self.shell, self.conn, self.fibers, self.gone), None)
 }
 
 ///|

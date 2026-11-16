@@ -260,7 +260,7 @@ fn side_tab_node(
     @sf.style_node(b, side_tab_body, in_row=true)
     b.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
     b.says(By(fn() { Some(@view.said(Tab, label=names().0, selected=front())) })) |> ignore
-    @sf.presses_node(b, fn() { side_change(src, r, "front", Some(tab)) })
+    @sf.presses_node(b, fn() { side_front_pressed(src, r, tab) })
     side_mark_node(b, src, r, view, tab, fn() { front() || lit() })
     @sf.words_node(b, fn() { names().0 }, fn() {
       if front() {

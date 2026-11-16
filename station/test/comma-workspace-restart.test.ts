@@ -45,6 +45,7 @@ test("a new home resets the old copy before its own first read completes", async
   const config = new ConfigFile(dir);
   config.update((raw) => { raw.connects = [{ id: "new-home", kind: "comma", enabled: true,
     comma: { server: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, token: "new_home_token_123" } }]; });
+  await CommaStats.makeDirs(dir);
   const legacy = CommaStats.at(dir, nothing, quiet);
   legacy.apply([row("unscoped old title")], [], 0); legacy.close();
   const old = CommaStats.inWorkspace(dir, "old-home", nothing, quiet);

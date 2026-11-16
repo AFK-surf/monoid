@@ -173,6 +173,7 @@ async function surfaceRig(o: { topics?: boolean; threadMode?: boolean; names?: b
     close: async () => {
       await surface.stop();
       await book?.close();
+      await threads.written();
       await fake.close();
       await t.close();
       rmSync(dir, { recursive: true, force: true });

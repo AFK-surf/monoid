@@ -356,6 +356,11 @@ function rigSelfOf(raw: any): RigSelf | null {
 /// Pretty JSON, field order as the Rust struct's, the removal only while there is one; the provider and the gateways
 /// only when there are (a still.fail station's file is as it always was).
 export function writeState(data: string, s: CloudState) {
+  writePrivate(statePath(data), stateText(s));
+}
+
+/// cloud.json's text for `s` (writeState).
+function stateText(s: CloudState): string {
   const out: Record<string, unknown> = {
     ...(s.provider !== undefined ? { provider: s.provider } : {}),
     origin: s.origin, station: s.station, workspace: s.workspace, workspace_name: s.workspace_name, name: s.name,
@@ -372,7 +377,7 @@ export function writeState(data: string, s: CloudState) {
   if (s.rig_pending !== undefined) out.rig_pending = s.rig_pending;
   if (s.rig_due === true) out.rig_due = true;
   if (s.full_pending !== undefined) out.full_pending = s.full_pending;
-  writePrivate(statePath(data), JSON.stringify(out, null, 2));
+  return JSON.stringify(out, null, 2);
 }
 
 /// The joined workspaces a file or a `state` frame's `workspaces` names, what is malformed in them left out.
@@ -534,6 +539,8 @@ export class Cloud {
       log.warn("cloud", "cloud.json could not be read; keeping the previous state", { error: (error as Error).message });
       return;
     }
+    // Written by another (`stillfail` on this machine): what this one last wrote is not what is there.
+    this.written = null;
     if (tell || JSON.stringify(next) !== JSON.stringify(this.state)) {
       this.state = next;
       setStationCloud(next?.origin);
@@ -1136,16 +1143,25 @@ export class Cloud {
   }
 
   /// Changes the state, writes it, tells the listeners.
+  /// What this process last wrote of cloud.json (null: not since it was read).
+  private written: string | null = null;
+
+  /// Changes the state, writes it (only where that changed what was written: the control plane's every frame was a
+  /// write and its sync on the main thread, the same bytes each time), tells the listeners.
   update(change: (s: CloudState) => void) {
     if (!this.state) return;
     change(this.state);
     setStationCloud(this.state.origin);
-    this.writing = true;
-    try {
-      writeState(this.data, this.state);
-    } finally {
-      // Its own write, seen by the file's watch a moment later (the file system's time).
-      wall.after(100, () => (this.writing = false));
+    const text = stateText(this.state);
+    if (text !== this.written) {
+      this.writing = true;
+      try {
+        writePrivate(statePath(this.data), text);
+        this.written = text;
+      } finally {
+        // Its own write, seen by the file's watch a moment later (the file system's time).
+        wall.after(100, () => (this.writing = false)); // timer: a debounce of a burst (its own write, which the watch of cloud.json sees a moment later)
+      }
     }
     this.tell();
   }

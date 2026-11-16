@@ -8,7 +8,7 @@
 // it up: they are no one's.
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomInt } from "node:crypto";
-import { statSync } from "node:fs";
+import { stat } from "node:fs/promises";
 import net from "node:net";
 import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
@@ -144,7 +144,7 @@ export class PhoneDisplays {
     // Kept on the phone for the next (the link to it may carry 0.1 MB/s): put again when it is not the same.
     const jar = `/data/local/tmp/stillfail-display-${SERVER_VERSION}.jar`;
     const there = Number((await shell(`stat -c %s ${jar} 2>/dev/null`).catch(() => "")).trim());
-    if (there !== statSync(this.#file).size) await run(["push", this.#file, jar]);
+    if (there !== (await stat(this.#file)).size) await run(["push", this.#file, jar]);
     const port = Number((await run(["forward", "tcp:0", `localabstract:scrcpy_${scid}`])).trim());
     if (!Number.isInteger(port) || port <= 0) throw new Error("adb gave no port for the display");
     const forward = { port, adb: [adb, ...server] };

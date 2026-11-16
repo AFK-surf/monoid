@@ -121,8 +121,8 @@ jobs:
             libs/mbui/out/textdiff/
           if-no-files-found: warn
 
-  # still.fail's app over made-up data (its apps/mbui sffix, against this mbui), asked for by a run's stillfail_ref:
-  # its wide frame (a desktop's window) and a phone's page, light and dark, for comparing with macOS's.
+  # still.fail's app over made-up data (its apps/mbui sffix, against this mbui), asked for by a run's stillfail_ref: built
+  # here, shot by stillfail-shots in each face at once (the build alone is three of a job's five minutes).
   stillfail:
     if: github.event_name == 'workflow_dispatch' && inputs.stillfail_ref != ''
     runs-on: windows-latest
@@ -157,18 +157,56 @@ jobs:
             mbui-win-sffix-store-
             mbui-win-store-b-
       - name: Build sffix
-        run: APP=sffix bash ../../apps/mbui/scripts/win.sh build
+        run: |
+          APP=sffix bash ../../apps/mbui/scripts/win.sh build
+          mkdir -p out/sffix && cp "$(ls out/win/app/_build/native/release/build/*/sffix/sffix.exe)" out/sffix/
       - if: always()
         uses: actions/cache/save@v4
         with:
           path: .ci/mbc-store
           key: mbui-win-sffix-store-${{ github.sha }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sffix-windows
+          path: libs/mbui/out/sffix/
+
+  # Its wide frame (a desktop's window) at 150% (MBUI_SCALE=1.5, as a 4K screen at 150% has it), light and dark, in each
+  # face (the app's own: Inter, Han in Microsoft YaHei UI; Segoe UI Variable; Noto Sans SC's variable file), and the
+  # sidebar's hover moved down and up its rows as a video; the default face's leg also the pages at 100%, the chat at 1440×900 and a phone's.
+  # For comparing with macOS's, by people: nothing checked.
+  stillfail-shots:
+    needs: stillfail
+    runs-on: windows-latest
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        face: [own, segoe, noto]
+    defaults:
+      run:
+        working-directory: libs/mbui
+        shell: bash
+    steps:
+      - run: git config --global core.autocrlf false
+        working-directory: ${{ github.workspace }}
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: sffix-windows
+          path: libs/mbui/out/sffix/
       - name: Screenshots
         run: |
           mkdir -p out/shot-sf
           D=$(cygpath -w "$PWD/out/shot-sf")
-          EXE=$(ls out/win/app/_build/native/release/build/*/sffix/sffix.exe)
-          MBUI_BENCH=-1 MBUI_SCALE=1.5 MBUI_WIN=1280x800 MBUI_FIXTURE=chat MBUI_SCRIPT=shot MBUI_SHOT_NAME=win-wide-chat-150pct MBUI_SHOT_DIR="$D" ./$EXE
+          EXE=out/sffix/sffix.exe
+          case "${{ matrix.face }}" in
+            own) FACES="" ;;
+            segoe) FACES="1:local:Segoe UI Variable;2:local:Segoe UI Variable" ;;
+            noto)
+              curl -fsSL -o NotoSansSC-VF.ttf 'https://raw.githubusercontent.com/google/fonts/main/ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf'
+              FACES="1:NotoSansSC-VF.ttf;2:NotoSansSC-VF.ttf" ;;
+          esac
+          n=win-wide-chat-150pct-${{ matrix.face }}
           {
             echo "until 首页的列表改成按天分组"
             echo "shot hover-f00"
@@ -178,41 +216,36 @@ jobs:
               f=$((f + 1))
             done
             echo "hover 首页的列表改成按天分组"
-            echo "shot win-wide-chat-150pct-hover"
+            echo "shot hovered"
             echo "exit"
           } > out/shot-sf/hover.drive
           DRIVE_B64=$(base64 < out/shot-sf/hover.drive | tr -d '\n')
-          MBUI_BENCH=-1 MBUI_SCALE=1.5 MBUI_WIN=1280x800 MBUI_FIXTURE=chat MBUI_DRIVE_B64="$DRIVE_B64" MBUI_SHOT_DIR="$D" ./$EXE
-          ffmpeg -y -framerate 12 -i out/shot-sf/hover-f%02d.png -c:v libx264 -pix_fmt yuv420p out/shot-sf/win-wide-chat-150pct-hover.mp4 || true
-          rm -f out/shot-sf/hover-f*.png
-          MBUI_FACES="1:local:Segoe UI Variable;2:local:Segoe UI Variable" MBUI_BENCH=-1 MBUI_SCALE=1.5 MBUI_WIN=1280x800 MBUI_FIXTURE=chat MBUI_SCRIPT=shot MBUI_SHOT_NAME=win-wide-chat-150pct-segoe-var MBUI_SHOT_DIR="$D" ./$EXE
-          MBUI_FACES="1:local:Segoe UI Variable;2:local:Segoe UI Variable" MBUI_BENCH=-1 MBUI_SCALE=1.5 MBUI_WIN=1280x800 MBUI_FIXTURE=chat MBUI_DRIVE_B64="$DRIVE_B64" MBUI_SHOT_DIR="$D" ./$EXE
-          mv out/shot-sf/win-wide-chat-150pct-hover.png out/shot-sf/win-wide-chat-150pct-segoe-var-hover.png || true
-          rm -f out/shot-sf/hover-f*.png
-          MBUI_BENCH=-1 MBUI_SCALE=1.5 MBUI_WIN=1280x800 MBUI_FIXTURE=chat MBUI_DRIVE_B64="$DRIVE_B64" MBUI_SHOT_DIR="$D" ./$EXE
-          rm -f out/shot-sf/hover-f*.png
-          if curl -fsSL -o NotoSansSC-VF.ttf 'https://raw.githubusercontent.com/google/fonts/main/ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf'; then
-            MBUI_FACES="1:NotoSansSC-VF.ttf;2:NotoSansSC-VF.ttf" MBUI_BENCH=-1 MBUI_SCALE=1.5 MBUI_WIN=1280x800 MBUI_FIXTURE=chat MBUI_SCRIPT=shot MBUI_SHOT_NAME=win-wide-chat-150pct-noto MBUI_SHOT_DIR="$D" ./$EXE
-            MBUI_FACES="1:NotoSansSC-VF.ttf;2:NotoSansSC-VF.ttf" MBUI_BENCH=-1 MBUI_SCALE=1.5 MBUI_WIN=1280x800 MBUI_FIXTURE=chat MBUI_DRIVE_B64="$DRIVE_B64" MBUI_SHOT_DIR="$D" ./$EXE
-            mv out/shot-sf/win-wide-chat-150pct-hover.png out/shot-sf/win-wide-chat-150pct-noto-hover.png || true
-            ffmpeg -y -framerate 12 -i out/shot-sf/hover-f%02d.png -c:v libx264 -pix_fmt yuv420p out/shot-sf/win-wide-chat-150pct-noto-hover.mp4 || true
+          for d in 0 1; do
+            m=$n$([ $d = 1 ] && echo -dark || true)
+            MBUI_FACES="$FACES" MBUI_DARK=$d MBUI_BENCH=-1 MBUI_SCALE=1.5 MBUI_WIN=1280x800 MBUI_FIXTURE=chat MBUI_SCRIPT=shot MBUI_SHOT_NAME=$m MBUI_SHOT_DIR="$D" ./$EXE
+            MBUI_FACES="$FACES" MBUI_DARK=$d MBUI_BENCH=-1 MBUI_SCALE=1.5 MBUI_WIN=1280x800 MBUI_FIXTURE=chat MBUI_DRIVE_B64="$DRIVE_B64" MBUI_SHOT_DIR="$D" ./$EXE
+            mv out/shot-sf/hovered.png out/shot-sf/$m-hover.png || true
+            # the frames as they were shot, and whether any two the hand had at the same place differ (a row's words
+            # drawn otherwise as the hover passes them back)
+            mkdir -p out/shot-sf/$m-frames && cp out/shot-sf/hover-f*.png out/shot-sf/$m-frames/ || true
+            ffmpeg -loglevel error -y -framerate 12 -i out/shot-sf/hover-f%02d.png -c:v libx264 -pix_fmt yuv420p out/shot-sf/$m-hover.mp4 || true
             rm -f out/shot-sf/hover-f*.png
-            MBUI_BENCH=-1 MBUI_SCALE=1.5 MBUI_WIN=1280x800 MBUI_FIXTURE=chat MBUI_DRIVE_B64="$DRIVE_B64" MBUI_SHOT_DIR="$D" ./$EXE
-            rm -f out/shot-sf/hover-f*.png
-          fi
-          for m in home chat settings-appearance files; do
-            for d in 0 1; do
-              n=win-wide-$m$([ $d = 1 ] && echo -dark || true)
-              MBUI_BENCH=-1 MBUI_WIN=1280x800 MBUI_DARK=$d MBUI_FIXTURE=$m MBUI_SCRIPT=shot MBUI_SHOT_NAME=$n MBUI_SHOT_DIR="$D" ./$EXE
-            done
           done
-          MBUI_BENCH=-1 MBUI_WIN=1440x900 MBUI_FIXTURE=chat MBUI_SCRIPT=shot MBUI_SHOT_NAME=win-wide-chat-1440 MBUI_SHOT_DIR="$D" ./$EXE
-          MBUI_BENCH=-1 MBUI_WIN=390x844 MBUI_SCRIPT=shot MBUI_SHOT_NAME=win-phone-home MBUI_SHOT_DIR="$D" ./$EXE
+          if [ "${{ matrix.face }}" = own ]; then
+            for m in home chat settings-appearance files; do
+              for d in 0 1; do
+                n=win-wide-$m$([ $d = 1 ] && echo -dark || true)
+                MBUI_BENCH=-1 MBUI_WIN=1280x800 MBUI_DARK=$d MBUI_FIXTURE=$m MBUI_SCRIPT=shot MBUI_SHOT_NAME=$n MBUI_SHOT_DIR="$D" ./$EXE
+              done
+            done
+            MBUI_BENCH=-1 MBUI_WIN=1440x900 MBUI_FIXTURE=chat MBUI_SCRIPT=shot MBUI_SHOT_NAME=win-wide-chat-1440 MBUI_SHOT_DIR="$D" ./$EXE
+            MBUI_BENCH=-1 MBUI_WIN=390x844 MBUI_SCRIPT=shot MBUI_SHOT_NAME=win-phone-home MBUI_SHOT_DIR="$D" ./$EXE
+          fi
           ls -la out/shot-sf
       - uses: actions/upload-artifact@v4
         if: always()
         continue-on-error: true
         with:
-          name: stillfail-windows-shots
+          name: stillfail-windows-shots-${{ matrix.face }}
           path: libs/mbui/out/shot-sf/
           if-no-files-found: warn

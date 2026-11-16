@@ -13,7 +13,7 @@ import { applyState } from "../src/cloud/presence.ts";
 import { Cloud, MODE_PENDING_S, readState, rigGrantsPath, writeState } from "../src/cloud/state.ts";
 import { Fibers } from "../src/ops/fibers.ts";
 import { type Ended, RigGrants } from "../src/rig/grants.ts";
-import { testClock } from "./hub-fakes.ts";
+import { settle, testClock } from "./hub-fakes.ts";
 
 const WS = "01WORKSPACE";
 const RIG = "aa".repeat(32);
@@ -160,6 +160,7 @@ test("a grant is kept across a restart, taken back by its person's word alone, a
     rig.grant(STATION, signed, w.owner.chain);
     rig.grant(STATION, w.grant("r2", "s2", { kind: "idle", seconds: 3600 }), w.owner.chain);
     await rig.close();
+    await rig.written();
     rig = w.make();
     assert.equal(rig.refusal(WS, STATION, "s1"), null, "kept with the lock it was checked against");
 
@@ -228,7 +229,7 @@ test("whole again: only its person's signature, lately made, is kept for it", as
   }
 });
 
-test("what a machine is changes only by what was asked of it and the control plane listing it so, never by either alone", () => {
+test("what a machine is changes only by what was asked of it and the control plane listing it so, never by either alone", async () => {
   const data = mkdtempSync(join(tmpdir(), "rig-mode-"));
   const now = Math.floor(Date.now() / 1000);
   const base = { origin: "https://app.still.fail", station: STATION, workspace: WS, workspace_name: "Home", name: "nas", peers: [] };
@@ -276,6 +277,8 @@ test("what a machine is changes only by what was asked of it and the control pla
     applyState(s, frame({}));
     assert.equal(readState(data)!.rig, undefined);
     assert.equal(readState(data)!.full_pending, undefined);
+    // (removed off the thread)
+    await settle();
     assert.equal(existsSync(rigGrantsPath(data)), false);
     s.close();
   } finally {
@@ -327,6 +330,7 @@ test("a device on the rig: attached and taken off only by what its person signed
     assert.ok(w.ended.some((e) => e.request === "d2" && e.why === "removed" && e.device === cam.id));
     // Kept across a restart.
     rig.device(attach(false, w.now() + 1));
+    await rig.written();
     assert.deepEqual(w.make().devices().map((d) => d.id), [cam.id]);
   } finally {
     await w.close();

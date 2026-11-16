@@ -18,6 +18,8 @@
 // Written again, 2026-11-16: 已归档 made once as nodes (sfpages archive_node.mbt; the wide sidebar's lane, sfdesk
 // archive_side_node.mbt): what the old view built again at each change of the archive (its last number) is none now,
 // the rows that come or go made and let go in its place.
+// The profiles' 概览's pools the core's `profilesOverview` since, a station down lays out its pills and badges anew
+// (`profilesOverview/down`).
 ///|
 let real_size_change_known : Map[String, (Int, Int, Int, Int, Int, Int)] = {
   "phone board stations/host": (0, 0, 0, 0, 0, 0),
@@ -1701,7 +1703,8 @@ let real_size_change_known : Map[String, (Int, Int, Int, Int, Int, Int)] = {
   "wide place-stations resources/sample": (0, 0, 26, 7, 0, 6),
   "wide place-stations stationMove to= module=/moving": (21, 0, 43, 2, 0, 0),
   "wide place-profiles profiles/quota": (0, 0, 0, 0, 2, 41),
-  "wide place-profiles profiles/down": (119, 1, 157, 45, 0, 936),
+  "wide place-profiles profiles/down": (119, 1, 130, 39, 0, 936),
+  "wide place-profiles profilesOverview/down": (0, 0, 27, 6, 0, 6),
   "wide newchat newChat/host": (0, 0, 0, 0, 0, 15),
   "wide newchat newChat/down": (0, 0, 0, 0, 0, 15),
   "wide newchat-files newChat/host": (0, 0, 0, 0, 0, 29),

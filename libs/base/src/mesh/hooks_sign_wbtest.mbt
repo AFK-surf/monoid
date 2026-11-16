@@ -24,6 +24,20 @@ test "the device key signs: by the shell where it signs, else here, RFC 8032's s
   // What it answers that is not a key and a signature: signed here.
   stood.signs = Some({ "publicKey": "zz", "signature": "bb" })
   assert_eq(hex_of(mesh.sign(b"\x72").1), rfc8032[1].3)
+  // A signature checked: here where the shell has no `crypto.verify`, by the shell where it has, asked in hex.
+  let (key, message, signature) = (unhex(rfc8032[2].2), unhex(rfc8032[2].1), unhex(rfc8032[2].3))
+  assert_true(mesh.verify(key, message, signature))
+  assert_false(mesh.verify(key, b"\x00", signature))
+  stood.verifies = Some(Json::boolean(false))
+  assert_false(mesh.verify(key, message, signature))
+  assert_eq(stood.verify_asks, [
+    "{\"alg\":\"Ed25519\",\"key\":\"\{rfc8032[2].2}\",\"signature\":\"\{rfc8032[2].3}\",\"message\":\"af82\"}",
+  ])
+  stood.verifies = Some(Json::boolean(true))
+  assert_true(mesh.verify(key, b"\x00", signature))
+  // What it answers that is no yes or no: checked here.
+  stood.verifies = Some(Json::null())
+  assert_false(mesh.verify(key, b"\x00", signature))
   // Opus: where the shell says the endpoint decodes it.
   assert_false(mesh.decodes_opus())
   stood.opus = Some(true)

@@ -2,9 +2,10 @@
 // it; Feishu's feishu-names.json) so the admin API never waits on the platform for a name: a name not known yet answers
 // null at once, is fetched in the background, and `onLearn` tells the pages to read again (once per burst). Failed
 // lookups are not tried again for a while. The readers read the same file (read/slack-known.ts).
-import { readFileSync, renameSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { Clock, Effect, Exit, FiberSet, Scope } from "effect";
 import { liveClock } from "../ops/fibers.ts";
+import { PrivateFile } from "../ops/files.ts";
 import { log } from "../ops/log.ts";
 import type { Person } from "../sessions/chat.ts";
 
@@ -29,6 +30,7 @@ export class NameBook {
   private run: (effect: Effect.Effect<void>) => Promise<void>;
   private closed = false;
   private clock: Clock.Clock;
+  private file: PrivateFile;
 
   constructor(path: string, options: NameBookOptions = {}) {
     this.path = path;
@@ -36,7 +38,7 @@ export class NameBook {
     this.learnAfterMs = options.learnAfterMs ?? 200;
     let text: string | null = null;
     try {
-      text = readFileSync(path, "utf8");
+      text = readFileSync(path, "utf8"); // sync: read once, before the station serves
     } catch {}
     if (text !== null) {
       try {
@@ -47,6 +49,7 @@ export class NameBook {
         log.warn("connects", "names file unreadable; starting empty", { path: this.path, error: (error as Error).message });
       }
     }
+    this.file = new PrivateFile(path);
     this.clock = options.clock ?? liveClock;
     this.scope = Effect.runSync(Scope.make());
     const run = Effect.runSync(Scope.provide(FiberSet.makeRuntimePromise<never, void, never>(), this.scope));
@@ -77,12 +80,13 @@ export class NameBook {
     return known ?? null;
   }
 
-  /// Ends its timers; what was learned and not yet saved is saved now.
+  /// Ends its timers; what was learned and not yet saved is saved now, and resolves once it is written.
   async close() {
-    if (this.closed) return;
+    if (this.closed) return this.file.written();
     this.closed = true;
     await Effect.runPromise(Scope.close(this.scope, Exit.void));
     if (this.saving) this.save();
+    await this.file.written();
   }
 
   private learn(key: string, fetch: () => Promise<Entry | null>) {
@@ -124,14 +128,11 @@ export class NameBook {
     void this.run(Effect.sleep(ms).pipe(Effect.andThen(Effect.sync(f)))).catch(() => {});
   }
 
+  /// Written off the main thread (a write on its way and those asked meanwhile: the latest only, after it).
   private save() {
     this.saving = false;
-    const tmp = this.path.replace(/\.json$/, "") + ".json.tmp";
-    try {
-      writeFileSync(tmp, JSON.stringify(Object.fromEntries(this.entries)));
-      renameSync(tmp, this.path);
-    } catch (error) {
+    this.file.write(JSON.stringify(Object.fromEntries(this.entries))).catch((error) => {
       log.warn("connects", "names not saved", { path: this.path, error: (error as Error).message });
-    }
+    });
   }
 }

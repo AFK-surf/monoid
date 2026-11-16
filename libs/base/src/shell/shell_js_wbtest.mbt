@@ -1,7 +1,7 @@
 // The page's shell's own turning, in Node, with the page's timers in the test's hands: `setTimeout`, `clearTimeout`
 // and `queueMicrotask` are the test's while it runs (put back before anything is asserted), so nothing here waits on
-// real time, and the runtime's clock is the test's own. What needs iroh or a page's storage is not reached: that
-// is held by a page in a browser, outside this repository (AGENTS.md).
+// real time, and the runtime's clock is the test's own. What needs iroh, a page's storage or its IndexedDB is not
+// reached: that is held by a page in a browser, outside this repository (AGENTS.md).
 
 ///|
 #external
@@ -358,8 +358,62 @@ async fn given_the_module() -> Unit raise {
 }
 
 ///|
-/// (one test, the two one after the other: a page has one shell, and Node runs async tests at once)
-async test "iroh given: as what loads it, then as the module itself in a worker" {
+/// What `op` is answered on the page: its JSON, and its bytes as text where it carries any; or what it failed with.
+async fn page_said(rt : @effect.Runtime, shell : Shell, op : String, args : Json, bytes? : Bytes) -> String {
+  on_page(rt, () => {
+    let answer = shell.call(op, args, bytes?)
+    match answer.bytes {
+      Some(b) => "\{answer.json.stringify()} \{@utf8.decode(b)}"
+      None => answer.json.stringify()
+    }
+  })
+}
+
+///|
+/// Keys and their bytes (`idb.*`) where there is no IndexedDB (Node): kept in the page's own map, read back, deleted
+/// one by one and by a prefix, and scanned in order, from a prefix, past a key, a page at a time.
+async fn keys_in_memory() -> Unit raise {
+  let rt = @effect.Runtime::live(() => 1_000L)
+  let shell = Shell::start_with(rt, fake_module(fake_make()))
+  let missing = page_said(rt, shell, "idb.get", { "key": "a/1" })
+  let puts = []
+  for k in ["b/2", "a/2", "a/10", "a/1", "ab", "a"] {
+    puts.push(page_said(rt, shell, "idb.put", { "key": Json::string(k) }, bytes=@utf8.encode("v" + k)))
+  }
+  let got = page_said(rt, shell, "idb.get", { "key": "a/10" })
+  let again = page_said(rt, shell, "idb.put", { "key": "a/10" }, bytes=b"w")
+  let got_again = page_said(rt, shell, "idb.get", { "key": "a/10" })
+  let all = page_said(rt, shell, "idb.scan", {})
+  let under = page_said(rt, shell, "idb.scan", { "prefix": "a/" })
+  let first_page = page_said(rt, shell, "idb.scan", { "prefix": "a/", "limit": 2 })
+  let next_page = page_said(rt, shell, "idb.scan", { "prefix": "a/", "after": "a/10", "limit": 2 })
+  let before_prefix = page_said(rt, shell, "idb.scan", { "prefix": "a/", "after": "", "limit": 1 })
+  let one_gone = page_said(rt, shell, "idb.delete", { "key": "ab" })
+  let prefix_gone = page_said(rt, shell, "idb.delete", { "prefix": "a/" })
+  let left = page_said(rt, shell, "idb.scan", {})
+  let no_key = page_said(rt, shell, "idb.get", {})
+  let item = (k : String, v : String) => "{\"key\":\"\{k}\",\"hex\":\"\{v}\"}"
+  assert_eq(missing, "{\"found\":false}")
+  assert_eq(puts, ["{}", "{}", "{}", "{}", "{}", "{}"])
+  assert_eq(got, "{\"found\":true} va/10")
+  assert_eq((again, got_again), ("{}", "{\"found\":true} w"))
+  assert_eq(
+    all,
+    "{\"items\":[\{item("a", "7661")},\{item("a/1", "76612f31")},\{item("a/10", "77")},\{item("a/2", "76612f32")},\{item("ab", "766162")},\{item("b/2", "76622f32")}],\"more\":false}",
+  )
+  assert_eq(under, "{\"items\":[\{item("a/1", "76612f31")},\{item("a/10", "77")},\{item("a/2", "76612f32")}],\"more\":false}")
+  assert_eq(first_page, "{\"items\":[\{item("a/1", "76612f31")},\{item("a/10", "77")}],\"more\":true}")
+  assert_eq(next_page, "{\"items\":[\{item("a/2", "76612f32")}],\"more\":false}")
+  assert_eq(before_prefix, "{\"items\":[\{item("a/1", "76612f31")}],\"more\":true}")
+  assert_eq((one_gone, prefix_gone), ("{}", "{}"))
+  assert_eq(left, "{\"items\":[\{item("a", "7661")},\{item("b/2", "76622f32")}],\"more\":false}")
+  assert_eq(no_key, "failed: no key")
+}
+
+///|
+/// (one test, these one after the other: a page has one shell, and Node runs async tests at once)
+async test "iroh given: as what loads it, then as the module itself in a worker; keys kept where there is no IndexedDB" {
   given_a_loader()
   given_the_module()
+  keys_in_memory()
 }

@@ -9,6 +9,13 @@
 //   op                 on a page
 //   storage.get/set    localStorage, the key `<dir>:<key>`, the value in hex (a file a key natively); where there is
 //                      none (a worker), a failure
+//   idb.get/put/delete/scan   keys (strings) and their bytes, past localStorage's few MB: the page's IndexedDB,
+//                      the database `<dir>:idb` and its store "kv"; where there is none (Node, a worker made
+//                      without it), a map of this page's alone, gone with it. `get {key}` answers `{found}` and,
+//                      found, the bytes; `put {key}` with the bytes, `{}`; `delete {key}` or `{prefix}`, every key
+//                      it starts, `{}`; `scan {prefix?, after?, limit?}` the keys from `prefix` past `after`, in
+//                      the order of their UTF-16 code units, `limit` (200 unless said) at most: `{items: [{key,
+//                      hex}], more}`. No other shell has them: the Rust shell keeps what it keeps in `sql.*`
 //   iroh.bind          the module's `bind({secretKey, relayUrls})`, with `relayEntries` where any are said (each
 //                      `{entry, relay}`): through relays alone whatever is asked (a browser has no UDP: `relayOnly`
 //                      is always so), nothing looked up (`lookup` never), and no connection taken (`alpns` is not
@@ -107,6 +114,92 @@ extern "js" fn page_start(prefix : String, loader : Loader, answered : (Int, Int
   #|    if (typeof localStorage === "undefined") throw new Error("no localStorage here");
   #|    return localStorage;
   #|  };
+  #|  // the page's IndexedDB, opened as first asked (again after a failure); none: a map of the page's alone
+  #|  let db = null;
+  #|  const memory = typeof indexedDB === "undefined" ? new Map() : null;
+  #|  const done = (r) => new Promise((ok, fail) => { r.onsuccess = () => ok(r.result); r.onerror = () => fail(r.error); });
+  #|  const store = (mode) => (db ??= new Promise((ok, fail) => {
+  #|    const r = indexedDB.open(prefix + ":idb", 1);
+  #|    r.onupgradeneeded = () => r.result.createObjectStore("kv");
+  #|    r.onsuccess = () => ok(r.result);
+  #|    r.onerror = () => fail(r.error);
+  #|  }).catch((e) => { db = null; throw e; })).then((d) => d.transaction("kv", mode).objectStore("kv"));
+  #|  const committed = (s) => new Promise((ok, fail) => {
+  #|    s.transaction.oncomplete = () => ok();
+  #|    s.transaction.onerror = s.transaction.onabort = () => fail(s.transaction.error ?? new Error("aborted"));
+  #|  });
+  #|  const key = (a) => {
+  #|    if (typeof a.key !== "string") throw new Error("no key");
+  #|    return a.key;
+  #|  };
+  #|  // the keys from `from` on (past it where `past`), in order, each with its value, while `f` takes them
+  #|  const walk = async (from, past, f) => {
+  #|    if (memory !== null) {
+  #|      for (const k of [...memory.keys()].sort()) {
+  #|        if (k < from || (past && k === from)) continue;
+  #|        if (!f(k, memory.get(k))) break;
+  #|      }
+  #|      return;
+  #|    }
+  #|    const s = await store("readonly");
+  #|    await new Promise((ok, fail) => {
+  #|      const r = s.openCursor(IDBKeyRange.lowerBound(from, past));
+  #|      r.onerror = () => fail(r.error);
+  #|      r.onsuccess = () => {
+  #|        const c = r.result;
+  #|        if (c === null || typeof c.key !== "string" || !f(c.key, c.value)) ok();
+  #|        else c.continue();
+  #|      };
+  #|    });
+  #|  };
+  #|  const idb = async (op, a, bytes) => {
+  #|    switch (op) {
+  #|      case "idb.get": {
+  #|        const k = key(a);
+  #|        const v = memory !== null ? memory.get(k) : await done((await store("readonly")).get(k));
+  #|        return v === undefined ? [{ found: false }] : [{ found: true }, v];
+  #|      }
+  #|      case "idb.put": {
+  #|        const k = key(a);
+  #|        const v = Uint8Array.from(bytes ?? none);
+  #|        if (memory !== null) memory.set(k, v);
+  #|        else {
+  #|          const s = await store("readwrite");
+  #|          s.put(v, k);
+  #|          await committed(s);
+  #|        }
+  #|        return [{}];
+  #|      }
+  #|      case "idb.delete": {
+  #|        const gone = [];
+  #|        if (typeof a.prefix === "string") await walk(a.prefix, false, (k) => k.startsWith(a.prefix) && gone.push(k) > 0);
+  #|        else gone.push(key(a));
+  #|        if (memory !== null) for (const k of gone) memory.delete(k);
+  #|        else if (gone.length > 0) {
+  #|          const s = await store("readwrite");
+  #|          for (const k of gone) s.delete(k);
+  #|          await committed(s);
+  #|        }
+  #|        return [{}];
+  #|      }
+  #|      default: {
+  #|        // idb.scan
+  #|        const p = typeof a.prefix === "string" ? a.prefix : "";
+  #|        const after = typeof a.after === "string" ? a.after : null;
+  #|        const limit = Number.isInteger(a.limit) && a.limit > 0 ? a.limit : 200;
+  #|        const past = after !== null && after >= p;
+  #|        const items = [];
+  #|        let more = false;
+  #|        await walk(past ? after : p, past, (k, v) => {
+  #|          if (!k.startsWith(p)) return false;
+  #|          if (items.length === limit) return !(more = true);
+  #|          items.push({ key: k, hex: hex(v) });
+  #|          return true;
+  #|        });
+  #|        return [{ items, more }];
+  #|      }
+  #|    }
+  #|  };
   #|  const stream = (h) => {
   #|    if (h?.stream === undefined) throw new Error("not a stream");
   #|    return h.stream;
@@ -122,6 +215,11 @@ extern "js" fn page_start(prefix : String, loader : Loader, answered : (Int, Int
   #|      case "storage.set":
   #|        storage().setItem(prefix + ":" + a.key, hex(bytes ?? none));
   #|        return [{}];
+  #|      case "idb.get":
+  #|      case "idb.put":
+  #|      case "idb.delete":
+  #|      case "idb.scan":
+  #|        return idb(op, a, bytes);
   #|      case "iroh.bind": {
   #|        const module = await load();
   #|        return [{ id: keep({ endpoint: await module.bind({ secretKey: bytes ?? none, relayUrls: a.relayUrls ?? [], ...(a.relayEntries ? { relayEntries: a.relayEntries } : {}) }) }) }];

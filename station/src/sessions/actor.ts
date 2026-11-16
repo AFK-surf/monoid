@@ -13,7 +13,7 @@ import type { MbActor } from "./mb-actor.ts";
 import type { AgentDriver, AgentSession, BackgroundTask, FailureReason, LiveEvent, OpenOptions, Profile, RuntimeEvent, TurnOutcome } from "../agents/runtime.ts";
 import { afresh as afreshNote, backgroundStopped, cleared, continuedHere, formatCardChoices, formatInbound, formatWidgetModels, readMemory, resumeLost, sessionInstructions } from "../agents/instructions.ts";
 import { latest as latestNote, untold } from "../agents/migrations.ts";
-import { unreadableDir, unreadableDirMessage } from "../ops/files.ts";
+import { unreadableDirAsync, unreadableDirMessage } from "../ops/files.ts";
 import { Places } from "../ops/places.ts";
 import { log } from "../ops/log.ts";
 import { Said, tr, stationLang } from "../ops/i18n.ts";
@@ -359,7 +359,7 @@ export async function openAgent(deps: SessionDeps, key: string, how: OpenHow): P
   // terminal) is looked at as ops/places.ts does, never on this thread in a folder macOS protects (still.fail Helper
   // asked for it, its window put up for a grant it lacks); the session's own workspace is the station's.
   if (row.cwd) await (deps.places ?? defaultPlaces()).directory(row.cwd, { lang: stationLang() });
-  else if (unreadableDir(base.cwd)) throw new Said(unreadableDirMessage(stationLang(), base.cwd));
+  else if (await unreadableDirAsync(base.cwd)) throw new Said(unreadableDirMessage(stationLang(), base.cwd));
   const generation = how.generation();
   let agent: AgentSession;
   // Recorded before it may be left, so the history reads on from it.

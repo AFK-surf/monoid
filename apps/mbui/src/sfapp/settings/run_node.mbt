@@ -43,10 +43,12 @@ pub fn run_settings_node(
   // (its list at its top as the page and its own lists change places: each a list of its own from its head)
   let scroll = @view.Scroll::list()
   v.reacts(list, fn(_) { scroll.put(0.0) })
-  // (its button pinned under its list, not scrolling with it, while the page shows what it picks: run_foot_node)
+  // (its button pinned under its list, not scrolling with it, while the page shows what it picks: run_foot_node; there
+  // at once with what the page shows, as its list changes for a model's or an account's at once (page_node's), never
+  // making its way up after it: the page's change seen twice, switches_still's screen 32)
   let footed = fn() { list() == "" && view() is Some(_) }
   let body = v.box(fn(_) {  })
-  v.show(footed, fn(f) { run_foot_node(f, core, station, of, view, frame) })
+  v.show(footed, at_once=true, fn(f) { run_foot_node(f, core, station, of, view, frame) })
   @sf.page_node(
     body,
     fn() {

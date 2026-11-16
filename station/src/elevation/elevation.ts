@@ -10,9 +10,11 @@
 //   RunLevel and windows.json put back and the station started as before, said `notStarted`.
 // What is under way or how the last change failed is in run/elevation.json, which outlives the restart.
 import { type ChildProcess, execFile, spawn } from "node:child_process";
-import { copyFileSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
+import { access, copyFile, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { log } from "../ops/log.ts";
 
 /// How long Windows' prompt is waited for before the change is given up.
 export const ASK_MS = 120_000;
@@ -64,10 +66,23 @@ export class Elevation {
   #probed: { elevated: boolean; admin: boolean } | null = null;
   #asking: ChildProcess | null = null;
   #cancel: (() => void) | null = null;
+  /// run/elevation.json and windows.json's `admin` as last read or written here: the overview reads these, never the
+  /// disk (each GET /overview read both on the station's thread). The elevated side writes both: they are read again
+  /// off the thread while it may (`#reload`).
+  #kept: Kept | null;
+  #on: boolean;
+  /// How many times `#kept` was changed here: what a read began before a change found is not taken.
+  #made = 0;
+  /// The files' writes and reads, one after another.
+  #disk: Promise<void> = Promise.resolve();
+  /// A change being made ready (its files written): another is refused meanwhile, as once one is asked.
+  #changing = false;
   readonly #d: ElevationDeps;
 
   constructor(d: ElevationDeps) {
     this.#d = d;
+    this.#kept = keptIn(readBeforeServing(join(d.data, "run", "elevation.json")));
+    this.#on = onIn(readBeforeServing(join(d.data, "windows.json")));
   }
 
   get #run() {
@@ -80,41 +95,64 @@ export class Elevation {
     this.#probed = await (this.#d.probe ?? probe)().catch(() => ({ elevated: false, admin: false }));
     const kept = this.kept();
     if (kept?.step !== undefined) {
-      if (kept.step === "restarting" && kept.want !== this.#probed.elevated) this.#keep({ want: kept.want, at: this.#d.now(), failed: "notStarted" });
-      else if (kept.step !== "restarting" || kept.want === this.#probed.elevated) this.#clear();
+      if (kept.step === "restarting" && kept.want !== this.#probed.elevated) void this.#keep({ want: kept.want, at: this.#d.now(), failed: "notStarted" });
+      else if (kept.step !== "restarting" || kept.want === this.#probed.elevated) void this.#clear();
     }
     this.#d.changed();
   }
 
-  stop(): void {
+  /// Its look at the elevated side called off, its prompt ended; resolves once what it wrote is written.
+  async stop(): Promise<void> {
     this.#cancel?.();
     this.#asking?.kill();
+    await this.settled();
   }
 
-  kept(): Kept | null {
-    try {
-      const k = JSON.parse(readFileSync(join(this.#run, "elevation.json"), "utf8").replace(/^﻿/, ""));
-      return typeof k?.want === "boolean" ? k : null;
-    } catch {
-      return null;
+  /// Once the files' writes and reads asked so far are done (and those they asked in turn).
+  async settled(): Promise<void> {
+    for (let at = this.#disk; ; at = this.#disk) {
+      await at;
+      if (at === this.#disk) return;
     }
   }
 
-  #keep(k: Kept) {
-    writeFileSync(join(this.#run, "elevation.json"), JSON.stringify(k));
+  kept(): Kept | null {
+    return this.#kept;
   }
 
-  #clear() {
-    rmSync(join(this.#run, "elevation.json"), { force: true });
+  /// `f` after the files' work asked before it; a failure is said, not thrown.
+  #queue(f: () => Promise<void>): Promise<void> {
+    const next = this.#disk.then(f).catch((e) => log.warn("elevation", "its state not kept", { error: (e as Error).message }));
+    this.#disk = next;
+    return next;
+  }
+
+  #keep(k: Kept): Promise<void> {
+    this.#kept = k;
+    this.#made++;
+    const text = JSON.stringify(k);
+    return this.#queue(() => writeFile(join(this.#run, "elevation.json"), text));
+  }
+
+  #clear(): Promise<void> {
+    this.#kept = null;
+    this.#made++;
+    return this.#queue(() => rm(join(this.#run, "elevation.json"), { force: true }));
+  }
+
+  /// Both files read again, as the elevated side may have written them: a change made here meanwhile stands.
+  #reload(): Promise<void> {
+    const made = this.#made;
+    return this.#queue(async () => {
+      const [state, windows] = await Promise.all([readOrNull(join(this.#run, "elevation.json")), readOrNull(join(this.#d.data, "windows.json"))]);
+      if (made === this.#made) this.#kept = keptIn(state);
+      this.#on = onIn(windows);
+    });
   }
 
   /// windows.json's `admin`: what its logon task is registered with, by install.ps1 or a change from here.
   on(): boolean {
-    try {
-      return JSON.parse(readFileSync(join(this.#d.data, "windows.json"), "utf8").replace(/^﻿/, ""))?.admin === true;
-    } catch {
-      return false;
-    }
+    return this.#on;
   }
 
   view(manage: boolean): ElevationView {
@@ -132,22 +170,29 @@ export class Elevation {
 
   /// Switched to `on`: asked of Windows, applied elevated, the station restarted as its task then runs it (see above).
   /// Answered as soon as it is asked; the overview says how it goes.
-  change(on: boolean): void {
+  async change(on: boolean): Promise<void> {
     const p = this.#probed ?? { elevated: false, admin: false };
-    if (this.kept()?.step !== undefined) throw new ChangeRefused("busy");
+    if (this.#changing || this.kept()?.step !== undefined) throw new ChangeRefused("busy");
     if (!p.elevated && !p.admin) throw new ChangeRefused("notAdmin");
-    const hidden = join(this.#d.app, "mesh", "target", "release", "stillfail-station-w.exe");
-    if (!existsSync(hidden)) throw new ChangeRefused("notInstalled");
-    const now = this.#d.now();
-    const deadline = now + ASK_MS;
-    const kept = readWindowsJson(this.#d.data);
-    const task = typeof kept.task === "string" && kept.task !== "" ? kept.task : "still.fail station";
-    // Copied out of <app>: what runs from there is stopped as the station is.
-    const runner = join(this.#run, "stillfail-elevation-w.exe");
-    copyFileSync(hidden, runner);
-    writeFileSync(join(this.#run, "elevation-restart.ps1"), restartScript({ run: this.#run, data: this.#d.data, app: this.#d.app, task, on }));
-    writeFileSync(join(this.#run, "elevation-apply.ps1"), applyScript({ run: this.#run, data: this.#d.data, task, on, deadline, restart: on !== p.elevated, runner }));
-    this.#keep({ want: on, at: now, step: "asking" });
+    this.#changing = true;
+    let now: number;
+    try {
+      const hidden = join(this.#d.app, "mesh", "target", "release", "stillfail-station-w.exe");
+      if (!(await access(hidden).then(() => true, () => false))) throw new ChangeRefused("notInstalled");
+      now = this.#d.now();
+      const deadline = now + ASK_MS;
+      const kept = windowsJsonIn(await readOrNull(join(this.#d.data, "windows.json")));
+      const task = typeof kept.task === "string" && kept.task !== "" ? kept.task : "still.fail station";
+      // Copied out of <app>: what runs from there is stopped as the station is.
+      const runner = join(this.#run, "stillfail-elevation-w.exe");
+      await copyFile(hidden, runner);
+      await writeFile(join(this.#run, "elevation-restart.ps1"), restartScript({ run: this.#run, data: this.#d.data, app: this.#d.app, task, on }));
+      await writeFile(join(this.#run, "elevation-apply.ps1"), applyScript({ run: this.#run, data: this.#d.data, task, on, deadline, restart: on !== p.elevated, runner }));
+      // Written before the elevated side can write its own over it.
+      await this.#keep({ want: on, at: now, step: "asking" });
+    } finally {
+      this.#changing = false;
+    }
     this.#d.changed();
     const child = (this.#d.run ?? runHidden)(askScript(join(this.#run, "elevation-apply.ps1"), !p.elevated));
     this.#asking = child;
@@ -155,10 +200,12 @@ export class Elevation {
       this.#cancel?.();
       this.#cancel = null;
       this.#asking = null;
-      const k = this.kept();
-      // Said by the elevated side meanwhile (applying, restarting, failed): its, not this.
-      if (failed !== null && k?.step === "asking") this.#keep({ want: on, at: this.#d.now(), failed });
-      this.#d.changed();
+      void this.#reload().then(() => {
+        const k = this.kept();
+        // Said by the elevated side meanwhile (applying, restarting, failed): its, not this.
+        if (failed !== null && k?.step === "asking") void this.#keep({ want: on, at: this.#d.now(), failed });
+        this.#d.changed();
+      });
     };
     this.#cancel = this.#d.after(ASK_MS, () => {
       child.kill();
@@ -175,26 +222,53 @@ export class Elevation {
       this.#d.changed();
       const until = this.#d.now() + APPLY_MS;
       const look = () => {
-        const k = this.kept();
-        this.#d.changed();
-        if (k?.step === "asking" || k?.step === "applying") {
-          if (this.#d.now() < until) this.#cancel = this.#d.after(1000, look);
-          else this.#keep({ want: on, at: this.#d.now(), failed: "error" });
-        } else this.#cancel = null;
+        this.#cancel = null;
+        void this.#reload().then(() => {
+          const k = this.kept();
+          this.#d.changed();
+          if (k?.step === "asking" || k?.step === "applying") {
+            if (this.#d.now() < until) this.#cancel = this.#d.after(1000, look);
+            else void this.#keep({ want: on, at: this.#d.now(), failed: "error" });
+          }
+        });
       };
       this.#cancel = this.#d.after(1000, look);
     });
   }
 }
 
-function readWindowsJson(data: string): Record<string, unknown> {
+/// A file's text, null where it cannot be read: only before the station serves.
+function readBeforeServing(path: string): string | null {
   try {
-    const j = JSON.parse(readFileSync(join(data, "windows.json"), "utf8").replace(/^﻿/, ""));
+    return readFileSync(path, "utf8"); // sync: read once, before the station serves (Elevation is made as its part is)
+  } catch {
+    return null;
+  }
+}
+
+/// A file's text off the station's thread, null where it cannot be read.
+const readOrNull = (path: string) => readFile(path, "utf8").catch(() => null);
+
+/// What run/elevation.json says, where it says something (PowerShell writes a BOM).
+function keptIn(text: string | null): Kept | null {
+  try {
+    const k = JSON.parse((text ?? "").replace(/^\uFEFF/, ""));
+    return typeof k?.want === "boolean" ? k : null;
+  } catch {
+    return null;
+  }
+}
+
+function windowsJsonIn(text: string | null): Record<string, unknown> {
+  try {
+    const j = JSON.parse((text ?? "").replace(/^\uFEFF/, ""));
     return j !== null && typeof j === "object" ? j : {};
   } catch {
     return {};
   }
 }
+
+const onIn = (text: string | null) => windowsJsonIn(text).admin === true;
 
 /// A PowerShell string of `s`.
 const q = (s: string) => `'${s.replaceAll("'", "''")}'`;

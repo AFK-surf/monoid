@@ -1045,6 +1045,17 @@ const readsOf = (method: string, path: string) => {
 /// `plain`: the station's own answer, said as it is (not compressed, no length said).
 async function handledOf(m: Members, method: string, path: string, head: any, body: Buffer, viewer: Admitted["viewer"], signal?: AbortSignal): Promise<{ handled: Answer; headers: Record<string, string>; rest: string; plain?: true }> {
   const json = (status: number, said: unknown): Answer => ({ status, headers: { "content-type": "application/json" }, body: Buffer.from(typeof said === "string" ? said : JSON.stringify(said)) });
+  // A lock route's answer, a POST's once the person's chains it took are on disk (person-chains.ts `written`): one that
+  // could not be written is not said kept.
+  const kept = async (status: number, said: unknown): Promise<Answer> => {
+    if (method !== "POST") return json(status, said);
+    try {
+      await personChainsOf(m.cloud).written();
+    } catch (e) {
+      return json(500, { error: `not kept on this station, try again: ${(e as Error).message}` });
+    }
+    return json(status, said);
+  };
   // The caller's headers go on, but not those of the hop, nor any of the station's own: who is asking is only what
   // the credential says.
   const headers: Record<string, string> = {};
@@ -1060,7 +1071,7 @@ async function handledOf(m: Members, method: string, path: string, head: any, bo
   // The workspace lock (cloud/lock.ts): the station's, here where the device that brings it is known.
   if (route === "/lock") {
     const [status, said] = lockRoute(m.cloud, method, at < 0 ? [] : queryPairs(rest.slice(at + 1)), body, viewer);
-    return { handled: json(status, said), headers, rest, plain: true };
+    return { handled: await kept(status, said), headers, rest, plain: true };
   }
   // The workspace's ways (mesh/ways.ts): read by its members' devices, changed from the app's 连接方式.
   if (route === "/ways") {
@@ -1075,7 +1086,7 @@ async function handledOf(m: Members, method: string, path: string, head: any, bo
   const lockPart = /^\/lock\/(person|devices|bodies|logs|heads|given)$/.exec(route);
   if (lockPart) {
     const [status, said] = lockPartRoute(m.cloud, lockPart[1]!, method, body, viewer);
-    return { handled: json(status, said), headers, rest, plain: true };
+    return { handled: await kept(status, said), headers, rest, plain: true };
   }
   const handled = await m.admin.handle({
     method,

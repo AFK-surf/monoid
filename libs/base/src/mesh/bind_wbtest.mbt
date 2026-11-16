@@ -766,3 +766,124 @@ test "a connection the wait brought that nobody took is closed to be forgotten a
   ignore(far.comes("other/9"))
   assert_true(gave(asking) is Some(incoming) && incoming.alpn == hex("other/9"))
 }
+
+///|
+/// The handle of a stream at the stood-in shell.
+fn Inbound::handle(self : Inbound) -> Int {
+  handle_of({ "id": self.stream.id })
+}
+
+///|
+test "after its first stream, the streams its peer opens are taken one by one, each read and answered on its own; asked side by side, each asker gets its own; the first asked with none before is the first, and first after it is a mistake" {
+  let (stood, far, _, incoming, conn) = taken()
+  let reading = stood.go(() => incoming.first())
+  far.sends(far.open(conn), b"{\"t\":\"hello\"}\n")
+  assert_eq(gave(reading).0, "{\"t\":\"hello\"}")
+  // Two ask at once: the shell is asked one wait at a time, the second asker's after the first's was answered.
+  let one = stood.go(() => incoming.accept())
+  let two = stood.go(() => incoming.accept())
+  assert_eq((ended_as(one), ended_as(two), stood.times("conn.acceptBi \{conn}")), ("waiting", "waiting", 2))
+  let s1 = far.open(conn)
+  assert_eq((ended_as(two), stood.times("conn.acceptBi \{conn}")), ("waiting", 3))
+  let s2 = far.open(conn)
+  guard (gave(one), gave(two)) is (Some(first), Some(second)) else { fail("no stream was given") }
+  assert_eq((first.handle(), second.handle()), (s1, s2))
+  // Each its own: what its peer sends there, what goes back there.
+  far.sends(s2, b"two")
+  far.sends(s1, b"one")
+  assert_true(gave(stood.go(() => first.take())) == Some(b"one"))
+  assert_true(gave(stood.go(() => second.take())) == Some(b"two"))
+  assert_eq(ended_as(stood.go(() => second.out.write(b"2"))), "ok")
+  assert_eq(ended_as(stood.go(() => first.out.write(b"1"))), "ok")
+  assert_true(far.got(s1) == b"1" && far.got(s2) == b"2")
+  // The first asked by accept: its program reads it itself, and first is then its mistake.
+  let (stood, far, _, incoming, conn) = taken()
+  let taking = stood.go(() => incoming.accept())
+  let s = far.open(conn)
+  assert_true(gave(taking) is Some(inbound) && inbound.handle() == s)
+  assert_true(ended_as(stood.go(() => incoming.first())).has_prefix("invalid_params: "))
+  // An accept asked while first waits for its line waits for it, and is the stream after.
+  let (stood, far, _, incoming, conn) = taken()
+  let reading = stood.go(() => incoming.first())
+  let after = stood.go(() => incoming.accept())
+  let s1 = far.open(conn)
+  assert_eq((ended_as(after), stood.times("conn.acceptBi \{conn}")), ("waiting", 1))
+  far.sends(s1, b"hi\n")
+  assert_eq((gave(reading).1.handle(), ended_as(after)), (s1, "waiting"))
+  let s2 = far.open(conn)
+  assert_true(gave(after) is Some(inbound) && inbound.handle() == s2)
+}
+
+///|
+test "an asker of the next stream that gives up loses none: the shell is asked once, and the stream it brings is the next asker's; one nobody took is reset as the connection is closed or ends; one the shell brings after the end is reset there" {
+  let (stood, far, _, incoming, conn) = taken()
+  let asking = stood.go(() => incoming.accept())
+  asking.interrupt()
+  stood.run()
+  assert_eq((ended_as(asking), stood.times("conn.acceptBi \{conn}")), ("interrupted", 1))
+  let s = far.open(conn)
+  assert_true(gave(stood.go(() => incoming.accept())) is Some(inbound) && inbound.handle() == s)
+  assert_eq((stood.times("conn.acceptBi \{conn}"), stood.times("istream.reset \{s}")), (1, 0))
+  // Brought for nobody, then the connection closed by its program: the stream is reset, its wait let go of.
+  let asking = stood.go(() => incoming.accept())
+  asking.interrupt()
+  stood.run()
+  let kept = far.open(conn)
+  incoming.close()
+  stood.run()
+  assert_eq((stood.times("istream.reset \{kept}"), far.closes), (1, ["\{conn} closed"]))
+  assert_true(gave(stood.go(() => incoming.accept())) is None)
+  assert_eq(stood.times("conn.acceptBi \{conn}"), 2)
+  // Brought for nobody, then the connection ended by its peer: reset as its end is told.
+  let (stood, far, _, incoming, conn) = taken()
+  let asking = stood.go(() => incoming.accept())
+  asking.interrupt()
+  stood.run()
+  let kept = far.open(conn)
+  far.end(conn, "bye")
+  assert_eq(stood.times("istream.reset \{kept}"), 1)
+  // An asker waiting as the connection ends is told none; the shell's wait, answered with a stream only after,
+  // has it reset there.
+  let (stood, far, _, incoming, conn) = taken()
+  stood.holding = "conn.acceptBi"
+  let asking = stood.go(() => incoming.accept())
+  far.end(conn, "bye")
+  assert_true(gave(asking) is None)
+  stood.last += 1
+  let late = stood.last
+  stood.give("conn.acceptBi", { "id": Json::number(late.to_double()) })
+  assert_eq(stood.times("istream.reset \{late}"), 1)
+  assert_true(gave(stood.go(() => incoming.accept())) is None)
+}
+
+///|
+test "a stream opened from this side of a connection a peer dialled: written and read as one the peer opened; given up while the shell opens it, what comes is reset; ended first, it fails as cut" {
+  let (stood, far, _, incoming, conn) = taken()
+  let reading = stood.go(() => incoming.first())
+  far.sends(far.open(conn), b"hello\n")
+  ignore(gave(reading))
+  let opened = gave(stood.go(() => incoming.open()))
+  assert_eq(stood.times("conn.openBi \{conn}"), 1)
+  let s = opened.handle()
+  assert_eq(ended_as(stood.go(() => opened.out.write(b"{\"t\":\"push\"}\nbody"))), "ok")
+  assert_true(far.got(s) == b"body")
+  far.sends(s, b"back")
+  assert_true(gave(stood.go(() => opened.take())) == Some(b"back"))
+  // Given up while the shell opens it: opened all the same, and reset as it comes.
+  stood.holding = "conn.openBi"
+  let asking = stood.go(() => incoming.open())
+  asking.interrupt()
+  stood.run()
+  assert_eq(ended_as(asking), "interrupted")
+  stood.last += 1
+  let late = stood.last
+  stood.give("conn.openBi", { "id": Json::number(late.to_double()) })
+  assert_eq((stood.times("istream.reset \{late}"), stood.times("istream.write \{late}")), (1, 0))
+  // The connection ending while one is opened: its asker is told so; asked after, it fails at once.
+  let waiting = stood.go(() => incoming.open())
+  far.end(conn, "bye")
+  assert_eq(ended_as(waiting), cut_said)
+  let after = stood.go(() => incoming.open())
+  assert_true(ended_as(after).has_prefix("mesh: "))
+  assert_eq(stood.times("conn.openBi \{conn}"), 3)
+}

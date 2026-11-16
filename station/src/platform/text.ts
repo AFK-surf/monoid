@@ -1,6 +1,5 @@
 // Reading what a machine's commands and files say (api/host.ts's, for every machine): Rust's str methods as host.rs
 // uses them.
-import { spawnSync } from "node:child_process";
 
 /// Rust's str::trim (char::is_whitespace).
 const WS = "\\t\\n\\v\\f\\r \\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000";
@@ -14,12 +13,6 @@ export const splitWords = (s: string) => s.split(SPLIT).filter((w) => w !== "");
 export const parseU64 = (s: string): number | null => (/^\+?[0-9]+$/.test(s) ? Number(s) : null);
 /// str::parse::<f64> for what these commands write (no inf or nan here).
 export const parseF64 = (s: string): number | null => (/^[+-]?([0-9]+\.?[0-9]*|\.[0-9]+)([eE][+-]?[0-9]+)?$/.test(s) ? Number(s) : null);
-
-/// output: a command's output, trimmed, or none when it cannot be run (within a few seconds) or fails.
-export function output(command: string, args: string[]): string | null {
-  const out = spawnSync(command, args, { timeout: 3000, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
-  return out.status === 0 && typeof out.stdout === "string" ? trim(out.stdout) : null;
-}
 
 /// What a system's memory left says of its pressure (where it has no level of its own): under a tenth available is high,
 /// under 4% critical.

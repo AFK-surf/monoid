@@ -1,12 +1,15 @@
 // A station can start before its user's desktop and inherit an old DISPLAY. Look up that same user's active
 // graphical session when logind is available; never borrow another user's session or X11 credentials.
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
+import { access } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
 const run = promisify(execFile);
 type Session = { id: string; uid: number; type: "x11" | "wayland"; active: boolean; remote: boolean; display?: string };
+
+/// Whether `path` is there, looked at off the station's thread.
+const there = (path: string) => access(path).then(() => true, () => false);
 
 function fields(text: string): Record<string, string> {
   return Object.fromEntries(text.split("\n").flatMap((line) => {
@@ -44,7 +47,7 @@ export async function desktopEnvironment(base: NodeJS.ProcessEnv = process.env):
 
     const env: NodeJS.ProcessEnv = { ...base, XDG_SESSION_TYPE: session.type };
     const runtime = `/run/user/${uid}`;
-    if (existsSync(join(runtime, "bus"))) {
+    if (await there(join(runtime, "bus"))) {
       env.XDG_RUNTIME_DIR = runtime;
       env.DBUS_SESSION_BUS_ADDRESS = `unix:path=${join(runtime, "bus")}`;
     }
@@ -81,7 +84,7 @@ export async function desktopEnvironment(base: NodeJS.ProcessEnv = process.env):
     }
     if (!env.XAUTHORITY) {
       for (const candidate of [join(runtime, "gdm/Xauthority"), base.HOME && join(base.HOME, ".Xauthority")]) {
-        if (candidate && existsSync(candidate)) { env.XAUTHORITY = candidate; break; }
+        if (candidate && (await there(candidate))) { env.XAUTHORITY = candidate; break; }
       }
     }
     return env;

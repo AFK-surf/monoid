@@ -70,7 +70,7 @@ export const WATCH_HELD_MS = 90_000;
 
 export type HubOptions = {
   /// Where a file a person drops into a view is put on this machine (the drive's
-  /// `dropFolder`); none: files are not taken.
+  /// `droppedInto`); none: files are not taken.
   drop?: () => string | null;
 };
 

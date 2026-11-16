@@ -16,6 +16,8 @@ of its workspace (`moon.work`); `effect` stays in mbui.
   thread, and at once where answers wait already), and at each round calls `Shell::turn`, which takes what is in and
   runs the runtime until nothing is ready, never waiting, and says when its next timer is due. On js iroh is loaded from an address (`Shell::start`) or given, the
   module or what loads it (`Shell::start_with`, `IrohJs`); a worker has no localStorage, so `storage.*` fails there.
+  A page keeps keys and their bytes past localStorage's few MB in IndexedDB (`idb.*`, `shell_js.mbt`'s head), in a map
+  of its own where there is none (Node): no other shell has those ops.
 - `src/wire`: pure stream framing and event-stream parsing (`lines`, request/reply heads, SSE text) with no transport.
 - `src/mesh`: the device side of the mesh on top of `shell` and `wire` (endpoints, scoped peer links, hello/pings/renewal,
   requests/streams/duplex, health racing in `health.mbt`, wake/rebind in `wake.mbt`, what the endpoint is bound
@@ -67,8 +69,10 @@ of its workspace (`moon.work`); `effect` stays in mbui.
   and the reply read as ever.
 - A connection a peer dials to the endpoint (`Mesh::incoming`, only where `Binding.takes` names a protocol) is never a
   link: no credential, ping or `links` entry knows it. The mesh keeps one the shell brought that no asker took yet;
-  its first line is held to `first_ms` (30 s) and 64 KiB (`Incoming::first`). How long a taken one stays and how
-  many at once are its program's to bound; while one is open the endpoint is not bound anew.
+  its first line is held to `first_ms` (30 s) and 64 KiB (`Incoming::first`). The streams after it, its peer's
+  (`Incoming::accept`) and its program's (`Incoming::open`), are waited for in the mesh's fibers as a link's are,
+  and are its program's to bound, as are how long a taken one stays and how many at once; while one is open the
+  endpoint is not bound anew.
 - What a peer's hello answer says of its `lan` / `tailnet` addresses (IPv4 `a.b.c.d:port`, 8 of each, as the
   TypeScript mesh's check) is kept by place in the program's `Store` (`Mesh::make`'s `addresses`), unreadable kept
   values taken for none. A dial given them does not wait to be on a relay (`onto_max_ms`), as in that mesh.
@@ -92,6 +96,9 @@ of its workspace (`moon.work`); `effect` stays in mbui.
   ways' fiber while they are steered, by its link's otherwise.
 - `Mesh::sign` asks the shell (`ed25519.sign`, the Rust shell's) and signs in `sign.mbt` only where it cannot (a
   page): that code is TweetNaCl's, not constant-time beyond what it was, and signs nothing it is not given.
+  `Mesh::verify` asks the shell (`crypto.verify`) and checks in `sign.mbt` (`ed25519_verify`) where it cannot, which
+  refuses what the Rust shell's libcrux refuses (`S` past the order, a point not written once only): change both
+  together.
   `Mesh::migrate` binds the endpoint anew on the key given and lets go of everything on the one before at once.
 - The device's key file is its user's alone whatever the umask, by the Rust shell's doing alone
   (`client/shell/src/lib.rs` `create_private`): a program linked to a shell from before keeps its key as its umask has
@@ -137,7 +144,8 @@ left is another part's:
     its first step.
   - Only a dial can be cancelled in the shell (`Shell::give_up`). An interrupted stream read or write leaves the shell
     stream unusable, so interrupted streams must be reset (`Reply::cancel`, `Out::write`), and control-stream exchanges
-    (`Mesh::ping`, `Mesh::race`) or stream opens/accepts (`Link::stream`, `Link::accept`) run in the mesh's own fibers.
+    (`Mesh::ping`, `Mesh::race`) or stream opens/accepts (`open_on`, `accept_on`: a link's and a taken connection's)
+    run in the mesh's own fibers.
   - `Mesh::rebind` only rebinds the endpoint when `Mesh::idle` reports nothing active on it; callers never cache the
     endpoint handle across waits.
   - `Mesh::retune` onto other relays lets go of every link first, as `drop_link` does (peers told the caller's

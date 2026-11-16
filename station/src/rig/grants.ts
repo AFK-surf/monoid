@@ -8,13 +8,13 @@
 // What it cannot tell: which chat a station's request is really for. The station says, as it says whose a vault's
 // grant is; an agent that owns its station can use a grant another chat of that station holds, and no more.
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import {
   type AddBody, type DeviceBody, type Device, type GrantBody, type RevokeBody, type SettingsBody, type Signed, type Kind, TIMEOUT_MAX, signedBytes, wellFormed,
   FULL_FOR, type FullBody,
 } from "../../../client/core-ts/src/rig-form.ts";
 import { type Entry, entryHash, personFold, signatureOk } from "../cloud/lock.ts";
-import { writePrivate } from "../ops/files.ts";
+import { PrivateFile } from "../ops/files.ts";
 import { Fibers } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 
@@ -76,13 +76,22 @@ export class RigGrants {
   readonly #fibers: Fibers;
   #kept: Kept = { chain: [], settings: null, add: null, grants: {}, revoked: {}, devices: {}, deviceSettings: {} };
   #armed: (() => void) | null = null;
+  readonly #file: PrivateFile;
 
   constructor(deps: GrantsDeps) {
     this.#d = deps;
+    this.#file = new PrivateFile(deps.path);
     this.#fibers = deps.fibers ?? new Fibers("rig");
-    if (existsSync(deps.path)) {
+    let text: string | null = null;
+    try {
+      text = readFileSync(deps.path, "utf8"); // sync: read once, before the station serves
+    } catch (error) {
+      // None kept yet: nobody granted. Else as one unreadable.
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") log.warn("rig", "the rig's grants could not be read; none holds until they are signed again", { error: (error as Error).message });
+    }
+    if (text !== null) {
       try {
-        const raw = JSON.parse(readFileSync(deps.path, "utf8"));
+        const raw = JSON.parse(text);
         this.#kept = {
           chain: Array.isArray(raw?.chain) ? raw.chain : [],
           settings: wellFormed("settings", raw?.settings) ? raw.settings : null,
@@ -104,8 +113,14 @@ export class RigGrants {
     return Math.floor(this.#fibers.now() / 1000);
   }
 
+  /// Kept in memory at once, written off the station's thread after (the latest of what is asked meanwhile).
   #save(): void {
-    writePrivate(this.#d.path, JSON.stringify(this.#kept));
+    void this.#file.write(JSON.stringify(this.#kept)).catch((error) => log.warn("rig", "the rig's grants were not written", { error: (error as Error).message }));
+  }
+
+  /// Once what was kept is written (the rig closing).
+  written(): Promise<void> {
+    return this.#file.written();
   }
 
   #self(): Self {

@@ -51,6 +51,13 @@ fn settings_core_of(
   login_card~ : (@ui.Ctx, String, String, Bool) -> Unit,
   share_card~ : () -> Unit,
 ) -> @settings.Core {
+  // (概览 switched to from the accounts' list once what it shows is answered, the list meanwhile, and what was asked
+  // handed to it as the list's pages hand theirs: the shells' shown_read of "profiles-list")
+  @settings.overview_switch.val = fn(ws, go) {
+    let scope = { "scope": Json::string(ws) }
+    switch_answered(src, [station_rows_ask(ws), ("profiles", scope), ("profilesOverview", scope)], "profiles-list\u{1}" + ws, go)
+    |> ignore
+  }
   {
     topic: fn(name, params) {
       let topic = src.topic(name, params)

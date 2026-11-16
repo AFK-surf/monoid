@@ -45,7 +45,7 @@ export function packetsSince(was: LinkNet["packets"], now: LinkNet["packets"]): 
   return { sent: now.sent - was.sent, lost: now.lost - was.lost };
 }
 
-const STATION_TOPICS = new Set(["link", "overview", "sessions", "host", "net", "way", "threads", "chatRows", "jobs", "archivedRows", "stationUsage", "stationResources", "session", "live", "thread", "letters", "slackApp", "jobLog", "job", "drive", "screens", "terminals", "screenCard", "machineLogins", "machineLogin", "machineLoginScreen", "stationSearch", "memory", "presets", "stationMove", "linkPreview", "filePeek", "messagePeek"]);
+const STATION_TOPICS = new Set(["link", "overview", "sessions", "host", "net", "way", "threads", "chatRows", "jobs", "archivedRows", "stationUsage", "stationResources", "session", "live", "thread", "letters", "slackApp", "jobLog", "job", "drive", "screens", "terminals", "screenCard", "machineLogins", "machineLogin", "machineLoginScreen", "stationSearch", "memory", "presets", "profilePace", "stationMove", "linkPreview", "filePeek", "messagePeek"]);
 
 const u64 = (v: unknown): number | null => (typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : null);
 
@@ -60,7 +60,7 @@ export function placeKey(station: string, thread: number): string {
 }
 
 /// The station topics made from how its link is (up, down, why): made again as it changes.
-const LINKED = new Set(["link", "live", "screens", "terminals", "screenCard", "drive", "presets", "memory", "stationMove", "linkPreview", "filePeek", "messagePeek", "job", "machineLogins", "machineLogin"]);
+const LINKED = new Set(["link", "live", "screens", "terminals", "screenCard", "drive", "presets", "profilePace", "memory", "stationMove", "linkPreview", "filePeek", "messagePeek", "job", "machineLogins", "machineLogin"]);
 
 export class StationTopics implements Owner {
   readonly #core: Inner;
@@ -195,6 +195,8 @@ export class StationTopics implements Owner {
     if (topic.topic === "memory") this.#sync.memoryShown(station);
     // The presets: read each time shown (the directories offered move as chats work), and as one changes.
     if (topic.topic === "presets") this.#sync.presetsShown(station);
+    // The accounts' last hours: read each time the Profile overview shows them, and as the station tells they changed.
+    if (topic.topic === "profilePace") this.#sync.paceShown(station);
     // What moves to another station: read each time shown, and as its station says it changed.
     if (topic.topic === "stationMove") this.#sync.moveShown(topic);
     // What a web link in a message is: read each time its card shows (a pull request's state moves), what was read
@@ -322,6 +324,12 @@ export class StationTopics implements Owner {
         if (v !== undefined) return { ok: structuredClone(v) as never };
         if (link && down(link.state)) return { err: new CoreError("offline", downWords(link.state, this.#core.views.stationName(station))) };
         return error ? { err: error } : undefined;
+      }
+      case "profilePace": {
+        // As the station said them last; none while a station is down or has not said (the overview draws what it
+        // has of the allowances alone meanwhile).
+        const v = this.#sync.pace(station);
+        return { ok: (v ?? { profiles: {} }) as never };
       }
       case "stationMove": {
         // As the station said it last (move.ts shapes it), with the stations it may go to as the workspace has them now;
