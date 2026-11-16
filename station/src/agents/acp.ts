@@ -18,6 +18,7 @@
 // started and signed in, how it is given the station's instructions, a message for the running turn, what it says of
 // its usage) is its driver's, by the hooks below; and so is a transcript kept by the station (KeptTranscript), for a
 // runtime whose own the station cannot read.
+import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import { appendFile } from "node:fs/promises";
 import { join } from "node:path";
 import { wall } from "../ops/fibers.ts";
@@ -95,6 +96,9 @@ export type AcpSnapshot = ProcessSnapshot & {
 /// (something else came), a call once done with what it said, the turn's usage, its end. The program says each line
 /// (mb/src/acp `kept`) but the session's opening, a turn's usage and an end by its process exiting; each is written in
 /// turn off the station's thread, a turn's end said once what came before it is (`settled`).
+/// How much of a kept transcript's end is read for its running turn (lastOfTurn).
+const TAIL = 1 << 20;
+
 export class KeptTranscript {
   private readonly kind: RuntimeKind;
   private readonly dir: string;
@@ -124,6 +128,40 @@ export class KeptTranscript {
     void next.then(() => {
       if (this.#writing === next) this.#writing = null;
     });
+  }
+
+  /// The last line of `type` kept of `id` since its last turn's end (null: none, or none in the file's last `TAIL`
+  /// bytes): what a station taken up after a crash goes on from, where what the one before wrote was not yet
+  /// acknowledged to its runner and comes again.
+  lastOfTurn(id: string, type: string): Json | null {
+    if (id === "") return null;
+    let fd: number;
+    try {
+      fd = openSync(join(this.dir, `${id}.jsonl`), "r"); // sync: once, as a crashed session is taken up, before it is told anything
+    } catch {
+      return null;
+    }
+    try {
+      const size = fstatSync(fd).size; // sync: as above
+      const from = Math.max(0, size - TAIL);
+      const buf = Buffer.alloc(size - from);
+      readSync(fd, buf, 0, buf.length, from); // sync: as above, its last TAIL bytes at most
+      const lines = buf.toString("utf8").split("\n");
+      if (from > 0) lines.shift();
+      for (let i = lines.length - 1; i >= 0; i--) {
+        let line: Json;
+        try {
+          line = JSON.parse(lines[i]!);
+        } catch {
+          continue;
+        }
+        if (line?.type === "end") return null;
+        if (line?.type === type) return line;
+      }
+      return null;
+    } finally {
+      closeSync(fd); // sync: as above
+    }
   }
 
   /// What is being written, done (null: nothing is).

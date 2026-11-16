@@ -21,7 +21,7 @@ import { join } from "node:path";
 import { peerHttpBase } from "../tools/http.ts";
 import { rulesFolder as folderOf } from "./rules-folder.ts";
 import { AcpDriver, AcpSession, KeptTranscript, acpOutcome, type AcpStart } from "./acp.ts";
-import type { Events } from "./own-process.ts";
+import type { Events, Replayed } from "./own-process.ts";
 import { expandRoute, profileEnv, profileModel } from "./profiles.ts";
 import { cleanEnv, failureOf, uuid, type FailureReason, type OpenOptions } from "./runtime.ts";
 
@@ -317,6 +317,21 @@ export class DevinSession extends AcpSession {
 
   protected ending() {
     this.usage = null;
+  }
+
+  /// After a crash: the running turn's calls as its transcript has them, the last written being where it goes on from.
+  /// What the station before wrote but had not acknowledged to the runner comes again, and without this was counted a
+  /// call of its own: written twice, the turn's spend with it (devin.test.ts' crash, 4 calls where there were 3).
+  replayed(replayed: Replayed, resume: string | undefined) {
+    super.replayed(replayed, resume);
+    if (!this.turn.busy) return;
+    const last = this.transcript?.lastOfTurn(this.sessionId, "usage");
+    if (!last || typeof last.run !== "string" || last.usage === undefined) return;
+    const [run, k] = last.run.split(":");
+    const calls = k === undefined ? 1 : Number(k);
+    if (!run || !Number.isSafeInteger(calls) || calls < (this.usage?.calls ?? 0)) return;
+    const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+    this.usage = { run, calls, lastCall: JSON.stringify(last.usage), context: n(last.context), window: n(last.window) };
   }
 
   protected override cutShort(said: string) {

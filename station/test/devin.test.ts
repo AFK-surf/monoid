@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { after, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { CONFIG, DevinDriver, callOf, classifyFailure, devinArgs, devinCatalog, devinData, devinKey, outcomeOf, rulesFolder, variant } from "../src/agents/devin.ts";
+import { CONFIG, DevinDriver, DevinSession, SESSIONS, callOf, classifyFailure, devinArgs, devinCatalog, devinData, devinHome, devinKey, outcomeOf, rulesFolder, variant } from "../src/agents/devin.ts";
 import { profileEnv, profileRuntimes } from "../src/agents/profiles.ts";
 import type { AgentSession, OpenOptions, Profile, RuntimeEvent } from "../src/agents/runtime.ts";
 import { allLeft } from "../src/agents/runner.ts";
@@ -515,6 +515,41 @@ describe("the Devin driver", { concurrency: true }, () => {
       assert.ok(!a.events.some((e) => e.type === "closed"), "the first driver hears nothing after letting go");
     });
   }
+
+  // The crash's cut at its worst, made so: the station before wrote a call's usage, then crashed before the runner was
+  // told it took that line, so the line comes again to the next. It goes on from the transcript's last call, the line
+  // again no call of its own (it was written twice, a turn's 3 calls counted 4: #6667's check-station, 2026-11-16).
+  test("after a crash, a usage the transcript has already is not counted again; the next call goes on from it", async () => {
+    const o = options();
+    const id = "dv-crash-cut";
+    const dir = join(devinHome(o.profile.home), SESSIONS);
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, `${id}.jsonl`);
+    const counts = (input: number, out: number) => ({ inputTokens: input - 400, cacheReadTokens: 400, cacheWriteTokens: 0, outputTokens: out });
+    const update = (input: number, out: number, used: number) => ({
+      sessionUpdate: "usage_update", used, size: 262000,
+      _meta: { "cognition.ai/inputTokens": input, "cognition.ai/cachedReadTokens": 400, "cognition.ai/outputTokens": out },
+    });
+    const kept = (l: object) => JSON.stringify({ time: 1, ...l });
+    writeFileSync(path, [
+      kept({ type: "session", id, cwd: data }),
+      kept({ type: "usage", run: "r0", model: "swe-2", usage: counts(900, 9), calls: 1, context: 900, window: 262000 }),
+      kept({ type: "end", status: "finished" }),
+      kept({ type: "user", text: "hold" }),
+      kept({ type: "usage", run: "r1", model: "swe-2", usage: counts(1000, 50), calls: 1, context: 1050, window: 262000 }),
+      kept({ type: "usage", run: "r1:2", model: "swe-2", usage: counts(1100, 51), calls: 1, context: 1151, window: 262000 }),
+    ].join("\n") + "\n");
+    const s = new DevinSession(driver(), () => {}, o);
+    const internal = s as unknown as { took(e: unknown): boolean; settled(): Promise<void> | null };
+    s.replayed({ session: id, turn: { busy: true }, live: null }, undefined);
+    // Its last call's line, again (and as said twice, the second time as its agent's), then the next call.
+    internal.took({ type: "usage", update: update(1100, 51, 1151), owner: null });
+    internal.took({ type: "usage", update: update(1100, 51, 1151), owner: null });
+    internal.took({ type: "usage", update: update(1200, 52, 1252), owner: null });
+    await internal.settled();
+    const usage = lines(path).filter((l) => l.type === "usage");
+    assert.deepEqual(usage.map((l) => [l.run, l.usage.inputTokens, l.context]), [["r0", 500, 900], ["r1", 600, 1050], ["r1:2", 700, 1151], ["r1:3", 800, 1252]]);
+  });
 });
 
 describe("what a profile runs Devin on", () => {
