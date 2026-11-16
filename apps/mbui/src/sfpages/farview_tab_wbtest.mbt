@@ -2,7 +2,8 @@
 // the stage's Hello and viewport said as it goes live (the viewport as tall as the window less the tab's bar), the
 // host's document (fvclient's doc wire, made as a host makes it: fvclient/doc's Mirror) laid out and drawn here as
 // nodes, a tap said to the host on the element under it, a box of the page's that scrolls scrolled here and its place
-// told the host, the view let go as the tab goes; the same tab shown twice at once, each a stage and a view of its own.
+// told the host, the view let go as the tab goes; the same tab shown twice at once, each a stage and a view of its own;
+// a page of a real tab's size, what each change of it makes, lays out and measures, laid out once a moment.
 
 ///|
 priv struct FarviewRig {
@@ -96,6 +97,7 @@ fn farview_rig(
 /// What a host of a page says of it as it sends it whole, then as it changes (fvclient/doc's Mirror).
 priv struct FarviewHost {
   doc : @html.Node
+  css : String
   mirror : @doc.Mirror
   mut seq : Int
 }
@@ -114,8 +116,8 @@ let farview_page_css : String = "body { margin: 0 } .page { position: relative; 
   ".band { height: 50px; background: rgb(0, 255, 0) } .rest { height: 850px }"
 
 ///|
-fn FarviewHost::new() -> FarviewHost {
-  { doc: @html.parse(farview_page_html), mirror: @doc.Mirror::new(), seq: 0 }
+fn FarviewHost::new(html? : String = farview_page_html, css? : String = farview_page_css) -> FarviewHost {
+  { doc: @html.parse(html), css, mirror: @doc.Mirror::new(), seq: 0 }
 }
 
 ///|
@@ -124,7 +126,7 @@ fn FarviewHost::state(self : FarviewHost) -> @doc.DocState {
     base: "https://example.test/",
     root: self.doc,
     frames: [],
-    sheets: [("https://example.test/s.css", farview_page_css)],
+    sheets: [("https://example.test/s.css", self.css)],
     cssom: [],
     defined: fn(_) { false },
     states: fn(_) { 0 },
@@ -407,4 +409,112 @@ test "a Farview tab: 接管 on the agent's line's middle, its words on one line,
     assert_true((bt + bh / 2.0 - (at + line / 2.0)).abs() < 1.0, msg="\{w} at \{scale}: words from \{at}, 接管 \{bt}+\{bh}")
     assert_true(ah < line * 1.5, msg="one line at \{w}: \{ah}")
   }
+}
+
+///|
+/// A page of a real tab's size (still.fail's Screen page on a phone, 2026-11-15: 611-660 nodes laid out): a bar of
+/// links over a side list and a list of `cards` cards that scrolls, each a title, a badge (id `b<i>`), a line under it,
+/// its time and a button.
+fn farview_real_html(cards : Int) -> String {
+  let out = StringBuilder()
+  out.write_string("<!doctype html><html><head><link rel=stylesheet href=s.css></head><body><div class=top>")
+  for i in 0..<6 {
+    out.write_string("<a class=nav href=#\{i}>Section \{i}</a>")
+  }
+  out.write_string("</div><div class=main><div class=side>")
+  for i in 0..<8 {
+    out.write_string("<div class=item><span class=dot></span><span>Folder \{i}</span></div>")
+  }
+  out.write_string("</div><div id=list class=list>")
+  for i in 0..<cards {
+    out.write_string(
+      "<div class=card><div class=head><span class=title>Card title \{i}</span>" +
+      "<span id=b\{i} class=badge>\{i % 9}</span></div><p class=sub>Subtitle line of card \{i}, a few words</p>" +
+      "<div class=foot><span class=meta>\{i} min ago</span><button class=btn>Open</button></div></div>",
+    )
+  }
+  out.write_string("</div></div></body></html>")
+  out.to_string()
+}
+
+///|
+let farview_real_css : String = "body { margin: 0; font: 14px sans-serif } " +
+  ".top { display: flex; gap: 8px; padding: 8px; background: rgb(240, 240, 245) } .nav { color: rgb(20, 60, 200) } " +
+  ".main { display: flex; height: 760px } .side { width: 90px; padding: 4px; background: rgb(250, 250, 250) } " +
+  ".item { display: flex; gap: 4px; padding: 4px 0 } .dot { width: 8px; height: 8px; border-radius: 4px; background: rgb(0, 160, 90) } " +
+  ".list { flex: 1; overflow: auto } " +
+  ".card { margin: 6px; padding: 8px; border-radius: 8px; background: rgb(255, 255, 255); border: 1px solid rgb(220, 220, 225) } " +
+  ".head { display: flex; justify-content: space-between } .title { font-weight: bold } " +
+  ".badge { padding: 0 6px; border-radius: 8px; background: rgb(230, 60, 60); color: rgb(255, 255, 255) } " +
+  ".sub { margin: 4px 0; color: rgb(110, 110, 120) } .foot { display: flex; justify-content: space-between } " +
+  ".btn { border-radius: 6px; background: rgb(20, 60, 200); color: rgb(255, 255, 255); border: 0; padding: 2px 8px }"
+
+///|
+/// What the frames drawn since `Tester::tree_frames_from_now` did, all told: made, let go, laid out, measured, bindings.
+fn farview_frames_did(r : FarviewRig) -> (Int, Int, Int, Int, Int) {
+  r.t
+  .tree_frames()
+  .fold(init=(0, 0, 0, 0, 0), fn(a, f) { (a.0 + f.made, a.1 + f.let_go, a.2 + f.laid, a.3 + f.measured, a.4 + f.bindings) })
+}
+
+///|
+// A page of a real tab's size (30 cards: 680 nodes laid out, as still.fail's Screen page on a phone laid 611-660,
+// 2026-11-15), then what its host sends as it changes: what the tab makes, lets go, lays out, measures and binds held
+// to what the change is, and the page laid out (fvclient's own styling, layout and painting, which no count of the
+// tree's sees: `@stage.phase_mark`) once a moment, in the frame, however many messages came in it. Its ui_hang
+// (build 9298 on: 24 freezes of 0.3-3.2 s in 7.5 min, all of them `tree structures` and `core progress farview.view`)
+// was messages coming several at once, each laying out the whole page as it came: 15 at one moment were 15 layouts of
+// the page in the messages before the frame.
+test "a Farview tab of a real page's size: a change makes and lays out what it changed, the page laid out once a moment" {
+  let layouts = Ref(0)
+  @stage.phase_mark.val = fn(p) { if p == "start" { layouts.val += 1 } }
+  let r = farview_rig(screen="browser:fv_real")
+  let (_, tell) = r.views[0]
+  farview_live(tell)
+  r.t.run_for(farview_drawn_ms)
+  let host = FarviewHost::new(html=farview_real_html(30), css=farview_real_css)
+  // the page whole: made once, laid out once
+  layouts.val = 0
+  r.t.tree_frames_from_now()
+  farview_feed(tell, host.reset())
+  assert_eq(layouts.val, 0, msg="laid out in the messages")
+  r.t.run_for(farview_drawn_ms)
+  let (made, let_go, laid, measured, bindings) = farview_frames_did(r)
+  assert_eq(layouts.val, 1)
+  assert_true(made <= 657 && let_go == 0 && laid <= 684 && measured <= 1 && bindings <= 1471, msg="whole: made \{made} let go \{let_go} laid \{laid} measured \{measured} bindings \{bindings}")
+  assert_true(laid >= 550, msg="not a real page's size: laid \{laid}")
+  // one badge's words: that word's node made again, nothing measured
+  layouts.val = 0
+  r.t.tree_frames_from_now()
+  host.find("b3").children[0].data = "77"
+  farview_feed(tell, host.patch())
+  r.t.run_for(farview_drawn_ms)
+  let (made, let_go, laid, measured, bindings) = farview_frames_did(r)
+  assert_eq(layouts.val, 1)
+  assert_true(made <= 1 && let_go <= 1 && laid <= 16 && measured == 0 && bindings <= 9, msg="a badge's words: made \{made} let go \{let_go} laid \{laid} measured \{measured} bindings \{bindings}")
+  // one badge's ground: its box made again; the badges after it of the same look keyed by the how-many-th such each
+  // take the place of the one before (scene.mbt's keys: one a card, 40 laid at 30 cards, 60 at 50)
+  layouts.val = 0
+  r.t.tree_frames_from_now()
+  host.find("b4").attrs.push({ prefix: "", name: "style", value: "background: rgb(0, 0, 255)", ns: "" })
+  farview_feed(tell, host.patch())
+  r.t.run_for(farview_drawn_ms)
+  let (made, let_go, laid, measured, bindings) = farview_frames_did(r)
+  assert_eq(layouts.val, 1)
+  assert_true(made <= 1 && let_go <= 1 && laid <= 40 && measured == 0 && bindings <= 78, msg="a badge's ground: made \{made} let go \{let_go} laid \{laid} measured \{measured} bindings \{bindings}")
+  // 15 changes at one moment, each a message of its own: none laid out as it comes, the page laid out once in the
+  // frame, each changed word's node made again
+  layouts.val = 0
+  r.t.tree_frames_from_now()
+  for k in 0..<15 {
+    host.find("b\{k + 5}").children[0].data = "x\{k}"
+    farview_feed(tell, host.patch())
+  }
+  assert_eq(layouts.val, 0, msg="laid out in the messages")
+  r.t.run_for(farview_drawn_ms)
+  let (made, let_go, laid, measured, bindings) = farview_frames_did(r)
+  assert_eq(layouts.val, 1)
+  assert_true(made <= 15 && let_go <= 15 && laid <= 44 && measured == 0 && bindings <= 95, msg="15 at once: made \{made} let go \{let_go} laid \{laid} measured \{measured} bindings \{bindings}")
+  assert_true(r.t.words().any(fn(w) { w.0 == "x14" }))
+  @stage.phase_mark.val = fn(_) {  }
 }
