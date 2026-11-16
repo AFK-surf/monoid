@@ -683,8 +683,12 @@ fn sheet_node(
           }
         })
         sheet
-        // (its foot past the window's by its corner, as the host's: its round corners only at its top)
-        .margin(By(fn() { (0.0, 0.0, 0.0, -reach.get()) }))
+        // (its foot past the window's by its corner, as the host's: its round corners only at its top; between the
+        // system's bars down the window's sides, as what goes over the window keeps clear of them: View::clear)
+        .margin(By(fn() {
+          let (_, right, _, left) = layer.clear()
+          (left, 0.0, right, -reach.get())
+        }))
         .max_height(By(fn() {
           // (one that grows: up to the window's top as a finger draws it past its most, giving way; one as tall as what
           // it holds up to its share (`hugs`), no taller than that share)
