@@ -1044,6 +1044,7 @@ web-main.memory.global.when
 web-main.memory.gone
 web-main.memory.noWhen
 web-main.memory.others
+web-main.memory.others.when
 web-main.memory.overview
 web-main.memory.projects
 web-main.memory.projects.none
@@ -1283,6 +1284,7 @@ web-pages.localStation.doing.install
 web-pages.localStation.doing.restart
 web-pages.localStation.doing.start
 web-pages.localStation.doing.stop
+web-pages.localStation.doing.uninstall
 web-pages.localStation.doing.update
 web-pages.localStation.inWorkspace
 web-pages.localStation.lead
@@ -1305,6 +1307,10 @@ web-pages.localStation.stopped
 web-pages.localStation.thisMac
 web-pages.localStation.thisPc
 web-pages.localStation.title
+web-pages.localStation.uninstall
+web-pages.localStation.uninstallAction
+web-pages.localStation.uninstallConfirmBody
+web-pages.localStation.uninstalled
 web-pages.localStation.update
 web-pages.notifications.enable.allow
 web-pages.notifications.enable.browser
@@ -1423,6 +1429,7 @@ web-pages.security.denyDevice
 web-pages.security.devices
 web-pages.security.join
 web-pages.security.joinBody
+web-pages.security.joinShort
 web-pages.security.joinTitle
 web-pages.security.joined
 web-pages.security.lead
@@ -1590,6 +1597,7 @@ web-pages.stations.device
 web-pages.stations.deviceOffline
 web-pages.stations.joinedElsewhere
 web-pages.stations.joinedFrom
+web-pages.stations.thisMachine
 web-pages.stations.page.part.machine
 web-pages.stations.page.part.overview
 web-pages.stations.page.part.settings
@@ -1625,6 +1633,8 @@ web-pages.vault.addKind.login
 web-pages.vault.addKind.loginDetail
 web-pages.vault.addKind.profile
 web-pages.vault.addKind.profileDetail
+web-pages.vault.addKind.slack
+web-pages.vault.addKind.slackDetail
 web-pages.vault.addKind.ssh_key
 web-pages.vault.addKind.ssh_keyDetail
 web-pages.vault.addKind.file
@@ -1968,3 +1978,10 @@ core-views.copies.andLast
 core-views.copies.taking.gits
 core-views.copies.taking.failed
 core-views.copies.why.error
+web-pages.vault.oauth.added
+web-pages.vault.oauth.failed
+web-pages.vault.oauth.signIn.slack
+web-pages.vault.oauth.card.title.slack
+web-pages.vault.oauth.card.read.slack
+web-pages.vault.oauth.card.write.slack
+web-pages.vault.oauth.card.kept.slack

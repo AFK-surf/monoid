@@ -61,6 +61,47 @@ pub fn avatar_node(
 }
 
 ///|
+/// A glyph (`glyph`: its name, its paths, its dots and its colour, as it is now) drawn in node `g`, `size` across, in its
+/// colour, else `tint` (station_mark_node's glyph).
+fn glyph_drawn_node(
+  g : @view.View,
+  glyph : () -> (String, Array[String], Array[String], String)?,
+  size : Double,
+  tint : () -> Int64,
+) -> Unit {
+  g.width(Is(Some(size))).height(Is(Some(size))) |> ignore
+  g
+  .shapes(By(fn() {
+    match glyph() {
+      Some((_, lines, dots, colour)) => {
+        let layers : Array[@pixels.VectorPath] = []
+        for d in lines {
+          layers.push({ d, fill: 0L, stroke: 0x000000FFL, width: 1.75, even_odd: false, sx: 1.0, sy: 1.0, tx: 0.0, ty: 0.0 })
+        }
+        for d in dots {
+          layers.push({ d, fill: 0x000000FFL, stroke: 0L, width: 0.0, even_odd: false, sx: 1.0, sy: 1.0, tx: 0.0, ty: 0.0 })
+        }
+        let color = glyph_color(colour, theme().dark).unwrap_or(tint())
+        let drawing : @pixels.Vector = { w: 24.0, h: 24.0, layers }
+        @ui.vector_shapes(drawing, size, g.pixel_scale(), tint=color)
+      }
+      None => []
+    }
+  }))
+  .drawn_as(By(fn() { "sf/pic/glyph/" + glyph().map(fn(x) { x.0 }).unwrap_or("") }))
+  |> ignore
+}
+
+///|
+/// Glyph `name` (one of glyph_list's) alone in `parent`, `size` across, in `tint`: as station_mark_node draws a mark
+/// that is that glyph, its box the glyph's own (no mark round it to say what else it could be: a picker's cell).
+#callsite(autofill(loc))
+pub fn glyph_mark_node(parent : @view.View, name : String, size : Double, tint : () -> Int64, loc~ : SourceLoc) -> Unit {
+  let paths = glyph_paths(name).map(fn(p) { (name, p.0, p.1, "") })
+  parent.box(made_for=loc, fn(g) { glyph_drawn_node(g, fn() { paths }, size, tint) }) |> ignore
+}
+
+///|
 /// A station's or a workspace's mark (station_mark's, as a node) in `parent`, `size` across: its `icon` first, a glyph
 /// (glyph:<name>, glyph:<name>:<colour>, in that colour, else `tint`) or a picture put up (its address: its bytes the
 /// core's, asked for on `stint` as the page's time on top is, a GIF among them moving; or a data URL), covering its
@@ -100,29 +141,7 @@ pub fn station_mark_node(
     (data_image(i), false)
   }
   parent.box(made_for=loc, fn(m) {
-    m.show(fn() { glyph() is Some(_) }, fn(g) {
-      g.width(Is(Some(size))).height(Is(Some(size))) |> ignore
-      g
-      .shapes(By(fn() {
-        match glyph() {
-          Some((_, lines, dots, colour)) => {
-            let layers : Array[@pixels.VectorPath] = []
-            for d in lines {
-              layers.push({ d, fill: 0L, stroke: 0x000000FFL, width: 1.75, even_odd: false, sx: 1.0, sy: 1.0, tx: 0.0, ty: 0.0 })
-            }
-            for d in dots {
-              layers.push({ d, fill: 0x000000FFL, stroke: 0L, width: 0.0, even_odd: false, sx: 1.0, sy: 1.0, tx: 0.0, ty: 0.0 })
-            }
-            let color = glyph_color(colour, theme().dark).unwrap_or(tint())
-            let drawing : @pixels.Vector = { w: 24.0, h: 24.0, layers }
-            @ui.vector_shapes(drawing, size, g.pixel_scale(), tint=color)
-          }
-          None => []
-        }
-      }))
-      .drawn_as(By(fn() { "sf/pic/glyph/" + glyph().map(fn(x) { x.0 }).unwrap_or("") }))
-      |> ignore
-    })
+    m.show(fn() { glyph() is Some(_) }, fn(g) { glyph_drawn_node(g, glyph, size, tint) })
     m.show(fn() { picture().0 != "" }, fn(p) {
       // (covering its square, an address's and a data URL's alike, and faded in as it is decoded: an old view's
       // picture's way, station_mark's)

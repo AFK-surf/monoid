@@ -5,9 +5,9 @@
 // Cursor dashboard's API keys and can revoke it there. Unlike the SDK's own login (90 days), it is minted without an
 // end: signed in once, the station stays signed in.
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { writePrivate } from "../ops/files.ts";
+import { writePrivateSoon } from "../ops/files.ts";
 import { profileFetch } from "../ops/agent-env.ts";
 import { cursorHome } from "../agents/cursor.ts";
 
@@ -23,9 +23,9 @@ export type CursorLogin = { apiKey: string; email: string | null; keyName: strin
 
 export const authFile = (home: string) => join(cursorHome(home), "auth.json");
 
-export function readCursor(home: string): CursorLogin | null {
+export async function readCursor(home: string): Promise<CursorLogin | null> {
   try {
-    return cursorIn(readFileSync(authFile(home), "utf8"));
+    return cursorIn(await readFile(authFile(home), "utf8"));
   } catch {
     return null;
   }
@@ -38,7 +38,7 @@ export function cursorIn(text: string): CursorLogin | null {
   return { apiKey: j.apiKey, email: typeof j.email === "string" && j.email !== "" ? j.email : null, keyName: typeof j.keyName === "string" ? j.keyName : "", createdAt: typeof j.createdAt === "number" ? j.createdAt : 0 };
 }
 
-export const writeCursor = (home: string, login: CursorLogin) => writePrivate(authFile(home), `${JSON.stringify(login, null, 2)}\n`);
+export const writeCursor = (home: string, login: CursorLogin): Promise<void> => writePrivateSoon(authFile(home), `${JSON.stringify(login, null, 2)}\n`);
 
 const base64url = (b: Buffer) => b.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 

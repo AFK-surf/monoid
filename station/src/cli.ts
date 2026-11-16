@@ -1,5 +1,7 @@
 // The station's commands other than `run` (the Rust station's main.rs `main`): enroll, status, id. Their output is what
 // people and `bin/stillfail` read, so its words are the catalog's, as the Rust station says them.
+import { CloudTransport, cloudEntry } from "./cloud/transport.ts";
+import { ConfigFile } from "./ops/config.ts";
 import { existsSync, mkdirSync, readFileSync, renameSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { loadKey } from "./cloud/key.ts";
@@ -10,6 +12,8 @@ import { rmSync } from "node:fs";
 import { type Provider, specOf } from "./cloud/provider.ts";
 import { stationLang, tr } from "./ops/i18n.ts";
 import { version } from "./ops/version.ts";
+import { wall } from "./ops/fibers.ts";
+import { healthOf, healthPath, workingOf } from "./ops/health.ts";
 
 const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((s): s is string => typeof s === "string") : []);
 
@@ -135,35 +139,39 @@ export function nameJoinedLock(data: string, ws: string, hash: string, atMachine
 async function redeem(data: string, origin: string, token: string, provider: Provider, path: string, rig = false): Promise<any> {
   const plane = specOf(provider);
   const key = loadKey(data);
-  let response: Response | undefined;
-  // The new proof first; the old spelling only when a pre-rename cloud explicitly refuses the signature.
-  for (const prefix of plane.enrollPrefixes) {
-    const signature = key.sign(`${prefix}-station-enroll-v1:${origin}:${token}:${key.id}`);
-    response = await fetch(`${origin}${path}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      // Joining: it pins the lock of a locked workspace it joins, which the plane asks before
-      // letting it into one.
-      // `rig`: it enrolls as a rig, which a rig's token alone makes.
-      body: JSON.stringify({ token, station: key.id, signature, version: version(), ...(path === plane.joinPath ? { locks: true } : {}), ...(rig ? { rig: true } : {}) }),
-      signal: AbortSignal.timeout(20_000),
-    });
-    if (prefix === plane.enrollPrefixes.at(-1) || response.status !== 401) break;
-    const text = await response.text();
-    let error: unknown;
-    try {
-      error = JSON.parse(text).error;
-    } catch {}
-    if (error !== "invalid_signature") throw new Error(`${plane.name} answered ${response.status}: ${text}`);
-  }
-  // A control plane from before several workspaces has no join: nothing changed there.
-  if (path === plane.joinPath && response!.status === 404) {
-    const text = await response!.text();
-    if (!text.includes("enrollment_not_found")) throw new Error(`${plane.name} cannot add a station to more than one workspace yet; nothing changed`);
-    throw new Error(`${plane.name} answered 404: ${text}`);
-  }
-  if (!response!.ok) throw new Error(`${plane.name} answered ${response!.status}: ${await response!.text()}`);
-  return await response!.json();
+  const config = new ConfigFile(data);
+  const transport = new CloudTransport(() => cloudEntry(config.raw()));
+  try {
+    let response: Response | undefined;
+    // The new proof first; the old spelling only when a pre-rename cloud explicitly refuses the signature.
+    for (const prefix of plane.enrollPrefixes) {
+      const signature = key.sign(`${prefix}-station-enroll-v1:${origin}:${token}:${key.id}`);
+      response = await (provider === "stillfail" ? transport.fetch : fetch)(`${origin}${path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        // Joining: it pins the lock of a locked workspace it joins, which the plane asks before
+        // letting it into one.
+        // `rig`: it enrolls as a rig, which a rig's token alone makes.
+        body: JSON.stringify({ token, station: key.id, signature, version: version(), ...(path === plane.joinPath ? { locks: true } : {}), ...(rig ? { rig: true } : {}) }),
+        signal: AbortSignal.timeout(20_000),
+      });
+      if (prefix === plane.enrollPrefixes.at(-1) || response.status !== 401) break;
+      const text = await response.text();
+      let error: unknown;
+      try {
+        error = JSON.parse(text).error;
+      } catch {}
+      if (error !== "invalid_signature") throw new Error(`${plane.name} answered ${response.status}: ${text}`);
+    }
+    // A control plane from before several workspaces has no join: nothing changed there.
+    if (path === plane.joinPath && response!.status === 404) {
+      const text = await response!.text();
+      if (!text.includes("enrollment_not_found")) throw new Error(`${plane.name} cannot add a station to more than one workspace yet; nothing changed`);
+      throw new Error(`${plane.name} answered 404: ${text}`);
+    }
+    if (!response!.ok) throw new Error(`${plane.name} answered ${response!.status}: ${await response!.text()}`);
+    return await response!.json();
+  } finally { await transport.close(); }
 }
 
 /// `lock status`: whether a workspace lock is pinned here and how far it goes; `lock reset`: takes it away (kept beside
@@ -200,8 +208,9 @@ export function id(data: string) {
   console.log(loadKey(data).id);
 }
 
-/// Where the station is: running or not, its workspace, online or why not.
-export function status(data: string): string {
+/// Where the station is: running or not, its workspace, online or why not, and how it works: "normal" only where its
+/// process is there and said so lately (ops/health.ts), its link to the front holds, and it hears the cloud.
+export function status(data: string, now = wall.now()): string {
   const say = (key: string, args?: Record<string, unknown>) => tr(stationLang(), key, args);
   const when = (secs: number) => new Date(secs * 1000).toISOString();
   const read = (path: string): any => {
@@ -238,7 +247,18 @@ export function status(data: string): string {
   else if (presence) out.push(say("station.cli.status.offlineWhy", { why: typeof presence.error === "string" ? presence.error : say("station.cli.status.notConnectedYet") }));
   else if (!running) out.push(say("station.cli.status.offlineNotRunning"));
   else out.push(say("station.cli.status.offline"));
-  if (state.removed_at === undefined) out.push(say(state.rig !== undefined ? "station.cli.rig.working" : "station.cli.status.working"));
+  if (state.removed_at === undefined) {
+    const health = running ? healthOf(read(healthPath(data))) : null;
+    const working = workingOf({ running: running !== null, health, healthAlive: health !== null && alive(health.pid), online: presence?.online === true, conflict: presence?.conflict === true, now });
+    out.push(
+      working.is === "stopped" ? say("station.cli.status.stopped")
+        : working.is === "unresponsive" ? say("station.cli.status.unresponsive", { secs: Math.round(working.silentMs / 1000) })
+        : working.is === "front" ? say("station.cli.status.frontDown")
+        : working.is === "conflict" ? say("station.cli.status.keyConflict")
+        : working.is === "offline" ? say("station.cli.status.limited")
+        : say(state.rig !== undefined ? "station.cli.rig.working" : "station.cli.status.working"),
+    );
+  }
   return out.join("\n");
 }
 

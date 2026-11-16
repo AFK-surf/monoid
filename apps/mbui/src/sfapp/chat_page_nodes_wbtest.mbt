@@ -1260,6 +1260,19 @@ fn quote_nodes_pill(t : @ui.Tester) -> (Double, Double, Double, Double)? {
 }
 
 ///|
+/// The quote mark actually drawn in the pill over the picked words.
+fn quote_nodes_mark(t : @ui.Tester) -> String {
+  guard quote_nodes_pill(t) is Some((x, y, w, h)) && @ui.view_tree() is Some(tree) else { return "" }
+  for d in tree.drawn() {
+    let name = tree.drawn_name(d.id)
+    if name.has_prefix("/icon/quote") && d.x >= x && d.y >= y && d.x + d.w <= x + w && d.y + d.h <= y + h {
+      return name
+    }
+  }
+  ""
+}
+
+///|
 /// Words `s` of a message in a chat's page made with its inside nodes on 大屏, its list wheeled up till they are drawn
 /// well within the window (pick_pill_kept_wbtest's way): where they are drawn.
 fn quote_nodes_words(t : @ui.Tester, s : String) -> (Double, Double, Double, Double) raise {
@@ -1295,6 +1308,16 @@ test "大屏, a chat's page made with its inside nodes: words of an agent's mess
   )
   t.run_for(@ui.move_most_ms)
   assert_true(quote_nodes_pill(t) is Some(_), msg="引用 gone once at rest")
+  assert_eq(quote_nodes_mark(t), "/icon/quote/", msg="the pill over the end has a closing quote")
+  // The same words picked in the other direction put the pill at their start and use an opening quote.
+  t.run_for(@ui.double_click_ms)
+  t.drag(px + pw - 1.0, py + ph / 2.0, px + 1.0, py + ph / 2.0)
+  t.frame()
+  assert_true(@ui.picked_now().map(fn(p) { p.text.contains("90") }).unwrap_or(false))
+  assert_eq(quote_nodes_mark(t), "/icon/quote-open/", msg="the pill over the start has an opening quote")
+  t.run_for(@ui.double_click_ms)
+  t.drag(px + 1.0, py + ph / 2.0, px + pw - 1.0, py + ph / 2.0)
+  t.frame()
   // pressed (a click of its own, not a second of the drag's): the quote in the chat's draft (composer.quote), whose
   // words, which message and as what; nothing picked, the pill gone
   t.run_for(@ui.double_click_ms)
@@ -1444,13 +1467,13 @@ test "小屏, a chat's page made with its inside nodes: a finger's pick in a mes
 /// drawn all gone over a row: its flash at rest, its menu's band shut, as they were; not a control's ground under the
 /// pointer, a bar's button's 32 by 32, which is another matter).
 fn flash_grounds() -> (Int, Int) {
-  let accent = @ui.tree_theme().color(AccentBg) & 0xFFFFFF00L
+  let flash = @sf.theme().flash_bg() & 0xFFFFFF00L
   let mut seen = 0
   let mut clear = 0
   for d in @ui.view_tree().unwrap().drawn() {
     if d.ground != 0L && (d.ground & 0xFFL) == 0L && d.w >= 200.0 {
       clear += 1
-    } else if (d.ground & 0xFFFFFF00L) == accent && d.ground != 0L {
+    } else if (d.ground & 0xFFFFFF00L) == flash && d.ground != 0L {
       seen += 1
     }
   }
@@ -1470,5 +1493,38 @@ test "a chat's page made with its inside nodes, on 小屏 and 大屏: a message 
     assert_true(flash_grounds().0 > 0, msg="\{name}: flashing, no accent's ground drawn: \{Repr(flash_grounds())}")
     long_run(t, l, @sfbase.flash_ms + long_rest_ms)
     assert_eq(flash_grounds(), (0, 0), msg="\{name}: at rest")
+  }
+}
+
+///|
+test "a chat's page made with its inside nodes, on 小屏 and 大屏: a message gone to that shows already glides to just under its top, the eyes taken along to it, not there at once" {
+  for s in long_screens {
+    let (name, w, h, _) = s
+    let l = long_chat()
+    let t = place_long_open(l, s)
+    t.move_to(w / 2.0, h / 2.0)
+    for _ in 0..<2 {
+      t.wheel(w / 2.0, h / 2.0, -600.0)
+      long_run(t, l, long_rest_ms)
+    }
+    // (the lowest message whose head shows in the lower half: gone to as a quote of it is pressed)
+    let mut target = -1
+    let mut from = 0.0
+    for n in l.first.get()..=l.last.get() {
+      if t.rect_of("第\{n}条：") is Some((_, y, _, _)) && y > h / 2.0 && y < h * 0.8 {
+        target = n
+        from = y
+      }
+    }
+    assert_true(target >= 0, msg="\{name}: nothing shows in the lower half")
+    go_to(long_ref, target.to_double())
+    @ui.came_from_outside()
+    t.run_for(@view.wheel_ease_ms)
+    let mid = t.rect_of("第\{target}条：").map(fn(r) { r.1 })
+    long_run(t, l, long_rest_ms)
+    let end = t.rect_of("第\{target}条：").map(fn(r) { r.1 })
+    guard (mid, end) is (Some(m), Some(e)) else { fail("\{name}: \{target} not drawn: \{Repr((mid, end))}") }
+    assert_true(e > 0.0 && e < h / 3.0, msg="\{name}: \{target} gone to at \{e}")
+    assert_true(m < from - 2.0 && m > e + 2.0, msg="\{name}: from \{from} to \{e}, at \{m} on its way")
   }
 }

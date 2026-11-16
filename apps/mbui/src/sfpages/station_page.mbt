@@ -148,7 +148,9 @@ fn station_head(c : @ui.Ctx, core : Core, here : Here, s : Json?, manager : Bool
     Some(_) => (local_stopped_words(stopped), text(stopped, "doing") != "")
     None => (text(s, "stateText"), flag(s, "stateBusy"))
   }
-  let lines = [station_head_facts(s)]
+  // (what the machine is, none for one never reached: no line, and no dot before nothing)
+  let facts = station_head_facts(s)
+  let lines = if facts == "" { [] } else { [facts] }
   @sf.own_head(
     c,
     fn(side) {
@@ -178,7 +180,7 @@ fn station_head(c : @ui.Ctx, core : Core, here : Here, s : Json?, manager : Bool
           let emoji = text(s, "emoji")
           let icon = text(s, "icon")
           if @sf.has_station_mark(emoji, icon) {
-            @sf.station_mark(c, emoji, icon, st_mark_glyph, t.p.text)
+            @sf.station_mark(c, emoji, icon, if side <= 32.0 { st_mark_wide_glyph } else { st_mark_glyph }, t.p.text)
           } else {
             let letter = match name.iter().next() {
               Some(ch) => ch.to_string().to_upper()
@@ -198,7 +200,7 @@ fn station_head(c : @ui.Ctx, core : Core, here : Here, s : Json?, manager : Bool
     lines~,
     // its dot before what it says of how it is (reconnecting …; this machine's, how it stands here: 已停止, 正在更新),
     // else before what the machine is
-    dot=if state_text == "" { dot } else { "" },
+    dot=if state_text == "" && facts != "" { dot } else { "" },
     state?=if state_text != "" {
       Some(fn() {
         @sf.status_dot(c, if state_busy && stopped is Some(_) { "busy" } else { dot })
@@ -212,6 +214,9 @@ fn station_head(c : @ui.Ctx, core : Core, here : Here, s : Json?, manager : Bool
       match stopped {
         Some(_) => station_start(c, core, stopped, address)
         None => if !online || silent { station_retry(c, core, s) }
+      }
+      if flag(s, "protect") {
+        station_protect(c, core, here, s)
       }
       if manager {
         @settings.doing_mark(
@@ -270,6 +275,17 @@ fn station_retry(c : @ui.Ctx, core : Core, s : Json?) -> Unit {
       "client.wake",
       obj([("away", Json::number(0.0)), ("network", Json::boolean(true)), ("retry", Json::boolean(true))]),
     )
+  }) |> ignore
+}
+
+///|
+/// Its 加入安全模式 where its workspace's safe mode does not name it and the viewer could protect it from here (`protect`: an
+/// owner on a device that signs, it online), as 设置 › 安全 offers it (join_dialog: asked first); while it goes, busy.
+fn station_protect(c : @ui.Ctx, core : Core, here : Here, s : Json?) -> Unit {
+  let id = text(s, "id")
+  let joining = is_doing(core, ["lock.joinStation"], [("workspace", here.workspace), ("station", id)])
+  @sf.button(c, @sf.t("web-pages.security.joinShort"), key="station-protect/" + text(s, "station"), tone=Ghost, busy=joining, disabled=joining, on_press=fn() {
+    join_dialog(core, here.workspace, id, text(s, "name"))
   }) |> ignore
 }
 
@@ -1354,34 +1370,39 @@ fn station_cold_amount(words : String) -> Double? {
 /// A custom threshold is entered in its own editor, keeping the words being typed there.
 fn station_cold_custom(core : Core, address : String, cost : Double) -> Unit {
   let field_ = @ui.Field::new(text=cost.to_string())
-  let key = "context-cost-custom/" + (desk_dialogs.val + 1).to_string()
   let title = @sf.t("web-pages.stations.context.threshold")
-  open_dialog(
+  let amount = fn() { station_cold_amount(field_.text()) }
+  open_dialog_nodes(
     @sf.t("web-pages.stations.context.customAmount"),
-    fn(c, _) {
-      @sf.field(c, title, hint=@sf.t("web-pages.stations.context.amountHint"), fn() {
-        @sf.input(c, key, placeholder=title, field=field_) |> ignore
+    fn(v, _) {
+      @sf.field_node(v, fn() { title }, hint=fn() { @sf.t("web-pages.stations.context.amountHint") }, fn(f) {
+        @sf.input_node(f, field_, placeholder=title, label=title) |> ignore
       })
     },
-    fn(c, shut) {
-      @sf.button(c, @sf.t("common.cancel"), key=key + "/cancel", tone=Ghost, on_press=fn() {
-        shut()
-      }) |> ignore
-      let amount = station_cold_amount(field_.text())
-      let changed = match amount {
-        Some(v) => v != cost
-        None => false
-      }
-      let busy = is_doing(core, ["context.setAfresh"], [("station", address)])
-      @sf.button(c, @sf.t("common.save"), key=key + "/save", tone=Primary, busy~, disabled=!changed, on_press=fn() {
-        match amount {
-          Some(v) => {
-            @settings.act(core, @sf.t("web-pages.stations.context.what"), "context.setAfresh", obj([("station", str(address)), ("afreshAbove", Json::number(v))]))
-            shut()
+    fn(v, shut) {
+      @sf.button_node(v, fn() { @sf.t("common.cancel") }, shut, tone=Ghost) |> ignore
+      @sf.button_node(
+        v,
+        fn() { @sf.t("common.save") },
+        fn() {
+          match amount() {
+            Some(a) => {
+              @settings.act(core, @sf.t("web-pages.stations.context.what"), "context.setAfresh", obj([("station", str(address)), ("afreshAbove", Json::number(a))]))
+              shut()
+            }
+            None => ()
           }
-          None => ()
-        }
-      }) |> ignore
+        },
+        tone=Primary,
+        busy=fn() { is_doing(core, ["context.setAfresh"], [("station", address)]) },
+        disabled=fn() {
+          match amount() {
+            Some(a) => a == cost
+            None => true
+          }
+        },
+      )
+      |> ignore
     },
   )
 }
@@ -1449,6 +1470,9 @@ fn station_machine(c : @ui.Ctx, core : Core, s : Json?, manager : Bool) -> Array
 let st_mark_glyph : Double = 28.0
 
 ///|
+let st_mark_wide_glyph : Double = 18.0
+
+///|
 let st_profile_glyph : Double = 18.0
 
 ///|
@@ -1506,20 +1530,30 @@ let st_problem_bad : @ui.TextStyle = st_problem.then(@ui.text_style(color=Danger
 /// Taking a station out of the workspace, asked first (its ⋯'s 移出, and 移出 workspace once its chats were moved
 /// away, station_retire_node.mbt): back to the list at once (the page of a station going has nothing to show), its answer said there.
 fn station_remove_ask(core : Core, here : Here, s : Json?) -> Unit {
+  let address = text(s, "station")
   confirm(
     @sf.t("web-pages.settings.stations.removeConfirm", args=[("name", text(s, "name"))]),
     @sf.t("web-pages.settings.stations.removeConfirmBody", args=[("name", "still.fail")]),
     @sf.t("web-pages.settings.stations.removeAction"),
     danger=true,
-    // back to the list at once (the page of a station going has nothing to show), its answer said there
+    // closed where its page (or its move page) was pushed on the stack; in the stations' place it stays on the place,
+    // which moves on to the first left once the list drops it (places.mbt place_route)
     fn() {
-      (core.pop)()
+      if !@sfbase.close_page(Setting(@settings.Route::Station(address))) {
+        @sfbase.close_page(Setting(@settings.Route::StationMove(address))) |> ignore
+      }
       @settings.act(
         core,
         @sf.t("web-pages.settings.stations.remove"),
         "workspace.removeStation",
         obj([("workspace", str(here.workspace)), ("station", str(text(s, "id"))), ("account", str(here.sub))]),
         done=@sf.t("android-settings.station.removed"),
+        then=fn(_) {
+          let key = place_key(here.workspace, "stations")
+          if place_pick.get(key) == Some(@settings.Route::Station(address)) {
+            place_pick.remove(key)
+          }
+        },
       )
     },
   )

@@ -45,6 +45,7 @@ import { KINDS as THING_KINDS, OUTLINE_FOUND, isVideo, mediaDays, thingsHaving, 
 import { archive, archiveSearch } from "./archive.ts";
 import { Local, PENDING_PREFIX } from "./local.ts";
 import { askAnswers } from "./vault.ts";
+import { stationsGuard } from "./lock.ts";
 import * as marks from "./marks.ts";
 import { usageView } from "./usage.ts";
 import { usageSummary } from "./usage-summary.ts";
@@ -105,7 +106,7 @@ export const chatDerive: Derive = {
 };
 
 /// A station's overview and host reading as its row and its page show them (Views `#stationShownOf`).
-type StationShown = { full: Derived<J>; profile: Derived<J>; host: Derived<J>; row: Derived<J>; hostRow: Derived<J>; unreadable: Derived<boolean>; offered: Derived<J[]>; judge: (o: J) => boolean };
+type StationShown = { full: Derived<J>; profile: Derived<J>; settings: Derived<J>; host: Derived<J>; row: Derived<J>; hostRow: Derived<J>; unreadable: Derived<boolean>; offered: Derived<J[]>; judge: (o: J) => boolean };
 
 /// A station of a scope, as the workspace lists it.
 /// `joined`: the station's home is another workspace, this one it joined.
@@ -355,10 +356,12 @@ function originOf(connect: J, origin: J): { originKind: string; originText: stri
   const feishu = text("surface")?.startsWith("feishu:") === true || format.isFeishuChat(text("channel") ?? "");
   // A Comma Task's: Comma and the Group, no place (a Task is not in a channel).
   const comma = text("surface")?.startsWith("comma:") === true;
+  // A group connect's: its conversation by name (a group's, a private chat's other member's), no #.
+  const group = text("surface")?.startsWith("group:") === true;
   const place = comma || (text("channel") === null && channelName === null) ? null : format.placeName(text("surface") ?? "slack", text("channel") ?? "", channelName ?? "");
   return {
-    originKind: comma ? "comma" : feishu ? "feishu" : "slack",
-    originText: [comma ? "Comma" : feishu ? t("core-views.feishu") : "Slack", text("teamName"), place].filter((x) => x !== null).join(" · "),
+    originKind: comma ? "comma" : group ? "group" : feishu ? "feishu" : "slack",
+    originText: [comma ? "Comma" : group ? t("core-views.group") : feishu ? t("core-views.feishu") : "Slack", text("teamName"), place].filter((x) => x !== null).join(" · "),
   };
 }
 
@@ -728,6 +731,10 @@ const connectsPartOf = (v: Value | undefined): J => {
   return { connects: arr(get(o, "connects")), slackApps: arr(get(o, "slackApps")), profiled: !isObject(o) || arr(get(o, "profiles")).length > 0 };
 };
 
+/// The parts of a station's overview its page asks alone (`stationPart`) that are of its settings (data.ts
+/// overviewSettings): made of those alone.
+const SETTINGS_PARTS = new Set(["automaticDecisions", "archiving"]);
+
 /// What the views are put together with: the core's store and data, and what the accounts say of a workspace.
 export type ViewsEnv = {
   host: Host;
@@ -748,6 +755,8 @@ export type ViewsEnv = {
   xshareAsked?: (station: string, session: string) => xshare.Asked | undefined;
   /// The name of the home workspace of a station a workspace joined, when the viewer is in it (memberships.ts).
   homeName?: (workspace: string, id: string) => string | null;
+  /// Safe mode in a workspace as its stations' rows say it (views/lock.ts `stationsGuard`); none where not given.
+  guard?: (workspace: string) => { protects: (id: string) => boolean; can: () => boolean } | null;
   /// Whether a workspace's notices are heard of on this device (`notify.set` `workspaces`); every one where not given.
   heard?: (workspace: string) => boolean;
   /// A topic a view watches shown again (its owner asked to bring it up to date, store.ts `resume`).
@@ -799,6 +808,7 @@ export function envOf(core: Inner): ViewsEnv {
     resume: (topic) => core.router.resume(topic),
     xshareAsked: (station, session) => xshare.asked(core, station, session),
     homeName: (workspace, id) => memberships.homeName(core, workspace, id),
+    guard: (workspace) => stationsGuard(core, workspace),
     vaultAnswers: (workspace, asks) => askAnswers(core, workspace, asks),
     heard: (workspace) => core.attention?.attend.heard(workspace) ?? true,
     ways: (workspace) => {
@@ -1718,7 +1728,10 @@ export class Views implements Owner {
         const stations = this.#stationsOr(view.scope as string);
         if (stations === undefined || !Array.isArray(stations)) return stations as Value | undefined;
         if (!stations.some((s) => s.address === view.station)) return { ok: null };
-        return { ok: get(this.#stationShownOf(view.station as string).full.get(), view.part as string) ?? null };
+        // (the automatic decisions and archiving of what is kept of them beside the overview, made as the whole makes
+        // them: never the whole)
+        const parts = this.#stationShownOf(view.station as string);
+        return { ok: get(SETTINGS_PARTS.has(view.part as string) ? parts.settings.get() : parts.full.get(), view.part as string) ?? null };
       }
       case "profiles": {
         // What goes out is the rows (ProfileRow), shaped here beside the value the list made (conform.ts shapedBeside, as
@@ -1743,7 +1756,9 @@ export class Views implements Owner {
         // Each station's name, whether it is up and its overview: what the settings say of them, not their pages.
         const stations = this.#stationsOr(view.scope as string);
         if (stations === undefined || !Array.isArray(stations)) return stations as Value | undefined;
-        return { ok: settingsView(stations.map((s) => ({ name: s.name, online: s.online, overview: this.#stationShownOf(s.address).full.get() }))) };
+        // (of the automatic decisions and archiving kept beside each overview, decorated as the whole decorates them:
+        // never the whole, of some 150 KB a phone's each)
+        return { ok: settingsView(stations.map((s) => ({ name: s.name, online: s.online, overview: this.#stationShownOf(s.address).settings.get() }))) };
       }
       case "connects":
         return this.#connects(view.scope as string, view.mine === true);
@@ -3116,6 +3131,7 @@ export class Views implements Owner {
     let silentNext = Infinity;
     const byId = new Map(stations.map((s) => [String(s.id), s]));
     const mine = this.#mayChangeMode(scope);
+    const guard = this.#core.guard?.(scope) ?? null;
     const row = kind === "row";
     const items = stations.filter((s) => only === undefined || s.address === only).map((s) => {
       const parts = this.#stationShownOf(s.address);
@@ -3158,6 +3174,8 @@ export class Views implements Owner {
       } else this.#hostless.delete(s.address);
       const blocked = !s.online && cause === "lock" && typeof get(this.link(s.address), "message") === "string" ? (get(this.link(s.address), "message") as string) : null;
       const running = u64(get(get(overview, "counts"), "running")) ?? 0;
+      const unprotected = guard !== null && !guard.protects(String(s.id));
+      const can = unprotected && guard!.can();
       const item: J = {
         station: s.address,
         id: s.id,
@@ -3171,6 +3189,9 @@ export class Views implements Owner {
         reconnecting: s.online && state !== "online" && state !== "error",
         ...stationState(s.online, blocked !== null || cause === "updating", summary, typeof s.lastSeen === "number" ? s.lastSeen : null, read !== undefined, running, c),
         problems: stationProblems(s.online, silent, blocked, typeof s.lastSeen === "number", cause === "updating", unreadable),
+        // Not named by its workspace's safe mode: its 保护 where it is shown, where the viewer could protect it from here
+        // (the user, 2026-11-15: 「在 station 这里要能点成受保护」, 「不需要写不受保护」: the button alone, no words).
+        ...(unprotected && can && s.online ? { protect: true } : {}),
         // Down for a security mode: why, in place of the page's 离线 words.
         ...(blocked !== null ? { blocked } : {}),
         lastSeen: s.lastSeen,
@@ -3216,15 +3237,17 @@ export class Views implements Owner {
     // on 小屏 (Hermes, Mac Studio, 2026-11-12).
     const shown = new WeakMap<object, present.Made<J>>();
     const readable = new WeakMap<object, boolean>();
-    const decorate = (o: J, c: present.Clock, part = false): J => {
-      if (part) work.profiledParts++;
+    const decorate = (o: J, c: present.Clock, part: false | "profiled" | "settings" = false): J => {
+      if (part === "profiled") work.profiledParts++;
+      else if (part === "settings") work.settingsParts++;
       else work.overviews++;
       const shownOf = present.decorate(overview, structuredClone(o), c);
       // (a part put through the overview's shape as the whole is, the rest of it the shape's defaults, which nothing
-      // reading it reads: its profiles, sharing, mesh and machines' logins as the whole would have them)
-      return asShaped("Overview", part && isObject(shownOf) ? { ...overviewDefaults(), ...shownOf } : shownOf);
+      // reading it reads: its profiles, sharing, mesh and machines' logins, or its automatic decisions and archiving, as
+      // the whole would have them)
+      return asShaped("Overview", part !== false && isObject(shownOf) ? { ...overviewDefaults(), ...shownOf } : shownOf);
     };
-    const decorated = (read: () => J, part = false) => computed(() => {
+    const decorated = (read: () => J, part: false | "profiled" | "settings" = false) => computed(() => {
       const o = read();
       if (o === undefined) return null;
       // (its times in words, by the minute)
@@ -3233,7 +3256,14 @@ export class Views implements Owner {
     });
     kept = {
       full: decorated(() => this.ok(overview)),
-      profile: decorated(() => this.#core.data.overviewProfiled(station), true),
+      profile: decorated(() => this.#core.data.overviewProfiled(station), "profiled"),
+      // Its automatic decisions and archiving as the whole has them (present.ts overview decorates them of themselves
+      // alone), of what is kept of them beside the overview (data.ts overviewSettings), never of the whole; null where
+      // this core cannot read the whole (`full` would be null), as `unreadable` says it.
+      settings: (() => {
+        const part = decorated(() => this.#core.data.overviewSettings(station), "settings");
+        return computed(() => (kept!.unreadable.get() ? null : part.get()));
+      })(),
       host: computed(() => {
         const h = this.ok({ topic: "host", station });
         return h === undefined ? null : asShaped("Host", present.host(h));
@@ -3308,7 +3338,7 @@ export class Views implements Owner {
     const slackApps: J[] = [];
     let noProfile = stations.length > 0;
     for (const s of stations) {
-      const part = this.#core.store.select({ topic: "overview", station: s.address }, connectsPartOf);
+      const part = this.#connectsPart(s.address);
       if (part === undefined || "err" in part || part.profiled) noProfile = false;
       if (part !== undefined && !("err" in part)) for (const app of part.slackApps) slackApps.push({ station: s.address, stationName: s.name, app });
       if (!s.online) continue;
@@ -3339,6 +3369,13 @@ export class Views implements Owner {
     return shown;
   }
 
+  /// What the connects read of a station's overview (connectsPartOf): of what is kept of it beside the overview
+  /// (data.ts overviewConnects), never the whole; where none is held, why not as the overview's topic says it.
+  #connectsPart(station: string): J {
+    const kept = this.#core.data.overviewConnects(station);
+    return kept !== undefined ? kept : this.#core.store.select({ topic: "overview", station }, connectsPartOf);
+  }
+
   /// One connect of a scope's station, by its id: its page (`page`, ConnectView) or the sessions its choice of one lists
   /// (`candidates`, ConnectCandidates). None while its station's overview is not read, why where it could not be; null
   /// where the scope has no such station up, or it no such connect.
@@ -3347,7 +3384,9 @@ export class Views implements Owner {
     if (stations === undefined || !Array.isArray(stations)) return stations as Value | undefined;
     const s = stations.find((x) => x.address === station);
     if (s === undefined || !s.online) return { ok: null };
-    const v = this.value({ topic: "overview", station });
+    // (of what is kept of its overview beside it, data.ts overviewConnects: never the whole)
+    const kept = this.#core.data.overviewConnects(station);
+    const v = kept !== undefined ? { ok: kept } : this.value({ topic: "overview", station });
     if (v === undefined || "err" in v) return v;
     const connects = arr(get(v.ok, "connects"));
     const connect = connects.find((c) => str(get(c, "id")) === id);
@@ -4058,6 +4097,17 @@ export class Views implements Owner {
     const offsetMin = this.#core.host.utcOffsetMin(this.#core.host.nowMs());
     const out: J[] = [];
     const heard = new Set<string>();
+    // Whose workspace keeps a file heard with a message: the session given it (a person's file, put in its uploads), or
+    // the station's agent whose workspace its path is in (another agent's post in the same thread names its own
+    // uploads). Asked of the hearer's session, another agent's file answered 404, shown as 暂时无法预览 for good
+    // (pengxiao, 2026-11-16). The station's sessions read only once a file is not the hearer's.
+    let others: J[] | null = null;
+    const keeper = (path: string, hearer: J, key: string): string => {
+      const within = (ws: string | null) => ws !== null && ws !== "" && path.startsWith(`${ws}/`);
+      if (within(str(get(hearer, "workspace")))) return key;
+      others ??= arr(this.ok({ topic: "sessions", station }));
+      return str(get(others.find((s) => within(str(get(s, "workspace")))), "key")) ?? key;
+    };
     for (const a of agents) {
       const key = str(get(a.session, "key"));
       if (key === null) continue;
@@ -4089,11 +4139,11 @@ export class Views implements Owner {
         const picture = s.out || s.user === null ? undefined : pictures.get(s.user.replace(/^<@(.+)>$/, "$1"));
         const by = s.out ? structuredClone(agent) : { name: s.who || s.user || "Slack", ...(picture !== undefined ? { picture } : {}) };
         // A person's files are listed after their words, as the agent was given them: drawn as files, kept in the
-        // workspace of the agent's session that was given them.
+        // workspace that holds them (`keeper`).
         const words = s.out ? { text: s.text, files: [] } : heardFiles(s.text);
         const text = present.mentions(words.text, people.bots, people.members);
         const item: J = { key: `${key}/${s.i}/${s.k}`, after, createdAt: s.at, text, place, failed: s.failed, by };
-        if (words.files.length > 0) item.attachments = words.files.map((f) => ({ ...f, owner: key }));
+        if (words.files.length > 0) item.attachments = words.files.map((f) => ({ ...f, owner: keeper(f.path, a.session, key) }));
         if (!s.out) item.received = true;
         out.push(item);
       }

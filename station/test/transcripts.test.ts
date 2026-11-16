@@ -1,4 +1,4 @@
-// Reading transcripts as they grow (src/read/tail.ts), and where a reader reads the pages of a history from
+// Reading transcripts as they grow (test/reference/tail.ts), and where a reader reads the pages of a history from
 // (src/read/transcripts.ts).
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -7,10 +7,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { zstdCompressSync } from "node:zlib";
-import { SEGMENT, framesOf, seekTable, segmented, segmentedSoon, unpackedWhole } from "../src/read/packed.ts";
-import { ChainTail, MARK_EVERY, PIECE, TranscriptTail } from "../src/read/tail.ts";
-import { READING, brief, readTimeline, scriptCalls } from "../src/read/transcript.ts";
-import { chainOf, entriesOf, forgetKept, lengthOf } from "../src/read/transcripts.ts";
+import { SEGMENT, framesOf, seekTable, segmented, segmentedSoon, unpackedWhole } from "./reference/packed.ts";
+import { ChainTail, MARK_EVERY, PIECE, TranscriptTail } from "./reference/tail.ts";
+import { READING, brief, readTimeline, scriptCalls } from "./reference/transcript.ts";
+import { chainOf, entriesOf, forgetKept, lengthOf } from "./reference/transcripts.ts";
 import { packFile, segmentFile } from "../src/sessions/archive.ts";
 
 const temp = () => mkdtempSync(join(tmpdir(), "transcripts-"));
@@ -242,6 +242,28 @@ test("however long a transcript put away is, every segment of it is compressed a
   rmSync(dir, { recursive: true, force: true });
 });
 
+test("lines of every length come back whole across segments", async () => {
+  // Lines of lengths that never line up with a segment's end, one longer than a segment among them.
+  const dir = temp();
+  const path = join(dir, "t.jsonl");
+  const lines: string[] = [];
+  let bytes = 0;
+  for (let i = 0; bytes < SEGMENT * 3 + 777; i++) {
+    const line = `${i}:${(i === 40 ? "L" : String.fromCharCode(97 + (i % 26))).repeat(i === 40 ? SEGMENT + 333 : 1 + ((i * 7919) % 200_000))}\n`;
+    lines.push(line);
+    bytes += line.length;
+  }
+  writeFileSync(path, lines.join(""));
+  await packFile(path);
+  const file = openSync(`${path}.zst`, "r");
+  const frames = framesOf(file)!;
+  closeSync(file);
+  assert.ok(frames.length >= 4, `${frames.length} segments`);
+  assert.equal(frames.reduce((n, f) => n + f.size, 0), bytes);
+  assert.deepEqual(unpackedWhole(`${path}.zst`), Buffer.from(lines.join("")));
+  rmSync(dir, { recursive: true, force: true });
+});
+
 test("a transcript put away with its last segment stored as it is (0.1.6800 to 0.1.6802) is put away again compressed", async () => {
   const dir = temp();
   const path = join(dir, "t.jsonl");
@@ -357,7 +379,7 @@ function corpus(): { claude: string; codex: string } {
 
 /// What lines gave when READING was each: a reading kept on disk (read/transcripts.ts) counts and marks entries as lines
 /// gave them then.
-const READ_AS: Record<number, string> = { 2: "8a08a82d23cb7c00" };
+const READ_AS: Record<number, string> = { 2: "8a08a82d23cb7c00", 3: "a566fc514beb28bf" };
 
 test("a prompt that came while a Claude agent worked is read as one that began a turn, where it was given", () => {
   const dir = temp();

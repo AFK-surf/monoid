@@ -1,8 +1,8 @@
 // What agents do in their own conversations (the Rust station's hub.rs: chat_post, chat_state, chat_history, slack_api and
 // what they rest on): post (with files and a card, ending the turn or not), record how the turn ends, read a thread,
 // and call Slack as their bot. What a tool says of the turn reaches its session's actor, in turn with the rest.
-import { mkdirSync, rmSync } from "node:fs";
-import { copyFile, stat } from "node:fs/promises";
+import { rmSync } from "node:fs";
+import { copyFile, mkdir, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { PlaceRefused } from "../ops/places.ts";
 import { wall } from "../ops/fibers.ts";
@@ -35,7 +35,7 @@ import {
 import { type ChatSurface, callApi } from "./chat.ts";
 import { threadsToldOf } from "./afresh.ts";
 import type { Hub } from "./hub.ts";
-import { shownFacts } from "./image-size.ts";
+import { shownFactsSoon } from "./image-size.ts";
 import { dir as thumbsDir, keep } from "../drive/thumbs.ts";
 import { INTERNAL_CONNECT } from "./internal.ts";
 import { namedLocalPaths, prepare } from "./local-links.ts";
@@ -298,7 +298,7 @@ export async function attach(hub: Hub, key: string, paths: string[], into: strin
   if (!row || !target) throw new Error("unknown session");
   if (paths.length > 10) throw new Error("at most 10 files per message");
   const dir = join(target.workspace, "uploads");
-  mkdirSync(dir, { recursive: true });
+  await mkdir(dir, { recursive: true });
   // Copied off the station's thread: a large file, or one read back from disk on a machine short of memory, held it
   // for up to 10 seconds a post (a station, 2026-10-28).
   const out: Attachment[] = [];
@@ -320,7 +320,7 @@ export async function attach(hub: Hub, key: string, paths: string[], into: strin
     const copy = join(dir, `${stamp}-${safe}`);
     await copyFile(path, copy);
     // a picture or a film as it is shown, so pages hold its place (a film's length and frames with it)
-    out.push({ name, path: copy, size: meta.size, ...shownFacts(copy) } satisfies Attachment);
+    out.push({ name, path: copy, size: meta.size, ...(await shownFactsSoon(copy)) } satisfies Attachment);
   }
   return out;
 }
@@ -725,12 +725,12 @@ export async function chatState(hub: Hub, key: string, args: Args): Promise<stri
 }
 
 /// chat_history: earlier messages of one of the session's conversations.
-/// chat_leave: the session stops hearing a Slack or Feishu thread until someone mentions it there (hub `acceptInTurn`).
+/// chat_leave: the session stops hearing a Slack, Feishu or group thread until someone mentions it there (hub `acceptInTurn`).
 /// A still.fail chat is never left: people there talk to its agents, mentioned or not.
 export function chatLeave(hub: Hub, key: string, args: Args): string {
   const thread = target(hub, key, args.to);
   const to = jsString(args.to);
-  if (thread.thread.surface === STILLFAIL_SURFACE) throw new Error(`${to} is a still.fail chat: it cannot be left. Only Slack and Feishu threads can.`);
+  if (thread.thread.surface === STILLFAIL_SURFACE) throw new Error(`${to} is a still.fail chat: it cannot be left. Only Slack, Feishu and group threads can.`);
   hub.store.leaveThread(thread.thread.id, key);
   return `Left ${to}: its messages no longer reach you until someone mentions you there; chat_history still reads it and chat_post still posts there.`;
 }

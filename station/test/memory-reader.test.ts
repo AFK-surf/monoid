@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { routes } from "../src/api/routes/usage.ts";
-import { usageOps } from "../src/read/ops-usage.ts";
+import { usageOps } from "./reference/ops-usage.ts";
 
 test("a joined workspace's memory is read in the reader rather than on the station thread", async () => {
   const asked: unknown[] = [];

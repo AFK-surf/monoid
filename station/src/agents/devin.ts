@@ -21,7 +21,7 @@ import { join } from "node:path";
 import { peerHttpBase } from "../tools/http.ts";
 import { rulesFolder as folderOf } from "./rules-folder.ts";
 import { AcpDriver, AcpSession, KeptTranscript, acpOutcome, type AcpStart } from "./acp.ts";
-import type { Events } from "./own-process.ts";
+import type { Events, Replayed } from "./own-process.ts";
 import { expandRoute, profileEnv, profileModel } from "./profiles.ts";
 import { cleanEnv, failureOf, uuid, type FailureReason, type OpenOptions } from "./runtime.ts";
 
@@ -207,6 +207,7 @@ export function devinEnv(options: OpenOptions): Record<string, string> {
 }
 
 export class DevinDriver extends AcpDriver<DevinSession> {
+  protected readonly keepsTranscript = true;
   private readonly command: string;
 
   constructor(options: DevinDriverOptions) {
@@ -250,7 +251,6 @@ export class DevinDriver extends AcpDriver<DevinSession> {
 type TurnUsage = { run: string; calls: number; lastCall: string; context: number; window: number };
 
 export class DevinSession extends AcpSession {
-  protected readonly steersByPrompt = true;
   /// The `model` config option's values (a family's variant each): what another model between turns is set to.
   private families: string[] = [];
   /// The running turn's call count and last call seen (each call's counts are said twice, the second time as its
@@ -261,10 +261,6 @@ export class DevinSession extends AcpSession {
     super(driver, events, new KeptTranscript("devin", join(devinHome(options.profile.home), SESSIONS)));
     const rawModel = options.model ?? profileModel(options.profile);
     this.model = rawModel !== undefined ? devinFusionBase(rawModel).model : null;
-  }
-
-  protected classify(text: string) {
-    return classifyFailure(text);
   }
 
   /// The model its config options say is current, and the values the `model` option takes.
@@ -296,11 +292,11 @@ export class DevinSession extends AcpSession {
 
   /// Each call's counts are said twice (the second time as its agent's): counted once, and written as it comes so a
   /// long turn's spend and context are live and survive a handover or crash.
-  protected updated(update: Json) {
+  protected updated(update: Json, owner: string | null) {
     if (update?.sessionUpdate !== "usage_update") return;
     const counts = callOf(update);
     const said = JSON.stringify(counts);
-    const run = this.owner !== null ? this.owner.slice(this.owner.indexOf(":") + 1) : uuid();
+    const run = owner !== null ? owner.slice(owner.indexOf(":") + 1) : uuid();
     const u = (this.usage ??= { run, calls: 0, lastCall: "", context: 0, window: 0 });
     if (said === u.lastCall) return;
     u.lastCall = said;
@@ -321,6 +317,21 @@ export class DevinSession extends AcpSession {
 
   protected ending() {
     this.usage = null;
+  }
+
+  /// After a crash: the running turn's calls as its transcript has them, the last written being where it goes on from.
+  /// What the station before wrote but had not acknowledged to the runner comes again, and without this was counted a
+  /// call of its own: written twice, the turn's spend with it (devin.test.ts' crash, 4 calls where there were 3).
+  replayed(replayed: Replayed, resume: string | undefined) {
+    super.replayed(replayed, resume);
+    if (!this.turn.busy) return;
+    const last = this.transcript?.lastOfTurn(this.sessionId, "usage");
+    if (!last || typeof last.run !== "string" || last.usage === undefined) return;
+    const [run, k] = last.run.split(":");
+    const calls = k === undefined ? 1 : Number(k);
+    if (!run || !Number.isSafeInteger(calls) || calls < (this.usage?.calls ?? 0)) return;
+    const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+    this.usage = { run, calls, lastCall: JSON.stringify(last.usage), context: n(last.context), window: n(last.window) };
   }
 
   protected override cutShort(said: string) {

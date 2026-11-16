@@ -114,6 +114,24 @@ pub fn play_mark(c : @ui.Ctx, side : Double, shade : @ui.Color) -> Int {
 }
 
 ///|
+/// A video's play mark over its picture in `parent` (play_mark's, as nodes): a disc `side` across of `shade`, the solid
+/// triangle in it white, its weight in the disc's middle. The node.
+#callsite(autofill(loc))
+pub fn play_mark_node(parent : @view.View, side : Double, shade : @ui.Color, loc~ : SourceLoc) -> @view.View {
+  parent.box(made_for=loc, fn(d) {
+    d
+    .width(Is(Some(side)))
+    .height(Is(Some(side)))
+    .radius(Is(side / 2.0))
+    .ground(By(fn() { @ui.tree_theme().color(shade) }))
+    .lines_up(Is(Some(Middle)))
+    .lies_along(Is(Middle))
+    |> ignore
+    icon_node(d, "play-mark", side * play_mark_share, Is(white)) |> ignore
+  })
+}
+
+///|
 /// A video's capsule over its picture, in its foot's start corner concentric with its `corner` (a message's file's: the
 /// chat's media tiles' and a message's video's; a quote's picture's): a small play mark and how long it is (`duration`, none where that is
 /// not known) on the video's shade. `coming`: how far the core has brought it here, a ring of that share and the share
@@ -555,6 +573,18 @@ fn read_numbers(text : String) -> Array[Double] {
 }
 
 ///|
+/// How an icon drawn `k` points a unit (its size over 24) widens its strokes: under 1, by k^0.58, not by k, so a bar's
+/// 14–16 and a rail's 20 are drawn in one weight of ink (20's 1.75 stroke 1.57, 16's 1.38, 14's 1.28; by k they were
+/// 1.46, 1.17 and 1.02), and none thinner than the eye takes for the same line; at 24 and over, by k (their points too).
+fn stroke_k(k : Double) -> Double {
+  if k < 1.0 {
+    @dmath.pow(k, 0.58)
+  } else {
+    k
+  }
+}
+
+///|
 /// An icon's parts as icon_data.mbt has them (0 a line, 1 a closed one, 2 a fill's outline: one with a width the
 /// first of a fill), `k` points a unit, in `color`: its strokes of a width one shape (their pieces' nearest the one
 /// that covers a pixel, as one stroke), each fill one.
@@ -585,8 +615,9 @@ fn icon_shapes(data : Array[Double], k : Double, color : Int64) -> Array[@ui.Sha
   for f in fills {
     out.push(@ui.shape_of(f, fill=color))
   }
+  let width_k = stroke_k(k)
   for s in strokes {
-    out.push(@ui.shape_of(s.1, stroke=color, width=s.0 * k))
+    out.push(@ui.shape_of(s.1, stroke=color, width=s.0 * width_k))
   }
   out
 }

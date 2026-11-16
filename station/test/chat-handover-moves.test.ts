@@ -7,17 +7,17 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { place } from "../src/replica/carry-worker.ts";
 import { newSession, say } from "../src/sessions/lifecycle.ts";
 import { Moves } from "../src/move/station.ts";
 import { MoveAsks } from "../src/tools/move.ts";
 import { plainStore } from "../src/vault/plain.ts";
 import { given, message } from "./hub-fakes.ts";
-import { PeerGone } from "../src/mesh/peer.ts";
+import { PeerGone, PeerStopped } from "../src/mesh/peer.ts";
 import { Refused } from "../src/mesh/bus.ts";
 import { stationLang, tr } from "../src/ops/i18n.ts";
 import { hearLines } from "../src/ops/log.ts";
-import { WS, A, B, C, type Station, world, endTurn, stillfailChat, gitEnv, homeThread, entries } from "./move-world.ts";
+import { PREVIOUS_LIMIT_MS } from "../src/ops/previous.ts";
+import { WS, A, B, C, type Station, world, endTurn, stillfailChat, gitEnv, homeThread, entries, retiredCopy } from "./move-world.ts";
 
 type Json = any;
 
@@ -98,6 +98,66 @@ test("a move asked as the connection to the other station is found gone asks onc
   const back = await a.moves.scheduler.back(WS, B, { module: "chats", item: key }).then(() => null, (e: Error) => e.message);
   assert.match(back ?? "", /cannot be reached now|连不上/, "gone twice: out of reach");
   assert.equal(a.rig.store.handedTo(key)?.station, B, "nothing moved");
+});
+
+test("the other station's process handing over to its next as every request of a move's turn is asked (half never taken, half taken with their answers lost): each is asked again once, dialed anew, and the move goes as it would, each entry there once", async () => {
+  const w = world();
+  const a = w.get(A);
+  const b = w.get(B);
+  const { key, thread } = await stillfailChat(a);
+  const said = entries(a, thread);
+  // (each request of the turn to B met once by its process stopping: by its words, the same asked again passing)
+  const met = new Map<string, "never taken" | "answer lost">();
+  let turn = false;
+  const first = (to: string, r: Json, how: "never taken" | "answer lost") => {
+    if (!turn || to !== B) return false;
+    const id = JSON.stringify(r);
+    if (met.has(id)) return false;
+    met.set(id, how);
+    return true;
+  };
+  let n = 0;
+  w.tamper((to, r) => {
+    if (n % 2 === 0 && first(to, r, "never taken")) {
+      n++;
+      throw new PeerStopped();
+    }
+    return r;
+  });
+  w.lose((to, r) => (n % 2 === 1 && first(to, r, "answer lost") ? (n++, new PeerStopped()) : null));
+  turn = true;
+  const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: key }).then((o) => ({ turn: null as string | null, failed: o.failed, failures: o.failures ?? [] }), (e: Error) => ({ turn: e.message, failed: null, failures: [] }));
+  turn = false;
+  await w.quiet();
+  assert.deepEqual(out, { turn: null, failed: null, failures: [] }, "every request answered by the next process: it went");
+  const kinds = new Set(met.values());
+  assert.ok(met.size >= 6 && kinds.has("never taken") && kinds.has("answer lost"), `requests of each kind met the process stopping: ${JSON.stringify([...met].map(([r, how]) => [JSON.parse(r).method, how]))}`);
+  assert.equal(a.rig.store.handedTo(key)?.station, B, "handed there");
+  assert.equal(b.rig.session(key).ws, null, "it went");
+  assert.deepEqual(entries(b, homeThread(b, key)), said, "each entry there once, asked twice or not");
+});
+
+test("a station whose process stops as move.open is asked is asked again once, dialed anew, and can be moved to; one that is really gone is said out of reach at once, in the same words as before", async () => {
+  const w = world();
+  const a = w.get(A);
+  const b = w.get(B);
+  let stopping = 1;
+  const asked: string[] = [];
+  w.tamper((to, r) => {
+    if (to === B) asked.push(r.method);
+    if (to === B && r.method === "move.open" && stopping > 0) {
+      stopping--;
+      throw new PeerStopped();
+    }
+    return r;
+  });
+  assert.equal(await a.moves.refusal(WS, B), null, "answered by the next process");
+  assert.deepEqual(asked, ["move.open", "move.open"]);
+  asked.length = 0;
+  b.up = false;
+  assert.equal(await a.moves.refusal(WS, B), tr(stationLang(), "station.move.unreachable", { station: "B" }), "gone: out of reach, in its words");
+  assert.deepEqual(asked, [], "not reached: nothing went, asked no more");
+  b.up = true;
 });
 
 test("the other station killed in the middle of a turn: found gone once and dialed anew in vain, it is asked nothing more in that turn: what is left of the turn fails at once in people's words, the turn ends; started again, it keeps nothing of it", async () => {
@@ -740,4 +800,241 @@ test("a move stopped once a chat went: that chat completes there, nothing after 
   assert.equal(a.rig.store.handedTo(third), null);
   assert.equal(a.moves.scheduler.last(WS)!.stoppedBy, "owner@x");
   assert.equal(a.moves.scheduler.stopping(), false, "said no more once the turn ended");
+});
+
+/// Station `st`'s next process (a launcher's hand-over): another Moves on its data directory, begun, the process before it
+/// gone as `previous` says.
+function nextProcess(st: Station, previous: Promise<void>) {
+  const next = st.make(previous);
+  return { next, started: next.start() };
+}
+
+/// Where chat `key` is in sight: the stations whose own row of it is live.
+const inSight = (w: ReturnType<typeof world>, key: string) => [...w.stations.values()].filter((s) => s.rig.store.liveOf([key]).length > 0).map((s) => s.id.slice(0, 1));
+
+test("a station handing over to its next process as one of its chats is handed to another station: the next process acts on it only once the one before is gone; the chat in sight on exactly one station", async () => {
+  const w = world();
+  const a = w.get(A);
+  const b = w.get(B);
+  const { key } = await stillfailChat(a);
+  // (the next process begins as the hand-over has its counts there, between `rows` and `gone`)
+  let gone!: () => void;
+  const previous = new Promise<void>((r) => (gone = r));
+  let next = null as ReturnType<typeof nextProcess> | null;
+  a.onFail = (step) => {
+    if (step === "counts" && next === null) next = nextProcess(a, previous);
+  };
+  const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: key });
+  a.onFail = null;
+  assert.ok(next !== null, "the next process began during the hand-over");
+  // The process before stops and is gone; the next goes on.
+  await a.moves.close();
+  gone();
+  await next!.started;
+  a.moves = next!.next;
+  await w.quiet();
+  assert.equal(out.failed, null, JSON.stringify(out.failed));
+  assert.deepEqual(inSight(w, key), ["b"], "in sight on B alone");
+  assert.equal(a.rig.store.handedTo(key)?.station, B, "A says it is on B");
+  assert.equal(b.rig.store.handedTo(key), null);
+});
+
+test("two processes of one station deciding one hand-over at once (the next not waiting for the one before): whichever decides first, the chat is in sight on exactly one station, never said gone where it failed", async () => {
+  const w = world();
+  const a = w.get(A);
+  const { key } = await stillfailChat(a);
+  // (the next process begins as the hand-over has its counts there, not waiting for this one (as a gate given up
+  // would); this one, about to decide, waits for it to have begun: it decides first)
+  let next = null as ReturnType<typeof nextProcess> | null;
+  a.onFail = (step) => {
+    if (step === "counts" && next === null) next = nextProcess(a, Promise.resolve());
+    if (step === "decide" && next !== null) return next.started;
+  };
+  const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: key }).then((o) => o, (e: Error) => ({ failed: { error: e.message } }));
+  a.onFail = null;
+  await next!.started;
+  await a.moves.close();
+  a.moves = next!.next;
+  await w.quiet();
+  const seen = inSight(w, key);
+  assert.equal(seen.length, 1, `in sight on exactly one station: ${JSON.stringify(seen)} (${JSON.stringify(out.failed)})`);
+  const handed = a.rig.store.handedTo(key);
+  assert.equal(handed === null, seen[0] === "a", "said gone from A exactly where it is on B");
+});
+
+/// A hand-over record of A's of chat `key` to B as a process writes it (handover.ts `Out`).
+function outRecord(st: Station, key: string, o: { id: string; step: string; at: number; shown?: boolean; ended?: boolean; v?: number }) {
+  const path = join(st.rig.dir, "replica", "handover", "out", `${o.id}.json`);
+  mkdirSync(join(path, ".."), { recursive: true });
+  writeFileSync(path, JSON.stringify({
+    id: o.id, keys: [key], to: B, toName: "B", ws: WS, at: o.at, step: o.step, error: o.step === "failed" ? "the station restarted midway" : null, jobs: [], dropOwed: false,
+    sent: {}, counts: null, there: {}, routes: [], routed: 0, shown: o.shown ?? false, done: 0, total: 0, held: true, ...(o.v === undefined ? { v: 2 } : o.v === 1 ? {} : { v: o.v }), ...(o.ended ? { ended: true } : {}),
+  }));
+}
+
+test("a chat this station says went to another where its hand-over failed and the other does not hold it (the real run's, 2026-11-15) is in sight here again as this station starts, once; one the other holds is completed", async () => {
+  for (const there of [false, true]) {
+    const w = world();
+    const a = w.get(A);
+    const b = w.get(B);
+    const { key } = await stillfailChat(a);
+    // A as Office-VM-1 was left: its record failed, its handed_over row naming B, B holding nothing of it in sight
+    outRecord(a, key, { id: "mwhsykk6-x-bbbbbbbb-1", step: "failed", at: 1000 });
+    a.rig.store.goneTo([key], B, { [key]: { thread: null, there: null } });
+    if (there) {
+      // (B holds it after all: a chat of that key in sight there)
+      retiredCopy(a, b, key, null);
+    }
+    assert.equal(a.rig.store.handedTo(key)?.station, B);
+    a.moves = a.make();
+    await a.moves.start();
+    await w.quiet();
+    if (!there) {
+      assert.equal(a.rig.store.handedTo(key), null, "no longer said to be on B");
+      assert.deepEqual(inSight(w, key), ["a"], "in sight here, once");
+    } else {
+      assert.equal(a.rig.store.handedTo(key)?.station, B, "it went");
+      assert.deepEqual(inSight(w, key), ["b"], "in sight there alone");
+    }
+  }
+});
+
+test("a failed hand-over of a chat that went later by another is left as it is: the chat stays where it went", async () => {
+  const w = world();
+  const a = w.get(A);
+  const b = w.get(B);
+  const { key } = await stillfailChat(a);
+  // (older than the move after it: its chat's latest record is that one's)
+  outRecord(a, key, { id: "old-failed-bbbbbbbb-1", step: "failed", at: -1 });
+  const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: key });
+  await w.quiet();
+  assert.equal(out.failed, null);
+  a.moves = a.make();
+  await a.moves.start();
+  await w.quiet();
+  assert.equal(a.rig.store.handedTo(key)?.station, B, "still said to be on B");
+  assert.deepEqual(inSight(w, key), ["b"], "in sight on B alone");
+  assert.equal(JSON.parse(readFileSync(join(a.rig.dir, "replica", "handover", "out", "old-failed-bbbbbbbb-1.json"), "utf8")).step, "failed", "the old record as it was");
+});
+
+test("a failed hand-over record that is from before (v1), was shown there, or is over is not mended: its chat stays said to be where it went", async () => {
+  const w = world();
+  const a = w.get(A);
+  const keys: string[] = [];
+  for (const [n, o] of [["v1", { v: 1 }], ["shown", { shown: true }], ["ended", { ended: true }]] as const) {
+    const { key } = await stillfailChat(a);
+    outRecord(a, key, { id: `${n}-failed-bbbbbbbb-1`, step: "failed", at: 1000, ...o });
+    a.rig.store.goneTo([key], B, { [key]: { thread: null, there: null } });
+    keys.push(key);
+  }
+  a.moves = a.make();
+  await a.moves.start();
+  await w.quiet();
+  for (const key of keys) assert.equal(a.rig.store.handedTo(key)?.station, B, `${key}: still said to be on B`);
+});
+
+test("a move turn asked while the station process before this one is still there waits for it; past PREVIOUS_LIMIT_MS it is refused in words to ask again, and so is another station's request; once that process is gone, it goes", async () => {
+  const w = world();
+  const a = w.get(A);
+  const b = w.get(B);
+  const { key } = await stillfailChat(a);
+  let gone!: () => void;
+  const previous = new Promise<void>((r) => (gone = r));
+  a.moves = a.make(previous);
+  const turn = a.moves.scheduler.move(WS, B, { module: "chats", item: key }).then((o) => ({ o, e: null as Error | null }), (e: Error) => ({ o: null, e }));
+  const peer = b.bus.ask(A, { method: "move.chats.live", keys: [key] }).then(() => null, (e: Error) => e);
+  await w.quiet();
+  await w.t.adjust(PREVIOUS_LIMIT_MS);
+  const words = tr(stationLang(), "station.move.previousStill");
+  const refused = await given(turn, "the turn answered past the limit");
+  assert.equal(refused.e?.message, words, "the turn refused in words");
+  assert.equal((await given(peer, "the other station answered"))?.message, words, "the other station's request refused in words");
+  assert.equal(a.rig.store.handedTo(key), null, "nothing moved");
+  gone();
+  await a.moves.start();
+  const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: key });
+  await w.quiet();
+  assert.equal(out.failed, null, JSON.stringify(out.failed));
+  assert.equal(a.rig.store.handedTo(key)?.station, B, "gone, it went");
+});
+
+test("a chat said gone whose show was never answered, left so by two processes of one station (the drill's 9m: the one before wrote `gone` last): where it went dropped the hand-over, it is in sight here again, once; where it holds it and only the show's answer was lost, it is completed, never taken back", async () => {
+  for (const dropped of [true, false]) {
+    const w = world();
+    const a = w.get(A);
+    const b = w.get(B);
+    const { key } = await stillfailChat(a);
+    // (its show not answered: never taken there, or taken and its answer lost)
+    let shows = 0;
+    w.tamper((to, r) => {
+      if (to === B && r.method === "handover.show" && dropped && shows++ === 0) throw new Error("station unreachable");
+      return r;
+    });
+    w.lose((to, r) => (to === B && r.method === "handover.show" && !dropped && shows++ === 0 ? new Error("station unreachable") : null));
+    const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: key });
+    await w.quiet();
+    const o = a.moves.handover.outs()[0]!;
+    assert.equal(o.step, "gone", `${dropped}: said gone, ${JSON.stringify(out.failed)}`);
+    assert.equal(o.shown, false, "not shown");
+    w.tamper(null);
+    w.lose(null);
+    if (dropped) {
+      // (dropped there, as the next process had it dropped)
+      await a.bus.ask(B, { method: "handover.drop", workspace: WS, origin: A, id: o.id });
+      assert.deepEqual(inSight(w, key), ["a"], "only A's row, said gone");
+    } else assert.deepEqual(inSight(w, key), ["a", "b"], "shown there, its answer lost");
+    // A started again (the next process, the one before gone)
+    await a.moves.close();
+    a.moves = a.make();
+    await a.moves.start();
+    await w.quiet();
+    if (dropped) {
+      assert.deepEqual(inSight(w, key), ["a"], "in sight on A, once");
+      assert.equal(a.rig.store.handedTo(key), null, "no longer said to be on B");
+      const after = a.moves.handover.outs().find((x) => x.id === o.id)!;
+      assert.equal(after.step, "failed", "the record over as a failure");
+      assert.equal(after.ended, true);
+    } else {
+      assert.deepEqual(inSight(w, key), ["b"], "in sight on B alone: completed, not taken back");
+      assert.equal(a.rig.store.handedTo(key)?.station, B);
+    }
+  }
+});
+
+test("a chat that only ran before on a login of this machine's own (which cannot go) is no need of it: planned here with no `cannot`, saying what it leaves; moved with its needs, it goes on the login it runs on, its turns there taking up its runtime session; moved back, the past login's runtime session is here as it was; one running on such a login now still cannot go", async () => {
+  const w = world();
+  const a = w.get(A);
+  const b = w.get(B);
+  const { key } = await stillfailChat(a);
+  // (it ran on `mine`, this machine's own, before; it runs on `cc`, shared, now)
+  a.rig.store.ranIn(key, "run-mine", "mine");
+  const [onMine] = newSession(a.rig.hub, { runtime: "claude", profile: "mine", createdBy: "p@x" });
+  const plan = await a.moves.scheduler.plan(WS, B);
+  const item = plan.items.find((x) => x.module === "chats" && x.id === key)!;
+  assert.equal(item.cannot, undefined, `no cannot: ${item.cannot}`);
+  assert.ok(!item.needs.some((n) => n.id === "machine:mine"), `no need of the past login: ${JSON.stringify(item.needs)}`);
+  assert.match(item.leaves ?? "", /mine/, "says what it leaves");
+  const now = plan.items.find((x) => x.module === "chats" && x.id === onMine)!;
+  assert.ok(now.needs.some((n) => n.id === "machine:mine"), "one running on it now still needs it");
+  // Moved with its needs: it goes, nothing of the past login moved.
+  const asked: string[] = [];
+  w.tamper((to, r) => (to === B && asked.push(JSON.stringify(r)), r));
+  const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: key, withNeeds: true });
+  await w.quiet();
+  w.tamper(null);
+  assert.equal(out.failed, null, JSON.stringify(out.failed));
+  assert.ok(!out.done.some((d) => d.id === "machine:mine"), "the past login not moved");
+  assert.ok(!asked.some((r) => r.includes("move.accounts") && r.includes("mine")), "the past login asked of B as no account");
+  assert.equal(b.rig.session(key).ws, null, "it went");
+  // A turn there: on its current login, its runtime session taken up.
+  say(b.rig.hub, homeThread(b, key), "p@x", "and there?");
+  await w.quiet();
+  assert.equal(b.rig.claude.last().options.resume, "claude-1", "its runtime session on its current login taken up");
+  await endTurn(b, key);
+  // Back: the past login's runtime session here as it was.
+  const back = await a.moves.scheduler.back(WS, B, { module: "chats", item: key });
+  await w.quiet();
+  assert.equal(back.failed, null, JSON.stringify(back.failed));
+  const rows = a.rig.store.db.prepare("SELECT id, profile FROM runtime_sessions WHERE session_key = ? ORDER BY id").all(key) as { id: string; profile: string }[];
+  assert.ok(rows.some((r) => r.id === "run-mine" && r.profile === "mine"), `the past login's runtime session kept here: ${JSON.stringify(rows)}`);
 });

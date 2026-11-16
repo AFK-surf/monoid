@@ -307,6 +307,7 @@ fn rs_spark_shapes(points : Array[Double], w : Double, ink : Int64) -> Array[@ui
 /// `stacked`, each row's names on a line of their own over its figures, where beside the figures they would have less
 /// than rs_name_least each; `share`, the sorted column's share before its figures, left out where the figures' line
 /// has not the room for it.
+#derive(Eq)
 priv struct RsLayout {
   widths : Array[Double]
   stacked : Bool

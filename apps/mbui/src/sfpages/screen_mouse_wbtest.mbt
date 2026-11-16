@@ -422,3 +422,35 @@ test "a mouse's press on a drop row's 在访达中显示 over the picture is its
   r.t.run_for(@sf.toast_ms)
   mouse_done(r)
 }
+
+///|
+test "in a chat's side panel with keyboard and mouse: one compact toolbar row (no traffic-light indent, no back, no duplicate title), with 控制中心 on a browser tab and 组合键 on a desktop" {
+  // browser tab in side panel (373 wide, as in a 1280x800 chat window)
+  let b = screen_rig(w=373.0, h=756.0, platform=0, in_tab=true)
+  b.t.run_for(@sf.later_ms)
+  b.state("live", more={ "openUrl": Json::boolean(true), "address": Json::string("https://console.anthropic.com/login") })
+  b.t.draw()
+  assert_true(b.labelled(tr("common.back")) is None)
+  assert_true(b.t.find("still.fail — Chrome") is None)
+  assert_true(b.labelled(tr("web-pages.screen.back")) is Some(_))
+  assert_true(b.labelled(tr("web-pages.screen.panel")) is Some(_))
+  assert_eq(b.ui().stage_y, 48.0)
+  assert_eq(b.t.squeeze_faults(), [])
+  assert_eq(b.t.audit(), [])
+  mouse_done(b)
+
+  // desktop screen in side panel: status line + 组合键 + 控制中心 in one 48px row
+  let d = screen_rig(w=373.0, h=756.0, platform=0, screen="desktop", in_tab=true)
+  d.t.run_for(@sf.later_ms)
+  d.state("live", more={ "kind": Json::string("desktop"), "title": Json::string("桌面") })
+  d.t.draw()
+  assert_true(d.labelled(tr("common.back")) is None)
+  assert_true(d.t.find("桌面") is None)
+  assert_true(d.t.find("控制 · 李雷也在看") is Some(_))
+  assert_true(d.labelled(tr("web-pages.screen.combos")) is Some(_))
+  assert_true(d.labelled(tr("web-pages.screen.panel")) is Some(_))
+  assert_eq(d.ui().stage_y, 48.0)
+  assert_eq(d.t.squeeze_faults(), [])
+  assert_eq(d.t.audit(), [])
+  mouse_done(d)
+}

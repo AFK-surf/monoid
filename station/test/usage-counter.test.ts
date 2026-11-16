@@ -1,5 +1,7 @@
-// The usage counter (src/usage/counter.ts): the Rust station's usage/tests.rs ported, the push-driven reads, and (when a
-// copy of a real station is at $USAGE_WORK, default /tmp/usage-work) what it records against what the Rust recorded.
+// The usage counter (src/usage/counter.ts, its reads the MoonBit program's): the Rust station's usage/tests.rs ported, the
+// push-driven reads, and (when a copy of a real station is at $USAGE_WORK, default /tmp/usage-work) what it records
+// against what the Rust recorded. Each store is a file, as the program writes there; how a runtime's lines are read
+// into calls and a transcript read in parts are the TypeScript reference's (test/usage-counter-reference.ts).
 import type { Clock } from "effect";
 import assert from "node:assert/strict";
 import { appendFileSync, closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
@@ -11,14 +13,16 @@ import { monitorEventLoopDelay } from "node:perf_hooks";
 import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 import { zstdCompressSync, zstdDecompressSync } from "node:zlib";
-import { SEGMENT } from "../src/read/packed.ts";
-import { cost, price, priceTable, sessionUsage, usageNow } from "../src/read/usage.ts";
+import { SEGMENT } from "./reference/packed.ts";
+import { cost, price, priceTable, sessionUsage, usageNow } from "./reference/usage.ts";
+import { tr } from "../src/ops/i18n.ts";
 import { packFile } from "../src/sessions/archive.ts";
-import { iso, parseIso, rememberCodexRollout } from "../src/read/transcript.ts";
+import { iso, parseIso, rememberCodexRollout } from "./reference/transcript.ts";
 import { type StoreChange, type UsageGroup, Store, newMessage } from "../src/store/store.ts";
 import { installCompactUsage } from "../src/store/usage-compact.ts";
-import { retireUsageIndexes } from "../src/store/usage-retire.ts";
-import { type CallState, UsageCounter, callsOf, claudeFiles, claudeProject, readFrom } from "../src/usage/counter.ts";
+import { retireUsageIndexes } from "./reference/backfill/usage-retire.ts";
+import { UsageCounter } from "../src/usage/counter.ts";
+import { type CallState, callsOf, claudeFiles, claudeProject, readFrom } from "./usage-counter-reference.ts";
 import type { UsageCall, UsageFor } from "../src/store/usage.ts";
 import { keepUsage } from "../src/usage/module.ts";
 import { testClock } from "./hub-fakes.ts";
@@ -159,8 +163,10 @@ test("GPT usage has a price, and unknown variants do not borrow one", () => {
 });
 
 test("the price note finishes its explanation in both languages", () => {
-  assert.ok((priceTable("zh") as any).note.endsWith("。"));
-  assert.ok((priceTable("en") as any).note.endsWith("."));
+  // (said by the client, core-ts views/usage.ts: the station's table carries no words)
+  assert.equal((priceTable("zh") as any).note, undefined);
+  assert.ok(tr("zh", "station.usage.priceNote").endsWith("。"));
+  assert.ok(tr("en", "station.usage.priceNote").endsWith("."));
 });
 
 type Rig = { data: string; store: Store; usage: UsageCounter };
@@ -168,7 +174,7 @@ type Rig = { data: string; store: Store; usage: UsageCounter };
 function rig(options: { settleMs?: number; safetyMs?: number; clock?: Clock.Clock } = {}): Rig {
   const data = tempdir();
   writeFileSync(join(data, "config.json"), JSON.stringify({ profiles: [{ id: "cc", runtime: "claude", home: "homes/cc" }] }));
-  const store = Store.open(":memory:", null, options.clock);
+  const store = Store.open(join(data, "stillfail.db"), null, options.clock);
   stores.push(store);
   const usage = new UsageCounter({ store, config: () => ({ dataDir: data, profiles: [{ home: join(data, "homes/cc") }] }), ...options });
   counters.push(usage);
@@ -380,13 +386,17 @@ test("a replacement checkpoint resumes from the new file after an interrupted re
   const replacement = [0, 1, 2].map((i) => claudeLine(`old-${i}`, now - 1, "claude-opus-5-5", usage(2, 0, 0, 0, 1)));
   replacement.push(claudeLine("new", now + 2, "claude-opus-5-5", usage(3, 0, 0, 0, 1)));
   writeFileSync(path, replacement.join("\n") + "\n");
-  const record = r.store.recordUsage.bind(r.store);
-  r.store.recordUsage = () => { throw new Error("interrupted"); };
-  await assert.rejects(r.usage.read(new Set(["active"])), /interrupted/);
-  r.store.recordUsage = record;
+  // The program ended with the read under way (before the new file's checkpoint, after it, or done).
+  const read = r.usage.read(new Set(["active"]));
+  // Done before the end, or stopped by it.
+  const stopped = read.then(() => {}, (error: Error) => assert.match(error.message, /stopping/));
+  // Asked of the program (its process started, the read sent) before it is ended: what follows holds wherever it was.
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  await r.usage.stop();
+  await stopped;
   const again = new UsageCounter({ store: r.store, config: () => ({ dataDir: r.data, profiles: [{ home: join(r.data, "homes/cc") }] }), clock: time.clock });
   counters.push(again);
-  assert.equal(await again.read(new Set(["active"])), 1);
+  await again.read(new Set(["active"]));
   assert.deepEqual(r.store.db.prepare("SELECT id FROM usage ORDER BY id").all().map((row) => row.id), ["first", "new"]);
 });
 
@@ -571,7 +581,7 @@ test("each call is counted once, for whom its turn worked, where and on what", a
   assert.equal(r.store.usageGroups(0, MAX, 0).reduce((s, g) => s + g.calls, 0), 4);
 });
 
-test("each part's calls are put to the turns they were made in, those turns alone read", async () => {
+test("each part's calls are put to the turns they were made in", async () => {
   const time = await today();
   const pause = () => time.adjust(15);
   const r = rig({ clock: time.clock });
@@ -579,36 +589,27 @@ test("each part's calls are put to the turns they were made in, those turns alon
   session(r.store, "chat:c-1", workspace, r.store.now());
   const chat = r.store.openThreadOf("ember", "ember", "1.0", null, "creator@x", "chat:c-1");
   r.store.joinThread(chat.id, "chat:c-1", "ember");
-  // The turns read for each part: from when its first call was made until its last.
-  const real = r.store.usageTurns.bind(r.store);
-  const asked: [number, number][] = [];
-  r.store.usageTurns = (key: string, from: number, until: number) => (asked.push([from, until]), real(key, from, until));
   await pause();
   r.store.startTurnFor("t1", "chat:c-1", "input", { profile: "cc", person: "a@x", thread: chat.id });
   const main = join(r.data, "transcripts/claude", claudeProject(workspace), "r1.jsonl");
-  let last = 0;
-  const at = () => (last = r.store.now() + 1);
+  const at = () => r.store.now() + 1;
   append(main, [claudeLine("m1", at(), "claude-opus-5-5", usage(1, 0, 0, 0, 1))]);
   assert.equal(await r.usage.read(), 1);
-  assert.deepEqual(asked.at(-1), [last, last]);
   // The same turn going on: read on from where it was left.
   await pause();
   append(main, [claudeLine("m2", at(), "claude-opus-5-5", usage(2, 0, 0, 0, 1))]);
   assert.equal(await r.usage.read(), 1);
-  assert.deepEqual(asked.at(-1), [last, last]);
   // A turn begun (a job's notice: for whom the one before worked), and a message taken during it.
   await pause();
   r.store.startTurn("t2", "chat:c-1", "job");
   append(main, [claudeLine("m3", at(), "claude-opus-5-5", usage(3, 0, 0, 0, 1))]);
   assert.equal(await r.usage.read(), 1);
-  assert.deepEqual(asked.at(-1), [last, last]);
   await pause();
   const [n] = r.store.insertMessage(newMessage(chat.id, "2.0", "person", "b@x", "再看看"));
   r.store.deliver(chat.id, n, ["chat:c-1"]);
   r.store.markDelivered("chat:c-1", [{ thread: chat.id, n, apart: false }]);
   append(main, [claudeLine("m4", at(), "claude-opus-5-5", usage(4, 0, 0, 0, 1))]);
   assert.equal(await r.usage.read(), 1);
-  assert.deepEqual(asked.at(-1), [last, last]);
   // Each for whom its turn worked: the job's and the one during it for the person before.
   assert.deepEqual(r.store.usageGroups(0, MAX, 0).map((g) => [g.calls, g.input, g.person, g.thread]), [[4, 10, "a@x", chat.id]]);
 });
@@ -743,7 +744,7 @@ test("a file read in parts records each part's whole lines and leaves a partial 
   assert.equal(parts.at(-1), line.length * 8);
 });
 
-for (const truncated of [false, true]) test(`a dense transcript yields between writes and resumes ${truncated ? "after it was shortened" : "from its last completed part"}`, async () => {
+for (const truncated of [false, true]) test(`a dense transcript whose read was stopped is read on by the next, each call once${truncated ? ", after it was shortened" : ""}`, async () => {
   const time = testClock();
   const r = rig({ clock: time.clock });
   const workspace = join(r.data, "dense");
@@ -756,24 +757,14 @@ for (const truncated of [false, true]) test(`a dense transcript yields between w
   const count = 350;
   append(path, Array.from({ length: count }, (_, i) => claudeLine(`dense-${i}`, 2000 + i, "claude-opus-5-5", usage(1, 0, 0, 0, 1))));
   if (truncated) assert.ok(readFileSync(path).length < previous.offset);
-
-  const record = r.store.recordUsage.bind(r.store);
-  let stopping: Promise<void> | undefined;
-  r.store.recordUsage = (...args: Parameters<Store["recordUsage"]>) => {
-    const added = record(...args);
-    if (stopping === undefined) {
-      stopping = new Promise<void>((resolve, reject) => setImmediate(() => { r.usage.stop().then(resolve, reject); }));
-    }
-    return added;
-  };
+  // The program ended with the read under way: what it wrote is each batch with its position (mb/src/usagecount).
   const read = r.usage.read(new Set(["k"]));
-  await assert.rejects(read);
-  await stopping;
-  r.store.recordUsage = record;
-  const recorded = (r.store.db.prepare("SELECT COUNT(*) AS n FROM usage").get() as { n: number }).n;
-  assert.ok(recorded > 1 && recorded < count + 1, "the stop ran between writes");
-  assert.equal(r.store.usageFiles().get(path)?.offset, truncated ? 0 : previous.offset);
-
+  // Done before the end, or stopped by it.
+  const stopped = read.then(() => {}, (error: Error) => assert.match(error.message, /stopping/));
+  // Asked of the program (its process started, the read sent) before it is ended: what follows holds wherever it was.
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  await r.usage.stop();
+  await stopped;
   const again = new UsageCounter({ store: r.store, config: () => ({ dataDir: r.data, profiles: [{ home: join(r.data, "homes/cc") }] }), clock: time.clock });
   counters.push(again);
   await again.read(new Set(["k"]));
@@ -992,4 +983,33 @@ test("a session's summary says what its calls used as recorded: added up and pri
   store.recordUsage("/t2.jsonl", { session: "k", offset: 1, model: null }, "claude", [call("f", began + 1000, false, 6)]);
   keepUsage(store, "k", true);
   assert.deepEqual(context(), [6, 116, began + 1000], "its first call");
+});
+
+test("a session deleted leaves nothing in the counter: one made again with its key has its turn's end read", async () => {
+  const time = await today();
+  const r = rig({ settleMs: 20, safetyMs: 60_000, clock: time.clock });
+  const calls = () => r.store.usageGroups(0, MAX, 0).reduce((s, g) => s + g.calls, 0);
+  session(r.store, "k", join(r.data, "w"), r.store.now() - 1000);
+  r.usage.start();
+  await time.begun(1);
+  r.store.startTurn("t1", "k", "input");
+  append(join(r.data, "transcripts/claude", claudeProject(join(r.data, "w")), "r.jsonl"), [claudeLine("m1", r.store.now() + 1, "claude-opus-5-5", usage(1, 0, 0, 0, 1))]);
+  r.store.endTurn("t1", "completed", null, null, null);
+  // Its turn's end as the counter keeps it: later than the next one's of a session made again with its key.
+  r.store.db.prepare("UPDATE turns SET ended_at = ? WHERE id = 't1'").run(r.store.now() + 3_600_000);
+  await time.begun(2);
+  await time.adjust(20);
+  await time.begun(3);
+  assert.equal(calls(), 1);
+  r.store.deleteSession("k");
+  const again = join(r.data, "w-again");
+  session(r.store, "k", again, r.store.now());
+  r.store.startTurn("t2", "k", "input");
+  append(join(r.data, "transcripts/claude", claudeProject(again), "r.jsonl"), [claudeLine("m2", r.store.now() + 1, "claude-opus-5-5", usage(1, 0, 0, 0, 1))]);
+  r.store.endTurn("t2", "completed", null, null, null);
+  await time.begun(4);
+  await time.adjust(20);
+  await time.begun(5);
+  assert.equal(calls(), 2, "the new session's turn is read as it ends, not held back by the deleted one's");
+  await r.usage.stop();
 });

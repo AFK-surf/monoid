@@ -9,16 +9,16 @@
 // - a subagent is a session of its own in the process, said spawned and finished in Grok Build's own notifications;
 // - the model and effort are flags of the process, the station's instructions `_meta.rules`; `--always-approve` runs
 //   without approvals, as the other runtimes do.
-import { appendFileSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import { mkdirSync, readdirSync, statSync } from "node:fs";
+import { appendFile, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { peerHttpBase } from "../tools/http.ts";
 import { AcpDriver, AcpSession, STEER, type AcpStart } from "./acp.ts";
-import { LiveFromAcp } from "./live.ts";
 import type { Events } from "./own-process.ts";
 import { expandRoute, profileEnv, profileModel } from "./profiles.ts";
-import { cleanEnv, failureOf, uuid, type FailureReason, type LiveEvent, type OpenOptions } from "./runtime.ts";
+import { cleanEnv, failureOf, uuid, type FailureReason, type OpenOptions } from "./runtime.ts";
 
 type Json = any;
 
@@ -38,7 +38,7 @@ export const USAGE = "stillfail-usage.jsonl";
 export const grokEffort = (effort: string | undefined) => (effort && ["low", "medium", "high", "xhigh", "max"].includes(effort) ? effort : undefined);
 
 /// Grok Build keeps a session at <grok home>/sessions/<working directory, escaped>/<id>/: the directory, if it is there
-/// (`home`: the profile's).
+/// (`home`: the profile's). Before a session starts (`sessionAt` once it runs, off the station's thread).
 export function sessionDir(home: string, sessionId: string): string | null {
   if (sessionId === "") return null;
   const root = join(grokHome(home), SESSIONS);
@@ -56,7 +56,8 @@ export function sessionDir(home: string, sessionId: string): string | null {
   return null;
 }
 
-/// What failed a turn, from what Grok Build said of it (SuperGrok's sign-in is a subscription's).
+/// What failed a turn, from what Grok Build said of it (SuperGrok's sign-in is a subscription's). What the program reads
+/// a process by does this (mb/src/acp `classify`); this is what it is held to.
 export const classifyFailure = (text: string): FailureReason => failureOf(text, { auth: ["access token", "subscription"] });
 
 /// A turn's usage as the station keeps it beside the transcript (counted by usage/counter.ts): its input less what was
@@ -76,6 +77,23 @@ export function usageLine(answer: Json, time: number, window: number | null = nu
   return JSON.stringify({ type: "stillfail/usage", time, id, model: typeof meta.modelId === "string" ? meta.modelId : null, usage, context, window });
 }
 
+/// `sessionDir`, read off the station's thread: where a turn's usage is written.
+export async function sessionAt(home: string, sessionId: string): Promise<string | null> {
+  if (sessionId === "") return null;
+  const root = join(grokHome(home), SESSIONS);
+  let dirs: string[];
+  try {
+    dirs = await readdir(root);
+  } catch {
+    return null;
+  }
+  for (const d of dirs) {
+    const dir = join(root, d, sessionId);
+    if (await stat(dir).then((s) => s.isDirectory(), () => false)) return dir;
+  }
+  return null;
+}
+
 export type GrokDriverOptions = {
   /// The station's data directory: runners live in <data>/run/runners.
   data: string;
@@ -87,14 +105,6 @@ export type GrokDriverOptions = {
 /// are behind Grok Build's search_tool and use_tool), so that no turn spends a step looking for them.
 export const grokRules = (instructions: string) =>
   `${instructions}${instructions === "" ? "" : "\n\n"}The station's tools (chat_post, chat_state and the others named in these instructions) are the stillfail MCP server's: call one with use_tool and its full name, stillfail__<tool> (for example stillfail__chat_post), without searching for it first.`;
-
-/// A subagent's step as the parent session shows it: its own id, marked a subagent's, under the call that spawned it.
-function underParent(event: LiveEvent, child: string, parent: string | undefined): LiveEvent {
-  if (event.kind === "phase" || event.kind === "tasks" || event.kind === "plan") return event;
-  const id = `sub:${child}:${event.id}`;
-  if (event.kind !== "start") return { ...event, id };
-  return { ...event, id, subagent: true, ...(parent !== undefined ? { parent } : {}) };
-}
 
 /// The process's arguments: no approvals, its own process (not a shared leader), the model and effort chosen.
 export function grokArgs(model: string | undefined, effort: string | undefined): string[] {
@@ -146,22 +156,20 @@ export class GrokDriver extends AcpDriver<GrokSession> {
   }
 }
 
+/// A session: its subagents' steps (a session of its own each in the process, said spawned and finished in Grok Build's
+/// own notifications) are the program's to read, under the call that spawned them (mb/src/acp `under_parent`).
 export class GrokSession extends AcpSession {
   /// The profile's home (its sessions are in grokHome of it).
   private readonly home: string;
   /// What its model's context can hold (as session/new or session/load said), by model.
   private windows = new Map<string, number>();
-  /// Its subagents' sessions (Grok Build says them as it spawns them): their steps, under the call that spawned them.
-  private children = new Map<string, { live: LiveFromAcp; parent: string | undefined }>();
+  /// Each turn's usage being written beside its transcript, in turn.
+  #writing: Promise<void> | null = null;
 
   constructor(driver: GrokDriver, events: Events, options: OpenOptions) {
     super(driver, events);
     this.home = options.profile.home;
     this.model = options.model ?? profileModel(options.profile) ?? null;
-  }
-
-  protected classify(text: string) {
-    return classifyFailure(text);
   }
 
   /// The models Grok Build said it has: which is current, and what each one's context holds.
@@ -175,45 +183,35 @@ export class GrokSession extends AcpSession {
     }
   }
 
-  /// A subagent's session says its own steps: under the call that spawned it.
-  protected other(from: string, update: Json) {
-    const child = this.children.get(from);
-    if (child) for (const event of child.live.feed(update)) this.events({ type: "live", event: underParent(event, from, child.parent) });
-  }
-
-  protected notified(message: Json) {
-    if (message.method !== "_x.ai/session_notification" || message.params?.sessionId !== this.sessionId) return;
-    const update = message.params?.update;
-    const child = typeof update?.child_session_id === "string" ? update.child_session_id : null;
-    if (child === null) return;
-    if (update?.sessionUpdate === "subagent_spawned") this.children.set(child, { live: new LiveFromAcp(), parent: this.live.openCall() });
-    if (update?.sessionUpdate === "subagent_finished") this.endChild(child);
-  }
-
   protected ending(_id: string, answer: Json) {
     this.keepUsage(answer);
-    for (const child of [...this.children.keys()]) this.endChild(child);
   }
 
-  /// A subagent done: what it still had open ends.
-  private endChild(id: string) {
-    const child = this.children.get(id);
-    if (!child) return;
-    this.children.delete(id);
-    for (const event of child.live.ended()) this.events({ type: "live", event: underParent(event, id, child.parent) });
+  protected settled(): Promise<void> | null {
+    return this.#writing;
   }
 
-  /// The turn's usage, beside its transcript (none for a turn that made no call).
+  /// The turn's usage, beside its transcript (none for a turn that made no call): written off the station's thread, the
+  /// turn said ended once it is.
   private keepUsage(answer: Json) {
     const model = typeof answer?.result?._meta?.modelId === "string" ? answer.result._meta.modelId : this.model;
     const line = usageLine(answer, wall.now(), model !== null ? (this.windows.get(model) ?? null) : null);
-    const dir = sessionDir(this.home, this.sessionId);
-    if (line === null || dir === null) return;
-    try {
-      appendFileSync(join(dir, USAGE), `${line}\n`);
-    } catch (e) {
-      log.warn("agents::grok", "a turn's usage was not kept", { session: this.sessionId, error: (e as Error).message });
-    }
+    if (line === null) return;
+    const session = this.sessionId;
+    const write = async () => {
+      const dir = await sessionAt(this.home, session);
+      if (dir === null) return;
+      try {
+        await appendFile(join(dir, USAGE), `${line}\n`);
+      } catch (e) {
+        log.warn("agents::grok", "a turn's usage was not kept", { session, error: (e as Error).message });
+      }
+    };
+    const next: Promise<void> = (this.#writing ?? Promise.resolve()).then(write);
+    this.#writing = next;
+    void next.then(() => {
+      if (this.#writing === next) this.#writing = null;
+    });
   }
 
   /// Into the running turn, read at its next safe point (after the tool call it is in). Not when nothing runs: Grok

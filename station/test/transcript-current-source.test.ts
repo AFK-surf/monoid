@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { transcriptFile } from "../src/read/sessions.ts";
-import { makeStore, openStore, runtimeSessionSource, runtimeSessionSources } from "../src/read/store.ts";
+import { transcriptFile } from "./reference/sessions.ts";
+import { makeStore, openStore, runtimeSessionSource, runtimeSessionSources } from "./reference/store.ts";
 import { Store } from "../src/store/store.ts";
 
 test("a current transcript lookup does not read a session's other runtime sources", () => {

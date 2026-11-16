@@ -275,8 +275,9 @@ pub fn screen_page(
       let child_at : ScreenAt = { station: s.station, screen: next, title: "", until_gone: true }
       match @sfbase.lone_page.val {
         Some(Screen(prev)) => {
+          // (the window shows the child first, so the screen it leaves is no window's when it is let go of)
+          @sfbase.lone_page_replace(Screen({ ..child_at, until_gone: false }))
           screen_left(src, prev.station, prev.screen)
-          @sfbase.lone_page.val = Some(Screen({ ..child_at, until_gone: false }))
         }
         _ =>
           if u.in_tab {
@@ -379,13 +380,24 @@ pub fn screen_page(
       })
       |> ignore
     } else if !@sf.soft_keyboard() {
-      // keyboard and mouse: the viewer's bar across the window's top, always there, the picture under it (what is at
-      // the top of the screen, its windows' title bars, never under the bar); the keyboard and the mouse its own
-      screen_viewer_bar(c, s, u, title, close)
-      if browser_shown(s) {
-        browser_bar(c, s, u, close)
+      if u.in_tab {
+        // beside a chat in its side panel: the panel's own tab bar above already names the screen, closes it and opens
+        // it in a window of its own, so only one compact toolbar row (browser controls + 控制中心, or desktop status +
+        // 组合键 + 控制中心) stands over the picture
+        screen_tab_bar(c, s, u, title, close)
+        if s.can_take_over() {
+          c.box(style=take_over_place, fn() { take_over(c, s, u) }) |> ignore
+        }
+        screen_content(c, s, u, key)
+      } else {
+        // keyboard and mouse: the viewer's bar across the window's top, always there, the picture under it (what is at
+        // the top of the screen, its windows' title bars, never under the bar); the keyboard and the mouse its own
+        screen_viewer_bar(c, s, u, title, close)
+        if browser_shown(s) {
+          browser_bar(c, s, u, close)
+        }
+        screen_content(c, s, u, key)
       }
-      screen_content(c, s, u, key)
     } else if sideways {
       c.box(style=screen_row, fn() {
         screen_rail(c, s, u, catching, catcher, close)
@@ -567,6 +579,21 @@ pub fn screen_covered(src : Source, station : String, screen : String, covered :
 /// again.
 pub fn screen_left(src : Source, station : String, screen : String) -> Unit {
   let key = screen_key(station, screen)
+  // (taken over by a window of this run beside the first, as it opened there: its view, its decoder and the frame it
+  // shows kept open for that window, the way it was driven with them; only what this page put up here let go of. That
+  // window lets it go as it closes: screen_window_left)
+  if @sfbase.window_has_screen(station, screen) {
+    match screen_uis.get(key) {
+      Some(u) => {
+        screen_panels_close(u)
+        if u.fulled && @ui.full_screen() {
+          @hostapi.set_full_screen(false)
+        }
+      }
+      None => ()
+    }
+    return
+  }
   match screens_open.get(key) {
     Some(s) => s.close(src)
     None => ()
@@ -590,6 +617,40 @@ pub fn screen_left(src : Source, station : String, screen : String) -> Unit {
   }
   screens_open.remove(key)
   screen_uis.remove(key)
+}
+
+///|
+/// A window of this run beside the first closed on page `p` (sfbase's window_page_left): a screen it showed that no
+/// other window shows now let go of, as its page leaving would (screen_left).
+fn screen_window_left(p : @sfbase.Page) -> Unit {
+  guard p is Screen(at) && !@sfbase.window_has_screen(at.station, at.screen) else { return }
+  match screens_open.get(screen_key(at.station, at.screen)) {
+    Some(s) => screen_left(s.src, at.station, at.screen)
+    None => ()
+  }
+}
+
+///|
+/// Page `p` given to window `wid` of this run as it opens (sfbase's window_page_given): a screen's pictures' layers that
+/// window's from then on, so the page it leaves here, going, neither takes them back nor hides them there.
+fn screen_window_given(p : @sfbase.Page, wid : Int) -> Unit {
+  guard p is Screen(at) else { return }
+  match screens_open.get(screen_key(at.station, at.screen)) {
+    Some(s) =>
+      for st in [s.stream, s.part] {
+        match st {
+          Some(st) => st.given_to_window(wid)
+          None => ()
+        }
+      }
+    None => ()
+  }
+}
+
+///|
+fn init {
+  @sfbase.window_page_left.val = screen_window_left
+  @sfbase.window_page_given.val = screen_window_given
 }
 
 // ── what goes between the device and the screen ─────────────────────────
@@ -894,6 +955,68 @@ fn screen_top_bar(c : @ui.Ctx, s : ScreenSess, u : ScreenUi, title : String, clo
 }
 
 ///|
+/// With keyboard and mouse inside a chat's side panel (`u.in_tab`): one row, no traffic-light indent, no `< 返回`, and
+/// (where `u.own_bar` is None and the panel's tab row stands above) no duplicate title or close button.
+fn screen_tab_bar(c : @ui.Ctx, s : ScreenSess, u : ScreenUi, title : String, close : () -> Unit) -> Unit {
+  u.narrow_bar = true
+  if !s.open_now() && u.own_bar is None {
+    return
+  }
+  let browser = browser_shown(s)
+  let style = match u.own_bar {
+    Some(own) => own
+    None => if browser { screen_tab_browser_bar } else { screen_tab_status_bar }
+  }
+  c.box(style~, fn() {
+    if browser {
+      browser_seen(s)
+      c.box(style=screen_bar_tools, fn() { browser_tools(c, s, u, close, true) }) |> ignore
+    } else {
+      c.box(style=screen_bar_words, fn() {
+        let said = match opt_text(s.state, "title") {
+          Some(t) if t != "" => t
+          _ => if title != "" { title } else { @sf.t("android-misc.screen.title") }
+        }
+        if u.own_bar is Some(_) {
+          c.text(said, style=screen_title_words) |> ignore
+        }
+        let line = text(s.state, "line")
+        if line != "" && s.open_now() && !s.can_take_over() {
+          c.text(line, style=screen_line_words) |> ignore
+        }
+      })
+      |> ignore
+      let (tabs, _) = view_tabs(s)
+      if !tabs.is_empty() {
+        tabs_button(c, s, u, tabs.length(), close)
+      }
+      if s.driving() && !s.simulator() {
+        combos_button(c, s, u)
+      }
+    }
+    if s.open_now() {
+      center_button(c, s, u, close)
+    }
+    if u.own_bar is Some(_) {
+      round_button(c, "screen-close", "close", @sf.t("android-misc.screen.close"), on_press=fn() {
+        close()
+      })
+    }
+  })
+  |> ignore
+}
+
+///|
+/// 组合键 as a round button in the side panel's compact bar while driving a desktop.
+fn combos_button(c : @ui.Ctx, s : ScreenSess, u : ScreenUi) -> Unit {
+  let key = "screen-combos"
+  let id = c.id(key)
+  round_button(c, key, "keycap", @sf.t("web-pages.screen.combos"), on=screen_panel_on(u, "keys"), on_press=fn() {
+    keys_open(s, u, Of(id), combos_only=true)
+  })
+}
+
+///|
 /// Whether the link to the screen's station is poor now (its round trip amber or red): the viewer's bar says so then,
 /// and only then (its figures are 控制中心's).
 fn net_poor(s : ScreenSess) -> Bool {
@@ -919,7 +1042,9 @@ fn screen_viewer_bar(c : @ui.Ctx, s : ScreenSess, u : ScreenUi, title : String, 
   let combos = s.driving() && !s.simulator()
   let (tabs, add) = view_tabs(s)
   let middle = if tabs.is_empty() || narrow { None } else { Some(fn() { tabs_row(c, s, u, tabs, add, close) }) }
-  @sf.viewer_bar(c, "screen-bar", @sf.t("common.back"), said, line, false, ink, fn() {
+  // (alone in a window of its own, nowhere to go back to: its window's close and 控制中心's 断开 close it)
+  let back = if @sfbase.lone_page.val is Some(_) { "" } else { @sf.t("common.back") }
+  @sf.viewer_bar(c, "screen-bar", back, said, line, false, ink, fn() {
     if s.phase() == "live" && net_poor(s) {
       net_chip(c, s, u)
     }

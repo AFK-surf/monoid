@@ -11,6 +11,11 @@ import { ConfigFile } from "../src/ops/config.ts";
 import type { Request } from "../src/api/request.ts";
 import { checkConfig } from "../src/accounts/check.ts";
 import { platform } from "../src/platform/index.ts";
+import { randomBytes } from "node:crypto";
+import { crc32, deflateRawSync, inflateRawSync } from "node:zlib";
+import { direct } from "../src/drive/fs.ts";
+import { MAX_DEPTH, TooBig, ZIP_CHUNK, zipFolder } from "../src/drive/zip.ts";
+import { timeFiles } from "../src/ops/file-waits.ts";
 
 function place() {
   // The home in a folder of its own: the picker's look above it lists that, not the machine's temporary directory
@@ -372,4 +377,129 @@ test("the folder picker says which folders are git repositories, a worktree's .g
   const many = await drive.folders(join(base, "many"), base, "en");
   assert.equal(many.entries.length, 40);
   assert.deepEqual(many.entries.filter((e) => e.git).map((e) => e.name), Array.from({ length: 20 }, (_, i) => `r${String(i * 2).padStart(2, "0")}`));
+});
+
+/// A zip's entries as a reader finds them by its central directory, each body checked against its CRC.
+function unzipped(zip: Buffer): { name: string; method: number; body: Buffer }[] {
+  const end = zip.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
+  let at = zip.readUInt32LE(end + 16);
+  const out: { name: string; method: number; body: Buffer }[] = [];
+  for (let i = 0; i < zip.readUInt16LE(end + 10); i++) {
+    const [method, crc, packed, size, n, local] = [zip.readUInt16LE(at + 10), zip.readUInt32LE(at + 16), zip.readUInt32LE(at + 20), zip.readUInt32LE(at + 24), zip.readUInt16LE(at + 28), zip.readUInt32LE(at + 42)];
+    const name = zip.subarray(at + 46, at + 46 + n).toString();
+    // The local header says what the central one does (no data descriptor).
+    assert.equal(zip.readUInt32LE(local), 0x04034b50);
+    assert.deepEqual([zip.readUInt16LE(local + 8), zip.readUInt32LE(local + 14), zip.readUInt32LE(local + 18), zip.readUInt32LE(local + 22)], [method, crc, packed, size], name);
+    const start = local + 30 + zip.readUInt16LE(local + 26);
+    const stored = zip.subarray(start, start + packed);
+    const body = method === 8 ? inflateRawSync(stored) : Buffer.from(stored);
+    assert.equal(body.length, size, name);
+    assert.equal(crc32(body) >>> 0, crc, name);
+    out.push({ name, method, body });
+    at += 46 + n + zip.readUInt16LE(at + 30) + zip.readUInt16LE(at + 32);
+  }
+  return out;
+}
+
+const noSkip = async () => false;
+
+test("zipFolder: files deflated a chunk at a time, those deflate does not shrink stored as they are, links left out", async () => {
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "zip-")));
+  const dir = join(base, "album");
+  mkdirSync(join(dir, "sub", "deeper"), { recursive: true });
+  const text = Buffer.from("all work and no play makes a dull station\n".repeat(40_000)); // ~1.7 MB, many chunks
+  const noise = randomBytes(ZIP_CHUNK * 2 + 1234); // stored, read again
+  const small = randomBytes(1000); // stored, kept from its one chunk
+  writeFileSync(join(dir, "text.txt"), text);
+  writeFileSync(join(dir, "noise.bin"), noise);
+  writeFileSync(join(dir, "sub", "small.bin"), small);
+  writeFileSync(join(dir, "sub", "empty"), "");
+  writeFileSync(join(dir, "sub", "deeper", "x.txt"), "x");
+  symlinkSync(join(dir, "text.txt"), join(dir, "link.txt"));
+  symlinkSync(dir, join(dir, "sub", "up"));
+  const want = [
+    ["album/", 0, ""],
+    ["album/noise.bin", 0, noise],
+    ["album/sub/", 0, ""],
+    ["album/sub/deeper/", 0, ""],
+    ["album/sub/deeper/x.txt", 0, "x"],
+    ["album/sub/empty", 0, ""],
+    ["album/sub/small.bin", 0, small],
+    ["album/text.txt", 8, text],
+  ] as const;
+  // Directly (read as a stream) and as the helper reads (by parts), the same zip.
+  for (const [kind, fs] of [["stream", direct], ["parts", { ...direct, readStream: undefined }]] as const) {
+    const to = join(base, `${kind}.zip`);
+    const size = await zipFolder(dir, to, 1 << 30, noSkip, fs);
+    const zip = readFileSync(to);
+    assert.equal(size, zip.length);
+    assert.deepEqual(unzipped(zip).map((e) => [e.name, e.method, e.body.toString("latin1")]), want.map(([n, m, b]) => [n, m, Buffer.from(b).toString("latin1")]), kind);
+    // As small as deflating it whole made it.
+    assert.ok(zip.length < noise.length + small.length + deflateRawSync(text).length + 1000);
+  }
+});
+
+test("zipFolder: past `most` it stops as the bytes come, not once a file is read whole", async () => {
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "zip-")));
+  const dir = join(base, "big");
+  mkdirSync(dir);
+  writeFileSync(join(dir, "grows.bin"), randomBytes(ZIP_CHUNK * 8));
+  // Said to be empty when looked at (it grew since): only reading it tells.
+  let given = 0;
+  const fs = {
+    ...direct,
+    lstat: async (p: string) => ({ ...(await direct.lstat(p)), size: 0 }),
+    readAll: async (p: string) => {
+      const all = await direct.readAll(p);
+      given += all.length;
+      return all;
+    },
+    async *readStream(p: string, chunk: number) {
+      for await (const c of direct.readStream!(p, chunk)) {
+        given += c.length;
+        yield c as Buffer;
+      }
+    },
+  };
+  await assert.rejects(zipFolder(dir, join(base, "big.zip"), ZIP_CHUNK + 10, noSkip, fs), TooBig);
+  assert.ok(given <= ZIP_CHUNK * 3, `read ${given}`);
+  // Known too big by its size: nothing of it read.
+  given = 0;
+  await assert.rejects(zipFolder(dir, join(base, "big2.zip"), ZIP_CHUNK, noSkip, { ...fs, lstat: direct.lstat }), TooBig);
+  assert.equal(given, 0);
+  // Told the drive's way.
+  const p = place();
+  writeFileSync(join(p.root, "Season 1", "big.bin"), randomBytes(4096));
+  assert.equal(await code(p.drive.zip(p.root, "Season 1", 1024, true)), "too_large");
+});
+
+test("zipFolder: no deeper than MAX_DEPTH", async () => {
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "zip-")));
+  let deep = join(base, "top");
+  for (let i = 0; i <= MAX_DEPTH; i++) deep = join(deep, "d");
+  mkdirSync(deep, { recursive: true });
+  await assert.rejects(zipFolder(join(base, "top"), join(base, "deep.zip"), 1 << 20, noSkip), TooBig);
+  const ok = join(base, "ok");
+  let shallow = ok;
+  for (let i = 0; i < MAX_DEPTH; i++) shallow = join(shallow, "d");
+  mkdirSync(shallow, { recursive: true });
+  await zipFolder(ok, join(base, "ok.zip"), 1 << 20, noSkip);
+  assert.equal(unzipped(readFileSync(join(base, "ok.zip"))).length, MAX_DEPTH + 1);
+});
+
+test("zipFolder: the station's thread waits on no file, and nothing is deflated on it", async () => {
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "zip-")));
+  const dir = join(base, "f");
+  mkdirSync(join(dir, "sub"), { recursive: true });
+  writeFileSync(join(dir, "a.txt"), "hello ".repeat(100_000));
+  writeFileSync(join(dir, "sub", "b.bin"), randomBytes(ZIP_CHUNK + 1));
+  writeFileSync(join(dir, "sub", "c"), "");
+  const timed = timeFiles();
+  try {
+    await zipFolder(dir, join(base, "f.zip"), 1 << 30, noSkip);
+    assert.equal(timed.take().calls, 0);
+  } finally {
+    timed.stop();
+  }
+  assert.ok(!readFileSync(new URL("../src/drive/zip.ts", import.meta.url), "utf8").includes("Sync("));
 });

@@ -81,19 +81,18 @@ fn invitation_token(words : String) -> String? {
 }
 
 ///|
-/// The sheet's body: in 20 from its sides, its parts 10 apart (InviteLinkSheet's Column).
-// kept across runs: a value (no field of it changes)
-let invite_body : @ui.Style = @ui.css("w=Full h=Full px=S5 gap=S2_5 clip")
-
-///|
 /// Its buttons at the end of a row, 8 apart, 6 over them and 24 under (InviteLinkSheet's Row).
 // kept across runs: a value (no field of it changes)
 let invite_buttons : @ui.Style = @ui.css("row w=Full pt=S1_5 pb=S6 gap=S2 justify=JEnd")
 
 ///|
-/// The field a link is pasted in: the surface, a line round it, 12 round, 12 and 10 in.
+/// The same in a dialog in the middle of the window, nothing under them: the dialog's foot is 24 from them as its sides.
 // kept across runs: a value (no field of it changes)
-let invite_field : @ui.Style = @ui.css("w=Full px=S3 py=S2_5 radius=Xl bg=Card border=B1 border_color=Line")
+let invite_buttons_in_dialog : @ui.Style = @ui.css("row w=Full pt=S1_5 gap=S2 justify=JEnd")
+
+///|
+/// The field the link is pasted in: a rectangle's corners (12), as the sheet's field was, not a capsule.
+let invite_corner : Double = 12.0
 
 ///|
 /// What it says (14, muted), the account's label (13, semibold), why it failed (13, red).
@@ -116,15 +115,11 @@ fn open_invite_link() -> Unit {
 }
 
 ///|
-/// The sheet, over the pages or the sign-in page.
-fn invite_sheet(c : @ui.Ctx, src : Source) -> Unit {
-  let t = @sf.theme()
-  let accounts = src.topic("accounts", {}).get().snapshot()
-  let list = match accounts.value {
-    Some(Array(a)) => a
-    _ => []
-  }
-  let sub = match list.iter().find_first(fn(a) { text(Some(a), "sub") == invite.chosen.get() }) {
+/// The account the invitation is read and accepted as, of `src`'s accounts as they are now: the one chosen, else the
+/// first; "" none.
+fn invite_sub(src : Source) -> String {
+  let list = invite_accounts(src)
+  match list.iter().find_first(fn(a) { text(Some(a), "sub") == invite.chosen.get() }) {
     Some(a) => text(Some(a), "sub")
     None =>
       match list.get(0) {
@@ -132,181 +127,258 @@ fn invite_sheet(c : @ui.Ctx, src : Source) -> Unit {
         None => ""
       }
   }
-  // read once per account: what the link leads to depends on who looks
-  match invite.token.get() {
-    Some(tok) if sub != "" && !invite.asked.contains(tok + "\u{1}" + sub) => {
-      let k = tok + "\u{1}" + sub
-      invite.asked[k] = true
-      c.tell("invitation.preview/" + k, fn() {
-        (src.call)(
-          "invitation.preview",
-          { "token": Json::string(tok), "account": Json::string(sub) },
-          fn(r) {
-            invite.read[k] = match r {
-              Ok(v) => Ok(v)
-              Err(e) => Err(error_words(e))
-            }
-          },
-        )
-      })
-    }
-    _ => ()
+}
+
+///|
+/// The accounts signed in, as the core says them now.
+fn invite_accounts(src : Source) -> Array[Json] {
+  match src.topic("accounts", {}).get().value {
+    Some(Array(a)) => a
+    _ => []
   }
-  let read = match invite.token.get() {
-    Some(tok) => invite.read.get(tok + "\u{1}" + sub)
+}
+
+///|
+/// What the invitation's link was read to lead to as the account it would be accepted by: Ok(its preview), Err(why
+/// not), None while it is read (or with no link yet).
+fn invite_read(src : Source) -> Result[Json, String]? {
+  match invite.token.get() {
+    Some(tok) => invite.read.get(tok + "\u{1}" + invite_sub(src))
     None => None
   }
-  let buttons = fn(body : () -> Unit) {
-    c.box(style=invite_buttons, body) |> ignore
+}
+
+///|
+/// Whether it is signed out (the core says no account signed in): nothing reads the invitation yet.
+fn invite_signed_out(src : Source) -> Bool {
+  src.topic("accounts", {}).get().value is Some(_) && invite_accounts(src).length() == 0
+}
+
+///|
+/// The invitation sheet's title as it is now: to sign in first, to paste a link, the workspace it leads to, that it
+/// cannot be used, that it is read.
+fn invite_title(src : Source) -> String {
+  if invite_signed_out(src) {
+    return fill("android-misc.signIn.title", [("app", "still.fail")])
   }
-  let lead = fn(words : String) {
-    c.text(words, style=invite_lead) |> ignore
-  }
-  // signed out: nothing reads the invitation yet (as the web's /invite: sign in first, then decide)
-  if accounts.value is Some(_) && list.length() == 0 {
-    sheet_head(c, fill("android-misc.signIn.title", [("app", "still.fail")]))
-    c.box(style=invite_body, fn() {
-      lead(fill("android-misc.signIn.invited", [("app", "still.fail")]))
-      buttons(fn() {
-        @sf.button(c, tr("common.cancel"), key="invite/cancel", on_press=fn() {
-          lower_sheet()
-        }) |> ignore
-        @sf.button(
-          c,
-          tr("android-misc.signIn.google"),
-          key="invite/sign-in",
-          tone=Primary,
-          busy=(src.signing_in)(),
-          on_press=fn() {
-            (src.sign_in)()
-          },
-        ) |> ignore
-      })
-    })
-    |> ignore
-    return
-  }
-  let head = match (invite.token.get(), read) {
+  match (invite.token.get(), invite_read(src)) {
     (None, _) => tr("android-misc.invite.byLink")
     (Some(_), Some(Ok(p))) => fill("android-misc.invite.joinNamed", [("name", text(Some(p), "name"))])
     (Some(_), Some(Err(_))) => tr("android-misc.invite.unusable")
     (Some(_), None) => tr("android-misc.invite.loading")
   }
-  sheet_head(c, head)
-  c.box(style=invite_body, fn() {
-    match (invite.token.get(), read) {
-      (None, _) => {
-        lead(fill("android-misc.invite.pasteLink", [("app", "still.fail")]))
-        let key = "invite/field"
-        let mut words = ""
-        c.box(
-          style=invite_field,
-          fn() {
-            let r = c.editor(
-              key,
-              placeholder="https://app.still.fail/invite#…",
-              font_size=15.0,
-              line=21.0,
-              max_lines=2,
-              plain=true,
-              color=t.p.text,
-              placeholder_color=t.p.subtle,
-              caret_color=t.p.accent,
-              enter_sends=false,
-              field=invite.field,
-            )
-            words = r.text
-          },
-        )
+}
+
+///|
+/// Where the invitation sheet stands: signed out, a link to paste, why it cannot be used, read meanwhile, what it leads
+/// to (invite_node's).
+#derive(Eq)
+priv enum InviteStands {
+  InviteSignIn
+  InvitePaste
+  InviteUnusable(String)
+  InviteReading
+  InviteShown(String)
+}
+
+///|
+/// The invitation's sheet (invite_sheet's, as nodes of the window's tree made once in `v`), over the pages or the
+/// sign-in page, as the core and `invite` say it now: what the link leads to, read once per account (what it leads to
+/// depends on who looks), that account chosen when more than one is signed in, joined from here; signed out, to sign in
+/// first; with no link, a field to paste one in.
+fn invite_node(v : @view.View, src : Source) -> Unit {
+  // (read once per account and link: as either comes to be)
+  v.reacts(fn() { (invite.token.get(), invite_sub(src)) }, fn(k) {
+    match k {
+      (Some(tok), sub) if sub != "" && !invite.asked.contains(tok + "\u{1}" + sub) => {
+        let key = tok + "\u{1}" + sub
+        invite.asked[key] = true
+        (src.call)("invitation.preview", { "token": Json::string(tok), "account": Json::string(sub) }, fn(r) {
+          invite.read[key] = match r {
+            Ok(p) => Ok(p)
+            Err(e) => Err(error_words(e))
+          }
+        })
+      }
+      _ => ()
+    }
+  })
+  let stands = fn() {
+    if invite_signed_out(src) {
+      return InviteSignIn
+    }
+    match (invite.token.get(), invite_read(src)) {
+      (None, _) => InvitePaste
+      (Some(_), Some(Err(why))) => InviteUnusable(why)
+      (Some(_), None) => InviteReading
+      (Some(tok), Some(Ok(_))) => InviteShown(tok)
+    }
+  }
+  v.pick(stands, fn(p, at) {
+    @sf.style_node(p, fn() { @sf.panel_words_in_node(p).then(invite_column) })
+    let lead = fn(words : () -> String) { @sf.words_node(p, words, fn() { invite_lead }) |> ignore }
+    let buttons = fn(make : (@view.View) -> Unit) {
+      p.box(fn(b) {
+        // (24 under them on a sheet; in a dialog its own room under what it holds is that already)
+        @sf.style_node(b, fn() { if @sf.in_dialog_node(b) { invite_buttons_in_dialog } else { invite_buttons } })
+        make(b)
+      })
+      |> ignore
+    }
+    match at {
+      InviteSignIn => {
+        lead(fn() { fill("android-misc.signIn.invited", [("app", "still.fail")]) })
+        buttons(fn(b) {
+          @sf.button_node(b, fn() { tr("common.cancel") }, lower_sheet) |> ignore
+          @sf.button_node(b, fn() { tr("android-misc.signIn.google") }, fn() { (src.sign_in)() }, tone=Primary, busy=fn() {
+            (src.signing_in)()
+          })
+          |> ignore
+        })
+      }
+      InvitePaste => {
+        lead(fn() { fill("android-misc.invite.pasteLink", [("app", "still.fail")]) })
+        let words = @signals.signal(invite.field.text())
+        // (the link pasted in a rectangle with rounded corners (invite_corner), two lines of it at most, not a capsule)
+        @sf.textarea_node(p, invite.field, rows=1, most=2, corner=invite_corner, placeholder="https://app.still.fail/invite#…", edited=fn(w) {
+          words.set(w)
+        })
         |> ignore
-        buttons(fn() {
-          @sf.button(c, tr("common.cancel"), key="invite/cancel", on_press=fn() {
+        buttons(fn(b) {
+          @sf.button_node(b, fn() { tr("common.cancel") }, fn() {
             invite.field.take() |> ignore
             lower_sheet()
-          }) |> ignore
-          let token = invitation_token(words)
-          @sf.button(
-            c,
-            tr("android-misc.invite.view"),
-            key="invite/view",
-            tone=Primary,
-            disabled=token is None,
-            on_press=fn() {
+          })
+          |> ignore
+          @sf.button_node(
+            b,
+            fn() { tr("android-misc.invite.view") },
+            fn() {
+              let token = invitation_token(words.untracked())
               invite.field.take() |> ignore
               invite.token.set(token)
             },
-          ) |> ignore
+            tone=Primary,
+            disabled=fn() { invitation_token(words.get()) is None },
+          )
+          |> ignore
         })
       }
-      (Some(_), Some(Err(why))) => {
-        lead(why)
-        buttons(fn() {
-          if invite.given.get() is None {
-            @sf.button(c, tr("android-misc.invite.otherLink"), key="invite/other", on_press=fn() {
-              invite.token.set(None)
-            }) |> ignore
+      InviteUnusable(why) => {
+        lead(fn() { why })
+        buttons(fn(b) {
+          if @signals.untracked(fn() { invite.given.get() }) is None {
+            @sf.button_node(b, fn() { tr("android-misc.invite.otherLink") }, fn() { invite.token.set(None) }) |> ignore
           }
-          @sf.button(c, tr("common.close"), key="invite/close", tone=Primary, on_press=fn() {
-            lower_sheet()
-          }) |> ignore
+          @sf.button_node(b, fn() { tr("common.close") }, lower_sheet, tone=Primary) |> ignore
         })
       }
-      (Some(_), None) => @sf.wait_line(c, tr("common.reading"), key="invite")
-      (Some(tok), Some(Ok(p))) => {
-        let inviter = match text(Some(p), "inviter") {
-          "" => tr("android-misc.invite.someone")
-          s => s
+      InviteReading => @sf.wait_line_node(p, fn() { tr("common.reading") }) |> ignore
+      InviteShown(tok) => {
+        let preview = fn() {
+          match invite_read(src) {
+            Some(Ok(pv)) => Some(pv)
+            _ => None
+          }
         }
-        let email = text(Some(p), "email")
-        lead(
-          fill(
-            if email != "" {
-              "android-misc.invite.invitedYouAsOnly"
-            } else {
-              "android-misc.invite.invitedYouAs"
-            },
-            [("inviter", inviter), ("role", @sfpages.role_words(text(Some(p), "role"))), ("email", email)],
-          ),
-        )
-        if list.length() > 1 {
-          c.text(tr("android-misc.invite.whichAccount"), style=invite_label) |> ignore
-          c.box(style=@sf.full_width, fn() {
-            for a in list {
-              let s = text(Some(a), "sub")
-              @sf.choice_row(c, "invite/as/" + s, s == sub, text(Some(a), "email"), on_press=fn() {
-                invite.chosen.set(s)
-              }) |> ignore
-            }
+        lead(fn() {
+          let pv = preview()
+          let inviter = match text(pv, "inviter") {
+            "" => tr("android-misc.invite.someone")
+            s => s
+          }
+          let email = text(pv, "email")
+          fill(if email != "" { "android-misc.invite.invitedYouAsOnly" } else { "android-misc.invite.invitedYouAs" }, [
+            ("inviter", inviter),
+            ("role", @sfpages.role_words(text(pv, "role"))),
+            ("email", email),
+          ])
+        })
+        // (which account, where more than one is signed in)
+        p.pick(fn() { invite_accounts(src).map(fn(a) { (text(Some(a), "sub"), text(Some(a), "email")) }) }, fn(w, list) {
+          guard list.length() > 1 else { return }
+          @sf.words_node(w, fn() { tr("android-misc.invite.whichAccount") }, fn() { invite_label }) |> ignore
+          w.box(fn(rows) {
+            @sf.style_node(rows, fn() { @sf.full_width })
+            rows.each_of(fn() { list }, at_once=true, fn(row, a) {
+              let (sub, email) = a
+              @sf.choice_row_node(row, fn() { email }, fn() { invite_sub(src) == sub }, press=fn() { invite.chosen.set(sub) })
+            })
           })
           |> ignore
-        }
-        if invite.error.get() != "" {
-          c.text(invite.error.get(), style=invite_error) |> ignore
-        }
-        let as_email = match list.iter().find_first(fn(a) { text(Some(a), "sub") == sub }) {
-          Some(a) => text(Some(a), "email")
-          None => ""
-        }
-        buttons(fn() {
-          @sf.button(c, tr("common.cancel"), key="invite/cancel", on_press=fn() {
-            lower_sheet()
-          }) |> ignore
-          @sf.button(
-            c,
-            fill("android-misc.invite.joinAs", [("email", as_email)]),
-            key="invite/join",
-            tone=Primary,
-            busy=invite.accepting.get(),
-            disabled=sub == "",
-            on_press=fn() {
-              accept_invite(src, tok, sub, text(Some(p), "name"))
+        })
+        p.show(at_once=true, fn() { invite.error.get() != "" }, fn(e) {
+          @sf.words_node(e, fn() { invite.error.get() }, fn() { invite_error }) |> ignore
+        })
+        buttons(fn(b) {
+          @sf.button_node(b, fn() { tr("common.cancel") }, lower_sheet) |> ignore
+          @sf.button_node(
+            b,
+            fn() {
+              let sub = invite_sub(src)
+              let email = match invite_accounts(src).iter().find_first(fn(a) { text(Some(a), "sub") == sub }) {
+                Some(a) => text(Some(a), "email")
+                None => ""
+              }
+              fill("android-misc.invite.joinAs", [("email", email)])
             },
-          ) |> ignore
+            fn() {
+              let sub = invite_sub(src)
+              accept_invite(src, tok, sub, text(@signals.untracked(preview), "name"))
+            },
+            tone=Primary,
+            busy=fn() { invite.accepting.get() },
+            disabled=fn() { invite_sub(src) == "" },
+          )
+          |> ignore
         })
       }
     }
   })
-  |> ignore
+}
+
+///|
+/// What it holds: its parts 10 apart.
+// kept across runs: a value (no field of it changes)
+let invite_column : @ui.Style = @ui.css("w=Full gap=S2_5")
+
+///|
+/// The login sheet's body (login_sheet's, as nodes of the window's tree made once in `v`), over the pages in view, as
+/// the core says the login of `login_link`'s target now, workspace `w`'s core reading it: its card; why it cannot be
+/// read, or read meanwhile; ended. Seen under way while it is up, it closes by itself once finished or cancelled.
+fn login_node(v : @view.View, src : Source, w : Workspace) -> Unit {
+  let core = settings_core(src, w)
+  v.pick(fn() { login_link.target.get() }, fn(p, target) {
+    guard target is Some((station, id)) else { return }
+    let topic = fn() { src.topic("machineLogin", { "station": Json::string(station), "id": Json::string(id) }).get() }
+    p.reacts(fn() { (flag(topic().value, "active"), text(topic().value, "state")) }, fn(k) {
+      let (active, state) = k
+      if active {
+        login_link.seen_active = true
+      } else if login_link.seen_active && (state == "done" || state == "cancelled") {
+        lower_sheet()
+      }
+    })
+    // (0: read meanwhile; 1: why not; 2: its card; 3: ended)
+    p.pick(
+      fn() {
+        let t = topic()
+        match t.value {
+          None => if t.error is Some(_) { 1 } else { 0 }
+          Some(Object(_)) => 2
+          Some(_) => 3
+        }
+      },
+      fn(b, what) {
+        match what {
+          0 => @sf.wait_line_node(b, fn() { tr("common.reading") }) |> ignore
+          1 => @sf.words_node(b, fn() { topic().error.map_or("", error_words) }, fn() { invite_error }) |> ignore
+          2 => @sfpages.login_card_node(b, core, station, id, place="sheet")
+          _ => @sf.words_node(b, fn() { tr("web-main.logins.ended") }, fn() { invite_lead }) |> ignore
+        }
+      },
+    )
+  })
 }
 
 ///|
@@ -358,34 +430,6 @@ fn open_login(station : String, id : String) -> Unit {
   login_link.target.set(Some((station, id)))
   login_link.seen_active = false
   raise_sheet(LoginLink, title=tr("web-main.logins.title"))
-}
-
-///|
-/// The login sheet's body, over the pages in view.
-fn login_sheet(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
-  let (station, id) = match login_link.target.get() {
-    Some(pair) => pair
-    None => return
-  }
-  let core = settings_core(src, w)
-  let topic = src.topic("machineLogin", { "station": Json::string(station), "id": Json::string(id) }).get()
-  match topic.value {
-    None =>
-      match topic.error {
-        Some(e) => c.text(error_words(e), style=invite_error) |> ignore
-        None => @sf.wait_line(c, tr("common.reading"), key="login-link")
-      }
-    Some(Object(_)) as l => {
-      let active = flag(l, "active")
-      if active {
-        login_link.seen_active = true
-      } else if login_link.seen_active && (text(l, "state") == "done" || text(l, "state") == "cancelled") {
-        c.after_build("login-sheet-done", fn() { lower_sheet() })
-      }
-      @sfpages.login_card(c, core, station, id, place="sheet")
-    }
-    Some(_) => c.text(tr("web-main.logins.ended"), style=invite_lead) |> ignore
-  }
 }
 
 ///|

@@ -5,14 +5,15 @@ import { modelSpeed } from "../../../../client/core-ts/src/model-speed.ts";
 // routes/chats.ts's and routes/sessions.ts's (GET /sessions/:key/files among them).
 import { presetCopyInput } from "../../sessions/presets.ts";
 import { createHash, randomBytes, type Hash } from "node:crypto";
-import { appendFileSync, constants as fsConstants, copyFileSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, statfsSync, writeFileSync } from "node:fs";
+import { constants as fsConstants } from "node:fs";
+import { appendFile, copyFile, mkdir, readdir, rename, rm, stat, statfs, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { clean, fileName as nameOf, inside } from "../../ops/paths.ts";
 import { type Answer, type Request, error, json, param, segment, ok, Refused, input } from "../request.ts";
 import type { Route, Tools } from "../admin.ts";
 import { tr } from "../../ops/i18n.ts";
 import { log } from "../../ops/log.ts";
-import { find as findMachineSession, roots as machineRoots } from "../../read/machine.ts";
+import { type MachineSession, roots as machineRoots } from "../../read/machine.ts";
 import { STILLFAIL_SURFACE, handedWs } from "../../store/rows.ts";
 import type { Attachment, Quote, SessionRow } from "../../store/rows.ts";
 import type { Store } from "../../store/store.ts";
@@ -33,9 +34,9 @@ import { relay, relayPeople, relayPlaces } from "../../sessions/relay.ts";
 import { cc } from "../../sessions/cc.ts";
 import { shown } from "../../jobs/jobs.ts";
 import { withLock, workspaceFile } from "../../sessions/archive.ts";
-import { roomOf } from "../../sessions/footprint.ts";
+import { roomOfSoon } from "../../sessions/footprint.ts";
 import { dir as thumbsDir, keep } from "../../drive/thumbs.ts";
-import { shownFacts } from "../../sessions/image-size.ts";
+import { shownFactsSoon } from "../../sessions/image-size.ts";
 import { wall } from "../../ops/fibers.ts";
 import { sessionSeen } from "../seen.ts";
 import { runtimeKind } from "../../agents/runtime.ts";
@@ -69,40 +70,42 @@ const text = (v: unknown): string => (v === undefined || v === null ? "" : typeo
 const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
 const chars = (s: string, max: number) => [...s].slice(0, max).join("");
 
-const exists = (path: string) => statSync(path, { throwIfNoEntry: false }) !== undefined;
+/// What is at `path`, or null where nothing is.
+const statOf = (path: string) => stat(path).catch(() => null);
+const exists = async (path: string) => (await statOf(path)) !== null;
 /// Path::file_name.
 const fileName = (path: string) => nameOf(path) ?? "";
 
 /// files.rs `sweep_staged`: drops uploads that waited a day without a message taking them.
-export function sweepStaged(dir: string, now = wall.now()) {
+export async function sweepStaged(dir: string, now = wall.now()): Promise<void> {
   let names: string[];
   try {
-    names = readdirSync(dir);
+    names = await readdir(dir);
   } catch {
     return;
   }
   for (const name of names) {
-    const st = statSync(join(dir, name), { throwIfNoEntry: false });
-    if (st?.isFile() && now - st.mtimeMs > STAGED_FOR_MS) rmSync(join(dir, name), { force: true });
+    const st = await statOf(join(dir, name));
+    if (st?.isFile() && now - st.mtimeMs > STAGED_FOR_MS) await rm(join(dir, name), { force: true });
   }
 }
 
 /// Where an upload named `name` is kept in `dir`: its name made safe, and a path of its own.
-export function uploadPath(dir: string, name: string): { safe: string; path: string } {
+export async function uploadPath(dir: string, name: string): Promise<{ safe: string; path: string }> {
   const base = name.replace(/\\/g, "/").split("/").at(-1) ?? "";
   const safe = chars([...base].map((c) => (c.codePointAt(0)! < 0x20 ? "_" : c)).join("").replace(/^\.+/, ""), 120) || "file";
-  mkdirSync(dir, { recursive: true });
+  await mkdir(dir, { recursive: true });
   const stamp = new Date(wall.now()).toISOString().slice(0, 19).replace(/[:.]/g, "-");
   const random = randomBytes(3).toString("hex");
   return { safe, path: join(dir, `${stamp}-${random}-${safe}`) };
 }
 
 /// files.rs `save_upload`: a request's body kept in `dir` under its name, made safe and unique.
-function saveUpload(body: Buffer, dir: string, name: string, lang: Request["lang"]): Attachment {
-  const { safe, path } = uploadPath(dir, name);
+async function saveUpload(body: Buffer, dir: string, name: string, lang: Request["lang"]): Promise<Attachment> {
+  const { safe, path } = await uploadPath(dir, name);
   if (body.length > MAX_UPLOAD) throw new Refused(413, tr(lang, "station.files.tooLarge"));
-  writeFileSync(path, body, { flag: "wx" });
-  known(dir, createHash("sha256").update(body).digest("hex"), path);
+  await writeFile(path, body, { flag: "wx" });
+  await known(dir, createHash("sha256").update(body).digest("hex"), path);
   return { name: safe, path, size: body.length };
 }
 
@@ -117,8 +120,8 @@ const naming = new Map<string, Hash>();
 const NAMING_KEEP = 100;
 
 /// `path`, a whole upload in the uploads folder `dir`, is `sha256`.
-function known(dir: string, sha256: string, path: string): void {
-  const st = statSync(path, { throwIfNoEntry: false });
+async function known(dir: string, sha256: string, path: string): Promise<void> {
+  const st = await statOf(path);
   if (!st) return;
   const key = clean(dir);
   let held = contents.get(key);
@@ -137,11 +140,11 @@ export function movedUpload(dir: string, from: string, to: string): void {
 }
 
 /// Where `dir`'s uploads keep a file of `size` bytes that is `sha256`, unchanged since: null when none is.
-function kept(dir: string, sha256: string, size: number): string | null {
+async function kept(dir: string, sha256: string, size: number): Promise<string | null> {
   const held = contents.get(clean(dir));
   const e = held?.get(sha256);
   if (!held || !e) return null;
-  const st = statSync(e.path, { throwIfNoEntry: false });
+  const st = await statOf(e.path);
   if (!st?.isFile() || st.size !== size || e.size !== size || st.mtimeMs !== e.mtimeMs) {
     held.delete(sha256);
     return null;
@@ -158,7 +161,24 @@ const ASSEMBLED_KEEP_MS = 3600_000;
 /// that does not start where the file ends adds nothing: the caller goes on from `have` (one asked again after a lost
 /// answer, or after a broken connection, is answered as the first was). With `sha256` and no bytes, before its first
 /// part: a file the uploads hold already (sent before) is copied from there and answered whole, and nothing comes.
-export function savePart(body: Buffer, dir: string, q: { id: string; name: string; size: number; offset: number; sha256?: string | undefined }, lang: Request["lang"]): { have: number; file?: Attachment } {
+export function savePart(body: Buffer, dir: string, q: PartAsked, lang: Request["lang"]): Promise<{ have: number; file?: Attachment }> {
+  // One upload's parts in turn (a part asked again while the first try still writes reads what that one wrote); those
+  // of other uploads alongside.
+  const before = partTurns.get(q.id) ?? Promise.resolve();
+  const turn = before.then(() => savePartNow(body, dir, q, lang));
+  const held: Promise<void> = turn.then(() => {}, () => {});
+  partTurns.set(q.id, held);
+  void held.then(() => {
+    if (partTurns.get(q.id) === held) partTurns.delete(q.id);
+  });
+  return turn;
+}
+
+type PartAsked = { id: string; name: string; size: number; offset: number; sha256?: string | undefined };
+/// The last part asked of each upload in parts still under way: the next waits for it.
+const partTurns = new Map<string, Promise<void>>();
+
+async function savePartNow(body: Buffer, dir: string, q: PartAsked, lang: Request["lang"]): Promise<{ have: number; file?: Attachment }> {
   const now = wall.now();
   for (const [k, v] of assembled) if (now - v.at > ASSEMBLED_KEEP_MS) assembled.delete(k);
   if (!/^[A-Za-z0-9_-]{8,64}$/.test(q.id)) throw new Refused(400, "invalid upload id");
@@ -168,29 +188,29 @@ export function savePart(body: Buffer, dir: string, q: { id: string; name: strin
   if (q.sha256 !== undefined && !/^[0-9a-f]{64}$/.test(q.sha256)) throw new Refused(400, "invalid sha256");
   const done = assembled.get(q.id);
   if (done !== undefined) return { have: q.size, file: done.file };
-  mkdirSync(dir, { recursive: true });
+  await mkdir(dir, { recursive: true });
   const part = join(dir, `${PART_PREFIX}${q.id}`);
-  const have = statSync(part, { throwIfNoEntry: false })?.size ?? 0;
+  const have = (await statOf(part))?.size ?? 0;
   if (q.sha256 !== undefined && q.offset === 0 && body.length === 0 && have === 0) {
-    const from = kept(dir, q.sha256, q.size);
+    const from = await kept(dir, q.sha256, q.size);
     if (from !== null) {
-      const { safe, path } = uploadPath(dir, q.name);
+      const { safe, path } = await uploadPath(dir, q.name);
       // A copy of its own (a clone where the disk makes one): the chat it goes to may change it, the other not.
-      copyFileSync(from, path, fsConstants.COPYFILE_FICLONE);
-      known(dir, q.sha256, path);
+      await copyFile(from, path, fsConstants.COPYFILE_FICLONE);
+      await known(dir, q.sha256, path);
       const file = { name: safe, path, size: q.size };
       assembled.set(q.id, { at: now, file });
       return { have: q.size, file };
     }
   }
   if (have > q.size) {
-    rmSync(part, { force: true });
+    await rm(part, { force: true });
     throw new Refused(400, "invalid upload size");
   }
   if (have === 0 && q.offset === 0) {
     // A new file: refused at once when the disk cannot take it.
     try {
-      const fs = statfsSync(dir);
+      const fs = await statfs(dir);
       if (fs.bavail * fs.bsize < q.size + DISK_SPARE) throw new Refused(507, tr(lang, "station.files.noRoom"));
     } catch (e) {
       if (e instanceof Refused) throw e;
@@ -206,16 +226,16 @@ export function savePart(body: Buffer, dir: string, q: { id: string; name: strin
         naming.delete(old);
       }
     }
-    appendFileSync(part, added);
+    await appendFile(part, added);
     naming.get(q.id)?.update(added);
   }
-  const got = statSync(part, { throwIfNoEntry: false })?.size ?? 0;
+  const got = (await statOf(part))?.size ?? 0;
   if (got < q.size) return { have: got };
-  const { safe, path } = uploadPath(dir, q.name);
-  renameSync(part, path);
+  const { safe, path } = await uploadPath(dir, q.name);
+  await rename(part, path);
   const named = naming.get(q.id);
   naming.delete(q.id);
-  if (named) known(dir, named.digest("hex"), path);
+  if (named) await known(dir, named.digest("hex"), path);
   const file = { name: safe, path, size: q.size };
   assembled.set(q.id, { at: now, file });
   return { have: q.size, file };
@@ -277,6 +297,14 @@ function movedOf(s: Store, keys: readonly string[], r: Request): void {
 
 export const routes = (tools: Tools): Route[] => {
   const { read, store } = tools;
+  /// One of the machine's own sessions with where its transcript is, as the readers find it; none where there is none.
+  const foundMachineSession = async (r: Request, runtime: "claude" | "codex", id: string): Promise<MachineSession | null> => {
+    const a = await read(r, "machineSession", { lang: r.lang, runtime, id, found: true });
+    if (a.status === 404) return null;
+    const said = JSON.parse(String(a.body));
+    if (a.status !== 200) throw new Refused(a.status, said.error ?? "machine session not read");
+    return said.session as MachineSession;
+  };
   /// Answered with the hub, its refusals as `{error}`; 503 while there is none (a station starting). The agents' side as it
   /// is when asked (made after the admin API: services.ts AgentsSide).
   const write = async (f: (s: Store, a: AgentsParts) => Promise<Answer> | Answer): Promise<Answer> => {
@@ -342,32 +370,32 @@ export const routes = (tools: Tools): Route[] => {
       if (inside(path, stagedDir) && first !== undefined) {
         const into = join(first.dir, fileName(path));
         // Sent again (a retry after the first try got here): it has moved already.
-        if (exists(path)) {
-          mkdirSync(first.dir, { recursive: true });
-          renameSync(path, into);
+        if (await exists(path)) {
+          await mkdir(first.dir, { recursive: true });
+          await rename(path, into);
           movedUpload(stagedDir, path, into);
         }
         path = into;
       }
       const owner = dirs.find((d) => inside(path, d.dir));
-      if (!exists(path) && owner !== undefined) {
+      if (owner !== undefined && !(await exists(path))) {
         // Packed with its archived workspace: read back out of its archive, under its lock.
         const workspace = dirname(owner.dir);
-        const room = roomOf(a.hub.config().dataDir, workspace);
+        const room = await roomOfSoon(a.hub.config().dataDir, workspace);
         if (room !== null) {
           const bytes = await withLock(room, () => workspaceFile(room, path.slice(workspace.length + 1)));
           if (bytes !== null) {
-            mkdirSync(dirname(path), { recursive: true });
-            writeFileSync(path, bytes);
+            await mkdir(dirname(path), { recursive: true });
+            await writeFile(path, bytes);
           }
         }
       }
-      if (owner === undefined || !exists(path)) throw new Refused(400, tr(r.lang, "station.files.notUploaded"));
+      if (owner === undefined || !(await exists(path))) throw new Refused(400, tr(r.lang, "station.files.notUploaded"));
       // Its size as the sender read it; else, for a picture or a film, as its header says (a sender that could not read
       // it: the desktop's could not, nor a phone's core a JPEG's or any film's, image-size.ts); a film's length and
       // frames as its header says.
       const read = [dimension(o.width), dimension(o.height)];
-      const facts = shownFacts(path);
+      const facts = await shownFactsSoon(path);
       const [width, height] = read[0] !== undefined && read[1] !== undefined ? read : (facts ? [facts.width, facts.height] : read);
       const name = str(o.name) ?? path.slice(owner.dir.length + 1);
       const size = typeof o.size === "number" && o.size > 0 ? Math.min(Math.trunc(o.size), Number.MAX_SAFE_INTEGER) : 0;
@@ -479,8 +507,9 @@ export const routes = (tools: Tools): Route[] => {
           const kind = runtime(r, i);
           const id = text(i.id);
           const roots = machineRoots();
-          // Only Claude Code's and Codex's terminal sessions are read (read/machine.ts).
-          const found = kind === "dsh" || kind === "grok" || kind === "cursor" || kind === "devin" || kind === "hermes" || kind === "agy" ? null : findMachineSession(roots, kind, id);
+          // Only Claude Code's and Codex's terminal sessions are read, found by the readers (mb/src/readops/machine.mbt
+          // `machine_session`): a walk of every project or rollout and their heads read, never on this thread.
+          const found = kind === "claude" || kind === "codex" ? await foundMachineSession(r, kind, id) : null;
           if (found === null) throw new Refused(404, tr(r.lang, "station.admin.noLocalSession", { id }));
           const [key, chat] = await as(400, () => continueMachineSession(a.hub, roots, found, r.viewer.email, r.lang, r.viewer.home === false ? r.viewer.workspace : null));
           log.info("admin", "machine session continued from the admin page", { session: key, from: id, by: r.viewer.email });
@@ -519,10 +548,10 @@ export const routes = (tools: Tools): Route[] => {
       method: "POST",
       pattern: /^\/uploads$/,
       handle: (r) =>
-        write((_s, a) => {
+        write(async (_s, a) => {
           const dir = staged(a);
-          sweepStaged(dir);
-          return ok(saveUpload(r.body, dir, param(r, "name") ?? "file", r.lang));
+          await sweepStaged(dir);
+          return ok(await saveUpload(r.body, dir, param(r, "name") ?? "file", r.lang));
         }),
     },
     // A file in parts (savePart): a big one goes up a piece at a time, and on from where it was after a broken connection.
@@ -530,14 +559,14 @@ export const routes = (tools: Tools): Route[] => {
       method: "POST",
       pattern: /^\/uploads\/parts$/,
       handle: (r) =>
-        write((_s, a) => {
+        write(async (_s, a) => {
           const dir = staged(a);
-          sweepStaged(dir);
+          await sweepStaged(dir);
           const num = (name: string) => {
             const v = param(r, name);
             return v === undefined || !/^[0-9]+$/.test(v) ? -1 : Number(v);
           };
-          return ok(savePart(r.body, dir, { id: param(r, "id") ?? "", name: param(r, "name") ?? "file", size: num("size"), offset: num("offset"), sha256: param(r, "sha256") }, r.lang));
+          return ok(await savePart(r.body, dir, { id: param(r, "id") ?? "", name: param(r, "name") ?? "file", size: num("size"), offset: num("offset"), sha256: param(r, "sha256") }, r.lang));
         }),
     },
     // A session: deleted (DELETE); its ended jobs cleared.
@@ -557,10 +586,10 @@ export const routes = (tools: Tools): Route[] => {
       method: "DELETE",
       pattern: /^\/*sessions\/+([^/]+)\/+jobs(?:\/.*)?$/,
       handle: (r, [k]) =>
-        write((s, a) => {
+        write(async (s, a) => {
           const key = segment(k!);
           session(s, key, r);
-          const removed = a.jobs.clearEnded(key);
+          const removed = await a.jobs.clearEnded(key);
           log.info("admin", "ended jobs cleared from the admin page", { session: key, by: r.viewer.email, count: removed.length });
           return ok({ removed });
         }),
@@ -679,7 +708,7 @@ export const routes = (tools: Tools): Route[] => {
         write(async (s, a) => {
           const job = await a.jobs.stopFor(segment(id!), r.viewer.email);
           log.info("admin", "job stopped from the admin page", { job: job.id, by: r.viewer.email });
-          return ok(shown(s, job));
+          return ok(await shown(s, job));
         }),
     },
     // A person's message in a chat on the pages, with its files and quotes.
@@ -783,7 +812,8 @@ export const routes = (tools: Tools): Route[] => {
           const link = text(i.link).trim();
           if (link === "" && (connect === "" || channel === "")) throw new Refused(400, tr(r.lang, "station.relay.pick"));
           const by = { name: r.viewer.name.trim() || r.viewer.email, email: r.viewer.email };
-          return ok(await as(400, () => relay(a.hub, t, by, link !== "" ? { link, ...(connect !== "" ? { connect } : {}) } : { connect, channel }, chars(text(i.note), 2000))));
+          const join = i.join === true;
+          return ok(await as(400, () => relay(a.hub, t, by, link !== "" ? { link, ...(connect !== "" ? { connect } : {}) } : { connect, channel, ...(join ? { join } : {}) }, chars(text(i.note), 2000))));
         }),
     },
     // A chat archived or shown again: with its session when it is that session's own.

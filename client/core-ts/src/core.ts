@@ -456,7 +456,7 @@ export class Core {
       };
       handlers.relayView = (_i, call) => {
         const c = call as Extract<Call, { kind: "relayView" }>;
-        return Effect.sync(() => relayView(c.connects, c.query, c.all, c.bot, t));
+        return Effect.sync(() => relayView(c.connects, c.query, c.all, c.bot, t, c.place));
       };
       handlers.relayMentions = (_i, call) => {
         const c = call as Extract<Call, { kind: "relayMentions" }>;

@@ -171,9 +171,9 @@ fn usage_ranks_node(parent : @view.View, core : Core, v : () -> Json?) -> Unit {
             b
             .padding(Is((@sf.card_pad - @sf.corner_inset, 8.0, @sf.card_pad - @sf.corner_inset, 8.0)))
             .radius(By(ug_row_corner))
-            .ground(By(fn() { if b.pointed() { @ui.tree_theme().color(Hover) } else { 0L } }))
             .says(By(fn() { Some(@view.said(Button, label=words())) }))
             |> ignore
+            @sf.hover_ground_node(b)
             @sf.presses_node(b, fn() { usage_pick.all.set(!usage_pick.all.untracked()) })
             @sf.words_node(b, words, fn() { if @sf.lit_node(b) { ug_more_lit } else { ug_more_words } }) |> ignore
           })
@@ -201,8 +201,8 @@ fn usage_rank_row_node(parent : @view.View, core : Core, rank_key : () -> String
     .padding(Is((@sf.card_pad - @sf.corner_inset, 8.0, @sf.card_pad - @sf.corner_inset, 8.0)))
     .gap(Is(6.0))
     .radius(By(ug_row_corner))
-    .ground(By(fn() { if interactive() && r.pointed() { @ui.tree_theme().color(Hover) } else { 0L } }))
     |> ignore
+    @sf.hover_ground_node(r, on=interactive)
     @sf.presses_node(r, on=interactive, fn() {
       @signals.untracked(fn() {
         if opens_chat() {

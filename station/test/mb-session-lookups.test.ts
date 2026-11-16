@@ -8,8 +8,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
-import { chatShareIndexStep, installChatShareIndex } from "../src/store/chat-share-index.ts";
-import { installSessionDirectories, sessionDirectoriesStep } from "../src/store/session-directory.ts";
+import { chatShareIndexStep, installChatShareIndex } from "./reference/backfill/chat-share-index.ts";
+import { installSessionDirectories, sessionDirectoriesStep } from "./reference/backfill/session-directory.ts";
 import { Store } from "../src/store/store.ts";
 
 const binary = mbReaderBinary();

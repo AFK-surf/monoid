@@ -2,12 +2,20 @@
 // with the same JSON and bytes, done with what a browser has. iroh is iroh for the browser
 // (client/iroh-wasm, a module made by wasm-bindgen with its wasm beside it; its calls are those the TypeScript core
 // wraps, client/core-ts/src/iroh-bindings.ts), loaded from where the page serves it the first time an endpoint is
-// bound; what is kept is kept in the page's localStorage; the clock is the page's, the random bytes its crypto's.
+// bound, or given (`Shell::start_with`: the module, or what loads it, where a bundle has it already); what is kept
+// is kept in the page's localStorage (none in a worker: `storage.*` fails there, and its program keeps its own);
+// the clock is the page's, the random bytes its crypto's.
 //
 //   op                 on a page
-//   storage.get/set    localStorage, the key `<dir>:<key>`, the value in hex (a file a key natively)
-//   iroh.bind          the module's `bind({secretKey, relayUrls})`: through relays alone whatever is asked (a browser
-//                      has no UDP: `relayOnly` is always so), and nothing looked up (`lookup` never)
+//   storage.get/set    localStorage, the key `<dir>:<key>`, the value in hex (a file a key natively); where there is
+//                      none (a worker), a failure
+//   iroh.bind          the module's `bind({secretKey, relayUrls})`, with `relayEntries` where any are said (each
+//                      `{entry, relay}`): through relays alone whatever is asked (a browser has no UDP: `relayOnly`
+//                      is always so), nothing looked up (`lookup` never), and no connection taken (`alpns` is not
+//                      read: iroh-wasm binds with none)
+//   iroh.setRelayEntries   the endpoint's `setRelayEntries(entries)`, each `{entry, relay}`; of one closed, nothing
+//   iroh.accept        none: a page takes no connection. Asked, it fails as every op a page has not, which the
+//                      mesh says to whoever asked for one (`Mesh::incoming`)
 //   iroh.connect       `endpoint.connect(addr, alpn, [], givenUp)`; `fetch.cancel` of its call resolves `givenUp`,
 //                      which drops the handshake, and it is answered "cancelled" as natively
 //   iroh.endpointId, iroh.relayStatus, iroh.close      the endpoint's `id`, `relayStatus`, `close`
@@ -31,11 +39,9 @@
 //                  stream, which is neither; a reply's left unread): as the Rust shell lets a connection's go;
 //   a connection   kept as why it ended once it has (asked after, it answers that), until it is closed with
 //                  `forget` (`conn.close {id, forget: true}`: the mesh's, once it was told the end and keeps why
-//                  itself, or at once of one an opening gave up, ended or not) or its endpoint closes. The Rust
-//                  shell reads no `forget` and keeps that of every connection it had: there it is that shell's to
-//                  let go;
-//   an endpoint    as it is closed, with every connection of it and their streams. Nothing is answered of it after
-//                  (the Rust shell still says a closed one's id: the mesh keeps it and asks none).
+//                  itself, or at once of one an opening gave up, ended or not) or its endpoint closes, as the Rust
+//                  shell lets one go;
+//   an endpoint    as it is closed, with every connection of it and their streams. Nothing is answered of it after.
 // As natively, a wait given up is not a call given up but for a dial: a read let go of goes on (iroh-wasm's `read`
 // holds the stream's receiving half), so a stream is not read again after that, but reset.
 //
@@ -48,10 +54,33 @@
 priv type Page
 
 ///|
+/// iroh for the browser as its program gives it (`Shell::start_with`): the module itself, initialized (what has
+/// `bind`), or a function that gives it or a promise of it (`() => init().then(() => iroh)`), called the first time
+/// an endpoint is bound, and again at the next where what it gave failed.
+#external
+pub type IrohJs
+
+///|
+/// How the page's shell gets iroh's module: a function giving a promise of it, called as an endpoint is bound
+/// until one it gave came.
+#external
+priv type Loader
+
+///|
+/// The module at `at` (iroh-wasm's JavaScript, its wasm beside it), loaded and initialized.
+extern "js" fn loader_at(at : String) -> Loader =
+  #|(at) => () => import(at).then((module) => module.default().then(() => module))
+
+///|
+/// The module given, or what the function given gives (asked once a promise of it is wanted, not before).
+extern "js" fn loader_of(iroh : IrohJs) -> Loader =
+  #|(given) => typeof given === "function" ? () => Promise.resolve().then(() => given()) : () => Promise.resolve(given)
+
+///|
 /// `answered(id, kind, text, bytes)` is called as a call is answered (`Shell::settle`'s kinds), never while it is
 /// asked.
-extern "js" fn page_start(prefix : String, iroh : String, answered : (Int, Int, String, Bytes) -> Unit) -> Page =
-  #|(prefix, irohAt, answered) => {
+extern "js" fn page_start(prefix : String, loader : Loader, answered : (Int, Int, String, Bytes) -> Unit) -> Page =
+  #|(prefix, loader, answered) => {
   #|  const none = new Uint8Array(0);
   #|  // by handle: {endpoint}; {conn, of: its endpoint, closed: why it ended, once it has} or, ended, {gone: why, of};
   #|  // {stream, on: its connection, finished, ended}
@@ -65,13 +94,18 @@ extern "js" fn page_start(prefix : String, iroh : String, answered : (Int, Int, 
   #|  // by the call of a dial under way: what gives it up
   #|  const dials = new Map();
   #|  let iroh = null;
-  #|  const load = () => (iroh ??= import(irohAt).then((module) => module.default().then(() => module)).catch((e) => { iroh = null; throw e; }));
+  #|  const load = () => (iroh ??= loader().catch((e) => { iroh = null; throw e; }));
   #|  const hex = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
   #|  const unhex = (text) => Uint8Array.from(text.match(/../g) ?? [], (b) => Number.parseInt(b, 16));
   #|  const connection = (h) => {
   #|    if (h?.gone !== undefined) throw new Error("connection closed: " + (h.gone.reason ?? ""));
   #|    if (h?.conn === undefined) throw new Error("not a connection");
   #|    return h.conn;
+  #|  };
+  #|  // (a worker has no localStorage: its program keeps what it keeps itself)
+  #|  const storage = () => {
+  #|    if (typeof localStorage === "undefined") throw new Error("no localStorage here");
+  #|    return localStorage;
   #|  };
   #|  const stream = (h) => {
   #|    if (h?.stream === undefined) throw new Error("not a stream");
@@ -82,15 +116,15 @@ extern "js" fn page_start(prefix : String, iroh : String, answered : (Int, Int, 
   #|    const h = handles.get(a.id);
   #|    switch (op) {
   #|      case "storage.get": {
-  #|        const kept = localStorage.getItem(prefix + ":" + a.key);
+  #|        const kept = storage().getItem(prefix + ":" + a.key);
   #|        return kept === null ? [{ none: true }] : [{}, unhex(kept)];
   #|      }
   #|      case "storage.set":
-  #|        localStorage.setItem(prefix + ":" + a.key, hex(bytes ?? none));
+  #|        storage().setItem(prefix + ":" + a.key, hex(bytes ?? none));
   #|        return [{}];
   #|      case "iroh.bind": {
   #|        const module = await load();
-  #|        return [{ id: keep({ endpoint: await module.bind({ secretKey: bytes ?? none, relayUrls: a.relayUrls ?? [] }) }) }];
+  #|        return [{ id: keep({ endpoint: await module.bind({ secretKey: bytes ?? none, relayUrls: a.relayUrls ?? [], ...(a.relayEntries ? { relayEntries: a.relayEntries } : {}) }) }) }];
   #|      }
   #|      case "iroh.connect": {
   #|        if (h?.endpoint === undefined) throw new Error("not an endpoint");
@@ -120,6 +154,9 @@ extern "js" fn page_start(prefix : String, iroh : String, answered : (Int, Int, 
   #|          dials.delete(id);
   #|        }
   #|      }
+  #|      case "iroh.setRelayEntries":
+  #|        if (h?.endpoint !== undefined) await h.endpoint.setRelayEntries(a.entries ?? []);
+  #|        return [{}];
   #|      case "iroh.networkChange":
   #|        if (h?.endpoint !== undefined) await h.endpoint.networkChange();
   #|        return [{}];
@@ -211,6 +248,13 @@ extern "js" fn page_start(prefix : String, iroh : String, answered : (Int, Int, 
   #|      case "iroh.relayStatus":
   #|        if (h?.endpoint !== undefined) return h.endpoint.relayStatus();
   #|        break;
+  #|      case "iroh.addAddr":
+  #|        // (where a peer is, without looking it up: iroh-wasm's `addAddr`, answered at once)
+  #|        if (h?.endpoint !== undefined) {
+  #|          h.endpoint.addAddr(a.addr);
+  #|          return null;
+  #|        }
+  #|        break;
   #|      case "conn.closeReason":
   #|        if (h?.conn !== undefined) return h.conn.closeReason() ?? null;
   #|        if (h?.gone !== undefined) return h.gone;
@@ -293,9 +337,30 @@ let page : Ref[Page?] = Ref(None)
 /// as its next timer comes due, by `rt`'s own clock. So `rt` is a runtime on a clock of the page's
 /// (`Runtime::live(now)`), and nothing else ticks it.
 pub fn Shell::start(rt : @effect.Runtime, dir : String, iroh~ : String) -> Shell {
+  Shell::started(rt, dir, loader_at(iroh))
+}
+
+///|
+/// As `Shell::start`, with iroh given rather than loaded from an address (`IrohJs`: the module a bundle imported, or
+/// what initializes it), for a page or a worker. `dir`: what `storage.*` keys are kept under, where there is a
+/// localStorage (a worker has none, and its program keeps its own).
+pub fn Shell::start_with(rt : @effect.Runtime, iroh : IrohJs, dir? : String = "") -> Shell {
+  Shell::started(rt, dir, loader_of(iroh))
+}
+
+///|
+/// The page's shell started, iroh got by `loader`, and `rt` turned by the page's events from now on.
+fn Shell::started(rt : @effect.Runtime, dir : String, loader : Loader) -> Shell {
   let shell = Shell::of_target(rt)
-  let made = page_start(dir, iroh, (id, kind, text, bytes) => shell.settle(id.to_int64(), kind, text, bytes))
+  let made = page_start(dir, loader, (id, kind, text, bytes) => shell.settle(id.to_int64(), kind, text, bytes))
   page.val = Some(made)
+  turn_on(rt, made)
+  shell
+}
+
+///|
+/// `rt` turned by the page `made`'s events: once what woke a fiber is over, and as its next timer comes due.
+fn turn_on(rt : @effect.Runtime, made : Page) -> Unit {
   // (one turn for all that woke since the last: asked once, run as a microtask; then the page's timer set for the
   // runtime's next, which asks a turn as it comes due)
   let asked = Ref(false)
@@ -319,7 +384,6 @@ pub fn Shell::start(rt : @effect.Runtime, dir : String, iroh~ : String) -> Shell
   }
   rt.on_wake(() => (wake.val)())
   rt.on_timer(_ => (wake.val)())
-  shell
 }
 
 ///|

@@ -18,7 +18,8 @@ export type Waits = Need & { label?: string; at?: string };
 /// declares), why it cannot move (in words that say what to do; none: it can), how big it is (bytes, where known).
 /// `again`: its `cannot` is of this turn only (the other station did not answer what it has): asked again it may go,
 /// and nothing goes ahead of it to wait for it.
-export type Item = { module: string; id: string; label: string; needs: Need[]; cannot?: string; again?: true; size?: number };
+/// `leaves`: what of it stays here as it goes, in people's words (a chat's: this machine's own logins it only ran on before).
+export type Item = { module: string; id: string; label: string; needs: Need[]; cannot?: string; again?: true; size?: number; leaves?: string };
 /// Why an item cannot go where the other station did not answer what it has of it, as a plan asked (a station enrolled a
 /// moment ago, not reached): a plan is never made on a guess of what is there, so it is not tried; asked again it is.
 /// What a move says to people, in the station's language, already: passed on as it is, never worded again.
@@ -110,8 +111,12 @@ export interface Module {
   /// The item made usable at `to` for `forWhom` (the items of the turn that need it there), not moved; answered once it
   /// is (refused in words where it cannot be): `usableThere` says so from then.
   lend?(item: Item, to: string, forWhom: Need[]): Promise<void>;
+  /// Item `item`, lent to `to` before, needed there by `forWhom` too (going there now in a later turn): kept as lent
+  /// for them as well. None: lent for what it was lent for alone.
+  lentFor?(item: Item, to: string, forWhom: Need[]): Promise<void>;
   /// Items `items` are here, or never went (came back, failed, a chat that arrived here): what was lent for them alone is
-  /// taken back.
+  /// taken back, once the other says nothing there runs on it. Asked with none at a turn's end: what was kept lent only
+  /// for what the other runs on it is looked at again.
   left?(items: Need[]): Promise<void>;
   /// Whether the item is on this station now, from what the module keeps (none: its state says `here` or `failed`):
   /// what lets go, as the station starts, what was stopped waiting for it (scheduler `settleStopped`).

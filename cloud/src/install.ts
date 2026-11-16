@@ -517,6 +517,8 @@ prune_node
 fi
 mkdir -p "$HOME/.local/bin"
 ln -sf "$app/bin/stillfail" "$HOME/.local/bin/$product"
+# Installed again after stillfail uninstall (or the app's 卸载本机 Station): no longer said so.
+rm -f "$data/uninstalled"
 
 if [ -n "$token" ]; then
   echo "${say("cloud.install.join")}"
@@ -529,6 +531,8 @@ elif [ "$os" = Darwin ]; then
   mkdir -p "$(dirname "$plist")"
   cp "$tmp/service" "$plist"
   started=""
+  # (stopped from the app, the service is disabled: enabled, or bootstrap would load it and never start it)
+  launchctl enable "gui/$(id -u)/$label" 2>/dev/null || true
   for _ in 1 2 3 4 5; do
     launchctl bootstrap "gui/$(id -u)" "$plist" 2>/dev/null && { started=yes; break; }
     sleep 2

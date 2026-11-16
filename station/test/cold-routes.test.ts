@@ -8,11 +8,10 @@ import { test } from "node:test";
 import { Admin } from "../src/api/admin.ts";
 import type { Request } from "../src/api/request.ts";
 import { Jobs } from "../src/jobs/jobs.ts";
-import { tr } from "../src/ops/i18n.ts";
 import { Readers } from "../src/read/pool.ts";
 import { packWorkspace, withLock, workspaceArchive } from "../src/sessions/archive.ts";
 import { hubConfig } from "../src/sessions/config.ts";
-import { roomOf } from "../src/sessions/footprint.ts";
+import { roomOf } from "./footprint-reference.ts";
 import { Hub } from "../src/sessions/hub.ts";
 import { InternalChat } from "../src/sessions/internal.ts";
 import { Store } from "../src/store/store.ts";
@@ -51,7 +50,7 @@ test("an archived workspace's uploads: shown from its archive, and sent again fr
     assert.equal(String(thumb.body), "kept in the archive");
     const missing = await ask("GET", `/sessions/${made.key}/files`, undefined, [["name", "nothing.txt"]]);
     assert.equal(missing.status, 404);
-    assert.deepEqual(JSON.parse(String(missing.body)), { error: tr("en", "station.files.notFound") });
+    assert.deepEqual(JSON.parse(String(missing.body)), { error: "station.files.notFound" });
 
     const id = made.thread.id;
     const sent = await ask("POST", `/threads/${id}/messages`, {

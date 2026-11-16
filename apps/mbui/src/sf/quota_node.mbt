@@ -161,8 +161,13 @@ pub fn dials_node(
   loc~ : SourceLoc,
 ) -> Unit {
   let narrow = part_of(parent).look == Narrow
+  // (each dial its own, worked out once of them all, told only as it comes out otherwise: one dial's change runs nothing
+  // of the others)
   let dial = fn(d : @view.View, i : Int, short : Bool, wraps : Bool) {
-    dial_node(d, fn() { dials().get(i) }, fn() { details().get(i) }, fn() { !details().is_empty() }, short, wraps, narrow, columns)
+    let one = @signals.computed(fn(_) { dials().get(i) })
+    let detail = @signals.computed(fn(_) { details().get(i) })
+    let detailed = @signals.computed(fn(_) { !details().is_empty() })
+    dial_node(d, fn() { one.get() }, fn() { detail.get() }, fn() { detailed.get() }, short, wraps, narrow, columns)
   }
   let line = fn(r : @view.View, short : Bool) {
     style_node(r, fn() { if narrow { dl_row_narrow } else { dl_row_wide } }, in_row=narrow)
@@ -235,25 +240,30 @@ fn dial_node(
 ) -> Unit {
   let blank : Dial = { number: "", unit: "", fill: 0, level: "", label: "", note: "", label_short: "", note_short: "" }
   let now = fn() { dial().unwrap_or(blank) }
-  let ink = fn() {
+  // (its colour, whether it runs low and how many cells are lit, each worked out once of it, told only as it comes out
+  // otherwise: its figure or its words changing run nothing of its ten cells)
+  let ink_now = @signals.computed(fn(_) {
     let t = theme()
     match now().level {
       "amber" | "warn" => t.p.warn_ink
       "red" => t.p.red
       _ => t.p.green
     }
-  }
-  let low = fn() {
+  })
+  let ink = fn() { ink_now.get() }
+  let low_now = @signals.computed(fn(_) {
     match now().level {
       "amber" | "warn" | "red" => true
       _ => false
     }
-  }
-  let lit = fn() {
+  })
+  let low = fn() { low_now.get() }
+  let lit_now = @signals.computed(fn(_) {
     let f = now().fill
     let fill = if f < 0 { 0 } else if f > 100 { 100 } else { f }
     (fill.to_double() / 10.0).round().to_int()
-  }
+  })
+  let lit = fn() { lit_now.get() }
   style_node(d, fn() { if narrow { dl_dial_narrow } else if columns > 0 { dl_dial_wide_fixed } else { dl_dial_wide } }, in_row=true)
   // (the figure and its unit one line's runs: the unit on the figure's baseline)
   let number = fn() { if low() { dl_number.then(@ui.text_style(color=Data(ink()))) } else { dl_number } }

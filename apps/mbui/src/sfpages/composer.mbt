@@ -1214,7 +1214,8 @@ fn composer_file(c : @ui.Ctx, src : Source, spec : ComposerSpec, w : Writing, f 
   let key = "composer/file/" + id
   let name = text(v, "name")
   match picture {
-    Some(picture) => composer_picture(c, src, w, key, id, name, picture, going_now(v), gone_up(v), text(v, "error"))
+    Some(picture) =>
+      composer_picture(c, src, spec.station, w, key, id, name, picture, going_now(v), gone_up(v), text(v, "error"), v~)
     None => {
       // as wide as a card is (236), however little the row has: a card hugging its words in a row that wraps had none
       // left for them (its words squeezed to …); its ✕ hung on its corner, as a picture's (@sf.with_corner_remove)
@@ -1462,6 +1463,7 @@ fn picture_tile(
 fn composer_picture(
   c : @ui.Ctx,
   src : Source,
+  station : String,
   w : Writing,
   key : String,
   id : String,
@@ -1470,6 +1472,7 @@ fn composer_picture(
   pending : Bool,
   part : Double?,
   error : String,
+  v? : Json? = None,
 ) -> Unit {
   let thumb = c.id(key)
   let again = c.id(key + "/retry")
@@ -1484,32 +1487,96 @@ fn composer_picture(
       writing_retry(src, w, id)
     })
   }
-  // tapped, it opens in the viewer, growing out of its tile, from the bytes picked (`draft:<id>`, no session's: nothing
-  // to mark it into, it is in the draft already); one whose bytes are not here (a draft kept) opens nothing
-  match @sfbase.writing_went_to(id) {
-    Some((station, _, bytes)) => {
-      let a : Attachment = {
-        name,
-        path: "draft:" + id,
-        size: bytes.length().to_double(),
-        width: 0.0,
-        height: 0.0,
-        thumbhash: "",
-        owner: "",
-        upload: "",
-        duration: 0.0,
-        frames: 0,
-        held: false,
+  preview_composer_picture(c, station, id, name, picture, v, thumb, tile.val)
+}
+
+///|
+/// Tapped, a waiting picture opens in the viewer, growing out of its tile: from the bytes picked or kept (`draft:<id>`,
+/// no session's: nothing to mark it into, it is in the draft already), else a quoted message's file on the station
+/// (`done` with its session `owner`), else the picture its tile shows.
+fn preview_composer_picture(
+  c : @ui.Ctx,
+  station : String,
+  id : String,
+  name : String,
+  picture : String,
+  v : Json?,
+  thumb : Int,
+  tile : Int,
+) -> Unit {
+  let done = field(v, "done")
+  let width = if number(done, "width") > 0.0 { number(done, "width") } else { number(v, "width") }
+  let height = if number(done, "height") > 0.0 { number(done, "height") } else { number(v, "height") }
+  let preview : (String, String, Attachment, Bytes?)? = match @sfbase.writing_went_to(id) {
+    Some((went_station, _, bytes)) => {
+      let s = if station != "" { station } else { went_station }
+      Some((
+        s,
+        "",
+        {
+          name,
+          path: "draft:" + id,
+          size: bytes.length().to_double(),
+          width,
+          height,
+          thumbhash: "",
+          owner: "",
+          upload: "",
+          duration: 0.0,
+          frames: 0,
+          held: false,
+        },
+        Some(bytes),
+      ))
+    }
+    None =>
+      match done {
+        Some(j) if text(done, "owner") != "" => {
+          let a = attachment_of(j)
+          Some((station, text(done, "owner"), a, None))
+        }
+        _ if picture != "" && picture != "!" => {
+          let size = if number(done, "size") > 0.0 { number(done, "size") } else { number(v, "size") }
+          Some((
+            station,
+            "",
+            {
+              name,
+              path: "draft:" + id,
+              size,
+              width,
+              height,
+              thumbhash: "",
+              owner: "",
+              upload: "",
+              duration: 0.0,
+              frames: 0,
+              held: false,
+            },
+            None,
+          ))
+        }
+        _ => None
       }
-      // the viewer's id of it (its station, no session, its path), its tile kept for it to fly from
-      let seen = station + "//" + a.path
+  }
+  match preview {
+    Some((s, owner, a, bytes)) => {
+      // the viewer's id of it (its station, its session if any, its path), its tile kept for it to fly from
+      let seen = s + "/" + owner + "/" + a.path
       c.on_press(thumb, fn() {
-        @sfbase.keep_read(seen, bytes)
-        @sfbase.open_preview(station, "", a)
+        match bytes {
+          Some(b) => @sfbase.keep_read(seen, b)
+          None =>
+            match @sfbase.writing_went_to(id) {
+              Some((_, _, b)) => @sfbase.keep_read(seen, b)
+              None => ()
+            }
+        }
+        @sfbase.open_preview(s, owner, a)
       })
-      @sfbase.note_thumb(c, seen, tile.val, @sf.composer_inner(), picture~)
+      @sfbase.note_thumb(c, seen, tile, @sf.composer_inner(), picture~)
       // (not drawn while the viewer is its picture: one picture on the screen, never two)
-      c.look(tile.val, @ui.look(alpha=@sfbase.thumb_shows(seen)))
+      c.look(tile, @ui.look(alpha=@sfbase.thumb_shows(seen)))
     }
     None => ()
   }
@@ -2161,7 +2228,9 @@ pub fn send_in_chat(c : @ui.Ctx, src : Source, r : ChatRef, v : ChatView, w : Wr
   // (its references as the field's marks, which its flight takes off as; its row's runs as the core read its words)
   let marks = @sfbase.refs_sent_marks(w.key, words)
   let runs = @sfbase.refs_sent_runs(w.key, words)
-  let row = sent_local(rk, Some(v), words, up_files(w), going=going_files(w), quotes=sent_quotes(w), runs~, now=(src.now)())
+  // (what is in it now whole: its head and its messages by key where it holds them so, what the core's row taking
+  // these over is told apart from: sent_before, `newest`)
+  let row = sent_local(rk, Some(chat_whole(src, r, v)), words, up_files(w), going=going_files(w), quotes=sent_quotes(w), runs~, now=(src.now)())
   // its words take off from the field as they are (before it is emptied), the composer held as it is laid out for them
   // till they let go of it (theirs: composer_held_lines); on its way to another shape (a line more just typed), it
   // slows to rest from as fast as it went as they are sent (composer_view's @motion.stop_for), its room with it.
@@ -2196,6 +2265,9 @@ pub fn send_in_chat(c : @ui.Ctx, src : Source, r : ChatRef, v : ChatView, w : Wr
       Some(((x, y), _)) => @sfbase.sent_from_said(row, x, y)
       None => ()
     }
+    // (and each quote's card from where it is laid out in the composer, message_quotes_node's: where it stands at rest,
+    // over the field's words, even while it still comes in, as it does a moment after it is quoted)
+    @sfbase.sent_quotes_from_said(row, w.quotes.get().map(fn(q) { @motion.measured_rect(c, quote_card_key(text(Some(q), "id"))) }))
   }
   // At the end, the new row and its neighbours move together with the flight. When reading above it, glide there
   // instead of putting the list at the end in a single frame.

@@ -99,7 +99,7 @@ test("an agent of another workspace finds, reads and (when allowed) writes to a 
   // Another chat of that station is not shared.
   assert.match(await near.rig.refused(keyN, "chat_read", { chat: linkB }), /not shared with your workspace/);
   assert.match(await near.rig.refused(keyN, "session_send", { to: linkA, text: "hello" }), /read only/);
-  assert.match(await near.rig.refused(keyN, "chat_create", { key: "x", station: "far", text: "x" }), /./);
+  assert.match(await near.rig.refused(keyN, "chat_create", { for: "me", key: "x", station: "far", text: "x" }), /./);
 
   // Writable: the message is posted there, and its agent can answer the session that wrote.
   await far.xshare.share(keyA, [{ workspace: "W2", name: "Home", stations: [{ id: "near", name: "laptop" }] }], true, "a@example.com");

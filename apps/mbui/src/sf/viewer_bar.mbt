@@ -9,6 +9,7 @@
 /// The colours a bar is drawn in: the file's ground under it, its words, what is quieter, its line; a button's ground
 /// under the pointer (`hover`) and while what it opens is open (`chosen`), over that ground (a film's black has its
 /// own: the page's hover on it is dark on black, or near none: Player.css.ts's film --hover and --selected).
+#derive(Eq)
 pub(all) struct ViewerInk {
   ground : Int64
   ink : Int64
@@ -26,7 +27,7 @@ pub fn page_viewer_ink() -> ViewerInk {
 }
 
 ///|
-/// The bar (`key` its own): back to `back`, `name` and `meta` under it (`title`, where the file is, over them while
+/// The bar (`key` its own): back to `back` ("" none: its room kept), `name` and `meta` under it (`title`, where the file is, over them while
 /// they are pointed at: ViewerBar.tsx's title), `tools` at its end (viewer_tool, viewer_download); `hidden`, gone up
 /// out of the way. Its last tool stands at the window's top right corner as a page's bar's last button does
 /// (window_end_in: following the window's corner, as far in as from the bar's top), or clear of it where the last is
@@ -79,6 +80,11 @@ pub fn viewer_bar(
         c.box(style=viewer_bar_buttons, fn() {  }) |> ignore
       }
       c.box(style=if middle is Some(_) { viewer_bar_start_held } else { viewer_bar_start }, fn() {
+        // (no way back where there is nowhere to go back to: a page alone in a window of its own, whose window's own
+        // close closes it; its room kept, the name in the middle as ever)
+        if back == "" {
+          return
+        }
         let id = c.id(key + "/back")
         if live {
           c.on_press(id, on_back)

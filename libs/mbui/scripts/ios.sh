@@ -216,7 +216,7 @@ case "${1:-build}" in
       plutil -replace CFBundleShortVersionString -string "${MBUI_IOS_VERSION:-0.1.$MBUI_IOS_BUILD}" $APPDIR/Info.plist
     fi
     if [ -n "${MBUI_IOS_ASSETS:-}" ]; then
-      xcrun actool --compile $APPDIR --platform $IOS_SDK --minimum-deployment-target 17.0 --target-device iphone \
+      xcrun actool --compile $APPDIR --platform $IOS_SDK --minimum-deployment-target 17.0 --target-device iphone --target-device ipad \
         --app-icon AppIcon --output-partial-info-plist $OUT/assets-info.plist --errors --warnings \
         "$MBUI_IOS_ASSETS" > $OUT/actool.log 2>&1 || { cat $OUT/actool.log; exit 1; }
       /usr/libexec/PlistBuddy -c "Merge $OUT/assets-info.plist" $APPDIR/Info.plist > /dev/null

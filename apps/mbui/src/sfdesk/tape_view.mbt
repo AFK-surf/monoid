@@ -645,6 +645,21 @@ fn tape_settle(chat : String, open : String, known : Bool, at : Double) -> Unit 
 /// ms after it was put there at the latest.
 pub fn tape_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : Double) -> Unit {
   wide.tape.set(true)
+  board_frame_src.val = Some(src)
+  // (a workspace come in view that shows its chats as the board: its page's panel brought over, the board what it
+  // holds; at once as the frame is made, on the tape's way as another workspace comes in view)
+  let board_ws = Ref("")
+  v.reacts(fn() { @sfbase.workspace_in_view(src).0.map(fn(w) { w.id }).unwrap_or("") }, fn(ws) {
+    let first = board_ws.val == ""
+    board_ws.val = ws
+    guard ws != "" && @signals.untracked(fn() { @sfbase.board_on_of(src, ws) }) else { return }
+    guard app.nav.depth() == 1 && app.nav.top() is Home else { return }
+    if first {
+      wide.tape_at.set(Page)
+    } else if wide.tape_at.untracked() != Page {
+      wide.tape_ask.set(Some(Page))
+    }
+  })
   tape_goes.node = Some(v)
   tape_goes.ready = ready
   tape_goes.most = most
@@ -982,6 +997,7 @@ fn tape_cover(n : @view.View, p : TapePane, room : () -> (Double, Double, Double
         // bringing the page over as a press does; the keyboard's one way to it, all of the page behind taking none:
         // tape_in_use)
         .focusable(By(fn() { p == Page && wide.tape_at.get() == Side }))
+        .focus_ring(Is(Some((-1.0, -4.0, 0L))))
         // (pressed by a screen reader: brought over at that moment, as a tap brings it; a finger and the pointer its
         // gesture's, as ever: what drags a node is what a press on it finds)
         .on_press(fn() {
@@ -1195,20 +1211,19 @@ fn tape_side_at(side : @view.View) -> SideAt {
 }
 
 ///|
-/// A chat's side panel on the tape in node `pane` (tape_panel_box's, 6 in from the bars, 8 from the page's): an agent's
-/// history in front, the tree's, its ground, corners and line round what is in it as the page's panel's are
-/// (tape_page_pane), the panel's room beside the system's column its ground alone (side_history_node, its top an
-/// island built as tape_panel_built builds); a file in the viewer so too (side_view_node); else its island
-/// (tape_panel_built).
+/// A chat's side panel on the tape in node `pane` (tape_panel_box's, 6 in from the bars, 8 from the page's), the tree's:
+/// its ground, corners and line round what is in it as the page's panel's are (tape_page_pane), the panel's room beside
+/// the system's column its ground alone; its bar over whatever tab is in front (side_bar_node, on the tape's line, a tab
+/// alone its title), none where what is in front has its own (side_own_bar_node); under it an agent's history
+/// (side_history_node), a file in the viewer (side_view_node), a Farview tab (side_farview_node), 任务, agent 往来 and
+/// 图片、文件和链接 (side_own_node), any other tab its old view (side_panel, hosted as tape_panel_built builds). A new
+/// chat's Station 文件 its island (tape_panel_built).
 fn tape_side_node(pane : @view.View, src : Source) -> Unit {
   let tips = @sf.TipLayer::new(fn() { tape_goes.node })
-  let history = fn() {
+  // (a chat's while it shows a tab: its view gone (its workspace left), the island's, as a new chat's)
+  let chat = fn() {
     match tape_shown_side() {
-      Some(ChatSide(r)) =>
-        match tape_side_shown(src, r).1 {
-          front if side_node_tab(front) => Some((r, front))
-          _ => None
-        }
+      Some(ChatSide(r)) if tape_side_shown(src, r).0.length() > 0 => Some(r)
       _ => None
     }
   }
@@ -1216,9 +1231,9 @@ fn tape_side_node(pane : @view.View, src : Source) -> Unit {
   let island = fn(n : @view.View, build : (@ui.Ctx) -> Unit, natural : Bool) {
     @ui.old(n, build, key=tape_island_key, natural~)
   }
-  pane.pick(history, fn(q, shown) {
+  pane.pick(chat, fn(q, shown) {
     q.grow(Is(1.0)) |> ignore
-    guard shown is Some((r, agent)) else {
+    guard shown is Some(r) else {
       island(q, fn(c) { tape_panel_built(c, src) }, false).over(Is(true)) |> ignore
       return
     }
@@ -1236,7 +1251,7 @@ fn tape_side_node(pane : @view.View, src : Source) -> Unit {
     .padding(By(fn() { (0.0, 0.0, tape_room_now().under, 0.0) }))
     |> ignore
     @ui.tree_corners_linked(q, fn() { Some(tape_pane_corners(Panel, true)) })
-    // (what it reads its own, let go as the history leaves the front or the panel goes)
+    // (what it reads its own, let go as the tab leaves the front or the panel goes)
     let behind = fn(n : @view.View, build : (@ui.Ctx) -> Unit, natural : Bool) {
       island(
         n,
@@ -1252,12 +1267,56 @@ fn tape_side_node(pane : @view.View, src : Source) -> Unit {
         natural,
       )
     }
-    // (a file in the viewer: the panel's bar, then the file's tools and stage, as beside the page)
-    if @sfbase.view_tab_file(agent) is Some(_) {
-      side_view_node(q, src.owned_by(q), r, agent, behind)
-    } else {
-      side_history_node(q, src.owned_by(q), r, agent, tips, behind)
+    let src = src.owned_by(q)
+    let shown = fn() { tape_side_shown(src, r) }
+    q.show(at_once=true, fn() {
+      let (tabs, front) = shown()
+      !side_own_bar_node(q, tabs, front, true)
+    }, fn(b) { side_bar_node(b, src, r, shown, true, tips) })
+    let front = fn() {
+      match shown().1 {
+        front if side_node_tab(front) => front
+        _ => ""
+      }
     }
+    // (a file in the viewer: its tools and stage, as beside the page; a Farview tab, its screen drawn here; 任务, agent
+    // 往来, 图片、文件和链接 each its nodes, a card across the foot in the panel's corners; any other tab its old view)
+    q.pick(at_once=true, front, fn(s, agent) {
+      s.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
+      if agent == "" {
+        behind(
+          s,
+          fn(c) {
+            match (@sfbase.workspace_in_view(src).0, view_of_chat(src, r).0) {
+              (Some(w), Some(_)) => {
+                let (tabs, front) = shown()
+                side_panel(c, src, w, r, tabs, front)
+              }
+              _ => ()
+            }
+          },
+          false,
+        )
+        .grow(Is(1.0))
+        .min_height(Is(Some(0.0)))
+        |> ignore
+      } else if @sfbase.view_tab_file(agent) is Some(_) {
+        side_view_node(s, src, r, agent, behind)
+      } else if side_farview_tab(agent) is Some((station, screen)) {
+        side_farview_node(s, src, station, screen)
+      } else if side_adb_tab(agent) is Some(station) {
+        side_adb_node(s, src, station)
+      } else if side_own_tab(agent) {
+        side_own_node(s, src, r, agent, tips, fn() {
+          @sf.pane_round.val = Some(beside_column(tape_pane_corners(Panel, true), tape_room_now().under))
+          let st = @sf.pane_foot_card()
+          @sf.pane_round.val = None
+          st
+        })
+      } else {
+        side_history_node(s, src, r, agent, tips)
+      }
+    })
   })
 }
 
@@ -1277,12 +1336,11 @@ fn tape_side_shown(src : Source, r : ChatRef) -> (Array[String], String) {
 }
 
 ///|
-/// A chat's side panel on the tape (its island), closed while in use as it was as the tape moves off it.
+/// A new chat's side panel on the tape (its island: tape_side), closed while in use as it was as the tape moves off it.
 fn tape_panel_built(c : @ui.Ctx, src : Source) -> Unit {
   let (now, _, _, _) = @sfbase.workspace_in_view(src)
   guard now is Some(w) else { return }
   guard tape_shown_side() is Some(side) else { return }
-  let leaving = (tape_goes.panel_of)() is None
   let r = tape_room_now()
   let panel_w = dmax(0.0, c.width - r.under)
   tape_behind(c, Panel, fn() {
@@ -1290,7 +1348,7 @@ fn tape_panel_built(c : @ui.Ctx, src : Source) -> Unit {
     c.box(style=page_apart.then(@ui.style(w=Fixed(c.width), h=Fixed(c.height), radius=@sf.corners_radius(corners))), fn() {
       @sf.pane_round.val = Some(beside_column(corners, r.under))
       c.box(style=@ui.style(w=Fixed(panel_w), h=Full), fn() {
-        c.sized(panel_w, c.height, fn() { tape_side(c, src, w, side, leaving~) })
+        c.sized(panel_w, c.height, fn() { tape_side(c, src, w, side) })
       })
       |> ignore
       @sf.pane_round.val = None

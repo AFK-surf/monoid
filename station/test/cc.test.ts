@@ -17,7 +17,7 @@ import { Hub } from "../src/sessions/hub.ts";
 import { InternalChat } from "../src/sessions/internal.ts";
 import { newSession } from "../src/sessions/lifecycle.ts";
 import { Store } from "../src/store/store.ts";
-import { CcIndexPreparation, CcSessionsUnavailable } from "../src/store/cc-thread-index.ts";
+import { CcIndexPreparation, CcSessionsUnavailable } from "./reference/backfill/cc-thread-index.ts";
 import { FakeChat, FakeDriver, Rig, message, settle, testClock } from "./hub-fakes.ts";
 
 function prepared(store: Store, thread: number): ReturnType<Store["ccThreads"]> {

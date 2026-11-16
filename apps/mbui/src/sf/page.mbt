@@ -2162,6 +2162,7 @@ pub fn figures(c : @ui.Ctx, figures : Array[(String, String, String)]) -> Unit {
 ///|
 /// A dial's figure (Dial): what is left large (`number` and its `unit`), `fill` of its ten cells lit (0–100) in its
 /// `level`'s colour (green while plenty; amber, warn, red), its `label` and a quiet `note` under.
+#derive(Eq)
 pub(all) struct Dial {
   number : String
   unit : String
@@ -2465,32 +2466,29 @@ pub fn own_head(
     return
   }
   c.box(style=head_wide, fn() {
-    c.box(style=head_mark_wide, fn() { mark(head_mark_wide_side) }) |> ignore
-    c.box(style=head_identity, keep=true, fn() {
-      // its name and what it does on the name's line, the lines under them as wide as its words (lines of their own)
-      c.box(style=head_name_row, fn() {
-        c.box(style=head_name_line.then(head_name_grow), fn() {
-          // (short of room, its name is cut short, what follows it kept)
-          c.text(name, style=head_name_wide) |> ignore
-          if busy {
-            spinner(c, size=spinner_inline) |> ignore
-          }
-          match tags {
-            Some(f) => c.box(style=head_tags_wide, f) |> ignore
-            None => ()
-          }
-          match rename {
-            Some(f) => icon_action(c, "edit", "own-head-rename", rename_label, on_press=f)
-            None => ()
-          }
-        })
-        |> ignore
-        end()
+    // its mark, its name and what it does on the name's line, the lines under them from the mark's start
+    c.box(style=head_name_row, fn() {
+      c.box(style=head_mark_wide, fn() { mark(head_mark_wide_side) }) |> ignore
+      c.box(style=head_name_line.then(head_name_grow), fn() {
+        // (short of room, its name is cut short, what follows it kept)
+        c.text(name, style=head_name_wide) |> ignore
+        if busy {
+          spinner(c, size=spinner_inline) |> ignore
+        }
+        match tags {
+          Some(f) => c.box(style=head_tags_wide, f) |> ignore
+          None => ()
+        }
+        match rename {
+          Some(f) => icon_action(c, "edit", "own-head-rename", rename_label, on_press=f)
+          None => ()
+        }
       })
       |> ignore
-      below()
+      end()
     })
     |> ignore
+    below()
   })
   |> ignore
 }
@@ -2509,19 +2507,19 @@ pub fn row_ripple(c : @ui.Ctx, id : Int) -> Unit {
 // ── styles: narrow (web/src/mobile/parts.css.ts) ────────────────────────
 
 ///|
-/// Back's line over the large title (TopBack: 10 in, 6 over, 4 under).
+/// Back's line over the large title (TopBack: 18 in, 6 over, 4 under).
 // kept across runs: a value (no field of it changes)
-let pg_back_line : @ui.Style = @ui.css("row w=Full px=S2_5 pt=S1_5 pb=S1 align=ACenter")
+let pg_back_line : @ui.Style = @ui.css("row w=Full pl=S4_5 pr=S2_5 pt=S1_5 pb=S1 align=ACenter")
 
 ///|
-/// The large title (LargeTitle: 16 in, 6 under it), what it does at its end.
+/// The large title (LargeTitle: 24 in, where the words under it start; 6 under it), what it does at its end.
 // kept across runs: a value (no field of it changes)
-let pg_title_box : @ui.Style = @ui.css("w=Full px=S4 pb=S1_5")
+let pg_title_box : @ui.Style = @ui.css("w=Full pl=S6 pr=S4 pb=S1_5")
 
 ///|
 /// The large title with nothing over it (no back, no frame's bar): 40 under the top, as a wide page's head (desk_head).
 // kept across runs: a value (no field of it changes)
-let pg_title_box_alone : @ui.Style = @ui.css("w=Full px=S4 pt=S10 pb=S1_5")
+let pg_title_box_alone : @ui.Style = @ui.css("w=Full pl=S6 pr=S4 pt=S10 pb=S1_5")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -3159,10 +3157,10 @@ let fig_sub_whole : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=
 let fig_sub_line : @ui.Style = @ui.css("row w=Full")
 
 ///|
-/// A page's own head: wide, its mark 48 and its words beside it, 16 apart, 28 over what follows; narrow, its mark 40,
-/// 12 from its words, 16 over what follows, its words from the top.
+/// A page's own head: wide, its mark 32 on its name's line, 12 from its words, the lines under them from the mark's
+/// start, 28 over what follows; narrow, its mark 40, 12 from its words, 16 over what follows, its words from the top.
 // kept across runs: a value (no field of it changes)
-let head_wide : @ui.Style = @ui.css("row w=Full pb=S7 gap=S4 align=ACenter")
+let head_wide : @ui.Style = @ui.css("w=Full pb=S7 gap=S1_5")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -3179,15 +3177,11 @@ let head_narrow_foot : @ui.Style = @ui.css("pb=S4")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let head_mark_wide : @ui.Style = @ui.css("w=S12 h=S12 radius=Lg bg=Neutral align=ACenter justify=JCenter")
+let head_mark_wide : @ui.Style = @ui.css("w=S8 h=S8 radius=Md bg=Neutral align=ACenter justify=JCenter")
 
 ///|
 // kept across runs: a value (no field of it changes)
 let head_mark_narrow : @ui.Style = @ui.css("w=S10 h=S10 radius=Lg bg=Neutral align=ACenter justify=JCenter")
-
-///|
-// kept across runs: a value (no field of it changes)
-let head_identity : @ui.Style = @ui.style(w=grow, gap=S1_5)
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -3258,8 +3252,8 @@ pub fn loose(c : @ui.Ctx, body : () -> Unit) -> Unit {
 let pg_loose : @ui.Style = @ui.css("w=Full px=S3 pb=S2_5 gap=S3")
 
 ///|
-/// Its mark's box's side (what draws in it is given it): 48 wide, 40 narrow.
-let head_mark_wide_side : Double = 48.0
+/// Its mark's box's side (what draws in it is given it): 32 wide, 40 narrow.
+let head_mark_wide_side : Double = 32.0
 
 ///|
 let head_mark_narrow_side : Double = 40.0

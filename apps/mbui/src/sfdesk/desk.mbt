@@ -22,6 +22,7 @@ pub fn reset() -> Unit {
   context_reset()
   switcher_reset()
   browse_reset()
+  views_held_reset()
   cols_reset()
   kept_reset()
   pane_reset()

@@ -244,7 +244,9 @@ fn Ctx::emit_group_glass(self : Ctx, i : Int, alpha_in : Double) -> Unit {
 ///|
 /// The box's ground: its glass (or the glass's solid ground), and its own
 /// colour over that if it has one. The shadow of glass is drawn after it,
-/// outside it only, so the glass does not frost its own shadow.
+/// outside it only, so the glass does not frost or bend its own shadow: a
+/// drop of a liquid group's (drawn as its group's one shape) casts none of
+/// its own.
 fn Ctx::paint_glass(self : Ctx, n : Node, gl : Glass, alpha : Double) -> Unit {
   if glass_paint.solid {
     if n.shadow > 0.0 {
@@ -261,7 +263,7 @@ fn Ctx::paint_glass(self : Ctx, n : Node, gl : Glass, alpha : Double) -> Unit {
       self.notch_last(n)
     }
   }
-  if n.shadow > 0.0 && !gl.liquid {
+  if n.shadow > 0.0 && (!gl.liquid || glass_paint.in_group == 0) {
     self.paint_shadow(n, alpha, true)
   }
 }

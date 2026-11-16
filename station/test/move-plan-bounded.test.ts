@@ -114,19 +114,19 @@ const WANT: string[] = [
   "accounts | share:sh-b | bor |  |  | here | ",
   "accounts | machine:mine | mine |  | 本机自己的登录不能迁到别的 station：请在那边用登录工具登录 | here | chats gpt:C1:1.3",
   "accounts | own:solo@A | solo |  |  | here | chats team:all",
-  "chats | chat:c-0001 | a chat of two | accounts share:sh-cc,accounts key:f663c3465c5f0b8b63e89ebd3a687043 |  | here | jobs chat:c-0002#watch",
-  "chats | cl:C1:1.1 | a Slack thread | accounts share:sh-cc,accounts key:f663c3465c5f0b8b63e89ebd3a687043 |  | here | jobs cl:C1:1.1#dev,connects cl@A",
-  "chats | cl:C1:1.2 | cl:C1:1.2 | accounts share:sh-b |  | here | connects cl@A",
-  "chats | cl:C1:1.4 | cl:C1:1.4 | accounts share:sh-cc | 对话「cl:C1:1.4」的工作目录 /elsewhere/proj 不在这台 station 自己的目录里：它的文件不会一起迁走；确实要这样的话，选不带文件再迁一次 | here | connects cl@A",
-  "chats | cl:C1:1.5 | cl:C1:1.5 | accounts share:sh-cc |  | here | connects cl@A",
+  "chats | chat:c-0001 | a chat of two | accounts share:sh-cc,accounts key:f663c3465c5f0b8b63e89ebd3a687043 |  | here | ",
+  "chats | cl:C1:1.1 | a Slack thread | accounts share:sh-cc,accounts key:f663c3465c5f0b8b63e89ebd3a687043 |  | here | ",
+  "chats | cl:C1:1.2 | cl:C1:1.2 | accounts share:sh-b |  | here | ",
+  "chats | cl:C1:1.4 | cl:C1:1.4 | accounts share:sh-cc | 对话「cl:C1:1.4」的工作目录 /elsewhere/proj 不在这台 station 自己的目录里：它的文件不会一起迁走；确实要这样的话，选不带文件再迁一次 | here | ",
+  "chats | cl:C1:1.5 | cl:C1:1.5 | accounts share:sh-cc |  | here | ",
   "chats | cl:C1:1.9 | cl:C1:1.9 | accounts share:sh-cc |  | there | ",
-  "chats | cl:C1:3.1 | cl:C1:3.1 | accounts share:sh-cc,repos repo:https://example.test/shared.git |  | here | connects cl@A",
-  "chats | cl:C1:3.2 | cl:C1:3.2 | accounts share:sh-cc,repos repo:https://example.test/shared.git |  | here | connects cl@A",
-  "chats | cl:C1:3.3 | cl:C1:3.3 | accounts share:sh-cc,repos repo:https://example.test/own.git |  | here | connects cl@A",
-  "chats | cl:C1:3.4 | cl:C1:3.4 | accounts share:sh-cc |  | here | connects cl@A",
-  "chats | cl:C1:3.5 | cl:C1:3.5 | accounts share:sh-cc |  | here | connects cl@A",
-  "chats | cm:C9:1.7 | cm:C9:1.7 | accounts share:sh-cc |  | here | connects cm@A",
-  "chats | gpt:C1:1.3 | gpt:C1:1.3 | accounts machine:mine |  | here | connects gpt@A",
+  "chats | cl:C1:3.1 | cl:C1:3.1 | accounts share:sh-cc,repos repo:https://example.test/shared.git |  | here | ",
+  "chats | cl:C1:3.2 | cl:C1:3.2 | accounts share:sh-cc,repos repo:https://example.test/shared.git |  | here | ",
+  "chats | cl:C1:3.3 | cl:C1:3.3 | accounts share:sh-cc,repos repo:https://example.test/own.git |  | here | ",
+  "chats | cl:C1:3.4 | cl:C1:3.4 | accounts share:sh-cc |  | here | ",
+  "chats | cl:C1:3.5 | cl:C1:3.5 | accounts share:sh-cc |  | here | ",
+  "chats | cm:C9:1.7 | cm:C9:1.7 | accounts share:sh-cc |  | here | ",
+  "chats | gpt:C1:1.3 | gpt:C1:1.3 | accounts machine:mine |  | here | ",
   "chats | team:all | team:all | accounts own:solo@A,connects team@A |  | here | ",
   "jobs | cl:C1:1.1#dev | dev (npm run dev) | chats cl:C1:1.1 |  | here | ",
   "jobs | chat:c-0002#watch | watch (tsc -w) | chats chat:c-0001 |  | here | ",
@@ -236,6 +236,8 @@ for (const n of [300, 2_384]) {
     const first = watchFiles();
     const before = await a.moves.scheduler.plan(WS, B);
     first.stop();
+    // (the chats' sizes the first read set measuring, in their own thread on a station: measured before the count)
+    await a.moves.sizes.settled();
     assert.ok(first.total() <= filesMost(worktrees), `${first.total()} calls of the file system for the first plan of ${n} chats: at most ${filesMost(worktrees)}, a worktree's gitdir read once`);
     const w = watch(a.rig.store);
     const f = watchFiles();

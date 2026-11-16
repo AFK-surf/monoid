@@ -106,6 +106,7 @@ pub struct Client {
 pub fn Client::call(Self, String, params? : @json.Json, bytes? : Bytes?, on_done? : (Result[@json.Json, @json.Json]) -> Unit) -> Int32
 pub fn Client::call_bytes(Self, String, params? : @json.Json, on_done~ : (Result[(@json.Json, Bytes?), @json.Json]) -> Unit) -> Int32
 pub fn Client::call_said(Self, Map[String, @json.Json]) -> Bool
+pub fn Client::call_unread(Self, Int32) -> Bool
 pub fn Client::cancel(Self, Int32) -> Unit
 pub fn Client::follow_topic(Self, String, params? : Map[String, @json.Json]) -> Sub
 pub fn Client::leave_topic(Self, String, params? : Map[String, @json.Json]) -> Unit

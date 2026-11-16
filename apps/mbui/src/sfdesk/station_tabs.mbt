@@ -107,14 +107,8 @@ fn station_tab_pane(c : @ui.Ctx, src : Source, w : Workspace, r : ChatRef, tab :
         on_close=fn() { side_change(src, r, "close", Some(tab)) }, in_tab=true, own_bar~)
     }
     "drive" => files_tab(c, src, w.id, tabs_key(r), station, only_station=true, scope=station_files_scope(r, station))
-    // (the settings' own page, not one for every frame yet: its head with no back, the tab is the way to close it)
-    "adb" => {
-      let core = settings_core(src, w)
-      let here = @settings.here_of(core, w.id, w.name)
-      @settings.frame(core, here)
-      @settings.wide_deep.val = false
-      @settings.page(c, core, here, AdbShare(station))
-    }
+    // (the settings' 共享调试, made once as nodes in the panel: panel_node's side_adb_node)
+    "adb" => ()
     // (a station's page: its old view, the panel being one: station_page; every frame's own stack makes it once)
     _ => {
       let core = settings_core(src, w)

@@ -9,13 +9,14 @@
 // child) by its exit file appearing (a watch on jobs/exit), with a look at its leader once a second for the one end
 // that writes no file (its shell killed) — Node has no exit event for a process that is not its child.
 import { randomBytes } from "node:crypto";
-import { type FSWatcher, existsSync, mkdirSync, readFileSync, rmSync, watch } from "node:fs";
-import { access, appendFile, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { type FSWatcher, existsSync, mkdirSync, readFileSync, watch } from "node:fs";
+import { access, appendFile, lstat, open, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join, sep } from "node:path";
 import { Clock, Effect, Exit, FiberSet, Schedule, Scope } from "effect";
 import { startEnv } from "../ops/agent-env.ts";
 import { liveClock } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
+import { JOB_LOG_CAP, rotateInPlace } from "../ops/storage.ts";
 import { niced } from "../ops/nice.ts";
 import { startLasting } from "../ops/processes.ts";
 import { platform } from "../platform/index.ts";
@@ -27,6 +28,11 @@ import { endGroup, groupAlive, pidAlive, signalGroup, stillOurs } from "../ops/g
 import type { Pressure, Why } from "./admit.ts";
 
 export { outputAt, tail };
+
+/// A job's log, and what is left of it, kept this long after its job ended (`collect`).
+export const JOB_LOGS_KEPT_MS = 14 * 24 * 3600_000;
+/// A job's files whose job the store no longer has (its session deleted, its record cleared) kept this long.
+export const JOB_FILES_ORPHAN_MS = 3600_000;
 
 /// How many lines job_log gives by default.
 export const LOG_LINES = 50;
@@ -175,41 +181,16 @@ export function jobJson(j: JobRow): Json {
 export const queues = (job: JobRow): boolean => job.id.startsWith("remote_");
 
 /// A job as the pages show it: its record, what it said lately (newest first) and when its output last grew.
-export function shown(store: Store, job: JobRow): Json {
+export async function shown(store: Store, job: JobRow): Promise<Json> {
   const v = jobJson(job);
   v.notices = store.jobNotices(job.id, NOTICES_SHOWN);
-  v.outputAt = outputAt(job.log);
+  v.outputAt = await outputAt(job.log);
   return v;
 }
 
-/// The watches running, by session: what the pages show of a watching chat's agent (its session's `watch`): the
-/// watches' names (oldest first), since when the first runs, when one last gave word (`at`: its latest notice, else its
-/// start; a notice is news to the pages, output is not).
-export function watching(store: Store): Map<string, { names: string[]; since: number; at: number }> {
-  const by = new Map<string, JobRow[]>();
-  for (const job of store.jobsRunning().filter((j) => j.watch)) {
-    const list = by.get(job.sessionKey) ?? [];
-    list.push(job);
-    by.set(job.sessionKey, list);
-  }
-  const out = new Map<string, { names: string[]; since: number; at: number }>();
-  for (const [key, jobs] of by) {
-    // A stable sort, as sort_by_key is.
-    jobs.sort((a, b) => a.startedAt - b.startedAt);
-    const at = Math.max(...jobs.map((j) => Math.max(store.jobNotices(j.id, 1)[0]?.at ?? j.startedAt, j.startedAt)));
-    out.set(key, { names: jobs.map((j) => j.name), since: jobs[0].startedAt, at });
-  }
-  return out;
-}
-
 /// The exit code a job's shell wrote when it ended, if it did.
-export function readExit(path: string): number | null {
-  try {
-    const text = readFileSync(path, "utf8").trim();
-    return /^[+-]?\d+$/.test(text) ? Number(text) : null;
-  } catch {
-    return null;
-  }
+async function readExitFile(path: string): Promise<number | null> {
+  return await readFile(path, "utf8").then((t) => /^[+-]?\d+$/.test(t.trim()) ? Number(t.trim()) : null, () => null);
 }
 
 /// Where the claims that hold the screen are kept, in jobs/.
@@ -403,7 +384,7 @@ export class Jobs {
         await this.keepClaims(a);
         return null;
       case "node.tail":
-        return tail(a, b);
+        return await tail(a, b);
       case "node.lost":
         return await access(this.lostFile(a)).then(() => true, () => false);
       case "node.append":
@@ -437,7 +418,7 @@ export class Jobs {
         this.follow(this.store.getJob(a)!, b);
         return null;
       case "node.readExit":
-        return await readFile(this.exitFile(a), "utf8").then((t) => /^[+-]?\d+$/.test(t.trim()) ? Number(t.trim()) : null, () => null);
+        return await readExitFile(this.exitFile(a));
     }
     throw new Error(`no jobs' ask ${f}`);
   }
@@ -565,7 +546,63 @@ export class Jobs {
         if (this.running.get(id) === running) this.running.delete(id);
         running.settle();
       }
+      // Its shell ended, and what it started and left running in its group was told to end (the program's SIGTERM):
+      // what does not is made to, as a stop does. Left, they went on as orphans of nobody's (ppid 1) for good.
+      if (!this.closing && groupAlive(running.pgid)) await this.timed(endGroup(running.pgid, STOP_GRACE_MS));
+      const job = this.store.getJob(id);
+      if (job !== null) await this.capLog(job.log);
     });
+  }
+
+  /// A job's log held to JOB_LOG_CAP where it is (its shell appends to it: `exec >>`), what it had kept in `<log>.1`.
+  private async capLog(path: string): Promise<boolean> {
+    if (!path.startsWith(this.dir + sep)) return false;
+    try {
+      return await rotateInPlace(path, JOB_LOG_CAP);
+    } catch (error) {
+      log.warn("jobs", "a job's log not held to its bound", { log: path, error: (error as Error).message });
+      return false;
+    }
+  }
+
+  /// The logs of the jobs up held to their bound (ops/storage.ts Upkeep), and the files of jobs long over or gone
+  /// collected (`collect`).
+  async upkeep(now: number): Promise<{ capped: number; collected: string[] }> {
+    let capped = 0;
+    for (const job of this.store.jobsUp()) if (await this.capLog(job.log)) capped++;
+    return { capped, collected: await this.collect(now) };
+  }
+
+  /// The files in jobs/logs and jobs/exit of a job the store no longer has, unchanged for JOB_FILES_ORPHAN_MS (its
+  /// session deleted: 1,702 logs, 1.0 GB, on a station, 2026-11-15), and the log of a job that ended JOB_LOGS_KEPT_MS
+  /// ago, removed: its record stays, its log reads as empty (job_log). Of one up (running, or a service to start again)
+  /// nothing. The job ids whose files went.
+  async collect(now: number): Promise<string[]> {
+    const gone = new Set<string>();
+    const up = new Set(this.store.jobsUp().map((j) => j.id));
+    const looked = new Map<string, JobRow | null>();
+    const jobOf = (id: string) => {
+      if (!looked.has(id)) looked.set(id, this.store.getJob(id));
+      return looked.get(id)!;
+    };
+    const idOf = (name: string, sub: "logs" | "exit") => (sub === "logs" ? /^(.+?)\.log(\.1(\.tmp)?)?$/.exec(name)?.[1] : /^(.+?)(\.lost)?$/.exec(name)?.[1]) ?? null;
+    for (const sub of ["logs", "exit"] as const) {
+      const dir = join(this.dir, sub);
+      for (const name of await readdir(dir).catch(() => [] as string[])) {
+        const id = idOf(name, sub);
+        if (id === null) continue;
+        const job = jobOf(id);
+        const file = join(dir, name);
+        if (job === null) {
+          const st = await lstat(file).catch(() => null);
+          if (st === null || now - st.mtimeMs < JOB_FILES_ORPHAN_MS) continue;
+        } else if (up.has(id) || this.running.has(id) || job.state === "running" || job.endedAt === null || now - job.endedAt < JOB_LOGS_KEPT_MS) continue;
+        await rm(file, { force: true }).catch(() => undefined);
+        gone.add(id);
+      }
+    }
+    if (gone.size > 0) log.info("jobs", "files of jobs long over or gone removed", { jobs: gone.size });
+    return [...gone];
   }
 
   /// Runs a job's command, and follows it to its end: its group. `extra`: variables it is given besides (the queue's
@@ -672,7 +709,8 @@ export class Jobs {
       this.leaderGone(id, pgid).pipe(
         Effect.andThen(Effect.sync(() => heard())),
         // What its shell wrote, if it did.
-        Effect.andThen(Effect.suspend(() => this.ended(id, running, readExit(this.exitFile(id)), this.store.now() - began))),
+        Effect.andThen(Effect.promise(() => readExitFile(this.exitFile(id)))),
+        Effect.flatMap((code) => this.ended(id, running, code, this.store.now() - began)),
       ),
     ).catch(() => undefined);
   }
@@ -735,12 +773,12 @@ export class Jobs {
   }
 
   /// Takes a session's jobs that are over off its record (the pages' 清掉已结束的), their logs with them: the ids gone.
-  clearEnded(session: string): string[] {
+  async clearEnded(session: string): Promise<string[]> {
     const gone = this.store.clearEndedJobs(session);
-    for (const [id, file] of gone) {
-      if (file.startsWith(this.dir + sep)) rmSync(file, { force: true });
-      rmSync(this.exitFile(id), { force: true });
-    }
+    await Promise.all(gone.map(async ([id, file]) => {
+      if (file.startsWith(this.dir + sep)) await rm(file, { force: true });
+      await rm(this.exitFile(id), { force: true });
+    }));
     return gone.map(([id]) => id);
   }
 

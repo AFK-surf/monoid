@@ -3,7 +3,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { OTHER_JOBS_AT_INSTALL, installOtherActiveJobs } from "../src/store/active-jobs.ts";
 import { ACTIVE_WATCHES_AT_INSTALL, installActiveWatches } from "../src/store/watch-jobs.ts";
-import { ACTIVE_JOB_FIRST, ACTIVE_JOB_NEXT, activeJobUpgradeReady, activeJobUpgradeStep } from "../src/store/active-jobs-upgrade.ts";
+import { ACTIVE_JOB_FIRST, ACTIVE_JOB_NEXT, activeJobUpgradeReady, activeJobUpgradeStep } from "./reference/backfill/active-jobs-upgrade.ts";
 
 for (const watched of [false, true]) test(`an old database prepares active ${watched ? "watches" : "jobs"} without an unbounded writer transaction`, () => {
   const largest: number[] = [];

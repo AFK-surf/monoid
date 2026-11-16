@@ -105,7 +105,7 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
   reader_layout_nodes(root)
   root.each(
     fn() {
-      presented_said.get() |> ignore
+      presented_said.val.get() |> ignore
       let (w, _) = root.window()
       let sheet = layout(w) is Small
       // (a panel drawn by what screen it is on, none before the window has its size: what it is drawn as, a sheet or
@@ -136,7 +136,7 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
       // (which of its submenu rows has its menu open, one at a time, its own: panel_submenus_lent)
       panel_submenus_lend(row)
       let open = fn() {
-        presented_said.get() |> ignore
+        presented_said.val.get() |> ignore
         presented_open_of(serial)
       }
       // (drawn from its layer made till its way out is over: one closed before it ever showed, never)
@@ -244,12 +244,13 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
             // (a step further in from another presenter's panel: back from it back to that one)
             step_back?=if p.under is Some(_) { Some(fn() { dismissed_now(serial, back=true) }) } else { None },
             // (a page back, where it is past its first)
-            page_back=fn() { panel_pop(p) },
+            // (where its steps follow a flow kept elsewhere, told to that flow: flow_back)
+            page_back=fn() { flow_back(p) || panel_pop(p) },
             stood=fn() { p.stands },
             // (how tall it stands as it closes, for what comes in its place: close_from)
             stands_by=fn(f) { p.stands_now = Some(f) },
             taken=fn() {
-              presented_said.get() |> ignore
+              presented_said.val.get() |> ignore
               p.taken_by != 0
             },
             // (dimming what is under it only where no sheet under it does, the host's sheets among them: scrim_owner)
@@ -266,6 +267,20 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
             p,
             shown~,
             gone~,
+            covered~,
+          )
+        // (one of nodes that goes in steps in the middle of the window: its steps pages of one dialog)
+        Panel({ nodes: Some({ steps: true, .. }), .. } as x) if p.from == Unanchored || x.form =>
+          steps_centred_node(
+            row,
+            open,
+            x,
+            fn() { done(fn() {  }) },
+            fn() { dismissed_now(serial) },
+            p,
+            shown~,
+            gone~,
+            dims~,
             covered~,
           )
         Panel(x) if p.from == Unanchored || x.form =>
@@ -437,6 +452,18 @@ pub fn panel_words_in_node(v : @view.View) -> @ui.Style {
 }
 
 ///|
+/// How far apart a panel's body's parts stand in node `v` of it, where the body lays them out itself (one share of
+/// the window tall, its parts in a box of its own): as its presenter lays out a body's parts, a dialog's in the middle
+/// of the window 16 apart (dialog_body), a sheet's 10 (sheet_panel); none outside a panel.
+pub fn panel_parts_gap_node(v : @view.View) -> Double {
+  match v.lent(panel_in_lent) {
+    Some(p) if p.centred => @ui.Space::px(S4)
+    Some(_) => @ui.Space::px(S2_5)
+    None => 0.0
+  }
+}
+
+///|
 /// How far in from the column a field over a panel's rows stands in node `v` of its body: in a small panel beside what
 /// opened it at the column, its capsule on the rows' grounds' line as a pick's search is (pick_node's); in a sheet or a
 /// dialog on its words' line, as a sheet's own field is (the things' 筛选); none outside a panel.
@@ -455,6 +482,20 @@ pub fn panel_words_at_node(v : @view.View) -> Double {
     Some(p) => p.words
     None => 0.0
   }
+}
+
+///|
+/// Whether node `v` is made in the body of a small panel beside what opened it (in_small_panel's, where the body is
+/// nodes): its rows at its padding, as a menu's are; not in a sheet, a dialog or outside a panel.
+pub fn in_small_panel_node(v : @view.View) -> Bool {
+  panel_in_of(v).small
+}
+
+///|
+/// What reaches a panel's sides on purpose in node `v` of its body (panel_bleed's, where the body is nodes: a strip that
+/// scrolls under them, attach's photos): out across the room the panel leaves at its sides; none outside a panel.
+pub fn panel_bleed_node(v : @view.View) -> @ui.Style {
+  @ui.style(mx=room(-panel_in_of(v).sides))
 }
 
 ///|

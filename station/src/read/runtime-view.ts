@@ -2,6 +2,7 @@
 // are preserved. Shared by HTTP responses and the reader's digest calculation so unchanged rows stay unchanged.
 import { SHAPES } from "../../../client/core-ts/src/shapes/schema.ts";
 import type { Ty } from "../../../client/core-ts/src/shapes/dsl.ts";
+
 export const OMIT = Symbol("runtime unavailable to this client");
 const object = (v: unknown): v is Record<string, any> => v !== null && typeof v === "object" && !Array.isArray(v);
 // Unsupported required metadata removes its containing list item; optional metadata becomes null. A runtime
@@ -37,11 +38,4 @@ export function runtimeView(type: Ty, value: unknown, supported: Set<string>): u
     out[field.name] = v;
   }
   return out;
-}
-
-export function runtimeList(op: string, value: unknown, runtimes?: string[]): unknown {
-  if (!runtimes) return value;
-  const types: Record<string,string> = {sessions:"Session",chats:"ChatItem",threads:"ChatThread"};
-  const type = types[op];
-  return type ? runtimeView({vec:type},value,new Set(runtimes)) : value;
 }

@@ -96,6 +96,28 @@ test "外观's 震动 switch is at the end of its row and turns haptics off and 
 }
 
 ///|
+test "外观: files dragged into a chat can be sent as files or paths (prefs dropAs)" {
+  for (w, platform) in [(390.0, 0), (720.0, 0), (1280.0, 0), (1280.0, 3), (1280.0, 5)] {
+    let at = "\{w} platform \{platform}"
+    let sets : Array[Json] = []
+    let t = setting_tester(Appearance, w, platform~, h=2400.0, over=fn(s) {
+      { ..s, call: fn(name, params, done) { if name == "prefs.set" { sets.push(params) }; (s.call)(name, params, done) } }
+    })
+    assert_eq(t.get(Radio, label="发路径").check, Some(On), msg=at)
+    t.click(Radio, label="发文件")
+    t.draw()
+    assert_eq(sets.length(), 1, msg=at)
+    assert_eq(sets[0].stringify(), "{\"dropAs\":\"file\"}", msg=at)
+    assert_eq(t.get(Radio, label="发文件").check, Some(On), msg=at)
+    t.click(Radio, label="发路径")
+    t.draw()
+    assert_eq(sets.length(), 2, msg=at)
+    assert_eq(sets[1].stringify(), "{\"dropAs\":null}", msg=at)
+    assert_eq(t.get(Radio, label="发路径").check, Some(On), msg=at)
+  }
+}
+
+///|
 test "外观: wide setting titles have the same weight as the rows in 自动决策" {
   for platform in [0, 2] {
     let decision = @ui.Tester::new(fn(c) {

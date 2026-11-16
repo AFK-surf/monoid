@@ -5,6 +5,7 @@
 // a secret a station sends along (vault/incoming.ts), and the rig's own say over who may use it (rig/module.ts). No
 // agents, sessions, chats, connects, accounts, vault or drive are made here: there is nothing in this process that
 // could run one.
+import { closePeerRelays } from "../mesh/peer-relays.ts";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Cause, Context, Effect, Layer, Option, Stream, SubscriptionRef } from "effect";
@@ -18,10 +19,12 @@ import { applyNetwork } from "../mesh/mesh.ts";
 import { bindStation } from "../mesh/native.ts";
 import { PEER_ALPN, PEER_BYTES_ALPN, peerCall, servePeer } from "../mesh/peer.ts";
 import { DeviceRefused, PEER_HTTP_ALPN, serveHttp } from "../mesh/peer-http.ts";
-import { keepRelays } from "../mesh/relays.ts";
+import { keepRelays, wantedRelays } from "../mesh/relays.ts";
 import { congestionOf } from "../mesh/settings.ts";
-import { DISK_EVERY_MS, DISK_LOW_BYTES, diskFree } from "../ops/disk.ts";
 import { Fibers } from "../ops/fibers.ts";
+import { DISK_EVERY_MS, diskEvery, diskSoft, diskTier } from "../ops/disk.ts";
+import { Upkeep, diskOf } from "../ops/storage.ts";
+import { sweepRunners } from "../agents/runner.ts";
 import { mcpPortFile, ownData, portsToTry, rememberedMcpPort } from "../ops/files.ts";
 import type { Control } from "../ops/launcher.ts";
 import { log } from "../ops/log.ts";
@@ -108,6 +111,28 @@ export const RigLive = (control: Control) =>
       const memory = liveMemory({ data, store, jobs, notify: () => {}, clock: time.clock });
       memory.start();
 
+      // Its own files held to their bounds, and room made as its disk fills (ops/storage.ts, ops/disk.ts): a machine
+      // that only runs tasks keeps the mirrors and rooms of every chat that sends it one.
+      const upkeep = new Upkeep({ data, clock: time.clock, runners: (now) => sweepRunners(data, now), jobs: (now) => jobs.upkeep(now), remote: (now, disk) => remote.upkeep(now, disk) });
+      upkeep.start();
+      // Room made as its disk fills: what is made again when asked for, then other stations' mirrors unused the longest
+      // (jobs/remote.ts).
+      const relieving = async () => {
+        let tier: "ok" | "soft" | "low" = "ok";
+        try {
+          const disk = await diskOf(data);
+          tier = diskTier(disk.free, disk.total);
+          if (tier !== "ok") {
+            await upkeep.renewables(time.now());
+            await remote.relieve(time.now(), diskSoft(disk.total));
+          }
+        } catch (error) {
+          log.warn("rig", "making room on the disk failed", { error: (error as Error).message });
+        }
+        time.after(diskEvery(tier), relieving); // timer: a sample of this machine (its disk)
+      };
+      time.after(DISK_EVERY_MS, relieving); // timer: a sample of this machine (its disk)
+
       // Its own release, read at start and as the cloud says one is out; updated by itself while nothing runs.
       const updates = makeUpdates({ app, data, config, origin: () => plane.releaseBase(), running: () => 0, stationOnly: true });
       updates.start();
@@ -170,17 +195,6 @@ export const RigLive = (control: Control) =>
         control.failed(`the rig did not start: ${(e as Error).message}`);
       })));
 
-      // Room made on a disk running low: other stations' mirrors unused the longest go first (jobs/remote.ts).
-      const relieving = async () => {
-        try {
-          if (diskFree(data) < DISK_LOW_BYTES) await remote.relieve(time.now());
-        } catch (error) {
-          log.warn("rig", "making room on the disk failed", { error: (error as Error).message });
-        }
-        // A sample of this machine (its disk), looked at again later.
-        time.after(DISK_EVERY_MS, relieving);
-      };
-      time.after(DISK_EVERY_MS, relieving);
 
       // Nothing here to hand over turn by turn: drained at once.
       control.on("drain", () => {
@@ -194,6 +208,7 @@ export const RigLive = (control: Control) =>
           roster?.();
           await door?.close(5_000);
           await memory.close();
+          await upkeep.close();
           await rig.close();
           await remote.close();
           await jobs.shutdown();
@@ -220,14 +235,16 @@ export const RigMeshLive = Layer.effectDiscard(
     const run = Effect.gen(function* () {
       if (!cloud.state) yield* plane.changes.pipe(Stream.filter(() => cloud.state !== null), Stream.runHead);
       if (Number(process.env.STILLFAIL_MESH_BIND_ADDR?.split(":").at(-1)) > 0) yield* Effect.promise(() => previous.gone);
+      // Kept on the relays its workspace's ways keep on, as a station is (mesh/relays.ts).
+      const bound = wantedRelays(cloud);
       const endpoint = yield* Effect.acquireRelease(
-        Effect.promise(() => bindStation(native, { secretKey: key.seed, alpns: [PEER_HTTP_ALPN, PEER_BYTES_ALPN, PEER_ALPN], relayUrls: cloud.relays(), discovery: process.env.STILLFAIL_NO_DISCOVERY !== "1", congestion: congestionOf(config.raw()) })),
+        Effect.promise(() => bindStation(native, { secretKey: key.seed, alpns: [PEER_HTTP_ALPN, PEER_BYTES_ALPN, PEER_ALPN], relayUrls: bound, discovery: process.env.STILLFAIL_NO_DISCOVERY !== "1", congestion: congestionOf(config.raw()) })),
         (endpoint) => Effect.ignore(Effect.timeoutOption(Effect.promise(() => endpoint.close()), "1 second")),
       );
       log.info("mesh", "rig listening", { rig: endpoint.id(), workspace: cloud.state!.workspace_name, sockets: endpoint.sockets(), lan: lanAddrs(endpoint.sockets()) });
       yield* Effect.acquireRelease(Effect.sync(() => applyNetwork(endpoint, config)), (off) => Effect.sync(off));
       yield* Effect.acquireRelease(Effect.sync(() => side.net.attach(() => endpoint.home())), (off) => Effect.sync(off));
-      yield* Effect.forkScoped(keepRelays(endpoint, side.net));
+      yield* Effect.forkScoped(keepRelays(endpoint, side.net, bound));
       yield* Effect.forkScoped(
         Effect.gen(function* () {
           const online = yield* Effect.timeoutOption(Effect.promise(() => endpoint.online()), "15 seconds");
@@ -238,10 +255,12 @@ export const RigMeshLive = Layer.effectDiscard(
       // What it tells the stations (rig/module.ts), and nothing it asks of them.
       const call = peerCall(endpoint, cloud);
       peers.attach(call);
+      // (its watch of the ways, which lets go of connections through a relay turned off, ends with the mesh)
+      yield* Effect.addFinalizer(() => Effect.sync(() => { call.close?.(); closePeerRelays(endpoint); }));
       stationLog.sendWith((body) => Effect.runPromise(plane.logs(body)));
       yield* accept(endpoint, {
         // (a station: what this one keeps to it, from before it started again, asked whether it is still there)
-        arrived: (conn) => { if (!conn.alpn().equals(PEER_HTTP_ALPN)) call.arrived(conn); },
+        arrived: (conn) => call.arrived(conn),
         serve: (conn) =>
           conn.alpn().equals(PEER_HTTP_ALPN)
             ? serveHttp(conn, cloud, {

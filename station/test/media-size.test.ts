@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { shownFacts, shownSize } from "../src/sessions/image-size.ts";
+import { shownFacts, shownSize } from "./reference/image-size.ts";
 import { shownSize as coreShown } from "../../client/core-ts/src/imageSize.ts";
 import { exif, film, jpeg } from "../../client/core-ts/test/media-bytes.ts";
 

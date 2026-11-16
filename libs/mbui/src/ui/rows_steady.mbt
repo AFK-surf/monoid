@@ -54,20 +54,20 @@ priv struct RowsSteady {
   mut held : Bool
   mut file : String
   /// each sample's first time in the frame, the time of its last position, and that position
-  seen : Map[String, Array[(Double, Double, Double)]]
-  found : Set[String]
+  mut seen : Map[String, Array[(Double, Double, Double)]]
+  mut found : Set[String]
   /// each list's id, and when it was first shown (-1e9: long since)
-  lists : Map[Int, Double]
+  mut lists : Map[Int, Double]
   /// the window's size as the last frame measured was drawn (its rows measured anew from a frame drawn another size)
   mut window : (Double, Double)
   /// how much bigger the system's setting made words as that frame was drawn (font_scale): its rows laid out anew too
   mut words : Double
   /// when each row (by its list's id and its key) last turned back (rows_turn_ms)
-  turned : Map[String, Double]
+  mut turned : Map[String, Double]
   /// each row's last way (rows_return_ms): which way (1 down, -1 up), how far, when it last moved so, how far it has
   /// come back the other way since (0 none), when it set out, whether a row left on it with none come, and whether the
   /// row was drawn in a frame of its way back so far (not faint)
-  went : Map[String, (Double, Double, Double, Double, Double, Bool, Bool)]
+  mut went : Map[String, (Double, Double, Double, Double, Double, Bool, Bool)]
   /// when the hand last pressed, let go, typed, scrolled or went back (rows_steady_hand)
   mut hand : Double
 }

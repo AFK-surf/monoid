@@ -5,16 +5,37 @@
 // all of them in the 任务 tab. Laid out as the old view's was, by the same styles.
 
 ///|
-/// The popover's body in `v` (jobs_popover's) for jobs of `station`, the core's `chatJobs` as `view` says it now: a
-/// service pressed opens its tab (`service`), one that failed and the rest the 任务 tab at it (`tab`, "" none).
-fn jobs_pop_node(v : @view.View, src : Source, station : String, view : () -> Json?, service : (String) -> Unit, tab : (String) -> Unit) -> Unit {
+/// The popover's body in `v` (jobs_popover's) for jobs of `station`, the core's `chatJobs` as `view` says it now, the
+/// bar's summary of it (`summary`: whether it has any) as `summary` says: a service pressed opens its tab (`service`),
+/// one that failed and the rest the 任务 tab at it (`tab`, "" none). Said to have none only where the core says so (the
+/// list come empty, or the summary saying none while it comes), never while nothing is said yet: nothing shows then.
+fn jobs_pop_node(
+  v : @view.View,
+  src : Source,
+  station : String,
+  view : () -> Json?,
+  summary : () -> Json?,
+  service : (String) -> Unit,
+  tab : (String) -> Unit,
+) -> Unit {
   let tips = match @sf.panel_tips_of(v) {
     Some(t) => t
     None => @sf.TipLayer::new(fn() { None })
   }
   let jobs = fn() { items(view(), "jobs") }
-  v.pick(fn() { jobs().length() == 0 }, fn(p, none) {
-    if none {
+  // (0 nothing said yet, 1 none, 2 its jobs)
+  let shows = fn() {
+    match (view(), summary()) {
+      (Some(_), _) => if jobs().length() == 0 { 1 } else { 2 }
+      (None, Some(Object(s))) if s.get("hasJobs") is Some(False) => 1
+      (None, _) => 0
+    }
+  }
+  v.pick(shows, fn(p, said) {
+    if said == 0 {
+      return
+    }
+    if said == 1 {
       p.box(fn(e) {
         @sf.style_node(e, fn() { jobs_empty })
         @sf.words_node(e, fn() { @sf.t("web-main.jobs.none") }, fn() { jobs_empty_title }) |> ignore
@@ -62,8 +83,8 @@ fn jobs_pop_node(v : @view.View, src : Source, station : String, view : () -> Js
       let words = fn() { text(view(), "allText") + " · " + @sf.t("web-main.jobs.inPanel") }
       foot.box(fn(b) {
         @sf.style_node(b, fn() { jobs_all.then(jobs_pop_round) }, in_row=true)
-        b.ground(By(fn() { if @sf.lit_node(b) { @sf.theme().p.hover } else { 0L } })).says(By(fn() { Some(@view.said(Button, label=words())) }))
-        |> ignore
+        @sf.hover_ground_node(b)
+        b.says(By(fn() { Some(@view.said(Button, label=words())) })) |> ignore
         @sf.presses_node(b, fn() { tab("") })
         @sf.words_node(b, words, fn() { if @sf.lit_node(b) { jobs_all_hot } else { jobs_all_words } }) |> ignore
       })
@@ -91,10 +112,8 @@ fn jobs_pop_head(g : @view.View, name : String, note : () -> String) -> Unit {
 fn jobs_pop_row(row : @view.View, job : () -> Json?, end : () -> String, open : () -> Bool, press : () -> Unit) -> Unit {
   row.box(fn(b) {
     @sf.style_node(b, fn() { (if open() { job_row_static_inset } else { job_row_inset }).then(jobs_pop_round) })
-    b
-    .ground(By(fn() { if !open() && @sf.lit_node(b) { @sf.theme().p.hover } else { 0L } }))
-    .says(By(fn() { Some(@view.said(Button, label=text(job(), "name"))) }))
-    |> ignore
+    @sf.hover_ground_node(b, on=fn() { !open() })
+    b.says(By(fn() { Some(@view.said(Button, label=text(job(), "name"))) })) |> ignore
     @sf.presses_node(b, press)
     b.box(fn(on) {
       @sf.style_node(on, fn() { job_row_on }, in_row=true)
@@ -339,7 +358,8 @@ fn jobs_pop_last(body : @view.View, src : Source, station : String, job : () -> 
 fn jobs_pop_action(parent : @view.View, words : String, on : () -> Bool, mark : (@view.View) -> Unit, press : () -> Unit) -> Unit {
   parent.box(fn(b) {
     @sf.style_node(b, fn() { job_action_style }, in_row=true)
-    b.ground(By(fn() { if @sf.lit_node(b) { @sf.theme().p.hover } else { 0L } })).says(Is(Some(@view.said(Button, label=words)))) |> ignore
+    @sf.hover_ground_node(b, on~)
+    b.says(Is(Some(@view.said(Button, label=words)))) |> ignore
     @sf.presses_node(b, press, on~)
     mark(b)
     @sf.words_node(b, fn() { words }, fn() { if on() && @sf.lit_node(b) { job_action_hot } else { job_action_words } }) |> ignore

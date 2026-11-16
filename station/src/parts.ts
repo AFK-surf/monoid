@@ -116,7 +116,7 @@ export class StationParts {
 
   /// What a part holds only in memory and carries over to the next process at a handover (an update), never written
   /// down: `give` it as this process hands over, `take` what the process before gave.
-  carry<T>(name: string, give: () => T, take: (what: T) => void): void {
+  carry<T>(name: string, give: () => T | Promise<T>, take: (what: T) => void): void {
     if (this.#carries.has(name)) throw new Error(`${name} is carried over twice`);
     this.#carries.set(name, { give, take });
     if (this.#came.has(name)) {
@@ -129,15 +129,15 @@ export class StationParts {
   // ── what is asked of them ──
 
   /// What the parts carry over to the next process, by part.
-  carried(): Record<string, unknown> {
+  async carried(): Promise<Record<string, unknown>> {
     const out: Record<string, unknown> = {};
-    for (const [name, { give }] of this.#carries) {
+    await Promise.all([...this.#carries].map(async ([name, { give }]) => {
       try {
-        out[name] = give();
+        out[name] = await give();
       } catch (error) {
         log.warn("station", "a part's memory is not carried over", { part: name, error: (error as Error).message });
       }
-    }
+    }));
     return out;
   }
 

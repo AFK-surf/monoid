@@ -262,6 +262,9 @@ pub fn station_glyph_node(
   let made : Ref[@view.View?] = Ref(None)
   parent.box(made_for=loc, fn(v) {
     made.val = Some(v)
+    // (the counts, read again as what `g` reads changes, and what draws them woken only where they come out otherwise)
+    let counts = @signals.computed(fn(_) { g() }, same=fn(a, b) { a == b })
+    let g = fn() { counts.get() }
     let eye = fn() {
       let counts = g()
       let blinking = if counts.asleep { 0 } else { counts.working }

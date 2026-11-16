@@ -108,6 +108,8 @@ class Conn implements Connection {
   #accepting: ((s: End | null) => void) | null = null;
   #ends: End[] = [];
   #reason: string | null = null;
+  /// How it went (the addon's CloseInfo kind): closed here, or by its other end.
+  #kind = "application";
   #closed: Promise<string>;
   #resolve!: (r: string) => void;
   readonly #remote: string;
@@ -151,9 +153,10 @@ class Conn implements Connection {
     this.peer.#offer(theirs);
     return mine;
   }
-  gone(reason: string) {
+  gone(reason: string, kind = "application") {
     if (this.#reason !== null) return;
     this.#reason = reason;
+    this.#kind = kind;
     for (const e of this.#ends) e.fail(new Error("connection lost"));
     const take = this.#accepting;
     this.#accepting = null;
@@ -161,7 +164,7 @@ class Conn implements Connection {
     this.#resolve(reason);
   }
   close(_code: number, reason: string): void {
-    this.gone(reason);
+    this.gone(reason, "local");
     if (!this.silent) this.peer.gone(reason);
   }
   /// The addon's: whether the other end is still there, at once (nothing here takes time).
@@ -175,6 +178,9 @@ class Conn implements Connection {
   }
   isClosed(): boolean {
     return this.#reason !== null;
+  }
+  closeReason(): { kind: string; reason: string } | null {
+    return this.#reason === null ? null : { kind: this.#kind, reason: this.#reason };
   }
   closed(): Promise<string> {
     return this.#closed;

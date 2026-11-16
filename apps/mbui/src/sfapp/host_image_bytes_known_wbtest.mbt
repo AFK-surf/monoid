@@ -13,6 +13,8 @@ fn init {
     // most, 2026-11-14)
     ("src/sfapp/switches_still_wbtest.mbt", 2906925),
     ("src/sfapp/chat_bar_wide_wbtest.mbt", 89156),
+    // (the board's chat beside it: the first row's chat's pictures, as chat_bar_wide's)
+    ("src/sfapp/board_wbtest.mbt", 89156),
     ("src/sfapp/chat_images_told_wbtest.mbt", 57845),
     ("src/sfapp/chat_keys_wbtest.mbt", 127704),
     // (the chat's page made as nodes hands over the pictures of the rows its list has made round what shows, a screen
@@ -42,6 +44,12 @@ fn init {
     // (中屏's chat opened, its workspace switched: the chat's pictures handed over as it showed, 2026-11-14)
     ("src/sfapp/medium_switch_corners_wbtest.mbt", 38548),
     ("src/sfapp/newchat_send_wbtest.mbt", 231032),
+    // (a new chat sent on a workspace of real size, its people's pictures on the chats' list: Studio's run, 2026-11-15)
+    ("src/sfapp/real_size_new_chat_send_wbtest.mbt", 38548),
+    // (a chat of real size opened as nodes: the pictures of the rows round what shows, as chat_page_nodes_wbtest's)
+    ("src/sfapp/chat_nodes_open_budget_wbtest.mbt", 79372),
+    // (the same chat opened again on each page, old and as nodes: the pictures of the rows round what shows, 2026-11-16)
+    ("src/sfapp/chat_nodes_vs_old_wbtest.mbt", 38548),
     ("src/sfapp/notices_wbtest.mbt", 999086),
     ("src/sfapp/place_first_wbtest.mbt", 10862),
     ("src/sfapp/preview_tree_wbtest.mbt", 1934327),
@@ -50,6 +58,10 @@ fn init {
     ("src/sfapp/quote_flight_wbtest.mbt", 115644),
     ("src/sfapp/quote_image_wbtest.mbt", 320444),
     ("src/sfapp/screen_links_wbtest.mbt", 128336),
+    // (the real size's screens, made under its own file since their motion is not judged (squeeze_wbtest.mbt's
+    // screen_in): what Studio's run of both windows held at most, 2026-11-16, the wide window's; held till then under
+    // squeeze_wbtest.mbt's bar, which was theirs)
+    ("src/sfapp/real_size_wbtest.mbt", 1975151),
     ("src/sfapp/screens_wbtest.mbt", 1857231),
     ("src/sfapp/search_wbtest.mbt", 127704),
     ("src/sfapp/send_hold_wbtest.mbt", 89156),

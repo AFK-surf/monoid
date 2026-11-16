@@ -125,3 +125,100 @@ test "a chat's page's reads declared as it comes on top: asked at that moment, t
   }
   assert_eq(faults, [])
 }
+
+///|
+/// Every page a gate opens by (sfbase's page_reads, route_reads; sfdesk's place_reads), each route of the settings'.
+fn gated_pages() -> Array[Page] {
+  let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
+  let routes : Array[@settings.Route] = [
+    Home, Me, Appearance, Fonts, Workspace, Security, SecurityOpen, Vault, Stations, Station("ws1/st1"), Profiles(""),
+    Profiles("ws1/st1"), Profile("ws1/st1", "p1"), Connects(""), Connects("ws1/st1"), Connect("ws1/st1", "c1"), Memories,
+    Memory("ws1/st1"), MemoryDoc("ws1/st1", "", 0), Usage, Archive, AdbShare("ws1/st1"), NewProfile("ws1/st1"),
+    ProfileAccount("k1"), VaultItems, VaultItem("v1", "i1"), AutoDecisions, AutoCompletion, AutoPolicy("ws1/st1"),
+    BarSettings, KeptFiles, KeptChat("ws1/st1", 1), Changelog, About, Shortcuts, LocalStation, Notifications,
+    Permissions, Archiving, StationArchiving("ws1/st1"), StationMove("ws1/st1"), UsagePrices(7), RunSettings("ws1/st1", "k"),
+  ]
+  [
+    Chat(r),
+    NewChat,
+    Settings,
+    Archived,
+    Files,
+    Drive({ station: "ws1/st1", root: None, path: "" }),
+    Drive({ station: "ws1/st1", root: Some(@sffixture.fix_docs), path: "" }),
+    DriveRead({ station: "ws1/st1", root: Some(@sffixture.fix_docs), path: "a.md" }),
+    Service("ws1/st1", "j-web"),
+    PreviewFile("ws1/st1", "s-c1", "work/s-c1/release.html", "release.html"),
+    Place("stations"),
+    Place("profiles"),
+    Place("connects"),
+    Place("usage"),
+    Place("archive"),
+    ..routes.map(fn(r) { Page::Setting(r) }),
+  ]
+}
+
+///|
+test "every page opened where what opens waits for what it shows: all its gate asks read once it is at rest, the gate told then, on 小屏, 中屏 and 大屏" {
+  // (a sweep of what each page reads at rest, as the screens' sweeps are: at the default rate alone; what a page's
+  // opening does frame by frame is its own tests')
+  if @ui.test_at_a_rate() {
+    return
+  }
+  @ui.host_image_bytes_known([("src/sfapp/declared_read_wbtest.mbt", 40000000)])
+  let faults : Array[String] = []
+  for s in switch_screens {
+    let (name, w, h, platform) = s
+    for i, page in gated_pages() {
+      new_run()
+      let base = fixture("home")
+      // (what the made-up core has no value for answered as the core does before it holds any: null)
+      let src : Source = {
+        ..base,
+        gates_opens: fn() { true },
+        topic_read: fn(n, ps) {
+          let s = base.topic(n, ps).get().snapshot()
+          if s.value is None && s.error is None {
+            { ..s, value: Some(Json::null()) }
+          } else {
+            s
+          }
+        },
+      }
+      let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~)
+      t.run_for(@sf.local_ms)
+      @sfbase.open_page(page)
+      t.run_for(@sf.local_ms)
+      t.run_for(@sf.local_ms)
+      let unread = @sfbase.declared_unread()
+      if unread.length() > 0 {
+        faults.push("\{name} #\{i}: declared and read by none at rest: " + unread.join(", "))
+      }
+      let told = match @sfbase.workspace_in_view(src).0 {
+        Some(ws) =>
+          if name == "小屏" {
+            page_opens_by(src, ws, page, @sfbase.read_now(src))
+          } else {
+            @sfdesk.pane_opens(src, ws.id, page, @sfbase.read_now(src))
+          }
+        None => false
+      }
+      if !told {
+        let untold : Array[String] = []
+        let ask = fn(n : String, ps : Map[String, Json]) {
+          let st = @sfbase.read_now(src)(n, ps)
+          if !@sfbase.open_told(st) {
+            untold.push(n + " " + Json::object(ps).stringify())
+          }
+          st
+        }
+        match @sfbase.workspace_in_view(src).0 {
+          Some(ws) => if name == "小屏" { page_opens_by(src, ws, page, ask) |> ignore } else { @sfdesk.pane_opens(src, ws.id, page, ask) |> ignore }
+          None => ()
+        }
+        faults.push("\{name} #\{i}: its gate not told at rest: " + untold.join(", "))
+      }
+    }
+  }
+  assert_eq(faults, [])
+}

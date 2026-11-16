@@ -11,9 +11,11 @@
 // out); links are not followed. A name already where it goes was answered before the transfer began (the page asks):
 // replaced (the one there to the trash first), kept beside under a name of its own (`free`), or skipped.
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { platform } from "../platform/index.ts";
+import { PrivateFile } from "../ops/files.ts";
 import { log } from "../ops/log.ts";
 import { type Drive, DriveError, type Entry, MAX_READ } from "./drive.ts";
 
@@ -170,6 +172,10 @@ export class Transfers {
   #waiting: (() => void)[] = [];
   #lastSave = 0;
   #closed = false;
+  /// Each transfer's file, written off the station's thread (the latest of it), by id.
+  readonly #files = new Map<string, PrivateFile>();
+  /// The expired records' removals the constructor set going, waited for with what is written (`idle`, `close`).
+  #cleaning: Promise<unknown>[] = [];
 
   constructor(deps: TransfersDeps) {
     this.#deps = deps;
@@ -180,7 +186,7 @@ export class Transfers {
         const t = JSON.parse(readFileSync(join(deps.dir, name), "utf8")) as Transfer;
         if (typeof t?.id !== "string") continue;
         if (t.endedAt !== undefined && deps.now() - t.endedAt > KEPT_MS) {
-          rmSync(join(deps.dir, name), { force: true });
+          this.#cleaning.push(rm(join(deps.dir, name), { force: true }).catch(() => {}));
           continue;
         }
         this.#all.set(t.id, t);
@@ -231,14 +237,23 @@ export class Transfers {
     return t;
   }
 
-  /// Settled when none is left to run.
-  idle(): Promise<void> {
-    return this.#running === null ? Promise.resolve() : new Promise((resolve) => this.#waiting.push(resolve));
+  /// Settled when none is left to run and what was kept of each is on disk.
+  async idle(): Promise<void> {
+    if (this.#running !== null) await new Promise<void>((resolve) => this.#waiting.push(resolve));
+    await this.#written();
   }
 
-  close(): void {
+  /// Nothing more run; settled once what was kept of each is on disk.
+  async close(): Promise<void> {
     this.#closed = true;
     for (const resolve of this.#waiting.splice(0)) resolve();
+    await this.#written();
+  }
+
+  async #written(): Promise<void> {
+    const cleaning = this.#cleaning;
+    this.#cleaning = [];
+    await Promise.all([...cleaning, ...[...this.#files.values()].map((f) => f.written())]);
   }
 
   #mine(by: string, id: string): Transfer {
@@ -249,13 +264,9 @@ export class Transfers {
 
   #save(t: Transfer, tell: boolean): void {
     this.#all.set(t.id, t);
-    const path = join(this.#deps.dir, `${t.id}.json`);
-    try {
-      writeFileSync(`${path}.tmp`, JSON.stringify(t), { mode: 0o600 });
-      renameSync(`${path}.tmp`, path);
-    } catch (e) {
-      log.warn("drive", "a transfer was not kept", { id: t.id, error: (e as Error).message });
-    }
+    let file = this.#files.get(t.id);
+    if (file === undefined) this.#files.set(t.id, (file = new PrivateFile(join(this.#deps.dir, `${t.id}.json`))));
+    file.write(JSON.stringify(t)).catch((e) => log.warn("drive", "a transfer was not kept", { id: t.id, error: (e as Error).message }));
     this.#lastSave = this.#deps.now();
     if (tell) this.#deps.changed(t);
   }

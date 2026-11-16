@@ -74,7 +74,7 @@ export function makeControlPlane({ state, changes, key, up, provider }: PlanePar
         const ts = nowSecs();
         const digest = sha256hex(body);
         const headers = { "content-type": "application/json", ...signedHeaders(plane.telemetry.prefixes, s.station, ts, (prefix) => key.sign(`${prefix}-station-telemetry-v1:${s.origin}:${s.station}:${ts}:${digest}`)) };
-        const response = await fetch(`${s.origin}${to}`, { method: "POST", headers, body, signal: AbortSignal.timeout(30_000) });
+        const response = await (plane.provider === "stillfail" ? state.request : fetch)(`${s.origin}${to}`, { method: "POST", headers, body, signal: AbortSignal.timeout(30_000) });
         await response.body?.cancel();
         if (!response.ok) throw Object.assign(new Error(`${plane.name} answered ${response.status}`), { status: response.status });
       },
@@ -91,7 +91,7 @@ export function makeControlPlane({ state, changes, key, up, provider }: PlanePar
         try: async () => {
           const plane = spec();
           // Signed over "<tag>:<origin>:<station>:<ts>:<sha256 of the body, hex>".
-          await signedPost(state, key, plane.notifyPath, plane.notifyTag, workspace === undefined ? { notices } : { notices, workspace }, plane.name);
+          await signedPost(state, key, plane.notifyPath, plane.notifyTag, workspace === undefined ? { notices } : { notices, workspace }, plane.name, plane.provider === "stillfail" ? state.request : fetch);
         },
         catch: (e) => e as Error,
       }),

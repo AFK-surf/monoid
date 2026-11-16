@@ -587,6 +587,7 @@ fn Ctx::tree_shot_paint(self : Ctx, tree : @view.Tree) -> Unit {
       tree.turn_angle_of(c.id),
       tree.ground_drawn_of(c.id),
     )
+    let outer_ring_at = self.emit_outer_ring(c, x, y, a, s)
     if c.clips && !c.clips_self {
       let r = c.radius * s
       match c.corners {
@@ -594,6 +595,9 @@ fn Ctx::tree_shot_paint(self : Ctx, tree : @view.Tree) -> Unit {
         None => push_box_clip(x, y, c.w * s, c.h * s, r, r, r, r)
       }
       clipping.push(c.id)
+    }
+    if outer_ring_at >= 0 && outer_ring_at < self.ninst {
+      rings.push((c.id, self.shot_ring_take(outer_ring_at)))
     }
     if ring_at >= 0 && ring_at < self.ninst {
       rings.push((c.id, self.shot_ring_take(ring_at)))

@@ -1,0 +1,68 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/search"
+
+import {
+  "moonbitlang/core/json",
+  "station/host",
+  "station/sql",
+}
+
+// Values
+pub async fn answer(@sql.Db, @host.Host, String, String, @json.Json, () -> Bool) -> Array[@json.Json]
+
+pub fn clamp_limit(@json.Json?) -> Int32
+
+pub fn clamp_offset(@json.Json?) -> Int32
+
+pub fn compare_units(String, String) -> Int32
+
+pub fn describe(Error) -> String
+
+pub fn excerpt(String, Array[String]) -> String
+
+pub fn has(String, Array[String]) -> Bool
+
+pub fn has_legacy_said(@sql.Db) -> Bool raise
+
+pub fn sees(String?, String?, Asker) -> Bool
+
+pub fn terms(String) -> Array[String]
+
+// Errors
+
+// Types and methods
+pub(all) struct Asker {
+  workspace : String
+  home : Bool
+  scopes : Array[String]
+}
+pub fn Asker::from_json(@json.Json) -> Self
+
+pub(all) struct Doc {
+  key : String
+  kind : String
+  ws : String?
+  scope : String?
+  title : String
+  body : String
+  at : Double?
+  refs : Array[(String, @json.Json)]
+}
+
+pub struct Pages {
+  // private fields
+}
+pub fn Pages::add(Self, Doc) -> Unit
+pub fn Pages::new(Array[String], Asker, Int32, Int32) -> Self
+pub fn Pages::result(Self) -> Array[@json.Json]
+
+pub struct Reading {
+  // private fields
+}
+pub fn Reading::new(@sql.Db, @host.Host, String, String, Array[String]?, Asker, Bool, Array[String], (Doc) -> Unit, async () -> Unit) -> Self raise
+pub fn Reading::pending(Self) -> (Bool, Bool)
+pub async fn Reading::run(Self) -> Unit
+
+// Type aliases
+
+// Traits

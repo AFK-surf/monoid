@@ -5,10 +5,10 @@ import { join } from "node:path";
 import { constants } from "node:sqlite";
 import { test } from "node:test";
 import { Readers } from "../src/read/pool.ts";
-import * as reads from "../src/read/store.ts";
-import { usage } from "../src/read/usage.ts";
-import * as compact from "../src/store/usage-compact.ts";
-import { retireUsageIndexes } from "../src/store/usage-retire.ts";
+import * as reads from "./reference/store.ts";
+import { usage } from "./reference/usage.ts";
+import * as compact from "./reference/backfill/usage-compact.ts";
+import { retireUsageIndexes } from "./reference/backfill/usage-retire.ts";
 import { Store } from "../src/store/store.ts";
 
 test("an unbounded read with a cached summary says the same as one without", async () => {

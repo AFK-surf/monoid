@@ -100,7 +100,7 @@ test("registration: the link carries what the app is to get; asked until its id 
     assert.equal(url.searchParams.get("user_code"), "AB");
     assert.equal(url.searchParams.get("name"), "Codex 机器人");
     assert.deepEqual(JSON.parse(gunzipSync(Buffer.from(url.searchParams.get("addons")!, "base64url")).toString()), ADDONS);
-    assert.equal(encodeAddons({ a: 1 }).includes("="), false);
+    assert.equal((await encodeAddons({ a: 1 })).includes("="), false);
     await t.adjust(5000);
     await settle();
     assert.equal(reg.get(r.id)!.state, "waiting");
@@ -650,6 +650,7 @@ test("scan: the station resumes a waiting scan and retries a failed save after r
     confirmed = true;
     feishu = makeFeishu({ data, store, config, clock: t.clock, receive: async () => {}, bound: () => false });
     table = routes();
+    await feishu.registrations.ready();
     await t.adjust(5000);
     await fake.until("save failed", () => failures > 0);
     assert.equal(config.raw().connects.length, 0);
@@ -660,7 +661,9 @@ test("scan: the station resumes a waiting scan and retries a failed save after r
     failSave = false;
     feishu = makeFeishu({ data, store, config, clock: t.clock, receive: async () => {}, bound: () => false });
     table = routes();
+    await feishu.registrations.ready();
     await fake.until("saved after restart", () => typeof feishu.registrations.get(reg.id)?.connectId === "string");
+    await feishu.registrations.written();
     const kept = config.raw().connects;
     assert.equal(kept.length, 1);
     assert.deepEqual([kept[0].feishu.appId, kept[0].feishu.appSecret, kept[0].bind, kept[0].workspace, kept[0].requireMention, kept[0].feishu.threads], ["cli_scan", "scan-secret", { runtime: "claude", model: "chosen-model" }, "joined", false, true]);

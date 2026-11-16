@@ -184,7 +184,7 @@ fn chat_foot_nodes(c : @ui.Ctx, src : Source, r : ChatRef) -> Unit {
     c.box(style=@ui.style(w=Full, min_h=Fixed(@sfpages.composer_open_room(c, c.width))), fn() {
       c.spacer()
       match workspace_in_view(src).0 {
-        Some(w) => @sfpages.chat_composer(c, src, w, r, view_of_chat(src, r).0)
+        Some(w) => @sfpages.chat_composer(c, src, w, r, @sfbase.chat_view_now(src, r))
         None => ()
       }
     })

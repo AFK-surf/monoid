@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { listedSessions, makeStore } from "../src/read/store.ts";
+import { listedSessions, makeStore } from "./reference/store.ts";
 import { Store } from "../src/store/store.ts";
 
 for (const archived of [false, true]) for (const connect of [null, "client"]) {

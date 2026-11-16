@@ -128,7 +128,6 @@ fn agent_said_node(
           av,
           fn() { if m().author_kind == "agent" { m().by.maker } else { "" } },
           fn() { if m().author_kind == "agent" { m().by.runtime } else { "" } },
-          fn() { "" },
         )
         let agent = @signals.untracked(fn() { if m().author_kind == "agent" { message_agent_of(here, m().by.agent) } else { "" } })
         if agent != "" {
@@ -250,7 +249,7 @@ fn agent_prose_node(
     let now = @signals.untracked(m)
     let old_here = place.here()
     match @signals.untracked(fn() { placed(@sf.file_name_of(h)) }) {
-      Some(a) if is_viz(a.name) =>
+      Some(a) if is_viz(a.name) && !@sfbase.is_mbui_viz(a.name) =>
         viz_open_full(a.name, here.station, owner_of(old_here, a), a.path, here.session, linked=true)
       Some(a) => open_file(old_here, a, at~)
       None =>

@@ -5,13 +5,14 @@
 
 ///|
 /// What a case keeps: its window, what its caller was told each press (in order), what its look was handed, what its
-/// caller says of it (on, disabled).
+/// caller says of it (on, disabled, mixed).
 struct ToggleCase {
   t : @ui.Tester
   told : Array[Bool]
   state : Ref[@headless.Toggle?]
   on : @signals.Signal[Bool]
   off : @signals.Signal[Bool]
+  some : @signals.Signal[Bool]
 }
 
 ///|
@@ -21,7 +22,7 @@ struct ToggleCase {
 fn toggle_case(kind? : @headless.ToggleKind = Checkbox, writes? : Bool = true) -> ToggleCase raise {
   let flag = fn(v : Bool) { @signals.signal(v, same=fn(a : Bool, b : Bool) { a == b }) }
   let (told, state) = ([], Ref(None))
-  let (on, off) = (flag(false), flag(false))
+  let (on, off, some) = (flag(false), flag(false), flag(false))
   let t = window(fn(root) {
     root.box(fn(e) {
       e
@@ -66,10 +67,11 @@ fn toggle_case(kind? : @headless.ToggleKind = Checkbox, writes? : Bool = true) -
         |> ignore
       },
       disabled=fn() { off.get() },
+      mixed=fn() { some.get() },
     )
     |> ignore
   })
-  { t, told, state, on, off }
+  { t, told, state, on, off, some }
 }
 
 ///|
@@ -122,15 +124,27 @@ test "a toggle button is read out a button, pressed or not as its caller says, a
 }
 
 ///|
-test "Tab goes to a toggle; Enter turns it, Space turns it back, a screen reader's ask turns it again: each told the other of what it is then" {
-  let k = toggle_case()
+test "Tab goes to a switch; Enter turns it, Space turns it back, a screen reader's ask turns it again: each told the other of what it is then" {
+  let k = toggle_case(kind=Switch)
   k.t.act(Button, Focus, label="别处")
   k.t.tab()
   let at = k.focus()
   k.t.enter()
   k.t.key(@ui.key_space)
-  k.t.act(Checkbox, Activate, label="提醒")
+  k.t.act(Switch, Activate, label="提醒")
   assert_eq((at, k.told, k.on.get()), ("提醒", [true, false, true], true))
+}
+
+///|
+test "a checkbox with the focus turns by Space alone: Enter is left to what holds it (WAI-ARIA)" {
+  let k = toggle_case()
+  k.t.act(Button, Focus, label="别处")
+  k.t.tab()
+  let at = k.focus()
+  k.t.enter()
+  let after_enter = k.told.copy()
+  k.t.key(@ui.key_space)
+  assert_eq((at, after_enter, k.told, k.on.get()), ("提醒", [], [true], true))
 }
 
 ///|
@@ -228,4 +242,25 @@ test "a toggle with hold_press: a press held past the hold time and let go on it
   t.move_to(200.0, 200.0)
   t.release(200.0, 200.0)
   assert_eq((held_on, on.get()), (true, true))
+}
+
+///|
+test "a checkbox its caller says is mixed: read out Mixed, its look told so; a press turns it on, never off" {
+  let k = toggle_case()
+  k.some.set(true)
+  k.t.frame()
+  let said = k.t.get(Checkbox, label="提醒").check
+  let looked = k.state.val.unwrap().mixed()
+  k.t.click(Checkbox, label="提醒")
+  k.some.set(false)
+  k.t.frame()
+  assert_eq((said, looked, k.told, k.t.get(Checkbox, label="提醒").check), (Some(Mixed), true, [true], Some(On)))
+}
+
+///|
+test "a switch is never mixed, whatever its caller says: read out on or off" {
+  let k = toggle_case(kind=Switch)
+  k.some.set(true)
+  k.t.frame()
+  assert_eq((k.t.get(Switch, label="提醒").check, k.state.val.unwrap().mixed()), (Some(Off), false))
 }

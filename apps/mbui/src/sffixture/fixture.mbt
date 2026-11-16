@@ -67,14 +67,14 @@ pub fn fixture_chat_tabs(mode : String) -> Map[String, Json] {
   let kept = fn(tab : String) -> Json { { "tabs": [Json::string(tab)], "active": Json::string(tab) } }
   match mode {
     "newchat-files" => { "new:ws1": kept("files") }
-    "chat-screen-tab" => { "ws1/st1:s-c1": kept("screen:[\"ws-1/st-1\",\"browser:tab-1\"]") }
+    "chat-screen-tab" | "chat-browser-tab" => { "ws1/st1:s-c1": kept("screen:[\"ws-1/st-1\",\"browser:tab-1\"]") }
     "chat-letters-side" => { "ws1/st1:s-c1": kept("letters") }
     "chat-things-side" => { "ws1/st1:s-c1": kept("things") }
     "chat-jobs-side" => { "ws1/st1:s-c1": kept("jobs") }
     "chat-service-side" => { "ws1/st1:s-c1": kept("service:j-web") }
     "chat-history-side" | "chat-history-side-working" | "chat-model-pop" | "chat-model-accounts" => { "ws1/st1:s-c1": kept("s-c1") }
     "chat-tabs-side" => { "ws1/st1:s-c1": { "tabs": ["s-c1", "jobs"], "active": "jobs" } }
-    "chat-view-side" | "chat-view-side-image" | "chat-view-side-video" | "chat-view-side-audio" =>
+    "chat-view-side" | "chat-view-side-image" | "chat-view-side-video" | "chat-view-side-audio" | "chat-view-side-mbui" | "chat-view-side-memory-mbui" =>
       { "ws1/st1:s-c1": kept(fixture_view_tab(mode)) }
     _ => {}
   }
@@ -82,13 +82,15 @@ pub fn fixture_chat_tabs(mode : String) -> Map[String, Json] {
 
 ///|
 /// The file of the first row's chat open beside it in the viewer (chat-view-side: 说明.md; chat-view-side-image:
-/// 界面草图.png; chat-view-side-video: 演示录屏.mp4; chat-view-side-audio: 会议录音.m4a), its tab as the app keeps it
-/// (sfbase's view_tab_key).
+/// 界面草图.png; chat-view-side-video: 演示录屏.mp4; chat-view-side-audio: 会议录音.m4a; chat-view-side-mbui:
+/// release.mbui; chat-view-side-memory-mbui: memory-schemes.mbui), its tab as the app keeps it (sfbase's view_tab_key).
 pub fn fixture_view_tab(mode : String) -> String {
   let name = match mode {
     "chat-view-side-image" => "界面草图.png"
     "chat-view-side-video" => "演示录屏.mp4"
     "chat-view-side-audio" => "会议录音.m4a"
+    "chat-view-side-mbui" => "release.mbui"
+    "chat-view-side-memory-mbui" => "memory-schemes.mbui"
     _ => "说明.md"
   }
   for f in preview_files() {
@@ -104,9 +106,9 @@ pub fn fixture_view_tab(mode : String) -> String {
 /// panel's two tabs pointed at), as the core shows what is kept (chat-tabs.ts tabsOf).
 pub fn fixture_tabs_shown(mode : String) -> Map[String, Json] {
   match mode {
-    "chat-screen-tab" => { "ws1/st1:s-c1": { "open": ["screen:[\"ws-1/st-1\",\"browser:tab-1\"]"], "shown": "screen:[\"ws-1/st-1\",\"browser:tab-1\"]" } }
+    "chat-screen-tab" | "chat-browser-tab" => { "ws1/st1:s-c1": { "open": ["screen:[\"ws-1/st-1\",\"browser:tab-1\"]"], "shown": "screen:[\"ws-1/st-1\",\"browser:tab-1\"]" } }
     "chat-tabs-side" => { "ws1/st1:s-c1": { "open": ["s-c1", "jobs"], "shown": "jobs" } }
-    "chat-view-side" | "chat-view-side-image" | "chat-view-side-video" | "chat-view-side-audio" => {
+    "chat-view-side" | "chat-view-side-image" | "chat-view-side-video" | "chat-view-side-audio" | "chat-view-side-mbui" | "chat-view-side-memory-mbui" => {
       let tab = fixture_view_tab(mode)
       { "ws1/st1:s-c1": { "open": [Json::string(tab)], "shown": Json::string(tab) } }
     }
@@ -557,6 +559,9 @@ fn fixture_days_head(f : Fixture) -> Array[Json] {
   if f.mode == "webdemo" {
     return webdemo_days()
   }
+  if board_mode(f.mode) {
+    return board_days(f)
+  }
   let today = [
     row("c1", "整理发布清单", "ws1/st1", "2 分钟前", {
       "state": "run",
@@ -763,6 +768,23 @@ fn fixture_chat_row(f : Fixture, params : Map[String, Json]) -> Json? {
   let p = Some(Json::object(params))
   let station = text(p, "station")
   let session = text(p, "session")
+  // (a chat made here, newChat.create's key: its row as the core gives a new chat's, 新对话, made on its station in
+  // whichever workspace that is, the made-up lists' first row's look)
+  if session.has_prefix("new:") && f.mode != "loading" && f.mode != "empty" {
+    let rows = fixture_days_head(f).map(fn(d) { items(Some(d), "items") }).flatten()
+    match rows.get(0) {
+      Some(Object(m)) => {
+        let r = m.copy()
+        r["id"] = Json::string(session)
+        r["session"] = Json::string(session)
+        r["station"] = Json::string(station)
+        r["title"] = Json::string("新对话")
+        r["unread"] = Json::number(0.0)
+        return Some(Json::object(r))
+      }
+      _ => ()
+    }
+  }
   // (as fixture_chats has them: the first workspace's alone, none while they are read or in a workspace with none)
   if f.mode == "loading" || f.mode == "empty" || @settings.workspace_of(station) != "ws1" {
     return Some(Json::null())
@@ -1373,6 +1395,8 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
           _ => Json::null()
         },
       }
+      // the board's (board_fixture.mbt)
+      board_prefs_into(o)
       // the drive's ways, the files' page's tabs and favourites (browse_fixture.mbt)
       fix_browse_prefs_into(o)
       // whether what was opened and let go is brought, up to how big (downloads_fixture.mbt)
@@ -1570,7 +1594,9 @@ pub fn round_trip_by(base : Source, ms : () -> Double) -> Source {
 /// made-up station's (fix_now's fixture_changed): what it does is answer the client, which the client is told itself.
 fn made_core_later(ms : Double, f : () -> Unit) -> Unit {
   match (fix_clock.val, fix_ctx.val) {
-    (None, Some(_)) => @ui.runtime().after(ms.ceil().to_int(), f)
+    // (between frames at its moment, as a device's core's answer comes: under a Tester its fake host's, in no frame's
+    // own work)
+    (None, Some(_)) => @ui.later_between_frames(ms, "made core", f)
     _ => fix_later(ms, f)
   }
 }
@@ -1584,7 +1610,9 @@ fn made_core_post(text : String, heard : (String) -> Unit, live : () -> Bool) ->
   made_core_later(0.0, fn() {
     if live() {
       heard("in " + text)
-      @core.receive(text, None)
+      // (on the core's channel, as a device's core posts it: what changes only a topic's signal, or answers a call
+      // whose answer does no more, taken as it comes, the rest as the next frame begins: sfcore's listen)
+      @ui.outside_post("core", text)
     }
   })
 }
@@ -1594,7 +1622,8 @@ fn made_core_post(text : String, heard : (String) -> Unit, live : () -> Bool) ->
 /// topic's first value `ms` late each time the client subscribes to it, what changes of it after told as it changes,
 /// and none of it after the client lets it go (its unsubscribe, sent once no reader of it is left anywhere); so what is
 /// asked again and when is the client's to say, as on a device, never this made-up core's own count of who reads what.
-/// Calls are `base`'s, as they were (the client carries them too: answered so). What the client sends and what is
+/// Calls are carried by the client to this core, answered by `base`'s and posted back on the core's channel, as a
+/// device's are. What the client sends and what is
 /// answered are the same messages a run's trace keeps (src/core's trace.mbt), told to `heard` as they go. `late`, where
 /// said, how late each topic is answered by its name and params (as a page reads them), in `ms`'s place. `delta_of`,
 /// where said, what changed of a topic's value as the core's keyed ops (by its name and params): a change after its
@@ -1750,7 +1779,8 @@ pub fn round_trip_again(
             Ok(v) => { "id": Json::number(id.to_double()), "ok": v }
             Err(e) => { "id": Json::number(id.to_double()), "error": e }
           }
-          give(answer.stringify())
+          // (`ms` late, as a topic's first value is: a round trip across the core's thread)
+          made_core_later(ms, fn() { give(answer.stringify()) })
         })
       _ => ()
     }
@@ -1759,6 +1789,13 @@ pub fn round_trip_again(
   // (a Tester begun anew, a kept conversation), never taken back)
   let serving = fn() {
     if mine.val == 0 {
+      // (the core's channel taken as a device's app takes it: sfcore's listen, as far as this package knows its lists,
+      // the calls whose answers change only signals; what more a run said there kept)
+      @ui.on_message("core", @core.receive)
+      @ui.on_message_said("core", @core.receive_said)
+      for name in @sfbase.calls_said() {
+        @core.said(name)
+      }
       mine.val = @core.serve(send)
       // (as the app's client tells it: a chat list's first window before the list, a chat's before the chat:
       // src/stillfail's main)
@@ -1769,6 +1806,16 @@ pub fn round_trip_again(
   let wire = fn(name : String, params : Map[String, Json]) { @sfbase.core_topic_params(name, params) }
   {
     ..base,
+    // (a call carried by the client to this core and answered on its channel, as a device's app calls its core:
+    // stillfail's core_source; one whose answer nobody reads given none to read it)
+    call: fn(name, params, done) {
+      serving()
+      if @sfbase.unread_answer(done) {
+        @core.call(name, params~)
+        return
+      }
+      @core.call(name, params~, on_done=done)
+    },
     topic_read: fn(name, params) {
       serving()
       let w = wire(name, params)
@@ -1777,6 +1824,10 @@ pub fn round_trip_again(
       { value: s.value, error: s.error, version: s.version }
     },
     topic_key: fn(name, params) { wire_key(name, wire(name, params)) },
+    topic_keyed: fn(name, params, field, keys) {
+      serving()
+      @core.keyed_of(name, wire(name, params), field, keys)
+    },
     waits: fn(name, params) {
       serving()
       @core.follow_topic(name, params=wire(name, params)).waiting
@@ -1900,6 +1951,9 @@ fn made_fixture(mode : String) -> Fixture {
 pub fn fixture(mode : String) -> Source {
   fixture_answers.clear()
   paged_days.val = None
+  board_started_rows.clear()
+  // the board shown and its drafts, as the prefs keep them (but board-list: the same chats as Home's list)
+  board_prefs_seed(mode)
   paged_rows.clear()
   fixture_preview(mode)
   let f = made_fixture(mode)
@@ -2041,6 +2095,7 @@ pub fn fixture(mode : String) -> Source {
   {
     topic_read: fn(name, params) { fixture_topic(f, name, params) },
     topic_key: @sfbase.exact_topic_key,
+    topic_keyed: fn(_, _, _, _) { None },
     topic_scope: None,
     topic_alive: fn() { true },
     topic_lease_own: None,
@@ -2071,6 +2126,13 @@ pub fn fixture(mode : String) -> Source {
         }
         done(Ok(Json::null()))
         return
+      }
+      match fixture_board_call(f, name, params) {
+        Some(r) => {
+          done(r)
+          return
+        }
+        None => ()
       }
       match fixture_kept(name, params, None) {
         Some(r) => {
@@ -2311,6 +2373,8 @@ pub fn fixture(mode : String) -> Source {
               }
             _ => ()
           }
+          // the board's (board_fixture.mbt)
+          board_prefs_set(params)
           // the drive's ways, the files' page's tabs, its favourites
           fix_browse_prefs_set(params) |> ignore
           fix_fill_prefs_set(params)
@@ -2410,6 +2474,7 @@ pub fn fixture(mode : String) -> Source {
     signing_in: fn() { false },
     sign_in_step: fn() { Idle },
     picture: fn(_, _) { "" },
+    picture_waits: fn(_) { false },
     fatal: fn() { None },
     // (chat-image-coming: its pictures asked of their station, so much of each heard, never here)
     file: fn(station, key, name) {
@@ -2439,6 +2504,8 @@ pub fn fixture(mode : String) -> Source {
     asks_station_updates: fn() { true },
     asks_station_move: fn() { true },
     asks_terminals: fn() { true },
+    swr_views: fn() { false },
+    gates_opens: fn() { false },
   }
 }
 

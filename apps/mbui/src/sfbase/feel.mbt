@@ -50,7 +50,7 @@ pub fn feel_needed(c : @ui.Ctx, r : ChatRef, v : ChatView) -> Unit {
 /// opening it till 2026-11-15).
 fn feel_needed_node(n : @view.View, src : Source, r : ChatRef) -> Unit {
   let seen : Ref[Bool?] = Ref(None)
-  n.reacts(fn() { view_of_chat(src, r).0.map(chat_needs) }, fn(now) {
+  n.reacts(fn() { chat_view_now(src, r).map(chat_needs) }, fn(now) {
     guard now is Some(needs) else { return }
     if needs && seen.val is Some(false) && app_in_front() {
       @ui.haptic(Confirm)

@@ -3,6 +3,9 @@
 // state says its home (the workspace it joined first) at the top, as before, and the others in `workspaces`.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { exportPKCS8, generateKeyPair } from "jose";
 import type { LockEntry } from "../src/lock.ts";
@@ -144,6 +147,7 @@ test("a station joins a second workspace: named there; its home's at the top of 
     assert.deepEqual(both.peers.map((p: any) => p.id), [x.id, y.id]);
     assert.deepEqual(both.workspaces, [{ workspace: lab, workspace_name: "Lab", name: "lab box", peers: [{ id: x.id, name: "lab box", version: "0.5.0" }], revocations: [], lock: null, ways: { relays: ["https://relay-b.example", "https://relay-a.example"], off: [] } }]);
     assert.deepEqual(both.relay_urls, [h.origin, "https://relay-a.example", "https://relay-b.example"], "every workspace's relays, each once");
+    assert.deepEqual(both.stillfail_relays, [h.origin], "still.fail's said apart from the workspaces' own");
     assert.equal((await sy.state())?.workspaces.length ?? 0, 0, "the home's other station hears nothing of the lab");
 
     // Each workspace lists it under its own name; the lab's says it is joined there.
@@ -363,5 +367,28 @@ test("notices and reports are of the workspace the station names, one it is in; 
     assert.deepEqual(listed.map((f: any) => [f.number, f.workspace?.id, f.station?.name]), [[2, lab, "lab box"], [1, home, "willow"]]);
   } finally {
     await h.close();
+  }
+});
+
+test("a relay a workspace added as its own before it became one of still.fail's is told as still.fail's alone (2026-11-16, 上海 in hypershell-算法)", async () => {
+  const persist = mkdtempSync(join(tmpdir(), "relays-"));
+  const before = await harness({ persist });
+  const x = await key();
+  try {
+    const alice = before.as(await before.login("alice"));
+    const ws = await create(alice, "Lab");
+    assert.equal((await alice("PUT", `/v1/workspaces/${ws}/relays`, { relays: ["https://pvg.example:8445"] })).status, 200);
+    assert.equal((await enroll(before, x, await token(alice, ws, "box"))).status, 200);
+  } finally {
+    await before.close();
+  }
+  const after = await harness({ persist, relayUrls: "https://pvg.example:8445" });
+  try {
+    const state = await (await connect(after, x)).state();
+    assert.deepEqual(state.ways.relays, [], "not the workspace's any more");
+    assert.deepEqual(state.stillfail_relays, [after.origin, "https://pvg.example:8445"]);
+    assert.deepEqual(state.relay_urls, [after.origin, "https://pvg.example:8445"], "each once");
+  } finally {
+    await after.close();
   }
 });

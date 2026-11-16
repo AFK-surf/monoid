@@ -8,13 +8,14 @@ import { runnerId } from "../src/agents/process.ts";
 import { keyPart, sandboxName } from "../src/agents/sandbox-name.ts";
 import { runnerSessions } from "../src/jobs/memory.ts";
 import { SandboxNameBuilder } from "../src/sessions/sandbox-name-builder.ts";
-import { enableSandboxIndex, runnerNameSessions, RUNNER_SESSION_CANDIDATES, sandboxIndexReady, sandboxIndexStep } from "../src/store/sandbox-index.ts";
+import { enableSandboxIndex, runnerNameSessions, RUNNER_SESSION_CANDIDATES, sandboxIndexReady, sandboxIndexStep } from "./reference/backfill/sandbox-index.ts";
 import { LIVE_SESSIONS, Store } from "../src/store/store.ts";
+import { dbFile } from "./temp-dir.ts";
 
 test("rechecking runner ownership does not read unrelated live sessions", async () => {
   const read: { none: number; one: number }[] = [];
   for (const unrelated of [40, 400]) {
-    const store = Store.open(":memory:");
+    const store = Store.open(dbFile("runners-own-"));
     const db = store.db;
     let seen = 0, observing = false;
     db.function("runner_session_seen", (_key) => { if (observing) seen++; return 1; });
@@ -58,7 +59,7 @@ test("rechecking runner ownership does not read unrelated live sessions", async 
 test("a new unrelated session does not make a runner reread all sessions", async () => {
   const reads: number[] = [];
   for (const unrelated of [40, 400]) {
-    const store = Store.open(":memory:"), db = store.db;
+    const store = Store.open(dbFile("runners-new-")), db = store.db;
     let seen = 0, observing = false;
     db.function("runner_session_seen", (_key) => { if (observing) seen++; return 1; });
     const observed = new Proxy(db, { get(target, property) {
@@ -93,7 +94,7 @@ test("a new unrelated session does not make a runner reread all sessions", async
 });
 
 test("runner names use the old live and archived order, including colliding key parts", async () => {
-  const store = Store.open(":memory:");
+  const store = Store.open(dbFile("runners-order-"));
   const db = store.db;
   const builder = new SandboxNameBuilder(store, Promise.resolve(), () => false);
   try {
@@ -151,7 +152,7 @@ test("a memory look answers while the previous station still writes, then uses t
 });
 
 test("a pause between runners does not make their return rebuild historical names", async () => {
-  const store = Store.open(":memory:");
+  const store = Store.open(dbFile("runners-pause-"));
   const builder = new SandboxNameBuilder(store, Promise.resolve(), () => false);
   try {
     const db = store.db;

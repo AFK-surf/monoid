@@ -29,7 +29,7 @@ fn op_waits_quietly(t : Tester) -> Unit raise {
 
 ///|
 test "a run of op: what reads how it ended told at the moment the host's word says it did, at any rate; nothing while it runs" {
-  let run : @signals.Signal[@hostapi.OpRun?] = @signals.signal(None)
+  let run : @signals.Signal[@hostapi.OpRun?] = @signals.signal_ref(None)
   let told : Array[(Int, Double)] = []
   let t = Tester::new(fn(_c) {  })
   fake_op.val = Some(fn(_) { (0, "[]", "") })

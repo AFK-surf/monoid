@@ -76,6 +76,7 @@ export function moveView(plan: Plan, order: string[], stopped: { item: { module:
           ...(x.at !== undefined ? { at: name(x.at) } : {}),
           ...(x.waitsFor?.at !== undefined ? { waitsAt: name(x.waitsFor.at) } : x.waits === "station" && x.from !== undefined ? { waitsAt: name(x.from) } : {}),
           ...(x.cannot !== undefined ? { cannot: x.cannot } : {}),
+          ...(x.leaves !== undefined ? { leaves: x.leaves } : {}),
           ...(x.error ? { error: x.error } : {}),
           ...(x.progress ? { progress: x.progress } : {}),
           // (here, its host, and usable there too: lent for what moved there)

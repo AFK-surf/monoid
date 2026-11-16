@@ -31,6 +31,11 @@ pub(open) trait Host {
   window_opens(Self) -> Bool = _
   window_open(Self, String) -> Bool = _
   window_front(Self, String) -> Bool = _
+  windows_in_process(Self) -> Bool = _
+  window_open_id(Self, String) -> Int = _
+  window_front_id(Self, Int) -> Bool = _
+  window_close_id(Self, Int) -> Unit = _
+  window_current(Self) -> Int = _
   set_cursor(Self, Int) -> Unit = _
   set_badge(Self, Int) -> Unit = _
   menu_setup(Self, String) -> Unit = _
@@ -95,6 +100,7 @@ pub(open) trait Host {
   set_back(Self, FuncRef[(Int, Double, Double, Int) -> Unit]) -> Unit = _
   back_enabled(Self, Bool) -> Unit = _
   reduce_transparency(Self) -> Bool = _
+  increase_contrast(Self) -> Bool = _
   gpu_ms(Self) -> Double = _
   cpu_ms(Self) -> Double = _
   env(Self, String) -> String = _
@@ -248,8 +254,13 @@ pub(open) trait Host {
   cl_picture(Self, Int) -> Int = _
   tm_open(Self, Int, Int) -> Int = _
   tm_write(Self, Int, Bytes) -> Unit = _
-  tm_resize(Self, Int, Int, Int) -> Unit = _
-  tm_lines(Self, Int) -> String = _
+  tm_resize(Self, Int, Int, Int, Int, Int) -> Unit = _
+  tm_frame(Self, Int, Int) -> Bytes = _
+  tm_modes(Self, Int) -> Int = _
+  tm_scroll(Self, Int, Int, Int) -> Unit = _
+  tm_select(Self, Int, Int, Int, Int, Int, Int) -> Int = _
+  tm_text(Self, Int, Int) -> String = _
+  tm_mouse(Self, Int, Int, Int, Int, Int, Int, Int, Int, Int, Int) -> Bytes = _
   tm_close(Self, Int) -> Unit = _
   cl_text(Self, Int) -> String = _
   cl_png(Self, Int) -> Bytes = _
@@ -268,6 +279,9 @@ pub(open) trait Host {
   ncall_state(Self, Int) -> Int = _
   ncall_result(Self, Int) -> String = _
   ncall_end(Self, Int) -> Unit = _
+  // (a method is added last: one put before others moves their places in the table every call goes through, and the C
+  // of each program calling them, all of it, is compiled again)
+  words_spaced(Self) -> Int = _
 }
 
 ///|
@@ -368,6 +382,31 @@ impl Host with window_open(_, _) {
 ///|
 impl Host with window_front(_, _) {
   false
+}
+
+///|
+impl Host with windows_in_process(_) {
+  false
+}
+
+///|
+impl Host with window_open_id(_, _) {
+  0
+}
+
+///|
+impl Host with window_front_id(_, _) {
+  false
+}
+
+///|
+impl Host with window_close_id(_, _) {
+  ()
+}
+
+///|
+impl Host with window_current(_) {
+  0
 }
 
 ///|
@@ -483,6 +522,28 @@ impl Host with shape(_, _, _, _, _, _) {
 ///|
 impl Host with text_key(_, _, _, _, _) {
   0
+}
+
+///|
+/// Found from the host's own shapes (MBUI_AUTOSPACE=off: none wanted; see words_spaced).
+impl Host with words_spaced(self) {
+  if self.env("MBUI_AUTOSPACE") == "off" {
+    return words_spaced_none
+  }
+  // a Han character and a Latin letter shaped together a sixteenth of an em wider than each on its own (Core Text's:
+  // an eighth, on whichever of the two it puts it)
+  let size = 16.0
+  let pair = FixedArray::make(8, 0.0)
+  let han = FixedArray::make(4, 0.0)
+  let latin = FixedArray::make(4, 0.0)
+  if self.shape("\u{56FD}a", size, 400, 0, pair) == 2 &&
+    self.shape("\u{56FD}", size, 400, 0, han) == 1 &&
+    self.shape("a", size, 400, 0, latin) == 1 &&
+    pair[2] + pair[6] - han[2] - latin[2] > size / 16.0 {
+    words_spaced_by_host
+  } else {
+    words_spaced_here
+  }
 }
 
 ///|
@@ -689,6 +750,11 @@ impl Host with back_enabled(_, _) {
 
 ///|
 impl Host with reduce_transparency(_) {
+  false
+}
+
+///|
+impl Host with increase_contrast(_) {
   false
 }
 
@@ -1373,13 +1439,38 @@ impl Host with tm_write(_, _, _) {
 }
 
 ///|
-impl Host with tm_resize(_, _, _, _) {
+impl Host with tm_resize(_, _, _, _, _, _) {
   ()
 }
 
 ///|
-impl Host with tm_lines(_, _) {
+impl Host with tm_frame(_, _, _) {
+  b""
+}
+
+///|
+impl Host with tm_modes(_, _) {
+  0
+}
+
+///|
+impl Host with tm_scroll(_, _, _, _) {
+  ()
+}
+
+///|
+impl Host with tm_select(_, _, _, _, _, _, _) {
+  0
+}
+
+///|
+impl Host with tm_text(_, _, _) {
   ""
+}
+
+///|
+impl Host with tm_mouse(_, _, _, _, _, _, _, _, _, _, _) {
+  b""
 }
 
 ///|
@@ -1511,8 +1602,8 @@ pub fn window_setup(min_w : Double, min_h : Double, w : Double, h : Double, inse
 ///|
 /// The desktop's window kept out of sight as it opens, till the app shows it (window_show), said before `run`: its
 /// frames drawn meanwhile, it comes up with what the app has drawn by then, not its ground before that. Nothing where
-/// the system shows the app's window itself (iOS, Android, a browser's page) or a host keeps it as it was (Windows,
-/// Linux: shown at once).
+/// the system shows the app's window itself (iOS, Android, a browser's page). Each desktop's host keeps its own way
+/// (the Mac's see-through, Windows' cloaked by its compositor, Linux's made and not shown till then).
 pub fn window_hold() -> Unit {
   current.val.window_hold()
 }
@@ -1646,6 +1737,42 @@ pub fn window_open(what : String) -> Bool {
 /// where it was minimized: whether there is one still open (false once it has closed, and where window_opens is not).
 pub fn window_front(what : String) -> Bool {
   current.val.window_front(what)
+}
+
+///|
+/// Whether a window of the app's own opens in this run, beside its first (window_open_id), rather than as another run
+/// of the program (window_open): one app, one process, every window drawn by the same program and the same core. A
+/// host that has not that (a phone's, the web's), or a run that is itself a window of its own (MBUI_WINDOW), says
+/// false, and window_open is still its way.
+pub fn windows_in_process() -> Bool {
+  current.val.windows_in_process()
+}
+
+///|
+/// Another window of this run, for `what`: its id (1 and up, the first window being 0), 0 where none opened. The app
+/// is asked to draw it as it draws its first (@ui's window_slots.mbt: each window its own tree, the same program).
+pub fn window_open_id(what : String) -> Int {
+  current.val.window_open_id(what)
+}
+
+///|
+/// Window `wid` of this run (window_open_id) out of the Dock where it was minimized and to the front: whether it is
+/// still open.
+pub fn window_front_id(wid : Int) -> Bool {
+  current.val.window_front_id(wid)
+}
+
+///|
+/// Window `wid` of this run closed (never the first, 0, nor the run): what it showed let go of as the host tells it
+/// closed (an outside event, @ui's window_slots.mbt).
+pub fn window_close_id(wid : Int) -> Unit {
+  current.val.window_close_id(wid)
+}
+
+///|
+/// The window of this run the host is drawing a frame of or handing input from now (0, the first, between them).
+pub fn window_current() -> Int {
+  current.val.window_current()
 }
 
 ///|
@@ -1840,6 +1967,29 @@ pub fn shape(
 /// join), for `glyph`.
 pub fn text_key(text : String, size : Double, weight : Int, style : Int) -> Int {
   current.val.text_key(text, size, weight, style)
+}
+
+///|
+/// words_spaced: the host's shaper spaces nothing, mbui does (ui's text.mbt `words_spaced_in`).
+pub let words_spaced_here : Int = 0
+
+///|
+/// words_spaced: the host's shaper spaces Chinese and Japanese words itself (Core Text since iOS 26 and macOS 27).
+pub let words_spaced_by_host : Int = 1
+
+///|
+/// words_spaced: nothing spaced, by the host or by mbui (MBUI_AUTOSPACE=off: a picture of words set as a shaper that
+/// spaces none sets them, Android's).
+pub let words_spaced_none : Int = 2
+
+///|
+/// Who spaces Chinese and Japanese words (an eighth of an em between a Han character or kana and a Latin letter or a
+/// digit; a full-width mark set a half em closer before another): one of words_spaced_here, words_spaced_by_host,
+/// words_spaced_none. Asked once a run: a host found to space them by its own shapes, where a Latin letter after a Han
+/// character comes out wider than on its own; MBUI_AUTOSPACE=off for none (and for the Apple hosts =off or =mbui
+/// their shaper's own left out: apple_text.m's make_line).
+pub fn words_spaced() -> Int {
+  current.val.words_spaced()
 }
 
 ///|
@@ -2195,6 +2345,14 @@ pub fn back_enabled(on : Bool) -> Unit {
 /// turned off; Android has no such setting (never).
 pub fn reduce_transparency() -> Bool {
   current.val.reduce_transparency()
+}
+
+///|
+/// Whether the system asks for more contrast (lines and quiet words drawn stronger): macOS's Increase Contrast,
+/// iOS's Increase Contrast (darker system colours), Windows' high contrast on; Android and Linux have no such setting
+/// an app reads (never).
+pub fn increase_contrast() -> Bool {
+  current.val.increase_contrast()
 }
 
 ///|
@@ -3178,13 +3336,49 @@ fn tm_write(id : Int, data : Bytes) -> Unit {
 }
 
 ///|
-fn tm_resize(id : Int, cols : Int, rows : Int) -> Unit {
-  current.val.tm_resize(id, cols, rows)
+fn tm_resize(id : Int, cols : Int, rows : Int, cw : Int, ch : Int) -> Unit {
+  current.val.tm_resize(id, cols, rows, cw, ch)
 }
 
 ///|
-fn tm_lines(id : Int) -> String {
-  current.val.tm_lines(id)
+fn tm_frame(id : Int, flags : Int) -> Bytes {
+  current.val.tm_frame(id, flags)
+}
+
+///|
+fn tm_modes(id : Int) -> Int {
+  current.val.tm_modes(id)
+}
+
+///|
+fn tm_scroll(id : Int, kind : Int, value : Int) -> Unit {
+  current.val.tm_scroll(id, kind, value)
+}
+
+///|
+fn tm_select(id : Int, kind : Int, x0 : Int, y0 : Int, x1 : Int, y1 : Int) -> Int {
+  current.val.tm_select(id, kind, x0, y0, x1, y1)
+}
+
+///|
+fn tm_text(id : Int, sel : Int) -> String {
+  current.val.tm_text(id, sel)
+}
+
+///|
+fn tm_mouse(
+  id : Int,
+  action : Int,
+  button : Int,
+  mods : Int,
+  x : Int,
+  y : Int,
+  w : Int,
+  h : Int,
+  cw : Int,
+  ch : Int,
+) -> Bytes {
+  current.val.tm_mouse(id, action, button, mods, x, y, w, h, cw, ch)
 }
 
 ///|

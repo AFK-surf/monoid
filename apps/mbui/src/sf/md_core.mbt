@@ -2,6 +2,7 @@
 // Markdown. Words are runs of the text the tree was read from; formulas carry only glyph placements; a code block its
 // ink (ink.mbt).
 ///|
+#derive(Eq)
 priv enum MdInline {
   Text(String)
   Code(String)
@@ -18,20 +19,25 @@ priv enum MdInline {
   HardBreak
 }
 ///|
+#derive(Eq)
 priv struct MdItem { task : Bool?; blocks : Array[MdBlock] }
 ///|
+#derive(Eq)
 priv struct MdList { ordered : Bool; start : Int; tight : Bool; items : Array[MdItem] }
 ///|
 /// How a table's column is aligned (GFM's `:--`, `:-:`, `--:`; none said).
 // never drawn: a table's columns are not aligned as said
 #warnings("-unused_constructor")
+#derive(Eq)
 priv enum MdAlign { Plain; Left; Center; Right }
 ///|
 /// `md`, `csv`: the table to copy, as Markdown and as CSV, as the core wrote it (markdown.ts tableMarkdown, tableCsv).
 // align is never drawn: a table's columns are not aligned as said
 #warnings("-unused_field")
+#derive(Eq)
 priv struct MdTable { align : Array[MdAlign]; head : Array[Array[MdInline]]; rows : Array[Array[Array[MdInline]]]; md : String; csv : String }
 ///|
+#derive(Eq)
 priv enum MdBlock {
   Paragraph(Array[MdInline])
   Heading(Int, Array[MdInline])

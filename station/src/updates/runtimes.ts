@@ -1,5 +1,5 @@
-// Claude Code, Codex, DeepSeek Harness, Grok Build and Devin on this machine (Cursor's SDK: updates.ts readCursor): where the station's PATH finds
-// them, how each is updated the way it was installed (`claude update`, Devin's installer, npm, Homebrew, winget, Vite+, Codex's
+// Claude Code, Codex, DeepSeek Harness, Grok Build, Devin and Pi on this machine (Cursor's SDK: updates.ts readCursor): where the station's PATH finds
+// them, how each is updated the way it was installed (`claude update`, `pi update`, Devin's installer, npm, Homebrew, winget, Vite+, Codex's
 // standalone installer) or installed when it is not there, and running those commands.
 import { existsSync, lstatSync, readdirSync, readlinkSync, realpathSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -22,7 +22,7 @@ export const kindName = (k: Kind) => (k === "station" ? "Station" : runtimeLabel
 export const kindCommand = (k: Kind) => (k === "station" ? "stillfail-station" : k);
 /// Where the latest is said: the npm registry's latest of the runtime's package (none for Devin: its manifest says it,
 /// DEVIN_MANIFEST).
-export const kindPackage = (k: Kind) => (k === "claude" ? "@anthropic-ai/claude-code" : k === "codex" ? "@openai/codex" : k === "dsh" ? "@deepseek-ai/dsh" : k === "grok" ? "@xai-official/grok" : k === "cursor" ? "@cursor/sdk" : "");
+export const kindPackage = (k: Kind) => (k === "claude" ? "@anthropic-ai/claude-code" : k === "codex" ? "@openai/codex" : k === "dsh" ? "@deepseek-ai/dsh" : k === "grok" ? "@xai-official/grok" : k === "cursor" ? "@cursor/sdk" : k === "pi" ? "@earendil-works/pi-coding-agent" : "");
 
 /// Where the Devin CLI's installer reads the latest build ({version, platforms}).
 export const DEVIN_MANIFEST = "https://static.devin.ai/cli/current/manifest.json";
@@ -130,6 +130,9 @@ export function howToUpdate(kind: Kind, found: Found, env: Env): How | Unable {
   // the current one: the installer again fetches the latest and switches it (`devin update` wants a terminal: without
   // one it ends at once, nothing done).
   if (kind === "devin") return realPath.includes("/devin/cli/_versions/") ? platform.devinInstall : new Unable("station.updates.devinElsewhere", { path: realPath });
+  // Pi installed by its own installer (pi.dev's, Nix, a wrapper) updates itself the way it was installed (`pi update`
+  // runs its installer's command, PI_SELF_UPDATE_COMMAND); one npm installed, by npm, below.
+  if (kind === "pi" && !realPath.includes("/lib/node_modules/")) return { program: found.onPath, args: ["update"] };
   // A package manager's of this machine's kind (Windows: winget's, Vite+'s shim beside vp.exe, npm's .cmd in its prefix).
   const shim = platform.shimUpdate(found, kindPackage(kind), env);
   if (shim === "no-npm") return new Unable("station.updates.noNpm", { name });
@@ -159,8 +162,8 @@ export function howToUpdate(kind: Kind, found: Found, env: Env): How | Unable {
   };
   const using = (program: string | Unable, args: string[]): How | Unable => (program instanceof Unable ? program : { program, args });
   const pkg = `${kindPackage(kind)}@latest`;
-  // Homebrew has Claude Code and Codex (DeepSeek Harness and Grok Build are npm's only here).
-  const npmOnly = kind === "dsh" || kind === "grok";
+  // Homebrew has Claude Code and Codex (DeepSeek Harness, Grok Build and Pi are npm's only here).
+  const npmOnly = kind === "dsh" || kind === "grok" || kind === "pi";
   if (!npmOnly && realPath.includes("/Caskroom/")) return using(brew(), ["upgrade", "--cask", kind === "claude" ? "claude-code" : "codex"]);
   if (!npmOnly && realPath.includes("/Cellar/")) return using(brew(), ["upgrade", kind === "claude" ? "claude-code" : "codex"]);
   if (realPath.includes("/node_modules/")) {
@@ -202,7 +205,7 @@ CODEX_HOME="$1" CODEX_INSTALL_DIR="$2" CODEX_NON_INTERACTIVE=1 sh -c "$installer
 
 /// How a runtime the machine has not is installed, or why it cannot be from here: Claude Code by its own installer
 /// (into ~/.local/bin, on the station's PATH as install.ts sets it), Codex by npm, else its own installer (into
-/// ~/.local/bin too; where that is not run, `node`'s npm), DeepSeek Harness and Grok Build by npm (where the machine has
+/// ~/.local/bin too; where that is not run, `node`'s npm), DeepSeek Harness, Grok Build and Pi by npm (where the machine has
 /// none, `node`'s: installed first), Devin and the Antigravity CLI by their own installers (into ~/.local/bin too).
 export function howToInstall(kind: Kind, env: Env, node: OwnNode | null = null): How | Unable {
   if (kind === "station") return new Unable("");
@@ -210,8 +213,10 @@ export function howToInstall(kind: Kind, env: Env, node: OwnNode | null = null):
   if (kind === "claude") return platform.claudeInstall;
   if (kind === "agy") return platform.agyInstall;
   if (kind === "devin") return platform.devinInstall;
-  // DeepSeek Harness is an npm package (it runs on the Node npm is of: 22.19 or newer).
+  // DeepSeek Harness is an npm package (it runs on the Node npm is of: 22.19 or newer), Pi too (22.19 too; it needs none
+  // of its dependencies' install scripts, which it says to leave out).
   if (kind === "dsh" || kind === "grok") return npmInstall(env, node, ["install", "-g", `${kindPackage(kind)}@latest`], kindName(kind));
+  if (kind === "pi") return npmInstall(env, node, ["install", "-g", "--ignore-scripts", `${kindPackage(kind)}@latest`], kindName(kind));
   const args = ["install", "-g", "@openai/codex@latest"];
   const npm = findCommand("npm", env);
   if (npm) return { program: npm.onPath, args };

@@ -35,7 +35,7 @@ export interface OperationParams {
   "chat.regenerateTitle": { thread: number };
   "chat.pin": { pinned?: boolean | null | undefined; session: string };
   "chat.relayPlaces": { thread: number };
-  "chat.relay": { thread: number; connect?: string | null | undefined; channel?: string | null | undefined; link?: string | null | undefined; note?: string | null | undefined };
+  "chat.relay": { thread: number; connect?: string | null | undefined; channel?: string | null | undefined; link?: string | null | undefined; note?: string | null | undefined; join?: boolean | null | undefined };
   "chat.relayPeople": { thread: number; connect?: string | null | undefined; channel?: string | null | undefined; link?: string | null | undefined };
   "decision.dismiss": { thread: number; seq: number };
   "decision.close": { thread: number; seq: number; option: string };
@@ -74,6 +74,7 @@ export interface OperationParams {
   "feishu.createConnect": { feishu: unknown; bind?: unknown; mode?: string | null | undefined; requireMention?: boolean | null | undefined; owner?: unknown };
   "feishu.putSecret": { id: string; appSecret: string };
   "comma.createConnect": { line: string; bind?: unknown };
+  "group.createConnect": { group: unknown; bind?: unknown; mode?: string | null | undefined; requireMention?: boolean | null | undefined; owner?: unknown };
   "slack.verify": { connect?: string | null | undefined; install?: string | null | undefined; appToken?: string | null | undefined; botToken?: string | null | undefined };
   "slack.makeApp": { team?: string | null | undefined; settings?: unknown; icon?: string | null | undefined };
   "slack.dropApp": { appId: string };
@@ -269,6 +270,7 @@ export function bindStationOperations(call: Call) {
     feishuCreateConnect: <T = unknown>(params: OperationParams["feishu.createConnect"]) => call("feishu.createConnect", params) as Promise<T>,
     feishuPutSecret: <T = unknown>(params: OperationParams["feishu.putSecret"]) => call("feishu.putSecret", params) as Promise<T>,
     commaCreateConnect: <T = unknown>(params: OperationParams["comma.createConnect"]) => call("comma.createConnect", params) as Promise<T>,
+    groupCreateConnect: <T = unknown>(params: OperationParams["group.createConnect"]) => call("group.createConnect", params) as Promise<T>,
     slackVerify: <T = unknown>(params: OperationParams["slack.verify"] = {}) => call("slack.verify", params) as Promise<T>,
     slackMakeApp: <T = unknown>(params: OperationParams["slack.makeApp"] = {}) => call("slack.makeApp", params) as Promise<T>,
     slackDropApp: <T = unknown>(params: OperationParams["slack.dropApp"]) => call("slack.dropApp", params) as Promise<T>,

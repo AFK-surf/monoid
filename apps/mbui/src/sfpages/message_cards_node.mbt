@@ -66,16 +66,27 @@ fn mine_to_node(here : MessageNodeHere, assignee : String) -> Bool {
 /// A request read again in a panel (card_history's, as nodes; a sheet on a small screen) opened from `from`: `body` in
 /// the panel's words' room.
 fn card_history_node(from : @view.View, body : (@view.View) -> Unit) -> Unit {
+  card_history_from(Node(from), body)
+}
+
+///|
+/// What was asked read again in a panel of nodes opened from `from` (a sheet on a small screen): `body` in the panel's
+/// words' room (`padded`), or across it as a card the panel holds lays itself out (an options card: not padded).
+fn card_history_from(from : @sf.Anchor, padded? : Bool = true, body : (@view.View) -> Unit) -> Unit {
   @sf.panel_nodes(
     @sf.t("web-main.history.details"),
     fn(p, _) {
-      p.box(fn(b) {
-        @sf.style_node(b, fn() { @sf.panel_words_in_node(b) })
-        body(b)
-      })
-      |> ignore
+      if padded {
+        p.box(fn(b) {
+          @sf.style_node(b, fn() { @sf.panel_words_in_node(b) })
+          body(b)
+        })
+        |> ignore
+      } else {
+        body(p)
+      }
     },
-    from=Node(from),
+    from~,
   )
 }
 
@@ -148,7 +159,7 @@ fn rig_ask_node(v : @view.View, here : MessageNodeHere, core : @settings.Core?, 
               None
             },
           }
-        })
+        }, same=fn(a, b) { a == b })
         @settings.rig_card_node(r, core, here.station, fn() { card.get() }, lock=fn() {
           open_page(Setting(@settings.Route::AdbShare("")))
         })
@@ -215,7 +226,7 @@ fn phone_ask_node(v : @view.View, here : MessageNodeHere, core : @settings.Core?
             who: who(),
             ended: if a.status != "" { Some((a.status, a.scope, a.why)) } else { None },
           }
-        })
+        }, same=fn(a, b) { a == b })
         @settings.phone_card_node(r, core, here.station, fn() { card.get() }, how=fn() {
           open_page(Setting(@settings.Route::AdbShare("")))
         })
@@ -283,6 +294,7 @@ let vault_ask_none : VaultAsk = {
   username: "",
   filename: "",
   typed: false,
+  oauth: "",
   describe: false,
   new_name: "",
   new_about: "",
@@ -312,6 +324,7 @@ fn vault_asked_of(ask : VaultAsk) -> @settings.Asked {
     username: ask.username,
     filename: ask.filename,
     typed: ask.typed,
+    oauth: ask.oauth,
     station: ask.station,
     describe: ask.describe,
     new_name: ask.new_name,
@@ -328,13 +341,19 @@ fn vault_asked_of(ask : VaultAsk) -> @settings.Asked {
 /// core), the card without its answer; decided, a line saying how it ended in the card's place, pressed for what was
 /// asked. Not here: one asking for a file to be picked (message_card_node's NotYet).
 fn vault_ask_node(v : @view.View, here : MessageNodeHere, core : @settings.Core?, m : () -> Message) -> Unit {
-  let ask = fn() {
-    match m().card {
-      Some({ ask: Some(a), .. }) => a
-      _ => vault_ask_none
-    }
-  }
-  let asked = fn() { vault_asked_of(ask()) }
+  // (what it asks, and that as its card says it, worked out once as the message changes: what the card makes of it
+  // reads them over and over, each reading a field)
+  let asking = @signals.computed(
+    fn(_) {
+      match m().card {
+        Some({ ask: Some(a), .. }) => a
+        _ => vault_ask_none
+      }
+    },
+  )
+  let ask = fn() { asking.get() }
+  let asked_now = @signals.computed(fn(_) { vault_asked_of(ask()) })
+  let asked = fn() { asked_now.get() }
   let card = fn() { m().card }
   v.pick(fn() { ask().status != "" }, fn(p, decided) {
     @sf.style_node(p, fn() { under_post_room })

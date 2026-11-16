@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <glib/gstdio.h>
 #include <gtk/gtk.h>
 #include "moonbit.h"
 // (mbui's mini_json.h by names of this file's own: the core's file, in the same unit before it, has a jget and a jnum
@@ -155,6 +156,10 @@ static moonbit_string_t sf_station_said(void) {
   char *app = g_build_filename(data, "app", NULL);
   if (g_file_test(app, G_FILE_TEST_IS_DIR)) g_string_append(o, ",\"installed\":true");
   g_free(app);
+  // taken away here (stillfail uninstall, or 卸载本机 Station), its data kept: never brought back unasked
+  char *gone = g_build_filename(data, "uninstalled", NULL);
+  if (g_file_test(gone, G_FILE_TEST_EXISTS)) g_string_append(o, ",\"uninstalled\":true");
+  g_free(gone);
   if (service) g_string_append_printf(o, ",\"service\":{\"kind\":\"systemd\",\"name\":\"%s\"}", station_unit());
   jv cloud = local_json(data, "mesh/cloud.json");
   const char *ws = jtext(&cloud, "workspace");
@@ -278,6 +283,24 @@ static void local_fail(const char *why) {
   station_changed();
 }
 
+// 卸载本机 Station, in sh: $1 the data, $2 the unit, $3 its file, $4 the command's link, $5 the product (its WSL
+// keeper's name), as bin/stillfail's uninstall does it there; done with no data there too (a unit left of a station
+// removed by hand), nothing then said taken away
+static const char *local_uninstall_sh =
+    "if [ -f \"$3\" ]; then systemctl --user disable --now \"$2\" 2>/dev/null || true; rm -f \"$3\"; "
+    "systemctl --user daemon-reload 2>/dev/null || true; fi\n"
+    "if [ -n \"${WSL_DISTRO_NAME:-}\" ] && command -v wslpath >/dev/null 2>&1 && command -v cmd.exe >/dev/null 2>&1; then\n"
+    "  appdata=$(cd / && cmd.exe /c \"echo %APPDATA%\" 2>/dev/null | tr -d '\\r')\n"
+    "  case \"$appdata\" in ?:\\\\*) rm -f \"$(wslpath -u \"$appdata\")/Microsoft/Windows/Start Menu/Programs/Startup/$5-station-$WSL_DISTRO_NAME.vbs\" ;; esac\n"
+    "fi\n"
+    "for pid in $(cat \"$1/stillfail.pid\" 2>/dev/null || :; sed -n 's/.*\"pid\":[ ]*\\([0-9][0-9]*\\).*/\\1/p' \"$1/run/station.json\" 2>/dev/null); do\n"
+    "  [ \"$pid\" -gt 1 ] 2>/dev/null && ps -o args= -p \"$pid\" 2>/dev/null | grep -qF -- \"$1\" && kill \"$pid\" 2>/dev/null || continue\n"
+    "  for _ in 1 2 3 4 5; do kill -0 \"$pid\" 2>/dev/null || break; sleep 1; done\n"
+    "done\n"
+    "if [ -L \"$4\" ]; then case \"$(readlink \"$4\")\" in \"$1/app/\"*) rm -f \"$4\" ;; esac; fi\n"
+    "rm -rf \"$1/app\" \"$1/app.old\" \"$1/app.failed\" \"$1/node\" \"$1/helper\" \"$1/run\" \"$1/stillfail.pid\" || exit 1\n"
+    "[ ! -d \"$1\" ] || : > \"$1/uninstalled\"\n";
+
 static void sf_station_act(moonbit_string_t action) {
   char *a = station_utf8(action), *data = local_data();
   // `install {…}`, `update {…}`: the station's installer, install.sh of the cloud (`origin`), a token or none (with it
@@ -305,11 +328,31 @@ static void sf_station_act(moonbit_string_t action) {
     g_object_unref(l);
     g_object_unref(f);
     g_free(path);
+  } else if (!strcmp(a, "uninstall")) {
+    // its service, what runs of it, its command's link and its release taken away, its data kept (bin/stillfail's
+    // uninstall, the same): by sh with the paths as its arguments, never in its words; done with no release there too
+    char *unit = g_build_filename(g_get_user_config_dir(), "systemd", "user", station_unit(), NULL);
+    char *link = g_build_filename(g_get_home_dir(), ".local", "bin", station_id(), NULL);
+    char **argv = g_new0(char *, 10);
+    argv[0] = g_strdup("sh"), argv[1] = g_strdup("-c"), argv[2] = g_strdup(local_uninstall_sh), argv[3] = g_strdup("sh");
+    argv[4] = g_strdup(data), argv[5] = g_strdup(station_unit()), argv[6] = unit, argv[7] = link;
+    argv[8] = g_strdup(station_id());
+    local_begin(a, argv, NULL);
   } else if (!strcmp(a, "start") || !strcmp(a, "stop") || !strcmp(a, "restart")) {
     if (local_service()) {
-      char **argv = g_new0(char *, 5);
-      argv[0] = g_strdup("systemctl"), argv[1] = g_strdup("--user"), argv[2] = g_strdup(a);
-      argv[3] = g_strdup(station_unit());
+      // for good: stopped, it is disabled (no start at the next login); started, enabled again and no longer said
+      // taken away
+      if (strcmp(a, "stop")) {
+        char *gone = g_build_filename(data, "uninstalled", NULL);
+        g_unlink(gone);
+        g_free(gone);
+      }
+      char **argv = g_new0(char *, 7);
+      argv[0] = g_strdup("sh"), argv[1] = g_strdup("-c");
+      argv[2] = g_strdup(!strcmp(a, "stop") ? "systemctl --user disable --now \"$1\""
+                         : !strcmp(a, "start") ? "systemctl --user enable --now \"$1\""
+                                               : "systemctl --user enable \"$1\" && systemctl --user restart \"$1\"");
+      argv[3] = g_strdup("sh"), argv[4] = g_strdup(station_unit());
       local_begin(a, argv, NULL);
     } else {
       jv run = local_json(data, "run/station.json");

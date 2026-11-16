@@ -10,6 +10,10 @@ import { CommaStats } from "../src/comma/stats.ts";
 import { CommaTasks } from "../src/comma/tasks.ts";
 import { Rig } from "./hub-fakes.ts";
 
+/// How long the statistics' database waits for a write held here before refusing (stats.ts `BUSY_MS`): what is tried
+/// again while a test holds its lock, without 5 s of the test's time a try.
+const LOCKED_MS = 20;
+
 type Json = any;
 const until = async (f: () => boolean) => {
   for (let i = 0; i < 1000 && !f(); i++) await new Promise((resolve) => setTimeout(resolve, 10));
@@ -74,7 +78,7 @@ test("a workspace change while an index guard is locked stops its retry before s
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const rig = new Rig();
   const path = join(rig.dir, "index.db");
-  const stats = new CommaStats(path, async () => ({ stations: [], unread: [] }), () => () => {});
+  const stats = new CommaStats(path, async () => ({ stations: [], unread: [] }), () => () => {}, undefined, LOCKED_MS);
   const blocker = new DatabaseSync(path);
   blocker.exec("BEGIN IMMEDIATE");
   let attempts = 0, allowed = true;

@@ -6,6 +6,7 @@
 //! TypeScript's. And the image codecs of the thumbnails (thumbs.rs).
 
 mod keep;
+mod log;
 mod thumbs;
 mod local;
 mod usage;
@@ -90,7 +91,10 @@ pub struct Endpoint {
     inner: IrohEndpoint,
     keepers: Arc<StdMutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
     /// The relays it was bound with: home on each, no keeper wanted there.
-    homes: Vec<RelayUrl>,
+    bound: Vec<RelayUrl>,
+    /// Those of them it is home on now: one removed is home no more (a keeper is wanted there once it is kept on it
+    /// again, unless it is inserted again first, home again).
+    homes: StdMutex<Vec<RelayUrl>>,
     /// Connections coming that are held unanswered, not even their handshake (`hold_incoming`), and those held.
     held: Arc<StdMutex<(u32, Vec<iroh::endpoint::Incoming>)>>,
     /// The connections whose handshakes are done, as each finishes (`accept`), once one was first asked for.
@@ -136,7 +140,7 @@ impl<B: AddressLookupBuilder> AddressLookupBuilder for Optional<B> {
         Ok(Unmade(match self.1.into_address_lookup(endpoint) {
             Ok(lookup) => Some(lookup),
             Err(error) => {
-                eprintln!("mesh: stations not found through {}: {error:#}", self.0);
+                crate::log::info(&format!("mesh: stations not found through {}: {error:#}", self.0));
                 None
             }
         }))
@@ -157,6 +161,11 @@ impl<L: AddressLookup> AddressLookup for Unmade<L> {
 
 #[napi]
 pub async fn bind(options: Options) -> napi::Result<Endpoint> {
+    bind_with(options, false).await
+}
+
+/// `insecure`: relays whose certificates are not checked (the tests' own, self-signed, on this machine).
+async fn bind_with(options: Options, #[allow(unused_variables)] insecure: bool) -> napi::Result<Endpoint> {
     let bytes: [u8; 32] = options.secret_key.as_ref().try_into().map_err(|_| failed("the key is not 32 bytes"))?;
     let key = SecretKey::from_bytes(&bytes);
     let relays: Vec<RelayUrl> = options.relay_urls.iter().map(|u| relay_url(u)).collect::<Result<_, _>>()?;
@@ -177,6 +186,10 @@ pub async fn bind(options: Options) -> napi::Result<Endpoint> {
     if options.relay_only.unwrap_or(false) {
         builder = builder.clear_ip_transports();
     }
+    #[cfg(test)]
+    if insecure {
+        builder = builder.ca_tls_config(iroh::tls::CaTlsConfig::insecure_skip_verify());
+    }
     if options.lookup.unwrap_or(false) && !relays.is_empty() {
         builder = builder
             .address_lookup(Optional("mDNS", iroh_mdns_address_lookup::MdnsAddressLookup::builder().service_name(MDNS_SERVICE).advertise(false)))
@@ -186,7 +199,7 @@ pub async fn bind(options: Options) -> napi::Result<Endpoint> {
             .address_lookup(Optional("mDNS", iroh_mdns_address_lookup::MdnsAddressLookup::builder().service_name(MDNS_SERVICE)))
             .address_lookup(Optional("the DHT", iroh_mainline_address_lookup::DhtAddressLookup::builder().dht_builder(dht()).secret_key(key)));
     }
-    Ok(Endpoint { inner: builder.bind().await.map_err(failed)?, keepers: Arc::default(), homes: relays, held: Arc::default(), accepted: Arc::default() })
+    Ok(Endpoint { inner: builder.bind().await.map_err(failed)?, keepers: Arc::default(), homes: StdMutex::new(relays.clone()), bound: relays, held: Arc::default(), accepted: Arc::default() })
 }
 
 #[napi(object)]
@@ -196,6 +209,13 @@ pub struct Addr {
     pub relays: Option<Vec<String>>,
     /// `ip:port`, each.
     pub ips: Option<Vec<String>>,
+    /// Relays it is not to be reached through, though Address Lookup names them (its workspaces turned them off).
+    pub disabled_relays: Option<Vec<String>>,
+}
+
+/// The relays `addr` says the endpoint is not to be reached through, where it says them.
+fn disabled_relays(addr: &Addr) -> napi::Result<Option<Vec<RelayUrl>>> {
+    addr.disabled_relays.as_ref().map(|urls| urls.iter().map(|u| relay_url(u)).collect()).transpose()
 }
 
 fn endpoint_addr(addr: &Addr) -> napi::Result<EndpointAddr> {
@@ -240,13 +260,21 @@ impl Endpoint {
     #[napi]
     pub async fn insert_relay(&self, url: String) -> napi::Result<()> {
         let url = relay_url(&url)?;
-        self.inner.insert_relay(url.clone(), Arc::new(iroh::RelayConfig::from(url))).await;
+        self.inner.insert_relay(url.clone(), Arc::new(iroh::RelayConfig::from(url.clone()))).await;
+        // (one it was bound with is home again: iroh's relay transport bound for it takes it back)
+        let mut homes = self.homes.lock().unwrap();
+        if self.bound.contains(&url) && !homes.contains(&url) {
+            homes.push(url);
+        }
         Ok(())
     }
 
+    /// Off every relay transport: its connection there ended, no longer home there nor in its address.
     #[napi]
     pub async fn remove_relay(&self, url: String) -> napi::Result<()> {
-        self.inner.remove_relay(&relay_url(&url)?).await;
+        let url = relay_url(&url)?;
+        self.inner.remove_relay(&url).await;
+        self.homes.lock().unwrap().retain(|r| r != &url);
         Ok(())
     }
 
@@ -255,6 +283,21 @@ impl Endpoint {
     #[napi]
     pub fn set_congestion(&self, congestion: String) -> napi::Result<()> {
         self.inner.set_transport_config(transport(&congestion)?);
+        Ok(())
+    }
+
+    /// The relays the endpoint `id` is not to be reached through (`relays`), and whether iroh's own public relays are
+    /// among them (`public`): in force once this resolves (iroh's `set_disabled_relays`), on what a connection to it
+    /// has already as on what a dial after takes. None: any relay.
+    #[napi]
+    pub async fn disabled_relays(&self, id: String, relays: Vec<String>, public: Option<bool>) -> napi::Result<()> {
+        let bytes: [u8; 32] = hex::decode(&id).map_err(failed)?.try_into().map_err(|_| failed("the id is not 32 bytes"))?;
+        let peer = EndpointId::from_bytes(&bytes).map_err(failed)?;
+        let mut disabled: std::collections::BTreeSet<RelayUrl> = relays.iter().map(|u| relay_url(u)).collect::<Result<_, _>>()?;
+        if public.unwrap_or(false) {
+            disabled.extend(iroh::defaults::prod::default_relay_map().relays::<Vec<_>>().iter().map(|c| c.url.clone()));
+        }
+        self.inner.set_disabled_relays(peer, disabled).await;
         Ok(())
     }
 
@@ -276,7 +319,8 @@ impl Endpoint {
     #[napi]
     pub fn keep(&self, urls: Vec<String>) -> napi::Result<()> {
         let mut relays: Vec<RelayUrl> = urls.iter().map(|u| relay_url(u)).collect::<Result<_, _>>()?;
-        relays.retain(|r| !self.homes.contains(r));
+        let homes = self.homes.lock().unwrap().clone();
+        relays.retain(|r| !homes.contains(r));
         let urls: Vec<String> = relays.iter().map(ToString::to_string).collect();
         let mut keepers = self.keepers.lock().unwrap();
         keepers.retain(|url, task| {
@@ -333,7 +377,7 @@ impl Endpoint {
                             Ok(conn) => {
                                 let _ = tx.send(conn);
                             }
-                            Err(error) => eprintln!("mesh: a connection's handshake failed from {from:?} after {} ms: {error:#}", started.elapsed().as_millis()),
+                            Err(error) => crate::log::info(&format!("mesh: a connection's handshake failed from {from:?} after {} ms: {error:#}", started.elapsed().as_millis())),
                         }
                     });
                 }
@@ -348,7 +392,10 @@ impl Endpoint {
     /// own deadline passed), and the handshake is given up then (`dial`).
     #[napi]
     pub async fn connect(&self, addr: Addr, alpn: Buffer, additional: Option<Vec<Buffer>>, given_up: Option<Promise<()>>) -> napi::Result<Connection> {
-        let options = iroh::endpoint::ConnectOptions::new().with_additional_alpns(additional.unwrap_or_default().iter().map(|a| a.to_vec()).collect());
+        let mut options = iroh::endpoint::ConnectOptions::new().with_additional_alpns(additional.unwrap_or_default().iter().map(|a| a.to_vec()).collect());
+        if let Some(disabled) = disabled_relays(&addr)? {
+            options = options.with_disabled_relays(disabled);
+        }
         let given_up = async move {
             match given_up {
                 Some(promise) => drop(promise.await),
@@ -385,10 +432,10 @@ impl Endpoint {
         self.inner.network_change().await;
     }
 
-    /// Its home relays, and whether it is connected to each now.
+    /// Its home relays, and whether it is connected to each now (and held inactive there for another endpoint of its id).
     #[napi]
     pub fn relay_status(&self) -> Vec<RelayState> {
-        self.inner.home_relay_status().get().iter().map(|s| RelayState { url: s.url().to_string(), connected: s.is_connected(), access: s.access_url().to_string() }).collect()
+        self.inner.home_relay_status().get().iter().map(|s| RelayState { url: s.url().to_string(), connected: s.is_connected(), access: s.access_url().to_string(), conflict: s.same_endpoint_id_connected() }).collect()
     }
 
     #[napi]
@@ -430,6 +477,9 @@ pub struct RelayState {
     pub url: String,
     pub connected: bool,
     pub access: String,
+    /// The relay holds this endpoint's connection inactive: another endpoint with its secret key connected after it
+    /// (a second station on the same key: another machine with a copy of its data, a front left from before).
+    pub conflict: bool,
 }
 
 /// One way a connection can go: through a relay (its URL) or direct; the one chosen now, its round trip, and the
@@ -733,6 +783,7 @@ impl Stream {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use n0_future::StreamExt;
 
     /// A way of finding stations that cannot be made, as mDNS is with UDP 5353 unavailable.
     #[derive(Debug)]
@@ -796,4 +847,165 @@ mod tests {
         assert!(endpoint.is_ok(), "{:?}", endpoint.err());
         endpoint.unwrap().close().await;
     }
+
+    /// Two relays on this machine (`r` standing for one of still.fail's, `own` for the workspace's), each with what it
+    /// was sent counted, a station on both and a peer on both answering each stream with what it read.
+    struct TwoRelays {
+        r: RelayUrl,
+        own: RelayUrl,
+        r_server: iroh_relay::server::Server,
+        own_server: iroh_relay::server::Server,
+        station: Endpoint,
+        peer: IrohEndpoint,
+    }
+
+    const TEST_ALPN: &[u8] = b"stillfail/test/1";
+
+    impl TwoRelays {
+        async fn new() -> TwoRelays {
+            let (_, r, r_server) = iroh::test_utils::run_relay_server_with(false).await.unwrap();
+            let (_, own, own_server) = iroh::test_utils::run_relay_server_with(false).await.unwrap();
+            let options = Options {
+                secret_key: vec![11u8; 32].into(),
+                alpns: vec![TEST_ALPN.to_vec().into()],
+                relay_urls: vec![r.to_string(), own.to_string()],
+                relay_entries: None,
+                discovery: Some(false),
+                bind_addr: Some("127.0.0.1:0".into()),
+                lookup: None,
+                relay_only: None,
+                congestion: None,
+            };
+            let station = bind_with(options, true).await.unwrap();
+            let peer = IrohEndpoint::builder(Minimal)
+                .secret_key(SecretKey::from_bytes(&[12; 32]))
+                .alpns(vec![TEST_ALPN.to_vec()])
+                .relay_mode(RelayMode::Custom(iroh::RelayMap::from_iter([r.clone(), own.clone()])))
+                .home_on_every_relay()
+                .ca_tls_config(iroh::tls::CaTlsConfig::insecure_skip_verify())
+                .bind_addr(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
+                .unwrap()
+                .bind()
+                .await
+                .unwrap();
+            tokio::spawn({
+                let peer = peer.clone();
+                async move {
+                    while let Some(incoming) = peer.accept().await {
+                        tokio::spawn(async move {
+                            let Ok(conn) = incoming.await else { return };
+                            while let Ok((mut send, mut recv)) = conn.accept_bi().await {
+                                let got = recv.read_to_end(1 << 16).await.unwrap_or_default();
+                                let _ = send.write_all(&got).await;
+                                let _ = send.finish();
+                            }
+                        });
+                    }
+                }
+            });
+            let here = station.inner.clone();
+            tokio::time::timeout(Duration::from_secs(20), async { tokio::join!(here.online(), peer.online()) }).await.expect("both on their relays in time");
+            TwoRelays { r, own, r_server, own_server, station, peer }
+        }
+
+        /// What a relay was sent by its clients to pass on (datagrams), so far.
+        fn sent(server: &iroh_relay::server::Server) -> u64 {
+            server.metrics().server.send_packets_recv.get()
+        }
+
+        /// The peer as the station dials it: by `relays`, and by its address on this machine.
+        fn addr(&self, relays: &[&RelayUrl]) -> Addr {
+            let port = self.peer.bound_sockets().iter().find(|s| s.is_ipv4()).unwrap().port();
+            Addr { disabled_relays: None, id: hex::encode(self.peer.id().as_bytes()), relays: Some(relays.iter().map(|r| r.to_string()).collect()), ips: Some(vec![format!("127.0.0.1:{port}")]) }
+        }
+
+        async fn dial(&self, relays: &[&RelayUrl]) -> Connection {
+            tokio::time::timeout(Duration::from_secs(20), self.station.connect(self.addr(relays), TEST_ALPN.to_vec().into(), None, None)).await.expect("dialed in time").unwrap()
+        }
+    }
+
+    /// Until `conn` has a path through `relay` (each change of its paths looked at as it comes; given up after 30 s).
+    async fn path_through(conn: &Connection, relay: &RelayUrl) {
+        let through = |conn: &Connection| conn.inner.paths().iter().any(|p| matches!(p.remote_addr(), iroh::TransportAddr::Relay(u) if u == relay));
+        let mut changes = conn.inner.paths_stream();
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while !through(conn) {
+                if changes.next().await.is_none() {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("a path through the relay in time");
+        assert!(through(conn), "the connection ended with no path through {relay}");
+    }
+
+    /// Until `server` was sent `more` datagrams past `from`: the time it takes paths to be kept alive through it some
+    /// rounds, counted, not slept (given up after 60 s).
+    async fn sent_past(server: &iroh_relay::server::Server, from: u64, more: u64) {
+        tokio::time::timeout(Duration::from_secs(60), async {
+            while TwoRelays::sent(server) < from + more {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("the relay passed datagrams on in time");
+    }
+
+    /// A stream both ways on `conn`: what went came back.
+    async fn echoes(conn: &Connection) {
+        let (mut send, mut recv) = conn.inner.open_bi().await.unwrap();
+        send.write_all(b"still there").await.unwrap();
+        send.finish().unwrap();
+        assert_eq!(recv.read_to_end(64).await.unwrap(), b"still there");
+    }
+
+    /// What the station handed to relay `relay` for the peer so far (iroh's count where datagrams go to the relay
+    /// transports: the station's own, to that peer alone).
+    fn handed(t: &TwoRelays, relay: &RelayUrl) -> u64 {
+        t.station.inner.relay_datagrams(relay, &t.peer.id()).sent
+    }
+
+    /// A connection kept (the direct path chosen, a backup path through each relay) while `r` is turned off for its peer
+    /// (`disabled_relays`, as a workspace turning it off has the station hold it, no dial): once that resolves the path
+    /// through `r` is given up, nothing more is handed to `r` for the peer, and `r` passes nothing on in a window after
+    /// one that lets what was on its way pass, the connection going on over its direct path. Before the endpoint held
+    /// what a connection had (#6692 on zzj3720/iroh#17), `r` passed on 14, then 4 in such windows. Real relays and
+    /// their time: the side run's.
+    #[tokio::test]
+    #[ignore = "side: real relays on this machine, and their time"]
+    async fn a_connection_kept_while_its_peer_is_narrowed_drops_the_backup_through_the_relay_turned_off() {
+        let t = TwoRelays::new().await;
+        let peer = hex::encode(t.peer.id().as_bytes());
+        let conn = t.dial(&[&t.r, &t.own]).await;
+        path_through(&conn, &t.r).await;
+        path_through(&conn, &t.own).await;
+        echoes(&conn).await;
+        let chosen_direct = |c: &Connection| c.inner.paths().iter().any(|p| p.is_ip() && p.is_selected());
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while !chosen_direct(&conn) {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("the direct path chosen in time");
+        assert!(conn.inner.paths().iter().any(|p| !p.is_selected() && matches!(p.remote_addr(), iroh::TransportAddr::Relay(u) if u == &t.r)), "a backup path through r");
+        t.station.disabled_relays(peer, vec![t.r.to_string()], Some(false)).await.unwrap();
+        let (r_before, handed_before) = (TwoRelays::sent(&t.r_server), handed(&t, &t.r));
+        assert!(!conn.inner.paths().iter().any(|p| matches!(p.remote_addr(), iroh::TransportAddr::Relay(u) if u == &t.r)), "the path through r given up as it took hold");
+        let own_from = TwoRelays::sent(&t.own_server);
+        sent_past(&t.own_server, own_from, 4).await;
+        let r_settled = TwoRelays::sent(&t.r_server);
+        sent_past(&t.own_server, own_from, 12).await;
+        let (r_after, handed_after) = (TwoRelays::sent(&t.r_server), handed(&t, &t.r));
+        echoes(&conn).await;
+        eprintln!("after r was turned off for the kept connection's peer: handed to r for it {}, r sent {} then {} (own sent {})", handed_after - handed_before, r_settled - r_before, r_after - r_settled, TwoRelays::sent(&t.own_server) - own_from);
+        assert_eq!(handed_after, handed_before, "the station handed r datagrams for the peer after it was turned off for it");
+        assert_eq!(r_after, r_settled, "r passed datagrams on in the second window");
+        assert!(conn.inner.paths().iter().any(|p| p.is_ip()), "the direct path kept");
+        assert!(conn.inner.close_reason().is_none(), "the connection goes on");
+        t.station.close().await;
+        t.peer.close().await;
+    }
+
 }

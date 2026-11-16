@@ -1160,6 +1160,8 @@ moonbit_string_t mb_host_env(moonbit_string_t name) {
 // Android has no setting asking for less transparency (MBUI_GLASS=solid stands in for it); the GPU's time is not
 // measured here.
 int32_t mb_host_reduce_transparency(void) { return 0; }
+// Android has no setting asking an app for more contrast (high contrast text is the system's own, not told apps).
+int32_t mb_host_increase_contrast(void) { return 0; }
 
 // The performance record (@hostapi.perf_state): none kept here (iOS keeps one, ios_app.m).
 int32_t mb_host_perf_state(void) { return -1; }
@@ -1903,6 +1905,12 @@ int32_t mb_host_window_snap_state(void) { return 0; }
 int32_t mb_host_window_opens(void) { return 0; }
 int32_t mb_host_window_open(moonbit_string_t what) { (void)what; return 0; }
 int32_t mb_host_window_front(moonbit_string_t what) { (void)what; return 0; }
+// The windows of this run (@hostapi.windows_in_process and the rest: host_native.mbt's `windows`): none but its own
+// here.
+int32_t mb_host_windows(int32_t op, int32_t wid, moonbit_string_t what) {
+  (void)op, (void)wid, (void)what;
+  return 0;
+}
 void mb_host_set_cursor(int32_t kind) { (void)kind; }
 void mb_host_set_badge(int32_t n) { (void)n; }
 // The menu bar (@hostapi.menu_setup): none here.

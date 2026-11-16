@@ -18,6 +18,7 @@ import { Places } from "../ops/places.ts";
 import { log } from "../ops/log.ts";
 import { Said, tr, stationLang } from "../ops/i18n.ts";
 import { failureOf, modelLimitOf, runtimeKind, runtimeLabel, type RuntimeKind } from "../agents/runtime.ts";
+import { CommandMissing } from "../agents/runner.ts";
 import { type CardChoice, type DeliveryCardState, type Handed, type MessageRow, type PendingMessage, type RunChange } from "../store/rows.ts";
 import { PostBlocksUnavailable } from "../store/post-blocks.ts";
 import { WidgetSourcesUnavailable } from "../store/widget-sources.ts";
@@ -89,6 +90,8 @@ export type SessionStore = {
   startTurnFor(id: string, key: string, kind: string, by: TurnFor): void;
   endTurn(id: string, outcome: string, detail: string | null, declared: string | null, wait: number | null): void;
   declareTurn(id: string, declared: string | null, wait: number | null): void;
+  /// The turns a restart cut off, ended as aborted (store.ts `endCutOff`; optional: none ended without it).
+  endCutOff?(key: string): number;
   setRunning(key: string, running: boolean): void;
   setSessionContextBefore(key: string, before: number | null): void;
   setRuntimeSessionId(key: string, id: string | null): void;
@@ -138,8 +141,9 @@ export type SessionDeps = {
   chat(connect: string): Surface | undefined;
   driver(runtime: RuntimeKind): AgentDriver;
   /// The profile a session's runtime starts on now: its own while usable, else another that can take it on (`holding`:
-  /// its process has work going in the background, kept on an account nearly full).
-  runOn(key: string, holding?: boolean): Profile & { spelling?(model: string): string | null };
+  /// its process has work going in the background, kept on an account nearly full; `across`: before a turn, so another
+  /// runtime's when none of its own can run it, accounts.ts `runOn`).
+  runOn(key: string, holding?: boolean, across?: boolean): Profile & { spelling?(model: string): string | null };
   /// A turn ran into the allowance of `ranOn`, the profile its process was started on (null: the session's own), or
   /// `model`'s own limit there (that model alone passed over on it): the profile left and the one moved to, when it moved.
   spend(key: string, ranOn: string | null, model?: string | null): [string, string] | null;
@@ -174,14 +178,14 @@ export type SessionDeps = {
   /// station set to, and its large context's prompt cache over.
   coldAfresh?(key: string, now: number): boolean;
   /// What a session whose runtime session could not be resumed is told with its next prompt (sessions/afresh.ts
-  /// `toldResumeLost`).
-  resumeLost?(key: string): string;
+  /// `toldResumeLost`), found off the station's thread.
+  resumeLost?(key: string): string | Promise<string>;
   /// What a session compacted or gone on in a new conversation is told when its chats are long (sessions/afresh.ts
   /// `toldLongChat`): to read back what people said in them. Null when they are not.
   longChat?(key: string): string | null;
   /// Its subagents `ids` of runtime session `from`, stopped with its process, taken to runtime session `to` begun on
   /// `on`, so that they are taken up there (sessions/afresh.ts): the ids taken.
-  carrySubagents?(from: string, to: string, on: Profile, ids: string[]): string[];
+  carrySubagents?(from: string, to: string, on: Profile, ids: string[]): Promise<string[]>;
   /// The runtime session it runs in, on `profile` (null: not known).
   ranIn?(key: string, id: string, profile: string | null): void;
   idle(key: string): void;
@@ -286,13 +290,16 @@ export function lastStationSaid(deps: SessionDeps, key: string): string | null {
 /// Its process takes how its session runs now in place, when it runs on the same profile (`profile`) and can: how it
 /// runs then; else null (actor.ts `catchUp`).
 export async function retuneAgent(deps: SessionDeps, key: string, session: AgentSession, runtime: RuntimeKind, profileNow: string | null, restart: boolean, holding: boolean) {
-  const row = deps.store.getSession(key);
+  const before = deps.store.getSession(key);
   let profile: ReturnType<SessionDeps["runOn"]> | null = null;
   try {
-    profile = row ? deps.runOn(key, holding) : null;
+    profile = before ? deps.runOn(key, holding, true) : null;
   } catch {}
+  // As it is now: moved to another runtime, its process cannot take it in place (it is ended and opened anew).
+  const current = deps.store.getSession(key);
+  const row = current && current.runtime === runtime ? current : undefined;
   const ready = row && profile && !restart && profile.id === profileNow && session.retune ? await deps.linkSkills(row) : "";
-  if (!restart && row && profile && profile.id === profileNow && session.retune?.(openOptions(row, profile, deps, ready))) {
+  if (!restart && row && profile && profile.id === profileNow && session.retune?.(await openOptions(row, profile, deps, ready))) {
     return { runtime, model: (row.model ?? null) as string | null, effort: (row.effort ?? null) as string | null };
   }
   return null;
@@ -327,15 +334,22 @@ export async function openAgent(deps: SessionDeps, key: string, how: OpenHow): P
   const told = { afresh: null as string | null, resumeLost: false, readBackTold: false, stoppedNote: null as string | null };
   if (await deps.archiveIsCold(key)) await deps.restoreArchive(key);
   const store = deps.store;
+  const initial = store.getSession(key);
+  if (!initial) throw new Error(`session ${key} disappeared`);
+  const was = runtimeKind(initial.runtime);
+  if (!was) throw new Error(`session ${key} runs an unknown runtime ${initial.runtime}`);
+  how.runtime(was);
+  // Its account first: none of its runtime's able to run it, it may go on on another runtime's (accounts.ts `runOn`),
+  // whose driver then opens it, afresh.
+  const profile = deps.runOn(key, false, true);
   const row = store.getSession(key);
   if (!row) throw new Error(`session ${key} disappeared`);
   const runtime = runtimeKind(row.runtime);
   if (!runtime) throw new Error(`session ${key} runs an unknown runtime ${row.runtime}`);
-  how.runtime(runtime);
+  if (runtime !== was) how.runtime(runtime);
   const driver = deps.driver(runtime);
-  const profile = deps.runOn(key);
   const memory = await deps.linkSkills(row);
-  const base = openOptions(row, profile, deps, memory);
+  const base = await openOptions(row, profile, deps, memory);
   // Its context cleared by hand (clear): no runtime session now, those before on record. A new one, told so; one
   // continued from a terminal is given still.fail's instructions as a new session is (no cache of its own to keep).
   const wasCleared = row.runtimeSessionId === null && (store.runtimeSessions?.(key).length ?? 0) > 0;
@@ -362,12 +376,16 @@ export async function openAgent(deps: SessionDeps, key: string, how: OpenHow): P
     told.afresh = afresh;
     const from = store.runtimeSessionSource ? store.runtimeSessionSource(key, row.runtimeSessionId!) ?? undefined
       : store.runtimeSessionSources?.(key).find((s) => s.id === row.runtimeSessionId);
-    if (from === undefined || from.runtime === row.runtime) resumable = deps.carrySubagents?.(row.runtimeSessionId!, agent.id(), profile, subagents) ?? [];
+    if (from === undefined || from.runtime === row.runtime) resumable = (await deps.carrySubagents?.(row.runtimeSessionId!, agent.id(), profile, subagents)) ?? [];
   } else if (row.runtimeSessionId) {
     try {
       agent = await driver.open({ ...base, resume: row.runtimeSessionId }, how.listener(generation));
       resumable = subagents;
     } catch (error) {
+      // Nothing wrong with the conversation (the network, the account, a borrowing): it stays the session's, opened
+      // again with its next turn. Left for a new one, a long chat lost its whole conversation to a process that could
+      // not reach its provider once (tokyo-mac-studio-0, 2026-11-16, as the machine came up).
+      if (isNonSessionOpenError(error)) throw error;
       log.warn("session", "resume failed; starting a new runtime session", { session: key, id: row.runtimeSessionId, error: (error as Error).message });
       agent = await driver.open(base, how.listener(generation));
       told.resumeLost = true;
@@ -387,6 +405,17 @@ export async function openAgent(deps: SessionDeps, key: string, how: OpenHow): P
   return { ...told, session: agent, generation, identity: { runtime, model: row.model ?? null, effort: row.effort ?? null }, profile: profile.id };
 }
 
+/// Whether opening a runtime session failed for something other than the conversation itself (`openAgent`): the
+/// station's own words (`Said`: a sign-in not lent, a folder it may not read), its runtime not installed, or what the
+/// failure says is the network, the account, the provider or a limit. Resuming again later may well work, so the
+/// conversation is kept rather than left for a new one.
+export function isNonSessionOpenError(error: unknown): boolean {
+  if (error instanceof Said || error instanceof CommandMissing) return true;
+  if ((error as { missing?: unknown } | null)?.missing === true) return true;
+  const reason = failureOf((error as Error | null)?.message ?? String(error));
+  return reason === "network" || reason === "auth" || reason === "refused" || reason === "blocked" || reason === "rate_limit" || reason === "overloaded";
+}
+
 /// What a turn is prompted with (actor.ts `startTurn`): what it is handed, after what it is told first (its resume
 /// lost, what was stopped, a long chat, going on afresh, a session continued here, what changed in how it works since it
 /// was last told), timed.
@@ -395,7 +424,7 @@ export async function promptFor(deps: SessionDeps, key: string, now: number, han
   const row = store.getSession(key);
   // A session begun in a terminal and continued here: its first turn here says so, with how still.fail works.
   const continued = row && row.cwd && !store.hasTurns(key) ? continuedHere(sessionInstructions(row.workspace, row.cwd, deps.reposDir(), deps.memoryPath(key), await deps.linkSkills(row), deps.siteInstructions?.(), deps.ownName?.())) : null;
-  let prompt = lost ? `${deps.resumeLost?.(key) ?? resumeLost(key, [])}\n\n${handed}` : handed;
+  let prompt = lost ? `${(await deps.resumeLost?.(key)) ?? resumeLost(key, [])}\n\n${handed}` : handed;
   if (stopped !== null) prompt = `${stopped}\n\n${prompt}`;
   // Gone on in a new conversation, or compacted: in a long chat, told to read back what people said in it.
   const long = lost || afresh !== null || compacted ? (deps.longChat?.(key) ?? null) : null;
@@ -408,7 +437,7 @@ export async function promptFor(deps: SessionDeps, key: string, now: number, han
     const full = row ? join(row.workspace, ".stillfail-instructions.md") : "";
     if (row) {
       try {
-        const preset = row.cwd ? null : presetCopyOf(row.workspace);
+        const preset = row.cwd ? null : await presetCopyOf(row.workspace);
         const memory = await deps.linkSkills(row);
         await writeFile(full, sessionInstructions(row.workspace, row.cwd ?? null, deps.reposDir(), deps.memoryPath(key), memory, deps.siteInstructions?.(), deps.ownName?.()) + (preset ? presetInstructions(preset) : ""));
       } catch {}
@@ -549,13 +578,13 @@ export async function linkSkills(row: any, deps: Pick<SessionDeps, "memoryPath">
 }
 
 /// `memory`: its workspace's memory as `linkSkills` gave it.
-export function openOptions(row: any, profile: Profile & { spelling?(model: string): string | null }, deps: Pick<SessionDeps, "mcpUrl" | "reposDir" | "memoryPath" | "siteInstructions" | "ownName">, memory: string): OpenOptions {
+export async function openOptions(row: any, profile: Profile & { spelling?(model: string): string | null }, deps: Pick<SessionDeps, "mcpUrl" | "reposDir" | "memoryPath" | "siteInstructions" | "ownName">, memory: string): Promise<OpenOptions> {
   const skills = row.cwd ? undefined : join(dirname(deps.memoryPath(row.key)), "skills");
   // The model as this profile spells it (openai/gpt-6-astra on a router for gpt-6-astra).
   const model = row.model ? (profile.spelling?.(row.model) ?? row.model) : undefined;
   // What its chat was opened with (presets.ts): told after the station's own instructions (its folders' skills are in
   // its workspace already).
-  const preset = row.cwd ? null : presetCopyOf(row.workspace);
+  const preset = row.cwd ? null : await presetCopyOf(row.workspace);
   return {
     key: row.key,
     profile,

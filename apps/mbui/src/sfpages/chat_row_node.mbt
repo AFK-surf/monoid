@@ -548,8 +548,8 @@ pub fn chat_row_node(
           .radius(Is(1.0e6))
           .lines_up(Is(Some(Middle)))
           .lies_along(Is(Middle))
-          .ground(By(fn() { if @sf.lit_node(k) { t().p.hover } else { 0L } }))
           |> ignore
+          @sf.hover_ground_node(k)
           @sf.presses_node(k, fn() { then_whole(fn(w) { archive_row(src, w, here=kept is Some(_)) }, fn() {  }) })
           // (beside the row now, not in it: right clicked, the row's menu still, as on its name)
           k.on_menu(fn(m) { open_menu(m.wx, m.wy, false) }) |> ignore
@@ -1019,8 +1019,8 @@ fn tray_node(
             .height(Is(Some(row_key_side)))
             .radius(Is(row_key_side / 2.0))
             .padding(By(fn() { (side(), 0.0, side(), 0.0) }))
-            .ground(By(fn() { if undo_on() && @sf.lit_node(k) { @sf.alpha(@sf.theme().p.text, 0.08) } else { 0L } }))
             |> ignore
+            @sf.hover_ground_node(c, by=k, on=undo_on, color=fn() { @sf.alpha(@sf.theme().p.text, 0.08) })
             @sf.words_node(c, fn() { @sf.t("android-chat.archived.undo") }, fn() {
               swipe_words.then(@ui.text_style(color=Data(ink(c, fn(p) { p.text }))))
             })

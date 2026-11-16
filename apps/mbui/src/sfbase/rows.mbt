@@ -267,7 +267,7 @@ priv struct ChatsRead {
 /// The chats' list as the core's `chats` topic gives it: its rows read again only as they changed (one chat said
 /// something: its row read).
 // kept across runs: what it keeps is let go of by a run anew and by reset (derived.mbt)
-let chats_read : Derived[ChatsRead] = Derived::new("chats", fn(v, was) {
+let chats_read : Derived[ChatsRead] = Derived::new_ref("chats", fn(v, was) {
   let jsons : Array[Json] = []
   for d in items(Some(v), "days") {
     for j in items(Some(d), "items") {
@@ -310,6 +310,17 @@ let chats_read_last : Ref[Array[(Json, ChatItem)]] = Ref([])
 /// A row's key in the list, as the core keys them (client/core-ts collections.ts: `station` and `id`).
 fn chat_row_key(r : Json) -> String {
   text(Some(r), "station") + "\u{1}" + text(Some(r), "id")
+}
+
+///|
+/// The list's filter in workspace `ws` chosen (`all`, `mine`, `watching`, `hidden`): kept here at once, and in the prefs
+/// (the core's `listFilter`, by workspace).
+pub fn set_filter_of(src : Source, ws : String, f : String) -> Unit {
+  if filter_of(src, ws) == f {
+    return
+  }
+  app.filters[ws] = f
+  (src.call)("prefs.set", Json::object({ "listFilter": Json::object(Map::from_array([(ws, Json::string(f))])) }), answer_unread)
 }
 
 ///|
@@ -569,7 +580,20 @@ pub fn row_agent_groups(item : ChatItem) -> Array[RowAgent] {
 /// The stations at a glance, as the core has them in workspace `ws` (asleep while every station is down as the
 /// device's network is), and in words: asleep, what the core cannot reach says it; else the stations (the core's),
 /// and what is wrong with them.
+/// Worked out once for each change of what it reads, and what reads it told only where it comes out otherwise: a chat's
+/// message, card or unread changes the chats' list, not the stations' glyph or words.
 pub fn stations_at_glance(src : Source, ws : String) -> (@sf.GlyphCounts, String) {
+  stations_glance_kept.read(src, ws, fn(_) { stations_at_glance_now(src, ws) }, same=fn(a, b) { a == b })
+}
+
+///|
+/// The stations at a glance by workspace (stations_at_glance's), by the source read.
+// kept across runs: what it keeps is let go of by a run anew and by reset (derived.mbt)
+let stations_glance_kept : Kept[(@sf.GlyphCounts, String)] = Kept::new()
+
+///|
+/// The stations at a glance as the topics say them now (stations_at_glance's getter).
+fn stations_at_glance_now(src : Source, ws : String) -> (@sf.GlyphCounts, String) {
   let chats = chats_topic(src, ws)
   let g = field(chats.value, "glyph")
   let status = src.topic("status", { "workspace": Json::string(ws) }).get().value

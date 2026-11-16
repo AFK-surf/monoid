@@ -7,7 +7,7 @@ export const ARCHIVE_PIN_EXISTS = "SELECT 1 FROM archive_pin_rows WHERE session 
 export const ARCHIVE_KEEP_EXISTS = "SELECT 1 FROM archive_keep_rows WHERE thread = ? LIMIT 1";
 
 type Kind = "pins" | "kept";
-const parts = (kind: Kind) => kind === "pins"
+export const parts = (kind: Kind) => kind === "pins"
   ? { source: "pins", key: "session", rows: "archive_pin_rows", staged: "archive_pin_replaced" }
   : { source: "kept_chats", key: "thread", rows: "archive_keep_rows", staged: "archive_keep_replaced" };
 
@@ -61,7 +61,7 @@ export function installArchiveMarkIndex(db: DatabaseSync): void {
 }
 
 type Meta = { kind: Kind; version: number; last_rowid: string | null; end_rowid: string | null; complete: number };
-function markers(db: DatabaseSync): Meta[] {
+export function markers(db: DatabaseSync): Meta[] {
   const rows = db.prepare(`SELECT kind, version, CAST(last_rowid AS TEXT) AS last_rowid,
     CAST(end_rowid AS TEXT) AS end_rowid, complete FROM archive_mark_meta ORDER BY kind`).all() as Meta[];
   if (rows.length !== 2 || rows[0]?.kind !== "kept" || rows[1]?.kind !== "pins") throw new Error("archive mark index version marker is missing");
@@ -70,25 +70,3 @@ function markers(db: DatabaseSync): Meta[] {
 }
 
 export function archiveMarksReady(db: DatabaseSync): boolean { return markers(db).every((m) => m.complete === 1); }
-
-export function archiveMarksStep(db: DatabaseSync, limit = 256): { done: boolean; visited: number } {
-  if (!Number.isSafeInteger(limit) || limit < 1) throw new RangeError("archive mark batch must be positive");
-  db.exec("BEGIN IMMEDIATE");
-  try {
-    const all = markers(db);
-    const meta = all.find((m) => m.complete !== 1);
-    if (meta === undefined) { db.exec("COMMIT"); return { done: true, visited: 0 }; }
-    const { source, key, rows } = parts(meta.kind);
-    const positions = (meta.last_rowid === null
-      ? db.prepare(`SELECT CAST(rowid AS TEXT) AS position FROM ${source} WHERE rowid <= CAST(? AS INTEGER) ORDER BY rowid LIMIT ?`).all(meta.end_rowid, limit)
-      : db.prepare(`SELECT CAST(rowid AS TEXT) AS position FROM ${source} WHERE rowid > CAST(? AS INTEGER) AND rowid <= CAST(? AS INTEGER) ORDER BY rowid LIMIT ?`).all(meta.last_rowid, meta.end_rowid, limit)) as { position: string }[];
-    const put = db.prepare(`INSERT INTO ${rows} (${key}, position) SELECT s.${key}, s.rowid FROM ${source} s WHERE s.rowid = CAST(? AS INTEGER)
-      AND NOT EXISTS (SELECT 1 FROM ${rows} i WHERE i.${key} IS s.${key} AND i.position = s.rowid)`);
-    for (const row of positions) put.run(row.position);
-    const finished = positions.length < limit;
-    db.prepare("UPDATE archive_mark_meta SET last_rowid = CAST(? AS INTEGER), complete = ? WHERE kind = ?")
-      .run(positions.at(-1)?.position ?? meta.last_rowid, finished ? 1 : 0, meta.kind);
-    db.exec("COMMIT");
-    return { done: finished && all.every((m) => m.kind === meta.kind || m.complete === 1), visited: positions.length };
-  } catch (error) { try { db.exec("ROLLBACK"); } catch {} throw error; }
-}

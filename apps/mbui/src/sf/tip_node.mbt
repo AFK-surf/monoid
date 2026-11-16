@@ -124,23 +124,48 @@ pub fn tip_node(
     }
     open.set(on)
   }
+  // (opened on its control (TipHand::open): the window's taps then, shut by the one after it)
+  let opened_at = Ref(0)
   // (what decides it, as of each cause: the pointer over it (a mouse's), a press on it, the keyboard's focus shown on it,
-  // whether it takes input at all, whether there is anything to say)
+  // whether it takes input at all, whether there is anything to say, how a finger holds it and, while that is let go
+  // (Lifted) or tapped open (Opened), the window's presses or taps (View::window_downs, window_taps): read only then,
+  // so a tip a finger holds not is woken by no press or tap elsewhere in the window)
   let state = fn() {
+    let held = hand.get()
     (
       @ui.pointing() is Mouse && (if within { anchor.pointed_in() } else { anchor.pointed() }),
       anchor.pressed(),
       anchor.focus_shown(),
       anchor.takes_input(),
       label() != "",
-      hand.get(),
+      held,
+      match held {
+        Lifted => anchor.window_downs()
+        Opened => anchor.window_taps()
+        _ => 0
+      },
     )
   }
-  let before = Ref((false, false, Free))
+  let before = Ref((false, false, Free, 0))
   anchor.reacts(state, fn(s) {
-    let (over, pressed, focused, takes, says, held) = s
-    let (was_over, was_focused, was_held) = before.val
-    before.val = (over, focused, held)
+    let (over, pressed, focused, takes, says, held, n) = s
+    let (was_over, was_focused, was_held, was_n) = before.val
+    before.val = (over, focused, held, n)
+    // (let go by a finger that held it open: shown on a while, gone at the next press wherever it lands, or then;
+    // opened on its control: shown till the next tap, wherever it lands (a press let go without dragging, as about's
+    // tapped_anywhere; a finger's tap that opened it told after its control took it, so the one after that), a press
+    // held, dragged or called off shutting it not)
+    if held == was_held && n != was_n {
+      if held == Lifted {
+        (lifted_end.val)()
+        hand.set(Free)
+        return
+      }
+      if held == Opened && n > opened_at.val + 1 {
+        hand.set(Free)
+        return
+      }
+    }
     if made.val && open.untracked() && takes && says &&
       (held != Free || (!pressed && !shut.val)) &&
       ((over && !was_over) || (focused && !was_focused) || (held != Free && was_held == Free)) {
@@ -177,7 +202,7 @@ pub fn tip_node(
       // (rested on a while from now: shown then, as it is then, a pointer over it carrying no press, taking input)
       rest.val = Some(
         anchor.at_moment(at + delay, fn() {
-          let (over, pressed, _, takes, says, _) = @signals.untracked(state)
+          let (over, pressed, _, takes, says, _, _) = @signals.untracked(state)
           if over && !pressed && takes && says && !shut.val {
             set_open(true)
           }
@@ -191,22 +216,6 @@ pub fn tip_node(
     hand.set(Free)
     set_open(false)
   }
-  // (let go by a finger that held it open: shown on a while, gone at the next press wherever it lands, or then)
-  anchor.reacts(fn() { anchor.window_downs() }, fn(_) {
-    if hand.untracked() == Lifted {
-      (lifted_end.val)()
-      hand.set(Free)
-    }
-  })
-  // (opened on its control (TipHand::open): shown till the next tap, wherever it lands (the window's taps,
-  // View::window_taps: a press let go without dragging, as about's tapped_anywhere; a finger's tap that opened it told
-  // after its control took it, so the one after that); a press held, dragged or called off shuts it not)
-  let opened_at = Ref(0)
-  anchor.reacts(fn() { anchor.window_taps() }, fn(n) {
-    if hand.untracked() == Opened && n > opened_at.val + 1 {
-      hand.set(Free)
-    }
-  })
   // (its control let go: nothing of it left pending)
   anchor.owns(fn() {
     stop_rest()

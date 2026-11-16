@@ -41,13 +41,13 @@ pub fn switcher_toggle(blur : () -> Unit) -> Unit {
 }
 
 ///|
-/// Esc: in one kind's list, back to all of them; else closed (its field let go: the keyboard goes nowhere until another
+/// Esc: words typed cleared first; in one kind's list, back to all of them; else closed (its field let go: the keyboard goes nowhere until another
 /// is pressed: `blur`). Whether it took it (open).
 pub fn switcher_escape(blur : () -> Unit) -> Bool {
   if !switching.untracked() {
     return false
   }
-  if !@sfpages.finder_back() {
+  if !@sfpages.finder_escape() {
     switching.set(false)
     switcher_closed()
     blur()
@@ -98,7 +98,7 @@ pub fn switcher(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
   // 14% down the window in its middle
   let scrim = @sf.alpha(t.p.overlay, ground.map(fn(l) { l.alpha }).unwrap_or(1.0))
   c.with_dismissed(fn(_) { close() }, fn() {
-    c.overlay("switcher-layer", modal=true, scrim~, initial_focus=0, on_escape=@sfpages.finder_back, fn() {
+    c.overlay("switcher-layer", modal=true, scrim~, initial_focus=0, on_escape=@sfpages.finder_escape, fn() {
       // (32 short of the window at most: room round it however narrow the frame is)
       let room = dmin(switcher_w, c.width - switcher_side - switcher_side)
       let i = c.box(

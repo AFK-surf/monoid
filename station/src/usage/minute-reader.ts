@@ -1,35 +1,71 @@
-import { Worker } from "node:worker_threads";
+import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
-import { MbProcess, mbReaderBinary } from "../read/mb-reader.ts";
+import { MbProcess, readerBinary } from "../read/mb-reader.ts";
 import type { InWorkspace } from "../store/rows.ts";
 
 export type MinuteRequest = { id: number; viewer: InWorkspace | null } | { id: number; detail: InWorkspace | null }
   | { id: number; remote: true } | { id: number; chats: InWorkspace | null };
 export type MinuteResponse = { id?: number; error?: string; complete?: boolean; foreground?: boolean };
 
-/// Check whether previously maintained summaries are complete without writing or filling old history. By the MoonBit
-/// checker (station/mb, src/usage: `--builder usage-check`) where its program is there, else by the worker.
+/// How long a checker with nothing asked of it is kept.
+const IDLE_MS = 60_000;
+
+/// Check whether previously maintained summaries are complete without writing or filling old history, by the MoonBit
+/// checker (station/mb, src/usage: `--builder usage-check`; `binary`: the program, a test's own where it gives one). One with
+/// nothing asked of it goes after IDLE_MS (or at once: `trimIdle`) and is started again by the next ask: it keeps
+/// nothing between asks (each is answered from the database as it is then), and what this keeps (`complete`) stays.
 export class MinuteReader {
   readonly #path: string;
-  readonly #mb: string | null;
-  #worker: Worker | MbProcess | null = null;
+  readonly #mb: string | undefined;
+  #worker: MbProcess | null = null;
   #next = 0;
   #closed = false;
   #complete = false;
   #termination: Promise<number> | null = null;
   #waiting = new Map<number, { resolve: () => void; reject: (error: Error) => void; request: MinuteRequest; sent: boolean }>();
-  constructor(path: string, _options: { previousGone?: Promise<void>; priority?: SharedArrayBuffer } = {}, mb = mbReaderBinary()) {
+  /// The idle checker's going armed (IDLE_MS), called off by an ask.
+  #idle: (() => void) | null = null;
+  readonly #after: (ms: number, f: () => void) => () => void;
+  /// `options.after`: the timer of IDLE_MS (a test's own; else the wall's).
+  constructor(path: string, options: { previousGone?: Promise<void>; priority?: SharedArrayBuffer; after?: (ms: number, f: () => void) => () => void } = {}, binary?: string) {
     this.#path = path;
-    this.#mb = mb;
+    this.#mb = binary;
+    this.#after = options.after ?? wall.after;
+  }
+
+  /// Whether a checker runs now.
+  get running(): boolean { return this.#worker !== null; }
+
+  /// The checker let go at once if nothing is asked of it: 1, else 0.
+  trimIdle(): number {
+    if (this.#closed || this.#worker === null || this.#waiting.size > 0) return 0;
+    this.#letGo();
+    return 1;
+  }
+
+  #letGo(): void {
+    this.#idle?.();
+    this.#idle = null;
+    const worker = this.#worker;
+    if (worker === null) return;
+    this.#worker = null;
+    this.#termination = worker.terminate();
+  }
+
+  /// Nothing asked of the checker: it goes after IDLE_MS unless asked again.
+  #idleLater(): void {
+    if (this.#closed || this.#worker === null || this.#waiting.size > 0 || this.#idle !== null) return;
+    // timer: a deadline (an idle program's process let go)
+    this.#idle = this.#after(IDLE_MS, () => {
+      this.#idle = null;
+      if (this.#waiting.size === 0) this.#letGo();
+    });
   }
 
   start(): void {
     if (this.#closed || this.#complete || this.#worker !== null) return;
-    const file = new URL(import.meta.url.endsWith(".ts") ? "./minute-worker.ts" : "./usage/minute-worker.js", import.meta.url);
-    const worker = this.#mb !== null ? new MbProcess(this.#mb, ["--builder", "usage-check", "--db", this.#path])
-      : new Worker(file, { workerData: { path: this.#path }, resourceLimits: { maxOldGenerationSizeMb: 128, maxYoungGenerationSizeMb: 8 } });
+    const worker = new MbProcess(this.#mb ?? readerBinary(), ["--builder", "usage-check", "--db", this.#path]);
     this.#worker = worker;
-    if (worker instanceof Worker) worker.unref();
     worker.on("message", (answer: MinuteResponse) => {
       if (answer.complete) {
         this.#complete = true;
@@ -45,6 +81,7 @@ export class MinuteReader {
       this.#waiting.delete(answer.id);
       if (answer.error) waiting.reject(new Error(answer.error));
       else waiting.resolve();
+      this.#idleLater();
     });
     let failure: Error | null = null;
     worker.on("error", (error: Error) => {
@@ -60,10 +97,12 @@ export class MinuteReader {
       }
     });
     this.#sendWaiting();
+    this.#idleLater();
   }
 
   #sendWaiting(): void {
     if (this.#worker === null) return;
+    if (this.#waiting.size > 0) { this.#idle?.(); this.#idle = null; }
     for (const waiting of this.#waiting.values()) if (!waiting.sent) {
       this.#worker.postMessage(waiting.request);
       waiting.sent = true;
@@ -141,6 +180,8 @@ export class MinuteReader {
 
   async close(): Promise<void> {
     this.#closed = true;
+    this.#idle?.();
+    this.#idle = null;
     for (const waiting of this.#waiting.values()) waiting.reject(new Error("station stopping"));
     this.#waiting.clear();
     if (this.#worker !== null) this.#termination = this.#worker.terminate();

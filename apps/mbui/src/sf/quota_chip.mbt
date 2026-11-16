@@ -13,6 +13,15 @@ pub fn has_quota(q : Json?) -> Bool {
 }
 
 ///|
+/// An allowance's chips (quota_chips', marked) in words, as a screen reader is told them where they are part of what is
+/// pressed (a chat's agent's row of its account): each window's mark and what is left in it, `5H 62% W 18%`; "" where
+/// it shows none (has_quota).
+pub fn quota_chips_said(q : Json?) -> String {
+  guard has_quota(q) && chip_field(q, "windows") is Some(Array(windows)) else { return "" }
+  windows.map(fn(w) { chip_str(Some(w), "mark") + " " + chip_left(Some(w)).to_string() + "%" }).join(" ")
+}
+
+///|
 /// An allowance's windows (QuotaChip each): a chip per
 /// window, what is left in it, filled as far as that, its mark before it where `marked` (the web's default; a chat's
 /// agents only with more than one), or `worded`, its name and what is left in words, as a machine's chips say theirs
@@ -149,16 +158,16 @@ fn quota_parts(windows : Array[Json]) -> Array[(String, Array[Json])] {
   } else if base.length() > 0 {
     parts.push(("", base))
   }
+  let has_pool = base.length() == 0 && order.iter().any(fn(s) { counts.get(s).unwrap_or(0) > 1 })
   let single : Array[Json] = []
   for s in order {
-    if counts.get(s).unwrap_or(0) > 1 {
-      let group_wins = windows.filter(fn(w) { chip_str(Some(w), "scope") == s })
-      parts.push((quota_group_name(group_wins[0]), group_wins))
+    let group_wins = windows.filter(fn(w) { chip_str(Some(w), "scope") == s })
+    let gname = if group_wins.length() > 0 { quota_group_name(group_wins[0]) } else { "" }
+    if counts.get(s).unwrap_or(0) > 1 || (has_pool && gname != "" && chip_str(Some(group_wins[0]), "mark").has_prefix(gname + " ")) {
+      parts.push((gname, group_wins))
     } else {
-      for w in windows {
-        if chip_str(Some(w), "scope") == s {
-          single.push(w)
-        }
+      for w in group_wins {
+        single.push(w)
       }
     }
   }

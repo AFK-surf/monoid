@@ -672,8 +672,12 @@ fn clamp_inst_clip(
     cr : Double,
     cs : Double,
   ) {
-    if a[b + xi] != mx || a[b + yi] != my {
-      let theirs = a[b + xi] == cx && a[b + yi] == cy
+    // (an edge moved by less than a millionth is where it was, as push_box_clip has it (clip_edge_is): the same edge
+    // worked out two ways, its own moved by a slide and the clip it is cut to, parts by that, and its corner squared
+    // there was round where the frame was built whole: a ripple's disc in a card on a page sliding off, its corner 26
+    // built whole and 0 painted alone, sfreplay's station-rename at 120 a second, 2026-11-16)
+    if !clip_edge_is(a[b + xi], mx) || !clip_edge_is(a[b + yi], my) {
+      let theirs = clip_edge_is(a[b + xi], cx) && clip_edge_is(a[b + yi], cy)
       a[b + 24 + j] = if theirs { cr } else { 0.0 }
       a[b + 28 + j] = if theirs { cs } else { 0.0 }
     }
@@ -730,10 +734,21 @@ let tie_slack : Double = 1.0e-6
 let glyphs_carried : FixedArray[Double] = [0.0, 0.0]
 
 ///|
-/// Where a glyph's picture goes across, `x` as painted: on the pixels where it is laid out (glyphs_carried).
-fn glyph_x(x : Double, sc : Double) -> Double {
-  let m = glyphs_carried[0]
-  on_pixels(x - m, sc) + m
+/// Where a glyph's picture goes across, its cluster at `x` and its own offset `ox` (`sc` pixels a point): `x` set on
+/// the pixels first (as `glyph_sub` rounds the cluster origin), then `ox` in whole pixels.
+fn on_glyph_col(x : Double, ox : Double, sc : Double) -> Double {
+  if sc <= 0.0 {
+    return x + ox
+  }
+  on_pixels(x, sc) + (ox * sc).round() / sc
+}
+
+///|
+/// Where a glyph's picture goes across, `x` as painted and its own offset `ox`: on the pixels where it is laid out
+/// (glyph_origin_x, glyphs_carried).
+fn glyph_x(x : Double, ox : Double, sc : Double) -> Double {
+  let m = glyphs_carried[0] - glyph_origin_x.val
+  on_glyph_col(x - m, ox, sc) + m
 }
 
 ///|
@@ -1119,7 +1134,7 @@ fn Ctx::emit_text(
   center_in? : Double = -1.0,
   spans? : Array[(Int, Int, Int64)] = [],
   font? : (Double, Int, Int, Double),
-  unplaced? : Array[(Int, Double, Double, Double, Double, Double)],
+  unplaced? : Array[UnplacedGlyph],
 ) -> Unit {
   let s = tl.shaped
   let n = s.starts.length()
@@ -1169,6 +1184,14 @@ fn Ctx::emit_text(
       left_out()
       continue
     }
+    // centred: each line by half of what it leaves of the box
+    let dx = if center_in >= 0.0 && line < tl.line_w.length() {
+      dmax((center_in - tl.line_w[line]) / 2.0, 0.0)
+    } else {
+      0.0
+    }
+    let base_key = key
+    let key = glyph_sub(base_key, ox + dx + tl.xs[c] + s.pad, sc, z)
     if rec_whole.val {
       if rec_glyph_early(key, sc / zoom, ox + tl.xs[c], top, ox + tl.xs[c] + s.adv[c], top + tl.line_h) {
         rec_skip(top, top + tl.line_h)
@@ -1182,13 +1205,7 @@ fn Ctx::emit_text(
       continue
     }
     let (gw, gh) = (g.gw / z, g.gh / z)
-    // centred: each line by half of what it leaves of the box
-    let dx = if center_in >= 0.0 && line < tl.line_w.length() {
-      dmax((center_in - tl.line_w[line]) / 2.0, 0.0)
-    } else {
-      0.0
-    }
-    let gx = glyph_x(ox + dx + tl.xs[c] + s.pad + g.ox / z, sc)
+    let gx = glyph_x(ox + dx + tl.xs[c] + s.pad, g.ox / z, sc)
     let gy = glyph_row(oy, line.to_double() * tl.line_h + tl.ascent, g.oy / z, sc)
     let adaptive = glass_paint.ink_r > 0.0 && !g.color
     // (the uniform scale is about its ink's middle; an extra horizontal scale is about its advance's middle, so a
@@ -1206,7 +1223,18 @@ fn Ctx::emit_text(
     // (where it is before it is set on the pixels, for what places it again elsewhere: a node's words, set on the
     // pixels where the scene composes them, view_blit; what its own look moves it by after that, as here)
     match unplaced {
-      Some(u) => u.push((self.ninst, ox + dx + tl.xs[c] + s.pad + g.ox / z, top + tl.ascent, g.oy / z, gx - set_x, gy - set_y))
+      Some(u) =>
+        u.push({
+          at: self.ninst,
+          x: ox + dx + tl.xs[c] + s.pad,
+          ox: g.ox / z,
+          base: top + tl.ascent,
+          oy: g.oy / z,
+          own_x: gx - set_x,
+          own_y: gy - set_y,
+          key: base_key,
+          z,
+        })
       None => ()
     }
     // (its halo's, where its words have one: halo.mbt)

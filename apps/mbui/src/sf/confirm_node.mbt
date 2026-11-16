@@ -5,8 +5,9 @@
 // draws it (confirm_w wide at most, the window less dialog_margin; dialog_r round, the panel's ground, its line, its
 // shadow; its title, its words, then cancel and the action at its foot's end), coming in by @kit.dialog_in and going
 // by @kit.pop_out from the moments it opens and closes; read out a dialog named by its title. Escape, back and cancel
-// close it (`cancel`); the action does `confirm`. The focus on its own ground as it opens (confirm_dialog's: a layer
-// that traps it with no stop of its own), back to what had it as it goes.
+// close it (`cancel`); the action does `confirm`, and so does Enter where it can be undone (its default: not where
+// `danger`). The focus on its own ground as it opens (confirm_dialog's: a layer that traps it with no stop of its
+// own), back to what had it as it goes.
 
 ///|
 /// A confirm in `parent` while `open()` (going over pop_out_ms once not): `title`, its `words`, `action` (solid red
@@ -32,7 +33,8 @@ pub fn confirm_node(
   dialog_layer_node(parent, open, cancel, shown~, gone~, dims~, covered~, fn(across, layer, look, veil) {
     confirm_panel(across, layer, look, veil, title, words, warning, action, danger, cancel, confirm) |> ignore
     // (the focus on its own ground as it opens, as confirm_dialog's (an overlay that traps it, with no stop of its own:
-    // the layer's own), Enter and Space doing nothing there; back to what had it as it goes)
+    // the layer's own), Space doing nothing there, Enter its default's: its action unless `danger`; back to what had it
+    // as it goes)
     layer
   })
 }
@@ -68,6 +70,7 @@ fn dialog_layer_node(
   scrim? : () -> Int64 = fn() { @ui.tree_theme().scrim },
   ground_ms? : Double = confirm_ground_ms,
   night_with_ground? : Bool = false,
+  top_share? : Double = 0.0,
 ) -> Unit {
   parent.show(
     open,
@@ -82,13 +85,18 @@ fn dialog_layer_node(
       let veiled = EdgeWay::new(0.0)
       layer.reacts(covered, fn(on) { veiled.go(layer, if on { 1.0 } else { 0.0 }, confirm_ground_ms) }) |> ignore
       let veil = fn() { confirm_faded(@ui.tree_theme().scrim, veiled.shown(layer)) }
+      // (what it holds made first, what it reads then waited for before it comes in: OpenGate)
+      let gate = OpenGate::new()
       layer.reacts(fn() { layer.leaving() }, fn(going) {
         if going {
+          gate.stop()
           shown.go(layer, 0.0, @kit.pop_out_ms, ease=Leave)
           dim.go(layer, 0.0, @kit.pop_out_ms, ease=Leave)
         } else {
-          shown.go(layer, 1.0, @kit.dialog_ms)
-          dim.go(layer, 1.0, ground_ms)
+          gate.go(layer, fn() {
+            shown.go(layer, 1.0, @kit.dialog_ms)
+            dim.go(layer, 1.0, ground_ms)
+          })
         }
       })
       let look = fn() {
@@ -157,7 +165,16 @@ fn dialog_layer_node(
         (left, top, right, foot)
       }))
       |> ignore
-      layer.box(fn(s) { s.grow(Is(1.0)) |> ignore }) |> ignore
+      // (over it the room `top_share` of the window's height says, where it says one: else as much as under it)
+      layer.box(fn(s) {
+        if top_share > 0.0 {
+          s.height(By(fn() { Some(layer.window().1 * top_share) })).shrink(Is(0.0)) |> ignore
+        } else {
+          s.grow(Is(1.0)) |> ignore
+        }
+      })
+      |> ignore
+      gate.collect(fn() {
       layer.box(fn(across) {
         across.row(Is(true)) |> ignore
         across.box(fn(s) { s.grow(Is(1.0)) |> ignore }) |> ignore
@@ -172,6 +189,8 @@ fn dialog_layer_node(
         across.box(fn(s) { s.grow(Is(1.0)) |> ignore }) |> ignore
       })
       |> ignore
+      })
+      gate.seal(layer)
       layer.box(fn(s) { s.grow(Is(1.0)) |> ignore }) |> ignore
     },
     leave=@kit.pop_out_ms,
@@ -257,7 +276,14 @@ fn confirm_panel(
       f.box(fn(s) { s.grow(Is(1.0)) |> ignore }) |> ignore
       // (going, they take nothing: what is leaving takes no press, focus or key; drawn as they were, going with it)
       let no = button_node(f, fn() { t("common.cancel") }, cancel, tone=Ghost)
-      button_node(f, action, confirm, tone=if danger { DangerSolid } else { Primary }) |> ignore
+      // (its action the default where it can be undone: Enter that nothing with the focus takes does it; one that cannot
+      // be undone none, so that Enter never does it: the owner, 2026-11-16, after Apple's)
+      button_node(f, action, confirm, tone=if danger { DangerSolid } else { Primary }, default_on?=if danger {
+        None
+      } else {
+        Some(fn() { true })
+      })
+      |> ignore
       cancel_at.val = Some(no)
     })
     |> ignore

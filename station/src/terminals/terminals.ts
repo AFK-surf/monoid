@@ -20,7 +20,7 @@ import { wall } from "../ops/fibers.ts";
 import { type Ended, type Out, type TerminalLink, pastScreen } from "./link.ts";
 
 export const TERMINAL_TYPE = "application/x-stillfail-terminal";
-export const KIND = { screen: 1, out: 2, state: 3, input: 16, resize: 17 } as const;
+export const KIND = { screen: 1, out: 2, state: 3, input: 16, resize: 17, control: 18 } as const;
 /// A client's frame: what is typed at once, or a size.
 export const MAX_IN = 64 * 1024;
 /// A terminal's size, in cells.
@@ -121,8 +121,10 @@ export class Terminals {
   }
 
   /// One a runner kept from before this station (adopted as it starts).
-  keep(id: string, link: TerminalLink, meta: TerminalMeta) {
-    this.#add(new Terminal(id, link, meta.by, meta.at, meta.cwd, meta.chat, meta.workspace));
+  keep(id: string, link: TerminalLink, meta: TerminalMeta, size?: { cols?: number; rows?: number }) {
+    const t = new Terminal(id, link, meta.by, meta.at, meta.cwd, meta.chat, meta.workspace);
+    if (within(size?.cols, SIZE.cols) && within(size?.rows, SIZE.rows)) t.size = { cols: size.cols, rows: size.rows };
+    this.#add(t);
   }
 
   #add(t: Terminal) {
@@ -175,7 +177,7 @@ export class Terminals {
 
   #state(t: Terminal, v: View): Record<string, unknown> {
     const s = t.shown();
-    return { id: t.id, types: t.typing === v.id, typing: s.typing, looking: s.looking, cwd: t.cwd, cols: t.size.cols, rows: t.size.rows, ...(t.link.over ? { ended: s.ended ?? null } : {}) };
+    return { id: t.id, types: t.typing === v.id, typing: s.typing, looking: s.looking, cwd: t.cwd, cols: t.size.cols, rows: t.size.rows, inband: true, ...(t.link.over ? { ended: s.ended ?? null } : {}) };
   }
 
   #tellAll(t: Terminal) {
@@ -241,6 +243,10 @@ export class Terminals {
       pending = pending ?? [];
       try {
         const shown = await terminal.link.screen();
+        if (terminal.typing === null && within(shown.cols, SIZE.cols) && within(shown.rows, SIZE.rows) && (terminal.size.cols !== shown.cols || terminal.size.rows !== shown.rows)) {
+          terminal.size = { cols: shown.cols, rows: shown.rows };
+          this.#tellAll(terminal);
+        }
         shownAt = shown.at;
         send(KIND.screen, shown.data);
       } catch {
@@ -278,11 +284,38 @@ export class Terminals {
         else if (f.kind === KIND.resize && typing) {
           const size = sizeOf(f.payload);
           if (size === null) continue;
+          const changed = terminal.size.cols !== size.cols || terminal.size.rows !== size.rows;
           terminal.size = size;
           terminal.link.resize(size.cols, size.rows);
           this.#tellAll(terminal);
-          // Every view is given the screen again at the new size (its own terminal made that size from it).
-          for (const v of terminal.views.values()) void v.again();
+          // Watchers are given the screen again at the new size; the typing view already resized its own terminal in place.
+          if (changed) {
+            for (const v of terminal.views.values()) if (v !== view) void v.again();
+          }
+        } else if (f.kind === KIND.control) {
+          const c = controlOf(f.payload);
+          if (c === null) continue;
+          if (!c.control) {
+            if (terminal.typing === view.id) {
+              terminal.typing = null;
+              view.types = false;
+              this.#tellAll(terminal);
+            }
+          } else if (!looksOnly && (c.taken || terminal.typing === null || terminal.typing === view.id)) {
+            const prev = terminal.typing !== null && terminal.typing !== view.id ? terminal.views.get(terminal.typing) : undefined;
+            if (prev) {
+              prev.types = false;
+              log.info("terminal", "taken over", { id: terminal.id, by: name, from: prev.name });
+            }
+            terminal.typing = view.id;
+            view.types = true;
+            if (c.cols !== undefined && c.rows !== undefined && (terminal.size.cols !== c.cols || terminal.size.rows !== c.rows)) {
+              terminal.size = { cols: c.cols, rows: c.rows };
+              terminal.link.resize(c.cols, c.rows);
+              for (const v of terminal.views.values()) if (v !== view) void v.again();
+            }
+            this.#tellAll(terminal);
+          }
         }
       }
     } catch {
@@ -323,6 +356,18 @@ export function sizeOf(payload: Buffer): { cols: number; rows: number } | null {
   try {
     const v = JSON.parse(payload.toString("utf8"));
     return within(v?.cols, SIZE.cols) && within(v?.rows, SIZE.rows) ? { cols: v.cols, rows: v.rows } : null;
+  } catch {
+    return null;
+  }
+}
+
+/// An in-band `control` frame (`只看` release or `接管` takeover), or null when malformed.
+export function controlOf(payload: Buffer): { control: boolean; taken: boolean; cols?: number; rows?: number } | null {
+  try {
+    const v = JSON.parse(payload.toString("utf8"));
+    if (v === null || typeof v !== "object" || typeof v.control !== "boolean") return null;
+    const hasSize = within(v.cols, SIZE.cols) && within(v.rows, SIZE.rows);
+    return { control: v.control, taken: v.taken === true, ...(hasSize ? { cols: v.cols, rows: v.rows } : {}) };
   } catch {
     return null;
   }

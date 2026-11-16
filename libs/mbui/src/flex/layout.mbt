@@ -1399,6 +1399,10 @@ fn layout_flex(
       if cs.position == Absolute {
         continue
       }
+      // (on a line: the measure that put it there writes none, and one left out as it was laid before is not now)
+      if c.line < 0 {
+        c.line = 0
+      }
       // (pool.add written out: called from here too, it is not inlined
       // where every container's items are set up)
       let k = pool.count
@@ -2099,9 +2103,13 @@ fn layout_flex(
           cross_pos = cross_size - cross_pos - cross
         }
         f.unsafe_set(i + CROSS_POS, cross_pos)
-        // (for baselines only, which reuse does not take: measuring may
-        // write them too)
-        flow.unsafe_get(at.unsafe_get(k)).line = pool.line_of.unsafe_get(k)
+        // (for baselines only, which reuse does not take; laid out only, never as it is measured: a measure in a room
+        // it has not laid out in (a row with none bound, what holds it finding its size) puts back on a line what its
+        // row left out as it was laid, and a layout of that row kept after it (p_ok) would leave it so, of no size but
+        // not left out: drawn whole where it was let go, 2026-11-15)
+        if perform {
+          flow.unsafe_get(at.unsafe_get(k)).line = pool.line_of.unsafe_get(k)
+        }
       }
     }
     let fw = if row { main_size + pbw } else { cross_size + pbw }
@@ -3322,7 +3330,10 @@ fn node_baseline(n : Node) -> Double {
     if c.line > 0 {
       break
     }
-    if c.style.position == Absolute || c.style.display == DisplayNone || (n.holds_gone && c.style.gone_empty && holds_none(c)) {
+    if c.line < 0 ||
+      c.style.position == Absolute ||
+      c.style.display == DisplayNone ||
+      (n.holds_gone && c.style.gone_empty && holds_none(c)) {
       continue
     }
     let al = item_align(n.style, c.style)

@@ -210,3 +210,18 @@ pub fn archive_undo(src : Source, params : Map[String, Json]) -> () -> Unit {
     )
   }
 }
+
+///|
+/// Whether `key` failed within the last 6 s (failed_lately's, for nodes of the window's tree): read as `v` holds it, its
+/// red mark let go at its moment 6 s after the failure was first seen there.
+pub fn failed_lately_node(v : @view.View, key : String) -> () -> Bool {
+  let stop : Ref[() -> Unit] = Ref(fn() {  })
+  v.reacts(fn() { acting.failed.get(key) }, fn(n) {
+    (stop.val)()
+    stop.val = fn() {  }
+    if n is Some(_) {
+      stop.val = v.at_moment(v.logic_at() + failed_ms, later=true, fn() { acting.failed.remove(key) })
+    }
+  })
+  fn() { acting.failed.contains(key) }
+}

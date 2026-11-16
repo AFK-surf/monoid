@@ -1,6 +1,6 @@
-// The copies' work in memory that does not grow with what a station has (replica/export.ts `#fold`, restore.ts `build`):
-// a copy of some 100 MB of messages exported, folded whole (a chat deleted) and taken back in a thread whose heap is a
-// quarter of it; one holding a fold or a restore whole in memory fails there.
+// The copies' work in memory that does not grow with what a station has (reference/replica-export.ts `#fold`,
+// reference/replica-restore.ts `build`): a copy of some 100 MB of messages exported, folded whole (a chat deleted) and
+// taken back in a thread whose heap is a quarter of it; one holding a fold or a restore whole in memory fails there.
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { test } from "node:test";

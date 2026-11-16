@@ -7,11 +7,12 @@
 // Here: the logins under way and ended lately (their screens with them), and the record of those done through still.fail
 // on this station (command, its chat, who finished it, when, how it ended: <data>/logins/history.json), which is all the
 // station page lists.
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Clock } from "effect";
 import { startEnv } from "../ops/agent-env.ts";
 import { Fibers } from "../ops/fibers.ts";
+import { PrivateFile } from "../ops/files.ts";
 import { type Lang, stationLang, tr } from "../ops/i18n.ts";
 import { log } from "../ops/log.ts";
 import { platform } from "../platform/index.ts";
@@ -121,9 +122,17 @@ export class Logins {
   /// The logins their agent's call waits on now (how many calls), told what they ask by that call's answer.
   readonly #heard = new Map<string, number>();
   #next = 0;
+  /// The record of logins done here, newest first: read once as it starts, written through (`history.json`).
+  #history: Login[] = [];
+  readonly #historyFile: PrivateFile;
+  /// Recorded before the file was read: written once it is, with what it kept.
+  #loaded = false;
+  readonly #ready: Promise<void>;
 
   constructor(o: LoginsOptions) {
     this.#data = o.data;
+    this.#historyFile = new PrivateFile(join(o.data, "logins", "history.json"));
+    this.#ready = this.#load();
     this.#env = o.env ?? (() => startEnv(SCRUBBED));
     this.#fibers = new Fibers("logins", o.clock);
     this.#lang = o.lang ?? stationLang;
@@ -161,22 +170,36 @@ export class Logins {
 
   // ── the history ──
 
+  /// Once the history kept before is read (the station waits for it before it serves: module.ts).
+  ready(): Promise<void> {
+    return this.#ready;
+  }
+
+  /// Once what was recorded is written down (or failed).
+  async written(): Promise<void> {
+    await this.#ready;
+    await this.#historyFile.written();
+  }
+
+  async #load(): Promise<void> {
+    let kept: Login[] = [];
+    try {
+      const v = JSON.parse(await readFile(this.#historyFile.path, "utf8"));
+      if (Array.isArray(v)) kept = v.filter((l) => l && typeof l.id === "string");
+    } catch {}
+    const recorded = new Set(this.#history.map((l) => l.id));
+    this.#history = [...this.#history, ...kept.filter((l) => !recorded.has(l.id))].slice(0, HISTORY_MOST);
+    this.#loaded = true;
+    if (recorded.size > 0) this.#writeHistory();
+  }
+
   /// The logins done through still.fail on this station, newest first: how each ended, no page, code or output. Each
   /// named by its command, as one under way is (one kept before names were the program's was named env).
   history(): Login[] {
-    try {
-      const v = JSON.parse(readFileSync(join(this.#data, "logins", "history.json"), "utf8"));
-      return Array.isArray(v)
-        ? v.filter((l) => l && typeof l.id === "string").map((l: Login) => (Array.isArray(l.command) ? { ...l, name: programOf(l.command) } : l))
-        : [];
-    } catch {
-      return [];
-    }
+    return this.#history.map((l: Login) => (Array.isArray(l.command) ? { ...l, name: programOf(l.command) } : l));
   }
 
   #record(login: Login) {
-    const dir = join(this.#data, "logins");
-    mkdirSync(dir, { recursive: true });
     const kept: Login = {
       id: login.id, name: login.name, command: login.command, state: login.state, waiting: false, by: login.by,
       ...(login.workspace ? { workspace: login.workspace } : {}), ...(login.chat ? { chat: login.chat } : {}),
@@ -184,8 +207,12 @@ export class Logins {
       startedAt: login.startedAt, expiresAt: login.expiresAt, ...(login.endedAt !== undefined ? { endedAt: login.endedAt } : {}),
       ...(login.timedOut ? { timedOut: true } : {}),
     };
-    const history = [kept, ...this.history().filter((l) => l.id !== login.id)].slice(0, HISTORY_MOST);
-    writeAtomic(join(dir, "history.json"), `${JSON.stringify(history, null, 2)}\n`);
+    this.#history = [kept, ...this.#history.filter((l) => l.id !== login.id)].slice(0, HISTORY_MOST);
+    if (this.#loaded) this.#writeHistory();
+  }
+
+  #writeHistory() {
+    this.#historyFile.write(`${JSON.stringify(this.#history, null, 2)}\n`).catch((e) => log.warn("logins", "a login was not recorded", { error: (e as Error).message }));
   }
 
   // ── logins ──
@@ -219,14 +246,17 @@ export class Logins {
     if (running) return this.#shown(running);
     const id = `${this.#fibers.now().toString(36)}${(++this.#next).toString(36)}${Math.random().toString(36).slice(2, 6)}`;
     const dir = join(this.#data, "run", "logins");
-    mkdirSync(dir, { recursive: true });
+    const [shims] = await Promise.all([this.#shims(), mkdir(dir, { recursive: true })]);
+    // (one started meanwhile for the same command is given rather than another)
+    const meanwhile = [...this.#entries.values()].find((e) => e.run.active && e.run.command.join("\0") === words.join("\0"));
+    if (meanwhile) return this.#shown(meanwhile);
     const entry: Entry = { starter, screens: new Set(), run: undefined as unknown as LoginRun };
     entry.run = new LoginRun({
       id,
       command: words,
       env: this.#env(),
       cwd: platform.home(this.#env()) ?? this.#data,
-      shims: this.#shims(),
+      shims,
       opened: join(dir, `${id}.opened`),
       fibers: this.#fibers,
       lang,
@@ -458,20 +488,14 @@ export class Logins {
 
   /// The stand-ins for the browser (`browser` for BROWSER; `open`, `xdg-open` and `osascript` first on the command's
   /// PATH): each writes the pages it is given to the file the login names, and does nothing else.
-  #shims(): string {
+  async #shims(): Promise<string> {
     const dir = join(this.#data, "run", "login-shims");
-    mkdirSync(dir, { recursive: true });
+    await mkdir(dir, { recursive: true });
     const pages = `#!/bin/sh\n# A browser for a login command run by still.fail (station/src/logins): the page goes to the station.\n[ -n "$STILLFAIL_LOGIN_OPENED" ] || exit 0\nfor a in "$@"; do printf '%s\\n' "$a" >> "$STILLFAIL_LOGIN_OPENED"; done\nexit 0\n`;
     // Python's opener before 3.14 says `open location "…"` on osascript's stdin.
     const osascript = `#!/bin/sh\n# osascript for a login command run by still.fail (station/src/logins): the page goes to the station.\n[ -n "$STILLFAIL_LOGIN_OPENED" ] || exit 0\nprintf '%s\\n' "$*" >> "$STILLFAIL_LOGIN_OPENED"\n[ -t 0 ] || cat >> "$STILLFAIL_LOGIN_OPENED"\nexit 0\n`;
-    for (const [name, text] of [["browser", pages], ["open", pages], ["xdg-open", pages], ["osascript", osascript]] as const) {
-      const path = join(dir, name);
-      let same = false;
-      try {
-        same = readFileSync(path, "utf8") === text;
-      } catch {}
-      if (!same) platform.makeCommand(path, text);
-    }
+    // (each left alone where it is as it is to be: makeCommandSoon)
+    await Promise.all(([["browser", pages], ["open", pages], ["xdg-open", pages], ["osascript", osascript]] as const).map(([name, text]) => platform.makeCommandSoon(join(dir, name), text)));
     return dir;
   }
 
@@ -480,15 +504,10 @@ export class Logins {
     for (const e of this.#entries.values()) e.run.close();
     this.#entries.clear();
     await this.#fibers.close();
+    await this.written();
   }
 }
 
 /// What the login commands do not take from the station's environment: what would point a runtime elsewhere, and the
 /// station's own.
 const SCRUBBED = ["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "STILLFAIL_MESH_NATIVE", "STILLFAIL_RUNNER", "SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"];
-
-function writeAtomic(path: string, text: string) {
-  const tmp = `${path}.${process.pid}.tmp`;
-  writeFileSync(tmp, text);
-  renameSync(tmp, path);
-}

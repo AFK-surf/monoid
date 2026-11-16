@@ -133,14 +133,15 @@ pub(all) struct FlyingFile {
 }
 
 ///|
-pub let send_flight : @signals.Signal[SendFlight?] = @signals.signal(None)
+// (by the one flight: what it measures is set on it as it goes, a flight its object)
+pub let send_flight : @signals.Signal[SendFlight?] = @signals.signal_ref(None)
 
 ///|
 /// Words sent before the last, on their way as more were sent (flight_start): each goes on to its row as it was
 /// going, until it lands (flight_frame). The last sent alone (send_flight) are the composer's and the list's: these
 /// are only their rows' (flight_to), which draw them. Dropped as the next were sent, they stood in their row at once,
 /// from wherever they were on the way (26 points off it, in one frame, with the next sent 300 ms after them).
-let flights_on : @signals.Signal[Array[SendFlight]] = @signals.signal([], same=fn(a, b) {
+let flights_on : @signals.Signal[Array[SendFlight]] = @signals.signal_by([], same=fn(a, b) {
   // (the same words sent, by their numbers: none set again as none tells nothing)
   guard a.length() == b.length() else { return false }
   for i in 0..<a.length() {

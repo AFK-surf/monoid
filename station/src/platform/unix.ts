@@ -4,7 +4,8 @@ import { type ChildProcess, execFile, execFileSync, spawn } from "node:child_pro
 import { chmodSync, existsSync, lstatSync, readFileSync, readdirSync, readlinkSync, realpathSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { release, type as osType, userInfo } from "node:os";
 import { basename, delimiter, join } from "node:path";
-import { access, copyFile, readFile, readdir } from "node:fs/promises";
+import { access, chmod, copyFile, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import { wall } from "../ops/fibers.ts";
 import type { Env, Found, Host, HostSample, Platform } from "./index.ts";
@@ -32,6 +33,34 @@ const real = (p: string) => {
     return null;
   }
 };
+
+/// How this machine starts a command as background work (Platform.backgrounded): which wrapper is here, looked for
+/// once. macOS's taskpolicy; Linux's ionice (util-linux's: busybox's has no `-t`, without which a container that refuses
+/// the IO class would refuse to run the command) and nice; nice alone; nothing.
+export type Background = { kind: "taskpolicy" } | { kind: "ionice"; ionice: string; nice: string } | { kind: "nice"; nice: string } | { kind: "none" };
+
+let backgroundFound: Background | null = null;
+function background(): Background {
+  if (backgroundFound !== null) return backgroundFound;
+  const there = (p: string) => existsSync(p); // sync: a stat or two, once for the process
+  const nice = ["/usr/bin/nice", "/bin/nice"].find(there);
+  if (MACOS && there("/usr/sbin/taskpolicy")) backgroundFound = { kind: "taskpolicy" };
+  else {
+    const ionice = MACOS ? undefined : ["/usr/bin/ionice", "/bin/ionice"].find((p) => there(p) && !/busybox/.test(real(p) ?? p));
+    backgroundFound = ionice !== undefined && nice !== undefined ? { kind: "ionice", ionice, nice } : nice !== undefined ? { kind: "nice", nice } : { kind: "none" };
+  }
+  return backgroundFound;
+}
+
+/// `program` with `args` under the wrapper `how`.
+export function backgroundedOn(how: Background, program: string, args: string[]): [string, string[]] {
+  switch (how.kind) {
+    case "taskpolicy": return ["/usr/sbin/taskpolicy", ["-b", program, ...args]];
+    case "ionice": return [how.ionice, ["-t", "-c2", "-n7", how.nice, "-n", "10", program, ...args]];
+    case "nice": return [how.nice, ["-n", "10", program, ...args]];
+    case "none": return [program, args];
+  }
+}
 
 /// files.rs `clean` on Unix: the path absolute (a leading `/`), `.` and `..` worked out lexically.
 function clean(path: string): string {
@@ -280,10 +309,30 @@ function mounts(): string[] {
   return mounted.points;
 }
 
+/// Where Linux's `script` (util-linux's) may be.
+const SCRIPTS = ["/usr/bin/script", "/bin/script"];
+
+/// Platform.terminalSoon, given where Linux's `script` is (none: there is no pseudo-terminal to give).
+function inTerminal(script: string | undefined, program: string, args: string[], cols: number, rows: number): [string, string[]] | null {
+  // The window's size first (script's own is its stdin's, a pipe's: none), then the command in its place.
+  const inner = ["/bin/sh", "-c", `stty cols ${cols} rows ${rows} 2>/dev/null; exec "$@"`, "sh", program, ...args];
+  // macOS's script refuses a socket for its stdin, and Node's pipes (and macOS's fifos) are sockets: a pipe is put
+  // between, `cat` feeding it from ours, ended as the command ends (else it would hold the end up until ours closes).
+  if (MACOS) {
+    const run = `stty cols ${cols} rows ${rows} 2>/dev/null; exec "$@"`;
+    const feed = `exec 3<&0; cat <&3 | { /usr/bin/script -q /dev/null /bin/sh -c '${run}' sh "$@" 3<&-; s=$?; /usr/bin/pkill -P $$ -x cat; exit $s; }`;
+    return ["/bin/sh", ["-c", feed, "sh", program, ...args]];
+  }
+  return script === undefined ? null : [script, ["-qfec", inner.map(quoted).join(" "), "/dev/null"]];
+}
+
 export const unix: Platform = {
   os: OS[process.platform] ?? process.platform,
   buildOs: process.platform === "darwin" || process.platform === "linux" ? process.platform : null,
   clonesFiles: MACOS,
+  nativeCache: (env, home) =>
+    env.STILLFAIL_NATIVE_CACHE ||
+    (MACOS ? join(home, "Library", "Caches", "stillfail-native") : join(env.XDG_CACHE_HOME || join(home, ".cache"), "stillfail-native")),
 
   exe: (name) => name,
   home: (env) => env.HOME,
@@ -307,6 +356,17 @@ export const unix: Platform = {
     }
     return null;
   },
+  savedPath: async () => null,
+  async findCommandSoon(name: string, env: Env): Promise<Found | null> {
+    const path = env.PATH;
+    if (path === undefined) return null;
+    for (const dir of path.split(delimiter)) {
+      const onPath = join(dir === "" ? "." : dir, name);
+      const st = await stat(onPath).catch(() => null);
+      if (st !== null && st.isFile() && (st.mode & 0o111) !== 0) return { onPath, real: (await realpath(onPath).catch(() => null)) ?? onPath };
+    }
+    return null;
+  },
   userShell(env) {
     if (env.SHELL) return env.SHELL;
     try {
@@ -321,9 +381,26 @@ export const unix: Platform = {
   posixShell: () => "/bin/sh",
   grouped: (program, args) => [program, args],
   lowered: (program, args, by) => (by === 0 || !existsSync("/usr/bin/nice") ? [program, args] : ["/usr/bin/nice", ["-n", String(by), program, ...args]]),
+  backgrounded: (program, args) => backgroundedOn(background(), program, args),
+  flushing: (dir) => (MACOS ? ["sync", []] : ["sync", ["-f", dir]]),
   makeCommand(path, script) {
     writeFileSync(path, script);
     chmodSync(path, 0o755);
+    return path;
+  },
+  async makeCommandSoon(path, script) {
+    // (one there already as it is to be kept: a command running it may hold it)
+    const [had, st] = await Promise.all([readFile(path, "utf8").catch(() => null), stat(path).catch(() => null)]);
+    if (had === script && st !== null && (st.mode & 0o111) !== 0) return path;
+    const tmp = `${path}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(tmp, script);
+      await chmod(tmp, 0o755);
+      await rename(tmp, path);
+    } catch (error) {
+      await rm(tmp, { force: true }).catch(() => {});
+      throw error;
+    }
     return path;
   },
 
@@ -555,18 +632,17 @@ export const unix: Platform = {
     return [...new Set(found)].filter(executable);
   },
   hasDisplay: (env) => MACOS || Boolean(env.DISPLAY || env.WAYLAND_DISPLAY),
-  terminal(program, args, cols, rows) {
-    // The window's size first (script's own is its stdin's, a pipe's: none), then the command in its place.
-    const inner = ["/bin/sh", "-c", `stty cols ${cols} rows ${rows} 2>/dev/null; exec "$@"`, "sh", program, ...args];
-    // macOS's script refuses a socket for its stdin, and Node's pipes (and macOS's fifos) are sockets: a pipe is put
-    // between, `cat` feeding it from ours, ended as the command ends (else it would hold the end up until ours closes).
-    if (MACOS) {
-      const run = `stty cols ${cols} rows ${rows} 2>/dev/null; exec "$@"`;
-      const feed = `exec 3<&0; cat <&3 | { /usr/bin/script -q /dev/null /bin/sh -c '${run}' sh "$@" 3<&-; s=$?; /usr/bin/pkill -P $$ -x cat; exit $s; }`;
-      return ["/bin/sh", ["-c", feed, "sh", program, ...args]];
+  async terminalSoon(program, args, cols, rows) {
+    let script: string | undefined;
+    if (!MACOS) {
+      for (const p of SCRIPTS) {
+        if ((await stat(p).catch(() => null)) !== null) {
+          script = p;
+          break;
+        }
+      }
     }
-    const script = ["/usr/bin/script", "/bin/script"].find((p) => existsSync(p));
-    return script === undefined ? null : [script, ["-qfec", inner.map(quoted).join(" "), "/dev/null"]];
+    return inTerminal(script, program, args, cols, rows);
   },
   descendants,
   async inputIdleMs() {

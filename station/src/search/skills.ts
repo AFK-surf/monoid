@@ -1,6 +1,6 @@
 // Read a skill by its name (one found by workspace search, or one a tool or the instructions name: the station's own
-// are in every workspace's catalog), using the same workspace-scoped catalog as search and GET /memory.
-import { memory } from "../read/memory.ts";
+// are in every workspace's catalog), using the same workspace-scoped catalog as search and GET /memory: the readers'
+// (mb/src/readops `memory`), never read on the station's thread.
 import type { Tool } from "../tools/mcp.ts";
 import { wall } from "../ops/fibers.ts";
 import type { SearchDeps } from "./tool.ts";
@@ -13,8 +13,11 @@ function selection(args: Record<string, unknown>): { name: string; file: string 
   return { name: args.name, file: typeof args.file === "string" ? args.file : "SKILL.md" };
 }
 
-export function readSkill(data: string, workspace: string | undefined, name: string, file: string): string {
-  const catalog = memory(data, workspace);
+/// What GET /memory answers (the readers' `memory`): the catalog a skill is read from.
+export type SkillCatalog = { skills: { name: string; text: string; files: { name: string; text: string }[] }[] };
+
+/// A skill's file as `skill_read` gives it, out of the catalog of the workspace it is read in.
+export function formatSkillFromCatalog(catalog: SkillCatalog, name: string, file: string): string {
   const skill = catalog.skills.find((s: any) => s.name === name);
   if (!skill) throw new Error(`No skill ${JSON.stringify(name)} in this workspace on this station`);
   const text = file === "SKILL.md" ? skill.text : skill.files.find((f: any) => f.name === file)?.text;
@@ -23,9 +26,12 @@ export function readSkill(data: string, workspace: string | undefined, name: str
   return `Skill ${JSON.stringify(name)}, file ${JSON.stringify(file)}\nAvailable files: ${files.map((f) => JSON.stringify(f)).join(", ")}\n\n${text}`;
 }
 
-export async function skillForPeer(data: string, request: any, workspace: string | null, home: string | null): Promise<{ text: string }> {
+/// Another station of the workspace reading a skill here (`skill.read` on the bus): `readCatalog` reads the catalog of
+/// a workspace (none: the home one's).
+export async function skillForPeer(readCatalog: (workspace?: string) => Promise<SkillCatalog>, request: any, workspace: string | null, home: string | null): Promise<{ text: string }> {
   const { name, file } = selection(request ?? {});
-  return { text: readSkill(data, workspace === null || workspace === home ? undefined : workspace, name, file) };
+  const catalog = await readCatalog(workspace === null || workspace === home ? undefined : workspace);
+  return { text: formatSkillFromCatalog(catalog, name, file) };
 }
 
 export function skillTools(deps: SearchDeps): Tool[] {

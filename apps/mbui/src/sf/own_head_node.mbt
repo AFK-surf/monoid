@@ -9,8 +9,8 @@
 /// it is saved; `tags` (its runtimes: what it is); `lines` of what it is and where; how it stands under them (`state`),
 /// what it does at the end of its name's line (`actions`); `dot` (a state's: online, offline …; "" none) before its
 /// first line, `state` only while `state_shown` says, what is wrong with it under all of them (`warnings`: its words,
-/// red or else amber). Wide, the web's identity: its mark 48, its name large with
-/// its tags and a pencil after it, the lines under it as wide as its words. Narrow: its mark, its name and what it does
+/// red or else amber). Wide: its mark 32 on its name's line with a pencil and what it does after it, the lines under
+/// them from the mark's start. Narrow: its mark, its name and what it does
 /// in one line (what it does on back's line over it where the page puts back there: head_back_holds), the name a size
 /// under the page's large title on as many lines as it takes, pressed to rename it; its tags and lines under them.
 #callsite(autofill(loc))
@@ -131,37 +131,32 @@ pub fn own_head_node(
     |> ignore
     return
   }
-  parent.box(fn(h) {
+  parent.box(made_for=loc, fn(h) {
     style_node(h, fn() { head_wide })
-    h.box(fn(m) {
-      style_node(m, fn() { head_mark_wide })
-      mark(m, head_mark_wide_side)
-    })
-    |> ignore
-    h.box(fn(id) {
-      style_node(id, fn() { head_identity }, in_row=true)
-      id.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-      // its name and what it does on the name's line, the lines under them as wide as its words (lines of their own)
-      id.box(fn(row) {
-        style_node(row, fn() { head_name_row })
-        row.box(fn(l) {
-          style_node(l, fn() { head_name_line.then(head_name_grow) }, in_row=true)
-          l.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-          // (short of room, its name is cut short, what follows it kept)
-          words_node(l, name, fn() { head_name_wide }).shrink(Is(1.0)) |> ignore
-          l.show(busy, fn(s) { spinner_node(s, size=spinner_inline) |> ignore })
-          match rename {
-            Some(f) => l.show(renames, fn(e) { icon_action_node(e, "edit", rename_label, f) |> ignore })
-            None => ()
-          }
-        })
-        |> ignore
-        end(row)
+    // its mark, its name and what it does on the name's line, the lines under them from the mark's start
+    h.box(fn(row) {
+      style_node(row, fn() { head_name_row })
+      row.box(fn(m) {
+        style_node(m, fn() { head_mark_wide })
+        mark(m, head_mark_wide_side)
       })
       |> ignore
-      below(id)
+      row.box(fn(l) {
+        style_node(l, fn() { head_name_line.then(head_name_grow) }, in_row=true)
+        l.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+        // (short of room, its name is cut short, what follows it kept)
+        words_node(l, name, fn() { head_name_wide }).shrink(Is(1.0)) |> ignore
+        l.show(busy, fn(s) { spinner_node(s, size=spinner_inline) |> ignore })
+        match rename {
+          Some(f) => l.show(renames, fn(e) { icon_action_node(e, "edit", rename_label, f) |> ignore })
+          None => ()
+        }
+      })
+      |> ignore
+      end(row)
     })
     |> ignore
+    below(h)
   })
   |> ignore
 }
@@ -368,3 +363,44 @@ pub fn labelled_field_node(
   })
   |> ignore
 }
+
+///|
+/// What a page does at its head's end (`actions`: each its mark, what it is called and its press), in `parent`, by the
+/// page's width: wide, side by side, each the quiet button with its mark and its words, each a spinner while `busy`;
+/// narrow, each a button of its mark alone (icon_action_node), one spinner in their place while `busy`.
+#callsite(autofill(loc))
+pub fn head_actions_node(
+  parent : @view.View,
+  actions : Array[(String, () -> String, () -> Unit)],
+  busy? : () -> Bool = fn() { false },
+  loc~ : SourceLoc,
+) -> Unit {
+  parent.box(made_for=loc, fn(row) {
+    row.row(Is(true)).lines_up(Is(Some(Middle))) |> ignore
+    match look_node(row) {
+      Wide => {
+        row.gap(Is(head_actions_wide_gap)) |> ignore
+        for a in actions {
+          button_node(row, a.1, a.2, tone=Ghost, icon=a.0, busy~) |> ignore
+        }
+      }
+      Narrow =>
+        row.pick(busy, fn(p, busy) {
+          p.row(Is(true)).gap(Is(head_actions_narrow_gap)).lines_up(Is(Some(Middle))) |> ignore
+          if busy {
+            spinner_node(p, size=spinner_inline) |> ignore
+          } else {
+            p.each_of(fn() { actions }, fn(e, a) { icon_action_node(e, a.0, a.1, a.2) |> ignore })
+          }
+        })
+    }
+  })
+  |> ignore
+}
+
+///|
+/// A head's actions apart: wide, its quiet buttons 8 (a head's row's gap=S2); narrow, its marks 12 (gap=S3).
+let head_actions_wide_gap : Double = 8.0
+
+///|
+let head_actions_narrow_gap : Double = 12.0

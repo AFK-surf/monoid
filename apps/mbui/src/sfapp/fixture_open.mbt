@@ -114,7 +114,7 @@ pub fn open_fixture(mode : String) -> Unit {
     "home-attention" => @sfdesk.open_attention()
     // (what is beside it: the made-up core keeps it so, fixture.mbt fixture_chat_tabs)
     "chat-letters-side" => {
-      dui.letters_open = ""
+      @sfdesk.letters_to_list(r)
       dui.letters_held[r.station + "\u{1}" + r.session] = 7.0
     }
     "chat-model-pop" => @sfpages.open_triple(r.station, "session:s-c1")
@@ -167,7 +167,7 @@ fn open_decide_panels(mode : String, src : Source) -> Unit {
     "chat-things" => open_things(src, r, 7.0)
     "chat-letters-open" => {
       open_letters(src, r, 7.0)
-      dui.letters_open = @sffixture.fix_letters_link
+      @sfdesk.letters_open_at(r, @sffixture.fix_letters_link)
     }
     "chat-agent" | "chat-agent-unsaid" | "chat-agent-screens" => open_agent(src, r, "s-c1")
     "chat-jobs" => open_chat_jobs(src, r)
@@ -238,16 +238,14 @@ pub fn open_drive_fixture(mode : String) -> Unit {
       app.nav.push(DriveRead(at))
       let r = @sf.reading_for(reader_key(at))
       if mode != "reader" && mode != "reader-md" {
-        r.chrome = true
+        r.chrome.set(true)
       }
       if mode == "reader-contents" {
-        r.panel = @sf.ReaderPanel::Contents
-        r.contents_put = false
+        r.panel.set(@sf.ReaderPanel::Contents)
       }
       if mode == "reader-layout" {
         // (the layout's panel, nodes of the window's tree, told it is open)
         @sf.reader_panel_set(r, @sf.ReaderPanel::Layout)
-        r.contents_put = false
       }
     }
     // (chat-station-files: ＋'s Station 文件 put up as the app's source is made, fixture_station_files)
@@ -687,6 +685,9 @@ pub fn open_mode(mode : String) -> Unit {
     // the profiles' place with Willow's own Codex login offered with its allowance (settings-profiles-offer's)
     @settings.fixture_page("settings-profiles-offer") |> ignore
     app.nav.replace(Place("profiles"))
+  } else if mode == "place-profiles-sum-a" {
+    @settings.fixture_page("settings-profiles-sum-a") |> ignore
+    app.nav.replace(Place("profiles"))
   } else if mode == "terminal" || mode.has_prefix("terminal-") {
     // one of its terminals: typed into here (terminal, terminal-kb, terminal-keys, terminal-center), by someone else
     // with 接管 over it (terminal-taken), or ended with 重新打开 (terminal-ended)
@@ -694,6 +695,7 @@ pub fn open_mode(mode : String) -> Unit {
       "terminal-kb" => @sfpages.terminal_fixture_ask("kb")
       "terminal-keys" => @sfpages.terminal_fixture_ask("keys")
       "terminal-center" => @sfpages.terminal_fixture_ask("center")
+      "terminal-scrolled" => @sfpages.terminal_fixture_ask("scrolled")
       _ => ()
     }
     let tid = match mode {

@@ -338,6 +338,20 @@ impl @hostapi.Host for FakeHost with font_metrics(self, size, weight, style, out
 }
 
 ///|
+/// Who spaces Chinese and Japanese words: nobody where the run says MBUI_AUTOSPACE=off, else a live host's answer, else
+/// the fake's own (Tester::words_spaced_here).
+impl @hostapi.Host for FakeHost with words_spaced(self) {
+  // (none, as the run's own MBUI_AUTOSPACE says: a film's, its live host not asked)
+  if self.env.get("MBUI_AUTOSPACE") == Some("off") {
+    return @hostapi.words_spaced_none
+  }
+  match self.live {
+    Some(l) => l.host.words_spaced()
+    None => self.words_spaced
+  }
+}
+
+///|
 /// Fake shaping: one cluster per extended grapheme cluster, as real hosts
 /// make them; Latin half an em wide (0.6 in the code face; ASCII as a real face where the test says:
 /// Tester::latin_advances), everything else a full em.
@@ -442,7 +456,7 @@ impl @hostapi.Host for FakeHost with glyph(self, key, out) {
   out[3] = self.glyph_box.1
   out[4] = 0.0
   out[5] = -10.0
-  out[6] = if key >= 0x1F000 { 1.0 } else { 0.0 }
+  out[6] = if (key & 0x03FFFFFF) >= 0x1F000 { 1.0 } else { 0.0 }
 }
 
 ///|
@@ -550,6 +564,12 @@ impl @hostapi.Host for FakeHost with atlas_generation(self) {
 /// The system asks for less transparency (Tester::set_reduce_transparency).
 impl @hostapi.Host for FakeHost with reduce_transparency(self) {
   self.reduce_transparency
+}
+
+///|
+/// The system asks for more contrast (Tester::set_increase_contrast).
+impl @hostapi.Host for FakeHost with increase_contrast(self) {
+  self.increase_contrast
 }
 
 ///|
@@ -744,6 +764,11 @@ impl @hostapi.Host for FakeHost with image_load_bytes(self, data, max_px) {
         (Some(_), Some((w, h, ow, oh))) => fake_image_sized(self, w, h, ow, oh)
         _ => fake_image(self, 400, 300, max_px)
       }
+  }
+  // (said to take a while: done that long after it is asked for, Tester::decode_bytes_after)
+  match fake_decode_bytes_after.val.search_by(fn(d) { d.0 == data }) {
+    Some(i) => self.decode_due[id] = self.time + fake_decode_bytes_after.val[i].1
+    None => ()
   }
   self.image_bytes[id] = data.length()
   self.image_bytes_now += data.length()
@@ -943,7 +968,9 @@ impl @hostapi.Host for FakeHost with view_place(self, id, px, py, pw, ph, pcx0, 
     } else {
       " round \{pr0} \{pr1} \{pr2} \{pr3}"
     }) +
-    (if shown { "" } else { " hidden" }),
+    (if shown { "" } else { " hidden" }) +
+    // (in a window of the run beside the first, which: window_slots.mbt)
+    (if self.window_at != 0 { " window \{self.window_at}" } else { "" }),
   )
   let z = window_zoom_drawn.val
   let (x, y, w, h) = (px / z, py / z, pw / z, ph / z)
@@ -1331,6 +1358,50 @@ impl @hostapi.Host for FakeHost with window_front(self, what) {
 }
 
 ///|
+/// Its windows in this run where the test says so (Tester::set_windows_in_process).
+impl @hostapi.Host for FakeHost with windows_in_process(self) {
+  self.windows_in_process
+}
+
+///|
+/// Another window of the run, its size the one said for it or 480 × 720 (Tester::set_window_beside_size).
+impl @hostapi.Host for FakeHost with window_open_id(self, what) {
+  ignore(what)
+  guard self.windows_in_process else { return 0 }
+  self.window_ids = self.window_ids + 1
+  let wid = self.window_ids
+  if !self.window_sizes.contains(wid) {
+    self.window_sizes[wid] = (480.0, 720.0)
+  }
+  self.wants = true
+  wid
+}
+
+///|
+/// A window of the run to the front, while it is open (Tester::close_window_beside), kept.
+impl @hostapi.Host for FakeHost with window_front_id(self, wid) {
+  let open = wid > 0 && wid <= self.window_ids && !self.window_ids_closed.contains(wid)
+  if open {
+    self.window_ids_fronted.push(wid)
+  }
+  open
+}
+
+///|
+/// A window of the run closed by the app, kept.
+impl @hostapi.Host for FakeHost with window_close_id(self, wid) {
+  if !self.window_ids_closed.contains(wid) {
+    self.window_ids_closed.push(wid)
+  }
+}
+
+///|
+/// The window of the run drawn or handed input now (Tester::in_window).
+impl @hostapi.Host for FakeHost with window_current(self) {
+  self.window_at
+}
+
+///|
 /// What another app shared in (Tester::share_in), from the frame after it was told; taken once.
 impl @hostapi.Host for FakeHost with shared_in(self) {
   match self.share {
@@ -1625,6 +1696,11 @@ impl @hostapi.Host for FakeHost with ga_read_end(self, a0) {
 
 // This device's password manager (@hostapi passwords.mbt) as a test has it: none, unless it says how `op` answers
 // (`fake_op`: its exit code, output and error output for the arguments given), each run ended at once.
+
+///|
+/// Bytes said to take a while to decode (Tester::decode_bytes_after; a film's scene says so of its own): the bytes and
+/// how many ms after each decode of them is asked for it is done. None, as a Tester begins.
+pub let fake_decode_bytes_after : Ref[Array[(Bytes, Double)]] = Ref([])
 
 ///|
 /// How `op` answers a test, given its arguments: None, no password manager here.
@@ -2397,6 +2473,19 @@ impl @hostapi.Host for FakeHost with script_step(self, step, arg) {
         "viewsaid: not a line of what a native view's host says: " + arg
       }
     }
+    "appsaid" => {
+      // (what the app's own native call `NAME` says from here on, `NAME TEXT`, as a device's host comes to say it:
+      // changed outside the app, posted on its channel as the host tells it, app_calls.h)
+      match arg.find(" ") {
+        Some(i) => {
+          let name = arg[:i].to_owned()
+          self.app_said[name] = arg[i + 1:].to_owned()
+          fake_post(self, name, "{}", None)
+          ""
+        }
+        None => "appsaid: NAME TEXT, not " + arg
+      }
+    }
     "ime" => {
       self.dev.ime_inset = number(arg)
       self.wants = true
@@ -2475,6 +2564,41 @@ fn posted_tell() -> Unit {
     f()
     if fake_posted.length() > 0 {
       on_outside(outside_posted, 0, 0)
+    }
+  }
+}
+
+///|
+/// `f` done `ms` from now between frames, as what comes from outside comes then (a made-up core's answer across no
+/// thread: an app's fixture): under a Tester its fake host's moment (FakeHost::due), told at it however the clock is run
+/// on; on a device's host the window's runtime's timer. `what` names it.
+pub fn later_between_frames(ms : Double, what : String, f : () -> Unit) -> Unit {
+  match fake.val {
+    Some(h) => h.due(h.time + ms, what, f)
+    None => runtime().after(ms.ceil().to_int(), f)
+  }
+}
+
+///|
+/// A message on `channel` from what stands for the outside in this process (a made-up core answering across no thread:
+/// an app's fixture), posted as a host's is: under a Tester to its fake host, told between frames at its moment with
+/// all posted then (posted_tell); on a device's host taken as messages_between takes a post, what changes only signals
+/// now and the rest left for the next frame, which it asks for (in a frame, left for the next). So what a test's made-up
+/// core says reaches the app by the path a device's core's does.
+pub fn outside_post(channel : String, json : String) -> Unit {
+  match fake.val {
+    // (told by what is telling the fake host's moments now, posted_tell, or as its clock moves on)
+    Some(h) => fake_post(h, channel, json, None)
+    None => {
+      if frame_running.val {
+        messages_in.push((channel, json, None))
+        outside_left()
+        return
+      }
+      messages_take([(channel, json, None)])
+      if messages_in.length() > 0 {
+        outside_left()
+      }
     }
   }
 }

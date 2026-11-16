@@ -22,6 +22,20 @@ pub fn settings_core(src : Source, w : Workspace) -> @settings.Core {
 pub let login_card_of : Ref[(@ui.Ctx, @settings.Core, String, String, Bool) -> Unit] = Ref(fn(_, _, _, _, _) {  })
 
 ///|
+/// A sign-in to a service as the person, its token kept in their vault (@settings.Core's vault_oauth: sfcore's
+/// vault_oauth): by workspace, vault, provider and request. Given as the app starts; with none given it says it failed.
+// kept across runs: what the app says once as it starts
+pub let vault_oauth_of : Ref[(String, String, String, String, (Result[String, String]) -> Unit) -> Unit] = Ref(fn(
+  _,
+  _,
+  _,
+  _,
+  done,
+) {
+  done(Err(""))
+})
+
+///|
 /// The card to share of the workspace's agents at work, as the pages open it (sfpages' share_card_open), given as the
 /// app starts.
 // kept across runs: what the app says once as it starts
@@ -55,10 +69,11 @@ fn settings_core_of(
         // (an account's page once what it shows is answered, the screen as it was meanwhile: account_open.mbt)
         _ => {
           let open = fn() { open_page(Setting(r)) }
-          let asks = route_asks(w.id, r)
           // (an account's page timed for the host from the press: open_timing)
-          let open = if asks.is_empty() { open } else { timed_open("account", open) }
-          open_answered(src, asks, open) |> ignore
+          let open = if route_asks(w.id, r).is_empty() { open } else { timed_open("account", open) }
+          // (a station's and a connect's too where what opens waits for what it shows: route_open_asks)
+          open_answered(src, route_open_asks(src, w, r), open, then?=route_open_then(src, w, r), most?=route_open_most(src, w, r))
+          |> ignore
         }
       }
     },
@@ -108,21 +123,13 @@ fn settings_core_of(
         toast_later(@sf.t("android-misc.link.cantOpen"))
       }
     },
+    vault_oauth: fn(ws, vault, provider, request, done) { (vault_oauth_of.val)(ws, vault, provider, request, done) },
     open_screen: fn(station, screen) { open_page(Screen({ station, screen, title: "", until_gone: true })) },
     pick_picture: fn(done) {
       @ui.pick(@hostapi.PickKind::Photos, on_got=fn(files) { done(files.get(0).map(fn(f) { f.bytes })) }) is Some(_)
     },
     bars: fn() { bars_in(src, w.id) },
     set_bars: fn(sets, cur) { set_bars(src, w.id, sets, cur) },
-    place_icon: fn(c, place, color) {
-      if place == "stations" {
-        // one station on, as no station is meant
-        let still : @sf.GlyphCounts = { online: 1, dim: 0, failing: 0, working: 0, asleep: false, connecting: 0 }
-        @sf.station_glyph(c, still, 28.0, color, @sf.theme().p.red) |> ignore
-      } else {
-        @sf.icon(c, place_icon(place), size=28.0, color~) |> ignore
-      }
-    },
     reporting: fn() { reporting_on(src) },
     set_reporting: fn(on) {
       match reporting_host.get() {
@@ -167,7 +174,8 @@ pub(all) struct ReportingHost {
 
 ///|
 /// The host's, set once as the app starts (src/stillfail main); None under a Tester (reset), unless its test sets one.
-pub let reporting_host : @signals.Signal[ReportingHost?] = @signals.signal(None)
+// (by the one host: functions, no value to compare)
+pub let reporting_host : @signals.Signal[ReportingHost?] = @signals.signal_ref(None)
 
 ///|
 /// Whether this device's core sends what people use (the prefs' `counted`, client/core-ts/src/use-counts.ts: a build

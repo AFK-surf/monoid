@@ -1,4 +1,4 @@
-// Every thread as chat_list has it, with no viewer's unread count (station/src/read/ops-sessions.ts `threadList`,
+// Every thread as chat_list has it, with no viewer's unread count (station/test/reference/ops-sessions.ts `threadList`,
 // store.ts `listThreads(s, "", null, null, "none")`): each with its sessions, last entry, latest message, people, first
 // words and letters, the most recently said in first.
 

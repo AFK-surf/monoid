@@ -225,8 +225,10 @@ pub fn Tree::said_order(self : Tree) -> Array[SaidNode] {
   let out : Array[SaidNode] = []
   fn walk(at : Int, parent : Int, depth : Int, hid : Bool) -> Unit {
     let n = self.nodes[at]
-    // (left out of its row: none of it read out, Tree::out_at)
-    if !n.live || n.out {
+    // (left out of its row: none of it read out, Tree::out_at; nor where it is said to be laid out nowhere now
+    // (View::laid_nowhere), as what it says is as of now, before the layout that leaves it out: never what it says now
+    // where it was laid out before)
+    if !n.live || n.out || n.flex.style.display == @flex.DisplayNone {
       return
     }
     // (in its bones: none of it there yet, View::bones)

@@ -1,7 +1,7 @@
 // What the agents spent, as the usage page reads it (station/src/read/usage.ts `usage`, GET /usage) and as a Comma
 // connect sends it (read/outflow.ts `outflowUsage`): the day's groups (usagegroups.mbt) with what they cost, the threads,
-// people and accounts they name, the prices, the tasks other stations ran here and the page's year. The station's own
-// words (the local page, the prices' note, an unnamed chat) the pool gives with the read (`words`).
+// people and accounts they name, the prices, the tasks other stations ran here and the page's year. It says no words of
+// its own: an unnamed chat's title is "" and the local page has no name, for the client to say.
 
 ///|
 /// store.ts `usageSince` and usage-detail.ts `usageDetailSince`: from when every call was counted, and from when the
@@ -371,7 +371,7 @@ let sources : Array[Source] = [
 ///|
 /// runtime.ts RUNTIME_KINDS.
 let runtime_kinds : Array[String] = [
-  "claude", "codex", "dsh", "grok", "cursor", "devin", "hermes", "agy",
+  "claude", "codex", "dsh", "grok", "cursor", "devin", "hermes", "agy", "pi",
 ]
 
 ///|
@@ -501,7 +501,7 @@ fn first_runtime(p : @jsjson.JValue) -> String raise {
   }
   match text(jget(Some(p), "runtime")) {
     Some(own) if runtime_kinds.contains(own) =>
-      if own == "dsh" && kind == Some("subscription") {
+      if (own == "dsh" || own == "pi") && kind == Some("subscription") {
         "claude"
       } else {
         own
@@ -882,7 +882,7 @@ fn remote_runs_since(
 
 ///|
 /// usage.ts `usage`: what the agents spent from `from` until `to`, by day in the asker's time zone, with what the rows
-/// name. `batched`: the groups the summary blocks gave (read/worker.ts, `usageGroupsBatched`), where they did.
+/// name. `batched`: the groups the summary blocks gave (read/store.ts `usageGroupsBatched`), where they did.
 fn usage_answer(
   db : @sql.Db,
   known : Known,
@@ -1002,7 +1002,7 @@ fn usage_answer(
   let since = usage_since(db)
   let detail = if a.metadata { detail_since(db) } else { Json::null() }
   let prices = if a.metadata {
-    Some(price_table(word("priceNote"), visible.map(g => g.model)))
+    Some(price_table(visible.map(g => g.model)))
   } else {
     None
   }
@@ -1072,8 +1072,8 @@ fn big_given(v : Json?) -> Int64 raise {
 }
 
 ///|
-/// ops-usage.ts `usage` (GET /usage), with what read/worker.ts reads before it: the summary blocks' groups where the page
-/// does not wait for its details (`usageGroupsBatched`).
+/// ops-usage.ts `usage` (GET /usage), with what the reader of before read first (test/reference-worker.ts): the summary
+/// blocks' groups where the page does not wait for its details (`usageGroupsBatched`).
 pub fn usage_page(
   db : @sql.Db,
   host : @host.Host,

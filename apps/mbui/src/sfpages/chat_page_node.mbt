@@ -68,14 +68,37 @@ pub fn chat_page_body_node(
   // message quoted from there (chat_quote_node)
   @ui.words_picked(v)
   // (its view and entries as last read: once read, never none again while the page is)
+  // (the chat's messages by key where the source keeps them so (sfbase's ChatMessages): then, while nothing sent from
+  // here is on its way and its outbox is empty, its view is its head alone (sfbase's chat_head: a word streamed into a
+  // message reads none of it again) and its rows are by key (chat_body_keyed); else its view and entries whole, as
+  // view_of_chat works them out)
+  let sending = fn() { @sfbase.sending_now(r.station + "\u{1}" + r.session) }
   let read : @signals.Computed[(ChatView, Array[Entry])?] = @signals.computed(
     fn(was) {
-      match @sfbase.view_of_chat(src, r) {
-        (Some(view), entries, _) => Some((view, entries))
-        _ =>
-          match was {
-            Some(w) => w
-            None => None
+      // (the head read first: what holds the topic, whose messages by key are then there)
+      let head = if @sfbase.fresh_view(r) is None {
+        match @sfbase.chat_head(src, r) {
+          (Some(h), _) =>
+            match @sfbase.chat_messages(src, r) {
+              // (what is on its way from here answering its last card: as the core will say once it has it)
+              Some(ms) => Some((@sfbase.chat_sent_here(r, h, ms).0, chat_no_entries))
+              None => None
+            }
+          _ => None
+        }
+      } else {
+        None
+      }
+      match head {
+        Some(h) => Some(h)
+        None =>
+          match @sfbase.view_of_chat(src, r) {
+            (Some(view), entries, _) => Some((view, entries))
+            _ =>
+              match was {
+                Some(w) => w
+                None => None
+              }
           }
       }
     },
@@ -135,7 +158,7 @@ pub fn chat_page_body_node(
         // (a quote's card pressed: the message it quotes gone to, where the chat holds it, and the passage it quotes lit
         // there alone where its words have it, as the old page's cards (message.mbt quote_cards): chat_goes_to)
         jump: Some(fn(ts, passage) {
-          match @signals.untracked(view).messages.iter().find_first(fn(m) { m.ts == ts }) {
+          match chat_said_all(src, r, view).iter().find_first(fn(m) { m.ts == ts }) {
             Some(m) => @sfbase.go_to(r, m.seq, passage~)
             None => ()
           }
@@ -152,7 +175,7 @@ pub fn chat_page_body_node(
             None => first.1
           }
         },
-        sending=fn() { @sfbase.sending_now(r.station + "\u{1}" + r.session) },
+        sending~,
         core~,
         cover~,
         room~,
@@ -162,6 +185,7 @@ pub fn chat_page_body_node(
         read=fn(place, scroll, rows) { chat_read_node(o, src, r, view, place, scroll, rows, shows, cover) },
         to=r,
         shows~,
+        msgs=@signals.untracked(fn() { @sfbase.chat_messages(src, r) }),
       )
       |> ignore
     })

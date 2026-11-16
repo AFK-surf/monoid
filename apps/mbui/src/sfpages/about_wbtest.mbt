@@ -155,7 +155,7 @@ test "关于 where newer builds are not asked for (no source, as on iOS; no vers
 }
 
 ///|
-test "关于's 检查更新 pressed: the update dialog over the page asks still.fail cloud now, then says what it answered in place of a toast; 确定 closes it" {
+test "关于's 检查更新 pressed: the update dialog over the page asks still.fail cloud now, then says what it answered in place of a toast; 好 closes it" {
   for case in [(390.0, 2), (1280.0, 0)] {
     let (w, platform) = case
     let asked : Array[(Result[Json, String]) -> Unit] = []
@@ -178,7 +178,7 @@ test "关于's 检查更新 pressed: the update dialog over the page asks still.
     assert_true(t.find("已是最新版本") is Some(_), msg=at)
     assert_eq(app.toast.get().words, "", msg=at)
     assert_true(app.nav.top() == Setting(About), msg=at)
-    t.click(Button, label="确定")
+    t.click(Button, label="好")
     t.draw()
     assert_true(!@sfbase.update_dialog_open(), msg=at)
     @sfbase.update_reset()

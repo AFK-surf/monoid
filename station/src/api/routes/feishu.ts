@@ -137,7 +137,7 @@ export const feishuRoutes = (deps: FeishuRoutesDeps): Route[] => {
       method: "DELETE",
       pattern: /^\/*feishu\/+registrations\/+([^/]+)\/*$/,
       handle: answer(async (r, [id]) => {
-        if (!feishu.registrations.cancel(percentDecode(id!), idOf(r.viewer), r.viewer.workspace)) throw new Refused(404, tr(r.lang, "station.feishu.notRegistered"));
+        if (!(await feishu.registrations.cancel(percentDecode(id!), idOf(r.viewer), r.viewer.workspace))) throw new Refused(404, tr(r.lang, "station.feishu.notRegistered"));
         return ok(await deps.overview(r.viewer, r.lang));
       }),
     },

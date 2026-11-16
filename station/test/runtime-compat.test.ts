@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { runtimeList } from "../src/read/runtime-view.ts";
+import { runtimeList } from "./reference/runtime-view.ts";
 import { Admin } from "../src/api/admin.ts";
 import { runtimeCompatible, clientRuntimes } from "../src/api/runtime-compat.ts";
 import { json, type Request } from "../src/api/request.ts";
 import { RUNTIME_KINDS } from "../src/agents/runtime.ts";
 import { SHAPES } from "../../client/core-ts/src/shapes/schema.ts";
 import { conform } from "../../client/core-ts/src/conform.ts";
-import { changedOf, digest } from "../src/read/digest.ts";
+import { changedOf, digest } from "./reference/digest.ts";
 const viewer = { sub: "u", email: "u@x", name: "", role: "owner", workspace: "w", device: "d" };
 const request = (path: string, headers: Record<string,string> = {}, method = "GET", body: unknown = {}): Request => ({ path, headers, method, query: [], body: Buffer.from(JSON.stringify(body)), viewer, lang: "en" });
 const modern = { "stillfail-runtimes": RUNTIME_KINDS.join(",") };

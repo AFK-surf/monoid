@@ -119,6 +119,8 @@ pub fn Tester::end_run(self : Tester, restore : &@hostapi.Host) -> Unit {
 /// the packages over it: on_reset) emptied; then checked (leaked_state), so that what is added later and not
 /// forgotten here fails the next Tester at once rather than a test somewhere else.
 fn reset_globals() -> Unit {
+  // (the run before's windows beside its first let go of, its first window's state in place: window_slots.mbt)
+  windows_reset()
   window_zoom_reset()
   journal_reset()
   tree_frames_reset()
@@ -156,6 +158,10 @@ fn reset_globals() -> Unit {
   reset_glass()
   reveal_reset()
   clear_shapes()
+  // (the paragraphs laid out of those shapes with them: their glyphs' keys the run before's, which a run whose host
+  // gave others (a Tester over another kept text) would draw as its own; text_cache.generation, put back below, does
+  // not tell the two runs apart)
+  rich_kept.clear()
   text_cache.fonts.clear()
   text_cache.metrics.clear()
   glyphs_forget()
@@ -177,6 +183,7 @@ fn reset_globals() -> Unit {
   messages_reset()
   drop_reset()
   fake_op.val = None
+  fake_decode_bytes_after.val = []
   fake_op_runs.clear()
   fake_op_pending.val = false
   fake_autofill.val = false
@@ -212,6 +219,8 @@ fn reset_globals() -> Unit {
   stacked_views.clear()
   views_stirred.clear()
   streams_reset()
+  fake_terminals.clear()
+  fake_terminal_next.val = 0
   native_nodes.clear()
   picture_at.clear()
   wheels.clear()
@@ -428,6 +437,7 @@ pub fn Tester::new(
     native: native.unwrap_or(platform_pointing(platform)),
     keyboard: keyboard.unwrap_or(platform_keyboard(platform)),
     reduce_transparency: false,
+    increase_contrast: false,
     reduce_motion: false,
     logs: [],
     image_sizes: {},
@@ -448,6 +458,7 @@ pub fn Tester::new(
     generation_on_face_add: Ref(false),
     tabular: 0.0,
     cjk_marks: false,
+    words_spaced: @hostapi.words_spaced_none,
     glyph_box: (6.0, 10.0),
     faces_wider: {},
     latin: None,
@@ -469,6 +480,12 @@ pub fn Tester::new(
     windows_opened: [],
     windows_closed: [],
     windows_fronted: [],
+    windows_in_process: false,
+    window_ids: 0,
+    window_at: 0,
+    window_sizes: {},
+    window_ids_fronted: [],
+    window_ids_closed: [],
     opened: [],
     dark,
     inset: window_inset,
@@ -597,6 +614,7 @@ pub fn Tester::new(
   // (each frame of the looks by the clock alone drawn whole after it as well, and the two compared: frame_watch.mbt)
   looks_check.val = true
   looks_made_at.val = loc.to_string()
+  passes_begin()
   focus_off_begun()
   // (the file each bar of its is held by: motion_runs)
   if motion_runs() {
@@ -1190,6 +1208,14 @@ fn Tester::frame_at_said(self : Tester, at : Double) -> String? {
 /// there, nothing later: no step or end taken past it), what is drawn sampled at `shown` (a moment later, as a host's
 /// frame is drawn for its vsync). The next events may come at any moment from `now`.
 pub fn Tester::frame_shown_at(self : Tester, now : Double, shown : Double) -> Unit {
+  // (the first window's frame, its state in place, then each window of the run beside it: tester_windows.mbt)
+  as_window(0, fn() { self.frame_shown_first(now, shown) })
+  self.frames_beside(now, shown)
+}
+
+///|
+/// The first window's frame of frame_shown_at's, with every check the Tester holds it to.
+fn Tester::frame_shown_first(self : Tester, now : Double, shown : Double) -> Unit {
   let at = now
   // (what was posted told at its moment, and what the fake host does at its own moments up to this frame's, before the
   // clock comes there: posted_tell, FakeHost::due)
@@ -1234,6 +1260,8 @@ pub fn Tester::frame_shown_at(self : Tester, now : Double, shown : Double) -> Un
   on_frame(self.w, self.h, self.fake.scale, if shown > at { shown } else { at })
   // (a bench's measured frame ends here: what follows is the Tester's own checks of it, which a device runs not)
   bench_frame_ends()
+  // (how many times it laid the window's tree out, and each event since the frame before: tester_passes.mbt)
+  self.hold_passes()
   self.hold_a11y_whole()
   self.frames = self.frames + 1
   self.fake.drawn = true
@@ -1298,6 +1326,8 @@ pub fn Tester::frame_shown_at(self : Tester, now : Double, shown : Double) -> Un
       }
     _ => ()
   }
+  // (what the Tester's own checks of it ran, none of the next frame's: tester_passes.mbt)
+  passes_counted_now()
 }
 
 ///|
@@ -2521,6 +2551,13 @@ pub fn Tester::set_reduce_transparency(self : Tester, on : Bool) -> Unit {
 }
 
 ///|
+/// The system asks for more contrast from now on, or no longer.
+pub fn Tester::set_increase_contrast(self : Tester, on : Bool) -> Unit {
+  host_setting_set("set_increase_contrast")
+  self.fake.increase_contrast = on
+}
+
+///|
 /// The glass drawn in the last frame: (x, y, w, h, kind (5 frosted, 6
 /// liquid), the capture it shares (1, 2, …)).
 pub fn Tester::drawn_glass(self : Tester) -> Array[(Double, Double, Double, Double, Int, Int)] {
@@ -2923,6 +2960,14 @@ pub fn Tester::decode_after(self : Tester, src : String, ms : Double) -> Unit {
 }
 
 ///|
+/// Bytes `data` handed over for a decode (an image added by its bytes: `add_image`) take `ms` to decode, as
+/// Tester::decode_after's source does: its host says each decode of them is done `ms` after it is asked for.
+pub fn Tester::decode_bytes_after(self : Tester, data : Bytes, ms : Double) -> Unit {
+  ignore(self)
+  fake_decode_bytes_after.val.push((data, ms))
+}
+
+///|
 /// Makes up an image at `src`, `w` × `h` pixels, for views to load.
 pub fn Tester::add_image(self : Tester, src : String, w : Int, h : Int) -> Unit {
   self.fake.image_sizes[src] = (w, h)
@@ -3132,6 +3177,30 @@ pub fn Tester::tabular_wider(self : Tester, em : Double) -> Unit {
 /// (@hostapi.style_proportional), from now on: as a Chinese face (思源黑体) draws it, its pwid asked or not.
 pub fn Tester::cjk_face_marks(self : Tester) -> Unit {
   self.fake.cjk_marks = true
+}
+
+///|
+/// Chinese and Japanese words spaced by mbui (@hostapi.words_spaced_here: an eighth of an em between Han or kana and a
+/// Latin letter or digit, a full-width mark set closer before another), from now on, as on a host whose shaper spaces
+/// none (Android's, Windows', Linux's, the web's); `by_host` for a host whose shaper spaces the words but sets no mark
+/// closer (Core Text's since iOS 26 and macOS 27: mbui sets only the marks); `none` for nobody's (MBUI_AUTOSPACE=off,
+/// and a Tester's own until it says: its fake's widths as they are).
+pub fn Tester::words_spaced_here(
+  self : Tester,
+  by_host? : Bool = false,
+  none? : Bool = false,
+) -> Unit {
+  self.fake.words_spaced = if none {
+    @hostapi.words_spaced_none
+  } else if by_host {
+    @hostapi.words_spaced_by_host
+  } else {
+    @hostapi.words_spaced_here
+  }
+  // (what was laid out in the shapes before laid out again, as when a face comes in: text.mbt's atlas generation)
+  clear_shapes()
+  words_shaped_in.set(words_shaped_in.untracked() + 1)
+  view_words_rescaled()
 }
 
 ///|

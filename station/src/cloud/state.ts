@@ -1,6 +1,8 @@
 // Where the station stands with still.fail cloud: <data>/mesh/cloud.json (its fields, mode and pretty JSON as the Rust
 // station writes them: the desktop app and `bin/stillfail` read it too). One copy in memory, written through on every
 // change and told to whoever listens; the file is watched only for `enroll` writing it from another process.
+import { CloudTransport, type CloudEntry } from "./transport.ts";
+import type { Clock } from "effect";
 import { type FSWatcher, existsSync, mkdirSync, readFileSync, renameSync, rmSync, watch } from "node:fs";
 import { dirname, join } from "node:path";
 import { nowSecs, writePrivate } from "../ops/files.ts";
@@ -56,6 +58,9 @@ export type CloudState = {
   relay_url: string;
   /// Every relay, still.fail's (`relay_url`) first; missing from files of before there were several.
   relay_urls: string[];
+  /// still.fail's own relays alone, as the control plane says them apart from the workspaces' own it puts in
+  /// `relay_urls` (mesh/ways.ts `stillFails`); absent from planes of before it.
+  stillfail_relays?: string[];
   grant_keys: any;
   /// The workspace's stations this one may call (peer RPC); none from old clouds.
   peers: any[];
@@ -299,6 +304,7 @@ export function moveFormerHost(data: string) {
   raw.origin = moved(raw.origin);
   if (raw.relay_url !== undefined) raw.relay_url = moved(raw.relay_url);
   if (Array.isArray(raw.relay_urls)) raw.relay_urls = raw.relay_urls.map(moved);
+  if (Array.isArray(raw.stillfail_relays)) raw.stillfail_relays = raw.stillfail_relays.map(moved);
   writePrivate(statePath(data), JSON.stringify(raw, null, 2));
   log.info("cloud", "moved to still.fail cloud's host", { from: FORMER_HOST, to: HOST });
 }
@@ -314,6 +320,8 @@ export function readState(data: string): CloudState | null {
   const ways = waysSaidOf(raw.ways);
   if (ways !== null) state.ways = ways;
   else delete state.ways;
+  if (Array.isArray(raw.stillfail_relays)) state.stillfail_relays = raw.stillfail_relays.filter((u: unknown): u is string => typeof u === "string");
+  else delete state.stillfail_relays;
   const rig = rigSelfOf(raw.rig);
   if (rig !== null) state.rig = rig;
   else delete state.rig;
@@ -353,6 +361,7 @@ export function writeState(data: string, s: CloudState) {
     origin: s.origin, station: s.station, workspace: s.workspace, workspace_name: s.workspace_name, name: s.name,
     relay_url: s.relay_url, relay_urls: s.relay_urls, grant_keys: s.grant_keys, peers: s.peers, revocations: s.revocations,
   };
+  if (s.stillfail_relays !== undefined) out.stillfail_relays = s.stillfail_relays;
   if (s.gateway_keys !== undefined) out.gateway_keys = s.gateway_keys;
   if (s.removed_at !== undefined) out.removed_at = s.removed_at;
   if (s.removed_code !== undefined) out.removed_code = s.removed_code;
@@ -396,6 +405,16 @@ export const isRevocation = (r: any): r is Revocation => typeof r?.kind === "str
 
 /// The state in memory, and who wants to hear of its changes.
 export class Cloud {
+  private readonly networkClock?: Clock.Clock;
+  private readonly networkEntry: () => CloudEntry | null;
+  private network?: CloudTransport;
+  get transport(): CloudTransport {
+    if (!this.network) {
+      this.network = new CloudTransport(this.networkEntry, this.networkClock);
+    }
+    return this.network;
+  }
+  request = (url: string, init?: RequestInit): Promise<Response> => this.provider() === "stillfail" ? this.transport.fetch(url, init) : fetch(url, init);
   state: CloudState | null;
   /// Whether `peers` is taken as the workspace's stations: the roster the cloud said last, kept in cloud.json, through a
   /// presence socket gone and a restart (user, 2026-11-04: a station cut off from the cloud for an hour refused every
@@ -457,8 +476,10 @@ export class Cloud {
 
   /// `watchFiles`: whether the files are watched for others' changes (tests that start and stop many stations leave it out:
   /// macOS takes a good while to end each watch).
-  constructor(data: string, watchFiles = true) {
+  constructor(data: string, watchFiles = true, clock?: Clock.Clock, entry: () => CloudEntry | null = () => null) {
     this.data = data;
+    this.networkClock = clock;
+    this.networkEntry = entry;
     try {
       moveFormerHost(data);
     } catch (error) {
@@ -496,9 +517,11 @@ export class Cloud {
   }
 
   close() {
+    const closed = this.network?.close();
     this.watcher?.close();
     this.locksWatcher?.close();
     this.listeners.clear();
+    return closed;
   }
 
   /// The state read again from its file; told when it changed, or anyway (`tell`: the station joined a workspace, and

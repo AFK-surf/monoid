@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { constants } from "node:sqlite";
 import { test } from "node:test";
-import { makeStore } from "../src/read/store.ts";
-import { usage, usageHistory } from "../src/read/usage.ts";
+import { makeStore } from "./reference/store.ts";
+import { usage, usageHistory } from "./reference/usage.ts";
 import { Store } from "../src/store/store.ts";
 import type { InWorkspace } from "../src/store/rows.ts";
 import { installCompactUsage } from "../src/store/usage-compact.ts";

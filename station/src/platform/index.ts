@@ -59,6 +59,10 @@ export type Platform = {
   buildOs: string | null;
   /// Whether a file copied on a disk of this machine can be a clone of it, taking no room of its own (APFS: macOS).
   clonesFiles: boolean;
+  /// The machine's cache of native parts, which scripts/native.ts keeps and every worktree and station process shares:
+  /// $STILLFAIL_NATIVE_CACHE, else ~/Library/Caches/stillfail-native (macOS), $XDG_CACHE_HOME/stillfail-native or
+  /// ~/.cache/stillfail-native (Linux), %LOCALAPPDATA%\stillfail-native (Windows).
+  nativeCache: (env: Env, home: string) => string;
 
   // Commands and their environment.
   /// An executable's file name (`stillfail-runner` → `stillfail-runner.exe` on Windows).
@@ -73,8 +77,14 @@ export type Platform = {
   appendPath(env: Env, dir: string): void;
   /// A command on `env`'s PATH as a shell finds it (with PATHEXT's extensions on Windows).
   findCommand(name: string, env: Env): Found | null;
+  /// `findCommand` off the station's thread: each place on PATH looked at in turn, the first found.
+  findCommandSoon(name: string, env: Env): Promise<Found | null>;
   /// The user's interactive shell, when this machine has one to read a PATH from.
   userShell(env: Env): string | null;
+  /// The PATH a process started now would be given, where the machine keeps it apart from a shell (Windows' registry:
+  /// the machine's, then the user's, each `%VAR%` expanded): what an installer put there after this process started,
+  /// which a running process is never given. None on Unix, where the shell's startup files say it (`userShell`).
+  savedPath(env: Env): Promise<string[] | null>;
   /// How Node runs a command (a name on PATH, or a path) with `args`: on Windows a .cmd is run around cmd when it can
   /// be (npm's, Vite+'s), else through it, quoted.
   runnable(command: string, args: string[], env: NodeJS.ProcessEnv): { file: string; args: string[]; windowsVerbatimArguments?: true };
@@ -86,9 +96,21 @@ export type Platform = {
   /// A command started `by` lower in CPU priority than this process (ops/nice.ts): under nice where there is one; as
   /// it is on Windows (no nice).
   lowered(program: string, args: string[], by: number): [string, string[]];
+  /// A command started as the system's background work (the station's own builders and indexers, read/mb-reader.ts):
+  /// its CPU and its disk's reads and writes both yield to the foreground's. macOS: under `/usr/sbin/taskpolicy -b`
+  /// (PRIO_DARWIN_BG: background CPU QoS and IOPOL_THROTTLE, for it and all it starts), where nice alone leaves APFS's
+  /// IO as it was; Linux: under `ionice -t -c2 -n7` and `nice -n 10` (best-effort's lowest IO, a lower CPU priority);
+  /// else as `lowered` by 10; as it is on Windows. Each wrapper execs the command, which keeps its pid.
+  backgrounded(program: string, args: string[]): [string, string[]];
+  /// The command that writes out what the file system holding `dir` has of written files (replica/sending.ts
+  /// `flushOnce`): Linux's `sync -f <dir>`, that file system only; macOS's `sync`, every one; none on Windows.
+  flushing(dir: string): [string, string[]] | null;
   /// A shell script at `path` runnable by name from any shell: on Windows a `.cmd` beside it too, running it with the
   /// POSIX shell, or doing nothing when `noop`. The name a program is to be given for it (the .cmd on Windows).
   makeCommand(path: string, script: string, noop?: boolean): string;
+  /// `makeCommand` off the station's thread, each file written beside and renamed into place: a command that runs it
+  /// meanwhile finds the one before or this one whole, never half of it. One already as it is to be is left alone.
+  makeCommandSoon(path: string, script: string, noop?: boolean): Promise<string>;
 
   // Process groups (ops/group.ts).
   /// Signals a whole group; one already gone is no error. On Windows any signal ends it.
@@ -214,8 +236,8 @@ export type Platform = {
   // Logins to command-line tools (logins/run.ts, logins/relay.ts).
   /// `program` with `args` in a pseudo-terminal of `cols` × `rows` (stdin a pipe, kept open: closing it ends the
   /// command), as the system's `script` gives one: the program and arguments to start; none where there is no such way
-  /// (Windows: the command runs on pipes).
-  terminal(program: string, args: string[], cols: number, rows: number): [string, string[]] | null;
+  /// (Windows: the command runs on pipes). Where `script` is is looked for off the station's thread.
+  terminalSoon(program: string, args: string[], cols: number, rows: number): Promise<[string, string[]] | null>;
   /// The processes `pid` started, and theirs (not itself).
   descendants(pid: number): Promise<number[]>;
   // Memory, as the station's queue and its watch over the agents' processes read it (jobs/admit.ts, jobs/memory.ts).

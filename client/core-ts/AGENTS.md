@@ -72,6 +72,13 @@ the statements that read most. What the sync writes is held the same way: each c
 of each setting, from its run to the core at rest, alone (a core started anew, nothing asked) and held (everything the
 app asks held), reads at most twice what it writes (text bound to statements that write) and sends, or 8 KB, growing
 no faster; `OVER_WRITE` and `GROWS_WRITE` there, which only fall. A new cause is measured by being in `CAUSES`.
+A page of the settings opened first in a run, Home shown (the owner, 2026-11-16: 「设置页面第一次点进去会卡挺久」), is
+held the same way by `test/cold-open.test.ts`: it decorates and reads no station's whole overview (what each page reads
+of one is a column of `station_part`, schema.ts PART_COLUMNS) and runs as many statements with five times the chats'
+logs; what each chat keeps (`cache.usage`) is read of counts triggers keep (`log_bytes`, schema.ts ensureLogBytes),
+never summed of the rows, and so are the files kept (`part_bytes`, drive-kept.ts ensurePartBytes, never `part`), and
+that call, which changes nothing, lets the first values of the page it is asked with go first (store.ts `turn`); a call
+that changes something never waits so (rule 5).
 What the views, the store and what goes out walk in memory is held the same way (`test/view-work.test.ts`): work.ts
 `walked` counts reads tracked, values made again, `share`'s and `equal`'s walks, keyed lists' diffs and the items put
 together, copied and fitted as they go out, each to the topic made or sent then, past the items found the same objects

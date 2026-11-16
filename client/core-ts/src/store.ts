@@ -34,10 +34,11 @@ import { walked, walkingAs, work } from "./work.ts";
 export const COALESCE_MS = 50;
 export const EVICT_AFTER_MS = 60_000;
 /// How many values let go of keeping them (`keep`) are remembered for a client (#kept), the least recently let go of
-/// forgotten first: the app keeps the lists its places open on, a workspace's eight or so, and its last 4 chats
-/// (apps/mbui/src/sfbase/source.mbt `topic_kept`). One it keeps past these, asked again, is still answered `same`
-/// where its value is the same object still (a token needs nothing remembered), and whole where it is not.
-export const KEPT_PER_CLIENT = 24;
+/// forgotten first: the app keeps the lists its places open on, a workspace's eight or so, its last 8 chats, and the
+/// read-only topics of the pages, panels and cards it opened lately (apps/mbui/src/sfbase/source.mbt `topic_kept`,
+/// `views_kept`; 96 of every name together, `kept_most_by`). One it keeps past these, asked again, is still answered
+/// `same` where its value is the same object still (a token needs nothing remembered), and whole where it is not.
+export const KEPT_PER_CLIENT = 96;
 /// The topics a page opens with, each first subscriber's wait for its first value a trace of its own (`<topic>.open`,
 ///): how long a chat took to show, and how much of that the core spent making it.
 const OPENED = new Set(["chat"]);

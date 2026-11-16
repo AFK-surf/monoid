@@ -642,8 +642,8 @@ fn Ctx::corner_faults(self : Ctx) -> Array[String] {
       // across a panel's foot: the user, 2026-10-26, a finger's not concentric with the page's corners, not found)
       let round = rb >= dmin(b.fw, b.fh) / 2.0 - 0.5
       if round {
-        if ((t - d).abs() <= 0.5 && ra < a.fh / 2.0 - 0.5 && b.fh <= b.fw + 0.5) ||
-          ((l - r).abs() <= 0.5 && ra < a.fw / 2.0 - 0.5 && b.fw <= b.fh + 0.5) {
+        if ((t - d).abs() <= 0.5 && b.fh < a.fh - 1.0 && ra < a.fh / 2.0 - 0.5 && b.fh <= b.fw + 0.5) ||
+          ((l - r).abs() <= 0.5 && b.fw < a.fw - 1.0 && ra < a.fw / 2.0 - 0.5 && b.fw <= b.fh + 0.5) {
           continue
         }
         // a mark smaller than the gap it would leave round it standing concentric (the corner's radius less its own

@@ -450,6 +450,9 @@ pub(all) struct Found {
   two_h : Double
   head_h : Double
   quiet_h : Double
+  /// how high its first line and the line under it are at least, whatever words they hold (none: as their words)
+  first_least : Double
+  second_least : Double
   /// a line (chosen by the keys: on the words' tint), one of two lines (how far in and whether rounded: where the
   /// list stands, found_row_in)
   row : @ui.Style
@@ -492,6 +495,8 @@ pub let mouse_found : Found = {
   two_h: 54.0,
   head_h: 32.0,
   quiet_h: 54.0,
+  first_least: 0.0,
+  second_least: 0.0,
   row: @ui.style(row=true, w=Full, min_h=Fixed(mouse_found_row_h), py=S2, gap=S2_5, align=ACenter, selected=@ui.patch(bg=Tint)),
   two: @ui.style(row=true, w=Full, min_h=Fixed(mouse_found_row_h), py=S2, gap=S2_5, align=AStart, selected=@ui.patch(bg=Tint)),
   mark: @ui.css("w=S5 h=S5 align=ACenter justify=JCenter"),
@@ -516,8 +521,9 @@ pub let mouse_found : Found = {
 }
 
 ///|
-/// Touch's (mobile/Home.css.ts mFound…, Search.kt: a row 50 high, 66 with a line under, 22 in on the left
-/// and 16 on the right, its parts 12 apart; its mark 20, icons and makers 18; 15 on 22 and 14 on 20; the phone's
+/// Touch's (mobile/Home.css.ts mFound…, Search.kt: a row 50 high, 66 with a line under (its mark on its first
+/// line, 12 over and under them), 22 in on the left and 16 on the right, its parts 12 apart; its lines 22 and 20 at
+/// least, growing with their words; its mark 20, icons and makers 18; 15 on 22 and 14 on 20; the phone's
 /// section header for a kind's heading; quiet words 22 in, 16 over and under).
 // kept across runs: a value (no field of it changes)
 pub let touch_found : Found = {
@@ -525,14 +531,16 @@ pub let touch_found : Found = {
   two_h: touch_found_two_h,
   head_h: 41.0,
   quiet_h: 44.0,
+  first_least: 22.0,
+  second_least: 20.0,
   row: @ui.style(row=true, w=Full, min_h=Fixed(touch_found_row_h), gap=S3, align=ACenter),
-  two: @ui.style(row=true, w=Full, min_h=Fixed(touch_found_two_h), gap=S3, align=ACenter),
-  mark: @ui.css("w=S5 h=S5 align=ACenter justify=JCenter"),
+  two: @ui.style(row=true, w=Full, min_h=Fixed(touch_found_two_h), py=S3, gap=S3, align=AStart),
+  mark: @ui.style(w=S5, min_h=found_line_h, align=ACenter, justify=JCenter),
   icon: 18.0,
   logo: 18.0,
   column: @ui.style(w=grow, justify=JCenter),
-  first: @ui.style(row=true, w=Full, h=found_line_h, gap=S2, align=ACenter),
-  second: @ui.css("row w=Full h=S5 gap=S2 align=ACenter"),
+  first: @ui.style(row=true, w=Full, min_h=found_line_h, gap=S2, align=ACenter),
+  second: @ui.css("row w=Full min_h=S5 gap=S2 align=ACenter"),
   title: @ui.text_style(size=Ui, leading=L7, color=Fg, wrap=false, w=grow),
   words: @ui.text_style(size=Ui, leading=L7, color=Fg, max_lines=1, w=Full),
   under: @ui.text_style(size=Meta, leading=L6, color=Muted, wrap=false, w=grow),
@@ -546,6 +554,44 @@ pub let touch_found : Found = {
   wait: @ui.css("w=Full py=S3"),
   wait_failing: @ui.css("w=Full py=S1_5"),
   said_words: @ui.text_style(size=Meta, leading=L5, color=Muted, w=Full),
+}
+
+///|
+/// How much higher than the theme says a found line of two (`two`) or a kind's heading is as its list first takes it
+/// at the system's size of words `scale`: by as much as its words' lines are higher there than at the default size, or
+/// than the least its lines are (first_least, second_least) where that is more; none at the default size.
+pub fn found_grown(f : Found, scale : Double, two~ : Bool) -> Double {
+  let grown = fn(style : @ui.TextStyle, least : Double) {
+    dmax(0.0, found_words_line(style, scale) - dmax(least, found_words_line(style, 1.0)))
+  }
+  if two {
+    grown(f.title, f.first_least) + grown(f.under, f.second_least)
+  } else {
+    grown(f.head_words, 0.0)
+  }
+}
+
+///|
+/// How high a line of words in `style` is at the system's size of words `scale`.
+fn found_words_line(style : @ui.TextStyle, scale : Double) -> Double {
+  let look = @ui.style_words(style)
+  if look.line < 0.0 {
+    -look.line * @ui.sp_at(scale, look.size)
+  } else {
+    @ui.sp_at(scale, look.line)
+  }
+}
+
+///|
+/// How high a found line of two's mark is at the system's size of words `scale`, so it stands across the middle of
+/// the first line as that line grows with its words (its least, first_least, at the default size); none where its
+/// first line says no least (its mark as the theme has it).
+pub fn found_mark_h(f : Found, scale : Double) -> Double {
+  if f.first_least <= 0.0 {
+    0.0
+  } else {
+    dmax(f.first_least, found_words_line(f.title, scale))
+  }
 }
 
 ///|

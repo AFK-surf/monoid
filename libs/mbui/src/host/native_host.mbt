@@ -111,6 +111,31 @@ impl @hostapi.Host for Native with window_front(_, what) {
 }
 
 ///|
+impl @hostapi.Host for Native with windows_in_process(_) {
+  windows(0, 0, "") != 0
+}
+
+///|
+impl @hostapi.Host for Native with window_open_id(_, what) {
+  windows(1, 0, what)
+}
+
+///|
+impl @hostapi.Host for Native with window_front_id(_, wid) {
+  windows(2, wid, "") != 0
+}
+
+///|
+impl @hostapi.Host for Native with window_close_id(_, wid) {
+  windows(3, wid, "") |> ignore
+}
+
+///|
+impl @hostapi.Host for Native with window_current(_) {
+  windows(4, 0, "")
+}
+
+///|
 impl @hostapi.Host for Native with set_cursor(_, kind) {
   set_cursor(kind)
 }
@@ -435,6 +460,11 @@ impl @hostapi.Host for Native with back_enabled(_, on) {
 ///|
 impl @hostapi.Host for Native with reduce_transparency(_) {
   reduce_transparency()
+}
+
+///|
+impl @hostapi.Host for Native with increase_contrast(_) {
+  increase_contrast()
 }
 
 ///|
@@ -1113,13 +1143,38 @@ impl @hostapi.Host for Native with tm_write(_, id, data) {
 }
 
 ///|
-impl @hostapi.Host for Native with tm_resize(_, id, cols, rows) {
-  tm_resize(id, cols, rows)
+impl @hostapi.Host for Native with tm_resize(_, id, cols, rows, cw, ch) {
+  tm_resize(id, cols, rows, cw, ch)
 }
 
 ///|
-impl @hostapi.Host for Native with tm_lines(_, id) {
-  tm_lines(id)
+impl @hostapi.Host for Native with tm_frame(_, id, flags) {
+  tm_frame(id, flags)
+}
+
+///|
+impl @hostapi.Host for Native with tm_modes(_, id) {
+  tm_modes(id)
+}
+
+///|
+impl @hostapi.Host for Native with tm_scroll(_, id, kind, value) {
+  tm_scroll(id, kind, value)
+}
+
+///|
+impl @hostapi.Host for Native with tm_select(_, id, kind, x0, y0, x1, y1) {
+  tm_select(id, kind, x0, y0, x1, y1)
+}
+
+///|
+impl @hostapi.Host for Native with tm_text(_, id, sel) {
+  tm_text(id, sel)
+}
+
+///|
+impl @hostapi.Host for Native with tm_mouse(_, id, action, button, mods, x, y, w, h, cw, ch) {
+  tm_mouse(id, action, button, mods, x, y, w, h, cw, ch)
 }
 
 ///|

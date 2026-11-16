@@ -25,7 +25,10 @@ use windows_sys::Wdk::System::Threading::{NtQueryInformationProcess, ProcessHand
 use windows_sys::Win32::Security::Authorization::{ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1};
 use windows_sys::Win32::Security::{GetTokenInformation, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser};
 use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, PIPE_ACCESS_DUPLEX, ReadFile, WriteFile};
-use windows_sys::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, SetStdHandle};
+use windows_sys::Win32::System::Console::{
+    COORD, ClosePseudoConsole, CreatePseudoConsole, GetStdHandle, HPCON, ResizePseudoConsole, STD_ERROR_HANDLE, STD_HANDLE, STD_INPUT_HANDLE,
+    STD_OUTPUT_HANDLE, SetStdHandle,
+};
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next};
 use windows_sys::Win32::System::IO::{CancelIoEx, CreateIoCompletionPort, GetOverlappedResult, GetQueuedCompletionStatus, OVERLAPPED};
 use windows_sys::Win32::System::JobObjects::{
@@ -34,13 +37,15 @@ use windows_sys::Win32::System::JobObjects::{
     TerminateJobObject,
 };
 use windows_sys::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES,
-    PIPE_WAIT,
+    ConnectNamedPipe, CreateNamedPipeW, CreatePipe, DisconnectNamedPipe, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE,
+    PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
 };
 use windows_sys::Win32::System::Threading::{
-    CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_SUSPENDED, CreateEventW, GetCurrentProcess,
-    GetExitCodeProcess, GetProcessTimes, OpenProcess, OpenProcessToken, OpenThread, PROCESS_QUERY_LIMITED_INFORMATION, ResumeThread, THREAD_SUSPEND_RESUME,
-    INFINITE, TerminateProcess,
+    CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateEventW, CreateProcessW,
+    DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetCurrentProcess, GetExitCodeProcess, GetProcessTimes, INFINITE,
+    InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST, OpenProcess, OpenProcessToken, OpenThread, PROCESS_INFORMATION,
+    PROCESS_QUERY_LIMITED_INFORMATION, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, ResumeThread, STARTUPINFOEXW, THREAD_SUSPEND_RESUME, TerminateProcess,
+    UpdateProcThreadAttribute, WaitForSingleObject,
 };
 
 use super::Signal;
@@ -445,6 +450,48 @@ impl Write for Conn {
     }
 }
 
+pub type Proc = Option<Child>;
+
+struct Hpcon(HPCON);
+
+// SAFETY: HPCON is an opaque ConPTY handle synchronized behind PtyMaster's Mutex.
+unsafe impl Send for Hpcon {}
+
+impl Drop for Hpcon {
+    fn drop(&mut self) {
+        // SAFETY: ours alone, closed once.
+        unsafe { ClosePseudoConsole(self.0) };
+    }
+}
+
+/// The runner's ConPTY handle, resized while the program runs and closed when it exits so `conhost.exe` drains and
+/// closes the output pipe immediately.
+pub struct PtyMaster(Mutex<Option<Hpcon>>);
+
+impl PtyMaster {
+    pub fn resize(&self, cols: u16, rows: u16) -> io::Result<()> {
+        let guard = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(hpcon) = guard.as_ref() else {
+            return Ok(());
+        };
+        let size = COORD {
+            X: cols.max(1).min(i16::MAX as u16) as i16,
+            Y: rows.max(1).min(i16::MAX as u16) as i16,
+        };
+        // SAFETY: a live HPCON we own.
+        let hr = unsafe { ResizePseudoConsole(hpcon.0, size) };
+        if hr != 0 {
+            return Err(io::Error::from_raw_os_error(hr));
+        }
+        Ok(())
+    }
+
+    pub fn close_on_exit(&self) {
+        let hpcon = self.0.lock().unwrap_or_else(|e| e.into_inner()).take();
+        drop(hpcon);
+    }
+}
+
 /// The agent, and the job that holds it and whatever it starts (its group).
 pub struct Agent {
     pid: i32,
@@ -455,12 +502,204 @@ pub struct Agent {
 }
 
 /// Starts the agent in a job of its own, without a console window, its stdio piped to the runner.
-pub fn spawn(program: &str, args: &[String], cwd: Option<&Path>) -> io::Result<(Child, Agent)> {
+pub fn spawn(
+    program: &str,
+    args: &[String],
+    cwd: Option<&Path>,
+) -> io::Result<(Proc, Agent, Option<Box<dyn Write + Send>>, Box<dyn Read + Send>, Box<dyn Read + Send>)> {
     keep_stdio();
     let job = new_job()?;
-    let (child, process) = start_in_job(&job, program, args, cwd, true)?;
-    let agent = Agent { pid: child.id() as i32, process, job, ended_by: AtomicU8::new(0) };
-    Ok((child, agent))
+    let (mut child, process) = start_in_job(&job, program, args, cwd, true)?;
+    let pid = child.id() as i32;
+    let stdin = child.stdin.take().map(|s| Box::new(s) as Box<dyn Write + Send>);
+    let stdout = Box::new(child.stdout.take().unwrap()) as Box<dyn Read + Send>;
+    let stderr = Box::new(child.stderr.take().unwrap()) as Box<dyn Read + Send>;
+    let agent = Agent { pid, process, job, ended_by: AtomicU8::new(0) };
+    Ok((Some(child), agent, stdin, stdout, stderr))
+}
+
+/// Starts a terminal's program attached to a Windows ConPTY of `cols` × `rows`, inside its own job object.
+pub fn spawn_pty(
+    program: &str,
+    args: &[String],
+    cwd: Option<&Path>,
+    cols: u16,
+    rows: u16,
+) -> io::Result<(Proc, Agent, Box<dyn Write + Send>, Box<dyn Read + Send>, PtyMaster)> {
+    keep_stdio();
+    let job = new_job()?;
+
+    let (mut in_read, mut in_write) = (null_mut(), null_mut());
+    // SAFETY: non-inheritable anonymous pipes (`lpPipeAttributes` is null).
+    if unsafe { CreatePipe(&mut in_read, &mut in_write, null(), 0) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let (mut out_read, mut out_write) = (null_mut(), null_mut());
+    if unsafe { CreatePipe(&mut out_read, &mut out_write, null(), 0) } == 0 {
+        unsafe {
+            CloseHandle(in_read);
+            CloseHandle(in_write);
+        }
+        return Err(io::Error::last_os_error());
+    }
+    // Wrap the runner's ends immediately so any early error closes them cleanly.
+    let writer = unsafe { File::from(OwnedHandle::from_raw_handle(in_write as RawHandle)) };
+    let reader = unsafe { File::from(OwnedHandle::from_raw_handle(out_read as RawHandle)) };
+
+    let size = COORD {
+        X: cols.max(1).min(i16::MAX as u16) as i16,
+        Y: rows.max(1).min(i16::MAX as u16) as i16,
+    };
+    let mut hpcon: HPCON = unsafe { std::mem::zeroed() };
+    // SAFETY: valid pipe handles; ConPTY duplicates `in_read` and `out_write`, so we close our copies right after.
+    let hr = unsafe { CreatePseudoConsole(size, in_read, out_write, 0, &mut hpcon) };
+    unsafe {
+        CloseHandle(in_read);
+        CloseHandle(out_write);
+    }
+    if hr != 0 {
+        return Err(io::Error::from_raw_os_error(hr));
+    }
+    let master = PtyMaster(Mutex::new(Some(Hpcon(hpcon))));
+
+    let resolved = resolve(program);
+    let (exe, before) = unshim(&resolved).unwrap_or((resolved, Vec::new()));
+    let cmd_str = if exe.extension().is_some_and(|e| e.eq_ignore_ascii_case("cmd") || e.eq_ignore_ascii_case("bat")) {
+        let comspec = std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".into());
+        let inner = shim::command_line(
+            &exe.to_string_lossy(),
+            before.iter().map(String::as_str).chain(args.iter().map(String::as_str)),
+        );
+        format!("{} /d /s /c \"{inner}\"", {
+            let mut q = String::new();
+            shim::quote_arg(&comspec, &mut q);
+            q
+        })
+    } else {
+        shim::command_line(
+            &exe.to_string_lossy(),
+            before.iter().map(String::as_str).chain(args.iter().map(String::as_str)),
+        )
+    };
+
+    let env_block = build_pty_env();
+    let cwd_wide: Option<Vec<u16>> = cwd.map(|p| p.as_os_str().encode_wide().chain(std::iter::once(0)).collect());
+
+    let mut attr_size: usize = 0;
+    unsafe { InitializeProcThreadAttributeList(null_mut(), 1, 0, &mut attr_size) };
+    let mut attr_buf = vec![0u64; attr_size.div_ceil(8).max(1)];
+    let attr_list: LPPROC_THREAD_ATTRIBUTE_LIST = attr_buf.as_mut_ptr().cast();
+    // SAFETY: buffer is sized and 8-byte aligned for `InitializeProcThreadAttributeList`.
+    if unsafe { InitializeProcThreadAttributeList(attr_list, 1, 0, &mut attr_size) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    struct AttrGuard(LPPROC_THREAD_ATTRIBUTE_LIST);
+    impl Drop for AttrGuard {
+        fn drop(&mut self) {
+            unsafe { DeleteProcThreadAttributeList(self.0) };
+        }
+    }
+    let _attr_guard = AttrGuard(attr_list);
+
+    // SAFETY: `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE` expects the `HPCON` value itself cast to `LPCVOID`, not `&hpcon`.
+    if unsafe {
+        UpdateProcThreadAttribute(
+            attr_list,
+            0,
+            PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE as usize,
+            hpcon as *const std::ffi::c_void,
+            size_of::<HPCON>(),
+            null_mut(),
+            null_mut(),
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+
+    let try_create = |breakaway: bool| -> io::Result<PROCESS_INFORMATION> {
+        let mut cmd_wide: Vec<u16> = OsStr::new(&cmd_str).encode_wide().chain(std::iter::once(0)).collect();
+        let mut si: STARTUPINFOEXW = unsafe { std::mem::zeroed() };
+        si.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
+        si.lpAttributeList = attr_list;
+        let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
+        // Do NOT pass CREATE_NO_WINDOW or STARTF_USESTDHANDLES with PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE.
+        let flags = EXTENDED_STARTUPINFO_PRESENT
+            | CREATE_UNICODE_ENVIRONMENT
+            | CREATE_NEW_PROCESS_GROUP
+            | CREATE_SUSPENDED
+            | if breakaway { CREATE_BREAKAWAY_FROM_JOB } else { 0 };
+        let ok = unsafe {
+            CreateProcessW(
+                null(),
+                cmd_wide.as_mut_ptr(),
+                null(),
+                null(),
+                0,
+                flags,
+                env_block.as_ptr().cast(),
+                cwd_wide.as_ref().map_or(null(), |v| v.as_ptr()),
+                (&raw const si).cast(),
+                &mut pi,
+            )
+        };
+        if ok == 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(pi)
+        }
+    };
+
+    let pi = match try_create(true) {
+        Err(e) if e.raw_os_error() == Some(windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED as i32) => try_create(false)?,
+        other => other?,
+    };
+    let process = unsafe { OwnedHandle::from_raw_handle(pi.hProcess as RawHandle) };
+    let thread = unsafe { OwnedHandle::from_raw_handle(pi.hThread as RawHandle) };
+    let pid = pi.dwProcessId as i32;
+    let assigned = (|| {
+        if unsafe { AssignProcessToJobObject(job.as_raw_handle() as HANDLE, process.as_raw_handle() as HANDLE) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if unsafe { ResumeThread(thread.as_raw_handle() as HANDLE) } == u32::MAX {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    })();
+    drop(thread);
+    if let Err(e) = assigned {
+        unsafe { TerminateProcess(process.as_raw_handle() as HANDLE, ENDED) };
+        return Err(e);
+    }
+    let agent = Agent { pid, process, job, ended_by: AtomicU8::new(0) };
+    Ok((None, agent, Box::new(writer), Box::new(reader), master))
+}
+
+fn build_pty_env() -> Vec<u16> {
+    let mut vars: Vec<(std::ffi::OsString, std::ffi::OsString)> = std::env::vars_os()
+        .filter(|(k, _)| {
+            let ks = k.to_string_lossy();
+            !ks.eq_ignore_ascii_case("TERM") && !ks.eq_ignore_ascii_case("COLORTERM")
+        })
+        .collect();
+    vars.push(("TERM".into(), "xterm-256color".into()));
+    vars.push(("COLORTERM".into(), "truecolor".into()));
+    vars.sort_by(|(a, _), (b, _)| a.to_string_lossy().to_uppercase().cmp(&b.to_string_lossy().to_uppercase()));
+    let mut block = Vec::new();
+    for (k, v) in vars {
+        if k.is_empty() {
+            continue;
+        }
+        block.extend(k.encode_wide());
+        block.push(b'=' as u16);
+        block.extend(v.encode_wide());
+        block.push(0);
+    }
+    if block.is_empty() {
+        block.push(0);
+    }
+    block.push(0);
+    block
 }
 
 fn new_job() -> io::Result<OwnedHandle> {
@@ -675,14 +914,21 @@ impl Agent {
 
     /// Waits for the agent to exit. The process handle kept means its pid is not reused meanwhile, so `ended` has
     /// nothing to guard here; it is called all the same, before the exit is said.
-    pub fn wait(&self, mut child: Child, ended: impl FnOnce()) -> Value {
-        let status = child.wait();
+    pub fn wait(&self, proc: Proc, ended: impl FnOnce()) -> Value {
+        let status = match proc {
+            Some(mut child) => child.wait().ok().and_then(|s| s.code()),
+            None => {
+                // SAFETY: waiting on our own handle of the ConPTY child process.
+                unsafe { WaitForSingleObject(self.process.as_raw_handle() as HANDLE, INFINITE) };
+                None
+            }
+        };
         ended();
         let by = self.ended_by.load(Ordering::SeqCst);
         if by > 0 {
             return json!({"op": "exit", "code": null, "signal": SIGNALS[by as usize - 1]});
         }
-        match status.ok().and_then(|s| s.code()) {
+        match status {
             Some(code) => json!({"op": "exit", "code": code, "signal": null}),
             None => {
                 let mut code = 0;

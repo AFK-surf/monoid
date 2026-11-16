@@ -133,7 +133,9 @@ pub fn Button::press(self : Button) -> Unit {
 ///|
 /// A button in `parent`, called `label` (what a screen reader says, as it changes; its look draws it or not), `press`
 /// done as it is pressed, given the button's node (where what it opens goes beside); `disabled` while it cannot be
-/// pressed. `look` is run once as it is made, given its node and what it reads of it: all that is drawn of it, and how
+/// pressed; `default_on` while it is its layer's default, pressed by Enter that nothing with the focus takes (a
+/// dialog's primary button; never one that cannot be undone: View::default_press). `look` is run once as it is made,
+/// given its node and what it reads of it: all that is drawn of it, and how
 /// it is laid out. Its node is made at `loc`, the line that says it; where that is a library's part with a look (a
 /// part of a part), `made_for` is where that part was asked for, its own `loc~` handed on, so what is found in the
 /// button is traced to the look's line and to the line that asked for it (source.mbt). The node.
@@ -144,6 +146,7 @@ pub fn button(
   press : (@view.View) -> Unit,
   look : (@view.View, Button) -> Unit,
   disabled? : () -> Bool = fn() { false },
+  default_on? : () -> Bool,
   hold? : Hold,
   made_for? : SourceLoc,
   loc~ : SourceLoc,
@@ -169,5 +172,10 @@ pub fn button(
       }
     })
     |> ignore
+    // (its layer's default while `default_on` says so, only where said: View::default_press, a binding no other button pays
+    // for)
+    if default_on is Some(f) {
+      v.default_press(By(f)) |> ignore
+    }
   })
 }

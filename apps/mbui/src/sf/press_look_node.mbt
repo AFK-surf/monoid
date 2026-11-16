@@ -2,8 +2,9 @@
 // soft disc from where the finger or the button went down, drifting to the node's middle as it grows, its way in over
 // ripple_enter_ms from that moment, on to gone over ripple_exit_ms once it is let go and its way in is over (a short
 // press shown whole); while it is down, a node standing on a ground of its own sunk a little, springing back as it is
-// let go. Each a motion's way from its cause's moment (there at once with motion reduced), drawn as each frame is
-// while it goes, let go with the node.
+// let go. Pressed by a pointer, no disc: the whole node pressed at once, its ink over it evenly and, on a ground of its
+// own, a little smaller, in and out as @motion.ripple's pointer's press goes. Each a motion's way from its cause's
+// moment (there at once with motion reduced), drawn as each frame is while it goes, let go with the node.
 
 ///|
 /// One press's ripple: where in the node it went down, its way, when it went down, when it was let go (none yet).
@@ -35,13 +36,15 @@ priv struct PressLook {
 /// ground of its own). Told the press's where, when and how big it is then; its letting go is the node's
 /// (View::pressed). A finger's press in what scrolls shows once it has stayed tap_indication_ms (Ctx::pressed's, Compose's
 /// clickable in a scrollable container): one that goes on to scroll shows nothing; a tap quicker than that shows
-/// as it is let go.
+/// as it is let go. A pointer's press lays the ink over it evenly (no disc: @motion.ripple's), or, where `pointer` is
+/// false (a row whose ground a pointer's press lights itself: the old view's press_ripple), shows nothing of its own.
 #callsite(autofill(loc))
 fn press_look(
   v : @view.View,
   corner : @view.Live[Double],
   grounded : () -> Bool,
   ink? : () -> Int64 = fn() { @motion.ripple_ink },
+  pointer? : Bool = true,
   loc~ : SourceLoc,
 ) -> PressLook {
   // (the ripples going, by their numbers, in the order they began)
@@ -59,9 +62,28 @@ fn press_look(
     1.0 - sink_most.val * s
   }))
   |> ignore
-  // (let go at `at`: each ripple not yet let go on its way out once its way in is over; the sink back)
+  // (a pointer's press, @motion.ripple's: no disc, the ink over the whole of it, evenly, while `veil` has it; when the
+  // button went down while it is, and its way out due)
+  let veil = @motion.Way::new(0.0)
+  let pointer_at : Ref[Double?] = Ref(None)
+  let pointer_due : Ref[() -> Unit] = Ref(fn() {  })
+  let pointer_once : @signals.Signal[Bool] = @signals.signal(false)
+  // (let go at `at`: each ripple not yet let go on its way out once its way in is over; the sink back; a pointer's
+  // press out from then, or from its way in's end where that is later, as @motion.ripple's)
   let lift = fn(at : Double) {
-    sink.go(0.0, @motion.lift_spring, at~)
+    match pointer_at.val {
+      Some(down_at) => {
+        pointer_at.val = None
+        let out_at = dmax(at, down_at + @motion.pointer_enter_ms)
+        pointer_due.val = v.at_moment(out_at, fn() {
+          pointer_due.val = fn() {  }
+          let out = @motion.tween(@motion.pointer_exit_ms, ease=Out)
+          veil.go(0.0, out, at=out_at)
+          sink.go(0.0, out, at=out_at)
+        })
+      }
+      None => sink.go(0.0, @motion.lift_spring, at~)
+    }
     for n in ripples.untracked() {
       guard made.get(n) is Some(r) else { continue }
       if r.lifted is None {
@@ -96,6 +118,14 @@ fn press_look(
   let pressed_once : @signals.Signal[Bool] = @signals.signal(false)
   v.show(fn() { pressed_once.get() }, at_once=true, fn(over) {
     over.made_for(loc).over(Is(true)).radius(corner).clips(Is(true)) |> ignore
+    // (a pointer's veil over all of it, evenly: made as its first pointer's press shows)
+    over.show(fn() { pointer_once.get() }, at_once=true, fn(ink_over) {
+      ink_over
+      .over(Is(true))
+      .ground(By(fn() { @motion.pointer_veil(ink()) }))
+      .alpha(By(fn() { veil.shown_on(ink_over) }))
+      |> ignore
+    })
     over.each(fn() { ripples.get() }, fn(n) { n }, fn(d, n) {
       match made.get(n.untracked()) {
         Some(r) => ripple_disc(d, r, ink)
@@ -105,6 +135,7 @@ fn press_look(
   })
   v.owns(fn() {
     (late_due.val)()
+    (pointer_due.val)()
     for _, r in made {
       for f in r.due {
         f()
@@ -114,6 +145,24 @@ fn press_look(
   |> ignore
   // (press `d` shown from `at`)
   let show = fn(d : @view.Drag, at : Double) {
+    // a pointer's: the whole of it pressed at once (on a ground of its own a little smaller too), no disc
+    if @ui.pointing() is Mouse && !pointer {
+      return
+    }
+    if @ui.pointing() is Mouse {
+      (pointer_due.val)()
+      pointer_due.val = fn() {  }
+      pointer_at.val = Some(at)
+      let in_ = @motion.tween(@motion.pointer_enter_ms, ease=Out)
+      if @signals.untracked(grounded) {
+        sink_most.val = @motion.pointer_sink(d.w, d.h)
+        sink.go(1.0, in_, at~)
+      }
+      veil.go(1.0, in_, at~)
+      pointer_once.set(true)
+      pressed_once.set(true)
+      return
+    }
     if @signals.untracked(grounded) {
       sink_most.val = dmin(press_sink_most, @motion.press_sink / dmax(dmax(d.w, d.h), 1.0))
       sink.go(1.0, @motion.lift_spring, at~)

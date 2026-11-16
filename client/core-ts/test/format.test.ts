@@ -150,19 +150,20 @@ test("reported_levels_aliases_empty_and_legacy", () => {
 
 test("deepseek_harness_is_named_thinks_at_its_own_levels_and_runs_on_any_endpoint", () => {
   assert.deepEqual(["claude", "codex", "dsh"].map(f.runtimeLabel), ["Claude Code", "Codex", "DeepSeek Harness"]);
-  assert.deepEqual(f.RUNTIMES, ["claude", "codex", "dsh", "grok", "cursor", "devin", "hermes", "agy"]);
+  assert.deepEqual(f.RUNTIMES, ["claude", "codex", "dsh", "grok", "cursor", "devin", "hermes", "agy", "pi"]);
   assert.deepEqual(fallback("dsh"), ["low", "medium", "high", "max"]);
   assert.deepEqual(available("dsh", "deepseek-v4", { codex: { "deepseek-v4": ["low"] } }), fallback("dsh"));
   const runs = (id: string, endpoint: string | null = null, protocol: string | null = null) => {
     const at = providers.endpoints(providers.find(id)!, endpoint, protocol);
     return at === null ? null : providers.runtimes(providers.uses(at, id));
   };
-  assert.deepEqual(runs("opencode-go"), ["claude", "codex", "dsh"]);
-  assert.deepEqual(runs("anthropic"), ["claude", "dsh"]);
-  assert.deepEqual(runs("openai"), ["codex", "dsh"]);
-  assert.deepEqual(runs("deepseek"), ["dsh"]);
+  // Pi runs wherever DeepSeek Harness does (a station offers either only where it lists it).
+  assert.deepEqual(runs("opencode-go"), ["claude", "codex", "dsh", "pi"]);
+  assert.deepEqual(runs("anthropic"), ["claude", "dsh", "pi"]);
+  assert.deepEqual(runs("openai"), ["codex", "dsh", "pi"]);
+  assert.deepEqual(runs("deepseek"), ["dsh", "pi"]);
   assert.deepEqual(runs("jev"), []);
-  assert.deepEqual(runs("cloudflare-ai-gateway", "https://gateway.ai.cloudflare.com/v1/a/b/compat", "chat_completions"), ["dsh"]);
+  assert.deepEqual(runs("cloudflare-ai-gateway", "https://gateway.ai.cloudflare.com/v1/a/b/compat", "chat_completions"), ["dsh", "pi"]);
   // Anthropic's protocol at an address given with /v1: clients add /v1/messages to the root above it.
   assert.equal(providers.endpoints(providers.find("custom")!, "http://127.0.0.1:4000/v1/", "anthropic")!.anthropic, "http://127.0.0.1:4000");
   assert.equal(providers.endpoints(providers.find("custom")!, "http://127.0.0.1:4000", "anthropic")!.anthropic, "http://127.0.0.1:4000");
@@ -174,15 +175,15 @@ test("grok_build_is_named_thinks_up_to_max_and_runs_on_xais_own_api_alone", () =
   assert.deepEqual(available("grok", "grok-5", { codex: { "grok-5": ["low"] } }), fallback("grok"));
   assert.deepEqual(available("grok", "grok-5", { grok: { "grok-5": ["low", "high"] } }), ["low", "high"]);
   const runs = (id: string) => providers.runtimes(providers.uses(providers.endpoints(providers.find(id)!, null, null)!, id));
-  assert.deepEqual(runs("xai"), ["codex", "dsh", "grok"]);
+  assert.deepEqual(runs("xai"), ["codex", "dsh", "grok", "pi"]);
   // Another provider speaking the same protocol does not run it, nor xAI's endpoints said with no provider.
-  assert.deepEqual(runs("openai"), ["codex", "dsh"]);
-  assert.deepEqual(providers.runtimes(providers.uses(providers.endpoints(providers.find("xai")!, null, null)!)), ["codex", "dsh"]);
+  assert.deepEqual(runs("openai"), ["codex", "dsh", "pi"]);
+  assert.deepEqual(providers.runtimes(providers.uses(providers.endpoints(providers.find("xai")!, null, null)!)), ["codex", "dsh", "pi"]);
 });
 
 test("cursor_is_named_last_sets_no_effort_and_runs_on_no_providers_key", () => {
   assert.equal(f.runtimeLabel("cursor"), "Cursor");
-  assert.deepEqual(f.RUNTIMES, ["claude", "codex", "dsh", "grok", "cursor", "devin", "hermes", "agy"]);
+  assert.deepEqual(f.RUNTIMES, ["claude", "codex", "dsh", "grok", "cursor", "devin", "hermes", "agy", "pi"]);
   assert.deepEqual([f.efforts("cursor"), fallback("cursor")], [[], []]);
   assert.deepEqual(available("cursor", "composer-2", { codex: { "composer-2": ["low"] } }), []);
   assert.deepEqual(f.makerOf("composer-2"), ["cursor", "Cursor"]);
@@ -223,4 +224,13 @@ test("fills_and_counts", () => {
   assert.deepEqual(fallback("hermes"), []);
   assert.equal(f.runtimeLabel("agy"), "Antigravity CLI");
   assert.deepEqual(fallback("agy"), []);
+});
+
+test("pi_is_named_pi_everywhere_and_thinks_up_to_max_its_model_clamping_it", () => {
+  assert.deepEqual([f.runtimeLabel("pi"), f.runtimeShort("pi")], ["Pi", "Pi"]);
+  assert.equal(f.RUNTIMES.at(-1), "pi");
+  assert.deepEqual(fallback("pi"), ["low", "medium", "high", "xhigh", "max"]);
+  assert.deepEqual(f.efforts("pi"), fallback("pi"));
+  assert.deepEqual(available("pi", "deepseek-v4", { dsh: { "deepseek-v4": ["low"] } }), fallback("pi"));
+  assert.deepEqual(available("pi", "deepseek-v4", { pi: { "deepseek-v4": ["low", "high"] } }), ["low", "high"]);
 });

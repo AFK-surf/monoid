@@ -15,7 +15,9 @@ let nav_want : Ref[(Source, Workspace, Array[Workspace])?] = { val: None }
 let nav_untaken : Ref[Bool] = { val: false }
 
 ///|
-let native_workspace_anchor : Ref[Int] = { val: 0 }
+/// What the workspaces' sheet opens beside where the system's glass holds the workspace's button: the old view's box
+/// that holds its place, or the node (gate_heading_node's).
+let native_workspace_anchor : Ref[@sf.Anchor] = { val: Unanchored }
 
 ///|
 let native_sidebar_items : Map[Int, @hostapi.NavItem] = Map([])
@@ -35,15 +37,28 @@ let floating_installed : Ref[Bool] = { val: false }
 fn native_workspace(c : @ui.Ctx, src : Source, w : Workspace, node : Int, id : Int) -> Unit {
   ignore(c)
   ignore(node)
-  native_workspace_anchor.val = id
+  native_workspace_anchor.val = Of(id)
+  native_workspace_hooked()
+  native_sidebar_items[id] = native_workspace_item(src, w)
+}
+
+///|
+/// The workspace's button in the system's glass (native_workspace's) as it is now: its name, its badge, a dot where
+/// another workspace has something or an invitation waits.
+fn native_workspace_item(src : Source, w : Workspace) -> @hostapi.NavItem {
+  let others = field(field(field(src.topic("workspaceMarks", @sfbase.marks_asked()).get().value, "workspaces"), w.id), "others") is Some(String(_))
+  {
+    id: "workspace-switch", title: w.name, icon: ws_badge(w),
+    dot: others || @sfpages.invitations_waiting(src).length() > 0, prominent: true, menu: [],
+  }
+}
+
+///|
+/// What hands the glass's buttons to the host once each frame is laid out, put up once.
+fn native_workspace_hooked() -> Unit {
   if !floating_installed.val {
     floating_installed.val = true
     @ui.on_after_layout(native_workspace_placed)
-  }
-  let others = field(field(field(src.topic("workspaceMarks", @sfbase.marks_asked()).get().value, "workspaces"), w.id), "others") is Some(String(_))
-  native_sidebar_items[id] = {
-    id: "workspace-switch", title: w.name, icon: ws_badge(w),
-    dot: others || @sfpages.invitations_waiting(src).length() > 0, prominent: true, menu: [],
   }
 }
 
@@ -737,7 +752,7 @@ fn rail_native_taps(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
         open_settings()
       }
     } else if id == "workspace-switch" {
-      @sfpages.open_workspaces(src, Of(native_workspace_anchor.val), compact=true)
+      @sfpages.open_workspaces(src, native_workspace_anchor.val, compact=true)
     } else if id == "sidebar/search" {
       switcher_toggle(fn() { c.blur() })
     } else if id.has_prefix("sidebar/filter/") {
@@ -854,7 +869,7 @@ fn nav_hold(src : Source) -> Unit {
 ///|
 /// What this file keeps put back as the app begins anew (desk.mbt reset).
 fn rail_native_reset() -> Unit {
-  native_workspace_anchor.val = 0
+  native_workspace_anchor.val = Unanchored
   column_short.set(false)
   nav_want.val = None
   nav_held.val = fn() { None }

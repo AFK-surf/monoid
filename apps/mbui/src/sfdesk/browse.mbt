@@ -39,6 +39,11 @@ let browse_places : Map[String, BrowsePlace] = Map([])
 ///|
 fn browse_reset() -> Unit {
   browse_places.clear()
+  for _, w in browse_waits {
+    w.end()
+  }
+  browse_waits.clear()
+  browse_held.set(Map([]))
 }
 
 ///|
@@ -124,7 +129,15 @@ pub fn browse(
   }
   let b = { ..b0, shown: match got { Some(v) => Some(v); None => p.last }, count_text: match got { Some(v) => v.count_text; None => None } }
   let here = view + "\n" + at.station + "\n" + root + "\n" + at.path
-  if p.told != here {
+  // (the place switched to show another folder or another way, what that shows read meanwhile: the core told of it at
+  // the press, browse_switch; once it is shown, what that press asked handed over to what reads it here, let go at this
+  // frame's end)
+  let held = browse_held.get().contains(owner) || browse_held.get().contains(key)
+  if !held {
+    @sfbase.shown_read("browse/" + owner)
+    @sfbase.shown_read("browse/" + key)
+  }
+  if p.told != here && !held {
     // (a name being changed lets go as another folder is shown)
     if p.told != "" {
       p.renaming = None
@@ -137,6 +150,115 @@ pub fn browse(
     })
   }
   b
+}
+
+///|
+/// The places (a place's owner, `page` or `tab`, or one place by its key) switched by a press to show something else
+/// whose browsing is read meanwhile (browse_switch): the place shown as it was till then, the core told nothing more of
+/// it by what shows it.
+// kept across runs: put back by browse_reset
+let browse_held : @signals.Signal[Map[String, Bool]] = @signals.signal(Map([]))
+
+///|
+/// What waits for each place switched (browse_switch), by what holds it.
+// kept across runs: put back by browse_reset
+let browse_waits : Map[String, @sfbase.PressWait] = Map([])
+
+///|
+/// The places `sides` show (each as it is, and what it is to show: another folder, another way) switched by a press,
+/// held by `hold` (their owner: every place of it; or one's key): the core told at once where each is (`drive.browse`
+/// `at`, as the build would once switched), and each kept as it is shown till what it is to show is answered (its
+/// browsing so and each folder it draws, `folders` of it and of what its browsing says, None before that is answered:
+/// sfbase's switch_answered), then `commit` (what puts them there), told in one frame with what it read handed over to
+/// their readers; never a folder or a way drawn in its bones, on either side. Pressed again before that, or what it was
+/// pressed in gone, the one before is waited for no more and `let_go` done.
+fn browse_switch(
+  c : @ui.Ctx,
+  src : Source,
+  sides : Array[(Browse, Browse)],
+  hold : String,
+  folders : (Browse, @sfbase.BrowseView?) -> Array[String],
+  commit : () -> Unit,
+  let_go? : () -> Unit = fn() {  },
+) -> Unit {
+  @signals.untracked(fn() {
+    browse_switch_off(hold)
+    browse_held_put(hold, true)
+    let folder = fn(to : Browse, path : String) -> (String, Map[String, Json]) {
+      ("drive", { "station": Json::string(to.at.station), "root": Json::string(to.root), "path": Json::string(path) })
+    }
+    let asks : Array[(String, Map[String, Json])] = []
+    for side in sides {
+      let (b, to) = side
+      let p = browse_place(b.key)
+      p.told = to.view + "\n" + to.at.station + "\n" + to.root + "\n" + to.at.path
+      browse_send(c, src, to, { "act": "at" })
+      asks.push(("driveBrowse", to.where_()))
+      for f in folders(to, None) {
+        asks.push(folder(to, f))
+      }
+    }
+    // (what each draws of its folders once its browsing says them: a tree's folders opened)
+    let then = fn(read : ((String, Map[String, Json])) -> Json?) -> Array[(String, Map[String, Json])] {
+      let out = []
+      for side in sides {
+        let to = side.1
+        let got = read(("driveBrowse", to.where_()))
+        guard got is Some(_) else { continue }
+        for f in folders(to, @sfbase.browse_view_of(got)) {
+          out.push(folder(to, f))
+        }
+      }
+      out
+    }
+    let w = @sfbase.switch_answered(
+      src,
+      asks,
+      "browse/" + hold,
+      then~,
+      fn() {
+        browse_waits.remove(hold)
+        browse_held_put(hold, false)
+        commit()
+      },
+      let_go=fn() {
+        browse_waits.remove(hold)
+        browse_held_put(hold, false)
+        let_go()
+      },
+    )
+    if w.waiting() {
+      browse_waits[hold] = w
+    }
+  })
+}
+
+///|
+/// What waits for a switch of `hold` (browse_switch) waited for no more, its place shown as it is.
+fn browse_switch_off(hold : String) -> Unit {
+  match browse_waits.get(hold) {
+    Some(w) => {
+      browse_waits.remove(hold)
+      w.give_up()
+    }
+    None => ()
+  }
+}
+
+///|
+/// `hold` held (browse_held) or let go.
+fn browse_held_put(hold : String, on : Bool) -> Unit {
+  let now = browse_held.untracked()
+  if now.contains(hold) == on {
+    return
+  }
+  let next = now.copy()
+  if on {
+    next[hold] = true
+  } else {
+    next.remove(hold)
+  }
+  browse_held.set(next)
 }
 
 ///|

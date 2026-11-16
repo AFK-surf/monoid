@@ -1,6 +1,6 @@
 // The station's place with still.fail cloud (src/cloud/state.ts) as kept in memory and in <data>/mesh/cloud.json.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -60,4 +60,22 @@ test("a workspace lookup checks only that workspace and has the same members as 
   assert.equal(cloud.membership("home"), null);
   assert.equal(cloud.membership("chosen"), null);
   assert.deepEqual(cloud.memberships(), []);
+});
+
+
+test("cloud routing follows the supplied station config without opening another config document", async () => {
+  const data = mkdtempSync(join(tmpdir(), "cloud-routing-"));
+  writeFileSync(join(data, "config.json"), "not JSON");
+  let entry: { origin: string; host: string; port: number } | null = {
+    origin: "https://app.still.fail", host: "entry.test", port: 24443,
+  };
+  const cloud = new Cloud(data, false, undefined, () => entry);
+  try {
+    assert.equal(cloud.transport.eligible("https://app.still.fail/v1/stations/connect"), true);
+    entry = null;
+    assert.equal(cloud.transport.eligible("https://app.still.fail/v1/stations/connect"), false);
+  } finally {
+    await cloud.close();
+    rmSync(data, { recursive: true, force: true });
+  }
 });

@@ -151,7 +151,8 @@ export class Station extends DurableObject<Env> {
     }
   }
 
-  /** "ping" is answered by the runtime; what else a station says is of the workspace locks, answered by the Directory. */
+  /** "ping" is answered by the runtime; what else a station says (of the workspace locks, of its ways) is answered by
+   * the Directory. */
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
     if (typeof message !== "string") return;
     const { station, origin } = ws.deserializeAttachment() as Attachment;

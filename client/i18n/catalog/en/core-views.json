@@ -174,6 +174,8 @@
   "core-views.flow.key": "API key",
   "core-views.flow.key_card": "API key",
   "core-views.flow.key_card_hint": "Use {name}'s API key, pay as you go",
+  "core-views.flow.enterprise": "Enterprise · Gemini Enterprise",
+  "core-views.flow.enterprise_hint": "A company Google Workspace or Google Cloud account, runs Antigravity CLI. Sign in once with your work Google account and paste the code it shows; if no license is assigned to you, also give a Google Cloud project. Google's terms forbid other tools using it; the account may be suspended.",
   "core-views.flow.key_notice": "The key is kept on this station only",
   "core-views.flow.key_optional": "API key (optional)",
   "core-views.flow.not_yours": "This add flow belongs to another page",
@@ -183,7 +185,7 @@
   "core-views.flow.plan_hint.claude": "Claude Pro / Max, runs Claude Code. Sign in once in the browser.",
   "core-views.flow.plan_hint.codex": "ChatGPT Plus / Pro, runs Codex. Sign in once with a device code.",
   "core-views.flow.plan_hint.grok": "SuperGrok / X Premium+, runs Grok Build. Sign in once with a device code.",
-  "core-views.flow.plan_hint.opencode": "OpenCode Go / Go Plus, runs Claude Code, Codex and DeepSeek Harness. Sign in once with an OpenCode account.",
+  "core-views.flow.plan_hint.opencode": "OpenCode Go / Go Plus, runs Claude Code, Codex, DeepSeek Harness and Pi. Sign in once with an OpenCode account.",
   "core-views.flow.plan_hint.kimi": "Kimi Code membership, runs Claude Code. Sign in once with a Kimi account.",
   "core-views.flow.plan_hint.agy": "Google AI Pro / Ultra or a free Google account, runs Antigravity CLI. Sign in once with Google, then paste the code it shows. Google's terms forbid other tools using it; the account may be suspended.",
   "core-views.flow.protocol.anthropic": "Anthropic Messages",
@@ -843,5 +845,6 @@
   "core-views.move.summary.to": "Moving to {name}",
   "core-views.move.summary.moving": "Moving · {module} “{label}”",
   "core-views.move.summary.stopped": {"one": "1 stopped", "other": "{n} stopped"},
-  "core-views.move.summary.failed": {"one": "1 failed", "other": "{n} failed"}
+  "core-views.move.summary.failed": {"one": "1 failed", "other": "{n} failed"},
+  "core-views.group": "Group"
 }

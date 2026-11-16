@@ -460,9 +460,10 @@ test "an iPhone Duo on its side: a service alone in the side panel a card in it,
   let holes = t.holes()
   assert_eq(holes.length(), 1, msg="the service's page")
   let (x, y, hw, hh) = holes[0]
-  // the panel it is alone in: the roundest at its foot left of those round it
+  // the panel it is alone in (the tree's, an old view in it drawing the service: Tester::boxes_held): the roundest at
+  // its foot left of those round it
   let mut panel : @ui.Laid? = None
-  for b in t.boxes() {
+  for b in t.boxes_held() {
     if b.radii.3 > 0.0 && b.x < x && x + hw <= b.x + b.w && b.y < y && y + hh < b.y + b.h &&
       (panel is None || panel.unwrap().w > b.w) {
       panel = Some(b)

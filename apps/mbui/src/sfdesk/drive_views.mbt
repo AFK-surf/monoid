@@ -103,6 +103,11 @@ fn drag_target(c : @ui.Ctx, src : Source, id : Int, key : String, into : DriveAt
 /// How `place` (page or tab) shows a folder, as last chosen there. The files page starts with the detailed list; a
 /// chat's narrower files tab starts with columns where they fit.
 pub fn drive_view(src : Source, place : String) -> String {
+  // (another way pressed and what it shows not read yet: the one shown till it is, view_press)
+  match views_held.get().get(place) {
+    Some(v) => return v
+    None => ()
+  }
   match text(field(src.topic("prefs", {}).get().value, "driveViews"), place) {
     "columns" => "columns"
     "tree" => "tree"
@@ -141,6 +146,112 @@ pub fn set_drive_view(src : Source, place : String, v : String) -> Unit {
   let o : Map[String, Json] = Map([])
   o[place] = if place != "page" && v == "columns" { Json::null() } else { Json::string(v) }
   (src.call)("prefs.set", { "driveViews": Json::object(o) }, @sfbase.answer_unread)
+}
+
+///|
+/// Each place's way shown while another pressed waits for what it shows (view_press), by place; and the one pressed,
+/// what the choice shows meanwhile (view_pressed).
+// kept across runs: put back by views_held_reset (reset)
+let views_held : @signals.Signal[Map[String, String]] = @signals.signal(Map([]))
+
+///|
+// kept across runs: put back by views_held_reset (reset)
+let views_pressed : @signals.Signal[Map[String, String]] = @signals.signal(Map([]))
+
+///|
+fn views_held_reset() -> Unit {
+  views_held.set(Map([]))
+  views_pressed.set(Map([]))
+}
+
+///|
+/// `place`'s entry of a map kept as a signal (`m`) set to `v`, or taken out (None): a new map, told as it changes.
+fn views_put(m : @signals.Signal[Map[String, String]], place : String, v : String?) -> Unit {
+  let now = m.untracked()
+  if now.get(place) == v {
+    return
+  }
+  let next = now.copy()
+  match v {
+    Some(v) => next[place] = v
+    None => next.remove(place)
+  }
+  m.set(next)
+}
+
+///|
+/// The way `place`'s choice shows: the one pressed while what it shows is read (view_press), else the one shown.
+fn view_pressed(place : String, shown : String) -> String {
+  views_pressed.get().get(place).unwrap_or(shown)
+}
+
+///|
+/// Another way pressed for the folder `b` shows (every place of its owner `b.owner`; `others`, the other sides of the
+/// files' page as they are shown): kept as chosen at once (set_drive_view), the choice showing it pressed, and every
+/// side switched to it once what that way draws is read there (browse_switch: each one's browsing that way, and its
+/// folders: columns the way down to the one shown, a tree the one shown and each folder opened in it), the folders
+/// shown as they were meanwhile; never a way drawn in its bones, on either side.
+fn view_press(c : @ui.Ctx, src : Source, b : Browse, v : String, others? : Array[Browse] = []) -> Unit {
+  let place = b.owner
+  @signals.untracked(fn() {
+    let shown = drive_view(src, place)
+    views_put(views_pressed, place, None)
+    views_put(views_held, place, None)
+    set_drive_view(src, place, v)
+    if v == shown {
+      // (one pressed before waited for no more: the way shown is the one chosen again)
+      browse_switch_off(place)
+      return
+    }
+    views_put(views_held, place, Some(shown))
+    views_put(views_pressed, place, Some(v))
+    browse_switch(
+      c,
+      src,
+      [b, ..others].map(fn(s) { (s, { ..s, view: v }) }),
+      place,
+      fn(to, view) {
+        let path = to.at.path
+        match v {
+          "columns" => {
+            let out = [""]
+            let mut so_far = ""
+            if path != "" {
+              for part in path.split("/") {
+                so_far = dv_join(so_far, part.to_owned())
+                out.push(so_far)
+              }
+            }
+            out
+          }
+          "tree" => {
+            let out = [path]
+            match view {
+              Some(bv) =>
+                for o in bv.open {
+                  if path == "" || o.has_prefix(path + "/") {
+                    out.push(o)
+                  }
+                }
+              None => ()
+            }
+            out
+          }
+          _ => [path]
+        }
+      },
+      fn() {
+        views_put(views_held, place, None)
+        views_put(views_pressed, place, None)
+      },
+      let_go=fn() {
+        if views_pressed.untracked().get(place) == Some(v) {
+          views_put(views_held, place, None)
+          views_put(views_pressed, place, None)
+        }
+      },
+    )
+  })
 }
 
 ///|

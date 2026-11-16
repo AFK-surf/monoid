@@ -51,11 +51,12 @@ fn message_files_node(
   at : String,
   over? : () -> Double = fn() { 0.0 },
 ) -> Unit {
-  // (the files as they are now, worked out once as what they are worked out of changes: each file's every reading of
-  // itself below goes through this, not through the message again)
-  let listed = @signals.computed_scoped(fn(_) { list() }, same=physical_equal)
-  let list = fn() { listed.get() }
+  // (none, as most messages have: nothing worked out for them but whether there are some)
   parent.show(fn() { list().length() > 0 }, fn(s) {
+    // (the files as they are now, worked out once as what they are worked out of changes: each file's every reading of
+    // itself below goes through this, not through the message again)
+    let listed = @signals.computed(fn(_) { list() })
+    let list = fn() { listed.get() }
     s.by_room(fn(r, room) {
       r.box(fn(files) {
         @sf.style_node(files, fn() {
@@ -64,19 +65,19 @@ fn message_files_node(
           if o > 0.0 { wrap.then(@ui.style(pt=@sf.room_of(o))) } else { wrap }
         })
         files.wraps(Is(Some(files_gap))) |> ignore
-        let keys = fn() { list().map(fn(a) { @sfbase.file_key(a) }) }
-        files.each(keys, fn(k) { k }, fn(slot, k) {
-          // (its key read through what it is given, never kept: a block may be taken to show another key; found once
-          // as that or the files change, what reads it many times over reading that)
-          let found = @signals.computed_scoped(
+        // (the files kept by key: a file's block told as that file changes, comes or goes, never as another does)
+        let by_key = files.keyed_by(list, @sfbase.file_key)
+        files.each(fn() { by_key.keys() }, fn(k) { k }, fn(slot, k) {
+          // (its key read through what it is given, never kept: a block may be taken to show another key; read once
+          // as that or its file changes, what reads it many times over reading that)
+          let found = @signals.computed(
             fn(_) {
               let key = k.get()
-              match list().iter().find_first(fn(x) { @sfbase.file_key(x) == key }) {
+              match by_key.get(key) {
                 Some(x) => x
                 None => attachment_of({ "name": Json::string(""), "path": Json::string(key) })
               }
             },
-            same=physical_equal,
           )
           let a = fn() { found.get() }
           slot.box(fn(item) {

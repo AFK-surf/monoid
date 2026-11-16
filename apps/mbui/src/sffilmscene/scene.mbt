@@ -13,11 +13,30 @@ pub fn source(arg : (String) -> String) -> () -> @sfapp.Source {
         if arg("MBUI_FILM_AUTOFILL") == "1" { @ui.fake_autofill.val = true }
         // 1Password as a scene has it (none unless said): asked and slow to answer, or allowed but its servers not
         // reached
-        match arg("MBUI_FILM_OP") {
+        let op_mode = if mode == "chat-signin-many" { "many" } else { arg("MBUI_FILM_OP") }
+        match op_mode {
           "slow" => {
             @ui.fake_op.val = Some(fn(_) { (0, "[]", "") })
             @ui.fake_op_pending.val = true
           }
+          "many" =>
+            @ui.fake_op.val = Some(fn(args) {
+              if args.contains("list") {
+                (
+                  0,
+                  "[{\"id\":\"gh1\",\"title\":\"GitHub\",\"additional_information\":\"lin@example.com\",\"urls\":[{\"href\":\"https://github.com\"}]},{\"id\":\"gh2\",\"title\":\"GitHub\",\"additional_information\":\"lin.personal@example.com\",\"urls\":[{\"href\":\"https://github.com/login\"}]},{\"id\":\"gh3\",\"title\":\"GitHub\",\"additional_information\":\"team1@example.com\",\"urls\":[{\"href\":\"https://github.com\"}]},{\"id\":\"gh4\",\"title\":\"GitHub\",\"additional_information\":\"team2@example.com\",\"urls\":[{\"href\":\"https://github.com\"}]},{\"id\":\"gh5\",\"title\":\"GitHub OAuth\",\"additional_information\":\"524783491799-i2nuidv1m2jssguh64lopn8g1kd7a8oe.apps.example.com\",\"urls\":[{\"href\":\"https://github.com\"}]}]",
+                  "",
+                )
+              } else if args.contains("--otp") {
+                (1, "", "[ERROR] no one-time password")
+              } else {
+                (
+                  0,
+                  "[{\"id\":\"username\",\"label\":\"username\",\"value\":\"lin@example.com\"},{\"id\":\"password\",\"purpose\":\"PASSWORD\",\"label\":\"password\",\"value\":\"s3cret\"}]",
+                  "",
+                )
+              }
+            })
           "unreached" =>
             @ui.fake_op.val = Some(fn(_) {
               (1, "", "[ERROR] 2026/11/03 16:43:31 Get \"https://my.1password.com/api/v2/account/keysets\": unexpected EOF\n")
@@ -35,6 +54,9 @@ pub fn source(arg : (String) -> String) -> () -> @sfapp.Source {
         if arg("MBUI_UPDATES_MS") != "" { @sffixture.fixture_updates(ms=whole_ms(arg("MBUI_UPDATES_MS"))) }
         if arg("MBUI_UPDATE") != "" { @sffixture.fixture_update(arg("MBUI_UPDATE")) }
         let s = if late > 0.0 { @sffixture.round_trip(s, late) } else { s }
+        // MBUI_OPEN_WHOLE=1: a card, a panel or a sheet opened the first time waits for what it reads, as the app does
+        // (@sf.OpenGate; a fixture's own tests say what shows before the core answers, so not without it)
+        let s = if arg("MBUI_OPEN_WHOLE") == "1" { { ..s, gates_opens: fn() { true } } } else { s }
         let held = arg("MBUI_HOLD")
         let s = if held != "" { @sffixture.held_topics(s, held.split(",").map(fn(x) { x.to_owned() }).collect()) } else { s }
         let failed = arg("MBUI_FAILED")
@@ -42,6 +64,26 @@ pub fn source(arg : (String) -> String) -> () -> @sfapp.Source {
           @sffixture.failed_topics(s, failed.split(",").map(fn(x) { x.to_owned() }).collect(), arg("MBUI_FAILED_WHY"))
         } else { s }
         let s = if arg("MBUI_SAID") == "1" { @sffixture.said_longest_source(s) } else { s }
+        // MBUI_FILM_FACE_MS=N: the people's faces the core gives at once (the fixture's ana_face among them), the host
+        // decoding each N ms after it is asked; MBUI_FILM_FACE_WAITS=1: a page opening waits for them, as the app does
+        // (Source.picture_waits; sfapp's page_pictures_wbtest)
+        let s = if arg("MBUI_FILM_FACE_MS") != "" {
+          let bytes = @sffixture.fixture_file_png("face.png")
+          @ui.fake_decode_bytes_after.val.push((bytes, whole_ms(arg("MBUI_FILM_FACE_MS"))))
+          let faces = @sfapp.core_pictures_waited(fn(_, done) { done(Some(bytes)) }, fn(_, done) { done(Some(bytes)) })
+          let waits = arg("MBUI_FILM_FACE_WAITS") == "1"
+          {
+            ..s,
+            picture: fn(url, stint) {
+              let key = (faces.shown)(url, stint)
+              @sfbase.picture_gated(key)
+              key
+            },
+            picture_waits: fn(url) { waits && (faces.waits)(url) },
+          }
+        } else {
+          s
+        }
         if dark { @sf.set_dark(Some(true)) }
         @sf.give_faces()
         src.val = Some(s)

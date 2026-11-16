@@ -5,11 +5,12 @@ import { ResourceWatch } from "../src/resources/watch.ts";
 import { SessionDirectoryBuilder } from "../src/sessions/session-directory-builder.ts";
 import { SESSION_DIR_ARGUMENTS } from "../src/store/session-directory.ts";
 import { LIVE_SESSIONS, Store } from "../src/store/store.ts";
+import { dbFile } from "./temp-dir.ts";
 
 test("a resources check does not read unrelated session directories", async () => {
   const counts: { steady: number; changed: number }[] = [];
   for (const unrelated of [40, 400]) {
-    const store = Store.open(":memory:"), db = store.db;
+    const store = Store.open(dbFile("res-places-")), db = store.db;
     let observed = false, now = 0;
     const read = new Set<string>();
     db.function("resource_place_seen", (key) => { if (observed && String(key).startsWith("other:")) read.add(String(key)); return 1; });

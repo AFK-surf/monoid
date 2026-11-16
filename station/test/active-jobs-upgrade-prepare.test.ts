@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { installOtherActiveJobs, installRemoteQueueIndex, REMOTE_QUEUE_JOBS } from "../src/store/active-jobs.ts";
-import { activeJobUpgradeReady, activeJobUpgradeStep, activeRemoteJobsAvailable, REMOTE_QUEUE_PREPARED } from "../src/store/active-jobs-upgrade.ts";
+import { activeJobUpgradeReady, activeJobUpgradeStep, activeRemoteJobsAvailable, REMOTE_QUEUE_PREPARED } from "./reference/backfill/active-jobs-upgrade.ts";
 import { installActiveWatches } from "../src/store/watch-jobs.ts";
 
 const present = (db: DatabaseSync, type: string, name: string) =>

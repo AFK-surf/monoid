@@ -6,7 +6,8 @@ import { copyFileSync, existsSync, linkSync, lstatSync, readFileSync, readlinkSy
 import { cpus as cpuList, freemem, release, totalmem, uptime as osUptime, version as osVersion } from "node:os";
 import { delimiter, dirname, join, win32 } from "node:path";
 import { createConnection } from "node:net";
-import { stat } from "node:fs/promises";
+import { readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import { holder, osCpuTicks, pidAlive, runnerBinary } from "./processes.ts";
 import type { Env, Found, Host, Platform } from "./index.ts";
@@ -92,6 +93,21 @@ function findCommand(name: string, env: Env): Found | null {
     for (const ext of exts) {
       const onPath = join(dir === "" ? "." : dir, name + ext);
       if (isFile(onPath)) return { onPath, real: real(onPath) ?? onPath };
+    }
+  }
+  return null;
+}
+
+/// `findCommand` off the station's thread.
+async function findCommandSoon(name: string, env: Env): Promise<Found | null> {
+  const key = Object.keys(env).find((k) => k.toUpperCase() === "PATH");
+  const path = key === undefined ? undefined : env[key];
+  if (path === undefined) return null;
+  const exts = (env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter((e) => e !== "").map((e) => e.toLowerCase());
+  for (const dir of path.split(delimiter)) {
+    for (const ext of exts) {
+      const onPath = join(dir === "" ? "." : dir, name + ext);
+      if ((await stat(onPath).catch(() => null))?.isFile()) return { onPath, real: (await realpath(onPath).catch(() => null)) ?? onPath };
     }
   }
   return null;
@@ -271,6 +287,59 @@ const host: Host = {
   }),
 };
 
+/// The environment's string values as the registry keeps them, unexpanded (`DoNotExpandEnvironmentNames`): the machine's
+/// and the user's, as UTF-8 JSON in base64, so a path of other than ASCII comes through whatever the console's code page.
+const SAVED_ENVIRONMENT = `$ErrorActionPreference = 'Stop'
+function Saved($path) {
+  $o = @{}
+  $key = Get-Item -LiteralPath $path -ErrorAction SilentlyContinue
+  if ($key) { foreach ($n in $key.GetValueNames()) { $v = $key.GetValue($n, $null, 'DoNotExpandEnvironmentNames'); if ($v -is [string]) { $o[$n] = $v } } }
+  $o
+}
+$j = @{ machine = (Saved 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment'); user = (Saved 'HKCU:\\Environment') } | ConvertTo-Json -Compress -Depth 3
+[Console]::Out.Write([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($j)))`;
+
+type Saved = Record<string, string>;
+
+/// PATH as Windows composes it for a new process: the machine's then the user's, each `%NAME%` expanded by the
+/// variables before it (the process's, the machine's, then the user's, case aside); one it lacks stays as written, as
+/// ExpandEnvironmentStrings leaves it. Only absolute directories, each once. The other values only expand PATH's.
+export function savedPathOf(machine: Saved, user: Saved, env: Env): string[] {
+  const vars = new Map<string, string>();
+  for (const [k, v] of Object.entries(env)) if (v !== undefined) vars.set(k.toUpperCase(), v);
+  const expand = (s: string) => s.replace(/%([^%]+)%/g, (all, name: string) => vars.get(name.toUpperCase()) ?? all);
+  const path = (saved: Saved) => Object.entries(saved).find(([k]) => k.toUpperCase() === "PATH")?.[1] ?? "";
+  const parts: string[] = [];
+  for (const saved of [machine, user]) {
+    for (const [k, v] of Object.entries(saved)) if (k.toUpperCase() !== "PATH") vars.set(k.toUpperCase(), expand(v));
+    parts.push(...expand(path(saved)).split(";"));
+  }
+  const seen = new Set<string>();
+  return parts.map((d) => d.trim()).filter((d) => {
+    if (!win32.isAbsolute(d) || /^[\\/](?![\\/])/.test(d) || seen.has(d.toLowerCase())) return false;
+    seen.add(d.toLowerCase());
+    return true;
+  });
+}
+
+/// The PATH the registry gives a process started now (savedPathOf), or null where it cannot be read in time.
+async function savedPath(env: Env): Promise<string[] | null> {
+  try {
+    const { stdout } = await run("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(SAVED_ENVIRONMENT, "utf16le").toString("base64")], {
+      windowsHide: true,
+      timeout: 8_000,
+      maxBuffer: 1 << 20,
+    });
+    const said: unknown = JSON.parse(Buffer.from(stdout.trim(), "base64").toString("utf8"));
+    const strings = (o: unknown): Saved =>
+      o !== null && typeof o === "object" ? Object.fromEntries(Object.entries(o).filter((e): e is [string, string] => typeof e[1] === "string")) : {};
+    const { machine, user } = (said ?? {}) as { machine?: unknown; user?: unknown };
+    return savedPathOf(strings(machine), strings(user), env);
+  } catch {
+    return null;
+  }
+}
+
 /// A PowerShell string of `s`.
 const q = (s: string) => `'${s.replaceAll("'", "''")}'`;
 
@@ -356,6 +425,7 @@ export const windows: Platform = {
   os: "windows",
   buildOs: "win32",
   clonesFiles: false,
+  nativeCache: (env, home) => env.STILLFAIL_NATIVE_CACHE || join(env.LOCALAPPDATA || join(home, "AppData", "Local"), "stillfail-native"),
 
   exe: (name) => `${name}.exe`,
   home: (env) => env.HOME ?? env.USERPROFILE,
@@ -375,7 +445,9 @@ export const windows: Platform = {
     env[key] = path === "" ? dir : `${path}${delimiter}${dir}`;
   },
   findCommand,
+  findCommandSoon,
   userShell: () => null,
+  savedPath,
   /// A bare name is found with PATHEXT (libuv adds .exe and .com only), and a .cmd or .bat (npm's shims) runs through
   /// cmd, which Node refuses to do by itself: each argument quoted, and one cmd would read into (a quote, a %) refused.
   runnable(command, args, env) {
@@ -392,12 +464,34 @@ export const windows: Platform = {
   /// gone, too), ended whole when the runner is.
   grouped: (program, args) => [runnerBinary(), ["--job", "--", program, ...args]],
   lowered: (program, args) => [program, args],
+  /// As it is: Windows has no wrapper that execs a command lower and keeps its pid (a job would be another process).
+  backgrounded: (program, args) => [program, args],
+  /// None: Windows has no `sync`; what is taken there is flushed a file at a time (sending.ts `receiveFile`).
+  flushing: () => null,
   /// Windows runs no script by its #!: a .cmd beside it hands it to Git's sh (or does nothing).
   makeCommand(path, script, noop) {
     writeFileSync(path, script);
     const name = path.slice(Math.max(path.lastIndexOf("\\"), path.lastIndexOf("/")) + 1);
     // %~dp0 is cmd's to expand (any path); the shell's is named as a .cmd can (cmdPath).
     writeFileSync(`${path}.cmd`, noop ? "@exit /b 0\r\n" : `@"${cmdPath(posixShell())}" "%~dp0${name}" %*\r\n`);
+    return `${path}.cmd`;
+  },
+  async makeCommandSoon(path, script, noop) {
+    const name = path.slice(Math.max(path.lastIndexOf("\\"), path.lastIndexOf("/")) + 1);
+    const beside = async (to: string, text: string) => {
+      // (one there already as it is to be kept: renamed over while a command runs it, Windows refuses)
+      if ((await readFile(to, "utf8").catch(() => null)) === text) return;
+      const tmp = `${to}.${randomUUID()}.tmp`;
+      try {
+        await writeFile(tmp, text);
+        await rename(tmp, to);
+      } catch (error) {
+        await rm(tmp, { force: true }).catch(() => {});
+        throw error;
+      }
+    };
+    await beside(path, script);
+    await beside(`${path}.cmd`, noop ? "@exit /b 0\r\n" : `@"${cmdPath(posixShell())}" "%~dp0${name}" %*\r\n`);
     return `${path}.cmd`;
   },
 
@@ -585,7 +679,7 @@ export const windows: Platform = {
 
   // No `script`: a login's command runs on pipes (most say their link and code then). No process tree is read: only
   // the command itself is taken to listen.
-  terminal: () => null,
+  terminalSoon: async () => null,
   descendants: async () => [],
   // What is left of the memory says its pressure; the processes are not read (the watch over them is macOS's and Linux's).
   memoryPressure: async () => pressureOfAvailable(freemem(), totalmem()),

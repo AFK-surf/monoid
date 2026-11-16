@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { AWAKE_BACKFILL_NEXT, AWAKE_WAIT_STATUS, awakeWaitsReady, awakeWaitsStep } from "../src/store/awake-waits.ts";
-import { installRecoverWaits, recoverWaitsReady, recoverWaitsStep } from "../src/store/recover-waits.ts";
+import { AWAKE_BACKFILL_NEXT, AWAKE_WAIT_STATUS, awakeWaitsReady, awakeWaitsStep } from "./reference/backfill/awake-waits.ts";
+import { installRecoverWaits, recoverWaitsReady, recoverWaitsStep } from "./reference/backfill/recover-waits.ts";
 
 function fixture(path = ":memory:") {
   const db = new DatabaseSync(path);

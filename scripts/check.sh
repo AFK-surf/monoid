@@ -165,7 +165,7 @@ report() {
       echo "· $name … FAILED (${took} s)"
       # (what a test file said of itself as it ended, before its summary: a process it left running, its station
       # ending; a file that failed whole says nothing more in the summary's last lines)
-      grep -E "left running after its tests|^  [0-9]+ |the program running the sessions ended" "$tmp/step.$i.log" | head -20 | sed 's/^/    /'
+      grep -E "left running after its tests|^  [0-9]+ |the program running the sessions ended|\.test\.ts: as it ended: " "$tmp/step.$i.log" | head -20 | sed 's/^/    /'
       tail -40 "$tmp/step.$i.log" | sed 's/^/    /'
       # (what a test file left running as it ended fails that file with nothing of its own in the tail: said here
       # wherever it is in the log; main 345b3c51's station 4/6, hub-routes failed whole and nothing said why)
@@ -373,7 +373,7 @@ if part ts; then
       added 'station/src/*.ts' ':(exclude,glob)station/src/**/*worker.ts' ':(exclude)station/src/read' ':(exclude)station/src/cli.ts' \
         ':(exclude)station/src/updates/command.ts' ':(exclude)station/src/updates/delta.ts'
       added 'station/src/read/pool.ts' 'station/src/read/mb-reader.ts' 'station/src/read/tail.ts' 'station/src/read/transcript.ts' \
-        'station/src/read/packed.ts' 'station/src/read/plan.ts' 'station/src/read/*-builder.ts' 'station/src/read/*-requests.ts' ':(exclude,glob)station/src/**/*worker.ts'
+        'station/src/read/*-builder.ts' 'station/src/read/*-requests.ts' ':(exclude,glob)station/src/**/*worker.ts'
     } | grep -nE '\b(access|appendFile|chmod|chown|close|copyFile|cp|exists|fchmod|fchown|fdatasync|fstat|fsync|ftruncate|futimes|lchown|link|lstat|lutimes|mkdir|mkdtemp|open|opendir|read|readdir|readFile|readlink|readv|realpath|rename|rm|rmdir|stat|statfs|symlink|truncate|unlink|utimes|write|writeFile|writev|exec|execFile|spawn|gzip|gunzip|deflate|deflateRaw|inflate|inflateRaw|unzip|brotliCompress|brotliDecompress|zstdCompress|zstdDecompress)Sync(\.native)?\(' \
       | grep -v 'sync:' > "$tmp/syncs" || true
     step "the station's main thread waits on nothing (in what this adds)" sh -c "! grep . '$tmp/syncs'"
@@ -496,25 +496,19 @@ if [ $full = 1 ]; then
   # The station: it and its tests run whenever it, one of its native parts or the words it says changed (station_paths:
   # scripts/plan.sh reads it from this line for CI's check-station).
   station_paths='^station/|^vendor/|^client/i18n/|^client/shell/|^libs/mbui/src/effect/|^rules/js/|^scripts/native\.ts$|^scripts/station-slice\.sh$'
-  # Its tests' native parts, prebuilt (mesh addon, runner, the reader in MoonBit; on a Mac the Rust station's archive
-  # command too, for the compatibility tests, which skip themselves without it: it is prebuilt for darwin alone).
+  # Its tests' native parts, prebuilt (mesh addon, runner, the reader in MoonBit, and the Rust station's archive
+  # command for darwin-arm64 and linux-x64).
   station_natives="mesh runner reader"
-  [ "$(uname -s)" = Darwin ] && station_natives="mesh runner archive-rs reader"
+  case "$(uname -s)-$(uname -m)" in Darwin-*|Linux-x86_64) station_natives="mesh runner archive-rs reader" ;; esac
   if part station && touches "$station_paths"; then
     prep station deps station
-    # Its programs in MoonBit (station/mb): what of them runs without a host (src/wire).
-    remembered "tests: station's MoonBit" "station/mb libs/mbui/src/effect libs/mbui/moon.mod" sh -c 'cd station/mb && moon test --target native src/wire && moon test --target native src/jsjson && moon test --target native src/nodepath && moon test --target native src/jscase && moon test --target native src/admit'
+    # Its programs in MoonBit (station/mb): what of them runs without a host (src/wire, src/claude and the rest below).
+    remembered "tests: station's MoonBit" "station/mb libs/mbui/src/effect libs/mbui/moon.mod" sh -c 'cd station/mb && moon test --target native src/wire && moon test --target native src/jsjson && moon test --target native src/nodepath && moon test --target native src/jscase && moon test --target native src/claude && moon test --target native src/codex && moon test --target native src/dsh && moon test --target native src/cursor && moon test --target native src/acp && moon test --target native src/pi && moon test --target native src/history && moon test --target native src/usagecount && moon test --target native src/pieces && moon test --target native src/admit && moon test --target native src/memory && moon test --target native src/packed'
     step "typecheck: station" after station sh -c 'cd station && pnpm exec tsgo --noEmit'
     # The station's time is its Clock's (写法): the machine's only through ops/fibers.ts' wall. Cursor's
     # driver (agents/cursor-bridge.mjs) and the sandbox bridge (agents/sandbox-bridge.mjs) run in processes of their own,
     # not the station's.
     step "station: time through its clock" sh -c '! git grep -nE "Date\.now\(|new Date\(\)|setTimeout\(|setInterval\(" -- station/src ":!station/src/ops/fibers.ts" ":!station/src/agents/cursor-bridge.mjs" ":!station/src/agents/sandbox-bridge.mjs"'
-    # Where the station's tests are another run's (CI: check-station's, on Linux), the ones only a Mac can run are
-    # this one's: those of the Rust station's archive command (test/cold-compat.test.ts, 8 tests; every other test
-    # ran on Linux as on a Mac, 2026-11-10).
-    if ! part station-tests && [ "$(uname -s)" = Darwin ]; then
-      remembered "tests: station, a Mac's alone" "station scripts/native.ts" after station sh -c 'cd station && node ../scripts/native.ts run mesh runner archive-rs reader -- node --import ./test/setup-env.mjs --test --test-timeout=600000 test/cold-compat.test.ts'
-    fi
   fi
   # The station's tests (station/test): every file, or one slice of them (STILLFAIL_STATION_SHARD="<i>/<n>": the
   # files dealt by what each costs, the longest first, each onto the slice with the least: scripts/station-slice.sh). CI runs them in slices on Linux runners of their own (pipeline.yml,
@@ -533,7 +527,7 @@ if [ $full = 1 ]; then
   if part station && touches '^station/(src/|integration/|test/setup-env\.mjs$)|^client/core-ts/(src/|test/(helpers|station-fixture)\.ts$)|^scripts/check\.sh$'; then
     prep station deps station
     prep core deps client/core-ts
-    step "tests: station and core usage stream" after station after core sh -c 'cd station && pnpm exec tsgo -p integration/tsconfig.json && node --disable-warning=ExperimentalWarning --import ./test/setup-env.mjs --test --test-timeout=30000 integration/usage-client-stream.test.ts'
+    step "tests: station and core usage stream" after station after core sh -c 'cd station && pnpm exec tsgo -p integration/tsconfig.json && node ../scripts/native.ts run reader -- node --disable-warning=ExperimentalWarning --import ./test/setup-env.mjs --test --test-timeout=30000 integration/usage-client-stream.test.ts'
   fi
   # The native parts' own tests, where their Rust changed (the mesh addon's: the vendored crates it patches in, too).
   for crate in launcher runner mesh screen; do

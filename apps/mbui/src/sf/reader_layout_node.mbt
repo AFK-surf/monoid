@@ -1,10 +1,10 @@
 // The reader's layout (排版: Reader.tsx Layout) as nodes of the window's tree, laid over the reader where its panel is
-// (reader.mbt's, an old view): the day's papers, the size with its keys, the lines and the margins on sliders, the
+// (reader_node.mbt's): the day's papers, the size with its keys, the lines and the margins on sliders, the
 // face and the indent each a choice (seg_node), each changed as it is picked (the host's set_reader_style). While a
 // reading's layout is open (layout_open, reader_panel_set): on 小屏 a sheet from the window's foot, half of it tall, on
 // the page's own ground (sheet_node, as the reader's other panels are the host's sheets there); else docked at the
 // window's right under the reader's bar, 320 wide, on its paper (the old panel's place, desk_panel's: the text kept
-// clear of it as reader_column has it), its head the title and its close. It follows the tier as the window changes,
+// clear of it as reader_sides has it), its head the title and its close. It follows the tier as the window changes,
 // as the old panel did; closed (Escape, its close, the sheet let go, gone back), it goes as the sheet goes, or at once.
 // A reader in a tab beside a chat has the same docked panel in the tab's own stage (reader_layout_docked, laid by
 // sfbase's viewer_tab_node), going and coming back with the tab.
@@ -75,6 +75,11 @@ fn reader_layout_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
       },
       foot: None,
       hugs: false,
+      hugs_centred: false,
+      steps: false,
+      sheet_heads: true,
+      heads: false,
+      top: 0.0,
     }),
   }
   let shut = fn() {
@@ -319,8 +324,10 @@ fn layout_size_key(
     k
     .alpha(By(fn() { if on() { desk_whole } else { desk_size_key_off } }))
     .radius(By(desk_size_key_corner))
-    .ground(By(fn() { if on() && lit_node(k) { @ui.tree_theme().color(Tint) } else { no_ground } }))
+    .ground(Is(no_ground))
+    .focus_ring_theme()
     |> ignore
+    hover_ground_node(k, on~, color=fn() { @ui.tree_theme().color(Tint) })
     words_node(k, fn() { words }, fn() { desk_size_key_words.then(@ui.text_style(color=Data(p().ink))) }) |> ignore
   })
   |> ignore
@@ -506,22 +513,19 @@ fn slider_node(
           .radius(By(fn() { side() / 2.0 }))
           .ground(By(fn() { p().accent }))
           .edge(By(fn() { (slider_ring, p().ground) }))
+          .ring(
+            By(fn() {
+              if s.focus_shown() {
+                let t = @ui.tree_theme()
+                (t.focus_w, t.focus_gap, t.focus)
+              } else {
+                (0.0, 0.0, 0L)
+              }
+            }),
+          )
           |> ignore
         })
         |> ignore
-        // (the keyboard's focus on it: a ring round the knob, its gap and width the theme's: focus_ring's)
-        k.show(fn() { s.focus_shown() }, fn(ring) {
-          let out = fn() {
-            let t = @ui.tree_theme()
-            t.focus_gap + t.focus_w
-          }
-          ring
-          .over(Is(true))
-          .margin(By(fn() { (-out(), -out(), -out(), -out()) }))
-          .radius(By(fn() { slider_thumb_d / 2.0 + out() }))
-          .edge(By(fn() { (@ui.tree_theme().focus_w, @ui.tree_theme().focus) }))
-          |> ignore
-        })
       })
       |> ignore
       o.box(fn(b) { b.grow(By(fn() { desk_whole - at() })).basis(Is(Some(0.0))) |> ignore }) |> ignore

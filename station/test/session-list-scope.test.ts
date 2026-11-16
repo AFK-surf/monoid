@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { sessions } from "../src/read/sessions.ts";
-import { makeStore, sessionUsages, transcriptLengths, watching } from "../src/read/store.ts";
+import { sessions } from "./reference/sessions.ts";
+import { makeStore, sessionUsages, transcriptLengths, watching } from "./reference/store.ts";
 import { PEOPLE_AT } from "../src/store/rows.ts";
 import { Store } from "../src/store/store.ts";
 

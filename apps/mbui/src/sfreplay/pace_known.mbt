@@ -67,8 +67,6 @@ let pace_splits_known : Map[String, Array[Int]] = {
   "viewer": [7],
   // 3: sub {"topic":"chat","compact":true,"session":…,"station":…} | strict call cache.usage {}
   "settings-connect": [7],
-  "settings-device-pages": [7],
-  "settings-vault-item": [7],
   // 3: sub {"query":…,"scope":…,"topic":"shareIn","source":…} | strict sub {"topic":"notify"}
   // (120, seen once its rows were held: shareIn let go of before driveTransfers in the strict pass, after it at 120.
   // shareIn is read by the share sheet's old view as its frame builds (src/sfapp/share.mbt:445, share_parts,
@@ -205,7 +203,6 @@ let frames_unrecorded_known : Array[String] = [
   "drive-upload",
   "drive-zip",
   "glass",
-  "history",
   "home-new-chat",
   "lock-wait",
   "mark-read",
@@ -283,15 +280,22 @@ let strict_known : Map[String, (String, String)] = Map([
   (
     "draft",
     (
-      "its motion at rest at 3290.177388696544 ms, 189.09438088404386 ms after the run's next step (3101.0830078125 ms; its timeline 21.912109375 ms later from its first step); said since the last step that acted: the bar's springs, told at src/sfapp/bar.mbt:170:12-170:102@stillfail (at rest at 3290.177388696544 ms) | bar/k to 0, told at src/sfapp/bar.mbt:300:3-300:36@stillfail (at rest at 3290.177388696544 ms) | a stack's slide, told at src/ui/nav_view.mbt:362:7-362:68@mbui (at rest at 2902.3291015625 ms) | Anim \"composer/hint\" to 1, told at src/sfpages/composer.mbt:915:5-915:105@stillfail (at rest at 3066.6666666666665 ms) | Anim \"composer/hint\" to 1, told at src/sfpages/composer.mbt:915:5-915:105@stillfail (at rest at 3100 ms) | Anim \"composer/send/able\" to 1, told at src/sfpages/composer.mbt:1022:14-1022:124@stillfail (at rest at 2740 ms) | Anim \"layout composer/box\" to 1, told at src/motion/layer.mbt:1576:3-1576:47@mbui (at rest at 2900 ms) | Anim \"layout composer/extras\" to 0, told at src/motion/layer.mbt:1576:3-1576:47@mbui (at rest at 2900 ms) | Anim \"layout composer/part/words\" to 0, told at src/motion/layer.mbt:1576:3-1576:47@mbui (at rest at 2900 ms) | Anim \"layout composer/notices/01M6W4XGV9R8EP2T8MEXHXRZSC/0542fc65aeac537e7b415361c87bd78e6109b4bc5957f0c782439cd3a4cff4a6:chat:c-4d386bcc584806fc879106a02c56a9a4\" to 0, told at src/motion/layer.mbt:1576:3-1576:47@mbui (at rest at 2900 ms) | a list's rows' heights, told at src/ui/list.mbt:1005:5-1005:92@mbui (at rest at 2900 ms)",
+      "its motion at rest at 3290.177388696544 ms, 189.09438088404386 ms after the run's next step (3101.0830078125 ms; its timeline 21.912109375 ms later from its first step); said since the last step that acted: the bar's springs, told at src/sfapp/bar.mbt:170:12-170:102@stillfail (at rest at 3290.177388696544 ms) | bar/k to 0, told at src/sfapp/bar.mbt:300:3-300:36@stillfail (at rest at 3290.177388696544 ms) | a stack's slide, told at src/ui/nav_view.mbt:362:7-362:68@mbui (at rest at 2902.3291015625 ms) | Anim \"composer/hint\" to 1, told at src/sfpages/composer.mbt:915:5-915:105@stillfail (at rest at 3066.6666666666665 ms) | Anim \"composer/hint\" to 1, told at src/sfpages/composer.mbt:915:5-915:105@stillfail (at rest at 3100 ms) | Anim \"composer/send/able\" to 1, told at src/sfpages/composer.mbt:1022:14-1022:124@stillfail (at rest at 2740 ms) | Anim \"layout composer/box\" to 1, told at src/motion/layer.mbt:1577:3-1577:47@mbui (at rest at 2900 ms) | Anim \"layout composer/extras\" to 0, told at src/motion/layer.mbt:1577:3-1577:47@mbui (at rest at 2900 ms) | Anim \"layout composer/part/words\" to 0, told at src/motion/layer.mbt:1577:3-1577:47@mbui (at rest at 2900 ms) | Anim \"layout composer/notices/01M6W4XGV9R8EP2T8MEXHXRZSC/0542fc65aeac537e7b415361c87bd78e6109b4bc5957f0c782439cd3a4cff4a6:chat:c-4d386bcc584806fc879106a02c56a9a4\" to 0, told at src/motion/layer.mbt:1577:3-1577:47@mbui (at rest at 2900 ms) | a list's rows' heights, told at src/ui/list.mbt:1005:5-1005:92@mbui (at rest at 2900 ms)",
       "untraced: the bar's springs, the stack's slide and the composer's ways still moving as the run's next step came",
     ),
   ),
   (
     "settings-add-station",
     (
-      "its motion at rest at 2295.209228515625 ms, 16.55908203125 ms after the run's next step (2278.650146484375 ms; its timeline 13.2421875 ms later from its first step); said since the last step that acted: Anim \"ripple\" to 0.5, told at src/motion/ripple.mbt:124:5-124:56@mbui (at rest at 2400 ms)",
-      "untraced: a press's ripple still moving as the run's next step came (mbui/src/motion/ripple.mbt:124)",
+      "its motion at rest at 2295.209228515625 ms, 16.55908203125 ms after the run's next step (2278.650146484375 ms; its timeline 13.2421875 ms later from its first step); said since the last step that acted: Anim \"ripple\" to 0.5, told at src/motion/ripple.mbt:180:5-180:56@mbui (at rest at 2400 ms)",
+      "untraced: a press's ripple still moving as the run's next step came (mbui/src/motion/ripple.mbt:180)",
+    ),
+  ),
+  (
+    "settings-vault-item",
+    (
+      "its motion at rest at 3178.962890625 ms, 84.2900390625 ms after the run's next step (3094.6728515625 ms; its timeline 47.491943359375 ms later from its first step); said since the last step that acted: ",
+      "traced: the stack's slide from 密钥 to 全部密钥 (src/ui/nav.mbt:368), as long as before (2829.9 to 3180.3 ms, the same at main); 密钥 made as nodes (sfpages' vault_node) takes 全部密钥's press between frames, its slide said at once from the press's moment, where the old view's was told as a frame built it and not yet said as the run's next step came: the run took that step before the slide was over",
     ),
   ),
   (
@@ -299,20 +303,6 @@ let strict_known : Map[String, (String, String)] = Map([
     (
       "its motion at rest at 2817.304931640625 ms, 66.697021484375 ms after the run's next step (2750.60791015625 ms; its timeline 37.575927734375 ms later from its first step); said since the last step that acted: ",
       "untraced: a motion at rest 66.7 ms after the run's next step, nothing said since the last step that acted (50 ms later since #5953: the add panel's note a line longer, its sheet taller)",
-    ),
-  ),
-  (
-    "share-files",
-    (
-      "its motion at rest at 1466.6666666666665 ms, 60.553629557291515 ms after the run's next step (1406.113037109375 ms; its timeline 0 ms later from its first step); said since the last step that acted: image \"mem:share-in/1\" fading in, told at src/ui/image.mbt:744:5-744:63@mbui (at rest at 1300 ms)",
-      "untraced: an image fading in as the run's next step came (mbui/src/ui/image.mbt:744)",
-    ),
-  ),
-  (
-    "share-new-chat",
-    (
-      "its motion at rest at 1466.6666666666665 ms, 6.895670572916515 ms after the run's next step (1459.77099609375 ms; its timeline 0 ms later from its first step); said since the last step that acted: the bar's springs, told at src/sfapp/bar.mbt:170:12-170:102@stillfail (at rest at 1096.608154296875 ms) | image \"mem:share-in/1\" fading in, told at src/ui/image.mbt:744:5-744:63@mbui (at rest at 1300 ms)",
-      "untraced: the bar's springs and an image fading in as the run's next step came",
     ),
   ),
   (

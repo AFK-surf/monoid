@@ -106,6 +106,14 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
     One exception (the user, 2026-11-10): how each station up is reached (`stationNet`, Station's network line) is
     sampled of the stations, so it is asked only from a finger on Station's tab, never while Home sits; the first time
     Station opens in a run, and before the core has said it, that line alone shows its bones.
+  - A page's, a panel's or a card's own read-only topic (sfbase's `views_kept`) is kept by the core's client as it is
+    let go of and shown again at once as it is asked again, till the core answers (`@core.Client::show_kept`,
+    MBUI_SWR_VIEWS); a chat's value kept waits for the core, and the lists above are shown again by `last_said`, never
+    through the client (what names a station by them takes no kept value: `station_marks`).
+  - A card, a panel, a sheet or a dialog opened the first time comes in once what its nodes read as they are made is
+    answered, `open_hold_ms` at most, never held for what waits on a station (`src/sf/open_gate.mbt`: what reads a topic
+    tells it through sfbase's `Source::topic`; MBUI_OPEN_WHOLE, `src/sfapp/open_whole_wbtest.mbt`). What an old body
+    (an `@ui.old` island) reads is read as frames build it, after, and is not waited for.
   - On 小屏 a place of the bottom bar switched away from is kept, not let go (2026-11-12: making Home, 连接 or 用量
     anew at each switch was the largest cause of hangs on Home): its page's nodes put on the stack's shelf at rest and
     taken back as it is switched to (sfbase's `nav_root_kept`: the bar, back to the chats, the history; the rail and the
@@ -131,8 +139,19 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
     another workspace comes in view. So a shell's function says only what its first screen reads, all of it read once
     it is at rest (`src/sfapp/declared_read_wbtest.mbt`). So is what a page reads as it is first built, declared as it
     comes on top (sfbase's `page_opens`, by `page_opens_node`), let go of where no reader took it as another comes on top.
-    A bridge while pages are built by the old view: a page made as nodes says what it reads where it is made, and writes
-    nothing here.
+  - Where what opens waits for what it shows (MBUI_OPEN_WHOLE), a page come on top by any way (a press, a link, the
+    settings' sidebar, back) shows once what it reads as it is first drawn is answered, `page_local_ms` at most, the
+    screen as it was meanwhile: one table of every page and every settings' route, matched whole, no `_` arm
+    (`src/sfbase/page_reads.mbt`: `page_reads`, `route_reads`), read by the stack's wait on 小屏 (sfapp's
+    `page_opens_by`), the pane's on 中屏 and 大屏 (sfdesk's `pane_opens`, with what a place's list picks: `place_reads`),
+    a press through `open_answered` (`route_open_asks`) and declared as it comes on top (`page_opens_node`). It says
+    only what the page reads at rest whatever is answered, each the way the page asks it, what follows from an answer
+    by `then`; `declared_read_wbtest.mbt` opens every page on each screen and holds all of it read. A chat's page waits
+    as well for the faces it shows that the device holds (its people's, its posts' authors'), while the core reads them
+    (`picture` with `kept`: never waiting on the network, client/core-ts asks.ts `pictureKept`) or their decode is not
+    done; one the device has not comes as the network brings it, as before (sfbase's `pictures_in`,
+    `Source.picture_waits`; 2026-11-16: a face came a frame after the words, from its initial to the picture;
+    `src/sfapp/page_pictures_wbtest.mbt`).
   - A press that waits for the core before it opens something (a menu, a panel, a question) goes through sfbase's
     `press_wait` (`src/sfbase/press_wait.mbt`), never a wait of its own: it waits only while what it was pressed in
     stays as it was (the page, the workspace, nothing else put up) and lets go of what it asked when it stops
@@ -161,6 +180,14 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
 - A page's list makes a block only while it shows, so a block is a row, not a group of them: a card of a long list
   is made a block a row, each a piece of the card (`@sf.card_piece_node`), as 更新日志's days are (2026-11-11: a day of
   62 changes made one block was made whole in the frame it came into view).
+- The chat's page made as nodes reads its chat by key, as the core sends it (the user, 2026-11-15: 「明显错的，它目前快也要改」):
+  its head alone (sfbase's `chat_head`, `chat_view_now`: no message in it) and its messages each by its key
+  (`ChatMessages`, a subscription's `Sub::keyed`), each row its own message's (sfpages' `chat_body_keyed`), so a word
+  streamed into one message reads none of the others; nothing on that page, its bar, composer or what ticks under it,
+  reads `view_of_chat` as a message changes (`chat_body_keyed_wbtest.mbt` counts it of the page's list). What reads the chat whole at a
+  press reads it then (`chat_whole`). What is sent from here before the core has it, and an outbox, are rows by key too
+  (`chat_body_keyed`'s `taken`, sfbase's `chat_sent_here`): the core's rows that take them over looked for from the
+  newest back. `chat_body_rows` is the list's only where its source keeps no messages by key.
 - What is left of the old is counted by detlint and only falls: `old-island` (`@ui.old` hosting a Ctx in a node),
   `old-list` (`Ctx::list`), `old-panel`, `click-read`, `key-read`, `build-motion`, `layout-read-back`, `ui-current`.
   A change never adds one; one it touches it moves over. A node-made part is never wrapped back into a Ctx.

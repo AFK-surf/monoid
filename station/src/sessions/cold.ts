@@ -3,7 +3,7 @@
 // build makes again is removed from its own directory, and the rest of its workspace and the transcripts its runtime
 // keeps in station storage are packed (archive.ts); they are restored before its runtime starts again, or when it is
 // shown again. The hub calls it (ColdStorage) from the session's queue, so no turn starts halfway through.
-import { existsSync, realpathSync, statSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { access, readdir, realpath, stat, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { execFile } from "node:child_process";
@@ -12,11 +12,15 @@ import { log } from "../ops/log.ts";
 import { platform } from "../platform/index.ts";
 import { wall } from "../ops/fibers.ts";
 import { realOutside } from "../ops/places.ts";
-import { homesFirst, sessionPlaces, transcriptPaths } from "../read/transcript.ts";
+import { homesFirst, sessionPlaces } from "../read/transcript.ts";
+import { transcriptPathsSoon } from "../read/transcript-soon.ts";
 import * as archive from "./archive.ts";
 import { runtimeNamed } from "./config.ts";
-import { measureRoom, roomOf, roomOfSoon, safeToRemove, within } from "./footprint.ts";
+import { measureRoom, roomOfSoon, safeToRemove, within } from "./footprint.ts";
 import type { ColdStorage, Hub } from "./hub.ts";
+import type { Located } from "./live.ts";
+import type { RuntimeKind } from "../agents/runtime.ts";
+import type { SessionRow } from "../store/rows.ts";
 
 /// Links followed, never into a folder macOS protects (a session continued there, a job's directory: ops/places.ts).
 /// Each path is kept for 15 minutes so repeated archive rounds do not follow the same folders on the station's thread.
@@ -32,16 +36,16 @@ const canonical = (path: string): string | null => {
   return real;
 };
 
-/// Each session's own directory as last found (`roomOfSoon`, off the thread), for FOLLOWED_MS: `archiveRoom` is asked
-/// again before each step of packing one, and followed its paths on the station's thread at every ask.
-const rooms = new Map<string, { at: number; room: string | null }>();
-const keptRoom = (dataDir: string, workspace: string): string | null => {
-  const kept = rooms.get(workspace);
-  if (kept !== undefined && wall.now() - kept.at < FOLLOWED_MS) return kept.room;
-  return roomOf(dataDir, workspace);
-};
+/// Each session's own directory as last found (`roomOfSoon`, off the thread): `archiveRoom` is asked again before each
+/// step of packing one, and followed its paths on the station's thread at every ask. Every work that asks it finds it
+/// first (`findRoom`), so it is never followed here: a workspace not found (moved meanwhile) has no room, and the work
+/// stops.
+const rooms = new Map<string, string | null>();
+const keptRoom = (workspace: string): string | null => rooms.get(workspace) ?? null;
 async function findRoom(dataDir: string, workspace: string): Promise<void> {
-  rooms.set(workspace, { at: wall.now(), room: await roomOfSoon(dataDir, workspace) });
+  const room = await roomOfSoon(dataDir, workspace);
+  rooms.delete(workspace);
+  rooms.set(workspace, room);
   if (rooms.size > 1024) rooms.delete(rooms.keys().next().value!);
 }
 
@@ -72,7 +76,7 @@ export class ColdRooms implements ColdStorage {
     const hub = this.hub();
     const row = hub.store.getSession(key);
     if (!row) return null;
-    const dir = keptRoom(this.dataDir(), row.workspace);
+    const dir = keptRoom(row.workspace);
     if (dir === null || row.archivedAt === null || row.running || hub.processState(key) === "running") return null;
     // The sessions in use alone (by their indexes): this is asked again and again as a session is packed.
     const shared = hub.store
@@ -103,7 +107,7 @@ export class ColdRooms implements ColdStorage {
     });
   }
 
-  /// Removes what a build or an install makes again (node_modules, a Cargo target, …; footprint.ts `rebuildable`) from
+  /// Removes what a build or an install makes again (node_modules, a Cargo target, …; footprint.ts `rebuildableSoon`) from
   /// an archived session's own directory: it may come back, and is built again then. Left as it is while the session is
   /// back in the lists or at work, or a session/job still uses its directory. Returns removed allocated file bytes.
   async cleanRebuildable(key: string): Promise<number> {
@@ -127,31 +131,50 @@ export class ColdRooms implements ColdStorage {
     return freed;
   }
 
+  /// The files of an archived session's transcripts that cold storage puts away, nothing of it on the station's thread.
   /// Runtime-owned files outside station storage are never removed. A shared runtime session is left hot while another
-  /// chat can still use it. The main transcript and Claude's subagent files are compressed together.
-  historyFiles(key: string, packing: boolean): string[] {
+  /// chat can still use it. The main transcript and Claude's subagent files are compressed together. The transcripts are
+  /// found where the live view finds them (live.ts `locateAsync`, the MoonBit program's), their directories followed and
+  /// Claude's subagent files listed off it; where there is no locator (a test's hub), as its history finds them
+  /// (`historyFound`).
+  async historyFilesSoon(key: string, packing: boolean): Promise<string[]> {
     const hub = this.hub();
     const row = hub.store.getSession(key);
     if (!row) throw new Error(`unknown session ${key}`);
     const sources = hub.store.runtimeSessionSources(key);
     if (sources.length === 0) return [];
-    if (packing && sources.some((source) => hub.store.transcriptInUse(source.runtime, source.id, key)))
-      return [];
-    const config = hub.config();
-    const root = realpathSync(config.dataDir);
+    if (packing && sources.some((source) => hub.store.transcriptInUse(source.runtime, source.id, key))) return [];
+    const locate = hub.live.locateAsync;
+    const located = locate !== null ? await locate(key, new AbortController().signal) : await this.historyFound(row, sources);
+    if (located === null) return [];
+    const root = await realpath(hub.config().dataDir);
     const files: string[] = [];
-    // With those of the runtime sessions it ran in before (sessions/afresh.ts), each found as its history finds it.
-    for (const each of sources) {
-      const segmentRuntime = runtimeNamed(each.runtime);
-      if (!segmentRuntime) continue;
-      const path = transcriptPaths(segmentRuntime, config.dataDir, homesFirst(config.profiles, each.profile), [each.id], sessionPlaces(row)).paths[0];
-      if (path === undefined) continue;
-      const parent = realpathSync(dirname(path));
-      if (!within(parent, root)) continue;
+    for (const each of located.paths) {
+      const [path, runtime] = typeof each === "string" ? [each, located.runtime] : [each.path, each.runtime];
+      // (its directory gone since it was located: nothing of it to find, the others still are)
+      const parent = await realpath(dirname(path)).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return null;
+        throw error;
+      });
+      if (parent === null || !within(parent, root)) continue;
       files.push(join(parent, basename(path)));
-      if (segmentRuntime === "claude") archive.jsonlFiles(join(parent, each.id), files);
+      if (runtime === "claude") await archive.jsonlFilesSoon(join(parent, basename(path, ".jsonl")), files);
     }
     return files;
+  }
+
+  /// Where a session's transcripts are where no locator finds them (a test's hub): each of the runtime sessions it ran in
+  /// (sessions/afresh.ts) found as its history finds it, off the station's thread.
+  async historyFound(row: SessionRow, sources: readonly { id: string; runtime: string; profile: string | null }[]): Promise<Located> {
+    const { dataDir, profiles } = this.hub().config();
+    const paths: { path: string; runtime: RuntimeKind }[] = [];
+    for (const each of sources) {
+      const runtime = runtimeNamed(each.runtime);
+      if (!runtime) continue;
+      const path = (await transcriptPathsSoon(runtime, dataDir, homesFirst(profiles, each.profile), [each.id], sessionPlaces(row))).paths[0];
+      if (path !== undefined) paths.push({ path, runtime });
+    }
+    return paths.length === 0 ? null : { runtime: paths[0]!.runtime, paths };
   }
 
   /// Whether an archived session's directory or transcripts are put away: asked before each of its processes opens, so
@@ -167,7 +190,7 @@ export class ColdRooms implements ColdStorage {
       const locate = hub.live.locateAsync;
       paths = locate !== null
         ? ((await locate(key, new AbortController().signal))?.paths ?? []).map((p) => (typeof p === "string" ? p : p.path))
-        : this.historyFiles(key, false);
+        : await this.historyFilesSoon(key, false);
     } catch {
       return false;
     }
@@ -178,12 +201,12 @@ export class ColdRooms implements ColdStorage {
   async restore(key: string): Promise<void> {
     const row = this.hub().store.getSession(key);
     if (!row) throw new Error(`unknown session ${key}`);
-    const room = roomOf(this.dataDir(), row.workspace);
+    const room = await roomOfSoon(this.dataDir(), row.workspace);
     if (room === null) return;
     await archive.withLock(room, async () => {
       await archive.restoreWorkspace(room);
       // Restoration must work even after the store has already brought this chat back.
-      for (const path of this.historyFiles(key, false)) await archive.restoreFile(path);
+      for (const path of await this.historyFilesSoon(key, false)) await archive.restoreFile(path);
       await unlink(join(room, "cold")).catch(() => undefined);
     });
   }
@@ -261,9 +284,14 @@ export class ColdRooms implements ColdStorage {
   /// Rust station's copy of them (`archive/transcripts/<key>.jsonl.zst`, which nothing reads) once they all are: the
   /// copy's size, 0 without one.
   private async packHistory(key: string, ready: () => boolean): Promise<number> {
-    const files = this.historyFiles(key, true);
+    const files = await this.historyFilesSoon(key, true);
+    // (asked before each piece of each file is packed: what is in memory and the store alone, no transcript looked for
+    // again, which the files found already are)
+    const hub = this.hub();
+    const sources = hub.store.runtimeSessionSources(key);
+    const unused = () => !sources.some((source) => hub.store.transcriptInUse(source.runtime, source.id, key));
     for (const path of files) {
-      await archive.packFileIf(path, () => ready() && this.historyFiles(key, true).length > 0);
+      await archive.packFileIf(path, () => ready() && unused());
     }
     if (files.length === 0) return 0;
     for (const path of files) if ((await there(path)) || !(await there(archive.packed(path)))) return 0;
@@ -331,7 +359,7 @@ export class ColdRooms implements ColdStorage {
       for (const row of page) {
         let files: string[] = [];
         try {
-          files = this.historyFiles(row.key, false);
+          files = await this.historyFilesSoon(row.key, false);
         } catch {}
         for (const path of files) {
           try {

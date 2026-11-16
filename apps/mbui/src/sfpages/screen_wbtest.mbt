@@ -39,6 +39,7 @@ fn screen_rig(
   h264? : Bool = false,
   os? : String = "",
   screens? : Json,
+  in_tab? : Bool = false,
 ) -> ScreenRig {
   @sfbase.reset()
   // this machine's station, as its host says (`here`); none by default
@@ -164,7 +165,7 @@ fn screen_rig(
       )
       @ui.old(root, fn(c) {
         match app.nav.top() {
-          Screen(at) => screen_page(c, src, at, @sf.no_frame)
+          Screen(at) => screen_page(c, src, at, @sf.no_frame, in_tab~)
           _ => ()
         }
         @sf.presented(c)

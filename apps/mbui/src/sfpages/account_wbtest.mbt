@@ -181,3 +181,14 @@ test "账号's devices, narrow: this one's 当前 whole on its line beside a nam
     assert_true(pill_h <= note_h, msg="\{at}: 当前 \{pill_h} high")
   }
 }
+
+///|
+test "账号's 退出登录 in its first row's end keeps the corner rule at each width and with either hand, lit too (a tablet's wide page under a finger: by the row's side, not moved)" {
+  for case in page_cases + [(1194.0, 2)] {
+    let (w, platform) = case
+    let t = setting_tester(Me, w, platform~, h=834.0)
+    let at = "\{w} platform \{platform}"
+    assert_eq(t.corner_faults(), [], msg=at)
+    assert_eq(t.lit_all_faults().filter(fn(f) { f.contains("退出登录") }), [], msg=at)
+  }
+}

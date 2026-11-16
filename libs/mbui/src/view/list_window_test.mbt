@@ -264,6 +264,50 @@ test "Scroll::tucks: what is tucked under what covers the top is out of sight an
 }
 
 ///|
+test "Scroll::tucks: scrolled down past what is tucked, the wheel back up stops where it ends; only turned again after a pause there does it show" {
+  // (block 0 tucked, its foot at the top: put at 40)
+  let c = window_case(tucks=0)
+  let at = fn(dy : Double, t : Double) {
+    c.tree.wheel_at(150.0, 50.0, 0.0, dy, 0, t) |> ignore
+    c.tree.frame(390.0, 844.0) |> ignore
+    c.scroll.at(c.tree)
+  }
+  let start = c.scroll.at(c.tree)
+  let down = at(100.0, 10.0)
+  // (back up with no pause, and on further up: held where block 0 ends)
+  let up = at(-200.0, 20.0)
+  let on = at(-50.0, 30.0)
+  // (a pause, then up again from there: it shows)
+  let pulled = at(-30.0, 400.0)
+  // (down past it again and back up in one go: held there again)
+  let again = at(100.0, 1000.0)
+  let back = at(-200.0, 1010.0)
+  assert_eq((start, down, up, on, pulled, again, back), (40.0, 140.0, 40.0, 40.0, 10.0, 110.0, 40.0))
+}
+
+///|
+test "Scroll::tucks: dragged back up past what is tucked, stopped where it ends; a finger come down there anew pulls it into sight" {
+  let c = window_case(tucks=0)
+  c.tree.lists_feel(fn() { (@view.ListFeel::Ios, 3.0) })
+  c.tree.wheel_at(150.0, 50.0, 0.0, 100.0, 0, 10.0) |> ignore
+  c.tree.frame(390.0, 844.0) |> ignore
+  // (a finger down from 20 to 200, held there, let go: from 140 up by what it moved past the slop, stopped at 40)
+  let drag = fn(t : Double, to : Double) {
+    let id = c.tree.claimer_of(c.tree.claimers_at(150.0, 20.0), 0.0, 20.0).unwrap()
+    c.tree.drag_at(id, Down, 150.0, 20.0, t) |> ignore
+    c.tree.drag_at(id, Moved, 150.0, 50.0, t + 8.0) |> ignore
+    c.tree.drag_at(id, Moved, 150.0, to, t + 16.0) |> ignore
+    c.tree.drag_at(id, Moved, 150.0, to, t + 300.0) |> ignore
+    c.tree.drag_at(id, Up, 150.0, to, t + 308.0) |> ignore
+    c.tree.advance(t + 5000.0)
+    c.scroll.at(c.tree)
+  }
+  let first = drag(100.0, 200.0)
+  let second = drag(6000.0, 40.0)
+  assert_eq((first, second < 40.0, second >= 0.0), (40.0, true, true))
+}
+
+///|
 test "ListPlace::bring: a block brought to the top of where it shows (an offset over it), what is over it counted as it is" {
   let place = @view.ListPlace::new()
   let k = window_case(place~)

@@ -243,7 +243,7 @@ fn qt_uncapsuled(l : Array[String]) -> (Array[String], Array[String]) {
   let capsule = fn(x : String) {
     (x.has_prefix("rect ") && x.has_suffix(" 166")) ||
     x.has_prefix("words 0:42@") ||
-    (x.has_prefix("shape ") && x.has_suffix(" 4294967295") && x.contains(" 0.36458333333333337 "))
+    (x.has_prefix("shape ") && x.has_suffix(" 4294967295") && x.contains(" 0.5266056723709838 "))
   }
   (l.filter(fn(x) { !capsule(x) }), l.filter(capsule))
 }

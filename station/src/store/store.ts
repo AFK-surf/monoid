@@ -25,9 +25,9 @@ import {
   type SessionBusy, type SessionRow, type SessionStats, type SessionThread, type StoreChange, type ThreadRow, type ThreadSummary,
   type CardChoice, type TurnFor, type TurnRow, type TurnSummary, type WidgetModel, type InWorkspace, AUTO, XSHARE_IDLE_MS, I64_MAX, MANUAL, STATION_AUTHOR, STILLFAIL_SURFACE, attachment, handedWs,
   byBytes, cardOf, entryColumns, jsonList, letterEntry, letterMessage, mergeEntries, optionsCard, parsed, stored, takeChars, toEntry, toJob, toMembership,
-  LAST_MESSAGE, LEGACY_LAST_MESSAGE, LEGACY_MESSAGES_BEFORE, LETTER_SQL, MESSAGES_BEFORE, MESSAGE_PAGE_ENTRIES, isLetter, liveShare, shareLive, toChatShare, toMessage, toOpened, toSession, toSessionThread, toThread, toTurnSummary, JOBS_RUNNING, JOBS_UP, JOB_AT_PORT, SESSION_JOBS, CARD_BEFORE, OPTIONS_BEFORE, SESSION_OF_RUNTIME, PEOPLE_AT,
+  LAST_MESSAGE, LEGACY_LAST_MESSAGE, LEGACY_MESSAGES_BEFORE, LETTER_SQL, MESSAGES_BEFORE, MESSAGE_PAGE_ENTRIES, isLetter, liveShare, shareLive, toChatShare, toMessage, toOpened, toSession, toSessionThread, toThread, toTurnSummary, JOBS_RUNNING, JOBS_UP, JOB_AT_PORT, LAST_JOBS_OF, LIVE_ON_PROFILE, SESSION_JOBS, CARD_BEFORE, OPTIONS_BEFORE, SESSION_OF_RUNTIME, PEOPLE_AT,
 } from "./rows.ts";
-import { SCHEMA, SCHEMA_VERSION, addArchiveColumns, addEditIndex, repairMergedEditLookup, addRuntimeSessionRuntime, hasRuntimeOrderIndex, addCardOutcomes, addListState, addLetters, addPendingCards, addSessionTurns, addSessionWork, addTellIndexes, addThreadIndexes, addUsageCompactions, addAutoTitleColumns, addClientColumn, addLetterColumn, addQueueColumns, addSizeColumn, addSmallJobColumn, addUsageColumns, addUsageQuarters, addUsageTotals, addWaitWatchColumn, addWatchColumn, addWorkspaceColumns, addOpenerTitle, addLeftColumn } from "./schema.ts";
+import { SCHEMA, SCHEMA_VERSION, addArchiveColumns, addEditIndex, repairMergedEditLookup, addRuntimeSessionRuntime, hasRuntimeOrderIndex, addCardOutcomes, addListState, addLetters, addPendingCards, addSessionTurns, addSessionWork, addTellIndexes, addThreadIndexes, addUsageCompactions, addAutoTitleColumns, addClientColumn, addLetterColumn, addQueueColumns, addSizeColumn, addSmallJobColumn, addUsageColumns, addUsageQuarters, addUsageTotals, addWaitWatchColumn, addWatchColumn, addWorkspaceColumns, addOpenerTitle, addLedColumn, addLeftColumn } from "./schema.ts";
 import { installUsageCompactions, usageCompactionsReady } from "./usage-compactions.ts";
 import { installPeopleSinceIndex } from "./legacy-people-since.ts";
 import { ARCHIVE_POLICY, LEGACY_ARCHIVE_POLICY, hasLegacyArchivePolicy, installArchivePolicyIndex } from "./archive-policy-index.ts";
@@ -206,7 +206,7 @@ export const workOfRow = (r: Json | undefined): WorkOf | undefined =>
   r === undefined ? undefined : { pending: r.pending !== 0, lastTurn: r.started_at === null ? null : toTurnSummary(r) };
 
 /// What the auto-archive needs to know of a session idle long enough (sessions/lifecycle.ts), as a reader says it
-/// (read/ops-sessions.ts `archiveFacts`): bound to a connect, pinned, its chats and which of them are kept, its work and
+/// (test/reference/ops-sessions.ts `archiveFacts`): bound to a connect, pinned, its chats and which of them are kept, its work and
 /// whether a job of its is up. Null where the index that says it is not built yet. Its chats are the recent ones
 /// (`recentThreadRows`), as everything the station decides of a session's threads looks at.
 export type ArchiveFacts = { bound: boolean | null; pinned: boolean | null; threads: SessionThread[]; kept: number[] | null; work: WorkOf | null; upJob: boolean | null };
@@ -754,6 +754,7 @@ export class Store {
       addWorkspaceColumns(db);
       installArchivePolicyIndex(db);
       addOpenerTitle(db);
+      addLedColumn(db);
       addLeftColumn(db);
       addUsageColumns(db);
       installUsageSpan(db);
@@ -1413,12 +1414,12 @@ export class Store {
   // ── chats agents opened (opened_chats; sessions/opened.ts) ──
 
   /// Records a chat opened for a session: by its station and key, and its parent's ('' for this station).
-  insertOpened(o: Omit<Opened, "state" | "createdAt" | "openerTitle"> & { openerTitle?: string | null }): void {
+  insertOpened(o: Omit<Opened, "state" | "createdAt" | "openerTitle" | "led"> & { openerTitle?: string | null; led: boolean | null }): void {
     this.#with((changes) => {
       const at = this.now();
       this.#run(
-        `INSERT INTO opened_chats (child_station, child, parent_station, parent, key, title, link, opener_title, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        o.childStation, o.child, o.parentStation, o.parent, o.key, o.title, o.link, o.openerTitle ?? null, at,
+        `INSERT INTO opened_chats (child_station, child, parent_station, parent, key, title, link, opener_title, led, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        o.childStation, o.child, o.parentStation, o.parent, o.key, o.title, o.link, o.openerTitle ?? null, o.led === null ? null : o.led ? 1 : 0, at,
       );
       // Told of the chat it was opened from, here (the parent's station is this one: '').
       if (o.parentStation === "") {
@@ -1807,6 +1808,31 @@ export class Store {
       }
       this.#sessionWorkspaceChanged();
     });
+  }
+
+  /// Sessions `keys` said gone to `station` (`goneTo`) whose hand-over did not go after all, nor are they there: no longer
+  /// said to be there, in sight here as they were (replica/handover.ts `#mend`). One out of sight here, or said to be at
+  /// another station, is left as it is.
+  notGone(keys: readonly string[], station: string): string[] {
+    const back: string[] = [];
+    this.#with((changes) => {
+      this.#tx(() => {
+        for (const key of keys) {
+          const row = this.#one("SELECT ws FROM sessions WHERE key = ?", key);
+          if (row === undefined || (row.ws as string | null)?.startsWith(handedWs("")) === true) continue;
+          if (this.#run("DELETE FROM handed_over WHERE session = ? AND station = ?", key, station) === 0) continue;
+          back.push(key);
+          changes.push({ type: "moved", key, station: null, ws: (row.ws as string | null) ?? null, thread: null, there: null });
+        }
+      });
+      for (const key of back) {
+        this.#handed.delete(key);
+        this.#wsOf.delete(key);
+        changes.push({ type: "session", key });
+      }
+      if (back.length > 0) this.#sessionWorkspaceChanged();
+    });
+    return back;
   }
 
   /// Sessions `keys` handed to `station`: where each went kept with its chat's thread here and there, then out of sight
@@ -3681,6 +3707,32 @@ export class Store {
     });
   }
 
+  /// The session's turns a restart cut off (no runner kept their process): ended as aborted now, each with the state it
+  /// said it ends in where that is not waiting (as `endTurn` ends one, a card closed meanwhile making it final), so none
+  /// is left running for ever (`turns.ended_at` NULL: the session shown at work, never idle). How many it ended.
+  endCutOff(session: string): number {
+    return this.#with((changes) => {
+      const now = this.now();
+      const n = this.#run(
+        `UPDATE turns SET ended_at = ?2, outcome = 'aborted', detail = 'other: cut off by restart',
+           declared = CASE WHEN declared = 'waiting' THEN NULL ELSE declared END,
+           wait_seconds = CASE WHEN declared = 'waiting' THEN NULL ELSE wait_seconds END
+         WHERE session_key = ?1 AND ended_at IS NULL`,
+        session, now,
+      );
+      if (n === 0) return 0;
+      this.#run(
+        `UPDATE turns SET declared = 'final', wait_seconds = NULL
+         WHERE session_key = ?1 AND ended_at = ?2 AND detail = 'other: cut off by restart'
+           AND declared IN ('block', 'need_help', 'need_human', 'need_decision') AND about_n IS NOT NULL
+           AND EXISTS (SELECT 1 FROM closed_cards c WHERE c.thread = turns.about_thread AND c.n = turns.about_n)`,
+        session, now,
+      );
+      changes.push({ type: "session", key: session });
+      return n;
+    });
+  }
+
   /// The session was stopped while it waited: its latest turn, if it ended waiting, is recorded as stopped instead
   /// (aborted, no longer waiting). Whether it was.
   stopWait(session: string, refill = false): boolean {
@@ -3914,6 +3966,28 @@ export class Store {
   /// latest first: what a session has up.
   jobsUp(): JobRow[] {
     return this.#all(JOBS_UP).map(toJob);
+  }
+
+  /// What sessions `keys` have up (as `jobsUp` gives them, the latest first), each session's by its index: what one
+  /// chat's hold reads, never every job up on the station.
+  jobsUpOf(keys: readonly string[]): JobRow[] {
+    return keys.flatMap((k) => this.upJobIds(k).flatMap((id) => this.getJob(id) ?? [])).sort((a, b) => b.startedAt - a.startedAt);
+  }
+
+  /// The chats here in sight that run on profile `pid` (not archived, not handed away), at most `most`: whether a login
+  /// another station lends this one is in use here (move/station.ts `move.uses`). By the index of those in sight.
+  liveSessionsOn(pid: string, most: number): string[] {
+    return (this.#all(LIVE_ON_PROFILE, pid, most) as { key: string }[]).map((r) => r.key);
+  }
+
+  /// Of each of sessions `keys` that has had a job, its last job made (by the index) and where that stands (its end, or
+  /// its state): what a room's size is kept against (move/sizes.ts), as a job's build writes in it. One statement
+  /// whatever the keys.
+  jobsMarkOf(keys: readonly string[]): Map<string, string> {
+    const out = new Map<string, string>();
+    if (keys.length === 0) return out;
+    for (const x of this.#all(LAST_JOBS_OF, JSON.stringify(keys)) as { k: string; r: number; e: number | null; state: string }[]) out.set(x.k, `${x.r}/${x.e ?? x.state}`);
+    return out;
   }
 
   /// The service holding a port, including one waiting to restart.

@@ -4,10 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { constants } from "node:sqlite";
 import { test } from "node:test";
-import * as compact from "../src/store/usage-compact.ts";
+import * as compact from "./reference/backfill/usage-compact.ts";
 import { Store } from "../src/store/store.ts";
 import type { UsageCall, UsageFor } from "../src/store/usage.ts";
-import { retireUsageIndexes } from "../src/store/usage-retire.ts";
+import { retireUsageIndexes } from "./reference/backfill/usage-retire.ts";
 
 const a = { workspace: "A", home: false };
 const b = { workspace: "B", home: false };

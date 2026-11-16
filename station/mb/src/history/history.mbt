@@ -1,4 +1,4 @@
-// What the words find in the execution histories an asker may see (station/src/search/sources.ts `historyHits`): the
+// What the words find in the execution histories an asker may see (station/test/reference/search-sources.ts `historyHits`): the
 // most recently active sessions first and each one's latest steps first, until a page and one more are found or the
 // time is up; a session's transcripts read (their entries numbered as its history page numbers them) only when they
 // have every word (`mentions`), each a part at a time through the shell (`text.*`).

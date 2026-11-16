@@ -178,7 +178,9 @@ pub fn table_node(
   on_link_hold? : ((String, (Double, Double, Double, Double)) -> Unit)? = None,
   loc~ : SourceLoc,
 ) -> Unit {
-  let table = fn() { table_of(text(), tree()) }
+  // (read once as its text or its reading changes, what reads it many times over (its columns, each cell) reading that)
+  let table_now = @signals.computed(fn(_) { table_of(text(), tree()) })
+  let table = fn() { table_now.get() }
   parent.box(made_for=loc, fn(outer) {
     // (its text asked of the core as it is made and as it says another, none where it is told its reading; read by it
     // till it says another or is let go: md_read_by)
@@ -242,6 +244,7 @@ fn md_table_body_node(
       }
       // (each cell's extent and the columns' widths, as Md::table works them out: table_widths)
       let widths_for = fn(t : MdTable) {
+        table_widths_worked.val += 1
         let rows = [t.head]
         rows.append(t.rows)
         let extents = rows.mapi(fn(r, row) {
@@ -261,23 +264,65 @@ fn md_table_body_node(
         })
         table_widths(extents, room(), fit, fn(x) { node_sp(outer, x) })
       }
-      let widths = fn() {
+      // (worked out once as the table or its room changes, what reads them (its frame, each row's columns, each
+      // cell's width and sides, each rule) reading that: every cell's words measured once, not once for each of those)
+      let widths_now = @signals.computed(fn(_) {
         match table() {
           Some(t) => widths_for(t)
           None => ([], 0.0)
         }
+      })
+      let widths = fn() { widths_now.get() }
+      // (its head's row's height, as it comes to in its room: where its copy key's middle is)
+      let head_h : Ref[@view.View?] = Ref(None)
+      // (its own key, whatever its words: two tables of the same each their own menu, copy and picture)
+      let scrolled = fn(outer : @view.View) {
+        table_nodes_made.val += 1
+        let key = "sf-table/\{table_nodes_made.val}"
+        let in_rows = fn(held : @view.View) {
+          held.padding(Is((bleed, 0.0, bleed, 0.0))) |> ignore
+          // (it, then its copy key past it, from their tops: table_beside's; the key hung out in `bleed` where that has
+          // its whole room, as Md::table has it)
+          held.box(fn(beside) {
+            beside
+            .row(Is(true))
+            .lines_up(Is(Some(Start)))
+            // (pointed at as a whole, its key with it: what shows its key; taking no press nor hold for it)
+            .points(Is(copy))
+            .margin(Is((0.0, 0.0, if copy && bleed >= table_key_room { -table_key_room } else { 0.0 }, 0.0)))
+            |> ignore
+            table_frame_node(beside, table, widths, head_h~, on_link~, on_link_hold~, cell_images?, rows~)
+            if copy && has_head {
+              table_key_node(beside, key, fn() { table() }, fn() {
+                match head_h.val {
+                  Some(h) => given.tall(h)
+                  None => 0.0
+                }
+              }, widths_for)
+            }
+          })
+          |> ignore
+        }
+        // (its bar under its last row alone, where it is in pieces)
+        if has_foot {
+          outer.scrolls(across, slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), bar_in=bleed, in_rows) |> ignore
+        } else {
+          outer.scrolls(across, slop=@ui.touch_slop(), in_rows) |> ignore
+        }
+      }
+      // (as wide as its columns, scrolled across where wider than its room: every table but a chat's shared picture's,
+      // nothing to choose between)
+      if !fit {
+        scrolled(outer)
+        return
       }
       // (shown whole in the column where it fits not (`fit`, a chat's shared picture): its every part as much smaller
       // as makes it as wide as the room, nothing of it to scroll to: Md::table's)
       let scale = fn() {
-        if fit {
-          let total = widths().1
-          let avail = room()
-          if total > avail && avail > 0.0 {
-            avail / total
-          } else {
-            1.0
-          }
+        let total = widths().1
+        let avail = room()
+        if total > avail && avail > 0.0 {
+          avail / total
         } else {
           1.0
         }
@@ -296,7 +341,7 @@ fn md_table_body_node(
                 let k = scale()
                 (ws.map(fn(w) { w * k }), total * k)
               },
-              scale~,
+              scale=Some(scale),
               on_link~,
               on_link_hold~,
               cell_images?,
@@ -306,45 +351,18 @@ fn md_table_body_node(
           |> ignore
           return
         }
-      // (its head's row's height, as it comes to in its room: where its copy key's middle is)
-      let head_h : Ref[@view.View?] = Ref(None)
-      // (its own key, whatever its words: two tables of the same each their own menu, copy and picture)
-      table_nodes_made.val += 1
-      let key = "sf-table/\{table_nodes_made.val}"
-      let in_rows = fn(held : @view.View) {
-        held.padding(Is((bleed, 0.0, bleed, 0.0))) |> ignore
-        // (it, then its copy key past it, from their tops: table_beside's; the key hung out in `bleed` where that has its
-        // whole room, as Md::table has it)
-        held.box(fn(beside) {
-          beside
-          .row(Is(true))
-          .lines_up(Is(Some(Start)))
-          // (pointed at as a whole, its key with it: what shows its key; taking no press nor hold for it)
-          .points(Is(copy))
-          .margin(Is((0.0, 0.0, if copy && bleed >= table_key_room { -table_key_room } else { 0.0 }, 0.0)))
-          |> ignore
-        table_frame_node(beside, table, widths, head_h~, on_link~, on_link_hold~, cell_images?, rows~)
-        if copy && has_head {
-          table_key_node(beside, key, fn() { table() }, fn() {
-            match head_h.val {
-              Some(h) => given.tall(h)
-              None => 0.0
-            }
-          }, widths_for)
-        }
-        })
-        |> ignore
-      }
-      // (its bar under its last row alone, where it is in pieces)
-      if has_foot {
-        outer.scrolls(across, slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), bar_in=bleed, in_rows) |> ignore
-      } else {
-        outer.scrolls(across, slop=@ui.touch_slop(), in_rows) |> ignore
-      }
+        scrolled(outer)
       })
+      |> ignore
     })
     |> ignore
 }
+
+///|
+/// How many times a table's columns' widths were worked out (md_table_body_node's, each of its cells' words measured):
+/// what its tests count.
+// kept across runs: it goes on counting
+let table_widths_worked : Ref[Int] = Ref(0)
 
 ///|
 /// A table's frame as nodes in `beside` (md_table_body_node's, and its picture's: table_key_node): its head's row and
@@ -359,12 +377,21 @@ fn table_frame_node(
   head_h? : Ref[@view.View?] = Ref(None),
   on_link? : (String) -> Unit = fn(_) {  },
   on_link_hold? : ((String, (Double, Double, Double, Double)) -> Unit)? = None,
-  scale? : () -> Double = fn() { 1.0 },
+  scale? : (() -> Double)? = None,
   cell_images? : (Array[MdInline]) -> Array[(Double, (@view.View, () -> Double) -> Unit)]?,
   rows? : (Int, Int)? = None,
   loc~ : SourceLoc,
 ) -> Unit {
   let some = rows
+  // (as it is drawn, all of it at 1 where it is said no scale (every table but one shown whole smaller): each cell's
+  // look and each rule's height said once, not bound)
+  let scale_by = scale
+  let scale = fn() {
+    match scale_by {
+      Some(f) => f()
+      None => 1.0
+    }
+  }
   beside.box(made_for=loc, fn(frame) {
     frame.width(By(fn() { Some(widths().1) })) |> ignore
     // (all its rows, its head's 0: how many, the last ruled under by none)
@@ -397,41 +424,51 @@ fn table_frame_node(
               None => []
             }
           }
-          let pad = fn() { table_cell_pad(k, widths().0.length()) }
+          // (its width and its sides, one binding for both)
           cell
-          .width(By(fn() { widths().0.get(k) }))
-          .padding(By(fn() {
-            let (pl, pr) = pad()
-            let k = scale()
-            (pl * k, table_cell_y * k, pr * k, table_cell_y * k)
-          }))
+          .sets_together(fn() {
+            let ws = widths().0
+            (ws.get(k), table_cell_pad(k, ws.length()), scale())
+          }, fn(s) {
+            let (w, (pl, pr), k) = s
+            cell.width(Is(w)).padding(Is((pl * k, table_cell_y * k, pr * k, table_cell_y * k))) |> ignore
+          })
           .lies_along(Is(Middle))
           |> ignore
-          // its words (as a message's, in pieces, a press on a link where it leads: runs_links)
+          // its words (as a message's, in pieces, a press on a link where it leads, made as it first has one:
+          // words_links_node)
           let words_box = fn(cell : @view.View) {
-            cell.box(fn(w) {
-              let look = fn() -> @view.WordsLook {
-                let size = (if head { 12.0 } else { 13.0 }) * scale()
-                {
-                  size,
-                  weight: if head { 500 } else { 400 },
-                  line: (Float::from_double(size) * (1.65 : Float)).to_double(),
-                  wrap: true,
-                  tracking: @view.letters_own,
-                  balance: false,
-                  max_lines: 0,
-                }
+            // (its pieces worked out once as its words change, what draws them and what presses their links reading that)
+            let runs_now = @signals.computed(fn(_) { table_cell_runs(words()) })
+            let runs = fn() { runs_now.get() }
+            let look = fn() -> @view.WordsLook {
+              let size = (if head { 12.0 } else { 13.0 }) * scale()
+              {
+                size,
+                weight: if head { 500 } else { 400 },
+                line: (Float::from_double(size) * (1.65 : Float)).to_double(),
+                wrap: true,
+                tracking: @view.letters_own,
+                balance: false,
+                max_lines: 0,
               }
-              let runs = fn() { table_cell_runs(words()) }
-              w
-              .words_runs(By(runs))
-              .words_look(By(look))
-              .runs_look(By(table_runs_look))
-              .ink(By(fn() { if head { web().muted } else { theme().p.text } }))
+            }
+            let w = cell.box(fn(w) {
+              // (its pieces first: saying them says the words' look and ink plain, what follows says them)
+              w.words_runs(By(runs)) |> ignore
+              // (its look said once where it is drawn at 1; how its pieces are set and in what ink, all from the theme:
+              // one binding for both)
+              if scale_by is None {
+                w.words_look(Is(look())) |> ignore
+              } else {
+                w.words_look(By(look)) |> ignore
+              }
+              w.sets_together(fn() { (table_runs_look(), if head { web().muted } else { theme().p.text }) }, fn(s) {
+                w.runs_look(Is(s.0)).ink(Is(s.1)) |> ignore
+              })
               |> ignore
-              @ui.runs_links(w, runs, on_link, hold?=on_link_hold) |> ignore
             })
-            |> ignore
+            words_links_node(cell, w, runs, on_link, hold=on_link_hold)
           }
           // its images in a row where it is only the message's images (CellImageRow: 6 apart, 4 over and under, each
           // cell_image_width wide), else its words, made again only as it comes to hold another number of them; where
@@ -470,14 +507,18 @@ fn table_frame_node(
         })
       })
       |> ignore
-      // (a rule under each but the last, as faint as is seen)
-      line.show(fn() { r < all() - 1 }, fn(rule) {
+      // (a rule under each but the last, as faint as is seen: as wide as its row, none under the last (no room, no
+      // ink), one binding for all of it and no structure for whether it is)
+      line.box(fn(rule) {
         rule
-        .width(By(fn() { Some(widths().1) }))
-        .height(By(fn() { Some(scale()) }))
-        .ground(By(fn() { theme().p.line }))
+        .fills_across(Is(true))
+        .sets_together(fn() { (r < all() - 1, scale(), theme().p.line) }, fn(s) {
+          let (ruled, k, ink) = s
+          rule.height(Is(Some(if ruled { k } else { 0.0 }))).ground(Is(if ruled { ink } else { 0L })) |> ignore
+        })
         |> ignore
       })
+      |> ignore
     })
   })
   |> ignore

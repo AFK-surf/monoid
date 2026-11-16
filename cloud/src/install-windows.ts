@@ -366,6 +366,8 @@ if ($binApart) { $kept.bin = $binApart }
 if ($adminRun) { $kept.admin = $true }
 if ($kept.Count -gt 0) { $kept | ConvertTo-Json | Set-Content -Path (Join-Path $data 'windows.json') -Encoding UTF8 }
 else { Remove-Item (Join-Path $data 'windows.json') -ErrorAction SilentlyContinue }
+# Installed again after stillfail uninstall (or the app's 卸载本机 Station): no longer said so.
+Remove-Item (Join-Path $data 'uninstalled') -ErrorAction SilentlyContinue
 $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 if (-not $binApart -and -not (($userPath -split ';') -contains $bin)) {
   [Environment]::SetEnvironmentVariable('Path', ((@($bin) + @($userPath -split ';' | Where-Object { $_ })) -join ';'), 'User')

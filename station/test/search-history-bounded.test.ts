@@ -4,7 +4,7 @@ import { open } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { openStore } from "../src/read/store.ts";
+import { openStore } from "./reference/store.ts";
 import { historyGroup, historyHits } from "./reference/search-sources.ts";
 import { Store } from "../src/store/store.ts";
 

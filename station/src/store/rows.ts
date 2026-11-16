@@ -39,6 +39,10 @@ export const feishuSurface = (connect: string): string => `feishu:${connect}`;
 /// Where a Comma connect's threads (its Comma Tasks) live: the connect's own.
 export const commaSurface = (connect: string): string => `comma:${connect}`;
 
+/// Where a group connect's threads (its IM server's conversations) live: the connect's own (its people's ids are the
+/// server's).
+export const groupSurface = (connect: string): string => `group:${connect}`;
+
 export type SessionScope = "thread" | "all";
 
 /// Who looks, as far as the station's workspaces go: their workspace, and whether it is the
@@ -106,7 +110,7 @@ export type EntryKind = "message" | "edit";
 
 export type Quote = { author: string; text: string; comment: string; ts?: string; role?: string; file?: string };
 /// `width`, `height`: a picture's or a film's size as shown; `duration` (ms) and `frames`: a film's length and how many
-/// frames its picture has (sessions/image-size.ts shownFacts), so a page says them before it reads the film.
+/// frames its picture has (sessions/image-size.ts shownFactsSoon), so a page says them before it reads the film.
 export type Attachment = { name: string; path: string; size: number; width?: number; height?: number; thumbhash?: string; duration?: number; frames?: number };
 
 /// One entry of a thread's log (as the archive files hold them, one per line).
@@ -445,12 +449,16 @@ export type Opened = {
   link: string | null; state: string | null; createdAt: number;
   /// What the parent was called when it opened the child (kept by the child's station only; null before it).
   openerTitle: string | null;
+  /// Whether its opener leads it (chat_create `for: "me"`): its asks are its opener's to take up, not its person's.
+  /// Null on a row from before it (its opener told as a leader is, its asks its person's).
+  led: boolean | null;
 };
 
 export function toOpened(r: Json): Opened {
   return {
     childStation: r.child_station, child: r.child, parentStation: r.parent_station, parent: r.parent, key: r.key, title: r.title,
     link: r.link, state: r.state, createdAt: r.created_at, openerTitle: r.opener_title ?? null,
+    led: r.led === undefined || r.led === null ? null : Number(r.led) === 1,
   };
 }
 
@@ -653,6 +661,10 @@ export const JOBS_UP = "SELECT * FROM (SELECT * FROM jobs WHERE state = 'running
 
 /// The latest running service, or one waiting to restart, holding a port. The two state-and-port seeks do not read
 /// other services or commands (jobs.ts startId).
+/// The sessions in sight on profile ?1 not handed away, at most ?2 (by the index of those in sight).
+export const LIVE_ON_PROFILE = "SELECT key FROM sessions INDEXED BY sessions_live WHERE archived_at IS NULL AND profile = ?1 AND key NOT IN (SELECT session FROM handed_over) LIMIT ?2";
+/// Each of sessions ?1's last job made (its rowid within the session's index) and where it stands: one statement.
+export const LAST_JOBS_OF = "SELECT session_key AS k, rowid AS r, ended_at AS e, state FROM jobs WHERE rowid IN (SELECT MAX(rowid) FROM jobs INDEXED BY jobs_by_session WHERE session_key IN (SELECT value FROM json_each(?1)) GROUP BY session_key)";
 export const JOB_AT_PORT = `SELECT id, name, port FROM (
   SELECT id, name, port, started_at FROM jobs INDEXED BY jobs_up WHERE state = 'running' AND port = ?1
   UNION ALL

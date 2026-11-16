@@ -362,3 +362,32 @@ test("the_buddies_are_the_web_s_list", () => {
   assert.ok(Array.isArray(all) && all.length > 5);
   assert.ok(typeof all[0].id === "string" && typeof all[0].label === "string" && typeof all[0].bg === "string");
 });
+
+test("a_picture_asked_as_kept_is_answered_from_the_device_at_once_or_with_none_its_fetch_set_off_for_the_next_asking", async () => {
+  const host = new FakeHost();
+  let fetched = 0;
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  host.onFetch(async (req) => {
+    fetched++;
+    await gate;
+    return { status: 200, headers: [["content-type", "image/png"]], body: new Uint8Array([req.url.length, 3]) };
+  });
+  const asks = new Asks(host, nothing);
+  assert.deepEqual(parseAsk("picture", { url: "https://p.test/a.png", kept: true }), { kind: "picture", url: "https://p.test/a.png", kept: true });
+  assert.deepEqual(parseAsk("picture", { url: "https://p.test/a.png" }), { kind: "picture", url: "https://p.test/a.png", kept: false });
+  // Not on the device: none at once, the network not waited for, its fetch set off.
+  const [kind, bytes] = await run(asks.pictureKept("https://p.test/a.png"));
+  assert.deepEqual([kind, bytes.length], ["", 0]);
+  // The asking that follows shares that one fetch.
+  const asked = run(asks.picture("https://p.test/a.png"));
+  release();
+  assert.deepEqual([...(await asked)[1]], [20, 3]);
+  assert.equal(fetched, 1);
+  // Kept now: answered from the device, again without the network.
+  const again = new Asks(host, nothing);
+  const [k2, b2] = await run(again.pictureKept("https://p.test/a.png"));
+  assert.deepEqual([k2, [...b2]], ["image/png", [20, 3]]);
+  assert.equal(fetched, 1);
+  await assert.rejects(run(asks.pictureKept("file:///etc/passwd")));
+});

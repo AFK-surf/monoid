@@ -10,6 +10,7 @@
 //   hold:<k>      k deltas, then waits until steered (the steers its deltas) or interrupted
 //   gate:<n>:<k>:<name>   k of n deltas; the rest once FAKE_DUMP.<name>.a (a fifo) is written, then FAKE_DUMP.<name>.said
 //                 made; the end once FAKE_DUMP.<name>.b is (what the test lets happen when, not a time)
+// What the station hands it around a message (a hub's prompt) leaves these to be found anywhere in it: slow:, gate:.
 // thread/unsubscribe is answered once FAKE_DUMP.unsub.a (a fifo) is written, when there is one.
 // FAKE_DUMP: its argv and env are appended there as a JSON line, and every line of stdin to FAKE_DUMP.stdin. The
 // version it says it is (`--version`, its userAgent) is FAKE_DUMP.version's when there is one, else 0.
@@ -93,6 +94,8 @@ function completed(threadId, t, status, error) {
 }
 
 async function runTurn(threadId, text) {
+  const asked = /(?:^|\s)((?:slow:\d+|gate:\d+:\d+:[\w-]+))(?:\s|$)/.exec(text);
+  if (asked && !text.startsWith(asked[1])) text = asked[1];
   const t = thread(threadId);
   t.interrupted = false;
   notify("turn/started", { threadId, turn: { id: t.turn, status: "inProgress", items: [] } });

@@ -716,6 +716,19 @@ pub fn[K : Hash + Eq] View::scrolls_window(
       i = self.tree.nodes[i].parent
     }
   }
+  // (those of a kind another may take put by as they no more show (`reused`), each with what says its key now, what
+  // wakes what it binds (View::rests) and the slot it is still in, none once that slot left what has slots or had its
+  // measured height forgotten and it was taken out of it, held by no node (View::park): so many at most of each, the
+  // rest let go; all let go with the list)
+  let spare : Map[Int, Array[(View, @signals.Signal[K], () -> Unit, View?)]] = Map([])
+  let spare_let_go = fn() {
+    for _, all in spare {
+      for b in all {
+        b.0.let_go()
+      }
+      all.clear()
+    }
+  }
   // (how wide what it holds is given to be, as it is laid out: View::scrolls' fill)
   let room_w : @signals.Signal[Double?] = @signals.signal(None, same=fn(a, b) { a == b })
   self.reacts(fn() { (room_w.get(), self.words_redone()) }, fn(_) {
@@ -726,6 +739,21 @@ pub fn[K : Hash + Eq] View::scrolls_window(
         heights_changed.push(k)
         if tall.get(k) is Some(c) {
           c.set(None)
+        }
+      }
+      // (a block put by in a slot whose height is forgotten: taken out of it so a taller block cannot overflow est)
+      for _, those in spare {
+        for i, sp in those {
+          match sp {
+            (v, key, wake, Some(was_in)) => {
+              let k = key.untracked()
+              if !showing.contains(k) && !heights.contains(k) && v.alive() {
+                was_in.park(v, rest=false) |> ignore
+                those[i] = (v, key, wake, None)
+              }
+            }
+            _ => ()
+          }
         }
       }
       tell()
@@ -773,7 +801,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   let laid_grid = Ref(-1.0)
   // (how many times they were worked out: what shows by them worked out again each time)
   let laid_rev = Ref(0)
-  let laid = @signals.computed(fn(_) {
+  let laid = @signals.computed_by(fn(_) {
     laid_rev.val = laid_rev.val + 1
     told.get() |> ignore
     let ks = keys()
@@ -1271,6 +1299,16 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   let pin : Ref[(K, Double, Array[View], Double)?] = Ref(None)
   // (what was pressed: let go, or what was over it, held no more)
   let pin_node : Ref[View?] = Ref(None)
+  // (what holds what was pressed, up to its block, each with where what lies over it starts among `over` and how tall
+  // what lies over what was pressed under it was then: what was pressed let go by what it was in (a pick's branch made
+  // anew as the press shuts or opens it), held by the nearest of them still there, by what lies over that, as tall as
+  // that was then)
+  let pin_up : Ref[Array[(View, Int, Double)]] = Ref([])
+  let pin_less = Ref(0.0)
+  // (where it was held at the foot of the room kept under its blocks once what was pressed held it no more (its fill's
+  // `top` and keys then): followed again once keys come at its foot have taken that room, unless the hand moved it from
+  // there or another row was pressed)
+  let room_held : Ref[(Double, Int, K?)?] = Ref(None)
   let unpin : Ref[() -> Unit] = Ref(fn() {  })
   let pin_ends = Ref(false)
   // (where it was scrolled to as it was pressed: moved from there by the hand, held no more; and how many blocks it had,
@@ -1352,9 +1390,11 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   s.pressed_said = fn(v) {
     // (the block it is in, made here, and what lies over it there: none, nothing held)
     let over : Array[View] = []
+    let up_at : Array[(View, Int)] = []
     let mut found : K? = None
     let mut i = v.at
     while i >= 0 && i != self.at && found is None {
+      up_at.push((self.tree.handle(i), over.length()))
       for b in blocks {
         if b.0.at == i && b.0.alive() {
           found = Some(@signals.untracked(b.1))
@@ -1384,13 +1424,24 @@ pub fn[K : Hash + Eq] View::scrolls_window(
       top_now(all, @signals.untracked(at))
     }
     let below = all.top(j) - shown_top
-    let was = over_h(over)
+    let each_h = over.map(fn(o) { over_h([o]) })
+    let was = each_h.fold(init=0.0, fn(a, h) { a + h })
+    let up = up_at.map(fn(u) {
+      let mut under = 0.0
+      for n in 0..<u.1 {
+        under = under + each_h[n]
+      }
+      (u.0, u.1, under)
+    })
     let x_then = @signals.untracked(at)
     let foot_then = s.at_foot() && @signals.untracked(follows)
     fn() {
       (unpin.val)()
+      room_held.val = None
       pin.val = Some((k, below, over, was))
       pin_node.val = Some(v)
+      pin_up.val = up
+      pin_less.val = 0.0
       pin_x.val = x_then
       let ks = @signals.untracked(keys)
       pin_with.val = (ks.length(), ks.last())
@@ -1473,7 +1524,10 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   // to be; else where the top of what shows is by its anchor, as its blocks are counted now, within half a point of
   // where it would be at its foot. By its own blocks, so in the same layout as one measured anew or grown there, as
   // its near_foot is; not by how far the scroll went as last laid out, which a block come or grown has not reached yet)
-  let at_foot_now = @signals.computed(fn(_) {
+  // (scoped: read once outside any reader (Scroll::at_foot_now, untracked), it lets go of what it read again, so that
+  // what it reads (its blocks, its keys) is followed by nothing once nothing else follows it: a plain one kept on
+  // them for good, the keys' topic with them, past the list's going)
+  let at_foot_now = @signals.computed_scoped(fn(_) {
     if capped_now() {
       return false
     }
@@ -1576,18 +1630,6 @@ pub fn[K : Hash + Eq] View::scrolls_window(
       j
     } else {
       i
-    }
-  }
-  // (those of a kind another may take put by as they no more show (`reused`), each with what says its key now, what
-  // wakes what it binds (View::rests) and the slot it is still in, none once that slot left what has slots and it was
-  // taken out of it, held by no node (View::park): so many at most of each, the rest let go; all let go with the list)
-  let spare : Map[Int, Array[(View, @signals.Signal[K], () -> Unit, View?)]] = Map([])
-  let spare_let_go = fn() {
-    for _, all in spare {
-      for b in all {
-        b.0.let_go()
-      }
-      all.clear()
     }
   }
   // (whether each shows, by its key: told only to those that come to show or stop, not each block reading the window,
@@ -1709,15 +1751,27 @@ pub fn[K : Hash + Eq] View::scrolls_window(
           None => 0.0
         }
         let most = dmax(0.0, whole_now() - vh)
+        // (no further up than the hand takes it: what is tucked over its top kept out of sight, Scroll::top_now)
+        let top = dmin(@signals.untracked(fn() { s.top_now() }), most)
         let to = match ask {
           // (its offset from under what covers its top, as the fill's)
-          Bring(k, off, _) =>
+          // (what it holds of a go-to's (`sought`) low in what shows with its top there: its middle at the middle of
+          // that instead, as the fill puts it, where it is laid out now)
+          Bring(k, off, sought) =>
             match laid_at.get(k) {
-              Some(i) if i < all.length() => Some(all.top(i) + off - @signals.untracked(fn() { s.top_covered() }))
+              Some(i) if i < all.length() => {
+                let (cover, under) = @signals.untracked(fn() { (s.top_covered(), s.foot_covered_now()) })
+                let to = all.top(i) + off - cover
+                match (sought, sought_of(all, i)) {
+                  (true, Some((y0, y1))) if (y0 + y1) / 2.0 - off + cover > cover + 0.8 * (vh - under - cover) =>
+                    Some(to + (y0 + y1) / 2.0 - off - (cover + vh - under) / 2.0 + cover)
+                  _ => Some(to)
+                }
+              }
               _ => None
             }
           ToEnd => Some(most)
-          Centre(_) => None
+          Centre(_) | BringSought(_, _) => None
         }
         match to {
           // (far from there, more than two of its heights: there at once, as an old view's list's glide far)
@@ -1725,8 +1779,8 @@ pub fn[K : Hash + Eq] View::scrolls_window(
             match (ask, end_glide.val, s.notch.untracked()) {
               // (back to its foot again while it glides there: on from where it is, as fast as it goes)
               (ToEnd, Some(g), Some(n)) if physical_equal(g, n) =>
-                s.glide_on(self, self.cause_at(), dclamp(to, 0.0, most), most)
-              _ => s.glide_to(self, self.cause_at(), dclamp(to, 0.0, most))
+                s.glide_on(self, self.cause_at(), dclamp(to, top, most), most)
+              _ => s.glide_to(self, self.cause_at(), dclamp(to, top, most))
             }
             end_glide.val = match ask {
               ToEnd => s.notch.untracked()
@@ -1858,6 +1912,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   let slots_cover = fn(all : Places[K], need : Array[K], top : Double, vh : Double) {
     let n = all.length()
     if n == 0 {
+      slots_found.val = None
       if slot_keys.untracked().length() > 0 {
         slot_keys.set([])
       }
@@ -2137,7 +2192,8 @@ pub fn[K : Hash + Eq] View::scrolls_window(
       let all = places(laid.untracked())
       let stale = match slots_found.val {
         Some((col, at, _)) => !physical_equal(col, all.col) || at != all.col.refills
-        None => slot_keys.untracked().length() > 0
+        // (none found: slots there for no keys, or keys there with no slots, the first come to a list that had none)
+        None => slot_keys.untracked().length() > 0 || all.length() > 0
       }
       if stale {
         let top = foot_top(all, vh)
@@ -2357,6 +2413,8 @@ pub fn[K : Hash + Eq] View::scrolls_window(
     // down than its top's place it is put so far in this fill, worked out anew in each pass as the block is measured)
     let mut seeking = false
     let mut sought_by = 0.0
+    // (asked to put what a block marks sought this far under what covers its top: ListPlace::bring_sought)
+    let mut sought_under : Double? = None
     let mut to_end = false
     // (asked: put there, what it was on by itself stopped; else moved by as much as the anchor says)
     let mut asked = false
@@ -2381,6 +2439,11 @@ pub fn[K : Hash + Eq] View::scrolls_window(
               Bring(k, off, seek) => {
                 seeking = seek
                 (k, Some(off))
+              }
+              BringSought(k, under) => {
+                seeking = true
+                sought_under = Some(under)
+                (k, Some(0.0))
               }
               Centre(k) => (k, None)
               ToEnd => panic()
@@ -2410,6 +2473,23 @@ pub fn[K : Hash + Eq] View::scrolls_window(
     if asked {
       s.held = false
       held = false
+    }
+    // (what was pressed let go: held by the nearest of what held it still there, what lay over it under that let go
+    // with it and no longer counted)
+    match (pin.val, pin_node.val) {
+      (Some((_, _, over, _)), Some(v)) if !v.alive() =>
+        match pin_up.val.iter().find_first(fn(u) { u.0.alive() }) {
+          Some((a, from, under)) if from <= over.length() => {
+            over.drain(0, from) |> ignore
+            pin_less.val = under
+            pin_node.val = Some(a)
+            pin_up.val = pin_up.val
+              .filter(fn(u) { u.1 >= from })
+              .map(fn(u) { (u.0, u.1 - from, u.2 - under) })
+          }
+          _ => ()
+        }
+      _ => ()
     }
     match (pin.val, pin_node.val) {
       (Some((_, _, over, _)), Some(v)) if !v.alive() || over.iter().any(fn(o) { !o.alive() }) => {
@@ -2523,7 +2603,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
       if !asked && pin.val is Some((k, below, over, was)) && laid_at.get(k) is Some(i) && i < all.length() {
         ai = i
         pressed_holds = true
-        aoff = over_h(over) - was - below
+        aoff = over_h(over) - (was - pin_less.val) - below
         foot_room.set(dmax(0.0, all.top(i) + aoff + vh - blocks_foot(all)))
       } else if floor.val is Some((lk, e0)) {
         // (a key come at its foot: the stretch from the last that stayed as long as it was, it and what is under it and
@@ -2544,8 +2624,14 @@ pub fn[K : Hash + Eq] View::scrolls_window(
         // the block's top shows `-aoff` under the list's top: list_sought.mbt)
         aoff = aoff - sought_by
         sought_by = 0.0
-        match sought_of(all, ai) {
-          Some((y0, y1)) => {
+        match (sought_of(all, ai), sought_under) {
+          // (its top `lead` under what covers the list's top, wherever it lies)
+          (Some((y0, _)), Some(lead)) => {
+            let cover = @signals.untracked(fn() { s.top_covered() })
+            sought_by = y0 - cover - lead - aoff
+            aoff = aoff + sought_by
+          }
+          (Some((y0, y1)), None) => {
             let (cover, under) = @signals.untracked(fn() { (s.top_covered(), s.foot_covered_now()) })
             let mid = (y0 + y1) / 2.0
             if -aoff + mid > cover + 0.8 * (vh - under - cover) {
@@ -2553,7 +2639,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
               aoff = aoff + sought_by
             }
           }
-          None => ()
+          (None, _) => ()
         }
       }
       let most = dmax(0.0, whole_now() - vh)
@@ -2948,7 +3034,10 @@ pub fn[K : Hash + Eq] View::scrolls_window(
         }
       }
       // (back at its foot at rest, where it follows its foot: kept there from now as what it holds grows; not where an
-      // ask cut short by its foot still going down was put back, the next fill going on with it)
+      // ask cut short by its foot still going down was put back, the next fill going on with it. At the foot of the room
+      // kept under its blocks for what was pressed it is not at its own: followed from there, it would drop by that room
+      // as soon as anything at its foot changed. Held there instead, as long as the hand leaves it where it is, what comes
+      // at its foot taking that room as it grows; once it is all taken, followed again from where that leaves it)
       if !follows_foot &&
         !held &&
         !binds &&
@@ -2956,12 +3045,32 @@ pub fn[K : Hash + Eq] View::scrolls_window(
         !has_pin &&
         @signals.untracked(follows) &&
         vh > 0.0 &&
-        top >= dmax(0.0, whole_now() - vh) - 0.5 &&
         s.rest_now() is None &&
         s.glides_till() is None {
-        s.held = false
-        row_let_go(false)
-        s.to_foot()
+        if room_held.val is Some((t0, _, _)) && (t0 - top).abs() > 0.5 {
+          room_held.val = None
+        }
+        let at_end = top >= dmax(0.0, whole_now() - vh) - 0.5
+        if foot_room.untracked() > 0.5 {
+          if at_end && room_held.val is None {
+            let ks = @signals.untracked(keys)
+            room_held.val = Some((top, ks.length(), ks.last()))
+          }
+        } else {
+          let room_taken = match room_held.val {
+            Some((_, len0, last0)) => {
+              let ks = @signals.untracked(keys)
+              (len0, last0) != (ks.length(), ks.last())
+            }
+            None => false
+          }
+          room_held.val = None
+          if at_end || room_taken {
+            s.held = false
+            row_let_go(false)
+            s.to_foot()
+          }
+        }
       }
       // (gliding back to its foot, its foot moved since the glide set out or went on (a block measured or come at its
       // end, its pinned foot grown or shrunk, a way under it): on to where it is now, from where the glide has it and as
@@ -3135,7 +3244,9 @@ pub fn[K : Hash + Eq] View::scrolls_window(
       came_row[k] = row
     }
     let r = foot_room.untracked()
-    guard r > 0.0 && came_by_data.val.contains(k) else { return 0.0 }
+    // (only at its foot, followed: held off it (the room kept for what was pressed, the press's ways ended), the room
+    // stays where it shows and what comes under it takes it as it grows, nothing over it moving)
+    guard r > 0.0 && came_by_data.val.contains(k) && @signals.untracked(fn() { s.at_foot() }) else { return 0.0 }
     foot_room.set(0.0)
     took_room[k] = (row, r)
     r
@@ -3495,14 +3606,15 @@ pub fn[K : Hash + Eq] View::scrolls_window(
                 // (left where it is, in its slot out of sight, what it binds at rest: nothing drawn changes as it goes,
                 // so it is drawn again for nothing; moved only as the next to show takes it)
                 if all.length() < spare_most && v.alive() {
-                  let wake = v.rests()
-                  // (its key gone from the list: let go with its slot, as were every slot kept)
-                  if slot_keys.untracked().contains(k) || !laid_at.contains(k) {
+                  // (its key gone from the list: let go with its slot, as were every slot kept; a slot counted at est
+                  // cannot keep a block that may exceed est and overflow into sight)
+                  if (slot_keys.untracked().contains(k) && heights.contains(k)) || !laid_at.contains(k) {
+                    let wake = v.rests()
                     all.push((v, key, wake, Some(slot)))
                   } else {
-                    // (its slot no more among those kept (found anew in the same change, let go as it is told): taken
-                    // out of it first, held by no node, so the slot's going lets go none of it)
-                    slot.park(v) |> ignore
+                    // (its slot no more among those kept (found anew in the same change, let go as it is told), or its
+                    // height forgotten: taken out of it first, held by no node, so the slot's going lets go none of it)
+                    let wake = slot.park(v)
                     all.push((v, key, wake, None))
                   }
                 } else {
@@ -3629,6 +3741,8 @@ let glide_most : Double = 2.0
 /// the middle.
 priv enum ListAsk[K] {
   Bring(K, Double, Bool)
+  /// what the block marks sought (View::sought) put this far under what covers its top (ListPlace::bring_sought)
+  BringSought(K, Double)
   Centre(K)
   ToEnd
 }
@@ -3668,7 +3782,7 @@ pub fn[K] ListPlace::new() -> ListPlace[K] {
 /// (Ctx::list_scroll_to's): gliding there where `glide` and it is near. `sought`: and what the block holds of what a
 /// go-to brings (View::sought) before the eyes, in the same fill: where it would lie low (its middle past 80% of the
 /// room between what covers the list's top and its pinned foot's top), its middle at the middle of that room instead
-/// (list_sought.mbt), as far as the list goes; not gliding.
+/// (list_sought.mbt), as far as the list goes; gliding there too where `glide` and it is near, as it is laid out then.
 pub fn[K] ListPlace::bring(
   self : ListPlace[K],
   key : K,
@@ -3677,12 +3791,31 @@ pub fn[K] ListPlace::bring(
   sought? : Bool = false,
 ) -> Unit {
   self.from = None
-  if glide && !sought && (self.glide)(Bring(key, offset, false)) {
+  if glide && (self.glide)(Bring(key, offset, sought)) {
     self.asked = None
     return
   }
   self.asked = Some(Bring(key, offset, sought))
   (self.laid_again)()
+}
+
+///|
+/// Block `key` brought so that what it marks sought (View::sought: a place in its words, where a text was left or a
+/// find goes) stands `under` under what covers the list's top (Scroll::top_covered), its top that far down the room,
+/// wherever in the block it lies, as far as the list goes; where the block marks none, its top there. In one fill, the
+/// block measured as it is laid out (a reader's column opened where it was left: an old view's list scrolled there a
+/// frame after its height was laid out). Not gliding.
+pub fn[K] ListPlace::bring_sought(self : ListPlace[K], key : K, under? : Double = 0.0) -> Unit {
+  self.from = None
+  self.asked = Some(BringSought(key, under))
+  (self.laid_again)()
+}
+
+///|
+/// Whether something asked of it (a block brought, its foot) is still to be done by its list's next layout: what it
+/// has in sight told meanwhile (ListPlace::on_sight, at the input that asked it) is where it was, not where it goes.
+pub fn[K] ListPlace::asking(self : ListPlace[K]) -> Bool {
+  self.asked is Some(_)
 }
 
 ///|

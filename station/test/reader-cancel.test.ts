@@ -8,7 +8,7 @@ import { Admin } from "../src/api/admin.ts";
 import { json } from "../src/api/request.ts";
 import { Cloud, writeState } from "../src/cloud/state.ts";
 import { ALPN, Reader, serve, writeLine } from "../src/mesh/serve.ts";
-import { HttpError } from "../src/read/views.ts";
+import { HttpError } from "./reference/views.ts";
 import { GrantKey } from "./fake-control-plane.ts";
 import { memoryMesh } from "./memory-mesh.ts";
 

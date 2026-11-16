@@ -5,7 +5,7 @@
 ///|
 /// A checkbox in `parent`, on or off as `on` says: 18 square, its corner 6, on the page's ground edged in the theme's
 /// control edge (darker under the pointer), filled with the primary ink while on, its tick in the ink on that; faded
-/// while `disabled`. Pressed (a tap, a click, Space or Enter with the keyboard's focus, a screen reader's Activate),
+/// while `disabled`. Pressed (a tap, a click, Space with the keyboard's focus, a screen reader's Activate),
 /// `turn` told what it becomes; a ring round it while the keyboard's focus is on it. Read out a checkbox named `label`,
 /// on or off.
 #callsite(autofill(loc))
@@ -48,19 +48,8 @@ pub fn check_node(
       .ink(By(fn() { @ui.tree_theme().on_primary }))
       |> ignore
     })
-    // (the keyboard's focus on it: a ring round it, its gap and width the theme's: focus_ring's)
-    b.show(fn() { b.focus_shown() }, fn(ring) {
-      let out = fn() {
-        let t = @ui.tree_theme()
-        t.focus_gap + t.focus_w
-      }
-      ring
-      .over(Is(true))
-      .margin(By(fn() { (-out(), -out(), -out(), -out()) }))
-      .radius(By(fn() { check_corner + out() }))
-      .edge(By(fn() { (@ui.tree_theme().focus_w, @ui.tree_theme().focus) }))
-      |> ignore
-    })
+    // (the keyboard's focus on it: a concentric ring round it, its gap and width the theme's)
+    focus_ring_node(b)
   })
   |> ignore
 }

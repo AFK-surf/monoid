@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, wri
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { Admin } from "../src/api/admin.ts";
 import { Events } from "../src/api/events.ts";
 import type { Viewer } from "../src/mesh/credential.ts";
@@ -1498,6 +1498,14 @@ test("Windows' desktop, for real: stillfail-screen gives a picture of the displa
 /// and token; `status` as `status` is, `permissions.show` noted (its window then up), `quit` noted, `screen.view`
 /// (and `simulator.view`) answering with made-up frames and noting the input. `restartOnce`: its next view asks to start again (a grant taken
 /// since it started), and it is back on its socket a moment later, as the app started again is.
+after(() => {
+  for (const fake of FakeHelperApp.made) {
+    try {
+      fake.close();
+    } catch {}
+  }
+});
+
 class FakeHelperApp {
   launches = 0;
   quits = 0;
@@ -1518,7 +1526,12 @@ class FakeHelperApp {
   watching = 0;
   constructor(status: any) {
     this.status = status;
+    FakeHelperApp.made.add(this);
   }
+  /// Every one made, closed as the file ends: one a test left open (it failed before its `close`) would keep its socket
+  /// and connections, and the test's process with them, until CI's limit, saying nothing of the test that failed
+  /// (check-station (0) cancelled at 5 minutes on #6574, helper.sock left listening with 5 pipes, as on #6028).
+  static readonly made = new Set<FakeHelperApp>();
   #closed = false;
   launch = async (_app: string, env: Record<string, string>) => {
     // Closed with the test: a station still watching it must not have it listen again (the test would never end).
@@ -1858,14 +1871,17 @@ test("a view the station opens itself (an agent's) shows who has it, driving or 
 });
 
 /// Moves `time` on 100 ms each time the station waits on it, until `done`: its time passes only while it waits, so
-/// what it does between its waits (asking the helper over its socket) comes first however slow the machine is.
-async function passing(time: ReturnType<typeof testClock>, done: () => boolean) {
+/// what it does between its waits (asking the helper over its socket) comes first however slow the machine is. Each
+/// step is what the station does, never a count of the loop's turns between: it began another wait, or `changed` (what `done`
+/// reads) came. Counted in turns (2,000 `setImmediate`s, some 20 ms), a runner slow to answer the helper's socket
+/// failed it before the helper was back (#6587's check-station (1), 2026-11-16).
+async function passing(time: ReturnType<typeof testClock>, done: () => boolean, changed: () => Promise<void>) {
   let seen = time.asked();
   for (let i = 0; i < 2_000 && !done(); i++) {
     if (time.asked() > seen) {
       seen = time.asked();
       await time.adjust(100);
-    } else await new Promise((r) => setImmediate(r));
+    } else await Promise.race([time.begun(seen + 1), changed()]);
   }
   assert.ok(done(), "never came to pass");
 }
@@ -1878,10 +1894,15 @@ test("the helper watched: ended by itself it is started again, once, its window 
   // it still under way as the helper went would start it, as it should).
   let backs = 0;
   let backing: Promise<void> = Promise.resolve();
-  const helper: HelperApp = new HelperApp({ app, dir, launch: fake.launch, clock: time.clock, onBack: () => (backs++, (backing = desktop.helperBack())) });
+  let told: (() => void)[] = [];
+  const helper: HelperApp = new HelperApp({ app, dir, launch: fake.launch, clock: time.clock, onBack: () => {
+    backs++;
+    backing = desktop.helperBack();
+    for (const tell of told.splice(0)) tell();
+  } });
   const desktop: Desktop = new Desktop({ supported: true, helper, changed: () => {}, lang: () => "en" });
   const back = async (n: number) => {
-    await passing(time, () => backs === n);
+    await passing(time, () => backs === n, () => new Promise<void>((r) => told.push(r)));
     await backing;
   };
   await assert.rejects(desktop.open({ maxWidth: 1920, maxHeight: 1080, codecs: ["h264"] }));

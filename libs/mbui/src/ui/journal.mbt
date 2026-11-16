@@ -54,6 +54,9 @@ pub(all) struct FrameDone {
   /// it (`@view.again_names`: "withins=12 told=3"; "" none): a pass done over and over said by its cause
   passes : Int
   again : String
+  /// the window's tree's bindings run since the frame before (Work's `bindings_run`): what its tree bindings part did,
+  /// counted, nothing of it read again where nothing it reads changed
+  bindings : Int
   why : String
 }
 
@@ -415,6 +418,7 @@ fn journal_reset() -> Unit {
   journal_notes.clear()
   journal_tree_work.val = (0, 0, 0, 0)
   journal_passes.val = 0
+  journal_bindings.val = 0
   journal_again.val = FixedArray::make(8, 0)
   shown_names.clear()
   shown_slot.val = 0
@@ -551,13 +555,15 @@ fn journal_frame(c : Ctx, tw : Double, t0 : Double, t3 : Double, t4 : Double) ->
   }
   let msgs = probe_msgs_ms.val
   // (what the window's tree did since the frame before: its counts now less those kept then)
-  let (now, passes, again) = match view_app.val {
+  let (now, passes, again, bindings) = match view_app.val {
     Some(tree) => {
       let w = tree.work()
-      ((w.made, w.let_go, w.laid, w.measured), w.passes, w.again)
+      ((w.made, w.let_go, w.laid, w.measured), w.passes, w.again, w.bindings_run)
     }
-    None => ((0, 0, 0, 0), 0, FixedArray::make(8, 0))
+    None => ((0, 0, 0, 0), 0, FixedArray::make(8, 0), 0)
   }
+  let bindings_was = journal_bindings.val
+  journal_bindings.val = bindings
   let was = journal_tree_work.val
   journal_tree_work.val = now
   let passes_was = journal_passes.val
@@ -586,6 +592,7 @@ fn journal_frame(c : Ctx, tw : Double, t0 : Double, t3 : Double, t4 : Double) ->
       measured: journal_since(now.3, was.3),
       passes: journal_since(passes, passes_was),
       again: again_said.join(" "),
+      bindings: journal_since(bindings, bindings_was),
       why,
     }),
     tw,
@@ -608,6 +615,11 @@ let journal_tree_work : Ref[(Int, Int, Int, Int)] = Ref((0, 0, 0, 0))
 /// The window's tree's layout passes, and those run again inside one by cause, as the last frame was kept.
 // kept across runs: put back as a run begins (journal_reset), written as each frame is kept
 let journal_passes : Ref[Int] = Ref(0)
+
+///|
+/// The window's tree's bindings run, as the last frame was kept.
+// kept across runs: put back as a run begins (journal_reset), written as each frame is kept
+let journal_bindings : Ref[Int] = Ref(0)
 
 ///|
 // kept across runs: put back as a run begins (journal_reset), written as each frame is kept
@@ -929,6 +941,7 @@ pub fn Hang::json(self : Hang) -> Json {
       o["laid"] = Json::number(f.laid.to_double())
       o["measured"] = Json::number(f.measured.to_double())
       o["passes"] = Json::number(f.passes.to_double())
+      o["bindings"] = Json::number(f.bindings.to_double())
       if f.again != "" {
         o["again"] = Json::string(f.again)
       }

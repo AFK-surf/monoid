@@ -357,14 +357,6 @@ fn narrow_bar_shown(src : Source, w : Workspace) -> Bool {
 /// Over the frame with workspace `w` in view, in every tier: the sheets, a new device waiting on this one's code, what
 /// the settings put up, ⌘K and ⌘/, the presenters, the toasts, the loupe.
 fn signed_in_over(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
-  sheet_contents(fn(kind) {
-    match kind {
-      ShareSheet => share_in_sheet(c, src, w)
-      InviteLink => invite_sheet(c, src)
-      LoginLink => login_sheet(c, src, w)
-      NoSheet => ()
-    }
-  })
   // a new device waiting on this one's code, in any workspace of the person's, over whichever page is open
   // : put up when no other sheet is
   @settings.lock_prompts(settings_core(src, w), !sheet_open())
@@ -372,8 +364,6 @@ fn signed_in_over(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
   @settings.vault_prompts(settings_core(src, w), !sheet_open())
   // (the core what the settings put up over a page draws with, put up by what has none at hand)
   @settings.panels_frame(settings_core(src, w), w.id)
-  // what another app shares, in the wide window's panel (share.mbt; a sheet on Small, as ShareSheet)
-  share_panel(c, src, w)
   // ⌘K's panel and ⌘/'s shortcuts, in every tier over the pages, under the presenters (sfdesk's switcher.mbt,
   // shortcuts.mbt)
   @sfdesk.switcher(c, src, w)
@@ -447,7 +437,7 @@ fn narrow_made_as(
           }
           // (what the page does, given its place's top bar as it is made: each making of it its own, let go with it
           // where none since gave another)
-          let page_actions : @signals.Signal[((@view.View) -> Unit, Int)?] = @signals.signal(None, same=fn(a, b) {
+          let page_actions : @signals.Signal[((@view.View) -> Unit, Int)?] = @signals.signal_by(None, same=fn(a, b) {
             match (a, b) {
               (None, None) => true
               (Some(x), Some(y)) => x.1 == y.1
@@ -654,6 +644,11 @@ fn narrow_made_as(
       made("local-station", fn(p, core, _here, frame, _stint, _acts) { @sfpages.local_station_node(p, core, on_back=core.pop, frame~) })
     Setting(Permissions) =>
       made("permissions", fn(p, core, _here, frame, _stint, _acts) { @sfpages.permissions_node(p, core, on_back=core.pop, frame~) })
+    Setting(Me) =>
+      made("me", fn(p, core, here, frame, stint, _acts) { @sfpages.me_node(p, core, here, on_back=core.pop, frame~, stint~) })
+    Setting(Fonts) => made("fonts", fn(p, core, _here, frame, _stint, _acts) { @sfpages.fonts_node(p, core, on_back=core.pop, frame~) })
+    Setting(BarSettings) =>
+      made("bars", fn(p, core, _here, frame, _stint, _acts) { @sfpages.bars_node(p, core, on_back=core.pop, frame~) })
     Setting(Security) =>
       made("security", fn(p, core, here, frame, stint, _acts) { @sfpages.security_node(p, core, here, on_back=core.pop, frame~, stint~) })
     Setting(SecurityOpen) =>
@@ -664,6 +659,26 @@ fn narrow_made_as(
       made("workspace", fn(p, core, here, frame, stint, _acts) { @sfpages.workspace_node(p, core, here, on_back=core.pop, frame~, stint~) })
     Setting(VaultItems) =>
       made("vault-items", fn(p, core, here, frame, _stint, _acts) { @sfpages.vault_items_node(p, core, here, on_back=core.pop, frame~) })
+    Setting(KeptFiles) => made("kept", fn(p, core, _here, frame, _stint, _acts) { @settings.kept_node(p, core, on_back=core.pop, frame~) })
+    // (by its station and thread: another chat's another page)
+    Setting(KeptChat(station, thread)) =>
+      made("kept/" + station + "/" + thread.to_string(), fn(p, core, _here, frame, _stint, _acts) {
+        @settings.kept_chat_node(p, core, station, thread, on_back=core.pop, frame~)
+      })
+    // (by its station and session: another's another page)
+    Setting(RunSettings(station, key)) =>
+      made("run/" + station + "/" + key, fn(p, core, _here, frame, _stint, _acts) {
+        @settings.run_settings_node(p, core, station, key, on_back=core.pop, frame~)
+      })
+    // (by the station whose step is said first: another station's another page)
+    Setting(AdbShare(focus)) =>
+      made("adb/" + focus, fn(p, core, _here, frame, _stint, _acts) { @settings.adb_node(p, core, focus, on_back=core.pop, frame~) })
+    Setting(Vault) => made("vault", fn(p, core, here, frame, _stint, _acts) { @sfpages.vault_node(p, core, here, on_back=core.pop, frame~) })
+    // (by its vault and item: another's another page)
+    Setting(VaultItem(vault, item)) =>
+      made("vault-item/" + vault + "/" + item, fn(p, core, here, frame, _stint, _acts) {
+        @sfpages.vault_item_node(p, core, here, vault, item, on_back=core.pop, frame~)
+      })
     // (by its station: another station's another page; as a place of the bottom bar's, its ＋ the bar's notch:
     // connects_add)
     Setting(Connects(only)) =>
@@ -673,6 +688,12 @@ fn narrow_made_as(
     Setting(Connect(station, id)) =>
       made("connect/" + station + "/" + id, fn(p, core, here, frame, stint, _acts) {
         @sfpages.connect_node(p, src, core, here, station, id, on_back=core.pop, frame~, stint~)
+      })
+    // a drive's text read: the whole window, the reader's own bars over it (sfpages' reader_page_node)
+    DriveRead(at) =>
+      made("drive-read/" + at.station + "/" + at.root.unwrap_or("") + "/" + at.path, fn(p, _core, _here, _frame, _stint, _acts) {
+        p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        @sfpages.reader_page_node(p, src, at)
       })
     // a station's terminal: the whole window, its bar under the status bar (terminal_node)
     Terminal(at) =>
@@ -714,6 +735,18 @@ fn narrow_made_as(
           top=fn() { frame().top },
         )
         @sfpages.farview_tab_node(p, src, at.station, at.screen)
+      })
+    Setting(Profiles("")) if @settings.profiles_narrow_overview.get() =>
+      made("profiles-overview", fn(p, core, here, frame, _stint, acts) {
+        @sfpages.profiles_overview_node(
+          p,
+          core,
+          here,
+          on_back=core.pop,
+          frame~,
+          on_show_accounts=fn() { @settings.profiles_narrow_overview.set(false) },
+          bar_actions?=if place { Some(acts) } else { None },
+        )
       })
     Setting(Profile(address, id)) =>
       made("profile/" + address + "/" + id, fn(p, core, here, frame, stint, _acts) {

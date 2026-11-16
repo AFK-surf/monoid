@@ -8,7 +8,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { MbReader, mbReaderBinary } from "../src/read/mb-reader.ts";
 import { Readers } from "../src/read/pool.ts";
-import type { Answer, Ready } from "../src/read/serve-reads.ts";
+import type { Answer, Ready } from "../src/read/mb-reader.ts";
 import { Store } from "../src/store/store.ts";
 import { readersOf } from "./reference.ts";
 

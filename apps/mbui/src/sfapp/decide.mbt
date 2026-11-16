@@ -1,5 +1,5 @@
 // What a chat's cards and buttons do (slice 8: still.fail apps/android chat/screens/Decisions.kt DecisionUnder, OptionButton;
-// Chat.kt AskDismiss, ArchiveUnder, archiveChat; LoginCards.kt; AppState.kt act, isDoing); a sheet's head (SheetHead). The
+// Chat.kt AskDismiss, ArchiveUnder, archiveChat; LoginCards.kt; AppState.kt act, isDoing). The
 // chat's sheets (sheets.mbt) are the library's presenters'. What is done is said to
 // the core as the Android app says it, under way on its button (a spinner), said in a toast when it could not be;
 // nothing with MBUI_READONLY=1.
@@ -9,8 +9,6 @@
 priv struct Decide {
   /// asks let go here, before the core says so, by station, thread and post
   gone : Map[String, Bool]
-  /// the letters' sheet: the chat opened in it, by its key ("" the list of them)
-  mut letters_open : String
   /// the chats whose letters were read for their sheet (the core's `chatLetters`), by station and session: their
   /// threads, let go as the chat is (chat.mbt chat_left)
   letters_held : Map[String, Double]
@@ -23,7 +21,6 @@ priv struct Decide {
 ///|
 let dui : Decide = {
   gone: {},
-  letters_open: "",
   letters_held: {},
   job_tab: 0,
   opened: @sf.LiveMap::new(),
@@ -33,7 +30,6 @@ let dui : Decide = {
 /// As at the start (tests).
 fn decide_reset() -> Unit {
   dui.gone.clear()
-  dui.letters_open = ""
   dui.letters_held.clear()
   dui.job_tab = 0
   history_tab.set(0)
@@ -68,16 +64,3 @@ fn archive_chat(src : Source, r : ChatRef, v : ChatView) -> Unit {
     at_once=true,
   )
 }
-
-// ── a sheet's head ──────────────────────────────────────────────────────
-
-///|
-/// A sheet's head: its title, 17 bold.
-fn sheet_head(c : @ui.Ctx, title : String) -> Unit {
-  let t = @sf.theme()
-  c.box(dir=Row, w=Fill(1.0), pl=18.0, pr=18.0, pt=4.0, pb=10.0, align=ACenter, fn() {
-    c.text(title, size=t.t.title, weight=700, color=t.p.text, wrap=false) |> ignore
-  })
-  |> ignore
-}
-

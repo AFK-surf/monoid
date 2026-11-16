@@ -390,3 +390,32 @@ test "a sign-in decided as its card shows, made once as nodes: the card goes, th
   assert_false(@sf.presenting())
 }
 
+///|
+test "many 1Password logins including a long OAuth username: stacked top to bottom in 1Password's order, cut to one line inside the card, with 在画面中登录 and 登录后存入密钥库 kept below" {
+  let many = "[{\"id\":\"gh1\",\"title\":\"GitHub\",\"additional_information\":\"lin@example.com\",\"urls\":[{\"href\":\"https://github.com\"}]},{\"id\":\"gh2\",\"title\":\"GitHub\",\"additional_information\":\"lin.personal@example.com\",\"urls\":[{\"href\":\"https://github.com/login\"}]},{\"id\":\"gh3\",\"title\":\"GitHub\",\"additional_information\":\"team1@example.com\",\"urls\":[{\"href\":\"https://github.com\"}]},{\"id\":\"gh4\",\"title\":\"GitHub\",\"additional_information\":\"team2@example.com\",\"urls\":[{\"href\":\"https://github.com\"}]},{\"id\":\"gh5\",\"title\":\"GitHub OAuth\",\"additional_information\":\"524783491799-i2nuidv1m2jssguh64lopn8g1kd7a8oe.apps.example.com\",\"urls\":[{\"href\":\"https://github.com\"}]}]"
+  let c : SignInCase = {
+    name: "five logins with long oauth",
+    post: signin_post_with(),
+    host: OnePassword(many, false, false),
+    presses: ["用 1Password 登录"],
+    fails: false,
+  }
+  for w in [760.0, 390.0] {
+    let t = signin_held(c, w)
+    assert_eq(t.fixed_outgrown(), [], msg="outgrown at \{w}")
+    card_audit(t, "five logins at \{w}", 0)
+    let y1 = t.find_last("GitHub · lin@example.com").unwrap().1
+    let y2 = t.find_last("GitHub · lin.personal@example.com").unwrap().1
+    let y3 = t.find_last("GitHub · team1@example.com").unwrap().1
+    let y4 = t.find_last("GitHub · team2@example.com").unwrap().1
+    let y5 = t.find_last("GitHub OAuth").unwrap().1
+    let y_self = t.find_last("在画面中登录").unwrap().1
+    let y_keep = t.find_last("登录后存入密钥库").unwrap().1
+    assert_true(y1 < y2 && y2 < y3 && y3 < y4 && y4 < y5, msg="top-to-bottom order: \{y1},\{y2},\{y3},\{y4},\{y5}")
+    assert_true(y5 < y_self && y5 < y_keep, msg="actions below choices: \{y5} vs \{y_self},\{y_keep}")
+  }
+  let t = signin_held(c, 390.0, scale=1.3)
+  assert_eq(t.fixed_outgrown(), [], msg="outgrown at 390 1.3")
+  card_audit(t, "five logins at 390 1.3", 0)
+}
+

@@ -16,6 +16,7 @@ pub fn runtime_label(rt : String) -> String {
     "devin" => "Devin"
     "hermes" => "Hermes Agent"
     "agy" => "Antigravity CLI"
+    "pi" => "Pi"
     _ => rt
   }
 }
@@ -32,6 +33,7 @@ pub fn runtime_short(rt : String) -> String {
     "devin" => "Devin"
     "hermes" => "Hermes"
     "agy" => "AGY"
+    "pi" => "Pi"
     _ => rt
   }
 }

@@ -73,9 +73,9 @@ test("a session is opened with what the deployment adds to its instructions", as
   const row = { key: "k", workspace: "/w/s/workspace", token: "t", cwd: null };
   const deps = { mcpUrl: () => "http://127.0.0.1:1/mcp", reposDir: () => "/w/repos", memoryPath: () => "/w/agent/MEMORY.md" };
   const profile = { id: "p", runtime: "claude", runtimes: ["claude"], home: "/h", models: [], named: [], name: "p", backgroundOnMessage: true, enabled: true } as never;
-  const without = openOptions(row, profile, deps, "").instructions;
+  const without = (await openOptions(row, profile, deps, "")).instructions;
   assert.ok(!without.includes("Monoid"));
-  const site = openOptions(row, profile, { ...deps, siteInstructions: () => "This machine is a Monoid Machine." }, "").instructions;
+  const site = (await openOptions(row, profile, { ...deps, siteInstructions: () => "This machine is a Monoid Machine." }, "")).instructions;
   assert.equal(site, `${without}\n\nThis machine is a Monoid Machine.`);
 });
 

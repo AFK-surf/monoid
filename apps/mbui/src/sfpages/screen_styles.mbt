@@ -72,10 +72,10 @@ let take_over_place : @ui.Style = @ui.css("w=Full px=S3 py=S1 align=ACenter")
 // ── buttons ───────────────────────────────────────────────────────────────
 
 ///|
-/// A round button (40), the ink at 10% under it while it is on.
+/// A round button (40), the ink at 10% under it while it is on, the hover ground under the hand.
 // kept across runs: a value (no field of it changes)
 let round_button_box : @ui.Style = @ui.css((
-  #|w=S10 h=S10 radius=Full align=ACenter justify=JCenter selected{bg=A(Fg,O10)}
+  #|w=S10 h=S10 radius=Full align=ACenter justify=JCenter hovered{bg=Hover} pressed{bg=Hover} selected{bg=A(Fg,O10)}
 ))
 
 ///|
@@ -96,6 +96,16 @@ let screen_bar : @ui.Style = @ui.css("row w=Full h=S14 pl=S1_5 pr=S2_5 gap=S2 al
 /// under the panel's close.
 // kept across runs: a value (no field of it changes)
 let screen_bar_in_tabs : @ui.Style = @ui.css("row w=Full h=S11 pl=S10 pr=S6 gap=S2 align=ACenter")
+
+///|
+/// With keyboard and mouse in a chat's side panel (its tab bar above already names the tab, closes it and pops it out):
+/// one compact row on the page's ground (no painted bg of its own, so it never forms a rule-3 seam with the canvas).
+// kept across runs: a value (no field of it changes)
+let screen_tab_browser_bar : @ui.Style = @ui.css("row w=Full py=S1 pl=S2 pr=S2 gap=S2 align=ACenter")
+
+///|
+// kept across runs: a value (no field of it changes)
+let screen_tab_status_bar : @ui.Style = @ui.css("row w=Full h=S12 pl=S4 pr=S2 gap=S2 align=ACenter")
 
 ///|
 // kept across runs: a value (no field of it changes)

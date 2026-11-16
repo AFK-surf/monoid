@@ -190,7 +190,7 @@ export const idToken = (claims: unknown) => `x.${Buffer.from(JSON.stringify(clai
 
 /// The station's browser as the logins see it (logins/pages.ts): its tabs in memory (`T1`, `T2`…, each at the page it
 /// opened), each page visited by `visit` as Chrome would load it; `gone` closes one as a
-/// person would.
+/// person would, `went` moves one to another page.
 export function fakeBrowser(visit: (url: string) => void = () => {}, available = true) {
   const tabs = new Map<string, string>();
   const options = new Map<string, OpenTabOptions | undefined>();
@@ -210,6 +210,7 @@ export function fakeBrowser(visit: (url: string) => void = () => {}, available =
     async closeTab(id) {
       if (tabs.delete(id)) changed();
     },
+    tabUrl: (id) => tabs.get(id) ?? null,
   };
   const pages = new LoginPages(browser, (c) => {
     changed = c;
@@ -221,6 +222,11 @@ export function fakeBrowser(visit: (url: string) => void = () => {}, available =
     options,
     gone: (id: string) => {
       tabs.delete(id);
+      changed();
+    },
+    /// The page in tab `id` gone on to `url` (a redirect, a link followed), as Chrome tells it.
+    went: (id: string, url: string) => {
+      tabs.set(id, url);
       changed();
     },
   };

@@ -43,7 +43,8 @@ export async function readMemory(path: string): Promise<string> {
 /// and the longest line of one. Every session of the workspace reads MEMORY.md and a project's skill whole: one that
 /// grew into a log of progress (skills/stillfail/SKILL.md reached 165 KB on 2026-11-15, 49 "status" sections that
 /// contradicted each other) costs each session tens of thousands of tokens and misleads it. A merge keeps both
-/// versions where two stations changed one place (share/memory-merge.ts), so what came twice is the agents' to tidy too.
+/// versions where two stations changed one place (share/memory.ts, merged by station/mb src/memory), so what came
+/// twice is the agents' to tidy too.
 export const MEMORY_MOST = 8 * 1024;
 export const SKILL_MOST = 24 * 1024;
 export const LINE_MOST = 1500;
@@ -77,15 +78,15 @@ export function overgrown(files: [string, string][]): string {
   return `[still.fail: this memory has grown past what an agent can use: condense a file you touch before you add to it]\n${said.join("\n")}\nKeep the lasting rules and facts, one line each; drop progress, status and handover notes (they belong in a chat's own workspace); keep one of what is said twice and the newest of what contradicts.`;
 }
 
-const instructions = (project: string, workspace: string, repos_dir: string, memory_path: string, station: string) => `You work on this machine for people who write to you from still.fail chats, Slack threads, Feishu chats and Comma Tasks.
+const instructions = (project: string, workspace: string, repos_dir: string, memory_path: string, station: string) => `You work on this machine for people who write to you from still.fail chats, Slack threads, Feishu chats, group (IM) chats and Comma Tasks.
 
 Messages:
-- Each message comes as <message via="web|slack|feishu|comma" thread="…" from="…" ts="…">: thread is the conversation to answer in. sent_at is the message's time in UTC; recorded_at is when the station recorded it if its identifier does not encode a time. ts is the original message identifier. A delivery says when it was handed to you in UTC. via="station" is a notice (a job ended): act on it and tell whoever asked for the work.
+- Each message comes as <message via="web|slack|feishu|group|comma" thread="…" from="…" ts="…">: thread is the conversation to answer in. sent_at is the message's time in UTC; recorded_at is when the station recorded it if its identifier does not encode a time. ts is the original message identifier. A delivery says when it was handed to you in UTC. via="station" is a notice (a job ended): act on it and tell whoever asked for the work.
 - One session can hear several threads: answer each in its own. Not every message is for you; other agents are bots: build on their work and mention them when you need something.
 - before="TS" means it was written before your post TS, without seeing it.
 - A chat_post is held back when messages you have not read came in its thread first; read them, then send it unchanged with send=<its id> if it still stands, or post what fits now.
-- A message headed 来自/From <a chat's link> is a letter from another chat's agent: answer it with session_send to that link. A chat headed 由…开的/Opened by <a chat's link> was opened for you: work in it with chat_post; its opener hears how your turns end.
-- Told to stop following a Slack or Feishu thread: say so in a sentence and chat_leave it.
+- A message headed 来自/From <a chat's link> is a letter from another chat's agent: answer it with session_send to that link. A chat headed 由…领导的/Led by <a chat's link> is a part of that chat's work: work in it with chat_post; its leader hears how your turns end and is who you ask (need_human reaches it, not a person); report your conclusions and their evidence apart, and what you would drop, found no gain in, or think needs a person as a proposal for it to decide. One headed …为你开的/Opened for you by <a chat's link> is your person's: work for them as in any chat. One headed 由…开的/Opened by: its opener hears how your turns end.
+- Told to stop following a Slack, Feishu or group thread: say so in a sentence and chat_leave it.
 - Write in the language the chat's people write in. Code, commits and pull requests follow their repository.
 
 Answering:
@@ -99,7 +100,7 @@ Answering:
 - Asked to do something as another chat did, read that chat from its start first (what was asked there, what it used), and never have people carry words between chats. Another chat's agent asking this chat to take up a large piece of another line of work: ask this chat's people first.
 - Before fixing a bug, look whether someone already opened or merged a fix (pull requests by its issue, its words and its files; the files' recent commits).
 - Never ask people to run a command or paste a secret: use the login tool for logins (skill stillfail-login), the vault for credentials (skill stillfail-vault).
-- For visible results show them (skills stillfail-show, stillfail-viz). For other chats, agents, Slack or Feishu APIs and archive policy, read skill stillfail-chats. To move chats, or a whole station, to another station, skill stillfail-move. When you do not have a skill that your instructions or a tool's description names, read it with skill_read by its name.
+- For visible results show them (skills stillfail-show, stillfail-viz). For other chats, agents, Slack or Feishu APIs and archive policy, read skill stillfail-chats. To move chats, or a whole station, to another station, skill stillfail-move. To lead other chats or subagents toward one goal, skill stillfail-leading. When you do not have a skill that your instructions or a tool's description names, read it with skill_read by its name.
 
 End every turn with one state, given as kind on your last chat_post or with chat_state:
 - all_done with done: only when nothing people asked for in the chat is left (no next step of yours, no unmerged branch, no open question): what was finished and the evidence (a commit, a release, the answer given). A step of a longer goal done is not all_done.
@@ -108,17 +109,17 @@ End every turn with one state, given as kind on your last chat_post or with chat
 - Otherwise do not end the turn: a post that says what you do next means you go on doing it now.
 
 Formatting: GitHub Markdown everywhere. Differences:
-| | still.fail chat (thread CHAT/… or EMBER/…) | Slack | Feishu |
-|---|---|---|---|
-| mention | write the name | <@USER_ID> | <at id=OPEN_ID></at> |
-| files (chat_post files=[paths]) | ![](shot.png) places an image, [name](file) a file | uploaded below the text | sent below the text |
-| math | \\(…\\) and \\[…\\] | Unicode plain text | Unicode plain text |
+| | still.fail chat (thread CHAT/… or EMBER/…) | Slack | Feishu | group |
+|---|---|---|---|---|
+| mention | write the name | <@USER_ID> | <at id=OPEN_ID></at> | @name |
+| files (chat_post files=[paths]) | ![](shot.png) places an image, [name](file) a file | uploaded below the text | sent below the text | sent with the text |
+| math | \\(…\\) and \\[…\\] | Unicode plain text | Unicode plain text | Unicode plain text |
 Write file names as \`code\`.
 
 Where you work:
 ${project}- Session workspace: ${workspace}: scratch files, clones and worktrees. Only files sent in the chat outlive it; push what must last.
-- Shared repository cache: ${repos_dir}: canonical clones; work in worktrees, never edit them directly.
-- A repository's AGENTS.md files, its root's and each directory's down to where you change code, are its rules: read them first (you may be told them as you reach a directory) and keep them true in what you change.
+- Shared repository cache: ${repos_dir}: canonical clones; open a detached worktree in your workspace to read or change one (never edit the cache directly), and batch independent reads and searches in parallel rather than slicing files through the shell.
+- A repository's AGENTS.md (or CLAUDE.md) files, its root's and each directory's down to where you change code, are its rules: read them first (you may be told them as you reach a directory) and keep them true in what you change.
 
 Memory:
 - The memory and skills are the same on every station of this workspace: the stations keep them level, an edit here reaching the others within seconds.${station === "" ? "" : ` You are on station ${station}.`} What is true of one machine alone (its disk, paths, accounts, network) says which station it is of: \`- ${station || "Studio"}：…\`. A line or skill marked [<station>] came from that station before the memory was shared.
@@ -141,7 +142,7 @@ export const RESUME_AFTER_RESTART = `The station restarted while you were in the
 export const GO_ON_AFTER_AUTH = `Your last turn stopped on an authentication error. The station reopened the runtime to reload its credentials. Continue the unfinished work from this conversation. First check the transcript, files and any operations already started; do not repeat completed actions. If an action's outcome is uncertain, verify it before retrying. Post only if people need to know.`;
 export const GO_ON_AFTER_CODEX_UPDATE = `Your last turn stopped because Codex was too old for the selected model. The station updated Codex and reopened this conversation. Continue the unfinished work from this conversation. First check the transcript, files and any operations already started; do not repeat completed actions. If an action's outcome is uncertain, verify it before retrying. Post only if people need to know.`;
 
-export const GO_ON_AFTER_SPENT = `Your last turn was cut off: the account it ran on hit its usage limit. You now run on another account (or model). Check where you were, then continue the work. Post only if people need to know.`;
+export const GO_ON_AFTER_SPENT = `Your last turn was cut off: the account it ran on hit its usage limit. You now run on another account (or runtime or model). Check where you were, then continue the work. Do not announce the switch itself, but if what remains will take more than a couple of minutes and people have not yet been told the plan or where things stand, post a brief progress note before going on.`;
 
 export const GO_ON_AFTER_OVERLOADED = `Your last turn was cut off: the model was at capacity (the provider's side, not your account), and the station waited a while before trying again. Check where you were, then continue the work. Post only if people need to know.`;
 
@@ -212,6 +213,8 @@ export function parseThreadAddress(value: string): [string, string] | null {
   const [channel, ts] = [v.slice(0, at), v.slice(at + 1)];
   // A Feishu chat's: its chat id and the message or topic it began with.
   if (/^oc_[A-Za-z0-9]+$/.test(channel) && /^om(t)?_[A-Za-z0-9]+$/.test(ts)) return [channel, ts];
+  // A group connect's: its conversation's id, twice (src/group: a conversation is one thread).
+  if (/^[0-9a-f]{16}$/.test(channel) && ts === channel) return [channel, ts];
   const dot = ts.indexOf(".");
   if (dot < 0) return null;
   const [secs, micros] = [ts.slice(0, dot), ts.slice(dot + 1)];
@@ -257,15 +260,15 @@ export function messageForAgent(m: MessageRow): string {
   return parts.filter((p) => p !== "").join("\n\n");
 }
 
-const via = (surface: string) => (surface === STILLFAIL_SURFACE ? "web" : surface.startsWith("feishu:") ? "feishu" : surface.startsWith("comma:") ? "comma" : "slack");
+const via = (surface: string) => (surface === STILLFAIL_SURFACE ? "web" : surface.startsWith("feishu:") ? "feishu" : surface.startsWith("comma:") ? "comma" : surface.startsWith("group:") ? "group" : "slack");
 
 /// The still.fail app a message was sent from, as an attribute; nothing for one that did not say.
 const clientAttr = (m: MessageRow) => (m.client !== null && m.client !== undefined ? ` client="${escapeAttr(m.client)}"` : "");
 
-/// Slack and app message IDs are seconds since the epoch; Comma's are sequence numbers, and Feishu's are opaque.
+/// Slack and app message IDs are seconds since the epoch; Comma's and a group's are sequence numbers, and Feishu's are opaque.
 /// For the latter two only the time the station recorded the message is known (which can be later than it was sent).
 function timeAttr(m: MessageRow, surface: string): string {
-  const numeric = via(surface) !== "comma" && via(surface) !== "feishu" && /^\d{10}(?:\.\d+)?$/.test(m.ts) ? Number(m.ts) * 1000 : NaN;
+  const numeric = via(surface) !== "comma" && via(surface) !== "feishu" && via(surface) !== "group" && /^\d{10}(?:\.\d+)?$/.test(m.ts) ? Number(m.ts) * 1000 : NaN;
   const sent = Number.isFinite(numeric) && numeric <= 8.64e15 ? numeric : null;
   const recorded = Number.isFinite(m.createdAt) && m.createdAt > 0 && m.createdAt <= 8.64e15 ? m.createdAt : null;
   const at = sent ?? recorded;

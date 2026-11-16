@@ -46,17 +46,13 @@ pub fn one_of_node(
             rg.item(slot, fn() { v }, words, space_only=true, fn(r, item) {
               let on = fn() { item.chosen() }
               style_node(r, fn() { one_of_row.then(@ui.style(min_h=Fixed(theme().items.least))) })
-              r
-              // (one_of_row_hot's hover ground: a mouse over any of it, or it pressed)
-              .ground(By(fn() {
-                if !item.disabled() && (hovered_in_node(r) || item.pressed()) {
-                  @ui.tree_theme().color(Hover)
-                } else {
-                  0L
-                }
-              }))
-              .alpha(By(fn() { if item.disabled() { one_of_disabled_alpha } else { 1.0 } }))
-              |> ignore
+              // (one_of_row_hot's hover ground: a mouse over any of it, or it pressed, or keyboard focus)
+              r.focus_ring_theme().alpha(By(fn() { if item.disabled() { one_of_disabled_alpha } else { 1.0 } })) |> ignore
+              hover_ground_node(
+                r,
+                on=fn() { !item.disabled() },
+                lit=Some(fn() { hovered_in_node(r) || item.pressed() || r.focus_shown() }),
+              )
               words_node(r, words, fn() { theme().rows.title }) |> ignore
               // (its words and its check apart: one_of_row's JBetween, what is left of the row between them)
               r.box(fn(gap) { gap.grow(Is(1.0)) |> ignore }) |> ignore

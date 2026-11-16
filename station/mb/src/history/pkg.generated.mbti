@@ -1,0 +1,93 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/history"
+
+import {
+  "moonbitlang/core/json",
+  "moonbitlang/core/ref",
+  "station/host",
+  "station/jsjson",
+  "station/locate",
+  "station/search",
+  "station/sql",
+}
+
+// Values
+pub async fn answer(@sql.Db, @host.Host, String, String, @locate.Finder, @json.Json, () -> Bool) -> Array[@json.Json]
+
+pub fn brief(Entry) -> (Entry, Bool)
+
+pub fn chain_of(@host.Host, String, Array[(String, String)], String?) -> Array[Marked] raise
+
+pub fn date_iso(Double) -> String raise
+
+pub fn date_parse(String) -> Double?
+
+pub fn entries_of(@host.Host, String, Array[Marked], Double, Double, Bool) -> Array[@json.Json]
+
+pub fn entry_json(Entry, Bool) -> @json.Json
+
+pub let in_script_output : @ref.Ref[String]
+
+pub fn is_alphanumeric(Int32) -> Bool
+
+pub fn length_of(Array[Marked]) -> Int32
+
+pub fn marks_dir(String, String) -> String
+
+pub fn script_calls(String) -> (Array[(String, @jsjson.JValue)], Bool)
+
+pub fn state_json(TailState) -> @json.Json
+
+pub fn tail_read(@host.Host, String, @json.Json) -> @json.Json raise
+
+pub fn timeline_of(String, @jsjson.JValue, ReadState, Array[Entry]) -> Unit raise
+
+// Errors
+
+// Types and methods
+pub(all) struct Entry {
+  at : String?
+  kind : String
+  text : String
+  tool : String?
+  ok : Bool?
+  call_id : String?
+  subagent : Bool
+  said : String?
+}
+
+pub struct Histories {
+  // private fields
+}
+pub async fn Histories::group(Self) -> @json.Json?
+pub fn Histories::new(@sql.Db, @host.Host, String, String, @locate.Finder, Array[String], @search.Asker, Int32, Int32, Int32, () -> Bool, async () -> Unit) -> Self
+
+pub struct Mark {
+  offset : Int64
+  index : Int32
+  inner : Array[(String, Int32)]
+}
+
+pub struct Marked {
+  state : TailState
+  marks : Array[Mark]
+}
+
+pub struct ReadState {
+  // private fields
+}
+pub fn ReadState::new() -> Self
+
+pub struct TailState {
+  path : String
+  runtime : String?
+  offset : Int64
+  partial : Bytes
+  count : Int32
+  inner : Array[(String, Int32)]
+  packed_stamp : String?
+}
+
+// Type aliases
+
+// Traits

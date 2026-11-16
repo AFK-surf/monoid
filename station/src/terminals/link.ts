@@ -9,7 +9,7 @@ import { platform } from "../platform/index.ts";
 /// Output from `at` (stdout's offset as the runner counts it).
 export type Out = { at: number; bytes: Buffer };
 /// The screen as it is, VT that makes it again in a new terminal of its size, and how much of the output made it.
-export type Shown = { at: number; data: Buffer };
+export type Shown = { at: number; data: Buffer; cols?: number; rows?: number };
 export type Ended = { code: number | null; signal: string | null };
 
 /// What a link needs of a socket: the runner's, or a test's.
@@ -20,7 +20,7 @@ export type Wire = {
   on(event: "close", f: () => void): void;
 };
 
-/// A runner's socket, read as lines of JSON.
+/// A runner's socket, read as lines of JSON, coalescing contiguous `out` chunks that arrive in one read.
 export function runnerWire(info: RunnerInfo): Wire {
   const socket: Socket = createConnection(info.socket);
   let carry = "";
@@ -28,6 +28,20 @@ export function runnerWire(info: RunnerInfo): Wire {
   const closes: (() => void)[] = [];
   socket.on("data", (chunk) => {
     carry += chunk.toString("utf8");
+    const emit = (m: any) => {
+      for (const f of lines) f(m);
+    };
+    let outAt = -1;
+    let outEnd = -1;
+    let outParts: Buffer[] = [];
+    const flushOut = () => {
+      if (outParts.length === 0) return;
+      const bytes = outParts.length === 1 ? outParts[0]! : Buffer.concat(outParts);
+      outParts = [];
+      emit({ op: "out", stream: "out", at: outAt, bytes });
+      outAt = -1;
+      outEnd = -1;
+    };
     for (let i = carry.indexOf("\n"); i >= 0; i = carry.indexOf("\n")) {
       const line = carry.slice(0, i);
       carry = carry.slice(i + 1);
@@ -37,8 +51,23 @@ export function runnerWire(info: RunnerInfo): Wire {
       } catch {
         continue;
       }
-      for (const f of lines) f(message);
+      if (message?.op === "out" && message.stream === "out" && typeof message.at === "number" && typeof message.data === "string") {
+        const bytes = Buffer.from(message.data, "base64");
+        if (outParts.length > 0 && message.at === outEnd) {
+          outParts.push(bytes);
+          outEnd += bytes.length;
+        } else {
+          flushOut();
+          outAt = message.at;
+          outEnd = message.at + bytes.length;
+          outParts.push(bytes);
+        }
+        continue;
+      }
+      flushOut();
+      emit(message);
     }
+    flushOut();
   });
   socket.on("error", () => undefined);
   socket.on("close", () => {
@@ -74,8 +103,9 @@ export class TerminalLink {
   #take(m: any) {
     switch (m?.op) {
       case "out": {
-        if (m.stream !== "out" || typeof m.at !== "number" || typeof m.data !== "string") return;
-        const bytes = Buffer.from(m.data, "base64");
+        if (m.stream !== "out" || typeof m.at !== "number") return;
+        const bytes = Buffer.isBuffer(m.bytes) ? m.bytes : typeof m.data === "string" ? Buffer.from(m.data, "base64") : null;
+        if (bytes === null) return;
         this.#at = m.at + bytes.length;
         // Nothing kept: what is shown again comes from the screen.
         this.#send({ op: "ack", out: this.#at, err: 0 });
@@ -84,7 +114,10 @@ export class TerminalLink {
       }
       case "screen": {
         const ask = this.#asked.shift();
-        if (ask && typeof m.at === "number" && typeof m.data === "string") ask({ at: m.at, data: Buffer.from(m.data, "base64") });
+        if (ask && typeof m.at === "number" && typeof m.data === "string") {
+          const size = typeof m.cols === "number" && typeof m.rows === "number" ? { cols: m.cols, rows: m.rows } : {};
+          ask({ at: m.at, data: Buffer.from(m.data, "base64"), ...size });
+        }
         return;
       }
       case "error": {

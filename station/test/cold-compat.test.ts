@@ -24,7 +24,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { zstdDecompressSync } from "node:zlib";
-import { unpackedWhole } from "../src/read/packed.ts";
+import { unpackedWhole } from "./reference/packed.ts";
 import { packFile, packWorkspace, packed, restoreFile, restoreWorkspace, workspaceArchive, workspaceFile } from "../src/sessions/archive.ts";
 
 const binary = process.env.ARCHIVE_RS ?? join(import.meta.dirname, "archive-rs", "target", "release", "archive-rs");

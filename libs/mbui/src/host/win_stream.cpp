@@ -639,12 +639,16 @@ static void fed_dropped(Stream *s) {
   if (direct >= 0) route_acked(route, direct);
 }
 
-// Windows' H.264 decoder once on the GPU is told nothing more and never released: its going, or flushed and told its
-// streaming ends, resets the app's Direct3D device about 100 ms later (DXGI_ERROR_DEVICE_RESET, also on another thread,
-// the GPU idle or seconds on: an RTX 5080's, driver 621.12, 2026-11-04), every Present failing from then on and the
-// window's picture stopped. Kept as it is for the next stream of its size, which goes on with it from a key frame.
+// A decoder once streaming on the GPU (H.264's, H.265's or AV1's: `codec`) is told nothing more and never released:
+// H.264's going, or flushed and told its streaming ends, resets the app's Direct3D device about 100 ms later
+// (DXGI_ERROR_DEVICE_RESET, also on another thread, the GPU idle or seconds on: an RTX 5080's, driver 621.12,
+// 2026-11-04), every Present failing from then on and the window's picture stopped; H.265's leaves semaphore handles
+// behind in the process each time one is released (driver 621.24, 2026-11-15, #6541). Kept as it is by codec and size
+// for the next stream or config of that codec and size, which goes on with it from a key frame.
 struct H264Kept {
   IMFTransform *dec;
+  int codec;
+  LONGLONG next;
   UINT32 cw, ch, w, h, rows;
   int bt601, full;
 };
@@ -665,18 +669,20 @@ static void h264_keep(H264 *d) {
   }
   AcquireSRWLockExclusive(&h264_kept_lock);
   // (more than that: not kept, and still not released)
-  if (h264_nkept < H264_KEPT) h264_kept[h264_nkept++] = {d->dec, d->cw, d->ch, d->w, d->h, d->rows, d->bt601, d->full};
+  if (h264_nkept < H264_KEPT)
+    h264_kept[h264_nkept++] = {d->dec, d->codec, d->next, d->cw, d->ch, d->w, d->h, d->rows, d->bt601, d->full};
   ReleaseSRWLockExclusive(&h264_kept_lock);
 }
 
-// One kept of this size given to `d`: 1 here.
+// One kept of this codec and size given to `d`: 1 here.
 static int h264_kept_take(H264 *d, UINT32 w, UINT32 h) {
   int got = 0;
   AcquireSRWLockExclusive(&h264_kept_lock);
   for (int i = 0; i < h264_nkept && !got; i++) {
     H264Kept *k = &h264_kept[i];
-    if (k->cw != w || k->ch != h) continue;
+    if (k->codec != d->codec || k->cw != w || k->ch != h) continue;
     d->dec = k->dec;
+    if (k->next > d->next) d->next = k->next;
     d->w = k->w, d->h = k->h, d->rows = k->rows;
     d->bt601 = k->bt601, d->full = k->full;
     *k = h264_kept[--h264_nkept];
@@ -687,7 +693,7 @@ static int h264_kept_take(H264 *d, UINT32 w, UINT32 h) {
 }
 
 static void h264_stop(H264 *d) {
-  if (d->dec && d->gpu && d->streaming && d->codec == CODEC_H264) h264_keep(d);
+  if (d->dec && d->gpu && d->streaming) h264_keep(d);
   else if (d->dec) d->dec->Release();
   d->dec = NULL;
   d->streaming = 0;
@@ -843,9 +849,10 @@ static int h264_start(Stream *s, UINT32 w, UINT32 h) {
     if (FAILED(MFStartup(MF_VERSION, MFSTARTUP_LITE))) return 0;
     mf_started = 1;
   }
-  if (d->codec == CODEC_H264 && !InterlockedCompareExchange(&s->no_gpu, 0, 0) && h264_kept_take(d, w, h)) {
+  if (!InterlockedCompareExchange(&s->no_gpu, 0, 0) && h264_kept_take(d, w, h)) {
     d->gpu = d->streaming = 1;
-    fprintf(stdout, "win: stream %d: H.264 %ux%u decoded on the GPU (a decoder kept)\n", s->id, w, h);
+    fprintf(stdout, "win: stream %d: %s %ux%u decoded on the GPU (a decoder kept)\n", s->id, codec_name(d->codec), w,
+            h);
     fflush(stdout);
     return 1;
   }
@@ -909,7 +916,7 @@ static void h264_broken(Stream *s, HRESULT hr) {
   fed_dropped(s);
   say(s, "b");
   // (not to be taken up again, and on the GPU not released either: h264_keep)
-  if (d->gpu && d->codec == CODEC_H264) d->dec = NULL;
+  if (d->gpu) d->dec = NULL;
   h264_stop(d);
   h264_start(s, d->cw, d->ch);
 }

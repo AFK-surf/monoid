@@ -119,12 +119,14 @@ function vaultAsk(v: J): J | null {
     out.approvedTimeoutKind = get(approved, "kind");
     out.approvedTimeoutSeconds = get(approved, "seconds");
   }
-  // A request to keep a secret (secret_save): what kind, the account it is for, whether the person types it in.
+  // A request to keep a secret (secret_save): what kind, the account it is for, whether the person types it in (or
+  // signs in to a service for it: `oauth`).
   const kind = trimmed(get(get(v, "save"), "kind"));
   if (kind !== null) {
     const username = trimmed(get(get(v, "save"), "username"));
     const filename = trimmed(get(get(v, "save"), "filename"));
-    out.save = { kind, ...(username !== null ? { username } : {}), ...(filename !== null ? { filename } : {}), ...(get(get(v, "save"), "typed") === true ? { typed: true } : {}) };
+    const oauth = trimmed(get(get(v, "save"), "oauth"));
+    out.save = { kind, ...(username !== null ? { username } : {}), ...(filename !== null ? { filename } : {}), ...(get(get(v, "save"), "typed") === true ? { typed: true } : {}), ...(oauth !== null ? { oauth } : {}) };
   } else if (isObject(get(v, "describe")) && typeof get(get(v, "describe"), "name") === "string") {
     // A request to rename the item or change its about (secret_describe): as they would be, and its about as it was.
     const d = get(v, "describe");
@@ -209,7 +211,14 @@ export function decider(card: J, creator: J): string | null {
   return trimmed(get(card, "assignee")) ?? trimmed(get(creator, "email")) ?? trimmed(get(creator, "id"));
 }
 
+/// Whether an agent leads the row's chat (chat_create `for: "me"`, its station's `opener.led`): what it asks is its
+/// leader's to take up, so it waits for no person (the user, 2026-11-15).
+export function led(row: J): boolean {
+  return get(get(row, "opener"), "led") === true;
+}
+
 export function forViewer(row: J, me: J): J | null {
+  if (led(row)) return null;
   const d = asked(row);
   if (d === null || dismissed(d)) return null;
   const who = decider(d.card, get(row, "creator"));
@@ -232,7 +241,7 @@ export function askOf(row: J, d: J, me: J): J {
     .find((n) => typeof n === "string" && n.trim() !== "");
   const text = typeof need === "string" ? need.trim() : question(str(get(d.message, "text")) ?? "");
   const who = decider(d.card, get(row, "creator"));
-  return { seq: d.seq, card: ofRow(row) !== null, mine: who !== null && present.isViewer(me, who, []), text };
+  return { seq: d.seq, card: ofRow(row) !== null, mine: !led(row) && who !== null && present.isViewer(me, who, []), text };
 }
 
 export function asked(row: J): J | null {

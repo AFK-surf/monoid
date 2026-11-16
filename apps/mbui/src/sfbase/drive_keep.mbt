@@ -139,6 +139,18 @@ pub fn keep_bytes(
 }
 
 ///|
+/// Bytes kept on the device as a file named `name` (keep_bytes's), at a cause (a handler: a press, a frame grabbed):
+/// asked of the host then, what it says of it said as it says.
+pub fn keep_bytes_now(name : String, mime : String, bytes : Bytes) -> Unit {
+  let way = keep_way_of(name)
+  let (saved, failed) = keep_words(way)
+  match @ui.keep(name, mime, bytes, way~) {
+    Some(k) => keepings.push({ keep: k, name, saved, failed, then: fn(_) {  } })
+    None => toast_later(failed)
+  }
+}
+
+///|
 /// A drive's file read a part at a time (`drive.read`, drive_part each), each handed to `part` as it comes (false: no
 /// more wanted), its row's progress kept in dv_fetches meanwhile; `done` with None once it is all read (or `part`
 /// refused one), else the core's error. `row`: the row that shows how far, when not the file's own (a folder zipped).

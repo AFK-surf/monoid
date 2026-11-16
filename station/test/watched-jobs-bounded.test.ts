@@ -4,11 +4,12 @@ import { watchedJobs } from "../src/jobs/memory.ts";
 import { ProcessJobsBuilder } from "../src/jobs/process-jobs-builder.ts";
 import { PROCESS_JOBS } from "../src/store/process-jobs.ts";
 import { JOBS_RUNNING, Store } from "../src/store/store.ts";
+import { dbFile } from "./temp-dir.ts";
 
 test("memory, resources and the phone gate do not read queued jobs without a process group", async () => {
   const seen: number[] = [];
   for (const queued of [40, 400]) {
-    const store = Store.open(":memory:"), db = store.db;
+    const store = Store.open(dbFile("watched-jobs-")), db = store.db;
     let waiting = 0, observing = false;
     db.function("waiting_job_seen", (id) => { if (observing && String(id).startsWith("waiting-")) waiting++; return 1; });
     const observed = new Proxy(db, { get(target, property) {

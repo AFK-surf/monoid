@@ -12,6 +12,13 @@ pub(all) struct Read {
 }
 
 ///|
+/// The same topic as it stood: what derive(Eq) says, its version looked at first and its value last, the one JSON or
+/// equal (a value set again is mostly the one it was).
+pub impl Eq for Read with equal(a, b) {
+  a.version == b.version && a.error == b.error && @signals.same_value(a.value, b.value)
+}
+
+///|
 /// What the pages need of the app around them.
 pub(all) struct Core {
   /// the topic `name` with its params (the core's `subscribe`)
@@ -61,6 +68,10 @@ pub(all) struct Core {
   /// a web page to open (a sign-in's, Slack's): handed to the system's browser (@ui.open_url), said so where nothing
   /// took it
   open_link : (String) -> Unit
+  /// a sign-in to a service as the person, its token kept in their vault (添加 › Slack 账号, an agent's card asking for
+  /// one): by workspace, vault ("plain": the plain library), provider and the agent's request it answers ("" none);
+  /// `done` the item's name, "" where the web's own page finishes it, or why not ("cancelled": given up)
+  vault_oauth : (String, String, String, String, (Result[String, String]) -> Unit) -> Unit
   /// a page opened in the station's own browser (a sign-in's): its tab's screen in the viewer, by station and screen,
   /// gone back from by itself once the tab is gone (closed as the sign-in ends)
   open_screen : (String, String) -> Unit
@@ -71,8 +82,6 @@ pub(all) struct Core {
   bars : () -> (Array[Array[String]], Int)
   /// the bars changed (kept as the workspace's), the one shown
   set_bars : (Array[Array[String]], Int) -> Unit
-  /// a place's icon, 28 high in a colour (Station's the stations' glyph, one on)
-  place_icon : (@ui.Ctx, String, Int64) -> Unit
   /// whether usage statistics and error reports go out from this device (Crashes.reporting); None where nothing is
   /// sent anyway (no host takes them, a build without PostHog's key): no row then
   reporting : () -> Bool?
@@ -513,6 +522,7 @@ pub fn left(route : Route) -> Unit {
   match route {
     Archive => archive_reset()
     Connects(_) => connects_mine.val = false
+    Profiles("") => profiles_narrow_overview.set(false)
     Station(a) => station_parts.remove(a)
     NewProfile(a) =>
       match left_core.val {
@@ -545,6 +555,8 @@ pub fn left(route : Route) -> Unit {
 /// As at the start: nothing chosen, no sheet (tests).
 pub fn reset() -> Unit {
   archive_reset()
+  local_said_kept.val = None
+  profiles_narrow_overview.set(false)
   browser_tabs_seen.clear()
   tabs_made.val = 0
   page_rows.clear()
@@ -615,9 +627,9 @@ pub fn reset() -> Unit {
   kept_all.set(false)
   run_opened.clear()
   run_list.clear()
+  run_model_find.set("")
   new_profiles.clear()
   bar_adding.set(false)
-  bar_moves.clear()
   opened.plain.clear()
   opened.opening.clear()
   opened.shown.clear()
@@ -629,7 +641,7 @@ pub fn reset() -> Unit {
 /// Whether every frame makes `r`'s page once as nodes of the window's tree (narrow_made, pane_made, tape_made), as a page
 /// of the stack and as a place: its old view gone.
 pub fn made_once(r : Route) -> Bool {
-  r is (About | Changelog | Memories | Memory(_) | MemoryDoc(_, _, _) | Archiving | StationArchiving(_) | StationMove(_) | AutoDecisions | Usage | UsagePrices(_) | Shortcuts | Notifications | AutoCompletion | Permissions | AutoPolicy(_) | Appearance | LocalStation | Security | SecurityOpen | Workspace | VaultItems | Connects(_) | Connect(_, _) | Profile(_, _) | NewProfile(_) | Station(_))
+  r is (About | Changelog | Memories | Memory(_) | MemoryDoc(_, _, _) | Archiving | StationArchiving(_) | StationMove(_) | AutoDecisions | Usage | UsagePrices(_) | Shortcuts | Notifications | AutoCompletion | Permissions | AutoPolicy(_) | Appearance | LocalStation | Security | SecurityOpen | Workspace | Vault | VaultItems | VaultItem(_, _) | AdbShare(_) | KeptFiles | KeptChat(_, _) | RunSettings(_, _) | Connects(_) | Connect(_, _) | Profile(_, _) | NewProfile(_) | Station(_) | Me | Fonts | BarSettings)
 }
 
 ///|

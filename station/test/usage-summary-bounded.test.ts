@@ -5,10 +5,10 @@ import { join } from "node:path";
 import { constants, DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { Worker } from "node:worker_threads";
-import * as reads from "../src/read/store.ts";
+import * as reads from "./reference/store.ts";
 import { Store } from "../src/store/store.ts";
 import { installCompactUsage, installUsageSummaryChanges } from "../src/store/usage-compact.ts";
-import { installUsageSummaryBlocks, usageSummaryBlocksPending, usageSummaryBlocksStep } from "../src/store/usage-summary-blocks.ts";
+import { installUsageSummaryBlocks, usageSummaryBlocksPending, usageSummaryBlocksStep } from "./reference/backfill/usage-summary-blocks.ts";
 
 test("a cold usage summary does bounded work as more minutes contribute to the same days", async () => {
   const store = Store.open(":memory:");
@@ -542,7 +542,7 @@ test("the background worker resumes and accounts requested workspaces independen
       for (let minute = 0; minute < 40; minute++) insert.run(session, minute, scope);
     installUsageSummaryBlocks(store.db);
     usageSummaryBlocksStep(store.db, 3);
-    worker = new Worker(new URL("../src/usage/scope-worker.ts", import.meta.url), { workerData: { path, priority: store.backfillPriority } });
+    worker = new Worker(new URL("./workers/usage-scope-worker.ts", import.meta.url), { workerData: { path, priority: store.backfillPriority } });
     const wake = (scope?: string) => new Promise<{ done: boolean; error?: string }>((resolve, reject) => {
       const fail = (error: Error) => { worker!.off("message", success); reject(error); };
       const success = (answer: { done: boolean; error?: string }) => { worker!.off("error", fail); resolve(answer); };

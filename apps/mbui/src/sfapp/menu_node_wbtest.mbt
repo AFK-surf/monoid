@@ -510,3 +510,17 @@ test "大屏, keyboard and mouse: a menu presented beside what was never drawn: 
 fn menu_item_doing(label : String, done : Array[String], off? : Bool = false, heading? : Bool = false) -> @sf.MenuItem? {
   Some({ label, icon: "", danger: false, disabled: off, chosen: None, heading, select: fn() { done.push(label) } })
 }
+
+///|
+test "大屏, keyboard and mouse: a menu's rows go round as a Mac's: Up from the first lights the last, Down from the last the first" {
+  let chosen = []
+  let t = menu_of_three(chosen)
+  t.key(@ui.key_code_down)
+  t.key(@ui.key_code_up)
+  let up = t.focused().map(fn(s) { s.label })
+  t.key(@ui.key_code_down)
+  let down = t.focused().map(fn(s) { s.label })
+  t.key(@ui.key_code_enter)
+  t.run_for(@ui.move_most_ms)
+  assert_eq((up, down, chosen), (Some("三项"), Some("一项"), [0]))
+}

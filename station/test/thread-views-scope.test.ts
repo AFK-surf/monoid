@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { threads } from "../src/read/sessions.ts";
-import { firstText, listThreads, makeStore } from "../src/read/store.ts";
+import { threads } from "./reference/sessions.ts";
+import { firstText, listThreads, makeStore } from "./reference/store.ts";
 import { installLegacyEdits } from "../src/store/legacy-edits-build.ts";
 import { Store } from "../src/store/store.ts";
 

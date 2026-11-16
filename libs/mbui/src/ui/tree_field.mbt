@@ -22,7 +22,8 @@ priv struct TreeField {
   hint : () -> String
   shorter : Array[String]
   trim : Bool
-  submitted : (String) -> Unit
+  /// what is told its words as they are given up (Enter); none: that Enter presses its layer's default (View::default_press)
+  submitted : ((String) -> Unit)?
   pasted : (String) -> Unit
   /// what is told files pasted into it (⌘V with files or a picture on the clipboard), where it takes them
   files : ((Array[(String, Bytes)]) -> Unit)?
@@ -70,7 +71,11 @@ let tree_fields_rev : Ref[Int] = Ref(0)
 fn view_words_found(d : @view.Drawn) -> String {
   match tree_fields.get(d.id) {
     Some(tf) => (tf.hint)()
-    None => view_words_set(d.words, d.words_look, d.words_breaks)
+    None =>
+      match tree_terminals.get(d.id) {
+        Some(tt) => tt.visible_text()
+        None => view_words_set(d.words, d.words_look, d.words_breaks)
+      }
   }
 }
 
@@ -81,7 +86,8 @@ fn view_words_found(d : @view.Drawn) -> String {
 /// it; `files`: what it is told files pasted into it, where it takes them, as Ctx::editor's `files` and
 /// Ctx::field_files), as tall as
 /// its words lay out between `min_lines` (one unless said) and `max_lines` (Field::laid), read out as a field of its words. `submitted`: what
-/// is told its words as they are given up (Enter, where it gives them up), once, at that key's moment; `pasted`, a
+/// is told its words as they are given up (Enter, where it gives them up), once, at that key's moment (none said:
+/// that Enter presses the default of the layer it is in, View::default_press); `pasted`, a
 /// paste of `paste_limit` characters or more, not put in, once, at that paste's; `edited`: its words as the person's
 /// edit changes them (a key, the input method's words, a paste, an undo: Ctx::editor's `on_change`), once, at that
 /// edit's moment, never as the app puts words in it (Field::set, Field::follow). `placeholder_by`: its placeholder as
@@ -107,7 +113,7 @@ pub fn field(
   secret? : Bool = false,
   words? : Bool = false,
   look? : (String) -> (String, Array[(Int, Int, Int64)]),
-  submitted? : (String) -> Unit = fn(_) {  },
+  submitted? : (String) -> Unit,
   pasted? : (String) -> Unit = fn(_) {  },
   edited? : (String) -> Unit,
   files? : (Array[(String, Bytes)]) -> Unit,
@@ -642,12 +648,12 @@ fn tree_field_let_go(id : @view.NodeId, x : Double, y : Double, up : Bool) -> Un
 /// reader's words, a paste come): what its paint reads (Ctx::paint_tree_field), so the frame after paints it again,
 /// whatever else that frame does.
 // kept across runs: only counted on
-let tree_fields_drawn : @signals.Signal[Int] = @signals.signal(0)
+let tree_fields_drawn : Ref[@signals.Signal[Int]] = Ref(@signals.signal(0))
 
 ///|
 /// A field of the tree's changed by what is its own: painted again from the next frame (tree_fields_drawn).
 fn tree_field_redraw() -> Unit {
-  tree_fields_drawn.set(tree_fields_drawn.untracked() + 1)
+  tree_fields_drawn.val.set(tree_fields_drawn.val.untracked() + 1)
   h_frame_owed()
 }
 
@@ -916,7 +922,15 @@ fn tree_field_told(tf : TreeField) -> Unit {
   match tf.st.submitted {
     Some(words) => {
       tf.st.submitted = None
-      (tf.submitted)(words)
+      match tf.submitted {
+        Some(f) => f(words)
+        // (none takes them: the Enter that gave them up the default's of its layer, as AppKit's field's Return is)
+        None =>
+          match view_app.val {
+            Some(tree) => view_default_pressed(tree, Some(tf.view.id())) |> ignore
+            None => ()
+          }
+      }
     }
     None => ()
   }
@@ -985,7 +999,7 @@ fn Ctx::paint_tree_field(
   let fb = self.tree_field_box(id, tf, ux, uy, w, h)
   let st = tf.st
   // (painted again as what is its own changes it (tree_field_redraw), and with the clock while its words are flung on)
-  tree_fields_drawn.get() |> ignore
+  tree_fields_drawn.val.get() |> ignore
   // (more lines than it shows: its words' scroll brought to this frame as an old view's field's is as it is built
   // (Ctx::editor: Ctx::scroll_state, its fling stepped, its bar's and its fling's motion told), kept as this frame's;
   // painted again with the clock while it is flung)
@@ -995,7 +1009,7 @@ fn Ctx::paint_tree_field(
     sw.theme = self.theme
     sw.built_frame = self.frame_no
     if sw.rest >= 0.0 {
-      frame_clock.get() |> ignore
+      frame_clock.val.get() |> ignore
     }
   }
   st.placed_x = ux

@@ -2,11 +2,16 @@
 // bots are in as the core offers them, one picked with its note, relayed there.
 
 ///|
-/// 「那里由 … 回复」 at the right under the place picked: its end in line with the place's note's (更换), right of its name.
+/// 「那里由 … 回复」 (and 换一个) at the right under the place picked: its end in line with the place's note's (更换), right of
+/// its name.
 fn relay_via_at_right(t : @ui.Tester) -> Unit raise {
   let (name_x, _, _, _) = t.rect_of("#dev").unwrap()
   let (via_x, _, _, _) = t.rect_of("那里由").unwrap()
-  let (end_x, _, end_w, _) = t.rect_of("回复").unwrap()
+  // (its end: 换一个 where the place has other bots, else 回复)
+  let (end_x, _, end_w, _) = match t.rect_of("换一个") {
+    Some(r) => r
+    None => t.rect_of("回复").unwrap()
+  }
   let change = match t.rect_of("更换") {
     Some(r) => r
     None => t.rect_of("新 thread · 更换").unwrap()

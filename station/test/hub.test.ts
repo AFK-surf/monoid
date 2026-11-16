@@ -9,9 +9,8 @@ import { test } from "node:test";
 import { GO_ON_AFTER_AUTH, GO_ON_AFTER_FAILED, GO_ON_AFTER_OVERLOADED, GO_ON_AFTER_REFILL, GO_ON_AFTER_SPENT, GO_ON_AFTER_UNANSWERED, NUDGE, TOOLS_LOST } from "../src/agents/instructions.ts";
 import { retryable } from "../src/sessions/actor.ts";
 import { latest } from "../src/agents/migrations.ts";
-import { classifyResult } from "../src/agents/claude.ts";
-import { claudeProject, homesFirst, transcriptPaths } from "../src/read/transcript.ts";
-import { marksDir, stateOf } from "../src/read/transcripts.ts";
+import { claudeProject, homesFirst, transcriptPaths } from "./reference/transcript-paths.ts";
+import { marksDir, stateOf } from "./reference/transcripts.ts";
 import { hubConfig } from "../src/sessions/config.ts";
 import { sessionKey } from "../src/sessions/hub.ts";
 import { addToThread, autoArchive, archive, archiveBy, archiveChat, bindSingle, configure, deleteSession, newSession, openChat, say as sayIn } from "../src/sessions/lifecycle.ts";
@@ -727,24 +726,21 @@ test("a turn that cannot start is not left starting, and stop clears what is sti
   await r.accept(m);
   await settle();
   const key = sessionKey("cl", "C1", m.threadTs);
-  const phase = () => {
-    let said: unknown = "untold";
-    const id = r.hub.live.subscribe(key, 0, 0, (l: any) => {
-      if (l.type === "steps") said = l.phase;
-    });
-    r.hub.live.unsubscribe(key, id);
-    return said;
+  // (what a stream opening is told of it now: its steps and what is said to be under way)
+  const phase = async () => {
+    await r.hub.live.idle();
+    return (((await r.hub.live.nowOf([key]))[key] ?? []).find((l: any) => l.type === "steps") as any)?.phase;
   };
-  assert.equal(phase(), null, "the failed start ended what was said to be starting");
+  assert.equal(await phase(), null, "the failed start ended what was said to be starting");
   assert.equal(r.hub.processState(key), "cold");
   // What the station said of it is its own, in English: not said; that it could not start is.
   assert.equal(r.chat.lastText(), "⚠️ 无法启动 agent\n\n```\nthe station this subscription is signed in on did not lend it: station mesh is not ready\n```");
   // Said to be under way some other way: stop, with nothing running, clears it.
   r.hub.live.event(key, { kind: "phase", phase: "starting" });
-  assert.notEqual(phase(), null);
+  assert.notEqual(await phase(), null);
   await r.hub.stop(key);
   await settle();
-  assert.equal(phase(), null);
+  assert.equal(await phase(), null);
   await r.close();
 });
 
@@ -2439,6 +2435,38 @@ test("a runtime updated from the pages: its sessions' processes end now if idle,
   await r.close();
 });
 
+test("a profile signed in anew: its sessions' processes end now if idle, else before their next turn; another profile's are left", async () => {
+  const r = new Rig();
+  const m = say("<@UBOT> fix the build");
+  await r.accept(m);
+  await settle();
+  const key = sessionKey("cl", "C1", m.threadTs);
+  assert.equal(r.session(key).profile, "cc");
+  const running = r.claude.last();
+  // Another profile signed in: nothing of this session's ends.
+  r.hub.profileLoginChanged("cc2");
+  // Signed in while a turn runs: that turn goes on; its process ends before the next, which starts on the new sign-in.
+  r.hub.profileLoginChanged("cc");
+  await settle();
+  assert.ok(!running.disposed && running.aborts === 0, "the running turn is not cut off");
+  await r.call(key, "chat_post", { to: `C1/${m.threadTs}`, text: "done", kind: "final" });
+  running.complete();
+  await settle();
+  await r.accept({ ...say("<@UBOT> once more"), threadTs: m.threadTs });
+  await settle();
+  assert.ok(running.disposed, "its process ended before the next turn");
+  const next = r.claude.last();
+  assert.notEqual(next, running);
+  await r.call(key, "chat_post", { to: `C1/${m.threadTs}`, text: "done", kind: "final" });
+  next.complete();
+  await settle();
+  // Idle: it ends at once.
+  r.hub.profileLoginChanged("cc");
+  await settle();
+  assert.ok(next.disposed);
+  await r.close();
+});
+
 test("a deleted profile's sessions go on on another, and stop when no other can run them", async () => {
   const r = new Rig();
   const m = say("<@UBOT> fix the build");
@@ -2602,7 +2630,7 @@ test("a turn that runs out of allowance goes on on another account, or once the 
     raw.profiles[0].models = ["opus"];
     raw.profiles.push({ ...raw.profiles[0], id: "cc2", name: "second" });
   });
-  const spent = (text: string) => ({ kind: "failed" as const, reason: classifyResult(text), message: text });
+  const spent = (text: string) => ({ kind: "failed" as const, reason: "rate_limit" as const, message: text });
   const m = message();
   await r.accept(m);
   await settle();
@@ -2660,7 +2688,7 @@ test("a model's own limit is said as the model's, not the account's: the quota l
   await r.accept(m);
   await settle();
   const agent = r.claude.last();
-  agent.end({ kind: "failed", reason: classifyResult(said), message: said });
+  agent.end({ kind: "failed", reason: "rate_limit", message: said });
   await settle();
   assert.equal(r.chat.lastText(), `⚠️ Fable 自身限额已用完（非账号额度），恢复后自动继续\n\n\`\`\`\n${said}\n\`\`\``);
   // Woken meanwhile, it runs into it again: said once, as an account's is.
@@ -2678,7 +2706,7 @@ test("a model's own limit passes over that model alone on its account: its other
     raw.profiles.push({ ...raw.profiles[0], id: "cc2", name: "second" });
   });
   const said = "You've reached your Opus limit. Switch to another model, or manage usage credits at https://claude.ai/settings/usage?from=cc_cli_limit_message, to continue.";
-  const limited = { kind: "failed" as const, reason: classifyResult(said), message: said };
+  const limited = { kind: "failed" as const, reason: "rate_limit" as const, message: said };
   const claude = () => r.config.profiles.filter((p) => p.runtime === "claude");
   await r.accept(message());
   await settle();
@@ -2731,7 +2759,6 @@ test("a failure whose words name no limit, where the allowance asked again shows
   const opus = { label: "每周 · Opus", usedPercent: 100, resetsAt: now + week, minutes: 10080, scope: "Opus" };
   r.hub.accounts.setHealth((id) => (read && id === "cc" ? { account: "a1", quota: { state: "ok", windows: [{ label: "5 小时", usedPercent: 10, resetsAt: now + 3_600_000, minutes: 300 }], scoped: [opus], detail: null, checkedAt: now } } : {}));
   const said = "Opus is out of its week: switch to another model to continue.";
-  assert.equal(classifyResult(said), "model");
   const m = message();
   await r.accept(m);
   await settle();
@@ -2739,7 +2766,7 @@ test("a failure whose words name no limit, where the allowance asked again shows
   const key = first.options.route;
   const thread = r.thread("C1", m.threadTs);
   assert.equal(first.options.profile.id, "cc");
-  first.end({ kind: "failed", reason: classifyResult(said), message: said });
+  first.end({ kind: "failed", reason: "model", message: said });
   await settle();
   assert.deepEqual(asked, ["cc"]);
   // Not moved by itself: said what the allowance shows, the notice bound to the turn, which 重试 no longer takes.
@@ -2813,7 +2840,7 @@ test("an account spent with none to move to is said once; what wakes it waits fo
   const HOUR = 60 * 60 * 1000;
   const now = time.clock.currentTimeMillisUnsafe();
   r.hub.accounts.setHealth(() => ({ quota: { state: "ok", windows: [{ label: "5h", usedPercent: 100, resetsAt: now + 2 * HOUR, minutes: 300 }], detail: null, checkedAt: now } }));
-  const spent = { kind: "failed" as const, reason: classifyResult("usage limit reached"), message: "You've hit your limit · resets 5pm" };
+  const spent = { kind: "failed" as const, reason: "rate_limit" as const, message: "You've hit your limit · resets 5pm" };
   const said = () => r.chat.texts().filter((t) => t.includes("额度已用完"));
   const m = message();
   await r.accept(m);
@@ -3094,7 +3121,7 @@ test("a model at capacity is no account's limit: said once, tried again after lo
   const r = new Rig({ clock: time.clock });
   r.edit((raw) => raw.profiles.push({ ...raw.profiles[0], id: "cc2", name: "second" }));
   const text = "Selected model is at capacity. Please try a different model.";
-  const full = { kind: "failed" as const, reason: classifyResult(text), message: text };
+  const full = { kind: "failed" as const, reason: "overloaded" as const, message: text };
   const said = () => r.chat.texts().filter((t) => t.includes("模型满载"));
   const m = message();
   await r.accept(m);
@@ -3200,7 +3227,7 @@ test("taken up by the next station, a process runs on the account it was started
   assert.ok(busyTaken.options.profile.id === "cc" && idleTaken.options.profile.id === "cc", "taken up where their processes run");
   assert.ok(r.session(busyKey).profile === "cc" && r.session(idleKey).profile === "cc", "not moved by being taken up");
   // The running turn runs into the first account's allowance: the second takes it on.
-  busyTaken.end({ kind: "failed", reason: classifyResult("usage limit reached"), message: "You've hit your weekly limit · resets Oct 26 at 9pm" });
+  busyTaken.end({ kind: "failed", reason: "rate_limit" as const, message: "You've hit your weekly limit · resets Oct 26 at 9pm" });
   await settle();
   assert.ok(busyTaken.disposed);
   const busyNext = claude.last();
@@ -3264,7 +3291,7 @@ test("on another account a conversation goes on in a new runtime session, its hi
     raw.profiles[0].models = ["opus"];
     raw.profiles.push({ ...raw.profiles[0], id: "cc2", name: "second" });
   });
-  const spent = { kind: "failed" as const, reason: classifyResult("usage limit reached"), message: "usage limit reached" };
+  const spent = { kind: "failed" as const, reason: "rate_limit" as const, message: "usage limit reached" };
   // The profiles share a home here, so their transcripts, in the project of the session's workspace.
   const transcript = (id: string, said: string, context: number) => {
     const path = join(r.config.profiles[0]!.home, "projects", claudeProject(r.session(key).workspace)!, `${id}.jsonl`);
@@ -3529,9 +3556,9 @@ function machine(root: string, project: string) {
 }
 
 test("a session the machine kept goes on in a chat, run in its own directory, with what was said in it", async () => {
-  const { find } = await import("../src/read/machine.ts");
+  const { find } = await import("./reference/machine.ts");
   const { continueMachineSession } = await import("../src/sessions/lifecycle.ts");
-  const { readTimeline } = await import("../src/read/transcript.ts");
+  const { readTimeline } = await import("./reference/transcript.ts");
   const r = new Rig();
   const root = join(r.dir, "machine");
   const project = join(root, "app");
@@ -3588,7 +3615,7 @@ test("a session the machine kept goes on in a chat, run in its own directory, wi
 });
 
 test("a continued session that cannot be resumed is told to read the terminal's own transcript", async () => {
-  const { find } = await import("../src/read/machine.ts");
+  const { find } = await import("./reference/machine.ts");
   const { continueMachineSession } = await import("../src/sessions/lifecycle.ts");
   const r = new Rig();
   const root = join(r.dir, "machine");
@@ -3613,7 +3640,7 @@ test("a continued session that cannot be resumed is told to read the terminal's 
 // root reads a directory whatever its mode says.
 // Windows has no chmod that keeps the owner out.
 test("a directory the station may not read is told as that, not left to the agent to fail in", { skip: process.getuid?.() === 0 || process.platform === "win32" }, async () => {
-  const { find } = await import("../src/read/machine.ts");
+  const { find } = await import("./reference/machine.ts");
   const { continueMachineSession } = await import("../src/sessions/lifecycle.ts");
   const r = new Rig();
   const root = join(r.dir, "machine");
@@ -3643,7 +3670,7 @@ test("a directory the station may not read is told as that, not left to the agen
 });
 
 test("a session whose directory is gone is not continued", async () => {
-  const { find } = await import("../src/read/machine.ts");
+  const { find } = await import("./reference/machine.ts");
   const { continueMachineSession } = await import("../src/sessions/lifecycle.ts");
   const r = new Rig();
   const root = join(r.dir, "machine");

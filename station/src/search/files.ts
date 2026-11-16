@@ -5,11 +5,11 @@
 // data is never found, and the person's own mail, messages, calendars, contacts, notes and photos only where the station
 // says so (config.json `search.personal`).
 import { spawn } from "node:child_process";
-import { type Dirent } from "node:fs";
-import { readFile, readdir, stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, sep } from "node:path";
 import { wall } from "../ops/fibers.ts";
+import { type Visit, walkBounded } from "../ops/walk.ts";
 import { platform } from "../platform/index.ts";
 import { protectedTop } from "../drive/fs.ts";
 import type { Asker, Group, Hit } from "./match.ts";
@@ -132,51 +132,45 @@ const TEXT_MAX = 256 * 1024;
 /// How long a walk may take.
 export const WALK_MS = 3_000;
 
+/// How deep below a top a walk goes, and how many entries it lists at most.
+export const WALK_DEPTH = 16;
+export const WALK_ENTRIES = 200_000;
+
 /// The files and folders under `tops` whose name has every word, or (a small text file) whose name and words have them:
 /// a folder at a time, the nearest the top first, until `most` are found or `ms` is up (`left`: some were not reached).
+/// Bounded as every walk of the station's (ops/walk.ts): on each top's own file system (a share or a disk mounted in the
+/// home is not gone into), no link followed, at most WALK_DEPTH deep and WALK_ENTRIES entries.
 export async function walk(tops: string[], words: string[], options: { skip: string[]; most: number; ms: number; now: () => number; signal?: AbortSignal }): Promise<{ paths: string[]; left: boolean }> {
-  const until = options.now() + options.ms;
   const skipped = (p: string) => options.skip.some((d) => under(p, d));
   const has = (text: string) => {
     const lower = text.toLowerCase();
     return words.every((w) => lower.includes(w));
   };
-  const folders = [...tops];
   const paths: string[] = [];
-  while (folders.length > 0) {
-    if (paths.length >= options.most) return { paths, left: true };
-    if (options.now() > until || options.signal?.aborted) return { paths, left: true };
-    const dir = folders.shift()!;
-    let names: Dirent[];
+  const walked = await walkBounded(tops, async (d): Promise<Visit> => {
+    if (d.depth === 0) return;
+    if (paths.length >= options.most) return "stop";
+    if (d.name.startsWith(".")) return "skip";
+    const path = d.path;
+    if (skipped(path)) return "skip";
+    if (d.directory) {
+      if (has(d.name)) paths.push(path);
+      return SKIPPED.has(d.name) ? "skip" : undefined;
+    }
+    if (!d.file) return;
+    if (has(d.name)) {
+      paths.push(path);
+      return;
+    }
+    if (!TEXTS.test(d.name)) return;
     try {
-      names = await readdir(dir, { withFileTypes: true });
+      if ((await stat(path)).size > TEXT_MAX) return;
+      if (has(`${d.name}\n${await readFile(path, "utf8")}`)) paths.push(path);
     } catch {
-      continue;
+      // Gone, or not readable: not found.
     }
-    for (const d of names) {
-      if (d.name.startsWith(".")) continue;
-      const path = join(dir, d.name);
-      if (skipped(path)) continue;
-      if (d.isDirectory()) {
-        if (!SKIPPED.has(d.name)) folders.push(path);
-        if (has(d.name)) paths.push(path);
-        continue;
-      }
-      if (!d.isFile()) continue;
-      if (has(d.name)) {
-        paths.push(path);
-        continue;
-      }
-      if (!TEXTS.test(d.name)) continue;
-      try {
-        if ((await stat(path)).size > TEXT_MAX) continue;
-        if (has(`${d.name}\n${await readFile(path, "utf8")}`)) paths.push(path);
-      } catch {
-        // Gone, or not readable: not found.
-      }
-    }
-  }
-  return { paths, left: false };
+  }, { followRoot: true, maxDepth: WALK_DEPTH, maxEntries: WALK_ENTRIES, maxDurationMs: options.ms, now: options.now, ...(options.signal ? { signal: options.signal } : {}) });
+  return { paths, left: walked.truncated && walked.reason !== "depth" || paths.length >= options.most };
 }
 
 export class FileSearch {

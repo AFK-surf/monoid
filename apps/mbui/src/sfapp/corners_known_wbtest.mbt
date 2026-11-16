@@ -25,6 +25,14 @@ let corners_everywhere_known : Map[String, Int] = {
   // words' and the window's, no place it is stood at: the rule holds what does not scroll to the corner, and nothing
   // here stands it elsewhere. Gone as the page's height is any other (English's has none).
   known["touch-zh lock-security"] = 3
+  // 密钥 with a vault waiting to be keyed anew, in the tablet's window, in English: the rail's one, off the window's
+  // side as the page shows (made as nodes: its old view was not swept).
+  known["touch-en settings-vault-waits"] = 1
+  // The same in Chinese: the rail's one, and its page, which does not fill its panel, ending with 删除此库's card 26 over
+  // the panel's foot, 16 in, its foot corners where the panel's 42 would want them 16 (全部密钥 a card of its own over
+  // how it keeps its secrets, as its old view had it). Where it ends is its words' and the window's, as 安全's above:
+  // gone as the page's height is any other (English's has none).
+  known["touch-zh settings-vault-waits"] = 3
   // A request for the phone waiting (chat-phone-lacks, swept since 2026-11-11; the same card as chat-phone's, on main
   // unswept): its length's chooser, the last of its answer's row, stands in the card's foot end corner off concentric
   // with it where its words are long (闲置 1 小时后失效 on a phone; Until idle for 1 hour wherever English is), as the
@@ -36,6 +44,12 @@ let corners_everywhere_known : Map[String, Int] = {
   known["tablet-en chat-phone-lacks"] = 1
   known["wide-en chat-phone-lacks"] = 2
   known["wide-win-en chat-phone-lacks"] = 2
+  // The board in a Windows window's 大屏, its sidebar closed (sfdesk's place_bare_now): the rail alone at the window's
+  // corners, round as it is wide (21) 6 in where the window's are 8 round, its top and foot ends and its dock's: the
+  // frame's for every place without a sidebar (place-connects and place-usage have the same 4 there, not swept), not
+  // the board's.
+  known["wide-win-zh board"] = 4
+  known["wide-win-en board"] = 4
   known
 }
 
@@ -50,7 +64,7 @@ let corners_everywhere_known : Map[String, Int] = {
 let corners_tape_rail : Array[String] = [
   // (a station's terminals among its screens, a terminal's page over the frame: the rail on the tape under them)
   "settings-station-terminals", "terminal", "terminal-taken",
-  "webdemo", "home", "home-bars", "home-jobs", "home-sheet", "home-news", "new-workspace", "new-workspace-code", "rail-menu",
+  "webdemo", "home", "board", "home-bars", "home-jobs", "home-sheet", "home-news", "new-workspace", "new-workspace-code", "rail-menu",
   "home-station-updates", "station-updates", "home-station-updates-app", "station-updates-app", "place", "switcher", "switcher-found", "keys-dialog", "search", "search-jobs", "search-results", "chat", "chat-agent",
   "chat-agent-unsaid", "chat-answering", "chat-attach", "chat-attach-row", "chat-cards", "chat-compose",
   "chat-download", "chat-failed", "chat-feedback", "chat-image-coming", "chat-file-links", "chat-find", "chat-flash", "chat-flash-mine", "chat-flash-notice",
@@ -85,7 +99,7 @@ let corners_tape_rail : Array[String] = [
   "screen-not-drivable", "screen-outdated", "screen-pages", "screen-read-only", "screen-reconnecting", "screen-trackpad",
   "screen-trackpad-command", "screen-user-pages", "screen-user-tabs", "screen-windows", "screen-window", "settings-home", "settings-appearance", "settings-me", "settings-me-reading",
   "settings-workspace", "settings-security", "settings-vault", "settings-vault-items", "settings-vault-item",
-  "settings-stations", "settings-station", "settings-station-offline", "settings-station-env",
+  "settings-stations", "settings-stations-unprotected", "settings-station", "settings-station-unprotected", "settings-station-offline", "settings-station-env",
   "settings-station-processes", "settings-station-mark", "settings-station-lower", "settings-station-versions",
   "settings-station-updated",
   "settings-station-network", "settings-station-copies", "settings-station-copies-alone", "settings-station-restore", "settings-station-restore-offer",
@@ -98,11 +112,11 @@ let corners_tape_rail : Array[String] = [
   "settings-profiles", "settings-profiles-monthly", "settings-profiles-fable", "settings-profiles-own3",
   "settings-profiles-week-fable", "settings-profiles-several", "settings-profile", "settings-profile-fable", "settings-profile-own3",
   "settings-profile-week-fable", "settings-profile-quota", "settings-profile-quota-kinds",
-  "settings-profile-lower", "settings-profile-login", "settings-profile-login-failed",
+  "settings-profile-lower", "settings-profile-unshareable", "settings-profile-login", "settings-profile-login-failed",
   "settings-profile-quota-failed", "settings-profile-blocked", "settings-profile-signin", "settings-profile-key", "settings-profile-copy",
   "settings-new-profile", "settings-new-profile-stations", "settings-new-profile-key", "settings-connects", "settings-connect", "settings-connect-menu", "settings-connect-mode",
   "settings-connect-run", "settings-new-connect", "settings-new-connect-platform", "settings-new-connect-scan",
-  "settings-new-connect-app", "settings-new-connect-comma", "settings-connect-comma", "settings-connect-feishu", "settings-slack-app", "settings-memory", "settings-memory-doc", "settings-usage",
+  "settings-new-connect-app", "settings-new-connect-comma", "settings-connect-comma", "settings-connect-feishu", "settings-new-connect-platform-group", "settings-new-connect-group", "settings-connect-group", "settings-slack-app", "settings-memory", "settings-memory-doc", "settings-usage",
   "settings-archive", "settings-kept", "settings-kept-many", "settings-vault-off", "settings-vault-plain",
   "settings-vault-waits", "settings-vault-words", "settings-vault-add", "settings-vault-editor", "settings-vault-recover",
   "settings-lock-prompt", "settings-add-people", "settings-workspace-mark", "settings-local-fonts",
@@ -136,18 +150,14 @@ let corners_outgrown_known : Map[String, Int] = Map([])
 /// icon's button beside it 32. And what old views hosted in the window's tree show, not measured till the spacing rules
 /// took the tree's nodes in each after its parent (2026-11-14): 屏幕's pages in the wide windows, a tab's × 40 beside
 /// its tabs' 36 (their address field 36 beside 后退's 40 till it was as high, 2026-11-15); a chat's 任务 beside it in the
-/// wide windows.
+/// wide windows till it was made of nodes (2026-11-15).
 let corners_heights_known : Map[String, Int] = Map([
-  ("wide-en chat-jobs-side", 1),
   ("wide-en screen-user-pages", 1),
   ("wide-en screen-user-tabs", 1),
-  ("wide-win-en chat-jobs-side", 1),
   ("wide-win-en screen-user-pages", 1),
   ("wide-win-en screen-user-tabs", 1),
-  ("wide-win-zh chat-jobs-side", 1),
   ("wide-win-zh screen-user-pages", 1),
   ("wide-win-zh screen-user-tabs", 1),
-  ("wide-zh chat-jobs-side", 1),
   ("wide-zh screen-user-pages", 1),
   ("wide-zh screen-user-tabs", 1),
   ("wide-zh settings-connects", 1),
@@ -165,10 +175,8 @@ let corners_heights_known : Map[String, Int] = Map([
 /// file's card in a chat (published files), a found message in the outline, 决策's chevron, a run's model in its
 /// history's details (its icon and chevron). And what old views hosted in the window's tree show, measured once the
 /// rules took the tree's nodes in each after its parent (#6294, 2026-11-15): a chat's files and references, its
-/// agent's card, 文件's rows, a station's settings, 搜索's results, a login's fill.
+/// agent's card, 文件's rows, a station's settings, a login's fill.
 let corners_first_line_known : Map[String, Int] = Map([
-  ("phone-en search-jobs", 3),
-  ("phone-zh search-jobs", 3),
   ("phone-en history-details", 2),
   ("phone-zh history-details", 2),
   ("desk-en newchat-preset-new-browse", 2),
@@ -182,12 +190,16 @@ let corners_first_line_known : Map[String, Int] = Map([
   ("phone-en settings-new-connect-app", 2),
   ("phone-en settings-new-connect-comma", 2),
   ("phone-en settings-new-connect-platform", 2),
+  ("phone-en settings-new-connect-platform-group", 2),
+  ("phone-en settings-new-connect-group", 2),
   ("phone-en settings-new-connect-scan", 2),
   ("phone-zh settings-connects", 2),
   ("phone-zh settings-new-connect", 2),
   ("phone-zh settings-new-connect-app", 2),
   ("phone-zh settings-new-connect-comma", 2),
   ("phone-zh settings-new-connect-platform", 2),
+  ("phone-zh settings-new-connect-platform-group", 2),
+  ("phone-zh settings-new-connect-group", 2),
   ("phone-zh settings-new-connect-scan", 2),
   ("tablet-en chat-outline-find", 1),
   ("tablet-en chat-publish", 2),
@@ -197,6 +209,8 @@ let corners_first_line_known : Map[String, Int] = Map([
   ("tablet-en settings-new-connect-app", 2),
   ("tablet-en settings-new-connect-comma", 2),
   ("tablet-en settings-new-connect-platform", 2),
+  ("tablet-en settings-new-connect-platform-group", 2),
+  ("tablet-en settings-new-connect-group", 2),
   ("tablet-en settings-new-connect-scan", 2),
   ("tablet-en settings-stations-command", 3),
   ("tablet-zh chat-outline-find", 1),
@@ -207,6 +221,8 @@ let corners_first_line_known : Map[String, Int] = Map([
   ("tablet-zh settings-new-connect-app", 2),
   ("tablet-zh settings-new-connect-comma", 2),
   ("tablet-zh settings-new-connect-platform", 2),
+  ("tablet-zh settings-new-connect-platform-group", 2),
+  ("tablet-zh settings-new-connect-group", 2),
   ("tablet-zh settings-new-connect-scan", 2),
   ("touch-en chat-outline-find", 1),
   ("touch-en chat-publish", 2),
@@ -222,6 +238,8 @@ let corners_first_line_known : Map[String, Int] = Map([
   ("wide-en settings-new-connect-app", 2),
   ("wide-en settings-new-connect-comma", 2),
   ("wide-en settings-new-connect-platform", 2),
+  ("wide-en settings-new-connect-platform-group", 2),
+  ("wide-en settings-new-connect-group", 2),
   ("wide-en settings-new-connect-scan", 2),
   ("wide-en settings-stations-command", 3),
   ("wide-win-en chat-publish", 2),
@@ -231,6 +249,8 @@ let corners_first_line_known : Map[String, Int] = Map([
   ("wide-win-en settings-new-connect-app", 2),
   ("wide-win-en settings-new-connect-comma", 2),
   ("wide-win-en settings-new-connect-platform", 2),
+  ("wide-win-en settings-new-connect-platform-group", 2),
+  ("wide-win-en settings-new-connect-group", 2),
   ("wide-win-en settings-new-connect-scan", 2),
   ("wide-win-en settings-stations-command", 3),
   ("wide-win-zh chat-publish", 2),
@@ -240,6 +260,8 @@ let corners_first_line_known : Map[String, Int] = Map([
   ("wide-win-zh settings-new-connect-app", 2),
   ("wide-win-zh settings-new-connect-comma", 2),
   ("wide-win-zh settings-new-connect-platform", 2),
+  ("wide-win-zh settings-new-connect-platform-group", 2),
+  ("wide-win-zh settings-new-connect-group", 2),
   ("wide-win-zh settings-new-connect-scan", 2),
   ("wide-zh chat-publish", 2),
   ("wide-zh newchat-preset-new-browse", 2),
@@ -248,18 +270,12 @@ let corners_first_line_known : Map[String, Int] = Map([
   ("wide-zh settings-new-connect-app", 2),
   ("wide-zh settings-new-connect-comma", 2),
   ("wide-zh settings-new-connect-platform", 2),
+  ("wide-zh settings-new-connect-platform-group", 2),
+  ("wide-zh settings-new-connect-group", 2),
   ("wide-zh settings-new-connect-scan", 2),
-  ("desk-en chat-agent-unsaid", 1),
-  ("desk-en chat-agent", 1),
   ("desk-en screen-login-fill", 1),
-  ("desk-win-en chat-agent-unsaid", 1),
-  ("desk-win-en chat-agent", 1),
   ("desk-win-en screen-login-fill", 1),
-  ("desk-win-zh chat-agent-unsaid", 1),
-  ("desk-win-zh chat-agent", 1),
   ("desk-win-zh screen-login-fill", 1),
-  ("desk-zh chat-agent-unsaid", 1),
-  ("desk-zh chat-agent", 1),
   ("desk-zh screen-login-fill", 1),
   ("phone-en chat-attach-row", 3),
   ("phone-en chat-attach", 2),
@@ -284,14 +300,14 @@ let corners_first_line_known : Map[String, Int] = Map([
   ("phone-en place-stations-tasks", 4),
   ("phone-en place-stations", 2),
   ("phone-en screen-login-fill", 1),
-  ("phone-en search-results", 7),
   ("phone-en service-restart", 1),
   ("phone-en settings-stations-add", 2),
   ("phone-en settings-stations-command", 2),
-  ("phone-en settings-stations-devices", 5),
+  ("phone-en settings-stations-devices", 4),
   ("phone-en settings-stations-existing", 2),
   ("phone-en settings-stations-tasks", 4),
   ("phone-en settings-stations", 2),
+  ("phone-en settings-stations-unprotected", 2),
   ("phone-zh chat-attach-row", 3),
   ("phone-zh chat-attach", 2),
   ("phone-zh chat-download", 1),
@@ -315,16 +331,14 @@ let corners_first_line_known : Map[String, Int] = Map([
   ("phone-zh place-stations-tasks", 4),
   ("phone-zh place-stations", 2),
   ("phone-zh screen-login-fill", 1),
-  ("phone-zh search-results", 7),
   ("phone-zh service-restart", 1),
   ("phone-zh settings-stations-add", 2),
   ("phone-zh settings-stations-command", 2),
-  ("phone-zh settings-stations-devices", 5),
+  ("phone-zh settings-stations-devices", 4),
   ("phone-zh settings-stations-existing", 2),
   ("phone-zh settings-stations-tasks", 4),
   ("phone-zh settings-stations", 2),
-  ("tablet-en chat-agent-unsaid", 1),
-  ("tablet-en chat-agent", 1),
+  ("phone-zh settings-stations-unprotected", 2),
   ("tablet-en chat-attach-row", 3),
   ("tablet-en chat-attach", 2),
   ("tablet-en chat-download", 1),
@@ -333,17 +347,13 @@ let corners_first_line_known : Map[String, Int] = Map([
   ("tablet-en chat-station-ref", 1),
   ("tablet-en chat-station-sheet", 2),
   ("tablet-en screen-login-fill", 1),
-  ("tablet-en settings-fonts-code", 1),
-  ("tablet-en settings-fonts", 1),
-  ("tablet-en settings-local-fonts", 1),
   ("tablet-en settings-stations-add", 2),
   ("tablet-en settings-stations-devices", 5),
   ("tablet-en settings-stations-existing", 2),
   ("tablet-en settings-stations-tasks", 4),
   ("tablet-en settings-stations", 2),
+  ("tablet-en settings-stations-unprotected", 2),
   ("tablet-en share-card-senren-menu", 10),
-  ("tablet-zh chat-agent-unsaid", 1),
-  ("tablet-zh chat-agent", 1),
   ("tablet-zh chat-attach-row", 3),
   ("tablet-zh chat-attach", 2),
   ("tablet-zh chat-download", 1),
@@ -352,26 +362,18 @@ let corners_first_line_known : Map[String, Int] = Map([
   ("tablet-zh chat-station-ref", 1),
   ("tablet-zh chat-station-sheet", 2),
   ("tablet-zh screen-login-fill", 1),
-  ("tablet-zh settings-fonts-code", 1),
-  ("tablet-zh settings-fonts", 1),
-  ("tablet-zh settings-local-fonts", 1),
   ("tablet-zh settings-stations-add", 2),
   ("tablet-zh settings-stations-command", 2),
   ("tablet-zh settings-stations-devices", 5),
   ("tablet-zh settings-stations-existing", 2),
   ("tablet-zh settings-stations-tasks", 4),
   ("tablet-zh settings-stations", 2),
+  ("tablet-zh settings-stations-unprotected", 2),
   ("tablet-zh share-card-senren-menu", 10),
-  ("touch-en chat-agent-unsaid", 1),
-  ("touch-en chat-agent", 1),
   ("touch-en screen-login-fill", 1),
   ("touch-en share-card-senren-menu", 10),
-  ("touch-zh chat-agent-unsaid", 1),
-  ("touch-zh chat-agent", 1),
   ("touch-zh screen-login-fill", 1),
   ("touch-zh share-card-senren-menu", 10),
-  ("wide-en chat-agent-unsaid", 1),
-  ("wide-en chat-agent", 1),
   ("wide-en chat-attach-row", 3),
   ("wide-en chat-attach", 2),
   ("wide-en chat-download", 1),
@@ -384,8 +386,7 @@ let corners_first_line_known : Map[String, Int] = Map([
   ("wide-en settings-stations-existing", 2),
   ("wide-en settings-stations-tasks", 4),
   ("wide-en settings-stations", 2),
-  ("wide-win-en chat-agent-unsaid", 1),
-  ("wide-win-en chat-agent", 1),
+  ("wide-en settings-stations-unprotected", 2),
   ("wide-win-en chat-attach-row", 3),
   ("wide-win-en chat-attach", 2),
   ("wide-win-en chat-download", 1),
@@ -398,8 +399,7 @@ let corners_first_line_known : Map[String, Int] = Map([
   ("wide-win-en settings-stations-existing", 2),
   ("wide-win-en settings-stations-tasks", 4),
   ("wide-win-en settings-stations", 2),
-  ("wide-win-zh chat-agent-unsaid", 1),
-  ("wide-win-zh chat-agent", 1),
+  ("wide-win-en settings-stations-unprotected", 2),
   ("wide-win-zh chat-attach-row", 3),
   ("wide-win-zh chat-attach", 2),
   ("wide-win-zh chat-download", 1),
@@ -413,8 +413,7 @@ let corners_first_line_known : Map[String, Int] = Map([
   ("wide-win-zh settings-stations-existing", 2),
   ("wide-win-zh settings-stations-tasks", 4),
   ("wide-win-zh settings-stations", 2),
-  ("wide-zh chat-agent-unsaid", 1),
-  ("wide-zh chat-agent", 1),
+  ("wide-win-zh settings-stations-unprotected", 2),
   ("wide-zh chat-attach-row", 3),
   ("wide-zh chat-attach", 2),
   ("wide-zh chat-download", 1),
@@ -428,6 +427,7 @@ let corners_first_line_known : Map[String, Int] = Map([
   ("wide-zh settings-stations-existing", 2),
   ("wide-zh settings-stations-tasks", 4),
   ("wide-zh settings-stations", 2),
+  ("wide-zh settings-stations-unprotected", 2),
 ])
 
 ///|

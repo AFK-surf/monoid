@@ -27,6 +27,9 @@ type Json = any;
 export const BUILD_DAYS = 31;
 const DAY_MS = 24 * 60 * 60_000;
 const SETTLE_MS = 60_000;
+/// How long a statement on the statistics' database waits for another process's write (a handover's) before SQLite
+/// refuses it.
+export const BUSY_MS = 5000;
 const EVERY_MS = 60 * 60_000;
 // A writer that keeps committing while the old rows are classified can keep dirtying them indefinitely. After
 // several such turns, apply the still-dirty rows with the original predicate instead of never finishing the build.
@@ -294,13 +297,15 @@ export class CommaStats {
   readonly #read: Read;
   readonly #changes: (changed: () => void) => () => void;
 
-  /// `changes`: tells when the agents spent or a chat moved, until the function it answers is called.
-  constructor(path: string, read: Read, changes: (changed: () => void) => () => void, ready: Promise<void> = Promise.resolve()) {
+  /// `changes`: tells when the agents spent or a chat moved, until the function it answers is called. `busyMs`: how long
+  /// a statement waits for another's write before it is refused (`BUSY_MS`; a test holding the database's lock to see
+  /// what is tried again gives less, each try else 5 s of its time).
+  constructor(path: string, read: Read, changes: (changed: () => void) => () => void, ready: Promise<void> = Promise.resolve(), busyMs = BUSY_MS) {
     this.#read = read;
     this.#changes = changes;
     // Shared with the process serving as a new one starts beside it (a handover): another's write waited for, as the
     // store's is, not refused at once ("database is locked" stopped a station's next process as it made this).
-    this.#db = new DatabaseSync(path, { timeout: 5000 });
+    this.#db = new DatabaseSync(path, { timeout: busyMs });
     this.#db.exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
     this.stats = new RevIndex(this.#db, "stats_index", ready);
     this.tasks = new RevIndex(this.#db, "task_index", ready);
@@ -326,9 +331,9 @@ export class CommaStats {
     this.#db.prepare("DELETE FROM said WHERE at < ?").run(now - BUILD_DAYS * DAY_MS);
   }
 
-  static at(data: string, read: Read, changes: (changed: () => void) => () => void, ready?: Promise<void>): CommaStats {
+  static at(data: string, read: Read, changes: (changed: () => void) => () => void, ready?: Promise<void>, busyMs?: number): CommaStats {
     mkdirSync(data, { recursive: true });
-    return new CommaStats(join(data, "comma-stats.db"), read, changes, ready);
+    return new CommaStats(join(data, "comma-stats.db"), read, changes, ready, busyMs);
   }
 
   /// A workspace's index is never taken from the old, unscoped index: its owner is not known after a home change.

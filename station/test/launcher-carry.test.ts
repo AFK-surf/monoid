@@ -71,3 +71,30 @@ test("what is carried over goes only to a launcher that carries it, and what the
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("that its main thread runs is said only to a launcher that asks for it", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "launcher-heartbeat-"));
+  try {
+    // A launcher from before `--launcher-heartbeat`: it would log each line as one it does not know.
+    const old = await channel(dir);
+    const before = launcher(["run", "--launcher-pipe", old.path, "--launcher-ports", "1,2", "--launcher-carries"]);
+    await old.connected;
+    before.heartbeat();
+    before.ready("0.1.0");
+    await until(() => old.lines.length === 1);
+    assert.deepEqual(old.lines, [{ ready: true, version: "0.1.0" }]);
+    stops.splice(0).forEach((stop) => stop());
+
+    const now = await channel(dir);
+    const control = launcher(["run", "--launcher-pipe", now.path, "--launcher-ports", "1,2", "--launcher-carries", "--launcher-heartbeat"]);
+    await now.connected;
+    control.heartbeat();
+    await until(() => now.lines.length === 1);
+    assert.deepEqual(now.lines, [{ heartbeat: true }]);
+    // On its own (no launcher): nothing to say it to.
+    launcher(["run"]).heartbeat();
+  } finally {
+    stops.splice(0).forEach((stop) => stop());
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -130,6 +130,12 @@ export interface ChatSurface {
   channelName?(channel: string): Promise<string | null>;
   /// Where the bot can start a conversation (a chat relayed there, sessions/relay.ts): the channels and groups it is in.
   places?(): Promise<Place[]>;
+  /// Whether its bot may join a public channel itself (Slack's channels:join), as last said; read after `places`.
+  joins?(): boolean;
+  /// The public channels of its workspace its bot is not in, at most a couple of thousand.
+  openPlaces?(): Promise<Place[]>;
+  /// Its bot joins a public channel of its workspace.
+  join?(channel: string): Promise<void>;
   /// The people in one of its places (bots left out), at most a couple of thousand: who a note relaying a chat there
   /// can mention.
   peopleIn?(channel: string): Promise<Member[]>;

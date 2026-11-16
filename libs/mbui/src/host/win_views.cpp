@@ -246,6 +246,11 @@ struct MediaRead {
 
 struct View {
   int vid, kind;
+  // the window of the run it is in (win_app.c: the windows of one run; 0 the first): the one in place as it was opened,
+  // then the one in place as it is placed (a view a window's frames place goes there); -1, its window closed (hidden,
+  // under none, till the app closes it)
+  int wid = 0;
+  double raster = 0;  // the scale its web view draws at (its window's, as it was last placed there)
   int sid = 0;  // a stream's picture's (kind 4): the stream's id
   long long z = 0;  // where it is stacked: over those of a lower z (opened later, or raised later: view_tell 5)
   double x = 0, y = 0, w = 0, h = 0, cx0 = 0, cy0 = 0, cx1 = 0, cy1 = 0;
@@ -298,7 +303,6 @@ struct View {
   bool stood_told = false;
 };
 
-static HWND hwnd_main;
 static std::map<int, View *> views;  // by id
 static int next_vid;
 static long long next_z;  // the z the next view opened or raised takes: over all the others
@@ -358,15 +362,15 @@ static void fail(View *v, const char *why, HRESULT hr) {
 
 static double scale_now(void) { return mb_app_scale(); }
 
-// Its box put among the others' as its z says: under the lowest of those over it, else over them all.
+// Its box put among the others' of its window as its z says: under the lowest of those over it, else over them all.
 // (AddVisual with no reference visual and insertAbove TRUE puts it under all of them: FALSE, over them.)
 static void stack(View *v) {
-  IDCompositionVisual *under = (IDCompositionVisual *)mb_render_views_visual();
+  IDCompositionVisual *under = (IDCompositionVisual *)mb_render_views_visual_of(v->wid);
   if (!under || !v->box) return;
   View *over = NULL;
   for (auto &kv : views) {
     View *o = kv.second;
-    if (o != v && o->box && o->z > v->z && (!over || o->z < over->z)) over = o;
+    if (o != v && o->wid == v->wid && o->box && o->z > v->z && (!over || o->z < over->z)) over = o;
   }
   under->RemoveVisual(v->box.Get());
   under->AddVisual(v->box.Get(), FALSE, over ? over->box.Get() : NULL);
@@ -383,10 +387,32 @@ static void say_stack(void) {
   vlog("%s", line.c_str());
 }
 
+// Taken to the window in place where it is in another (a window's frames placing it: the app's tree draws it there now):
+// its box off that window's views and among this one's, its web view's window this one (its input, its scale).
+static void moved_here(View *v) {
+  int wid = mb_app_wid();
+  if (v->wid == wid) return;
+  IDCompositionVisual *was = (IDCompositionVisual *)mb_render_views_visual_of(v->wid);
+  if (was && v->box) was->RemoveVisual(v->box.Get());
+  if (captured == v->vid) {
+    captured = 0;
+    ReleaseCapture();
+  }
+  if (hovered == v->vid) hovered = 0;
+  vlog("view %d: to window %d from %d", v->vid, wid, v->wid);
+  v->wid = wid;
+  stack(v);
+  if (v->ctl) v->ctl->put_ParentWindow((HWND)mb_app_hwnd_now());
+}
+
 // Placed as it was last told: its box at the clip, the web view at its rect within it, hidden by an empty clip.
 static void apply_place(View *v) {
   if (!v->box || (!v->ctl && v->kind != 4)) return;
+  // (a window's scale is its own: a view in another than the one in place is placed as it is taken there)
+  if (v->wid != mb_app_wid()) return;
   double s = scale_now();
+  ComPtr<ICoreWebView2Controller3> c3;
+  if (v->ctl && v->raster != s && SUCCEEDED(v->ctl.As(&c3))) c3->put_RasterizationScale(s), v->raster = s;
   double bx = round(v->cx0 * s), by = round(v->cy0 * s);
   v->box->SetOffsetX((float)bx);
   v->box->SetOffsetY((float)by);
@@ -814,7 +840,7 @@ static void player_said(View *v, const wchar_t *t) {
 
 static void made(View *v, ICoreWebView2CompositionController *cc) {
   IDCompositionDevice *dc = (IDCompositionDevice *)mb_render_dcomp();
-  IDCompositionVisual *under = (IDCompositionVisual *)mb_render_views_visual();
+  IDCompositionVisual *under = (IDCompositionVisual *)mb_render_views_visual_of(v->wid);
   v->comp = cc;
   if (FAILED(cc->QueryInterface(IID_PPV_ARGS(&v->ctl))) || FAILED(v->ctl->get_CoreWebView2(&v->web)) || !dc ||
       !under || FAILED(dc->CreateVisual(&v->box)) || FAILED(dc->CreateVisual(&v->content))) {
@@ -825,6 +851,8 @@ static void made(View *v, ICoreWebView2CompositionController *cc) {
   stack(v);  // over the views opened (or raised) before it, under those raised since
   v->box->SetClip(D2D_RECT_F{0, 0, 0, 0});
   cc->put_RootVisualTarget(v->content.Get());
+  // (made with the first window as its own: its window the one it is in, if another)
+  if (v->wid > 0) v->ctl->put_ParentWindow((HWND)mb_app_hwnd_of(v->wid));
   ComPtr<ICoreWebView2Controller2> c2;
   // (a player's black, as a picture's letterbox: the others' a page's white)
   if (SUCCEEDED(v->ctl.As(&c2)))
@@ -832,7 +860,8 @@ static void made(View *v, ICoreWebView2CompositionController *cc) {
   ComPtr<ICoreWebView2Controller3> c3;
   if (SUCCEEDED(v->ctl.As(&c3))) {
     c3->put_ShouldDetectMonitorScaleChanges(FALSE);
-    c3->put_RasterizationScale(scale_now());
+    // (its window's: the first's, or the one in place as it was opened; placed in another, that one's then)
+    if (v->wid == mb_app_wid()) c3->put_RasterizationScale(v->raster = scale_now());
   }
   if (v->zoom != 1) v->ctl->put_ZoomFactor(v->zoom);
   ComPtr<ICoreWebView2Settings> s;
@@ -960,7 +989,7 @@ static void made(View *v, ICoreWebView2CompositionController *cc) {
                               return S_OK;
                             }).Get(),
                         &tok);
-  if (v->placed) apply_place(v);
+  if (v->placed && v->wid == mb_app_wid()) apply_place(v);
   else mb_render_commit();
   std::wstring url = v->kind == 3   ? std::wstring(kSite) + (v->start.empty() ? L"/" : v->start)
                      : v->kind == 1 ? std::wstring(kPlayer) + L"/"
@@ -998,9 +1027,9 @@ static void make_web(View *v) {
   ComPtr<ICoreWebView2ControllerOptions> opts;
   if (v->kind != 2 && SUCCEEDED(env.As(&e10)) && SUCCEEDED(e10->CreateCoreWebView2ControllerOptions(&opts))) {
     opts->put_IsInPrivateModeEnabled(TRUE);
-    hr = e10->CreateCoreWebView2CompositionControllerWithOptions(hwnd_main, opts.Get(), done.Get());
+    hr = e10->CreateCoreWebView2CompositionControllerWithOptions((HWND)mb_app_hwnd(), opts.Get(), done.Get());
   } else {
-    hr = e3->CreateCoreWebView2CompositionController(hwnd_main, done.Get());
+    hr = e3->CreateCoreWebView2CompositionController((HWND)mb_app_hwnd(), done.Get());
   }
   if (FAILED(hr)) fail(v, "its web view could not be asked for", hr);
 }
@@ -1082,9 +1111,9 @@ extern "C" int32_t mb_host_view_open(int32_t kind, moonbit_string_t arg) {
     std::wstring a = wstr(arg);
     View *v = open_stream_view(_wtoi(a.c_str()));
     if (!v) return 0;
-    if (!hwnd_main) hwnd_main = (HWND)mb_app_hwnd();
     v->vid = ++next_vid;
     v->kind = 4;
+    v->wid = mb_app_wid();
     v->z = ++next_z;
     views[v->vid] = v;
     stack(v);
@@ -1095,10 +1124,10 @@ extern "C" int32_t mb_host_view_open(int32_t kind, moonbit_string_t arg) {
   }
   if (kind != 1 && kind != 2 && kind != 3) return 0;
   if (!mb_render_dcomp() || !runtime_here()) return 0;
-  if (!hwnd_main) hwnd_main = (HWND)mb_app_hwnd();
   View *v = new View;
   v->vid = ++next_vid;
   v->kind = kind;
+  v->wid = mb_app_wid();
   v->z = ++next_z;
   if (kind == 1) {
     // (the app draws its controls over it: the mouse the canvas's)
@@ -1138,6 +1167,7 @@ extern "C" void mb_host_view_place(int32_t vid, double x, double y, double w, do
   v->x = x; v->y = y; v->w = w; v->h = h;
   v->cx0 = cx0; v->cy0 = cy0; v->cx1 = cx1; v->cy1 = cy1;
   v->r[0] = r0; v->r[1] = r1; v->r[2] = r2; v->r[3] = r3;
+  moved_here(v);
   apply_place(v);
   if (resized) refresh_snap(v);
 }
@@ -1160,7 +1190,7 @@ extern "C" void mb_host_view_close(int32_t vid) {
   if (v->ctl) v->ctl->Close();
   // (a stream's layer taken off it first)
   if (v->kind == 4) mb_stream_attach(v->sid, NULL);
-  IDCompositionVisual *under = (IDCompositionVisual *)mb_render_views_visual();
+  IDCompositionVisual *under = (IDCompositionVisual *)mb_render_views_visual_of(v->wid);
   if (under && v->box) under->RemoveVisual(v->box.Get());
   mb_render_commit();
   if (captured == vid) {
@@ -1502,7 +1532,9 @@ static View *view_at(double x, double y) {
   for (auto &kv : views) {
     View *v = kv.second;
     if (top && top->z > v->z) continue;
-    if (!v->shown || !v->placed || !v->comp || v->kind == 1 || v->touch == "through" || covered_at(v, x, y)) continue;
+    if (v->wid != mb_app_wid() || !v->shown || !v->placed || !v->comp || v->kind == 1 || v->touch == "through" ||
+        covered_at(v, x, y))
+      continue;
     double x0 = fmax(v->cx0, v->x), y0 = fmax(v->cy0, v->y);
     double x1 = fmin(v->cx1, v->x + v->w), y1 = fmin(v->cy1, v->y + v->h);
     if (x >= x0 && x < x1 && y >= y0 && y < y1) top = v;
@@ -1539,9 +1571,10 @@ extern "C" int mb_views_input(unsigned msg, uintptr_t wp, intptr_t lp) {
     default: return 0;
   }
   POINT p = {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
-  if (msg == WM_MOUSEWHEEL || msg == WM_MOUSEHWHEEL) ScreenToClient(hwnd_main, &p);
+  if (msg == WM_MOUSEWHEEL || msg == WM_MOUSEHWHEEL) ScreenToClient((HWND)mb_app_hwnd_now(), &p);
   double s = scale_now();
   View *v = captured ? find(captured) : view_at(p.x / s, p.y / s);
+  if (v && v->wid != mb_app_wid()) v = NULL;
   if (hovered && (!v || v->vid != hovered)) {
     View *h = find(hovered);
     if (h && h->comp) h->comp->SendMouseInput(COREWEBVIEW2_MOUSE_EVENT_KIND_LEAVE, COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_NONE, 0, POINT{0, 0});
@@ -1558,7 +1591,7 @@ extern "C" int mb_views_input(unsigned msg, uintptr_t wp, intptr_t lp) {
   v->comp->SendMouseInput(kind, (COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS)GET_KEYSTATE_WPARAM(wp), data, q);
   if (msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN || msg == WM_MBUTTONDOWN || msg == WM_XBUTTONDOWN) {
     // its keys: the page's until the canvas is clicked again
-    if (!captured) SetCapture(hwnd_main);
+    if (!captured) SetCapture((HWND)mb_app_hwnd_now());
     captured = v->vid;
     v->ctl->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
   } else if (captured && (msg == WM_LBUTTONUP || msg == WM_RBUTTONUP || msg == WM_MBUTTONUP || msg == WM_XBUTTONUP) &&
@@ -1575,12 +1608,13 @@ extern "C" void *mb_views_cursor(double x, double y) {
   return v ? (void *)v->cursor : NULL;
 }
 
-// The window's scale changed: each web view drawn at it, placed again.
+// The window in place's scale changed: each web view in it drawn at it, placed again.
 extern "C" void mb_views_rescale(void) {
   for (auto &kv : views) {
     View *v = kv.second;
+    if (v->wid != mb_app_wid()) continue;
     ComPtr<ICoreWebView2Controller3> c3;
-    if (v->ctl && SUCCEEDED(v->ctl.As(&c3))) c3->put_RasterizationScale(scale_now());
+    if (v->ctl && SUCCEEDED(v->ctl.As(&c3))) c3->put_RasterizationScale(v->raster = scale_now());
     if (v->placed) apply_place(v);
   }
 }
@@ -1624,7 +1658,8 @@ extern "C" void mb_views_snap_all(void) {
 extern "C" void mb_views_draw_under(uint8_t *out, int w, int h, double scale) {
   // (as they are stacked: the one over the others drawn last)
   std::vector<View *> order;
-  for (auto &kv : views) order.push_back(kv.second);
+  for (auto &kv : views)
+    if (kv.second->wid == mb_app_wid()) order.push_back(kv.second);
   std::sort(order.begin(), order.end(), [](View *a, View *b) { return a->z < b->z; });
   for (View *v : order) {
     if (!v->shown || !v->placed || v->w <= 0 || v->h <= 0) continue;
@@ -1661,4 +1696,27 @@ extern "C" void mb_views_draw_under(uint8_t *out, int w, int h, double scale) {
       }
     }
   }
+}
+
+// Window `wid` closing (win_app.c win_closed), before what it drew is let go of: each view in it taken off its views
+// and hidden, its web view's window the first's, under no window's till the app closes it (as it lets go of what the
+// window showed) or another window's frames place it.
+extern "C" void mb_views_forget(int wid) {
+  IDCompositionVisual *under = (IDCompositionVisual *)mb_render_views_visual_of(wid);
+  for (auto &kv : views) {
+    View *v = kv.second;
+    if (v->wid != wid) continue;
+    if (under && v->box) under->RemoveVisual(v->box.Get());
+    if (v->ctl) {
+      v->ctl->put_IsVisible(FALSE);
+      v->ctl->put_ParentWindow((HWND)mb_app_hwnd());
+    }
+    if (captured == v->vid) {
+      captured = 0;
+      ReleaseCapture();
+    }
+    if (hovered == v->vid) hovered = 0;
+    v->wid = -1;
+  }
+  mb_render_commit();
 }

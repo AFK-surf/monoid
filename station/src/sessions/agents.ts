@@ -17,7 +17,8 @@ import { DshDriver } from "../agents/dsh.ts";
 import { GrokDriver } from "../agents/grok.ts";
 import { CursorDriver } from "../agents/cursor.ts";
 import { HermesDriver } from "../agents/hermes.ts";
-import { AGY_TOOL_BUDGET, AgyDriver } from "../agents/agy.ts";
+import { PiDriver } from "../agents/pi.ts";
+import { AGY_TOOL_BUDGET, AgyDriver, agyRenew } from "../agents/agy.ts";
 import { type RuntimeKind, runtimeKind } from "../agents/runtime.ts";
 import { DevinDriver } from "../agents/devin.ts";
 import { Jobs, notifyEndpoint, screenEndpoint } from "../jobs/jobs.ts";
@@ -25,7 +26,9 @@ import { liveMemory } from "../jobs/memory.ts";
 import { WorkspaceWatch, workspaceWorking, type WorkspaceReading } from "../jobs/workspace-size.ts";
 import { Remote, followRoster } from "../jobs/remote.ts";
 import { ConfigFile } from "../ops/config.ts";
-import { DISK_EVERY_MS, DISK_LOW_BYTES, diskFree } from "../ops/disk.ts";
+import { DISK_EVERY_MS, DISK_LOW_BYTES, diskEvery, diskFree, diskSoft, diskTier } from "../ops/disk.ts";
+import { Upkeep, diskOf } from "../ops/storage.ts";
+import { sweepRunners } from "../agents/runner.ts";
 import type { Control } from "../ops/launcher.ts";
 import { log } from "../ops/log.ts";
 import { mcpPortFile, ownData, portsToTry, rememberedMcpPort } from "../ops/files.ts";
@@ -70,15 +73,16 @@ import { stationLang, tr, type Lang } from "../ops/i18n.ts";
 import { type Updates, makeUpdates } from "../updates/updates.ts";
 import { channelOf } from "../updates/versions.ts";
 import { type Connect, hubConfig } from "./config.ts";
-import type { TailState } from "../read/tail.ts";
+import type { TailState } from "../read/transcript.ts";
 import { followLatestThreadRequests } from "../read/latest-thread-requests.ts";
 import { ColdRooms } from "./cold.ts";
 import { Hub } from "./hub.ts";
 import { LiveLocator } from "./live-locator.ts";
+import { peekPackedProgram } from "./packed-mb.ts";
 import { buildWorkspaceActivity } from "./workspace-activity-builder.ts";
 import { buildSessionCounts } from "./session-count-builder.ts";
 import { PostBlockBuilder } from "./post-block-builder.ts";
-import { roomOf } from "./footprint.ts";
+import { roomOfSoon } from "./footprint.ts";
 import { InternalChat } from "./internal.ts";
 import { expireArchived, relieveArchived, startAutoArchiveTimer } from "./lifecycle.ts";
 import { fromPeer, sender } from "./messages.ts";
@@ -246,7 +250,7 @@ export const AgentsLive = (control: Control) =>
       let sharing: Sharing | null = null;
       const borrowed = (p: unknown) => sharing?.borrowedSubscription(p) === true;
       const hermes = new HermesDriver({ data });
-      const agy = new AgyDriver({ data });
+      const agy = new AgyDriver({ data, lent: { borrowed: (p) => borrowed(p), write: (p) => sharing!.lendAgy(p) } });
       // What the station before this one left, taken up (`start`): until then the codex app-servers its runners keep are
       // the sessions' that ran on them (agents/codex.ts `takenUp`).
       const takenUp = Promise.withResolvers<void>();
@@ -308,6 +312,7 @@ export const AgentsLive = (control: Control) =>
           new DevinDriver({ data }),
           hermes,
           agy,
+          new PiDriver({ data }),
         ],
         mcpUrl: () => door?.url ?? "",
         internal: new InternalChat(),
@@ -373,7 +378,7 @@ export const AgentsLive = (control: Control) =>
           const workingSessions: { key: string; workspace: string }[] = JSON.parse(await readers.read("sessionsAtWork", { processes }, "zh"));
           return (await Promise.all(workingSessions.map(async (s) => {
             const found: WorkspaceReading[] = [];
-            if (roomOf(data, s.workspace) !== null) {
+            if ((await roomOfSoon(data, s.workspace)) !== null) {
               const size = remote.workspaceReader.size(s.workspace, workspaceWatch.limit(s.key, ""));
               if (size !== null) found.push({ session: s.key, station: "", name: "this station", path: s.workspace, ...size });
             }
@@ -600,7 +605,7 @@ export const AgentsLive = (control: Control) =>
         data, store, config, hub, reviewUndecided: () => startReview(hub), codex: () => codex as any, hermes: () => hermes, agy: () => agy, following: () => events.inUse() || hub.anyRunning(), checkOnStart: true,
         workspaces: () => hub.workspaces(),
         claudeVersion: () => updates.get().find((v) => v.id === "claude")?.version ?? null,
-        shared: { status: (p) => sharing!.status(p), lendCodex: (p, rejected) => sharing!.lendCodex(p, rejected), lendClaude: (p, rejected) => sharing!.lendClaude(p, rejected), quotaReset: (p, key) => sharing!.quotaReset(p.id, key), loginUpdated: () => { void sharing?.reconcile(); }, view: (p) => sharing?.profileView(p) ?? null, hostName },
+        shared: { status: (p) => sharing!.status(p), lendCodex: (p, rejected) => sharing!.lendCodex(p, rejected), lendAgy: (p, rejected) => sharing!.lendAgy(p, rejected), lendClaude: (p, rejected) => sharing!.lendClaude(p, rejected), quotaReset: (p, key) => sharing!.quotaReset(p.id, key), loginUpdated: (id) => { sharing?.loginUpdated(id); }, view: (p) => sharing?.profileView(p) ?? null, hostName },
       });
       found = accounts.found;
       accounts.start();
@@ -614,6 +619,7 @@ export const AgentsLive = (control: Control) =>
         claudeToken: (p, rejected) => accounts.claudeToken(p, rejected, true),
         // In sandboxes no Codex here holds the refresh token: it is renewed here whenever it runs out.
         codexRenewRunning: async (id) => await codex.renewLogin(id),
+        agyRenew: (home) => agyRenew(home),
         status: async (id) => { const h = await accounts.lentHealth(id); return { check: h.check ?? null, quota: h.quota ?? null }; },
         changed: () => events.overviewChanged(),
         recheck: () => accounts.recheckBorrowed(),
@@ -624,6 +630,8 @@ export const AgentsLive = (control: Control) =>
       });
       remote.setShares((peer, request, workspace) => sharing!.handle(peer, request, workspace));
       sharing.start();
+      // (the program that reads its skills' files, idle, let go when the station is short of memory)
+      readers.onTrim(() => sharing!.trimIdle());
       // The agents' memory, the same on every station of a workspace (share/memory.ts).
       const memorySync = new MemorySync({
         data, cloud,
@@ -631,6 +639,8 @@ export const AgentsLive = (control: Control) =>
         agentHome: () => settings().agentHome,
       });
       remote.setMemory((peer, request, workspace) => memorySync.handle(peer, request, workspace));
+      // (its program, idle, let go when the station is short of memory)
+      readers.onTrim(() => memorySync.trimIdle());
       memorySync.start();
       yield* Effect.addFinalizer(() => Effect.promise(() => memorySync.stop()));
       xshare.start();
@@ -645,18 +655,25 @@ export const AgentsLive = (control: Control) =>
         state: async (key) => (JSON.parse(await readers.read("transcriptState", { key }, "zh")) as { states: TailState[] | null }).states,
         page: async (key, before, limit, brief) => JSON.parse(await readers.read("timeline", { key, before: String(before), limit: String(limit), lang: "zh", ...(brief ? { brief: "1" } : {}) }, "zh")),
       };
-      // And what a watched transcript gains as it is written (read/read-tail.ts): parsed by them, not here.
+      // And what a watched transcript gains as it is written (mb/src/reader/live.mbt `read_soon`): parsed by them, not here.
       hub.live.tailRead = async (runtime, state) => JSON.parse(await readers.read("tailRead", { runtime, state }, "zh", { told: true }));
       // Resolving a live session's older transcript files may take a while; keep it off the station's thread.
       const liveLocator = new LiveLocator(data, (key) => store.getSession(key), () => hub.config().profiles);
       hub.live.locateAsync = (key, signal) => liveLocator.locate(key, signal);
+      readers.onTrim(() => liveLocator.trimIdle());
       yield* Effect.addFinalizer(() => Effect.promise(() => liveLocator.close()));
+      // The program that puts transcripts and workspaces away (sessions/packed-mb.ts), when one was made: let go under the
+      // machine's pressure while nothing is asked of it, and ended with the agents (an ask under way failed, as at a
+      // handover: the next process does it again).
+      readers.onTrim(() => peekPackedProgram()?.trimIdle() ?? 0);
+      yield* Effect.addFinalizer(() => Effect.promise(() => peekPackedProgram()?.close() ?? Promise.resolve()));
       // Not asked of them before the process before has handed over: what it carries says where each reading stands.
       hub.live.handover = previous;
-      // Where each checklist was read to, for the next process to read on from (not back, at each update).
-      parts.carry("live.plans", () => hub.live.carriedPlans(), (what) => hub.live.takePlans(what));
-      // And where each transcript's reading stood, for it to read on from there (not ask the readers, at each update).
-      parts.carry("live.tails", () => hub.live.carriedTails(), (what) => hub.live.takeTails(what));
+      // Where each checklist was read to, for the next process to read on from (not back, at each update), and where each
+      // transcript's reading stood, for it to read on from there (not ask the readers, at each update).
+      const liveCarried = () => hub.live.carried();
+      parts.carry("live.plans", async () => (await liveCarried()).plans, (what) => hub.live.takePlans(what));
+      parts.carry("live.tails", async () => (await liveCarried()).tails, (what) => hub.live.takeTails(what));
       hub.threadList = async () => JSON.parse(await readers.read("threadList", {}, "zh"));
       hub.recentChatList = async (ws, home, limit, signal) => JSON.parse(await readers.read("recentChatList", { ws, home, limit }, "zh", { signal }));
       hub.searchChatList = async (ws, home, limit, query) => JSON.parse(await readers.read("searchChatList", { ws, home, limit, query }, "zh"));
@@ -702,7 +719,7 @@ export const AgentsLive = (control: Control) =>
         },
         // The sessions at work, followed by the station itself: told to the streams that follow them, in brief.
         held: () => hub.live.held(),
-        heldNow: (key) => hub.live.now(key),
+        heldNow: (keys) => hub.live.nowOf(keys),
         overview: view,
         processState: (key) => hub.processState(key),
         followed: () => accounts.followed(),
@@ -907,8 +924,20 @@ export const AgentsLive = (control: Control) =>
       };
       time.after(300_000, emptying);
 
-      // The disk of the station's data low: the mirrors of other stations' tasks not in use go, then archived
-      // workspaces before their time (ops/disk.ts).
+      // The station's own files held to their bounds (ops/storage.ts): its logs, runners gone, jobs' logs, other
+      // stations' rooms, the database's log, caches.
+      const upkeep = new Upkeep({
+        data,
+        clock: hub.clock,
+        runners: (now) => sweepRunners(data, now, (info) => hub.endOrphan(info, now)),
+        jobs: (now) => jobs.upkeep(now),
+        remote: (now, disk) => remote.upkeep(now, disk),
+        checkpoint: () => readers.checkpointHard(),
+      });
+      upkeep.start();
+
+      // The disk of the station's data getting full: what is made again when asked for goes, then the mirrors of other
+      // stations' tasks not in use; low, then archived workspaces before their time (ops/disk.ts).
       const relieving = async () => {
         const free = () => {
           try {
@@ -917,17 +946,21 @@ export const AgentsLive = (control: Control) =>
             return Infinity;
           }
         };
+        let tier: "ok" | "soft" | "low" = "ok";
         try {
-          if (free() < DISK_LOW_BYTES) {
-            await remote.relieve(hub.now());
-            await relieveArchived(hub, free);
+          const disk = await diskOf(data).catch(() => null);
+          tier = disk === null ? "ok" : diskTier(disk.free, disk.total);
+          if (tier !== "ok") {
+            await upkeep.renewables(hub.now());
+            await remote.relieve(hub.now(), disk === null ? DISK_LOW_BYTES : diskSoft(disk.total));
           }
+          if (free() < DISK_LOW_BYTES) await relieveArchived(hub, free);
         } catch (error) {
           log.warn("hub", "making room on the disk failed", { error: (error as Error).message });
         }
-        time.after(DISK_EVERY_MS, relieving);
+        time.after(diskEvery(tier), relieving); // timer: a sample of this machine (its disk)
       };
-      time.after(DISK_EVERY_MS, relieving);
+      time.after(DISK_EVERY_MS, relieving); // timer: a sample of this machine (its disk)
 
       // What the Rust station's archiving left (the transcripts kept twice): once, when the devices have come back.
       time.after(180_000, () => cold.finishLegacyCopies().then(() => cold.segmentHistories()));
@@ -964,6 +997,7 @@ export const AgentsLive = (control: Control) =>
           await workspaceActivity.close();
           await sessionCounts.close();
           await time.close();
+          await upkeep.close();
           await sharing?.close();
           await xshare.close();
           unlistenRule();

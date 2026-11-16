@@ -73,6 +73,7 @@ priv struct Actor {
   mut tools_restarts : Int
   mut saying : (String, String)?
   mut last_said : String
+  mut turn_text : String
   mut posted : Bool
   mut stop_requested : Bool
   mut resume_lost : Bool
@@ -124,11 +125,17 @@ priv struct Actors {
   mut jobs : JobsState
   /// the tasks of other stations here and this station's there (remote.mbt), Node's shell of them `#remote`
   mut remote : RemoteState
+  /// the agents' processes read here (agents.mbt): what each read, once Node took it, is given its actor here
+  mut agents : Agents?
+  /// the live view of the sessions (live.mbt), Node's shell of it `#live`
+  mut live : LiveState
+  /// the separator of this station's system's paths (`--sep`): what is joined here as Node joins it (remote_files.mbt)
+  sep : String
 }
 
 ///|
-fn Actors::new(host : @host.Host) -> Actors {
-  { host, actors: Map([]), asked: Map([]), timers: Map([]), next: 0, now: 0.0, active: 0, seen: 0, db: None, jobs: JobsState::new(), remote: RemoteState::new() }
+fn Actors::new(host : @host.Host, sep : String) -> Actors {
+  { host, actors: Map([]), asked: Map([]), timers: Map([]), next: 0, now: 0.0, active: 0, seen: 0, db: None, jobs: JobsState::new(), remote: RemoteState::new(), agents: None, live: LiveState::new(), sep }
 }
 
 ///|
@@ -137,15 +144,23 @@ suberror Asked {
 }
 
 ///|
-fn Asked::message(e : Error) -> String {
-  match e {
+/// Its words as they are, where an error is said (`to_string`): without it MoonBit says only the type's name
+/// ("station/reader.Asked.Asked" in a chat's notice in place of what Node said, Office-VM-1 2026-11-16).
+impl Show for Asked with output(self, logger) {
+  match self {
     Asked(j) =>
-      match j.value("message") {
-        Some(String(s)) => s
-        _ => j.stringify()
-      }
-    _ => e.to_string()
+      logger.write_string(
+        match j.value("message") {
+          Some(String(s)) => s
+          _ => j.stringify()
+        },
+      )
   }
+}
+
+///|
+fn Asked::message(e : Error) -> String {
+  e.to_string()
 }
 
 ///|
@@ -253,6 +268,7 @@ fn Actors::actor(self : Actors, key : String, runtime : String) -> Actor {
         tools_restarts: 0,
         saying: None,
         last_said: "",
+        turn_text: "",
         posted: false,
         stop_requested: false,
         resume_lost: false,
@@ -352,9 +368,10 @@ async fn Actors::enqueue(self : Actors, a : Actor, task : async () -> Unit raise
 ///|
 /// The sessions' program (`--sessions`): the agents' output read (agents.mbt) and the actors (this file) in one, each
 /// line of Node's to the one it is for: an actor's says `actor`, or is an answer, a wait's time, the database's place.
-pub async fn serve_sessions(host : @host.Host) -> Unit {
-  let s = Actors::new(host)
+pub async fn serve_sessions(host : @host.Host, sep : String) -> Unit {
+  let s = Actors::new(host, sep)
   let a = Agents::new(host)
+  s.agents = Some(a)
   host.say(({ "ready": true } : Json).stringify())
   while host.line() is Some(line) {
     if actors_line(line) {
@@ -368,9 +385,88 @@ pub async fn serve_sessions(host : @host.Host) -> Unit {
 }
 
 ///|
+/// A batch of what its runtime session's process said, read here (agents.mbt `tell`) and taken by Node (mb-actor.ts
+/// `routed`): each event given the actor as Node gave it before, in order. Node says what it decides of them: a turn's
+/// outcome (`outcome`, the failure's reason by its words). The live view here takes each first (live.mbt), and a turn's
+/// end waits for what its transcript said last there (`live_end`).
+fn Actors::routed(self : Actors, a : Actor, n : Int, k : Int, generation : Int, said : Json) -> Unit {
+  guard self.agents is Some(agents) else { return }
+  guard agents.take(n, k) is Some((events, _)) else { return }
+  for e in events {
+    let event = @json.parse(@jsjson.stringify(e)) catch { _ => continue }
+    // (the live view takes each first, as it is: live.mbt)
+    let mut read = Json::null()
+    match str_of(event.value("type")) {
+      Some("live") => self.live_event(a.key, event.value("event").unwrap_or(Json::null()))
+      Some("turnEnded") => read = { "live": jnum(self.live_end(a.key).to_double()) }
+      _ => ()
+    }
+    let event = match event {
+      // (what the session's owner keeps of a turn's start and end, not the actor's: Claude Code's turn, a Codex
+      // thread's turn's id and where it is in the output)
+      Object(fields) if str_of(event.value("type")) == Some("turnEnded") => {
+        let m = fields.copy()
+        for k in ["turn", "from", "to"] {
+          m.remove(k)
+        }
+        if said.value("outcome") is Some(o) {
+          m["outcome"] = o
+        }
+        Json::object(m)
+      }
+      Object(fields) if str_of(event.value("type")) == Some("turnStarted") => {
+        let m = fields.copy()
+        for k in ["turn", "turnId", "from", "to"] {
+          m.remove(k)
+        }
+        Json::object(m)
+      }
+      Object(_) if str_of(event.value("type")) == Some("live") =>
+        match live_for_actor(event.value("event").unwrap_or(Json::null())) {
+          Some(ev) => Json::object({ "type": jstr("live"), "event": ev })
+          None => continue
+        }
+      // (what the session's owner alone takes: a token asked for, an ACP runtime's transcript lines, a prompt's answer,
+      // its usage: own-process.ts `took`)
+      Object(_) if str_of(event.value("type")) is Some("renew" | "kept" | "answered" | "usage") => continue
+      _ => event
+    }
+    self.spawn(() => self.on_event(a, generation, event, read) catch {
+      e => self.log(a, "error", "session event failed", fields={ "error": Json::string(Asked::message(e)) })
+    })
+  }
+}
+
+///|
+/// What of a live event an actor reads (mb-actor.ts `#event`, as Node gave it): what moves its status line and its
+/// words; a tool's start without its input.
+fn live_for_actor(e : Json) -> Json? {
+  let kind = str_of(e.value("kind")).unwrap_or("")
+  if kind == "tasks" || kind == "plan" {
+    return None
+  }
+  if kind == "delta" && str_of(e.value("field")) != Some("text") {
+    return None
+  }
+  if kind == "start" && str_of(e.value("step")) == Some("thinking") {
+    return None
+  }
+  if kind == "start" && str_of(e.value("step")) == Some("tool") {
+    let m : Map[String, Json] = { "kind": jstr(kind), "step": jstr("tool") }
+    for f in ["id", "tool"] {
+      if e.value(f) is Some(v) {
+        m[f] = v
+      }
+    }
+    return Some(Json::object(m))
+  }
+  Some(e)
+}
+
+///|
 /// Whether a line of Node's is for the actors: what Node says them begins so (mb-actor.ts `post`, its keys first).
 fn actors_line(line : String) -> Bool {
-  ["{\"call\":", "{\"answer\":", "{\"due\":", "{\"db\":", "{\"runtime\":", "{\"event\":", "{\"codexUpdated\":"].iter().any(p => line.has_prefix(p))
+  ["{\"call\":", "{\"answer\":", "{\"due\":", "{\"db\":", "{\"runtime\":", "{\"event\":", "{\"routed\":", "{\"codexUpdated\":"].iter().any(p => line.has_prefix(p))
 }
 
 ///|
@@ -391,12 +487,13 @@ fn Actors::heard(self : Actors, line : String) -> Unit {
       self.active = 0
       self.jobs = JobsState::new()
       self.remote = RemoteState::new()
+      self.live = LiveState::new()
       if self.db is Some(db) {
         db.close()
       }
       self.db = match place {
         String(path) =>
-          Some(@sql.Db::attach(self.host, path, wait=5000)) catch {
+          Some(@sql.Db::attach(self.host, path, wait=30000)) catch {
             e => {
               @host.note("actors: the station's database not opened: " + (match e { @wire.ShellError(m) => m }))
               None
@@ -420,13 +517,32 @@ fn Actors::heard(self : Actors, line : String) -> Unit {
       let id = id.to_int()
       if self.timers.get(id) is Some(then) {
         self.timers.remove(id)
+        // (counted active while it runs: what it says Node meanwhile, a `tell` too, must not say this program quiet)
+        self.active += 1
         then()
+        self.active -= 1
+        self.quiet()
       }
       return
     }
     _ => ()
   }
   guard said.value("actor") is Some(String(key)) else { return }
+  if key == live_key {
+    // (each as it comes, in order: what of it waits goes on as a fiber of its own)
+    if said is { "call": Number(id, ..), "method": String(method), .. } {
+      let args = match said.value("args") {
+        Some(Array(args)) => args
+        _ => []
+      }
+      // (counted active while it runs, as a due timer's work)
+      self.active += 1
+      self.live_called(id, method, args)
+      self.active -= 1
+      self.quiet()
+    }
+    return
+  }
   if key == jobs_key || key == remote_key {
     // (the jobs' calls: each a fiber of its own, as an actor's call is before it is queued)
     if said is { "call": Number(id, ..), "method": String(method), .. } {
@@ -489,6 +605,8 @@ fn Actors::heard(self : Actors, line : String) -> Unit {
         e => self.log(a, "error", "session event failed", fields={ "error": Json::string(Asked::message(e)) })
       })
     }
+    { "routed": Number(n, ..), "batch": Number(k, ..), "generation": Number(generation, ..), .. } =>
+      self.routed(a, n.to_int(), k.to_int(), generation.to_int(), said)
     { "codexUpdated": Number(id, ..), .. } => {
       let why = match said.value("why") {
         Some(String(w)) => Some(w)

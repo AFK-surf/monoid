@@ -5,9 +5,9 @@ import { join } from "node:path";
 import { constants, DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { Readers } from "../src/read/pool.ts";
-import { outflowUsage } from "../src/read/outflow.ts";
-import { makeStore, remoteRunCount, remoteRunsSince } from "../src/read/store.ts";
-import { usage as readUsage } from "../src/read/usage.ts";
+import { outflowUsage } from "./reference/outflow.ts";
+import { makeStore, remoteRunCount, remoteRunsSince } from "./reference/store.ts";
+import { usage as readUsage } from "./reference/usage.ts";
 import { Store } from "../src/store/store.ts";
 import { MinuteReader } from "../src/usage/minute-reader.ts";
 

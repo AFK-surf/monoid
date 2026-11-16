@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { constants, DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { installPostBlocks, postBlocksReady, postBlocksStep } from "../src/store/post-blocks.ts";
+import { installPostBlocks, postBlocksReady, postBlocksStep } from "./reference/backfill/post-blocks.ts";
 
 const entries = `CREATE TABLE entries (thread INTEGER NOT NULL, n INTEGER NOT NULL, kind TEXT NOT NULL,
   author_kind TEXT NOT NULL, author TEXT NOT NULL, ts TEXT, PRIMARY KEY(thread,n));

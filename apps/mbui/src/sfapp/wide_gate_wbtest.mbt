@@ -1,4 +1,4 @@
-// The page for a device waiting to be confirmed in the workspace's lock (sfpages' lock_wait.mbt; cloud/Security.tsx
+// The page for a device waiting to be confirmed in the workspace's lock (sfpages' lock_wait_node.mbt; cloud/Security.tsx
 // SecurityWaiting, mobile/Security.tsx SecurityWaitingScreen): in the page's place, beside the rail on the wide frame,
 // under Home's bar laid out Small; the web's desktop page with keyboard and mouse, its mobile screen with touch.
 

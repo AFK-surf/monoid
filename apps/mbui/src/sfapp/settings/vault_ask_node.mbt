@@ -56,6 +56,7 @@ pub fn vault_foot_node(
   foot~ : Bool,
   describe? : () -> Bool = fn() { false },
   remove? : () -> Bool = fn() { false },
+  extra? : (@view.View) -> Unit,
 ) -> Unit {
   let lasts = fn() {
     match answer() {
@@ -120,9 +121,16 @@ pub fn vault_foot_node(
       vault_typed[key] = field_of(part)
     }
   }
+  // (one the person signs in to a service for in place of typing it: that service, "" none)
+  let signs_in = fn() {
+    match typed() {
+      Some(ty) => ty.oauth
+      None => ""
+    }
+  }
   let typing = fn() {
     match (answer(), typed()) {
-      (Some(Approve(_)), Some(ty)) if ty.kind != "file" => Some(ty)
+      (Some(Approve(_)), Some(ty)) if ty.kind != "file" && ty.oauth == "" => Some(ty)
       _ => None
     }
   }
@@ -132,7 +140,7 @@ pub fn vault_foot_node(
       None => false
     }
   }
-  let empty = fn() { typed() is Some(_) && field_of("/secret").text().trim(chars=" \n\t").to_owned() == "" }
+  let empty = fn() { typed() is Some(_) && signs_in() == "" && field_of("/secret").text().trim(chars=" \n\t").to_owned() == "" }
   let act = fn(yes : Bool, call : String, what : String, params : Json) {
     if core.read_only != "" {
       (core.say)(core.read_only)
@@ -163,7 +171,33 @@ pub fn vault_foot_node(
       }
     })
   }
+  // (存入 by signing in to the service: its page in the browser, the request approved with the token as it comes back,
+  // the card saying so then. Its buttons stay as they were meanwhile: a browser's page given up says nothing to the app
+  // on every host (the web's tab, a loopback's), so it may be pressed again or turned down)
+  let sign_in = fn() {
+    @signals.untracked(fn() {
+      if core.read_only != "" {
+        (core.say)(core.read_only)
+        return
+      }
+      let r = request()
+      (core.vault_oauth)(ws(), "", signs_in(), r, fn(res) {
+        match res {
+          Ok(_) => ()
+          Err(why) => {
+            if why != "cancelled" {
+              (core.say)(fill("android-misc.act.failed", [("what", tr("android-settings.vault.act.saveWhat")), ("error", if why == "" { tr("web-pages.vault.oauth.failed") } else { why })]))
+            }
+          }
+        }
+      })
+    })
+  }
   let approve = fn() {
+    if @signals.untracked(signs_in) != "" {
+      sign_in()
+      return
+    }
     @signals.untracked(fn() {
       let s = save()
       let sc = scope()
@@ -282,7 +316,13 @@ pub fn vault_foot_node(
       } else {
         @sf.button_node(
           p,
-          fn() { tr(if remove() { "android-settings.vault.act.remove" } else if describe() { "android-settings.vault.act.change" } else if save() { "android-settings.vault.act.save" } else { "android-settings.vault.act.allow" }) },
+          fn() {
+            if signs_in() != "" {
+              tr("web-pages.vault.oauth.signIn." + signs_in())
+            } else {
+              tr(if remove() { "android-settings.vault.act.remove" } else if describe() { "android-settings.vault.act.change" } else if save() { "android-settings.vault.act.save" } else { "android-settings.vault.act.allow" })
+            }
+          },
           approve,
           // (one to delete the item: red, as what cannot be undone)
           tone=if @signals.untracked(remove) { DangerSolid } else { Primary },
@@ -323,6 +363,11 @@ pub fn vault_foot_node(
       acts(f)
       if beside {
         choice(f)
+      }
+      // (after the buttons: the vault page's 打开对话)
+      match extra {
+        Some(x) => x(f)
+        None => ()
       }
     })
     |> ignore
@@ -456,8 +501,12 @@ fn vault_runs_node(v : @view.View, runs : () -> Array[@ui.Run], style : @ui.Text
 fn vault_asked_node(v : @view.View, ask : () -> Asked, full_command : Bool) -> Unit {
   v.box(fn(w) {
     @sf.style_node(w, fn() { @sf.ask_what })
-    vault_runs_node(w, fn() { vault_title_runs(ask()) }, @sf.ask_title) |> ignore
+    // (one the person signs in to a service for: its mark, what it connects and the item's name, in place of the title)
+    w.show(fn() { ask().oauth != "" }, fn(s) { vault_oauth_head_node(s, ask) })
+    w.show(fn() { ask().oauth == "" }, fn(s) { vault_runs_node(s, fn() { vault_title_runs(ask()) }, @sf.ask_title) |> ignore })
     w.show(fn() { ask().reason != "" }, fn(s) { @sf.words_node(s, fn() { ask().reason }, fn() { @sf.ask_note }) |> ignore })
+    // (what signing in lets agents do, and that it stays theirs: the card's how it is given, in the person's words)
+    w.show(fn() { ask().oauth != "" }, fn(s) { vault_oauth_gives_node(s, ask) })
     w.show(fn() { ask().command != "" }, fn(s) {
       vault_runs_node(s, fn() { [@ui.span(ask().command, mono=true)] }, if full_command { @sf.ask_note } else { ask_command })
       |> ignore
@@ -482,7 +531,7 @@ fn vault_asked_node(v : @view.View, ask : () -> Asked, full_command : Bool) -> U
       })
       |> ignore
     })
-    w.show(fn() { ask().how_text != "" && !ask().describe && !ask().remove }, fn(s) {
+    w.show(fn() { ask().how_text != "" && !ask().describe && !ask().remove && ask().oauth == "" }, fn(s) {
       @sf.words_node(s, fn() { ask().how_text }, fn() { @sf.ask_note }) |> ignore
     })
     w.show(fn() { vault_odd_runs(ask()).length() > 0 }, fn(s) {
@@ -491,6 +540,96 @@ fn vault_asked_node(v : @view.View, ask : () -> Asked, full_command : Bool) -> U
   })
   |> ignore
 }
+
+///|
+/// The head of a request to sign in to a service for a token (`oauth`): the service's mark on its first line, what it
+/// connects (连接你的 Slack 账号) and, under it, the item's name as the agent gave it.
+fn vault_oauth_head_node(v : @view.View, ask : () -> Asked) -> Unit {
+  v.box(fn(r) {
+    @sf.style_node(r, fn() { vault_oauth_head }, in_row=true)
+    @sf.drawable_node(r, @signals.untracked(ask).oauth, vault_oauth_mark) |> ignore
+    r.box(fn(c) {
+      @sf.style_node(c, fn() { vault_oauth_words })
+      @sf.words_node(c, fn() { tr("web-pages.vault.oauth.card.title." + ask().oauth) }, fn() { vault_oauth_title }) |> ignore
+      @sf.words_node(c, fn() { ask().name }, fn() { @sf.ask_note }) |> ignore
+    })
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
+/// What signing in for it lets agents do, a line each with its icon on its first line: read and search as the person,
+/// post as them, and that the token stays in their vault, each use asked.
+fn vault_oauth_gives_node(v : @view.View, ask : () -> Asked) -> Unit {
+  v.box(fn(l) {
+    @sf.style_node(l, fn() { vault_oauth_gives })
+    for line in vault_oauth_lines {
+      let (icon, key) = line
+      l.box(fn(r) {
+        @sf.style_node(r, fn() { vault_oauth_give }, in_row=true)
+        r.box(fn(i) {
+          @sf.style_node(i, fn() { vault_oauth_give_icon })
+          @sf.icon_node(i, icon, vault_oauth_glyph, By(fn() { @sf.theme().p.muted })) |> ignore
+        })
+        |> ignore
+        @sf.words_node(r, fn() { tr("web-pages.vault.oauth.card." + key + "." + ask().oauth) }, fn() { vault_oauth_give_words }) |> ignore
+      })
+      |> ignore
+    }
+  })
+  |> ignore
+}
+
+///|
+/// What signing in for a token lets agents do, a line each: its icon and its words' key's part.
+// kept across runs: a table, never written
+let vault_oauth_lines : Array[(String, String)] = [("search", "read"), ("send", "write"), ("shield-check", "kept")]
+
+///|
+/// A sign-in request's head: its mark beside its words, on their first line.
+// kept across runs: an immutable style
+let vault_oauth_head : @ui.Style = @ui.css("row w=Full gap=S3 align=AStart")
+
+///|
+/// The service's mark at a sign-in request's head (as tall as its two lines' first two thirds).
+// kept across runs: a value (no field of it changes)
+let vault_oauth_mark : Double = 28.0
+
+///|
+/// A sign-in request's head's words: what it connects over the item's name.
+// kept across runs: an immutable style
+let vault_oauth_words : @ui.Style = @ui.style(w=@sf.grow, gap=S0_5)
+
+///|
+/// What it connects, in the card's title's words a little heavier.
+// kept across runs: an immutable style
+let vault_oauth_title : @ui.TextStyle = @ui.text_style(size=Ui, leading=L5, color=Fg, weight=Semibold, w=Full)
+
+///|
+/// What signing in lets agents do: its lines under the reason.
+// kept across runs: an immutable style
+let vault_oauth_gives : @ui.Style = @ui.css("w=Full gap=S1 pt=S1")
+
+///|
+/// A line of it: its icon on its first line, beside its words.
+// kept across runs: an immutable style
+let vault_oauth_give : @ui.Style = @ui.css("row w=Full gap=S2 align=AStart")
+
+///|
+/// The icon's place, as tall as a line of the words beside it, the icon in its middle.
+// kept across runs: an immutable style
+let vault_oauth_give_icon : @ui.Style = @ui.css("h=S5 align=ACenter justify=JCenter")
+
+///|
+/// A line's icon, as the card's notes' glyphs are.
+// kept across runs: a value (no field of it changes)
+let vault_oauth_glyph : Double = 14.0
+
+///|
+/// A line's words.
+// kept across runs: an immutable style
+let vault_oauth_give_words : @ui.TextStyle = @ui.text_style(size=Caption, leading=L5, color=Fg, w=Full)
 
 ///|
 /// Request `request()` in workspace `ws()` as its card in `v` (vault_card's, as nodes), as its message says it now:
@@ -556,4 +695,42 @@ pub fn vault_outcome_node(
   history? : ((@view.View) -> Unit)? = None,
 ) -> Unit {
   ask_outcome_node(v, fn() { status() == "granted" }, fn() { vault_outcome_words(ask(), status(), scope()) }, inline, history~)
+}
+
+///|
+/// Request `request()` in workspace `ws()` as a card in `v` (vault_ask's, as nodes), as the vaults topic lists it (the
+/// vault page's waiting requests, the viewer's to answer): what is asked (`ask()`), and its answer at its foot as that
+/// topic says it, `extra` after its buttons (its chat's way there).
+pub fn vault_request_node(
+  v : @view.View,
+  core : Core,
+  ws : () -> String,
+  request : () -> String,
+  ask : () -> Asked,
+  extra? : (@view.View) -> Unit,
+) -> Unit {
+  // (how it is answered here, worked out once for each change of the vaults' view: what its foot shows reads that alone,
+  // not the view whole as another request or a vault's count changes)
+  let said_now = @signals.computed(fn(_) { topic_answer(core, ws(), request(), true, None) })
+  let said = fn() { said_now.get() }
+  // (in its card's foot corners where it is answered here: vault_ask's `foot`)
+  let foot = @signals.untracked(said) is Some((Approve(_) | SetUp, _, _))
+  @sf.ask_card_node(v, fn(k) {
+    vault_asked_node(k, ask, false)
+    vault_foot_node(
+      k,
+      core,
+      ws,
+      request,
+      fn() { said().map(fn(s) { s.0 }) },
+      fn() { said().map(fn(s) { s.1 }).unwrap_or(false) },
+      fn() { said().bind(fn(s) { s.2 }) },
+      fn() { (ask().timeout_kind, ask().timeout_seconds) },
+      foot~,
+      describe=fn() { ask().describe },
+      remove=fn() { ask().remove },
+      extra?,
+    )
+  })
+  |> ignore
 }

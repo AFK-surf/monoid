@@ -340,7 +340,11 @@ pub fn file_card(
   let ground = if !composer && (retry || restore || remove || slot) { ground.then(card_end_justified) } else { ground }
   let b = c.box(
     // (in the composer, pointed at: the hover's tint over its own ground, not in its place)
-    style=if open && !(composer && !named) && c.hovered(id) { ground.then(card_hot) } else { ground },
+    style=if open && !(composer && !named) && c.hovered(id) {
+      ground.then(if named { card_named_hot } else { card_hot })
+    } else {
+      ground
+    },
     border_color?=if named { Some(theme().p.line_strong) } else { None },
     id~,
     fn() {
@@ -609,7 +613,11 @@ let card_end_justified : @ui.Style = @ui.css("pr=S3_5 justify=JBetween")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let card_hot : @ui.Style = @ui.css("bg=Hover")
+let card_hot : @ui.Style = @ui.css("bg=Over(Neutral, Hover)")
+
+///|
+// kept across runs: a value (no field of it changes)
+let card_named_hot : @ui.Style = @ui.css("bg=Hover")
 
 ///|
 /// A named file's card (fileCard[data-named]: no ground, 1px dashed in --line-strong, given as it is drawn).
@@ -768,7 +776,7 @@ pub fn quote_card(
           c.box(style=quote_pin, fn() { c.text(pin, style=quote_pin_words) |> ignore }) |> ignore
           c.text(words.split("\n").next().map(fn(s) { s.to_owned() }).unwrap_or(""), style=quote_text) |> ignore
         } else {
-          c.box(style=quote_mark, fn() { icon(c, "quote", size=quote_icon, color=p.accent) |> ignore }) |> ignore
+          c.box(style=quote_mark, fn() { icon(c, "quote-open", size=quote_icon, color=p.accent) |> ignore }) |> ignore
           c.rich(
             [
               @ui.span(t("web-main.quote.author", args=[("author", author)]), weight=500, color=p.text),

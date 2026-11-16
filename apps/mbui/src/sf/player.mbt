@@ -340,6 +340,9 @@ priv struct PlayerView {
   mut ended_off : String
   mut file : String
   mut placed : (Double, Double, Double, Double)?
+  /// where a player's nodes have its picture now (player_node's: at the moment of what asks, else of what the window's
+  /// tree last did), while they live
+  mut placed_by : (() -> (Double, Double, Double, Double)?)?
   /// taken down past the line and let go: going, its picture left where the finger left it, its controls away
   mut taken_down : Bool
 }
@@ -431,6 +434,7 @@ fn view_for(key : String, margin? : Double = 0.0) -> PlayerView {
         ended_off: "",
         file: "",
         placed: None,
+        placed_by: None,
         taken_down: false,
       }
       player_views[key] = v
@@ -444,10 +448,12 @@ fn view_for(key : String, margin? : Double = 0.0) -> PlayerView {
 /// down), while its view is open: what a viewer closing it flies back from.
 pub fn player_picture_at(key : String) -> (Double, Double, Double, Double)? {
   match player_views.get(key) {
+    Some({ placed_by: Some(f), .. }) => f()
     Some(v) => v.placed
     None => None
   }
 }
+
 
 ///|
 /// What a player's view held of its own, by its player's key, let go (the player closed).

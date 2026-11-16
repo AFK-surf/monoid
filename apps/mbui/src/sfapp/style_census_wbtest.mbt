@@ -85,12 +85,13 @@ test "styles: how many values of each kind the app's screens use" {
   // dials were its last 36.
   // The chats' lists keep room under their last row to scroll their tucked search out of view (Scroll::tucks' room,
   // 39 where the rows are short of a screen), worked out as they are laid out, no token of its own.
+  // 记忆 shows recent diffs inline (tool_diff's faint_ground, red_bg, green_bg and green_ink, by day and by night).
   inspect(counts.to_string(), content=(
     #|text 36
     #|weight 4
     #|space 24
     #|radius 24
-    #|color 73
+    #|color 81
     #|
 
 

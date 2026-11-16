@@ -1,6 +1,7 @@
-// The chat's things on 小屏 (open_things): a sheet whose body is nodes (@sfpages.things_node), held to the same page
-// with its old body (@sfpages.things_body, the wide side pane's still) in the host's sheet of the same panel: where each
-// of their words is drawn, the kinds' choice pressed where it is drawn, and 在对话中查看 closing it.
+// The chat's things on 小屏 (open_things): a sheet whose body is nodes (@sfpages.things_node), held to what its old
+// body (things_body, gone 2026-11-15 as the tab beside the chat was made of nodes too) drew in the host's sheet of the
+// same panel, kept as it was then: where each of their words is drawn, the kinds' choice pressed where it is drawn, and
+// 在对话中查看 closing it.
 
 ///|
 /// A chat of the made-up core's, open on a phone.
@@ -12,17 +13,6 @@ fn things_chat() -> (@ui.Tester, Source, ChatRef) {
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
   t.run_for(@ui.move_most_ms)
   (t, src, r)
-}
-
-///|
-/// The chat's things with their old body in the host's sheet (open_things's panel as it was).
-fn open_things_old(src : Source, r : ChatRef) -> Unit {
-  @sf.panel(tr("web-main.things.title"), from=Unanchored, tall=0.8, grows=true, fn(c, close) {
-    @sfpages.things_body(c, src, r, 7.0, true, fn(seq) {
-      close()
-      go_to(r, seq)
-    })
-  })
 }
 
 ///|
@@ -60,13 +50,76 @@ fn things_seen(t : @ui.Tester, r : ChatRef, open : () -> Unit) -> (Array[(String
 ///|
 test "小屏: the chat's things, a sheet whose body is nodes: each of its words where the host's sheet of its old body has it; 文件 pressed where it is drawn: its files, where the old one's are" {
   let (t, src, r) = things_chat()
-  let (old_first, old_files) = things_seen(t, r, fn() { open_things_old(src, r) })
   let (first, files) = things_seen(t, r, fn() { open_things(src, r, 7.0) })
   assert_true(first.iter().any(fn(w) { w.0 == "媒体 4" }), msg="the kinds' choice")
-  assert_eq(first, old_first)
+  debug_inspect(first, content=(
+    
+    #|[
+    #|  ("等 林 决定", 16, 198, 65, 18),
+    #|  ("图片、文件和链接", 24, 198, 128, 24),
+    #|  ("先不换", 63, 237, 293, 22),
+    #|  ("媒体 4", 46, 251.5, 45, 21),
+    #|  ("文件 2", 130.5, 251.5, 45, 21),
+    #|  ("链接 2", 215, 251.5, 45, 21),
+    #|  ("PR 4", 307, 251.5, 30, 21),
+    #|  ("这次只改列表，截图下次再说", 63, 259, 293, 18),
+    #|  ("一起换", 63, 291, 293, 22),
+    #|  ("筛选", 40, 295, 310, 22),
+    #|  ("把首页和聊天页的截图都更新", 63, 313, 293, 18),
+    #|  ("今天", 24, 348, 30, 22),
+    #|  ("忽略", 16, 352, 358, 18),
+    #|  ("19:20 · Claude", 24, 384, 91, 18),
+    #|  ("列表高度改前改后", 123, 384, 104, 18),
+    #|  ("Willow 上 codex 的登录已失效：请在设置里重新登录", 39, 396, 312, 22),
+    #|  ("Claude", 41, 447, 39, 18),
+    #|  ("15 分钟前", 86, 447, 54, 18),
+    #|  ("推送截图前要先登录 gh。", 16, 472, 358, 23),
+    #|  ("在 Willow 上登录 gh", 34, 525, 322, 18),
+    #|  ("等你在浏览器里登录", 34, 545, 117, 18),
+    #|  ("17:05 · Claude", 24, 554, 91, 18),
+    #|  ("录了一段滑动", 123, 554, 78, 18),
+    #|  ("Claude", 41, 604, 39, 18),
+    #|  ("5 分钟前", 86, 604, 48, 18),
+    #|  ("做完了：列表、跳到最新的按钮、加载更早的消息都好了，截图也换了。", 16, 629, 358, 46),
+    #|  ("0:12", 61, 680, 24, 16),
+    #|  ("昨天", 24, 730, 30, 22),
+    #|  ("22:40 · Ana", 24, 766, 71.5, 18),
+    #|  ("发消息", 53, 797.5, 276, 25),
+    #|]
+  ))
   assert_true(files.iter().any(fn(w) { w.0 == "build.log" }), msg="its files")
   assert_false(files.iter().any(fn(w) { w.0 == "列表高度改前改后" }), msg="its pictures' words gone")
-  assert_eq(files, old_files)
+  debug_inspect(files, content=(
+    
+    #|[
+    #|  ("等 林 决定", 16, 198, 65, 18),
+    #|  ("图片、文件和链接", 24, 198, 128, 24),
+    #|  ("先不换", 63, 237, 293, 22),
+    #|  ("媒体 4", 46, 251.5, 45, 21),
+    #|  ("文件 2", 130.5, 251.5, 45, 21),
+    #|  ("链接 2", 215, 251.5, 45, 21),
+    #|  ("PR 4", 307, 251.5, 30, 21),
+    #|  ("这次只改列表，截图下次再说", 63, 259, 293, 18),
+    #|  ("一起换", 63, 291, 293, 22),
+    #|  ("筛选", 40, 295, 310, 22),
+    #|  ("把首页和聊天页的截图都更新", 63, 313, 293, 18),
+    #|  ("build.log", 58, 344, 67.5, 22),
+    #|  ("忽略", 16, 352, 358, 18),
+    #|  ("18 KB · Claude · 1 小时前", 58, 368, 162.5, 18),
+    #|  ("Willow 上 codex 的登录已失效：请在设置里重新登录", 39, 396, 312, 22),
+    #|  ("性能报告.pdf", 58, 404, 90, 22),
+    #|  ("1.0 MB · Claude · 2 小时前", 58, 428, 169, 18),
+    #|  ("Claude", 41, 447, 39, 18),
+    #|  ("15 分钟前", 86, 447, 54, 18),
+    #|  ("推送截图前要先登录 gh。", 16, 472, 358, 23),
+    #|  ("在 Willow 上登录 gh", 34, 525, 322, 18),
+    #|  ("等你在浏览器里登录", 34, 545, 117, 18),
+    #|  ("Claude", 41, 604, 39, 18),
+    #|  ("5 分钟前", 86, 604, 48, 18),
+    #|  ("做完了：列表、跳到最新的按钮、加载更早的消息都好了，截图也换了。", 16, 629, 358, 46),
+    #|  ("发消息", 53, 797.5, 276, 25),
+    #|]
+  ))
 }
 
 ///|
@@ -143,17 +196,22 @@ fn things_held_seen(t : @ui.Tester, r : ChatRef, name : String, open : () -> Uni
 ///|
 test "小屏: the chat's things whose body is nodes: a file's row held by a finger is felt, lit and its menu opened as the old body's is, held and with its menu open, the sheet behind it pushed back and dimmed" {
   let (t, src, r) = things_chat()
-  let old = things_held_seen(t, r, "build.log", fn() { open_things_old(src, r) })
   let now = things_held_seen(t, r, "build.log", fn() { open_things(src, r, 7.0) })
-  assert_true(old.3, msg="the old one's menu opened")
-  assert_eq(now.0, old.0, msg="felt")
-  assert_eq(now.1, old.1, msg="lit while held")
-  assert_eq(now.2, old.2, msg="lit while its menu is open")
-  assert_eq(now.3, old.3, msg="its menu")
+  assert_true(now.3, msg="its menu opened")
   // (the sheet behind it pushed back and dimmed: its row up from where it was, the scrim over it)
-  assert_true(old.4.1.length() > 0 && old.4.1[0].1 < old.4.0, msg="the old one pushed back: \{Repr(old.4)}")
-  assert_true(old.4.2.length() > 1, msg="the old one dimmed over itself: \{Repr(old.4)}")
-  assert_eq(now.4, old.4, msg="pushed back and dimmed")
+  assert_true(now.4.1.length() > 0 && now.4.1[0].1 < now.4.0, msg="pushed back: \{Repr(now.4)}")
+  assert_true(now.4.2.length() > 1, msg="dimmed over itself: \{Repr(now.4)}")
+  // (felt, lit while held and while its menu is open, pushed back and dimmed: as the old body's was)
+  debug_inspect(now, content=(
+    
+    #|(
+    #|  [LongPress],
+    #|  [],
+    #|  [],
+    #|  true,
+    #|  (344, [(58, 199)], [(0, 0, 390, 844), (0, 24, 390, 717)]),
+    #|)
+  ))
 }
 
 ///|
@@ -206,10 +264,15 @@ test "小屏: the chat's things whose body is nodes: a video the station made no
   let (t, base, r) = things_chat()
   let src : Source = { ..base, poster: fn(_, _, _) { "!" } }
   let frame = fixture_file_png("演示录屏.mp4")
-  let old = things_first_seen(t, r, frame, fn() { open_things_old(src, r) })
   let now = things_first_seen(t, r, frame, fn() { open_things(src, r, 7.0) })
-  assert_true(old.0 > 0 && old.1.length() > 0, msg="the old one's first frame: \{Repr(old)}")
-  assert_eq(now, old)
+  assert_true(now.0 > 0 && now.1.length() > 0, msg="its first frame: \{Repr(now)}")
+  debug_inspect(now, content=(
+    
+    #|(
+    #|  1,
+    #|  [("mem:pv-first/5789003989113648266/31/演示录屏.mp4", 24, 578, 242, 136)],
+    #|)
+  ))
 }
 
 ///|
@@ -269,13 +332,41 @@ fn things_peek_seen(t : @ui.Tester, r : ChatRef, kind : String, name : String, o
 ///|
 test "小屏 with a mouse: the chat's things whose body is nodes: a link's row and a pull request's pointed at show its card (web_peek) where the old body's do, each of its words, and it goes as the pointer leaves" {
   let (t, src, r) = things_chat_mouse()
+  let seen = []
   for k in [("links", "列表滚动的性能数据"), ("pulls", "首页列表按天分组")] {
     let (kind, name) = k
-    let old = things_peek_seen(t, r, kind, name, fn() { open_things_old(src, r) })
     let now = things_peek_seen(t, r, kind, name, fn() { open_things(src, r, 7.0) })
-    assert_true(old.0.length() > 0 && old.1, msg="\{kind}: the old one's card, gone after: \{Repr(old)}")
-    assert_eq(now, old, msg="\{kind}: \{Repr(now)}, the old one's \{Repr(old)}")
+    assert_true(now.0.length() > 0 && now.1, msg="\{kind}: its card, gone after: \{Repr(now)}")
+    seen.push(now)
   }
+  debug_inspect(seen, content=(
+    
+    #|[
+    #|  (
+    #|    [
+    #|      ("列表滚动的性能数据", 68, 352, 208, 22),
+    #|      ("Example · example.com/bench/list", 68, 375, 208, 18),
+    #|      ("复制链接", 218, 403, 52, 20),
+    #|    ],
+    #|    true,
+    #|  ),
+    #|  (
+    #|    [
+    #|      ("已合并", 44, 411, 39, 18),
+    #|      ("acme/shop #128", 99, 411, 91, 18),
+    #|      ("3 小时前", 315.5, 411, 52, 18),
+    #|      ("首页列表按天分组", 24, 438, 120, 22),
+    #|      ("复制链接", 309.5, 470, 52, 20),
+    #|      ("lin", 48, 471, 19.5, 18),
+    #|      ("+120", 81.5, 471, 26, 18),
+    #|      ("−8", 113.5, 471, 13, 18),
+    #|      ("4 个文件", 146.5, 471, 52, 18),
+    #|      ("检查通过 9", 218.5, 471, 65, 18),
+    #|    ],
+    #|    true,
+    #|  ),
+    #|]
+  ))
 }
 
 ///|
@@ -336,10 +427,8 @@ test "小屏 with a mouse: a link's card whose row is nodes waits for the hand t
     t.run_for(sheet_way_ms(t))
     (held, after)
   }
-  let old = seen(fn() { open_things_old(src, r) })
   let now = seen(fn() { open_things(src, r, 7.0) })
-  assert_eq(old, (false, true), msg="the old one's")
-  assert_eq(now, old)
+  assert_eq(now, (false, true))
 }
 
 ///|
@@ -364,10 +453,11 @@ test "小屏 with a mouse: a link's card whose row is nodes holds a page's icon 
   // (its image's key, once its card asked it)
   let key = fn() { @sfbase.link_picture(src, r.station, "https://example.com/bench/list", Some(page), "icon") }
   let drawn = fn(_x : Double, _y : Double) { media_drawn(t, key()).map(fn(b) { "\{@ui.rect_text(b)}" }).join(" ") }
-  let old = things_card_seen(t, r, "links", "列表滚动的性能数据", fn() { open_things_old(src, r) }, drawn)
   let now = things_card_seen(t, r, "links", "列表滚动的性能数据", fn() { open_things(src, r, 7.0) }, drawn)
-  assert_true(old != "", msg="the old one's icon")
-  assert_eq(now, old)
+  assert_true(now != "", msg="its icon")
+  debug_inspect(now, content=(
+    #|"(30, 360.29999999999995, 20, 15)"
+  ))
 }
 
 ///|
@@ -407,10 +497,11 @@ test "小屏 with a mouse: a link's card whose row is nodes taller than the wind
       "\{@ui.list_text(shown.map(fn(w) { "(\{w.0}, \{w.1}, \{w.2}, \{w.3}, \{w.4})" }))}\n\{@ui.list_text(wheeled.map(fn(w) { "(\{w.0}, \{w.1}, \{w.2}, \{w.3}, \{w.4})" }))}"
     })
   }
-  let old = seen(fn() { open_things_old(src, r) })
   let now = seen(fn() { open_things(src, r, 7.0) })
-  assert_true(old.contains("label 0"), msg="the old one's card")
-  assert_eq(now, old)
+  assert_true(now.contains("label 0"), msg="its card")
+  debug_inspect(now, content=(
+    #|"[(label 0, 81.5, 81, 45.5, 18), (label 1, 147, 81, 45.5, 18), (label 2, 212.5, 81, 45.5, 18), (label 3, 28, 109, 45.5, 18), (label 4, 93.5, 109, 45.5, 18), (label 5, 159, 109, 45.5, 18), (label 6, 224.5, 109, 45.5, 18), (label 7, 28, 137, 45.5, 18), (label 8, 93.5, 137, 45.5, 18), (label 9, 159, 137, 45.5, 18), (label 10, 224.5, 137, 52, 18), (label 11, 28, 165, 52, 18), (label 12, 100, 165, 52, 18), (label 13, 172, 165, 52, 18), (label 14, 244, 165, 52, 18), (label 15, 28, 193, 52, 18), (label 16, 100, 193, 52, 18), (label 17, 172, 193, 52, 18), (label 18, 244, 193, 52, 18), (label 19, 28, 221, 52, 18), (label 20, 100, 221, 52, 18), (label 21, 172, 221, 52, 18), (label 22, 244, 221, 52, 18), (label 23, 28, 249, 52, 18), (label 24, 100, 249, 52, 18), (label 25, 172, 249, 52, 18), (label 26, 244, 249, 52, 18), (label 27, 28, 277, 52, 18), (label 28, 100, 277, 52, 18), (label 29, 172, 277, 52, 18), (label 30, 244, 277, 52, 18), (label 31, 28, 305, 52, 18), (label 32, 100, 305, 52, 18), (label 33, 172, 305, 52, 18), (label 34, 244, 305, 52, 18), (label 35, 28, 333, 52, 18), (label 36, 100, 333, 52, 18), (label 37, 172, 333, 52, 18), (label 38, 244, 333, 52, 18), (label 39, 28, 361, 52, 18), (label 40, 100, 361, 52, 18), (label 41, 172, 361, 52, 18), (label 42, 244, 361, 52, 18), (label 43, 28, 389, 52, 18), (label 44, 100, 389, 52, 18), (label 45, 172, 389, 52, 18), (label 46, 244, 389, 52, 18), (label 47, 28, 417, 52, 18), (label 48, 100, 417, 52, 18), (label 49, 172, 417, 52, 18), (label 50, 244, 417, 52, 18), (label 51, 28, 445, 52, 18), (label 52, 100, 445, 52, 18), (label 53, 172, 445, 52, 18), (label 54, 244, 445, 52, 18), (label 55, 28, 473, 52, 18), (label 56, 100, 473, 52, 18), (label 57, 172, 473, 52, 18), (label 58, 244, 473, 52, 18), (label 59, 28, 501, 52, 18), (label 60, 100, 501, 52, 18), (label 61, 172, 501, 52, 18), (label 62, 244, 501, 52, 18), (label 63, 28, 529, 52, 18), (label 64, 100, 529, 52, 18), (label 65, 172, 529, 52, 18), (label 66, 244, 529, 52, 18), (label 67, 28, 557, 52, 18), (label 68, 100, 557, 52, 18), (label 69, 172, 557, 52, 18), (label 70, 244, 557, 52, 18), (label 71, 28, 585, 52, 18), (label 72, 100, 585, 52, 18), (label 73, 172, 585, 52, 18), (label 74, 244, 585, 52, 18), (label 75, 28, 613, 52, 18), (label 76, 100, 613, 52, 18), (label 77, 172, 613, 52, 18), (label 78, 244, 613, 52, 18), (label 79, 28, 641, 52, 18), (label 80, 100, 641, 52, 18), (label 81, 172, 641, 52, 18), (label 82, 244, 641, 52, 18), (label 83, 28, 669, 52, 18), (label 84, 100, 669, 52, 18), (label 85, 172, 669, 52, 18), (label 86, 244, 669, 52, 18), (label 87, 28, 697, 52, 18), (label 88, 100, 697, 52, 18), (label 89, 172, 697, 52, 18), (label 90, 244, 697, 52, 18), (label 91, 28, 725, 52, 18), (label 92, 100, 725, 52, 18), (label 93, 172, 725, 52, 18), (label 94, 244, 725, 52, 18), (label 95, 28, 753, 52, 18), (label 96, 100, 753, 52, 18), (label 97, 172, 753, 52, 18), (label 98, 244, 753, 52, 18), (label 99, 28, 781, 52, 18), (label 100, 100, 781, 58.5, 18), (label 101, 178.5, 781, 58.5, 18), (label 102, 28, 809, 58.5, 18), (label 103, 106.5, 809, 58.5, 18), (label 104, 185, 809, 58.5, 18), (label 105, 28, 837, 58.5, 18), (label 106, 106.5, 837, 58.5, 18), (label 107, 185, 837, 58.5, 18)]\n[(label 11, 28, 19, 52, 18), (label 12, 100, 19, 52, 18), (label 13, 172, 19, 52, 18), (label 14, 244, 19, 52, 18), (label 15, 28, 47, 52, 18), (label 16, 100, 47, 52, 18), (label 17, 172, 47, 52, 18), (label 18, 244, 47, 52, 18), (label 19, 28, 75, 52, 18), (label 20, 100, 75, 52, 18), (label 21, 172, 75, 52, 18), (label 22, 244, 75, 52, 18), (label 23, 28, 103, 52, 18), (label 24, 100, 103, 52, 18), (label 25, 172, 103, 52, 18), (label 26, 244, 103, 52, 18), (label 27, 28, 131, 52, 18), (label 28, 100, 131, 52, 18), (label 29, 172, 131, 52, 18), (label 30, 244, 131, 52, 18), (label 31, 28, 159, 52, 18), (label 32, 100, 159, 52, 18), (label 33, 172, 159, 52, 18), (label 34, 244, 159, 52, 18), (label 35, 28, 187, 52, 18), (label 36, 100, 187, 52, 18), (label 37, 172, 187, 52, 18), (label 38, 244, 187, 52, 18), (label 39, 28, 215, 52, 18), (label 40, 100, 215, 52, 18), (label 41, 172, 215, 52, 18), (label 42, 244, 215, 52, 18), (label 43, 28, 243, 52, 18), (label 44, 100, 243, 52, 18), (label 45, 172, 243, 52, 18), (label 46, 244, 243, 52, 18), (label 47, 28, 271, 52, 18), (label 48, 100, 271, 52, 18), (label 49, 172, 271, 52, 18), (label 50, 244, 271, 52, 18), (label 51, 28, 299, 52, 18), (label 52, 100, 299, 52, 18), (label 53, 172, 299, 52, 18), (label 54, 244, 299, 52, 18), (label 55, 28, 327, 52, 18), (label 56, 100, 327, 52, 18), (label 57, 172, 327, 52, 18), (label 58, 244, 327, 52, 18), (label 59, 28, 355, 52, 18), (label 60, 100, 355, 52, 18), (label 61, 172, 355, 52, 18), (label 62, 244, 355, 52, 18), (label 63, 28, 383, 52, 18), (label 64, 100, 383, 52, 18), (label 65, 172, 383, 52, 18), (label 66, 244, 383, 52, 18), (label 67, 28, 411, 52, 18), (label 68, 100, 411, 52, 18), (label 69, 172, 411, 52, 18), (label 70, 244, 411, 52, 18), (label 71, 28, 439, 52, 18), (label 72, 100, 439, 52, 18), (label 73, 172, 439, 52, 18), (label 74, 244, 439, 52, 18), (label 75, 28, 467, 52, 18), (label 76, 100, 467, 52, 18), (label 77, 172, 467, 52, 18), (label 78, 244, 467, 52, 18), (label 79, 28, 495, 52, 18), (label 80, 100, 495, 52, 18), (label 81, 172, 495, 52, 18), (label 82, 244, 495, 52, 18), (label 83, 28, 523, 52, 18), (label 84, 100, 523, 52, 18), (label 85, 172, 523, 52, 18), (label 86, 244, 523, 52, 18), (label 87, 28, 551, 52, 18), (label 88, 100, 551, 52, 18), (label 89, 172, 551, 52, 18), (label 90, 244, 551, 52, 18), (label 91, 28, 579, 52, 18), (label 92, 100, 579, 52, 18), (label 93, 172, 579, 52, 18), (label 94, 244, 579, 52, 18), (label 95, 28, 607, 52, 18), (label 96, 100, 607, 52, 18), (label 97, 172, 607, 52, 18), (label 98, 244, 607, 52, 18), (label 99, 28, 635, 52, 18), (label 100, 100, 635, 58.5, 18), (label 101, 178.5, 635, 58.5, 18), (label 102, 28, 663, 58.5, 18), (label 103, 106.5, 663, 58.5, 18), (label 104, 185, 663, 58.5, 18), (label 105, 28, 691, 58.5, 18), (label 106, 106.5, 691, 58.5, 18), (label 107, 185, 691, 58.5, 18), (label 108, 28, 719, 58.5, 18), (label 109, 106.5, 719, 58.5, 18), (label 110, 185, 719, 58.5, 18), (label 111, 28, 747, 58.5, 18), (label 112, 106.5, 747, 58.5, 18), (label 113, 185, 747, 58.5, 18), (label 114, 28, 775, 58.5, 18), (label 115, 106.5, 775, 58.5, 18), (label 116, 185, 775, 58.5, 18), (label 117, 28, 803, 58.5, 18), (label 118, 106.5, 803, 58.5, 18), (label 119, 185, 803, 58.5, 18)]"
+  ))
 }
 
 ///|
@@ -443,10 +534,8 @@ test "小屏 with a mouse: a link's card whose row is nodes, its address copied,
     t.run_for(sheet_way_ms(t))
     (again, after)
   }
-  let old = seen(fn() { open_things_old(src, r) })
   let now = seen(fn() { open_things(src, r, 7.0) })
-  assert_eq(old, (true, true), msg="the old one's")
-  assert_eq(now, old)
+  assert_eq(now, (true, true))
 }
 
 ///|

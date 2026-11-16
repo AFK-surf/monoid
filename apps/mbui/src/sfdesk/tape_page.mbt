@@ -60,8 +60,9 @@ fn tape_page_pane(v : @view.View, src : Source) -> Unit {
       // (a page's bar on the tape the tree's, over its own view: what the page says of it, collected as it is built)
       // (a chat's page made once holds its old view, which says its bar as it is built, as an old view's page does)
       head=fn(b, k, made) {
-        let chat = @signals.untracked(fn() { app.nav.page_of(k) is Some((p, _)) && @sfbase.chat_page_is(p) })
-        tape_bar_head(b, k, made && !chat, tips)
+        // (and Home, whose board has its bar of its own: board.mbt's board_tape_made)
+        let own_bar = @signals.untracked(fn() { app.nav.page_of(k) is Some((p, _)) && (@sfbase.chat_page_is(p) || p is Home) })
+        tape_bar_head(b, k, made && !own_bar, tips)
       },
       // (a page of the library's made once in its place, where it is: its bar the tape's, from what the page is)
       made=fn(p) { tape_made(src, p, tips) },
@@ -189,7 +190,7 @@ fn tape_bar_of(k : Int) -> TapeBar {
         said: @signals.signal(None, same=fn(a, b) { a == b }),
         back: fn() {  },
         page_said: @signals.signal(None, same=fn(a, b) { a == b }),
-        page_actions: @signals.signal(None, same=fn(a, b) {
+        page_actions: @signals.signal_by(None, same=fn(a, b) {
           match (a, b) {
             (None, None) => true
             (Some(x), Some(y)) => x.2 == y.2
@@ -361,6 +362,8 @@ fn tape_made(
     )
   }
   match page {
+    // (Home: the board while it is chosen, else the panel's ground: board.mbt)
+    Home if pane_makes.val => Some(board_tape_made(src, tips, width))
     // (laid out by the page's width, narrow or wide: page_node's)
     Setting(About) if pane_makes.val =>
       made("about", fn(p, core, _here, _stint, told, _acts) {
@@ -384,9 +387,12 @@ fn tape_made(
         context_node(p)
         profiles_place_node(p, src, core, here, stint, fn() { tape_made_frame }, width, said=told, tips~)
       })
-    // (the stations' place with one that only runs tasks picked: its page made once, in the place of the old view's)
-    Place("stations") if place_rig(src) != "" =>
-      tape_made(src, Setting(Station(place_rig(src))), tips).map(fn(m) { ("place/" + m.0, m.1) })
+    // (the stations' place: the station picked in its list made once as its page is, none the first to add)
+    Place("stations") =>
+      made("place/stations", fn(p, core, here, stint, told, _acts) {
+        context_node(p)
+        stations_place_node(p, src, core, here, stint, fn() { tape_made_frame }, width, said=told, tips~)
+      })
     // (a place of the rail's whose page is one of those: that page as the settings open it, at the stack's root, made
     // under its own kind)
     Place(name) =>
@@ -396,6 +402,8 @@ fn tape_made(
           tape_made(src, Setting(r), tips).map(fn(m) { ("place/" + m.0, m.1) })
         _ => None
       }
+    // (the settings come to beside their list: its first row's page, made once as that page is)
+    Settings => tape_made(src, Setting(settings_landing), tips).map(fn(m) { ("settings/" + m.0, m.1) })
     // (by its station: another station's another page, not this one become it)
     Setting(Memory(address)) if pane_makes.val =>
       made("memory/" + address, fn(p, core, here, _stint, told, _acts) {
@@ -429,6 +437,21 @@ fn tape_made(
       made("appearance", fn(p, core, _here, _stint, told, _acts) {
         @sfpages.appearance_node(p, core, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~)
       })
+    Setting(Profiles("")) if @settings.profiles_narrow_overview.get() =>
+      made("profiles-overview", fn(p, core, here, _stint, told, _acts) {
+        context_node(p)
+        @sfpages.profiles_overview_node(
+          p,
+          core,
+          here,
+          on_back=core.pop,
+          frame=fn() { tape_made_frame },
+          said=told,
+          width~,
+          tips~,
+          on_show_accounts=fn() { @settings.profiles_narrow_overview.set(false) },
+        )
+      })
     // (by its station and id: another's another page; made in every case, as it has no old view)
     Setting(Profile(address, id)) =>
       made("profile/" + address + "/" + id, fn(p, core, here, stint, told, _acts) {
@@ -456,6 +479,21 @@ fn tape_made(
         context_node(p)
         @sfpages.permissions_node(p, core, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~)
       })
+    Setting(Me) if pane_makes.val =>
+      made("me", fn(p, core, here, stint, told, _acts) {
+        context_node(p)
+        @sfpages.me_node(p, core, here, on_back=core.pop, frame=fn() { tape_made_frame }, stint~, said=told, width~)
+      })
+    Setting(Fonts) if pane_makes.val =>
+      made("fonts", fn(p, core, _here, _stint, told, _acts) {
+        context_node(p)
+        @sfpages.fonts_node(p, core, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~)
+      })
+    Setting(BarSettings) if pane_makes.val =>
+      made("bars", fn(p, core, _here, _stint, told, _acts) {
+        context_node(p)
+        @sfpages.bars_node(p, core, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~)
+      })
     Setting(Security) if pane_makes.val =>
       made("security", fn(p, core, here, stint, told, _acts) {
         context_node(p)
@@ -475,6 +513,40 @@ fn tape_made(
       made("vault-items", fn(p, core, here, _stint, told, _acts) {
         context_node(p)
         @sfpages.vault_items_node(p, core, here, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~)
+      })
+    Setting(KeptFiles) if pane_makes.val =>
+      made("kept", fn(p, core, _here, _stint, told, _acts) {
+        context_node(p)
+        @settings.kept_node(p, core, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~)
+      })
+    // (by its station and thread: another chat's another page)
+    Setting(KeptChat(station, thread)) if pane_makes.val =>
+      made("kept/" + station + "/" + thread.to_string(), fn(p, core, _here, _stint, told, _acts) {
+        context_node(p)
+        @settings.kept_chat_node(p, core, station, thread, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~)
+      })
+    // (by its station and session: another's another page)
+    Setting(RunSettings(station, key)) if pane_makes.val =>
+      made("run/" + station + "/" + key, fn(p, core, _here, _stint, told, _acts) {
+        context_node(p)
+        @settings.run_settings_node(p, core, station, key, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~)
+      })
+    // (by the station whose step is said first: another station's another page)
+    Setting(AdbShare(focus)) if pane_makes.val =>
+      made("adb/" + focus, fn(p, core, _here, _stint, told, _acts) {
+        context_node(p)
+        @settings.adb_node(p, core, focus, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~)
+      })
+    Setting(Vault) if pane_makes.val =>
+      made("vault", fn(p, core, here, _stint, told, _acts) {
+        context_node(p)
+        @sfpages.vault_node(p, core, here, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~)
+      })
+    // (by its vault and item: another's another page)
+    Setting(VaultItem(vault, item)) if pane_makes.val =>
+      made("vault-item/" + vault + "/" + item, fn(p, core, here, _stint, told, _acts) {
+        context_node(p)
+        @sfpages.vault_item_node(p, core, here, vault, item, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~)
       })
     // (by its station and id: another's another page; 添加连接 in the bar)
     Setting(Connects(only)) if pane_makes.val =>

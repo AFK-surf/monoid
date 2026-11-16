@@ -399,7 +399,13 @@ function connectsOf(station: number): J[] {
     slack: { appToken: "", botToken: "" }, feishu: { appId: "cli_a7f3e9b2c41d500e", appSecret: "…9c2b", domain: "feishu", threads: true },
     connection: { state: "connected" }, createdBy: { id: pick(PEOPLE, station + 4).email, name: pick(PEOPLE, station + 4).name }, sessions: 12 + station, session: null,
   };
-  return station % 2 === 0 ? [slack(1), slack(2), slack(3), feishu] : [slack(1), slack(2), feishu];
+  const group: J = {
+    id: "c-group-1", name: "Claude", team: null, enabled: true, kind: "group", mode: "multi-session", requireMention: true, bind: { runtime: "claude", model: null, effort: null, profile: null },
+    slack: { appToken: "", botToken: "" },
+    group: { server: "3f9a1c0e7d2b4a6f8e1c3b5a7d9f2e4c6b8a0d1f3e5c7b9a2d4f6e8c0a1b8b0d", relays: ["https://relay-tokyo.group.example"], botName: "Claude", memberId: `m-${station}`, device: "7c1e9a3f5b2d4c6e8a0f1b3d5c7e9a2f4b6d8c0e1a3f5b7d9c2e4a6f8b0d1c3e", joining: false },
+    connection: { state: "connected" }, createdBy: { id: pick(PEOPLE, station + 5).email, name: pick(PEOPLE, station + 5).name }, sessions: 4 + station, session: null,
+  };
+  return station === 0 ? [slack(1), slack(2), slack(3), feishu, group] : station % 2 === 0 ? [slack(1), slack(2), slack(3), feishu] : [slack(1), slack(2), feishu];
 }
 
 function decisionsOf(now: number, station: number, profiles: J[]): J {

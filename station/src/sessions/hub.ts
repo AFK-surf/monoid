@@ -21,17 +21,19 @@
 // running that nothing took up.
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { Clock, Effect, Fiber } from "effect";
 import { liveClock, within } from "../ops/fibers.ts";
 import { RUNTIME_KINDS, type AgentDriver, type AgentSession, type RuntimeKind } from "../agents/runtime.ts";
-import { runnerId } from "../agents/process.ts";
-import { allLeft, isTerminalRunner, liveRunners } from "../agents/runner.ts";
+import { endRunner, runnerId } from "../agents/process.ts";
+import { RUNNER_LEFT_MS, allLeft, isTerminalRunner, liveRunners, type RunnerInfo } from "../agents/runner.ts";
 import { log } from "../ops/log.ts";
 import { tr, stationLang } from "../ops/i18n.ts";
-import { iso, sessionPlaces, transcriptSources } from "../read/transcript.ts";
-import { type Attachment, MANUAL, type SessionRow, type Store, STILLFAIL_SURFACE, feishuSurface, commaSurface, slackSurface, type MessageRow, type ThreadRow, type ThreadSummary } from "../store/store.ts";
+import { iso, sessionPlaces } from "../read/transcript.ts";
+import { transcriptSourcesSoon } from "../read/transcript-soon.ts";
+import { type Attachment, MANUAL, type SessionRow, type Store, STILLFAIL_SURFACE, feishuSurface, commaSurface, groupSurface, slackSurface, type MessageRow, type ThreadRow, type ThreadSummary } from "../store/store.ts";
 import type { DeliveryCardState, InWorkspace, PendingMessage } from "../store/rows.ts";
 import { comingWs, handedWs } from "../store/rows.ts";
 import { isNotice, markNotice } from "./chat.ts";
@@ -59,7 +61,7 @@ import { carrySubagents, goesAfresh, startsAfresh, toldCleared, toldLongChat, to
 import { serves } from "./pool.ts";
 import { settled } from "./opened.ts";
 import { untitledChat } from "./titles.ts";
-import { shownFacts } from "./image-size.ts";
+import { shownFactsSoon } from "./image-size.ts";
 import { sandboxIndexEnabled } from "../store/sandbox-index.ts";
 import { SandboxNameBuilder } from "./sandbox-name-builder.ts";
 import { SessionDirectoryBuilder } from "./session-directory-builder.ts";
@@ -136,6 +138,9 @@ export type HubOptions = {
   stationName?: (id: string) => string | null;
   /// The runners alive on this machine now, by id (default: <data>/run/runners).
   runners?: () => string[];
+  /// How a runner of an agent's that nobody holds is ended (`takeUp`, `endOrphan`; default: process.ts `endRunner`, that
+  /// runner alone).
+  endRunner?: (info: RunnerInfo) => Promise<unknown>;
   /// Another session being taken up: the launcher hears the station gets on with it (ops/launcher.ts `taking`).
   taking?: () => void;
   cold?: ColdStorage;
@@ -256,6 +261,11 @@ export class Hub {
   private holdsNow = new Set<Hold>();
   /// Sessions taken up from the previous station: their turns run on, not cut off.
   private adopted = new Set<string>();
+  /// Whether its drivers hold every agent's process of this station's that goes on (`ownsRunner`): from the end of
+  /// `takeUp` to a handover or the end.
+  private holdsRunners = false;
+  /// The runners `takeUp` found that nobody took up, being ended (tests wait for it).
+  orphansEnded: Promise<void> = Promise.resolve();
   /// Chats made lately by session key: the key their client gave them, and when (NewChat.clientKey).
   readonly clientKeysMade = new Map<string, [string, number]>();
   /// Conversations a chat was relayed to whose agent has not posted there yet, by thread: the session and the station's
@@ -319,16 +329,17 @@ export class Hub {
       },
     });
     this.live = new LiveHub(
-      (key) => {
+      async (key) => {
         const row = this.store.getSession(key);
         const runtime = row && runtimeNamed(row.runtime);
         if (!row || !runtime || this.store.runtimeSessionSources(key).length === 0) return null;
         const { dataDir, profiles } = this.config();
-        // In its places alone: this is the main thread (read/transcript.ts `anywhere`).
-        const { paths, current } = transcriptSources(dataDir, profiles, this.store.runtimeSessionSources(key), sessionPlaces(row), { anywhere: false });
+        // In its places alone, as the live view asks it (read/transcript.ts `anywhere`).
+        const { paths, current } = await transcriptSourcesSoon(dataDir, profiles, this.store.runtimeSessionSources(key), sessionPlaces(row), { anywhere: false });
         return paths.length === 0 ? null : { runtime, paths, current };
       },
       this.clock,
+      () => this.program(),
     );
     // The sessions at work are followed by the station itself (live.ts `running`): as the store says each starts and
     // stops, and those at work now. Each transcript's length goes where its summary reads it (its usage, the usage
@@ -399,7 +410,7 @@ export class Hub {
     // Taken up from the previous station or not, what was cut off now resumes the usual way.
     this.adopted.clear();
     await Promise.all([...this.actors.values()].map((a) => a.suspend()));
-    await Promise.all([...this.drivers.values()].map((d) => d.shutdown()));
+    await Promise.all([...this.drivers.values()].map((d) => d.shutdown(true)));
   }
 
   /// Whether a session's workspace is one the station is in now (a joined one may have taken it out): held otherwise.
@@ -601,6 +612,8 @@ export class Hub {
   /// does nothing more.
   async handOver(limitMs = 30_000): Promise<Handover> {
     this.hold("drain");
+    // (what its drivers let go is the next station's)
+    this.holdsRunners = false;
     try {
       await this.settled(limitMs);
     } catch (error) {
@@ -667,9 +680,11 @@ export class Hub {
       }
       rmSync(file, { force: true });
     }
+    // Found before anything is taken up or started: what nobody takes up of these is ended, nothing started meanwhile.
+    const before = (this.options.runners ? this.options.runners().map((id) => ({ id }) as RunnerInfo) : await liveRunners(this.config().dataDir, { strict: true })).filter((r) => !isTerminalRunner(r.id));
     await this.adopt(handed);
     // A crash left runners without a snapshot: what they keep is taken up as it stands.
-    const runners = new Set(this.options.runners ? this.options.runners() : (await liveRunners(this.config().dataDir, { strict: true })).map((r) => r.id).filter((id) => !isTerminalRunner(id)));
+    const runners = new Set(before.map((r) => r.id));
     const taken = new Set(handed.sessions.map((s) => s.key));
     // A shared Codex host can only have a session to recover when that session was marked running. Without a
     // session-owned runner there is no reason to load the station's idle and archived sessions.
@@ -699,9 +714,52 @@ export class Hub {
         waitingSeconds: 0,
         nudges: 0,
         stopRequested: false,
+        // Idle since its session was last active (its turn's end set it), not from now: one found idle for hours is not
+        // kept warmMs more. (A turn it has running sets its idle time again as it ends.)
+        idleMs: Math.max(0, this.now() - row.lastActiveAt),
       };
       await this.adoptOne(row, snap, true);
     }
+    this.holdsRunners = true;
+    this.orphansEnded = this.endOrphans(before);
+  }
+
+  /// What a station left running that nobody took up (a session deleted or moved to another station since, one whose
+  /// taking up failed, an app-server none of whose sessions had a turn): ended, off the way of what goes on. A runner
+  /// left so went on for good, nothing ever asking for it again (a `claude -p` of 109 MB idle 35 hours, 2026-11-15).
+  private async endOrphans(found: RunnerInfo[]) {
+    const ending = found.filter((info) => !this.ownsRunner(info.id)).map(async (info) => {
+      log.info("hub", "a runtime process nobody took up, ended", { runner: info.id });
+      try {
+        await this.endRunnerOf(info);
+      } catch (error) {
+        log.warn("hub", "a runtime process nobody took up was not ended", { runner: info.id, error: (error as Error).message });
+      }
+    });
+    await Promise.all(ending);
+  }
+
+  private endRunnerOf(info: RunnerInfo): Promise<unknown> {
+    return this.options.endRunner ? this.options.endRunner(info) : endRunner(this.config().dataDir, info.id, "a runtime process nobody took up", info);
+  }
+
+  /// Whether one of its drivers holds runner `id` (or may: a driver that does not say holds every one of its runtime's).
+  ownsRunner(id: string): boolean {
+    for (const driver of this.drivers.values()) {
+      const owned = driver.ownedRunners?.();
+      if (owned === undefined ? id.startsWith(`${driver.runtime()}-`) : owned.has(id)) return true;
+    }
+    return false;
+  }
+
+  /// A runner of an agent's alive past what takes it up that none of its drivers holds, while they hold all that goes on
+  /// (Upkeep's sweep, agents/runner.ts `sweepRunners`): ended. One started RUNNER_LEFT_MS ago or less is left, its driver
+  /// may not hold it yet. Whether it was.
+  async endOrphan(info: RunnerInfo, now: number): Promise<boolean> {
+    if (!this.holdsRunners || isTerminalRunner(info.id) || now - info.startedAt < RUNNER_LEFT_MS || this.ownsRunner(info.id)) return false;
+    log.info("hub", "a runtime process nobody holds, ended", { runner: info.id });
+    await this.endRunnerOf(info);
+    return true;
   }
 
   /// Takes up a handover's snapshots (sessions handed over by the previous station).
@@ -734,14 +792,15 @@ export class Hub {
         const driver = this.sessionDriver(snap.runtime);
         const generation = actor.nextGeneration();
         const memory = await this.deps.linkSkills(row);
-        agent = await driver.adopt(openOptions(row, this.accounts.profile(ranOn) ?? this.accounts.runOn(row.key), this.deps, memory), snap.agent, actor.listener(generation));
+        agent = await driver.adopt(await openOptions(row, this.accounts.profile(ranOn) ?? this.accounts.runOn(row.key), this.deps, memory), snap.agent, actor.listener(generation));
       } catch (error) {
         log.warn("hub", "a session's runtime could not be taken up; it resumes the usual way", { session: row.key, error: (error as Error).message });
       }
     }
     // Its runtime not taken up: a turn it had is resumed the usual way (recover).
     if (withProcess && !agent) return;
-    actor.adopt(snap, agent, ranOn);
+    // (taken up whole before its idle time is looked at: `idleNow`)
+    await actor.adopt(snap, agent, ranOn);
     log.info("hub", "session taken up from the previous station", { session: row.key, withAgent: agent !== null });
     if (agent) {
       this.adopted.add(row.key);
@@ -945,13 +1004,14 @@ export class Hub {
         if (!chat.download) throw new Error("this platform does not give files");
         if (file.size > MAX_INBOUND_FILE) throw new Error("over 50 MB");
         const bytes = await chat.download(file);
-        mkdirSync(dir, { recursive: true });
+        await mkdir(dir, { recursive: true });
         const safe = Array.from(file.name)
           .map((c) => (c === "\\" || c === "/" || c.codePointAt(0)! < 0x20 ? "_" : c))
           .join("");
         const path = join(dir, `${iso(this.now()).slice(0, 19).replace(/[:.]/g, "-")}-${file.id}-${safe}`);
-        writeFileSync(path, bytes);
-        const attachment: Attachment = { name: file.name, path, size: bytes.length, ...shownFacts(path) };
+        // written and measured off the main thread: a file of up to 50 MB, a film's moov read from its end
+        await writeFile(path, bytes);
+        const attachment: Attachment = { name: file.name, path, size: bytes.length, ...(await shownFactsSoon(path)) };
         attachments.push(attachment);
       } catch (error) {
         log.warn("hub", "shared file not fetched", { session: key, file: file.id, error: (error as Error).message });
@@ -1131,7 +1191,8 @@ export class Hub {
     const row = this.store.getSession(key);
     if (row && row.archivedAt !== null) {
       const actor = this.actor(row);
-      void actor.evict().then(() => actor.cleanArchive());
+      // (what it left in the background ends with it: an archived session keeps nothing running)
+      void actor.evict(true).then(() => actor.cleanArchive());
     }
     const old = this.deadlines.get(key);
     if (old) this.interrupt(old);
@@ -1151,6 +1212,25 @@ export class Hub {
     );
     this.deadlines.set(key, fiber);
     this.evictIdle();
+  }
+
+  /// The machine short of memory (high, critical: ops/self-memory.ts): every idle claude and dsh process let go now,
+  /// whatever the warm limit and however briefly idle; then what the drivers keep running with no turn on it (Codex's
+  /// app-servers: `evictIdle`); how many were asked to end. Each session's ends only if still idle as its queue reaches
+  /// it, and keeps what it runs in the background (`holding`); its conversation resumes on its next message.
+  async evictAllIdle(): Promise<number> {
+    const now = this.now();
+    let asked = 0;
+    for (const actor of this.actors.values()) {
+      if (actor.runtime === "codex" || actor.idleMs(now) === null) continue;
+      void actor.evict();
+      asked++;
+    }
+    const ended = await Promise.all([...this.drivers.values()].map((d) => d.evictIdle?.().catch((error) => {
+      log.warn("hub", "what a driver keeps idle was not ended", { runtime: d.runtime(), error: (error as Error).message });
+      return 0;
+    }) ?? 0));
+    return ended.reduce((a, b) => a + b, asked);
   }
 
   /// Ends the session's runtime process if it is idle; the conversation resumes on the next message.
@@ -1189,6 +1269,16 @@ export class Hub {
   /// `runtimeChanged`).
   runtimeUpdated(runtime: RuntimeKind) {
     for (const actor of [...this.actors.values()]) if (actor.runtime === runtime) void actor.changed(true).catch(() => {});
+  }
+
+  /// A profile signed in anew (accounts/index.ts `afterSignIn`, `sharedChanged`): the processes of the sessions on it keep
+  /// the sign-in they started with, so each ends now if idle, else once its turn is over, and the next turn resumes in
+  /// a new one on the new sign-in. A chat handed to another station is left as it is.
+  profileLoginChanged(id: string) {
+    for (const row of this.store.listSessions()) {
+      if (row.profile !== id || this.handedOver(row.key)) continue;
+      void this.actors.get(row.key)?.changed(true).catch(() => {});
+    }
   }
 
   /// A profile was deleted: the sessions on it are taken on by another of their runtime's (their process ends now if
@@ -1340,6 +1430,7 @@ export class Hub {
   }
 
   async shutdown() {
+    this.holdsRunners = false;
     this.incoming.abort();
     this.stopTimers();
     this.unlistenRunning();
@@ -1442,6 +1533,7 @@ export class Hub {
     const kind = this.config().connects.find((c) => c.id === connect)?.kind;
     if (kind === "feishu") return feishuSurface(connect);
     if (kind === "comma") return commaSurface(connect);
+    if (kind === "group") return groupSurface(connect);
     return slackSurface(connect, this.chatOf(connect)?.workspace() ?? null);
   }
 
@@ -1628,7 +1720,7 @@ export class Hub {
       },
       chat: (connect) => this.chatOf(connect),
       driver: (runtime) => this.sessionDriver(runtime),
-      runOn: (key, holding) => this.accounts.runOn(key, holding),
+      runOn: (key, holding, across) => this.accounts.runOn(key, holding, false, across),
       spend: (key, ranOn, model) => this.accounts.spend(key, ranOn, model),
       refillsAt: (key) => this.accounts.refillsAt(key),
       recheck: (profile) => this.accounts.recheck(profile),

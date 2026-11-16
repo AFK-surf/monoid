@@ -1869,6 +1869,8 @@ void mb_host_exit(int32_t code) { exit(code); }
 
 // The system's Reduce Transparency (glass drawn solid).
 int32_t mb_host_reduce_transparency(void) { return UIAccessibilityIsReduceTransparencyEnabled() ? 1 : 0; }
+// The system's Increase Contrast (its darker system colours): lines and quiet words drawn stronger.
+int32_t mb_host_increase_contrast(void) { return UIAccessibilityDarkerSystemColorsEnabled() ? 1 : 0; }
 
 // The CPU's time the whole process has had, every thread's (@hostapi.cpu_ms: MBUI_PROBE's share of a CPU), in ms.
 double mb_host_cpu_ms(void) {
@@ -2861,6 +2863,12 @@ int32_t mb_host_window_snap_state(void) { return 0; }
 int32_t mb_host_window_opens(void) { return 0; }
 int32_t mb_host_window_open(moonbit_string_t what) { (void)what; return 0; }
 int32_t mb_host_window_front(moonbit_string_t what) { (void)what; return 0; }
+// The windows of this run (@hostapi.windows_in_process and the rest: host_native.mbt's `windows`): none but its own
+// here.
+int32_t mb_host_windows(int32_t op, int32_t wid, moonbit_string_t what) {
+  (void)op, (void)wid, (void)what;
+  return 0;
+}
 void mb_host_set_cursor(int32_t kind) { (void)kind; }
 // The number on the app's icon on the home screen (@hostapi.set_badge): what waits for the person; 0 none. (Shown once
 // the person let the app's notifications show badges: asked with them.)

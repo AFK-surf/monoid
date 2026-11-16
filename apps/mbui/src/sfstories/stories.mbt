@@ -13,7 +13,7 @@ fn side_by_side(card : @view.View, make : (@view.View) -> Unit) -> Unit {
 
 ///|
 /// A story's state: a part's own state kept with it, from its first making.
-fn[T] kept(v : T) -> @signals.Signal[T] {
+fn[T : Eq] kept(v : T) -> @signals.Signal[T] {
   @signals.signal(v)
 }
 
@@ -357,6 +357,27 @@ fn stories(tips : @sf.TipLayer) -> Array[Story] {
           fn(card) {
             let chosen = kept(2)
             @sf.seg_fill_node(card, fn() { ["系统", "浅色", "深色"] }, fn() { chosen.get() }, fn(i) { chosen.set(i) }, said="主题")
+            |> ignore
+          },
+        ),
+      ],
+    },
+    {
+      key: "choice-cards",
+      group: "选择",
+      name: "卡片单选 Choice cards",
+      file: "choice_cards_node.mbt",
+      api: [("choice_cards_node.mbt", "choice_cards_node")],
+      play: None,
+      about: "几种呈现方式并排成卡片，图标在上、文字在下，同时只选中一个（看板「显示」弹层里的 列表 | 看板）。",
+      cases: [
+        (
+          "列表 | 看板",
+          fn(card) {
+            let chosen = kept(1)
+            @sf.choice_cards_node(card, fn() { [("list", "列表"), ("view-columns", "看板")] }, fn() { chosen.get() }, fn(i) {
+              chosen.set(i)
+            }, said="视图")
             |> ignore
           },
         ),

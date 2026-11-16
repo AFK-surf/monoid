@@ -5,26 +5,28 @@ import { accessKind } from "../agents/profiles.ts";
 // continue_machine_session). Archiving here is the record (archived, hidden) and what goes with it (the process ends,
 // other stations are told); packing an archived session's files is the hub's ColdStorage.
 import { type PresetCopy, keepCopy, presetRefusal } from "./presets.ts";
-import { copyFileSync, mkdirSync, renameSync, rmSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { rm } from "node:fs/promises";
+import { copyFile, mkdir, rename, rm } from "node:fs/promises";
 import { basename, dirname, join, relative, sep } from "node:path";
 import { DISK_LOW_BYTES } from "../ops/disk.ts";
 import { PlaceRefused } from "../ops/places.ts";
 import { log } from "../ops/log.ts";
 import { tr, type Lang, stationLang } from "../ops/i18n.ts";
 import { checkContext } from "./context-cap.ts";
-import { type MachineSession, type Roots, rolloutOf, rolloutsIn } from "../read/machine.ts";
+import { type MachineSession, type Roots, ROLLOUT_DEPTH, ROLLOUT_ENTRIES, extension, rolloutOf } from "../read/machine.ts";
 import { usageNow } from "../read/usage.ts";
-import { readTimeline, sessionPlaces, sharedTranscripts, transcriptSources } from "../read/transcript.ts";
-import { forgetMarks, marksDir } from "../read/transcripts.ts";
+import { sessionPlaces, sharedTranscripts } from "../read/transcript.ts";
+import { transcriptSourcesSoon } from "../read/transcript-soon.ts";
+import { forgetMarksSoon, marksDir } from "../read/transcripts.ts";
+import { walkBounded } from "../ops/walk.ts";
 import { ARCHIVED_WORKSPACE_BATCH, AUTO, type ArchivedWorkspace, type Attachment, MANUAL, type Quote, STILLFAIL_SURFACE, type ThreadRow, type WorkOf, type ArchiveLook, type SessionRow } from "../store/store.ts";
 import { sessionBindingsReady } from "../store/session-bindings-index.ts";
 import { archiveMarksReady } from "../store/archive-mark-index.ts";
 import type { SessionChange } from "./accounts.ts";
 import { runChanged, runShown } from "./run-change.ts";
 import { unlockWorktrees, withLock } from "./archive.ts";
-import { roomOf } from "./footprint.ts";
+import { roomOfSoon } from "./footprint.ts";
 import { type Profile, type Runtime, runs, runtimeNamed, runtimeTitle } from "./config.ts";
 import { FAST_RUNTIMES } from "../agents/profiles.ts";
 import { CLIENT_KEY_KEPT_MS, type Hub, connectOf, newChatKey, newSingleSessionKey, newToken } from "./hub.ts";
@@ -325,7 +327,9 @@ export function archiveBy(hub: Hub, key: string, archived: boolean, by: string, 
   const actor = hub.actor(row);
   void actor
     .putAway()
-    .then(() => actor.evict())
+    // (what it left in the background ends with it: an archived session keeps nothing running; a turn under way runs
+    // to its end, which ends it then: hub.ts `idleNow`)
+    .then(() => actor.evict(true))
     .then(() => actor.cleanArchive());
 }
 
@@ -641,36 +645,42 @@ export async function deleteSession(hub: Hub, key: string) {
   await actor?.dispose();
   hub.live.forget(key);
   const { dataDir, profiles } = hub.config();
-  const transcripts = transcriptSources(dataDir, profiles, hub.store.runtimeSessionSources(key), sessionPlaces(row)).paths.map((p) => p.path);
+  const transcripts = (await transcriptSourcesSoon(dataDir, profiles, hub.store.runtimeSessionSources(key), sessionPlaces(row))).paths.map((p) => p.path);
   hub.store.deleteSession(key);
   hub.closed(key);
-  rmSync(transcriptCopy(hub, key), { force: true });
-  forgetMarks(marksDir(dataDir), transcripts);
+  await rm(transcriptCopy(hub, key), { force: true });
+  await forgetMarksSoon(marksDir(dataDir), transcripts);
   // Sessions made by the station keep their workspace in a directory of their own.
   const sessions = join(dataDir, "sessions");
   const own = basename(row.workspace) === "workspace" && (row.workspace + sep).startsWith(sessions + sep);
   const home = own ? dirname(row.workspace) : row.workspace;
-  const room = roomOf(dataDir, row.workspace);
+  const room = await roomOfSoon(dataDir, row.workspace);
   if (room !== null) {
     // Git worktrees it archived are let go first, so `git worktree prune` can clean them up.
     await withLock(room, async () => {
       await unlockWorktrees(room);
       await rm(home, { recursive: true, force: true });
     });
-  } else rmSync(home, { recursive: true, force: true });
+  } else await rm(home, { recursive: true, force: true });
   log.info("hub", "session deleted", { session: key });
 }
 
 /// Copies a machine session's transcript to where the station's runtimes keep theirs (`shared`:
 /// data/transcripts/<runtime>), at the same place under it, so a profile resumes it there: for Codex every file it keeps
-/// the thread in. The originals are not touched. Where the transcript read is.
-function copyTranscript(roots: Roots, session: MachineSession, shared: string): string {
+/// the thread in. The originals are not touched. Where the transcript read is. Off the main thread: a Codex home's
+/// rollouts walked as read/machine.ts `transcriptOf` walks them, bounded the same (ops/walk.ts), and a transcript of
+/// hundreds of MB copied by the file system's own copy.
+async function copyTranscript(roots: Roots, session: MachineSession, shared: string): Promise<string> {
   const root = session.runtime === "claude" ? roots.claude : roots.codex;
   const files = [session.path];
   if (session.runtime === "codex") {
-    const rollouts: string[] = [];
-    rolloutsIn(root, rollouts);
-    files.push(...rollouts.filter((p) => p !== session.path && rolloutOf(p, session.id)));
+    await walkBounded(
+      root,
+      (e) => {
+        if (e.file && e.depth > 0 && e.name.startsWith("rollout-") && extension(e.name) === "jsonl" && e.path !== session.path && rolloutOf(e.path, session.id)) files.push(e.path);
+      },
+      { maxDepth: ROLLOUT_DEPTH, maxEntries: ROLLOUT_ENTRIES, followRoot: true },
+    );
   }
   const under = (path: string) => {
     const rel = relative(root, path);
@@ -679,10 +689,10 @@ function copyTranscript(roots: Roots, session: MachineSession, shared: string): 
   };
   for (const from of files) {
     const to = join(shared, under(from));
-    mkdirSync(dirname(to), { recursive: true });
+    await mkdir(dirname(to), { recursive: true });
     const partial = to.replace(/\.jsonl$/, "") + ".jsonl.part";
-    copyFileSync(from, partial);
-    renameSync(partial, to);
+    await copyFile(from, partial);
+    await rename(partial, to);
   }
   return join(shared, under(session.path));
 }
@@ -731,15 +741,15 @@ export async function continueMachineSession(hub: Hub, roots: Roots, found: Mach
   const keptModel = found.model !== null && profiles.some((p) => p.models.includes(found.model!)) ? found.model : null;
   const profile = hub.accounts.pick(profiles, keptModel, false);
   const model = keptModel ?? profile.model ?? profile.models[0] ?? null;
-  const copy = copyTranscript(roots, found, sharedTranscripts(config.dataDir, runtime));
-  // Where its execution history is when it comes here: its last entry, read as the history reads it (from the shared
-  // place, read/transcript.ts `transcriptPaths`).
-  const entries = readTimeline(runtime, copy).length;
+  const copy = await copyTranscript(roots, found, sharedTranscripts(config.dataDir, runtime));
+  // Where its execution history is when it comes here: its last entry, counted as the history reads it (from the shared
+  // place, read/transcript.ts `transcriptPathsSoon`), by the readers, not on this thread.
+  const entries = await hub.live.counted(runtime, copy);
   const last = entries > 0 ? entries - 1 : null;
   const key = newChatKey();
   const workspace = chatWorkspace(config.dataDir, key);
-  mkdirSync(workspace, { recursive: true });
-  mkdirSync(join(config.dataDir, "repos"), { recursive: true });
+  await mkdir(workspace, { recursive: true });
+  await mkdir(join(config.dataDir, "repos"), { recursive: true });
   const now = hub.now();
   const titleOf = found.title ?? found.first;
   const title = titleOf !== null ? Array.from(titleOf).slice(0, 80).join("") : null;

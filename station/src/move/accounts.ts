@@ -2,7 +2,7 @@
 // (`share:<id>`), the key it runs with (`key:<hash>`) or, a login of this station's own, its profile here
 // (`own:<profile>@<station>`); this machine's own login (`machine:<id>`) cannot go. Moved by share/index.ts
 // `moveProfile`, so that the chats still here go on (`usableHere`): one shared is borrowed here after it; one not
-// shared whose login can be (share/index.ts `shareRefusal`: not a SuperGrok, Cursor, Devin, Antigravity or Kimi
+// shared whose login can be (share/index.ts `shareRefusal`: not a SuperGrok, Cursor, Devin or Kimi
 // sign-in) is shared first, with this station and the one it goes to alone, and moved as a shared one, borrowed here
 // after it too (not one shared with stations this one is not among: no copy is kept here of that) (the owner, 2026-11-14: while a migration goes on both stations keep working, logins lent between them);
 // one that cannot be is gone from here, and what needs it here is stopped first. Moved back by the same, asked of the
@@ -25,7 +25,7 @@ import { log } from "../ops/log.ts";
 import { stationLang, tr } from "../ops/i18n.ts";
 import type { AccountOf } from "../replica/handover.ts";
 import { shareRefusal } from "../share/index.ts";
-import { KeptMap, KeptSet } from "./kept.ts";
+import { KeptSet, LentLog } from "./kept.ts";
 import { type Item, type ItemState, type Module, named, unanswered, notAnswered } from "./module.ts";
 
 type Json = any;
@@ -45,9 +45,14 @@ export type ShareMoves = {
   lend?: (id: string, to: string) => Promise<{ share: string; made: boolean; widened: boolean }>;
   /// What `lend` changed undone (share/index.ts `unlend`).
   unlend?: (share: string, to: string, made: boolean, widened: boolean) => Promise<void>;
+  /// How many chats on station `to` run on share `share` (its `move.uses`); null: not answered, or a station from
+  /// before that does not say.
+  usesThere?: (to: string, share: string) => Promise<number | null>;
+  /// The chats handed from here to station `to` whose login is profile `pid` (as a start mends what was kept lent).
+  handedOn?: (to: string, pid: string) => string[];
 };
 
-/// A login lent for what moved (`move/accounts-lent.json`, by its share): to which station, as which item and profile,
+/// A login lent for what moved (`move/accounts-lent.log`, by its share, a line for each item it is lent for): to which station, as which item and profile,
 /// what lending it changed, and the items there it was lent for (by name): taken back when the last of them is here.
 /// `hostMoved`: its host moved there since (asked for by name): no longer lent; the other's addition taken off as it
 /// comes home (`cameHome`).
@@ -73,7 +78,7 @@ export type AccountsDeps = {
   shareMoves?: ShareMoves;
 };
 
-export function accountsModule(d: AccountsDeps): Module & { cameHome(share: string, from: string): Promise<void> } {
+export function accountsModule(d: AccountsDeps): Module & { cameHome(share: string, from: string): Promise<void>; lookAt(from: string, said?: { share: string; uses: number }): Promise<void> } {
   /// What the other station said it has, as each plan asked it: by item id, its profile there and whether it hosts the
   /// login (false: it borrows it; null: a station from before, which does not say, taken as hosting it); null: none.
   const there = new Map<string, { id: string; hosts: boolean | null } | null>();
@@ -82,9 +87,21 @@ export function accountsModule(d: AccountsDeps): Module & { cameHome(share: stri
   /// The shares a move made from here, by their id, kept across a start (undone as their login comes back).
   const made = d.data !== undefined && d.shareMoves !== undefined ? new KeptSet(join(d.data, "move", "accounts-shared.json")) : null;
   /// The logins lent for what moved, by share, kept across a start; and the items lent in this station's turns now.
-  const lent = d.data !== undefined && d.shareMoves?.lend !== undefined ? new KeptMap<Lent>(join(d.data, "move", "accounts-lent.json")) : null;
+  const lent = d.data !== undefined && d.shareMoves?.lend !== undefined ? new LentLog<Lent>(join(d.data, "move", "accounts-lent.log"), join(d.data, "move", "accounts-lent.json")) : null;
   const lentNow = new Map<string, string>();
-  const lentTo = (item: Item): string | undefined => lentNow.get(item.id) ?? (item.id.startsWith("share:") ? lent?.get(item.id.slice("share:".length))?.to : undefined);
+  /// The shares lent in the turn under way (till its end, `left` asked with none): one whose items did not go, the other
+  /// not answering whether it runs anything on it, is taken back all the same (it had it for this turn alone).
+  const fresh = new Set<string>();
+  /// What a station from before this kept lent, mended as it starts: the chats handed to where it is lent that run on
+  /// it, kept as what it is lent for (a later turn's chats were not, and the login was taken back from under them).
+  const mended = (async () => {
+    if (lent === null || d.shareMoves?.handedOn === undefined) return;
+    for (const [share, l] of lent.entries()) {
+      if (l.hostMoved === true) continue;
+      for (const key of d.shareMoves.handedOn(l.to, l.pid)) await lent.lentFor(share, `chats ${key}`);
+    }
+  })().catch((e) => log.warn("move", "what is lent not mended as the station started", { error: (e as Error).message }));
+  const lentTo = (item: Item): string | undefined => lentNow.get(item.id) ?? (item.id.startsWith("share:") ? lent?.base(item.id.slice("share:".length))?.to : undefined);
   /// Whether profile `pid`'s login, not shared, is shared as it moves (so it is borrowed here after it).
   const sharedAsItMoves = (pid: string) => {
     if (made === null || d.shared(pid)) return false;
@@ -98,7 +115,7 @@ export function accountsModule(d: AccountsDeps): Module & { cameHome(share: stri
   /// person opened it to another station meanwhile; no longer this station's to undo either way.
   const cameHome = (share: string, from: string): Promise<void> => {
     // (lent there by widening, its host moved there since: the other taken off again, as a person had it)
-    const l = lent?.get(share);
+    const l = lent?.base(share);
     if (l?.hostMoved === true) {
       return d.shareMoves!.unlend!(share, l.to, false, l.widened)
         .catch((e) => log.warn("move", "a login lent for a move not taken back as it came home", { share, error: (e as Error).message }))
@@ -211,25 +228,61 @@ export function accountsModule(d: AccountsDeps): Module & { cameHome(share: stri
       const pid = local.get(item.id);
       if (pid === undefined || lent === null) throw new Error(`account ${item.label} is not on this station`);
       const r = await d.shareMoves!.lend!(pid, to);
-      await lent.set(r.share, { to, item: item.id, pid, made: r.made, widened: r.widened, for: [...new Set([...(lent.get(r.share)?.for ?? []), ...forWhom.map(named)])] });
+      // (its record, then a line for each item it is lent for: those it was lent for before stay as they are)
+      if (lent.base(r.share) === undefined) fresh.add(r.share);
+      await lent.setBase(r.share, { to, item: item.id, pid, made: r.made, widened: r.widened });
+      for (const n of new Set(forWhom.map(named))) await lent.lentFor(r.share, n);
       lentNow.set(item.id, to);
     },
-    async left(items) {
+    async lentFor(item, to, forWhom) {
+      await mended;
+      if (lent === null || !item.id.startsWith("share:")) return;
+      const share = item.id.slice("share:".length);
+      const l = lent.base(share);
+      if (l === undefined || l.to !== to || l.hostMoved === true) return;
+      for (const n of new Set(forWhom.map(named))) await lent.lentFor(share, n);
+    },
+    /// A login lent to station `from`, kept lent for nothing of this station's (only for what `from` runs on it), looked
+    /// at again as `from` is heard of: a chat came from it, or it said its last chat on that login ended (`said`, its
+    /// `move.unused`): taken back where nothing there runs on it.
+    async lookAt(from, said) {
       if (lent === null) return;
-      const names = new Set(items.map(named));
+      await mended;
       for (const [share, l] of lent.entries()) {
-        if (l.hostMoved === true) continue;
-        const still = l.for.filter((n) => !names.has(n));
-        if (still.length === l.for.length) continue;
-        if (still.length > 0) {
-          await lent.set(share, { ...l, for: still });
-          continue;
-        }
-        // (the last item it was lent for is here: taken back, the other told now or once it is heard from)
+        if (l.to !== from || l.hostMoved === true || lent.forCount(share) > 0 || (said !== undefined && said.share !== share)) continue;
+        const uses = said !== undefined ? said.uses : ((await d.shareMoves!.usesThere?.(from, share).catch(() => null)) ?? null);
+        if (uses !== 0) continue;
+        log.info("move", "a login lent taken back: nothing on the station it was lent to runs on it", { share, to: from.slice(0, 12) });
         await d.shareMoves!.unlend!(share, l.to, l.made, l.widened).catch((e) => log.warn("move", "a login lent for a move not taken back", { share, error: (e as Error).message }));
         await lent.delete(share);
         lentNow.delete(l.item);
       }
+    },
+    async left(items) {
+      if (lent === null) return;
+      await mended;
+      // (the shares lent for these items, by their names: each item's line taken off; no other item's looked at; and
+      // those kept lent only for what the other runs on them, a few)
+      const shares = new Set(items.flatMap((x) => lent.sharesFor(named(x))));
+      if (items.length === 0) for (const [share] of lent.entries()) if (lent.forCount(share) === 0) shares.add(share);
+      for (const share of shares) {
+        const l = lent.base(share);
+        if (l === undefined || l.hostMoved === true) continue;
+        for (const x of items) await lent.unlent(share, named(x));
+        if (lent.forCount(share) > 0) continue;
+        // (the last item it was lent for is here: taken back once the other says nothing there runs on it, a chat it
+        // began on it too; not answered, kept lent and asked again at the next turn's end)
+        const uses = (await d.shareMoves!.usesThere?.(l.to, share).catch(() => null)) ?? null;
+        if (uses !== 0 && !(uses === null && fresh.has(share))) {
+          log.info("move", "a login lent kept lent: the other runs chats on it, or did not say", { share, to: l.to.slice(0, 12), uses });
+          continue;
+        }
+        await d.shareMoves!.unlend!(share, l.to, l.made, l.widened).catch((e) => log.warn("move", "a login lent for a move not taken back", { share, error: (e as Error).message }));
+        await lent.delete(share);
+        lentNow.delete(l.item);
+        fresh.delete(share);
+      }
+      if (items.length === 0) fresh.clear();
     },
     isHere(item) {
       return d.present?.(item.id) !== undefined;

@@ -23,7 +23,7 @@ import { test } from "node:test";
 import { zstdDecompressSync } from "node:zlib";
 import {
   emptyWorkspace,
-  jsonlFiles,
+  jsonlFilesSoon,
   lock,
   packFile,
   packFileIf,
@@ -38,7 +38,8 @@ import {
   workspaceArchive,
   workspaceFile,
 } from "../src/sessions/archive.ts";
-import { measureRoom, measured, rebuildable, roomOf, safeToRemove } from "../src/sessions/footprint.ts";
+import { measureRoom, measured, rebuildableSoon, safeToRemove } from "../src/sessions/footprint.ts";
+import { rebuildableKind, roomOf } from "./footprint-reference.ts";
 import { settle } from "./hub-fakes.ts";
 
 const temp = () => realpathSync(mkdtempSync(join(tmpdir(), "cold-")));
@@ -88,11 +89,12 @@ test("links the machine refuses come back where the restored workspace ends up, 
   const room = temp();
   const ws = join(room, "workspace");
   write(join(ws, "project/main.rs"), "fn main() {}");
-  symlinkSync("project", join(ws, "lib"), "dir");
+  symlinkSync("project", join(ws, "z-lib"), "dir");
   symlinkSync(join("project", "main.rs"), join(ws, "entry"));
   const release = await lock(room);
   await packWorkspace(room);
-  // As Windows without the privilege (Developer Mode off): links refused, junctions made.
+  // As Windows without the privilege (Developer Mode off): links refused, junctions made. (The tree is made by the
+  // shell, `tar.unpack`, whose links this machine refuses or not as it does; what stands in is made here, by Node.)
   const real = fsModule.promises.symlink;
   fsModule.promises.symlink = (async (target: string, path: string, type?: string) => {
     if (type === "junction") return real(target, path, type);
@@ -106,10 +108,11 @@ test("links the machine refuses come back where the restored workspace ends up, 
     syncBuiltinESMExports();
   }
   release();
+  // (`z-lib` after `project`: packed before it, so a directory's link made before its directory is: still one.)
   // The directory's stand-in (a junction) leads into the workspace at its final path: the tree was made beside it
   // (workspace.restoring) and moved.
-  assert.equal(realpathSync(join(ws, "lib")), realpathSync(join(ws, "project")));
-  assert.equal(readFileSync(join(ws, "lib", "main.rs"), "utf8"), "fn main() {}");
+  assert.equal(realpathSync(join(ws, "z-lib")), realpathSync(join(ws, "project")));
+  assert.equal(readFileSync(join(ws, "z-lib", "main.rs"), "utf8"), "fn main() {}");
   assert.equal(readFileSync(join(ws, "entry"), "utf8"), "fn main() {}");
   assert.ok(!existsSync(join(room, "workspace.restoring")));
   rmSync(room, { recursive: true });
@@ -307,7 +310,7 @@ test("the room's lock is taken in turn", async () => {
   rmSync(room, { recursive: true });
 });
 
-test("jsonl files: logical names, packed ones too, once each", () => {
+test("jsonl files: logical names, packed ones too, once each", async () => {
   const root = temp();
   write(join(root, "a.jsonl"), "");
   write(join(root, "sub/b.jsonl.zst"), "");
@@ -315,7 +318,7 @@ test("jsonl files: logical names, packed ones too, once each", () => {
   write(join(root, "c.txt"), "");
   write(join(root, "a.jsonl.archive-lock"), "");
   const out: string[] = [];
-  jsonlFiles(root, out);
+  await jsonlFilesSoon(root, out);
   assert.deepEqual(out.sort(), [join(root, "a.jsonl"), join(root, "sub/b.jsonl")]);
   assert.equal(withExtension("/x/abc.jsonl", "jsonl.archive-lock"), join("/x", "abc.jsonl.archive-lock"));
   assert.equal(withExtension("/x/abc.jsonl.zst", "zst.writing"), join("/x", "abc.jsonl.zst.writing"));
@@ -335,13 +338,109 @@ test("a file linked twice counts once", async () => {
   rmSync(root, { recursive: true });
 });
 
-test("what can be made again", () => {
+test("what can be made again", async () => {
   const p = temp();
   write(join(p, "android/build.gradle.kts"), "x");
   write(join(p, "android/settings.gradle.kts"), "x");
-  assert.ok(rebuildable(join(p, "x/node_modules")) && rebuildable(join(p, "android/build")) && rebuildable(join(p, "android/.gradle")));
-  assert.ok(!rebuildable(join(p, "site/build")) && !rebuildable(join(p, "site/target")) && !rebuildable(join(p, "dist")));
+  write(join(p, "rs/Cargo.toml"), "x");
+  for (const dir of ["x/node_modules", "android/build", "android/.gradle", "rs/target"]) assert.equal((await rebuildableSoon(join(p, dir))) !== null, true, dir);
+  for (const dir of ["site/build", "site/target", "dist"]) assert.equal((await rebuildableSoon(join(p, dir))) !== null, false, dir);
   rmSync(p, { recursive: true });
+});
+
+test("what can be made again known by what is in it or beside it, never by a bare name: Elixir, MoonBit, Xcode, Cargo of any name", async () => {
+  const p = temp();
+  const dir = (path: string) => mkdirSync(join(p, path), { recursive: true });
+  const TAG = "Signature: 8a477f597d28d172789f06886806bc55\n# This file is a cache directory tag created by cargo.\n# For information about cache directory tags see https://bford.info/cachedir/\n";
+  // Elixir: _build and deps beside mix.exs.
+  write(join(p, "ex/mix.exs"), "x");
+  dir("ex/_build/dev");
+  dir("ex/deps/jason");
+  // MoonBit: _build beside its module's manifest or its work's, or above within the checkout; .mooncakes beside.
+  write(join(p, "mb/moon.mod.json"), "{}");
+  dir("mb/_build");
+  dir("mb/.mooncakes");
+  write(join(p, "work/moon.work"), "x");
+  dir("work/_build");
+  dir("repo/.git");
+  write(join(p, "repo/moon.mod.json"), "{}");
+  write(join(p, "repo/src/lib/moon.pkg.json"), "{}");
+  dir("repo/src/lib/sub/_build");
+  // (above the checkout's top: not its; outside a checkout, only beside)
+  write(join(p, "outer/moon.mod.json"), "{}");
+  dir("outer/inner/.git");
+  dir("outer/inner/_build");
+  dir("outer/loose/_build");
+  // Xcode's derived data, of any name: its products and intermediates.
+  dir("DerivedData-App/Build/Products");
+  dir("DerivedData-App/Build/Intermediates.noindex");
+  dir("only-products/Build/Products");
+  // Cargo's target of any name: its CACHEDIR.TAG, and Cargo's own files in it.
+  write(join(p, "rs-a/CACHEDIR.TAG"), TAG);
+  write(join(p, "rs-a/.rustc_info.json"), "{}");
+  write(join(p, "rs-b/CACHEDIR.TAG"), TAG);
+  dir("rs-b/release/.fingerprint");
+  write(join(p, "rs-c/CACHEDIR.TAG"), TAG);
+  dir("rs-c/debug/deps");
+  write(join(p, "rs-tag-only/CACHEDIR.TAG"), TAG);
+  write(join(p, "other-cache/CACHEDIR.TAG"), "Signature: 8a477f597d28d172789f06886806bc55\n# a cache of another program's\n");
+  write(join(p, "other-cache/.rustc_info.json"), "{}");
+  write(join(p, "no-tag/.rustc_info.json"), "{}");
+  dir("no-tag/debug/deps");
+  dir("bare/_build");
+  dir("bare/deps");
+  dir("bare/.mooncakes");
+  const found = ["ex/_build", "ex/deps", "mb/_build", "mb/.mooncakes", "work/_build", "repo/src/lib/sub/_build", "DerivedData-App", "rs-a", "rs-b", "rs-c"];
+  const not = ["outer/inner/_build", "outer/loose/_build", "only-products", "rs-tag-only", "other-cache", "no-tag", "bare/_build", "bare/deps", "bare/.mooncakes", "repo/src", "ex"];
+  for (const d of found) {
+    assert.equal(rebuildableKind(join(p, d)), "found", d);
+    assert.equal(await rebuildableSoon(join(p, d)), "found", `${d} (off the thread)`);
+  }
+  for (const d of not) {
+    assert.equal(rebuildableKind(join(p, d)), null, d);
+    assert.equal(await rebuildableSoon(join(p, d)), null, `${d} (off the thread)`);
+  }
+  // (those by name stay so)
+  write(join(p, "rs/Cargo.toml"), "x");
+  dir("rs/target");
+  assert.equal(rebuildableKind(join(p, "rs/target")), "named");
+  assert.equal(await rebuildableSoon(join(p, "x/node_modules")), "named");
+  // A room's measure lists them, each whole.
+  assert.deepEqual((await measureRoom(join(p, "ex"))).rebuild.map(([d]) => d.slice(p.length + 1)).sort(), ["ex/_build", "ex/deps"]);
+  rmSync(p, { recursive: true });
+});
+
+test("archive cleanup takes one known by what is in it, inside a checkout, only where git ignores it", async () => {
+  const p = temp();
+  const git = (args: string[]) => execFileSync("git", ["-C", p, ...args]);
+  git(["init", "-q"]);
+  const TAG = "Signature: 8a477f597d28d172789f06886806bc55\n# This file is a cache directory tag created by cargo.\n";
+  const cargo = (d: string) => {
+    write(join(p, d, "CACHEDIR.TAG"), TAG);
+    write(join(p, d, ".rustc_info.json"), "{}");
+  };
+  write(join(p, ".gitignore"), "/ignored-out\n_build/\nlogs/\n");
+  cargo("ignored-out");
+  cargo("kept-out");
+  cargo("logs/rs");
+  write(join(p, "mix.exs"), "x");
+  write(join(p, "_build/dev/x.beam"), "x");
+  write(join(p, "deps/jason/mix.exs"), "x");
+  // (by its name, as before: untracked, it goes ignored or not)
+  write(join(p, "node_modules/dependency.js"), "x");
+  assert.equal(await safeToRemove(join(p, "ignored-out")), true, "ignored by its path");
+  assert.equal(await safeToRemove(join(p, "_build")), true, "ignored as a directory");
+  assert.equal(await safeToRemove(join(p, "logs/rs")), true, "in an ignored directory");
+  assert.equal(await safeToRemove(join(p, "kept-out")), false, "not ignored: the project's own");
+  assert.equal(await safeToRemove(join(p, "deps")), false, "not ignored: the project's own");
+  assert.equal(await safeToRemove(join(p, "node_modules")), true);
+  // (outside a checkout, it goes)
+  const q = temp();
+  write(join(q, "out/CACHEDIR.TAG"), TAG);
+  write(join(q, "out/.rustc_info.json"), "{}");
+  assert.equal(await safeToRemove(join(q, "out")), true);
+  rmSync(p, { recursive: true });
+  rmSync(q, { recursive: true });
 });
 
 test("archive cleanup keeps attachments, git and symlink targets", async () => {

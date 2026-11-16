@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { recentChatIds } from "../src/store/chat-list.ts";
-import { installRecentHomeIndex, scanRecentHomeChatsStep, settleRecentHomeChatStep, settleRecentHomeOrderStep, settleRecentHomeSessionStep } from "../src/store/chat-list-home-index.ts";
-import { installRecentHomeOverlap, readPreparedRecentHome, scanRecentHomeOverlapStep, settleRecentHomeOverlapStep } from "../src/store/chat-list-home-overlap.ts";
-import { scanRecentWorkspaceStep, settleRecentWorkspaceMemberStep, settleRecentWorkspaceSessionStep } from "../src/store/chat-list-scope-build.ts";
-import { trackRecentScope } from "../src/store/chat-list-scope-journal.ts";
-import { dispatchRecentScopeOrderStep, settleRecentWorkspaceOrderStep } from "../src/store/chat-list-scope-order.ts";
-import { readPreparedRecentWorkspace } from "../src/store/chat-list-scope-rows.ts";
-import { settleRecentScopeVisibilityStep } from "../src/store/chat-list-scope-visibility.ts";
+import { installRecentHomeIndex, scanRecentHomeChatsStep, settleRecentHomeChatStep, settleRecentHomeOrderStep, settleRecentHomeSessionStep } from "./reference/chat-list/chat-list-home-index.ts";
+import { installRecentHomeOverlap, readPreparedRecentHome, scanRecentHomeOverlapStep, settleRecentHomeOverlapStep } from "./reference/chat-list/chat-list-home-overlap.ts";
+import { scanRecentWorkspaceStep, settleRecentWorkspaceMemberStep, settleRecentWorkspaceSessionStep } from "./reference/chat-list/chat-list-scope-build.ts";
+import { trackRecentScope } from "./reference/chat-list/chat-list-scope-journal.ts";
+import { dispatchRecentScopeOrderStep, settleRecentWorkspaceOrderStep } from "./reference/chat-list/chat-list-scope-order.ts";
+import { readPreparedRecentWorkspace } from "./reference/chat-list/chat-list-scope-rows.ts";
+import { settleRecentScopeVisibilityStep } from "./reference/chat-list/chat-list-scope-visibility.ts";
 import { Store } from "../src/store/store.ts";
 
 for (const recursive of [false, true]) for (const partial of [false, true]) test(`home and workspace pages match the original across interleaved changes (partial batches ${partial}, recursive triggers ${recursive})`, () => {

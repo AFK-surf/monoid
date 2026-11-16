@@ -16,6 +16,7 @@ pub fn key_catcher_node(
   keys : (KeyIn) -> Unit,
   make : (@view.View) -> Unit,
   on? : @view.Live[Bool] = Is(true),
+  paste? : (String) -> Unit,
   loc~ : SourceLoc,
 ) -> @view.View {
   parent.box(made_for=loc, fn(k) {
@@ -24,6 +25,7 @@ pub fn key_catcher_node(
     let st = g().catcher_of(said)
     st.node = Some(id)
     st.told = Some(keys)
+    st.paste_told = paste
     k
     .focusable(on, keys=0)
     .says(Is(Some(@view.said(TextField, label~))))
@@ -37,6 +39,25 @@ pub fn key_catcher_node(
     |> ignore
     make(k)
   })
+}
+
+///|
+/// The input method's current uncommitted preedit text for key catcher `v` (`""` when none), tracked reactively.
+pub fn key_catcher_composing(v : @view.View) -> String {
+  match tree_said_of.get(v.id()) {
+    Some(said) =>
+      match g().dev.catchers.get(said) {
+        Some(st) => st.composing_sig.get()
+        None => ""
+      }
+    None => ""
+  }
+}
+
+///|
+/// Place the input method's candidate window at `(x, y)` (`h` points tall) in window coordinates for key catcher `v`.
+pub fn key_catcher_place(v : @view.View, x : Double, y : Double, h : Double) -> Unit {
+  g().catcher_of(tree_said_id(v.id())).place = Some((x, y, h))
 }
 
 ///|

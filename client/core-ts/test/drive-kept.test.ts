@@ -9,6 +9,7 @@ import { Core } from "../src/core.ts";
 import { DriveKept, chatKeptId, keptId, outboxKeptId, sentKeptId } from "../src/drive-kept.ts";
 import { keptFirst } from "../src/station/calls.ts";
 import { HostWire } from "../src/station/wire.ts";
+import { SqlError, type Sql, type SqlValue } from "../src/host.ts";
 import { FakeHost } from "../src/testing.ts";
 import { answers, call } from "./helpers.ts";
 import { Raw, started, stationReplies, status } from "./station-fixture.ts";
@@ -492,4 +493,105 @@ test("the page of what the device keeps calls each chat as the chats' list does,
   const usage = answers(t.host.takeEmitted(), 1)?.ok as { chats: { thread: number; title: string | null }[] };
   assert.deepEqual(usage.chats.filter((c) => c.thread <= 3).map((c) => [c.thread, c.title]), [[2, "新对话"], [3, "看下构建"], [1, "处理构建问题"]]);
   t.core.close();
+});
+
+test("what each file's parts take is kept as they are put, fail, move and go, counted from a database from before, and summed where it cannot be written", async () => {
+  const host = new FakeHost();
+  // (a statement it matches fails as SQLite's does with no room)
+  let full: RegExp | null = null;
+  host.openDbHook = (name) => {
+    const inner = (host.openDbHook = null, Effect.runSync(host.openDb(name)));
+    host.openDbHook = (n) => (n === name ? wrapped : null);
+    const room = (q: string) => {
+      if (full?.test(q)) throw new SqlError("database or disk is full", "full");
+    };
+    const wrapped: Sql = {
+      exec: (q: string) => (room(q), inner.exec(q)),
+      run: (q: string, p?: readonly SqlValue[]) => (room(q), inner.run(q, p)),
+      all: (q: string, p?: readonly SqlValue[]) => (room(q), inner.all(q, p)),
+      close: () => {},
+    };
+    return wrapped;
+  };
+  const most = { file: 30, played: 1000, chat: Number.POSITIVE_INFINITY, sent: 1000, outbox: Number.POSITIVE_INFINITY };
+  let kept = new DriveKept(host, most);
+  const run = <A>(e: Effect.Effect<A>) => Effect.runPromise(e);
+  const sql = () => host.sqls.get("drive-kept")!;
+  const same = (label: string) => {
+    const counted = sql().all("SELECT id, bytes FROM part_bytes ORDER BY id").map((r) => `${r[0]} ${r[1]}`);
+    const summed = sql().all("SELECT id, sum(length) FROM part GROUP BY id HAVING sum(length) <> 0 ORDER BY id").map((r) => `${r[0]} ${r[1]}`);
+    assert.deepEqual(counted, summed, label);
+  };
+  /// What the page of what the device keeps says, as summing the parts says it.
+  const page = async () => [await run(kept.usage()), (await run(kept.chatFiles())).map((f) => `${f.key}/${f.name} ${f.bytes}`)];
+  const summedPage = () => [
+    Number(sql().all("SELECT coalesce(sum(p.length), 0) FROM part p JOIN kept k ON k.id = p.id WHERE k.kind != 'chat'")[0]![0]),
+    sql().all("SELECT k.id, coalesce(sum(p.length), 0) FROM kept k LEFT JOIN part p ON p.id = k.id WHERE k.kind = 'chat' GROUP BY k.id ORDER BY k.used DESC, k.id")
+      .map((r) => `${String(r[0]).split("\n")[2]}/${String(r[0]).split("\n").slice(3).join("\n")} ${r[1]}`),
+  ];
+  // Put: a file's parts, a chat's, one put again (as a core from before would, replacing it).
+  const book = keptId(ST, ROOT, "book");
+  await run(kept.keep(book, "file", 1, 20, "application/pdf", 0, bytesOf(8)));
+  await run(kept.keep(book, "file", 1, 20, "application/pdf", 8, bytesOf(6)));
+  for (const [key, name, n] of [["k1", "a.png", 5], ["k1", "b.mp4", 9], ["k2", "c.png", 3], ["k10", "d.png", 4]] as const) {
+    await run(kept.keep(chatKeptId(ST, key, name), "chat", 1, 40, "image/png", 0, bytesOf(n)));
+    host.advance(61_000);
+  }
+  sql().run("INSERT OR REPLACE INTO part (id, at, length, key) SELECT id, at, length, key FROM part WHERE id = ? AND at = 0", [book]);
+  same("put");
+  assert.deepEqual(await page(), summedPage());
+  // A part whose bytes could not be kept: its row goes.
+  const set = host.storageSet;
+  host.storageSet = () => Effect.fail(new Error("no room") as never);
+  await run(kept.keep(book, "file", 1, 20, "application/pdf", 14, bytesOf(6)));
+  host.storageSet = set;
+  same("a part that failed");
+  // Moved to another name, and past the bound of its kind: the least lately read let go.
+  const going = outboxKeptId("clip");
+  await run(kept.keep(going, "outbox", 0, 10, "video/mp4", 0, bytesOf(10)));
+  assert.equal(await run(kept.rename(going, sentKeptId(ST, "clip.mp4"), "sent", 10)), true);
+  same("renamed");
+  host.advance(61_000);
+  await run(kept.keep(keptId(ST, ROOT, "big"), "file", 1, 25, "application/pdf", 0, bytesOf(25)));
+  assert.equal(await run(kept.has(book)), false, "the book let go past the bound");
+  same("let go");
+  // A file changed on the station: what was kept of it goes as it is kept anew.
+  await run(kept.keep(chatKeptId(ST, "k2", "c.png"), "chat", 2, 41, "image/png", 0, bytesOf(7)));
+  same("changed");
+  // A chat's files let go with it: its sessions' alone (k1, not k10 though it starts the same).
+  await run(kept.forgetChat(ST, ["k1"]));
+  assert.deepEqual((await run(kept.chatFiles())).map((f) => f.key).sort(), ["k10", "k2"]);
+  same("a chat's let go");
+  assert.deepEqual(await page(), summedPage());
+  // The page read of the counts: no part summed.
+  const read: string[] = [];
+  const all = sql().all.bind(sql());
+  sql().all = (q: string, p?: readonly SqlValue[]) => (read.push(q), all(q, p));
+  await page();
+  sql().all = all;
+  assert.deepEqual(read.filter((q) => /\bFROM part\b|\bJOIN part\b/.test(q)), [], "no part read for the page");
+  // A database a core from before kept: counted as it opens.
+  for (const r of sql().all("SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'part'")) sql().exec(`DROP TRIGGER ${r[0]}`);
+  sql().exec("DROP TABLE part_bytes");
+  sql().run("INSERT INTO part (id, at, length, key) VALUES (?, 0, 11, 'drive-kept-old')", [chatKeptId(ST, "k3", "old.png")]);
+  sql().run("INSERT INTO kept (id, kind, mtime, size, type, used) VALUES (?, 'chat', 1, 11, 'image/png', 0)", [chatKeptId(ST, "k3", "old.png")]);
+  kept = new DriveKept(host, most);
+  assert.deepEqual(await page(), summedPage());
+  same("counted from before");
+  // The same with no room to count it: nothing of it written, the parts summed, and kept and let go as before.
+  for (const r of sql().all("SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'part'")) sql().exec(`DROP TRIGGER ${r[0]}`);
+  sql().exec("DROP TABLE part_bytes");
+  full = /^INSERT INTO part_bytes/;
+  kept = new DriveKept(host, most);
+  assert.deepEqual(await page(), summedPage());
+  assert.equal(sql().all("SELECT count(*) FROM sqlite_master WHERE name = 'part_bytes' OR (type = 'trigger' AND tbl_name = 'part')")[0]![0], 0, "nothing of it made");
+  await run(kept.keep(chatKeptId(ST, "k3", "new.png"), "chat", 1, 6, "image/png", 0, bytesOf(6)));
+  await run(kept.forgetChat(ST, ["k10"]));
+  assert.deepEqual(await page(), summedPage());
+  assert.ok(((await page())[1] as string[]).length > 0);
+  // Room again: counted as it next opens.
+  full = null;
+  kept = new DriveKept(host, most);
+  assert.deepEqual(await page(), summedPage());
+  same("room again");
 });

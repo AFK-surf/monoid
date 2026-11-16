@@ -1194,6 +1194,8 @@ pub fn page_entry_read(Int32, Source, Page) -> Unit
 
 pub fn page_entry_source(Source, @view.View, Int32) -> Source
 
+pub fn page_faces() -> Array[Bytes]
+
 pub fn page_glass() -> @paint.Glass
 
 pub let page_glass_blur : Double
@@ -1982,6 +1984,8 @@ pub fn whole_row(Source, ChatItem) -> ChatItem?
 pub fn window_front(Page) -> Bool
 
 pub fn window_opens_for(Page) -> Bool
+
+pub let wheel_rest_ms : Double
 
 pub fn window_page(String) -> Page?
 

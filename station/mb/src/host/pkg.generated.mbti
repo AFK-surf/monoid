@@ -1,0 +1,40 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/host"
+
+import {
+  "mbui/effect",
+  "moonbitlang/core/json",
+  "station/wire",
+}
+
+// Values
+pub fn args() -> Array[String]
+
+pub fn exit(Int32) -> Unit
+
+pub fn note(String) -> Unit
+
+pub fn now() -> Int64
+
+pub fn pid() -> Int32
+
+pub fn run(shell_dir? : String, async (Host) -> Unit) -> Int32
+
+// Errors
+
+// Types and methods
+pub struct Host {
+  rt : @effect.Runtime
+  lines : @effect.Queue[String]
+  // private fields
+}
+pub async fn Host::line(Self) -> String?
+pub fn Host::out(Self, Bytes) -> Unit
+pub fn Host::say(Self, String) -> Unit
+pub fn Host::say_bytes(Self, Bytes) -> Unit
+pub async fn Host::shell(Self, String, @json.Json, bytes? : Bytes, called? : (Int64) -> Unit) -> (@json.Json, Bytes?)
+pub fn Host::shell_sync(Self, String, @json.Json) -> @json.Json raise @wire.ShellError
+
+// Type aliases
+
+// Traits

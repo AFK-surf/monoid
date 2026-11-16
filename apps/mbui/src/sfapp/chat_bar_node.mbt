@@ -152,7 +152,7 @@ fn bar_trailing_width(held : @view.View, agents : Array[Agent], station : Statio
 fn chat_bar_of(b : @view.View, src : Source, r : ChatRef, stint : () -> Int) -> Unit {
   let state = chat_bar_state(r)
   let mid_w_sig : @signals.Signal[Double] = @signals.signal(0.0, same=fn(a, b) { a == b })
-  let view = fn() { view_of_chat(src, r).0 }
+  let view = fn() { @sfbase.chat_view_now(src, r) }
   let read = fn() { view() is Some(_) }
   let title_now = fn() {
     match view() {
@@ -669,9 +669,16 @@ fn via_dot_node(v : @view.View, via : String, size : Double, ring : Double) -> U
 }
 
 ///|
-/// People overlapping a little, each ringed in the page's ground (people_stack's, as nodes): side by side, each drawn 5
-/// over the one before it, the first over them all.
-fn people_stack_node(v : @view.View, src : Source, people : Array[Person], size : Double, stint : () -> Int) -> Unit {
+/// People overlapping a little, each ringed in the page's ground (people_stack's, as nodes; or `ring`: what they stand
+/// on, a sheet's): side by side, each drawn 5 over the one before it, the first over them all.
+fn people_stack_node(
+  v : @view.View,
+  src : Source,
+  people : Array[Person],
+  size : Double,
+  stint : () -> Int,
+  ring? : () -> Int64 = fn() { @sf.theme().p.bg },
+) -> Unit {
   let step = size + 3.0
   let n = people.length()
   v.width(Is(Some(step * n.to_double()))).height(Is(Some(step))) |> ignore
@@ -686,7 +693,7 @@ fn people_stack_node(v : @view.View, src : Source, people : Array[Person], size 
       .height(Is(Some(step)))
       .radius(Is(step / 2.0))
       .offset(Is(((step - 5.0) * i.to_double(), 0.0)))
-      .ground(By(fn() { @sf.theme().p.bg }))
+      .ground(By(ring))
       .row(Is(true))
       .lines_up(Is(Some(Middle)))
       .lies_along(Is(Middle))

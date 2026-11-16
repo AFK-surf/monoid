@@ -1368,12 +1368,8 @@ test "on the tape a settings page chosen in their list shows beside it, pressed 
   t.run_for(@ui.move_most_ms)
   assert_eq(@sfdesk.wide.tape_at.get(), @sfdesk.TapePane::Side)
   page_over(t, 600.0)
-  assert_true(settings_page_whole(t, "全局记忆 · 项目记忆", 600.0), msg="\{Repr(@sfdesk.wide.tape_at.get())} \{Repr(t.rect_of("全局记忆 · 项目记忆"))}")
-  // a level further in from the page in use: a station's memory, then one of its pages
-  t.tap_text("Willow")
-  t.run_for(@ui.move_most_ms)
-  t.run_for(@ui.move_most_ms)
   assert_true(settings_page_whole(t, "发布流程", 600.0), msg="\{Repr(@sfdesk.wide.tape_at.get())} \{Repr(t.rect_of("发布流程"))}")
+  // a level further in from the page in use: one of its pages
   t.tap_text("发布流程")
   t.run_for(@ui.move_most_ms)
   t.run_for(@ui.move_most_ms)

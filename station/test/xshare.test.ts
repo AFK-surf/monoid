@@ -243,8 +243,8 @@ test("a session that wrote to another workspace may be answered by it, no other"
 test("the pages share a chat (its starter or a manager) and say which station to take chats from; its view says with whom", async () => {
   const { Admin } = await import("../src/api/admin.ts");
   const { Store } = await import("../src/store/store.ts");
-  const { openStore } = await import("../src/read/store.ts");
-  const { thread: threadView } = await import("../src/read/sessions.ts");
+  const { openStore } = await import("./reference/store.ts");
+  const { thread: threadView } = await import("./reference/sessions.ts");
   const dir = mkdtempSync(join(tmpdir(), "xshare-routes-"));
   const store = Store.open(join(dir, "stillfail.db"), join(dir, "archive"));
   store.insertSession({ key: "s1", connect: "ds", runtime: "claude", profile: "cc", workspace: "/w/s1", token: "t", createdAt: 1, lastActiveAt: 1 });
@@ -274,7 +274,7 @@ test("the pages share a chat (its starter or a manager) and say which station to
   const view = threadView(reader, { sub: "a", email: "a@x", name: "A", role: "member", workspace: W1, device: "d" }, String(chat.id), "en");
   assert.deepEqual([view.xshare.to, view.xshare.write], [[{ workspace: W2, name: "Home" }], true]);
   // The chats' rows say it too, by the workspaces' ids.
-  const { chats } = await import("../src/read/views.ts");
+  const { chats } = await import("./reference/views.ts");
   const viewer = { sub: "a", email: "a@x", name: "A", role: "member", workspace: W1, device: "d" };
   assert.deepEqual(chats(reader, viewer, false).find((r: any) => r.id === "s1")?.xshare, { to: [W2], write: true });
   // A manager may stop it.

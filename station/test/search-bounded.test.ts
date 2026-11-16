@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { Store, newMessage } from "../src/store/store.ts";
-import { openStore } from "../src/read/store.ts";
+import { openStore } from "./reference/store.ts";
 import { type Asker, type Doc, pick, pickAsync } from "../src/search/match.ts";
 import { SEARCH_NEXT_MESSAGES, stationDocs } from "./reference/search-sources.ts";
 

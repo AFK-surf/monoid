@@ -103,7 +103,15 @@
     "read-before-run": {},
     "reset-by-hand": {},
     "app-word": {},
-    "frame-walk": {}
+    "frame-walk": {},
+    "scoped-computed": {},
+    "raw-effect": {},
+    "pick-loop": {},
+    "each-min-height": {},
+    "each-lookup": {},
+    "layout-drawn-while": {},
+    "shader-int": {},
+    "raw-hover-ground": {}
   },
   "excused": {
     "frame-request": {},
@@ -172,6 +180,14 @@
     "read-before-run": {},
     "reset-by-hand": {},
     "app-word": {},
-    "frame-walk": {}
+    "frame-walk": {},
+    "scoped-computed": {},
+    "raw-effect": {},
+    "pick-loop": {},
+    "each-min-height": {},
+    "each-lookup": {},
+    "layout-drawn-while": {},
+    "shader-int": {},
+    "raw-hover-ground": {}
   }
 }

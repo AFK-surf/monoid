@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { constants } from "node:sqlite";
 import { test } from "node:test";
-import { acknowledgeRecentScopeSession, installRecentScopeJournal, trackRecentScope } from "../src/store/chat-list-scope-journal.ts";
-import { recentScopeSessionsStep, type RecentScopeSessionCursor } from "../src/store/chat-list-scope-source.ts";
+import { acknowledgeRecentScopeSession, installRecentScopeJournal, trackRecentScope } from "./reference/chat-list/chat-list-scope-journal.ts";
+import { recentScopeSessionsStep, type RecentScopeSessionCursor } from "./reference/chat-list/chat-list-scope-source.ts";
 import { Store } from "../src/store/store.ts";
 
 test("workspace journaling installs without reading old sessions and rolls back on failure", () => {

@@ -1,4 +1,4 @@
-// chat_list searched (station/src/read/ops-sessions.ts `searchChatList`, store/chat-list.ts `searchChats`): every
+// chat_list searched (station/test/reference/ops-sessions.ts `searchChatList`, store/chat-list.ts `searchChats`): every
 // chat in scope tested by its titles, latest words and sessions, the matches counted and the first `limit` read in
 // full. The statements are the TypeScript's, as it makes them.
 

@@ -9,6 +9,7 @@ import { platform } from "../src/platform/index.ts";
 import { SessionDirectoryBuilder } from "../src/sessions/session-directory-builder.ts";
 import { sessionDirectoryCandidate } from "../src/store/session-directory.ts";
 import { LIVE_SESSIONS, Store } from "../src/store/store.ts";
+import { dbFile } from "./temp-dir.ts";
 
 test("rechecking a shared runner's command directory does not reread unrelated sessions", async () => {
   const counts: { steady: number; changed: number }[] = [];
@@ -29,7 +30,7 @@ test("rechecking a shared runner's command directory does not reread unrelated s
     platform.cwds = async () => new Map([[1010101, "/sessions/target/workspace/sub"]]);
     for (const unrelated of [40, 400]) {
       size = 1024 ** 4;
-      const store = Store.open(":memory:"), db = store.db;
+      const store = Store.open(dbFile("mem-dirs-")), db = store.db;
       let seen = 0, observing = false;
       db.function("memory_dir_seen", (key) => { if (observing && String(key).startsWith("other:")) seen++; return 1; });
       const observed = new Proxy(db, { get(target, property) {

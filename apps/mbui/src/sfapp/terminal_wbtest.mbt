@@ -27,20 +27,35 @@ test "a terminal typed into by someone else: who, and 接管, on a wide window's
     t.get(Button, label=tr("android-misc.screen.takeOver")) |> ignore
     // (its screen: what the station gave, drawn)
     assert_true(t.find("import { Effect }") is Some(_), msg="\{win.0}: the screen not drawn")
+    assert_true(t.find("远程终端") is Some(_), msg="\{win.0}: CJK box table not drawn")
     assert_true(t.query(Radio, label=tr("web-pages.screen.control")) is None, msg="\{win.0}: 只看/控制 left")
   }
 }
 
 ///|
-test "a terminal typed into here: no 控制 nor 接管; its 控制中心 holds 复制工作目录 and 结束会话, and inline 按键 keeps the terminal visible alongside combos and F-keys" {
+test "a terminal typed into here: deck has Backspace, keyboard dismiss resets kb_up, scrollback shows 回到最新, and inline 按键 keeps terminal visible" {
   let tp = screen_in("terminal", terminal_windows[0], "zh")
   tp.get(Button, label="Esc") |> ignore
   tp.get(Button, label=tr("android-misc.screen.keyboard")) |> ignore
+  tp.get(Button, label=tr("web-pages.terminal.backspace")) |> ignore
   tp.get(Button, label=tr("web-pages.terminal.sendCmd")) |> ignore
   let tkb = screen_in("terminal-kb", terminal_windows[0], "zh")
   tkb.get(Button, label=tr("android-misc.screen.key.down")) |> ignore
   tkb.get(Button, label=tr("android-misc.screen.key.right")) |> ignore
+  tkb.get(Button, label=tr("web-pages.terminal.backspace")) |> ignore
   tkb.get(Button, label=tr("web-pages.terminal.hideKeyboard")) |> ignore
+  assert_true(tkb.key_catching(), msg="terminal-kb should catch keys")
+  // Pressing Backspace on the strip must keep key_catcher focused!
+  tkb.click(Button, label=tr("web-pages.terminal.backspace"))
+  assert_true(tkb.key_catching(), msg="tapping strip Backspace must not blur key catcher")
+  // Dismissing soft keyboard via system back (keyboard_gone) must reset kb_up back to the 2-row deck!
+  tkb.keyboard_gone()
+  tkb.get(Button, label=tr("android-misc.screen.keyboard")) |> ignore
+  // Scrolled-up scrollback view shows 回到最新 and jumps back to bottom when clicked
+  let tsc = screen_in("terminal-scrolled", terminal_windows[0], "zh")
+  tsc.get(Button, label=tr("web-pages.terminal.scrollBottom")) |> ignore
+  tsc.click(Button, label=tr("web-pages.terminal.scrollBottom"))
+  assert_true(tsc.query(Button, label=tr("web-pages.terminal.scrollBottom")) is None, msg="回到最新 should disappear at bottom")
   for win in terminal_windows {
     let t = screen_in("terminal", win, "zh")
     assert_true(t.query(Button, label=tr("android-misc.screen.takeOver")) is None, msg="\{win.0}: 接管 while typing")

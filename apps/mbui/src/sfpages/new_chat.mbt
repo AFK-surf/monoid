@@ -523,7 +523,7 @@ fn station_rows_node(n : @view.View, src : Source, w : Workspace, v : Json?, clo
       // (its words on the panel's words' line wherever it is drawn: @sf.panel_row_in_node; its ground under a mouse, as
       // panel_row_in's `hovered`)
       @sf.style_node(row, fn() { station_row.then(@sf.panel_row_in_node(row)) })
-      row.ground(By(fn() { if @sf.hovered_in_node(row) || row.focus_shown() { @sf.theme().p.hover } else { 0L } })) |> ignore
+      @sf.hover_ground_node(row, lit=Some(fn() { @sf.hovered_in_node(row) || row.focus_shown() }))
       @sf.rippled_node(row, fn() {
         @sfbase.pick_new(src, w.id, { "station": Json::string(text(st, "id")) })
         close()
@@ -1011,10 +1011,24 @@ fn new_send(
         }
         (src.call)("chat.send", Json::object(params), fn(res) {
           match res {
-            Err(e) => {
-              sending.val = true
-              not_sent(text(Some(e), "message"))
-            }
+            Err(e) =>
+              match text(Some(e), "code") {
+                // (not taken into the chat's outbox: back in its composer, as send_in_chat's)
+                "invalid_params" | "core_restarted" | "closed" => {
+                  sending.val = true
+                  not_sent(text(Some(e), "message"))
+                }
+                // (in the outbox, which says it did not go yet and sends it once the station is reached: its words
+                // back in the composer too were sent twice, 2026-11-16)
+                _ => {
+                  @ui.haptic(Reject)
+                  fresh.starting.set(false)
+                  @sfbase.flight_carry_gone(draft)
+                  @sfbase.writing_starting(src, d, false)
+                  @sfbase.sent_local_gone(rk, row)
+                  toast_later(@sf.t("web-main.draft.notSent", args=[("error", text(Some(e), "message"))]))
+                }
+              }
             Ok(_) => {
               fresh.starting.set(false)
               @sfbase.writing_starting(src, d, false)

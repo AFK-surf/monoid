@@ -3,8 +3,9 @@
 // credentials it was asked for; it is the station's now (the root AGENTS.md, The cloud is the account system): a
 // device reads it of the stations it reaches (GET /lock/devices), each of which knows those that came to it. Kept on
 // disk, those of the last SEEN_SECS.
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { readFileSync } from "node:fs";
+import { PrivateFile } from "../ops/files.ts";
+import { log } from "../ops/log.ts";
 
 /// How long a device that came is kept (as the cloud listed them: the last 31 days).
 export const SEEN_SECS = 31 * 86400;
@@ -17,11 +18,12 @@ export const SEEN_MOST = 4096;
 export type Seen = { workspace: string; sub: string; email: string; device: string; base: string | null; kind: string | null; label: string | null; first_seen: number; last_seen: number };
 
 export class SeenDevices {
-  readonly #path: string | null;
+  /// Written off the station's thread: a device's connection waits on no disk.
+  readonly #file: PrivateFile | null;
   #rows = new Map<string, Seen>();
 
   constructor(path: string | null = null) {
-    this.#path = path;
+    this.#file = path === null ? null : new PrivateFile(path);
     if (path === null) return;
     try {
       for (const r of JSON.parse(readFileSync(path, "utf8")) as Seen[]) if (typeof r?.device === "string" && typeof r.sub === "string" && typeof r.workspace === "string") this.#rows.set(key(r), r);
@@ -58,12 +60,13 @@ export class SeenDevices {
       .sort((a, b) => (a.sub < b.sub ? -1 : a.sub > b.sub ? 1 : b.last_seen - a.last_seen));
   }
 
+  /// Once what was seen is on disk.
+  written(): Promise<void> {
+    return this.#file?.written() ?? Promise.resolve();
+  }
+
   #write() {
-    if (this.#path === null) return;
-    mkdirSync(dirname(this.#path), { recursive: true });
-    const temp = `${this.#path}.tmp`;
-    writeFileSync(temp, JSON.stringify([...this.#rows.values()]), { mode: 0o600 });
-    renameSync(temp, this.#path);
+    this.#file?.write(JSON.stringify([...this.#rows.values()])).catch((e) => log.warn("mesh", "the devices seen were not kept", { error: (e as Error).message }));
   }
 }
 

@@ -262,8 +262,35 @@ export const overviewSoftwareOf = (j: string) => `(SELECT json_object('version',
 /// in the core (one shown with what is being done to it here: data.ts overviewProfiled).
 export const OVERVIEW_PROFILED = ["profiles", "sharing", "mesh", "machineLogins"] as const;
 
+/// What the connects' list and a connect's page read of a station's overview, the JSON `j` (views.ts connectsPartOf,
+/// #connectOf), as SQL: its `connects` and `slackApps` (each `[]` where not a list), whether it has a profile
+/// (`profiled`: true where the overview is not an object, as nothing can be said of it) and whether its connects may
+/// change runtime (`connectRuntimeChange`). Kept in a column of its own (`station_part.connects`): the settings page
+/// read every station's whole overview for these, some 150 KB of a phone's each, as it first opened.
+export const overviewConnectsOf = (j: string) => `CASE WHEN json_type(${j}) = 'object'
+    THEN json_object(
+      'connects', json(CASE json_type(${j}, '$.connects') WHEN 'array' THEN ${j} -> '$.connects' ELSE '[]' END),
+      'slackApps', json(CASE json_type(${j}, '$.slackApps') WHEN 'array' THEN ${j} -> '$.slackApps' ELSE '[]' END),
+      'profiled', json(CASE WHEN json_type(${j}, '$.profiles') = 'array' AND json_array_length(${j}, '$.profiles') > 0 THEN 'true' ELSE 'false' END),
+      'connectRuntimeChange', json(CASE json_type(${j}, '$.connectRuntimeChange') WHEN 'true' THEN 'true' ELSE 'false' END))
+    ELSE json_object('connects', json('[]'), 'slackApps', json('[]'), 'profiled', json('true'), 'connectRuntimeChange', json('false')) END`;
+
+/// What the settings' automatic decisions and archiving read of a station's overview, the JSON `j` (views.ts
+/// `settings`, `stationPart` of these two; present.ts overview decorates them of themselves alone), as SQL: its
+/// `automaticDecisions` and `archiving`, each as the overview has it, one absent left out; NULL where the overview is
+/// not an object. Kept in a column of its own (`station_part.settings`): those pages read and decorated every
+/// station's whole overview for them.
+export const overviewSettingsOf = (j: string) => `CASE WHEN json_type(${j}) = 'object'
+    THEN json((SELECT json_group_object(o.key, ${j} -> o.fullkey) FROM json_each(${j}) AS o
+      WHERE o.key IN ('automaticDecisions', 'archiving')))
+    END`;
+
+/// The fields of an overview the settings read (overviewSettingsOf), for where they are made of an overview in the
+/// core (one shown with what is being done to it here: data.ts overviewSettings).
+export const OVERVIEW_SETTINGS = ["automaticDecisions", "archiving"] as const;
+
 /// Each column of an overview's part (`station_part`) and how SQLite makes it of the overview's JSON.
-export const PART_COLUMNS: [string, (j: string) => string][] = [["part", overviewPartOf], ["row", overviewRowOf], ["chat", overviewChatOf], ["formerly", overviewFormerlyOf], ["profiles", overviewProfilesOf], ["profiled", overviewProfiledOf], ["software", overviewSoftwareOf]];
+export const PART_COLUMNS: [string, (j: string) => string][] = [["part", overviewPartOf], ["row", overviewRowOf], ["chat", overviewChatOf], ["formerly", overviewFormerlyOf], ["profiles", overviewProfilesOf], ["profiled", overviewProfiledOf], ["software", overviewSoftwareOf], ["connects", overviewConnectsOf], ["settings", overviewSettingsOf]];
 /// The revision of a column of the part (`<column>_rev`), beside it: raised by the triggers as its text changes, so that
 /// a write is told what of the part changed by a few numbers, the texts not read (account.ts #overviewWritten). NULL
 /// where no trigger of this core counted it (a row a core that knows nothing of them put in).
@@ -517,6 +544,81 @@ export function ensureMoved(sql: Sql): void {
 /// Made where missing at every open, as `said`.
 export function ensureKept(sql: Sql): void {
   sql.exec("CREATE TABLE IF NOT EXISTS log_use (kind TEXT NOT NULL, station TEXT NOT NULL, id TEXT NOT NULL, opened INTEGER, evicted INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (kind, station, id))");
+}
+
+/// What each log keeps (a thread's entries, `entry`, by its thread; a session's transcript, `transcript`, by its
+/// session), in characters of their JSON, as `sum(length(json))` of its rows says it: what the device's page of what it
+/// keeps reads (account.ts cacheUsage), which summed every row of both, overflow pages and all, as the settings page
+/// first opened (some hundreds of ms of a phone's, 2026-11-16). Kept by triggers on the two tables, whoever writes them
+/// (an older core too): before a row is put in, what a row it replaces (INSERT OR REPLACE deletes it firing no delete
+/// trigger) took goes; then what it takes comes; a row deleted takes what it took away. A log whose bytes come to 0
+/// has no row. `log_bytes_done`: the stations (`''`: all) whose logs of a table were counted whole once
+/// (account.ts countLogs), the only ones the triggers keep counting: a station's logs are counted before they are read,
+/// as they first are, never as the database opens; what changes of one not counted yet is nothing of the counts. Made where missing at every open, as `said`; a trigger that is not
+/// this core's (missing, or another's statement) made again and every count let go with it, to be counted anew.
+export const LOG_TABLES = { entry: "thread", transcript: "session" } as const;
+const logTriggers = (): [string, string][] =>
+  (Object.entries(LOG_TABLES) as [string, string][]).flatMap(([table, key]) => {
+    // (only where the station's logs of the table are counted: one not counted yet is counted whole as it is, so a
+    // change before that is nothing of the counts, and a station whose rows all went before nothing counted it)
+    const counted = (row: "new" | "old") => `EXISTS (SELECT 1 FROM log_bytes_done AS d WHERE d.tbl = '${table}' AND d.station IN ('', ${row}.station))`;
+    const add = (row: "new" | "old", sign: "" | "-", from = "") =>
+      `INSERT INTO log_bytes (tbl, station, id, bytes) SELECT '${table}', ${row}.station, ${row}.${key}, ${sign}length(${from === "" ? `${row}.json` : "w.json"}) ${from === "" ? "WHERE" : `${from} AND`} ${counted(row)}
+          ON CONFLICT (tbl, station, id) DO UPDATE SET bytes = bytes + excluded.bytes;`;
+    const gone = (row: "new" | "old") => `DELETE FROM log_bytes WHERE tbl = '${table}' AND station = ${row}.station AND id = ${row}.${key} AND bytes = 0;`;
+    const n = table === "entry" ? "n" : "i";
+    return [
+      [`log_bytes_${table}_was`, `CREATE TRIGGER log_bytes_${table}_was BEFORE INSERT ON ${table}
+      BEGIN
+        ${add("new", "-", `FROM ${table} AS w WHERE w.station = new.station AND w.${key} = new.${key} AND w.${n} = new.${n}`)}
+      END`],
+      [`log_bytes_${table}_put`, `CREATE TRIGGER log_bytes_${table}_put AFTER INSERT ON ${table}
+      BEGIN
+        ${add("new", "")}
+        ${gone("new")}
+      END`],
+      [`log_bytes_${table}_set`, `CREATE TRIGGER log_bytes_${table}_set AFTER UPDATE ON ${table}
+      BEGIN
+        ${add("old", "-")}
+        ${gone("old")}
+        ${add("new", "")}
+        ${gone("new")}
+      END`],
+      [`log_bytes_${table}_drop`, `CREATE TRIGGER log_bytes_${table}_drop AFTER DELETE ON ${table}
+      BEGIN
+        ${add("old", "-")}
+        ${gone("old")}
+      END`],
+    ];
+  });
+
+export function ensureLogBytes(sql: Sql): void {
+  sql.exec("BEGIN IMMEDIATE");
+  try {
+    sql.exec(`
+      CREATE TABLE IF NOT EXISTS log_bytes (tbl TEXT NOT NULL, station TEXT NOT NULL, id NOT NULL, bytes INTEGER NOT NULL, PRIMARY KEY (tbl, station, id)) WITHOUT ROWID;
+      CREATE TABLE IF NOT EXISTS log_bytes_done (tbl TEXT NOT NULL, station TEXT NOT NULL, PRIMARY KEY (tbl, station)) WITHOUT ROWID;
+    `);
+    const had = new Map(sql.all("SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name IN ('entry', 'transcript')").map((r) => [String(r[0]), String(r[1])]));
+    let remade = false;
+    for (const [name, statement] of logTriggers()) {
+      const was = had.get(name);
+      if (was !== undefined && spaced(was) === spaced(statement)) continue;
+      if (was !== undefined) sql.exec(`DROP TRIGGER ${name}`);
+      sql.exec(statement);
+      remade = true;
+    }
+    // (a trigger missing or not this core's: what was counted may have missed a write)
+    if (remade) sql.exec("DELETE FROM log_bytes; DELETE FROM log_bytes_done;");
+    sql.exec("COMMIT");
+  } catch (e) {
+    try {
+      sql.exec("ROLLBACK");
+    } catch {
+      // Rolled back already.
+    }
+    throw e;
+  }
 }
 
 /// What a chat shows small (an image's thumbnail, a video's poster), kept on the device as its station sent it (base64,

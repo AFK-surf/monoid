@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Store } from "../src/store/store.ts";
-import { SESSION_CHAT_INDEXED, SessionChatPreparation } from "../src/store/session-chat-index.ts";
+import { SESSION_CHAT_INDEXED, SessionChatPreparation } from "./reference/backfill/session-chat-index.ts";
 
 test("naming a session with at most one chat needs no background preparation", () => {
   const store = Store.open(":memory:");

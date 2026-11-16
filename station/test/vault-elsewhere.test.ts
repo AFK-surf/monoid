@@ -39,6 +39,8 @@ function stations() {
   };
   const rooms: string[] = [];
   const clock = { now: 1_000_000 };
+  // What cedar's asks of orchard fail with, when set: its link gone, or orchard from before a method.
+  const link = { fails: null as string | null };
   const made = (name: string, peer: (given: string) => { id: string; name: string } | null, ask: (station: string, request: Json) => Promise<Json>) => {
     const db = new DatabaseSync(":memory:");
     return new Secrets({
@@ -59,10 +61,11 @@ function stations() {
     },
     async (station, request) => {
       if (station !== orchard.id) throw new Error("peer is not another station in this workspace");
+      if (link.fails) throw new Error(link.fails);
       return there.heard("st-cedar", WS, request);
     },
   );
-  return { dir, cards, told, rooms, here, there, clock };
+  return { dir, cards, told, rooms, here, there, clock, link };
 }
 
 test("a grant asked for another station: its commands run there, in the chat's directory, the value hidden; nowhere else", async () => {
@@ -113,6 +116,34 @@ test("a grant asked for another station: its commands run there, in the chat's d
     // Only the station a command was sent to says how it ended.
     await assert.rejects(s.here.heard("st-other", WS, { method: "vault.done", id: "x_01HZZZZZZZZZZZZZZZZZZZZZZZ", result: {} }), /no such command/);
     await assert.rejects(s.there.heard("st-cedar", WS, { method: "vault.run", id: "x_01HZZZZZZZZZZZZZZZZZZZZZZZ", session: "s1", command: "true", mode: "env", grant: "r_1", secret: { kind: "token", fields: {} } }), /holds no value/);
+  } finally {
+    rmSync(s.dir, { recursive: true, force: true });
+  }
+});
+
+test("a timed grant on a station not reached says so; only one that answers it does not know the question is too old", async () => {
+  const s = stations();
+  try {
+    const kept = s.here.save("s1", { name: "Router", kind: "token", reason: "keep", value: TOKEN, env: "ROUTER_TOKEN", cwd: s.dir });
+    await tick();
+    const [toKeep] = s.here.pending(WS, null, { sub: "bob", email: "bob@x.com" });
+    assert.ok(typeof s.here.savedPlain(WS, null, "bob@x.com", { request: toKeep!.id }) !== "string");
+    await kept;
+    const asked = s.here.ask("s1", { item: "Router", reason: "x", command: "true", station: "orchard" });
+    await tick();
+    const [r] = s.here.pending(WS, null, { sub: "bob", email: "bob@x.com" });
+    assert.equal(s.here.grantPlain(WS, null, "bob@x.com", { request: r!.id, scope: "hour", timeout: { kind: "idle", seconds: 3600 } }), null);
+    await asked;
+    const run = () => s.here.run("s1", { grant: r!.id, command: "true", cwd: join(s.dir, "here"), timeoutMs: 60_000 });
+
+    // Its link gone (2026-11-16: a station on the newest stable release was said to need an update).
+    s.link.fails = "the other station's connection was gone: the request got no answer from it";
+    await assert.rejects(run(), (e: Error) => /orchard could not be reached \(the other station's connection was gone/.test(e.message) && !/update/.test(e.message));
+    // A station from before timed grants answers the question as a method it does not know.
+    s.link.fails = "unknown method vault.capabilities";
+    await assert.rejects(run(), /orchard needs an update before a timed grant can run there/);
+    s.link.fails = null;
+    assert.match(await run(), /^exit code 0/);
   } finally {
     rmSync(s.dir, { recursive: true, force: true });
   }

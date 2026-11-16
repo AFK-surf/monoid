@@ -119,7 +119,7 @@ fn working_said_node(
           })
           line.box(fn(face) {
             @sf.style_node(face, fn() { activity_face })
-            face.box(fn(av) { agent_avatar_node(av, fn() { a().maker }, fn() { a().runtime }, fn() { "" }) |> ignore })
+            face.box(fn(av) { agent_avatar_node(av, fn() { a().maker }, fn() { a().runtime }) |> ignore })
             |> ignore
             // (what a message of its agent's coming while it is at work comes out of: agent_said_node's `out_of`; told no more
             // as it is let go)

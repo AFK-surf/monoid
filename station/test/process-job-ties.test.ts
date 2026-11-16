@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { watchedJobs } from "../src/jobs/memory.ts";
-import { installProcessJobs, processJobs, processJobsReady, processJobsStep } from "../src/store/process-jobs.ts";
+import { installProcessJobs, processJobs, processJobsReady, processJobsStep } from "./reference/backfill/process-jobs.ts";
 import { Store } from "../src/store/store.ts";
 
 test("prepared process groups keep the previous order when jobs start together with different ports", () => {

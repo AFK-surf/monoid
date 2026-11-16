@@ -115,6 +115,25 @@ pub fn panel_opens_on_node(v : @view.View) -> Unit {
 }
 
 ///|
+/// What a panel's way does as what it holds comes to another height for a cause of its own (the core's answer, a row
+/// come or gone), at that cause: a sheet goes from as tall as it is seen to as tall as it comes to, on a Move as long
+/// as that is far (sheet_node's `reshaped`), never a frame's step; lent by the sheet to what it holds (its nodes), none
+/// elsewhere (a dialog and a popover lay out what they hold as it comes).
+// kept across runs: what each sheet lends, let go with it
+let panel_reshape_lent : @view.Lent[() -> Unit] = @view.Lent::new()
+
+///|
+/// What node `v` (in what a panel holds) holds comes to another height now, for a cause of its own (what it reads told
+/// anew, a row come or gone): said where that cause is taken, so the panel's way follows it from that moment
+/// (panel_reshape_lent). Never said of a size measured: only of what changed it.
+pub fn panel_reshaped_node(v : @view.View) -> Unit {
+  match v.lent(panel_reshape_lent) {
+    Some(f) => f()
+    None => ()
+  }
+}
+
+///|
 /// Which field of what a panel holds has the keys as the panel opens (panel_opens_in_node, panel_search_at_hand_node):
 /// lent by each of the panel's ways (panel_centred_node, sheet_node, panel_node) to what it holds, read as all it holds
 /// is made.
@@ -391,6 +410,7 @@ fn panel_row_by(
       // (the hand's ground, and the one the keys are at only where the hand rests (a pointer and keys): a finger moves no
       // keys' row, and on it that ground stood under the reader's row at rest, a second beside the one pressed. Where the
       // pointer moving onto a row takes the keys there (`point`), the pointer's own is that one: one ground, never two)
+      // det-ok(raw-hover-ground): roving panel filter row bar moves at once with arrow keys and pointer
       .ground(By(fn() {
         let hand = if point is Some(_) { lit_node(r) && !hovered_node(r) } else { lit_node(r) }
         if hand || (lit() && pointer_rests()) { t().p.hover } else { 0L }
@@ -573,4 +593,38 @@ pub fn panel_switch_row_node(
     control(r)
   })
   |> ignore
+}
+
+///|
+/// A small panel's head in `parent` (panel_head's, where its body is nodes and heads itself: panel_nodes'
+/// `heads_itself`): its title (13, 600) in by a row's padding, as far under the panel's top as a menu's first item's
+/// words, 4 over what follows; `end`: what stands beside the title at the rest of its line, a row's capsule in the
+/// panel's top corner, concentric with it (a search), as panel_head's `end`.
+#callsite(autofill(loc))
+pub fn panel_head_node(
+  parent : @view.View,
+  title : () -> String,
+  end? : (@view.View) -> Unit,
+  loc~ : SourceLoc,
+) -> @view.View {
+  parent.box(made_for=loc, fn(h) {
+    match end {
+      Some(f) => {
+        style_node(h, fn() {
+          let r = menu_row_reach(theme().rows.pick)
+          panel_head_line.then(@ui.style(mt=room(-r), mr=room(-r)))
+        })
+        words_node(h, title, fn() { panel_title }) |> ignore
+        h.box(fn(e) {
+          style_node(e, fn() { panel_head_end }, in_row=true)
+          f(e)
+        })
+        |> ignore
+      }
+      None => {
+        style_node(h, fn() { panel_head_box })
+        words_node(h, title, fn() { panel_title }) |> ignore
+      }
+    }
+  })
 }

@@ -17,6 +17,7 @@ import { type ChildProcess, execFileSync, fork } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
 import type { Socket } from "node:net";
 import { join } from "node:path";
+import { brotliDecompressSync, gunzipSync, inflateSync, zstdDecompressSync } from "node:zlib";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 export const src = process.env.E2E_SF_SRC!;
@@ -127,7 +128,7 @@ const askedFile = (data: string) => join(data, "asked.log");
 /// each such answer; nothing the core sends or reads is changed.
 /// (`body`: given the whole answer, as read, of each request whose path `bodyOf` picks: what a station said, word for
 /// word, where a drill needs it beside what the core made of it)
-function watchRequests(told: (station: string, method: string, path: string, status: string, ms: number) => void, bodyOf?: (path: string) => boolean, body?: (station: string, path: string, raw: string) => void): void {
+function watchRequests(told: (station: string, method: string, path: string, status: string, ms: number) => void, bodyOf?: (path: string) => boolean, body?: (station: string, path: string, raw: Buffer) => void): void {
   // (the object as it is, but for `own`: the native one's methods called on it)
   const over = <T extends object>(target: T, own: Record<string, unknown>): T =>
     new Proxy(target, {
@@ -170,7 +171,7 @@ function watchRequests(told: (station: string, method: string, path: string, sta
           head = null;
           told(station, h.method, h.path, answered, Date.now() - began);
           if (chunks !== null) {
-            const raw = Buffer.concat(chunks).toString("utf8");
+            const raw = Buffer.concat(chunks);
             chunks = null;
             body?.(station, h.path, raw);
           }
@@ -190,6 +191,26 @@ function watchRequests(told: (station: string, method: string, path: string, sta
   }) as typeof process.dlopen;
 }
 
+/// What a GET /move answer read off its stream says is stopped on its station (`stopped`, routes.ts moveView: each
+/// `{item, waitsFor}` named `module id`); undefined for another answer (a refusal, a POST's). The stream is mesh/wire.ts's:
+/// a head line `{status, headers}`, then the body, compressed where its headers say so (zstd, as the core asks every
+/// answer: client/core-ts/src/station/requests.ts `ZSTD`).
+function moveStopped(raw: Buffer): { item: string; waitsFor: string }[] | undefined {
+  const end = raw.indexOf(10);
+  if (end < 0) return undefined;
+  try {
+    const head = JSON.parse(raw.subarray(0, end).toString("utf8"));
+    if (head?.status !== 200) return undefined;
+    const enc = String(Object.entries(head.headers ?? {}).find(([k]) => k.toLowerCase() === "content-encoding")?.[1] ?? "").toLowerCase();
+    const b = raw.subarray(end + 1);
+    const body = enc === "zstd" ? zstdDecompressSync(b) : enc === "gzip" ? gunzipSync(b) : enc === "br" ? brotliDecompressSync(b) : enc === "deflate" ? inflateSync(b) : b;
+    const v = JSON.parse(body.toString("utf8"));
+    return Array.isArray(v?.stopped) && Array.isArray(v?.modules) ? v.stopped : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 // A device: this file run as `device NAME again|new sealed|plain|page`, its core's messages passed to and from the
 // parent as they are.
 if (process.argv[2] === "device") {
@@ -199,7 +220,11 @@ if (process.argv[2] === "device") {
   // (before the core is loaded: it loads the addon as its host is made)
   watchRequests((station, method, path, status, ms) => {
     appendFileSync(record, `asked: ${new Date().toISOString().slice(11, 23)} ${station.slice(0, 8)} ${method} ${path} -> answered${status !== "" && status !== "-" ? ` ${status}` : ""} in ${ms} ms\n`);
-    if (process.connected) process.send!({ answered: { station, method, path } });
+    if (process.connected) process.send!({ answered: { station, method, path, ms } });
+  }, (path) => /^(\/admin\/api)?\/move(\?|$)/.test(path), (station, path, raw) => {
+    // (GET /move's answer as the station gave it: what it says is stopped there, `stopped`, the scheduler's)
+    const stopped = moveStopped(raw);
+    if (stopped !== undefined && process.connected) process.send!({ moveSaid: { station, path, stopped } });
   });
   // (how long this process's own loop was held, where over a second: drill 24 saw a turn's end minutes late and could not
   // tell whose loop it was)
@@ -291,7 +316,10 @@ export class Device {
   build: string | undefined;
   /// Each request of its core's to a station whose answer it read to its end (`watchRequests`), across its restarts,
   /// as this driver heard of it (`at`: its clock then); and the waits for one (`answered`).
-  answers: { station: string; method: string; path: string; at: number }[] = [];
+  answers: { station: string; method: string; path: string; at: number; ms?: number }[] = [];
+  /// Each GET /move its core asked and read to its end, as its station answered it: what that station says is stopped
+  /// (`stopped`, its scheduler's), heard at `at`, asked at `asked`.
+  moves: { station: string; path: string; at: number; asked: number; stopped: { item: string; waitsFor: string }[] }[] = [];
   #heard = new Set<() => void>();
   constructor(name: string, user = "alice", opts: { sealed?: boolean; page?: boolean; build?: string } = {}) {
     this.name = name;
@@ -309,6 +337,13 @@ export class Device {
       if (typeof m === "string") return this.#got(JSON.parse(m));
       if (m?.answered) {
         this.answers.push({ ...m.answered, at: Date.now() });
+        for (const f of [...this.#heard]) f();
+      }
+      if (m?.moveSaid) {
+        // (asked when: the answer of the same request, told just before, less how long it took)
+        const a = this.answers.findLast((x) => x.station === m.moveSaid.station && x.path === m.moveSaid.path);
+        const at = Date.now();
+        this.moves.push({ ...m.moveSaid, at, asked: a?.ms === undefined ? at : a.at - a.ms });
         for (const f of [...this.#heard]) f();
       }
     });
@@ -478,8 +513,10 @@ export class Device {
   /// The first request of its core's to station `station` whose path (less `/admin/api`) begins with `path`, answered
   /// and read to its end since `since` (this driver's clock), as soon as it is (or an error by `ms` saying those there
   /// were): what a read of the station that ends in it has been given, its core's own handling of it to follow.
-  answered(station: string, path: string, since: number, ms = 60_000): Promise<{ station: string; method: string; path: string; at: number }> {
-    const find = () => this.answers.find((a) => a.at >= since && a.station === station && a.path.replace(/^\/admin\/api/, "").startsWith(path));
+  /// `begunSince`: one asked since `since` as well (its answer's time less how long it took), not one asked before and
+  /// answered after (a link that answered across a station's restart proves nothing of the link to the new process).
+  answered(station: string, path: string, since: number, ms = 60_000, begunSince = false): Promise<{ station: string; method: string; path: string; at: number; ms?: number }> {
+    const find = () => this.answers.find((a) => a.at >= since && (!begunSince || a.at - (a.ms ?? Infinity) >= since) && a.station === station && a.path.replace(/^\/admin\/api/, "").startsWith(path));
     return new Promise((resolve, reject) => {
       const look = () => {
         const a = find();
@@ -492,6 +529,24 @@ export class Device {
         this.#heard.delete(look);
         const seen = this.answers.filter((a) => a.at >= since).map((a) => `${a.station.slice(0, 8)} ${a.method} ${a.path}`);
         reject(new Error(`${this.name}: no ${path} of ${station.slice(0, 8)} answered in ${ms} ms; answered since: ${seen.join(", ").slice(0, 2000) || "none"}`));
+      }, ms);
+      this.#heard.add(look);
+      look();
+    });
+  }
+  /// The first GET /move of `station` asked since `since` and answered (`moves`), or the time is up.
+  moveSaid(station: string, since: number, ms = 60_000): Promise<Device["moves"][number]> {
+    return new Promise((resolve, reject) => {
+      const look = () => {
+        const m = this.moves.find((x) => x.asked >= since && x.station === station);
+        if (!m) return;
+        clearTimeout(timer);
+        this.#heard.delete(look);
+        resolve(m);
+      };
+      const timer = setTimeout(() => {
+        this.#heard.delete(look);
+        reject(new Error(`${this.name}: no GET /move of ${station.slice(0, 8)} asked since ${new Date(since).toISOString().slice(11, 23)} answered in ${ms} ms`));
       }, ms);
       this.#heard.add(look);
       look();

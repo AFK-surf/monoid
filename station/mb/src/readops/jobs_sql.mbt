@@ -59,18 +59,18 @@ let latest_naming_origin_prepared_sql : String =
   #|      ORDER BY COALESCE(e.at,0) DESC,t.created_at DESC,t.id DESC LIMIT 1) END AS id
 
 ///|
-/// store/job-name-first.ts JOB_NAME_FIRST_LARGE.
+/// station/test/reference/backfill/job-name-first.ts JOB_NAME_FIRST_LARGE.
 let job_name_first_large_sql : String =
   #|SELECT 1 FROM thread_sessions WHERE thread=? LIMIT 1 OFFSET 64
 
 ///|
-/// store/job-name-first.ts JOB_NAME_FIRST_ROW.
+/// station/test/reference/backfill/job-name-first.ts JOB_NAME_FIRST_ROW.
 let job_name_first_row_sql : String =
   #|SELECT m.* FROM thread_sessions m WHERE m.rowid=(SELECT best FROM job_name_first
   #|  WHERE owner=?1 AND thread=?2 AND ready=1 AND restart=0)
 
 ///|
-/// store/workspace-up-jobs.ts WORKSPACE_UP_JOBS.
+/// station/test/reference/backfill/workspace-up-jobs.ts WORKSPACE_UP_JOBS.
 let workspace_up_jobs_sql : String =
   #|WITH wanted AS (
   #|  SELECT session FROM workspace_up_sessions INDEXED BY workspace_up_sessions_scope WHERE scope=0 AND ws=?1

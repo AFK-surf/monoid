@@ -1226,74 +1226,67 @@ fn open_sample() -> Json {
 }
 
 ///|
-/// A station of the workspace not in the lock, taken in once its owner says it is theirs.
-pub fn join_dialog(core : Core, ws : String, station : String, name : String) -> Unit {
-  @sf.confirm(
-    @sf.t("web-pages.security.joinTitle", args=[("name", name)]),
-    @sf.t("web-pages.security.joinBody"),
-    @sf.t("web-pages.security.join"),
-    fn() {
-      lock_call(
-        core,
-        ws,
-        "joinStation",
-        @sf.t("web-pages.security.join"),
-        [("station", station)],
-        done=@sf.t("web-pages.security.joined", args=[("name", name)]),
-      )
-    },
-  )
-}
-
-///|
 /// 关闭安全模式？: what turning it off gives up, a line each, and the workspace's name typed
 /// before it can go (`lock.disable`, Enter too); written in as it opens.
 pub fn turn_off_dialog(core : Core, ws : String, name : String) -> Unit {
-  let key = "lock-off/" + (desk_dialogs.val + 1).to_string()
-  let named = fn() { field_of(key).text().trim(chars=" \t\n").to_owned() == name.trim(chars=" \t\n").to_owned() }
-  let typed_in = Ref(false)
-  let go = fn(c : @ui.Ctx, shut : () -> Unit) {
-    c.blur()
+  let typed = @ui.Field::new()
+  let named = fn() { typed.text().trim(chars=" \t\n").to_owned() == name.trim(chars=" \t\n").to_owned() }
+  let go = fn(v : @view.View, shut : () -> Unit) {
+    v.focus_let_go()
     shut()
     @settings.act(core, @sf.t("web-pages.security.turnOff"), "lock.disable", obj([("workspace", str(ws))]))
   }
-  open_dialog(
+  open_dialog_nodes(
     @sf.t("web-pages.security.turnOffTitle"),
     description=@sf.t("web-pages.security.turnOffBody"),
-    fn(c, shut) {
-      c.box(style=sec_points, fn() {
-        sec_off_point(c, "server", @sf.t("web-pages.security.nowRisk"))
-        sec_off_point(c, "devices", @sf.t("web-pages.security.turnOffApproval"))
-        sec_off_point(c, "key", @sf.t("web-pages.security.turnOffVault"))
+    fn(v, shut) {
+      v.box(fn(l) {
+        @sf.style_node(l, fn() { sec_points })
+        sec_off_point_node(l, "server", fn() { @sf.t("web-pages.security.nowRisk") })
+        sec_off_point_node(l, "devices", fn() { @sf.t("web-pages.security.turnOffApproval") })
+        sec_off_point_node(l, "key", fn() { @sf.t("web-pages.security.turnOffVault") })
       })
       |> ignore
-      @sf.field(c, @sf.t("web-pages.security.turnOffType", args=[("name", name)]), fn() {
-        @sf.input(c, key, field=field_of(key), on_submit=fn(_) { if named() { go(c, shut) } }) |> ignore
+      let label = @sf.t("web-pages.security.turnOffType", args=[("name", name)])
+      @sf.field_node(v, fn() { label }, fn(f) {
+        // (written in as it opens: the keyboard's focus on it, on a sheet too, as the old dialog's focus_editor)
+        @sf.panel_opens_in_node(@sf.input_node(f, typed, label~, submitted=fn(_) { if named() { go(f, shut) } }))
       })
-      if !typed_in.val {
-        typed_in.val = true
-        c.focus_editor(key)
-      }
     },
-    fn(c, shut) {
-      @sf.button(c, @sf.t("common.cancel"), key="off-cancel", tone=Ghost, on_press=fn() {
-        c.blur()
-        shut()
-      }) |> ignore
-      @sf.button(c, @sf.t("web-pages.security.turnOff"), key="off-go", tone=DangerSolid, disabled=!named(), on_press=fn() {
-        go(c, shut)
-      }) |> ignore
+    fn(v, shut) {
+      @sf.button_node(
+        v,
+        fn() { @sf.t("common.cancel") },
+        fn() {
+          v.focus_let_go()
+          shut()
+        },
+        tone=Ghost,
+      )
+      |> ignore
+      @sf.button_node(v, fn() { @sf.t("web-pages.security.turnOff") }, fn() { go(v, shut) }, tone=DangerSolid, disabled=fn() { !named() })
+      |> ignore
     },
   )
 }
 
 ///|
-/// One thing turning it off gives up: its icon, muted, beside a line of it.
-fn sec_off_point(c : @ui.Ctx, icon : String, words : String) -> Unit {
-  let t = @sf.theme()
-  c.box(style=sec_point_line, fn() {
-    c.box(style=sec_point_icon, fn() { @sf.icon(c, icon, size=sec_point_glyph, color=t.p.muted) |> ignore }) |> ignore
-    c.box(style=sec_point_words, fn() { c.text(words, style=sec_point_text) |> ignore }) |> ignore
+/// One thing turning it off gives up (sec_point_node's, its words alone): its icon, muted, on its first line, beside
+/// a line of it.
+fn sec_off_point_node(parent : @view.View, icon : String, words : () -> String) -> Unit {
+  parent.box(fn(l) {
+    @sf.style_node(l, fn() { sec_point_line })
+    // (on its first line, across its middle: sec_point_text's)
+    @sf.first_line_node(l, Body, leading=L7, fn(i) {
+      i.width(Is(Some(sec_point_column))) |> ignore
+      @sf.icon_node(i, icon, sec_point_glyph, By(fn() { @sf.theme().p.muted })) |> ignore
+    })
+    |> ignore
+    l.box(fn(w) {
+      @sf.style_node(w, fn() { sec_point_words }, in_row=true)
+      @sf.words_node(w, words, fn() { sec_point_text }) |> ignore
+    })
+    |> ignore
   })
   |> ignore
 }
@@ -1301,6 +1294,10 @@ fn sec_off_point(c : @ui.Ctx, icon : String, words : String) -> Unit {
 ///|
 /// The sizes: what it changes, its marks 18 in a column of 20; a device's mark 16.
 let sec_point_glyph : Double = 18.0
+
+///|
+/// The column a mark of what it changes stands in (sec_point_icon's w=S5).
+let sec_point_column : Double = 20.0
 
 ///|
 let sec_device_glyph : Double = 16.0
@@ -1579,3 +1576,165 @@ let sec_open_foot_narrow : @ui.Style = @ui.css("row w=Full px=S1 pt=S4 gap=S3 al
 ///|
 // kept across runs: a value (no field of it changes)
 let sec_open_foot_note : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Muted)
+
+///|
+/// Asking to be confirmed, and the code typed (PairSteps): on 设置 › 安全 (the waiting page's: lock_wait_node's
+/// pair_steps_node). Typing (a trusted device shows a code): 输入… over the six boxes, then 正在核对 (turning), or how
+/// many tries are left in red, until when the code holds and 重新获取安全码; finding one, turning; else what is so (none found, why it failed, not asked yet), 发送批准请求 under it (`in_card`: last on
+/// a page's card, in its foot corner, concentric with it: @sf.foot_reach).
+fn pair_steps(c : @ui.Ctx, core : Core, ws : String, in_card? : Bool = false) -> Unit {
+  let lock = (core.topic)("lock", { "workspace": Json::string(ws) }).get().value
+  let me = field(lock, "me")
+  let pair = field(me, "pair")
+  let state = text(pair, "state")
+  let on = [("workspace", ws)]
+  let asking = @settings.is_doing(core, ["lock.pair"], on)
+  let checking = @settings.is_doing(core, ["lock.pairCode"], on) || state == "checking"
+  let note = fn(words : String, turning : Bool) {
+    c.box(style=lock_note, fn() {
+      if turning {
+        @sf.spinner(c, size=lock_spin) |> ignore
+      }
+      c.text(words, style=lock_note_words) |> ignore
+    })
+    |> ignore
+  }
+  // a web page nobody can approve here (the core's `me.needsAppText`, the page's lead): nothing to ask (no one could
+  // answer)
+  if text(me, "needsAppText") != "" {
+    return
+  }
+  // the devices it dials (the core's rows: 2026-11-05, 「到底是哪个设备会弹出来呀？」) on a quiet card under the step's
+  // action, a device to a row, its mark (a phone, a computer) and which machine (the user, #4213, 2026-11-10: fewer
+  // words, and under the buttons, which matter more and are never pushed out by it); on 设置 › 安全's card its rows
+  // alone, from where the card's words start (a ground of their own in its foot corner would not follow it)
+  let devices = fn(list : Array[Json]) {
+    if list.is_empty() {
+      return
+    }
+    c.box(style=if in_card { lock_devices_carded } else { lock_devices }, fn() {
+      c.box(style=if in_card { lock_devices_rows } else { lock_devices_card }, fn() {
+        for d in list {
+          let d = Some(d)
+          c.box(style=lock_device, fn() {
+            @sf.icon(c, lock_device_icon(d), size=lock_device_glyph, color=@sf.theme().p.muted) |> ignore
+            c.box(style=@sf.pg_row_words, fn() { c.text(text(d, "nameText"), style=lock_device_name) |> ignore })
+            |> ignore
+          })
+          |> ignore
+        }
+      })
+      |> ignore
+    })
+    |> ignore
+  }
+  let dialled = items(pair, "approvers")
+  // (a step's action, its row, the button as wide as its words, then the devices the step is about; `in_card` the
+  // row reaches the card's foot corner where it is last, and only its sides, the words where the card's are, where the
+  // devices come under it)
+  let action = fn(list : Array[Json], button : () -> Unit) {
+    let reach = if !in_card {
+      lock_actions
+    } else if list.is_empty() {
+      lock_actions.then(@sf.foot_reach(@sf.button_height()))
+    } else {
+      lock_actions.then(@sf.over_foot_reach(@sf.button_height()))
+    }
+    c.box(style=reach, fn() { @sf.card_foot_words(on=in_card, button) }) |> ignore
+    devices(list)
+  }
+  let showing = dialled.filter(fn(d) { flag(Some(d), "showing") })
+  if state == "code" || state == "wrong" || state == "checking" {
+    note(@sf.t("web-pages.security.pairEnter"), false)
+    let key = "lock-code/" + ws
+    // six boxes, three and three (CodeEntry), handed on once a code is typed; refused, they empty for the next try
+    let typed = c.code_field(
+      key,
+      wrong=state == "wrong",
+      enabled=!checking,
+      color=c.color(Fg),
+      disabled_color=c.color(Muted),
+      edge=c.color(@sf.code_edge),
+      next_edge=c.color(Fg),
+      wrong_edge=c.color(Danger),
+    )
+    if typed is Some(code) {
+      (core.call)("lock.pairCode", { "workspace": Json::string(ws), "code": Json::string(code) }, fn(r) {
+        match r {
+          Err(_) => c.clear_code_field(key)
+          // (approved, but no station took it yet: its sentence said, the code cleared)
+          Ok(v) if @settings.pending_said(v) != "" => {
+            c.clear_code_field(key)
+            (core.say)(@settings.pending_said(v))
+          }
+          Ok(_) => ()
+        }
+      })
+    }
+    if checking {
+      note(@sf.t("web-pages.security.pairChecking"), true)
+      devices(showing)
+    } else {
+      if state == "wrong" {
+        // what the core says of it (the device showing the code may be gone); a core of before says nothing
+        let said = match text(pair, "error") {
+          "" => @sf.t("web-pages.security.pairWrong", args=[("n", count(pair, "left").to_string())])
+          words => words
+        }
+        c.text(said, style=lock_failed) |> ignore
+      }
+      // how long the code holds (14:05 前有效), and a new one asked for at any time: the code gone or not read in time,
+      // nothing to type before asking again (2026-10-30)
+      match text(pair, "untilText") {
+        "" => ()
+        until => note(until, false)
+      }
+      // (which of them show it)
+      action(showing, fn() {
+        @sf.button(c, @sf.t("web-pages.security.pairAgain"), key="lock-pair-again/" + ws, tone=Ghost, on_press=fn() {
+          c.clear_code_field(key)
+          @settings.lock_call(core, ws, "pair", @sf.t("web-pages.security.pairAgain"), [])
+        }) |> ignore
+      })
+    }
+  } else if state == "finding" || asking {
+    note(@sf.t("web-pages.security.pairFinding"), true)
+    // asked again while it looks: the person opened a trusted device and nothing came up, so it looks again now
+    // rather than once its dials run out (2026-11-06 the user: 「直接加个没收到重新申请的按钮」)
+    if asking {
+      devices(dialled)
+    } else {
+      action(dialled, fn() {
+        @sf.button(c, @sf.t("web-pages.security.pairRetry"), key="lock-pair-retry/" + ws, tone=Ghost, on_press=fn() {
+          @settings.lock_call(core, ws, "pair", @sf.t("web-pages.security.pairRetry"), [])
+        }) |> ignore
+      })
+    }
+  } else {
+    match state {
+      "none" => note(@sf.t("web-pages.security.pairNone"), false)
+      "failed" => c.text(text(pair, "error"), style=lock_failed) |> ignore
+      _ =>
+        note(
+          @sf.t(if flag(me, "unsigned") { "web-pages.security.upgradeNotAsked" } else { "web-pages.security.notAsked" }),
+          false,
+        )
+    }
+    // (none found: which they are, its note having said to open one)
+    action(if state == "none" { dialled } else { [] }, fn() {
+      @sf.button(c, @sf.t("web-pages.security.request"), key="lock-pair/" + ws, tone=Primary, on_press=fn() {
+        @settings.lock_call(core, ws, "pair", @sf.t("web-pages.security.request"), [])
+      }) |> ignore
+    })
+  }
+}
+
+///|
+/// On 设置 › 安全's card: from where the card's words start.
+// kept across runs: a value (no field of it changes)
+let lock_devices_carded : @ui.Style = @ui.css("w=Full align=AStart")
+
+///|
+/// On 设置 › 安全's card: the rows, no ground of their own.
+// kept across runs: a value (no field of it changes)
+let lock_devices_rows : @ui.Style = @ui.css("gap=S3")

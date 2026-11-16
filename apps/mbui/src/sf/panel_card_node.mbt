@@ -26,3 +26,13 @@ pub fn panel_card_last_node(v : @view.View) -> @ui.Style {
     _ => no_card_out
   }
 }
+
+///|
+/// Whether node `v` is in what a dialog in the middle of the window holds (its corners round at its foot as at its top,
+/// a sheet's foot going on past the window's): what a part of it keeps clear of there, it need not elsewhere.
+pub fn in_dialog_node(v : @view.View) -> Bool {
+  match v.lent(panel_in_lent) {
+    Some(p) => p.centred && !p.small
+    None => false
+  }
+}

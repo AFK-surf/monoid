@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync, constants } from "node:sqlite";
 import { test } from "node:test";
-import { installSessionUpJobs, sessionUpJobsReady, sessionUpJobsStep } from "../src/store/session-up-jobs.ts";
+import { installSessionUpJobs, sessionUpJobsReady, sessionUpJobsStep } from "./reference/backfill/session-up-jobs.ts";
 import { Store } from "../src/store/store.ts";
 
 function dropIndex(store: Store) {

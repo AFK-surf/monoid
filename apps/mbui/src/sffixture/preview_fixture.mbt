@@ -30,6 +30,7 @@ pub fn preview_files() -> Array[(Attachment, () -> Bytes)] {
     // the chat's visualization (chat_fixture.mbt MBUI_FIXTURE=chat-viz / chat-mbui)
     (at("release.html", 1200.0, 0.0, 0.0), fn() { @utf8.encode(fixture_viz_html) }),
     (at("release.mbui", 1600.0, 0.0, 0.0), fn() { @utf8.encode(fixture_viz_mbui) }),
+    (at("memory-schemes.mbui", 2400.0, 0.0, 0.0), fn() { @utf8.encode(fixture_viz_memory_mbui) }),
     (at("list.ts", 600.0, 0.0, 0.0), fn() { @utf8.encode(fixture_code) }),
     (at("说明.md", 500.0, 0.0, 0.0), fn() { @utf8.encode(fixture_md) }),
     (at("数据.csv", 200.0, 0.0, 0.0), fn() { @utf8.encode(fixture_csv) }),
@@ -67,6 +68,8 @@ pub fn fixture_preview(mode : String) -> Unit {
     "chat-preview-webm" | "chat-preview-webm-unsupported" => "演示录屏.webm"
     "chat-preview-audio" => "会议录音.m4a"
     "chat-preview-html" => "报告.html"
+    "chat-preview-mbui" => "release.mbui"
+    "chat-preview-memory-mbui" => "memory-schemes.mbui"
     "chat-preview-code" => "list.ts"
     "chat-preview-md" => "说明.md"
     "chat-preview-csv" => "数据.csv"

@@ -1,27 +1,35 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { delimiter, join } from "node:path";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { after, test } from "node:test";
-import { AGY_FILE_TOKENS, AgyDriver, SESSIONS, agyAccountFile, agyKeychain, goKeyringValue, agyBaseModel, agyCatalog, agyConversations, agyEnv, agyHome, agyToken, agyVariant, classifyFailure, geminiDir, noticeFailure } from "../src/agents/agy.ts";
+import { AGY_CATALOG_RETRY_MS, AGY_FILE_TOKENS, AGY_TOOL_BUDGET, AGY_TOOL_CEILING, AGY_TOOL_WRAP, AgyDriver, AgyNoCatalog, SESSIONS, agyAccountFile, agyLentFile, agyPlan, agyRenew, agyTierIn, agyTokenReady, agyKeychain, goKeyringValue, agyBaseModel, agyCatalog, agyConversations, agyEnv, agyHome, agyToken, agyVariant, classifyFailure, geminiDir, noticeFailure } from "../src/agents/agy.ts";
+import { REPO_RULES_HOOK } from "../src/agents/repo-rules.ts";
 import type { OpenOptions, RuntimeEvent } from "../src/agents/runtime.ts";
 import { allLeft } from "../src/agents/runner.ts";
 import { profileRuntimes } from "../src/agents/profiles.ts";
 import { Accounts, accountEmail, accountEmailSoon } from "../src/accounts/index.ts";
 import { uncheckOutdated } from "../src/accounts/models.ts";
 import { accessKinds, checkProfile, loginCommand } from "../src/accounts/profiles.ts";
-import { LoginManager, type LoginState } from "../src/accounts/login.ts";
+import { LoginManager, type LoginState, agyCallbackCode } from "../src/accounts/login.ts";
+import { fakeBrowser } from "./accounts-fakes.ts";
 import { checkQuota } from "../src/accounts/quota.ts";
 import { ConfigFile } from "../src/ops/config.ts";
 import { Accounts as SessionAccounts } from "../src/sessions/accounts.ts";
+import { urgency } from "../src/sessions/pool.ts";
 import { hubConfig } from "../src/sessions/config.ts";
 import { Store } from "../src/store/store.ts";
 import { tr } from "../src/ops/i18n.ts";
 import { platform } from "../src/platform/index.ts";
-import { transcriptPath, readTimeline, isPosting } from "../src/read/transcript.ts";
-import { callsOf } from "../src/usage/counter.ts";
+import { transcriptPath, readTimeline, isPosting } from "./reference/transcript.ts";
+import { callsOf } from "./usage-counter-reference.ts";
 import { CHAT_CREATE } from "../src/tools/chat.ts";
+import { failureOf } from "../src/agents/runtime.ts";
+import { cannotStartWords } from "../src/sessions/actor.ts";
+import { testClock } from "./hub-fakes.ts";
+import { CORE, INDIRECT, McpEndpoint } from "../src/tools/mcp.ts";
+import { stationTools } from "./station-tools.ts";
 
 const data = mkdtempSync(process.platform === "win32" ? join(tmpdir(), "agy-") : "/tmp/agy-");
 const drivers: AgyDriver[] = [];
@@ -44,9 +52,9 @@ function setup(env: Record<string, string> = {}) {
   drivers.push(driver);
   return { options, events, driver, dump };
 }
-async function until(f: () => boolean) {
+async function until(f: () => boolean | Promise<boolean>) {
   const end = Date.now() + 10_000;
-  while (!f()) {
+  while (!(await f())) {
     if (Date.now() > end) throw new Error("timed out");
     await new Promise((r) => setTimeout(r, 20));
   }
@@ -95,6 +103,103 @@ test("a Gemini key runs the Antigravity CLI in its profile's files, with the sta
   await resumed.dispose();
 });
 
+test("a conversation the station kept but its CLI does not is not taken up: failed before anything starts, so the session goes on afresh; one another home of the station keeps is brought in and taken up", async () => {
+  const { options, events, driver, dump } = setup();
+  const session = await driver.open(options, (e) => events.push(e));
+  await session.prompt("hello");
+  await until(() => ended(events).length === 1);
+  const id = session.id();
+  await session.dispose();
+  // A chat moved here with the station's transcript alone (2026-11-16): its CLI's conversation is under the id of the
+  // profile it ran on there, a home beside this one; this profile's own store has none of it.
+  const cli = (home: string) => join(geminiDir(home), "antigravity-cli");
+  const own = join(agyConversations(options.profile.home), `${id}.db`);
+  const db = readFileSync(own, "utf8");
+  rmSync(own);
+  const started = () => readFileSync(dump, "utf8").trim().split("\n").length;
+  const before = started();
+  await assert.rejects(driver.open({ ...options, resume: id }, (e) => events.push(e)), /no Antigravity conversation .* in its CLI's store/);
+  assert.equal(started(), before, "no process started for it");
+  const other = join(data, `moved-from-${id}`);
+  mkdirSync(agyConversations(other), { recursive: true });
+  mkdirSync(join(cli(other), "brain", id, "notes"), { recursive: true });
+  mkdirSync(join(cli(other), "annotations"), { recursive: true });
+  writeFileSync(join(agyConversations(other), `${id}.db`), db);
+  writeFileSync(join(agyConversations(other), `${id}.db-wal`), "wal");
+  writeFileSync(join(cli(other), "brain", id, "notes", "plan.md"), "plan");
+  writeFileSync(join(cli(other), "annotations", `${id}.pbtxt`), "seen");
+  events.length = 0;
+  const resumed = await driver.open({ ...options, resume: id }, (e) => events.push(e));
+  assert.equal(resumed.id(), id);
+  assert.equal(readFileSync(own, "utf8"), db);
+  assert.equal(readFileSync(`${own}-wal`, "utf8"), "wal");
+  assert.equal(readFileSync(join(cli(options.profile.home), "brain", id, "notes", "plan.md"), "utf8"), "plan");
+  assert.equal(readFileSync(join(cli(options.profile.home), "annotations", `${id}.pbtxt`), "utf8"), "seen");
+  assert.ok(existsSync(join(agyConversations(other), `${id}.db`)), "copied: the home it came from keeps its own");
+  await resumed.prompt("again");
+  await until(() => ended(events).length === 1);
+  await resumed.dispose();
+});
+
+test("a process that could not reach its backend as the machine came up (no models) is opened again after a wait on the clock; the conversation resumed with its model, never refused as an unknown model", async () => {
+  const { options, events, driver: first, dump } = setup();
+  const session = await first.open(options, (e) => events.push(e));
+  const id = session.id();
+  await session.dispose();
+  const time = testClock();
+  const driver = new AgyDriver({ data, clock: time.clock });
+  drivers.push(driver);
+  // Its first two openings answer with no models (tokyo-mac-studio-0, 2026-11-16: `models: null`), the third with them.
+  const offline = { ...options, profile: { ...options.profile, env: { ...(options.profile.env as Record<string, string>), FAKE_AGY_OFFLINE: "2" } } };
+  let opened: Awaited<ReturnType<AgyDriver["open"]>> | null = null;
+  let failed: unknown = null;
+  const opening = driver.open({ ...offline, resume: id, model: "gemini-3.1-pro" }, (e) => events.push(e)).then((s) => (opened = s), (e) => (failed = e));
+  // A wait begun, or the opening over (as it was before: refused at once, "Unknown model ID").
+  const waits = async (n: number) => {
+    await Promise.race([time.begun(n), opening]);
+    assert.equal(failed, null, String(failed));
+    assert.equal(opened, null, "not opened before its wait");
+    assert.equal(time.asked(), n);
+  };
+  await waits(1);
+  await time.adjust(AGY_CATALOG_RETRY_MS[0]!);
+  await waits(2);
+  await time.adjust(AGY_CATALOG_RETRY_MS[1]!);
+  await opening;
+  assert.equal(failed, null, String(failed));
+  assert.equal(opened!.id(), id, "the conversation it was resuming");
+  assert.equal(readFileSync(dump + ".offline", "utf8"), "3");
+  const set = rpc(dump).filter((m) => m.method === "session/set_model");
+  assert.deepEqual(set.map((m) => m.params.modelId), ["gemini-3.1-pro"], "the model set only once there were models");
+  assert.equal(time.asked(), 2);
+  await opened!.dispose();
+});
+
+test("a process that never reaches its backend fails as the network after its waits, not as an unknown model", async () => {
+  const { options, events, dump } = setup({ FAKE_AGY_OFFLINE: "100" });
+  const time = testClock();
+  const driver = new AgyDriver({ data, clock: time.clock });
+  drivers.push(driver);
+  let failed: unknown = null;
+  const opening = driver.open({ ...options, model: "gemini-3.1-pro" }, (e) => events.push(e)).then(() => assert.fail("opened"), (e) => (failed = e));
+  for (const [i, wait] of AGY_CATALOG_RETRY_MS.entries()) {
+    // A wait begun, or the opening over (as it was before: refused at once, "Unknown model ID").
+    await Promise.race([time.begun(i + 1), opening]);
+    assert.equal(time.asked(), i + 1, `waited before opening again: ${String(failed)}`);
+    await time.adjust(wait);
+  }
+  await opening;
+  assert.ok(failed instanceof AgyNoCatalog, String(failed));
+  assert.equal(readFileSync(dump + ".offline", "utf8"), String(AGY_CATALOG_RETRY_MS.length + 1), "opened once and once again after each wait");
+  assert.equal(rpc(dump).filter((m) => m.method === "session/set_model").length, 0, "no model asked of a process that offers none");
+  assert.equal(failureOf((failed as Error).message), "network");
+  const words = cannotStartWords(failed);
+  assert.doesNotMatch(words, /Unknown model ID/);
+  // As any failure of the network is said ("connection failed"): the station's words for it, then what was said.
+  assert.equal(words.split("\n")[0], cannotStartWords(new Error("connection failed")).split("\n")[0]);
+  assert.notEqual(words.split("\n")[0], cannotStartWords(new Error("Unknown model ID: gemini-3.1-pro")).split("\n")[0]);
+});
+
 test("another model between turns is set in the running process; one it does not offer starts it again", async () => {
   const { options, events, driver, dump } = setup();
   const session = await driver.open(options, (e) => events.push(e));
@@ -127,9 +232,13 @@ test("cancel, a signed-out account, an expired sign-in and a spent quota", async
   await s.prompt("quota-said");
   await until(() => ended(events).length === 4);
   assert.deepEqual(ended(events)[3], { type: "turnEnded", outcome: { kind: "failed", reason: "rate_limit", message: "⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 56m33s." } });
-  await s.prompt("the quota");
+  // It says so after the turn's calls too, its last words (2026-11-15): still a limit.
+  await s.prompt("quota-after-calls");
   await until(() => ended(events).length === 5);
-  assert.deepEqual(ended(events)[4], { type: "turnEnded", outcome: { kind: "completed" } });
+  assert.deepEqual(ended(events)[4], { type: "turnEnded", outcome: { kind: "failed", reason: "rate_limit", message: "⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 22m58s." } });
+  await s.prompt("the quota");
+  await until(() => ended(events).length === 6);
+  assert.deepEqual(ended(events)[5], { type: "turnEnded", outcome: { kind: "completed" } });
   await s.dispose();
   const signedOut = setup({ FAKE_AGY_SIGNED_OUT: "1" });
   await assert.rejects(signedOut.driver.open(signedOut.options, () => {}), /Authentication required/);
@@ -137,8 +246,47 @@ test("cancel, a signed-out account, an expired sign-in and a spent quota", async
   // What the model says of a quota is no notice: not the whole turn, not one line of the CLI's own.
   assert.equal(noticeFailure("Your quota resets in an hour."), null);
   assert.equal(noticeFailure("⚠ Check the quota:\nit is low."), null);
+  assert.equal(noticeFailure("Summary:\n⚠ Your quota resets in an hour."), null);
   assert.equal(noticeFailure("⚠ Something else went wrong."), null);
+  // Its words for a failure it does not name (a borrowed token run out under it, 2026-11-16): a failed turn, not last words,
+  // even when streamed after partial text or a steered prompt.
+  assert.equal(noticeFailure("⚠ Agent execution terminated due to error."), "other");
+  assert.equal(noticeFailure("partial\n⚠ Agent execution terminated due to error.\n"), "other");
   assert.equal(noticeFailure("⚠ Authentication expired. Please log back in."), "auth");
+  // A sign-in lent by another station run out under the process (1.5.9's words): a sign-in's failure, which reopens it.
+  assert.equal(noticeFailure('⚠ agent executor error: generating and executing: request failed: Post "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse": oauth2: token expired and refresh token is not set'), "auth");
+  assert.equal(noticeFailure('partial\n⚠ agent executor error: generating and executing: request failed: Post "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse": oauth2: token expired and refresh token is not set\n'), "auth");
+  assert.equal(noticeFailure("⚠ agent executor error: unexpected EOF"), "other");
+});
+
+test("a borrowed Google account: a process opens on a sign-in lent anew once the one it has runs out soon, and goes on with one that lasts", async () => {
+  const { options } = setup();
+  const profile = { ...options.profile, access: { kind: "subscription" }, share: { borrowed: true, host: "h", id: "sh" } };
+  const signIn = (minutes: number) => JSON.stringify({ token: { access_token: `a${minutes}`, expiry: new Date(Date.now() + minutes * 60_000).toISOString() }, auth_method: "consumer" });
+  const writes: number[] = [];
+  let lend = 55;
+  const driver = new AgyDriver({ data, lent: { borrowed: () => true, write: async (p) => { writes.push(lend); writeFileSync(agyToken(p.home), signIn(lend)); return Date.now() + lend * 60_000; } } });
+  drivers.push(driver);
+  mkdirSync(join(geminiDir(profile.home), "antigravity-cli"), { recursive: true });
+  // 50 minutes left: opened on it, its host not asked.
+  writeFileSync(agyToken(profile.home), signIn(50));
+  let session = await driver.open({ ...options, profile }, () => {});
+  await session.dispose();
+  assert.deepEqual(writes, []);
+  // 20 left: lent anew first.
+  writeFileSync(agyToken(profile.home), signIn(20));
+  session = await driver.open({ ...options, profile }, () => {});
+  await session.dispose();
+  assert.deepEqual(writes, [55]);
+  assert.equal(JSON.parse(readFileSync(agyToken(profile.home), "utf8")).token.access_token, "a55");
+  // Its host away: 20 left is still enough to start on; 3 is not.
+  const away = new AgyDriver({ data, lent: { borrowed: () => true, write: async () => { throw new Error("未能借出"); } } });
+  drivers.push(away);
+  writeFileSync(agyToken(profile.home), signIn(20));
+  session = await away.open({ ...options, profile }, () => {});
+  await session.dispose();
+  writeFileSync(agyToken(profile.home), signIn(3));
+  await assert.rejects(away.open({ ...options, profile }, () => {}), /未能借出/);
 });
 
 test("steering mid-turn injects a prompt, completes once on the steered prompt, and keeps both prompts' usage", async () => {
@@ -180,7 +328,7 @@ test("tiered subscription models normalize to base model + thinking levels, map 
       "gpt-oss-120b": [],
       "gemini-pro-orchestrator": [],
     },
-    defaults: { "gemini-4-carbon": "high", "claude-opus-5-5": "high" },
+    defaults: { "gemini-4-carbon": "high", "claude-opus-5-5": "medium" },
   });
   const medCat = agyCatalog(
     ["gemini-4-carbon-low", "gemini-4-carbon-medium", "gemini-4-carbon-high", "claude-opus-5-5-low", "claude-opus-5-5-high"],
@@ -188,6 +336,7 @@ test("tiered subscription models normalize to base model + thinking levels, map 
   );
   assert.deepEqual(medCat.defaults, { "gemini-4-carbon": "medium", "claude-opus-5-5": "high" });
   assert.equal(agyVariant("gemini-4-carbon", undefined, ["gemini-4-carbon-low", "gemini-4-carbon-medium", "gemini-4-carbon-high"], "gemini-4-carbon-medium"), "gemini-4-carbon-medium");
+  assert.equal(agyVariant("claude-opus-5-5", undefined, ["claude-opus-5-5-low", "claude-opus-5-5-medium", "claude-opus-5-5-high"], "gemini-4-carbon-medium"), "claude-opus-5-5-medium");
   assert.equal(agyVariant("claude-opus-5-5", undefined, ["claude-opus-5-5-low", "claude-opus-5-5-high"], "gemini-4-carbon-medium"), "claude-opus-5-5-high");
   assert.deepEqual(agyBaseModel("claude-opus-5-5-medium"), { model: "claude-opus-5-5", effort: "medium" });
   assert.equal(agyVariant("gpt-oss-120b", undefined, ["gpt-oss-120b-medium"]), "gpt-oss-120b-medium");
@@ -248,6 +397,7 @@ for (const crashed of [false, true]) {
     const s = await driver.open(configured, (e) => events.push(e));
     await s.prompt("hold");
     await until(() => events.some((e) => e.type === "live" && e.event.kind === "delta" && e.event.text === "first "));
+    if (!crashed) await driver.freeze();
     const snapshot = crashed ? null : s.snapshot();
     s.detach();
     await allLeft();
@@ -268,7 +418,246 @@ for (const crashed of [false, true]) {
     assert.equal(adopted.retune!({ ...options, model: "gemini-3.5-flash" }), true);
     await adopted.dispose();
   });
+
+  test(`taking up an idle process ${crashed ? "after a crash" : "from a handover"} refuses one whose CLI database is gone, and brings one another home keeps`, async () => {
+    const { options, events, driver } = setup();
+    const s = await driver.open(options, (e) => events.push(e));
+    await s.prompt("hello");
+    await until(() => ended(events).length === 1);
+    const id = s.id();
+    const runner = s.runner()!;
+    const own = join(agyConversations(options.profile.home), `${id}.db`);
+    const db = readFileSync(own, "utf8");
+    rmSync(own);
+    if (!crashed) await driver.freeze();
+    const snapshot = crashed ? null : s.snapshot();
+    s.detach();
+    await allLeft();
+    const next = new AgyDriver({ data });
+    drivers.push(next);
+    if (!crashed) {
+      // Handover: refused before attaching, leaving the runner unowned for hub `endOrphans`, or brought in when another home has it.
+      await assert.rejects(next.adopt({ ...options, resume: id }, snapshot, () => {}), /no Antigravity conversation .* in its CLI's store/);
+      assert.equal(next.ownedRunners().size, 0);
+      const other = join(dirname(options.profile.home), `other-home-${id}`);
+      mkdirSync(agyConversations(other), { recursive: true });
+      writeFileSync(join(agyConversations(other), `${id}.db`), db);
+      const later: RuntimeEvent[] = [];
+      const adopted = await next.adopt({ ...options, resume: id }, snapshot, (e) => later.push(e));
+      assert.equal(readFileSync(own, "utf8"), db);
+      await adopted.prompt("again");
+      await until(() => ended(later).length === 1);
+      assert.deepEqual(ended(later)[0], { type: "turnEnded", outcome: { kind: "completed" } });
+      await adopted.dispose();
+    } else {
+      // Crash with no resume id: replay learns the conversation id, then disposes the broken runner when its `.db` is gone.
+      const { findRunner } = await import("../src/agents/process.ts");
+      await assert.rejects(next.adopt(options, null, () => {}), /no Antigravity conversation .* in its CLI's store/);
+      assert.equal(next.ownedRunners().size, 0);
+      assert.equal(await findRunner(data, runner), undefined, "broken runner disposed on crash replay");
+    }
+  });
 }
+
+test("a warm Antigravity session whose CLI lacks its trajectory recovers across handover and on a live prompt without an error notice", async () => {
+  const { Hub } = await import("../src/sessions/hub.ts");
+  const { InternalChat } = await import("../src/sessions/internal.ts");
+  const { FakeChat, message, reply, settle } = await import("./hub-fakes.ts");
+  const { findRunner } = await import("../src/agents/process.ts");
+  const hubDir = mkdtempSync(join(data, "hub-agy-"));
+  const dump = join(hubDir, "dump");
+  const home = join(hubDir, "homes", "ag");
+  const raw = {
+    askToName: false,
+    profiles: [{ id: "ag", runtime: "agy", home, access: { kind: "api-provider", provider: "google", key: "gemini-key" }, env: { PATH: fake, FAKE_DUMP: dump } }],
+    connects: [{ id: "cl", bind: { runtime: "agy" } }],
+  };
+  const cfg = hubConfig(raw, hubDir);
+  const store = Store.open(join(hubDir, "stillfail.db"));
+  const chat = new FakeChat("UBOT");
+  const makeHub = (drv: AgyDriver) => {
+    const h = new Hub({ config: () => cfg, store, chats: (id) => (id === "cl" ? chat : undefined), drivers: [drv], mcpUrl: "http://127.0.0.1:1/mcp", internal: new InternalChat() });
+    h.skillsLinker = async () => "";
+    return h;
+  };
+  const d1 = new AgyDriver({ data: hubDir });
+  let hub = makeHub(d1);
+  let d2: AgyDriver | null = null;
+  try {
+    // 1. Turn 1 opens a warm agy process and ends; fake/agy does not call chat_state, so maxNudges=0 lets it settle idle.
+    cfg.maxNudges = 0;
+    const m1 = message({ text: "first ask" });
+    await hub.accept("cl", m1);
+    await until(() => store.listSessions().length === 1 && !store.listSessions()[0]!.running && store.listSessions()[0]!.runtimeSessionId !== null);
+    await settle();
+    const key = store.listSessions()[0]!.key;
+    const id1 = store.getSession(key)!.runtimeSessionId!;
+    const runner1 = [...d1.ownedRunners()][0]!;
+    assert.ok(await findRunner(hubDir, runner1));
+
+    // 2. Its CLI `.db` is absent (as for a chat moved before #6608 whose warm process answered `session/load` on 0.1.9512).
+    //    Across a station handover, `takeUp` refuses the warm process, `endOrphans` ends its runner, and the next turn
+    //    starts a new conversation that reads back instead of failing with `trajectory not found`.
+    rmSync(join(agyConversations(home), `${id1}.db`));
+    await hub.handOver();
+    await d1.shutdown();
+    d2 = new AgyDriver({ data: hubDir });
+    hub = makeHub(d2);
+    await hub.takeUp();
+    await until(async () => (await findRunner(hubDir, runner1)) === undefined);
+    assert.equal(d2.ownedRunners().size, 0);
+
+    await hub.accept("cl", reply(m1, "2000.2", "<@UBOT> make it simpler", { addressed: true }));
+    // (the turn's prompt as the CLI took it, and the turn over: a session not running with no runtime id yet, as takeUp
+    // left it, is so before the turn begins, and the dump read then held only the first ask: main 6a896dd6's
+    // check-station (1), 43815915481)
+    // (a line the fake is still writing is not one yet)
+    // (its prompt in the new conversation, as it reopened: until then the one the warm process failed on is the last,
+    // and the session can be seen with its new id between the two: PR #6679's check-station (5), 43859167177)
+    const prompted = (words: string) => {
+      try {
+        return rpc(dump).some((m) => m.method === "session/prompt" && /Your earlier conversation could not be restored: this is a new one\./.test(String(m.params.prompt[0].text)) && String(m.params.prompt[0].text).includes(words));
+      } catch {
+        return false;
+      }
+    };
+    await until(() => {
+      const s = store.getSession(key)!;
+      return prompted("make it simpler") && !s.running && s.runtimeSessionId !== null && s.runtimeSessionId !== id1;
+    });
+    await settle();
+    const id2 = store.getSession(key)!.runtimeSessionId!;
+    assert.notEqual(id2, id1);
+    assert.equal(chat.texts().some((t) => t.includes("trajectory not found")), false, `unexpected error notice: ${chat.texts().join("\n")}`);
+    const promptsAfterHandover = rpc(dump).filter((m) => m.method === "session/prompt").map((m) => m.params.prompt[0].text as string);
+    assert.match(promptsAfterHandover.at(-1)!, /Your earlier conversation could not be restored: this is a new one\..*make it simpler/s);
+
+    // 3. Even without a station restart, if a warm `agy` process loses its trajectory (including a corrupt `.db` file still
+    //    on disk that fails `session/prompt` with `trajectory not found`), the actor ends the broken process, marks that id
+    //    lost in the driver, and reopens once in a new conversation with the person's message and zero error notice.
+    writeFileSync(join(agyConversations(home), `${id2}.db`), "corrupt");
+    await hub.accept("cl", reply(m1, "2000.3", "<@UBOT> and shorter", { addressed: true }));
+    await until(() => {
+      const s = store.getSession(key)!;
+      return prompted("and shorter") && !s.running && s.runtimeSessionId !== null && s.runtimeSessionId !== id2;
+    });
+    await settle();
+    const id3 = store.getSession(key)!.runtimeSessionId!;
+    assert.notEqual(id3, id2);
+    assert.equal(chat.texts().some((t) => t.includes("trajectory not found")), false, `unexpected error notice: ${chat.texts().join("\n")}`);
+    const promptsAfterLiveLoss = rpc(dump).filter((m) => m.method === "session/prompt").map((m) => m.params.prompt[0].text as string);
+    assert.match(promptsAfterLiveLoss.at(-1)!, /Your earlier conversation could not be restored: this is a new one\..*and shorter/s);
+  } finally {
+    await hub.shutdown();
+    await d1.shutdown();
+    if (d2) await d2.shutdown();
+    store.close();
+  }
+});
+
+test("a warm process on a borrowed sign-in that runs out too soon for a turn is opened again on one lent anew before the turn", async () => {
+  const { Hub } = await import("../src/sessions/hub.ts");
+  const { InternalChat } = await import("../src/sessions/internal.ts");
+  const { FakeChat, message, reply, settle } = await import("./hub-fakes.ts");
+  const hubDir = mkdtempSync(join(data, "hub-agy-lent-"));
+  const dump = join(hubDir, "dump");
+  const home = join(hubDir, "homes", "ag");
+  const raw = {
+    askToName: false,
+    profiles: [{ id: "ag", runtime: "agy", home, access: { kind: "api-provider", provider: "google", key: "gemini-key" }, env: { PATH: fake, FAKE_DUMP: dump } }],
+    connects: [{ id: "cl", bind: { runtime: "agy" } }],
+  };
+  const cfg = hubConfig(raw, hubDir);
+  const store = Store.open(join(hubDir, "stillfail.db"));
+  const chat = new FakeChat("UBOT");
+  const signIn = (minutes: number) => JSON.stringify({ token: { access_token: `a${minutes}`, expiry: new Date(Date.now() + minutes * 60_000).toISOString() }, auth_method: "consumer" });
+  // Its host away at first: the process opens on the 20 minutes the sign-in has left, enough to start on.
+  let hostAway = true;
+  const lends: number[] = [];
+  const driver = new AgyDriver({
+    data: hubDir,
+    lent: {
+      borrowed: () => true,
+      write: async (p) => {
+        if (hostAway) throw new Error("host away");
+        lends.push(55);
+        writeFileSync(agyToken(p.home), signIn(55));
+        return Date.now() + 55 * 60_000;
+      },
+    },
+  });
+  let completed = 0;
+  const open = driver.open.bind(driver);
+  driver.open = (options, events) => open(options, (event) => {
+    if (event.type === "turnEnded") completed++;
+    events(event);
+  });
+  mkdirSync(join(geminiDir(home), "antigravity-cli"), { recursive: true });
+  writeFileSync(agyToken(home), signIn(20));
+  const hub = new Hub({ config: () => cfg, store, chats: (id) => (id === "cl" ? chat : undefined), drivers: [driver], mcpUrl: "http://127.0.0.1:1/mcp", internal: new InternalChat() });
+  hub.skillsLinker = async () => "";
+  try {
+    cfg.maxNudges = 0;
+    const m1 = message({ text: "first ask" });
+    await hub.accept("cl", m1);
+    await until(() => completed >= 1 && store.listSessions().length === 1 && !store.listSessions()[0]!.running && store.listSessions()[0]!.runtimeSessionId !== null);
+    await settle();
+    const key = store.listSessions()[0]!.key;
+    const id = store.getSession(key)!.runtimeSessionId!;
+    const safeRpc = () => {
+      try {
+        return rpc(dump);
+      } catch {
+        return [];
+      }
+    };
+    const opens = () => safeRpc().filter((m) => m.method === "initialize").length;
+    const prompts = () => safeRpc().filter((m) => m.method === "session/prompt").map((m) => m.params.prompt[0].text as string);
+    assert.equal(opens(), 1);
+    assert.deepEqual(lends, []);
+
+    // The next turn: the process's token has under AGY_LENT_RENEW_MS left, so it is ended and the conversation opened
+    // again in a new process, on a sign-in lent anew, the person's words its prompt.
+    hostAway = false;
+    await hub.accept("cl", reply(m1, "2000.2", "<@UBOT> make it simpler", { addressed: true }));
+    await until(() => !store.getSession(key)!.running && prompts().some((p) => /make it simpler/.test(p)));
+    await settle();
+    assert.deepEqual(lends, [55]);
+    assert.equal(opens(), 2);
+    assert.equal(store.getSession(key)!.runtimeSessionId, id);
+    assert.equal(rpc(dump).filter((m) => m.method === "session/load").length, 1);
+
+    // One that lasts: the same process takes the turn after.
+    await hub.accept("cl", reply(m1, "2000.3", "<@UBOT> and shorter", { addressed: true }));
+    await until(() => !store.getSession(key)!.running && prompts().some((p) => /and shorter/.test(p)));
+    await settle();
+    assert.equal(opens(), 2);
+    assert.deepEqual(lends, [55]);
+
+    // A borrowed sign-in that runs out under an in-flight turn on 1.5.8 (partial text followed by AGY_TERMINATED):
+    // answered as `auth`, so `auth_retry` ends the expired process, lends anew, resumes via `session/load`, and
+    // continues once with `GO_ON_AFTER_AUTH` without posting a failure notice.
+    const { GO_ON_AFTER_AUTH } = await import("../src/agents/instructions.ts");
+    const live = [...(driver as any).live][0];
+    const postsBefore = chat.texts().length;
+    await hub.accept("cl", reply(m1, "2000.4", "<@UBOT> hold-turn", { addressed: true }));
+    await until(() => live.busy());
+    live.signInUntil = Date.now() - 60_000;
+    writeFileSync(agyToken(home), signIn(-1));
+    await hub.accept("cl", reply(m1, "2000.5", "<@UBOT> expire-mid-turn", { addressed: true }));
+    await until(() => !store.getSession(key)!.running && opens() === 3 && prompts().some((p) => p.includes(GO_ON_AFTER_AUTH)));
+    await settle();
+    assert.deepEqual(lends, [55, 55]);
+    assert.equal(store.getSession(key)!.runtimeSessionId, id);
+    assert.equal(rpc(dump).filter((m) => m.method === "session/load").length, 2);
+    assert.equal(chat.texts().some((t) => t.includes("terminated due to error") || t.includes("模型服务出错") || t.includes("认证失败")), false);
+    assert.equal(chat.texts().length, postsBefore + 1);
+  } finally {
+    await hub.shutdown();
+    await driver.shutdown();
+    store.close();
+  }
+});
 
 test("which profiles run it, and none of the machine's Google accounts", (t) => {
   const { options } = setup();
@@ -303,9 +692,10 @@ test("a Google account: signed in in its terminal interface (the way chosen, Goo
     await wait("needs_code");
     assert.match(logins.get("g")!.url ?? "", /^https:\/\/accounts\.google\.com\/o\/oauth2\/auth\?.*redirect_uri=https%3A%2F%2Fantigravity\.google%2Foauth-callback/);
     const run = JSON.parse(readFileSync(dump, "utf8").trim().split("\n").at(-1)!);
-    // Its HOME the profile's agy/ (so the sign-in lands in the ACP server's --gemini-dir), not a remote session's, none of
-    // the machine's keys.
-    assert.deepEqual([run.args, run.home, run.remote, run.key], [[], agyHome(home), null, null]);
+    // Its HOME an empty directory of its own (its sign-in copied into the profile's agy/ once done), its sign-in kept in a
+    // file there (AGY_FILE_TOKENS), its question to the terminal answered; none of the machine's keys.
+    assert.deepEqual([run.args, run.home, run.remote, run.key, run.fileTokens], [[], join(data, "run", "agy-login", "g-1"), null, null, AGY_FILE_TOKENS.SSH_CLIENT]);
+    assert.match(readFileSync(dump + ".terminal", "utf8"), /\\u001b\[\?1;2c/);
     await logins.submitCode("g", " 4/0Ab-code ", "en");
     await wait("done");
     assert.equal(JSON.parse(readFileSync(agyToken(home), "utf8")).token.access_token, "ya29.4/0Ab-code");
@@ -325,15 +715,321 @@ test("a Google account: signed in in its terminal interface (the way chosen, Goo
   await s.dispose();
 });
 
+test("a company's Google account: signed in by Google Cloud's way, its licence chosen, not done on its first file with only a token", { skip: process.platform === "win32" && "no terminal to sign in in" }, async () => {
+  const home = join(data, "company");
+  const dump = join(data, "company-dump");
+  const env = { ...process.env, PATH: fake, FAKE_DUMP: dump, FAKE_AGY_LICENSES: "1" } as Record<string, string>;
+  const logins = new LoginManager(data, { claude: "claude", codex: "codex", agy: "agy" }, () => env);
+  const wait = async (state: LoginState) => until(() => logins.get("c")?.state === state);
+  try {
+    await logins.start({ id: "c", runtime: "agy", home, enterprise: true }, "en");
+    await wait("needs_code");
+    assert.match(logins.get("c")!.url ?? "", /^https:\/\/accounts\.google\.com\/o\/oauth2\/auth\?/);
+    await logins.submitCode("c", "4/0Ab-company", "en");
+    await wait("done");
+    // Its second way (the arrow down, then Enter), Continue with Google Cloud, the code, then its licence.
+    const keys = readFileSync(dump + ".keys", "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    assert.deepEqual(keys.map((k) => [k.step, k.down]), [["menu", true], ["cloud", false], ["gcp-code", false], ["license", false]]);
+    // Done only once the licence was written: the sign-in stopped on the file with only its token would be signed out.
+    const file = JSON.parse(readFileSync(agyToken(home), "utf8"));
+    assert.deepEqual([file.project_id, file.user_tier, file.auth_method], ["company-project", "gcp-ge-ultra-tier", "gcp"]);
+    assert.equal(JSON.parse(readFileSync(agyAccountFile(home), "utf8")).email, "someone@company.com");
+    const checked = await checkProfile({ runtime: "agy", kind: "subscription", key: "", via: {}, home, env, machine: false, lang: "en" });
+    assert.deepEqual([checked.state, checked.plan], ["ok", "Enterprise Ultra"]);
+    // A file with only its token (the licence never chosen) is signed out, as `agy` takes it.
+    writeFileSync(agyToken(home), JSON.stringify({ token: { access_token: "ya29.x" }, auth_method: "gcp", id_token_email: "someone@company.com" }));
+    assert.equal((await checkProfile({ runtime: "agy", kind: "subscription", key: "", via: {}, home, env, machine: false, lang: "en" })).state, "login");
+  } finally {
+    await logins.close();
+  }
+});
+
+test("a company's Google account with no licence: Pay As You Go chosen, its Google Cloud project asked of the person; one refused ends the sign-in saying why", { skip: process.platform === "win32" && "no terminal to sign in in" }, async () => {
+  const home = join(data, "paygo");
+  const dump = join(data, "paygo-dump");
+  const env = { ...process.env, PATH: fake, FAKE_DUMP: dump } as Record<string, string>;
+  const logins = new LoginManager(data, { claude: "claude", codex: "codex", agy: "agy" }, () => env);
+  const wait = async (state: LoginState) => until(() => logins.get("p")?.state === state);
+  try {
+    await logins.start({ id: "p", runtime: "agy", home, enterprise: true }, "en");
+    await wait("needs_code");
+    await logins.submitCode("p", "4/0Ab-paygo", "en");
+    await wait("needs_project");
+    await assert.rejects(logins.submitCode("p", "  ", "en"), new RegExp(tr("en", "station.login.emptyCode")));
+    await logins.submitCode("p", "bad-project", "en");
+    await wait("failed");
+    assert.match(logins.get("p")!.error ?? "", /Permission denied on project bad-project/);
+
+    await logins.start({ id: "p", runtime: "agy", home, enterprise: true }, "en");
+    await wait("needs_code");
+    await logins.submitCode("p", "4/0Ab-paygo", "en");
+    await wait("needs_project");
+    await logins.submitCode("p", " my-project ", "en");
+    await wait("done");
+    const file = JSON.parse(readFileSync(agyToken(home), "utf8"));
+    assert.deepEqual([file.project_id, file.auth_method, file.token.access_token], ["my-project", "gcp", "ya29.4/0Ab-paygo"]);
+    const keys = readFileSync(dump + ".keys", "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    assert.deepEqual(keys.slice(-4).map((k) => [k.step, k.down]), [["cloud", false], ["gcp-code", false], ["billing", true], ["project", false]]);
+    // A company's account on no tier is Enterprise.
+    const checked = await checkProfile({ runtime: "agy", kind: "subscription", key: "", via: {}, home, env, machine: false, lang: "en" });
+    assert.deepEqual([checked.state, checked.plan], ["ok", "Enterprise"]);
+  } finally {
+    await logins.close();
+  }
+});
+
+test("a company's Google account through the accounts: made a profile that remembers it, signed in again the same way; its plan as `agy` says it", { skip: process.platform === "win32" && "no terminal to sign in in" }, async (t) => {
+  const dir = join(data, "company-accounts");
+  mkdirSync(dir, { recursive: true });
+  const dump = join(dir, "dump");
+  const saved = { PATH: process.env.PATH, FAKE_DUMP: process.env.FAKE_DUMP, FAKE_AGY_LICENSES: process.env.FAKE_AGY_LICENSES };
+  Object.assign(process.env, { PATH: fake, FAKE_DUMP: dump, FAKE_AGY_LICENSES: "1" });
+  t.after(() => {
+    for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k]; else process.env[k] = v;
+  });
+  const store = Store.open(":memory:", null);
+  const config = new ConfigFile(dir);
+  let tier: string | undefined = "gcp-ge-plus-tier";
+  const accounts = new Accounts({
+    data: dir,
+    store,
+    config,
+    machine: null,
+    checkOnStart: false,
+    loginCommands: { claude: "claude", codex: "codex", agy: "agy" },
+    check: (req, lang) => checkProfile({ ...req, env: {}, machine: false, lang }),
+    quota: async () => ({ state: "ok", windows: [], detail: null, checkedAt: 0 }),
+    agy: () => ({ models: async () => ["gemini-3.5-flash"], catalog: async () => ({ models: ["gemini-3.5-flash"], efforts: {}, defaults: {}, ...(tier !== undefined ? { tier } : {}) }) }),
+  });
+  const viewer = { email: "owner@company.com" } as never;
+  accounts.start();
+  try {
+    const { id } = await accounts.newLogin({ access: "agy-enterprise" }, viewer, "en");
+    await until(() => accounts.logins.get(id)?.state === "needs_code");
+    await accounts.logins.submitCode(id, "4/0Ab-made", "en");
+    await until(() => (config.raw().profiles ?? []).length === 1);
+    const made = config.raw().profiles[0];
+    assert.deepEqual([made.runtime, made.access, made.name], ["agy", { kind: "subscription", enterprise: true }, "someone@company.com"]);
+    // Its plan: as `agy` said it; where it says none, its sign-in's.
+    assert.equal((await accounts.check(made.id, "en")).plan, "Enterprise Plus");
+    tier = undefined;
+    assert.equal((await accounts.check(made.id, "en")).plan, "Enterprise Ultra");
+    // Signed in again: Google Cloud's way, without being told.
+    await accounts.startLogin(made.id, viewer, "en");
+    await until(() => accounts.logins.get(made.id)?.state === "needs_code");
+    const keys = readFileSync(dump + ".keys", "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    assert.deepEqual(keys.slice(-2).map((k) => [k.step, k.down]), [["menu", true], ["cloud", false]]);
+    accounts.logins.cancel(made.id);
+  } finally {
+    await accounts.close();
+    store.close();
+  }
+});
+
+/// A sign-in as `agy` keeps it, in a profile's agy/ (as a sign-in before left it).
+const signedInBefore = (home: string, fields: Record<string, unknown>) => {
+  mkdirSync(join(geminiDir(home), "antigravity-cli"), { recursive: true });
+  writeFileSync(agyToken(home), JSON.stringify(fields));
+};
+
+test("signed in again over a sign-in there is (a person's and a company's): `agy` runs in an empty HOME of its own, so it asks how to sign in; the new sign-in replaces the old once done, and the empty HOME goes", { skip: process.platform === "win32" && "no terminal to sign in in" }, async () => {
+  for (const enterprise of [false, true]) {
+    const home = join(data, `again-${enterprise}`);
+    const dump = join(data, `again-${enterprise}-dump`);
+    const env = { ...process.env, PATH: fake, FAKE_DUMP: dump, ...(enterprise ? { FAKE_AGY_LICENSES: "1" } : {}) } as Record<string, string>;
+    signedInBefore(home, { token: { access_token: "ya29.old", token_type: "Bearer" }, auth_method: enterprise ? "gcp" : "oauth", id_token_email: "before@x.test", ...(enterprise ? { project_id: "old-project" } : {}) });
+    const logins = new LoginManager(data, { claude: "claude", codex: "codex", agy: "agy" }, () => env);
+    const wait = async (state: LoginState) => until(() => logins.get("a")?.state === state);
+    try {
+      await logins.start({ id: "a", runtime: "agy", home, ...(enterprise ? { enterprise } : {}) }, "en");
+      await wait("needs_code");
+      const run = JSON.parse(readFileSync(dump, "utf8").trim().split("\n").at(-1)!);
+      assert.equal(run.fileTokens, AGY_FILE_TOKENS.SSH_CLIENT);
+      assert.ok(run.home.startsWith(join(data, "run", "agy-login")), run.home);
+      // The old one untouched while the new is under way.
+      assert.equal(JSON.parse(readFileSync(agyToken(home), "utf8")).token.access_token, "ya29.old");
+      await logins.submitCode("a", "4/0Ab-again", "en");
+      await wait("done");
+      const file = JSON.parse(readFileSync(agyToken(home), "utf8"));
+      assert.equal(file.token.access_token, "ya29.4/0Ab-again");
+      if (enterprise) assert.deepEqual([file.project_id, file.user_tier], ["company-project", "gcp-ge-ultra-tier"]);
+      assert.equal(JSON.parse(readFileSync(agyAccountFile(home), "utf8")).email, enterprise ? "someone@company.com" : "someone@gmail.com");
+      await until(() => !existsSync(run.home));
+    } finally {
+      await logins.close();
+    }
+  }
+});
+
+test("a sign-in again given up or failed leaves the sign-in there as it was", { skip: process.platform === "win32" && "no terminal to sign in in" }, async () => {
+  const home = join(data, "kept");
+  const env = { ...process.env, PATH: fake, FAKE_DUMP: join(data, "kept-dump") } as Record<string, string>;
+  const before = { token: { access_token: "ya29.kept", token_type: "Bearer", refresh_token: "r" }, auth_method: "gcp", id_token_email: "before@company.test", project_id: "kept-project", region: "global" };
+  signedInBefore(home, before);
+  const logins = new LoginManager(data, { claude: "claude", codex: "codex", agy: "agy" }, () => env);
+  const wait = async (state: LoginState) => until(() => logins.get("k")?.state === state);
+  try {
+    // Given up once its code went in (its file in its HOME written with only its token).
+    await logins.start({ id: "k", runtime: "agy", home, enterprise: true }, "en");
+    await wait("needs_code");
+    await logins.submitCode("k", "4/0Ab-dropped", "en");
+    await wait("needs_project");
+    logins.cancel("k");
+    assert.deepEqual(JSON.parse(readFileSync(agyToken(home), "utf8")), before);
+    // Failed: its project refused.
+    await logins.start({ id: "k", runtime: "agy", home, enterprise: true }, "en");
+    await wait("needs_code");
+    await logins.submitCode("k", "4/0Ab-refused", "en");
+    await wait("needs_project");
+    await logins.submitCode("k", "bad-project", "en");
+    await wait("failed");
+    assert.deepEqual(JSON.parse(readFileSync(agyToken(home), "utf8")), before);
+    await until(() => !existsSync(join(data, "run", "agy-login", "k-1")) && !existsSync(join(data, "run", "agy-login", "k-2")));
+  } finally {
+    await logins.close();
+  }
+});
+
+test("an Antigravity CLI account signed in again: its sessions' processes start again and its copies are told; a borrowed one's, once its host's new sign-in is lent", { skip: process.platform === "win32" && "no terminal to sign in in" }, async (t) => {
+  const dir = join(data, "again-accounts");
+  mkdirSync(dir, { recursive: true });
+  const saved = { PATH: process.env.PATH, FAKE_DUMP: process.env.FAKE_DUMP };
+  Object.assign(process.env, { PATH: fake, FAKE_DUMP: join(dir, "dump") });
+  t.after(() => {
+    for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k]; else process.env[k] = v;
+  });
+  const borrowedCopy = { id: "sh-0123456789abcdef0123", name: "Google AI Pro", runtime: "agy", access: { kind: "subscription" }, home: "homes/sh-0123456789abcdef0123", env: {}, share: { id: "sh-0123456789abcdef0123", borrowed: true, host: "host-station" } };
+  writeFileSync(join(dir, "config.json"), JSON.stringify({ profiles: [{ id: "gem", name: "Google AI Pro", runtime: "agy", access: { kind: "subscription" }, home: "homes/gem", env: {} }, borrowedCopy] }));
+  signedInBefore(join(dir, "homes", "gem"), { token: { access_token: "ya29.old", token_type: "Bearer" }, auth_method: "oauth", id_token_email: "someone@gmail.com" });
+  const store = Store.open(":memory:", null);
+  const config = new ConfigFile(dir);
+  const steps: string[] = [];
+  const accounts = new Accounts({
+    data: dir,
+    store,
+    config,
+    machine: null,
+    checkOnStart: false,
+    loginCommands: { claude: "claude", codex: "codex", agy: "agy" },
+    check: async () => ({ state: "ok", detail: "", models: ["gemini-3.5-flash"], checkedAt: 1 }),
+    quota: async () => ({ state: "ok", windows: [], detail: null, checkedAt: 0 }),
+    hub: { accounts: { setHealth() {}, healthOf: () => ({}) as never }, profileLoginChanged: (id) => void steps.push(`restart ${id}`) },
+    shared: {
+      status: async () => ({ check: { state: "ok", detail: "", models: null, checkedAt: 1 }, quota: null }),
+      view: () => null,
+      loginUpdated: (id) => void steps.push(`told ${id ?? ""}`),
+      lendAgy: async (p) => (steps.push(`lent ${p.id}`), Date.now() + 3600_000),
+    },
+  });
+  const viewer = { email: "owner@x.test" } as never;
+  accounts.start();
+  try {
+    await accounts.startLogin("gem", viewer, "en");
+    await until(() => accounts.logins.get("gem")?.state === "needs_code");
+    await accounts.logins.submitCode("gem", "4/0Ab-new", "en");
+    await until(() => steps.includes("restart gem"));
+    assert.deepEqual(steps, ["told gem", "restart gem"]);
+    assert.equal(JSON.parse(readFileSync(agyToken(join(dir, "homes", "gem")), "utf8")).token.access_token, "ya29.4/0Ab-new");
+    // A copy whose host signed in again: what it lends now written first, then its sessions' processes start again.
+    steps.length = 0;
+    await accounts.sharedChanged(borrowedCopy.id, false);
+    assert.deepEqual(steps, [`lent ${borrowedCopy.id}`, `restart ${borrowedCopy.id}`]);
+  } finally {
+    await accounts.close();
+    store.close();
+  }
+});
+
+test("a Google sign-in done in the station's browser: its code read off the page Google comes back to, its tab closed, nothing to paste; another sign-in's page left alone", { skip: process.platform === "win32" && "no terminal to sign in in" }, async () => {
+  const home = join(data, "in-station");
+  const env = { ...process.env, PATH: fake, FAKE_AGY_LICENSES: "1" } as Record<string, string>;
+  const logins = new LoginManager(data, { claude: "claude", codex: "codex", agy: "agy" }, () => env);
+  const b = fakeBrowser();
+  logins.attach(b.pages);
+  const wait = async (state: LoginState) => until(() => logins.get("s")?.state === state);
+  try {
+    await logins.start({ id: "s", runtime: "agy", home, enterprise: true }, "en");
+    await wait("needs_code");
+    assert.equal(logins.get("s")!.browser, true);
+    await logins.openPage("s", "en");
+    const [tab] = [...b.tabs.keys()];
+    const state = new URL(logins.get("s")!.url!).searchParams.get("state");
+    // Another sign-in's page (its state not this one's): nothing taken.
+    b.went(tab!, "https://antigravity.google/oauth-callback?code=4%2F0Ab-other&state=someone-else");
+    assert.equal(logins.get("s")!.state, "needs_code");
+    assert.ok(b.tabs.has(tab!));
+    // This one's: its code sent, its tab closed, and on through its licence to done.
+    b.went(tab!, `https://antigravity.google/oauth-callback?code=4%2F0Ab-station&state=${state}`);
+    assert.equal(logins.get("s")!.state, "verifying");
+    assert.ok(!b.tabs.has(tab!), "its tab closed");
+    await wait("done");
+    const file = JSON.parse(readFileSync(agyToken(home), "utf8"));
+    assert.deepEqual([file.token.access_token, file.project_id], ["ya29.4/0Ab-station", "company-project"]);
+  } finally {
+    await logins.close();
+  }
+  assert.equal(agyCallbackCode("https://antigravity.google/oauth-callback/?code=c&state=s", "https://accounts.google.com/o/oauth2/auth?state=s"), "c");
+  assert.equal(agyCallbackCode("https://antigravity.google/oauth-callback?state=s", "https://accounts.google.com/o/oauth2/auth?state=s"), null);
+  assert.equal(agyCallbackCode("https://evil.example/oauth-callback?code=c&state=s", "https://accounts.google.com/o/oauth2/auth?state=s"), null);
+  assert.equal(agyCallbackCode("https://antigravity.google/oauth-callback?code=c&state=t", "https://accounts.google.com/o/oauth2/auth?state=s"), null);
+  assert.equal(agyCallbackCode(null, null), null);
+});
+
+test("a company's sign-in that `agy` refuses after its code ends at once saying why, without its `[Auth Error]`", { skip: process.platform === "win32" && "no terminal to sign in in" }, async () => {
+  const home = join(data, "auth-error");
+  const env = { ...process.env, PATH: fake, FAKE_AGY_LICENSES: "1", FAKE_AGY_AUTH_ERROR: "1" } as Record<string, string>;
+  const logins = new LoginManager(data, { claude: "claude", codex: "codex", agy: "agy" }, () => env);
+  try {
+    await logins.start({ id: "e", runtime: "agy", home, enterprise: true }, "en");
+    await until(() => logins.get("e")?.state === "needs_code");
+    await logins.submitCode("e", "4/0Ab-x", "en");
+    await until(() => logins.get("e")?.state === "failed");
+    assert.equal(logins.get("e")!.error, tr("en", "station.login.agyFailed", { error: "Failed to select license: 403 PERMISSION_DENIED" }));
+  } finally {
+    await logins.close();
+  }
+});
+
+test("a Google account's tier, as people know its plan; a sign-in's file whole only with a company's licence or project; renewed and lent with what it holds", async () => {
+  assert.deepEqual(
+    ["g1-ultra-tier", "g1-pro-tier", "free-tier", "gcp-ge-ultra-tier", "gcp-ge-plus-tier", "gcp-ge-standard-tier", "gcp-standard-tier", "gcp-other-tier", "", "unknown"].map((t) => agyPlan(t)),
+    ["Ultra", "Pro", "Free", "Enterprise Ultra", "Enterprise Plus", "Enterprise", "Enterprise", "Enterprise", null, null],
+  );
+  assert.equal(agyPlan(null, true), "Enterprise");
+  assert.equal(agyTierIn({ sessionId: "s", _meta: { antigravity: { tier: { id: "g1-ultra-tier", name: "Google AI Ultra" } } } }), "g1-ultra-tier");
+  assert.equal(agyTierIn({ sessionId: "s" }), null);
+  const token = { access_token: "ya29.x" };
+  assert.equal(agyTokenReady(JSON.stringify({ token, auth_method: "consumer" }), false), true);
+  assert.equal(agyTokenReady(JSON.stringify({ token, auth_method: "oauth" }), false), true);
+  assert.equal(agyTokenReady(JSON.stringify({ token, auth_method: "gcp" }), false), false);
+  assert.equal(agyTokenReady(JSON.stringify({ token, auth_method: "gcp", project_id: "p" }), false), true);
+  assert.equal(agyTokenReady(JSON.stringify({ token, auth_method: "gcp", user_tier: "gcp-ge-ultra-tier" }), true), true);
+  assert.equal(agyTokenReady(JSON.stringify({ token }), true), false);
+  assert.equal(agyTokenReady(JSON.stringify({ token: { access_token: "" }, project_id: "p" }), false), false);
+  assert.equal(agyTokenReady("not json", false), false);
+  // Lent: the rest of the host's file kept, never its refresh token; a host from before lends none of it.
+  const stored = { auth_method: "gcp", id_token_email: "a@company.com", project_id: "p", region: "us-central1", user_tier: "gcp-ge-ultra-tier", tier_display_name: "Gemini Enterprise Ultra", wif_provider: "w" };
+  const lent = JSON.parse(agyLentFile({ token: { access_token: "a", refresh_token: "r" }, email: "a@company.com", auth_method: "gcp", stored }));
+  assert.deepEqual(lent, { ...stored, token: { access_token: "a" } });
+  assert.deepEqual(JSON.parse(agyLentFile({ token: { access_token: "a", refresh_token: "r" }, email: null, auth_method: null })), { token: { access_token: "a" }, auth_method: "consumer" });
+  // Renewed by `agy models`, which writes back its token alone: the company's project and tier kept.
+  const home = join(data, "renew-company");
+  mkdirSync(join(geminiDir(home), "antigravity-cli"), { recursive: true });
+  writeFileSync(agyToken(home), JSON.stringify({ ...stored, token: { access_token: "old", refresh_token: "r", expiry: "2020-01-01T00:00:00Z" } }));
+  await agyRenew(home, join(fileURLToPath(new URL("./fake", import.meta.url)), "agy"));
+  const renewed = JSON.parse(readFileSync(agyToken(home), "utf8"));
+  assert.deepEqual([renewed.token.access_token, renewed.token.refresh_token, renewed.project_id, renewed.region, renewed.user_tier, renewed.tier_display_name], ["renewed", "r", "p", "us-central1", "gcp-ge-ultra-tier", "Gemini Enterprise Ultra"]);
+});
+
 test("a Google account's sign-in: refused at once where there is no terminal; without a sign-in its allowance says signed out; its login command", async () => {
-  const terminal = platform.terminal;
-  platform.terminal = () => null;
+  const terminal = platform.terminalSoon;
+  platform.terminalSoon = async () => null;
   const logins = new LoginManager(data, { claude: "claude", codex: "codex", agy: "agy" });
   try {
     const job = await logins.start({ id: "nt", runtime: "agy", home: join(data, "no-terminal") }, "en");
     assert.deepEqual([job.state, job.error], ["failed", tr("en", "station.login.agyNoTerminal")]);
   } finally {
-    platform.terminal = terminal;
+    platform.terminalSoon = terminal;
     await logins.close();
   }
   const q = await checkQuota({ id: "p", runtime: "agy", home: join(data, "no-signin"), access: { kind: "subscription" } } as never, {}, undefined, undefined, "en");
@@ -403,6 +1099,171 @@ test("an Antigravity CLI account's Gemini and Claude / GPT windows weigh only on
   assert.equal(pool.runOn("s-gemini").id, "ag1");
   // Claude on ag1 sees only the 3P window (refills at 6000), while ag2's 3P window is also full (8500): stays on ag1 and refills at 6000.
   assert.equal(pool.refillsAt("s-claude"), 6000);
+
+  // On a Pro account whose separate Argon weekly cap (`scoped`) is used up, Argon sessions move off it while Hydrogen
+  // and Flash sessions on the same account remain healthy under the main Gemini pool.
+  sessions.set("s-argon", { key: "s-argon", runtime: "agy", profile: "ag1", profilePinned: false, model: "gemini-4-argon-medium", effort: null });
+  sessions.set("s-hydrogen", { key: "s-hydrogen", runtime: "agy", profile: "ag1", profilePinned: false, model: "gemini-4-hydrogen-medium", effort: null });
+  pool.setHealth((id) => ({
+    check: { state: "ok", detail: "ok", models: ["gemini-4-argon-medium", "gemini-4-hydrogen-medium", "claude-opus-5-5-medium"], checkedAt: 1500 },
+    quota:
+      id === "ag1"
+        ? { ...ag1Quota, scoped: [{ label: "每周 · Argon", usedPercent: 100, resetsAt: 9500, scope: "Argon" }] }
+        : {
+            state: "ok",
+            checkedAt: 1500,
+            windows: [
+              { label: "5 小时 · Gemini", usedPercent: 10, resetsAt: 7000, scope: "gemini" },
+              { label: "每周 · Gemini", usedPercent: 20, resetsAt: 8000, scope: "gemini" },
+              { label: "5 小时 · Claude / GPT", usedPercent: 10, resetsAt: 8500, scope: "3p" },
+              { label: "每周 · Claude / GPT", usedPercent: 10, resetsAt: 9000, scope: "3p" },
+            ],
+          },
+  }));
+  assert.equal(pool.runOn("s-argon").id, "ag2");
+  assert.equal(pool.runOn("s-hydrogen").id, "ag1");
+});
+
+/// An Antigravity CLI pool of two accounts over sessions kept in memory, on a clock the test moves.
+function agyPool(models: string[]) {
+  const cfg = hubConfig(
+    {
+      profiles: ["ag1", "ag2"].map((id) => ({ id, name: id.toUpperCase(), runtime: "agy", home: `/${id}`, access: { kind: "subscription" }, model: models[0], models })),
+    },
+    "/x",
+  );
+  const sessions = new Map<string, any>();
+  const t = { now: 2000, compacted: false };
+  const pool = new SessionAccounts({
+    config: () => cfg,
+    store: {
+      getSession: (k: string) => sessions.get(k),
+      setSessionProfile: (k: string, id: string, pinned: boolean) => {
+        const s = sessions.get(k);
+        if (s) {
+          s.profile = id;
+          s.profilePinned = pinned;
+        }
+      },
+      lastTurn: () => ({ endedAt: 1000 }),
+      recentlyCompacted: () => t.compacted,
+      compactionsReady: () => false,
+      lastContexts: () => [],
+      compactionPoints: () => new Map(),
+    } as never,
+    running: () => [],
+    clock: { currentTimeMillisUnsafe: () => t.now } as never,
+  });
+  const session = (key: string, model: string, profile = "ag1") => sessions.set(key, { key, runtime: "agy", profile, profilePinned: false, model, effort: null });
+  return { pool, sessions, t, session, at: (key: string) => sessions.get(key).profile as string };
+}
+
+test("an Antigravity CLI limit that names no model passes over its model's group on the account, a Pro account's own Argon week only Argon; a reset or a newer read lets them run again", () => {
+  const models = ["gemini-4-carbon-medium", "gemini-4-argon-medium", "gemini-4-hydrogen-medium", "gemini-4-flash-medium", "claude-opus-5-5-medium", "claude-sonnet-5-5-medium"];
+  const { pool, t, session, at } = agyPool(models);
+  const quota = (checkedAt: number, scoped?: unknown[]) => ({
+    state: "ok",
+    checkedAt,
+    windows: [
+      { label: "5 小时 · Gemini", usedPercent: 10, resetsAt: 50_000, minutes: 300, scope: "gemini" },
+      { label: "每周 · Gemini", usedPercent: 16, resetsAt: 900_000, minutes: 10080, scope: "gemini" },
+      { label: "5 小时 · Claude / GPT", usedPercent: 60, resetsAt: 60_000, minutes: 300, scope: "3p" },
+      { label: "每周 · Claude / GPT", usedPercent: 40, resetsAt: 900_000, minutes: 10080, scope: "3p" },
+    ],
+    ...(scoped ? { scoped } : {}),
+  });
+  let ag1 = quota(1500);
+  pool.setHealth((id) => ({ check: { state: "ok", models }, quota: id === "ag1" ? ag1 : quota(1500) }));
+  session("s-claude", "claude-opus-5-5-medium");
+  session("s-gemini", "gemini-4-carbon-medium");
+  session("s-sonnet", "claude-sonnet-5-5-medium");
+  // Its Claude turn ran into "Individual quota reached", its allowance not read again since (checkedAt before then):
+  // its Claude / GPT group is passed over there, its Gemini runs on (2026-11-16: the whole account was).
+  assert.deepEqual(pool.spend("s-claude", "ag1"), ["AG1", "AG2"]);
+  assert.equal(pool.runOn("s-gemini").id, "ag1");
+  assert.equal(at("s-gemini"), "ag1");
+  assert.equal(pool.runOn("s-sonnet").id, "ag2");
+  // Reset by hand, the group runs there again at once.
+  pool.resetAllowance("ag1");
+  session("s-sonnet", "claude-sonnet-5-5-medium");
+  assert.equal(pool.runOn("s-sonnet").id, "ag1");
+  // Spent again, then its allowance read again after it: what that says counts.
+  t.now = 3000;
+  session("s-claude", "claude-opus-5-5-medium");
+  pool.spend("s-claude", "ag1");
+  session("s-sonnet", "claude-sonnet-5-5-medium");
+  assert.equal(pool.runOn("s-sonnet").id, "ag2");
+  ag1 = quota(3500);
+  t.now = 4000;
+  session("s-sonnet", "claude-sonnet-5-5-medium");
+  assert.equal(pool.runOn("s-sonnet").id, "ag1");
+
+  // A Pro account's own Argon week used up: an Argon turn's limit passes over Argon alone there, its Hydrogen and Flash
+  // run on under the Gemini group.
+  ag1 = quota(3500, [{ label: "每周 · Argon", usedPercent: 100, resetsAt: 900_000, minutes: 10080, scope: "Argon" }]);
+  session("s-argon", "gemini-4-argon-medium");
+  session("s-hydrogen", "gemini-4-hydrogen-medium");
+  session("s-flash", "gemini-4-flash-medium");
+  pool.spend("s-argon", "ag1");
+  assert.equal(at("s-argon"), "ag2");
+  assert.equal(pool.runOn("s-hydrogen").id, "ag1");
+  assert.equal(pool.runOn("s-flash").id, "ag1");
+  assert.equal(pool.runOn("s-gemini").id, "ag1");
+  // Its Argon week read not yet full (95%, the Gemini group's at 16%): still Argon's own, Argon alone passed over until
+  // a newer read or a reset.
+  t.now = 5000;
+  ag1 = quota(4500, [{ label: "每周 · Argon", usedPercent: 95, resetsAt: 900_000, minutes: 10080, scope: "Argon" }]);
+  session("s-argon", "gemini-4-argon-medium");
+  pool.spend("s-argon", "ag1");
+  assert.equal(at("s-argon"), "ag2");
+  assert.equal(pool.runOn("s-hydrogen").id, "ag1");
+  session("s-argon", "gemini-4-argon-medium");
+  assert.equal(pool.runOn("s-argon").id, "ag2");
+  pool.resetAllowance("ag1");
+  session("s-argon", "gemini-4-argon-medium");
+  assert.equal(pool.runOn("s-argon").id, "ag1");
+  // And a read after its limit that says its Argon week has room lets it run there too.
+  t.now = 6000;
+  pool.spend("s-argon", "ag1");
+  session("s-argon", "gemini-4-argon-medium");
+  assert.equal(pool.runOn("s-argon").id, "ag2");
+  ag1 = quota(6500, [{ label: "每周 · Argon", usedPercent: 30, resetsAt: 900_000, minutes: 10080, scope: "Argon" }]);
+  t.now = 7000;
+  session("s-argon", "gemini-4-argon-medium");
+  assert.equal(pool.runOn("s-argon").id, "ag1");
+});
+
+test("an Antigravity CLI account's nearly full Claude / GPT five hours does not move its Gemini sessions off it; a window due to refill counts as refilled", () => {
+  const models = ["gemini-4-carbon-medium", "claude-opus-5-5-medium"];
+  const { pool, t, session } = agyPool(models);
+  const hour = 60 * 60 * 1000;
+  const quota = (gemini5h: number, p5h: number) => ({
+    state: "ok",
+    checkedAt: 1500,
+    windows: [
+      { label: "5 小时 · Gemini", usedPercent: gemini5h, resetsAt: 2 * hour, minutes: 300, scope: "gemini" },
+      { label: "每周 · Gemini", usedPercent: 30, resetsAt: 100 * hour, minutes: 10080, scope: "gemini" },
+      { label: "5 小时 · Claude / GPT", usedPercent: p5h, resetsAt: 2 * hour, minutes: 300, scope: "3p" },
+      { label: "每周 · Claude / GPT", usedPercent: 40, resetsAt: 100 * hour, minutes: 10080, scope: "3p" },
+    ],
+  });
+  pool.setHealth((id) => ({ check: { state: "ok", models }, quota: id === "ag1" ? quota(20, 95) : quota(20, 10) }));
+  t.compacted = true;
+  session("s-gemini", "gemini-4-carbon-medium");
+  session("s-claude", "claude-opus-5-5-medium");
+  assert.equal(pool.runOn("s-gemini").id, "ag1");
+  // Its Claude session, where that five hours does weigh, moves as before (it loses little: just compacted).
+  assert.equal(pool.runOn("s-claude").id, "ag2");
+
+  // Read before its five hours refilled: due by now, it is not crowded and weighs as a whole window again.
+  const now = 10 * hour;
+  const week = { label: "每周", usedPercent: 20, resetsAt: now + 72 * hour, minutes: 10080 };
+  const stale = { state: "ok", windows: [{ label: "5 小时", usedPercent: 90, resetsAt: now - 1, minutes: 300 }, week] };
+  const refilled = { state: "ok", windows: [{ label: "5 小时", usedPercent: 0, resetsAt: now - 1, minutes: 300 }, week] };
+  assert.equal(urgency(stale, now).crowded, false);
+  assert.deepEqual(urgency(stale, now), urgency(refilled, now));
+  const shortOnly = (used: number) => ({ state: "ok", windows: [{ label: "5 小时", usedPercent: used, resetsAt: now - 1, minutes: 300 }] });
+  assert.deepEqual(urgency(shortOnly(90), now), urgency(shortOnly(0), now));
 });
 
 test("macOS keychain: `agy` is kept to the profile's file, and a sign-in it had moved into the machine's one keychain item is taken back only by the profile whose account it is", async () => {
@@ -566,4 +1427,176 @@ test("uncheckOutdated migrates legacy tiered agy model IDs in config.json to bas
   assert.deepEqual(raw.profiles[0].models, ["gemini-4-carbon", "claude-opus-5-5"]);
   assert.equal(raw.profiles[0].model, "gemini-4-carbon");
   assert.equal(raw.connects[0].bind.model, "gemini-4-carbon");
+});
+
+test("a Claude session at max effort crossing runtimes to Antigravity CLI lands on medium", async () => {
+  const cfg = hubConfig(
+    {
+      profiles: [
+        { id: "cc", name: "CC", runtime: "claude", home: "/cc", access: { kind: "subscription" }, model: "claude-opus-5-5", models: ["claude-opus-5-5"] },
+        { id: "ag", name: "AG", runtime: "agy", home: "/ag", access: { kind: "subscription" }, model: "gemini-4-carbon", models: ["gemini-4-carbon", "claude-opus-5-5"] },
+      ],
+    },
+    "/x",
+  );
+  const sessions = new Map<string, any>([
+    ["s-opus", { key: "s-opus", runtime: "claude", profile: "cc", profilePinned: false, model: "claude-opus-5-5", effort: "max", runtimeSessionId: "cc-1" }],
+  ]);
+  const pool = new SessionAccounts({
+    config: () => cfg,
+    store: {
+      getSession: (k: string) => sessions.get(k),
+      setSessionProfile: (k: string, id: string, pinned: boolean) => Object.assign(sessions.get(k), { profile: id, profilePinned: pinned }),
+      setSessionRuntime: (k: string, runtime: string, profile: string, profilePinned: boolean, model: string | null, effort: string | null) =>
+        Object.assign(sessions.get(k), { runtime, profile, profilePinned, model, effort, runtimeSessionId: null }),
+      setSessionContextBefore: () => {},
+      ranIn: () => {},
+      lastTurn: () => ({ endedAt: 1000 }),
+      recentlyCompacted: () => false,
+      compactionsReady: () => false,
+      lastContexts: () => [],
+      compactionPoints: () => new Map(),
+    } as never,
+    running: () => [],
+    clock: { currentTimeMillisUnsafe: () => 2000 } as never,
+  });
+  pool.setHealth((id) => ({
+    check: {
+      state: "ok",
+      models: id === "cc" ? ["claude-opus-5-5"] : ["gemini-4-carbon", "claude-opus-5-5"],
+      modelEfforts: id === "ag" ? { agy: { "gemini-4-carbon": ["low", "medium", "high"], "claude-opus-5-5": ["low", "medium", "high"] } } : undefined,
+    },
+    quota: { state: "ok", windows: [] },
+  }));
+
+  assert.deepEqual(pool.spend("s-opus", "cc"), ["CC", "AG"]);
+  const moved = sessions.get("s-opus")!;
+  assert.equal(moved.runtime, "agy");
+  assert.equal(moved.effort, null);
+
+  const { options, driver, dump } = setup({ FAKE_AGY_SUBSCRIPTION: "1" });
+  const session = await driver.open({ ...options, model: moved.model, effort: moved.effort ?? undefined }, () => {});
+  assert.equal(session.currentModelId, "claude-opus-5-5-medium");
+  assert.equal(rpc(dump).find((m) => m.method === "session/set_model").params.modelId, "claude-opus-5-5-medium");
+  await session.dispose();
+});
+
+test("opening Antigravity sessions keeps --gemini-dir/config/hooks.json enabled across concurrent sessions and silences instructions-less ones via STILLFAIL_REPO_RULES", async () => {
+  const { options, driver } = setup();
+  const ws = mkdtempSync(join(data, "agy-hooks-ws-"));
+  const hooksFile = join(geminiDir(options.profile.home), "config", "hooks.json");
+  mkdirSync(dirname(hooksFile), { recursive: true });
+  writeFileSync(hooksFile, JSON.stringify({ custom: { PostInvocation: [{ command: "echo {}" }] }, stillfail: { enabled: false } }));
+
+  const s = await driver.open({ ...options, cwd: ws }, () => {});
+  const hooks = JSON.parse(readFileSync(hooksFile, "utf8"));
+  assert.deepEqual(hooks.custom, { PostInvocation: [{ command: "echo {}" }] });
+  assert.equal(Array.isArray(hooks.stillfail?.PostToolUse), true);
+  assert.equal(hooks.stillfail?.enabled, undefined);
+  const matcher = new RegExp(`^(?:${hooks.stillfail.PostToolUse[0].matcher})$`);
+  for (const tool of ["run_command", "read_file", "write_file", "edit_file", "view_file", "grep_search", "find_by_name", "list_dir"]) {
+    assert.equal(matcher.test(tool), true, tool);
+  }
+  const cmd: string = hooks.stillfail.PostToolUse[0].hooks[0].command;
+  assert.equal(cmd.includes(REPO_RULES_HOOK), true);
+  assert.match(cmd, platform.os === "windows" ? /^call ".*" ".*" 2>nul \|\| echo \{\}$/ : /\|\| printf '\{\}'$/);
+  assert.equal(hooks.stillfail.PostInvocation[0].command, cmd);
+
+  // Opening a terminal-continued session (`instructions: ""`) on the same profile home while `s` is alive leaves
+  // shared `hooks.json` enabled and silences only that process's hook via `STILLFAIL_REPO_RULES=0` (scrubbed otherwise).
+  const userRepo = mkdtempSync(join(data, "agy-user-repo-"));
+  const s2 = await driver.open({ ...options, key: `${options.key}-term`, cwd: userRepo, instructions: "", skills: undefined }, () => {});
+  try {
+    const afterTerm = JSON.parse(readFileSync(hooksFile, "utf8"));
+    assert.equal(Array.isArray(afterTerm.stillfail?.PostToolUse), true);
+    assert.equal(afterTerm.stillfail?.enabled, undefined);
+  } finally {
+    await s2.dispose();
+    await s.dispose();
+  }
+
+  assert.equal(agyEnv({ ...options, instructions: "" }).STILLFAIL_REPO_RULES, "0");
+  const prev = process.env.STILLFAIL_REPO_RULES;
+  process.env.STILLFAIL_REPO_RULES = "0";
+  try {
+    assert.equal(agyEnv(options).STILLFAIL_REPO_RULES, undefined);
+  } finally {
+    if (prev === undefined) delete process.env.STILLFAIL_REPO_RULES;
+    else process.env.STILLFAIL_REPO_RULES = prev;
+  }
+});
+
+test("Antigravity sessions materialize shared and symlinked preset skills into .agent/skills with non-symlink SKILL.md", async () => {
+  const { options, driver } = setup();
+  const ws = mkdtempSync(join(data, "agy-ws-"));
+  const shared = mkdtempSync(join(data, "agy-shared-skills-"));
+  const preset = mkdtempSync(join(data, "agy-preset-skills-"));
+  mkdirSync(join(shared, "team-skill", "scripts"), { recursive: true });
+  mkdirSync(join(shared, "team-skill", ".venv"), { recursive: true });
+  writeFileSync(join(shared, "team-skill", "SKILL.md"), "---\nname: team-skill\ndescription: v1\n---\n");
+  writeFileSync(join(shared, "team-skill", "scripts", "run.sh"), "#!/bin/sh\n");
+  writeFileSync(join(shared, "team-skill", ".venv", "huge"), "skip");
+  mkdirSync(join(preset, "deploy"), { recursive: true });
+  writeFileSync(join(preset, "deploy", "SKILL.md"), "---\nname: deploy\ndescription: preset\n---\n");
+
+  mkdirSync(join(ws, ".agents", "skills"), { recursive: true });
+  symlinkSync(join(preset, "deploy"), join(ws, ".agents", "skills", "deploy"), "dir");
+
+  const s = await driver.open({ ...options, cwd: ws, skills: shared }, () => {});
+  await s.dispose();
+
+  const teamDir = join(ws, ".agent", "skills", "team-skill");
+  const deployDir = join(ws, ".agent", "skills", "deploy");
+  assert.equal(existsSync(join(teamDir, "SKILL.md")), true);
+  assert.equal(lstatSync(teamDir).isSymbolicLink(), false);
+  assert.equal(lstatSync(join(teamDir, "SKILL.md")).isSymbolicLink(), false);
+  assert.equal(readFileSync(join(teamDir, "SKILL.md"), "utf8"), "---\nname: team-skill\ndescription: v1\n---\n");
+  assert.equal(existsSync(join(teamDir, "scripts", "run.sh")), true);
+  assert.equal(existsSync(join(teamDir, ".venv")), false);
+  assert.equal(existsSync(join(deployDir, "SKILL.md")), true);
+  assert.equal(lstatSync(join(deployDir, "SKILL.md")).isSymbolicLink(), false);
+
+  // Atomic replacement of SKILL.md and removal of a preset skill update .agent/skills on the next session open.
+  writeFileSync(join(shared, "team-skill", "SKILL.md.next"), "---\nname: team-skill\ndescription: v2\n---\n");
+  rmSync(join(shared, "team-skill", "SKILL.md"));
+  writeFileSync(join(shared, "team-skill", "SKILL.md"), readFileSync(join(shared, "team-skill", "SKILL.md.next")));
+  rmSync(join(shared, "team-skill", "SKILL.md.next"));
+  rmSync(join(ws, ".agents", "skills", "deploy"), { force: true });
+  const sNext = await driver.open({ ...options, cwd: ws, skills: shared }, () => {});
+  await sNext.dispose();
+  assert.equal(readFileSync(join(teamDir, "SKILL.md"), "utf8"), "---\nname: team-skill\ndescription: v2\n---\n");
+  assert.equal(existsSync(deployDir), false);
+
+  // A session continued from a terminal (skills: undefined) writes no .agent/skills.
+  const userRepo = mkdtempSync(join(data, "agy-user-skills-"));
+  const sTerm = await driver.open({ ...options, cwd: userRepo, instructions: "", skills: undefined }, () => {});
+  await sTerm.dispose();
+  assert.equal(existsSync(join(userRepo, ".agent")), false);
+});
+
+test("Antigravity CLI is declared the station's tools within what it keeps, chat_post among them, once it wraps each", async () => {
+  // As the station lists them to an `agy` session (sessions/agents.ts LISTINGS): fitted to AGY_TOOL_BUDGET.
+  const all = stationTools();
+  const listed = async (budget: number): Promise<any[]> => {
+    const e = new McpEndpoint(() => "s", all, undefined, () => ({ budget }));
+    const reply: any = await e.handle("POST", "Bearer t", JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }));
+    return reply.body.result.tools;
+  };
+  const weighed = (list: any[]) => list.reduce((n, t) => n + Buffer.byteLength(JSON.stringify(t)), 0);
+  const list = await listed(AGY_TOOL_BUDGET);
+  const names = list.map((t) => t.name);
+  const bytes = weighed(list);
+  assert.ok(bytes <= AGY_TOOL_BUDGET, `listed ${bytes} B`);
+  // What `agy` makes of them (agents/agy.ts AGY_TOOL_BUDGET): each given its description's prefix and `toolSummary`.
+  const wrapped = bytes + list.length * AGY_TOOL_WRAP;
+  assert.ok(wrapped <= AGY_TOOL_CEILING, `${list.length} tools, ${bytes} B listed, come to ${wrapped} B in agy, over ${AGY_TOOL_CEILING}`);
+  // The tools every turn needs are declared whatever the rest weigh, chat_post (the heaviest) first of all.
+  for (const name of ["chat_post", "chat_state", ...CORE]) assert.ok(names.includes(name), `${name} is not declared`);
+  // And the rest are still reached, through station_tool.
+  assert.equal(names.at(-1), INDIRECT);
+  const indirect: string[] = list.at(-1).inputSchema.properties.name.enum;
+  assert.deepEqual([...names.slice(0, -1), ...indirect].sort(), all.map((t) => t.name).sort());
+  // The 45,000 of before is what `agy` 1.5.8 dropped chat_post under (2026-11-16): over the ceiling, as this counts it.
+  const before = await listed(45_000);
+  assert.ok(weighed(before) + before.length * AGY_TOOL_WRAP > AGY_TOOL_CEILING);
 });

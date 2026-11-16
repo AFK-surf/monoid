@@ -14,6 +14,8 @@ import type { Addr, Connection, Endpoint, Stream } from "./native.ts";
 import { answerLock } from "./lock-sync.ts";
 import { answerMarks, stationMarksOf } from "./station-marks.ts";
 import { answerWays, waysOf } from "./ways.ts";
+import { goesThrough, onRelaysChanged, stationAddr } from "./relays.ts";
+import { peerRelaysOf } from "./peer-relays.ts";
 import { Reader } from "./serve.ts";
 
 export const PEER_ALPN = Buffer.from("stillfail/station/1");
@@ -100,7 +102,12 @@ const within = wall.within;
 class Incoming implements AsyncIterableIterator<Buffer> {
   /// All of it came.
   ended = false;
+  /// Held by the station answering a request whose bytes these are: a handler that stops reading them (it failed as
+  /// they came: its disk full) stops the stream only once its answer is through (`letGo`), so that the asker is told
+  /// why, not that the stream was reset.
+  held = false;
   #over = false;
+  #stopLater = false;
   readonly #reader: Reader;
   constructor(reader: Reader) {
     this.#reader = reader;
@@ -132,9 +139,19 @@ class Incoming implements AsyncIterableIterator<Buffer> {
   async return(): Promise<IteratorResult<Buffer>> {
     if (!this.#over) {
       this.#over = true;
-      await this.#reader.stream.reset(STOPPED).catch(() => {});
+      if (this.held) this.#stopLater = true;
+      else await this.#reader.stream.reset(STOPPED).catch(() => {});
     }
     return { done: true, value: undefined };
+  }
+  /// The answer through (or not to be sent): what was not read of it stopped now.
+  async letGo(): Promise<void> {
+    this.held = false;
+    if (this.#stopLater || (!this.#over && !this.ended)) {
+      this.#stopLater = false;
+      this.#over = true;
+      await this.#reader.stream.reset(STOPPED).catch(() => {});
+    }
   }
 }
 
@@ -192,14 +209,38 @@ const CHECK_MS = 2_000;
 /// What a request fails with when its connection was found gone (its other end did not answer on it): it got no
 /// answer, and the station that was asked may not have had it. Not a live peer that was slow (that is the timeout's).
 export class PeerGone extends Error {
-  constructor() {
-    super("the other station's connection was gone: the request got no answer from it (asked again, it is dialed anew)");
+  constructor(message = "the other station's connection was gone: the request got no answer from it (asked again, it is dialed anew)") {
+    super(message);
   }
 }
 
+/// What a station's connections are closed with as its process stops or hands over to the next (mesh.ts `closing`; the
+/// front's, mb/src/front/mesh.mbt `part`, says the same words).
+export const STOPPING = "station stopping";
+
+/// A PeerGone the other station said: its process stopped or handed over to the next as the request waited, closing its
+/// connection (`STOPPING`) with no answer. The station is there (the next process answers on a connection dialed anew),
+/// but whether the one that stopped took the request is not known: it may have run it and lost its answer (a
+/// hand-over's "peer answer not sent: write EPIPE", drill 7h). So only a request whose handler takes a repeat as the same
+/// is asked again (move/station.ts `#ask`, `refusal`).
+export class PeerStopped extends PeerGone {
+  constructor() {
+    super("the other station's process stopped or handed over as it was asked: its connection closed and the request got no answer (asked again, it is dialed anew)");
+  }
+}
+
+/// A dial to a station shared by the requests waiting for it (`waiters`), given up as the last stops waiting.
+type Dial = { made: Promise<Connection>; waiters: number; settled: boolean; abandoned: boolean; giveUp: () => void };
+
 /// What the station transport's caller is given: its requests, and `arrived` for each connection another station
 /// opens to this one (what this one keeps to it is asked whether it is still there: a station started again dials anew).
-export type StationCall = PeerCall & { arrived(conn: Connection): void };
+export type StationCall = PeerCall & { arrived(conn: Connection): void; close?(): void };
+
+/// Whether `conn` was closed by its other end's process stopping (`STOPPING`), as its close says.
+const closedStopping = (conn: Connection): boolean => {
+  const why = conn.closeReason?.() ?? null;
+  return why !== null && why.kind === "application" && why.reason === STOPPING;
+};
 
 /// Anything received on `conn` (packets, else bytes); null where its addon says nothing.
 const received = (conn: Connection): number | null => {
@@ -208,16 +249,44 @@ const received = (conn: Connection): number | null => {
 };
 
 /// How this station asks the others: one connection kept per peer, dialed once however many requests wait for it, and
-/// let go when it fails or its peer is no longer heard. `addr`: where a peer is (its id and still.fail's relays, found
-/// by them; tests give its sockets). `answerMs`: how long an answer is waited for, `checkMs` before its connection is
-/// asked whether it is still there, `heardMs` how long that ask takes at most (tests shorten them).
+/// let go when it fails or its peer is no longer heard. `addr`: where a peer is, asked in a workspace (the relays its
+/// ways keep on and those they turn off, relays.ts `stationAddr`; tests give its sockets). `answerMs`: how long an
+/// answer is waited for, `checkMs` before its connection is asked whether it is still there, `heardMs` how long that
+/// ask takes at most (tests shorten them).
 export function peerCall(
-  endpoint: Endpoint, cloud: Cloud, addr: (id: string) => Addr = (id) => ({ id, relays: cloud.relays() }), outside?: Outside, answerMs = ANSWER_MS,
+  endpoint: Endpoint, cloud: Cloud, given?: (id: string, workspace?: string | null) => Addr, outside?: Outside, answerMs = ANSWER_MS,
   timing: { checkMs?: number; heardMs?: number } = {},
 ): StationCall {
+  const addr = given ?? ((id: string, workspace?: string | null) => stationAddr(cloud, id, workspace ?? null));
+  // The relays each station is not reached through, held by the endpoint itself (peer-relays.ts), set before it is
+  // dialed and as the ways change, on what its connections have too; where the endpoint holds none (one from before),
+  // a connection whose chosen path goes through a relay turned off is closed instead (`goesThrough`).
+  const held = given === undefined ? peerRelaysOf(endpoint, cloud) : null;
+  const holds = () => held !== null && held.supported;
+  /// Where a station is dialed: the endpoint holding its disabled relays, the dial says none (it would set them over).
+  const dialAddr = (target: string, ws: string | null): Addr => {
+    const a = addr(target, ws);
+    if (!holds()) return a;
+    const { disabledRelays: _, ...rest } = a as Addr & { disabledRelays?: string[] };
+    return rest;
+  };
   const checkMs = timing.checkMs ?? CHECK_MS;
   const heardMs = timing.heardMs ?? HEARD_MS;
   const connections = new Map<string, Connection>();
+  /// The workspace each station was last asked in: what a connection kept to it is held to as the ways change.
+  const askedIn = new Map<string, string | null>();
+  // A relay turned off: the connections kept through it let go at once, not as the next request comes (idle, they kept
+  // it busy with their keep-alives meanwhile).
+  const sweep = () => {
+    if (holds()) return;
+    for (const [target, conn] of [...connections]) {
+      if (conn.isClosed() || !goesThrough(conn, addr(target, askedIn.get(target) ?? null).disabledRelays)) continue;
+      connections.delete(target);
+      log.info("mesh", "a station's connection goes through a relay turned off: closed", { peer: target.slice(0, 12) });
+      conn.close(0, "its relay turned off");
+    }
+  };
+  const stopSweeping = given === undefined ? onRelaysChanged(cloud, sweep) : () => {};
   /// Whether a connection's other end is still there: one ask a connection at a time, however many wait on it. An addon
   /// from before (no `answers`) counts as there.
   const asking = new Map<Connection, Promise<boolean>>();
@@ -263,14 +332,29 @@ export function peerCall(
   // dial another, the old one left open with its requests still run: a station following dozens of tasks on a loaded
   // one dialed dozens at once, again after each timeout, and the loaded one answered all of them (2026-10-21, one station to
   // another).
-  const dialing = new Map<string, Promise<Connection>>();
-  const connected = (target: string): Promise<Connection> => {
+  // A dial is given up (its handshake, `givenUp`) once no request waits for it any more: left going, iroh retransmitted
+  // its Initial packets to every relay for the connection's idle timeout, ten minutes, and to a station started again
+  // meanwhile they came as `authentication failed` by the batch (2026-11-16); one that came up too late is closed.
+  const dialing = new Map<string, Dial>();
+  const connected = (target: string, ws: string | null): { made: Promise<Connection>; dial: Dial | null; leave(): void } => {
     const open = connections.get(target);
-    if (open !== undefined && !open.isClosed()) return Promise.resolve(open);
+    if (open !== undefined && !open.isClosed()) {
+      // Kept from before its relay was turned off (the workspace's ways): let go, dialed anew through those on.
+      if (holds() || !goesThrough(open, addr(target, ws).disabledRelays)) return { made: (held?.hold(target) ?? Promise.resolve()).then(() => open), dial: null, leave: () => {} };
+      connections.delete(target);
+      log.info("mesh", "a station's connection goes through a relay turned off: closed, dialed anew", { peer: target.slice(0, 12) });
+      open.close(0, "its relay turned off");
+    }
     let dial = dialing.get(target);
     if (dial === undefined) {
-      dial = endpoint.connect(addr(target), PEER_BYTES_ALPN, [PEER_ALPN]).then(
+      let giveUp = () => {};
+      const givenUp = new Promise<void>((resolve) => (giveUp = resolve));
+      const made: Promise<Connection> = (held === null ? Promise.resolve() : held.hold(target)).then(() => endpoint.connect(dialAddr(target, ws), PEER_BYTES_ALPN, [PEER_ALPN], givenUp)).then(
         (conn) => {
+          if (d.abandoned) {
+            conn.close(0, "too late");
+            throw new NoLink("peer unavailable: its dial was given up");
+          }
           connections.set(target, conn);
           return conn;
         },
@@ -278,13 +362,40 @@ export function peerCall(
           throw new NoLink(`peer unavailable or does not support station RPC: ${(error as Error).message}`);
         },
       );
+      const d: Dial = { made, waiters: 0, settled: false, abandoned: false, giveUp };
       const settled = () => {
-        if (dialing.get(target) === dial) dialing.delete(target);
+        d.settled = true;
+        if (dialing.get(target) === d) dialing.delete(target);
       };
-      dial.then(settled, settled);
-      dialing.set(target, dial);
+      made.then(settled, settled);
+      dialing.set(target, d);
+      dial = d;
     }
-    return dial;
+    const of = dial;
+    of.waiters++;
+    let left = false;
+    return {
+      made: of.made,
+      dial: of,
+      leave: () => {
+        if (left) return;
+        left = true;
+        of.waiters--;
+        if (of.settled || of.waiters > 0) return;
+        if (dialing.get(target) === of) dialing.delete(target);
+        of.abandoned = true;
+        of.giveUp();
+      },
+    };
+  };
+  /// After a request failed on `conn`: whether its other end's process closed it stopping. Its close may be told a moment
+  /// after the stream failed (a front's connection hears it from the front): a connection not closed yet is asked
+  /// whether its other end is there (`there`, at once for one that is), and one that is not is waited for to close.
+  const stoppedThere = async (conn: Connection): Promise<boolean> => {
+    if (closedStopping(conn)) return true;
+    if (conn.closeReason === undefined || (!conn.isClosed() && (await there(conn)))) return false;
+    await conn.closed().catch(() => {});
+    return closedStopping(conn);
   };
   /// After a request failed on `conn`: closed, or its peer not heard, it goes (the next request dials again).
   const letGo = async (target: string, conn: Connection) => {
@@ -312,16 +423,21 @@ export function peerCall(
     const offered = workspace !== null && cloud.peersCurrent && cloud.movedOffered?.has(workspace) === true && typeof request?.method === "string" && request.method.startsWith("lock.")
       && (cloud.state?.joined ?? []).some((j) => j.workspace === workspace && j.peers.some((p) => p?.id === target));
     const ws = proof || offered ? workspace : workspaceFor(cloud, target, workspace, outside);
+    askedIn.set(target, ws);
     let conn: Connection | null = null;
-    let dial: Promise<Connection> | null = null;
+    let dial: Dial | null = null;
+    let leave = () => {};
     const late = "peer request timed out; execution may have happened — query the same task key";
     // What goes after the request (a file): sent as the other end takes it, however long that is; the answer is
     // waited for answerMs once they all went.
     const body = bytesOf(request);
     // Requests are bounded and retriable by their task key: a timeout is never "not run" (ask again by the key).
     const call = async () => {
-      dial = connected(target);
-      conn = body === null ? await dial : await within(answerMs, dial, late);
+      const dialed = connected(target, ws);
+      dial = dialed.dial;
+      leave = dialed.leave;
+      conn = body === null ? await dialed.made : await within(answerMs, dialed.made, late);
+      leave();
       if (!conn.alpn().equals(PEER_BYTES_ALPN)) {
         if (body !== null) throw new NoBytes("that station takes files only in chunks (it is not updated yet)");
         const stream = await conn.openBi();
@@ -383,9 +499,17 @@ export function peerCall(
     } catch (error) {
       // Set inside `call` (which TypeScript does not follow).
       const failed = conn as Connection | null;
-      const dialed = dial as Promise<Connection> | null;
+      const dialed = dial as Dial | null;
+      // (no longer waiting for its dial: the last to stop gives it up)
+      leave();
       // (its connection found gone, by this request or another: said so, whatever the stream failed with as it closed)
       if (failed !== null && found.has(failed)) throw error instanceof PeerGone ? error : new PeerGone();
+      // (its connection closed by the other station's process stopping or handing over, with no answer: said so, and
+      // let go at once, so the next request dials the process that answers now)
+      if (failed !== null && !(error instanceof Refused) && !(error instanceof NoBytes) && (error as Error)?.message !== late && (await stoppedThere(failed))) {
+        if (connections.get(target) === failed) connections.delete(target);
+        throw new PeerStopped();
+      }
       if (!(error instanceof Refused) && !(error instanceof NoBytes) && failed !== null) void letGo(target, failed);
       // Not connected in time: the next request dials again rather than wait on this dial.
       if (failed === null && dialed !== null && dialing.get(target) === dialed) dialing.delete(target);
@@ -396,11 +520,16 @@ export function peerCall(
   /// again: another endpoint, the one kept leading nowhere), is found gone and dropped, what waits on it failed at once.
   const arrived = (conn: Connection) => {
     const target = conn.remoteId();
+    // (a station that came to this one: held to its disabled relays as one dialed is, its connection's paths too)
+    void held?.hold(target).catch((error) => {
+      log.warn("mesh", "incoming station relay policy failed", { peer: target.slice(0, 12), error: (error as Error).message });
+      conn.close(0, "relay policy unavailable");
+    });
     const kept = connections.get(target);
     if (kept === undefined || kept === conn || kept.isClosed()) return;
     void there(kept).then((yes) => { if (!yes) drop(target, kept); });
   };
-  return Object.assign(ask, { arrived });
+  return Object.assign(ask, { arrived, close: stopSweeping });
 }
 
 /// Another station's connection: each of its requests answered by the remote tasks, while it belongs.
@@ -476,6 +605,7 @@ export async function servePeer(conn: Connection, cloud: Cloud, remote: Pick<Pee
       if (bytes && envelope.bytes === true) {
         if (envelope.request === null || typeof envelope.request !== "object") throw new Error("bytes after a request that is no object");
         incoming = new Incoming(reader);
+        incoming.held = true;
         envelope.request[BYTES] = incoming;
       }
       // A rig asks nothing of a station: it tells what became of a task it was sent and of its own grants and
@@ -532,12 +662,13 @@ export async function servePeer(conn: Connection, cloud: Cloud, remote: Pick<Pee
     } catch (error) {
       // The caller gone (it gave up, the connection closed, it stopped reading), or the answer's bytes failed on the way.
       log.info("mesh", "peer answer not sent", { error: (error as Error).message, ...(answer.error !== undefined ? { failed: answer.error } : {}) });
-      void incoming?.return();
+      void incoming?.letGo();
       return;
     }
-    // Bytes of the request not read (refused before): once the answer is through, the caller is stopped sending them.
+    // Bytes of the request not read (refused before, or its handler failed as they came): once the answer is through,
+    // the caller is stopped sending them.
     void within(10_000, stream.stopped(), "")
       .catch(() => {})
-      .finally(() => void (incoming !== null && !incoming.ended && incoming.return()));
+      .finally(() => void incoming?.letGo());
   }
 }

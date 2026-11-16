@@ -17,7 +17,7 @@
 /// chat is, the chat's Reading keeps (sfbase's reading_of, told_place and told_at): one account of it with the old
 /// page's list, which still draws the chat beside a page over it on the wide frame (a service's, its tab shown).
 priv struct ChatRead {
-  mut sight : (@view.Sight[String], ChatBodyRows)?
+  mut sight : (@view.Sight[String], ChatBodyNow)?
   mut whole : Double
   mut top : (Double, Double)?
   mut scale : Double
@@ -41,7 +41,7 @@ fn chat_read_node(
   view : () -> ChatView,
   place : @view.ListPlace[String],
   scroll : @view.Scroll,
-  rows : () -> ChatBodyRows,
+  rows : ChatBodyList,
   shows : () -> Bool,
   cover : () -> Double,
 ) -> Unit {
@@ -65,12 +65,12 @@ fn chat_read_node(
   // read_place): where it is (where it was left, to the pixel, as it is left there: chat_read_left) and the last
   // message seen whole
   let taken = fn(s : @view.Sight[String]) {
-    let rs = @signals.untracked(rows)
+    let rs = @signals.untracked(fn() { rows.read() })
     let cv = @signals.untracked(view)
     a.sight = Some((s, rs))
     a.scale = @signals.untracked(fn() { v.pixel_scale() })
     // the message at the top, its top under the list's: where the first in sight is one (else as it was)
-    match rs.rows.get(s.first).map(fn(row) { row.entry }) {
+    match rs.get(s.first).map(fn(row) { row.entry }) {
       Some(Said(m)) => a.top = Some((m.seq, @sfbase.kept_place_of(-s.into, @signals.untracked(cover))))
       _ => ()
     }
@@ -82,7 +82,7 @@ fn chat_read_node(
           i = i - 1
         }
         while i >= 0 {
-          match rs.rows.get(rs.keys[i]).map(fn(row) { row.entry }) {
+          match rs.get(rs.keys[i]).map(fn(row) { row.entry }) {
             Some(Said(m)) => {
               if m.seq > a.whole {
                 a.whole = m.seq
@@ -171,7 +171,7 @@ fn chat_nodes_find_list(r : ChatRef) -> FindList {
     showing: fn() {
       guard chat_reads.get(k) is Some(a) && a.sight is Some((s, rs)) else { return (-1.0, -1.0) }
       let seq = fn(key : String) {
-        match rs.rows.get(key).map(fn(row) { row.entry }) {
+        match rs.get(key).map(fn(row) { row.entry }) {
           Some(Said(m)) => Some(m.seq)
           _ => None
         }
@@ -229,7 +229,7 @@ fn chat_read_place(src : Source, r : ChatRef, v : ChatView, a : ChatRead, exact~
       @sfbase.kept_places[r.station + "\u{1}" + r.session] = {
         top: seq,
         offset: off,
-        bottom: match (end, v.messages.last()) {
+        bottom: match (end, chat_said_ends(src, r, fn() { v }).1) {
           (true, Some(m)) => m.seq
           _ => -1.0
         },

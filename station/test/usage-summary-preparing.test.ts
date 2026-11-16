@@ -8,11 +8,11 @@ import { Effect, Fiber } from "effect";
 import { error, json, type Request } from "../src/api/request.ts";
 import { usageRoutes } from "../src/api/routes/usage.ts";
 import { Readers } from "../src/read/pool.ts";
-import * as reads from "../src/read/store.ts";
-import { usage } from "../src/read/usage.ts";
+import * as reads from "./reference/store.ts";
+import { usage } from "./reference/usage.ts";
 import { Store } from "../src/store/store.ts";
 import { installCompactUsage } from "../src/store/usage-compact.ts";
-import { installUsageSummaryBlocks, usageSummaryBlocksStep, USAGE_SUMMARY_PENDING, type UsageSummaryRange } from "../src/store/usage-summary-blocks.ts";
+import { installUsageSummaryBlocks, usageSummaryBlocksStep, USAGE_SUMMARY_PENDING, type UsageSummaryRange } from "./reference/backfill/usage-summary-blocks.ts";
 import { retireUntilComplete, watchCompactMoves } from "../src/usage/module.ts";
 
 test("showing available history during preparation does not read old calls or compact minutes", () => {

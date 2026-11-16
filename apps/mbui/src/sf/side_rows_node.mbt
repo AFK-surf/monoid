@@ -12,6 +12,7 @@ pub fn nav_ground_node(v : @view.View, on : () -> Bool, lit? : Int64) -> Unit {
   v.reacts(fn() { lit_node(v) }, fn(h) { hover.go(v, if h { 1.0 } else { 0.0 }, dur_ms) })
   v.reacts(on, fn(o) { chosen.go(v, if o { 1.0 } else { 0.0 }, dur_ms) })
   v
+  .focus_ring_theme()
   .ground(By(fn() {
     let t = theme()
     let lit = lit.unwrap_or(t.p.selected)
@@ -20,7 +21,7 @@ pub fn nav_ground_node(v : @view.View, on : () -> Bool, lit? : Int64) -> Unit {
     if h <= 0.0 && o <= 0.0 {
       0L
     } else {
-      over(alpha(t.p.hover, h * (1.0 - o)), alpha(lit, o))
+      over(alpha(lit, o), alpha(t.p.hover, h * (1.0 - 0.35 * o)))
     }
   }))
   |> ignore
@@ -105,16 +106,19 @@ pub fn update_key_node(
       k
       .width(Is(Some(side)))
       .height(Is(Some(side)))
-      // (round as its ground is while there is one, as an old view's key's hovered{} look: at rest none, nothing
-      // standing in a corner)
-      .radius(By(fn() { if lit_node(k) && !b.disabled() { side / 2.0 } else { 0.0 } }))
+      // (round as its ground is while there is one, as an old view's key's hovered{} look; round at rest too, its
+      // ground none: in a sidebar's corner (the settings', where it is last on its band) concentric with it, as the
+      // corner rule takes it whatever it shows)
+      .radius(Is(side / 2.0))
       // (its mark in its middle both ways, as update_key_box's: a box lays what it holds down from its top)
       .lines_up(Is(Some(Middle)))
       .lies_along(Is(Middle))
-      .ground(By(fn() { if lit_node(k) && !b.disabled() { @ui.tree_theme().color(Hover) } else { 0L } }))
+      .focus_ring_theme()
       |> ignore
+      hover_ground_node(k, on=fn() { !b.disabled() })
       // (pressed while it is not busy: a press's ripple on it, its press then; read out unable to be pressed while busy)
-      let rippled = press_look(k, Is(side / 2.0), fn() { false })
+      // (a pointer's press lights its ground: press_ripple's)
+      let rippled = press_look(k, Is(side / 2.0), fn() { false }, pointer=false)
       let on_it = fn(d : @view.Drag) { k.finger_target(d.wx, d.wy) }
       k.gesture(
         @ui.touch_slop(),

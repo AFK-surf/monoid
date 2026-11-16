@@ -89,8 +89,8 @@ const sent = (path: string): Attachment => ({ name: path.split("/").at(-1)!, pat
 
 /// Looks every 20 ms until `f` holds: a thumbnail is made in the background, on the file system. No deadline (it
 /// comes, however slow the machine, or the test hangs).
-async function until(_what: string, f: () => boolean) {
-  while (!f()) await new Promise((r) => setTimeout(r, 20));
+async function until(_what: string, f: () => Promise<boolean>) {
+  while (!(await f())) await new Promise((r) => setTimeout(r, 20));
 }
 
 test("which files: png, jpg, jpeg and webp, by name", () => {
@@ -116,7 +116,7 @@ test("makes a small jpeg of a big screenshot once", async () => {
     const modified = statSync(made.path).mtimeMs;
     assert.equal((await thumbnail(src, thumbs, codecs))?.path, made.path);
     assert.equal(statSync(made.path).mtimeMs, modified);
-    assert.deepEqual(kept(thumbs, idOf(src)), made);
+    assert.deepEqual(await kept(thumbs, idOf(src)), made);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
@@ -178,9 +178,9 @@ test("gives images a thumbhash and makes their thumbnails", async () => {
     assert.deepEqual([files[3]!.thumbhash, files[4]!.thumbhash], [undefined, undefined]);
     assert.deepEqual(files[3], sent(notes));
     // The big one's thumbnail comes after, as if asked for.
-    await until("the big one's thumbnail", () => kept(thumbs, idOf(big)) !== null);
-    assert.equal(kept(thumbs, idOf(big))!.type, "image/jpeg");
-    assert.equal(kept(thumbs, idOf(small)), null);
+    await until("the big one's thumbnail", async () => (await kept(thumbs, idOf(big))) !== null);
+    assert.equal((await kept(thumbs, idOf(big)))!.type, "image/jpeg");
+    assert.equal(await kept(thumbs, idOf(small)), null);
     // None wanted, or no codecs: as they came.
     const plain = [sent(notes)];
     assert.equal(await keep(plain, thumbs, codecs), plain);
@@ -251,12 +251,12 @@ test("the files route and a message give what the Rust station gives", async () 
       const want = golden[name]!.thumbnail;
       const id = idOf(join(uploads, name));
       if (want === null) continue;
-      await until(`${name}'s thumbnail`, () => kept(thumbs, id) !== null);
-      const got = kept(thumbs, id)!;
+      await until(`${name}'s thumbnail`, async () => (await kept(thumbs, id)) !== null);
+      const got = (await kept(thumbs, id))!;
       assert.deepEqual([got.type, sha256(readFileSync(got.path))], [want.type, want.sha256], name);
     }
     // Small, other or unreadable images get none.
-    for (const name of names.filter((n) => golden[n]!.thumbnail === null)) assert.equal(kept(thumbs, idOf(join(uploads, name))), null, name);
+    for (const name of names.filter((n) => golden[n]!.thumbnail === null)) assert.equal(await kept(thumbs, idOf(join(uploads, name))), null, name);
   } finally {
     await hub.shutdown();
     await jobs.shutdown();

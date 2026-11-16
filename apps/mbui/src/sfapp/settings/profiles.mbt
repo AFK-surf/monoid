@@ -5,6 +5,10 @@
 // its key masked. (Signing a subscription in, adding a profile, its "…" and its sharing are a later slice's.)
 
 ///|
+/// Whether the narrow `Profiles` page shows the overview tab (`true`) or the default accounts list (`false`).
+pub let profiles_narrow_overview : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
+
+///|
 /// Why an allowance could not be read, in the provider's words.
 fn quota_trouble(q : Json?) -> String {
   match text(q, "state") {
@@ -193,6 +197,14 @@ fn workspace_profiles(c : @ui.Ctx, core : Core, here : Here) -> Array[() -> Unit
         list_row(c, fn() { row_title(c, tr("web-pages.settings.profiles.none"), color=t.p.muted) }) |> ignore
       })
       place_empty(c, tr("android-settings.profiles.note"))
+    })
+  } else {
+    blocks.push(fn() {
+      let labels = if @sf.language() == "en" { ["Accounts", "Overview"] } else { ["账号", "概览"] }
+      let picked = @sf.page_choice(c, "profiles/tab", labels, 0)
+      if picked == 1 {
+        profiles_narrow_overview.set(true)
+      }
     })
   }
   blocks.append(profile_list_blocks(c, core, list))

@@ -9,6 +9,7 @@
 import type { Clock } from "effect";
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { codexHome, type Env, readClaudeCredentials } from "../agents/machine-logins.ts";
 import { liveClock } from "../ops/fibers.ts";
@@ -186,6 +187,12 @@ export function codexClaims(home: string): Json | undefined {
   } catch {
     return undefined;
   }
+}
+
+/// `codexClaims` without holding the station's thread.
+export async function codexClaimsSoon(home: string): Promise<Json | undefined> {
+  const text = await readFile(join(home, "auth.json"), "utf8").catch(() => undefined);
+  return text === undefined ? undefined : codexClaimsIn(text);
 }
 
 /// The claims of the id token an auth.json's text has (`codexClaims`).

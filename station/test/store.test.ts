@@ -15,52 +15,52 @@ import { addClientColumn, addListState, firstDelivery, MERGED, SCHEMA } from "..
 import { ARCHIVE_POLICY, LEGACY_ARCHIVE_POLICY, installArchivePolicyIndex } from "../src/store/archive-policy-index.ts";
 import { installDecisionTimeIndex } from "../src/store/legacy-decision-time.ts";
 import { LEGACY_LAST_DECISION_REPAIR, installDecisionSessionIndex } from "../src/store/legacy-decision-session.ts";
-import { installLegacyEdits, legacyEditStep } from "../src/store/legacy-edits-build.ts";
+import { installLegacyEdits, legacyEditStep } from "./reference/backfill/legacy-edits-build.ts";
 import { installLegacySaid, LEGACY_SAID_BOUNDARY_TAIL, LEGACY_SAID_DRAIN, LEGACY_SAID_DRAIN_THREAD,
   LEGACY_SAID_HEAD_FIRST, LEGACY_SAID_HEAD_TAIL, LEGACY_SAID_NEEDS_DRAIN } from "../src/store/legacy-said-build.ts";
 import { ARCHIVE_LAST_FIRST, ARCHIVE_LAST_GUARD, ARCHIVE_LAST_LETTER_AFTER, ARCHIVE_LAST_LETTER_ANY,
-  ARCHIVE_LAST_SAID_KEY, ARCHIVE_LAST_SLICE_BEFORE, ARCHIVE_LAST_SLICE_FIRST, ARCHIVE_LAST_TAIL } from "../src/store/archive-last.ts";
+  ARCHIVE_LAST_SAID_KEY, ARCHIVE_LAST_SLICE_BEFORE, ARCHIVE_LAST_SLICE_FIRST, ARCHIVE_LAST_TAIL } from "./reference/backfill/archive-last.ts";
 import { CC_THREADS_SQL } from "../src/store/rows.ts";
-import { LATEST_THREAD_ATTEMPT, LATEST_THREAD_SCOPE } from "../src/store/latest-thread-index.ts";
-import { CARD_POST_AFTER, CARD_POST_BEFORE, CARD_POST_LATEST, CARD_POST_NEXT, CARD_POST_SAMPLE } from "../src/store/card-post-index.ts";
-import { SESSION_COUNT_FIRST, SESSION_COUNT_NEXT, SESSION_COUNT_TOTAL, SESSION_COUNT_CONNECT, SESSION_COUNT_DISPLACED } from "../src/store/session-counts.ts";
+import { LATEST_THREAD_ATTEMPT, LATEST_THREAD_SCOPE } from "./reference/backfill/latest-thread-index.ts";
+import { CARD_POST_AFTER, CARD_POST_BEFORE, CARD_POST_LATEST, CARD_POST_NEXT, CARD_POST_SAMPLE } from "./reference/backfill/card-post-index.ts";
+import { SESSION_COUNT_FIRST, SESSION_COUNT_NEXT, SESSION_COUNT_TOTAL, SESSION_COUNT_CONNECT, SESSION_COUNT_DISPLACED } from "./reference/backfill/session-counts.ts";
 import { SESSION_LIST_CONNECT, SESSION_LIST_DISPLACED, SESSION_LIST_FIRST, SESSION_LIST_NEXT, SESSION_LIST_SCOPE,
-  SESSION_LIST_SCOPE_CONNECT } from "../src/store/session-list-index.ts";
-import { SESSION_BINDINGS_DELETE, SESSION_BINDINGS_DISPLACED, SESSION_BINDINGS_EXISTS, SESSION_BINDINGS_FIRST, SESSION_BINDINGS_NEXT, SESSION_BINDINGS_SELECTED } from "../src/store/session-bindings-index.ts";
+  SESSION_LIST_SCOPE_CONNECT } from "./reference/backfill/session-list-index.ts";
+import { SESSION_BINDINGS_DELETE, SESSION_BINDINGS_DISPLACED, SESSION_BINDINGS_EXISTS, SESSION_BINDINGS_FIRST, SESSION_BINDINGS_NEXT, SESSION_BINDINGS_SELECTED } from "./reference/backfill/session-bindings-index.ts";
 import { ARCHIVE_KEEP_EXISTS, ARCHIVE_PIN_EXISTS } from "../src/store/archive-mark-index.ts";
 import { WIDGET_SOURCE, WIDGET_SOURCE_MISSING, WIDGET_SOURCE_POSITIONS_FIRST, WIDGET_SOURCE_POSITIONS_NEXT,
-  WIDGET_SOURCE_UNUSUAL, widgetSourcesStep } from "../src/store/widget-sources.ts";
-import { SESSION_UP_JOB, SESSION_UP_JOBS, SESSION_UP_JOBS_CONFLICT, SESSION_UP_JOBS_DISPLACED, SESSION_UP_JOBS_END, SESSION_UP_JOBS_FIRST, SESSION_UP_JOBS_NEXT } from "../src/store/session-up-jobs.ts";
+  WIDGET_SOURCE_UNUSUAL, widgetSourcesStep } from "./reference/backfill/widget-sources.ts";
+import { SESSION_UP_JOB, SESSION_UP_JOBS, SESSION_UP_JOBS_CONFLICT, SESSION_UP_JOBS_DISPLACED, SESSION_UP_JOBS_END, SESSION_UP_JOBS_FIRST, SESSION_UP_JOBS_NEXT } from "./reference/backfill/session-up-jobs.ts";
 import { ACTIVE_SESSIONS, TAKEN_SINCE, TURNS_BETWEEN, TURNS_FROM } from "../src/store/usage.ts";
 import { detailQuery } from "../src/store/usage-detail.ts";
 import { installCompactUsage } from "../src/store/usage-compact.ts";
-import { installUsageSummaryBlocks, usageSummaryBlocksRangeScan, usageSummaryBlocksScan } from "../src/store/usage-summary-blocks.ts";
+import { installUsageSummaryBlocks, usageSummaryBlocksRangeScan, usageSummaryBlocksScan } from "./reference/backfill/usage-summary-blocks.ts";
 import { REMOTE_RUNS_ALL, REMOTE_RUNS_OF } from "../src/store/remote-runs.ts";
 import { AWAKE_JOBS, REMOTE_QUEUE_JOBS, RUNNING_JOB_SESSIONS, RUNNING_WAIT_JOBS } from "../src/store/active-jobs.ts";
 import { activeJobUpgradeStep, ACTIVE_JOB_CONFLICT, ACTIVE_JOB_END, ACTIVE_JOB_FIRST, ACTIVE_JOB_NEXT, ACTIVE_JOB_NULL_ID,
-  ACTIVE_REMOTE_FIRST, ACTIVE_REMOTE_NEXT, REMOTE_QUEUE_PREPARED } from "../src/store/active-jobs-upgrade.ts";
+  ACTIVE_REMOTE_FIRST, ACTIVE_REMOTE_NEXT, REMOTE_QUEUE_PREPARED } from "./reference/backfill/active-jobs-upgrade.ts";
 import { HAS_SESSION_ACTIVE_WATCH } from "../src/store/watch-jobs.ts";
-import { RECOVER_AWAKE_WAITS, RECOVER_BACKFILL_FIRST, RECOVER_BACKFILL_NEXT, RECOVER_WAITS } from "../src/store/recover-waits.ts";
-import { AWAKE_BACKFILL_FIRST, AWAKE_BACKFILL_NEXT, AWAKE_WAIT_STATUS, reconcileAwakeWaits, syncAwakeWait } from "../src/store/awake-waits.ts";
-import * as read from "../src/read/store.ts";
-import { usageSummaryEdgeQuery } from "../src/read/usage-batched.ts";
-import { usageSummaryBlockOverlayQuery, usageSummaryBlockPendingQuery, usageSummaryBlockQueries } from "../src/read/usage-summary-blocks.ts";
-import { recentChatDisplacedEntry } from "../src/store/chat-list-entry-rowid.ts";
+import { RECOVER_AWAKE_WAITS, RECOVER_BACKFILL_FIRST, RECOVER_BACKFILL_NEXT, RECOVER_WAITS } from "./reference/backfill/recover-waits.ts";
+import { AWAKE_BACKFILL_FIRST, AWAKE_BACKFILL_NEXT, AWAKE_WAIT_STATUS, reconcileAwakeWaits, syncAwakeWait } from "./reference/backfill/awake-waits.ts";
+import * as read from "./reference/store.ts";
+import { usageSummaryEdgeQuery } from "./reference/usage-batched.ts";
+import { usageSummaryBlockOverlayQuery, usageSummaryBlockPendingQuery, usageSummaryBlockQueries } from "./reference/usage-summary-blocks.ts";
+import { recentChatDisplacedEntry } from "./reference/chat-list/chat-list-entry-rowid.ts";
 import { HISTORY_AFTER, HISTORY_DAYS, HISTORY_SCOPES, HISTORY_SEED_CALLS, HISTORY_TOTAL } from "../src/store/usage-history.ts";
-import { installRecentChatIndex, RECENT_GLOBAL_PAGE } from "../src/store/chat-list-index.ts";
-import { RECENT_DEFAULT_HOME_PAGE } from "../src/store/chat-list-home-index.ts";
-import { installRecentHomeOverlap, RECENT_HOME_ORDER_PAGE, RECENT_HOME_WORKSPACE_ORDER_PAGE } from "../src/store/chat-list-home-overlap.ts";
+import { installRecentChatIndex, RECENT_GLOBAL_PAGE } from "./reference/chat-list/chat-list-index.ts";
+import { RECENT_DEFAULT_HOME_PAGE } from "./reference/chat-list/chat-list-home-index.ts";
+import { installRecentHomeOverlap, RECENT_HOME_ORDER_PAGE, RECENT_HOME_WORKSPACE_ORDER_PAGE } from "./reference/chat-list/chat-list-home-overlap.ts";
 import { RECENT_SCOPE_ORDER_PENDING, RECENT_SCOPE_ORDER_SMALL, RECENT_SCOPE_VISIBILITY_AMBIGUOUS, RECENT_SCOPE_VISIBILITY_HOME,
   RECENT_SCOPE_VISIBILITY_MEMBERS_SMALL, RECENT_SCOPE_VISIBILITY_PENDING, RECENT_SCOPE_VISIBILITY_ROWS_SMALL,
-  RECENT_WORKSPACE_PAGE } from "../src/store/chat-list-scope-rows.ts";
-import { recentScopeHomeMemberQueries } from "../src/store/chat-list-scope-journal.ts";
+  RECENT_WORKSPACE_PAGE } from "./reference/chat-list/chat-list-scope-rows.ts";
+import { recentScopeHomeMemberQueries } from "./reference/chat-list/chat-list-scope-journal.ts";
 import { FIRST_SCOPE_CANDIDATE_SESSION, NEXT_SCOPE_CANDIDATE_SESSION, PUT_SCOPE_CANDIDATE, RECENT_SCOPE_MEMBER_EXISTS,
-  REMOVE_SCOPE_CANDIDATE } from "../src/store/chat-list-scope-build.ts";
-import { RECENT_CHAT_SCHEMA_VERSION } from "../src/store/chat-list-schema.ts";
+  REMOVE_SCOPE_CANDIDATE } from "./reference/chat-list/chat-list-scope-build.ts";
+import { RECENT_CHAT_SCHEMA_VERSION } from "./reference/chat-list/chat-list-schema.ts";
 import { FIRST_SCOPE_CONNECT, FIRST_SCOPE_HOME_THREADS, FIRST_SCOPE_MEMBER_THREADS, FIRST_SCOPE_OLD_SESSION, FIRST_SCOPE_SESSIONS,
   FIRST_SCOPE_SESSIONS_THROUGH, NEXT_SCOPE_CONNECT, NEXT_SCOPE_OLD_SESSION, SCOPE_HOME_THREADS, SCOPE_MEMBER_THREADS,
-  SCOPE_MEMBER_WITHOUT_HOME, SCOPE_SESSIONS, SCOPE_SESSIONS_THROUGH } from "../src/store/chat-list-scope-source.ts";
-import { FIRST_HOME_CHAT_MEMBERS, NEXT_HOME_CHAT_MEMBERS } from "../src/store/chat-list-home-source.ts";
+  SCOPE_MEMBER_WITHOUT_HOME, SCOPE_SESSIONS, SCOPE_SESSIONS_THROUGH } from "./reference/chat-list/chat-list-scope-source.ts";
+import { FIRST_HOME_CHAT_MEMBERS, NEXT_HOME_CHAT_MEMBERS } from "./reference/chat-list/chat-list-home-source.ts";
 import { type CardEnd, cardsEnded } from "../src/connects/card-ends.ts";
 import { fileAway } from "./archived-before.ts";
 import { referenceAnswersSince } from "./card-answer-reference.ts";
@@ -71,10 +71,10 @@ import { REBOX_BACKFILL_FIRST, REBOX_BACKFILL_NEXT, REBOX_READY } from "../src/v
 import { CARRIED_SAVE_PENDING, Secrets } from "../src/vault/secrets.ts";
 import { VaultStore } from "../src/vault/store.ts";
 import { enableSandboxIndex, runnerChoiceFromKeys, RUNNER_SESSION_CANDIDATES, RUNNER_TAKEUP_NAMES, RUNNER_TAKEUP_SESSIONS, SANDBOX_DIRTY_BATCH, SANDBOX_PRUNE_FIRST, SANDBOX_PRUNE_NEXT, SANDBOX_SCAN_FIRST,
-  SANDBOX_SCAN_NEXT, SANDBOX_SESSION } from "../src/store/sandbox-index.ts";
-import { installSessionDirectories, sessionDirectoryCandidate, sessionDirectoryChoice, SESSION_DIR_ARGUMENTS, SESSION_DIR_DIRTY, SESSION_DIR_FIRST, SESSION_DIR_INITIAL, SESSION_DIR_LIVE_FEW, SESSION_DIR_LIVE_MANY, SESSION_DIR_NEXT } from "../src/store/session-directory.ts";
-import { installChatShareIndex, SHARE_DIRTY, SHARE_DUE, SHARE_FIRST, SHARE_LAPSED_WORKSPACE, SHARE_LIVE, SHARE_NEXT, SHARE_NEXT_TIME } from "../src/store/chat-share-index.ts";
-import { installProcessJobs, PROCESS_JOBS, PROCESS_JOB_CONFLICT, PROCESS_JOB_END, PROCESS_JOB_FIRST, PROCESS_JOB_NEXT, PROCESS_JOB_NULL_ID } from "../src/store/process-jobs.ts";
+  SANDBOX_SCAN_NEXT, SANDBOX_SESSION } from "./reference/backfill/sandbox-index.ts";
+import { installSessionDirectories, sessionDirectoryCandidate, sessionDirectoryChoice, SESSION_DIR_ARGUMENTS, SESSION_DIR_DIRTY, SESSION_DIR_FIRST, SESSION_DIR_INITIAL, SESSION_DIR_LIVE_FEW, SESSION_DIR_LIVE_MANY, SESSION_DIR_NEXT } from "./reference/backfill/session-directory.ts";
+import { installChatShareIndex, SHARE_DIRTY, SHARE_DUE, SHARE_FIRST, SHARE_LAPSED_WORKSPACE, SHARE_LIVE, SHARE_NEXT, SHARE_NEXT_TIME } from "./reference/backfill/chat-share-index.ts";
+import { installProcessJobs, PROCESS_JOBS, PROCESS_JOB_CONFLICT, PROCESS_JOB_END, PROCESS_JOB_FIRST, PROCESS_JOB_NEXT, PROCESS_JOB_NULL_ID } from "./reference/backfill/process-jobs.ts";
 
 const dirs: string[] = [];
 const stores: Store[] = [];
@@ -1514,7 +1514,7 @@ test("jobs: a session's detail as a device asks it lists its latest and those st
   store.insertJob(job(0, { port: 4000 }));
   store.insertJob(job(1, { state: "running", endedAt: null, exitCode: null }));
   for (let i = 2; i < 62; i++) store.insertJob(job(i));
-  const { session: detail } = await import("../src/read/sessions.ts");
+  const { session: detail } = await import("./reference/sessions.ts");
   const viewer: Viewer = { sub: "u", email: "a@x", name: "A", role: "owner", workspace: "ws", device: "d", home: true };
   const r = read.makeStore(store.db, tempdir());
   const ids = (now: boolean) => detail(r, "a", viewer, "en", 0, now).jobs.map((j: any) => j.id);
@@ -1535,7 +1535,7 @@ test("what is written of a chat beside what is said in it is told as written: ar
   store.setArchiveVerdict("a", 7, 12, { picked: "archive" });
   store.clearArchiveSuggestion("a", 7);
   store.setChatShare("a", [{ workspace: "w2", name: "Two" }], true, "a@x");
-  store.insertOpened({ childStation: "", child: "b", parentStation: "", parent: "a", key: "k", title: "子对话", link: null, openerTitle: null });
+  store.insertOpened({ childStation: "", child: "b", parentStation: "", parent: "a", key: "k", title: "子对话", link: null, openerTitle: null, led: true });
   h.stop();
   const marks = h.changes.filter((c) => c.type === "chatMark").map(({ type: _, ...m }: any) => m);
   assert.deepEqual(marks.map((m: any) => m.opened ? { ...m, opened: { ...m.opened, createdAt: 0 } } : m), [
@@ -2149,7 +2149,7 @@ test("a session's work is kept as its turns end and go, from when it began to be
   store.endTurn("t2", "completed", null, null, null);
   assert.deepEqual(work(store), { a: 7 * MIN, b: 0 });
   // Its detail without its turns, as a device asks it (`?turns=0`); all of them as one from before does.
-  const { session: detail } = await import("../src/read/sessions.ts");
+  const { session: detail } = await import("./reference/sessions.ts");
   const viewer: Viewer = { sub: "u", email: "a@x", name: "A", role: "owner", workspace: "ws", device: "d", home: true };
   const r = read.makeStore(store.db, tempdir());
   assert.deepEqual(detail(r, "a", viewer, "en", 0).turns, []);

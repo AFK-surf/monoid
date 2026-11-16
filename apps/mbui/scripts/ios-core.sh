@@ -23,7 +23,7 @@ APP_EXTRA="--extra=src/core/core_native.c --extra=src/$PKG/core_engine.m"
 if [ "$PKG" = stillfail ]; then
   APP_EXTRA="$APP_EXTRA --extra=src/stillfail/terminal_ghostty.c"
   APP_LINK_TERM="out/core/$CORE_TARGET/libghostty-vt.a"
-  CFLAGS="$CFLAGS -Iout/core/ghostty-vt/include"
+  CFLAGS="${CFLAGS:-} -Iout/core/ghostty-vt/include"
 fi
 # the engine, the shell (and what it needs of the system: scripts/core.sh shell's native-static-libs for iOS), Hermes
 APP_LINK="${APP_LINK_TERM:-} out/core/$CORE_TARGET/libmbui_core.a out/core/$CORE_TARGET/libstillfail_shell.a -F$HERMES_SLICE -framework hermes \

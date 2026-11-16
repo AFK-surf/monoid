@@ -19,7 +19,7 @@ import { type Endpoint, type Stream, loadMesh } from "../src/mesh/native.ts";
 import { Store, newMessage } from "../src/store/store.ts";
 import { quotesOf } from "../src/api/routes/hub.ts";
 import { Admin } from "../src/api/admin.ts";
-import { REFERENCE_WORKER, readersOf } from "../test/reference.ts";
+import { REFERENCE, readersOf } from "../test/reference.ts";
 
 const binary = mbReaderBinary();
 const skip = binary === null ? "the MoonBit program is not built here (station/mb/build.sh)" : false;
@@ -167,7 +167,7 @@ test("a routed request is answered by the MoonBit program as the admin API answe
   assert.equal(answer.head.status, 200, said);
   assert.equal(answer.head.headers["content-encoding"], "zstd", said);
   assert.equal(answer.head.headers["stillfail-idempotent"], "1");
-  const worker = new Readers(data, 1, REFERENCE_WORKER);
+  const worker = new Readers(data, 1, REFERENCE);
   // (as the admin API learns people's names from who asks)
   worker.names.set(viewer.email, viewer.name);
   t.after(() => worker.close());

@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { test } from "node:test";
 import { mcpUrlOf, toolsLostIn } from "../src/agents/claude.ts";
-import { codexToolsLost } from "../src/agents/codex.ts";
+import { codexToolsLost } from "./codex-reference.ts";
 import { unreachable } from "../src/agents/runtime.ts";
 import { ownData, portsToTry } from "../src/ops/files.ts";
 

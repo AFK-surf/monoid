@@ -10,7 +10,7 @@ import { test } from "node:test";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
 import { Readers } from "../src/read/pool.ts";
 import { Store, newMessage } from "../src/store/store.ts";
-import { REFERENCE_WORKER, readersOf } from "./reference.ts";
+import { REFERENCE, readersOf } from "./reference.ts";
 
 const binary = mbReaderBinary();
 
@@ -43,7 +43,7 @@ test("the MoonBit reader reads merged messages as the worker does", { skip: bina
   for (const [thread, n] of [[a, p1.n], [b, p2.n]]) store.db.prepare("INSERT OR IGNORE INTO deliveries (thread, n, session) VALUES (?, ?, 's')").run(thread, n);
   const letter = store.insertLetter({ thread: a, ts: String(++ts), authorKind: "person", author: "x@y", text: "a letter", letter: { way: "in", title: "From X", link: null } });
   store.db.prepare("INSERT OR IGNORE INTO letter_deliveries (thread, n, session) VALUES (?, ?, 's')").run(a, letter);
-  const worker = new Readers(data, 1, REFERENCE_WORKER);
+  const worker = new Readers(data, 1, REFERENCE);
   const program = readersOf(data, binary);
   const read = (readers: Readers, op: string, args: unknown) => readers.read(op, args, "en").then((t) => JSON.parse(t), (e: Error & { status?: number }) => ({ error: e.message, status: e.status }));
   const all = async (readers: Readers) => {

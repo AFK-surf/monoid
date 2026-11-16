@@ -95,7 +95,6 @@ fn reset() -> Unit {
   share_in.find.set("")
   share_closing.val = false
   share_sinking.val = false
-  share_wide.set(false)
   splash_waited.set(false)
   splash_from.val = -1.0
   splash_owner.val = None
@@ -370,7 +369,7 @@ pub fn view(c : @ui.Ctx, src : Source) -> Unit {
   @sf.set_shortcuts(@sfdesk.tip_keys(src))
   // the library's words, the app's catalog's; what its viewers ask of the page (viewer_host.mbt)
   @sf.set_words(fill)
-  @sf.set_viewer_host(viewer_host_of(c, src))
+  @sf.set_viewer_host(viewer_host_of(src))
   // a chat's file downloaded by the core, all here: kept where the system keeps downloads, whatever page shows
   // (downloads.mbt)
   downloads_frame(c, src)
@@ -533,10 +532,15 @@ fn shown_now(src : Source, width : Double) -> @sfbase.Shown {
 /// theme, the window's sides, the layers over it).
 pub fn app_tree(src : Source) -> (@view.View) -> Unit {
   fn(root) {
+    // (the source the sheets show what they show of, said before one is put up: sheet.mbt)
+    sheet_src.val = Some(src)
     // (the library's words, the app's catalog's, and their language as the core's prefs say it, said before any page of
     // nodes is made: what one says on its first frame is its words in that language, not their keys or the device's
     // laid out and then said again; the old frame tells them each build, the same)
     @sf.set_words(fill)
+    // (what its viewers ask of the page, said before any page of nodes is made: a text a reader of nodes reads as it is
+    // made read by the core, viewer_host.mbt)
+    @sf.set_viewer_host(viewer_host_of(src))
     // Keep the prefs reader with the tree from its first read, including before the first frame is built.
     root.reacts(fn() { src.topic("prefs", {}).get().value }, @sfbase.language_from_prefs)
     // (the chat page this device makes, as chosen in 外观's 试用新对话页, told before any page of nodes is made: the first
@@ -585,6 +589,9 @@ pub fn app_tree(src : Source) -> (@view.View) -> Unit {
       // (none before the first frame gives the window)
       fn(a) { if a.1 > 0.0 { @ui.journal_arranged(a.0, a.1, a.2) } },
     )
+    // (each window of this run beside its first, a page alone over the same core, accounts and workspaces: its tree,
+    // lone_window_tree, its old views in lone_view's frame)
+    @ui.set_window_tree(fn(wid, _) { lone_window_tree(src, wid) }, around=fn(c) { lone_view(c, src) })
     // (what the splash waits by, kept by what lives through the app's states: splash_begin)
     splash_owner.val = Some(root)
     // (its nodes drawn in still.fail's theme, the one its old views are built in, as light or dark is set: view's
@@ -597,7 +604,7 @@ pub fn app_tree(src : Source) -> (@view.View) -> Unit {
     root.pick(fn() { share_over.get() }, fn(o, over) {
       o.grow(Is(1.0)) |> ignore
       if over {
-        @ui.old(o, fn(c) { over_view(c, src) }).grow(Is(1.0)) |> ignore
+        over_tree(o, src)
       } else {
         app_state_tree(o, src)
       }
@@ -618,6 +625,18 @@ pub fn app_tree(src : Source) -> (@view.View) -> Unit {
     // what a write said, over all of it, in every state and shell (sfbase's toasts_node)
     @sfbase.toasts_node(root, fn() { toast_bottom_now(root) }) |> ignore
   }
+}
+
+///|
+/// Over another app in node `o` (app_tree's, as share_over says): in a browser's window of its own, what is shared
+/// filling it (share_window), made once as nodes; the old view's frame that takes what is shared and puts up its sheet
+/// (over_view) over it.
+fn over_tree(o : @view.View, src : Source) -> Unit {
+  o.show(at_once=true, share_inline, fn(w) {
+    @sf.style_node(w, fn() { share_window })
+    share_sheet_node(w, src)
+  })
+  @ui.old(o, fn(c) { over_view(c, src) }).over(Is(true)) |> ignore
 }
 
 ///|
@@ -653,7 +672,13 @@ fn app_state_tree(root : @view.View, src : Source) -> Unit {
         // the first page's wait, at the moments its causes come (first_page_node)
         first_page_node(v, src)
         // what the page on top reads as it is first built, asked as it comes on top (sfbase's page_opens_node)
-        @sfbase.page_opens_node(v, src)
+        @sfbase.page_opens_node(v, src, fn(w, p, ask) {
+          if @sf.layout(v.window().0) is Small && !@sf.native_able() {
+            page_opens_by(src, w, p, ask)
+          } else {
+            @sfdesk.pane_opens(src, w.id, p, ask)
+          }
+        })
         // what the start says of notifications, at the moment the core's notify is answered or the app shown again
         @sfbase.notices_said_node(v, src)
         // what the workspace in view opens on, asked as it comes to be in view, the splash or the shell before it
@@ -715,14 +740,26 @@ fn lone_tree(v : @view.View, src : Source) -> Unit {
     o.over(Is(true)) |> ignore
     o.box(fn(b) { b.height(By(fn() { Some(window_band_now()) })).moves_window(Is(true)) |> ignore }) |> ignore
   })
-  @ui.old(v, fn(c) {
-    match @sfbase.lone_page.val {
-      Some(p) => lone_page_view(c, src, p)
-      None => ()
-    }
-  })
-  .over(Is(true))
-  |> ignore
+  match @sfbase.lone_page.val {
+    // a Farview tab: drawn here (sfpages' farview_tab_node), under the window's top band, as the panel and the
+    // phone's page draw it: its page laid out at this window's width as it changes, not a picture of the tab
+    Some(Screen(at)) if @sfpages.farview_screen(at.screen) =>
+      v.box(fn(p) {
+        // (padding's order: left, top, right, bottom)
+        p.over(Is(true)).padding(By(fn() { (0.0, window_band_now(), 0.0, 0.0) })) |> ignore
+        @sfpages.farview_tab_node(p, src, at.station, at.screen)
+      })
+      |> ignore
+    _ =>
+      @ui.old(v, fn(c) {
+        match @sfbase.lone_page.val {
+          Some(p) => lone_page_view(c, src, p)
+          None => ()
+        }
+      })
+      .over(Is(true))
+      |> ignore
+  }
   @ui.old(v, fn(c) {
     @sf.presented(c)
   })
@@ -732,16 +769,63 @@ fn lone_tree(v : @view.View, src : Source) -> Unit {
 }
 
 ///|
-/// Page `p` of a window of its own, alone over all of it (lone_tree's): a station's screen, closing it
-/// ending the run (its window closed as its own close button closes it).
+/// Page `p` of a window of its own, alone over all of it (lone_tree's): a station's screen, closing it closing the
+/// window: a window of this run beside its first (@ui.window_close_here: the run goes on), else the run of its own
+/// it is (its window closed as its own close button closes it).
 fn lone_page_view(c : @ui.Ctx, src : Source, p : Page) -> Unit {
   match p {
     Screen(at) =>
       @sfpages.screen_page(c, src, at, system_frame(), on_close=fn() {
-        c.after_build("lone-closed", fn() { @hostapi.exit(0) })
+        let wid = @ui.current_window_id()
+        c.after_build("lone-closed", fn() { if wid > 0 { @ui.window_close_here(wid) } else { @hostapi.exit(0) } })
       })
     _ => ()
   }
+}
+
+///|
+/// Window `wid` of this run beside its first (sfbase's open_window: a station's screen to a window of its own) as a
+/// tree made once: its page alone (lone_tree), over the core, the accounts and the workspaces this run holds already,
+/// so its first frame shows the page as it is (no splash, nothing read anew: a screen's view the window it left handed
+/// it); its keys the app's, what is presented in it and its toasts its own (sfbase's window.mbt, the library's
+/// presenters: each window's apart), none of the first window's history, splash or first page.
+pub fn lone_window_tree(src : Source, wid : Int) -> (@view.View) -> Unit {
+  fn(root) {
+    @sfbase.lone_page.val = @sfbase.window_here_page(wid)
+    // (the library's words and their language as the first window's tree says them: app_tree's)
+    @sf.set_words(fill)
+    root.reacts(fn() { src.topic("prefs", {}).get().value }, @sfbase.language_from_prefs)
+    // (its own size from the menu bar and its keys, apart from the first window's)
+    @sfdesk.zoom_actions(root, src, kept=false)
+    root.keymap(By(fn() {
+      let m = @settings.keymap_of(src.topic("prefs", {}).get().value)
+      { ..m, bindings: [..@stage.page_keys(), ..m.bindings] }
+    }))
+    |> ignore
+    @ui.set_tree_theme(@sf.ui_theme_now)
+    root.sides(By(fn() { sides_room() })) |> ignore
+    root.box(fn(v) {
+      v.grow(Is(1.0)) |> ignore
+      lone_tree(v, src)
+    })
+    |> ignore
+    @sf.presented_nodes(root)
+    @sfbase.toasts_node(root, fn() { toast_bottom_now(root) }) |> ignore
+  }
+}
+
+///|
+/// The old frame round window `wid`'s old views (lone_window_tree's): still.fail's theme as the first window's frame has
+/// it (view's), what the host clears to its ground; nothing of the first window's own (its shells, its first page, its
+/// menu bar, what the core says each frame).
+pub fn lone_view(c : @ui.Ctx, src : Source) -> Unit {
+  ignore(src)
+  let t = @sf.begin(c)
+  c.set_clear((t.p.bg >> 8) & 0xFFFFFFL)
+  c.with_theme(@sf.ui_theme(), fn() {
+    entry_said()
+    @ui.old_views_here(c)
+  })
 }
 
 ///|
@@ -821,7 +905,8 @@ fn page_view(
         // 文件: a place of the bar at the stack's root, else a page pushed
         Files => files_page(c, src, w, place=root)
         Drive(at) => drive_page(c, src, w, at)
-        DriveRead(at) => @sfpages.reader_page(c, src, at)
+        // (made once: narrow_shell.mbt's reader_page_node)
+        DriveRead(_) => ()
         DrivePlay(at) => @sfpages.play_page(c, src, at)
         Service(station, job) => service_page(c, src, station, job)
         PreviewFile(station, key, path, name) => preview_file_page(c, src, station, key, path, name)
@@ -916,16 +1001,8 @@ fn go_place_by(at : Double, place : String, sets : Array[Array[String]], cur : I
 /// A page of the settings, over the workspace in view, in the stack's frame: back to the page under it, under the status
 /// bar, over the navigation bar. One not merged yet: the phone's copy (src/sfapp/settings).
 fn setting_page(c : @ui.Ctx, src : Source, w : Workspace, r : @settings.Route) -> Unit {
-  let frame : PageFrame = {
-    back: app.nav.under().map(@sfbase.back_label),
-    top: status_top(),
-    foot: nav_foot(),
-    named: false,
-  }
-  if !@sfdesk.setting_route(c, src, w, r, frame) {
-    let core = settings_core(src, w)
-    @settings.page(c, core, @settings.here_of(core, w.id, w.name), r)
-  }
+  let core = settings_core(src, w)
+  @settings.page(c, core, @settings.here_of(core, w.id, w.name), r)
 }
 
 ///|
@@ -1144,7 +1221,8 @@ let first_page_ms : Double = splash_label_ms
 ///|
 /// Whether the core has answered (a value or why not) for what page `p` of workspace `w` shows as it opens (App.kt
 /// opening): a chat (or said its messages wait on a station: its page shows them to come), an agent's history, Home
-/// (all it opens on: home_opens, what a workspace switched waits for too); any other page is not waited for.
+/// (all it opens on: home_opens, what a workspace switched waits for too); where what opens waits for what it shows
+/// (gates_opens, MBUI_OPEN_WHOLE) every other page what it reads as it is first drawn (sfbase's page_reads), else none.
 fn page_ready(src : Source, w : Workspace, p : Page) -> Bool {
   page_opens_by(src, w, p, @sfbase.read_now(src))
 }
@@ -1157,14 +1235,17 @@ fn page_opens_by(
   p : Page,
   ask : (String, Map[String, Json]) -> @sfbase.TopicState,
 ) -> Bool {
+  let whole = (src.gates_opens)()
   match p {
-    Chat(r) => @sfbase.chat_opens(r, ask)
+    Chat(r) => @sfbase.chat_opens(r, ask, whole~)
     History(r, key, _) => {
       let t = ask("history", history_params(r, key))
       @sfbase.chat_opens(r, ask) && (t.value is Some(_) || t.error is Some(_))
     }
     Home => home_opens(src, w.id, ask)
-    _ => true
+    // (every other page, where what opens waits for what it shows: all it reads as it is first drawn, sfbase's
+    // page_reads, the table a press opening it asks by too)
+    _ => !whole || @sfbase.reads_told(@sfbase.page_reads(src, w.id, p, false), ask)
   }
 }
 
@@ -1411,7 +1492,7 @@ let window_shown : Ref[Bool] = Ref(false)
 /// what is beside it waited for in its tab; any other page is not waited for.
 fn pane_ready(src : Source, p : Page) -> Bool {
   match workspace_in_view(src).0 {
-    Some(w) => @sfdesk.pane_opens(w.id, p, @sfbase.read_now(src))
+    Some(w) => @sfdesk.pane_opens(src, w.id, p, @sfbase.read_now(src))
     None => true
   }
 }

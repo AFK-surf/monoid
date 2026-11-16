@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { after, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { CONFIG, DevinDriver, callOf, classifyFailure, devinArgs, devinCatalog, devinData, devinKey, outcomeOf, rulesFolder, variant } from "../src/agents/devin.ts";
+import { CONFIG, DevinDriver, DevinSession, SESSIONS, callOf, classifyFailure, devinArgs, devinCatalog, devinData, devinHome, devinKey, outcomeOf, rulesFolder, variant } from "../src/agents/devin.ts";
 import { profileEnv, profileRuntimes } from "../src/agents/profiles.ts";
 import type { AgentSession, OpenOptions, Profile, RuntimeEvent } from "../src/agents/runtime.ts";
 import { allLeft } from "../src/agents/runner.ts";
@@ -20,8 +20,8 @@ import { LoginManager, type LoginState } from "../src/accounts/login.ts";
 import { checkQuota } from "../src/accounts/quota.ts";
 import { tr } from "../src/ops/i18n.ts";
 import { platform } from "../src/platform/index.ts";
-import { callsOf } from "../src/usage/counter.ts";
-import { readTimeline, transcriptPath } from "../src/read/transcript.ts";
+import { callsOf } from "./usage-counter-reference.ts";
+import { readTimeline, transcriptPath } from "./reference/transcript.ts";
 
 const fake = join(dirname(fileURLToPath(import.meta.url)), "fake");
 process.env.PATH = `${fake}${delimiter}${process.env.PATH}`;
@@ -116,6 +116,17 @@ const ends = (events: RuntimeEvent[]) => events.filter((e) => e.type === "turnEn
 const ended = (k: number) => (events: RuntimeEvent[]) => ends(events).length >= k;
 const live = (events: RuntimeEvent[]) => events.flatMap((e) => (e.type === "live" ? [e.event] : []));
 const deltas = (events: RuntimeEvent[]) => live(events).flatMap((e) => (e.kind === "delta" ? [e.text] : []));
+
+/// What each step wrote, its deltas one after another joined: the program holds what a step writes a while and tells it
+/// as one (mb agents.mbt DELTAS_MS), as many as the time it took them to come makes.
+const written = (events: RuntimeEvent[]) =>
+  live(events).reduce<{ id: string; field: string; text: string }[]>((out, e) => {
+    if (e.kind !== "delta") return out;
+    const last = out.at(-1);
+    if (last !== undefined && last.id === e.id && last.field === e.field) last.text += e.text;
+    else out.push({ id: e.id, field: e.field, text: e.text });
+    return out;
+  }, []).map((d) => d.text);
 const outcome = (events: RuntimeEvent[], k = 0) => (ends(events)[k] as Extract<RuntimeEvent, { type: "turnEnded" }>).outcome;
 const lines = (file: string) => readFileSync(file, "utf8").trim().split("\n").map((l) => JSON.parse(l));
 const stdin = (dump: string) => lines(`${dump}.stdin`);
@@ -146,7 +157,7 @@ describe("the Devin driver", { concurrency: true }, () => {
       ["thinking", null, null], ["text", null, null], ["tool", "exec", pretty({ command: "sleep 1; echo done" })],
       ["tool", "mcp__stillfail__chat_post", pretty({ to: "here", text: "posted words" })], ["text", null, null],
     ]);
-    assert.deepEqual(deltas(events), ["thinking it over", "Running.", "done", "Posted.", "do", "ne"]);
+    assert.deepEqual(written(events), ["thinking it over", "Running.", "done", "Posted.", "done"]);
     assert.equal(live(events).filter((e) => e.kind === "end").length, starts.length, "every step started ends");
 
     // Its configuration (not the person's other tools', no updating itself), its model at its level.
@@ -426,7 +437,7 @@ describe("the Devin driver", { concurrency: true }, () => {
     await again.prompt("say:two");
     await b.until(ended(1));
     assert.ok(!b.events.some((e) => e.type === "turnStarted"));
-    assert.deepEqual(deltas(b.events), ["thinking it over", "tw", "o"]);
+    assert.deepEqual(written(b.events), ["thinking it over", "two"]);
     const timeline = timelineOf(o.profile.home, id);
     assert.deepEqual(timeline.filter((e) => e.kind === "user").map((e) => e.text), ["work", "say:two"]);
     assert.deepEqual(timeline.filter((e) => e.kind === "assistant").map((e) => e.text), ["Running.", "done", "two"]);
@@ -463,6 +474,8 @@ describe("the Devin driver", { concurrency: true }, () => {
         [[600, 400, 50, 1050, 262000]],
       );
       let snapshot: unknown = null;
+      // (its lines held as the hub holds them before a snapshot: hub.ts `handOver`)
+      if (!crashed) await first.freeze();
       if (!crashed) snapshot = JSON.parse(JSON.stringify(session.snapshot()));
       // Stops: the process goes on under its runner with nobody reading.
       first.detach();
@@ -502,6 +515,41 @@ describe("the Devin driver", { concurrency: true }, () => {
       assert.ok(!a.events.some((e) => e.type === "closed"), "the first driver hears nothing after letting go");
     });
   }
+
+  // The crash's cut at its worst, made so: the station before wrote a call's usage, then crashed before the runner was
+  // told it took that line, so the line comes again to the next. It goes on from the transcript's last call, the line
+  // again no call of its own (it was written twice, a turn's 3 calls counted 4: #6667's check-station, 2026-11-16).
+  test("after a crash, a usage the transcript has already is not counted again; the next call goes on from it", async () => {
+    const o = options();
+    const id = "dv-crash-cut";
+    const dir = join(devinHome(o.profile.home), SESSIONS);
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, `${id}.jsonl`);
+    const counts = (input: number, out: number) => ({ inputTokens: input - 400, cacheReadTokens: 400, cacheWriteTokens: 0, outputTokens: out });
+    const update = (input: number, out: number, used: number) => ({
+      sessionUpdate: "usage_update", used, size: 262000,
+      _meta: { "cognition.ai/inputTokens": input, "cognition.ai/cachedReadTokens": 400, "cognition.ai/outputTokens": out },
+    });
+    const kept = (l: object) => JSON.stringify({ time: 1, ...l });
+    writeFileSync(path, [
+      kept({ type: "session", id, cwd: data }),
+      kept({ type: "usage", run: "r0", model: "swe-2", usage: counts(900, 9), calls: 1, context: 900, window: 262000 }),
+      kept({ type: "end", status: "finished" }),
+      kept({ type: "user", text: "hold" }),
+      kept({ type: "usage", run: "r1", model: "swe-2", usage: counts(1000, 50), calls: 1, context: 1050, window: 262000 }),
+      kept({ type: "usage", run: "r1:2", model: "swe-2", usage: counts(1100, 51), calls: 1, context: 1151, window: 262000 }),
+    ].join("\n") + "\n");
+    const s = new DevinSession(driver(), () => {}, o);
+    const internal = s as unknown as { took(e: unknown): boolean; settled(): Promise<void> | null };
+    s.replayed({ session: id, turn: { busy: true }, live: null }, undefined);
+    // Its last call's line, again (and as said twice, the second time as its agent's), then the next call.
+    internal.took({ type: "usage", update: update(1100, 51, 1151), owner: null });
+    internal.took({ type: "usage", update: update(1100, 51, 1151), owner: null });
+    internal.took({ type: "usage", update: update(1200, 52, 1252), owner: null });
+    await internal.settled();
+    const usage = lines(path).filter((l) => l.type === "usage");
+    assert.deepEqual(usage.map((l) => [l.run, l.usage.inputTokens, l.context]), [["r0", 500, 900], ["r1", 600, 1050], ["r1:2", 700, 1151], ["r1:3", 800, 1252]]);
+  });
 });
 
 describe("what a profile runs Devin on", () => {
@@ -552,7 +600,7 @@ describe("what a profile runs Devin on", () => {
     try {
       const signedOut = await check();
       assert.equal(signedOut.state, "login");
-      assert.equal(devinEmail(home), null);
+      assert.equal((await devinEmail(home)), null);
       // A code refused: the sign-in fails with what Devin said.
       await logins.start({ id: "d", runtime: "devin", home }, "en");
       await wait("needs_code");
@@ -578,7 +626,7 @@ describe("what a profile runs Devin on", () => {
         devin: { "swe-2": ["medium", "high", "max"], "claude-opus-5-5": ["low", "medium"], "glm-5-2": ["max"] },
       });
       assert.match(signedIn.detail ?? "", /someone@example\.com/);
-      assert.equal(devinEmail(home), "someone@example.com", "noted for naming the account");
+      assert.equal((await devinEmail(home)), "someone@example.com", "noted for naming the account");
       assert.equal(lines(dump).filter((l) => l.argv[0] === "auth" && l.argv[1] === "status").every((l) => l.env.XDG_DATA_HOME === devinData(home)), true);
     } finally {
       await logins.close();
@@ -586,15 +634,15 @@ describe("what a profile runs Devin on", () => {
   });
 
   test("where there is no terminal to sign in in, the sign-in fails at once and says so", async () => {
-    const terminal = platform.terminal;
-    platform.terminal = () => null;
+    const terminal = platform.terminalSoon;
+    platform.terminalSoon = async () => null;
     const logins = new LoginManager(data, { claude: "claude", codex: "codex", devin: "devin" });
     try {
       const job = await logins.start({ id: "nt", runtime: "devin", home: join(data, "no-terminal") }, "en");
       assert.deepEqual([job.state, job.error], ["failed", tr("en", "station.login.devinNoTerminal")]);
       assert.equal(logins.get("nt")?.state, "failed");
     } finally {
-      platform.terminal = terminal;
+      platform.terminalSoon = terminal;
       await logins.close();
     }
   });

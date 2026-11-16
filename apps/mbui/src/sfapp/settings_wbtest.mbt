@@ -664,9 +664,14 @@ test "飞书: scanning, its QR code drawn on white and 在飞书中打开 handed
   let t = settings_tester("connects", mode="settings-new-connect-scan", shows="settings-new-connect-scan")
   assert_true(t.find("使用飞书扫描二维码，按提示创建机器人") is Some(_))
   assert_true(t.find("本机已登录飞书时，也可直接打开") is Some(_))
-  // the code's dark runs, black on the white square
-  let dark = t.drawn_rects().filter(fn(r) { r.4 == 0x000000FFL })
-  assert_true(dark.length() > 25)
+  // the code's dark runs, black on the white square (its one shape), all of them in it
+  let code = t.query(Image, label="创建飞书机器人的二维码").unwrap().rect
+  let dark = t.drawn_shapes().filter(fn(r) { r.5 == 0x000000FFL })
+  assert_true(dark.length() > 10, msg="\{dark.length()}")
+  assert_true(
+    dark.iter().all(fn(r) { r.0 >= code.0 && r.1 >= code.1 && r.0 + r.2 <= code.0 + code.2 + 0.5 && r.1 + r.3 <= code.1 + code.3 + 0.5 }),
+    msg="\{Repr(code)}",
+  )
   t.tap_text("在飞书中打开")
   assert_eq(t.opened(), ["https://open.feishu.cn/page/launcher?code=made-up"])
 }
@@ -952,6 +957,34 @@ test "a subscription signing in: its page's address copied from the ⋯ beside �
 }
 
 ///|
+test "adding a company's Google account: Google's three ways, its sign-in's code, then the Google Cloud project it asks for, sent as a code is" {
+  let t = settings_tester("new-profile:ws1/st1", shows="settings-new-profile-google-ways", platform=2)
+  let y = fn(words : String) { t.find(words).unwrap().1 }
+  assert_true(y("订阅 · Google AI") < y("企业版 · Gemini Enterprise") && y("企业版 · Gemini Enterprise") < y("API key"))
+  t.tap_text("企业版 · Gemini Enterprise")
+  t.run_for(@ui.move_most_ms)
+  // the person's Google account, not Claude's, in its step
+  assert_true(t.find("打开授权页面，用 still.fail 要使用的 Google 账号登录并同意授权") is Some(_))
+  t.tap_text("粘贴授权码")
+  t.type_text("4/0Ab-code")
+  t.tap_text("完成登录")
+  t.run_for(@ui.move_most_ms)
+  // no licence: its project asked, under what it is for
+  assert_true(y("项目 ID，例如 my-project") > y("这个账号没有分到 Gemini Enterprise 许可证。填写要使用的 Google Cloud 项目 ID："))
+  assert_true(t.find("粘贴授权码") is None)
+  t.tap_text("项目 ID，例如 my-project")
+  t.type_text("my-project")
+  t.tap_text("完成登录")
+  t.run_for(@ui.move_most_ms)
+  // its project taken: signed in, on to the profile it made, its plan beside it
+  assert_true(t.find("my-project") is None)
+  t.draw()
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("订阅账号 · Enterprise Ultra") is Some(_))
+  assert_true(t.find("已登录，已添加 Profile") is Some(_))
+}
+
+///|
 test "adding an Anthropic subscription asks before opening its authorization page" {
   let t = settings_tester("new-profile:ws1/st1", shows="settings-new-profile-login", platform=2)
   t.click(Button, label="打开授权页面")
@@ -984,9 +1017,10 @@ test "本机缓存: the drives' files kept, counted with the chats', let go when
     Some((_, x, y, w, h, _)) => t.tap(x + w / 2.0, y + h / 2.0)
     None => fail("no 删除")
   }
-  // (asked again once it is let go, drawn with the answer: nothing of it left, its row gone)
+  // (asked again once it is let go, drawn with the answer: nothing of it left, its row gone on its way)
   t.draw()
   t.draw()
+  t.run_for(@ui.move_most_ms)
   assert_true(t.find("38.5 MB") is None)
   assert_true(t.find("19.2 MB") is Some(_))
 }
@@ -1502,4 +1536,14 @@ test "the station's page's parts pressed: the page as it was till the part press
     }
   }
   assert_eq(failed, [], msg="presses not as at the press till the part came, then whole")
+}
+
+///|
+test "关闭安全模式: its dialog has the keys in the field the workspace's name is typed in as it opens, on a sheet and in the window's middle (as the old dialog's focus_editor)" {
+  for way in [("小屏", 390.0, 844.0), ("大屏", 1280.0, 800.0)] {
+    let (at, w, h) = way
+    let t = settings_tester("security", shows="settings-security-off", w~, h~)
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.focus_said().has_prefix("TextField"), msg="\{at}: \{t.focus_said()}")
+  }
 }

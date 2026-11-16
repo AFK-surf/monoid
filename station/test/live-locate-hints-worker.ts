@@ -1,5 +1,5 @@
 import { parentPort } from "node:worker_threads";
-import { transcriptLocationHints, transcriptSources, useTranscriptLocationHints, type TranscriptLocationHints } from "../src/read/transcript.ts";
+import { transcriptLocationHints, transcriptSources, useTranscriptLocationHints, type TranscriptLocationHints } from "./reference/transcript-paths.ts";
 
 parentPort!.on("message", (ask: { data: string; profiles: { id: string; home: string }[]; sources: { id: string; runtime: string; profile: string | null }[]; places: string[]; hints: TranscriptLocationHints }) => {
   useTranscriptLocationHints(ask.hints);

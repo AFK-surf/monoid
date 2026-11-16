@@ -250,7 +250,11 @@ test "small with a mouse, ⌘K in a chat: the search's page over it; Esc back to
   t.type_text("签名")
   t.frame()
   assert_true(t.find_last("签名证书续期") is Some(_))
-  // Esc: closed, the chat under it as it was
+  // Esc: what was typed cleared first, the search still up (a Mac's search field's); Esc again: closed, the chat
+  // under it as it was
+  t.key(@ui.key_escape)
+  t.frame()
+  assert_true(@sfpages.search_opened() && @sfpages.finder_query() == "")
   t.key(@ui.key_escape)
   t.frame()
   assert_false(@sfpages.search_opened())

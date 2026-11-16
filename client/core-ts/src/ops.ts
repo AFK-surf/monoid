@@ -32,8 +32,8 @@ export type Effect =
   | { kind: "machineLogins" }
   /// A sign-in for a new profile (the overview's `logins`) started, given its code or dropped: as the station answered,
   /// in place at once until the overview says as much. `id`: the login's (null: the answer names it, as it starts);
-  /// `from`: the state the step moves it on from (null: not listed yet).
-  | { kind: "login"; id: string | null; from: string | null }
+  /// `from`: the state the step moves it on from, or the states it may (null: not listed yet).
+  | { kind: "login"; id: string | null; from: string | string[] | null }
   /// A tab of the station's browser opened here by the id this device made for it (`screen`): listed at once, a view of
   /// it waiting for the station, until the station lists it or refuses it.
   | { kind: "tab"; screen: string };
@@ -102,7 +102,7 @@ export const PARAMS: Record<string, string> = {
   "chat.regenerateTitle": "thread:number",
   "chat.pin": "pinned?:boolean session:string",
   "chat.relayPlaces": "thread:number",
-  "chat.relay": "thread:number connect?:string channel?:string link?:string note?:string",
+  "chat.relay": "thread:number connect?:string channel?:string link?:string note?:string join?:boolean",
   "chat.relayPeople": "thread:number connect?:string channel?:string link?:string",
   "decision.dismiss": "thread:number seq:number",
   "decision.close": "thread:number seq:number option:string",
@@ -141,6 +141,7 @@ export const PARAMS: Record<string, string> = {
   "feishu.createConnect": "feishu:json bind?:json mode?:string requireMention?:boolean owner?:json",
   "feishu.putSecret": "id:string appSecret:string",
   "comma.createConnect": "line:string bind?:json",
+  "group.createConnect": "group:json bind?:json mode?:string requireMention?:boolean owner?:json",
   "slack.verify": "connect?:string install?:string appToken?:string botToken?:string",
   "slack.makeApp": "team?:string settings?:json icon?:string",
   "slack.dropApp": "appId:string",
@@ -459,11 +460,11 @@ function stationOp(name: string, params: unknown): Request | null {
       const thread = p.u64("thread");
       return op("GET", () => `/threads/${thread}/relay`, null, NONE);
     }
-    // The chat relayed to one of them (`connect`, `channel`) or to the Slack thread of a message's `link`, the person's
-    // note said with it: where it went on.
+    // The chat relayed to one of them (`connect`, `channel`; `join`: its bot joins that public channel first) or to the
+    // Slack thread of a message's `link`, the person's note said with it: where it went on.
     case "chat.relay": {
       const thread = p.u64("thread");
-      return op("POST", () => `/threads/${thread}/relay`, p.pick(["connect", "channel", "link", "note"]), { kind: "thread", archived: false });
+      return op("POST", () => `/threads/${thread}/relay`, p.pick(["connect", "channel", "link", "note", "join"]), { kind: "thread", archived: false });
     }
     // The people of where it would be relayed (a connect's channel or group, or the thread of a message's `link`), for
     // the note to mention, read as asked.
@@ -576,6 +577,9 @@ function stationOp(name: string, params: unknown): Request | null {
     // A Comma connect: made of the line Comma's still.fail plugin shows.
     case "comma.createConnect":
       return op("POST", () => "/comma/connects", p.pick(["line", "bind"]), { kind: "connect", id: null });
+    // A group connect: an IM server of AFK-surf/group joined as a member, by its endpoint id, relays and a code.
+    case "group.createConnect":
+      return op("POST", () => "/group/connects", p.pick(["group", "bind", "mode", "requireMention", "owner"]), { kind: "connect", id: null });
     // A Feishu connect's App Secret replaced (verified there first).
     case "feishu.putSecret":
       return op("PUT", () => `/feishu/connects/${p.at("id")}/secret`, p.pick(["appSecret"]), connect("id"));
@@ -631,9 +635,10 @@ function stationOp(name: string, params: unknown): Request | null {
       return op("POST", () => `/profiles/${p.at("id")}/login-code`, p.pick(["code"]), OVERVIEW);
     case "login.new":
       return op("POST", () => "/logins", p.pick(["runtime", "access"]), { kind: "login", id: null, from: null });
-    // A code is taken only while its sign-in waits for one.
+    // A code is taken only while its sign-in waits for one (or, a company's Google account with no licence, for its
+    // Google Cloud project, given the same way).
     case "login.code":
-      return op("POST", () => `/logins/${p.at("id")}/code`, p.pick(["code"]), { kind: "login", id: p.str("id"), from: "needs_code" });
+      return op("POST", () => `/logins/${p.at("id")}/code`, p.pick(["code"]), { kind: "login", id: p.str("id"), from: ["needs_code", "needs_project"] });
     case "login.drop":
       return op("DELETE", () => `/logins/${p.at("id")}`, null, { kind: "login", id: p.str("id"), from: null });
     // A sign-in's page opened in the station's own browser (在 station 的浏览器中登录), for the

@@ -10,7 +10,9 @@ test "84-connect" {
 ///|
 /// The flow of 84-connect in the pass `seed` (@sfreplay.orders): its end's screen.
 fn flow_84_connect(seed : UInt) -> String {
-  let f = @sfreplay.Flow::start(@sfreplay.trace("settings-connect"), seed~)
+  // (the run's app was the old view, whose token dialog, built again in each frame as it closed after 取消, made a
+  // form of its own anew (desk-tokens-3) and watched it (id 39), let go of as it went; the dialog of nodes, made once, makes none as it goes)
+  let f = @sfreplay.Flow::start(@sfreplay.trace("settings-connect"), seed~, drop=["desk-tokens-3", "\"id\":39,\"unsubscribe\""])
   // (the connect made on the test station before the app starts: e2e/peer.ts connect-put)
   f.before("peer connect-put e2e-080726")
   f.tap("icon:settings")

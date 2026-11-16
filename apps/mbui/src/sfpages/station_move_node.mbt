@@ -269,7 +269,8 @@ fn station_move_to_node(
     }
   }
   @sf.group_node(b, fn(g) {
-    g.pick(main, fn(r, what) {
+    // (made again only as there comes to be an action at its end or none: which it is, the action alone)
+    g.pick(fn() { main() != "" }, fn(r, acts) {
       @sf.link_row_opens_node(
         r,
         fn() { @sf.t("web-pages.stations.move.to") },
@@ -291,17 +292,21 @@ fn station_move_to_node(
         chevron=false,
         tail=fn(e) { station_move_chevron(e, fn() { "chevron-right" }) },
         tail_shown=fn() { !targets().is_empty() && !(field(v(), "moving") is Some(Object(_))) },
-        control?=match what {
-          "all" =>
-            Some(fn(c : @view.View) {
-              @sf.button_node(c, fn() { @sf.t("web-pages.stations.move.all") }, fn() {
-                station_move_all_confirm(core, address, @signals.untracked(v), false)
-              }, tone=Primary)
-              |> ignore
+        control?=if acts {
+          Some(fn(c : @view.View) {
+            c.pick(main, fn(a, what) {
+              if what == "remove" {
+                @sf.button_node(a, fn() { @sf.t("web-pages.stations.retire.remove") }, remove, tone=Primary) |> ignore
+              } else {
+                @sf.button_node(a, fn() { @sf.t("web-pages.stations.move.all") }, fn() {
+                  station_move_all_confirm(core, address, @signals.untracked(v), false)
+                }, tone=Primary)
+                |> ignore
+              }
             })
-          "remove" =>
-            Some(fn(c : @view.View) { @sf.button_node(c, fn() { @sf.t("web-pages.stations.retire.remove") }, remove, tone=Primary) |> ignore })
-          _ => None
+          })
+        } else {
+          None
         },
       )
     })
@@ -370,8 +375,9 @@ fn station_move_module_node(
         ])
     }
   }
-  card.pick(fn() { (text(m(), "action"), failed() is Some(_)) }, fn(r, k) {
-    let (act_now, refused) = k
+  let act_now = fn() { text(m(), "action") }
+  // (made again only as a refusal comes or goes, its note's ink with it: its action at its end comes and goes in it)
+  card.pick(fn() { failed() is Some(_) }, fn(r, refused) {
     @sf.link_row_node(
       r,
       fn() { @sf.t("web-pages.stations.move.module." + id) },
@@ -382,16 +388,16 @@ fn station_move_module_node(
       folds=is_open,
       control=fn(e) {
         @sf.line_end_node(e, fn(c) {
-          if act_now != "" {
+          c.show(fn() { act_now() != "" }, fn(a) {
             @sf.row_end_button_node(
-              c,
-              fn() { @sf.t(if act_now == "back" { "web-pages.stations.move.back" } else { "web-pages.stations.move.move" }) },
-              fn() { act(act_now) },
+              a,
+              fn() { @sf.t(if act_now() == "back" { "web-pages.stations.move.back" } else { "web-pages.stations.move.move" }) },
+              fn() { act(@signals.untracked(act_now)) },
               busy=doing,
               disabled=doing,
             )
             |> ignore
-          }
+          })
           station_move_chevron(c, fn() { if is_open() { "chevron-up" } else { "chevron-down" } })
         })
       },
@@ -442,13 +448,17 @@ fn station_move_item_node(
     let total = number(p, "total")
     if total > 0.0 { Some(number(p, "done") / total) } else { None }
   }
-  card.pick(fn() { (text(x(), "action"), state() == "moving") }, fn(r, k) {
-    let (action, moving) = k
+  let action = fn() { text(x(), "action") }
+  // (made again only as there comes to be an action at its end or none: which it is, and its bar as it moves or not,
+  // follow it in the row)
+  card.pick(fn() { action() != "" }, fn(r, acts) {
     let bad = fn() { state() == "failed" }
-    let words = match action {
-      "back" => "web-pages.stations.move.back"
-      "retry" => "common.retry"
-      _ => "web-pages.stations.move.move"
+    let words = fn() {
+      match action() {
+        "back" => "web-pages.stations.move.back"
+        "retry" => "common.retry"
+        _ => "web-pages.stations.move.move"
+      }
     }
     @sf.link_row_node(
       r,
@@ -465,14 +475,15 @@ fn station_move_item_node(
       // (something under its first line always, its bar while it moves, nothing else: so where it stands goes under its
       // label where the line has not the room for both, as a row with lines under it lays them, never the label cut)
       below=fn(b) { station_move_bar(b, part) },
-      below_open=fn() { if moving { 1.0 } else { 0.0 } },
-      control?=if action == "" {
+      below_open=fn() { if state() == "moving" { 1.0 } else { 0.0 } },
+      control?=if !acts {
         None
       } else {
         // (the button alone: with lines always under its first (`below`), the row puts it on that line, as high as it,
         // itself: link_row's `under`)
         Some(fn(c : @view.View) {
-          @sf.row_end_button_node(c, fn() { @sf.t(words) }, fn() { act(action) }, busy=doing, disabled=doing) |> ignore
+          @sf.row_end_button_node(c, fn() { @sf.t(words()) }, fn() { act(@signals.untracked(action)) }, busy=doing, disabled=doing)
+          |> ignore
         })
       },
     )

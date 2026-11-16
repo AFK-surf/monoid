@@ -1,7 +1,7 @@
 // What the clients show of the stations and their links: the stations' glyph and its line, what a list
 // with no rows says instead, how a chat's link is when it is not as it should be, a station's face, a station update.
 import { t } from "./i18n.ts";
-import { bytes as size } from "./format.ts";
+import { bytes as size, relativeTime } from "./format.ts";
 import { arr as arrU, get as getU, utf8 } from "./util.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -139,30 +139,82 @@ export function stationLine(online: boolean, host: J): string {
   return m !== "" ? m : t(online ? "core-logic.looks.station.online" : "core-logic.looks.station.offline");
 }
 
+function stripFrontmatter(text: string): string {
+  if (text.startsWith("---\n")) {
+    const rest = text.slice(4);
+    const at = rest.indexOf("\n---");
+    if (at >= 0) {
+      const after = rest.slice(at + 4);
+      return (after.startsWith("\n") ? after.slice(1) : after).trim();
+    }
+  }
+  return text.trim();
+}
+
+function whenChangedOf(item: J, now: number, offsetMin: number): string | undefined {
+  const at = get(item, "at");
+  const by = strOf(item, "by");
+  const ago = typeof at === "number" && at > 0 ? relativeTime(at, now, offsetMin) : "";
+  const parts = [ago, by].filter((s) => s !== "");
+  return parts.length > 0 ? parts.join(" · ") : undefined;
+}
+
+export function memoryDiff(before: string, after: string): [string, string][] {
+  if (before === after) return [];
+  const a = before === "" ? [] : before.split("\n");
+  const b = after === "" ? [] : after.split("\n");
+  let pre = 0;
+  while (pre < a.length && pre < b.length && a[pre] === b[pre]) pre++;
+  let suf = 0;
+  while (suf < a.length - pre && suf < b.length - pre && a[a.length - 1 - suf] === b[b.length - 1 - suf]) suf++;
+  const out: [string, string][] = [];
+  if (pre > 0 && a[pre - 1]!.trim() !== "") out.push([" ", a[pre - 1]!]);
+  const removed = a.slice(pre, a.length - suf).filter((l) => l.trim() !== "");
+  const added = b.slice(pre, b.length - suf).filter((l) => l.trim() !== "");
+  for (const l of removed.slice(0, 2)) out.push(["-", l]);
+  for (const l of added.slice(0, 2)) out.push(["+", l]);
+  if (out.every(([m]) => m === " ")) return [];
+  return out;
+}
+
 /// A station's answer as the clients show it: the agents' memory with each skill's text as people read it, what kind it
 /// is, when it is read and its pages, the global memory in its parts, and how long each is.
-export function answer(method: string, path: string, value: J): void {
+export function answer(method: string, path: string, value: J, now = Date.now(), offsetMin = 0): void {
   if (method !== "GET" || path !== "/memory") return;
   const global = get(value, "global");
   if (global !== null && typeof global === "object") {
     const text = strOf(global, "text");
-    global.sections = memorySections(text);
+    const sections = memorySections(text);
+    const wc = whenChangedOf(global, now, offsetMin);
+    if (wc !== undefined) global.whenChanged = wc;
+    if (typeof get(global, "prev") === "string") {
+      const prevText = strOf(global, "prev");
+      const gd = memoryDiff(prevText.trim(), text.trim());
+      if (gd.length > 0) global.diff = gd;
+      const prevSections = memorySections(prevText);
+      for (const sec of sections) {
+        const old = prevSections.find((p) => p.title === sec.title) ?? (prevSections.length === 1 && sections.length === 1 ? prevSections[0] : undefined);
+        const sd = memoryDiff(old ? old.text : "", sec.text);
+        if (sd.length > 0) {
+          sec.diff = sd;
+          if (wc !== undefined) sec.whenChanged = wc;
+        }
+      }
+    }
+    global.sections = sections;
     global.size = size(utf8(text).length);
   }
   for (const skill of arr(get(value, "skills"))) {
     const text = strOf(skill, "text");
-    let body = text;
-    if (text.startsWith("---\n")) {
-      const rest = text.slice(4);
-      const at = rest.indexOf("\n---");
-      if (at >= 0) {
-        const after = rest.slice(at + 4);
-        body = after.startsWith("\n") ? after.slice(1) : after;
-      }
-    }
     const description = strOf(skill, "description");
     const project = get(skill, "project") === true;
-    skill.body = body.trim();
+    skill.body = stripFrontmatter(text);
+    const wc = whenChangedOf(skill, now, offsetMin);
+    if (wc !== undefined) skill.whenChanged = wc;
+    if (typeof get(skill, "prev") === "string") {
+      const sd = memoryDiff(stripFrontmatter(strOf(skill, "prev")), skill.body);
+      if (sd.length > 0) skill.diff = sd;
+    }
     skill.about = project && description.startsWith("项目记忆：") ? description.slice("项目记忆：".length) : description;
     const brief = skill.about.replace(/（[^（）]*）/g, "").replace(/\s*\([^()]*\)/g, "").replace(/\s+/g, " ").trim();
     skill.brief = brief !== "" ? brief : skill.about;

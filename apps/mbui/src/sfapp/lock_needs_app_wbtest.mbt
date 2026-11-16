@@ -1,6 +1,6 @@
 // A web page left out of an upgraded workspace that nobody can approve there (the core's `me.needsAppText`: its person
 // has no app in the list; the owner, 2026-11-13: 「开了安全模式那就需要 app」): in the workspace's place (the waiting
-// page, sfpages' lock_wait.mbt and lock_wait_node.mbt) and on 安全 (security.mbt), under the title 请先安装客户端 the
+// page, sfpages' lock_wait_node.mbt) and on 安全 (security.mbt), under the title 请先安装客户端 the
 // core's words in place of the ask to be approved, no word of waiting or of a trusted device (there is none) and no
 // button that asks (nobody could answer it), on every screen; every rule of the Tester's audit
 // clean in what those pages make (the frame's own faults around them, its rail's and its edges', are those its other

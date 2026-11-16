@@ -86,11 +86,9 @@ const OVER_CHATS: Over = {
   "member": ["reads", "shared", "equaled"],
   "session": ["shared", "equaled", "copied", "fitted"],
   "decided": ["shared", "equaled"],
-  "updating": ["shared", "equaled", "copied", "fitted"],
+  "updating": ["shared", "equaled"],
   "machine": ["shared", "equaled", "fitted"],
   "login": ["shared"],
-  "archiving": ["shared"],
-  "off": ["shared"],
   "quota six pages": ["shared"],
   "message six pages": ["shared", "copied", "fitted"],
 };

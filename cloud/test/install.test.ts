@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { createServer } from "node:net";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import { createHash } from "node:crypto";
 import { bundledInstallScript, installScript, releaseType } from "../src/install.ts";
@@ -110,8 +111,8 @@ test("the releases bucket serves the station's releases and the apps' builds, an
  * `os` "linux" or "wsl" makes it a Linux (x64) instead, with a systemd for the user (`systemd`) or none; "wsl" is
  * Windows' Linux (its kernel says microsoft) with Windows' cmd.exe and wslpath, its drive C: in <root>/c.
  */
-function machine(os: "mac" | "linux" | "wsl" = "mac", systemd = true) {
-  const root = mkdtempSync(join(tmpdir(), "install-test-"));
+function machine(os: "mac" | "linux" | "wsl" = "mac", systemd = true, base = tmpdir()) {
+  const root = mkdtempSync(join(base, "install-test-"));
   const home = join(root, "home");
   const stub = join(root, "stub");
   const release = join(root, "release", "stillfail");
@@ -504,5 +505,142 @@ test("a Node another install put there meanwhile is the one kept, and nothing ha
     assert.equal(readFileSync(join(data, "node", "v24.21.0", "bin", "node"), "utf8"), theirs);
   } finally {
     m.done();
+  }
+});
+
+/**
+ * The station `machine()` installed taken away by the repository's own command (bin/stillfail, put in place of the
+ * release's stand-in): run as the person would (~/.local/bin/stillfail), with the machine's own stand-ins and Node on
+ * its PATH. Asynchronous, so a test's Helper on its socket can answer meanwhile.
+ */
+function uninstall(m: ReturnType<typeof machine>, args: string[], env: Record<string, string> = {}): Promise<{ status: number | null; out: string; said: string }> {
+  const app = join(m.home, ".stillfail", "app", "bin", "stillfail");
+  if (existsSync(app)) writeFileSync(app, readFileSync(join(import.meta.dirname, "..", "..", "bin", "stillfail")), { mode: 0o755 });
+  const command = existsSync(join(m.home, ".local", "bin", "stillfail")) ? join(m.home, ".local", "bin", "stillfail") : app;
+  return new Promise((resolve) => {
+    let out = "";
+    const child = spawn("sh", [command, ...args], {
+      env: { HOME: m.home, PATH: `${join(m.root, "stub")}:${dirname(process.execPath)}:/usr/bin:/bin:/usr/sbin:/sbin`, ...env } as unknown as NodeJS.ProcessEnv,
+    });
+    child.stdout.on("data", (d: Buffer) => (out += d));
+    child.stderr.on("data", (d: Buffer) => (out += d));
+    child.on("close", (status: number | null) => resolve({ status, out, said: existsSync(join(m.home, "said")) ? readFileSync(join(m.home, "said"), "utf8") : "" }));
+  });
+}
+
+/** A launcher's stand-in running `data` (its command line names it, as the launcher's does), its pid as it says it. */
+function launcher(data: string) {
+  const child = spawn("sh", ["-c", "while :; do sleep 1; done", "stillfail-station", "run", "--data", data], { stdio: "ignore", env: { PATH: "/usr/bin:/bin" } as unknown as NodeJS.ProcessEnv });
+  mkdirSync(join(data, "run"), { recursive: true });
+  writeFileSync(join(data, "run", "station.json"), JSON.stringify({ pid: child.pid, version: "0.1.4321" }));
+  return { child };
+}
+
+test("stillfail uninstall takes the station away for good, its data kept; installed again it is no longer said so and its service enabled", async () => {
+  // (a short path: a Unix socket's is at most 104 bytes on a Mac)
+  const m = machine("mac", true, "/tmp");
+  const data = join(m.home, ".stillfail");
+  try {
+    assert.equal(m.run(["tok"]).status, 0);
+    const plist = join(m.home, "Library", "LaunchAgents", "fail.still.station.plist");
+    assert.ok(existsSync(plist));
+    mkdirSync(join(data, "mesh"), { recursive: true });
+    writeFileSync(join(data, "mesh", "cloud.json"), '{"origin": "https://app.still.fail"}');
+    mkdirSync(join(data, "app.old"), { recursive: true });
+    // its Helper, on its socket beside its token, saying what it was asked
+    mkdirSync(join(data, "helper"), { recursive: true });
+    writeFileSync(join(data, "helper", "token"), "tok-1\n");
+    const asked: string[] = [];
+    const helper = createServer((c) => c.on("data", (d) => { asked.push(String(d)); c.end('{"ok":true}\n'); }));
+    await new Promise<void>((r) => helper.listen(join(data, "helper", "helper.sock"), r));
+    const station = launcher(data);
+    writeFileSync(join(m.home, "said"), "");
+    const done = await uninstall(m, ["uninstall"]);
+    helper.close();
+    assert.equal(done.status, 0, done.out);
+    assert.match(done.said, /^launchctl bootout gui\/\d+\/fail\.still\.station$/m);
+    assert.match(done.said, /^launchctl enable gui\/\d+\/fail\.still\.station$/m);
+    assert.ok(!existsSync(plist), "its service gone");
+    // (ended before it said it was done: it waited for that)
+    const running = station.child.exitCode === null && station.child.signalCode === null;
+    if (running) station.child.kill();
+    assert.ok(!running, "its launcher ended");
+    assert.deepEqual(asked.map((a) => JSON.parse(a)), [{ token: "tok-1", op: "quit" }]);
+    assert.throws(() => lstatSync(join(m.home, ".local", "bin", "stillfail")), "its command's link gone");
+    for (const part of ["app", "app.old", "node", "helper", "run"]) assert.ok(!existsSync(join(data, part)), part);
+    assert.ok(existsSync(join(data, "mesh", "cloud.json")), "its data kept");
+    assert.ok(existsSync(join(data, "uninstalled")));
+    assert.match(done.out, /kept in/);
+
+    // installed again (the app's 启动, an update): no longer said taken away, its service enabled before it is loaded
+    writeFileSync(join(m.home, "said"), "");
+    const again = m.run();
+    assert.equal(again.status, 0, again.out);
+    assert.ok(!existsSync(join(data, "uninstalled")));
+    const enable = again.said.search(/^launchctl enable gui\/\d+\/fail\.still\.station$/m);
+    assert.ok(enable >= 0 && enable < again.said.indexOf("launchctl bootstrap"), again.said);
+  } finally {
+    m.done();
+  }
+});
+
+test("stillfail uninstall --purge takes its data too; anything else is refused", async () => {
+  const m = machine("mac", true, "/tmp");
+  const data = join(m.home, ".stillfail");
+  try {
+    assert.equal(m.run(["tok"]).status, 0);
+    const wrong = await uninstall(m, ["uninstall", "--all"]);
+    assert.equal(wrong.status, 2, wrong.out);
+    assert.match(wrong.out, /usage: stillfail uninstall \[--purge\]/);
+    assert.ok(existsSync(join(data, "app")), "nothing taken");
+    const more = await uninstall(m, ["uninstall", "--purge", "now"]);
+    assert.equal(more.status, 2, more.out);
+    const purged = await uninstall(m, ["uninstall", "--purge"]);
+    assert.equal(purged.status, 0, purged.out);
+    assert.ok(!existsSync(data));
+    assert.ok(!existsSync(join(m.home, "Library", "LaunchAgents", "fail.still.station.plist")));
+  } finally {
+    m.done();
+  }
+});
+
+test("stillfail uninstall of a data directory of its own leaves the person's station beside it alone", async () => {
+  for (const os of ["mac", "linux"] as const) {
+    const m = machine(os, true, "/tmp");
+    try {
+      // the person's own: installed as always (~/.stillfail, its service naming it)
+      assert.equal(m.run(["tok"]).status, 0);
+      const plist = join(m.home, "Library", "LaunchAgents", "fail.still.station.plist");
+      const unit = join(m.home, ".config", "systemd", "user", "stillfail-station.service");
+      const service = os === "mac" ? plist : unit;
+      assert.ok(existsSync(service));
+      const mine = launcher(join(m.home, ".stillfail"));
+      // another's, apart: its release, its run
+      const apart = join(m.root, "apart");
+      mkdirSync(join(apart, "app", "bin"), { recursive: true });
+      writeFileSync(join(apart, "app", "bin", "stillfail"), "");
+      writeFileSync(join(m.home, "said"), "");
+      const done = await uninstall(m, ["uninstall"], { STILLFAIL_DATA: apart });
+      assert.equal(done.status, 0, done.out);
+      assert.ok(existsSync(service), `${os}: the person's service left`);
+      assert.doesNotMatch(done.said, /launchctl|systemctl/, os);
+      assert.ok(existsSync(join(m.home, ".stillfail", "app")), `${os}: the person's release left`);
+      assert.ok(lstatSync(join(m.home, ".local", "bin", "stillfail")).isSymbolicLink(), `${os}: the person's command left`);
+      assert.equal(mine.child.exitCode, null, `${os}: the person's station still runs`);
+      mine.child.kill();
+      assert.ok(!existsSync(join(apart, "app")) && existsSync(join(apart, "uninstalled")), os);
+
+      // its own (a Linux's): the service that runs it is taken away
+      if (os === "linux") {
+        writeFileSync(join(m.home, "said"), "");
+        const own = await uninstall(m, ["uninstall"]);
+        assert.equal(own.status, 0, own.out);
+        assert.match(own.said, /^systemctl --user disable --now stillfail-station\.service$/m);
+        assert.match(own.said, /^systemctl --user daemon-reload$/m);
+        assert.ok(!existsSync(unit));
+      }
+    } finally {
+      m.done();
+    }
   }
 });

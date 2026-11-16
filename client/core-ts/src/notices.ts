@@ -165,6 +165,8 @@ function lastSeq(row: J): number {
 /// What a row's change is worth telling its person, and in what words.
 function noticed(row: J, thenSeen: Seen | undefined, me: J, slackUsers: string[], members: J[]): [string, string] | null {
   if (get(row, "mine") !== true || (get(row, "connect") !== undefined && row.connect !== null)) return null;
+  // (a chat an agent leads tells its leader, not its people: decisions.led)
+  if (decisions.led(row)) return null;
   const now = seen(row);
   const then = thenSeen ?? { state: null, seq: 0, decision: null, pending: false, told: null };
   const by = present.lastBy(row, me, slackUsers, members);

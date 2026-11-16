@@ -10,6 +10,7 @@
 #include <d2d1.h>
 #include <wincodec.h>
 #include <math.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include "win.h"
@@ -17,11 +18,19 @@
 #pragma comment(lib, "dwrite.lib")
 #pragma comment(lib, "d2d1.lib")
 #pragma comment(lib, "windowscodecs.lib")
+#pragma comment(lib, "user32.lib")
 
 static const WCHAR *FAMILY = L"Segoe UI";
+static bool has_segoe_var_small, has_segoe_var_display;
 static const WCHAR *MONO = L"Consolas";  // the code face (style & 2)
 static const WCHAR *SERIF = L"SimSun";   // the serif face (style & 4): 宋体, its Latin too
 static const int RT_SIZE = 512;  // largest cluster bitmap, in pixels
+
+struct ClusterBounds {
+  double x0, y0, x1, y1, base;
+  int color;
+  bool valid;
+};
 
 typedef struct {
   int off, len;  // the cluster's text in pool
@@ -33,22 +42,25 @@ typedef struct {
   // its ink across, from where it starts (punct_ink); known: worked out
   double ink_l, ink_r;
   bool ink_known;
+  ClusterBounds bounds;
+  uint8_t subs_queued;
 } glyph_entry;
 
 static IDWriteFactory2 *dw;
 static IDWriteFontFallback *fallback;
-static IDWriteRenderingParams *params, *params_ct;
+static IDWriteRenderingParams *params, *params_gray, *params_ct;
 static ID2D1Factory *d2d;
 static IWICImagingFactory *wic;
-// Where a glyph is drawn: a bitmap of RT_SIZE pixels, Direct2D's target over it at the scale it was made for, a white
-// brush. The frames' thread has its own (the factories made in init); each thread drawing ahead its own, of its own
-// factories (Direct2D's single-threaded one, WIC's).
+// Where a glyph is drawn: a bitmap of RT_SIZE pixels, Direct2D's target over it at the scale it was made for, white
+// and black brushes. The frames' thread has its own (the factories made in init); each thread drawing ahead its own, of
+// its own factories (Direct2D's single-threaded one, WIC's).
 struct Target {
   ID2D1Factory *d2d;
   IWICImagingFactory *wic;
   IWICBitmap *bitmap;
   ID2D1RenderTarget *rt;
   ID2D1SolidColorBrush *white;
+  ID2D1SolidColorBrush *black;
   double scale;
 };
 static Target main_target;
@@ -66,9 +78,92 @@ static uint8_t *held_px;
 static struct { double size; int weight; int style; IDWriteTextFormat *f; } formats[32];
 static int n_formats;
 
+// Whether a monitor's EDID friendly name names an OLED panel (or a known QD-OLED / WOLED model whose EDID omits
+// "OLED"), whose triangular or RWBG subpixels do not match ClearType's horizontal RGB stripes.
+static bool is_oled_name(const WCHAR *name) {
+  static const WCHAR *const tags[] = {
+      L"OLED",     L"AW3225",   L"AW2725",   L"AW3423",   L"PG32UCD",  L"PG27AQD",  L"PG27UCD",  L"PG34WCD",
+      L"XG27AQD",  L"MPG 321",  L"MPG 271",  L"MAG 321",  L"MAG 271",  L"MPG 341",  L"FO32U",    L"FO27Q",
+      L"MO34WQC",  L"G80SD",    L"G60SD",    L"32GS95",   L"27GS95",   L"27GR95",   L"34GS95",   L"39GS95",
+      L"45GS95",   L"LG TV",
+  };
+  for (size_t k = 0; k < sizeof tags / sizeof tags[0]; k++) {
+    const WCHAR *t = tags[k];
+    size_t tlen = wcslen(t);
+    for (const WCHAR *p = name; *p; p++) {
+      if (_wcsnicmp(p, t, tlen) == 0) return true;
+    }
+  }
+  return false;
+}
+
+// Subpixel geometry of the machine's active display: FLAT when an active physical monitor is an OLED panel or when a
+// physical monitor is attached and the user turned ClearType off in Windows; BGR when configured so; else RGB.
+static DWRITE_PIXEL_GEOMETRY detect_pixel_geometry(void) {
+  bool has_edid_monitor = false;
+  bool has_oled = false;
+  UINT32 np = 0, nm = 0;
+  if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &np, &nm) == ERROR_SUCCESS && np > 0) {
+    DISPLAYCONFIG_PATH_INFO *paths = (DISPLAYCONFIG_PATH_INFO *)calloc(np, sizeof *paths);
+    DISPLAYCONFIG_MODE_INFO *modes = (DISPLAYCONFIG_MODE_INFO *)calloc(nm, sizeof *modes);
+    if (paths && modes && QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &np, paths, &nm, modes, NULL) == ERROR_SUCCESS) {
+      for (UINT32 i = 0; i < np; i++) {
+        DISPLAYCONFIG_TARGET_DEVICE_NAME tn = {};
+        tn.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME;
+        tn.header.size = sizeof tn;
+        tn.header.adapterId = paths[i].targetInfo.adapterId;
+        tn.header.id = paths[i].targetInfo.id;
+        if (DisplayConfigGetDeviceInfo(&tn.header) == ERROR_SUCCESS && tn.flags.edidIdsValid) {
+          has_edid_monitor = true;
+          if (is_oled_name(tn.monitorFriendlyDeviceName)) has_oled = true;
+        }
+      }
+    }
+    free(paths);
+    free(modes);
+  }
+  if (has_oled) return DWRITE_PIXEL_GEOMETRY_FLAT;
+  if (has_edid_monitor) {
+    BOOL smoothing = TRUE;
+    UINT type = FE_FONTSMOOTHINGCLEARTYPE;
+    if (SystemParametersInfoW(SPI_GETFONTSMOOTHING, 0, &smoothing, 0) && !smoothing) return DWRITE_PIXEL_GEOMETRY_FLAT;
+    if (SystemParametersInfoW(SPI_GETFONTSMOOTHINGTYPE, 0, &type, 0) && type != FE_FONTSMOOTHINGCLEARTYPE)
+      return DWRITE_PIXEL_GEOMETRY_FLAT;
+    IDWriteRenderingParams *sys = NULL;
+    if (SUCCEEDED(dw->CreateRenderingParams(&sys)) && sys) {
+      DWRITE_PIXEL_GEOMETRY g = sys->GetPixelGeometry();
+      FLOAT ct = sys->GetClearTypeLevel();
+      sys->Release();
+      if (g == DWRITE_PIXEL_GEOMETRY_FLAT || ct <= 0.0f) return DWRITE_PIXEL_GEOMETRY_FLAT;
+      if (g == DWRITE_PIXEL_GEOMETRY_BGR) return DWRITE_PIXEL_GEOMETRY_BGR;
+    }
+  }
+  return DWRITE_PIXEL_GEOMETRY_RGB;
+}
+
+static bool use_cleartype(double sc) { return params_ct != NULL && sc < 1.25; }
+
+// The system's font collection's family named `name` (its index), if there is one.
+static bool system_family(const WCHAR *name) {
+  IDWriteFontCollection *fc = NULL;
+  if (FAILED(dw->GetSystemFontCollection(&fc, FALSE))) return false;
+  UINT32 at = 0;
+  BOOL there = FALSE;
+  fc->FindFamilyName(name, &at, &there);
+  fc->Release();
+  return there;
+}
+
 static void init(void) {
   if (dw) return;
-  DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory2), (IUnknown **)&dw);
+  DWriteCreateFactory(DWRITE_FACTORY_TYPE_ISOLATED, __uuidof(IDWriteFactory2), (IUnknown **)&dw);
+  if (system_family(L"Segoe UI Variable")) {
+    FAMILY = L"Segoe UI Variable";
+  } else if (system_family(L"Segoe UI Variable Text")) {
+    FAMILY = L"Segoe UI Variable Text";
+    has_segoe_var_small = system_family(L"Segoe UI Variable Small");
+    has_segoe_var_display = system_family(L"Segoe UI Variable Display");
+  }
   IDWriteFontFallbackBuilder *b = NULL;
   IDWriteFontFallback *sys = NULL;
   dw->CreateFontFallbackBuilder(&b);
@@ -78,6 +173,11 @@ static void init(void) {
   };
   const WCHAR *cjk_fonts[] = {L"Microsoft YaHei UI", L"Microsoft YaHei", L"SimSun"};
   b->AddMapping(cjk, sizeof cjk / sizeof cjk[0], cjk_fonts, 3, NULL, NULL, NULL, 1.0f);
+  if (wcscmp(FAMILY, L"Segoe UI") != 0) {
+    DWRITE_UNICODE_RANGE latin[] = {{0x0020, 0x024F}, {0x1E00, 0x1EFF}, {0x2000, 0x206F}};
+    const WCHAR *latin_fonts[] = {FAMILY, L"Segoe UI"};
+    b->AddMapping(latin, sizeof latin / sizeof latin[0], latin_fonts, 2, NULL, NULL, NULL, 1.0f);
+  }
   dw->GetSystemFontFallback(&sys);
   b->AddMappings(sys);
   b->CreateFontFallback(&fallback);
@@ -85,20 +185,30 @@ static void init(void) {
   b->Release();
   // the font's own features, ligatures with them, as DirectWrite draws any app's text: a ligature is one
   // cluster of its letters (GetClusterMetrics), drawn whole
-  // plain coverage without hinting or contrast boost, like Core Text with
-  // smoothing off
+  // plain coverage without contrast boost for colour glyphs (emojis)
   IDWriteRenderingParams2 *p2 = NULL;
   dw->CreateCustomRenderingParams(1.0f, 0.0f, 0.0f, 0.0f, DWRITE_PIXEL_GEOMETRY_FLAT,
                                   DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC,
                                   DWRITE_GRID_FIT_MODE_DISABLED, &p2);
   params = p2;
-  // A glyph in one colour drawn with ClearType, as Windows draws any app's text (the user, 2026-10-29, beside Chrome:
-  // gray coverage looked soft): each of a pixel's three stripes, red, green, blue left to right, covered on its own,
-  // the same plain coverage otherwise; a colour glyph (an emoji) in gray as before.
-  IDWriteRenderingParams2 *c2 = NULL;
-  dw->CreateCustomRenderingParams(1.0f, 0.0f, 0.0f, 1.0f, DWRITE_PIXEL_GEOMETRY_RGB,
-                                  DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC, DWRITE_GRID_FIT_MODE_DISABLED, &c2);
-  params_ct = c2;
+  // Monochrome text in grayscale (used at 125%+ high-DPI scaling, on OLED panels, or when ClearType is off in Windows):
+  // unhinted geometric outlines as in macOS CoreText (DWRITE_GRID_FIT_MODE_DISABLED, so legacy CJK TrueType hinting
+  // bytecode does not pinch or distort stroke weights across rows) with symmetric 6x5 antialiasing
+  // (DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC) and optical stem darkening (contrast 0.35 at linear gamma 1.0).
+  IDWriteRenderingParams2 *g2 = NULL;
+  dw->CreateCustomRenderingParams(1.0f, 0.35f, 0.35f, 0.0f, DWRITE_PIXEL_GEOMETRY_FLAT,
+                                  DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC, DWRITE_GRID_FIT_MODE_DISABLED, &g2);
+  params_gray = g2;
+  // A glyph in one colour drawn with ClearType at < 150% on an RGB/BGR LCD: each of a pixel's three stripes covered on
+  // its own, with unhinted geometric outlines, symmetric 6x5 antialiasing, and optical stem darkening (contrast 0.35)
+  // at linear gamma (1.0).
+  DWRITE_PIXEL_GEOMETRY geom = detect_pixel_geometry();
+  if (geom != DWRITE_PIXEL_GEOMETRY_FLAT) {
+    IDWriteRenderingParams2 *c2 = NULL;
+    dw->CreateCustomRenderingParams(1.0f, 0.35f, 0.35f, 1.0f, geom,
+                                    DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC, DWRITE_GRID_FIT_MODE_DISABLED, &c2);
+    params_ct = c2;
+  }
   D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, __uuidof(ID2D1Factory), NULL, (void **)&d2d);
   CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
   CoCreateInstance(CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER, __uuidof(IWICImagingFactory),
@@ -232,17 +342,6 @@ extern "C" void mb_host_face_clear(int32_t f) {
   faces_changed();
 }
 
-// The system's font collection's family named `name` (its index), if there is one.
-static bool system_family(const WCHAR *name) {
-  IDWriteFontCollection *fc = NULL;
-  if (FAILED(dw->GetSystemFontCollection(&fc, FALSE))) return false;
-  UINT32 at = 0;
-  BOOL there = FALSE;
-  fc->FindFamilyName(name, &at, &there);
-  fc->Release();
-  return there;
-}
-
 // Face `f` set in the family installed here named `family`: the system's collection, by its name.
 extern "C" int32_t mb_host_face_add_family(int32_t f, moonbit_string_t family) {
   init();
@@ -251,7 +350,13 @@ extern "C" int32_t mb_host_face_add_family(int32_t f, moonbit_string_t family) {
   WCHAR name[128];
   memcpy(name, family, sizeof(WCHAR) * len);
   name[len] = 0;
-  if (!system_family(name)) return 0;
+  if (!system_family(name)) {
+    if (wcscmp(name, L"Segoe UI Variable") == 0 && system_family(L"Segoe UI Variable Text")) {
+      wcscpy_s(name, 128, L"Segoe UI Variable Text");
+    } else {
+      return 0;
+    }
+  }
   for (int i = 0; i < faces[f].n; i++) {
     free(faces[f].paths[i]);
     free(faces[f].data[i]);
@@ -331,12 +436,24 @@ extern "C" moonbit_string_t mb_host_local_font_families(void) {
   return s;
 }
 
+static const WCHAR *segoe_family_for_size(double size) {
+  if (has_segoe_var_small && size < 10.5) return L"Segoe UI Variable Small";
+  if (has_segoe_var_display && size >= 20.0) return L"Segoe UI Variable Display";
+  return FAMILY;
+}
+
 static IDWriteTextFormat *format_for(double size, int weight, int style) {
   for (int i = 0; i < n_formats; i++)
     if (formats[i].size == size && formats[i].weight == weight && formats[i].style == style) return formats[i].f;
   IDWriteTextFormat *f = NULL;
   int face = face_id(style);
-  dw->CreateTextFormat(face ? faces[face].family : (style & 2) ? MONO : (style & 4) ? SERIF : FAMILY,
+  const WCHAR *fam = face ? (faces[face].system && wcscmp(faces[face].family, L"Segoe UI Variable Text") == 0
+                                 ? segoe_family_for_size(size)
+                                 : faces[face].family)
+                   : (style & 2) ? MONO
+                   : (style & 4) ? SERIF
+                   : segoe_family_for_size(size);
+  dw->CreateTextFormat(fam,
                        face && faces[face].fc ? faces[face].fc : NULL, (DWRITE_FONT_WEIGHT)weight,
                        (style & 1) ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL,
                        DWRITE_FONT_STRETCH_NORMAL, (FLOAT)size, L"zh-cn", &f);
@@ -393,6 +510,34 @@ static IDWriteTextLayout *make_layout(const WCHAR *s, int len, double size, int 
     l2->Release();
   }
   set_style_features(l, len, style);
+  return l;
+}
+
+#define LAYOUT_CACHE_CAP 256
+static struct {
+  int key;
+  IDWriteTextLayout *l;
+} layout_cache[LAYOUT_CACHE_CAP];
+static bool layout_cache_inited;
+
+static void layout_cache_clear(void) {
+  for (int i = 0; i < LAYOUT_CACHE_CAP; i++) {
+    if (layout_cache[i].l) layout_cache[i].l->Release();
+    layout_cache[i].l = NULL;
+    layout_cache[i].key = -1;
+  }
+  layout_cache_inited = true;
+}
+
+static IDWriteTextLayout *main_layout_for(int key) {
+  if (!layout_cache_inited) layout_cache_clear();
+  int slot = key & (LAYOUT_CACHE_CAP - 1);
+  if (layout_cache[slot].key == key && layout_cache[slot].l) return layout_cache[slot].l;
+  if (layout_cache[slot].l) layout_cache[slot].l->Release();
+  glyph_entry *e = &entries[key];
+  IDWriteTextLayout *l = make_layout(pool + e->off, e->len, e->size, e->weight, e->style);
+  layout_cache[slot].key = key;
+  layout_cache[slot].l = l;
   return l;
 }
 
@@ -479,7 +624,13 @@ static int intern(const WCHAR *s, int len, double size, int weight, int style) {
   }
   memcpy(pool + pool_len, s, (size_t)len * sizeof(WCHAR));
   int id = n_entries++;
-  entries[id] = {(int)pool_len, len, size, weight, style, 0, 0, 0, 0, 0, 0, 0, false};
+  glyph_entry ge = {};
+  ge.off = (int)pool_len;
+  ge.len = len;
+  ge.size = size;
+  ge.weight = weight;
+  ge.style = style;
+  entries[id] = ge;
   pool_len += len;
   if ((size_t)n_entries * 2 > table_cap) {
     free(table);
@@ -514,14 +665,13 @@ static int punct_kind(WCHAR c) {
 static void punct_ink(int key) {
   glyph_entry *e = &entries[key];
   if (e->ink_known) return;
-  IDWriteTextLayout *l = make_layout(pool + e->off, e->len, e->size, e->weight, e->style);
+  IDWriteTextLayout *l = main_layout_for(key);
   DWRITE_TEXT_METRICS tm;
   DWRITE_OVERHANG_METRICS om;
   l->GetMetrics(&tm);
   l->SetMaxWidth(tm.widthIncludingTrailingWhitespace);
   l->SetMaxHeight(tm.height);
   l->GetOverhangMetrics(&om);
-  l->Release();
   e->ink_l = -om.left;
   e->ink_r = tm.widthIncludingTrailingWhitespace + om.right;
   e->ink_known = true;
@@ -606,9 +756,14 @@ static void reset_atlas(void) {
 static void ahead_forget(void);
 
 static void faces_changed(void) {
+  layout_cache_clear();
   for (int i = 0; i < n_formats; i++) formats[i].f->Release();
   n_formats = 0;
-  for (int i = 0; i < n_entries; i++) entries[i].ink_known = false;
+  for (int i = 0; i < n_entries; i++) {
+    entries[i].ink_known = false;
+    entries[i].bounds = {};
+    entries[i].subs_queued = 0;
+  }
   ahead_forget();
   reset_atlas();
 }
@@ -647,12 +802,12 @@ struct ColorProbe : public IDWriteTextRenderer {
     *p = 1;
     return S_OK;
   }
-  STDMETHOD(DrawGlyphRun)(void *, FLOAT, FLOAT, DWRITE_MEASURING_MODE, DWRITE_GLYPH_RUN const *run,
-                          DWRITE_GLYPH_RUN_DESCRIPTION const *, IUnknown *) override {
-    IDWriteFontFace2 *f2 = NULL;
-    if (SUCCEEDED(run->fontFace->QueryInterface(__uuidof(IDWriteFontFace2), (void **)&f2))) {
-      if (f2->IsColorFont()) color = 1;
-      f2->Release();
+  STDMETHOD(DrawGlyphRun)(void *, FLOAT x, FLOAT y, DWRITE_MEASURING_MODE mode, DWRITE_GLYPH_RUN const *run,
+                          DWRITE_GLYPH_RUN_DESCRIPTION const *desc, IUnknown *) override {
+    IDWriteColorGlyphRunEnumerator *runs = NULL;
+    if (SUCCEEDED(dw->TranslateColorGlyphRun(x, y, run, desc, mode, NULL, 0, &runs))) {
+      color = 1;
+      runs->Release();
     }
     return S_OK;
   }
@@ -670,8 +825,10 @@ struct ColorProbe : public IDWriteTextRenderer {
 static void target_ensure(Target *t, double scale) {
   if (t->rt && t->scale == scale) return;
   if (t->white) t->white->Release();
+  if (t->black) t->black->Release();
   if (t->rt) t->rt->Release();
   t->white = NULL;
+  t->black = NULL;
   t->rt = NULL;
   if (!t->bitmap && FAILED(t->wic->CreateBitmap(RT_SIZE, RT_SIZE, GUID_WICPixelFormat32bppPBGRA,
                                                   WICBitmapCacheOnDemand, &t->bitmap)))
@@ -684,6 +841,7 @@ static void target_ensure(Target *t, double scale) {
   t->rt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
   t->rt->SetTextRenderingParams(params);
   t->rt->CreateSolidColorBrush(D2D1::ColorF(1, 1, 1, 1), &t->white);
+  t->rt->CreateSolidColorBrush(D2D1::ColorF(0, 0, 0, 1), &t->black);
   t->scale = scale;
 }
 
@@ -696,12 +854,10 @@ struct Drawn {
   int color;
 };
 
-// A cluster's layout drawn in white at `sc` pixels a point, a pixel round its bounds, on `t`.
-static void draw_layout(IDWriteTextLayout *l, double sc, Target *t, Drawn *d) {
-  *d = {};
+static void measure_bounds(IDWriteTextLayout *l, ClusterBounds *cb) {
+  if (cb->valid) return;
   ColorProbe probe;
   l->Draw(NULL, &probe, 0, 0);
-  int color = probe.color;
   DWRITE_TEXT_METRICS tm;
   DWRITE_LINE_METRICS lm;
   UINT32 nl = 0;
@@ -715,38 +871,60 @@ static void draw_layout(IDWriteTextLayout *l, double sc, Target *t, Drawn *d) {
   // color glyphs and blanks use the typographic box
   double x0 = -om.left, y0 = -om.top;
   double x1 = tm.widthIncludingTrailingWhitespace + om.right, y1 = tm.height + om.bottom;
-  if (color || x1 - x0 <= 0 || y1 - y0 <= 0) {
+  if (probe.color || x1 - x0 <= 0 || y1 - y0 <= 0) {
     x0 = 0;
     y0 = 0;
     x1 = tm.widthIncludingTrailingWhitespace;
     y1 = tm.height;
   }
+  cb->x0 = x0;
+  cb->y0 = y0;
+  cb->x1 = x1;
+  cb->y1 = y1;
+  cb->base = nl ? lm.baseline : 0;
+  cb->color = probe.color;
+  cb->valid = true;
+}
+
+// A cluster's layout drawn in white at `sc` pixels a point (shifted horizontally by `dx` points for its
+// quarter-pixel subpixel phase), a pixel round its cached bounds `cb`, on `t`.
+static void draw_cluster(IDWriteTextLayout *l, const ClusterBounds *cb, double sc, double dx, Target *t, Drawn *d) {
+  *d = {};
+  int color = cb->color;
   // The bitmap's edges on whole pixels from the baseline, a pixel of room
   // around: the baseline then falls on a pixel row of every glyph's bitmap,
   // so glyphs placed on the same rounded baseline line up.
-  double base = nl ? lm.baseline : 0;
-  int px0 = (int)floor(x0 * sc) - 1, px1 = (int)ceil(x1 * sc) + 1;
-  int py0 = (int)floor((y0 - base) * sc) - 1, py1 = (int)ceil((y1 - base) * sc) + 1;
-  x0 = px0 / sc;
-  y0 = base + py0 / sc;
+  double base = cb->base;
+  int px0 = (int)floor(cb->x0 * sc) - 1, px1 = (int)ceil(cb->x1 * sc) + 1;
+  int py0 = (int)floor((cb->y0 - base) * sc) - 1, py1 = (int)ceil((cb->y1 - base) * sc) + 1;
+  double x0 = px0 / sc;
+  double y0 = base + py0 / sc;
   int pw = px1 - px0, ph = py1 - py0;
   if (pw <= 0 || ph <= 0 || pw > RT_SIZE || ph > RT_SIZE) return;
   target_ensure(t, sc);
   if (!t->rt) return;
-  // One colour: drawn white with ClearType on opaque black, each stripe's coverage in its channel (the shader blends a
-  // mask stripe by stripe: win_render.cpp fmain), its alpha their mean. Straight on the black: in a layer made for
-  // ClearType (D2D1_LAYER_OPTIONS_INITIALIZE_FOR_CLEARTYPE) Direct2D drew it gray after all.
-  bool stripes = params_ct && !color;
+  // One colour: drawn black on opaque white so Direct2D's contrast (0.5) at linear gamma (1.0) shapes coverage (with
+  // ClearType at < 150% on RGB/BGR LCDs, or contrast-boosted grayscale at 150%+ / on OLED / when ClearType is off),
+  // each stripe's coverage (255 - s) in its channel (the shader blends a mask stripe by stripe: win_render.cpp fmain),
+  // its alpha their mean. Straight on the target: in a layer made for ClearType
+  // (D2D1_LAYER_OPTIONS_INITIALIZE_FOR_CLEARTYPE) Direct2D drew it gray after all.
+  // Clip to the glyph's own bounds so Clear() does not wipe the entire 512x512 (1 MiB) WIC bitmap per glyph.
+  bool mono = !color && (params_ct || params_gray);
+  bool ct = mono && use_cleartype(sc);
+  FLOAT clip_w = (FLOAT)((pw < RT_SIZE ? pw + 1 : pw) / sc);
+  FLOAT clip_h = (FLOAT)((ph < RT_SIZE ? ph + 1 : ph) / sc);
   t->rt->BeginDraw();
-  t->rt->Clear(D2D1::ColorF(0, 0, 0, stripes ? 1.0f : 0.0f));
-  if (stripes) {
-    t->rt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE);
-    t->rt->SetTextRenderingParams(params_ct);
+  t->rt->PushAxisAlignedClip(D2D1::RectF(0.0f, 0.0f, clip_w, clip_h), D2D1_ANTIALIAS_MODE_ALIASED);
+  t->rt->Clear(mono ? D2D1::ColorF(1, 1, 1, 1) : D2D1::ColorF(0, 0, 0, 0));
+  if (mono) {
+    t->rt->SetTextAntialiasMode(ct ? D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE : D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+    t->rt->SetTextRenderingParams(ct ? params_ct : params_gray);
   }
-  t->rt->DrawTextLayout(D2D1::Point2F((FLOAT)-x0, (FLOAT)-y0), l, t->white,
+  t->rt->DrawTextLayout(D2D1::Point2F((FLOAT)(-x0 + dx), (FLOAT)-y0), l, mono ? t->black : t->white,
                         D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT | D2D1_DRAW_TEXT_OPTIONS_NO_SNAP);
+  t->rt->PopAxisAlignedClip();
   t->rt->EndDraw();
-  if (stripes) {
+  if (mono) {
     t->rt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
     t->rt->SetTextRenderingParams(params);
   }
@@ -762,10 +940,10 @@ static void draw_layout(IDWriteTextLayout *l, double sc, Target *t, Drawn *d) {
       const BYTE *s = src + (size_t)y * stride;
       uint8_t *o = px + (size_t)y * pw * 4;
       for (int x = 0; x < pw; x++, s += 4, o += 4) {
-        o[0] = s[2];
-        o[1] = s[1];
-        o[2] = s[0];
-        o[3] = stripes ? (uint8_t)((o[0] + o[1] + o[2] + 1) / 3) : s[3];
+        o[0] = mono ? (uint8_t)(255 - s[2]) : s[2];
+        o[1] = mono ? (uint8_t)(255 - s[1]) : s[1];
+        o[2] = mono ? (uint8_t)(255 - s[0]) : s[0];
+        o[3] = mono ? (uint8_t)((o[0] + o[1] + o[2] + 1) / 3) : s[3];
         // premultiplied: drawn in white, a mask's pixel has its colour equal to its alpha; an emoji's does not
         if (color == 1 && o[3] > 64 && (o[0] + 32 < o[3] || o[1] + 32 < o[3] || o[2] + 32 < o[3])) color = 2;
       }
@@ -780,16 +958,27 @@ static void draw_layout(IDWriteTextLayout *l, double sc, Target *t, Drawn *d) {
   d->w = pw / sc;
   d->h = ph / sc;
   d->ox = x0;
-  d->oy = y0 - (nl ? lm.baseline : 0);
+  d->oy = y0 - base;
 }
 
-// ---- drawing ahead: the glyphs a frame shaped and did not draw (text.mbt glyphs_ahead), drawn by threads of their own,
-// as Android's MBText and the Apple hosts' queue draw them; each taken as it is first asked for, from what was drawn
-// ahead: waited for while a thread draws it, drawn here when none has begun it ----
+// ---- drawing ahead: the glyphs a frame shaped (text.mbt glyphs_ahead) and the remaining subpixel phases of any
+// glyph first drawn on the main thread, drawn by threads of their own across all 5 horizontal quarter-pixel phases ----
 
-// One glyph asked to be drawn ahead: what it is drawn from (its words, its format and features as the frames' thread
-// had them, held; its scale), set before a thread has it and not changed after; under ahead_lock its state and, once
-// drawn, its picture. `dropped`: the frames' thread let go of it, the thread that has it frees it.
+#define SUB_COUNT 5
+#define SUB_ALL 0x1F
+
+// Horizontal quarter-pixel shift (in device pixels) encoded in bits 26..28 of a glyph key:
+// 0 -> 0.0, 1 -> +0.25, 2 -> +0.50, 3 -> -0.25, 4 -> -0.50.
+static double sub_dx(int sub) {
+  switch (sub) {
+    case 1: return 0.25;
+    case 2: return 0.50;
+    case 3: return -0.25;
+    case 4: return -0.50;
+    default: return 0.0;
+  }
+}
+
 enum { AHEAD_ASKED, AHEAD_DRAWING, AHEAD_DRAWN };
 struct Ahead {
   int key;
@@ -799,12 +988,14 @@ struct Ahead {
   IDWriteTypography *typography;
   double scale;
   int state;
+  uint8_t want_mask;
+  uint8_t have_mask;
   bool dropped;
-  Drawn drawn;
+  Drawn drawn[SUB_COUNT];
 };
 
-// The most glyphs asked for or drawn ahead and not placed yet (the oldest drawn let go past it).
-#define AHEAD_MOST 1024
+// The most glyph clusters asked for or drawn ahead and not all placed yet (the oldest drawn let go past it).
+#define AHEAD_MOST 2048
 static CRITICAL_SECTION ahead_lock;
 static CONDITION_VARIABLE ahead_more, ahead_done;
 static int ahead_started;
@@ -821,7 +1012,7 @@ static void ahead_free(Ahead *a) {
   if (a->format) a->format->Release();
   if (a->typography) a->typography->Release();
   free(a->text);
-  free(a->drawn.px);
+  for (int s = 0; s < SUB_COUNT; s++) free(a->drawn[s].px);
   free(a);
 }
 
@@ -849,21 +1040,36 @@ static DWORD WINAPI ahead_thread(void *) {
     Ahead *a = ahead_queue[ahead_head];
     ahead_head = (ahead_head + 1) % ahead_cap;
     ahead_n--;
-    bool gone = a->dropped;
+    uint8_t mask = a->want_mask;
+    bool gone = a->dropped || mask == 0;
     if (!gone) a->state = AHEAD_DRAWING;
     LeaveCriticalSection(&ahead_lock);
     if (gone) {
       ahead_free(a);
       continue;
     }
-    Drawn d = {};
+    Drawn local_d[SUB_COUNT] = {};
+    uint8_t built_mask = 0;
     IDWriteTextLayout *l = t.d2d && t.wic ? layout_with(a->text, a->len, a->format, a->typography) : NULL;
     if (l) {
-      draw_layout(l, a->scale, &t, &d);
+      ClusterBounds cb = {};
+      measure_bounds(l, &cb);
+      for (int s = 0; s < SUB_COUNT; s++) {
+        if (!(mask & (1 << s))) continue;
+        EnterCriticalSection(&ahead_lock);
+        bool drop_now = a->dropped;
+        LeaveCriticalSection(&ahead_lock);
+        if (drop_now) break;
+        draw_cluster(l, &cb, a->scale, sub_dx(s) / a->scale, &t, &local_d[s]);
+        built_mask |= (uint8_t)(1 << s);
+      }
       l->Release();
     }
     EnterCriticalSection(&ahead_lock);
-    a->drawn = d;
+    for (int s = 0; s < SUB_COUNT; s++) {
+      if (built_mask & (1 << s)) a->drawn[s] = local_d[s];
+    }
+    a->have_mask = built_mask;
     a->state = AHEAD_DRAWN;
     bool free_it = a->dropped;
     WakeAllConditionVariable(&ahead_done);
@@ -886,8 +1092,19 @@ static void order_remove_front(void) {
   order_n--;
 }
 
+static void order_clear_ptr(Ahead *a) {
+  for (int i = 0; i < order_n; i++) {
+    Ahead **at = &ahead_order[(order_head + i) % order_cap];
+    if (*at == a) {
+      *at = NULL;
+      break;
+    }
+  }
+}
+
 // Everything asked for let go: the faces or the scale changed, and what is drawn with them with it.
 static void ahead_forget(void) {
+  for (int i = 0; i < n_entries; i++) entries[i].subs_queued = 0;
   for (int i = 0; i < order_n; i++) {
     Ahead *a = ahead_order[(order_head + i) % order_cap];
     if (!a) continue;
@@ -905,131 +1122,167 @@ static bool drop_oldest_drawn(void) {
   Ahead *a = ahead_order[order_head];
   EnterCriticalSection(&ahead_lock);
   bool drawn = a->state == AHEAD_DRAWN;
+  uint8_t left_mask = a->have_mask;
   LeaveCriticalSection(&ahead_lock);
   if (!drawn) return false;
+  if (a->key >= 0 && a->key < n_entries) entries[a->key].subs_queued &= (uint8_t)~left_mask;
   ahead_of[a->key] = NULL;
   order_remove_front();
   ahead_free(a);
   return true;
 }
 
-// What was drawn ahead of `key` at the scale of now, taken (true, its picture in *d); false when it was not (asked
-// and not begun: no longer asked, drawn here).
-static bool drawn_ahead(int key, Drawn *d) {
+// What was drawn ahead of `key` at subpixel phase `sub` and the scale of now, taken (true, its picture in *d);
+// false when it was not (asked and not begun: removed from want_mask and drawn here).
+static bool drawn_ahead(int key, int sub, Drawn *d) {
+  if (sub < 0 || sub >= SUB_COUNT) return false;
   Ahead *a = key < ahead_of_cap ? ahead_of[key] : NULL;
   if (!a) return false;
-  ahead_of[key] = NULL;
-  for (int i = 0; i < order_n; i++) {
-    Ahead **at = &ahead_order[(order_head + i) % order_cap];
-    if (*at == a) {
-      *at = NULL;
-      break;
-    }
-  }
+  uint8_t bit = (uint8_t)(1 << sub);
   EnterCriticalSection(&ahead_lock);
   if (a->state == AHEAD_ASKED) {
-    // (left to its thread, which passes over it)
-    a->dropped = true;
+    a->want_mask &= (uint8_t)~bit;
+    bool empty = a->want_mask == 0;
+    if (empty) a->dropped = true;
     LeaveCriticalSection(&ahead_lock);
+    if (empty) {
+      ahead_of[key] = NULL;
+      order_clear_ptr(a);
+    }
     return false;
   }
-  while (a->state == AHEAD_DRAWING) SleepConditionVariableCS(&ahead_done, &ahead_lock, INFINITE);
-  LeaveCriticalSection(&ahead_lock);
-  bool ok = a->scale == text_scale;
-  if (ok) {
-    *d = a->drawn;
-    a->drawn.px = NULL;
+  if (a->state == AHEAD_DRAWING) {
+    if (!(a->want_mask & bit)) {
+      LeaveCriticalSection(&ahead_lock);
+      return false;
+    }
+    while (a->state == AHEAD_DRAWING) SleepConditionVariableCS(&ahead_done, &ahead_lock, INFINITE);
   }
-  ahead_free(a);
+  bool ok = a->scale == text_scale && (a->have_mask & bit) != 0;
+  if (ok) {
+    *d = a->drawn[sub];
+    a->drawn[sub] = {};
+    a->have_mask &= (uint8_t)~bit;
+  }
+  bool done = a->have_mask == 0 || a->scale != text_scale;
+  LeaveCriticalSection(&ahead_lock);
+  if (done) {
+    ahead_of[key] = NULL;
+    order_clear_ptr(a);
+    ahead_free(a);
+  }
   return ok;
 }
 
-extern "C" void mb_host_glyphs_ahead(int32_t *keys, int32_t n) {
-  if (n <= 0) return;
-  if (!ahead_started) {
-    ahead_started = 1;
-    InitializeCriticalSection(&ahead_lock);
-    InitializeConditionVariable(&ahead_more);
-    InitializeConditionVariable(&ahead_done);
-    // (a page's few hundred glyphs drawn in the time a frame or two takes, over the cores there are, the frames'
-    // thread's left to it)
-    SYSTEM_INFO si;
-    GetSystemInfo(&si);
-    int threads = (int)si.dwNumberOfProcessors - 1;
-    threads = threads < 1 ? 1 : threads > 4 ? 4 : threads;
-    for (int i = 0; i < threads; i++) {
-      HANDLE h = CreateThread(NULL, 0, ahead_thread, NULL, 0, NULL);
-      if (h) SetThreadPriority(h, THREAD_PRIORITY_BELOW_NORMAL), CloseHandle(h);
-    }
+static void ahead_ensure_started(void) {
+  if (ahead_started) return;
+  ahead_started = 1;
+  InitializeCriticalSection(&ahead_lock);
+  InitializeConditionVariable(&ahead_more);
+  InitializeConditionVariable(&ahead_done);
+  // (a page's few hundred glyphs drawn in the time a frame or two takes, over the cores there are, the frames'
+  // thread's left to it)
+  SYSTEM_INFO si;
+  GetSystemInfo(&si);
+  int threads = (int)si.dwNumberOfProcessors - 1;
+  threads = threads < 1 ? 1 : threads > 4 ? 4 : threads;
+  for (int i = 0; i < threads; i++) {
+    HANDLE h = CreateThread(NULL, 0, ahead_thread, NULL, 0, NULL);
+    if (h) SetThreadPriority(h, THREAD_PRIORITY_BELOW_NORMAL), CloseHandle(h);
   }
-  if (ahead_of_cap < n_entries) {
+}
+
+static bool ahead_enqueue_one(int k, uint8_t mask) {
+  if (k < 0 || k >= n_entries || mask == 0) return false;
+  ahead_ensure_started();
+  if (ahead_of_cap <= k) {
     int cap = n_entries * 2;
+    if (cap <= k) cap = (k + 1) * 2;
     ahead_of = (Ahead **)realloc(ahead_of, (size_t)cap * sizeof *ahead_of);
     memset(ahead_of + ahead_of_cap, 0, (size_t)(cap - ahead_of_cap) * sizeof *ahead_of);
     ahead_of_cap = cap;
   }
+  if (ahead_of[k]) return false;
+  if (order_n >= AHEAD_MOST && !drop_oldest_drawn()) return false;
+  glyph_entry *e = &entries[k];
+  e->subs_queued |= mask;
+  Ahead *a = (Ahead *)calloc(1, sizeof(Ahead));
+  a->key = k;
+  a->len = e->len;
+  a->text = (WCHAR *)malloc(sizeof(WCHAR) * (e->len ? e->len : 1));
+  memcpy(a->text, pool + e->off, sizeof(WCHAR) * e->len);
+  a->format = format_for(e->size, e->weight, e->style);
+  a->format->AddRef();
+  a->typography = typography_for(e->style);
+  if (a->typography) a->typography->AddRef();
+  a->scale = text_scale;
+  a->state = AHEAD_ASKED;
+  a->want_mask = mask;
+  ahead_of[k] = a;
+  if (order_n + 1 > order_cap) {
+    int cap = order_cap ? order_cap * 2 : 256;
+    Ahead **next = (Ahead **)malloc((size_t)cap * sizeof *next);
+    for (int j = 0; j < order_n; j++) next[j] = ahead_order[(order_head + j) % order_cap];
+    free(ahead_order);
+    ahead_order = next;
+    order_head = 0;
+    order_cap = cap;
+  }
+  ahead_order[(order_head + order_n++) % order_cap] = a;
+  EnterCriticalSection(&ahead_lock);
+  if (ahead_n + 1 > ahead_cap) {
+    int cap = ahead_cap ? ahead_cap * 2 : 256;
+    Ahead **next = (Ahead **)malloc((size_t)cap * sizeof *next);
+    for (int j = 0; j < ahead_n; j++) next[j] = ahead_queue[(ahead_head + j) % ahead_cap];
+    free(ahead_queue);
+    ahead_queue = next;
+    ahead_head = 0;
+    ahead_cap = cap;
+  }
+  ahead_queue[(ahead_head + ahead_n++) % ahead_cap] = a;
+  LeaveCriticalSection(&ahead_lock);
+  return true;
+}
+
+extern "C" void mb_host_glyphs_ahead(int32_t *keys, int32_t n) {
+  if (n <= 0 || !dw) return;
   int asked = 0;
   for (int32_t i = 0; i < n; i++) {
     int k = keys[i];
-    if (k < 0 || k >= n_entries || ahead_of[k]) continue;
-    if (order_n >= AHEAD_MOST && !drop_oldest_drawn()) break;
-    glyph_entry *e = &entries[k];
-    Ahead *a = (Ahead *)calloc(1, sizeof(Ahead));
-    a->key = k;
-    a->len = e->len;
-    a->text = (WCHAR *)malloc(sizeof(WCHAR) * (e->len ? e->len : 1));
-    memcpy(a->text, pool + e->off, sizeof(WCHAR) * e->len);
-    a->format = format_for(e->size, e->weight, e->style);
-    a->format->AddRef();
-    a->typography = typography_for(e->style);
-    if (a->typography) a->typography->AddRef();
-    a->scale = text_scale;
-    a->state = AHEAD_ASKED;
-    ahead_of[k] = a;
-    if (order_n + 1 > order_cap) {
-      int cap = order_cap ? order_cap * 2 : 256;
-      Ahead **next = (Ahead **)malloc((size_t)cap * sizeof *next);
-      for (int j = 0; j < order_n; j++) next[j] = ahead_order[(order_head + j) % order_cap];
-      free(ahead_order);
-      ahead_order = next;
-      order_head = 0;
-      order_cap = cap;
-    }
-    ahead_order[(order_head + order_n++) % order_cap] = a;
-    EnterCriticalSection(&ahead_lock);
-    if (ahead_n + 1 > ahead_cap) {
-      int cap = ahead_cap ? ahead_cap * 2 : 256;
-      Ahead **next = (Ahead **)malloc((size_t)cap * sizeof *next);
-      for (int j = 0; j < ahead_n; j++) next[j] = ahead_queue[(ahead_head + j) % ahead_cap];
-      free(ahead_queue);
-      ahead_queue = next;
-      ahead_head = 0;
-      ahead_cap = cap;
-    }
-    ahead_queue[(ahead_head + ahead_n++) % ahead_cap] = a;
-    LeaveCriticalSection(&ahead_lock);
-    asked++;
+    if (k < 0 || k >= n_entries) continue;
+    uint8_t rem = (uint8_t)(SUB_ALL & ~entries[k].subs_queued);
+    if (ahead_enqueue_one(k, rem)) asked++;
   }
   if (asked) WakeAllConditionVariable(&ahead_more);
 }
 
-// Glyph `key` drawn in white, a pixel round its bounds: its box (in its entry) and its picture, held for
-// mb_host_glyph_put (where it goes in the atlas is MoonBit's: hostapi's atlas.mbt). From what was drawn ahead of it,
-// else drawn here.
-static void rasterize(int key) {
-  glyph_entry *e = &entries[key];
+// Glyph `full_key` drawn in white, a pixel round its bounds: its box (in its entry) and its picture, held for
+// mb_host_glyph_put (where it goes in the atlas is MoonBit's: hostapi's atlas.mbt). From what was drawn ahead of it
+// when ready, else drawn here using cached cluster bounds and layout while its remaining subpixel phases are queued
+// ahead in the background.
+static void rasterize(int full_key) {
+  int key = full_key & 0x03FFFFFF;
+  int sub = (full_key >> 26) & 7;
+  if (sub >= SUB_COUNT) sub = 0;
   free(held_px);
   held_px = NULL;
   held_key = -1;
-  e->w = e->h = 0;
+  entries[key].w = entries[key].h = 0;
   Drawn d = {};
-  if (!drawn_ahead(key, &d)) {
-    IDWriteTextLayout *l = make_layout(pool + e->off, e->len, e->size, e->weight, e->style);
-    draw_layout(l, text_scale, &main_target, &d);
-    l->Release();
+  if (!drawn_ahead(key, sub, &d)) {
+    IDWriteTextLayout *l = main_layout_for(key);
+    glyph_entry *e = &entries[key];
+    measure_bounds(l, &e->bounds);
+    draw_cluster(l, &e->bounds, text_scale, sub_dx(sub) / text_scale, &main_target, &d);
+    e->subs_queued |= (uint8_t)(1 << sub);
+    uint8_t rem = (uint8_t)(SUB_ALL & ~e->subs_queued);
+    if (rem && ahead_enqueue_one(key, rem)) WakeAllConditionVariable(&ahead_more);
+  } else {
+    entries[key].subs_queued |= (uint8_t)(1 << sub);
   }
+  glyph_entry *e = &entries[key];
   if (d.px) {
-    held_key = key;
+    held_key = full_key;
     held_w = d.pw;
     held_h = d.ph;
     held_px = d.px;
@@ -1042,12 +1295,13 @@ static void rasterize(int key) {
 }
 
 extern "C" void mb_host_glyph(int32_t key, double *out) {
-  if (key < 0 || key >= n_entries) {
+  int base_key = key >= 0 ? (key & 0x03FFFFFF) : key;
+  if (base_key < 0 || base_key >= n_entries) {
     for (int i = 0; i < 7; i++) out[i] = 0;
     return;
   }
   rasterize(key);
-  glyph_entry *e = &entries[key];
+  glyph_entry *e = &entries[base_key];
   out[0] = 0;
   out[1] = 0;
   out[2] = e->w;
@@ -1124,8 +1378,9 @@ extern "C" void mb_host_ref_begin(double w, double h, double scale, int32_t bg) 
       D2D1_RENDER_TARGET_TYPE_SOFTWARE,
       D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), dpi, dpi);
   d2d->CreateWicBitmapRenderTarget(ref_bmp, &p, &ref_rt);
-  ref_rt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE);
-  ref_rt->SetTextRenderingParams(params_ct);
+  bool ct = use_cleartype(scale);
+  ref_rt->SetTextAntialiasMode(ct ? D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE : D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+  ref_rt->SetTextRenderingParams(ct ? params_ct : params_gray);
   ref_rt->CreateSolidColorBrush(D2D1::ColorF(0, 0, 0, 1), &ref_brush);
   ref_rt->BeginDraw();
   ref_rt->Clear(rgb(bg));

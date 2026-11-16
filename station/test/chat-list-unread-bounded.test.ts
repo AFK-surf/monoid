@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { sessionOps } from "../src/read/ops-sessions.ts";
-import { listThreads, makeStore } from "../src/read/store.ts";
+import { sessionOps } from "./reference/ops-sessions.ts";
+import { listThreads, makeStore } from "./reference/store.ts";
 import { chatList } from "../src/sessions/others.ts";
 import type { Hub } from "../src/sessions/hub.ts";
 import { Store } from "../src/store/store.ts";

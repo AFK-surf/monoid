@@ -78,6 +78,39 @@ test("a manager restarts the station through its launcher, which a station witho
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test("the page's restart starts the launcher's front anew with the handover where it can, once the answer has left", async () => {
+  const { pageRestart, FRONT_AFTER_MS } = await import("../src/ops/restart.ts");
+  const dir = mkdtempSync(join(tmpdir(), "network-settings-"));
+  try {
+    const config = new ConfigFile(dir);
+    let handovers = 0;
+    let fronts = 0;
+    let launcher = true;
+    const later: [number, () => void][] = [];
+    const find = async () => (launcher ? async () => { handovers++; } : null);
+    const request: Request = {
+      method: "POST", path: "/station/restart", query: [], headers: {}, lang: "zh", body: Buffer.alloc(0),
+      viewer: { sub: "a", email: "a@x", name: "A", role: "owner", workspace: "w", device: "d" },
+    };
+    const handle = (restartFront?: () => void) =>
+      routes({ config, restart: pageRestart(dir, restartFront, { find, later: (ms, f) => void later.push([ms, f]) }) })
+        .find((r) => String(r.pattern).includes("restart"))!.handle(request, []);
+    // a launcher that keeps a front: answered first, the front started anew (and the Node handed over) after
+    assert.equal((await handle(() => void fronts++)).status, 202);
+    assert.deepEqual([handovers, fronts], [0, 0]);
+    assert.deepEqual(later.map(([ms]) => ms), [FRONT_AFTER_MS]);
+    later.splice(0)[0]![1]();
+    assert.deepEqual([handovers, fronts], [0, 1], "the launcher's restart of the front is the handover");
+    // one that cannot (Windows, a launcher from before): the handover alone, as before
+    assert.equal((await handle()).status, 202);
+    assert.deepEqual([handovers, fronts, later.length], [1, 1, 0]);
+    // none: refused, nothing asked
+    launcher = false;
+    assert.equal((await handle(() => void fronts++)).status, 409);
+    assert.deepEqual([handovers, fronts, later.length], [1, 1, 0]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("the running mesh takes the network settings as they are saved, each once it changes", async () => {
   const { applyNetwork } = await import("../src/mesh/mesh.ts");
   const dir = mkdtempSync(join(tmpdir(), "network-settings-"));

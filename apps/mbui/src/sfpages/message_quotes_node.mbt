@@ -8,7 +8,8 @@
 /// What a message quotes (`quotes`, of its `files`: the one each names in its card) in `v`, as they change: the
 /// viewer's (`mine`) at the column's end, as wide as the widest needs and at most as its bubble may be; anyone
 /// else's across the column. `at` names where its message is (message_place: its quotes' pictures `at/q:<i>`); `said`
-/// its `said` (MessageFilesAt's).
+/// its `said` (MessageFilesAt's). Sent from here a moment ago (`from`: where each card stood in the composer, in their
+/// order), each card flies from there as its words' bubble does from the field, at its own size all the way.
 fn message_quotes_node(
   v : @view.View,
   src : Source,
@@ -18,6 +19,7 @@ fn message_quotes_node(
   mine : Bool,
   at : String,
   said? : () -> Bool = fn() { false },
+  from? : Array[(Double, Double, Double, Double)?] = [],
 ) -> Unit {
   let place = message_files_at(here, said)
   v.show(fn() { quotes().length() > 0 }, fn(s) {
@@ -33,6 +35,19 @@ fn message_quotes_node(
       cards.each(keys, fn(k) { k }, fn(slot, k) {
         // (its row as wide as the cards' column, as the old card is, w=Full in it: quote_box)
         @sf.style_node(slot, fn() { quote_card_row })
+        // (sent from here a moment ago: from where its card stood in the composer, its words' bubble's way (mine_bubble_node:
+        // the same flight, its rise as late), at its own size; a flight, sf/motion.mbt's kind 4, View::flies_in)
+        match from.get(@signals.untracked(fn() { keys().search(k.get()).unwrap_or(0) })) {
+          Some(Some((x, y, _, _))) =>
+            slot.flies_in(
+              // det-ok(motion-length): words sent's own, as their bubble's (mine_bubble_node), sf/motion.mbt kind 4
+              @motion.flight_by(@motion.tween(@sfbase.flight_desk_ms, ease=Flight)),
+              fn(to) { Some((x, y, to.2, to.3)) },
+              up_late=sent_up_late,
+            )
+            |> ignore
+          _ => ()
+        }
         // (read through its key, never kept: its place among the message's quotes)
         let i = fn() { keys().search(k.get()).unwrap_or(0) }
         let q = fn() -> Quote {

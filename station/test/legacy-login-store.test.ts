@@ -5,11 +5,12 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
-import { installLegacyLoginCards, LEGACY_LOGIN_CARDS, legacyLoginCardsStep } from "../src/store/legacy-login-cards.ts";
+import { installLegacyLoginCards, LEGACY_LOGIN_CARDS, legacyLoginCardsStep } from "./reference/backfill/legacy-login-cards.ts";
 import { buildLegacyEntryLookups } from "../src/store/legacy-said-builder.ts";
 import { Store } from "../src/store/store.ts";
 import { withoutLoginKeys } from "./legacy-login-fixture.ts";
 import { withoutSaidState } from "./legacy-message-fixture.ts";
+import { endsOnce } from "./programs.ts";
 
 function populate(store: Store, count: number): number {
   const thread = store.openThread("ember","CHAT","legacy-login-cards",null,null).id;
@@ -174,11 +175,8 @@ test("a stopped login-card worker settles handover and retries saved work", asyn
     assert.equal(store.db.prepare("SELECT scanned FROM login_card_meta").get()?.scanned,0);
     previous.resolve();
     const flag=join(dir,"failed"),script=join(dir,"flaky-worker.mjs");
-    const worker=new URL("../src/sessions/workspace-activity-worker.ts",import.meta.url).href;
-    writeFileSync(script,`import { existsSync, writeFileSync } from 'node:fs';\n` +
-      `if (!existsSync(${JSON.stringify(flag)})) { writeFileSync(${JSON.stringify(flag)}, 'failed'); process.exit(1); }\n` +
-      `await import(${JSON.stringify(worker)});\n`);
-    builder=buildLegacyEntryLookups(store,Promise.resolve(),pathToFileURL(script));
+    endsOnce(script, flag);
+    builder=buildLegacyEntryLookups(store,Promise.resolve(),script);
     assert.equal(await builder.ready,true);
     assert.equal(existsSync(flag),true);
     assert.equal(store.db.prepare("SELECT scanned FROM login_card_meta").get()?.scanned,1);
@@ -187,7 +185,8 @@ test("a stopped login-card worker settles handover and retries saved work", asyn
 });
 
 test("a completed login-card worker does not recheck its finished scan on later writes", async () => {
-  const store=Store.open(":memory:");
+  const dir=mkdtempSync(join(tmpdir(),"legacy-login-done-"));
+  const store=Store.open(join(dir,"station.db"));
   let builder: ReturnType<typeof buildLegacyEntryLookups> | null=null;
   try {
     populate(store,80);
@@ -213,7 +212,7 @@ test("a completed login-card worker does not recheck its finished scan on later 
     checks=0;
     builder.wake(); builder.wake(); builder.wake();
     assert.equal(checks,0,`a completed lookup rechecked its metadata ${checks} times`);
-  } finally { await builder?.close(); store.close(); }
+  } finally { await builder?.close(); store.close(); rmSync(dir,{recursive:true,force:true}); }
 });
 
 

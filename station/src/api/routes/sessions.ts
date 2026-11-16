@@ -13,7 +13,6 @@ import { dir as thumbsDir, thumbnail, wanted as wantedThumb } from "../../drive/
 import { poster, wanted as wantedPoster } from "../../drive/posters.ts";
 import { withLock, workspaceFile } from "../../sessions/archive.ts";
 import { roomOfSoon } from "../../sessions/footprint.ts";
-import { tr } from "../../ops/i18n.ts";
 import { clean, samePath, within } from "../../ops/paths.ts";
 import { readAt } from "../../drive/fs.ts";
 
@@ -32,7 +31,7 @@ type Found = { contentType: string; file: string } | { contentType: string; arch
 async function uploaded(tools: Tools, r: Request, key: string, name: string): Promise<Found | Answer> {
   const row = tools.store?.getSession(key) ?? null;
   if (row === null) return error(404, `unknown session ${key}`);
-  const notFound = () => error(404, tr(r.lang, "station.files.notFound"));
+  const notFound = () => error(404, "station.files.notFound");
   const uploads = clean(join(row.workspace, "uploads"));
   const base = name.split(/[/\\]/).at(-1) ?? "";
   const path = clean(`${uploads}/${base}`);
@@ -75,7 +74,7 @@ async function file(tools: Tools, r: Request, key: string, name: string, thumb: 
     const { room, path, relative } = found.archived;
     // Restored meanwhile: it is back in its upload directory.
     const bytes = await withLock(room, async () => (await readFile(path).catch(() => null)) ?? workspaceFile(room, relative));
-    return bytes === null ? error(404, tr(r.lang, "station.files.notFound")) : answered(found.contentType, bytes);
+    return bytes === null ? error(404, "station.files.notFound") : answered(found.contentType, bytes);
   }
   const small = thumb && tools.data !== undefined ? await thumbnail(found.file, thumbsDir(tools.data)) : null;
   return small !== null ? fromDisk(small.type, small.path) : fromDisk(found.contentType, found.file);
@@ -97,7 +96,7 @@ async function onDisk(tools: Tools, r: Request, key: string, name: string): Prom
     await writeFile(path, bytes);
     return true;
   });
-  return back ? { path, type: found.contentType } : error(404, tr(r.lang, "station.files.notFound"));
+  return back ? { path, type: found.contentType } : error(404, "station.files.notFound");
 }
 
 /// The most a part (GET /sessions/:key/parts) takes.

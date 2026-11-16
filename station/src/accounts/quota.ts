@@ -11,7 +11,7 @@
 //   and Claude / GPT 5-hour and weekly windows): agy-quota.ts;
 // - Anthropic API keys and other providers bill per use and have no allowance to show.
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { platform } from "../platform/index.ts";
 import { codexAuthFile, type Env } from "../agents/machine-logins.ts";
@@ -272,7 +272,7 @@ export async function checkQuota(profile: Profile, env: Env, codexRateLimits: Co
     const kind = accessKind(profile);
     if (kind === "opencode-go") return await opencode(urls, String((profile.access as Json)?.key ?? "").trim(), lang);
     if (kind === "api-provider" && (profile.access as Json)?.provider === KIMI_CODE) {
-      const key = kimiSignedIn(profile) ? (readKimi(profile.home)?.access ?? "") : String((profile.access as Json)?.key ?? "").trim();
+      const key = kimiSignedIn(profile) ? ((await readKimi(profile.home))?.access ?? "") : String((profile.access as Json)?.key ?? "").trim();
       return await kimiQuota(urls, key, lang);
     }
     if (kind === "anthropic-api" || kind === "api-provider") return quota("unsupported", [], tr(lang, "station.quota.payAsYouGo"));
@@ -414,10 +414,10 @@ function grokBilling(env: Env): Promise<Json> {
 }
 
 /// The account named by a Codex login file; the credentials never leave the request headers.
-function codexHeaders(authFile: string): Record<string, string> | null {
+async function codexHeaders(authFile: string): Promise<Record<string, string> | null> {
   let tokens: Json;
   try {
-    tokens = JSON.parse(readFileSync(authFile, "utf8"))?.tokens;
+    tokens = JSON.parse(await readFile(authFile, "utf8"))?.tokens;
   } catch {
     return null;
   }
@@ -451,7 +451,7 @@ async function addCodexResetDetails(q: ProfileQuota, headers: Record<string, str
 /// A ChatGPT subscription's allowance read with the tokens of a Codex auth.json (the machine's own login, which no
 /// app-server of the station's runs on): what Codex's /status shows. Null when there is no such file or token.
 export async function codexUsage(authFile: string, urls: Urls = URLS, lang: Lang = stationLang()): Promise<ProfileQuota | null> {
-  const headers = codexHeaders(authFile);
+  const headers = await codexHeaders(authFile);
   if (!headers) return null;
   const response = await get(`${urls.chatgpt}/backend-api/wham/usage`, headers);
   if (!response.ok) {
@@ -484,7 +484,7 @@ export async function lentCodexUsage(home: string, now: number, urls: Urls = URL
   const file = join(home, "auth.json");
   let expires = 0;
   try {
-    const token = JSON.parse(readFileSync(file, "utf8"))?.tokens?.access_token;
+    const token = JSON.parse(await readFile(file, "utf8"))?.tokens?.access_token;
     const claims = JSON.parse(Buffer.from(String(token).split(".")[1] ?? "", "base64url").toString("utf8"));
     if (typeof claims?.exp === "number") expires = claims.exp * 1000;
   } catch {

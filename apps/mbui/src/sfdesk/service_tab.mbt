@@ -23,7 +23,8 @@ pub fn tab_file(tab : String) -> (String, String, String)? {
     return None
   }
   match (try Some(@json.parse(tab.exact_view(start="file:".length()).to_owned())) catch { _ => None }) {
-    Some(Array([String(session), String(path), String(name)])) => Some((session, path, name))
+    Some(Array([String(session), String(path), String(name)])) if !@sfbase.is_mbui_viz(name) && !@sfbase.is_mbui_viz(path) =>
+      Some((session, path, name))
     _ => None
   }
 }
@@ -52,7 +53,10 @@ fn tab_let_go(r : ChatRef, tab : String) -> Unit {
   // (a file in the viewer: what it read)
   @sfbase.tab_viewer_let_go(tabs_key(r), tab)
   match tab_job(tab) {
-    Some(job) => sv_closing[service_key(r.station, job)] = (r.station, job)
+    Some(job) => {
+      sv_closing[service_key(r.station, job)] = (r.station, job)
+      jobs_handed.remove(service_key(r.station, job))
+    }
     None => ()
   }
 }
@@ -97,14 +101,42 @@ let sv_drawn : Map[String, Bool] = Map([])
 fn sv_reset() -> Unit {
   sv_closing.clear()
   sv_drawn.clear()
+  jobs_handed.clear()
+}
+
+///|
+/// The jobs a press opened a service's tab on (the 任务 tab's row: jobs_tab_node), as the chat's jobs said each then,
+/// by station and job (service_key): what its tab and its page show till the core says the job itself (job_now).
+// kept across runs: put back by sv_reset (reset), each let go as its tab is (tab_let_go)
+let jobs_handed : Map[String, Json] = Map([])
+
+///|
+/// Job `job` of `station` as the press that opens its service's tab has it (the chat's jobs' row): its tab opens on
+/// it, named and showing its page, never on 服务 and 正在连接 while the core is asked the job (main's switches sweep,
+/// 2026-11-16: the tab named 服务, then the job's name and its page 800 ms later).
+fn job_handed(station : String, job : String, row : Json?) -> Unit {
+  match row {
+    Some(Object(_) as j) => jobs_handed[service_key(station, job)] = j
+    _ => ()
+  }
+}
+
+///|
+/// Job `job` of `station`: as the core says it (the `job` topic, read), else as the press that opened its tab had it
+/// (job_handed), and the core's error where it found none.
+fn job_now(src : Source, station : String, job : String) -> (Json?, Json?) {
+  let found = src.topic("job", { "station": Json::string(station), "id": Json::string(job) }).get().snapshot()
+  match (found.value, found.error) {
+    (None, None) | (Some(Null), None) => (jobs_handed.get(service_key(station, job)), None)
+    (v, e) => (v, e)
+  }
 }
 
 ///|
 /// The service `job` of chat `r`'s station, beside the chat: the page while it is up (and as it starts again), what
 /// stopped it said otherwise.
 fn service_pane(c : @ui.Ctx, src : Source, r : ChatRef, job : String, close? : (() -> Unit)? = None) -> Unit {
-  let found = src.topic("job", { "station": Json::string(r.station), "id": Json::string(job) }).get().snapshot()
-  let j = found.value
+  let (j, error) = job_now(src, r.station, job)
   let name = match text(j, "name") {
     "" => svc("android-chat.preview.service")
     n => n
@@ -113,7 +145,7 @@ fn service_pane(c : @ui.Ctx, src : Source, r : ChatRef, job : String, close? : (
   let state = text(j, "state")
   match j {
     None | Some(Null) =>
-      match found.error {
+      match error {
         Some(e) => sv_said(c, svc("android-chat.preview.notFound", args=[("error", text(Some(e), "message"))]))
         None => c.box(style=sv_wait, fn() { @sf.wait_line(c, @sf.t("common.connecting"), key="service-tab") }) |> ignore
       }
@@ -233,7 +265,27 @@ fn beside_follow(v : @view.View, src : Source) -> Unit {
         }
         Some((Service(station, job), session, now)) if session != "" =>
           tab_beside(src, station, session, "service:" + job, now)
-        Some((PreviewFile(station, key, path, name), _, now)) => tab_beside(src, station, key, file_tab(key, path, name), now)
+        Some((PreviewFile(station, key, path, name), _, now)) => {
+          let tab = if @sfbase.is_mbui_viz(name) || @sfbase.is_mbui_viz(path) {
+            let a : @sfbase.Attachment = {
+              name: if name != "" { name } else { @sfbase.viz_base_name(path) },
+              path,
+              size: 0.0,
+              width: 0.0,
+              height: 0.0,
+              thumbhash: "",
+              owner: "",
+              upload: "",
+              duration: 0.0,
+              frames: 0,
+              held: false,
+            }
+            @sfbase.view_tab_key(station, key, a, None, false)
+          } else {
+            file_tab(key, path, name)
+          }
+          tab_beside(src, station, key, tab, now)
+        }
         _ => ()
       }
     },

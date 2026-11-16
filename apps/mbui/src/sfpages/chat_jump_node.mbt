@@ -70,7 +70,7 @@ fn chat_goes_to(
   r : ChatRef,
   jump : ChatJump,
   place : @view.ListPlace[String],
-  rows : () -> ChatBodyRows,
+  rows : ChatBodyList,
   view : () -> ChatView,
   cover : () -> Double,
   top : () -> Double,
@@ -91,7 +91,7 @@ fn chat_goes_to(
     // (placed while it shows: sfbase's keep_place_of)
     let rd = @sfbase.reading_of(chat)
     rd.placed = @signals.untracked(shows)
-    match @signals.untracked(rows).rows.get(s.first).map(fn(row) { row.entry }) {
+    match @signals.untracked(fn() { (rows.row)(s.first) }).map(fn(row) { row.entry }) {
       Some(Said(m)) => {
         rd.top_seq = m.seq
         rd.top_off = @sfbase.kept_place_of(-s.into, @signals.untracked(cover))
@@ -119,12 +119,12 @@ fn chat_goes_to(
   v.reacts(shows, fn(on) { @sfbase.reading_of(chat).placed = on && place.sight_now() is Some(_) }, at_start=false)
   let goes = fn() {
     guard @sfbase.go_tos.get(chat) is Some(target) else { return }
-    let rs = @signals.untracked(rows)
+    let rs = @signals.untracked(fn() { rows.read() })
     let cv = @signals.untracked(view)
     let mut first = -1.0
     let mut at : String? = None
     for k in rs.keys {
-      match rs.rows.get(k).map(fn(row) { row.entry }) {
+      match rs.get(k).map(fn(row) { row.entry }) {
         Some(Said(m)) => {
           if first < 0.0 {
             first = m.seq
@@ -141,7 +141,7 @@ fn chat_goes_to(
       Some(k) => {
         // (the passage a quote that led here quoted, where the message's words have it: lit alone as it flashes,
         // chat_passage_lit; else the row lit whole, Chat.tsx Quotes' jump)
-        let passage = match (@sfbase.go_to_passages.get(chat), rs.rows.get(k).map(fn(row) { row.entry })) {
+        let passage = match (@sfbase.go_to_passages.get(chat), rs.get(k).map(fn(row) { row.entry })) {
           (Some(p), Some(Said(m))) if !m.system && @sf.find_passage(m.text, p) is Some(_) => p
           _ => ""
         }
@@ -161,8 +161,18 @@ fn chat_goes_to(
         jump.went = (target, off)
         jump.put.set(1)
         // (what was meant in it before the eyes too, where it lies low in a long message: a search's words, a quote's
-        // passage; not back where the reader was: ListPlace::bring's `sought`, what its words mark: View::sought)
-        place.bring(k, offset=@sfbase.kept_place_under(off, c), sought=back is None)
+        // passage; not back where the reader was: ListPlace::bring's `sought`, what its words mark: View::sought. One in
+        // sight already glides there, the eyes taken along to it as it lights (what is between measured as it shows);
+        // one out of sight, its place only counted, there at once: `glide`)
+        let in_sight = match jump.sight.untracked() {
+          Some((first, last)) =>
+            match (rs.keys.search(first), rs.keys.search(k), rs.keys.search(last)) {
+              (Some(a), Some(i), Some(b)) => a <= i && i <= b
+              _ => false
+            }
+          None => false
+        }
+        place.bring(k, offset=@sfbase.kept_place_under(off, c), glide=back is None && in_sight, sought=back is None)
         // (back where the reader was: nothing of it shown; a search's: its words marked, nothing flashing; else it
         // flashes, from now)
         if back is None {
@@ -174,7 +184,7 @@ fn chat_goes_to(
             @sfbase.flash_rest_nodes.val = at + @sfbase.flash_ms
             // (the chat's reading told the message gone to and what of it is lit, as the old page's list tells it:
             // where the reader is, reader_top's)
-            match rs.rows.get(k).map(fn(row) { row.entry }) {
+            match rs.get(k).map(fn(row) { row.entry }) {
               Some(Said(m)) => {
                 let rd = @sfbase.reading_of(chat)
                 rd.flash = m.ts
@@ -208,7 +218,7 @@ fn chat_goes_to(
       }
     }
   }
-  v.reacts(fn() { (rows().keys, @sfbase.go_tos_said.get()) }, fn(_) { goes() })
+  v.reacts(fn() { ((rows.keys)(), @sfbase.go_tos_said.get()) }, fn(_) { goes() })
   // (its latest page come in place of a window short of the chat's end, asked: the list at its end)
   v.reacts(
     fn() { view().newer },
@@ -354,7 +364,7 @@ fn chat_outline_node(
       let cv = @signals.untracked(view)
       guard cv.thread is Some(th) else { return }
       let rd = @sfbase.reading_of(chat)
-      let current = outline_current(said_in_view(cv), rd.top_seq, rd.at_end)
+      let current = outline_current(said_in_view(chat_whole(src, r, cv)), rd.top_seq, rd.at_end)
       open_outline(src, r, th, current, from=Node(button.val), side=Left, stint=@signals.untracked(stint))
     }
     button.val = @sf.float_button_node(o, "list", fn() { @sf.t("web-main.outline.title") }, press, tips~, shortcut="chat.outline")
@@ -370,7 +380,7 @@ fn chat_outline_node(
           let cv = @signals.untracked(view)
           guard cv.thread is Some(th) else { return }
           let rd = @sfbase.reading_of(chat)
-          let current = outline_current(said_now(src, r, cv), rd.top_seq, rd.at_end)
+          let current = outline_current(said_now(src, r, chat_whole(src, r, cv)), rd.top_seq, rd.at_end)
           open_outline(src, r, th, current, from=Node(button.val), side=Left, keys=true, stint=@signals.untracked(stint), typed=words)
         })
         |> ignore
@@ -495,7 +505,7 @@ fn chat_rail_node(
       let ticks = @signals.computed(fn(_) {
         match said.get() {
           Some(s) => {
-            let latest = view().messages.fold(init=-1.0, fn(m, x) { if x.seq > m { x.seq } else { m } })
+            let latest = chat_said_latest(src, r, view)
             let (_, h) = o.window()
             let most = dmax(0.0, (h - top()) * rail_share - 2.0 * rail_pad.px())
             chat_rail_ticks(s, jump.reader.get(), latest, most)
@@ -585,7 +595,7 @@ fn chat_ask_node(
   src : Source,
   jump : ChatJump,
   view : () -> ChatView,
-  rows : () -> ChatBodyRows,
+  rows : ChatBodyList,
   width : () -> Double,
   tips : @sf.TipLayer,
 ) -> Unit {
@@ -593,7 +603,7 @@ fn chat_ask_node(
   let shown = fn() {
     let asks = asks_of(view())
     guard asks.length() > 0 && jump.sight.get() is Some((first, last)) else { return false }
-    let rs = rows()
+    let rs = rows.read()
     let mut inside = false
     let mut seen = false
     for k in rs.keys {
@@ -601,7 +611,7 @@ fn chat_ask_node(
         inside = true
       }
       if inside {
-        match rs.rows.get(k).map(fn(row) { row.entry }) {
+        match rs.get(k).map(fn(row) { row.entry }) {
           Some(Said(m)) if asks.contains(m.seq) => seen = true
           _ => ()
         }
@@ -633,26 +643,43 @@ fn chat_ask_node(
 }
 
 ///|
-/// What a row gone to shows of it (msgFlash, flash_start's), led there by no quote's passage its words have: the
-/// accent's ground under what `row` holds (its outermost node: across the list, square; a notice's pill, round:
-/// `round`), as lit as its flash is (`flash`: chat_flash_way's for row `key`).
-fn chat_flash_node(row : @view.View, key : String, jump : ChatJump, flash : @motion.Way, round? : Bool = false) -> Unit {
-  row.box(fn(b) {
-    b.over(Is(true)).presses(Is(false)) |> ignore
-    if round {
-      b.radius(Is(1.0e6)) |> ignore
-    }
-    b.ground(
-      By(fn() {
-        match chat_gone(jump) {
-          (k, _, "") if k == key => lit_by(@ui.tree_theme().color(AccentBg), flash.shown_on(b))
-          _ => 0L
-        }
-      }),
-    )
-    |> ignore
-  })
+/// What a message's row shows over all it is, said as the ground of its content line node `row` (across the list from
+/// edge to edge, under what it holds: no node of its own, as most rows are never gone to nor have their menu open):
+/// its flash in the theme's secondary emphasis ground (`flash` chat_flash_way's, row `key` gone to and no passage
+/// of it lit), and over that its menu's band (`band` message_menu_band_way's, the pointer's ground as lit as it is).
+fn chat_row_lit_node(row : @view.View, key : String, jump : ChatJump, flash : @motion.Way, band : @motion.Way) -> Unit {
+  row.ground(
+    By(fn() {
+      let lit = match chat_gone(jump) {
+        (k, _, "") if k == key => lit_by(@sf.theme().flash_bg(), flash.shown_on(row))
+        _ => 0L
+      }
+      ground_over(lit_by(@ui.tree_theme().color(Hover), band.shown_on(row)), lit)
+    }),
+  )
   |> ignore
+}
+
+///|
+/// Colour `top` drawn over colour `under` (each 0xRRGGBBAA, its alpha not multiplied in), as one: what the two grounds
+/// laid one over the other came to; either alone where the other is nothing.
+fn ground_over(top : Int64, under : Int64) -> Int64 {
+  let ta = (top & 0xFFL).to_double() / 255.0
+  let ua = (under & 0xFFL).to_double() / 255.0
+  if ua <= 0.0 {
+    return top
+  }
+  if ta <= 0.0 {
+    return under
+  }
+  let a = ta + ua * (1.0 - ta)
+  let mix = fn(shift : Int) -> Int64 {
+    let t = ((top >> shift) & 0xFFL).to_double()
+    let u = ((under >> shift) & 0xFFL).to_double()
+    let c = (t * ta + u * ua * (1.0 - ta)) / a
+    (c + 0.5).to_int64() & 0xFFL
+  }
+  (mix(24) << 24) | (mix(16) << 16) | (mix(8) << 8) | ((a * 255.0 + 0.5).to_int64() & 0xFFL)
 }
 
 ///|
@@ -675,20 +702,33 @@ fn chat_passage_lit(v : @view.View, key : String, jump : ChatJump, flash : @moti
 /// How lit row `key` gone to is (0 to 1), followed in node `b` (what makes the row): coming in over flash_in_ms on the
 /// ease-out, held to flash_held_ms, gone by flash_ms on Leave, from the moment the chat went to it (ChatJump's
 /// `flashed`: the press's, its cause), made then or later; with motion reduced lit whole for flash_ms, then not.
-fn chat_flash_way(b : @view.View, key : String, jump : ChatJump) -> @motion.Way {
+fn chat_flash_way(
+  b : @view.View,
+  key : String,
+  jump : ChatJump,
+  on_active? : (Bool) -> Unit = fn(_) {  },
+) -> @motion.Way {
   let way = @motion.Way::new(0.0)
   let due : Ref[() -> Unit] = Ref(fn() {  })
+  let rest : Ref[() -> Unit] = Ref(fn() {  })
   b.reacts(fn() { chat_gone(jump) }, fn(g) {
     let (k, at, _) = g
     guard k == key && at >= 0.0 && b.cause_at() < at + @sfbase.flash_ms else { return }
     (due.val)()
+    (rest.val)()
+    on_active(true)
     way.go(1.0, @motion.tween(@sfbase.flash_in_ms, ease=Out), at~)
     let out = at + (if @ui.reduced_motion() { @sfbase.flash_ms } else { @sfbase.flash_held_ms })
     due.val = b.at_moment(out, fn() {
       way.go(0.0, @motion.tween(@sfbase.flash_ms - @sfbase.flash_held_ms, ease=Leave), at=out)
     })
+    rest.val = b.at_moment(at + @sfbase.flash_ms, fn() { on_active(false) }, later=true)
   })
-  b.owns(fn() { (due.val)() }) |> ignore
+  b.owns(fn() {
+    (due.val)()
+    (rest.val)()
+  })
+  |> ignore
   way
 }
 

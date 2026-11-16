@@ -107,22 +107,39 @@ test("a_skill_says_which_part_of_the_memory_it_is_under", () => {
 });
 
 test("the_memory_reads_in_parts_with_how_long_each_is", () => {
+  const now = 1_700_000_000_000;
   const memory: J = {
-    global: { path: "g", text: "# ember memory\n\n## 回复\n- 一\n- 二\n\n```\n## 不是标题\n- 也不是一条\n```\n## 机器\n本机不编译\n" },
+    global: {
+      path: "g",
+      text: "# ember memory\n\n## 回复\n- 一\n- 二\n\n```\n## 不是标题\n- 也不是一条\n```\n## 机器\n本机不编译\n",
+      at: now - 15 * 60_000,
+      by: "Willow",
+      prev: "# ember memory\n\n## 回复\n- 一\n\n```\n## 不是标题\n- 也不是一条\n```\n## 机器\n本机不编译\n",
+    },
     skills: [{
-      name: "ember", description: "项目记忆：ember / still.fail（团队聊天里的 agent）。开发 ember 时使用。", project: true, text: "---\nname: ember\n---\n总览",
+      name: "ember", description: "项目记忆：ember / still.fail（团队聊天里的 agent）。开发 ember 时使用。", project: true, text: "---\nname: ember\n---\n总览\n- 新规则",
+      at: now - 40 * 60_000,
+      by: "Maple",
+      prev: "---\nname: ember\n---\n总览\n- 旧规则",
       files: [{ name: "design.md", text: "设计" }],
     }],
   };
-  answer("GET", "/memory", memory);
+  answer("GET", "/memory", memory, now, 0);
   assert.deepEqual(memory.global.sections.map((s: J) => [s.title, s.note]), [["回复", "2 条"], ["机器", "15 B"]]);
+  assert.equal(memory.global.whenChanged, "15 分钟前 · Willow");
+  assert.equal(memory.global.sections[0].whenChanged, "15 分钟前 · Willow");
+  assert.deepEqual(memory.global.sections[0].diff, [[" ", "- 一"], ["+", "- 二"]]);
+  assert.equal(memory.global.sections[1].whenChanged, undefined);
+  assert.equal(memory.global.sections[1].diff, undefined);
   assert.match(memory.global.sections[0].text, /## 不是标题/);
   const skill = memory.skills[0];
   assert.equal(skill.brief, "ember / still.fail。开发 ember 时使用。");
-  assert.deepEqual([skill.files[0].label, skill.files[0].size, skill.size], ["design", "6 B", "12 B"]);
+  assert.equal(skill.whenChanged, "40 分钟前 · Maple");
+  assert.deepEqual(skill.diff, [[" ", "总览"], ["-", "- 旧规则"], ["+", "- 新规则"]]);
+  assert.deepEqual([skill.files[0].label, skill.files[0].size, skill.size], ["design", "6 B", "24 B"]);
   // what its page and row say, the core's: its kind, when it is read, its pages
   assert.deepEqual([skill.kindText, skill.line], ["项目记忆", "ember / still.fail。开发 ember 时使用。"]);
-  assert.deepEqual(skill.pages.map((p: J) => [p.key, p.label, p.text]), [["", "总览", "总览"], ["design.md", "design", "设计"]]);
+  assert.deepEqual(skill.pages.map((p: J) => [p.key, p.label, p.text]), [["", "总览", "总览\n- 新规则"], ["design.md", "design", "设计"]]);
   assert.deepEqual(memorySections("开头的话\n## 一\n- a").map((s: J) => s.title), ["开头", "一"]);
   assert.deepEqual(memorySections("# 标题\n只有一段").map((s: J) => [s.title, s.text]), [["全文", "只有一段"]]);
   assert.deepEqual(memorySections(""), []);

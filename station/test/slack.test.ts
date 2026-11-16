@@ -421,7 +421,7 @@ describe("slack", { concurrency: true }, () => {
         ["合并", "1", "squash 合进 main"],
       ],
     );
-    assert.deepEqual([pick.type, pick.initial_option.value, send.text.text, send.style, JSON.parse(send.value)], ["radio_buttons", "1", "确定", "primary", { l: ["先不", "合并"] }]);
+    assert.deepEqual([pick.type, pick.initial_option.value, send.text.text, send.style, JSON.parse(send.value)], ["radio_buttons", "1", "提交", "primary", { l: ["先不", "合并"] }]);
     // A detail longer than an option takes: every option listed whole above, the options their labels only.
     const long = questionBlocks("选", { type: "options", options: [{ label: "A", detail: "说".repeat(80) }, { label: "B" }] }, "zh");
     assert.equal(long[0].text, `选\n\n**A**\n${"说".repeat(80)}\n\n**B**`);

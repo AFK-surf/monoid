@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { addClientColumn } from "../src/store/schema.ts";
-import { installLegacyEdits, legacyEditStep } from "../src/store/legacy-edits-build.ts";
+import { installLegacyEdits, legacyEditStep } from "./reference/backfill/legacy-edits-build.ts";
 import { Store } from "../src/store/store.ts";
 import { installWidgetSources } from "../src/store/widget-sources.ts";
 

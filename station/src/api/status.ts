@@ -17,7 +17,8 @@ import { Effect, Layer } from "effect";
 import { Fibers } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { version } from "../ops/version.ts";
-import { AgentsSide, ControlPlane, Paths, Store } from "../services.ts";
+import type { FrontLink } from "../ops/health.ts";
+import { AgentsSide, ControlPlane, MeshNative, Paths, Store } from "../services.ts";
 
 /// Where the socket is.
 export const statusSocket = (data: string) => join(data, "run", "status.sock");
@@ -64,6 +65,10 @@ export type LocalStatus = {
   waiting: number;
   /// The working ones first, then the waiting, each the latest first; at most TASKS_MOST.
   tasks: StatusTask[];
+  /// How its process reaches devices and the cloud (ops/health.ts): its endpoint bound by itself, linked to the front,
+  /// or linking to it again (devices cannot reach it meanwhile); whether it hears the cloud. Absent from a station from
+  /// before it said it.
+  health?: { front: FrontLink; presenceOnline: boolean };
 };
 
 /// What the status is made of: the control plane's state, the running sessions (the store's `running`), each live
@@ -75,6 +80,7 @@ export type StatusInput = {
   running: { key: string; title: string | null; since: number | null }[];
   processes: Map<string, string>;
   waiting: { key: string; title: string | null; need: string | null; endedAt: number }[];
+  health?: { front: FrontLink; presenceOnline: boolean };
 };
 
 export function statusOf(i: StatusInput): LocalStatus {
@@ -103,6 +109,7 @@ export function statusOf(i: StatusInput): LocalStatus {
     agents: { busy: busyKeys.size, warm: warmKeys.length, total: all.size },
     waiting: waiting.length,
     tasks: [...working, ...waits].slice(0, TASKS_MOST),
+    ...(i.health ? { health: i.health } : {}),
   };
 }
 
@@ -172,6 +179,7 @@ export const StatusLive = Layer.effectDiscard(
     const store = yield* Store;
     const plane = yield* ControlPlane;
     const side = yield* AgentsSide;
+    const mesh = yield* MeshNative;
     const time = yield* Effect.acquireRelease(Effect.sync(() => new Fibers("status")), (t) => Effect.promise(() => t.close()));
     const now = () => statusOf({
       version: version(),
@@ -180,6 +188,7 @@ export const StatusLive = Layer.effectDiscard(
       running: store.runningSessions().map((r) => ({ key: r.key, title: r.title, since: r.lastActiveAt })),
       processes: side.current?.hub.processes() ?? new Map(),
       waiting: store.waitingForPeople(store.now() - WAITING_DAYS * 24 * 60 * 60_000, TASKS_MOST),
+      health: { front: mesh.frontLink?.() ?? "direct", presenceOnline: plane.state.reached },
     });
     const changed = (f: () => void) => {
       const offStore = store.subscribe((c) => { if (c.type === "session" || c.type === "sessionRemoved") f(); });

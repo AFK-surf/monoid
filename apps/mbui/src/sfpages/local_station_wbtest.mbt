@@ -106,3 +106,82 @@ test "本机 Station with existing data unattached or removed offers 添加这�
     assert_true(t.query(Button, label="添加这台 Mac") is Some(_), msg=label)
   }
 }
+
+///|
+test "本机 Station taken away from its menu, at each width and with either hand: 卸载本机 Station asked first, its data named; 卸载 tells the host" {
+  for case in page_cases {
+    let (w, platform) = case
+    let t = setting_tester(LocalStation, w, platform~, host=fn(h) { h.set_app_said("local_station", local_running) })
+    let at = "\{w} platform \{platform}"
+    t.click(Button, label="更多操作")
+    t.frame()
+    t.run_for(@ui.move_most_ms)
+    // (only where the app looks after the station here: a Mac's host; a phone's has none to take away)
+    if platform != 0 {
+      assert_true(t.find_last("卸载本机 Station") is None, msg=at)
+      continue
+    }
+    let (x, y) = t.find_last("卸载本机 Station").unwrap()
+    t.tap(x, y)
+    t.frame()
+    t.run_for(@ui.move_most_ms)
+    // asked first: nothing told yet, what goes and what stays said
+    assert_eq(t.app_told("local_station_act"), [], msg=at)
+    assert_true(t.find("将停止运行并移除开机自启服务与程序文件；本地对话、记忆和密钥数据仍保留在 ~/.stillfail。") is Some(_), msg=at)
+    assert_eq(t.squeeze_faults(), [], msg=at)
+    assert_eq(t.audit(), [], msg=at)
+    t.click(Button, label="卸载")
+    t.frame()
+    assert_eq(t.app_told("local_station_act"), ["uninstall"], msg=at)
+  }
+}
+
+///|
+test "本机 Station's 卸载本机 Station only for one with a release or a service of its own" {
+  let cases : Array[(String, String, Bool)] = [
+    ("a service", local_running, true),
+    ("a release, stopped", "{\"data\":\"~/.stillfail\",\"runner\":\"none\",\"installed\":true}", true),
+    ("started by hand from a release", "{\"data\":\"~/.stillfail\",\"runner\":\"other\",\"installed\":true}", true),
+    // (its data alone: nothing here to take away)
+    ("data alone", "{\"data\":\"~/.stillfail\",\"runner\":\"none\",\"workspace\":{\"id\":\"ws1\",\"removed\":false}}", false),
+    ("taken away already", "{\"data\":\"~/.stillfail\",\"runner\":\"none\",\"uninstalled\":true,\"workspace\":{\"id\":\"ws1\",\"removed\":false}}", false),
+  ]
+  for one in cases {
+    let (why, said, offered) = one
+    let t = setting_tester(LocalStation, 1280.0, platform=0, host=fn(h) { h.set_app_said("local_station", said) })
+    t.click(Button, label="更多操作")
+    t.frame()
+    t.run_for(@ui.move_most_ms)
+    assert_eq(t.find_last("卸载本机 Station") is Some(_), offered, msg=why)
+  }
+}
+
+///|
+test "本机 Station being taken away, then taken away: 正在卸载 while the host does it, nothing pressable; 已卸载 after, its data's facts kept" {
+  let t = setting_tester(LocalStation, 1280.0, platform=0, host=fn(h) { h.set_app_said("local_station", (
+    #|{"data":"~/.stillfail","runner":"service","doing":"uninstall","installed":true,"service":{"kind":"launchd","name":"fail.still.station"},"workspace":{"id":"ws1","name":"星火工作室","stationName":"Willow","removed":false}}
+    ),
+  ) })
+  assert_true(t.find("正在卸载") is Some(_))
+  t.click(Button, label="更多操作")
+  t.frame()
+  t.run_for(@ui.move_most_ms)
+  // (its menu's every act held while it is done: pressed, nothing told)
+  let (x, y) = t.find_last("卸载本机 Station").unwrap()
+  t.tap(x, y)
+  t.frame()
+  assert_eq(t.app_told("local_station_act"), [])
+  t.key_told(@ui.key_escape, 0, t.time())
+  t.run_for(@ui.move_most_ms)
+  t.set_app_said("local_station", (
+    #|{"data":"~/.stillfail","runner":"none","uninstalled":true,"workspace":{"id":"ws1","name":"星火工作室","stationName":"Willow","removed":false}}
+    ),
+  )
+  t.run_for(@settings.local_read_ms)
+  for words in ["Willow", "已卸载", "在 星火工作室", "~/.stillfail"] {
+    assert_true(t.find(words) is Some(_), msg=words)
+  }
+  assert_true(t.find("正在卸载") is None)
+  assert_true(t.find("已停止") is None)
+  assert_eq(t.audit(), [])
+}

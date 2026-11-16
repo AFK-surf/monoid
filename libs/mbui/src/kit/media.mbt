@@ -630,6 +630,47 @@ pub fn Media::toggle_sideways(self : Media) -> Unit {
 }
 
 ///|
+/// For a player shown by nodes of the window's tree (what Media::frame does of its own with no Ctx, told as how it
+/// stands changes, outside any tracking): ready once it is, the place it opens at sought once more where the player took
+/// none before it was ready. Whether it is ready.
+pub fn Media::take_ready(self : Media) -> Bool {
+  let s = self.status()
+  if s.state == 1 && !self.started {
+    self.started = true
+    let read = match self.view {
+      Some(n) => n.bytes().to_int()
+      None => 0
+    }
+    let name = match self.track {
+      Some(t) => t.name
+      None => ""
+    }
+    @ui.log("player: \{name} ready, \{s.duration.to_int()} ms long, \{read} bytes read")
+    if self.start_at > 0.0 && s.position < self.start_at - 1000.0 {
+      self.seek(self.start_at)
+    }
+  }
+  self.started
+}
+
+///|
+/// Its decoder waited on long enough, for a player shown by nodes (media_decode_wait_ms after all its bytes came, as
+/// the node's clock has it): said unplayable from now on (Media::status's -4), as Media::frame says it.
+pub fn Media::decode_given_up(self : Media) -> Unit {
+  if self.pinned is None {
+    self.decode_failed = true
+  }
+}
+
+///|
+/// What it was told to wait before it says it waits (Media::new's `wait_ms`), how long a double tap's second tap may
+/// come after the first, how long a note is said, how long its controls take to come and to go: a node's own clock's
+/// for them.
+pub fn Media::times(self : Media) -> (Double, Double, Double, Double, Double) {
+  (self.wait_ms, self.double_tap_ms, self.note_ms, self.wake_ms, self.sleep_ms)
+}
+
+///|
 /// The player this frame (asked once a frame, before what shows it is built): ready once it is (the place it opens at
 /// owed to it where it took none before), its controls going once left alone `rest_ms` while it plays (a song's stay),
 /// a tap left single after `double_tap_ms` bringing them or taking them away, a note said `note_ms`.

@@ -8,6 +8,7 @@
 pub struct VizMbuiWidget {
   title : String
   subtitle : String
+  icon : String
   init_state : Map[String, Json]
   root : Json
   wasm_bytes : Bytes?
@@ -24,6 +25,7 @@ priv struct VizMbuiStore {
   root_sig : @signals.Signal[Json]
   title_sig : @signals.Signal[String]
   subtitle_sig : @signals.Signal[String]
+  icon_sig : @signals.Signal[String]
   tree_ver : @signals.Signal[Int]
   wasm_error : @signals.Signal[String]
 }
@@ -33,14 +35,155 @@ priv struct VizMbuiStore {
 let viz_mbui_stores : Array[VizMbuiStore] = []
 
 ///|
+// kept across runs: cleared in viz_pages_reset()
+let viz_mbui_meta_cache : Map[String, (Int, String, String)] = Map([])
+
+///|
 pub fn viz_mbui_states_clear() -> Unit {
   viz_mbui_stores.clear()
+  viz_mbui_meta_cache.clear()
 }
 
 ///|
 pub fn is_mbui_viz(name : String) -> Bool {
   let s = @sf.lower(name)
   s.has_suffix(".mbui") || s.has_suffix(".wasm")
+}
+
+///|
+pub fn viz_mbui_stem(name : String) -> String {
+  let low = @sf.lower(name)
+  let cut = if low.has_suffix(".mbui") {
+    5
+  } else if low.has_suffix(".wasm") {
+    5
+  } else {
+    0
+  }
+  if cut > 0 && name.length() > cut {
+    name.exact_view(end=name.length() - cut).to_owned()
+  } else {
+    name
+  }
+}
+
+///|
+fn viz_mbui_valid_icon(raw : String) -> String {
+  if raw != "" && @sf.icon_path(raw) != "" {
+    raw
+  } else {
+    "sparks"
+  }
+}
+
+///|
+fn viz_first_root_title(node : Json) -> String {
+  match node {
+    Object(ro) => {
+      let own = viz_json_str(ro, "title", "")
+      if own != "" {
+        return own
+      }
+      let ch = viz_children_of(ro)
+      if ch.length() == 1 {
+        match ch[0] {
+          Object(co) => viz_json_str(co, "title", "")
+          _ => ""
+        }
+      } else {
+        ""
+      }
+    }
+    _ => ""
+  }
+}
+
+///|
+pub fn viz_mbui_display_title(name : String, widget : VizMbuiWidget?) -> String {
+  match widget {
+    Some(w) =>
+      if w.title != "" {
+        w.title
+      } else {
+        let rt = viz_first_root_title(w.root)
+        if rt != "" {
+          rt
+        } else {
+          viz_mbui_stem(name)
+        }
+      }
+    None => viz_mbui_stem(name)
+  }
+}
+
+///|
+/// Resolved Mini-Program `(title, icon)` for a side-panel tab or full-window bar, reactive on live Wasm/store signals
+/// and cached on raw bytes / `viz_loads` so frames never re-parse JSON needlessly.
+pub fn viz_mbui_meta_of(station : String, key : String, path : String, name : String, bytes : Bytes?) -> (String, String) {
+  let suffix = if path != "" { "/" + path } else { "" }
+  if suffix != "" {
+    for s in viz_mbui_stores {
+      if s.key.has_suffix(suffix) {
+        let live_t = s.title_sig.get()
+        let live_ic = s.icon_sig.get()
+        let raw_t = if live_t != "" {
+          live_t
+        } else {
+          let rt = viz_first_root_title(s.root_sig.get())
+          if rt != "" {
+            rt
+          } else {
+            viz_mbui_stem(name)
+          }
+        }
+        return (viz_interp(s, raw_t), viz_mbui_valid_icon(live_ic))
+      }
+    }
+  }
+  let cache_key = path + "\n" + name
+  match bytes {
+    Some(b) => {
+      let n = b.length()
+      match viz_mbui_meta_cache.get(cache_key) {
+        Some((cached_n, t, ic)) if cached_n == n => return (t, ic)
+        _ => ()
+      }
+      let w = viz_mbui_parse_bytes(name, b)
+      let t = viz_mbui_display_title(name, w)
+      let ic = match w {
+        Some(widget) => widget.icon
+        None => "sparks"
+      }
+      viz_mbui_meta_cache[cache_key] = (n, t, ic)
+      return (t, ic)
+    }
+    None => ()
+  }
+  if station != "" && key != "" && path != "" {
+    match viz_loads.get(viz_id(station, key, path)) {
+      Some(l) =>
+        match l.html.get() {
+          Some(raw) => {
+            let n = raw.length()
+            match viz_mbui_meta_cache.get(cache_key) {
+              Some((cached_n, t, ic)) if cached_n == n => return (t, ic)
+              _ => ()
+            }
+            let w = viz_mbui_parse(name, raw)
+            let t = viz_mbui_display_title(name, w)
+            let ic = match w {
+              Some(widget) => widget.icon
+              None => "sparks"
+            }
+            viz_mbui_meta_cache[cache_key] = (n, t, ic)
+            return (t, ic)
+          }
+          None => ()
+        }
+      None => ()
+    }
+  }
+  (viz_mbui_stem(name), "sparks")
 }
 
 ///|
@@ -57,19 +200,35 @@ let viz_root_col : @ui.Style = @ui.css("w=Full gap=S2_5")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let viz_card_box : @ui.Style = @ui.css("w=Full p=S3 gap=S2 radius=Xl bg=Card")
+let viz_card_box : @ui.Style = @ui.style(w=Full, p=S4_5, gap=S2_5, radius=@sf.row_radius, bg=Card)
 
 ///|
 // kept across runs: a value (no field of it changes)
-let viz_stat_box : @ui.Style = @ui.css("w=Full p=S3 gap=S1 radius=Xl bg=Card")
+let viz_inner_card_box : @ui.Style = @ui.style(w=Full, p=S3, gap=S2, radius=@sf.small_radius, bg=Neutral)
 
 ///|
 // kept across runs: a value (no field of it changes)
-let viz_flow_node_box : @ui.Style = @ui.css("px=S2_5 py=S2 gap=S0_5 radius=Lg bg=Card")
+let viz_stat_box : @ui.Style = @ui.style(w=Full, p=S3_5, gap=S1, radius=@sf.small_radius, bg=Card)
 
 ///|
 // kept across runs: a value (no field of it changes)
-let viz_code_box : @ui.Style = @ui.css("w=Full p=S2_5 gap=S1 radius=Lg bg=Card")
+let viz_inner_stat_box : @ui.Style = @ui.style(w=Full, p=S3, gap=S1, radius=@sf.small_radius, bg=Neutral)
+
+///|
+// kept across runs: a value (no field of it changes)
+let viz_flow_node_box : @ui.Style = @ui.style(p=S3, gap=S0_5, radius=@sf.small_radius, bg=Card)
+
+///|
+// kept across runs: a value (no field of it changes)
+let viz_inner_flow_node_box : @ui.Style = @ui.style(p=S3, gap=S0_5, radius=@sf.small_radius, bg=Neutral)
+
+///|
+// kept across runs: a value (no field of it changes)
+let viz_code_box : @ui.Style = @ui.style(w=Full, p=S3, gap=S1, radius=@sf.small_radius, bg=Card)
+
+///|
+// kept across runs: a value (no field of it changes)
+let viz_inner_code_box : @ui.Style = @ui.style(w=Full, p=S3, gap=S1, radius=@sf.small_radius, bg=Neutral)
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -89,11 +248,50 @@ let viz_row_s1_5 : @ui.Style = @ui.css("row gap=S1_5 align=ACenter")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let viz_row_end_s1 : @ui.Style = @ui.css("row gap=S1 align=AEnd")
+let viz_row_first_line : @ui.Style = @ui.css("row min_h=S5 align=ACenter")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let viz_good : @ui.TextStyle = @ui.text_style(color=Positive)
+let viz_row_between_start_s2 : @ui.Style = @ui.css("row w=Full gap=S2 align=AStart justify=JBetween")
+
+///|
+// kept across runs: a value (no field of it changes)
+let viz_details_head : @ui.Style = @ui.style(
+  row=true,
+  w=Full,
+  px=S2_5,
+  py=S2,
+  gap=S2,
+  align=AStart,
+  radius=@sf.small_radius,
+  hovered=@ui.patch(bg=Hover),
+)
+
+///|
+let viz_details_out : Double = 10.0
+
+///|
+// kept across runs: a value (no field of it changes)
+let viz_details_head_in_card : @ui.Style = viz_details_head.then(
+  @ui.style(mx=@sf.room_of(-viz_details_out)),
+)
+
+///|
+// kept across runs: a value (no field of it changes)
+let viz_details_body : @ui.Style = @ui.css("w=Full pt=S2 gap=S2")
+
+///|
+// kept across runs: a value (no field of it changes)
+let viz_w_full : @ui.Style = @ui.css("w=Full")
+
+///|
+// kept across runs: a value (no field of it changes)
+let viz_row_end_s1 : @ui.Style = @ui.css("row gap=S1 align=AEnd")
+
+///|
+fn viz_good() -> @ui.TextStyle {
+  @ui.text_style(color=Data(@sf.theme().p.green_ink))
+}
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -186,14 +384,10 @@ fn viz_json_num_arr(obj : Map[String, Json], key : String) -> Array[Double] {
 ///|
 pub fn viz_mbui_parse_bytes(name : String, bytes : Bytes) -> VizMbuiWidget? {
   if is_wasm_bytes(bytes) {
-    let fallback_title = if name.has_suffix(".wasm") {
-      name.unsafe_substring(start=0, end=name.length() - 5)
-    } else {
-      name
-    }
     return Some({
-      title: fallback_title,
+      title: viz_mbui_stem(name),
       subtitle: "",
+      icon: "sparks",
       init_state: Map([]),
       root: Json::object(Map([])),
       wasm_bytes: Some(bytes),
@@ -249,6 +443,7 @@ pub fn viz_mbui_parse(name : String, raw : String) -> VizMbuiWidget? {
       }
       let title = viz_json_str(obj, "title", "")
       let subtitle = viz_json_str(obj, "subtitle", "")
+      let icon = viz_mbui_valid_icon(viz_json_str(obj, "icon", ""))
       let init_state : Map[String, Json] = Map([])
       match obj.get("state") {
         Some(Object(st)) =>
@@ -288,7 +483,7 @@ pub fn viz_mbui_parse(name : String, raw : String) -> VizMbuiWidget? {
             None => parsed
           }
       }
-      Some({ title, subtitle, init_state, root, wasm_bytes, gas_limit })
+      Some({ title, subtitle, icon, init_state, root, wasm_bytes, gas_limit })
     }
     _ => None
   }
@@ -302,19 +497,23 @@ fn viz_extract_state_map(raw : Json) -> Map[String, Json] {
       match obj.get("modelContent") {
         Some(Object(mc)) =>
           for k, v in mc {
-            out[k] = v
+            if k != "__error" {
+              out[k] = v
+            }
           }
         _ => ()
       }
       match obj.get("privateContent") {
         Some(Object(pc)) =>
           for k, v in pc {
-            out[k] = v
+            if k != "__error" {
+              out[k] = v
+            }
           }
         _ => ()
       }
       for k, v in obj {
-        if k != "modelContent" && k != "privateContent" {
+        if k != "modelContent" && k != "privateContent" && k != "__error" {
           out[k] = v
         }
       }
@@ -369,6 +568,11 @@ fn viz_apply_wasm_json_output(
       match obj.get("subtitle") {
         Some(String(sub)) if obj.contains("root") || obj.contains("body") =>
           store.subtitle_sig.set(sub)
+        _ => ()
+      }
+      match obj.get("icon") {
+        Some(String(ic)) if obj.contains("root") || obj.contains("body") =>
+          store.icon_sig.set(viz_mbui_valid_icon(ic))
         _ => ()
       }
       match obj.get("state") {
@@ -633,6 +837,7 @@ fn viz_store_of(
     root_sig: @signals.signal(widget.root),
     title_sig: @signals.signal(widget.title),
     subtitle_sig: @signals.signal(widget.subtitle),
+    icon_sig: @signals.signal(widget.icon),
     tree_ver: @signals.signal(0),
     wasm_error: @signals.signal(""),
   }
@@ -710,9 +915,34 @@ fn viz_state_get(store : VizMbuiStore, key : String) -> Json {
 fn viz_state_snapshot(store : VizMbuiStore) -> Json {
   let obj : Map[String, Json] = Map([])
   for k, sig in store.signals {
-    obj[k] = sig.untracked()
+    if k != "__error" {
+      obj[k] = sig.untracked()
+    }
+  }
+  let err = store.wasm_error.untracked()
+  if err != "" {
+    obj["__error"] = Json::string(err)
   }
   Json::object(obj)
+}
+
+///|
+fn viz_persist_diagnostics(store : VizMbuiStore, hears : VizHears, err : String) -> Unit {
+  if err == "" {
+    return
+  }
+  let snap = viz_state_snapshot(store)
+  if store.synced_raw != snap {
+    store.synced_raw = snap
+    match hears.keep {
+      Some(keep) => keep(snap)
+      None => ()
+    }
+  }
+  match hears.failed {
+    Some(f) => f(err)
+    None => ()
+  }
 }
 
 ///|
@@ -1105,7 +1335,7 @@ fn viz_text_style_of(obj : Map[String, Json]) -> @ui.TextStyle {
   }
   match tone {
     "muted" | "secondary" | "subtle" => weighted.then(@sf.quiet)
-    "ok" | "success" | "green" | "positive" => weighted.then(viz_good)
+    "ok" | "success" | "green" | "positive" => weighted.then(viz_good())
     "warn" | "warning" | "amber" | "yellow" => weighted.then(@sf.lacking)
     "bad" | "danger" | "error" | "red" => weighted.then(@sf.bad)
     "accent" | "orange" | "brand" | "primary" => weighted.then(@sf.accent)
@@ -1316,6 +1546,30 @@ fn viz_prepare_svg(raw : String, w : Double, h : Double) -> String {
 }
 
 ///|
+fn viz_node_is_text(n : Json) -> Bool {
+  match n {
+    String(_) => true
+    Object(o) =>
+      match @sf.lower(viz_json_str(o, "type", viz_json_str(o, "kind", ""))) {
+        "text" | "p" | "h1" | "h2" | "h3" | "label" => true
+        _ => false
+      }
+    _ => false
+  }
+}
+
+///|
+fn viz_last_text_index(children : Array[Json]) -> Int {
+  let mut last = -1
+  for i = 0; i < children.length(); i = i + 1 {
+    if viz_node_is_text(children[i]) {
+      last = i
+    }
+  }
+  last
+}
+
+///|
 fn viz_render_node(
   parent : @view.View,
   store : VizMbuiStore,
@@ -1324,6 +1578,8 @@ fn viz_render_node(
   path : String,
   depth : Int,
   in_row? : Bool = false,
+  in_row_grow? : Bool = false,
+  in_card? : Bool = false,
 ) -> Unit {
   if depth > 24 {
     return
@@ -1331,7 +1587,8 @@ fn viz_render_node(
   match node {
     String(s) =>
       parent.box(fn(w) {
-        @sf.style_node(w, fn() { @ui.style() }, in_row~)
+        let st = if in_row_grow { @ui.style(w=@sf.grow, min_w=viz_zero_len) } else { @ui.style() }
+        @sf.style_node(w, fn() { st }, in_row~)
         @sf.words_node(w, fn() { viz_interp(store, s) }, fn() { @sf.body }) |> ignore
       })
       |> ignore
@@ -1339,7 +1596,7 @@ fn viz_render_node(
       parent.box(fn(col) {
         @sf.style_node(col, fn() { viz_col_s2 }, in_row~)
         for i = 0; i < items.length(); i = i + 1 {
-          viz_render_node(col, store, hears, items[i], path + "/a\{i}", depth + 1)
+          viz_render_node(col, store, hears, items[i], path + "/a\{i}", depth + 1, in_card~)
         }
       })
       |> ignore
@@ -1359,7 +1616,7 @@ fn viz_render_node(
           fn() { viz_eval_cond(store, cond_json) },
           fn(s) {
             @sf.style_node(s, fn() { @ui.style(w=Full) }, in_row~)
-            viz_render_node(s, store, hears, Json::object(stripped), path + "/w", depth + 1)
+            viz_render_node(s, store, hears, Json::object(stripped), path + "/w", depth + 1, in_row_grow~, in_card~)
           },
         )
         return
@@ -1384,7 +1641,7 @@ fn viz_render_node(
             fn(s) {
               @sf.style_node(s, fn() { @ui.style(w=Full, gap=@sf.room_of(gap)) }, in_row~)
               for i = 0; i < children.length(); i = i + 1 {
-                viz_render_node(s, store, hears, children[i], path + "/s\{i}", depth + 1)
+                viz_render_node(s, store, hears, children[i], path + "/s\{i}", depth + 1, in_card~)
               }
             },
           )
@@ -1400,21 +1657,24 @@ fn viz_render_node(
               in_row~,
             )
             for i = 0; i < children.length(); i = i + 1 {
-              viz_render_node(col, store, hears, children[i], path + "/c\{i}", depth + 1)
+              viz_render_node(col, store, hears, children[i], path + "/c\{i}", depth + 1, in_card~)
             }
           })
           |> ignore
         }
         "row" | "controls" | "hstack" => {
           let gap = viz_json_num(obj, "gap", 8.0)
-          let wrap = viz_json_bool(obj, "wrap", !in_row)
-          let align = viz_align_of(viz_json_str(obj, "align", "center"))
-          let justify = viz_justify_of(viz_json_str(obj, "justify", "start"))
-          let row_w : @ui.Len = if in_row { Hug } else { Full }
           let children = viz_children_of(obj)
+          let last_text = viz_last_text_index(children)
+          let has_text = last_text >= 0
+          let wrap = viz_json_bool(obj, "wrap", !in_row && !has_text)
+          let align = viz_align_of(viz_json_str(obj, "align", if has_text { "start" } else { "center" }))
+          let justify_raw = viz_json_str(obj, "justify", "start")
+          let justify = viz_justify_of(justify_raw)
+          let row_w : @ui.Len = if in_row { Hug } else { Full }
           parent.box(fn(r) {
             if wrap {
-              r.wraps(Is(Some(0.0))) |> ignore
+              r.wraps(Is(Some(gap))) |> ignore
             }
             @sf.style_node(
               r,
@@ -1422,7 +1682,18 @@ fn viz_render_node(
               in_row~,
             )
             for i = 0; i < children.length(); i = i + 1 {
-              viz_render_node(r, store, hears, children[i], path + "/r\{i}", depth + 1, in_row=true)
+              let grow_text = !wrap && i == last_text && justify == JStart
+              viz_render_node(
+                r,
+                store,
+                hears,
+                children[i],
+                path + "/r\{i}",
+                depth + 1,
+                in_row=true,
+                in_row_grow=grow_text,
+                in_card~,
+              )
             }
           })
           |> ignore
@@ -1444,7 +1715,7 @@ fn viz_render_node(
                   let ci = c_idx
                   r.box(fn(cell) {
                     @sf.style_node(cell, fn() { @ui.style(w=@sf.grow, min_w=viz_zero_len) }, in_row=true)
-                    viz_render_node(cell, store, hears, child, path + "/g\{ci}", depth + 1)
+                    viz_render_node(cell, store, hears, child, path + "/g\{ci}", depth + 1, in_card~)
                   })
                   |> ignore
                 }
@@ -1461,13 +1732,14 @@ fn viz_render_node(
           let badge = viz_json_str(obj, "badge", "")
           let badge_tone = viz_json_str(obj, "badge_tone", viz_json_str(obj, "tone", ""))
           let children = viz_children_of(obj)
+          let card_style = if in_card { viz_inner_card_box } else { viz_card_box }
           parent.box(fn(card) {
-            @sf.style_node(card, fn() { viz_card_box }, in_row~)
+            @sf.style_node(card, fn() { card_style }, in_row~)
             if title != "" || subtitle != "" || badge != "" {
               card.box(fn(head) {
-                @sf.style_node(head, fn() { viz_row_between_s2 })
+                @sf.style_node(head, fn() { viz_row_between_start_s2 })
                 head.box(fn(titles) {
-                  @sf.style_node(titles, fn() { viz_col_s0_5 }, in_row=true)
+                  @sf.style_node(titles, fn() { viz_col_s0_5.then(@ui.style(w=@sf.grow, min_w=viz_zero_len)) }, in_row=true)
                   if title != "" {
                     titles.box(fn(w) {
                       @sf.words_node(w, fn() { viz_interp(store, title) }, fn() { @sf.card_title }) |> ignore
@@ -1483,13 +1755,17 @@ fn viz_render_node(
                 })
                 |> ignore
                 if badge != "" {
-                  @sf.pill_node(head, fn() { viz_interp(store, badge) }, tone=viz_pill_tone(badge_tone)) |> ignore
+                  head.box(fn(pr) {
+                    @sf.style_node(pr, fn() { viz_row_first_line }, in_row=true)
+                    @sf.pill_node(pr, fn() { viz_interp(store, badge) }, tone=viz_pill_tone(badge_tone)) |> ignore
+                  })
+                  |> ignore
                 }
               })
               |> ignore
             }
             for i = 0; i < children.length(); i = i + 1 {
-              viz_render_node(card, store, hears, children[i], path + "/cd\{i}", depth + 1)
+              viz_render_node(card, store, hears, children[i], path + "/cd\{i}", depth + 1, in_card=true)
             }
           })
           |> ignore
@@ -1501,8 +1777,9 @@ fn viz_render_node(
           let delta = viz_json_str(obj, "delta", viz_json_str(obj, "note", ""))
           let tone = viz_json_str(obj, "tone", "")
           let spark = viz_json_num_arr(obj, "spark")
+          let stat_style = if in_card { viz_inner_stat_box } else { viz_stat_box }
           parent.box(fn(card) {
-            @sf.style_node(card, fn() { viz_stat_box }, in_row~)
+            @sf.style_node(card, fn() { stat_style }, in_row~)
             if label != "" {
               card.box(fn(w) {
                 @sf.words_node(w, fn() { viz_interp(store, label) }, fn() { @sf.caption }) |> ignore
@@ -1526,18 +1803,21 @@ fn viz_render_node(
             })
             |> ignore
             if delta != "" || spark.length() >= 2 {
-              let delta_style = match @sf.lower(tone) {
-                "green" | "ok" | "good" | "success" => @sf.caption.then(viz_good)
-                "red" | "bad" | "danger" | "error" => @sf.caption.then(@sf.bad)
-                "yellow" | "amber" | "warn" | "warning" => @sf.caption.then(@sf.lacking)
-                _ => @sf.caption
+              let tone_l = @sf.lower(tone)
+              let delta_style = fn() {
+                match tone_l {
+                  "green" | "ok" | "good" | "success" => @sf.caption.then(viz_good())
+                  "red" | "bad" | "danger" | "error" => @sf.caption.then(@sf.bad)
+                  "yellow" | "amber" | "warn" | "warning" => @sf.caption.then(@sf.lacking)
+                  _ => @sf.caption
+                }
               }
               card.box(fn(foot_row) {
                 @sf.style_node(foot_row, fn() { viz_row_between_s2 })
                 if delta != "" {
                   foot_row.box(fn(w) {
                     @sf.style_node(w, fn() { @ui.style() }, in_row=true)
-                    @sf.words_node(w, fn() { viz_interp(store, delta) }, fn() { delta_style }) |> ignore
+                    @sf.words_node(w, fn() { viz_interp(store, delta) }, delta_style) |> ignore
                   })
                   |> ignore
                 }
@@ -1552,25 +1832,21 @@ fn viz_render_node(
         }
         "text" | "p" | "h1" | "h2" | "h3" | "label" => {
           let raw = viz_json_str(obj, "text", viz_json_str(obj, "value", viz_json_str(obj, "label", "")))
-          let st = viz_text_style_of(obj)
+          let box_st = if in_row_grow { @ui.style(w=@sf.grow, min_w=viz_zero_len) } else { @ui.style() }
           parent.box(fn(w) {
-            @sf.style_node(w, fn() { @ui.style() }, in_row~)
-            @sf.words_node(w, fn() { viz_interp(store, raw) }, fn() { st }) |> ignore
+            @sf.style_node(w, fn() { box_st }, in_row~)
+            @sf.words_node(w, fn() { viz_interp(store, raw) }, fn() { viz_text_style_of(obj) }) |> ignore
           })
           |> ignore
         }
         "badge" | "pill" => {
           let raw = viz_json_str(obj, "text", viz_json_str(obj, "label", ""))
           let tone = viz_pill_tone(viz_json_str(obj, "tone", viz_json_str(obj, "color", "")))
-          if in_row {
-            @sf.pill_node(parent, fn() { viz_interp(store, raw) }, tone~) |> ignore
-          } else {
-            parent.box(fn(pr) {
-              @sf.style_node(pr, fn() { viz_row_s1_5 })
-              @sf.pill_node(pr, fn() { viz_interp(store, raw) }, tone~) |> ignore
-            })
-            |> ignore
-          }
+          parent.box(fn(pr) {
+            @sf.style_node(pr, fn() { if in_row { viz_row_first_line } else { viz_row_s1_5 } }, in_row~)
+            @sf.pill_node(pr, fn() { viz_interp(store, raw) }, tone~) |> ignore
+          })
+          |> ignore
         }
         "dot" | "status" => {
           let raw = viz_json_str(obj, "text", viz_json_str(obj, "label", ""))
@@ -1602,18 +1878,21 @@ fn viz_render_node(
         "callout" | "alert" | "banner" => {
           let title = viz_json_str(obj, "title", "")
           let text = viz_json_str(obj, "text", viz_json_str(obj, "body", ""))
-          let tone = viz_json_str(obj, "tone", "blue")
-          let title_style = match @sf.lower(tone) {
-            "green" | "ok" | "good" => @sf.card_title.then(viz_good)
-            "red" | "bad" | "danger" => @sf.card_title.then(@sf.bad)
-            "yellow" | "amber" | "warn" => @sf.card_title.then(@sf.lacking)
-            _ => @sf.card_title
+          let tone_l = @sf.lower(viz_json_str(obj, "tone", "blue"))
+          let title_style = fn() {
+            match tone_l {
+              "green" | "ok" | "good" => @sf.card_title.then(viz_good())
+              "red" | "bad" | "danger" => @sf.card_title.then(@sf.bad)
+              "yellow" | "amber" | "warn" => @sf.card_title.then(@sf.lacking)
+              _ => @sf.card_title
+            }
           }
+          let box_style = if in_card { viz_inner_card_box } else { viz_card_box }
           parent.box(fn(b) {
-            @sf.style_node(b, fn() { viz_card_box }, in_row~)
+            @sf.style_node(b, fn() { box_style }, in_row~)
             if title != "" {
               b.box(fn(w) {
-                @sf.words_node(w, fn() { viz_interp(store, title) }, fn() { title_style }) |> ignore
+                @sf.words_node(w, fn() { viz_interp(store, title) }, title_style) |> ignore
               })
               |> ignore
             }
@@ -1628,8 +1907,9 @@ fn viz_render_node(
         }
         "code" | "pre" => {
           let text = viz_json_str(obj, "text", viz_json_str(obj, "code", ""))
+          let box_style = if in_card { viz_inner_code_box } else { viz_code_box }
           parent.box(fn(b) {
-            @sf.style_node(b, fn() { viz_code_box }, in_row~)
+            @sf.style_node(b, fn() { box_style }, in_row~)
             b.box(fn(w) {
               @sf.words_node(w, fn() { viz_interp(store, text) }, fn() { @sf.code }) |> ignore
             })
@@ -1648,24 +1928,27 @@ fn viz_render_node(
                   let v = viz_json_str(iobj, "value", "")
                   let badge = viz_json_str(iobj, "badge", "")
                   let tone = viz_json_str(iobj, "tone", "")
-                  let v_style = if viz_json_bool(iobj, "mono", false) {
-                    @sf.code
-                  } else {
-                    viz_text_style_of(iobj)
-                  }
+                  let is_mono = viz_json_bool(iobj, "mono", false)
                   col.box(fn(r) {
-                    @sf.style_node(r, fn() { viz_row_between_s2 })
+                    @sf.style_node(r, fn() { viz_row_between_start_s2 })
                     r.box(fn(w) {
                       @sf.style_node(w, fn() { @ui.style() }, in_row=true)
                       @sf.words_node(w, fn() { viz_interp(store, k) }, fn() { @sf.caption }) |> ignore
                     })
                     |> ignore
                     if badge != "" {
-                      @sf.pill_node(r, fn() { viz_interp(store, badge) }, tone=viz_pill_tone(tone)) |> ignore
+                      r.box(fn(pr) {
+                        @sf.style_node(pr, fn() { viz_row_first_line }, in_row=true)
+                        @sf.pill_node(pr, fn() { viz_interp(store, badge) }, tone=viz_pill_tone(tone)) |> ignore
+                      })
+                      |> ignore
                     } else {
                       r.box(fn(w) {
                         @sf.style_node(w, fn() { @ui.style() }, in_row=true)
-                        @sf.words_node(w, fn() { viz_interp(store, v) }, fn() { v_style }) |> ignore
+                        @sf.words_node(w, fn() { viz_interp(store, v) }, fn() {
+                          if is_mono { @sf.code } else { viz_text_style_of(iobj) }
+                        })
+                        |> ignore
                       })
                       |> ignore
                     }
@@ -1732,8 +2015,7 @@ fn viz_render_node(
                               viz_spark_node(cell, cell_path, fn() { sp }, sp_tone, 72.0, 20.0)
                             } else {
                               let txt = viz_json_str(cobj, "text", viz_json_str(cobj, "value", viz_json_str(cobj, "label", "")))
-                              let st = viz_text_style_of(cobj)
-                              @sf.words_node(cell, fn() { viz_interp(store, txt) }, fn() { st }) |> ignore
+                              @sf.words_node(cell, fn() { viz_interp(store, txt) }, fn() { viz_text_style_of(cobj) }) |> ignore
                             }
                           }
                           _ => {
@@ -1758,7 +2040,7 @@ fn viz_render_node(
             if n.length() > 0 { n } else { viz_children_of(obj) }
           }
           parent.box(fn(row) {
-            row.wraps(Is(Some(0.0))) |> ignore
+            row.wraps(Is(Some(@ui.Space::px(S2)))) |> ignore
             @sf.style_node(row, fn() { viz_row_wrap_s2 }, in_row~)
             for i = 0; i < nodes.length(); i = i + 1 {
               if i > 0 {
@@ -1778,17 +2060,21 @@ fn viz_render_node(
                   )
                   let badge = viz_json_str(nobj, "badge", "")
                   let tone = viz_json_str(nobj, "tone", "")
-                  let title_style = match @sf.lower(tone) {
-                    "green" | "ok" | "good" => @sf.body.then(@sf.strong).then(viz_good)
-                    "red" | "bad" | "danger" => @sf.body.then(@sf.strong).then(@sf.bad)
-                    "yellow" | "amber" | "warn" => @sf.body.then(@sf.strong).then(@sf.lacking)
-                    _ => @sf.body.then(@sf.strong)
+                  let tone_l = @sf.lower(tone)
+                  let title_style = fn() {
+                    match tone_l {
+                      "green" | "ok" | "good" => @sf.body.then(@sf.strong).then(viz_good())
+                      "red" | "bad" | "danger" => @sf.body.then(@sf.strong).then(@sf.bad)
+                      "yellow" | "amber" | "warn" => @sf.body.then(@sf.strong).then(@sf.lacking)
+                      _ => @sf.body.then(@sf.strong)
+                    }
                   }
+                  let flow_style = if in_card { viz_inner_flow_node_box } else { viz_flow_node_box }
                   row.box(fn(nb) {
-                    @sf.style_node(nb, fn() { viz_flow_node_box }, in_row=true)
+                    @sf.style_node(nb, fn() { flow_style }, in_row=true)
                     if title != "" {
                       nb.box(fn(w) {
-                        @sf.words_node(w, fn() { viz_interp(store, title) }, fn() { title_style }) |> ignore
+                        @sf.words_node(w, fn() { viz_interp(store, title) }, title_style) |> ignore
                       })
                       |> ignore
                     }
@@ -1929,7 +2215,7 @@ fn viz_render_node(
                   if tab_idx >= 0 && tab_idx < bodies.length() {
                     let tab_body = bodies[tab_idx]
                     for j = 0; j < tab_body.length(); j = j + 1 {
-                      viz_render_node(panel, store, hears, tab_body[j], path + "/tb\{tab_idx}_\{j}", depth + 1)
+                      viz_render_node(panel, store, hears, tab_body[j], path + "/tb\{tab_idx}_\{j}", depth + 1, in_card~)
                     }
                   }
                 },
@@ -1947,27 +2233,69 @@ fn viz_render_node(
           )
           let def_open = viz_json_bool(obj, "open", false)
           let sig = viz_state_sig(store, state_key, Json::boolean(def_open))
+          let open = fn() { viz_json_truthy(sig.get()) }
           let title = viz_json_str(obj, "title", viz_json_str(obj, "label", "详情"))
           let subtitle = viz_json_str(obj, "subtitle", viz_json_str(obj, "note", ""))
           let children = viz_children_of(obj)
+          let head_style = if in_card { viz_details_head_in_card } else { viz_details_head }
           parent.box(fn(col) {
-            @sf.style_node(col, fn() { viz_col_s1_5 }, in_row~)
-            @sf.choice_row_node(
+            @sf.style_node(col, fn() { viz_w_full }, in_row~)
+            let label_fn = fn() {
+              let lbl = viz_interp(store, title)
+              let note = viz_interp(store, subtitle)
+              if note == "" { lbl } else { lbl + "\n" + note }
+            }
+            @headless.disclosure(
               col,
-              fn() { viz_interp(store, title) },
-              fn() { viz_json_truthy(sig.get()) },
-              press=fn() {
+              label_fn,
+              open,
+              fn(_) {
                 let next = !viz_json_truthy(sig.untracked())
                 viz_state_set(store, hears, state_key, Json::boolean(next))
               },
-              note=fn() { viz_interp(store, subtitle) },
+              fn(head, _) {
+                @sf.style_node(head, fn() { head_style })
+                head
+                .focus_ring_theme()
+                .ground(By(fn() { if head.pressed() { @ui.tree_theme().color(TintStrong) } else { 0L } }))
+                |> ignore
+                @sf.hover_ground_node(head, on=fn() { !head.pressed() })
+                head.box(fn(titles) {
+                  @sf.style_node(titles, fn() { viz_col_s0_5.then(@ui.style(w=@sf.grow, min_w=viz_zero_len)) }, in_row=true)
+                  titles.box(fn(w) {
+                    @sf.words_node(w, fn() { viz_interp(store, title) }, fn() { @sf.body.then(@sf.strong) }) |> ignore
+                  })
+                  |> ignore
+                  if subtitle != "" {
+                    titles.box(fn(w) {
+                      @sf.words_node(w, fn() { viz_interp(store, subtitle) }, fn() { @sf.caption }) |> ignore
+                    })
+                    |> ignore
+                  }
+                })
+                |> ignore
+                head.box(fn(ic) {
+                  @sf.style_node(ic, fn() { viz_row_first_line }, in_row=true)
+                  @sf.icon_node(
+                    ic,
+                    "chevron-down",
+                    14.0,
+                    By(fn() { @ui.tree_theme().color(Muted) }),
+                    name_now=fn() { if open() { "chevron-up" } else { "chevron-down" } },
+                  )
+                  |> ignore
+                })
+                |> ignore
+              },
             )
+            |> ignore
             col.show(
-              fn() { viz_json_truthy(sig.get()) },
+              open,
               fn(body) {
-                @sf.style_node(body, fn() { viz_col_s2 })
+                body.fills_across(Is(true)).cuts_softly(Is(true)) |> ignore
+                @sf.style_node(body, fn() { viz_details_body })
                 for i = 0; i < children.length(); i = i + 1 {
-                  viz_render_node(body, store, hears, children[i], path + "/d\{i}", depth + 1)
+                  viz_render_node(body, store, hears, children[i], path + "/d\{i}", depth + 1, in_card~)
                 }
               },
             )
@@ -2041,7 +2369,7 @@ fn viz_render_node(
             parent.box(fn(col) {
               @sf.style_node(col, fn() { viz_col_s2 }, in_row~)
               for i = 0; i < children.length(); i = i + 1 {
-                viz_render_node(col, store, hears, children[i], path + "/u\{i}", depth + 1)
+                viz_render_node(col, store, hears, children[i], path + "/u\{i}", depth + 1, in_card~)
               }
             })
             |> ignore
@@ -2058,10 +2386,6 @@ fn viz_render_node(
 let viz_col_s2_5 : @ui.Style = @ui.css("w=Full gap=S2_5")
 
 ///|
-// kept across runs: a value (no field of it changes)
-let viz_col_s1_5 : @ui.Style = @ui.css("w=Full gap=S1_5")
-
-///|
 fn viz_render_ctx(
   c : @ui.Ctx,
   store : VizMbuiStore,
@@ -2070,16 +2394,26 @@ fn viz_render_ctx(
   path : String,
   depth : Int,
   in_row? : Bool = false,
+  in_row_grow? : Bool = false,
+  in_card? : Bool = false,
 ) -> Unit {
   if depth > 24 {
     return
   }
   match node {
-    String(s) => c.text(viz_interp(store, s), style=@sf.body) |> ignore
+    String(s) =>
+      if in_row_grow {
+        c.box(style=@ui.style(w=@sf.grow, min_w=viz_zero_len), fn() {
+          c.text(viz_interp(store, s), style=@sf.body) |> ignore
+        })
+        |> ignore
+      } else {
+        c.text(viz_interp(store, s), style=@sf.body) |> ignore
+      }
     Array(items) =>
       c.box(style=viz_col_s2, fn() {
         for i = 0; i < items.length(); i = i + 1 {
-          viz_render_ctx(c, store, hears, items[i], path + "/a\{i}", depth + 1)
+          viz_render_ctx(c, store, hears, items[i], path + "/a\{i}", depth + 1, in_card~)
         }
       })
       |> ignore
@@ -2111,7 +2445,7 @@ fn viz_render_ctx(
             let gap = viz_json_num(obj, "gap", 8.0)
             c.box(style=@ui.style(w=Full, gap=@sf.room_of(gap)), fn() {
               for i = 0; i < children.length(); i = i + 1 {
-                viz_render_ctx(c, store, hears, children[i], path + "/s\{i}", depth + 1)
+                viz_render_ctx(c, store, hears, children[i], path + "/s\{i}", depth + 1, in_card~)
               }
             })
             |> ignore
@@ -2123,24 +2457,38 @@ fn viz_render_ctx(
           let children = viz_children_of(obj)
           c.box(style=@ui.style(w=Full, gap=@sf.room_of(gap), align~), fn() {
             for i = 0; i < children.length(); i = i + 1 {
-              viz_render_ctx(c, store, hears, children[i], path + "/c\{i}", depth + 1)
+              viz_render_ctx(c, store, hears, children[i], path + "/c\{i}", depth + 1, in_card~)
             }
           })
           |> ignore
         }
         "row" | "controls" | "hstack" => {
           let gap = viz_json_num(obj, "gap", 8.0)
-          let wrap = viz_json_bool(obj, "wrap", !in_row)
-          let align = viz_align_of(viz_json_str(obj, "align", "center"))
-          let justify = viz_justify_of(viz_json_str(obj, "justify", "start"))
-          let row_w : @ui.Len = if in_row { Hug } else { Full }
           let children = viz_children_of(obj)
+          let last_text = viz_last_text_index(children)
+          let has_text = last_text >= 0
+          let wrap = viz_json_bool(obj, "wrap", !in_row && !has_text)
+          let align = viz_align_of(viz_json_str(obj, "align", if has_text { "start" } else { "center" }))
+          let justify_raw = viz_json_str(obj, "justify", "start")
+          let justify = viz_justify_of(justify_raw)
+          let row_w : @ui.Len = if in_row { Hug } else { Full }
           c.box(
             style=@ui.style(row=true, w=row_w, gap=@sf.room_of(gap), align~, justify~),
             flow=wrap,
             fn() {
               for i = 0; i < children.length(); i = i + 1 {
-                viz_render_ctx(c, store, hears, children[i], path + "/r\{i}", depth + 1, in_row=true)
+                let grow_text = !wrap && i == last_text && justify == JStart
+                viz_render_ctx(
+                  c,
+                  store,
+                  hears,
+                  children[i],
+                  path + "/r\{i}",
+                  depth + 1,
+                  in_row=true,
+                  in_row_grow=grow_text,
+                  in_card~,
+                )
               }
             },
           )
@@ -2159,7 +2507,7 @@ fn viz_render_ctx(
                 for c_idx = row_start; c_idx < row_end; c_idx = c_idx + 1 {
                   let child = children[c_idx]
                   c.box(style=@ui.style(w=@sf.grow, min_w=viz_zero_len), fn() {
-                    viz_render_ctx(c, store, hears, child, path + "/g\{c_idx}", depth + 1)
+                    viz_render_ctx(c, store, hears, child, path + "/g\{c_idx}", depth + 1, in_card~)
                   })
                   |> ignore
                 }
@@ -2176,10 +2524,11 @@ fn viz_render_ctx(
           let badge = viz_json_str(obj, "badge", "")
           let badge_tone = viz_json_str(obj, "badge_tone", viz_json_str(obj, "tone", ""))
           let children = viz_children_of(obj)
-          c.box(style=viz_card_box, fn() {
+          let card_style = if in_card { viz_inner_card_box } else { viz_card_box }
+          c.box(style=card_style, fn() {
             if title != "" || subtitle != "" || badge != "" {
-              c.box(style=viz_row_between_s2, fn() {
-                c.box(style=viz_col_s0_5, fn() {
+              c.box(style=viz_row_between_start_s2, fn() {
+                c.box(style=viz_col_s0_5.then(@ui.style(w=@sf.grow, min_w=viz_zero_len)), fn() {
                   if title != "" {
                     c.text(viz_interp(store, title), style=@sf.card_title) |> ignore
                   }
@@ -2189,13 +2538,16 @@ fn viz_render_ctx(
                 })
                 |> ignore
                 if badge != "" {
-                  @sf.pill(c, viz_interp(store, badge), tone=viz_pill_tone(badge_tone))
+                  c.box(style=viz_row_first_line, fn() {
+                    @sf.pill(c, viz_interp(store, badge), tone=viz_pill_tone(badge_tone))
+                  })
+                  |> ignore
                 }
               })
               |> ignore
             }
             for i = 0; i < children.length(); i = i + 1 {
-              viz_render_ctx(c, store, hears, children[i], path + "/cd\{i}", depth + 1)
+              viz_render_ctx(c, store, hears, children[i], path + "/cd\{i}", depth + 1, in_card=true)
             }
           })
           |> ignore
@@ -2207,7 +2559,8 @@ fn viz_render_ctx(
           let delta = viz_json_str(obj, "delta", viz_json_str(obj, "note", ""))
           let tone = viz_json_str(obj, "tone", "")
           let spark = viz_json_num_arr(obj, "spark")
-          c.box(style=viz_stat_box, fn() {
+          let stat_style = if in_card { viz_inner_stat_box } else { viz_stat_box }
+          c.box(style=stat_style, fn() {
             if label != "" {
               c.text(viz_interp(store, label), style=@sf.caption) |> ignore
             }
@@ -2220,7 +2573,7 @@ fn viz_render_ctx(
             |> ignore
             if delta != "" || spark.length() >= 2 {
               let delta_style = match @sf.lower(tone) {
-                "green" | "ok" | "good" | "success" => @sf.caption.then(viz_good)
+                "green" | "ok" | "good" | "success" => @sf.caption.then(viz_good())
                 "red" | "bad" | "danger" | "error" => @sf.caption.then(@sf.bad)
                 "yellow" | "amber" | "warn" | "warning" => @sf.caption.then(@sf.lacking)
                 _ => @sf.caption
@@ -2240,12 +2593,22 @@ fn viz_render_ctx(
         }
         "text" | "p" | "h1" | "h2" | "h3" | "label" => {
           let raw = viz_json_str(obj, "text", viz_json_str(obj, "value", viz_json_str(obj, "label", "")))
-          c.text(viz_interp(store, raw), style=viz_text_style_of(obj)) |> ignore
+          if in_row_grow {
+            c.box(style=@ui.style(w=@sf.grow, min_w=viz_zero_len), fn() {
+              c.text(viz_interp(store, raw), style=viz_text_style_of(obj)) |> ignore
+            })
+            |> ignore
+          } else {
+            c.text(viz_interp(store, raw), style=viz_text_style_of(obj)) |> ignore
+          }
         }
         "badge" | "pill" => {
           let raw = viz_json_str(obj, "text", viz_json_str(obj, "label", ""))
           let tone = viz_pill_tone(viz_json_str(obj, "tone", viz_json_str(obj, "color", "")))
-          @sf.pill(c, viz_interp(store, raw), tone~)
+          c.box(style=if in_row { viz_row_first_line } else { viz_row_s1_5 }, fn() {
+            @sf.pill(c, viz_interp(store, raw), tone~)
+          })
+          |> ignore
         }
         "dot" | "status" => {
           let raw = viz_json_str(obj, "text", viz_json_str(obj, "label", ""))
@@ -2268,12 +2631,13 @@ fn viz_render_ctx(
           let text = viz_json_str(obj, "text", viz_json_str(obj, "body", ""))
           let tone = viz_json_str(obj, "tone", "blue")
           let title_style = match @sf.lower(tone) {
-            "green" | "ok" | "good" => @sf.card_title.then(viz_good)
+            "green" | "ok" | "good" => @sf.card_title.then(viz_good())
             "red" | "bad" | "danger" => @sf.card_title.then(@sf.bad)
             "yellow" | "amber" | "warn" => @sf.card_title.then(@sf.lacking)
             _ => @sf.card_title
           }
-          c.box(style=viz_card_box, fn() {
+          let box_style = if in_card { viz_inner_card_box } else { viz_card_box }
+          c.box(style=box_style, fn() {
             if title != "" {
               c.text(viz_interp(store, title), style=title_style) |> ignore
             }
@@ -2285,7 +2649,8 @@ fn viz_render_ctx(
         }
         "code" | "pre" => {
           let text = viz_json_str(obj, "text", viz_json_str(obj, "code", ""))
-          c.box(style=viz_code_box, fn() {
+          let box_style = if in_card { viz_inner_code_box } else { viz_code_box }
+          c.box(style=box_style, fn() {
             c.text(viz_interp(store, text), style=@sf.code) |> ignore
           })
           |> ignore
@@ -2305,10 +2670,10 @@ fn viz_render_ctx(
                   } else {
                     viz_text_style_of(iobj)
                   }
-                  c.box(style=viz_row_between_s2, fn() {
+                  c.box(style=viz_row_between_start_s2, fn() {
                     c.text(viz_interp(store, k), style=@sf.caption) |> ignore
                     if badge != "" {
-                      c.box(style=viz_row_s1_5, fn() {
+                      c.box(style=viz_row_first_line, fn() {
                         @sf.pill(c, viz_interp(store, badge), tone=viz_pill_tone(tone))
                       })
                       |> ignore
@@ -2411,12 +2776,13 @@ fn viz_render_ctx(
                   let badge = viz_json_str(nobj, "badge", "")
                   let tone = viz_json_str(nobj, "tone", "")
                   let title_style = match @sf.lower(tone) {
-                    "green" | "ok" | "good" => @sf.body.then(@sf.strong).then(viz_good)
+                    "green" | "ok" | "good" => @sf.body.then(@sf.strong).then(viz_good())
                     "red" | "bad" | "danger" => @sf.body.then(@sf.strong).then(@sf.bad)
                     "yellow" | "amber" | "warn" => @sf.body.then(@sf.strong).then(@sf.lacking)
                     _ => @sf.body.then(@sf.strong)
                   }
-                  c.box(style=viz_flow_node_box, fn() {
+                  let flow_style = if in_card { viz_inner_flow_node_box } else { viz_flow_node_box }
+                  c.box(style=flow_style, fn() {
                     if title != "" {
                       c.text(viz_interp(store, title), style=title_style) |> ignore
                     }
@@ -2526,7 +2892,7 @@ fn viz_render_ctx(
                 tallest=true,
                 fn() {
                   for j = 0; j < tab_body.length(); j = j + 1 {
-                    viz_render_ctx(c, store, hears, tab_body[j], path + "/tb\{active_idx}_\{j}", depth + 1)
+                    viz_render_ctx(c, store, hears, tab_body[j], path + "/tb\{active_idx}_\{j}", depth + 1, in_card~)
                   }
                 },
               )
@@ -2548,26 +2914,49 @@ fn viz_render_ctx(
           let title = viz_json_str(obj, "title", viz_json_str(obj, "label", "详情"))
           let subtitle = viz_json_str(obj, "subtitle", viz_json_str(obj, "note", ""))
           let children = viz_children_of(obj)
-          c.box(style=viz_col_s1_5, fn() {
-            @sf.choice_row(
-              c,
-              path + "/det",
-              is_open,
-              viz_interp(store, title),
-              note=viz_interp(store, subtitle),
-              on_press=fn() {
-                viz_state_set(store, hears, state_key, Json::boolean(!is_open))
-              },
-            )
-            |> ignore
-            if is_open {
-              c.box(style=viz_col_s2, fn() {
-                for i = 0; i < children.length(); i = i + 1 {
-                  viz_render_ctx(c, store, hears, children[i], path + "/d\{i}", depth + 1)
+          let head_style = if in_card { viz_details_head_in_card } else { viz_details_head }
+          c.box(style=viz_w_full, fn() {
+            let hid = c.id(path + "/det")
+            c.on_press(hid, fn() {
+              viz_state_set(store, hears, state_key, Json::boolean(!is_open))
+            })
+            let b = c.box(style=head_style, id=hid, fn() {
+              c.box(style=viz_col_s0_5.then(@ui.style(w=@sf.grow, min_w=viz_zero_len)), fn() {
+                c.text(viz_interp(store, title), style=@sf.body.then(@sf.strong)) |> ignore
+                if subtitle != "" {
+                  c.text(viz_interp(store, subtitle), style=@sf.caption) |> ignore
                 }
               })
               |> ignore
-            }
+              c.box(style=viz_row_first_line, fn() {
+                @sf.icon(
+                  c,
+                  if is_open { "chevron-up" } else { "chevron-down" },
+                  size=14.0,
+                  color=c.color(Muted),
+                )
+                |> ignore
+              })
+              |> ignore
+            })
+            let lbl = viz_interp(store, title)
+            let note = viz_interp(store, subtitle)
+            c.semantics(b, Button, id=hid, label=if note == "" { lbl } else { lbl + "\n" + note }, expanded=is_open)
+            under_post(
+              c,
+              "viz-det/" + store.key + "/" + path,
+              is_open,
+              enter=@motion.trans(fade=0.0, spec=@motion.tween(@sf.enter_ms, ease=Out)),
+              exit=@motion.trans(fade=0.0, spec=@motion.tween(@sf.leave_ms, ease=Leave)),
+              fn() {
+                c.box(style=viz_details_body, fn() {
+                  for i = 0; i < children.length(); i = i + 1 {
+                    viz_render_ctx(c, store, hears, children[i], path + "/d\{i}", depth + 1, in_card~)
+                  }
+                })
+                |> ignore
+              },
+            )
           })
           |> ignore
         }
@@ -2630,7 +3019,7 @@ fn viz_render_ctx(
           if children.length() > 0 {
             c.box(style=viz_col_s2, fn() {
               for i = 0; i < children.length(); i = i + 1 {
-                viz_render_ctx(c, store, hears, children[i], path + "/u\{i}", depth + 1)
+                viz_render_ctx(c, store, hears, children[i], path + "/u\{i}", depth + 1, in_card~)
               }
             })
             |> ignore
@@ -2659,21 +3048,25 @@ pub fn viz_mbui_node(
   hears : VizHears,
 ) -> Unit {
   let store = viz_store_of(place, widget, state())
+  let in_shell = place.has_prefix("beside/") || place.has_prefix("viewer/")
   parent.box(fn(root) {
+    root.reacts(fn() { store.wasm_error.get() }, fn(err) {
+      viz_persist_diagnostics(store, hears, err)
+    })
     @sf.style_node(root, fn() {
       let _ = viz_store_of(place, widget, state())
       viz_root_col
     })
     root.show(
       fn() {
-        let t = store.title_sig.get()
+        let t = if in_shell { "" } else { store.title_sig.get() }
         let sub = store.subtitle_sig.get()
-        !viz_root_has_title(store.root_sig.get(), t) && (t != "" || sub != "")
+        !viz_root_has_title(store.root_sig.get(), store.title_sig.get()) && (t != "" || sub != "")
       },
       fn(head) {
         @sf.style_node(head, fn() { viz_col_s0_5 })
         head.show(
-          fn() { store.title_sig.get() != "" },
+          fn() { !in_shell && store.title_sig.get() != "" },
           fn(w) {
             @sf.words_node(w, fn() { viz_interp(store, store.title_sig.get()) }, fn() { @sf.title }) |> ignore
           },
@@ -2718,15 +3111,18 @@ pub fn viz_mbui_ctx(
   hears : VizHears,
 ) -> Unit {
   let store = viz_store_of(place, widget, state)
+  let in_shell = place.has_prefix("beside/") || place.has_prefix("viewer/")
   let root_json = store.root_sig.get()
   let title = store.title_sig.get()
+  let shown_title = if in_shell { "" } else { title }
   let subtitle = store.subtitle_sig.get()
   let w_err = store.wasm_error.get()
+  viz_persist_diagnostics(store, hears, w_err)
   c.box(style=viz_root_col, fn() {
-    if !viz_root_has_title(root_json, title) && (title != "" || subtitle != "") {
+    if !viz_root_has_title(root_json, title) && (shown_title != "" || subtitle != "") {
       c.box(style=viz_col_s0_5, fn() {
-        if title != "" {
-          c.text(viz_interp(store, title), style=@sf.title) |> ignore
+        if shown_title != "" {
+          c.text(viz_interp(store, shown_title), style=@sf.title) |> ignore
         }
         if subtitle != "" {
           c.text(viz_interp(store, subtitle), style=@sf.caption) |> ignore

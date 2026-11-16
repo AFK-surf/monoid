@@ -144,10 +144,13 @@ using @sf {
 }
 
 ///|
-using @sfpages {
+using @settings {
   join_dialog,
+}
+
+///|
+using @sfpages {
   turn_off_dialog,
-  type MessageHere,
   agent_mark,
   bar_foot,
   chat_find_list,
@@ -159,7 +162,6 @@ using @sfpages {
   find_open,
   image_copy_px,
   list_key,
-  message_row,
   unpremultiplied,
 }
 

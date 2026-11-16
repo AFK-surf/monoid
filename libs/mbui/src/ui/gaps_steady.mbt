@@ -44,8 +44,8 @@ priv struct GapWay {
 priv struct GapsSteady {
   mut held : Bool
   mut file : String
-  ways : Map[String, GapWay]
-  found : Set[String]
+  mut ways : Map[String, GapWay]
+  mut found : Set[String]
   mut window : (Double, Double)
   mut words : Double
 }

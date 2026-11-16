@@ -445,6 +445,34 @@ pub fn with_download_message(v : Json) -> Json {
 }
 
 ///|
+/// MBUI_FIXTURE=chat-files-sent: the chat with its agent's code, table and recording last, each opened in the preview
+/// from its message (preview_fixture.mbt's files: list.ts, 数据.csv, 演示录屏.mp4), flying in from where it is and back.
+pub fn with_sent_files(v : Json) -> Json {
+  match v {
+    Object(m) => {
+      let o = m.copy()
+      let all = match m.get("messages") {
+        Some(Array(a)) => a.copy()
+        _ => []
+      }
+      all.push(
+        msg(12, "agent", by_agent("anthropic", "claude", "s-c1"), "改好的列表代码、跑出来的帧时间表和一段录屏都在这里。", "1 分钟前", {
+          "ending": "all_done",
+          "attachments": [
+            file("list.ts", 0, 0, 600),
+            file("数据.csv", 0, 0, 200),
+            film_file("演示录屏.mp4", 1280, 720, 5242880, 12500, 375),
+          ],
+        }),
+      )
+      o["messages"] = Json::array(all)
+      Json::object(o)
+    }
+    _ => v
+  }
+}
+
+///|
 /// MBUI_FIXTURE=chat-download-on: chat-download's, its agent's long reply after the recording (the recording scrolled
 /// up under the chat's bar: flight_under_bar_wbtest.mbt).
 pub fn with_reply_after(v : Json) -> Json {

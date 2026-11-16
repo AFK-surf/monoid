@@ -9,7 +9,19 @@
 fn standard_head(mode : String) -> String? {
   match mode {
     "settings-new-profile" => Some("选择服务商")
+    // (a run's models: back to the run's page, 更换模型)
+    "settings-run-models" => Some("选择模型")
+    "settings-run-accounts" => Some("选择账号")
     _ => None
+  }
+}
+
+///|
+/// What back on `mode`'s standard head says (the page it goes back to).
+fn standard_back(mode : String) -> String {
+  match mode {
+    "settings-run-models" | "settings-run-accounts" => "更换模型"
+    _ => "设置"
   }
 }
 
@@ -45,7 +57,7 @@ test "nav bar: back, title and what is at its end on one line (settings' pages)"
     match standard_head(mode) {
       // the standard head: back on the line (and what is at its end, as one), the large title under the line
       Some(title) => {
-        if mids.length() < 1 || hi - lo > 0.25 || !mids.iter().any(fn(m) { m.0.contains("设置") }) {
+        if mids.length() < 1 || hi - lo > 0.25 || !mids.iter().any(fn(m) { m.0.contains(standard_back(mode)) }) {
           fail("\{mode}: the head's line holds \{said}")
         }
         match t.find(title) {
@@ -85,14 +97,14 @@ fn bar_line_under(mode : String, top : Double) -> Array[(String, Double)] {
 
 ///|
 test "nav bar: under the status bar on the pages that go back a step of their own (the new profile's, a connect's, a run's lists)" {
-  for mode in ["settings-new-profile", "settings-run-models"] {
+  for mode in ["settings-new-profile", "settings-run-models", "settings-run-accounts"] {
     let mids = bar_line_under(mode, 24.0)
     let said = mids.map(fn(m) { m.0 + "@" + m.1.to_string() }).join(", ")
     println("under a 24 status bar \{mode}: \{said}")
     // back and the title, both below the status bar (the page's paper is drawn over it), on one line; a standard
     // head's back alone on it (its title under it, lower still)
     let least = if standard_head(mode) is Some(_) { 1 } else { 2 }
-    let back_there = standard_head(mode) is None || mids.iter().any(fn(m) { m.0.contains("设置") })
+    let back_there = standard_head(mode) is None || mids.iter().any(fn(m) { m.0.contains(standard_back(mode)) })
     if mids.length() < least || !back_there || mids.iter().any(fn(m) { m.1 < 24.0 }) {
       fail("\{mode}: the bar's line under a 24 status bar holds \{said}")
     }

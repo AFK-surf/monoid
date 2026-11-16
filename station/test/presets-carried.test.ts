@@ -286,7 +286,7 @@ test("a folder naming this station is this machine's for a chat opened with it; 
   const [key, thread] = newSession(r.hub, { runtime: "claude", createdBy: "local", preset: base.id });
   sayIn(r.hub, thread.id, "local", "go");
   await settle();
-  const copy = presetCopyOf(r.session(key).workspace)!;
+  const copy = (await presetCopyOf(r.session(key).workspace))!;
   assert.deepEqual(copy.dirs.map((d) => [d.path, d.elsewhere ?? null]), [[here, null], ["/far", "sw"], ["/farther", "sx"]]);
   assert.equal(copy.dirs[0]!.guides?.[0]?.file, "AGENTS.md", "its instructions read here");
   assert.deepEqual(copy.dirs[0]!.skills, ["ship"], "its skills linked");

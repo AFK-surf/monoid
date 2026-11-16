@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { sender, senderTitleIfReady } from "../src/sessions/messages.ts";
-import { prepareLatestThreadStep } from "../src/store/latest-thread-index.ts";
+import { prepareLatestThreadStep } from "./reference/backfill/latest-thread-index.ts";
 import { Store } from "../src/store/store.ts";
 import { Secrets } from "../src/vault/secrets.ts";
 

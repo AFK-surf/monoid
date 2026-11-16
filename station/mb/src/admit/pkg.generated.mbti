@@ -1,0 +1,67 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/admit"
+
+import {
+  "moonbitlang/core/debug",
+}
+
+// Values
+pub fn claims_held(Array[Claim]) -> Claims
+
+pub let held_long_ms : Double
+
+pub fn overstaying(Array[Claim], Double) -> Array[Claim]
+
+pub let person_idle_ms : Double
+
+pub fn pick(Array[Waiting], Array[Started], String?, Bool, (String) -> Double?, Claims) -> Picked?
+
+pub fn place(Array[Waiting], String, (String) -> Double?) -> Int32?
+
+pub fn restart_pause(Int32, Double) -> Double
+
+pub fn served(Array[Claim], Array[String], Double, Bool) -> Array[Claim]
+
+// Errors
+
+// Types and methods
+#derive(Eq, Show, @debug.Debug)
+pub(all) struct Claim {
+  job : String
+  pid : Int32
+  at : Double
+  held : Bool
+  since : Double?
+}
+
+#derive(Eq, Show, @debug.Debug)
+pub(all) struct Claims {
+  held : Bool
+  asked : Double?
+}
+
+#derive(Eq, Show, @debug.Debug)
+pub(all) enum Picked {
+  Start(Waiting)
+  Wait(String)
+}
+
+#derive(Eq, Show, @debug.Debug)
+pub(all) struct Started {
+  id : String
+  screen : Bool
+  small : Bool
+}
+
+#derive(Eq, Show, @debug.Debug)
+pub(all) struct Waiting {
+  id : String
+  session : String
+  screen : Bool
+  queued_at : Double
+  small : Bool
+}
+
+// Type aliases
+
+// Traits

@@ -7,14 +7,17 @@ station takes it back in place of a lost one. Transcripts, usage, accounts and w
 own and are not copied: a chat taken back goes on afresh, as one moved to another account does (a station retired,
 below, sends them along).
 
-- One export, off the main thread (`export.ts`): the MoonBit program's (`station/mb/src/replica`, started by `runner.ts`
-  `exportThread`) where it is built, else a worker thread's (`worker.ts`); a restore the same (`restore.ts`
-  `takeBackSoon`). The program writes and reads what the TypeScript does, line for line, so either takes up the
-  other's state and copies (`station/test/mb-replica.test.ts` holds them to each other). It reads stillfail.db only: immutable batches
-  (`format.ts`), a generation of them per workspace, `head.json` written last. What changed is found by what the tables
-  already give (the rowid of what is only added to, an index, the store's own changes told to it, a digest of what was
-  written in its own `export.db`), never by a trigger or a statement on the main thread's write path
-  (`replica-export-bounded.test.ts` counts them).
+- One export, off the main thread: the MoonBit program's (`station/mb/src/replica`, started by `runner.ts`
+  `exportThread`); a restore the same (`restore.ts` `takeBackSoon`). There is no export or restore in TypeScript to
+  fall back to: the program writes and reads what the TypeScript of before does, line for line, so either takes up the
+  other's state and copies. That TypeScript is the tests' only (`station/test/reference/replica-export.ts`,
+  `replica-restore.ts` `takeBack`, `replica-format.ts`; `station/test/mb-replica.test.ts` holds them to each other; the
+  tests' own stations run it, `replica-work.ts` `InlineRunner`): `src/replica/` keeps only what the station itself
+  says and reads of a copy (`export.ts` what the export is told, `format.ts` a head and the names). It reads
+  stillfail.db only: immutable batches (`format.ts`), a generation of them per workspace, `head.json` written last.
+  What changed is found by what the tables already give (the rowid of what is only added to, an index, the store's
+  own changes told to it, a digest of what was written in its own `export.db`), never by a trigger or a statement on
+  the main thread's write path (`replica-export-bounded.test.ts` counts them).
 - The stations that keep them keep the batches and files as opaque files (`places.ts`): two other stations of the same
   workspace (the two whose rendezvous hash with it is highest, `peers.ts keepers`, worked out in each station from its
   roster). Nothing about it is set by anyone, and the app shows it as one row (the user, 2026-11-10: 「按最简单的交互方式
@@ -41,22 +44,33 @@ below, sends them along).
   「要允许用户选择目标迁移 station」) hands all its chats there to the station a person picked, which may have chats of
   its own: what is hard to move is left to what already makes it, never rewritten by hand (「避免脚本乱改改错」). The app
   shows first what it would move (`GET /retire/preview`, found by the same functions the retirement uses). Each
-  session's room whole (an archived one's packed workspace with it; `footprint.ts roomOf`, a session whose directory is
+  session's room whole (an archived one's packed workspace with it; `footprint.ts roomOfSoon`, a session whose directory is
   not the station's own counted and left) and its agents' transcripts go by their bytes to the same places under the
-  other's data directory, only under `sessions/` and `transcripts*/` (`carry-worker.ts`): a checkout's files as git
-  lists them (`rebuildable` stays behind), its own `.git` as files, a repository in it gone into; a linked worktree is
+  other's data directory, only under `sessions/` and `transcripts*/`, and what an Antigravity CLI keeps of a
+  conversation in its profile's home (`carry.ts` `cliKept`: `session/load` takes it up from there, not from the
+  station's transcript; the profile it runs on there brings it into its own home, agents/agy.ts `agyBringIn`; a chat
+  moved without it got "trajectory not found", 2026-11-16) (`carry.ts`: the MoonBit program's, `--builder
+  replica-carry`, `station/mb/src/replica/carry.mbt`, a process each, a cancel killing it; built for every system a
+  station runs on, so no worker thread to fall back to; the worker's from before is `station/test/carry-reference.ts`,
+  which `station/test/mb-replica-carry.test.ts` holds it to): a checkout's files as git
+  lists them (`rebuildable` stays behind, decided from the listings the walk reads: by its name anywhere, one known by
+  what is in it only outside a checkout and within 3 levels of the room's top, as git ignores it inside one; carry.mbt
+  `rebuilt_by_name`, `rebuilt_of_any_name`, held to the reference's (`station/test/footprint-reference.ts`) by `station/test/mb-replica-carry.test.ts` on the same
+  trees), its own `.git` as files (walked once the room was: a linked worktree of it walked later fetches into it, and
+  its sending was refused as changed, 2026-11-16), a repository in it gone into; a linked worktree is
   made again there by git (its remote fetched and pruned first, a bundle of the commits no remote has, `git worktree add`
-  and `repair`; one that cannot be keeps its bundle beside it; not begun where that station has no git). A station has
+  and `repair`, the remote fetched there too where the clone lacks its commit or the bundle's prerequisites; one that
+  cannot be keeps its bundle beside it; not begun where that station has no git). A station has
   a million files: nothing of them is one object on a main thread or in one message (a list a session on disk, an
   index of the lists, `retire.lacking` a bounded batch of hashes at a time; `replica-retire.test.ts` counts them). Every
   file is checked by its hash as it is written there, and put in place linked to what was sent, no byte copied
-  (`carry-worker.ts putFile`; one linked already, the same bytes at another path, is copied: two paths never share a
+  (`carry.mbt` `put_file`; one linked already, the same bytes at another path, is copied: two paths never share a
   file; 2026-11-14, Node's clone copied the bytes on APFS and filled a station's disk). The
-  copy is put in beside the other's chats by the same restore (`build`'s `merge`: each thread an id there, a
-  platform's thread both followed the one there with its own log, a still.fail chat of the same ts given the next free
-  one, the connects' ids and the sessions' `ws` as there), after which that station is this one too (`formerly`), each
-  moved chat's agent told once (`moved_notes`); what it tells the retired station goes to that one itself
-  (mesh/bus.ts `askItself`, as a request naming it would come back to itself). The chats stop (sessions/hub.ts
+  copy is put in beside the other's chats by the same restore (its `merge`, the reference's `build`: each thread an
+  id there, a platform's thread both followed the one there with its own log, a still.fail chat of the same ts given
+  the next free one, the connects' ids and the sessions' `ws` as there), after which that station is this one too
+  (`formerly`), each moved chat's agent told once (`moved_notes`); what it tells the retired station goes to that one
+  itself (mesh/bus.ts `askItself`, as a request naming it would come back to itself). The chats stop (sessions/hub.ts
   `quiet`, every chat of the workspace, the home one's too, and their jobs; for good once done, across restarts) only
   for what changed since the first sending; what their platforms say meanwhile is kept and goes there as each
   connect moved there (connects/workspace.ts `moveAll`; a Comma connect's, which no station routes to another, is refused unkept, as
@@ -102,8 +116,9 @@ below, sends them along).
   (`station/src/move/`, its AGENTS.md: independent modules, each item moved and moved back on its own, a scheduler that
   only orders them by their needs). Its state is a file a hand-over on each side (`handover/out/`, `handover/in/`):
   nothing of it is in the copies' export or the schema but `handed_over` (where each chat went, store `handOff`). The
-  chat is held alone (sessions/hub.ts `holdChat`), its files gathered alone (carry-worker.ts `gather`'s `keys`) and sent
-  as a retirement's are (`sending.ts`), its rows sent a page at a time and put in through the other's store, hidden
+  chat is held alone (sessions/hub.ts `holdChat`), its files gathered alone (carry.ts `gatherSoon`'s `keys`) and sent
+  as a retirement's are (`sending.ts`; flushed to the drive once a placing, not a file at a time, `flushOnce`: on macOS not surely all of
+  it, so one still coming as that machine starts again is dropped there, `boot`), its rows sent a page at a time and put in through the other's store, hidden
   until shown (store/handover.ts, `comingWs`): each thread's log goes on past what that station has (n kept where it
   was this chat's own as it was left, else by ts), so a chat handed back appends what was said there. Each station's
   log keeps the numbers it has: an arriving entry the same at its number is skipped, one found by ts elsewhere is that
@@ -115,10 +130,25 @@ below, sends them along).
   `handover.begin` refuses it before anything is written. What it had yet to be handed goes with it and is marked
   handed here once it is shown there (store `deliveredThere`), so none of it is handed to its agent again as it comes back. Only once the
   other counted what it has does this one say it went; before, a failure undoes it there and the chat goes on here
-  (`handover.drop`: after the placing under way, what it placed and the directories made for it, a linked worktree
-  git made with its registration, branch and ref, the repository staying; what it put aside back; a newer hand-over
-  of the chat drops an older one still coming first, so the older's drop, late, takes nothing of it);
-  after, nothing is undone and the rest is told until it is answered. Its platform threads are re-pointed where their
+  (`handover.drop`: answered once its rows are out and its record says it drops; then, by that station itself after
+  the placing under way (its next process where this one stops first), what it placed and the directories made for
+  it, a linked worktree git made with its registration, branch and ref, the repository staying; what it put aside
+  back; a newer hand-over of the chat drops an older one still coming first, its rows as it begins, its files before
+  the newer places anything (`#serialIn`), so the older's drop, late, takes nothing of it; asked even of a station the
+  turn found gone, owed until answered). No request of a hand-over waits on work that grows with the chat: its placing
+  (with its worktrees) and its pruning are told steps (move/told.ts, move/AGENTS.md), `handover.lacking` hashes
+  `HASH_MOST` bytes at most a request (the rest `unchecked`, asked again). The station it goes to drops it by itself where its own disk fails
+  what it is sent (full, over quota, read-only: refused in numbers, never a stream reset: mesh/peer.ts `Incoming.held`),
+  and where one still coming as it starts, or as its sender is heard from, no longer goes on there (`handover.still`);
+  after, nothing is undone and the rest is told until it is answered. One process of a station acts on its hand-overs
+  at a time: the next one a launcher starts begins, answers and goes on with none until the one before is gone
+  (`previous`, every record then read again), and a move turn waits for that too (move/station.ts `refusal`); a
+  hand-over's end is decided once, gone or failed, whichever process asks first (`decided`, a file linked into place),
+  so `gone` never follows its failure. A chat said gone (`handed_over`) whose latest hand-over failed and was never
+  shown, or is at `gone` and never shown where that station says it does not hold the hand-over (`handover.held`:
+  dropped, or never had; a show only not answered yet is left to its retries), is asked of where it went as the
+  station starts and as that one is heard from: held there in sight, the record is completed; not, it is in sight
+  here again, the record over as a failure (`#mend`; the real run, 2026-11-15, one chat on neither station). Its platform threads are re-pointed where their
   connect runs (connects/workspace.ts `route`, `connect.route`); what still comes here of it goes on there
   (`movedTo`). A device naming it here is answered where it went (409 with `moved`, `GET /moved`, `chat-moved`),
   only once that station showed it (store `goneTo`, then `shownThere`: told at `gone`, a device read it there before it

@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { OutflowChatIndex } from "../src/read/chat-index-builder.ts";
 import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
-import { installOutflowChatIndex, outflowChatIndexReady, outflowChatIndexStep } from "../src/store/outflow-index.ts";
+import { installOutflowChatIndex, outflowChatIndexReady, outflowChatIndexStep } from "./reference/backfill/outflow-index.ts";
 import { Store } from "../src/store/store.ts";
 
 const binary = mbReaderBinary();
@@ -86,7 +86,7 @@ test("the MoonBit builder makes and settles the chat order as the TypeScript doe
 test("the station's chat order index is made and settled by the MoonBit builder", async () => {
   assert.notEqual(binary, null);
   const f = old();
-  const index = new OutflowChatIndex(f.path, {}, undefined, binary);
+  const index = new OutflowChatIndex(f.path, {}, binary!);
   try {
     await index.ready({ workspace: "B", home: true });
     assert.equal(outflowChatIndexReady(f.store.db, { workspace: "B", home: true }), true);

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { constants, DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { makeStore, ORIGINAL_RUNTIME_ORDERED, originalRuntime, runtimeSessionSources, sessionOfRuntime } from "../src/read/store.ts";
+import { makeStore, ORIGINAL_RUNTIME_ORDERED, originalRuntime, runtimeSessionSources, sessionOfRuntime } from "./reference/store.ts";
 import { addRuntimeSessionRuntime } from "../src/store/schema.ts";
 import { Store } from "../src/store/store.ts";
 

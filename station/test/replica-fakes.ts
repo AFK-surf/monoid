@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { Store } from "../src/store/store.ts";
-import { type Row, RESTORE_ORDER, TABLES } from "../src/replica/format.ts";
+import { type Row, RESTORE_ORDER, TABLES } from "./reference/replica-format.ts";
 import { moved } from "../src/replica/restore.ts";
 
 export const HOME = "wshome";

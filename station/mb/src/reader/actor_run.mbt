@@ -220,10 +220,13 @@ async fn Actors::called(self : Actors, a : Actor, method : String, args : Array[
       }
       self.enqueue(a, async fn() { self.catch_up(a, a.turn is None && a.waiting is None) })
     }
-    "evict" =>
+    "evict" => {
+      // (`force`: its session archived, its process ends once its turn is over, what it left in the background too:
+      // an archived session keeps nothing running, and is packed cold only once its process is gone)
+      let force = truthy(arg(0))
       self.enqueue(a, async fn() {
         guard a.agent is Some(g) else { return }
-        if self.busy(a) || a.turn is Some(_) || self.holding(a) {
+        if self.busy(a) || a.turn is Some(_) || (!force && self.holding(a)) {
           return
         }
         // (another taken up meanwhile is not the idle one)
@@ -233,6 +236,7 @@ async fn Actors::called(self : Actors, a : Actor, method : String, args : Array[
         ignore(self.agent_do(a, g, "dispose", []))
         self.notify_store(a)
       })
+    }
     "compact" => {
       let say = truthy(arg(0))
       let mut refused : String? = None
@@ -308,7 +312,7 @@ async fn Actors::refills_at(self : Actors, a : Actor) -> Double raise {
 
 ///|
 async fn Actors::live_turn_ended(self : Actors, a : Actor) -> Unit raise {
-  ignore(self.rpc(a.key, "live.turnEnded", [jstr(a.key)]))
+  self.live_turn_end(a.key)
 }
 
 ///|
@@ -540,6 +544,11 @@ async fn Actors::recover(self : Actors, a : Actor) -> Json raise {
     }
     if a.delivery_interruptions > 0 {
       return
+    }
+    // The turn the restart cut off (its process gone with no runner to keep it) is ended here, before anything that may
+    // fail: left open, the session would be shown at work for ever (2026-11-16, a recovery that could not start).
+    if a.turn is None {
+      ignore(self.store(a, "endCutOff", [jstr(a.key)]))
     }
     if self.archived(a) {
       a.recovery_deferred = false
@@ -906,6 +915,8 @@ fn Actors::adopt(self : Actors, a : Actor, snap : Json, agent : Json, profile : 
   if num_of(snap.value("refillMs")) is Some(ms) {
     self.await_refill(a, self.now + ms)
   }
+  // (told now, its idle time with it: what `set_agent` told above was before it was taken up whole)
+  self.mirror(a)
 }
 
 ///|
@@ -1207,7 +1218,7 @@ async fn Actors::start_turn(self : Actors, a : Actor, kind : String, text : Stri
 
 ///|
 async fn Actors::start_turn_body(self : Actors, a : Actor, kind : String, text : String, by : Json, retry_about : Json) -> Unit raise {
-  self.tell(a.key, "live.event", [jstr(a.key), { "kind": "phase", "phase": "starting" }])
+  self.live_event(a.key, { "kind": "phase", "phase": "starting" })
   if (kind == "input" || kind == "job") && !self.holding(a) && !self.busy(a) &&
     self.deps(a, "coldAfresh", [jstr(a.key), jnum(self.now)]) is True {
     ignore(self.clear_now(a, true, said="station.notice.afreshCold", by="as its cache is over", keep_jobs=true))
@@ -1216,6 +1227,7 @@ async fn Actors::start_turn_body(self : Actors, a : Actor, kind : String, text :
   let lost = a.resume_lost
   a.resume_lost = false
   let (handed, told_choices) = self.with_choices(a, text)
+  a.turn_text = handed
   let stopped = a.stopped_note
   a.stopped_note = None
   let afresh = a.afresh
@@ -1320,10 +1332,18 @@ async fn Actors::end_process(self : Actors, a : Actor, agent : Agent?) -> Unit r
 /// actor.ts `ensureAgent`: its runtime session, opened (Node's: the driver, its options, the words it is told of how it
 /// was opened) where it has none.
 async fn Actors::ensure_agent(self : Actors, a : Actor) -> Agent raise {
-  if a.agent is Some(_) && !a.stale && !self.busy(a) {
+  if a.agent is Some(g) && !a.stale && !self.busy(a) {
     let on = self.rpc(a.key, "node.profileId", [jbool(self.holding(a))]) catch { _ => Json::null() }
     if !(on is Null) && on != a.profile {
       a.stale = true
+    }
+    // (its process can no longer take a turn as it is: an Antigravity CLI one whose borrowed sign-in runs out, runtime.ts
+    // `outlived`; its retune refuses, so it is opened again)
+    if !a.stale {
+      let outlived = self.rpc(a.key, "node.outlived", [jnum(g.handle.to_double())]) catch { _ => Json::null() }
+      if outlived is True {
+        a.stale = true
+      }
     }
   }
   self.catch_up(a, true)
@@ -1387,7 +1407,10 @@ async fn Actors::on_event(self : Actors, a : Actor, generation : Int, event : Js
       let outcome = event.value("outcome").unwrap_or(Json::null())
       ignore(
         self.enqueue(a, async fn() {
-          ignore(self.rpc(a.key, "node.read", [read]))
+          match read {
+            { "live": Number(n, ..), .. } => self.live_ended(n.to_int())
+            _ => ignore(self.rpc(a.key, "node.read", [read]))
+          }
           self.on_turn_ended(a, generation, outcome)
         }),
       )
@@ -1504,8 +1527,20 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
     return self.compacted(a, outcome)
   }
   let kind = str_of(outcome.value("kind")).unwrap_or("")
-  let reason = str_of(outcome.value("reason")).unwrap_or("")
+  let mut reason = str_of(outcome.value("reason")).unwrap_or("")
   let message = str_of(outcome.value("message")).unwrap_or("")
+  // (agy 1.5.8 says only `⚠ Agent execution terminated due to error.` (`other`) when its borrowed sign-in runs out
+  // under a turn, 2026-11-16: where the process's sign-in has expired, take it as `auth` so `auth_retry` reopens on one
+  // lent anew and goes on once)
+  if a.runtime == "agy" && kind == "failed" && reason == "other" &&
+    message.to_lower().contains("agent execution terminated due to error") && a.agent is Some(g) {
+    if truthy(self.agent_do(a, g, "signInExpired", []) catch { _ => Json::null() }) {
+      reason = "auth"
+    }
+    if !self.is_current(a, generation) {
+      return
+    }
+  }
   // (undefined: none shown; null: the account's; a name: that model's own)
   let mut limit : Json? = None
   if kind == "failed" && reason == "model" && a.turn is Some(_) && !(a.profile is Null) && !a.stop_requested {
@@ -1597,7 +1632,27 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
   if a.runtime == "codex" && kind == "failed" && reason == "auth" && !stop_requested && !(a.profile is Null) {
     ignore(self.deps(a, "recheck", [a.profile]))
   }
-  if (a.runtime == "claude" || a.runtime == "codex") && kind == "failed" && reason == "auth" && !stop_requested &&
+  // (agy: session/load answers without checking the CLI's conversation database, and a prompt on a conversation whose
+  // database is absent or corrupt fails with "trajectory not found"; end the broken process so no retry hits it again,
+  // and reopen once in a new conversation that reads back, 2026-11-16)
+  if a.runtime == "agy" && kind == "failed" && message.to_lower().contains("trajectory not found") {
+    let agent = a.agent
+    self.set_agent(a, None)
+    self.end_process(a, agent)
+    self.notify_store(a)
+    if !stop_requested && !self.held(a) && turn is Some(t) && !t.auth_retried && t.declared is None {
+      a.nudges = 0
+      self.log(a, "warn", "Antigravity trajectory missing; reopening in a new runtime session", fields={ "error": jstr(message) })
+      self.start_turn(a, "auth_retry", a.turn_text, by=t.by)
+      if a.turn is Some(nt) && t.codex_retried {
+        nt.codex_retried = true
+      }
+      return
+    }
+  }
+  // (agy: a sign-in lent by another station runs out under a process that never reads it again; a new one opens on
+  // one lent anew, agents/agy.ts AGY_LENT_RENEW_MS)
+  if (a.runtime == "claude" || a.runtime == "codex" || a.runtime == "agy") && kind == "failed" && reason == "auth" && !stop_requested &&
     !self.held(a) && turn is Some(t) && !t.auth_retried && t.declared is None {
     a.nudges = 0
     let agent = a.agent
@@ -1612,6 +1667,12 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
       nt.codex_retried = true
     }
     return
+  }
+  if a.runtime == "agy" && kind == "failed" && reason == "auth" && a.agent is Some(_) {
+    let agent = a.agent
+    self.set_agent(a, None)
+    self.end_process(a, agent)
+    self.notify_store(a)
   }
   let spent = kind == "failed" && reason == "rate_limit"
   if !spent {

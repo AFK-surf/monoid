@@ -11,7 +11,7 @@ import { Cloud } from "../src/cloud/state.ts";
 import { Jobs } from "../src/jobs/jobs.ts";
 import { type PeerCall, Remote } from "../src/jobs/remote.ts";
 import { member, roster } from "../src/mesh/peer.ts";
-import { memory } from "../src/read/memory.ts";
+import { memory } from "./reference/memory.ts";
 import { workspaceAgentHome } from "../src/sessions/agent-home.ts";
 import { profilesFor } from "../src/sessions/config.ts";
 import { sessionKey } from "../src/sessions/hub.ts";
@@ -238,7 +238,7 @@ test("a session's runtime is given its workspace's memory and skills, never anot
   const opened = async (key: string) => {
     const row = rig.store.getSession(key)!;
     const memory = await linkSkills(row, rig.hub.deps);
-    return { row, options: openOptions(row, rig.hub.accounts.runOn(key), rig.hub.deps, memory) };
+    return { row, options: await openOptions(row, rig.hub.accounts.runOn(key), rig.hub.deps, memory) };
   };
   const ofTwo = await opened(two);
   assert.ok(ofTwo.options.instructions.includes("# two's lessons") && !ofTwo.options.instructions.includes("# one's lessons"));

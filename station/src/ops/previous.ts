@@ -7,7 +7,7 @@ import { log } from "./log.ts";
 import { wall } from "./fibers.ts";
 
 /// How long the previous station process is waited for before its sessions are taken up all the same.
-const PREVIOUS_LIMIT_MS = 40_000;
+export const PREVIOUS_LIMIT_MS = 40_000;
 
 /// Whether a process is alive (signal 0).
 function alive(pid: number): boolean {

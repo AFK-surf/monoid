@@ -18,6 +18,7 @@ pub using @settings {
 
 ///|
 /// An agent of a row, by what its mark shows: the model's maker, its runtime.
+#derive(Eq)
 pub(all) struct RowAgent {
   /// its session's key
   key : String
@@ -28,6 +29,7 @@ pub(all) struct RowAgent {
 
 ///|
 /// Someone in a chat, as the core names them.
+#derive(Eq)
 pub(all) struct Person {
   id : String
   email : String
@@ -40,6 +42,7 @@ pub(all) struct Person {
 
 ///|
 /// A row of the list (ChatItem).
+#derive(Eq)
 pub(all) struct ChatItem {
   id : String
   session : String
@@ -118,6 +121,7 @@ pub(all) struct ChatItem {
 ///|
 /// The chat an agent opened a chat from (the core's Opener): where it is, as its list names it, and what it is to the
 /// chat it opened in words (由「…」创建); `archived` with what says so (已归档).
+#derive(Eq)
 pub(all) struct Opener {
   chat : ChatRef
   text : String
@@ -128,6 +132,7 @@ pub(all) struct Opener {
 ///|
 /// A chat a chat's agent opened (the core's OpenedChat): where it is, as its list names it, where it stands (its row's
 /// mark, what leads its line and the line), and whether it is in its station's archive (with what says so).
+#derive(Eq)
 pub(all) struct OpenedChat {
   chat : ChatRef
   mark : String
@@ -171,6 +176,7 @@ pub fn opener_of(v : Json?) -> Opener? {
 
 ///|
 /// A day of the list with its heading (今天, 昨天, 已固定…).
+#derive(Eq)
 pub(all) struct ChatDay {
   label : String
   items : Array[ChatItem]
@@ -383,6 +389,7 @@ fn chats_view_by(v : Json, item : (Json) -> ChatItem) -> ChatsView {
 
 ///|
 /// A workspace the viewer is in, and the account they are in it by.
+#derive(Eq)
 pub(all) struct Workspace {
   id : String
   name : String

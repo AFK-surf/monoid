@@ -12,8 +12,8 @@ import { PEOPLE_MS, SlackSurface } from "../src/slack/surface.ts";
 import { SlackClient } from "../src/slack/web.ts";
 import { chatTools } from "../src/tools/chat.ts";
 import { Readers } from "../src/read/pool.ts";
-import { installLegacyEdits, legacyEditDrain, legacyEditStep } from "../src/store/legacy-edits-build.ts";
-import { addClientColumn } from "../src/store/schema.ts";
+import { installLegacyEdits, legacyEditDrain, legacyEditStep } from "./reference/backfill/legacy-edits-build.ts";
+import { addClientColumn, repairMergedEditLookup } from "../src/store/schema.ts";
 import { Store } from "../src/store/store.ts";
 import { Rig, message, settle, testClock, type Setup } from "./hub-fakes.ts";
 import { FakeSlack } from "./slack-fake.ts";
@@ -47,7 +47,7 @@ test("a chat's places: the connects that can start a conversation, each bot's ch
   const connects = await relayPlaces(r.hub, thread);
   assert.deepEqual(connects, [
     {
-      id: "cl", kind: "slack", name: "ember", team: null, botImage: null, preferred: true,
+      id: "cl", kind: "slack", name: "ember", team: null, botImage: null, teamId: r.chat.workspace() || null, preferred: true,
       places: [{ id: "C1", name: "cue-dev", kind: "channel" }, { id: "C2", name: "design", kind: "channel", private: true }],
     },
   ], "the connects whose surface cannot start one (gpt, team here) are not offered");
@@ -352,6 +352,7 @@ async function relayIntoOldThread(disk = false) {
 test("a relay's first post prepares old edits through the background worker", async () => {
   const { r, key, old, db, done, opening } = await relayIntoOldThread(true);
   const readers = new Readers(r.dir, 1, undefined, 1);
+  readers.repairEdits = () => repairMergedEditLookup(r.store.db);
   try {
     let preparations = 0;
     r.hub.prepareLegacyEdits = (signal) => { preparations++; return readers.prepareLegacyEdits(signal); };
@@ -664,4 +665,29 @@ test("Slack: the people in a channel, named as users.list names them, bots and d
   } finally {
     await fake.close();
   }
+});
+
+test("a bot not in a public channel joins it as the chat is relayed there, where it may; offered among its open ones", async () => {
+  const { r, begun } = relayRig();
+  const joined: string[] = [];
+  Object.assign(r.chat, {
+    joins: () => true,
+    openPlaces: async () => [{ id: "C9", name: "general", kind: "channel" }],
+    join: async (channel: string) => void joined.push(channel),
+  });
+  const [, thread] = newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
+  const cl = (await relayPlaces(r.hub, thread)).find((c) => c.id === "cl")!;
+  assert.deepEqual([cl.joins, cl.open], [true, [{ id: "C9", name: "general", kind: "channel" }]]);
+  // Not asked to join: refused as before, nothing joined
+  await assert.rejects(relay(r.hub, thread, ADA, { connect: "cl", channel: "C9" }, ""), /not in C9/);
+  assert.deepEqual(joined, []);
+  const done = await relay(r.hub, thread, ADA, { connect: "cl", channel: "C9", join: true }, "");
+  assert.deepEqual(joined, ["C9"]);
+  assert.equal(done.place, "#general");
+  assert.equal(begun.at(-1)![0], "C9");
+  // One that may not join offers none
+  Object.assign(r.chat, { joins: () => false });
+  const again = (await relayPlaces(r.hub, thread)).find((c) => c.id === "cl")!;
+  assert.deepEqual([again.joins, again.open], [undefined, undefined]);
+  await r.close();
 });

@@ -223,6 +223,9 @@ fn screen_stage(c : @ui.Ctx, s : ScreenSess, u : ScreenUi, key : String, pair? :
         let shown = u.shown(c)
         // on its way back, as it was, faded; over (ended, gone…), blurred under the dark it has gone to
         let still = phase != "live" && s.shown_any
+        // (handed to a window of its own of this run, this page only going: its picture drawn here, never the system's
+        // video layer, which that window shows)
+        let handed = @sfbase.lone_page.val is None && @sfbase.window_has_screen(s.station, s.screen)
         c.layer(fn() {
           c.box(
             style=@ui.style(w=Fixed(shown.w), h=Fixed(shown.h)).then(
@@ -237,7 +240,7 @@ fn screen_stage(c : @ui.Ctx, s : ScreenSess, u : ScreenUi, key : String, pair? :
             fn() {
               match s.stream {
                 // (live: on the system's video layer where it has one; faded or under the dark, drawn here)
-                Some(st) => c.stream(st, w=Fill(1.0), h=Fill(1.0), layer=!still && !over) |> ignore
+                Some(st) => c.stream(st, w=Fill(1.0), h=Fill(1.0), layer=!still && !over && !handed) |> ignore
                 None => ()
               }
               // zoomed in, the part of the screen the station sends alone, sharper, over the whole where it is
@@ -247,7 +250,7 @@ fn screen_stage(c : @ui.Ctx, s : ScreenSess, u : ScreenUi, key : String, pair? :
                     c.stream(
                       pst,
                       at=Some((p.x * shown.w, p.y * shown.h, p.w * shown.w, p.h * shown.h)),
-                      layer=!still && !over,
+                      layer=!still && !over && !handed,
                     )
                     |> ignore
                   })
@@ -283,34 +286,38 @@ fn screen_stage(c : @ui.Ctx, s : ScreenSess, u : ScreenUi, key : String, pair? :
           |> ignore
         } else {
           // drawn over the frame at its own size, however zoomed: where the trackpad has it, else where the station says
-          // (on the picture's layer where it is there: screen_pointer_layer)
+          // (on the picture's layer where it is there: screen_pointer_layer); the trackpad's pointer and the station's
+          // two of their own, each where its own says, so the one put in the other's place as the trackpad is chosen or
+          // left is that one coming, never the other moving there
           match pointer_now(s, u) {
             Some((ax, ay)) if on_layer is None =>
-              c.layer(fn() {
-                // in the station's shape, its hot spot where it points (the trackpad's, hidden there, an arrow)
-                let shape = match pointer_shape(s) {
-                  "none" => "default"
-                  sh => sh
-                }
-                let (hx, hy) = @sf.pointer_hotspot(shape)
-                c.box(
-                  tx=shown.x + ax * shown.w - hx,
-                  ty=shown.y + ay * shown.h - hy,
-                  fn() {
-                    c.image(
-                      @sf.pointer_image(c, shape~),
-                      w=Px(@sf.pointer_size),
-                      h=Px(@sf.pointer_size),
-                      fit=FitFill,
-                      bg=0L,
-                      fade=false,
-                    )
-                    |> ignore
-                  },
-                )
+              c.scope(if pad_points(s, u) { 1 } else { 0 }, fn() {
+                c.layer(fn() {
+                  // in the station's shape, its hot spot where it points (the trackpad's, hidden there, an arrow)
+                  let shape = match pointer_shape(s) {
+                    "none" => "default"
+                    sh => sh
+                  }
+                  let (hx, hy) = @sf.pointer_hotspot(shape)
+                  c.box(
+                    tx=shown.x + ax * shown.w - hx,
+                    ty=shown.y + ay * shown.h - hy,
+                    fn() {
+                      c.image(
+                        @sf.pointer_image(c, shape~),
+                        w=Px(@sf.pointer_size),
+                        h=Px(@sf.pointer_size),
+                        fit=FitFill,
+                        bg=0L,
+                        fade=false,
+                      )
+                      |> ignore
+                    },
+                  )
+                  |> ignore
+                })
                 |> ignore
               })
-              |> ignore
             _ => ()
           }
         }

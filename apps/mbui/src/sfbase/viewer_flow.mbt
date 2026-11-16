@@ -2,7 +2,7 @@
 // drive's, one a message names by its path), its lines shown as soon as its first part is here, the next part read as
 // the end of what has come scrolls near; never read whole first, never cut at a size. Code is coloured a piece at a
 // time (`code.ink` on each piece's whole lines, at most HIGHLIGHT_LIMIT), so a file of any size is. One that comes
-// whole in its first part is shown as any file read whole is (its bytes: Viewer::text_stage, a desktop's reader).
+// whole in its first part is shown as any file read whole is (its bytes: viewer_stage_node's code and words, the reader).
 
 ///|
 /// How much of it a part reads.
@@ -196,71 +196,3 @@ pub fn utf8_whole(b : Bytes) -> Int {
   }
 }
 
-///|
-/// Its pieces coloured as the core says of the file's language (asked as they come, each once), for the theme shown.
-pub fn Flow::ink(self : Flow, c : @ui.Ctx, lang : String) -> Unit {
-  guard lang != "" else { return }
-  let dark = @sf.theme().dark
-  if self.colored_dark != dark {
-    self.colored_dark = dark
-    for p in self.pieces {
-      if p.done {
-        // (its words again, to colour for this theme)
-        p.words = self.lines[p.from:p.to].iter().collect().join("\n")
-        p.done = false
-      }
-    }
-  }
-  for p in self.pieces {
-    guard !p.done else { continue }
-    match @sf.code_ink(c, p.words, lang) {
-      // (asked: plain until the core says)
-      None => ()
-      Some(ink) => {
-        match ink {
-          Some(ink) =>
-            for k, line in runs_by_line(@sf.ink_runs(p.words, ink, dark)) {
-              if p.from + k < p.to {
-                self.colored[p.from + k] = Some(line)
-              }
-            }
-          None => ()
-        }
-        p.done = true
-        p.words = ""
-      }
-    }
-  }
-}
-
-///|
-/// What has come of it, on the stage as a file's text is (Viewer::lines_stage): its lines and the one begun, coloured
-/// where they are; the next part read as its end comes near; why reading on failed over them.
-pub fn Viewer::flow_stage(self : Viewer, c : @ui.Ctx, src : Source, f : Flow, kind : PKind, stage : Int) -> Unit {
-  let v = self
-  ignore(f.parts.get())
-  tap_stage(c, v, stage)
-  let (_, _, language) = preview_kind(v.name)
-  f.ink(c, if kind == KCode { language } else { "" })
-  let count = f.lines.length() + (if f.tail != "" { 1 } else { 0 })
-  let near = v.lines_stage(
-    c,
-    kind,
-    count,
-    fn(k) { if k < f.lines.length() { f.lines[k] } else { f.tail } },
-    fn(k) {
-      match f.colored.get(k) {
-        Some(Some(line)) => Some(line)
-        _ => None
-      }
-    },
-    match f.failed.get() {
-      Some(e) => Some(@sf.t("web-main.preview.loadFailed", args=[("error", e)]))
-      None => None
-    },
-  )
-  if near && !f.reading && !f.whole() && f.failed.get() is None {
-    // (asked once the frame's builds are over)
-    c.tell("preview/read-on", fn() { v.read_on(src) })
-  }
-}

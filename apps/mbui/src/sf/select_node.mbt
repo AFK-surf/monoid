@@ -53,6 +53,7 @@ pub fn select_node(
     disabled~,
     fn(b, d) {
       b
+      .focus_ring_theme()
       .row(Is(true))
       .gap(Is(select_gap))
       .padding(Is((select_x, select_y, select_x, select_y)))

@@ -1,6 +1,6 @@
-// A lost station's conversations taken back (station/src/replica/restore.ts `takeBack`): the copy brought into
-// <data>/restore/ folded on disk and put into this station's database before its store opens, its files put where its
-// rows say, that this station took the lost one's place (`formerly.json`) and what came of it (`restored.json`).
+// A lost station's conversations taken back (station/test/reference/replica-restore.ts `takeBack`): the copy brought
+// into <data>/restore/ folded on disk and put into this station's database before its store opens, its files put where
+// its rows say, that this station took the lost one's place (`formerly.json`) and what came of it (`restored.json`).
 
 ///|
 priv suberror NotEmpty
@@ -8,6 +8,14 @@ priv suberror NotEmpty
 ///|
 priv suberror FilesPending {
   FilesPending(Int, String)
+}
+
+///|
+/// Its words as they are where it is said (`to_string`), not its type's name.
+impl Show for FilesPending with output(self, logger) {
+  match self {
+    FilesPending(_, m) => logger.write_string(m)
+  }
 }
 
 ///|

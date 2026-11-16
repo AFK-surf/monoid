@@ -851,8 +851,9 @@ pub(all) struct App {
   mut held : Int
   mut held_long : Bool
   /// what was said last of a write (a toast): its words, which saying it is (one said again is a new one), what it
-  /// offers to do (its button's words, "" none: an archive's 撤销) and what that does, said together (toast_later)
-  toast : @signals.Signal[ToastSaid]
+  /// offers to do (its button's words, "" none: an archive's 撤销) and what that does, said together (toast_later);
+  /// each window's of the run its own (window.mbt: said in the window it was said in)
+  mut toast : @signals.Signal[ToastSaid]
 }
 
 ///|
@@ -878,7 +879,12 @@ pub let app : App = {
   switch_way: 0,
   held: 0,
   held_long: false,
-  toast: @signals.signal(toast_none, same=fn(a, b) { physical_equal(a, b) }),
+  toast: toast_said_new(),
+}
+
+///|
+fn toast_said_new() -> @signals.Signal[ToastSaid] {
+  @signals.signal_ref(toast_none)
 }
 
 ///|
@@ -906,6 +912,18 @@ fn page_entry_left(serial : Int, p : Page) -> Unit {
     }
     page_sources.remove(serial)
     release_pending_chat(serial)
+    // (what was handed to it and never taken, its view made in the open that handed it, before the handing (a page
+    // made once as nodes, put up in a frame: an account's page's station, account and memberships its press asked):
+    // held while it showed, let go as it leaves, not by the tree's root for good)
+    match handed_readers.get(serial) {
+      Some(readers) => {
+        handed_readers.remove(serial)
+        for reader in readers {
+          reader.release()
+        }
+      }
+      None => ()
+    }
     match p {
       Chat(_) => left_page_sources[left_pages.length()] = chat
       _ => ()
@@ -1084,6 +1102,7 @@ pub fn reset() -> Unit {
   @ui.set_motion_chosen(None)
   @ui.set_haptics(true)
   felt_reset()
+  board_reset()
   app.filters.clear()
   app.menu = false
   app.switch_way = 0
@@ -1177,6 +1196,7 @@ pub fn reset() -> Unit {
   // words sent flying (flight.mbt)
   flights_reset()
   sent_from_at.clear()
+  sent_quotes_from_at.clear()
   // the chats' lists as kept while they show and where they were left (chat_list.mbt)
   readings.clear()
   kept_places.clear()
@@ -1197,6 +1217,7 @@ pub fn reset() -> Unit {
   // the page shown alone in a window of its own (window.mbt)
   lone_page.val = None
   windows_open.clear()
+  windows_here_show.clear()
 }
 
 ///|
@@ -1234,6 +1255,7 @@ pub fn back_label(p : Page) -> String {
     Setting(@settings.Route::Security) => @sf.t("web-pages.security.title")
     Setting(@settings.Route::Vault) => @sf.t("web-pages.vault.title")
     Setting(@settings.Route::VaultItems) => @sf.t("web-pages.vault.all")
+    Setting(@settings.Route::KeptFiles) => @sf.t("android-settings.files.title")
     Setting(@settings.Route::Connects(_)) | Place("connects") => @sf.t("android-settings.connects.title")
     Place("usage") => @sf.t("web-pages.settings.nav.usage")
     Place("vault") => @sf.t("android-settings.vault.title")

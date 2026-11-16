@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { installLegacySaid, legacySaidDrain, legacySaidStep, LEGACY_HAS_UNREAD, LEGACY_SAID_LATEST, LEGACY_UNREAD, publishLegacySaid } from "../src/store/legacy-said-build.ts";
+import { installLegacySaid, legacySaidDrain, legacySaidStep, LEGACY_HAS_UNREAD, LEGACY_SAID_LATEST, LEGACY_UNREAD, publishLegacySaid } from "./reference/backfill/legacy-said-build.ts";
 import { installSaidState } from "../src/store/said-state.ts";
 
 function database() {

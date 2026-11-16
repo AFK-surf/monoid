@@ -34,6 +34,9 @@ on:
       - "apps/mbui/src/host/station_install.h"
       - "apps/mbui/src/host/station_calls.h"
       - "apps/mbui/scripts/station_install_test.c"
+      - "apps/mbui/src/host/station_uninstall.h"
+      - "apps/mbui/scripts/station_uninstall_test.c"
+      - "bin/stillfail.ps1"
       - "apps/mbui/scripts/linux_station_test.*"
       - "libs/mbui/src/kitdemo/gallery/linkcheck.mbt"
       - "libs/mbui/src/kitdemo/gallery/noticecheck.mbt"
@@ -94,6 +97,8 @@ jobs:
           mkdir -p out
           cc -Wall -Werror -Isrc/host -I../../libs/mbui/src/host scripts/station_install_test.c -o out/station_install_test
           out/station_install_test
+          cc -Wall -Werror -Isrc/host scripts/station_uninstall_test.c -o out/station_uninstall_test
+          out/station_uninstall_test
       - uses: ./.github/actions/mbui-moonbit
       - name: kitdemo
         run: scripts/host_contract.sh linux build

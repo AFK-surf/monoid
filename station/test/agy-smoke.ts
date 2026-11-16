@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { AgyDriver, agyToken } from "../src/agents/agy.ts";
 import { LoginManager } from "../src/accounts/login.ts";
 import { checkProfile } from "../src/accounts/profiles.ts";
-import { isPosting, transcriptPath } from "../src/read/transcript.ts";
+import { isPosting, transcriptPath } from "./reference/transcript.ts";
 import type { OpenOptions, RuntimeEvent, TurnOutcome } from "../src/agents/runtime.ts";
 
 const codeFile = process.env.AGY_SMOKE_CODE_FILE;

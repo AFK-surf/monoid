@@ -713,7 +713,7 @@ fn archive_verdict(db : @sql.Db, thread : Json) -> Json raise {
 
 ///|
 /// views.ts `named`: a chat opened or opened from, as a row names it.
-fn opened_named(station : Json, session : Json, title : Json) -> Json {
+fn opened_named(station : Json, session : Json, title : Json, led~ : Bool = false) -> Json {
   let out : Map[String, Json] = Map([])
   if !(station is Null) {
     out["station"] = station
@@ -721,6 +721,9 @@ fn opened_named(station : Json, session : Json, title : Json) -> Json {
   out["session"] = session
   if !(title is Null) {
     out["title"] = title
+  }
+  if led {
+    out["led"] = Json::boolean(true)
   }
   Json::object(out)
 }
@@ -732,7 +735,7 @@ fn openers_opened(db : @sql.Db, ids : Array[String]?) -> (Map[String, Json], Map
   let openers : Map[String, Json] = Map([])
   let opened : Map[String, Array[Json]] = Map([])
   let list = match ids { Some(i) => [ids_json(i.map(Json::string))]; None => [] }
-  let base_openers = "SELECT o.child, o.parent_station, o.parent, o.opener_title, p.title AS parent_title FROM opened_chats o LEFT JOIN sessions p ON o.parent_station = '' AND p.key = o.parent"
+  let base_openers = "SELECT o.child, o.parent_station, o.parent, o.opener_title, o.led, p.title AS parent_title FROM opened_chats o LEFT JOIN sessions p ON o.parent_station = '' AND p.key = o.parent"
   let base_opened = "SELECT o.parent, o.child_station, o.child, o.title, c.title AS child_title FROM opened_chats o LEFT JOIN sessions c ON o.child_station = '' AND c.key = o.child"
   let station = (v : Json) => if v == Json::string("") { Json::null() } else { v }
   let or_else = (a : Json, b : Json) => if a is Null { b } else { a }
@@ -743,7 +746,8 @@ fn openers_opened(db : @sql.Db, ids : Array[String]?) -> (Map[String, Json], Map
   }
   if rows is Some(rows) {
     for r in rows {
-      openers[js_text(field(r, "child"))] = opened_named(station(field(r, "parent_station")), field(r, "parent"), or_else(field(r, "opener_title"), field(r, "parent_title")))
+      let led = field(r, "led") is Number(1.0, ..)
+      openers[js_text(field(r, "child"))] = opened_named(station(field(r, "parent_station")), field(r, "parent"), or_else(field(r, "opener_title"), field(r, "parent_title")), led~)
     }
   }
   let rows = try {
