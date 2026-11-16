@@ -122,11 +122,16 @@ fn place_reads(src : Source, ws : String, place : String) -> @sfbase.OpenReads {
       @sfbase.reads_then({ asks: [list], then: None }, fn(read) {
         let all = items(read(list), "items")
         let routes = all.map(fn(e) { profile_route(Some(e)) })
-        let route = match place_pick.get(place_key(ws, place)) {
-          Some(r) if routes.contains(r) => Some(r)
-          _ => None
+        // (none listed: no page; the overview, by default and where nothing listed is picked, with its pools)
+        let overview : @sfbase.OpenReads = { asks: [("profilesOverview", { "scope": of })], then: None }
+        if all.length() == 0 {
+          return None
         }
-        route.map(fn(r) { @sfbase.route_reads(src, ws, r) })
+        match place_pick.get(place_key(ws, place)) {
+          Some(Profiles("")) | None => Some(overview)
+          Some(r) if routes.contains(r) => Some(@sfbase.route_reads(src, ws, r))
+          _ => Some(overview)
+        }
       })
     }
     _ => @sfbase.page_reads(src, ws, Place(place), true)

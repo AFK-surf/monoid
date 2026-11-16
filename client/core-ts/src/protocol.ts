@@ -86,6 +86,7 @@ export const TOPICS: Record<string, Spec> = {
   host: { station: S },
   memory: { station: S },
   presets: { station: S },
+  profilePace: { station: S },
   // What of a station moves to another (`to`, its id; "" none chosen yet), the items of `module` open, `limit` of them
   // (move.ts: a page at a time as its list is scrolled, MOVE_SHOWN_MOST at most).
   stationMove: { station: S, to: ["string", "def"], module: ["string", "def"], limit: ["u32", "skip"] },
@@ -123,6 +124,9 @@ export const TOPICS: Record<string, Spec> = {
   // or by a profile of it on a station (`station`, `id`), as a profile's page is opened.
   profiles: { scope: S },
   profile: { scope: S, key: ["string", "skip"], station: ["string", "skip"], id: ["string", "skip"] },
+  // The Profile overview's pools (views/profiles-overview.ts), and what each station said of its accounts' last hours
+  // (GET /profiles/pace), read while the overview shows.
+  profilesOverview: { scope: S },
   // A list's connects, each its row (ConnectRow); one connect's page asks that connect (ConnectView), and a
   // single-session one's page what its choice of a session lists, `connectCandidates`, while it can open that choice.
   connects: { scope: S, mine: ["bool", "def"] },
@@ -261,7 +265,7 @@ export function sameTopic(a: Topic, b: Topic): boolean {
   return topicKey(a) === topicKey(b);
 }
 
-const STATION_TOPICS = new Set(["link", "overview", "sessions", "host", "net", "way", "threads", "chatRows", "jobs", "archivedRows", "stationUsage", "stationResources", "session", "live", "thread", "letters", "slackApp", "jobLog", "drive", "screens", "terminals", "screenCard", "machineLogins", "machineLogin", "machineLoginScreen", "stationSearch", "memory", "presets", "stationMove", "linkPreview", "filePeek", "messagePeek"]);
+const STATION_TOPICS = new Set(["link", "overview", "sessions", "host", "net", "way", "threads", "chatRows", "jobs", "archivedRows", "stationUsage", "stationResources", "session", "live", "thread", "letters", "slackApp", "jobLog", "drive", "screens", "terminals", "screenCard", "machineLogins", "machineLogin", "machineLoginScreen", "stationSearch", "memory", "presets", "profilePace", "stationMove", "linkPreview", "filePeek", "messagePeek"]);
 const VIEWS = new Set(["chats", "chatRow", "stations", "station", "stationPart", "profiles", "profile", "connects", "connect", "connectCandidates", "chat", "history", "agentCard", "stationNet", "chatSearch", "search", "archive", "chatJobs", "chatLetters", "chatThings", "chatOutline", "imageNear", "longJobs", "workspaceMarks", "decisions", "usage", "fleet", "railCard", "stationUpdates", "settings", "resources", "adminList", "adminItem", "adminOverview", "adminRelays", "workspaceWays"]);
 
 /// The station a station topic belongs to; null for the account topics, the core's own and the views.

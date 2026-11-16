@@ -82,6 +82,9 @@ const OVER_READ: Record<string, number> = {
   "chats mine": 80,
   profile: 72,
   "profile key": 72,
+  // (the Profile overview's pools, of every account's row as the list reads them, kept beside each station's part: a
+  // few pools of hours whatever the accounts, so what it sends does not grow with them, what it reads does as the list's)
+  profilesOverview: 32,
   connect: 216,
   connectCandidates: 112,
   newChat: 40,
@@ -133,6 +136,7 @@ const GROWS: Record<string, Partial<Record<Knob, number>>> = {
   "stationPart logins": { profiles: 64 },
   "stationPart updates": { profiles: 64 },
   profiles: { profiles: 80, stations: 96 },
+  profilesOverview: { profiles: 80, stations: 96 },
   profile: { profiles: 200, stations: 216 },
   "profile key": { profiles: 200, stations: 216 },
   newChat: { profiles: 64 },

@@ -189,7 +189,15 @@ pub fn route_reads(src : Source, ws : String, r : @settings.Route) -> OpenReads 
         }),
       }
     }
-    Profiles("") => reads_of([stations, ("profiles", scope)])
+    // (and the Profile overview's pools where it shows them in the list's place: 概览 switched to)
+    Profiles("") =>
+      reads_of(
+        if @signals.untracked(fn() { @settings.profiles_narrow_overview.get() }) {
+          [stations, ("profiles", scope), ("profilesOverview", scope)]
+        } else {
+          [stations, ("profiles", scope)]
+        },
+      )
     Profiles(address) => reads_of([stations, part(address, "profiles"), part(address, "machineLogins")])
     Profile(station, id) => reads_of(profile_page_asks(ws, station, id))
     Connects(_) => reads_of([("connects", { "scope": of, "mine": Json::boolean(false) }), stations])
@@ -287,6 +295,9 @@ pub fn page_reads(src : Source, ws : String, p : Page, wide : Bool) -> OpenReads
     }
     // (a place of the rail's that is a settings' page: that page's; the stations' and the profiles' with what is picked
     // in them are the wide frame's own, sfdesk's pane_opens)
+    // (小屏's Profile place on 概览: its pools as well)
+    Place("profiles") if !wide && @signals.untracked(fn() { @settings.profiles_place_overview.get() }) =>
+      reads_of([stations, ("profiles", { "scope": of }), ("profilesOverview", { "scope": of })])
     Place(name) =>
       match @settings.route_of(name) {
         Some(r) => route_reads(src, ws, r)

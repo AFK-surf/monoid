@@ -54,6 +54,7 @@ import { stationUpdates } from "./station-updates.ts";
 import { chatsCard, usageCard } from "./rail-cards.ts";
 import { resourcesView } from "./resources.ts";
 import { stationProfileSummary, workspaceProfiles } from "./profiles.ts";
+import { profilesOverview } from "./profiles-overview.ts";
 import { settingsView } from "./settings.ts";
 import { waysView, type WaysView } from "./ways.ts";
 import { keptWays } from "./ways-stations.ts";
@@ -64,6 +65,9 @@ import * as xshare from "./xshare.ts";
 import * as memberships from "./memberships.ts";
 import * as publish from "./publish.ts";
 import { type SearchSource, searchView, stationTopic } from "./search.ts";
+
+/// An hour, in ms (the Profile overview is made again at each).
+const HOUR = 3_600_000;
 
 // deno-lint-ignore no-explicit-any
 type J = any;
@@ -91,7 +95,7 @@ export const WINDOW_UNTOLD = 50;
 /// (`stationsWhole` is the core's own: a scope's stations, each its page with the models it can run, as `stations` was
 /// before its items were rows. choose.ts reads it for a model's choice and its borrowing; no UI asks it, and protocol.ts
 /// does not offer it.)
-const VIEW_TOPICS = new Set(["chats", "chatRow", "chatSearch", "search", "stations", "station", "stationPart", "stationsWhole", "profiles", "profilesWhole", "profile", "connects", "connect", "connectCandidates", "chat", "history", "agentCard", "stationNet", "archive", "workspaceMarks", "chatJobs", "chatLetters", "chatThings", "chatOutline", "imageNear", "longJobs", "usage", "fleet", "railCard", "stationUpdates", "settings", "resources", "adminList", "adminItem", "adminOverview", "adminRelays", "workspaceWays"]);
+const VIEW_TOPICS = new Set(["chats", "chatRow", "chatSearch", "search", "stations", "station", "stationPart", "stationsWhole", "profiles", "profilesWhole", "profilesOverview", "profile", "connects", "connect", "connectCandidates", "chat", "history", "agentCard", "stationNet", "archive", "workspaceMarks", "chatJobs", "chatLetters", "chatThings", "chatOutline", "imageNear", "longJobs", "usage", "fleet", "railCard", "stationUpdates", "settings", "resources", "adminList", "adminItem", "adminOverview", "adminRelays", "workspaceWays"]);
 
 /// What a chat row's columns say that the views find rows by (db/account.ts): how urgent it is for its person
 /// (workspace marks), whether it asks something of them, what its agents are doing as its list's row says it.
@@ -1288,6 +1292,11 @@ export class Views implements Owner {
         scope = view.scope as string;
         perStation = (s) => [{ topic: "link", station: s }, { topic: "overview", station: s }];
         break;
+      case "profilesOverview":
+        // (and each station's accounts' last hours, read while the overview shows: its `profilePace`)
+        scope = view.scope as string;
+        perStation = (s) => [{ topic: "link", station: s }, { topic: "overview", station: s }, { topic: "profilePace", station: s }];
+        break;
       case "archive":
         scope = view.scope as string;
         perStation = (s) => [{ topic: "archivedRows", station: s }, { topic: "link", station: s }, ...(typeof view.q === "string" && view.q.trim() !== "" ? [archiveSearch(s, view.q)] : [])];
@@ -1825,6 +1834,20 @@ export class Views implements Owner {
         return this.#profilesView(view.scope as string);
       case "profile":
         return this.#profileOf(view);
+      case "profilesOverview": {
+        // The Profile overview's pools (views/profiles-overview.ts) of the accounts as the list's rows keep them (each
+        // window's percent left and its refill's moment: no overview decorated whole) and their stations' hours, made
+        // again as either changes and at each hour (its hours are the clock's).
+        const stations0 = this.#stationsOr(view.scope as string);
+        if (stations0 === undefined || !Array.isArray(stations0)) return stations0 as Value | undefined;
+        const key = profileRowKey();
+        const listed = workspaceProfiles(stations0.map((s) => ({ station: s.address, id: s.id, name: s.name, online: s.online, joined: s.joined, overview: this.#profileRowsOfStation(s.address, key) })));
+        const now = this.#core.host.nowMs();
+        this.#againIn(HOUR - (now % HOUR));
+        const stations = new Map(stations0.map((s) => [s.address, s.online]));
+        const pace = (station: string) => (stations.get(station) === true ? this.ok({ topic: "profilePace", station }) : undefined);
+        return { ok: profilesOverview(arr(listed.items), pace, now, this.#core.host.utcOffsetMin(now)) };
+      }
       case "settings": {
         // Each station's name, whether it is up and its overview: what the settings say of them, not their pages.
         const stations = this.#stationsOr(view.scope as string);

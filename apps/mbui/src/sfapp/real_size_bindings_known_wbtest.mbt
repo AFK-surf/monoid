@@ -32,6 +32,8 @@
 // reaches and the rows that come or go, where the old view built the list again uncounted; each row's keys mbui's
 // headless buttons (taking a press and the focus by whether they may) and where and when it was archived read out as
 // how (`how`).
+// 概览's pools the core's `profilesOverview` since (sfpages profiles_overview.mbt), a station down tells them apart:
+// its pills, badges and charts that changed (profilesOverview/down: 8).
 ///|
 let real_size_bindings_known : Map[String, Int] = {
   "phone home chats/down": 27,
@@ -721,6 +723,7 @@ let real_size_bindings_known : Map[String, Int] = {
   "wide place-stations stationNet/sample": 6,
   "wide place-stations resources/sample": 6,
   "wide place-profiles profiles/down": 156,
+  "wide place-profiles profilesOverview/down": 8,
   "wide newchat-station stationNet/sample": 1,
   "wide newchat-preset-new-add presets/preset": 40,
   "wide newchat-preset-new-clones newChat/host": 2,

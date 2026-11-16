@@ -1427,6 +1427,8 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
     // (one chat's whole row, of the same made-up chats: what the list's rows are cut from)
     "chatRow" => fixture_chat_row(f, params)
     "fleet" => Some(fixture_fleet(f))
+    // (the Profile overview's pools, as the core makes them of the made-up accounts: the settings' fixture_overview)
+    "profilesOverview" => Some(@settings.fixture_overview())
     "railCard" => fixture_rail_card(params)
     "search" => fixture_search(f, params)
     // the archive's chats (the settings' made-up ones): the wide frame's sidebar lists them

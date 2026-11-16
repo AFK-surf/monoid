@@ -890,7 +890,8 @@ let pl_wait_room : @ui.Style = @ui.css("w=Full px=S4 py=S3")
 /// The workspace's Profile page in node `v`: its accounts' list or 概览 (`overview`, which of the two: the bottom bar's
 /// place keeps its own, a pushed page and 中屏's and 大屏's theirs), one page whichever it shows, so switching between
 /// them keeps the page, its frame's top bar and what it reads: the accounts and the stations held by the page itself
-/// (`src.owned_by`, let go with it), so neither is let go as one is made in the other's place.
+/// (`src.owned_by`, let go with it), so neither is let go as one is made in the other's place; 概览 switched to once
+/// its pools are answered too (`@settings.overview_switch`), the list shown meanwhile.
 pub fn profiles_page_node(
   v : @view.View,
   src : Source,
@@ -906,7 +907,8 @@ pub fn profiles_page_node(
 ) -> Unit {
   v.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
   let held = src.owned_by(v)
-  let scope = { "scope": Json::string(@signals.untracked(here).workspace) }
+  let ws = @signals.untracked(here).workspace
+  let scope = { "scope": Json::string(ws) }
   held.prefetch("profiles", scope) |> ignore
   held.prefetch("stations", scope) |> ignore
   v.pick(fn() { overview.get() }, fn(p, shown) {
@@ -915,9 +917,12 @@ pub fn profiles_page_node(
       profiles_overview_node(p, core, here, on_back~, frame~, said?, width?, tips?, bar_actions?, on_show_accounts=fn() {
         overview.set(false)
       })
+      // (what the switch asked ahead, its pools, read anew by the overview just made: overview_switch)
+      @sfbase.shown_read("profiles-list\u{1}" + ws)
     } else {
+      // (概览 once what it shows is answered, the list meanwhile: overview_switch)
       profiles_list_node(p, core, here, "", on_back~, frame~, said?, width?, tips?, bar_actions?, on_show_overview=fn() {
-        overview.set(true)
+        (@settings.overview_switch.val)(ws, fn() { overview.set(true) })
       })
     }
   })

@@ -2,33 +2,75 @@
 // Minimal, graphic-first summary for staggered account reset schedules:
 // - Wide (`宽排法`): default view of `Place("profiles")`, listed first in the profiles sidebar (`概览`).
 // - Narrow (`窄排法`): `账号 | 概览` switch at the top of `Profiles` (defaults to the original `账号` list).
-// Two synchronized time-series charts per model pool:
-// 1. `额度与恢复` (Past 48h -> `现在` -> 7-day stepped reset forecast, red outage bands on `0%`);
-// 2. `消耗速度` (Zero-baseline diverging bars: positive green = slower than recovery, negative red = exhausts early).
+// Two charts per model pool, both the core's (`profilesOverview`), hour by hour:
+// 1. `额度与恢复`: what the pool had left the last 48 hours as its accounts were read, and the week on as foreseen
+//    (refills stepping up, red where it goes without);
+// 2. `消耗速度`: each of the last 24 hours and the next 24 against the most it could spend an hour and last the week
+//    (0, the middle line), in %/h: above it green (spent less than that), under it red (more, or going without).
 
 ///|
-priv struct PoolSlot {
-  weight : Double
-  raw_week_left : Double
-  cool_hours : Double
-  locked_hours : Double
-  reset_hours : Double
-  cycle_hours : Double
-  broken : Bool
-}
-
-///|
+/// A model's pool as the core makes it (`profilesOverview`: client/core-ts views/profiles-overview.ts).
 #derive(Eq)
 priv struct ModelPool {
   title : String
   ready : Int
   total : Int
   now_pct : Int
-  net_today : Int
   exhaust_hours : Int?
+  /// what it spends an hour now against what it could keep up (%/h): negative over it, or going without
+  net_now : Double
+  over_pace : Bool
+  /// percent left an hour apart: 48 hours back (0), now (48), 168 on (216)
   traj : Array[Double]
+  /// each of the 168 hours on, whether it goes without (of the core's `starveSpans`)
   will_starve : Array[Bool]
-  net_bars : Array[Double]
+  /// each hour against what it could keep up (%/h): the last 24 (0..23), the next 24 as foreseen (24..47)
+  hourly_net : Array[Double]
+}
+
+///|
+fn ov_num(v : Json?, key : String) -> Double {
+  match field(v, key) {
+    Some(Number(n, ..)) => n
+    _ => 0.0
+  }
+}
+
+///|
+fn ov_pool_of(j : Json) -> ModelPool {
+  let v = Some(j)
+  let nums = fn(key : String) -> Array[Double] {
+    items(v, key).map(fn(x) {
+      match x {
+        Number(n, ..) => n
+        _ => 0.0
+      }
+    })
+  }
+  {
+    title: text(v, "title"),
+    ready: count(v, "ready"),
+    total: count(v, "total"),
+    now_pct: count(v, "nowPct"),
+    exhaust_hours: match field(v, "exhaustHours") {
+      Some(Number(n, ..)) => Some(n.to_int())
+      _ => None
+    },
+    net_now: ov_num(v, "netPerHour"),
+    over_pace: flag(v, "overPace"),
+    traj: nums("traj"),
+    will_starve: {
+      let starve = Array::make(168, false)
+      let spans = nums("starveSpans")
+      for i = 0; i + 1 < spans.length(); i = i + 2 {
+        for h = spans[i].to_int(); h < spans[i + 1].to_int() && h < 168; h = h + 1 {
+          starve[h] = true
+        }
+      }
+      starve
+    },
+    hourly_net: nums("hourlyNet"),
+  }
 }
 
 ///|
@@ -171,60 +213,6 @@ fn ov_is_main_week(mk : String, sc : String, lbl : String) -> Bool {
 }
 
 ///|
-fn ov_is_main_short(mk : String, sc : String, lbl : String) -> Bool {
-  if sc != "" {
-    return false
-  }
-  if mk == "5H" || mk == "3D" || mk == "2H" {
-    return true
-  }
-  !lbl.contains("·") && (lbl.contains("小时") || lbl.contains("hour") || lbl.contains("5h"))
-}
-
-///|
-fn ov_entry_status(e : Json?) -> (Bool, Bool, Bool, Bool, String) {
-  let broken = ov_needs_fix(e)
-  if broken {
-    return (false, false, false, true, "")
-  }
-  let p = field(e, "profile")
-  let q = field(p, "quota")
-  if text(q, "state") == "blocked" {
-    return (false, false, true, false, text(q, "detail"))
-  }
-  let wins = if text(q, "state") == "ok" { items(q, "windows") } else { [] }
-  let mut week_dead = false
-  let mut short_dead = false
-  let mut week_refill = ""
-  let mut short_refill = ""
-  for w in wins {
-    let wv = Some(w)
-    let sc = text(wv, "scope")
-    let mk = text(wv, "mark")
-    let lbl = text(wv, "label")
-    let left = count(wv, "left")
-    if ov_is_main_week(mk, sc, lbl) && left <= 0 {
-      week_dead = true
-      if week_refill == "" {
-        week_refill = text(wv, "refills")
-      }
-    } else if ov_is_main_short(mk, sc, lbl) && left <= 0 {
-      short_dead = true
-      if short_refill == "" {
-        short_refill = text(wv, "refills")
-      }
-    }
-  }
-  if week_dead {
-    (false, false, true, false, week_refill)
-  } else if short_dead {
-    (false, true, false, false, short_refill)
-  } else {
-    (flag(e, "usable"), false, false, false, "")
-  }
-}
-
-///|
 fn ov_refill_minutes(s : String) -> Int {
   if s == "" {
     return 999999
@@ -285,51 +273,10 @@ fn ov_hours_short(h : Int) -> String {
 }
 
 ///|
-fn ov_signed_pct(v : Int) -> String {
-  let unit = if ov_en() { "%/d" } else { "%/天" }
-  if v > 0 {
-    "+" + v.to_string() + unit
-  } else {
-    v.to_string() + unit
-  }
-}
-
-///|
 fn ov_account_name(e : Json?) -> String {
   let p = field(e, "profile")
   let n = text(p, "name")
   if n != "" { n } else { text(e, "title") }
-}
-
-///|
-fn ov_plan_weight(e : Json?) -> Double {
-  let g = text(e, "group")
-  let pl = text(field(e, "profile"), "planText")
-  if g == "claude" {
-    if pl.contains("20x") {
-      20.0
-    } else if pl.contains("5x") {
-      5.0
-    } else {
-      1.0
-    }
-  } else if g == "chatgpt" {
-    if pl.contains("200") || pl.contains("Pro") {
-      10.0
-    } else if pl.contains("Team") {
-      2.0
-    } else {
-      1.0
-    }
-  } else if g == "agy" || g == "google" {
-    if pl.contains("Ultra") {
-      5.0
-    } else {
-      1.0
-    }
-  } else {
-    1.0
-  }
 }
 
 ///|
@@ -370,25 +317,6 @@ fn ov_issue_action_label(e : Json?) -> String {
 }
 
 ///|
-fn ov_find_window_ext(e : Json?, pred : (String, String, String) -> Bool) -> (Int, String, Double)? {
-  let q = field(field(e, "profile"), "quota")
-  if text(q, "state") != "ok" {
-    return None
-  }
-  for w in items(q, "windows") {
-    let wv = Some(w)
-    let mk = text(wv, "mark")
-    let sc = text(wv, "scope")
-    let lbl = text(wv, "label")
-    if pred(mk, sc, lbl) {
-      let cyc = if mk == "M" || lbl.contains("每月") || lbl.contains("Monthly") { 720.0 } else { 168.0 }
-      return Some((count(wv, "left"), text(wv, "refills"), cyc))
-    }
-  }
-  None
-}
-
-///|
 fn ov_expiring_waste(e : Json?) -> (Int, String)? {
   if ov_needs_fix(e) || text(e, "group") == "key" {
     return None
@@ -413,520 +341,6 @@ fn ov_expiring_waste(e : Json?) -> (Int, String)? {
     }
   }
   None
-}
-
-///|
-fn ov_reset_hours_of(rf : String, cycle_h : Double) -> Double {
-  let m = ov_refill_minutes(rf)
-  if m >= 900000 {
-    cycle_h / 2.0
-  } else {
-    let h = m.to_double() / 60.0
-    if h < 1.0 { 1.0 } else if h > cycle_h { cycle_h } else { h }
-  }
-}
-
-///|
-fn ov_starves_in_window(
-  shares : Array[Double],
-  init_tanks_at_start : Array[Double],
-  cool_until : Array[Double],
-  lock_until : Array[Double],
-  reset_h : Array[Int],
-  cycle_h : Array[Int],
-  start_h : Int,
-  end_h : Int,
-  test_burn_per_day : Double,
-) -> Bool {
-  let n = shares.length()
-  let tanks = init_tanks_at_start.copy()
-  let burn_step = test_burn_per_day / 24.0
-  let mut h = start_h + 1
-  while h <= end_h {
-    let hd = h.to_double()
-    for i in 0..<n {
-      let cyc = cycle_h[i]
-      if h >= reset_h[i] && (h - reset_h[i]) % cyc == 0 {
-        tanks[i] = shares[i]
-      }
-    }
-    let mut rem = burn_step
-    let mut pass = 0
-    while rem > 0.0001 && pass < n {
-      let mut best = -1
-      let mut best_next = 999999
-      for i in 0..<n {
-        if hd >= cool_until[i] && hd >= lock_until[i] && tanks[i] > 0.0001 {
-          let cyc = cycle_h[i]
-          let rem_to_rst = (reset_h[i] - (h % cyc) + cyc) % cyc
-          if rem_to_rst < best_next {
-            best_next = rem_to_rst
-            best = i
-          }
-        }
-      }
-      if best < 0 {
-        break
-      }
-      let take = @cmp.minimum(rem, tanks[best])
-      tanks[best] = tanks[best] - take
-      rem -= take
-      pass += 1
-    }
-    if rem > 0.02 {
-      return true
-    }
-    let mut avail = 0.0
-    for i in 0..<n {
-      if hd >= cool_until[i] && hd >= lock_until[i] {
-        avail += tanks[i]
-      }
-    }
-    if avail <= 0.05 && test_burn_per_day > 0.1 {
-      return true
-    }
-    h += 1
-  }
-  false
-}
-
-///|
-fn ov_finalize_pool(
-  title : String,
-  recs : Array[(PoolSlot, Bool)],
-) -> ModelPool? {
-  let total = recs.length()
-  if total == 0 {
-    return None
-  }
-  let mut ready = 0
-  let active_slots : Array[PoolSlot] = []
-  let mut active_w = 0.0
-
-  for r in recs {
-    let (slot, is_ready) = r
-    if is_ready {
-      ready += 1
-    }
-    if !slot.broken {
-      active_slots.push(slot)
-      active_w += slot.weight
-    }
-  }
-
-  if active_slots.length() == 0 || active_w <= 0.0 {
-    return Some({
-      title,
-      ready: 0,
-      total,
-      now_pct: 0,
-      net_today: -15,
-      exhaust_hours: Some(0),
-      traj: Array::make(217, 0.0),
-      will_starve: Array::make(168, true),
-      net_bars: Array::make(9, -15.0),
-    })
-  }
-
-  let n = active_slots.length()
-  let shares : Array[Double] = []
-  let cool_until : Array[Double] = []
-  let lock_until : Array[Double] = []
-  let reset_h : Array[Int] = []
-  let cycle_h : Array[Int] = []
-  let rate_pct_h : Array[Double] = []
-  let mut burn_h = 0.0
-  let mut weighted_cycle_days = 0.0
-
-  for s in active_slots {
-    let sh = s.weight / active_w * 100.0
-    shares.push(sh)
-    cool_until.push(s.cool_hours)
-    lock_until.push(s.locked_hours)
-    let cyc_i = @cmp.maximum(24, s.cycle_hours.round().to_int())
-    cycle_h.push(cyc_i)
-    let rh = s.reset_hours.round().to_int()
-    let rh_clamped = if rh < 1 { 1 } else if rh > cyc_i { cyc_i } else { rh }
-    reset_h.push(rh_clamped)
-    let elapsed = @cmp.maximum(16.0, @cmp.minimum(s.cycle_hours - 12.0, s.cycle_hours - s.reset_hours))
-    let used_pct = @cmp.maximum(0.0, 100.0 - s.raw_week_left)
-    let r_h = used_pct / elapsed
-    rate_pct_h.push(r_h)
-    burn_h += sh * r_h / 100.0
-    weighted_cycle_days += sh * (s.cycle_hours / 24.0) / 100.0
-  }
-
-  let burn_per_day_f = burn_h * 24.0
-  let traj = Array::make(217, 0.0)
-
-  for k in 1..=48 {
-    let kd = k.to_double()
-    let mut sum_past = 0.0
-    for i in 0..<n {
-      let age_now = active_slots[i].cycle_hours - active_slots[i].reset_hours
-      let pct_then = if kd <= age_now {
-        @cmp.minimum(100.0, active_slots[i].raw_week_left + rate_pct_h[i] * kd)
-      } else {
-        let before_rst = kd - age_now
-        @cmp.maximum(4.0, @cmp.minimum(95.0, 18.0 + rate_pct_h[i] * (before_rst - 1.0)))
-      }
-      sum_past += shares[i] * pct_then / 100.0
-    }
-    traj[48 - k] = @cmp.minimum(100.0, @cmp.maximum(0.0, sum_past))
-  }
-
-  let tanks : Array[Double] = []
-  for i in 0..<n {
-    tanks.push(shares[i] * active_slots[i].raw_week_left / 100.0)
-  }
-  let day_snapshots : Array[Array[Double]] = [tanks.copy()]
-
-  let mut now_avail = 0.0
-  for i in 0..<n {
-    if cool_until[i] <= 0.0 && lock_until[i] <= 0.0 {
-      now_avail += tanks[i]
-    }
-  }
-  traj[48] = now_avail
-
-  let mut exhaust_hours : Int? = if now_avail <= 0.5 && burn_per_day_f > 1.0 { Some(0) } else { None }
-
-  for h in 1..=168 {
-    let hd = h.to_double()
-    for i in 0..<n {
-      let cyc = cycle_h[i]
-      if h >= reset_h[i] && (h - reset_h[i]) % cyc == 0 {
-        tanks[i] = shares[i]
-      }
-    }
-    let mut rem = burn_h
-    let mut pass = 0
-    while rem > 0.0001 && pass < n {
-      let mut best = -1
-      let mut best_next = 999999
-      for i in 0..<n {
-        if hd >= cool_until[i] && hd >= lock_until[i] && tanks[i] > 0.0001 {
-          let cyc = cycle_h[i]
-          let rem_to_rst = (reset_h[i] - (h % cyc) + cyc) % cyc
-          if rem_to_rst < best_next {
-            best_next = rem_to_rst
-            best = i
-          }
-        }
-      }
-      if best < 0 {
-        break
-      }
-      let take = @cmp.minimum(rem, tanks[best])
-      tanks[best] = tanks[best] - take
-      rem -= take
-      pass += 1
-    }
-
-    let mut avail = 0.0
-    for i in 0..<n {
-      if hd >= cool_until[i] && hd >= lock_until[i] {
-        avail += tanks[i]
-      }
-    }
-    traj[48 + h] = @cmp.minimum(100.0, @cmp.maximum(0.0, avail))
-    if exhaust_hours is None && avail <= 0.3 && burn_per_day_f > 1.0 {
-      exhaust_hours = Some(h)
-    }
-    if h % 24 == 0 && day_snapshots.length() < 8 {
-      day_snapshots.push(tanks.copy())
-    }
-  }
-
-  let will_starve = Array::make(168, false)
-  for h in 0..<168 {
-    let v0 = traj[48 + h]
-    let v1 = traj[48 + h + 1]
-    if v1 > v0 + 1.0 {
-      will_starve[h] = false
-    } else if v0 <= 0.5 || v1 <= 0.5 {
-      will_starve[h] = true
-    } else {
-      let mut hits_zero = false
-      let mut k = h + 1
-      while k < 168 {
-        if traj[48 + k + 1] > traj[48 + k] + 1.5 {
-          break
-        }
-        if traj[48 + k] <= 0.4 {
-          hits_zero = true
-          break
-        }
-        k += 1
-      }
-      will_starve[h] = hits_zero
-    }
-  }
-
-  let net_bars : Array[Double] = []
-  let steady_rec = 100.0 / @cmp.maximum(1.0, weighted_cycle_days)
-  net_bars.push(steady_rec - burn_per_day_f * 0.92)
-  net_bars.push(steady_rec - burn_per_day_f)
-
-  for d in 0..<7 {
-    let start_h = d * 24
-    let end_h = @cmp.minimum(168, start_h + 96)
-    let snap = day_snapshots[d].copy()
-    let mut lo = 0.0
-    let mut hi = 60.0
-    for _ in 0..<12 {
-      let mid = (lo + hi) / 2.0
-      if ov_starves_in_window(shares, snap, cool_until, lock_until, reset_h, cycle_h, start_h, end_h, mid) {
-        hi = mid
-      } else {
-        lo = mid
-      }
-    }
-    let net_v = lo - burn_per_day_f
-    let actual_starves = ov_starves_in_window(
-      shares,
-      snap,
-      cool_until,
-      lock_until,
-      reset_h,
-      cycle_h,
-      start_h,
-      end_h,
-      burn_per_day_f,
-    )
-    let adjusted = if actual_starves && net_v >= -0.8 {
-      -1.5
-    } else if !actual_starves && net_v < 0.5 {
-      1.2
-    } else {
-      net_v
-    }
-    net_bars.push(adjusted)
-  }
-
-  Some({
-    title,
-    ready,
-    total,
-    now_pct: traj[48].round().to_int(),
-    net_today: net_bars[2].round().to_int(),
-    exhaust_hours,
-    traj,
-    will_starve,
-    net_bars,
-  })
-}
-
-///|
-fn ov_is_claude_gpt_win(mk : String, sc : String, lbl : String) -> Bool {
-  sc == "Claude / GPT" || mk == "Claude / GPT" || lbl.contains("Claude / GPT")
-}
-
-///|
-fn ov_is_fable_win(mk : String, sc : String, lbl : String) -> Bool {
-  sc == "Fable" || sc == "fable" || mk == "Fable" || lbl.contains("Fable")
-}
-
-///|
-fn ov_is_gemini_week(mk : String, sc : String, lbl : String) -> Bool {
-  let is_gem = sc == "Gemini" || sc == "gemini" || mk == "Gemini" || lbl.contains("Gemini")
-  is_gem &&
-  (mk == "W" || lbl.contains("每周") || lbl.contains("Weekly") || (sc == "" && mk == "Gemini" && !lbl.contains("小时") && !lbl.contains("h ")))
-}
-
-///|
-fn ov_is_gemini_short(mk : String, sc : String, lbl : String) -> Bool {
-  let is_gem = sc == "Gemini" || sc == "gemini" || mk == "Gemini" || lbl.contains("Gemini")
-  is_gem && (mk == "5H" || lbl.contains("小时") || lbl.contains("hour") || lbl.contains("5h"))
-}
-
-///|
-fn ov_build_pools(list : Array[Json]) -> Array[ModelPool] {
-  let pools : Array[ModelPool] = []
-
-  // 1. Claude Pool
-  let cl_recs : Array[(PoolSlot, Bool)] = []
-  for e in list {
-    let ev = Some(e)
-    let g = text(ev, "group")
-    if g == "claude" {
-      let wt = ov_plan_weight(ev)
-      let (is_ready, is_short, is_week_dead, is_broken, hint_rf) = ov_entry_status(ev)
-      let w_win = ov_find_window_ext(ev, ov_is_main_week)
-      if is_broken {
-        cl_recs.push(({ weight: wt, raw_week_left: 0.0, cool_hours: 0.0, locked_hours: 0.0, reset_hours: 84.0, cycle_hours: 168.0, broken: true }, false))
-      } else if is_week_dead {
-        let cyc = match w_win { Some((_, _, c)) => c; None => 168.0 }
-        cl_recs.push(({ weight: wt, raw_week_left: 0.0, cool_hours: 0.0, locked_hours: 0.0, reset_hours: ov_reset_hours_of(hint_rf, cyc), cycle_hours: cyc, broken: false }, false))
-      } else {
-        let (w_left, w_rf, cyc) = match w_win { Some(t3) => t3; None => (if is_ready { 100 } else { 0 }, "", 168.0) }
-        let cool_h = if is_short { @cmp.maximum(0.25, ov_refill_minutes(hint_rf).to_double() / 60.0) } else { 0.0 }
-        cl_recs.push(({ weight: wt, raw_week_left: w_left.to_double(), cool_hours: cool_h, locked_hours: 0.0, reset_hours: ov_reset_hours_of(w_rf, cyc), cycle_hours: cyc, broken: false }, !is_short && is_ready))
-      }
-    } else if g == "agy" || g == "google" {
-      match ov_find_window_ext(ev, ov_is_claude_gpt_win) {
-        Some((w_left, w_rf, cyc)) => {
-          let wt = ov_plan_weight(ev)
-          let broken = ov_needs_fix(ev)
-          let slot = {
-            weight: wt,
-            raw_week_left: if broken { 0.0 } else { w_left.to_double() },
-            cool_hours: 0.0,
-            locked_hours: 0.0,
-            reset_hours: ov_reset_hours_of(w_rf, cyc),
-            cycle_hours: cyc,
-            broken,
-          }
-          cl_recs.push((slot, !broken && w_left > 0))
-        }
-        None => ()
-      }
-    }
-  }
-  match ov_finalize_pool("Claude", cl_recs) {
-    Some(p) => pools.push(p)
-    None => ()
-  }
-
-  // 2. Fable Pool
-  let any_fable = list.iter().any(fn(e) { ov_find_window_ext(Some(e), ov_is_fable_win) is Some(_) })
-  if any_fable {
-    let fb_recs : Array[(PoolSlot, Bool)] = []
-    for e in list {
-      let ev = Some(e)
-      let fb_win = ov_find_window_ext(ev, ov_is_fable_win)
-      if fb_win is Some(_) || (text(ev, "group") == "claude" && ov_needs_fix(ev)) {
-        let wt = ov_plan_weight(ev)
-        let (is_ready, is_short, is_week_dead, is_broken, hint_rf) = ov_entry_status(ev)
-        let (fb_left, fb_rf, cyc) = match fb_win { Some(t3) => t3; None => (0, "", 168.0) }
-        if is_broken {
-          fb_recs.push(({ weight: wt, raw_week_left: 0.0, cool_hours: 0.0, locked_hours: 0.0, reset_hours: 84.0, cycle_hours: cyc, broken: true }, false))
-        } else if is_week_dead && fb_left > 0 {
-          let lock_h = ov_reset_hours_of(hint_rf, cyc)
-          fb_recs.push(({ weight: wt, raw_week_left: fb_left.to_double(), cool_hours: 0.0, locked_hours: lock_h, reset_hours: ov_reset_hours_of(if fb_rf != "" { fb_rf } else { hint_rf }, cyc), cycle_hours: cyc, broken: false }, false))
-        } else if fb_left <= 0 || is_week_dead {
-          let rf = if fb_rf != "" { fb_rf } else { hint_rf }
-          fb_recs.push(({ weight: wt, raw_week_left: 0.0, cool_hours: 0.0, locked_hours: 0.0, reset_hours: ov_reset_hours_of(rf, cyc), cycle_hours: cyc, broken: false }, false))
-        } else {
-          let cool_h = if is_short { @cmp.maximum(0.25, ov_refill_minutes(hint_rf).to_double() / 60.0) } else { 0.0 }
-          fb_recs.push(({ weight: wt, raw_week_left: fb_left.to_double(), cool_hours: cool_h, locked_hours: 0.0, reset_hours: ov_reset_hours_of(fb_rf, cyc), cycle_hours: cyc, broken: false }, !is_short && is_ready))
-        }
-      }
-    }
-    match ov_finalize_pool("Fable", fb_recs) {
-      Some(p) => pools.push(p)
-      None => ()
-    }
-  }
-
-  // 3. Codex Pool
-  let cx_recs : Array[(PoolSlot, Bool)] = []
-  for e in list {
-    let ev = Some(e)
-    let g = text(ev, "group")
-    if g == "chatgpt" {
-      let wt = ov_plan_weight(ev)
-      let (is_ready, is_short, is_week_dead, is_broken, hint_rf) = ov_entry_status(ev)
-      let w_win = ov_find_window_ext(ev, ov_is_main_week)
-      if is_broken {
-        cx_recs.push(({ weight: wt, raw_week_left: 0.0, cool_hours: 0.0, locked_hours: 0.0, reset_hours: 84.0, cycle_hours: 168.0, broken: true }, false))
-      } else if is_week_dead {
-        let cyc = match w_win { Some((_, _, c)) => c; None => 168.0 }
-        cx_recs.push(({ weight: wt, raw_week_left: 0.0, cool_hours: 0.0, locked_hours: 0.0, reset_hours: ov_reset_hours_of(hint_rf, cyc), cycle_hours: cyc, broken: false }, false))
-      } else {
-        let (w_left, w_rf, cyc) = match w_win { Some(t3) => t3; None => (if is_ready { 100 } else { 0 }, "", 168.0) }
-        let cool_h = if is_short { @cmp.maximum(0.25, ov_refill_minutes(hint_rf).to_double() / 60.0) } else { 0.0 }
-        cx_recs.push(({ weight: wt, raw_week_left: w_left.to_double(), cool_hours: cool_h, locked_hours: 0.0, reset_hours: ov_reset_hours_of(w_rf, cyc), cycle_hours: cyc, broken: false }, !is_short && is_ready))
-      }
-    } else if g == "agy" || g == "google" {
-      match ov_find_window_ext(ev, ov_is_claude_gpt_win) {
-        Some((w_left, w_rf, cyc)) => {
-          let wt = ov_plan_weight(ev)
-          let broken = ov_needs_fix(ev)
-          let slot = {
-            weight: wt,
-            raw_week_left: if broken { 0.0 } else { w_left.to_double() },
-            cool_hours: 0.0,
-            locked_hours: 0.0,
-            reset_hours: ov_reset_hours_of(w_rf, cyc),
-            cycle_hours: cyc,
-            broken,
-          }
-          cx_recs.push((slot, !broken && w_left > 0))
-        }
-        None => ()
-      }
-    }
-  }
-  match ov_finalize_pool("Codex", cx_recs) {
-    Some(p) => pools.push(p)
-    None => ()
-  }
-
-  // 4. Gemini Pool
-  let gm_recs : Array[(PoolSlot, Bool)] = []
-  for e in list {
-    let ev = Some(e)
-    if text(ev, "group") == "agy" || text(ev, "group") == "google" {
-      let wt = ov_plan_weight(ev)
-      let broken = ov_needs_fix(ev)
-      let w_win = ov_find_window_ext(ev, ov_is_gemini_week)
-      let s_win = ov_find_window_ext(ev, ov_is_gemini_short)
-      if broken {
-        gm_recs.push(({ weight: wt, raw_week_left: 0.0, cool_hours: 0.0, locked_hours: 0.0, reset_hours: 84.0, cycle_hours: 168.0, broken: true }, false))
-      } else {
-        let (w_left, w_rf, cyc) = match w_win { Some(t3) => t3; None => (100, "", 168.0) }
-        let (s_left, s_rf, _) = match s_win { Some(t3) => t3; None => (w_left, "", 168.0) }
-        if w_left <= 0 {
-          gm_recs.push(({ weight: wt, raw_week_left: 0.0, cool_hours: 0.0, locked_hours: 0.0, reset_hours: ov_reset_hours_of(w_rf, cyc), cycle_hours: cyc, broken: false }, false))
-        } else if s_left <= 0 {
-          let cool_h = @cmp.maximum(0.25, ov_refill_minutes(s_rf).to_double() / 60.0)
-          gm_recs.push(({ weight: wt, raw_week_left: w_left.to_double(), cool_hours: cool_h, locked_hours: 0.0, reset_hours: ov_reset_hours_of(w_rf, cyc), cycle_hours: cyc, broken: false }, false))
-        } else {
-          gm_recs.push(({ weight: wt, raw_week_left: w_left.to_double(), cool_hours: 0.0, locked_hours: 0.0, reset_hours: ov_reset_hours_of(w_rf, cyc), cycle_hours: cyc, broken: false }, flag(ev, "usable")))
-        }
-      }
-    }
-  }
-  match ov_finalize_pool("Gemini", gm_recs) {
-    Some(p) => pools.push(p)
-    None => ()
-  }
-
-  // 5. Any other active subscription groups
-  for extra in [
-    ("grok", "SuperGrok"),
-    ("kimi", "Kimi Code"),
-    ("opencode", "OpenCode Go"),
-    ("cursor", "Cursor"),
-    ("devin", "Devin"),
-  ] {
-    let (grp_key, p_title) = extra
-    let ex_recs : Array[(PoolSlot, Bool)] = []
-    for e in list {
-      let ev = Some(e)
-      if text(ev, "group") == grp_key {
-        let (is_ready, is_short, is_week_dead, is_broken, hint_rf) = ov_entry_status(ev)
-        let w_win = ov_find_window_ext(ev, ov_is_main_week)
-        if is_broken {
-          ex_recs.push(({ weight: 1.0, raw_week_left: 0.0, cool_hours: 0.0, locked_hours: 0.0, reset_hours: 84.0, cycle_hours: 168.0, broken: true }, false))
-        } else if is_week_dead {
-          let cyc = match w_win { Some((_, _, c)) => c; None => 168.0 }
-          ex_recs.push(({ weight: 1.0, raw_week_left: 0.0, cool_hours: 0.0, locked_hours: 0.0, reset_hours: ov_reset_hours_of(hint_rf, cyc), cycle_hours: cyc, broken: false }, false))
-        } else {
-          let (w_left, w_rf, cyc) = match w_win { Some(t3) => t3; None => (if is_ready { 100 } else { 0 }, "", 168.0) }
-          let cool_h = if is_short { @cmp.maximum(0.25, ov_refill_minutes(hint_rf).to_double() / 60.0) } else { 0.0 }
-          ex_recs.push(({ weight: 1.0, raw_week_left: w_left.to_double(), cool_hours: cool_h, locked_hours: 0.0, reset_hours: ov_reset_hours_of(w_rf, cyc), cycle_hours: cyc, broken: false }, !is_short && is_ready))
-        }
-      }
-    }
-    match ov_finalize_pool(p_title, ex_recs) {
-      Some(p) => pools.push(p)
-      None => ()
-    }
-  }
-
-  pools
 }
 
 ///|
@@ -1104,8 +518,47 @@ fn ov_trajectory_shapes(pool : ModelPool, w : Double, h : Double) -> Array[@ui.S
 }
 
 ///|
-fn ov_velocity_shapes(pool : ModelPool, scale_top : Double, w : Double, h : Double) -> Array[@ui.Shape] {
-  if w <= 10.0 || pool.net_bars.length() < 9 {
+/// A rate of the pool an hour in words: under 10 to a tenth (1.8%/h, 2%/h), else whole (12%/h); `signed`, above 0
+/// with its plus (+0.9%/h).
+fn ov_rate(v : Double, signed? : Bool = false) -> String {
+  let a = v.abs()
+  let words = if a < 0.05 {
+    "0"
+  } else if a < 10.0 {
+    let tenths = (a * 10.0).round().to_int()
+    let whole = tenths / 10
+    let part = tenths % 10
+    if part == 0 { whole.to_string() } else { whole.to_string() + "." + part.to_string() }
+  } else {
+    a.round().to_int().to_string()
+  }
+  let sign = if words == "0" { "" } else if v < 0.0 { "-" } else if signed { "+" } else { "" }
+  sign + words + "%/h"
+}
+
+///|
+/// The pace chart's reach each way from 0: the next round rate over what it shows.
+fn ov_net_top(p : ModelPool) -> Double {
+  let mut most = 0.0
+  for n in p.hourly_net {
+    if n.abs() > most {
+      most = n.abs()
+    }
+  }
+  for step in [0.5, 1.0, 2.0, 4.0, 6.0, 8.0, 10.0, 16.0, 20.0, 30.0, 40.0, 60.0, 80.0, 100.0] {
+    if most <= step {
+      return step
+    }
+  }
+  100.0
+}
+
+///|
+/// Each hour against the pace the pool could keep up all week (0, the line through the middle): the last 24 left of
+/// now, the next 24 as foreseen right of it (lighter); above it green where it spent less than that, under it red where
+/// it spent more or goes without, each bar from 0 rounded at its far end.
+fn ov_net_shapes(pool : ModelPool, scale_top : Double, w : Double, h : Double) -> Array[@ui.Shape] {
+  if w <= 10.0 || pool.hourly_net.length() < 48 || scale_top <= 0.0 {
     return []
   }
   let t = @sf.theme()
@@ -1116,56 +569,69 @@ fn ov_velocity_shapes(pool : ModelPool, scale_top : Double, w : Double, h : Doub
   let y_zero = pad_top + half
   let y_bot = pad_top + half * 2.0
   let shapes : Array[@ui.Shape] = []
-
-  shapes.push(@ui.shape_of([([0.0, y_top, w, y_top], false)], stroke=@sf.alpha(t.p.line, 0.7), width=1.0))
-  shapes.push(@ui.shape_of([([0.0, y_bot, w, y_bot], false)], stroke=@sf.alpha(t.p.line, 0.7), width=1.0))
-
-  let x_now = 2.0 / 9.0 * w
-  ov_push_v_dash(shapes, x_now, y_top, y_bot, 3.5, 3.0, @sf.alpha(t.p.text, 0.25), 1.0)
-
-  let slot_w = w / 9.0
-  let bar_w = @cmp.minimum(22.0, @cmp.maximum(8.0, slot_w * 0.58))
-
-  for i in 0..<9 {
-    let val = pool.net_bars[i]
-    let ratio = @cmp.minimum(1.0, val.abs() / scale_top)
-    let bh = @cmp.maximum(3.0, ratio * (half - 2.0))
-    let bx = (i.to_double() + 0.5) * slot_w - bar_w / 2.0
-    let past = i < 2
-    if val >= 0.0 {
-      let ink = if past { @sf.alpha(t.p.green, 0.50) } else { t.p.green }
-      let poly = ov_bar_poly(bx, y_zero - bh, bar_w, bh, 3.5, 0.0)
-      if poly.length() > 0 {
-        shapes.push(@ui.shape_of([(poly, true)], fill=ink))
-      }
+  for yg in [y_top, y_bot] {
+    shapes.push(@ui.shape_of([([0.0, yg, w, yg], false)], stroke=t.p.line, width=1.0))
+  }
+  ov_push_v_dash(shapes, 0.5 * w, y_top, y_bot, 3.5, 3.0, @sf.alpha(t.p.text, 0.28), 1.0)
+  let slot_w = w / 48.0
+  let bar_w = @cmp.minimum(9.0, @cmp.maximum(1.5, slot_w * 0.64))
+  for i in 0..<48 {
+    let v = pool.hourly_net[i]
+    if v.abs() < 0.05 {
+      continue
+    }
+    let bh = @cmp.maximum(2.0, @cmp.minimum(1.0, v.abs() / scale_top) * (half - 1.0))
+    let x = (i.to_double() + 0.5) * slot_w - bar_w / 2.0
+    let ink = if v >= 0.0 { t.p.green } else { t.p.red }
+    let ink = if i >= 24 { @sf.alpha(ink, 0.42) } else { ink }
+    let poly = if v >= 0.0 {
+      ov_bar_poly(x, y_zero - bh, bar_w, bh, bar_w / 2.0, 0.0)
     } else {
-      let ink = if past { @sf.alpha(t.p.red, 0.50) } else { t.p.red }
-      let poly = ov_bar_poly(bx, y_zero, bar_w, bh, 0.0, 3.5)
-      if poly.length() > 0 {
-        shapes.push(@ui.shape_of([(poly, true)], fill=ink))
-      }
+      ov_bar_poly(x, y_zero, bar_w, bh, 0.0, bar_w / 2.0)
+    }
+    if poly.length() > 0 {
+      shapes.push(@ui.shape_of([(poly, true)], fill=ink))
     }
   }
-
   shapes.push(@ui.shape_of([([0.0, y_zero, w, y_zero], false)], stroke=@sf.alpha(t.p.text, 0.34), width=1.25))
-
   shapes
 }
 
 ///|
-fn ov_time_axis_node(parent : @view.View, end_days : Int) -> Unit {
+/// A chart's hours under it, from its first to its last, `now`'s (its index) the stronger: as far in as the y axis's
+/// labels' column (`lead`) and the gap after it.
+fn ov_time_axis_node(parent : @view.View, lead : Double, labels : () -> Array[String], now : Int) -> Unit {
   parent.box(fn(axis) {
-    axis.row(Is(true)).padding(Is((42.0, 4.0, 0.0, 0.0))).lies_along(Is(Between)).lines_up(Is(Some(Middle))) |> ignore
-    @sf.words_node(axis, fn() { if ov_en() { "-2d" } else { "-2天" } }, fn() { ug_grid_label }).shrink(Is(0.0)) |> ignore
-    @sf.words_node(axis, fn() { if ov_en() { "Now" } else { "现在" } }, fn() { ug_peak }).shrink(Is(0.0)) |> ignore
-    @sf.words_node(axis, fn() { if ov_en() { "+2d" } else { "+2天" } }, fn() { ug_grid_label }).shrink(Is(0.0)) |> ignore
-    @sf.words_node(axis, fn() { if ov_en() { "+4d" } else { "+4天" } }, fn() { ug_grid_label }).shrink(Is(0.0)) |> ignore
-    @sf.words_node(axis, fn() { "+" + end_days.to_string() + (if ov_en() { "d" } else { "天" }) }, fn() { ug_grid_label })
-    .shrink(Is(0.0))
-    |> ignore
+    axis.row(Is(true)).padding(Is((lead + 6.0, 4.0, 0.0, 0.0))).lies_along(Is(Between)).lines_up(Is(Some(Middle))) |> ignore
+    for i in 0..<5 {
+      @sf.words_node(axis, fn() { labels().get(i).unwrap_or("") }, fn() { if i == now { ug_peak } else { ug_grid_label } })
+      .shrink(Is(0.0))
+      |> ignore
+    }
   })
   |> ignore
 }
+
+///|
+fn ov_quota_hours() -> Array[String] {
+  if ov_en() {
+    ["-2d", "Now", "+2d", "+4d", "+7d"]
+  } else {
+    ["-2天", "现在", "+2天", "+4天", "+7天"]
+  }
+}
+
+///|
+fn ov_burn_hours() -> Array[String] {
+  ["-24h", "-12h", if ov_en() { "Now" } else { "现在" }, "+12h", "+24h"]
+}
+
+///|
+/// The y axis's labels' column: as wide as its widest at the system's size of words.
+let ov_axis_w : Double = 36.0
+
+///|
+let ov_burn_axis_w : Double = 46.0
 
 ///|
 /// Single-line reactive pool tab (`Claude      ● 4/7`) at `8px` concentric inset (`ug_row_corner`). Its title, its count
@@ -1255,10 +721,14 @@ fn ov_pools_card_node(
       let picked = ov_picked_pool.get()
       match ps.iter().find_first(fn(p) { p.title == picked }) {
         Some(p) => Some(p)
+        // (none picked: the one going without soonest, else the first spending past its pace, else the first)
         None => {
           let mut worst = 0
           for i in 1..<ps.length() {
-            if ps[i].net_today < ps[worst].net_today {
+            let a = ps[i]
+            let b = ps[worst]
+            let soon = fn(p : ModelPool) { p.exhaust_hours.unwrap_or(100000) }
+            if soon(a) < soon(b) || (soon(a) == soon(b) && a.over_pace && !b.over_pace) {
               worst = i
             }
           }
@@ -1268,16 +738,6 @@ fn ov_pools_card_node(
     }
   })
   let active_pool = fn() { active_now.get() }
-
-  let scale_top_of = fn(p : ModelPool) -> Double {
-    let mut max_abs_v = 20.0
-    for b in p.net_bars {
-      if b.abs() > max_abs_v {
-        max_abs_v = b.abs()
-      }
-    }
-    ((max_abs_v.ceil().to_int() + 9) / 10 * 10).to_double()
-  }
 
   parent.box(fn(card) {
     card
@@ -1305,7 +765,7 @@ fn ov_pools_card_node(
             None => "0/0"
           }
         })
-        let low = @signals.computed(fn(_) { pool_at().map(fn(p) { p.net_today < 0 }).unwrap_or(false) })
+        let low = @signals.computed(fn(_) { pool_at().map(fn(p) { p.over_pace }).unwrap_or(false) })
         ov_pool_pill_node(
           slot,
           fn() { title.get() },
@@ -1324,13 +784,14 @@ fn ov_pools_card_node(
           match active_pool() {
             Some(active) =>
               match active.exhaust_hours {
-                Some(eh) if active.net_today < 0 =>
+                Some(eh) if eh <= 0 => active.now_pct.to_string() + (if ov_en() { "% · out now" } else { "% · 已断档" })
+                Some(eh) =>
                   if ov_en() {
-                    active.now_pct.to_string() + "% · " + ov_hours_short(eh) + " left"
+                    active.now_pct.to_string() + "% · out in " + ov_hours_short(eh)
                   } else {
                     active.now_pct.to_string() + "% · " + ov_hours_short(eh) + "后断档"
                   }
-                _ => active.now_pct.to_string() + "%"
+                None => active.now_pct.to_string() + "%"
               }
             None => ""
           }
@@ -1351,7 +812,7 @@ fn ov_pools_card_node(
               @sf.words_node(h1, c1_badge, fn() {
                 let t = @sf.theme()
                 let is_bad = match active_pool() {
-                  Some(ap) => ap.net_today < 0 && ap.exhaust_hours is Some(_)
+                  Some(ap) => ap.exhaust_hours is Some(_)
                   None => false
                 }
                 ug_peak.then(@ui.text_style(color=Data(if is_bad { t.p.red } else { t.p.green_ink })))
@@ -1363,7 +824,7 @@ fn ov_pools_card_node(
             col.box(fn(plot1) {
               plot1.row(Is(true)).gap(Is(6.0)) |> ignore
               plot1.box(fn(ys) {
-                ys.min_width(Is(Some(36.0))).min_height(Is(Some(ov_chart_h))).lies_along(Is(Between)).shrink(Is(0.0)) |> ignore
+                ys.min_width(Is(Some(ov_axis_w))).min_height(Is(Some(ov_chart_h))).lies_along(Is(Between)).shrink(Is(0.0)) |> ignore
                 @sf.words_node(ys, fn() { "100%" }, fn() { ug_scale_label }) |> ignore
                 @sf.words_node(ys, fn() { "50%" }, fn() { ug_scale_label }) |> ignore
                 @sf.words_node(ys, fn() { "0%" }, fn() { ug_scale_label }) |> ignore
@@ -1387,7 +848,7 @@ fn ov_pools_card_node(
               |> ignore
             })
             |> ignore
-            ov_time_axis_node(col, 7)
+            ov_time_axis_node(col, ov_axis_w, ov_quota_hours, 1)
           } else {
             // Chart 2: 消耗速度
             col.gap(Is(6.0)) |> ignore
@@ -1403,14 +864,14 @@ fn ov_pools_card_node(
                 h2,
                 fn() {
                   match active_pool() {
-                    Some(ap) => ov_signed_pct(ap.net_today)
+                    Some(ap) => ov_rate(ap.net_now, signed=true)
                     None => ""
                   }
                 },
                 fn() {
                   let t = @sf.theme()
                   let is_bad = match active_pool() {
-                    Some(ap) => ap.net_today < 0
+                    Some(ap) => ap.net_now < 0.0
                     None => false
                   }
                   ug_peak.then(@ui.text_style(color=Data(if is_bad { t.p.red } else { t.p.green_ink })))
@@ -1422,33 +883,17 @@ fn ov_pools_card_node(
 
             col.box(fn(plot2) {
               plot2.row(Is(true)).gap(Is(6.0)) |> ignore
+              let top = fn() {
+                match active_pool() {
+                  Some(ap) => ov_net_top(ap)
+                  None => 1.0
+                }
+              }
               plot2.box(fn(ys) {
-                ys.min_width(Is(Some(36.0))).min_height(Is(Some(ov_chart_h))).lies_along(Is(Between)).shrink(Is(0.0)) |> ignore
-                @sf.words_node(
-                  ys,
-                  fn() {
-                    let st = match active_pool() {
-                      Some(ap) => scale_top_of(ap).to_int()
-                      None => 30
-                    }
-                    "+" + st.to_string() + "%"
-                  },
-                  fn() { ug_scale_label },
-                )
-                |> ignore
+                ys.min_width(Is(Some(ov_burn_axis_w))).min_height(Is(Some(ov_chart_h))).lies_along(Is(Between)).shrink(Is(0.0)) |> ignore
+                @sf.words_node(ys, fn() { ov_rate(top(), signed=true) }, fn() { ug_scale_label }) |> ignore
                 @sf.words_node(ys, fn() { "0" }, fn() { ug_scale_label }) |> ignore
-                @sf.words_node(
-                  ys,
-                  fn() {
-                    let st = match active_pool() {
-                      Some(ap) => scale_top_of(ap).to_int()
-                      None => 30
-                    }
-                    "-" + st.to_string() + "%"
-                  },
-                  fn() { ug_scale_label },
-                )
-                |> ignore
+                @sf.words_node(ys, fn() { ov_rate(-top()) }, fn() { ug_scale_label }) |> ignore
               })
               |> ignore
               plot2.box(fn(cv2) {
@@ -1458,7 +903,7 @@ fn ov_pools_card_node(
                   .height(Is(Some(ov_chart_h)))
                   .shapes(By(fn() {
                     match active_pool() {
-                      Some(ap) => ov_velocity_shapes(ap, scale_top_of(ap), room.width(), ov_chart_h)
+                      Some(ap) => ov_net_shapes(ap, ov_net_top(ap), room.width(), ov_chart_h)
                       None => []
                     }
                   }))
@@ -1469,7 +914,7 @@ fn ov_pools_card_node(
               |> ignore
             })
             |> ignore
-            ov_time_axis_node(col, 6)
+            ov_time_axis_node(col, ov_burn_axis_w, ov_burn_hours, 2)
           }
         })
         |> ignore
@@ -1537,7 +982,8 @@ pub fn profiles_overview_node(
   let topic = fn() { (core.topic)("profiles", { "scope": Json::string(here().workspace) }).get() }
   let list_now = @signals.computed(fn(_) { items(topic().value, "items") }, same=jsons_same)
   let list = fn() { list_now.get() }
-  let pools_now = @signals.computed(fn(_) { ov_build_pools(list()) }, same=fn(a, b) { a == b })
+  let overview = fn() { (core.topic)("profilesOverview", { "scope": Json::string(here().workspace) }).get() }
+  let pools_now = @signals.computed(fn(_) { items(overview().value, "pools").map(ov_pool_of) }, same=fn(a, b) { a == b })
   let pools = fn() { pools_now.get() }
   let has_accounts_tab = on_show_accounts is Some(_)
   // (what it lists, each worked out once of the accounts for all that reads it, told only as it comes out otherwise: an

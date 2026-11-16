@@ -53,6 +53,8 @@ const SPECS: Record<string, Spec> = {
   newChat: { fields: { stations: items("station") } },
   // (an item moving is a patch of its row; a module's block its own)
   stationMove: { fields: { targets: items("station"), modules: { key: ["id"], item: { fields: { items: items("id") } } } } },
+  // (a pool by its name: what one change of the accounts moves goes out as that pool's fields that moved)
+  profilesOverview: { fields: { pools: items("title") } },
 };
 
 export function specOf(topic: Topic): Spec | null {

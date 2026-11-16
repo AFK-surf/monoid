@@ -1,0 +1,63 @@
+// GET /profiles/pace: each account's last PACE_HOURS hours as its Profile overview draws them (client/core-ts
+// views/profiles-overview.ts): what its allowance said in each hour, and what its calls spent in each, as dollars at
+// list prices by the window they count against (`scope`, as the allowance names its models' windows: Fable's, an
+// Antigravity account's Gemini and Claude / GPT). Read of the two statistics kept at write (store/profile-hours.ts).
+import { HOUR_MS, PACE_HOURS, type HourWindow, type SpendHour } from "../store/profile-hours.ts";
+import { price } from "../read/usage.ts";
+
+export type PaceQuota = { hour: number; at: number; windows: HourWindow[] };
+export type PaceSpend = { hour: number; scope: string; weight: number };
+export type PaceView = { nowAt: number; fromHour: number; profiles: Record<string, { quotas: PaceQuota[]; spend: PaceSpend[] }> };
+
+/// What an hour of one model's calls weighs: what they would cost at its list price, or for a model with none, what
+/// they would at a middling one (input $1, cache read 0.1×, a cache write 1.25×, output $5 a million).
+export function spendWeight(s: SpendHour): number {
+  const p = s.model === null ? null : price(s.model);
+  const writes = s.cacheWrite * 1.25 + s.cacheWriteLong * 2.0;
+  const dollars = p === null
+    ? (s.input + s.cacheRead * 0.1 + writes + s.output * 5) / 1e6
+    : (s.input * p.input + writes * p.input + s.cacheRead * p.cacheRead + s.output * p.output) / 1e6;
+  return Math.max(0, dollars * (s.fast ? 2 : 1));
+}
+
+/// The windows an hour of a runtime's model counts against ("" the account's own): a Fable (Mythos) model's against its
+/// own week and the account's, an Antigravity account's Gemini and Claude / GPT against theirs.
+export function spendScopes(runtime: string, model: string | null): string[] {
+  const m = (model ?? "").toLowerCase();
+  if (runtime === "claude" && (m.includes("fable") || m.includes("mythos"))) return ["Fable", ""];
+  if (runtime === "agy") {
+    if (m.includes("gemini")) return ["Gemini"];
+    if (m.includes("claude") || m.includes("gpt")) return ["Claude / GPT"];
+  }
+  return [""];
+}
+
+/// The view of what the store read, for the profiles `shown` keeps (the viewer's workspace's).
+export function paceView(nowAt: number, read: { quotas: { profile: string; hour: number; at: number; windows: HourWindow[] }[]; spend: SpendHour[] },
+  shown: (profile: string) => boolean): PaceView {
+  const nowHour = Math.floor(nowAt / HOUR_MS);
+  const profiles: PaceView["profiles"] = {};
+  const of = (p: string) => (profiles[p] ??= { quotas: [], spend: [] });
+  for (const q of read.quotas) if (shown(q.profile)) of(q.profile).quotas.push({ hour: q.hour, at: q.at, windows: q.windows });
+  const spent = new Map<string, Map<string, number>>();
+  for (const s of read.spend) {
+    if (!shown(s.profile)) continue;
+    const w = spendWeight(s);
+    if (w <= 0) continue;
+    const byKey = spent.get(s.profile) ?? new Map<string, number>();
+    spent.set(s.profile, byKey);
+    for (const scope of spendScopes(s.runtime, s.model)) {
+      const key = `${s.hour}\u0000${scope}`;
+      byKey.set(key, (byKey.get(key) ?? 0) + w);
+    }
+  }
+  for (const [profile, byKey] of spent) {
+    const list = of(profile).spend;
+    for (const [key, weight] of byKey) {
+      const [hour, scope] = key.split("\u0000") as [string, string];
+      list.push({ hour: Number(hour), scope, weight: Math.round(weight * 1e6) / 1e6 });
+    }
+    list.sort((a, b) => a.hour - b.hour || (a.scope < b.scope ? -1 : a.scope > b.scope ? 1 : 0));
+  }
+  return { nowAt, fromHour: nowHour - PACE_HOURS, profiles };
+}

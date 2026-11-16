@@ -38,6 +38,7 @@ import * as usage from "./usage.ts";
 import { timed } from "./timed.ts";
 import * as handover from "./handover.ts";
 import { installIncrementalUsageTotals, usageTotalsComplete } from "./usage-totals-source.ts";
+import { HOUR_MS, hourWindows, installProfileHours, PACE_HOURS, QUOTA_HOURS_READ, SPEND_HOURS_READ, type HourWindow, type SpendHour } from "./profile-hours.ts";
 import { installUsageSpan } from "./usage-span.ts";
 import { installUsageChatStats } from "./usage-chat-stats.ts";
 import { installUsage15m, moveUsage15m } from "./usage-15m.ts";
@@ -758,6 +759,7 @@ export class Store {
       if (!hasCompactUsage(db)) addUsageCompactions(db);
       installUsageCompactions(db);
       installUsage15m(db, clock.currentTimeMillisUnsafe());
+      installProfileHours(db);
       installIncrementalUsageTotals(db);
       usage.installUsageCounter(db, clock.currentTimeMillisUnsafe());
       installRemoteRuns(db);
@@ -3859,13 +3861,43 @@ export class Store {
     );
   }
 
-  /// Keeps a profile's quota (its `checkedAt` says when).
+  /// Keeps a profile's quota (its `checkedAt` says when), and an allowance read as its hour's (profile-hours.ts): the
+  /// last reading of each hour, those PACE_HOURS before it let go in the same write.
   setProfileQuota(profile: string, quota: Json): void {
+    const at = checkedAt(quota);
+    const windows = typeof quota === "object" && quota !== null && quota.state === "ok" && at !== null && at > 0 ? hourWindows(quota) : [];
     this.#run(
       `INSERT INTO profile_status (profile, quota_json, quota_at) VALUES (?, ?, ?)
        ON CONFLICT (profile) DO UPDATE SET quota_json = excluded.quota_json, quota_at = excluded.quota_at`,
-      profile, JSON.stringify(quota), checkedAt(quota),
+      profile, JSON.stringify(quota), at,
     );
+    if (windows.length === 0 || at === null) return;
+    const hour = Math.floor(at / HOUR_MS);
+    this.#run(
+      `INSERT INTO profile_quota_hours (profile, hour, windows_json, at) VALUES (?, ?, ?, ?)
+       ON CONFLICT (profile, hour) DO UPDATE SET windows_json = excluded.windows_json, at = excluded.at`,
+      profile, hour, JSON.stringify(windows), at,
+    );
+    this.#run("DELETE FROM profile_quota_hours WHERE profile = ? AND hour < ?", profile, hour - PACE_HOURS);
+  }
+
+  /// What the profiles' allowances said and their calls spent in each of the PACE_HOURS hours up to `nowHour` (GET
+  /// /profiles/pace): by the hour's index and usage_15m's quarters' (`from * 4`, the hour's first quarter), so a read
+  /// takes those hours' rows alone.
+  profileHours(nowHour: number): { quotas: { profile: string; hour: number; at: number; windows: HourWindow[] }[]; spend: SpendHour[] } {
+    const from = nowHour - PACE_HOURS;
+    const quotas = this.#all(QUOTA_HOURS_READ, from)
+      .map((r) => ({ profile: r.profile as string, hour: r.hour as number, at: r.at as number, windows: (parsed(r.windows_json) ?? []) as HourWindow[] }));
+    const spend = this.#all(SPEND_HOURS_READ, from * 4).map((r): SpendHour => ({
+      hour: r.hour, profile: r.profile, runtime: r.runtime, model: r.model === "" ? null : r.model, fast: r.fast === 1, calls: r.calls,
+      input: r.input, cacheRead: r.cache_read, cacheWrite: r.cache_write, cacheWriteLong: r.cache_write_long, output: r.output,
+    }));
+    return { quotas, spend };
+  }
+
+  /// A profile deleted: its hours go with it.
+  forgetProfileHours(profile: string): void {
+    this.#run("DELETE FROM profile_quota_hours WHERE profile = ?", profile);
   }
 
   // ── runtime process groups ──

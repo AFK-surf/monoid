@@ -11,6 +11,13 @@ pub let profiles_place_overview : @signals.Signal[Bool] = @signals.signal(false,
 pub let profiles_narrow_overview : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
 
 ///|
+/// How 概览 is switched to from the accounts' list, of workspace `ws` (`go` switches it): as the settings' core of the
+/// source in use says it (sfbase's settings_core_of), once the overview's pools are answered, the list shown meanwhile
+/// (switch_answered); at once where none said it.
+// kept across runs: what the source in use says of it
+pub let overview_switch : Ref[(String, () -> Unit) -> Unit] = Ref(fn(_, go) { go() })
+
+///|
 /// A kind of account's mark, before its section's title, and before an account's row of 全部密钥:
 /// its vendor's for a subscription, a key for keys.
 pub fn group_mark(c : @ui.Ctx, group : String) -> Unit {

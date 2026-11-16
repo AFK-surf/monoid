@@ -4,7 +4,7 @@
 # pieces from the checkout and runs a headless smoke test..
 #   scripts/core.sh deps | shell [TARGET] | hermes [apple] | hermes-kept [apple] | hermes-script FILE [OUT] | hermes-apple | engine [TARGET] | apple [TARGET]
 #                   | smoke [build|run] | listen | exit | fairness | sealed | collate | login-test | vectors | sizes | clean | all
-#                   | chat-open | ws-switch | md-parse | mermaid | mermaid-lib | mermaid-smoke | zstd-read
+#                   | chat-open | ws-switch | md-parse | profiles-overview | mermaid | mermaid-lib | mermaid-smoke | zstd-read
 # SF_SRC: the still.fail checkout (default: this one, scripts/env.sh); out/core/ gets everything built.
 # TARGET: a Rust target (default aarch64-apple-darwin; aarch64-apple-ios, aarch64-apple-ios-sim for iOS).
 set -e
@@ -584,6 +584,24 @@ writeFileSync(f, transformSync(readFileSync(f, 'utf8'), { babelrc: false, config
   $OUT/hermes/bin/hermes $o/run.hbc
 }
 
+# The Profile overview's pools made in Hermes as the core makes them (client/core-ts/bench/profiles-overview.ts), bundled as
+# the core is, run by Hermes's own command: ms the first and each again.
+profiles_overview() {
+  have_deps
+  hermes_apple || return 1
+  local o=$OUT/profiles-overview
+  mkdir -p $o
+  NODE_PATH=$CORE_TS/node_modules $CORE_TS/node_modules/.bin/esbuild $CORE_TS/bench/profiles-overview.ts --bundle --format=iife --platform=neutral \
+    --main-fields=module,main --target=es2020 --supported:async-await=false --supported:async-generator=false --minify --legal-comments=none --resolve-extensions=.ts,.js,.mjs --log-level=warning --outfile=$o/bench.js || return 1
+  (cd $CORE_TS && node --input-type=module -e "
+import { readFileSync, writeFileSync } from 'node:fs';
+import { transformSync } from '@babel/core';
+const f = process.argv[1];
+writeFileSync(f, transformSync(readFileSync(f, 'utf8'), { babelrc: false, configFile: false, compact: true, plugins: ['@babel/plugin-transform-classes'] }).code);" $o/bench.js) || return 1
+  "$(hermesc)" -emit-binary -O -block-scoping -out $o/run.hbc $o/bench.js 2>&1 | grep -a "error:" && return 1
+  $OUT/hermes/bin/hermes $o/run.hbc
+}
+
 # Mermaid's charts made in Hermes as the core makes them (client/core-ts/bench/mermaid.ts: mermaid, here compiled with it as
 # the app's mermaid_hbc.mbt is, loaded for the first, then each kind of chart, timed), bundled as the core is.
 mermaid_bench() {
@@ -776,6 +794,7 @@ case "${1:-all}" in
   hermes) [ "${2:-}" != apple ] || ENTRY=${ENTRY:-$APPLE_ENTRY}; hermes ;;
   hermes-kept) hermes_kept "${2:-}" ;;
   hermes-script) hermes_script "$2" "${3:-}" ;;
+  profiles-overview) profiles_overview ;;
   hermes-apple) hermes_apple ;;
   engine) engine "${2:-aarch64-apple-darwin}" ;;
   apple) apple "${2:-aarch64-apple-darwin}" ;;
@@ -803,5 +822,5 @@ case "${1:-all}" in
   sizes) sizes ;;
   clean) rm -rf "$CARGO_TARGET_DIR"; echo "removed $CARGO_TARGET_DIR (out/core kept)" ;;
   all) deps; shell; smoke_build; smoke_run; sizes ;;
-  *) echo "usage: scripts/core.sh deps | shell [TARGET] | hermes [apple] | hermes-kept [apple] | hermes-script FILE [OUT] | hermes-apple | engine [TARGET] | apple [TARGET] | apple-native [TARGET] | smoke [build|run] | listen | exit | fairness | collate | login-test | vectors | sizes | chat-open | ws-switch | md-parse | mermaid | mermaid-lib | mermaid-smoke | zstd-read | clean | all"; exit 2 ;;
+  *) echo "usage: scripts/core.sh deps | shell [TARGET] | hermes [apple] | hermes-kept [apple] | hermes-script FILE [OUT] | hermes-apple | engine [TARGET] | apple [TARGET] | apple-native [TARGET] | smoke [build|run] | listen | exit | fairness | collate | login-test | vectors | sizes | chat-open | ws-switch | md-parse | profiles-overview | mermaid | mermaid-lib | mermaid-smoke | zstd-read | clean | all"; exit 2 ;;
 esac
