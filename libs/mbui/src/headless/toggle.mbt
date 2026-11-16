@@ -1,6 +1,7 @@
 // The toggle: what is on or off, turned by a press. A checkbox or a switch (its kind: what a screen reader calls it),
 // pressed as the button is (a tap or a click on it, Enter or Space while it has the keyboard's focus, a screen
-// reader's Activate: the framework's, all of them its on_press). The component's: that it says it is its kind, called
+// reader's Activate: the framework's, all of them its on_press), but a checkbox by Space alone (WAI-ARIA's: Enter is
+// what holds it's). The component's: that it says it is its kind, called
 // by its label, on or off as its caller says; that it takes a press and the focus only while it is not disabled (the
 // focus let go of at the cause that disables it, Tab passing it by, read out disabled then); that a press, however it
 // came, tells its caller what it is to be (the other of what it is then), once, and never while it is disabled; and
@@ -103,9 +104,15 @@ pub fn toggle(
         }
     }
     // (its own words of the node, said after its look, as the button's)
+    // (a checkbox turns by Space alone, as WAI-ARIA has it and kit's checkbox does: Enter is left to what holds it, a
+    // form's or a dialog's own; a switch and a toggle button by both)
+    let keys = match kind {
+      Checkbox => @view.focus_space
+      Switch | Button => @view.focus_enter | @view.focus_space
+    }
     v
     .presses(By(able))
-    .focusable(By(able))
+    .focusable(By(able), keys~)
     .says(By(fn() {
       let now = on()
       Some(

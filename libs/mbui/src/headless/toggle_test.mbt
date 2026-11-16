@@ -122,15 +122,27 @@ test "a toggle button is read out a button, pressed or not as its caller says, a
 }
 
 ///|
-test "Tab goes to a toggle; Enter turns it, Space turns it back, a screen reader's ask turns it again: each told the other of what it is then" {
-  let k = toggle_case()
+test "Tab goes to a switch; Enter turns it, Space turns it back, a screen reader's ask turns it again: each told the other of what it is then" {
+  let k = toggle_case(kind=Switch)
   k.t.act(Button, Focus, label="别处")
   k.t.tab()
   let at = k.focus()
   k.t.enter()
   k.t.key(@ui.key_space)
-  k.t.act(Checkbox, Activate, label="提醒")
+  k.t.act(Switch, Activate, label="提醒")
   assert_eq((at, k.told, k.on.get()), ("提醒", [true, false, true], true))
+}
+
+///|
+test "a checkbox with the focus turns by Space alone: Enter is left to what holds it (WAI-ARIA)" {
+  let k = toggle_case()
+  k.t.act(Button, Focus, label="别处")
+  k.t.tab()
+  let at = k.focus()
+  k.t.enter()
+  let after_enter = k.told.copy()
+  k.t.key(@ui.key_space)
+  assert_eq((at, after_enter, k.told, k.on.get()), ("提醒", [], [true], true))
 }
 
 ///|

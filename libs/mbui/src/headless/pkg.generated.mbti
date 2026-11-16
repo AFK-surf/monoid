@@ -17,7 +17,7 @@ pub fn choice(@view.View, ChoiceKind, () -> String, () -> Bool, (@view.View) -> 
 pub fn disclosure(@view.View, () -> String, () -> Bool, (@view.View) -> Unit, (@view.View, Disclosure) -> Unit, disabled? : () -> Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
 
 #callsite(autofill(loc))
-pub fn[K : Eq] radio_group(@view.View, () -> String, () -> K, (K) -> Unit, (@view.View, RadioGroup[K]) -> Unit, kind? : GroupKind, axis? : GroupAxis, shown? : () -> Bool, selected? : Bool, in_node? : Bool, disabled? : () -> Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
+pub fn[K : Eq] radio_group(@view.View, () -> String, () -> K, (K) -> Unit, (@view.View, RadioGroup[K]) -> Unit, kind? : GroupKind, axis? : GroupAxis, shown? : () -> Bool, selected? : Bool, in_node? : Bool, disabled? : () -> Bool, manual? : Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
 
 #callsite(autofill(loc))
 pub fn slider(@view.View, () -> String, () -> Double, min~ : Double, max~ : Double, step~ : Double, (Double) -> Unit, (@view.View, Slider) -> Unit, thumb_room? : Double, disabled? : () -> Bool, value_text? : (Double) -> String, drag? : (@view.Drag) -> Unit, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View

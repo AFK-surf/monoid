@@ -1,6 +1,7 @@
 // The headless slider (@headless.slider), under a look of the tests' own: read out a slider with its range and value,
-// stepped by Increment/Decrement, arrow/Home/End keys and dragging along its track; disabled, none of these. Each
-// window is made by `window` (window_test.mbt), which holds that the slider's own file draws and lays out nothing.
+// stepped by Increment/Decrement, arrow/Page Up/Page Down/Home/End keys and dragging along its track; disabled, none
+// of these. Each window is made by `window` (window_test.mbt), which holds that the slider's own file draws and lays
+// out nothing.
 
 ///|
 test "a slider is read out with its range and stepped by a screen reader, keys, and drag" {
@@ -32,10 +33,12 @@ test "a slider is read out with its range and stepped by a screen reader, keys, 
   t.act(Slider, Increment, label="音量")
   t.act(Slider, Focus, label="音量")
   t.key(@ui.key_code_right)
+  t.key(@ui.key_code_page_down)
+  t.key(@ui.key_code_page_up)
   t.key(@ui.key_code_home)
   t.key(@ui.key_code_end)
   // Drag to middle of 220 wide slider (x=110 -> part=0.5 -> 50)
   t.press_at(110.0, 15.0)
   t.release(110.0, 15.0)
-  assert_eq(told, [55.0, 60.0, 0.0, 100.0, 50.0])
+  assert_eq(told, [55.0, 60.0, 10.0, 60.0, 0.0, 100.0, 50.0])
 }
