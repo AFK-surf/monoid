@@ -58,27 +58,23 @@ jobs:
     timeout-minutes: 5
     steps:
       # (the scripts as main has them now, not the measured commit's: one from before them had none, run 42573827310)
-      # (what it measures taken continue-on-error, each measure run only where its input came: a runner's reset to
-      # GitHub's artifact service loses that measure, record carrying the one before's, and fails nothing, mbui-size
-      # 43720133805's idle, 2026-11-15)
+      # (what it measures downloaded by scripts/download-artifact.sh --optional, each measure run only where its input
+      # came whole: a runner's reset to GitHub's artifact service loses that measure, record carrying the one before's,
+      # and fails nothing, mbui-size 43720133805's idle, 2026-11-15; actions/download-artifact once ended 0 with half
+      # the Mac's zip, which failed idle's measure of it, 43955196994, 2026-11-16)
       - uses: actions/checkout@v5
         with:
           sparse-checkout: |
             apps/mbui/scripts
             libs/mbui/scripts
+            scripts
       - run: command -v brotli || (sudo apt-get update -q && sudo apt-get install -yq brotli)
       - if: needs.find.outputs.web == 'true'
-        uses: actions/download-artifact@v4
-        continue-on-error: true
-        with: { name: "mbui-web-${{ needs.find.outputs.sha }}", path: in/web, run-id: "${{ env.RUN }}", github-token: "${{ github.token }}" }
+        run: bash scripts/download-artifact.sh --optional "$RUN" "mbui-web-${{ needs.find.outputs.sha }}" in/web
       - if: needs.find.outputs.apk == 'true'
-        uses: actions/download-artifact@v4
-        continue-on-error: true
-        with: { name: "mbui-apk-${{ needs.find.outputs.sha }}", path: in/apk, run-id: "${{ env.RUN }}", github-token: "${{ github.token }}" }
+        run: bash scripts/download-artifact.sh --optional "$RUN" "mbui-apk-${{ needs.find.outputs.sha }}" in/apk
       - if: needs.find.outputs.mac == 'true'
-        uses: actions/download-artifact@v4
-        continue-on-error: true
-        with: { name: "mac-unsigned-${{ needs.find.outputs.sha }}", path: in/mac, run-id: "${{ env.RUN }}", github-token: "${{ github.token }}" }
+        run: bash scripts/download-artifact.sh --optional "$RUN" "mac-unsigned-${{ needs.find.outputs.sha }}" in/mac
       - run: |
           set -eo pipefail
           S=apps/mbui/scripts/size.sh
@@ -140,23 +136,19 @@ jobs:
     runs-on: [self-hosted, mbui-render]
     timeout-minutes: 5
     steps:
+      - run: echo "JOB_END=$(($(date +%s) + 300))" >> "$GITHUB_ENV"
       - uses: actions/checkout@v5
         with:
           sparse-checkout: |
             apps/mbui/scripts
             libs/mbui/scripts
+            scripts
       - if: needs.find.outputs.apk == 'true'
-        uses: actions/download-artifact@v4
-        continue-on-error: true
-        with: { name: "mbui-apk-${{ needs.find.outputs.sha }}", path: in/apk, run-id: "${{ env.RUN }}", github-token: "${{ github.token }}" }
+        run: bash scripts/download-artifact.sh --optional "$RUN" "mbui-apk-${{ needs.find.outputs.sha }}" in/apk
       - if: needs.find.outputs.mac == 'true'
-        uses: actions/download-artifact@v4
-        continue-on-error: true
-        with: { name: "mac-unsigned-${{ needs.find.outputs.sha }}", path: in/mac, run-id: "${{ env.RUN }}", github-token: "${{ github.token }}" }
+        run: bash scripts/download-artifact.sh --optional "$RUN" "mac-unsigned-${{ needs.find.outputs.sha }}" in/mac
       - if: needs.demo.result == 'success'
-        uses: actions/download-artifact@v4
-        continue-on-error: true
-        with: { name: demo-mac, path: in/demo-mac }
+        run: bash scripts/download-artifact.sh --optional "${{ github.run_id }}" demo-mac in/demo-mac
       - run: |
           set -eo pipefail
           : > idle.jsonl
@@ -169,11 +161,24 @@ jobs:
           if [ -d in/apk ]; then
             # (an emulator of its own, gone after: scripts/android.sh emu, its AVD kept between runs)
             export JAVA_HOME=/opt/homebrew/opt/openjdk@17 AVD=mbui-idlemem EMU_PORT=5592 ANDROID_SERIAL=emulator-5592
-            trap '"${ANDROID_HOME:-$HOME/Library/Android/sdk}/platform-tools/adb" -s $ANDROID_SERIAL emu kill >/dev/null 2>&1 || true' EXIT
-            # (wiped each run, the same state each time; a data partition of 2 GB: the mini's disk is small)
-            EMU_FLAGS="-wipe-data -partition-size 2048" bash apps/mbui/scripts/android.sh emu
-            # (five runs: on the emulator one run's PSS is ±10% of another's, 136-162 MB on 2026-11-09)
-            COUNT=5 bash apps/mbui/scripts/idlemem.sh android "$(ls in/apk/*.apk | head -1)" | tee -a idle.jsonl
+            adb="${ANDROID_HOME:-$HOME/Library/Android/sdk}/platform-tools/adb"
+            trap '"$adb" -s $ANDROID_SERIAL emu kill >/dev/null 2>&1 || true' EXIT
+            # (cut 25 s before the job is, so the Macs' lines measured above are still uploaded: with Mini1 busy the
+            # emulator's cold start and five runs outlasted the job, and the job cancelled lost them too, mbui-size
+            # 43920702701 and 43924473673, 2026-11-16; that measure alone is left out, record carrying the one before's)
+            rc=0
+            bash scripts/with-timeout.sh "@$((JOB_END - 25))" bash -c '
+              set -eo pipefail
+              # (wiped each run, the same state each time; a data partition of 2 GB: the mini's disk is small)
+              EMU_FLAGS="-wipe-data -partition-size 2048" bash apps/mbui/scripts/android.sh emu
+              # (five runs: on the emulator one run's PSS is ±10% of another's, 136-162 MB on 2026-11-09)
+              COUNT=5 bash apps/mbui/scripts/idlemem.sh android "$1" > "$2"' _ "$(ls in/apk/*.apk | head -1)" android.jsonl || rc=$?
+            "$adb" -s $ANDROID_SERIAL emu kill >/dev/null 2>&1 || true
+            case $rc in
+              0) tee -a idle.jsonl < android.jsonl ;;
+              124) echo "::warning::Android's idle memory not measured in the job's time: left out" ;;
+              *) exit "$rc" ;;
+            esac
           fi
       - uses: actions/upload-artifact@v4
         continue-on-error: true

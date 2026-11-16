@@ -312,6 +312,10 @@ if part ts; then
   if touches '^scripts/with-timeout'; then
     step "a command's limit to the second" bash scripts/with-timeout-test.sh
   fi
+  # An artifact a CI job downloads, unzipped whole by its digest or not there at all.
+  if touches '^scripts/download-artifact'; then
+    step "artifact download: whole by digest or nothing there" bash scripts/download-artifact-test.sh
+  fi
   # The UIs never make a request of a station or still.fail cloud themselves: they name what they want done
   # (client/core-ts/src/ops.ts), and the core, which knows what it changes, brings every topic that shows it up to date.
   # the Wasm side of the native host's calls as their declarations make it

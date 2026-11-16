@@ -29,7 +29,9 @@
   connection to GitHub's artifact service reset fails a check that had passed (main acb00686, 2026-11-01; #5157's
   `offscreen`, 2026-11-10). One a later job downloads does not: there the upload's failure is the job's, unless that
   job does without it (mbui-size's measures and what they measure: `record` carries the one before's for a measure
-  missing).
+  missing). mbui-size downloads what it measures by `scripts/download-artifact.sh --optional`, not
+  actions/download-artifact, which once ended 0 with half a zip on the disk (43955196994, 2026-11-16): a zip is
+  checked by its size and digest, a cut one taken on by Range, and the directory is there only when it came whole.
 - A release's deltas (`scripts/release-deltas.ts`: the `deltas-<part>` jobs, each waiting for its own part's build
   alone, `put_feed` in `scripts/release.sh`) never fail or hold back a release: what goes wrong is a warning and that
   delta is left out, the feed whole without it. Their time is bounded by `--deadline` inside the job's own 5 minutes;
