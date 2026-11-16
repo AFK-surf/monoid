@@ -127,6 +127,8 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && inputs.stillfail_ref != ''
     runs-on: windows-latest
     timeout-minutes: 5
+    env:
+      MBC_STORE: ${{ github.workspace }}/.ci/mbc-store
     defaults:
       run:
         working-directory: libs/mbui
@@ -135,33 +137,30 @@ jobs:
       - run: git config --global core.autocrlf false
         working-directory: ${{ github.workspace }}
       - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
-        with:
-          repository: ${{ github.repository }}
-          ref: ${{ inputs.stillfail_ref }}
-          path: libs/mbui/sf
-          sparse-checkout: apps/mbui
       - uses: ./.github/actions/msvc
       # MoonBit's latest release, kept in the Actions cache by the ETags of its two downloads (the binaries and the
       # core, a HEAD each): installed (~16 s, most of it bundling the core) only when either changed. No answer: no
       # key, installed as before.
       - uses: ./.github/actions/mbui-moonbit
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            libs/mbui/_build
+            libs/mbui/out
+          key: mbui-win-build-mono-${{ github.sha }}
+          restore-keys: mbui-win-build-mono-
+      - uses: actions/cache/restore@v4
+        with:
+          path: .ci/mbc-store
+          key: mbui-win-store-b-${{ github.sha }}
+          restore-keys: mbui-win-store-b-
       - name: Build sffix
-        run: |
-          sh sf/apps/mbui/scripts/farview.sh
-          MBUI_APP_MOD=sf/apps/mbui APP=sffix scripts/win.sh build
+        run: APP=sffix bash ../../apps/mbui/scripts/win.sh build
       - name: Screenshots
         run: |
           mkdir -p out/shot-sf
           D=$(cygpath -w "$PWD/out/shot-sf")
           EXE=$(ls out/win/app/_build/native/release/build/*/sffix/sffix.exe)
-          for m in home chat settings-appearance files; do
-            for d in 0 1; do
-              n=win-wide-$m$([ $d = 1 ] && echo -dark || true)
-              MBUI_BENCH=-1 MBUI_WIN=1280x800 MBUI_DARK=$d MBUI_FIXTURE=$m MBUI_SCRIPT=shot MBUI_SHOT_NAME=$n MBUI_SHOT_DIR="$D" ./$EXE
-            done
-          done
-          MBUI_BENCH=-1 MBUI_WIN=1440x900 MBUI_FIXTURE=chat MBUI_SCRIPT=shot MBUI_SHOT_NAME=win-wide-chat-1440 MBUI_SHOT_DIR="$D" ./$EXE
           MBUI_BENCH=-1 MBUI_SCALE=1.5 MBUI_WIN=1280x800 MBUI_FIXTURE=chat MBUI_SCRIPT=shot MBUI_SHOT_NAME=win-wide-chat-150pct MBUI_SHOT_DIR="$D" ./$EXE
           {
             echo "until 首页的列表改成按天分组"
@@ -194,12 +193,14 @@ jobs:
             MBUI_BENCH=-1 MBUI_SCALE=1.5 MBUI_WIN=1280x800 MBUI_FIXTURE=chat MBUI_DRIVE_B64="$DRIVE_B64" MBUI_SHOT_DIR="$D" ./$EXE
             rm -f out/shot-sf/hover-f*.png
           fi
-          MBUI_BENCH=-1 MBUI_WIN=390x844 MBUI_SCRIPT=shot MBUI_SHOT_NAME=win-phone-home MBUI_SHOT_DIR="$D" ./$EXE
-          # its web views (WebView2): a service's page the app answers, an HTML file previewed
-          for m in service chat-preview-html; do
-            MBUI_SHOT_SCREEN=1 MBUI_BENCH=-1 MBUI_WIN=1280x800 MBUI_FIXTURE=$m MBUI_SCRIPT=shot MBUI_SHOT_NAME=win-wide-$m \
-              MBUI_SHOT_DIR="$D" ./$EXE 2>&1 | tee out/shot-sf/win-wide-$m.log
+          for m in home chat settings-appearance files; do
+            for d in 0 1; do
+              n=win-wide-$m$([ $d = 1 ] && echo -dark || true)
+              MBUI_BENCH=-1 MBUI_WIN=1280x800 MBUI_DARK=$d MBUI_FIXTURE=$m MBUI_SCRIPT=shot MBUI_SHOT_NAME=$n MBUI_SHOT_DIR="$D" ./$EXE
+            done
           done
+          MBUI_BENCH=-1 MBUI_WIN=1440x900 MBUI_FIXTURE=chat MBUI_SCRIPT=shot MBUI_SHOT_NAME=win-wide-chat-1440 MBUI_SHOT_DIR="$D" ./$EXE
+          MBUI_BENCH=-1 MBUI_WIN=390x844 MBUI_SCRIPT=shot MBUI_SHOT_NAME=win-phone-home MBUI_SHOT_DIR="$D" ./$EXE
           ls -la out/shot-sf
       - uses: actions/upload-artifact@v4
         if: always()
