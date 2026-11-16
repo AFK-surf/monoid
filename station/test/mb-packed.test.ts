@@ -2,17 +2,51 @@
 // `zstd.check`; the station's sessions/packed-mb.ts for sessions/archive.ts) held to the TypeScript it replaced
 // (test/reference/packed.ts, and its `segmentedBytes` for what archive.ts made before): the same table byte for byte,
 // the same frames read of a file, the same answer to whether one is in segments, the same cuts between segments, and
-// what each puts away read by the other, whole, a page at a time, or not at all where a byte of it is lost.
+// what each puts away read by the other, whole, a page at a time, or not at all where a byte of it is lost. And a
+// workspace's tar (the shell's `tar.pack`, `tar.unpack`, `tar.file`) held to the TypeScript that wrote and read it before
+// (test/reference/workspace-archive.ts): the same tar byte for byte, and what either packed restored and read by the
+// other, an archive cut short or leading out of its workspace refused by both.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { closeSync, existsSync, mkdtempSync, openSync, readFileSync, rmSync, statSync, truncateSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import {
+  chmodSync,
+  closeSync,
+  existsSync,
+  linkSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  readlinkSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  truncateSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { after, test } from "node:test";
-import { constants, zstdCompressSync } from "node:zlib";
+import { constants, zstdCompressSync, zstdDecompressSync } from "node:zlib";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
-import { packFile, packFileIf, restoreFile, segmentFile } from "../src/sessions/archive.ts";
+import {
+  emptyWorkspace,
+  packFile,
+  packFileIf,
+  packWorkspace,
+  restoreFile,
+  restoreWorkspace,
+  segmentFile,
+  workspaceArchive,
+  workspaceFile,
+} from "../src/sessions/archive.ts";
 import { IDLE_MS, PackedProgram } from "../src/sessions/packed-mb.ts";
+import { checksum, fileOf, gnuHeader, numberInto, packTree, padding, tarOfHeaders, unpackArchive } from "./reference/workspace-archive.ts";
 import { SEGMENT, framesOf, readSegments, seekTable, segmented, segmentedBytes, segmentedSoon, segmentsFrom, unpackedWhole } from "./reference/packed.ts";
 
 const binary = mbReaderBinary();
@@ -22,10 +56,14 @@ const dirs: string[] = [];
 let program: PackedProgram | null = null;
 after(async () => {
   await program?.close();
-  for (const d of dirs) rmSync(d, { recursive: true, force: true });
+  for (const d of dirs) {
+    // (a read-only directory a workspace's test left, where it failed before it made it writable again)
+    if (process.platform !== "win32" && existsSync(d)) execFileSync("chmod", ["-R", "u+rwx", d]);
+    rmSync(d, { recursive: true, force: true });
+  }
 });
 const fresh = () => {
-  const dir = mkdtempSync(join(tmpdir(), "mb-packed-"));
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "mb-packed-")));
   dirs.push(dir);
   return dir;
 };
@@ -263,5 +301,213 @@ test("the program is let go once nothing was asked of it for IDLE_MS, and starte
     assert.equal(p.running, false);
   } finally {
     await p.close();
+  }
+});
+
+// ── workspaces: the shell's tar (`tar.pack`, `tar.unpack`, `tar.file`) and the TypeScript it replaced ──
+
+/// Everything under `dir` as a line each: its kind, mode, and contents (a file's hash and mtime, a link's target).
+function manifest(dir: string, rel = ""): string[] {
+  const out: string[] = [];
+  for (const name of readdirSync(join(dir, rel)).sort()) {
+    const path = join(dir, rel, name);
+    const r = rel === "" ? name : `${rel}/${name}`;
+    const meta = lstatSync(path);
+    if (meta.isSymbolicLink()) out.push(`${r} link ${readlinkSync(path)}`);
+    else if (meta.isDirectory()) {
+      out.push(`${r} dir ${(meta.mode & 0o7777).toString(8)}`);
+      out.push(...manifest(dir, r));
+    } else if (meta.isFIFO()) out.push(`${r} fifo ${(meta.mode & 0o7777).toString(8)}`);
+    else out.push(`${r} file ${(meta.mode & 0o7777).toString(8)} ${meta.size} ${sha(readFileSync(path)).slice(0, 16)} ${Math.floor(meta.mtimeMs / 1000)}`);
+  }
+  return out;
+}
+
+const put = (path: string, bytes: string | Buffer) => {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, bytes);
+};
+const UPLOAD = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 1, 2, 3]);
+const DEEP = `${"长路径-".repeat(12)}/${"名字".repeat(30)}.md`;
+
+/// A workspace with what people's have: long and non-ASCII names (past a header's 100 bytes), a long link and a
+/// dangling one, a hard link, a read-only directory, empty files and directories, a big file, a pipe, an upload.
+function fillWorkspace(ws: string) {
+  put(join(ws, "project/src/main.rs"), "fn main() {}\n");
+  put(join(ws, "script.sh"), "#!/bin/sh\ntrue\n");
+  chmodSync(join(ws, "script.sh"), 0o751);
+  put(join(ws, "uploads/截图 1.png"), UPLOAD);
+  put(join(ws, DEEP), "deep and long");
+  put(join(ws, "empty"), "");
+  mkdirSync(join(ws, "an/empty/dir"), { recursive: true });
+  put(join(ws, "random.bin"), Buffer.from(Array.from({ length: 3 << 20 }, (_, i) => (i * 2654435761) >>> 24)));
+  symlinkSync(`${"远处/".repeat(30)}target`, join(ws, "long-link"));
+  symlinkSync("/nonexistent/absolute", join(ws, "dangling"));
+  put(join(ws, "a"), "hard linked");
+  linkSync(join(ws, "a"), join(ws, "b"));
+  put(join(ws, "readonly/go.mod"), "module m");
+  chmodSync(join(ws, "readonly"), 0o500);
+  execFileSync("mkfifo", ["-m", "640", join(ws, "pipe")]);
+  utimesSync(join(ws, "project/src/main.rs"), 1_700_000_000, 1_700_000_000);
+}
+
+const unixOnly = skip || (process.platform === "win32" && "pipes, modes and links are Unix's");
+
+test("a workspace the shell packs is the tar the reference packed, byte for byte, and each restores what the other packed", { skip: unixOnly }, async () => {
+  const dir = fresh();
+  const room = join(dir, "room");
+  const ws = join(room, "workspace");
+  fillWorkspace(ws);
+  const before = manifest(ws);
+  // The reference's archive of the same tree, beside it: the same tar.
+  const theirs = join(dir, "reference.tar.zst");
+  await packTree(ws, theirs);
+  await packWorkspace(room);
+  const mine = workspaceArchive(room);
+  assert.deepEqual(readdirSync(ws), [], "the originals go once packed");
+  assert.equal(statSync(mine).mode & 0o777, 0o600);
+  assert.deepEqual(zstdDecompressSync(readFileSync(mine)), zstdDecompressSync(readFileSync(theirs)), "the same tar");
+  // What the shell packed, the reference unpacks as it was, and reads a file of.
+  const out = join(dir, "by-reference");
+  mkdirSync(out);
+  assert.deepEqual(await unpackArchive(mine, out), new Map());
+  assert.deepEqual(manifest(out), before);
+  assert.deepEqual(await fileOf(mine, ["uploads", "截图 1.png"]), UPLOAD);
+  // And the shell reads it: a file by its path (with `./`, with Windows' separators), none for a directory or what is
+  // not there, nothing left beside the archive.
+  assert.deepEqual(await workspaceFile(room, "uploads/截图 1.png"), UPLOAD);
+  assert.deepEqual(await workspaceFile(room, `./${DEEP}`), Buffer.from("deep and long"));
+  if (process.platform === "win32") assert.deepEqual(await workspaceFile(room, "uploads\\截图 1.png"), UPLOAD);
+  assert.equal(await workspaceFile(room, "an"), null);
+  assert.equal(await workspaceFile(room, "missing"), null);
+  assert.deepEqual(readdirSync(room).filter((n) => n.includes("reading")), []);
+  // What the reference packed, the shell restores as it was.
+  writeFileSync(mine, readFileSync(theirs));
+  put(join(ws, "uploads/new.txt"), "new while archived");
+  await restoreWorkspace(room);
+  assert.equal(existsSync(mine), false);
+  assert.deepEqual(manifest(ws).filter((l) => !l.startsWith("uploads")), before.filter((l) => !l.startsWith("uploads")));
+  assert.equal(readFileSync(join(ws, "uploads/new.txt"), "utf8"), "new while archived");
+  assert.deepEqual(readFileSync(join(ws, "uploads/截图 1.png")), UPLOAD);
+  // And empties it, its uploads out of the archive the reference made.
+  await packTree(ws, mine);
+  await emptyWorkspace(room);
+  assert.deepEqual(readdirSync(ws), ["uploads"]);
+  assert.deepEqual(readdirSync(join(ws, "uploads")).sort(), ["new.txt", "截图 1.png"]);
+  assert.deepEqual(readFileSync(join(ws, "uploads/截图 1.png")), UPLOAD);
+  assert.equal(existsSync(mine), false);
+});
+
+test("an archive another tar wrote (pax names and sizes, ustar's prefix) is restored and read as the reference reads it", { skip: unixOnly }, async () => {
+  const dir = fresh();
+  const room = join(dir, "room");
+  mkdirSync(join(room, "workspace"), { recursive: true });
+  // ("<length> <key>=<value>\n", its length counting its own digits)
+  const record = (key: string, value: string) => {
+    const body = Buffer.byteLength(` ${key}=${value}\n`);
+    let n = body;
+    while (String(n).length + body !== n) n = String(n).length + body;
+    return `${n} ${key}=${value}\n`;
+  };
+  const meta = (size: number) => ({ mode: 0o100640, uid: 0, gid: 0, mtime: 1_600_000_000, size });
+  const body = (b: Buffer) => [b, Buffer.alloc(padding(b.length).length)];
+  const pax = Buffer.from(record("path", `uploads/${"由 pax 命名的".repeat(12)}.txt`) + record("size", "3"));
+  const ustar = gnuHeader(Buffer.from("b.txt"), "0", meta(3));
+  ustar.write("ustar\u000000", 257, "latin1");
+  ustar.write("uploads/nested", 345, "latin1");
+  ustar.fill(0x20, 148, 156);
+  numberInto(ustar, 148, 8, checksum(ustar));
+  await tarOfHeaders(workspaceArchive(room), [
+    gnuHeader(Buffer.from("./"), "5", { ...meta(0), mode: 0o40750 }),
+    gnuHeader(Buffer.from("pax"), "x", meta(pax.length)),
+    ...body(pax),
+    gnuHeader(Buffer.from("cut-short-by-pax"), "0", meta(99)),
+    ...body(Buffer.from("ccc")),
+    ustar,
+    ...body(Buffer.from("bbb")),
+    gnuHeader(Buffer.from("src/main.rs"), "0", meta(7)),
+    ...body(Buffer.from("fn main")),
+  ]);
+  const archive = workspaceArchive(room);
+  const paxName = `uploads/${"由 pax 命名的".repeat(12)}.txt`;
+  assert.deepEqual(await workspaceFile(room, paxName), await fileOf(archive, paxName.split("/")));
+  assert.deepEqual(await workspaceFile(room, "uploads/nested/b.txt"), Buffer.from("bbb"));
+  const out = join(dir, "by-reference");
+  mkdirSync(out);
+  await unpackArchive(archive, out);
+  const copy = join(dir, "copy.tar.zst");
+  writeFileSync(copy, readFileSync(archive));
+  await restoreWorkspace(room);
+  assert.deepEqual(manifest(join(room, "workspace")), manifest(out));
+  assert.equal(readFileSync(join(room, "workspace", paxName), "utf8"), "ccc");
+  // Only the uploads, out of the same archive.
+  writeFileSync(archive, readFileSync(copy));
+  await emptyWorkspace(room);
+  const uploads = join(dir, "uploads-by-reference");
+  mkdirSync(uploads);
+  await unpackArchive(copy, uploads, "uploads");
+  assert.deepEqual(manifest(join(room, "workspace")), manifest(uploads));
+});
+
+test("an archive cut short, with bytes after it or not zstd at all is refused by each reader, the workspace and the archive kept", { skip: unixOnly }, async () => {
+  const dir = fresh();
+  const room = join(dir, "room");
+  put(join(room, "workspace/uploads/a.txt"), "attachment");
+  put(join(room, "workspace/source.rs"), "work");
+  await packWorkspace(room);
+  const whole = readFileSync(workspaceArchive(room));
+  for (const [what, bytes] of [
+    ["its checksum's last byte", whole.subarray(0, whole.length - 1)],
+    ["half of it", whole.subarray(0, whole.length >> 1)],
+    ["a frame header", whole.subarray(0, 6)],
+    ["bytes after it", Buffer.concat([whole, Buffer.from("xx")])],
+    ["not zstd", Buffer.from("broken archive")],
+  ] as const) {
+    writeFileSync(workspaceArchive(room), bytes);
+    put(join(room, "workspace/uploads/new.txt"), "new");
+    await assert.rejects(workspaceFile(room, "uploads/a.txt"), what);
+    await assert.rejects(fileOf(workspaceArchive(room), ["uploads", "a.txt"]), `${what} (the reference)`);
+    await assert.rejects(restoreWorkspace(room), /restoring the archived workspace/, what);
+    await assert.rejects(emptyWorkspace(room), what);
+    assert.deepEqual(readFileSync(workspaceArchive(room)), bytes, what);
+    assert.equal(readFileSync(join(room, "workspace/uploads/new.txt"), "utf8"), "new", what);
+    assert.deepEqual(readdirSync(room).filter((n) => n.includes("reading")), [], what);
+  }
+  writeFileSync(workspaceArchive(room), whole);
+  await restoreWorkspace(room);
+  assert.equal(readFileSync(join(room, "workspace/source.rs"), "utf8"), "work");
+});
+
+test("an archive that leads out of its workspace (`..`, a link made first, a hard link up) writes nothing outside it, as the reference", { skip: unixOnly }, async () => {
+  const dir = fresh();
+  const meta = (size: number) => ({ mode: 0o100644, uid: 0, gid: 0, mtime: 1_600_000_000, size });
+  const entry = (name: string, kind: string, bytes = Buffer.alloc(0), link?: string) => [
+    gnuHeader(Buffer.from(name), kind, meta(bytes.length), link === undefined ? undefined : Buffer.from(link)),
+    bytes,
+    padding(bytes.length),
+  ];
+  const cases: [string, Buffer[], RegExp | null][] = [
+    ["`..` passed over", [...entry("../escaped", "0", Buffer.from("no")), ...entry("ok", "0", Buffer.from("yes"))], null],
+    ["through a link out", [...entry("out", "2", Buffer.alloc(0), dir), ...entry("out/escaped", "0", Buffer.from("no"))], /trying to unpack outside of destination path/],
+    ["a hard link up", entry("h", "1", Buffer.alloc(0), "../escaped"), /hard link outside of destination path/],
+    ["a device", entry("tty", "3"), /cannot unpack a device file: tty/],
+  ];
+  for (const [what, blocks, refused] of cases) {
+    const room = join(dir, what.replace(/\W/g, "-"));
+    put(join(room, "workspace/kept.txt"), "kept");
+    await tarOfHeaders(workspaceArchive(room), blocks);
+    const reference = join(room, "by-reference");
+    mkdirSync(reference);
+    if (refused === null) {
+      await unpackArchive(workspaceArchive(room), reference);
+      await restoreWorkspace(room);
+      assert.deepEqual(manifest(join(room, "workspace")).filter((l) => !l.startsWith("kept.txt")), manifest(reference), what);
+    } else {
+      await assert.rejects(unpackArchive(workspaceArchive(room), reference), refused, `${what} (the reference)`);
+      await assert.rejects(restoreWorkspace(room), refused, what);
+      assert.ok(existsSync(workspaceArchive(room)), what);
+      assert.equal(readFileSync(join(room, "workspace/kept.txt"), "utf8"), "kept", what);
+    }
+    assert.equal(existsSync(join(dir, "escaped")), false, what);
   }
 });

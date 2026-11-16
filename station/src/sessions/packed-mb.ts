@@ -1,12 +1,14 @@
 // Transcripts put away, put away again and written back by the MoonBit program (station/mb src/packed, reader
 // `--builder packed`), for sessions/archive.ts: a transcript cut into its segments, compressed, read back and compared
 // with what it was by the shell (client/shell `zstd.segments`, `zstd.check`), none of its bytes on the station's thread
-// or in its heap (a 150 MB transcript was held there 16 MiB at a time, with its copy and its compressed copy). The
+// or in its heap (a 150 MB transcript was held there 16 MiB at a time, with its copy and its compressed copy). So is a
+// session's workspace: packed into its tar, read back, unpacked and a file read out of it by the shell (`tar.pack`,
+// `tar.unpack`, `tar.file`), where the station walked it twice and streamed every block through its heap. The
 // station keeps the locks and the renames: the program only makes the temporary it is given and says whether it reads
 // back as it must. Started at its first ask, it goes after IDLE_MS with nothing asked of it and is started again by the
 // next: it keeps nothing between asks. There is no TypeScript to fall back to: what it replaced is
-// station/test/reference/packed.ts and the archive's own segmenting of before, which station/test/mb-packed.test.ts
-// holds it to.
+// station/test/reference/packed.ts, station/test/reference/workspace-archive.ts and the archive's own segmenting of
+// before, which station/test/mb-packed.test.ts holds it to.
 import { tmpdir } from "node:os";
 import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
@@ -81,14 +83,14 @@ export class PackedProgram {
     let failure: Error | null = null;
     child.on("error", (error: Error) => {
       failure = error;
-      log.error("archive", "the transcripts' program stopped", { error: error.message });
+      log.error("archive", "the archive's program stopped", { error: error.message });
     });
     child.on("exit", (code: number) => {
       if (this.#process !== child) return;
       this.#process = null;
       this.#idle?.();
       this.#idle = null;
-      const error = this.#closed ? new PackedProgramStopped("station stopping") : (failure ?? new Error(`the transcripts' program stopped (exit ${code})`));
+      const error = this.#closed ? new PackedProgramStopped("station stopping") : (failure ?? new Error(`the archive's program stopped (exit ${code})`));
       for (const waiting of this.#waiting.values()) waiting.reject(error);
       this.#waiting.clear();
     });
@@ -142,12 +144,19 @@ export class PackedProgram {
 let shared: PackedProgram | null = null;
 
 /// The one program the archive asks, made at its first ask. A process that comes to its end by itself (a command, a
-/// test's file) lets it go first, rather than leave it to find its stdin closed after.
+/// test's file) lets it go first, rather than leave it to find its stdin closed after: each time its loop runs out, not
+/// only the first (a test's file ran out between two tests, its program started again after and left running at its
+/// end; an idle program's process is let go of the loop).
 export function packedProgram(): PackedProgram {
   if (shared === null) {
     const program = new PackedProgram();
     shared = program;
-    process.once("beforeExit", () => void program.trimIdle());
+    process.on("beforeExit", () => void program.trimIdle());
   }
+  return shared;
+}
+
+/// The one program the archive asks, if it was made (what the station's memory lets go, and its end, reach).
+export function peekPackedProgram(): PackedProgram | null {
   return shared;
 }

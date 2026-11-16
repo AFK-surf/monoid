@@ -509,7 +509,11 @@ fn Actors::heard(self : Actors, line : String) -> Unit {
       let id = id.to_int()
       if self.timers.get(id) is Some(then) {
         self.timers.remove(id)
+        // (counted active while it runs: what it says Node meanwhile, a `tell` too, must not say this program quiet)
+        self.active += 1
         then()
+        self.active -= 1
+        self.quiet()
       }
       return
     }
@@ -523,7 +527,11 @@ fn Actors::heard(self : Actors, line : String) -> Unit {
         Some(Array(args)) => args
         _ => []
       }
+      // (counted active while it runs, as a due timer's work)
+      self.active += 1
       self.live_called(id, method, args)
+      self.active -= 1
+      self.quiet()
     }
     return
   }

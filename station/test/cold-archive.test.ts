@@ -92,7 +92,8 @@ test("links the machine refuses come back where the restored workspace ends up, 
   symlinkSync(join("project", "main.rs"), join(ws, "entry"));
   const release = await lock(room);
   await packWorkspace(room);
-  // As Windows without the privilege (Developer Mode off): links refused, junctions made.
+  // As Windows without the privilege (Developer Mode off): links refused, junctions made. (The tree is made by the
+  // shell, `tar.unpack`, whose links this machine refuses or not as it does; what stands in is made here, by Node.)
   const real = fsModule.promises.symlink;
   fsModule.promises.symlink = (async (target: string, path: string, type?: string) => {
     if (type === "junction") return real(target, path, type);

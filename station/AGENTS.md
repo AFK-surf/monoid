@@ -67,6 +67,14 @@
   `mb/src/footprint`), a process a measure, killed as it is called off, walking as `walkBounded` does with every
   entry stat'ed: no walk in TypeScript to fall back to, the one it replaced is `test/footprint-reference.ts`, which
   `test/mb-footprint.test.ts` holds it to.
+- A session's cold storage (`src/sessions/archive.ts`: a transcript put away as `<file>.jsonl.zst` in segments, a
+  workspace as `workspace.tar.zst`, a GNU tar in zstd as the Rust station wrote it) is the MoonBit program's
+  (`--builder packed`, `mb/src/packed`, `src/sessions/packed-mb.ts`: started at an ask, let go idle, under the
+  machine's pressure and with the agents), whose bytes the shell writes and reads a block at a time (`zstd.segments`,
+  `zstd.check`, `tar.pack`, `tar.unpack`, `tar.file`). Node keeps the locks, the worktrees' locks and the renames, none
+  of the bytes: no packing in TypeScript to fall back to, the ones it replaced are `test/reference/packed.ts` and
+  `test/reference/workspace-archive.ts`, which `test/mb-packed.test.ts` holds it to (the same tar, byte for byte), as
+  `test/cold-compat.test.ts` holds both to the Rust station's (`test/archive-rs`).
 - Time is the Clock's (a `TestClock` in tests): `Date.now`, `new Date()`, `setTimeout`, `setInterval` only in
   `src/ops/fibers.ts` (`wall`, for what is shared with other programs: mtimes, expiries, deadlines to processes).
   `scripts/check.sh` refuses them elsewhere.

@@ -1,7 +1,9 @@
-// What the station asks of the program that puts transcripts away (`--builder packed`, station/src/sessions/packed-mb.ts
-// for sessions/archive.ts): a line of JSON an ask, `{id, op, …}`, answered `{id, …}` (or `{id, error}`), one at a time,
-// nothing kept between them. The station holds the transcript's lock and renames what this made into place: this only
-// makes the temporary it is given and says whether it reads back as it must.
+// What the station asks of the program that puts transcripts and workspaces away (`--builder packed`,
+// station/src/sessions/packed-mb.ts for sessions/archive.ts): a line of JSON an ask, `{id, op, …}`, answered `{id, …}`
+// (or `{id, error}`), one at a time, nothing kept between them. The station holds the transcript's or the room's lock
+// and renames what this made into place: this only makes the temporary (or the tree) it is given and says whether it
+// reads back as it must. A workspace's tar is written and read by the shell (client/shell `tar.pack`, `tar.unpack`,
+// `tar.file`), a block at a time: none of its bytes come through here.
 
 ///|
 /// What failed, said to the station as its error.
@@ -131,6 +133,32 @@ async fn check(host : @host.Host, path : String, frames : Array[Frame]?, into? :
 }
 
 ///|
+/// What the shell is asked for a workspace's ask `op` (`workspace.pack`, `.unpack`, `.file`): its op and arguments, each
+/// given (a path's components only as strings), else what is missing said.
+fn workspace_call(op : String, ask : Json) -> (String, Map[String, Json]) raise Failed {
+  let given = (key : String) => Json::string(str_of(ask, key))
+  match op {
+    "workspace.pack" => ("tar.pack", { "dir": given("dir"), "out": given("out") })
+    "workspace.unpack" => {
+      let args : Map[String, Json] = { "path": given("path"), "dest": given("dest") }
+      match field(ask, "prefix") {
+        None | Some(Null) => ()
+        Some(String(prefix)) => args["prefix"] = Json::string(prefix)
+        Some(_) => raise Failed("no prefix")
+      }
+      ("tar.unpack", args)
+    }
+    "workspace.file" => {
+      guard field(ask, "wanted") is Some(Array(wanted)) && wanted.iter().all(p => p is String(_)) else {
+        raise Failed("no wanted")
+      }
+      ("tar.file", { "path": given("path"), "wanted": Json::array(wanted), "out": given("out") })
+    }
+    _ => raise Failed("no such ask")
+  }
+}
+
+///|
 /// The answer to one ask (its `id` put on by the caller):
 /// - `pack {path, temp}`: the transcript at `path` put away into `temp`, read back and found to be the transcript
 ///   still, byte for byte (archive.ts `packFileIf`);
@@ -138,7 +166,14 @@ async fn check(host : @host.Host, path : String, frames : Array[Frame]?, into? :
 /// - `segment {path, source, temp}`: one put away before it was in segments, or with a segment stored as it is, put
 ///   away again into `temp`, what it holds the same: `{segmented}`, false where it was already (`segmentFile`);
 /// - `restore {source, temp}`: one put away written back whole into `temp` (`restoreFile`);
-/// - `segmented {path}`, `frames {path}`, `table {frames}`: what the format says of a file, and a table's bytes (hex).
+/// - `segmented {path}`, `frames {path}`, `table {frames}`: what the format says of a file, and a table's bytes (hex);
+/// - `workspace.pack {dir, out}`: the workspace at `dir` put away into `out` (a GNU tar in zstd, as the Rust station's),
+///   read back whole and the workspace found unchanged meanwhile (archive.ts `packWorkspaceIf`);
+/// - `workspace.unpack {path, dest, prefix?}`: the archive at `path` made in `dest`, only its files and directories
+///   under `prefix` where given: `{refused}`, the links the machine refused, `[path, target]` each (`restoreWorkspace`,
+///   `emptyWorkspace`);
+/// - `workspace.file {path, wanted, out}`: the file of the archive at `path` whose path's components are `wanted`,
+///   written to `out`: `{found}` (`workspaceFile`).
 pub async fn answer(host : @host.Host, ask : Json) -> Json {
   match field(ask, "op") {
     Some(String("pack")) => {
@@ -194,6 +229,25 @@ pub async fn answer(host : @host.Host, ask : Json) -> Json {
         }
       }
       { "table": Json::string(@hex.encode(seek_table(sizes))) }
+    }
+    Some(String("workspace.pack")) => {
+      let (op, args) = workspace_call("workspace.pack", ask)
+      ignore(shell(host, op, args))
+      done()
+    }
+    Some(String("workspace.unpack")) => {
+      let (op, args) = workspace_call("workspace.unpack", ask)
+      match shell(host, op, args) {
+        { "refused": Array(refused), .. } => { "refused": Json::array(refused) }
+        _ => raise Failed("\{str_of(ask, "path")}: not unpacked")
+      }
+    }
+    Some(String("workspace.file")) => {
+      let (op, args) = workspace_call("workspace.file", ask)
+      match shell(host, op, args) {
+        { "found": True, .. } => { "found": true }
+        _ => { "found": false }
+      }
     }
     _ => raise Failed("no such ask")
   }

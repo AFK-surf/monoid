@@ -42,3 +42,61 @@ test "a frame stored as it is: the frame magic and the descriptor of one segment
   assert_false(stored(b"\x28\xb5\x2f\xfc\xe0"[:]))
   assert_false(stored(b"\x28\xb5\x2f\xfd"[:]))
 }
+
+///|
+/// A workspace's asks, as the shell is asked them (client/shell `tar.pack`, `tar.unpack`, `tar.file`; station/test/
+/// mb-packed.test.ts holds what it does to the TypeScript it replaced).
+test "a workspace's asks: the shell's op and what it is given, what is missing refused" {
+  let call = (op : String, ask : Json) => {
+    let (shell, args) = workspace_call(op, ask) catch { Failed(m) => ("refused", { "why": Json::string(m) }) }
+    Json::array([Json::string(shell), Json::object(args)]).stringify()
+  }
+  inspect(
+    call("workspace.pack", { "dir": "/r/workspace", "out": "/r/w.writing", "id": 1 }),
+    content=(
+      #|["tar.pack",{"dir":"/r/workspace","out":"/r/w.writing"}]
+    ),
+  )
+  inspect(
+    call("workspace.unpack", { "path": "/r/a.tar.zst", "dest": "/r/stage" }),
+    content=(
+      #|["tar.unpack",{"path":"/r/a.tar.zst","dest":"/r/stage"}]
+    ),
+  )
+  inspect(
+    call("workspace.unpack", { "path": "/r/a.tar.zst", "dest": "/r/stage", "prefix": "uploads" }),
+    content=(
+      #|["tar.unpack",{"path":"/r/a.tar.zst","dest":"/r/stage","prefix":"uploads"}]
+    ),
+  )
+  inspect(
+    call("workspace.file", { "path": "/r/a.tar.zst", "wanted": ["uploads", "截图 1.png"], "out": "/r/a.reading-1" }),
+    content=(
+      #|["tar.file",{"path":"/r/a.tar.zst","wanted":["uploads","截图 1.png"],"out":"/r/a.reading-1"}]
+    ),
+  )
+  inspect(
+    call("workspace.pack", { "dir": "/r/workspace" }),
+    content=(
+      #|["refused",{"why":"no out"}]
+    ),
+  )
+  inspect(
+    call("workspace.unpack", { "path": "/r/a", "dest": "/r/s", "prefix": 1 }),
+    content=(
+      #|["refused",{"why":"no prefix"}]
+    ),
+  )
+  inspect(
+    call("workspace.file", { "path": "/r/a", "wanted": ["uploads", 1], "out": "/r/o" }),
+    content=(
+      #|["refused",{"why":"no wanted"}]
+    ),
+  )
+  inspect(
+    call("workspace.copy", { "path": "/r/a" }),
+    content=(
+      #|["refused",{"why":"no such ask"}]
+    ),
+  )
+}

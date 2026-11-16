@@ -77,6 +77,7 @@ import { followLatestThreadRequests } from "../read/latest-thread-requests.ts";
 import { ColdRooms } from "./cold.ts";
 import { Hub } from "./hub.ts";
 import { LiveLocator } from "./live-locator.ts";
+import { peekPackedProgram } from "./packed-mb.ts";
 import { buildWorkspaceActivity } from "./workspace-activity-builder.ts";
 import { buildSessionCounts } from "./session-count-builder.ts";
 import { PostBlockBuilder } from "./post-block-builder.ts";
@@ -655,6 +656,11 @@ export const AgentsLive = (control: Control) =>
       hub.live.locateAsync = (key, signal) => liveLocator.locate(key, signal);
       readers.onTrim(() => liveLocator.trimIdle());
       yield* Effect.addFinalizer(() => Effect.promise(() => liveLocator.close()));
+      // The program that puts transcripts and workspaces away (sessions/packed-mb.ts), when one was made: let go under the
+      // machine's pressure while nothing is asked of it, and ended with the agents (an ask under way failed, as at a
+      // handover: the next process does it again).
+      readers.onTrim(() => peekPackedProgram()?.trimIdle() ?? 0);
+      yield* Effect.addFinalizer(() => Effect.promise(() => peekPackedProgram()?.close() ?? Promise.resolve()));
       // Not asked of them before the process before has handed over: what it carries says where each reading stands.
       hub.live.handover = previous;
       // Where each checklist was read to, for the next process to read on from (not back, at each update), and where each
