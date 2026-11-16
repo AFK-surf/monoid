@@ -14,7 +14,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
-import { Incoming, withFront } from "../src/mesh/front.ts";
+import { Front, Incoming, withFront } from "../src/mesh/front.ts";
+import { createServer } from "node:net";
 import { hearLines } from "../src/ops/log.ts";
 import type { Socket } from "node:net";
 import { type Connection, type Endpoint, type Mesh, type Stream, loadMesh } from "../src/mesh/native.ts";
@@ -370,5 +371,124 @@ test("a stream whose Node end closed first is written to: only that stream goes,
     await station.close();
     child.kill("SIGTERM");
     await end;
+  }
+});
+
+test("a Node binding again with other relays and another congestion controller takes the endpoint as it is: the connections on it stay", { skip }, async () => {
+  const addon = loadMesh();
+  const f = await front();
+  const key = randomBytes(32);
+  const options = { secretKey: key, alpns: [ALPN], relayUrls: [] as string[], discovery: false };
+  const first = await withFront(addon, f.socket).bind(options);
+  const device = await bindOn(addon, randomBytes(32));
+  let second: Endpoint | undefined;
+  try {
+    const accepting = first.accept();
+    const theirs = await device.connect(addrOf(first), ALPN);
+    const conn = (await accepting)!;
+    // (the next Node of a handover binds with what the station has now: a relay the cloud added meanwhile, the
+    // congestion controller changed in its settings)
+    second = await withFront(addon, f.socket).bind({ ...options, relayUrls: ["http://127.0.0.1:9/"], congestion: "bbr" });
+    assert.equal(second.id(), first.id());
+    assert.deepEqual(second.sockets(), first.sockets(), "the same endpoint, not one bound anew");
+    // The first Node's connection lives on, both ways.
+    const opened = await theirs.openBi();
+    await opened.write(Buffer.from("still here"));
+    await opened.finish();
+    const s = (await conn.acceptBi())!;
+    assert.equal((await readAll(s)).toString(), "still here");
+    assert.equal(conn.isClosed(), false);
+    // And the second Node takes what comes from then on, with the relays named last; bound with none again, none.
+    const next = second.accept();
+    const again = await device.connect(addrOf(second), ALPN);
+    assert.equal((await next)!.remoteId(), device.id());
+    again.close(0, "");
+    const third = await withFront(addon, f.socket).bind(options);
+    assert.equal(third.id(), first.id());
+    assert.deepEqual(third.sockets(), first.sockets());
+    await third.close();
+    theirs.close(0, "");
+  } finally {
+    await device.close();
+    await second?.close();
+    await first.close();
+    await f.stop();
+  }
+});
+
+test("a connection whose end its Node was told is let go at the front: nothing of it is kept", { skip }, async () => {
+  const addon = loadMesh();
+  const f = await front();
+  const node = await Front.open(f.socket);
+  const device = await bindOn(addon, randomBytes(32));
+  try {
+    const said = await node.ask("bind", { streams: node.streamsPath, key: randomBytes(32).toString("hex"), options: { alpns: [ALPN.toString("hex")], relayUrls: [], discovery: false } });
+    const accepting = node.ask("accept");
+    const theirs = await device.connect({ id: said.id, ips: (said.sockets as string[]).filter((s) => /^\d/.test(s)).map((s) => s.replace(/^0\.0\.0\.0/, "127.0.0.1")) }, ALPN);
+    const seen = await accepting;
+    assert.equal(seen.remote, device.id());
+    // (as front.ts's FrontConnection asks it of each connection, and asks nothing more of it once told)
+    const closed = node.ask("conn.closed", { conn: seen.conn });
+    theirs.close(5, "bye");
+    assert.equal((await closed).reason, "bye");
+    await assert.rejects(node.ask("conn.seen", { conn: seen.conn }), /no handle/, "let go at the shell, not kept as gone");
+    // A close asked after (the Node's own, crossing the end) is answered as before.
+    assert.deepEqual(await node.ask("conn.close", { conn: seen.conn, code: 0, reason: "" }), {});
+  } finally {
+    await node.ask("close").catch(() => {});
+    node.close();
+    await device.close();
+    await f.stop();
+  }
+});
+
+test("a connection that came before its Node said its routes goes by them once that Node takes it", { skip }, async () => {
+  const addon = loadMesh();
+  const f = await front();
+  const key = randomBytes(32);
+  const dir = mkdtempSync(join(tmpdir(), "mbm-"));
+  // what a route's program would be (served.ts): the request handed it, its head line first
+  const routedAt = join(dir, "routed.sock");
+  let routed!: (b: Buffer) => void;
+  const routedGot = new Promise<Buffer>((resolve) => (routed = resolve));
+  const server = createServer((c) => {
+    const parts: Buffer[] = [];
+    c.on("data", (b: Buffer) => {
+      parts.push(b);
+      if (Buffer.concat(parts).includes("/routed")) routed(Buffer.concat(parts));
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(routedAt, resolve));
+  const options = { secretKey: key, alpns: [ALPN], relayUrls: [] as string[], discovery: false };
+  const device = await bindOn(addon, randomBytes(32));
+  // The Node before, gone: what comes waits for the next.
+  const before = await withFront(addon, f.socket).bind(options);
+  const addr = addrOf(before);
+  await before.close();
+  let station: Endpoint | undefined;
+  try {
+    const theirs = await device.connect(addr, ALPN);
+    // The next binds (given what waited) and only then says its routes (mesh.ts: once its programs listen).
+    station = await withFront(addon, f.socket).bind(options);
+    assert.equal(await station.route!(ALPN, [routedAt], ["GET /routed"]), true);
+    const conn = (await station.accept())!;
+    assert.equal(conn.remoteId(), device.id());
+    // its first stream the Node's, as always; the next a routed request
+    const first = await theirs.openBi();
+    await first.write(Buffer.from("hello"));
+    const asked = await theirs.openBi();
+    await asked.write(Buffer.from(`${JSON.stringify({ method: "GET", path: "/routed" })}\n`));
+    assert.equal((await (await conn.acceptBi())!.read())?.toString(), "hello");
+    const where = await Promise.race([
+      routedGot.then(() => "routed"),
+      conn.acceptBi().then((s) => (s === null ? "ended" : "given the Node")),
+    ]);
+    assert.equal(where, "routed");
+    theirs.close(0, "");
+  } finally {
+    server.close();
+    await device.close();
+    await station?.close();
+    await f.stop();
   }
 });

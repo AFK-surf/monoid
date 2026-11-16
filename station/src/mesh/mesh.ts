@@ -178,7 +178,13 @@ export const MeshLive = Layer.effectDiscard(
           store?.told(changes);
         };
         served.says = { claim: (viewer, path, key, lang) => admin.claimSay(viewer, path, key, lang), said: (thread, n, text, row) => admin.saidElsewhere(thread, n, text, row) };
-        yield* Effect.forkScoped(Effect.promise(async () => {
+        // (a program that ended taken off the routes the connections taken from then on go by, and put back once its
+        // next one listens)
+        served.onRoutes = (paths) => void route(ALPN, paths, SERVED_ROUTES).catch(() => {});
+        // Routed before the first connection is taken (the front gives a connection the routes said by the time this
+        // process takes it): one taken before would have every request of its handed to this process, a device's
+        // events stream too, for as long as it stays. Not started, this process answers them all.
+        yield* Effect.promise(async () => {
           try {
             const paths = await served.start();
             if (!(await route(ALPN, paths, SERVED_ROUTES))) log.info("mesh", "the front routes nothing (one from before); every request is this process's");
@@ -186,7 +192,7 @@ export const MeshLive = Layer.effectDiscard(
           } catch (e) {
             log.warn("mesh", "the MoonBit program that answers requests did not start", { error: (e as Error).message });
           }
-        }));
+        });
       }
       // The control plane's gateways: the device tools, as far as the station's own setting lets them.
       const device = yield* Effect.acquireRelease(

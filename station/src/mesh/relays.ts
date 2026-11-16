@@ -28,8 +28,16 @@ export const keepRelays = (endpoint: Endpoint, net?: Net) =>
       return [...theirs, ...ways.relays().filter((u) => !theirs.some((t) => sameUrl(t) === sameUrl(u)))];
     };
     let ours = wanted();
+    // The workspaces' own are not among the relays the endpoint was bound with (still.fail's): put in before it is kept
+    // on them.
+    const theirs = cloud.state.relays();
+    for (const url of ours.filter((u) => !theirs.some((t) => sameUrl(t) === sameUrl(u)))) {
+      yield* Effect.promise(() => endpoint.insertRelay(url).catch((e) => log.warn("mesh", "a workspace's relay was not added", { relay: url, error: (e as Error).message })));
+    }
     endpoint.keep(ours);
-    let added = false;
+    // Whether iroh's public relays are on: not known at first, since an endpoint kept across a handover (the front's)
+    // may have them on from the process before; the first check that finds ours answering takes them off.
+    let added: boolean | null = null;
 
     // As the cloud pushes still.fail's, and as a workspace's own are added or taken away. One change at a time.
     let changing: Promise<void> = Promise.resolve();
@@ -74,12 +82,12 @@ export const keepRelays = (endpoint: Endpoint, net?: Net) =>
           } catch {}
         }
       }
-      if (!up && !added) {
+      if (!up && added !== true) {
         log.warn("mesh", "none of still.fail's relays answers; adding iroh's public relays until one does", { relays: ours });
         await endpoint.publicRelays(true);
         added = true;
-      } else if (up && added) {
-        log.info("mesh", "still.fail's relays answer again; back home to them", { relays: ours });
+      } else if (up && added !== false) {
+        if (added === true) log.info("mesh", "still.fail's relays answer again; back home to them", { relays: ours });
         await endpoint.publicRelays(false);
         added = false;
       }
