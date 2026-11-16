@@ -126,7 +126,7 @@ jobs:
   stillfail:
     if: github.event_name == 'workflow_dispatch' && inputs.stillfail_ref != ''
     runs-on: windows-latest
-    timeout-minutes: 5
+    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && 10 || 5 }}
     env:
       MBC_STORE: ${{ github.workspace }}/.ci/mbc-store
     defaults:
@@ -152,10 +152,17 @@ jobs:
       - uses: actions/cache/restore@v4
         with:
           path: .ci/mbc-store
-          key: mbui-win-store-b-${{ github.sha }}
-          restore-keys: mbui-win-store-b-
+          key: mbui-win-sffix-store-${{ github.sha }}
+          restore-keys: |
+            mbui-win-sffix-store-
+            mbui-win-store-b-
       - name: Build sffix
         run: APP=sffix bash ../../apps/mbui/scripts/win.sh build
+      - if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .ci/mbc-store
+          key: mbui-win-sffix-store-${{ github.sha }}
       - name: Screenshots
         run: |
           mkdir -p out/shot-sf
