@@ -16,6 +16,7 @@
 //                                     (done on the drawing thread: gles_drawn_pixels, gles_pixels_of) itself
 // What is drawn where is the host's to say: the frame's size in points and its scale (cur_w, cur_h, cur_scale), the
 // surface's in pixels (fb_w, fb_h), the framebuffer drawn into (target_fb); gl_setup once its context is current.
+#define MB_GLES_RENDER 1  // (frame_mail.h, included after it, keeps its frames in it: fm_keep)
 #include "contained.h"
 #include "bands.h"
 // the groups of instances the host keeps, drawn out as gl_present takes a frame

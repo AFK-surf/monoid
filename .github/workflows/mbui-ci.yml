@@ -57,6 +57,11 @@ jobs:
         run: bash scripts/ios-terminate-test.sh
       - name: "Android's frame pacing (FramePacer, MBView's) on a clock of its own: each refresh a new frame while the app asks, the display's rate, a phone's recorded frames replayed (scripts/framepacer_test.sh; its known list only shortens)"
         run: sh scripts/framepacer_test.sh
+      - name: "Android's frame waiting between its app thread and GL thread (src/host/frame_mail.h, FrameMail): the newest frame drawn, what it said differs joined, the GL context's tasks in their order among the frames, what lets go of a frame's pictures only once a newer one is shown, no frame made for a context gone drawn (scripts/frame_mail_test.c, scripts/framemail_test.sh)"
+        run: |
+          mkdir -p out
+          cc -Wall -I src/host scripts/frame_mail_test.c -lm -o out/frame_mail_test && out/frame_mail_test
+          sh scripts/framemail_test.sh
       - name: "Android's soft keyboard request in full screen and multi-window"
         run: sh scripts/ime_request_test.sh
       - name: Check

@@ -95,6 +95,21 @@ final class Streams {
             }
         });
     }
+    /**
+     * {@code r}, which lets go of what a frame draws, on the GL thread once a frame made after it is on the screen
+     * (MBView.toRetire: the frame kept till then may be drawn again), as onGl says.
+     */
+    private static void onGlRetire(Runnable r) {
+        MBView.toRetire(() -> {
+            try {
+                dropSurfaces();
+                r.run();
+            } catch (RuntimeException e) {
+                e.printStackTrace();
+            }
+        });
+    }
+
     private static int nextId;
 
     /** Whether there is an H.264 decoder here at all (else the app asks for JPEG only): found once (WarmUp, as the app
@@ -377,7 +392,7 @@ final class Streams {
         Stream s = streams.remove(id);
         if (s == null) return;
         s.closeApp();
-        onGl(s::close);
+        onGlRetire(s::close);
     }
 
     // MBUI_STREAM_HOLD_DECODER=MS (a test's, android-streams.sh anew): as the context is lost each decoder's thread held

@@ -343,9 +343,15 @@ static GLuint image_tex(int id) {
   return id > 0 && id < img_tex_cap ? img_texs[id] : 0;
 }
 
+// MBView's app thread makes the frames and the GL thread draws them (Native.twoThreads), or both are the GL thread's
+// (MBView.ONE: a run to a declared moment, mbui-render's)
+static int one_thread = 1;
+
 // a new context has none of the old textures (GL thread): forget them and decode again; each told the app again as it
 // is uploaded anew (Native.imageTold: its `told` cleared first, Native.imagesUntold on the app's thread), so what
-// draws it is drawn again then, not left as the frames drawn without it had it
+// draws it is drawn again then, not left as the frames drawn without it had it. With two threads the decoding again is
+// asked on the app's thread right after the `told` are cleared (MBView.contextMade), so no upload's telling can come
+// before that clearing there.
 static int images_lost(JNIEnv *env) {
   static int first = 1;
   if (first) {
@@ -354,7 +360,7 @@ static int images_lost(JNIEnv *env) {
   }
   if (img_tex_cap) memset(img_texs, 0, (size_t)img_tex_cap * sizeof *img_texs);
   white_tex = 0;
-  (*env)->CallStaticVoidMethod(env, images_cls, m_img_reload);
+  if (one_thread) (*env)->CallStaticVoidMethod(env, images_cls, m_img_reload);
   streams_lost(env);
   views_lost(env);
   return 1;
@@ -412,110 +418,21 @@ JNIEXPORT void JNICALL Java_dev_mbui_Native_thermal(JNIEnv *env, jclass c, jbool
 int32_t mb_host_thermal_throttled(void) { return thermal_hot; }
 
 // ---------------------------------------------------------------------------
-// The frame waiting (MBView's two threads). The app's thread makes a frame (mb_host_present: its floats, its groups'
-// headers drawn out, in a buffer of the pool; the size it was laid out at; what of it was said to differ) as `made`,
-// handed over as the frame ends (Native.publish) as the one `pending`; the GL thread takes the newest pending as it
-// draws (Native.take: its floats become fbuf, the frame kept), the next's buffer the one it gave back. A frame handed
-// over while the one before still waits takes its place, what both said to differ joined (all of it where either was
-// drawn whole): the newest drawn, never a queue of old ones behind the hand. MBView holds its lock round publish and
-// take, and hands the frame's glyphs (MBText) over with it. With both on one thread (MBView.ONE) a frame is drawn as
-// it is presented, as before.
-static int one_thread = 1;
+// The frame waiting (MBView's two threads: frame_mail.h). The app's thread makes a frame (mb_host_present: its floats,
+// its groups' headers drawn out, in a buffer of the pool), handed over as the frame ends (Native.publish); the GL thread
+// takes the newest as it draws (Native.take), or to read it back (glSync: taken unshown). MBView holds its lock round
+// publish, take and dropPending, and hands the frame's glyphs (MBText) over with it. With both on one thread
+// (MBView.ONE) a frame is drawn as it is presented, as before.
+#include "frame_mail.h"
 
 JNIEXPORT void JNICALL Java_dev_mbui_Native_twoThreads(JNIEnv *env, jclass c) { one_thread = 0; }
 
-typedef struct {
-  int told, whole, n;
-  double r[MB_PARTS][4];
-} said_parts;
-
-typedef struct {
-  float *f;
-  size_t cap;
-  int32_t count;
-  double r, g, b, w, h, scale;
-  said_parts said;
-  int has;
-} handed_frame;
-
-static handed_frame made, pending;
-// what the app said differs of the frame being made (the app's thread), and the size it lays out at (Native.frame)
-static said_parts said_now;
+// the size the app lays out at (Native.frame: the app's thread), handed over with the frame it makes
 static double app_w, app_h, app_scale;
-
-#define MB_POOL 3
-static pthread_mutex_t pool_mu = PTHREAD_MUTEX_INITIALIZER;
-static float *pool_f[MB_POOL];
-static size_t pool_cap[MB_POOL];
-
-// A buffer of at least `need` floats (its room in *cap), from the pool where it has one.
-static float *pool_take(size_t need, size_t *cap) {
-  float *got = NULL;
-  size_t got_cap = 0;
-  pthread_mutex_lock(&pool_mu);
-  for (int i = 0; i < MB_POOL; i++)
-    if (pool_f[i] && pool_cap[i] >= need) {
-      got = pool_f[i];
-      got_cap = pool_cap[i];
-      pool_f[i] = NULL;
-      break;
-    }
-  pthread_mutex_unlock(&pool_mu);
-  if (!got) {
-    got_cap = need + need / 4;
-    got = malloc(got_cap * sizeof(float));
-  }
-  *cap = got_cap;
-  return got;
-}
-
-static void pool_give(float *f, size_t cap) {
-  if (!f) return;
-  pthread_mutex_lock(&pool_mu);
-  for (int i = 0; i < MB_POOL; i++)
-    if (!pool_f[i]) {
-      pool_f[i] = f;
-      pool_cap[i] = cap;
-      f = NULL;
-      break;
-    }
-  pthread_mutex_unlock(&pool_mu);
-  free(f);
-}
-
-static void said_add(said_parts *d, double x, double y, double w, double h) {
-  d->told = 1;
-  if (w < 0 || h < 0) {
-    d->whole = 1;
-  } else if (w > 0 && h > 0) {
-    // (more than it keeps: the last one grown round it)
-    if (d->n == MB_PARTS) {
-      double *e = d->r[MB_PARTS - 1];
-      double x1 = fmax(e[0] + e[2], x + w), y1 = fmax(e[1] + e[3], y + h);
-      e[0] = fmin(e[0], x);
-      e[1] = fmin(e[1], y);
-      e[2] = x1 - e[0];
-      e[3] = y1 - e[1];
-    } else {
-      double *e = d->r[d->n++];
-      e[0] = x; e[1] = y; e[2] = w; e[3] = h;
-    }
-  }
-}
-
-// What frame `d` said differs joined with what the one it takes the place of (`was`, never drawn) said.
-static void said_join(said_parts *d, const said_parts *was) {
-  if (!d->told || d->whole) return;
-  if (!was->told || was->whole) {
-    d->whole = 1;
-    return;
-  }
-  for (int i = 0; i < was->n; i++) said_add(d, was->r[i][0], was->r[i][1], was->r[i][2], was->r[i][3]);
-}
 
 void mb_host_render_dirty(double x, double y, double w, double h) {
   if (one_thread) gl_dirty_add(x, y, w, h);
-  else said_add(&said_now, x, y, w, h);
+  else fm_said(x, y, w, h);
 }
 
 // (the frame as the app gave it, its groups' headers drawn out as it is taken: groups.h)
@@ -527,71 +444,25 @@ void mb_host_present(double *buf, int32_t count, double r, double g, double b) {
     gl_present(buf, count, r, g, b);
     return;
   }
-  // (presented twice in one frame: the second in the first's place, both said)
-  if (made.has) {
-    said_parts was = made.said;
-    made.said = said_now;
-    said_join(&made.said, &was);
-  } else {
-    made.said = said_now;
-  }
-  said_now = (said_parts){0};
-  size_t need = gl_frame_floats(count);
-  if (made.cap < need) {
-    pool_give(made.f, made.cap);
-    made.f = pool_take(need, &made.cap);
-  }
-  mb_groups_floats(made.f, buf, count);
-  made.count = count;
-  made.r = r;
-  made.g = g;
-  made.b = b;
-  made.w = app_w;
-  made.h = app_h;
-  made.scale = app_scale;
-  made.has = 1;
+  float *f = fm_present(gl_frame_floats(count), count, r, g, b, app_w, app_h, app_scale);
+  mb_groups_floats(f, buf, count);
 }
 
 // (the app's thread, under MBView's lock, as a frame ends) the frame made handed over: whether there was one
-JNIEXPORT jboolean JNICALL Java_dev_mbui_Native_publish(JNIEnv *env, jclass c) {
-  if (!made.has) return JNI_FALSE;
-  if (pending.has) {
-    said_join(&made.said, &pending.said);
-    if (pending.w != made.w || pending.h != made.h || pending.scale != made.scale) made.said.whole = made.said.told = 1;
-  }
-  // (the pending one's buffer, never drawn, the next made's)
-  float *f = pending.f;
-  size_t cap = pending.cap;
-  pending = made;
-  made = (handed_frame){0};
-  made.f = f;
-  made.cap = cap;
+JNIEXPORT jboolean JNICALL Java_dev_mbui_Native_publish(JNIEnv *env, jclass c) { return fm_publish() ? JNI_TRUE : JNI_FALSE; }
+
+// (GL thread, under MBView's lock) the frame pending taken as the one kept (fbuf), to be drawn (Native.draw) or, not
+// `shown`, only read back (MBView.glSync): whether there was one
+JNIEXPORT jboolean JNICALL Java_dev_mbui_Native_take(JNIEnv *env, jclass c, jboolean shown) {
+  handed_frame got;
+  if (!fm_take(&got)) return JNI_FALSE;
+  fm_keep(&got, shown ? 1 : 0);
   return JNI_TRUE;
 }
 
-// (GL thread, under MBView's lock) the frame pending taken as the one kept (fbuf), to be drawn (Native.draw): whether
-// there was one
-JNIEXPORT jboolean JNICALL Java_dev_mbui_Native_take(JNIEnv *env, jclass c) {
-  if (!pending.has) return JNI_FALSE;
-  float *was = fbuf;
-  size_t was_cap = fcap;
-  fbuf = pending.f;
-  fcap = pending.cap;
-  kept_count = pending.count;
-  kept_r = pending.r;
-  kept_g = pending.g;
-  kept_b = pending.b;
-  cur_w = pending.w;
-  cur_h = pending.h;
-  cur_scale = pending.scale;
-  dirty_told = pending.said.told;
-  dirty_whole = pending.said.whole;
-  dirty_n = pending.said.n;
-  memcpy(dirty, pending.said.r, sizeof dirty);
-  pending = (handed_frame){0};
-  pool_give(was, was_cap);
-  return JNI_TRUE;
-}
+// (under MBView's lock) the frame pending let go undrawn: made before the GL context it would be drawn in (MBView
+// contextMade), its glyphs' places in an atlas gone
+JNIEXPORT void JNICALL Java_dev_mbui_Native_dropPending(JNIEnv *env, jclass c) { fm_drop_pending(); }
 
 // (GL thread) the frame taken drawn (gl_present_kept: straight onto the surface or through the canvas)
 JNIEXPORT void JNICALL Java_dev_mbui_Native_draw(JNIEnv *env, jclass c) { gl_present_kept(kept_count, kept_r, kept_g, kept_b); }

@@ -22,8 +22,13 @@ final class Native {
     static native void redraw();
     /** The frame the app made handed over (its thread, under MBView's lock): whether it made one. */
     static native boolean publish();
-    /** The frame handed over taken as the one kept (GL thread, under MBView's lock): whether there was one. */
-    static native boolean take();
+    /**
+     * The frame handed over taken as the one kept (GL thread, under MBView's lock): to be drawn ({@code shown}), or only
+     * read back (MBView.glSync: the next frame drawn whole); whether there was one.
+     */
+    static native boolean take(boolean shown);
+    /** The frame handed over let go undrawn (under MBView's lock: made before the GL context it would be drawn in). */
+    static native void dropPending();
     /** The frame taken drawn (GL thread). */
     static native void draw();
     /** What the app's thread waits for of the GL context done (GL thread: MBView.glSync). */

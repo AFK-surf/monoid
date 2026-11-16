@@ -32,9 +32,11 @@ import javax.microedition.khronos.opengles.GL10;
  * on taking the touches and laying out the next frame meanwhile, and the GL
  * thread draws the newest it was handed (the frame waiting: android_host.c),
  * never a queue of old ones. What the app asks of the GL context (a picture's
- * texture made or let go, a stream's frame latched) is put on the GL thread's
- * queue (toRender) in its order among the frames: done before the frame handed
- * over after it is drawn, and after the one handed over before it. Frames are
+ * texture made, a stream's frame latched) is put on the GL thread's queue
+ * (toRender) in its order among the frames: done before the frame handed over
+ * after it is drawn, and after the one handed over before it; what lets go of
+ * what a frame draws, once a frame handed over after it is on the screen
+ * (toRetire). FrameMail keeps what the two threads hand each other. Frames are
  * paced by the display's vsync (Choreographer), one per vsync at most, each
  * told that vsync's time, as Compose's frames are: a frame asked for while
  * touches are handled (the input phase of a vsync) is made at that vsync, one
@@ -184,43 +186,34 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
 
     // ---- the GL thread's queue: what the app asks of the GL context, in its order among the frames ----
 
-    /** A task of the GL thread's queue, numbered among the frames handed over (under `mail`). */
-    private static final class GlTask {
-        final long seq;
-        final Runnable r;
+    /** The frame waiting, the GL thread's queue and what is let go once no frame on the screen uses it (FrameMail). */
+    private static final FrameMail<MBText.Placed> mail = new FrameMail<>(new FrameMail.Frames<MBText.Placed>() {
+        @Override public boolean publish() { return Native.publish(); }
 
-        GlTask(long seq, Runnable r) {
-            this.seq = seq;
-            this.r = r;
+        @Override public boolean take(boolean shown) { return Native.take(shown); }
+
+        @Override public void dropPending() { Native.dropPending(); }
+
+        @Override public int built() { return Latency.frameBuilt(); }
+
+        @Override public void merged(int from, int to) { Latency.merged(from, to); }
+
+        @Override public String frameName() { return MBText.takeFrameName(); }
+
+        @Override public void dropped(java.util.List<MBText.Placed> glyphs) {
+            for (MBText.Placed g : glyphs) g.bmp.recycle();
         }
-    }
 
-    /**
-     * The frame waiting and the GL thread's queue (under `mail`): the number of each task and frame handed over
-     * (seq); the frame pending's (-1: none), the glyphs it puts in the atlases (all those placed since the frame drawn
-     * last, a frame taking another's place taking its glyphs too), when it is to be shown, the picture of it asked
-     * (MBText.refFrame) and its frame of a latency run; whether the frame kept is to be drawn again (only a native
-     * view's picture changed) and when it is to be shown then. The floats are android_host.c's (Native.publish, take).
-     */
-    private static final Object mail = new Object();
-    private static long seq;
-    private static final ArrayDeque<GlTask> glTasks = new ArrayDeque<>();
-    private static long pendingSeq = -1;
-    private static java.util.ArrayList<MBText.Placed> pendingGlyphs = new java.util.ArrayList<>();
-    private static long pendingShows;
-    private static String pendingRef;
-    private static int pendingLat = -1;
-    private static boolean redrawOwed;
-    private static long redrawShows;
-    private static int redrawLat = -1;
-    /** How many frames the app's thread has made (handed over or not: one that presents nothing too). */
-    private static long made;
+        @Override public void failed(RuntimeException e) {
+            Host.log("gl: " + e);
+            android.util.Log.e("mbui", "gl task", e);
+        }
+    });
 
     /**
      * {@code r} run on the GL thread (its context current): after the frames handed over before it are drawn, before
-     * those handed over after it (from the app's thread: a texture let go once no frame left to draw draws it; a
-     * stream's frame latched for the frame that shows it); from another thread (a picture decoded), as soon as it can.
-     * With ONE, the GL thread's queue as it was.
+     * those handed over after it (from the app's thread: a texture made; a stream's frame latched for the frame that
+     * shows it); from another thread (a picture decoded), as soon as it can. With ONE, the GL thread's queue as it was.
      */
     static void toRender(Runnable r) {
         MBView v = Host.view;
@@ -228,10 +221,23 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
             if (v != null) v.queueEvent(r);
             return;
         }
-        synchronized (mail) {
-            glTasks.add(new GlTask(++seq, r));
-        }
+        mail.task(r);
         if (v != null) v.queueEvent(MBView::glTasksDue);
+    }
+
+    /**
+     * {@code r}, which lets go of what a frame draws (a picture's texture, a native view's, a stream's), run on the GL
+     * thread once a frame the app's thread hands over after it is drawn on the screen: the frame kept till then is
+     * drawn again as a native view's picture changes or the surface asks, and still draws it (FrameMail.retire). With
+     * ONE, after the frame being made, which is drawn as it is made.
+     */
+    static void toRetire(Runnable r) {
+        if (ONE) {
+            MBView v = Host.view;
+            if (v != null) v.queueEvent(r);
+            return;
+        }
+        mail.retire(r);
     }
 
     /**
@@ -242,36 +248,12 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
      */
     private static void glTasksDue() {
         if (!glCurrent()) return;
-        runTasks(pendingSeqNow());
+        mail.runTasks(mail.pendingSeqNow());
     }
 
     /** Whether a GL context is current on this thread. */
     private static boolean glCurrent() {
         return android.opengl.EGL14.eglGetCurrentContext() != android.opengl.EGL14.EGL_NO_CONTEXT;
-    }
-
-    private static long pendingSeqNow() {
-        synchronized (mail) {
-            return pendingSeq >= 0 ? pendingSeq : Long.MAX_VALUE;
-        }
-    }
-
-    /** The tasks numbered before {@code upto} run, in their order (GL thread); each one's failure said, not thrown. */
-    private static void runTasks(long upto) {
-        while (true) {
-            GlTask t;
-            synchronized (mail) {
-                t = glTasks.peek();
-                if (t == null || t.seq >= upto) return;
-                glTasks.poll();
-            }
-            try {
-                t.r.run();
-            } catch (RuntimeException e) {
-                Host.log("gl: " + e);
-                android.util.Log.e("mbui", "gl task", e);
-            }
-        }
     }
 
     // ---- GL thread ----
@@ -306,15 +288,24 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
     /**
      * Drawing set up in a context made anew (GL thread): what the app's thread keeps of what was in the old one let go
      * there (the glyphs' places in the atlases, MBText.reset; the images' textures, to be told again as each is
-     * uploaded anew: Native.imagesUntold), and a frame of the app's made, drawn whole.
+     * uploaded anew: Native.imagesUntold, then decoded again), and a frame of the app's made, drawn whole. No frame
+     * made before the app's thread let go of the old atlas is drawn in the new context (FrameMail.contextMade).
      */
     private void contextMade(boolean lost) {
+        // (the frame waiting let go: its glyphs are in the old atlas; so are those of any the app hands over till it is
+        // told, FrameMail)
+        long gen = mail.contextMade();
         logic.post(() -> {
             MBText.reset();
-            if (lost) Native.imagesUntold();
+            if (lost) {
+                Native.imagesUntold();
+                // (decoded again after the told are cleared: an upload's telling can only come after, on this thread)
+                Images.reload();
+            }
+            mail.contextTold(gen);
+            pacer.appWanted.set(true);
+            wantFrame();
         });
-        pacer.appWanted.set(true);
-        wantFrame();
     }
 
     @Override
@@ -504,16 +495,7 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
         float w = getWidth() / density, h = Math.max(1, getHeight() - Host.imeBottom) / density;
         long[] at = pacer.vsyncAt();
         if (pictured && !app) {
-            int lat = Latency.frameBuilt();
-            synchronized (mail) {
-                redrawOwed = true;
-                redrawShows = at[1];
-                if (redrawLat >= 0) Latency.merged(redrawLat, lat);
-                redrawLat = lat;
-                made++;
-                mail.notifyAll();
-            }
-            requestRender();
+            if (mail.redrawAsked(at[1])) requestRender();
             NativeViews.framed(false);
             pacer.redrawn();
             return;
@@ -535,32 +517,10 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
     /**
      * The frame the app made handed over to the GL thread (the app's thread), to be shown at {@code shows}: with the
      * glyphs it put in the atlases, the picture of it asked (MBText.refFrame) and its frame of a latency run; one still
-     * waiting there replaced by it (android_host.c Native.publish), its glyphs kept before this one's, its latency
-     * run's events this one's.
+     * waiting there replaced by it (FrameMail.handOver).
      */
     private void handOver(long shows) {
-        boolean any;
-        synchronized (mail) {
-            made++;
-            // (a new surface's GL thread waiting for the app's frame: drawOnGl, whether or not this one presented)
-            mail.notifyAll();
-            any = Native.publish();
-            if (any) {
-                int lat = Latency.frameBuilt();
-                if (pendingSeq >= 0 && pendingLat >= 0) {
-                    if (lat >= 0) Latency.merged(pendingLat, lat);
-                    else lat = pendingLat;
-                }
-                pendingSeq = ++seq;
-                pendingShows = shows;
-                pendingLat = lat;
-                pendingGlyphs.addAll(MBText.placed);
-                MBText.placed.clear();
-                String ref = MBText.takeFrameName();
-                if (ref != null) pendingRef = ref;
-            }
-        }
-        if (any) requestRender();
+        if (mail.handOver(shows, MBText.placed)) requestRender();
     }
 
     /** The GL thread's time drawing the last frame (ns), told to the system with the app's (frameWorked). */
@@ -568,8 +528,9 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
 
     /**
      * The frame handed over drawn (GL thread), the GL thread's queue's tasks before it done first and those after it
-     * after; else the frame kept drawn again (a native view's picture changed, or the surface asks for a frame: GLSurfaceView
-     * swaps whatever this draws). A new surface's first frame, or one at a new size, waits a while for the app's.
+     * after, and what the frames it took the place of used let go once it is drawn; else the frame kept drawn again (a
+     * native view's picture changed, or the surface asks for a frame: GLSurfaceView swaps whatever this draws). A new
+     * surface's first frame, or one at a new size, waits a while for the app's.
      */
     private void drawOnGl() {
         if (mine != setUp) {
@@ -582,70 +543,34 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
             fresh = Math.max(fresh, 100);
         }
         long t0 = System.nanoTime();
-        boolean took;
-        long frameSeq = -1, shows = 0;
-        java.util.ArrayList<MBText.Placed> glyphs = null;
-        String ref = null;
-        int lat = -1;
-        boolean redraw;
-        synchronized (mail) {
-            if (fresh > 0 && pendingSeq < 0 && !redrawOwed) {
-                long until = System.nanoTime() + fresh * 1_000_000L, from = made;
-                for (long left = fresh; pendingSeq < 0 && made == from && left > 0;
-                     left = (until - System.nanoTime()) / 1_000_000L) {
-                    try {
-                        mail.wait(left);
-                    } catch (InterruptedException e) {
-                        break;
-                    }
-                }
-            }
-            fresh = 0;
-            took = Native.take();
-            if (took) {
-                frameSeq = pendingSeq;
-                pendingSeq = -1;
-                glyphs = pendingGlyphs;
-                pendingGlyphs = new java.util.ArrayList<>();
-                shows = pendingShows;
-                ref = pendingRef;
-                pendingRef = null;
-                lat = pendingLat;
-                pendingLat = -1;
-            }
-            redraw = redrawOwed;
-            redrawOwed = false;
-            if (!took && redraw) {
-                shows = redrawShows;
-                lat = redrawLat;
-            } else if (redrawLat >= 0) {
-                Latency.merged(redrawLat, lat);
-            }
-            redrawLat = -1;
-        }
+        mail.awaitFresh(fresh);
+        fresh = 0;
+        FrameMail.Taken<MBText.Placed> t = mail.take();
         // what the app asked of the context before this frame: done first (a stream's frame latched, a texture made)
-        if (took) runTasks(frameSeq);
+        if (t.took) mail.runTasks(t.seq);
         // the native views' pictures come since the last frame, for this one to draw where it shows them
         NativeViews.latch();
-        if (took) {
-            MBText.upload(glyphs);
+        if (t.took) {
+            MBText.upload(t.glyphs);
             Native.draw();
         } else {
             Native.redraw();
         }
-        showAt(shows);
-        if (ref != null) MBText.frameDrawn(ref);
-        Latency.frameEnds(lat);
+        // what the frames it took the place of on the screen used, and this one does not: let go now
+        mail.runAll(t.retire);
+        showAt(t.shows);
+        if (t.ref != null) MBText.frameDrawn(t.ref);
+        Latency.frameEnds(t.lat);
         glWorked = System.nanoTime() - t0;
         // what the app asked of it after: done now, but for what follows a frame handed over meanwhile
-        runTasks(pendingSeqNow());
+        mail.runTasks(mail.pendingSeqNow());
     }
 
     /**
      * What the app's thread waits for of the GL context (android_host.c gl_sync: a read back): done on the GL thread,
-     * the frame pending taken first as the one presented last (and drawn there with the next frame); false where there
-     * is no GL thread to do it (no surface, paused) or it did not in a while (it waits on the app's: no frame comes),
-     * which the app reads as nothing read.
+     * the frame pending taken first as the one presented last, to read back (drawn on the screen as the next frame:
+     * FrameMail.takeForSync); false where there is no GL thread to do it (no surface, paused) or it did not in a while
+     * (it waits on the app's: no frame comes), which the app reads as nothing read.
      */
     static boolean glSync() {
         MBView v = Host.view;
@@ -661,26 +586,11 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
                     done.notify();
                     return;
                 }
-                boolean took;
-                long frameSeq = -1;
-                java.util.ArrayList<MBText.Placed> glyphs = null;
-                synchronized (mail) {
-                    took = Native.take();
-                    if (took) {
-                        frameSeq = pendingSeq;
-                        pendingSeq = -1;
-                        glyphs = pendingGlyphs;
-                        pendingGlyphs = new java.util.ArrayList<>();
-                        // (drawn as the next frame: the one it took the place of was shown)
-                        redrawOwed = true;
-                        redrawShows = pendingShows;
-                        if (pendingLat >= 0) Latency.frameEnds(pendingLat);
-                        pendingLat = -1;
-                    }
-                }
-                if (took) {
-                    runTasks(frameSeq);
-                    MBText.upload(glyphs);
+                FrameMail.Taken<MBText.Placed> t = mail.takeForSync();
+                if (t.took) {
+                    Latency.frameEnds(t.lat);
+                    mail.runTasks(t.seq);
+                    MBText.upload(t.glyphs);
                 }
                 Native.glSync();
                 state[0] = true;

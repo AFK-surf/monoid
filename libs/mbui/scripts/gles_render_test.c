@@ -3,7 +3,8 @@
 // test's own standing for the surface (target_fb): a frame drawn whole goes straight onto it, no canvas made; one said
 // to differ in parts is drawn into the canvas and shown, the surface then the same to the byte as the frame drawn
 // whole; the blur under glass kept while what is under it is the same, made again once it is not, never kept while a
-// picture under it had no texture yet; a group the host keeps drawn out to the float the app's own instance would be.
+// picture under it had no texture yet; a group the host keeps drawn out to the float the app's own instance would be;
+// a frame handed over from another thread (frame_mail.h) taken only to read back leaving the next drawn whole.
 //   cc -Wall -Wno-unused-function -I src/host -I "$MOON_HOME/include" scripts/gles_render_test.c
 //     $(pkg-config --cflags --libs epoxy zlib) -lm -o out/gles_render_test && out/gles_render_test
 #include <epoxy/gl.h>
@@ -26,6 +27,7 @@ static GLuint image_tex(int id) { return id == 1 ? picture_one : 0; }
 static void view_parts_in(int tid, int32_t start, int32_t end) { (void)tid, (void)start, (void)end; }
 
 #include "gles_render.h"
+#include "frame_mail.h"
 
 static int failed;
 
@@ -79,6 +81,24 @@ static int surface_as_whole(GLuint surface) {
   free(shown);
   free(whole);
   return same;
+}
+
+// A frame handed over from the thread that makes it (frame_mail.h: Android's app thread), what it says differs a
+// part x, y, w × h of it.
+static void hand(const double *inst, int32_t count, double x, double y, double w, double h) {
+  // (said as it is painted, before it is presented: mb_host_render_dirty)
+  fm_said(x, y, w, h);
+  float *f = fm_present(gl_frame_floats(count), count, 0.1, 0.2, 0.3, W, H, S);
+  mb_groups_floats(f, inst, count);
+  CHECK(fm_publish());
+}
+
+// The frame handed over taken (Android's Native.take): to be drawn (and drawn, Native.draw), or only read back.
+static void take(int shown) {
+  handed_frame got;
+  CHECK(fm_take(&got));
+  fm_keep(&got, shown);
+  if (shown) gl_present_kept(kept_count, kept_r, kept_g, kept_b);
 }
 
 int main(void) {
@@ -144,6 +164,48 @@ int main(void) {
   two[0] = 16;
   gl_present(two, 2, 0.1, 0.2, 0.3);
   CHECK(canvas_ok == 0);
+  CHECK(surface_as_whole(surface));
+
+  // Frames handed over from another thread (frame_mail.h, Android's two), drawn in their parts as they say. One taken
+  // only to read back (Android's glSync, the app waiting on a pixel of it) is never on the surface: what it said differs
+  // is not what the next drawn goes by, nor is anything left of it there, and the canvas no longer holds the frame
+  // before. So the next drawn, which says only its own part, is drawn whole into the canvas: the surface then is what it
+  // is drawn whole, the part the one read back changed too. So too where the one read back is drawn again first
+  // (Native.redraw: a native view's picture changed).
+  hand(two, 2, 10, 8, 30, 30);
+  take(1);
+  CHECK(surface_as_whole(surface));
+  two[MB_INST + 1] = 46;
+  hand(two, 2, 58, 38, 24, 30);
+  take(1);
+  CHECK(canvas_ok == 1);
+  CHECK(surface_as_whole(surface));
+  two[0] = 20;
+  hand(two, 2, 10, 8, 32, 24);
+  take(0);
+  draw_kept_read();
+  glBindFramebuffer(GL_FRAMEBUFFER, surface);
+  CHECK(canvas_ok == 0);
+  CHECK(dirty_told == 0 && dirty_whole == 0 && dirty_n == 0);
+  two[MB_INST + 1] = 40;
+  hand(two, 2, 58, 38, 24, 30);
+  take(1);
+  CHECK(surface_as_whole(surface));
+  two[0] = 24;
+  hand(two, 2, 18, 8, 28, 24);
+  take(0);
+  draw_kept_read();
+  draw_kept();
+  CHECK(dirty_told == 0);
+  two[MB_INST + 1] = 44;
+  hand(two, 2, 58, 38, 24, 30);
+  take(1);
+  CHECK(surface_as_whole(surface));
+  // (and the canvas holds the frame again: the one after drawn in its parts alone, the same)
+  two[MB_INST + 1] = 42;
+  hand(two, 2, 58, 38, 24, 30);
+  take(1);
+  CHECK(canvas_ok == 1);
   CHECK(surface_as_whole(surface));
 
   // The blur under glass kept while what is drawn under it is the same: what is over it changing makes none again;

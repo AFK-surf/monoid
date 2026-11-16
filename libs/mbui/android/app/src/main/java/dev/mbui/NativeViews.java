@@ -1154,12 +1154,13 @@ final class NativeViews {
         private volatile boolean dropped;
 
         /**
-         * The view closed (the app's thread): no frame draws it from now on (said on the GL thread, after the frames
-         * handed over before: MBView.toRender), its plain texture let go of there.
+         * The view closed (the app's thread): no frame draws it from now on (said on the GL thread once a frame made
+         * after this is on the screen, the frame kept till then drawing it as it was: MBView.toRetire), its plain
+         * texture let go of there.
          */
         void drop() {
             dropped = true;
-            MBView.toRender(() -> {
+            MBView.toRetire(() -> {
                 texture(id, 0);
                 part(id, 0, 1);
                 if (tex != 0) GLES30.glDeleteTextures(1, new int[] {tex}, 0);

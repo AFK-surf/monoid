@@ -101,10 +101,13 @@ final class Images {
         MBView.toRender(r);
     }
 
-    /** Image `id` freed (the app's thread): its texture let go on the GL thread, after the frames that draw it. */
+    /**
+     * Image `id` freed (the app's thread): its texture let go on the GL thread once a frame made after this is on the
+     * screen (the frame kept till then may be drawn again, and draws it: MBView.toRetire).
+     */
     static void free(int id) {
         live.remove(id);
-        MBView.toRender(() -> Native.imageGone(id));
+        MBView.toRetire(() -> Native.imageGone(id));
     }
 
     static void reload() {
