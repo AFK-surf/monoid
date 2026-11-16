@@ -266,8 +266,9 @@ test("a file of 40 MiB, past a pack's bytes, goes alone in pieces: packed and ta
     assert.equal(got.took, 1);
     assert.ok(readFileSync(join(there, entry.hash)).equals(b), "there byte for byte");
     assert.ok(got.sent < b.length * 0.6, `its zeros compressed: ${got.sent} of ${b.length}`);
-    // (its buffers a few pieces of the stream and the compressors' windows: 8.4 MiB for this file, 11 for one of 160 MiB,
-    // measured 2026-11-16; the heap its modules', what it was before the file)
+    // (its buffers a few pieces of the stream and the compressors' windows, what is alive with the garbage collected
+    // first: 2.1 MiB for this file, each run, measured 2026-11-17; uncollected, 8.4 to 16.1 by when V8 got to it. The
+    // heap its modules', what it was before the file)
     const mib = (n: number) => `${(n / 1024 / 1024).toFixed(1)} MiB`;
     assert.ok(got.buffers < 16 * 1024 * 1024, `its buffers at most ${mib(got.buffers)} for a file of 40 MiB`);
     assert.ok(got.heap - got.before.heap < 8 * 1024 * 1024, `its heap grew ${mib(got.heap - got.before.heap)}`);
