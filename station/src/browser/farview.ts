@@ -1,9 +1,11 @@
 // Farview (AFK-surf/farview, a browser whose pages run on a host and draw on the person's device) as a chat's browser,
-// in place of its Chrome context, where the station's config says so: config.json `browser: { farview: "<the unpacked
-// release: bin/host.exe, bin/agent.exe, lib/>", engine?: "chrome" | "farview", sessions?: [<session>...] }`. Released
-// to chats one at a time (the lead, 2026-11-16): `engine: "farview"` makes it every chat's; else Chrome stays the
-// chats' browser but for the sessions listed and those whose agent chose Farview (the `browser` tool's `engine`, kept
-// in the chat's directory). Without `farview`, nothing here runs and the chats have Chrome as before.
+// in place of its Chrome context: config.json `browser: { farview?: "<the unpacked release: bin/host.exe,
+// bin/agent.exe, lib/>" | false, engine?: "chrome" | "farview", sessions?: [<session>...] }`. With no `farview`, a
+// station on a system Farview is released for has it all the same: the release its version names, downloaded and
+// unpacked the first time a chat's Farview starts (farview-release.ts); `farview: false` is none, the chats' browser
+// Chrome alone. Released to chats one at a time (the lead, 2026-11-16): `engine: "farview"` makes it every chat's; else
+// Chrome stays the chats' browser but for the sessions listed and those whose agent chose Farview (the `browser`
+// tool's `engine`, kept in the chat's directory).
 //
 // A chat's Farview is a tab or several, each a host process (`host.exe --tab`) that lasts with nobody connected, in a
 // directory of its own (<data>/browser/farview/<chat>/tabs/<n>: its address, host.json while it runs), all of them
@@ -31,6 +33,7 @@ import { startLasting } from "../ops/processes.ts";
 import type { Screens } from "../screens/source.ts";
 import type { BrowserStatus } from "./browser.ts";
 import { askTab } from "./farview-agent.ts";
+import { FARVIEW_RELEASES, type FarviewRelease, farviewCacheDir, farviewSources, farviewAsset, farviewTarget, unpackRelease, type Fetch } from "./farview-release.ts";
 import { FarviewForm } from "./farview-form.ts";
 import { FarviewScreen } from "./farview-screen.ts";
 import { type CookieParam, allCookies, ofSites } from "./signins.ts";
@@ -38,14 +41,34 @@ import type { TabInfo } from "./tabs.ts";
 
 export type Engine = "chrome" | "farview";
 
-/// Where Farview is and whose browser it is, as the config says it; null: the chats have Chrome.
-export type FarviewConfig = { dir: string; host: string; agent: string; engine: Engine; sessions: string[] };
+/// Where Farview is and whose browser it is, as the config says it; null: the chats have Chrome. `release`: the release
+/// `dir` is to be unpacked from where it is not there yet (none: a directory the config names).
+export type FarviewConfig = {
+  dir: string;
+  host: string;
+  agent: string;
+  engine: Engine;
+  sessions: string[];
+  release?: { target: string; rev: string; sha256: string };
+};
 
-export function farviewConfig(raw: any): FarviewConfig | null {
-  const b = raw?.browser;
-  if (b === null || typeof b !== "object" || typeof b.farview !== "string" || b.farview === "") return null;
+/// The config's Farview: the directory `browser.farview` names; else, unless it says `false`, the release for
+/// `target` (this system) in `releases`, kept in the machine's cache of native parts.
+export function farviewConfig(
+  raw: any,
+  target: string = farviewTarget(),
+  releases: Readonly<Record<string, FarviewRelease>> = FARVIEW_RELEASES,
+  env: NodeJS.ProcessEnv = process.env,
+): FarviewConfig | null {
+  const b = raw?.browser !== null && typeof raw?.browser === "object" ? raw.browser : {};
+  if (b.farview === false) return null;
   const sessions = Array.isArray(b.sessions) ? b.sessions.filter((s: unknown): s is string => typeof s === "string" && s !== "") : [];
-  return { dir: b.farview, host: join(b.farview, "bin", "host.exe"), agent: join(b.farview, "bin", "agent.exe"), engine: b.engine === "farview" ? "farview" : "chrome", sessions };
+  const engine: Engine = b.engine === "farview" ? "farview" : "chrome";
+  const at = (dir: string) => ({ dir, host: join(dir, "bin", "host.exe"), agent: join(dir, "bin", "agent.exe"), engine, sessions });
+  if (typeof b.farview === "string" && b.farview !== "") return at(b.farview);
+  const release = Object.hasOwn(releases, target) ? releases[target] : undefined;
+  if (release === undefined) return null;
+  return { ...at(farviewCacheDir(target, release, env)), release: { target, ...release } };
 }
 
 /// Whether `session`'s chat has Farview for its browser: what its agent chose (`chosen`) where it chose, else every
@@ -88,6 +111,9 @@ export type FarviewOptions = {
   dir: string;
   config: () => FarviewConfig | null;
   screens?: Screens;
+  /// How a release's tarball is downloaded (a test's own; else over HTTPS), and from where.
+  fetch?: Fetch;
+  sources?: (name: string) => string[];
 };
 
 /// Whether something answers on a port of 127.0.0.1.
@@ -113,6 +139,8 @@ export class FarviewTabs {
   readonly #chosen = new Map<string, Engine>();
   /// A chat's tabs opened one at a time (each takes the next number).
   readonly #opening = new Map<string, Promise<unknown>>();
+  /// A release being unpacked, by where it goes: asked again meanwhile, the same one.
+  readonly #unpacking = new Map<string, Promise<void>>();
 
   constructor(o: FarviewOptions) {
     this.#o = o;
@@ -131,13 +159,35 @@ export class FarviewTabs {
   /// `session`'s agent chose `engine` for its chat's browser: kept in its directory, for this station process and the
   /// next. Choosing Chrome ends its Farview tabs (their profile stays).
   async choose(session: string, engine: Engine): Promise<void> {
-    if (this.active() === null) throw new Error("Farview is not on this station (config.json `browser.farview`): this chat's browser is Chrome.");
+    const config = this.active();
+    if (config === null) throw new Error("Farview is not on this station (config.json `browser.farview`, or no release for this system): this chat's browser is Chrome.");
+    if (engine === "farview") await this.ready(config);
     const chat = this.#chatOf(session);
     await mkdir(chat, { recursive: true, mode: 0o700 });
     await writeFile(join(chat, "session"), session, { mode: 0o600 });
     await writeFile(join(chat, "engine"), engine, { mode: 0o600 });
     this.#chosen.set(session, engine);
     if (!this.activeFor(session)) await this.stop(session);
+  }
+
+  /// Farview's release unpacked where `config` says, downloaded the first time (once, however many ask meanwhile; one
+  /// that failed is tried again the next time it is asked). A directory the config names is as it is.
+  async ready(config: FarviewConfig): Promise<void> {
+    const r = config.release;
+    if (r === undefined) return;
+    let made = this.#unpacking.get(config.dir);
+    if (made === undefined) {
+      const name = farviewAsset(r.target, r);
+      made = unpackRelease(config.dir, r.target, r, this.#o.sources?.(name) ?? farviewSources(name), this.#o.fetch).then(
+        () => log.info("browser", "Farview's release unpacked", { dir: config.dir, rev: r.rev }),
+        (e) => {
+          this.#unpacking.delete(config.dir);
+          throw e;
+        },
+      );
+      this.#unpacking.set(config.dir, made);
+    }
+    await made;
   }
 
   #chatOf(session: string): string {
@@ -229,10 +279,11 @@ export class FarviewTabs {
   async #start(session: string, n: number, url?: string): Promise<Host> {
     const config = this.active();
     if (config === null) throw new Error("Farview is not this station's browser (config.json `browser`).");
+    await this.ready(config);
     try {
       await access(config.host);
     } catch {
-      throw new Error(`Farview's host is not at ${config.host}: unpack its release there, or take \`browser\` out of config.json for Chrome.`);
+      throw new Error(`Farview's host is not at ${config.host}: unpack its release there, or say \`browser.farview: false\` in config.json for Chrome.`);
     }
     const dir = this.#tabDir(session, n);
     const found = await this.#find(session, n, dir);
@@ -497,6 +548,7 @@ export function farviewHowTo(config: FarviewConfig, tabs: FarviewTab[]): string 
     ...tabs.map((t) => `- ${t.id}${t.title ? ` ${JSON.stringify(t.title)}` : ""} ${t.url || FIRST_PAGE} — agent port ${t.agent}`),
     `Drive a tab with: \`${run(first?.agent ?? 0)} <step>...\` (that tab's agent port) — each step prints what the page says after it (its address, title and an outline of its content).`,
     "Steps: `look`, `go:<address>`, `click:<selector>`, `fill:<selector>=<words>`, `submit:<selector>`, `key:<key>` or `key:<key>@<selector>`, `back`, `forward`, `reload`, `wait:<ms>`, `shot:<file.png>`, `eval:<js>` (its result as JSON).",
+    "Files: `upload:<selector>=<file>[,<file>...]` gives a file input those files of this machine, as if a person chose them (the page sees them chosen: its input and change events, input.files, a form's upload). What a page downloads is saved, not shown, in its tab's own `downloads/` directory; the step `downloads` lists each file saved there, its name, size and path.",
     `For example: \`${run(first?.agent ?? 0)} go:https://example.com look\`.`,
     "More tabs: `browser` action open (with `url`) opens one and gives its port; action close (with `tab`) closes one. A page that opens a new window (a link to _blank, window.open) gets a tab of its own: action tabs shows it.",
     "There is no DevTools address: Playwright and chrome-devtools-mcp do not drive it.",

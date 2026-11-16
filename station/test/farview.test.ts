@@ -16,13 +16,24 @@ import { DEFAULT_SIZE, FarviewScreen, FrameLink, inputOf, sizeFor } from "../src
 import { decodeAnswer, encodeAsk } from "../src/browser/farview-agent.ts";
 import { browserTools, type ToolBrowsers } from "../src/browser/tool.ts";
 
-test("Farview is on only where config.json says where it is, every chat's browser by its engine, else the chats it lists", () => {
-  assert.equal(farviewConfig({}), null);
-  assert.equal(farviewConfig({ browser: { engine: "chrome" } }), null);
-  assert.equal(farviewConfig({ browser: { engine: "farview" } }), null);
+test("Farview is where config.json says it is, else the release for this system unless it says false; every chat's browser by its engine, else the chats it lists", () => {
+  const releases = { "darwin-arm64": { rev: "0123456789abcdef", sha256: "ab".repeat(32) } };
+  const env = { STILLFAIL_NATIVE_CACHE: "/cache" };
+  // no release for the system and no directory said: Chrome alone; `false`: Chrome alone, a release or not
+  assert.equal(farviewConfig({}, "linux-riscv64", releases, env), null);
+  assert.equal(farviewConfig({ browser: { engine: "farview" } }, "linux-riscv64", releases, env), null);
+  assert.equal(farviewConfig({ browser: { farview: false } }, "darwin-arm64", releases, env), null);
+  assert.equal(farviewConfig({ browser: { farview: false, engine: "farview" } }, "darwin-arm64", releases, env), null);
+  // none said: the release, in the cache of native parts, Chrome still the chats' browser unless said
+  const got = { dir: "/cache/farview/0123456789ab-darwin-arm64", host: "/cache/farview/0123456789ab-darwin-arm64/bin/host.exe", agent: "/cache/farview/0123456789ab-darwin-arm64/bin/agent.exe" };
+  const release = { target: "darwin-arm64", rev: "0123456789abcdef", sha256: "ab".repeat(32) };
+  assert.deepEqual(farviewConfig({}, "darwin-arm64", releases, env), { ...got, engine: "chrome", sessions: [], release });
+  assert.deepEqual(farviewConfig({ browser: { engine: "farview", sessions: ["chat:a"] } }, "darwin-arm64", releases, env), { ...got, engine: "farview", sessions: ["chat:a"], release });
+  // a directory said: it, whatever the release
   const all = { dir: "/opt/fv", host: "/opt/fv/bin/host.exe", agent: "/opt/fv/bin/agent.exe", engine: "farview", sessions: [] };
-  assert.deepEqual(farviewConfig({ browser: { engine: "farview", farview: "/opt/fv" } }), all);
-  const some = farviewConfig({ browser: { farview: "/opt/fv", sessions: ["chat:a", 3, ""] } });
+  assert.deepEqual(farviewConfig({ browser: { engine: "farview", farview: "/opt/fv" } }, "darwin-arm64", releases, env), all);
+  assert.deepEqual(farviewConfig({ browser: { engine: "farview", farview: "/opt/fv" } }, "linux-riscv64", releases, env), all);
+  const some = farviewConfig({ browser: { farview: "/opt/fv", sessions: ["chat:a", 3, ""] } }, "darwin-arm64", releases, env);
   assert.deepEqual(some, { ...all, engine: "chrome", sessions: ["chat:a"] });
   // every chat's; the listed and those that chose it of the rest; a listed chat's own choice of Chrome is kept too
   assert.equal(farviewFor(farviewConfig({ browser: { engine: "farview", farview: "/opt/fv" } }), "chat:x", undefined), true);
@@ -311,7 +322,7 @@ test("a chat's Farview is for it as the config lists it or its agent chose it, t
     // every chat's where the config says so
     fv.set({ browser: { farview: join(fv.root, "release"), engine: "farview" } });
     assert.equal(next.activeFor("chat:third"), true);
-    fv.set({});
+    fv.set({ browser: { farview: false } });
     assert.equal(next.activeFor("chat:listed"), false);
     await assert.rejects(next.choose("chat:listed", "farview"), /not on this station/);
   } finally {

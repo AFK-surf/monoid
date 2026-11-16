@@ -312,6 +312,9 @@ export const unix: Platform = {
   os: OS[process.platform] ?? process.platform,
   buildOs: process.platform === "darwin" || process.platform === "linux" ? process.platform : null,
   clonesFiles: MACOS,
+  nativeCache: (env, home) =>
+    env.STILLFAIL_NATIVE_CACHE ||
+    (MACOS ? join(home, "Library", "Caches", "stillfail-native") : join(env.XDG_CACHE_HOME || join(home, ".cache"), "stillfail-native")),
 
   exe: (name) => name,
   home: (env) => env.HOME,
