@@ -249,7 +249,7 @@ for t in $targets; do
     # (and 60-68 cut at 64: that run 249 s, part 3/4 268 s of its 5 minutes on main e18b38e4 43719996435)
     sweeps=(src/sfapp/screens_wbtest.mbt:1 src/sfapp/corners_wbtest.mbt:5 src/sfapp/squeeze_said_wbtest.mbt:1
       src/sfapp/contrast_wbtest.mbt:1 src/sfapp/kept_rows_kinds_wbtest.mbt:@2@3@4@5@8 src/sfapp/preview_tree_wbtest.mbt:@54
-      src/sfapp/words_large_wbtest.mbt:2 src/sfapp/real_size_wbtest.mbt:2 src/sfapp/send_steady_wbtest.mbt:@1@2
+      src/sfapp/words_large_wbtest.mbt:2 src/sfapp/real_size_wbtest.mbt:@1@2 src/sfapp/send_steady_wbtest.mbt:@1@2
       src/sfapp/chat_page_nodes_wbtest.mbt:2 src/sfapp/answers_still_wbtest.mbt:@2@3@4@5
       src/sfapp/switches_still_wbtest.mbt:@20@25@29@34@38@43@47@52@56@60@64@68@73@79@90@123@146@176@205@248)
     pages=()
@@ -559,11 +559,15 @@ for t in $targets; do
       # the most room at the default rate: the wide window's, the longer, on the first, where the opening alone was
       # 103 s of its 5 minutes (#5407 42976047326); the phone's on the fourth, which has no run but its pages. On Studio
       # in Wasm 37 s and 13 s where the opening alone was 28 s: some 135 s and 50 s here, 2026-11-11)
-      "src/sfapp/real_size_wbtest.mbt --index 1-2") echo 1 ;;
+      # (its tests cut at each of its two sweeps since #6627 put a quick test of its own first: cut in two halves, the
+      # first was that test alone and the second both sweeps, "--index 1-3", matched by none of these and dealt to the
+      # fourth beside its 142 files of pages, 306 s, app 4/4 cut at its 5 minutes on main 202a54dc 43822504735)
+      "src/sfapp/real_size_wbtest.mbt --index 2-"*) echo 1 ;;
       # (the phone's on the third since, whose one program for its pages leaves its cores the room: on the fourth beside
       # its pages on four programs and send_steady's three, app 4/4 was the default rate's longest on 2026-11-14's
       # pushes, 225-295 s and cut at its 5 minutes on two branches (43562536058, 43565983820), where app 3/4 was
       # 124-243)
+      "src/sfapp/real_size_wbtest.mbt --index 1-2") echo 3 ;;
       "src/sfapp/real_size_wbtest.mbt --index 0-1") echo 3 ;;
       "src/sfapp/kept_rows_kinds_wbtest.mbt --index 8-"*) echo 2 ;;
       "src/sfapp/kept_rows_kinds_wbtest.mbt "*) echo 3 ;;
