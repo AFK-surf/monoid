@@ -2,11 +2,11 @@
 // under), Git for Windows' sh for what agents write, `\` and drives in paths, links that take a privilege, PATHEXT and
 // .cmd shims, a scheduled task where Unix starts things in the background.
 import { type ChildProcess, execFile, spawn } from "node:child_process";
-import { copyFileSync, existsSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { cpus as cpuList, freemem, release, totalmem, uptime as osUptime, version as osVersion } from "node:os";
 import { delimiter, dirname, join, win32 } from "node:path";
 import { createConnection } from "node:net";
-import { access, link as hardLink, lstat, readFile, readlink, realpath, rename, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
+import { access, copyFile, link as hardLink, lstat, readFile, readlink, realpath, rename, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import { holder, osCpuTicks, pidAlive, runnerBinary } from "./processes.ts";
@@ -461,7 +461,7 @@ export function windowsUpdateScript(runDir: string, env: Record<string, string>,
 /// (`stillfail-station-w --run`, copied into run/ so the installer stopping what runs from <app> leaves it be). (Not
 /// WMI's Win32_Process.Create: PowerShell started so is what malware does, and security software refuses it.) The task
 /// starts with the user's own environment, so what this side gives it is in run/update.ps1 (windowsUpdateScript).
-function startInstaller(script: string, runDir: string, env: Record<string, string>, app: string): Promise<boolean> {
+async function startInstaller(script: string, runDir: string, env: Record<string, string>, app: string): Promise<boolean> {
   const ps1 = join(runDir, "update.ps1");
   const hidden = join(runDir, "stillfail-update-w.exe");
   // The station's task as install.ps1 named it (windows.json: a station apart's), and " update".
@@ -470,20 +470,20 @@ function startInstaller(script: string, runDir: string, env: Record<string, stri
   // register the logon task at RunLevel Highest again without a prompt (install-windows.ts keeps admin in windows.json).
   let admin = false;
   try {
-    const kept = JSON.parse(readFileSync(join(dirname(runDir), "windows.json"), "utf8").trim());
+    const kept = JSON.parse((await readFile(join(dirname(runDir), "windows.json"), "utf8")).trim());
     if (typeof kept?.task === "string" && kept.task) task = kept.task;
     if (kept?.admin === true) admin = true;
   } catch {}
   task += " update";
   try {
-    rmSync(join(runDir, "update.err"), { force: true });
+    await rm(join(runDir, "update.err"), { force: true });
     // Refused while an update before still runs from it.
-    copyFileSync(join(app, "mesh", "target", "release", "stillfail-station-w.exe"), hidden);
+    await copyFile(join(app, "mesh", "target", "release", "stillfail-station-w.exe"), hidden);
     // A copy: the installer replaces the release it is in.
-    copyFileSync(script, join(runDir, "install.ps1"));
-    writeFileSync(ps1, windowsUpdateScript(runDir, env, task));
+    await copyFile(script, join(runDir, "install.ps1"));
+    await writeFile(ps1, windowsUpdateScript(runDir, env, task));
   } catch {
-    return Promise.resolve(false);
+    return false;
   }
   const register = [
     "$ErrorActionPreference = 'Stop'",

@@ -625,7 +625,7 @@ export class Jobs {
     // station. The shell appends to the log itself: Git's sh on Windows cannot write to a file Node opened for
     // appending (its handle may only append). Lower than the station (ops/nice.ts): nice runs the shell in its own
     // process, the pid the same.
-    const shell: [string, string[]] = [platform.posixShell(env), ["-c", `exec >>"$3" 2>&1; ${WRAPPER}`, JOB_COMMAND_NAME, job.command, exit, job.log]];
+    const shell: [string, string[]] = [await platform.posixShellSoon(env), ["-c", `exec >>"$3" 2>&1; ${WRAPPER}`, JOB_COMMAND_NAME, job.command, exit, job.log]];
     // A sandbox's task (agents/sandbox.ts): its command runs there through the bridge, which the shell here runs
     // in its place: its output comes back to the log here, its exit code to the exit file here.
     if (job.sandbox !== undefined) {

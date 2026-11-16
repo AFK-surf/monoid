@@ -16,6 +16,7 @@ import { after, test } from "node:test";
 import { ConfigFile } from "../src/ops/config.ts";
 import { WINDOWS, platform as machine } from "../src/platform/index.ts";
 import { setChannel } from "../src/updates/channel.ts";
+import { windows } from "../src/platform/windows.ts";
 import { Updates, type UpdatesOptions } from "../src/updates/updates.ts";
 import { script } from "./accounts-fakes.ts";
 import { syncCalls } from "./main-thread-sync.ts";
@@ -235,4 +236,31 @@ test("`stillfail-station channel` asking the running station, and its answer, wa
   assert.deepEqual(readdirSync(runDir).filter((f) => f.startsWith("channel-")), []);
   // The config kept with the channel is written off the thread too (ops/config.ts `updateSoon`).
   assert.deepEqual(calls, []);
+});
+
+test("a Windows station's update started: windows.json read, the runner and the installer copied and its script written off the thread", { skip: WINDOWS && "it would register the scheduled task" }, async () => {
+  const data = scratch();
+  const run = join(data, "run");
+  const app = join(data, "app");
+  mkdirSync(run);
+  mkdirSync(join(app, "mesh", "target", "release"), { recursive: true });
+  writeFileSync(join(app, "mesh", "target", "release", "stillfail-station-w.exe"), "runner");
+  writeFileSync(join(data, "windows.json"), JSON.stringify({ task: "still.fail station (b)", admin: true }));
+  writeFileSync(join(run, "update.err"), "the update before");
+  const installer = join(app, "install.ps1");
+  writeFileSync(installer, "# the installer");
+  let started: boolean | undefined;
+  const calls = await syncCalls(async () => {
+    // (no powershell.exe here: the task is not registered, and that is said)
+    started = await windows.startInstaller(installer, run, { STILLFAIL_DATA: data, PATH: "" }, app);
+  });
+  assert.deepEqual(calls, []);
+  assert.equal(started, false);
+  assert.deepEqual(readdirSync(run).sort(), ["install.ps1", "stillfail-update-w.exe", "update.ps1"], "update.err of the update before taken away");
+  assert.equal(readFileSync(join(run, "stillfail-update-w.exe"), "utf8"), "runner");
+  assert.match(readFileSync(join(run, "update.ps1"), "utf8"), /still\.fail station \(b\) update/, "the task windows.json names");
+  // The runner missing (an update before still runs from it): not started, and nothing waited on either.
+  rmSync(join(app, "mesh"), { recursive: true });
+  assert.deepEqual(await syncCalls(async () => void (started = await windows.startInstaller(installer, run, {}, app))), []);
+  assert.equal(started, false);
 });

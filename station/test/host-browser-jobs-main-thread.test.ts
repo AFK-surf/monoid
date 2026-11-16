@@ -1,13 +1,15 @@
 // What the station's main thread waits on as it measures its machine (api/host.ts `Host`: GET /host, the events' host
 // samples, station_list's load), says whether there is a Chrome here and starts one (browser/chrome.ts `chromeHost`),
 // starts an agent's runner (agents/runner.ts `startRunner`), asks whether Codex's update is the station's own
-// (agents/codex.ts `updateMatchesStation`) and follows a job an earlier station started to its end (jobs/jobs.ts
-// `leaderGone`): none of node:fs's or node:child_process's synchronous calls (station/AGENTS.md, the main thread waits
-// on nothing). Each ran on every sample (Linux's /proc/stat read on the thread), every overview (each place a Chrome may
-// be looked at), every runner started (PATH walked) and every second of a job taken up (its exit file looked for).
+// (agents/codex.ts `updateMatchesStation`), follows a job an earlier station started to its end (jobs/jobs.ts
+// `leaderGone`) and starts one (`spawn`, its shell found by `posixShellSoon`): none of node:fs's or
+// node:child_process's synchronous calls (station/AGENTS.md, the main thread waits on nothing). Each ran on every sample
+// (Linux's /proc/stat read on the thread), every overview (each place a Chrome may be looked at), every runner started
+// (PATH walked), every second of a job taken up (its exit file looked for) and every job started on Windows (Git's sh
+// looked for on disk).
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -193,6 +195,34 @@ test("a job an earlier station started is followed to its end, its exit file loo
     assert.ok(told[0]!.includes("ended with exit code 3"), told[0]);
   } finally {
     await next.shutdown();
+    store.close();
+  }
+});
+
+test("a job started and followed to its end waits on no file and no process, its shell found off the main thread", { skip: WINDOWS && "a POSIX command" }, async () => {
+  const dir = scratch();
+  const work = join(dir, "work");
+  mkdirSync(work);
+  const store = Store.open(":memory:");
+  // (as the station starts, before it serves: its stillfail-job made)
+  const jobs = new Jobs({ store, data: dir, notify: () => {}, link: () => null });
+  // What finds the shell on the station's thread is for that alone (on Windows it looks on disk).
+  const shell = mock.method(platform, "posixShell", () => {
+    throw new Error("the shell found on the main thread");
+  });
+  try {
+    let id = "";
+    const calls = await syncCalls(async () => {
+      id = (await jobs.start("s1", "build", "echo built; exit 4", work, null, false)).id;
+      await until(() => store.getJob(id)!.state === "exited");
+    });
+    assert.deepEqual(calls, []);
+    assert.equal(shell.mock.callCount(), 0);
+    assert.equal(store.getJob(id)!.exitCode, 4);
+    assert.equal(readFileSync(store.getJob(id)!.log, "utf8"), "built\n");
+  } finally {
+    shell.mock.restore();
+    await jobs.shutdown();
     store.close();
   }
 });

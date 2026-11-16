@@ -92,7 +92,9 @@ export type Platform = {
   /// `runnable` off the station's thread (on Windows, PATH looked in and a shim read).
   runnableSoon(command: string, args: string[], env: NodeJS.ProcessEnv): Promise<{ file: string; args: string[]; windowsVerbatimArguments?: true }>;
   /// The shell jobs, device commands and the vault's runs go under (/bin/sh; Git for Windows' sh, found by `env`: an
-  /// error that says how to get it where there is none).
+  /// error that says how to get it where there is none). On Windows it looks on disk on the station's thread: only for
+  /// what runs before the station serves (`makeCommand`); what runs after asks `posixShellSoon`
+  /// (test/src-sync-calls.test.ts holds it).
   posixShell(env?: NodeJS.ProcessEnv): string;
   /// `posixShell` off the station's thread; on Windows, where `env` finds none, by the PATH the registry gives a
   /// process started now too (`savedPath`: Git installed since the station started).

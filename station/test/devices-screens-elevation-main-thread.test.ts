@@ -13,7 +13,7 @@ import { writeFile } from "node:fs/promises";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after, test } from "node:test";
+import { after, mock, test } from "node:test";
 import { type GrantBody, type Kind, latest, signedBytes } from "../../client/core-ts/src/rig-form.ts";
 import { PhoneDisplays } from "../src/adb/displays.ts";
 import { adbPath } from "../src/adb/link.ts";
@@ -23,6 +23,7 @@ import { DeviceTools } from "../src/device/tools.ts";
 import { Elevation } from "../src/elevation/elevation.ts";
 import { ModelCatalog } from "../src/models/module.ts";
 import { Fibers } from "../src/ops/fibers.ts";
+import { platform, WINDOWS } from "../src/platform/index.ts";
 import { RigGrants } from "../src/rig/grants.ts";
 import { SimDebug } from "../src/screens/sim-debug.ts";
 import { Effect } from "effect";
@@ -111,6 +112,31 @@ test("the device tools: a path followed to see whether it is the station's own, 
   }), []);
   assert.deepEqual(said, [{ refused: null }, { refused: "forbidden" }, { refused: null }]);
   tools.close();
+});
+
+test("the device tools' exec and process.start find their shell off the thread", { skip: WINDOWS && "a POSIX command" }, async () => {
+  const home = made("main-thread-device-shell");
+  const tools = new DeviceTools({ home, env: { PATH: process.env.PATH, HOME: home } });
+  const run = (op: string, args: Record<string, unknown>) => Effect.runPromise(tools.run(op, args, {}, "full")) as Promise<Record<string, unknown>>;
+  // What finds the shell on the station's thread is for what runs before it serves (on Windows it looks on disk).
+  const shell = mock.method(platform, "posixShell", () => {
+    throw new Error("the shell found on the main thread");
+  });
+  let ran: Record<string, unknown> = {};
+  let started: Record<string, unknown> = {};
+  try {
+    assert.deepEqual(await syncCalls(async () => {
+      ran = await run("exec", { command: "echo hi" });
+      started = await run("process.start", { command: "echo there" });
+    }), []);
+  } finally {
+    shell.mock.restore();
+    tools.close();
+  }
+  assert.equal(shell.mock.callCount(), 0);
+  assert.equal(ran.exit_code, 0);
+  assert.equal(ran.stdout, "hi\n");
+  assert.equal(started.process_id, "p1");
 });
 
 test("a simulator's install folder named and an app in it installed: its folders made off the thread", async () => {
