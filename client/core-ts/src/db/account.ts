@@ -20,7 +20,8 @@ import { SqlError, sqlError } from "../host.ts";
 import { topicKey, type Topic } from "../protocol.ts";
 import type { Runner } from "../runtime.ts";
 import { equal, isObject } from "../util.ts";
-import { CHAT_COLUMNS, CHAT_MADE, type ChatColumnsMade, ensureChatColumns, ensureFilesKept, ensureKept, ensureLetters, ensureMdKept, ensureMoved, ensureOverviewParts, ensureSaid, ensureSlackSaid, giveBackRoom, migrate, overviewProfilesOf, PART_COLUMNS, partRev, versionOf } from "./schema.ts";
+import { TITLED } from "../titles.ts";
+import { CHAT_COLUMNS, CHAT_MADE, type ChatColumnsMade, ensureChatColumns, ensureFilesKept, ensureKept, ensureLetters, ensureLogBytes, LOG_TABLES, ensureMdKept, ensureMoved, ensureOverviewParts, ensureSaid, ensureSlackSaid, giveBackRoom, migrate, overviewProfilesOf, PART_COLUMNS, partRev, versionOf } from "./schema.ts";
 import { CHAT_READS, rowColumns, type ChatRead } from "./chat-reads.ts";
 import { KEPT, KEPT_ALL, KeptValues, type ListRow } from "./kept.ts";
 import { readItem, type Said } from "../elsewhere.ts";
@@ -460,6 +461,12 @@ export class AccountDb {
         // No room to make it: nothing is let go this time.
       }
       try {
+        ensureLogBytes(sql);
+        this.#logBytes = true;
+      } catch {
+        // No room to make it: what each chat keeps is counted of its rows this time.
+      }
+      try {
         giveBackRoom(sql);
       } catch {
         // No room to rewrite it in: the file stays as large this time.
@@ -549,6 +556,8 @@ export class AccountDb {
       this.#lists.clear();
       this.#chatsHeld.clear();
       this.#slackNames.clear();
+      // (what was counted in it is not either)
+      this.#logsCounted.clear();
       const again = [...this.#unwritten, ...precious];
       this.#unwritten = [];
       if (again.length > 0) {
@@ -760,6 +769,18 @@ export class AccountDb {
   /// overview is held: kept beside its part (`station_part.profiled`).
   overviewProfiled(station: string): J {
     return this.#overviewColumn(station, "profiled");
+  }
+
+  /// What the connects' list and a connect's page read of a station's overview (schema.ts overviewConnectsOf),
+  /// undefined while no overview is held: kept beside its part (`station_part.connects`).
+  overviewConnects(station: string): J {
+    return this.#overviewColumn(station, "connects");
+  }
+
+  /// What the settings' automatic decisions and archiving read of a station's overview (schema.ts overviewSettingsOf),
+  /// undefined while no overview is held or it is not an object: kept beside its part (`station_part.settings`).
+  overviewSettings(station: string): J {
+    return this.#overviewColumn(station, "settings");
   }
 
   /// The profile `id` of a station's overview, whole, undefined where it has none such (schema.ts overviewProfilesOf):
@@ -2635,10 +2656,73 @@ export class AccountDb {
     return this.sql.all("SELECT thread FROM chat WHERE station = ? AND archived = 0 AND thread IS NOT NULL AND last_active >= ? ORDER BY last_active DESC LIMIT ?", [station, since, most]).map((r) => r[0] as number);
   }
 
+  /// Whether `log_bytes` is kept (schema.ts ensureLogBytes).
+  #logBytes = false;
+  /// The tables whose every station's logs are counted in `log_bytes` (#countLogs), as far as this core knows.
+  #logsCounted = new Set<string>();
+
+  /// One step of counting the logs not counted yet (schema.ts ensureLogBytes: each station's of a table, whole, once):
+  /// answers whether any is left. A step reads one station's rows of one table, so the caller can let other work in
+  /// between (station/calls.ts cache.usage); what is written meanwhile the triggers count, and a station counted anew
+  /// is counted whole. Nothing to count where the counts are not kept (a database a newer core wrote) or cannot be
+  /// written (no room, a write of this burst that failed): a step that cannot write says none is left, so a caller's
+  /// loop ends, and what is not counted is read of its rows (cacheUsage).
+  countLogs(): boolean {
+    if (!this.#logBytes || this.readOnly) return false;
+    for (const [table, key] of Object.entries(LOG_TABLES) as [keyof typeof LOG_TABLES, string][]) {
+      if (this.#logsCounted.has(table)) continue;
+      const done = new Set(this.sql.all("SELECT station FROM log_bytes_done WHERE tbl = ?", [table]).map((r) => String(r[0])));
+      if (done.has("")) {
+        this.#logsCounted.add(table);
+        continue;
+      }
+      // (each station of the table, seeking to the next in its key: DISTINCT would walk every row)
+      const stations = this.sql.all(
+        `WITH RECURSIVE s(station) AS (
+           SELECT min(station) FROM ${table}
+           UNION ALL
+           SELECT (SELECT min(t.station) FROM ${table} t WHERE t.station > s.station) FROM s WHERE s.station IS NOT NULL
+         ) SELECT station FROM s WHERE station IS NOT NULL`,
+      ).map((r) => String(r[0]));
+      const next = stations.find((st) => !done.has(st));
+      if (this.#full || this.#failed !== null) return false;
+      let wrote = false;
+      this.#write(() => {
+        if (next === undefined) {
+          // (every station of the table counted, listed in this same step: from now on all of them are; a count of one
+          // not counted, were there one, goes)
+          this.sql.run("DELETE FROM log_bytes WHERE tbl = ? AND station NOT IN (SELECT station FROM log_bytes_done WHERE tbl = ?)", [table, table]);
+          this.sql.run("INSERT OR IGNORE INTO log_bytes_done (tbl, station) VALUES (?, '')", [table]);
+          this.sql.run("DELETE FROM log_bytes_done WHERE tbl = ? AND station <> ''", [table]);
+          wrote = true;
+          return;
+        }
+        this.sql.run("DELETE FROM log_bytes WHERE tbl = ? AND station = ?", [table, next]);
+        this.sql.run(`INSERT INTO log_bytes (tbl, station, id, bytes) SELECT ?, station, ${key}, sum(length(json)) FROM ${table} WHERE station = ? GROUP BY ${key} HAVING sum(length(json)) <> 0`, [table, next]);
+        this.sql.run("INSERT OR IGNORE INTO log_bytes_done (tbl, station) VALUES (?, ?)", [table, next]);
+        wrote = true;
+      });
+      if (!wrote || this.#failed !== null) return false;
+      if (next === undefined) this.#logsCounted.add(table);
+      return true;
+    }
+    return false;
+  }
+
+  /// The sessions of a chat (a thread), in order: by its key alone.
+  threadSessions(station: string, thread: number): string[] {
+    return this.sql.all("SELECT session FROM thread_member WHERE station = ? AND thread = ? ORDER BY session", [station, thread]).map((r) => r[0] as string);
+  }
+
   /// What this database keeps of each chat (a thread): its entries, its sessions' transcripts and what it shows small, in
-  /// characters of their JSON (near enough their bytes), with its sessions and its row as held (`view`, null when none
-  /// is); what a session has counted with its first thread. For the device's page of what it keeps (`cache.usage`).
+  /// characters of their JSON (near enough their bytes), with its sessions and what of its row says what it is called
+  /// (`view`: format.ts chatTitle's fields, null when no row is held); what a session has counted with its first
+  /// thread. For the device's page of what it keeps (`cache.usage`). Its logs are read of what they are counted at
+  /// (`log_bytes`, counted first where they are not: countLogs), never of their rows.
   cacheUsage(): { station: string; thread: number; view: J | null; sessions: string[]; bytes: number }[] {
+    while (this.countLogs());
+    // (read of the counts only where every table's are whole: where a step could not be written, of the rows)
+    const counted = this.#logBytes && !this.readOnly && Object.keys(LOG_TABLES).every((t) => this.#logsCounted.has(t));
     const out = new Map<string, { station: string; thread: number; view: J | null; sessions: string[]; bytes: number }>();
     const of = (station: string, thread: number) => {
       const k = `${station}\0${thread}`;
@@ -2646,16 +2730,23 @@ export class AccountDb {
       if (row === undefined) out.set(k, (row = { station, thread, view: null, sessions: [], bytes: 0 }));
       return row;
     };
-    for (const r of this.sql.all("SELECT station, thread, sum(length(json)) FROM entry GROUP BY station, thread")) of(r[0] as string, r[1] as number).bytes += Number(r[2] ?? 0);
+    const logs = counted
+      ? this.sql.all("SELECT tbl, station, id, bytes FROM log_bytes")
+      : [
+          ...this.sql.all("SELECT 'entry', station, thread, sum(length(json)) FROM entry GROUP BY station, thread"),
+          ...this.sql.all("SELECT 'transcript', station, session, sum(length(json)) FROM transcript GROUP BY station, session"),
+        ];
+    for (const r of logs) if (r[0] === "entry") of(r[1] as string, Number(r[2])).bytes += Number(r[3] ?? 0);
     const firstThread = new Map<string, number>();
     for (const r of this.sql.all("SELECT station, session, thread FROM thread_member ORDER BY station, session, thread")) {
       const [station, session, thread] = [r[0] as string, r[1] as string, r[2] as number];
       of(station, thread).sessions.push(session);
       if (!firstThread.has(`${station}\0${session}`)) firstThread.set(`${station}\0${session}`, thread);
     }
-    for (const r of this.sql.all("SELECT station, session, sum(length(json)) FROM transcript GROUP BY station, session")) {
-      const thread = firstThread.get(`${r[0] as string}\0${r[1] as string}`);
-      if (thread !== undefined) of(r[0] as string, thread).bytes += Number(r[2] ?? 0);
+    for (const r of logs) {
+      if (r[0] !== "transcript") continue;
+      const thread = firstThread.get(`${r[1] as string}\0${r[2] as string}`);
+      if (thread !== undefined) of(r[1] as string, thread).bytes += Number(r[3] ?? 0);
     }
     if (this.#filesKept) {
       for (const r of this.sql.all("SELECT station, session, sum(size) FROM file_kept GROUP BY station, session")) {
@@ -2670,11 +2761,29 @@ export class AccountDb {
         if (thread !== undefined && Number.isInteger(thread)) of(station, thread).bytes += Number(r[2] ?? 0);
       }
     }
-    for (const row of out.values()) {
-      const json = this.sql.all("SELECT json FROM thread WHERE station = ? AND id = ?", [row.station, row.thread])[0]?.[0];
-      if (json !== undefined) row.view = parse(json) as J;
+    const shown = [...out.values()].filter((r) => r.bytes > 0);
+    // (each row's fields its title is made of, by SQLite, in one statement: neither a statement nor a whole row parsed
+    // here a chat)
+    if (shown.length > 0) {
+      const keys = JSON.stringify(shown.map((r) => [r.station, r.thread]));
+      const rows = this.sql.all(
+        `SELECT t.station, t.id, json_type(t.json), ${TITLED.map((k) => `CASE json_type(t.json, '$.${k}') WHEN 'text' THEN json_extract(t.json, '$.${k}') END`).join(", ")}
+         FROM json_each(?) AS k JOIN thread AS t ON t.station = k.value ->> 0 AND t.id = k.value ->> 1`,
+        [keys],
+      );
+      // (each a text, or not there: what is not a text is nothing to chatTitle; a record that is JSON's null, none)
+      for (const r of rows) {
+        const row = out.get(`${r[0] as string}\0${r[1] as number}`);
+        if (row === undefined || r[2] === "null") continue;
+        const view: Record<string, string> = {};
+        TITLED.forEach((k, i) => {
+          const v = r[3 + i];
+          if (typeof v === "string") view[k] = v;
+        });
+        row.view = view;
+      }
     }
-    return [...out.values()].filter((r) => r.bytes > 0);
+    return shown;
   }
 
   /// Forgets what is kept of a chat: its entries, its sessions' transcripts and what it shows small (read again from its

@@ -6,7 +6,7 @@
 // Topics of this data have no value of their own: their value is read from here (`shared`), by query, when it goes
 // out; each database's writer says which topics a burst changed, and the store pushes what changed (keyed deltas).
 import { Effect, Fiber, Queue } from "effect";
-import { OVERVIEW_CHAT, OVERVIEW_PROFILED } from "./db/schema.ts";
+import { OVERVIEW_CHAT, OVERVIEW_PROFILED, OVERVIEW_SETTINGS } from "./db/schema.ts";
 import { AccountDb, LIST_OF, foundOf, type ChatFound, type Changes, type Derive, type HeadRow, type ListKind, type LogTable, type MovedTo, type RowChange, frozen } from "./db/account.ts";
 import { KEPT as BESIDE, type AnyKept, type Kept, type Maker, type Owner } from "./db/kept.ts";
 import { CHAT_READS, chatKeys, type ChatRead, type ReadKey } from "./db/chat-reads.ts";
@@ -852,6 +852,8 @@ export class Data {
     this.#tellQuery({ topic: "$overview-chat", station });
     this.#tellQuery({ topic: "$overview-profiles", station });
     this.#tellQuery({ topic: "$overview-profiled", station });
+    this.#tellQuery({ topic: "$overview-connects", station });
+    this.#tellQuery({ topic: "$overview-settings", station });
   }
 
   /// The steps an overview of the station has gone past (or that it no longer has where they were): let go.
@@ -874,6 +876,8 @@ export class Data {
     this.#tellQuery({ topic: "$overview-chat", station });
     this.#tellQuery({ topic: "$overview-profiles", station });
     this.#tellQuery({ topic: "$overview-profiled", station });
+    this.#tellQuery({ topic: "$overview-connects", station });
+    this.#tellQuery({ topic: "$overview-settings", station });
     return true;
   }
 
@@ -884,6 +888,8 @@ export class Data {
     this.#tellQuery({ topic: "$overview-chat", station });
     this.#tellQuery({ topic: "$overview-profiles", station });
     this.#tellQuery({ topic: "$overview-profiled", station });
+    this.#tellQuery({ topic: "$overview-connects", station });
+    this.#tellQuery({ topic: "$overview-settings", station });
   }
 
   /// A held topic's new value (read, or as an event left it). `confirmed`: it came from its source just now (else it
@@ -1396,6 +1402,33 @@ export class Data {
     return frozen(out);
   }
 
+  /// What the connects' list and a connect's page read of a station's overview (account.ts overviewConnects, schema.ts
+  /// overviewConnectsOf), kept beside it: read in a computed, it is made again only as that changes, not with the rest
+  /// of the overview. Where the overview is shown with what is being done to it here (overlaid), made of that, anew.
+  overviewConnects(station: string): unknown {
+    this.#readQuery({ topic: "$overview-connects", station });
+    if (!this.#overlaid(station)) return this.of(station)?.overviewConnects(station);
+    const shown = this.shown({ topic: "overview", station });
+    if (shown === undefined) return undefined;
+    if (!isObject(shown)) return frozen({ connects: [], slackApps: [], profiled: true, connectRuntimeChange: false });
+    const list = (v: unknown) => (Array.isArray(v) ? v : []);
+    return frozen({ connects: list(shown.connects), slackApps: list(shown.slackApps), profiled: list(shown.profiles).length > 0, connectRuntimeChange: shown.connectRuntimeChange === true });
+  }
+
+  /// What the settings' automatic decisions and archiving read of a station's overview (account.ts overviewSettings,
+  /// schema.ts OVERVIEW_SETTINGS), kept beside it: read in a computed, it is made again only as that changes. Where the
+  /// overview is shown with what is being done to it here (overlaid), made of that, anew.
+  overviewSettings(station: string): unknown {
+    this.#readQuery({ topic: "$overview-settings", station });
+    if (!this.#overlaid(station)) return this.of(station)?.overviewSettings(station);
+    const shown = this.shown({ topic: "overview", station });
+    if (!isObject(shown)) return undefined;
+    const out: Record<string, unknown> = {};
+    // (in the overview's order, as SQLite keeps the part: json_each)
+    for (const k of Object.keys(shown)) if ((OVERVIEW_SETTINGS as readonly string[]).includes(k)) out[k] = shown[k];
+    return frozen(out);
+  }
+
   /// The stations a station took the place of (account.ts overviewFormerly), kept beside its overview: read in a
   /// computed, it is made again only as that changes.
   overviewFormerly(station: string): unknown {
@@ -1742,6 +1775,16 @@ export class Data {
 
   forgetLog(table: LogTable, station: string, id: string): void {
     this.of(station)?.forgetLog(table, station, id);
+  }
+
+  /// One step of counting what each chat keeps where it is not counted yet (AccountDb.countLogs): whether any is left.
+  countLogs(): boolean {
+    return this.dbs().some((db) => db.countLogs());
+  }
+
+  /// The sessions of a chat (AccountDb.threadSessions).
+  threadSessions(station: string, thread: number): string[] {
+    return this.of(station)?.threadSessions(station, thread) ?? [];
   }
 
   /// What every account's database keeps of each chat (AccountDb.cacheUsage).

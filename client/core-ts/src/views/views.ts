@@ -106,7 +106,7 @@ export const chatDerive: Derive = {
 };
 
 /// A station's overview and host reading as its row and its page show them (Views `#stationShownOf`).
-type StationShown = { full: Derived<J>; profile: Derived<J>; host: Derived<J>; row: Derived<J>; hostRow: Derived<J>; unreadable: Derived<boolean>; offered: Derived<J[]>; judge: (o: J) => boolean };
+type StationShown = { full: Derived<J>; profile: Derived<J>; settings: Derived<J>; host: Derived<J>; row: Derived<J>; hostRow: Derived<J>; unreadable: Derived<boolean>; offered: Derived<J[]>; judge: (o: J) => boolean };
 
 /// A station of a scope, as the workspace lists it.
 /// `joined`: the station's home is another workspace, this one it joined.
@@ -728,6 +728,10 @@ const connectsPartOf = (v: Value | undefined): J => {
   const o = v.ok as J;
   return { connects: arr(get(o, "connects")), slackApps: arr(get(o, "slackApps")), profiled: !isObject(o) || arr(get(o, "profiles")).length > 0 };
 };
+
+/// The parts of a station's overview its page asks alone (`stationPart`) that are of its settings (data.ts
+/// overviewSettings): made of those alone.
+const SETTINGS_PARTS = new Set(["automaticDecisions", "archiving"]);
 
 /// What the views are put together with: the core's store and data, and what the accounts say of a workspace.
 export type ViewsEnv = {
@@ -1722,7 +1726,10 @@ export class Views implements Owner {
         const stations = this.#stationsOr(view.scope as string);
         if (stations === undefined || !Array.isArray(stations)) return stations as Value | undefined;
         if (!stations.some((s) => s.address === view.station)) return { ok: null };
-        return { ok: get(this.#stationShownOf(view.station as string).full.get(), view.part as string) ?? null };
+        // (the automatic decisions and archiving of what is kept of them beside the overview, made as the whole makes
+        // them: never the whole)
+        const parts = this.#stationShownOf(view.station as string);
+        return { ok: get(SETTINGS_PARTS.has(view.part as string) ? parts.settings.get() : parts.full.get(), view.part as string) ?? null };
       }
       case "profiles": {
         // What goes out is the rows (ProfileRow), shaped here beside the value the list made (conform.ts shapedBeside, as
@@ -1747,7 +1754,9 @@ export class Views implements Owner {
         // Each station's name, whether it is up and its overview: what the settings say of them, not their pages.
         const stations = this.#stationsOr(view.scope as string);
         if (stations === undefined || !Array.isArray(stations)) return stations as Value | undefined;
-        return { ok: settingsView(stations.map((s) => ({ name: s.name, online: s.online, overview: this.#stationShownOf(s.address).full.get() }))) };
+        // (of the automatic decisions and archiving kept beside each overview, decorated as the whole decorates them:
+        // never the whole, of some 150 KB a phone's each)
+        return { ok: settingsView(stations.map((s) => ({ name: s.name, online: s.online, overview: this.#stationShownOf(s.address).settings.get() }))) };
       }
       case "connects":
         return this.#connects(view.scope as string, view.mine === true);
@@ -3226,15 +3235,17 @@ export class Views implements Owner {
     // on 小屏 (Hermes, Mac Studio, 2026-11-12).
     const shown = new WeakMap<object, present.Made<J>>();
     const readable = new WeakMap<object, boolean>();
-    const decorate = (o: J, c: present.Clock, part = false): J => {
-      if (part) work.profiledParts++;
+    const decorate = (o: J, c: present.Clock, part: false | "profiled" | "settings" = false): J => {
+      if (part === "profiled") work.profiledParts++;
+      else if (part === "settings") work.settingsParts++;
       else work.overviews++;
       const shownOf = present.decorate(overview, structuredClone(o), c);
       // (a part put through the overview's shape as the whole is, the rest of it the shape's defaults, which nothing
-      // reading it reads: its profiles, sharing, mesh and machines' logins as the whole would have them)
-      return asShaped("Overview", part && isObject(shownOf) ? { ...overviewDefaults(), ...shownOf } : shownOf);
+      // reading it reads: its profiles, sharing, mesh and machines' logins, or its automatic decisions and archiving, as
+      // the whole would have them)
+      return asShaped("Overview", part !== false && isObject(shownOf) ? { ...overviewDefaults(), ...shownOf } : shownOf);
     };
-    const decorated = (read: () => J, part = false) => computed(() => {
+    const decorated = (read: () => J, part: false | "profiled" | "settings" = false) => computed(() => {
       const o = read();
       if (o === undefined) return null;
       // (its times in words, by the minute)
@@ -3243,7 +3254,14 @@ export class Views implements Owner {
     });
     kept = {
       full: decorated(() => this.ok(overview)),
-      profile: decorated(() => this.#core.data.overviewProfiled(station), true),
+      profile: decorated(() => this.#core.data.overviewProfiled(station), "profiled"),
+      // Its automatic decisions and archiving as the whole has them (present.ts overview decorates them of themselves
+      // alone), of what is kept of them beside the overview (data.ts overviewSettings), never of the whole; null where
+      // this core cannot read the whole (`full` would be null), as `unreadable` says it.
+      settings: (() => {
+        const part = decorated(() => this.#core.data.overviewSettings(station), "settings");
+        return computed(() => (kept!.unreadable.get() ? null : part.get()));
+      })(),
       host: computed(() => {
         const h = this.ok({ topic: "host", station });
         return h === undefined ? null : asShaped("Host", present.host(h));
@@ -3318,7 +3336,7 @@ export class Views implements Owner {
     const slackApps: J[] = [];
     let noProfile = stations.length > 0;
     for (const s of stations) {
-      const part = this.#core.store.select({ topic: "overview", station: s.address }, connectsPartOf);
+      const part = this.#connectsPart(s.address);
       if (part === undefined || "err" in part || part.profiled) noProfile = false;
       if (part !== undefined && !("err" in part)) for (const app of part.slackApps) slackApps.push({ station: s.address, stationName: s.name, app });
       if (!s.online) continue;
@@ -3349,6 +3367,13 @@ export class Views implements Owner {
     return shown;
   }
 
+  /// What the connects read of a station's overview (connectsPartOf): of what is kept of it beside the overview
+  /// (data.ts overviewConnects), never the whole; where none is held, why not as the overview's topic says it.
+  #connectsPart(station: string): J {
+    const kept = this.#core.data.overviewConnects(station);
+    return kept !== undefined ? kept : this.#core.store.select({ topic: "overview", station }, connectsPartOf);
+  }
+
   /// One connect of a scope's station, by its id: its page (`page`, ConnectView) or the sessions its choice of one lists
   /// (`candidates`, ConnectCandidates). None while its station's overview is not read, why where it could not be; null
   /// where the scope has no such station up, or it no such connect.
@@ -3357,7 +3382,9 @@ export class Views implements Owner {
     if (stations === undefined || !Array.isArray(stations)) return stations as Value | undefined;
     const s = stations.find((x) => x.address === station);
     if (s === undefined || !s.online) return { ok: null };
-    const v = this.value({ topic: "overview", station });
+    // (of what is kept of its overview beside it, data.ts overviewConnects: never the whole)
+    const kept = this.#core.data.overviewConnects(station);
+    const v = kept !== undefined ? { ok: kept } : this.value({ topic: "overview", station });
     if (v === undefined || "err" in v) return v;
     const connects = arr(get(v.ok, "connects"));
     const connect = connects.find((c) => str(get(c, "id")) === id);

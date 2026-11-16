@@ -12,6 +12,11 @@ export { splitWhitespace };
 /// A thread as both sides hold it: its fields by the names the station's rows and the core's records give them.
 export type Titled = { surface?: unknown; channel?: unknown; title?: unknown; autoTitle?: unknown };
 
+/// Every field of a thread's record what it is called is made of: chatTitle's (`Titled`) and the first thing said in it
+/// and its channel's name, as format.ts chatTitle reads them of the record. What reads a record for its title alone
+/// reads these of it (db/account.ts cacheUsage).
+export const TITLED: readonly string[] = ["surface", "channel", "title", "autoTitle", "firstText", "channelName"];
+
 /// What an unnamed chat and a direct message are called, in the caller's language.
 export type TitleWords = { untitled: string; directMessage: string };
 
