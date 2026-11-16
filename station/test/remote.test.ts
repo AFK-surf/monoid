@@ -754,6 +754,20 @@ describe("remote", { concurrency: true }, () => {
     assert.deepEqual((await use("station_task", { ...task, action: "get" })).job, null);
   });
 
+  test("a task's directory and what comes back stays in its task's directory, as this machine's paths go (Node's isAbsolute)", async () => {
+    const { home, use } = pair();
+    const src = join(home, "src");
+    mkdirSync(src);
+    writeFileSync(join(src, "input.txt"), "in\n");
+    // (absolute as this machine has it: `C:\…` on Windows, which the program's POSIX-only check once refused)
+    const prepared = await use("station_task", { station: "B", key: "dir", action: "prepare", dir: src, command: "true", back: ["out/result.txt"] });
+    assert.equal(prepared.prepared, true, JSON.stringify(prepared));
+    const win = process.platform === "win32";
+    for (const back of ["/etc/passwd", "../outside", "a/../../outside", ...(win ? ["C:\\outside", "\\outside", "a\\..\\..\\outside"] : [])]) {
+      await assert.rejects(use("station_task", { station: "B", key: "dir", action: "prepare", dir: src, command: "true", back: [back] }), /back must be paths relative/, back);
+    }
+  });
+
   test("a failed prepare stays fenced after migration of an older record and a restart", async () => {
     const { a, b, clock, use } = pair();
     const task = { station: "B", key: "restart" };

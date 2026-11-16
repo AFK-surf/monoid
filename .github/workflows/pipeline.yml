@@ -268,6 +268,9 @@ jobs:
       # Agents under runners on their named pipes, read by Node and by the MoonBit reader (its pipe opened by the shell).
       - name: Runners on Windows
         run: cd station && node ../scripts/native.ts run runner reader -- node --import ./test/setup-env.mjs --test test/runner-windows.test.ts
+      # The remote tasks' paths as Windows has them, joined and judged by the MoonBit program (`--sessions --sep \`).
+      - name: Remote tasks' paths on Windows
+        run: cd station && node ../scripts/native.ts run runner reader -- node --import ./test/setup-env.mjs --test --test-name-pattern='Windows|stays in its task' test/remote.test.ts
       - name: Windows installer handover diagnostics
         run: node --test --test-name-pattern='the Windows installer reports the new process' cloud/test/install-windows.test.ts
       # What the job started that is still running as it ends: the runner's clean-up of them took 52-237 s after the

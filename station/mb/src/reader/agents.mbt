@@ -192,6 +192,14 @@ fn Agents::told(self : Agents, line : String) -> Unit {
   ]
   guard ops.iter().find_first(k => num(k) is Some(_)) is Some(op) else { return }
   guard self.sessions.get(num(op).unwrap().to_int()) is Some(h) else { return }
+  // (its socket closed: Node let it go after what it took, the rest of what was told it let go with it, `gone`)
+  if h.closed && (op == "done" || op == "detach") {
+    h.batches.clear()
+    h.batch_threads.clear()
+    h.batch_before.clear()
+    self.gone(h)
+    return
+  }
   match op {
     "ack" => if num("to") is Some(to) { self.acked(h, to.to_int64()) }
     "route" => {

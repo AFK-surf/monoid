@@ -516,15 +516,19 @@ export class HostedProcess {
   /// Its socket closed with no end told (`stderr`: the last lines its process wrote there).
   closed_(stderr = ""): void | Promise<void> {
     if (this.gone || this.#said !== null) return;
+    // (the program keeps it till what it told before is taken: what was, was said before this on its stdin, and the
+    // rest, held or let go here, is let go there with it)
     if (pidAlive(this.info.runner)) {
       log.warn("agents::process", "another station took the runner over; letting go", { label: this.#options.label });
       this.#frozen = true;
       this.gone = true;
+      this.done();
       this.#host.forget(this);
     } else {
       this.#said = "runner gone";
       this.#resolveExit(this.#said);
       const told = this.#frozen ? undefined : this.#options.exit(this.#said, stderr);
+      this.done();
       this.#host.forget(this);
       return told;
     }
