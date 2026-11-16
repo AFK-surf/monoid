@@ -181,6 +181,8 @@ test("cancel, a signed-out account, an expired sign-in and a spent quota", async
   assert.equal(noticeFailure("Your quota resets in an hour."), null);
   assert.equal(noticeFailure("⚠ Check the quota:\nit is low."), null);
   assert.equal(noticeFailure("⚠ Something else went wrong."), null);
+  // Its words for a failure it does not name (a borrowed token run out under it, 2026-11-16): a failed turn, not last words.
+  assert.equal(noticeFailure("⚠ Agent execution terminated due to error."), "other");
   assert.equal(noticeFailure("⚠ Authentication expired. Please log back in."), "auth");
   // A sign-in lent by another station run out under the process (1.5.9's words): a sign-in's failure, which reopens it.
   assert.equal(noticeFailure('⚠ agent executor error: generating and executing: request failed: Post "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse": oauth2: token expired and refresh token is not set'), "auth");
@@ -475,6 +477,78 @@ test("a warm Antigravity session whose CLI lacks its trajectory recovers across 
     await hub.shutdown();
     await d1.shutdown();
     if (d2) await d2.shutdown();
+    store.close();
+  }
+});
+
+test("a warm process on a borrowed sign-in that runs out too soon for a turn is opened again on one lent anew before the turn", async () => {
+  const { Hub } = await import("../src/sessions/hub.ts");
+  const { InternalChat } = await import("../src/sessions/internal.ts");
+  const { FakeChat, message, reply, settle } = await import("./hub-fakes.ts");
+  const hubDir = mkdtempSync(join(data, "hub-agy-lent-"));
+  const dump = join(hubDir, "dump");
+  const home = join(hubDir, "homes", "ag");
+  const raw = {
+    askToName: false,
+    profiles: [{ id: "ag", runtime: "agy", home, access: { kind: "api-provider", provider: "google", key: "gemini-key" }, env: { PATH: fake, FAKE_DUMP: dump } }],
+    connects: [{ id: "cl", bind: { runtime: "agy" } }],
+  };
+  const cfg = hubConfig(raw, hubDir);
+  const store = Store.open(join(hubDir, "stillfail.db"));
+  const chat = new FakeChat("UBOT");
+  const signIn = (minutes: number) => JSON.stringify({ token: { access_token: `a${minutes}`, expiry: new Date(Date.now() + minutes * 60_000).toISOString() }, auth_method: "consumer" });
+  // Its host away at first: the process opens on the 20 minutes the sign-in has left, enough to start on.
+  let hostAway = true;
+  const lends: number[] = [];
+  const driver = new AgyDriver({
+    data: hubDir,
+    lent: {
+      borrowed: () => true,
+      write: async (p) => {
+        if (hostAway) throw new Error("host away");
+        lends.push(55);
+        writeFileSync(agyToken(p.home), signIn(55));
+        return Date.now() + 55 * 60_000;
+      },
+    },
+  });
+  mkdirSync(join(geminiDir(home), "antigravity-cli"), { recursive: true });
+  writeFileSync(agyToken(home), signIn(20));
+  const hub = new Hub({ config: () => cfg, store, chats: (id) => (id === "cl" ? chat : undefined), drivers: [driver], mcpUrl: "http://127.0.0.1:1/mcp", internal: new InternalChat() });
+  hub.skillsLinker = async () => "";
+  try {
+    cfg.maxNudges = 0;
+    const m1 = message({ text: "first ask" });
+    await hub.accept("cl", m1);
+    await until(() => store.listSessions().length === 1 && !store.listSessions()[0]!.running && store.listSessions()[0]!.runtimeSessionId !== null);
+    await settle();
+    const key = store.listSessions()[0]!.key;
+    const id = store.getSession(key)!.runtimeSessionId!;
+    const opens = () => rpc(dump).filter((m) => m.method === "initialize").length;
+    const prompts = () => rpc(dump).filter((m) => m.method === "session/prompt").map((m) => m.params.prompt[0].text as string);
+    assert.equal(opens(), 1);
+    assert.deepEqual(lends, []);
+
+    // The next turn: the process's token has under AGY_LENT_RENEW_MS left, so it is ended and the conversation opened
+    // again in a new process, on a sign-in lent anew, the person's words its prompt.
+    hostAway = false;
+    await hub.accept("cl", reply(m1, "2000.2", "<@UBOT> make it simpler", { addressed: true }));
+    await until(() => !store.getSession(key)!.running && prompts().some((p) => /make it simpler/.test(p)));
+    await settle();
+    assert.deepEqual(lends, [55]);
+    assert.equal(opens(), 2);
+    assert.equal(store.getSession(key)!.runtimeSessionId, id);
+    assert.equal(rpc(dump).filter((m) => m.method === "session/load").length, 1);
+
+    // One that lasts: the same process takes the turn after.
+    await hub.accept("cl", reply(m1, "2000.3", "<@UBOT> and shorter", { addressed: true }));
+    await until(() => !store.getSession(key)!.running && prompts().some((p) => /and shorter/.test(p)));
+    await settle();
+    assert.equal(opens(), 2);
+    assert.deepEqual(lends, [55]);
+  } finally {
+    await hub.shutdown();
+    await driver.shutdown();
     store.close();
   }
 });

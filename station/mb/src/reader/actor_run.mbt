@@ -1327,10 +1327,18 @@ async fn Actors::end_process(self : Actors, a : Actor, agent : Agent?) -> Unit r
 /// actor.ts `ensureAgent`: its runtime session, opened (Node's: the driver, its options, the words it is told of how it
 /// was opened) where it has none.
 async fn Actors::ensure_agent(self : Actors, a : Actor) -> Agent raise {
-  if a.agent is Some(_) && !a.stale && !self.busy(a) {
+  if a.agent is Some(g) && !a.stale && !self.busy(a) {
     let on = self.rpc(a.key, "node.profileId", [jbool(self.holding(a))]) catch { _ => Json::null() }
     if !(on is Null) && on != a.profile {
       a.stale = true
+    }
+    // (its process can no longer take a turn as it is: an Antigravity CLI one whose borrowed sign-in runs out, runtime.ts
+    // `outlived`; its retune refuses, so it is opened again)
+    if !a.stale {
+      let outlived = self.rpc(a.key, "node.outlived", [jnum(g.handle.to_double())]) catch { _ => Json::null() }
+      if outlived is True {
+        a.stale = true
+      }
     }
   }
   self.catch_up(a, true)

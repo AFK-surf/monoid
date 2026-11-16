@@ -300,12 +300,18 @@ export const classifyFailure = (text: string): FailureReason =>
 /// is never one: a notice is all of the turn's last words, one line of its own, and only what tells the account, a
 /// limit or the provider counts (not `model`, the rest). What the program reads a process by does this (mb/src/acp
 /// `notice_failure`); this is what it is held to.
+/// Its own words for any failure it gives no reason for (1.5.9: a token run out under it, 2026-11-16) fail the turn too,
+/// as one not known: shown as a failure to try again, never forwarded as the agent's last words.
 export function noticeFailure(said: string): FailureReason | null {
   const text = said.trim();
   if (!text.startsWith("⚠") || text.includes("\n")) return null;
   const reason = classifyFailure(text);
-  return reason === "model" ? null : reason;
+  if (reason !== "model") return reason;
+  return text.toLowerCase().includes(AGY_TERMINATED) ? "other" : null;
 }
+
+/// What Antigravity CLI says of a turn it ended on an error it does not name.
+const AGY_TERMINATED = "agent execution terminated due to error";
 
 /// The process's arguments: the profile's files, no approvals, no telemetry.
 export const agyArgs = (home: string) => ["acp", "--gemini-dir", geminiDir(home), "--dangerously-skip-permissions", "--disable-telemetry"];
@@ -504,11 +510,16 @@ export class AgyDriver extends AcpDriver<AgySession> {
   }
 
   protected async begin(options: OpenOptions, events: Events, probe: boolean): Promise<AgySession> {
-    if (this.lent?.borrowed(options.profile)) await this.renewLent(options.profile);
+    const borrowed = this.lent?.borrowed(options.profile) === true;
+    if (borrowed) await this.renewLent(options.profile);
     else if (accessKind(options.profile) === "subscription") await agyTakeBack(options.profile.home);
+    // Read before the process starts: the token it reads, never read again (AGY_LENT_RENEW_MS).
+    const until = borrowed ? await agyExpiry(options.profile.home) : null;
     // Failed here, before anything starts, so the session goes on in a new conversation and reads back.
     if (options.resume !== undefined) await this.ensureConversation(options.profile.home, options.resume);
-    return super.begin(options, events, probe);
+    const session = await super.begin(options, events, probe);
+    session.signInUntil = until;
+    return session;
   }
 
   override async adopt(options: OpenOptions, snapshot: unknown | null, events: Events): Promise<AgySession> {
@@ -518,6 +529,10 @@ export class AgyDriver extends AcpDriver<AgySession> {
     const id = typeof (snapshot as { id?: unknown } | null)?.id === "string" ? (snapshot as { id: string }).id : options.resume;
     if (id !== undefined) await this.ensureConversation(options.profile.home, id);
     const session = await super.adopt(options, snapshot, events);
+    // One handed over says the token it opened on (`kept`); one taken up after a crash, or from a station from before,
+    // does not, and is opened again before its next turn: the file may hold a token lent since, for another process.
+    if (this.lent?.borrowed(options.profile) !== true) session.signInUntil = null;
+    else if (session.signInUntil === null) session.signInUntil = 0;
     if (session.id() !== id) {
       try {
         await this.ensureConversation(options.profile.home, session.id());
@@ -560,6 +575,9 @@ export class AgySession extends AcpSession {
   tier: string | null = null;
   /// The context its last call had and the model's window, as usage_update says them.
   private context = { used: 0, size: 0 };
+  /// When the borrowed sign-in its process opened on runs out (ms); null on a sign-in of this station's own, which
+  /// `agy` renews itself.
+  signInUntil: number | null = null;
   private readonly agyDriver: AgyDriver;
 
   constructor(driver: AgyDriver, events: Events, options: OpenOptions) {
@@ -585,7 +603,7 @@ export class AgySession extends AcpSession {
   }
 
   protected kept() {
-    return { availableModels: this.availableModels, currentModelId: this.currentModelId, defaultModelId: this.defaultModelId, context: this.context };
+    return { availableModels: this.availableModels, currentModelId: this.currentModelId, defaultModelId: this.defaultModelId, context: this.context, signInUntil: this.signInUntil };
   }
 
   protected taken(snapshot: Json) {
@@ -594,6 +612,16 @@ export class AgySession extends AcpSession {
     this.defaultModelId = typeof snapshot.defaultModelId === "string" ? snapshot.defaultModelId : null;
     const c = snapshot.context;
     if (c && typeof c === "object") this.context = { used: typeof c.used === "number" ? c.used : 0, size: typeof c.size === "number" ? c.size : 0 };
+    this.signInUntil = typeof snapshot.signInUntil === "number" ? snapshot.signInUntil : null;
+  }
+
+  /// Its process's borrowed sign-in has less than AGY_LENT_RENEW_MS left: it takes no turn on it, but is ended and
+  /// opened again before the next (on a token lent anew, `renewLent`). Without it a process kept warm for an hour ran
+  /// out under every turn, which `agy` told only as "⚠ Agent execution terminated due to error." (1.5.9; its log said
+  /// "oauth2: token expired and refresh token is not set"), no sign-in failure `auth_retry` answers: Office-Host-2,
+  /// 2026-11-16, five chats failing every turn in 0.1 s.
+  outlived() {
+    return this.signInUntil !== null && this.signInUntil - wall.now() < AGY_LENT_RENEW_MS;
   }
 
   protected updated(update: Json, _owner: string | null) {
@@ -621,7 +649,7 @@ export class AgySession extends AcpSession {
 
   /// Between turns, another model or thinking level is set in the running process, read from its next turn on.
   retune(options: OpenOptions) {
-    if (this.turn.closed || this.turn.busy || this.sessionId === "") return false;
+    if (this.turn.closed || this.turn.busy || this.sessionId === "" || this.outlived()) return false;
     const model = options.model ?? profileModel(options.profile);
     if (model === undefined) return false;
     const target = agyVariant(model, options.effort, this.availableModels, this.defaultModelId);
