@@ -13,7 +13,8 @@ struct DefaultCase {
 }
 
 ///|
-/// A window 400 by 300 holding a panel (one layer): a ground that takes the focus and no key ("底"), a button "取消",
+/// A window 400 by 300 holding a modal panel (one layer): a ground that takes the focus and no key ("底"), a button
+/// "取消",
 /// a button "确认" its default while `on` (and not disabled: `off`), with `twice` another default "也确认", and a
 /// one-line field "名字" that gives its words up to its caller where `takes`.
 fn default_case(twice? : Bool = false, takes? : Bool = false) -> DefaultCase raise {
@@ -25,6 +26,7 @@ fn default_case(twice? : Bool = false, takes? : Bool = false) -> DefaultCase rai
     root.box(fn(panel) {
       panel
       .says(Is(Some(@view.said(Dialog, label="面板"))))
+      .modal(Is(true))
       .presses(Is(true))
       .focusable(Is(true), keys=0, tab=false)
       |> ignore

@@ -65,12 +65,13 @@ fn button_by(
 ) -> @view.View {
   let live = fn() { !disabled() && !busy() }
   let solid = tone == Primary || tone == DangerSolid
-  // (a panel's primary button its default where none is said: Enter in it that nothing with the focus takes presses it,
+  // (a primary button its layer's default where none is said: Enter in a dialog, a sheet or a panel (a modal layer's
+  // alone, @view.Tree::default_of) that nothing with the focus takes presses it,
   // as a dialog's default button is (the owner, 2026-11-16: 照苹果的来); a red one never, so that Enter does not do
   // what cannot be undone; a panel with two primaries has none, @view.Tree::default_of)
   let default_on = match default_on {
     Some(f) => Some(f)
-    None => if tone == Primary && parent.lent(panel_in_lent) is Some(_) { Some(fn() { true }) } else { None }
+    None => if tone == Primary { Some(fn() { true }) } else { None }
   }
   let height = button_height()
   // (what it is to the hand, the keyboard and a screen reader is mbui's headless button's: read out a button called by

@@ -2,8 +2,8 @@
 // to be pressed by Enter that nothing with the focus takes (View::default_press). Enter goes first to what has the
 // focus (a button or a toggle it presses, a field's own Enter: View::focusable's `keys`, ui's field), then to the
 // nodes that take keys and the keymap's actions (Tree::key_at, Tree::stroke), and only what none of them took comes
-// here: the default of the layer the focus is in (what of the root holds it), or, the focus in none of the tree, of
-// the topmost modal layer. A dialog says its primary button is its default; a confirm of what cannot be undone says
+// here: the default of the topmost modal layer (a dialog, a sheet, a panel), the focus in it or in none of the tree; a
+// page has none. A dialog says its primary button is its default; a confirm of what cannot be undone says
 // none, so that Enter does not do it (the owner, 2026-11-16: 「危险操作回车不执行」, after Apple's: a destructive button
 // is not the default). Where a layer holds more than one that would take it, none is pressed: which was meant is not
 // known. A default is pressed as a press on it is taken (Tree::run_press_at's conditions: living, taking presses, under
@@ -38,20 +38,21 @@ pub fn View::default_press(self : View, on : Live[Bool]) -> View {
 
 ///|
 /// The default that Enter at `at` presses (see the file's head), `from` the node the focus is in (None: in none of the
-/// tree): the one of its layer, or of the topmost modal layer, that takes a press then, where it is the only one.
+/// tree): the one of the topmost modal layer (the focus in it or in none) that takes a press then, where it is the only
+/// one.
 pub fn Tree::default_of(self : Tree, from : NodeId?) -> NodeId? {
   if self.defaults_set <= 0 || self.nodes.length() == 0 || !self.nodes[0].live {
     return None
   }
-  let top = match from {
-    Some(id) if self.alive_id(id) => self.top_of(id.at)
-    _ =>
-      match self.modal_top() {
-        Some(m) => self.top_of(m.at)
-        None => -1
-      }
-  }
+  // (a modal layer's alone: a dialog, a sheet, a panel; a page has no default, its primaries many and Enter its own)
+  guard self.modal_top() is Some(m) else { return None }
+  let top = self.top_of(m.at)
   guard top > 0 else { return None }
+  // (the focus in another layer than it, over it: that layer's Enter, none of this one's)
+  match from {
+    Some(id) if self.alive_id(id) && self.top_of(id.at) != top => return None
+    _ => ()
+  }
   let found : Array[Int] = []
   self.topmost_from(top, fn(n) { n.default_press }, found)
   let taking = found.filter(fn(i) { self.nodes[i].on_press is Some(_) && !self.pressless_at(i) })
