@@ -329,9 +329,13 @@ final class Streams {
     /** A command for stream `id`'s decoder or SurfaceTexture (@ui's stream_feed.mbt); "latch" is a frame shown. */
     static void codec(int id, String cmd, byte[] data) {
         Stream s = streams.get(id);
-        // (its decoder made on the GL thread as its config came: there in order before this)
+        // (its decoder made on the GL thread as its config came: there in order before this. A frame to latch or drop
+        // is of the SurfaceTexture the app was told of: one made anew since, a new context's, holds none of it)
+        int surf = s != null ? s.surfaces : 0;
         if (s != null) onGl(() -> {
-            if (s.video != null) s.video.command(cmd, data);
+            if (s.video == null) return;
+            if ((cmd.startsWith("latch ") || cmd.startsWith("drop ")) && s.surfaces != surf) return;
+            s.video.command(cmd, data);
         });
         if (cmd.startsWith("latch ") && throwShow != null && throwShow.equals(String.valueOf(++shows))) throw new RuntimeException("MBUI_STREAM_THROW_SHOW: show " + shows);
     }
@@ -531,6 +535,8 @@ final class Streams {
         int tex, texW, texH;
         /** Its SurfaceTexture, the external texture under it, its Surface (GL thread; the decoder has the surface). */
         SurfaceTexture st;
+        /** How many SurfaceTextures it has had (made on the GL thread, read on the app's: codec). */
+        volatile int surfaces;
         int ext;
         Surface surface;
         H264 video;
@@ -575,6 +581,7 @@ final class Streams {
 
         /** A SurfaceTexture on a new external texture of the context there is, handed to the decoder (GL thread). */
         void surfaceAnew() {
+            surfaces++;
             SurfaceTexture oldSt = st;
             Surface oldSurface = surface;
             ext = external();

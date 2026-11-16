@@ -234,9 +234,20 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
         if (v != null) v.queueEvent(MBView::glTasksDue);
     }
 
-    /** The tasks of the GL thread's queue that may run now: all those before the frame pending (all of them, none). */
+    /**
+     * The tasks of the GL thread's queue that may run now: all those before the frame pending (all of them, none). Not
+     * while its context is not current (the view paused: its events still run, its surface let go): the next frame
+     * drawn does them, where the app's thread made them while it was (a stream's frame latched on a SurfaceTexture of
+     * a context not current fails).
+     */
     private static void glTasksDue() {
+        if (!glCurrent()) return;
         runTasks(pendingSeqNow());
+    }
+
+    /** Whether a GL context is current on this thread. */
+    private static boolean glCurrent() {
+        return android.opengl.EGL14.eglGetCurrentContext() != android.opengl.EGL14.EGL_NO_CONTEXT;
     }
 
     private static long pendingSeqNow() {
@@ -644,6 +655,12 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
         v.queueEvent(() -> {
             synchronized (done) {
                 if (state[1]) return;
+                // (its context not current, the view paused meanwhile: nothing read)
+                if (!glCurrent()) {
+                    state[0] = true;
+                    done.notify();
+                    return;
+                }
                 boolean took;
                 long frameSeq = -1;
                 java.util.ArrayList<MBText.Placed> glyphs = null;
