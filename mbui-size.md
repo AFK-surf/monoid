@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [cb0eb0ffa](https://github.com/AFK-surf/monoid/commit/cb0eb0ffa85c5076b4186b9a1e3d1373dd5b38de) mbui app: each-lookup cleared to none; the board's | 2.46 | 3.45 | 14.67 | 35.88 | 57.43 | 31.47 | 65.03 | 99.99 | 122.71 |
 | [776ef5c39](https://github.com/AFK-surf/monoid/commit/776ef5c391241ece161a9d952fc8cf9ffef64bc4) mbui: 全部密钥, 连接, 更新日志 and 自动补全 run only the binding | 2.46 | 3.45 | 14.67 | 35.88 | 57.43 | 31.47 | 65.03 | 99.99 | 122.71 |
 | [0a099ace6](https://github.com/AFK-surf/monoid/commit/0a099ace607d5db2a754447de3a40059a597756d) core-ts: drop only the silent stream's way and app | 2.46 | 3.45 | 14.67 | 35.88 | 57.4 | 31.47 | 65.01 | 100.07 | 120.32 |
 | [a379dfc3f](https://github.com/AFK-surf/monoid/commit/a379dfc3f41e8cecbe37cba7b9e7490e3e61c303) Apply workspace relay restrictions to existing pee | 2.46 | 3.45 | 14.67 | 35.88 | 57.4 | 31.46 | 65.01 | 100.3 | 111.98 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [024e321b6](https://github.com/AFK-surf/monoid/commit/024e321b62aa54c9bf0559136e2e8ed6ae6c1e28) Ways: still.fail's relays told apart by the cloud; | 2.43 | 3.37 | 14.31 | 35.41 | 55.81 | 31.07 | 63.6 | 99.78 | 118.68 |
 | [9d06e9554](https://github.com/AFK-surf/monoid/commit/9d06e955444b1d0c9d3bd7a6b323136c7b46ef32) mbui: 阅读器与预览舞台改为节点（old-list reader.mbt 3 → 0、viewe | 2.43 | 3.37 | 14.31 | 35.41 | 55.81 | 31.06 | 63.58 | 99.58 | 114.64 |
 | [d84254d1d](https://github.com/AFK-surf/monoid/commit/d84254d1d16947b8bafef36178208ccd77837a09) mbui: a table's columns worked out once and its ce | 2.43 | 3.37 | 14.31 | 35.41 | 55.81 | 31.06 | 63.58 | 99.58 | 114.64 |
-| [10665f3ab](https://github.com/AFK-surf/monoid/commit/10665f3ab13fa3929b11e3e0e14f5f73570565b1) vault: a timed grant on a station not reached says | 2.43 | 3.37 | 14.3 | 35.4 | 55.78 | 31.06 | 63.58 | 99.58 | 115.01 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [cb0eb0ffa](https://github.com/AFK-surf/monoid/commit/cb0eb0ffa85c5076b4186b9a1e3d1373dd5b38de) mbui app: each-lookup cleared to none; the board's | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 53.04 |
 | [776ef5c39](https://github.com/AFK-surf/monoid/commit/776ef5c391241ece161a9d952fc8cf9ffef64bc4) mbui: 全部密钥, 连接, 更新日志 and 自动补全 run only the binding | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 57.36 |
 | [0a099ace6](https://github.com/AFK-surf/monoid/commit/0a099ace607d5db2a754447de3a40059a597756d) core-ts: drop only the silent stream's way and app | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 57.36 |
 | [a379dfc3f](https://github.com/AFK-surf/monoid/commit/a379dfc3f41e8cecbe37cba7b9e7490e3e61c303) Apply workspace relay restrictions to existing pee | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 57.36 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [024e321b6](https://github.com/AFK-surf/monoid/commit/024e321b62aa54c9bf0559136e2e8ed6ae6c1e28) Ways: still.fail's relays told apart by the cloud; | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.25 |
 | [9d06e9554](https://github.com/AFK-surf/monoid/commit/9d06e955444b1d0c9d3bd7a6b323136c7b46ef32) mbui: 阅读器与预览舞台改为节点（old-list reader.mbt 3 → 0、viewe | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.25 |
 | [d84254d1d](https://github.com/AFK-surf/monoid/commit/d84254d1d16947b8bafef36178208ccd77837a09) mbui: a table's columns worked out once and its ce | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.3 |
-| [10665f3ab](https://github.com/AFK-surf/monoid/commit/10665f3ab13fa3929b11e3e0e14f5f73570565b1) vault: a timed grant on a station not reached says | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.3 |
