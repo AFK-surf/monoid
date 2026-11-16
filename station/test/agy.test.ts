@@ -446,9 +446,11 @@ test("a warm Antigravity session whose CLI lacks its trajectory recovers across 
     // left it, is so before the turn begins, and the dump read then held only the first ask: main 6a896dd6's
     // check-station (1), 43815915481)
     // (a line the fake is still writing is not one yet)
+    // (its prompt in the new conversation, as it reopened: until then the one the warm process failed on is the last,
+    // and the session can be seen with its new id between the two: PR #6679's check-station (5), 43859167177)
     const prompted = (words: string) => {
       try {
-        return rpc(dump).some((m) => m.method === "session/prompt" && String(m.params.prompt[0].text).includes(words));
+        return rpc(dump).some((m) => m.method === "session/prompt" && /Your earlier conversation could not be restored: this is a new one\./.test(String(m.params.prompt[0].text)) && String(m.params.prompt[0].text).includes(words));
       } catch {
         return false;
       }
