@@ -411,6 +411,28 @@ test("a command run with a grant, or for a secret to keep, goes by Git's sh wher
   }
 });
 
+test("a command run with a grant, or for a secret to keep, finds the platform's sh with an empty PATH without leaking the station's environment", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "vault-run-empty-path-"));
+  const env: Record<string, string> = { PATH: dir, ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}) };
+  const had = process.env.STILLFAIL_SHELL_PROBE;
+  process.env.STILLFAIL_SHELL_PROBE = "station-only";
+  try {
+    const held = { request: { id: "r_env" }, grant: { mode: "env", hosts: [] }, secret: { kind: "token", name: "gh", fields: { value: TOKEN } }, uses: 0 } as unknown as Parameters<typeof runWith>[0];
+    const ran = await runWith(held, { command: 'printf "%s:%s\\n" "$GH_TOKEN" "${STILLFAIL_SHELL_PROBE:-absent}"; echo done >&2; exit 3', cwd: dir, env: "GH_TOKEN", timeoutMs: 60_000 }, new Proxy(dir, Date.now), env, () => {});
+    assert.equal(ran.code, 3, ran.output);
+    assert.ok(!ran.output.includes(TOKEN) && !ran.output.includes("station-only"), ran.output);
+    assert.ok(ran.output.includes(`${HIDDEN}:absent`) && ran.output.includes("done"), ran.output);
+    const got = await capture('printf "%s:%s" kept-value "${STILLFAIL_SHELL_PROBE:-absent}"; echo said >&2', dir, env, 60_000);
+    assert.equal(got.code, 0, got.err);
+    assert.equal(got.out, "kept-value:absent");
+    assert.match(got.err, /said/);
+  } finally {
+    if (had === undefined) delete process.env.STILLFAIL_SHELL_PROBE;
+    else process.env.STILLFAIL_SHELL_PROBE = had;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 for (const action of ["grant", "save"] as const) test(`a failed queued vault ${action} restores its box and can be accepted again`, () => {
   const w = world(), db = new DatabaseSync(":memory:"), vaults = new VaultStore(db);
   vaults.putVault(w.vault); vaults.putItem(w.item);
