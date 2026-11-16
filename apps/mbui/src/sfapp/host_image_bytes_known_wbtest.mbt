@@ -48,6 +48,8 @@ fn init {
     ("src/sfapp/real_size_new_chat_send_wbtest.mbt", 38548),
     // (a chat of real size opened as nodes: the pictures of the rows round what shows, as chat_page_nodes_wbtest's)
     ("src/sfapp/chat_nodes_open_budget_wbtest.mbt", 79372),
+    // (the same chat opened again on each page, old and as nodes: the pictures of the rows round what shows, 2026-11-16)
+    ("src/sfapp/chat_nodes_vs_old_wbtest.mbt", 38548),
     ("src/sfapp/notices_wbtest.mbt", 999086),
     ("src/sfapp/place_first_wbtest.mbt", 10862),
     ("src/sfapp/preview_tree_wbtest.mbt", 1934327),

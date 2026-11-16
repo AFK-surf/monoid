@@ -13,14 +13,16 @@
 /// frames a rate draws: 1052 to 1072 wide at 7 to 120 a second, 2026-11-16). Counted 2026-11-16, once a paragraph's
 /// links are made only as it has one (sf words_links_node: till then the room for their cards alone), a long message's
 /// piece of one block its box alone and a row's sides its padding: before them 804, 365, 2591, 920 made and 810, 1185
-/// made scrolling up.
+/// made scrolling up. Again once a row's flash and its menu's band are its own ground, its line and middle one node, an
+/// agent's own picture holds no place's corner and a chooser's menu is held in its layer only once it opens: before
+/// that 797, 358, 2584, 913 and 750, 1094.
 let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
-  "phone cold": (797, 38, 900, 150, 793),
-  "phone again": (358, 26, 258, 29, 314),
-  "wide cold": (2584, 483, 3712, 560, 2767),
-  "wide again": (913, 130, 895, 124, 1217),
-  "phone up": (750, 857, 717, 92, 0),
-  "wide up": (1094, 890, 1075, 129, 0),
+  "phone cold": (782, 38, 885, 150, 778),
+  "phone again": (343, 26, 246, 29, 299),
+  "wide cold": (2569, 483, 3694, 560, 2752),
+  "wide again": (898, 130, 883, 124, 1202),
+  "phone up": (688, 783, 660, 92, 0),
+  "wide up": (1003, 816, 991, 129, 0),
 }
 
 ///|

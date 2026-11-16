@@ -128,7 +128,6 @@ fn agent_said_node(
           av,
           fn() { if m().author_kind == "agent" { m().by.maker } else { "" } },
           fn() { if m().author_kind == "agent" { m().by.runtime } else { "" } },
-          fn() { "" },
         )
         let agent = @signals.untracked(fn() { if m().author_kind == "agent" { message_agent_of(here, m().by.agent) } else { "" } })
         if agent != "" {

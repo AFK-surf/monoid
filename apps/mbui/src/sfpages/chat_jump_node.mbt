@@ -656,6 +656,46 @@ fn chat_flash_node(row : @view.View, key : String, jump : ChatJump, flash : @mot
 }
 
 ///|
+/// What a message's row shows over all it is, said as the ground of its outermost node `row` (what fills all of it,
+/// under what it holds: no node of its own, as most rows are never gone to nor have their menu open): its flash, the
+/// accent's ground as lit as it is (chat_flash_node's, `flash` chat_flash_way's, row `key` gone to and no passage of it
+/// lit), and over that its menu's band (message_menu_band_way's `band`, the pointer's ground as lit as it is).
+fn chat_row_lit_node(row : @view.View, key : String, jump : ChatJump, flash : @motion.Way, band : @motion.Way) -> Unit {
+  row.ground(
+    By(fn() {
+      let lit = match chat_gone(jump) {
+        (k, _, "") if k == key => lit_by(@ui.tree_theme().color(AccentBg), flash.shown_on(row))
+        _ => 0L
+      }
+      ground_over(lit_by(@ui.tree_theme().color(Hover), band.shown_on(row)), lit)
+    }),
+  )
+  |> ignore
+}
+
+///|
+/// Colour `top` drawn over colour `under` (each 0xRRGGBBAA, its alpha not multiplied in), as one: what the two grounds
+/// laid one over the other came to; either alone where the other is nothing.
+fn ground_over(top : Int64, under : Int64) -> Int64 {
+  let ta = (top & 0xFFL).to_double() / 255.0
+  let ua = (under & 0xFFL).to_double() / 255.0
+  if ua <= 0.0 {
+    return top
+  }
+  if ta <= 0.0 {
+    return under
+  }
+  let a = ta + ua * (1.0 - ta)
+  let mix = fn(shift : Int) -> Int64 {
+    let t = ((top >> shift) & 0xFFL).to_double()
+    let u = ((under >> shift) & 0xFFL).to_double()
+    let c = (t * ta + u * ua * (1.0 - ta)) / a
+    (c + 0.5).to_int64() & 0xFFL
+  }
+  (mix(24) << 24) | (mix(16) << 16) | (mix(8) << 8) | ((a * 255.0 + 0.5).to_int64() & 0xFFL)
+}
+
+///|
 /// The passage of row `key` a quote that led there quoted (ChatJump's `flashed`), lit where its words have it as the
 /// row's flash goes (chat_flash_way, in node `v`, what makes the row): its words and the ground it is drawn on now, the
 /// accent's as a passage picked in a message is (picked_alpha), as lit as the flash is; ("", clear) for another row, or

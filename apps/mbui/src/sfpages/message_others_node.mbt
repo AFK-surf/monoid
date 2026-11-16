@@ -176,9 +176,9 @@ fn sent_elsewhere_body(v : @view.View, src : Source, here : MessageNodeHere, s :
           })
           |> ignore
         } else {
-          agent_avatar_node(a, fn() { s().by.maker }, fn() { s().by.runtime }, fn() {
+          agent_avatar_node(a, fn() { s().by.maker }, fn() { s().by.runtime }, corner=Some(fn() {
             if surface() == "feishu" { "feishu" } else { "slack" }
-          })
+          }))
           |> ignore
         }
       })

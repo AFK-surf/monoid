@@ -1040,7 +1040,6 @@ fn chat_body_row(
     // alone, or the passage a quote that led here quoted lit in its words alone: chat_passage_lit)
     // (a piece of a long message gone to as the message is: all its pieces lit as one)
     let flash = chat_flash_way(p, chat_piece_of(k), jump)
-    let over = fn(row : @view.View, key : String) { chat_flash_node(row, key, jump, flash) }
     let pill_over = fn(pill : @view.View, key : String) { chat_flash_node(pill, key, jump, flash, round=true) }
     let lit = chat_passage_lit(p, chat_piece_of(k), jump, flash)
     let m0 = match @signals.untracked(entry) {
@@ -1054,11 +1053,11 @@ fn chat_body_row(
       }
     }
     let frame = fn(body : (@view.View) -> Unit) { message_row_frame_node(p, k, side, top, body) |> ignore }
-    // (a message's: under its flash, its band while its menu shows, right clicked or its ⋯'s, as the row says that)
+    // (a message's: its flash, and over it its band while its menu shows, right clicked or its ⋯'s, as the row says
+    // that: both its outermost node's ground, chat_row_lit_node's)
     let more : Ref[() -> Bool] = Ref(fn() { false })
     let over = fn(row : @view.View, key : String) {
-      over(row, key)
-      message_menu_band_node(row, key, more)
+      chat_row_lit_node(row, key, jump, flash, message_menu_band_way(row, key, more))
     }
     match kind {
       KTop => p.box(fn(b) { b.height(By(fn() { Some(list_top()) })) |> ignore }) |> ignore

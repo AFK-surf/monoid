@@ -45,7 +45,9 @@ fn message_row_frame_node(
   over? : (@view.View, String) -> Unit = fn(_, _) {  },
 ) -> MessageRowNode {
   let node = parent.box(fn(root) {
-    @sf.style_node(root, fn() { row_column })
+    // (across all of the list, as the old row's column (row_column): its look said once, no binding for what never
+    // changes)
+    root.fills_across(Is(true)) |> ignore
     over(root, key)
     // (the room over it, as the row before it says: one kind of room in the other's place as that changes (none, a
     // joined one's, the gap between messages), the row's own structure, its way the column's; the list's way of it with
@@ -54,15 +56,14 @@ fn message_row_frame_node(
     // Picked by the room itself, a list narrowed under chat_narrow_w by the bars the system took made its way from
     // the wide gap to the narrow, laid out none till its end, then stepped there: chat_pops_wbtest's 中屏 beside them)
     root.pick(fn() { row_top_kind(top()) }, fn(gap, _) { gap.height(By(fn() { Some(top()) })) |> ignore })
-    root.box(fn(line) {
-      @sf.style_node(line, fn() { row_line })
-      // (in from the pane's sides as its padding: no box of room either side)
-      line.padding(By(fn() { (side(), 0.0, if @sf.native_side() { native_row_inset() } else { side() }, 0.0) })) |> ignore
-      line.box(fn(m) {
-        @sf.style_node(m, fn() { row_middle }, in_row=true)
-        body(m)
-      })
+    // (its middle, as wide as the list less its sides, those its padding: the old row's line and its middle
+    // (row_line, row_middle) one node, no box of room either side)
+    root.box(fn(m) {
+      m
+      .fills_across(Is(true))
+      .padding(By(fn() { (side(), 0.0, if @sf.native_side() { native_row_inset() } else { side() }, 0.0) }))
       |> ignore
+      body(m)
     })
     |> ignore
   })
