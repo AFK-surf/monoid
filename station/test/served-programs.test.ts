@@ -142,15 +142,43 @@ test("a program that ends as it starts is started again a second later, and its 
   await s.close();
 });
 
-test("a program that ends before it listens fails the start: the station answers every request till the next listens", async () => {
+test("one program listening and the other ended as it started: the start gives the one, and the other joins it as it listens", async () => {
   const { s, programs, routes, pass } = served();
   const started = s.start();
   programs[0]!.listen();
   programs[1]!.emit("exit", 1);
-  await assert.rejects(started, /ended/);
+  assert.deepEqual(await started, [programs[0]!.path]);
   assert.deepEqual(routes, []);
   pass(1_000);
   programs[2]!.listen();
   assert.deepEqual(routes, [[programs[0]!.path, programs[2]!.path]]);
+  await s.close();
+});
+
+test("a program that neither listens nor ends in time is ended, and started again; the start gives the one listening", async () => {
+  const { s, programs, routes, pass } = served();
+  const started = s.start();
+  programs[0]!.listen();
+  let ended = false;
+  programs[1]!.on("exit", () => (ended = true));
+  pass(15_000);
+  assert.deepEqual(await started, [programs[0]!.path]);
+  assert.equal(ended, true, "the one that hung is ended");
+  assert.deepEqual(routes, [[programs[0]!.path]]);
+  assert.equal(programs.length, 3);
+  programs[2]!.listen();
+  assert.deepEqual(routes.at(-1), [programs[0]!.path, programs[2]!.path]);
+  await s.close();
+});
+
+test("none listening in time fails the start: this process answers every request till one listens", async () => {
+  const { s, programs, routes, pass } = served();
+  const started = s.start();
+  programs[0]!.emit("exit", 1);
+  programs[1]!.emit("exit", 1);
+  await assert.rejects(started, /no serving program listens/);
+  pass(1_000);
+  programs[2]!.listen();
+  assert.deepEqual(routes.at(-1), [programs[2]!.path]);
   await s.close();
 });

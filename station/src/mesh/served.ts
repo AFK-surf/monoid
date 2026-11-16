@@ -116,17 +116,24 @@ export class Served {
     this.#stream = stream;
   }
 
-  /// Where the programs listen, once each does.
-  /// One that did not listen in time, or ended first, fails it: this process answers every request till one does
-  /// (`onRoutes`).
+  /// Where the programs listen, once each listened or ended, or `SERVED_LISTEN_MS` passed: those that listen by then,
+  /// the rest put on the routes as they listen (`onRoutes`). One that neither listened nor ended in that time is ended
+  /// (and started again as one that ended). None listening fails it: this process answers every request till one does.
   async start(): Promise<string[]> {
     for (let i = 0; i < SERVERS; i++) this.#servers.push(this.#start(i));
-    try {
-      await wall.within(SERVED_LISTEN_MS, Promise.all(this.#servers.map((s) => s.listening)), "the programs did not listen in time"); // timer: a deadline on child processes starting
-      return this.#servers.map((s) => s.path);
-    } finally {
-      this.#started = true;
+    let stop = () => {};
+    const late = new Promise<void>((resolve) => (stop = this.#after(SERVED_LISTEN_MS, resolve))); // timer: a deadline on child processes starting
+    await Promise.race([Promise.allSettled(this.#servers.map((s) => s.listening)), late]).finally(stop);
+    this.#started = true;
+    for (const s of this.#servers) {
+      if (!s.ready && !s.ended) {
+        log.warn("served", "a serving program did not listen in time; ending it", { path: s.path });
+        void s.process.terminate().catch(() => {});
+      }
     }
+    const live = this.#livePaths();
+    if (live.length === 0) throw new Error("no serving program listens");
+    return live;
   }
 
   /// The sockets of the programs listening now.

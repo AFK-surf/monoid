@@ -42,8 +42,8 @@ priv struct Mesh {
   /// given it as it is, another binds anew.
   mut endpoint : Json?
   mut identity : String
-  /// Its relays as the Nodes' binds named them, and its congestion controller: what a later bind changes in place
-  /// (a Node's own `insertRelay`, `removeRelay` and `setCongestion` change them on the endpoint between binds).
+  /// Its relays and its congestion controller as they are on it: as the last bind named them, then as a Node's own
+  /// `insertRelay`, `removeRelay` and `setCongestion` changed them. What a later bind changes in place.
   mut bound_relays : Array[String]
   mut bound_congestion : String
   mut said : Json
@@ -264,6 +264,21 @@ fn relays_of(options : Json) -> Array[String] {
 }
 
 ///|
+/// Whether `url` is among `urls`, a trailing slash or not.
+fn has_relay(urls : Array[String], url : String) -> Bool {
+  urls.iter().any(u => bare_url(u) == bare_url(url))
+}
+
+///|
+fn bare_url(url : String) -> String {
+  let mut end = url.length()
+  while end > 0 && url[end - 1] == '/' {
+    end = end - 1
+  }
+  url[:end].to_string()
+}
+
+///|
 /// The congestion controller a binding names, or the shell's own.
 fn congestion_of(options : Json) -> String {
   match field(options, "congestion") {
@@ -300,16 +315,18 @@ async fn Mesh::bind(self : Mesh, options : Json, key : Bytes) -> Json {
   if self.endpoint is Some(endpoint) && self.identity == identity {
     let relays = relays_of(options)
     for url in relays {
-      if !self.bound_relays.contains(url) {
-        ignore(self.host.shell("iroh.insertRelay", { "id": endpoint, "url": Json::string(url) })) catch {
-          e => @host.note("mesh: relay \{url} not added: \{message(e)}")
+      if !has_relay(self.bound_relays, url) {
+        match (try { Ok(self.host.shell("iroh.insertRelay", { "id": endpoint, "url": Json::string(url) })) } catch { e => Err(e) }) {
+          Ok(_) => @host.note("mesh: relay \{url} added as a Node bound")
+          Err(e) => @host.note("mesh: relay \{url} not added: \{message(e)}")
         }
       }
     }
     for url in self.bound_relays {
-      if !relays.contains(url) {
-        ignore(self.host.shell("iroh.removeRelay", { "id": endpoint, "url": Json::string(url) })) catch {
-          e => @host.note("mesh: relay \{url} not removed: \{message(e)}")
+      if !has_relay(relays, url) {
+        match (try { Ok(self.host.shell("iroh.removeRelay", { "id": endpoint, "url": Json::string(url) })) } catch { e => Err(e) }) {
+          Ok(_) => @host.note("mesh: relay \{url} removed as a Node bound")
+          Err(e) => @host.note("mesh: relay \{url} not removed: \{message(e)}")
         }
       }
     }
@@ -559,8 +576,16 @@ async fn Mesh::act(self : Mesh, client : Client, ask : Json, op : String, arg : 
         _ => { "id": self.bound() }
       }
       let said = self.host.shell("iroh." + op, args).0
-      if op == "setCongestion" && field(args, "congestion") is String(c) {
-        self.bound_congestion = c
+      // (what is on the endpoint now, which the next bind is reconciled with)
+      match (op, field(args, "congestion"), field(args, "url")) {
+        ("setCongestion", String(c), _) => self.bound_congestion = c
+        ("insertRelay", _, String(url)) =>
+          if !has_relay(self.bound_relays, url) {
+            self.bound_relays.push(url)
+          }
+        ("removeRelay", _, String(url)) =>
+          self.bound_relays = self.bound_relays.filter(u => bare_url(u) != bare_url(url))
+        _ => ()
       }
       said
     }

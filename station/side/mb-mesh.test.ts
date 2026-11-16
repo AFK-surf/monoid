@@ -492,3 +492,41 @@ test("a connection that came before its Node said its routes goes by them once t
     await f.stop();
   }
 });
+
+test("a bind is reconciled with the relays on the endpoint as a Node changed them, not as the last bind named them", { skip }, async () => {
+  const f = await front();
+  const node = await Front.open(f.socket);
+  const [R1, R2, R3] = ["http://127.0.0.1:9/", "http://127.0.0.1:10/", "http://127.0.0.1:11/"];
+  const key = randomBytes(32).toString("hex");
+  const bind = (relayUrls: string[]) => node.ask("bind", { streams: node.streamsPath, key, options: { alpns: [ALPN.toString("hex")], relayUrls, discovery: false } });
+  // What the front changes of the endpoint's relays as a Node binds: its log's lines.
+  const changed: string[] = [];
+  let last!: () => void;
+  const lastSaid = new Promise<void>((resolve) => (last = resolve));
+  hearLines((l) => {
+    const m = /^mesh: relay (\S+) (added|removed) as a Node bound$/.exec(String((l.fields as { line?: string } | undefined)?.line ?? ""));
+    if (m) changed.push(`${m[2]} ${m[1]}`);
+    if (m?.[2] === "removed" && m[1] === R1) last();
+  });
+  try {
+    const said = await bind([R1, R2]);
+    // A Node takes R2 off (the cloud no longer names it); by the next handover the cloud names it again: given back.
+    await node.ask("removeRelay", { args: { url: R2 } });
+    assert.equal((await bind([R1, R2])).id, said.id);
+    // A Node puts R3 in; the next bind does not name it: it goes.
+    await node.ask("insertRelay", { args: { url: R3 } });
+    assert.equal((await bind([R1, R2])).id, said.id);
+    // The same relays again: nothing to change.
+    assert.equal((await bind([R1, R2])).id, said.id);
+    // R1 no longer named: what is said last (its log's lines come on the program's stderr, apart from its answers, in
+    // the order it changed them)
+    assert.equal((await bind([R2])).id, said.id);
+    await lastSaid;
+    assert.deepEqual(changed, [`added ${R2}`, `removed ${R3}`, `removed ${R1}`]);
+  } finally {
+    hearLines(null);
+    await node.ask("close").catch(() => {});
+    node.close();
+    await f.stop();
+  }
+});

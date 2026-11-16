@@ -11,25 +11,28 @@ import type { Net } from "../jobs/load.ts";
 import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { ControlPlane } from "../services.ts";
+import type { Cloud } from "../cloud/state.ts";
 import type { Endpoint } from "./native.ts";
 import { sameUrl, waysOf } from "./ways.ts";
 
 /// Asking our relays whether they answer is asking an outside system: the one timer here.
 const RELAY_CHECK = "30 seconds";
 
+/// The relays the station is kept on: still.fail's, then the workspaces' own not among them. What its endpoint is bound
+/// with (mesh.ts), so a front's endpoint taken over in a handover is reconciled with all of them (mesh.mbt `bind`).
+export function wantedRelays(state: Cloud): string[] {
+  const theirs = state.relays();
+  return [...theirs, ...waysOf(state).relays().filter((u) => !theirs.some((t) => sameUrl(t) === sameUrl(u)))];
+}
+
 /// Runs for good (until interrupted).
 export const keepRelays = (endpoint: Endpoint, net?: Net) =>
   Effect.gen(function* () {
     const cloud = yield* ControlPlane;
     const ways = waysOf(cloud.state);
-    // still.fail's, then the workspaces' own not among them.
-    const wanted = () => {
-      const theirs = cloud.state.relays();
-      return [...theirs, ...ways.relays().filter((u) => !theirs.some((t) => sameUrl(t) === sameUrl(u)))];
-    };
+    const wanted = () => wantedRelays(cloud.state);
     let ours = wanted();
-    // The workspaces' own are not among the relays the endpoint was bound with (still.fail's): put in before it is kept
-    // on them.
+    // The workspaces' own put in before it is kept on them, where the endpoint was bound with still.fail's alone.
     const theirs = cloud.state.relays();
     for (const url of ours.filter((u) => !theirs.some((t) => sameUrl(t) === sameUrl(u)))) {
       yield* Effect.promise(() => endpoint.insertRelay(url).catch((e) => log.warn("mesh", "a workspace's relay was not added", { relay: url, error: (e as Error).message })));
