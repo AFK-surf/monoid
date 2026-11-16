@@ -45,8 +45,8 @@ function rig() {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /// What a real process does has no event here: looked at every 5 ms, no deadline.
-async function until(check: () => boolean) {
-  while (!check()) await sleep(5);
+async function until(check: () => boolean | Promise<boolean>) {
+  while (!(await check())) await sleep(5);
 }
 
 function gate(dir: string): { wait: string; open: () => Promise<void> } {
@@ -70,11 +70,11 @@ describe("jobs' files", { concurrency: true }, () => {
     assert.equal(statSync(job.log).ino, inode, "the same file its shell holds");
     assert.equal(statSync(job.log).size, 0);
     assert.ok(statSync(`${job.log}.1`).size <= JOB_LOG_CAP);
-    assert.equal(tail(job.log, 2), "pad\npad", "just cut: what came before is read from what it kept");
+    assert.equal(await tail(job.log, 2), "pad\npad", "just cut: what came before is read from what it kept");
     await g.open();
     await until(() => readFileSync(job.log, "utf8") === "after\n");
-    assert.equal(tail(job.log, 3), "pad\npad\nafter", "its new lines after those it kept");
-    assert.equal(tail(job.log, 1), "after");
+    assert.equal(await tail(job.log, 3), "pad\npad\nafter", "its new lines after those it kept");
+    assert.equal(await tail(job.log, 1), "after");
     await r.jobs.stop(job.id);
   });
 
@@ -103,7 +103,7 @@ describe("jobs' files", { concurrency: true }, () => {
     assert.ok(!existsSync(done.log) && !existsSync(join(logs, "ghost.log")) && !existsSync(join(logs, "ghost.log.1")) && !existsSync(join(exits, "ghost")));
     assert.ok(existsSync(join(logs, "fresh.log")), "a gone job's file written just now stays a while");
     assert.ok(existsSync(live.log), "a running job's log stays");
-    assert.equal(tail(done.log, 10), "", "its record stays, its log reads as empty");
+    assert.equal(await tail(done.log, 10), "", "its record stays, its log reads as empty");
     assert.equal(r.store.getJob(done.id)!.state, "exited");
     await g.open();
     await r.jobs.stop(live.id);

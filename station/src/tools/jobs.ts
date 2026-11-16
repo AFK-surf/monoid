@@ -85,7 +85,7 @@ export function jobTools(jobs: Jobs, workspace: (session: string) => string | nu
         const job = owned(jobs, key, args);
         const n = asU64(args.lines);
         const lines = n === null ? LOG_LINES : Math.min(Math.max(n, 1), 1000);
-        const log = tail(job.log, lines);
+        const log = await tail(job.log, lines);
         return log === "" ? `${named(job)} has written nothing yet.` : log;
       },
     },

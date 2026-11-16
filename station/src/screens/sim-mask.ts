@@ -2,7 +2,10 @@
 // Duo's two), read for what the app's device body goes round. Each corner is the circle that comes as near its corner as the
 // shape does, as a share of the panel's width: Apple's curves start far along the edges, and may pass them a little (a Duo's
 // cover is nearly square on its hinge).
-import { inflateSync } from "node:zlib";
+import { promisify } from "node:util";
+import { inflate } from "node:zlib";
+
+const inflated = promisify(inflate);
 
 /// How many straight pieces each curve of a mask is taken as.
 const CURVE_STEPS = 16;
@@ -10,7 +13,7 @@ const CURVE_STEPS = 16;
 export type Panel = { width: number; height: number; corners: [number, number, number, number] };
 
 /// The panel a mask's PDF says, its corners top left and then round it; null when it is not such a mask.
-export function panelOf(pdf: Buffer): Panel | null {
+export async function panelOf(pdf: Buffer): Promise<Panel | null> {
   const text = pdf.toString("latin1");
   const box = /\/MediaBox\s*\[\s*0(?:\.0+)?\s+0(?:\.0+)?\s+([\d.]+)\s+([\d.]+)\s*\]/.exec(text);
   if (!box) return null;
@@ -24,7 +27,7 @@ export function panelOf(pdf: Buffer): Panel | null {
     const body = pdf.subarray(start, end);
     let path: string;
     try {
-      path = inflateSync(body).toString("latin1");
+      path = (await inflated(body)).toString("latin1");
     } catch {
       path = body.toString("latin1");
     }

@@ -584,10 +584,10 @@ export const routes = (tools: Tools): Route[] => {
       method: "DELETE",
       pattern: /^\/*sessions\/+([^/]+)\/+jobs(?:\/.*)?$/,
       handle: (r, [k]) =>
-        write((s, a) => {
+        write(async (s, a) => {
           const key = segment(k!);
           session(s, key, r);
-          const removed = a.jobs.clearEnded(key);
+          const removed = await a.jobs.clearEnded(key);
           log.info("admin", "ended jobs cleared from the admin page", { session: key, by: r.viewer.email, count: removed.length });
           return ok({ removed });
         }),
@@ -705,7 +705,7 @@ export const routes = (tools: Tools): Route[] => {
         write(async (s, a) => {
           const job = await a.jobs.stopFor(segment(id!), r.viewer.email);
           log.info("admin", "job stopped from the admin page", { job: job.id, by: r.viewer.email });
-          return ok(shown(s, job));
+          return ok(await shown(s, job));
         }),
     },
     // A person's message in a chat on the pages, with its files and quotes.

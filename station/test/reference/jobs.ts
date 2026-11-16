@@ -10,10 +10,100 @@ import type { Json, JobRow, Store } from "./store.ts";
 import { HttpError, chats, scopeOfJobNames, shownTitleOf } from "./views.ts";
 import type { Lang } from "../../src/ops/i18n.ts";
 import { log } from "../../src/ops/log.ts";
-import { outputAt, tail } from "../../src/read/jobs.ts";
+import { closeSync, fstatSync, openSync, readFileSync, readSync, statSync } from "node:fs";
+import type { JobRow as StationJobRow, Store as StationStore } from "../../src/store/store.ts";
+import { rustLines } from "../../src/read/jobs.ts";
 
-export * from "../../src/read/jobs.ts";
-export { outputAt, tail };
+export { rustLines };
+
+/// How much of a log `tail` reads at most.
+const LOG_BYTES = 64 * 1024;
+
+/// output_at, as the station read it on its main thread before src/read/jobs.ts's went to node:fs/promises.
+export function outputAt(path: string): number | null {
+  try {
+    const meta = statSync(path, { bigint: true });
+    if (meta.size === 0n || meta.mtimeNs < 0n) return null;
+    return Number(meta.mtimeNs / 1_000_000n);
+  } catch {
+    return null;
+  }
+}
+
+/// tail, as the station read it on its main thread before src/read/jobs.ts's went to node:fs/promises.
+export function tail(path: string, lines: number): string {
+  const now = tailLines(path);
+  if (now.length >= lines) return now.slice(now.length - lines).join("\n");
+  const before = tailLines(`${path}.1`);
+  const all = [...before, ...now];
+  return all.slice(Math.max(0, all.length - lines)).join("\n");
+}
+
+function tailLines(path: string): string[] {
+  let file: number;
+  try {
+    file = openSync(path, "r");
+  } catch {
+    return [];
+  }
+  let bytes: Buffer;
+  try {
+    let size = LOG_BYTES;
+    try {
+      size = fstatSync(file).size;
+    } catch {
+      // Metadata failing: read a bounded portion from the start.
+    }
+    const from = Math.max(0, size - LOG_BYTES);
+    const chunks: Buffer[] = [];
+    const piece = Buffer.alloc(64 * 1024);
+    try {
+      // The job may keep writing while this is read. Stop at the end seen above; later writes are read next time.
+      for (let at = from; at < size; ) {
+        const n = readSync(file, piece, 0, Math.min(piece.length, size - at), at);
+        if (n === 0) break;
+        chunks.push(Buffer.from(piece.subarray(0, n)));
+        at += n;
+      }
+    } catch {
+      // read_to_end failing keeps what it read.
+    }
+    bytes = Buffer.concat(chunks);
+  } finally {
+    closeSync(file);
+  }
+  return rustLines(new TextDecoder("utf-8").decode(bytes));
+}
+
+/// The exit code a job's shell wrote when it ended, if it did (src/jobs/jobs.ts reads it with node:fs/promises).
+export function readExit(path: string): number | null {
+  try {
+    const text = readFileSync(path, "utf8").trim();
+    return /^[+-]?\d+$/.test(text) ? Number(text) : null;
+  } catch {
+    return null;
+  }
+}
+
+/// The watches running, by session, as the station's own store has them (the pages' `watch` of a watching chat's agent
+/// is the MoonBit reader's): the watches' names (oldest first), since when the first runs, when one last gave word
+/// (`at`: its latest notice, else its start; a notice is news to the pages, output is not).
+export function watching(store: StationStore): Map<string, { names: string[]; since: number; at: number }> {
+  const by = new Map<string, StationJobRow[]>();
+  for (const job of store.jobsRunning().filter((j) => j.watch)) {
+    const list = by.get(job.sessionKey) ?? [];
+    list.push(job);
+    by.set(job.sessionKey, list);
+  }
+  const out = new Map<string, { names: string[]; since: number; at: number }>();
+  for (const [key, jobs] of by) {
+    // A stable sort, as sort_by_key is.
+    jobs.sort((a, b) => a.startedAt - b.startedAt);
+    const at = Math.max(...jobs.map((j) => Math.max(store.jobNotices(j.id, 1)[0]?.at ?? j.startedAt, j.startedAt)));
+    out.set(key, { names: jobs.map((j) => j.name), since: jobs[0]!.startedAt, at });
+  }
+  return out;
+}
 /// How many of a job's notices the pages get with it.
 const NOTICES_SHOWN = 20;
 

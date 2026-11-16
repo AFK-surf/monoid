@@ -13,7 +13,8 @@ import { after, describe, test } from "node:test";
 import { type Clock, type Duration, Effect, Exit, Scope } from "effect";
 import { TestClock } from "effect/testing";
 import { endGroup, groupAlive, signalGroup } from "../src/ops/group.ts";
-import { Jobs, notifyEndpoint, readExit, screenEndpoint, shown, tail, watching } from "../src/jobs/jobs.ts";
+import { Jobs, notifyEndpoint, screenEndpoint, shown, tail } from "../src/jobs/jobs.ts";
+import { readExit, watching } from "./reference/jobs.ts";
 import { openAgentsDoor } from "../src/tools/http.ts";
 import { McpEndpoint } from "../src/tools/mcp.ts";
 import { agentNice } from "../src/ops/nice.ts";
@@ -89,8 +90,8 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /// Waits for what a real process does (it has no event here), looking every 5 ms. No deadline: it comes, however slow
 /// the machine, or the test hangs.
-async function until(_what: string, check: () => boolean) {
-  while (!check()) await sleep(5);
+async function until(_what: string, check: () => boolean | Promise<boolean>) {
+  while (!(await check())) await sleep(5);
 }
 
 /// A job's command that never ends by itself: running for as long as a test needs, however slow the machine.
@@ -195,7 +196,7 @@ describe("jobs", { concurrency: true }, () => {
     await until("it ends", () => r.state(job.id) === "exited");
     const ended = r.store.getJob(job.id)!;
     assert.equal(ended.exitCode, 3);
-    assert.equal(tail(ended.log, 10), "compiling\ndone");
+    assert.equal(await tail(ended.log, 10), "compiling\ndone");
     await until("its agent is told", () => r.said().length > 0);
     const said = r.said();
     assert.ok(said[0].startsWith(`Job "build" (${job.id}) ended with exit code 3.`), said[0]);
@@ -225,7 +226,7 @@ describe("jobs", { concurrency: true }, () => {
     // What it said is kept for the pages, newest first, with the job as they get it.
     await r.jobs.notified(job.token, "nearly there");
     assert.deepEqual(r.store.jobNotices(job.id, 10).map((n) => n.text), ["nearly there", "half way"]);
-    const v = shown(r.store, r.store.getJob(job.id)!);
+    const v = await shown(r.store, r.store.getJob(job.id)!);
     assert.equal(v.notices[0].text, "nearly there");
     assert.ok(!("token" in v));
     const stopped = await r.jobs.stop(job.id);
@@ -245,7 +246,7 @@ describe("jobs", { concurrency: true }, () => {
     const ended = r.store.getJob(job.id)!;
     assert.equal(ended.state, "exited");
     const usage = "usage: stillfail-job notify <words> | stillfail-job screen <command>... | stillfail-job show <command>...";
-    assert.equal(tail(ended.log, 10), `${usage}\nset`);
+    assert.equal(await tail(ended.log, 10), `${usage}\nset`);
     // On Windows, stillfail-job.cmd beside it (for cmd and PowerShell).
     assert.equal(readdirSync(join(r.dir, "jobs", "bin")).length, WINDOWS ? 2 : 1);
   });
@@ -265,19 +266,19 @@ describe("jobs", { concurrency: true }, () => {
       const first = await r.jobs.start("s1", "shots", `stillfail-job screen sh -c "touch first.in; ${go.wait}; touch first.out"; echo "first $?"`, r.work, null, false);
       await until("the first has the screen", () => existsSync(join(r.work, "first.in")));
       const next = await r.jobs.start("s2", "more shots", `stillfail-job screen sh -c '[ -e first.out ] && touch next.after; exit 3'; echo "next $?"`, r.work, null, false);
-      await until("the next waits for it", () => tail(r.store.getJob(next.id)!.log, 5).includes("waiting for the screen"));
+      await until("the next waits for it", async () => (await tail(r.store.getJob(next.id)!.log, 5)).includes("waiting for the screen"));
       assert.equal(r.state(next.id), "running");
       assert.deepEqual(r.said(), [], "neither running job is reported ended while the second waits for the screen");
       await go.open();
       await until("both end", () => r.state(first.id) !== "running" && r.state(next.id) !== "running");
       await until("both ends are told", () => r.said().length === 2);
       assert.ok(existsSync(join(r.work, "next.after")), "the next's command ran once the first's had ended");
-      assert.match(tail(r.store.getJob(first.id)!.log, 5), /first 0$/);
-      assert.match(tail(r.store.getJob(next.id)!.log, 5), /next 3$/, "the command's own exit code");
+      assert.match(await tail(r.store.getJob(first.id)!.log, 5), /first 0$/);
+      assert.match(await tail(r.store.getJob(next.id)!.log, 5), /next 3$/, "the command's own exit code");
       // A job with no way to ask (a station from before it) runs the command as it is.
       const old = await r.jobs.start("s3", "old", `STILLFAIL_JOB_SCREEN= stillfail-job screen sh -c 'exit 5'; echo "old $?"`, r.work, null, false);
       await until("it ends", () => r.state(old.id) !== "running");
-      assert.equal(tail(r.store.getJob(old.id)!.log, 5), "old 5");
+      assert.equal(await tail(r.store.getJob(old.id)!.log, 5), "old 5");
     } finally {
       await door.close(0);
     }
@@ -296,14 +297,14 @@ describe("jobs", { concurrency: true }, () => {
       await until("the shots have the screen", () => existsSync(join(r.work, "shots.in")));
       // a window kept up for a person: it waits for the shots (who has it said), then stays up holding nothing
       const vm = await r.jobs.start("s2", "a VM to try", `stillfail-job show sh -c 'touch vm.up; ${FOREVER}'`, r.work, null, false);
-      await until("the window waits", () => tail(r.store.getJob(vm.id)!.log, 5).includes("waiting for the screen (shots ("));
+      await until("the window waits", async () => (await tail(r.store.getJob(vm.id)!.log, 5)).includes("waiting for the screen (shots ("));
       assert.equal(existsSync(join(r.work, "vm.up")), false);
       await go.open();
       await until("the window is up", () => existsSync(join(r.work, "vm.up")));
       // and holds nothing: another command has the screen at once
       const more = await r.jobs.start("s3", "more shots", `stillfail-job screen sh -c 'exit 0'; echo "more $?"`, r.work, null, false);
       await until("it ends", () => r.state(more.id) !== "running");
-      assert.match(tail(r.store.getJob(more.id)!.log, 5), /more 0$/);
+      assert.match(await tail(r.store.getJob(more.id)!.log, 5), /more 0$/);
       assert.equal(r.state(vm.id), "running");
       await r.jobs.stop(vm.id);
     } finally {
@@ -346,7 +347,7 @@ describe("jobs", { concurrency: true }, () => {
     const other = await r.jobs.start("s2", "boom", "exit 2", r.work, null, false);
     await until("they end", () => [failed, done, other].every((j) => r.state(j.id) === "exited"));
     r.store.addJobNotice(failed.id, "broke");
-    const cleared = r.jobs.clearEnded("s1").sort();
+    const cleared = (await r.jobs.clearEnded("s1")).sort();
     assert.deepEqual(cleared, [failed.id, done.id].sort());
     const left = r.store.listJobs(null).map((j) => j.id);
     assert.equal(left.length, 2);
@@ -365,7 +366,7 @@ describe("jobs", { concurrency: true }, () => {
     await time.adjust("1 second");
     await until("it is started again", () => r.store.getJob(job.id)!.restarts >= 1);
     assert.ok(r.said()[0].includes("ended with exit code 1; the station starts it again in 1 s."), r.said()[0]);
-    assert.ok(tail(job.log, 5).includes("up on 4999"));
+    assert.ok((await tail(job.log, 5)).includes("up on 4999"));
     await assert.rejects(async () => await r.jobs.start("s2", "other", "true", r.work, 4999, false), /port 4999/, "one service per port");
     await until("it ended again and waits out its pause", () => time.asked() === 2);
     await r.jobs.stop(job.id);
@@ -392,7 +393,7 @@ describe("jobs", { concurrency: true }, () => {
     await go.open();
     await until("it ends", () => after.state(job.id) === "exited");
     assert.equal(after.store.getJob(job.id)!.exitCode, 4, "how it ended, from what its shell wrote");
-    assert.equal(tail(job.log, 5), "built", "it ran on to its end");
+    assert.equal(await tail(job.log, 5), "built", "it ran on to its end");
     await until("its agent is told", () => after.said().length > 0);
     assert.ok(after.said()[0].includes("ended with exit code 4"), after.said()[0]);
   });
@@ -439,7 +440,7 @@ describe("jobs", { concurrency: true }, () => {
     const id: string = made.id;
     assert.equal(made.link, `https://ember.test/o/ws/st/s1?service=${id}`);
     assert.ok(!("token" in made), "its token is not said");
-    await until("it writes", () => tail(r.store.getJob(id)!.log, 5) === "hello");
+    await until("it writes", async () => (await tail(r.store.getJob(id)!.log, 5)) === "hello");
     assert.equal(await call("job_log", "s1", { id }), "hello");
     await assert.rejects(call("job_log", "s2", { id }), /another session's/);
     assert.ok((await call("job_list", "s1", {})).includes(id));

@@ -9,7 +9,7 @@
 // child) by its exit file appearing (a watch on jobs/exit), with a look at its leader once a second for the one end
 // that writes no file (its shell killed) — Node has no exit event for a process that is not its child.
 import { randomBytes } from "node:crypto";
-import { type FSWatcher, existsSync, mkdirSync, readFileSync, rmSync, watch } from "node:fs";
+import { type FSWatcher, existsSync, mkdirSync, readFileSync, watch } from "node:fs";
 import { access, appendFile, lstat, open, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join, sep } from "node:path";
 import { Clock, Effect, Exit, FiberSet, Schedule, Scope } from "effect";
@@ -181,41 +181,16 @@ export function jobJson(j: JobRow): Json {
 export const queues = (job: JobRow): boolean => job.id.startsWith("remote_");
 
 /// A job as the pages show it: its record, what it said lately (newest first) and when its output last grew.
-export function shown(store: Store, job: JobRow): Json {
+export async function shown(store: Store, job: JobRow): Promise<Json> {
   const v = jobJson(job);
   v.notices = store.jobNotices(job.id, NOTICES_SHOWN);
-  v.outputAt = outputAt(job.log);
+  v.outputAt = await outputAt(job.log);
   return v;
 }
 
-/// The watches running, by session: what the pages show of a watching chat's agent (its session's `watch`): the
-/// watches' names (oldest first), since when the first runs, when one last gave word (`at`: its latest notice, else its
-/// start; a notice is news to the pages, output is not).
-export function watching(store: Store): Map<string, { names: string[]; since: number; at: number }> {
-  const by = new Map<string, JobRow[]>();
-  for (const job of store.jobsRunning().filter((j) => j.watch)) {
-    const list = by.get(job.sessionKey) ?? [];
-    list.push(job);
-    by.set(job.sessionKey, list);
-  }
-  const out = new Map<string, { names: string[]; since: number; at: number }>();
-  for (const [key, jobs] of by) {
-    // A stable sort, as sort_by_key is.
-    jobs.sort((a, b) => a.startedAt - b.startedAt);
-    const at = Math.max(...jobs.map((j) => Math.max(store.jobNotices(j.id, 1)[0]?.at ?? j.startedAt, j.startedAt)));
-    out.set(key, { names: jobs.map((j) => j.name), since: jobs[0].startedAt, at });
-  }
-  return out;
-}
-
 /// The exit code a job's shell wrote when it ended, if it did.
-export function readExit(path: string): number | null {
-  try {
-    const text = readFileSync(path, "utf8").trim();
-    return /^[+-]?\d+$/.test(text) ? Number(text) : null;
-  } catch {
-    return null;
-  }
+async function readExitFile(path: string): Promise<number | null> {
+  return await readFile(path, "utf8").then((t) => /^[+-]?\d+$/.test(t.trim()) ? Number(t.trim()) : null, () => null);
 }
 
 /// Where the claims that hold the screen are kept, in jobs/.
@@ -409,7 +384,7 @@ export class Jobs {
         await this.keepClaims(a);
         return null;
       case "node.tail":
-        return tail(a, b);
+        return await tail(a, b);
       case "node.lost":
         return await access(this.lostFile(a)).then(() => true, () => false);
       case "node.append":
@@ -443,7 +418,7 @@ export class Jobs {
         this.follow(this.store.getJob(a)!, b);
         return null;
       case "node.readExit":
-        return await readFile(this.exitFile(a), "utf8").then((t) => /^[+-]?\d+$/.test(t.trim()) ? Number(t.trim()) : null, () => null);
+        return await readExitFile(this.exitFile(a));
     }
     throw new Error(`no jobs' ask ${f}`);
   }
@@ -734,7 +709,8 @@ export class Jobs {
       this.leaderGone(id, pgid).pipe(
         Effect.andThen(Effect.sync(() => heard())),
         // What its shell wrote, if it did.
-        Effect.andThen(Effect.suspend(() => this.ended(id, running, readExit(this.exitFile(id)), this.store.now() - began))),
+        Effect.andThen(Effect.promise(() => readExitFile(this.exitFile(id)))),
+        Effect.flatMap((code) => this.ended(id, running, code, this.store.now() - began)),
       ),
     ).catch(() => undefined);
   }
@@ -797,12 +773,12 @@ export class Jobs {
   }
 
   /// Takes a session's jobs that are over off its record (the pages' 清掉已结束的), their logs with them: the ids gone.
-  clearEnded(session: string): string[] {
+  async clearEnded(session: string): Promise<string[]> {
     const gone = this.store.clearEndedJobs(session);
-    for (const [id, file] of gone) {
-      if (file.startsWith(this.dir + sep)) rmSync(file, { force: true });
-      rmSync(this.exitFile(id), { force: true });
-    }
+    await Promise.all(gone.map(async ([id, file]) => {
+      if (file.startsWith(this.dir + sep)) await rm(file, { force: true });
+      await rm(this.exitFile(id), { force: true });
+    }));
     return gone.map(([id]) => id);
   }
 

@@ -465,7 +465,7 @@ export class Remote {
       case "node.jobJson":
         return jobJson(a);
       case "node.tail":
-        return tail(a, b);
+        return await tail(a, b);
       case "node.ensureIdentity":
         await ensureIdentity(this.data);
         return null;
