@@ -187,8 +187,10 @@ test("a Codex turn handed over while it writes is taken up by the next station a
     await until(() => existsSync(`${gate}.said`), "the rest of its deltas written");
     await writeFile(`${gate}.b`, "go");
     const store = next.store;
-    await until(() => store.lastTurn(key)?.endedAt != null && !store.getSession(key)!.running, "its turn ended on the next station");
-    assert.equal(store.listTurns(key)[0]!.summary.outcome, "completed", "its turn, ended on the next station");
+    // (its turn and the one that nudges it, no state said: both ended before the station is let go, as below; let go
+    // between them, the nudge's app-server started as it shut down: mb-agents-closed.test.ts)
+    await until(() => store.listTurns(key).length >= 2 && store.lastTurn(key)?.endedAt != null && !store.getSession(key)!.running, "its turns ended on the next station");
+    assert.deepEqual(store.listTurns(key).map((t) => t.summary.outcome), ["completed", "completed"], "its turn, ended on the next station, and the nudge's");
     const posted = next.hub.program()!.posted;
     assert.equal(posted.get("event") ?? 0, 0, `events said through Node: ${JSON.stringify([...posted])}`);
   } finally {

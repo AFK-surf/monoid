@@ -114,9 +114,17 @@ export class AgentsHost {
     this.#users.add(user);
   }
 
-  /// The program, started if it is not running: what is said to it before it is ready waits in its stdin.
+  /// Let go by its last driver (`close`): it reads nothing more.
+  get closed() {
+    return this.#closed;
+  }
+
+  /// The program, started if it is not running: what is said to it before it is ready waits in its stdin. Never once
+  /// closed: one started then would be held by what it reads, and nothing would end it (2026-11-16, a Codex turn
+  /// opening as its station shut down: hub-e2e.test.ts's process never ended).
   #ensure(): SessionsProgram {
     if (this.#proc && !this.#proc.ended) return this.#proc;
+    if (this.#closed) throw new Error("the station's agents were let go: no process is read any more");
     const proc = SessionsProgram.of(this.#data)!;
     this.#proc = proc;
     proc.use(this.#user);
@@ -325,9 +333,17 @@ export class HostedProcess {
   }
 
   /// Starts `program` under a runner `id` (one of that id left by an earlier station ended first), read by `host`.
+  /// Not once `host` is closed (its drivers shut down while this was on its way): the runner of that id may be the next
+  /// station's by then, and what would be started now nobody would read or end.
   static async start(host: AgentsHost, data: string, id: string, program: string, args: string[], env: Record<string, string>, cwd: string, options: HostedOptions, turn: Json) {
+    const closed = () => new Error(`${options.label} not started: the station's agents were let go`);
+    if (host.closed) throw closed();
     await endRunner(data, id, options.label);
     const info = await startRunner(data, id, program, args, env, cwd);
+    if (host.closed) {
+      await endRunner(data, id, options.label, info);
+      throw closed();
+    }
     const p = new HostedProcess(host, info, options, turn, null);
     host.attach(p);
     return p;

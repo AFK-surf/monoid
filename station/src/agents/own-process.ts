@@ -204,11 +204,12 @@ export abstract class OwnProcessDriver<S extends OwnProcessSession = OwnProcessS
     this.live.delete(session);
   }
 
-  async shutdown() {
+  async shutdown(again = false) {
     const live = [...this.live];
     this.live.clear();
     await Promise.all(live.map((s) => s.dispose()));
-    await this.agents.close(this);
+    // (used again: its program ends once it has nothing to read, mb-agents.ts `forget`)
+    if (!again) await this.agents.close(this);
   }
 
   detach() {

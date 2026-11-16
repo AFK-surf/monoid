@@ -408,7 +408,7 @@ export class Hub {
     // Taken up from the previous station or not, what was cut off now resumes the usual way.
     this.adopted.clear();
     await Promise.all([...this.actors.values()].map((a) => a.suspend()));
-    await Promise.all([...this.drivers.values()].map((d) => d.shutdown()));
+    await Promise.all([...this.drivers.values()].map((d) => d.shutdown(true)));
   }
 
   /// Whether a session's workspace is one the station is in now (a joined one may have taken it out): held otherwise.

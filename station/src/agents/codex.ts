@@ -601,6 +601,8 @@ export class CodexDriver implements AgentDriver {
   /// App-servers being replaced while turns run on them (`drain`): out of `hosts`, each ending after its last turn.
   private draining = new Set<Host>();
   private hostQueue: Promise<unknown> = Promise.resolve();
+  /// Shut down for good (`shutdown`): no step of `serial` runs after.
+  private stopped = false;
   /// The runners of app-servers being started or taken up in the step of `serial` running: not yet in `hosts`.
   private readonly claimed = new Set<string>();
   /// Its waits (an idle app-server's end), never closed: a driver shut down (the station out of its workspace) is used
@@ -880,9 +882,10 @@ export class CodexDriver implements AgentDriver {
   }
 
   /// One at a time, as Rust's hosts mutex: starting, replacing and taking up hosts. What a step claimed (a runner it
-  /// starts or takes up) is in `hosts` or `draining` once it is done, or nobody's.
+  /// starts or takes up) is in `hosts` or `draining` once it is done, or nobody's. None once the driver is shut down for
+  /// good: an app-server it started then nobody would end.
   private serial<T>(work: () => Promise<T>): Promise<T> {
-    const step = () => work().finally(() => this.claimed.clear());
+    const step = () => (this.stopped ? Promise.reject(new Error("codex app-server not started: the station's agents were let go")) : work()).finally(() => this.claimed.clear());
     const next = this.hostQueue.then(step, step);
     this.hostQueue = next.catch(() => {});
     return next;
@@ -1343,12 +1346,19 @@ export class CodexDriver implements AgentDriver {
     return [...this.hosts.values(), ...this.draining].filter((h) => h.alive()).map((h) => h.proc);
   }
 
-  async shutdown() {
-    const hosts = [...this.hosts.values(), ...this.draining];
-    this.hosts.clear();
-    this.draining.clear();
+  /// Its app-servers ended: those being started or taken up too, once that step is done (`serial`), and, unless it is
+  /// used `again`, none after.
+  async shutdown(again = false) {
+    const hosts = await this.serial(async () => {
+      this.stopped = !again;
+      const hosts = [...this.hosts.values(), ...this.draining];
+      this.hosts.clear();
+      this.draining.clear();
+      return hosts;
+    }).catch(() => [] as Host[]);
     await Promise.all(hosts.map((h) => h.proc.kill(5000)));
-    await this.agents.close(this);
+    // (used again: its program ends once it has nothing to read, mb-agents.ts `forget`)
+    if (!again) await this.agents.close(this);
   }
 
   detach() {

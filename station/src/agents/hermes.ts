@@ -135,9 +135,9 @@ export class HermesDriver extends AcpDriver<HermesSession> {
     }
   }
 
-  override async shutdown() {
+  override async shutdown(again = false) {
     this.stopping = true;
-    await super.shutdown();
+    await super.shutdown(again);
   }
 
   protected session(options: OpenOptions, events: Events) {

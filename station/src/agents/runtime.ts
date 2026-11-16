@@ -214,8 +214,11 @@ export interface AgentDriver {
   /// Takes up a session whose process a runner kept: `snapshot` as the previous station left it, or null after a crash
   /// (then what the runner kept unread says where the turn is). What it does comes to `events` from now on.
   adopt(options: OpenOptions, snapshot: unknown | null, events: (event: RuntimeEvent) => void): Promise<AgentSession>;
-  /// Ends every process this driver started.
-  shutdown(): Promise<void>;
+  /// Ends every process this driver started. `again`: it is used again after (the station out of its workspace,
+  /// `Hub.suspendAll`); else it is not (the station stops), and nothing it was asked before is started after: a process
+  /// started then nobody would end (2026-11-16, CI of #6583: a Codex turn opening as hub-e2e.test.ts's station shut down
+  /// left an app-server running and the program reading it holding the test file's process).
+  shutdown(again?: boolean): Promise<void>;
   /// Lets go of every process without ending them (handover).
   detach(): void;
   /// Holds what is read of its processes for a handover (one read off the station's thread: agents/mb-agents.ts), and

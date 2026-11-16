@@ -1299,3 +1299,17 @@ describe("the Codex driver under the station's variables", () => {
     await until(ended(1));
   });
 });
+
+// Shut down for good as a session is being opened (a turn's nudge as hub-e2e.test.ts's station shut down, 2026-11-16,
+// CI of #6583: the app-server it then started was left running, and the program reading it held the test file's
+// process): none is started after, and the open fails saying so. (The shutdown's step comes first: the open reaches
+// `serial` only after what it reads before it.)
+test("shut down as a session opens: no app-server started after, the open refused", async () => {
+  const d = driver();
+  const p = profile();
+  const opening = d.open(options(p), () => {});
+  await d.shutdown();
+  await assert.rejects(opening, /not started: the station's agents were let go/);
+  assert.deepEqual(existsSync(p.dump) ? starts(p.dump).filter((s) => s.argv[0] === "app-server") : [], [], "no app-server started");
+  assert.deepEqual(existingRunners(data).map((r) => r.id).filter((id) => id.includes(p.id)), []);
+});
