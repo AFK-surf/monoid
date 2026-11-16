@@ -22,16 +22,43 @@ export async function servePicture(request: Request, get: (url: string, init: Re
   }
   const type = (r.headers.get("content-type") ?? "").split(";")[0]!.trim().toLowerCase();
   if (r.status !== 200 || !type.startsWith("image/") || type.includes("svg")) {
-    await r.body?.cancel();
+    await r.body?.cancel().catch(() => {});
     return reply({ error: "not_found" }, 404);
   }
   if (Number(r.headers.get("content-length") ?? 0) > PICTURE_BYTES) {
-    await r.body?.cancel();
+    await r.body?.cancel().catch(() => {});
     return reply({ error: "too_large" }, 413);
   }
-  const body = new Uint8Array(await r.arrayBuffer());
-  if (body.length > PICTURE_BYTES) return reply({ error: "too_large" }, 413);
-  return new Response(body, {
+  // A length header may be absent or wrong: stop reading as soon as the body exceeds the limit.
+  // One growing buffer also bounds bookkeeping when the upstream sends many tiny chunks.
+  let body = new Uint8Array(0);
+  let length = 0;
+  const reader = r.body?.getReader();
+  if (reader) {
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        length += value.byteLength;
+        if (length > PICTURE_BYTES) {
+          // A broken connection's cleanup must not turn a size rejection into an unrelated error.
+          await reader.cancel().catch(() => {});
+          return reply({ error: "too_large" }, 413);
+        }
+        if (length > body.byteLength) {
+          const grown = new Uint8Array(Math.min(PICTURE_BYTES, Math.max(length, body.byteLength * 2)));
+          grown.set(body);
+          body = grown;
+        }
+        body.set(value, length - value.byteLength);
+      }
+    } catch {
+      return reply({ error: "unreachable" }, 502);
+    } finally {
+      reader.releaseLock();
+    }
+  }
+  return new Response(body.subarray(0, length), {
     headers: {
       "content-type": type,
       "cache-control": `public, max-age=${KEPT_SECONDS}`,
