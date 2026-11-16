@@ -3254,15 +3254,27 @@ fn view_old_moved(x : Double, y : Double) -> Unit {
 /// node that does something when pressed, it is that node's (held till it is let go, and let go on it with the primary
 /// button, pressed; called off, nothing); down where the old view is, the old view's (held so, its own to call off);
 /// down elsewhere, nothing's. A move with nothing held goes to the old view where it is over it. True where the old
-/// view is to see none of it.
-fn view_pointer(kind : Int, x : Double, y : Double, button : Int) -> Bool {
-  let tree = match view_app.val {
-    Some(t) => t
-    None => return false
+/// view is to see none of it. `brings` false: a move of a system's batch of a finger's samples after its first, taken
+/// as the first found things, nothing laid out for it (touches.mbt).
+fn view_pointer(kind : Int, x : Double, y : Double, button : Int, brings? : Bool = true) -> Bool {
+  match view_app.val {
+    Some(tree) if !brings => {
+      let took = Ref(false)
+      tree.moves_unlaid(fn() { took.val = view_pointer_now(tree, kind, x, y, button, false) })
+      took.val
+    }
+    Some(tree) => view_pointer_now(tree, kind, x, y, button, true)
+    None => false
   }
+}
+
+///|
+fn view_pointer_now(tree : @view.Tree, kind : Int, x : Double, y : Double, button : Int, brings : Bool) -> Bool {
   // (the tree as of the event's moment, taken once as it began: what had ended by then settled, what is where then)
   let at = view_moment()
-  tree.bring_to(at)
+  if brings {
+    tree.bring_to(at)
+  }
   // (what the old views take presses at, where the tree has them as of then; not for a move of a finger a node of the
   // tree's holds (View::on_drag): it is that node's, nothing of an old view's asked)
   if !(kind == 1 && view_held.val is Some(Dragging(_))) {

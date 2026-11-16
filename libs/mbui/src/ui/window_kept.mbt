@@ -496,6 +496,7 @@ fn window_kept_ui_6() -> Array[WindowKept] {
     kept_map(dues),
     kept_fixed(touch_slots, fn() { FixedArray::make(2, 0) }),
     kept_fixed(touch_down, fn() { FixedArray::make(2, false) }),
+    kept_ref(moves_batched, fn() { false }),
     kept_ref(last_touch_x, fn() { 0.0 }),
     kept_ref(last_touch_y, fn() { 0.0 }),
     kept_map(tree_fields),

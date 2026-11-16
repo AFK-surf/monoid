@@ -639,7 +639,7 @@ JNIEXPORT void JNICALL Java_dev_mbui_Native_pointer(JNIEnv *env, jclass c, jint 
   event_time = -1;
 }
 
-// A touch screen's finger (kinds 10-13, touches.mbt), by its pointer id (where a press's button goes), at its time.
+// A touch screen's finger (kinds 10-14, touches.mbt), by its pointer id (where a press's button goes), at its time.
 JNIEXPORT void JNICALL Java_dev_mbui_Native_touch(JNIEnv *env, jclass c, jint kind, jint id, jfloat x, jfloat y,
                                                  jdouble t) {
   event_time = t;

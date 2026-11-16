@@ -915,7 +915,7 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
     @Override
     public boolean onTouchEvent(MotionEvent e) {
         // each finger by its pointer id (an index is only its place in this event): handed on as it comes, down, moved,
-        // up or called off (pointer kinds 10-13, the id where a button goes), what they come to the app's to work out
+        // up or called off (pointer kinds 10-14, the id where a button goes), what they come to the app's to work out
         // (touches.mbt: two of them its, the first let go the second the first, one called off all of it)
         final int a = e.getActionMasked();
         final double t = e.getEventTime();
@@ -957,7 +957,8 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
             }
             case MotionEvent.ACTION_MOVE: {
                 // each finger's samples batched into the move (MotionEvent's history) and the event itself, each at its
-                // own time (uptime ms, as Compose's PointerInputChange has them)
+                // own time (uptime ms, as Compose's PointerInputChange has them); each but the last of them all as 14,
+                // more of the batch after it, so what they do is laid out once, as the last is taken (touches.mbt)
                 final int n = e.getPointerCount(), h = e.getHistorySize();
                 final int[] ids = new int[n];
                 final float[] xs = new float[n * (h + 1)], ys = new float[n * (h + 1)];
@@ -975,7 +976,10 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
                 }
                 toApp(() -> {
                     for (int k = 0; k <= h; k++)
-                        for (int p = 0; p < n; p++) Native.touch(11, ids[p], xs[p * (h + 1) + k], ys[p * (h + 1) + k], ts[k]);
+                        for (int p = 0; p < n; p++) {
+                            final int kind = k == h && p == n - 1 ? 11 : 14;
+                            Native.touch(kind, ids[p], xs[p * (h + 1) + k], ys[p * (h + 1) + k], ts[k]);
+                        }
                 });
                 return true;
             }

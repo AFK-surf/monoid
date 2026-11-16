@@ -143,8 +143,9 @@ yet and you can add one, add it.
   at its moment, and at the end of a way that may move something under it (`Tree::hand_at_end`: a Move, a way in or
   out, a glide; one that changes only how a thing looks, a fade, a bar's hiding, is none: `Prop::moves_hits`), never on
   a frame as something goes (no highlight jumping along the rows passing under it). A drag is inputs, each found once; a
-  wheel's every notch is one; the glide after a fling is let go is a way: found at its end. What the clock, a frame's
-  laying out or the hand itself tells is no change of it (`Tree::hits_bump`).
+  wheel's every notch is one; the glide after a fling is let go is a way: found at its end. A system's batch of a
+  finger's samples (a frame's 2-4) is each taken at its moment but laid out once, at its last (`src/ui/touches.mbt`).
+  What the clock, a frame's laying out or the hand itself tells is no change of it (`Tree::hits_bump`).
 - A row that leaves out what has not the room (`View::fits`) leaves before it cuts: what may leave goes first, then
   words cut short come down to their least, four of their size (flex's `cut_kept_ems`: a node's `View::cuts`; a box
   sized by what it holds keeps what its words keep), and only then does what is beside it give way. Such a row said

@@ -367,7 +367,7 @@ static int touch_id(UITouch *u) {
   }
   return n.intValue;
 }
-// finger `u`'s event (`kind` 10-13) where sample `at` of it was, at its time
+// finger `u`'s event (`kind` 10-14) where sample `at` of it was, at its time
 static void touch_at(int kind, UITouch *u, UITouch *at, UIView *v) {
   CGPoint p = [at locationInView:v];
   event_time = touch_ms(at.timestamp);
@@ -377,7 +377,8 @@ static void touch_at(int kind, UITouch *u, UITouch *at, UIView *v) {
 // One callback's touches `t` handed on as `kind` in the order they were taken: by their times, one moment's by the
 // fingers' ids (given as each went down: touch_id), one finger's samples in their own order (a move's coalesced into
 // it, 120 Hz digitizers); never by the order the set lists them in, which is none. Fingers going down at one moment
-// take their ids in the order of where they are (top to bottom, then left to right).
+// take their ids in the order of where they are (top to bottom, then left to right). A move's samples but the last of
+// them all go as 14, more of the batch after it, so what they do is laid out once, as the last is taken (touches.mbt).
 static void touches_sent(int kind, NSSet<UITouch *> *t, UIEvent *e, UIView *v) {
   if (kind == 10) {
     touches_begun(t, e);
@@ -403,7 +404,10 @@ static void touches_sent(int kind, NSSet<UITouch *> *t, UIEvent *e, UIView *v) {
     NSComparisonResult by = [(NSNumber *)a[2] compare:(NSNumber *)b[2]];
     return by != NSOrderedSame ? by : [(NSNumber *)a[3] compare:(NSNumber *)b[3]];
   }];
-  for (NSArray *s in all) touch_at(kind, s[0], s[1], v);
+  for (NSUInteger k = 0; k < all.count; k++) {
+    NSArray *s = all[k];
+    touch_at(kind == 11 && k + 1 < all.count ? 14 : kind, s[0], s[1], v);
+  }
 }
 - (void)touchesBegan:(NSSet<UITouch *> *)t withEvent:(UIEvent *)e {
   touches_sent(10, t, e, self);

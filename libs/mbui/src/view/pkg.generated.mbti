@@ -1072,6 +1072,7 @@ pub struct Tree {
   mut drawn_due : Bool
   mut before_causes : Int32
   mut standing : Bool
+  mut moves_unlaid : Bool
   mut settle_asked : Bool
   mut settle_at : Double
   mut measured_gen : Int32
@@ -1245,6 +1246,7 @@ pub fn Tree::modal_stack(Self) -> Int32
 pub fn Tree::modal_top(Self) -> NodeId?
 pub fn Tree::modal_top_lets_back(Self) -> Bool
 pub fn Tree::moment(Self) -> Double?
+pub fn Tree::moves_unlaid(Self, () -> Unit) -> Unit
 pub fn Tree::moves_window(Self, NodeId) -> Bool
 pub fn Tree::new((View) -> Unit, measure? : (String, WordsLook, Double, Double) -> (Double, Double), measure_runs? : (Array[@text.Run], WordsLook, RunsLook, Double, Double) -> (Double, Double), measure_shorter? : (String, Array[String], WordsLook, Double, Double) -> Double, measure_kept? : (String, WordsLook, Double, Double) -> (Double, Double), measure_runs_kept? : (Array[@text.Run], WordsLook, RunsLook, Double, Double) -> (Double, Double), time? : () -> Double, sources? : Bool) -> Self
 pub fn Tree::old_views_building(Self) -> Unit

@@ -60,6 +60,9 @@
 //   dragon DX DY MS TEXT        the same from the lowest TEXT on screen, where the frame has it
 //   holdon MS DX DY MOVE TEXT   held still on the lowest TEXT (or @X,Y) MS, then dragged DX DY over MOVE ms and held
 //                               there MS again before it is lifted (a long press slid on)
+//   samples N [apart]           the drags after it move N times a frame, the way from the frame before cut in N, as a
+//                               phone's system hands a frame's samples in one batch (touches.mbt: each but the last
+//                               with more after it); apart: each a move of its own, as hosts did before batches (1)
 //   backswipe DX [MS] [right] [off]  the system's back gesture (Android's predictive back) from the left edge (right:
 //                               the right's), DX across over MS (300 by default), a step a frame, then gone through
 //                               (off: called off)
@@ -145,6 +148,11 @@ priv struct Driver {
   mut gt0 : Double
   // (`holdon`: how long it stays held where it ends, before it is lifted)
   mut gstay : Double
+  // (`samples`: how many moves a frame a drag makes, the last frame's way cut so, and whether they go as one batch)
+  mut gsamples : Int
+  mut gapart : Bool
+  // (where the drag's last move was: the next frame's samples go on from it)
+  mut gfrom : Double
   mut gms : Double
   // the system's back gesture under way (backswipe): how far across it goes, from which edge (1 the right), whether
   // it is called off at the end, since when, over how long (0: none)
@@ -297,6 +305,9 @@ fn drive_start(script : String, dir : String, done_dir? : String = "") -> Unit {
     gdy: 0.0,
     gt0: 0.0,
     gstay: 0.0,
+    gsamples: 1,
+    gapart: false,
+    gfrom: 0.0,
     gms: 0.0,
     bdx: 0.0,
     bedge: 0,
@@ -1008,6 +1019,13 @@ fn drive_steps(c : Ctx) -> Unit {
     let f = dmin((now - d.gt0) / d.gms, 1.0)
     let x = d.gx + d.gdx * f
     let y = d.gy + d.gdy * f
+    // (a frame's samples, the way since the last move cut in `gsamples`, each but the last with more after it)
+    let n = d.gsamples
+    for k in 1..<n {
+      let fk = d.gfrom + (f - d.gfrom) * k.to_double() / n.to_double()
+      pointer_in(1, d.gx + d.gdx * fk, d.gy + d.gdy * fk, 0, 0, more=!d.gapart)
+    }
+    d.gfrom = f
     on_pointer(1, x, y, 0)
     if f >= 1.0 && now >= d.gt0 + d.gms + d.gstay {
       d.gstay = 0.0
@@ -1075,6 +1093,13 @@ fn drive_steps(c : Ctx) -> Unit {
         }
       "timeout" => {
         d.timeout = number(arg)
+        next()
+      }
+      "samples" => {
+        let words = arg.split(" ").map(fn(v) { v.to_owned() }).to_array()
+        let n = number(words[0]).to_int()
+        d.gsamples = if n < 1 { 1 } else { n }
+        d.gapart = words.length() > 1 && words[1] == "apart"
         next()
       }
       // the steps after it act in window N of the run (0 the first), taken by that window's frames
@@ -1346,6 +1371,7 @@ fn drive_steps(c : Ctx) -> Unit {
         d.gdy = number(words[2])
         d.gms = dmax(number(words[3]), 16.0)
         d.gt0 = now + number(words[0])
+        d.gfrom = 0.0
         d.gstay = number(words[0])
         h_log("DRIVE holdon \{arg} from \{x.to_int()},\{y.to_int()}")
         tell_step(d.steps[d.at], Acted)
@@ -1388,6 +1414,7 @@ fn drive_steps(c : Ctx) -> Unit {
         d.gdy = if rest.length() > 1 { number(rest[1]) } else { 0.0 }
         d.gms = if rest.length() > 2 { dmax(number(rest[2]), 16.0) } else { 300.0 }
         d.gt0 = now
+        d.gfrom = 0.0
         h_log("DRIVE \{cmd} \{arg} from \{x.to_int()},\{y.to_int()}")
         tell_step(d.steps[d.at], Acted)
         on_pointer(0, x, y, 0)
