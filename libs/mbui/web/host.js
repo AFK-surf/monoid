@@ -719,6 +719,9 @@
   uniform highp sampler2D u_bd;
   uniform vec4 u_map;
   uniform vec4 u_uvc;
+  // where a point is in the capture's sharp level (u_img while liquid glass is drawn: capture's rTex)
+  uniform vec4 u_rmap;
+  uniform vec4 u_ruvc;
   uniform vec4 u_shape[8];
   uniform vec4 u_rad[2];
   uniform int u_n;
@@ -755,6 +758,10 @@
   }
   vec3 backdrop(vec2 p) {
     return texture(u_bd, clamp(p * u_map.xy + u_map.zw, u_uvc.xy, u_uvc.zw)).rgb;
+  }
+  // what is under liquid glass at p, not blurred
+  vec3 sharp(vec2 p) {
+    return texture(u_img, clamp(p * u_rmap.xy + u_rmap.zw, u_ruvc.xy, u_ruvc.zw)).rgb;
   }
   float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
   // how much of the pixel at p its rounded clip keeps (r: the corners' radii, top left, then clockwise; s: how smooth
@@ -812,31 +819,63 @@
       return;
     }
     if (kind == 6) {
-      // liquid: one shape of the group's, merged; what is under it bent along the bezel, the colours split a little
+      // liquid: one shape of the group's, merged, a drop of glass on what is under it: its height a squircle's meniscus
+      // over the bezel (z = (1 - r^4)^(1/4), r 0 where the bezel starts in, 1 at the rim), what is under it seen through
+      // it bent by Snell's law (n = 1.52), the colours split a little: blurred on its flat, sharp through its lip (the
+      // capture's level that is not blurred, R); its rim a cool body, a bright ridge 0.75 in from its edge and a sharp
+      // cool edge outside it, so it reads on white as on colour
       float k = v_pad.w;
       float d = sd_group(p, k);
       float a = clamp(0.5 - d * u_scale, 0.0, 1.0);
       if (a <= 0.0) discard;
       float e = 0.5;
       vec2 grad = vec2(sd_group(p + vec2(e, 0.0), k) - sd_group(p - vec2(e, 0.0), k),
-                       sd_group(p + vec2(0.0, e), k) - sd_group(p - vec2(0.0, e), k));
-      vec2 n = grad / max(length(grad), 1e-4);
+                   sd_group(p + vec2(0.0, e), k) - sd_group(p - vec2(0.0, e), k));
+      vec2 n2 = grad / max(length(grad), 1e-4);
       float bezel = max(v_c2.y, 1.0);
-      float edge = 1.0 - clamp(-d / bezel, 0.0, 1.0);
-      float disp = v_pad.y * (1.0 - sqrt(max(1.0 - edge * edge, 0.0)));
-      vec2 off = -n * disp;
+      // (r: 0 on the flat inside, d <= -bezel; 1 at the rim, d = 0; the slope rises smoothly out of the flat)
+      float r = clamp(1.0 + d / bezel, 0.0, 1.0);
+      float r2 = r * r;
+      float r4 = r2 * r2;
+      float slope = 0.48 * (r2 * r) / pow(max(1.0 - r4, 0.035), 0.75);
+      float inv_n = 1.0 / sqrt(slope * slope + 1.0);
+      vec2 Nxy = n2 * (slope * inv_n);
+      float Nz = inv_n;
+      // (Snell's law: the light comes straight down, (0, 0, -1), from air into glass: eta = 1 / 1.52)
+      float eta = 0.6578947;
+      float k_ior = max(1.0 - eta * eta * (1.0 - Nz * Nz), 0.0);
+      float kt = eta * Nz - sqrt(k_ior);
+      vec2 Txy = Nxy * kt;
+      float Tz = -eta + kt * Nz;
+      // (at most pad.y away: |Txy / Tz| * 1.18 is 0.988 at the steepest, so what capture keeps round it is enough)
+      vec2 off = Txy * (1.18 * v_pad.y / max(-Tz, 1e-4));
       float ch = v_pad.z;
-      vec3 c = vec3(backdrop(p + off * (1.0 + ch)).r, backdrop(p + off).g, backdrop(p + off * (1.0 - ch)).b);
+      vec3 cf = vec3(backdrop(p + off * (1.0 + ch)).r, backdrop(p + off).g, backdrop(p + off * (1.0 - ch)).b);
+      vec3 cs = vec3(sharp(p + off * (1.0 + ch)).r, sharp(p + off).g, sharp(p + off * (1.0 - ch)).b);
+      // (the lip sharp, the flat blurred; its tint whole on the flat, where words lie, and less through the lip)
+      float lens = r2 * smoothstep(0.22, 0.90, r);
+      vec3 c = mix(cf, cs, lens * 0.82);
       c = max(mix(vec3(luma(c)), c, v_p.z), 0.0);
-      c = c * (1.0 - col.a) + col.rgb * col.a;
-      // the rim lit from the top left, and less across from it
-      float ndl = dot(n, vec2(-0.6, -0.8));
-      float band = clamp(1.0 + d / 2.5, 0.0, 1.0);
-      float spec = v_c2.x * (band * (0.9 * pow(max(ndl, 0.0), 1.5) + 0.45 * pow(max(-ndl, 0.0), 1.5)) +
-                             0.3 * edge * edge * max(ndl, 0.0));
-      // the edge shaded, more on the side away from the light, so the shape reads over a light ground too
-      c *= 1.0 - v_c2.x * band * (0.1 + 0.25 * max(-ndl, 0.0));
-      c = c + (1.0 - c) * clamp(spec, 0.0, 1.0);
+      float tint_a = col.a * (1.0 - 0.52 * lens);
+      c = c * (1.0 - tint_a) + col.rgb * tint_a;
+      float ndl = dot(n2, vec2(-0.6, -0.8));
+      float rim = v_c2.x;
+      // (1) the body of the meniscus a little cooler, never darker than a shade: room for the ridge to show white
+      float body_ring = r2 * (1.0 - 0.35 * r);
+      c = mix(c, c * vec3(0.92, 0.945, 0.98), rim * 0.42 * body_ring);
+      // (2) a ridge of light 0.75 in from the edge, most at the top left and some across from it, and a Fresnel sheen:
+      // towards white itself, not by what is left of white, so a light ground does not swallow it
+      float spec_band = clamp(1.0 - abs(d + 0.75) / 0.95, 0.0, 1.0);
+      spec_band *= spec_band;
+      float fresnel = pow(clamp(1.0 - Nz, 0.0, 1.0), 2.6);
+      float spec = rim * (spec_band * (0.92 * pow(max(ndl, 0.0), 1.8) + 0.48 * pow(max(-ndl, 0.0), 2.2) + 0.22) +
+                          0.28 * fresnel * max(ndl + 0.3, 0.0));
+      c = mix(c, vec3(1.0, 1.0, 1.0), clamp(spec, 0.0, 0.92));
+      // (3) its outermost 0.85 a sharp cool edge outside the ridge, so its outline holds on white
+      float edge_b = clamp(1.0 + d / 0.85, 0.0, 1.0);
+      edge_b *= edge_b;
+      float struct_rim = rim * edge_b * (0.165 * (1.0 - 0.50 * max(ndl, 0.0)) + 0.045 * max(-ndl, 0.0));
+      c = mix(c, c * vec3(0.36, 0.41, 0.50), clamp(struct_rim, 0.0, 0.34));
       c += mb_dither(p * u_scale) / 255.0;
       o = vec4(c, 1.0) * (a * v_c2.w);
       return;
@@ -1005,7 +1044,7 @@
     gl.attachShader(post, compile(gl.FRAGMENT_SHADER, PFS));
     gl.linkProgram(post);
     if (!gl.getProgramParameter(post, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(post));
-    for (const n of ['u_vp', 'u_scale', 'u_atlas', 'u_img', 'u_bd', 'u_map', 'u_uvc', 'u_gb', 'u_shape', 'u_rad', 'u_n', 'u_segs']) U[n] = gl.getUniformLocation(prog, n);
+    for (const n of ['u_vp', 'u_scale', 'u_atlas', 'u_img', 'u_bd', 'u_map', 'u_uvc', 'u_rmap', 'u_ruvc', 'u_gb', 'u_shape', 'u_rad', 'u_n', 'u_segs']) U[n] = gl.getUniformLocation(prog, n);
     for (const n of ['u_src', 'u_a', 'u_b', 'u_c']) PU[n] = gl.getUniformLocation(post, n);
     vao = gl.createVertexArray();
     gl.bindVertexArray(vao);
@@ -1038,8 +1077,9 @@
   // channel as the canvas has; what the passes write keeps 10 (RGB10_A2, in as many bytes): at 8 each pass rounds the
   // frost's slow slopes into flat steps, a texel of the last level 8 pixels wide on the screen (a blur under 4 pixels,
   // too narrow to halve, is written back into the copy: it leaves no slope that wide).
-  let lv = null, lvW = 0, lvH = 0, bdTex = null;
+  let lv = null, lvW = 0, lvH = 0, bdTex = null, rTex = null;
   const gmap = new Float32Array(4), guvc = new Float32Array(4), ggb = new Float32Array(4);
+  const rmap = new Float32Array(4), ruvc = new Float32Array(4);
   const gshape = new Float32Array(32), grad = new Float32Array(8);
   let gn = 0;
   function levelTex(format, w, h) {
@@ -1206,6 +1246,14 @@
     gmap[0] = sc / d / L.w; gmap[1] = -sc / d / L.h;
     gmap[2] = -px0 / d / L.w; gmap[3] = (Hh - pb0) / d / L.h;
     guvc[0] = 0.5 / L.w; guvc[1] = 0.5 / L.h; guvc[2] = (lw[k] - 0.5) / L.w; guvc[3] = (lh[k] - 0.5) / L.h;
+    // the sharp one liquid glass sees through its lip, of the levels its blur left as they were copied: the half once
+    // halved twice or more, the copy once halved (not contained: contained, its copy is the edge's pass's), else L
+    const rk = k >= 2 ? 1 : k === 1 && !contained ? 0 : k;
+    const R = k >= 2 ? lv[1] : k === 1 && !contained ? lv[0] : L, rd = 1 << rk;
+    rTex = R.t;
+    rmap[0] = sc / rd / R.w; rmap[1] = -sc / rd / R.h;
+    rmap[2] = -px0 / rd / R.w; rmap[3] = (Hh - pb0) / rd / R.h;
+    ruvc[0] = 0.5 / R.w; ruvc[1] = 0.5 / R.h; ruvc[2] = (lw[rk] - 0.5) / R.w; ruvc[3] = (lh[rk] - 0.5) / R.h;
     return true;
   }
   // the main program's state, after the passes
@@ -1235,6 +1283,8 @@
     gl.uniform1i(U.u_bd, 2);
     gl.uniform4fv(U.u_map, gmap);
     gl.uniform4fv(U.u_uvc, guvc);
+    gl.uniform4fv(U.u_rmap, rmap);
+    gl.uniform4fv(U.u_ruvc, ruvc);
     gl.uniform4fv(U.u_gb, ggb);
     gl.uniform4fv(U.u_shape, gshape);
     gl.uniform4fv(U.u_rad, grad);
@@ -1353,6 +1403,7 @@
       if (n === 0) return;
     }
     bdTex = null;
+    rTex = null;
     gmap.fill(0); guvc.fill(0); ggb.fill(0); gn = 0;
     gl.useProgram(prog);
     gl.bindVertexArray(vao);
@@ -1383,8 +1434,14 @@
         }
         if (shows) {
           for (let i = 0; i < INST / 4; i++) gl.vertexAttribPointer(i, 4, gl.FLOAT, false, INST * 4, start * INST * 4 + i * 16);
-          // liquid: the group as one shape, drawn once
-          gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, Math.round(f32[start * INST + 5]) === 6 ? 1 : end - start);
+          // liquid: the group as one shape, drawn once, its capture's sharp level in unit 1 (an image's run after it
+          // binds its own there again)
+          const liquid = Math.round(f32[start * INST + 5]) === 6;
+          if (liquid) {
+            gl.activeTexture(gl.TEXTURE1);
+            gl.bindTexture(gl.TEXTURE_2D, rTex || atlasTex);
+          }
+          gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, liquid ? 1 : end - start);
         }
         start = end;
         continue;
@@ -2716,7 +2773,7 @@
   };
   const contextRestored = () => {
     setupGL();
-    lv = null; lvW = 0; lvH = 0; bdTex = null;
+    lv = null; lvW = 0; lvH = 0; bdTex = null; rTex = null;
     segsTex = null; segsRows = 0; segsHad = null; segsHadRows = 0;
     uploadedFor = -1;
     textChanged();

@@ -525,7 +525,20 @@ pub fn finder_list(
   // (several stations: what is found says which it is on)
   let several = @sfbase.station_marks(src, w.id).length() > 1
   let stacked = found_stacked(c.width)
-  let est = lines.fold(init=foot_in, fn(h, l) { h + finder_h(l, f.found, stacked) })
+  // (as high as its lines come to at the system's size of words: theirs grown by their words, @sf.found_grown)
+  let scale = @ui.font_scale()
+  let two_grown = @sf.found_grown(f.found, scale, two=true)
+  let head_grown = @sf.found_grown(f.found, scale, two=false)
+  let est = lines.fold(init=foot_in, fn(h, l) {
+    let line_h = finder_h(l, f.found, stacked)
+    h +
+    line_h +
+    (match l {
+      Head(_) => head_grown
+      _ if finder_two(l, stacked) => two_grown
+      _ => 0.0
+    })
+  })
   let h : @ui.Size = match most {
     Some(m) => Px(dmin(m, est))
     None => Fill(1.0)
@@ -586,11 +599,20 @@ fn finder_key(line : FindLine) -> String {
 fn finder_h(l : FindLine, f : @sf.Found, stacked : Bool) -> Double {
   match l {
     Head(_) => f.head_h
-    Message(_) => f.two_h
-    Item(it) => if it.text == "" && !stacked { f.row_h } else { f.two_h }
-    Chat(ch) => if ch.found is Some(_) || stacked { f.two_h } else { f.row_h }
     Note(_) | Wait(_, _) | Said(_) => f.quiet_h
-    _ => f.row_h
+    _ => if finder_two(l, stacked) { f.two_h } else { f.row_h }
+  }
+}
+
+///|
+/// Whether a line says something under its first line (a message its chat, an item its line with the words, a chat the
+/// words found in it; `stacked`: who, where and when under the words of a chat or an item).
+fn finder_two(l : FindLine, stacked : Bool) -> Bool {
+  match l {
+    Message(_) => true
+    Item(it) => it.text != "" || stacked
+    Chat(ch) => ch.found is Some(_) || stacked
+    _ => false
   }
 }
 
@@ -657,13 +679,16 @@ fn found_line(
       Chat(ch) => ch.found is Some(_)
       _ => false
     })
+  // (a line of two: its mark as high as its first line, on its middle however large its words, @sf.found_mark_h)
+  let mark_h = if two { @sf.found_mark_h(f, @ui.font_scale()) } else { 0.0 }
+  let mark_look = if mark_h > 0.0 { f.mark.then(@ui.style(min_h=Fixed(mark_h))) } else { f.mark }
   let mark = fn(icon : String) {
-    c.box(style=f.mark, fn() { @sf.icon(c, icon, size=f.icon, color=t.p.muted) |> ignore }) |> ignore
+    c.box(style=mark_look, fn() { @sf.icon(c, icon, size=f.icon, color=t.p.muted) |> ignore }) |> ignore
   }
   // a chat's picture (ChatPicture): its first agent's maker's mark
   let picture = fn(item : ChatItem) {
     match item.agents.get(0) {
-      Some(a) => c.box(style=f.mark, fn() { @sf.maker_mark(c, a.maker, a.runtime, f.logo) |> ignore }) |> ignore
+      Some(a) => c.box(style=mark_look, fn() { @sf.maker_mark(c, a.maker, a.runtime, f.logo) |> ignore }) |> ignore
       None => mark("chat")
     }
   }
@@ -738,7 +763,7 @@ fn found_line(
       }
       Item(it) => {
         if it.kind == "station" {
-          c.box(style=f.mark, fn() {
+          c.box(style=mark_look, fn() {
             @sf.station_mark(c, it.station_emoji, it.station_icon, f.icon, t.p.muted, none="server")
           })
           |> ignore

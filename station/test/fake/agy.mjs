@@ -198,11 +198,11 @@ for await (const line of createInterface({ input: process.stdin })) {
   else if (m.method === 'session/new') {
     if (process.env.FAKE_AGY_SIGNED_OUT) { say({ id: m.id, error: { code: -32000, message: 'Authentication required' } }); continue; }
     sessionId = randomUUID();
-    writeFileSync(join(conversations, sessionId), 'conversation');
+    writeFileSync(join(conversations, `${sessionId}.db`), 'conversation');
     reply(m.id, { sessionId, models, ...(process.env.FAKE_AGY_TIER ? { _meta: { antigravity: { tier: { id: process.env.FAKE_AGY_TIER, name: 'Google AI Ultra' } } } } : {}) });
   } else if (m.method === 'session/load') {
     sessionId = p.sessionId;
-    if (!existsSync(join(conversations, sessionId))) { say({ id: m.id, error: { code: -32602, message: 'conversation not found' } }); continue; }
+    if (!existsSync(join(conversations, `${sessionId}.db`))) { say({ id: m.id, error: { code: -32602, message: 'conversation not found' } }); continue; }
     update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'past replay' } });
     reply(m.id, { models });
   } else if (m.method === 'session/set_model') {

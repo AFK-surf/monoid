@@ -56,14 +56,11 @@ fn message_row_frame_node(
     root.pick(fn() { row_top_kind(top()) }, fn(gap, _) { gap.height(By(fn() { Some(top()) })) |> ignore })
     root.box(fn(line) {
       @sf.style_node(line, fn() { row_line })
-      line.box(fn(s) { s.width(By(fn() { Some(side()) })) |> ignore }) |> ignore
+      // (in from the pane's sides as its padding: no box of room either side)
+      line.padding(By(fn() { (side(), 0.0, if @sf.native_side() { native_row_inset() } else { side() }, 0.0) })) |> ignore
       line.box(fn(m) {
         @sf.style_node(m, fn() { row_middle }, in_row=true)
         body(m)
-      })
-      |> ignore
-      line.box(fn(s) {
-        s.width(By(fn() { Some(if @sf.native_side() { native_row_inset() } else { side() }) })) |> ignore
       })
       |> ignore
     })

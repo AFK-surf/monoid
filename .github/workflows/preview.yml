@@ -573,7 +573,7 @@ jobs:
           [ -n "$E2E" ] || exit 0
           (cd cloud && quiet pnpm install --frozen-lockfile --prefer-offline)
           (cd station && quiet pnpm install --frozen-lockfile --prefer-offline && quiet pnpm run build)
-      # The test station's natives (e2e/win.sh: mesh and runner, win32-x64), by their keys. A change to one of them is in
+      # The test station's natives (e2e/win.sh: mesh, runner and reader, win32-x64), by their keys. A change to one of them is in
       # no release yet and is built only by the pipeline's natives job (a Mac's cross-build: this machine has no zig):
       # then its end is waited for (an outside wait, its job's own state), and a branch takes what it built (its run's
       # artifact, as the pipeline's own jobs do, .github/actions/natives); main's it published to the release. None
@@ -583,7 +583,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          missing=$(node scripts/native.ts missing mesh:win32-x64 runner:win32-x64)
+          missing=$(node scripts/native.ts missing mesh:win32-x64 runner:win32-x64 reader:win32-x64)
           [ -n "$missing" ] || exit 0
           echo "not in the release yet: $(echo $missing); the pipeline's natives job is waited for"
           api() { gh api "repos/$GITHUB_REPOSITORY/$1" --jq "$2"; }
@@ -593,7 +593,7 @@ jobs:
           # waited for it until its 6 minutes ran out, the next one's in the release 2 minutes before, 40642483751.)
           main() { [ "$GITHUB_REF" = refs/heads/main ]; }
           while :; do
-            ! main || [ -n "$(node scripts/native.ts missing mesh:win32-x64 runner:win32-x64)" ] || { echo "(in the release after $((SECONDS - t0)) s)"; break; }
+            ! main || [ -n "$(node scripts/native.ts missing mesh:win32-x64 runner:win32-x64 reader:win32-x64)" ] || { echo "(in the release after $((SECONDS - t0)) s)"; break; }
             [ -n "$run" ] || run=$(api "actions/workflows/pipeline.yml/runs?head_sha=$GITHUB_SHA&per_page=1" '.workflow_runs[0].id // empty' || true)
             state=$([ -z "$run" ] || api "actions/runs/$run/jobs?per_page=100" '.jobs[] | select(.name == "natives") | "\(.status) \(.conclusion // "")"' || true)
             case "$state" in

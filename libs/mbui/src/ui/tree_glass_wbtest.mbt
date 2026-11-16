@@ -45,6 +45,48 @@ test "a node's glass: one capture with the glass just before it, its own where s
 }
 
 ///|
+/// Two liquid nodes side by side over a ground, each casting a shadow while `cast` holds: the kinds of the instances
+/// drawn from the first glass on, and the captures each glass takes.
+test "a liquid node's shadow: drawn after its glass, outside it; none where it casts none, the two then one capture" {
+  let cast = @signals.signal(true, same=fn(a, b) { a == b })
+  let t = Tester::new(fn(_c) {  }, w=300.0, h=200.0)
+  set_view_app(fn(root) {
+    root.box(fn(b) { b.over(Is(true)).ground(Is(0x3366CCFFL)) |> ignore }) |> ignore
+    for x in [10.0, 80.0] {
+      root.box(fn(n) {
+        n
+        .over(Is(true))
+        .offset(Is((x, 10.0)))
+        .width(Is(Some(60.0)))
+        .height(Is(Some(40.0)))
+        .radius(Is(20.0))
+        .glass(Is(Some(Glass::liquid())))
+        .shadow(By(fn() { if cast.get() { (10.0, 3.0, 0x00000033L) } else { (0.0, 0.0, 0L) } }))
+        |> ignore
+      })
+      |> ignore
+    }
+  })
+  t.draw()
+  let kinds = fn() {
+    let c = g()
+    let all = (0).until(c.ninst).map(fn(k) { c.inst[k * inst_size + 5].to_int() }).collect()
+    let first = all.search(6).unwrap_or(all.length())
+    all[first:].to_owned()
+  }
+  let runs = fn() { t.drawn_glass().map(fn(g) { (g.0, g.4, g.5) }) }
+  // (each glass, then its shadow, outside it)
+  assert_eq(kinds(), [6, 2, 6, 2])
+  // (a shadow drawn between them: a capture each)
+  assert_eq(runs(), [(10.0, 6, 1), (80.0, 6, 2)])
+  cast.set(false)
+  t.frame_at(t.time() + frame_period_default)
+  assert_eq(kinds(), [6, 6])
+  // (nothing between them: one capture, the two merged)
+  assert_eq(runs(), [(10.0, 6, 1), (80.0, 6, 1)])
+}
+
+///|
 test "a node's glass where glass is drawn solid: its solid ground in its corner, no capture" {
   let t = Tester::new(fn(_c) {  }, w=300.0, h=200.0)
   set_glass_solid(Some(true))

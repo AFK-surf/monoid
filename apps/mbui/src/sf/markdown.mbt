@@ -167,6 +167,31 @@ let parsed_used : Ref[Int] = Ref(0)
 let parsed_budget : Int = 4000000
 
 ///|
+/// About how much `j` weighs held (blocks_of's budget: about as long as it is written), worked out where it lies,
+/// nothing written out for it.
+fn json_cost(j : Json) -> Int {
+  match j {
+    Null | True | False => 4
+    Number(_, ..) => 8
+    String(s) => s.length() + 2
+    Array(xs) => {
+      let mut n = 2
+      for x in xs {
+        n = n + json_cost(x)
+      }
+      n
+    }
+    Object(m) => {
+      let mut n = 2
+      for k, v in m {
+        n = n + k.length() + 4 + json_cost(v)
+      }
+      n
+    }
+  }
+}
+
+///|
 fn blocks_of(text : String, tree : Json?) -> Array[MdBlock] {
   if parsed.get(text) is Some(b) && (core_parsed.contains(text) || (!(tree is Some(Array(_))) && markdown_read.val is None)) { return b }
   let b = match tree {
@@ -180,7 +205,7 @@ fn blocks_of(text : String, tree : Json?) -> Array[MdBlock] {
         _ => [Paragraph([Text(text)])]
       }
   }
-  let cost = text.length() + (match tree { Some(j) => j.stringify().length(); None => 0 })
+  let cost = text.length() + (match tree { Some(j) => json_cost(j); None => 0 })
   let old_cost = parsed_cost.get(text).unwrap_or(0)
   parsed_used.val -= old_cost
   // One unusually large visible message can stand alone; it never pins all the older drawings beside it.

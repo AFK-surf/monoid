@@ -13,7 +13,7 @@ import { runtimeKind } from "../src/agents/runtime.ts";
 import { sessionPlaces, storage, transcriptSources } from "../src/read/transcript.ts";
 import { carriedTo, moved } from "../src/replica/restore.ts";
 
-import { type CarriedFile, type CarriedGit, type CarriedHome, type CarriedSession, type CarryIndex, type Gathered, SIZED_TRANSCRIPTS, type Sized, type Sizing, carriedPlace, indexFile, listFile } from "../src/replica/carry.ts";
+import { type CarriedFile, type CarriedGit, type CarriedHome, type CarriedSession, type CarryIndex, type Gathered, SIZED_TRANSCRIPTS, type Sized, type Sizing, carriedPlace, cliKeptOf, indexFile, listFile } from "../src/replica/carry.ts";
 
 export type { CarriedFile, CarryIndex, Gathered };
 
@@ -459,6 +459,13 @@ function walked(dataDir: string, db: string, ws: string, home: boolean, scratch:
             whole(join(dirname(t.path), id));
             if (tplaces.length < SIZED_TRANSCRIPTS) tplaces.push(join(dirname(t.path), id));
           }
+        }
+        // An Antigravity CLI conversation's own store in its profile's home: what `session/load` takes it up from.
+        for (const r of ids) {
+          if (r.runtime !== "agy" || r.profile === null) continue;
+          const kept = cliKeptOf(dataDir, r.profile, r.id);
+          for (const f of kept.files) add(f);
+          for (const dir of kept.dirs) if (existsSync(dir)) whole(dir);
         }
         // Its room, whole (an archived one's workspace packed in it): one that is not the station's goes nowhere.
         const room = roomFor(dataDir, realData, s.workspace);

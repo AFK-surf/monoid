@@ -96,6 +96,44 @@ test("a Gemini key runs the Antigravity CLI in its profile's files, with the sta
   await resumed.dispose();
 });
 
+test("a conversation the station kept but its CLI does not is not taken up: failed before anything starts, so the session goes on afresh; one another home of the station keeps is brought in and taken up", async () => {
+  const { options, events, driver, dump } = setup();
+  const session = await driver.open(options, (e) => events.push(e));
+  await session.prompt("hello");
+  await until(() => ended(events).length === 1);
+  const id = session.id();
+  await session.dispose();
+  // A chat moved here with the station's transcript alone (2026-11-16): its CLI's conversation is under the id of the
+  // profile it ran on there, a home beside this one; this profile's own store has none of it.
+  const cli = (home: string) => join(geminiDir(home), "antigravity-cli");
+  const own = join(agyConversations(options.profile.home), `${id}.db`);
+  const db = readFileSync(own, "utf8");
+  rmSync(own);
+  const started = () => readFileSync(dump, "utf8").trim().split("\n").length;
+  const before = started();
+  await assert.rejects(driver.open({ ...options, resume: id }, (e) => events.push(e)), /no Antigravity conversation .* in its CLI's store/);
+  assert.equal(started(), before, "no process started for it");
+  const other = join(data, `moved-from-${id}`);
+  mkdirSync(agyConversations(other), { recursive: true });
+  mkdirSync(join(cli(other), "brain", id, "notes"), { recursive: true });
+  mkdirSync(join(cli(other), "annotations"), { recursive: true });
+  writeFileSync(join(agyConversations(other), `${id}.db`), db);
+  writeFileSync(join(agyConversations(other), `${id}.db-wal`), "wal");
+  writeFileSync(join(cli(other), "brain", id, "notes", "plan.md"), "plan");
+  writeFileSync(join(cli(other), "annotations", `${id}.pbtxt`), "seen");
+  events.length = 0;
+  const resumed = await driver.open({ ...options, resume: id }, (e) => events.push(e));
+  assert.equal(resumed.id(), id);
+  assert.equal(readFileSync(own, "utf8"), db);
+  assert.equal(readFileSync(`${own}-wal`, "utf8"), "wal");
+  assert.equal(readFileSync(join(cli(options.profile.home), "brain", id, "notes", "plan.md"), "utf8"), "plan");
+  assert.equal(readFileSync(join(cli(options.profile.home), "annotations", `${id}.pbtxt`), "utf8"), "seen");
+  assert.ok(existsSync(join(agyConversations(other), `${id}.db`)), "copied: the home it came from keeps its own");
+  await resumed.prompt("again");
+  await until(() => ended(events).length === 1);
+  await resumed.dispose();
+});
+
 test("another model between turns is set in the running process; one it does not offer starts it again", async () => {
   const { options, events, driver, dump } = setup();
   const session = await driver.open(options, (e) => events.push(e));

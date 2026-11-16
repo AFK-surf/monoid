@@ -9,8 +9,8 @@
 // - the station keeps the transcript (acp.ts KeptTranscript), with each turn's usage: the prompt's answer says it.
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
-import { lstat, mkdir, rm, writeFile, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { cp, lstat, mkdir, readdir, rename, rm, stat, writeFile, readFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { wall } from "../ops/fibers.ts";
 import { writePrivateSoon } from "../ops/files.ts";
 import { log } from "../ops/log.ts";
@@ -39,6 +39,38 @@ export const agyTokenIn = (gemini: string) => join(gemini, "antigravity-cli", "a
 export const agyAccountFile = (home: string) => join(agyHome(home), "account.json");
 /// Where `agy acp` keeps its conversation databases under `--gemini-dir` once a signed-in session opens.
 export const agyConversations = (home: string) => join(geminiDir(home), "antigravity-cli", "conversations");
+
+/// Conversation `id` brought into the CLI's store of profile home `home` from another home beside it (the station's
+/// `homes/`) that keeps it, where this one does not: its database (and `-wal`), `annotations/<id>.pbtxt` and
+/// `brain/<id>/` (replica/carry.ts `cliKept`), copied, the database last, so that one there is whole. A chat moved from
+/// another station comes with what its CLI kept under the id of the profile it ran on there, which may be known here
+/// by another (a login lent: `sh-…`); `session/load` finds the conversation only in the profile's own `--gemini-dir`.
+/// The name of the home it came from; null where nothing was brought.
+export async function agyBringIn(home: string, id: string): Promise<string | null> {
+  if (!SESSION_ID.test(id)) return null;
+  const here = join(geminiDir(home), "antigravity-cli");
+  if (await there(join(here, "conversations", `${id}.db`))) return null;
+  const homes = dirname(home);
+  for (const name of (await readdir(homes).catch(() => [] as string[])).sort()) {
+    const other = join(homes, name);
+    if (other === home) continue;
+    const cli = join(geminiDir(other), "antigravity-cli");
+    if (!(await there(join(cli, "conversations", `${id}.db`)))) continue;
+    for (const [dir, entry] of [["conversations", `${id}.db-wal`], ["annotations", `${id}.pbtxt`], ["brain", id]] as const) {
+      if (!(await there(join(cli, dir, entry)))) continue;
+      await mkdir(join(here, dir), { recursive: true });
+      await cp(join(cli, dir, entry), join(here, dir, entry), { recursive: true, preserveTimestamps: true });
+    }
+    const db = join(here, "conversations", `${id}.db`);
+    await cp(join(cli, "conversations", `${id}.db`), `${db}.bringing`, { preserveTimestamps: true });
+    await rename(`${db}.bringing`, db);
+    log.info("agy", "a conversation brought into the profile's CLI from another home of the station", { id, from: name, to: home });
+    return name;
+  }
+  return null;
+}
+
+const there = (path: string): Promise<boolean> => stat(path).then(() => true, () => false);
 export function agyEmailIn(text: string): string | null {
   try {
     const email = JSON.parse(text)?.id_token_email;
@@ -457,6 +489,13 @@ export class AgyDriver extends AcpDriver<AgySession> {
   protected async begin(options: OpenOptions, events: Events, probe: boolean): Promise<AgySession> {
     if (this.lent?.borrowed(options.profile)) await this.renewLent(options.profile);
     else if (accessKind(options.profile) === "subscription") await agyTakeBack(options.profile.home);
+    // A conversation taken up is one its CLI keeps, not only one the station kept (`starting`): a chat moved here with
+    // the station's transcript alone had `session/load` answer and each prompt fail, "trajectory not found"
+    // (2026-11-16). Failed here, before anything starts, the session goes on in a new one and reads back.
+    if (options.resume !== undefined && SESSION_ID.test(options.resume)) {
+      await agyBringIn(options.profile.home, options.resume);
+      if (!(await there(join(agyConversations(options.profile.home), `${options.resume}.db`)))) throw new Error(`no Antigravity conversation ${options.resume} in its CLI's store`);
+    }
     return super.begin(options, events, probe);
   }
 

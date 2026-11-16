@@ -265,11 +265,55 @@ fn Files::under_of(self : Files, dir : String, path : String) -> String? {
 
 ///|
 /// carry-reference.ts `carriedPlace`: whether `path` is one that goes along, or is put: under `data`'s `sessions/` or a
-/// `transcripts*/` of it.
+/// `transcripts*/` of it, or what an Antigravity CLI keeps of its conversations in a profile's home there (`cli_kept`).
 fn Files::carried_place(self : Files, data : String, path : String) -> Bool {
   guard self.under_of(data, path) is Some(rel) && rel != "" else { return false }
   let parts : Array[String] = rel.split(self.sep).map(x => x.to_string()).collect()
-  parts.length() > 1 && (parts[0] == "sessions" || parts[0].has_prefix("transcripts"))
+  parts.length() > 1 && (parts[0] == "sessions" || parts[0].has_prefix("transcripts") || cli_kept(parts))
+}
+
+///|
+/// carry.ts `cliKept`: the parts of a path under the data directory in a profile's home where an Antigravity CLI keeps
+/// a conversation (`homes/<profile>/agy/.gemini/antigravity-cli/` `conversations`, `brain` or `annotations`).
+fn cli_kept(parts : Array[String]) -> Bool {
+  parts.length() >= 7 &&
+  parts[0] == "homes" &&
+  parts[2] == "agy" &&
+  parts[3] == ".gemini" &&
+  parts[4] == "antigravity-cli" &&
+  (parts[5] == "conversations" || parts[5] == "brain" || parts[5] == "annotations")
+}
+
+///|
+/// carry.ts `ONE_SEGMENT`: a path segment of its own (no separator, never `.` or `..`).
+fn one_segment(s : String) -> Bool {
+  if s.length() == 0 || s.unsafe_charcode_at(0) == '.' {
+    return false
+  }
+  for i in 0..<s.length() {
+    let c = s.unsafe_charcode_at(i)
+    if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '.' || c == '@' || c == '+' || c == '-') {
+      return false
+    }
+  }
+  true
+}
+
+///|
+/// carry.ts `cliKeptOf`, gathered: what an Antigravity CLI keeps of each of `ids` (those of the `agy` runtime with a
+/// profile) in its profile's home, which `session/load` takes the conversation up from.
+fn Gathering::cli_kept_of(self : Gathering, ids : Array[@locate.Source]) -> Unit raise {
+  for r in ids {
+    guard r.runtime == "agy" && r.profile is Some(profile) && one_segment(profile) && one_segment(r.id) else { continue }
+    let cli = self.files.join([self.data, "homes", profile, "agy", ".gemini", "antigravity-cli"])
+    self.add(self.files.join([cli, "conversations", r.id + ".db"]))
+    self.add(self.files.join([cli, "conversations", r.id + ".db-wal"]))
+    self.add(self.files.join([cli, "annotations", r.id + ".pbtxt"]))
+    let brain = self.files.join([cli, "brain", r.id])
+    if self.files.exists(brain) {
+      self.whole(brain)
+    }
+  }
 }
 
 ///|
@@ -1052,6 +1096,8 @@ pub fn carry_gather(
         g.whole(files.join([files.dir_of(path), id]))
       }
     }
+    // An Antigravity CLI conversation's own store in its profile's home: what `session/load` takes it up from.
+    g.cli_kept_of(ids)
     // Its room, whole (an archived one's workspace packed in it): one that is not the station's goes nowhere.
     let room = files.room_for(data, real_data, workspace)
     match room {
@@ -1253,6 +1299,7 @@ pub fn carry_sizes(
           }
         }
       }
+      g.cli_kept_of(ids)
       if files.room_for(data, real_data, workspace) is Some(dir) {
         g.room_walk(dir)
       }

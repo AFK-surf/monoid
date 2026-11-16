@@ -102,8 +102,8 @@ static NSString *shader_src = @
 "struct U { float2 vp; float scale; float pad; };\n"
 "// glass: where a point's backdrop is in the blurred copy (uv = p * map.xy + map.zw, kept in uvc), a liquid group's\n"
 "// bounds, shapes and corners, how many (misc.x); misc.y 1 where what it copied of a native view's hole is let through\n"
-"// (glass_through)\n"
-"struct G { float4 map; float4 uvc; float4 gb; float4 shape[8]; float4 rad[2]; float4 misc; };\n"
+"// (glass_through); rmap and ruvc where it is in the capture's sharp level (img, while liquid glass is drawn)\n"
+"struct G { float4 map; float4 uvc; float4 gb; float4 shape[8]; float4 rad[2]; float4 misc; float4 rmap; float4 ruvc; };\n"
 "struct VOut { float4 pos [[position]]; float2 p; float2 cp; uint iid [[flat]]; };\n"
 "vertex VOut vmain(uint vid [[vertex_id]], uint iid [[instance_id]],\n"
 "    const device Inst* inst [[buffer(0)]], constant U& u [[buffer(1)]], constant G& g [[buffer(2)]]) {\n"
@@ -159,6 +159,11 @@ MB_CORNER_SL
 "  return bd.sample(s, uv);\n"
 "}\n"
 "static float3 backdrop(texture2d<float> bd, constant G& g, float2 p) { return backdrop4(bd, g, p).rgb; }\n"
+"// what is under liquid glass at p, not blurred: the capture's sharp level (show_blur's rtex)\n"
+"static float3 sharp(texture2d<float> img, constant G& g, float2 p) {\n"
+"  constexpr sampler s(filter::linear, address::clamp_to_edge);\n"
+"  return img.sample(s, clamp(p * g.rmap.xy + g.rmap.zw, g.ruvc.xy, g.ruvc.zw)).rgb;\n"
+"}\n"
 "static float luma(float3 c) { return dot(c, float3(0.2126, 0.7152, 0.0722)); }\n"
 "// how much of the pixel at p its rounded clip keeps (r: the corners' radii, top left, then clockwise; s: how smooth\n"
 "// each is), its edge covered as a box's own (0.5 - d * scale), so what it cuts meets the ground of the box that cuts it\n"
@@ -213,33 +218,63 @@ MB_CORNER_SL
 "    return (t * col.a) * cover;\n"
 "  }\n"
 "  if (kind == 6) {\n"
-"    // liquid: one shape of the group's, merged; what is under it bent along the bezel, the colours split a little\n"
+"    // liquid: one shape of the group's, merged, a drop of glass on what is under it: its height a squircle's meniscus\n"
+"    // over the bezel (z = (1 - r^4)^(1/4), r 0 where the bezel starts in, 1 at the rim), what is under it seen through\n"
+"    // it bent by Snell's law (n = 1.52), the colours split a little: blurred on its flat, sharp through its lip (the\n"
+"    // capture's level that is not blurred, R); its rim a cool body, a bright ridge 0.75 in from its edge and a sharp\n"
+"    // cool edge outside it, so it reads on white as on colour\n"
 "    float k = I.pad.w;\n"
 "    float d = sd_group(p, g, k);\n"
 "    float a = clamp(0.5 - d * u.scale, 0.0, 1.0);\n"
 "    if (a <= 0.0) discard_fragment();\n"
 "    float e = 0.5;\n"
 "    float2 grad = float2(sd_group(p + float2(e, 0.0), g, k) - sd_group(p - float2(e, 0.0), g, k),\n"
-"                         sd_group(p + float2(0.0, e), g, k) - sd_group(p - float2(0.0, e), g, k));\n"
-"    float2 n = grad / max(length(grad), 1e-4);\n"
+"                 sd_group(p + float2(0.0, e), g, k) - sd_group(p - float2(0.0, e), g, k));\n"
+"    float2 n2 = grad / max(length(grad), 1e-4);\n"
 "    float bezel = max(I.c2.y, 1.0);\n"
-"    float edge = 1.0 - clamp(-d / bezel, 0.0, 1.0);\n"
-"    float disp = I.pad.y * (1.0 - sqrt(max(1.0 - edge * edge, 0.0)));\n"
-"    float2 off = -n * disp;\n"
+"    // (r: 0 on the flat inside, d <= -bezel; 1 at the rim, d = 0; the slope rises smoothly out of the flat)\n"
+"    float r = clamp(1.0 + d / bezel, 0.0, 1.0);\n"
+"    float r2 = r * r;\n"
+"    float r4 = r2 * r2;\n"
+"    float slope = 0.48 * (r2 * r) / pow(max(1.0 - r4, 0.035), 0.75);\n"
+"    float inv_n = 1.0 / sqrt(slope * slope + 1.0);\n"
+"    float2 Nxy = n2 * (slope * inv_n);\n"
+"    float Nz = inv_n;\n"
+"    // (Snell's law: the light comes straight down, (0, 0, -1), from air into glass: eta = 1 / 1.52)\n"
+"    float eta = 0.6578947;\n"
+"    float k_ior = max(1.0 - eta * eta * (1.0 - Nz * Nz), 0.0);\n"
+"    float kt = eta * Nz - sqrt(k_ior);\n"
+"    float2 Txy = Nxy * kt;\n"
+"    float Tz = -eta + kt * Nz;\n"
+"    // (at most pad.y away: |Txy / Tz| * 1.18 is 0.988 at the steepest, so what capture keeps round it is enough)\n"
+"    float2 off = Txy * (1.18 * I.pad.y / max(-Tz, 1e-4));\n"
 "    float ch = I.pad.z;\n"
-"    float3 c = float3(backdrop(bd, g, p + off * (1.0 + ch)).r, backdrop(bd, g, p + off).g,\n"
-"                      backdrop(bd, g, p + off * (1.0 - ch)).b);\n"
+"    float3 cf = float3(backdrop(bd, g, p + off * (1.0 + ch)).r, backdrop(bd, g, p + off).g, backdrop(bd, g, p + off * (1.0 - ch)).b);\n"
+"    float3 cs = float3(sharp(img, g, p + off * (1.0 + ch)).r, sharp(img, g, p + off).g, sharp(img, g, p + off * (1.0 - ch)).b);\n"
+"    // (the lip sharp, the flat blurred; its tint whole on the flat, where words lie, and less through the lip)\n"
+"    float lens = r2 * smoothstep(0.22, 0.90, r);\n"
+"    float3 c = mix(cf, cs, lens * 0.82);\n"
 "    c = max(mix(float3(luma(c)), c, I.p.z), 0.0);\n"
-"    c = c * (1.0 - col.a) + col.rgb * col.a;\n"
-"    // the rim lit from the top left, and less across from it\n"
-"    float2 L = float2(-0.6, -0.8);\n"
-"    float ndl = dot(n, L);\n"
-"    float band = clamp(1.0 + d / 2.5, 0.0, 1.0);\n"
-"    float spec = I.c2.x * (band * (0.9 * pow(max(ndl, 0.0), 1.5) + 0.45 * pow(max(-ndl, 0.0), 1.5)) +\n"
-"                           0.3 * edge * edge * max(ndl, 0.0));\n"
-"    // the edge shaded, more on the side away from the light, so the shape reads over a light ground too\n"
-"    c *= 1.0 - I.c2.x * band * (0.1 + 0.25 * max(-ndl, 0.0));\n"
-"    c = c + (1.0 - c) * clamp(spec, 0.0, 1.0);\n"
+"    float tint_a = col.a * (1.0 - 0.52 * lens);\n"
+"    c = c * (1.0 - tint_a) + col.rgb * tint_a;\n"
+"    float ndl = dot(n2, float2(-0.6, -0.8));\n"
+"    float rim = I.c2.x;\n"
+"    // (1) the body of the meniscus a little cooler, never darker than a shade: room for the ridge to show white\n"
+"    float body_ring = r2 * (1.0 - 0.35 * r);\n"
+"    c = mix(c, c * float3(0.92, 0.945, 0.98), rim * 0.42 * body_ring);\n"
+"    // (2) a ridge of light 0.75 in from the edge, most at the top left and some across from it, and a Fresnel sheen:\n"
+"    // towards white itself, not by what is left of white, so a light ground does not swallow it\n"
+"    float spec_band = clamp(1.0 - abs(d + 0.75) / 0.95, 0.0, 1.0);\n"
+"    spec_band *= spec_band;\n"
+"    float fresnel = pow(clamp(1.0 - Nz, 0.0, 1.0), 2.6);\n"
+"    float spec = rim * (spec_band * (0.92 * pow(max(ndl, 0.0), 1.8) + 0.48 * pow(max(-ndl, 0.0), 2.2) + 0.22) +\n"
+"                        0.28 * fresnel * max(ndl + 0.3, 0.0));\n"
+"    c = mix(c, float3(1.0, 1.0, 1.0), clamp(spec, 0.0, 0.92));\n"
+"    // (3) its outermost 0.85 a sharp cool edge outside the ridge, so its outline holds on white\n"
+"    float edge_b = clamp(1.0 + d / 0.85, 0.0, 1.0);\n"
+"    edge_b *= edge_b;\n"
+"    float struct_rim = rim * edge_b * (0.165 * (1.0 - 0.50 * max(ndl, 0.0)) + 0.045 * max(-ndl, 0.0));\n"
+"    c = mix(c, c * float3(0.36, 0.41, 0.50), clamp(struct_rim, 0.0, 0.34));\n"
 "    c += mb_dither(p * u.scale) / 255.0;\n"
 "    return (float4(c, 1.0) * (a * I.c2.w)) * cover;\n"
 "  }\n"
@@ -535,9 +570,10 @@ void mb_atlas_upload(int color, int x, int y, int w, int h, const void *px) {
 // slopes into flat steps, a texel of the last level 8 pixels wide on the screen (a blur under 4 pixels, too narrow to
 // halve, is written back into the copy: it leaves no slope that wide).
 
-typedef struct { float map[4]; float uvc[4]; float gb[4]; float shape[8][4]; float rad[2][4]; float misc[4]; } GU;
+typedef struct { float map[4]; float uvc[4]; float gb[4]; float shape[8][4]; float rad[2][4]; float misc[4]; float rmap[4]; float ruvc[4]; } GU;
 static GU gu;
 static id<MTLTexture> gtex;  // the blurred copy the glass in view shows
+static id<MTLTexture> rtex;  // the sharp level of it liquid glass sees through its lip (texture 1 while it is drawn)
 
 static id<MTLTexture> level_tex(MTLPixelFormat format, int w, int h) {
   MTLTextureDescriptor *td = [MTLTextureDescriptor
@@ -746,6 +782,15 @@ static void show_blur(const Grab *m) {
   gu.map[2] = -(float)m->px0 / d / W; gu.map[3] = -(float)m->py0 / d / H;
   gu.uvc[0] = 0.5f / W; gu.uvc[1] = 0.5f / H;
   gu.uvc[2] = ((float)lw[m->k] - 0.5f) / W; gu.uvc[3] = ((float)lh[m->k] - 0.5f) / H;
+  // the sharp one, of the levels its blur left as they were copied (blur): the half once halved twice or more, the
+  // copy once halved (not contained: contained, its copy is the edge's pass's, ltmp), else the blurred one itself
+  int rk = m->k >= 2 ? 1 : m->k == 1 && !m->contained ? 0 : m->k;
+  rtex = m->k >= 2 ? lv[1] : m->k == 1 && !m->contained ? lv[0] : gtex;
+  float RW = (float)rtex.width, RH = (float)rtex.height, rd = (float)(1 << rk);
+  gu.rmap[0] = sc / rd / RW; gu.rmap[1] = sc / rd / RH;
+  gu.rmap[2] = -(float)m->px0 / rd / RW; gu.rmap[3] = -(float)m->py0 / rd / RH;
+  gu.ruvc[0] = 0.5f / RW; gu.ruvc[1] = 0.5f / RH;
+  gu.ruvc[2] = ((float)lw[rk] - 0.5f) / RW; gu.ruvc[3] = ((float)lh[rk] - 0.5f) / RH;
 }
 
 // A grab of target blurred into the levels: what is drawn so far in its rectangle copied out, halved k times, the
@@ -930,6 +975,7 @@ static void draw_banded(id<MTLRenderCommandEncoder> enc, id<MTLRenderPipelineSta
 static void encode(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLRenderPipelineState> p,
                    id<MTLBuffer> buf, int32_t count, double r, double g, double b, double alpha, const MTLScissorRect *part) {
   gtex = nil;
+  rtex = nil;
   memset(&gu, 0, sizeof gu);
   encode_missing = 0;
   const float *f = (const float *)buf.contents;
@@ -982,9 +1028,11 @@ static void encode(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLRenderP
         bound = tid;
       }
       [enc setRenderPipelineState:p];
-      // liquid: the group as one shape, drawn once
+      // liquid: the group as one shape, drawn once, its capture's sharp level in texture 1 (an image's run after it
+      // binds its own there again)
       if (shows) {
         int liquid = (int)(f[start * MB_INST + 5] + 0.5f) == 6;
+        if (liquid) [enc setFragmentTexture:(rtex ?: atlas) atIndex:1];
         [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6
                 instanceCount:liquid ? 1 : end - start baseInstance:start];
       }

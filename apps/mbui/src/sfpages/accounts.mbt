@@ -666,6 +666,10 @@ fn profile_sign_in_node(
           @sf.copy_command_node(x, command, copy=@sf.t("common.copy"), copied=@sf.t("common.copied"))
         })
         @sf.card_foot_node(q, fn(f) {
+          // (登录 at the foot's start, the way on the machine at its end; where the two have not the room on one line,
+          // words set large, 登录 keeps the foot's line and its corner (the line wrapped up, View::wraps' `reverse`) and
+          // the way on the machine goes on the line over it, alone at its start, its words on the card's)
+          f.lies_along(Is(Between)).wraps(Is(Some(pf_foot_lines)), reverse=true) |> ignore
           @sf.button_node(
             f,
             fn() { if state() == "done" || !needed() { @sf.t("web-pages.signIn.again") } else { @sf.t("web-pages.profiles.signIn") } },
@@ -675,9 +679,6 @@ fn profile_sign_in_node(
             busy=fn() { is_doing(core, ["profile.login"], on) },
           )
           |> ignore
-          // (the way to sign in on the machine at the foot's end, in the card's corner concentric with it: where its
-          // words are long (English) it stood just short of the corner, its ground under the hand off the corner's)
-          f.box(fn(sp) { sp.grow(Is(1.0)) |> ignore }) |> ignore
           f.show(at_once=true, fn() { command() != "" }, fn(x) {
             @sf.button_node(
               x,
@@ -686,6 +687,7 @@ fn profile_sign_in_node(
               fn() { if open.command.get() { @sf.t("web-pages.profiles.collapse") } else { @sf.t("android-settings.login.manualShort") } },
               fn() { open.command.set(!open.command.untracked()) },
               tone=Ghost,
+              card_words=true,
             )
             |> ignore
           })
@@ -2441,6 +2443,10 @@ let pf_wait_line : @ui.Style = @ui.css("row gap=S2 align=ACenter")
 ///|
 /// A card's parts apart, what a part of it shows in its own room too (desk_card's gap=S3_5).
 let pf_card_gap : Double = 14.0
+
+///|
+/// A footed card's lines of buttons apart where they go on to another (card_foot's gap between them, 8).
+let pf_foot_lines : Double = 8.0
 
 ///|
 /// A sign-in's step (steps: its words over what is done in it).

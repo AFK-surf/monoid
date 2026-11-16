@@ -2382,7 +2382,9 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
   let ground_c = if bones != 0L { self.bone_ground(c.ground, bones) } else { c.ground }
   let edge_c = if bones != 0L { self.bone_ground(c.edge.1, bones) } else { c.edge.1 }
   // (the shadow it casts, as a box with a shadow casts it, Ctx::paint's and paint_glass's: under its ground; glass's
-  // solid ground over it; frosted glass's after the glass, outside it only, so the glass frosts not its own shadow)
+  // solid ground over it; glass's, frosted or liquid, after the glass, outside it only, so the glass neither frosts nor
+  // bends its own shadow; none where it casts none, so liquid shapes side by side with no shadow still share one
+  // capture and merge)
   let (blur, dy, cast) = if bone_whole { (0.0, 0.0, 0L) } else { c.shadow }
   // (its corners each, where it says them (View::corners), on each instance of its ground as it is emitted)
   let each = fn() {
@@ -2404,7 +2406,7 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
       glass_at = self.ninst - start
       self.glass_inst(0.0, 0.0, c.w, c.h, c.radius, gl, 1.0)
       each()
-      if blur > 0.0 && !gl.liquid {
+      if blur > 0.0 {
         self.push_inst(0.0, dy, c.w, c.h, c.radius, 2.0, 0.0, blur, cast, 1.0, 1.0, dy, 0.0, 0.0)
         each()
       }

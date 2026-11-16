@@ -176,7 +176,21 @@ function world() {
   run.run("chat:a", "run-1", "cc", 2, "claude");
   run.run("chat:c", "cdx-1", null, 1, "codex");
   run.run("chat:c", "gone-1", null, 2, "nothing-such");
+  // an Antigravity CLI conversation: what its CLI keeps of it in its profile's home goes too
+  run.run("chat:c", "agy-1", "lent-g", 3, "agy");
+  run.run("chat:c", "../agy-2", "lent-g", 4, "agy");
   d.close();
+  const cli = join(data, "homes", "lent-g", "agy", ".gemini", "antigravity-cli");
+  for (const dir of ["conversations", "annotations", "brain/agy-1/notes", "brain/other-1", "implicit"]) mkdirSync(join(cli, dir), { recursive: true });
+  writeFileSync(join(cli, "conversations", "agy-1.db"), "trajectory");
+  writeFileSync(join(cli, "conversations", "agy-1.db-wal"), "wal");
+  writeFileSync(join(cli, "conversations", "agy-1.db-shm"), "shm");
+  writeFileSync(join(cli, "conversations", "other-1.db"), "another's");
+  writeFileSync(join(cli, "annotations", "agy-1.pbtxt"), "seen");
+  writeFileSync(join(cli, "brain", "agy-1", "notes", "plan.md"), "plan");
+  writeFileSync(join(cli, "brain", "other-1", "plan.md"), "another's");
+  writeFileSync(join(cli, "implicit", "agy-1.pb"), "the CLI's own");
+  writeFileSync(join(cli, "antigravity-oauth-token"), "a sign-in");
   const claude = join(data, "transcripts", "claude", claudeProject(aws)!);
   mkdirSync(join(claude, "run-1", "subagents"), { recursive: true });
   writeFileSync(join(claude, "run-0.jsonl"), '{"type":"user","n":0}\n');
@@ -295,10 +309,10 @@ test("the program gathers what the worker thread gathered: the same lists, index
     assert.deepEqual(first.mb.unreadable, [join(aws, "closed"), join(aws, "secret.txt")]);
   }
   const listed = indexOf(first.mb).sessions.flatMap((s) => [...linesOf(s.at)].map((l) => JSON.parse(l).path as string));
-  for (const want of ["\u{1F600}.txt", "run-1/subagents/agent-x.jsonl", "run-b.jsonl.zst", "rollout-2026-11-15T00-00-00-cdx-1.jsonl", "session.v2.jsonl", "lone/target/kept.txt", "repo/.git/HEAD", "repo/inner/i.txt", "wt/y.txt", "workspace.tar.zst", "pic-link", "dangling"]) {
+  for (const want of ["\u{1F600}.txt", "run-1/subagents/agent-x.jsonl", "run-b.jsonl.zst", "rollout-2026-11-15T00-00-00-cdx-1.jsonl", "session.v2.jsonl", "lone/target/kept.txt", "repo/.git/HEAD", "repo/inner/i.txt", "wt/y.txt", "workspace.tar.zst", "pic-link", "dangling", "conversations/agy-1.db", "conversations/agy-1.db-wal", "annotations/agy-1.pbtxt", "brain/agy-1/notes/plan.md"]) {
     assert.ok(listed.some((p) => p.endsWith(want)), want);
   }
-  for (const not of ["made.bin", "ignored.log", "node_modules", "archive.lock", ".writing", "mine.txt", "session.v1.jsonl", "ex/_build", "ex/deps", "mb/_build", "mb/.mooncakes", "ios-dd/", "rs-out/"]) assert.ok(!listed.some((p) => p.includes(not)), not);
+  for (const not of ["made.bin", "ignored.log", "node_modules", "archive.lock", ".writing", "mine.txt", "session.v1.jsonl", "ex/_build", "ex/deps", "mb/_build", "mb/.mooncakes", "ios-dd/", "rs-out/", "agy-1.db-shm", "other-1", "implicit", "oauth", "agy-2"]) assert.ok(!listed.some((p) => p.includes(not)), not);
   for (const kept of ["bare/_build/kept-too.txt", "bare/deps/kept.txt", "a/b/c/d/dd/Build/Products/app", "only-products/Build/Products/kept.app", "other-cache/.rustc_info.json"]) assert.ok(listed.some((p) => p.endsWith(kept)), kept);
   assert.ok(!listed.includes(join(wt, ".git")), "a linked worktree's .git is made again there, not carried");
   // JavaScript's order, not the bytes': 😀 (U+D83D…) before Ａ (U+FF21)
@@ -384,6 +398,7 @@ test("the program puts in what the worker thread put: the same files, modes, tim
   const first = await both("first", { made: true, aside: true, placed: true });
   assert.ok(first.placed > 0 && first.missing === 1, JSON.stringify(first));
   assert.equal(existsSync(join(toM, "station.key")), false, "nothing outside sessions and transcripts");
+  assert.equal(readFileSync(join(toM, "homes", "lent-g", "agy", ".gemini", "antigravity-cli", "conversations", "agy-1.db"), "utf8"), "trajectory", "an Antigravity CLI conversation where its profile's CLI keeps it");
   // again: what the placing put is known, not looked at; without its file of what it put, found the same by its bytes
   assert.equal((await both("again", { made: true, aside: true, placed: true })).placed, 0);
   assert.equal((await both("again, looked at")).placed, 0);

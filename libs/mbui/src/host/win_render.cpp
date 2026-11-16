@@ -65,9 +65,11 @@ struct level { ID3D11Texture2D *t; ID3D11RenderTargetView *rt; ID3D11ShaderResou
 static level lv[5];
 static MBContained post_edge;
 static int lv_w, lv_h;
-struct GU { float map[4]; float uvc[4]; float gb[4]; float shape[8][4]; float rad[8][4]; float misc[4]; };
+struct GU { float map[4]; float uvc[4]; float gb[4]; float shape[8][4]; float rad[8][4]; float misc[4]; float rmap[4]; float ruvc[4]; };
 static GU gu;
 static ID3D11ShaderResourceView *gsrv;
+// the capture's sharp level liquid glass sees through its lip (t1 while it is drawn)
+static ID3D11ShaderResourceView *rsrv;
 // What is a window's own (win_app.c: the windows of one run): its swap chain and its buffer's view, its composition's
 // target, root, the native views' visual under the canvas's and the canvas's (NULL: the swap chain is the window's own),
 // its buffer's size in pixels and its size in points and scale (mb_render_set_size's); the last frame, kept for
@@ -145,8 +147,9 @@ static const char *shader_src =
     "#endif\n"
     "cbuffer U : register(b0) { float2 vp; float scale; float pad; };\n"
     "// glass (src/ui/glass.mbt): where a point is in the blurred copy under it (uv = p * gmap.xy + gmap.zw, kept in guvc),\n"
-    "// a liquid group's bounds, shapes, corners (x of each), how many\n"
-    "cbuffer G : register(b1) { float4 gmap; float4 guvc; float4 ggb; float4 gshape[8]; float4 grad[8]; float4 gmisc; };\n"
+    "// a liquid group's bounds, shapes, corners (x of each), how many; where it is in the capture's sharp level (img while\n"
+    "// liquid glass is drawn: capture's rsrv)\n"
+    "cbuffer G : register(b1) { float4 gmap; float4 guvc; float4 ggb; float4 gshape[8]; float4 grad[8]; float4 gmisc; float4 grmap; float4 gruvc; };\n"
     "Texture2D atlas : register(t0);\n"
     "Texture2D img : register(t1);\n"
     "Texture2D bd : register(t2);\n"
@@ -217,6 +220,10 @@ static const char *shader_src =
     "}\n"
     "float3 backdrop(float2 p) {\n"
     "  return bd.SampleLevel(samp, clamp(p * gmap.xy + gmap.zw, guvc.xy, guvc.zw), 0).rgb;\n"
+    "}\n"
+    "// what is under liquid glass at p, not blurred\n"
+    "float3 sharp(float2 p) {\n"
+    "  return img.SampleLevel(samp, clamp(p * grmap.xy + grmap.zw, gruvc.xy, gruvc.zw), 0).rgb;\n"
     "}\n"
     "float luma(float3 c) { return dot(c, float3(0.2126, 0.7152, 0.0722)); }\n"
     "// how much of the pixel at p its rounded clip keeps (r: the corners' radii, top left, then clockwise; s: how smooth\n"
@@ -315,32 +322,64 @@ static const char *shader_src =
     "    return (t * col.a) * cover;\n"
     "  }\n"
     "  if (kind == 6) {\n"
-    "    // liquid: one shape of the group's, merged; what is under it bent along the bezel, the colours split a little\n"
+    "    // liquid: one shape of the group's, merged, a drop of glass on what is under it: its height a squircle's meniscus\n"
+    "    // over the bezel (z = (1 - r^4)^(1/4), r 0 where the bezel starts in, 1 at the rim), what is under it seen through\n"
+    "    // it bent by Snell's law (n = 1.52), the colours split a little: blurred on its flat, sharp through its lip (the\n"
+    "    // capture's level that is not blurred, R); its rim a cool body, a bright ridge 0.75 in from its edge and a sharp\n"
+    "    // cool edge outside it, so it reads on white as on colour\n"
     "    float k = I.pd.w;\n"
     "    float d = sd_group(p, k);\n"
     "    float a = saturate(0.5 - d * scale);\n"
     "    if (a <= 0.0) discard;\n"
     "    float e = 0.5;\n"
-    "    float2 grad2 = float2(sd_group(p + float2(e, 0.0), k) - sd_group(p - float2(e, 0.0), k),\n"
-    "                          sd_group(p + float2(0.0, e), k) - sd_group(p - float2(0.0, e), k));\n"
-    "    float2 n = grad2 / max(length(grad2), 1e-4);\n"
+    "    float2 grad = float2(sd_group(p + float2(e, 0.0), k) - sd_group(p - float2(e, 0.0), k),\n"
+    "                 sd_group(p + float2(0.0, e), k) - sd_group(p - float2(0.0, e), k));\n"
+    "    float2 n2 = grad / max(length(grad), 1e-4);\n"
     "    float bezel = max(I.c2.y, 1.0);\n"
-    "    float edge = 1.0 - saturate(-d / bezel);\n"
-    "    float disp = I.pd.y * (1.0 - sqrt(max(1.0 - edge * edge, 0.0)));\n"
-    "    float2 off = -n * disp;\n"
+    "    // (r: 0 on the flat inside, d <= -bezel; 1 at the rim, d = 0; the slope rises smoothly out of the flat)\n"
+    "    float r = saturate(1.0 + d / bezel);\n"
+    "    float r2 = r * r;\n"
+    "    float r4 = r2 * r2;\n"
+    "    float slope = 0.48 * (r2 * r) / pow(max(1.0 - r4, 0.035), 0.75);\n"
+    "    float inv_n = 1.0 / sqrt(slope * slope + 1.0);\n"
+    "    float2 Nxy = n2 * (slope * inv_n);\n"
+    "    float Nz = inv_n;\n"
+    "    // (Snell's law: the light comes straight down, (0, 0, -1), from air into glass: eta = 1 / 1.52)\n"
+    "    float eta = 0.6578947;\n"
+    "    float k_ior = max(1.0 - eta * eta * (1.0 - Nz * Nz), 0.0);\n"
+    "    float kt = eta * Nz - sqrt(k_ior);\n"
+    "    float2 Txy = Nxy * kt;\n"
+    "    float Tz = -eta + kt * Nz;\n"
+    "    // (at most pad.y away: |Txy / Tz| * 1.18 is 0.988 at the steepest, so what capture keeps round it is enough)\n"
+    "    float2 off = Txy * (1.18 * I.pd.y / max(-Tz, 1e-4));\n"
     "    float ch = I.pd.z;\n"
-    "    float3 c = float3(backdrop(p + off * (1.0 + ch)).r, backdrop(p + off).g, backdrop(p + off * (1.0 - ch)).b);\n"
+    "    float3 cf = float3(backdrop(p + off * (1.0 + ch)).r, backdrop(p + off).g, backdrop(p + off * (1.0 - ch)).b);\n"
+    "    float3 cs = float3(sharp(p + off * (1.0 + ch)).r, sharp(p + off).g, sharp(p + off * (1.0 - ch)).b);\n"
+    "    // (the lip sharp, the flat blurred; its tint whole on the flat, where words lie, and less through the lip)\n"
+    "    float lens = r2 * smoothstep(0.22, 0.90, r);\n"
+    "    float3 c = lerp(cf, cs, lens * 0.82);\n"
     "    float lc = luma(c);\n"
     "    c = max(lerp(float3(lc, lc, lc), c, I.prm.z), 0.0);\n"
-    "    c = c * (1.0 - col.a) + col.rgb * col.a;\n"
-    "    // the rim lit from the top left, and less across from it\n"
-    "    float ndl = dot(n, float2(-0.6, -0.8));\n"
-    "    float band = saturate(1.0 + d / 2.5);\n"
-    "    float spec = I.c2.x * (band * (0.9 * pow(max(ndl, 0.0), 1.5) + 0.45 * pow(max(-ndl, 0.0), 1.5)) +\n"
-    "                           0.3 * edge * edge * max(ndl, 0.0));\n"
-    "    // the edge shaded, more on the side away from the light, so the shape reads over a light ground too\n"
-    "    c *= 1.0 - I.c2.x * band * (0.1 + 0.25 * max(-ndl, 0.0));\n"
-    "    c = c + (1.0 - c) * saturate(spec);\n"
+    "    float tint_a = col.a * (1.0 - 0.52 * lens);\n"
+    "    c = c * (1.0 - tint_a) + col.rgb * tint_a;\n"
+    "    float ndl = dot(n2, float2(-0.6, -0.8));\n"
+    "    float rim = I.c2.x;\n"
+    "    // (1) the body of the meniscus a little cooler, never darker than a shade: room for the ridge to show white\n"
+    "    float body_ring = r2 * (1.0 - 0.35 * r);\n"
+    "    c = lerp(c, c * float3(0.92, 0.945, 0.98), rim * 0.42 * body_ring);\n"
+    "    // (2) a ridge of light 0.75 in from the edge, most at the top left and some across from it, and a Fresnel sheen:\n"
+    "    // towards white itself, not by what is left of white, so a light ground does not swallow it\n"
+    "    float spec_band = saturate(1.0 - abs(d + 0.75) / 0.95);\n"
+    "    spec_band *= spec_band;\n"
+    "    float fresnel = pow(saturate(1.0 - Nz), 2.6);\n"
+    "    float spec = rim * (spec_band * (0.92 * pow(max(ndl, 0.0), 1.8) + 0.48 * pow(max(-ndl, 0.0), 2.2) + 0.22) +\n"
+    "                        0.28 * fresnel * max(ndl + 0.3, 0.0));\n"
+    "    c = lerp(c, float3(1.0, 1.0, 1.0), clamp(spec, 0.0, 0.92));\n"
+    "    // (3) its outermost 0.85 a sharp cool edge outside the ridge, so its outline holds on white\n"
+    "    float edge_b = saturate(1.0 + d / 0.85);\n"
+    "    edge_b *= edge_b;\n"
+    "    float struct_rim = rim * edge_b * (0.165 * (1.0 - 0.50 * max(ndl, 0.0)) + 0.045 * max(-ndl, 0.0));\n"
+    "    c = lerp(c, c * float3(0.36, 0.41, 0.50), clamp(struct_rim, 0.0, 0.34));\n"
     "    c += mb_dither(p * scale) / 255.0;\n"
     "    return (float4(c, 1.0) * (a * I.c2.w)) * cover;\n"
     "  }\n"
@@ -1172,6 +1211,15 @@ static int capture(ID3D11RenderTargetView *target, int pw, int ph, const float *
   gu.map[0] = sc / d / L->w; gu.map[1] = sc / d / L->h;
   gu.map[2] = -(float)px0 / d / L->w; gu.map[3] = -(float)py0 / d / L->h;
   gu.uvc[0] = 0.5f / L->w; gu.uvc[1] = 0.5f / L->h; gu.uvc[2] = (lw[k] - 0.5f) / L->w; gu.uvc[3] = (lh[k] - 0.5f) / L->h;
+  // the sharp one, of the levels its blur left as they were copied: the half once halved twice or more, the copy once
+  // halved (not contained: contained, its copy is the edge's pass's), else L
+  int rk = k >= 2 ? 1 : k == 1 && !contained ? 0 : k;
+  level *R = k >= 2 ? &lv[1] : k == 1 && !contained ? &lv[0] : L;
+  float rd = (float)(1 << rk);
+  rsrv = R->srv;
+  gu.rmap[0] = sc / rd / R->w; gu.rmap[1] = sc / rd / R->h;
+  gu.rmap[2] = -(float)px0 / rd / R->w; gu.rmap[3] = -(float)py0 / rd / R->h;
+  gu.ruvc[0] = 0.5f / R->w; gu.ruvc[1] = 0.5f / R->h; gu.ruvc[2] = (lw[rk] - 0.5f) / R->w; gu.ruvc[3] = (lh[rk] - 0.5f) / R->h;
   return 1;
 }
 
@@ -1275,6 +1323,7 @@ static void encode(ID3D11RenderTargetView *target, int pw, int ph, int32_t count
   ctx->UpdateSubresource(ubuf, 0, NULL, &u, 0, 0);
   memset(&gu, 0, sizeof gu);
   gsrv = NULL;
+  rsrv = NULL;
   segs_upload(f, count);
   main_state(target, pw, ph);
   if (part) {
@@ -1297,8 +1346,11 @@ static void encode(ID3D11RenderTargetView *target, int pw, int ph, int32_t count
         main_state(target, pw, ph);
       }
       ctx->PSSetShader(ps, NULL, 0);
-      // liquid: the group as one shape, drawn once
-      if (shows) ctx->DrawInstanced(6, (int)(f[start * MB_INST + 5] + 0.5f) == 6 ? 1 : (UINT)(end - start), 0, (UINT)start);
+      // liquid: the group as one shape, drawn once, its capture's sharp level in t1 (an image's run after it binds its
+      // own there again)
+      int liquid = (int)(f[start * MB_INST + 5] + 0.5f) == 6;
+      if (shows && liquid) ctx->PSSetShaderResources(1, 1, rsrv ? &rsrv : &atlas_srv);
+      if (shows) ctx->DrawInstanced(6, liquid ? 1 : (UINT)(end - start), 0, (UINT)start);
       start = end;
       continue;
     }

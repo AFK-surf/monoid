@@ -51,11 +51,12 @@ fn message_files_node(
   at : String,
   over? : () -> Double = fn() { 0.0 },
 ) -> Unit {
-  // (the files as they are now, worked out once as what they are worked out of changes: each file's every reading of
-  // itself below goes through this, not through the message again)
-  let listed = @signals.computed(fn(_) { list() })
-  let list = fn() { listed.get() }
+  // (none, as most messages have: nothing worked out for them but whether there are some)
   parent.show(fn() { list().length() > 0 }, fn(s) {
+    // (the files as they are now, worked out once as what they are worked out of changes: each file's every reading of
+    // itself below goes through this, not through the message again)
+    let listed = @signals.computed(fn(_) { list() })
+    let list = fn() { listed.get() }
     s.by_room(fn(r, room) {
       r.box(fn(files) {
         @sf.style_node(files, fn() {

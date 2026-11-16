@@ -46,7 +46,10 @@ below, sends them along).
   shows first what it would move (`GET /retire/preview`, found by the same functions the retirement uses). Each
   session's room whole (an archived one's packed workspace with it; `footprint.ts roomOf`, a session whose directory is
   not the station's own counted and left) and its agents' transcripts go by their bytes to the same places under the
-  other's data directory, only under `sessions/` and `transcripts*/` (`carry.ts`: the MoonBit program's, `--builder
+  other's data directory, only under `sessions/` and `transcripts*/`, and what an Antigravity CLI keeps of a
+  conversation in its profile's home (`carry.ts` `cliKept`: `session/load` takes it up from there, not from the
+  station's transcript; the profile it runs on there brings it into its own home, agents/agy.ts `agyBringIn`; a chat
+  moved without it got "trajectory not found", 2026-11-16) (`carry.ts`: the MoonBit program's, `--builder
   replica-carry`, `station/mb/src/replica/carry.mbt`, a process each, a cancel killing it; built for every system a
   station runs on, so no worker thread to fall back to; the worker's from before is `station/test/carry-reference.ts`,
   which `station/test/mb-replica-carry.test.ts` holds it to): a checkout's files as git

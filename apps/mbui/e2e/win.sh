@@ -75,10 +75,14 @@ echo '{"profiles":[{"id":"cc","runtime":"claude","home":"homes/cc","models":["cl
 echo '{}' > "$STATION/data/homes/cc/.credentials.json"
 mesh=$(cd "$SF" && node scripts/native.ts file mesh win32-x64)
 runner=$(cd "$SF" && node scripts/native.ts file runner win32-x64)
+# (its MoonBit program, as a release has it beside main.js: every system's station reads through it, none in
+# TypeScript to fall back to since #6377; without it the station started nowhere here, "station not up" each day from
+# 2026-11-15, as e2e-local.sh gives it STILLFAIL_MB_READER)
+reader=$(cd "$SF" && node scripts/native.ts file reader win32-x64)
 station_env() {
   for v in $(env | grep -Eo '^(STILLFAIL|CLAUDE|CODEX)[A-Z0-9_]*=' | tr -d =); do unset $v; done
   export HOME="$(w "$STATION/home")" USERPROFILE="$(w "$STATION/home")" PATH="$SF/station/test/fake:$PATH"
-  export STILLFAIL_NO_DISCOVERY=1 STILLFAIL_DATA="$(w "$STATION/data")" STILLFAIL_MESH_NATIVE="$mesh" STILLFAIL_RUNNER="$runner"
+  export STILLFAIL_NO_DISCOVERY=1 STILLFAIL_DATA="$(w "$STATION/data")" STILLFAIL_MESH_NATIVE="$mesh" STILLFAIL_RUNNER="$runner" STILLFAIL_MB_READER="$reader"
 }
 token=$(grep -m1 '^ENROLL ' "$OUT/cloud.log" | awk '{print $NF}' | tr -d '\r')
 station_ok=0

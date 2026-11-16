@@ -159,20 +159,21 @@ static void init(void) {
                                   DWRITE_GRID_FIT_MODE_DEFAULT, &p2);
   params = p2;
   // Monochrome text in grayscale (used at 150%+ high-DPI scaling, on OLED panels, or when ClearType is off in Windows):
-  // vertical grid-fitting, natural 6x1 vertical crispness at UI sizes (DWRITE_RENDERING_MODE_DEFAULT), and contrast
-  // boost (0.5) at linear gamma (1.0), without RGB subpixel fringing.
+  // vertical grid-fitting with symmetric 6x5 antialiasing (DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC: horizontal stems
+  // snapped to pixel rows by DWRITE_GRID_FIT_MODE_DEFAULT, while diagonal strokes and curves stay smooth vertically)
+  // and gentle contrast boost (0.2) at linear gamma (1.0), without RGB subpixel fringing.
   IDWriteRenderingParams2 *g2 = NULL;
-  dw->CreateCustomRenderingParams(1.0f, 0.5f, 0.5f, 0.0f, DWRITE_PIXEL_GEOMETRY_FLAT,
-                                  DWRITE_RENDERING_MODE_DEFAULT, DWRITE_GRID_FIT_MODE_DEFAULT, &g2);
+  dw->CreateCustomRenderingParams(1.0f, 0.2f, 0.2f, 0.0f, DWRITE_PIXEL_GEOMETRY_FLAT,
+                                  DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC, DWRITE_GRID_FIT_MODE_DEFAULT, &g2);
   params_gray = g2;
   // A glyph in one colour drawn with ClearType at < 150% on an RGB/BGR LCD: each of a pixel's three stripes covered on
-  // its own, with vertical grid-fitting, natural 6x1 ClearType at UI sizes (DWRITE_RENDERING_MODE_DEFAULT), and
-  // contrast boost (0.5) at linear gamma (1.0).
+  // its own, with vertical grid-fitting, symmetric 6x5 antialiasing on diagonals/curves, and gentle contrast boost
+  // (0.2) at linear gamma (1.0).
   DWRITE_PIXEL_GEOMETRY geom = detect_pixel_geometry();
   if (geom != DWRITE_PIXEL_GEOMETRY_FLAT) {
     IDWriteRenderingParams2 *c2 = NULL;
-    dw->CreateCustomRenderingParams(1.0f, 0.5f, 0.5f, 1.0f, geom,
-                                    DWRITE_RENDERING_MODE_DEFAULT, DWRITE_GRID_FIT_MODE_DEFAULT, &c2);
+    dw->CreateCustomRenderingParams(1.0f, 0.2f, 0.2f, 1.0f, geom,
+                                    DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC, DWRITE_GRID_FIT_MODE_DEFAULT, &c2);
     params_ct = c2;
   }
   D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, __uuidof(ID2D1Factory), NULL, (void **)&d2d);
