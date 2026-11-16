@@ -142,6 +142,15 @@ jobs:
       MBC_STORE: ${{ github.workspace }}/.ci/mbc-store
       HBC_CACHE: ${{ github.workspace }}/.ci/hbc
     steps:
+      # (when the job is cut, its timeout-minutes above, for its build's own limit to the second (scripts/with-timeout.sh);
+      # and the runner's image (GitHub's ImageVersion; none, a runner of our own: own), for the units' store: GitHub
+      # gives a push one of two images while it moves to a newer one, and their compilers or headers make other units,
+      # so one store over both kept only the last run's image's units (used.sh), the other's run compiling all again:
+      # preview's ios on main, 20261104.0337.1 and 20261112.0361.1 in turn, 43919855625 to 43925936518, 2026-11-16)
+      - name: The job's end and its image
+        run: |
+          echo "JOB_END=$(( $(date +%s) + ${{ github.event_name == 'push' && 5 || 10 }} * 60 ))" >> "$GITHUB_ENV"
+          echo "IMG=$(printf '%s' "${ImageVersion:-own}" | tr -c 'A-Za-z0-9._-' '_')" >> "$GITHUB_ENV"
       - uses: actions/checkout@v5
         with: { fetch-depth: 0, filter: "blob:none" } # the build's number is the commits in the history (their files only as checked out)
       # (GTK 4 and what the host and the core link beside it: libsoup, libsecret)
@@ -161,10 +170,13 @@ jobs:
           path: |
             .ci/mbc-store
             .ci/hbc
-          key: mbui-linux-${{ matrix.arch }}-m-${{ github.sha }}
+          key: mbui-linux-${{ matrix.arch }}-m-${{ env.IMG }}-${{ github.sha }}
           # (m- alone: GitHub tries every restore key on the branch's own caches before main's, so a wider name took the
-          # branch's last push for main's newest, a push after main's moved compiling it all again)
-          restore-keys: mbui-linux-${{ matrix.arch }}-m-
+          # branch's last push for main's newest, a push after main's moved compiling it all again. This image's first,
+          # else another's)
+          restore-keys: |
+            mbui-linux-${{ matrix.arch }}-m-${{ env.IMG }}-
+            mbui-linux-${{ matrix.arch }}-m-
       - if: github.ref != 'refs/heads/main'
         run: mkdir -p .ci && mv .ci "$RUNNER_TEMP/ci-main"
       - uses: actions/cache/restore@v4
@@ -174,8 +186,10 @@ jobs:
           path: |
             .ci/mbc-store
             .ci/hbc
-          key: mbui-linux-${{ matrix.arch }}-b-${{ github.sha }}
-          restore-keys: mbui-linux-${{ matrix.arch }}-b-
+          key: mbui-linux-${{ matrix.arch }}-b-${{ env.IMG }}-${{ github.sha }}
+          restore-keys: |
+            mbui-linux-${{ matrix.arch }}-b-${{ env.IMG }}-
+            mbui-linux-${{ matrix.arch }}-b-
       - if: github.ref != 'refs/heads/main'
         run: |
           mkdir -p .ci && cp -a -n "$RUNNER_TEMP/ci-main/." .ci/ && rm -rf "$RUNNER_TEMP/ci-main"
@@ -201,15 +215,15 @@ jobs:
       # behind to be caught up in five minutes was never saved again: Linux x64's on main, cut at its limit on nearly
       # every run from 11:50 UTC on 2026-11-15, after #6483 made every unit new, 746 of 992 units compiled where it got
       # through, its beta not put all that while)
+      # (cut 35 s before the job is: it begins some 40 s in, and the stop, the key and the save take some 30 s)
       - name: Build (APP=stillfail)
         id: build
-        timeout-minutes: 3.5
         run: |
           # (every process of the build's carries this mark, for the step after to stop what is left of it when it was
           # cut: a step stopped leaves its children running, and they wrote the store as the cache's tar read it)
           echo "$$-$(date +%s%N)" > "$RUNNER_TEMP/build-tree"
           export MBUI_BUILD_TREE=$(cat "$RUNNER_TEMP/build-tree")
-          bash apps/mbui/scripts/linux.sh build
+          bash scripts/with-timeout.sh @$((JOB_END - 35)) bash apps/mbui/scripts/linux.sh build
       - name: The caches' keys, by what they hold
         if: always() && steps.build.outcome != 'skipped'
         run: |
@@ -229,7 +243,7 @@ jobs:
             done
             find .ci/mbc-store -name '*.lock' -delete 2>/dev/null || true
           fi
-          echo "STORE_KEY=mbui-linux-${{ matrix.arch }}-${{ github.ref == 'refs/heads/main' && 'm' || 'b' }}-$(sh apps/mbui/scripts/held.sh .ci/mbc-store .ci/hbc)" >> "$GITHUB_ENV"
+          echo "STORE_KEY=mbui-linux-${{ matrix.arch }}-${{ github.ref == 'refs/heads/main' && 'm' || 'b' }}-$IMG-$(sh apps/mbui/scripts/held.sh .ci/mbc-store .ci/hbc)" >> "$GITHUB_ENV"
       - if: always() && env.STORE_KEY != '' && env.STORE_KEY != steps.store.outputs.cache-matched-key && env.STORE_KEY != steps.own.outputs.cache-matched-key
         uses: actions/cache/save@v4
         with:
@@ -299,6 +313,15 @@ jobs:
       # (the shell's cargo build in the checkout, as mac-app.sh's is, for the cache below)
       CARGO_TARGET_DIR: ${{ github.workspace }}/apps/mbui/out/core-target
     steps:
+      # (when the job is cut, its timeout-minutes above, for its build's own limit to the second (scripts/with-timeout.sh);
+      # and the runner's image (GitHub's ImageVersion; none, a runner of our own: own), for the units' store: GitHub
+      # gives a push one of two images while it moves to a newer one, and their compilers or headers make other units,
+      # so one store over both kept only the last run's image's units (used.sh), the other's run compiling all again:
+      # preview's ios on main, 20261104.0337.1 and 20261112.0361.1 in turn, 43919855625 to 43925936518, 2026-11-16)
+      - name: The job's end and its image
+        run: |
+          echo "JOB_END=$(( $(date +%s) + ${{ github.event_name == 'push' && 5 || 10 }} * 60 ))" >> "$GITHUB_ENV"
+          echo "IMG=$(printf '%s' "${ImageVersion:-own}" | tr -c 'A-Za-z0-9._-' '_')" >> "$GITHUB_ENV"
       - name: iOS's SDK 27.1 or later
         run: |
           v=$(xcrun --sdk iphoneos --show-sdk-version)
@@ -313,8 +336,11 @@ jobs:
           path: |
             .ci/mbc-store
             .ci/hbc
-          key: mbui-ios-${{ github.sha }}
-          restore-keys: mbui-ios-
+          key: mbui-ios-${{ env.IMG }}-${{ github.sha }}
+          # (this image's, else another's: each image's kept apart, above)
+          restore-keys: |
+            mbui-ios-${{ env.IMG }}-
+            mbui-ios-
       # (Hermes for Apple and its hermesc by the versions core.sh pins, as pipeline.yml's desktop job keeps them)
       - id: hermes
         run: echo "key=$(grep -E '^HERMES_(RN|APPLE_URL|APPLE_SHA256)=' apps/mbui/scripts/core.sh | shasum -a 256 | cut -c1-16)" >> "$GITHUB_OUTPUT"
@@ -380,19 +406,19 @@ jobs:
       # (a build cut short by its own limit, before the job's, still keeps what it compiled: main's store saved over what
       # was restored, nothing taken out, so the next run goes on from there, as the Linux jobs' do. Cut at the job's five
       # minutes it kept nothing: main's ten pushes up to c64dfaa7 (2026-11-16, libs/mbui changed) each compiled from
-      # the same old store till they were cut, 43908146733's after 254 s of it. A push's 3.4 minutes: it begins some
-      # 60 s in, and the stop, the key and the save take some 30 s)
+      # the same old store till they were cut, 43908146733's after 254 s of it. Cut 35 s before the job is: it begins
+      # some 60 s in, and the stop, the key and the save take some 30 s)
       - name: The iOS app for a device, as an .ipa
         id: build
-        timeout-minutes: ${{ github.event_name == 'push' && 3.4 || 8.4 }}
         run: |
           # (every process of the build's carries this mark, for the step after to stop what is left of it when it was
           # cut: a step stopped leaves its children running, and they wrote the store as the cache's tar read it)
           echo "$$-$(date +%s)-$RANDOM" > "$RUNNER_TEMP/build-tree"
           export MBUI_BUILD_TREE=$(cat "$RUNNER_TEMP/build-tree")
-          APP=stillfail MBUI_IOS_SDK=iphoneos MBUI_IOS_ID=fail.still.mbui SF_SRC=$PWD bash apps/mbui/scripts/ios.sh build
-          cd apps/mbui/out/ios-device && rm -rf Payload *.ipa && mkdir Payload && cp -R MBUI.app Payload/
-          zip -qry stillfail-mbui.ipa Payload && ls -la stillfail-mbui.ipa
+          APP=stillfail MBUI_IOS_SDK=iphoneos MBUI_IOS_ID=fail.still.mbui SF_SRC=$PWD bash scripts/with-timeout.sh @$((JOB_END - 35)) bash -ec '
+            bash apps/mbui/scripts/ios.sh build
+            cd apps/mbui/out/ios-device && rm -rf Payload *.ipa && mkdir Payload && cp -R MBUI.app Payload/
+            zip -qry stillfail-mbui.ipa Payload && ls -la stillfail-mbui.ipa'
       # (for people: no later job downloads it, so a reset of the artifact service fails nothing that passed, main
       # 391fece4's ios, its CreateArtifact timed out five times, 2026-11-11)
       - uses: actions/upload-artifact@v4
@@ -427,7 +453,7 @@ jobs:
             done
             find .ci/mbc-store -name '*.lock' -delete 2>/dev/null || true
           fi
-          echo "STORE_KEY=mbui-ios-$(sh apps/mbui/scripts/held.sh .ci/mbc-store .ci/hbc)" >> "$GITHUB_ENV"
+          echo "STORE_KEY=mbui-ios-$IMG-$(sh apps/mbui/scripts/held.sh .ci/mbc-store .ci/hbc)" >> "$GITHUB_ENV"
       - if: always() && github.ref == 'refs/heads/main' && env.STORE_KEY != '' && env.STORE_KEY != steps.store.outputs.cache-matched-key
         uses: actions/cache/save@v4
         with:

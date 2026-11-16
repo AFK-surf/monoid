@@ -50,7 +50,11 @@ DEV_NAME=${MBUI_IOS_DEVICE:-ios-mbui-sf}
 PKG=${APP:-demo}
 LOG=${MBUI_IOS_LOG:-$PWD/$OUT/app.log}
 SDK=$(xcrun --sdk $IOS_SDK --show-sdk-path)
-CC="xcrun --sdk $IOS_SDK clang -arch arm64 $MIN -isysroot $SDK"
+# (Xcode's clang itself, found once: through `xcrun` each of the app's ~1100 units ran xcrun first, and mbc keys a
+# unit by its compiler's file, there /usr/bin/xcrun, which a macOS update of GitHub's image changes with Xcode as it
+# was, so that every unit kept for the next run was another's: preview's ios, images 20261104.0337.1 and 20261112.0361.1)
+CLANG=$(xcrun --sdk $IOS_SDK -f clang)
+CC="$CLANG -arch arm64 $MIN -isysroot $SDK"
 CFLAGS="-I$MOON_HOME/include -I$ROOT/src/host -I$ROOT/ios/shim -fwrapv -fno-strict-aliasing -Wno-unused-value -O2 -DMOONBIT_ALLOCATOR=MOONBIT_ALLOCATOR_SYSTEM"
 
 APP_EXTRA= APP_LINK= APP_ENTITLEMENTS=

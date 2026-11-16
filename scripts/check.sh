@@ -308,6 +308,10 @@ if part ts; then
   if touches '^\.github/workflows/|^scripts/ci-timeouts\.py$'; then
     step "CI jobs: 5 minutes at most" python3 scripts/ci-timeouts.py
   fi
+  # A CI step's limit to the second (its own timeout-minutes is whole minutes).
+  if touches '^scripts/with-timeout'; then
+    step "a command's limit to the second" bash scripts/with-timeout-test.sh
+  fi
   # The UIs never make a request of a station or still.fail cloud themselves: they name what they want done
   # (client/core-ts/src/ops.ts), and the core, which knows what it changes, brings every topic that shows it up to date.
   # the Wasm side of the native host's calls as their declarations make it

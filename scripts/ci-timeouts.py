@@ -52,7 +52,13 @@ bad = []
 for path in sorted(glob.glob(os.path.join(root, ".github/workflows/*.yml"))):
     name = os.path.relpath(path, root)
     jobs, job, in_jobs = [], None, False
-    for line in open(path, encoding="utf-8"):
+    for n, line in enumerate(open(path, encoding="utf-8"), 1):
+        # (a job's or a step's minutes are whole: GitHub's runner takes a step's 3.8, 3.5, 3.4 or 3.2 as 3, cutting it
+        # up to 48 s early (preview.yml's ios 43924444930, 2026-11-16). A step that must end to the second runs its
+        # command under scripts/with-timeout.sh)
+        m = re.match(r"^\s*timeout-minutes:\s*(.+?)\s*$", line)
+        if m and re.search(r"\d\.\d", m.group(1)):
+            bad.append(f"{name}:{n}: timeout-minutes {m.group(1)}: whole minutes only (scripts/with-timeout.sh for seconds)")
         if re.match(r"^jobs:\s*$", line):
             in_jobs = True
             continue

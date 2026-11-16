@@ -950,6 +950,8 @@ jobs:
       MBC_STORE: ${{ github.workspace }}/.ci/mbc-store
       HBC_CACHE: ${{ github.workspace }}/.ci/hbc
     steps:
+      # (when the job is cut, its timeout-minutes above, for its build's own limit to the second, scripts/with-timeout.sh)
+      - run: echo "JOB_END=$(( $(date +%s) + ${{ github.event_name == 'push' && 5 || 10 }} * 60 ))" >> "$GITHUB_ENV"
       - uses: actions/checkout@v5
         with: { fetch-depth: 0, filter: "blob:none" } # its build is the commits in the history
       # (mbc's units and the core's bytecode, and moon's own build below: main's newest, saved by this job on main by what
@@ -1065,12 +1067,16 @@ jobs:
       # restored, nothing taken out, so the next run goes on from there, as preview.yml's Linux build does (#6575).
       # Saved only at the job's end, main's c3e7df99 and 4c3a71b2 (2026-11-16, libs/mbui/src/ui changed, 724 of 1028
       # units compiled, moon's build 235 s) were cut at the job's five minutes with nothing kept, the next run as far behind.
-      # 3.2 minutes: it begins some 67 s in, and the worker's stop, the key and the save take some 25 s. Main's alone: a
-      # branch saves no store, so only the job's own limit holds it)
+      # Cut 35 s before the job is (JOB_END, scripts/with-timeout.sh): it begins some 67 s in, and the worker's stop, the
+      # key and the save take some 25 s. Main's alone: a branch saves no store, so only the job's own limit holds it)
       - name: Finish the Mac app build
         id: finish
-        timeout-minutes: ${{ github.ref == 'refs/heads/main' && 3.2 || 5 }}
-        run: bash .github/mac-release-prebuild.sh wait
+        run: |
+          if [ "$GITHUB_REF" = refs/heads/main ]; then
+            bash scripts/with-timeout.sh @$((JOB_END - 35)) bash .github/mac-release-prebuild.sh wait
+          else
+            bash .github/mac-release-prebuild.sh wait
+          fi
       # Hand over the same build to the signing job; mac-app.sh checks its build and beta face when taking it back.
       - name: Bundle the beta Mac app for signing
         env:

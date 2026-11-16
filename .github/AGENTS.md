@@ -12,7 +12,10 @@
   holds no one back and is mended forward by whoever brought it, never rolled back: the run's
   `rates-said` says what merged since the last run that went through, the likeliest first (`scripts/rates-said.sh`).
 - Every job says `timeout-minutes`, 5 at most (`scripts/ci-timeouts.py`; only its `LONGER`, runs of the day's or by
-  hand, 10). A job that needs longer is made faster.
+  hand, 10). A job that needs longer is made faster. Minutes are whole (the runner cut a step's 3.8 at 3): a step that
+  must end some seconds before its job, for the caches saved after it, runs under `scripts/with-timeout.sh`
+  `@$((JOB_END - 35))`, JOB_END written by the job's first step. The units' stores of GitHub's images are keyed by the
+  image (`IMG`, its `ImageVersion`): two images in turn kept only the last run's units in one.
 - No paid runners (GitHub's larger ones): horizontal Linux test slices (`check-station`, `check-core`, and `mbui-check`
   unless `vars.CI_1_MBUI == 'on'`) and small deploy jobs run on GitHub's standard elastic runners; non-Apple `natives`,
   `natives-main`, `check` and cross-platform `side` parts run on `ci-1` (`linux-ci`, `linux-quick`, a 16-core Linux
