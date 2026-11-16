@@ -11,13 +11,15 @@ mod local;
 mod usage;
 mod verify;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
 use iroh::address_lookup::{AddressLookup, AddressLookupBuilder, AddressLookupBuilderError, EndpointData, Error as AddressLookupError, Item as AddressLookupItem};
 use iroh::endpoint::{Connection as IrohConnection, QuicTransportConfig, RecvStream, SendStream, presets::Minimal};
-use iroh::{Endpoint as IrohEndpoint, EndpointAddr, EndpointId, RelayMode, RelayUrl, SecretKey, Watcher};
+use iroh::address_lookup::EndpointInfo;
+use iroh::{Endpoint as IrohEndpoint, EndpointAddr, EndpointId, RelayMode, RelayUrl, SecretKey, TransportAddr, Watcher};
+use n0_future::StreamExt;
 use n0_future::boxed::BoxStream;
 use napi::bindgen_prelude::{Buffer, Promise};
 use napi_derive::napi;
@@ -87,14 +89,103 @@ pub struct RelayEntry {
 
 #[napi]
 pub struct Endpoint {
-    inner: IrohEndpoint,
+    /// iroh's endpoint: another in its place, of the same key, once bound again on other relays (`rebind_relays`).
+    inner: StdMutex<IrohEndpoint>,
+    /// What it was bound with but its relays, to bind it again so.
+    made: Made,
     keepers: Arc<StdMutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
     /// The relays it was bound with: home on each, no keeper wanted there.
-    homes: Vec<RelayUrl>,
+    homes: StdMutex<Vec<RelayUrl>>,
     /// Connections coming that are held unanswered, not even their handshake (`hold_incoming`), and those held.
     held: Arc<StdMutex<(u32, Vec<iroh::endpoint::Incoming>)>>,
-    /// The connections whose handshakes are done, as each finishes (`accept`), once one was first asked for.
+    /// The connections whose handshakes are done, as each finishes (`accept`), once one was first asked for; and where
+    /// those of an endpoint bound again in its place go too, till it is closed.
     accepted: Arc<Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<IrohConnection>>>>,
+    giving: StdMutex<Option<tokio::sync::mpsc::UnboundedSender<IrohConnection>>>,
+    /// The relays the DHT may say a peer is on (`RelayFilter`).
+    filter: Arc<StdMutex<RelayFilter>>,
+    /// One binding again at a time.
+    rebinding: Mutex<()>,
+}
+
+/// What an endpoint is bound with but its relays (`bind`), kept to bind it again on others (`rebind_relays`).
+struct Made {
+    key: SecretKey,
+    alpns: Vec<Vec<u8>>,
+    entries: Vec<(RelayUrl, RelayUrl)>,
+    bind_addr: Option<std::net::SocketAddr>,
+    relay_only: bool,
+    lookup: bool,
+    discovery: bool,
+    /// As `set_congestion` changed it since.
+    congestion: StdMutex<String>,
+}
+
+/// The relays a station's address lookup (the DHT) may say a peer is on: those the station dials that peer by
+/// (`connect`'s `relays`), else those it is on itself; any while iroh's public relays are on (none of its own answers,
+/// so any way may do). A peer that is also of a workspace of another station's that did not turn a relay off, or the
+/// DHT's record of before it was, would otherwise have this endpoint dial it through a relay the station's workspace
+/// turned off (iroh resolves an address with no path chosen, and takes every relay it is told). Its IP addresses are
+/// kept: what is found on a LAN or punched through is no relay.
+#[derive(Debug, Default)]
+struct RelayFilter {
+    endpoint: HashSet<RelayUrl>,
+    peers: HashMap<EndpointId, HashSet<RelayUrl>>,
+    public_on: bool,
+}
+
+impl RelayFilter {
+    /// What of `item` may be dialed: none of it where it said only relays not allowed.
+    fn item(&self, item: AddressLookupItem) -> Option<AddressLookupItem> {
+        if self.public_on {
+            return Some(item);
+        }
+        let allowed = self.peers.get(&item.endpoint_id()).unwrap_or(&self.endpoint);
+        let data = &item.endpoint_info().data;
+        let all = data.addrs().count();
+        let addrs: Vec<TransportAddr> = data.addrs().filter(|a| !matches!(a, TransportAddr::Relay(url) if !allowed.contains(url))).cloned().collect();
+        if addrs.is_empty() {
+            return None;
+        }
+        if addrs.len() == all {
+            return Some(item);
+        }
+        let mut kept = EndpointData::new(addrs);
+        kept.set_user_data(data.user_data().cloned());
+        Some(AddressLookupItem::new(EndpointInfo::from_parts(item.endpoint_id(), kept), item.provenance(), item.last_updated()))
+    }
+}
+
+/// An address lookup whose findings go through the endpoint's `RelayFilter`; made of a builder by `Holding`.
+#[derive(Debug)]
+struct Filtered<L>(L, Arc<StdMutex<RelayFilter>>);
+
+#[derive(Debug)]
+struct Holding<B>(B, Arc<StdMutex<RelayFilter>>);
+
+impl<B: AddressLookupBuilder> AddressLookupBuilder for Holding<B> {
+    fn into_address_lookup(self, endpoint: &IrohEndpoint) -> Result<impl AddressLookup, AddressLookupBuilderError> {
+        Ok(Filtered(self.0.into_address_lookup(endpoint)?, self.1))
+    }
+}
+
+impl<L: AddressLookup> AddressLookup for Filtered<L> {
+    fn publish(&self, data: &EndpointData) {
+        self.0.publish(data);
+    }
+
+    fn resolve(&self, endpoint_id: EndpointId) -> Option<BoxStream<Result<AddressLookupItem, AddressLookupError>>> {
+        let filter = self.1.clone();
+        let found = self.0.resolve(endpoint_id)?;
+        Some(
+            found
+                .filter_map(move |r| match r {
+                    Ok(item) => filter.lock().unwrap().item(item).map(Ok),
+                    Err(e) => Some(Err(e)),
+                })
+                .boxed(),
+        )
+    }
 }
 
 /// The connections' transport: the congestion controller named (BBR is opt-in: noq 1.3.0 can underestimate bandwidth
@@ -158,35 +249,98 @@ impl<L: AddressLookup> AddressLookup for Unmade<L> {
 #[napi]
 pub async fn bind(options: Options) -> napi::Result<Endpoint> {
     let bytes: [u8; 32] = options.secret_key.as_ref().try_into().map_err(|_| failed("the key is not 32 bytes"))?;
-    let key = SecretKey::from_bytes(&bytes);
     let relays: Vec<RelayUrl> = options.relay_urls.iter().map(|u| relay_url(u)).collect::<Result<_, _>>()?;
     let entries: Vec<(RelayUrl, RelayUrl)> = options.relay_entries.unwrap_or_default().iter().map(|e| Ok((relay_url(&e.entry)?, relay_url(&e.relay)?))).collect::<napi::Result<_>>()?;
-    let relay_map = iroh::RelayMap::from_iter(relays.iter().map(|relay| {
-        iroh::RelayConfig::from(relay.clone()).with_entries(entries.iter().filter(|(_, target)| target == relay).map(|(entry, _)| entry.clone()))
-    }));
-    let transport = transport(options.congestion.as_deref().unwrap_or("cubic"))?;
-    let mut builder = IrohEndpoint::builder(Minimal)
-        .secret_key(key.clone())
-        .alpns(options.alpns.iter().map(|a| a.to_vec()).collect())
-        .relay_mode(if relays.is_empty() { RelayMode::Disabled } else { RelayMode::Custom(relay_map) })
-        .home_on_every_relay()
-        .transport_config(transport);
-    if let Some(addr) = &options.bind_addr {
-        builder = builder.bind_addr(addr.parse::<std::net::SocketAddr>().map_err(failed)?).map_err(failed)?;
+    let bind_addr = options.bind_addr.as_deref().map(|a| a.parse::<std::net::SocketAddr>().map_err(failed)).transpose()?;
+    let congestion = options.congestion.unwrap_or_else(|| "cubic".into());
+    transport(&congestion)?;
+    let made = Made {
+        key: SecretKey::from_bytes(&bytes),
+        alpns: options.alpns.iter().map(|a| a.to_vec()).collect(),
+        entries,
+        bind_addr,
+        relay_only: options.relay_only.unwrap_or(false),
+        lookup: options.lookup.unwrap_or(false),
+        discovery: options.discovery.unwrap_or(true),
+        congestion: StdMutex::new(congestion),
+    };
+    let filter = Arc::new(StdMutex::new(RelayFilter { endpoint: relays.iter().cloned().collect(), ..RelayFilter::default() }));
+    let inner = made.bind(&relays, &filter).await?;
+    Ok(Endpoint {
+        inner: StdMutex::new(inner),
+        made,
+        keepers: Arc::default(),
+        homes: StdMutex::new(relays),
+        held: Arc::default(),
+        accepted: Arc::default(),
+        giving: StdMutex::new(None),
+        filter,
+        rebinding: Mutex::new(()),
+    })
+}
+
+impl Made {
+    /// iroh's endpoint, bound on `relays` (home on each).
+    async fn bind(&self, relays: &[RelayUrl], filter: &Arc<StdMutex<RelayFilter>>) -> napi::Result<IrohEndpoint> {
+        let relay_map = iroh::RelayMap::from_iter(relays.iter().map(|relay| {
+            iroh::RelayConfig::from(relay.clone()).with_entries(self.entries.iter().filter(|(_, target)| target == relay).map(|(entry, _)| entry.clone()))
+        }));
+        let transport = transport(&self.congestion.lock().unwrap())?;
+        let mut builder = IrohEndpoint::builder(Minimal)
+            .secret_key(self.key.clone())
+            .alpns(self.alpns.clone())
+            .relay_mode(if relays.is_empty() { RelayMode::Disabled } else { RelayMode::Custom(relay_map) })
+            .home_on_every_relay()
+            .transport_config(transport);
+        if let Some(addr) = self.bind_addr {
+            builder = builder.bind_addr(addr).map_err(failed)?;
+        }
+        if self.relay_only {
+            builder = builder.clear_ip_transports();
+        }
+        if self.lookup && !relays.is_empty() {
+            builder = builder
+                .address_lookup(Optional("mDNS", iroh_mdns_address_lookup::MdnsAddressLookup::builder().service_name(MDNS_SERVICE).advertise(false)))
+                .address_lookup(Optional("the DHT", iroh_mainline_address_lookup::DhtAddressLookup::builder().dht_builder(dht()).no_publish()));
+        } else if self.discovery {
+            // (the DHT's findings held to the relays the station's workspaces go by: RelayFilter)
+            builder = builder
+                .address_lookup(Optional("mDNS", iroh_mdns_address_lookup::MdnsAddressLookup::builder().service_name(MDNS_SERVICE)))
+                .address_lookup(Holding(Optional("the DHT", iroh_mainline_address_lookup::DhtAddressLookup::builder().dht_builder(dht()).secret_key(self.key.clone())), filter.clone()));
+        }
+        builder.bind().await.map_err(failed)
     }
-    if options.relay_only.unwrap_or(false) {
-        builder = builder.clear_ip_transports();
-    }
-    if options.lookup.unwrap_or(false) && !relays.is_empty() {
-        builder = builder
-            .address_lookup(Optional("mDNS", iroh_mdns_address_lookup::MdnsAddressLookup::builder().service_name(MDNS_SERVICE).advertise(false)))
-            .address_lookup(Optional("the DHT", iroh_mainline_address_lookup::DhtAddressLookup::builder().dht_builder(dht()).no_publish()));
-    } else if options.discovery.unwrap_or(true) {
-        builder = builder
-            .address_lookup(Optional("mDNS", iroh_mdns_address_lookup::MdnsAddressLookup::builder().service_name(MDNS_SERVICE)))
-            .address_lookup(Optional("the DHT", iroh_mainline_address_lookup::DhtAddressLookup::builder().dht_builder(dht()).secret_key(key)));
-    }
-    Ok(Endpoint { inner: builder.bind().await.map_err(failed)?, keepers: Arc::default(), homes: relays, held: Arc::default(), accepted: Arc::default() })
+}
+
+/// The connections coming to `endpoint`, each given to `tx` as its handshake is done, till it closes. Handshakes go on
+/// side by side, each on its own (`Endpoint::accept` says why).
+fn accepting(endpoint: IrohEndpoint, held: Arc<StdMutex<(u32, Vec<iroh::endpoint::Incoming>)>>, tx: tokio::sync::mpsc::UnboundedSender<IrohConnection>) {
+    napi::bindgen_prelude::spawn(async move {
+        while let Some(incoming) = endpoint.accept().await {
+            {
+                let mut held = held.lock().unwrap();
+                if held.0 > 0 {
+                    held.0 -= 1;
+                    held.1.push(incoming);
+                    continue;
+                }
+            }
+            let tx = tx.clone();
+            napi::bindgen_prelude::spawn(async move {
+                // One whose handshake fails is said, where it came from and how long it took: a device whose
+                // dials to the station never got through said nothing here, which way its packets came or
+                // whether any came at all (2026-10-29).
+                let from = incoming.remote_addr();
+                let started = Instant::now();
+                match incoming.await {
+                    Ok(conn) => {
+                        let _ = tx.send(conn);
+                    }
+                    Err(error) => eprintln!("mesh: a connection's handshake failed from {from:?} after {} ms: {error:#}", started.elapsed().as_millis()),
+                }
+            });
+        }
+    });
 }
 
 #[napi(object)]
@@ -213,40 +367,48 @@ fn endpoint_addr(addr: &Addr) -> napi::Result<EndpointAddr> {
 
 #[napi]
 impl Endpoint {
+    /// iroh's endpoint as it is now.
+    fn inner(&self) -> IrohEndpoint {
+        self.inner.lock().unwrap().clone()
+    }
+
     /// Its id, as the station's (hex).
     #[napi]
     pub fn id(&self) -> String {
-        hex::encode(self.inner.id().as_bytes())
+        hex::encode(self.inner().id().as_bytes())
     }
 
     /// Where it listens on this machine: `ip:port`, each.
     #[napi]
     pub fn sockets(&self) -> Vec<String> {
-        self.inner.bound_sockets().iter().map(ToString::to_string).collect()
+        self.inner().bound_sockets().iter().map(ToString::to_string).collect()
     }
 
     /// Resolves once it is on its home relay (at once with relays off).
     #[napi]
     pub async fn online(&self) {
-        self.inner.online().await;
+        self.inner().online().await;
     }
 
     /// Its home relay now, if it has one.
     #[napi]
     pub fn home(&self) -> Option<String> {
-        self.inner.home_relay_status().get().first().map(|s| s.url().to_string())
+        self.inner().home_relay_status().get().first().map(|s| s.url().to_string())
     }
 
     #[napi]
     pub async fn insert_relay(&self, url: String) -> napi::Result<()> {
         let url = relay_url(&url)?;
-        self.inner.insert_relay(url.clone(), Arc::new(iroh::RelayConfig::from(url))).await;
+        self.filter.lock().unwrap().endpoint.insert(url.clone());
+        self.inner().insert_relay(url.clone(), Arc::new(iroh::RelayConfig::from(url))).await;
         Ok(())
     }
 
     #[napi]
     pub async fn remove_relay(&self, url: String) -> napi::Result<()> {
-        self.inner.remove_relay(&relay_url(&url)?).await;
+        let url = relay_url(&url)?;
+        self.filter.lock().unwrap().endpoint.remove(&url);
+        self.inner().remove_relay(&url).await;
         Ok(())
     }
 
@@ -254,19 +416,21 @@ impl Endpoint {
     /// the advanced network setting changed while the station runs.
     #[napi]
     pub fn set_congestion(&self, congestion: String) -> napi::Result<()> {
-        self.inner.set_transport_config(transport(&congestion)?);
+        self.inner().set_transport_config(transport(&congestion)?);
+        *self.made.congestion.lock().unwrap() = congestion;
         Ok(())
     }
 
     /// iroh's own public relays: added while none of still.fail's answers, removed once one does (`keep_relays`).
     #[napi]
     pub async fn public_relays(&self, on: bool) {
+        self.filter.lock().unwrap().public_on = on;
         let public: Vec<Arc<iroh::RelayConfig>> = iroh::defaults::prod::default_relay_map().relays();
         for config in public {
             if on {
-                self.inner.insert_relay(config.url.clone(), config.clone()).await;
+                self.inner().insert_relay(config.url.clone(), config.clone()).await;
             } else {
-                self.inner.remove_relay(&config.url).await;
+                self.inner().remove_relay(&config.url).await;
             }
         }
     }
@@ -276,7 +440,8 @@ impl Endpoint {
     #[napi]
     pub fn keep(&self, urls: Vec<String>) -> napi::Result<()> {
         let mut relays: Vec<RelayUrl> = urls.iter().map(|u| relay_url(u)).collect::<Result<_, _>>()?;
-        relays.retain(|r| !self.homes.contains(r));
+        let homes = self.homes.lock().unwrap().clone();
+        relays.retain(|r| !homes.contains(r));
         let urls: Vec<String> = relays.iter().map(ToString::to_string).collect();
         let mut keepers = self.keepers.lock().unwrap();
         keepers.retain(|url, task| {
@@ -287,7 +452,7 @@ impl Endpoint {
             named
         });
         for relay in relays {
-            let endpoint = self.inner.clone();
+            let endpoint = self.inner();
             keepers.entry(relay.to_string()).or_insert_with(|| napi::bindgen_prelude::spawn(keep::keep(endpoint, relay)));
         }
         Ok(())
@@ -310,34 +475,8 @@ impl Endpoint {
         let mut accepted = self.accepted.lock().await;
         let done = accepted.get_or_insert_with(|| {
             let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-            let endpoint = self.inner.clone();
-            let held = self.held.clone();
-            napi::bindgen_prelude::spawn(async move {
-                while let Some(incoming) = endpoint.accept().await {
-                    {
-                        let mut held = held.lock().unwrap();
-                        if held.0 > 0 {
-                            held.0 -= 1;
-                            held.1.push(incoming);
-                            continue;
-                        }
-                    }
-                    let tx = tx.clone();
-                    napi::bindgen_prelude::spawn(async move {
-                        // One whose handshake fails is said, where it came from and how long it took: a device whose
-                        // dials to the station never got through said nothing here, which way its packets came or
-                        // whether any came at all (2026-10-29).
-                        let from = incoming.remote_addr();
-                        let started = Instant::now();
-                        match incoming.await {
-                            Ok(conn) => {
-                                let _ = tx.send(conn);
-                            }
-                            Err(error) => eprintln!("mesh: a connection's handshake failed from {from:?} after {} ms: {error:#}", started.elapsed().as_millis()),
-                        }
-                    });
-                }
-            });
+            accepting(self.inner(), self.held.clone(), tx.clone());
+            *self.giving.lock().unwrap() = Some(tx);
             rx
         });
         done.recv().await.map(|inner| Connection { inner })
@@ -355,7 +494,16 @@ impl Endpoint {
                 None => std::future::pending().await,
             }
         };
-        let conn = dial(&self.inner, endpoint_addr(&addr)?, &alpn, options, given_up).await.map_err(failed)?;
+        let to = endpoint_addr(&addr)?;
+        {
+            // The relays it is dialed by are the only ones the DHT may add (RelayFilter); none said, those of the endpoint.
+            let mut filter = self.filter.lock().unwrap();
+            match &addr.relays {
+                Some(_) => drop(filter.peers.insert(to.id, to.relay_urls().cloned().collect())),
+                None => drop(filter.peers.remove(&to.id)),
+            }
+        }
+        let conn = dial(&self.inner(), to, &alpn, options, given_up).await.map_err(failed)?;
         Ok(Connection { inner: conn })
     }
 
@@ -363,7 +511,8 @@ impl Endpoint {
     #[napi]
     pub fn add_addr(&self, addr: Addr) -> napi::Result<()> {
         let addr = endpoint_addr(&addr)?;
-        let lookup = self.inner.address_lookup().map_err(failed)?;
+        let inner = self.inner();
+        let lookup = inner.address_lookup().map_err(failed)?;
         lookup.add(iroh::address_lookup::MemoryLookup::from_endpoint_info([addr]));
         Ok(())
     }
@@ -375,20 +524,69 @@ impl Endpoint {
         for entry in entries {
             grouped.entry(relay_url(&entry.relay)?).or_default().push(relay_url(&entry.entry)?);
         }
-        self.inner.set_relay_entries(grouped.into_iter().collect()).await;
+        self.inner().set_relay_entries(grouped.into_iter().collect()).await;
         Ok(())
     }
 
     /// The network changed (a phone's, after it slept): its sockets and relay connection looked at anew.
     #[napi]
     pub async fn network_change(&self) {
-        self.inner.network_change().await;
+        self.inner().network_change().await;
     }
 
     /// Its home relays, and whether it is connected to each now (and held inactive there for another endpoint of its id).
     #[napi]
     pub fn relay_status(&self) -> Vec<RelayState> {
-        self.inner.home_relay_status().get().iter().map(|s| RelayState { url: s.url().to_string(), connected: s.is_connected(), access: s.access_url().to_string(), conflict: s.same_endpoint_id_connected() }).collect()
+        self.inner().home_relay_status().get().iter().map(|s| RelayState { url: s.url().to_string(), connected: s.is_connected(), access: s.access_url().to_string(), conflict: s.same_endpoint_id_connected() }).collect()
+    }
+
+    /// Bound again as it was, on `urls` alone: what takes a relay it is home on off it, which `remove_relay` does not
+    /// (iroh's `Transports::bind` gives each relay it is bound with a relay map of its own, and the transport it homes
+    /// with tells a relay no longer named nothing). The same key, so the same id; its connections end with the endpoint
+    /// let go, and are dialed again. Its keepers stop (`keep` starts those wanted). One holding a fixed port lets it go
+    /// first, and where it cannot be bound so is bound again as it was; another is bound before the old one goes.
+    /// What `accept` gives from then on comes of the new one too.
+    #[napi]
+    pub async fn rebind_relays(&self, urls: Vec<String>) -> napi::Result<()> {
+        let relays: Vec<RelayUrl> = urls.iter().map(|u| relay_url(u)).collect::<Result<_, _>>()?;
+        let _one = self.rebinding.lock().await;
+        let old = self.inner();
+        let was = self.homes.lock().unwrap().clone();
+        for (_, task) in self.keepers.lock().unwrap().drain() {
+            task.abort();
+        }
+        let fixed = self.made.bind_addr.is_some_and(|a| a.port() != 0);
+        if fixed {
+            old.close().await;
+        }
+        let new = match self.made.bind(&relays, &self.filter).await {
+            Ok(new) => new,
+            Err(error) if fixed => {
+                eprintln!("mesh: not bound again on {urls:?}: {error}; bound as it was");
+                let again = self.made.bind(&was, &self.filter).await?;
+                *self.inner.lock().unwrap() = again.clone();
+                if let Some(tx) = self.giving.lock().unwrap().clone() {
+                    accepting(again, self.held.clone(), tx);
+                }
+                return Err(error);
+            }
+            Err(error) => return Err(error),
+        };
+        *self.inner.lock().unwrap() = new.clone();
+        *self.homes.lock().unwrap() = relays.clone();
+        {
+            let mut filter = self.filter.lock().unwrap();
+            filter.endpoint = relays.iter().cloned().collect();
+            filter.public_on = false;
+        }
+        if let Some(tx) = self.giving.lock().unwrap().clone() {
+            accepting(new, self.held.clone(), tx);
+        }
+        if !fixed {
+            // (its close waits on every connection, up to seconds: not waited for)
+            napi::bindgen_prelude::spawn(async move { old.close().await });
+        }
+        Ok(())
     }
 
     #[napi]
@@ -396,7 +594,9 @@ impl Endpoint {
         for (_, task) in self.keepers.lock().unwrap().drain() {
             task.abort();
         }
-        self.inner.close().await;
+        // (accept answers none once the endpoint's own accepting ends)
+        self.giving.lock().unwrap().take();
+        self.inner().close().await;
     }
 }
 
@@ -789,6 +989,86 @@ mod tests {
         let closing = tokio::time::Instant::now();
         endpoint.close().await;
         assert!(closing.elapsed() < Duration::from_secs(5), "the endpoint's close waited {:?}", closing.elapsed());
+    }
+
+    /// A DHT saying a peer is at these addresses.
+    #[derive(Debug)]
+    struct Says(Vec<TransportAddr>);
+
+    impl AddressLookup for Says {
+        fn resolve(&self, endpoint_id: EndpointId) -> Option<BoxStream<Result<AddressLookupItem, AddressLookupError>>> {
+            let item = AddressLookupItem::new(EndpointInfo::from_parts(endpoint_id, EndpointData::new(self.0.clone())), "dht", Some(7));
+            Some(n0_future::stream::iter([Ok(item)]).boxed())
+        }
+    }
+
+    /// What `lookup` finds of `id`: each finding's addresses, its provenance and when it was updated.
+    async fn found(lookup: &impl AddressLookup, id: EndpointId) -> Vec<(Vec<TransportAddr>, &'static str, Option<u64>)> {
+        lookup.resolve(id).unwrap().filter_map(|r| r.ok()).map(|i| (i.endpoint_info().data.addrs().cloned().collect(), i.provenance(), i.last_updated())).collect::<Vec<_>>().await
+    }
+
+    /// The DHT's record of a peer (another workspace of its that kept still.fail's relays on, or one of before they
+    /// were turned off) adds none of the relays the station does not go by: those of the endpoint, else those the peer
+    /// is dialed by; its IP addresses stay, and everything while iroh's public relays are on.
+    #[tokio::test]
+    async fn the_dht_adds_no_relay_turned_off() {
+        let off: RelayUrl = "https://relay.still.example".parse().unwrap();
+        let own: RelayUrl = "https://relay.own.example".parse().unwrap();
+        let ip: std::net::SocketAddr = "192.168.1.9:4433".parse().unwrap();
+        let peer = SecretKey::from_bytes(&[9; 32]).public();
+        let filter = Arc::new(StdMutex::new(RelayFilter { endpoint: [own.clone()].into(), ..RelayFilter::default() }));
+        let all = vec![TransportAddr::Relay(off.clone()), TransportAddr::Relay(own.clone()), TransportAddr::Ip(ip)];
+        let dht = Filtered(Says(all.clone()), filter.clone());
+        assert_eq!(found(&dht, peer).await, vec![(vec![TransportAddr::Relay(own.clone()), TransportAddr::Ip(ip)], "dht", Some(7))]);
+        assert!(found(&Filtered(Says(vec![TransportAddr::Relay(off.clone())]), filter.clone()), peer).await.is_empty(), "nothing left: no finding");
+        // Dialed by relays of its own (`connect`'s): those, whatever the endpoint is on.
+        filter.lock().unwrap().peers.insert(peer, [off.clone()].into());
+        assert_eq!(found(&dht, peer).await[0].0, vec![TransportAddr::Relay(off.clone()), TransportAddr::Ip(ip)]);
+        filter.lock().unwrap().peers.insert(peer, HashSet::new());
+        assert_eq!(found(&dht, peer).await[0].0, vec![TransportAddr::Ip(ip)]);
+        // iroh's public relays on: as it was found.
+        filter.lock().unwrap().public_on = true;
+        assert_eq!(found(&dht, peer).await[0].0, all);
+    }
+
+    /// Bound again on fewer relays: the same id, its relays and what the DHT may add those alone, and what comes to the
+    /// endpoint bound in its place given by the same `accept`.
+    #[tokio::test]
+    async fn bound_again_on_other_relays() {
+        let (a, b) = ("http://127.0.0.1:9/".to_string(), "http://127.0.0.1:10/".to_string());
+        let options = Options {
+            secret_key: vec![5u8; 32].into(),
+            alpns: vec![b"test".to_vec().into()],
+            relay_urls: vec![a.clone(), b.clone()],
+            relay_entries: None,
+            discovery: Some(false),
+            bind_addr: Some("127.0.0.1:0".into()),
+            lookup: None,
+            relay_only: None,
+            congestion: None,
+        };
+        let endpoint = bind(options).await.unwrap();
+        let id = endpoint.id();
+        let accepting = endpoint.accept();
+        let first = tokio::time::timeout(Duration::from_millis(10), accepting).await;
+        assert!(first.is_err(), "nothing came yet");
+        endpoint.rebind_relays(vec![b.clone()]).await.unwrap();
+        assert_eq!(endpoint.id(), id);
+        assert_eq!(*endpoint.homes.lock().unwrap(), vec![relay_url(&b).unwrap()]);
+        assert_eq!(endpoint.filter.lock().unwrap().endpoint, [relay_url(&b).unwrap()].into());
+        let socket: std::net::SocketAddr = endpoint.sockets().iter().find_map(|s| s.parse().ok().filter(|a: &std::net::SocketAddr| a.is_ipv4())).unwrap();
+        let client = IrohEndpoint::builder(Minimal).relay_mode(RelayMode::Disabled).bind().await.unwrap();
+        let to = EndpointAddr::new(endpoint.inner().id()).with_ip_addr(std::net::SocketAddr::from(([127, 0, 0, 1], socket.port())));
+        let dialing = tokio::spawn({
+            let client = client.clone();
+            async move { client.connect(to, b"test").await.map(|c| c.remote_id()) }
+        });
+        let came = tokio::time::timeout(Duration::from_secs(10), endpoint.accept()).await.expect("accepted in time").expect("a connection");
+        assert_eq!(came.inner.remote_id(), client.id());
+        assert_eq!(dialing.await.unwrap().unwrap(), endpoint.inner().id());
+        endpoint.close().await;
+        assert!(tokio::time::timeout(Duration::from_secs(10), endpoint.accept()).await.expect("answered once closed").is_none());
+        client.close().await;
     }
 
     #[tokio::test]

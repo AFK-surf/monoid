@@ -18,7 +18,7 @@ import { applyNetwork } from "../mesh/mesh.ts";
 import { bindStation } from "../mesh/native.ts";
 import { PEER_ALPN, PEER_BYTES_ALPN, peerCall, servePeer } from "../mesh/peer.ts";
 import { DeviceRefused, PEER_HTTP_ALPN, serveHttp } from "../mesh/peer-http.ts";
-import { keepRelays } from "../mesh/relays.ts";
+import { keepRelays, wantedRelays } from "../mesh/relays.ts";
 import { congestionOf } from "../mesh/settings.ts";
 import { Fibers } from "../ops/fibers.ts";
 import { DISK_EVERY_MS, diskEvery, diskSoft, diskTier } from "../ops/disk.ts";
@@ -235,7 +235,7 @@ export const RigMeshLive = Layer.effectDiscard(
       if (!cloud.state) yield* plane.changes.pipe(Stream.filter(() => cloud.state !== null), Stream.runHead);
       if (Number(process.env.STILLFAIL_MESH_BIND_ADDR?.split(":").at(-1)) > 0) yield* Effect.promise(() => previous.gone);
       const endpoint = yield* Effect.acquireRelease(
-        Effect.promise(() => bindStation(native, { secretKey: key.seed, alpns: [PEER_HTTP_ALPN, PEER_BYTES_ALPN, PEER_ALPN], relayUrls: cloud.relays(), discovery: process.env.STILLFAIL_NO_DISCOVERY !== "1", congestion: congestionOf(config.raw()) })),
+        Effect.promise(() => bindStation(native, { secretKey: key.seed, alpns: [PEER_HTTP_ALPN, PEER_BYTES_ALPN, PEER_ALPN], relayUrls: wantedRelays(cloud), discovery: process.env.STILLFAIL_NO_DISCOVERY !== "1", congestion: congestionOf(config.raw()) })),
         (endpoint) => Effect.ignore(Effect.timeoutOption(Effect.promise(() => endpoint.close()), "1 second")),
       );
       log.info("mesh", "rig listening", { rig: endpoint.id(), workspace: cloud.state!.workspace_name, sockets: endpoint.sockets(), lan: lanAddrs(endpoint.sockets()) });
@@ -250,7 +250,7 @@ export const RigMeshLive = Layer.effectDiscard(
         }),
       );
       // What it tells the stations (rig/module.ts), and nothing it asks of them.
-      const call = peerCall(endpoint, cloud);
+      const call = yield* Effect.acquireRelease(Effect.sync(() => peerCall(endpoint, cloud)), (call) => Effect.sync(() => call.close?.()));
       peers.attach(call);
       stationLog.sendWith((body) => Effect.runPromise(plane.logs(body)));
       yield* accept(endpoint, {

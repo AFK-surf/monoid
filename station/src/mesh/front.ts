@@ -511,6 +511,9 @@ class FrontConnection implements Connection {
   closeReason() { return this.#closed === null ? null : { kind: this.#closed.kind, reason: this.#closed.reason }; }
 }
 
+/// A relay's URL as the front compares them (mesh.mbt `bare_url`): without a trailing slash.
+const bare = (url: string) => url.replace(/\/+$/, "");
+
 /// The station's endpoint at the front, its link to it made again where it went (the front ended, and the launcher
 /// started another: front.rs): bound again as it was, what it accepts from then on the new link's. Connections made on
 /// the link that went went with it.
@@ -518,7 +521,8 @@ class FrontEndpoint implements Endpoint {
   readonly #socket: string;
   readonly #bind: Record<string, unknown>;
   #front: Front;
-  #said: { id: string; sockets: string[] };
+  /// What the front said as it was bound: and, a front of now, the relays its endpoint was bound with and those on it.
+  #said: { id: string; sockets: string[]; homes?: string[]; relays?: string[] };
   #relays: { url: string; connected: boolean; access: string; conflict?: boolean }[] = [];
   #asking = false;
   #closed = false;
@@ -528,7 +532,7 @@ class FrontEndpoint implements Endpoint {
   #routed: { alpn: string; front: string[]; routes: string[] } | null = null;
   readonly #closing: () => void;
 
-  private constructor(socket: string, bind: Record<string, unknown>, front: Front, said: { id: string; sockets: string[] }, closing: () => void) {
+  private constructor(socket: string, bind: Record<string, unknown>, front: Front, said: { id: string; sockets: string[]; homes?: string[]; relays?: string[] }, closing: () => void) {
     this.#closing = closing;
     this.#socket = socket;
     this.#bind = bind;
@@ -619,8 +623,37 @@ class FrontEndpoint implements Endpoint {
     this.#asking = true;
     this.#ask("relayStatus").then((r) => { this.#relays = r; }, () => {}).finally(() => (this.#asking = false));
   }
-  insertRelay(url: string) { return this.#ask("insertRelay", { args: { url } }).then(() => {}); }
-  removeRelay(url: string) { return this.#ask("removeRelay", { args: { url } }).then(() => {}); }
+  // What it is bound with again, should the front go and be linked to again (`#watch`), follows the relays as they
+  // change: a front started anew binds afresh with them, and would bring back those taken out.
+  #relayUrls(change: (urls: string[]) => string[]) {
+    const options = this.#bind.options as { relayUrls: string[] };
+    options.relayUrls = change(options.relayUrls);
+  }
+  insertRelay(url: string) {
+    return this.#ask("insertRelay", { args: { url } }).then(() => {
+      const fresh = (urls: string[]) => (urls.some((u) => bare(u) === bare(url)) ? urls : [...urls, url]);
+      this.#relayUrls(fresh);
+      if (this.#said.relays) this.#said.relays = fresh(this.#said.relays);
+    });
+  }
+  removeRelay(url: string) {
+    return this.#ask("removeRelay", { args: { url } }).then(() => {
+      const less = (urls: string[]) => urls.filter((u) => bare(u) !== bare(url));
+      this.#relayUrls(less);
+      if (this.#said.relays) this.#said.relays = less(this.#said.relays);
+    });
+  }
+  rebindRelays(urls: string[]) {
+    return this.#ask("rebindRelays", { args: { urls } }).then((said: { id: string; sockets: string[] }) => {
+      this.#relayUrls(() => [...urls]);
+      // (bound anew: its sockets too)
+      this.#said = { ...this.#said, ...said, homes: [...urls], relays: [...urls] };
+    });
+  }
+  boundRelays() {
+    const { homes, relays } = this.#said;
+    return homes === undefined || relays === undefined ? undefined : { homes: [...homes], relays: [...relays] };
+  }
   publicRelays(on: boolean) { return this.#ask("publicRelays", { args: { on } }).then(() => {}); }
   keep(urls: string[]) { void this.#ask("keep", { args: { urls } }).catch((e) => log.warn("mesh", "relays not kept", { error: (e as Error).message })); }
   setCongestion(congestion: "cubic" | "bbr") { void this.#ask("setCongestion", { args: { congestion } }).catch(() => {}); }

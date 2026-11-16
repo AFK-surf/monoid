@@ -46,6 +46,12 @@ priv struct Mesh {
   /// `insertRelay`, `removeRelay` and `setCongestion` changed them. What a later bind changes in place.
   mut bound_relays : Array[String]
   mut bound_congestion : String
+  /// The relays the endpoint was bound with at the shell, home on each: iroh's removeRelay leaves those connected (each
+  /// has a relay map of its own), so one is taken off only by binding again (`rebindRelays`), with the binding and
+  /// key kept here.
+  mut home_relays : Array[String]
+  mut bound_options : Json
+  mut bound_key : Bytes
   mut said : Json
   /// What came while no Node had bound.
   waiting : Array[Json]
@@ -68,6 +74,9 @@ pub async fn mesh(host : @host.Host, path : String) -> Unit {
     identity: "",
     bound_relays: [],
     bound_congestion: default_congestion,
+    home_relays: [],
+    bound_options: Json::null(),
+    bound_key: Bytes::from_array(FixedArray::make(0, b'\x00')),
     said: Json::null(),
     waiting: [],
     clients: [],
@@ -338,7 +347,7 @@ async fn Mesh::bind(self : Mesh, options : Json, key : Bytes) -> Json {
       }
       self.bound_congestion = congestion
     }
-    return self.said
+    return self.told()
   }
   let mut old = self.endpoint
   if old is Some(o) && fixed_port(options) {
@@ -354,13 +363,89 @@ async fn Mesh::bind(self : Mesh, options : Json, key : Bytes) -> Json {
   self.endpoint = Some(endpoint)
   self.identity = identity
   self.bound_relays = relays_of(options)
+  self.home_relays = relays_of(options)
+  self.bound_options = options
+  self.bound_key = key
   self.bound_congestion = congestion_of(options)
   self.said = {
     "id": self.host.shell_sync("iroh.endpointId", { "id": endpoint }),
     "sockets": self.host.shell_sync("iroh.sockets", { "id": endpoint }),
   }
   ignore(self.host.rt.fork(name="mesh accept", () => self.accepting(endpoint)))
-  self.said
+  self.told()
+}
+
+///|
+/// What a bind is answered: the endpoint's id and sockets, the relays it was bound with (`homes`) and those on it now
+/// (`relays`), which a Node taking it over reconciles with those it wants (relays.ts `boundRelays`).
+fn Mesh::told(self : Mesh) -> Json {
+  match self.said {
+    Object(m) => {
+      let out = m.copy()
+      out["homes"] = Json::array(self.home_relays.map(u => Json::string(u)))
+      out["relays"] = Json::array(self.bound_relays.map(u => Json::string(u)))
+      Json::object(out)
+    }
+    said => said
+  }
+}
+
+///|
+/// The endpoint bound again as it was, on `relays` alone, with the congestion controller it has now: the same key, so
+/// the same id; what came on the one let go ends with it, and what comes to the new one goes to the Nodes as before.
+/// One holding a fixed port lets it go first, and where it cannot be bound so is bound again as it was; another is bound
+/// before the old one goes, which a bind that fails leaves as it was.
+async fn Mesh::rebind(self : Mesh, relays : Array[String]) -> Json {
+  let old = self.bound()
+  guard self.bound_options is Object(m) else { fail("no binding to bind again") }
+  let with_relays = (urls : Array[String]) => {
+    let o = m.copy()
+    o["relayUrls"] = Json::array(urls.map(u => Json::string(u)))
+    o["congestion"] = Json::string(self.bound_congestion)
+    Json::object(o)
+  }
+  let options = with_relays(relays)
+  let fixed = fixed_port(options)
+  if fixed {
+    self.endpoint = None
+    self.let_go(old)
+  }
+  let bound = try {
+    Ok(self.host.shell("iroh.bind", options, bytes=self.bound_key))
+  } catch {
+    e => Err(e)
+  }
+  let endpoint = match bound {
+    Ok(({ "id": endpoint, .. }, _)) => endpoint
+    _ => {
+      if fixed {
+        // (its port let go already: bound again as it was, so the station stays reachable)
+        let (again, _) = self.host.shell("iroh.bind", with_relays(self.home_relays), bytes=self.bound_key)
+        if again is { "id": endpoint, .. } {
+          self.endpoint = Some(endpoint)
+          ignore(self.host.rt.fork(name="mesh accept", () => self.accepting(endpoint)))
+        }
+      }
+      match bound {
+        Err(e) => raise e
+        _ => fail("the shell bound no endpoint")
+      }
+    }
+  }
+  if !fixed {
+    self.let_go(old)
+  }
+  @host.note("mesh: bound again on \{relays.length()} relays, was home on \{self.home_relays.length()}")
+  self.endpoint = Some(endpoint)
+  self.bound_options = options
+  self.home_relays = relays.copy()
+  self.bound_relays = relays.copy()
+  self.said = {
+    "id": self.host.shell_sync("iroh.endpointId", { "id": endpoint }),
+    "sockets": self.host.shell_sync("iroh.sockets", { "id": endpoint }),
+  }
+  ignore(self.host.rt.fork(name="mesh accept", () => self.accepting(endpoint)))
+  self.told()
 }
 
 ///|
@@ -588,6 +673,17 @@ async fn Mesh::act(self : Mesh, client : Client, ask : Json, op : String, arg : 
         _ => ()
       }
       said
+    }
+    // Bound again on these relays alone: what takes one it is home on off it (relays.ts `rebindRelays`).
+    "rebindRelays" => {
+      guard asked_args(arg) is { "urls": Array(urls), .. } else { fail("no urls") }
+      let relays = []
+      for u in urls {
+        if u is String(url) {
+          relays.push(url)
+        }
+      }
+      self.rebind(relays)
     }
     "addAddr" => self.host.shell_sync("iroh.addAddr", { "id": self.bound(), "addr": arg("addr") })
     "relayStatus" => self.host.shell_sync("iroh.relayStatus", { "id": self.bound() })

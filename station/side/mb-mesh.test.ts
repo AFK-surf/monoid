@@ -530,3 +530,45 @@ test("a bind is reconciled with the relays on the endpoint as a Node changed the
     await f.stop();
   }
 });
+
+test("bound again on fewer relays (one it was home on turned off): the same id, the relays it is home on those alone, what was on the old endpoint ended, what comes to the new one taken", { skip }, async () => {
+  const addon = loadMesh();
+  const f = await front();
+  const [R1, R2] = ["http://127.0.0.1:9/", "http://127.0.0.1:10/"];
+  const station = await withFront(addon, f.socket).bind({ secretKey: randomBytes(32), alpns: [ALPN], relayUrls: [R1, R2], discovery: false });
+  const device = await bindOn(addon, randomBytes(32));
+  const asking = await Front.open(f.socket);
+  try {
+    assert.deepEqual(station.boundRelays?.(), { homes: [R1, R2], relays: [R1, R2] });
+    const accepting = station.accept();
+    const before = await device.connect(addrOf(station), ALPN);
+    const was = (await accepting)!;
+    const id = station.id();
+    await station.rebindRelays!([R2]);
+    assert.equal(station.id(), id, "the same key: the same id");
+    assert.deepEqual(station.boundRelays?.(), { homes: [R2], relays: [R2] });
+    // The relays it is home on at the shell: R1 is none of them now.
+    const status = (await asking.ask("relayStatus")) as { url: string }[];
+    assert.ok(!status.some((r) => r.url.replace(/\/+$/, "") === R1.replace(/\/+$/, "")), JSON.stringify(status));
+    // What was on the endpoint let go ended with it.
+    await was.closed();
+    assert.equal(was.isClosed(), true);
+    before.close(0, "");
+    // What comes to the new one is taken, both ways.
+    const next = station.accept();
+    const theirs = await device.connect(addrOf(station), ALPN);
+    const conn = (await next)!;
+    assert.equal(conn.remoteId(), device.id());
+    const opened = await theirs.openBi();
+    await opened.write(Buffer.from("after"));
+    await opened.finish();
+    assert.equal((await readAll((await conn.acceptBi())!)).toString(), "after");
+    theirs.close(0, "");
+  } finally {
+    await asking.ask("close").catch(() => {});
+    asking.close();
+    await device.close();
+    await station.close();
+    await f.stop();
+  }
+});

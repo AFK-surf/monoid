@@ -9,7 +9,7 @@
 //! Operations are named and take JSON and maybe bytes; bridge.ts lists them. `sf_shell_call` answers later through
 //! `complete(ctx, id, json, error, bytes)` from any thread; `sf_shell_call_sync` answers at once.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::{CStr, c_char, c_void};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -491,6 +491,70 @@ struct Kept {
     keepers: Mutex<HashMap<String, tokio::task::JoinHandle<()>>>,
     homes: Vec<RelayUrl>,
     held: Mutex<(u32, Vec<iroh::endpoint::Incoming>)>,
+    /// The relays a station's DHT may say a peer is on (`RelayFilter`).
+    filter: Arc<Mutex<RelayFilter>>,
+}
+
+/// The relays a station's address lookup (the DHT) may say a peer is on, as the station's addon holds them
+/// (station/native/mesh `RelayFilter`, which says why): those the peer is dialed by (`iroh.connect`'s `relays`), else
+/// those the endpoint is on; any while iroh's public relays are on. IP addresses are kept.
+#[derive(Debug, Default)]
+struct RelayFilter {
+    endpoint: HashSet<RelayUrl>,
+    peers: HashMap<EndpointId, HashSet<RelayUrl>>,
+    public_on: bool,
+}
+
+impl RelayFilter {
+    /// What of `item` may be dialed: none of it where it said only relays not allowed.
+    fn item(&self, item: iroh::address_lookup::Item) -> Option<iroh::address_lookup::Item> {
+        if self.public_on {
+            return Some(item);
+        }
+        let allowed = self.peers.get(&item.endpoint_id()).unwrap_or(&self.endpoint);
+        let data = &item.endpoint_info().data;
+        let all = data.addrs().count();
+        let addrs: Vec<iroh::TransportAddr> = data.addrs().filter(|a| !matches!(a, iroh::TransportAddr::Relay(url) if !allowed.contains(url))).cloned().collect();
+        if addrs.is_empty() {
+            return None;
+        }
+        if addrs.len() == all {
+            return Some(item);
+        }
+        let mut kept = iroh::address_lookup::EndpointData::new(addrs);
+        kept.set_user_data(data.user_data().cloned());
+        Some(iroh::address_lookup::Item::new(iroh::address_lookup::EndpointInfo::from_parts(item.endpoint_id(), kept), item.provenance(), item.last_updated()))
+    }
+}
+
+/// An address lookup whose findings go through the endpoint's `RelayFilter`; made of a builder by `Holding`.
+#[derive(Debug)]
+struct Filtered<L>(L, Arc<Mutex<RelayFilter>>);
+
+#[derive(Debug)]
+struct Holding<B>(B, Arc<Mutex<RelayFilter>>);
+
+impl<B: iroh::address_lookup::AddressLookupBuilder> iroh::address_lookup::AddressLookupBuilder for Holding<B> {
+    fn into_address_lookup(self, endpoint: &Endpoint) -> Result<impl iroh::address_lookup::AddressLookup, iroh::address_lookup::AddressLookupBuilderError> {
+        Ok(Filtered(self.0.into_address_lookup(endpoint)?, self.1))
+    }
+}
+
+impl<L: iroh::address_lookup::AddressLookup> iroh::address_lookup::AddressLookup for Filtered<L> {
+    fn publish(&self, data: &iroh::address_lookup::EndpointData) {
+        self.0.publish(data);
+    }
+
+    fn resolve(&self, endpoint_id: EndpointId) -> Option<n0_future::boxed::BoxStream<Result<iroh::address_lookup::Item, iroh::address_lookup::Error>>> {
+        let filter = self.1.clone();
+        let found = self.0.resolve(endpoint_id)?;
+        Some(Box::pin(found.filter_map(move |r| {
+            futures::future::ready(match r {
+                Ok(item) => filter.lock().unwrap().item(item).map(Ok),
+                Err(e) => Some(Err(e)),
+            })
+        })))
+    }
 }
 
 /// A socket's halves as the shell keeps them (`Handle::Tcp`).
@@ -2975,14 +3039,25 @@ impl Inner {
             }
             "iroh.bind" => self.bind(&a, bytes.unwrap_or_default()).await,
             "iroh.connect" => {
-                let endpoint = match self.handle(id_of(&a)?)? {
-                    Handle::Endpoint(endpoint, _) => endpoint,
+                let (endpoint, kept) = match self.handle(id_of(&a)?)? {
+                    Handle::Endpoint(endpoint, kept) => (endpoint, kept),
                     Handle::Unbound { .. } => return Err("the endpoint is closed".into()),
                     _ => return Err("not an endpoint".into()),
                 };
                 let additional: Vec<Vec<u8>> = a.get("additional").and_then(Value::as_array).into_iter().flatten().filter_map(|x| hex::decode(x.as_str()?).ok()).collect();
                 let options = iroh::endpoint::ConnectOptions::new().with_additional_alpns(additional);
-                let addr = endpoint_addr(a.get("addr").ok_or("missing addr")?)?;
+                let given = a.get("addr").ok_or("missing addr")?;
+                let addr = endpoint_addr(given)?;
+                {
+                    // The relays it is dialed by are the only ones a station's DHT may add (RelayFilter); none said,
+                    // the endpoint's.
+                    let mut filter = kept.filter.lock().unwrap();
+                    if given.get("relays").is_some_and(Value::is_array) {
+                        filter.peers.insert(addr.id, addr.relay_urls().cloned().collect());
+                    } else {
+                        filter.peers.remove(&addr.id);
+                    }
+                }
                 let connecting = endpoint.connect_with_opts(addr, &bytes.unwrap_or_default(), options).await.map_err(err)?;
                 let conn = connecting.await.map_err(err)?;
                 Ok(Answer::json(json!({ "id": self.keep_conn(conn) })))
@@ -3303,14 +3378,18 @@ impl Inner {
                     "iroh.online" => endpoint.online().await,
                     "iroh.insertRelay" => {
                         let url = relay_url(str_of(&a, "url")?)?;
+                        kept.filter.lock().unwrap().endpoint.insert(url.clone());
                         endpoint.insert_relay(url.clone(), Arc::new(iroh::RelayConfig::from(url))).await;
                     }
                     "iroh.removeRelay" => {
-                        endpoint.remove_relay(&relay_url(str_of(&a, "url")?)?).await;
+                        let url = relay_url(str_of(&a, "url")?)?;
+                        kept.filter.lock().unwrap().endpoint.remove(&url);
+                        endpoint.remove_relay(&url).await;
                     }
                     // iroh's own public relays: added while none of still.fail's answers, removed once one does.
                     "iroh.publicRelays" => {
                         let on = a.get("on").and_then(Value::as_bool).unwrap_or(false);
+                        kept.filter.lock().unwrap().public_on = on;
                         for config in iroh::defaults::prod::default_relay_map().relays::<Vec<_>>() {
                             if on {
                                 endpoint.insert_relay(config.url.clone(), config.clone()).await;
@@ -3574,6 +3653,7 @@ impl Inner {
         let relay_map = iroh::RelayMap::from_iter(relays.iter().map(|relay| {
             iroh::RelayConfig::from(relay.clone()).with_entries(entries.iter().filter(|(_, target)| target == relay).map(|(entry, _)| entry.clone()))
         }));
+        let filter = Arc::new(Mutex::new(RelayFilter { endpoint: relays.iter().cloned().collect(), ..RelayFilter::default() }));
         let alpns: Vec<Vec<u8>> = a.get("alpns").and_then(Value::as_array).into_iter().flatten().map(|x| hex::decode(x.as_str().unwrap_or_default()).map_err(err)).collect::<Result<_, _>>()?;
         let mut builder = Endpoint::builder(Minimal)
             .secret_key(key)
@@ -3601,10 +3681,11 @@ impl Inner {
             // addon's `bind`), each left out, said, where it cannot be made (mDNS's port held, no network yet).
             builder = builder
                 .address_lookup(Optional("mDNS", iroh_mdns_address_lookup::MdnsAddressLookup::builder().service_name(MDNS_SERVICE)))
-                .address_lookup(Optional("the DHT", iroh_mainline_address_lookup::DhtAddressLookup::builder().dht_builder(dht()).secret_key(key_again)));
+                // (its findings held to the relays the station's workspaces go by: RelayFilter)
+                .address_lookup(Holding(Optional("the DHT", iroh_mainline_address_lookup::DhtAddressLookup::builder().dht_builder(dht()).secret_key(key_again)), filter.clone()));
         }
         let endpoint = builder.bind().await.map_err(err)?;
-        Ok(Answer::json(json!({ "id": self.keep(Handle::Endpoint(endpoint, Arc::new(Kept { homes: relays.clone(), ..Kept::default() }))) })))
+        Ok(Answer::json(json!({ "id": self.keep(Handle::Endpoint(endpoint, Arc::new(Kept { homes: relays.clone(), filter, ..Kept::default() }))) })))
     }
 
     /// An account's database: opened, a statement run, its rows, closed, its file removed.
@@ -4551,6 +4632,41 @@ pub extern "C" fn sf_utc_offset_min(at_ms: f64) -> i32 {
 mod tests {
     use super::*;
     use std::sync::{Condvar, Mutex as StdMutex};
+
+    /// A DHT saying a peer is at these addresses.
+    #[derive(Debug)]
+    struct Says(Vec<iroh::TransportAddr>);
+
+    impl iroh::address_lookup::AddressLookup for Says {
+        fn resolve(&self, endpoint_id: EndpointId) -> Option<n0_future::boxed::BoxStream<Result<iroh::address_lookup::Item, iroh::address_lookup::Error>>> {
+            let info = iroh::address_lookup::EndpointInfo::from_parts(endpoint_id, iroh::address_lookup::EndpointData::new(self.0.clone()));
+            Some(Box::pin(futures::stream::iter([Ok(iroh::address_lookup::Item::new(info, "dht", Some(7)))])))
+        }
+    }
+
+    /// As the station's addon (station/native/mesh `the_dht_adds_no_relay_turned_off`): the station's front's DHT adds
+    /// none of the relays it does not go by, keeps IP addresses, and adds everything while iroh's public relays are on.
+    #[test]
+    fn the_dht_adds_no_relay_turned_off() {
+        use iroh::TransportAddr;
+        use iroh::address_lookup::AddressLookup;
+        let off: RelayUrl = "https://relay.still.example".parse().unwrap();
+        let own: RelayUrl = "https://relay.own.example".parse().unwrap();
+        let ip: std::net::SocketAddr = "192.168.1.9:4433".parse().unwrap();
+        let peer = SecretKey::from_bytes(&[9; 32]).public();
+        let filter = Arc::new(Mutex::new(RelayFilter { endpoint: [own.clone()].into(), ..RelayFilter::default() }));
+        let all = vec![TransportAddr::Relay(off.clone()), TransportAddr::Relay(own.clone()), TransportAddr::Ip(ip)];
+        let found = |lookup: &dyn AddressLookup| -> Vec<(Vec<TransportAddr>, &'static str, Option<u64>)> {
+            futures::executor::block_on(lookup.resolve(peer).unwrap().filter_map(|r| futures::future::ready(r.ok())).map(|i| (i.endpoint_info().data.addrs().cloned().collect(), i.provenance(), i.last_updated())).collect::<Vec<_>>())
+        };
+        let dht = Filtered(Says(all.clone()), filter.clone());
+        assert_eq!(found(&dht), vec![(vec![TransportAddr::Relay(own.clone()), TransportAddr::Ip(ip)], "dht", Some(7))]);
+        assert!(found(&Filtered(Says(vec![TransportAddr::Relay(off.clone())]), filter.clone())).is_empty(), "nothing left: no finding");
+        filter.lock().unwrap().peers.insert(peer, [off.clone()].into());
+        assert_eq!(found(&dht)[0].0, vec![TransportAddr::Relay(off.clone()), TransportAddr::Ip(ip)], "dialed by relays of its own: those");
+        filter.lock().unwrap().public_on = true;
+        assert_eq!(found(&dht)[0].0, all, "iroh's public relays on: as found");
+    }
 
     fn frame(kind: u8, body: &[u8]) -> Vec<u8> {
         let mut f = vec![kind];

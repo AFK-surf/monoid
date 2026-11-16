@@ -285,7 +285,7 @@ async function main() {
   const evilEndpoint = await endpointOf(evilSeed, PEER_ALPN);
   // Its own cloud.json, read as a station reads one (Cloud's own memberships).
   const evilCloud = Object.assign(Object.create(Cloud.prototype), { state: { workspace: ws, workspace_name: "", name: "", station: evilKey.id, peers: [{ id: A.id }, { id: B.id }], revocations: [] }, lock: null, peersCurrent: true, relays: () => [RELAY] });
-  const asPeer = peerCall(evilEndpoint, evilCloud);
+  const asPeer = peerCall(evilEndpoint, evilCloud, (id) => ({ id, relays: [RELAY] }));
   const ask = (id: string) => asPeer(id, ws, { method: "task.prepare", session: "s", key: "k", spec: { command: "id" } }).then((r) => `answered ${JSON.stringify(r)}`, (e) => `refused: ${e.message}`);
   const peerA = await ask(A.id);
   const peerB = await ask(B.id);

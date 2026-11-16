@@ -99,7 +99,10 @@ export const MeshLive = Layer.effectDiscard(
       );
       // The workspace's other stations: asked through this endpoint, their tasks stopped once they are not in it.
       // And the stations of other workspaces chats are shared with or from (xshare/index.ts).
-      const call = peerCall(endpoint, cloud.state, undefined, { reaches: (target, workspace) => side.outside?.reaches(target, workspace) === true });
+      const call = yield* Effect.acquireRelease(
+        Effect.sync(() => peerCall(endpoint, cloud.state, undefined, { reaches: (target, workspace) => side.outside?.reaches(target, workspace) === true })),
+        (call) => Effect.sync(() => call.close?.()),
+      );
       peers.attach(call);
       // The agents' door's way to the other stations' web services (peer-http.ts).
       yield* Effect.acquireRelease(

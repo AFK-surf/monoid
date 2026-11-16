@@ -21,6 +21,7 @@ import { ownPorts } from "../ops/own.ts";
 import { type PeerRoute, type PeerTarget, refuseUpgrade } from "../tools/http.ts";
 import type { Addr, Connection, Endpoint, Stream } from "./native.ts";
 import { PEER_ALPN, member } from "./peer.ts";
+import { offRelay, peerAllowedRelays, peerRelays, waysOf } from "./ways.ts";
 import { pipeTcp, reachLocal } from "./peer-forward.ts";
 import { Reader, writeLine } from "./serve.ts";
 
@@ -164,27 +165,55 @@ async function upload(req: IncomingMessage, body: boolean, stream: Stream): Prom
 }
 
 /// This station's way to the others' web services, for its agents' door: a connection kept per station (dropped when it
-/// fails), a stream a request. `addr`: where a station is (its id and still.fail's relays; tests give its sockets).
+/// fails), a stream a request. `addr`: where a station is in the workspace it is asked in (its id and that workspace's
+/// relays, those it turned off left out: ways.ts `peerRelays`; tests give its sockets). A connection kept that goes
+/// through a relay turned off is closed as it is found before a request and as the ways change (peer.ts' way).
 export class PeerHttp implements PeerRoute {
   private connections = new Map<string, Promise<Connection>>();
   private endpoint: Endpoint;
   private cloud: Cloud;
-  private addr: (id: string) => Addr;
+  private addr: (id: string, workspace?: string) => Addr;
+  /// Where `addr` is the default one: the relays a connection is held to. And the workspace each station was last asked in.
+  private held: boolean;
+  private askedIn = new Map<string, string>();
+  private stops: (() => void)[] = [];
   private connectMs: number;
   /// The upgrades answered here (the local program's side of a WebSocket), each with the sub-protocol the service chose.
   private sockets: WebSocketServer;
   private chosen = new WeakMap<IncomingMessage, string | null>();
 
-  constructor(endpoint: Endpoint, cloud: Cloud, addr: (id: string) => Addr = (id) => ({ id, relays: cloud.relays() }), connectMs = CONNECT_MS) {
+  constructor(endpoint: Endpoint, cloud: Cloud, addr?: (id: string, workspace?: string) => Addr, connectMs = CONNECT_MS) {
     this.endpoint = endpoint;
     this.cloud = cloud;
-    this.addr = addr;
+    this.held = addr === undefined;
+    this.addr = addr ?? ((id, workspace) => ({ id, relays: peerRelays(cloud, workspace ?? null) }));
+    if (this.held) {
+      const sweep = () => this.#sweep();
+      this.stops = [waysOf(cloud).listen(sweep), cloud.listen(sweep)];
+    }
     this.connectMs = connectMs;
     this.sockets = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 16 * 1024 * 1024, handleProtocols: (_offered, req) => this.chosen.get(req) ?? false });
   }
 
+  /// Each connection made that goes through a relay turned off, closed and forgotten (the next request dials again).
+  #sweep() {
+    for (const [id, made] of [...this.connections]) made.then((conn) => { if (this.connections.get(id) === made) this.#turnedOff(id, made, conn); }, () => {});
+  }
+
+  /// Whether `conn` (`made`, to station `id`) goes through a relay turned off, and was closed and forgotten for it.
+  #turnedOff(id: string, made: Promise<Connection>, conn: Connection): boolean {
+    if (!this.held || conn.isClosed()) return false;
+    const off = offRelay(conn, peerAllowedRelays(this.cloud, id, this.askedIn.get(id) ?? null));
+    if (off === null) return false;
+    this.forget(id, made);
+    log.info("mesh", "a station's web connection goes through a relay turned off: closed, to be dialed again", { peer: id.slice(0, 12), relay: off });
+    conn.close(0, "relay turned off");
+    return true;
+  }
+
   /// Its connections end (the mesh stops).
   close() {
+    for (const stop of this.stops.splice(0)) stop();
     for (const made of this.connections.values()) made.then((c) => c.close(0, "station stopping"), () => {});
     this.connections.clear();
   }
@@ -195,10 +224,10 @@ export class PeerHttp implements PeerRoute {
 
   /// A connection to station `id` (`given`: as the URL named it) speaking this protocol. A station from before it is told
   /// by the station transport's protocol, offered after this one: it takes that one instead.
-  private async connect(id: string, given: string): Promise<Connection> {
+  private async connect(id: string, given: string, workspace?: string): Promise<Connection> {
     let giveUp = () => {};
     const givenUp = new Promise<void>((resolve) => (giveUp = resolve));
-    const connecting = this.endpoint.connect(this.addr(id), PEER_HTTP_ALPN, [PEER_ALPN], givenUp);
+    const connecting = this.endpoint.connect(this.addr(id, workspace), PEER_HTTP_ALPN, [PEER_ALPN], givenUp);
     let conn: Connection;
     try {
       conn = await wall.within(this.connectMs, connecting, TIMED_OUT);
@@ -217,16 +246,24 @@ export class PeerHttp implements PeerRoute {
   }
 
   /// A new stream to station `id`: on the connection kept, or a new one when that one is gone.
-  private async stream(id: string, given: string): Promise<Stream> {
+  private async stream(id: string, given: string, workspace?: string): Promise<Stream> {
+    if (workspace !== undefined) this.askedIn.set(id, workspace);
+    let redialed = false;
     for (let attempt = 0; ; attempt++) {
       let made = this.connections.get(id);
       if (made === undefined) {
-        const connecting = this.connect(id, given);
+        const connecting = this.connect(id, given, workspace);
         made = connecting;
         this.connections.set(id, connecting);
         connecting.catch(() => this.forget(id, connecting));
       }
       const conn = await made;
+      // (one through a relay turned off: dialed again, once, by the relays the workspace goes by)
+      if (!redialed && this.#turnedOff(id, made, conn)) {
+        redialed = true;
+        attempt -= 1;
+        continue;
+      }
       try {
         if (conn.isClosed()) throw new Error("connection lost");
         return await conn.openBi();
@@ -255,7 +292,7 @@ export class PeerHttp implements PeerRoute {
     const peer = peerNamed(this.cloud, given);
     // Named in what it says by its name (a forward asks by the id).
     const station = nameOf(this.cloud, peer.id);
-    const s = await this.stream(peer.id, station);
+    const s = await this.stream(peer.id, station, peer.workspace);
     try {
       await writeLine(s, { workspace: peer.workspace, ...to, tcp: true, ...(probe ? { probe: true } : {}) });
       if (probe) await s.finish();
@@ -281,7 +318,7 @@ export class PeerHttp implements PeerRoute {
     let stream: Stream | null = null;
     try {
       const peer = peerNamed(this.cloud, target.station);
-      const s = (stream = await this.stream(peer.id, target.station));
+      const s = (stream = await this.stream(peer.id, target.station, peer.workspace));
       const length = req.headers["content-length"];
       const body = length !== undefined ? length !== "0" : req.headers["transfer-encoding"] !== undefined;
       await writeLine(s, { workspace: peer.workspace, port: target.port, method: req.method ?? "GET", path: target.path, headers: passed(req.rawHeaders), body });
@@ -329,7 +366,7 @@ export class PeerHttp implements PeerRoute {
     try {
       if ((req.headers.upgrade ?? "").toLowerCase() !== "websocket") throw new HttpRefusal(400, "only WebSocket upgrades go to other stations");
       const peer = peerNamed(this.cloud, target.station);
-      const s = (stream = await this.stream(peer.id, target.station));
+      const s = (stream = await this.stream(peer.id, target.station, peer.workspace));
       await writeLine(s, { workspace: peer.workspace, port: target.port, method: "GET", path: target.path, headers: passed(req.rawHeaders), socket: true });
       const reader = new Reader(s, MAX_HEAD);
       const answer = await reader.line();

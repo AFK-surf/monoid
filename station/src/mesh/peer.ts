@@ -13,7 +13,7 @@ import { BYTES, CHECK_BYTES, type Bytes, NoBytes, NoLink, type PeerBus, type Pee
 import type { Addr, Connection, Endpoint, Stream } from "./native.ts";
 import { answerLock } from "./lock-sync.ts";
 import { answerMarks, stationMarksOf } from "./station-marks.ts";
-import { answerWays, waysOf } from "./ways.ts";
+import { answerWays, offRelay, peerAllowedRelays, peerRelays, waysOf } from "./ways.ts";
 import { Reader } from "./serve.ts";
 
 export const PEER_ALPN = Buffer.from("stillfail/station/1");
@@ -229,7 +229,7 @@ export class PeerStopped extends PeerGone {
 
 /// What the station transport's caller is given: its requests, and `arrived` for each connection another station
 /// opens to this one (what this one keeps to it is asked whether it is still there: a station started again dials anew).
-export type StationCall = PeerCall & { arrived(conn: Connection): void };
+export type StationCall = PeerCall & { arrived(conn: Connection): void; close?(): void };
 
 /// Whether `conn` was closed by its other end's process stopping (`STOPPING`), as its close says.
 const closedStopping = (conn: Connection): boolean => {
@@ -244,16 +244,37 @@ const received = (conn: Connection): number | null => {
 };
 
 /// How this station asks the others: one connection kept per peer, dialed once however many requests wait for it, and
-/// let go when it fails or its peer is no longer heard. `addr`: where a peer is (its id and still.fail's relays, found
-/// by them; tests give its sockets). `answerMs`: how long an answer is waited for, `checkMs` before its connection is
-/// asked whether it is still there, `heardMs` how long that ask takes at most (tests shorten them).
+/// let go when it fails or its peer is no longer heard. `addr`: where a peer is in the workspace it is asked in (its id
+/// and that workspace's relays, those it turned off left out: ways.ts `peerRelays`; tests give its sockets).
+/// `answerMs`: how long an answer is waited for, `checkMs` before its connection is asked whether it is still there,
+/// `heardMs` how long that ask takes at most (tests shorten them).
+/// A connection kept that goes through a relay its workspaces turned off is closed (`close` stops following them), as
+/// it is found before a request and as the ways change: dialed again, it goes by those they go by. A direct one stays.
 export function peerCall(
-  endpoint: Endpoint, cloud: Cloud, addr: (id: string) => Addr = (id) => ({ id, relays: cloud.relays() }), outside?: Outside, answerMs = ANSWER_MS,
+  endpoint: Endpoint, cloud: Cloud, given?: (id: string, workspace?: string) => Addr, outside?: Outside, answerMs = ANSWER_MS,
   timing: { checkMs?: number; heardMs?: number } = {},
 ): StationCall {
+  const addr = given ?? ((id: string, workspace?: string) => ({ id, relays: peerRelays(cloud, workspace ?? null) }));
   const checkMs = timing.checkMs ?? CHECK_MS;
   const heardMs = timing.heardMs ?? HEARD_MS;
   const connections = new Map<string, Connection>();
+  /// The workspace each peer was last asked in: what its connection's relays are held to as the ways change.
+  const askedIn = new Map<string, string>();
+  /// The relays a connection to `target` may go through; null where there is nothing to hold it to (a test's sockets).
+  const allowed = (target: string, ws: string | null): string[] | null => {
+    if (given === undefined) return peerAllowedRelays(cloud, target, ws);
+    return given(target, ws ?? undefined).relays ?? null;
+  };
+  /// Whether `conn`, kept to `target`, went through a relay turned off, and was closed for it (the next request dials again).
+  const turnedOff = (target: string, conn: Connection, ws: string | null): boolean => {
+    const relays = allowed(target, ws);
+    const off = relays === null ? null : offRelay(conn, relays);
+    if (off === null) return false;
+    if (connections.get(target) === conn) connections.delete(target);
+    log.info("mesh", "a station's connection goes through a relay turned off: closed, to be dialed again", { peer: target.slice(0, 12), relay: off });
+    conn.close(0, "relay turned off");
+    return true;
+  };
   /// Whether a connection's other end is still there: one ask a connection at a time, however many wait on it. An addon
   /// from before (no `answers`) counts as there.
   const asking = new Map<Connection, Promise<boolean>>();
@@ -300,12 +321,13 @@ export function peerCall(
   // one dialed dozens at once, again after each timeout, and the loaded one answered all of them (2026-10-21, one station to
   // another).
   const dialing = new Map<string, Promise<Connection>>();
-  const connected = (target: string): Promise<Connection> => {
+  const connected = (target: string, ws: string): Promise<Connection> => {
+    askedIn.set(target, ws);
     const open = connections.get(target);
-    if (open !== undefined && !open.isClosed()) return Promise.resolve(open);
+    if (open !== undefined && !open.isClosed() && !turnedOff(target, open, ws)) return Promise.resolve(open);
     let dial = dialing.get(target);
     if (dial === undefined) {
-      dial = endpoint.connect(addr(target), PEER_BYTES_ALPN, [PEER_ALPN]).then(
+      dial = endpoint.connect(addr(target, ws), PEER_BYTES_ALPN, [PEER_ALPN]).then(
         (conn) => {
           connections.set(target, conn);
           return conn;
@@ -365,7 +387,7 @@ export function peerCall(
     const body = bytesOf(request);
     // Requests are bounded and retriable by their task key: a timeout is never "not run" (ask again by the key).
     const call = async () => {
-      dial = connected(target);
+      dial = connected(target, ws);
       conn = body === null ? await dial : await within(answerMs, dial, late);
       if (!conn.alpn().equals(PEER_BYTES_ALPN)) {
         if (body !== null) throw new NoBytes("that station takes files only in chunks (it is not updated yet)");
@@ -451,7 +473,16 @@ export function peerCall(
     if (kept === undefined || kept === conn || kept.isClosed()) return;
     void there(kept).then((yes) => { if (!yes) drop(target, kept); });
   };
-  return Object.assign(ask, { arrived });
+  // As the ways change (a relay or still.fail's turned off), the connections kept are held to them at once: one left
+  // open on a relay turned off would be kept alive through it each second (lib.rs PATH_KEEP_ALIVE).
+  const sweep = () => {
+    for (const [target, conn] of [...connections]) if (!conn.isClosed()) turnedOff(target, conn, askedIn.get(target) ?? null);
+  };
+  const stops = given === undefined ? [waysOf(cloud).listen(sweep), cloud.listen(sweep)] : [];
+  const close = () => {
+    for (const stop of stops.splice(0)) stop();
+  };
+  return Object.assign(ask, { arrived, close });
 }
 
 /// Another station's connection: each of its requests answered by the remote tasks, while it belongs.

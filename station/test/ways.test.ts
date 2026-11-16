@@ -10,7 +10,7 @@ import { applyState } from "../src/cloud/presence.ts";
 import { Cloud, writeState } from "../src/cloud/state.ts";
 import type { Admitted } from "../src/mesh/credential.ts";
 import { waysRoute } from "../src/mesh/serve.ts";
-import { Ways, WaysRefusal, addRelay, answerWays, followWays, removeRelay, setRelays, setWay, stillFails, tellWays } from "../src/mesh/ways.ts";
+import { Ways, WaysRefusal, addRelay, answerWays, followWays, removeRelay, setRelays, setWay, stillFails, tellWays, workspaceRelays } from "../src/mesh/ways.ts";
 import { relayTools } from "../src/tools/relays.ts";
 
 const WS = "01HZZZZZZZZZZZZZZZZZZZZZZZ";
@@ -19,11 +19,11 @@ const A = "a".repeat(64);
 const B = "b".repeat(64);
 
 /// A station `me` of WS (the other its peer), on still.fail's relays; `ways` what the control plane kept.
-function station(me: string, ways?: { relays: string[]; off: string[] }) {
+function station(me: string, ways?: { relays: string[]; off: string[] }, rigs: { id: string; name: string }[] = []) {
   const data = mkdtempSync(join(tmpdir(), "ways-"));
   writeState(data, { origin: "https://app.still.fail", station: me, workspace: WS, workspace_name: "Team", name: "s", relay_url: OURS[0]!, relay_urls: OURS, grant_keys: { keys: [] }, peers: [], revocations: [] });
   const cloud = new Cloud(data, false);
-  applyState(cloud, JSON.stringify({ type: "state", workspace: WS, workspace_name: "Team", name: "s", origin: "https://app.still.fail", relay_url: OURS[0], relay_urls: OURS, peers: [{ id: A, name: "a" }, { id: B, name: "b" }], revocations: [], ...(ways ? { ways } : {}) }));
+  applyState(cloud, JSON.stringify({ type: "state", workspace: WS, workspace_name: "Team", name: "s", origin: "https://app.still.fail", relay_url: OURS[0], relay_urls: OURS, peers: [{ id: A, name: "a" }, { id: B, name: "b" }], revocations: [], ...(ways ? { ways } : {}), ...(rigs.length > 0 ? { rigs: rigs.map((r) => ({ ...r, owner: "u", owner_email: "u@x", owner_name: "U" })) } : {}) }));
   return { cloud, ways: new Ways(cloud, join(data, "mesh", "ways.json")) };
 }
 
@@ -213,4 +213,38 @@ test("one of still.fail's relays another workspace of the station's added as its
   // Kept across a restart of the station.
   await ways.written();
   assert.deepEqual(new Cloud(data, false).state?.stillfail_relays, ours);
+});
+
+test("the relays a workspace's stations go by: still.fail's then its own, those turned off left out, never none", () => {
+  const OWN = "https://relay.own.test";
+  const s = station(A, { relays: [OWN], off: [] });
+  assert.deepEqual(workspaceRelays(s.ways, WS), [...OURS, OWN]);
+  setWay(s.ways, WS, "ours", false);
+  assert.deepEqual(workspaceRelays(s.ways, WS), [OWN], "`ours` off: still.fail's all left out");
+  setWay(s.ways, WS, "ours", true);
+  setWay(s.ways, WS, `${OURS[1]}/`, false);
+  assert.deepEqual(workspaceRelays(s.ways, WS), [OURS[0], OWN], "one of still.fail's off alone, as it is compared");
+  setWay(s.ways, WS, OWN, false);
+  assert.deepEqual(workspaceRelays(s.ways, WS), [OURS[0]], "one of its own off");
+  // A ways.json changed by hand that turns every one off: all of them, rather than none.
+  s.ways.take(WS, { relays: [{ url: OWN }], off: ["ours", OWN], at: Number.MAX_SAFE_INTEGER, station: B });
+  assert.deepEqual(workspaceRelays(s.ways, WS), [...OURS, OWN]);
+});
+
+test("the workspace's stations that only run tasks are given its ways too", async () => {
+  const C = "c".repeat(64);
+  const a = station(A, undefined, [{ id: C, name: "rig" }]);
+  const rig = station(C);
+  const asked: string[] = [];
+  const b = station(B);
+  const call = async (peer: string, ws: string | null, request: any) => {
+    asked.push(`${peer.slice(0, 1)} ${request.method}`);
+    return answerWays(peer === C ? rig.ways : b.ways, request, ws ?? WS) as any;
+  };
+  const stop = followWays(a.ways, call, () => () => {});
+  setWay(a.ways, WS, "lan", false);
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  assert.ok(asked.includes("c ways.put"), `the rig is brought level: ${asked.join(", ")}`);
+  assert.deepEqual(rig.ways.view(WS).off, ["lan"]);
+  stop();
 });

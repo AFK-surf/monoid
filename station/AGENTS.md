@@ -263,6 +263,14 @@
   nobody approves it (the user, 2026-11-11: 「要手动加太不 ai native 了」): a relay carries only end-to-end encrypted
   packets and one that is slow is not taken, so an approval would guard nothing; the tool adds one only once this
   station reached it as a relay, and who added it is kept and shown.
+- The stations go by them too, not only the devices (2026-11-16: a workspace that turned still.fail's relays off for its
+  own still had its stations reach each other and stay on still.fail's): a station is kept on the relays its
+  workspaces go by (`src/mesh/ways.ts` `wantedRelays`; one another workspace of its goes by stays), dials a peer by the
+  relays of the workspace it asks it in (`peerRelays`), and closes a connection kept to one that goes through a relay
+  turned off (`offRelay`; a direct one stays). iroh's public relays never come in where every workspace turned
+  still.fail's off. Two things of iroh's are held for it: its DHT adds no relay to a peer's address but those it is
+  dialed by (`RelayFilter` in `native/mesh` and in `client/shell`, the front's), and a relay it was bound with goes
+  only by binding the endpoint again (`rebindRelays`: removeRelay leaves its connection up).
 
 ## A station's name and icon
 

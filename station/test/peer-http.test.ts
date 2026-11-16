@@ -15,6 +15,8 @@ import type { Endpoint } from "../src/mesh/native.ts";
 import { type AgentsDoor, openAgentsDoor, peerTarget } from "../src/tools/http.ts";
 import { McpEndpoint } from "../src/tools/mcp.ts";
 import { memoryMesh } from "./memory-mesh.ts";
+import { setWay, waysOf } from "../src/mesh/ways.ts";
+import { OURS, OWN, P1, P2, W2, type Way, dialing, twoWorkspaces } from "./relay-fakes.ts";
 
 /// A station's cloud.json in memory, read as the station reads it: in workspace "ws" with `peers` ({id, name}).
 const cloudOf = (station: string, name: string, peers: { id: string; name: string }[]): any =>
@@ -325,5 +327,31 @@ test("a station that takes no connection in time is said to be offline", async (
     assert.match(await answer.text(), /station far did not answer .* offline/);
   } finally {
     await door.close(0);
+  }
+});
+
+test("another station's services are reached by the relays of its workspace; a connection through one turned off is dialed again", async () => {
+  const cloud = twoWorkspaces();
+  const ways = new Map<string, Way>([[P1, { ip: "192.168.1.9:4433" }], [P2, { relay: `${OURS[0]}/` }]]);
+  const { endpoint, dialed, made } = dialing(PEER_HTTP_ALPN, { status: 200 }, (peer) => ways.get(peer)!);
+  const http = new PeerHttp(endpoint, cloud);
+  try {
+    assert.equal(await http.tunnel(P1, 8080, true), null);
+    assert.equal(await http.tunnel(P2, 8080, true), null);
+    assert.deepEqual(dialed.map((a) => [a.id, a.relays]), [[P1, [OWN]], [P2, OURS]], "W1 turned still.fail's off for its own");
+    setWay(waysOf(cloud), W2, OURS[0]!, false);
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    assert.equal(made[1]!.isClosed(), true, "closed as the relay was turned off");
+    assert.equal(made[0]!.isClosed(), false, "the direct one stays");
+    ways.set(P2, { relay: `${OURS[1]}/` });
+    await http.tunnel(P2, 8080, true);
+    assert.deepEqual(dialed[2]!.relays, [OURS[1]]);
+    // Found only as a request comes: dialed again then.
+    ways.set(P1, { relay: `${OURS[1]}/` });
+    await http.tunnel(P1, 8080, true);
+    assert.equal(made[0]!.isClosed(), true);
+    assert.deepEqual(dialed.map((a) => a.relays).slice(3), [[OWN]]);
+  } finally {
+    http.close();
   }
 });

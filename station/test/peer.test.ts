@@ -10,6 +10,8 @@ import { NoBytes, bytesOf, withBytes } from "../src/mesh/bus.ts";
 import { oneBytes, readBytes, stopBytes } from "../src/mesh/files.ts";
 import { memoryMesh } from "./memory-mesh.ts";
 import { Cloud, type Joined } from "../src/cloud/state.ts";
+import { setWay, waysOf } from "../src/mesh/ways.ts";
+import { BOTH, OURS, OWN, P1, P2, W1, W2, type Way, dialing, twoWorkspaces } from "./relay-fakes.ts";
 
 /// A station's cloud.json in memory, read as the station reads it (Cloud's own memberships): in workspace "ws", and in
 /// those of `joined` too.
@@ -361,4 +363,51 @@ test("a station safe mode leaves out is refused saying why; one of no workspace 
   assert.deepEqual(roster(cloud, "w2"), { workspace: "w2", stations: [{ id: "st" }, { id: "B" }], current: true, unprotected: [{ id: "C" }] });
   cloud.lock = null;
   assert.deepEqual(roster(cloud, "ws"), { workspace: "ws", stations: [{ id: "A" }], current: true });
+});
+
+test("a peer is dialed by the relays of the workspace it is asked in: its own, those it turned off left out", async () => {
+  const cloud = twoWorkspaces();
+  const { endpoint, dialed } = dialing(PEER_BYTES_ALPN, { result: { ok: true } }, () => ({ ip: "192.168.1.9:4433" }));
+  const call = peerCall(endpoint, cloud);
+  try {
+    // W1 turned still.fail's off for its own; W2 goes by still.fail's.
+    assert.deepEqual(await call(P1, W1, { method: "describe" }), { ok: true });
+    await call(P2, W2, { method: "describe" });
+    assert.deepEqual(dialed.map((a) => [a.id, a.relays]), [[P1, [OWN]], [P2, OURS]]);
+    // One of still.fail's turned off in W2 alone.
+    setWay(waysOf(cloud), W2, `${OURS[1]}/`, false);
+    await call(BOTH, W2, { method: "describe" });
+    assert.deepEqual(dialed[2]!.relays, [OURS[0]]);
+  } finally {
+    call.close?.();
+  }
+});
+
+test("a connection kept through a relay turned off is closed and dialed again by those on; a direct one stays", async () => {
+  const cloud = twoWorkspaces();
+  const ways = new Map<string, Way>([[P2, { relay: `${OURS[0]}/` }], [P1, { ip: "192.168.1.9:4433" }]]);
+  const { endpoint, dialed, made } = dialing(PEER_BYTES_ALPN, { result: { ok: true } }, (peer) => ways.get(peer)!);
+  const call = peerCall(endpoint, cloud);
+  try {
+    await call(P2, W2, { method: "describe" });
+    await call(P1, W1, { method: "describe" });
+    assert.equal(made.length, 2);
+    // The relay P2's connection goes through turned off: closed at once, not at the next request.
+    setWay(waysOf(cloud), W2, OURS[0]!, false);
+    assert.equal(made[0]!.isClosed(), true, "the one through the relay turned off");
+    assert.equal(made[1]!.isClosed(), false, "the direct one (a LAN's) stays");
+    ways.set(P2, { relay: `${OURS[1]}/` });
+    await call(P2, W2, { method: "describe" });
+    assert.deepEqual(dialed.map((a) => a.relays), [OURS, [OWN], [OURS[1]]]);
+    // One found going through a relay turned off only as a request comes (its way changed since): dialed again then.
+    await call(P1, W1, { method: "describe" });
+    assert.equal(made.length, 3, "the direct one taken as it is");
+    ways.set(P1, { relay: `${OURS[1]}/` });
+    await call(P1, W1, { method: "describe" });
+    assert.equal(made[1]!.isClosed(), true);
+    assert.equal(made.length, 4);
+    assert.deepEqual(dialed[3]!.relays, [OWN]);
+  } finally {
+    call.close?.();
+  }
 });

@@ -6,8 +6,9 @@
 // changes), by this station; between two of the same time the larger station id. A station that holds none yet goes by
 // what still.fail cloud kept before (`Cloud.waysSaid`). The workspace's stations keep each other level over
 // `stillfail/station/1` (`ways.get`, `ways.put`: followWays), devices read it (`GET /ways`, serve.ts) and are told it
-// changed on their event streams (`ways`, tellWays), and this station keeps every workspace's own relays as it keeps
-// still.fail's (relays.ts).
+// changed on their event streams (`ways`, tellWays). The stations go by them too: this station is kept on the relays its
+// workspaces go by (`wantedRelays`, relays.ts), and dials each other station by those of the workspace it asks it in
+// (`peerRelays`, peer.ts and peer-http.ts), a connection kept through one turned off closed (`offRelay`).
 //
 // Nobody approves a relay: it carries only the mesh's packets, end to end encrypted, and one that is slow or does not
 // answer is not taken (client/core-ts mesh.ts measures each way). Who added each is kept (`by`) and shown, so a person
@@ -171,6 +172,70 @@ export function stillFails(cloud: Cloud): string[] {
   return cloud.relays().filter((u) => !theirs.some((t) => sameUrl(t) === sameUrl(u)));
 }
 
+/// The relays `ws`'s stations go by, to each other as its devices do to them: still.fail's, then its own, without those
+/// it turned off (`ours`: all of still.fail's). Where that leaves none (a ways.json changed by hand: setWay keeps the
+/// last one on), all of them: a workspace is never left with no relay at all.
+export function workspaceRelays(ways: Ways, ws: string): string[] {
+  const ours = stillFails(ways.cloud);
+  const view = ways.view(ws);
+  const own = view.relays.map((r) => r.url).filter((u) => !ours.some((o) => sameUrl(o) === sameUrl(u)));
+  const turnedOff = (u: string) => view.off.some((w) => sameUrl(w) === sameUrl(u));
+  const on = [...(view.off.includes("ours") ? [] : ours.filter((u) => !turnedOff(u))), ...own.filter((u) => !turnedOff(u))];
+  return on.length > 0 ? on : [...ours, ...own];
+}
+
+/// The relays the station is kept on: still.fail's, then the workspaces' own not among them, those its workspaces turned
+/// off left out (one another workspace of its still goes by stays). What its endpoint is bound with (mesh.ts,
+/// rig/main.ts), so a front's endpoint taken over in a handover is reconciled with all of them (mesh.mbt `bind`).
+export function wantedRelays(state: Cloud): string[] {
+  const all = state.memberships();
+  if (all.length === 0) return state.relays();
+  const ways = waysOf(state);
+  const on: string[] = [];
+  for (const m of all) for (const u of workspaceRelays(ways, m.workspace)) if (!on.some((x) => sameUrl(x) === sameUrl(u))) on.push(u);
+  const ours = stillFails(state);
+  const isOurs = (u: string) => ours.some((o) => sameUrl(o) === sameUrl(u));
+  return [...on.filter(isOurs), ...on.filter((u) => !isOurs(u))];
+}
+
+/// Whether every workspace of the station's turned still.fail's relays off (`ours`): iroh's public relays are not
+/// taken then either, however its own relays answer.
+export function allOursOff(state: Cloud): boolean {
+  const all = state.memberships();
+  if (all.length === 0) return false;
+  const ways = waysOf(state);
+  return all.every((m) => ways.view(m.workspace).off.includes("ours"));
+}
+
+/// The relays a peer of `workspace` is dialed by (peer.ts, peer-http.ts): the workspace's (`workspaceRelays`); where
+/// this station keeps none of its ways (a station of another workspace a chat is shared with: its ways are its own
+/// stations'), those this station is kept on.
+export function peerRelays(cloud: Cloud, workspace: string | null): string[] {
+  const ws = workspace ?? cloud.home();
+  const of = ws !== null && (cloud.membership(ws) !== null || (cloud.state?.joined ?? []).some((j) => j.workspace === ws));
+  return of ? workspaceRelays(waysOf(cloud), ws) : wantedRelays(cloud);
+}
+
+/// The relays a connection to `peer` may go through: those of every workspace of this station's it is a station of
+/// (one in two of them is reached by either's: a connection dialed for one is not dropped for the other's request),
+/// and `workspace`'s, the one it is asked in.
+export function peerAllowedRelays(cloud: Cloud, peer: string, workspace: string | null): string[] {
+  const out = [...peerRelays(cloud, workspace)];
+  const ways = waysOf(cloud);
+  for (const m of cloud.memberships()) {
+    if (!m.peers.some((p) => p?.id === peer) && !cloud.rigs(m.workspace).some((r) => r.id === peer)) continue;
+    for (const u of workspaceRelays(ways, m.workspace)) if (!out.some((x) => sameUrl(x) === sameUrl(u))) out.push(u);
+  }
+  return out;
+}
+
+/// The relay a connection goes through now that is none of `allowed` (its chosen path's); null where it goes by one
+/// of them, direct (a LAN's, a punched hole's), by nothing chosen yet, or says nothing of its paths.
+export function offRelay(conn: { paths?(): { selected: boolean; relay?: string | null }[] }, allowed: string[]): string | null {
+  const relay = conn.paths?.().find((p) => p.selected)?.relay ?? null;
+  return relay === null || relay === "" || allowed.some((u) => sameUrl(u) === sameUrl(relay)) ? null : relay;
+}
+
 /// `url` added to `ws`'s own relays, by `by`. One already there stays as it is.
 export function addRelay(ways: Ways, ws: string, raw: string, by: string | null): WaysRecord {
   const url = relayUrl(raw, insecure(ways.cloud));
@@ -325,7 +390,11 @@ export function followWays(ways: Ways, call: PeerCall, after: (ms: number, f: ()
   const look = () => {
     const st = cloud.state;
     if (stopped || !st || !cloud.peersCurrent) return;
-    for (const m of cloud.memberships()) for (const p of m.peers) if (typeof p?.id === "string" && p.id !== st.station) bring(p.id, m.workspace, m.home);
+    for (const m of cloud.memberships()) {
+      for (const p of m.peers) if (typeof p?.id === "string" && p.id !== st.station) bring(p.id, m.workspace, m.home);
+      // Its stations that only run tasks keep its relays too (relays.ts, the rig's own endpoint), so they are given its ways.
+      for (const r of cloud.rigs(m.workspace)) if (r.id !== st.station && !m.peers.some((p) => p?.id === r.id)) bring(r.id, m.workspace, m.home);
+    }
   };
   look();
   const unlistenCloud = cloud.listen(look);

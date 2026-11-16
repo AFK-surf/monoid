@@ -4,6 +4,8 @@
 // scripts/mesh-base.ts keeps it so.
 import { existsSync } from "node:fs";
 
+/// `relays`: the relays the endpoint is reached by, and the only ones it is reached by: those its address lookup (the
+/// DHT) finds besides are left out (the addon's `RelayFilter`), unless iroh's public relays are on.
 export type Addr = { id: string; relays?: string[]; ips?: string[] };
 export type Stream = {
   read(): Promise<Buffer | null>;
@@ -66,6 +68,13 @@ export type Endpoint = {
   removeRelay(url: string): Promise<void>;
   publicRelays(on: boolean): Promise<void>;
   keep(urls: string[]): void;
+  /// Bound again as it was, on `urls` alone (the same key: the same id; its connections end and are made again): what
+  /// takes a relay it is home on off it, which removeRelay does not (iroh keeps each relay it was bound with on a relay
+  /// map of its own). Absent from an addon or a front from before.
+  rebindRelays?(urls: string[]): Promise<void>;
+  /// Where a program of its own keeps it across this process's handovers (front.ts): the relays it was bound with
+  /// (`homes`, home on each) and those on it now (`relays`). Absent where this process bound it.
+  boundRelays?(): { homes: string[]; relays: string[] } | undefined;
   /// The advanced network setting changed while running (lib.rs): the controller of the connections made from now
   /// on. Absent from an addon from before.
   setCongestion?(congestion: "cubic" | "bbr"): void;
