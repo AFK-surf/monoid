@@ -354,6 +354,7 @@ static const char *FS =
 static const char *FS_FLAT =
     "#version 300 es\n"
     "precision highp float;\n"
+    "precision highp int;\n"
     "flat in vec4 v_color;\n"
     "out vec4 o;\n"
     "void main() { o = vec4(v_color.rgb, 1.0) * v_color.a; }\n";

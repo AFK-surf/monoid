@@ -215,6 +215,7 @@ static const char *YUV_VS =
 static const char *YUV_FS =
     "#version 300 es\n"
     "precision highp float;\n"
+    "precision highp int;\n"
     "uniform sampler2D py, pu, pv;\n"
     "uniform int nv12;\n"
     "uniform mat3 m;\n"

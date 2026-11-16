@@ -7,8 +7,8 @@ let conf_text : String =
   #|         "frame_core": ["src/ui/app.mbt", "src/host"]},
   #| "globals": {"roots": ["src/app"]},
   #| "flows": ["flows/*.drive"],
-  #| "scripts": ["scripts/*.sh", "scripts/*.mjs"],
-  #| "hosts": ["android/*.java", "src/host/*.m", "src/host/*.c"],
+  #| "scripts": ["scripts/*.sh", "scripts/*.mjs", "web/*.js"],
+  #| "hosts": ["android/*.java", "src/host/*.m", "src/host/*.c", "src/host/*.h", "web/host.js"],
   #| "run_first": {"starts": ["new_run", "fresh_app"], "reads": ["@sf.t", "tr"]},
   #| "reset_by_hand": {"names": ["new_run"]},
   #| "counts": {}}
@@ -2897,4 +2897,42 @@ test "layout-drawn-while" {
     0,
   )
   |> ignore
+}
+
+///|
+test "shader-int" {
+  let bad_h =
+    #|static const char *VS =
+    #|  "#version 300 es\n"
+    #|  "void main() { gl_Position = vec4(0.0); }\n";
+    #|static const char *FS =
+    #|  "#version 300 es\n"
+    #|  "precision highp float;\n"
+    #|  "out vec4 o;\n"
+    #|  "void main() { o = vec4(1.0); }\n";
+  let bad_js =
+    #|const FS = `#version 300 es
+    #|precision highp float;
+    #|precision mediump int;
+    #|out vec4 o;
+    #|void main() { o = vec4(1.0); }`;
+  let fs = found([("src/host/gles_render.h", bad_h), ("web/host.js", bad_js)], "shader-int", 2)
+  assert_eq(lines(fs), [1, 5])
+  let good_h =
+    #|static const char *VS =
+    #|  "#version 300 es\n"
+    #|  "void main() { gl_Position = vec4(0.0); }\n";
+    #|static const char *FS =
+    #|  "#version 300 es\n"
+    #|  "precision highp float;\n"
+    #|  "precision highp int;\n"
+    #|  "out vec4 o;\n"
+    #|  "void main() { o = vec4(1.0); }\n";
+  let good_js =
+    #|const FS = `#version 300 es
+    #|precision highp float;
+    #|precision highp int;
+    #|out vec4 o;
+    #|void main() { o = vec4(1.0); }`;
+  found([("src/host/gles_render.h", good_h), ("web/host.js", good_js)], "shader-int", 0) |> ignore
 }

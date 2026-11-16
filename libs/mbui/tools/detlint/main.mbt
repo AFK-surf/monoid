@@ -77,6 +77,56 @@ let host_delays : Array[@re.Regex] = [
 let unsettled_ok : @re.Regex = rx("\\bunsettled_ok\\s*=")
 
 ///|
+/// Every #version 300 es fragment shader (a shader block declaring a float precision before void main) declares
+/// `precision highp int;` too: ESSL 3.00 defaults fragment `int` to 16-bit `mediump`, while software and desktop GL
+/// promote it to 32-bit.
+let shader_float_prec : @re.Regex = rx("\\bprecision\\s+(?:highp|mediump|lowp)\\s+float\\s*;")
+
+///|
+let shader_highp_int : @re.Regex = rx("\\bprecision\\s+highp\\s+int\\s*;")
+
+///|
+fn lint_shader_int(rel : String, src : String, out : Array[Finding]) -> Unit {
+  let lines = src.split("\n").map(fn(l) { l.to_owned() }).to_array()
+  let mut at = -1
+  let mut head = ""
+  let mut float_prec = false
+  let mut highp_int = false
+  let flush = fn() {
+    if at > 0 && float_prec && !highp_int {
+      out.push(finding("shader-int", rel, at, head))
+    }
+    at = -1
+    float_prec = false
+    highp_int = false
+  }
+  for i, line in lines {
+    let s = line.trim_start(chars=" \t\r\n\u{b}\u{c}").to_owned()
+    if s.has_prefix("//") || s.has_prefix("*") || s.has_prefix("/*") {
+      continue
+    }
+    if line.contains("#version 300 es") && !line.contains("strlen(") && !line.contains("snprintf(") {
+      flush()
+      at = i + 1
+      head = trim(line)
+    }
+    if at > 0 {
+      let cs = line.to_array()
+      if shader_float_prec.search_chars_from(cs, 0) is Some(_) {
+        float_prec = true
+      }
+      if shader_highp_int.search_chars_from(cs, 0) is Some(_) {
+        highp_int = true
+      }
+      if line.contains("void main(") {
+        flush()
+      }
+    }
+  }
+  flush()
+}
+
+///|
 fn find_chars(s : Array[Char], w : String) -> Int {
   let cs = w.to_array()
   let mut i = 0
@@ -315,9 +365,13 @@ fn lint_sources(files : Array[(String, String)], cfg : Config) -> Array[Finding]
         lint_lines(rel, src, "at-rest-wait", [shot_rest, drive_rest_text], findings, comment)
         if matches(rel, cfg.hosts) {
           lint_lines(rel, src, "host-delay", host_delays, findings, "//")
+          lint_shader_int(rel, src, findings)
         }
       }
-      5 => lint_lines(rel, src, "host-delay", host_delays, findings, "//")
+      5 => {
+        lint_lines(rel, src, "host-delay", host_delays, findings, "//")
+        lint_shader_int(rel, src, findings)
+      }
       _ => ()
     }
     // (what names an app, in any file read: its comment's mark as each kind has it)

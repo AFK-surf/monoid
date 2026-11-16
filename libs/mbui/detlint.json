@@ -308,7 +308,8 @@
       "src/ui/nav_flat_view.mbt": 1,
       "src/ui/nav_view.mbt": 1
     },
-    "layout-drawn-while": {}
+    "layout-drawn-while": {},
+    "shader-int": {}
   },
   "excused": {
     "frame-request": {},
@@ -393,7 +394,8 @@
     "pick-loop": {},
     "each-min-height": {},
     "each-lookup": {},
-    "layout-drawn-while": {}
+    "layout-drawn-while": {},
+    "shader-int": {}
   },
   "tester": {
     "names": [

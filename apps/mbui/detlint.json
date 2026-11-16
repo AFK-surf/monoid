@@ -622,7 +622,8 @@
     },
     "layout-drawn-while": {
       "src/sfpages/board_node.mbt": 2
-    }
+    },
+    "shader-int": {}
   },
   "excused": {
     "frame-request": {},
@@ -716,6 +717,7 @@
     "pick-loop": {},
     "each-min-height": {},
     "each-lookup": {},
-    "layout-drawn-while": {}
+    "layout-drawn-while": {},
+    "shader-int": {}
   }
 }

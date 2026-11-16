@@ -414,6 +414,7 @@ final class Streams {
         String fs = "#version 300 es\n"
                 + "#extension GL_OES_EGL_image_external_essl3 : require\n"
                 + "precision mediump float;\n"
+                + "precision highp int;\n"
                 + "uniform samplerExternalOES u_t;\n"
                 + "in vec2 v_uv;\n"
                 + "out vec4 o;\n"

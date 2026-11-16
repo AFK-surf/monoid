@@ -109,7 +109,8 @@
     "pick-loop": {},
     "each-min-height": {},
     "each-lookup": {},
-    "layout-drawn-while": {}
+    "layout-drawn-while": {},
+    "shader-int": {}
   },
   "excused": {
     "frame-request": {},
@@ -184,6 +185,7 @@
     "pick-loop": {},
     "each-min-height": {},
     "each-lookup": {},
-    "layout-drawn-while": {}
+    "layout-drawn-while": {},
+    "shader-int": {}
   }
 }

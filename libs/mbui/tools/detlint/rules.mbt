@@ -12,7 +12,7 @@ let rule_names : Array[String] = [
   "build-clock", "build-motion", "old-list", "list-comes-off", "old-island", "old-panel",
   "click-read", "key-read", "part-place", "button-by-hand", "layout-told", "abort-unsaid", "empty-on-done", "panic-test", "read-before-run", "reset-by-hand",
   "app-word", "frame-walk", "scoped-computed", "raw-effect", "pick-loop", "each-min-height",
-  "each-lookup", "layout-drawn-while",
+  "each-lookup", "layout-drawn-while", "shader-int",
 ]
 
 ///|
@@ -90,6 +90,7 @@ let rule_words : Map[String, String] = {
   "read-before-run": "a test reads the app's words or language (detlint.json `run_first.reads`: @sf.t, tr) before it starts its own run of the app (`run_first.starts`: new_run, fresh_app; Tester::new, or a function that starts one first): what it reads then is the app as the test before it in the process left it. gate_wbtest's last test leaves the core's prefs saying English; landing_node_wbtest's first, reading its titles' words before its new_run, looked for English ones in the Chinese its run drew, and failed only where the two files ran in one process, which CI's grouping changes with the rate and the files' seconds (#5433, 2026-11-11). Start the run first, then read what it shows",
   "reset-by-hand": "a test puts the app back by hand (new_run) and makes no Tester after it: the app's reset is then left marked as done for a Tester to come (sfapp's reset_by_hand), and that Tester is the next test's, which starts from the app as this one left it, not as at the start (2026-11-11); a test that makes no Tester puts it back with fresh_app(), which leaves nothing marked",
   "host-delay": "a host does something a fixed time later (postDelayed, dispatch_after, SetTimer, setTimeout): do it on the event it waits for (a callback, a listener, the system's word); a time the app asked for (its wake) says so on its line (det-ok)",
+  "shader-int": "a #version 300 es fragment shader (declaring a float precision) without `precision highp int;`: ESSL 3.00 fragment shaders default int to 16-bit mediump ([-32768, 32767]), while desktop and software drivers promote it to 32-bit, hiding mobile GPU overflows (such as u_segs texel indices past 13,109 segments)",
 }
 
 ///|
