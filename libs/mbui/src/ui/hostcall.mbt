@@ -69,6 +69,8 @@ struct FakeHost {
   mut keyboard : Bool
   // the system asks for less transparency (glass drawn solid)
   mut reduce_transparency : Bool
+  // the system asks for more contrast (Tester::set_increase_contrast)
+  mut increase_contrast : Bool
   // the person's setting for motion: reduced (Tester::set_reduce_motion; or the environment's MBUI_REDUCE_MOTION=1)
   mut reduce_motion : Bool
   logs : Array[String]
@@ -780,6 +782,12 @@ let presented_ms : Ref[Double] = { val: 0.0 }
 ///|
 fn h_reduce_transparency() -> Bool {
   @hostapi.reduce_transparency() || h_env("MBUI_GLASS") == "solid"
+}
+
+///|
+/// Whether the system asks for more contrast (MBUI_CONTRAST=more stands in for it in a picture or a film).
+fn h_increase_contrast() -> Bool {
+  @hostapi.increase_contrast() || h_env("MBUI_CONTRAST") == "more"
 }
 
 ///|

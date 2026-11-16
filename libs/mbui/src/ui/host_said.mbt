@@ -93,6 +93,18 @@ let motion_reduced_said : HostSaid[Bool] = host_said(false, motion_reduced_asked
 let glass_solid_said : HostSaid[Bool] = host_said(false, h_reduce_transparency)
 
 ///|
+/// Whether the system asks for more contrast (more_contrast).
+// kept across runs: put back by each Tester (host_settings_arrive as its first frame begins)
+let contrast_said : HostSaid[Bool] = host_said(false, h_increase_contrast)
+
+///|
+/// Whether the system asks for more contrast now (macOS's and iOS's Increase Contrast, Windows' high contrast),
+/// followed: what reads it (an app's theme) is made again as it changes.
+pub fn more_contrast() -> Bool {
+  contrast_said.now()
+}
+
+///|
 /// Whether the host decodes H.264 (h264_here), drives its decoder from here (stream_feeds), has a video layer
 /// (stream_layers).
 // kept across runs: put back by each Tester (host_settings_arrive as its first frame begins)
@@ -118,6 +130,7 @@ fn host_settings_arrive() -> Unit {
   reads_out_said.arrive()
   motion_reduced_said.arrive()
   glass_solid_said.arrive()
+  contrast_said.arrive()
   h264_said.arrive()
   feeds_said.arrive()
   layers_said.arrive()

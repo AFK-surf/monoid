@@ -221,6 +221,8 @@ pub let ime_action_secret : Int32
 
 pub fn ime_inset() -> Double
 
+pub fn increase_contrast() -> Bool
+
 pub fn install_package(String, Bytes) -> Unit
 
 pub fn keep(String, String, Bytes, way? : KeepWay) -> Keep?
@@ -956,6 +958,7 @@ pub(open) trait Host {
   fn set_back(Self, FuncRef[(Int32, Double, Double, Int32) -> Unit]) -> Unit = _
   fn back_enabled(Self, Bool) -> Unit = _
   fn reduce_transparency(Self) -> Bool = _
+  fn increase_contrast(Self) -> Bool = _
   fn gpu_ms(Self) -> Double = _
   fn cpu_ms(Self) -> Double = _
   fn env(Self, String) -> String = _

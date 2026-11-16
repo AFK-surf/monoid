@@ -100,6 +100,7 @@ pub(open) trait Host {
   set_back(Self, FuncRef[(Int, Double, Double, Int) -> Unit]) -> Unit = _
   back_enabled(Self, Bool) -> Unit = _
   reduce_transparency(Self) -> Bool = _
+  increase_contrast(Self) -> Bool = _
   gpu_ms(Self) -> Double = _
   cpu_ms(Self) -> Double = _
   env(Self, String) -> String = _
@@ -749,6 +750,11 @@ impl Host with back_enabled(_, _) {
 
 ///|
 impl Host with reduce_transparency(_) {
+  false
+}
+
+///|
+impl Host with increase_contrast(_) {
   false
 }
 
@@ -2339,6 +2345,14 @@ pub fn back_enabled(on : Bool) -> Unit {
 /// turned off; Android has no such setting (never).
 pub fn reduce_transparency() -> Bool {
   current.val.reduce_transparency()
+}
+
+///|
+/// Whether the system asks for more contrast (lines and quiet words drawn stronger): macOS's Increase Contrast,
+/// iOS's Increase Contrast (darker system colours), Windows' high contrast on; Android and Linux have no such setting
+/// an app reads (never).
+pub fn increase_contrast() -> Bool {
+  current.val.increase_contrast()
 }
 
 ///|

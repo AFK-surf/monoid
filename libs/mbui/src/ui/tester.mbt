@@ -437,6 +437,7 @@ pub fn Tester::new(
     native: native.unwrap_or(platform_pointing(platform)),
     keyboard: keyboard.unwrap_or(platform_keyboard(platform)),
     reduce_transparency: false,
+    increase_contrast: false,
     reduce_motion: false,
     logs: [],
     image_sizes: {},
@@ -2547,6 +2548,13 @@ pub fn Tester::perf_said(self : Tester) -> (Array[Bool], Array[String]) {
 pub fn Tester::set_reduce_transparency(self : Tester, on : Bool) -> Unit {
   host_setting_set("set_reduce_transparency")
   self.fake.reduce_transparency = on
+}
+
+///|
+/// The system asks for more contrast from now on, or no longer.
+pub fn Tester::set_increase_contrast(self : Tester, on : Bool) -> Unit {
+  host_setting_set("set_increase_contrast")
+  self.fake.increase_contrast = on
 }
 
 ///|

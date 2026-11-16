@@ -463,6 +463,11 @@ impl @hostapi.Host for Native with reduce_transparency(_) {
 }
 
 ///|
+impl @hostapi.Host for Native with increase_contrast(_) {
+  increase_contrast()
+}
+
+///|
 impl @hostapi.Host for Native with gpu_ms(_) {
   gpu_ms()
 }

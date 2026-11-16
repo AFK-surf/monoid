@@ -1869,6 +1869,8 @@ void mb_host_exit(int32_t code) { exit(code); }
 
 // The system's Reduce Transparency (glass drawn solid).
 int32_t mb_host_reduce_transparency(void) { return UIAccessibilityIsReduceTransparencyEnabled() ? 1 : 0; }
+// The system's Increase Contrast (its darker system colours): lines and quiet words drawn stronger.
+int32_t mb_host_increase_contrast(void) { return UIAccessibilityDarkerSystemColorsEnabled() ? 1 : 0; }
 
 // The CPU's time the whole process has had, every thread's (@hostapi.cpu_ms: MBUI_PROBE's share of a CPU), in ms.
 double mb_host_cpu_ms(void) {

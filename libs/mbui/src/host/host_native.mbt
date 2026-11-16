@@ -170,6 +170,8 @@ extern "C" fn ffi_mem_bytes() -> Double = "mb_host_mem_bytes"
 
 extern "C" fn ffi_reduce_transparency() -> Int = "mb_host_reduce_transparency"
 
+extern "C" fn ffi_increase_contrast() -> Int = "mb_host_increase_contrast"
+
 extern "C" fn ffi_gpu_ms() -> Double = "mb_host_gpu_ms"
 
 extern "C" fn ffi_cpu_ms() -> Double = "mb_host_cpu_ms"
@@ -860,6 +862,13 @@ fn back_enabled(on : Bool) -> Unit {
 /// turned off; Android has no such setting (never).
 fn reduce_transparency() -> Bool {
   ffi_reduce_transparency() != 0
+}
+
+///|
+/// Whether the system asks for more contrast: macOS's and iOS's Increase Contrast, Windows' high contrast;
+/// Android and Linux have no such setting an app reads (never).
+fn increase_contrast() -> Bool {
+  ffi_increase_contrast() != 0
 }
 
 ///|

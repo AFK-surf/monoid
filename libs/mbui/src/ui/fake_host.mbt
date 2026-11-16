@@ -567,6 +567,12 @@ impl @hostapi.Host for FakeHost with reduce_transparency(self) {
 }
 
 ///|
+/// The system asks for more contrast (Tester::set_increase_contrast).
+impl @hostapi.Host for FakeHost with increase_contrast(self) {
+  self.increase_contrast
+}
+
+///|
 /// Its performance record (Tester::set_perf): -1 none kept here, 0 off, 1 on.
 impl @hostapi.Host for FakeHost with perf_state(self) {
   self.perf

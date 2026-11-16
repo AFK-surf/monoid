@@ -10,6 +10,29 @@
 // (markdown.mbt `web`).
 
 ///|
+/// `p` as the system asking for more contrast has it (`more`: macOS's and iOS's Increase Contrast, Windows' high
+/// contrast; @ui.more_contrast), as Apple's own colours go then (the owner, 2026-11-16: 照苹果的来): the quiet words
+/// (muted, subtle) half way to the words' own ink, the lines that only part things (line, line_strong) twice as seen.
+/// What is the same whatever is asked (the accent, the grounds, the tones) stays.
+fn contrasted(p : Palette, more : Bool) -> Palette {
+  guard more else { return p }
+  {
+    ..p,
+    muted: mix(p.text, 0.5, p.muted),
+    subtle: mix(p.text, 0.5, p.subtle),
+    line: twice_seen(p.line),
+    line_strong: twice_seen(p.line_strong),
+  }
+}
+
+///|
+/// `c` twice as opaque, opaque at most.
+fn twice_seen(c : Int64) -> Int64 {
+  let a = (c & 0xFFL) * 2L
+  (c & 0xFFFFFF00L) | (if a > 255L { 255L } else { a })
+}
+
+///|
 /// The colours a view reads (the web's names: `text` is --text, `bg` the
 /// page's ground, the warm paper; `card` and `canvas` what stands on it, white).
 pub(all) struct Palette {
@@ -1215,7 +1238,7 @@ fn screen_layout(width : Double) -> Layout {
 /// or dark as set: call at the top of a view.
 pub fn begin(_c : @ui.Ctx) -> Theme {
   let dark = dark_set.untracked().unwrap_or(false)
-  current.val = theme_of(dark)
+  current.val = theme_of(dark, @signals.untracked(@ui.more_contrast))
   current.val
 }
 
@@ -1471,18 +1494,18 @@ fn accented(p : Palette, dark : Bool, key : String) -> Palette {
 ///|
 /// The theme light or dark as `dark` says, its sizes by the native input (begin's): what it is made of known whenever it
 /// is asked, not only as a frame begins.
-fn theme_of(dark : Bool) -> Theme {
+fn theme_of(dark : Bool, more : Bool) -> Theme {
   let touch = native_input() is Finger
   let accent = accent_set.untracked()
   // (one of each: the same whenever it is asked, what is made of it kept as long as it is)
-  match themes_made.get((dark, touch, accent)) {
+  match themes_made.get((dark, touch, accent, more)) {
     Some(t) => return t
     None => ()
   }
   let t : Theme = {
     dark,
     touch,
-    p: accented(if dark { dark_palette } else { light_palette }, dark, accent),
+    p: contrasted(accented(if dark { dark_palette } else { light_palette }, dark, accent), more),
     t: if touch { narrow_type } else { wide_type },
     rows: if touch { narrow_rows } else { wide_rows },
     control_h: if touch { narrow_control_h } else { wide_control_h },
@@ -1491,14 +1514,14 @@ fn theme_of(dark : Bool) -> Theme {
     items: if touch { narrow_items } else { wide_items },
     chat_list: if touch { touch_chat_list } else { mouse_chat_list },
   }
-  themes_made[(dark, touch, accent)] = t
+  themes_made[(dark, touch, accent, more)] = t
   t
 }
 
 ///|
-/// The themes made (theme_of), by light or dark, the native input and the accent.
+/// The themes made (theme_of), by light or dark, the native input, the accent and whether more contrast is asked.
 // kept across runs: each a value of what it is made of
-let themes_made : Map[(Bool, Bool, String), Theme] = Map([])
+let themes_made : Map[(Bool, Bool, String, Bool), Theme] = Map([])
 
 ///|
 /// Whether a ground is drawn on in place of the page's now (with_ground): the theme is current's, as it says, till then.
@@ -1548,10 +1571,12 @@ pub fn theme() -> Theme {
   let dark = dark_set.get().unwrap_or(false)
   // (read as a signal too: what is made once of the accent follows it)
   accent_set.get() |> ignore
+  // (and the system asking for more contrast: @ui.more_contrast, followed as it changes)
+  let more = @ui.more_contrast()
   if ground_over.val > 0 {
     current.val
   } else {
-    theme_of(dark)
+    theme_of(dark, more)
   }
 }
 

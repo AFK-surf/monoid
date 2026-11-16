@@ -1776,6 +1776,13 @@ int32_t mb_host_reduce_transparency(void) {
   return v == 0;
 }
 
+// Windows' high contrast (Settings > Accessibility > Contrast themes) on: lines and quiet words drawn stronger.
+int32_t mb_host_increase_contrast(void) {
+  HIGHCONTRASTW hc = {sizeof hc};
+  if (!SystemParametersInfoW(SPI_GETHIGHCONTRAST, sizeof hc, &hc, 0)) return 0;
+  return (hc.dwFlags & HCF_HIGHCONTRASTON) ? 1 : 0;
+}
+
 // The CPU's time the whole process has had, every thread's (@hostapi.cpu_ms: MBUI_PROBE's share of a CPU), in ms.
 double mb_host_cpu_ms(void) {
   FILETIME made, ended, kernel, user;

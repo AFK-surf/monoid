@@ -1679,6 +1679,7 @@ moonbit_string_t mb_host_env(moonbit_string_t name) {
 }
 
 int32_t mb_host_reduce_transparency(void) { return 0; }
+int32_t mb_host_increase_contrast(void) { return 0; }
 
 double mb_host_gpu_ms(void) { return -1; }
 

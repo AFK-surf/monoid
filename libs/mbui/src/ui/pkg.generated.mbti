@@ -429,6 +429,8 @@ pub let mod_shift_key : Int32
 
 pub fn mods_held() -> Int32
 
+pub fn more_contrast() -> Bool
+
 pub fn motion_counted(Array[String]) -> Unit
 
 pub let move_least_ms : Double
@@ -3086,6 +3088,7 @@ pub fn Tester::set_frame_period(Self, Double) -> Unit
 pub fn Tester::set_frame_times(Self, Array[Double]) -> Unit
 pub fn Tester::set_groups(Self, Bool) -> Unit
 pub fn Tester::set_h265(Self, Bool) -> Unit
+pub fn Tester::set_increase_contrast(Self, Bool) -> Unit
 pub fn Tester::set_ime_inset(Self, Double) -> Unit
 pub fn Tester::set_keyboard(Self, Bool) -> Unit
 pub fn Tester::set_local_fonts(Self, String) -> Unit

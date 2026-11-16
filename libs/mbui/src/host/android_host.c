@@ -1160,6 +1160,8 @@ moonbit_string_t mb_host_env(moonbit_string_t name) {
 // Android has no setting asking for less transparency (MBUI_GLASS=solid stands in for it); the GPU's time is not
 // measured here.
 int32_t mb_host_reduce_transparency(void) { return 0; }
+// Android has no setting asking an app for more contrast (high contrast text is the system's own, not told apps).
+int32_t mb_host_increase_contrast(void) { return 0; }
 
 // The performance record (@hostapi.perf_state): none kept here (iOS keeps one, ios_app.m).
 int32_t mb_host_perf_state(void) { return -1; }

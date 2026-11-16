@@ -3430,6 +3430,11 @@ int32_t mb_host_reduce_transparency(void) {
   return [[NSWorkspace sharedWorkspace] accessibilityDisplayShouldReduceTransparency] ? 1 : 0;
 }
 
+// The system's Increase Contrast (lines and quiet words drawn stronger).
+int32_t mb_host_increase_contrast(void) {
+  return [[NSWorkspace sharedWorkspace] accessibilityDisplayShouldIncreaseContrast] ? 1 : 0;
+}
+
 // The CPU's time the whole process has had, every thread's (@hostapi.cpu_ms: MBUI_PROBE's share of a CPU), in ms.
 double mb_host_cpu_ms(void) {
   struct rusage u;

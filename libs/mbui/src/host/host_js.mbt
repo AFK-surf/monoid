@@ -479,6 +479,12 @@ fn reduce_transparency() -> Bool {
 }
 
 ///|
+/// Whether the system asks for more contrast: the web is not drawn by this host for people (its own page), never.
+fn increase_contrast() -> Bool {
+  false
+}
+
+///|
 /// The GPU's time for the last frame drawn, in ms (-1: not known here).
 fn gpu_ms() -> Double {
   js_gpu_ms()
