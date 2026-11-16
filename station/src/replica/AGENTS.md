@@ -56,9 +56,11 @@ below, sends them along).
   lists them (`rebuildable` stays behind, decided from the listings the walk reads: by its name anywhere, one known by
   what is in it only outside a checkout and within 3 levels of the room's top, as git ignores it inside one; carry.mbt
   `rebuilt_by_name`, `rebuilt_of_any_name`, held to the reference's (`station/test/footprint-reference.ts`) by `station/test/mb-replica-carry.test.ts` on the same
-  trees), its own `.git` as files, a repository in it gone into; a linked worktree is
+  trees), its own `.git` as files (walked once the room was: a linked worktree of it walked later fetches into it, and
+  its sending was refused as changed, 2026-11-16), a repository in it gone into; a linked worktree is
   made again there by git (its remote fetched and pruned first, a bundle of the commits no remote has, `git worktree add`
-  and `repair`; one that cannot be keeps its bundle beside it; not begun where that station has no git). A station has
+  and `repair`, the remote fetched there too where the clone lacks its commit or the bundle's prerequisites; one that
+  cannot be keeps its bundle beside it; not begun where that station has no git). A station has
   a million files: nothing of them is one object on a main thread or in one message (a list a session on disk, an
   index of the lists, `retire.lacking` a bounded batch of hashes at a time; `replica-retire.test.ts` counts them). Every
   file is checked by its hash as it is written there, and put in place linked to what was sent, no byte copied

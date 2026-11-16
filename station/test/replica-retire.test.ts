@@ -993,6 +993,75 @@ test("a linked worktree whose branch was deleted on its remote is made again wit
   assert.equal(git(there, "status", "--porcelain"), "");
 });
 
+test("a chat's linked worktrees made again on a station whose clone its remote has gone past (a hand-over's, the clone not made there): its remote fetched for a commit or a bundle's prerequisite it lacks, a worktree there missing but locked overridden", async () => {
+  const from = dataDir("from");
+  const db = join(from, "stillfail.db");
+  const store = Store.open(db, join(from, "archive"));
+  chat(store, from, "chat:w", null, 1);
+  const ws = (store.getSession("chat:w") as Json).workspace as string;
+  store.close();
+  const remote = join(dataDir("remote"), "r.git");
+  const { seed } = checkoutIn(join(dataDir("other"), "c"), remote);
+  const c1 = git(seed, "rev-parse", "HEAD");
+  // (the other station's clone, as the repos module moved it there: before its remote went on)
+  const stale = join(dataDir("stale"), "r");
+  execFileSync("git", ["clone", "-q", remote, stale], { stdio: "ignore", env: gitEnv() });
+  writeFileSync(join(seed, "a.txt"), "two\n");
+  git(seed, "commit", "-q", "-am", "C2");
+  git(seed, "push", "-q", "origin", "main");
+  const c2 = git(seed, "rev-parse", "HEAD");
+  const main = join(from, "repos", "r");
+  mkdirSync(join(from, "repos"), { recursive: true });
+  execFileSync("git", ["clone", "-q", remote, main], { stdio: "ignore", env: gitEnv() });
+  mkdirSync(ws, { recursive: true });
+  // a bundle of a commit whose parent only the remote has; a worktree at a commit only the remote has; one at a commit
+  // the clone there has, whose place there git keeps a missing worktree of, locked (one archived, a run cut short)
+  git(main, "worktree", "add", "-q", "-b", "w-bundle", join(ws, "a-bundle"), "origin/main");
+  writeFileSync(join(ws, "a-bundle", "c.txt"), "three\n");
+  git(join(ws, "a-bundle"), "add", "c.txt");
+  git(join(ws, "a-bundle"), "commit", "-q", "-m", "C3");
+  const c3 = git(join(ws, "a-bundle"), "rev-parse", "HEAD");
+  git(main, "worktree", "add", "-q", "-b", "w-ahead", join(ws, "b-ahead"), "origin/main");
+  git(main, "worktree", "add", "-q", "-b", "w-locked", join(ws, "c-locked"), c1);
+  const g = await gather(from, db, HOME, true, join(from, "scratch"));
+  const index = indexOf(g);
+  assert.deepEqual(index.gits.map((x) => [x.dir.slice(ws.length + 1), x.head, x.bundle !== null]), [["a-bundle", c3, true], ["b-ahead", c2, false], ["c-locked", c1, false]]);
+  const files = sent(g);
+  /// A station of its own for each run: the chat's files placed, the clone moved there before the remote went on.
+  const there = async () => {
+    const to = dataDir("to");
+    await place(to, g.index, files);
+    cpSync(stale, join(to, "repos", "r"), { recursive: true });
+    const locked = `${join(to, ws.slice(from.length + 1), "c-locked")}.git-carrying`;
+    git(join(to, "repos", "r"), "worktree", "add", "-q", "--detach", locked, c1);
+    git(join(to, "repos", "r"), "worktree", "lock", "--reason", "still.fail archived workspace", locked);
+    rmSync(locked, { recursive: true, force: true });
+    return to;
+  };
+  const wants: Record<string, [string, string]> = { "a-bundle": [c3, "w-bundle"], "b-ahead": [c2, "w-ahead"], "c-locked": [c1, "w-locked"] };
+  const madeThere = (to: string, name: string) => {
+    const at = join(to, ws.slice(from.length + 1), name);
+    assert.equal(git(at, "rev-parse", "HEAD"), wants[name]![0], `${name}: its commit`);
+    assert.equal(git(at, "symbolic-ref", "--short", "HEAD"), wants[name]![1], `${name}: its branch`);
+    assert.equal(git(at, "status", "--porcelain"), "", `${name}: its files as git has them`);
+  };
+  // each alone, then the three together
+  const alone: [string, string][] = [];
+  const counts: Record<string, { made: number; failed: number }> = {};
+  for (const one of index.gits) {
+    const to = await there();
+    const name = one.dir.slice(ws.length + 1);
+    counts[name] = await rebuildGits(to, join(to, "repos"), { ...index, gits: [one] }, files, gitAsync, { clone: false });
+    alone.push([to, name]);
+  }
+  const to = await there();
+  counts.together = await rebuildGits(to, join(to, "repos"), index, files, gitAsync, { clone: false });
+  assert.deepEqual(counts, { "a-bundle": { made: 1, failed: 0 }, "b-ahead": { made: 1, failed: 0 }, "c-locked": { made: 1, failed: 0 }, together: { made: 3, failed: 0 } });
+  for (const [at, name] of alone) madeThere(at, name);
+  for (const name of Object.keys(wants)) madeThere(to, name);
+  assert.doesNotMatch(git(join(to, "repos", "r"), "worktree", "list", "--porcelain"), /git-carrying/, "the locked one git kept is gone");
+});
+
 test("a copy put in beside a station's own chats: its threads given ids there, a platform's thread both followed is the one there, a still.fail chat of the same ts is its own; the connects named and the sessions' workspace as there", async () => {
   const made = station();
   // (a session of a connect of A's, in a thread B follows too)

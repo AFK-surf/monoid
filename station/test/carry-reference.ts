@@ -196,6 +196,9 @@ function walked(dataDir: string, db: string, ws: string, home: boolean, scratch:
   let before = new Map<string, { size: number; mtimeMs: number; hash: string }>();
   let seen = new Set<string>();
   let list: ListFile | Tally | null = null;
+  /// A gathering's: the session's own repositories (a checkout's `.git` directory), walked whole once its room was: a
+  /// linked worktree of one walked after it in the room fetches into it (`linked`).
+  let ownGits: string[] = [];
   /// Where what is added may be (the agent home's own files are under it, not the data directory's sessions).
   let under: (path: string) => boolean = (path) => carriedPlace(dataDir, path);
   const unreadable: string[] = [];
@@ -324,7 +327,8 @@ function walked(dataDir: string, db: string, ws: string, home: boolean, scratch:
       }
     };
     if (st.isDirectory()) {
-      whole(dotgit);
+      if (sizing !== null) whole(dotgit);
+      else ownGits.push(dotgit);
       take();
       return true;
     }
@@ -353,7 +357,7 @@ function walked(dataDir: string, db: string, ws: string, home: boolean, scratch:
     const repo = common === null ? dir : resolve(dir, common);
     if (!fetched.has(repo)) {
       fetched.add(repo);
-      git(dir, ["fetch", "-q", "--prune", "origin"], FETCH_MS);
+      git(dir, ["fetch", "-q", "--no-write-fetch-head", "--prune", "origin"], FETCH_MS);
     }
     const branch = git(dir, ["symbolic-ref", "--short", "-q", "HEAD"]);
     const bundle = join(scratch, `${gits.length}.bundle`);
@@ -438,6 +442,7 @@ function walked(dataDir: string, db: string, ws: string, home: boolean, scratch:
       }
       seen = new Set();
       walkedOf = 0;
+      ownGits = [];
       list = sizing !== null ? new Tally() : new ListFile(at);
       let complete = true;
       /// (a sizing's: where its transcripts are, which the other station is asked to size of its own)
@@ -471,6 +476,8 @@ function walked(dataDir: string, db: string, ws: string, home: boolean, scratch:
         const room = roomFor(dataDir, realData, s.workspace);
         if (room === null) skipped.push(s.key);
         else roomWalk(room);
+        // (its own repositories last, as the fetches of its linked worktrees left them)
+        for (const dotgit of ownGits) whole(dotgit);
       } catch (e) {
         if (e !== CUT) throw e;
         complete = false;

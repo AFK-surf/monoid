@@ -1722,8 +1722,8 @@ export class Retire {
 /// to its commit, its branch taken where no branch of that name is here. Its files are left as they were put: what it
 /// changed shows as changed. One that cannot be made is left as its files, its bundle kept beside it
 /// (`<dir>.carried.bundle`: the only copy of its commits no remote has), counted.
-/// `clone` false: a repository not in the cache already is not cloned, and its remote not fetched: a chat handed over
-/// (handover.ts) has its repository moved before it by the repos module (move/repos.ts), and only adds its worktree.
+/// `clone` false: a repository not in the cache already is not cloned: a chat handed over (handover.ts) has its
+/// repository moved before it by the repos module (move/repos.ts), and only adds its worktree.
 /// A linked worktree `rebuildGits` made: its directory, its repository, the branch and the ref it made there (none: there
 /// already). What a hand-over that fails takes out again (handover.ts), the repository itself staying.
 export type MadeGit = { dir: string; repo: string; branch: string | null; ref: string | null };
@@ -1772,11 +1772,17 @@ export async function rebuildGits(dataDir: string, reposDir: string, carry: { da
       const repo = await repoOf(g.remote);
       const ref = `refs/carried/${g.head}`;
       const refBefore = g.bundle === null ? true : await git(repo, ["rev-parse", "-q", "--verify", ref]).then(() => true, () => false);
-      if (g.bundle !== null) await git(repo, ["fetch", "-q", join(from, g.bundle), `+HEAD:${ref}`]);
-      if (opts.clone !== false && await git(repo, ["cat-file", "-e", `${g.head}^{commit}`]).then(() => false, () => true)) await git(repo, ["fetch", "-q", "origin"]);
+      // (its remote fetched where the repository lacks what the worktree stands on: a bundle's prerequisites, its commit.
+      // A clone here before its remote went on, as the repos module moved it, lacks what was pushed since)
+      const fetchOrigin = () => git(repo, ["fetch", "-q", "--no-write-fetch-head", "origin"]);
+      const fromBundle = () => git(repo, ["fetch", "-q", join(from, g.bundle!), `+HEAD:${ref}`]);
+      if (g.bundle !== null) await fromBundle().catch(async () => (await fetchOrigin(), await fromBundle()));
+      if (await git(repo, ["cat-file", "-e", `${g.head}^{commit}`]).then(() => false, () => true)) await fetchOrigin();
       const beside = `${dir}.git-carrying`;
       await rm(beside, { recursive: true, force: true });
-      await git(repo, ["worktree", "add", "-q", "--no-checkout", "--detach", beside, g.head]);
+      // (forced twice: a worktree git keeps there, gone but locked, as an archived one or a run cut short left it, is
+      // git's to take over)
+      await git(repo, ["worktree", "add", "-f", "-f", "-q", "--no-checkout", "--detach", beside, g.head]);
       // (said before it is in place, so that one cut between the two is taken out too)
       await opts.made?.({ dir, repo, branch: null, ref: refBefore ? null : ref });
       await rename(join(beside, ".git"), join(dir, ".git"));

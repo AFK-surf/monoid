@@ -1,7 +1,8 @@
 // The MoonBit program's gathering and placing of a retired station's files (`--builder replica-carry`, station/mb's
 // src/replica/carry.mbt, started by src/replica/carry.ts) held to the worker thread's from before (carry-reference.ts)
 // on the same station: the same lists byte for byte, the same index and answers (a checkout with its own repository and
-// one inside it, a linked worktree with commits no remote has, links, what a build makes again, transcripts of each
+// one inside it, a linked worktree with commits no remote has, one of a clone in the room whose fetch writes in its
+// .git, links, what a build makes again, transcripts of each
 // runtime and a put-away one, a room not the station's own, files it cannot read, names JavaScript and the disk sort
 // apart), a gathering again taking a file's hash from its list before; and the same files put on two stations, by
 // their bytes, modes, times and links, what they made, kept and put aside.
@@ -15,6 +16,7 @@ import { test } from "node:test";
 import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
 import { claudeProject } from "../src/read/transcript.ts";
 import { type CarryIndex, type Gathered, gatherSoon, inProgram, placeSoon, previewSoon, sizesSoon } from "../src/replica/carry.ts";
+import { type Sending, lackingIn, receiveFile, sendGathered } from "../src/replica/sending.ts";
 import { Store } from "../src/store/store.ts";
 import { gather, linesOf, place, preview, sizes } from "./carry-reference.ts";
 import { HOME, OTHER, chat, dataDir as madeDir, station as madeStation } from "./replica-fakes.ts";
@@ -415,6 +417,71 @@ test("the program puts in what the worker thread put: the same files, modes, tim
   assert.equal((await both("replaced", { made: true, aside: true })).placed, 2);
   // a chat handed over: its Claude transcripts under its room's project there
   await both("projects", { projects: true });
+});
+
+test("a room's own clone and a linked worktree of it walked after it: the clone's .git listed as the worktree's fetch left it, every file of it sent by the hash its list says, by the program as by the worker thread", { skip }, async () => {
+  // (the Farview chat's room, 2026-11-16: `farview` hashed whole, then `farview-b5`'s fetch wrote into its .git, and the
+  // hand-over's held sending was refused, "a file changed as it was sent", every time)
+  const world = () => {
+    const made = station();
+    const aws = (made.store.getSession("chat:a") as { workspace: string }).workspace;
+    made.store.close();
+    mkdirSync(aws, { recursive: true });
+    const remote = join(dataDir("remote"), "r.git");
+    mkdirSync(remote, { recursive: true });
+    git(remote, "init", "-q", "--bare", "-b", "main");
+    const seed = dataDir("seed");
+    git(seed, "init", "-q", "-b", "main");
+    writeFileSync(join(seed, "a.txt"), "one\n");
+    git(seed, "add", "-A");
+    git(seed, "commit", "-q", "-m", "first");
+    git(seed, "remote", "add", "origin", remote);
+    git(seed, "push", "-q", "origin", "main", "main:gone");
+    const farview = join(aws, "farview");
+    execFileSync("git", ["clone", "-q", remote, farview], { stdio: "ignore", env: gitEnv() });
+    git(farview, "worktree", "add", "-q", "-b", "wt", join(aws, "farview-wt"));
+    // (its remote goes on meanwhile: a commit, a branch deleted)
+    writeFileSync(join(seed, "a.txt"), "two\n");
+    git(seed, "commit", "-q", "-am", "second");
+    git(seed, "push", "-q", "origin", "main", ":gone");
+    return { ...made, aws, farview };
+  };
+  /// Every file its lists name under the clone's .git is there with the bytes its hash says, and the whole of it is sent
+  /// as a hand-over's held sending sends it (strict), taken by the hash its list says.
+  const asListed = async (g: Gathered, farview: string, who: string) => {
+    const lines = indexOf(g).sessions.flatMap((s) => [...linesOf(s.at)].map((l) => JSON.parse(l) as { path: string; hash?: string }));
+    const own = lines.filter((f) => f.path.startsWith(join(farview, ".git") + "/") && f.hash !== undefined);
+    assert.ok(own.some((f) => f.path.includes("/refs/remotes/origin/") || f.path.endsWith("/packed-refs")), `${who}: the clone's refs listed`);
+    for (const f of own) {
+      assert.ok(existsSync(f.path), `${who}: ${f.path} is there`);
+      assert.equal(createHash("sha256").update(readFileSync(f.path)).digest("hex"), f.hash, `${who}: ${f.path} as its list says`);
+    }
+    const got = dataDir("got");
+    const to: Sending = {
+      most: 64,
+      stopping: () => false,
+      total: () => {},
+      done: () => {},
+      lacking: async (hashes) => ({ lacking: await lackingIn(got, hashes) }),
+      put: async (hash, bytes) => receiveFile(got, hash, bytes, false),
+    };
+    assert.match((await sendGathered(g, to, true)) ?? "", /^[0-9a-f]{64}$/, `${who}: sent whole, held`);
+  };
+  {
+    const { data, db, farview } = world();
+    await asListed(gather(data, db, HOME, true, dataDir("scratch-ref")), farview, "the worker thread");
+  }
+  {
+    const { data, db, farview } = world();
+    await asListed(await gatherSoon(data, db, HOME, true, dataDir("scratch-mb")), farview, "the program");
+  }
+  // the two on the same room, one after the other: the same lists, byte for byte (the second's fetch writes nothing)
+  const { data, db, farview } = world();
+  const { ref, mb } = await bothGather(data, db, HOME, true);
+  assert.equal(indexOf(mb).gits.length, 1);
+  assert.equal(indexOf(mb).gits[0]!.dir, `${farview}-wt`);
+  await asListed(ref, farview, "the worker thread, then");
+  await asListed(mb, farview, "the program, after it");
 });
 
 test("a gathering called off is answered at once, its program ended; one called off before it began starts none; one answered has ended as it is", { skip }, async () => {

@@ -683,6 +683,9 @@ priv struct Gathering {
   gits : Array[JValue]
   bundles : Map[String, String]
   fetched : Set[String]
+  /// A gathering's (carry-reference.ts `ownGits`): the session's own repositories (a checkout's `.git` directory),
+  /// walked whole once its room was: a linked worktree of one walked after it in the room fetches into it (`linked`).
+  own_gits : Array[String]
   mut bytes : Double
   mut before : Map[String, (Double, Double, String)]
   mut seen : Set[String]
@@ -915,7 +918,11 @@ fn Gathering::checkout(self : Gathering, dir : String, depth : Int) -> Bool rais
     }
   }
   if kind == "dir" {
-    self.whole(dotgit)
+    if self.tally is Some(_) {
+      self.whole(dotgit)
+    } else {
+      self.own_gits.push(dotgit)
+    }
     take()
     return true
   }
@@ -957,7 +964,7 @@ fn Gathering::linked(self : Gathering, dir : String) -> JValue? raise {
   }
   if !self.fetched.contains(repo) {
     self.fetched.add(repo)
-    ignore(self.git(dir, ["fetch", "-q", "--prune", "origin"], timeout=120000.0))
+    ignore(self.git(dir, ["fetch", "-q", "--no-write-fetch-head", "--prune", "origin"], timeout=120000.0))
   }
   let branch = self.git(dir, ["symbolic-ref", "--short", "-q", "HEAD"])
   let bundle = self.files.join([self.scratch, "\{self.gits.length()}.bundle"])
@@ -1039,6 +1046,7 @@ pub fn carry_gather(
     gits: [],
     bundles: Map([]),
     fetched: Set([]),
+    own_gits: [],
     bytes: 0.0,
     before: Map([]),
     seen: Set([]),
@@ -1068,6 +1076,7 @@ pub fn carry_gather(
     let at = list_file(files, scratch, key)
     g.read_before(at)
     g.seen = Set([])
+    g.own_gits.clear()
     let list = ListFile::open(at)
     g.list = Some(list)
     // Its transcripts: each runtime session's, where the station keeps them, and a Claude one's subagents beside it.
@@ -1103,6 +1112,10 @@ pub fn carry_gather(
     match room {
       None => skipped.push(str(key))
       Some(dir) => g.room_walk(dir)
+    }
+    // (its own repositories last, as the fetches of its linked worktrees left them)
+    for dotgit in g.own_gits {
+      g.whole(dotgit)
     }
     g.list = None
     let hash = list.close(files)
@@ -1199,6 +1212,7 @@ pub fn carry_sizes(
     gits: [],
     bundles: Map([]),
     fetched: Set([]),
+    own_gits: [],
     bytes: 0.0,
     before: Map([]),
     seen: Set([]),
